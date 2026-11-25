@@ -60,6 +60,17 @@ export const KIN_CHAT_LABEL = "kin:chat";
 const KIN_CACHE_SAVE_INTERVAL = Duration.millis(1500);
 
 const inboxCache = persistQuery(Schema.Struct({ inbox: KinInboxState, savedAt: Schema.String }));
+/** Offline the viewer sees their own waiting only: someone else's rows are kept live, never here. */
+const ownWaiting = <A extends { readonly inbox: KinInboxState }>(cached: A): A =>
+  cached.inbox.waiting.some((item) => item.waitsFor !== undefined)
+    ? {
+        ...cached,
+        inbox: {
+          ...cached.inbox,
+          waiting: cached.inbox.waiting.filter((item) => item.waitsFor === undefined),
+        },
+      }
+    : cached;
 const chatCache = persistQuery(Schema.Struct({ chat: KinChatState, savedAt: Schema.String }));
 
 const isKinChatError = Schema.is(KinChatError);
@@ -226,8 +237,9 @@ const throttledSave = Effect.fnUntraced(function* <A, R>(
 
 /**
  * Tells `reread` when the direct chats or the viewer's place in them change: being let message
- * a lead adds its chat, and losing that leaves the chat read-only. The first snapshot is the
- * starting point and says nothing.
+ * a lead adds its chat, and losing that leaves the chat read-only. Also when a row that names no
+ * agent (a group, the Team room) starts or stops working, so the leads list's `working` is fresh
+ * for `kinWorkingAgents`. The first snapshot is the starting point and says nothing.
  */
 export const onKinDirectChatsChange =
   (reread: (environmentId: EnvironmentId, orgIds: ReadonlyArray<KinOrgId>) => void) =>
@@ -240,11 +252,19 @@ export const onKinDirectChatsChange =
           Stream.tap((view) =>
             Effect.sync(() => {
               const direct = view.value.chats.filter((chat) => chat.kind === "direct");
-              const key = direct
-                .map((chat) => `${chat.chatId}:${chat.members.map((m) => m.role).join(",")}`)
-                .join("|");
+              const unnamed = view.value.chats.filter(
+                (chat) =>
+                  chat.working === true &&
+                  !chat.members.some((member) => member.principal._tag === "agent"),
+              );
+              const key = [
+                ...direct.map(
+                  (chat) => `${chat.chatId}:${chat.members.map((m) => m.role).join(",")}`,
+                ),
+                ...unnamed.map((chat) => `working:${chat.chatId}`),
+              ].join("|");
               if (seen !== null && seen !== key)
-                reread(environmentId, [...new Set(direct.map((chat) => chat.orgId))]);
+                reread(environmentId, [...new Set(view.value.chats.map((chat) => chat.orgId))]);
               seen = key;
             }),
           ),
@@ -257,11 +277,11 @@ export function kinInboxStream(input: KinChatsSubscribeInput) {
     Effect.gen(function* () {
       const environmentId = yield* currentEnvironmentId;
       const key = queryPersistenceKey(KIN_INBOX_LABEL, input);
-      const cached = yield* inboxCache.load(environmentId, key);
+      const cached = Option.map(yield* inboxCache.load(environmentId, key), ownWaiting);
       let state = Option.match(cached, { onNone: () => emptyKinInbox, onSome: (c) => c.inbox });
       let live = false;
       const saver = yield* throttledSave((value: { inbox: KinInboxState; savedAt: string }) =>
-        inboxCache.save(environmentId, key, value),
+        inboxCache.save(environmentId, key, ownWaiting(value)),
       );
       const events: Stream.Stream<
         KinInboxEvent,
@@ -269,7 +289,13 @@ export function kinInboxStream(input: KinChatsSubscribeInput) {
         EnvironmentSupervisor.EnvironmentSupervisor
       > = Stream.merge(
         resubscribeWhenKinReturns(
-          retryWhileKinUnavailable(subscribe(KIN_CHAT_WS_METHODS.chatsSubscribe, input)),
+          retryWhileKinUnavailable(
+            subscribe(KIN_CHAT_WS_METHODS.chatsSubscribe, {
+              ...input,
+              acceptPreview: true,
+              acceptWaitsFor: true,
+            }),
+          ),
           Stream.empty,
           Stream.empty,
         ),

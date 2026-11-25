@@ -1,9 +1,16 @@
-import { KinOrgId, type KinGitHubAppAccount, type KinGitHubStatus } from "@t3tools/contracts";
+import {
+  KinOrgId,
+  type KinGitHubAgents,
+  type KinGitHubAppAccount,
+  type KinGitHubInstant,
+  type KinGitHubStatus,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import { AsyncResult } from "effect/reactivity";
 
 import {
   createKinGitHubGuardActions,
+  createKinGitHubLookActions,
   KIN_GITHUB_GUARD_COPY,
   kinGitHubAccountRepos,
   kinGitHubGuardAction,
@@ -12,6 +19,7 @@ import {
   kinGitHubAccountsHint,
   kinGitHubAgentsView,
   kinGitHubAppCreatePath,
+  kinGitHubInstantRow,
   kinGitHubRow,
   kinGitHubSheet,
 } from "./kinGitHub.ts";
@@ -147,7 +155,7 @@ describe("kinGitHubAgentsView", () => {
     expect([adopted.canCreate, adopted.disconnect, adopted.setUpLine]).toEqual([
       false,
       { name: "Invented Kin", settingsUrl: "https://github.com/settings/apps/invented-kin" },
-      "Invented Kin, set up earlier on Kin's computer.",
+      "Invented Kin, set up earlier.",
     ]);
     const none = kinGitHubAgentsView(
       {
@@ -307,13 +315,154 @@ describe("kinGitHubAccountRows", () => {
     expect(shown([{ ...org, installable: false }])).toEqual([
       [
         "Not installed",
-        "Invented Kin is private to Invented-Owner, so GitHub can't install it on invented-co and agents work as you here. On GitHub, open the App's settings → Advanced, then choose Make public.",
+        "Invented Kin is private to Invented-Owner, so GitHub can't install it on invented-co and agents work as you here. On GitHub, open the App's settings → Advanced, then choose Make public. Then come back and choose Check again.",
         "Open Advanced on GitHub -> https://github.com/settings/apps/invented-kin/advanced",
       ],
     ]);
+    // Only the private App's row offers Check again beside its link.
+    expect(
+      kinGitHubAccountRows({
+        ...agents,
+        accounts: [row, org, { ...org, installable: false }],
+      }).map((entry) => entry.checkAgain === true),
+    ).toEqual([false, false, true]);
     const { accounts: _accounts, ...unknown } = { ...agents, accounts: undefined };
     expect(kinGitHubAccountRows(unknown)).toEqual([]);
     expect(kinGitHubAgentsView(unknown, null, 0).installUrl).toBe(agents.installUrl);
+  });
+});
+
+describe("createKinGitHubLookActions", () => {
+  it("says nothing once Kin asked GitHub again, and says so in words when it waited", async () => {
+    const look = (looked: boolean) =>
+      createKinGitHubLookActions({
+        orgId: KinOrgId.make("org"),
+        look: async () => AsyncResult.success({ looked }),
+        refresh: () => {},
+      }).look();
+    expect(await look(true)).toBeNull();
+    expect(await look(false)).toBe("Kin looked a moment ago. Try again in a couple of minutes.");
+  });
+});
+
+describe("kinGitHubInstantRow", () => {
+  const agents: KinGitHubAgents = {
+    as: "app",
+    appName: "Invented Kin",
+    problem: null,
+    watched: 4,
+    installed: 4,
+    without: [],
+    ownerUses: [],
+  };
+  const now = Date.parse("2026-03-02T10:00:00Z");
+  const settingsUrl = "https://github.com/settings/apps/invented-kin/permissions";
+  const instant = (state: KinGitHubInstant["state"], more: Partial<KinGitHubInstant> = {}) => ({
+    ...agents,
+    instant: { state, missing: [], settingsUrl, last: null, ...more },
+  });
+
+  it.each([
+    ["absent", agents, null],
+    [
+      "on, never heard",
+      instant("on"),
+      ["ok", "At once", "GitHub tells Kin the moment something happens on your repos.", null],
+    ],
+    [
+      "on, last heard",
+      instant("on", { last: { at: "2026-03-02T09:57:00Z", ok: true } }),
+      [
+        "ok",
+        "At once",
+        "GitHub tells Kin the moment something happens on your repos. Last heard 3 min ago.",
+        null,
+      ],
+    ],
+    [
+      "on, last failed",
+      instant("on", { last: { at: "2026-03-02T09:57:00Z", ok: false } }),
+      [
+        "attention",
+        "At once",
+        "GitHub tells Kin the moment something happens on your repos. GitHub's last message, 3 min ago, didn't get through.",
+        null,
+      ],
+    ],
+    [
+      "events",
+      instant("events", { missing: ["Pull request", "Issue comment", "Check suite"] }),
+      [
+        "attention",
+        "Events to tick",
+        `On GitHub, tick "Pull request", "Issue comment" and "Check suite" under Subscribe to events on the App's Permissions & events page. Also make sure Active is ticked under Webhook on the App's General page: GitHub doesn't let Kin check that. Until then Kin checks GitHub every minute, so nothing is missed.`,
+        `Open Permissions & events -> ${settingsUrl}`,
+      ],
+    ],
+    [
+      "events, no settings page",
+      instant("events", { missing: ["Issues"], settingsUrl: null }),
+      [
+        "attention",
+        "Events to tick",
+        `On GitHub, tick "Issues" under Subscribe to events on the App's Permissions & events page. Also make sure Active is ticked under Webhook on the App's General page: GitHub doesn't let Kin check that. Until then Kin checks GitHub every minute, so nothing is missed.`,
+        null,
+      ],
+    ],
+    [
+      "address",
+      instant("address"),
+      [
+        "muted",
+        "Every minute",
+        "This Kin has no public address, so GitHub can't reach it. Kin checks GitHub every minute instead.",
+        null,
+      ],
+    ],
+    [
+      "error",
+      instant("error"),
+      [
+        "attention",
+        "Every minute",
+        "Kin couldn't set up GitHub to tell it at once. Kin keeps checking GitHub every minute instead.",
+        null,
+      ],
+    ],
+    [
+      "error, the App's events going to another address",
+      instant("error", { elsewhere: true }),
+      [
+        "attention",
+        "Every minute",
+        "This App already sends its events to another address, so Kin left it as it is. Kin keeps checking GitHub every minute.",
+        null,
+      ],
+    ],
+    [
+      "offered, for an App Kin didn't make",
+      { ...agents, instantOffer: true },
+      [
+        "muted",
+        "Every minute",
+        "Kin didn't make this GitHub App, so it hasn't touched the App's webhook. Kin can set it, so GitHub tells Kin the moment something happens. If the App already sends its events somewhere else, Kin leaves it as it is.",
+        null,
+      ],
+    ],
+  ] as const)("%s", (_name, input, expected) => {
+    const row = kinGitHubInstantRow(input, now);
+    expect(row?.offer === true).toBe(input.instantOffer === true);
+    expect(
+      row === null
+        ? null
+        : [
+            row.tone,
+            row.label,
+            row.detail,
+            row.action === null ? null : `${row.action.label} -> ${row.action.url}`,
+          ],
+    ).toEqual(expected);
+    if (row !== null) expect(row.title).toBe("How fast Kin hears from GitHub");
   });
 });
 

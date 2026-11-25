@@ -30,6 +30,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
+import * as Tracer from "effect/Tracer";
 
 import { ServerConfig } from "../../config.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -44,11 +45,18 @@ import * as OwnerDocs from "./ownerDocs.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
 import * as OwnerClients from "./ownerClients.ts";
 import * as OwnerWork from "./ownerWork.ts";
+import { PRESETS } from "./registers.ts";
 import * as WorkStream from "./workStream.ts";
 import { search } from "./search.ts";
 import { indexWhere, searchIndexed } from "./searchIndex.ts";
 import { listDef } from "./registers.ts";
-import { personSees, teamCan, unreadableBy, viewerOfPeople } from "./teamView.ts";
+import {
+  personSees,
+  teamCan,
+  unreadableBy,
+  viewerOfPeople,
+  withoutOwnFigures,
+} from "./teamView.ts";
 
 // Invented org, people and entries only.
 const orgId = KinOrgId.make("org");
@@ -82,6 +90,7 @@ const entry = Arbitrary.all({
   project: pickOrNull(["p1", "p2"]),
   party: pickOrNull(["c1", "c2"]),
   attendees: someOf,
+  alsoOn: someOf,
   company: flag,
   title: pick(["Plan launch", "Fix login", "Call vendor"]),
 });
@@ -208,6 +217,9 @@ const rowsOf = (w: World): ReadonlyArray<Row> => [
     party: e.party,
     fields: {
       attendees: e.attendees.map((m) => `person:${m}`),
+      ...(e.list === "work" && e.alsoOn.some((m) => m !== e.owner)
+        ? { alsoOn: e.alsoOn.filter((m) => m !== e.owner).map((m) => `person:${m}`) }
+        : {}),
       ...(e.company ? { home: "company" } : {}),
     },
     title: `${e.title} ${i + 1}`,
@@ -268,7 +280,9 @@ const seen = (viewer: Member) =>
 const ownLabel = (row: Row) => row.sensitive && !SENSITIVE_BY_DEFAULT.has(row.list);
 const holdsOrAttends = (row: Row, viewer: Member) =>
   row.list === "work" &&
-  (row.owner === viewer || (row.fields["attendees"] as Array<string>).includes(`person:${viewer}`));
+  (row.owner === viewer ||
+    (row.fields["attendees"] as Array<string>).includes(`person:${viewer}`) ||
+    ((row.fields["alsoOn"] ?? []) as Array<string>).includes(`person:${viewer}`));
 
 // Every entry carries an amount no other value has; one she may not see must appear nowhere.
 const canary = (index: number) => 98_765_400_017 + index * 10_301;
@@ -382,6 +396,7 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
             createdBy: benGone(e.createdBy),
             assignedBy: e.assignedBy === "ben" ? "owner" : e.assignedBy,
             attendees: notBen(e.attendees),
+            alsoOn: notBen(e.alsoOn),
           })),
         });
         assert.deepStrictEqual([...(yield* seen("ana"))].toSorted(), [...before[0]!].toSorted());
@@ -462,6 +477,7 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
         project: null,
         party: null,
         attendees: [],
+        alsoOn: [],
         company: false,
         title: "Call vendor",
       };
@@ -670,6 +686,11 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
           KinPersonId.make("ben"),
         ),
       );
+      // Her own figure is lifted out of what is held against her; an entry key's number never is.
+      assert.strictEqual(
+        withoutOwnFigures("INV-3 for 3 seats at 2,50,000", "3 seats at 250000"),
+        "INV-3 for  seats at ",
+      );
     }),
   );
 
@@ -699,6 +720,70 @@ layer(testLayer)("what a teammate sees and is told", (it) => {
         yield* install(emptyWorld);
         const text = `${before}${form.replaceAll("{n}", n).replace("{w}", w)}${after}`;
         assert.isUndefined(yield* tell(text), text);
+      }),
+  );
+
+  it.effect(
+    "a member on a private task sees it but can only leave, and only while on the team",
+    () =>
+      Effect.gen(function* () {
+        const records = yield* KinRecords.KinRecords;
+        const sql = yield* SqlClient.SqlClient;
+        const task: Row = {
+          id: "e1",
+          list: "work",
+          owner: "owner",
+          createdBy: "owner",
+          assignedBy: null,
+          sensitive: true,
+          shared: false,
+          project: null,
+          party: null,
+          fields: { alsoOn: ["person:ana"] },
+          title: "Plan launch 1",
+        };
+        yield* install(emptyWorld, [task]);
+        const writer = (viewer: Member) => {
+          const personId = KinPersonId.make(viewer);
+          return {
+            actor: { _tag: "person" as const, personId },
+            via: "owner" as const,
+            teammate: true,
+          };
+        };
+        const renames = (viewer: Member) =>
+          records
+            .update(orgId, writer(viewer), "E-1", { title: "Plan launch again" })
+            .pipe(Effect.exit);
+        const leaves = (viewer: Member) =>
+          records
+            .update(orgId, writer(viewer), "E-1", { fields: { alsoOn: [] } })
+            .pipe(Effect.exit);
+        const edits = Effect.fn(function* (viewer: Member) {
+          const detail = yield* records.detail((yield* records.getById(orgId, "e1"))!, 1);
+          const can = yield* teamCan(orgId, KinPersonId.make(viewer), [
+            { ...detail, states: ["open", "doing", "waiting", "done", "dropped"] },
+          ]);
+          return can.get(detail.recordId)!.edit;
+        });
+        assert.isTrue((yield* seen("ana")).has("e1"));
+        assert.isFalse(yield* edits("ana"));
+        assert.isTrue(Exit.isFailure(yield* renames("ana")));
+        assert.isFalse((yield* seen("ben")).has("e1"));
+        assert.isFalse(yield* edits("ben"));
+        assert.isTrue(Exit.isFailure(yield* renames("ben")));
+        assert.isTrue(Exit.isFailure(yield* leaves("ben")));
+        const away = (gone: boolean) =>
+          sql`UPDATE kin_session_bindings SET revoked_at = ${gone ? 1 : null}
+          WHERE org_id = ${orgId} AND person_id = 'ana'`;
+        yield* away(true);
+        yield* Effect.gen(function* () {
+          assert.isFalse(yield* edits("ana"));
+          assert.isTrue(Exit.isFailure(yield* renames("ana")));
+          assert.isTrue(Exit.isFailure(yield* leaves("ana")));
+        }).pipe(Effect.ensuring(away(false).pipe(Effect.orDie)));
+        assert.isTrue(Exit.isSuccess(yield* leaves("ana")));
+        assert.isFalse((yield* seen("ana")).has("e1"));
       }),
   );
 
@@ -937,6 +1022,7 @@ const PINNED_JOIN: readonly [World, ReadonlyArray<Step>] = [
         project: "p1",
         party: null,
         attendees: [],
+        alsoOn: [],
         company: false,
         title: "Call vendor",
       },
@@ -1009,6 +1095,7 @@ const PINNED_MOVE: readonly [World, ReadonlyArray<Step>] = [
         project: null,
         party: null,
         attendees: [],
+        alsoOn: [],
         company: false,
         title: "Fix login",
       },
@@ -1022,6 +1109,7 @@ const PINNED_MOVE: readonly [World, ReadonlyArray<Step>] = [
         project: null,
         party: null,
         attendees: [],
+        alsoOn: [],
         company: false,
         title: "Call vendor",
       },
@@ -1035,6 +1123,7 @@ const PINNED_MOVE: readonly [World, ReadonlyArray<Step>] = [
         project: "p1",
         party: "c2",
         attendees: [],
+        alsoOn: [],
         company: false,
         title: "Call vendor",
       },
@@ -1429,6 +1518,70 @@ layer(testLayer)("Work's live stream", (it) => {
     streamCase(PINNED_MOVE),
   );
 
+  it.effect("a shared receipt follows its payment's invoice and client visibility", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(at + 3_600_000);
+        const entry = {
+          ...rowsOf(emptyWorld)[0]!,
+          owner: "owner",
+          sensitive: false,
+          shared: true,
+          title: "Invented payment",
+          party: "c2",
+        } as const;
+        yield* once;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT OR IGNORE INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json) VALUES (${orgId}, 'receipts', 'Receipts', 'RCT', 0,
+          ${at}, ${JSON.stringify({ ...PRESETS.receipts, currency: "INR" })})`;
+        yield* install(
+          { ...emptyWorld, clients: [{ sensitive: true, shared: false }, emptyWorld.clients[1]!] },
+          [
+            { ...entry, id: "inv1", list: "invoices" },
+            { ...entry, id: "rct1", list: "receipts", fields: { payment: "invented-payment" } },
+          ],
+        );
+        yield* sql`UPDATE kin_registers SET definition_json = ${JSON.stringify({ ...PRESETS.invoices, currency: "INR" })}
+          WHERE org_id = ${orgId} AND register_id = 'invoices'`;
+        yield* sql`UPDATE kin_people SET sees_money = 1 WHERE org_id = ${orgId} AND person_id = 'ana'`;
+        yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor,
+          currency, paid_on, origin_key, created_at, created_by_kind) VALUES
+          (${orgId}, 'invented-payment', 'inv1', 100, 'INR', '2026-11-11', 'test-payment', ${at}, 'person')`;
+        const records = yield* KinRecords.KinRecords;
+        const ana = peopleOf("ana");
+        const receipt = KinRecordKey.make("RCT-1");
+        const session = yield* WorkStream.makeWorkStream(ana, { orgId, acceptRows: true });
+        const pull = yield* Stream.toPull(records.changes(orgId));
+        yield* session.start((yield* pull)[0]!.seq);
+        assert.isTrue((yield* seen("ana")).has("rct1"));
+        for (const { key, patch, visible } of [
+          { key: "INV-1", patch: { partyId: "c1" }, visible: false },
+          { key: "C-1", patch: { sensitive: false }, visible: true },
+          { key: "C-1", patch: { sensitive: true }, visible: false },
+          { key: "INV-1", patch: { partyId: "c2" }, visible: true },
+        ]) {
+          yield* records.update(
+            orgId,
+            { actor: { _tag: "person", personId: KinPersonId.make(ownerId) }, via: "owner" },
+            key,
+            patch,
+          );
+          assert.strictEqual((yield* seen("ana")).has("rct1"), visible);
+          const events = yield* session.batch((yield* pull).flatMap(session.pendingOf));
+          assert.isTrue(
+            events.some((event) =>
+              visible
+                ? event._tag === "upsert" && event.record.key === receipt
+                : event._tag === "removed" && event.key === receipt,
+            ),
+            `receipt row after changing ${key} to ${JSON.stringify(patch)}`,
+          );
+        }
+      }),
+    ),
+  );
+
   it.effect("a late tick can't let a resume skip its change, or use up a removal", () =>
     Effect.scoped(
       Effect.gen(function* () {
@@ -1504,6 +1657,66 @@ layer(testLayer)("Work's live stream", (it) => {
           ),
           `ana kept ${late.key}: ${JSON.stringify(sent)}`,
         );
+      }),
+    ),
+  );
+
+  it.effect("one change is counted once for every owner-level screen, and a member her own", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(at + 3_600_000);
+        yield* install(emptyWorld);
+        const records = yield* KinRecords.KinRecords;
+        const pull = yield* Stream.toPull(records.changes(orgId));
+        const opening = (yield* pull)[0]!.seq;
+        const task = (title: string, owner: string) =>
+          OwnerWork.create(peopleOf("owner"), {
+            orgId,
+            clientRequestId: `counted-${title}`,
+            title,
+            owner: { _tag: "person", personId: KinPersonId.make(owner) },
+          });
+        yield* task("The owner's own", "owner");
+        const screens = yield* Effect.forEach(["owner", CO_OWNER, "owner", "ana"] as const, (who) =>
+          Effect.gen(function* () {
+            const session = yield* WorkStream.makeWorkStream(peopleOf(who), {
+              orgId,
+              acceptRows: true,
+            });
+            yield* session.start(opening);
+            return { who, session };
+          }),
+        );
+        const made = yield* task("Hers", "ana");
+        const ticks: Array<KinRecords.Tick> = [];
+        while (!ticks.some((tick) => tick.key === made.key)) ticks.push(...(yield* pull));
+        let counted = 0;
+        const tracer = Tracer.make({
+          span(options) {
+            const span = new Tracer.NativeSpan(options);
+            const end = span.end.bind(span);
+            span.end = (endTime, exit) => {
+              end(endTime, exit);
+              const text = span.attributes.get("db.query.text");
+              if (typeof text === "string" && text.includes("SUM(r.state = 'doing')")) counted += 1;
+            };
+            return span;
+          },
+        });
+        const open = new Map<string, number>();
+        for (const { who, session } of screens) {
+          const sent = yield* session
+            .batch(ticks.flatMap((tick) => session.pendingOf(tick)))
+            .pipe(Effect.withTracer(tracer));
+          const counts = sent.find((event) => event._tag === "counts");
+          if (counts !== undefined) open.set(who, counts.open);
+        }
+        assert.strictEqual(counted, 2, "one read for the owner-level screens, one for hers");
+        assert.strictEqual(open.get(CO_OWNER), 2);
+        assert.strictEqual(open.get("owner"), 2);
+        const hers = yield* OwnerWork.summary(peopleOf("ana"), { orgId });
+        assert.strictEqual(open.get("ana"), hers.open);
+        assert.strictEqual(hers.open, 1, "a member's counts are her own");
       }),
     ),
   );

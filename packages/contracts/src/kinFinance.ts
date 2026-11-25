@@ -31,7 +31,7 @@ import {
  * computed by the server from integer minor units, one total per currency.
  */
 
-export const KinListFieldType = Schema.Literals([
+export const KinWritableListFieldType = Schema.Literals([
   "text",
   "choice",
   "date",
@@ -39,6 +39,11 @@ export const KinListFieldType = Schema.Literals([
   "link",
   "money",
   "file",
+]);
+export const KinListFieldType = Schema.Literals([
+  ...KinWritableListFieldType.literals,
+  "number",
+  "yesno",
 ]);
 export type KinListFieldType = typeof KinListFieldType.Type;
 export { KinListFieldKey };
@@ -52,7 +57,8 @@ export const KinListField = Schema.Struct({
   /** A choice field's options. */
   choices: Schema.optional(Schema.Array(Label).check(Schema.isMaxLength(30))),
   /** What a link field points at. */
-  link: Schema.optional(Schema.Literals(["clients", "projects"])),
+  link: Schema.optional(Schema.Literals(["clients", "projects", "list"])),
+  linkList: Schema.optional(Schema.String),
   /** Money fields always are. */
   sensitive: Schema.Boolean,
   retired: Schema.optional(Schema.Literal(true)),
@@ -94,8 +100,22 @@ export const KinListDefinition = Schema.Struct({
   /** How a category reads where that differs from how it is stored: `gst` as `GST`. */
   categoryLabels: Schema.optional(Schema.Record(Schema.String, Label)),
   fields: Schema.Array(KinListField),
+  remindOn: Schema.optional(KinListFieldKey),
+  /**
+   * One check on every entry: a number field below or above another number field or a fixed
+   * number. Sent only to a caller that accepts `check`, which reads one of `below` and `above`.
+   */
+  check: Schema.optional(
+    Schema.Struct({
+      field: KinListFieldKey,
+      below: Schema.optional(Schema.Union([KinListFieldKey, Schema.Finite])),
+      above: Schema.optional(Schema.Union([KinListFieldKey, Schema.Finite])),
+    }),
+  ),
   /** New entries are labelled sensitive. */
   sensitive: Schema.Boolean,
+  team: Schema.optional(Schema.Boolean),
+  teamSince: Schema.optional(Schema.NullOr(NonNegativeInt)),
   /** Its entries carry an amount, in `currency` unless they say otherwise. */
   amount: Schema.Boolean,
   currency: KinCurrency,
@@ -117,10 +137,26 @@ export const KinListsInput = Schema.Struct({
   orgId: KinOrgId,
   /** Also the archived ones. */
   archived: Schema.optional(Schema.Boolean),
+  /** The later field types and features this caller can read. */
+  accept: Schema.optional(Schema.Array(Schema.String)),
 });
 export type KinListsInput = typeof KinListsInput.Type;
-export const KinListsResult = Schema.Struct({ lists: Schema.Array(KinListDefinition) });
+export const KinListsResult = Schema.Struct({
+  lists: Schema.Array(KinListDefinition),
+  /** This host takes a name to bill on an invoice or quote; an older host sends nothing. */
+  billToByName: Schema.optional(Schema.Boolean),
+});
 export type KinListsResult = typeof KinListsResult.Type;
+
+/** Company-made lists that keep money or bank rows and are never opened to the team. */
+export const KIN_LISTS_NEVER_TEAM = [
+  "expenses",
+  "invoices",
+  "receipts",
+  "quotes",
+  "payments",
+  "bank_transactions",
+] as const;
 
 /**
  * The owner's changes to a defined list, which never delete: archiving hides it and refuses new
@@ -143,6 +179,7 @@ export const KinListUpdateInput = Schema.Struct({
    */
   payments: Schema.optional(Schema.Boolean),
   archived: Schema.optional(Schema.Boolean),
+  team: Schema.optional(Schema.Boolean),
   retireFields: Schema.optional(Schema.Array(KinListFieldKey).check(Schema.isMaxLength(30))),
   restoreFields: Schema.optional(Schema.Array(KinListFieldKey).check(Schema.isMaxLength(30))),
   /** Sets how it numbers what it issues from now on; numbers already issued stay. */
@@ -165,6 +202,8 @@ export const KinDateRow = Schema.Struct({
   allDay: Schema.Boolean,
 });
 export type KinDateRow = typeof KinDateRow.Type;
+/** Only a due day can be late; an entry's own day, such as an invoice's issue day, never is. */
+export const kinDateRowLate = (row: KinDateRow) => row.kind === "due" && row.record.late;
 
 /** Everything with a date in `[from, to)`, across lists, soonest first. A calendar or agenda. */
 export const KinDatesInput = Schema.Struct({
@@ -218,10 +257,11 @@ export const KinMoneySummary = Schema.Struct({
     overdue: KinMoneyTotals,
     invoices: NonNegativeInt,
     overdueInvoices: NonNegativeInt,
-    /** Longest overdue first, then most owed; `party` null for invoices with no client. */
+    /** Longest overdue first, then most owed; invoices without a client share one null group. */
     byClient: Schema.Array(
       Schema.Struct({
         party: Schema.NullOr(KinRecordRef),
+        billTo: Schema.optional(Schema.String),
         owed: KinMoneyTotals,
         overdue: KinMoneyTotals,
         invoices: NonNegativeInt,
@@ -229,6 +269,8 @@ export const KinMoneySummary = Schema.Struct({
         oldestOverdueDays: Schema.NullOr(NonNegativeInt),
       }),
     ),
+    /** Owing clients past the first 20 a screen is sent, when there are more; absent otherwise. */
+    byClientMore: Schema.optional(NonNegativeInt),
   }),
   /** Money paid in: tax a client deducted at source settles an invoice but isn't counted here. */
   received: Schema.Struct({ thisMonth: KinMoneyTotals, lastMonth: KinMoneyTotals }),
@@ -275,6 +317,8 @@ export const KinMoneySummaryInput = Schema.Struct({
   upcomingRows: Schema.optional(Schema.Boolean),
   /** One client's page: what is owed is that client's alone, and none to a teammate without Money. */
   party: Schema.optional(KinRecordKey),
+  /** Every owing client in `owed.byClient`, not the first 20 and a count of the rest. */
+  allClients: Schema.optional(Schema.Boolean),
 });
 export type KinMoneySummaryInput = typeof KinMoneySummaryInput.Type;
 
@@ -530,6 +574,11 @@ const KinCompanyProfileFields = {
   financialYearStartMonth: Schema.optional(KinMonthNumber),
   /** Null charges no tax; India's GST is worked out by the invoice recipe instead. */
   tax: Schema.optional(Schema.NullOr(KinCompanyTax)),
+  /**
+   * False when an owner said the company is not registered for its country's tax: its documents
+   * charge none and print no client's tax number. Absent or null when not said.
+   */
+  taxRegistered: Schema.optional(Schema.NullOr(Schema.Literal(false))),
 };
 export const KinCompanyProfileData = Schema.Struct(KinCompanyProfileFields);
 export type KinCompanyProfileData = typeof KinCompanyProfileData.Type;
@@ -547,7 +596,7 @@ export type KinCompanyProfileInput = typeof KinCompanyProfileInput.Type;
 export const KIN_EXPORT_ROUTE = "/api/kin/export";
 /** What that zip holds and leaves out: Settings, the zip's README and the user guide say it in these words. */
 export const KIN_EXPORT_HOLDS =
-  "Your clients, contacts, projects, every list with its entries and their payments, each doc as it reads now, and the files entries and docs hold, in one zip. Kin's import makes the clients, contacts, projects and entries again; the docs and files are there to keep.";
+  "Your clients, contacts, projects, every list with its entries and their payments, each entry's comments, the contact logged with each client, each doc as it reads now, and the files entries, comments and docs hold, in one zip. Kin's import makes the clients, contacts, projects and entries again; the comments, logged contact, docs and files are there to keep.";
 export const KIN_EXPORT_LEAVES =
   "It is not a full backup. Not in it: memory, which stays in your memory repository; chats; people and their access; agents and their characters; check-ins and reminders; connections, social accounts and their posts; budgets, bank statements and company details; settings; project repos and members; and who holds each entry, how it repeats and its history. Keys, tokens, sign-in sessions, pairing codes and bank details never leave.";
 export const KinExportLinkInput = Schema.Struct({ orgId: KinOrgId });
@@ -599,6 +648,8 @@ export const KinCompanyProfileSetInput = Schema.Struct({
   country: Schema.optional(Schema.NullOr(KinCountryCode)),
   financialYearStartMonth: Schema.optional(KinMonthNumber),
   tax: Schema.optional(Schema.NullOr(KinCompanyTax)),
+  /** False says the company is not registered for its tax, and clears its tax number; null unsays it. */
+  taxRegistered: Schema.optional(Schema.NullOr(Schema.Literal(false))),
 });
 export type KinCompanyProfileSetInput = typeof KinCompanyProfileSetInput.Type;
 

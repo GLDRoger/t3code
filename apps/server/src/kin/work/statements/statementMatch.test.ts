@@ -4,6 +4,7 @@ import {
   type ExpenseCandidate,
   type InvoiceCandidate,
   matchRows,
+  type PartnerCandidate,
   suggest,
   vendorOf,
 } from "./statementMatch.ts";
@@ -52,9 +53,11 @@ const match = (
   rows: ReadonlyArray<StatementRow>,
   invoices: ReadonlyArray<InvoiceCandidate> = [],
   expenses: ReadonlyArray<ExpenseCandidate> = [],
+  withholdsAtSource = true,
 ) =>
   matchRows(rows, {
     currency: "INR",
+    withholdsAtSource,
     invoices,
     expenses,
     ownAccounts: ["7710"],
@@ -64,6 +67,43 @@ const match = (
 
 describe("statement matching", () => {
   it.each([
+    {
+      name: "a credit matching a signed refund, not the same positive expense",
+      rows: [row({ description: "Ambermill Hosting refund", amountMinor: 500 })],
+      invoices: [],
+      expenses: [
+        expense({ amountMinor: -500, vendor: "Ambermill Hosting" }),
+        expense({
+          recordId: "rec_charge",
+          key: "EXP-2",
+          amountMinor: 500,
+          vendor: "Ambermill Hosting",
+        }),
+      ],
+      group: "matched",
+      fit: "exact",
+    },
+    ...(
+      [
+        ["IMPS-SELF-XXXXXXXX7710-OWN ACCOUNT", "choose"],
+        ["NEFT-XXXXXXXX7710-AMBERMILL HOSTING", "choose"],
+        ["NEFT-INVENTED PAYMENT", "choose"],
+        ["NEFT-EXP-1", "matched"],
+      ] as const
+    ).map(([description, group]) => ({
+      name: `a same-day refund candidate on ${description}`,
+      rows: [row({ description, amountMinor: 500 })],
+      invoices: [],
+      expenses: [
+        expense({
+          amountMinor: -500,
+          vendor: "Ambermill Hosting",
+          ...(description === "NEFT-EXP-1" ? { day: null } : {}),
+        }),
+      ],
+      group,
+      fit: "exact",
+    })),
     {
       name: "a credit of the exact balance from the named client",
       rows: [
@@ -86,6 +126,20 @@ describe("statement matching", () => {
       expenses: [],
       group: "matched",
       fit: "tds",
+    },
+    {
+      name: "the same short credit for a company whose country withholds no tax at source",
+      rows: [
+        row({
+          description: "NEFT CR-UTIB0000002-NORTHWIND RETAIL PVT LTD",
+          amountMinor: 9_000_000,
+        }),
+      ],
+      invoices: [invoice({ amountMinor: 10_000_000, client: "Northwind Retail Pvt Ltd" })],
+      expenses: [],
+      withholds: false,
+      group: "choose",
+      fit: "part",
     },
     {
       name: "TDS on the amount before GST",
@@ -187,10 +241,53 @@ describe("statement matching", () => {
       group: "unmatched",
       fit: undefined,
     },
-  ] as const)("$name", ({ rows, invoices, expenses, group, fit }) => {
-    const [result] = match(rows, invoices, expenses);
+  ] as const)("$name", ({ rows, invoices, expenses, group, fit, ...rest }) => {
+    const [result] = match(rows, invoices, expenses, "withholds" in rest ? rest.withholds : true);
     assert.strictEqual(result!.group, group);
     assert.strictEqual(result!.candidates[0]?.fit, fit);
+  });
+
+  it.each([
+    ["INV-2", null, "NEFT TIDEWATER FREIGHT INV/2026/015", null, false],
+    ["INV-1", "INV/2026/015", "NEFT TIDEWATER FREIGHT INV/2026/015", null, true],
+    ["INV-1", null, "NEFT TIDEWATER FREIGHT INV-12", null, false],
+    ["INV-2", null, "INV2 PAYMENT", null, true],
+    ["INV-2", null, "NEFT INV26", null, false],
+    ["INV-2", null, "NEFT INV-002", null, false],
+    ["INV-2", null, "NEFT INV-2A", null, false],
+    ["INV-2", null, "NEFT XINV-2", null, false],
+    ["INV-2", null, "NEFT TIDEWATER", "INV-26", false],
+    ["INV-2", null, "NEFT TIDEWATER", "REF INV 2", true],
+    ["INV-3", "चालान-2026/15", "NEFT चालान 2026/15 भुगतान", null, true],
+    ["INV-3", "चालान-2026/15", "NEFT चालान 2026/150", null, false],
+  ] as const)(
+    "an invoice %s printed %s is numbered in %s (reference %s): %s",
+    (key, number, description, reference, numbered) => {
+      const [result] = match(
+        [row({ description, reference, amountMinor: 100 })],
+        [invoice({ key, number, amountMinor: 100 })],
+      );
+      assert.strictEqual(
+        result!.candidates[0]?.why.includes("invoice number in the narration"),
+        numbered,
+      );
+    },
+  );
+
+  it.each([
+    ["REFUND EXP 1", true],
+    ["NEFT-EXP-12", false],
+    ["NEFT-EXP-1B", false],
+  ] as const)("an expense's key is numbered in %s: %s", (description, numbered) => {
+    const [result] = match(
+      [row({ description, amountMinor: 500 })],
+      [],
+      [expense({ amountMinor: -500 })],
+    );
+    assert.strictEqual(
+      result!.candidates[0]?.why.includes("expense reference in the narration"),
+      numbered,
+    );
   });
 
   it("records the TDS deducted, and gives one entry to one row", () => {
@@ -223,6 +320,7 @@ describe("statement matching", () => {
       ],
       {
         currency: "INR",
+        withholdsAtSource: true,
         invoices: [],
         payments: [
           {
@@ -273,6 +371,355 @@ describe("statement matching", () => {
     assert.strictEqual(shown.category, category);
   });
 
+  it("repays a partner's oldest owed expenses a debit adds up to, lump sum after lump sum", () => {
+    const owed = (key: string, amountMinor: number) => ({
+      recordId: `rec_${key}`,
+      key,
+      amountMinor,
+    });
+    const partners: ReadonlyArray<PartnerCandidate> = [
+      {
+        name: "Meera Rao",
+        currency: "INR",
+        owed: [owed("EXP-4", 120_000), owed("EXP-7", 80_000), owed("EXP-9", 50_000)],
+      },
+    ];
+    const debit = (index: number, date: string, description: string, amountMinor: number) =>
+      row({ index, date, description, amountMinor, direction: "debit" });
+    const rows = [
+      // Listed newest first, as many banks do: the earlier lump sum still settles the oldest.
+      debit(0, "2026-10-20", "IMPS-MEERA RAO-REIMB", 50_000),
+      debit(1, "2026-10-08", "NEFT DR-UTIB0000001-MEERA RAO", 200_000),
+      debit(2, "2026-10-09", "UPI-SOMEONE ELSE", 120_000),
+    ];
+    const results = matchRows(rows, {
+      currency: "INR",
+      withholdsAtSource: true,
+      invoices: [],
+      expenses: [],
+      partners,
+      ownAccounts: [],
+      known: [],
+      bank: null,
+    });
+    assert.deepStrictEqual(
+      results.map((one) => [one.group, one.candidates.map((c) => c.repays?.map((r) => r.key))]),
+      [
+        ["matched", [["EXP-9"]]],
+        ["matched", [["EXP-4", "EXP-7"]]],
+        // The oldest is already taken by the earlier lump sum, and nothing names her.
+        ["unmatched", []],
+      ],
+    );
+    const only = (rows: ReadonlyArray<ReturnType<typeof debit>>, owing = partners) =>
+      matchRows(rows, {
+        currency: "INR",
+        withholdsAtSource: true,
+        invoices: [],
+        expenses: [],
+        partners: owing,
+        ownAccounts: [],
+        known: [],
+        bank: null,
+      }).map((one) => [one.group, one.candidates.map((c) => c.repays?.map((r) => r.key))]);
+    // An amount alone, to someone the narration names instead, is no repayment.
+    assert.deepStrictEqual(only([debit(0, "2026-10-08", "NEFT DR-UTIB0000001-SOMEONE", 120_000)]), [
+      ["unmatched", []],
+    ]);
+    // Two the same day, listed opposite to how they settle: each still finds its run.
+    assert.deepStrictEqual(
+      only([
+        debit(0, "2026-10-08", "MEERA RAO", 50_000),
+        debit(1, "2026-10-08", "MEERA RAO", 200_000),
+      ]),
+      [
+        ["matched", [["EXP-9"]]],
+        ["matched", [["EXP-4", "EXP-7"]]],
+      ],
+    );
+    // A repayment that isn't its row's clear match moves nobody past it: no later row skips ahead.
+    const twins = [
+      partners[0]!,
+      { name: "Meera Rao", currency: "INR", owed: [owed("EXP-30", 120_000)] },
+    ];
+    assert.deepStrictEqual(
+      only(
+        [debit(0, "2026-10-08", "MEERA RAO", 120_000), debit(1, "2026-10-09", "MEERA RAO", 80_000)],
+        twins,
+      ),
+      [
+        ["choose", [["EXP-30"], ["EXP-4"]]],
+        ["unmatched", []],
+      ],
+    );
+    const skips = matchRows([debit(0, "2026-10-08", "MEERA RAO", 80_000)], {
+      currency: "INR",
+      withholdsAtSource: true,
+      invoices: [],
+      expenses: [],
+      partners,
+      ownAccounts: [],
+      known: [],
+      bank: null,
+    });
+    assert.deepStrictEqual(skips[0]!.candidates, []);
+
+    // Two partners, two currencies: each line settles only its own currency's run, by name.
+    const both = [
+      ...partners,
+      { name: "Dev Malhotra", currency: "INR", owed: [owed("EXP-5", 50_000)] },
+      { name: "Meera Rao", currency: "USD", owed: [owed("EXP-6", 3_000)] },
+      // A refund to her card after the company paid her back: she owes the company the net.
+      { name: "Zoya Sheikh", currency: "INR", owed: [owed("EXP-8", -20_000)] },
+    ];
+    const lines = matchRows(
+      [
+        debit(0, "2026-10-08", "NEFT DR-DEV MALHOTRA", 50_000),
+        debit(1, "2026-10-08", "NEFT DR-MEERA RAO", 30_000),
+        row({
+          index: 2,
+          date: "2026-10-09",
+          description: "NEFT CR-ZOYA SHEIKH-REFUND",
+          amountMinor: 20_000,
+          direction: "credit",
+        }),
+        // Less than her oldest, and more than all she is owed: no run adds up, nothing is used.
+        debit(3, "2026-10-10", "NEFT DR-MEERA RAO", 100_000),
+        debit(4, "2026-10-11", "NEFT DR-MEERA RAO", 900_000),
+      ],
+      {
+        currency: "INR",
+        withholdsAtSource: true,
+        invoices: [],
+        expenses: [],
+        partners: both,
+        ownAccounts: [],
+        known: [],
+        bank: null,
+      },
+    );
+    assert.deepStrictEqual(
+      lines.map((one) => [
+        one.group,
+        one.candidates.map((c) => [c.title, c.repays?.map((r) => r.key)]),
+      ]),
+      [
+        // It equals her newest too, but only his oldest run adds up to it.
+        ["matched", [["Repays Dev Malhotra: 1 expense", ["EXP-5"]]]],
+        // Her USD 30.00 is not an INR line's to settle.
+        ["unmatched", []],
+        ["matched", [["Settles with Zoya Sheikh: 1 expense", ["EXP-8"]]]],
+        ["unmatched", []],
+        ["unmatched", []],
+      ],
+    );
+    // What she is owed stays in view on those lines, and neither is offered as a new expense.
+    assert.deepStrictEqual(lines[3]!.suggestion, {
+      action: "later",
+      why: "This doesn't match what Meera Rao is owed (₹2,500.00). Kin settles a repayment only when it matches.",
+    });
+    assert.strictEqual(lines[4]!.suggestion.action, "later");
+
+    // Exact sums: as numbers, MAX + 2 - MAX rounds to 1 and a one-cent line would settle all three.
+    const huge = [
+      {
+        name: "Meera Rao",
+        currency: "INR",
+        owed: [
+          owed("EXP-11", Number.MAX_SAFE_INTEGER),
+          owed("EXP-12", 2),
+          owed("EXP-13", -Number.MAX_SAFE_INTEGER),
+        ],
+      },
+    ];
+    assert.deepStrictEqual(only([debit(0, "2026-10-08", "MEERA RAO", 1)], huge), [
+      ["unmatched", []],
+    ]);
+    // A move to the company's own account that names her repays nothing and stays a transfer.
+    const own = matchRows(
+      [debit(0, "2026-10-08", "SELF TRANSFER TO OWN ACCOUNT XX7710 MEERA RAO", 120_000)],
+      {
+        currency: "INR",
+        withholdsAtSource: true,
+        invoices: [],
+        expenses: [],
+        partners,
+        ownAccounts: ["7710"],
+        known: [],
+        bank: null,
+      },
+    );
+    assert.deepStrictEqual(
+      own.map((one) => [one.group, one.candidates.length, one.suggestion.action]),
+      [["unmatched", 0, "transfer"]],
+    );
+    // Ticked only for an unambiguous payee: a whole name one partner answers to, or a stored id.
+    const meeras = [
+      { name: "Meera Iyer", id: "person:meera", currency: "INR", owed: [owed("EXP-21", 10_000)] },
+      { name: "Meera Shah", id: "person:shah", currency: "INR", owed: [owed("EXP-22", 20_000)] },
+    ];
+    assert.deepStrictEqual(
+      [
+        only([debit(0, "2026-10-08", "REIMBURSE MEERA", 10_000)], meeras),
+        only([debit(0, "2026-10-08", "REIMBURSE MEERA", 10_000)], [meeras[0]!]),
+        only([debit(0, "2026-10-08", "NEFT DR-MEERA IYER", 10_000)], meeras),
+        only(
+          [debit(0, "2026-10-08", "IMPS MEERA meera@invented.example", 10_000)],
+          [{ ...meeras[0]!, name: "M. I.", ids: ["meera@invented.example"] }],
+        ),
+      ],
+      [
+        [["choose", [["EXP-21"]]]],
+        [["choose", [["EXP-21"]]]],
+        [["matched", [["EXP-21"]]]],
+        [["matched", [["EXP-21"]]]],
+      ],
+    );
+    // A line naming a partner is never a new expense: owed nothing here, or already repaid by hand.
+    const placed = (
+      line: ReturnType<typeof debit>,
+      owing: ReadonlyArray<PartnerCandidate>,
+      payees: ReadonlyArray<{
+        name: string;
+        repaid: ReadonlyArray<{ currency: string; day: string; amountMinor: number }>;
+      }> = [],
+    ) => {
+      const [one] = matchRows([line], {
+        currency: "INR",
+        withholdsAtSource: true,
+        invoices: [],
+        expenses: [],
+        partners: owing,
+        payees,
+        ownAccounts: [],
+        known: [],
+        bank: null,
+      });
+      return [one!.group, one!.candidates.map((c) => c.repays?.map((r) => r.key)), one!.suggestion];
+    };
+    assert.deepStrictEqual(
+      [
+        placed(debit(0, "2026-10-08", "NEFT DR-MEERA RAO", 30_000), [
+          { name: "Meera Rao", currency: "USD", owed: [owed("EXP-6", 3_000)] },
+        ]),
+        placed(
+          debit(0, "2026-10-08", "IMPS-DEV MALHOTRA", 30_000),
+          [],
+          [{ name: "Dev Malhotra", repaid: [] }],
+        ),
+        placed(debit(0, "2026-10-08", "NEFT DR-MEERA RAO", 120_000), partners, [
+          {
+            name: "Meera Rao",
+            repaid: [{ currency: "INR", day: "2026-10-06", amountMinor: 120_000 }],
+          },
+        ]),
+      ],
+      [
+        [
+          "unmatched",
+          [],
+          {
+            action: "later",
+            why: "It names Meera Rao, who is owed nothing in INR, so it isn't offered as a new expense",
+          },
+        ],
+        [
+          "unmatched",
+          [],
+          {
+            action: "later",
+            why: "It names Dev Malhotra, who is owed nothing in INR, so it isn't offered as a new expense",
+          },
+        ],
+        [
+          "unmatched",
+          [],
+          {
+            action: "later",
+            why: "Looks like Meera Rao's repayment already marked on 2026-10-06, so it isn't recorded again",
+          },
+        ],
+      ],
+    );
+    // A line can't pay back what was spent after it.
+    assert.deepStrictEqual(
+      placed(debit(0, "2026-10-08", "NEFT DR-MEERA RAO", 10_000), [
+        {
+          name: "Meera Rao",
+          currency: "INR",
+          owed: [{ ...owed("EXP-41", 10_000), day: "2026-10-09" }],
+        },
+      ]).slice(0, 2),
+      ["unmatched", []],
+    );
+    // Names in any script, accents or none.
+    assert.deepStrictEqual(
+      [
+        placed(debit(0, "2026-10-08", "TRANSFER 李娜", 10_000), [
+          { name: "李娜", currency: "INR", owed: [owed("EXP-31", 10_000)] },
+        ]).slice(0, 2),
+        placed(debit(0, "2026-10-08", "NEFT-मीरा राव", 10_000), [
+          { name: "मीरा राव", currency: "INR", owed: [owed("EXP-32", 10_000)] },
+        ]).slice(0, 2),
+        placed(debit(0, "2026-10-08", "IMPS ZOE SHEIKH", 10_000), [
+          { name: "Zoë Sheikh", currency: "INR", owed: [owed("EXP-33", 10_000)] },
+        ]).slice(0, 2),
+      ],
+      [
+        ["matched", [["EXP-31"]]],
+        ["matched", [["EXP-32"]]],
+        ["matched", [["EXP-33"]]],
+      ],
+    );
+    assert.deepStrictEqual(only([debit(0, "2026-10-08", "MEERA RAO", 2)], huge), [
+      ["matched", [["EXP-11", "EXP-12", "EXP-13"]]],
+    ]);
+  });
+
+  it("ranks a credit's refund and a partner's return together, and ticks neither on an amount alone", () => {
+    const refund = expense({
+      key: "EXP-3",
+      recordId: "rec_refund",
+      amountMinor: -1_250,
+      day: "2026-10-05",
+      vendor: "Cityline Cabs",
+    });
+    const credit = (description: string) =>
+      row({ description, amountMinor: 1_250, direction: "credit", date: "2026-10-05" });
+    const placed = (description: string, partners: ReadonlyArray<PartnerCandidate>) =>
+      matchRows([credit(description)], {
+        currency: "INR",
+        withholdsAtSource: true,
+        invoices: [],
+        expenses: [refund],
+        partners,
+        ownAccounts: [],
+        known: [],
+        bank: null,
+      }).map((one) => [one.group, one.candidates.map((c) => c.repays?.[0]?.key ?? c.key)])[0];
+    const meera: PartnerCandidate = {
+      name: "Meera Rao",
+      currency: "INR",
+      owed: [{ recordId: "rec_held", key: "EXP-5", amountMinor: -1_250 }],
+    };
+    assert.deepStrictEqual(
+      [
+        // The same amount on the same day says nothing about whose refund it is.
+        placed("NEFT-INVENTED 4417", []),
+        placed("NEFT-INVENTED 4417", [meera]),
+        // Naming her outweighs a refund with no evidence; naming the vendor outweighs her.
+        placed("IMPS-MEERA RAO-RETURN", [meera]),
+        placed("NEFT-CITYLINE CABS REFUND", [meera]),
+      ],
+      [
+        ["choose", ["EXP-3"]],
+        ["choose", ["EXP-3"]],
+        ["matched", ["EXP-5"]],
+        ["matched", ["EXP-3"]],
+      ],
+    );
+  });
+
   it("reads vendors the way banks write them", () => {
     assert.strictEqual(vendorOf("UPI/DR/412345/ZOMATO LTD/YESB/zomato@yes"), "Zomato Ltd");
     assert.strictEqual(vendorOf("ACH D- INVENTED INSURANCE CO-POLICY 88"), "Invented Insurance Co");
@@ -280,5 +727,21 @@ describe("statement matching", () => {
     assert.strictEqual(vendorOf("UPI DR 412345 CLOUDNEST"), "Cloudnest");
     assert.strictEqual(vendorOf("DR FIGMA INC"), "Figma Inc");
     assert.strictEqual(vendorOf("POS DR THIRD WAVE COFFEE"), "Third Wave Coffee");
+    // A card statement's line is often just the merchant and its city.
+    assert.strictEqual(vendorOf("NETFLIX.COM MUMBAI"), "Netflix");
+    // W-26: a narration no rail or channel word explains names nobody, and a generic word isn't one.
+    assert.strictEqual(vendorOf("BEING AMOUNT PAID TOWARDS MAINTENANCE NOV"), undefined);
+    assert.strictEqual(vendorOf("CHQ PAID 004512 CLEARING"), undefined);
+    assert.strictEqual(vendorOf("BIL/INVOICE 22"), undefined);
+    // An older expense's junk vendor is never offered again, since Kin would refuse it.
+    const junk = suggest(
+      row({ direction: "debit", description: "UPI-INVOICE-PAY", amountMinor: 1 }),
+      {
+        ownAccounts: [],
+        known: [{ vendor: "Invoice", category: "software" }],
+        bank: null,
+      },
+    );
+    assert.strictEqual(junk.vendor, undefined);
   });
 });

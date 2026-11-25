@@ -49,8 +49,14 @@ import {
   outsideToolAllowed,
   OUTSIDE_REFUSAL,
   stampEvent,
+  renderSource,
+  stampKey,
+  stampReads,
+  codingAgentSource,
+  followsCodingAgent,
 } from "../lead/OutsideContent.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { readProfile } from "../work/companyProfile.ts";
 import { presetDefinition } from "../work/registers.ts";
 import * as ConnectionSecrets from "./ConnectionSecrets.ts";
 import {
@@ -66,7 +72,7 @@ import { guarded } from "./EgressGuard.ts";
 import { CONNECTION_LIMITS } from "./limits.ts";
 import * as McpGateway from "./McpGateway.ts";
 import { KinConnectionsToolkit } from "./mcp.ts";
-import { GOOGLE_SCOPES } from "./Google.ts";
+import { GOOGLE_SCOPES, googleGrant, googleMail } from "./Google.ts";
 import { challengeOf } from "./OAuth.ts";
 import { promptLine } from "./ConnectionRows.ts";
 import { staleAsksStranded } from "./strandedAsks.ts";
@@ -125,6 +131,7 @@ type Spec = {
   readonly callError?: {
     readonly code?: number;
     readonly status?: number;
+    readonly retryAfter?: string;
     readonly before?: () => Promise<unknown>;
   };
 };
@@ -244,7 +251,12 @@ const makeFake = Effect.fnUntraced(function* (initial: Spec) {
         if (held !== undefined && method === held.method) await held.until();
         if (failing !== undefined && method === "tools/call") {
           await failing.before?.();
-          if (failing.status !== undefined) return new Response(null, { status: failing.status });
+          if (failing.status !== undefined)
+            return new Response(null, {
+              status: failing.status,
+              headers:
+                failing.retryAfter === undefined ? {} : { "retry-after": failing.retryAfter },
+            });
           return new Response(
             JSON.stringify({
               jsonrpc: "2.0",
@@ -568,40 +580,51 @@ describe("KinConnections", () => {
     ),
   );
 
-  it.effect("reports GitHub activity from the events the owner's watch queued", () =>
+  it.effect("names each outside read of a turn once, for a person, after its key", () =>
     withFake(BASE, () =>
       Effect.gen(function* () {
-        const sql = yield* SqlClient.SqlClient;
-        yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
-            auth, reach, state, created_at, updated_at)
-          VALUES (${orgId}, 'gh', 'github', 'GitHub', 'remote', 'api.githubcopilot.com', 'none',
-            'open', 'active', 1, 1)`;
-        const github = (id: string, at: number) =>
-          sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
-              queued_at, state)
-            VALUES (${id}, ${orgId}, ${lead}, 'github', 'P2', ${JSON.stringify({
-              repo: "acme/app",
-              deliveryId: `poll:${id}`,
-              eventName: "mention",
-              summary: `mention on acme/app#7 by alice`,
-            })}, ${at}, ${at}, 'done')`;
-        yield* github("seen", 0);
-        yield* TestClock.adjust("1 hour");
-        yield* github("new", 60_000);
-        const activity = yield* (yield* KinConnections).activity(orgId, "gh");
-        assert.strictEqual(activity._tag, "github");
-        if (activity._tag !== "github") return;
-        // The chat event the seed queued and the one at the cursor's start are not GitHub news.
-        assert.deepStrictEqual(activity.deliveries, [
+        const reading = { orgId, wakeupId: "wake-reads" };
+        yield* markOutside(reading, "web:example.org");
+        yield* markOutside(reading, "web search");
+        yield* markOutside(reading, "social:@studio");
+        yield* markOutside(reading, "web:example.org");
+        yield* markOutside(reading, "conn-1", [
           {
-            fireId: "new",
-            repo: "acme/app",
-            deliveryId: "poll:new",
-            receivedAt: 60_000,
-            eventName: "mention",
-            summary: "mention on acme/app#7 by alice",
+            k: "mail",
+            id: "conn-1",
+            account: "Studio mail",
+            from: "Ravi Menon <ravi@lumen.example>",
+            subject: "Launch",
           },
         ]);
+        const stamp = (yield* outsideStamp(reading)) ?? "";
+        assert.strictEqual(stampKey(stamp), "web:example.org");
+        // Stored as what was read, by kind and connection, not as a sentence.
+        assert.deepStrictEqual(stampReads(stamp), [
+          { k: "web", host: "example.org" },
+          { k: "web" },
+          { k: "social", handle: "@studio" },
+          {
+            k: "mail",
+            id: "conn-1",
+            account: "Studio mail",
+            from: "Ravi Menon <ravi@lumen.example>",
+            subject: "Launch",
+          },
+        ]);
+        assert.strictEqual(
+          renderSource(stamp, true),
+          "the web page example.org; a web search; posts by @studio; mail from Ravi Menon <ravi@lumen.example>: Launch",
+        );
+        // Anyone who may not see that mailbox reads only what kind of text it was.
+        assert.strictEqual(
+          renderSource(stamp, false),
+          "a web page; a web search; social posts; a mail",
+        );
+        // A stamp stored before reads were named still reads as its key says.
+        assert.strictEqual(renderSource("check-in", true), "outside text in a check-in");
+        assert.strictEqual(renderSource("conn-1", true), "text from a connected service");
+        assert.strictEqual(renderSource("conn-1\tnot json", false), "a connected service");
       }),
     ),
   );
@@ -1274,43 +1297,71 @@ describe("KinConnections", () => {
         assert.isTrue(yield* outsideRead({ orgId, wakeupId: "retried" }));
         assert.isTrue(yield* outsideRead({ orgId, wakeupId: "handed" }));
         assert.isFalse(yield* outsideRead({ orgId, wakeupId: "clean" }));
-        assert.strictEqual(yield* outsideStamp({ orgId, wakeupId: "handed" }), id);
+        // What it read travels with it: the key cards name, and what a person reads.
+        const handed = (yield* outsideStamp({ orgId, wakeupId: "handed" })) ?? "";
+        assert.strictEqual(stampKey(handed), id);
+        assert.strictEqual(renderSource(handed, true), "PostHog (query)");
+        assert.strictEqual(renderSource(handed, false), "a connected service");
+        // A coding agent's words woken beside a check-in's outside text: the mark holds, and
+        // travels with a hand-off made in that turn.
+        yield* stampEvent(orgId, "from-key", codingAgentSource("Invented laptop"));
+        yield* inheritOutside({
+          orgId,
+          wakeupId: "mixed",
+          eventIds: ["from-key"],
+          shows: "check-in",
+        });
+        assert.isTrue(yield* followsCodingAgent({ orgId, wakeupId: "mixed" }));
+        yield* stampEvent(orgId, "passed-on", yield* outsideStamp({ orgId, wakeupId: "mixed" }));
+        yield* inheritOutside({ orgId, wakeupId: "after", eventIds: ["passed-on"] });
+        assert.isTrue(yield* followsCodingAgent({ orgId, wakeupId: "after" }));
+        assert.isFalse(yield* followsCodingAgent({ orgId, wakeupId: "handed" }));
       }),
     ),
   );
 
-  it.effect("stops a turn at its call and character bounds, also for calls made at once", () =>
-    withFake(BASE, () =>
+  it.effect("never stops a turn by its count of calls; one huge answer is cut and says so", () =>
+    withFake(BASE, (fake) =>
       Effect.gen(function* () {
         const id = (yield* addPosthog).connection.connectionId;
         yield* markRead(id, ["query"]);
-        const sql = yield* SqlClient.SqlClient;
-        const spent = (calls: number, chars: number) =>
-          sql`INSERT INTO kin_connection_turn_spend (org_id, wakeup_id, calls, chars, last_reserved,
-              updated_at) VALUES (${orgId}, 'wake', ${calls}, ${chars}, 0, 0)
-            ON CONFLICT (org_id, wakeup_id) DO UPDATE SET calls = excluded.calls,
-              chars = excluded.chars`;
-        yield* spent(1, CONNECTION_LIMITS.turnChars);
-        assert.include((yield* call(id, "query").pipe(Effect.flip)).message, "400,000 characters");
-        yield* spent(CONNECTION_LIMITS.turnCalls, 0);
-        const stopped = yield* call(id, "query").pipe(Effect.flip);
-        assert.include(stopped.message, "already made 200 calls to connected services");
-        assert.include(stopped.message, "Answer with what you have");
-        // Sixteen at once with one call left: one runs, the rest are refused.
-        yield* spent(CONNECTION_LIMITS.turnCalls - 1, 0);
-        const results = yield* Effect.all(
-          Array.from({ length: 16 }, () => call(id, "query").pipe(Effect.result)),
-          { concurrency: "unbounded" },
+        const answers = yield* Effect.forEach(
+          Array.from({ length: 201 }),
+          () => call(id, "query"),
+          { concurrency: 8 },
         );
-        assert.strictEqual(results.filter((result) => result._tag === "Success").length, 1);
-        // Only what was read stays spent, and a result past what is left is cut with the marker.
-        const [after] = yield* sql<{ calls: number; chars: number }>`SELECT calls, chars
-          FROM kin_connection_turn_spend WHERE wakeup_id = 'wake'`;
-        assert.deepStrictEqual(after, { calls: 200, chars: "pageviews: 42".length });
-        yield* spent(1, CONNECTION_LIMITS.turnChars - 5);
+        assert.include(answers.at(-1)?.quoted ?? "", "pageviews: 42");
+        const huge = "x".repeat(CONNECTION_LIMITS.resultChars + 1_234);
+        yield* fake.set({
+          ...BASE,
+          tools: [{ ...QUERY, result: () => text(huge) }, DELETE, SEARCH],
+        });
         const cut = yield* call(id, "query");
-        assert.include(cut.quoted ?? "", "pagev");
-        assert.include(cut.quoted ?? "", "[cut: 8 more characters;");
+        assert.include(
+          cut.quoted ?? "",
+          "[cut: 1,234 more characters; call again with narrower arguments for the rest]",
+        );
+        // A service that says "too often" reaches the agent as a line saying when to try again.
+        yield* fake.set({ ...BASE, callError: { status: 429 } });
+        const throttled = yield* call(id, "query").pipe(Effect.flip);
+        assert.strictEqual(throttled.reason, "unavailable");
+        assert.strictEqual(
+          throttled.message,
+          "mcp.posthog.com says Kin is asking too often (HTTP 429); try again in a minute or so.",
+        );
+        yield* fake.set({ ...BASE, callError: { status: 429, retryAfter: "120" } });
+        assert.include(
+          (yield* call(id, "query").pipe(Effect.flip)).message,
+          "(HTTP 429); try again in 2 minutes.",
+        );
+        yield* fake.set({
+          ...BASE,
+          callError: { status: 429, retryAfter: "Wed, 25 Nov 2026 10:00:00 GMT" },
+        });
+        assert.include(
+          (yield* call(id, "query").pipe(Effect.flip)).message,
+          "(HTTP 429); try again after 2026-11-25T10:00:00.000Z.",
+        );
       }),
     ),
   );
@@ -1679,6 +1730,30 @@ describe("KinConnections", () => {
         );
         const unknown = yield* connections.offer(scope, { service: "myspace" }).pipe(Effect.flip);
         assert.instanceOf(unknown, KinChatError);
+        // The owner's own mailbox is connected in his own turn: never offered. A co-owner's own is
+        // theirs alone: neither counted nor named here.
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${mateId}`;
+        for (const [person, preset] of [
+          [ownerId, "google"],
+          [mateId, "microsoft"],
+        ] as const)
+          yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url,
+              url_host, auth, reach, state, created_at, updated_at, person_id)
+            VALUES (${orgId}, ${`own-${preset}`}, ${preset}, ${preset}, 'builtin',
+              'https://invented.example', 'invented.example', 'oauth', 'open', 'active', 0, 0,
+              ${person})`;
+        const canConnect = (yield* connections.tools(scope, {})).canConnect ?? [];
+        assert.notInclude(canConnect, "google");
+        assert.include(canConnect, "microsoft");
+        assert.strictEqual(
+          (yield* connections.offer(scope, { service: "google" })).note,
+          "Google is already connected, as Owner's own mailbox: it is read in a turn that is theirs alone, in their own chat with an agent. Nothing to connect.",
+        );
+        assert.strictEqual(
+          (yield* connections.offer(scope, { service: "microsoft" })).note,
+          OFFERED,
+        );
       }),
     ),
   );
@@ -1735,6 +1810,8 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
     refreshes: 0,
     revoked: false,
     googleRequests: [] as Array<URL>,
+    /** A Web app's secret at Microsoft; null for a public client, which redeems with PKCE alone. */
+    microsoftSecret: null as string | null,
     /** The scopes Google says it granted; none, as from a sign-in before Kin could send. */
     scope: undefined as string | undefined,
     sent: [] as Array<{
@@ -1900,8 +1977,8 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
       }
       if (url.origin === "https://login.microsoftonline.com") {
         const form = new URLSearchParams(await request.clone().text());
-        // A public client: the code is redeemed with PKCE alone.
-        if (form.has("client_secret")) return json({ error: "invalid_request" }, 400);
+        if (form.get("client_secret") !== vendor.microsoftSecret)
+          return json({ error: "invalid_client" }, 401);
         return token(request);
       }
       if (url.host === "graph.microsoft.com") {
@@ -1974,6 +2051,8 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
         if (path.endsWith("/users/me/threads")) return json({ threads: [{ id: "t1" }] });
         if (path.endsWith("/users/me/threads/t1"))
           return json(thread(url.searchParams.get("format")));
+        if (path.endsWith("/calendars/team%40group.calendar.example"))
+          return json({ id: "team@group.calendar.example", summary: "Invented team" });
         if (/\/calendars\/[^/]+\/events\/e1$/.test(path)) {
           const wait = vendor.beforeEvent;
           vendor.beforeEvent = undefined;
@@ -2311,8 +2390,11 @@ describe("KinConnections sign-in", () => {
         assert.strictEqual(url.host, "accounts.google.com");
         assert.strictEqual(url.searchParams.get("client_id"), GOOGLE_CLIENT);
         assert.strictEqual(url.searchParams.get("access_type"), "offline");
-        assert.include(url.searchParams.get("scope") ?? "", "gmail.readonly");
-        assert.include(url.searchParams.get("scope") ?? "", "gmail.send");
+        assert.deepStrictEqual(url.searchParams.get("scope")?.split(" "), [
+          "https://www.googleapis.com/auth/gmail.modify",
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar.readonly",
+        ]);
         const done = yield* connections.signInFinish(owner, {
           orgId,
           response: vendor.approve(started.authorizationUrl, null),
@@ -2499,6 +2581,48 @@ const withGoogle = <A, E>(
   }).pipe(Effect.scoped);
 
 describe("KinConnections sending", () => {
+  it.effect("drafts the same mail card for single addresses and lists", () =>
+    withGoogle((vendor, cards) =>
+      Effect.gen(function* () {
+        yield* connectGoogle(vendor);
+        const to = "ana@client.example";
+        const cc = "meera@invented.example";
+        for (const [tool, draft] of [
+          ["mail_send", { subject: "November update", body: "Here is the latest." }],
+          ["mail_reply", { threadId: "t1", body: "Here is the latest." }],
+        ] as const) {
+          const list = yield* sendCall(tool, { ...draft, to: [to], cc: [cc] });
+          assert.strictEqual(list.note, ASKED);
+          const card = cards.at(-1)!;
+          const before = JSON.stringify(card);
+          const count = cards.length;
+          const singleTo = yield* sendCall(tool, { ...draft, to, cc: [cc] });
+          const singleCc = yield* sendCall(tool, { ...draft, to: [to], cc });
+          assert.deepStrictEqual([singleTo, singleCc], [list, list]);
+          assert.lengthOf(cards, count);
+          assert.strictEqual(JSON.stringify(cards.at(-1)), before);
+          assert.deepStrictEqual([card.send?.to, card.send?.cc], [[to], [cc]]);
+
+          // A reply goes to the thread's sender: what `to` holds is never read.
+          if (tool === "mail_reply") {
+            assert.deepStrictEqual(yield* sendCall(tool, { ...draft, to: [], cc: [cc] }), list);
+            assert.lengthOf(cards, count);
+            continue;
+          }
+          const emptyList = yield* sendCall(tool, { ...draft, to: [] }).pipe(Effect.flip);
+          const emptyText = yield* sendCall(tool, { ...draft, to: "" }).pipe(Effect.flip);
+          assert.strictEqual(emptyText.message, emptyList.message);
+          for (const recipients of ["a@x.example, b@x.example", "a@x.example; b@x.example"]) {
+            const bad = yield* sendCall(tool, { ...draft, to: recipients }).pipe(Effect.flip);
+            assert.include(bad.message, "isn't a plain address");
+          }
+          assert.lengthOf(cards, count);
+        }
+        assert.lengthOf(vendor.vendor.sent, 0);
+      }),
+    ),
+  );
+
   it.effect("sends an email only on the owner's Confirm, with exactly what the card showed", () =>
     withGoogle((vendor, cards) =>
       Effect.gen(function* () {
@@ -2550,6 +2674,8 @@ describe("KinConnections sending", () => {
               name: "INV-26-27-001.pdf",
               label: "Invoice INV/26-27/001 · ₹1,18,000.00",
               bytes: PDF(1).length,
+              // The company has no bank details: the card says the invoice can't say how to pay.
+              bankMissing: true,
             },
           ],
           outcome: null,
@@ -2604,6 +2730,20 @@ describe("KinConnections sending", () => {
             json_extract(result_json, '$.threadId') AS "threadId"
           FROM kin_connection_asks WHERE entry_record_id = 'rec_inv' AND state = 'sent'`;
         assert.deepStrictEqual(onInvoice, [{ to: '["ana@client.example"]', threadId: "t-sent" }]);
+
+        // With a UPI id or an account to be paid to, an invoice card carries no such line.
+        const { rev: _rev, updatedAt: _at, ...company } = yield* readProfile(orgId);
+        yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+            updated_by_kind, updated_by_id)
+          VALUES (${orgId}, ${JSON.stringify({ ...company, bank: { ...company.bank, upi: "invented@bank" } })},
+            1, 1, 'person', ${ownerId})`;
+        yield* sendCall("mail_send", {
+          to: ["ana@client.example"],
+          subject: "Invoice INV/26-27/001, again",
+          body,
+          attachments: ["INV-1"],
+        });
+        assert.notProperty(cards.at(-1)!.send!.attachments[0], "bankMissing");
       }),
     ),
   );
@@ -2669,6 +2809,7 @@ describe("KinConnections sending", () => {
           assert.strictEqual(event.note, ASKED);
           // Its times read plainly in the owner's zone, UTC here.
           assert.include(JSON.stringify(cards.at(-1)), "When: Fri, 20 Nov, 9:30 am to 10:00 am");
+          assert.include(cards.at(-1)!.send!.body, "In your calendar");
           const booked = yield* answer(cards.at(-1)!.widgetId, ownerId, true);
           yield* connections.sendAsk(orgId, booked!.askId);
           const saved = vendor.vendor.sent.at(-1)!;
@@ -2678,7 +2819,8 @@ describe("KinConnections sending", () => {
             [{ email: "ana@client.example" }],
           );
 
-          // A change names the calendar and the event as they are, and goes to exactly those.
+          // A change names the calendar, by the name it has there, and the event as it is now,
+          // and goes to exactly those.
           yield* sendCall("calendar_save_event", {
             calendarId: "team@group.calendar.example",
             eventId: "e1",
@@ -2691,7 +2833,7 @@ describe("KinConnections sending", () => {
           assert.strictEqual(
             change.send!.body,
             [
-              "In calendar: team@group.calendar.example",
+              "In calendar: Invented team",
               "Currently: Board prep, Fri, 20 Nov, 4:30 am to 5:00 am",
               "When: Fri, 20 Nov, 10:30 am to 11:00 am",
             ].join("\n"),
@@ -2715,6 +2857,13 @@ describe("KinConnections sending", () => {
           assert.strictEqual(cards.at(-1), change);
           const patches = () => vendor.vendor.sent.filter((one) => one.method === "PATCH").length;
           assert.strictEqual(patches(), 1);
+          yield* sendCall("calendar_save_event", {
+            calendarId: "invented-unknown-calendar",
+            title: "Invented fallback",
+            start: "2026-11-20T16:00:00+05:30",
+            end: "2026-11-20T16:30:00+05:30",
+          });
+          assert.include(cards.at(-1)!.send!.body, "In calendar: invented-unknown-calendar");
           // Someone else edits the event between two identical asks: still one open card.
           const rename = sendCall("calendar_save_event", {
             calendarId: "team@group.calendar.example",
@@ -2954,6 +3103,78 @@ describe("KinConnections sending", () => {
     ),
   );
 
+  it.effect(
+    "deleting a doc closes the open send card carrying it: it can't be confirmed, and bringing the doc back doesn't reopen it",
+    () =>
+      withGoogle((vendor, cards) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* connectGoogle(vendor);
+          const mail = { to: ["ana@client.example"], subject: "Invoice", attachments: ["DOC-1"] };
+          yield* sendCall("mail_send", { ...mail, body: "Attached." });
+          const open = cards.at(-1)!.widgetId;
+          const closed: Array<{
+            readonly widgetId: string;
+            readonly title?: string;
+            readonly text?: string;
+          }> = [];
+          yield* sql.withTransaction(
+            Effect.andThen(
+              sql`UPDATE kin_records SET state = 'dropped'
+                WHERE org_id = ${orgId} AND record_id = 'rec_doc'`,
+              closeSubject(
+                {
+                  orgId,
+                  recordId: "rec_doc",
+                  key: "DOC-1",
+                  registerId: "docs",
+                  state: "dropped",
+                  sparing: [],
+                  now: 2,
+                },
+                {
+                  closeReplaced: (input) =>
+                    Effect.sync(
+                      () =>
+                        void closed.push({
+                          widgetId: input.widgetId,
+                          ...(input.outcome?.title === undefined
+                            ? {}
+                            : { title: input.outcome.title }),
+                          ...(input.outcome?.text === undefined
+                            ? {}
+                            : { text: input.outcome.text }),
+                        }),
+                    ),
+                },
+              ),
+            ),
+          );
+          assert.deepStrictEqual(closed, [
+            {
+              widgetId: open,
+              title: "Deleted with its draft",
+              text: "Deleted with its draft: DOC-1 was deleted.",
+            },
+          ]);
+          assert.deepStrictEqual(
+            yield* sql`SELECT state, reason FROM kin_connection_asks WHERE widget_id = ${open}`,
+            [{ state: "stale", reason: "DOC-1 was deleted, so nothing was sent." }],
+          );
+          assert.include(yield* answer(open, ownerId, true).pipe(Effect.flip), {
+            reason: "widget_changed",
+          });
+          // Brought back, the card stays closed and the same call is told why.
+          yield* sql`UPDATE kin_records SET state = 'open'
+            WHERE org_id = ${orgId} AND record_id = 'rec_doc'`;
+          assert.deepInclude(yield* sendCall("mail_send", { ...mail, body: "Attached." }), {
+            note: "The card for this exact action was closed: DOC-1 was deleted, so nothing was sent.",
+          });
+          assert.lengthOf(vendor.vendor.sent, 0);
+        }),
+      ),
+  );
+
   it.effect("a co-owner made a member strands no card in a chat that is no longer owner-only", () =>
     withGoogle((vendor, cards) =>
       Effect.gen(function* () {
@@ -3037,6 +3258,36 @@ describe("KinConnections sending", () => {
       }),
     ),
   );
+
+  it("reads what a Google grant allows from either family of scopes", () => {
+    const auth = (...names: ReadonlyArray<string>) =>
+      names.map((name) => `https://www.googleapis.com/auth/${name}`).join(" ");
+    const cases = [
+      { granted: GOOGLE_SCOPES, allows: [true, true, true, true], sends: true },
+      {
+        granted: auth(
+          "gmail.readonly",
+          "gmail.send",
+          "calendar.events.readonly",
+          "calendar.events",
+        ),
+        allows: [true, true, true, true],
+        sends: true,
+      },
+      { granted: auth("gmail.readonly"), allows: [true, false, false, false], sends: false },
+      { granted: auth("calendar.readonly"), allows: [false, false, true, false], sends: false },
+      { granted: undefined, allows: [false, false, false, false], sends: false },
+    ];
+    for (const { granted, allows, sends } of cases) {
+      const grant = googleGrant(granted);
+      assert.deepStrictEqual(
+        [grant.readsMail, grant.sendsMail, grant.readsCalendar, grant.writesCalendar],
+        allows,
+        granted,
+      );
+      assert.strictEqual(googleMail.canSend(granted), sends, granted);
+    }
+  });
 });
 
 /** A second Google account, signed in with the same client, its send tools marked Ask me. */
@@ -3205,6 +3456,10 @@ describe("KinConnections accounts", () => {
         );
         assert.include(listing.note ?? "", "several mail accounts");
         const line = yield* promptLine(orgId);
+        assert.match(
+          line ?? "",
+          /^The company's connected services \(each is the company's, whatever name or address it carries\), reached with kin_connection_tools and kin_connection_call: /,
+        );
         assert.include(line ?? "", `"${WORK_MAIL}" sends as "billing@work.example"`);
         assert.include(line ?? "", `owner's note "billing and invoices"`);
 
@@ -3229,6 +3484,33 @@ describe("KinConnections accounts", () => {
             : [],
           [WORK_MAIL, ["billing@work.example"]],
         );
+        // The server's own thread read, for bank alerts, goes as far as the owner's Read does.
+        const readThread = () =>
+          connections
+            .readThread(orgId, work.connectionId, "t2")
+            .pipe(Effect.map((messages) => messages.map((one) => one.messageId)));
+        const setRead = (mode: "read" | "off") =>
+          Effect.gen(function* () {
+            const shown = yield* connections.get(owner, {
+              orgId,
+              connectionId: work.connectionId,
+            });
+            yield* connections.setToolModes(owner, {
+              orgId,
+              connectionId: work.connectionId,
+              modes: [
+                {
+                  tool: "mail_read_thread",
+                  mode,
+                  digest: shown.tools.find((one) => one.name === "mail_read_thread")?.pinDigest,
+                },
+              ],
+            });
+          });
+        yield* setRead("off");
+        assert.deepStrictEqual(yield* readThread(), []);
+        yield* setRead("read");
+        assert.deepStrictEqual(yield* readThread(), ["<m2@client2.example>"]);
 
         // A reply: only in its own account, from the alias it reached, quoted as Gmail does.
         const unknown = yield* sendCall("mail_reply", { threadId: "t9", body: "Resent." }).pipe(
@@ -3289,14 +3571,23 @@ describe("KinConnections accounts", () => {
           VALUES (${orgId}, 'rec_client', 'clients', 'C-1', 'Invented Two', 'person', ${ownerId},
             'person', 'c1', 0, 0, NULL, '{}'),
             (${orgId}, 'rec_raj', 'contacts', 'CT-1', 'Raj', 'person', ${ownerId}, 'person',
-            'ct1', 0, 0, 'rec_client', '{"email":"Raj@Client2.example"}')`;
+            'ct1', 0, 0, 'rec_client', '{"email":"Raj@Client2.example"}'),
+            (${orgId}, 'rec_client3', 'clients', 'C-2', 'Invented Three', 'person', ${ownerId},
+            'person', 'c2', 0, 0, NULL, '{}'),
+            (${orgId}, 'rec_raj3', 'contacts', 'CT-2', 'Raj', 'person', ${ownerId}, 'person',
+            'ct2', 0, 0, 'rec_client3',
+            '{"email":"raj@three.example","emails":["raj@three.example","RAJ@client2.example"]}')`;
         const replied = yield* answer(reply.widgetId, ownerId, true);
         yield* connections.sendAsk(orgId, replied!.askId);
         yield* connections.sendAsk(orgId, replied!.askId);
+        // Each client whose contact holds the address, as its main email or another one.
         assert.deepStrictEqual(
           yield* sql`SELECT party_id AS "partyId", kind, note, person_id AS "personId"
-            FROM kin_client_touches ORDER BY touch_id`,
-          [{ partyId: "rec_client", kind: "email", note: "Re: PO 77", personId: ownerId }],
+            FROM kin_client_touches ORDER BY party_id`,
+          [
+            { partyId: "rec_client", kind: "email", note: "Re: PO 77", personId: ownerId },
+            { partyId: "rec_client3", kind: "email", note: "Re: PO 77", personId: ownerId },
+          ],
         );
         const sentReply = vendor.vendor.sent.at(-1)!;
         assert.strictEqual(sentReply.account, WORK_MAIL);
@@ -3366,6 +3657,40 @@ describe("KinConnections accounts", () => {
         const sentEmail = vendor.vendor.sent.at(-1)!;
         assert.strictEqual(sentEmail.account, OWNER_MAIL);
         assert.strictEqual(header(sentBody(sentEmail.json).message, "From"), OWNER_MAIL);
+
+        // A read across a provider's accounts says which it read and which mail it left.
+        yield* connections.setSignInClient(owner, {
+          orgId,
+          service: "microsoft",
+          client: { clientId: MICROSOFT_APP },
+        });
+        vendor.vendor.scope = "openid offline_access User.Read Mail.Read Mail.Send";
+        const outlook = yield* connections.signInStart(owner, {
+          orgId,
+          service: "microsoft",
+          returnTo: "web",
+        });
+        const ms = yield* connections.signInFinish(owner, {
+          orgId,
+          response: vendor.approve(outlook.authorizationUrl, null),
+        });
+        yield* markRead(ms.connection.connectionId, ["mail_search"]);
+        const search = (connection: string) =>
+          connections
+            .call(scope, { connection, tool: "mail_search", arguments: { query: "invoice" } })
+            .pipe(Effect.map((answer) => (answer.quoted ?? "").split("\n")[0]));
+        assert.strictEqual(
+          yield* search("google"),
+          `Read: ${WORK_MAIL}, ${OWNER_MAIL} (Google). Not read: owner@outlook.example (Microsoft): name it, or connection mail, to read it too.`,
+        );
+        assert.strictEqual(
+          yield* search("mail"),
+          `Read: ${WORK_MAIL}, ${OWNER_MAIL} (Google), owner@outlook.example (Microsoft).`,
+        );
+        // Another person's own mailbox is not the turn's to read, so it is never named.
+        yield* (yield* SqlClient.SqlClient)`UPDATE kin_connections SET person_id = ${mateId}
+          WHERE connection_id = ${ms.connection.connectionId}`;
+        assert.strictEqual(yield* search("google"), `Read: ${WORK_MAIL}, ${OWNER_MAIL} (Google).`);
       }),
     ),
   );
@@ -3462,6 +3787,26 @@ describe("KinConnections Microsoft", () => {
 
         const activity = yield* connections.activity(orgId, id);
         assert.strictEqual(activity._tag, "mail");
+
+        // A Web app the company already had: its secret goes with the code, PKCE as before.
+        vendor.vendor.microsoftSecret = "invented-web-secret";
+        yield* connections.setSignInClient(owner, {
+          orgId,
+          service: "microsoft",
+          client: { clientId: MICROSOFT_APP, clientSecret: Redacted.make("invented-web-secret") },
+        });
+        const again = yield* connections.signInStart(owner, {
+          orgId,
+          connectionId: id,
+          returnTo: "web",
+        });
+        yield* connections.signInFinish(owner, {
+          orgId,
+          response: vendor.approve(again.authorizationUrl, null),
+        });
+        const form = vendor.vendor.tokenForms.at(-1)!;
+        assert.strictEqual(form.get("client_secret"), "invented-web-secret");
+        assert.isTrue(form.has("code_verifier"));
       }),
     ),
   );

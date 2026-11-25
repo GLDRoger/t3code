@@ -1,6 +1,8 @@
 // @effect-diagnostics globalDate:off - Pure view helpers read the device's clock for React render, outside an Effect runtime.
-import { formatKinWhen } from "@t3tools/contracts";
+import { formatKinWhen, KIN_CHOICE_DISMISS_ACTION } from "@t3tools/contracts";
 import type { KinWaitingItem, KinWidgetId } from "@t3tools/contracts";
+
+import { kinChoiceActInput, kinChoiceDismissInput } from "./kinChoicePresentation.ts";
 
 export interface KinWaitingAskView {
   /** What a tap names: the card it answers, as `kinChoiceActInput` takes it. */
@@ -54,22 +56,12 @@ export function kinWaitingAskView(item: KinWaitingItem, nowMs: number): KinWaiti
   };
 }
 
-/**
- * The line under an open question card that Kin answers itself if nobody does: "If nobody answers
- * by tomorrow at 7:30 PM: Draft it." Read from the reader's own waiting item, which says what is
- * taken and when; null where none waits on that card or nothing is taken without them.
- */
-export function kinChoiceDefaultLine(
-  widgetId: KinWidgetId,
-  waiting: ReadonlyArray<KinWaitingItem> | null | undefined,
-  nowMs: number,
-): string | null {
-  const ask = waiting?.find((item) => item.widgetId === widgetId)?.ask;
-  if (ask === undefined || ask.default === null) return null;
-  const by = Date.parse(ask.by);
-  // Past its time and not yet taken (the agent is paused, or Kin's next pass is due): no promise.
-  if (by <= nowMs) return null;
-  const day = kinAskDay(by, nowMs).replace(/^on /, "");
-  const label = /[.!?…]$/u.test(ask.default) ? ask.default : `${ask.default}.`;
-  return `If nobody answers by ${day} at ${formatKinWhen(new Date(by), "time")}: ${label}`;
-}
+/** A tap in Waiting on you: one of the question's answers, or its Dismiss. */
+export const kinWaitingAskInput = (
+  target: KinWaitingAskView["target"],
+  optionId: string,
+  clientActionId: string,
+) =>
+  optionId === KIN_CHOICE_DISMISS_ACTION
+    ? kinChoiceDismissInput(target, false, clientActionId)
+    : kinChoiceActInput(target, optionId, clientActionId);

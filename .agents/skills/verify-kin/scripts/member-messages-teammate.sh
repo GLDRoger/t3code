@@ -37,7 +37,7 @@ expect_in "$(kv as zoya rpc kin.chats.withPerson "{\"personId\":\"$ZOYA\"}" 2>&1
 # On the web: New offers it, and the chat names the only two readers.
 kv as zoya web open chat:chief >/dev/null
 kv as zoya web click --name "New chat, group, agent or teammate" >/dev/null
-kv as zoya web click --name "Message a teammate" >/dev/null
+kv as zoya web click --name "Message someone" >/dev/null
 kv as zoya web wait "Only you and they can read it." >/dev/null || fail "the picker doesn't say who reads the chat"
 kv as zoya web click --name "Arjun Rao" >/dev/null
 kv as zoya web wait "Only you two can read this." >/dev/null || fail "the chat doesn't say only the two of them read it"

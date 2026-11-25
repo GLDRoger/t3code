@@ -8,7 +8,7 @@ import {
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { RpcClientError } from "effect/rpc";
-import { AsyncResult } from "effect/reactivity";
+import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -17,6 +17,7 @@ import {
   kinHostLink,
   kinHostIdToSave,
   kinStandInLine,
+  makeKinHostAtoms,
   resolveKinHost,
   resolveKinHostAt,
   type KinHost,
@@ -274,6 +275,32 @@ describe("resolveKinHost", () => {
         { savedHostId: c, phases: { ...retry, [b]: refused }, previous: standing },
       ),
     ).toMatchObject({ environmentId: c, connected: false });
+
+    // The app's host atom feeds its last answer back, on web as on the phone.
+    const phases =
+      Atom.make<Record<string, Pick<EnvironmentConnectionPresentation, "phase" | "error">>>(
+        failing,
+      );
+    const known: Array<EnvironmentId> = [];
+    const { hostAtom } = makeKinHostAtoms({
+      ready: () => true,
+      candidates: (get) =>
+        [b, c].map((environmentId) =>
+          kinHostCandidate(
+            environmentId,
+            get(phases)[environmentId] ?? { phase: "connected", error: null },
+          ),
+        ),
+      probe: () => (environmentId) => (environmentId === b ? ready : pending),
+      cachedOrgs: () => () => null,
+      savedHostId: () => c,
+      markKnown: (environmentId) => known.push(environmentId),
+    });
+    const registry = AtomRegistry.make();
+    expect(registry.get(hostAtom)).toMatchObject({ environmentId: b, standInFor: c });
+    registry.set(phases, retry);
+    expect(registry.get(hostAtom)).toMatchObject({ environmentId: b, standInFor: c });
+    expect(new Set(known)).toEqual(new Set([c]));
   });
 
   it("saves a host picked over a saved one that isn't Kin or has no identity", () => {
@@ -323,8 +350,13 @@ describe("resolveKinHost", () => {
     expect(resolve({ [a]: noIdentity }, { savedHostId: a })).toMatchObject({ environmentId: a });
   });
 
-  it("ignores offline environments it has not saved", () => {
-    expect(resolve({ [a]: ready }, { offline: [a] })).toEqual({ _tag: "none" });
+  it("ignores offline environments it has not saved, saying Kin may be on one", () => {
+    expect(resolve({ [a]: ready }, { offline: [a] })).toEqual({ _tag: "none", unreachable: true });
+    // Signed out of the live computer: only ones that don't answer are left, not ones without Kin.
+    const down = { phase: "reconnecting", error: "Couldn't connect." } as const;
+    expect(resolve({}, { savedHostId: null, phases: { [a]: down, [b]: down, [c]: down } })).toEqual(
+      { _tag: "none", unreachable: true },
+    );
   });
 });
 

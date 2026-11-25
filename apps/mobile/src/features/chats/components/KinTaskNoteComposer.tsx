@@ -43,7 +43,7 @@ import type { ComposerSendPresentation } from "../../threads/composerSendPresent
 import { SendActionButton } from "../../threads/ThreadComposer";
 import { kinClient } from "../state/kinClient";
 import { kinAttachmentFailure } from "../state/kinAttachmentFailure";
-import { kinDraftKey } from "./KinComposer";
+import { kinDraftKey } from "../state/kinDraftKey";
 
 const NOTE_SEND: ComposerSendPresentation = {
   label: KIN_TASK_NOTE_COPY.send,
@@ -229,7 +229,6 @@ export function KinTaskNoteComposer(props: {
             className={`min-h-11 flex-1 justify-center py-1 ${serverConfig === null ? "pl-4" : ""}`}
           >
             <TextInput
-              accessibilityLabel={KIN_TASK_RECORD.addNote}
               value={draft.text}
               editable={!sending}
               multiline

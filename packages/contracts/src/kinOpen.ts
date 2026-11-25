@@ -10,7 +10,8 @@ import { KinRecordKey } from "./kinWork.ts";
 
 /**
  * Everything open for one person, computed by the host at read time: what needs attention, what
- * waits on them in chats, their own tasks due today, and overdue invoices as one row.
+ * waits on them in chats, the tasks Tasks counts under their Needs you, and overdue invoices as
+ * one row.
  */
 
 export const KinOpenItem = Schema.Union([
@@ -19,7 +20,8 @@ export const KinOpenItem = Schema.Union([
   Schema.TaggedStruct("task", {
     key: KinRecordKey,
     title: Schema.String.check(Schema.isMaxLength(300)),
-    dueAt: CanonicalUtcTimestamp,
+    /** Absent for an undated task that waits on them, such as one handed back. */
+    dueAt: Schema.optional(CanonicalUtcTimestamp),
     /** A day, not a time: shown as the day where the owner is. */
     dueAllDay: Schema.optional(Schema.Boolean),
     projectTitle: Schema.optional(Schema.String),
@@ -38,10 +40,15 @@ export const KinOpenRow = Schema.Struct({
 export type KinOpenRow = typeof KinOpenRow.Type;
 
 export const KinOpenCounts = Schema.Struct({
-  /** Every row, uncapped: every badge, Needs you, the Tasks block and the brief show this. */
+  /** Every row, uncapped: what Needs attention, or On me, counts. */
   needsYou: NonNegativeInt,
   /** The waiting rows, uncapped: Waiting on you and the evening summary. */
   waiting: NonNegativeInt,
+  /**
+   * The tasks Tasks counts under Needs you, uncapped, those a fact or a card stands for included:
+   * the Tasks badge with the list's deal facts. Absent from older hosts.
+   */
+  tasks: Schema.optional(NonNegativeInt),
 });
 export type KinOpenCounts = typeof KinOpenCounts.Type;
 
@@ -117,7 +124,9 @@ export function kinOpenDiff(
   );
   const orderMoved = !sameIds(natural, order);
   const countsMoved =
-    held.counts.needsYou !== next.counts.needsYou || held.counts.waiting !== next.counts.waiting;
+    held.counts.needsYou !== next.counts.needsYou ||
+    held.counts.waiting !== next.counts.waiting ||
+    held.counts.tasks !== next.counts.tasks;
   if (removed.length === 0 && updated.length === 0 && !orderMoved && !countsMoved) return null;
   return {
     asOf: next.asOf,

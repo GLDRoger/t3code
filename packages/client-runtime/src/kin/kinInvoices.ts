@@ -3,6 +3,7 @@ import type {
   KinIssueResult,
   KinListDefinition,
   KinMakeReceiptInput,
+  KinMoney,
   KinMakeReceiptResult,
   KinOrgId,
   KinPayment,
@@ -12,8 +13,10 @@ import type {
   KinRecordKey,
 } from "@t3tools/contracts";
 
+import { kinBilledName } from "./kinBillTo.ts";
 import { kinWorkDayOfTime, kinWorkDueLabel, type KinWorkNames } from "./kinWork.ts";
 import {
+  kinDraftShowsNoBalance,
   kinInvoiceBankText,
   kinMoneyText,
   kinParseMoney,
@@ -26,7 +29,22 @@ import {
  * in against it and the receipt for each payment, the documents made for it, and Money's receipts.
  */
 
+/**
+ * The line a confirmation before issuing or sending money shows: "Total ₹1,18,000 to Lumen Grove."
+ * A draft with no amount yet says only who it is to, never "0".
+ */
+export function kinConfirmTotal(
+  amount: KinMoney | null | undefined,
+  client: string | null | undefined,
+): string | null {
+  const total = amount == null || amount.minor === 0 ? null : kinMoneyText(amount);
+  const to = client == null || client.trim() === "" ? null : client.trim();
+  if (total === null) return to === null ? null : `To ${to}.`;
+  return to === null ? `Total ${total}.` : `Total ${total} to ${to}.`;
+}
+
 export const KIN_INVOICES = {
+  loadFailed: "Couldn't load invoices",
   number: "Invoice number",
   sentTo: (to: string, day: string) =>
     `Sent to ${to} ${/^(today|yesterday)$/.test(day) ? day : `on ${day}`}`,
@@ -83,6 +101,13 @@ export const KIN_INVOICES = {
   receiptSet: (number: string | null, invoice: string) =>
     `${number === null ? "The receipt" : `Receipt ${number}`} is set against ${invoice}.`,
   receiptProblems: "The receipt and its number stand, but Kin couldn't make its PDF:",
+  amountTitle: "Change an issued invoice?",
+  amountDetail: (number: string, was: string, next: string, sent: boolean) =>
+    sent
+      ? `${number} was issued and sent for ${was}. Change its total to ${next}? Your client's copy still says ${was}. The change is kept in its history with your name.`
+      : `${number} was issued for ${was}. Change its total to ${next}? Its number stays, and the change is kept in its history with your name.`,
+  noAmount: "no amount",
+  amountConfirm: "Change total",
 };
 
 export const KIN_RECEIPTS = {
@@ -160,10 +185,35 @@ export const kinIsInvoice = (item: Pick<KinRecordDetail, "list">) => item.list =
 /** The field an issued number is written to; the invoice heading shows it instead. */
 export const KIN_INVOICE_NUMBER_FIELD = "number";
 
-const numberFieldOf = (item: KinRecordDetail) => {
+const numberFieldOf = (item: Pick<KinRecordDetail, "fields">) => {
   const value = item.fields?.[KIN_INVOICE_NUMBER_FIELD];
   return typeof value === "string" ? value : null;
 };
+
+/**
+ * The question before an issued invoice's total changes, naming the old and new totals; null on a
+ * draft, a void invoice, or when the total stays as it is.
+ */
+export function kinIssuedAmountQuestion(
+  item: Pick<KinRecordDetail, "list" | "state" | "fields" | "amount" | "sent">,
+  next: KinMoney | null,
+) {
+  const number = numberFieldOf(item)?.trim() ?? "";
+  if (!kinIsInvoice(item) || item.state === "dropped" || number === "") return null;
+  const was = item.amount;
+  if (was === undefined) return null;
+  if (next !== null && next.minor === was.minor && next.currency === was.currency) return null;
+  return {
+    title: KIN_INVOICES.amountTitle,
+    message: KIN_INVOICES.amountDetail(
+      number,
+      kinMoneyText(was, true),
+      next === null ? KIN_INVOICES.noAmount : kinMoneyText(next, true),
+      (item.sent?.length ?? 0) > 0,
+    ),
+    confirm: KIN_INVOICES.amountConfirm,
+  };
+}
 
 /** Where a payment's receipt is, and the one tap it takes next. */
 export type KinPaymentReceiptView =
@@ -200,7 +250,7 @@ export interface KinInvoiceView {
   readonly received: string | null;
   /** TDS the client deducted, when there is any: not part of what was received. */
   readonly tdsDeducted: string | null;
-  /** Null on a void invoice: nothing is due on it. */
+  /** Null on a void invoice, and on a draft nothing came in on: nothing is due on it. */
   readonly balance: string | null;
   readonly settled: boolean;
   /** "Not recorded as paid. Bank known to 31 Oct." while some of it is owed; else null. */
@@ -210,6 +260,8 @@ export interface KinInvoiceView {
   readonly documents: ReadonlyArray<{ readonly key: KinRecordKey; readonly title: string }>;
   /** The series prefix the next number comes from, for Issue's confirmation. */
   readonly prefix: string | null;
+  /** Issue's confirmation line with the total and the client, from `kinConfirmTotal`. */
+  readonly issueTotal: string | null;
   /** "Sent to ana@client.com on 15 Nov", newest first. */
   readonly sent: ReadonlyArray<string>;
 }
@@ -235,6 +287,7 @@ export function kinInvoiceView(
 ): KinInvoiceView {
   const { number, description } = kinInvoiceTitle(item.title, numberFieldOf(item));
   const isVoid = item.state === "dropped";
+  const owesNothing = isVoid || kinDraftShowsNoBalance(item);
   // Older servers send no `received`: then everything that settled it came in.
   const received =
     item.received ??
@@ -258,9 +311,9 @@ export function kinInvoiceView(
     number,
     void: isVoid,
     total: item.amount === undefined ? null : kinMoneyText(item.amount, true),
-    received: received === null ? null : kinMoneyText(received, true),
+    received: received === null || owesNothing ? null : kinMoneyText(received, true),
     tdsDeducted: tds === null ? null : kinMoneyText(tds, true),
-    balance: isVoid || item.balance === undefined ? null : kinMoneyText(item.balance, true),
+    balance: owesNothing || item.balance === undefined ? null : kinMoneyText(item.balance, true),
     settled: item.balance?.minor === 0,
     bank: isVoid ? null : kinInvoiceBankText(item, now),
     payments: (item.payments ?? []).map((payment) => {
@@ -281,6 +334,7 @@ export function kinInvoiceView(
     }),
     documents: documents.reverse(),
     prefix: def?.numbering?.prefix ?? null,
+    issueTotal: kinConfirmTotal(item.amount, kinBilledName(item)),
     sent: (item.sent ?? []).map((mail) =>
       KIN_INVOICES.sentTo(
         mail.to.join(", "),

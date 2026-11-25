@@ -1,7 +1,10 @@
 import { assert, it } from "@effect/vitest";
 import * as Predicate from "effect/Predicate";
+import * as Schema from "effect/Schema";
 
 import { advertisedJsonSchema } from "../../mcp/advertisedJsonSchema.ts";
+import { ImportHeader } from "./importFormat.ts";
+import { DefineInput } from "./leadMoney.ts";
 import { KinDocsToolkit } from "./mcp/docTools.ts";
 import { KinWorkToolkit } from "./mcp/tools.ts";
 
@@ -57,4 +60,25 @@ it("the batch-write tools advertise every free-text field's bound", () => {
       [],
       name,
     );
+});
+
+it("list_define takes number and yes or no fields; imports and unknown types stay refused", () => {
+  const define = Schema.is(DefineInput);
+  const importHeader = Schema.is(ImportHeader);
+  const accepted = (type: string) => {
+    const fields = [{ label: "Count", type }];
+    return [
+      define({ sourceEventId: "ask-event", name: "Stock", fields }),
+      importHeader({
+        format: "kin-import",
+        version: 1,
+        batch: "stock",
+        lists: [{ list: "stock", fields }],
+      }),
+    ];
+  };
+  assert.deepStrictEqual(accepted("text"), [true, true]);
+  assert.deepStrictEqual(accepted("unknown"), [false, false]);
+  for (const type of ["number", "yesno"])
+    assert.deepStrictEqual(accepted(type), [true, false], type);
 });

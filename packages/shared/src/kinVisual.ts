@@ -337,6 +337,72 @@ const RAW_TEXT_ELEMENTS = [
 ];
 /** The page loads Kin's own files from these paths and nowhere else on Kin. */
 export const KIN_VISUAL_FILE_ROUTE = "/api/assets";
+/** Kin's pinned fonts, public and the same on every host, under the path a page may load from. */
+export const KIN_VISUAL_FONT_ROUTE = `${KIN_VISUAL_FILE_ROUTE}/kin-fonts`;
+/** The files of `KinToolchain`'s pinned fonts a page may name; a test there holds the two together. */
+export const KIN_VISUAL_FONTS = [
+  { family: "Poppins", weight: 400, file: "Poppins-Regular.ttf" },
+  { family: "Poppins", weight: 700, file: "Poppins-Bold.ttf" },
+  { family: "Mukta", weight: 400, file: "Mukta-Regular.ttf" },
+  { family: "Mukta", weight: 700, file: "Mukta-Bold.ttf" },
+] as const;
+/** In a page, the company's logo: its file where there is one, an empty picture where not. */
+const KIN_BRAND_LOGO = "kin-brand:logo";
+/** The company's brand as documents use it; each part absent falls back to the theme. */
+export interface KinVisualBrand {
+  readonly primary: string | null;
+  readonly secondary: string | null;
+  readonly font: string | null;
+  /** The logo's URL: a `data:` image or a path on Kin. */
+  readonly logo: string | null;
+}
+export interface KinVisualLook {
+  readonly brand?: KinVisualBrand | undefined;
+  /** A picture fills its frame edge to edge on the theme's background, rather than a card's. */
+  readonly picture?: boolean | undefined;
+}
+const BLANK_LOGO =
+  "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIxIiBoZWlnaHQ9IjEiLz4=";
+// Fonts only Typst carries are named first, for a host that has them, then the closest stack.
+const FONT_STACKS: Readonly<Record<string, string>> = {
+  Poppins: '"Poppins",var(--font-sans)',
+  Mukta: '"Mukta",var(--font-sans)',
+  "Libertinus Serif": '"Libertinus Serif",Georgia,"Times New Roman",serif',
+  "New Computer Modern": '"New Computer Modern",Georgia,"Times New Roman",serif',
+  "DejaVu Sans Mono": '"DejaVu Sans Mono",var(--font-mono)',
+};
+const BRAND_COLOR = /^#[0-9a-fA-F]{6}$/;
+const BRAND_LOGO_URL =
+  /^(?:data:image\/(?:png|jpeg|svg\+xml);base64,[A-Za-z0-9+/]+={0,2}|\/[A-Za-z0-9_./-]+)$/;
+
+/** The look's own sheet: Kin's fonts, the brand's variables and, for a picture, its frame. */
+function lookSheet(look: KinVisualLook): string {
+  const brand = look.brand;
+  const color = (value: string | null | undefined, fallback: string) =>
+    value != null && BRAND_COLOR.test(value) ? value : fallback;
+  const font = brand?.font != null ? FONT_STACKS[brand.font] : undefined;
+  return (
+    KIN_VISUAL_FONTS.map(
+      (one) =>
+        `@font-face{font-family:"${one.family}";font-weight:${one.weight};font-style:normal;font-display:block;src:url("${KIN_VISUAL_FONT_ROUTE}/${one.file}") format("truetype")}`,
+    ).join("") +
+    `:root{--brand-primary:${color(brand?.primary, "var(--primary)")};--brand-secondary:${color(brand?.secondary, "var(--chart-2)")};--brand-font:${font ?? "var(--font-sans)"}}` +
+    // A page sizes its logo before it knows there is none; the empty one keeps no space.
+    `img[src="${BLANK_LOGO}"]{display:none!important}` +
+    (look.picture === true
+      ? "html{padding:0;background:var(--background);overflow:hidden}body{margin:0}"
+      : "")
+  );
+}
+
+/** `kin-brand:logo` as the brand's logo, or an empty picture: never a load that leaves Kin. */
+function withLogo(html: string, brand: KinVisualBrand | undefined): string {
+  const logo = brand?.logo;
+  return html.replaceAll(
+    KIN_BRAND_LOGO,
+    logo != null && BRAND_LOGO_URL.test(logo) ? logo : BLANK_LOGO,
+  );
+}
 // Sinks and creators the prelude knows; any other method whose name says HTML is closed.
 const KNOWN_HTML_METHODS = [
   "innerHTML",
@@ -462,8 +528,12 @@ const THEME_SHEET = '<style id="t3-theme">';
  * what must not exist with the browser's own parser, so no string reading of ours can disagree.
  * `hosts` are the ones the response's policy allows; the page's own policy repeats them.
  */
-export function kinVisualPageDocument(html: string, hosts: ReadonlyArray<string> = []): string {
-  const page = injectHtmlRenderBootstrap(html);
+export function kinVisualPageDocument(
+  html: string,
+  hosts: ReadonlyArray<string> = [],
+  look: KinVisualLook = {},
+): string {
+  const page = injectHtmlRenderBootstrap(withLogo(html, look.brand));
   const sheet = page.indexOf(THEME_SHEET);
   const close = sheet === -1 ? -1 : page.indexOf("</script>", sheet);
   const themed =
@@ -471,6 +541,7 @@ export function kinVisualPageDocument(html: string, hosts: ReadonlyArray<string>
       ? page
       : page.slice(0, close + "</script>".length) +
         KIN_MARKUP +
+        `<style id="kin-look">${lookSheet(look)}</style>` +
         page.slice(close + "</script>".length);
   const doctype = LEADING_DOCTYPE.exec(themed);
   const at = doctype === null ? 0 : doctype[0].length;
@@ -503,6 +574,7 @@ export const KIN_VISUAL_PAGE_GUIDE = [
   ),
   "Plain HTML and CSS need no library: a styled or sortable table, a grid of figures, a timeline.",
   'Look native with the theme variables instead of fixed colours: --background, --foreground, --muted, --muted-foreground, --card, --border, --primary, --accent, --destructive, --warning, --success, --info (most have a -foreground), --chart-1 to --chart-6, --radius, --font-sans, --font-mono, --space-1 to --space-6 and --text-xs to --text-xl. In script, kin.token("--border") reads one, kin.colors() is the six chart colours, kin.dark() says which theme is on and kin.onTheme(fn) runs fn when it changes. The base sheet already sets the text colour, font and size.',
+  `The company's colours are --brand-primary and --brand-secondary, its font is --brand-font and <img src="${KIN_BRAND_LOGO}"> is its logo; each falls back to the theme when the company has none, and a missing logo takes no space.`,
   `An image, audio or video file already sent in this chat can be shown by its id: <img src="${KIN_VISUAL_FILE_SCHEME}ATTACHMENT_ID">. An image of your own goes in as a data: URL.`,
   "Write for a phone first: the frame is about 300px wide there and up to 680px on a desktop, inside a card that already shows the title. Leave html and body without a background, outer border, heading that repeats the title or side padding, use fluid widths, and let a wide table scroll sideways inside its own overflow-x:auto box.",
   "Let content set the height; do not use vh units or height:100% on html or body. Keep it still: no looping animation.",

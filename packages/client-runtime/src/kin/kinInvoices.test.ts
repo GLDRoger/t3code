@@ -15,11 +15,13 @@ import {
   kinAdvanceDraft,
   kinAdvanceInput,
   KIN_INVOICES,
+  kinConfirmTotal,
   kinInvoiceActions,
   kinInvoiceDraftNote,
   kinInvoiceTitle,
   kinInvoiceMissingClient,
   kinInvoiceView,
+  kinIssuedAmountQuestion,
   kinReceiptModes,
   kinReceiptNotice,
   kinReceiptReferencePlaceholder,
@@ -91,6 +93,19 @@ describe("kinInvoiceTitle", () => {
     ["INV-12 notes: nothing", null, null, "INV-12 notes: nothing"],
   ])("reads %j with number field %j", (title, field, number, description) => {
     expect(kinInvoiceTitle(title, field)).toEqual({ number, description });
+  });
+});
+
+describe("kinConfirmTotal", () => {
+  it.each([
+    [{ minor: 11_800_000, currency: "INR" }, "Lumen Grove", "Total ₹1,18,000 to Lumen Grove."],
+    [{ minor: 245_050, currency: "USD" }, "Lumen Grove", "Total $2,450.50 to Lumen Grove."],
+    [{ minor: 11_800_000, currency: "INR" }, null, "Total ₹1,18,000."],
+    [undefined, "Lumen Grove", "To Lumen Grove."],
+    [{ minor: 0, currency: "INR" }, "Lumen Grove", "To Lumen Grove."],
+    [undefined, null, null],
+  ] as const)("%j to %s says %s", (amount, client, line) => {
+    expect(kinConfirmTotal(amount, client)).toBe(line);
   });
 });
 
@@ -235,6 +250,21 @@ describe("kinInvoiceView", () => {
     const view = kinInvoiceView(invoice({ state: "dropped", late: true }), invoices, now);
     expect([view.void, view.balance]).toEqual([true, null]);
   });
+
+  it("shows a draft nothing came in on owing nothing, and a draft with a payment as it stands", () => {
+    const full = { minor: 10_000_000, currency: "INR" };
+    const figures = (patch: Partial<KinRecordDetail>) => {
+      const view = kinInvoiceView(invoice({ state: "open", ...patch }), invoices, now);
+      return [view.total, view.balance, view.received];
+    };
+    expect(figures({ balance: full })).toEqual(["₹1,00,000.00", null, null]);
+    expect(figures({ balance: full, received: { minor: 0, currency: "INR" } })).toEqual([
+      "₹1,00,000.00",
+      null,
+      null,
+    ]);
+    expect(figures({})).toEqual(["₹1,00,000.00", "₹60,000.00", "₹40,000.00"]);
+  });
 });
 
 describe("kinInvoiceMissingClient", () => {
@@ -281,6 +311,40 @@ describe("kinInvoiceActions", () => {
       null,
     );
     expect(kinInvoiceDraftNote({ state: "open" }, draft, { numbering: undefined })).toBe(null);
+  });
+});
+
+describe("kinIssuedAmountQuestion", () => {
+  const lakh = (minor: number) => ({ minor, currency: "INR" });
+  it("asks before an issued invoice's total changes, naming both totals", () => {
+    expect(kinIssuedAmountQuestion(invoice({}), lakh(9_000_000))).toEqual({
+      title: KIN_INVOICES.amountTitle,
+      message:
+        "QST/2026-27/008 was issued for ₹1,00,000.00. Change its total to ₹90,000.00? Its number stays, and the change is kept in its history with your name.",
+      confirm: KIN_INVOICES.amountConfirm,
+    });
+    const sent = invoice({
+      sent: [
+        {
+          to: ["accounts@client.test"],
+          subject: "Invoice",
+          at: "2026-11-10T05:00:00Z",
+          threadId: null,
+        },
+      ],
+    });
+    expect(kinIssuedAmountQuestion(sent, null)?.message).toBe(
+      "QST/2026-27/008 was issued and sent for ₹1,00,000.00. Change its total to no amount? Your client's copy still says ₹1,00,000.00. The change is kept in its history with your name.",
+    );
+  });
+
+  it.each([
+    ["a draft", invoice({ fields: {}, title: "Website build" }), lakh(9_000_000)],
+    ["a void invoice", invoice({ state: "dropped" }), lakh(9_000_000)],
+    ["the same total", invoice({}), lakh(10_000_000)],
+    ["another list", invoice({ list: KinListId.make("expenses") }), lakh(9_000_000)],
+  ])("asks nothing for %s", (_name, item, next) => {
+    expect(kinIssuedAmountQuestion(item, next)).toBeNull();
   });
 });
 

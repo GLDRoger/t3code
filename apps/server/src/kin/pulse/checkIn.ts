@@ -1,6 +1,8 @@
 import {
   KinEvent,
   KinEventId,
+  KinPulseOutsideLine,
+  KinWorkHours,
   type KinAgentId,
   type KinPersonId,
   type KinMemoryItemId,
@@ -8,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
@@ -25,14 +28,17 @@ import {
   timeOnDayOf,
 } from "../triggers/kinSchedules.ts";
 import { dayIn } from "../work/money.ts";
-import { ownerZone } from "../work/recordRows.ts";
+import { endOfDay, ownerZone, startOfDay } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
-import { matchLines, type OutsideRead } from "./outside.ts";
+import { matchLines, outsideKey, type OutsideRead } from "./outside.ts";
+import { importedSince } from "./personMorning.ts";
+import { leftOpen, reserveLeft } from "./leftForCheckIn.ts";
 import { markTold, toldBy, untold } from "./told.ts";
+import * as KinShell from "../shell/KinShell.ts";
+import { sectionOfList } from "../shell/sections.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
+import { DAY_MS, MINUTE_MS } from "../durations.ts";
 
-const MINUTE = 60_000;
-const DAY = 24 * 60 * MINUTE;
 const sha = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
 
 /**
@@ -43,16 +49,20 @@ export const looseOffsetMs = (
   scheduleId: string,
   slot: string,
   spanMinutes = LOOSE_BEFORE_MINUTES + LOOSE_AFTER_MINUTES,
-) => (Number.parseInt(sha(`${scheduleId}\0${slot}`).slice(0, 8), 16) % (spanMinutes + 1)) * MINUTE;
+) =>
+  (Number.parseInt(sha(`${scheduleId}\0${slot}`).slice(0, 8), 16) % (spanMinutes + 1)) * MINUTE_MS;
 
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
+const decodeLines = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(KinPulseOutsideLine)),
+);
 const OUTSIDE_CAP = 60;
 
 const MORNING = "checkin-morning";
 const WEEKLY = "checkin-weekly";
 const EVENING = "checkin-evening";
-/** The briefs: not skipped for a quiet pulse. The evening one has its own facts (`scheduledTasks`). */
-const BRIEFS: ReadonlySet<string> = new Set([MORNING, WEEKLY, EVENING]);
+const WEEKDAYS = [1, 2, 3, 4, 5];
+const decodeHours = Schema.decodeUnknownOption(Schema.fromJsonString(KinWorkHours));
 
 /**
  * Whether the weekly brief is set to come on the company's day `day`, near `at`. Its days are the
@@ -72,7 +82,7 @@ const weeklyDue = Effect.fn("KinPulse.weeklyDue")(function* (
   const every = everyOf(task, row.looseAt);
   if (every === undefined) return false;
   return [-1, 0, 1].some((by) => {
-    const slot = timeOnDayOf(at + by * DAY, zones.host, every.at);
+    const slot = timeOnDayOf(at + by * DAY_MS, zones.host, every.at);
     const weekDay = DateTime.toParts(
       DateTime.makeZonedUnsafe(slot, { timeZone: zones.host }),
     ).weekDay;
@@ -123,9 +133,29 @@ export const coveredToday = Effect.fn("KinPulse.coveredToday")(function* (input:
       : ("morning" as const);
 });
 
+const hasDueToday = Effect.fn("KinPulse.checkInDueToday")(function* (
+  orgId: KinOrgId,
+  day: string,
+  zone: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const shell = yield* KinShell.getForDisplay(orgId);
+  const from = startOfDay(day, zone);
+  const through = endOfDay(day, zone);
+  const rows = yield* sql<{ listId: string }>`SELECT DISTINCT register_id AS "listId"
+    FROM kin_records WHERE org_id = ${orgId} AND state IN ('open', 'doing', 'waiting')
+      AND (due_at BETWEEN ${from} AND ${through}
+        OR (register_id = 'work' AND category = 'meeting' AND date_at BETWEEN ${from} AND ${through}))
+    ORDER BY register_id`;
+  return rows.some(({ listId }) => {
+    const section = sectionOfList(listId);
+    return section === null || KinShell.sectionOn(shell, section);
+  });
+});
+
 /**
  * One check-in at the slot's minute: what the owner hasn't been told and what is new outside.
- * With nothing untold no model runs, except for a brief; Run now tells every open fact. `slot`,
+ * With nothing untold a slot can skip; Run now tells every open fact. `slot`,
  * the host day, keys the event; `day`, the company's, is what the fold and the evening go by.
  */
 export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
@@ -144,20 +174,13 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   readonly zone: string;
   readonly at: number;
   readonly outside: OutsideRead;
+  readonly sumUp?: boolean;
 }) {
   const queue = yield* KinEventQueue.KinEventQueue;
   const { orgId, at } = input;
   // Only open facts: one in hand or set aside is not news, and comes back as news when it ends.
   const read = yield* KinPulse.read({ orgId, at, viewer: { _tag: "owner" }, limit: 200 });
   const facts = read.facts;
-  const matched = yield* matchLines(orgId, input.outside.lines);
-  const byId = new Map(matched.map(({ line }) => [`${line.source}\0${line.id}`, line]));
-  const lines = input.outside.lines
-    .map((line) => byId.get(`${line.source}\0${line.id}`) ?? line)
-    .toSorted((a, b) => Number(b.matched !== undefined) - Number(a.matched !== undefined))
-    .slice(0, OUTSIDE_CAP);
-  const brief = BRIEFS.has(input.scheduleId);
-  if (!brief && facts.length === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
   const slot = input.manualId ?? dayIn(input.dueAt, input.zone);
   const dedupeKey = `checkin:${input.scheduleId}:${slot}`;
   const eventId = KinEventId.make(`pulse-${sha(`${orgId}\0${dedupeKey}`).slice(0, 32)}`);
@@ -193,15 +216,104 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
     return {
       _tag: "duplicate",
       facts: (yield* toldBy(orgId, [eventId])).size,
-      outside: lines.length,
+      outside: input.outside.lines.length,
       notBefore: stored.notBefore ?? stored.queuedAt,
     } as const;
-  const [agent] = yield* sql<{ owner: KinPersonId }>`SELECT owner_person_id AS owner
-    FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${input.agentId}`;
+  const [agent] = yield* sql<{ owner: KinPersonId; hours: string | null }>`
+    SELECT a.owner_person_id AS owner, p.work_hours_json AS hours
+    FROM kin_agents a LEFT JOIN kin_people p ON p.org_id = a.org_id AND p.person_id = a.owner_person_id
+    WHERE a.org_id = ${orgId} AND a.agent_id = ${input.agentId} ORDER BY a.agent_id`;
   if (agent === undefined) return { _tag: "nothing_new" } as const;
   const told = { orgId, personId: agent.owner, at, zone: company };
-  const tell = input.manualId !== undefined ? facts : yield* untold({ ...told, facts });
-  if (!brief && tell.length === 0 && lines.length === 0) return { _tag: "nothing_new" } as const;
+  // Its earlier slots that a hold kept past their own day: this one goes instead, with their news.
+  const heldPast =
+    day === undefined
+      ? []
+      : (yield* sql<{
+          eventId: string;
+          notBefore: number;
+          day: string;
+          outside: string | null;
+          notListed: number | null;
+        }>`
+          SELECT event_id AS "eventId", not_before AS "notBefore",
+            json_extract(json, '$.checkIn.day') AS day, json_extract(json, '$.outside') AS outside,
+            json_extract(json, '$.outsideNotListed') AS "notListed"
+          FROM kin_events WHERE org_id = ${orgId} AND agent_id = ${input.agentId}
+            AND tag = 'pulse' AND state = 'queued' AND not_before IS NOT NULL
+            AND json_extract(json, '$.checkIn.scheduleId') = ${input.scheduleId}
+            AND json_extract(json, '$.checkIn.day') < ${day}
+          ORDER BY event_id`).filter((row) => dayIn(row.notBefore, company) > row.day);
+  const theirs = yield* toldBy(
+    orgId,
+    heldPast.map((row) => row.eventId),
+  );
+  const outside = [
+    ...heldPast.flatMap((row) => Option.getOrElse(decodeLines(row.outside), () => [])),
+    ...input.outside.lines,
+  ];
+  const mailKeys = [...new Set(outside.filter((line) => line.source === "mail").map(outsideKey))];
+  const handled = new Set<string>();
+  if (mailKeys.length > 0) {
+    const [previous] = yield* sql<{ at: number | null }>`
+      SELECT MAX(received_at) AS at FROM kin_events
+      WHERE org_id = ${orgId} AND tag = 'pulse' AND received_at <= ${at}
+        AND event_id != ${eventId} AND json_extract(json, '$.checkIn') IS NOT NULL`;
+    for (let start = 0; start < mailKeys.length; start += 500) {
+      const done = yield* sql<{ key: string }>`
+        SELECT e.dedupe_key AS key FROM kin_events e JOIN kin_wakeups w
+          ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
+        WHERE e.org_id = ${orgId} AND e.tag = 'pulse' AND e.state = 'done'
+          AND e.dedupe_key IN ${sql.in(mailKeys.slice(start, start + 500))}
+          AND w.ended_at >= ${previous?.at ?? 0} AND w.ended_at <= ${at}
+        ORDER BY e.dedupe_key`;
+      for (const row of done) handled.add(row.key);
+    }
+  }
+  const remaining = outside.filter(
+    (line) => line.source !== "mail" || !handled.has(outsideKey(line)),
+  );
+  const matched = yield* matchLines(orgId, remaining);
+  const byId = new Map(remaining.map((line) => [outsideKey(line), line]));
+  for (const { line } of matched) byId.set(outsideKey(line), line);
+  const sent = [...byId.values()]
+    .toSorted((a, b) => Number(b.matched !== undefined) - Number(a.matched !== undefined))
+    .slice(0, OUTSIDE_CAP);
+  const notListed =
+    byId.size - sent.length + heldPast.reduce((sum, row) => sum + (row.notListed ?? 0), 0);
+  const open =
+    input.manualId !== undefined
+      ? undefined
+      : new Set((yield* untold({ ...told, facts })).map((fact) => fact.key));
+  const fresh = facts.filter(
+    (fact) => open === undefined || open.has(fact.key) || theirs.has(fact.key),
+  );
+  // An imported deal's facts wait for the next morning's page: an import is not news by itself.
+  const imported =
+    input.scheduleId === MORNING || input.manualId !== undefined
+      ? new Set<string>()
+      : yield* importedSince(orgId, fresh, startOfDay(dayIn(at, company), company));
+  const tell = fresh.filter(
+    (fact) => fact.subject.recordId === undefined || !imported.has(fact.subject.recordId),
+  );
+  const left = yield* leftOpen(orgId, input.agentId, agent.owner);
+  if (tell.length === 0 && sent.length === 0 && left.length === 0 && input.scheduleId !== WEEKLY) {
+    const weekDay = DateTime.toParts(
+      DateTime.makeZonedUnsafe(minute ?? at, { timeZone: company }),
+    ).weekDay;
+    const workingMorning =
+      input.scheduleId === MORNING &&
+      (Option.getOrUndefined(decodeHours(agent.hours))?.days ?? WEEKDAYS).includes(weekDay);
+    const manualBrief =
+      day === undefined && (input.scheduleId === MORNING || input.scheduleId === EVENING);
+    if (!workingMorning && !manualBrief) {
+      const due =
+        day !== undefined && (input.scheduleId === MORNING || input.scheduleId === EVENING)
+          ? yield* hasDueToday(orgId, day, company)
+          : false;
+      if (!due && input.sumUp !== true) return { _tag: "nothing_new" } as const;
+    }
+  }
   // Nobody asked for it: one that lands in the owner's quiet hours waits for them to end.
   const quietUntil =
     input.manualId === undefined
@@ -241,13 +353,25 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
             ...(figures ? { figures: true } : {}),
             ...(day === undefined ? {} : { day }),
           },
-          ...(lines.length === 0 ? {} : { outside: lines }),
+          ...(sent.length === 0 ? {} : { outside: sent }),
+          ...(notListed > 0 ? { outsideNotListed: notListed } : {}),
         }),
         notBefore === undefined ? undefined : { notBefore },
       )
       .pipe(
         Effect.tap((result) =>
-          result.duplicate ? Effect.void : markTold({ ...told, eventId, facts: tell }),
+          result.duplicate
+            ? Effect.void
+            : markTold({ ...told, eventId, facts: tell }).pipe(
+                Effect.andThen(reserveLeft({ ...told, eventId, holdIds: left })),
+                Effect.andThen(
+                  heldPast.length === 0
+                    ? Effect.void
+                    : sql`UPDATE kin_events SET state = 'expired' WHERE org_id = ${orgId}
+                        AND event_id IN ${sql.in(heldPast.map((row) => row.eventId))}
+                        AND state = 'queued'`,
+                ),
+              ),
         ),
         Effect.map((result) => (result.duplicate ? "duplicate" : "queued")),
         Effect.catchTags({
@@ -259,7 +383,7 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   return {
     _tag: queued,
     facts: tell.length,
-    outside: lines.length,
+    outside: sent.length,
     notBefore: notBefore ?? at,
   } as const;
 });

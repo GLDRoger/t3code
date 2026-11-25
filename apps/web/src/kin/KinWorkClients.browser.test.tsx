@@ -13,6 +13,9 @@ import { page, userEvent } from "vite-plus/test/browser";
 const state = vi.hoisted(() => ({
   clients: [] as Array<unknown>,
   page: null as unknown,
+  filters: [] as Array<unknown>,
+  sees: false,
+  marketing: { tags: [] as Array<string>, cameFrom: [] as Array<unknown> },
 }));
 
 vi.mock(import("./useKinWork"), async (importOriginal) => {
@@ -31,7 +34,13 @@ vi.mock(import("./useKinWork"), async (importOriginal) => {
       moreFailed: false,
       stale: false,
     },
-    list: { setFilter: () => {}, refresh: () => {}, loadMore: async () => {} },
+    list: {
+      setFilter: (next: unknown) => {
+        state.filters.push(next);
+      },
+      refresh: () => {},
+      loadMore: async () => {},
+    },
   });
   return {
     ...(await importOriginal()),
@@ -46,10 +55,25 @@ vi.mock(import("./useKinWork"), async (importOriginal) => {
 // The page's other sections read the host on their own; these tests are about its first rows.
 vi.mock(
   import("./KinAttention"),
-  () => ({ KinAttentionSection: () => null, KinAsideNote: () => null }) as never,
+  () =>
+    ({
+      KinAttentionSection: () => null,
+      KinAttentionItem: () => null,
+      KinAttentionHandled: () => null,
+      KinAsideNote: () => null,
+      kinAttentionNames: () => new Map(),
+    }) as never,
 );
 vi.mock(import("./KinWorkPlaceLists"), () => ({ KinWorkPlaceLists: () => null }) as never);
 vi.mock(import("./KinDocsList"), () => ({ KinDocsUnder: () => null }) as never);
+vi.mock(import("./useKinOwnerLevel"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  useKinSeesClients: () => state.sees,
+}));
+vi.mock(import("./KinMarketing"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  useKinMarketing: () => state.marketing as never,
+}));
 
 import "~/index.css";
 import { render } from "../../test/render";
@@ -77,9 +101,22 @@ const row = (key: string, name: string, more: Partial<KinPartyRow> = {}): KinPar
   ...more,
 });
 
-function setup(input: { readonly clients?: ReadonlyArray<KinPartyRow>; readonly page?: unknown }) {
+function setup(input: {
+  readonly clients?: ReadonlyArray<KinPartyRow>;
+  readonly page?: unknown;
+  readonly sees?: boolean;
+}) {
   state.clients = [...(input.clients ?? [])];
   state.page = input.page ?? null;
+  state.filters = [];
+  state.sees = input.sees ?? false;
+  state.marketing = {
+    tags: ["harbour", "clinics"],
+    cameFrom: [
+      { source: "campaign:P-3", label: "Harbour trade fair", campaign: true },
+      { source: "Referral", label: "Referral", campaign: false },
+    ],
+  };
 }
 
 const clientsList = (onAdd: ((start: string) => void) | null = null) => (
@@ -125,6 +162,20 @@ describe("the Clients list", () => {
     expect(late.element().textContent).toContain("Late: Reminder texts copy");
     await expect.element(late.getByText("Late", { exact: true })).toBeVisible();
     expect(late.getByText(/No next step/).elements()).toHaveLength(0);
+  });
+
+  it("filters by where they came from, a campaign among them, and by tag", async () => {
+    setup({ clients: [row("C-1", "Brightwater Clinics", { prospect: true })], sees: true });
+    await using _screen = await render(clientsList());
+    await userEvent.click(page.getByRole("button", { name: "Filter" }));
+    await userEvent.click(page.getByRole("menuitem", { name: /^Came from/ }));
+    await userEvent.click(page.getByRole("menuitemradio", { name: /Harbour trade fair/ }));
+    expect(state.filters.at(-1)).toMatchObject({ cameFrom: "campaign:P-3" });
+    await userEvent.click(page.getByRole("button", { name: "Filter" }));
+    await userEvent.click(page.getByRole("menuitem", { name: /^Tag/ }));
+    await userEvent.click(page.getByRole("menuitemradio", { name: "clinics" }));
+    expect(state.filters.at(-1)).toMatchObject({ tag: "clinics" });
+    await expect.element(page.getByRole("button", { name: "Export list" })).toBeVisible();
   });
 
   it("offers a prospect, not an import, when there are none yet", async () => {
@@ -215,6 +266,66 @@ describe("a client's page", () => {
     await userEvent.click(page.getByRole("button", { name: /^Call Ingrid about the pilot/ }));
     expect(onOpenTask).toHaveBeenCalledWith("W-44");
     expect(page.getByText("No next step").elements()).toHaveLength(0);
+  });
+
+  it("marks promises with where they were made, and puts the contract's dates under the name", async () => {
+    const promise = (key: string, title: string, side: "ours" | "theirs", from?: object) => ({
+      recordId: KinRecordId.make(`r-${key}`),
+      orgId: target.orgId,
+      key: KinRecordKey.make(key),
+      title,
+      state: "open",
+      waitingOn: null,
+      owner: { _tag: "person", personId: zoya },
+      category: from === undefined ? "task" : "obligation",
+      side,
+      dueAt: null,
+      dueAllDay: false,
+      late: false,
+      confirmed: true,
+      sensitive: false,
+      working: false,
+      pullRequest: null,
+      rev: 1,
+      createdAt: "2026-11-01T10:00:00.000Z",
+      updatedAt: "2026-11-01T10:00:00.000Z",
+      closedAt: null,
+      ...(from === undefined ? {} : { from }),
+    });
+    setup({
+      page: {
+        ...clientPage({ weOwe: 2, theyOwe: 1 }),
+        weOwe: {
+          records: [
+            promise("W-1", "Send the revised quote", "ours", {
+              kind: "note",
+              note: "At the site visit",
+            }),
+            promise("W-2", "Book the training day", "ours"),
+          ],
+          total: 2,
+        },
+        theyOwe: {
+          records: [promise("W-3", "Signed order form", "theirs", { kind: "mail" })],
+          total: 1,
+        },
+        contract: { project: "P-1", renewsOn: "2027-03-01", noticeBy: "2026-12-31", soon: true },
+      },
+    });
+    await using _screen = await render(clientScreen(null));
+    await expect
+      .element(page.getByText("Renews 1 Mar · notice by 31 Dec"))
+      .toHaveClass(/text-warning-foreground/);
+    expect(page.getByText("Promised", { exact: true }).elements()).toHaveLength(2);
+    await expect.element(page.getByText("At the site visit")).toBeVisible();
+    await expect.element(page.getByText("From a mail")).toBeVisible();
+  });
+
+  it("has no contract line for a client with no renewal", async () => {
+    setup({ page: clientPage({}) });
+    await using _screen = await render(clientScreen(null));
+    await expect.element(page.getByText("Brightwater Clinics").first()).toBeVisible();
+    expect(page.getByText(/^Renews /).elements()).toHaveLength(0);
   });
 
   it("keeps terms, Keep private and closing from a teammate the host says may only edit", async () => {

@@ -22,7 +22,7 @@ import * as Codex from "./codex.ts";
 import { kinInstructions } from "../session.ts";
 import { ownerOnlyWakeup } from "../../Audience.testkit.ts";
 import { SESSION_REFUSAL } from "../../Audience.ts";
-import { KIN_DEFERRED_TOOLS } from "../../deferredTools.ts";
+import { KIN_ALWAYS_LOADED } from "../../deferredTools.ts";
 import { KinAgentSessionPolicy } from "../../sessionPolicy.ts";
 import { KinServer, type Services as KinServices } from "../../../KinServer.ts";
 import * as KinPersistence from "../../../persistence/KinPersistence.ts";
@@ -69,6 +69,7 @@ const kinServer = Layer.succeed(KinServer, {
       KinAgentSessionPolicy,
       KinAgentSessionPolicy.of({
         refusal: () => Effect.undefined,
+        webSearch: () => Effect.undefined,
         delegated: (threadId) => Effect.succeed(threadId === "task-from-lead"),
         toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
         agentName: () => Effect.succeed("Tech lead"),
@@ -169,9 +170,9 @@ it.effect(
       const { stateDir } = yield* ServerConfig.ServerConfig;
       const memory = `${stateDir}/kin/demo-a/memory-read`;
       // A model Codex's catalog lacks has no tool search, so it gets every Kin tool up front.
-      for (const [model, rare] of [
-        ["gpt-6.1-sol", [...KIN_DEFERRED_TOOLS]],
-        ["gpt-unlisted-1", []],
+      for (const [model, searches] of [
+        ["gpt-6.1-sol", true],
+        ["gpt-unlisted-1", false],
       ] as const) {
         const sent = yield* session("kin-shared:finance", memory, true, t3TurnStart.input, model);
         const [read, start, resume, turn] = sent;
@@ -191,23 +192,23 @@ it.effect(
           assert.strictEqual(config["mcp_servers.chrome.enabled"], false);
           assert.strictEqual(config["mcp_servers.sentry.enabled"], false);
           assert.notProperty(config, "mcp_servers.t3-code.enabled");
-          // Kin's tools up front as a Claude lead gets them, the rare ones deferred on a second mount.
-          const { disabled_tools: _, ...endpoint } = t3ThreadStart.config["mcp_servers.t3-code"];
+          // Kin's core up front as a Claude lead gets it, everything else deferred on a second mount.
+          const endpoint = t3ThreadStart.config["mcp_servers.t3-code"];
           assert.deepStrictEqual(config["mcp_servers.t3-code"], {
             ...endpoint,
-            disabled_tools: ["t3_thread_wait", ...rare],
+            ...(searches ? { enabled_tools: [...KIN_ALWAYS_LOADED] } : {}),
             omit_tools_from: ["deferred"],
             default_tools_approval_mode: "approve",
           });
           assert.deepStrictEqual(
             config[`mcp_servers.${Codex.KIN_RARE_SERVER}`],
-            rare.length === 0
-              ? undefined
-              : {
+            searches
+              ? {
                   ...endpoint,
-                  enabled_tools: rare,
+                  disabled_tools: ["t3_thread_wait", ...KIN_ALWAYS_LOADED],
                   default_tools_approval_mode: "approve",
-                },
+                }
+              : undefined,
           );
           // No skills: Claude's Kin sessions load no setting sources.
           assert.strictEqual(config["skills.include_instructions"], false);
@@ -303,6 +304,8 @@ it.effect(
               Effect.andThen(fullSessionRefusal(threadId)),
               Effect.provideService(SqlClient.SqlClient, sql),
             ),
+          // Codex's own web search stays off in a confined session: nothing asks this.
+          webSearch: () => Effect.die("unused web search"),
           delegated: () => Effect.succeed(false),
           toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
           agentName: () => Effect.succeed("Tech lead"),

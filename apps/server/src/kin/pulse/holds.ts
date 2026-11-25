@@ -18,7 +18,9 @@ import * as NodeCrypto from "node:crypto";
 import { outsideRead } from "../lead/OutsideContent.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import { dayIn } from "../work/money.ts";
+import type { ToolNamer } from "../work/toolNames.ts";
 import { iso } from "./senses/shared.ts";
+import { keyEventSql, keySentSql } from "../chat/keySent.ts";
 
 /**
  * A record set aside (`kin_holds`): one live hold per record for the company, and one per teammate
@@ -95,11 +97,14 @@ export const endedHolds = Effect.fn("KinHolds.ended")(function* (
     .toSorted((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0));
 });
 
+/** What a hold is matched on: a fact's record, and the client or project it is scoped to. */
+type Covered = {
+  readonly subject: Partial<KinPulseFact["subject"]>;
+  readonly scope: Partial<KinPulseFact["scope"]>;
+};
+
 /** Whether `hold` covers a fact about `fact.subject`, scoped as `fact.scope` says. */
-export const covers = (
-  hold: Pick<Hold, "recordId" | "recordKey" | "register">,
-  fact: Pick<KinPulseFact, "subject" | "scope">,
-) =>
+export const covers = (hold: Pick<Hold, "recordId" | "recordKey" | "register">, fact: Covered) =>
   fact.subject.recordId === hold.recordId ||
   (COVERS_ALL.has(hold.register) &&
     (fact.scope.clientKey === hold.recordKey || fact.scope.projectKey === hold.recordKey));
@@ -113,11 +118,8 @@ const counts = (hold: Hold, reader: Reader) =>
  * The hold that sets this fact aside for `reader` now, if any: the one function every reader
  * of the pulse goes through. Pass facts as sensed, before a teammate's view drops scope names.
  */
-export const asideOf = (
-  fact: Pick<KinPulseFact, "subject" | "scope">,
-  holds: ReadonlyArray<Hold>,
-  reader: Reader,
-) => holds.find((hold) => counts(hold, reader) && covers(hold, fact));
+export const asideOf = (fact: Covered, holds: ReadonlyArray<Hold>, reader: Reader) =>
+  holds.find((hold) => counts(hold, reader) && covers(hold, fact));
 
 /** The holds a reader sees, one per record: theirs and the company's. */
 export const holdsFor = (holds: ReadonlyArray<Hold>, reader: Reader) =>
@@ -149,31 +151,17 @@ export const subjectText = (aside: Pick<KinPulseAside, "record" | "covers">) =>
  * One line on a hold for an agent: "INV-9 Site build only is set aside until 2026-12-17, by
  * Finance on Rhea's word (2026-11-20)". `names` maps agent and person ids to names.
  */
-export const asideLine = (
-  aside: KinPulseAside,
-  names: ReadonlyMap<string, string>,
-  zone: string,
-) => {
-  const byId = aside.by._tag === "agent" ? aside.by.agentId : aside.by.personId;
-  const who = names.get(byId) ?? (aside.by._tag === "agent" ? "an agent" : "a person");
+export const asideLine = (aside: KinPulseAside, name: ToolNamer, zone: string) => {
   const word =
-    aside.onWordOf === null ? "" : ` on ${names.get(aside.onWordOf) ?? "a person"}'s word`;
+    aside.onWordOf === null
+      ? ""
+      : ` on ${name({ _tag: "person", personId: aside.onWordOf })}'s word`;
   const until =
     aside.until === null
       ? "until someone lifts it"
       : `until ${dayIn(DateTime.toEpochMillis(aside.until), zone)}`;
-  return `${subjectText(aside)} is set aside ${until}, by ${who}${word} (${dayIn(DateTime.toEpochMillis(aside.at), zone)})${aside.note === null ? "" : `: ${aside.note}`}`;
+  return `${subjectText(aside)} is set aside ${until}, by ${name(aside.by)}${word} (${dayIn(DateTime.toEpochMillis(aside.at), zone)})${aside.note === null ? "" : `: ${aside.note}`}`;
 };
-
-/** Agents' and people's names in an org, for hold lines. */
-export const holdNames = Effect.fn("KinHolds.names")(function* (orgId: KinOrgId) {
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ id: string; name: string }>`SELECT agent_id AS id,
-      display_name AS name FROM kin_agents WHERE org_id = ${orgId}
-    UNION ALL SELECT person_id AS id, display_name AS name FROM kin_people WHERE org_id = ${orgId}
-    ORDER BY id`;
-  return new Map(rows.map((row) => [row.id, row.name]));
-});
 
 /** The record a hold is on, by key, in this org. */
 export const holdRecord = Effect.fn("KinHolds.record")(function* (orgId: KinOrgId, key: string) {
@@ -203,12 +191,15 @@ export const wordOf = Effect.fn("KinHolds.wordOf")(function* (input: {
     passedOn: number;
     ownerLevel: number;
   }>`WITH woke AS (SELECT e.event_id AS id, e.tag,
-        json_extract(e.json, '$.origin') IS NOT NULL AS origin,
+        -- What a coding agent's key sent or wrote is passed on, never anyone's own word.
+        (json_extract(e.json, '$.origin') IS NOT NULL
+          OR ${sql.literal(keyEventSql("e"))}) AS origin,
         CASE WHEN json_extract(e.json, '$.provenance._tag') = 'human'
           THEN json_extract(e.json, '$.provenance.personId') END AS by,
         CASE WHEN e.tag IN ('chat.message', 'widget.action')
             AND json_extract(e.json, '$.origin') IS NULL AND m.origin_json IS NULL
             AND m.author_kind = 'human' AND m.chat_id = json_extract(e.json, '$.chatId')
+            AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
           THEN m.author_person_id END AS person,
         COALESCE(${sql.literal(ownerLevelSql("m.org_id", "m.author_person_id"))}, 0) AS "ownerLevel"
       FROM kin_events e
@@ -347,8 +338,8 @@ export const liftHold = Effect.fn("KinHolds.lift")(function* (input: {
 });
 
 /** A refusal to ask about a held record: the subject, the day and whose word it was. */
-export const refusalText = (hold: Hold, names: ReadonlyMap<string, string>, zone: string) =>
-  `${asideLine(asideView(hold, { _tag: "owner" }), names, zone)}. Kin won't ask about it before then.`;
+export const refusalText = (hold: Hold, name: ToolNamer, zone: string) =>
+  `${asideLine(asideView(hold, { _tag: "owner" }), name, zone)}. Kin won't ask about it before then.`;
 
 /**
  * The live hold on any of these records, or on its project or client, that counts for `personId`

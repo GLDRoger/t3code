@@ -1,4 +1,5 @@
 import {
+  calendarTimeMillis,
   KIN_SOCIAL_WEEK_CARD,
   KinChatError,
   type KinAgentId,
@@ -32,6 +33,8 @@ import * as Semaphore from "effect/Semaphore";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 
+import { boundPost, madeUnderApproval, recordPostCard } from "../questions/approval.ts";
+import { POST_ALONE, POST_FIRST } from "../lead/approvedDraft.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { resolveAttachmentPathById } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
@@ -84,6 +87,7 @@ import {
   type SocialProvider,
 } from "./SocialProvider.ts";
 import { zernio } from "./Zernio.ts";
+import { DAY_MS } from "../durations.ts";
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const notAllowed = (message: string) => new KinChatError({ reason: "not_allowed", message });
@@ -94,7 +98,6 @@ const isProviderError = Schema.is(SocialProviderError);
 const asKinError = (cause: unknown) =>
   isKinError(cause) ? cause : unavailable("Kin couldn't do that just now. Try again in a minute.");
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
-const DAY_MS = 86_400_000;
 /** A key waits this long between Kin showing what it reaches and the owner's Confirm. */
 const CHECK_TTL_MS = 10 * 60_000;
 /** Reads are kept this long: a week's numbers don't move by the minute, and X charges per read. */
@@ -628,6 +631,8 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
     const since = input.since ?? dayIn(now - 7 * DAY_MS, zone);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(since)) return yield* invalid("since is a day, YYYY-MM-DD.");
     const out = [];
+    // A client's own accounts: their captions are written outside the company.
+    const outside: Array<string> = [];
     for (const group of groups) {
       const accounts = accountsOf(group);
       if (group.problem !== null) {
@@ -646,6 +651,8 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
         ).pipe(Effect.mapError(said)),
       );
       const costs = [...new Set(accounts.flatMap((one) => provider.readCost(one.platform) ?? []))];
+      if (group.partyId !== null && got.value.posts.some((post) => (post.caption ?? "") !== ""))
+        outside.push(accounts[0]?.handle ?? group.label);
       out.push({
         group: group.label,
         accounts: accounts.map((one) => ({
@@ -668,6 +675,11 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
             }),
       });
     }
+    // Marked before the captions reach the turn, as a looked-up account's are.
+    for (const handle of outside)
+      yield* markOutside(lead, `social:${handle.slice(0, 60)}`).pipe(
+        Effect.mapError(() => unavailable("Kin couldn't note the outside read.")),
+      );
     const calendar = (yield* calendarPosts(lead.orgId, now - DAY_MS)).map((post) => ({
       postId: post.postId,
       group:
@@ -765,7 +777,7 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
   });
 
   const atOf = (text: string | undefined) => {
-    const ms = text === undefined ? Number.NaN : Date.parse(text);
+    const ms = text === undefined ? Number.NaN : calendarTimeMillis(text);
     return Number.isFinite(ms) && /[zZ]|[+-]\d{2}:?\d{2}$/.test(text ?? "") ? ms : undefined;
   };
 
@@ -863,6 +875,8 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
             RETURNING post_id`).length === 0
       )
         return false;
+      // A post saved under the owner's Approve is that approval's one result.
+      if (existing === undefined) yield* madeUnderApproval(lead, { kind: "post", postId });
       // A changed post leaves the card it was on: that card no longer shows what would go.
       if (existing?.cardId != null && existing.state === "proposed")
         yield* Cards.refreshWeekCard(lead.orgId, existing.cardId, (card) => ({
@@ -897,6 +911,13 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
     const now = yield* Clock.currentTimeMillis;
     const group = yield* groupNamed(lead.orgId, input.group);
     const drafts = yield* draftsOfGroup(lead.orgId, group.groupId, now + CONFIRM_LEAD_MS);
+    // Under the owner's Approve its card carries the saved post alone, so his Confirm sends only it.
+    const bound = yield* boundPost(lead).pipe(Effect.provide(context));
+    if (bound !== undefined) {
+      if (bound.postId === undefined || !drafts.some((one) => one.postId === bound.postId))
+        return yield* invalid(POST_FIRST);
+      if (drafts.some((one) => one.postId !== bound.postId)) return yield* invalid(POST_ALONE);
+    }
     if (drafts.length === 0)
       return yield* invalid(
         `${group.label} has no drafts still to come. Save some with social_draft first.`,
@@ -912,6 +933,12 @@ const make = Effect.fn("KinSocial.make")(function* (provider: SocialProvider) {
       drafts,
       title,
     }).pipe(
+      // The card that carries an approval's bound post is recorded beside it.
+      Effect.tap((card) =>
+        bound?.postId === undefined
+          ? Effect.void
+          : recordPostCard(lead.orgId, bound.questionId, bound.postId, card.cardId),
+      ),
       sql.withTransaction,
       Effect.provide(context),
       Effect.tapError((error) =>

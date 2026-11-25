@@ -42,6 +42,7 @@ export const DreamJson = Schema.Struct({
 });
 export type DreamJson = typeof DreamJson.Type;
 const decodeDream = Schema.decodeUnknownEffect(Schema.fromJsonString(DreamJson));
+const EDIT_QUOTE = "an item from an edit quotes only what the person typed in it";
 const rank = (trust: MemoryTrust) => ["external", "agent", "member", "owner"].indexOf(trust);
 /**
  * The code checks a dream must pass before anything is committed. `base` is the checkout as the
@@ -74,7 +75,12 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
     failures.push("dream.json is missing or invalid");
   const report = dream?._tag === "Some" ? dream.value : undefined;
   const material = new Map(input.material.map((entry) => [entry.ref, entry]));
+  const people = new Set(
+    input.material.flatMap((entry) => (entry.trust === "agent" ? [] : [entry.saidBy])),
+  );
   const listed = new Set(report?.changes.map((change) => change.path));
+  /** New items refused only for their edit quote, by id: candidates to leave out. */
+  const untyped = new Map<string, string>();
 
   for (const [path, text] of changes) {
     if (path === "rules.md") {
@@ -165,7 +171,31 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
         );
       continue;
     }
-    if (author.trust !== fm.trust || author.saidBy !== fm.said_by)
+    // An edit's draft is the agent's words: only what the person typed in it can be theirs to
+    // quote, and only a preference for drafts (rule 1c) may cite one without a quote.
+    if (author.kind === "edit") {
+      if (author.trust !== fm.trust || author.saidBy !== fm.said_by)
+        failures.push(
+          `${path} claims ${fm.trust} from ${fm.said_by}; the source was ${author.trust} from ${author.saidBy}`,
+        );
+      const quote = fm.quote;
+      const typed =
+        quote === undefined
+          ? fm.kind === "person"
+          : (author.changed ?? []).some((part) => quoteRefusal(quote, part.now) === undefined);
+      if (!typed) {
+        failures.push(`${path} quote: ${EDIT_QUOTE}`);
+        untyped.set(path, fm.id);
+      }
+      continue;
+    }
+    // A relationship item is the agent's own note on a client (rule 1b): it may claim less than
+    // what it cites, under the dream's name or its source's but no other person's, without a quote.
+    const ownNote =
+      fm.kind === "relationship" &&
+      rank(fm.trust) <= Math.min(rank(author.trust), rank("agent")) &&
+      (fm.said_by === author.saidBy || !people.has(fm.said_by));
+    if (!ownNote && (author.trust !== fm.trust || author.saidBy !== fm.said_by))
       failures.push(
         `${path} claims ${fm.trust} from ${fm.said_by}; the source was ${author.trust} from ${author.saidBy}`,
       );
@@ -174,7 +204,7 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
       const refusal =
         fm.quote !== undefined
           ? quoteRefusal(fm.quote, author.text)
-          : author.kind === "chat" && author.trust !== "agent"
+          : author.kind === "chat" && author.trust !== "agent" && !ownNote
             ? QUOTE_MISSING
             : undefined;
       if (refusal !== undefined) failures.push(`${path} quote: ${refusal}`);
@@ -217,11 +247,37 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
         if (!contradiction.resolution && !contradiction.question)
           failures.push(`contradiction ${index + 1} has no resolution or question`);
   }
+  // A new item whose only fault is its edit quote costs that item, not the night, when
+  // nothing else in the night names it. Anything else still fails the night.
+  const named = new Set([
+    ...(report?.merges.flatMap((entry) => [entry.into, ...entry.from]) ?? []),
+    ...(report?.supersessions.flatMap((entry) => [entry.id, entry.superseded_by ?? ""]) ?? []),
+    ...(report?.contradictions.flatMap((entry) => entry.items) ?? []),
+  ]);
+  const dropped = new Set<string>();
+  for (const [path, id] of untyped) {
+    const own = failures.filter((line) => line.startsWith(`${path} `));
+    if (
+      input.base.has(path) ||
+      input.stored.has(path) ||
+      own.length !== 1 ||
+      named.has(id) ||
+      [...changes].some(([other, text]) => other !== path && text.includes(id))
+    )
+      continue;
+    failures.splice(failures.indexOf(own[0]!), 1);
+    changes.delete(path);
+    dropped.add(path);
+  }
   const committed = new Map(
-    [...input.tree.keys()].map((path) => [
-      path,
-      changes.get(path) ?? input.stored.get(path) ?? input.tree.get(path)!,
-    ]),
+    [...input.tree.keys()]
+      .filter((path) => !dropped.has(path))
+      .map((path) => [path, changes.get(path) ?? input.stored.get(path) ?? input.tree.get(path)!]),
   );
-  return { failures, changes, committed, dream: report };
+  const reported =
+    report === undefined
+      ? undefined
+      : { ...report, changes: report.changes.filter((change) => !dropped.has(change.path)) };
+  const leftOut = [...dropped].map((path) => `Left out ${path}: ${EDIT_QUOTE}`);
+  return { failures, changes, committed, dream: reported, leftOut };
 });

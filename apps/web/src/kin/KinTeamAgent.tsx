@@ -1,160 +1,115 @@
-import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
+import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_COMPANY_CHAT_COPY,
   KIN_TEAM_AGENT_COPY,
   kinTeamAgentChoices,
-  kinTeamAgentLabel,
 } from "@t3tools/client-runtime/kin/kinProfiles";
+import { kinTeamAgentDetail } from "@t3tools/client-runtime/kin/kinReach";
+import { KIN_TEAM_PAGE } from "@t3tools/client-runtime/kin/kinTeam";
 import { KinAgentId, type EnvironmentId, type KinOrgId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { ChevronDownIcon, BotIcon, UsersIcon } from "lucide-react";
 import { useState } from "react";
 
-import { Button } from "../components/ui/button";
-import { Menu, MenuPopup, MenuRadioGroup, MenuRadioItem, MenuTrigger } from "../components/ui/menu";
+import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
-import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
-import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { KinSettingsChoice, useKinSettingsSave } from "./settings/KinSettingsControls";
+import { KinSettingsRow, KinSettingsSection } from "./settings/KinSettingsLayout";
 
 const OFF = "off";
 
-/** The agent everyone on the team can chat with, or off. The Team page's top row, owner only. */
-export function KinTeamAgentRow(props: {
-  readonly environmentId: EnvironmentId;
-  readonly orgId: KinOrgId;
-}) {
-  const { environmentId, orgId } = props;
-  const result = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
-  const set = useAtomCommand(kinClient.teamAgentSet, { reportFailure: false });
-  const [pending, setPending] = useState<string | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
-  const held = Option.getOrNull(AsyncResult.value(result));
-  if (held === null) return null;
-  const choices = kinTeamAgentChoices(held.leads);
-  const current = held.teamAgentId ?? null;
-  const shown = pending ?? current ?? OFF;
-  const label =
-    pending === null
-      ? kinTeamAgentLabel(held.leads, current)
-      : (choices.find((choice) => (choice.agentId ?? OFF) === pending)?.label ?? "");
-  const pick = async (value: string) => {
-    if (value === (current ?? OFF)) return;
-    setPending(value);
-    setProblem(null);
-    const outcome = await set({
-      environmentId,
-      input: { orgId, agentId: value === OFF ? null : KinAgentId.make(value) },
-    });
-    setPending(null);
-    if (!AsyncResult.isSuccess(outcome))
-      setProblem(kinFailureText(squashAtomCommandFailure(outcome), KIN_TEAM_AGENT_COPY.failed));
-  };
-  return (
-    <section className="flex flex-col gap-1.5 rounded-lg border border-border/60 p-3">
-      <div className="flex items-center gap-3">
-        <BotIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 text-sm font-medium text-foreground">
-          {KIN_TEAM_AGENT_COPY.label}
-        </span>
-        <Menu>
-          <MenuTrigger render={<Button size="sm" variant="outline" aria-busy={pending !== null} />}>
-            {label}
-            <ChevronDownIcon aria-hidden />
-          </MenuTrigger>
-          <MenuPopup align="end" side="bottom">
-            <MenuRadioGroup value={shown} onValueChange={(value) => void pick(String(value))}>
-              {choices.map((choice) => (
-                <MenuRadioItem key={choice.agentId ?? OFF} value={choice.agentId ?? OFF}>
-                  <span className="flex min-w-0 items-center justify-between gap-4">
-                    <span className="truncate">{choice.label}</span>
-                    {choice.suggested ? (
-                      <span className="shrink-0 text-xs text-muted-foreground">
-                        {KIN_TEAM_AGENT_COPY.suggested}
-                      </span>
-                    ) : null}
-                  </span>
-                </MenuRadioItem>
-              ))}
-            </MenuRadioGroup>
-          </MenuPopup>
-        </Menu>
-      </div>
-      <p className="ps-7 text-xs text-muted-foreground">{KIN_TEAM_AGENT_COPY.detail}</p>
-      {problem === null ? null : (
-        <p role="alert" className="ps-7 text-xs text-destructive-foreground">
-          {problem}
-        </p>
-      )}
-    </section>
-  );
-}
-
-/** The company chat: off, or on with the agent that answers when nobody is named. Owner only. */
-export function KinCompanyChatRow(props: {
+/**
+ * Settings → Team's "Talk to": the agent everyone can chat with, and the company chat with the
+ * agent that answers in it. Each choice saves the moment it is picked.
+ */
+export function KinTalkToSection(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
 }) {
   const { environmentId, orgId } = props;
   const leadsAtom = kinClient.leads({ environmentId, input: { orgId } });
-  const result = useAtomValue(leadsAtom);
-  const refresh = useAtomRefresh(leadsAtom);
-  const set = useAtomCommand(kinClient.groupSetCompany, { reportFailure: false });
-  const [pending, setPending] = useState<string | null>(null);
-  const [problem, setProblem] = useState<string | null>(null);
-  const held = Option.getOrNull(AsyncResult.value(result));
+  const held = Option.getOrNull(AsyncResult.value(useAtomValue(leadsAtom)));
+  const reach = useAtomValue(kinClient.reach({ environmentId, input: { orgId } }));
+  const setTeamAgent = useAtomCommand(kinClient.teamAgentSet, { reportFailure: false });
+  const setCompany = useAtomCommand(kinClient.groupSetCompany, { reportFailure: false });
+  const save = useKinSettingsSave();
+  // What was just picked, shown until the host's next read agrees or refuses.
+  const [picked, setPicked] = useState<{ readonly key: string; readonly value: string } | null>(
+    null,
+  );
   if (held === null) return null;
-  const choices = kinTeamAgentChoices(held.leads).map((choice) => ({
-    ...choice,
-    label: choice.agentId === null ? choice.label : `On, ${choice.label} answers`,
-  }));
-  const current = held.companyChat?.leadAgentId ?? null;
-  const shown = pending ?? current ?? OFF;
-  // The trigger names only the agent, so it fits beside the title at phone width.
-  const label = kinTeamAgentLabel(held.leads, shown === OFF ? null : shown);
-  const pick = async (value: string) => {
-    if (value === (current ?? OFF)) return;
-    setPending(value);
-    setProblem(null);
-    const outcome = await set({
-      environmentId,
-      input: { orgId, leadAgentId: value === OFF ? null : KinAgentId.make(value) },
-    });
-    refresh();
-    setPending(null);
-    if (!AsyncResult.isSuccess(outcome))
-      setProblem(kinFailureText(squashAtomCommandFailure(outcome), KIN_COMPANY_CHAT_COPY.failed));
+  const choices = kinTeamAgentChoices(held.leads);
+  const teamAgent = held.teamAgentId ?? null;
+  const companyAgent = held.companyChat?.leadAgentId ?? null;
+  const shown = (key: string, current: string | null) =>
+    picked?.key === key ? picked.value : (current ?? OFF);
+  const options = (current: string | null, suggest: boolean) =>
+    choices.map((choice) => ({
+      value: choice.agentId ?? OFF,
+      label:
+        suggest && choice.suggested && choice.agentId !== current
+          ? KIN_TEAM_PAGE.suggested(choice.label)
+          : choice.label,
+    }));
+  const pick = async (
+    key: string,
+    value: string,
+    failed: string,
+    sent: Parameters<typeof save.run>[2],
+  ) => {
+    setPicked({ key, value });
+    await save.run(key, failed, sent);
+    appAtomRegistry.refresh(leadsAtom);
+    setPicked(null);
   };
+  const restricted =
+    kinTeamAgentDetail(Option.getOrNull(AsyncResult.value(reach)), teamAgent) !==
+    KIN_TEAM_AGENT_COPY.detail;
   return (
-    <section className="flex flex-col gap-1.5 rounded-lg border border-border/60 p-3">
-      <div className="flex items-center gap-3">
-        <UsersIcon aria-hidden className="size-4 shrink-0 text-muted-foreground" />
-        <span className="min-w-0 flex-1 text-sm font-medium text-foreground">
-          {KIN_COMPANY_CHAT_COPY.label}
-        </span>
-        <Menu>
-          <MenuTrigger render={<Button size="sm" variant="outline" aria-busy={pending !== null} />}>
-            {label}
-            <ChevronDownIcon aria-hidden />
-          </MenuTrigger>
-          <MenuPopup align="end" side="bottom">
-            <MenuRadioGroup value={shown} onValueChange={(value) => void pick(String(value))}>
-              {choices.map((choice) => (
-                <MenuRadioItem key={choice.agentId ?? OFF} value={choice.agentId ?? OFF}>
-                  <span className="truncate">{choice.label}</span>
-                </MenuRadioItem>
-              ))}
-            </MenuRadioGroup>
-          </MenuPopup>
-        </Menu>
-      </div>
-      <p className="ps-7 text-xs text-muted-foreground">{KIN_COMPANY_CHAT_COPY.detail}</p>
-      {problem === null ? null : (
-        <p role="alert" className="ps-7 text-xs text-destructive-foreground">
-          {problem}
-        </p>
-      )}
-    </section>
+    <KinSettingsSection title={KIN_TEAM_PAGE.talkTo} problem={save.problem}>
+      <KinSettingsRow
+        title={KIN_TEAM_AGENT_COPY.label}
+        wrap
+        detail={restricted ? KIN_TEAM_PAGE.teamAgentRestricted : KIN_TEAM_PAGE.teamAgentDetail}
+        control={
+          <KinSettingsChoice
+            label={KIN_TEAM_AGENT_COPY.label}
+            value={shown("team-agent", teamAgent)}
+            options={options(teamAgent, true)}
+            disabled={save.busy !== null}
+            onChange={(value) =>
+              void pick("team-agent", value, KIN_TEAM_AGENT_COPY.failed, () =>
+                setTeamAgent({
+                  environmentId,
+                  input: { orgId, agentId: value === OFF ? null : KinAgentId.make(value) },
+                }),
+              )
+            }
+          />
+        }
+      />
+      <KinSettingsRow
+        title={KIN_COMPANY_CHAT_COPY.label}
+        wrap
+        detail={KIN_TEAM_PAGE.companyChatDetail}
+        control={
+          <KinSettingsChoice
+            label={KIN_COMPANY_CHAT_COPY.label}
+            value={shown("company-chat", companyAgent)}
+            options={options(companyAgent, false)}
+            disabled={save.busy !== null}
+            onChange={(value) =>
+              void pick("company-chat", value, KIN_COMPANY_CHAT_COPY.failed, () =>
+                setCompany({
+                  environmentId,
+                  input: { orgId, leadAgentId: value === OFF ? null : KinAgentId.make(value) },
+                }),
+              )
+            }
+          />
+        }
+      />
+    </KinSettingsSection>
   );
 }

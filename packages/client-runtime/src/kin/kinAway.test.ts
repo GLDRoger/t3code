@@ -1,6 +1,12 @@
 // @effect-diagnostics globalDate:off - Fixtures build days and times relative to a fixed clock.
 import { describe, expect, it } from "@effect/vitest";
-import { kinAwayLine, kinAwayProblem, kinMessageOnMyClock, kinWhenText } from "./kinAway.ts";
+import {
+  kinAwayLine,
+  kinAwayProblem,
+  kinArrivesText,
+  kinMessageOnMyClock,
+  kinWhenText,
+} from "./kinAway.ts";
 import type { KinMessage } from "@t3tools/contracts";
 
 import { makeKinFixtureMessages } from "./kinChatFixtures.ts";
@@ -45,6 +51,57 @@ describe("a held message's time, on each reader's clock", () => {
   });
 });
 
+describe("the note under a request that waits for someone", () => {
+  // 07:00 on Sat 21 Nov in Kolkata.
+  const rhea = {
+    at: "2026-11-21T01:30:00.000Z",
+    zone: "Asia/Kolkata",
+    text: "07:00 their time (Sat 21 Nov)",
+    of: "Rhea Kapoor",
+  };
+  it.each([
+    [
+      "Rhea's own zone",
+      "Asia/Kolkata",
+      "Rhea Kapoor will see your request at 7:00 AM (Sat Nov 21).",
+    ],
+    [
+      "UTC",
+      "UTC",
+      "Rhea Kapoor will see your request at 7:00 AM their time (Sat Nov 21), 1:30 AM your time.",
+    ],
+    [
+      "Auckland",
+      "Pacific/Auckland",
+      "Rhea Kapoor will see your request at 7:00 AM their time (Sat Nov 21), 2:30 PM your time.",
+    ],
+    [
+      "Bogota, a day behind",
+      "America/Bogota",
+      "Rhea Kapoor will see your request at 7:00 AM their time (Sat Nov 21), 8:30 PM your time (Fri Nov 20).",
+    ],
+  ])("names the person and their time, read in %s", (_name, zone, line) => {
+    expect(kinArrivesText(rhea, zone)).toBe(line);
+  });
+
+  it("replaces Kin's held-request note, and no other message naming a time", () => {
+    const note = kinMessage({
+      messageId: "kin-arrives:relay-1" as KinMessage["messageId"],
+      body: `In Rhea Kapoor's quiet hours: it arrives at ${rhea.text}.`,
+      when: rhea,
+    });
+    expect(kinMessageOnMyClock(note, "Asia/Kolkata").body).toBe(
+      "Rhea Kapoor will see your request at 7:00 AM (Sat Nov 21).",
+    );
+    const limit = kinMessage({
+      messageId: "kin-arrives:limit" as KinMessage["messageId"],
+      body: "Back at 7:00 am",
+      when: { at: rhea.at, zone: rhea.zone, text: "7:00 am" },
+    });
+    expect(kinMessageOnMyClock(limit, "Asia/Kolkata")).toBe(limit);
+  });
+});
+
 describe("away until a day", () => {
   const now = new Date("2026-11-17T20:00:00.000Z");
   it("names whose calendar when the reader's differs", () => {
@@ -54,6 +111,9 @@ describe("away until a day", () => {
     );
     expect(kinAwayLine(zoya, { mine: false, zone: "Europe/London", now })).toBe(
       "Away until Thu Nov 19 (India Standard Time)",
+    );
+    expect(kinAwayLine(zoya, { mine: true, short: true, zone: "Europe/London", now })).toBe(
+      "Until Thu Nov 19 (India Standard Time)",
     );
     expect(kinAwayLine({ ...zoya, awayUntil: undefined }, { mine: false, now })).toBeNull();
   });

@@ -47,11 +47,17 @@ text:
     from: com.t3tools.t3code.preview
     to: com.gldroger.kin.preview
     exact: true
-  - files: [apps/mobile/app.config.ts, apps/desktop/src/electron/ElectronProtocol.ts]
+  - files:
+      - apps/mobile/app.config.ts
+      - apps/desktop/src/electron/ElectronProtocol.ts
+      - apps/desktop/src/kin/appPage.ts
     from: t3code
     to: kin
     exact: true
-  - files: [apps/mobile/app.config.ts, apps/desktop/src/electron/ElectronProtocol.ts]
+  - files:
+      - apps/mobile/app.config.ts
+      - apps/desktop/src/electron/ElectronProtocol.ts
+      - apps/desktop/src/kin/appPage.ts
     from: t3code-dev
     to: kin-dev
     exact: true
@@ -61,7 +67,7 @@ text:
     exact: true
   # Kin's mobile app is Kin and nothing else: no coding threads, tabs or settings. Coding lives in
   # the T3 Code app. See KIN_ONLY in apps/mobile/src/lib/kinOnly.ts.
-  - files: [apps/mobile/app.config.ts, apps/mobile/src/lib/kinOnly.ts]
+  - files: [apps/mobile/src/lib/kinOnly.ts]
     from: "kin-only:off"
     to: "kin-only:on"
     exact: true
@@ -300,9 +306,18 @@ text:
     to: "'.kin', 'device'"
 
   # Desktop: product name, app id, URL schemes, data folders.
+  # Named Kin, never "Kin (Beta)": the bundle name comes from productName (see the guard on
+  # DesktopEnvironment.ts in scripts/lib/kinBrandGuards.ts for the window and menu name).
   - files: [apps/desktop/package.json]
-    from: T3 Code
+    from: T3 Code (Beta)
     to: Kin
+    exact: true
+  # Kin's desktop app is a window on the team's own Kin host, joined with a link: no bundled
+  # server, projects or provider set-up. See apps/desktop/src/kin/KinDesktopOnly.ts.
+  - files: [apps/desktop/src/kin/KinDesktopOnly.ts, scripts/lib/kinDesktopBuild.ts]
+    from: "kin-desktop:off"
+    to: "kin-desktop:on"
+    exact: true
   - files: [apps/desktop/src/app/DesktopEnvironment.ts]
     from: T3 Code
     to: Kin
@@ -423,7 +438,24 @@ text:
       Kin is an open-source desktop app for coding agents. Work with your existing agent subscriptions,
       review code changes, and run commands in your projects. Connect from desktop, web, or mobile to
       continue working remotely.
-    to: "Kin: AI team leads in chat, built on T3 Code."
+    to: "Kin: AI team leads in chat."
+  # Windows' file properties (CompanyName, copyright) and the uninstall entry's publisher; Kin's
+  # name, as the .deb maintainer above.
+  - files: [scripts/build-desktop-artifact.ts]
+    from: T3 Tools
+    to: Kin
+    exact: true
+  # The launcher's StartupWMClass, read from the running Linux app's window (WM_CLASS
+  # "com.gldroger.kin", "com.gldroger.Kin"), so docks match the window to Kin's launcher.
+  - files: [scripts/build-desktop-artifact.ts]
+    from: com.t3tools.T3Code
+    to: com.gldroger.Kin
+    exact: true
+  # Windows' uninstall entry shows this as its support and "more info" links; Kin's source.
+  - files: [scripts/build-desktop-artifact.ts]
+    from: https://t3.codes
+    to: https://github.com/GLDRoger/t3code
+    exact: true
   - files: [scripts/build-desktop-artifact.ts]
     from: T3-Code-
     to: Kin-
@@ -454,6 +486,12 @@ text:
     from: T3 Code
     to: Kin
     exact: true
+  # Kin's web app has no coding threads: T3 Code's coding addresses open Kin's home. See
+  # KIN_WEB_ONLY in apps/web/src/kin/kinWebOnly.ts.
+  - files: [apps/web/src/kin/kinWebOnly.ts]
+    from: "kin-web:off"
+    to: "kin-web:on"
+    exact: true
   # Kin's web build has no release stage, so it is named Kin, never "Kin (Beta)".
   - files: [apps/web/src/branding.logic.ts]
     from: Beta
@@ -466,6 +504,51 @@ text:
       - apps/web/src/components/sidebar/SidebarChrome.tsx
     from: T3 Code
     to: Kin
+  # Kin's own Settings pages that name the app: Environments' "Use in another app" dialog, and
+  # Maintenance's database notice.
+  - files:
+      - apps/web/src/components/mcp/UseInAnotherAppDialog.tsx
+      - apps/web/src/components/settings/DatabaseStorageNotice.tsx
+    from: T3 Code
+    to: Kin
+  # The app's Settings pages Kin keeps (General, Maintenance, About, Environments, Sharing &
+  # access, Secrets, Labs) name the app as Kin, and their kept rows speak of agents' work, not
+  # threads; rows that only serve coding threads are hidden (KIN_CODING_SETTING_ROWS).
+  - files:
+      - apps/web/src/components/settings/SettingsPanels.tsx
+      - apps/web/src/components/settings/ConnectionsSettings.tsx
+      - apps/web/src/components/settings/SecretsSettings.tsx
+      - apps/web/src/components/settings/LinkedEnvironmentsSettings.tsx
+    from: T3 Code
+    to: Kin
+  - files:
+      - apps/web/src/components/settings/SettingsPanels.tsx
+      - apps/web/src/components/settings/settingsSearch.ts
+    from: Continue threads after restarts
+    to: Continue agents' work after restarts
+  - files: [apps/web/src/components/settings/SettingsPanels.tsx]
+    from: continue threads after restarts
+    to: continue agents' work after restarts
+  - files: [apps/web/src/components/settings/SettingsPanels.tsx]
+    from: resume interrupted threads after
+    to: resume agents' interrupted work after
+  - files:
+      - apps/web/src/components/settings/SettingsPanels.tsx
+      - apps/web/src/components/settings/settingsSearch.ts
+    from: Compact idle threads
+    to: Compact idle agent chats
+  - files: [apps/web/src/components/settings/SettingsPanels.tsx]
+    from: compact idle threads
+    to: compact idle agent chats
+  - files: [apps/web/src/components/settings/SettingsPanels.tsx]
+    from: an idle Claude thread
+    to: an idle Claude agent chat
+  - files: [apps/web/src/components/settings/LinkedEnvironmentsSettings.tsx]
+    from: launch and drive threads there
+    to: start and drive work there
+  - files: [apps/web/src/components/settings/LinkedEnvironmentsSettings.tsx]
+    from: wait on threads there
+    to: wait on work there
   # The wordmark itself is an asset (assets/apps/web/src/components/T3Wordmark.tsx).
   - files: [apps/web/src/components/sidebar/SidebarChrome.tsx]
     from: T3
@@ -628,8 +711,9 @@ scopes:
   web:
     reason: >-
       The Kin server's own web app (ops/kin/host/update.sh brands its build worktree in place):
-      its name, title, install manifest, icons and marks. Only these, because the server itself
-      stays unbranded: it runs on ~/.t3 and keeps T3's identities.
+      its name, title, install manifest, icons and marks, and its switch that keeps out T3 Code's
+      coding screens. Only these, because the server itself stays unbranded: it runs on ~/.t3 and
+      keeps T3's identities.
     files:
       - apps/web/index.html
       - apps/web/vite.config.ts
@@ -643,6 +727,14 @@ scopes:
       - apps/web/src/components/T3Wordmark.tsx
       - apps/web/src/components/sidebar/SidebarChrome.tsx
       - apps/web/src/components/ui/standalone-page.tsx
+      - apps/web/src/components/mcp/UseInAnotherAppDialog.tsx
+      - apps/web/src/components/settings/DatabaseStorageNotice.tsx
+      - apps/web/src/components/settings/SettingsPanels.tsx
+      - apps/web/src/components/settings/settingsSearch.ts
+      - apps/web/src/components/settings/ConnectionsSettings.tsx
+      - apps/web/src/components/settings/SecretsSettings.tsx
+      - apps/web/src/components/settings/LinkedEnvironmentsSettings.tsx
+      - apps/web/src/kin/kinWebOnly.ts
       # The server build copies these over the client's icons (applyDevelopmentIconOverrides).
       - assets/dev/blueprint-web-*
     # apps/web/public/kin-icon.png stays one release for tabs that still link it; then delete it.
@@ -694,6 +786,7 @@ leaks:
         - ops/kin/host/kin
         - ops/kin/host/kin-server.service
         - ops/kin/host/retire-workers.sh
+        - ops/kin/host/setup.sh
         - ops/kin/host/update.sh
     - reason: >-
         kin-verify drives the unbranded dev client from a source checkout (T3's dev scheme and
@@ -714,6 +807,14 @@ leaks:
         - apps/web/src/components/chat/TimelineUserMessageRow.tsx
         - apps/mobile/src/features/threads/ThreadQueueControl.tsx
         - apps/mobile/src/features/threads/ThreadFeed.tsx
+    - reason: The User-Agent header sent to a TanStack Source host a person connects; never shown.
+      leak: scheme-name
+      text: "^t3code$"
+      files: [packages/source-control-tanstack-source/src/server/**]
+    - reason: The git identity of a benchmark's throwaway scratch repository; never shown or sent.
+      leak: t3-domain
+      text: "bench@t3\\.codes"
+      files: [scripts/server-metrics.ts]
     - reason: Demo data for upstream's store screenshots; the project is named after the T3 Code repo.
       leak: scheme-name
       text: "^t3code$"
@@ -832,6 +933,7 @@ leaks:
       text: "^https://github\\.com/pingdotgg/t3code/blob/main/docs/user/"
       files:
         - apps/web/src/components/settings/MultipleAccountsNote.tsx
+        - apps/web/src/components/workflows/WorkflowRunsView.tsx
         - packages/contracts/src/environmentHttp.ts
     - reason: >-
         The provider model manifest the server reads from upstream's main branch; Kin uses the

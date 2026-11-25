@@ -16,6 +16,7 @@ import * as ServerSettings from "../../serverSettings.ts";
 import * as ProviderRegistryMock from "../../provider/testUtils/providerRegistryMock.ts";
 import {
   CommandId,
+  type KinTaskCardState,
   MessageId,
   ProjectId,
   ProviderInstanceId,
@@ -211,6 +212,35 @@ it.effect("maps authoritative thread state, including pending decisions", () =>
       [{ pullRequests: [link(1), link(2, "stack-dismissed")], branchPullRequest }, [1]],
       [{ pullRequests: [link(2, "stack-dismissed")], branchPullRequest: null }, []],
     ];
+    // A failed task's cause, where its provider's failure tells it; the card's model is "invented-model".
+    const failureRows: ReadonlyArray<
+      [Partial<OrchestrationV2ThreadShell>, KinTaskCardState["failure"]]
+    > = [
+      [
+        { lastErrorCode: "api_error_400", lastError: "API Error: 400 no route for invented-model" },
+        "model_not_offered",
+      ],
+      [
+        { lastErrorCode: "api_error_404", lastError: "model: invented-model not found" },
+        "model_not_offered",
+      ],
+      [{ lastErrorCode: "api_error_400", lastError: "API Error: 400 prompt is too long" }, null],
+      [{ lastErrorClass: "permission_error", lastError: "Not signed in" }, "signed_out"],
+      [{ lastErrorCode: "authentication_failed", lastError: "Invalid API key" }, "signed_out"],
+      [{ lastErrorClass: "transport_error", lastError: "fetch failed" }, "unreachable"],
+      [{ lastErrorClass: "usage_limit", lastError: "Limit reached" }, "usage_limit"],
+      [{ lastErrorClass: "provider_error", lastError: "Something broke" }, null],
+    ];
+    for (const [patch, expected] of failureRows) {
+      const failed = { ...shell, status: "failed" as const, ...patch };
+      const card = { ...TaskCard.decodeTaskCard(state), model: "invented-model" };
+      assert.strictEqual(TaskCard.taskCardState(card, failed, timestamp).failure, expected);
+      // Only a failed card says why it stopped.
+      assert.notProperty(
+        TaskCard.taskCardState(card, { ...failed, status: "running" }, timestamp),
+        "failure",
+      );
+    }
     for (const [patch, expected] of prRows)
       assert.deepStrictEqual(
         TaskCard.taskCardState(
@@ -527,7 +557,7 @@ it.effect("streams a real delegated child state change through kin.chat.subscrib
               }),
               Layer.mock(SecretRequests)({}),
               Layer.mock(ThreadLaunchService)({}),
-              Layer.mock(ProjectService)({}),
+              Layer.mock(ProjectService)({ getById: () => Effect.succeedNone }),
               Layer.mock(ScheduledTaskService)({}),
               Layer.mock(RemoteDelegation)({}),
               Layer.mock(GitVcsDriver)({}),

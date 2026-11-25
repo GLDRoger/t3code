@@ -16,6 +16,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Setup from "./appSetup.ts";
+import { HOOK_EVENTS, KIN_GITHUB_HOOK_ROUTE, KinGitHubHook, make as makeHook } from "./appHook.ts";
 import { emptyWorld, FakeGitHub } from "./fakeGitHub.ts";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import * as AppKey from "./appKey.ts";
@@ -28,6 +29,7 @@ const T0 = Date.UTC(2026, 10, 17, 9, 0, 0);
 const owner = { _tag: "person" as const, orgId, personId: KinPersonId.make("owner") };
 const member = { _tag: "person" as const, orgId, personId: KinPersonId.make("member") };
 const ORIGIN = "https://kin.invented.example";
+const PUBLIC = "https://kin.public.example.test";
 
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -72,9 +74,11 @@ const setup = (options: { readonly hostAppId?: string } = {}) =>
     /** Kin starting, as at boot or after a restart over the same state. */
     const boot = Effect.gen(function* () {
       const app = yield* makeApp.pipe(Effect.provide(services));
+      const hook = yield* makeHook.pipe(Effect.provideService(KinGitHubApp, app));
       const flow = yield* Setup.make.pipe(
         Effect.provide(services),
         Effect.provideService(KinGitHubApp, app),
+        Effect.provideService(KinGitHubHook, hook),
       );
       yield* app.refresh();
       return { app, flow };
@@ -104,23 +108,44 @@ describe("making Kin's GitHub App from Settings", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("posts a manifest that needs no webhook and comes back to the owner's own Kin", () =>
-    Effect.gen(function* () {
-      const { flow } = yield* setup();
-      const { path } = yield* flow.start([owner], orgId);
-      const state = new URL(path, ORIGIN).searchParams.get("state") ?? "";
-      assert.isTrue(Option.isNone(yield* flow.page("forged", "", ORIGIN)));
-      const page = Option.getOrThrow(yield* flow.page(state, "  Kin   for Studio ", ORIGIN));
-      const manifest = JSON.parse(
-        (/name="manifest" value="([^"]+)"/.exec(page)?.[1] ?? "{}").replaceAll("&quot;", '"'),
-      ) as Record<string, unknown>;
-      assert.strictEqual(manifest.name, "Kin for Studio");
-      assert.strictEqual(manifest.redirect_url, `${ORIGIN}/api/kin/github-app/created`);
-      assert.isUndefined(manifest.hook_attributes);
-      assert.deepStrictEqual(manifest.default_events, []);
-      assert.notProperty(manifest.default_permissions as object, "administration");
-      assert.include(page, `action="https://github.com/settings/apps/new?state=${state}"`);
-    }).pipe(Effect.provide(layer)),
+  it.effect(
+    "posts a manifest that comes back to the owner's own Kin, with a webhook only where Kin has a public address",
+    () =>
+      Effect.gen(function* () {
+        const { flow } = yield* setup();
+        const manifestOf = Effect.fn("test.manifestOf")(function* (name: string) {
+          const { path } = yield* flow.start([owner], orgId);
+          const state = new URL(path, ORIGIN).searchParams.get("state") ?? "";
+          const page = Option.getOrThrow(yield* flow.page(state, name, ORIGIN));
+          assert.include(page, `action="https://github.com/settings/apps/new?state=${state}"`);
+          return JSON.parse(
+            (/name="manifest" value="([^"]+)"/.exec(page)?.[1] ?? "{}").replaceAll("&quot;", '"'),
+          ) as Record<string, unknown>;
+        });
+        assert.isTrue(Option.isNone(yield* flow.page("forged", "", ORIGIN)));
+        const manifest = yield* manifestOf("  Kin   for Studio ");
+        assert.strictEqual(manifest.name, "Kin for Studio");
+        assert.strictEqual(manifest.redirect_url, `${ORIGIN}/api/kin/github-app/created`);
+        assert.isUndefined(manifest.hook_attributes);
+        assert.deepStrictEqual(manifest.default_events, []);
+        assert.notProperty(manifest.default_permissions as object, "administration");
+
+        // The webhook goes to Kin's own public address, never the browser's origin.
+        const hooked = yield* manifestOf("").pipe(
+          Effect.provide(
+            ConfigProvider.layer(
+              ConfigProvider.fromUnknown({ KIN_ENABLED: true, KIN_PUBLIC_URL: PUBLIC }),
+            ),
+          ),
+        );
+        assert.deepStrictEqual(hooked.hook_attributes, {
+          url: `${PUBLIC}${KIN_GITHUB_HOOK_ROUTE}`,
+          active: true,
+        });
+        assert.deepStrictEqual(hooked.default_events, Object.keys(HOOK_EVENTS));
+        assert.strictEqual(hooked.redirect_url, `${ORIGIN}/api/kin/github-app/created`);
+        assert.deepStrictEqual(hooked.default_permissions, manifest.default_permissions);
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect(
@@ -202,6 +227,64 @@ describe("making Kin's GitHub App from Settings", () => {
       assert.isTrue(Option.isNone(yield* kept("9100")));
       assert.deepStrictEqual(yield* app.origin!(), { source: "none" });
       assert.deepStrictEqual(yield* app.state(), { _tag: "none" });
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("Check again looks at the App now, at most once in two minutes, for owners only", () =>
+    Effect.gen(function* () {
+      const { github, app, flow } = yield* setup();
+      const state = new URL((yield* flow.start([owner], orgId)).path, ORIGIN).searchParams.get(
+        "state",
+      )!;
+      yield* flow.complete(state, "code-1");
+      github.world.app!.public = false;
+      yield* app.lookAgain();
+      const visible = () =>
+        app.state().pipe(Effect.map((now) => (now._tag === "ok" ? now.app.public : undefined)));
+      const unsigned = () =>
+        github.world.calls.filter((call) => call === "GET apps/kin-for-invented-studio").length;
+      assert.isFalse(yield* visible());
+      // Made public on GitHub: one look sees it at once, not after the quarter-hour.
+      github.world.app!.public = true;
+      for (const people of [[member], []])
+        assert.strictEqual((yield* Effect.flip(flow.look(people, orgId))).reason, "not_allowed");
+      assert.isFalse(yield* visible());
+      assert.deepStrictEqual(yield* flow.look([owner], orgId), { looked: true });
+      assert.isTrue(yield* visible());
+      // A second ask within two minutes sends nothing and keeps what Kin saw.
+      const asked = unsigned();
+      github.world.app!.public = false;
+      yield* TestClock.adjust("119 seconds");
+      assert.deepStrictEqual(yield* flow.look([owner], orgId), { looked: false });
+      assert.strictEqual(unsigned(), asked);
+      assert.isTrue(yield* visible());
+      yield* TestClock.adjust("1 second");
+      assert.deepStrictEqual(yield* flow.look([owner], orgId), { looked: true });
+      assert.strictEqual(unsigned(), asked + 1);
+      assert.isFalse(yield* visible());
+      // GitHub throttling the unsigned look says nothing about the App: what Kin saw stands.
+      github.world.failing = ["apps/kin-for-invented-studio"];
+      yield* TestClock.adjust("2 minutes");
+      assert.deepStrictEqual(yield* flow.look([owner], orgId), { looked: true });
+      assert.strictEqual(unsigned(), asked + 2);
+      assert.isFalse(yield* visible());
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("Check again with no App, or no key to ask with, asks nothing and spends no wait", () =>
+    Effect.gen(function* () {
+      const { github, store, flow } = yield* setup();
+      github.world.calls.length = 0;
+      assert.deepStrictEqual(yield* flow.look([owner], orgId), { looked: false });
+      const state = new URL((yield* flow.start([owner], orgId)).path, ORIGIN).searchParams.get(
+        "state",
+      )!;
+      yield* flow.complete(state, "code-1");
+      const key = Option.getOrThrow(yield* store.get(AppKey.appKeyName("9100")));
+      yield* store.remove(AppKey.appKeyName("9100"));
+      assert.deepStrictEqual(yield* flow.look([owner], orgId), { looked: false });
+      yield* store.set(AppKey.appKeyName("9100"), key);
+      assert.deepStrictEqual(yield* flow.look([owner], orgId), { looked: true });
     }).pipe(Effect.provide(layer)),
   );
 

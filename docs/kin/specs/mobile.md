@@ -245,19 +245,18 @@ Every screen handles the same seven states. Each state's copy is fixed below.
   - The thread was deleted: the thread screen shows its not-found state.
 - A PR chip, if present, opens the PR with the existing `useOpenPullRequest` (`native/useOpenPullRequest.ts`).
 
-**Deferral card.** Data: `KinDeferralCard` in `packages/contracts/src/kinLead.ts`: `{ itemId, title, dueAt, onDue: "remind" | "start" | "ask" | "chase", text, phase?, graceEndsAt? }`. The phase picks the buttons, which mirror `actionsFor` in `apps/server/src/kin/triggers/deferrals.ts`. Every button posts `value: itemId` (TRIG-7, TRIG-8).
+**Deferral card.** Data: `KinDeferralCard` in `packages/contracts/src/kinLead.ts`: `{ itemId, title, dueAt, onDue: "remind" | "start" | "ask" | "chase", text, phase?, graceEndsAt?, actions? }`. The server lists the taps it takes in `actions`; the card draws those it knows, and a teammate only Undo. A card from an older server without `actions` offers Undo when confirmed and nothing after. Every button posts `value: itemId` (TRIG-7, TRIG-8).
 
-| Phase               | Reads                                                                                                                                   | Buttons                                                                   |
-| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
-| none (confirm)      | "Deferred to Fri 13 Nov, 9:00. I'll start then.", the server's `text` when it adds something, "Due in 3 days"                           | **Undo** (Change and Just remind me return with the owner-tap dispatcher) |
-| `heads_up`          | "Starting at 9:00." and "Starting in 12 min". Inside the grace window (`graceEndsAt`): "This was due at 9:00." then "Starting at 9:30." | **Start now**, **Monday**, **Cancel**                                     |
-| `asked`             | Titled "Needs your decision". The server's `text`, which names what changed: why Kin won't start on its own, or that it's late          | **Start now**, **Monday**, **Cancel**                                     |
-| `started`           | "Started."                                                                                                                              | none                                                                      |
-| closed (`closedAt`) | "Closed."                                                                                                                               | none                                                                      |
+| Phase               | Reads                                                                                                                                   | Buttons                                                              |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| none (confirm)      | "Set for Fri 13 Nov, 9:00. I'll ask you to start it then.", the server's `text` when it adds something, "Due in 3 days"                 | **Undo**                                                             |
+| `heads_up`          | "Starting at 9:00." and "Starting in 12 min". Inside the grace window (`graceEndsAt`): "This was due at 9:00." then "Starting at 9:30." | **Start now**, **Monday**, **Cancel**                                |
+| `asked`             | Titled "Needs your decision". The server's `text`: tap Start now to start it, and why Kin won't start on its own, or that it's late     | **Start now** (when the server can start it), **Monday**, **Cancel** |
+| `started`           | "Started."                                                                                                                              | none                                                                 |
+| closed (`closedAt`) | "Closed."                                                                                                                               | none                                                                 |
 
-- **Change** writes nothing on the server: it hands the item to the lead, which asks the owner what to change. The card says "Sent. Your agent will ask what to change." and its buttons stay usable. Every other button rewrites or closes the card, so its buttons stay off until the next revision.
-- The host may refuse **Start now** with `stopped`, `workers_blocked` or `below_l2`. The card's copy for each is in `KIN_START_NOW_REFUSALS`; it shows once the owner-tap dispatcher reports refusals back.
-- Taps stay refused while `deferralCardActionsReady` is false. The card then shows "Kin didn't take that answer. Tell your agent in the chat instead."
+- Kin applies Start now, Monday and Cancel itself in the tap, with no agent turn, so the card says "Asked <Agent> to start it.", "Moved to Monday." or "Cancelled." and its buttons stay off until the next revision. Monday brings back the confirm card for next Monday 9:00.
+- A tap on a card that changed since it was drawn is refused as changed: "This card changed. Check it again." A refusal stays on the card for the person who tapped even when the card changed or closed before the answer came; what was sent stays with its revision.
 - Notices belong to the revision they were raised on and disappear when the card changes. A retry of the same action on the same revision after a dropped send reuses its `clientActionId`.
 - The countdown follows the shared minute tick, never a timer of its own.
 - All times are in the device timezone, written as "Fri 13 Nov, 9:00". They are built from whole `Intl.DateTimeFormat` strings, because Hermes leaves `hour` and `minute` out of `formatToParts`.
@@ -307,12 +306,12 @@ Hiding the buttons is a convenience, not the protection (DESIGN 9.3). The server
 
 - It registers categories once at install, with `Notifications.setNotificationCategoryAsync`:
 
-| Category id              | Actions (identifier: title)                                                  | Action `options` (set on each action)                          |
-| ------------------------ | ---------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `kin.approval`           | `review: Review`                                                             | `opensAppToForeground: true`, `isAuthenticationRequired: true` |
-| `kin.deferral.confirmed` | `change: Change`, `remind: Just remind me`                                   | foreground                                                     |
-| `kin.deferral.heads_up`  | `start_now: Start now`, `monday: Monday`, `cancel: Cancel` (`isDestructive`) | foreground, auth required                                      |
-| `kin.message`            | none (tap opens chat)                                                        | n/a                                                            |
+| Category id              | Actions (identifier: title)                                                     | Action `options` (set on each action)                          |
+| ------------------------ | ------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `kin.approval`           | `review: Review`                                                                | `opensAppToForeground: true`, `isAuthenticationRequired: true` |
+| `kin.deferral.confirmed` | none (its only tap, Undo, is on the card); an older build's buttons are removed | n/a                                                            |
+| `kin.deferral.heads_up`  | `start_now: Start now`, `monday: Monday`, `cancel: Cancel` (`isDestructive`)    | foreground, auth required                                      |
+| `kin.message`            | none (tap opens chat)                                                           | n/a                                                            |
 
 - There is no "Approve" action on the notification. Approving needs the in-app biometric prompt and signature (approvals spec), so the lock screen offers **Review**, which opens `KinApproval`.
 - In phase 1 every action opens the app. Background actions are not reliable when the app has been killed.
@@ -501,7 +500,7 @@ Commands, from `apps/mobile`: `vp run typecheck` and `vp test run --project unit
 
 ## Open questions
 
-- Which Apple Developer team signs the Kin build, and who creates its APNs key? Its App ID also needs the App Attest capability, or approval keys can't be activated (approvals spec, section 4). Android FCM waits until someone uses Android.
+- Which Apple Developer team signs the Kin build, and who creates its APNs key? Its App ID also needs the App Attest capability, or approval keys can't be activated (approvals spec, section 4). Android phones go through FCM (`apps/server/src/kin/push/Fcm.ts`), with `KIN_FCM_SERVICE_ACCOUNT_FILE` (ops/kin/host/README.md, Phone notifications).
 - Is "Kin" the right label for the entry row, or should it carry the lead's name?
 - Should the Waiting on you banner also show on T3's Home list when the Kin row is scrolled away (for example, as a pinned header)?
 - Does phase 1 need folded agent talk, given there is one agent in a direct chat?

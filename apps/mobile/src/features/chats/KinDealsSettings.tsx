@@ -1,5 +1,11 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { KIN_DEAL_STAGES, kinDealStagesProblem } from "@t3tools/client-runtime/kin/kinDeals";
+import {
+  KIN_DEALS,
+  KIN_DEAL_QUIET,
+  KIN_DEAL_STAGES,
+  kinDealQuietProblem,
+  kinDealStagesProblem,
+} from "@t3tools/client-runtime/kin/kinDeals";
 import type { KinDealStagesResult } from "@t3tools/contracts";
 import { useState } from "react";
 import { View } from "react-native";
@@ -14,9 +20,10 @@ import { ListSection } from "../../components/ui/ListSection";
 import { Menu } from "../../components/ui/Menu";
 import { Notice } from "../../components/ui/Notice";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { KinSectionSwitch } from "./components/KinSectionSwitch";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
 import { NO_LINK, targetOf } from "./KinWorkFormScreens";
-import { useKinDealStages, useKinDealStagesSet } from "./state/useKinDeals";
+import { useKinDealQuietDaysSet, useKinDealStages, useKinDealStagesSet } from "./state/useKinDeals";
 import type { KinWorkTarget } from "./state/useKinWork";
 
 export type KinDealStagesParams = {
@@ -45,10 +52,11 @@ function DealStages(props: KinWorkTarget) {
     return <StagesEditor key={state.value.rev} {...props} held={state.value} onRefresh={refresh} />;
   return (
     <KinWorkFrame title={KIN_DEAL_STAGES.title} onBack={() => navigation.goBack()}>
+      <KinSectionSwitch {...props} id="deals" />
       {state._tag === "loading" ? (
         <KinWorkLoading label="Loading stages" />
       ) : state._tag === "failed" ? (
-        <KinLoadFailed title="Stages didn't load" cause={state.cause} onRetry={refresh} />
+        <KinLoadFailed title={KIN_DEALS.stagesFailed} cause={state.cause} onRetry={refresh} />
       ) : (
         <EmptyState
           variant="plain"
@@ -91,12 +99,14 @@ function StagesEditor(
         onBack={() => navigation.goBack()}
         refresh={{ accessibilityLabel: "Refresh", onPress: props.onRefresh }}
       >
+        <KinSectionSwitch {...props} id="deals" />
         <ListSection title={KIN_DEAL_STAGES.stages} footer={KIN_DEAL_STAGES.readOnly}>
           {held.stages.map((stage) => (
             <ListRowLayout key={stage.id} label={stage.name} />
           ))}
         </ListSection>
         <Ends />
+        <QuietDays {...props} held={held} />
       </KinWorkFrame>
     );
 
@@ -179,6 +189,7 @@ function StagesEditor(
         disabled: busy || !dirty || invalid !== null,
       }}
     >
+      <KinSectionSwitch {...props} id="deals" />
       <Text textRole="footnote" className="px-2 text-foreground-muted">
         {KIN_DEAL_STAGES.detail}
       </Text>
@@ -243,7 +254,58 @@ function StagesEditor(
         )}
       </ListSection>
       <Ends />
+      <QuietDays {...props} held={held} />
     </KinWorkFrame>
+  );
+}
+
+/** "A deal goes quiet after N days": the owner level sets it; everyone else reads it. */
+function QuietDays(props: KinWorkTarget & { readonly held: KinDealStagesResult }) {
+  const days = props.held.quietDays;
+  const save = useKinDealQuietDaysSet(props);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  if (days === undefined) return null;
+  const footer = props.held.can
+    ? KIN_DEAL_QUIET.detail
+    : `${KIN_DEAL_QUIET.detail} ${KIN_DEAL_QUIET.readOnly}`;
+  const change = () =>
+    Dialog.prompt({
+      title: KIN_DEAL_QUIET.title,
+      message: KIN_DEAL_QUIET.label,
+      initialValue: String(days),
+      confirmText: KIN_DEAL_QUIET.save,
+      onConfirm: (typed) => {
+        const invalid = kinDealQuietProblem(typed);
+        if (invalid !== null) {
+          setProblem(invalid);
+          return;
+        }
+        if (Number(typed) === days) return;
+        setBusy(true);
+        setProblem(null);
+        void save(Number(typed)).then((outcome) => {
+          setBusy(false);
+          if (!outcome.ok) setProblem(outcome.problem);
+        });
+      },
+    });
+  return (
+    <ListSection title={KIN_DEAL_QUIET.title} footer={footer}>
+      {problem === null ? null : (
+        <Notice message={problem} tone="danger" onDismiss={() => setProblem(null)} />
+      )}
+      {props.held.can ? (
+        <ListActionRow
+          label={KIN_DEAL_QUIET.days(days)}
+          accessibilityLabel={`${KIN_DEAL_QUIET.title} ${KIN_DEAL_QUIET.days(days)}`}
+          loading={busy}
+          onPress={change}
+        />
+      ) : (
+        <ListRowLayout label={KIN_DEAL_QUIET.days(days)} />
+      )}
+    </ListSection>
   );
 }
 

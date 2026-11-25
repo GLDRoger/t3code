@@ -1,0 +1,559 @@
+import {
+  KIN_LIST_SECTIONS,
+  KIN_SECTION_SWITCHES,
+  KIN_SECTIONS_PAGE,
+  KIN_SWITCHABLE_SECTIONS,
+  kinSectionHeldOffLine,
+  kinSectionName,
+  kinSectionNamed,
+  kinSectionNameProblem,
+  kinSectionNoun,
+  kinSectionOn,
+  kinSectionRenamed,
+  kinSectionSwitchOn,
+  kinDockRoom,
+  kinListSectionDocked,
+  kinListCanBeSection,
+  kinListSectionId,
+  kinListSections,
+  type KinListSection,
+  type KinSectionChange,
+  type KinSwitchableSection,
+} from "@t3tools/client-runtime/kin/kinShell";
+import { kinFailureText, kinRetryText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_SET_UP, kinSetUpChief } from "@t3tools/client-runtime/kin/kinSetUp";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
+import { KIN_SET_UP_MESSAGE_PREFIX, type EnvironmentId, type KinShell } from "@t3tools/contracts";
+import { useAtomValue } from "@effect/atom-react";
+import { AsyncResult } from "effect/reactivity";
+import { useState, type ReactNode } from "react";
+
+import { Button } from "../../components/ui/button";
+import { Input } from "../../components/ui/input";
+import {
+  Select,
+  SelectItem,
+  SelectPopup,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select";
+import { Switch } from "../../components/ui/switch";
+import { appAtomRegistry } from "../../rpc/atomRegistry";
+import { kinClient } from "../kinClient";
+import { deliverKinOutbox, kinOutbox } from "../kinOutbox";
+import { kinListsOf, useKinLists } from "../useKinMoney";
+import { useKinOpenChat } from "../useKinOpenChat";
+import { useKinSectionCanSet, useKinSectionSet, useKinShell } from "../useKinShell";
+import type { KinWorkTarget } from "../useKinWork";
+import { KinSettingsField, KinSettingsFormDialog } from "./KinSettingsControls";
+import { KinSettingsLoading, KinSettingsRow, KinSettingsSection } from "./KinSettingsLayout";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
+
+/**
+ * The shell as this page holds it: the host's, or a save's answer until `kin.access.me` reads it
+ * back, so a switch never flicks back to the tapped-away state. Null while the host hasn't said;
+ * undefined from a host older than sections.
+ */
+function useHeldShell(target: KinWorkTarget) {
+  const shell = useKinShell(target.environmentId);
+  const set = useKinSectionSet(target);
+  const [saved, setSaved] = useState<KinShell | null>(null);
+  const held =
+    shell === undefined
+      ? undefined
+      : shell === null || (saved !== null && saved.rev > shell.rev)
+        ? saved
+        : shell;
+  return {
+    held,
+    /** Saves one change; the host's words on failure, null once saved. */
+    change: async (from: KinShell, change: KinSectionChange): Promise<string | null> => {
+      const outcome = await set(from, change);
+      if (outcome.ok) {
+        setSaved(outcome.value);
+        return null;
+      }
+      // Changed elsewhere: the host's answer is read again, so drop ours.
+      if (outcome.changed) setSaved(null);
+      return outcome.problem;
+    },
+  };
+}
+
+type Held = ReturnType<typeof useHeldShell>;
+
+/** One section's switch row in its own card, with its failure said under it, in place. */
+function KinSectionRow(props: {
+  readonly id: KinSwitchableSection;
+  readonly held: Held;
+  readonly shell: KinShell;
+  /** The section's own name as the title (Sections), or its switch's sentence (its own page). */
+  readonly titled: "name" | "sentence";
+  readonly children?: ReactNode;
+}) {
+  const words = KIN_SECTION_SWITCHES[props.id];
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const title = props.titled === "name" ? kinSectionName(props.shell, props.id) : words.title;
+  const heldOff = kinSectionHeldOffLine(props.shell, props.id);
+  const on = kinSectionOn(props.shell, props.id);
+  const detail = kinSectionNamed(
+    props.shell,
+    heldOff ??
+      // Its own page says nothing is deleted; Sections says it once, above every row.
+      (props.titled === "sentence" ? `${words.detail} ${words.kept}` : words.detail),
+  );
+  return (
+    <KinSettingsSection problem={problem}>
+      <KinSettingsRow
+        title={title}
+        wrap
+        detail={detail}
+        control={
+          <Switch
+            aria-label={title}
+            aria-busy={busy}
+            aria-description={heldOff ?? undefined}
+            checked={on}
+            // Held off by another section: the line says which; nothing to send from here.
+            disabled={busy || heldOff !== null}
+            onCheckedChange={async (next) => {
+              setBusy(true);
+              setProblem(null);
+              setProblem(await props.held.change(props.shell, { id: props.id, on: next }));
+              setBusy(false);
+            }}
+          />
+        }
+      />
+      {props.children}
+    </KinSettingsSection>
+  );
+}
+
+/**
+ * A section's switch alone, for the owner level only, on that section's own page (Settings ›
+ * Deals): what turning it off does, that nothing is deleted, and that older phone apps keep the
+ * place. Nothing shows to anyone else, or on an older host.
+ */
+export function KinSectionSwitch(props: KinWorkTarget & { readonly id: KinSwitchableSection }) {
+  const may = useKinSectionCanSet(props.environmentId);
+  const held = useHeldShell(props);
+  if (!may || held.held === undefined) return null;
+  return (
+    <div className="flex flex-col gap-2">
+      {held.held === null ? (
+        <KinSettingsSection>
+          <KinSettingsLoading rows={1} />
+        </KinSettingsSection>
+      ) : (
+        <KinSectionRow id={props.id} held={held} shell={held.held} titled="sentence" />
+      )}
+      <p className="text-pretty px-1 text-xs text-muted-foreground">
+        {KIN_SECTION_SWITCHES[props.id].olderPhones}
+      </p>
+    </div>
+  );
+}
+
+/** Clients' own name: "Call it…", and the way back to Kin's. */
+function KinSectionRenameRow(props: { readonly held: Held; readonly shell: KinShell }) {
+  const words = KIN_SECTIONS_PAGE.rename;
+  const renamed = kinSectionRenamed(props.shell);
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const save = async (name: string, noun: string) => {
+    setBusy(true);
+    setProblem(null);
+    const failed = await props.held.change(props.shell, { id: "clients", name, noun });
+    setBusy(false);
+    setProblem(failed);
+    if (failed === null) setEditing(false);
+  };
+  return (
+    <>
+      <KinSettingsRow
+        title={words.title}
+        wrap
+        detail={
+          renamed
+            ? `${kinSectionName(props.shell, "clients")}, one ${kinSectionNoun(props.shell, "clients")}`
+            : words.detail
+        }
+        control={
+          <>
+            {renamed ? (
+              <Button size="xs" variant="ghost" disabled={busy} onClick={() => save("", "")}>
+                {words.backToKins}
+              </Button>
+            ) : null}
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={busy}
+              onClick={() => {
+                setProblem(null);
+                setEditing(true);
+              }}
+            >
+              {renamed ? "Change" : "Rename"}
+            </Button>
+          </>
+        }
+      />
+      {problem === null || editing ? null : (
+        <p role="alert" className="px-4 pb-3 text-pretty text-xs text-destructive-foreground">
+          {problem}
+        </p>
+      )}
+      {editing ? (
+        <KinSectionRenameDialog
+          shell={props.shell}
+          busy={busy}
+          problem={problem}
+          onSave={save}
+          onClose={() => {
+            setEditing(false);
+            setProblem(null);
+          }}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function KinSectionRenameDialog(props: {
+  readonly shell: KinShell;
+  readonly busy: boolean;
+  readonly problem: string | null;
+  readonly onSave: (name: string, noun: string) => void;
+  readonly onClose: () => void;
+}) {
+  const words = KIN_SECTIONS_PAGE.rename;
+  const renamed = kinSectionRenamed(props.shell);
+  const [name, setName] = useState(renamed ? kinSectionName(props.shell, "clients") : "");
+  const [noun, setNoun] = useState(renamed ? kinSectionNoun(props.shell, "clients") : "");
+  const notReady = kinSectionNameProblem(name, noun);
+  const unchanged =
+    renamed &&
+    name.trim() === kinSectionName(props.shell, "clients") &&
+    noun.trim() === kinSectionNoun(props.shell, "clients");
+  return (
+    <KinSettingsFormDialog
+      title={words.title}
+      description={words.detail}
+      submitLabel={words.save}
+      busy={props.busy}
+      notReady={name.trim() === "" || unchanged ? "" : notReady}
+      problem={props.problem}
+      typed={name !== "" || noun !== ""}
+      onSubmit={() => props.onSave(name, noun)}
+      onClose={props.onClose}
+    >
+      <KinSettingsField label={words.name}>
+        {({ control }) => (
+          <Input
+            id={control}
+            value={name}
+            maxLength={40}
+            placeholder={words.namePlaceholder}
+            onChange={(event) => setName(event.target.value)}
+          />
+        )}
+      </KinSettingsField>
+      <KinSettingsField label={words.noun}>
+        {({ control }) => (
+          <Input
+            id={control}
+            value={noun}
+            maxLength={40}
+            placeholder={words.nounPlaceholder}
+            onChange={(event) => setNoun(event.target.value)}
+          />
+        )}
+      </KinSettingsField>
+    </KinSettingsFormDialog>
+  );
+}
+
+/**
+ * Settings › Sections: each section the company can switch, with Clients' own name. The owner
+ * level only; Docs is always on, so it isn't listed.
+ */
+export function KinSectionsSettings(props: KinWorkTarget) {
+  const may = useKinSectionCanSet(props.environmentId);
+  const held = useHeldShell(props);
+  // The host sets sections for the owner level only; anyone else reaching the address sees none.
+  if (!may) return null;
+  if (held.held === undefined)
+    return (
+      <p className="text-pretty px-1 text-sm text-muted-foreground">
+        {KIN_SECTIONS_PAGE.olderHost}
+      </p>
+    );
+  const shell = held.held;
+  return (
+    <>
+      <KinSetUpRow {...props} />
+      {shell === null ? (
+        <KinSettingsSection>
+          <KinSettingsLoading rows={4} />
+        </KinSettingsSection>
+      ) : (
+        <>
+          {KIN_SWITCHABLE_SECTIONS.map((id) => (
+            <KinSectionRow key={id} id={id} held={held} shell={shell} titled="name">
+              {id === "clients" ? <KinSectionRenameRow held={held} shell={shell} /> : null}
+            </KinSectionRow>
+          ))}
+          <KinListSectionsSettings {...props} held={held} shell={shell} />
+        </>
+      )}
+      <p className="text-pretty px-1 text-xs text-muted-foreground">
+        {KIN_SECTIONS_PAGE.olderPhones}
+      </p>
+    </>
+  );
+}
+
+/**
+ * "Set up for my kind of company…": sends the owner's own ask to their Chief of staff and opens
+ * that chat. Nothing changes here; the Chief of staff proposes each change on its own card.
+ */
+function KinSetUpRow(props: KinWorkTarget) {
+  const { environmentId, orgId } = props;
+  const leads = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
+  const openChat = useKinOpenChat();
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const chief = AsyncResult.isSuccess(leads) ? kinSetUpChief(leads.value.leads) : undefined;
+  const ask = async () => {
+    if (chief === undefined || chief === null) return;
+    setBusy(true);
+    setProblem(null);
+    const chat = await runKinCommand(appAtomRegistry, kinClient.chatWithAgent, {
+      environmentId,
+      input: { orgId, agentId: chief.agentId },
+    });
+    const queued =
+      chat._tag === "Success"
+        ? await kinOutbox.enqueue({
+            environmentId,
+            chatId: chat.value.chatId,
+            body: KIN_SET_UP.ask,
+            idPrefix: KIN_SET_UP_MESSAGE_PREFIX,
+          })
+        : null;
+    setBusy(false);
+    if (chat._tag !== "Success") {
+      setProblem(kinFailureText(squashAtomCommandFailure(chat), KIN_SET_UP.failed));
+      return;
+    }
+    if (queued?._tag !== "queued") {
+      setProblem(kinRetryText(KIN_SET_UP.failed));
+      return;
+    }
+    void deliverKinOutbox();
+    openChat(environmentId, orgId, chat.value.chatId);
+  };
+  return (
+    <KinSettingsSection problem={problem}>
+      <KinSettingsRow
+        title={KIN_SET_UP.action}
+        wrap
+        detail={chief === null ? KIN_SET_UP.noChief : KIN_SET_UP.detail}
+        {...(chief === undefined || chief === null || busy ? {} : { onOpen: () => void ask() })}
+      />
+    </KinSettingsSection>
+  );
+}
+
+/** A section's other settings while it is off: still there to change, and said to be unused. */
+export function KinSectionInactive(props: {
+  readonly environmentId: EnvironmentId;
+  readonly id: KinSwitchableSection;
+  readonly children: ReactNode;
+}) {
+  const shell = useKinShell(props.environmentId);
+  if (kinSectionOn(shell, props.id)) return props.children;
+  return (
+    <>
+      <p role="note" className="-mb-4 text-pretty px-1 text-sm text-muted-foreground">
+        {kinSectionSwitchOn(shell, props.id)
+          ? kinSectionHeldOffLine(shell, props.id)
+          : KIN_SECTION_SWITCHES[props.id].inactive}
+      </p>
+      <div data-kin-section-off="" className="contents [&>section]:opacity-64">
+        {props.children}
+      </div>
+    </>
+  );
+}
+
+/**
+ * The company's own lists shown as sections: each one's switch, its place in the phone's dock while
+ * there is room, and the way out of the sidebar; then the way to show another list as one.
+ */
+function KinListSectionsSettings(
+  props: KinWorkTarget & { readonly held: Held; readonly shell: KinShell },
+) {
+  const lists = useKinLists(props, { enabled: true });
+  const defs = kinListsOf(lists);
+  const sections = kinListSections(props.shell);
+  const shown = new Set(sections.map((section) => section.list));
+  const offered = defs.filter((def) => kinListCanBeSection(def) && !shown.has(def.list));
+  const name = (list: string) => defs.find((def) => def.list === list)?.name ?? list;
+  return (
+    <>
+      {sections.length === 0 ? null : (
+        <div className="flex flex-col gap-2">
+          <div className="flex flex-col gap-0.5 px-1">
+            <h3 className="text-sm font-semibold text-foreground">{KIN_LIST_SECTIONS.title}</h3>
+            <p className="text-pretty text-xs text-muted-foreground">{KIN_LIST_SECTIONS.detail}</p>
+          </div>
+          {sections.map((section) => (
+            <KinListSectionRows
+              key={section.id}
+              section={section}
+              name={name(section.list)}
+              held={props.held}
+              shell={props.shell}
+            />
+          ))}
+        </div>
+      )}
+      {/* Nothing to choose from: the row stays away, as before lists could be sections. */}
+      {offered.length === 0 ? null : (
+        <KinListSectionAdd
+          offered={offered.map((def) => ({ list: def.list, name: def.name }))}
+          held={props.held}
+          shell={props.shell}
+        />
+      )}
+    </>
+  );
+}
+
+function KinListSectionRows(props: {
+  readonly section: KinListSection;
+  readonly name: string;
+  readonly held: Held;
+  readonly shell: KinShell;
+}) {
+  const { section } = props;
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const send = async (change: KinSectionChange) => {
+    setBusy(true);
+    setProblem(null);
+    setProblem(await props.held.change(props.shell, change));
+    setBusy(false);
+  };
+  // A docked section may always leave the dock; a new one needs a place Money or Clients left.
+  // One marked for the dock that doesn't fit reads as off, and nothing is saved until it is touched.
+  const docked = kinListSectionDocked(props.shell, section.id);
+  const dockFull = kinDockRoom(props.shell).full && !docked;
+  return (
+    <KinSettingsSection problem={problem}>
+      <KinSettingsRow
+        title={props.name}
+        control={
+          <Switch
+            aria-label={props.name}
+            aria-busy={busy}
+            checked={section.on}
+            disabled={busy}
+            onCheckedChange={(on) => void send({ id: section.id, on })}
+          />
+        }
+      />
+      <KinSettingsRow
+        title={KIN_LIST_SECTIONS.dock}
+        wrap
+        {...(dockFull ? { detail: KIN_LIST_SECTIONS.dockFull } : {})}
+        control={
+          <Switch
+            aria-label={`${props.name}: ${KIN_LIST_SECTIONS.dock}`}
+            aria-busy={busy}
+            checked={docked}
+            disabled={busy || dockFull}
+            onCheckedChange={(dock) => void send({ id: section.id, dock })}
+          />
+        }
+      />
+      <KinSettingsRow
+        title={KIN_LIST_SECTIONS.removeDetail}
+        wrap
+        control={
+          <Button
+            size="xs"
+            variant="outline"
+            disabled={busy}
+            onClick={() => void send({ id: section.id, remove: true })}
+          >
+            {KIN_LIST_SECTIONS.remove}
+          </Button>
+        }
+      />
+    </KinSettingsSection>
+  );
+}
+
+function KinListSectionAdd(props: {
+  readonly offered: ReadonlyArray<{ readonly list: string; readonly name: string }>;
+  readonly held: Held;
+  readonly shell: KinShell;
+}) {
+  const [picked, setPicked] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const choice = props.offered.find((one) => one.list === picked) ?? null;
+  return (
+    <KinSettingsSection problem={problem}>
+      <KinSettingsRow
+        title={KIN_LIST_SECTIONS.add}
+        wrap
+        control={
+          <>
+            <Select value={picked} onValueChange={(value) => setPicked(value)}>
+              <SelectTrigger
+                size="sm"
+                className="w-40 min-w-0"
+                aria-label={KIN_LIST_SECTIONS.addPick}
+              >
+                <SelectValue>{choice?.name ?? KIN_LIST_SECTIONS.addPick}</SelectValue>
+              </SelectTrigger>
+              <SelectPopup alignItemWithTrigger={false}>
+                {props.offered.map((one) => (
+                  <SelectItem key={one.list} value={one.list}>
+                    {one.name}
+                  </SelectItem>
+                ))}
+              </SelectPopup>
+            </Select>
+            <Button
+              size="xs"
+              disabled={busy || choice === null}
+              aria-busy={busy}
+              onClick={async () => {
+                if (choice === null) return;
+                setBusy(true);
+                setProblem(null);
+                const failed = await props.held.change(props.shell, {
+                  id: kinListSectionId(choice.list),
+                  on: true,
+                });
+                setBusy(false);
+                setProblem(failed);
+                if (failed === null) setPicked(null);
+              }}
+            >
+              {KIN_LIST_SECTIONS.addSave}
+            </Button>
+          </>
+        }
+      />
+    </KinSettingsSection>
+  );
+}

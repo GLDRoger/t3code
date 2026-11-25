@@ -18,6 +18,7 @@ import { useAtomCommand } from "../../state/use-atom-command";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
 import type { KinWorkTarget } from "./state/useKinWork";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 
 /**
  * Keep or decline money an agent suggested, with the same Keep and Not needed a suggested task
@@ -86,6 +87,7 @@ export function KinMoneySuggested(
     readonly onChanged: () => void;
   },
 ) {
+  const grows = useKinTextGrows();
   const { allowed, busy, problem, act } = useKinKeepSuggestion(props, props.onChanged);
   return (
     <ListSection title={KIN_MONEY.suggested} footer={KIN_MONEY.suggestedNote}>
@@ -100,10 +102,14 @@ export function KinMoneySuggested(
             className="min-h-11 flex-row items-center gap-3 px-4 py-2.5 active:opacity-60"
           >
             <View className="min-w-0 flex-1 gap-0.5">
-              <Text textRole="body" numberOfLines={1} className="text-foreground">
+              <Text textRole="body" numberOfLines={kinLines(1, grows)} className="text-foreground">
                 {row.title}
               </Text>
-              <Text textRole="footnote" numberOfLines={1} className="text-foreground-muted">
+              <Text
+                textRole="footnote"
+                numberOfLines={kinLines(1, grows)}
+                className="text-foreground-muted"
+              >
                 {row.line}
               </Text>
             </View>

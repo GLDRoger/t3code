@@ -1,5 +1,6 @@
 import {
   KinChatError,
+  KIN_WORK_ALSO_ON_MAX,
   KinDay,
   KinProjectBilling,
   KinRecordKey,
@@ -16,8 +17,9 @@ import { projectPage } from "./crm.ts";
 import { sectionsOf } from "./docBody.ts";
 import { versionOf } from "./docs.ts";
 import { type FieldValue, fieldList, fieldText, isMoney, parseFields } from "./lists.ts";
-import { dayIn, formatMoney, parseAmount } from "./money.ts";
+import { dayIn, dayWords, formatMoney, parseAmount } from "./money.ts";
 import { principalOfText, principalText, specChangesOf } from "./projectSpine.ts";
+import type { ToolNamer } from "./toolNames.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
 import { matchName } from "./nameMatch.ts";
 import { ownerZone, type RecordRow, selectRecords, toRecord } from "./recordRows.ts";
@@ -42,6 +44,14 @@ const From = Schema.NullOr(
   description:
     "The doc and section id (from doc_read's outline) it was written from. Kin flags the task when that section changes; giving it again re-anchors it. null clears.",
 });
+/** A new row's `from`: a plan's doc section, or where a promise was made. */
+export const CreateFrom = Schema.Union([
+  From,
+  KinToolText(
+    280,
+    'Where a promise (an obligation) was made: chat:<message id> for a message in this turn, else a few words ("At the site visit").',
+  ),
+]);
 
 /** What a Work or project row may also carry; rows of other lists refuse them. */
 export const SpineInputs = {
@@ -53,7 +63,8 @@ export const SpineInputs = {
   reason: Schema.optional(Schema.NullOr(Reason)),
   from: Schema.optional(From),
   at: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isMaxLength(40)))).annotate({
-    description: "A meeting's start: a time with its offset (2026-11-20T15:00+05:30).",
+    description:
+      "A meeting's start: a time with its offset (2026-11-20T15:00+05:30). On any other task it is its due.",
   }),
   attendees: Schema.optional(Schema.Array(Who).check(Schema.isMaxLength(30))).annotate({
     description: "A meeting's people: each as owner is named.",
@@ -74,6 +85,16 @@ export const SpineInputs = {
   members: Schema.optional(Schema.Array(Who).check(Schema.isMaxLength(50))).annotate({
     description:
       "A project's people and agents besides its owner (its lead), each as owner is named; replaces the list.",
+  }),
+  alsoOn: Schema.optional(
+    Schema.Array(Who).check(Schema.isMaxLength(KIN_WORK_ALSO_ON_MAX)),
+  ).annotate({
+    description:
+      "A task's people and agents besides its owner, each as owner is named; replaces the list. They help; its owner answers for it.",
+  }),
+  promisedTo: Schema.optional(Schema.NullOr(Who)).annotate({
+    description:
+      "The one person here a task was promised to, named as owner is; never its owner. null clears.",
   }),
 };
 type SpineRow = {
@@ -184,6 +205,10 @@ export const spineFields = Effect.fn("KinLeadSpine.fields")(function* <E, R>(
     Effect.forEach(list, (text) => resolve.who(text).pipe(Effect.map(principalText)));
   if (row.attendees !== undefined) fields.attendees = yield* people(row.attendees);
   if (row.members !== undefined) fields.members = yield* people(row.members);
+  if (row.alsoOn !== undefined) fields.alsoOn = yield* people(row.alsoOn);
+  if (row.promisedTo !== undefined)
+    fields.promisedTo =
+      row.promisedTo === null ? null : principalText(yield* resolve.who(row.promisedTo));
   for (const key of ["size", "reason", "where", "billing", "startsOn", "renewsOn"] as const)
     if (row[key] !== undefined) fields[key] = row[key] ?? null;
   if (row.value !== undefined) {
@@ -204,10 +229,7 @@ export const spineFields = Effect.fn("KinLeadSpine.fields")(function* <E, R>(
 });
 
 /** A row's spine fields as an agent reads them. */
-export const spineShown = (
-  row: RecordRow,
-  name: (who: KinWorkPrincipal | null) => string | undefined,
-) => {
+export const spineShown = (row: RecordRow, name: ToolNamer) => {
   const fields = parseFields(row.fieldsJson);
   const text = (key: string) => fieldText(fields, key) ?? undefined;
   const names = (key: string) => {
@@ -220,7 +242,8 @@ export const spineShown = (
     milestone: text("milestone"),
     size: text("size"),
     reason: text("reason"),
-    from: doc === undefined ? undefined : `${doc} § ${text("fromSection") ?? ""}`,
+    // A plan's doc section, or where a promise was made as it was given.
+    from: doc === undefined ? text("from") : `${doc} § ${text("fromSection") ?? ""}`,
     attendees: names("attendees"),
     where: text("where"),
     billing: text("billing"),
@@ -228,6 +251,11 @@ export const spineShown = (
     startsOn: text("startsOn"),
     renewsOn: text("renewsOn"),
     members: names("members"),
+    alsoOn: names("alsoOn"),
+    promisedTo: ((who) =>
+      who === undefined ? undefined : (name(principalOfText(who)) ?? "someone"))(
+      text("promisedTo"),
+    ),
   };
   return Object.fromEntries(Object.entries(shown).filter((entry) => entry[1] !== undefined)) as {
     readonly [K in keyof typeof shown]?: string;
@@ -247,6 +275,8 @@ export const SpineShown = {
   startsOn: Schema.optional(Schema.String),
   renewsOn: Schema.optional(Schema.String),
   members: Schema.optional(Schema.String),
+  alsoOn: Schema.optional(Schema.String),
+  promisedTo: Schema.optional(Schema.String),
 };
 
 const Line = Schema.Struct({
@@ -255,6 +285,7 @@ const Line = Schema.Struct({
   state: Schema.String,
   owner: Schema.optional(Schema.String),
   due: Schema.optional(Schema.String),
+  dueDay: Schema.optional(Schema.String),
   late: Schema.optional(Schema.Literal(true)),
   milestone: Schema.optional(Schema.String),
   size: Schema.optional(Schema.String),
@@ -268,6 +299,7 @@ export const ProjectRead = Schema.Struct({
       title: Schema.String,
       state: Schema.String,
       due: Schema.optional(Schema.String),
+      dueDay: Schema.optional(Schema.String),
       done: Schema.Number,
       total: Schema.Number,
       late: Schema.optional(Schema.Literal(true)),
@@ -305,12 +337,14 @@ export const ProjectRead = Schema.Struct({
       gone: Schema.optional(Schema.Literal(true)),
     }),
   ),
-  money: Schema.Struct({
-    quoted: Schema.Array(Schema.String),
-    invoiced: Schema.Array(Schema.String),
-    received: Schema.Array(Schema.String),
-    unpaid: Schema.Array(Schema.String),
-  }),
+  money: Schema.optional(
+    Schema.Struct({
+      quoted: Schema.Array(Schema.String),
+      invoiced: Schema.Array(Schema.String),
+      received: Schema.Array(Schema.String),
+      unpaid: Schema.Array(Schema.String),
+    }),
+  ),
   /** No milestones and no tasks yet: the first plan is still to be proposed. */
   noPlan: Schema.optional(Schema.Literal(true)),
 });
@@ -320,8 +354,9 @@ const OPEN = ["open", "doing", "waiting"] as const;
 export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
   row: RecordRow,
   now: number,
-  name: (who: KinWorkPrincipal | null) => string | undefined,
+  name: ToolNamer,
   viewer: KinViewer,
+  money = true,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const page = yield* projectPage(row, now, 0, viewer);
@@ -349,6 +384,7 @@ export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
   const zone = yield* ownerZone(row.orgId as KinOrgId);
   const day = (at: string | null, allDay: boolean) =>
     at === null ? undefined : allDay ? dayIn(Date.parse(at), zone) : at;
+  const words = (at: string | null) => (at === null ? undefined : dayWords(Date.parse(at), zone));
   const line = (task: RecordRow) => {
     const record = toRecord(task, now);
     const fields = parseFields(task.fieldsJson);
@@ -358,6 +394,7 @@ export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
       state: record.state,
       owner: name(record.owner),
       due: day(record.dueAt, record.dueAllDay) ?? record.dateAt,
+      dueDay: words(record.dueAt),
       ...(record.late ? { late: true as const } : {}),
       milestone: fieldText(fields, "milestone") ?? undefined,
       size: fieldText(fields, "size") ?? undefined,
@@ -374,6 +411,7 @@ export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
       title: one.title,
       state: one.state,
       due: day(one.dueAt, one.dueAllDay),
+      dueDay: words(one.dueAt),
       done: one.done,
       total: one.total,
       ...(one.late ? { late: true as const } : {}),
@@ -396,12 +434,16 @@ export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
       section: one.section,
       ...(one.gone ? { gone: true as const } : {}),
     })),
-    money: {
-      quoted: shownMoney(page.money?.quoted),
-      invoiced: shownMoney(page.money?.invoiced),
-      received: shownMoney(page.money?.received),
-      unpaid: shownMoney(page.money?.unpaid),
-    },
+    ...(money
+      ? {
+          money: {
+            quoted: shownMoney(page.money?.quoted),
+            invoiced: shownMoney(page.money?.invoiced),
+            received: shownMoney(page.money?.received),
+            unpaid: shownMoney(page.money?.unpaid),
+          },
+        }
+      : {}),
     ...(milestones.length === 0 && tasksTotal === 0 ? { noPlan: true as const } : {}),
   } satisfies typeof ProjectRead.Type;
 });

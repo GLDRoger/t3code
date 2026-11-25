@@ -2,6 +2,7 @@ import {
   AuthKinChatScope,
   EnvironmentId,
   KIN_APPROVAL_WS_METHODS,
+  KinChatError,
   KinOrgId,
   KinRecordKey,
   type AuthSessionState,
@@ -22,6 +23,7 @@ import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vite-plus/test";
 
+import { runKinCommand } from "./kinRunCommand.ts";
 import {
   AVAILABLE_CONNECTION_STATE,
   PrimaryConnectionTarget,
@@ -34,6 +36,7 @@ import type { WsRpcProtocolClient } from "../rpc/protocol.ts";
 import type * as RpcSession from "../rpc/session.ts";
 import { environmentSessionGenerationAtom } from "../state/runtime.ts";
 import { makeKinClient, type KinClientPlatform } from "./kinClient.ts";
+import { createKinOwnerTimeZoneSync } from "./kinTimeZone.ts";
 
 vi.mock("../state/session.ts", () => ({
   createEnvironmentSessionAtoms: () => ({ sessionStateAtom: () => grantedSession }),
@@ -160,7 +163,7 @@ describe("makeKinClient", () => {
         });
         const create = (orgId: KinOrgId, domain: string) =>
           Effect.promise(() =>
-            kinClient.leadCreate.run(registry, {
+            runKinCommand(registry, kinClient.leadCreate, {
               environmentId: env,
               input: { orgId, name: "Finance", domain, charter: "Keeps the books." } as never,
             }),
@@ -289,13 +292,109 @@ describe("makeKinClient", () => {
         expect(registry.get(kinClient.agentDefaultsSet.permissionAtom(env))).toBe(false);
         // The hidden control is a courtesy: a call still goes, and the host's answer is the answer.
         const outcome = yield* Effect.promise(() =>
-          kinClient.agentDefaultsSet.run(registry, {
+          runKinCommand(registry, kinClient.agentDefaultsSet, {
             environmentId: env,
             input: { orgId: org } as never,
           }),
         );
         expect(count("kin.agents.defaults.set")).toBe(1);
         expect(AsyncResult.isFailure(outcome)).toBe(true);
+      }),
+    ),
+  );
+});
+
+describe("createKinOwnerTimeZoneSync", () => {
+  const device = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const zoneHost = (access: () => Effect.Effect<unknown, HostRefused>) =>
+    Effect.gen(function* () {
+      const host = yield* fakeHost({
+        "kin.access.me": access,
+        "kin.triggers.getTimeZone": () => Effect.succeed({ orgId: org, timeZone: "Etc/GMT+13" }),
+        "kin.triggers.setTimeZone": (input: { readonly timeZone: string }) =>
+          Effect.succeed({ orgId: org, timeZone: input.timeZone }),
+      });
+      const registry = AtomRegistry.make();
+      yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
+      const sync = createKinOwnerTimeZoneSync(host.runtime);
+      const run = Effect.promise(async () => {
+        await sync(registry, env, [org]);
+      });
+      const setTo = () =>
+        host.calls.flatMap((call) =>
+          call.tag === "kin.triggers.setTimeZone"
+            ? [(call.input as { readonly timeZone: string }).timeZone]
+            : [],
+        );
+      return { ...host, registry, sync, run, setTo };
+    });
+
+  it.effect("sets the owner's zone after a first read that failed, then stops asking", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        let reads = 0;
+        const { run, count, setTo } = yield* zoneHost(() =>
+          reads++ === 0
+            ? Effect.fail(new HostRefused({ message: "not connected yet" }))
+            : Effect.succeed({ access: "owner" }),
+        );
+        yield* run;
+        expect(setTo()).toEqual([]);
+        yield* run;
+        expect(setTo()).toEqual([device]);
+        yield* run;
+        expect([count("kin.access.me"), setTo()]).toEqual([2, [device]]);
+      }),
+    ),
+  );
+
+  it.effect("sets the owner's zone when the session's grants arrive after the directory", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { registry, sync, setTo } = yield* zoneHost(() =>
+          Effect.succeed({ access: "owner" }),
+        );
+        const granted = registry.get(grantedSession);
+        registry.set(grantedSession, AsyncResult.initial());
+        const synced = sync(registry, env, [org]);
+        registry.set(grantedSession, granted);
+        yield* Effect.promise(async () => {
+          await synced;
+        });
+        expect(setTo()).toEqual([device]);
+      }),
+    ),
+  );
+
+  it.effect.each(["co_owner", "member"])("never sets it for a %s, and asks once", (access) =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const { run, count, setTo } = yield* zoneHost(() => Effect.succeed({ access }));
+        yield* run;
+        yield* run;
+        expect([count("kin.access.me"), setTo()]).toEqual([1, []]);
+      }),
+    ),
+  );
+
+  it.effect("stops asking once the host refuses the zone", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const host = yield* fakeHost({
+          "kin.access.me": () => Effect.succeed({ access: "owner" }),
+          "kin.triggers.getTimeZone": () => Effect.succeed({ orgId: org, timeZone: "Etc/GMT+13" }),
+          "kin.triggers.setTimeZone": () =>
+            Effect.fail(new KinChatError({ reason: "invalid_state", message: "Invalid zone." })),
+        } as unknown as Answers);
+        const registry = AtomRegistry.make();
+        yield* Effect.addFinalizer(() => Effect.sync(() => registry.dispose()));
+        const sync = createKinOwnerTimeZoneSync(host.runtime);
+        const run = Effect.promise(async () => {
+          await sync(registry, env, [org]);
+        });
+        yield* run;
+        yield* run;
+        expect(host.count("kin.triggers.setTimeZone")).toBe(1);
       }),
     ),
   );

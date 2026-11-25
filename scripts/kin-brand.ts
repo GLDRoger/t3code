@@ -171,7 +171,12 @@ export const copyCheckout = Effect.fn("kinBrand.copyCheckout")(function* (
       yield* assertNoSymlink(target, path.dirname(file));
       yield* fs.makeDirectory(path.dirname(destination), { recursive: true });
       if (modes.get(file) === "120000") {
-        yield* fs.symlink(yield* fs.readLink(source), destination);
+        // With core.symlinks=false (Git for Windows' default) a link is a file holding its target.
+        const isLink = (yield* fs.lstat(source)).type === "SymbolicLink";
+        yield* fs.symlink(
+          isLink ? yield* fs.readLink(source) : yield* fs.readFileString(source),
+          destination,
+        );
       } else if (yield* fs.exists(source)) {
         yield* fs.copyFile(source, destination);
       }

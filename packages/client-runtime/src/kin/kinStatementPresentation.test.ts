@@ -7,6 +7,8 @@ import {
   type KinStatementReviewCard,
   type KinWidget,
 } from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import { kinCardView } from "./kinCardPresentation.ts";
@@ -24,6 +26,8 @@ import {
   kinStatementFailureText,
   kinStatementNewer,
   kinStatementOpenSuggestions,
+  kinStatementRereadText,
+  kinStatementReviewActions,
   kinStatementRowNote,
   kinStatementSections,
   kinStatementSelectionOf,
@@ -218,6 +222,9 @@ describe("statement review card", () => {
     const mixed = [offers[0]!, { ...target(1, "INV-4"), note: "Part payment" }];
     expect(kinStatementSharedNote(mixed)).toBeNull();
     expect(kinStatementTargetLine(mixed[1]!, null)).toBe("INV-4 · Retainer, part payment");
+    expect(
+      kinStatementTargetLine({ ...target(1, "EXP-4"), note: "Marks EXP-4, EXP-7 repaid" }, null),
+    ).toBe("EXP-4 · Retainer, marks EXP-4, EXP-7 repaid");
   });
 
   it("never offers money in as a new expense", () => {
@@ -277,6 +284,58 @@ describe("statement review card", () => {
       kind: "unknown",
       text: "Broken",
     });
+  });
+
+  it("sends one apply, undo or reread at a time and shows each refusal in the server's words", async () => {
+    const refusal = new KinChatError({ reason: "conflict", message: "Something changed." });
+    const sent: Array<string> = [];
+    const refuse =
+      <A>(name: string) =>
+      async () => {
+        sent.push(name);
+        return AsyncResult.failure<A, unknown>(Cause.fail(refusal));
+      };
+    const answer =
+      <A>(name: string, value: A) =>
+      async () => {
+        sent.push(name);
+        return AsyncResult.success<A, unknown>(value);
+      };
+    let local = kinStatementLocal(card.hash);
+    const seen = { failure: null as string | null, pending: [] as Array<string | null>, note: "" };
+    const actions = (pending: "apply" | "undo" | "reread" | null) =>
+      kinStatementReviewActions({
+        review: view,
+        environmentId: EnvironmentId.make("env"),
+        shown: kinStatementShown(card, local),
+        pending,
+        commands: {
+          select: refuse("select"),
+          rows: refuse("rows"),
+          apply: answer("apply", { card }),
+          undo: refuse("undo"),
+          reread: answer("reread", { status: "reading" as const }),
+        },
+        set: {
+          local: (update) => (local = update(local)),
+          failure: (text) => (seen.failure = text),
+          pending: (pending) => seen.pending.push(pending),
+          rereadNote: (text) => (seen.note = text ?? ""),
+        },
+      });
+
+    await actions("apply").send("undo");
+    await actions("reread").readAgain();
+    expect(sent).toEqual([]);
+    await actions(null).send("undo");
+    expect([seen.pending, seen.failure]).toEqual([["undo", null], "Something changed."]);
+    await actions(null).readAgain();
+    expect([seen.failure, seen.note]).toEqual([null, kinStatementRereadText("reading")]);
+    // A refused tap comes off the queue and leaves the card as the server last had it.
+    await actions(null).change({ _tag: "tick", row: 0, ticked: false });
+    expect([local.queued, local.reply, seen.failure]).toEqual([[], null, "Something changed."]);
+    expect(await actions(null).load("matched")).toBe(false);
+    expect(sent).toEqual(["undo", "reread", "select", "rows"]);
   });
 
   it("shows the server's own words when it refuses", () => {

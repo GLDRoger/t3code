@@ -12,11 +12,13 @@ import type * as SqlError from "effect/sql/SqlError";
 
 import type { PersistenceDecodeError, PersistenceSqlError } from "../../persistence/Errors.ts";
 import type { KinChatService } from "../chat/KinChatService.ts";
+import { closeRetiredTroubles } from "../host/KinHostCare.ts";
 import {
   closeHeldQuestions,
   reopenRetiredQuestions,
   retiredQuestionText,
 } from "../questions/openQuestions.ts";
+import * as KinWatches from "../watches/KinWatches.ts";
 
 /**
  * What retiring an agent does to everything it has in flight, inside the transaction that sets
@@ -77,7 +79,7 @@ export const retire = Effect.fn("KinRetirement.retire")(function* (
     readonly retiredAt: string;
     readonly now: number;
   },
-  chat: Pick<KinChatService["Service"], "closeReplaced">,
+  chat: Pick<KinChatService["Service"], "closeReplaced" | "notice">,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, agentId, now } = input;
@@ -94,10 +96,35 @@ export const retire = Effect.fn("KinRetirement.retire")(function* (
     RETURNING wakeup_id AS "wakeupId"`;
   // Waiting, or held by a turn just aborted (whose finish would requeue it): never runs.
   const expired = yield* sql`UPDATE kin_events AS e SET state = 'expired'
-    WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND (e.state = 'queued'
+    WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND (e.state IN ('queued', 'failed')
       OR (e.state = 'claimed' AND EXISTS (SELECT 1 FROM kin_wakeups w WHERE w.org_id = e.org_id
         AND w.wakeup_id = e.wakeup_id AND w.aborted_at IS NOT NULL)))
     RETURNING event_id`;
+  // Someone whose message in their direct chat now goes unanswered hears why, once per chat.
+  const ids = expired.map((row) => String(row.event_id));
+  const unanswered =
+    ids.length === 0
+      ? []
+      : yield* sql<{ chatId: KinChatId; messageId: KinMessageId; name: string }>`
+          SELECT m.chat_id AS "chatId", MAX(m.message_id) AS "messageId",
+            COALESCE(l.name, a.display_name) AS name
+          FROM kin_events e
+          JOIN kin_messages m ON m.org_id = e.org_id AND m.author_kind = 'human'
+            AND m.message_id = json_extract(e.json, '$.messageId')
+          JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id AND c.kind = 'direct'
+          JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
+          LEFT JOIN kin_leads l ON l.org_id = a.org_id AND l.agent_id = a.agent_id
+          WHERE e.org_id = ${orgId} AND e.agent_id = ${agentId} AND e.tag = 'chat.message'
+            AND e.event_id IN ${sql.in(ids)}
+          GROUP BY m.chat_id ORDER BY m.chat_id`;
+  for (const row of unanswered)
+    yield* chat.notice({
+      orgId,
+      chatId: row.chatId,
+      messageId: retiredNoticeId(row.messageId),
+      audience: "chat",
+      body: retiredAgentNotice(row.name),
+    });
   // Kin-clock timers in chats no live agent answers: deferrals, reminders and scheduled runs.
   const chats = heldChats(sql, orgId, agentId);
   yield* sql`INSERT INTO kin_retirement_holds
@@ -140,6 +167,8 @@ export const retire = Effect.fn("KinRetirement.retire")(function* (
     },
     chat,
   );
+  yield* KinWatches.closeRetired(orgId, agentId, now);
+  yield* closeRetiredTroubles(orgId, agentId, now);
   return {
     turns: turns.map((row) => KinWakeupId.make(row.wakeupId)),
     expired: expired.length,
@@ -160,7 +189,9 @@ export const restore = Effect.fn("KinRetirement.restore")(function* (input: {
 }) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, agentId, now } = input;
-  yield* reopenRetiredQuestions({ orgId, agentId, retiredAt: Date.parse(input.retiredAt), now });
+  const retiredAt = Date.parse(input.retiredAt);
+  yield* reopenRetiredQuestions({ orgId, agentId, retiredAt, now });
+  yield* KinWatches.reopenRetired(orgId, agentId, retiredAt, now);
   const held = sql`SELECT target_id FROM kin_retirement_holds
     WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
   yield* sql`UPDATE kin_triggers AS t SET enabled = 1, updated_at = ${now},

@@ -6,6 +6,7 @@ import {
   KinChatError,
   KinLead,
   type KinMemoryItemId,
+  KinPersonId,
   type KinOrgId,
   type MemoryItemEvery,
   ProjectId,
@@ -30,6 +31,7 @@ import * as ThreadManagementService from "../../orchestration-v2/ThreadManagemen
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as ScheduledTaskService from "../../scheduledTasks/ScheduledTaskService.ts";
 import { leadProjectId } from "../lead/leadProject.ts";
+import { ownerLevel } from "../people/KinAccess.ts";
 import { isStrayKinTask, KIN_COMMAND_PREFIX, KIN_TASK_PREFIX } from "./taskIds.ts";
 
 const commandIdOf = (orgId: KinOrgId, scheduleId: string) =>
@@ -80,6 +82,12 @@ export const promptSha256 = (prompt: string) =>
     Effect.provide(NodeCrypto.layer),
   );
 
+const Every = Schema.Struct({ at: Schema.String, days: Schema.Array(Schema.Number) });
+/** A check-in set in Settings: the owner's own time, and the host time Kin last wrote for it. */
+const OwnerTime = Schema.fromJsonString(Schema.Struct({ ...Every.fields, host: Every }));
+export const decodeOwnerTime = Schema.decodeUnknownOption(OwnerTime);
+const encodeOwnerTime = Schema.encodeEffect(OwnerTime);
+
 export interface KinSchedule {
   readonly taskId: ScheduledTaskId;
   readonly orgId: KinOrgId;
@@ -99,13 +107,16 @@ export interface KinSchedule {
   readonly looseAt: string | null;
   /** Its runs are pulse check-ins, not its prompt run as a task. */
   readonly checkIn: number;
+  /** Set in Settings: `OwnerTime` as JSON. */
+  readonly ownerTime: string | null;
 }
 
 const COLUMNS = `task_id AS "taskId", org_id AS "orgId", schedule_id AS "scheduleId",
   agent_id AS "agentId", chat_id AS "chatId", source_event AS "sourceEvent", said_by AS "saidBy",
   audience, content_sha256 AS "contentSha256", inbox_thread_id AS "inboxThreadId",
   asked_sha256 AS "askedSha256", pending_enabled AS "pendingEnabled", run_now_at AS "runNowAt",
-  deleted_at AS "deletedAt", loose_at AS "looseAt", check_in AS "checkIn"`;
+  deleted_at AS "deletedAt", loose_at AS "looseAt", check_in AS "checkIn",
+  owner_time_json AS "ownerTime"`;
 
 export const readSchedule = (sql: SqlClient.SqlClient, orgId: KinOrgId, scheduleId: string) =>
   sql<KinSchedule>`SELECT ${sql.literal(COLUMNS)} FROM kin_schedules
@@ -206,6 +217,8 @@ export interface SaveInput {
   /** True changes an existing schedule in place: same native task, same card. */
   readonly existing: boolean;
   readonly chatId: KinChatId;
+  /** 'shared': set for the chat it was asked in, so it runs there (`sharedChatOf`). */
+  readonly audience?: "shared" | undefined;
   readonly sourceEvent: string;
   readonly saidBy: string;
   readonly title: string;
@@ -219,6 +232,10 @@ export interface SaveInput {
    * confirm stay as they are, so this save approves no wording.
    */
   readonly keepWording?: true | undefined;
+  /** The owner's own time it was set at, kept so a clock change moves `every` and not that. */
+  readonly ownerTime?: MemoryItemEvery | undefined;
+  /** The person who confirmed it just asked for it to run: a pause, from any screen, ends. */
+  readonly resume?: true | undefined;
   readonly now: number;
 }
 
@@ -298,7 +315,7 @@ const make = Effect.gen(function* () {
       title: input.title,
       prompt: input.prompt,
       // A change keeps a pause set in the Scheduled tasks screen.
-      enabled: existing === undefined ? true : existing.enabled === 1,
+      enabled: existing === undefined || input.resume === true ? true : existing.enabled === 1,
       schedule: {
         type: "fixed_time",
         timeOfDay: input.around === true ? windowStart(input.every.at) : input.every.at,
@@ -320,13 +337,17 @@ const make = Effect.gen(function* () {
     // After the task: a crash between leaves a task with no row, which the sink refuses.
     yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
         source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at,
-        loose_at, check_in)
+        loose_at, check_in, owner_time_json)
       VALUES (${taskId}, ${input.orgId}, ${input.scheduleId}, ${input.agentId}, ${input.chatId},
-        ${input.sourceEvent}, ${input.saidBy}, 'owner_only', ${hash}, ${inbox}, ${input.now},
+        ${input.sourceEvent}, ${input.saidBy}, ${input.audience ?? "owner_only"}, ${hash}, ${inbox}, ${input.now},
         ${input.now}, ${input.around === true ? input.every.at : null},
-        ${input.checkIn === true ? 1 : 0})
-      ON CONFLICT (task_id) DO UPDATE SET chat_id = excluded.chat_id,
+        ${input.checkIn === true ? 1 : 0},
+        ${input.ownerTime === undefined ? null : yield* encodeOwnerTime({ ...input.ownerTime, host: input.every })})
+      ON CONFLICT (task_id) DO UPDATE SET agent_id = excluded.agent_id, chat_id = excluded.chat_id,
+        pending_enabled = CASE WHEN ${input.resume === true ? 1 : 0} THEN NULL
+          ELSE pending_enabled END,
         loose_at = excluded.loose_at, check_in = excluded.check_in,
+        owner_time_json = excluded.owner_time_json,
         source_event = excluded.source_event, said_by = excluded.said_by,
         audience = excluded.audience,
         content_sha256 = CASE WHEN ${keep} THEN content_sha256 ELSE excluded.content_sha256 END,
@@ -399,3 +420,22 @@ function asChatError(cause: unknown) {
 }
 
 export const layer = Layer.effect(KinSchedules, make);
+
+/**
+ * Whether a run of `schedule` may still go on: not paused (a Run now included), and a room's own
+ * still has its setter in the company, owner or co-owner. Read at the fire and again at the claim.
+ */
+export const runnable = Effect.fn("KinSchedules.runnable")(function* (
+  sql: SqlClient.SqlClient,
+  schedule: KinSchedule,
+  task: NativeTask,
+) {
+  if ((schedule.pendingEnabled ?? task.enabled) !== 1) return false;
+  if (schedule.audience !== "shared") return true;
+  const [setter] = yield* sql<{ removed: number }>`SELECT removed_at IS NOT NULL AS removed
+    FROM kin_people WHERE org_id = ${schedule.orgId} AND person_id = ${schedule.saidBy}`;
+  if (setter === undefined || setter.removed === 1) return false;
+  return yield* ownerLevel(schedule.orgId, KinPersonId.make(schedule.saidBy)).pipe(
+    Effect.provideService(SqlClient.SqlClient, sql),
+  );
+});

@@ -1,13 +1,17 @@
+import * as KinShell from "../shell/KinShell.ts";
+import { listSectionRefused, sectionOfList, sectionOfRegister } from "../shell/sections.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 import {
   KinChatError,
   KinCurrency,
-  type KinListDefinition,
+  KinListDefinition,
   KinListField,
   KinListFieldKey,
   KinNumberingRule,
   type KinOrgId,
+  type KinRecord,
+  type KinRecordDetail,
   KinRecordState,
   isCalendarDay,
 } from "@t3tools/contracts";
@@ -18,11 +22,14 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 import {
   fieldText,
   type FieldValue,
   isMoney,
   LISTS,
+  WATCHED_NUMBER_FIELDS,
+  TEAM_LIST_RESERVED,
   type ListName,
   parseFields,
   sensitiveFields,
@@ -34,10 +41,19 @@ import {
   homeCurrency,
 } from "./companyProfile.ts";
 import { regionOf } from "./region.ts";
+import {
+  FUNDED_BY,
+  fundedByRefusal,
+  fundingKeyRefusal,
+  REIMBURSEMENT_FIELDS,
+} from "./reimbursement.ts";
 import { companyRegion, NEUTRAL_PAID_WITH } from "./statements/statementRegion.ts";
 import { dayIn, isCurrency } from "./money.ts";
 import { cardAnswer } from "./ownerCards.ts";
+import { BILL_TO_FIELDS, hasBillTo } from "./billTo.ts";
+import { countedEntry } from "./recordRows.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 /**
  * KinRegisters: what a list is. Work and the light CRM are fixed in code; every other list,
@@ -66,7 +82,11 @@ export const StoredDefinition = Schema.Struct({
   defaultState: KinRecordState,
   categories: Schema.Array(Label).check(Schema.isMaxLength(30)),
   fields: Schema.Array(KinListField).check(Schema.isMaxLength(20)),
+  remindOn: KinListDefinition.fields.remindOn,
+  check: KinListDefinition.fields.check,
   sensitive: Schema.Boolean,
+  team: KinListDefinition.fields.team,
+  teamSince: KinListDefinition.fields.teamSince,
   amount: Schema.Boolean,
   currency: KinCurrency,
   /** Made while the company's country wasn't chosen: takes the company's currency once it is. */
@@ -110,6 +130,12 @@ const field = (
   more: Partial<Omit<FieldDef, "key" | "label" | "type">> = {},
 ): FieldDef => ({ key, label, type, sensitive: type === "money", ...more });
 
+const billToFields = Object.entries(BILL_TO_FIELDS).map(([key, label]) =>
+  field(key, label, "text", {
+    sensitive: key === "billToTaxNumber" || key === "billToEmail" || key === "billToAddress",
+  }),
+);
+
 /** The three lists money and the calendar read, by these ids; each is created in chat by a yes. */
 export const PRESETS: Record<
   PresetId,
@@ -142,6 +168,8 @@ export const PRESETS: Record<
       field("paidWith", "Paid with", "choice", { choices: NEUTRAL_PAID_WITH }),
       field("paidBy", "Paid by", "person"),
       field("receipt", "Receipt", "file", { sensitive: true }),
+      // Who funded it, and whether the company owes a partner back (`reimbursement.ts`).
+      ...REIMBURSEMENT_FIELDS,
     ],
     sensitive: true,
     amount: true,
@@ -160,6 +188,7 @@ export const PRESETS: Record<
       field("number", "Invoice number", "text"),
       field("tax", "Tax", "money"),
       field("file", "Invoice file", "file", { sensitive: true }),
+      ...billToFields,
     ],
     sensitive: true,
     amount: true,
@@ -207,6 +236,7 @@ export const PRESETS: Record<
       field("number", "Quote number", "text"),
       field("tax", "Tax", "money"),
       field("file", "Quote file", "file", { sensitive: true }),
+      ...billToFields,
     ],
     sensitive: true,
     amount: true,
@@ -326,12 +356,15 @@ const builtInDef = (name: ListName, currency: string): ListDef => {
 };
 export const isBuiltIn = (id: string): id is ListName => Object.hasOwn(LISTS, id);
 const isPreset = (id: string): id is PresetId => (PRESET_IDS as ReadonlyArray<string>).includes(id);
+/** An Invoices draft: not issued yet, so nobody owes it. */
+export const isInvoiceDraft = (list: string, state: KinRecordState) =>
+  list === "invoices" && state === "open";
 /** Whether an entry in `state` owes its balance: not closed, and not an Invoices draft. */
 export const owesIn = (def: ListDef, state: KinRecordState) =>
-  state !== "done" && state !== "dropped" && !(def.id === "invoices" && state === "open");
+  state !== "done" && state !== "dropped" && !isInvoiceDraft(def.id, state);
 /**
- * Where a new entry with no state asked for starts: an invoice is Issued only once it has an
- * issue day or a number, else Draft; an expense is Paid only on or before today, else To pay.
+ * Where a new entry with no state asked for starts: an invoice is Issued once it has a number or
+ * an issue day on or before today, else Draft; an expense is Paid only on or before today, else To pay.
  */
 export const startState = (
   def: ListDef,
@@ -344,7 +377,10 @@ export const startState = (
 ): KinRecordState => {
   const fallback = def.states.includes("open") ? "open" : def.defaultState;
   if (def.id === "invoices" && def.defaultState === "waiting")
-    return entry.dateAt !== null || entry.numbered ? "waiting" : fallback;
+    return entry.numbered ||
+      (entry.dateAt !== null && dayIn(entry.dateAt, entry.zone) <= dayIn(entry.now, entry.zone))
+      ? "waiting"
+      : fallback;
   if (def.id === "expenses" && def.defaultState === "done" && entry.dateAt !== null)
     return dayIn(entry.dateAt, entry.zone) > dayIn(entry.now, entry.zone) ? fallback : "done";
   return def.defaultState;
@@ -405,6 +441,21 @@ const presetExtras = (id: string, definition: StoredDefinition) => {
   const categoryLabels = { ...preset?.categoryLabels, ...definition.categoryLabels };
   return {
     ...(Object.keys(categoryLabels).length === 0 ? {} : { categoryLabels }),
+    ...(hasBillTo(id)
+      ? {
+          fields: [
+            ...definition.fields.map((stored) =>
+              billToFields.some((field) => field.key === stored.key && field.sensitive) &&
+              !stored.sensitive
+                ? { ...stored, sensitive: true }
+                : stored,
+            ),
+            ...billToFields.filter(
+              (field) => !definition.fields.some((stored) => stored.key === field.key),
+            ),
+          ],
+        }
+      : {}),
     ...(preset?.payments === true ? { payments: true as const } : {}),
   };
 };
@@ -449,6 +500,22 @@ export const unknownList = (id: string) =>
     message: `There is no list ${id.slice(0, 40)}. A new list is proposed with list_define first.`,
   });
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+export const teamListRefusal = (id: string, name: string, sensitive?: boolean) =>
+  TEAM_LIST_RESERVED.includes(id) || name.trim().toLowerCase() === "bank transactions"
+    ? invalid("A built-in list can't be opened to the team.")
+    : sensitive === true
+      ? invalid("A sensitive list can't be opened to the team. Unmark it as sensitive first.")
+      : undefined;
+
+export const teamListChange = (
+  def: Pick<StoredDefinition, "team" | "teamSince">,
+  team: boolean | undefined,
+  now: number,
+) => {
+  if (team === undefined || team === (def.team === true)) return {};
+  return { team, teamSince: team ? now : (def.teamSince ?? null) };
+};
+
 const isChatError = Schema.is(KinChatError);
 
 /** The entry's own fields that are confidential: money, files and any marked so, plus `amount`. */
@@ -456,6 +523,51 @@ export const sensitiveKeys = (def: ListDef): ReadonlyArray<string> => [
   ...(def.amount ? ["amount"] : []),
   ...def.fields.filter((one) => one.sensitive || one.type === "money").map((one) => one.key),
 ];
+
+/** The same field and history projection for the host's list, sheet and agent tools. */
+export const listEntryFor = <
+  T extends KinRecord & Partial<Pick<KinRecordDetail, "changes" | "payments" | "files">>,
+>(
+  entry: T,
+  list: string,
+  def: ListDef | undefined,
+  money: boolean,
+) => {
+  if (money || TEAM_LIST_RESERVED.includes(list)) return entry;
+  const secrets = new Set([
+    ...(def === undefined ? Object.keys(entry.fields ?? {}) : sensitiveKeys(def)),
+    "amount",
+    "payment",
+    "payments",
+  ]);
+  const {
+    amount: _amount,
+    balance: _balance,
+    received: _received,
+    tdsDeducted: _tds,
+    payments: _payments,
+    files: _files,
+    fields,
+    changes,
+    ...rest
+  } = entry;
+  const shown =
+    fields === undefined
+      ? undefined
+      : Object.fromEntries(Object.entries(fields).filter(([key]) => !secrets.has(key)));
+  return {
+    ...rest,
+    ...(shown === undefined || Object.keys(shown).length === 0 ? {} : { fields: shown }),
+    ...(changes === undefined
+      ? {}
+      : {
+          changes: changes.flatMap((change) => {
+            const fields = change.fields.filter((field) => !secrets.has(field.field));
+            return change.kind === "updated" && fields.length === 0 ? [] : [{ ...change, fields }];
+          }),
+        }),
+  };
+};
 
 /**
  * Whether stored values fit a defined list's fields: known, not retired unless cleared, and of
@@ -489,20 +601,52 @@ export const checkFields = (
         break;
       case "person":
         if (typeof value !== "string" || !/^(?:person|agent):.{1,120}$/.test(value)) return wrong;
+        if (def.id === "expenses" && key === FUNDED_BY) {
+          const refusal = fundedByRefusal(value);
+          if (refusal !== undefined) return invalid(refusal);
+        }
         break;
       case "link":
-        if (typeof value !== "string" || value.length > 120) return wrong;
+        if (spec.link === "list" || typeof value !== "string" || value.length > 120) return wrong;
         break;
       case "money":
         if (!isMoney(value) || !isCurrency(value.currency)) return wrong;
         break;
+      case "number":
+        if (typeof value !== "string" || !isFieldNumber(value)) return wrong;
+        break;
+      case "yesno":
+        if (value !== "yes" && value !== "no") return wrong;
+        break;
       case "file":
         if (!Array.isArray(value) || value.length === 0 || value.length > 10) return wrong;
         break;
+      default:
+        return wrong;
     }
   }
   return undefined;
 };
+/** A number field's value as stored: plain digits, a leading minus, a decimal point. */
+export const isFieldNumber = (value: string) =>
+  /^-?\d{1,15}(?:\.\d{1,6})?$/.test(value) && Number.isFinite(Number(value));
+
+const YES_NO = new Map([
+  ["yes", "yes"],
+  ["true", "yes"],
+  ["no", "no"],
+  ["false", "no"],
+]);
+/**
+ * A number or yes/no as a person or agent writes it ("1,200.50", "Yes"), as the field stores it;
+ * undefined when it isn't one.
+ */
+export const typedText = (type: "number" | "yesno", text: string) => {
+  if (type === "yesno") return YES_NO.get(text.trim().toLowerCase());
+  const number = text.replace(/[\s,]/g, "");
+  return isFieldNumber(number) ? String(Number(number)) : undefined;
+};
+
 /** A date field's value: a day, or a day and a time of day in the owner's zone. */
 export const isFieldDate = (value: string) =>
   isCalendarDay(value.slice(0, 10)) &&
@@ -521,7 +665,11 @@ export const describe = (spec: FieldDef) =>
             ? "an amount such as 4,200.50 or 12k"
             : spec.type === "file"
               ? "the names of files attached to this turn's messages"
-              : "a line of text";
+              : spec.type === "number"
+                ? "a number, such as 12 or 3.5"
+                : spec.type === "yesno"
+                  ? "yes or no"
+                  : "a line of text";
 
 /**
  * The ids a defined list's fields hold, against rows of this org, inside the caller's write:
@@ -589,34 +737,51 @@ const shownLabels = (labels: Readonly<Record<string, string>> | undefined) => {
   const shown = Object.entries(labels ?? {}).filter(([category, label]) => label !== category);
   return shown.length === 0 ? {} : { categoryLabels: Object.fromEntries(shown) };
 };
+export const legacyFieldType = ({ type, link }: FieldDef) =>
+  type === "number" || type === "yesno" || (type === "link" && link === "list") ? "text" : type;
+
 /** The contract shape, with how many of its entries are open. */
 export const toDefinition = (
   def: ListDef,
   open: number,
-  numbering = numberingOf(def),
-): KinListDefinition => ({
-  list: def.id,
-  name: def.name,
-  prefix: def.prefix,
-  builtIn: def.builtIn !== null,
-  states: def.states,
-  stateLabels: def.stateLabels,
-  defaultState: def.defaultState,
-  categories: def.categories,
-  fields: def.fields,
-  sensitive: def.sensitive,
-  amount: def.amount,
-  currency: def.currency,
-  ...shownLabels(def.categoryLabels),
-  ...(def.payments === true ? { payments: true as const } : {}),
-  ...(def.dueLabel === undefined ? {} : { dueLabel: def.dueLabel }),
-  ...(def.dateLabel === undefined ? {} : { dateLabel: def.dateLabel }),
-  ...(numbering === undefined ? {} : { numbering }),
-  archivedAt:
-    def.archivedAt === null ? null : DateTime.formatIso(DateTime.makeUnsafe(def.archivedAt)),
-  rev: def.rev,
-  open,
-});
+  accept?: ReadonlyArray<string>,
+): KinListDefinition => {
+  const numbering = numberingOf(def);
+  return {
+    list: def.id,
+    name: def.name,
+    prefix: def.prefix,
+    builtIn: def.builtIn !== null,
+    states: def.states,
+    stateLabels: def.stateLabels,
+    defaultState: def.defaultState,
+    categories: def.categories,
+    fields: def.fields.flatMap((field): ReadonlyArray<FieldDef> => {
+      if (def.id === "goals" && WATCHED_NUMBER_FIELDS.includes(field.key)) return [];
+      if (field.type === "link" && field.link === "list")
+        return accept?.includes("list") ? [field] : [];
+      const type = accept?.includes(field.type) ? field.type : legacyFieldType(field);
+      return [field.type === type ? field : { ...field, type }];
+    }),
+    ...(def.remindOn !== undefined && accept?.includes("remindOn")
+      ? { remindOn: def.remindOn }
+      : {}),
+    ...(def.check !== undefined && accept?.includes("check") ? { check: def.check } : {}),
+    sensitive: def.sensitive,
+    ...(def.team === undefined ? {} : { team: def.team, teamSince: def.teamSince ?? null }),
+    amount: def.amount,
+    currency: def.currency,
+    ...shownLabels(def.categoryLabels),
+    ...(def.payments === true ? { payments: true as const } : {}),
+    ...(def.dueLabel === undefined ? {} : { dueLabel: def.dueLabel }),
+    ...(def.dateLabel === undefined ? {} : { dateLabel: def.dateLabel }),
+    ...(numbering === undefined ? {} : { numbering }),
+    archivedAt:
+      def.archivedAt === null ? null : DateTime.formatIso(DateTime.makeUnsafe(def.archivedAt)),
+    rev: def.rev,
+    open,
+  };
+};
 
 // Defining a list in conversation: proposed in one turn, created from a later one the owner's
 // answer in that chat woke. Proposals are by the lead and chat; nothing else creates one.
@@ -633,6 +798,14 @@ export type Additions = {
   readonly categories: ReadonlyArray<string>;
   readonly choices: Readonly<Record<string, ReadonlyArray<string>>>;
   readonly stateLabels: StoredDefinition["stateLabels"];
+  readonly remindOn?: string | undefined;
+  readonly check?: StoredDefinition["check"];
+  readonly unwatch?: ReadonlyArray<"remindOn" | "check"> | undefined;
+};
+/** Shown as a section of the company's own once made, and in the phone's dock when asked. */
+const Shown = {
+  section: Schema.optional(Schema.Boolean),
+  dock: Schema.optional(Schema.Boolean),
 };
 const Proposal = Schema.Union([
   Schema.TaggedStruct("new", {
@@ -640,6 +813,7 @@ const Proposal = Schema.Union([
     name: Schema.String,
     prefix: Schema.String,
     definition: StoredDefinition,
+    ...Shown,
   }),
   Schema.TaggedStruct("extend", {
     id: Schema.String,
@@ -647,6 +821,12 @@ const Proposal = Schema.Union([
     categories: Schema.Array(Schema.String),
     choices: Schema.Record(Schema.String, Schema.Array(Schema.String)),
     stateLabels: StateLabels,
+    team: KinListDefinition.fields.team,
+    remindOn: KinListDefinition.fields.remindOn,
+    check: KinListDefinition.fields.check,
+    /** What Kin stops watching: the reminder day, the check, or both. */
+    unwatch: Schema.optional(Schema.Array(Schema.Literals(["remindOn", "check"]))),
+    ...Shown,
   }),
 ]);
 export type Proposal = typeof Proposal.Type;
@@ -734,6 +914,13 @@ const checkFieldDefs = (fields: ReadonlyArray<FieldDef>): KinChatError | undefin
 
 /** Adds to a definition, never takes away: new fields, categories, choices and state names. */
 const extended = (def: StoredDefinition, additions: Additions) => {
+  const { remindOn, check, ...kept } = def;
+  const watched = {
+    ...(additions.unwatch?.includes("remindOn") === true || remindOn === undefined
+      ? {}
+      : { remindOn }),
+    ...(additions.unwatch?.includes("check") === true || check === undefined ? {} : { check }),
+  };
   const fields = [...def.fields];
   for (const spec of additions.fields) {
     const existing = fields.find((one) => one.key === spec.key);
@@ -749,12 +936,50 @@ const extended = (def: StoredDefinition, additions: Additions) => {
     fields[index] = { ...spec, choices: [...new Set([...(spec.choices ?? []), ...choices])] };
   }
   const next: StoredDefinition = {
-    ...def,
+    ...kept,
+    ...watched,
     fields,
     categories: [...new Set([...def.categories, ...additions.categories])],
     stateLabels: { ...def.stateLabels, ...additions.stateLabels },
+    ...(additions.remindOn === undefined ? {} : { remindOn: additions.remindOn }),
+    ...(additions.check === undefined ? {} : { check: additions.check }),
   };
-  return checkFieldDefs(next.fields) ?? next;
+  return checkFieldDefs(next.fields) ?? checkWatch(next) ?? next;
+};
+
+/** A list's check in its own words: "On hand is below Reorder point". */
+export const checkText = (
+  fields: ReadonlyArray<FieldDef>,
+  check: NonNullable<StoredDefinition["check"]>,
+) => {
+  const label = (key: string) => fields.find((one) => one.key === key)?.label ?? key;
+  const other = check.below ?? check.above ?? 0;
+  return `${label(check.field)} is ${check.below === undefined ? "above" : "below"} ${typeof other === "number" ? other : label(other)}`;
+};
+
+/** What a list's entries are watched by: a date field for reminders, and one number check. */
+const checkWatch = (
+  def: Pick<StoredDefinition, "fields" | "remindOn" | "check">,
+): KinChatError | undefined => {
+  const live = (key: string) => def.fields.find((one) => one.key === key && one.retired !== true);
+  if (
+    def.remindOn !== undefined &&
+    def.remindOn !== OWN_DATE &&
+    live(def.remindOn)?.type !== "date"
+  )
+    return invalid(
+      `remindOn names a date field, the list's own date or its due day; ${def.remindOn} isn't one.`,
+    );
+  if (def.check === undefined) return undefined;
+  const { field, below, above } = def.check;
+  if (live(field)?.type !== "number")
+    return invalid(`A check compares one of the list's number fields; ${field} isn't one.`);
+  if ((below === undefined) === (above === undefined))
+    return invalid("A check is either below or above, not both.");
+  const other = below ?? above!;
+  if (typeof other === "string" && (other === field || live(other)?.type !== "number"))
+    return invalid(`A check compares with a number or another number field; ${other} isn't one.`);
+  return undefined;
 };
 
 /** What a proposal would make, checked now, so a yes never meets a refusal. */
@@ -768,7 +993,9 @@ const checkDraft = (draft: Draft): KinChatError | undefined => {
   if (isBuiltIn(draft.id) || Object.values(LISTS).some((list) => list.prefix === draft.prefix))
     return invalid(`The key prefix ${draft.prefix} is Kin's own. Propose another.`);
   if (!isCurrency(def.currency)) return invalid(`${def.currency} is not a currency code.`);
-  return checkFieldDefs(def.fields);
+  const taken = draft.id === "expenses" ? fundingKeyRefusal(def.fields) : undefined;
+  if (taken !== undefined) return invalid(taken);
+  return checkFieldDefs(def.fields) ?? checkWatch(def);
 };
 
 /** What a list is asked to be: `list_define`'s input, or an import's list. */
@@ -795,9 +1022,108 @@ export type ListInput = {
   readonly amount?: boolean | undefined;
   readonly currency?: string | undefined;
   readonly sensitive?: boolean | undefined;
+  readonly team?: boolean | undefined;
   readonly dueLabel?: string | undefined;
   readonly dateLabel?: string | undefined;
+  readonly section?: boolean | undefined;
+  readonly dock?: boolean | undefined;
+  /** A date field by label or key; null stops reminding. */
+  readonly remindOn?: string | null | undefined;
+  /** A number field by label or key, below or above a number or another number field; null stops it. */
+  readonly check?:
+    | {
+        readonly field: string;
+        readonly below?: string | number | undefined;
+        readonly above?: string | number | undefined;
+      }
+    | null
+    | undefined;
 };
+
+/** A field the caller named by its label or its key, as its key; the name as given when none is. */
+const fieldKey = (fields: ReadonlyArray<FieldDef>, named: string) =>
+  fields.find(
+    (one) =>
+      one.key === named ||
+      one.label.toLowerCase() === named.trim().toLowerCase() ||
+      one.key === keyFor(named),
+  )?.key ?? named.trim();
+
+/**
+ * `remindOn` naming each entry's own date rather than a field: `date` is every entry's own
+ * column, so no field can take the key, and an older client reads it as any field key.
+ */
+export const OWN_DATE = "date";
+/**
+ * What a reminder names: a date field by label or key (a field wins), the list's own date (its
+ * date label, or "date"), or its due day (its due label, or "due"), which needs nothing stored.
+ */
+export const remindTarget = (
+  fields: ReadonlyArray<FieldDef>,
+  labels: { readonly dateLabel?: string | undefined; readonly dueLabel?: string | undefined },
+  named: string,
+) => {
+  const word = named.trim().toLowerCase();
+  const field = fieldKey(fields, named);
+  if (fields.some((one) => one.key === field)) return field;
+  if (word === OWN_DATE || word === labels.dateLabel?.trim().toLowerCase()) return OWN_DATE;
+  if (word === "due" || word === labels.dueLabel?.trim().toLowerCase()) return "due";
+  return field;
+};
+
+/** The reminder field and check a call names, as the definition stores them. */
+const watchOf = (
+  fields: ReadonlyArray<FieldDef>,
+  input: ListInput,
+  labels: { readonly dateLabel?: string | undefined; readonly dueLabel?: string | undefined },
+) => {
+  const reminder =
+    input.remindOn === undefined || input.remindOn === null
+      ? undefined
+      : remindTarget(fields, labels, input.remindOn);
+  const other = (value: string | number | undefined) =>
+    value === undefined ? undefined : typeof value === "number" ? value : fieldKey(fields, value);
+  const below = other(input.check?.below);
+  const above = other(input.check?.above);
+  return {
+    ...(reminder === undefined || reminder === "due" ? {} : { remindOn: reminder }),
+    ...(input.check === undefined || input.check === null
+      ? {}
+      : {
+          check: {
+            field: fieldKey(fields, input.check.field),
+            ...(below === undefined ? {} : { below }),
+            ...(above === undefined ? {} : { above }),
+          },
+        }),
+  };
+};
+const shownAs = (input: ListInput) => ({
+  ...(input.section === true ? { section: true } : {}),
+  ...(input.section === true && input.dock !== undefined ? { dock: input.dock } : {}),
+});
+
+/** Reminders and a check speak only for a list that is a section, or is asked to be one. */
+const sectionOptionsRefusal = Effect.fn("KinRegisters.sectionOptionsRefusal")(function* (
+  orgId: KinOrgId,
+  id: string,
+  input: ListInput,
+) {
+  if (input.dock !== undefined && input.section !== true)
+    return invalid("dock comes with section true: the phone's dock holds sections.");
+  if (input.section === true) {
+    const refusal = yield* KinShell.listDockRefusal(orgId, id, input.dock);
+    return refusal === undefined ? undefined : invalid(refusal);
+  }
+  if ((input.remindOn ?? undefined) === undefined && (input.check ?? undefined) === undefined)
+    return undefined;
+  const shell = yield* KinShell.get(orgId);
+  return shell.sections.some((one) => one.id === KinShell.listSectionId(id))
+    ? undefined
+    : invalid(
+        "Kin reminds and warns only for a list shown as a section: pass section true as well.",
+      );
+});
 
 const fieldDefs = (fields: NonNullable<ListInput["fields"]>) => {
   const defs: Array<FieldDef> = [];
@@ -825,10 +1151,18 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
   const fields = fieldDefs(input.fields ?? []);
   if (!Array.isArray(fields)) return yield* fields;
   if (input.list !== undefined) {
+    if (input.team === true) {
+      const reserved = teamListRefusal(input.list, input.list);
+      if (reserved !== undefined) return yield* reserved;
+    }
     const def = yield* listDef(orgId, input.list);
     if (def === undefined) return yield* unknownList(input.list);
     if (def.builtIn !== null)
       return yield* invalid(`${def.name} is built in; its fields are fixed.`);
+    if (input.team === true) {
+      const refused = teamListRefusal(def.id, def.name, def.sensitive);
+      if (refused !== undefined) return yield* refused;
+    }
     // A field named again with new choices adds those choices to it.
     const choices: Record<string, ReadonlyArray<string>> = {};
     const added = fields.filter((one) => {
@@ -839,19 +1173,51 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
       }
       return true;
     });
-    return {
+    const refused = yield* sectionOptionsRefusal(orgId, def.id, input);
+    if (refused !== undefined) return yield* refused;
+    // A reminder on the due day stores none: the due day is sensed already.
+    const onDue =
+      typeof input.remindOn === "string" &&
+      remindTarget([...def.fields, ...added], def, input.remindOn) === "due";
+    const unwatch = [
+      ...((input.remindOn === null || onDue) && def.remindOn !== undefined
+        ? ["remindOn" as const]
+        : []),
+      ...(input.check === null && def.check !== undefined ? ["check" as const] : []),
+    ];
+    if (
+      input.section === true &&
+      listSectionRefused({ ...def, payments: def.payments === true ? 1 : null })
+    )
+      return yield* invalid(
+        `${def.name} has its place in Kin already, so it can't be a section of its own.`,
+      );
+    const extension = {
       _tag: "extend",
       id: def.id,
       fields: added,
       categories: input.categories ?? [],
       choices,
       stateLabels: input.stateNames ?? {},
+      ...(input.team === true || (input.team === false && def.team === true)
+        ? { team: input.team }
+        : {}),
+      ...watchOf([...def.fields, ...added], input, def),
+      ...(unwatch.length === 0 ? {} : { unwatch }),
+      ...shownAs(input),
     } satisfies Proposal;
+    const next = extended(def, extension);
+    if (isChatError(next)) return yield* next;
+    return extension;
   }
   const named =
     input.id ?? input.template ?? (input.name === undefined ? undefined : idFor(input.name));
   if (named === undefined)
     return yield* invalid("Name the list, start from a template, or say which list to add to.");
+  if (input.team === true) {
+    const reserved = teamListRefusal(named, input.name ?? named);
+    if (reserved !== undefined) return yield* reserved;
+  }
   const { pending, ...money } = yield* companyMoneyState(orgId);
   const home = money.homeCurrency;
   const preset = (PRESET_IDS as ReadonlyArray<string>).includes(named)
@@ -866,6 +1232,16 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
       `${name} entries are numbered when issued, and an issued one always carries its amount, so this list keeps amounts.`,
     );
   const states = input.states ?? preset?.states ?? ["open", "done", "dropped"];
+  const listFields = [
+    // A template's choice field named again with more choices keeps them, as on a list made already.
+    ...(preset?.fields ?? []).map((had) => {
+      const asked = fields.find((one) => one.key === had.key);
+      return had.type === "choice" && asked?.type === "choice"
+        ? { ...had, choices: [...new Set([...(had.choices ?? []), ...(asked.choices ?? [])])] }
+        : had;
+    }),
+    ...fields.filter((one) => !(preset?.fields ?? []).some((field) => field.key === one.key)),
+  ];
   const definition: StoredDefinition = {
     noun: input.noun ?? preset?.noun ?? name.toLowerCase().replace(/s$/, ""),
     states,
@@ -878,17 +1254,13 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
           : states[0]!,
     categories: [...new Set([...(preset?.categories ?? []), ...(input.categories ?? [])])],
     ...ownLabels(named, preset?.categoryLabels),
-    fields: [
-      // A template's choice field named again with more choices keeps them, as on a list made already.
-      ...(preset?.fields ?? []).map((had) => {
-        const asked = fields.find((one) => one.key === had.key);
-        return had.type === "choice" && asked?.type === "choice"
-          ? { ...had, choices: [...new Set([...(had.choices ?? []), ...(asked.choices ?? [])])] }
-          : had;
-      }),
-      ...fields.filter((one) => !(preset?.fields ?? []).some((field) => field.key === one.key)),
-    ],
+    fields: listFields,
+    ...watchOf(listFields, input, {
+      dateLabel: input.dateLabel ?? preset?.dateLabel,
+      dueLabel: input.dueLabel ?? preset?.dueLabel,
+    }),
     sensitive: input.sensitive ?? preset?.sensitive ?? amount,
+    ...(input.team === undefined ? {} : { team: input.team }),
     amount,
     currency: input.currency ?? home,
     ...(pending && input.currency === undefined ? { currencyPending: true as const } : {}),
@@ -899,6 +1271,12 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
       ? { dateLabel: (input.dateLabel ?? preset?.dateLabel)! }
       : {}),
   };
+  if (input.section === true && preset !== undefined)
+    return yield* invalid(
+      `${name} has its place in Kin already, so it can't be a section of its own.`,
+    );
+  const sectionRefused = yield* sectionOptionsRefusal(orgId, named, input);
+  if (sectionRefused !== undefined) return yield* sectionRefused;
   if (!isCurrency(definition.currency))
     return yield* invalid(`${definition.currency} is not a currency code.`);
   const draft = {
@@ -907,13 +1285,15 @@ export const proposalFor = Effect.fn("KinRegisters.proposalFor")(function* (
     prefix: input.prefix ?? preset?.prefix ?? prefixFor(name),
     definition,
   };
-  const refused = checkDraft(draft);
+  const refused =
+    (definition.team === true ? teamListRefusal(named, name, definition.sensitive) : undefined) ??
+    checkDraft(draft);
   if (refused !== undefined) return yield* refused;
   if ((yield* listDef(orgId, draft.id)) !== undefined)
     return yield* invalid(
       `There is already a list ${draft.name}; propose fields to add to it with list instead.`,
     );
-  return { _tag: "new", ...draft } satisfies Proposal;
+  return { _tag: "new", ...draft, ...shownAs(input) } satisfies Proposal;
 });
 
 const proposalIdFor = (orgId: string, agentId: string, wakeupId: string, json: string) =>
@@ -934,17 +1314,20 @@ export const propose = Effect.fn("KinRegisters.propose")(function* (input: {
     WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}`;
   if (chat === undefined) return yield* invalid("This turn has no chat to propose a list in.");
   // The same list asked again in this chat, from a later turn such as the owner's tap on it, is
-  // that question still: one card. Only a no the owner gave closes it.
-  const [open] = yield* sql<{ proposalId: string; widgetId: string | null; owner: string }>`
-    SELECT p.proposal_id AS "proposalId", p.widget_id AS "widgetId", a.owner_person_id AS owner
+  // that question still: one card. So is that list proposed again in one turn, however worded.
+  // Only a no an owner or co-owner gave closes it.
+  const [open] = yield* sql<{ proposalId: string; widgetId: string | null }>`
+    SELECT p.proposal_id AS "proposalId", p.widget_id AS "widgetId"
     FROM kin_list_proposals p
-    JOIN kin_agents a ON a.org_id = p.org_id AND a.agent_id = p.agent_id
     WHERE p.org_id = ${input.orgId} AND p.agent_id = ${input.agentId}
-      AND p.chat_id = ${input.chatId} AND p.definition_json = ${json} AND p.defined_at IS NULL
+      AND p.chat_id = ${input.chatId} AND p.defined_at IS NULL
+      AND (p.definition_json = ${json} OR (p.wakeup_id = ${input.wakeupId}
+        AND p.register_id = ${input.proposal.id}
+        AND p.extends_existing = ${input.proposal._tag === "extend" ? 1 : 0}))
     ORDER BY p.proposed_at DESC, p.proposal_id LIMIT 1`;
   if (
     open !== undefined &&
-    (open.widgetId === null || (yield* cardAnswer(input.orgId, open.widgetId, open.owner)) !== "no")
+    (open.widgetId === null || (yield* cardAnswer(input.orgId, open.widgetId)) !== "no")
   )
     return open.proposalId;
   const proposalId = proposalIdFor(input.orgId, input.agentId, input.wakeupId, json);
@@ -955,6 +1338,17 @@ export const propose = Effect.fn("KinRegisters.propose")(function* (input: {
       ${input.now})
     ON CONFLICT DO NOTHING`;
   return proposalId;
+});
+
+/** A proposal as stored, for what its card and its tool result show. */
+export const storedProposal = Effect.fn("KinRegisters.storedProposal")(function* (
+  orgId: KinOrgId,
+  proposalId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ json: string }>`SELECT definition_json AS json
+    FROM kin_list_proposals WHERE org_id = ${orgId} AND proposal_id = ${proposalId}`;
+  return row === undefined ? undefined : Option.getOrUndefined(decodeProposal(row.json));
 });
 
 /** The card Kin put the proposal to the owner with; a retry keeps the first. */
@@ -979,20 +1373,25 @@ export const defineList = Effect.fn("KinRegisters.defineList")(function* (
   orgId: KinOrgId,
   proposal: Proposal,
   now: number,
+  /** The owner-level person whose yes this is: it shows the list as a section when asked. */
+  by?: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   if (proposal._tag === "new") {
-    const { currencyPending, ...made } = proposal.definition;
+    const { currencyPending, teamSince: _teamSince, ...made } = proposal.definition;
     // A proposal from before the country was chosen, said yes to after, takes today's currency.
     const today = currencyPending === true ? yield* listCurrency(orgId) : undefined;
     const draft = {
       ...proposal,
-      definition:
-        today === undefined || today.currencyPending === true
-          ? proposal.definition
-          : { ...made, ...today },
+      definition: {
+        ...made,
+        ...(today === undefined ? (currencyPending === true ? { currencyPending } : {}) : today),
+        ...(made.team === true ? { teamSince: now } : {}),
+      },
     };
-    const refused = checkDraft(draft);
+    const refused =
+      (made.team === true ? teamListRefusal(draft.id, draft.name, made.sensitive) : undefined) ??
+      checkDraft(draft);
     if (refused !== undefined) return yield* refused;
     const taken = yield* sql<{ id: string; prefix: string }>`SELECT register_id AS id,
         key_prefix AS prefix FROM kin_registers WHERE org_id = ${orgId}
@@ -1012,12 +1411,20 @@ export const defineList = Effect.fn("KinRegisters.defineList")(function* (
   } else {
     const def = yield* listDef(orgId, proposal.id);
     if (def === undefined || def.builtIn !== null) return yield* unknownList(proposal.id);
-    const next = extended(def, proposal);
+    if (proposal.team === true) {
+      const refused = teamListRefusal(def.id, def.name, def.sensitive);
+      if (refused !== undefined) return yield* refused;
+    }
+    const next = extended({ ...def, ...teamListChange(def, proposal.team, now) }, proposal);
     if (isChatError(next)) return yield* next;
+    const taken = def.id === "expenses" ? fundingKeyRefusal(next.fields) : undefined;
+    if (taken !== undefined) return yield* invalid(taken);
     yield* sql`UPDATE kin_registers SET definition_json = ${yield* encodeDefinition(next)},
         rev = rev + 1
       WHERE org_id = ${orgId} AND register_id = ${proposal.id}`;
   }
+  if (proposal.section === true && by !== undefined)
+    yield* KinShell.showList(orgId, proposal.id, proposal.dock, by);
   yield* (yield* KinRefreshObserver).touch(orgId, "workLists");
 });
 
@@ -1042,12 +1449,9 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
     definedAt: number | null;
     registerId: string;
     widgetId: string | null;
-    owner: string;
   }>`SELECT p.chat_id AS "chatId", p.definition_json AS json, p.chat_seq AS "chatSeq",
-      p.defined_at AS "definedAt", p.register_id AS "registerId", p.widget_id AS "widgetId",
-      a.owner_person_id AS owner
+      p.defined_at AS "definedAt", p.register_id AS "registerId", p.widget_id AS "widgetId"
     FROM kin_list_proposals p
-    JOIN kin_agents a ON a.org_id = p.org_id AND a.agent_id = p.agent_id
     WHERE p.org_id = ${input.orgId} AND p.proposal_id = ${input.proposalId}
       AND p.agent_id = ${input.agentId}`;
   if (row === undefined)
@@ -1056,25 +1460,26 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
       message: `No proposal ${input.proposalId.slice(0, 40)} of yours. Propose the list first.`,
     });
   if (row.definedAt !== null) return { id: row.registerId, created: false };
-  const tapped =
-    row.widgetId === null ? undefined : yield* cardAnswer(input.orgId, row.widgetId, row.owner);
+  const tapped = row.widgetId === null ? undefined : yield* cardAnswer(input.orgId, row.widgetId);
   if (tapped === "no")
     return yield* new KinChatError({
       reason: "not_allowed",
       message:
         "The owner said no to this proposal on its card, so nothing was created. Propose it again only if they ask for it.",
     });
-  // Every person here is read from the stored event and the stored message both: a tap is the
-  // owner's own tap row on this proposal's card, a message is the owner's own text after it.
-  const answered = yield* sql`SELECT 1 FROM kin_events e
+  // Every person here is read from the stored event and the stored message both: a tap is an
+  // owner's or co-owner's own tap row on this proposal's card, a message their own text after it.
+  const answered = yield* sql<{ personId: string }>`SELECT m.author_person_id AS "personId"
+    FROM kin_events e
     JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
       AND m.chat_id = json_extract(e.json, '$.chatId')
     WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
       AND e.wakeup_id = ${input.wakeupId} AND m.chat_id = ${row.chatId}
       AND json_extract(e.json, '$.origin.personId') IS NULL
       AND json_extract(e.json, '$.provenance._tag') = 'human'
-      AND json_extract(e.json, '$.provenance.personId') = ${row.owner}
-      AND m.author_kind = 'human' AND m.author_person_id = ${row.owner}
+      AND json_extract(e.json, '$.provenance.personId') = m.author_person_id
+      AND m.author_kind = 'human' AND ${sql.literal(ownerLevelSql("m.org_id", "m.author_person_id"))}
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
       AND ((e.tag = 'chat.message' AND m.kind = 'text' AND m.seq > ${row.chatSeq})
         OR (e.tag = 'widget.action' AND m.kind = 'widget_action'
           AND m.widget_id = ${row.widgetId ?? ""} AND ${tapped === "yes" ? 1 : 0} = 1))
@@ -1087,7 +1492,27 @@ export const carryOut = Effect.fn("KinRegisters.carryOut")(function* (input: {
     });
   const proposal = Option.getOrUndefined(decodeProposal(row.json));
   if (proposal === undefined) return yield* invalid("That proposal can no longer be read.");
-  yield* defineList(input.orgId, proposal, input.now);
+  const register = proposal._tag === "new" ? proposal : yield* listDef(input.orgId, proposal.id);
+  const payments =
+    register === undefined
+      ? undefined
+      : "definition" in register
+        ? register.definition.payments
+        : register.payments;
+  const section =
+    sectionOfRegister({
+      id: proposal.id,
+      name: register?.name ?? null,
+      payments: payments === true ? 1 : null,
+    }) ?? sectionOfList(proposal.id);
+  if (section !== null) {
+    const shell = yield* KinShell.get(input.orgId);
+    if (!KinShell.sectionOn(shell, section))
+      return yield* invalid(
+        `${KinShell.sectionName(shell, section)} is turned off for this company.`,
+      );
+  }
+  yield* defineList(input.orgId, proposal, input.now, answered[0]!.personId);
   yield* sql`UPDATE kin_list_proposals SET defined_at = ${input.now}
     WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId}`;
   return { id: proposal.id, created: true };
@@ -1126,6 +1551,9 @@ export const proposalToCreate = Effect.fn("KinRegisters.proposalToCreate")(funct
     : `there is already a list “${taken.name}”`;
 });
 
+/** The list a stored proposal makes, by id. */
+export const proposedList = (json: string) => Option.getOrUndefined(decodeProposal(json))?.id;
+
 /**
  * Creates the list a proposal names from the owner's tap on a card that offered exactly it, in
  * the tap's transaction. The reason nothing was created, or undefined once it is.
@@ -1136,6 +1564,8 @@ export const defineProposed = Effect.fn("KinRegisters.defineProposed")(function*
   readonly proposalId: string;
   readonly definition: string;
   readonly now: number;
+  /** The owner-level person who tapped. */
+  readonly by: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ json: string; definedAt: number | null }>`SELECT
@@ -1146,10 +1576,37 @@ export const defineProposed = Effect.fn("KinRegisters.defineProposed")(function*
   if (row.definedAt !== null) return "the list was already made";
   const proposal = yield* proposalToCreate(input.orgId, row.json);
   if (typeof proposal === "string") return proposal;
-  yield* defineList(input.orgId, proposal, input.now);
+  yield* defineList(input.orgId, proposal, input.now, input.by);
   yield* sql`UPDATE kin_list_proposals SET defined_at = ${input.now}
     WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId}`;
   return undefined;
+});
+
+/**
+ * Where a list lives among the clients' places, as they place it (`kinPlaceLists`): the
+ * company's Subscriptions list in Money's Subscriptions, Kin's money lists in Money, its client
+ * lists in Clients, every other in Docs.
+ */
+export const listPlace = Effect.fn("KinRegisters.place")(function* (orgId: KinOrgId, id: string) {
+  const live = (yield* definedLists(orgId)).filter((def) => def.archivedAt === null);
+  const subscriptions =
+    live.find((def) => def.id === "subscriptions") ??
+    live.find((def) => /subscription/i.test(def.name));
+  const name = (yield* listDef(orgId, id))?.name ?? id;
+  if (subscriptions?.id === id)
+    return {
+      place: "money",
+      list: id,
+      subscriptions: true,
+      words: "Money → Subscriptions",
+    } as const;
+  const place = ["invoices", "expenses", "quotes"].includes(id)
+    ? ("money" as const)
+    : ["clients", "deals"].includes(id)
+      ? ("clients" as const)
+      : ("docs" as const);
+  const words = { money: "Money", clients: "Clients", docs: "Docs" }[place];
+  return { place, list: id, words: id === "clients" ? words : `${words} → ${name}` };
 });
 
 /** Open entries per list, for the definitions the owner sees. */
@@ -1168,6 +1625,18 @@ export const openCounts = Effect.fn("KinRegisters.openCounts")(function* (
   return new Map(rows.map((row) => [row.id, row.open]));
 });
 
+export const countListStates = Effect.fn("KinRegisters.countListStates")(function* (
+  orgId: KinOrgId,
+  list: string,
+  states: ReadonlyArray<KinRecordState>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.register_id = ${list} AND r.state IN ${sql.in(states)}
+      AND ${countedEntry(sql, states)}`;
+  return row?.count ?? 0;
+});
+
 /** Lists a built-in recipe needs: made from the preset on first use, with no card to approve. */
 const RECIPE_LISTS: ReadonlyArray<PresetId> = ["quotes", "invoices"];
 export const isRecipeList = (id: string) => (RECIPE_LISTS as ReadonlyArray<string>).includes(id);
@@ -1178,13 +1647,24 @@ export const listOrPreset = Effect.fn("KinRegisters.listOrPreset")(function* (
   id: string,
   now: number,
 ) {
+  return isRecipeList(id)
+    ? yield* presetList(orgId, id as PresetId, now)
+    : yield* listDef(orgId, id);
+});
+
+/** A preset's list, made from the preset when this org has none yet: an owner-level person's own write. */
+export const presetList = Effect.fn("KinRegisters.presetList")(function* (
+  orgId: KinOrgId,
+  id: PresetId,
+  now: number,
+) {
   const sql = yield* SqlClient.SqlClient;
   const existing = yield* listDef(orgId, id);
-  if (existing !== undefined || !isRecipeList(id)) return existing;
+  if (existing !== undefined) return existing;
   // One transaction, so a country saved meanwhile either rewrites this list or comes after it.
   return yield* sql.withTransaction(
     Effect.gen(function* () {
-      const proposal = yield* proposalFor(orgId, { template: id as PresetId });
+      const proposal = yield* proposalFor(orgId, { template: id });
       yield* defineList(orgId, proposal, now).pipe(
         // Two first quotes at once: the other made it, which is the same list.
         Effect.catchIf(

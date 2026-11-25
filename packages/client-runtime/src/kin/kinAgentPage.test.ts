@@ -1,3 +1,4 @@
+// @effect-diagnostics globalDate:off - Fixtures read change lines against a fixed day.
 import {
   type KinAgentChange,
   KinRecordKey,
@@ -12,6 +13,8 @@ import {
   kinAgentChangeLine,
   kinAgentChangeOffer,
   kinAgentPageCan,
+  kinAgentPageFolds,
+  kinAgentReadyCharacterLine,
   kinAgentUsageLine,
   kinEffortOffAdvice,
   kinWithMediumEffort,
@@ -30,6 +33,56 @@ describe("kinAgentPageCan", () => {
     expect(can.card).toBe(card);
     for (const what of ["edit", "model", "character", "access", "pause", "remove"] as const)
       expect(can[what]).toBe(edits);
+  });
+});
+
+describe("kinAgentPageFolds", () => {
+  const playbook = { key: KinRecordKey.make("D-1"), title: "Winning customers" };
+  const account = { label: "Mail", account: "rhea@ambermill.test", paused: false };
+  it("folds check-ins, reach, playbooks and changes in that order, each with its count", () => {
+    const folds = kinAgentPageFolds(
+      { connections: [account, account], playbooks: [playbook], changed: [] },
+      1,
+    );
+    expect(folds.map((fold) => [fold.id, fold.summary])).toEqual([
+      ["checkIns", "1 check-in"],
+      ["reach", "2 accounts"],
+      ["playbooks", "1 playbook"],
+      ["changed", "None"],
+    ]);
+  });
+  it("leaves the check-in count unsaid until read, and drops changes an older host doesn't send", () => {
+    const folds = kinAgentPageFolds({ connections: [], playbooks: [] }, null);
+    expect(folds.map((fold) => [fold.id, fold.summary])).toEqual([
+      ["checkIns", null],
+      ["reach", "None"],
+      ["playbooks", "None"],
+    ]);
+  });
+});
+
+describe("kinAgentReadyCharacterLine", () => {
+  it.each([
+    [
+      { name: "Growth", area: "" },
+      "Kin gives Growth a ready-made sales character; change it on your computer.",
+    ],
+    [
+      { name: "Social", area: "" },
+      "Kin gives Social a ready-made social media character; change it on your computer.",
+    ],
+    [
+      { name: "Mira", area: "Marketing" },
+      "Kin gives Mira a ready-made sales character; change it on your computer.",
+    ],
+    [
+      { name: "Chief of staff", area: "Chief of staff" },
+      "Kin gives Chief of staff a ready-made chief of staff character; change it on your computer.",
+    ],
+    [{ name: "Hiring", area: "" }, null],
+    [{ name: "", area: "" }, null],
+  ])("%o", (draft, line) => {
+    expect(kinAgentReadyCharacterLine(draft)).toBe(line);
   });
 });
 
@@ -206,6 +259,26 @@ describe("kinAgentChangeLine and kinAgentChangeOffer", () => {
     const one = change(over as Partial<KinAgentChange>);
     expect(kinAgentChangeLine(one, new Map())).toBe(line);
     expect(kinAgentChangeOffer(one)).toEqual(offer);
+  });
+
+  it("names a holder as people read names everywhere, never by id", () => {
+    const moved = change({
+      kind: "updated",
+      fields: [{ field: "owner", from: "person:p-gone", to: "agent:a-fin" }],
+    });
+    expect(kinAgentChangeLine(moved, new Map([["a-fin", "Finance"]]))).toBe(
+      "D-3 Invented chase notes: holder a teammate → Finance",
+    );
+  });
+
+  it.each([
+    ["Pacific/Honolulu", "2026-11-28T09:59:59.999Z", "2026-11-23T09:59:59.999Z"],
+    ["Asia/Kolkata", "2026-11-27T18:29:59.999Z", "2026-11-22T18:29:59.999Z"],
+  ])("a due moved reads the company's days in %s, whatever this device's", (zone, from, to) => {
+    const moved = change({ kind: "updated", fields: [{ field: "due", from, to }] });
+    expect(kinAgentChangeLine(moved, new Map(), new Date("2026-11-18T09:00:00.000Z"), zone)).toBe(
+      "D-3 Invented chase notes: due Nov 27 → Nov 22",
+    );
   });
 
   it.each([

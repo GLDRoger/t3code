@@ -14,7 +14,7 @@ import { KinConnectionKey, type KinConnectionId } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ComponentRef, type ReactNode, type RefObject } from "react";
 import { TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicator";
@@ -29,6 +29,8 @@ import { ListActionRow } from "../../../components/ui/ListActionRow";
 import { SecretTextInput } from "../../../components/ui/SecretTextInput";
 import { tryCopyTextWithHaptic } from "../../../lib/copyTextWithHaptic";
 import { useAtomCommand } from "../../../state/use-atom-command";
+import { KinLoadFailed } from "../components/KinLoadFailed";
+import { KinWorkFieldBox } from "../components/KinWorkPieces";
 import { kinClient } from "../state/kinClient";
 import { kinSignInInApp, kinSignInReturn, useKinConnectionActions } from "./kinConnectionSignIn";
 import {
@@ -56,10 +58,16 @@ function AddForm(props: {
   readonly params: KinConnectionsParams;
   readonly target: KinConnectionsTarget;
 }) {
+  const urlInput = useRef<ComponentRef<typeof TextInput>>(null);
+  const nameInput = useRef<ComponentRef<typeof TextInput>>(null);
+  const orgInput = useRef<ComponentRef<typeof TextInput>>(null);
+  const clientIdInput = useRef<ComponentRef<typeof TextInput>>(null);
+  const ownClientIdInput = useRef<ComponentRef<typeof TextInput>>(null);
   const navigation = useNavigation();
   const { environmentId, orgId } = props.target;
   const listAtom = kinClient.connections({ environmentId, input: { orgId } });
-  const view = Option.getOrNull(AsyncResult.value(useAtomValue(listAtom)));
+  const list = useAtomValue(listAtom);
+  const view = Option.getOrNull(AsyncResult.value(list));
   const reload = useAtomRefresh(listAtom);
   const actions = useKinConnectionActions(environmentId, orgId, reload);
   const services = kinAddableServices(view?.services ?? []);
@@ -135,7 +143,11 @@ function AddForm(props: {
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
         >
           {view === null ? (
-            <AppActivityIndicator />
+            AsyncResult.isFailure(list) ? (
+              <KinLoadFailed title={COPY.loadFailed} cause={list} onRetry={reload} />
+            ) : (
+              <AppActivityIndicator />
+            )
           ) : (
             <>
               <Text textRole="body" className="px-2 text-foreground-muted">
@@ -161,8 +173,9 @@ function AddForm(props: {
                 ))}
               </ListSection>
               {custom ? (
-                <Field label={COPY.urlLabel}>
+                <Field input={urlInput} label={COPY.urlLabel}>
                   <TextInput
+                    ref={urlInput}
                     accessibilityLabel={COPY.urlLabel}
                     value={shown.url}
                     editable={!busy}
@@ -176,8 +189,9 @@ function AddForm(props: {
                   />
                 </Field>
               ) : null}
-              <Field label={COPY.nameLabel}>
+              <Field input={nameInput} label={COPY.nameLabel}>
                 <TextInput
+                  ref={nameInput}
                   accessibilityLabel={COPY.nameLabel}
                   value={shown.label}
                   editable={!busy}
@@ -205,8 +219,9 @@ function AddForm(props: {
                 </Field>
               )}
               {service?.fields.includes("org") === true ? (
-                <Field label={COPY.orgLabel}>
+                <Field input={orgInput} label={COPY.orgLabel}>
                   <TextInput
+                    ref={orgInput}
                     accessibilityLabel={COPY.orgLabel}
                     value={shown.org}
                     editable={!busy}
@@ -249,8 +264,9 @@ function AddForm(props: {
                       }
                     />
                   </ListSection>
-                  <Field label={clientSetup.clientIdLabel}>
+                  <Field input={clientIdInput} label={clientSetup.clientIdLabel}>
                     <TextInput
+                      ref={clientIdInput}
                       accessibilityLabel={clientSetup.clientIdLabel}
                       value={clientId}
                       editable={!busy}
@@ -296,8 +312,9 @@ function AddForm(props: {
                   <Text textRole="body" className="px-2 text-foreground-muted">
                     {accountClient.detail}
                   </Text>
-                  <Field label={clientSetup.clientIdLabel}>
+                  <Field input={ownClientIdInput} label={clientSetup.clientIdLabel}>
                     <TextInput
+                      ref={ownClientIdInput}
                       accessibilityLabel={clientSetup.clientIdLabel}
                       value={shown.clientId}
                       editable={!busy}
@@ -362,12 +379,14 @@ function NoteForm(props: {
   readonly target: KinConnectionsTarget;
   readonly connectionId: KinConnectionId;
 }) {
+  const noteInput = useRef<ComponentRef<typeof TextInput>>(null);
   const navigation = useNavigation();
   const { environmentId, orgId } = props.target;
   const ref = { orgId, connectionId: props.connectionId };
-  const detail = Option.getOrNull(
-    AsyncResult.value(useAtomValue(kinClient.connection({ environmentId, input: ref }))),
-  );
+  const detailAtom = kinClient.connection({ environmentId, input: ref });
+  const read = useAtomValue(detailAtom);
+  const reread = useAtomRefresh(detailAtom);
+  const detail = Option.getOrNull(AsyncResult.value(read));
   const update = useAtomCommand(kinClient.connectionUpdate, { reportFailure: false });
   const [value, setValue] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -375,7 +394,8 @@ function NoteForm(props: {
   const shown = value ?? detail?.connection.note ?? "";
 
   const save = async () => {
-    if (busy) return;
+    // Until the note is read, saving would put an empty field over it.
+    if (busy || detail === null) return;
     setBusy(true);
     setProblem(null);
     const note = shown.trim();
@@ -397,7 +417,7 @@ function NoteForm(props: {
           label: COPY.save,
           onPress: () => void save(),
           loading: busy,
-          disabled: busy || shown.trim().length > 200,
+          disabled: busy || detail === null || shown.trim().length > 200,
         }}
       />
       <ScreenContent surface="screen">
@@ -408,21 +428,30 @@ function NoteForm(props: {
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
         >
           {problem === null ? null : <ErrorBanner message={problem} />}
-          <Field label={COPY.noteLabel} hint={COPY.noteHint}>
-            <TextInput
-              accessibilityLabel={COPY.noteLabel}
-              value={shown}
-              editable={!busy}
-              autoFocus
-              maxLength={200}
-              returnKeyType="done"
-              placeholder={COPY.notePlaceholder}
-              placeholderTextColorClassName="accent-placeholder"
-              onChangeText={setValue}
-              onSubmitEditing={() => void save()}
-              className="min-h-8 font-sans text-base text-foreground"
-            />
-          </Field>
+          {detail === null ? (
+            AsyncResult.isFailure(read) ? (
+              <KinLoadFailed title="Couldn't load this connection" cause={read} onRetry={reread} />
+            ) : (
+              <AppActivityIndicator />
+            )
+          ) : (
+            <Field input={noteInput} label={COPY.noteLabel} hint={COPY.noteHint}>
+              <TextInput
+                ref={noteInput}
+                accessibilityLabel={COPY.noteLabel}
+                value={shown}
+                editable={!busy}
+                autoFocus
+                maxLength={200}
+                returnKeyType="done"
+                placeholder={COPY.notePlaceholder}
+                placeholderTextColorClassName="accent-placeholder"
+                onChangeText={setValue}
+                onSubmitEditing={() => void save()}
+                className="min-h-8 font-sans text-base text-foreground"
+              />
+            </Field>
+          )}
         </ScreenScrollView>
       </ScreenContent>
     </View>
@@ -434,6 +463,7 @@ function EditForm(props: {
   readonly connectionId: KinConnectionId;
   readonly rename: boolean;
 }) {
+  const nameInput = useRef<ComponentRef<typeof TextInput>>(null);
   const navigation = useNavigation();
   const { environmentId, orgId } = props.target;
   const ref = { orgId, connectionId: props.connectionId };
@@ -485,8 +515,9 @@ function EditForm(props: {
         >
           {problem === null ? null : <ErrorBanner message={problem} />}
           {props.rename ? (
-            <Field label={COPY.nameLabel}>
+            <Field input={nameInput} label={COPY.nameLabel}>
               <TextInput
+                ref={nameInput}
                 accessibilityLabel={COPY.nameLabel}
                 value={shown}
                 editable={!busy}
@@ -522,15 +553,23 @@ function EditForm(props: {
 function Field(props: {
   readonly label: string;
   readonly hint?: string;
+  /** The input a tap on the label's line focuses; a secret field has no handle to focus. */
+  readonly input?: RefObject<ComponentRef<typeof TextInput> | null>;
   readonly children: ReactNode;
 }) {
   return (
     <View className="gap-2">
       <ListSection>
-        <View className="gap-2 px-4 py-3">
-          <Text className="text-sm text-foreground-muted">{props.label}</Text>
-          {props.children}
-        </View>
+        {props.input === undefined ? (
+          <View className="gap-2 px-4 py-3">
+            <Text className="text-sm text-foreground-muted">{props.label}</Text>
+            {props.children}
+          </View>
+        ) : (
+          <KinWorkFieldBox label={props.label} input={props.input}>
+            {props.children}
+          </KinWorkFieldBox>
+        )}
       </ListSection>
       {props.hint === undefined ? null : (
         <Text textRole="footnote" className="px-4 text-foreground-muted">

@@ -7,27 +7,49 @@ import {
   KinPersonId,
   KinRecordId,
   KinWidgetId,
+  kinWorkHandedBackOpen,
+  kinWorkMoveUnder,
+  type KinPulseFact,
   type KinRecord,
   type KinRecordDetail,
   type KinWorkMoveCard,
   type KinWorkRowMove,
   type KinWorkSummary,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
+import { kinEntryFacts } from "./kinAttention.ts";
 import { kinMayHaveGoneLine } from "./kinChoicePresentation.ts";
 import { kinRecordMove } from "./kinTaskRecord.ts";
 import {
+  KIN_PERSON_TASKS,
   kinNeedsYouCount,
+  kinPersonTasksCount,
   kinTaskLine,
+  kinTaskQuickFilters,
+  kinTasksSharedAbout,
   kinTaskStep,
   kinTaskStepStatusShown,
   kinTasksByMove,
+  kinTasksDealFacts,
+  kinTasksDealFactsOf,
   kinTaskFilterProjects,
   kinTasksGroupedBy,
   kinTasksMostUrgent,
+  kinTasksOnCount,
+  kinTasksTick,
+  kinTasksTickedShown,
+  kinTasksWithTicked,
+  type KinTaskTicked,
 } from "./kinTasksList.ts";
-import type { KinWorkNames } from "./kinWork.ts";
+import type { KinWorkNotice } from "./kinWorkChanges.ts";
+import {
+  KIN_WORK_DEFAULT_FILTER,
+  kinWorkOverview,
+  kinWorkRow,
+  type KinWorkNames,
+} from "./kinWork.ts";
 
 // Ambermill, invented: owner Rhea; Meera, Zoya; agents Chief of staff and Finance.
 const rhea = { _tag: "person", personId: KinPersonId.make("ambermill-rhea") } as const;
@@ -141,6 +163,18 @@ describe("whose move a task is (kinRecordMove, the rule Tasks and the record sha
       "needsYou",
     ],
     ["someone else's own", detail({ owner: meera, createdBy: meera }), true, "rest"],
+    ["you are on it", detail({ owner: meera, createdBy: meera, alsoOn: [rhea] }), true, "waiting"],
+    [
+      "you are on it and it is late",
+      detail({
+        owner: meera,
+        createdBy: meera,
+        alsoOn: [rhea],
+        ...late("2026-11-10T00:00:00.000Z"),
+      }),
+      true,
+      "needsYou",
+    ],
     [
       "an agent's suggestion, for the owner level",
       detail({ owner: chief, createdBy: chief, confirmed: false }),
@@ -156,6 +190,71 @@ describe("whose move a task is (kinRecordMove, the rule Tasks and the record sha
     ["closed", detail({ state: "done" }), true, null],
   ] as const)("%s", (_name, item, ownerLevel, expected) => {
     expect(kinRecordMove(item, names, ownerLevel)).toBe(expected);
+  });
+});
+
+describe("kinWorkMoveUnder: Needs you holds only the coming week, what is late and what asks you", () => {
+  const at = now.getTime();
+  const inDays = (days: number) => new Date(at + days * 24 * 60 * 60 * 1000).toISOString();
+  const under = (
+    record: KinRecord,
+    extra: { card?: boolean; ownerLevel?: boolean; askedToday?: boolean } = {},
+  ) =>
+    kinWorkMoveUnder(
+      {
+        state: record.state,
+        owner: record.owner,
+        waitingOn: record.waitingOn,
+        late: record.late,
+        confirmed: record.confirmed,
+        askedBy: null,
+        givenBy: record.givenBy ?? null,
+        card: extra.card ?? false,
+        handedBackOpen: kinWorkHandedBackOpen(
+          record.handedBack === undefined ? null : Date.parse(record.handedBack.at),
+          Date.parse(record.updatedAt),
+        ),
+        askedToday: extra.askedToday ?? false,
+        dueMs: record.dueAt === null ? null : Date.parse(record.dueAt),
+      },
+      { personId: rhea.personId, ownerLevel: extra.ownerLevel ?? true },
+      at,
+    );
+  it.each([
+    ["due in 6 days stays", row("A", { dueAt: inDays(6) }), {}, null],
+    ["due in 32 days is coming up", row("B", { dueAt: inDays(32) }), {}, "comingUp"],
+    ["no date is its own group", row("C"), {}, "noDate"],
+    ["a card waiting on you stays", row("D", { dueAt: inDays(32) }), { card: true }, null],
+    ["late never leaves", row("E", late(inDays(-2))), {}, null],
+    ["a suggestion to keep stays", row("F", { dueAt: inDays(32), confirmed: false }), {}, null],
+    [
+      "waiting on you stays",
+      row("G", { owner: meera, state: "waiting", waitingOn: rhea, dueAt: inDays(32) }),
+      {},
+      null,
+    ],
+    ["someone else's is not moved", row("H", { owner: meera, givenBy: rhea }), {}, null],
+    // A hand-back and a nudge ask the holder something: they stay until acted on, or today.
+    [
+      "undated and handed back to you stays",
+      row("I", { handedBack: { by: meera, at: inDays(-1) }, updatedAt: inDays(-1) }),
+      {},
+      null,
+    ],
+    [
+      "handed back, then changed since, follows the plain rule",
+      row("J", { handedBack: { by: meera, at: inDays(-1) }, updatedAt: inDays(-0.5) }),
+      {},
+      "noDate",
+    ],
+    [
+      "due in 32 days, asked today where it stands, stays",
+      row("K", { dueAt: inDays(32) }),
+      { askedToday: true },
+      null,
+    ],
+  ] as const)("%s", (_name, record, extra, expected) => {
+    expect(under(record, extra)).toBe(expected);
   });
 });
 
@@ -187,6 +286,7 @@ describe("kinTasksByMove", () => {
           needsYou: null,
           ownerLevel: true,
           names,
+          read: true,
         }),
       ),
     ).toEqual([
@@ -202,6 +302,33 @@ describe("kinTasksByMove", () => {
     ]);
   });
 
+  it.each([
+    ["UTC", ["U", "V", "B", "X", "A"]],
+    // In Auckland V falls due the next day, so it no longer leads B's.
+    ["Pacific/Auckland", ["U", "B", "V", "X", "A"]],
+  ] as const)("an urgent task leads its own due day where the company is (%s)", (zone, order) => {
+    const records = [
+      row("A"),
+      row("B", { dueAt: "2026-11-20T00:00:00.000Z" }),
+      row("U", { dueAt: "2026-11-20T09:00:00.000Z", urgent: true }),
+      row("V", { dueAt: "2026-11-20T12:00:00.000Z", urgent: true }),
+      row("X", { urgent: true }),
+    ];
+    const items = kinTasksByMove({
+      records,
+      moves: new Map(),
+      counts: null,
+      needsYou: null,
+      ownerLevel: true,
+      names: { ...names, zone },
+      read: true,
+    });
+    expect(groups(items)).toEqual(["Needs you -", ...order]);
+    // Its flag is on its row; urgent alone puts nothing else in Needs you.
+    expect(kinTaskLine(records[2]!, names, now).urgent).toBe(true);
+    expect(kinTaskLine(records[1]!, names, now).urgent).toBe(false);
+  });
+
   it("keeps the host's order and counts, says all clear, and ends with Done", () => {
     const records = [row("D", { owner: meera }), row("E", { owner: zoya })];
     const moves = new Map<string, KinWorkRowMove>([
@@ -210,7 +337,17 @@ describe("kinTasksByMove", () => {
     ]);
     const counts = { needsYou: 0, waiting: 60, rest: 1, doneRecently: 16 };
     expect(
-      groups(kinTasksByMove({ records, moves, counts, needsYou: 0, ownerLevel: true, names })),
+      groups(
+        kinTasksByMove({
+          records,
+          moves,
+          counts,
+          needsYou: 0,
+          ownerLevel: true,
+          names,
+          read: true,
+        }),
+      ),
     ).toEqual([
       "Needs you 0",
       "clear",
@@ -219,6 +356,60 @@ describe("kinTasksByMove", () => {
       "Rest of the team 1",
       "E",
       "done",
+    ]);
+    // Nothing read yet, as offline before the first answer: no group, so not all clear either.
+    expect(
+      kinTasksByMove({
+        records: [],
+        moves: new Map(),
+        counts: null,
+        needsYou: null,
+        ownerLevel: true,
+        names,
+        read: false,
+      }),
+    ).toEqual([]);
+  });
+
+  it("draws your own undated tasks under Needs you and far-off ones after Waiting, uncounted", () => {
+    const records = [
+      row("L", late("2026-11-15T00:00:00.000Z")),
+      row("N"),
+      row("D", { owner: meera }),
+      row("F", { dueAt: "2026-12-20T00:00:00.000Z" }),
+      row("E", { owner: zoya }),
+    ];
+    const moves = new Map<string, KinWorkRowMove>([
+      ["L", { key: "L", group: "needsYou" }],
+      ["N", { key: "N", group: "needsYou", under: "noDate" }],
+      ["D", { key: "D", group: "waiting" }],
+      ["F", { key: "F", group: "needsYou", under: "comingUp" }],
+      ["E", { key: "E", group: "rest" }],
+    ]);
+    const counts = { needsYou: 1, waiting: 1, rest: 1, doneRecently: 0, noDate: 4, comingUp: 2 };
+    expect(
+      groups(
+        kinTasksByMove({
+          records,
+          moves,
+          counts,
+          needsYou: 1,
+          ownerLevel: true,
+          names,
+          read: true,
+        }),
+      ),
+    ).toEqual([
+      "Needs you 1",
+      "L",
+      "No date 4",
+      "N",
+      "Waiting on others 1",
+      "D",
+      "Coming up 2",
+      "F",
+      "Rest of the team 1",
+      "E",
     ]);
   });
 
@@ -234,9 +425,233 @@ describe("kinTasksByMove", () => {
           needsYou: 2,
           ownerLevel: false,
           names: asZoya,
+          read: true,
         }),
       ),
     ).toEqual(["Needs you 2", "Your projects 1", "K", "foot"]);
+  });
+});
+
+describe("a ticked row stays in its place while its Undo can be reached", () => {
+  const moves = new Map<string, KinWorkRowMove>([
+    ["A", { key: "A", group: "needsYou" }],
+    ["B", { key: "B", group: "needsYou" }],
+    ["C", { key: "C", group: "needsYou" }],
+  ]);
+  const counts = { needsYou: 3, waiting: 0, rest: 0, doneRecently: 0 };
+  const listed = (records: ReadonlyArray<KinRecord>) =>
+    kinTasksByMove({ records, moves, counts, needsYou: 3, ownerLevel: true, names, read: true });
+  const shape = (items: ReturnType<typeof listed>) =>
+    items.flatMap((item) =>
+      item.type === "task"
+        ? [
+            `${item.key}:${item.record.state}${item.ticked ? "~" : ""}${item.first ? "^" : ""}${item.last ? "$" : ""}`,
+          ]
+        : [],
+    );
+  const done = (record: KinRecord): KinRecord => ({ ...record, state: "done" });
+  const notice: KinWorkNotice = {
+    key: "A",
+    kind: "saved",
+    text: "Marked done.",
+    undo: { type: "state", state: "open", waitingOn: null },
+  };
+
+  it("holds a ticked row under the line it sat under once the host drops it, then lets it go", () => {
+    const before = listed([row("A"), row("B"), row("C")]);
+    const first = kinTasksTick({
+      held: [],
+      items: before,
+      key: "B",
+      action: { type: "state", state: "done" },
+      notice: null,
+    });
+    expect(first.undo).toBe(false);
+    // The host's next read leaves B out: without the hold, C would slide up under the thumb.
+    const after = listed([row("A"), row("C")]);
+    expect(shape(after)).toEqual(["A:open^", "C:open$"]);
+    const held = kinTasksTickedShown(first.ticked, { pending: {} }, { ...notice, key: "B" });
+    expect(shape(kinTasksWithTicked(after, held, done))).toEqual(["A:open^", "B:done~", "C:open$"]);
+    // A second quick tick holds both, each in its own place.
+    const second = kinTasksTick({
+      held,
+      items: kinTasksWithTicked(after, held, done),
+      key: "C",
+      action: { type: "state", state: "done" },
+      notice: null,
+    });
+    const both = kinTasksTickedShown(second.ticked, { pending: { C: { state: "done" } } }, null);
+    expect(shape(kinTasksWithTicked(listed([row("A")]), both, done))).toEqual([
+      "A:open^",
+      "B:done~",
+      "C:done~$",
+    ]);
+    // The Undo bar went: nothing is held, and the rows leave together.
+    expect(kinTasksTickedShown(second.ticked, { pending: {} }, null)).toEqual([]);
+  });
+
+  it("puts a row the host still lists as it is, and drops one whose line has gone", () => {
+    const before = listed([row("A"), row("B")]);
+    const ticked = kinTasksTick({
+      held: [],
+      items: before,
+      key: "B",
+      action: { type: "state", state: "done" },
+      notice: null,
+    }).ticked;
+    expect(shape(kinTasksWithTicked(listed([row("A"), done(row("B"))]), ticked, done))).toEqual([
+      "A:open^",
+      "B:done~$",
+    ]);
+    const orphan: ReadonlyArray<KinTaskTicked<KinRecord>> = ticked.map((one) => ({
+      ...one,
+      after: "gone",
+    }));
+    expect(shape(kinTasksWithTicked(listed([row("A")]), orphan, done))).toEqual(["A:open^$"]);
+  });
+
+  it("takes the Undo when the held row is ticked again, and nothing else is an undo", () => {
+    const items = listed([row("A")]);
+    const reopen = { type: "state", state: "open" } as const;
+    expect(kinTasksTick({ held: [], items, key: "A", action: reopen, notice }).undo).toBe(true);
+    expect(kinTasksTick({ held: [], items, key: "C", action: reopen, notice }).undo).toBe(false);
+    expect(
+      kinTasksTick({ held: [], items, key: "A", action: reopen, notice: { ...notice, undo: null } })
+        .undo,
+    ).toBe(false);
+  });
+});
+
+describe("kinTasksDealFacts", () => {
+  const fact = (
+    sense: KinPulseFact["sense"],
+    key: string,
+    actor: KinPulseFact["actor"],
+    patch: Partial<KinPulseFact> = {},
+  ): KinPulseFact => ({
+    sense,
+    family: "work",
+    key: `${sense}:${key}`,
+    subject: { kind: "record", key, title: `Invented ${key}` },
+    scope: { clientKey: "C-1", clientTitle: "Corran Tiles" },
+    since: DateTime.makeUnsafe(Date.UTC(2026, 10, 16, 9)),
+    consequence: `Invented ${key} for Corran Tiles has no next step.`,
+    actor,
+    sensitive: false,
+    wake: "sweep",
+    handled: null,
+    ...patch,
+  });
+  const pulseOf = (...facts: ReadonlyArray<KinPulseFact>) => ({
+    asOf: DateTime.makeUnsafe(now.getTime()),
+    total: facts.length,
+    facts,
+  });
+  const owner = { _tag: "owner" } as const;
+  const everything = pulseOf(
+    fact("deal_no_next_step", "DL-1", zoya),
+    fact("deal_quiet", "DL-2", zoya),
+    fact("deal_date_passed", "DL-3", rhea),
+    fact("deal_no_next_step", "C-4", owner),
+    fact("deal_quiet", "DL-5", zoya, {
+      handled: {
+        by: zoya,
+        at: DateTime.makeUnsafe(Date.UTC(2026, 10, 17)),
+        until: null,
+        note: null,
+      },
+    }),
+    fact("task_late", "W-9", zoya),
+    fact("client_quiet", "C-1", owner),
+    fact("entry_late", "BK-1", zoya, { consequence: "Was due Nov 16, 2 days ago." }),
+    fact("entry_check", "STK-2", owner, { consequence: "On hand is 3, below Reorder point (10)." }),
+  );
+  const keys = (rows: ReturnType<typeof kinTasksDealFacts>) => rows.map((one) => one.factKey);
+
+  it("lists a person's own deal and prospect facts, and the owner's own and those that fall to him", () => {
+    expect(
+      keys(kinTasksDealFacts({ ownerLevel: false, names: asZoya, now, pulse: everything })),
+    ).toEqual(["deal_no_next_step:DL-1", "deal_quiet:DL-2", "entry_late:BK-1"]);
+    expect(keys(kinTasksDealFacts({ ownerLevel: true, names, now, pulse: everything }))).toEqual([
+      "deal_date_passed:DL-3",
+      "deal_no_next_step:C-4",
+      "entry_check:STK-2",
+    ]);
+    // A list entry that is late or off its check is its holder's, as a late task is, and opens it.
+    expect(
+      kinTasksDealFacts({ ownerLevel: false, names: asZoya, now, pulse: everything })[2],
+    ).toMatchObject({
+      detail: "Was due Nov 16, 2 days ago.",
+      open: { type: "record", key: "BK-1" },
+    });
+    expect(kinEntryFacts(everything)).toEqual(
+      new Map([
+        ["BK-1", ["Was due Nov 16, 2 days ago."]],
+        ["STK-2", ["On hand is 3, below Reorder point (10)."]],
+      ]),
+    );
+    // A deal with no next step carries "What's next?"; a prospect's opens the prospect.
+    const [deal] = kinTasksDealFacts({ ownerLevel: false, names: asZoya, now, pulse: everything });
+    expect(deal).toMatchObject({ whatsNext: "DL-1", open: { type: "record", key: "DL-1" } });
+    const prospect = kinTasksDealFacts({ ownerLevel: true, names, now, pulse: everything })[1];
+    expect(prospect).toMatchObject({ whatsNext: null, open: { type: "record", key: "C-4" } });
+  });
+
+  it("drops a fact once it clears, and has none while the pulse loads", () => {
+    expect(kinTasksDealFacts({ ownerLevel: false, names: asZoya, now, pulse: pulseOf() })).toEqual(
+      [],
+    );
+    expect(kinTasksDealFacts({ ownerLevel: true, names, now, pulse: null })).toEqual([]);
+    expect(kinTasksDealFacts({ ownerLevel: true, names, now })).toEqual([]);
+    // Needs you counts them beside the tasks, as the badge does.
+    const counts = { needsYou: 3, waiting: 0, rest: 0, doneRecently: 0 };
+    const dealFacts = kinTasksDealFactsOf(everything, {
+      ownerLevel: false,
+      me: asZoya.me,
+    }).length;
+    expect(kinNeedsYouCount({ counts, dealFacts })).toBe(6);
+    expect(kinNeedsYouCount({ counts: null, dealFacts })).toBeNull();
+  });
+
+  it("puts them first under Needs you, so it is not all clear", () => {
+    const facts = kinTasksDealFacts({ ownerLevel: false, names: asZoya, now, pulse: everything });
+    const items = kinTasksByMove({
+      records: [row("K", { owner: zoya })],
+      moves: new Map([["K", { key: "K", group: "needsYou" }]]),
+      counts: { needsYou: 0, waiting: 0, rest: 0, doneRecently: 0 },
+      needsYou: 3,
+      ownerLevel: false,
+      names: asZoya,
+      facts,
+      read: true,
+    });
+    expect(
+      items.map((item) =>
+        item.type === "fact"
+          ? `${item.key} ${item.first} ${item.last}`
+          : item.type === "task"
+            ? `${item.key} ${item.first} ${item.last}`
+            : item.type,
+      ),
+    ).toEqual([
+      "heading",
+      "deal_no_next_step:DL-1 true false",
+      "deal_quiet:DL-2 false false",
+      "entry_late:BK-1 false false",
+      "K false true",
+      "foot",
+    ]);
+    const alone = kinTasksByMove({
+      records: [],
+      moves: new Map(),
+      counts: { needsYou: 0, waiting: 0, rest: 0, doneRecently: 0 },
+      needsYou: 1,
+      ownerLevel: false,
+      names: asZoya,
+      facts: facts.slice(0, 1),
+      read: true,
+    });
+    expect(alone.map((item) => item.type)).toEqual(["heading", "fact", "foot"]);
   });
 });
 
@@ -302,6 +717,56 @@ describe("kinTaskStep", () => {
       { key: "W", group: "waiting" },
       null,
     ],
+    [
+      "handed back to you: who, and why in their words",
+      row("B", { handedBack: { by: meera, at: "2026-11-18T08:30:00.000Z" } }),
+      { key: "B", group: "needsYou", handedBackNote: "The clinic wants Zoya on it." },
+      { kind: "told", line: "Meera handed this back: “The clinic wants Zoya on it.”" },
+    ],
+    [
+      "handed back to you with no words: who",
+      row("C", { handedBack: { by: zoya, at: "2026-11-18T08:30:00.000Z" } }),
+      { key: "C", group: "needsYou" },
+      { kind: "told", line: "Zoya handed this back" },
+    ],
+    [
+      "handed back, then ticked and its Undo taken: said as before, as the task's page says it",
+      row("H", {
+        handedBack: { by: zoya, at: "2026-11-18T08:30:00.000Z" },
+        updatedAt: "2026-11-18T08:45:00.000Z",
+      }),
+      { key: "H", group: "needsYou", handedBackNote: "The clinic wants Zoya on it." },
+      { kind: "told", line: "Zoya handed this back: “The clinic wants Zoya on it.”" },
+    ],
+    [
+      "yours, and someone asked today where it stands",
+      row("D", { ...late("2026-11-15T00:00:00.000Z") }),
+      { key: "D", group: "needsYou", askedBy: meera.personId },
+      { kind: "told", line: "Meera asked where this stands" },
+    ],
+    [
+      "handed back by a coding agent",
+      row("KB", { handedBack: { by: zoya, at: "2026-11-18T08:30:00.000Z" } }),
+      {
+        key: "KB",
+        group: "needsYou",
+        handedBackByCodingAgent: true,
+        handedBackNote: "I need the samples first.",
+      },
+      { kind: "told", line: "Zoya (coding agent) handed this back: “I need the samples first.”" },
+    ],
+    [
+      "asked where it stands by a coding agent",
+      row("KD"),
+      { key: "KD", group: "needsYou", askedBy: meera.personId, askedByCodingAgent: true },
+      { kind: "told", line: "Meera (coding agent) asked where this stands" },
+    ],
+    [
+      "yours, nothing told: no step",
+      row("E", { ...late("2026-11-15T00:00:00.000Z") }),
+      { key: "E", group: "needsYou" },
+      null,
+    ],
   ] as const)("%s", (_name, record, move, expected) => {
     const step = kinTaskStep(record, move as KinWorkRowMove, names, now);
     if (expected === null) return expect(step).toBeNull();
@@ -313,6 +778,7 @@ describe("kinTaskStep", () => {
     }
     if (step?.kind === "question" && "options" in expected)
       expect(step.options.map((option) => option.label)).toEqual(expected.options);
+    if (step?.kind === "told" && "line" in expected) expect(step.line).toBe(expected.line);
     if (step?.kind === "nudge" && "name" in expected)
       expect({ name: step.name, line: step.line, nudged: step.nudged }).toEqual({
         name: expected.name,
@@ -341,7 +807,134 @@ describe("kinTaskStepStatusShown", () => {
   });
 });
 
+describe("kinTaskQuickFilters", () => {
+  const counts = { open: 9, doing: 1, waiting: 2, late: 3, dueThisWeek: 4 };
+  const summary = {
+    ...counts,
+    closed: 5,
+    owners: [{ owner: rhea, open: 6, doing: 0, waiting: 1, late: 2, dueThisWeek: 3 }],
+    seq: 1,
+    asOf: now.toISOString(),
+  } as unknown as KinWorkSummary;
+  const shown = (filter = KIN_WORK_DEFAULT_FILTER, me = names.me) =>
+    kinTaskQuickFilters(filter, kinWorkOverview(summary, filter, names), me);
+
+  it("offers five at a glance, each with its count, and a second tap takes one off", () => {
+    const quick = shown();
+    expect(quick.map((one) => [one.label, one.count, one.selected])).toEqual([
+      ["All open", 9, true],
+      ["Mine", 6, false],
+      ["This week", 4, false],
+      ["Marked waiting", 2, false],
+      ["Late", 3, false],
+    ]);
+    const mine = quick[1]!.next;
+    expect(mine.owner).toEqual(rhea);
+    // Mine keeps a view chosen with it; its counts are then the reader's own.
+    const mineLate = shown({ ...mine, view: "late" });
+    expect(mineLate.filter((one) => one.selected).map((one) => one.label)).toEqual([
+      "Mine",
+      "Late",
+    ]);
+    expect(mineLate[4]!.count).toBe(2);
+    expect(mineLate[4]!.next).toMatchObject({ view: "open", owner: rhea });
+    expect(mineLate[1]!.next).toMatchObject({ view: "late", owner: null });
+    expect(mineLate[0]!.next).toMatchObject({ view: "open", owner: null });
+    // Mine counts tasks the reader is on, which the host counts under their holders.
+    const onIt = [
+      row("M1", { owner: zoya, alsoOn: [rhea] }),
+      row("M2", { owner: zoya, alsoOn: [rhea], state: "done" }),
+      row("M3", { owner: rhea }),
+    ];
+    const onMine = kinTasksOnCount(onIt, names.me);
+    expect(onMine).toBe(1);
+    const counted = kinTaskQuickFilters(
+      KIN_WORK_DEFAULT_FILTER,
+      kinWorkOverview(summary, KIN_WORK_DEFAULT_FILTER, names, onMine),
+      names.me,
+    );
+    expect(counted[1]!.count).toBe(7);
+    // Before the reader is known there is no Mine.
+    expect(shown(KIN_WORK_DEFAULT_FILTER, null).map((one) => one.id)).toEqual([
+      "all",
+      "week",
+      "waiting",
+      "late",
+    ]);
+  });
+});
+
+describe("a waiting task's mark and words, from the reader's seat", () => {
+  const asMeera: KinWorkNames = { ...names, me: meera.personId };
+  const onRhea = row("A", { state: "waiting", waitingOn: rhea });
+  it.each([
+    ["waits on the reader: an ordinary to-do", onRhea, names, "open", "done", "No date"],
+    [
+      "the same task, seen by someone else",
+      onRhea,
+      asMeera,
+      "waiting",
+      "done",
+      "Waiting on Rhea · No date",
+    ],
+    [
+      "waits on someone else",
+      row("B", { state: "waiting", waitingOn: zoya }),
+      names,
+      "waiting",
+      "done",
+      "Waiting on Zoya · No date",
+    ],
+    [
+      "waits on nobody named",
+      row("C", { state: "waiting" }),
+      names,
+      "waiting",
+      "done",
+      "Waiting · No date",
+    ],
+    [
+      "late and waiting: the clock still has its words, late stays red text",
+      row("D", { state: "waiting", waitingOn: zoya, ...late("2026-11-15T09:00:00.000Z") }),
+      names,
+      "waiting",
+      "done",
+      "Waiting on Zoya",
+    ],
+    ["open", row("E"), names, "open", "done", "No date"],
+  ] as const)("%s", (_name, record, who, mark, tick, rest) => {
+    const shown = kinWorkRow(record, who, now);
+    const line = kinTaskLine(record, who, now);
+    expect([shown.state, shown.tick, line.rest]).toEqual([mark, tick, rest]);
+    // The clock never stands without "Waiting…" beside it, and never says "Waiting on you".
+    expect(line.rest.startsWith("Waiting")).toBe(shown.state === "waiting");
+    expect(`${line.rest} ${shown.status} ${shown.detail}`).not.toContain("Waiting on you");
+  });
+});
+
 describe("kinTaskLine", () => {
+  it("drops You on your own list, and the client every row shares", () => {
+    const lumen = { recordId: KinRecordId.make("rec-C-1"), key: "C-1", title: "Lumen Clinics" };
+    const mine = row("A", { party: lumen, dueAt: "2026-11-24T23:59:59.000Z", dueAllDay: true });
+    const hers = row("B", { owner: zoya, party: lumen });
+    const shared = kinTasksSharedAbout([mine, hers]);
+    expect(shared).toBe("Lumen Clinics");
+    expect(kinTaskLine(mine, names, now, { ownList: true, sharedAbout: shared })).toMatchObject({
+      holder: null,
+      rest: "Due Tue, Nov 24",
+    });
+    expect(kinTaskLine(hers, names, now, { ownList: true, sharedAbout: shared }).holder).toBe(
+      "Zoya",
+    );
+    // Elsewhere, and once one row names another client or none, each row says its own.
+    expect(kinTaskLine(mine, names, now)).toMatchObject({
+      holder: "You",
+      rest: "Due Tue, Nov 24 · Lumen Clinics",
+    });
+    expect(kinTasksSharedAbout([mine, hers, row("C")])).toBeNull();
+    expect(kinTasksSharedAbout([mine])).toBeNull();
+  });
+
   it.each([
     ["late is one red word", row("A", late("2026-11-15T09:00:00.000Z")), "late", "3 days late", ""],
     [
@@ -357,11 +950,46 @@ describe("kinTaskLine", () => {
       "Due tomorrow",
     ],
     ["no date says so", row("C"), null, null, "No date"],
+    [
+      "steps say how many are ticked",
+      row("S", { steps: { done: 2, of: 4 } }),
+      null,
+      null,
+      "No date · 2 of 4",
+    ],
+    [
+      "waiting names who it waits on",
+      row("D", {
+        state: "waiting",
+        waitingOn: zoya,
+        dueAt: "2026-11-24T23:59:59.000Z",
+        dueAllDay: true,
+      }),
+      null,
+      null,
+      "Waiting on Zoya · Due Tue, Nov 24",
+    ],
   ] as const)("%s", (_name, record, tone, text, rest) => {
     const line = kinTaskLine(record, names, now);
     expect(line.lead?.tone ?? null).toBe(tone);
     expect(line.lead?.text ?? null).toBe(text);
     expect(line.rest).toBe(rest);
+  });
+
+  it.each([
+    ["nobody else", row("A", { owner: zoya }), names, null],
+    ["one person, by first name", row("B", { owner: zoya, alsoOn: [meera] }), names, "with Meera"],
+    [
+      "an agent, by its name",
+      row("C", { owner: zoya, alsoOn: [chief] }),
+      names,
+      "with Chief of staff",
+    ],
+    ["two or more, counted", row("D", { owner: zoya, alsoOn: [meera, chief] }), names, "with 2"],
+    ["the reader on it", row("E", { owner: zoya, alsoOn: [meera, rhea] }), names, "with you"],
+  ] as const)("says who else is on it after the holder: %s", (_name, record, who, said) => {
+    const line = kinTaskLine(record, who, now);
+    expect([line.holder, line.with]).toEqual(["Zoya", said]);
   });
 });
 
@@ -385,6 +1013,21 @@ describe("a person's page and the project filter", () => {
     ]);
   });
 
+  it("counts the tasks a person is only on apart from the ones they hold", () => {
+    const page = (records: ReadonlyArray<KinRecord>, total = records.length) => ({
+      total,
+      records,
+    });
+    const held = row("W-1", { owner: meera });
+    const on = row("W-2", { owner: zoya, alsoOn: [meera] });
+    const who = meera.personId;
+    expect(kinPersonTasksCount(page([held, held]), who)).toBe("2 open tasks");
+    expect(kinPersonTasksCount(page([held, on, on]), who)).toBe("1 open task · on 2 more");
+    expect(kinPersonTasksCount(page([on]), who)).toBe("On 1 open task");
+    // A page that doesn't hold them all can't split them: the host's total stands.
+    expect(kinPersonTasksCount(page([held, on], 30), who)).toBe(KIN_PERSON_TASKS.count(30));
+  });
+
   it("offers a teammate every project of a task they see, not only the ones they are on", () => {
     const theirs = { key: "P-1", title: "Lumen booking app" } as const;
     const other = { recordId: KinRecordId.make("p-2"), key: "P-2", title: "Kin" } as const;
@@ -400,12 +1043,10 @@ describe("a person's page and the project filter", () => {
 });
 
 describe("kinNeedsYouCount", () => {
-  it("is the open list's count where it streams, else Tasks' own", () => {
+  it("is Tasks' own count, null until it arrives", () => {
     const counts = { needsYou: 4, waiting: 0, rest: 0, doneRecently: 0 };
-    expect(kinNeedsYouCount({ open: null, counts })).toBe(4);
-    expect(kinNeedsYouCount({ open: null, counts: null })).toBeNull();
-    const open = { counts: { needsYou: 7 } } as Parameters<typeof kinNeedsYouCount>[0]["open"];
-    expect(kinNeedsYouCount({ open, counts })).toBe(7);
+    expect(kinNeedsYouCount({ counts })).toBe(4);
+    expect(kinNeedsYouCount({ counts: null })).toBeNull();
   });
 });
 

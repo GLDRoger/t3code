@@ -1,6 +1,7 @@
 import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
 import {
   EnvironmentId,
+  KinOrgId,
   type KeybindingCommand,
   type ResolvedKeybindingsConfig,
 } from "@t3tools/contracts";
@@ -10,7 +11,7 @@ import { describe, expect, it, vi } from "vite-plus/test";
 
 import { registerCommands } from "../shortcuts/dispatcher";
 import { primaryServerKeybindingsAtom } from "../state/server";
-import { registerKinListCommands, startKinListTracking } from "./kinListSwitch";
+import { kinDestinationLink, registerKinListCommands, startKinListTracking } from "./kinListSwitch";
 import { kinHostAtom } from "./useKinHost";
 
 const KIN_HOST: KinHost = {
@@ -35,7 +36,7 @@ const keybindings: ResolvedKeybindingsConfig = (
 }));
 
 function fakeRouter(pathname: string) {
-  const location = { pathname, href: pathname };
+  const location = { pathname, href: pathname, state: {} };
   const navigate = vi.fn(async (to: { readonly to?: string; readonly href?: string }) => {
     location.pathname = to.to ?? to.href ?? location.pathname;
     location.href = location.pathname;
@@ -97,6 +98,50 @@ describe("registerKinListCommands", () => {
     expect(t3).toHaveBeenCalledTimes(row.reaches ? 1 : 0);
   });
 
+  it("keeps ⌘1 to ⌘5 on the destinations and gives Numbers the digit after them", () => {
+    using stack = new DisposableStack();
+    const registry = stack.adopt(
+      AtomRegistry.make({
+        initialValues: [
+          [kinHostAtom, KIN_HOST],
+          [primaryServerKeybindingsAtom, keybindings],
+        ],
+      }),
+      (made) => made.dispose(),
+    );
+    const nav = stack.adopt(document.body.appendChild(document.createElement("nav")), (made) =>
+      made.remove(),
+    );
+    const clicked: Array<string> = [];
+    for (const name of ["chats", "tasks", "money", "clients", "docs", "numbers"]) {
+      const link = nav.appendChild(document.createElement("a"));
+      link.textContent = name;
+      link.setAttribute(name === "numbers" ? "data-kin-numbers" : "data-kin-destination", name);
+      link.addEventListener("click", (event) => {
+        event.preventDefault();
+        clicked.push(name);
+      });
+    }
+    const { router } = fakeRouter("/kin/kin-host/org/tasks");
+    stack.defer(registerKinListCommands(router, registry));
+    const digit = (n: number) =>
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          code: `Digit${n}`,
+          key: String(n),
+          metaKey: true,
+          ctrlKey: true,
+          cancelable: true,
+          bubbles: true,
+        }),
+      );
+
+    digit(5);
+    digit(6);
+
+    expect(clicked).toEqual(["docs", "numbers"]);
+  });
+
   it("leads from a coding thread back into Kin, and is no way out of Kin", () => {
     using stack = new DisposableStack();
     const registry = stack.adopt(
@@ -135,5 +180,23 @@ describe("startKinListTracking", () => {
     stack.defer(startKinListTracking(router, registry));
 
     expect(location.pathname).toBe(row.opens);
+  });
+
+  it("returns Chats to the chat you left only on the host it is on", () => {
+    using stack = new DisposableStack();
+    const registry = stack.adopt(
+      AtomRegistry.make({ initialValues: [[kinHostAtom, KIN_HOST]] }),
+      (made) => made.dispose(),
+    );
+    const { router } = fakeRouter("/kin/kin-host/org-ambermill/chat-rhea");
+    stack.defer(startKinListTracking(router, registry));
+    const on = (host: string) =>
+      kinDestinationLink("chats", {
+        environmentId: EnvironmentId.make(host),
+        orgId: KinOrgId.make("org-ambermill"),
+      });
+
+    expect(on("kin-host")).toMatchObject({ params: { chatId: "chat-rhea" } });
+    expect(on("other-host")).toEqual({ to: "/kin" });
   });
 });

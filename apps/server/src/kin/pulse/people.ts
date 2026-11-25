@@ -21,9 +21,11 @@ import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshHub } from "../chat/KinRefreshHub.ts";
 import { coalesced, hashedLive, viewHash } from "../hashedLive.ts";
 import { KinRecords } from "../work/KinRecords.ts";
+import { list as workList } from "../work/ownerWork.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
+import type { SensedFact } from "./senses/shared.ts";
 
 /** "Needs attention" on people's screens: the same read and handling agents use, as that person. */
 
@@ -88,15 +90,18 @@ export const screenFacts = <F extends KinPulseFact>(
 export const read = Effect.fn("KinPulsePeople.read")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinPulseListInput,
+  sensed?: ReadonlyArray<SensedFact>,
 ) {
   const { person, viewer } = yield* viewerIn(people, input.orgId);
   const read = yield* KinPulse.read({
     orgId: input.orgId,
     at: yield* Clock.currentTimeMillis,
     viewer,
+    sensed,
     personId: person.personId,
     includeHandled: input.includeHandled,
     scope: input.scope,
+    excludeOverflow: !input.acceptSenses?.includes("sense_overflow"),
     limit: SCREEN_CAP,
   }).pipe(Effect.catchTags({ SqlError: unavailableOn }));
   const facts = screenFacts(read.facts, input.acceptSenses);
@@ -107,19 +112,34 @@ export const read = Effect.fn("KinPulsePeople.read")(function* (
 
 /** Names a page by what a screen shows of it (not `asOf`). */
 const pulseHash = (read: KinPulseScreenRead) =>
-  viewHash(JSON.stringify([read.total, read.facts, read.outline ?? null]));
+  viewHash(
+    JSON.stringify(
+      read.tasksNeedsYou === undefined
+        ? [read.total, read.facts, read.outline ?? null]
+        : [read.total, read.facts, read.outline ?? null, read.tasksNeedsYou],
+    ),
+  );
+
+/** Tasks' Needs you count, read as the Tasks screen reads it. */
+const tasksNeedsYou = (people: ReadonlyArray<PersonIdentity>, orgId: KinOrgId) =>
+  workList(people, { orgId, open: true, byMove: true, limit: 1, acceptCompactRows: true }).pipe(
+    Effect.map((page) => page.counts?.needsYou ?? 0),
+  );
+
+/** What a Work change asks of a pulse stream: its page sensed afresh, or only Tasks' count. */
+const RESENSE = -1;
+const RECOUNT = -2;
 
 /**
- * `kin.pulse.subscribe`: the page `read` gives this viewer, then what moved in it, built by that
- * same read each time the pulse moves. A member's page also turns on the Work they may see, so
- * their Work changes read it again too; whether they are a member follows their level as it
- * changes. Nothing is sent when the page a screen shows stayed put.
+ * `kin.pulse.subscribe`: `read`'s page, then what moved in it. A member's page also turns on the
+ * Work they see, and follows their level as it changes. With `tasksNeedsYou`, Tasks' count rides
+ * along, counted again as their tasks move. Nothing is sent when the page stayed put.
  */
 export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinPulseSubscribeInput) =>
   Stream.unwrap(
     Effect.gen(function* () {
       const { person, viewer } = yield* viewerIn(people, input.orgId);
-      const { held, ...listInput } = input;
+      const { held, tasksNeedsYou: counting, ...listInput } = input;
       const pulse = (yield* KinRefreshHub).changes(input.orgId).pipe(
         Stream.map((now) => now.pulse ?? 0),
         Stream.changes,
@@ -134,17 +154,22 @@ export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinPulse
             return viewerIn(people, input.orgId).pipe(
               Effect.map((now) => {
                 member = now.viewer._tag !== "owner";
-                return true;
+                return RESENSE;
               }),
               // Gone from the org: the read says so and ends the stream.
-              Effect.orElseSucceed(() => true),
+              Effect.orElseSucceed(() => RESENSE),
             );
+          if (member && (tick.key === undefined || tick.team?.has(person.personId) === true))
+            return Effect.succeed(RESENSE);
           return Effect.succeed(
-            member && (tick.key === undefined || tick.team?.has(person.personId) === true),
+            counting === true &&
+              !member &&
+              (tick.registerId === undefined || tick.registerId === "work")
+              ? RECOUNT
+              : null,
           );
         }),
-        Stream.filter((moved) => moved),
-        Stream.map(() => -1),
+        Stream.filter((moved) => moved !== null),
       );
       const live = hashedLive({
         held,
@@ -154,8 +179,25 @@ export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinPulse
         diff: kinPulseDiff,
         apply: kinPulseApply,
       });
-      return coalesced(Stream.merge(pulse, work), () =>
-        read(people, listInput).pipe(Effect.map(live.next)),
+      // Moved by the pulse, it shows what the last tick sensed, if no older than what it shows; a
+      // member's Work change is sensed afresh, so it shows at once.
+      let shownAt: number | undefined;
+      let count: number | undefined;
+      return coalesced(Stream.merge(pulse, work), (asked) =>
+        Effect.gen(function* () {
+          const tick = KinPulse.lastTick(input.orgId);
+          const reuse =
+            !asked.includes(RESENSE) &&
+            shownAt !== undefined &&
+            tick !== undefined &&
+            tick.at >= shownAt;
+          shownAt = reuse ? tick.at : yield* Clock.currentTimeMillis;
+          const page = yield* read(people, listInput, reuse ? tick.facts : undefined);
+          if (counting !== true) return live.next(page);
+          if (count === undefined || asked.includes(RESENSE) || asked.includes(RECOUNT))
+            count = yield* tasksNeedsYou(people, input.orgId);
+          return live.next({ ...page, tasksNeedsYou: count });
+        }),
       );
     }),
   );

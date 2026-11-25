@@ -86,14 +86,14 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
     .filter((one) => one.agentId !== agentId)
     .map((one) => {
       const held = load?.("agent", one.agentId);
-      return `${colleagueLine(one.name, one.body)}${
+      return `${colleagueLine(one)}${
         held === undefined
           ? ""
           : ` (${held.open} open${held.late > 0 ? `, ${held.late} late` : ""})`
       }`;
     });
 
-  const people = yield* sql<{
+  const found = yield* sql<{
     id: string;
     name: string;
     access: string | null;
@@ -109,7 +109,15 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
       AND EXISTS (SELECT 1 FROM kin_session_bindings b WHERE b.org_id = p.org_id
         AND b.person_id = p.person_id AND b.revoked_at IS NULL)
     ORDER BY CASE access WHEN 'owner' THEN 0 WHEN 'co_owner' THEN 1 ELSE 2 END, display_name
-    LIMIT ${PEOPLE_CAP}`;
+    LIMIT ${PEOPLE_CAP + 1}`;
+  const unlisted =
+    found.length > PEOPLE_CAP
+      ? ((yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_people p
+          WHERE p.org_id = ${orgId} AND p.removed_at IS NULL
+            AND EXISTS (SELECT 1 FROM kin_session_bindings b WHERE b.org_id = p.org_id
+              AND b.person_id = p.person_id AND b.revoked_at IS NULL)`)[0]?.n ?? 0) - PEOPLE_CAP
+      : 0;
+  const people = found.slice(0, PEOPLE_CAP);
   // What each is on now: their newest task in progress that isn't private. Owner-only turns.
   const focus = ownerOnly
     ? new Map(
@@ -157,6 +165,7 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
     ].filter((part) => part !== undefined && part !== "");
     return `- ${JSON.stringify(clip(person.name, 80))}: ${parts.join("; ")}`;
   });
+  if (unlisted > 0) team.push(`- ${unlisted} more: people_read lists everyone.`);
 
   const self = all.find((one) => one.agentId === agentId)?.name ?? "";
   const seat: Array<string> = [];

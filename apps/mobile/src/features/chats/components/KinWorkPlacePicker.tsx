@@ -13,6 +13,8 @@ import { ListRow } from "../../../components/ui/ListRow";
 import { SearchField } from "../../../components/ui/SearchField";
 import { useKinPickerSearch, type KinWorkTarget } from "../state/useKinWork";
 import { KinWorkAboveKeyboard } from "./KinWorkPieces";
+import { useKinShell } from "../state/useKinShell";
+import { kinPickerNamed, kinSectionNoun } from "@t3tools/client-runtime/kin/kinShell";
 
 type PickerRow =
   | { readonly type: "label"; readonly id: string; readonly label: string }
@@ -28,7 +30,7 @@ const KEYBOARD_LIST_MAX_HEIGHT = 192;
  * choices, as the time zone picker does, typing asks the host about every one the person may see,
  * and a pick closes it.
  */
-export function KinWorkPlacePicker(props: {
+export function KinWorkPlacePicker(given: {
   readonly target: KinWorkTarget;
   readonly noun: "client" | "project";
   readonly icon: AppSymbolName;
@@ -41,6 +43,8 @@ export function KinWorkPlacePicker(props: {
   readonly choices: ReadonlyArray<KinWorkRef>;
   /** A task's done projects, offered after the open ones so a late task can still be filed there. */
   readonly done?: ReadonlyArray<KinWorkRef>;
+  /** The only keys this viewer may pick (`kinTaskProjectsAllowed`); null or absent for any. */
+  readonly only?: ReadonlySet<string> | null;
   readonly disabled: boolean;
   readonly onPick: (ref: KinWorkRef | null) => void;
   /** Whether "None" is offered: the host may let a value change but not be cleared. */
@@ -52,6 +56,9 @@ export function KinWorkPlacePicker(props: {
     readonly onPick: (side: "ours" | "theirs") => void;
   };
 }) {
+  // A client picker says the company's own word for Clients in its label and its own rows.
+  const clientShell = useKinShell(given.target.environmentId);
+  const props = kinPickerNamed(clientShell, given);
   const { held, side, extra } = props;
   const none = props.none ?? KIN_WORK_NEW_COPY.none;
   const [open, setOpen] = useState(false);
@@ -63,6 +70,7 @@ export function KinWorkPlacePicker(props: {
   useEffect(() => {
     if (open && keyboardUp && found.current !== null) aboveKeyboard?.(found.current);
   }, [open, keyboardUp, aboveKeyboard]);
+  const clientNoun = kinSectionNoun(clientShell, "clients");
   const search = useKinPickerSearch(
     props.target,
     props.noun === "client" ? "clients" : "projects",
@@ -74,6 +82,8 @@ export function KinWorkPlacePicker(props: {
     search: search.state,
     loaded: { open: props.choices, done: props.done ?? [] },
     held: extra !== undefined && held?.key === extra.key ? null : held,
+    only: props.only ?? null,
+    called: props.noun === "client" ? clientNoun : "project",
   });
   const groups = kinTaskProjectMenu({ projects: view.open, doneProjects: view.done });
   const typed = query.trim() !== "";
@@ -122,6 +132,7 @@ export function KinWorkPlacePicker(props: {
         icon={props.icon}
         label={props.label}
         detail={held?.title ?? none}
+        detailEllipsizeMode="tail"
         {...(held !== null && side?.value === "theirs"
           ? { description: KIN_WORK_NEW_COPY.sideTheirs }
           : {})}

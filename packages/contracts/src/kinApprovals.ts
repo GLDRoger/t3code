@@ -382,6 +382,7 @@ export const KinAuditEvent = Schema.Literals([
   "key_confirmed",
   "key_revoked",
   "credential_check_failed",
+  "watch_restarted",
 ]);
 export type KinAuditEvent = typeof KinAuditEvent.Type;
 
@@ -581,6 +582,11 @@ export class KinApprovalError extends Schema.TaggedError<KinApprovalError>()("Ki
 }) {}
 
 export const KIN_APPROVAL_WS_METHODS = {
+  /**
+   * @deprecated Always fails `unavailable`, and no client has ever called it: approvals are read
+   * one at a time (`get`). Kept because contracts are add-only; it goes once no supported build
+   * predates the one that marked it.
+   */
   list: "kin.approvals.list",
   get: "kin.approvals.get",
   challenge: "kin.approvals.challenge",

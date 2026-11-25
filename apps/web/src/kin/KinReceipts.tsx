@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  KIN_INVOICES,
   KIN_RECEIPTS,
   kinReceiptModeLabel,
   kinReceiptModes,
@@ -59,6 +60,7 @@ import {
   useKinReceipts,
 } from "./useKinMoney";
 import { kinWorkChoicesAtom, type KinWorkTarget } from "./useKinWork";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 const SHOWN = 8;
 const KIN_INVOICES_LIST = KinListId.make("invoices");
@@ -426,24 +428,22 @@ function KinSetAgainstDialog(
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the client's open invoices from the host when the dialog opens or Retry is pressed
   useEffect(() => {
     let current = true;
-    void kinClient.workList
-      .run(appAtomRegistry, {
-        environmentId,
-        input: {
-          orgId,
-          list: KIN_INVOICES_LIST,
-          states: ["waiting"],
-          ...(payer === null ? {} : { party: payer }),
-          limit: 50,
-        },
-      })
-      .then((result) => {
-        if (current)
-          setHeld({
-            attempt,
-            invoices: AsyncResult.isSuccess(result) ? result.value.records : null,
-          });
-      });
+    void runKinCommand(appAtomRegistry, kinClient.workList, {
+      environmentId,
+      input: {
+        orgId,
+        list: KIN_INVOICES_LIST,
+        states: ["waiting"],
+        ...(payer === null ? {} : { party: payer }),
+        limit: 50,
+      },
+    }).then((result) => {
+      if (current)
+        setHeld({
+          attempt,
+          invoices: AsyncResult.isSuccess(result) ? result.value.records : null,
+        });
+    });
     return () => {
       current = false;
     };
@@ -472,7 +472,7 @@ function KinSetAgainstDialog(
           ) : invoices === null ? (
             <div className="flex flex-col items-start gap-2">
               <Alert variant="error">
-                <AlertDescription>Couldn't load invoices.</AlertDescription>
+                <AlertDescription>{KIN_INVOICES.loadFailed}</AlertDescription>
               </Alert>
               <Button size="sm" variant="outline" onClick={() => setAttempt((n) => n + 1)}>
                 Retry

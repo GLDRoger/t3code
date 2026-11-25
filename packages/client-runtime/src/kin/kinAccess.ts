@@ -1,4 +1,5 @@
 import {
+  kinAccessAllows,
   kinOwnerLevel,
   kinRpcAccess,
   type EnvironmentId,
@@ -82,13 +83,6 @@ const failedWithoutAnswer = (
   !result.waiting &&
   !answered.has(errorTag(Cause.squash(result.cause)));
 
-/** Whether a person of `kind` may call a method of `access` (`KIN_RPC_ACCESS`). */
-function kinAccessAllows(kind: KinPersonAccess | null, access: KinRpcAccess | undefined) {
-  if (access === undefined || access === "person") return true;
-  if (kind === "owner") return true;
-  return kind === "co_owner" && access === "owner_level";
-}
-
 /** The viewer's own kind in the org the directory named, or null until the host has said. */
 function makeKinAccess<R, ER>(
   runtime: Atom.AtomRuntime<EnvironmentRegistry.EnvironmentRegistry | R, ER>,
@@ -106,22 +100,13 @@ function makeKinAccess<R, ER>(
       const supervisor = yield* EnvironmentSupervisor.EnvironmentSupervisor;
       const environmentId = supervisor.target.environmentId;
       // A failed read would leave a co-owner on a member's dock until the next refresh.
-      return yield* Effect.suspend(() =>
-        Effect.promise(() => read.run(registry, { environmentId, input })),
-      ).pipe(
-        Effect.flatMap((result) =>
-          result._tag === "Success"
-            ? Effect.succeed(result.value)
-            : result._tag === "Failure"
-              ? Effect.failCause(result.cause)
-              : Effect.never,
-        ),
+      return yield* Effect.suspend(() => read.run(registry, { environmentId, input })).pipe(
         Effect.retry({ times: 4, schedule: Schedule.exponential("1 second") }),
       );
     }),
     staleTimeMs: 30_000,
     // A kind change moves `leads` and `people` for everyone, members included; a country chosen
-    // moves the company's money.
+    // moves the company's money; a section switched moves `shell`.
     refreshTrigger: (target: {
       readonly environmentId: EnvironmentId;
       readonly input: KinAccessMeInput;
@@ -131,7 +116,8 @@ function makeKinAccess<R, ER>(
         const leads = refreshes("leads")(target);
         const people = refreshes("people")(target);
         const company = refreshes("company")(target);
-        trigger = Atom.make((get) => `${get(leads)}|${get(people)}|${get(company)}`);
+        const shell = refreshes("shell")(target);
+        trigger = Atom.make((get) => `${get(leads)}|${get(people)}|${get(company)}|${get(shell)}`);
         triggers.set(`${target.environmentId}:${target.input.orgId}`, trigger);
       }
       return trigger;
@@ -297,7 +283,9 @@ export function createKinRpcCommand<
     const kind = kinAccessAtom(runtime, environmentId);
     let atom = combined.get(granted);
     if (atom === undefined) {
-      atom = Atom.make((get) => get(granted) && kinAccessAllows(get(kind), access));
+      atom = Atom.make(
+        (get) => get(granted) && (access === undefined || kinAccessAllows(get(kind), access)),
+      );
       combined.set(granted, atom);
     }
     return atom;

@@ -6,9 +6,11 @@ import {
   KinRpcs,
   kinOwnerLevel,
   authScopeRequiredResponse,
+  kinAccessAllows,
   kinRpcAccess,
   type KinRpcAccess,
 } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -21,14 +23,20 @@ import { KinIdentity } from "./chat/KinIdentity.ts";
 import { makeKinChatHandlers } from "./chat/rpcHandlers.ts";
 import { makeKinConnectionHandlers } from "./connections/rpcHandlers.ts";
 import { makeKinSocialHandlers } from "./social/rpcHandlers.ts";
+import { makeKinPicturesHandlers } from "./pictures/rpcHandlers.ts";
 import { makeKinLevelHandlers } from "./levels/rpcHandlers.ts";
 import { makeKinMemoryHandlers } from "./memory/rpcHandlers.ts";
 import { KinServer, type Services } from "./KinServer.ts";
 import { accessOf } from "./people/KinAccess.ts";
 import { makeKinPushHandlers } from "./push/rpcHandlers.ts";
+import { KIN_READ_RPCS, readOnlyStream } from "./readRpcs.ts";
 import { makeKinRecommendHandlers } from "./recommend/rpcHandlers.ts";
+import { makeKinHostHandlers } from "./host/rpcHandlers.ts";
 import { makeKinWorkHandlers } from "./work/rpcHandlers.ts";
 import { makeKinTasksKeyHandlers } from "./tasksKey/rpcHandlers.ts";
+import { makeKinNumbersHandlers } from "./numbers/rpcHandlers.ts";
+import { makeKinShellHandlers } from "./shell/rpcHandlers.ts";
+import { makeKinWatchHandlers } from "./watches/rpcHandlers.ts";
 import { countryFirstForPerson, isCountryFirst } from "./work/companyProfile.ts";
 
 const group = RpcGroup.make(...KinRpcs);
@@ -62,8 +70,7 @@ export const admits = Effect.fn("KinRpc.admits")(function* (
   if (access === "person") return;
   if (Option.isNone(services)) return yield* unavailable;
   const kind = yield* kindOf(session, services.value).pipe(Effect.mapError(() => unavailable));
-  if (kind === "owner") return;
-  if (kind === "co_owner" && access === "owner_level") return;
+  if (kinAccessAllows(kind, access ?? "org_owner")) return;
   return yield* access === "org_owner" && kind === "co_owner" ? ownerOnly : refused;
 });
 
@@ -92,6 +99,8 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
   const services = Option.flatMap(kin, (kin) => kin.services);
   const handlers = group.of({
     ...(yield* makeKinPeopleHandlers(session)),
+    ...(yield* makeKinShellHandlers(session)),
+    ...(yield* makeKinNumbersHandlers(session)),
     ...(yield* makeKinTasksKeyHandlers(session)),
     ...(yield* makeKinChatHandlers(session)),
     ...(yield* makeKinApprovalHandlers(session, services)),
@@ -101,23 +110,30 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
     ...(yield* makeKinPushHandlers(session)),
     ...(yield* makeKinConnectionHandlers(session)),
     ...(yield* makeKinSocialHandlers(session)),
+    ...(yield* makeKinPicturesHandlers(session)),
     ...(yield* makeKinRecommendHandlers(session)),
+    ...(yield* makeKinHostHandlers(session)),
+    ...(yield* makeKinWatchHandlers(session)),
   });
   const personSees = forPerson(session, services);
   const guarded: Record<string, unknown> = {};
   for (const [tag, handler] of Object.entries(handlers)) {
     const check = admits(session, services, kinRpcAccess(tag));
+    const reads = KIN_READ_RPCS.has(tag);
     guarded[tag] = (...args: ReadonlyArray<unknown>) => {
       const result: unknown = Reflect.apply(handler, undefined, args);
-      return Stream.isStream(result)
-        ? Stream.unwrap(Effect.as(check, result))
-        : Effect.andThen(
-            check,
-            Effect.catch(
-              result as Effect.Effect<unknown, EnvironmentAuthorizationError | KinChatError>,
-              personSees,
-            ),
-          );
+      if (Stream.isStream(result)) {
+        const stream = Stream.unwrap(Effect.as(check, result));
+        return reads ? readOnlyStream(stream) : stream;
+      }
+      const effect = Effect.andThen(
+        check,
+        Effect.catch(
+          result as Effect.Effect<unknown, EnvironmentAuthorizationError | KinChatError>,
+          personSees,
+        ),
+      );
+      return reads ? NodeSqliteClient.readOnly(effect) : effect;
     };
   }
   // Every entry keeps its handler's signature; only a refusal is added, typed as the group's error.

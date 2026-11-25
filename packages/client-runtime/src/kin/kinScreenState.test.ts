@@ -22,6 +22,7 @@ import {
   kinReconnectStep,
   kinWaitingBannerView,
   kinWaitingRowView,
+  kinWaitsForDetail,
 } from "./kinScreenState.ts";
 
 const environmentId = EnvironmentId.make("env-kin");
@@ -261,6 +262,16 @@ describe("chat list rows", () => {
     [{ kind: "system", widgetId: "memory-changes:lead:1", body: "Remembered: x" }, "Saved a note"],
     [{ kind: "system", widgetId: "deferral:org:1", body: "Deferred to Fri" }, "Set a reminder"],
     [{ kind: "text", body: "**Fixed** `pay`" }, "Fixed pay"],
+    // Kin's morning page: its first real line under the greeting, never its markup.
+    [
+      {
+        kind: "system",
+        form: "brief",
+        createdAt: new Date(2026, 10, 9, 8).toISOString(),
+        body: "Clients:\n- Follow-ups today: 1.\n- Corran rollout has no next step.",
+      },
+      "Good morning · Follow-ups today: 1.",
+    ],
   ])("never previews a card tap's JSON or Kin's own bookkeeping", (last, preview) => {
     const held = row({ lastMessage: { author: { _tag: "system" }, status: "posted", ...last } });
     expect(kinChatRowView(held, directory).preview).toBe(preview);
@@ -395,6 +406,7 @@ describe("chat list rows", () => {
     ["## Done\n\n- **Merged** [#212](https://x.test) `main`", "Done Merged #212 main"],
     ["*Shipped* the _retry_ fix", "Shipped the retry fix"],
     ["Run:\n```ts\nawait retry()\n```", "Run: await retry()"],
+    ["Reviewed in t3-thread://v2/ab12 and [here](t3-thread://v2/cd34)", "Reviewed in and here"],
     ["2 * 3 * 4 in snake_case_name", "2 * 3 * 4 in snake_case_name"],
     [
       "Due:\n\n| Piece | Owner |\n|---|:--:|\n| Brand guide | Zoya |",
@@ -431,6 +443,28 @@ describe("kinWaitingBannerView", () => {
     expect(kinWaitingBannerView([item("decision")])?.accessibilityLabel).toBe(
       "Waiting on you, 1 item: 1 decision",
     );
+  });
+
+  it("names a mail ready to send and a draft sent up for what they are", () => {
+    const card = (kind: string) => ({ reason: "question", card: kind }) as never;
+    expect(kinWaitingBannerView([card("mail"), item("question"), card("draft")])).toEqual({
+      count: 3,
+      summary: "1 mail to send · 1 question · 1 more",
+      accessibilityLabel: "Waiting on you, 3 items: 1 mail to send, 1 question, and 1 more",
+    });
+  });
+
+  it("shows for a co-owner when only the owner's things wait, counting none as hers", () => {
+    const rhea = { name: "Rhea Rao", items: [item("question"), item("approval")] };
+    expect(kinWaitingBannerView([], [rhea])).toEqual({
+      count: 0,
+      summary: "2 waiting for Rhea Rao",
+      accessibilityLabel: "Waiting on you, nothing on you. 2 waiting for Rhea Rao",
+    });
+    expect(kinWaitingBannerView([item("question")], [rhea])?.summary).toBe(
+      "1 question · 2 waiting for Rhea Rao",
+    );
+    expect(kinWaitingBannerView([], [{ name: "Rhea Rao", items: [] }])).toBeNull();
   });
 });
 
@@ -529,8 +563,43 @@ describe("kinWaitingRowView", () => {
       label: "Question",
       chatTitle: "Atlas",
       text: "Merge #212 now?",
+      excerpt: null,
+      waitsFor: null,
       createdAt: "2026-11-08T09:30:00.000Z",
     });
+  });
+
+  it("says whom someone else's row waits for, and shows a draft's first lines", () => {
+    const theirs = {
+      ...(item(null, "chat-rhea") as object),
+      card: "draft",
+      question: "Approve the workshop proposal?",
+      excerpt: "Workshop proposal\nSix hours on site",
+      ask: { agent: "Chief of staff" },
+      waitsFor: { personId: "rhea", name: "Rhea Rao" },
+    } as never;
+    expect(kinWaitingRowView(theirs, chats, agentNames)).toMatchObject({
+      label: "Draft to approve",
+      chatTitle: "Chief of staff",
+      text: "Approve the workshop proposal?",
+      excerpt: "Workshop proposal\nSix hours on site",
+      waitsFor: "Waits for Rhea Rao",
+    });
+    // Opened, it shows what it asks and whose it is, with its answers as words, never buttons.
+    expect(
+      kinWaitsForDetail({
+        ...(theirs as object),
+        ask: {
+          agent: "Chief of staff",
+          options: [{ label: "Approve" }, { label: "Changes first" }],
+        },
+      } as never),
+    ).toEqual([
+      "Workshop proposal\nSix hours on site",
+      "Answers: Approve / Changes first",
+      "Only Rhea Rao can answer this. You can look at it here.",
+    ]);
+    expect(kinWaitsForDetail(item("m-2"))).toEqual([]);
   });
 
   it("has no text when the inbox doesn't carry the message", () => {

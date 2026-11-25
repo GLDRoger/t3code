@@ -107,6 +107,7 @@ export function KinProjectPeopleSection(
       {adding ? (
         <KinProjectPeopleSheet
           title={KIN_PROJECT_PEOPLE.choose}
+          private={view.privacy.private}
           people={props.people}
           names={props.names}
           on={view.people}
@@ -177,6 +178,7 @@ const same = (a: KinWorkPrincipal, b: KinWorkPrincipal) =>
 
 function KinProjectPeopleSheet(props: {
   readonly title: string;
+  readonly private: boolean;
   readonly people: ReadonlyArray<KinPerson> | null;
   readonly names: KinWorkNames;
   readonly on: Parameters<typeof kinProjectPeopleChoices>[0]["on"];
@@ -195,7 +197,9 @@ function KinProjectPeopleSheet(props: {
       <SheetPopup side="right">
         <SheetHeader>
           <SheetTitle>{props.title}</SheetTitle>
-          <SheetDescription>{KIN_PROJECT_PEOPLE.detail}</SheetDescription>
+          <SheetDescription>
+            {props.private ? KIN_PROJECT_PEOPLE.privateDetail : KIN_PROJECT_PEOPLE.detail}
+          </SheetDescription>
         </SheetHeader>
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-6 pb-6">
           <KinProjectPeoplePicker

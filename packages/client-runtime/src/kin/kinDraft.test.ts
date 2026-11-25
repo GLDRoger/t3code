@@ -42,6 +42,33 @@ describe("kinAskDraft", () => {
   ] as const)("%s", (_, typed, question, ref, text, after) => {
     expect(kinAskDraft(typed, { question, ref })).toEqual({ text, ref: after });
   });
+
+  it.each([
+    // typed, the line the last Ask readied, the new Ask's line, text after
+    [
+      "a new line replaces an untouched earlier one",
+      "Here is the bank statement: ",
+      "Here is the bank statement: ",
+      "Add a subscription: ",
+      "Add a subscription: ",
+    ],
+    [
+      "words typed after the earlier line stay",
+      "Here is the bank statement: March",
+      "Here is the bank statement: ",
+      "Add a subscription: ",
+      "Add a subscription: \n\nHere is the bank statement: March",
+    ],
+    [
+      "a box emptied since stays empty under the new line",
+      "",
+      "Log an expense: ",
+      "Add a subscription: ",
+      "Add a subscription: ",
+    ],
+  ] as const)("%s", (_, typed, readied, question, text) => {
+    expect(kinAskDraft(typed, { question, ref: null, readied })).toEqual({ text, ref: null });
+  });
 });
 
 describe("kinDraftGoesWith", () => {

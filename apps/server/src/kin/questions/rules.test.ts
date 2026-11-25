@@ -17,7 +17,7 @@ const IST = "Asia/Kolkata";
 const at = (iso: string) => Date.parse(iso);
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 
-it("a question's day is 19:30 at the end of the next working day, on the person's clock", () => {
+it("a question's day ends with the next working day, on the person's clock and hours", () => {
   // Monday 11:30 IST: Tuesday 19:30 IST.
   assert.strictEqual(iso(defaultDue(at("2026-11-16T06:00:00Z"), IST)), "2026-11-17T14:00:00.000Z");
   // Monday 23:00 IST, after the day ended: still Tuesday.
@@ -26,13 +26,64 @@ it("a question's day is 19:30 at the end of the next working day, on the person'
   assert.strictEqual(iso(defaultDue(at("2026-11-20T09:00:00Z"), IST)), "2026-11-23T14:00:00.000Z");
   assert.strictEqual(iso(defaultDue(at("2026-11-21T09:00:00Z"), IST)), "2026-11-23T14:00:00.000Z");
   // Someone who works Saturdays only.
+  const saturdays = { days: [6], start: "10:30", end: "19:30" };
   assert.strictEqual(
-    iso(defaultDue(at("2026-11-16T06:00:00Z"), IST, [6])),
+    iso(defaultDue(at("2026-11-16T06:00:00Z"), IST, saturdays)),
     "2026-11-21T14:00:00.000Z",
   );
   // No safe default: raised the next working morning at 10:30.
   assert.strictEqual(iso(raiseAt(at("2026-11-17T14:00:00Z"), IST)), "2026-11-18T05:00:00.000Z");
   assert.strictEqual(iso(raiseAt(at("2026-11-20T14:00:00Z"), IST)), "2026-11-23T05:00:00.000Z");
+  // Someone who works 8 to 17 on weekdays: their day ends at 17:00, a raise comes at 8:00.
+  const early = { days: [1, 2, 3, 4, 5], start: "08:00", end: "17:00" };
+  assert.strictEqual(
+    iso(defaultDue(at("2026-11-16T06:00:00Z"), IST, early)),
+    "2026-11-17T11:30:00.000Z",
+  );
+  assert.strictEqual(
+    iso(raiseAt(at("2026-11-17T11:30:00Z"), IST, early)),
+    "2026-11-18T02:30:00.000Z",
+  );
+  assert.deepStrictEqual(namedDue("2026-11-18", at("2026-11-16T06:00:00Z"), IST, early), {
+    at: at("2026-11-18T11:30:00Z"),
+  });
+  // A night shift, Monday to Friday 22:00 to 06:00: its day ends when the shift does, the next
+  // morning, and a raise comes when one starts.
+  const night = { days: [1, 2, 3, 4, 5], start: "22:00", end: "06:00" };
+  for (const [asked, due] of [
+    // Monday 11:30 and 23:00, on Monday's shift: Tuesday 06:00.
+    ["2026-11-16T06:00:00Z", "2026-11-17T00:30:00.000Z"],
+    ["2026-11-16T17:30:00Z", "2026-11-17T00:30:00.000Z"],
+    // Tuesday 02:00, mid-shift: today ends at 06:00, so its day is Wednesday's 06:00.
+    ["2026-11-16T20:30:00Z", "2026-11-18T00:30:00.000Z"],
+    // Friday 23:00: Saturday 06:00. Saturday 23:00, no shift that night: Tuesday 06:00.
+    ["2026-11-20T17:30:00Z", "2026-11-21T00:30:00.000Z"],
+    ["2026-11-21T17:30:00Z", "2026-11-24T00:30:00.000Z"],
+  ] as const)
+    assert.strictEqual(iso(defaultDue(at(asked), IST, night)), due, asked);
+  // Raised at the next shift's start: Tuesday 22:00, and after Friday's shift, Monday 22:00.
+  assert.strictEqual(
+    iso(raiseAt(at("2026-11-17T00:30:00Z"), IST, night)),
+    "2026-11-17T16:30:00.000Z",
+  );
+  assert.strictEqual(
+    iso(raiseAt(at("2026-11-21T00:30:00Z"), IST, night)),
+    "2026-11-23T16:30:00.000Z",
+  );
+  // A named Monday ends with Monday's shift, Tuesday 06:00.
+  assert.deepStrictEqual(namedDue("2026-11-23", at("2026-11-16T06:00:00Z"), IST, night), {
+    at: at("2026-11-24T00:30:00Z"),
+  });
+  // Across Berlin's clocks going back on 25 Oct: Saturday's 22:00 to 06:00 is nine hours.
+  const saturdayNight = { days: [6], start: "22:00", end: "06:00" };
+  assert.strictEqual(
+    iso(defaultDue(at("2026-10-24T10:00:00Z"), "Europe/Berlin", saturdayNight)),
+    "2026-10-25T05:00:00.000Z",
+  );
+  assert.strictEqual(
+    iso(raiseAt(at("2026-10-25T05:00:00Z"), "Europe/Berlin", saturdayNight)),
+    "2026-10-31T21:00:00.000Z",
+  );
 });
 
 it("a named day is 19:30 that day, and refused when past or more than a month out", () => {
@@ -50,6 +101,16 @@ it("the same intent about a shared record repeats; anything Kin can't tell is le
   };
   assert.strictEqual(finance.intent, "draft payment reminder");
   assert.deepStrictEqual(finance.about, ["INV-8", "INV-9"]);
+  // A pull request by its URL, in one spelling; an issue's or a bare page's is not one.
+  assert.deepStrictEqual(
+    normaliseAbout([
+      " https://github.com/Invented-Co/App/pull/12/ ",
+      "https://github.com/invented-co/app/pull/12",
+      "https://github.com/invented-co/app/issues/3",
+      "https://example.com/pull/4",
+    ]),
+    ["https://github.com/invented-co/app/pull/12"],
+  );
   const chief = { intent: normaliseIntent("should I draft a payment reminder"), about: ["INV-8"] };
   assert.isTrue(repeats(chief, finance));
   // Another intent, no shared record, or nothing to compare: allowed.
@@ -69,6 +130,10 @@ it("a default that sends or moves money is never safe to take alone", () => {
   // A bare yes reads its question.
   assert.isFalse(safeDefault("Yes", "Shall I send VIOM the reminder?"));
   assert.isFalse(safeDefault("Yes", "Mark INV-8 paid?"));
+  // A field named for money is no act of moving it.
+  const ways = ["Paid-by + statement match, ~3 days (my pick)", "Full build, ~2 weeks"];
+  assert.isTrue(safeDefault(ways[0]!, "Which way for partner reimbursements?", { labels: ways }));
+  assert.isFalse(safeDefault("Pay it today", "Shall I settle INV-8?"));
   // Money terms are the owner's: a rate or an amount in any option, or a money record, in any currency.
   const terms = ["40% advance now, rest on milestones", "Full amount on delivery"];
   assert.isFalse(safeDefault(terms[0]!, "How should Orbit pay for P-3?", { labels: terms }));

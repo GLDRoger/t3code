@@ -1,6 +1,11 @@
 import { kinWhenFormat } from "@t3tools/contracts";
 import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
-import { KIN_LISTS } from "@t3tools/client-runtime/kin/kinLists";
+import {
+  KIN_AMOUNT_SLIP,
+  KIN_LISTS,
+  kinAmountAsking,
+  type KinAmountAsk,
+} from "@t3tools/client-runtime/kin/kinLists";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import type { KinWorkFile } from "@t3tools/contracts";
 import { ChevronDownIcon, FileIcon, ImageIcon, PencilIcon, XIcon } from "lucide-react";
@@ -77,11 +82,19 @@ export function KinEntryText(props: {
   readonly headline?: boolean;
   readonly disabled: boolean;
   readonly onSave: (text: string) => Promise<string | null>;
+  /** An amount's question about a slip, shown as a line while the text is the one asked about. */
+  readonly ask?: KinAmountAsk | null;
+  /** Opens as the box, for a detail the person just asked to type. */
+  readonly open?: boolean;
+  readonly onCancel?: () => void;
 }) {
-  const [text, setText] = useState<string | null>(null);
+  const [text, setText] = useState<string | null>(props.open === true ? props.draft : null);
   const [problem, setProblem] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const id = useId();
+  const ask = props.ask ?? null;
+  const asking = text === null ? null : kinAmountAsking(ask, text.trim());
+  const failed = problem !== null && problem !== ask?.line ? problem : null;
   if (text === null)
     return (
       <button
@@ -137,25 +150,34 @@ export function KinEntryText(props: {
             if (event.key === "Escape") {
               event.stopPropagation();
               setText(null);
+              props.onCancel?.();
             }
           }}
         />
         <Button type="submit" size="sm" disabled={saving} aria-busy={saving}>
-          {KIN_LISTS.entry.save}
+          {asking === null ? KIN_LISTS.entry.save : KIN_AMOUNT_SLIP.save}
         </Button>
         <Button
           type="button"
           size="sm"
           variant="outline"
           disabled={saving}
-          onClick={() => setText(null)}
+          onClick={() => {
+            setText(null);
+            props.onCancel?.();
+          }}
         >
           {KIN_WORK_COPY.cancel}
         </Button>
       </div>
-      {problem === null ? null : (
+      {asking === null ? null : (
+        <p role="status" className="text-sm text-foreground">
+          {asking.line}
+        </p>
+      )}
+      {failed === null ? null : (
         <Alert variant="error">
-          <AlertDescription>{problem}</AlertDescription>
+          <AlertDescription>{failed}</AlertDescription>
         </Alert>
       )}
     </form>

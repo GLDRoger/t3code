@@ -1,5 +1,7 @@
 import * as Schema from "effect/Schema";
 
+import { casePattern } from "./pattern.ts";
+
 export const DeviceExpect = Schema.Struct({
   briefs: Schema.optional(Schema.Number),
   recording: Schema.optional(Schema.String),
@@ -951,7 +953,7 @@ export function gradeDevice(expect: typeof DeviceExpect.Type | undefined, run: D
     add(
       `device final report /${pattern}/`,
       run.stopReason === "end_turn" &&
-        (!!recovered || new RegExp(pattern).test(run.finalText ?? "")),
+        (!!recovered || casePattern(pattern).test(run.finalText ?? "")),
     );
   if (expect.noRawUi) add("shellMustNot device UI", !allActions.some((action) => action.raw));
   if (expect.maxCaptureAttempts !== undefined)

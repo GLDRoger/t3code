@@ -1,6 +1,6 @@
 import { SidebarChromeFooter, SidebarChromeHeader } from "../components/sidebar/SidebarChrome";
 import { SidebarContent, SidebarGroup } from "../components/ui/sidebar";
-import { isElectron } from "../env";
+import { hasDesktopWindowChrome } from "./kinDesktopWindow";
 import { KinChatList } from "./KinChatList";
 import { KinNav } from "./KinNav";
 import { KinNewLeadButton } from "./KinNewLeadButton";
@@ -9,7 +9,7 @@ import { KinNewLeadButton } from "./KinNewLeadButton";
 export function KinSidebar() {
   return (
     <>
-      <SidebarChromeHeader isElectron={isElectron} />
+      <SidebarChromeHeader isElectron={hasDesktopWindowChrome} />
       <KinNav />
       <SidebarContent
         className="min-h-full"

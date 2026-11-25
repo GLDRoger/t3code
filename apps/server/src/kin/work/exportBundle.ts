@@ -1,8 +1,10 @@
 import {
+  formatKinMoney,
   KIN_EXPORT_HOLDS,
   KIN_EXPORT_LEAVES,
   KIN_EXPORT_ROUTE,
   KinChatError,
+  KinAttachment,
   KinDocFile,
   type KinExportLink,
   type KinExportLinkInput,
@@ -33,9 +35,16 @@ import type {
   ImportProject,
 } from "./importFormat.ts";
 import { LISTS, parseFields, type FieldValues } from "./lists.ts";
-import { currencyDigits, dayIn } from "./money.ts";
-import { iso, ownerZone, workFailure } from "./recordRows.ts";
-import { allLists, keyFor, PRESETS, type ListDef, type PresetId } from "./registers.ts";
+import { dayIn } from "./money.ts";
+import { iso, ownerZone, stepsOf, workFailure } from "./recordRows.ts";
+import {
+  allLists,
+  keyFor,
+  legacyFieldType,
+  PRESETS,
+  type ListDef,
+  type PresetId,
+} from "./registers.ts";
 import { zipStream, type ZipEntry } from "./zipStream.ts";
 
 /**
@@ -52,6 +61,9 @@ export const EXPORT_READS = [
   "kin_issued_numbers",
   "kin_doc_versions",
   "kin_doc_files",
+  "kin_record_comments",
+  "kin_client_touches",
+  "kin_people",
 ] as const;
 
 /** Rows `kin import` takes as entries; the rest are rows of their own or files here. */
@@ -145,11 +157,8 @@ export const readExportToken = Effect.fn("KinExport.readToken")(function* (
   return Option.filter(claims, (one) => one.expiresAt > now);
 });
 
-const decimal = (minor: number, currency: string) => {
-  const digits = currencyDigits(currency);
-  const text = String(minor).padStart(digits + 1, "0");
-  return digits === 0 ? text : `${text.slice(0, -digits)}.${text.slice(-digits)}`;
-};
+const decimal = (minor: number, currency: string) =>
+  formatKinMoney(minor, currency, { bare: true, cents: "always" });
 const line = (row: unknown) => `${JSON.stringify(row)}\n`;
 const some = <A>(key: string, value: A | null | undefined | "") =>
   value === null || value === undefined || value === "" ? {} : { [key]: value };
@@ -173,6 +182,8 @@ type RecordRow = {
   readonly confirmed: number;
   readonly notes: string;
   readonly fieldsJson: string;
+  readonly stepsJson: string | null;
+  readonly urgent: number | null;
   readonly createdAt: number;
   readonly closedAt: number | null;
 };
@@ -195,9 +206,9 @@ const listSpec = (def: ListDef): ImportList => {
     return [
       {
         label: one.label,
-        type: one.type,
+        type: legacyFieldType(one),
         ...some("choices", one.choices),
-        ...some("link", one.link),
+        ...some("link", one.link === "list" ? undefined : one.link),
         ...(one.sensitive && one.type !== "money" && one.type !== "file"
           ? { sensitive: true }
           : {}),
@@ -283,7 +294,7 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
       } else if (typeof value === "string") {
         if (spec?.type === "person") {
           if (value === `person:${owner}`) out[outKey] = "owner";
-        } else if (spec?.type === "link") {
+        } else if (spec !== undefined && legacyFieldType(spec) === "link") {
           const linked = parties.get(value);
           if (linked !== undefined) out[outKey] = linked;
         } else if (value.trim() !== "" && value.length <= 500) out[outKey] = value;
@@ -296,7 +307,7 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
       title, state, category, party_id AS "partyId", project_id AS "projectId", due_at AS "dueAt",
       due_all_day AS "dueAllDay", date_at AS "dateAt", date_all_day AS "dateAllDay",
       amount_minor AS "amountMinor", currency, sensitive, confirmed, notes,
-      fields_json AS "fieldsJson", created_at AS "createdAt", closed_at AS "closedAt"
+      fields_json AS "fieldsJson", steps_json AS "stepsJson", urgent, created_at AS "createdAt", closed_at AS "closedAt"
     FROM kin_records`;
   /** One register's rows in pages, so a company's whole history never sits in memory. */
   const pages = (registers: ReadonlyArray<string>, not: boolean) =>
@@ -391,6 +402,7 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
         const number = numbers.find((one) => one.recordId === row.recordId)?.number;
         const paid = payments.filter((one) => one.recordId === row.recordId);
         const fields = fieldsOf(row, def);
+        const steps = stepsOf(row);
         const entry: ImportEntry = {
           source: row.key,
           list: row.registerId,
@@ -405,6 +417,8 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
             ? {}
             : { amount: decimal(row.amountMinor, row.currency), currency: row.currency }),
           ...some("notes", row.notes),
+          ...(steps.length > 0 ? { steps } : {}),
+          ...(row.registerId === "work" ? { urgent: row.urgent === 1 } : {}),
           ...(Object.keys(fields).length === 0 ? {} : { fields }),
           ...(row.sensitive === 1 ? { sensitive: true } : {}),
           ...(row.confirmed === 0 ? { suggested: true } : {}),
@@ -464,6 +478,82 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
     Stream.flatMap((entries) => Stream.fromIterable(entries)),
   );
 
+  /** Each entry's comments, oldest first, and the files they hold. */
+  const commentRows = Stream.paginate({ key: "", seq: 0 }, (after: { key: string; seq: number }) =>
+    sql<{
+      key: string;
+      seq: number;
+      at: number;
+      byKind: string;
+      by: string | null;
+      body: string;
+      filesJson: string;
+    }>`
+      SELECT r.key, c.seq, c.created_at AS at, c.author_kind AS "byKind",
+        p.display_name AS by, c.body, c.files_json AS "filesJson"
+      FROM kin_record_comments c
+      JOIN kin_records r ON r.org_id = c.org_id AND r.record_id = c.record_id
+      LEFT JOIN kin_people p ON c.author_kind = 'person' AND p.org_id = c.org_id
+        AND p.person_id = c.author_id
+      WHERE c.org_id = ${orgId} AND c.removed_at IS NULL AND (r.key, c.seq) > (${after.key}, ${after.seq})
+      ORDER BY r.key, c.seq LIMIT ${PAGE}`.pipe(
+      Effect.map((rows) => {
+        const lines = rows.map((row) => {
+          const files = Option.getOrElse(decodeCommentFiles(row.filesJson), () => []);
+          for (const one of files) keepFile(`files/${row.key}`, one.id, safeName(one.name));
+          return line({
+            entry: row.key,
+            at: iso(row.at),
+            by: row.byKind === "agent" ? "agent" : (row.by ?? "person"),
+            text: row.body,
+            ...(files.length === 0 ? {} : { files: files.map((one) => safeName(one.name)) }),
+          });
+        });
+        const last = rows.at(-1);
+        return [
+          lines,
+          rows.length < PAGE || last === undefined
+            ? Option.none()
+            : Option.some({ key: last.key, seq: last.seq }),
+        ] as const;
+      }),
+    ),
+  ).pipe(Stream.flatMap((lines) => Stream.fromIterable(lines)));
+
+  /** Contact logged with each client, oldest first. */
+  const contactRows = Stream.paginate("", (after: string) =>
+    sql<{
+      touchId: string;
+      client: string;
+      at: number;
+      kind: string;
+      who: string | null;
+      note: string;
+    }>`
+      SELECT t.touch_id AS "touchId", r.key AS client, t.at, t.kind, p.display_name AS who, t.note
+      FROM kin_client_touches t
+      JOIN kin_records r ON r.org_id = t.org_id AND r.record_id = t.party_id
+      LEFT JOIN kin_people p ON p.org_id = t.org_id AND p.person_id = t.person_id
+      WHERE t.org_id = ${orgId} AND t.removed_at IS NULL AND t.touch_id > ${after}
+      ORDER BY t.touch_id LIMIT ${PAGE}`.pipe(
+      Effect.map(
+        (rows) =>
+          [
+            rows.map((row) =>
+              line({
+                client: row.client,
+                at: iso(row.at),
+                kind: row.kind,
+                ...some("who", row.who),
+                ...some("note", row.note),
+              }),
+            ),
+            rows.length < PAGE ? Option.none() : Option.some(rows.at(-1)!.touchId),
+          ] as const,
+      ),
+    ),
+  ).pipe(Stream.flatMap((lines) => Stream.fromIterable(lines)));
+
   const fileEntries = Stream.suspend(() => Stream.fromIterable(files)).pipe(
     Stream.mapEffect((one) =>
       Effect.gen(function* () {
@@ -488,7 +578,9 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
     "           Restore it on the computer running Kin with: t3 kin import --file kin.jsonl --apply",
     "           What it makes is owned by whoever imports it.",
     "docs/      Each doc as it reads now, and the files docs show.",
-    "files/     Files kept on entries, such as invoice PDFs and receipts.",
+    "files/     Files kept on entries, such as invoice PDFs and receipts, and on their comments.",
+    "comments.jsonl  Each entry's comments, oldest first.",
+    "contacts.jsonl  The contact logged with each client: calls, meetings, emails and messages.",
     "",
   ].join("\n");
 
@@ -501,6 +593,8 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
     Stream.fromIterable<ZipEntry<SqlError.SqlError, never>>([
       { name: "README.txt", data: text(readme) },
       { name: "kin.jsonl", data: lines.pipe(Stream.encodeText) },
+      { name: "comments.jsonl", data: commentRows.pipe(Stream.encodeText) },
+      { name: "contacts.jsonl", data: contactRows.pipe(Stream.encodeText) },
     ]).pipe(
       Stream.concat(docEntries),
       // Last: the docs and entries above named the files.
@@ -517,6 +611,9 @@ const safeName = (name: string) =>
     .slice(0, 80) || "untitled";
 const extname = (path: string) => /\.[A-Za-z0-9]{1,10}$/.exec(path)?.[0] ?? "";
 const decodeDocFile = Schema.decodeUnknownOption(Schema.fromJsonString(KinDocFile));
+const decodeCommentFiles = Schema.decodeUnknownOption(
+  Schema.fromJsonString(Schema.Array(KinAttachment)),
+);
 const fileNameOf = (json: string | null) =>
   json === null ? undefined : Option.getOrUndefined(decodeDocFile(json))?.name;
 const text = (value: string) => Stream.make(new TextEncoder().encode(value));

@@ -1,3 +1,4 @@
+import { KIN_CHART_COPY } from "@t3tools/client-runtime/kin/kinChart";
 import type {
   KinChartMark,
   KinChartTone,
@@ -394,7 +395,7 @@ export const KinChart = memo(function KinChart(props: { readonly view: KinChartV
       <View className="flex-row">
         <Chip
           size="small"
-          label={asTable ? "Show chart" : "Show as table"}
+          label={asTable ? KIN_CHART_COPY.showChart : KIN_CHART_COPY.showTable}
           onPress={() => setAsTable(!asTable)}
         />
       </View>

@@ -1,4 +1,9 @@
-import type { KinBankKnown, KinOrgId } from "@t3tools/contracts";
+import {
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
+  type KinBankKnown,
+  type KinOrgId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -9,6 +14,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
 import { openingOf, sameAccounts } from "./bankAccounts.ts";
+import { DAY_MS } from "../../durations.ts";
 
 /**
  * How far Kin sees the bank, computed when read from the statements the owner confirmed. Kin
@@ -16,7 +22,6 @@ import { openingOf, sameAccounts } from "./bankAccounts.ts";
  * a month no statement covers, Kin can't tell.
  */
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 /** An account whose lines end this long before another's no longer holds back the company's day. */
 const KEPT_UP_DAYS = 45;
 
@@ -210,23 +215,53 @@ export const bankKnown = Effect.fn("KinBankKnown.read")(function* (orgId: KinOrg
   return knownThrough(yield* confirmedCoverage(orgId), today);
 });
 
+const BankCredit = Schema.Struct({
+  key: Schema.String,
+  date: Schema.String,
+  amount: Schema.String,
+  title: Schema.String,
+  reason: Schema.String,
+});
+
 /** `bankAnswer` in a tool's result. */
 export const BankAnswer = Schema.Struct({
   knownThrough: Schema.NullOr(Schema.String),
   note: Schema.String,
   accounts: Schema.optional(Schema.Unknown),
+  /** An unpaid invoice's own read: unexplained credits that look like its payment, newest first. */
+  credits: Schema.optional(Schema.Array(BankCredit)),
 });
+
+export const shortDay = (day: string) =>
+  formatKinWhen(Date.parse(`${day}T00:00:00Z`), "date", { zone: "UTC", locale: KIN_TEXT_LOCALE });
 
 /**
  * How far Kin sees the bank, as an agent reads it beside a money answer; `accounts` adds each
- * account's run. Every word is the server's.
+ * account's run, and `credits` what Bank transactions holds that looks like one invoice's
+ * payment. Every word is the server's.
  */
-export const bankAnswer = (bank: BankKnown, accounts = false) => ({
+export const bankAnswer = (
+  bank: BankKnown,
+  accounts = false,
+  credits: ReadonlyArray<typeof BankCredit.Type> = [],
+) => ({
   knownThrough: bank.through,
   note:
-    bank.through === null
-      ? "No bank statement is confirmed, so Kin can't see what reached the bank."
-      : `The confirmed bank statements cover every day to ${bank.through} on the accounts Kin has; Kin can't see the bank after that day.`,
+    credits.length > 0
+      ? `${
+          bank.through === null
+            ? "No bank statement is confirmed."
+            : `The confirmed bank statements cover every day to ${bank.through}.`
+        } Bank transactions has ${
+          credits.length === 1
+            ? "an unexplained credit that looks"
+            : "unexplained credits that look"
+        } like this invoice's payment: ${credits
+          .map((one) => `${one.key}, ${one.amount} on ${shortDay(one.date)}`)
+          .join("; ")}. The invoice isn't recorded as paid until the owner confirms.`
+      : bank.through === null
+        ? "No bank statement is confirmed, so Kin can't see what reached the bank."
+        : `The confirmed bank statements cover every day to ${bank.through} on the accounts Kin has; Kin can't see the bank after that day.`,
   ...(accounts && bank.accounts.length > 0
     ? {
         accounts: bank.accounts.map((one) => ({
@@ -237,4 +272,5 @@ export const bankAnswer = (bank: BankKnown, accounts = false) => ({
         })),
       }
     : {}),
+  ...(credits.length === 0 ? {} : { credits }),
 });

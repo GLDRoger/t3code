@@ -1,7 +1,13 @@
 import { KinPersonId, type KinRecipe, type KinRecordChange } from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinHasNotesHistory, kinNotesVersions, kinTemplateGroups } from "./kinTemplates.ts";
+import { kinDocPrivacy } from "./kinDocs.ts";
+import {
+  kinDocLabelAction,
+  kinHasNotesHistory,
+  kinNotesVersions,
+  kinTemplateGroups,
+} from "./kinTemplates.ts";
 import type { KinWorkNames } from "./kinWork.ts";
 
 // @effect-diagnostics-next-line globalDate:off
@@ -103,5 +109,40 @@ describe("kinNotesVersions", () => {
     // Cleared notes still have versions to bring back; an entry never noted has none.
     expect(kinHasNotesHistory({ changes: [change(2, "Before", "")] })).toBe(true);
     expect(kinHasNotesHistory({ changes: [] })).toBe(false);
+  });
+});
+
+describe("a doc's private line and its label item", () => {
+  it("say who reads it, and a draft a teammate still reads is made yours first", () => {
+    const zoya = { reader: { name: "Zoya Sheikh" } };
+    const rows = [
+      [{ sensitive: false }, null, "Mark as private"],
+      [{ sensitive: true }, "Private. Only owners see this.", "Mark as not private"],
+      [{ sensitive: true, kindLabel: {} }, "Private. Only owners see this.", "Mark as not private"],
+      [
+        { sensitive: true, kindLabel: zoya },
+        "Private. Only owners and Zoya Sheikh, whose draft it is, see this.",
+        "Keep to owners only",
+      ],
+      [
+        { sensitive: true, kindLabel: { reader: { name: "Zoya Sheikh", you: true as const } } },
+        "Private. Only you and the owners see this.",
+        "Mark as not private",
+      ],
+      [
+        { sensitive: false, sensitiveInherited: true as const },
+        "Private, because its client or project is. Only owners see this.",
+        null,
+      ],
+    ] as const;
+    for (const [doc, line, item] of rows) {
+      expect(kinDocPrivacy(doc), JSON.stringify(doc)).toBe(line);
+      expect(kinDocLabelAction(doc)?.label ?? null, JSON.stringify(doc)).toBe(item);
+    }
+    expect(kinDocLabelAction({ sensitive: true, kindLabel: zoya })).toMatchObject({
+      sensitive: true,
+      detail:
+        "Zoya Sheikh won't be able to read it any more. Only owners will, and agents only in your own chats.",
+    });
   });
 });

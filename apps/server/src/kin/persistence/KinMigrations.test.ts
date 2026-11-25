@@ -1,3 +1,5 @@
+// @effect-diagnostics nodeBuiltinImport:off -- each case copies one migrated database file.
+import K021PushDevices from "./migrations/K021_PushDevices.ts";
 import PeopleInvitesMigration from "./migrations/K038_PeopleInvites.ts";
 import ChatGrantsLapse from "./migrations/K055_ChatGrantsLapse.ts";
 import K058Work from "./migrations/K058_Work.ts";
@@ -18,10 +20,16 @@ import K073KeyPushes from "./migrations/K073_KeyPushes.ts";
 import K074DocJobCleanup from "./migrations/K074_DocJobCleanup.ts";
 import K075ServerRenderedDocuments from "./migrations/K075_ServerRenderedDocuments.ts";
 import K077DocumentLabels from "./migrations/K077_DocumentLabels.ts";
+import K079ImportRuns from "./migrations/K079_ImportRuns.ts";
 import K088MoneyRecords from "./migrations/K088_MoneyRecords.ts";
 import K107Connections from "./migrations/K107_Connections.ts";
-import { assert, describe, it } from "@effect/vitest";
+import * as NodeFS from "node:fs";
+import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
+
+import { assert, beforeAll, describe, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -31,7 +39,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { migrationManifest, runMigrations } from "../../persistence/Migrations.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { PreparedJson } from "../connections/Sending.ts";
-import { runKinMigrations } from "./KinMigrations.ts";
+import { kinMigrations, runKinMigrations } from "./KinMigrations.ts";
 import * as KinPersistence from "./KinPersistence.ts";
 
 const decodePrepared = Schema.decodeSync(PreparedJson);
@@ -43,12 +51,16 @@ const tableNames = [
   "kin_amount_notices",
   "kin_approver_key_confirmations",
   "kin_approver_keys",
+  "kin_arrivals",
   "kin_audit",
   "kin_auth_key_repairs",
   "kin_auth_paired_sessions",
   "kin_auth_session_keys",
+  "kin_bank_alerts",
   "kin_bank_statement_entries",
   "kin_bank_statements",
+  "kin_bill_reads",
+  "kin_bill_requests",
   "kin_budget",
   "kin_budget_charges",
   "kin_budget_limits",
@@ -58,6 +70,7 @@ const tableNames = [
   "kin_chats",
   "kin_client_touches",
   "kin_company_profile",
+  "kin_company_shell",
   "kin_connection_asks",
   "kin_connection_calls",
   "kin_connection_cursors",
@@ -71,6 +84,7 @@ const tableNames = [
   "kin_doc_job_figures",
   "kin_doc_jobs",
   "kin_doc_versions",
+  "kin_dream_charges",
   "kin_dream_runs",
   "kin_event_outside",
   "kin_events",
@@ -106,25 +120,34 @@ const tableNames = [
   "kin_money_budget_receipts",
   "kin_money_budgets",
   "kin_number_series",
+  "kin_number_values",
+  "kin_offline_skips",
   "kin_org_state",
   "kin_orgs",
   "kin_pending_actions",
   "kin_people",
   "kin_people_invites",
+  "kin_picture_counts",
+  "kin_picture_images",
+  "kin_picture_settings",
   "kin_ping_deliveries",
   "kin_ping_escalations",
   "kin_ping_items",
   "kin_ping_ledger",
   "kin_pr_review_posts",
+  "kin_private_turns",
   "kin_profile_changes",
   "kin_pull_requests",
   "kin_pulse_facts",
   "kin_pulse_nudges",
   "kin_pulse_seeds",
   "kin_pulse_told",
+  "kin_push_about",
   "kin_push_devices",
   "kin_push_rings",
+  "kin_push_sent",
   "kin_questions",
+  "kin_reach_limits",
   "kin_reaction_wakes",
   "kin_reactions",
   "kin_read_state",
@@ -169,13 +192,16 @@ const tableNames = [
   "kin_trigger_inbox",
   "kin_trigger_settings",
   "kin_triggers",
+  "kin_trouble_agents",
+  "kin_troubles",
   "kin_turn_figures",
   "kin_visual_hosts",
   "kin_waiting",
   "kin_wakeup_outside_reads",
   "kin_wakeup_sensitive_reads",
   "kin_wakeups",
-  "kin_webhook_sources",
+  "kin_watch_looks",
+  "kin_watches",
   "kin_widgets",
   "kin_worker_attempts",
   "kin_worker_charges",
@@ -183,7 +209,198 @@ const tableNames = [
   "kin_workers",
 ];
 const timestamp = "2026-11-07T00:00:00.000Z";
-const layer = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
+// What hosts already ran, frozen: never edit it to add a migration.
+const shipped = [
+  [1, "ChatCore"],
+  [2, "Lead"],
+  [3, "Triggers"],
+  [4, "MemoryReads"],
+  [5, "OneChatOwner"],
+  [6, "Pings"],
+  [7, "Budget"],
+  [8, "Floor"],
+  [9, "JudgeLog"],
+  [10, "ChatChanges"],
+  [11, "MemoryHeads"],
+  [12, "SecretAllow"],
+  [13, "Routines"],
+  [14, "LeadToolCalls"],
+  [15, "AuthSessionKeys"],
+  [16, "DeferralRuns"],
+  [17, "Workers"],
+  [18, "Dreams"],
+  [19, "WebhookSecretHash"],
+  [20, "Approvals"],
+  [21, "PushDevices"],
+  [22, "ChatLevels"],
+  [23, "ExecutionWriteStarted"],
+  [24, "MemoryReviewPulls"],
+  [25, "FloorGrantWakeup"],
+  [26, "Reactions"],
+  [27, "AuthorityBinding"],
+  [28, "WakeupTimings"],
+  [29, "DropJudgeLog"],
+  [30, "ManyLeads"],
+  [31, "LeadDeliveries"],
+  [32, "WorkerEnvironment"],
+  [33, "ApproverKeyConfirmations"],
+  [34, "PerLeadWakeups"],
+  [35, "RetireLevelCards"],
+  [38, "PeopleInvites"],
+  [39, "LeadHandoffs"],
+  [40, "MessageAttachments"],
+  [41, "GroupLead"],
+  [42, "ReactionWakes"],
+  [43, "WakeupAudience"],
+  [44, "WakeupSharedSince"],
+  [45, "WakeupAudienceAbort"],
+  [46, "ChatCleared"],
+  [47, "SilentMessages"],
+  [50, "LeadAccess"],
+  [51, "ChatSharing"],
+  [52, "MemoryLabels"],
+  [53, "MemorySharing"],
+  [54, "SharedProjection"],
+  [55, "ChatGrantsLapse"],
+  [56, "SuggestionsByVersion"],
+  [57, "Schedules"],
+  [58, "Work"],
+  [59, "WorkerWithdrawals"],
+  [60, "WorkClients"],
+  [61, "WorkerAttempts"],
+  [62, "WorkerPublishApproval"],
+  [63, "LegacyWorkerAttempts"],
+  [64, "AgentRetirement"],
+  [65, "WakeupRetired"],
+  [66, "WakeupsUnretiredIndex"],
+  [67, "Docs"],
+  [68, "WorkMoney"],
+  [69, "WorkerNetwork"],
+  [70, "VisualHosts"],
+  [71, "OwnerAnswerCards"],
+  [72, "GeneratedDocuments"],
+  [73, "KeyPushes"],
+  [74, "DocJobCleanup"],
+  [75, "ServerRenderedDocuments"],
+  [76, "DocFiles"],
+  [77, "DocumentLabels"],
+  [78, "RecipeLabelBaselines"],
+  [79, "ImportRuns"],
+  [80, "RecordRequestHash"],
+  [81, "RecipeJobPasses"],
+  [82, "BankStatements"],
+  [83, "StatementSafety"],
+  [84, "RecipeDefaults"],
+  [85, "StatementReading"],
+  [86, "StatementChatPasswords"],
+  [87, "TeamWork"],
+  [88, "MoneyRecords"],
+  [106, "ChatThreads"],
+  [107, "Connections"],
+  [110, "BudgetNotices"],
+  [130, "ConnectionPause"],
+  [131, "ReceiptProposalsPasswordBudget"],
+  [132, "PeopleProfiles"],
+  [133, "MoneyBudgets"],
+  [134, "ConnectionSignIn"],
+  [135, "PulseFacts"],
+  [136, "ConnectionAsks"],
+  [137, "PersonAccess"],
+  [138, "PulseCheckIns"],
+  [139, "ClientTouches"],
+  [140, "AssignedByAgent"],
+  [141, "ConnectionAccounts"],
+  [142, "MicrosoftConnections"],
+  [143, "PersonPlaces"],
+  [144, "PullRequestCare"],
+  [145, "RetireRoutines"],
+  [146, "SendDecidedBy"],
+  [147, "SendOwesCard"],
+  [148, "EventReplied"],
+  [149, "SendAccount"],
+  [150, "PersonRemoved"],
+  [151, "ToldAndHeld"],
+  [152, "MessageForm"],
+  [153, "HeldRelays"],
+  [154, "TeamDiscussions"],
+  [155, "TalkStyle"],
+  [156, "NamedKeys"],
+  [157, "AgentSettings"],
+  [158, "PrivateBy"],
+  [159, "OpenQuestions"],
+  [160, "GitHubWatch"],
+  [161, "Social"],
+  [162, "PersonHours"],
+  [163, "OneModel"],
+  [164, "WorkersRetired"],
+  [165, "HandedBack"],
+  [166, "GitHubAppRetired"],
+  [167, "TeamMemorySetting"],
+  [168, "GitHubOwnerUses"],
+  [169, "AwayAndWhen"],
+  [170, "OneSocialProfile"],
+  [171, "GitHubBranchGuards"],
+  [172, "CalendarCursor"],
+  [173, "NoMemoryReviewPulls"],
+  [174, "AnswerPages"],
+  [175, "HandoffWantsAnswer"],
+  [176, "RecordComments"],
+  [177, "RecordChangesByWakeup"],
+  [178, "AskOutsideAndDispatch"],
+  [179, "DeviceLinks"],
+  [180, "CardPlans"],
+  [181, "TasksKeys"],
+  [182, "HandoffRoutes"],
+  [183, "TasksKeyMakers"],
+  [184, "Recommendations"],
+  [185, "AskedFor"],
+  [186, "TasksKeysWithoutMaker"],
+  [187, "Holds"],
+  [188, "ReachLimits"],
+  [189, "MorningPages"],
+  [190, "RecordTitleIndex"],
+] as const;
+const kinMigrationsFrom = (from: number) => kinMigrations.filter(([id]) => id >= from);
+const historyOf = (list: typeof kinMigrations) =>
+  list.map(([migration_id, name]) => ({ migration_id, name }));
+const freshLayer = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
+
+const tempDir = Effect.acquireRelease(
+  Effect.sync(() => NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "kin-migrations-"))),
+  (dir) => Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
+);
+
+// Migrating is most of a case's time, so each case opens its own copy of one migrated database.
+const migratedFile = Deferred.makeUnsafe<string>();
+beforeAll(() =>
+  Effect.gen(function* () {
+    const file = NodePath.join(yield* tempDir, "migrated.sqlite");
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`VACUUM INTO ${file}`;
+    }).pipe(Effect.provide(freshLayer));
+    yield* Deferred.succeed(migratedFile, file);
+  }),
+);
+
+// The one setting of the server's setup that changes what a case can write.
+const foreignKeysOn = Layer.effectDiscard(
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`PRAGMA foreign_keys = ON`;
+  }),
+);
+
+const layer = Layer.unwrap(
+  Effect.gen(function* () {
+    const file = NodePath.join(yield* tempDir, "kin.sqlite");
+    NodeFS.copyFileSync(yield* Deferred.await(migratedFile), file);
+    return Layer.provideMerge(
+      KinPersistence.layer,
+      Layer.provideMerge(foreignKeysOn, NodeSqliteClient.layer({ filename: file })),
+    );
+  }),
+);
 
 const kinSchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -252,6 +469,23 @@ const undoChatSharing = Effect.gen(function* () {
   yield* sql`ALTER TABLE kin_chats DROP COLUMN shared_at`;
 });
 
+const undoChatPins = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE kin_chat_members DROP COLUMN pinned_at`;
+});
+
+const undoTaskSteps = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  for (const column of ["steps_json", "urgent"])
+    yield* sql`ALTER TABLE kin_records DROP COLUMN ${sql.literal(column)}`;
+});
+
+const undoSentUpDrafts = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  for (const column of ["draft_json", "approved_at", "draft_made_json"])
+    yield* sql`ALTER TABLE kin_questions DROP COLUMN ${sql.literal(column)}`;
+});
+
 const undoApproverKeyConfirmations = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`DROP TABLE kin_approver_key_confirmations`;
@@ -280,153 +514,7 @@ describe("Kin migrations", () => {
           before.map((row) => row.name),
           tableNames,
         );
-        assert.deepStrictEqual(yield* kinHistory, [
-          { migration_id: 1, name: "ChatCore" },
-          { migration_id: 2, name: "Lead" },
-          { migration_id: 3, name: "Triggers" },
-          { migration_id: 4, name: "MemoryReads" },
-          { migration_id: 5, name: "OneChatOwner" },
-          { migration_id: 6, name: "Pings" },
-          { migration_id: 7, name: "Budget" },
-          { migration_id: 8, name: "Floor" },
-          { migration_id: 9, name: "JudgeLog" },
-          { migration_id: 10, name: "ChatChanges" },
-          { migration_id: 11, name: "MemoryHeads" },
-          { migration_id: 12, name: "SecretAllow" },
-          { migration_id: 13, name: "Routines" },
-          { migration_id: 14, name: "LeadToolCalls" },
-          { migration_id: 15, name: "AuthSessionKeys" },
-          { migration_id: 16, name: "DeferralRuns" },
-          { migration_id: 17, name: "Workers" },
-          { migration_id: 18, name: "Dreams" },
-          { migration_id: 19, name: "WebhookSecretHash" },
-          { migration_id: 20, name: "Approvals" },
-          { migration_id: 21, name: "PushDevices" },
-          { migration_id: 22, name: "ChatLevels" },
-          { migration_id: 23, name: "ExecutionWriteStarted" },
-          { migration_id: 24, name: "MemoryReviewPulls" },
-          { migration_id: 25, name: "FloorGrantWakeup" },
-          { migration_id: 26, name: "Reactions" },
-          { migration_id: 27, name: "AuthorityBinding" },
-          { migration_id: 28, name: "WakeupTimings" },
-          { migration_id: 29, name: "DropJudgeLog" },
-          { migration_id: 30, name: "ManyLeads" },
-          { migration_id: 31, name: "LeadDeliveries" },
-          { migration_id: 32, name: "WorkerEnvironment" },
-          { migration_id: 33, name: "ApproverKeyConfirmations" },
-          { migration_id: 34, name: "PerLeadWakeups" },
-          { migration_id: 35, name: "RetireLevelCards" },
-          { migration_id: 38, name: "PeopleInvites" },
-          { migration_id: 39, name: "LeadHandoffs" },
-          { migration_id: 40, name: "MessageAttachments" },
-          { migration_id: 41, name: "GroupLead" },
-          { migration_id: 42, name: "ReactionWakes" },
-          { migration_id: 43, name: "WakeupAudience" },
-          { migration_id: 44, name: "WakeupSharedSince" },
-          { migration_id: 45, name: "WakeupAudienceAbort" },
-          { migration_id: 46, name: "ChatCleared" },
-          { migration_id: 47, name: "SilentMessages" },
-          { migration_id: 50, name: "LeadAccess" },
-          { migration_id: 51, name: "ChatSharing" },
-          { migration_id: 52, name: "MemoryLabels" },
-          { migration_id: 53, name: "MemorySharing" },
-          { migration_id: 54, name: "SharedProjection" },
-          { migration_id: 55, name: "ChatGrantsLapse" },
-          { migration_id: 56, name: "SuggestionsByVersion" },
-          { migration_id: 57, name: "Schedules" },
-          { migration_id: 58, name: "Work" },
-          { migration_id: 59, name: "WorkerWithdrawals" },
-          { migration_id: 60, name: "WorkClients" },
-          { migration_id: 61, name: "WorkerAttempts" },
-          { migration_id: 62, name: "WorkerPublishApproval" },
-          { migration_id: 63, name: "LegacyWorkerAttempts" },
-          { migration_id: 64, name: "AgentRetirement" },
-          { migration_id: 65, name: "WakeupRetired" },
-          { migration_id: 66, name: "WakeupsUnretiredIndex" },
-          { migration_id: 67, name: "Docs" },
-          { migration_id: 68, name: "WorkMoney" },
-          { migration_id: 69, name: "WorkerNetwork" },
-          { migration_id: 70, name: "VisualHosts" },
-          { migration_id: 71, name: "OwnerAnswerCards" },
-          { migration_id: 72, name: "GeneratedDocuments" },
-          { migration_id: 73, name: "KeyPushes" },
-          { migration_id: 74, name: "DocJobCleanup" },
-          { migration_id: 75, name: "ServerRenderedDocuments" },
-          { migration_id: 76, name: "DocFiles" },
-          { migration_id: 77, name: "DocumentLabels" },
-          { migration_id: 78, name: "RecipeLabelBaselines" },
-          { migration_id: 79, name: "ImportRuns" },
-          { migration_id: 80, name: "RecordRequestHash" },
-          { migration_id: 81, name: "RecipeJobPasses" },
-          { migration_id: 82, name: "BankStatements" },
-          { migration_id: 83, name: "StatementSafety" },
-          { migration_id: 84, name: "RecipeDefaults" },
-          { migration_id: 85, name: "StatementReading" },
-          { migration_id: 86, name: "StatementChatPasswords" },
-          { migration_id: 87, name: "TeamWork" },
-          { migration_id: 88, name: "MoneyRecords" },
-          { migration_id: 106, name: "ChatThreads" },
-          { migration_id: 107, name: "Connections" },
-          { migration_id: 110, name: "BudgetNotices" },
-          { migration_id: 130, name: "ConnectionPause" },
-          { migration_id: 131, name: "ReceiptProposalsPasswordBudget" },
-          { migration_id: 132, name: "PeopleProfiles" },
-          { migration_id: 133, name: "MoneyBudgets" },
-          { migration_id: 134, name: "ConnectionSignIn" },
-          { migration_id: 135, name: "PulseFacts" },
-          { migration_id: 136, name: "ConnectionAsks" },
-          { migration_id: 137, name: "PersonAccess" },
-          { migration_id: 138, name: "PulseCheckIns" },
-          { migration_id: 139, name: "ClientTouches" },
-          { migration_id: 140, name: "AssignedByAgent" },
-          { migration_id: 141, name: "ConnectionAccounts" },
-          { migration_id: 142, name: "MicrosoftConnections" },
-          { migration_id: 143, name: "PersonPlaces" },
-          { migration_id: 144, name: "PullRequestCare" },
-          { migration_id: 145, name: "RetireRoutines" },
-          { migration_id: 146, name: "SendDecidedBy" },
-          { migration_id: 147, name: "SendOwesCard" },
-          { migration_id: 148, name: "EventReplied" },
-          { migration_id: 149, name: "SendAccount" },
-          { migration_id: 150, name: "PersonRemoved" },
-          { migration_id: 151, name: "ToldAndHeld" },
-          { migration_id: 152, name: "MessageForm" },
-          { migration_id: 153, name: "HeldRelays" },
-          { migration_id: 154, name: "TeamDiscussions" },
-          { migration_id: 155, name: "TalkStyle" },
-          { migration_id: 156, name: "NamedKeys" },
-          { migration_id: 157, name: "AgentSettings" },
-          { migration_id: 158, name: "PrivateBy" },
-          { migration_id: 159, name: "OpenQuestions" },
-          { migration_id: 160, name: "GitHubWatch" },
-          { migration_id: 161, name: "Social" },
-          { migration_id: 162, name: "PersonHours" },
-          { migration_id: 163, name: "OneModel" },
-          { migration_id: 164, name: "WorkersRetired" },
-          { migration_id: 165, name: "HandedBack" },
-          { migration_id: 166, name: "GitHubAppRetired" },
-          { migration_id: 167, name: "TeamMemorySetting" },
-          { migration_id: 168, name: "GitHubOwnerUses" },
-          { migration_id: 169, name: "AwayAndWhen" },
-          { migration_id: 170, name: "OneSocialProfile" },
-          { migration_id: 171, name: "GitHubBranchGuards" },
-          { migration_id: 172, name: "CalendarCursor" },
-          { migration_id: 173, name: "NoMemoryReviewPulls" },
-          { migration_id: 174, name: "AnswerPages" },
-          { migration_id: 175, name: "HandoffWantsAnswer" },
-          { migration_id: 176, name: "RecordComments" },
-          { migration_id: 177, name: "RecordChangesByWakeup" },
-          { migration_id: 178, name: "AskOutsideAndDispatch" },
-          { migration_id: 179, name: "DeviceLinks" },
-          { migration_id: 180, name: "CardPlans" },
-          { migration_id: 181, name: "TasksKeys" },
-          { migration_id: 182, name: "HandoffRoutes" },
-          { migration_id: 183, name: "TasksKeyMakers" },
-          { migration_id: 184, name: "Recommendations" },
-          { migration_id: 185, name: "AskedFor" },
-          { migration_id: 186, name: "TasksKeysWithoutMaker" },
-          { migration_id: 187, name: "Holds" },
-        ]);
+        assert.deepStrictEqual(yield* kinHistory, historyOf(kinMigrations));
         assert.deepStrictEqual(
           upstreamBefore.map((row) => [row.migration_id, row.name] as const),
           migrationManifest,
@@ -447,6 +535,9 @@ describe("Kin migrations", () => {
           ["kin_grants", ["accepted_at", "consumed_at"]],
           ["kin_executions", ["started_at", "finished_at"]],
           ["kin_push_devices", ["created_at", "updated_at"]],
+          ["kin_push_sent", ["sent_at", "withdrawn_at"]],
+          ["kin_push_about", ["at"]],
+          ["kin_offline_skips", ["at"]],
           ["kin_chat_levels", ["level_since"]],
           ["kin_reactions", ["created_at", "removed_at", "woke_at"]],
         ] as const) {
@@ -457,10 +548,6 @@ describe("Kin migrations", () => {
             assert.strictEqual(columns.find((column) => column.name === name)?.type, "INTEGER");
           }
         }
-        assert.deepStrictEqual(
-          yield* sql`SELECT name FROM pragma_table_info('kin_webhook_sources') WHERE pk > 0 ORDER BY pk`,
-          [{ name: "org_id" }, { name: "source_id" }],
-        );
         // The search index's FTS5 tables carry no org: each row is reached through kin_search_rows.
         for (const { name } of before.filter(
           (row) =>
@@ -486,153 +573,7 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(yield* runKinMigrations(), []);
         assert.deepStrictEqual(yield* runKinMigrations(), []);
         assert.deepStrictEqual(yield* kinSchema, before);
-        assert.deepStrictEqual(yield* kinHistory, [
-          { migration_id: 1, name: "ChatCore" },
-          { migration_id: 2, name: "Lead" },
-          { migration_id: 3, name: "Triggers" },
-          { migration_id: 4, name: "MemoryReads" },
-          { migration_id: 5, name: "OneChatOwner" },
-          { migration_id: 6, name: "Pings" },
-          { migration_id: 7, name: "Budget" },
-          { migration_id: 8, name: "Floor" },
-          { migration_id: 9, name: "JudgeLog" },
-          { migration_id: 10, name: "ChatChanges" },
-          { migration_id: 11, name: "MemoryHeads" },
-          { migration_id: 12, name: "SecretAllow" },
-          { migration_id: 13, name: "Routines" },
-          { migration_id: 14, name: "LeadToolCalls" },
-          { migration_id: 15, name: "AuthSessionKeys" },
-          { migration_id: 16, name: "DeferralRuns" },
-          { migration_id: 17, name: "Workers" },
-          { migration_id: 18, name: "Dreams" },
-          { migration_id: 19, name: "WebhookSecretHash" },
-          { migration_id: 20, name: "Approvals" },
-          { migration_id: 21, name: "PushDevices" },
-          { migration_id: 22, name: "ChatLevels" },
-          { migration_id: 23, name: "ExecutionWriteStarted" },
-          { migration_id: 24, name: "MemoryReviewPulls" },
-          { migration_id: 25, name: "FloorGrantWakeup" },
-          { migration_id: 26, name: "Reactions" },
-          { migration_id: 27, name: "AuthorityBinding" },
-          { migration_id: 28, name: "WakeupTimings" },
-          { migration_id: 29, name: "DropJudgeLog" },
-          { migration_id: 30, name: "ManyLeads" },
-          { migration_id: 31, name: "LeadDeliveries" },
-          { migration_id: 32, name: "WorkerEnvironment" },
-          { migration_id: 33, name: "ApproverKeyConfirmations" },
-          { migration_id: 34, name: "PerLeadWakeups" },
-          { migration_id: 35, name: "RetireLevelCards" },
-          { migration_id: 38, name: "PeopleInvites" },
-          { migration_id: 39, name: "LeadHandoffs" },
-          { migration_id: 40, name: "MessageAttachments" },
-          { migration_id: 41, name: "GroupLead" },
-          { migration_id: 42, name: "ReactionWakes" },
-          { migration_id: 43, name: "WakeupAudience" },
-          { migration_id: 44, name: "WakeupSharedSince" },
-          { migration_id: 45, name: "WakeupAudienceAbort" },
-          { migration_id: 46, name: "ChatCleared" },
-          { migration_id: 47, name: "SilentMessages" },
-          { migration_id: 50, name: "LeadAccess" },
-          { migration_id: 51, name: "ChatSharing" },
-          { migration_id: 52, name: "MemoryLabels" },
-          { migration_id: 53, name: "MemorySharing" },
-          { migration_id: 54, name: "SharedProjection" },
-          { migration_id: 55, name: "ChatGrantsLapse" },
-          { migration_id: 56, name: "SuggestionsByVersion" },
-          { migration_id: 57, name: "Schedules" },
-          { migration_id: 58, name: "Work" },
-          { migration_id: 59, name: "WorkerWithdrawals" },
-          { migration_id: 60, name: "WorkClients" },
-          { migration_id: 61, name: "WorkerAttempts" },
-          { migration_id: 62, name: "WorkerPublishApproval" },
-          { migration_id: 63, name: "LegacyWorkerAttempts" },
-          { migration_id: 64, name: "AgentRetirement" },
-          { migration_id: 65, name: "WakeupRetired" },
-          { migration_id: 66, name: "WakeupsUnretiredIndex" },
-          { migration_id: 67, name: "Docs" },
-          { migration_id: 68, name: "WorkMoney" },
-          { migration_id: 69, name: "WorkerNetwork" },
-          { migration_id: 70, name: "VisualHosts" },
-          { migration_id: 71, name: "OwnerAnswerCards" },
-          { migration_id: 72, name: "GeneratedDocuments" },
-          { migration_id: 73, name: "KeyPushes" },
-          { migration_id: 74, name: "DocJobCleanup" },
-          { migration_id: 75, name: "ServerRenderedDocuments" },
-          { migration_id: 76, name: "DocFiles" },
-          { migration_id: 77, name: "DocumentLabels" },
-          { migration_id: 78, name: "RecipeLabelBaselines" },
-          { migration_id: 79, name: "ImportRuns" },
-          { migration_id: 80, name: "RecordRequestHash" },
-          { migration_id: 81, name: "RecipeJobPasses" },
-          { migration_id: 82, name: "BankStatements" },
-          { migration_id: 83, name: "StatementSafety" },
-          { migration_id: 84, name: "RecipeDefaults" },
-          { migration_id: 85, name: "StatementReading" },
-          { migration_id: 86, name: "StatementChatPasswords" },
-          { migration_id: 87, name: "TeamWork" },
-          { migration_id: 88, name: "MoneyRecords" },
-          { migration_id: 106, name: "ChatThreads" },
-          { migration_id: 107, name: "Connections" },
-          { migration_id: 110, name: "BudgetNotices" },
-          { migration_id: 130, name: "ConnectionPause" },
-          { migration_id: 131, name: "ReceiptProposalsPasswordBudget" },
-          { migration_id: 132, name: "PeopleProfiles" },
-          { migration_id: 133, name: "MoneyBudgets" },
-          { migration_id: 134, name: "ConnectionSignIn" },
-          { migration_id: 135, name: "PulseFacts" },
-          { migration_id: 136, name: "ConnectionAsks" },
-          { migration_id: 137, name: "PersonAccess" },
-          { migration_id: 138, name: "PulseCheckIns" },
-          { migration_id: 139, name: "ClientTouches" },
-          { migration_id: 140, name: "AssignedByAgent" },
-          { migration_id: 141, name: "ConnectionAccounts" },
-          { migration_id: 142, name: "MicrosoftConnections" },
-          { migration_id: 143, name: "PersonPlaces" },
-          { migration_id: 144, name: "PullRequestCare" },
-          { migration_id: 145, name: "RetireRoutines" },
-          { migration_id: 146, name: "SendDecidedBy" },
-          { migration_id: 147, name: "SendOwesCard" },
-          { migration_id: 148, name: "EventReplied" },
-          { migration_id: 149, name: "SendAccount" },
-          { migration_id: 150, name: "PersonRemoved" },
-          { migration_id: 151, name: "ToldAndHeld" },
-          { migration_id: 152, name: "MessageForm" },
-          { migration_id: 153, name: "HeldRelays" },
-          { migration_id: 154, name: "TeamDiscussions" },
-          { migration_id: 155, name: "TalkStyle" },
-          { migration_id: 156, name: "NamedKeys" },
-          { migration_id: 157, name: "AgentSettings" },
-          { migration_id: 158, name: "PrivateBy" },
-          { migration_id: 159, name: "OpenQuestions" },
-          { migration_id: 160, name: "GitHubWatch" },
-          { migration_id: 161, name: "Social" },
-          { migration_id: 162, name: "PersonHours" },
-          { migration_id: 163, name: "OneModel" },
-          { migration_id: 164, name: "WorkersRetired" },
-          { migration_id: 165, name: "HandedBack" },
-          { migration_id: 166, name: "GitHubAppRetired" },
-          { migration_id: 167, name: "TeamMemorySetting" },
-          { migration_id: 168, name: "GitHubOwnerUses" },
-          { migration_id: 169, name: "AwayAndWhen" },
-          { migration_id: 170, name: "OneSocialProfile" },
-          { migration_id: 171, name: "GitHubBranchGuards" },
-          { migration_id: 172, name: "CalendarCursor" },
-          { migration_id: 173, name: "NoMemoryReviewPulls" },
-          { migration_id: 174, name: "AnswerPages" },
-          { migration_id: 175, name: "HandoffWantsAnswer" },
-          { migration_id: 176, name: "RecordComments" },
-          { migration_id: 177, name: "RecordChangesByWakeup" },
-          { migration_id: 178, name: "AskOutsideAndDispatch" },
-          { migration_id: 179, name: "DeviceLinks" },
-          { migration_id: 180, name: "CardPlans" },
-          { migration_id: 181, name: "TasksKeys" },
-          { migration_id: 182, name: "HandoffRoutes" },
-          { migration_id: 183, name: "TasksKeyMakers" },
-          { migration_id: 184, name: "Recommendations" },
-          { migration_id: 185, name: "AskedFor" },
-          { migration_id: 186, name: "TasksKeysWithoutMaker" },
-          { migration_id: 187, name: "Holds" },
-        ]);
+        assert.deepStrictEqual(yield* kinHistory, historyOf(kinMigrations));
         assert.deepStrictEqual(yield* upstreamHistory, upstreamBefore);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_orgs`, [
           { org_id: "org", name: "Kin", created_at: timestamp },
@@ -651,6 +592,9 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(indexes, [
           { name: "idx_kin_agents_org_agent" },
           { name: "idx_kin_auth_session_keys_revoked" },
+          { name: "idx_kin_bill_reads_attachment" },
+          { name: "idx_kin_bill_reads_batch" },
+          { name: "idx_kin_bill_reads_event" },
           { name: "idx_kin_chat_members_agent" },
           { name: "idx_kin_chat_members_person" },
           { name: "idx_kin_chats_org_chat" },
@@ -660,6 +604,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_doc_versions_file" },
           { name: "idx_kin_dream_runs_material" },
           { name: "idx_kin_events_dedupe" },
+          { name: "idx_kin_events_held_by" },
           { name: "idx_kin_events_queue" },
           { name: "idx_kin_events_wakeup" },
           { name: "idx_kin_floor_grant_scope" },
@@ -669,7 +614,9 @@ describe("Kin migrations", () => {
           { name: "idx_kin_lead_access_person" },
           { name: "idx_kin_lead_deliveries_pending" },
           { name: "idx_kin_leads_org_domain" },
+          { name: "idx_kin_messages_agent_thread" },
           { name: "idx_kin_messages_changes" },
+          { name: "idx_kin_offline_skips_at" },
           { name: "idx_kin_pending_actions_approved" },
           { name: "idx_kin_pending_actions_expiry" },
           { name: "idx_kin_pending_actions_org_state" },
@@ -680,7 +627,13 @@ describe("Kin migrations", () => {
           { name: "idx_kin_pr_review_posts_widget" },
           { name: "idx_kin_pull_requests_state" },
           { name: "idx_kin_pulse_facts_open" },
+          { name: "idx_kin_push_about_at" },
+          { name: "idx_kin_push_about_key" },
           { name: "idx_kin_push_devices_person" },
+          { name: "idx_kin_push_sent_at" },
+          { name: "idx_kin_push_sent_due" },
+          { name: "idx_kin_push_sent_live" },
+          { name: "idx_kin_push_sent_message" },
           { name: "idx_kin_reaction_wakes_chat" },
           { name: "idx_kin_reactions_woke" },
           { name: "idx_kin_record_changes_org" },
@@ -693,11 +646,13 @@ describe("Kin migrations", () => {
           { name: "idx_kin_records_due" },
           { name: "idx_kin_records_number" },
           { name: "idx_kin_records_owner" },
+          { name: "idx_kin_records_owner_list" },
           { name: "idx_kin_records_party" },
           { name: "idx_kin_records_project" },
           { name: "idx_kin_records_register" },
           { name: "idx_kin_records_repo" },
           { name: "idx_kin_records_state_due" },
+          { name: "idx_kin_records_title" },
           { name: "idx_kin_shadow_entries_promotion" },
           { name: "idx_kin_shadow_entries_review" },
           { name: "idx_kin_social_groups_party" },
@@ -709,10 +664,16 @@ describe("Kin migrations", () => {
           { name: "idx_kin_trigger_inbox_pending" },
           { name: "idx_kin_trigger_inbox_retention" },
           { name: "idx_kin_triggers_due" },
+          { name: "idx_kin_troubles_open" },
           { name: "idx_kin_waiting_open_widget_person" },
           { name: "idx_kin_waiting_person_resolved_at" },
           { name: "idx_kin_wakeups_running_lead" },
+          { name: "idx_kin_wakeups_started" },
           { name: "idx_kin_wakeups_unretired_agent" },
+          { name: "idx_kin_watch_looks_at" },
+          { name: "idx_kin_watch_looks_watch" },
+          { name: "idx_kin_watches_due" },
+          { name: "idx_kin_watches_record" },
           { name: "idx_kin_widgets_chat_message" },
           { name: "idx_kin_widgets_type_closed_at" },
           { name: "idx_kin_worker_attempts_ready" },
@@ -737,160 +698,14 @@ describe("Kin migrations", () => {
           yield* sql`SELECT name FROM pragma_index_info('idx_kin_waiting_person_resolved_at') ORDER BY seqno`,
           [{ name: "person_id" }, { name: "resolved_at" }],
         );
-      }).pipe(Effect.provide(layer)),
+      }).pipe(Effect.provide(freshLayer)),
   );
 
   it.effect("also migrates before upstream without creating or changing upstream history", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* sql`PRAGMA foreign_keys = ON`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [1, "ChatCore"],
-        [2, "Lead"],
-        [3, "Triggers"],
-        [4, "MemoryReads"],
-        [5, "OneChatOwner"],
-        [6, "Pings"],
-        [7, "Budget"],
-        [8, "Floor"],
-        [9, "JudgeLog"],
-        [10, "ChatChanges"],
-        [11, "MemoryHeads"],
-        [12, "SecretAllow"],
-        [13, "Routines"],
-        [14, "LeadToolCalls"],
-        [15, "AuthSessionKeys"],
-        [16, "DeferralRuns"],
-        [17, "Workers"],
-        [18, "Dreams"],
-        [19, "WebhookSecretHash"],
-        [20, "Approvals"],
-        [21, "PushDevices"],
-        [22, "ChatLevels"],
-        [23, "ExecutionWriteStarted"],
-        [24, "MemoryReviewPulls"],
-        [25, "FloorGrantWakeup"],
-        [26, "Reactions"],
-        [27, "AuthorityBinding"],
-        [28, "WakeupTimings"],
-        [29, "DropJudgeLog"],
-        [30, "ManyLeads"],
-        [31, "LeadDeliveries"],
-        [32, "WorkerEnvironment"],
-        [33, "ApproverKeyConfirmations"],
-        [34, "PerLeadWakeups"],
-        [35, "RetireLevelCards"],
-        [38, "PeopleInvites"],
-        [39, "LeadHandoffs"],
-        [40, "MessageAttachments"],
-        [41, "GroupLead"],
-        [42, "ReactionWakes"],
-        [43, "WakeupAudience"],
-        [44, "WakeupSharedSince"],
-        [45, "WakeupAudienceAbort"],
-        [46, "ChatCleared"],
-        [47, "SilentMessages"],
-        [50, "LeadAccess"],
-        [51, "ChatSharing"],
-        [52, "MemoryLabels"],
-        [53, "MemorySharing"],
-        [54, "SharedProjection"],
-        [55, "ChatGrantsLapse"],
-        [56, "SuggestionsByVersion"],
-        [57, "Schedules"],
-        [58, "Work"],
-        [59, "WorkerWithdrawals"],
-        [60, "WorkClients"],
-        [61, "WorkerAttempts"],
-        [62, "WorkerPublishApproval"],
-        [63, "LegacyWorkerAttempts"],
-        [64, "AgentRetirement"],
-        [65, "WakeupRetired"],
-        [66, "WakeupsUnretiredIndex"],
-        [67, "Docs"],
-        [68, "WorkMoney"],
-        [69, "WorkerNetwork"],
-        [70, "VisualHosts"],
-        [71, "OwnerAnswerCards"],
-        [72, "GeneratedDocuments"],
-        [73, "KeyPushes"],
-        [74, "DocJobCleanup"],
-        [75, "ServerRenderedDocuments"],
-        [76, "DocFiles"],
-        [77, "DocumentLabels"],
-        [78, "RecipeLabelBaselines"],
-        [79, "ImportRuns"],
-        [80, "RecordRequestHash"],
-        [81, "RecipeJobPasses"],
-        [82, "BankStatements"],
-        [83, "StatementSafety"],
-        [84, "RecipeDefaults"],
-        [85, "StatementReading"],
-        [86, "StatementChatPasswords"],
-        [87, "TeamWork"],
-        [88, "MoneyRecords"],
-        [106, "ChatThreads"],
-        [107, "Connections"],
-        [110, "BudgetNotices"],
-        [130, "ConnectionPause"],
-        [131, "ReceiptProposalsPasswordBudget"],
-        [132, "PeopleProfiles"],
-        [133, "MoneyBudgets"],
-        [134, "ConnectionSignIn"],
-        [135, "PulseFacts"],
-        [136, "ConnectionAsks"],
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrations);
       const before = yield* kinSchema;
       assert.deepStrictEqual(
         before.map((row) => row.name),
@@ -922,6 +737,7 @@ describe("Kin migrations", () => {
       yield* sql`ALTER TABLE kin_handoffs DROP COLUMN asked_message_id`;
       yield* sql`ALTER TABLE kin_handoffs DROP COLUMN route_widget_id`;
       yield* sql`ALTER TABLE kin_handoffs DROP COLUMN route_state`;
+      yield* sql`ALTER TABLE kin_messages DROP COLUMN withdrawn_json`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN origin_json`;
       yield* sql`ALTER TABLE kin_handoffs DROP COLUMN wants_answer`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN source_wakeup_id`;
@@ -934,8 +750,19 @@ describe("Kin migrations", () => {
       yield* sql`ALTER TABLE kin_messages DROP COLUMN silent`;
       yield* sql`ALTER TABLE kin_messages DROP COLUMN change_seq`;
       yield* sql`ALTER TABLE kin_chats DROP COLUMN change_seq`;
-      yield* sql`ALTER TABLE kin_webhook_sources DROP COLUMN secret_sha256`;
-      yield* sql`ALTER TABLE kin_webhook_sources DROP COLUMN secret_bound_at`;
+      // K194 dropped it; K019 alters it as K003 made it.
+      yield* sql`CREATE TABLE kin_webhook_sources (
+        source_id TEXT NOT NULL,
+        org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
+        repo TEXT NOT NULL,
+        scheduled_task_id TEXT NOT NULL UNIQUE,
+        inbox_thread_id TEXT NOT NULL,
+        github_hook_id INTEGER,
+        bot_login TEXT NOT NULL,
+        status TEXT NOT NULL CHECK (status IN ('active', 'paused_in_t3', 'blocked_by_policy', 'missing')),
+        PRIMARY KEY (org_id, source_id),
+        UNIQUE (org_id, repo)
+      )`;
       yield* sql`DROP TABLE kin_dream_runs`;
       yield* sql`DROP TABLE kin_deferral_runs`;
       yield* sql`DROP TABLE kin_auth_paired_sessions`;
@@ -968,6 +795,8 @@ describe("Kin migrations", () => {
       yield* sql`DROP TABLE kin_budget_charges`;
       yield* sql`DROP TABLE kin_lead_deliveries`;
       yield* sql`DROP TABLE kin_scheduled_tasks`;
+      yield* sql`DROP INDEX idx_kin_events_held_by`;
+      yield* sql`ALTER TABLE kin_events DROP COLUMN held_by`;
       yield* sql`ALTER TABLE kin_events DROP COLUMN replied_at`;
       yield* sql`ALTER TABLE kin_events DROP COLUMN budget_deferred`;
       for (const column of [
@@ -1013,150 +842,9 @@ describe("Kin migrations", () => {
       yield* undoGroupLead;
       yield* undoWakeupAudience;
       yield* undoChatSharing;
+      yield* undoChatPins;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 5`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [5, "OneChatOwner"],
-        [6, "Pings"],
-        [7, "Budget"],
-        [8, "Floor"],
-        [9, "JudgeLog"],
-        [10, "ChatChanges"],
-        [11, "MemoryHeads"],
-        [12, "SecretAllow"],
-        [13, "Routines"],
-        [14, "LeadToolCalls"],
-        [15, "AuthSessionKeys"],
-        [16, "DeferralRuns"],
-        [17, "Workers"],
-        [18, "Dreams"],
-        [19, "WebhookSecretHash"],
-        [20, "Approvals"],
-        [21, "PushDevices"],
-        [22, "ChatLevels"],
-        [23, "ExecutionWriteStarted"],
-        [24, "MemoryReviewPulls"],
-        [25, "FloorGrantWakeup"],
-        [26, "Reactions"],
-        [27, "AuthorityBinding"],
-        [28, "WakeupTimings"],
-        [29, "DropJudgeLog"],
-        [30, "ManyLeads"],
-        [31, "LeadDeliveries"],
-        [32, "WorkerEnvironment"],
-        [33, "ApproverKeyConfirmations"],
-        [34, "PerLeadWakeups"],
-        [35, "RetireLevelCards"],
-        [38, "PeopleInvites"],
-        [39, "LeadHandoffs"],
-        [40, "MessageAttachments"],
-        [41, "GroupLead"],
-        [42, "ReactionWakes"],
-        [43, "WakeupAudience"],
-        [44, "WakeupSharedSince"],
-        [45, "WakeupAudienceAbort"],
-        [46, "ChatCleared"],
-        [47, "SilentMessages"],
-        [50, "LeadAccess"],
-        [51, "ChatSharing"],
-        [52, "MemoryLabels"],
-        [53, "MemorySharing"],
-        [54, "SharedProjection"],
-        [55, "ChatGrantsLapse"],
-        [56, "SuggestionsByVersion"],
-        [57, "Schedules"],
-        [58, "Work"],
-        [59, "WorkerWithdrawals"],
-        [60, "WorkClients"],
-        [61, "WorkerAttempts"],
-        [62, "WorkerPublishApproval"],
-        [63, "LegacyWorkerAttempts"],
-        [64, "AgentRetirement"],
-        [65, "WakeupRetired"],
-        [66, "WakeupsUnretiredIndex"],
-        [67, "Docs"],
-        [68, "WorkMoney"],
-        [69, "WorkerNetwork"],
-        [70, "VisualHosts"],
-        [71, "OwnerAnswerCards"],
-        [72, "GeneratedDocuments"],
-        [73, "KeyPushes"],
-        [74, "DocJobCleanup"],
-        [75, "ServerRenderedDocuments"],
-        [76, "DocFiles"],
-        [77, "DocumentLabels"],
-        [78, "RecipeLabelBaselines"],
-        [79, "ImportRuns"],
-        [80, "RecordRequestHash"],
-        [81, "RecipeJobPasses"],
-        [82, "BankStatements"],
-        [83, "StatementSafety"],
-        [84, "RecipeDefaults"],
-        [85, "StatementReading"],
-        [86, "StatementChatPasswords"],
-        [87, "TeamWork"],
-        [88, "MoneyRecords"],
-        [106, "ChatThreads"],
-        [107, "Connections"],
-        [110, "BudgetNotices"],
-        [130, "ConnectionPause"],
-        [131, "ReceiptProposalsPasswordBudget"],
-        [132, "PeopleProfiles"],
-        [133, "MoneyBudgets"],
-        [134, "ConnectionSignIn"],
-        [135, "PulseFacts"],
-        [136, "ConnectionAsks"],
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(5));
       assert.deepStrictEqual(
         yield* sql`SELECT member_id FROM kin_chat_members WHERE org_id = 'org' ORDER BY member_id`,
         [{ member_id: "existing-owner" }],
@@ -1180,153 +868,7 @@ describe("Kin migrations", () => {
         migrationManifest,
       );
       assert.deepStrictEqual(yield* kinSchema, before);
-      assert.deepStrictEqual(yield* kinHistory, [
-        { migration_id: 1, name: "ChatCore" },
-        { migration_id: 2, name: "Lead" },
-        { migration_id: 3, name: "Triggers" },
-        { migration_id: 4, name: "MemoryReads" },
-        { migration_id: 5, name: "OneChatOwner" },
-        { migration_id: 6, name: "Pings" },
-        { migration_id: 7, name: "Budget" },
-        { migration_id: 8, name: "Floor" },
-        { migration_id: 9, name: "JudgeLog" },
-        { migration_id: 10, name: "ChatChanges" },
-        { migration_id: 11, name: "MemoryHeads" },
-        { migration_id: 12, name: "SecretAllow" },
-        { migration_id: 13, name: "Routines" },
-        { migration_id: 14, name: "LeadToolCalls" },
-        { migration_id: 15, name: "AuthSessionKeys" },
-        { migration_id: 16, name: "DeferralRuns" },
-        { migration_id: 17, name: "Workers" },
-        { migration_id: 18, name: "Dreams" },
-        { migration_id: 19, name: "WebhookSecretHash" },
-        { migration_id: 20, name: "Approvals" },
-        { migration_id: 21, name: "PushDevices" },
-        { migration_id: 22, name: "ChatLevels" },
-        { migration_id: 23, name: "ExecutionWriteStarted" },
-        { migration_id: 24, name: "MemoryReviewPulls" },
-        { migration_id: 25, name: "FloorGrantWakeup" },
-        { migration_id: 26, name: "Reactions" },
-        { migration_id: 27, name: "AuthorityBinding" },
-        { migration_id: 28, name: "WakeupTimings" },
-        { migration_id: 29, name: "DropJudgeLog" },
-        { migration_id: 30, name: "ManyLeads" },
-        { migration_id: 31, name: "LeadDeliveries" },
-        { migration_id: 32, name: "WorkerEnvironment" },
-        { migration_id: 33, name: "ApproverKeyConfirmations" },
-        { migration_id: 34, name: "PerLeadWakeups" },
-        { migration_id: 35, name: "RetireLevelCards" },
-        { migration_id: 38, name: "PeopleInvites" },
-        { migration_id: 39, name: "LeadHandoffs" },
-        { migration_id: 40, name: "MessageAttachments" },
-        { migration_id: 41, name: "GroupLead" },
-        { migration_id: 42, name: "ReactionWakes" },
-        { migration_id: 43, name: "WakeupAudience" },
-        { migration_id: 44, name: "WakeupSharedSince" },
-        { migration_id: 45, name: "WakeupAudienceAbort" },
-        { migration_id: 46, name: "ChatCleared" },
-        { migration_id: 47, name: "SilentMessages" },
-        { migration_id: 50, name: "LeadAccess" },
-        { migration_id: 51, name: "ChatSharing" },
-        { migration_id: 52, name: "MemoryLabels" },
-        { migration_id: 53, name: "MemorySharing" },
-        { migration_id: 54, name: "SharedProjection" },
-        { migration_id: 55, name: "ChatGrantsLapse" },
-        { migration_id: 56, name: "SuggestionsByVersion" },
-        { migration_id: 57, name: "Schedules" },
-        { migration_id: 58, name: "Work" },
-        { migration_id: 59, name: "WorkerWithdrawals" },
-        { migration_id: 60, name: "WorkClients" },
-        { migration_id: 61, name: "WorkerAttempts" },
-        { migration_id: 62, name: "WorkerPublishApproval" },
-        { migration_id: 63, name: "LegacyWorkerAttempts" },
-        { migration_id: 64, name: "AgentRetirement" },
-        { migration_id: 65, name: "WakeupRetired" },
-        { migration_id: 66, name: "WakeupsUnretiredIndex" },
-        { migration_id: 67, name: "Docs" },
-        { migration_id: 68, name: "WorkMoney" },
-        { migration_id: 69, name: "WorkerNetwork" },
-        { migration_id: 70, name: "VisualHosts" },
-        { migration_id: 71, name: "OwnerAnswerCards" },
-        { migration_id: 72, name: "GeneratedDocuments" },
-        { migration_id: 73, name: "KeyPushes" },
-        { migration_id: 74, name: "DocJobCleanup" },
-        { migration_id: 75, name: "ServerRenderedDocuments" },
-        { migration_id: 76, name: "DocFiles" },
-        { migration_id: 77, name: "DocumentLabels" },
-        { migration_id: 78, name: "RecipeLabelBaselines" },
-        { migration_id: 79, name: "ImportRuns" },
-        { migration_id: 80, name: "RecordRequestHash" },
-        { migration_id: 81, name: "RecipeJobPasses" },
-        { migration_id: 82, name: "BankStatements" },
-        { migration_id: 83, name: "StatementSafety" },
-        { migration_id: 84, name: "RecipeDefaults" },
-        { migration_id: 85, name: "StatementReading" },
-        { migration_id: 86, name: "StatementChatPasswords" },
-        { migration_id: 87, name: "TeamWork" },
-        { migration_id: 88, name: "MoneyRecords" },
-        { migration_id: 106, name: "ChatThreads" },
-        { migration_id: 107, name: "Connections" },
-        { migration_id: 110, name: "BudgetNotices" },
-        { migration_id: 130, name: "ConnectionPause" },
-        { migration_id: 131, name: "ReceiptProposalsPasswordBudget" },
-        { migration_id: 132, name: "PeopleProfiles" },
-        { migration_id: 133, name: "MoneyBudgets" },
-        { migration_id: 134, name: "ConnectionSignIn" },
-        { migration_id: 135, name: "PulseFacts" },
-        { migration_id: 136, name: "ConnectionAsks" },
-        { migration_id: 137, name: "PersonAccess" },
-        { migration_id: 138, name: "PulseCheckIns" },
-        { migration_id: 139, name: "ClientTouches" },
-        { migration_id: 140, name: "AssignedByAgent" },
-        { migration_id: 141, name: "ConnectionAccounts" },
-        { migration_id: 142, name: "MicrosoftConnections" },
-        { migration_id: 143, name: "PersonPlaces" },
-        { migration_id: 144, name: "PullRequestCare" },
-        { migration_id: 145, name: "RetireRoutines" },
-        { migration_id: 146, name: "SendDecidedBy" },
-        { migration_id: 147, name: "SendOwesCard" },
-        { migration_id: 148, name: "EventReplied" },
-        { migration_id: 149, name: "SendAccount" },
-        { migration_id: 150, name: "PersonRemoved" },
-        { migration_id: 151, name: "ToldAndHeld" },
-        { migration_id: 152, name: "MessageForm" },
-        { migration_id: 153, name: "HeldRelays" },
-        { migration_id: 154, name: "TeamDiscussions" },
-        { migration_id: 155, name: "TalkStyle" },
-        { migration_id: 156, name: "NamedKeys" },
-        { migration_id: 157, name: "AgentSettings" },
-        { migration_id: 158, name: "PrivateBy" },
-        { migration_id: 159, name: "OpenQuestions" },
-        { migration_id: 160, name: "GitHubWatch" },
-        { migration_id: 161, name: "Social" },
-        { migration_id: 162, name: "PersonHours" },
-        { migration_id: 163, name: "OneModel" },
-        { migration_id: 164, name: "WorkersRetired" },
-        { migration_id: 165, name: "HandedBack" },
-        { migration_id: 166, name: "GitHubAppRetired" },
-        { migration_id: 167, name: "TeamMemorySetting" },
-        { migration_id: 168, name: "GitHubOwnerUses" },
-        { migration_id: 169, name: "AwayAndWhen" },
-        { migration_id: 170, name: "OneSocialProfile" },
-        { migration_id: 171, name: "GitHubBranchGuards" },
-        { migration_id: 172, name: "CalendarCursor" },
-        { migration_id: 173, name: "NoMemoryReviewPulls" },
-        { migration_id: 174, name: "AnswerPages" },
-        { migration_id: 175, name: "HandoffWantsAnswer" },
-        { migration_id: 176, name: "RecordComments" },
-        { migration_id: 177, name: "RecordChangesByWakeup" },
-        { migration_id: 178, name: "AskOutsideAndDispatch" },
-        { migration_id: 179, name: "DeviceLinks" },
-        { migration_id: 180, name: "CardPlans" },
-        { migration_id: 181, name: "TasksKeys" },
-        { migration_id: 182, name: "HandoffRoutes" },
-        { migration_id: 183, name: "TasksKeyMakers" },
-        { migration_id: 184, name: "Recommendations" },
-        { migration_id: 185, name: "AskedFor" },
-        { migration_id: 186, name: "TasksKeysWithoutMaker" },
-        { migration_id: 187, name: "Holds" },
-      ]);
+      assert.deepStrictEqual(yield* kinHistory, historyOf(kinMigrations));
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(yield* sql`SELECT org_id FROM kin_orgs`, [{ org_id: "org" }]);
@@ -1386,127 +928,7 @@ describe("Kin migrations", () => {
           VALUES (${id}, ${subject}, ${method}, '[]', ${ip}, ${timestamp},
             '2026-12-07T00:00:00.000Z', ${revoked})`;
       }
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [27, "AuthorityBinding"],
-        [28, "WakeupTimings"],
-        [29, "DropJudgeLog"],
-        [30, "ManyLeads"],
-        [31, "LeadDeliveries"],
-        [32, "WorkerEnvironment"],
-        [33, "ApproverKeyConfirmations"],
-        [34, "PerLeadWakeups"],
-        [35, "RetireLevelCards"],
-        [38, "PeopleInvites"],
-        [39, "LeadHandoffs"],
-        [40, "MessageAttachments"],
-        [41, "GroupLead"],
-        [42, "ReactionWakes"],
-        [43, "WakeupAudience"],
-        [44, "WakeupSharedSince"],
-        [45, "WakeupAudienceAbort"],
-        [46, "ChatCleared"],
-        [47, "SilentMessages"],
-        [50, "LeadAccess"],
-        [51, "ChatSharing"],
-        [52, "MemoryLabels"],
-        [53, "MemorySharing"],
-        [54, "SharedProjection"],
-        [55, "ChatGrantsLapse"],
-        [56, "SuggestionsByVersion"],
-        [57, "Schedules"],
-        [58, "Work"],
-        [59, "WorkerWithdrawals"],
-        [60, "WorkClients"],
-        [61, "WorkerAttempts"],
-        [62, "WorkerPublishApproval"],
-        [63, "LegacyWorkerAttempts"],
-        [64, "AgentRetirement"],
-        [65, "WakeupRetired"],
-        [66, "WakeupsUnretiredIndex"],
-        [67, "Docs"],
-        [68, "WorkMoney"],
-        [69, "WorkerNetwork"],
-        [70, "VisualHosts"],
-        [71, "OwnerAnswerCards"],
-        [72, "GeneratedDocuments"],
-        [73, "KeyPushes"],
-        [74, "DocJobCleanup"],
-        [75, "ServerRenderedDocuments"],
-        [76, "DocFiles"],
-        [77, "DocumentLabels"],
-        [78, "RecipeLabelBaselines"],
-        [79, "ImportRuns"],
-        [80, "RecordRequestHash"],
-        [81, "RecipeJobPasses"],
-        [82, "BankStatements"],
-        [83, "StatementSafety"],
-        [84, "RecipeDefaults"],
-        [85, "StatementReading"],
-        [86, "StatementChatPasswords"],
-        [87, "TeamWork"],
-        [88, "MoneyRecords"],
-        [106, "ChatThreads"],
-        [107, "Connections"],
-        [110, "BudgetNotices"],
-        [130, "ConnectionPause"],
-        [131, "ReceiptProposalsPasswordBudget"],
-        [132, "PeopleProfiles"],
-        [133, "MoneyBudgets"],
-        [134, "ConnectionSignIn"],
-        [135, "PulseFacts"],
-        [136, "ConnectionAsks"],
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(27));
       assert.deepStrictEqual(
         yield* sql`SELECT session_id, via FROM kin_auth_paired_sessions ORDER BY session_id`,
         [
@@ -1541,122 +963,7 @@ describe("Kin migrations", () => {
         migration_id: 31,
         name: "LeadDeliveries",
       });
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [32, "WorkerEnvironment"],
-        [33, "ApproverKeyConfirmations"],
-        [34, "PerLeadWakeups"],
-        [35, "RetireLevelCards"],
-        [38, "PeopleInvites"],
-        [39, "LeadHandoffs"],
-        [40, "MessageAttachments"],
-        [41, "GroupLead"],
-        [42, "ReactionWakes"],
-        [43, "WakeupAudience"],
-        [44, "WakeupSharedSince"],
-        [45, "WakeupAudienceAbort"],
-        [46, "ChatCleared"],
-        [47, "SilentMessages"],
-        [50, "LeadAccess"],
-        [51, "ChatSharing"],
-        [52, "MemoryLabels"],
-        [53, "MemorySharing"],
-        [54, "SharedProjection"],
-        [55, "ChatGrantsLapse"],
-        [56, "SuggestionsByVersion"],
-        [57, "Schedules"],
-        [58, "Work"],
-        [59, "WorkerWithdrawals"],
-        [60, "WorkClients"],
-        [61, "WorkerAttempts"],
-        [62, "WorkerPublishApproval"],
-        [63, "LegacyWorkerAttempts"],
-        [64, "AgentRetirement"],
-        [65, "WakeupRetired"],
-        [66, "WakeupsUnretiredIndex"],
-        [67, "Docs"],
-        [68, "WorkMoney"],
-        [69, "WorkerNetwork"],
-        [70, "VisualHosts"],
-        [71, "OwnerAnswerCards"],
-        [72, "GeneratedDocuments"],
-        [73, "KeyPushes"],
-        [74, "DocJobCleanup"],
-        [75, "ServerRenderedDocuments"],
-        [76, "DocFiles"],
-        [77, "DocumentLabels"],
-        [78, "RecipeLabelBaselines"],
-        [79, "ImportRuns"],
-        [80, "RecordRequestHash"],
-        [81, "RecipeJobPasses"],
-        [82, "BankStatements"],
-        [83, "StatementSafety"],
-        [84, "RecipeDefaults"],
-        [85, "StatementReading"],
-        [86, "StatementChatPasswords"],
-        [87, "TeamWork"],
-        [88, "MoneyRecords"],
-        [106, "ChatThreads"],
-        [107, "Connections"],
-        [110, "BudgetNotices"],
-        [130, "ConnectionPause"],
-        [131, "ReceiptProposalsPasswordBudget"],
-        [132, "PeopleProfiles"],
-        [133, "MoneyBudgets"],
-        [134, "ConnectionSignIn"],
-        [135, "PulseFacts"],
-        [136, "ConnectionAsks"],
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(32));
       const columns = yield* sql<{ name: string }>`
         SELECT name FROM pragma_table_info('kin_workers')`;
       for (const column of workerColumns)
@@ -1701,237 +1008,11 @@ describe("Kin migrations", () => {
           { migration_id: 31, name: "LeadDeliveries" },
           { migration_id: 32, name: "WorkerEnvironment" },
         ]);
-        assert.deepStrictEqual(yield* runKinMigrations(), [
-          [33, "ApproverKeyConfirmations"],
-          [34, "PerLeadWakeups"],
-          [35, "RetireLevelCards"],
-          [38, "PeopleInvites"],
-          [39, "LeadHandoffs"],
-          [40, "MessageAttachments"],
-          [41, "GroupLead"],
-          [42, "ReactionWakes"],
-          [43, "WakeupAudience"],
-          [44, "WakeupSharedSince"],
-          [45, "WakeupAudienceAbort"],
-          [46, "ChatCleared"],
-          [47, "SilentMessages"],
-          [50, "LeadAccess"],
-          [51, "ChatSharing"],
-          [52, "MemoryLabels"],
-          [53, "MemorySharing"],
-          [54, "SharedProjection"],
-          [55, "ChatGrantsLapse"],
-          [56, "SuggestionsByVersion"],
-          [57, "Schedules"],
-          [58, "Work"],
-          [59, "WorkerWithdrawals"],
-          [60, "WorkClients"],
-          [61, "WorkerAttempts"],
-          [62, "WorkerPublishApproval"],
-          [63, "LegacyWorkerAttempts"],
-          [64, "AgentRetirement"],
-          [65, "WakeupRetired"],
-          [66, "WakeupsUnretiredIndex"],
-          [67, "Docs"],
-          [68, "WorkMoney"],
-          [69, "WorkerNetwork"],
-          [70, "VisualHosts"],
-          [71, "OwnerAnswerCards"],
-          [72, "GeneratedDocuments"],
-          [73, "KeyPushes"],
-          [74, "DocJobCleanup"],
-          [75, "ServerRenderedDocuments"],
-          [76, "DocFiles"],
-          [77, "DocumentLabels"],
-          [78, "RecipeLabelBaselines"],
-          [79, "ImportRuns"],
-          [80, "RecordRequestHash"],
-          [81, "RecipeJobPasses"],
-          [82, "BankStatements"],
-          [83, "StatementSafety"],
-          [84, "RecipeDefaults"],
-          [85, "StatementReading"],
-          [86, "StatementChatPasswords"],
-          [87, "TeamWork"],
-          [88, "MoneyRecords"],
-          [106, "ChatThreads"],
-          [107, "Connections"],
-          [110, "BudgetNotices"],
-          [130, "ConnectionPause"],
-          [131, "ReceiptProposalsPasswordBudget"],
-          [132, "PeopleProfiles"],
-          [133, "MoneyBudgets"],
-          [134, "ConnectionSignIn"],
-          [135, "PulseFacts"],
-          [136, "ConnectionAsks"],
-          [137, "PersonAccess"],
-          [138, "PulseCheckIns"],
-          [139, "ClientTouches"],
-          [140, "AssignedByAgent"],
-          [141, "ConnectionAccounts"],
-          [142, "MicrosoftConnections"],
-          [143, "PersonPlaces"],
-          [144, "PullRequestCare"],
-          [145, "RetireRoutines"],
-          [146, "SendDecidedBy"],
-          [147, "SendOwesCard"],
-          [148, "EventReplied"],
-          [149, "SendAccount"],
-          [150, "PersonRemoved"],
-          [151, "ToldAndHeld"],
-          [152, "MessageForm"],
-          [153, "HeldRelays"],
-          [154, "TeamDiscussions"],
-          [155, "TalkStyle"],
-          [156, "NamedKeys"],
-          [157, "AgentSettings"],
-          [158, "PrivateBy"],
-          [159, "OpenQuestions"],
-          [160, "GitHubWatch"],
-          [161, "Social"],
-          [162, "PersonHours"],
-          [163, "OneModel"],
-          [164, "WorkersRetired"],
-          [165, "HandedBack"],
-          [166, "GitHubAppRetired"],
-          [167, "TeamMemorySetting"],
-          [168, "GitHubOwnerUses"],
-          [169, "AwayAndWhen"],
-          [170, "OneSocialProfile"],
-          [171, "GitHubBranchGuards"],
-          [172, "CalendarCursor"],
-          [173, "NoMemoryReviewPulls"],
-          [174, "AnswerPages"],
-          [175, "HandoffWantsAnswer"],
-          [176, "RecordComments"],
-          [177, "RecordChangesByWakeup"],
-          [178, "AskOutsideAndDispatch"],
-          [179, "DeviceLinks"],
-          [180, "CardPlans"],
-          [181, "TasksKeys"],
-          [182, "HandoffRoutes"],
-          [183, "TasksKeyMakers"],
-          [184, "Recommendations"],
-          [185, "AskedFor"],
-          [186, "TasksKeysWithoutMaker"],
-          [187, "Holds"],
-        ]);
-        assert.deepStrictEqual((yield* kinHistory).slice(-114), [
-          { migration_id: 32, name: "WorkerEnvironment" },
-          { migration_id: 33, name: "ApproverKeyConfirmations" },
-          { migration_id: 34, name: "PerLeadWakeups" },
-          { migration_id: 35, name: "RetireLevelCards" },
-          { migration_id: 38, name: "PeopleInvites" },
-          { migration_id: 39, name: "LeadHandoffs" },
-          { migration_id: 40, name: "MessageAttachments" },
-          { migration_id: 41, name: "GroupLead" },
-          { migration_id: 42, name: "ReactionWakes" },
-          { migration_id: 43, name: "WakeupAudience" },
-          { migration_id: 44, name: "WakeupSharedSince" },
-          { migration_id: 45, name: "WakeupAudienceAbort" },
-          { migration_id: 46, name: "ChatCleared" },
-          { migration_id: 47, name: "SilentMessages" },
-          { migration_id: 50, name: "LeadAccess" },
-          { migration_id: 51, name: "ChatSharing" },
-          { migration_id: 52, name: "MemoryLabels" },
-          { migration_id: 53, name: "MemorySharing" },
-          { migration_id: 54, name: "SharedProjection" },
-          { migration_id: 55, name: "ChatGrantsLapse" },
-          { migration_id: 56, name: "SuggestionsByVersion" },
-          { migration_id: 57, name: "Schedules" },
-          { migration_id: 58, name: "Work" },
-          { migration_id: 59, name: "WorkerWithdrawals" },
-          { migration_id: 60, name: "WorkClients" },
-          { migration_id: 61, name: "WorkerAttempts" },
-          { migration_id: 62, name: "WorkerPublishApproval" },
-          { migration_id: 63, name: "LegacyWorkerAttempts" },
-          { migration_id: 64, name: "AgentRetirement" },
-          { migration_id: 65, name: "WakeupRetired" },
-          { migration_id: 66, name: "WakeupsUnretiredIndex" },
-          { migration_id: 67, name: "Docs" },
-          { migration_id: 68, name: "WorkMoney" },
-          { migration_id: 69, name: "WorkerNetwork" },
-          { migration_id: 70, name: "VisualHosts" },
-          { migration_id: 71, name: "OwnerAnswerCards" },
-          { migration_id: 72, name: "GeneratedDocuments" },
-          { migration_id: 73, name: "KeyPushes" },
-          { migration_id: 74, name: "DocJobCleanup" },
-          { migration_id: 75, name: "ServerRenderedDocuments" },
-          { migration_id: 76, name: "DocFiles" },
-          { migration_id: 77, name: "DocumentLabels" },
-          { migration_id: 78, name: "RecipeLabelBaselines" },
-          { migration_id: 79, name: "ImportRuns" },
-          { migration_id: 80, name: "RecordRequestHash" },
-          { migration_id: 81, name: "RecipeJobPasses" },
-          { migration_id: 82, name: "BankStatements" },
-          { migration_id: 83, name: "StatementSafety" },
-          { migration_id: 84, name: "RecipeDefaults" },
-          { migration_id: 85, name: "StatementReading" },
-          { migration_id: 86, name: "StatementChatPasswords" },
-          { migration_id: 87, name: "TeamWork" },
-          { migration_id: 88, name: "MoneyRecords" },
-          { migration_id: 106, name: "ChatThreads" },
-          { migration_id: 107, name: "Connections" },
-          { migration_id: 110, name: "BudgetNotices" },
-          { migration_id: 130, name: "ConnectionPause" },
-          { migration_id: 131, name: "ReceiptProposalsPasswordBudget" },
-          { migration_id: 132, name: "PeopleProfiles" },
-          { migration_id: 133, name: "MoneyBudgets" },
-          { migration_id: 134, name: "ConnectionSignIn" },
-          { migration_id: 135, name: "PulseFacts" },
-          { migration_id: 136, name: "ConnectionAsks" },
-          { migration_id: 137, name: "PersonAccess" },
-          { migration_id: 138, name: "PulseCheckIns" },
-          { migration_id: 139, name: "ClientTouches" },
-          { migration_id: 140, name: "AssignedByAgent" },
-          { migration_id: 141, name: "ConnectionAccounts" },
-          { migration_id: 142, name: "MicrosoftConnections" },
-          { migration_id: 143, name: "PersonPlaces" },
-          { migration_id: 144, name: "PullRequestCare" },
-          { migration_id: 145, name: "RetireRoutines" },
-          { migration_id: 146, name: "SendDecidedBy" },
-          { migration_id: 147, name: "SendOwesCard" },
-          { migration_id: 148, name: "EventReplied" },
-          { migration_id: 149, name: "SendAccount" },
-          { migration_id: 150, name: "PersonRemoved" },
-          { migration_id: 151, name: "ToldAndHeld" },
-          { migration_id: 152, name: "MessageForm" },
-          { migration_id: 153, name: "HeldRelays" },
-          { migration_id: 154, name: "TeamDiscussions" },
-          { migration_id: 155, name: "TalkStyle" },
-          { migration_id: 156, name: "NamedKeys" },
-          { migration_id: 157, name: "AgentSettings" },
-          { migration_id: 158, name: "PrivateBy" },
-          { migration_id: 159, name: "OpenQuestions" },
-          { migration_id: 160, name: "GitHubWatch" },
-          { migration_id: 161, name: "Social" },
-          { migration_id: 162, name: "PersonHours" },
-          { migration_id: 163, name: "OneModel" },
-          { migration_id: 164, name: "WorkersRetired" },
-          { migration_id: 165, name: "HandedBack" },
-          { migration_id: 166, name: "GitHubAppRetired" },
-          { migration_id: 167, name: "TeamMemorySetting" },
-          { migration_id: 168, name: "GitHubOwnerUses" },
-          { migration_id: 169, name: "AwayAndWhen" },
-          { migration_id: 170, name: "OneSocialProfile" },
-          { migration_id: 171, name: "GitHubBranchGuards" },
-          { migration_id: 172, name: "CalendarCursor" },
-          { migration_id: 173, name: "NoMemoryReviewPulls" },
-          { migration_id: 174, name: "AnswerPages" },
-          { migration_id: 175, name: "HandoffWantsAnswer" },
-          { migration_id: 176, name: "RecordComments" },
-          { migration_id: 177, name: "RecordChangesByWakeup" },
-          { migration_id: 178, name: "AskOutsideAndDispatch" },
-          { migration_id: 179, name: "DeviceLinks" },
-          { migration_id: 180, name: "CardPlans" },
-          { migration_id: 181, name: "TasksKeys" },
-          { migration_id: 182, name: "HandoffRoutes" },
-          { migration_id: 183, name: "TasksKeyMakers" },
-          { migration_id: 184, name: "Recommendations" },
-          { migration_id: 185, name: "AskedFor" },
-          { migration_id: 186, name: "TasksKeysWithoutMaker" },
-          { migration_id: 187, name: "Holds" },
-        ]);
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(33));
+        assert.deepStrictEqual(
+          (yield* kinHistory).slice(-kinMigrationsFrom(32).length),
+          historyOf(kinMigrationsFrom(32)),
+        );
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_lead_deliveries`, [delivery]);
         assert.deepStrictEqual(
           yield* sql`SELECT name FROM pragma_table_info('kin_workers') WHERE name = 'environment_id'`,
@@ -1986,119 +1067,7 @@ describe("Kin migrations", () => {
           VALUES ('org', 'dm', ${id}, ${seq}, 'system', 'member', 'text', ${body}, '[]', 'posted', ${timestamp})`;
       yield* undoPeopleInvites;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 35`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [35, "RetireLevelCards"],
-        [38, "PeopleInvites"],
-        [39, "LeadHandoffs"],
-        [40, "MessageAttachments"],
-        [41, "GroupLead"],
-        [42, "ReactionWakes"],
-        [43, "WakeupAudience"],
-        [44, "WakeupSharedSince"],
-        [45, "WakeupAudienceAbort"],
-        [46, "ChatCleared"],
-        [47, "SilentMessages"],
-        [50, "LeadAccess"],
-        [51, "ChatSharing"],
-        [52, "MemoryLabels"],
-        [53, "MemorySharing"],
-        [54, "SharedProjection"],
-        [55, "ChatGrantsLapse"],
-        [56, "SuggestionsByVersion"],
-        [57, "Schedules"],
-        [58, "Work"],
-        [59, "WorkerWithdrawals"],
-        [60, "WorkClients"],
-        [61, "WorkerAttempts"],
-        [62, "WorkerPublishApproval"],
-        [63, "LegacyWorkerAttempts"],
-        [64, "AgentRetirement"],
-        [65, "WakeupRetired"],
-        [66, "WakeupsUnretiredIndex"],
-        [67, "Docs"],
-        [68, "WorkMoney"],
-        [69, "WorkerNetwork"],
-        [70, "VisualHosts"],
-        [71, "OwnerAnswerCards"],
-        [72, "GeneratedDocuments"],
-        [73, "KeyPushes"],
-        [74, "DocJobCleanup"],
-        [75, "ServerRenderedDocuments"],
-        [76, "DocFiles"],
-        [77, "DocumentLabels"],
-        [78, "RecipeLabelBaselines"],
-        [79, "ImportRuns"],
-        [80, "RecordRequestHash"],
-        [81, "RecipeJobPasses"],
-        [82, "BankStatements"],
-        [83, "StatementSafety"],
-        [84, "RecipeDefaults"],
-        [85, "StatementReading"],
-        [86, "StatementChatPasswords"],
-        [87, "TeamWork"],
-        [88, "MoneyRecords"],
-        [106, "ChatThreads"],
-        [107, "Connections"],
-        [110, "BudgetNotices"],
-        [130, "ConnectionPause"],
-        [131, "ReceiptProposalsPasswordBudget"],
-        [132, "PeopleProfiles"],
-        [133, "MoneyBudgets"],
-        [134, "ConnectionSignIn"],
-        [135, "PulseFacts"],
-        [136, "ConnectionAsks"],
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(35));
       assert.deepStrictEqual(yield* sql`SELECT message_id, status FROM kin_messages ORDER BY seq`, [
         { message_id: "promotion:lead:L1", status: "dismissed" },
         { message_id: "shadow-review:lead:2026-11-09", status: "dismissed" },
@@ -2188,107 +1157,7 @@ describe("Kin migrations", () => {
             ${JSON.stringify({ _tag: "human", personId: asker, memberId: "m" })}, 'running', 0, ${chat})`;
         yield* undoChatSharing;
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 51`;
-        assert.deepStrictEqual(yield* runKinMigrations(), [
-          [51, "ChatSharing"],
-          [52, "MemoryLabels"],
-          [53, "MemorySharing"],
-          [54, "SharedProjection"],
-          [55, "ChatGrantsLapse"],
-          [56, "SuggestionsByVersion"],
-          [57, "Schedules"],
-          [58, "Work"],
-          [59, "WorkerWithdrawals"],
-          [60, "WorkClients"],
-          [61, "WorkerAttempts"],
-          [62, "WorkerPublishApproval"],
-          [63, "LegacyWorkerAttempts"],
-          [64, "AgentRetirement"],
-          [65, "WakeupRetired"],
-          [66, "WakeupsUnretiredIndex"],
-          [67, "Docs"],
-          [68, "WorkMoney"],
-          [69, "WorkerNetwork"],
-          [70, "VisualHosts"],
-          [71, "OwnerAnswerCards"],
-          [72, "GeneratedDocuments"],
-          [73, "KeyPushes"],
-          [74, "DocJobCleanup"],
-          [75, "ServerRenderedDocuments"],
-          [76, "DocFiles"],
-          [77, "DocumentLabels"],
-          [78, "RecipeLabelBaselines"],
-          [79, "ImportRuns"],
-          [80, "RecordRequestHash"],
-          [81, "RecipeJobPasses"],
-          [82, "BankStatements"],
-          [83, "StatementSafety"],
-          [84, "RecipeDefaults"],
-          [85, "StatementReading"],
-          [86, "StatementChatPasswords"],
-          [87, "TeamWork"],
-          [88, "MoneyRecords"],
-          [106, "ChatThreads"],
-          [107, "Connections"],
-          [110, "BudgetNotices"],
-          [130, "ConnectionPause"],
-          [131, "ReceiptProposalsPasswordBudget"],
-          [132, "PeopleProfiles"],
-          [133, "MoneyBudgets"],
-          [134, "ConnectionSignIn"],
-          [135, "PulseFacts"],
-          [136, "ConnectionAsks"],
-          [137, "PersonAccess"],
-          [138, "PulseCheckIns"],
-          [139, "ClientTouches"],
-          [140, "AssignedByAgent"],
-          [141, "ConnectionAccounts"],
-          [142, "MicrosoftConnections"],
-          [143, "PersonPlaces"],
-          [144, "PullRequestCare"],
-          [145, "RetireRoutines"],
-          [146, "SendDecidedBy"],
-          [147, "SendOwesCard"],
-          [148, "EventReplied"],
-          [149, "SendAccount"],
-          [150, "PersonRemoved"],
-          [151, "ToldAndHeld"],
-          [152, "MessageForm"],
-          [153, "HeldRelays"],
-          [154, "TeamDiscussions"],
-          [155, "TalkStyle"],
-          [156, "NamedKeys"],
-          [157, "AgentSettings"],
-          [158, "PrivateBy"],
-          [159, "OpenQuestions"],
-          [160, "GitHubWatch"],
-          [161, "Social"],
-          [162, "PersonHours"],
-          [163, "OneModel"],
-          [164, "WorkersRetired"],
-          [165, "HandedBack"],
-          [166, "GitHubAppRetired"],
-          [167, "TeamMemorySetting"],
-          [168, "GitHubOwnerUses"],
-          [169, "AwayAndWhen"],
-          [170, "OneSocialProfile"],
-          [171, "GitHubBranchGuards"],
-          [172, "CalendarCursor"],
-          [173, "NoMemoryReviewPulls"],
-          [174, "AnswerPages"],
-          [175, "HandoffWantsAnswer"],
-          [176, "RecordComments"],
-          [177, "RecordChangesByWakeup"],
-          [178, "AskOutsideAndDispatch"],
-          [179, "DeviceLinks"],
-          [180, "CardPlans"],
-          [181, "TasksKeys"],
-          [182, "HandoffRoutes"],
-          [183, "TasksKeyMakers"],
-          [184, "Recommendations"],
-          [185, "AskedFor"],
-          [186, "TasksKeysWithoutMaker"],
-          [187, "Holds"],
-        ]);
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(51));
         assert.deepStrictEqual(
           yield* sql`SELECT chat_id, shared_at IS NOT NULL AS shared, shared_from_seq FROM kin_chats ORDER BY chat_id`,
           [
@@ -2341,120 +1210,7 @@ describe("Kin migrations", () => {
       yield* wakeup("done", "lead", "completed");
       yield* wakeup("done-2", "lead-2", "completed");
 
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [34, "PerLeadWakeups"],
-        [35, "RetireLevelCards"],
-        [38, "PeopleInvites"],
-        [39, "LeadHandoffs"],
-        [40, "MessageAttachments"],
-        [41, "GroupLead"],
-        [42, "ReactionWakes"],
-        [43, "WakeupAudience"],
-        [44, "WakeupSharedSince"],
-        [45, "WakeupAudienceAbort"],
-        [46, "ChatCleared"],
-        [47, "SilentMessages"],
-        [50, "LeadAccess"],
-        [51, "ChatSharing"],
-        [52, "MemoryLabels"],
-        [53, "MemorySharing"],
-        [54, "SharedProjection"],
-        [55, "ChatGrantsLapse"],
-        [56, "SuggestionsByVersion"],
-        [57, "Schedules"],
-        [58, "Work"],
-        [59, "WorkerWithdrawals"],
-        [60, "WorkClients"],
-        [61, "WorkerAttempts"],
-        [62, "WorkerPublishApproval"],
-        [63, "LegacyWorkerAttempts"],
-        [64, "AgentRetirement"],
-        [65, "WakeupRetired"],
-        [66, "WakeupsUnretiredIndex"],
-        [67, "Docs"],
-        [68, "WorkMoney"],
-        [69, "WorkerNetwork"],
-        [70, "VisualHosts"],
-        [71, "OwnerAnswerCards"],
-        [72, "GeneratedDocuments"],
-        [73, "KeyPushes"],
-        [74, "DocJobCleanup"],
-        [75, "ServerRenderedDocuments"],
-        [76, "DocFiles"],
-        [77, "DocumentLabels"],
-        [78, "RecipeLabelBaselines"],
-        [79, "ImportRuns"],
-        [80, "RecordRequestHash"],
-        [81, "RecipeJobPasses"],
-        [82, "BankStatements"],
-        [83, "StatementSafety"],
-        [84, "RecipeDefaults"],
-        [85, "StatementReading"],
-        [86, "StatementChatPasswords"],
-        [87, "TeamWork"],
-        [88, "MoneyRecords"],
-        [106, "ChatThreads"],
-        [107, "Connections"],
-        [110, "BudgetNotices"],
-        [130, "ConnectionPause"],
-        [131, "ReceiptProposalsPasswordBudget"],
-        [132, "PeopleProfiles"],
-        [133, "MoneyBudgets"],
-        [134, "ConnectionSignIn"],
-        [135, "PulseFacts"],
-        [136, "ConnectionAsks"],
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(34));
       assert.deepStrictEqual(
         yield* sql`SELECT name FROM sqlite_master WHERE type = 'index' AND name GLOB 'idx_kin_wakeups_running*' ORDER BY name`,
         [{ name: "idx_kin_wakeups_running_lead" }],
@@ -2497,105 +1253,7 @@ describe("Kin migrations", () => {
         ('org', 'nightly-team', NULL, 0), ('org', 'nightly-owner', NULL, 1),
         ('org', 'held', 5, NULL), ('org', 'held-nightly', 5, 0)`;
 
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [53, "MemorySharing"],
-        [54, "SharedProjection"],
-        [55, "ChatGrantsLapse"],
-        [56, "SuggestionsByVersion"],
-        [57, "Schedules"],
-        [58, "Work"],
-        [59, "WorkerWithdrawals"],
-        [60, "WorkClients"],
-        [61, "WorkerAttempts"],
-        [62, "WorkerPublishApproval"],
-        [63, "LegacyWorkerAttempts"],
-        [64, "AgentRetirement"],
-        [65, "WakeupRetired"],
-        [66, "WakeupsUnretiredIndex"],
-        [67, "Docs"],
-        [68, "WorkMoney"],
-        [69, "WorkerNetwork"],
-        [70, "VisualHosts"],
-        [71, "OwnerAnswerCards"],
-        [72, "GeneratedDocuments"],
-        [73, "KeyPushes"],
-        [74, "DocJobCleanup"],
-        [75, "ServerRenderedDocuments"],
-        [76, "DocFiles"],
-        [77, "DocumentLabels"],
-        [78, "RecipeLabelBaselines"],
-        [79, "ImportRuns"],
-        [80, "RecordRequestHash"],
-        [81, "RecipeJobPasses"],
-        [82, "BankStatements"],
-        [83, "StatementSafety"],
-        [84, "RecipeDefaults"],
-        [85, "StatementReading"],
-        [86, "StatementChatPasswords"],
-        [87, "TeamWork"],
-        [88, "MoneyRecords"],
-        [106, "ChatThreads"],
-        [107, "Connections"],
-        [110, "BudgetNotices"],
-        [130, "ConnectionPause"],
-        [131, "ReceiptProposalsPasswordBudget"],
-        [132, "PeopleProfiles"],
-        [133, "MoneyBudgets"],
-        [134, "ConnectionSignIn"],
-        [135, "PulseFacts"],
-        [136, "ConnectionAsks"],
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(53));
       assert.deepStrictEqual(
         yield* sql`SELECT item_id, held_at, classified, shared_content, suggested_content,
             suggested_at IS NOT NULL AS suggested FROM kin_memory_labels ORDER BY item_id`,
@@ -2652,104 +1310,7 @@ describe("Kin migrations", () => {
           ('org', 'held', 5, 'old', 'owner_label', 1, NULL, NULL),
           ('org', 'suggested', NULL, NULL, NULL, NULL, 'words', 2)`;
 
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [54, "SharedProjection"],
-        [55, "ChatGrantsLapse"],
-        [56, "SuggestionsByVersion"],
-        [57, "Schedules"],
-        [58, "Work"],
-        [59, "WorkerWithdrawals"],
-        [60, "WorkClients"],
-        [61, "WorkerAttempts"],
-        [62, "WorkerPublishApproval"],
-        [63, "LegacyWorkerAttempts"],
-        [64, "AgentRetirement"],
-        [65, "WakeupRetired"],
-        [66, "WakeupsUnretiredIndex"],
-        [67, "Docs"],
-        [68, "WorkMoney"],
-        [69, "WorkerNetwork"],
-        [70, "VisualHosts"],
-        [71, "OwnerAnswerCards"],
-        [72, "GeneratedDocuments"],
-        [73, "KeyPushes"],
-        [74, "DocJobCleanup"],
-        [75, "ServerRenderedDocuments"],
-        [76, "DocFiles"],
-        [77, "DocumentLabels"],
-        [78, "RecipeLabelBaselines"],
-        [79, "ImportRuns"],
-        [80, "RecordRequestHash"],
-        [81, "RecipeJobPasses"],
-        [82, "BankStatements"],
-        [83, "StatementSafety"],
-        [84, "RecipeDefaults"],
-        [85, "StatementReading"],
-        [86, "StatementChatPasswords"],
-        [87, "TeamWork"],
-        [88, "MoneyRecords"],
-        [106, "ChatThreads"],
-        [107, "Connections"],
-        [110, "BudgetNotices"],
-        [130, "ConnectionPause"],
-        [131, "ReceiptProposalsPasswordBudget"],
-        [132, "PeopleProfiles"],
-        [133, "MoneyBudgets"],
-        [134, "ConnectionSignIn"],
-        [135, "PulseFacts"],
-        [136, "ConnectionAsks"],
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(54));
       assert.deepStrictEqual(
         yield* sql`SELECT item_id, held_at, shared_content, shared_how, suggested_content,
             suggested_at IS NOT NULL AS suggested FROM kin_memory_labels ORDER BY item_id`,
@@ -2798,103 +1359,7 @@ describe("Kin migrations", () => {
       yield* runKinMigrations();
       yield* undoSuggestionsByVersion;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 55`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [55, "ChatGrantsLapse"],
-        [56, "SuggestionsByVersion"],
-        [57, "Schedules"],
-        [58, "Work"],
-        [59, "WorkerWithdrawals"],
-        [60, "WorkClients"],
-        [61, "WorkerAttempts"],
-        [62, "WorkerPublishApproval"],
-        [63, "LegacyWorkerAttempts"],
-        [64, "AgentRetirement"],
-        [65, "WakeupRetired"],
-        [66, "WakeupsUnretiredIndex"],
-        [67, "Docs"],
-        [68, "WorkMoney"],
-        [69, "WorkerNetwork"],
-        [70, "VisualHosts"],
-        [71, "OwnerAnswerCards"],
-        [72, "GeneratedDocuments"],
-        [73, "KeyPushes"],
-        [74, "DocJobCleanup"],
-        [75, "ServerRenderedDocuments"],
-        [76, "DocFiles"],
-        [77, "DocumentLabels"],
-        [78, "RecipeLabelBaselines"],
-        [79, "ImportRuns"],
-        [80, "RecordRequestHash"],
-        [81, "RecipeJobPasses"],
-        [82, "BankStatements"],
-        [83, "StatementSafety"],
-        [84, "RecipeDefaults"],
-        [85, "StatementReading"],
-        [86, "StatementChatPasswords"],
-        [87, "TeamWork"],
-        [88, "MoneyRecords"],
-        [106, "ChatThreads"],
-        [107, "Connections"],
-        [110, "BudgetNotices"],
-        [130, "ConnectionPause"],
-        [131, "ReceiptProposalsPasswordBudget"],
-        [132, "PeopleProfiles"],
-        [133, "MoneyBudgets"],
-        [134, "ConnectionSignIn"],
-        [135, "PulseFacts"],
-        [136, "ConnectionAsks"],
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(55));
       assert.deepStrictEqual(yield* sql`SELECT * FROM kin_memory_labels`, []);
       yield* undoSuggestionsByVersion;
 
@@ -2950,103 +1415,7 @@ describe("Kin migrations", () => {
 
       // K056 keeps every suggestion, as when it was suggested, and drops the revisions.
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 55`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [55, "ChatGrantsLapse"],
-        [56, "SuggestionsByVersion"],
-        [57, "Schedules"],
-        [58, "Work"],
-        [59, "WorkerWithdrawals"],
-        [60, "WorkClients"],
-        [61, "WorkerAttempts"],
-        [62, "WorkerPublishApproval"],
-        [63, "LegacyWorkerAttempts"],
-        [64, "AgentRetirement"],
-        [65, "WakeupRetired"],
-        [66, "WakeupsUnretiredIndex"],
-        [67, "Docs"],
-        [68, "WorkMoney"],
-        [69, "WorkerNetwork"],
-        [70, "VisualHosts"],
-        [71, "OwnerAnswerCards"],
-        [72, "GeneratedDocuments"],
-        [73, "KeyPushes"],
-        [74, "DocJobCleanup"],
-        [75, "ServerRenderedDocuments"],
-        [76, "DocFiles"],
-        [77, "DocumentLabels"],
-        [78, "RecipeLabelBaselines"],
-        [79, "ImportRuns"],
-        [80, "RecordRequestHash"],
-        [81, "RecipeJobPasses"],
-        [82, "BankStatements"],
-        [83, "StatementSafety"],
-        [84, "RecipeDefaults"],
-        [85, "StatementReading"],
-        [86, "StatementChatPasswords"],
-        [87, "TeamWork"],
-        [88, "MoneyRecords"],
-        [106, "ChatThreads"],
-        [107, "Connections"],
-        [110, "BudgetNotices"],
-        [130, "ConnectionPause"],
-        [131, "ReceiptProposalsPasswordBudget"],
-        [132, "PeopleProfiles"],
-        [133, "MoneyBudgets"],
-        [134, "ConnectionSignIn"],
-        [135, "PulseFacts"],
-        [136, "ConnectionAsks"],
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(55));
       assert.deepStrictEqual(
         yield* sql`SELECT org_id, item_id, held_at, shared_content, shared_how, suggested_content,
             suggested_at IS NOT NULL AS suggested FROM kin_memory_labels ORDER BY org_id, item_id`,
@@ -3081,33 +1450,7 @@ describe("Kin migrations", () => {
         VALUES ('lead', 'org', 'Lead', 0, ${old}, '[]', 'direct')`;
       yield* sql`INSERT INTO kin_agent_defaults (org_id, models_json) VALUES ('org', ${old})`;
 
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(163));
       const one = JSON.parse(strong);
       for (const table of ["kin_leads", "kin_agent_defaults"]) {
         const [row] = yield* sql<{
@@ -3137,26 +1480,7 @@ describe("Kin migrations", () => {
         VALUES ('org', 'draft', 'post', 'sg_second', 'Invented', 9, 'draft', 'lead', 0, 0),
           ('org', 'kept', 'post', 'sg_first', 'Invented', 9, 'draft', 'lead', 0, 0)`;
 
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(170));
       assert.deepStrictEqual(
         yield* sql<{ groupId: string }>`SELECT group_id AS "groupId" FROM kin_social_groups
           WHERE removed_at IS NULL ORDER BY group_id`,
@@ -3195,17 +1519,7 @@ describe("Kin migrations", () => {
       yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
         VALUES ('phone', 'org', 'zoya', 1)`;
 
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(179));
       assert.deepStrictEqual(
         yield* sql`SELECT invite_id AS "inviteId", made_by_person_id AS "madeBy",
           made_by_session_id AS "madeFrom" FROM kin_people_invites`,
@@ -3217,17 +1531,81 @@ describe("Kin migrations", () => {
         [{ sessionId: "phone", parent: null, linkId: null }],
       );
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 179`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(179));
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "K197 gives open invites no chosen places, keeps a choice and its chooser, and reruns",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runKinMigrations();
+        for (const column of ["sees_json", "sees_by_person_id"])
+          yield* sql`ALTER TABLE kin_people_invites DROP COLUMN ${sql.literal(column)}`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 197`;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+        yield* sql`INSERT INTO kin_people_invites (invite_id, org_id, person_id, display_name, handle,
+          secret_hash, created_at, expires_at)
+        VALUES ('invite', 'org', NULL, 'Zoya', 'zoya', 'hash', 1, 2)`;
+        const invites = sql`SELECT invite_id AS "inviteId", sees_json AS sees,
+        sees_by_person_id AS by FROM kin_people_invites`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(197));
+        assert.deepStrictEqual(yield* invites, [{ inviteId: "invite", sees: null, by: null }]);
+        const sees = JSON.stringify({ clients: false, docs: true, money: true });
+        yield* sql`UPDATE kin_people_invites SET sees_json = ${sees}, sees_by_person_id = 'meera'`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 197`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(197));
+        assert.deepStrictEqual(yield* invites, [{ inviteId: "invite", sees, by: "meera" }]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("K198 gives every chat member no pin, keeps a pin, and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* undoChatPins;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 198`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Ambermill', ${timestamp})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('rhea', 'org', 'rhea', 'Rhea', ${timestamp})`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+        VALUES ('chat', 'org', 'project_group', 0, ${timestamp})`;
+      yield* sql`INSERT INTO kin_chat_members (org_id, chat_id, member_id, role, joined_at,
+          principal_kind, person_id)
+        VALUES ('org', 'chat', 'member', 'owner', ${timestamp}, 'person', 'rhea')`;
+      const pinned = sql`SELECT member_id AS "memberId", pinned_at AS "pinnedAt"
+        FROM kin_chat_members`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(198));
+      assert.deepStrictEqual(yield* pinned, [{ memberId: "member", pinnedAt: null }]);
+      yield* sql`UPDATE kin_chat_members SET pinned_at = 5`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 198`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(198));
+      assert.deepStrictEqual(yield* pinned, [{ memberId: "member", pinnedAt: 5 }]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("K199 gives every task no steps and no urgent mark, keeps both, and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* undoTaskSteps;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 199`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at) VALUES ('org', 'work', 'Work', 'W', 1, 1)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, created_by_kind, origin_key, created_at, updated_at)
+        VALUES ('org', 'task', 'work', 'W-1', 'Design the screen', 'person', 'dev', 'person',
+          'origin', 1, 1)`;
+      const tasks = sql`SELECT key, steps_json AS steps, urgent FROM kin_records`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(199));
+      assert.deepStrictEqual(yield* tasks, [{ key: "W-1", steps: null, urgent: null }]);
+      const steps = JSON.stringify([{ title: "Wireframe", done: true }]);
+      yield* sql`UPDATE kin_records SET steps_json = ${steps}, urgent = 1`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 199`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(199));
+      assert.deepStrictEqual(yield* tasks, [{ key: "W-1", steps, urgent: 1 }]);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -3244,11 +1622,7 @@ describe("Kin migrations", () => {
       const columns = sql<{ name: string }>`SELECT name FROM pragma_table_info('kin_questions')
         WHERE name IN ('for_chat_id', 'for_person_id', 'card_json') ORDER BY name`;
       yield* drop;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(185));
       assert.lengthOf(yield* columns, 3);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
@@ -3275,10 +1649,7 @@ describe("Kin migrations", () => {
         const keys = sql<{ sessionId: string; revoked: number; revokedAt: number | null }>`SELECT
           session_id AS "sessionId", revoked_at IS NOT NULL AS revoked, revoked_at AS "revokedAt"
         FROM kin_tasks_keys ORDER BY session_id`;
-        assert.deepStrictEqual(yield* runKinMigrations(), [
-          [186, "TasksKeysWithoutMaker"],
-          [187, "Holds"],
-        ]);
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(186));
         const ended = yield* keys;
         assert.deepStrictEqual(
           ended.map(({ sessionId, revoked }) => [sessionId, revoked]),
@@ -3291,10 +1662,7 @@ describe("Kin migrations", () => {
         assert.strictEqual(ended[0]?.revokedAt, 7);
         // Run again, it changes nothing.
         yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 186`;
-        assert.deepStrictEqual(yield* runKinMigrations(), [
-          [186, "TasksKeysWithoutMaker"],
-          [187, "Holds"],
-        ]);
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(186));
         assert.deepStrictEqual(yield* keys, ended);
       }).pipe(Effect.provide(layer)),
   );
@@ -3322,8 +1690,1043 @@ describe("Kin migrations", () => {
         ),
       );
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 187`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [[187, "Holds"]]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(187));
       assert.lengthOf(yield* sql`SELECT 1 FROM kin_holds`, 3);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
+    "K188 keeps closed only what the owner revoked by hand, and holds one live limit per pair",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runKinMigrations();
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 188`;
+        yield* sql`DROP TABLE kin_reach_limits`;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Ambermill', 1)`;
+        for (const [personId, access, removedAt] of [
+          ["rhea", "owner", null],
+          ["meera", "co_owner", null],
+          ["dev", "member", null],
+          ["zoya", "member", 40],
+          ["arjun", "member", null],
+        ] as const)
+          yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+              access, removed_at)
+            VALUES (${personId}, 'org', ${personId}, ${personId}, 1, ${access}, ${removedAt})`;
+        for (const agentId of ["chief", "finance"])
+          yield* sql`INSERT INTO kin_agents (agent_id, org_id, role, display_name, owner_person_id,
+              created_at)
+            VALUES (${agentId}, 'org', 'lead', ${agentId}, 'rhea', 1)`;
+        yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+          VALUES ('org', 'chief', 'rhea', 1)`;
+        for (const [agentId, personId, revokedAt] of [
+          // By hand: stays closed.
+          ["finance", "dev", 30],
+          // Still allowed.
+          ["finance", "arjun", null],
+          // Stamped at Zoya's removal: the removal's, not a restriction.
+          ["finance", "zoya", 40],
+          // A co-owner messages every agent; the team agent never closed anything.
+          ["finance", "meera", 30],
+          ["chief", "dev", 30],
+        ] as const)
+          yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by,
+              granted_at, revoked_at)
+            VALUES ('org', ${agentId}, ${personId}, 'rhea', 10, ${revokedAt})`;
+        const limits = sql`SELECT one_kind, one_id, other_kind, other_id, set_by_person_id,
+            set_at, lifted_at FROM kin_reach_limits ORDER BY limit_id`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(188));
+        const backfilled = yield* limits;
+        assert.deepStrictEqual(backfilled, [
+          {
+            one_kind: "agent",
+            one_id: "finance",
+            other_kind: "person",
+            other_id: "dev",
+            set_by_person_id: "rhea",
+            set_at: 30,
+            lifted_at: null,
+          },
+        ]);
+        // One live limit per pair; a lifted one stays as history beside a new one.
+        const insert = (limitId: string) =>
+          sql`INSERT INTO kin_reach_limits (limit_id, org_id, one_kind, one_id, other_kind,
+              other_id, set_by_person_id, set_at)
+            VALUES (${limitId}, 'org', 'agent', 'finance', 'person', 'dev', 'rhea', 50)`;
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(insert("again"))));
+        yield* sql`UPDATE kin_reach_limits SET lifted_at = 60, lifted_by_person_id = 'meera'`;
+        yield* insert("again");
+        // The pair is stored in one order only.
+        const reversed = sql`INSERT INTO kin_reach_limits (limit_id, org_id, one_kind, one_id,
+            other_kind, other_id, set_by_person_id, set_at)
+          VALUES ('reversed', 'org', 'person', 'dev', 'agent', 'chief', 'rhea', 50)`;
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(reversed)));
+        // Run again, it adds nothing.
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 188`;
+        const before = yield* limits;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(188));
+        assert.deepStrictEqual(yield* limits, before);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "K189 gives everyone already here the default morning page, and runs again safely",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runKinMigrations();
+        yield* sql`ALTER TABLE kin_people DROP COLUMN morning_json`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 189`;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('rhea', 'org', 'rhea', 'Rhea', ${timestamp}),
+          ('zoya', 'org', 'zoya', 'Zoya', ${timestamp})`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(189));
+        const people = () =>
+          sql<{ personId: string; morning: string | null }>`SELECT person_id AS "personId",
+          morning_json AS morning FROM kin_people ORDER BY person_id`;
+        assert.deepStrictEqual(yield* people(), [
+          { personId: "rhea", morning: null },
+          { personId: "zoya", morning: null },
+        ]);
+        yield* sql`UPDATE kin_people SET morning_json = '{"at":"07:30","days":[1],"on":false}'
+        WHERE person_id = 'zoya'`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 189`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(189));
+        assert.strictEqual((yield* people())[1]?.morning, '{"at":"07:30","days":[1],"on":false}');
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K190 keeps every import run and its numbering, and lets a check keep a row", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 190`;
+      yield* sql`DROP INDEX idx_kin_records_title`;
+      yield* sql`DROP TABLE kin_import_runs`;
+      yield* K079ImportRuns;
+      yield* sql`INSERT INTO kin_orgs VALUES ('org', 'Invented Ambermill', '2026-11-11T00:00:00.000Z')`;
+      for (const [batch, action, finished] of [
+        ["spring", "apply", 2],
+        ["spring", "undo", 3],
+        ["summer", "apply", null],
+      ] as const)
+        yield* sql`INSERT INTO kin_import_runs (org_id, batch, action, person_id, started_at,
+            finished_at, lists_json, summary_json)
+          VALUES ('org', ${batch}, ${action}, 'rhea', 1, ${finished}, '["deals"]', '{"done":4}')`;
+      yield* sql`DELETE FROM kin_import_runs WHERE batch = 'summer'`;
+      const runs = sql`SELECT * FROM kin_import_runs ORDER BY seq`;
+      const before = yield* runs;
+      const check = sql`INSERT INTO kin_import_runs (org_id, batch, action, person_id, started_at)
+        VALUES ('org', '', 'check', 'rhea', 4) RETURNING seq`;
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(check)));
+
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(190));
+      assert.deepStrictEqual(yield* runs, before);
+      assert.deepStrictEqual(yield* check, [{ seq: 4 }]);
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM sqlite_master WHERE name = 'idx_kin_records_title'`,
+        1,
+      );
+      // Run again, it changes nothing.
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 190`;
+      const after = yield* runs;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(190));
+      assert.deepStrictEqual(yield* runs, after);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
+    "K191 reads one wake-up's posts and a day's wake-ups by index, not the whole history",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        // Each read is its own statement: the client keeps a prepared plan for a statement's text.
+        const plans = Effect.fn(function* (read: string) {
+          const tag = sql.literal(`/* ${read} */`);
+          const posts = yield* sql<{ detail: string }>`EXPLAIN QUERY PLAN SELECT body ${tag}
+          FROM kin_messages
+          WHERE org_id = 'org' AND author_kind = 'agent' AND author_agent_id = 'lead'
+            AND author_thread_id = 'kin:lead' AND created_at >= '2026-11-20T00:00:00.000Z'
+          ORDER BY seq`;
+          const failed = yield* sql<{
+            detail: string;
+          }>`EXPLAIN QUERY PLAN SELECT COUNT(*) AS n ${tag}
+          FROM kin_wakeups WHERE org_id = 'org' AND status IN ('failed', 'timed_out')
+            AND started_at >= 0`;
+          return [...posts, ...failed].map((row) => row.detail).join("\n");
+        });
+        yield* runKinMigrations();
+        const indexed = yield* plans("indexed");
+        assert.include(indexed, "idx_kin_messages_agent_thread");
+        assert.include(indexed, "idx_kin_wakeups_started");
+        yield* sql`DROP INDEX idx_kin_messages_agent_thread`;
+        yield* sql`DROP INDEX idx_kin_wakeups_started`;
+        // Without them, both read every row the org ever had.
+        const scanned = yield* plans("without");
+        assert.include(scanned, "idx_kin_messages_changes (org_id=?)");
+        assert.notInclude(scanned, "started_at>");
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 191`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(191));
+        assert.strictEqual(yield* plans("again"), indexed);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
+    "K194 drops the webhook sources a host still holds, and runs on one already without",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const sources = sql`SELECT name FROM sqlite_master WHERE name = 'kin_webhook_sources'`;
+        yield* runKinMigrations();
+        assert.deepStrictEqual(yield* sources, []);
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 194`;
+        yield* sql`CREATE TABLE kin_webhook_sources (
+        source_id TEXT NOT NULL,
+        org_id TEXT NOT NULL REFERENCES kin_orgs(org_id),
+        repo TEXT NOT NULL,
+        scheduled_task_id TEXT NOT NULL UNIQUE,
+        inbox_thread_id TEXT NOT NULL,
+        github_hook_id INTEGER,
+        bot_login TEXT NOT NULL,
+        status TEXT NOT NULL,
+        secret_sha256 TEXT,
+        secret_bound_at INTEGER,
+        PRIMARY KEY (org_id, source_id)
+      )`;
+        yield* sql`INSERT INTO kin_orgs VALUES ('org', 'Invented Ambermill', '2026-11-11T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_webhook_sources (source_id, org_id, repo, scheduled_task_id,
+          inbox_thread_id, bot_login, status)
+        VALUES ('source', 'org', 'ambermill/shop', 'task', 'inbox', 'kin[bot]', 'active')`;
+        yield* sql`PRAGMA foreign_keys = ON`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(194));
+        assert.deepStrictEqual(yield* sources, []);
+        assert.deepStrictEqual(yield* sql`PRAGMA foreign_key_check`, []);
+        // Already gone: it runs again and changes nothing.
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 194`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(194));
+        assert.deepStrictEqual(yield* sources, []);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
+    "K196 gives a host on K195 the review receipt column, keeps its rows, then 197 to 218, and runs again",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const receipts = sql<{ trigger_key: string; review_url: string | null }>`
+          SELECT trigger_key, review_url FROM kin_github_handled ORDER BY trigger_key`;
+        const later = sql<{ name: string }>`
+          SELECT name FROM pragma_table_info('kin_people_invites')
+            WHERE name IN ('sees_json', 'sees_by_person_id')
+          UNION ALL SELECT name FROM pragma_table_info('kin_chat_members') WHERE name = 'pinned_at'
+          UNION ALL SELECT name FROM pragma_table_info('kin_records')
+            WHERE name IN ('steps_json', 'urgent')
+          UNION ALL SELECT name FROM pragma_table_info('kin_questions')
+            WHERE name IN ('draft_json', 'approved_at', 'draft_made_json')
+          ORDER BY name`;
+        yield* runKinMigrations();
+        // A host on K195: none of 196-200's columns yet, one handled trigger.
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 196`;
+        yield* sql`ALTER TABLE kin_github_handled DROP COLUMN review_url`;
+        for (const column of ["sees_json", "sees_by_person_id"])
+          yield* sql`ALTER TABLE kin_people_invites DROP COLUMN ${sql.literal(column)}`;
+        yield* undoChatPins;
+        yield* undoTaskSteps;
+        yield* undoSentUpDrafts;
+        assert.deepStrictEqual(yield* later, []);
+        yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, outcome, at)
+          VALUES ('org', 'review:ambermill/shop#7', 'ambermill/shop', 7, 'woke', 1)`;
+        // Later branches' migrations run after these too; only these three are this test's.
+        assert.deepStrictEqual(
+          (yield* runKinMigrations()).map(([id]) => id),
+          [
+            196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
+            213, 214, 215, 216, 217, 218, 219,
+          ],
+        );
+        assert.deepStrictEqual(yield* receipts, [
+          { trigger_key: "review:ambermill/shop#7", review_url: null },
+        ]);
+        assert.deepStrictEqual(
+          (yield* later).map(({ name }) => name),
+          [
+            "approved_at",
+            "draft_json",
+            "draft_made_json",
+            "pinned_at",
+            "sees_by_person_id",
+            "sees_json",
+            "steps_json",
+            "urgent",
+          ],
+        );
+        // Already there: it changes nothing.
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 196`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(196));
+        assert.deepStrictEqual(yield* receipts, [
+          { trigger_key: "review:ambermill/shop#7", review_url: null },
+        ]);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("a host on K196 migrates through 197 to 218, and again", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const added = sql<{ name: string }>`
+        SELECT name FROM pragma_table_info('kin_people_invites')
+          WHERE name IN ('sees_json', 'sees_by_person_id')
+        UNION ALL SELECT name FROM pragma_table_info('kin_chat_members') WHERE name = 'pinned_at'
+        UNION ALL SELECT name FROM pragma_table_info('kin_records')
+          WHERE name IN ('steps_json', 'urgent')
+        UNION ALL SELECT name FROM pragma_table_info('kin_questions')
+          WHERE name IN ('draft_json', 'approved_at', 'draft_made_json')
+        ORDER BY name`;
+      yield* runKinMigrations();
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 197`;
+      for (const column of ["sees_json", "sees_by_person_id"])
+        yield* sql`ALTER TABLE kin_people_invites DROP COLUMN ${sql.literal(column)}`;
+      yield* undoChatPins;
+      yield* undoTaskSteps;
+      yield* undoSentUpDrafts;
+      assert.deepStrictEqual(yield* added, []);
+      assert.deepStrictEqual(
+        (yield* runKinMigrations()).map(([id]) => id),
+        [
+          197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214,
+          215, 216, 217, 218, 219,
+        ],
+      );
+      const all = [
+        "approved_at",
+        "draft_json",
+        "draft_made_json",
+        "pinned_at",
+        "sees_by_person_id",
+        "sees_json",
+        "steps_json",
+        "urgent",
+      ];
+      assert.deepStrictEqual(
+        (yield* added).map(({ name }) => name),
+        all,
+      );
+      for (const from of [
+        197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214,
+        215, 216, 217, 218,
+      ]) {
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= ${from}`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(from));
+        assert.deepStrictEqual(
+          (yield* added).map(({ name }) => name),
+          all,
+        );
+      }
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
+    "K200 gives a database at K198 the draft columns, keeps its questions, and runs again harmlessly",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const columns = sql<{ name: string; type: string; notnull: number }>`SELECT name, type,
+            "notnull" FROM pragma_table_info('kin_questions')
+          WHERE name IN ('draft_json', 'approved_at', 'draft_made_json') ORDER BY name`;
+        const questions = sql<{ id: string; question: string; draft: string | null }>`SELECT
+            question_id AS id, question, draft_json AS draft FROM kin_questions ORDER BY question_id`;
+        yield* runKinMigrations();
+        // A database at K198: none of this migration's columns, one open question.
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 200`;
+        for (const column of ["draft_json", "approved_at", "draft_made_json"])
+          yield* sql`ALTER TABLE kin_questions DROP COLUMN ${sql.literal(column)}`;
+        assert.deepStrictEqual(yield* columns, []);
+        yield* sql`INSERT INTO kin_orgs VALUES ('org', 'Invented Ambermill', '2026-11-11T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id,
+            kind, question, safe, asked_at, due_at, act_at, state)
+          VALUES ('q-1', 'org', 'chief', 'rhea', 'chat-1', 'card', 'Invented: Friday?', 0, 1, 2, 3,
+            'open')`;
+        const added = [
+          { name: "approved_at", type: "INTEGER", notnull: 0 },
+          { name: "draft_json", type: "TEXT", notnull: 0 },
+          { name: "draft_made_json", type: "TEXT", notnull: 0 },
+        ];
+        const kept = [{ id: "q-1", question: "Invented: Friday?", draft: null }];
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(200));
+        assert.deepStrictEqual(yield* columns, added);
+        assert.deepStrictEqual(yield* questions, kept);
+        // Already there: running it again changes nothing.
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 200`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(200));
+        assert.deepStrictEqual(yield* columns, added);
+        assert.deepStrictEqual(yield* questions, kept);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K201 rebuilds an upgraded search index so a doc is found by its kind", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      // Back to K200, as release 1 leaves it: the index without a kind, holding a playbook that never says "playbook".
+      yield* sql`DROP TABLE kin_search`;
+      yield* sql`CREATE VIRTUAL TABLE kin_search USING fts5(
+        title, body, tokenize = 'unicode61 remove_diacritics 2')`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 201`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+        VALUES ('org', 'docs', 'Docs', 'D', 1)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, category,
+          owner_kind, owner_id, created_by_kind, origin_key, created_at, updated_at)
+        VALUES ('org', 'doc', 'docs', 'D-1', 'Chasing money', 'playbook', 'person', 'p',
+          'person', 'owner:1', 1, 1)`;
+      yield* sql`INSERT INTO kin_search_rows (org_id, record_id, part) VALUES ('org', 'doc', 'public')`;
+      yield* sql`INSERT INTO kin_search (rowid, title, body)
+        SELECT id, 'Chasing money', '' FROM kin_search_rows`;
+      const found = sql<{
+        rowid: number;
+      }>`SELECT rowid FROM kin_search WHERE kin_search MATCH 'playbooks'`;
+      assert.lengthOf(yield* found, 0);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(201));
+      assert.lengthOf(yield* found, 1);
+      // Run again: the index is rebuilt from what is stored, so the doc is found once.
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 201`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(201));
+      assert.lengthOf(yield* found, 1);
+      // Without FTS5 there is no index to rebuild, and search scans.
+      yield* sql`DROP TABLE kin_search`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 201`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(201));
+      assert.lengthOf(yield* sql`SELECT 1 FROM sqlite_master WHERE name = 'kin_search'`, 0);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
+    "K202 lets a push device be an Android phone, keeps every column of a host's iPhone rows, and reruns",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        // K208's and K213's columns come after this one's work, so it is compared without them.
+        const shape = sql`SELECT cid, name, type, "notnull", dflt_value, pk
+          FROM pragma_table_info('kin_push_devices') WHERE name NOT IN ('quiet_channel', 'withdraws')
+          ORDER BY cid`;
+        const indexes = sql`SELECT name, sql FROM sqlite_master
+          WHERE type = 'index' AND tbl_name = 'kin_push_devices' ORDER BY name`;
+        const rows = sql`SELECT org_id, token, person_id, platform, aps_environment, device_label,
+            session_id, proof_key_thumbprint, created_at, updated_at
+          FROM kin_push_devices ORDER BY org_id, token`;
+        yield* runKinMigrations();
+        // A host on K201: the table as K021 made it, holding iPhones with every column filled.
+        yield* sql`DROP TABLE kin_push_devices`;
+        yield* K021PushDevices;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 202`;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('rhea', 'org', 'rhea', 'Rhea', 1), ('meera', 'org', 'meera', 'Meera', 1)`;
+        const device = (token: string, platform: string) =>
+          sql`INSERT INTO kin_push_devices (org_id, token, person_id, platform, aps_environment,
+              device_label, session_id, proof_key_thumbprint, created_at, updated_at)
+            VALUES ('org', ${token}, 'rhea', ${platform}, 'production', 'Rhea phone', 's1',
+              'thumb-1', 1, 2)`;
+        yield* device("a".repeat(64), "ios");
+        yield* sql`INSERT INTO kin_push_devices VALUES ('org', ${"b".repeat(64)}, 'meera', 'ios',
+          'development', 'Meera phone', 's2', 'thumb-2', 3, 4)`;
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(device("fcm:token", "android"))));
+        const before = { shape: yield* shape, indexes: yield* indexes, rows: yield* rows };
+        assert.lengthOf(before.rows, 2);
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(202));
+        assert.deepStrictEqual(
+          { shape: yield* shape, indexes: yield* indexes, rows: yield* rows },
+          before,
+        );
+        yield* device("fcm:token", "android");
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(device("other", "windows"))));
+        const after = yield* rows;
+        assert.deepStrictEqual(after.slice(0, 2), before.rows);
+        assert.lengthOf(after, 3);
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 202`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(202));
+        assert.deepStrictEqual(
+          { shape: yield* shape, indexes: yield* indexes, rows: yield* rows },
+          { ...before, rows: after },
+        );
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
+    "K203 gives a host on K202 the watch tables and the background model, keeps its defaults, and reruns",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const tables = sql<{ name: string }>`SELECT name FROM sqlite_master
+          WHERE type = 'table' AND name IN ('kin_watches', 'kin_watch_looks') ORDER BY name`;
+        const defaults = sql`SELECT * FROM kin_agent_defaults ORDER BY org_id`;
+        yield* runKinMigrations();
+        // A host on K202: no watch tables, a company default model and no background one.
+        yield* sql`DROP TABLE kin_watch_looks`;
+        yield* sql`DROP TABLE kin_watches`;
+        yield* sql`ALTER TABLE kin_agent_defaults DROP COLUMN scout_model_json`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 203`;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;
+        yield* sql`INSERT INTO kin_agent_defaults (org_id, models_json)
+          VALUES ('org', '{"default":"invented-model"}')`;
+        assert.deepStrictEqual(yield* tables, []);
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(203));
+        assert.deepStrictEqual(
+          (yield* tables).map(({ name }) => name),
+          ["kin_watch_looks", "kin_watches"],
+        );
+        assert.deepStrictEqual(yield* defaults, [
+          { org_id: "org", models_json: '{"default":"invented-model"}', scout_model_json: null },
+        ]);
+        // A look must name its watch, and only a round's summary row has no watch.
+        const look = (watch: string | null, counts: string | null) =>
+          sql`INSERT INTO kin_watch_looks (org_id, look_id, round_id, watch_id, at, counts_json)
+            VALUES ('org', ${`l-${watch ?? "round"}-${counts ?? "none"}`}, 'r', ${watch}, 1, ${counts})`;
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(look(null, null))));
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(look("w", "{}"))));
+        yield* look(null, "{}");
+        yield* look("w", null);
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 203`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(203));
+        assert.lengthOf(yield* defaults, 1);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
+    "K207 gives a host on K206 the trouble tables and held_by, one open trouble per cause, and reruns",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runKinMigrations();
+        yield* sql`DROP INDEX idx_kin_events_held_by`;
+        yield* sql`ALTER TABLE kin_events DROP COLUMN held_by`;
+        yield* sql`DROP TABLE kin_trouble_agents`;
+        yield* sql`DROP TABLE kin_troubles`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 207`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(207));
+        const open = (id: string, closedAt: number | null) =>
+          sql`INSERT INTO kin_troubles (trouble_id, org_id, cause, opened_at, closed_at)
+            VALUES (${id}, 'org', 'space', 1, ${closedAt})`;
+        yield* open("t1", 2);
+        yield* open("t2", null);
+        assert.isTrue(Exit.isFailure(yield* Effect.exit(open("t3", null))));
+        const columns = yield* sql<{
+          name: string;
+        }>`SELECT name FROM pragma_table_info('kin_events')
+          WHERE name = 'held_by'`;
+        assert.lengthOf(columns, 1);
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 207`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(207));
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K204 gives a host on K203 the bank alert log, and runs again harmlessly", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const shape = sql`SELECT name, sql FROM sqlite_master
+        WHERE tbl_name = 'kin_bank_alerts' ORDER BY name`;
+      yield* runKinMigrations();
+      const made = yield* shape;
+      // The table, its key's own index, and the two it reads by.
+      assert.lengthOf(made, 4);
+      yield* sql`DROP TABLE kin_bank_alerts`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 204`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(204));
+      assert.deepStrictEqual(yield* shape, made);
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 204`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(204));
+      assert.deepStrictEqual(yield* shape, made);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
+    "K205 gives a database at K204 the arrival ledger and the mail cursor, keeps cursors, and runs again",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const shape = sql<{ name: string }>`SELECT name FROM sqlite_master
+            WHERE name IN ('kin_arrivals', 'kin_arrivals_mail_key')
+          UNION ALL SELECT name FROM pragma_table_info('kin_connection_cursors')
+            WHERE name = 'mail_cursor'
+          ORDER BY name`;
+        const cursors = sql<{ until: number }>`SELECT checked_until AS until
+          FROM kin_connection_cursors ORDER BY connection_id`;
+        yield* runKinMigrations();
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 205`;
+        yield* sql`DROP TABLE kin_arrivals`;
+        yield* sql`ALTER TABLE kin_connection_cursors DROP COLUMN mail_cursor`;
+        assert.deepStrictEqual(yield* shape, []);
+        yield* sql`INSERT INTO kin_orgs VALUES ('org', 'Invented Ambermill', '2026-11-11T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+            url_host, auth, reach, state, created_at, updated_at)
+          VALUES ('org', 'c-1', 'google', 'Gmail', 'builtin', 'gmail.googleapis.com', 'oauth',
+            'closed', 'active', 1, 1)`;
+        yield* sql`INSERT INTO kin_connection_cursors (org_id, connection_id, checked_until,
+            updated_at) VALUES ('org', 'c-1', 42, 1)`;
+        const all = ["kin_arrivals", "kin_arrivals_mail_key", "mail_cursor"];
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(205));
+        assert.deepStrictEqual(
+          (yield* shape).map(({ name }) => name),
+          all,
+        );
+        assert.deepStrictEqual(yield* cursors, [{ until: 42 }]);
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 205`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(205));
+        assert.deepStrictEqual(yield* cursors, [{ until: 42 }]);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
+    "K206 adds an empty shell table for existing companies and keeps a stored shell on rerun",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runKinMigrations();
+        yield* sql`DROP TABLE kin_company_shell`;
+        // Later migrations run after it again; only K206 is this test's.
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 206`;
+        yield* sql`INSERT INTO kin_orgs VALUES ('org', 'Ambermill', '2026-11-22')`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(206));
+        const shells = sql`SELECT org_id, shell_json, rev, set_by, set_at
+        FROM kin_company_shell ORDER BY org_id`;
+        assert.deepStrictEqual(yield* shells, []);
+        const sections = '[{"id":"deals","on":false}]';
+        yield* sql`INSERT INTO kin_company_shell VALUES ('org', ${sections}, 1, 'rhea', 1)`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 206`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(206));
+        assert.deepStrictEqual(yield* shells, [
+          { org_id: "org", shell_json: sections, rev: 1, set_by: "rhea", set_at: 1 },
+        ]);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K208 adds the answers switch and the quiet channel flag, keeping rows on rerun", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`INSERT INTO kin_orgs VALUES ('org', 'Ambermill', '2026-11-22')`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('rhea', 'org', 'rhea', 'Rhea', '2026-11-22')`;
+      yield* sql`INSERT INTO kin_push_devices (org_id, token, person_id, platform,
+          aps_environment, session_id, created_at, updated_at)
+        VALUES ('org', 'phone', 'rhea', 'android', 'production', 'sess', 1, 1)`;
+      const rows = sql`SELECT p.answers_ring AS ring, d.quiet_channel AS quiet FROM kin_people p
+        JOIN kin_push_devices d ON d.person_id = p.person_id ORDER BY p.person_id`;
+      assert.deepStrictEqual(yield* rows, [{ ring: null, quiet: 0 }]);
+      yield* sql`UPDATE kin_people SET answers_ring = 0`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 208`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(208));
+      assert.deepStrictEqual(yield* rows, [{ ring: 0, quiet: 0 }]);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
+    "K209 keeps one picture setting per org, only reserved, made or unclear counts of 1 to 4, and one image per picture version",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runKinMigrations();
+        assert.deepInclude(yield* kinHistory, { migration_id: 209, name: "Pictures" });
+        yield* sql`INSERT INTO kin_picture_settings (org_id, monthly_limit, updated_at, updated_by)
+          VALUES ('org', NULL, 1, 'rhea')`;
+        const refused = [
+          sql`INSERT INTO kin_picture_settings (org_id, monthly_limit, updated_at, updated_by)
+            VALUES ('org', 50, 1, 'rhea')`,
+          sql`INSERT INTO kin_picture_settings (org_id, monthly_limit, updated_at, updated_by)
+            VALUES ('other', 0, 1, 'rhea')`,
+          ...[0, 5].map(
+            (count) => sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id,
+              count, state, at) VALUES ('org', ${`c${count}`}, '2026-11', 'growth', ${count},
+              'made', 1)`,
+          ),
+          sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id, count, state, at)
+            VALUES ('org', 'c-failed', '2026-11', 'growth', 1, 'failed', 1)`,
+          // A picture version is posted as one chat image.
+          sql`INSERT INTO kin_picture_images (org_id, record_id, version, attachment_id)
+            VALUES ('org', 'pic', 1, 'kin-chat-b')`,
+        ];
+        yield* sql`INSERT INTO kin_picture_images (org_id, record_id, version, attachment_id)
+          VALUES ('org', 'pic', 1, 'kin-chat-a')`;
+        for (const query of refused) assert.isTrue(Exit.isFailure(yield* Effect.exit(query)));
+        yield* sql`INSERT INTO kin_picture_counts (org_id, count_id, month, agent_id, person_id,
+            count, state, at)
+          VALUES ('org', 'c1', '2026-11', 'growth', NULL, 4, 'reserved', 1),
+            ('org', 'c2', '2026-11', 'growth', NULL, 1, 'unclear', 1)`;
+        // Run again, it changes nothing.
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 209`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(209));
+        assert.deepStrictEqual(
+          yield* sql`SELECT count_id, count FROM kin_picture_counts ORDER BY count_id`,
+          [
+            { count_id: "c1", count: 4 },
+            { count_id: "c2", count: 1 },
+          ],
+        );
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K210 gives Expenses who funded it, changes no entry or label, and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 210`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+      const fields = [
+        { key: "vendor", label: "Vendor", type: "text", sensitive: false },
+        { key: "paidFrom", label: "Paid from", type: "text", sensitive: false },
+        { key: "paidPersonallyBy", label: "Paid personally by", type: "text", sensitive: false },
+      ];
+      const definition = JSON.stringify({ noun: "expense", fields });
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+            definition_json, created_at) VALUES ('org', 'expenses', 'Expenses', 'EXP', 0,
+            ${definition}, 1)`;
+      const entry = (key: string, state: string, more: Record<string, string>) =>
+        sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+              owner_kind, owner_id, created_by_kind, origin_key, created_at, updated_at,
+              fields_json)
+            VALUES ('org', ${key}, 'expenses', ${key}, 'Train tickets', ${state}, 'person', 'dev',
+              'person', ${key}, 1, 1, ${JSON.stringify({ vendor: "Rail", ...more })})`;
+      yield* entry("EXP-1", "done", { paidPersonallyBy: "partner@ambermill.example" });
+      yield* entry("EXP-2", "done", { paidFrom: "mail intake" });
+      yield* entry("EXP-3", "open", { paidPersonallyBy: "partner@ambermill.example" });
+      yield* entry("EXP-4", "done", {
+        paidPersonallyBy: "partner@ambermill.example",
+        reimbursement: "repaid",
+      });
+      const read = Effect.gen(function* () {
+        const [list] = yield* sql<{ json: string; rev: number }>`SELECT
+              definition_json AS json, rev FROM kin_registers WHERE register_id = 'expenses'`;
+        const entries = yield* sql<{ key: string; owed: string | null }>`SELECT key,
+              json_extract(fields_json, '$.reimbursement') AS owed FROM kin_records ORDER BY key`;
+        const shape = JSON.parse(list!.json) as {
+          fields: ReadonlyArray<{ key: string; label: string }>;
+        };
+        return {
+          rev: list!.rev,
+          fields: shape.fields.map((one) => `${one.key}:${one.label}`),
+          entries,
+        };
+      });
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(210));
+      const once = yield* read;
+      assert.deepStrictEqual(once.fields, [
+        "vendor:Vendor",
+        "paidFrom:Paid from",
+        "paidPersonallyBy:Paid personally by",
+        "fundedBy:Funded by",
+        "reimbursement:Reimbursement",
+        "repaidOn:Repaid on",
+      ]);
+      // An imported partner's entry waits for the owner's word; no person or state is guessed.
+      assert.deepStrictEqual(once.entries, [
+        { key: "EXP-1", owed: null },
+        { key: "EXP-2", owed: null },
+        { key: "EXP-3", owed: null },
+        { key: "EXP-4", owed: "repaid" },
+      ]);
+      const [funded] = yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_records
+          WHERE json_extract(fields_json, '$.fundedBy') IS NOT NULL`;
+      assert.strictEqual(funded!.n, 0);
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 210`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(210));
+      assert.deepStrictEqual(yield* read, once);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "K210 adds only the missing fields, and moves a list's own reimbursement of another kind off Kin's key",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* runKinMigrations();
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 210`;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+        const fields = [
+          { key: "fundedBy", label: "Funded by", type: "person", sensitive: false },
+          { key: "reimbursement", label: "Reimbursement", type: "text", sensitive: false },
+        ];
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+            definition_json, created_at) VALUES ('org', 'expenses', 'Expenses', 'EXP', 0,
+            ${JSON.stringify({ noun: "expense", fields })}, 1)`;
+        const stored = JSON.stringify({ paidPersonallyBy: "partner@ambermill.example" });
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+            owner_kind, owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
+          VALUES ('org', 'e', 'expenses', 'EXP-1', 'Train tickets', 'done', 'person', 'dev',
+            'person', 'e', 1, 1, ${stored})`;
+        // The company's own note under Kin's key: it keeps its words, under a key of its own.
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+            owner_kind, owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
+          VALUES ('org', 'n', 'expenses', 'EXP-2', 'Client dinner', 'done', 'person', 'dev',
+            'person', 'n', 1, 1, ${JSON.stringify({ reimbursement: "owed", vendor: "Cafe" })})`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(210));
+        const [list] = yield* sql<{
+          json: string;
+        }>`SELECT definition_json AS json FROM kin_registers`;
+        const shape = JSON.parse(list!.json) as {
+          fields: ReadonlyArray<{ key: string; type: string }>;
+        };
+        assert.deepStrictEqual(
+          shape.fields.map((one) => `${one.key}:${one.type}`),
+          ["fundedBy:person", "reimbursement2:text", "reimbursement:choice", "repaidOn:date"],
+        );
+        const rows = yield* sql<{ json: string }>`SELECT fields_json AS json FROM kin_records
+          ORDER BY key`;
+        assert.deepStrictEqual(
+          rows.map((one) => JSON.parse(one.json)),
+          [JSON.parse(stored), { vendor: "Cafe", reimbursement2: "owed" }],
+        );
+        // Again: nothing moves twice.
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 210`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(210));
+        const [again] = yield* sql<{ json: string }>`SELECT definition_json AS json
+          FROM kin_registers`;
+        assert.strictEqual(again!.json, list!.json);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("K210 adds nothing to an Expenses list with no room for all three fields", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 210`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
+      const fields = Array.from({ length: 18 }, (_, n) => ({
+        key: `extra${n}`,
+        label: `Extra ${n}`,
+        type: "text",
+        sensitive: false,
+      }));
+      const definition = JSON.stringify({ noun: "expense", fields });
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          definition_json, created_at) VALUES ('org', 'expenses', 'Expenses', 'EXP', 0,
+          ${definition}, 1)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+          owner_kind, owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
+        VALUES ('org', 'e', 'expenses', 'EXP-1', 'Train tickets', 'done', 'person', 'dev',
+          'person', 'e', 1, 1, ${JSON.stringify({ paidPersonallyBy: "partner@ambermill.example" })})`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(210));
+      const [list] = yield* sql<{ json: string; rev: number }>`SELECT definition_json AS json, rev
+        FROM kin_registers`;
+      assert.deepStrictEqual(list, { json: definition, rev: 1 });
+      const [row] = yield* sql<{ json: string }>`SELECT fields_json AS json FROM kin_records`;
+      assert.notInclude(row!.json, "reimbursement");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("K211 keeps every connection the company's, keys live addresses once, and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      for (const index of [
+        "kin_connections_person",
+        "kin_connections_live_account",
+        "kin_connections_live_person",
+      ])
+        yield* sql.unsafe(`DROP INDEX IF EXISTS ${index}`);
+      for (const [table, column] of [
+        ["kin_connections", "person_id"],
+        ["kin_connections", "account_key"],
+        ["kin_connection_calls", "private_to"],
+        ["kin_connection_asks", "left_at"],
+      ])
+        yield* sql.unsafe(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+      yield* sql`DROP TABLE kin_private_turns`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 211`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Ambermill', 1)
+        ON CONFLICT DO NOTHING`;
+      // Two live rows of one address (an older host's), and a removed one.
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url,
+          url_host, auth, reach, state, account_label, created_at, updated_at, removed_at)
+        VALUES ('org', 'c-1', 'google', 'Mail', 'builtin', NULL, 'g', 'oauth', 'closed',
+            'active', 'Rhea@Ambermill.example', 1, 1, NULL),
+          ('org', 'c-2', 'microsoft', 'Mail', 'builtin', NULL, 'm', 'oauth', 'closed',
+            'active', 'rhea@ambermill.example', 2, 2, NULL),
+          ('org', 'c-3', 'google', 'Old', 'builtin', NULL, 'g', 'oauth', 'closed',
+            'active', 'rhea@ambermill.example', 0, 0, 1)`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(211));
+      const rows = yield* sql<{ id: string; personId: string | null; key: string | null }>`SELECT
+          connection_id AS id, person_id AS "personId", account_key AS key
+        FROM kin_connections ORDER BY connection_id`;
+      assert.deepStrictEqual(rows, [
+        { id: "c-1", personId: null, key: "rhea@ambermill.example" },
+        { id: "c-2", personId: null, key: null },
+        { id: "c-3", personId: null, key: null },
+      ]);
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 211`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(211));
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K212 preserves exact same-day corrections on rerun", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`DROP TABLE kin_number_values`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 212`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(212));
+      yield* sql`INSERT INTO kin_number_values (org_id, record_id, as_of, seq, value, person_id, recorder_name, created_at)
+        VALUES ('org', 'g1', '2026-11-20', 1, '1.00000000000000000001', 'rhea', 'Rhea', 42),
+          ('org', 'g1', '2026-11-20', 2, '1.00000000000000000002', 'rhea', 'Rhea', 42)`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 212`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(212));
+      assert.deepStrictEqual(
+        yield* sql`SELECT value FROM kin_number_values WHERE org_id = 'org' ORDER BY seq`,
+        [{ value: "1.00000000000000000001" }, { value: "1.00000000000000000002" }],
+      );
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect(
+    "K213 adds what pushes told and a phone's topic matching, keeps devices, and reruns",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const devices = sql`SELECT token, quiet_channel, withdraws FROM kin_push_devices ORDER BY token`;
+        yield* runKinMigrations();
+        // A host on K212: no sent rows, its phones registered before topics.
+        yield* sql`DROP TABLE kin_push_sent`;
+        yield* sql`DROP TABLE kin_push_about`;
+        yield* sql`ALTER TABLE kin_push_devices DROP COLUMN withdraws`;
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 213`;
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('rhea', 'org', 'rhea', 'Rhea', 1)`;
+        yield* sql`INSERT INTO kin_push_devices (org_id, token, person_id, platform, aps_environment,
+          session_id, quiet_channel, created_at, updated_at)
+        VALUES ('org', ${"a".repeat(64)}, 'rhea', 'ios', 'production', 's1', 0, 1, 2)`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(213));
+        assert.deepStrictEqual(yield* devices, [
+          { token: "a".repeat(64), quiet_channel: 0, withdraws: 0 },
+        ]);
+        yield* sql`INSERT INTO kin_push_sent (org_id, person_id, topic, sent_at)
+        VALUES ('org', 'rhea', 'c:chat_dm', 5)`;
+        assert.isTrue(
+          Exit.isFailure(
+            yield* Effect.exit(sql`INSERT INTO kin_push_devices (org_id, token, person_id, platform,
+              aps_environment, session_id, withdraws, created_at, updated_at)
+            VALUES ('org', ${"b".repeat(64)}, 'rhea', 'ios', 'production', 's2', 2, 1, 2)`),
+          ),
+        );
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 213`;
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(213));
+        assert.deepStrictEqual(
+          yield* sql`SELECT person_id, topic, sent_at, withdrawn_at FROM kin_push_sent`,
+          [{ person_id: "rhea", topic: "c:chat_dm", sent_at: 5, withdrawn_at: null }],
+        );
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K214 keeps why an agent withdrew a message, keeps every message, and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      // A host on K213: messages with no withdrawn column.
+      yield* sql`ALTER TABLE kin_messages DROP COLUMN withdrawn_json`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 214`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+          VALUES ('chat', 'org', 'project_group', 1, '2026-11-23T09:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_messages (org_id, chat_id, message_id, seq, author_kind,
+            author_role, kind, body, mentions_json, status, created_at)
+          VALUES ('org', 'chat', 'm1', 1, 'system', 'member', 'system', 'Kept', '[]', 'posted',
+            '2026-11-23T09:00:00.000Z')`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(214));
+      assert.deepStrictEqual(
+        yield* sql`SELECT message_id, body, status, withdrawn_json FROM kin_messages`,
+        [{ message_id: "m1", body: "Kept", status: "posted", withdrawn_json: null }],
+      );
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 214`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(214));
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K218 starts each answered mark where the read mark stood, once", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`ALTER TABLE kin_read_state DROP COLUMN answered_seq`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 218`;
+      yield* sql`PRAGMA foreign_keys = OFF`;
+      yield* sql`INSERT INTO kin_read_state (chat_id, member_id, org_id, last_read_seq, updated_at)
+        VALUES ('chat', 'member', 'org', 7, '2026-11-25T00:00:00.000Z')`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(218));
+      const marks = sql`SELECT last_read_seq, answered_seq FROM kin_read_state`;
+      assert.deepStrictEqual(yield* marks, [{ last_read_seq: 7, answered_seq: 7 }]);
+      // Seen moves on alone; a rerun never lifts answered to it.
+      yield* sql`UPDATE kin_read_state SET last_read_seq = 9`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 218`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(218));
+      assert.deepStrictEqual(yield* marks, [{ last_read_seq: 9, answered_seq: 7 }]);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K219 lets a person have several own mailboxes, keeps rows, and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`CREATE UNIQUE INDEX kin_connections_live_person
+        ON kin_connections (org_id, person_id) WHERE removed_at IS NULL AND person_id IS NOT NULL`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 219`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Ambermill', 1)`;
+      const own = (id: string, address: string) =>
+        sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url,
+            url_host, auth, reach, state, account_label, created_at, updated_at, person_id,
+            account_key)
+          VALUES ('org', ${id}, 'google', ${address}, 'builtin', NULL, 'g', 'oauth', 'closed',
+            'active', ${address}, 1, 1, 'rhea', ${address})`;
+      yield* own("c-1", "rhea@ambermill.example");
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(own("c-2", "rhea.home@ambermill.example"))));
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(219));
+      yield* own("c-2", "rhea.home@ambermill.example");
+      // An address is still live only once in the company.
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(own("c-3", "rhea.home@ambermill.example"))));
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 219`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(219));
+      assert.deepStrictEqual(
+        yield* sql`SELECT connection_id AS id FROM kin_connections ORDER BY connection_id`,
+        [{ id: "c-1" }, { id: "c-2" }],
+      );
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K216 adds the skip record and keeps its rows on rerun", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`DROP TABLE kin_offline_skips`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 216`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(216));
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;
+      yield* sql`INSERT INTO kin_offline_skips (org_id, kind, ref, reason, at)
+        VALUES ('org', 'check_in', 'ns:task:1', 'outside_hours', 1)`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 216`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(216));
+      assert.lengthOf(yield* sql`SELECT ref FROM kin_offline_skips`, 1);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K215 keeps existing stop rows and a pending offline notice on rerun", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      for (const column of ["last_alive_at", "offline_notices_json", "stop_managed"])
+        yield* sql`ALTER TABLE kin_org_state DROP COLUMN ${sql.literal(column)}`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 215`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;
+      yield* sql`INSERT INTO kin_org_state (org_id) VALUES ('org')`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(215));
+      const rows = sql`SELECT paused, stop_managed, last_alive_at, offline_notices_json FROM kin_org_state`;
+      assert.deepStrictEqual(yield* rows, [
+        { paused: 0, stop_managed: 1, last_alive_at: null, offline_notices_json: "[]" },
+      ]);
+      const pending = '[{"from":1,"to":12000000}]';
+      yield* sql`UPDATE kin_org_state SET last_alive_at = 12000000, offline_notices_json = ${pending}`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 215`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(215));
+      assert.deepStrictEqual(yield* rows, [
+        { paused: 0, stop_managed: 1, last_alive_at: 12000000, offline_notices_json: pending },
+      ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
@@ -3337,7 +2740,10 @@ describe("Kin migrations", () => {
       const exit = yield* Effect.exit(runKinMigrations());
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "5_OneChatOwner");
-      assert.include(String(exit), "below the latest applied migration 187");
+      assert.include(
+        String(exit),
+        `below the latest applied migration ${kinMigrations.at(-1)![0]}`,
+      );
       assert.deepStrictEqual(yield* kinHistory, history);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
@@ -3352,6 +2758,11 @@ describe("Kin migrations", () => {
       assert.isTrue(Exit.isFailure(exit));
       assert.include(String(exit), "22_ChatLevels");
       assert.include(String(exit), "share a number");
+      assert.strictEqual(new Set(kinMigrations.map(([id]) => id)).size, kinMigrations.length);
+      assert.strictEqual(new Set(kinMigrations.map(([, name]) => name)).size, kinMigrations.length);
+      // Nothing a host already ran is dropped, renamed or renumbered; new ones go after it.
+      assert.deepStrictEqual(kinMigrations.slice(0, shipped.length), [...shipped]);
+      assert.isTrue(kinMigrations.slice(shipped.length).every(([id]) => id > shipped.at(-1)![0]));
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
@@ -3426,6 +2837,7 @@ describe("Kin migrations", () => {
           attempts: 1,
           budget_deferred: 0,
           replied_at: null,
+          held_by: null,
         },
         kin_workers: {
           org_id: "org",
@@ -3498,6 +2910,9 @@ describe("Kin migrations", () => {
           paused_at: 1794009600000,
           paused_by: "owner",
           reason: "Stop",
+          last_alive_at: null,
+          offline_notices_json: "[]",
+          stop_managed: 1,
         },
       };
       const crossOrgLead = yield* Effect.exit(
@@ -3893,100 +3308,7 @@ it.effect("K058 adds Work to a database at K057, keeps its rows, and reruns with
     yield* sql`DROP TABLE kin_registers`;
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 58`;
     yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [
-      [58, "Work"],
-      [59, "WorkerWithdrawals"],
-      [60, "WorkClients"],
-      [61, "WorkerAttempts"],
-      [62, "WorkerPublishApproval"],
-      [63, "LegacyWorkerAttempts"],
-      [64, "AgentRetirement"],
-      [65, "WakeupRetired"],
-      [66, "WakeupsUnretiredIndex"],
-      [67, "Docs"],
-      [68, "WorkMoney"],
-      [69, "WorkerNetwork"],
-      [70, "VisualHosts"],
-      [71, "OwnerAnswerCards"],
-      [72, "GeneratedDocuments"],
-      [73, "KeyPushes"],
-      [74, "DocJobCleanup"],
-      [75, "ServerRenderedDocuments"],
-      [76, "DocFiles"],
-      [77, "DocumentLabels"],
-      [78, "RecipeLabelBaselines"],
-      [79, "ImportRuns"],
-      [80, "RecordRequestHash"],
-      [81, "RecipeJobPasses"],
-      [82, "BankStatements"],
-      [83, "StatementSafety"],
-      [84, "RecipeDefaults"],
-      [85, "StatementReading"],
-      [86, "StatementChatPasswords"],
-      [87, "TeamWork"],
-      [88, "MoneyRecords"],
-      [106, "ChatThreads"],
-      [107, "Connections"],
-      [110, "BudgetNotices"],
-      [130, "ConnectionPause"],
-      [131, "ReceiptProposalsPasswordBudget"],
-      [132, "PeopleProfiles"],
-      [133, "MoneyBudgets"],
-      [134, "ConnectionSignIn"],
-      [135, "PulseFacts"],
-      [136, "ConnectionAsks"],
-      [137, "PersonAccess"],
-      [138, "PulseCheckIns"],
-      [139, "ClientTouches"],
-      [140, "AssignedByAgent"],
-      [141, "ConnectionAccounts"],
-      [142, "MicrosoftConnections"],
-      [143, "PersonPlaces"],
-      [144, "PullRequestCare"],
-      [145, "RetireRoutines"],
-      [146, "SendDecidedBy"],
-      [147, "SendOwesCard"],
-      [148, "EventReplied"],
-      [149, "SendAccount"],
-      [150, "PersonRemoved"],
-      [151, "ToldAndHeld"],
-      [152, "MessageForm"],
-      [153, "HeldRelays"],
-      [154, "TeamDiscussions"],
-      [155, "TalkStyle"],
-      [156, "NamedKeys"],
-      [157, "AgentSettings"],
-      [158, "PrivateBy"],
-      [159, "OpenQuestions"],
-      [160, "GitHubWatch"],
-      [161, "Social"],
-      [162, "PersonHours"],
-      [163, "OneModel"],
-      [164, "WorkersRetired"],
-      [165, "HandedBack"],
-      [166, "GitHubAppRetired"],
-      [167, "TeamMemorySetting"],
-      [168, "GitHubOwnerUses"],
-      [169, "AwayAndWhen"],
-      [170, "OneSocialProfile"],
-      [171, "GitHubBranchGuards"],
-      [172, "CalendarCursor"],
-      [173, "NoMemoryReviewPulls"],
-      [174, "AnswerPages"],
-      [175, "HandoffWantsAnswer"],
-      [176, "RecordComments"],
-      [177, "RecordChangesByWakeup"],
-      [178, "AskOutsideAndDispatch"],
-      [179, "DeviceLinks"],
-      [180, "CardPlans"],
-      [181, "TasksKeys"],
-      [182, "HandoffRoutes"],
-      [183, "TasksKeyMakers"],
-      [184, "Recommendations"],
-      [185, "AskedFor"],
-      [186, "TasksKeysWithoutMaker"],
-      [187, "Holds"],
-    ]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(58));
     assert.deepStrictEqual(yield* sql`SELECT org_id FROM kin_orgs`, [{ org_id: "org" }]);
     yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
       VALUES ('org', 'work', 'Work', 'W', 1)`;
@@ -4017,99 +3339,7 @@ it.effect(
       yield* sql`DROP TABLE kin_worker_attempts`;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 59`;
       yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [59, "WorkerWithdrawals"],
-        [60, "WorkClients"],
-        [61, "WorkerAttempts"],
-        [62, "WorkerPublishApproval"],
-        [63, "LegacyWorkerAttempts"],
-        [64, "AgentRetirement"],
-        [65, "WakeupRetired"],
-        [66, "WakeupsUnretiredIndex"],
-        [67, "Docs"],
-        [68, "WorkMoney"],
-        [69, "WorkerNetwork"],
-        [70, "VisualHosts"],
-        [71, "OwnerAnswerCards"],
-        [72, "GeneratedDocuments"],
-        [73, "KeyPushes"],
-        [74, "DocJobCleanup"],
-        [75, "ServerRenderedDocuments"],
-        [76, "DocFiles"],
-        [77, "DocumentLabels"],
-        [78, "RecipeLabelBaselines"],
-        [79, "ImportRuns"],
-        [80, "RecordRequestHash"],
-        [81, "RecipeJobPasses"],
-        [82, "BankStatements"],
-        [83, "StatementSafety"],
-        [84, "RecipeDefaults"],
-        [85, "StatementReading"],
-        [86, "StatementChatPasswords"],
-        [87, "TeamWork"],
-        [88, "MoneyRecords"],
-        [106, "ChatThreads"],
-        [107, "Connections"],
-        [110, "BudgetNotices"],
-        [130, "ConnectionPause"],
-        [131, "ReceiptProposalsPasswordBudget"],
-        [132, "PeopleProfiles"],
-        [133, "MoneyBudgets"],
-        [134, "ConnectionSignIn"],
-        [135, "PulseFacts"],
-        [136, "ConnectionAsks"],
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(59));
       assert.lengthOf(
         yield* sql`SELECT 1 FROM sqlite_master WHERE name = 'kin_worker_withdrawals'`,
         0,
@@ -4145,97 +3375,7 @@ it.effect("K061 turns the withdrawals K059 stored into stops of those attempts",
         ('org', 'rec', 4, 'wk-1', 5, 'lead', 'W-1', 'settled', 8),
         ('org', 'rec', 3, 'wk-2', 9, 'lead', 'W-1', 'failed', 7),
         ('org', 'rec', 3, 'wk-3', 9, 'lead', 'W-1', 'settled', 7)`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [
-      [61, "WorkerAttempts"],
-      [62, "WorkerPublishApproval"],
-      [63, "LegacyWorkerAttempts"],
-      [64, "AgentRetirement"],
-      [65, "WakeupRetired"],
-      [66, "WakeupsUnretiredIndex"],
-      [67, "Docs"],
-      [68, "WorkMoney"],
-      [69, "WorkerNetwork"],
-      [70, "VisualHosts"],
-      [71, "OwnerAnswerCards"],
-      [72, "GeneratedDocuments"],
-      [73, "KeyPushes"],
-      [74, "DocJobCleanup"],
-      [75, "ServerRenderedDocuments"],
-      [76, "DocFiles"],
-      [77, "DocumentLabels"],
-      [78, "RecipeLabelBaselines"],
-      [79, "ImportRuns"],
-      [80, "RecordRequestHash"],
-      [81, "RecipeJobPasses"],
-      [82, "BankStatements"],
-      [83, "StatementSafety"],
-      [84, "RecipeDefaults"],
-      [85, "StatementReading"],
-      [86, "StatementChatPasswords"],
-      [87, "TeamWork"],
-      [88, "MoneyRecords"],
-      [106, "ChatThreads"],
-      [107, "Connections"],
-      [110, "BudgetNotices"],
-      [130, "ConnectionPause"],
-      [131, "ReceiptProposalsPasswordBudget"],
-      [132, "PeopleProfiles"],
-      [133, "MoneyBudgets"],
-      [134, "ConnectionSignIn"],
-      [135, "PulseFacts"],
-      [136, "ConnectionAsks"],
-      [137, "PersonAccess"],
-      [138, "PulseCheckIns"],
-      [139, "ClientTouches"],
-      [140, "AssignedByAgent"],
-      [141, "ConnectionAccounts"],
-      [142, "MicrosoftConnections"],
-      [143, "PersonPlaces"],
-      [144, "PullRequestCare"],
-      [145, "RetireRoutines"],
-      [146, "SendDecidedBy"],
-      [147, "SendOwesCard"],
-      [148, "EventReplied"],
-      [149, "SendAccount"],
-      [150, "PersonRemoved"],
-      [151, "ToldAndHeld"],
-      [152, "MessageForm"],
-      [153, "HeldRelays"],
-      [154, "TeamDiscussions"],
-      [155, "TalkStyle"],
-      [156, "NamedKeys"],
-      [157, "AgentSettings"],
-      [158, "PrivateBy"],
-      [159, "OpenQuestions"],
-      [160, "GitHubWatch"],
-      [161, "Social"],
-      [162, "PersonHours"],
-      [163, "OneModel"],
-      [164, "WorkersRetired"],
-      [165, "HandedBack"],
-      [166, "GitHubAppRetired"],
-      [167, "TeamMemorySetting"],
-      [168, "GitHubOwnerUses"],
-      [169, "AwayAndWhen"],
-      [170, "OneSocialProfile"],
-      [171, "GitHubBranchGuards"],
-      [172, "CalendarCursor"],
-      [173, "NoMemoryReviewPulls"],
-      [174, "AnswerPages"],
-      [175, "HandoffWantsAnswer"],
-      [176, "RecordComments"],
-      [177, "RecordChangesByWakeup"],
-      [178, "AskOutsideAndDispatch"],
-      [179, "DeviceLinks"],
-      [180, "CardPlans"],
-      [181, "TasksKeys"],
-      [182, "HandoffRoutes"],
-      [183, "TasksKeyMakers"],
-      [184, "Recommendations"],
-      [185, "AskedFor"],
-      [186, "TasksKeysWithoutMaker"],
-      [187, "Holds"],
-    ]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(61));
     assert.deepStrictEqual(
       yield* sql`SELECT worker_id, started_at, agent_id, withdrawn_at, stopped_at, stop_key,
           stop_label, stop_state FROM kin_worker_attempts ORDER BY worker_id`,
@@ -4300,98 +3440,7 @@ it.effect(
         owner_id, created_by_kind, origin_key, created_at, updated_at)
       VALUES ('org', 'rec', 'work', 'W-1', 'Ship the invented report', 'person', 'p', 'person',
         'owner:1', 1, 1)`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [60, "WorkClients"],
-        [61, "WorkerAttempts"],
-        [62, "WorkerPublishApproval"],
-        [63, "LegacyWorkerAttempts"],
-        [64, "AgentRetirement"],
-        [65, "WakeupRetired"],
-        [66, "WakeupsUnretiredIndex"],
-        [67, "Docs"],
-        [68, "WorkMoney"],
-        [69, "WorkerNetwork"],
-        [70, "VisualHosts"],
-        [71, "OwnerAnswerCards"],
-        [72, "GeneratedDocuments"],
-        [73, "KeyPushes"],
-        [74, "DocJobCleanup"],
-        [75, "ServerRenderedDocuments"],
-        [76, "DocFiles"],
-        [77, "DocumentLabels"],
-        [78, "RecipeLabelBaselines"],
-        [79, "ImportRuns"],
-        [80, "RecordRequestHash"],
-        [81, "RecipeJobPasses"],
-        [82, "BankStatements"],
-        [83, "StatementSafety"],
-        [84, "RecipeDefaults"],
-        [85, "StatementReading"],
-        [86, "StatementChatPasswords"],
-        [87, "TeamWork"],
-        [88, "MoneyRecords"],
-        [106, "ChatThreads"],
-        [107, "Connections"],
-        [110, "BudgetNotices"],
-        [130, "ConnectionPause"],
-        [131, "ReceiptProposalsPasswordBudget"],
-        [132, "PeopleProfiles"],
-        [133, "MoneyBudgets"],
-        [134, "ConnectionSignIn"],
-        [135, "PulseFacts"],
-        [136, "ConnectionAsks"],
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(60));
       assert.deepStrictEqual(yield* sql`SELECT key, repo FROM kin_records`, [
         { key: "W-1", repo: null },
       ]);
@@ -4430,96 +3479,7 @@ it.effect("K062 upgrades a database at K061, keeps its attempts, and reruns clea
     yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', ${timestamp})`;
     yield* sql`INSERT INTO kin_worker_attempts (org_id, worker_id, started_at, agent_id, pushed_sha)
       VALUES ('org', 'wk-1', 5, 'lead', 'abc')`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [
-      [62, "WorkerPublishApproval"],
-      [63, "LegacyWorkerAttempts"],
-      [64, "AgentRetirement"],
-      [65, "WakeupRetired"],
-      [66, "WakeupsUnretiredIndex"],
-      [67, "Docs"],
-      [68, "WorkMoney"],
-      [69, "WorkerNetwork"],
-      [70, "VisualHosts"],
-      [71, "OwnerAnswerCards"],
-      [72, "GeneratedDocuments"],
-      [73, "KeyPushes"],
-      [74, "DocJobCleanup"],
-      [75, "ServerRenderedDocuments"],
-      [76, "DocFiles"],
-      [77, "DocumentLabels"],
-      [78, "RecipeLabelBaselines"],
-      [79, "ImportRuns"],
-      [80, "RecordRequestHash"],
-      [81, "RecipeJobPasses"],
-      [82, "BankStatements"],
-      [83, "StatementSafety"],
-      [84, "RecipeDefaults"],
-      [85, "StatementReading"],
-      [86, "StatementChatPasswords"],
-      [87, "TeamWork"],
-      [88, "MoneyRecords"],
-      [106, "ChatThreads"],
-      [107, "Connections"],
-      [110, "BudgetNotices"],
-      [130, "ConnectionPause"],
-      [131, "ReceiptProposalsPasswordBudget"],
-      [132, "PeopleProfiles"],
-      [133, "MoneyBudgets"],
-      [134, "ConnectionSignIn"],
-      [135, "PulseFacts"],
-      [136, "ConnectionAsks"],
-      [137, "PersonAccess"],
-      [138, "PulseCheckIns"],
-      [139, "ClientTouches"],
-      [140, "AssignedByAgent"],
-      [141, "ConnectionAccounts"],
-      [142, "MicrosoftConnections"],
-      [143, "PersonPlaces"],
-      [144, "PullRequestCare"],
-      [145, "RetireRoutines"],
-      [146, "SendDecidedBy"],
-      [147, "SendOwesCard"],
-      [148, "EventReplied"],
-      [149, "SendAccount"],
-      [150, "PersonRemoved"],
-      [151, "ToldAndHeld"],
-      [152, "MessageForm"],
-      [153, "HeldRelays"],
-      [154, "TeamDiscussions"],
-      [155, "TalkStyle"],
-      [156, "NamedKeys"],
-      [157, "AgentSettings"],
-      [158, "PrivateBy"],
-      [159, "OpenQuestions"],
-      [160, "GitHubWatch"],
-      [161, "Social"],
-      [162, "PersonHours"],
-      [163, "OneModel"],
-      [164, "WorkersRetired"],
-      [165, "HandedBack"],
-      [166, "GitHubAppRetired"],
-      [167, "TeamMemorySetting"],
-      [168, "GitHubOwnerUses"],
-      [169, "AwayAndWhen"],
-      [170, "OneSocialProfile"],
-      [171, "GitHubBranchGuards"],
-      [172, "CalendarCursor"],
-      [173, "NoMemoryReviewPulls"],
-      [174, "AnswerPages"],
-      [175, "HandoffWantsAnswer"],
-      [176, "RecordComments"],
-      [177, "RecordChangesByWakeup"],
-      [178, "AskOutsideAndDispatch"],
-      [179, "DeviceLinks"],
-      [180, "CardPlans"],
-      [181, "TasksKeys"],
-      [182, "HandoffRoutes"],
-      [183, "TasksKeyMakers"],
-      [184, "Recommendations"],
-      [185, "AskedFor"],
-      [186, "TasksKeysWithoutMaker"],
-      [187, "Holds"],
-    ]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(62));
     assert.deepStrictEqual(
       yield* sql`SELECT worker_id, pushed_sha, visibility, sensitive_at, ready_sha, approved_sha,
           declined_at FROM kin_worker_attempts`,
@@ -4615,32 +3575,7 @@ it.effect("K164 keeps a worker's PR on the Work entry it belongs to, and reruns 
     yield* sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation, created_at)
       VALUES ('org', 'entry', 'worker', 'wk-pr', 'attempt', 1),
         ('org', 'entry', 'worker', 'wk-none', 'attempt', 1)`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [
-      [164, "WorkersRetired"],
-      [165, "HandedBack"],
-      [166, "GitHubAppRetired"],
-      [167, "TeamMemorySetting"],
-      [168, "GitHubOwnerUses"],
-      [169, "AwayAndWhen"],
-      [170, "OneSocialProfile"],
-      [171, "GitHubBranchGuards"],
-      [172, "CalendarCursor"],
-      [173, "NoMemoryReviewPulls"],
-      [174, "AnswerPages"],
-      [175, "HandoffWantsAnswer"],
-      [176, "RecordComments"],
-      [177, "RecordChangesByWakeup"],
-      [178, "AskOutsideAndDispatch"],
-      [179, "DeviceLinks"],
-      [180, "CardPlans"],
-      [181, "TasksKeys"],
-      [182, "HandoffRoutes"],
-      [183, "TasksKeyMakers"],
-      [184, "Recommendations"],
-      [185, "AskedFor"],
-      [186, "TasksKeysWithoutMaker"],
-      [187, "Holds"],
-    ]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(164));
     const links = sql`SELECT kind, target, relation, label FROM kin_record_links ORDER BY kind, target`;
     const expected = [
       {
@@ -4689,30 +3624,7 @@ it.effect("K166 declines a review still waiting on its Post card and clears the 
         VALUES (${`waiting-${post}`}, 'org', 'owner', 'dm', ${widgetId}, ${widgetId}, 'decision',
           ${timestamp})`;
     }
-    assert.deepStrictEqual(yield* runKinMigrations(), [
-      [166, "GitHubAppRetired"],
-      [167, "TeamMemorySetting"],
-      [168, "GitHubOwnerUses"],
-      [169, "AwayAndWhen"],
-      [170, "OneSocialProfile"],
-      [171, "GitHubBranchGuards"],
-      [172, "CalendarCursor"],
-      [173, "NoMemoryReviewPulls"],
-      [174, "AnswerPages"],
-      [175, "HandoffWantsAnswer"],
-      [176, "RecordComments"],
-      [177, "RecordChangesByWakeup"],
-      [178, "AskOutsideAndDispatch"],
-      [179, "DeviceLinks"],
-      [180, "CardPlans"],
-      [181, "TasksKeys"],
-      [182, "HandoffRoutes"],
-      [183, "TasksKeyMakers"],
-      [184, "Recommendations"],
-      [185, "AskedFor"],
-      [186, "TasksKeysWithoutMaker"],
-      [187, "Holds"],
-    ]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(166));
     const shown = sql`SELECT p.post_id AS post, p.state, m.status,
         w.closed_at IS NOT NULL AS closed, q.resolved_at IS NOT NULL AS resolved
       FROM kin_pr_review_posts p
@@ -4760,94 +3672,7 @@ it.effect(
       yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id,
           created_at, retired_at)
         VALUES ('old', 'org', 'Old', 'lead', 'owner', ${timestamp}, ${timestamp})`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [64, "AgentRetirement"],
-        [65, "WakeupRetired"],
-        [66, "WakeupsUnretiredIndex"],
-        [67, "Docs"],
-        [68, "WorkMoney"],
-        [69, "WorkerNetwork"],
-        [70, "VisualHosts"],
-        [71, "OwnerAnswerCards"],
-        [72, "GeneratedDocuments"],
-        [73, "KeyPushes"],
-        [74, "DocJobCleanup"],
-        [75, "ServerRenderedDocuments"],
-        [76, "DocFiles"],
-        [77, "DocumentLabels"],
-        [78, "RecipeLabelBaselines"],
-        [79, "ImportRuns"],
-        [80, "RecordRequestHash"],
-        [81, "RecipeJobPasses"],
-        [82, "BankStatements"],
-        [83, "StatementSafety"],
-        [84, "RecipeDefaults"],
-        [85, "StatementReading"],
-        [86, "StatementChatPasswords"],
-        [87, "TeamWork"],
-        [88, "MoneyRecords"],
-        [106, "ChatThreads"],
-        [107, "Connections"],
-        [110, "BudgetNotices"],
-        [130, "ConnectionPause"],
-        [131, "ReceiptProposalsPasswordBudget"],
-        [132, "PeopleProfiles"],
-        [133, "MoneyBudgets"],
-        [134, "ConnectionSignIn"],
-        [135, "PulseFacts"],
-        [136, "ConnectionAsks"],
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(64));
       assert.deepStrictEqual(yield* shape, fresh);
       assert.deepStrictEqual(
         yield* sql`SELECT agent_id, retired_at, retired_by_person_id FROM kin_agents`,
@@ -4887,93 +3712,7 @@ it.effect(
       yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status,
           event_ids, aborted_at)
         VALUES ('wake', 'org', 'lead', 'cheap', 1, 'running', '[]', 2)`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [65, "WakeupRetired"],
-        [66, "WakeupsUnretiredIndex"],
-        [67, "Docs"],
-        [68, "WorkMoney"],
-        [69, "WorkerNetwork"],
-        [70, "VisualHosts"],
-        [71, "OwnerAnswerCards"],
-        [72, "GeneratedDocuments"],
-        [73, "KeyPushes"],
-        [74, "DocJobCleanup"],
-        [75, "ServerRenderedDocuments"],
-        [76, "DocFiles"],
-        [77, "DocumentLabels"],
-        [78, "RecipeLabelBaselines"],
-        [79, "ImportRuns"],
-        [80, "RecordRequestHash"],
-        [81, "RecipeJobPasses"],
-        [82, "BankStatements"],
-        [83, "StatementSafety"],
-        [84, "RecipeDefaults"],
-        [85, "StatementReading"],
-        [86, "StatementChatPasswords"],
-        [87, "TeamWork"],
-        [88, "MoneyRecords"],
-        [106, "ChatThreads"],
-        [107, "Connections"],
-        [110, "BudgetNotices"],
-        [130, "ConnectionPause"],
-        [131, "ReceiptProposalsPasswordBudget"],
-        [132, "PeopleProfiles"],
-        [133, "MoneyBudgets"],
-        [134, "ConnectionSignIn"],
-        [135, "PulseFacts"],
-        [136, "ConnectionAsks"],
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(65));
       assert.deepStrictEqual(yield* column, fresh);
       assert.deepStrictEqual(
         yield* sql`SELECT wakeup_id, aborted_at, retired_at FROM kin_wakeups`,
@@ -5010,92 +3749,7 @@ it.effect(
       yield* sql`DROP INDEX idx_kin_wakeups_unretired_agent`;
       yield* sql`DROP TABLE kin_worker_network`;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 66`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [66, "WakeupsUnretiredIndex"],
-        [67, "Docs"],
-        [68, "WorkMoney"],
-        [69, "WorkerNetwork"],
-        [70, "VisualHosts"],
-        [71, "OwnerAnswerCards"],
-        [72, "GeneratedDocuments"],
-        [73, "KeyPushes"],
-        [74, "DocJobCleanup"],
-        [75, "ServerRenderedDocuments"],
-        [76, "DocFiles"],
-        [77, "DocumentLabels"],
-        [78, "RecipeLabelBaselines"],
-        [79, "ImportRuns"],
-        [80, "RecordRequestHash"],
-        [81, "RecipeJobPasses"],
-        [82, "BankStatements"],
-        [83, "StatementSafety"],
-        [84, "RecipeDefaults"],
-        [85, "StatementReading"],
-        [86, "StatementChatPasswords"],
-        [87, "TeamWork"],
-        [88, "MoneyRecords"],
-        [106, "ChatThreads"],
-        [107, "Connections"],
-        [110, "BudgetNotices"],
-        [130, "ConnectionPause"],
-        [131, "ReceiptProposalsPasswordBudget"],
-        [132, "PeopleProfiles"],
-        [133, "MoneyBudgets"],
-        [134, "ConnectionSignIn"],
-        [135, "PulseFacts"],
-        [136, "ConnectionAsks"],
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(66));
       assert.deepStrictEqual(yield* index, fresh);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
       yield* K066WakeupsUnretiredIndex;
@@ -5125,91 +3779,7 @@ it.effect(
         owner_id, created_by_kind, origin_key, created_at, updated_at)
       VALUES ('org', 'rec', 'work', 'W-1', 'Ship the invented report', 'person', 'p', 'person',
         'owner:1', 1, 1)`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [67, "Docs"],
-        [68, "WorkMoney"],
-        [69, "WorkerNetwork"],
-        [70, "VisualHosts"],
-        [71, "OwnerAnswerCards"],
-        [72, "GeneratedDocuments"],
-        [73, "KeyPushes"],
-        [74, "DocJobCleanup"],
-        [75, "ServerRenderedDocuments"],
-        [76, "DocFiles"],
-        [77, "DocumentLabels"],
-        [78, "RecipeLabelBaselines"],
-        [79, "ImportRuns"],
-        [80, "RecordRequestHash"],
-        [81, "RecipeJobPasses"],
-        [82, "BankStatements"],
-        [83, "StatementSafety"],
-        [84, "RecipeDefaults"],
-        [85, "StatementReading"],
-        [86, "StatementChatPasswords"],
-        [87, "TeamWork"],
-        [88, "MoneyRecords"],
-        [106, "ChatThreads"],
-        [107, "Connections"],
-        [110, "BudgetNotices"],
-        [130, "ConnectionPause"],
-        [131, "ReceiptProposalsPasswordBudget"],
-        [132, "PeopleProfiles"],
-        [133, "MoneyBudgets"],
-        [134, "ConnectionSignIn"],
-        [135, "PulseFacts"],
-        [136, "ConnectionAsks"],
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(67));
       const indexed = yield* found;
       assert.lengthOf(indexed, 1);
       assert.deepStrictEqual(yield* runKinMigrations(), []);
@@ -5238,90 +3808,7 @@ it.effect("K068 adds money to a database at K067, keeps its entries, and reruns 
         owner_id, created_by_kind, origin_key, created_at, updated_at, amount_minor, currency)
       VALUES ('org', 'rec', 'work', 'W-1', 'Pay the invented vendor', 'person', 'p', 'person',
         'owner:1', 1, 1, 4200000, 'INR')`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [
-      [68, "WorkMoney"],
-      [69, "WorkerNetwork"],
-      [70, "VisualHosts"],
-      [71, "OwnerAnswerCards"],
-      [72, "GeneratedDocuments"],
-      [73, "KeyPushes"],
-      [74, "DocJobCleanup"],
-      [75, "ServerRenderedDocuments"],
-      [76, "DocFiles"],
-      [77, "DocumentLabels"],
-      [78, "RecipeLabelBaselines"],
-      [79, "ImportRuns"],
-      [80, "RecordRequestHash"],
-      [81, "RecipeJobPasses"],
-      [82, "BankStatements"],
-      [83, "StatementSafety"],
-      [84, "RecipeDefaults"],
-      [85, "StatementReading"],
-      [86, "StatementChatPasswords"],
-      [87, "TeamWork"],
-      [88, "MoneyRecords"],
-      [106, "ChatThreads"],
-      [107, "Connections"],
-      [110, "BudgetNotices"],
-      [130, "ConnectionPause"],
-      [131, "ReceiptProposalsPasswordBudget"],
-      [132, "PeopleProfiles"],
-      [133, "MoneyBudgets"],
-      [134, "ConnectionSignIn"],
-      [135, "PulseFacts"],
-      [136, "ConnectionAsks"],
-      [137, "PersonAccess"],
-      [138, "PulseCheckIns"],
-      [139, "ClientTouches"],
-      [140, "AssignedByAgent"],
-      [141, "ConnectionAccounts"],
-      [142, "MicrosoftConnections"],
-      [143, "PersonPlaces"],
-      [144, "PullRequestCare"],
-      [145, "RetireRoutines"],
-      [146, "SendDecidedBy"],
-      [147, "SendOwesCard"],
-      [148, "EventReplied"],
-      [149, "SendAccount"],
-      [150, "PersonRemoved"],
-      [151, "ToldAndHeld"],
-      [152, "MessageForm"],
-      [153, "HeldRelays"],
-      [154, "TeamDiscussions"],
-      [155, "TalkStyle"],
-      [156, "NamedKeys"],
-      [157, "AgentSettings"],
-      [158, "PrivateBy"],
-      [159, "OpenQuestions"],
-      [160, "GitHubWatch"],
-      [161, "Social"],
-      [162, "PersonHours"],
-      [163, "OneModel"],
-      [164, "WorkersRetired"],
-      [165, "HandedBack"],
-      [166, "GitHubAppRetired"],
-      [167, "TeamMemorySetting"],
-      [168, "GitHubOwnerUses"],
-      [169, "AwayAndWhen"],
-      [170, "OneSocialProfile"],
-      [171, "GitHubBranchGuards"],
-      [172, "CalendarCursor"],
-      [173, "NoMemoryReviewPulls"],
-      [174, "AnswerPages"],
-      [175, "HandoffWantsAnswer"],
-      [176, "RecordComments"],
-      [177, "RecordChangesByWakeup"],
-      [178, "AskOutsideAndDispatch"],
-      [179, "DeviceLinks"],
-      [180, "CardPlans"],
-      [181, "TasksKeys"],
-      [182, "HandoffRoutes"],
-      [183, "TasksKeyMakers"],
-      [184, "Recommendations"],
-      [185, "AskedFor"],
-      [186, "TasksKeysWithoutMaker"],
-      [187, "Holds"],
-    ]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(68));
     assert.deepStrictEqual(
       yield* sql`SELECT r.amount_minor, r.currency, r.date_all_day, g.rev FROM kin_records r
         JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id`,
@@ -5366,89 +3853,7 @@ it.effect(
       assert.isTrue((yield* Effect.exit(write("other.com", 2)))._tag === "Failure");
       yield* sql`DROP TABLE kin_worker_network`;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 69`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [69, "WorkerNetwork"],
-        [70, "VisualHosts"],
-        [71, "OwnerAnswerCards"],
-        [72, "GeneratedDocuments"],
-        [73, "KeyPushes"],
-        [74, "DocJobCleanup"],
-        [75, "ServerRenderedDocuments"],
-        [76, "DocFiles"],
-        [77, "DocumentLabels"],
-        [78, "RecipeLabelBaselines"],
-        [79, "ImportRuns"],
-        [80, "RecordRequestHash"],
-        [81, "RecipeJobPasses"],
-        [82, "BankStatements"],
-        [83, "StatementSafety"],
-        [84, "RecipeDefaults"],
-        [85, "StatementReading"],
-        [86, "StatementChatPasswords"],
-        [87, "TeamWork"],
-        [88, "MoneyRecords"],
-        [106, "ChatThreads"],
-        [107, "Connections"],
-        [110, "BudgetNotices"],
-        [130, "ConnectionPause"],
-        [131, "ReceiptProposalsPasswordBudget"],
-        [132, "PeopleProfiles"],
-        [133, "MoneyBudgets"],
-        [134, "ConnectionSignIn"],
-        [135, "PulseFacts"],
-        [136, "ConnectionAsks"],
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(69));
       yield* K069WorkerNetwork;
       assert.deepStrictEqual(yield* runKinMigrations(), []);
     }).pipe(Effect.provide(layer)),
@@ -5471,87 +3876,7 @@ it.effect("K071 adds a proposal's card and one profile change per card, and reru
     assert.isTrue((yield* Effect.exit(change("four", "choice:a")))._tag === "Failure");
     yield* sql`DROP TABLE kin_profile_changes`;
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 71`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [
-      [71, "OwnerAnswerCards"],
-      [72, "GeneratedDocuments"],
-      [73, "KeyPushes"],
-      [74, "DocJobCleanup"],
-      [75, "ServerRenderedDocuments"],
-      [76, "DocFiles"],
-      [77, "DocumentLabels"],
-      [78, "RecipeLabelBaselines"],
-      [79, "ImportRuns"],
-      [80, "RecordRequestHash"],
-      [81, "RecipeJobPasses"],
-      [82, "BankStatements"],
-      [83, "StatementSafety"],
-      [84, "RecipeDefaults"],
-      [85, "StatementReading"],
-      [86, "StatementChatPasswords"],
-      [87, "TeamWork"],
-      [88, "MoneyRecords"],
-      [106, "ChatThreads"],
-      [107, "Connections"],
-      [110, "BudgetNotices"],
-      [130, "ConnectionPause"],
-      [131, "ReceiptProposalsPasswordBudget"],
-      [132, "PeopleProfiles"],
-      [133, "MoneyBudgets"],
-      [134, "ConnectionSignIn"],
-      [135, "PulseFacts"],
-      [136, "ConnectionAsks"],
-      [137, "PersonAccess"],
-      [138, "PulseCheckIns"],
-      [139, "ClientTouches"],
-      [140, "AssignedByAgent"],
-      [141, "ConnectionAccounts"],
-      [142, "MicrosoftConnections"],
-      [143, "PersonPlaces"],
-      [144, "PullRequestCare"],
-      [145, "RetireRoutines"],
-      [146, "SendDecidedBy"],
-      [147, "SendOwesCard"],
-      [148, "EventReplied"],
-      [149, "SendAccount"],
-      [150, "PersonRemoved"],
-      [151, "ToldAndHeld"],
-      [152, "MessageForm"],
-      [153, "HeldRelays"],
-      [154, "TeamDiscussions"],
-      [155, "TalkStyle"],
-      [156, "NamedKeys"],
-      [157, "AgentSettings"],
-      [158, "PrivateBy"],
-      [159, "OpenQuestions"],
-      [160, "GitHubWatch"],
-      [161, "Social"],
-      [162, "PersonHours"],
-      [163, "OneModel"],
-      [164, "WorkersRetired"],
-      [165, "HandedBack"],
-      [166, "GitHubAppRetired"],
-      [167, "TeamMemorySetting"],
-      [168, "GitHubOwnerUses"],
-      [169, "AwayAndWhen"],
-      [170, "OneSocialProfile"],
-      [171, "GitHubBranchGuards"],
-      [172, "CalendarCursor"],
-      [173, "NoMemoryReviewPulls"],
-      [174, "AnswerPages"],
-      [175, "HandoffWantsAnswer"],
-      [176, "RecordComments"],
-      [177, "RecordChangesByWakeup"],
-      [178, "AskOutsideAndDispatch"],
-      [179, "DeviceLinks"],
-      [180, "CardPlans"],
-      [181, "TasksKeys"],
-      [182, "HandoffRoutes"],
-      [183, "TasksKeyMakers"],
-      [184, "Recommendations"],
-      [185, "AskedFor"],
-      [186, "TasksKeysWithoutMaker"],
-      [187, "Holds"],
-    ]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(71));
     yield* K071OwnerAnswerCards;
     assert.deepStrictEqual(yield* runKinMigrations(), []);
     assert.lengthOf(
@@ -5578,86 +3903,7 @@ it.effect("K072 issues each number once per series and entry, and reruns cleanly
     assert.isTrue(Exit.isFailure(yield* issue(2, "INV/26-27/001", "rec-2")));
     assert.isTrue(Exit.isFailure(yield* issue(1, "INV/26-27/009", "rec-3")));
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 72`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [
-      [72, "GeneratedDocuments"],
-      [73, "KeyPushes"],
-      [74, "DocJobCleanup"],
-      [75, "ServerRenderedDocuments"],
-      [76, "DocFiles"],
-      [77, "DocumentLabels"],
-      [78, "RecipeLabelBaselines"],
-      [79, "ImportRuns"],
-      [80, "RecordRequestHash"],
-      [81, "RecipeJobPasses"],
-      [82, "BankStatements"],
-      [83, "StatementSafety"],
-      [84, "RecipeDefaults"],
-      [85, "StatementReading"],
-      [86, "StatementChatPasswords"],
-      [87, "TeamWork"],
-      [88, "MoneyRecords"],
-      [106, "ChatThreads"],
-      [107, "Connections"],
-      [110, "BudgetNotices"],
-      [130, "ConnectionPause"],
-      [131, "ReceiptProposalsPasswordBudget"],
-      [132, "PeopleProfiles"],
-      [133, "MoneyBudgets"],
-      [134, "ConnectionSignIn"],
-      [135, "PulseFacts"],
-      [136, "ConnectionAsks"],
-      [137, "PersonAccess"],
-      [138, "PulseCheckIns"],
-      [139, "ClientTouches"],
-      [140, "AssignedByAgent"],
-      [141, "ConnectionAccounts"],
-      [142, "MicrosoftConnections"],
-      [143, "PersonPlaces"],
-      [144, "PullRequestCare"],
-      [145, "RetireRoutines"],
-      [146, "SendDecidedBy"],
-      [147, "SendOwesCard"],
-      [148, "EventReplied"],
-      [149, "SendAccount"],
-      [150, "PersonRemoved"],
-      [151, "ToldAndHeld"],
-      [152, "MessageForm"],
-      [153, "HeldRelays"],
-      [154, "TeamDiscussions"],
-      [155, "TalkStyle"],
-      [156, "NamedKeys"],
-      [157, "AgentSettings"],
-      [158, "PrivateBy"],
-      [159, "OpenQuestions"],
-      [160, "GitHubWatch"],
-      [161, "Social"],
-      [162, "PersonHours"],
-      [163, "OneModel"],
-      [164, "WorkersRetired"],
-      [165, "HandedBack"],
-      [166, "GitHubAppRetired"],
-      [167, "TeamMemorySetting"],
-      [168, "GitHubOwnerUses"],
-      [169, "AwayAndWhen"],
-      [170, "OneSocialProfile"],
-      [171, "GitHubBranchGuards"],
-      [172, "CalendarCursor"],
-      [173, "NoMemoryReviewPulls"],
-      [174, "AnswerPages"],
-      [175, "HandoffWantsAnswer"],
-      [176, "RecordComments"],
-      [177, "RecordChangesByWakeup"],
-      [178, "AskOutsideAndDispatch"],
-      [179, "DeviceLinks"],
-      [180, "CardPlans"],
-      [181, "TasksKeys"],
-      [182, "HandoffRoutes"],
-      [183, "TasksKeyMakers"],
-      [184, "Recommendations"],
-      [185, "AskedFor"],
-      [186, "TasksKeysWithoutMaker"],
-      [187, "Holds"],
-    ]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(72));
     yield* K072GeneratedDocuments;
     assert.lengthOf(yield* sql`SELECT 1 FROM kin_issued_numbers`, 1);
   }).pipe(Effect.provide(layer)),
@@ -5677,85 +3923,7 @@ it.effect("K073 owes one push per key change, each notice's once, and reruns cle
     assert.isTrue(Exit.isFailure(yield* owe("k3", "added", "kin-key-added:k1")));
     assert.isTrue(Exit.isFailure(yield* owe("k3", "renamed", null)));
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 73`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [
-      [73, "KeyPushes"],
-      [74, "DocJobCleanup"],
-      [75, "ServerRenderedDocuments"],
-      [76, "DocFiles"],
-      [77, "DocumentLabels"],
-      [78, "RecipeLabelBaselines"],
-      [79, "ImportRuns"],
-      [80, "RecordRequestHash"],
-      [81, "RecipeJobPasses"],
-      [82, "BankStatements"],
-      [83, "StatementSafety"],
-      [84, "RecipeDefaults"],
-      [85, "StatementReading"],
-      [86, "StatementChatPasswords"],
-      [87, "TeamWork"],
-      [88, "MoneyRecords"],
-      [106, "ChatThreads"],
-      [107, "Connections"],
-      [110, "BudgetNotices"],
-      [130, "ConnectionPause"],
-      [131, "ReceiptProposalsPasswordBudget"],
-      [132, "PeopleProfiles"],
-      [133, "MoneyBudgets"],
-      [134, "ConnectionSignIn"],
-      [135, "PulseFacts"],
-      [136, "ConnectionAsks"],
-      [137, "PersonAccess"],
-      [138, "PulseCheckIns"],
-      [139, "ClientTouches"],
-      [140, "AssignedByAgent"],
-      [141, "ConnectionAccounts"],
-      [142, "MicrosoftConnections"],
-      [143, "PersonPlaces"],
-      [144, "PullRequestCare"],
-      [145, "RetireRoutines"],
-      [146, "SendDecidedBy"],
-      [147, "SendOwesCard"],
-      [148, "EventReplied"],
-      [149, "SendAccount"],
-      [150, "PersonRemoved"],
-      [151, "ToldAndHeld"],
-      [152, "MessageForm"],
-      [153, "HeldRelays"],
-      [154, "TeamDiscussions"],
-      [155, "TalkStyle"],
-      [156, "NamedKeys"],
-      [157, "AgentSettings"],
-      [158, "PrivateBy"],
-      [159, "OpenQuestions"],
-      [160, "GitHubWatch"],
-      [161, "Social"],
-      [162, "PersonHours"],
-      [163, "OneModel"],
-      [164, "WorkersRetired"],
-      [165, "HandedBack"],
-      [166, "GitHubAppRetired"],
-      [167, "TeamMemorySetting"],
-      [168, "GitHubOwnerUses"],
-      [169, "AwayAndWhen"],
-      [170, "OneSocialProfile"],
-      [171, "GitHubBranchGuards"],
-      [172, "CalendarCursor"],
-      [173, "NoMemoryReviewPulls"],
-      [174, "AnswerPages"],
-      [175, "HandoffWantsAnswer"],
-      [176, "RecordComments"],
-      [177, "RecordChangesByWakeup"],
-      [178, "AskOutsideAndDispatch"],
-      [179, "DeviceLinks"],
-      [180, "CardPlans"],
-      [181, "TasksKeys"],
-      [182, "HandoffRoutes"],
-      [183, "TasksKeyMakers"],
-      [184, "Recommendations"],
-      [185, "AskedFor"],
-      [186, "TasksKeysWithoutMaker"],
-      [187, "Holds"],
-    ]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(73));
     yield* K073KeyPushes;
     assert.lengthOf(yield* sql`SELECT 1 FROM kin_key_pushes`, 3);
   }).pipe(Effect.provide(layer)),
@@ -5773,84 +3941,7 @@ it.effect("K074 owes every document job's worktree until it is removed, and reru
       WHERE removed_at IS NULL ORDER BY worker_id`;
     assert.deepStrictEqual(yield* owed, [{ workerId: "wk-1" }]);
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 74`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [
-      [74, "DocJobCleanup"],
-      [75, "ServerRenderedDocuments"],
-      [76, "DocFiles"],
-      [77, "DocumentLabels"],
-      [78, "RecipeLabelBaselines"],
-      [79, "ImportRuns"],
-      [80, "RecordRequestHash"],
-      [81, "RecipeJobPasses"],
-      [82, "BankStatements"],
-      [83, "StatementSafety"],
-      [84, "RecipeDefaults"],
-      [85, "StatementReading"],
-      [86, "StatementChatPasswords"],
-      [87, "TeamWork"],
-      [88, "MoneyRecords"],
-      [106, "ChatThreads"],
-      [107, "Connections"],
-      [110, "BudgetNotices"],
-      [130, "ConnectionPause"],
-      [131, "ReceiptProposalsPasswordBudget"],
-      [132, "PeopleProfiles"],
-      [133, "MoneyBudgets"],
-      [134, "ConnectionSignIn"],
-      [135, "PulseFacts"],
-      [136, "ConnectionAsks"],
-      [137, "PersonAccess"],
-      [138, "PulseCheckIns"],
-      [139, "ClientTouches"],
-      [140, "AssignedByAgent"],
-      [141, "ConnectionAccounts"],
-      [142, "MicrosoftConnections"],
-      [143, "PersonPlaces"],
-      [144, "PullRequestCare"],
-      [145, "RetireRoutines"],
-      [146, "SendDecidedBy"],
-      [147, "SendOwesCard"],
-      [148, "EventReplied"],
-      [149, "SendAccount"],
-      [150, "PersonRemoved"],
-      [151, "ToldAndHeld"],
-      [152, "MessageForm"],
-      [153, "HeldRelays"],
-      [154, "TeamDiscussions"],
-      [155, "TalkStyle"],
-      [156, "NamedKeys"],
-      [157, "AgentSettings"],
-      [158, "PrivateBy"],
-      [159, "OpenQuestions"],
-      [160, "GitHubWatch"],
-      [161, "Social"],
-      [162, "PersonHours"],
-      [163, "OneModel"],
-      [164, "WorkersRetired"],
-      [165, "HandedBack"],
-      [166, "GitHubAppRetired"],
-      [167, "TeamMemorySetting"],
-      [168, "GitHubOwnerUses"],
-      [169, "AwayAndWhen"],
-      [170, "OneSocialProfile"],
-      [171, "GitHubBranchGuards"],
-      [172, "CalendarCursor"],
-      [173, "NoMemoryReviewPulls"],
-      [174, "AnswerPages"],
-      [175, "HandoffWantsAnswer"],
-      [176, "RecordComments"],
-      [177, "RecordChangesByWakeup"],
-      [178, "AskOutsideAndDispatch"],
-      [179, "DeviceLinks"],
-      [180, "CardPlans"],
-      [181, "TasksKeys"],
-      [182, "HandoffRoutes"],
-      [183, "TasksKeyMakers"],
-      [184, "Recommendations"],
-      [185, "AskedFor"],
-      [186, "TasksKeysWithoutMaker"],
-      [187, "Holds"],
-    ]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(74));
     yield* K074DocJobCleanup;
     assert.deepStrictEqual(yield* owed, [{ workerId: "wk-1" }]);
   }).pipe(Effect.provide(layer)),
@@ -5866,83 +3957,7 @@ it.effect("K075 keeps what a rendered document was asked with, and reruns cleanl
       VALUES ('org', 'rd-1', '', '', 'document', 'c', 'h', 0, 'o', '', '', 'owner_only', 1, 1,
         '{}', 'Invoice', 'person-1')`;
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 75`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [
-      [75, "ServerRenderedDocuments"],
-      [76, "DocFiles"],
-      [77, "DocumentLabels"],
-      [78, "RecipeLabelBaselines"],
-      [79, "ImportRuns"],
-      [80, "RecordRequestHash"],
-      [81, "RecipeJobPasses"],
-      [82, "BankStatements"],
-      [83, "StatementSafety"],
-      [84, "RecipeDefaults"],
-      [85, "StatementReading"],
-      [86, "StatementChatPasswords"],
-      [87, "TeamWork"],
-      [88, "MoneyRecords"],
-      [106, "ChatThreads"],
-      [107, "Connections"],
-      [110, "BudgetNotices"],
-      [130, "ConnectionPause"],
-      [131, "ReceiptProposalsPasswordBudget"],
-      [132, "PeopleProfiles"],
-      [133, "MoneyBudgets"],
-      [134, "ConnectionSignIn"],
-      [135, "PulseFacts"],
-      [136, "ConnectionAsks"],
-      [137, "PersonAccess"],
-      [138, "PulseCheckIns"],
-      [139, "ClientTouches"],
-      [140, "AssignedByAgent"],
-      [141, "ConnectionAccounts"],
-      [142, "MicrosoftConnections"],
-      [143, "PersonPlaces"],
-      [144, "PullRequestCare"],
-      [145, "RetireRoutines"],
-      [146, "SendDecidedBy"],
-      [147, "SendOwesCard"],
-      [148, "EventReplied"],
-      [149, "SendAccount"],
-      [150, "PersonRemoved"],
-      [151, "ToldAndHeld"],
-      [152, "MessageForm"],
-      [153, "HeldRelays"],
-      [154, "TeamDiscussions"],
-      [155, "TalkStyle"],
-      [156, "NamedKeys"],
-      [157, "AgentSettings"],
-      [158, "PrivateBy"],
-      [159, "OpenQuestions"],
-      [160, "GitHubWatch"],
-      [161, "Social"],
-      [162, "PersonHours"],
-      [163, "OneModel"],
-      [164, "WorkersRetired"],
-      [165, "HandedBack"],
-      [166, "GitHubAppRetired"],
-      [167, "TeamMemorySetting"],
-      [168, "GitHubOwnerUses"],
-      [169, "AwayAndWhen"],
-      [170, "OneSocialProfile"],
-      [171, "GitHubBranchGuards"],
-      [172, "CalendarCursor"],
-      [173, "NoMemoryReviewPulls"],
-      [174, "AnswerPages"],
-      [175, "HandoffWantsAnswer"],
-      [176, "RecordComments"],
-      [177, "RecordChangesByWakeup"],
-      [178, "AskOutsideAndDispatch"],
-      [179, "DeviceLinks"],
-      [180, "CardPlans"],
-      [181, "TasksKeys"],
-      [182, "HandoffRoutes"],
-      [183, "TasksKeyMakers"],
-      [184, "Recommendations"],
-      [185, "AskedFor"],
-      [186, "TasksKeysWithoutMaker"],
-      [187, "Holds"],
-    ]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(75));
     yield* K075ServerRenderedDocuments;
     assert.deepStrictEqual(
       yield* sql`SELECT given_json AS "givenJson", title, asked_by_person_id AS "by"
@@ -5964,81 +3979,7 @@ it.effect("K077 adds recipe labels and request fingerprints, and reruns cleanly"
         created_at, request_sha256)
       VALUES ('org', 'rd-1', '', '', 'document', 'c', 'h', 0, 'o', '', '', 'owner_only', 1, 'f')`;
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 77`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [
-      [77, "DocumentLabels"],
-      [78, "RecipeLabelBaselines"],
-      [79, "ImportRuns"],
-      [80, "RecordRequestHash"],
-      [81, "RecipeJobPasses"],
-      [82, "BankStatements"],
-      [83, "StatementSafety"],
-      [84, "RecipeDefaults"],
-      [85, "StatementReading"],
-      [86, "StatementChatPasswords"],
-      [87, "TeamWork"],
-      [88, "MoneyRecords"],
-      [106, "ChatThreads"],
-      [107, "Connections"],
-      [110, "BudgetNotices"],
-      [130, "ConnectionPause"],
-      [131, "ReceiptProposalsPasswordBudget"],
-      [132, "PeopleProfiles"],
-      [133, "MoneyBudgets"],
-      [134, "ConnectionSignIn"],
-      [135, "PulseFacts"],
-      [136, "ConnectionAsks"],
-      [137, "PersonAccess"],
-      [138, "PulseCheckIns"],
-      [139, "ClientTouches"],
-      [140, "AssignedByAgent"],
-      [141, "ConnectionAccounts"],
-      [142, "MicrosoftConnections"],
-      [143, "PersonPlaces"],
-      [144, "PullRequestCare"],
-      [145, "RetireRoutines"],
-      [146, "SendDecidedBy"],
-      [147, "SendOwesCard"],
-      [148, "EventReplied"],
-      [149, "SendAccount"],
-      [150, "PersonRemoved"],
-      [151, "ToldAndHeld"],
-      [152, "MessageForm"],
-      [153, "HeldRelays"],
-      [154, "TeamDiscussions"],
-      [155, "TalkStyle"],
-      [156, "NamedKeys"],
-      [157, "AgentSettings"],
-      [158, "PrivateBy"],
-      [159, "OpenQuestions"],
-      [160, "GitHubWatch"],
-      [161, "Social"],
-      [162, "PersonHours"],
-      [163, "OneModel"],
-      [164, "WorkersRetired"],
-      [165, "HandedBack"],
-      [166, "GitHubAppRetired"],
-      [167, "TeamMemorySetting"],
-      [168, "GitHubOwnerUses"],
-      [169, "AwayAndWhen"],
-      [170, "OneSocialProfile"],
-      [171, "GitHubBranchGuards"],
-      [172, "CalendarCursor"],
-      [173, "NoMemoryReviewPulls"],
-      [174, "AnswerPages"],
-      [175, "HandoffWantsAnswer"],
-      [176, "RecordComments"],
-      [177, "RecordChangesByWakeup"],
-      [178, "AskOutsideAndDispatch"],
-      [179, "DeviceLinks"],
-      [180, "CardPlans"],
-      [181, "TasksKeys"],
-      [182, "HandoffRoutes"],
-      [183, "TasksKeyMakers"],
-      [184, "Recommendations"],
-      [185, "AskedFor"],
-      [186, "TasksKeysWithoutMaker"],
-      [187, "Holds"],
-    ]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(77));
     yield* K077DocumentLabels;
     assert.deepStrictEqual(
       yield* sql`SELECT l.sensitive, j.request_sha256 AS "request" FROM kin_recipe_labels l
@@ -6059,80 +4000,7 @@ it.effect("K078 keeps one baseline per workspace, and reruns cleanly", () =>
       VALUES ('org', ${"b".repeat(40)}, 2) ON CONFLICT (org_id) DO NOTHING`;
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 78`;
     // Later migrations rerun with it, and K080 leaves the column it already added.
-    assert.deepStrictEqual(yield* runKinMigrations(), [
-      [78, "RecipeLabelBaselines"],
-      [79, "ImportRuns"],
-      [80, "RecordRequestHash"],
-      [81, "RecipeJobPasses"],
-      [82, "BankStatements"],
-      [83, "StatementSafety"],
-      [84, "RecipeDefaults"],
-      [85, "StatementReading"],
-      [86, "StatementChatPasswords"],
-      [87, "TeamWork"],
-      [88, "MoneyRecords"],
-      [106, "ChatThreads"],
-      [107, "Connections"],
-      [110, "BudgetNotices"],
-      [130, "ConnectionPause"],
-      [131, "ReceiptProposalsPasswordBudget"],
-      [132, "PeopleProfiles"],
-      [133, "MoneyBudgets"],
-      [134, "ConnectionSignIn"],
-      [135, "PulseFacts"],
-      [136, "ConnectionAsks"],
-      [137, "PersonAccess"],
-      [138, "PulseCheckIns"],
-      [139, "ClientTouches"],
-      [140, "AssignedByAgent"],
-      [141, "ConnectionAccounts"],
-      [142, "MicrosoftConnections"],
-      [143, "PersonPlaces"],
-      [144, "PullRequestCare"],
-      [145, "RetireRoutines"],
-      [146, "SendDecidedBy"],
-      [147, "SendOwesCard"],
-      [148, "EventReplied"],
-      [149, "SendAccount"],
-      [150, "PersonRemoved"],
-      [151, "ToldAndHeld"],
-      [152, "MessageForm"],
-      [153, "HeldRelays"],
-      [154, "TeamDiscussions"],
-      [155, "TalkStyle"],
-      [156, "NamedKeys"],
-      [157, "AgentSettings"],
-      [158, "PrivateBy"],
-      [159, "OpenQuestions"],
-      [160, "GitHubWatch"],
-      [161, "Social"],
-      [162, "PersonHours"],
-      [163, "OneModel"],
-      [164, "WorkersRetired"],
-      [165, "HandedBack"],
-      [166, "GitHubAppRetired"],
-      [167, "TeamMemorySetting"],
-      [168, "GitHubOwnerUses"],
-      [169, "AwayAndWhen"],
-      [170, "OneSocialProfile"],
-      [171, "GitHubBranchGuards"],
-      [172, "CalendarCursor"],
-      [173, "NoMemoryReviewPulls"],
-      [174, "AnswerPages"],
-      [175, "HandoffWantsAnswer"],
-      [176, "RecordComments"],
-      [177, "RecordChangesByWakeup"],
-      [178, "AskOutsideAndDispatch"],
-      [179, "DeviceLinks"],
-      [180, "CardPlans"],
-      [181, "TasksKeys"],
-      [182, "HandoffRoutes"],
-      [183, "TasksKeyMakers"],
-      [184, "Recommendations"],
-      [185, "AskedFor"],
-      [186, "TasksKeysWithoutMaker"],
-      [187, "Holds"],
-    ]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(78));
     assert.deepStrictEqual(
       yield* sql`SELECT commit_sha AS "commit" FROM kin_recipe_label_baselines`,
       [{ commit: "a".repeat(40) }],
@@ -6152,59 +4020,7 @@ it.effect(
         ('ravi', 'org', 'ravi', 'Ravi', '2026-11-12T00:00:00.000Z')`;
       yield* sql`UPDATE kin_people SET access = NULL`;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 137`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(137));
       assert.deepStrictEqual(
         yield* sql`SELECT person_id AS "personId", access FROM kin_people ORDER BY person_id`,
         [
@@ -6238,70 +4054,7 @@ it.effect("K088 lets a Dates list take an amount, keeps rendered figures, and re
           definition_json, created_at)
         VALUES ('org', ${id}, ${id}, ${prefix}, 0, '{"noun":"date","amount":false}', 1)`;
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 88`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [
-      [88, "MoneyRecords"],
-      [106, "ChatThreads"],
-      [107, "Connections"],
-      [110, "BudgetNotices"],
-      [130, "ConnectionPause"],
-      [131, "ReceiptProposalsPasswordBudget"],
-      [132, "PeopleProfiles"],
-      [133, "MoneyBudgets"],
-      [134, "ConnectionSignIn"],
-      [135, "PulseFacts"],
-      [136, "ConnectionAsks"],
-      [137, "PersonAccess"],
-      [138, "PulseCheckIns"],
-      [139, "ClientTouches"],
-      [140, "AssignedByAgent"],
-      [141, "ConnectionAccounts"],
-      [142, "MicrosoftConnections"],
-      [143, "PersonPlaces"],
-      [144, "PullRequestCare"],
-      [145, "RetireRoutines"],
-      [146, "SendDecidedBy"],
-      [147, "SendOwesCard"],
-      [148, "EventReplied"],
-      [149, "SendAccount"],
-      [150, "PersonRemoved"],
-      [151, "ToldAndHeld"],
-      [152, "MessageForm"],
-      [153, "HeldRelays"],
-      [154, "TeamDiscussions"],
-      [155, "TalkStyle"],
-      [156, "NamedKeys"],
-      [157, "AgentSettings"],
-      [158, "PrivateBy"],
-      [159, "OpenQuestions"],
-      [160, "GitHubWatch"],
-      [161, "Social"],
-      [162, "PersonHours"],
-      [163, "OneModel"],
-      [164, "WorkersRetired"],
-      [165, "HandedBack"],
-      [166, "GitHubAppRetired"],
-      [167, "TeamMemorySetting"],
-      [168, "GitHubOwnerUses"],
-      [169, "AwayAndWhen"],
-      [170, "OneSocialProfile"],
-      [171, "GitHubBranchGuards"],
-      [172, "CalendarCursor"],
-      [173, "NoMemoryReviewPulls"],
-      [174, "AnswerPages"],
-      [175, "HandoffWantsAnswer"],
-      [176, "RecordComments"],
-      [177, "RecordChangesByWakeup"],
-      [178, "AskOutsideAndDispatch"],
-      [179, "DeviceLinks"],
-      [180, "CardPlans"],
-      [181, "TasksKeys"],
-      [182, "HandoffRoutes"],
-      [183, "TasksKeyMakers"],
-      [184, "Recommendations"],
-      [185, "AskedFor"],
-      [186, "TasksKeysWithoutMaker"],
-      [187, "Holds"],
-    ]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(88));
     yield* K088MoneyRecords;
     // What an issued document showed is never edited or removed.
     yield* sql`INSERT INTO kin_doc_jobs (org_id, worker_id, agent_id, wakeup_id, mode,
@@ -6349,68 +4102,7 @@ it.effect(
         yield* sql.unsafe(`DROP TABLE ${table}`);
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 107`;
       yield* sql`INSERT INTO kin_orgs VALUES ('org', 'Invented Co', '2026-11-15T00:00:00.000Z')`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [107, "Connections"],
-        [110, "BudgetNotices"],
-        [130, "ConnectionPause"],
-        [131, "ReceiptProposalsPasswordBudget"],
-        [132, "PeopleProfiles"],
-        [133, "MoneyBudgets"],
-        [134, "ConnectionSignIn"],
-        [135, "PulseFacts"],
-        [136, "ConnectionAsks"],
-        [137, "PersonAccess"],
-        [138, "PulseCheckIns"],
-        [139, "ClientTouches"],
-        [140, "AssignedByAgent"],
-        [141, "ConnectionAccounts"],
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(107));
       yield* K107Connections;
       assert.deepStrictEqual(yield* sql`SELECT wakeup_id FROM kin_wakeup_outside_reads`, []);
       yield* sql`INSERT INTO kin_connections (org_id, connection_id, label, kind, url_host, auth,
@@ -6442,65 +4134,7 @@ it.effect("K131 carries each statement's wrong passwords into its budget, and re
           'needs_password', 1, ${card}, ${chat})`;
     yield* sql`DELETE FROM kin_statement_password_budget`;
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 131`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [
-      [131, "ReceiptProposalsPasswordBudget"],
-      [132, "PeopleProfiles"],
-      [133, "MoneyBudgets"],
-      [134, "ConnectionSignIn"],
-      [135, "PulseFacts"],
-      [136, "ConnectionAsks"],
-      [137, "PersonAccess"],
-      [138, "PulseCheckIns"],
-      [139, "ClientTouches"],
-      [140, "AssignedByAgent"],
-      [141, "ConnectionAccounts"],
-      [142, "MicrosoftConnections"],
-      [143, "PersonPlaces"],
-      [144, "PullRequestCare"],
-      [145, "RetireRoutines"],
-      [146, "SendDecidedBy"],
-      [147, "SendOwesCard"],
-      [148, "EventReplied"],
-      [149, "SendAccount"],
-      [150, "PersonRemoved"],
-      [151, "ToldAndHeld"],
-      [152, "MessageForm"],
-      [153, "HeldRelays"],
-      [154, "TeamDiscussions"],
-      [155, "TalkStyle"],
-      [156, "NamedKeys"],
-      [157, "AgentSettings"],
-      [158, "PrivateBy"],
-      [159, "OpenQuestions"],
-      [160, "GitHubWatch"],
-      [161, "Social"],
-      [162, "PersonHours"],
-      [163, "OneModel"],
-      [164, "WorkersRetired"],
-      [165, "HandedBack"],
-      [166, "GitHubAppRetired"],
-      [167, "TeamMemorySetting"],
-      [168, "GitHubOwnerUses"],
-      [169, "AwayAndWhen"],
-      [170, "OneSocialProfile"],
-      [171, "GitHubBranchGuards"],
-      [172, "CalendarCursor"],
-      [173, "NoMemoryReviewPulls"],
-      [174, "AnswerPages"],
-      [175, "HandoffWantsAnswer"],
-      [176, "RecordComments"],
-      [177, "RecordChangesByWakeup"],
-      [178, "AskOutsideAndDispatch"],
-      [179, "DeviceLinks"],
-      [180, "CardPlans"],
-      [181, "TasksKeys"],
-      [182, "HandoffRoutes"],
-      [183, "TasksKeyMakers"],
-      [184, "Recommendations"],
-      [185, "AskedFor"],
-      [186, "TasksKeysWithoutMaker"],
-      [187, "Holds"],
-    ]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(131));
     const budget = sql`SELECT budget_key AS key, remaining, refill_at IS NOT NULL AS "refills"
       FROM kin_statement_password_budget ORDER BY budget_key`;
     // One out of tries takes a password again at once, as sending the file again let it before.
@@ -6511,65 +4145,7 @@ it.effect("K131 carries each statement's wrong passwords into its budget, and re
     ];
     assert.deepStrictEqual(yield* budget, carried);
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 131`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [
-      [131, "ReceiptProposalsPasswordBudget"],
-      [132, "PeopleProfiles"],
-      [133, "MoneyBudgets"],
-      [134, "ConnectionSignIn"],
-      [135, "PulseFacts"],
-      [136, "ConnectionAsks"],
-      [137, "PersonAccess"],
-      [138, "PulseCheckIns"],
-      [139, "ClientTouches"],
-      [140, "AssignedByAgent"],
-      [141, "ConnectionAccounts"],
-      [142, "MicrosoftConnections"],
-      [143, "PersonPlaces"],
-      [144, "PullRequestCare"],
-      [145, "RetireRoutines"],
-      [146, "SendDecidedBy"],
-      [147, "SendOwesCard"],
-      [148, "EventReplied"],
-      [149, "SendAccount"],
-      [150, "PersonRemoved"],
-      [151, "ToldAndHeld"],
-      [152, "MessageForm"],
-      [153, "HeldRelays"],
-      [154, "TeamDiscussions"],
-      [155, "TalkStyle"],
-      [156, "NamedKeys"],
-      [157, "AgentSettings"],
-      [158, "PrivateBy"],
-      [159, "OpenQuestions"],
-      [160, "GitHubWatch"],
-      [161, "Social"],
-      [162, "PersonHours"],
-      [163, "OneModel"],
-      [164, "WorkersRetired"],
-      [165, "HandedBack"],
-      [166, "GitHubAppRetired"],
-      [167, "TeamMemorySetting"],
-      [168, "GitHubOwnerUses"],
-      [169, "AwayAndWhen"],
-      [170, "OneSocialProfile"],
-      [171, "GitHubBranchGuards"],
-      [172, "CalendarCursor"],
-      [173, "NoMemoryReviewPulls"],
-      [174, "AnswerPages"],
-      [175, "HandoffWantsAnswer"],
-      [176, "RecordComments"],
-      [177, "RecordChangesByWakeup"],
-      [178, "AskOutsideAndDispatch"],
-      [179, "DeviceLinks"],
-      [180, "CardPlans"],
-      [181, "TasksKeys"],
-      [182, "HandoffRoutes"],
-      [183, "TasksKeyMakers"],
-      [184, "Recommendations"],
-      [185, "AskedFor"],
-      [186, "TasksKeysWithoutMaker"],
-      [187, "Holds"],
-    ]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(131));
     assert.deepStrictEqual(yield* budget, carried);
   }).pipe(Effect.provide(layer)),
 );
@@ -6609,54 +4185,7 @@ it.effect(
       yield* sql`INSERT INTO kin_connection_cursors (org_id, connection_id, checked_until, updated_at)
       VALUES ('org', 'conn_google', 5, 1)`;
 
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [142, "MicrosoftConnections"],
-        [143, "PersonPlaces"],
-        [144, "PullRequestCare"],
-        [145, "RetireRoutines"],
-        [146, "SendDecidedBy"],
-        [147, "SendOwesCard"],
-        [148, "EventReplied"],
-        [149, "SendAccount"],
-        [150, "PersonRemoved"],
-        [151, "ToldAndHeld"],
-        [152, "MessageForm"],
-        [153, "HeldRelays"],
-        [154, "TeamDiscussions"],
-        [155, "TalkStyle"],
-        [156, "NamedKeys"],
-        [157, "AgentSettings"],
-        [158, "PrivateBy"],
-        [159, "OpenQuestions"],
-        [160, "GitHubWatch"],
-        [161, "Social"],
-        [162, "PersonHours"],
-        [163, "OneModel"],
-        [164, "WorkersRetired"],
-        [165, "HandedBack"],
-        [166, "GitHubAppRetired"],
-        [167, "TeamMemorySetting"],
-        [168, "GitHubOwnerUses"],
-        [169, "AwayAndWhen"],
-        [170, "OneSocialProfile"],
-        [171, "GitHubBranchGuards"],
-        [172, "CalendarCursor"],
-        [173, "NoMemoryReviewPulls"],
-        [174, "AnswerPages"],
-        [175, "HandoffWantsAnswer"],
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(142));
       assert.deepStrictEqual(yield* schemaOf(), widened);
       assert.isTrue(Exit.isSuccess(yield* connection("conn_outlook", "microsoft")));
       assert.isTrue(Exit.isFailure(yield* connection("conn_other", "yahoo")));
@@ -6689,21 +4218,7 @@ it.effect("K175 leaves existing K174 hand-offs with a null answer preference", (
     if (columns.some((column) => column.name === "wants_answer"))
       yield* sql`ALTER TABLE kin_handoffs DROP COLUMN wants_answer`;
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 175`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [
-      [175, "HandoffWantsAnswer"],
-      [176, "RecordComments"],
-      [177, "RecordChangesByWakeup"],
-      [178, "AskOutsideAndDispatch"],
-      [179, "DeviceLinks"],
-      [180, "CardPlans"],
-      [181, "TasksKeys"],
-      [182, "HandoffRoutes"],
-      [183, "TasksKeyMakers"],
-      [184, "Recommendations"],
-      [185, "AskedFor"],
-      [186, "TasksKeysWithoutMaker"],
-      [187, "Holds"],
-    ]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(175));
     assert.deepStrictEqual(yield* sql`SELECT wants_answer FROM kin_handoffs`, [
       { wants_answer: null },
     ]);
@@ -6733,20 +4248,7 @@ it.effect(
       yield* sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind, actor_id,
         via, kind, fields_json)
       VALUES ('org', 'r1', 1, 0, 'agent', 'chief', 'lead', 'created', '[]')`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [
-        [176, "RecordComments"],
-        [177, "RecordChangesByWakeup"],
-        [178, "AskOutsideAndDispatch"],
-        [179, "DeviceLinks"],
-        [180, "CardPlans"],
-        [181, "TasksKeys"],
-        [182, "HandoffRoutes"],
-        [183, "TasksKeyMakers"],
-        [184, "Recommendations"],
-        [185, "AskedFor"],
-        [186, "TasksKeysWithoutMaker"],
-        [187, "Holds"],
-      ]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(176));
       assert.deepStrictEqual(yield* sql`SELECT asked_by_person_id FROM kin_records`, [
         { asked_by_person_id: null },
       ]);
@@ -6799,18 +4301,7 @@ it.effect("K178 counts a send under way at the upgrade as started, and nothing e
           pin_digest, payload_json, agent_id, wakeup_id, chat_id, state, proposed_at, decided_at)
         VALUES ('org', ${askId}, 'conn', 'mail_send', 'pin', ${payload}, 'finance', 'wake', 'chat',
           ${state}, 1, ${decided})`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [
-      [178, "AskOutsideAndDispatch"],
-      [179, "DeviceLinks"],
-      [180, "CardPlans"],
-      [181, "TasksKeys"],
-      [182, "HandoffRoutes"],
-      [183, "TasksKeyMakers"],
-      [184, "Recommendations"],
-      [185, "AskedFor"],
-      [186, "TasksKeysWithoutMaker"],
-      [187, "Holds"],
-    ]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(178));
     const rows = yield* sql<{
       ask_id: string;
       outside_from: string | null;

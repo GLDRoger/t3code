@@ -1,5 +1,8 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
+  KIN_CODING_AGENT_UNNAMED,
+  KIN_WORK_ALSO_ON_MAX,
+  type KinPersonId,
   kinWorkMove,
   type KinWorkMoveGroup,
   KIN_RECORD_COMMENT_FILES_MAX,
@@ -13,23 +16,31 @@ import {
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
 
+import { KIN_RETIRED_LABEL } from "./kinAgentRetire.ts";
 import { kinAwayDay } from "./kinAway.ts";
 import { kinSafeWebUrl } from "./kinLinks.ts";
 import { formatKinTime, type KinAvatarView } from "./kinScreenState.ts";
 import {
+  KIN_WORK_YOURS_TO_DO,
+  kinWorkWaitsOnMe,
   kinWorkActorName,
   kinWorkAvatar,
   kinWorkChangeText,
   kinWorkDueDayText,
   kinWorkDueDays,
   kinWorkDueText,
+  kinWorkGiven,
   kinWorkName,
+  kinWorkPrincipalKey,
+  kinWorkSamePrincipal,
+  type KinWorkAssignee,
   type KinWorkItemView,
   type KinWorkNames,
 } from "./kinWork.ts";
 import { kinWorkStatusOffer } from "./kinWorkChanges.ts";
 
 export const KIN_TASK_RECORD = {
+  editBrief: "Edit the brief",
   details: "Details",
   askedBy: "Asked by",
   heldBy: "Held by",
@@ -59,6 +70,7 @@ export const KIN_TASK_RECORD = {
 
 /** A task's note box and its notes, on web and phone. */
 export const KIN_TASK_NOTE_COPY = {
+  removeLabel: "Remove this note",
   send: "Add note",
   sending: "Sending…",
   retry: "Retry",
@@ -123,7 +135,7 @@ export interface KinRecordWho {
   readonly avatar: KinAvatarView;
 }
 
-export function kinRecordWho(who: KinWorkPrincipal, names: KinWorkNames): KinRecordWho {
+function kinRecordWho(who: KinWorkPrincipal, names: KinWorkNames): KinRecordWho {
   const mine = who._tag === "person" && who.personId === names.me;
   const own = mine ? names.people.get(who.personId) : undefined;
   return {
@@ -132,7 +144,7 @@ export function kinRecordWho(who: KinWorkPrincipal, names: KinWorkNames): KinRec
   };
 }
 
-const isMe = (who: KinWorkPrincipal, names: KinWorkNames) =>
+const isMe = (who: KinWorkPrincipal, names: Pick<KinWorkNames, "me">) =>
   who._tag === "person" && who.personId === names.me;
 
 /**
@@ -200,6 +212,7 @@ export function kinRecordMove(
     | "askedBy"
     | "givenBy"
     | "waiting"
+    | "alsoOn"
   >,
   names: KinWorkNames,
   ownerLevel: boolean,
@@ -216,6 +229,7 @@ export function kinRecordMove(
       askedBy: asker?._tag === "person" ? asker.personId : null,
       givenBy: item.givenBy ?? null,
       card: item.waiting !== undefined,
+      ...(item.alsoOn === undefined ? {} : { alsoOn: item.alsoOn }),
     },
     { personId: names.me, ownerLevel },
   );
@@ -234,6 +248,8 @@ export function kinRecordChip(
   if (item.state === "dropped") return { tone: "plain", label: "Dropped" };
   if (item.late && item.dueAt !== null)
     return { tone: "late", label: kinLateWords(item, names, now) };
+  // Waiting on this viewer is theirs to move, never a pause (`kinWorkWaitsOnMe`).
+  if (kinWorkWaitsOnMe(item, names)) return { tone: "plain", label: KIN_WORK_YOURS_TO_DO };
   const handedToMe = item.handedBack !== undefined && isMe(item.owner, names);
   // Tasks' Needs you and this chip read one rule; a plain task of your own says its status.
   const move = kinRecordMove(item, names, view.can.confirm);
@@ -313,6 +329,24 @@ export function kinNextStep(input: NextStepInput): KinNextStepView {
 }
 
 /**
+ * A task page's Brief section under the next-step card, web and phone: whole, or without its words
+ * where the card quotes them already (keeping its Edit, who wrote it and earlier versions), or not
+ * drawn where that leaves nothing to do.
+ */
+export function kinTaskBrief(input: {
+  readonly view: Pick<KinWorkItemView, "notes">;
+  readonly step: Pick<KinNextStepView, "words">;
+  /** This viewer may edit the brief here. */
+  readonly edit: boolean;
+  /** How many earlier versions of the brief there are. */
+  readonly versions: number;
+}): { readonly words: boolean } | null {
+  const quoted = input.view.notes !== null && input.step.words === input.view.notes;
+  if (!quoted) return { words: true };
+  return input.edit || input.versions > 0 ? { words: false } : null;
+}
+
+/**
  * Where a task page's own controls sit for this viewer: status on the page, the rest in the ••• /
  * More menu; the Brief section carries the page's edit. Each is present only where the host takes
  * that move from this viewer, and Done or Reopen only where the next-step card doesn't offer it.
@@ -366,6 +400,11 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
   const waitsOnMe =
     item.state === "waiting" && item.waitingOn !== null && isMe(item.waitingOn, names);
   const nothingNeeded = waitsOnMe ? `${view.status}.` : KIN_TASK_RECORD.nothingNeeded;
+  // Theirs to do, with why it is when the record says and the card doesn't quote it already.
+  const yoursToDo = (quoted: string | null) =>
+    view.reason === null || quoted === view.reason
+      ? `${KIN_WORK_YOURS_TO_DO}.`
+      : `${KIN_WORK_YOURS_TO_DO}: ${view.reason}`;
   if (view.suggestion !== null) {
     const acts =
       input.change && view.can.confirm
@@ -424,8 +463,9 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
       who: { name: "You", avatar: holder.avatar },
       line: "have this",
       when: due === null ? null : `due ${due}`,
-      words: view.reason,
-      note: null,
+      // What to do: the brief, and why it came only while there is none.
+      words: view.notes ?? view.reason,
+      note: waitsOnMe ? yoursToDo(view.notes ?? view.reason) : null,
       acts: [...done, ...back],
     };
   }
@@ -467,6 +507,7 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
   }
   const waiting =
     item.state === "waiting" &&
+    !waitsOnMe &&
     !(item.waitingOn !== null && samePrincipal(item.waitingOn, item.owner));
   return {
     kind: "held",
@@ -474,8 +515,7 @@ function stepFor(input: NextStepInput): Omit<KinNextStepView, "waiting"> {
     line: waiting ? view.status.replace(/^Waiting/, "is waiting") : "has this",
     when: due === null ? null : `due ${due}`,
     words: null,
-    // The line already says it waits on this viewer.
-    note: toldLater ?? (waitsOnMe ? null : KIN_TASK_RECORD.nothingNeeded),
+    note: toldLater ?? (waitsOnMe ? yoursToDo(null) : KIN_TASK_RECORD.nothingNeeded),
     acts: [],
   };
 }
@@ -505,6 +545,8 @@ export interface KinActivityLine {
   readonly after: string | null;
   /** An agent that did it for `who`, or their coding-agent key: "via Chief of staff". */
   readonly via: string | null;
+  /** Why it went to its holder, quoted under the newest hand-over (or the making that gave it). */
+  readonly quote: string | null;
   /** A note's own words and files; null on a change. */
   readonly comment: {
     readonly commentId: string;
@@ -546,6 +588,14 @@ function beforeAfter(change: KinRecordChange, names: KinWorkNames, now: Date) {
   return { before: null, after: null };
 }
 
+/** "coding agent “Work laptop”": the kind is Kin's word and the name the key's, quoted, so none poses as Kin. */
+const codingAgentVia = (name: string | undefined) =>
+  name === undefined
+    ? null
+    : name === KIN_CODING_AGENT_UNNAMED
+      ? KIN_CODING_AGENT_UNNAMED
+      : `coding agent “${name}”`;
+
 function changeLine(change: KinRecordChange, names: KinWorkNames, now: Date): KinActivityLine {
   const full = kinWorkChangeText(change, names, now, "work", "brief");
   const actor = kinWorkActorName(change.by, names);
@@ -568,8 +618,9 @@ function changeLine(change: KinRecordChange, names: KinWorkNames, now: Date): Ki
       asker !== undefined
         ? actor
         : named && change.by._tag === "person"
-          ? (change.codingAgent ?? null)
+          ? codingAgentVia(change.codingAgent)
           : null,
+    quote: null,
     comment: null,
   };
 }
@@ -584,7 +635,8 @@ function commentLine(comment: KinRecordComment, names: KinWorkNames, now: Date):
     when: formatKinTime(new Date(comment.at), now),
     before: null,
     after: null,
-    via: comment.by._tag === "person" ? (comment.codingAgent ?? null) : null,
+    via: comment.by._tag === "person" ? codingAgentVia(comment.codingAgent) : null,
+    quote: null,
     comment: {
       commentId: comment.commentId,
       body: comment.body,
@@ -603,13 +655,25 @@ export function kinTaskActivity(
   item: Pick<KinRecordDetail, "changes" | "comments">,
   names: KinWorkNames,
   now: Date,
+  /** Why its holder has it (`KinWorkItemView.reason`), quoted where it was given. */
+  reason: string | null = null,
 ): ReadonlyArray<KinActivityLine> {
+  const gave =
+    reason === null
+      ? undefined
+      : item.changes.find(
+          (change) =>
+            change.kind === "created" || change.fields.some((field) => field.field === "owner"),
+        );
   const lines = [
-    ...[...item.changes].reverse().map((change) => ({
-      at: Date.parse(change.at),
-      order: 0,
-      line: changeLine(change, names, now),
-    })),
+    ...[...item.changes].reverse().map((change) => {
+      const line = changeLine(change, names, now);
+      return {
+        at: Date.parse(change.at),
+        order: 0,
+        line: change === gave ? { ...line, quote: reason } : line,
+      };
+    }),
     ...(item.comments ?? []).map((comment) => ({
       at: Date.parse(comment.at),
       order: 1,
@@ -638,6 +702,207 @@ export function kinBriefBy(
     avatar: by._tag === "system" ? null : kinWorkAvatar(by),
     when: formatKinTime(new Date(wrote?.at ?? item.createdAt), now),
   };
+}
+
+/** Details' With row: who else is on a task besides its holder. */
+export const KIN_TASK_WITH = {
+  label: "With",
+  add: "Put someone on it",
+  /** The With row's value while nobody else is on it, for a reader who may put someone on. */
+  none: "Add someone",
+  remove: (name: string) => `Take ${name} off it`,
+  leave: "Leave",
+  leaveLabel: "Leave this task",
+  full: `${KIN_WORK_ALSO_ON_MAX} are on it, the most a task takes.`,
+  /** As the Team list says it beside someone whose access was removed. */
+  noAccess: "No access",
+  invited: "Invited",
+} as const;
+
+export interface KinTaskWithPerson {
+  readonly key: string;
+  readonly principal: KinWorkPrincipal;
+  /** A person's first name, an agent's whole name; "You" for the reader. */
+  readonly name: string;
+  readonly avatar: KinAvatarView;
+  /** No access, Invited or Retired, said quietly beside the name; null when all is well. */
+  readonly status: string | null;
+  /** × takes them off, Leave takes the reader off; null offers neither. */
+  readonly act: "remove" | "leave" | null;
+}
+
+/**
+ * Who else is on a task, as Details lists them under With, and whether the reader may
+ * put someone on it: `edit` is the task's `can.edit`, `change` whether this device may update
+ * tasks at all, which is all Leave needs. `joined` marks who no longer opens Kin.
+ */
+export function kinTaskWith(input: {
+  readonly item: Pick<KinRecord, "alsoOn">;
+  readonly names: KinWorkNames;
+  readonly edit: boolean;
+  readonly change: boolean;
+  readonly joined?: ReadonlyArray<KinPersonId> | null;
+  readonly invited?: ReadonlyArray<KinPersonId> | null;
+}): {
+  readonly people: ReadonlyArray<KinTaskWithPerson>;
+  readonly add: boolean;
+  readonly full: string | null;
+} {
+  const { names } = input;
+  const on = input.item.alsoOn ?? [];
+  const edit = input.edit && input.change;
+  const joined = input.joined == null ? null : new Set<string>(input.joined);
+  const invited = new Set<string>(input.invited ?? []);
+  const people = on.map((who): KinTaskWithPerson => {
+    const me = isMe(who, names);
+    const status =
+      who._tag === "agent"
+        ? names.retired?.has(who.agentId) === true
+          ? KIN_RETIRED_LABEL
+          : null
+        : joined === null || joined.has(who.personId)
+          ? null
+          : invited.has(who.personId)
+            ? KIN_TASK_WITH.invited
+            : KIN_TASK_WITH.noAccess;
+    const name = kinWorkName(who, names);
+    return {
+      key: kinWorkPrincipalKey(who),
+      principal: who,
+      name: who._tag === "agent" || me ? name : (name.split(/\s+/)[0] ?? name),
+      avatar: kinWorkAvatar(who),
+      status,
+      act: me && input.change ? "leave" : edit ? "remove" : null,
+    };
+  });
+  const room = on.length < KIN_WORK_ALSO_ON_MAX;
+  return { people, add: edit && room, full: edit && !room ? KIN_TASK_WITH.full : null };
+}
+
+/** Who can be put on a task: the holder's own picker, less its holder and whoever is on it. */
+export function kinTaskWithChoices(
+  assignees: {
+    readonly leads: ReadonlyArray<KinWorkAssignee>;
+    readonly people: ReadonlyArray<KinWorkAssignee>;
+  },
+  item: {
+    readonly owner: KinWorkPrincipal | null;
+    readonly alsoOn?: ReadonlyArray<KinWorkPrincipal> | undefined;
+  },
+) {
+  const free = (row: KinWorkAssignee) =>
+    !kinWorkSamePrincipal(row.principal, item.owner) &&
+    !(item.alsoOn ?? []).some((who) => kinWorkSamePrincipal(who, row.principal));
+  return {
+    leads: assignees.leads.filter(free).map((row) => ({ ...row, current: false })),
+    people: assignees.people.filter(free).map((row) => ({ ...row, current: false })),
+  };
+}
+
+/** The list once `who` is taken off it. */
+export const kinTaskWithout = (
+  item: Pick<KinRecord, "alsoOn">,
+  who: KinWorkPrincipal,
+): ReadonlyArray<KinWorkPrincipal> =>
+  (item.alsoOn ?? []).filter((one) => !kinWorkSamePrincipal(one, who));
+
+/**
+ * Who holds a task or a list entry, and whether pressing it opens the hand-over: only for a reader
+ * the host lets give it (the holder or owner level) on a device that may give.
+ */
+export function kinRecordHeld(input: {
+  readonly item: Pick<KinRecordDetail, "owner">;
+  readonly view: Pick<KinWorkItemView, "owner" | "can" | "assignLabel">;
+  readonly names: KinWorkNames;
+  /** This device may give tasks to someone. */
+  readonly give: boolean;
+}): KinRecordWho & { readonly opens: boolean } {
+  const { view, names } = input;
+  const holder = kinRecordWho(input.item.owner, names);
+  return {
+    ...holder,
+    name: view.owner.retired ? `${holder.name} (${KIN_RETIRED_LABEL.toLowerCase()})` : holder.name,
+    opens: input.give && view.can.give && view.assignLabel !== null,
+  };
+}
+
+/**
+ * Details' Held by and With rows. Held by opens the hand-over only for a reader who may give the
+ * task; With opens a menu where someone on it can be taken off or the reader can leave, goes
+ * straight to the picker when adding is all there is, and is absent when it has nothing to say.
+ */
+export function kinTaskPeopleRows(input: {
+  readonly item: Pick<KinRecordDetail, "owner">;
+  readonly view: Pick<KinWorkItemView, "owner" | "can" | "assignLabel">;
+  readonly names: KinWorkNames;
+  /** This device may give tasks to someone. */
+  readonly give: boolean;
+  readonly with: ReturnType<typeof kinTaskWith>;
+}): {
+  readonly held: KinRecordWho & { readonly opens: boolean };
+  readonly with: { readonly value: string; readonly opens: "menu" | "add" | null } | null;
+} {
+  const { people, add } = input.with;
+  const acts = people.some((who) => who.act !== null);
+  const first = people[0]?.name ?? "";
+  const value =
+    people.length === 0
+      ? KIN_TASK_WITH.none
+      : people.length === 1
+        ? first
+        : people.length === 2
+          ? `${first} and ${people[1]?.name ?? ""}`
+          : `${first} and ${people.length - 1} more`;
+  return {
+    held: kinRecordHeld(input),
+    with: people.length === 0 && !add ? null : { value, opens: acts ? "menu" : add ? "add" : null },
+  };
+}
+
+/**
+ * Where a task came from, said once under Details: "Asked by you · given to Dev through Chief of
+ * staff · Nov 23". Null when the record names nobody who asked or gave it.
+ */
+export function kinTaskOrigin(
+  item: Pick<
+    KinRecordDetail,
+    | "owner"
+    | "createdBy"
+    | "assignedBy"
+    | "assignedByAgent"
+    | "assignedAt"
+    | "askedBy"
+    | "changes"
+    | "handedBack"
+    | "state"
+  >,
+  names: KinWorkNames,
+  now: Date,
+): string | null {
+  const asker = kinRecordAskedBy(item);
+  const move = kinWorkGiven(item);
+  const when = (at: string) => formatKinTime(new Date(at), now);
+  const holder = kinWorkName(item.owner, names, "you");
+  const gave =
+    move === null
+      ? null
+      : move.kind === "handedBack"
+        ? `handed back by ${kinWorkName(move.by, names, "you")} · ${when(move.at)}`
+        : move.kind === "handedBackChange"
+          ? `handed back by ${move.by._tag === "system" ? "Kin" : kinWorkName(move.by, names, "you")} · ${when(move.at)}`
+          : [
+              (asker !== null && samePrincipal(asker, move.giver)
+                ? `given to ${holder}`
+                : `${kinWorkName(move.giver, names, "you")} gave it to ${holder}`) +
+                (move.via === null ? "" : ` through ${kinWorkActorName(move.via, names)}`),
+              move.at === null ? null : when(move.at),
+            ]
+              .filter((part) => part !== null)
+              .join(" · ");
+  const line = [asker === null ? null : `Asked by ${kinWorkName(asker, names, "you")}`, gave]
+    .filter((part) => part !== null)
+    .join(" · ");
+  return line === "" ? null : capital(line);
 }
 
 const capital = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);

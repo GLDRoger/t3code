@@ -6,6 +6,8 @@ import {
   type KinGitHubAppAccount,
   type KinGitHubAppCreateStart,
   type KinGitHubAppDisconnected,
+  type KinGitHubAppLooked,
+  type KinGitHubHookAllowed,
   type KinGitHubAppReposResult,
   type KinGitHubAppReposSetInput,
   type KinGitHubBranchGuard,
@@ -26,6 +28,7 @@ import { AsyncResult } from "effect/reactivity";
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { kinFailureText } from "./kinAnswers.ts";
 import type { KinConnectionTone } from "./kinConnections.ts";
+import { kinCount } from "./kinCount.ts";
 
 /**
  * Settings → Connections → GitHub: the owner's own GitHub login on his Kin's computer. Web and
@@ -34,7 +37,12 @@ import type { KinConnectionTone } from "./kinConnections.ts";
 export const KIN_GITHUB_COPY = {
   title: "GitHub",
   intro:
-    "Your own GitHub login on your Kin's computer. Kin watches your repositories with it, and agents can clone, push and open pull requests on any repository your account can reach.",
+    "Your own GitHub login. Kin watches your repositories with it, and agents can clone, push and open pull requests wherever your account can.",
+  purpose: "Your GitHub login, the repositories Kin watches, and who agents work as there.",
+  open: "Open",
+  accountTitle: "Your account",
+  disconnectRow: "Disconnect GitHub",
+  disconnectRowDetail: "Agents stop working on GitHub as you.",
   connect: "Connect",
   reconnect: "Reconnect",
   disconnect: "Disconnect",
@@ -55,12 +63,12 @@ export const KIN_GITHUB_COPY = {
   tokenLabel: "Personal access token (classic)",
   tokenPlaceholder: "ghp_…",
   tokenHint:
-    "Make one in GitHub under Settings → Developer settings → Tokens (classic), with repo, read:org and workflow. It goes to your Kin's computer and is never shown again.",
+    "Make one in GitHub under Settings → Developer settings → Tokens (classic), with repo, read:org and workflow. It goes to your Kin and is never shown again.",
   tokenConnect: "Connect with token",
   connecting: "Connecting…",
   disconnectTitle: "Disconnect GitHub?",
   disconnectDetail: (login: string) =>
-    `Agents and git on your Kin's computer stop acting as ${login}. To end it on GitHub too, revoke GitHub CLI under Settings → Applications.`,
+    `Agents stop acting as ${login}. To end it on GitHub too, revoke GitHub CLI under Settings → Applications.`,
   revokeUrl: "https://github.com/settings/applications",
   revokeLabel: "Authorized apps on GitHub",
   loadFailed: "Couldn't load your GitHub connection",
@@ -84,6 +92,16 @@ const orgList = (orgs: ReadonlyArray<string>) => {
   if (orgs.length <= 3) return `${orgs.slice(0, -1).join(", ")} and ${orgs.at(-1)}`;
   return `${orgs.slice(0, 2).join(", ")} and ${orgs.length - 2} more`;
 };
+
+/** The GitHub row's one line on Connections: what it reaches, or what's in the way. */
+export function kinGitHubRowDetail(status: KinGitHubStatus): string {
+  const account = status.account;
+  if (status.signIn !== null) return KIN_GITHUB_COPY.waiting;
+  if (account === null)
+    return status.failed ?? "Agents work in your repositories once you connect.";
+  if (account.problem !== null) return account.problem;
+  return account.orgs.length === 0 ? "Your own repositories" : `Reaches ${orgList(account.orgs)}`;
+}
 
 /** The GitHub row on the Connections list. */
 export function kinGitHubRow(status: KinGitHubStatus): KinGitHubRow {
@@ -155,6 +173,53 @@ const settle = async (sent: Sent<KinGitHubStatus>, doing: string): Promise<Outco
       };
 };
 
+const answer = async <A>(sent: Sent<A>, doing: string) => {
+  const result = await sent;
+  return AsyncResult.isSuccess(result)
+    ? ({ ok: true, value: result.value } as const)
+    : ({
+        ok: false,
+        problem: kinFailureText(squashAtomCommandFailure(result), `Couldn't ${doing}.`, {
+          device: `This device isn't allowed to ${doing}.`,
+        }),
+      } as const);
+};
+
+/** Asks Kin to look at its App on GitHub now, as after the owner changed it there. */
+export function createKinGitHubLookActions(options: {
+  readonly orgId: KinOrgId;
+  readonly look: (input: KinGitHubInput) => Sent<KinGitHubAppLooked>;
+  readonly refresh: () => void;
+}) {
+  return {
+    /** What to say after the press: null once Kin asked GitHub again. */
+    look: async () => {
+      const outcome = await answer(options.look({ orgId: options.orgId }), "check the App again");
+      options.refresh();
+      return outcome.ok
+        ? outcome.value.looked
+          ? null
+          : KIN_GITHUB_AGENTS_COPY.lookedRecently
+        : outcome.problem;
+    },
+  };
+}
+
+/** The owner's yes to Kin setting the webhook of a GitHub App it didn't make. */
+export function createKinGitHubHookActions(options: {
+  readonly orgId: KinOrgId;
+  readonly allow: (input: KinGitHubInput) => Sent<KinGitHubHookAllowed>;
+  readonly refresh: () => void;
+}) {
+  return {
+    allow: async () => {
+      const outcome = await answer(options.allow({ orgId: options.orgId }), "set up the webhook");
+      options.refresh();
+      return outcome;
+    },
+  };
+}
+
 /** Starting and ending Kin's own GitHub App, each answered in plain words. */
 export function createKinGitHubAppSetupActions(options: {
   readonly orgId: KinOrgId;
@@ -162,17 +227,6 @@ export function createKinGitHubAppSetupActions(options: {
   readonly disconnect: (input: KinGitHubInput) => Sent<KinGitHubAppDisconnected>;
   readonly refresh: () => void;
 }) {
-  const answer = async <A>(sent: Sent<A>, doing: string) => {
-    const result = await sent;
-    return AsyncResult.isSuccess(result)
-      ? ({ ok: true, value: result.value } as const)
-      : ({
-          ok: false,
-          problem: kinFailureText(squashAtomCommandFailure(result), `Couldn't ${doing}.`, {
-            device: `This device isn't allowed to ${doing}.`,
-          }),
-        } as const);
-  };
   return {
     start: () => answer(options.create({ orgId: options.orgId }), "start making the App"),
     disconnect: async () => {
@@ -232,8 +286,6 @@ export const KIN_GITHUB_WATCH_COPY = {
   asYou: "As you",
 } as const;
 
-const plural = (count: number, one: string) => `${count} ${count === 1 ? one : `${one}s`}`;
-
 const ago = (at: number, now: number) => {
   const seconds = Math.max(0, Math.round((now - at) / 1000));
   if (seconds < 60) return "just now";
@@ -245,9 +297,9 @@ const ago = (at: number, now: number) => {
 /** "Watching: 4 repos · last checked 20 s ago · 3 things handled today". */
 export function kinGitHubWatchLine(watch: KinGitHubWatch, now: number): string {
   return [
-    `Watching: ${plural(watch.repos, "repo")}`,
+    `Watching: ${kinCount(watch.repos, "repo")}`,
     watch.checkedAt === null ? "not checked yet" : `last checked ${ago(watch.checkedAt, now)}`,
-    `${plural(watch.handledToday, "thing")} handled today`,
+    `${kinCount(watch.handledToday, "thing")} handled today`,
   ].join(" · ");
 }
 
@@ -394,7 +446,7 @@ export function createKinGitHubGuardActions(options: {
       summary: !all
         ? null
         : failed.length === 0
-          ? `Protected ${plural(changed, "repo")}.`
+          ? `Protected ${kinCount(changed, "repo")}.`
           : `Protected ${changed} of ${total}. Not protected:`,
       problems: failed.map(kinGitHubGuardRefusal),
     };
@@ -407,6 +459,9 @@ export const KIN_GITHUB_AGENTS_COPY = {
   install: "Install on more repos",
   usesTitle: "Done as you lately",
   accountsTitle: "Where the App is",
+  checkAgain: "Check again",
+  // oxlint-disable-next-line t3code/kin-failure-words -- not a failure: the guard's wait, in the owner's words
+  lookedRecently: "Kin looked a moment ago. Try again in a couple of minutes.",
   /** Under the rows while one of them sends the owner to GitHub. */
   accountsHint: "On GitHub, choose All repositories, then confirm. New repos are covered too.",
 } as const;
@@ -429,6 +484,8 @@ export interface KinGitHubAccountRow {
   readonly watched: number;
   /** The installation's page on GitHub, offered when GitHub refuses a change made from Kin. */
   readonly settingsUrl: string | null;
+  /** Kin looks at the App on GitHub only now and then: the owner may ask it to look again now. */
+  readonly checkAgain?: true;
 }
 
 /** Making Kin's GitHub App from Settings, and letting it go. */
@@ -448,7 +505,7 @@ export const KIN_GITHUB_APP_SETUP_COPY = {
     `Kin forgot ${name}; agents work on GitHub as you. To remove the App for good, delete it on GitHub.`,
   appOnGitHub: "The App on GitHub",
   setUpInKin: (name: string, by: string, at: string) => `${name}, set up in Kin by ${by} on ${at}.`,
-  setUpEarlier: (name: string) => `${name}, set up earlier on Kin's computer.`,
+  setUpEarlier: (name: string) => `${name}, set up earlier.`,
 } as const;
 
 /** Choosing the App's repos one by one on an account, from Kin. */
@@ -506,7 +563,7 @@ export function createKinGitHubAppRepoActions(options: {
   };
 }
 
-const reposWord = (count: number) => plural(count, "watched repo");
+const reposWord = (count: number) => kinCount(count, "watched repo");
 
 /** One row per account with watched repos; empty when Kin can't tell the accounts. */
 export function kinGitHubAccountRows(agents: KinGitHubAgents): ReadonlyArray<KinGitHubAccountRow> {
@@ -549,7 +606,7 @@ function accountState(
         detail: [
           rest === 0 || (row.elsewhere ?? 0) === 0
             ? ""
-            : `Works on ${plural(row.elsewhere ?? 0, "repo")} Kin doesn't watch.`,
+            : `Works on ${kinCount(row.elsewhere ?? 0, "repo")} Kin doesn't watch.`,
           rest === 0
             ? "Covers every watched repo here, but not repos made later."
             : `Agents work as you on ${row.covered === 0 ? "its" : "the other"} ${reposWord(rest)}.`,
@@ -573,7 +630,8 @@ function accountState(
         return {
           tone: "muted",
           label: "Not installed",
-          detail: `${app} is private to ${agents.appOwner ?? "the account that owns it"}, so GitHub can't install it on ${row.account} and agents work as you here. On GitHub, open the App's settings → Advanced, then choose Make public.`,
+          detail: `${app} is private to ${agents.appOwner ?? "the account that owns it"}, so GitHub can't install it on ${row.account} and agents work as you here. On GitHub, open the App's settings → Advanced, then choose Make public. Then come back and choose Check again.`,
+          checkAgain: true,
           action:
             agents.appSettingsUrl === undefined
               ? null
@@ -604,6 +662,107 @@ function accountState(
   }
 }
 
+/** Whether GitHub tells Kin at once, as one row under the App's accounts. */
+export interface KinGitHubInstantRow {
+  readonly title: string;
+  readonly tone: KinConnectionTone;
+  readonly label: string;
+  readonly detail: string;
+  /** The App's "Permissions & events" page on GitHub, while events are left to tick. */
+  readonly action: { readonly label: string; readonly url: string } | null;
+  /** Kin didn't make the App and may set its webhook once an owner allows it, on the web. */
+  readonly offer?: true;
+}
+
+export const KIN_GITHUB_INSTANT_COPY = {
+  allow: "Let Kin set it up",
+  onComputer: "Turn this on from Kin on your computer.",
+} as const;
+
+const quotedList = (names: ReadonlyArray<string>) => {
+  const quoted = names.map((name) => `"${name}"`);
+  return quoted.length <= 1
+    ? quoted.join("")
+    : `${quoted.slice(0, -1).join(", ")} and ${quoted.at(-1)}`;
+};
+
+/** Null without `instant` or `instantOffer`, which only an owner or co-owner is sent. */
+export function kinGitHubInstantRow(
+  agents: KinGitHubAgents,
+  now: number,
+): KinGitHubInstantRow | null {
+  const instant = agents.instant;
+  const title = "How fast Kin hears from GitHub";
+  if (instant === undefined)
+    return agents.instantOffer === true
+      ? {
+          title,
+          tone: "muted",
+          label: "Every minute",
+          detail:
+            "Kin didn't make this GitHub App, so it hasn't touched the App's webhook. Kin can set it, so GitHub tells Kin the moment something happens. If the App already sends its events somewhere else, Kin leaves it as it is.",
+          action: null,
+          offer: true,
+        }
+      : null;
+  const everyMinute = "Until then Kin checks GitHub every minute, so nothing is missed.";
+  switch (instant.state) {
+    case "on": {
+      const last = instant.last;
+      const at = last === null ? Number.NaN : Date.parse(last.at);
+      const heard = Number.isNaN(at)
+        ? ""
+        : last?.ok === true
+          ? ` Last heard ${ago(at, now)}.`
+          : ` GitHub's last message, ${ago(at, now)}, didn't get through.`;
+      return {
+        title,
+        tone: last?.ok === false ? "attention" : "ok",
+        label: "At once",
+        detail: `GitHub tells Kin the moment something happens on your repos.${heard}`,
+        action: null,
+      };
+    }
+    case "events":
+      return {
+        title,
+        tone: "attention",
+        label: "Events to tick",
+        detail: [
+          instant.missing.length === 0
+            ? "On GitHub, tick the events Kin needs on the App's Permissions & events page."
+            : `On GitHub, tick ${quotedList(instant.missing)} under Subscribe to events on the App's Permissions & events page.`,
+          "Also make sure Active is ticked under Webhook on the App's General page: GitHub doesn't let Kin check that.",
+          everyMinute,
+        ].join(" "),
+        action:
+          instant.settingsUrl === null
+            ? null
+            : { label: "Open Permissions & events", url: instant.settingsUrl },
+      };
+    case "address":
+      return {
+        title,
+        tone: "muted",
+        label: "Every minute",
+        detail:
+          "This Kin has no public address, so GitHub can't reach it. Kin checks GitHub every minute instead.",
+        action: null,
+      };
+    case "error":
+      return {
+        title,
+        tone: "attention",
+        label: "Every minute",
+        detail:
+          instant.elsewhere === true
+            ? "This App already sends its events to another address, so Kin left it as it is. Kin keeps checking GitHub every minute."
+            : "Kin couldn't set up GitHub to tell it at once. Kin keeps checking GitHub every minute instead.",
+        action: null,
+      };
+  }
+}
+
 /** Whether to show the hint under the rows: some row sends the owner to pick on GitHub. */
 export const kinGitHubAccountsHint = (rows: ReadonlyArray<KinGitHubAccountRow>) =>
   rows.some((row) => row.action?.picksRepos === true) ? KIN_GITHUB_AGENTS_COPY.accountsHint : null;
@@ -630,7 +789,7 @@ export interface KinGitHubAgentsView {
 const repoList = (repos: ReadonlyArray<string>, total: number) => {
   const named = repos.slice(0, 3);
   const more = total - named.length;
-  if (more > 0) return `${named.join(", ")} and ${plural(more, "more repo")}`;
+  if (more > 0) return `${named.join(", ")} and ${kinCount(more, "more repo")}`;
   return named.length <= 1
     ? named.join("")
     : `${named.slice(0, -1).join(", ")} and ${named.at(-1)}`;
@@ -672,7 +831,7 @@ export function kinGitHubAgentsView(
       headline: `Agents work on GitHub as ${you}.`,
       detail:
         agents.problem ??
-        "Kin has no GitHub App on this computer, so their commits, pull requests and reviews carry your name, signed with the agent's.",
+        "Kin has no GitHub App yet, so their commits, pull requests and reviews carry your name, signed with the agent's.",
       installUrl: null,
       ...extras,
       uses,
@@ -683,7 +842,7 @@ export function kinGitHubAgentsView(
       ? `Agents work on GitHub as ${app} wherever it is installed.`
       : agents.installed === 0
         ? (agents.elsewhere ?? 0) > 0
-          ? `${app} works only on ${plural(agents.elsewhere ?? 0, "repo")} Kin doesn't watch, so on watched repos agents work as ${you}.`
+          ? `${app} works only on ${kinCount(agents.elsewhere ?? 0, "repo")} Kin doesn't watch, so on watched repos agents work as ${you}.`
           : `${app} isn't installed on any watched repo yet, so agents work there as ${you}.`
         : missing === 0
           ? `Agents work on GitHub as ${app} on ${agents.watched === 1 ? "your watched repo" : `all ${agents.watched} watched repos`}.`

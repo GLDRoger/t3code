@@ -1,13 +1,16 @@
 import { useAtomValue } from "@effect/atom-react";
-import type { KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
-import { KIN_LIST_DEFAULT_FILTER, kinListSend } from "@t3tools/client-runtime/kin/kinLists";
+import { kinRateDay, type KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
+import { KIN_MONEY } from "@t3tools/client-runtime/kin/kinMoney";
+import { KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
 import {
   KIN_SUBSCRIPTIONS,
   kinFinancialYearStart,
+  kinSubscriptionActions,
   kinSubscriptionsList,
   kinSubscriptionsView,
   type KinFigureLine,
   type KinSubscriptionRow,
+  type KinSubscriptionUndo,
 } from "@t3tools/client-runtime/kin/kinSubscriptions";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { KinListDefinition, KinRecordKey } from "@t3tools/contracts";
@@ -218,8 +221,7 @@ export function KinSubscriptionsPage(
   const lists = useKinLists(props, { enabled: true });
   const rates = useKinRates(props);
   const def = kinSubscriptionsList(kinListsOf(lists));
-  if (lists.state._tag === "refused")
-    return <KinWorkNotice title="Not available" detail={KIN_SUBSCRIPTIONS.moneyKept} />;
+  if (lists.state._tag === "refused") return <KinWorkNotice {...KIN_MONEY.onlyOwner} />;
   if (lists.state._tag !== "ready")
     return lists.state._tag === "loading" ? (
       <div
@@ -231,7 +233,7 @@ export function KinSubscriptionsPage(
       </div>
     ) : (
       <KinLoadFailed
-        what={"Couldn't load subscriptions"}
+        what={KIN_SUBSCRIPTIONS.loadFailed}
         cause={lists.state._tag === "failed" ? lists.state.cause : null}
         onRetry={lists.refresh}
         className="mx-auto w-full max-w-3xl p-4"
@@ -264,46 +266,18 @@ function KinSubscriptionsBody(
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
-  const [undo, setUndo] = useState<{
-    key: string;
-    title: string;
-    repeat: KinSubscriptionRow["repeat"];
-  } | null>(null);
-  const cancellable = props.def.states.includes("dropped");
-  const setState = async (
-    row: KinSubscriptionRow,
-    cancel: boolean,
-    repeat: KinSubscriptionRow["repeat"] = null,
-  ) => {
-    setBusy(row.key);
-    setProblem(null);
-    const outcome = await kinListSend({
-      online: () => kinHostConnected(environmentId),
-      send: () =>
-        update({
-          environmentId,
-          input: {
-            orgId,
-            key: row.key as KinRecordKey,
-            rev: row.rev,
-            state: cancel
-              ? "dropped"
-              : props.def.defaultState === "dropped"
-                ? "open"
-                : props.def.defaultState,
-            // A cancelled one must not renew itself; undo puts its cycle back.
-            ...(cancel && row.repeat !== null ? { repeat: null } : {}),
-            ...(!cancel && repeat !== null ? { repeat } : {}),
-          },
-        }),
-    });
-    setBusy(null);
-    entries.refresh();
-    if (!outcome.ok) return setProblem(outcome.problem);
-    setUndo(cancel ? { key: row.key, title: row.title, repeat: row.repeat } : null);
-  };
+  const [undo, setUndo] = useState<KinSubscriptionUndo | null>(null);
+  const actions = kinSubscriptionActions({
+    environmentId,
+    orgId,
+    def: props.def,
+    online: () => kinHostConnected(environmentId),
+    update,
+    refresh: entries.refresh,
+    set: { busy: setBusy, problem: setProblem, undo: setUndo },
+  });
   const basis = (props.rates?.rates ?? []).map(
-    (rate) => `${rate.currency}: ${props.rates?.home} ${rate.rate} as of ${rate.asOf}`,
+    (rate) => `${rate.currency}: ${props.rates?.home} ${rate.rate} as of ${kinRateDay(rate.asOf)}`,
   );
   const rows = (list: ReadonlyArray<KinSubscriptionRow>, cancelled: boolean) =>
     list.map((row) => (
@@ -311,11 +285,11 @@ function KinSubscriptionsBody(
         key={row.key}
         row={row}
         busy={busy !== null}
-        canChange={canChange && cancellable}
+        canChange={canChange && actions.cancellable}
         onOpen={() => props.onOpenKey(row.key as KinRecordKey)}
         {...(cancelled
-          ? { onUndo: () => void setState(row, false) }
-          : { onCancel: () => void setState(row, true) })}
+          ? { onUndo: () => void actions.restore(row) }
+          : { onCancel: () => void actions.cancel(row) })}
       />
     ));
   return (
@@ -333,7 +307,7 @@ function KinSubscriptionsBody(
               <Button
                 size="xs"
                 variant="ghost"
-                onClick={() => agent.ask("About our subscriptions: ")}
+                onClick={() => agent.ask(KIN_SUBSCRIPTIONS.askAbout)}
               >
                 <MessageSquareIcon />
                 Ask {agent.name}
@@ -372,11 +346,7 @@ function KinSubscriptionsBody(
                 size="xs"
                 variant="outline"
                 disabled={busy !== null}
-                onClick={() => {
-                  const row = view.cancelled.find((one) => one.key === undo.key);
-                  if (row !== undefined) void setState(row, false, undo.repeat);
-                  setUndo(null);
-                }}
+                onClick={() => actions.undo(undo, view.cancelled)}
               >
                 Undo
               </Button>

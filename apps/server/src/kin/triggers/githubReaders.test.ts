@@ -251,7 +251,17 @@ describe("Kin GitHub readers", () => {
             defaultBranchRef: { name: "main", target: { statusCheckRollup: { state: "FAILURE" } } },
             pullRequests: {
               pageInfo: { hasNextPage: true },
-              nodes: [pull(4, "Owner"), pull(5, "someone"), pull(6, "owner", true)],
+              nodes: [
+                pull(4, "Owner"),
+                pull(5, "someone"),
+                pull(6, "owner", true),
+                {
+                  ...pull(7, "someone"),
+                  reviewRequests: {
+                    nodes: [{ requestedReviewer: { slug: "invented-reviewers" } }],
+                  },
+                },
+              ],
             },
           },
         },
@@ -265,12 +275,20 @@ describe("Kin GitHub readers", () => {
       assert.deepStrictEqual(yield* reader!.read(orgId, "owner"), {
         reviews: [
           { repo: REPO, number: 4, title: "PR 4", url: `https://github.com/${REPO}/pull/4` },
+          {
+            repo: REPO,
+            number: 7,
+            title: "PR 7",
+            url: `https://github.com/${REPO}/pull/7`,
+            teams: ["invented-reviewers"],
+          },
         ],
         ciRed: [{ repo: REPO, branch: "main" }],
         failedRepos: 0,
         truncatedRepos: 1,
         repos: 1,
       });
+      assert.deepStrictEqual((yield* reader!.read(orgId, "teammate")).reviews, []);
     }).pipe(Effect.provide(layer));
   });
 

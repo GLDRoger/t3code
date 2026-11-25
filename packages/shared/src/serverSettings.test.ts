@@ -976,6 +976,29 @@ describe("synchronized model preferences", () => {
         setProviderModelOrder: { provider, modelOrder: [] },
       }).providerModelPreferences?.[provider],
     ).toEqual({ hiddenModels: ["luna", "sol"], modelOrder: [] });
+    // A model hidden because the provider refused it keeps when; the same un-hide clears both.
+    const refused = applyServerSettingsPatch(web, {
+      setModelsHidden: [{ provider, model: "astra", hidden: true, refusedAt: 1_700 }],
+    });
+    expect(refused.providerModelPreferences?.[provider]).toEqual({
+      hiddenModels: ["luna", "sol", "astra"],
+      modelOrder: ["sol", "luna", "astra"],
+      refusedAt: { astra: 1_700 },
+    });
+    expect(
+      applyServerSettingsPatch(refused, {
+        setModelsHidden: [
+          { provider, model: "luna", hidden: false },
+          { provider, model: "astra", hidden: true, refusedAt: 1_800 },
+          { provider, model: "sol", hidden: true, refusedAt: 1_800 },
+        ],
+      }).providerModelPreferences?.[provider]?.refusedAt,
+    ).toEqual({ astra: 1_700 });
+    expect(
+      applyServerSettingsPatch(refused, {
+        setModelsHidden: [{ provider, model: "astra", hidden: false }],
+      }).providerModelPreferences?.[provider],
+    ).toEqual({ hiddenModels: ["luna", "sol"], modelOrder: ["sol", "luna", "astra"] });
   });
 
   it("migrates saved lists independently without claiming empty legacy lists", () => {

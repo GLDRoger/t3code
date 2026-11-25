@@ -21,6 +21,7 @@ import {
 import { getLocalStorageItem, removeLocalStorageItem } from "../hooks/useLocalStorage";
 import {
   isRichTextBoldShortcut,
+  isSidebarToggleShortcut,
   resolveShortcutCommand,
   shortcutLabelForCommand,
 } from "../keybindings";
@@ -40,8 +41,10 @@ import {
 } from "../panelAnimations";
 import { BackgroundThreadAnnouncer } from "./BackgroundThreadAnnouncer";
 import { HistorySwipeNavigation } from "./HistorySwipeNavigation";
+import { hasDesktopWindowChrome, kinWindowFullscreen } from "../kin/kinDesktopWindow";
 import { kinListShownAt } from "../kin/kinListSwitch";
 import { KinSidebar } from "../kin/KinSidebar";
+import { KIN_WEB_ONLY } from "../kin/kinWebOnly";
 import ThreadSidebar from "./Sidebar";
 import { SidebarBrandWidthProbe } from "./sidebar/SidebarChrome";
 import { isAppModalPage } from "./sidebar/mainAppLocation";
@@ -84,8 +87,8 @@ function readViewportWidth(): number {
 let windowFullscreenSnapshot: boolean | null = null;
 
 function macosDesktopBridge() {
-  if (!isElectron || !isMacPlatform(navigator.platform)) return null;
-  return window.desktopBridge ?? null;
+  if (!hasDesktopWindowChrome || !isMacPlatform(navigator.platform)) return null;
+  return window.desktopBridge ?? kinWindowFullscreen;
 }
 
 function subscribeToWindowFullscreen(onChange: () => void): () => void {
@@ -350,15 +353,17 @@ function SidebarControl({ showSidebar }: { readonly showSidebar: boolean }) {
         // the toggle stays available everywhere else.
         return;
       }
-      const command = resolveShortcutCommand(event, keybindings, {
-        context: {
-          terminalFocus: isTerminalFocused(),
-          previewFocus: isPreviewFocused(),
-          ...readRoutePanelsOpen(router),
-          usagePageOpen,
-        },
-      });
-      if (command !== "sidebar.toggle") return;
+      if (
+        !isSidebarToggleShortcut(event, keybindings, {
+          context: {
+            terminalFocus: isTerminalFocused(),
+            previewFocus: isPreviewFocused(),
+            ...readRoutePanelsOpen(router),
+            usagePageOpen,
+          },
+        })
+      )
+        return;
 
       event.preventDefault();
       event.stopPropagation();
@@ -426,6 +431,7 @@ export function AppSidebarLayout({
   /** A teammate's session: Kin's list is the only one, and no thread is ever loaded. */
   chatOnly?: boolean;
 }) {
+  const kinOnly = chatOnly || KIN_WEB_ONLY;
   const gt = useGT();
   const sidebarArea = workspaceAreaProps("sidebar", 0, gt("Threads"));
   const [sidebarRouteReveal] = useState<SidebarRouteReveal>(() => ({
@@ -438,7 +444,7 @@ export function AppSidebarLayout({
   const kinListOpen = kinListShownAt(pathname) === "kin";
   const panelAnimationsSuppressed = usePanelNavigationSuppression(pathname);
   const routePanelAnimationsActive = panelAnimationsActive && !panelAnimationsSuppressed;
-  const isMacosDesktop = isElectron && isMacPlatform(navigator.platform);
+  const isMacosDesktop = hasDesktopWindowChrome && isMacPlatform(navigator.platform);
   const [sidebarWidth, setSidebarWidth] = useState(readInitialThreadSidebarWidth);
   // A clamped drag may not change width, so viewport changes need a separate subscription.
   const viewportWidth = useSyncExternalStore(subscribeToViewportWidth, readViewportWidth);
@@ -499,18 +505,18 @@ export function AppSidebarLayout({
               style={windowControlsInsetStyle}
             >
               {/* Threads stay mounted under Kin's list, so switching back keeps their scroll and search. */}
-              {chatOnly ? null : (
+              {kinOnly ? null : (
                 <div className={kinListOpen ? "hidden" : "contents"}>
                   <ThreadSidebar routeReveal={sidebarRouteReveal} />
                 </div>
               )}
-              {kinListOpen || chatOnly ? <KinSidebar /> : null}
+              {kinListOpen || kinOnly ? <KinSidebar /> : null}
               <SidebarRail onDoubleClick={resetSidebarWidth} />
             </Sidebar>
           </>
         ) : null}
         {children}
-        {chatOnly ? null : <BackgroundThreadAnnouncer />}
+        {kinOnly ? null : <BackgroundThreadAnnouncer />}
         <SidebarControl showSidebar={showSidebar} />
         {isElectron ? <HistorySwipeNavigation /> : null}
       </SidebarProvider>

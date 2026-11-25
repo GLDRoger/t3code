@@ -37,7 +37,7 @@ import { readPullRequestListPreferences } from "../pullRequest/pullRequestListPr
 import { kinListAt, kinListShownAt } from "../../kin/kinListSwitch";
 import { openKinSettings } from "../../kin/kinSettingsAddress";
 import { isChatOnlySession } from "../../environments/primary";
-import { useKinListSwitch } from "../../kin/useKinListSwitch";
+import { useKinBrandProduct } from "../../kin/useKinListSwitch";
 import { readIssueListPreferences } from "../issue/issueListPreferences";
 import { IssueGlyph } from "../issue/issuePresentation";
 import { isSidebarUtilityPage, useNavigateToMainApp } from "./mainAppLocation";
@@ -173,27 +173,15 @@ function HistoryNavigationButton({
 
 function SidebarBrand({ onBackdrop }: { onBackdrop: boolean }) {
   const gt = useGT();
-  const kinSwitch = useKinListSwitch();
+  const kinProduct = useKinBrandProduct();
   const className = cn(
     "relative z-10 ml-[var(--workspace-titlebar-content-left)] h-7 w-fit min-w-0 shrink-0 items-center overflow-hidden rounded-md outline-hidden ring-ring focus-visible:ring-2 focus-visible:ring-inset",
     onBackdrop ? "text-white" : "text-foreground",
   );
-  // A teammate's session has no coding threads to switch to or go home to.
-  if (isChatOnlySession()) {
+  if (kinProduct !== null) {
     return (
       <span className={cn(className, "flex")}>
-        <SidebarBrandMark onBackdrop={onBackdrop} product="Kin" />
-      </span>
-    );
-  }
-  // With Kin on, the mark names the area you're in; the destinations above the list move between them.
-  if (kinSwitch !== null) {
-    return (
-      <span className={cn(className, "flex")}>
-        <SidebarBrandMark
-          onBackdrop={onBackdrop}
-          product={kinSwitch.current === "kin" ? "Kin" : "Code"}
-        />
+        <SidebarBrandMark onBackdrop={onBackdrop} product={kinProduct} />
       </span>
     );
   }

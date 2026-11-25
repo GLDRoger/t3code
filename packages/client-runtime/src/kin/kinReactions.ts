@@ -6,6 +6,9 @@ import {
   type KinReactionEmoji,
 } from "@t3tools/contracts";
 
+/** A reaction chip's spoken action, after its label. */
+export const KIN_REACTION_COPY = { remove: "Remove your reaction", add: "Add yours" } as const;
+
 /** Spoken names, so VoiceOver reads "thumbs up" rather than the glyph's codepoint. */
 export const KIN_REACTION_NAMES: Readonly<Record<KinReactionEmoji, string>> = {
   "👍": "thumbs up",
@@ -37,6 +40,9 @@ export const KIN_PICKER_REACTIONS = [
   "😢",
   "💯",
 ] as const satisfies ReadonlyArray<KinReactionEmoji>;
+
+/** The long-press sheet's first row; "More" opens the rest. */
+export const KIN_QUICK_REACTIONS = KIN_PICKER_REACTIONS.slice(0, 5);
 
 const reactionKey = (reaction: Pick<KinReaction, "messageId" | "memberId" | "emoji">) =>
   `${reaction.messageId}|${reaction.memberId}|${reaction.emoji}`;

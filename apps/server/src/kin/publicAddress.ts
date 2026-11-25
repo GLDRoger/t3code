@@ -1,4 +1,5 @@
 import { kinIsLocalOnlyHost } from "@t3tools/contracts";
+import { normalizeHostname } from "@t3tools/shared/hostClassification";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -40,6 +41,23 @@ export const publicAddress = Effect.fn("KinPublicAddress.publicAddress")(functio
   const { linked, linkRevoked, tunnelHostname } = state.value;
   if (!linked || linkRevoked || tunnelHostname === undefined) return undefined;
   return reachableOrigin(`https://${tunnelHostname}`);
+});
+
+/**
+ * Every host this installation is reached by from outside, as `publicAddress` reads them: the
+ * host of `KIN_PUBLIC_URL` as set, and T3 Connect's tunnel, linked or not. Kin reads no page there.
+ */
+export const ownHosts = Effect.fn("KinPublicAddress.ownHosts")(function* () {
+  const set = yield* configured.pipe(Effect.orElseSucceed(() => Option.none<string>()));
+  const hosts: Array<string> = [];
+  if (Option.isSome(set) && URL.canParse(set.value)) hosts.push(new URL(set.value).hostname);
+  const cloud = yield* Effect.serviceOption(CloudLink);
+  const state = Option.isNone(cloud)
+    ? Option.none()
+    : yield* cloud.value.linkState().pipe(Effect.option);
+  if (Option.isSome(state) && state.value.tunnelHostname !== undefined)
+    hosts.push(state.value.tunnelHostname);
+  return hosts.map(normalizeHostname).filter((host) => host !== "");
 });
 
 /** Run once at start: a `KIN_PUBLIC_URL` that will be ignored is said once, never fatal. */

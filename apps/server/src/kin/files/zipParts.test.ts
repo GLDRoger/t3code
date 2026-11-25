@@ -84,7 +84,7 @@ const TOO_LARGE = "unpacks to more than Kin reads in one file";
 
 /** Both of Kin's ZIP readers on one file: the office checker's reason and the statement reader's. */
 const bothRefuse = async (bytes: Uint8Array, reason: string) => {
-  assert.strictEqual(await typeMismatch("xlsx", bytes), `it's a XLSX that ${reason}`);
+  assert.strictEqual(await typeMismatch("xlsx", bytes), `it's an XLSX that ${reason}`);
   assert.deepStrictEqual(await readStatementFile(bytes), {
     _tag: "unreadable",
     reason: `Kin doesn't open this spreadsheet: it ${reason}.`,

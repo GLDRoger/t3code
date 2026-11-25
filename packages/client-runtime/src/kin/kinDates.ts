@@ -1,5 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
-import { kinWhenParts } from "@t3tools/contracts";
+import { kinDateRowLate, kinWhenParts } from "@t3tools/contracts";
 import type { KinDateRow, KinDatesInput, KinDatesResult, KinRecordKey } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 
@@ -133,7 +133,7 @@ function kinDateRowView(row: KinDateRow, names: KinWorkNames, now: Date): KinDat
   const at = new Date(row.at);
   const day = kinWorkAllDay(row.at, true, names) ?? row.at.slice(0, 10);
   const closed = kinWorkClosed(record.state);
-  const late = row.kind === "due" && record.late;
+  const late = kinDateRowLate(row);
   const time = row.allDay || Number.isNaN(at.getTime()) ? null : kinWorkClock(at, names.zone);
   const amount = record.amount === undefined ? null : kinMoneyText(record.amount);
   const stateLabel = kinSuggestionText(record, row.stateLabel);

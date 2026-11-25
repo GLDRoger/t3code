@@ -11,6 +11,7 @@ import {
   type KinOpenRead,
   kinOpenApply,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -28,6 +29,7 @@ import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import * as KinPulse from "../pulse/KinPulse.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as Open from "./people.ts";
 
@@ -164,7 +166,7 @@ it.effect("a card that starts waiting on her reaches her stream as only what mov
         { ...kinOpenApply(first.read, change), asOf: fresh.asOf },
         fresh,
       );
-      assert.deepStrictEqual(fresh.counts, { needsYou: 2, waiting: 1 });
+      assert.deepStrictEqual(fresh.counts, { needsYou: 2, waiting: 1, tasks: 1 });
       assert.isFalse(mentions(fresh, "W-1"));
     }),
   ).pipe(Effect.provide(layer)),
@@ -232,7 +234,7 @@ it.effect("an approval waiting on her leaves her stream when it lapses, nothing 
   ).pipe(Effect.provide(layer)),
 );
 
-it.effect("her day turns at her own midnight: tomorrow's task becomes today's", () =>
+it.effect("her day turns at her own midnight: a task coming into her week joins", () =>
   Effect.scoped(
     Effect.gen(function* () {
       yield* seed;
@@ -240,7 +242,8 @@ it.effect("her day turns at her own midnight: tomorrow's task becomes today's", 
       // 17:30 in Kolkata: her day turns at 18:30 UTC, hours before the company's.
       yield* sql`UPDATE kin_people SET time_zone = 'Asia/Kolkata' WHERE org_id = ${orgId}
         AND person_id = ${meera}`;
-      yield* task("W-3", meera, NOW + 8 * HOUR);
+      // A week and three hours off now; inside the week, as Tasks counts it, by her midnight.
+      yield* task("W-3", meera, NOW + 7 * DAY + 3 * HOUR);
       const events = yield* follow(as(meera));
       const first = yield* snapshotOf(events);
       assert.deepStrictEqual(
@@ -255,6 +258,39 @@ it.effect("her day turns at her own midnight: tomorrow's task becomes today's", 
         change.updated.map((row) => row.id),
         "task:W-3",
       );
+    }),
+  ).pipe(Effect.provide(layer)),
+);
+
+it.effect("an owner's list the pulse moves shows its tick's facts, never an older tick's", () =>
+  Effect.scoped(
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* KinPulse.tick(orgId, NOW - HOUR);
+      // Late since that tick: the list opened after it shows its fact.
+      yield* task("W-3", rhea, NOW - 2 * DAY);
+      const events = yield* follow(as(rhea));
+      let held = yield* snapshotOf(events);
+      assert.isTrue(held.rows.some((row) => row.id.startsWith("fact:task_late:W-3:")));
+      const next = Effect.gen(function* () {
+        held = kinOpenApply(held, yield* changeOf(events));
+        const fresh = yield* Open.read(as(rhea), { orgId });
+        assert.deepStrictEqual<unknown>({ ...held, asOf: fresh.asOf }, fresh);
+      });
+
+      // The pulse moves with no tick since: the older tick's facts would show W-3 as a bare task.
+      yield* sql`UPDATE kin_pulse_facts SET handled_by_kind = 'person', handled_by_id = ${rhea},
+        handled_at = ${NOW} WHERE org_id = ${orgId}`;
+      yield* (yield* RefreshHub.KinRefreshObserver).touch(orgId, "pulse");
+      yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+      yield* next;
+
+      yield* task("W-4", rhea, NOW - 2 * DAY);
+      yield* KinPulse.tick(orgId, yield* Clock.currentTimeMillis);
+      yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+      yield* next;
+      assert.isTrue(held.rows.some((row) => row.id.startsWith("fact:task_late:W-4:")));
     }),
   ).pipe(Effect.provide(layer)),
 );

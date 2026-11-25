@@ -12,6 +12,7 @@ import {
   ThreadId,
   type KinWorkAssignInput,
   type KinWorkSummary,
+  KIN_LEFT_FIELD,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
@@ -32,9 +33,12 @@ import {
   kinWorkHostClients,
   kinWorkAssignees,
   kinWorkAudience,
+  kinWorkNameOfText,
   kinWorkAudienceMove,
   kinWorkHostEdits,
   kinWorkClientStays,
+  kinWorkAnswerKept,
+  kinWorkAnswerOf,
   kinWorkItemState,
   kinWorkItemView,
   kinWorkListFooter,
@@ -106,6 +110,30 @@ const detail = (patch: Partial<KinRecordDetail> = {}): KinRecordDetail => ({
   links: [],
   changes: [],
   ...patch,
+});
+
+describe("kinWorkName", () => {
+  const names = {
+    people: new Map([
+      ["p-me", "Rhea"],
+      ["p-zoya", "Zoya"],
+    ]),
+    agents: new Map([["a-fin", "Finance"]]),
+    me: KinPersonId.make("p-me"),
+  };
+  it.each([
+    ["yourself", "person:p-me", "You"],
+    ["a teammate", "person:p-zoya", "Zoya"],
+    ["an agent, by name", "agent:a-fin", "Finance"],
+    ["an unlisted teammate", "person:p-gone", "A teammate"],
+    ["an unlisted agent, never by id", "agent:a-gone", "An agent"],
+  ])("names %s", (_, text, expected) => {
+    expect(kinWorkNameOfText(text, names)).toBe(expected);
+  });
+
+  it("leaves text that names nobody", () => {
+    expect(kinWorkNameOfText("next week", names)).toBeNull();
+  });
 });
 
 describe("kinWorkListQuery", () => {
@@ -296,6 +324,14 @@ describe("kinWorkStaleNotice", () => {
   ] as const)("on a held page that is behind, with the link %s, says %j", (link, notice) => {
     expect(kinWorkStaleNotice(link)).toEqual(notice);
   });
+
+  it("offline, says when the rows shown were last read, as a chat's offline line does", () => {
+    const readAt = Date.parse("2026-11-11T08:00:00.000Z");
+    expect(kinWorkStaleNotice("offline", readAt, (date) => date.toISOString())).toEqual({
+      message: "Offline. Last updated 2026-11-11T08:00:00.000Z.",
+      retry: false,
+    });
+  });
 });
 
 describe("kinWorkOnlyOwner", () => {
@@ -325,6 +361,50 @@ describe("kinWorkItemView", () => {
         owner: lead,
         reason: "You know the auth flow best",
         changes: [
+          {
+            seq: 8,
+            at,
+            by: priya,
+            via: "owner",
+            kind: "updated",
+            fields: [{ field: "alsoOn", from: `person:${me.personId}`, to: null }],
+          },
+          {
+            seq: 7,
+            at,
+            by: priya,
+            via: "owner",
+            kind: "updated",
+            fields: [
+              {
+                field: "alsoOn",
+                from: `agent:${lead.agentId}, person:${priya.personId}`,
+                to: `agent:${lead.agentId}`,
+              },
+            ],
+          },
+          {
+            seq: 6.5,
+            at,
+            by: priya,
+            via: "owner",
+            kind: "updated",
+            fields: [{ field: "alsoOn", from: null, to: `person:${priya.personId}` }],
+          },
+          {
+            seq: 6,
+            at,
+            by: priya,
+            via: "owner",
+            kind: "updated",
+            fields: [
+              {
+                field: "alsoOn",
+                from: null,
+                to: `agent:${lead.agentId}, person:${me.personId}`,
+              },
+            ],
+          },
           {
             seq: 5,
             at,
@@ -385,6 +465,17 @@ describe("kinWorkItemView", () => {
             ],
           },
           {
+            seq: 1.6,
+            at,
+            by: me,
+            via: "owner",
+            kind: "updated",
+            fields: [
+              { field: "owner", from: `agent:${lead.agentId}`, to: `person:${priya.personId}` },
+              { field: "alsoOn", from: `person:${priya.personId}`, to: null },
+            ],
+          },
+          {
             seq: 1.5,
             at,
             by: me,
@@ -403,12 +494,17 @@ describe("kinWorkItemView", () => {
     expect(view.given).toMatch(/^Priya handed this back · /);
     expect(view.reason).toBe("On the release");
     expect(view.history.map((line) => line.text)).toEqual([
+      "Priya took you off it",
+      "Priya left it",
+      "Priya joined it",
+      "Priya put Tech lead and you on it",
       "Priya handed it back to Tech lead: “On the release”",
       "Tech lead marked it waiting on Priya",
       "You gave it to Tech lead",
       "Tech lead updated it",
       "Tech lead told Priya",
       "Tech lead gave it to Priya, not told yet",
+      "You gave it to Priya",
       "You set it to repeat every month",
       "You added this",
     ]);
@@ -447,6 +543,17 @@ describe("kinWorkItemView", () => {
             kind: "updated",
             fields: [{ field: "owner", from: null, to: `person:${me.personId}` }],
           },
+          {
+            seq: 0.5,
+            at,
+            by: lead,
+            via: "lead",
+            kind: "updated",
+            fields: [
+              { field: "owner", from: `person:${priya.personId}`, to: `person:${me.personId}` },
+              { field: KIN_LEFT_FIELD, from: `person:${priya.personId}`, to: null },
+            ],
+          },
         ],
       }),
       names,
@@ -459,6 +566,7 @@ describe("kinWorkItemView", () => {
       "Priya came back; it's theirs again",
       "You removed Priya's access; it stays with them",
     ]);
+    expect(view.history.at(-1)?.text).toBe("Tech lead gave it to you (Priya left)");
   });
 
   it("says an invoice was issued, paid or voided, not marked waiting, finished or dropped", () => {
@@ -487,6 +595,75 @@ describe("kinWorkItemView", () => {
       "Tech lead marked it paid",
       "Tech lead issued it",
     ]);
+  });
+
+  it("lists a task's steps in order, and says all ticked without marking it done", () => {
+    const can = {
+      states: ["done" as const],
+      edit: true,
+      party: true,
+      project: true,
+      clearProject: true,
+      give: true,
+      takeBack: false,
+      mark: true,
+      unmark: true,
+      share: false,
+      confirm: false,
+    };
+    const checklist = [
+      { title: "Fields and states", done: true },
+      { title: "Wireframe", done: true },
+    ];
+    const changed = (seq: number, field: string, to: string) =>
+      ({
+        seq,
+        at: "2026-11-10T09:00:00.000Z",
+        by: lead,
+        via: "lead",
+        kind: "updated",
+        fields: [{ field, from: null, to }],
+      }) as const;
+    const view = kinWorkItemView(
+      detail({
+        can,
+        checklist,
+        steps: { done: 2, of: 2 },
+        urgent: true,
+        changes: [changed(2, "urgent", "true"), changed(1, "steps", "Wireframe (done)")],
+      }),
+      names,
+      now,
+      50,
+      place,
+    );
+    expect(view.urgent).toBe(true);
+    expect(view.history.map((line) => line.text)).toEqual([
+      "Tech lead marked it urgent",
+      "Tech lead changed its steps",
+    ]);
+    expect(view.steps).toMatchObject({
+      count: "2 of 2",
+      editable: true,
+      allDone: "Every step is ticked. Mark the task done when it's finished.",
+    });
+    expect(view.steps?.items.map((item) => [item.title, item.label])).toEqual([
+      ["Fields and states", "Untick: Fields and states"],
+      ["Wireframe", "Untick: Wireframe"],
+    ]);
+    expect(view.state).not.toBe("done");
+    // One that may not change it reads them and ticks none; with none, it has no Steps.
+    const reader = { ...can, edit: false };
+    expect(
+      kinWorkItemView(detail({ can: reader, checklist }), names, now, 50, place).steps,
+    ).toMatchObject({ editable: false });
+    expect(
+      kinWorkItemView(detail({ can: reader, checklist: [] }), names, now, 50, place).steps,
+    ).toBeNull();
+    // One who may change it can add the first step.
+    expect(
+      kinWorkItemView(detail({ can, checklist: [] }), names, now, 50, place).steps,
+    ).toMatchObject({ count: null, items: [], editable: true });
   });
 
   it("opens web links and source chats only, and keeps the latest word on a pull request", () => {
@@ -544,6 +721,15 @@ describe("kinWorkItemView", () => {
     );
   });
 
+  it("names the outside text a task was made or changed after, in a quiet line of its own", () => {
+    const remarks = (afterReading?: KinRecordDetail["afterReading"]) =>
+      kinWorkItemView(detail(afterReading ? { afterReading } : {}), names, now, 50, place).remarks;
+    const source = "mail from lena@brightwell.example: New bank details";
+    expect(remarks({ made: true, source })).toEqual([`Made after reading: ${source}`]);
+    expect(remarks({ made: false, source })).toEqual([`Changed after reading: ${source}`]);
+    expect(remarks()).toEqual([]);
+  });
+
   it("puts who sees a task as one answer, and a pick changes only what it must", () => {
     const project = { key: "P-1", title: "Invented app" };
     const at = (sensitive: boolean, shared: boolean) =>
@@ -558,7 +744,7 @@ describe("kinWorkItemView", () => {
     const plain = kinWorkAudience({ ...at(false, false), project }, owner);
     expect(plain.current).toBe("people");
     expect(plain.answer).toBe(
-      "You, co-owners, whoever has it or gave it, and the people on Invented app",
+      "You, co-owners, whoever has it, gave it or is with it, and the people on Invented app",
     );
     expect(plain.choices.map((one) => one.id)).toEqual(["people", "team", "me"]);
     // Marked private wins over an old share, so it reads as only you.
@@ -586,20 +772,20 @@ describe("kinWorkItemView", () => {
     const lead = { mark: true, unmark: false, share: false };
     const hers = kinWorkAudience({ ...at(false, false), project }, lead, priyas);
     expect(hers.answer).toBe(
-      "Invented Owner, co-owners, whoever has it or gave it, and the people on Invented app",
+      "Invented Owner, co-owners, whoever has it, gave it or is with it, and the people on Invented app",
     );
     // She may make it private; un-marking and sharing stay the owner's.
     expect(hers.choices.map((one) => one.id)).toEqual(["people", "me"]);
     // Picking it reads "Only me" to her as to the owner.
     expect(hers.choices.find((one) => one.id === "me")?.label).toBe("Only me");
     const marked = kinWorkAudience(at(true, false), lead, priyas);
-    expect(marked.answer).toBe("Only Invented Owner, co-owners and whoever has it");
+    expect(marked.answer).toBe("Only Invented Owner, co-owners and whoever has it or is with it");
     expect(marked.choices).toEqual([]);
     // Her own mark is hers to take off, and reads as hers; to anyone else, as kept to her.
     const own = { ...lead, unmark: true };
     const herMark = { ...at(true, false), markedBy: priya.personId };
     expect(kinWorkAudience(herMark, own, priyas)).toMatchObject({
-      answer: "Only you, co-owners and whoever has it",
+      answer: "Only you, co-owners and whoever has it or is with it",
       choices: [
         { id: "people", label: "People on it" },
         { id: "me", label: "Only me" },
@@ -611,7 +797,7 @@ describe("kinWorkItemView", () => {
       )?.label,
     ).toBe("Only Priya");
     expect(kinWorkAudience(at(true, false), owner, { ...names, owner: me.personId }).answer).toBe(
-      "Only you, co-owners and whoever has it",
+      "Only you, co-owners and whoever has it or is with it",
     );
   });
 });
@@ -623,6 +809,10 @@ describe("a task on an older host", () => {
     const view = kinWorkItemView(suggested, names, now, 50, place);
     expect(view).toMatchObject({ editable: false, suggestion: "Tech lead suggested this task." });
     expect(view.remarks.join(" ")).toContain("Tell it in chat");
+  });
+
+  it("shows no Steps to add where the host doesn't say it keeps them", () => {
+    expect(kinWorkItemView({ ...suggested, seq: 9 }, names, now, 50, place).steps).toBeNull();
   });
 
   it("offers them on a host that sends a task's own change number", () => {
@@ -752,6 +942,18 @@ describe("kinWorkItemState", () => {
     // A read from before the change still gives way to its answer.
     expect(shown(detail({ rev: 3, seq: 6 }), answer)).toBe(answer);
     expect(shown(detail({ rev: 4, seq: 6 }), answer)).toBe(answer);
+  });
+});
+
+describe("kinWorkAnswerOf", () => {
+  it("keeps one person's answer from the next person signed in on the same host", () => {
+    const rheas = kinWorkAnswerKept({}, detail({ rev: 4 }), "rhea");
+    expect(kinWorkAnswerOf(rheas, detail().key, "rhea")?.rev).toBe(4);
+    expect(kinWorkAnswerOf(rheas, detail().key, "arjun")).toBeUndefined();
+    // Arjun's own answer replaces hers at the same rev; an older one of hers changes nothing.
+    const arjuns = kinWorkAnswerKept(rheas, detail({ rev: 4 }), "arjun");
+    expect(kinWorkAnswerOf(arjuns, detail().key, "arjun")?.rev).toBe(4);
+    expect(kinWorkAnswerKept(rheas, detail({ rev: 3 }), "rhea")).toBe(rheas);
   });
 });
 
@@ -1077,6 +1279,39 @@ describe("kinWorkDraftCheck", () => {
       ok: true,
       input: { title: "Sign" },
     });
+    // From a deal's page: the deal it sits on, and where it was promised, said only of a promise.
+    const deal = { key: "DL-4" as const, title: "Invented second clinic" };
+    expect(
+      kinWorkDraftCheck({
+        ...KIN_WORK_NO_DRAFT,
+        title: "Plan",
+        party,
+        side: "ours",
+        deal,
+        from: " At the site visit ",
+      }),
+    ).toEqual({
+      ok: true,
+      input: {
+        title: "Plan",
+        party: "C-1",
+        category: "obligation",
+        deal: "DL-4",
+        from: "At the site visit",
+      },
+    });
+    expect(
+      kinWorkDraftCheck({ ...KIN_WORK_NO_DRAFT, title: "Plan", party, from: "Ignored" }),
+    ).toEqual({ ok: true, input: { title: "Plan", party: "C-1" } });
+    expect(
+      kinWorkDraftCheck({
+        ...KIN_WORK_NO_DRAFT,
+        title: "Plan",
+        party,
+        side: "ours",
+        from: "x".repeat(281),
+      }).ok,
+    ).toBe(false);
   });
 });
 

@@ -1,9 +1,20 @@
-import { canonicalTimeZone, type EnvironmentId, type KinOrgId } from "@t3tools/contracts";
+import {
+  canonicalTimeZone,
+  KinChatError,
+  type EnvironmentId,
+  type KinOrgId,
+} from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as Schema from "effect/Schema";
 import type { Atom, AtomRegistry } from "effect/reactivity";
 
+import { runKinCommand } from "./kinRunCommand.ts";
 import type * as EnvironmentRegistry from "../connection/registry.ts";
+import type { AtomCommandResult } from "../state/runtime.ts";
 import { createKinRpcCommand } from "./kinAccess.ts";
 import { kinNowMs } from "./kinNow.ts";
+
+export const KIN_TIME_ZONE_PLACEHOLDER = "City or region";
 
 /** Whether two zone names are one zone: `Asia/Calcutta` is `Asia/Kolkata`. */
 export const kinSameTimeZone = (a: string, b: string) => {
@@ -35,12 +46,18 @@ const CURRENT_NAMES: Readonly<Record<string, string>> = {
 export const kinZoneName = (zone: string) => CURRENT_NAMES[zone] ?? zone;
 
 const OFFSET_ONLY = /^(GMT|UTC)([+\-\u2212]|$)/;
+// POSIX signs: `Etc/GMT-13` is thirteen hours ahead of UTC.
+const FIXED_OFFSET = /^Etc\/GMT([+-])(\d{1,2})$/;
 
 /**
  * A zone as a person names it, in the platform's words for this device's language: "India
  * Standard Time", "Pacific Time". Never the id; "Kolkata" where the platform has no name for it.
  */
+const UNIVERSAL = /^(?:Etc\/)?(?:UTC|UCT|GMT|GMT0|Universal|Zulu|Greenwich)$/;
+
 export function kinZoneLabel(zone: string, locale?: string, at = kinNowMs()): string {
+  // People say "UTC"; the platform's long name ("Coordinated Universal Time") reads as jargon.
+  if (UNIVERSAL.test(zone)) return "UTC";
   for (const style of ["longGeneric", "long"] as const) {
     try {
       const name = new Intl.DateTimeFormat(locale, { timeZone: zone, timeZoneName: style })
@@ -51,8 +68,19 @@ export function kinZoneLabel(zone: string, locale?: string, at = kinNowMs()): st
       // An engine without this style, or a zone it doesn't know: try the next.
     }
   }
+  const fixed = FIXED_OFFSET.exec(zone);
+  if (fixed !== null) return `GMT${fixed[1] === "-" ? "+" : "-"}${Number(fixed[2])}`;
   return (kinZoneName(zone).split("/").at(-1) ?? zone).replaceAll("_", " ");
 }
+
+// The host's answer ends the sync for this run; a dropped link, a session not loaded yet or a
+// host still starting up is tried again at the next directory read.
+const isKinChatError = Schema.is(KinChatError);
+const answered = (result: AtomCommandResult<unknown, unknown>) => {
+  if (result._tag === "Success") return true;
+  const error = Cause.squash(result.cause);
+  return isKinChatError(error) && error.reason !== "unavailable";
+};
 
 /**
  * The owner's own device keeps the company's zone: once per app run and org, when none was set
@@ -73,31 +101,33 @@ export function createKinOwnerTimeZoneSync<R, ER>(
     label: "kin:time-zone:set",
     tag: "kin.triggers.setTimeZone",
   });
-  const attempted = new Set<string>();
+  // Running or settled. The calls authorize themselves, waiting for the session to load.
+  const started = new Set<string>();
   return (
     registry: AtomRegistry.AtomRegistry,
     environmentId: EnvironmentId,
     orgIds: ReadonlyArray<KinOrgId>,
   ) => {
-    if (!registry.get(set.permissionAtom(environmentId))) return;
     const device = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    if (!device) return;
-    for (const orgId of orgIds) {
+    if (!device) return Promise.resolve();
+    const sync = async (orgId: KinOrgId) => {
       const key = `${environmentId}\u0000${orgId}`;
-      if (attempted.has(key)) continue;
-      attempted.add(key);
+      if (started.has(key)) return;
+      started.add(key);
+      const settled = (result: AtomCommandResult<unknown, unknown>) => {
+        if (!answered(result)) started.delete(key);
+      };
       const target = { environmentId, input: { orgId } };
-      void accessRead
-        .run(registry, target)
-        .then((me) =>
-          me._tag === "Success" && me.value.access === "owner" ? read.run(registry, target) : null,
-        )
-        .then((stored) => {
-          if (stored?._tag !== "Success") return;
-          if (stored.value.fromHost !== true && kinSameTimeZone(stored.value.timeZone, device))
-            return;
-          return set.run(registry, { environmentId, input: { orgId, timeZone: device } });
-        });
-    }
+      const me = await runKinCommand(registry, accessRead, target);
+      if (me._tag !== "Success") return settled(me);
+      if (me.value.access !== "owner") return;
+      const stored = await runKinCommand(registry, read, target);
+      if (stored._tag !== "Success") return settled(stored);
+      if (stored.value.fromHost !== true && kinSameTimeZone(stored.value.timeZone, device)) return;
+      settled(
+        await runKinCommand(registry, set, { environmentId, input: { orgId, timeZone: device } }),
+      );
+    };
+    return Promise.all(orgIds.map(sync)).then(() => undefined);
   };
 }

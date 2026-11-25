@@ -6,9 +6,10 @@ import {
   kinPageGist,
   kinIsBrief,
   kinPageSections,
-  kinPageShape,
+  kinMessageShape,
   kinPlainBody,
   KIN_FIGURE_SCHEME,
+  type KinChatPreview,
   type KinMessage,
   type KinMessageLink,
   type KinPageSection,
@@ -29,9 +30,7 @@ export type KinMessageLayout = "bubble" | "page";
 type Shaped = Pick<KinMessage, "author" | "body" | "form" | "status" | "embeds">;
 
 export function kinMessageLayout(message: Shaped): KinMessageLayout {
-  if (message.status === "deleted" || message.author._tag === "human") return "bubble";
-  if ((message.embeds?.length ?? 0) > 0 || kinIsBrief(message.body, message.form)) return "page";
-  return kinPageShape(message.body);
+  return kinMessageShape(message);
 }
 
 /** A brief's greeting and date over its page; null for every other page. */
@@ -91,9 +90,28 @@ const MARKDOWN_LINK = /!?\[[^\]\n]*\]\([^)\n]*\)/g;
 const BARE_URL = /<?https?:\/\/[^\s<>()]+>?/g;
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
+const NAME_MAX = 40;
+const MARKDOWN_MARK = /[\\`*_~<>[\]]/g;
+
+/** What a link reads as: an entry's name in place of its key, cut to a readable length. */
+const linkLabel = (link: KinMessageLink, written: string) => {
+  const name = link.name?.replace(/\s+/g, " ").trim();
+  if (name === undefined || name === "" || link.to._tag !== "record" || written !== link.to.key)
+    return written;
+  const cut = name.length > NAME_MAX ? `${name.slice(0, NAME_MAX - 1).trimEnd()}…` : name;
+  return cut.replace(MARKDOWN_MARK, (mark) => `\\${mark}`);
+};
+
+/** A link's hover: the key a name stands for, with the entry's line; nothing for a plain name. */
+export const kinLinkTitle = (link: KinMessageLink) =>
+  link.name === undefined || link.to._tag !== "record"
+    ? (link.note ?? undefined)
+    : [link.text, link.note].filter((part) => part !== null).join(" · ");
+
 /**
  * The body with each link's text, the first place it is written outside code and existing links,
- * made an in-app link. Longer texts go first, so "Orbit Dental retainer" isn't cut by "Orbit Dental".
+ * made an in-app link, an entry's key written as its name. Longer texts go first, so "Orbit Dental
+ * retainer" isn't cut by "Orbit Dental".
  */
 export function kinLinkedMarkdown(
   body: string,
@@ -126,7 +144,8 @@ export function kinLinkedMarkdown(
       href === "plain"
         ? `${LINK_KIND}:${one.index}`
         : formatComposerContextHref(LINK_KIND, ComposerContextId.make(String(one.index)));
-    out += `${body.slice(from, one.at)}[${body.slice(one.at, one.end)}](${target})`;
+    const written = body.slice(one.at, one.end);
+    out += `${body.slice(from, one.at)}[${linkLabel(links[one.index]!, written)}](${target})`;
     from = one.end;
   }
   return out + body.slice(from);
@@ -248,7 +267,14 @@ export function kinPageCut(markdown: string, brief = false): KinPageCut | null {
  * The line a chat list shows for an agent's message, still markdown: a page's first thing under
  * "Needs you" (else its first line), after the greeting for a brief.
  */
-export function kinMessageGistMarkdown(message: Shaped & Pick<KinMessage, "createdAt">): string {
+export function kinMessageGistMarkdown(
+  message: Shaped & Pick<KinMessage, "createdAt">,
+  preview?: KinChatPreview,
+): string {
+  if (preview !== undefined)
+    return preview.brief
+      ? `${kinBriefHead(message.createdAt, null).greeting} · ${preview.gist}`
+      : preview.gist;
   if (kinMessageLayout(message) === "bubble") return message.body;
   const gist = kinPageGist(message.body);
   const head = kinPageHead(message, null);
