@@ -433,7 +433,7 @@ inputs:
   lines:
     type: table
     required: false
-    description: "What was offered, one row each: quantity times rate is the value before tax; sac is the owner's SAC or HSN code, else the company's. taxRate is the line's tax percent only when the owner gave that line its own rate (0 for no tax), else leave it out. Leave out to bill the entry's amount as one line."
+    description: "What is offered, one row each: quantity times rate is the value before tax; sac is the owner's SAC or HSN code, else the company's. taxRate is the line's tax percent only when the owner gave that line its own rate (0 for no tax), else leave it out. Leave out to quote the entry's amount as one line."
     columns: { description: text, sac: code, quantity: decimal, unit: text, rate: money, taxRate: decimal }
   gstRate: { type: decimal, required: false, description: "GST percent; 18 unless the owner said otherwise" }
   exportUnderLut: { type: boolean, required: false, description: "For an export: false only when the owner said IGST will be paid on it" }
