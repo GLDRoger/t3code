@@ -2721,12 +2721,12 @@ it.effect.each([
   {
     name: "new mail it carried",
     mail: true,
-    said: "Afternoon check-in didn't run at 3:12 pm (Wed 25 Nov). Nothing was lost, but the next check-in won't bring up the new items from connections it would have listed.",
+    said: "Afternoon check-in didn't run at 3:12 pm (Wed 25 Nov). The next check-in covers it, except the new items from connections it would have listed.",
   },
   {
     name: "a fact three check-ins missed",
     missedThrice: true,
-    said: "Afternoon check-in didn't run at 3:12 pm (Wed 25 Nov). Nothing was lost, but the next check-in won't bring up 1 open item it has now missed three times.",
+    said: "Afternoon check-in didn't run at 3:12 pm (Wed 25 Nov). The next check-in covers it, except 1 open item it has now missed three times.",
   },
   // The owner's standing notice for the cause already says it: no second line.
   { name: "a standing notice", trouble: true, said: undefined },

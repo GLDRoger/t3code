@@ -1622,7 +1622,7 @@ const make = Effect.gen(function* () {
       body: `${row.title} didn't run at ${at}. ${
         left.length === 0
           ? "Nothing was lost: the next check-in covers it."
-          : `Nothing was lost, but the next check-in won't bring up ${left.join(" or ")}.`
+          : `The next check-in covers it, except ${left.join(" and ")}.`
       }`,
       when: { at: DateTime.formatIso(DateTime.makeUnsafe(row.startedAt)), zone, text: at },
     };
