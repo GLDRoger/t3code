@@ -1116,6 +1116,33 @@ describe("KinPulse", () => {
       }).pipe(Effect.provide(chatLayer)),
   );
 
+  it.effect("our own late follow-up is not drafted again within 3 days of its mail going", () =>
+    Effect.gen(function* () {
+      yield* salesDay;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+          url_host, auth, reach, state, account_label, created_at, updated_at, person_id)
+        VALUES (${orgId}, 'conn-mate', 'google', 'meera@invented.example', 'builtin',
+          'gmail.googleapis.com', 'oauth', 'closed', 'active', 'meera@invented.example', 0, 0,
+          ${mate})`;
+      const key = `task_late:W-30:due=${B + 2 * DAY}`;
+      const drafted = Effect.fn("test.drafted")(function* (at: number) {
+        yield* TestClock.setTime(at);
+        return (yield* KinPulse.tick(orgId, at)).drafted.map((one) => one.key);
+      });
+      assert.deepStrictEqual(yield* drafted(NOON_LA), [key]);
+      // She confirmed its mail an hour later: the card is gone, the mail went.
+      yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
+          pin_digest, payload_json, agent_id, wakeup_id, chat_id, entry_record_id, proposed_at,
+          state, done_at)
+        VALUES (${orgId}, 'ask-sent', 'conn-mate', 'mail_send', 'p', '{}', ${growth}, 'w', 'c',
+          'r-W-30', 0, 'sent', ${NOON_LA + HOUR})`;
+      assert.deepStrictEqual(yield* drafted(NOON_LA + DAY), []);
+      assert.deepStrictEqual(yield* drafted(NOON_LA + 2 * DAY), []);
+      assert.deepStrictEqual(yield* drafted(NOON_LA + 3 * DAY + HOUR), [key]);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
   it.effect("a wake checks again as it starts: holder, quiet hours, cards, a private client", () =>
     Effect.gen(function* () {
       yield* salesDay;

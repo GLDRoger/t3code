@@ -83,9 +83,9 @@ const draftersFor = Effect.fnUntraced(function* (
 /**
  * Their zone and how to draft `recordId`, an open task of ours `personId` holds and sees, due today
  * or late; with a client, Clients on for both and no mail card open on it (Deals on for a deal's
- * step); without one, no doc linked to it since its due day began. Undefined when not. One a
- * client owes us (`theirs`) needs its client, and is chased only once in each late band its holder
- * is told in (`lateBandDays`) and not within `SENT_WITHIN_MS` of a mail sent for it.
+ * step) and no mail sent for it within `SENT_WITHIN_MS`; without one, no doc linked to it since
+ * its due day began. Undefined when not. One a client owes us (`theirs`) needs its client, and is
+ * chased only once in each late band its holder is told in (`lateBandDays`).
  */
 const stillDue = Effect.fnUntraced(function* (
   orgId: KinOrgId,
@@ -141,7 +141,6 @@ const stillDue = Effect.fnUntraced(function* (
   if (row.dueAt > at && dayIn(row.dueAt, zone) !== dayIn(at, zone)) return undefined;
   if (row.theirs === 1) {
     if (row.client === 0 || row.dueAt > at) return undefined;
-    if (row.sentAt !== null && row.sentAt > at - SENT_WITHIN_MS) return undefined;
     const band = row.dueAt + lateBandDays((at - row.dueAt) / HOUR_MS) * DAY_MS;
     if (yield* chasedSince(orgId, personId, recordId, band, dayIn(at, zone))) return undefined;
   }
@@ -155,6 +154,7 @@ const stillDue = Effect.fnUntraced(function* (
     return { zone, path: "doc" as const };
   }
   if (row.seesClients !== 1 || row.carded === 1) return undefined;
+  if (row.sentAt !== null && row.sentAt > at - SENT_WITHIN_MS) return undefined;
   const on = (section: "clients" | "deals") =>
     KinShell.sectionOnFor(orgId, section).pipe(Effect.orElseSucceed(() => false));
   if (!(yield* on("clients")) || (row.deal === 1 && !(yield* on("deals")))) return undefined;
