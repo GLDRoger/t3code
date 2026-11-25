@@ -3755,7 +3755,10 @@ it.effect("a tap records a bank credit as the invoice's payment the matcher rank
           applyPlan,
           { records, chat: kin.chats },
         ).pipe(Effect.flip),
-        { reason: "not_allowed", message: "Only the owner or a co-owner applies credit." },
+        {
+          reason: "not_allowed",
+          message: "Only the owner or a co-owner can apply a client's credit.",
+        },
       );
       const unappliedInvoice = (yield* records.get(orgId, next.key))!;
       assert.strictEqual(unappliedInvoice.paid, 0);

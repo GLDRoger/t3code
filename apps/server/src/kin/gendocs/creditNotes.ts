@@ -64,17 +64,15 @@ const invoiceFor = Effect.fn("KinCreditNotes.invoiceFor")(function* (
     isSuggestion(invoice) ||
     fieldText(parseFields(invoice.fieldsJson), "number") === null
   )
-    return yield* invalid("A credit note needs an issued invoice that still owes money.");
+    return yield* invalid("A credit note needs an invoice that is issued and still owed.");
   if (amount.currency !== invoice.currency)
-    return yield* invalid("A credit note must be in the invoice's currency.");
+    return yield* invalid("Enter the amount in the invoice's currency.");
   if (
     amount.minor <= 0 ||
     invoice.amountMinor === null ||
     amount.minor > invoice.amountMinor - invoice.paid
   )
-    return yield* invalid(
-      "The credit note must take off more than zero and no more than the invoice owes.",
-    );
+    return yield* invalid("Enter an amount above zero and no more than the invoice still owes.");
   return invoice;
 });
 
@@ -100,10 +98,10 @@ const draft = Effect.fn("KinCreditNotes.draft")(function* (
       )
         return yield* new KinChatError({
           reason: "not_allowed",
-          message: "Only the owner level can draft a credit note.",
+          message: "Only the owner or a co-owner can make a credit note.",
         });
       const reason = input.reason.trim();
-      if (reason === "") return yield* invalid("A credit note needs a reason.");
+      if (reason === "") return yield* invalid("Add the reason for this credit note.");
       const originKey = `credit-note-draft:${writer.actor._tag}:${writer.actor._tag === "person" ? writer.actor.personId : writer.actor.agentId}:${input.originKey}`;
       const [existing] = yield* sql<{ key: string }>`SELECT key FROM kin_records
       WHERE org_id = ${orgId} AND register_id = ${LIST} AND origin_key = ${originKey}`;
@@ -177,15 +175,20 @@ const issue = Effect.fn("KinCreditNotes.issue")(function* (
         return yield* Numbers.issue(orgId, by, note.key);
       const { invoice: invoiceKey, reason } = parseFields(note.fieldsJson);
       if (typeof reason !== "string" || reason.trim() === "")
-        return yield* invalid("A credit note needs a reason.");
+        return yield* invalid("Add the reason for this credit note.");
       if (note.amountMinor === null || note.currency === null || typeof invoiceKey !== "string")
-        return yield* invalid("A credit note needs an invoice and an amount.");
+        return yield* invalid(
+          "This credit note has no invoice or amount. Void it and make a new one from the invoice.",
+        );
       const amount = { minor: note.amountMinor, currency: note.currency };
       const invoice = yield* invoiceFor(orgId, invoiceKey, amount);
       if (invoice.partyId !== note.partyId)
-        return yield* invalid("The invoice's client changed. Draft a new credit note.");
+        return yield* invalid(
+          "The invoice now has a different client. Void this credit note and make a new one.",
+        );
       const issued = yield* Numbers.issue(orgId, by, note.key);
-      if (issued.number === null) return yield* invalid("Kin couldn't issue the credit note.");
+      if (issued.number === null)
+        return yield* invalid("Kin couldn't issue the credit note. Try again.");
       yield* records.pay(orgId, by, invoice.key, {
         amount,
         paidOn: dayIn(yield* Clock.currentTimeMillis, yield* ownerZone(orgId)),

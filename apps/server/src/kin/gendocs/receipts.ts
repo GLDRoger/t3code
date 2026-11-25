@@ -240,7 +240,7 @@ const forPayment = Effect.fn("KinReceipts.forPayment")(function* (
       `That is the advance ${payment.invoiceKey} received; it is its own receipt. Nothing was made.`,
     );
   if (payment.originKey.startsWith("credit_note:"))
-    return yield* invalid("A credit note is not money received, so it gets no receipt.");
+    return yield* invalid("A credit note isn't money received, so it has no receipt.");
   if (payment.withheld === 1)
     return yield* invalid(
       "That line is tax the client withheld, not money received, so it gets no receipt. Make the receipt for the payment that came in. Nothing was made.",
@@ -561,7 +561,7 @@ export const unsetAgainst = Effect.fn("KinReceipts.unsetAgainst")(function* (
       if (writer.actor._tag !== "person" || !(yield* ownerLevel(orgId, writer.actor.personId)))
         return yield* new KinChatError({
           reason: "not_allowed",
-          message: "Only the owner or a co-owner un-applies credit.",
+          message: "Only the owner or a co-owner can un-apply a client's credit.",
         });
       yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.payment);
       const receipt = yield* records.get(orgId, receiptKey);
@@ -586,7 +586,7 @@ export const unsetAgainst = Effect.fn("KinReceipts.unsetAgainst")(function* (
       )
         return { key: receipt.key };
       if (receipt.state === "dropped" || payment.voidedAt !== null)
-        return yield* invalid(`${receipt.key} is void; it can't be un-applied.`);
+        return yield* invalid(`${receipt.key} is void, so there is no credit to un-apply.`);
       yield* records.voidPayment(
         orgId,
         writer,

@@ -569,7 +569,8 @@ export type PaymentInput = {
 };
 export const CREDIT_NOTE_TAP =
   "Kin issues and voids a credit note only on the owner's own tap on its page; offer the owner that there.";
-export const CREDIT_NOTE_VOID = "A void credit note stays void; make a new one.";
+export const CREDIT_NOTE_VOID =
+  "A void credit note can't be brought back. Make a new one from the invoice.";
 
 const CLOSED = ["done", "dropped"] as const;
 /** Quotes and invoices: real only on an owner-level person's word (`startsKept`). */
@@ -2067,7 +2068,9 @@ const make = Effect.gen(function* () {
     options: InsertOptions,
   ) {
     if (input.list === "credit_notes" && writer.creditNote !== true)
-      return yield* invalid("Draft credit notes from their invoice.");
+      return yield* invalid(
+        "A credit note starts from its invoice: open the invoice and choose Credit note.",
+      );
     const recordId = recordIdFor(orgId, input.originKey);
     const existing = yield* byId(orgId, recordId).pipe(provideSql);
     if (writer.teammate === true && writer.actor._tag === "person")
@@ -2438,7 +2441,7 @@ const make = Effect.gen(function* () {
               patch.confirmed === false)
           )
             return yield* invalid(
-              "Undo the bank credit to change or take back the money it left as an advance.",
+              "This credit is what a bank credit left after paying its invoices. Undo that bank credit to change it. Nothing changed.",
             );
           if (RECEIPT_TIES.some((field) => field in (patch.fields ?? {})))
             return yield* invalid(RECEIPT_TIES_ARE_KINS);
@@ -2758,14 +2761,16 @@ const make = Effect.gen(function* () {
               patch.confirmed === false)
           )
             return yield* invalid(
-              "An issued credit note keeps its invoice, amount and reason. Void it and draft a new one.",
+              "An issued credit note keeps its invoice, amount and reason. To change them, void it and make a new one.",
             );
           if (
             patch.fields?.invoice !== undefined ||
             patch.fields?.number !== undefined ||
             (patch.partyId !== undefined && patch.partyId !== row.partyId)
           )
-            return yield* invalid("A credit note keeps the invoice it was drafted from.");
+            return yield* invalid(
+              "A credit note stays with the invoice it was made from. To credit another invoice, make a new one from that invoice.",
+            );
         }
         const agentExpense = writer.actor._tag === "agent" && list === "expenses";
         if (agentExpense && row.state !== wanted) {
@@ -3710,7 +3715,9 @@ const make = Effect.gen(function* () {
           );
         }
         if (found.originKey.startsWith("credit_note:") && writer.creditNote !== true)
-          return yield* invalid("Void the credit note to take back its reduction.");
+          return yield* invalid(
+            "This came from a credit note. Void the credit note to take it back.",
+          );
         if (found.voidedAt !== null) return row;
         if (mode !== "unapply_credit" && row.registerId === "invoices") {
           const receiptId = /^receipt:([^:]+)(?::after:.+)?$/.exec(found.originKey)?.[1];
@@ -3802,7 +3809,8 @@ const make = Effect.gen(function* () {
         )
           return yield* new KinChatError({
             reason: "not_allowed",
-            message: "Only the owner or a co-owner undoes a bank credit.",
+            message:
+              "Only the owner or a co-owner can undo what a bank credit paid. Nothing changed.",
           });
         yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.payment).pipe(provideSql);
         const bank = yield* byKey(orgId, key).pipe(provideSql);

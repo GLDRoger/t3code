@@ -980,7 +980,8 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
       return done ?? nothingDone(`${plan.bankKey} or ${plan.key} changed since this was offered`);
     }
     case "apply_credit": {
-      if (!owner) return yield* notAllowed("Only the owner or a co-owner applies credit.");
+      if (!owner)
+        return yield* notAllowed("Only the owner or a co-owner can apply a client's credit.");
       yield* refuseOff("invoices");
       const why = yield* drawsHold(orgId, draws);
       if (why !== undefined) return nothingDone(why);
@@ -1020,7 +1021,8 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
     }
     case "record_bill":
     case "mark_bill_paid": {
-      if (!owner) return yield* notAllowed("Only the owner or a co-owner confirms bills to pay.");
+      if (!owner)
+        return yield* notAllowed("Only the owner or a co-owner can record a bill or mark it paid.");
       yield* refuseOff("expenses");
       if (plan.kind === "mark_bill_paid") yield* refuseOff("bank_transactions");
       const why = yield* drawsHold(orgId, draws);

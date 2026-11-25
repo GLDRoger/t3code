@@ -220,9 +220,9 @@ export const KIN_CREDIT_NOTES = {
   reason: "Reason",
   saveDraft: "Save draft",
   amountProblem: "Enter an amount above zero.",
-  currencyProblem: (currency: string) => `A credit note must be in ${currency}.`,
+  currencyProblem: (currency: string) => `Enter the amount in ${currency}.`,
   amountOver: (owed: string) => `That's more than the ${owed} still owed.`,
-  reasonProblem: "Say why you're making this credit note.",
+  reasonProblem: "Add the reason for this credit note.",
   states: {
     draft: "Draft",
     issued: "Issued",
