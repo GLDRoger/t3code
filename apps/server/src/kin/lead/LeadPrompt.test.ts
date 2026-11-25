@@ -57,6 +57,7 @@ import {
 import { ownerLevelAsked } from "../people/KinAccess.ts";
 import { recordedAudience } from "./Audience.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
+import { onHostClock } from "../pulse/checkInSeeds.ts";
 import { PRESETS } from "../work/registers.ts";
 
 import {
@@ -3647,6 +3648,41 @@ it.effect(
       yield* sql`UPDATE kin_widgets SET state_json = json_set(state_json, '$.askedBy.left', json('true'))
         WHERE widget_id = ${`deferral:${orgId}:def-plans`}`;
       expect(line(yield* prompt.build(turn))).toContain('asked by "someone who has left"');
+      // The owner lives elsewhere than the host: the routine reads in his own time, the time he
+      // said in winter, through the clock change; moved on T3's screen, its host time turned to his.
+      const host = KinSchedules.hostTimeZone();
+      const winter = Date.UTC(2026, 0, 12, 12);
+      const summer = Date.UTC(2026, 6, 13, 12);
+      const zone = ["09:00", onHostClock("09:00", [1], "America/New_York", host, summer).at].includes(
+        onHostClock("09:00", [1], "America/New_York", host, winter).at,
+      )
+        ? "Asia/Kolkata"
+        : "America/New_York";
+      yield* sql`DELETE FROM kin_trigger_settings`;
+      yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief,
+          evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check,
+          quiet_hours_json)
+        VALUES (${orgId}, ${zone}, '09:00', '18:00', '02:00', 0, 1, '09:00', '{}')`;
+      const onHost = onHostClock("09:00", [1], zone, host, winter);
+      const setEvery = (every: { at: string; days: ReadonlyArray<number> }) =>
+        sql`UPDATE kin_widgets SET state_json = json_set(state_json, '$.every', json(${JSON.stringify(every)}))
+          WHERE widget_id = ${`scheduled:${orgId}:sch-plans`}`;
+      yield* setEvery(onHost);
+      yield* sql`UPDATE kin_schedules SET owner_time_json = ${JSON.stringify({
+        at: "09:00",
+        days: [1],
+        host: onHost,
+      })} WHERE schedule_id = 'sch-plans'`;
+      yield* TestClock.setTime(summer);
+      expect(line(yield* prompt.build(turn))).toContain(
+        'routine "sch-plans" ("Open tasks") every Monday 09:00, set by',
+      );
+      yield* setEvery({ at: "12:00", days: [1] });
+      const turned = onHostClock("12:00", [1], host, zone, summer);
+      const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+      expect(line(yield* prompt.build(turn))).toContain(
+        `routine "sch-plans" ("Open tasks") every ${dayNames[turned.days[0]!]} ${turned.at}, set by`,
+      );
       // A direct chat never gets the line.
       expect(yield* prompt.build({ ...input, lane: { chatId, mode: "notice" } })).not.toContain(
         "Set in this chat",
