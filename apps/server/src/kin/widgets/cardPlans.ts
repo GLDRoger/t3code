@@ -1,6 +1,7 @@
 import {
   type KinChatId,
   KinMessageId,
+  KinMoney,
   type KinOrgId,
   KinTrimmedText,
   type KinWidgetId,
@@ -90,6 +91,8 @@ const PaymentPlan = Schema.Struct({
   rev: Schema.Number,
   amountMinor: Schema.Number,
   currency: Schema.String,
+  received: Schema.optionalKey(KinMoney),
+  rate: Schema.optionalKey(Schema.String),
   day: Schema.String,
   /** Tax the client withheld, when the matcher read the credit as the amount less it. */
   withheldMinor: Schema.NullOr(Schema.Number),

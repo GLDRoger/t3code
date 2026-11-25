@@ -82,6 +82,18 @@ export const kinCurrency = (code: string): KinCurrencyInfo => {
   };
 };
 
+/** Received major units per one owed major unit, rounded to six places. Owed must be positive. */
+export const kinImpliedRate = (owed: KinMoney, received: KinMoney): string => {
+  const microsPerUnit = 1_000_000n;
+  const scale = kinCurrency(owed.currency).decimals - kinCurrency(received.currency).decimals;
+  const numerator = BigInt(received.minor) * microsPerUnit * 10n ** BigInt(Math.max(scale, 0));
+  const denominator = BigInt(owed.minor) * 10n ** BigInt(Math.max(-scale, 0));
+  const micros = (numerator * 2n + denominator) / (denominator * 2n);
+  return `${micros / microsPerUnit}.${String(micros % microsPerUnit).padStart(6, "0")}`;
+};
+
+export const kinRateShown = (rate: string): string => rate.replace(/(\.\d{2}\d*?)0+$/, "$1");
+
 /** Digits grouped with commas: thousands, or lakh and crore (12,34,567). */
 export const kinGroupDigits = (digits: string, grouping: KinCurrencyInfo["grouping"]) =>
   grouping === "indian" && digits.length > 3

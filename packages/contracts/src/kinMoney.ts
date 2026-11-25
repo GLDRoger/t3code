@@ -129,6 +129,8 @@ export type KinBankKnown = typeof KinBankKnown.Type;
 export const KinPayment = Schema.Struct({
   paymentId: TrimmedNonEmptyString,
   amount: KinMoney,
+  received: Schema.optionalKey(KinMoney),
+  rate: Schema.optionalKey(Schema.String),
   paidOn: KinDay,
   note: Schema.String,
   recordedAt: IsoDateTime,

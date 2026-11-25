@@ -1,4 +1,9 @@
-import { KinChatError, type KinChoiceOutcome, type KinOrgId } from "@t3tools/contracts";
+import {
+  KinChatError,
+  type KinChoiceOutcome,
+  type KinOrgId,
+  kinRateShown,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -9,7 +14,7 @@ import { formatMoney } from "../money.ts";
 import { byNumber, recordName } from "../recordRows.ts";
 import { BANK_CREDIT_ORIGIN, bankStates, findBankList } from "./bankList.ts";
 import { shortDay } from "./bankKnown.ts";
-import { agentWrote, creditMatch, type CreditPair } from "./invoiceCredits.ts";
+import { agentWrote, creditMatch, type CreditPair, rateMoney } from "./invoiceCredits.ts";
 
 /**
  * A `kin_ask` option that records a Bank transactions credit as an invoice's payment: drawn only
@@ -98,6 +103,10 @@ export const drawPayment = Effect.fn("KinCreditPayment.draw")(function* (
     chosen.candidate.fit === "tds" && chosen.candidate.tdsMinor !== undefined
       ? chosen.candidate.tdsMinor
       : null;
+  const amount =
+    "rate" in chosen
+      ? chosen.owed
+      : { minor: chosen.credit.amountMinor, currency: chosen.credit.currency };
   return {
     kind: "record_payment",
     recordId: chosen.invoice.recordId,
@@ -109,15 +118,13 @@ export const drawPayment = Effect.fn("KinCreditPayment.draw")(function* (
     bankRecordId: bank.recordId,
     bankKey: bank.key,
     rev: chosen.credit.rev,
-    amountMinor: chosen.credit.amountMinor,
-    currency: chosen.credit.currency,
+    amountMinor: amount.minor,
+    currency: amount.currency,
+    ...("rate" in chosen ? { received: chosen.received, rate: chosen.rate } : {}),
     day: chosen.credit.date,
     withheldMinor,
     owedAfterMinor:
-      chosen.invoice.amountMinor -
-      chosen.invoice.paidMinor -
-      chosen.credit.amountMinor -
-      (withheldMinor ?? 0),
+      chosen.invoice.amountMinor - chosen.invoice.paidMinor - amount.minor - (withheldMinor ?? 0),
     draw,
   } satisfies PaymentPlan;
 });
@@ -132,14 +139,27 @@ const what = (plan: PaymentPlan) =>
       : `, with ${money(plan, plan.withheldMinor)} of tax the client withheld`
   }`;
 
+const settledWhat = (plan: PaymentPlan, showBankKey: boolean) => {
+  if (plan.received === undefined || plan.rate === undefined) return undefined;
+  const client = showBankKey && plan.client !== null ? ` from ${plan.client}` : "";
+  const bankKey = showBankKey ? ` (${plan.bankKey})` : "";
+  const owed = rateMoney({ minor: plan.amountMinor, currency: plan.currency });
+  return `${plan.number}${client} (${owed}) with ${rateMoney(plan.received)} received on ${shortDay(plan.day)}${bankKey}, a rate of ${kinRateShown(plan.rate)}`;
+};
+
 export const paymentLabel = (plan: PaymentPlan) =>
-  `Record ${money(plan, plan.amountMinor)} for ${plan.number}`;
-export const paymentLine = (plan: PaymentPlan) =>
-  `Record ${what(plan)}; ${
+  plan.rate === undefined
+    ? `Record ${money(plan, plan.amountMinor)} for ${plan.number}`
+    : `Settle ${plan.number}`;
+export const paymentLine = (plan: PaymentPlan) => {
+  const settlement = settledWhat(plan, true);
+  if (settlement !== undefined) return `Settle ${settlement}`;
+  return `Record ${what(plan)}; ${
     plan.owedAfterMinor <= 0
       ? "it settles the invoice in full"
       : `${money(plan, plan.owedAfterMinor)} stays owed on it`
   }`;
+};
 
 /**
  * The tap's writes, as `person`: the payment (and the tax withheld) on the invoice, the credit
@@ -156,6 +176,7 @@ export const recordPayment = Effect.fn("KinCreditPayment.record")(function* (
   const match = yield* creditMatch(orgId, plan.bankRecordId);
   const pair = match?.first.find((one) => one.invoice.recordId === plan.recordId);
   const def = yield* findBankList(orgId);
+  const ratePair = pair !== undefined && "rate" in pair ? pair : undefined;
   if (
     match === undefined ||
     match.recorded !== undefined ||
@@ -163,6 +184,11 @@ export const recordPayment = Effect.fn("KinCreditPayment.record")(function* (
     def === undefined ||
     pair.credit.rev !== plan.rev ||
     pair.invoice.seen !== plan.seen ||
+    ratePair?.rate !== plan.rate ||
+    ratePair?.received.minor !== plan.received?.minor ||
+    ratePair?.received.currency !== plan.received?.currency ||
+    (ratePair !== undefined &&
+      (ratePair.owed.minor !== plan.amountMinor || ratePair.owed.currency !== plan.currency)) ||
     (pair.candidate.fit === "tds" ? (pair.candidate.tdsMinor ?? null) : null) !== plan.withheldMinor
   ) {
     yield* retell(orgId, `payment_seen:${plan.bankKey}`);
@@ -171,6 +197,7 @@ export const recordPayment = Effect.fn("KinCreditPayment.record")(function* (
   const origin = `${BANK_CREDIT_ORIGIN}${plan.bankRecordId}:${widgetId}`;
   yield* records.pay(orgId, writer, plan.key, {
     amount: { minor: plan.amountMinor, currency: plan.currency },
+    ...(ratePair === undefined ? {} : { received: ratePair.received, rate: ratePair.rate }),
     paidOn: plan.day,
     note: `${plan.bankKey} in Bank transactions, ${plan.day}`,
     originKey: `${origin}:received`,
@@ -205,12 +232,16 @@ export const recordPayment = Effect.fn("KinCreditPayment.record")(function* (
     relation: "relates",
     label: plan.key,
   });
+  const settlement = settledWhat(plan, false);
   return {
     title: "Payment recorded",
-    text: `Recorded ${what(plan)}; ${
-      plan.owedAfterMinor <= 0
-        ? "the invoice is paid in full"
-        : `${money(plan, plan.owedAfterMinor)} is still owed on it`
-    }. ${plan.bankKey} is explained in Bank transactions.`,
+    text:
+      settlement !== undefined
+        ? `Settled ${settlement}; the invoice is paid in full. ${plan.bankKey} is explained in Bank transactions.`
+        : `Recorded ${what(plan)}; ${
+            plan.owedAfterMinor <= 0
+              ? "the invoice is paid in full"
+              : `${money(plan, plan.owedAfterMinor)} is still owed on it`
+          }. ${plan.bankKey} is explained in Bank transactions.`,
   } satisfies KinChoiceOutcome;
 });
