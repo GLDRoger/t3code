@@ -113,6 +113,7 @@ import {
 import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
 import { diffGoesOn, postedResult } from "../../apps/server/src/kin/github/GitHubWatch.ts";
 import { DIFF_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
+import { filePage, READ_NEXT, READ_REFUSAL } from "../../apps/server/src/kin/github/repoRead.ts";
 import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
 import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
 import { KinSalesToolkit } from "../../apps/server/src/kin/sales/mcp.ts";
@@ -814,6 +815,75 @@ const docReadAnswer = (input: {
   };
 };
 
+/** kin_github_read as `readRepo` answers it, over a few files at one ref. */
+const repoReadAnswer = (input: {
+  repo: string;
+  files: Record<string, string>;
+  path: string | null;
+  search: string | null;
+  ref: string | null;
+  line: number | null;
+}) => {
+  const ref = input.ref ?? "the default branch";
+  const words = input.search?.replace(/\s+/g, " ").trim() ?? "";
+  if (words !== "") {
+    const needles = words.toLowerCase().split(" ");
+    const matches = Object.entries(input.files)
+      .filter(([, text]) => needles.some((word) => text.toLowerCase().includes(word)))
+      .map(([path, text]) => ({
+        path,
+        fragments: [
+          text
+            .split("\n")
+            .filter((line) => needles.some((word) => line.toLowerCase().includes(word)))
+            .slice(0, 2)
+            .join("\n"),
+        ],
+      }));
+    return {
+      repo: input.repo,
+      ref: "the default branch",
+      matches,
+      next:
+        (matches.length === 0 ? READ_NEXT.none(input.repo, words) : READ_NEXT.found) +
+        (input.ref === null ? "" : READ_NEXT.defaultOnly),
+    };
+  }
+  const path = (input.path ?? "")
+    .split("/")
+    .filter((part) => part !== "")
+    .join("/");
+  const file = input.files[path];
+  if (file !== undefined)
+    return { repo: input.repo, ref, path, ...filePage(file, input.line ?? undefined) };
+  const prefix = path === "" ? "" : `${path}/`;
+  const entries = new Map<string, { path: string; type: string; size?: number }>();
+  for (const [name, text] of Object.entries(input.files)) {
+    if (!name.startsWith(prefix)) continue;
+    const [first, ...rest] = name.slice(prefix.length).split("/");
+    const at = `${prefix}${first}`;
+    entries.set(
+      at,
+      rest.length > 0 ? { path: at, type: "dir" } : { path: at, type: "file", size: text.length },
+    );
+  }
+  if (entries.size === 0)
+    return {
+      $error: {
+        _tag: "KinChatError",
+        reason: "not_found",
+        message: READ_REFUSAL.missing(input.repo, path, ref),
+      },
+    };
+  return {
+    repo: input.repo,
+    ref,
+    path,
+    entries: [...entries.values()].sort((a, b) => a.path.localeCompare(b.path)),
+    next: READ_NEXT.listed,
+  };
+};
+
 const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
   // record_update of who funded an expense or whether it was paid back, refused to an agent.
   fundingRefusal: () => ({
@@ -830,6 +900,25 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
   // kin_github_diff's refusal when GitHub doesn't give the diff (`reviewAsk.ts`).
   diffUnread: () => ({
     $error: { _tag: "KinChatError", reason: "not_allowed", message: DIFF_REFUSAL.unread },
+  }),
+  // kin_github_read over a case's invented files, paged and worded by Kin's code (`repoRead.ts`).
+  repoRead: (input: {
+    repo: string;
+    files: Record<string, string>;
+    path: string | null;
+    search: string | null;
+    ref: string | null;
+    line: number | null;
+  }) => repoReadAnswer(input),
+  // kin_github_read's refusal for a private repo the asker can't see, as Kin words it.
+  repoReadRefused: (input: { repo: string; name: string; login: boolean }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "not_allowed",
+      message: input.login
+        ? READ_REFUSAL.notCollaborator(input.repo, input.name)
+        : READ_REFUSAL.noLogin(input.repo, input.name),
+    },
   }),
   // kin_github_review's answer for a review GitHub took (`GitHubWatch.ts` postedResult).
   reviewPosted: (input: {
