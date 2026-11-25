@@ -1,3 +1,6 @@
+import * as NodeFS from "node:fs";
+import * as NodePath from "node:path";
+
 import { CommandId, KinAgentId, KinOrgId, MessageId, ThreadId } from "@t3tools/contracts";
 import { assert, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -5,7 +8,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
-import { delegatedTurn, fullSessionRefusal } from "./AgentSession.ts";
+import { delegatedTurn, fullSessionRefusal, isT3Tool } from "./AgentSession.ts";
 import { SESSION_REFUSAL } from "./Audience.ts";
 import { approvedWakeup, ownerOnlyWakeup } from "./Audience.testkit.ts";
 
@@ -150,3 +153,26 @@ it.effect(
       assert.isUndefined(yield* fullSessionRefusal(lead));
     }).pipe(Effect.provide(authorityLayer)),
 );
+
+it("counts every upstream toolkit's tools as T3's, so a new one is hidden until Kin lists it", async () => {
+  const folder = NodePath.resolve(import.meta.dirname, "../../mcp/toolkits");
+  const names: Array<string> = [];
+  for (const entry of NodeFS.readdirSync(folder, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const exported: Record<string, unknown> = await import(
+      NodePath.join(folder, entry.name, "tools.ts")
+    );
+    for (const value of Object.values(exported))
+      if (
+        (typeof value === "object" || typeof value === "function") &&
+        value !== null &&
+        "tools" in value
+      )
+        names.push(...Object.keys(value.tools as object));
+  }
+  assert.isAbove(names.length, 50);
+  assert.deepStrictEqual(
+    names.filter((name) => !isT3Tool(name)),
+    [],
+  );
+});
