@@ -621,6 +621,7 @@ const stallCards = Effect.fn("KinFactCards.stalled")(function* (input: {
 
 /** The rest wait for later passes, so one pass never floods a chat or an agent's turn. */
 const MILESTONE_CARDS_PER_PASS = 3;
+const NOTICE_CARDS_PER_PASS = 3;
 const MILESTONE_SENSES: ReadonlySet<string> = new Set(["milestone_late", "milestone_at_risk"]);
 /** One card per milestone and due day, whether it is at risk or late by the time it is asked. */
 const milestoneCardKey = (recordId: string, dueAt: number) =>
@@ -829,6 +830,7 @@ const noticeCards = Effect.fn("KinFactCards.notices")(function* (input: {
   const [owner] = yield* sql<{ personId: string }>`SELECT owner_person_id AS "personId"
     FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${chief}`;
   if (owner === undefined) return;
+  const sent = new Map<string, number>();
   for (const fact of input.open) {
     if (fact.sense !== "notice_due" || fact.scope.projectKey === undefined) continue;
     if (asked(input.posted, fact.key)) continue;
@@ -862,7 +864,8 @@ const noticeCards = Effect.fn("KinFactCards.notices")(function* (input: {
       : dayIn(at, zone) >= day
         ? ownerId
         : undefined;
-    if (personId === undefined || !(yield* input.budget.free(personId))) continue;
+    if (personId === undefined || (sent.get(personId) ?? 0) >= NOTICE_CARDS_PER_PASS) continue;
+    if (!(yield* input.budget.free(personId))) continue;
     const [drafter] = yield* draftersFor(orgId, row.recordId, "mail", chief);
     const agentId =
       drafter === undefined ? null : yield* Reach.carrierFor(orgId, personId, drafter);
@@ -919,6 +922,7 @@ const noticeCards = Effect.fn("KinFactCards.notices")(function* (input: {
       posted: input.posted,
     });
     if (card === undefined) continue;
+    sent.set(personId, (sent.get(personId) ?? 0) + 1);
     input.budget.spend(personId);
     yield* markTold({ orgId, personId, eventId: card.messageId, facts: [fact], at, zone });
   }

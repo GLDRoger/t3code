@@ -1327,3 +1327,23 @@ it.effect(
       }),
     ),
 );
+
+it.effect("at most three notice cards to one person a pass: the rest come on the next", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      for (const [n, day] of ["25", "26", "27", "28", "29"].entries())
+        yield* contract(ctx, { _tag: "agent", agentId: sales }, `2027-01-${day}`, undefined, {
+          client: `Client ${n + 1}`,
+          contact: `Contact ${n + 1}`,
+          project: `Retainer ${n + 1}`,
+        });
+      yield* TestClock.setTime(NOW);
+      yield* tickAt(ctx, NOW);
+      assert.lengthOf(yield* noticeCards(ctx), 3);
+      yield* tickAt(ctx, NOW + HOUR);
+      const all = yield* noticeCards(ctx);
+      assert.lengthOf(all, 5);
+      assert.isTrue(all.every((card) => card.who === ctx.owner.personId));
+    }),
+  ),
+);
