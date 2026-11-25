@@ -89,6 +89,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { usePreparedConnection } from "../../state/session";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { useKinShell } from "./state/useKinShell";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { ThreadMarkdownImage } from "../threads/ThreadMarkdownImage";
@@ -387,7 +388,8 @@ function KinDocBody(
   );
   const old = doc.version.version !== doc.latest.version;
   const previous = kinDocPrevious(doc.version);
-  const privacy = kinDocPrivacy(doc);
+  const shell = useKinShell(environmentId);
+  const privacy = kinDocPrivacy(doc, shell);
   const label = useKinDocLabel(target, doc);
   const deleting = useKinDocDelete(target);
   const mayDelete = deleting.allowed && doc.deletable === true;

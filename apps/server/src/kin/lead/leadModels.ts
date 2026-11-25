@@ -66,7 +66,10 @@ export const findProviderModel = (models: ReadonlyArray<ServerProviderModel>, sl
   models.find((model) => model.slug === slug || model.aliases?.includes(slug));
 
 /** The model's name as its provider lists it, else the id it was saved with. */
-const modelLabel = (providers: ReadonlyArray<ServerProvider> | null, selection: ModelSelection) =>
+export const modelLabel = (
+  providers: ReadonlyArray<ServerProvider> | null,
+  selection: ModelSelection,
+) =>
   findProviderModel(
     providers?.find((provider) => provider.instanceId === selection.instanceId)?.models ?? [],
     selection.model,

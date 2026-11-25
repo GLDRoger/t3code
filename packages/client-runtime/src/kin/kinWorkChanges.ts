@@ -290,7 +290,12 @@ export const kinWorkTakeLabel = (
 ) => (kinWorkGaveIt(record, names) ? KIN_WORK_COPY.takeBack : KIN_WORK_COPY.take);
 
 /** What happened, in a few words, once the host says it did. */
-function savedText(record: KinRecord, action: KinWorkAction, names: KinWorkNames): string {
+function savedText(
+  record: KinRecord,
+  action: KinWorkAction,
+  names: KinWorkNames,
+  named: (text: string) => string,
+): string {
   const holder = kinWorkName(record.owner, names);
   const told = stops(record, action) ? ` ${holder} was told to stop.` : "";
   switch (action.type) {
@@ -323,7 +328,7 @@ function savedText(record: KinRecord, action: KinWorkAction, names: KinWorkNames
       if (action.project != null) return `Now in ${action.project.title}.`;
       if (action.side !== undefined)
         return action.side === "theirs" ? "Marked as theirs to do." : "Marked as ours to do.";
-      return action.party === null ? "Taken off its client." : "Taken out of its project.";
+      return action.party === null ? named("Taken off its client.") : "Taken out of its project.";
     case "private":
       return action.private ? "Kept private." : "No longer private.";
     case "repeat":
@@ -479,6 +484,8 @@ export function createKinWorkChanges(options: {
   readonly onChange: (state: KinWorkChangesState) => void;
   /** Answers shared with the task's other screens: read before sending, written on success. */
   readonly answers?: KinWorkAnswers;
+  /** Kin's words about clients in the company's own name for them (`kinSectionNamed`). */
+  readonly named?: (text: string) => string;
 }) {
   const { orgId } = options;
   let state = kinWorkChangesStart(options.editing);
@@ -597,7 +604,7 @@ export function createKinWorkChanges(options: {
             : {
                 key,
                 kind: "saved",
-                text: savedText(record, action, names),
+                text: savedText(record, action, names, options.named ?? String),
                 undo: undoOf(record, action),
               },
       });

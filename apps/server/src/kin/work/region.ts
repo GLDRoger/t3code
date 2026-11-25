@@ -17,6 +17,8 @@ export interface CompanyRegion {
   readonly locale?: string;
   /** A client here pays an invoice less tax it withholds at source (TDS). */
   readonly withholdsAtSource?: true;
+  /** What a withheld-tax line is called here. */
+  readonly withheldTax?: string;
   /** Company details keep the company's tax number here (the profile's `gstin`). */
   readonly keepsTaxNumber?: true;
   /** What a document says in place of its tax lines when the company is not registered for it. */
@@ -43,6 +45,7 @@ const REGIONS: Readonly<Record<string, CompanyRegion>> = {
       ["tds", "TDS"],
     ],
     withholdsAtSource: true,
+    withheldTax: "TDS",
     keepsTaxNumber: true,
     notRegistered: "GST not charged: the supplier is not registered under GST.",
     // oxlint-disable-next-line t3code/kin-one-format -- the region table is where India's locale lives.

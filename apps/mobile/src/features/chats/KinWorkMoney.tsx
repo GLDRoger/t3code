@@ -86,7 +86,7 @@ import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from ".
 import { KinChart } from "./widgets/KinChart";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
-import { useKinSectionOn } from "./state/useKinShell";
+import { useKinSectionOn, useKinShell } from "./state/useKinShell";
 
 type Shared = KinWorkTarget & {
   readonly live: KinWorkLive;
@@ -453,6 +453,7 @@ export function KinMoneyArea(props: Shared) {
   const navigation = useNavigation();
   const target = { environmentId: props.environmentId, orgId: props.orgId };
   const invoicesOn = useKinSectionOn(props.environmentId, "invoices");
+  const shell = useKinShell(props.environmentId);
   const seq = props.stale ? null : props.live.seq;
   const datesAllowed = useAtomValue(kinClient.workDates.permissionAtom(target.environmentId));
   // Only a viewer who can't open Dates is drawn the coming-up rows themselves.
@@ -551,12 +552,12 @@ export function KinMoneyArea(props: Shared) {
     );
   }
   const summary = state.value;
-  const view = kinMoneyView(summary, kinListsOf(lists));
+  const view = kinMoneyView(summary, kinListsOf(lists), shell);
   const owing = allClients && every.state._tag === "ready" ? every.state.value.owed : summary.owed;
   const clients =
     owing === summary.owed
       ? view.clients
-      : kinMoneyView({ ...summary, owed: owing }, kinListsOf(lists)).clients;
+      : kinMoneyView({ ...summary, owed: owing }, kinListsOf(lists), shell).clients;
   const openRecord = (to: KinAttentionOpen) => {
     if (to.type === "record") navigation.navigate("KinWorkItem", { ...target, task: to.key });
   };

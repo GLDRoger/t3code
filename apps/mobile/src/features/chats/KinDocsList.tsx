@@ -43,7 +43,7 @@ import {
   kinWorkAskDraft,
 } from "@t3tools/client-runtime/kin/kinWorkHome";
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
-import { kinListSections } from "@t3tools/client-runtime/kin/kinShell";
+import { kinListSections, kinSectionNamed } from "@t3tools/client-runtime/kin/kinShell";
 import { kinWorkOffline } from "@t3tools/client-runtime/kin/kinWork";
 import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
@@ -576,7 +576,7 @@ export function KinDocsList(
     pinnedRow === null || !onMine || (held !== null && kinIsMine(pinnedRow, held))
       ? pinnedRow
       : null;
-  const library = kinDocLibrary(records, pin);
+  const library = kinDocLibrary(records, pin, shell);
   const whatWeSell: ReadonlyArray<Item> =
     !refused && !onMine && shown === "rows" && pinShown && pinned === null && starter !== null
       ? [{ type: "whatWeSell", id: "what-we-sell" }]
@@ -868,7 +868,11 @@ export function KinDocsList(
               ) : passages ? null : searching || !everything ? (
                 <EmptyState variant="plain" {...KIN_DOCS.noMatch} />
               ) : onMine && !filter.archived && all.length > 0 ? (
-                <EmptyState variant="plain" {...KIN_DOCS.noneMine} />
+                <EmptyState
+                  variant="plain"
+                  title={KIN_DOCS.noneMine.title}
+                  detail={kinSectionNamed(shell, KIN_DOCS.noneMine.detail)}
+                />
               ) : (
                 <EmptyState
                   variant="plain"
