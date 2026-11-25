@@ -14,11 +14,7 @@ import { SearchField } from "../../../components/ui/SearchField";
 import { useKinPickerSearch, type KinWorkTarget } from "../state/useKinWork";
 import { KinWorkAboveKeyboard } from "./KinWorkPieces";
 import { useKinShell } from "../state/useKinShell";
-import {
-  kinPickerNamed,
-  kinSectionNamed,
-  kinSectionNoun,
-} from "@t3tools/client-runtime/kin/kinShell";
+import { kinPickerNamed, kinPlaceFind, kinSectionNoun } from "@t3tools/client-runtime/kin/kinShell";
 
 type PickerRow =
   | { readonly type: "label"; readonly id: string; readonly label: string }
@@ -75,8 +71,7 @@ export function KinWorkPlacePicker(given: {
     if (open && keyboardUp && found.current !== null) aboveKeyboard?.(found.current);
   }, [open, keyboardUp, aboveKeyboard]);
   const clientNoun = kinSectionNoun(clientShell, "clients");
-  const find =
-    props.noun === "client" ? kinSectionNamed(clientShell, "Find a client") : "Find a project";
+  const find = kinPlaceFind(props.noun, clientShell);
   const search = useKinPickerSearch(
     props.target,
     props.noun === "client" ? "clients" : "projects",
