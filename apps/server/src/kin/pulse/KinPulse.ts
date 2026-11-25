@@ -113,13 +113,16 @@ const encodeSensed = Schema.encodeEffect(
 );
 
 /**
- * Who a read is for: the owner sees every fact; people see only facts about tasks and milestones,
- * not sensitive, that every one of them may see (`viewSees`). Clients, money, goals and the
- * company's own facts are owner-level.
+ * The owner level sees all facts. People see shared work they may read and, when reading alone,
+ * the client and personal mailbox facts addressed to them.
  */
 export type Viewer =
   | { readonly _tag: "owner" }
-  | { readonly _tag: "people"; readonly people: ReadonlyArray<KinPersonId> };
+  | {
+      readonly _tag: "people";
+      readonly people: ReadonlyArray<KinPersonId>;
+      readonly excludeOwnMail?: boolean;
+    };
 
 export const context = Effect.fn("KinPulse.context")(function* (orgId: KinOrgId, at: number) {
   const sql = yield* SqlClient.SqlClient;
@@ -322,6 +325,15 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
           return { ...fact, scope };
         });
   const deals = yield* dealsHeardBy(orgId, viewer, facts);
+  const ownMail =
+    viewer.excludeOwnMail || viewer.people.length !== 1
+      ? []
+      : facts.filter(
+          (fact) =>
+            fact.sense === "mail_gap" &&
+            fact.actor._tag === "person" &&
+            fact.actor.personId === viewer.people[0],
+        );
   // Who holds a task after their access went is the owner's to settle, not a teammate's.
   const candidates = facts.filter(
     (fact) =>
@@ -337,7 +349,8 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
         (fact) => visibleOverflow(orgId, viewer.people, fact),
       )).flat()
     : [];
-  if (candidates.length === 0 || viewer.people.length === 0) return [...counts, ...deals];
+  if (candidates.length === 0 || viewer.people.length === 0)
+    return [...counts, ...deals, ...ownMail];
   const sql = yield* SqlClient.SqlClient;
   const ids = [...new Set(candidates.map((fact) => fact.subject.recordId!))];
   // A list section's entry facts reach whoever sees the entry; others only on tasks and milestones.
@@ -404,7 +417,7 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
       },
     };
   });
-  return [...counts, ...work, ...deals];
+  return [...counts, ...work, ...deals, ...ownMail];
 });
 
 /**
