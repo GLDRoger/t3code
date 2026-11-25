@@ -299,6 +299,17 @@ const DuePlan = Schema.Struct({
   toDay: Schema.String,
 });
 export type DuePlan = typeof DuePlan.Type;
+/**
+ * A contract's notice day (`recordId` its project): let it renew, as agreed. Giving notice is the
+ * card's plain answer, which wakes its agent to draft the mail. Never drawn by an agent.
+ */
+const NoticePlan = Schema.Struct({
+  kind: Schema.Literal("notice_renew"),
+  ...FactCardFields,
+  noticeBy: Schema.String,
+  renewsOn: Schema.String,
+});
+export type NoticePlan = typeof NoticePlan.Type;
 export const CardPlan = Schema.Union([
   RecordPlan,
   StartPlan,
@@ -314,14 +325,16 @@ export const CardPlan = Schema.Union([
   WaitedPlan,
   StallPlan,
   DuePlan,
+  NoticePlan,
 ]);
 export type CardPlan = typeof CardPlan.Type;
-export type FactCardPlan = WaitedPlan | StallPlan | DuePlan;
+export type FactCardPlan = WaitedPlan | StallPlan | DuePlan | NoticePlan;
 const FACT_CARD_KINDS: ReadonlySet<string> = new Set<FactCardPlan["kind"]>([
   "waited_answer",
   "stall_answer",
   "move_due",
   "keep_due",
+  "notice_renew",
 ]);
 /** Kin's own card about a pulse fact: it answers nothing else and no agent draws or redraws it. */
 export const isFactCard = (plan: CardPlan): plan is FactCardPlan => FACT_CARD_KINDS.has(plan.kind);

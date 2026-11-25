@@ -28,14 +28,17 @@ import {
   isFactCard,
   plansOf,
   type DuePlan,
+  type NoticePlan,
   sealPlans,
   type StallPlan,
   type WaitedPlan,
 } from "../widgets/cardPlans.ts";
 import { dayIn } from "../work/money.ts";
-import { daysOverdue, startOfDay } from "../work/recordRows.ts";
+import { noticeDay } from "../work/crm.ts";
+import { daysOverdue, endOfDay, startOfDay } from "../work/recordRows.ts";
 import { teamGuard, viewSees } from "../work/teamView.ts";
-import { daysText, type SenseContext } from "./senses/shared.ts";
+import { draftersFor } from "./draftWake.ts";
+import { daysAgoText, daysText, type SenseContext } from "./senses/shared.ts";
 import { markTold } from "./told.ts";
 import { DAY_MS, thresholds, toMs } from "./thresholds.ts";
 
@@ -73,6 +76,11 @@ export const factCardShown = (plan: FactCardPlan) => {
         : { label: "Done", line: `Mark ${plan.key} done` };
     case "waited_answer":
       return waitedShown(plan);
+    case "notice_renew":
+      return {
+        label: "Let it renew",
+        line: "Nothing is sent; Kin doesn't ask you about this notice day again",
+      };
   }
 };
 
@@ -107,6 +115,8 @@ const closedOutcome = (plan: FactCardPlan): KinChoiceOutcome => {
       case "move_due":
       case "keep_due":
         return `${plan.key} no longer needs a new date.`;
+      case "notice_renew":
+        return `${plan.key}'s notice day changed or passed, so this was closed.`;
     }
   })();
   return { title: "No longer needed", text };
@@ -245,6 +255,7 @@ export const postFactCard = Effect.fn("KinFactCards.post")(function* (input: {
   readonly round: number;
   readonly question: string;
   readonly detail?: string;
+  readonly whileOpen?: string;
   readonly options: ReadonlyArray<CardOption>;
   readonly posted: ReadonlyArray<CardRow>;
 }) {
@@ -327,6 +338,7 @@ export const postFactCard = Effect.fn("KinFactCards.post")(function* (input: {
             clientMessageId: `kin-fact-card:${input.factKey}:${input.round}:${personId}${tries === 0 ? "" : `:${tries}`}`,
             question: clamp(input.question, QUESTION_MAX),
             ...(input.detail === undefined ? {} : { detail: input.detail }),
+            ...(input.whileOpen === undefined ? {} : { whileOpen: input.whileOpen }),
             options: input.options.map((one) => ({ label: one.label })),
             actions: shown,
             untilAnswered: true,
@@ -747,6 +759,113 @@ const milestoneCards = Effect.fn("KinFactCards.milestones")(function* (input: {
   }
 });
 
+/**
+ * A contract's notice day: one card per project and day, to whoever looks after the client when
+ * they may see the project, else the owner, in their chat with the agent that would draft the
+ * notice mail. Let it renew has it in hand; Give notice wakes that agent to draft it.
+ */
+const noticeCards = Effect.fn("KinFactCards.notices")(function* (input: {
+  readonly ctx: SenseContext;
+  readonly open: ReadonlyArray<KinPulseFact>;
+  readonly sees: (
+    personId: KinPersonId,
+    facts: ReadonlyArray<KinPulseFact>,
+  ) => Effect.Effect<ReadonlyArray<{ readonly key: string }>, SqlError, SqlClient.SqlClient>;
+  readonly level: ReadonlySet<string>;
+  readonly posted: ReadonlyArray<CardRow>;
+  readonly budget: NudgeBudget;
+}) {
+  const { ctx } = input;
+  const { orgId, chief, at, zone } = ctx;
+  if (chief === undefined) return;
+  const sql = yield* SqlClient.SqlClient;
+  const [owner] = yield* sql<{ personId: string }>`SELECT owner_person_id AS "personId"
+    FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${chief}`;
+  if (owner === undefined) return;
+  for (const fact of input.open) {
+    if (fact.sense !== "notice_due" || fact.scope.projectKey === undefined) continue;
+    if (asked(input.posted, fact.key)) continue;
+    const [row] = yield* sql<{
+      recordId: string;
+      key: string;
+      title: string;
+      rev: number;
+      renewsOn: string;
+      noticeDays: string | null;
+    }>`SELECT record_id AS "recordId", key, title, rev,
+        json_extract(fields_json, '$.renewsOn') AS "renewsOn",
+        json_extract(fields_json, '$.noticeDays') AS "noticeDays"
+      FROM kin_records WHERE org_id = ${orgId} AND key = ${fact.scope.projectKey}
+        AND register_id = 'projects' AND state = 'open'`;
+    const day = row === undefined ? undefined : noticeDay(row.renewsOn, row.noticeDays);
+    if (row === undefined || day === undefined || fact.key !== `notice_due:${row.key}:on=${day}`)
+      continue;
+    const looks = fact.actor._tag === "person" ? fact.actor.personId : undefined;
+    const theirs =
+      looks !== undefined &&
+      (input.level.has(looks) ||
+        ((yield* input.sees(looks, [fact])).length > 0 &&
+          (yield* sql`SELECT 1 FROM kin_records r WHERE r.org_id = ${orgId}
+            AND r.record_id = ${row.recordId} AND ${viewSees(sql, [looks])}`).length > 0));
+    const personId = theirs ? looks : KinPersonId.make(owner.personId);
+    if (!(yield* input.budget.free(personId))) continue;
+    const [drafter] = yield* draftersFor(orgId, row.recordId, "mail", chief);
+    const agentId =
+      drafter === undefined ? null : yield* Reach.carrierFor(orgId, personId, drafter);
+    if (agentId === null) continue;
+    const [names] = yield* sql<{ person: string; agent: string }>`SELECT
+        p.display_name AS person, a.display_name AS agent
+      FROM kin_people p JOIN kin_agents a ON a.org_id = p.org_id AND a.agent_id = ${agentId}
+      WHERE p.org_id = ${orgId} AND p.person_id = ${personId} AND p.removed_at IS NULL`;
+    if (names === undefined) continue;
+    // The subject is the client the project bills, else the project itself.
+    const client = fact.subject.recordId === row.recordId ? undefined : fact.subject;
+    const [contact] =
+      client?.recordId === undefined
+        ? []
+        : yield* sql<{ name: string }>`SELECT title AS name FROM kin_records
+            WHERE org_id = ${orgId} AND register_id = 'contacts' AND state = 'open'
+              AND party_id = ${client.recordId}
+              AND trim(COALESCE(json_extract(fields_json, '$.email'), '')) <> ''
+            ORDER BY lower(title), key LIMIT 1`;
+    const by = endOfDay(day, zone);
+    const plan = {
+      kind: "notice_renew",
+      factKey: fact.key,
+      round: 0,
+      personId,
+      personName: names.person,
+      agentId,
+      recordId: row.recordId,
+      key: row.key,
+      title: row.title,
+      rev: row.rev,
+      noticeBy: dayWord(startOfDay(day, zone), zone),
+      renewsOn: dayWord(startOfDay(row.renewsOn, zone), zone),
+    } satisfies NoticePlan;
+    const contract = `${client?.title ?? row.title}'s contract ${row.key} renews ${plan.renewsOn}`;
+    const until = `Until you choose, nothing is sent and it renews as agreed. Give notice and ${names.agent} drafts the notice mail to ${contact?.name ?? "the client"} for your Confirm.`;
+    const card = yield* postFactCard({
+      ctx,
+      personId,
+      agentId,
+      factKey: fact.key,
+      round: 0,
+      question:
+        by < at
+          ? `${contract}; notice was due by ${plan.noticeBy}, ${daysAgoText(ctx, by)}. Let it renew, or give notice anyway?`
+          : `${contract}, and notice is due by ${plan.noticeBy}. Let it renew, or give notice?`,
+      detail: until,
+      whileOpen: until,
+      options: [{ label: factCardShown(plan).label, plan }, { label: "Give notice" }],
+      posted: input.posted,
+    });
+    if (card === undefined) continue;
+    input.budget.spend(personId);
+    yield* markTold({ orgId, personId, eventId: card.messageId, facts: [fact], at, zone });
+  }
+});
+
 /** Whether a teammate may make this change to a record, as their own screens would. */
 const mayChange = (
   orgId: KinOrgId,
@@ -792,4 +911,5 @@ export const factCards = Effect.fn("KinFactCards.pass")(function* (input: {
   yield* waitedCards({ ...input, level, posted, budget });
   yield* stallCards({ ...input, level, posted, budget });
   yield* milestoneCards({ ...input, level, posted, budget });
+  yield* noticeCards({ ...input, level, posted, budget });
 });

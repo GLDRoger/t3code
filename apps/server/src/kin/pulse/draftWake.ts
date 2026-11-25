@@ -83,8 +83,9 @@ type DraftPath = "mail" | "doc";
  * Who may draft a follow-up, in order: the live lead its project (or it, a project) names as its
  * lead; for one to a client, the first live lead whose domain sells; the company's own lead
  * (`routing`). A paused lead runs nothing, so it drafts nothing.
+ * @public
  */
-const draftersFor = Effect.fnUntraced(function* (
+export const draftersFor = Effect.fnUntraced(function* (
   orgId: KinOrgId,
   recordId: string,
   path: DraftPath,

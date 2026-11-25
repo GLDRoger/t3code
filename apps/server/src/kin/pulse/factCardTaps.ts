@@ -11,7 +11,13 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { ownerLevel } from "../people/KinAccess.ts";
-import type { DuePlan, FactCardPlan, StallPlan, WaitedPlan } from "../widgets/cardPlans.ts";
+import type {
+  DuePlan,
+  FactCardPlan,
+  NoticePlan,
+  StallPlan,
+  WaitedPlan,
+} from "../widgets/cardPlans.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { insertComment, requestHashOf } from "../work/recordComments.ts";
 import { viewSees } from "../work/teamView.ts";
@@ -310,6 +316,24 @@ const runDue = Effect.fn("KinFactCards.runDue")(function* (
 });
 
 /**
+ * Let it renew: the owner level's answer is the company's, so their check-ins stop telling it; a
+ * teammate's quiets it for them alone.
+ */
+const runNotice = Effect.fn("KinFactCards.runNotice")(function* (tap: FactTap, plan: NoticePlan) {
+  const held = yield* holdFact(tap, plan, {
+    factKey: plan.factKey,
+    action: "not_a_problem",
+    note: `${plan.personName}: let it renew`,
+    view: "theirs",
+  });
+  if (!held) return nothingDone(`${plan.key}'s notice day changed since this was offered`);
+  return {
+    title: "Left to renew",
+    text: `${plan.key} renews ${plan.renewsOn} as agreed. Nothing was sent.`,
+  };
+});
+
+/**
  * A tap on Kin's card about a fact, in the tap's transaction: only the person it asks may answer,
  * and only while what it asked about is as it was; else nothing is done and the card says why.
  */
@@ -338,5 +362,7 @@ export const runFactCard = Effect.fn("KinFactCards.run")(function* (
     case "move_due":
     case "keep_due":
       return yield* runDue(tap, plan, records);
+    case "notice_renew":
+      return yield* runNotice(tap, plan);
   }
 });
