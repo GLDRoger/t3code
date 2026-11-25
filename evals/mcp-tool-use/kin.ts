@@ -829,7 +829,11 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     const amount = money(input.amount);
     const withheld = money(input.withheld);
     const paidOn = input.paidOn;
-    if (paidOn === null || !/^\d{4}-\d{2}-\d{2}$/.test(paidOn) || (amount ?? withheld) === undefined)
+    if (
+      paidOn === null ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(paidOn) ||
+      (amount ?? withheld) === undefined
+    )
       return {
         $error: {
           _tag: "KinChatError",

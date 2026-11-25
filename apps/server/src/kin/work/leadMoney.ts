@@ -10,7 +10,6 @@ import {
   KinGstin,
   KinWritableListFieldType,
   KinListId,
-  type KinMoney,
   type KinOrgId,
   KinRecordKey,
   KinChatId,
@@ -89,7 +88,6 @@ import {
   issuedNumber,
   notFound,
   ownerZone,
-  recordName,
   stillSuggestion,
   suggestedStateLabel,
 } from "./recordRows.ts";
@@ -572,7 +570,7 @@ export const PaymentResult = Schema.Union([PaymentRecorded, PaymentProposed]);
 
 export const PAYMENT_PROPOSED_NEXT =
   "Nothing is recorded yet. Kin put this payment to the owner on a card. Say in one short line that it is there to check and confirm, and that nothing is recorded until they tap Confirm; a typed yes doesn't record it. Never say it is recorded, marked paid or done.";
-export const PAYMENT_NO_CARD_NEXT =
+const PAYMENT_NO_CARD_NEXT =
   "Nothing was recorded. Kin couldn't show the owner a card for this payment, so ask them to record it themselves in Money.";
 
 const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof PaymentInput.Type) {

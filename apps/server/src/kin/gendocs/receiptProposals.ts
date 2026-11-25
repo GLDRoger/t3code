@@ -128,8 +128,7 @@ export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
             ...(received === undefined
               ? {}
               : {
-                  name:
-                    issuedNumber(parseFields(against.fieldsJson).number).number ?? against.key,
+                  name: issuedNumber(parseFields(against.fieldsJson).number).number ?? against.key,
                 }),
           },
     recorded: sameAdvances,
@@ -202,7 +201,11 @@ const paymentLines = (snapshot: Snapshot, received: Received) => {
         ]),
     ...(left === undefined
       ? []
-      : [left.minor <= 0 ? "It settles the invoice in full" : `Still owed after: ${formatMoney(left)}`]),
+      : [
+          left.minor <= 0
+            ? "It settles the invoice in full"
+            : `Still owed after: ${formatMoney(left)}`,
+        ]),
     ...(received.note === undefined ? [] : [`Agent's note: ${received.note}`]),
   ];
 };

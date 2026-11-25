@@ -2523,7 +2523,10 @@ describe("receipts", () => {
         // The advance on the books, set against that invoice, becomes its payment: on Confirm only,
         // one card however often it is asked.
         if (made.status !== "made") return assert.fail("expected the advance's receipt");
-        const setting = { entry: KinRecordKey.make(made.receipt), against: KinRecordKey.make("INV-1") };
+        const setting = {
+          entry: KinRecordKey.make(made.receipt),
+          against: KinRecordKey.make("INV-1"),
+        };
         const onInvoice = yield* proposed(setting);
         assert.strictEqual((yield* proposed(setting)).proposal, onInvoice.proposal);
         const invoicePaid = sql<{ minor: number }>`SELECT p.amount_minor AS minor
