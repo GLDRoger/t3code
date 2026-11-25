@@ -85,6 +85,42 @@ export function useKinAskBeforeDiscard(typed: boolean) {
   };
 }
 
+/**
+ * Scrolls `scroll` so `node` sits above the keyboard and `below` points more. React Native's lift
+ * reads the field as if the scroll view began at the screen's top; a sheet's views measure from
+ * the sheet, which ends at the screen's bottom, so its offset on screen is added.
+ */
+export function kinLiftAboveKeyboard(
+  scroll: ComponentRef<typeof ScreenScrollView> | null,
+  node: ComponentRef<typeof View>,
+  below: number,
+  sheet: boolean,
+) {
+  scroll?.measureInWindow((_x, top, _width, height) =>
+    scroll.scrollResponderScrollNativeHandleToKeyboard(
+      node,
+      below + 8 + (sheet ? Dimensions.get("screen").height - top - height : top),
+      true,
+    ),
+  );
+}
+
+/** A multi-line field's lift: UIKit keeps only the caret in view, so later lines sit under the keyboard. */
+export function useKinWorkLiftWhileTyping(
+  input: React.RefObject<ComponentRef<typeof TextInput> | null>,
+) {
+  const aboveKeyboard = use(KinWorkAboveKeyboard);
+  return () => {
+    const node = input.current;
+    if (aboveKeyboard === null || node === null) return;
+    if (Keyboard.isVisible()) return aboveKeyboard(node);
+    const shown = Keyboard.addListener("keyboardDidShow", () => {
+      shown.remove();
+      if (node.isFocused()) aboveKeyboard(node);
+    });
+  };
+}
+
 /** A Work screen that isn't a list: everything sits in the scroll view that clears the bar. */
 export function KinWorkFrame(
   props: Pick<
@@ -115,19 +151,10 @@ export function KinWorkFrame(
   const [footerHeight, setFooterHeight] = useState(0);
   const scroll = useRef<ComponentRef<typeof ScreenScrollView>>(null);
   const footerSpace = useRef(0);
-  // React Native's lift reads the field against the scroll view as if it began at the screen's
-  // top. A sheet's views measure from the sheet, which ends at the screen's bottom, so its start
-  // on screen is the screen's height less its own; without it a field lands under the keyboard.
   const sheet = props.onClose !== undefined;
   const [aboveKeyboard] = useState(
     () => (node: ComponentRef<typeof View>) =>
-      scroll.current?.measureInWindow((_x, top, _width, height) =>
-        scroll.current?.scrollResponderScrollNativeHandleToKeyboard(
-          node,
-          footerSpace.current + 8 + (sheet ? Dimensions.get("screen").height - top - height : top),
-          true,
-        ),
-      ),
+      kinLiftAboveKeyboard(scroll.current, node, footerSpace.current, sheet),
   );
   const barOverlap = useBarOverlap();
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- moves the native scroll view so a save's problem, drawn at the top, isn't left under the header
@@ -793,19 +820,8 @@ export function KinWorkTextField(props: {
   const keyboard = props.keyboard ?? "sentences";
   const { remove } = props;
   const input = useRef<ComponentRef<typeof TextInput>>(null);
-  const aboveKeyboard = use(KinWorkAboveKeyboard);
-  // UIKit keeps only the caret in view, so a note's later lines sit under the keyboard: lift the
-  // whole field once the keyboard is up and as it grows.
-  const grows = props.multiline === true || props.wraps === true;
-  const lift = () => {
-    const node = input.current;
-    if (!grows || aboveKeyboard === null || node === null) return;
-    if (Keyboard.isVisible()) return aboveKeyboard(node);
-    const shown = Keyboard.addListener("keyboardDidShow", () => {
-      shown.remove();
-      if (node.isFocused()) aboveKeyboard(node);
-    });
-  };
+  const liftWhileTyping = useKinWorkLiftWhileTyping(input);
+  const lift = props.multiline === true || props.wraps === true ? liftWhileTyping : () => {};
   return (
     <KinWorkFieldBox
       label={props.label}
