@@ -58,6 +58,8 @@ export type DreamOutcome =
       readonly branch: string;
       readonly head: string;
       readonly dream: DreamJson;
+      /** Items the checks left out of a night that landed, each with why. */
+      readonly leftOut: ReadonlyArray<string>;
     }
   | {
       readonly _tag: "failed";
@@ -98,6 +100,9 @@ const EMPTY_DREAM_CONSUMES_MATERIAL = true;
 /** The owner's choice: whether a dream may start once the day's budget is spent. Off, it waits. */
 const DREAM_RUNS_ON_A_SPENT_BUDGET = false;
 const emptyDream: DreamJson = { changes: [], merges: [], supersessions: [], contradictions: [] };
+/** Where a failed night says why, a night that landed says what it left out. */
+const leftOutLine = (leftOut: ReadonlyArray<string>) =>
+  leftOut.length === 0 ? null : leftOut.join("\n").slice(0, 4000);
 const zoned = (ms: number, timeZone: string) => DateTime.makeZonedUnsafe(ms, { timeZone });
 
 const extractPrompt = (input: { orgId: string; head: string; full: boolean }) =>
@@ -107,7 +112,7 @@ Read ${scratch}/material.json. It lists every original since the last good dream
 
 1. Extract durable facts, meaning only what will still matter weeks from now and could not be cheaply found again: lasting facts about the company, clients, people and projects, how the owner wants things done, decisions with their reasons, and promises with their dates. Never make an item of a to-do, a follow-up minutes or hours away, where work stands or what someone is waiting for, anything readable again from a repo, PR or check, or small talk; one item holds one thing. Put them into item files under objectives/, commitments/, deferrals/, decisions/, people/, claims/ or relationships/, and fold journal/ entries. Merge duplicate items with trust agent or external and mark the replaced ones with invalid_at and superseded_by.
 1b. Keep one relationship item per client with trust agent (kind relationship, links ["client:C-3"] with its key), from that client's touches, chats and work: who they are and who decides, how they like to work, what was promised and what annoyed them (with dates), the dynamic with us and why, and what they might want next. Never put to-dos, status, meeting dates, amounts owed or last contact in it. Revise yours as they change; what a person said about them stays in its own item, as rule 4 says. Commercial terms and what they are charged go in a second relationship item with sensitive true.
-1c. Entries of kind edit show what a person changed in an agent's draft, before and after. When more than one shows the same kind of change to a draft's wording, not its facts, write it once, in one person item under people/, as that person's preference for drafts, with one of those entries as its source and its said_by and trust, and all of them in dream.json. It is kept as theirs, so it says only what the edits show and in how many, without names or details from them. Cite an edit entry for nothing else: what a draft says is not a fact yet.
+1c. Entries of kind edit show what a person changed in an agent's draft, before and after. When more than one shows the same kind of change to a draft's wording, not its facts, write it once, in one person item under people/, as that person's preference for drafts, with one of those entries as its source and its said_by and trust, and all of them in dream.json. It is kept as theirs, so it says only what the edits show and in how many, without names or details from them. Cite an edit entry for nothing else but a fact the person typed: its "changed" lists their words ("now") in place of the draft's ("was"). A fact their words state (a rate, a date, a name) is one item with their said_by and trust and quote = one whole "now", saying what they typed and nothing else the draft says. The rest of a draft is not a fact yet: no other item, a relationship one included, cites the edit.
 2. Edit only item files and journal/. Never delete a file. Never edit rules.md or INDEX.md. Do not run git.
 3. A new item, or one whose source changes, takes source = the material ref, and said_by and trust = that entry's saidBy and trust. When that entry is a chat message a person wrote, the item also takes quote = their exact words from it that say it, at most 400 characters. Never change an item's quote.
 4. An item with trust owner or member holds what a person said: leave it exactly as it is, and never supersede, close or move it. You may write your own item that cites it, as your own conclusion: source = its material ref, trust agent (external if that item's is), and no quote. The same goes for any item you make from another item, a reminder included.
@@ -225,6 +230,7 @@ const make = Effect.gen(function* () {
     if (outcome._tag === "succeeded") {
       yield* sql`UPDATE kin_dream_runs SET status = 'succeeded', head = ${outcome.head},
         dream_json = ${yield* encodeDream(outcome.dream)}, ended_at = ${now},
+        failure = ${leftOutLine(outcome.leftOut)},
         material_until = ${EMPTY_DREAM_CONSUMES_MATERIAL ? sql`material_until` : sql`material_from`}
         WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running' RETURNING dream_id`;
       return;
@@ -454,6 +460,7 @@ const make = Effect.gen(function* () {
         branch,
         head: base.head,
         dream: emptyDream,
+        leftOut: [],
       } satisfies DreamOutcome;
     }
     const root = yield* prepareCheckout(orgId, dreamId, files, material);
@@ -548,6 +555,12 @@ const make = Effect.gen(function* () {
         ...(credential ? ["The dream output contains a live T3 credential"] : []),
       ];
       if (failures.length > 0 || checked.dream === undefined) return failed(failures);
+      if (checked.leftOut.length > 0)
+        yield* Effect.logWarning("Kin dream left items out", {
+          orgId,
+          dreamId,
+          leftOut: checked.leftOut,
+        });
       const { commit } = yield* writer.value.commitDream(orgId, {
         branch,
         base: base.head,
@@ -572,6 +585,7 @@ const make = Effect.gen(function* () {
           branch,
           head: commit,
           dream: checked.dream,
+          leftOut: checked.leftOut,
         } satisfies DreamOutcome;
       // From here a cancel loses: memory lands as a wake-up's does, and the run is settled
       // in the transaction that records it, so its material counts as dreamed only once landed.
@@ -587,7 +601,7 @@ const make = Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
               const rows =
                 yield* sql`UPDATE kin_dream_runs SET status = 'succeeded', head = ${head},
-                dream_json = ${dreamText}, ended_at = ${now}
+                dream_json = ${dreamText}, ended_at = ${now}, failure = ${leftOutLine(checked.leftOut)}
               WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running'
               RETURNING dream_id`;
               if (rows.length !== 1)
@@ -603,6 +617,7 @@ const make = Effect.gen(function* () {
         branch,
         head: landed.commit,
         dream: checked.dream,
+        leftOut: checked.leftOut,
       } satisfies DreamOutcome;
     }).pipe(Effect.ensuring(fs.remove(root, { recursive: true, force: true }).pipe(Effect.ignore)));
   });
