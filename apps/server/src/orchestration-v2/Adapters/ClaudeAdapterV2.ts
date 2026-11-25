@@ -34,8 +34,11 @@ import {
   claudeModelLedger,
   claudeReportedContextWindows,
   normalizeClaudeTurnTokenUsage,
+  recordClaudeRequestUsage,
+  runningClaudeTurnTokenUsage,
   type ClaudeLedgerUsage,
   type ClaudeModelLedger,
+  type ClaudeTurnRequests,
 } from "../../provider/ClaudeTurnTokenUsage.ts";
 import { toMcpElicitationResponse } from "../../provider/CodexMcpElicitation.ts";
 import {
@@ -5431,6 +5434,7 @@ interface ActiveClaudeTurnContext {
     requestedAt?: DateTime.Utc;
     usage: ClaudeMessageUsage | null;
   } | null;
+  readonly requests: ClaudeTurnRequests;
   compactionTokens: number | undefined;
   readonly toolCalls: Map<string, ActiveClaudeToolCall>;
   // A successful status can precede the boundary that supplies its token counts.
@@ -6766,6 +6770,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           if (typeof usage !== "number") {
             if (claudeMessageInputTokens(usage) <= 0) return;
             context.compactionTokens = undefined;
+            const id = context.streamUsage?.messageId;
+            if (id !== undefined) recordClaudeRequestUsage(context.requests, id, usage, false);
           }
           yield* emitProviderEvent({
             type: "provider_turn.updated",
@@ -6786,6 +6792,9 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               startedAt: context.startedAt,
               completedAt: null,
               tokenUsage,
+              ...(context.requests.size === 0
+                ? {}
+                : { turnTokenUsage: runningClaudeTurnTokenUsage(context.requests) }),
               ...(context.executedModel === undefined ? {} : { model: context.executedModel }),
             },
           });
@@ -10070,6 +10079,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     input.context.steeredSegmentUsage,
                     {
                       rootModels: input.context.rootModels,
+                      requests: input.context.requests,
                       ...(input.result === undefined
                         ? {}
                         : {
@@ -11803,6 +11813,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ? undefined
                 : canonicalClaudeSubagentModel(modelCatalog, snapshotModel);
             if (parentToolUseId !== null && model !== undefined) {
+              const { id, usage } = message.message;
+              if (usage != null) recordClaudeRequestUsage(context.requests, id, usage, true);
               const subagent = yield* resolveSubagentByToolUseId(context, parentToolUseId);
               if (subagent === undefined) {
                 rememberPendingClaudeSubagentLaunch(
@@ -14091,6 +14103,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 blocks: new Map(),
               },
               streamUsage: null,
+              requests: new Map(),
               compactionTokens: undefined,
               toolCalls: new Map(),
               compaction: null,
