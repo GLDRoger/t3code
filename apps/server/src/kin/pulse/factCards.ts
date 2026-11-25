@@ -151,16 +151,13 @@ const asked = (
   );
 
 /**
- * A teammate's card counts as their nudge for the day (`kin_pulse_nudges`), so an agent's text
- * nudge and Kin's card never both arrive: none when they were nudged today, or their last nudge
- * in the past week went unanswered. Claims the day in the caller's transaction; false when taken.
+ * Whether a teammate's nudge of `day` is still free (`kin_pulse_nudges`), so an agent's text nudge
+ * and Kin's card never both arrive: not when they were nudged that day, or their last nudge in the
+ * past week went unanswered.
  */
-const claimNudge = Effect.fn("KinFactCards.claimNudge")(function* (input: {
+const nudgeFree = Effect.fn("KinFactCards.nudgeFree")(function* (input: {
   readonly orgId: KinOrgId;
   readonly personId: KinPersonId;
-  readonly agentId: KinAgentId;
-  readonly chatId: KinChatId;
-  readonly factKey: string;
   readonly at: number;
   readonly day: string;
 }) {
@@ -171,20 +168,63 @@ const claimNudge = Effect.fn("KinFactCards.claimNudge")(function* (input: {
     FROM kin_pulse_nudges WHERE org_id = ${orgId} AND person_id = ${personId}
     ORDER BY sent_at DESC LIMIT 1`;
   if (last?.day === input.day) return false;
-  if (last !== undefined && at - last.sentAt < NUDGE_BACK_OFF_MS) {
-    const [answered] = yield* sql`SELECT 1 FROM kin_messages
-      WHERE org_id = ${orgId} AND chat_id = ${last.chatId} AND author_person_id = ${personId}
-        AND origin_json IS NULL
-        AND created_at > ${DateTime.formatIso(DateTime.makeUnsafe(last.sentAt))} LIMIT 1`;
-    if (answered === undefined) return false;
-  }
+  if (last === undefined || at - last.sentAt >= NUDGE_BACK_OFF_MS) return true;
+  const [answered] = yield* sql`SELECT 1 FROM kin_messages
+    WHERE org_id = ${orgId} AND chat_id = ${last.chatId} AND author_person_id = ${personId}
+      AND origin_json IS NULL
+      AND created_at > ${DateTime.formatIso(DateTime.makeUnsafe(last.sentAt))} LIMIT 1`;
+  return answered !== undefined;
+});
+
+/** A teammate's card is their nudge of the day: claims it in the caller's transaction, or false. */
+const claimNudge = Effect.fn("KinFactCards.claimNudge")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly personId: KinPersonId;
+  readonly agentId: KinAgentId;
+  readonly chatId: KinChatId;
+  readonly factKey: string;
+  readonly at: number;
+  readonly day: string;
+}) {
+  if (!(yield* nudgeFree(input))) return false;
+  const sql = yield* SqlClient.SqlClient;
   const claimed = yield* sql`INSERT INTO kin_pulse_nudges (org_id, person_id, day, agent_id,
       chat_id, fact_key, sent_at)
-    VALUES (${orgId}, ${personId}, ${input.day}, ${input.agentId}, ${input.chatId},
-      ${input.factKey}, ${at})
+    VALUES (${input.orgId}, ${input.personId}, ${input.day}, ${input.agentId}, ${input.chatId},
+      ${input.factKey}, ${input.at})
     ON CONFLICT (org_id, person_id, day) DO NOTHING RETURNING day`;
   return claimed.length > 0;
 });
+
+/**
+ * Each teammate's nudge of the day, read once a pass: once it is spent, their other facts are
+ * skipped before anything about them is read.
+ */
+const nudgeBudget = (ctx: SenseContext, level: ReadonlySet<string>) => {
+  const free = new Map<string, boolean>();
+  return {
+    free: Effect.fn("KinFactCards.budgetFree")(function* (personId: KinPersonId) {
+      if (level.has(personId)) return true;
+      const known = free.get(personId);
+      if (known !== undefined) return known;
+      const sql = yield* SqlClient.SqlClient;
+      const [person] = yield* sql<{ zone: string | null }>`SELECT time_zone AS zone
+        FROM kin_people WHERE org_id = ${ctx.orgId} AND person_id = ${personId}`;
+      const now = yield* nudgeFree({
+        orgId: ctx.orgId,
+        personId,
+        at: ctx.at,
+        day: dayIn(ctx.at, person?.zone ?? ctx.zone),
+      });
+      free.set(personId, now);
+      return now;
+    }),
+    spend: (personId: KinPersonId) => {
+      if (!level.has(personId)) free.set(personId, false);
+    },
+  };
+};
+type NudgeBudget = ReturnType<typeof nudgeBudget>;
 
 /**
  * Posts one card about a fact to `personId`, in their direct chat with `agentId` (else the team
@@ -379,6 +419,7 @@ const waitedCards = Effect.fn("KinFactCards.waited")(function* (input: {
   ) => Effect.Effect<ReadonlyArray<{ readonly key: string }>, SqlError, SqlClient.SqlClient>;
   readonly level: ReadonlySet<string>;
   readonly posted: ReadonlyArray<CardRow>;
+  readonly budget: NudgeBudget;
 }) {
   const { ctx } = input;
   const { orgId, chief } = ctx;
@@ -389,6 +430,7 @@ const waitedCards = Effect.fn("KinFactCards.waited")(function* (input: {
     if (fact.actor._tag !== "person" || input.level.has(fact.actor.personId)) continue;
     const personId = fact.actor.personId;
     if (asked(input.posted, fact.key, personId)) continue;
+    if (!(yield* input.budget.free(personId))) continue;
     const [row] = yield* sql<{
       key: string;
       title: string;
@@ -436,7 +478,7 @@ const waitedCards = Effect.fn("KinFactCards.waited")(function* (input: {
     const options = [plan("done"), plan("by", next), plan("by", week), plan("not_mine")].map(
       (one) => ({ label: factCardShown(one).label, plan: one }),
     );
-    yield* postFactCard({
+    const card = yield* postFactCard({
       ctx,
       personId,
       agentId: chief,
@@ -446,6 +488,7 @@ const waitedCards = Effect.fn("KinFactCards.waited")(function* (input: {
       options,
       posted: input.posted,
     });
+    if (card !== undefined) input.budget.spend(personId);
   }
 });
 
@@ -464,6 +507,7 @@ const stallCards = Effect.fn("KinFactCards.stalled")(function* (input: {
   ) => Effect.Effect<ReadonlyArray<{ readonly key: string }>, SqlError, SqlClient.SqlClient>;
   readonly level: ReadonlySet<string>;
   readonly posted: ReadonlyArray<CardRow>;
+  readonly budget: NudgeBudget;
 }) {
   const { ctx } = input;
   const { orgId, chief } = ctx;
@@ -484,6 +528,7 @@ const stallCards = Effect.fn("KinFactCards.stalled")(function* (input: {
         row.outcome !== DID_NOTHING,
     ).length;
     if (asked(input.posted, fact.key, personId, round)) continue;
+    if (!(yield* input.budget.free(personId))) continue;
     const [row] = yield* sql<{
       key: string;
       title: string;
@@ -515,7 +560,7 @@ const stallCards = Effect.fn("KinFactCards.stalled")(function* (input: {
     const plans = (["still", "done"] as const).map(
       (answer) => ({ kind: "stall_answer", answer, ...base }) satisfies StallPlan,
     );
-    yield* postFactCard({
+    const card = yield* postFactCard({
       ctx,
       personId,
       agentId: chief,
@@ -528,6 +573,7 @@ const stallCards = Effect.fn("KinFactCards.stalled")(function* (input: {
       ],
       posted: input.posted,
     });
+    if (card !== undefined) input.budget.spend(personId);
   }
 });
 
@@ -590,6 +636,7 @@ const milestoneCards = Effect.fn("KinFactCards.milestones")(function* (input: {
   ) => Effect.Effect<ReadonlyArray<{ readonly key: string }>, SqlError, SqlClient.SqlClient>;
   readonly level: ReadonlySet<string>;
   readonly posted: ReadonlyArray<CardRow>;
+  readonly budget: NudgeBudget;
 }) {
   const { ctx } = input;
   const { orgId, chief, at } = ctx;
@@ -631,6 +678,7 @@ const milestoneCards = Effect.fn("KinFactCards.milestones")(function* (input: {
           (yield* mayChange(orgId, lead, { recordId: fact.subject.recordId, key: row.key }))));
     const personId = mayMove ? lead : KinPersonId.make(owner.personId);
     if ((sent.get(personId) ?? 0) >= MILESTONE_CARDS_PER_PASS) continue;
+    if (!(yield* input.budget.free(personId))) continue;
     const agentId =
       row.holderKind === "agent" && row.holderId !== null && ctx.liveAgents.has(row.holderId)
         ? KinAgentId.make(row.holderId)
@@ -682,6 +730,7 @@ const milestoneCards = Effect.fn("KinFactCards.milestones")(function* (input: {
     });
     if (card === undefined) continue;
     sent.set(personId, (sent.get(personId) ?? 0) + 1);
+    input.budget.spend(personId);
     yield* markTold({
       orgId,
       personId,
@@ -734,7 +783,8 @@ export const factCards = Effect.fn("KinFactCards.pass")(function* (input: {
     ),
   );
   const level = yield* ownerLevelPeople(orgId);
-  yield* waitedCards({ ...input, level, posted });
-  yield* stallCards({ ...input, level, posted });
-  yield* milestoneCards({ ...input, level, posted });
+  const budget = nudgeBudget(input.ctx, level);
+  yield* waitedCards({ ...input, level, posted, budget });
+  yield* stallCards({ ...input, level, posted, budget });
+  yield* milestoneCards({ ...input, level, posted, budget });
 });

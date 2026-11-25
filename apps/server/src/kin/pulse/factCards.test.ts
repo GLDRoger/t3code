@@ -30,6 +30,7 @@ import * as Kin from "../layer.ts";
 import * as Reach from "../lead/Reach.ts";
 import type { Services } from "../KinServer.ts";
 import { KinRecords } from "../work/KinRecords.ts";
+import { factCards } from "./factCards.ts";
 import * as KinPulse from "./KinPulse.ts";
 
 // Invented: Rhea's Ambermill. Zoya's W-1 waits on Arjun, W-2 on Rhea; Meera is a co-owner.
@@ -865,6 +866,44 @@ it.effect(
         const second = yield* cards(ctx);
         assert.strictEqual(second.filter((card) => card.who === zoyaId).length, 1);
         assert.strictEqual(second.filter((card) => card.who === ctx.owner.personId).length, 4);
+      }),
+    ),
+);
+
+it.effect(
+  "a teammate whose nudge of the day is spent costs the pass nothing more: none of their facts is read",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW);
+        for (const key of ["W-1", "W-2"])
+          yield* ctx.records.update(ctx.orgId, ctx.byOwner, key, { state: "done" });
+        for (const title of ["Draft onboarding guide", "Plan the second site"])
+          yield* inProgress(ctx, title, zoyaId, NOW - 4 * DAY);
+        const chat = yield* ctx.chats.createDirect(ctx.person(zoyaId), {
+          orgId: ctx.orgId,
+          agentId: chief,
+        });
+        yield* ctx.sql`INSERT INTO kin_pulse_nudges (org_id, person_id, day, agent_id, chat_id,
+            fact_key, sent_at)
+          VALUES (${ctx.orgId}, ${zoyaId}, '2026-11-25', ${chief}, ${chat.chatId}, 'other',
+            ${NOW - HOUR})`;
+        const facts = (yield* KinPulse.read({
+          orgId: ctx.orgId,
+          at: NOW,
+          viewer: { _tag: "owner" },
+          limit: 200,
+        })).facts;
+        assert.strictEqual(facts.filter((fact) => fact.sense === "task_stalled").length, 2);
+        let reads = 0;
+        yield* factCards({
+          ctx: yield* KinPulse.context(ctx.orgId, NOW),
+          sensed: facts,
+          open: facts,
+          sees: (_personId, some) => Effect.sync(() => (reads += 1)).pipe(Effect.as(some)),
+        });
+        assert.strictEqual(reads, 0);
+        assert.deepStrictEqual(yield* cards(ctx), []);
       }),
     ),
 );
