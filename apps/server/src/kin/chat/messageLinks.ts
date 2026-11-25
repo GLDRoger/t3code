@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- the synchronous digest uses bytes already read.
+import * as NodeCrypto from "node:crypto";
 import {
   EnvironmentId,
   KIN_MESSAGE_LINKS_CAP,
@@ -21,7 +23,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { turnChanges } from "../lead/turnChanges.ts";
-import { ownerLevel } from "../people/KinAccess.ts";
+import { accessSql, ownerLevel } from "../people/KinAccess.ts";
 import {
   KIN_OWNER_LEVEL,
   seenBy,
@@ -160,6 +162,43 @@ const noteOf = (row: {
     ? `${row.title} · ${STATE_WORDS[row.state] ?? row.state}`
     : row.title;
 
+const directAgentChats = (sql: SqlClient.SqlClient, orgId: KinOrgId, personId: KinPersonId) =>
+  sql`FROM kin_chats c
+    JOIN kin_chat_members me ON me.org_id = c.org_id AND me.chat_id = c.chat_id
+      AND me.principal_kind = 'person' AND me.person_id = ${personId} AND me.left_at IS NULL
+    JOIN kin_chat_members am ON am.org_id = c.org_id AND am.chat_id = c.chat_id
+      AND am.principal_kind = 'agent' AND am.left_at IS NULL
+    JOIN kin_agents a ON a.org_id = c.org_id AND a.agent_id = am.agent_id AND a.retired_at IS NULL
+    WHERE c.org_id = ${orgId} AND c.kind = 'direct' AND c.archived_at IS NULL`;
+
+export const linkAccessStamp = Effect.fn("KinMessageLinks.accessStamp")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const viewer = viewerOfPeople([personId]);
+  const [row] = yield* sql<{ targets: string }>`
+    WITH reader AS (
+      SELECT ${sql.literal(accessSql("p"))} IN ('owner', 'co_owner') AS owner
+      FROM kin_people p WHERE p.org_id = ${orgId} AND p.person_id = ${personId}
+    ), targets(kind, target) AS (
+      SELECT 'settings', '' FROM reader WHERE owner
+      UNION ALL
+      SELECT 'person', person_id FROM kin_people
+        WHERE org_id = ${orgId} AND removed_at IS NULL AND person_id <> ${personId}
+      UNION ALL
+      SELECT DISTINCT 'chat', c.chat_id ${directAgentChats(sql, orgId, personId)}
+      UNION ALL
+      SELECT 'record', json_array(r.key, CASE
+        WHEN json_type(r.fields_json, '$.number') = 'text'
+          AND (reader.owner OR ${listNumberSeenBy(sql, viewer)}) THEN 1 ELSE 0 END)
+        FROM kin_records r CROSS JOIN reader
+        WHERE r.org_id = ${orgId} AND (reader.owner OR ${seenBy(sql, viewer)})
+    )
+    SELECT json_group_array(json_array(kind, target) ORDER BY kind, target) AS targets FROM targets`;
+  return NodeCrypto.createHash("sha256").update(row!.targets).digest("hex").slice(0, 16);
+});
+
 /** What this viewer may open, read once for a batch of messages. */
 const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
   orgId: KinOrgId,
@@ -173,15 +212,7 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
   const sql = yield* SqlClient.SqlClient;
   // Their own direct chats with agents: the chat a name like "Finance" opens.
   const agents = yield* sql<{ name: string; chatId: string }>`SELECT a.display_name AS name,
-      c.chat_id AS "chatId"
-    FROM kin_chats c
-    JOIN kin_chat_members me ON me.org_id = c.org_id AND me.chat_id = c.chat_id
-      AND me.principal_kind = 'person' AND me.person_id = ${personId} AND me.left_at IS NULL
-    JOIN kin_chat_members am ON am.org_id = c.org_id AND am.chat_id = c.chat_id
-      AND am.principal_kind = 'agent' AND am.left_at IS NULL
-    JOIN kin_agents a ON a.org_id = c.org_id AND a.agent_id = am.agent_id AND a.retired_at IS NULL
-    WHERE c.org_id = ${orgId} AND c.kind = 'direct' AND c.archived_at IS NULL
-    ORDER BY c.created_at`;
+      c.chat_id AS "chatId" ${directAgentChats(sql, orgId, personId)} ORDER BY c.created_at`;
   const people = yield* sql<{ name: string; personId: string }>`SELECT display_name AS name,
       person_id AS "personId" FROM kin_people
     WHERE org_id = ${orgId} AND removed_at IS NULL AND person_id <> ${personId}`;

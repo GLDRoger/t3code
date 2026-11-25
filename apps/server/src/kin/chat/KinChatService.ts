@@ -2870,6 +2870,7 @@ const make = Effect.gen(function* () {
               ...member,
               afterSeq: input.afterSeq ?? 0,
               afterChangeSeq: input.afterChangeSeq,
+              includeAccessStamp: true,
             }),
           );
           const backlog: KinChatStreamEvent = resumed.reset
@@ -2896,6 +2897,7 @@ const make = Effect.gen(function* () {
                 ...(Option.isSome(presence)
                   ? yield* presence.value.snapshot(identity.orgId, input.chatId)
                   : {}),
+                accessStamp: resumed.accessStamp,
                 readSeq: Option.match(yield* repo.getReadState(member), {
                   onNone: () => 0,
                   onSome: (read) => read.lastReadSeq,
