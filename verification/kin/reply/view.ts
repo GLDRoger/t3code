@@ -91,6 +91,16 @@ export const variants = [
     what: "the reply posts after someone joined, as the turn's private prompt wrote it",
   },
   {
+    name: "line-not-ended",
+    breaks: "NeverTwo",
+    what: "the join's held-back line posts but the turn's unanswered asks are not ended (no `endLostToJoin`, the code before this change)",
+  },
+  {
+    name: "join-expires-silently",
+    breaks: "EveryMessageAnswered",
+    what: "a join expires the asks waiting in the chat and posts no line (no `stoppedLines`)",
+  },
+  {
     name: "line-stays",
     breaks: "LineClears",
     what: "the end of a turn no longer clears the agent's line",
@@ -140,6 +150,10 @@ export const step = (action: string, from: Vars, to: Vars) => {
       return "The floor closes";
     case "SomeoneJoins":
       return "Someone joins the chat while the agent works";
+    case "JoinStops":
+      return from["wake"] === "running"
+        ? "Someone else joins; the agent's turn is stopped and the chat is told once"
+        : "Someone else joins; the chat is told once your waiting message won't be answered";
     case "ReplyHeldBack":
       return to["aborted"] === true
         ? "Its reply is held back for the join; nothing visible yet, so a fresh turn will answer"

@@ -932,6 +932,57 @@ it.effect.each([
     }).pipe(Effect.provide(layer)),
 );
 
+// Reply model of 25 Nov: a join after the reply posted, mid-run, told the asker to ask again.
+it.effect.each([
+  { unanswered: false, lines: [] },
+  {
+    unanswered: true,
+    lines: [
+      "Tech lead didn't finish its reply: someone joined while it was working. What it had already done stays; ask again for the answer.",
+    ],
+  },
+] as const)(
+  "a join after the lead replied, while it still works, leaves that ask answered (other ask unanswered: $unanswered)",
+  ({ unanswered, lines }) =>
+    Effect.gen(function* () {
+      const { sql, groups, queue, owner, orgId, tech, priya, sam, say, events, wake } = yield* seed;
+      const { chatId } = yield* groups.create([owner], {
+        orgId,
+        title: "Planning",
+        agentIds: [tech],
+        personIds: unanswered ? [sam.personId] : [],
+      });
+      const replied = yield* say(owner, chatId, "Invented-owner-replied-ask");
+      const other = unanswered ? yield* say(sam, chatId, "Invented-sam-open-ask") : undefined;
+      const running = yield* wake(tech);
+      // The reply posted (its answered mark) and the lead went on to a tool call.
+      yield* sql`UPDATE kin_events SET replied_at = 1
+        WHERE wakeup_id = ${running.wakeupId}
+          AND json_extract(json, '$.messageId') = ${replied.messageId}`;
+      yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash)
+        VALUES (${orgId}, ${running.wakeupId}, 'item:task-1', 'fixture-hash')`;
+      yield* groups.addMember([owner], {
+        chatId,
+        principal: { _tag: "person", personId: priya.personId },
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT body FROM kin_messages WHERE chat_id = ${chatId}
+          AND author_kind = 'system' ORDER BY seq`,
+        lines.map((body) => ({ body })),
+      );
+      // The stopped run ending requeues nothing: no later turn answers the replied ask again.
+      yield* queue.finish({ orgId, wakeupId: running.wakeupId, status: "failed" });
+      const stateOf = (messageId: string) =>
+        events.pipe(
+          Effect.map((rows) =>
+            rows.filter((row) => row.messageId === messageId).map((row) => row.state),
+          ),
+        );
+      assert.deepStrictEqual(yield* stateOf(replied.messageId), ["done"]);
+      if (other !== undefined) assert.deepStrictEqual(yield* stateOf(other.messageId), ["expired"]);
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "someone removed and added back is a new join: the lead reads them nothing from before it",
   () =>
