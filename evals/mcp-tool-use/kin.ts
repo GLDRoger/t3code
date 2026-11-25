@@ -187,6 +187,8 @@ import {
   RESCUE_PROMPT,
 } from "../../apps/server/src/kin/reply/classify.ts";
 import { TURN_EVENT_TOOLS } from "../../apps/server/src/kin/lead/eventIds.ts";
+import { noticeConsequence } from "../../apps/server/src/kin/pulse/senses/money.ts";
+import { noticeDay } from "../../apps/server/src/kin/work/crm.ts";
 import type { McpToolUseCase } from "./run.ts";
 
 export { kinInstructions, kinLeadInstructions };
@@ -1268,6 +1270,21 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
         spent: BigInt(one.spent as number),
       })),
     } as never),
+  // A notice_due fact's consequence before its day, as the money sense words it.
+  noticeDue: (input: {
+    client: string;
+    project: string;
+    renewsOn: string;
+    noticeDays: string;
+    zone: string;
+  }) =>
+    noticeConsequence({
+      name: input.client,
+      title: input.project,
+      by: endOfDay(noticeDay(input.renewsOn, input.noticeDays)!, input.zone),
+      renews: endOfDay(input.renewsOn, input.zone),
+      zone: input.zone,
+    }),
 };
 /** A field of the call's input by its path, such as `records.0.title`. */
 const argAt = (args: unknown, path: string): unknown =>
