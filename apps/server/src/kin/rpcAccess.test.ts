@@ -67,6 +67,8 @@ const MEMBER = [
   "kin.docs.get",
   "kin.docs.history",
   "kin.docs.list",
+  // `setReaders` checks the draft's writer and the owner level against stored rows.
+  "kin.docs.readers",
   // A teammate's own draft card: `sendUp` checks the card, the chat and the doc from stored rows.
   "kin.docs.sendUp",
   "kin.docs.subscribe",

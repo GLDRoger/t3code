@@ -90,6 +90,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinDocChangesView } from "./KinDocChangesView";
 import { KinDocFileDialog } from "./KinDocFileDialog";
 import { KinDocReader } from "./KinDocReader";
+import { KinDocReadersRow } from "./KinDocReadersRow";
 import { openDestination } from "./KinNotifications";
 import { KinLinkedGroups } from "./KinWorkItemSheet";
 import { KinWatchLine } from "./KinWatchLine";
@@ -355,8 +356,18 @@ export function KinDocPage(
       {doc === null ||
       comparing !== undefined ||
       doc.archived ||
-      doc.sensitive ||
-      doc.sensitiveInherited === true ? null : (
+      doc.sensitiveInherited === true ? null : doc.readers !== undefined ? (
+        <div className="mx-auto w-full max-w-3xl px-6 pt-3">
+          <KinDocReadersRow
+            environmentId={environmentId}
+            orgId={orgId}
+            doc={doc}
+            names={names}
+            disabled={busy}
+            onSettled={refresh}
+          />
+        </div>
+      ) : doc.sensitive ? null : (
         <div className="mx-auto w-full max-w-3xl px-6 pt-3">
           {doc.company === true ? (
             <div className="flex flex-col gap-0.5">

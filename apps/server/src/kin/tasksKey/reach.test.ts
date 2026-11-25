@@ -611,6 +611,7 @@ const reach: Readonly<Record<string, ReadonlyArray<string> | string>> = {
   "kin.docs.setDefaultRecipe": "stays in the app: 5 (host, company sections and settings)",
   "kin.docs.startWhatWeSell": "stays in the app: 5 (host, company sections and settings)",
   "kin.docs.editSection": ["write_doc"],
+  "kin.docs.readers": "stays in the app: 3 (access to documents)",
   "kin.docs.sendUp":
     "not reached yet: sending a draft doc up to an agent; ask_agent is the nearest",
   "kin.docs.delete": "stays in the app: 6 (deleting or archiving)",

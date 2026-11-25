@@ -2290,6 +2290,11 @@ export function makeKinClient<R, ER>(
       tag: "kin.docs.label",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
     }),
+    docReaders: createKinRpcCommand(runtime, {
+      label: "kin:docs:readers",
+      tag: "kin.docs.readers",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
     docFile: createKinRpcCommand(runtime, {
       label: "kin:docs:file",
       tag: "kin.docs.file",
