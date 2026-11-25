@@ -184,6 +184,12 @@ export const KinListUpdateInput = Schema.Struct({
   restoreFields: Schema.optional(Schema.Array(KinListFieldKey).check(Schema.isMaxLength(30))),
   /** Sets how it numbers what it issues from now on; numbers already issued stay. */
   numbering: Schema.optional(KinNumberingRule),
+  /** The date Kin reminds on: a date field's key, or "date" for each entry's own date. Null stops it; the due day needs none. */
+  remindOn: Schema.optional(Schema.NullOr(KinListFieldKey)),
+  /** The one number check on every entry; null stops it. */
+  check: Schema.optional(Schema.NullOr(KinListDefinition.fields.check)),
+  /** As on `kin.work.lists`: the result carries remindOn and check only when this names them. */
+  accept: KinListsInput.fields.accept,
 });
 export type KinListUpdateInput = typeof KinListUpdateInput.Type;
 
