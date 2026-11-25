@@ -328,8 +328,7 @@ export class KinReplyBridge extends Context.Service<
      * The wake-up failed, in the lane read before the queue closed it: `partway` after
      * something visible (not retried), `replied` when its reply already answered every message
      * (a line only for a card the reply named and never posted, or a promise not kept),
-     * `retrying` (`retrying_later` before the long wait) when it showed nothing, `gave_up` last,
-     * `stopped` for a run that ignored Stop and was ended for certain.
+     * `retrying` (`retrying_later` before the long wait) when it showed nothing, `gave_up` last.
      */
     readonly failed: (input: {
       readonly orgId: KinOrgId;

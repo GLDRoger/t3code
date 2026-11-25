@@ -19,9 +19,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { ServerConfig } from "../../config.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
-import { KinChatService } from "../chat/KinChatService.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
-import { closeQuestionsAbout } from "../questions/openQuestions.ts";
 import { pullRequestAbout } from "../questions/rules.ts";
 import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
 import { KinServer } from "../KinServer.ts";
@@ -720,6 +718,11 @@ export const make = Effect.gen(function* () {
   const api = yield* KinGitHubApi;
   const queue = yield* KinEventQueue.KinEventQueue;
   const records = yield* Effect.serviceOption(KinRecords);
+  // Loaded at build: static imports of these close an import cycle through Kin's leads.
+  const { KinChatService } = yield* Effect.promise(() => import("../chat/KinChatService.ts"));
+  const { closeQuestionsAbout } = yield* Effect.promise(
+    () => import("../questions/openQuestions.ts"),
+  );
   const chat = yield* Effect.serviceOption(KinChatService);
   const refresh = yield* KinRefreshObserver;
   const app = yield* gitHubApp;

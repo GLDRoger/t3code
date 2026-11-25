@@ -3653,9 +3653,10 @@ it.effect(
       const host = KinSchedules.hostTimeZone();
       const winter = Date.UTC(2026, 0, 12, 12);
       const summer = Date.UTC(2026, 6, 13, 12);
-      const zone = ["09:00", onHostClock("09:00", [1], "America/New_York", host, summer).at].includes(
-        onHostClock("09:00", [1], "America/New_York", host, winter).at,
-      )
+      const zone = [
+        "09:00",
+        onHostClock("09:00", [1], "America/New_York", host, summer).at,
+      ].includes(onHostClock("09:00", [1], "America/New_York", host, winter).at)
         ? "Asia/Kolkata"
         : "America/New_York";
       yield* sql`DELETE FROM kin_trigger_settings`;
@@ -3679,7 +3680,15 @@ it.effect(
       );
       yield* setEvery({ at: "12:00", days: [1] });
       const turned = onHostClock("12:00", [1], host, zone, summer);
-      const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+      const dayNames = [
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+        "Thursday",
+        "Friday",
+        "Saturday",
+      ];
       expect(line(yield* prompt.build(turn))).toContain(
         `routine "sch-plans" ("Open tasks") every ${dayNames[turned.days[0]!]} ${turned.at}, set by`,
       );

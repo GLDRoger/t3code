@@ -327,22 +327,22 @@ const make = Effect.gen(function* () {
       : forced && (finished.stranded > 0 || finished.failedEventIds.length > 0)
         ? "stopped"
         : finished.stranded > 0
-        ? "partway"
-        : finished.replied > 0
-          ? "replied"
-          : (finished.heldEventIds?.length ?? 0) > 0
-            ? lane.value.owed
-              ? "held"
-              : undefined
-            : setup !== null
-              ? setup
-              : finished.failedEventIds.length > 0
-                ? "gave_up"
-                : finished.retried > 0 && lane.value.owed
-                  ? finished.retryInMs >= KinEventQueue.LAST_RETRY_MS
-                    ? "retrying_later"
-                    : "retrying"
-                  : undefined;
+          ? "partway"
+          : finished.replied > 0
+            ? "replied"
+            : (finished.heldEventIds?.length ?? 0) > 0
+              ? lane.value.owed
+                ? "held"
+                : undefined
+              : setup !== null
+                ? setup
+                : finished.failedEventIds.length > 0
+                  ? "gave_up"
+                  : finished.retried > 0 && lane.value.owed
+                    ? finished.retryInMs >= KinEventQueue.LAST_RETRY_MS
+                      ? "retrying_later"
+                      : "retrying"
+                    : undefined;
     if (outcome !== undefined)
       yield* bridge.value.failed({
         orgId: row.orgId,
