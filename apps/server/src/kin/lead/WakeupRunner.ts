@@ -238,6 +238,7 @@ const make = Effect.gen(function* () {
     status: "completed" | "failed" | "interrupted" | "timed_out",
     setup: SetupFailure | null = null,
     failure: unknown = null,
+    forced = false,
   ) {
     // Read first: finishing returns retried events to the queue, which drops their lane.
     const lane =
@@ -272,6 +273,7 @@ const make = Effect.gen(function* () {
       wakeupId: row.wakeupId,
       status,
       ...(holdUntil === undefined ? {} : { holdUntil }),
+      ...(forced ? { final: true } : {}),
     });
     // Its bills left unanswered are told as unread once the turn is over for good.
     if (Option.isSome(chatRepository) && Option.isSome(chatHub))
@@ -322,7 +324,9 @@ const make = Effect.gen(function* () {
     // Every message already replied to: one message, one answer, unless the reply's promise broke.
     const outcome = quiet
       ? undefined
-      : finished.stranded > 0
+      : forced && (finished.stranded > 0 || finished.failedEventIds.length > 0)
+        ? "stopped"
+        : finished.stranded > 0
         ? "partway"
         : finished.replied > 0
           ? "replied"
@@ -1072,6 +1076,7 @@ const make = Effect.gen(function* () {
       // Someone besides the owner joined while it worked: it says nothing more, and a fresh
       // wake-up answers its events (`KinEventQueue.finish`).
       let abandoned = yield* isAborted(row);
+      let forced = false;
       yield* Effect.gen(function* () {
         if (result.timedOut) {
           yield* threads.interruptThread({
@@ -1086,12 +1091,28 @@ const make = Effect.gen(function* () {
             runId: current,
             timeoutMs: 30_000,
           });
-          if (settled.timedOut)
-            yield* Effect.logWarning("Kin timed-out run may continue after interrupt", {
-              orgId: row.orgId,
-              wakeupId: row.wakeupId,
-              runId: current,
-            });
+          // It ignored the interrupt: its tasks and its agent are ended for certain, as retiring does.
+          if (settled.timedOut) {
+            forced = true;
+            yield* threads
+              .stopDelegatedTasks({
+                threadId,
+                commandId: CommandId.make(`kin-timeout-stop:${row.wakeupId}`),
+                reason: "Its turn took too long and was stopped.",
+              })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Kin could not stop a stuck turn's tasks", { threadId, cause }),
+                ),
+              );
+            yield* threads
+              .forceStopThread({ threadId, runId: current })
+              .pipe(
+                Effect.catchCause((cause) =>
+                  Effect.logWarning("Kin could not force-stop a stuck turn", { threadId, cause }),
+                ),
+              );
+          }
         }
         // The reply lands before memory commits, while the wake-up still owns its lane. Its run
         // just ended, so the floor's grant counts from now; a rescue turn that keeps working
@@ -1154,7 +1175,7 @@ const make = Effect.gen(function* () {
             countAttempt: false,
             notBefore: (yield* Clock.currentTimeMillis) + PAUSE_POLL_INTERVAL_MS,
           });
-        else yield* finishWakeup(row, status, setup, failure);
+        else yield* finishWakeup(row, status, setup, failure, forced);
       }).pipe(
         Effect.onExit((exit) =>
           result.timedOut && Exit.isFailure(exit)

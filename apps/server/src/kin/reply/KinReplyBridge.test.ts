@@ -1806,6 +1806,25 @@ it.effect.each([
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect("a turn that ignored Stop tells its chat once that it was stopped, with Retry", () =>
+  Effect.gen(function* () {
+    const { bridge, owner, wakeupId, sql, chatId } = yield* setup({ ask: "Rates for Tidewater?" });
+    const lane = { chatId, mode: "reply" as const, owed: true, leadName: "Ada" };
+    yield* bridge.failed({ orgId: owner.orgId, wakeupId, lane, outcome: "stopped" });
+    yield* bridge.failed({ orgId: owner.orgId, wakeupId, lane, outcome: "stopped" });
+    assert.deepStrictEqual(
+      yield* sql`SELECT message_id AS "messageId", body FROM kin_messages
+        WHERE org_id = ${owner.orgId} AND author_kind = 'system' ORDER BY seq`,
+      [
+        {
+          messageId: `kin-failed:${wakeupId}`,
+          body: "Ada took too long and was stopped. Nothing it hadn't finished was sent. Ask again to start fresh.",
+        },
+      ],
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("posts nothing for an L0 lead's reply in a chat its owner didn't place it in", () =>
   Effect.gen(function* () {
     const { fake, runId, complete, posted, sql, owner } = yield* setup({
