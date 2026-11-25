@@ -290,11 +290,16 @@ export const kinTotalsLines = (totals: KinMoneyTotals, paise = false): ReadonlyA
 
 export const KIN_MONEY_NOTHING = "Nothing";
 
-/** A category as its list labels it, else exactly as it was written and stored. */
+const readableCategory = (category: string) => {
+  const [first] = category;
+  return first === undefined ? "" : first.toUpperCase() + category.slice(first.length);
+};
+
+/** A category as its list labels it, else its key with an initial capital. */
 export const kinCategoryLabel = (
   category: string,
   def?: Pick<KinListDefinition, "categoryLabels"> | null,
-) => def?.categoryLabels?.[category] ?? category;
+) => def?.categoryLabels?.[category] ?? readableCategory(category);
 
 /** "Today" reads as "today" after a label; a date keeps its capitals. */
 export const afterLabel = (when: string) =>
@@ -1810,8 +1815,11 @@ export function kinListEditInput(
   for (const category of def.categories) {
     const label = (draft.categoryLabels[category] ?? "").trim();
     if (label === kinCategoryLabel(category, def)) continue;
-    // Cleared, or typed back as stored: it shows as stored again.
-    categories[category] = label === "" || label === category ? null : label;
+    // Cleared, or typed back as its default name: clear any stored custom label.
+    categories[category] =
+      label === "" || label === category || label === kinCategoryLabel(category, null)
+        ? null
+        : label;
   }
   const renamed = name !== def.name;
   const payments = draft.payments !== (def.payments === true);

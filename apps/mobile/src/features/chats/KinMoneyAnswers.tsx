@@ -3,7 +3,11 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import type { KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import { KIN_INVOICES, kinConfirmTotal } from "@t3tools/client-runtime/kin/kinInvoices";
-import { KIN_BANK, KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
+import {
+  KIN_BANK,
+  KIN_LIST_DEFAULT_FILTER,
+  kinCategoryLabel,
+} from "@t3tools/client-runtime/kin/kinLists";
 import { kinWorkReadUnreachable } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import {
@@ -720,7 +724,7 @@ function BudgetForm(props: KinWorkTarget & { readonly budget: KinMoneyBudget | n
   const setter = useKinBudgetSet(props);
   const close = () => navigation.goBack();
   const categories = expenses?.categories ?? [];
-  const label = (category: string) => expenses?.categoryLabels?.[category] ?? category;
+  const label = (category: string) => kinCategoryLabel(category, expenses);
   const home = rates?.home ?? expenses?.currency ?? KIN_DEFAULT_HOME_CURRENCY;
   const save = async () => {
     const checked = kinBudgetInput(props.orgId, draft, home, requestId);

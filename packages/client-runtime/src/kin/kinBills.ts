@@ -21,7 +21,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-import { kinMoneyText } from "./kinLists.ts";
+import { kinCategoryLabel, kinMoneyText } from "./kinLists.ts";
 
 /**
  * Bills added in bulk, as both apps show them: the words, what each bill offers by its state, the
@@ -220,7 +220,7 @@ const blank = (value: string | undefined) =>
 /** What the reader read off the bill, every field in its place, a blank left empty. */
 function kinBillFields(
   read: KinBillRead,
-  categoryLabel: (category: string) => string = (category) => category,
+  categoryLabel: (category: string) => string = (category) => kinCategoryLabel(category),
 ): ReadonlyArray<KinBillField> {
   const category = blank(read.category);
   const day = blank(read.date);
@@ -281,7 +281,7 @@ function kinBillStateLabel(row: KinBillRow) {
 /** A kept or dropped bill is its expense now: that expense's figures, the bill's own number kept. */
 function kinBillExpenseFields(
   row: KinBillRow,
-  categoryLabel: (category: string) => string = (category) => category,
+  categoryLabel: (category: string) => string = (category) => kinCategoryLabel(category),
 ): ReadonlyArray<KinBillField> | null {
   const expense = row.expense;
   if ((row.state !== "kept" && row.state !== "dropped") || expense === undefined) return null;

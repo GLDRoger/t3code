@@ -726,12 +726,12 @@ function KinListSettings(
                   {def.categories.map((held) => (
                     <div key={held} className="flex items-center gap-2">
                       <span className="w-28 shrink-0 truncate text-xs text-muted-foreground">
-                        {held}
+                        {kinCategoryLabel(held, null)}
                       </span>
                       <Input
-                        aria-label={`Name for ${held}`}
+                        aria-label={`Name for ${kinCategoryLabel(held, null)}`}
                         value={draft.categoryLabels[held] ?? ""}
-                        placeholder={held}
+                        placeholder={kinCategoryLabel(held, null)}
                         maxLength={KIN_LIST_LABEL_MAX}
                         disabled={locked || changes.busy}
                         autoComplete="off"

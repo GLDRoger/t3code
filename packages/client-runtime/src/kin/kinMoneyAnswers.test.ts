@@ -163,7 +163,7 @@ describe("kinBudgets", () => {
     // A project the host gives no name for is gone: never shown by its key.
     const nameless = { ...budget("d", -500, 100, "ok"), project: { key: "P-7", title: null } };
     expect(kinBudgetsView({ month: "2026-11", budgets: [nameless] }, null, null)[0]?.label).toBe(
-      "travel in a removed project",
+      "Travel in a removed project",
     );
     expect(kinBudgetDraftOf(nameless).project).toBeNull();
     expect(kinBudgetsView({ month: "2026-11", budgets: [nameless] }, null, null)[0]?.share).toBe(0);
