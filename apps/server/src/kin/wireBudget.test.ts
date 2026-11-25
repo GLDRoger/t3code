@@ -11,6 +11,7 @@ import {
   KinChatSummary,
   KinChatStreamEvent,
   KinMoneyAnswerRpcs,
+  type KinMyMailbox,
   KinNumbersRpcs,
   KIN_MONEY_PARTS,
   type KinMoneyPart,
@@ -44,6 +45,7 @@ import { previewRow } from "./chat/chatRowPreview.ts";
 import * as ChatHub from "./chat/KinChatHub.ts";
 import * as ChatRepository from "./chat/KinChatRepository.ts";
 import * as ChatService from "./chat/KinChatService.ts";
+import { KinConnections } from "./connections/ConnectionsService.ts";
 import * as Groups from "./chat/KinGroups.ts";
 import {
   type AgentIdentity,
@@ -631,7 +633,21 @@ const numbersBytes = Effect.fn("KinWireBudget.numbers")(function* () {
 const pinned = (chat: boolean) =>
   Object.fromEntries(Object.entries(budget).filter(([key]) => key.startsWith("chat.") === chat));
 
-withLayer(layer)("Kin wire budget", (it) => {
+const connections = Layer.mock(KinConnections)({
+  mine: (_people, { orgId }) =>
+    Effect.succeed({
+      orgId,
+      mailbox: null,
+      mailboxes: [],
+      services: [
+        { service: "google", label: "Google", ready: false },
+        { service: "microsoft", label: "Microsoft", ready: false },
+      ],
+      signInAddress: "https://ambermill.example/sign-in",
+    } satisfies KinMyMailbox),
+});
+
+withLayer(Layer.merge(layer, connections))("Kin wire budget", (it) => {
   it.effect("hot reads and one change's stream match kinWireBudget.json", () =>
     Effect.gen(function* () {
       yield* seed(BASE_SIZE);
