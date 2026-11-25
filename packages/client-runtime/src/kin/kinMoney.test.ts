@@ -17,6 +17,9 @@ import {
   kinCompanyGlance,
   kinCompanyInput,
   kinCompanyRead,
+  kinCountries,
+  kinCountryChoices,
+  kinCountryCodeOf,
   kinCountryName,
 } from "./kinCompanyProfile.ts";
 import { kinDatesMonth, kinMonthWindow, kinZonedDayStart } from "./kinDates.ts";
@@ -441,12 +444,43 @@ describe("company details", () => {
     });
     // A company that never saved its details is offered this device's country, and only it.
     const unsaved = { ...(uk as object), rev: 0 } as never;
-    expect(kinCompanyDraftOf(unsaved, "US").country).toBe("US");
-    expect(kinCompanyDraftOf(uk, "US").country).toBe("GB");
+    expect(kinCompanyDraftOf(unsaved, "US").country).toBe("United States");
+    expect(kinCompanyDraftOf(uk, "US").country).toBe("United Kingdom");
     expect(kinCompanyInput("org" as never, unsaved, kinCompanyDraftOf(unsaved, "US"))).toEqual({
       ok: true,
       input: { orgId: "org", rev: 0, country: "US" },
     });
+    // Any real country works by name (ignoring case and accents) or code; non-countries are refused.
+    expect(
+      kinCompanyInput("org" as never, profile, {
+        ...kinCompanyDraftOf(profile),
+        country: "United Kingdom",
+      }),
+    ).toEqual({ ok: true, input: { orgId: "org", rev: 4, country: "GB" } });
+    expect(kinCompanyInput("org" as never, uk, { ...ukDraft, country: "Japan" })).toEqual({
+      ok: true,
+      input: { orgId: "org", rev: 4, country: "JP" },
+    });
+    expect(kinCompanyInput("org" as never, uk, { ...ukDraft, country: "reunion" })).toEqual({
+      ok: true,
+      input: { orgId: "org", rev: 4, country: "RE" },
+    });
+    expect(kinCompanyInput("org" as never, uk, { ...ukDraft, country: "cote d'ivoire" })).toEqual({
+      ok: true,
+      input: { orgId: "org", rev: 4, country: "CI" },
+    });
+    expect(fields(kinCompanyEditSections(uk, { ...ukDraft, country: "India" }))).toContain("gstin");
+    for (const bad of ["ZZ", "EU", "UN", "XA", "XB", "Atlantis"])
+      expect(kinCompanyInput("org" as never, uk, { ...ukDraft, country: bad })).toEqual({
+        ok: false,
+        problems: { country: "Pick a country from the list, or type its name or code." },
+      });
+    const codes = new Set(kinCountries().map((one) => one.code));
+    expect(["IN", "GB", "US", "JP", "RE"].every((code) => codes.has(code))).toBe(true);
+    expect(["ZZ", "EU", "EZ", "UN", "XA", "XB", "QO"].some((code) => codes.has(code))).toBe(false);
+    expect(kinCountryChoices("gb")[0]?.code).toBe("GB");
+    expect(kinCountryChoices("reunion")[0]?.code).toBe("RE");
+    expect(kinCountryCodeOf("UK")).toBe("GB");
     // A new company still waiting on its country only takes the device's with a tap: saving just
     // an address saves the address and leaves it waiting.
     const waiting = { ...(profile as object), country: null, rev: 0 } as never;
