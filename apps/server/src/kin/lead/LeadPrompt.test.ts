@@ -718,7 +718,7 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
       "# Your seat\n\n- You hold 2 open.",
       'Standing permissions from the owner: "Invented-permission-zq"',
       'Your positions: "Invented-position-zq"',
-      `The company's GitHub accounts, the owner's and his organisations': "Invented-org-zq", "rhea-invented-zq".`,
+      `The company's GitHub accounts, the owner's and their organisations': "Invented-org-zq", "rhea-invented-zq".`,
     ])
       expect(owners).toContain(part);
     expect(owners).not.toContain("Invented-other-voice-zq");

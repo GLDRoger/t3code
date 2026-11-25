@@ -142,21 +142,21 @@ export const KinLeadToolkit = Toolkit.make(
     ...handoff,
     dependencies: [...handoff.dependencies, KinLevelGate],
     description:
-      "Send one person in the company a message from this chat, in their chat with you: what the person you're answering needs from them, or their answer back. A teammate's request to merge, change code or re-run CI goes to the owner this way: their request and what you couldn't check, never a question. Kin shows who it is from and through whom, so write the message itself, never opening with their name or \"X is asking\": its first sentence, all a phone notification shows, is what you need the reader to do, as \"<do this>, so <what it unblocks>\", or the news itself when nothing is needed. Words only, short; it can't hold amounts or anything they can't see. Whenever you say you'll tell or pass something to someone, call this first; if you don't, Kin tells the asker it didn't reach them. For the owner later, not now (\"don't message him now\", \"tell him at the check-in\"), set checkIn: Kin gives it to his next check-in with you; only then say he'll hear it there. A question only they can answer is kin_ask_person. A restricted pair is refused and says so. For a late task in their hours, pulse_nudge.",
+      "Send one person in the company a message from this chat, in their chat with you: what the person you're answering needs from them, or their answer back. A teammate's request to merge, change code or re-run CI goes to the owner this way: their request and what you couldn't check, never a question. Kin shows who it is from and through whom, so write the message itself, never opening with their name or \"X is asking\": its first sentence, all a phone notification shows, is what you need the reader to do, as \"<do this>, so <what it unblocks>\", or the news itself when nothing is needed. Words only, short; it can't hold amounts or anything they can't see. Whenever you say you'll tell or pass something to someone, call this first; if you don't, Kin tells the asker it didn't reach them. For the owner later, not now (\"don't message them now\", \"tell them at the check-in\"), set checkIn: Kin gives it to their next check-in with you; only then say they'll hear it there. A question only they can answer is kin_ask_person. A restricted pair is refused and says so. For a late task in their hours, pulse_nudge.",
     parameters: Handoff.RelayInput,
     success: Handoff.RelayResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("team_open", {
     ...team,
     description:
-      "Open a Team-room discussion for agents to settle something: you need another agent's answer, you're about to decide in another agent's lane, or the owner says \"sort it out between you\". decider is whose call it is; to asks up to two agents; text opens it. Kin wakes them in turn; others with a stake may pitch in. When the owner asked, the outcome comes back to you to tell him. A refusal says why: then work it out in your own lane.",
+      "Open a Team-room discussion for agents to settle something: you need another agent's answer, you're about to decide in another agent's lane, or the owner says \"sort it out between you\". decider is whose call it is; to asks up to two agents; text opens it. Kin wakes them in turn; others with a stake may pitch in. When the owner asked, the outcome comes back to you to tell the owner. A refusal says why: then work it out in your own lane.",
     parameters: Team.TeamOpenInput,
     success: Team.TeamResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("team_say", {
     ...team,
     description:
-      "Your one message when Kin wakes you in a Team-room discussion; nothing else you write there is posted. To pass, end without it. to asks up to two agents next. The decider or Chief of staff may widen the question once and decide (end decide: outcome is the one line the owner reads, did what you already changed). After a decision one agent may object once (intent objection). The Chief of staff may also park it (end park) or bring the owner a disagreement that is his (end bring, with positions, lean and options).",
+      "Your one message when Kin wakes you in a Team-room discussion; nothing else you write there is posted. To pass, end without it. to asks up to two agents next. The decider or Chief of staff may widen the question once and decide (end decide: outcome is the one line the owner reads, did what you already changed). After a decision one agent may object once (intent objection). The Chief of staff may also park it (end park) or bring the owner a disagreement that is the owner's (end bring, with positions, lean and options).",
     parameters: Team.TeamSayInput,
     success: Team.TeamResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -245,7 +245,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("memory_label", {
     ...shared,
     description:
-      'Change who may know memory items (itemIds). sensitive true keeps them between you and the owner at once ("keep that between us"). sensitive false asks the owner to let the team know them, only when his own message this turn says so ("the team can know those"), never on your judgement; they stay his until he says yes in Memory: pass on the note it returns.',
+      'Change who may know memory items (itemIds). sensitive true keeps them between you and the owner at once ("keep that between us"). sensitive false asks the owner to let the team know them, only when the owner\'s own message this turn says so ("the team can know those"), never on your judgement; they stay the owner\'s until the owner says yes in Memory: pass on the note it returns.',
     parameters: Lead.LabelInput,
     success: Lead.LabelResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -259,14 +259,14 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_schedule", {
     ...shared,
     description:
-      "Set up a recurring task, only when the owner's own message this turn asked: what (the instruction, in his terms), at (HH:MM in the owner's own time, as he said it; Kin keeps it at that hour through clock changes), days (0 Sunday to 6 Saturday) and chatId. Each run you get the instruction, do the work and post the results; a run missed by over 10 minutes is skipped. replaces swaps an existing task for this one. One time only: kin_defer. A number to watch against a limit, or to fetch on a schedule: numbers_watch.",
+      "Set up a recurring task, only when the owner's own message this turn asked: what (the instruction, in their terms), at (HH:MM in the owner's own time, as they said it; Kin keeps it at that hour through clock changes), days (0 Sunday to 6 Saturday) and chatId. Each run you get the instruction, do the work and post the results; a run missed by over 10 minutes is skipped. replaces swaps an existing task for this one. One time only: kin_defer. A number to watch against a limit, or to fetch on a schedule: numbers_watch.",
     parameters: Lead.ScheduleInput,
     success: Lead.ItemResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_cancel", {
     ...shared,
     description:
-      "Cancel a reminder, follow-up or scheduled task you set up, or another agent's reminder the owner tells you to drop in his own chat with you, by itemId; the result says whether it stopped. To move one, use kin_defer with replaces.",
+      "Cancel a reminder, follow-up or scheduled task you set up, or another agent's reminder the owner tells you to drop in their own chat with you, by itemId; the result says whether it stopped. To move one, use kin_defer with replaces.",
     parameters: Lead.CancelInput,
     success: Lead.CancelResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -295,7 +295,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_github_watch", {
     ...prCare,
     description:
-      'The GitHub repos Kin watches for the owner (his and his organisations\'). Omit repo to list them. watch false is his "leave repo X alone", true undoes it; mentions true lets an @-mention of him there call you.',
+      'The GitHub repos Kin watches for the owner (theirs and their organisations\'). Omit repo to list them. watch false is their "leave repo X alone", true undoes it; mentions true lets an @-mention of the owner there call you.',
     parameters: GitHubWatchInput,
     success: KinGitHubRepos,
   }).annotate(McpSchema.EnabledWhen, enabled),

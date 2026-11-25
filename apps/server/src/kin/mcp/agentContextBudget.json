@@ -2,20 +2,20 @@
   "mcpToolListJsonBytes": 64767,
   "kinToolListJsonBytes": 3044,
   "kinInstructionsBytes": {
-    "owner": 40341,
-    "confined": 40289
+    "owner": 40546,
+    "confined": 40494
   },
-  "kinSharedInstructionsHash": "ce1d13abcdef2447fb4ce7190aaf801ff4938b3c35cb8bcfaaa91313461fa631",
+  "kinSharedInstructionsHash": "33138a28b3c39d07aa56204be790456c57e54ab67303a2cdd062b4b59cf90ddc",
   "kinLeadToolListJsonBytes": {
-    "engineering": 168017,
-    "engineeringBesideFinanceAndSales": 152955,
-    "finance": 147195,
-    "shared": 96516,
-    "social": 150268,
-    "socialBesideFinanceAndSales": 135206,
-    "support": 147195
+    "engineering": 168084,
+    "engineeringBesideFinanceAndSales": 153022,
+    "finance": 147262,
+    "shared": 96537,
+    "social": 150343,
+    "socialBesideFinanceAndSales": 135281,
+    "support": 147262
   },
-  "kinLeadAlwaysLoadedToolBytes": 74302,
+  "kinLeadAlwaysLoadedToolBytes": 74319,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -103,10 +103,10 @@
     },
     "kin_ask_person": {
       "desc": 789,
-      "schema": 875
+      "schema": 883
     },
     "kin_cancel": {
-      "desc": 229,
+      "desc": 231,
       "schema": 115
     },
     "kin_chart": {
@@ -130,11 +130,11 @@
       "schema": 226
     },
     "kin_connection_note": {
-      "desc": 288,
+      "desc": 291,
       "schema": 153
     },
     "kin_connection_offer": {
-      "desc": 321,
+      "desc": 326,
       "schema": 98
     },
     "kin_connection_tools": {
@@ -162,7 +162,7 @@
       "schema": 134
     },
     "kin_github_watch": {
-      "desc": 208,
+      "desc": 221,
       "schema": 114
     },
     "kin_hand_off": {
@@ -202,11 +202,11 @@
       "schema": 199
     },
     "kin_relay": {
-      "desc": 1101,
-      "schema": 324
+      "desc": 1107,
+      "schema": 325
     },
     "kin_schedule": {
-      "desc": 516,
+      "desc": 520,
       "schema": 991
     },
     "kin_take_private": {
@@ -226,7 +226,7 @@
       "schema": 2828
     },
     "memory_label": {
-      "desc": 357,
+      "desc": 380,
       "schema": 212
     },
     "memory_read": {
@@ -350,7 +350,7 @@
       "schema": 156
     },
     "social_week": {
-      "desc": 249,
+      "desc": 257,
       "schema": 151
     },
     "statement_read": {
@@ -362,12 +362,12 @@
       "schema": 494
     },
     "team_open": {
-      "desc": 433,
+      "desc": 439,
       "schema": 332
     },
     "team_say": {
-      "desc": 515,
-      "schema": 1113
+      "desc": 523,
+      "schema": 1114
     },
     "touch_log": {
       "desc": 362,
@@ -385,7 +385,7 @@
     "pulse": 3012,
     "scheduled": 3248,
     "reminder": 3019,
-    "groupReply": 3039,
+    "groupReply": 3040,
     "teamRoom": 2751
   }
 }

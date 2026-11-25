@@ -551,7 +551,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           return yield* new KinChatError({
             reason: "not_found",
             message:
-              "Kin doesn't watch that repo: it isn't the owner's or his organisations', or GitHub isn't connected.",
+              "Kin doesn't watch that repo: it isn't the owner's or their organisations', or GitHub isn't connected.",
           });
         const changed =
           input.watch === undefined && input.mentions === undefined

@@ -35,7 +35,7 @@ import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts"
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
 import { alreadyOnIt, leftNote, passedFactBody } from "../../apps/server/src/kin/lead/Handoff.ts";
 import { ASK_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
-import { dueShows, repeatedPromise } from "../../apps/server/src/kin/work/leadWork.ts";
+import { dueShows, madeIn, repeatedPromise } from "../../apps/server/src/kin/work/leadWork.ts";
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import {
   endOfDay,
@@ -140,9 +140,11 @@ import {
 } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { HEAD_START_WAKE } from "../../apps/server/src/kin/pulse/prepareWake.ts";
 import {
+  DRAFT_CALL_NOTES,
   DRAFT_CHASE,
   DRAFT_DEAL,
   DRAFT_DOCUMENT,
+  DRAFT_FROM_MAILBOX,
   DRAFT_MEETING_OUTCOME,
   DRAFT_MEETING_PREP,
   PROPOSE_PLAN,
@@ -589,6 +591,14 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replace(/\{\{DRAFT_CHASE:([^:}]+):([^}]+)\}\}/g, (_, name: string, from: string) =>
       DRAFT_CHASE(name, from.split(",")),
     )
+    .replace(/\{\{DRAFT_FROM_MAILBOX:([^:}]+):([^}]+)\}\}/g, (_, name: string, from: string) =>
+      DRAFT_FROM_MAILBOX(name, from.split(",")),
+    )
+    // `{{DRAFT_CALL_NOTES:<name>|mailbox}}` (a mailbox but no contact) or `|no-mailbox`.
+    .replace(
+      /\{\{DRAFT_CALL_NOTES:([^|}]+)\|(mailbox|no-mailbox)\}\}/g,
+      (_, name: string, of: string) => DRAFT_CALL_NOTES(name, of === "mailbox"),
+    )
     .replace(
       /\{\{DRAFT_DEAL:([^|}]+)\|([^|}]+)\|([^}]+)\}\}/g,
       (_, name: string, from: string, reason: string) => DRAFT_DEAL(name, from.split(","), reason),
@@ -836,24 +846,33 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     note: leftNote(input.to, input, input.asker),
   }),
   // record_create's answer for new suggestions, keys from `first` (`leadWork.ts` createRow).
-  suggestedRows: (input: { records: unknown; first: number; zone: string }) => ({
-    records: (Array.isArray(input.records) ? input.records : []).map((row: unknown, index) => {
-      const one = isRecord(row) ? row : {};
-      const list = one.list === "milestones" ? "milestones" : "work";
+  suggestedRows: (input: { records: unknown; first: number; zone: string }) => {
+    const asked = (Array.isArray(input.records) ? input.records : []).map((row: unknown) => {
+      const one: Readonly<Record<string, unknown>> = isRecord(row) ? row : {};
+      return {
+        due: one.due,
+        title: one.title,
+        list: one.list === "milestones" ? "milestones" : "work",
+      };
+    });
+    const records = asked.map((one, index) => {
       const due = typeof one.due === "string" ? one.due : undefined;
       const day = due !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(due);
       const at = due === undefined ? NaN : day ? endOfDay(due, input.zone) : Date.parse(due);
       return {
-        key: `${list === "milestones" ? "M" : "W"}-${input.first + index}`,
+        key: `${one.list === "milestones" ? "M" : "W"}-${input.first + index}`,
         title: typeof one.title === "string" ? one.title : "",
         created: true,
         state: "open",
-        stateLabel: suggestedStateLabel(list, "open"),
+        stateLabel: suggestedStateLabel(one.list, "open"),
         suggested: true,
-        ...(list === "work" && Number.isFinite(at) ? { shows: dueShows(at, day, input.zone) } : {}),
+        ...(one.list === "work" && Number.isFinite(at)
+          ? { shows: dueShows(at, day, input.zone) }
+          : {}),
       };
-    }),
-  }),
+    });
+    return { ...madeIn(asked, records), records };
+  },
   // record_update's answer for a task given a due or a time (`leadWork.ts` dueOf, shownDue).
   taskUpdate: (input: { key: string; rev: number; state: string; due: unknown; zone: string }) => {
     const due = typeof input.due === "string" ? input.due : "";

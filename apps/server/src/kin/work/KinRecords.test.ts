@@ -4392,7 +4392,7 @@ it.effect(
       }))!;
       assert.match(
         mixed,
-        /^The owner gave you this Work entry to do, but this turn is not his ask in person/,
+        /^The owner gave you this Work entry to do, but this turn is not their ask in person/,
       );
       assert.include(mixed, "what you make from it waits to be kept");
       assert.notInclude(mixed, "as if the owner had asked you");
