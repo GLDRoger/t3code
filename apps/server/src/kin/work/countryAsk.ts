@@ -142,7 +142,11 @@ export const postCountryAsk = Effect.fn("KinCountryAsk.post")(
           (yield* sql<{ name: string }>`SELECT name FROM kin_orgs WHERE org_id = ${orgId}`)[0]
             ?.name;
         if (company === undefined) return;
-        const state = { company, round } satisfies KinCountryCardState;
+        const state = {
+          company,
+          round,
+          question: `Which country is ${company} in? It sets tax words and date formats.`,
+        } satisfies KinCountryCardState;
         let marked = !starts;
         for (const id of people) {
           const personId = KinPersonId.make(id);

@@ -4996,7 +4996,11 @@ describe("the company profile", () => {
         );
         for (const card of open) {
           assert.isNull(card.closedAt);
-          assert.deepStrictEqual(JSON.parse(card.state), { company: "Ambermill", round: 1 });
+          assert.deepStrictEqual(JSON.parse(card.state), {
+            company: "Ambermill",
+            round: 1,
+            question: "Which country is Ambermill in? It sets tax words and date formats.",
+          });
         }
         assert.deepStrictEqual(
           yield* waiting,
@@ -5030,6 +5034,7 @@ describe("the company profile", () => {
           assert.deepStrictEqual(JSON.parse(card.state), {
             company: "Ambermill",
             round: 1,
+            question: "Which country is Ambermill in? It sets tax words and date formats.",
             answered: { _tag: "chose", by: "Meera", country: "US" },
           });
         }

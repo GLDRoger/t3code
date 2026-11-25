@@ -664,6 +664,8 @@ export type KinCompanyProfileSetInput = typeof KinCompanyProfileSetInput.Type;
 export const KinCountryCardState = Schema.Struct({
   company: Schema.String,
   round: Schema.Literals([1, 2]),
+  /** Needs you reads a card's question from its state. */
+  question: Schema.optional(Schema.String),
   answered: Schema.optional(
     Schema.Union([
       Schema.TaggedStruct("chose", { by: Schema.String, country: Schema.String }),
