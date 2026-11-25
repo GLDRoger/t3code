@@ -69,6 +69,7 @@ vi.mock(import("./useKinHost"), async (importOriginal) => ({
 }));
 // Files take the chat's upload path, which is its own; this note carries words only.
 vi.mock(import("./KinComposerAttachments"), () => ({
+  KinAttachButton: (() => null) as never,
   KinComposerAttachmentStrip: () => null,
   useKinComposerAttachments: (() => ({
     count: 0,
@@ -146,6 +147,60 @@ describe("a note on a task", () => {
   });
 });
 
+describe("what a coding agent did on a task", () => {
+  it("reads as its person's, via the coding agent by its quoted name", async () => {
+    setup([]);
+    const zoya = { _tag: "person", personId: KinPersonId.make("zoya") } as const;
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <KinTaskActivity
+          {...target}
+          // Its own task: notes a test posted stay in the app's store for that task.
+          itemKey={KinRecordKey.make("T-42")}
+          item={{
+            changes: [
+              {
+                seq: 2,
+                at: "2026-11-19T09:00:00.000Z",
+                by: zoya,
+                via: "owner",
+                kind: "updated",
+                fields: [{ field: "state", from: "open", to: "doing" }],
+                codingAgent: "Invented laptop",
+              },
+            ],
+            comments: [
+              {
+                commentId: "comment-1",
+                seq: 1,
+                at: "2026-11-19T09:30:00.000Z",
+                by: zoya,
+                codingAgent: "Invented laptop",
+                body: "Invented: also mark the invoice paid",
+                files: [],
+              },
+            ],
+          }}
+          names={{ ...names, people: new Map([...names.people, ["zoya", "Zoya"]]) }}
+          now={new Date("2026-11-19T10:00:00.000Z")}
+          note={null}
+          onOpenProject={() => {}}
+        />
+      </AppAtomRegistryProvider>,
+    );
+    // Each line is who did it, then what, then via the coding agent and its name, quoted.
+    const lines = page.getByRole("listitem");
+    await vi.waitFor(() =>
+      expect(lines.elements().map((line) => line.textContent)).toEqual([
+        expect.stringMatching(/^Zoya started on it, via coding agent “Invented laptop” · /),
+        expect.stringMatching(
+          /^Zoya via coding agent “Invented laptop” · .+Invented: also mark the invoice paid$/,
+        ),
+      ]),
+    );
+  });
+});
+
 describe("a task's links and its project's note", () => {
   it("adds a link that shows under Linked, and a project note that tops the task's Activity", async () => {
     setup([]);
@@ -184,7 +239,6 @@ describe("a task's links and its project's note", () => {
           itemKey={target.itemKey}
           addLink
           onOpenKey={() => {}}
-          onClose={() => {}}
         />
       </AppAtomRegistryProvider>,
     );
@@ -212,7 +266,6 @@ describe("a task's links and its project's note", () => {
           itemKey={target.itemKey}
           addLink
           onOpenKey={() => {}}
-          onClose={() => {}}
         />
         <KinProjectNoteSection
           {...target}

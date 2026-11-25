@@ -1,4 +1,5 @@
 import {
+  KIN_CAMPAIGN_SOURCE,
   KIN_CONTACT_DETAILS_MAX,
   KIN_DEFAULT_HOME_CURRENCY,
   KIN_GST_STATES,
@@ -23,14 +24,10 @@ import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { kinFailureText } from "./kinAnswers.ts";
-import {
-  isKinChatError,
-  kinWorkFailuresOf,
-  kinWorkRefused,
-  type KinWorkRef,
-  kinWorkDueLabel,
-} from "./kinWork.ts";
+import type { KinLink } from "./kinHost.ts";
+import { isKinChatError, kinWorkFailuresOf, kinWorkRefused, type KinWorkRef } from "./kinWork.ts";
 import { kinMoneyDraft, kinParseMoney } from "./kinLists.ts";
+import { kinNoticeDays } from "./kinPromises.ts";
 import { kinContactEmailOk, kinContactPhoneOk, KIN_PROJECTS } from "./kinWorkClients.ts";
 import { KIN_WORK_OFFLINE_CHANGE } from "./kinWorkChanges.ts";
 import type { KinWorkLive } from "./kinWorkStream.ts";
@@ -159,6 +156,14 @@ function kinGstStateName(place: string): string | null {
   return KIN_GST_STATE_NAMES.find((name) => letters(name) === wanted) ?? null;
 }
 const gstinOf = (text: string) => text.replace(/\s+/g, "").toUpperCase();
+
+/** A GSTIN as typed, with its spaces out and in capitals; null when it isn't one. */
+export const kinGstinTyped = (text: string) => {
+  const value = gstinOf(text);
+  return KIN_GSTIN_PATTERN.test(value) ? value : null;
+};
+export const KIN_GSTIN_WRONG =
+  "That GSTIN isn't right: it has 15 letters and digits, like 27ABCDE1234F1Z5.";
 /** The state a GSTIN is registered in, from its first two digits; null for one that isn't valid. */
 function kinGstinState(gstin: string): string | null {
   const value = gstinOf(gstin);
@@ -179,6 +184,7 @@ export const kinClientDraftOf = (
     | "kind"
     | "prospect"
     | "source"
+    | "campaign"
     | "tags"
     | "terms"
     | "address"
@@ -202,7 +208,11 @@ export const kinClientDraftOf = (
           : party.prospect === true
             ? "prospect"
             : "client",
-    source: party?.source ?? "",
+    // A campaign is stored by its key; the field shows its name (`kinCameFromLabel`).
+    source:
+      party?.campaign === undefined
+        ? (party?.source ?? "")
+        : `${KIN_CAMPAIGN_SOURCE}${party.campaign.key}`,
     tags: (party?.tags ?? []).join(", "),
     terms: party?.terms ?? "",
     address: party?.address ?? "",
@@ -292,9 +302,7 @@ export const kinClientDraftCheck = (draft: KinClientDraft): string | null =>
       tagsCheck(draft.tags) ??
       tooLong(draft.terms, NOTES_MAX, "the terms") ??
       tooLong(draft.address, ADDRESS_MAX, "the address") ??
-      (draft.gstin.trim() !== "" && !KIN_GSTIN_PATTERN.test(gstinOf(draft.gstin))
-        ? "That GSTIN isn't right: it has 15 letters and digits, like 27ABCDE1234F1Z5."
-        : null) ??
+      (draft.gstin.trim() !== "" && kinGstinTyped(draft.gstin) === null ? KIN_GSTIN_WRONG : null) ??
       tooLong(draft.placeOfSupply, PLACE_MAX, "the country") ??
       tooLong(draft.notes, NOTES_MAX, "the notes") ??
       firstContactCheck(draft));
@@ -354,6 +362,8 @@ export interface KinContactDraft {
   readonly emails: ReadonlyArray<string>;
   readonly phones: ReadonlyArray<string>;
   readonly notes: string;
+  /** Absent on a client's first contact, which takes none. */
+  readonly tags?: ReadonlyArray<string>;
 }
 
 /** Every one a contact has, main first, from a host that sends the list or only the main one. */
@@ -366,6 +376,7 @@ export const kinContactDraftOf = (contact?: KinContact): KinContactDraft => ({
   emails: detailsOf(contact?.emails, contact?.email),
   phones: detailsOf(contact?.phones, contact?.phone),
   notes: contact?.notes ?? "",
+  tags: contact?.tags ?? [],
 });
 
 /** One more empty field below the last, up to what a contact takes. */
@@ -454,6 +465,7 @@ export const kinContactCreateInput = (
   name: draft.name.trim(),
   ...(draft.role.trim() === "" ? {} : { role: draft.role.trim() }),
   ...newDetails(draft.emails, draft.phones),
+  ...(draft.tags === undefined || draft.tags.length === 0 ? {} : { tags: draft.tags }),
   ...(draft.notes.trim() === "" ? {} : { notes: draft.notes.trim() }),
 });
 
@@ -463,6 +475,7 @@ export const kinContactUpdateInput = (
   ...(changed.name === undefined ? {} : { name: changed.name.trim() }),
   ...(changed.role === undefined ? {} : { role: changed.role.trim() || null }),
   ...changedDetails(changed.emails, changed.phones),
+  ...(changed.tags === undefined ? {} : { tags: changed.tags }),
   ...(changed.notes === undefined ? {} : { notes: changed.notes.trim() }),
 });
 
@@ -482,6 +495,11 @@ export interface KinProjectDraft {
   readonly currency: string;
   readonly startsOn: string | null;
   readonly renewsOn: string | null;
+  /** Days of notice before it renews, as typed; empty for none (`kinNoticeDays`). */
+  readonly noticeDays: string;
+  readonly campaign: boolean;
+  /** A campaign's audience tag; empty for none. */
+  readonly audience: string;
 }
 
 export const KIN_PROJECT_BILLING_LABELS: Readonly<Record<KinProjectBilling, string>> = {
@@ -518,6 +536,12 @@ export const kinProjectDraftOf = (
   currency: home,
   startsOn: project?.startsOn ?? null,
   renewsOn: project?.renewsOn ?? null,
+  noticeDays:
+    project?.noticeDays === undefined || project.noticeDays === null
+      ? ""
+      : String(project.noticeDays),
+  campaign: project?.campaign === true,
+  audience: project?.audience ?? "",
 });
 const valueOf = (text: string, currency: string) =>
   text.trim() === "" ? null : kinParseMoney(text.trim(), currency);
@@ -531,11 +555,10 @@ const reposOf = (text: string) =>
 
 const NOT_A_DAY = "Enter a real date.";
 
-/** What the target field says under itself while the owner types a day. */
-export const kinProjectTargetHint = (target: string, now: Date): string => {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(target))
-    return `A day as year-month-day. Leave it empty for ${KIN_PROJECTS.noTarget.toLowerCase()}.`;
-  return kinRealDay(target) ? kinWorkDueLabel(target, now) : NOT_A_DAY;
+/** What the target field says under itself; the picked day is on the field, so then nothing. */
+export const kinProjectTargetHint = (target: string | null): string | null => {
+  if (target === null) return `Leave it empty for ${KIN_PROJECTS.noTarget.toLowerCase()}.`;
+  return kinRealDay(target) ? null : NOT_A_DAY;
 };
 
 export const kinProjectDraftCheck = (draft: KinProjectDraft): string | null => {
@@ -546,9 +569,15 @@ export const kinProjectDraftCheck = (draft: KinProjectDraft): string | null => {
   if (draft.target !== null && !kinRealDay(draft.target)) return NOT_A_DAY;
   if (draft.startsOn !== null && !kinRealDay(draft.startsOn)) return NOT_A_DAY;
   if (draft.renewsOn !== null && !kinRealDay(draft.renewsOn)) return NOT_A_DAY;
+  const notice = kinNoticeDays(draft.noticeDays);
+  if (typeof notice === "object" && notice !== null) return notice.problem;
   if (draft.value.trim() !== "" && valueOf(draft.value, draft.currency) === null)
     return "Write the value as an amount, such as 600000 or $12,000.";
-  return tooLong(draft.name, NAME_MAX, "the name") ?? tooLong(draft.notes, NOTES_MAX, "the notes");
+  return (
+    tooLong(draft.name, NAME_MAX, "the name") ??
+    tooLong(draft.audience, TAG_MAX, "the audience") ??
+    tooLong(draft.notes, NOTES_MAX, "the notes")
+  );
 };
 
 const repoNames = (text: string) => reposOf(text).filter((repo) => isRepo(repo));
@@ -568,6 +597,11 @@ export const kinProjectCreateInput = (
     : { value: valueOf(draft.value, draft.currency) }),
   ...(draft.startsOn === null ? {} : { startsOn: draft.startsOn }),
   ...(draft.renewsOn === null ? {} : { renewsOn: draft.renewsOn }),
+  ...(typeof kinNoticeDays(draft.noticeDays) === "number"
+    ? { noticeDays: kinNoticeDays(draft.noticeDays) as number }
+    : {}),
+  ...(draft.campaign ? { campaign: true } : {}),
+  ...(draft.campaign && draft.audience.trim() !== "" ? { audience: draft.audience.trim() } : {}),
 });
 
 export const kinProjectUpdateInput = (
@@ -588,7 +622,14 @@ export const kinProjectUpdateInput = (
   ...(changed.value === undefined ? {} : { value: valueOf(changed.value, currency) }),
   ...(changed.startsOn === undefined ? {} : { startsOn: changed.startsOn }),
   ...(changed.renewsOn === undefined ? {} : { renewsOn: changed.renewsOn }),
+  ...(changed.noticeDays === undefined ? {} : { noticeDays: noticeOrNull(changed.noticeDays) }),
+  ...(changed.campaign === undefined ? {} : { campaign: changed.campaign }),
+  ...(changed.audience === undefined ? {} : { audience: changed.audience.trim() || null }),
 });
+const noticeOrNull = (text: string) => {
+  const days = kinNoticeDays(text);
+  return typeof days === "number" ? days : null;
+};
 
 // Why a change didn't go through
 
@@ -704,6 +745,30 @@ export async function kinWorkSend<A>(input: {
 }
 
 // A form
+
+/** Asked once when a form that holds typed, unsaved words is closed. */
+export const KIN_FORM_DISCARD = {
+  title: "Discard what you typed?",
+  keep: "Keep editing",
+  discard: "Discard",
+} as const;
+
+const typedValue = (value: unknown): unknown =>
+  typeof value === "string"
+    ? value.trim()
+    : Array.isArray(value)
+      ? value.map(typedValue).filter((one) => one !== "")
+      : value;
+
+/**
+ * Whether closing a form would throw away something: a field that now says other than it did
+ * when the form opened. Spaces, and an empty "Add another" row, are nothing typed.
+ */
+export function kinFormTyped<D extends object>(from: D, draft: D): boolean {
+  return (Object.keys(draft) as Array<keyof D>).some(
+    (key) => JSON.stringify(typedValue(draft[key])) !== JSON.stringify(typedValue(from[key])),
+  );
+}
 
 /** A form's fields: text, a switch, or a client picked by its key. */
 type Draft = object;
@@ -858,6 +923,13 @@ export type KinWorkReadState<A> =
       readonly stale: boolean;
     };
 
+/**
+ * A read with nothing held that the connection can't carry: it says neither loading nor failed,
+ * since the page's one offline line already says why.
+ */
+export const kinWorkReadUnreachable = (state: KinWorkReadState<unknown>, link: KinLink) =>
+  link === "offline" && (state._tag === "loading" || state._tag === "failed");
+
 export function kinWorkReadState<A>(
   result: AsyncResult.AsyncResult<A, unknown>,
 ): KinWorkReadState<A> {
@@ -881,6 +953,8 @@ function kinWorkPageAffected(
   page: { readonly own: string; readonly held: ReadonlySet<string> },
 ): "yes" | "no" | "ask" {
   if (key === page.own || page.held.has(key)) return "yes";
+  // A campaign's counts read every client, contact and deal: `kinProjectPageKeys` holds `C-*`.
+  if (page.held.has(`${kindOf(key)}-*`)) return "yes";
   // Another client never shows on a client's page, nor another project on a project's.
   if (kindOf(key) === kindOf(page.own)) return "no";
   // A task, contact or project the page doesn't hold might have just been pointed at it.
@@ -892,6 +966,9 @@ function kinWorkPageAffected(
  * shows, never for one it covers or another client's. A change naming anything else might have
  * just become this page's, so `newest` asks for the page's latest change number first.
  */
+// The sections revision each page read was first shown under, kept with the read across mounts.
+const shellRevOfPage = new WeakMap<object, number>();
+
 export function createKinWorkPageWatch(options: {
   readonly own: KinRecordKey;
   readonly reread: () => void;
@@ -902,6 +979,13 @@ export function createKinWorkPageWatch(options: {
   let handled = 0;
   let asking = false;
   return {
+    /** Call with the page as read and each revision of the company's sections, which shape it. */
+    shell: (rev: number | undefined, page: object | null) => {
+      if (rev === undefined || page === null) return;
+      const at = shellRevOfPage.get(page);
+      shellRevOfPage.set(page, rev);
+      if (at !== undefined && at !== rev) options.reread();
+    },
     /** Call with each state of Work and the page as held; `page` is null while it is first read. */
     changed: (
       live: Pick<KinWorkLive, "changed" | "unnamed">,

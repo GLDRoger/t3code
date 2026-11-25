@@ -6,12 +6,15 @@ import {
   createKinGitHubAppRepoActions,
   createKinGitHubAppSetupActions,
   createKinGitHubGuardActions,
+  createKinGitHubHookActions,
+  createKinGitHubLookActions,
   KIN_GITHUB_APP_SETUP_COPY as SETUP,
   kinGitHubAppCreatePath,
   KIN_GITHUB_AGENTS_COPY as AGENTS,
   KIN_GITHUB_APP_REPOS_COPY as PICK,
   KIN_GITHUB_COPY as COPY,
   KIN_GITHUB_GUARD_COPY as GUARD,
+  KIN_GITHUB_INSTANT_COPY as INSTANT,
   type KinGitHubGuardOutcome,
   KIN_GITHUB_WATCH_COPY as WATCH,
   kinGitHubAccountRepos,
@@ -20,10 +23,13 @@ import {
   kinGitHubAgentsView,
   kinGitHubGuardAction,
   kinGitHubGuardLine,
+  kinGitHubInstantRow,
   kinGitHubRow,
+  kinGitHubRowDetail,
   kinGitHubSheet,
   kinGitHubWatchLine,
 } from "@t3tools/client-runtime/kin/kinGitHub";
+import type { KinConnectionTone } from "@t3tools/client-runtime/kin/kinConnections";
 import type {
   EnvironmentId,
   KinGitHubAppCreateStart,
@@ -32,11 +38,9 @@ import type {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
-import { useId, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 
-import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
 import { Alert, AlertDescription } from "../components/ui/alert";
-import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import {
   Dialog,
@@ -53,27 +57,81 @@ import { Switch } from "../components/ui/switch";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinConfirm } from "./KinConfirm";
 import { kinClient } from "./kinClient";
+import {
+  KinSettingsLoadFailed,
+  KinSettingsLoading,
+  KinSettingsPage,
+  KinSettingsRow,
+  KinSettingsSection,
+  KinSettingsStatus,
+} from "./settings/KinSettingsLayout";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
 
-const TONE_BADGE = {
-  ok: "success",
-  attention: "warning",
-  error: "error",
-  muted: "outline",
-} as const;
+/** A state said only when it isn't fine: problems are badges, quiet states plain text. */
+function ToneStatus(props: { readonly tone: KinConnectionTone; readonly label: string }) {
+  if (props.tone === "ok") return null;
+  return (
+    <KinSettingsStatus tone={props.tone === "muted" ? "quiet" : props.tone}>
+      {props.label}
+    </KinSettingsStatus>
+  );
+}
+
+/** A row's name with its state beside it, so a narrow window keeps room for the text. */
+function TitleWithStatus(props: {
+  readonly title: string;
+  readonly tone: KinConnectionTone;
+  readonly label: string;
+}) {
+  return (
+    <span className="flex flex-wrap items-center gap-2">
+      {props.title}
+      <ToneStatus tone={props.tone} label={props.label} />
+    </span>
+  );
+}
+
+/** A row's line, then its buttons under it: several buttons don't fit beside text on a phone. */
+function DetailWithActions(props: { readonly detail: ReactNode; readonly actions: ReactNode }) {
+  return (
+    <>
+      {props.detail}
+      {props.actions === null ? null : (
+        <span className="mt-2 flex flex-wrap gap-2">{props.actions}</span>
+      )}
+    </>
+  );
+}
 
 type Actions = ReturnType<typeof createKinGitHubActions>;
 
-/** Settings → Connections → GitHub, for the owner and co-owners only. */
+/**
+ * Settings → Connections → GitHub, for the owner and co-owners only: one row, which opens
+ * GitHub's own page (`onOpen`) once there is more to see than Connect.
+ */
 export function KinGitHubConnect(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
+  readonly onOpen?: () => void;
 }) {
   return useKinOwnerLevel(props.environmentId) ? <GitHubSection {...props} /> : null;
 }
 
-function GitHubSection(props: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId }) {
+/** GitHub's own page: your account, what Kin watches, who agents work as, and Disconnect last. */
+export function KinGitHubPage(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+}) {
+  return useKinOwnerLevel(props.environmentId) ? <GitHubSection {...props} page /> : null;
+}
+
+function GitHubSection(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly onOpen?: () => void;
+  readonly page?: boolean;
+}) {
   const { environmentId, orgId } = props;
   const statusAtom = kinClient.github({ environmentId, input: { orgId } });
   const result = useAtomValue(statusAtom);
@@ -93,75 +151,95 @@ function GitHubSection(props: { readonly environmentId: EnvironmentId; readonly 
   const [confirming, setConfirming] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const row = status === null ? null : kinGitHubRow(status);
+  const more = status !== null && (status.account !== null || status.agents !== undefined);
+  const connectLabel =
+    row === null || row.action === "disconnect"
+      ? null
+      : row.action === "reconnect"
+        ? COPY.reconnect
+        : row.action === "waiting"
+          ? COPY.enterCode
+          : COPY.connect;
+
+  const accountRow =
+    status === null || row === null ? (
+      AsyncResult.isFailure(result) ? (
+        <KinSettingsLoadFailed onRetry={reload}>{COPY.loadFailed}</KinSettingsLoadFailed>
+      ) : (
+        <KinSettingsLoading rows={1} />
+      )
+    ) : (
+      <KinSettingsRow
+        title={row.title}
+        wrap
+        detail={kinGitHubRowDetail(status)}
+        status={row.tone === "muted" ? null : <ToneStatus tone={row.tone} label={row.label} />}
+        control={
+          connectLabel === null ? null : (
+            <Button
+              size="xs"
+              variant="outline"
+              onClick={() => {
+                setProblem(null);
+                setSheet(true);
+              }}
+            >
+              {connectLabel}
+            </Button>
+          )
+        }
+        {...(props.page !== true && props.onOpen !== undefined && more
+          ? { onOpen: props.onOpen, openLabel: `${COPY.open}: ${COPY.title}` }
+          : {})}
+      />
+    );
 
   return (
     <>
-      <SettingsSection title={COPY.title}>
-        {status === null || row === null ? (
-          AsyncResult.isFailure(result) ? (
-            <div className="flex items-center justify-between gap-3 px-4 py-3">
-              <p className="text-sm text-destructive-foreground">{COPY.loadFailed}</p>
-              <Button size="xs" variant="outline" onClick={reload}>
-                {KIN_RETRY}
-              </Button>
-            </div>
-          ) : (
-            <p className="px-4 py-3 text-sm text-muted-foreground">Loading…</p>
-          )
-        ) : (
-          <SettingsRow
-            title={row.title}
-            description={row.detail}
-            status={<Badge variant={TONE_BADGE[row.tone]}>{row.label}</Badge>}
-            control={
-              <div className="flex gap-2">
-                {row.action === "reconnect" ? (
-                  <Button size="xs" variant="outline" onClick={() => setConfirming(true)}>
+      {props.page === true ? (
+        <KinSettingsPage purpose={COPY.purpose}>
+          <KinSettingsSection title={COPY.accountTitle} problem={problem}>
+            {accountRow}
+          </KinSettingsSection>
+          {status?.account != null &&
+          status.account.problem === null &&
+          status.watch !== undefined ? (
+            <KinSettingsSection title={WATCH.reposTitle}>
+              <WatchedRepos environmentId={environmentId} orgId={orgId} status={status} />
+            </KinSettingsSection>
+          ) : null}
+          {status?.agents === undefined ? null : (
+            <AgentIdentity
+              environmentId={environmentId}
+              orgId={orgId}
+              status={status}
+              agents={status.agents}
+            />
+          )}
+          {status?.account == null ? null : (
+            <KinSettingsSection title={COPY.disconnect}>
+              <KinSettingsRow
+                title={COPY.disconnectRow}
+                wrap
+                detail={COPY.disconnectRowDetail}
+                control={
+                  <Button
+                    size="sm"
+                    variant="destructive-outline"
+                    onClick={() => setConfirming(true)}
+                  >
                     {COPY.disconnect}
                   </Button>
-                ) : null}
-                <Button
-                  size="xs"
-                  variant="outline"
-                  onClick={() => {
-                    setProblem(null);
-                    if (row.action === "disconnect") setConfirming(true);
-                    else setSheet(true);
-                  }}
-                >
-                  {row.action === "disconnect"
-                    ? COPY.disconnect
-                    : row.action === "reconnect"
-                      ? COPY.reconnect
-                      : row.action === "waiting"
-                        ? COPY.enterCode
-                        : COPY.connect}
-                </Button>
-              </div>
-            }
-          />
-        )}
-        {status?.account != null &&
-        status.account.problem === null &&
-        status.watch !== undefined ? (
-          <WatchedRepos environmentId={environmentId} orgId={orgId} status={status} />
-        ) : null}
-        {status?.agents === undefined ? null : (
-          <AgentIdentity
-            environmentId={environmentId}
-            orgId={orgId}
-            status={status}
-            agents={status.agents}
-          />
-        )}
-        {problem === null ? null : (
-          <div className="px-4 pb-3">
-            <Alert variant="error">
-              <AlertDescription>{problem}</AlertDescription>
-            </Alert>
-          </div>
-        )}
-      </SettingsSection>
+                }
+              />
+            </KinSettingsSection>
+          )}
+        </KinSettingsPage>
+      ) : (
+        <KinSettingsSection title={COPY.title} problem={problem}>
+          {accountRow}
+        </KinSettingsSection>
+      )}
       {sheet ? (
         <ConnectDialog status={status} actions={actions} onClose={() => setSheet(false)} />
       ) : null}
@@ -201,90 +279,216 @@ function AgentIdentity(props: {
   const hint = kinGitHubAccountsHint(rows);
   const [picking, setPicking] = useState<string | null>(null);
   return (
-    <div className="flex flex-col gap-3 border-t px-4 py-3">
-      <div className="flex flex-col gap-1">
-        <p className="text-sm font-medium">{view.headline}</p>
-        <p className="text-sm text-muted-foreground">{view.detail}</p>
-      </div>
-      <AppSetUp environmentId={props.environmentId} orgId={props.orgId} view={view} />
-      {rows.length === 0 ? null : (
-        <div className="flex flex-col gap-1">
-          <p className="text-xs font-medium text-muted-foreground">{AGENTS.accountsTitle}</p>
-          <ul className="flex flex-col divide-y rounded-md border">
-            {rows.map((row) => (
-              <li
-                key={row.key}
-                className="flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between sm:gap-x-4"
+    <>
+      <KinSettingsSection title={AGENTS.title}>
+        <AppSetUp
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          view={view}
+          install={
+            view.installUrl === null ? null : (
+              <Button
+                size="xs"
+                variant="outline"
+                render={<a href={view.installUrl} target="_blank" rel="noreferrer noopener" />}
               >
-                <div className="flex min-w-0 flex-col gap-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="truncate text-sm font-medium">{row.account}</span>
-                    <Badge variant={TONE_BADGE[row.tone]}>{row.label}</Badge>
-                  </div>
-                  <p className="text-xs text-muted-foreground">{row.detail}</p>
-                </div>
-                {row.action === null && !row.pickable ? null : (
-                  <div className="flex shrink-0 flex-wrap gap-2">
-                    {row.pickable ? (
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        aria-expanded={picking === row.key}
-                        onClick={() => setPicking(picking === row.key ? null : row.key)}
-                      >
-                        {picking === row.key ? PICK.hide : PICK.choose(row.watched)}
-                      </Button>
-                    ) : null}
-                    {row.action === null ? null : (
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        render={
-                          <a href={row.action.url} target="_blank" rel="noreferrer noopener" />
-                        }
-                      >
-                        {row.action.label}
-                      </Button>
-                    )}
-                  </div>
-                )}
-                {picking === row.key ? (
+                {AGENTS.install}
+              </Button>
+            )
+          }
+        />
+        <KinGitHubInstantLine
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          agents={props.agents}
+          now={now}
+        />
+      </KinSettingsSection>
+      {rows.length === 0 ? null : (
+        <KinSettingsSection title={AGENTS.accountsTitle} description={hint ?? undefined}>
+          {rows.map((row) => (
+            <div key={row.key}>
+              <KinSettingsRow
+                title={<TitleWithStatus title={row.account} tone={row.tone} label={row.label} />}
+                wrap
+                detail={
+                  <DetailWithActions
+                    detail={row.detail}
+                    actions={
+                      row.action === null && !row.pickable && row.checkAgain !== true ? null : (
+                        <>
+                          {row.pickable ? (
+                            <Button
+                              size="xs"
+                              variant="outline"
+                              aria-expanded={picking === row.key}
+                              onClick={() => setPicking(picking === row.key ? null : row.key)}
+                            >
+                              {picking === row.key ? PICK.hide : PICK.choose(row.watched)}
+                            </Button>
+                          ) : null}
+                          {row.action === null ? null : (
+                            <Button
+                              size="xs"
+                              variant="outline"
+                              render={
+                                <a
+                                  href={row.action.url}
+                                  target="_blank"
+                                  rel="noreferrer noopener"
+                                />
+                              }
+                            >
+                              {row.action.label}
+                            </Button>
+                          )}
+                          {row.checkAgain === true ? (
+                            <CheckAgain environmentId={props.environmentId} orgId={props.orgId} />
+                          ) : null}
+                        </>
+                      )
+                    }
+                  />
+                }
+              />
+              {picking === row.key ? (
+                <div className="px-4 pb-3">
                   <AccountRepos
                     environmentId={props.environmentId}
                     orgId={props.orgId}
                     account={row.account}
                     settingsUrl={row.settingsUrl}
                   />
-                ) : null}
-              </li>
-            ))}
-          </ul>
-          {hint === null ? null : <p className="text-xs text-muted-foreground">{hint}</p>}
-        </div>
-      )}
-      {view.installUrl === null ? null : (
-        <div>
-          <Button
-            size="xs"
-            variant="outline"
-            render={<a href={view.installUrl} target="_blank" rel="noreferrer noopener" />}
-          >
-            {AGENTS.install}
-          </Button>
-        </div>
+                </div>
+              ) : null}
+            </div>
+          ))}
+        </KinSettingsSection>
       )}
       {view.uses.length === 0 ? null : (
-        <div className="flex flex-col gap-1">
-          <p className="text-xs font-medium text-muted-foreground">{AGENTS.usesTitle}</p>
-          <ul className="flex flex-col divide-y rounded-md border">
-            {view.uses.map((use) => (
-              <li key={use.key} className="flex min-w-0 flex-col gap-0.5 px-3 py-2">
-                <span className="text-xs text-muted-foreground">{use.line}</span>
-                <code className="truncate font-mono text-xs">{use.command}</code>
-              </li>
-            ))}
-          </ul>
-        </div>
+        <KinSettingsSection title={AGENTS.usesTitle}>
+          {view.uses.map((use) => (
+            <KinSettingsRow
+              key={use.key}
+              title={use.line}
+              detail={<code className="font-mono">{use.command}</code>}
+            />
+          ))}
+        </KinSettingsSection>
+      )}
+    </>
+  );
+}
+
+export function KinGitHubInstantLine(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly agents: NonNullable<KinGitHubStatus["agents"]>;
+  readonly now: number;
+}) {
+  const row = kinGitHubInstantRow(props.agents, props.now);
+  if (row === null) return null;
+  return (
+    <KinSettingsRow
+      title={<TitleWithStatus title={row.title} tone={row.tone} label={row.label} />}
+      wrap
+      detail={
+        <DetailWithActions
+          detail={row.detail}
+          actions={
+            row.action === null && row.offer !== true ? null : (
+              <>
+                {row.action === null ? null : (
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    render={<a href={row.action.url} target="_blank" rel="noreferrer noopener" />}
+                  >
+                    {row.action.label}
+                  </Button>
+                )}
+                {row.offer === true ? (
+                  <AllowHook environmentId={props.environmentId} orgId={props.orgId} />
+                ) : null}
+              </>
+            )
+          }
+        />
+      }
+    />
+  );
+}
+
+/** Asks Kin to look at its App on GitHub now; every open screen redraws from what it sees. */
+function CheckAgain(props: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId }) {
+  const { environmentId, orgId } = props;
+  const allowed = useAtomValue(kinClient.githubAppLook.permissionAtom(environmentId));
+  const reload = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
+  const look = useAtomCommand(kinClient.githubAppLook, { reportFailure: false });
+  const actions = createKinGitHubLookActions({
+    orgId,
+    look: (input) => look({ environmentId, input }),
+    refresh: reload,
+  });
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState<string | null>(null);
+  if (!allowed) return null;
+  return (
+    <>
+      <Button
+        size="xs"
+        variant="outline"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          setSaid(null);
+          void actions.look().then((line) => {
+            setBusy(false);
+            setSaid(line);
+          });
+        }}
+      >
+        {AGENTS.checkAgain}
+      </Button>
+      {said === null ? null : <p className="w-full text-xs text-muted-foreground">{said}</p>}
+    </>
+  );
+}
+
+/** The owner's yes to Kin setting the webhook of an App it didn't make; the row then redraws. */
+function AllowHook(props: { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId }) {
+  const { environmentId, orgId } = props;
+  const allowed = useAtomValue(kinClient.githubAppHookAllow.permissionAtom(environmentId));
+  const reload = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
+  const allow = useAtomCommand(kinClient.githubAppHookAllow, { reportFailure: false });
+  const actions = createKinGitHubHookActions({
+    orgId,
+    allow: (input) => allow({ environmentId, input }),
+    refresh: reload,
+  });
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  if (!allowed) return null;
+  return (
+    <div className="flex shrink-0 flex-col gap-2">
+      <Button
+        size="xs"
+        disabled={busy}
+        onClick={() => {
+          setBusy(true);
+          setProblem(null);
+          void actions.allow().then((outcome) => {
+            setBusy(false);
+            if (!outcome.ok) setProblem(outcome.problem);
+          });
+        }}
+      >
+        {INSTANT.allow}
+      </Button>
+      {problem === null ? null : (
+        <Alert variant="error">
+          <AlertDescription>{problem}</AlertDescription>
+        </Alert>
       )}
     </div>
   );
@@ -295,6 +499,8 @@ function AppSetUp(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
   readonly view: ReturnType<typeof kinGitHubAgentsView>;
+  /** Install on more repos, beside the App's own buttons. */
+  readonly install: ReactNode;
 }) {
   const { environmentId, orgId, view } = props;
   const reload = useAtomRefresh(kinClient.github({ environmentId, input: { orgId } }));
@@ -318,61 +524,79 @@ function AppSetUp(props: {
   const forgetting = view.disconnect;
   return (
     <>
-      {view.setUpLine === null ? null : (
-        <p className="text-xs text-muted-foreground">{view.setUpLine}</p>
-      )}
-      {view.canCreate || forgetting !== null ? (
-        <div className="flex flex-wrap gap-2">
-          {view.canCreate ? (
-            <Button
-              size="xs"
-              onClick={() => {
-                setCreating({ started: null, problem: null });
-                void actions
-                  .start()
-                  .then((outcome) =>
-                    setCreating((open) =>
-                      open === null
-                        ? null
-                        : outcome.ok
-                          ? { started: outcome.value, problem: null }
-                          : { started: null, problem: outcome.problem },
-                    ),
-                  );
-              }}
-            >
-              {SETUP.create}
-            </Button>
-          ) : null}
-          {forgetting === null ? null : (
-            <Button size="xs" variant="outline" onClick={() => setConfirming(true)}>
-              {SETUP.disconnect}
-            </Button>
-          )}
-        </div>
-      ) : null}
+      <KinSettingsRow
+        title={view.headline}
+        wrap
+        detail={
+          <DetailWithActions
+            detail={
+              <>
+                {view.detail}
+                {view.setUpLine === null ? null : (
+                  <span className="mt-1 block">{view.setUpLine}</span>
+                )}
+              </>
+            }
+            actions={
+              view.canCreate || forgetting !== null || props.install !== null ? (
+                <>
+                  {view.canCreate ? (
+                    <Button
+                      size="xs"
+                      variant="outline"
+                      onClick={() => {
+                        setCreating({ started: null, problem: null });
+                        void actions
+                          .start()
+                          .then((outcome) =>
+                            setCreating((open) =>
+                              open === null
+                                ? null
+                                : outcome.ok
+                                  ? { started: outcome.value, problem: null }
+                                  : { started: null, problem: outcome.problem },
+                            ),
+                          );
+                      }}
+                    >
+                      {SETUP.create}
+                    </Button>
+                  ) : null}
+                  {props.install}
+                  {forgetting === null ? null : (
+                    <Button size="xs" variant="outline" onClick={() => setConfirming(true)}>
+                      {SETUP.disconnect}
+                    </Button>
+                  )}
+                </>
+              ) : null
+            }
+          />
+        }
+      />
       {left === null ? null : (
-        <Alert variant="info">
-          <AlertDescription>
-            <span>{SETUP.disconnected(left.name)}</span>
-            {left.url === null ? null : (
-              <span className="mt-2 block">
-                <Button
-                  size="xs"
-                  variant="outline"
-                  render={<a href={left.url} target="_blank" rel="noreferrer noopener" />}
-                >
-                  {SETUP.appOnGitHub}
-                </Button>
-              </span>
-            )}
-          </AlertDescription>
-        </Alert>
+        <KinSettingsRow
+          title={SETUP.disconnected(left.name)}
+          wrap
+          control={
+            left.url === null ? null : (
+              <Button
+                size="xs"
+                variant="outline"
+                render={<a href={left.url} target="_blank" rel="noreferrer noopener" />}
+              >
+                {SETUP.appOnGitHub}
+              </Button>
+            )
+          }
+        />
       )}
       {problem === null ? null : (
-        <Alert variant="error">
-          <AlertDescription>{problem}</AlertDescription>
-        </Alert>
+        <div className="px-4 pb-3">
+          <Alert variant="error">
+            <AlertDescription>{problem}</AlertDescription>
+          </Alert>
+        </div>
       )}
       {creating === null ? null : (
         <CreateAppDialog
@@ -505,7 +729,9 @@ function AccountRepos(props: {
         </Button>
       </div>
     ) : (
-      <p className="text-sm text-muted-foreground sm:basis-full">Loading…</p>
+      <div className="sm:basis-full">
+        <KinSettingsLoading rows={2} />
+      </div>
     );
   const mine = kinGitHubAccountRepos(all, account, "");
   const shown = kinGitHubAccountRepos(all, account, query);
@@ -623,7 +849,7 @@ function WatchedRepos(props: {
   const watch = status.watch;
   if (watch === undefined) return null;
   return (
-    <div className="flex flex-col gap-2 border-t px-4 py-3">
+    <div className="flex flex-col gap-2 px-4 py-3">
       <p className="text-sm text-muted-foreground">{kinGitHubWatchLine(watch, now)}</p>
       {watch.problem === null ? null : (
         <Alert variant="warning">
@@ -768,7 +994,7 @@ function RepoList(props: {
         </Button>
       </div>
     ) : (
-      <p className="text-sm text-muted-foreground">Loading…</p>
+      <KinSettingsLoading rows={3} />
     );
   return (
     <div className="flex flex-col gap-2">
@@ -783,7 +1009,9 @@ function RepoList(props: {
             <div className="flex min-w-0 flex-col">
               <div className="flex min-w-0 items-center gap-2">
                 <span className="truncate text-sm">{repo.repo}</span>
-                {repo.fork ? <Badge variant="outline">{WATCH.fork}</Badge> : null}
+                {repo.fork ? (
+                  <KinSettingsStatus tone="quiet">{WATCH.fork}</KinSettingsStatus>
+                ) : null}
               </div>
               {repo.mentions || repo.agentsAs !== undefined || kinGitHubGuardLine(repo) !== null ? (
                 <span className="text-xs text-muted-foreground">
@@ -825,7 +1053,7 @@ function RepoList(props: {
         ))}
       </ul>
       <GuardOutcome outcome={guard.outcome} />
-      {repos.some((repo) => !repo.watched && !repo.fork) ? (
+      {repos.some((repo) => !repo.watched) ? (
         <div>
           <Button
             size="xs"

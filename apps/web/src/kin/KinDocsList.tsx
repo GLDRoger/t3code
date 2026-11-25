@@ -1,7 +1,7 @@
 import type { KinViewerScope } from "@t3tools/client-runtime/kin/kinViewerScope";
 import { kinNothingShown } from "@t3tools/client-runtime/kin/kinViewerScope";
 import { useKinViewerScope } from "./useKinOwnerLevel";
-import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_MORE_FAILED, KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_DOCS,
@@ -33,6 +33,9 @@ import {
   type KinListIndexRow,
 } from "@t3tools/client-runtime/kin/kinLists";
 import { KIN_WORK_HOME, kinPlaceLists } from "@t3tools/client-runtime/kin/kinWorkHome";
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
+import { kinWorkOffline } from "@t3tools/client-runtime/kin/kinWork";
+import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import type { KinDocListRow, KinListDefinition, KinListId, KinRecordKey } from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
 import {
@@ -44,6 +47,7 @@ import {
   FolderInputIcon,
   MessageSquareIcon,
   TableIcon,
+  Undo2Icon,
 } from "lucide-react";
 import { useState } from "react";
 
@@ -63,6 +67,9 @@ import {
 import { KinDocFileDialog } from "./KinDocFileDialog";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
+import { useKinHostAt } from "./useKinHost";
+import { useKinDocDelete } from "./useKinDocDelete";
+import { toastDocRestored } from "./kinDocDeleteToasts";
 import {
   useKinDocsList,
   useKinDocsLive,
@@ -86,8 +93,11 @@ function KinDocRowButton(props: {
   readonly onOpen: () => void;
   /** An unfiled doc's one-click way to file it. */
   readonly onFile?: () => void;
+  /** A deleted doc's way back, for whoever may. */
+  readonly onRestore?: () => void;
+  readonly restoring?: boolean;
 }) {
-  const { row, onFile } = props;
+  const { row, onFile, onRestore } = props;
   return (
     <div className="flex min-w-0 items-center gap-2">
       <button
@@ -95,7 +105,7 @@ function KinDocRowButton(props: {
         aria-label={row.accessibilityLabel}
         aria-current={props.selected === true ? true : undefined}
         onClick={props.onOpen}
-        className={ROW}
+        className={cn(ROW, "min-w-0")}
       >
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex min-w-0 items-center gap-1.5">
@@ -111,8 +121,11 @@ function KinDocRowButton(props: {
           {props.bare || row.under === null ? null : (
             <span className="truncate text-xs text-muted-foreground">{row.under}</span>
           )}
+          {row.deletedLine === null ? null : (
+            <span className="truncate text-xs text-muted-foreground">{row.deletedLine}</span>
+          )}
         </span>
-        {row.archived ? (
+        {row.archived && row.deletedLine === null ? (
           <Badge size="sm" variant="outline">
             {KIN_DOCS.archived}
           </Badge>
@@ -127,6 +140,19 @@ function KinDocRowButton(props: {
         >
           <FolderInputIcon />
           {KIN_DOC_HOMES.file}
+        </Button>
+      )}
+      {onRestore === undefined ? null : (
+        <Button
+          size="xs"
+          variant="outline"
+          aria-label={`${KIN_DOCS.restoreDoc} ${row.title}`}
+          disabled={props.restoring === true}
+          aria-busy={props.restoring === true}
+          onClick={onRestore}
+        >
+          <Undo2Icon />
+          {props.restoring === true ? KIN_DOCS.restoringDoc : KIN_DOCS.restoreDoc}
         </Button>
       )}
     </div>
@@ -323,8 +349,10 @@ export function KinDocsList(
   const [playbooksOpen, setPlaybooksOpen] = useState(false);
   const [filing, setFiling] = useState<KinDocListRow | null>(null);
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(props.environmentId));
+  const deleting = useKinDocDelete(props);
   const scope = useKinViewerScope(props.environmentId);
   const { filter } = state;
+  const shown = kinListShown(state, kinHostLink(useKinHostAt(props.environmentId)));
   const text = filter.text.trim().toLowerCase();
   const searching = text !== "";
   const everything = filter.show._tag === "all";
@@ -362,7 +390,7 @@ export function KinDocsList(
   const starter = useKinWhatWeSellStart(props);
   const library = kinDocLibrary(state.records, pinShown ? (pinned ?? null) : null);
   const whatWeSell: ReadonlyArray<Item> =
-    pinShown && pinned === null && starter !== null
+    shown === "rows" && pinShown && pinned === null && starter !== null
       ? [{ type: "whatWeSell", id: "what-we-sell" }]
       : [];
   // Typed words narrow the list on the host, so every doc is looked through, not just these rows.
@@ -425,6 +453,7 @@ export function KinDocsList(
           allLists,
           playbooksOpen,
           canFile,
+          deleting.busy,
           props.selected,
           starter?.agent,
           pinned,
@@ -434,8 +463,12 @@ export function KinDocsList(
         onEndReachedThreshold={0.5}
         ListHeaderComponent={
           <div className="mx-auto flex w-full max-w-3xl flex-col gap-3 px-4 pt-2 pb-1">
-            {props.stale || state.stale ? (
-              <KinWorkStaleLine environmentId={props.environmentId} onRetry={list.refresh} />
+            {shown === "rows" && (props.stale || state.stale) ? (
+              <KinWorkStaleLine
+                environmentId={props.environmentId}
+                onRetry={list.refresh}
+                readAt={state.readAt}
+              />
             ) : null}
             <Input
               type="search"
@@ -503,11 +536,13 @@ export function KinDocsList(
         }
         ListEmptyComponent={
           <div className="mx-auto w-full max-w-3xl px-4">
-            {state.loading ? (
+            {shown === "offline" ? (
+              <KinWorkNotice {...kinWorkOffline("docs")} />
+            ) : shown === "loading" ? (
               <div role="status" aria-label={KIN_DOCS.loading}>
                 <KinWorkRowSkeletons />
               </div>
-            ) : state.failed !== null ? (
+            ) : shown === "failed" ? (
               <KinLoadFailed
                 what={KIN_DOCS.loadFailed}
                 cause={state.failed}
@@ -530,21 +565,31 @@ export function KinDocsList(
             {items.length > 0 &&
             docItems.length === 0 &&
             playbookItems.length === 0 &&
-            !state.loading ? (
+            shown !== "loading" ? (
               <div className="mx-auto w-full max-w-3xl px-4 pt-4">
-                <KinWorkNotice
-                  {...(searching
-                    ? KIN_DOCS.noMatch
-                    : filter.archived
-                      ? KIN_DOCS.emptyArchived
-                      : (kinNothingShown("docs", scope) ?? KIN_DOCS.empty))}
-                />
+                {shown === "failed" ? (
+                  <KinLoadFailed
+                    what={KIN_DOCS.loadFailed}
+                    cause={state.failed}
+                    onRetry={list.refresh}
+                  />
+                ) : (
+                  <KinWorkNotice
+                    {...(shown === "offline"
+                      ? kinWorkOffline("docs")
+                      : searching
+                        ? KIN_DOCS.noMatch
+                        : filter.archived
+                          ? KIN_DOCS.emptyArchived
+                          : (kinNothingShown("docs", scope) ?? KIN_DOCS.empty))}
+                  />
+                )}
               </div>
             ) : null}
             {footer === null ? null : (
               <div className="mx-auto flex w-full max-w-3xl items-center gap-3 px-6 py-3">
                 <p className="text-xs text-muted-foreground" role="status">
-                  {state.moreFailed ? "Couldn't load more." : footer}
+                  {state.moreFailed ? KIN_MORE_FAILED : footer}
                 </p>
                 <Button
                   size="xs"
@@ -690,6 +735,16 @@ export function KinDocsList(
                 onOpen={() => props.onOpen(item.row.key)}
                 {...(canFile && kinDocUnfiled(item.row) && filter.show._tag !== "files"
                   ? { onFile: () => setFiling(item.row) }
+                  : {})}
+                {...(deleting.allowed && item.row.archived && item.row.deletable === true
+                  ? {
+                      onRestore: () =>
+                        void deleting.restore(item.row.key).then((why) => {
+                          toastDocRestored(item.row.title, why);
+                          if (why === null) list.refresh();
+                        }),
+                      restoring: deleting.busy === item.row.key,
+                    }
                   : {})}
               />
             </div>

@@ -12,11 +12,8 @@ import {
   FlaskConicalIcon,
   BotIcon,
   createLucideIcon,
-  CalendarCheckIcon,
-  TrendingUpIcon,
   CalendarClockIcon,
   FileDiffIcon,
-  FingerprintIcon,
   FolderTreeIcon,
   GitBranchIcon,
   GlobeIcon,
@@ -35,9 +32,6 @@ import {
   SmartphoneIcon,
   WrenchIcon,
   XIcon,
-  Building2Icon,
-  PlugIcon,
-  CircleUserIcon,
 } from "lucide-react";
 import { resolveEventKeys } from "@t3tools/shared/keybindings";
 import { useLocation, useNavigate } from "@tanstack/react-router";
@@ -59,19 +53,20 @@ import { scrollToSettingsTarget } from "./settingsLayout";
 import {
   searchSettings,
   revealSettingsSearchTarget,
-  KIN_MOVED_SETTINGS_PATHS,
-  KIN_ONLY_SETTINGS_PATHS,
-  SETTINGS_NAV_GROUPS,
+  settingsNavGroups,
   SETTINGS_NAV_LABELS,
   SETTINGS_SECTION_LABELS,
   type SettingsPath,
   type SettingsSearchItem,
 } from "./settingsSearch";
-import { useAvailableSettingsSearchItems } from "./useAvailableSettingsSearchItems";
+import {
+  useAvailableSettingsSearchItems,
+  useHasSecretProvidersEnvironment,
+} from "./useAvailableSettingsSearchItems";
 import { handleSettingsSectionKeyDown } from "./settingsSectionNavigation";
 import { workspaceAreaProps } from "../../lib/workspaceFocus";
-import { kinListShownAt } from "../../kin/kinListSwitch";
-import { useKinHost } from "../../kin/useKinHost";
+import { KIN_SETTINGS_SECTION_ICONS } from "../../kin/kinSettingsSearch";
+import { useKinSettingsNavGroups } from "../../kin/useKinSettingsNavGroups";
 
 const SnapShotIcon = createLucideIcon("snap-shot", [
   [
@@ -117,17 +112,12 @@ const SETTINGS_SECTION_ICONS: Readonly<
   "/settings/worktrees": FolderTreeIcon,
   "/settings/connections": ServerIcon,
   "/settings/access": ShieldCheckIcon,
-  "/settings/approvals": FingerprintIcon,
   "/settings/secrets": KeyRoundIcon,
-  "/settings/company": Building2Icon,
-  "/settings/check-ins": CalendarCheckIcon,
-  "/settings/deals": TrendingUpIcon,
-  "/settings/kin-connections": PlugIcon,
-  "/settings/kin-profile": CircleUserIcon,
   "/settings/maintenance": WrenchIcon,
   "/settings/labs": FlaskConicalIcon,
   "/settings/about": InfoIcon,
   "/settings/archived": ArchiveIcon,
+  ...KIN_SETTINGS_SECTION_ICONS,
 };
 
 // Detail pages without a nav entry highlight the page that links to them.
@@ -153,25 +143,16 @@ export function SettingsSidebarNav({ pathname }: { pathname: string }) {
   const navigate = useNavigate();
   const currentHash = useLocation({ select: (location) => location.hash });
   const activePath = SETTINGS_DETAIL_PAGE_PARENTS[pathname] ?? pathname;
-  const hasKinHost = useKinHost()._tag === "host";
-  // Over Kin, its check-ins are the schedule; the coding list keeps its own scheduled tasks.
-  const overKin = hasKinHost && kinListShownAt(pathname) === "kin";
-  const navGroups = SETTINGS_NAV_GROUPS.map((group) => ({
-    ...group,
-    paths: group.paths.filter(
-      (path) =>
-        (hasKinHost || !KIN_ONLY_SETTINGS_PATHS.has(path)) &&
-        // With Kin on, its pages live in Kin's Settings (the gear on Chats), not here too.
-        !(hasKinHost && KIN_MOVED_SETTINGS_PATHS.has(path)) &&
-        !(overKin && path === "/settings/scheduled-tasks"),
-    ),
-  }));
   const searchInputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   // Below md the nav is an icon rail; searching expands it over the page.
   const [compactSearchOpen, setCompactSearchOpen] = useState(false);
   const [activeResultIndex, setActiveResultIndex] = useState(0);
   const searchableItems = useAvailableSettingsSearchItems();
+  const navGroups = useKinSettingsNavGroups(
+    settingsNavGroups(useHasSecretProvidersEnvironment()),
+    pathname,
+  );
   const results = searchSettings(query, searchableItems, m);
   const isSearching = query.trim().length > 0;
   const hasResults = results.length > 0;

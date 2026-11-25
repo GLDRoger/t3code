@@ -1,4 +1,6 @@
 import type { KinDestination } from "@t3tools/client-runtime/kin/kinNavigation";
+import type { KinPlaces } from "@t3tools/client-runtime/kin/kinPlaces";
+import type { Atom } from "effect/reactivity";
 import { EnvironmentId, KinAgentId, KinChatId, KinOrgId } from "@t3tools/contracts";
 import { describe, expect, it, vi } from "vite-plus/test";
 import { page, userEvent } from "vite-plus/test/browser";
@@ -10,6 +12,20 @@ const target = {
 const chief = KinAgentId.make("agent-chief");
 
 const groupsSeen = vi.hoisted(() => ({ values: [] as Array<ReadonlyArray<string>> }));
+const placesSeen = vi.hoisted(() => ({ atom: null as unknown }));
+vi.mock(import("./kinPlacesAtom"), async (importOriginal) => {
+  const { Atom } = await import("effect/reactivity");
+  const places = Atom.make<KinPlaces>({ destinations: [], answered: true }).pipe(Atom.keepAlive);
+  placesSeen.atom = places;
+  return { ...(await importOriginal()), kinPlacesAtom: () => places };
+});
+
+// Whether the host lists a number for this person; the owner level always has Numbers.
+const numbersSeen = vi.hoisted(() => ({ shown: false }));
+vi.mock(import("./useKinNumbers"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  useKinNumbersShown: () => numbersSeen.shown,
+}));
 
 vi.mock(import("./KinNewLeadButton"), async (importOriginal) => ({
   ...(await importOriginal()),
@@ -95,16 +111,19 @@ import { openCommandPalette } from "../commandPaletteBus";
 import { useCommandPaletteStore } from "../commandPaletteStore";
 import { CommandPalette } from "../components/CommandPalette";
 import { AppAtomRegistryProvider, appAtomRegistry } from "../rpc/atomRegistry";
-import { kinShownDestinationsAtom } from "./kinListSwitch";
 
 const chatsPath = `/kin/${target.environmentId}/${target.orgId}/chat-chief`;
 const KIN_ROWS =
-  /^(Chats|Tasks|Money|Clients|Docs|Projects|Lists|Dates|Go to)\b|: model, character/;
+  /^(Chats|Tasks|Money|Clients|Docs|Numbers|Projects|Lists|Dates|Go to)\b|: model, character/;
 
-function setup(destinations: ReadonlyArray<KinDestination>) {
+function setup(destinations: ReadonlyArray<KinDestination>, numbersShown = false) {
+  numbersSeen.shown = numbersShown;
   useCommandPaletteStore.setState(useCommandPaletteStore.getInitialState(), true);
   groupsSeen.values = [];
-  appAtomRegistry.set(kinShownDestinationsAtom, { target, destinations });
+  appAtomRegistry.set(placesSeen.atom as Atom.Writable<KinPlaces>, {
+    destinations,
+    answered: true,
+  });
 }
 
 async function renderPalette() {
@@ -119,6 +138,9 @@ async function renderPalette() {
   return screen;
 }
 
+// The shortcut sign follows the platform; CI runs on Linux.
+const onMac = () => vi.spyOn(Navigator.prototype, "platform", "get").mockReturnValue("MacIntel");
+
 const kinRowNames = () =>
   page
     .getByRole("option")
@@ -128,7 +150,8 @@ const kinRowNames = () =>
 
 describe("Kin's rows in the command palette", () => {
   it("offers the owner each place once, with its shortcut, and no two rows share a value", async () => {
-    setup(["chats", "tasks", "money", "clients", "docs"]);
+    setup(["chats", "tasks", "money", "clients", "docs"], true);
+    using _mac = onMac();
     await using _screen = await renderPalette();
 
     expect(kinRowNames()).toEqual([
@@ -137,6 +160,7 @@ describe("Kin's rows in the command palette", () => {
       "Money: who owes you, what came in and what went out⌘3",
       "Clients: what you owe them and what they owe you⌘4",
       "Docs: what your agents have written up⌘5",
+      "Numbers: the figures your company watches, and today's values⌘6",
       "Projects: how each one is going",
       "Lists: everything your agents keep track of",
       "Dates: everything due, across every list",
@@ -153,11 +177,13 @@ describe("Kin's rows in the command palette", () => {
 
   it("offers a teammate without Money no Money and no Dates, and Projects opens its tab", async () => {
     setup(["chats", "tasks", "clients", "docs"]);
+    using _mac = onMac();
     await using screen = await renderPalette();
 
     const names = kinRowNames();
     expect(names.some((name) => name.startsWith("Money"))).toBe(false);
     expect(names.some((name) => name.startsWith("Dates"))).toBe(false);
+    expect(names.some((name) => name.startsWith("Numbers"))).toBe(false);
     expect(names).toContain("Clients: what you owe them and what they owe you⌘3");
     expect(names).toContain("Projects: how each one is going");
     expect(names).toContain("Lists: everything your agents keep track of");

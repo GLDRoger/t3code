@@ -1,8 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
-import { KIN_INVOICES } from "@t3tools/client-runtime/kin/kinInvoices";
+import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
+import { KIN_INVOICES, kinConfirmTotal } from "@t3tools/client-runtime/kin/kinInvoices";
 import { KIN_BANK, KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
+import { kinWorkReadUnreachable } from "@t3tools/client-runtime/kin/kinWorkForms";
+import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import {
   KIN_BUDGETS,
   KIN_CASH,
@@ -17,6 +20,7 @@ import {
   kinBudgetsView,
   kinCashView,
   kinOutlookView,
+  type KinOutlookView,
   kinQuoteActions,
   kinQuoteInvoice,
   kinQuoteRow,
@@ -32,6 +36,7 @@ import {
   EnvironmentId,
   KinMoneyBudget,
   KinOrgId,
+  KinPersonId,
   type KinListDefinition,
   type KinRecordDetail,
   type KinRecordKey,
@@ -41,8 +46,8 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { useState } from "react";
-import type { KinMakeStep } from "./KinInvoice";
-import { Pressable, View } from "react-native";
+import type { KinMakeStep } from "./kinMakeStep";
+import { Alert, Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
@@ -71,10 +76,14 @@ import {
   useKinBudgetSet,
   useKinCash,
   useKinInvoiceFromQuote,
+  useKinMatchPartner,
   useKinOutlook,
 } from "./state/useKinMoneyAnswers";
-import { useKinWorkChoices, type KinWorkTarget } from "./state/useKinWork";
+import { useKinHostAt } from "./state/useKinHost";
+import { useKinWorkChoices, useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
+import { useKinShell } from "./state/useKinShell";
 
 const PEEK = 5;
 type Section = KinWorkTarget & { readonly seq: number | null; readonly rates: KinRates | null };
@@ -90,6 +99,7 @@ function Row(props: {
   readonly onPress?: () => void;
   readonly children?: React.ReactNode;
 }) {
+  const grows = useKinTextGrows();
   return (
     <Pressable
       accessibilityRole={props.onPress === undefined ? "text" : "button"}
@@ -101,13 +111,13 @@ function Row(props: {
       className="min-h-11 flex-row items-start gap-3 bg-grouped-card px-4 py-2.5 active:opacity-60"
     >
       <View className="min-w-0 flex-1 gap-0.5">
-        <Text textRole="body" numberOfLines={1} className="text-foreground">
+        <Text textRole="body" numberOfLines={kinLines(1, grows)} className="text-foreground">
           {props.label}
         </Text>
         {props.note == null || props.note === "" ? null : (
           <Text
             textRole="footnote"
-            numberOfLines={1}
+            numberOfLines={kinLines(1, grows)}
             className={props.late ? "text-danger-foreground" : "text-foreground-muted"}
           >
             {props.note}
@@ -162,7 +172,9 @@ export function KinCashSection(props: Section) {
   const agent = useKinAskAgent(props, "money");
   const [why, setWhy] = useState<string | null>(null);
   const [details, setDetails] = useState(false);
+  const link = kinHostLink(useKinHostAt(props.environmentId));
   if (state._tag === "refused" || state._tag === "gone") return null;
+  if (kinWorkReadUnreachable(state, link)) return null;
   const view = state._tag === "ready" ? kinCashView(state.value, props.rates, now) : null;
   return (
     <ListSection title={KIN_CASH.title}>
@@ -295,10 +307,121 @@ function OutlookRows(props: {
           note={row.note}
           amount={row.amount}
           estimate={row.estimate}
-          onPress={() => props.onOpen(row.key)}
+          {...(row.key === null ? {} : { onPress: () => props.onOpen(row.key!) })}
         />
       ))}
       {props.all && props.more > 0 ? <Plain>{KIN_OUTLOOK.more(props.more)}</Plain> : null}
+    </>
+  );
+}
+
+/** Who the company owes back; one no teammate is matched to yet gets a person picked. */
+function PartnersOwed(
+  props: Section & {
+    readonly rows: KinOutlookView["partners"];
+    readonly unsaid: KinOutlookView["unsaid"];
+  },
+) {
+  const directory = useKinWorkDirectory(
+    props,
+    props.rows.some((one) => one.match !== null) || props.unsaid.length > 0,
+  );
+  const matching = useKinMatchPartner(props);
+  const people = [...directory.names.people].sort((a, b) => a[1].localeCompare(b[1]));
+  if (props.rows.length + props.unsaid.length === 0) return null;
+  // While one pick saves, the menus open greyed and say so: a second pick is never lost silently.
+  const pickable = people.map(([id, name]) => ({
+    id,
+    title: name,
+    attributes: { disabled: matching.busy },
+  }));
+  const say = (row: KinOutlookView["unsaid"][number], event: string) => {
+    const [personId, settled] = event.split("\n");
+    const name = people.find(([id]) => id === personId)?.[1];
+    if (matching.busy || name === undefined || (settled !== "owed" && settled !== "repaid")) return;
+    Alert.alert(
+      KIN_OUTLOOK.sayTitle(row.address),
+      `${name}: ${settled === "owed" ? KIN_OUTLOOK.stillOwed : KIN_OUTLOOK.paidBack}. ${settled === "owed" ? KIN_OUTLOOK.stillOwedHint : KIN_OUTLOOK.paidBackHint}`,
+      [
+        { text: KIN_OUTLOOK.cancel, style: "cancel" },
+        {
+          text: KIN_OUTLOOK.confirm,
+          onPress: () =>
+            void matching.match(row.address, row.seen, KinPersonId.make(personId!), settled),
+        },
+      ],
+    );
+  };
+  return (
+    <>
+      {props.rows.length === 0 ? null : (
+        <Text textRole="footnote" className="bg-grouped-card px-4 pt-2 text-foreground-muted">
+          {KIN_OUTLOOK.partners}
+        </Text>
+      )}
+      {props.rows.map((row) =>
+        row.match === null ? (
+          <ListRowLayout key={row.id} label={row.name} description={row.note} detail={row.amount} />
+        ) : (
+          <Menu
+            key={row.id}
+            title={KIN_OUTLOOK.whoIsThis}
+            accessibilityRole="button"
+            accessibilityLabel={`${row.name}, ${row.amount}. ${KIN_OUTLOOK.whoIsThis}`}
+            actions={pickable}
+            onPressAction={({ nativeEvent: { event } }) => {
+              if (!matching.busy)
+                void matching.match(row.match!.address, row.match!.seen, KinPersonId.make(event));
+            }}
+          >
+            <View pointerEvents="none">
+              <ListRowLayout
+                label={row.name}
+                description={`${row.note} · ${matching.busy ? KIN_OUTLOOK.saving : KIN_OUTLOOK.whoIsThis}`}
+                detail={row.amount}
+              />
+            </View>
+          </Menu>
+        ),
+      )}
+      {props.unsaid.length === 0 ? null : (
+        <Text textRole="footnote" className="bg-grouped-card px-4 pt-2 text-foreground-muted">
+          {KIN_OUTLOOK.unsaid}
+        </Text>
+      )}
+      {props.unsaid.map((row) => (
+        <Menu
+          key={row.address}
+          title={KIN_OUTLOOK.sayWho}
+          accessibilityRole="button"
+          accessibilityLabel={`${row.address}, ${row.amount}. ${KIN_OUTLOOK.sayWho}`}
+          actions={people.map(([id, name]) => ({
+            id,
+            title: name,
+            attributes: { disabled: matching.busy },
+            subactions: (
+              [
+                ["owed", KIN_OUTLOOK.stillOwed],
+                ["repaid", KIN_OUTLOOK.paidBack],
+              ] as const
+            ).map(([settled, title]) => ({ id: `${id}\n${settled}`, title })),
+          }))}
+          onPressAction={({ nativeEvent: { event } }) => say(row, event)}
+        >
+          <View pointerEvents="none">
+            <ListRowLayout
+              label={row.address}
+              description={`${row.note} · ${matching.busy ? KIN_OUTLOOK.saving : KIN_OUTLOOK.sayWho}`}
+              detail={row.amount}
+            />
+          </View>
+        </Menu>
+      ))}
+      {matching.problem === null ? null : (
+        <Text textRole="footnote" className="bg-grouped-card px-4 py-1 text-destructive">
+          {matching.problem}
+        </Text>
+      )}
     </>
   );
 }
@@ -309,7 +432,9 @@ export function KinOutlookSection(props: Section) {
   const open = useOpenEntry(props);
   const { state, refresh } = useKinOutlook(props, true);
   const [all, setAll] = useState(false);
+  const link = kinHostLink(useKinHostAt(props.environmentId));
   if (state._tag === "refused" || state._tag === "gone") return null;
+  if (kinWorkReadUnreachable(state, link)) return null;
   const view = state._tag === "ready" ? kinOutlookView(state.value, props.rates, now) : null;
   const longer = view !== null && view.incoming.length + view.outgoing.length > 0;
   return (
@@ -369,6 +494,7 @@ export function KinOutlookSection(props: Section) {
             more={view.more.outgoing}
             onOpen={open}
           />
+          <PartnersOwed {...props} rows={view.partners} unsaid={view.unsaid} />
           {view.notes.length + view.runway.length === 0 ? null : (
             <Text textRole="footnote" className="bg-grouped-card px-4 py-2 text-foreground-muted">
               {[...view.notes, ...view.runway.map((one) => one.text)].join(" ")}
@@ -387,7 +513,7 @@ export function KinOutlookSection(props: Section) {
 }
 
 // As Money counts them: no suggestion is an open quote until it is kept.
-const OPEN_QUOTES = { ...KIN_LIST_DEFAULT_FILTER, show: "open" as const, kept: true };
+const OPEN_QUOTES = { ...KIN_LIST_DEFAULT_FILTER, show: "notClosed" as const, kept: true };
 
 /** Open quotes first, each opening the quote; See all opens the whole list. */
 export function KinQuotesSection(
@@ -402,7 +528,9 @@ function QuotesPeek(props: Section) {
   const now = new Date(useNowMinuteMs());
   const open = useOpenEntry(props);
   const { state } = useKinListEntries(props, KIN_QUOTES_LIST, OPEN_QUOTES, props.seq);
+  const link = kinHostLink(useKinHostAt(props.environmentId));
   const rows = state.records.map((record) => kinQuoteRow(record, props.rates, now));
+  if (kinListShown(state, link) === "offline") return null;
   return (
     <KinFoldSection
       title={KIN_QUOTES.title}
@@ -445,6 +573,7 @@ function QuotesPeek(props: Section) {
 }
 
 function BudgetRow(props: { readonly view: KinBudgetView; readonly onPress?: () => void }) {
+  const grows = useKinTextGrows();
   const { view } = props;
   return (
     <Pressable
@@ -458,7 +587,11 @@ function BudgetRow(props: { readonly view: KinBudgetView; readonly onPress?: () 
       className="min-h-11 gap-1.5 bg-grouped-card px-4 py-2.5 active:opacity-60"
     >
       <View className="flex-row justify-between gap-3">
-        <Text textRole="body" numberOfLines={1} className="min-w-0 flex-1 text-foreground">
+        <Text
+          textRole="body"
+          numberOfLines={kinLines(1, grows)}
+          className="min-w-0 flex-1 text-foreground"
+        >
           {view.label}
         </Text>
         <Text textRole="body" className="tabular-nums text-foreground">
@@ -508,7 +641,9 @@ export function KinBudgetsSection(
   const canChange = useAtomValue(kinClient.workSetBudget.permissionAtom(props.environmentId));
   const [all, setAll] = useState(false);
   const expenses = props.lists.find((one) => one.list === "expenses") ?? null;
+  const link = kinHostLink(useKinHostAt(props.environmentId));
   if (state._tag === "refused" || state._tag === "gone") return null;
+  if (kinWorkReadUnreachable(state, link)) return null;
   const views = state._tag === "ready" ? kinBudgetsView(state.value, expenses, props.rates) : [];
   // Absent with none set: Money's Add sets the first one.
   if (state._tag === "ready" && views.length === 0) return null;
@@ -709,7 +844,12 @@ export function KinQuoteActions(
     invoice: useAtomValue(kinClient.workInvoiceFromQuote.permissionAtom(environmentId)),
   };
   const invoiced = invoicing.invoice ?? kinQuoteInvoice(item.links);
-  const can = kinQuoteActions(quote.state, props.def?.numbering !== undefined, invoiced !== null);
+  const can = kinQuoteActions(
+    quote.state,
+    props.def?.numbering !== undefined,
+    invoiced !== null,
+    useKinShell(environmentId),
+  );
   const [requestId] = useState(uuidv4);
   const busy = props.busy || actions.busy || invoicing.busy;
   const numbered = quote.number !== item.key;
@@ -749,7 +889,9 @@ export function KinQuoteActions(
           onPress={() =>
             Dialog.confirm({
               title: KIN_QUOTES.sendTitle,
-              message: KIN_QUOTES.sendDetail,
+              message: [kinConfirmTotal(item.amount, item.party?.title), KIN_QUOTES.sendDetail]
+                .filter((line) => line !== null)
+                .join("\n"),
               confirmText: KIN_QUOTES.send,
               onConfirm: () => void actions.issue(item.key),
             })
@@ -826,6 +968,9 @@ export function KinLinesFields(props: {
   readonly lines: ReadonlyArray<KinLineDraft>;
   readonly disabled: boolean;
   readonly onChange: (lines: ReadonlyArray<KinLineDraft>) => void;
+  /** Each line's SAC or HSN code, which only India's invoices carry; shown unless false. */
+  readonly codes?: boolean;
+  readonly detail?: string;
 }) {
   const set = (index: number, patch: Partial<KinLineDraft>) =>
     props.onChange(props.lines.map((one, at) => (at === index ? { ...one, ...patch } : one)));
@@ -836,7 +981,7 @@ export function KinLinesFields(props: {
           {KIN_LINES.title}
         </Text>
         <Text textRole="footnote" className="text-foreground-muted">
-          {KIN_LINES.detail}
+          {props.detail ?? KIN_LINES.detail}
         </Text>
       </View>
       {props.lines.map((line, index) => (
@@ -849,18 +994,20 @@ export function KinLinesFields(props: {
             disabled={props.disabled}
             onChangeText={(description) => set(index, { description })}
           />
-          <KinWorkTextField
-            label={KIN_LINES.sac}
-            value={line.sac}
-            maxLength={8}
-            keyboard="numbers"
-            disabled={props.disabled}
-            onChangeText={(sac) => set(index, { sac })}
-          />
+          {props.codes === false ? null : (
+            <KinWorkTextField
+              label={KIN_LINES.sac}
+              value={line.sac}
+              maxLength={8}
+              keyboard="decimal"
+              disabled={props.disabled}
+              onChangeText={(sac) => set(index, { sac })}
+            />
+          )}
           <KinWorkTextField
             label={KIN_LINES.quantity}
             value={line.quantity}
-            keyboard="numbers"
+            keyboard="decimal"
             disabled={props.disabled}
             onChangeText={(quantity) => set(index, { quantity })}
           />

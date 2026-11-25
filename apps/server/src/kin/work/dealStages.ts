@@ -69,3 +69,29 @@ export const stageMove = (
   fields: { stage: to },
   names: { stage: { from: stageName(stages, from), to: stageName(stages, to) } },
 });
+
+/**
+ * Whether the weekly brief's page carries the pipeline's three lines (Settings → Check-ins). Kept
+ * beside the stages: a check-in row has no column for it. Off until the owner level turns it on.
+ */
+export const weeklyPipelineOf = Effect.fn("KinDeals.weeklyPipelineOf")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ on: number | null }>`SELECT
+      json_extract(definition_json, '$.weeklyPipeline') AS "on" FROM kin_registers
+    WHERE org_id = ${orgId} AND register_id = 'deals' AND built_in = 1`;
+  return row?.on === 1;
+});
+
+export const setWeeklyPipeline = Effect.fn("KinDeals.setWeeklyPipeline")(function* (
+  orgId: KinOrgId,
+  on: boolean,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+    VALUES (${orgId}, 'deals', 'Deals', 'DL', 1, ${now})
+    ON CONFLICT DO NOTHING`;
+  yield* sql`UPDATE kin_registers SET definition_json = json_set(
+      COALESCE(NULLIF(definition_json, ''), '{}'), '$.weeklyPipeline', ${on ? 1 : 0})
+    WHERE org_id = ${orgId} AND register_id = 'deals' AND built_in = 1`;
+});

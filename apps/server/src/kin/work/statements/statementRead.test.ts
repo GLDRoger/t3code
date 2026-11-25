@@ -6,9 +6,9 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 
-import { readStatementFile } from "./statementFiles.ts";
+import { readStatementFile, TOO_LARGE } from "./statementFiles.ts";
 import { pdf, threePageStatement } from "./statementPdf.testkit.ts";
-import { READER_LIMITS, readIsolated, runReader, TOO_LARGE } from "./statementReader.ts";
+import { READER_LIMITS, readIsolated, runReader } from "./statementReader.ts";
 import { checkBalances, currencyIn, parseAmount, parseDay, readTable } from "./statementTable.ts";
 
 // Every statement here is invented: Lakeview Studio, its clients and its accounts are made up.
@@ -337,13 +337,16 @@ describe("hostile statement files", () => {
     Effect.gen(function* () {
       for (const [name, file] of hostile)
         assert.strictEqual((yield* readIsolated(file(), "INR"))._tag, "unreadable", name);
-      assert.strictEqual((yield* readIsolated(fixture("hdfc-account.pdf"), "INR"))._tag, "read");
+      assert.strictEqual(
+        (yield* readIsolated(fixture("statement-layout-a.pdf"), "INR"))._tag,
+        "read",
+      );
     }),
   );
 
   it.live("stops a reader past its time or memory with a reason the owner can act on", () =>
     Effect.gen(function* () {
-      const slow = yield* readIsolated(fixture("hdfc-account.pdf"), "INR", undefined, {
+      const slow = yield* readIsolated(fixture("statement-layout-a.pdf"), "INR", undefined, {
         ...READER_LIMITS,
         timeoutMs: 1,
       });
@@ -355,6 +358,11 @@ describe("hostile statement files", () => {
       });
       if (big._tag !== "unreadable") return assert.fail(big._tag);
       assert.strictEqual(big.reason, TOO_LARGE);
+      const damaged = new Uint8Array(Buffer.from("%PDF-1.7\n1 0 obj\n<< /Type /Catalog"));
+      assert.deepStrictEqual(yield* readIsolated(damaged, "INR"), {
+        _tag: "unreadable",
+        reason: "The PDF couldn't be opened; it may be damaged.",
+      });
     }),
   );
 
@@ -426,9 +434,10 @@ describe("hostile statement files", () => {
           precheck: false,
         });
         assert.deepStrictEqual(run.outcome, { _tag: "unreadable", reason: TOO_LARGE });
-        assert.strictEqual(run.stopped, "memory");
-        // Killed at the first sample past the limit: never the gigabytes the file decodes to.
-        assert.isAbove(run.peakKib, limit);
+        // Killed at the first sample past the limit, or, with no systemd scope on Linux, stopped
+        // sooner by the address-space cap: never the gigabytes the file decodes to.
+        if (run.stopped === undefined) assert.isBelow(run.peakKib, limit);
+        else assert.strictEqual(run.stopped, "memory");
         assert.isBelow(run.peakKib, limit * 2);
       }),
   );
@@ -466,7 +475,7 @@ describe("hostile statement files", () => {
 
   it.live("opens a locked PDF in its reader process with the owner's password", () =>
     Effect.gen(function* () {
-      const locked = fixture("hdfc-account-locked.pdf");
+      const locked = fixture("statement-layout-a-locked.pdf");
       assert.deepStrictEqual(yield* readIsolated(locked, "INR"), { _tag: "needs_password" });
       const opened = yield* readIsolated(locked, "INR", Redacted.make("lake4821"));
       assert.strictEqual(opened._tag, "read");
@@ -475,8 +484,8 @@ describe("hostile statement files", () => {
 });
 
 describe("statement files", () => {
-  it("reads an HDFC account PDF: columns from the header, wrapped narrations, both pages", async () => {
-    const { statement, format } = await read(fixture("hdfc-account.pdf"));
+  it("reads an HDFC account layout: columns from the header and wrapped narrations", async () => {
+    const { statement, format } = await read(fixture("statement-layout-a.pdf"));
     assert.strictEqual(format, "pdf");
     assert.strictEqual(statement.kind, "account");
     assert.strictEqual(statement.bank, "HDFC Bank");
@@ -493,7 +502,7 @@ describe("statement files", () => {
       [first.date, first.description, first.reference, first.direction, first.amountMinor],
       [
         "2026-10-02",
-        "NEFT CR-ICIC0000001-BRIGHTLINE MEDIA LLP- INV 26-27 004",
+        "NEFT CR-LKVB0000001-BRIGHTLINE MEDIA LLP- INV 26-27 004",
         "N275260001234567",
         "credit",
         11_800_000,
@@ -502,7 +511,7 @@ describe("statement files", () => {
     assert.strictEqual(first.balanceMinor, 36_800_000);
     // Two identical tea payments on one day stay two rows.
     assert.lengthOf(
-      statement.rows.filter((row) => row.description === "UPI-CHAI POINT-chai@invbank"),
+      statement.rows.filter((row) => row.description === "UPI-MOSS TEA BAR-tea@invbank"),
       2,
     );
     assert.strictEqual(
@@ -528,7 +537,7 @@ describe("statement files", () => {
   });
 
   it("asks for a statement PDF's password, refuses a wrong one and opens with the right one", async () => {
-    const locked = fixture("hdfc-account-locked.pdf");
+    const locked = fixture("statement-layout-a-locked.pdf");
     assert.deepStrictEqual(await readStatementFile(locked), { _tag: "needs_password" });
     assert.deepStrictEqual(await readStatementFile(locked, "lake0000"), {
       _tag: "wrong_password",
@@ -539,7 +548,7 @@ describe("statement files", () => {
   });
 
   it("reads an HDFC card PDF: Cr marks payments, foreign spends keep their currency", async () => {
-    const { statement } = await read(fixture("hdfc-card.pdf"));
+    const { statement } = await read(fixture("statement-layout-b.pdf"));
     assert.strictEqual(statement.kind, "card");
     assert.strictEqual(statement.account, "7710");
     assert.deepStrictEqual([statement.from, statement.to], ["2026-09-16", "2026-10-15"]);
@@ -549,7 +558,7 @@ describe("statement files", () => {
       ["debit", "credit", "debit", "debit", "debit", "debit"],
     );
     assert.deepStrictEqual(
-      statement.rows.find((row) => row.description.startsWith("FIGMA"))?.foreign,
+      statement.rows.find((row) => row.description.startsWith("PIXELQUILL"))?.foreign,
       { currency: "USD", amountMinor: 1_500 },
     );
     assert.strictEqual(statement.check.status, "adds_up");
@@ -563,7 +572,7 @@ describe("statement files", () => {
   });
 
   it("reads an old binary XLS download", async () => {
-    const { statement, format } = await read(fixture("hdfc-account.xls"));
+    const { statement, format } = await read(fixture("invented-account.xls"));
     assert.strictEqual(format, "xls");
     assert.strictEqual(statement.account, "4821");
     assert.deepStrictEqual(

@@ -1,12 +1,16 @@
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { kinAccessAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { kinFailureText, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_CONNECTIONS_COPY as COPY,
+  KIN_MY_MAILBOX_COPY as MINE,
+  kinTakesMailbox,
   kinAcceptAll,
   kinCallRow,
   kinConnectionChange,
   kinConnectionStatus,
+  kinIsMailConnection,
   kinSuggestedModes,
   kinToolRows,
   kinToolMark,
@@ -28,12 +32,12 @@ import { ErrorBanner } from "../../../components/ui/ErrorBanner";
 import { ListActionRow } from "../../../components/ui/ListActionRow";
 import { ListRowLayout } from "../../../components/ui/ListRowLayout";
 import { ListSection } from "../../../components/ui/ListSection";
-import { ListToggleRow } from "../../../components/ui/ListToggleRow";
 import { Notice } from "../../../components/ui/Notice";
 import { SegmentedControl } from "../../../components/ui/SegmentedControl";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
 import { useNowMinuteMs } from "../../../lib/clock";
+import { connectionAtomRuntime } from "../../../connection/runtime";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
 import { kinSignInInApp, kinSignInReturn, useKinConnectionActions } from "./kinConnectionSignIn";
@@ -44,6 +48,7 @@ import {
   type KinConnectionParams,
   type KinConnectionsTarget,
 } from "./kinConnectionTarget";
+import { KinWorkToggleRow } from "../components/KinWorkPieces";
 
 /** One connection as its record: how it stands, its tools inline, recent use, and its controls. */
 export function KinConnectionScreen({ route }: StaticScreenProps<KinConnectionParams>) {
@@ -80,6 +85,9 @@ function ConnectionRecord(props: {
   const update = useAtomCommand(kinClient.connectionUpdate, { reportFailure: false });
   const setReach = useAtomCommand(kinClient.connectionSetReach, { reportFailure: false });
   const actions = useKinConnectionActions(environmentId, orgId, reload);
+  const move = useAtomCommand(kinClient.mailboxMove, { reportFailure: false });
+  const canMove = useAtomValue(kinClient.mailboxMove.permissionAtom(environmentId));
+  const takes = kinTakesMailbox(useAtomValue(kinAccessAtom(connectionAtomRuntime, environmentId)));
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
 
@@ -153,6 +161,27 @@ function ConnectionRecord(props: {
           }),
       },
     ]);
+
+  // iOS cuts an alert title after two lines, so a long address goes in the message.
+  const confirmTake = () =>
+    Dialog.alert(
+      `${MINE.makeMine}?`,
+      `${connection.accountLabel ?? connection.label}\n\n${MINE.makeMineDetail}`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: MINE.makeMineAction,
+          onPress: () =>
+            void move({
+              environmentId,
+              input: { orgId, connectionId: props.connectionId, to: "mine" },
+            }).then((done) => {
+              if (AsyncResult.isSuccess(done)) navigation.goBack();
+              else setProblem(kinFailureText(done, MINE.moving));
+            }),
+        },
+      ],
+    );
 
   return (
     <View collapsable={false} className="flex-1 bg-screen">
@@ -323,7 +352,7 @@ function ConnectionRecord(props: {
           </ListSection>
 
           <ListSection footer={COPY.reachDetail}>
-            <ListToggleRow
+            <KinWorkToggleRow
               label={COPY.reachTitle}
               value={connection.reach === "closed"}
               disabled={busy !== null}
@@ -335,7 +364,11 @@ function ConnectionRecord(props: {
             />
           </ListSection>
 
-          <ListSection>
+          <ListSection
+            {...(canMove && !takes && kinIsMailConnection(connection)
+              ? { footer: MINE.takeAsCoOwner }
+              : {})}
+          >
             <ListActionRow
               label={COPY.rename}
               onPress={() =>
@@ -368,6 +401,9 @@ function ConnectionRecord(props: {
                 )
               }
             />
+            {canMove && takes && kinIsMailConnection(connection) ? (
+              <ListActionRow label={MINE.makeMine} disabled={busy !== null} onPress={confirmTake} />
+            ) : null}
             <ListActionRow
               tone="danger"
               label={COPY.remove}

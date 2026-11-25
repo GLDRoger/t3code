@@ -5,11 +5,14 @@ import { View } from "react-native";
 import { Button } from "../../../components/ui/Button";
 import { EmptyState } from "../../../components/ui/EmptyState";
 import {
+  kinIntroSendsTo,
   KIN_INTRO_COUNTRY,
   KIN_INTRO_PROMPTS,
   KIN_INTRO_START_HINT,
 } from "@t3tools/client-runtime/kin/kinIntro";
 import { kinLeadIntroDetail } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import { kinIntroSetUpLine } from "@t3tools/client-runtime/kin/kinSetUp";
+import { useKinWhatWeSellAnswer } from "../state/useKinDocs";
 import { useKinIsOwnerLevel } from "../state/kinChatOnly";
 import { useKinCountryNeeded } from "../state/useKinMoney";
 
@@ -23,12 +26,16 @@ export function KinIntro(props: {
   readonly agentName: string;
   /** What the owner made the lead for; null until it loads, or when it has none. */
   readonly charter: string | null;
+  /** The viewer's own Chief of staff, whose intro may name the company's answer. */
+  readonly setsUp: boolean;
   readonly onSend: (text: string) => void;
   readonly onStart: (text: string) => void;
 }) {
   const navigation = useNavigation();
   const countryNeeded = useKinCountryNeeded(props);
   const ownerLevel = useKinIsOwnerLevel(props.environmentId);
+  const answer = useKinWhatWeSellAnswer(props, props.setsUp && ownerLevel);
+  const detail = kinLeadIntroDetail(props.charter);
   return (
     <View className="w-full max-w-[520px] self-center">
       <EmptyState
@@ -36,7 +43,11 @@ export function KinIntro(props: {
         title={
           (props.charter ?? "").trim() === "" ? `What ${props.agentName} does` : props.agentName
         }
-        detail={kinLeadIntroDetail(props.charter)}
+        detail={
+          typeof answer === "string"
+            ? `${detail}\n\n${kinIntroSetUpLine(props.agentName, answer)}`
+            : detail
+        }
         action={
           <View className="flex-row flex-wrap justify-center gap-2">
             {countryNeeded && ownerLevel ? (
@@ -59,7 +70,7 @@ export function KinIntro(props: {
                   tone="secondary"
                   size="compact"
                   label={prompt.label}
-                  accessibilityHint={`Sends this to ${props.agentName}`}
+                  accessibilityHint={kinIntroSendsTo(props.agentName)}
                   onPress={() => props.onSend(prompt.text)}
                 />
               ) : (

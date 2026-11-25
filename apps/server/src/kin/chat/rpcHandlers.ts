@@ -2,6 +2,7 @@ import { sessionUploadOwner } from "../../assets/AttachmentUpload.ts";
 import { KinChatAndBudgetRpcs, KinChatError, type KinLeadRetireInput } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Cause from "effect/Cause";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
@@ -33,12 +34,6 @@ const disabled = new KinChatError({
   message: "Kin is not running on this host.",
 });
 const isKinChatError = Schema.is(KinChatError);
-/** Open chats per connection: an owner keeps a few dozen open at most; this is several times that. */
-export const KIN_OPEN_CHATS_PER_CONNECTION = 200;
-const tooManyChats = new KinChatError({
-  reason: "limit",
-  message: "Too many chats are open on this device. Close some and try again.",
-});
 const leadRefusal = Schema.is(LeadProvision.KinLeadProvisionError);
 const leadReasons = {
   not_owner: "not_allowed",
@@ -139,7 +134,10 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
       Effect.mapError(mapError),
       Effect.catchDefect(defect),
     );
-  let openChats = 0;
+  const chatSubscriptions = new Map<
+    string,
+    { readonly replaced: Deferred.Deferred<void>; readonly closed: Deferred.Deferred<void> }
+  >();
   return rpcs.of({
     "kin.budget.get": (input) =>
       services.pipe(
@@ -239,17 +237,35 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
     "kin.chat.subscribe": (input) =>
       Stream.unwrap(
         Effect.gen(function* () {
-          // Held for as long as the stream runs: `unwrap` scopes the effect to it.
-          yield* Effect.acquireRelease(
-            Effect.suspend(() =>
-              openChats >= KIN_OPEN_CHATS_PER_CONNECTION
-                ? Effect.fail(tooManyChats)
-                : Effect.sync(() => void (openChats += 1)),
-            ),
-            () => Effect.sync(() => void (openChats -= 1)),
-          );
           const { chat, people } = yield* viewer;
-          return chat.subscribe(people, input);
+          const key = input.chatId;
+          const current = {
+            replaced: yield* Deferred.make<void>(),
+            closed: yield* Deferred.make<void>(),
+          };
+          const previous = yield* Effect.acquireRelease(
+            Effect.sync(() => {
+              const previous = chatSubscriptions.get(key);
+              chatSubscriptions.set(key, current);
+              if (previous !== undefined) Deferred.doneUnsafe(previous.replaced, Effect.void);
+              return previous;
+            }),
+            (previous) =>
+              // A replacement can itself be cancelled before its predecessor frees the queue.
+              (previous === undefined ? Effect.void : Deferred.await(previous.closed)).pipe(
+                Effect.andThen(
+                  Effect.sync(() => {
+                    if (chatSubscriptions.get(key) === current) chatSubscriptions.delete(key);
+                    Deferred.doneUnsafe(current.closed, Effect.void);
+                  }),
+                ),
+              ),
+          );
+          return Stream.unwrap(
+            (previous === undefined ? Effect.void : Deferred.await(previous.closed)).pipe(
+              Effect.as(chat.subscribe(people, input)),
+            ),
+          ).pipe(Stream.interruptWhen(Deferred.await(current.replaced)));
         }),
       ).pipe(
         Stream.tapError(logInfra),
@@ -270,6 +286,13 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
         Effect.mapError(mapError),
         Effect.catchDefect(defect),
       ),
+    "kin.chats.pin": (input) =>
+      viewer.pipe(
+        Effect.flatMap(({ chat, people }) => chat.pin(people, input)),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
     "kin.chats.clear": (input) =>
       viewer.pipe(
         Effect.flatMap(({ chat, people }) => chat.clear(people, input)),
@@ -278,6 +301,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
         Effect.catchDefect(defect),
       ),
     "kin.chat.members": (input) => group((groups, people) => groups.members(people, input)),
+    "kin.chat.working": (input) => group((groups, people) => groups.working(people, input)),
     "kin.groups.create": (input) => group((groups, people) => groups.create(people, input)),
     "kin.chats.withPerson": (input) => group((groups, people) => groups.withPerson(people, input)),
     "kin.groups.addMember": (input) => group((groups, people) => groups.addMember(people, input)),
@@ -339,7 +363,7 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
                 reason: "not_allowed",
                 message: "Only the owner or a co-owner can create agents.",
               });
-            const { _tag, lead } = yield* LeadProvision.create({
+            const provision = LeadProvision.create({
               creator: { _tag: "session", session },
               name: input.name,
               domain: input.domain,
@@ -351,6 +375,9 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
               Effect.provideContext(kin.value.services.value),
               Effect.provideService(ServerSettingsService, settings.value),
             );
+            const { _tag, lead } = yield* Option.isSome(providerRegistry)
+              ? provision.pipe(Effect.provideService(ProviderRegistry, providerRegistry.value))
+              : provision;
             // No agent goes without a character; a failure leaves the next start to write it.
             yield* seedCharacters(lead.orgId).pipe(
               Effect.provideContext(kin.value.services.value),
@@ -385,10 +412,17 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
             );
             // An org the session's person isn't in has no leads to show them.
             if (person === undefined)
-              return { leads: [], contacts: [], teamAgentId: null, companyChat: null };
+              return {
+                leads: [],
+                contacts: [],
+                messageable: [],
+                teamAgentId: null,
+                companyChat: null,
+              };
             return yield* Effect.all({
               leads: LeadProvision.profiles(person, { includeRetired: input.includeRetired }),
               contacts: LeadProvision.contacts(person),
+              messageable: LeadProvision.messageable(person),
               teamAgentId: LeadProvision.teamAgent(person.orgId),
               companyChat: companyChatOf(person.orgId),
             }).pipe(Effect.provideContext(kin.value.services.value));
@@ -572,6 +606,38 @@ export const makeKinChatHandlers = Effect.fn("makeKinChatHandlers")(function* (
           Effect.gen(function* () {
             if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
             return yield* LeadProvision.disallow({
+              ...input,
+              editor: { _tag: "session", session },
+            }).pipe(Effect.provideContext(kin.value.services.value));
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.reach.list": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            return yield* LeadProvision.reachList({
+              ...input,
+              editor: { _tag: "session", session },
+            }).pipe(Effect.provideContext(kin.value.services.value));
+          }),
+        ),
+        Effect.mapError(toLeadError),
+        Effect.tapError(logInfra),
+        Effect.mapError(mapError),
+        Effect.catchDefect(defect),
+      ),
+    "kin.reach.set": (input) =>
+      services.pipe(
+        Effect.flatMap(() =>
+          Effect.gen(function* () {
+            if (Option.isNone(kin) || Option.isNone(kin.value.services)) return yield* unavailable;
+            return yield* LeadProvision.reachSet({
               ...input,
               editor: { _tag: "session", session },
             }).pipe(Effect.provideContext(kin.value.services.value));

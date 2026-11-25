@@ -3,25 +3,23 @@ import { SymbolView } from "../../components/ui/AppSymbol";
 import { Platform, Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
-import { Button } from "../../components/ui/Button";
 import { NewThreadButton } from "../../components/NewThreadButton";
 import { FloatingActionButton } from "../../components/ui/FloatingActionButton";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ScreenContent } from "../../components/ui/ScreenContent";
-import type { WorkspaceTab } from "./workspace/workspace-tabs-state";
+import { workspaceUsesColumns, type WorkspaceTab } from "./workspace/workspace-tabs-state";
 
 export function WorkspaceEmptyDetail(props: {
   readonly tab?: WorkspaceTab | "settings";
   readonly onStartNewTask?: () => void;
   readonly onAddConnection?: () => void;
-  /** Shown with `onAddConnection`: the other way to start, for someone joining a team. */
-  readonly onJoinKin?: () => void;
 }) {
   const gt = useGT();
   const pullRequests = props.tab === "pullRequests";
   const issues = props.tab === "issues";
   const settings = props.tab === "settings";
-  if (props.tab === "usage") return <View className="flex-1 bg-screen" />;
+  if (props.tab !== undefined && props.tab !== "settings" && !workspaceUsesColumns(props.tab))
+    return <View className="flex-1 bg-screen" />;
   return (
     <ScreenContent surface="screen">
       <View
@@ -34,26 +32,17 @@ export function WorkspaceEmptyDetail(props: {
         {props.onAddConnection ? (
           <View className="w-full max-w-[430px]">
             <EmptyState
-              // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-              title="Get started"
-              // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-              detail="Joining a team? Use the link they sent you. Running your own Kin? Connect the computer it runs on."
+              title={gt("No environments connected")}
+              detail={gt("Add an environment to load projects and start coding sessions.")}
               variant="plain"
               action={
-                <View className="items-center gap-3">
-                  {props.onJoinKin ? (
-                    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-                    <Button tone="primary" label="I have a join link" onPress={props.onJoinKin} />
-                  ) : null}
-                  <FloatingActionButton
-                    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-                    label={props.onJoinKin ? "Set up my own Kin" : gt("Add environment")}
-                    icon="plus"
-                    variant="extended"
-                    tone={props.onJoinKin ? "secondary" : "primary"}
-                    onPress={props.onAddConnection}
-                  />
-                </View>
+                <FloatingActionButton
+                  label={gt("Add environment")}
+                  icon="plus"
+                  variant="extended"
+                  tone="primary"
+                  onPress={props.onAddConnection}
+                />
               }
             />
           </View>

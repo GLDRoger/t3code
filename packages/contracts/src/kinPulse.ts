@@ -13,6 +13,8 @@ import { KinRecordId, KinRecordKey } from "./kinWork.ts";
  * fact and its consequence; the agent woken by it decides what, if anything, to do.
  */
 
+/** The senses the promises feature adds: a contract's notice day (`notice_due`). */
+export const KIN_PROMISE_SENSES = ["notice_due"] as const;
 const KIN_PULSE_SENSES = [
   "task_late",
   "task_due_soon",
@@ -47,12 +49,39 @@ const KIN_PULSE_SENSES = [
   "meeting_soon",
   "holder_removed",
   "statement_missing",
+  "bank_alerts_unreadable",
+  "deal_no_next_step",
+  "deal_quiet",
+  "deal_date_passed",
+  "number_off",
+  "number_stale",
+  "entry_late",
+  "entry_check",
+  "sense_overflow",
+  ...KIN_PROMISE_SENSES,
+  "payment_seen",
+  "repaid_seen",
 ] as const;
 /**
  * Senses newer than the first phones: a screen read sends them only to a client that lists them
  * in `acceptSenses`, so an older client never meets a sense it can't decode.
  */
-export const KIN_PULSE_LATER_SENSES = ["holder_removed", "statement_missing"] as const;
+export const KIN_PULSE_LATER_SENSES = [
+  "holder_removed",
+  "statement_missing",
+  "bank_alerts_unreadable",
+  "deal_no_next_step",
+  "deal_quiet",
+  "deal_date_passed",
+  "number_off",
+  "number_stale",
+  "entry_late",
+  "entry_check",
+  "sense_overflow",
+  ...KIN_PROMISE_SENSES,
+  "payment_seen",
+  "repaid_seen",
+] as const;
 export const KinPulseSense = Schema.Literals(KIN_PULSE_SENSES);
 export type KinPulseSense = typeof KinPulseSense.Type;
 
@@ -81,7 +110,10 @@ export const KinPulseHandled = Schema.Struct({
     Schema.TaggedStruct("person", { personId: KinPersonId }),
   ]),
   at: CanonicalUtcTimestamp,
-  /** Hidden until then; null closes this episode for good ("not a problem"). */
+  /**
+   * Hidden until then; null is "not a problem": for good on this episode, but an invoice still
+   * owed only until its next chase is due.
+   */
   until: Schema.NullOr(CanonicalUtcTimestamp),
   note: Schema.NullOr(Schema.String.check(Schema.isMaxLength(500))),
 });
@@ -126,8 +158,17 @@ export const KinPulseFact = Schema.Struct({
   /** Sense, subject and episode: a moved due date is a new key, so a new fact. */
   key: TrimmedNonEmptyString.check(Schema.isMaxLength(300)),
   subject: Schema.Struct({
-    // `bank` comes only with a later sense, so an older client never meets it.
-    kind: Schema.Literals(["record", "worker", "task", "budget", "agent", "pull_request", "bank"]),
+    // Bank and overflow subjects come only with later senses.
+    kind: Schema.Literals([
+      "record",
+      "worker",
+      "task",
+      "budget",
+      "agent",
+      "pull_request",
+      "bank",
+      "overflow",
+    ]),
     /** A record's key (INV-4), a task's thread, an agent id, a budget id, or owner/name#12 (PR). */
     key: TrimmedNonEmptyString,
     title: Schema.String.check(Schema.isMaxLength(280)),
@@ -140,6 +181,7 @@ export const KinPulseFact = Schema.Struct({
     projectTitle: Schema.optional(Schema.String),
     clientKey: Schema.optional(Schema.String),
     clientTitle: Schema.optional(Schema.String),
+    billTo: Schema.optional(Schema.String),
   }),
   /** When it became true. */
   since: CanonicalUtcTimestamp,
@@ -201,6 +243,8 @@ export type KinPulseRead = typeof KinPulseRead.Type;
 export const KinPulseScreenRead = Schema.Struct({
   ...KinPulseRead.fields,
   outline: Schema.optional(KinPulseOutline),
+  /** Tasks' own Needs you count (`kin.work.list` by move), on a stream that asked for it. */
+  tasksNeedsYou: Schema.optional(NonNegativeInt),
 });
 export type KinPulseScreenRead = typeof KinPulseScreenRead.Type;
 
@@ -238,6 +282,8 @@ export const KinPulseSubscribeInput = Schema.Struct({
   ...KinPulseListInput.fields,
   /** The `hash` of the page held from an earlier session; unchanged, the stream starts `current`. */
   held: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+  /** Also `tasksNeedsYou`, kept current as Work moves: the Tasks badge. Ignored by an older host. */
+  tasksNeedsYou: Schema.optional(Schema.Boolean),
 });
 export type KinPulseSubscribeInput = typeof KinPulseSubscribeInput.Type;
 
@@ -261,6 +307,8 @@ export const KinPulseEvent = Schema.Union([
     order: Schema.optional(Schema.Array(KinPulseFactKey)),
     /** Absent: the held list stands. */
     setAside: Schema.optional(Schema.Array(KinPulseAside)),
+    /** Absent: the held count stands. */
+    tasksNeedsYou: Schema.optional(NonNegativeInt),
     hash: Schema.String,
   }),
 ]);
@@ -366,6 +414,10 @@ const KinWeekdays = Schema.Array(
 export const KinCoveringBrief = Schema.Literals(["morning", "weekly"]);
 export type KinCoveringBrief = typeof KinCoveringBrief.Type;
 
+/** The pipeline's three lines on Monday's page. */
+export const KinCheckInNumbers = Schema.Literals(["pipeline"]);
+export type KinCheckInNumbers = typeof KinCheckInNumbers.Type;
+
 export const KinCheckIn = Schema.Struct({
   scheduleId: KinMemoryItemId,
   title: Schema.String,
@@ -382,6 +434,11 @@ export const KinCheckIn = Schema.Struct({
   runNowPending: Schema.Boolean,
   /** Not sent today, the company's day, because this brief came instead. */
   coveredToday: Schema.optional(KinCoveringBrief),
+  /**
+   * Kin's own counts added to its page; only the weekly brief has it, empty when none is on.
+   * Absent from older hosts and on every other check-in.
+   */
+  numbers: Schema.optional(Schema.Array(KinCheckInNumbers)),
 });
 export type KinCheckIn = typeof KinCheckIn.Type;
 
@@ -411,7 +468,15 @@ export type KinCheckInSaveInput = typeof KinCheckInSaveInput.Type;
 export const KinCheckInActInput = Schema.Struct({
   orgId: KinOrgId,
   scheduleId: KinMemoryItemId,
-  action: Schema.Literals(["run_now", "turn_off", "turn_on", "remove"]),
+  /** `numbers_on` and `numbers_off` are the weekly brief's pipeline lines. */
+  action: Schema.Literals([
+    "run_now",
+    "turn_off",
+    "turn_on",
+    "remove",
+    "numbers_on",
+    "numbers_off",
+  ]),
 });
 export type KinCheckInActInput = typeof KinCheckInActInput.Type;
 
@@ -429,13 +494,15 @@ export const KinBrief = Schema.Struct({
   on: Schema.Boolean,
   /** Not sent today, the company's day, because this brief came instead. */
   coveredToday: Schema.optional(KinCoveringBrief),
+  /** A morning page Kin writes for this person itself, in their own time zone; no agent's brief. */
+  page: Schema.optional(Schema.Boolean),
 });
 export type KinBrief = typeof KinBrief.Type;
 
 export const KinBriefsInput = Schema.Struct({ orgId: KinOrgId });
 export type KinBriefsInput = typeof KinBriefsInput.Type;
 export const KinBriefsResult = Schema.Struct({
-  /** The company time zone check-ins keep, which `at` is in. */
+  /** The company time zone check-ins keep, which `at` is in; a morning page's own person's zone. */
   zone: Schema.String,
   /** Only the briefs this person receives; none for someone who receives none. */
   briefs: Schema.Array(KinBrief),

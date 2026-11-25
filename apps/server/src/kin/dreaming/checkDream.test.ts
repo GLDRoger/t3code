@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { QUOTE_MISSING } from "../memory/keeping.ts";
 import { checkDream } from "./checkDream.ts";
+import { changedParts } from "./edits.ts";
 import type { MaterialEntry } from "./material.ts";
 
 const orgId = KinOrgId.make("fixture-org");
@@ -207,6 +208,82 @@ it.effect.each([
     ],
   },
   {
+    name: "accepts a relationship note that claims less than the line it cites, and nothing else that does",
+    tree: new Map([
+      ...goodTree,
+      [
+        "relationships/note.md",
+        fixtureItem({
+          id: "rel-001",
+          kind: "relationship",
+          source: ownerRef,
+          said_by: "kin-dream",
+          trust: "agent",
+        }),
+      ],
+      [
+        "relationships/raised.md",
+        fixtureItem({
+          id: "rel-002",
+          kind: "relationship",
+          source: agentRef,
+          said_by: "fixture-lead",
+          trust: "owner",
+        }),
+      ],
+      [
+        "relationships/named.md",
+        fixtureItem({
+          id: "rel-003",
+          kind: "relationship",
+          source: ownerRef,
+          said_by: "fixture-guest",
+          trust: "agent",
+        }),
+      ],
+      [
+        "claims/note.md",
+        fixtureItem({
+          id: "clm-010",
+          kind: "claim",
+          source: ownerRef,
+          said_by: "kin-dream",
+          trust: "agent",
+        }),
+      ],
+      [
+        "people/note.md",
+        fixtureItem({
+          id: "per-010",
+          kind: "person",
+          source: ownerRef,
+          said_by: "kin-dream",
+          trust: "agent",
+        }),
+      ],
+    ]),
+    dream: {
+      ...goodDream,
+      changes: [
+        ...goodDream.changes,
+        { path: "relationships/note.md", sources: [ownerRef] },
+        { path: "relationships/raised.md", sources: [agentRef] },
+        { path: "relationships/named.md", sources: [ownerRef] },
+        { path: "claims/note.md", sources: [ownerRef] },
+        { path: "people/note.md", sources: [ownerRef] },
+      ],
+    },
+    failures: [
+      "relationships/raised.md claims owner from fixture-lead; the source was agent from fixture-lead",
+      "relationships/named.md claims agent from fixture-guest; the source was owner from fixture-owner",
+      `relationships/named.md quote: ${QUOTE_MISSING}`,
+      "claims/note.md claims agent from kin-dream; the source was owner from fixture-owner",
+      `claims/note.md quote: ${QUOTE_MISSING}`,
+      "people/note.md claims agent from kin-dream; the source was owner from fixture-owner",
+      `people/note.md quote: ${QUOTE_MISSING}`,
+    ],
+  },
+  {
     name: "rejects what a person said without their words from that message",
     tree: new Map([
       ...goodTree,
@@ -356,6 +433,183 @@ it.effect.each([
         "claims/new.md",
         "journal/2026/11-07.md",
       ]);
+  }),
+);
+
+const editRef = "kin:send:ask-rate";
+/** A person's change to Finance's mail, its `changed` as the material lists it. */
+const editOf = (before: string, text: string): MaterialEntry => ({
+  ref: editRef,
+  kind: "edit",
+  saidBy: "rhea",
+  trust: "owner",
+  at: "2026-11-07T13:00:00.000Z",
+  about: "Mail to sam@tidewater.invalid",
+  before,
+  text,
+  changed: changedParts(before, text),
+});
+/** Rhea's change to Finance's quote mail: the rate, and a start date she added. */
+const rateEdit = editOf(
+  "Subject: Rates\n\nHi Sam, our rate is 45 an hour. Invoices are due within 30 days.",
+  "Subject: Rates\n\nHi Sam, our rate is 50 an hour, from 1 January. Invoices are due within 30 days.",
+);
+const fromEdit = (overrides: Record<string, unknown> = {}) =>
+  fixtureItem({
+    id: "clm-rate",
+    kind: "claim",
+    source: editRef,
+    said_by: "rhea",
+    trust: "owner",
+    sensitive: true,
+    ...overrides,
+  });
+const typedOnly = (path: string) =>
+  `${path} quote: an item from an edit quotes only what the person typed in it`;
+it.effect.each([
+  {
+    name: "keeps a fact quoting words the person typed",
+    path: "claims/rate.md",
+    item: fromEdit({ quote: "from 1 January" }),
+    failures: [],
+  },
+  {
+    name: "keeps a fact quoting a word the person changed",
+    path: "claims/rate.md",
+    item: fromEdit({ quote: "50" }),
+    failures: [],
+  },
+  {
+    name: "leaves out a fact quoting the agent's words the person left as they were",
+    path: "claims/terms.md",
+    item: fromEdit({ quote: "Invoices are due within 30 days" }),
+    failures: [],
+    leftOut: ["claims/terms.md"],
+  },
+  {
+    name: "leaves out a quote that runs from typed words into the agent's",
+    path: "claims/rate.md",
+    item: fromEdit({ quote: "50 an hour, from 1 January" }),
+    failures: [],
+    leftOut: ["claims/rate.md"],
+  },
+  {
+    name: "leaves out a fact with no quote",
+    path: "claims/rate.md",
+    item: fromEdit(),
+    failures: [],
+    leftOut: ["claims/rate.md"],
+  },
+  {
+    name: "keeps the person's preference for drafts, as rule 1c writes it",
+    path: "people/drafts.md",
+    item: fromEdit({ id: "per-drafts", kind: "person" }),
+    failures: [],
+  },
+  {
+    name: "leaves out a preference quoting the agent's words",
+    path: "people/drafts.md",
+    item: fromEdit({ id: "per-drafts", kind: "person", quote: "our rate is" }),
+    failures: [],
+    leftOut: ["people/drafts.md"],
+  },
+  {
+    name: "leaves out the agent's sentence the person only moved",
+    path: "claims/rate.md",
+    item: fromEdit({ quote: "Our rate is 45 an hour." }),
+    edit: editOf(
+      "Hi Sam,\n\nInvoices are due within 30 days.\n\nOur rate is 45 an hour.",
+      "Hi Sam,\n\nOur rate is 45 an hour.\n\nInvoices are due within 30 days.",
+    ),
+    failures: [],
+    leftOut: ["claims/rate.md"],
+  },
+  {
+    name: "refuses the night for a relationship note made from an edit",
+    path: "relationships/tidewater.md",
+    item: fromEdit({ id: "rel-tide", kind: "relationship", said_by: "kin-dream", trust: "agent" }),
+    failures: [
+      `relationships/tidewater.md claims agent from kin-dream; the source was owner from rhea`,
+      typedOnly("relationships/tidewater.md"),
+    ],
+  },
+  {
+    name: "refuses the night when the refused item was in memory before",
+    path: "claims/rate.md",
+    before: fromEdit({ source: agentRef, said_by: "fixture-lead", trust: "agent" }),
+    item: fromEdit({ quote: "Invoices are due within 30 days" }),
+    failures: [typedOnly("claims/rate.md")],
+  },
+  {
+    name: "refuses the night when the night's report names the refused item",
+    path: "claims/rate.md",
+    item: fromEdit({ quote: "Invoices are due within 30 days" }),
+    merges: [{ into: "clm-rate", from: ["clm-001"], sources: [editRef] }],
+    failures: [typedOnly("claims/rate.md")],
+  },
+  {
+    name: "refuses the night when another changed file names the refused item",
+    path: "claims/rate.md",
+    item: fromEdit({ quote: "Invoices are due within 30 days" }),
+    also: [
+      "claims/older.md",
+      fromEdit({
+        id: "clm-older",
+        source: agentRef,
+        said_by: "fixture-lead",
+        trust: "agent",
+        superseded_by: "clm-rate",
+      }),
+    ],
+    failures: [typedOnly("claims/rate.md")],
+  },
+  {
+    name: "refuses another person's name on typed words",
+    path: "claims/rate.md",
+    item: fromEdit({ said_by: "meera", quote: "from 1 January" }),
+    failures: ["claims/rate.md claims owner from meera; the source was owner from rhea"],
+  },
+] as const)("checkDream from an edit: $name", (row) =>
+  Effect.gen(function* () {
+    const before = new Map([
+      ...base,
+      ...("before" in row ? [[row.path, row.before] as const] : []),
+    ]);
+    const also = "also" in row ? [row.also] : [];
+    const result = yield* checkDream({
+      orgId,
+      base: before,
+      stored: before,
+      tree: new Map([...before, [row.path, row.item], ...also]),
+      special: [],
+      dreamJson: json({
+        ...goodDream,
+        changes: [row.path, ...also.map(([path]) => path)].map((path) => ({
+          path,
+          sources: [path === row.path ? editRef : agentRef],
+        })),
+        merges: "merges" in row ? row.merges : [],
+      }),
+      material: [...material, "edit" in row ? row.edit : rateEdit],
+      requireResolutions: true,
+    });
+    assert.deepStrictEqual(result.failures, [...row.failures]);
+    const leftOut: ReadonlyArray<string> = "leftOut" in row ? row.leftOut : [];
+    // What is left out is said where a failed night's reason is, and is in nothing that lands.
+    assert.deepStrictEqual(
+      result.leftOut,
+      leftOut.map(
+        (path) => `Left out ${path}: an item from an edit quotes only what the person typed in it`,
+      ),
+    );
+    for (const path of leftOut) {
+      assert.isFalse(result.changes.has(path));
+      assert.isFalse(result.committed.has(path));
+      assert.deepStrictEqual(
+        result.dream?.changes.filter((change) => change.path === path),
+        [],
+      );
+    }
   }),
 );
 

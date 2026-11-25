@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { KIN_DATES } from "@t3tools/client-runtime/kin/kinDates";
 import { KIN_SUBSCRIPTIONS } from "@t3tools/client-runtime/kin/kinSubscriptions";
+import { KIN_BILLS } from "@t3tools/client-runtime/kin/kinBills";
 import { KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
 import { KIN_MONEY, type KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
 import { kinPlaceInPlace } from "@t3tools/client-runtime/kin/kinNavigation";
@@ -47,16 +48,28 @@ import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
 import { Button } from "../components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { Toggle, ToggleGroup } from "../components/ui/toggle-group";
-import { isElectron } from "../env";
+import { hasDesktopWindowChrome } from "./kinDesktopWindow";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { KinDocPage } from "./KinDocPage";
 import { KinDocsList } from "./KinDocsList";
 import { KinSubscriptionsPage } from "./KinSubscriptions";
+import { KinBillsPage } from "./KinBills";
 import { KinSearchDialog } from "./KinSearchDialog";
 import { KinWorkClientPage, KinWorkClientsList, KinWorkProjectsTab } from "./KinWorkClients";
 import { KinDealNewDialog, KinDealsTab } from "./KinDeals";
 import { KinDealPage } from "./KinDealPage";
+import { useKinSectionOn, useKinShell } from "./useKinShell";
+import {
+  kinSectionNamed,
+  kinSectionNamedWords,
+  kinSectionOf,
+  kinSectionOffLine,
+  kinSectionOffNotice,
+  type KinSectionId,
+} from "@t3tools/client-runtime/kin/kinShell";
+import { KinImportView } from "./KinImport";
+import { KIN_IMPORT } from "@t3tools/client-runtime/kin/kinImport";
 import { KIN_DEALS, kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { KinWorkDates } from "./KinWorkDates";
@@ -77,6 +90,7 @@ import { kinClient, retryKinAccess } from "./kinClient";
 import {
   KIN_PLACE_PATH,
   kinRecordOf,
+  kinSearchDialogPlace,
   kinSearchOf,
   kinTaskAddress,
   type KinPlace,
@@ -191,6 +205,9 @@ export function KinPlacesRoute() {
           window.location.href,
         ).toString()
       }
+      onLeave={(to) =>
+        void navigate({ ...to, params, replace: search.open !== undefined, state: { kinDepth: 0 } })
+      }
       dialog={search.open ?? null}
       person={search.person ?? null}
       onDialog={(next) => {
@@ -283,6 +300,7 @@ export function KinPlaceView({
   dialog,
   onDialog,
   docLink,
+  onLeave,
   tab: askedTab,
   onTab,
   person = null,
@@ -304,6 +322,8 @@ export function KinPlaceView({
   readonly onDialog: (dialog: KinPlaceDialog | null) => void;
   /** The address of a doc, or one section of it, for Copy link. */
   readonly docLink: (doc: KinRecordKey, section: string | null) => string;
+  /** A search hit that lives in another place or tab opens there, in the dialog's stead. */
+  readonly onLeave: (to: NonNullable<ReturnType<typeof kinSearchDialogPlace>>) => void;
 }) {
   const { environmentId } = props;
   const router = useRouter();
@@ -315,14 +335,22 @@ export function KinPlaceView({
   const canAdd = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
   // The host takes a new client from the owner level, and a prospect from a teammate with Clients on.
   const canAddClient = useKinSeesClients(environmentId);
-  // Deals are for someone with Clients on; a deals address without it shows Clients.
-  const tab = kinClientsTabShown(askedTab, canAddClient);
+  // Deals are for someone with Clients on, while the company runs deals; a deals address
+  // without them shows Clients.
+  const dealsOn = useKinSectionOn(environmentId, "deals");
+  const shell = useKinShell(environmentId);
+  const named = (text: string) => kinSectionNamed(shell, text);
+  const seesDeals = canAddClient && dealsOn;
+  const tab = kinClientsTabShown(askedTab, seesDeals);
   const ownerLevel = useKinOwnerLevel(environmentId);
   const canAddProject = useAtomValue(kinClient.workProjectCreate.permissionAtom(environmentId));
   const canChangeTasks = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
   const ready = state._tag === "ready";
   const summary = ready ? state.live.summary : null;
   const hostClients = kinWorkHostClients(summary);
+  // With Clients off, its pickers and ways in leave every form; its records still open by link.
+  const clientsOn = useKinSectionOn(environmentId, "clients");
+  const pickers = hostClients && clientsOn;
   const directory = useKinWorkDirectory(props, ready);
   const choices = useKinWorkChoices(props, ready && hostClients);
   const changes = useKinWorkChanges(props);
@@ -388,21 +416,34 @@ export function KinPlaceView({
         }
       : null;
   const addClient =
-    ready && hostClients && canAddClient
+    ready && pickers && canAddClient
       ? (start: KinClientDraftKind) => setAdding({ type: "client", start })
       : null;
-  const addLabel = ownerLevel ? KIN_CLIENTS.add : KIN_CLIENTS.addProspect;
+  const addLabel = named(ownerLevel ? KIN_CLIENTS.add : KIN_CLIENTS.addProspect);
   const addProject =
-    ready && hostClients && canAddProject ? () => setAdding({ type: "project" }) : null;
-  const title = KIN_WORK_HOME.places[place];
+    ready && pickers && canAddProject ? () => setAdding({ type: "project" }) : null;
+  const title = named(KIN_WORK_HOME.places[place]);
+  // The company turned this place's section off: it says so, for everyone, and records still open.
+  const sectionOff =
+    place === "clients" || place === "money" ? kinSectionOffNotice(shell, place, ownerLevel) : null;
+  const offLine = (section: KinSectionId | null) =>
+    section === null ? null : kinSectionOffLine(shell, section, ownerLevel);
+  const recordSection = (shown: KinRecordWhere): KinSectionId | null =>
+    "list" in shown
+      ? kinSectionOf({ list: shown.list })
+      : "party" in shown || "project" in shown
+        ? "clients"
+        : place === "money" || place === "clients"
+          ? place
+          : null;
   // The host takes a deal from the owner level and a teammate with Clients on, as a prospect.
   const addDeal =
-    ready && hostClients && canAddClient
+    ready && pickers && seesDeals
       ? (party: KinWorkRef | null) => setAdding({ type: "deal", party })
       : null;
 
   const header = (
-    <WorkspacePageHeader electron={isElectron}>
+    <WorkspacePageHeader electron={hasDesktopWindowChrome}>
       {/* A place is reached from the sidebar, so only a record has a Back. */}
       {(record === null && !taskPage) || wide ? null : (
         <Button
@@ -421,7 +462,9 @@ export function KinPlaceView({
               ? KIN_DATES.title
               : record !== null && !wide && !taskPage && "subscriptions" in record
                 ? KIN_SUBSCRIPTIONS.title
-                : title}
+                : record !== null && !wide && !taskPage && "bills" in record
+                  ? KIN_BILLS.added
+                  : title}
           </h1>
         </WorkspaceBreadcrumbItem>
       </WorkspaceBreadcrumb>
@@ -429,18 +472,19 @@ export function KinPlaceView({
       !ready ||
       !hostClients ||
       placeRefused ||
+      sectionOff !== null ||
       ((record !== null || taskPage) && !wide) ? null : (
         <ToggleGroup
           aria-label={title}
           value={[tab]}
           onValueChange={(value) => {
-            const next = kinClientsTabs(canAddClient).find((held) => held.id === value[0]);
+            const next = kinClientsTabs(seesDeals).find((held) => held.id === value[0]);
             if (next !== undefined) onTab(next.id);
           }}
         >
-          {kinClientsTabs(canAddClient).map((held) => (
+          {kinClientsTabs(seesDeals).map((held) => (
             <Toggle key={held.id} value={held.id}>
-              {held.label}
+              {named(held.label)}
             </Toggle>
           ))}
         </ToggleGroup>
@@ -462,10 +506,13 @@ export function KinPlaceView({
             </Button>
           ) : place === "clients" && tab === "deals" ? (
             addDeal === null ? null : (
-              <Button size="sm" onClick={() => addDeal(null)}>
-                <PlusIcon />
-                {KIN_DEALS.newDeal}
-              </Button>
+              // Below phone width the Deals tab's own header carries it.
+              <span className="max-sm:hidden">
+                <Button size="sm" onClick={() => addDeal(null)}>
+                  <PlusIcon />
+                  {KIN_DEALS.newDeal}
+                </Button>
+              </span>
             )
           ) : place === "clients" && addClient !== null && addProject !== null ? (
             <Menu>
@@ -483,6 +530,9 @@ export function KinPlaceView({
                   </MenuItem>
                 ) : null}
                 <MenuItem onClick={addProject}>{KIN_PROJECTS.add}</MenuItem>
+                {ownerLevel ? (
+                  <MenuItem onClick={() => onDialog("import")}>{KIN_IMPORT.entry}</MenuItem>
+                ) : null}
               </MenuPopup>
             </Menu>
           ) : place === "clients" && (addClient ?? addProject) !== null ? (
@@ -517,6 +567,7 @@ export function KinPlaceView({
           onOpenKey={setOpenKey}
           onDates={() => open({ dates: true })}
           onSubscriptions={() => open({ subscriptions: true })}
+          onBills={(batchId) => open({ bills: batchId })}
           onOpenDoc={openDoc}
         />
       );
@@ -597,7 +648,7 @@ export function KinPlaceView({
         onOpenProject={openProject}
         onAdd={addTask === null ? null : () => addTask(KIN_WORK_NO_DRAFT)}
         initial={narrowed}
-        choices={hostClients ? choices : null}
+        choices={pickers ? choices : null}
       />
     );
   };
@@ -630,6 +681,15 @@ export function KinPlaceView({
           onOpenKey={fromRecord.task}
         />
       );
+    if ("bills" in shown)
+      return (
+        <KinBillsPage
+          {...props}
+          batchId={shown.bills}
+          onOpenKey={fromRecord.task}
+          onOpenBatch={(batchId) => fromRecord.open({ bills: batchId })}
+        />
+      );
     if ("dates" in shown)
       return (
         <KinWorkDates
@@ -653,6 +713,7 @@ export function KinPlaceView({
           initial={listStart?.list === shown.list ? listStart.filter : KIN_LIST_DEFAULT_FILTER}
           openKey={openKey}
           onOpenKey={fromRecord.task}
+          onBills={(batchId) => fromRecord.open({ bills: batchId })}
           onGone={() => onGo("docs", null, false)}
         />
       );
@@ -721,6 +782,7 @@ export function KinPlaceView({
             ? null
             : (party) => setAdding({ type: "project", party })
         }
+        onAddTask={addTask}
         onClose={() => setOpenKey(null)}
       />
     ) : (
@@ -732,7 +794,7 @@ export function KinPlaceView({
         frame={frame}
         directory={directory}
         changes={changes}
-        choices={hostClients ? choices : null}
+        choices={pickers ? choices : null}
         onOpenKey={go.task}
         onOpenClient={go.party}
         onOpenProject={go.project}
@@ -741,6 +803,8 @@ export function KinPlaceView({
       />
     );
   const opening = record !== null || taskPage;
+  // Import a file takes the Clients place over while it is open; the host decides who may.
+  const importing = dialog === "import" && place === "clients" && ownerLevel && hostClients;
 
   // A doc on a narrow window is the whole page, under its own header with its own way back.
   const docAlone = record !== null && "doc" in record && !wide && !taskPage;
@@ -748,11 +812,17 @@ export function KinPlaceView({
     <>
       {docAlone ? null : header}
       {state._tag === "refused" ? (
-        <KinWorkNotice {...kinWorkOnlyOwner(place)} />
+        <KinWorkNotice {...kinSectionNamedWords(shell, kinWorkOnlyOwner(place))} />
+      ) : sectionOff !== null && !opening ? (
+        <KinWorkNotice {...sectionOff} />
       ) : placeRefused && !opening ? (
-        <KinWorkNotice {...(place === "money" ? KIN_MONEY.onlyOwner : kinWorkOnlyOwner(place))} />
+        <KinWorkNotice
+          {...(place === "money"
+            ? KIN_MONEY.onlyOwner
+            : kinSectionNamedWords(shell, kinWorkOnlyOwner(place)))}
+        />
       ) : state._tag === "offline" ? (
-        <KinWorkNotice {...kinWorkOffline(place)} />
+        <KinWorkNotice {...kinSectionNamedWords(shell, kinWorkOffline(place))} />
       ) : state._tag === "failed" ? (
         <KinLoadFailed
           what={KIN_WORK_LOAD_FAILED}
@@ -767,10 +837,16 @@ export function KinPlaceView({
         <div className="mx-auto w-full max-w-3xl p-4" role="status" aria-label={`Loading ${title}`}>
           <KinWorkRowSkeletons />
         </div>
+      ) : importing ? (
+        <KinImportView
+          {...props}
+          directory={directory.names}
+          onOpenDeals={seesDeals ? () => onTab("deals") : null}
+        />
       ) : (
         <div className="flex min-h-0 flex-1">
           {/* A record under a place taken away says for itself that it isn't theirs; no list beside it. */}
-          {opening && (!wide || placeRefused) ? null : (
+          {opening && (!wide || placeRefused || sectionOff !== null) ? null : (
             <div
               className={
                 !opening
@@ -793,12 +869,19 @@ export function KinPlaceView({
               {/* The record stays mounted under a task opened from it, so closing the task costs no read. */}
               {record === null ? null : (
                 <div className={taskPage ? "hidden" : "flex min-h-0 min-w-0 flex-1 flex-col"}>
+                  <KinSectionOffNote line={offLine(recordSection(record))} />
                   {recordView(record)}
                 </div>
               )}
-              {taskPage && openKey !== null
-                ? task(openKey, wide ? "pane" : "page", fromRecord)
-                : null}
+              {taskPage && openKey !== null ? (
+                <>
+                  {/* A deal's page says it for itself. */}
+                  {kinIsDealKey(openKey) ? null : (
+                    <KinSectionOffNote line={offLine(kinSectionOf({ key: openKey }))} />
+                  )}
+                  {task(openKey, wide ? "pane" : "page", fromRecord)}
+                </>
+              ) : null}
             </section>
           )}
         </div>
@@ -809,11 +892,15 @@ export function KinPlaceView({
           onClose={() => onDialog(null)}
           // Whatever a hit opens takes the dialog's place in the address.
           onOpen={(hit) => {
-            if (hit.kind === "docs") openDoc(hit.key, hit.section?.id);
+            const away = kinSearchDialogPlace({ place, tab }, hit);
+            if (away !== null) onLeave(away);
+            else if (hit.kind === "docs") openDoc(hit.key, hit.section?.id);
             else if (hit.kind === "clients") openClient(hit.key);
             else if (hit.kind === "projects") openProject(hit.key);
             else if (hit.kind === "memory") openKinMemoryInstead(router.history, hit.title, "open");
-            // A contact has no page of its own, and a money entry opens on its sheet.
+            // A contact has no page of its own: its client's opens.
+            else if (hit.clientKey !== null) openClient(hit.clientKey);
+            // A money entry opens on its sheet.
             else setOpenKey(hit.key);
           }}
         />
@@ -823,12 +910,13 @@ export function KinPlaceView({
         <KinWorkNewDialog
           {...props}
           directory={directory}
-          choices={hostClients ? choices : null}
+          choices={pickers ? choices : null}
           start={adding.draft}
           onAdded={(key) => {
+            const fromDeal = adding.draft.deal != null;
             setAdding(null);
-            // Added from a client or project, it shows up there: the record stays put.
-            if (record === null) setOpenKey(key);
+            // Added from a client, project or deal, it shows up there: the record stays put.
+            if (record === null && !fromDeal) setOpenKey(key);
             else onDialog(null);
           }}
           onClose={() => {
@@ -882,5 +970,17 @@ export function KinPlaceView({
         />
       ) : null}
     </>
+  );
+}
+
+/** The one line on a record whose section the company turned off; it still opens. */
+function KinSectionOffNote(props: { readonly line: string | null }) {
+  return props.line === null ? null : (
+    <p
+      role="note"
+      className="mx-auto w-full max-w-3xl px-4 pt-3 text-pretty text-sm text-muted-foreground"
+    >
+      {props.line}
+    </p>
   );
 }

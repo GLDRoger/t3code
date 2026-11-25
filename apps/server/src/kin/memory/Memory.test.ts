@@ -7,7 +7,9 @@ import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -220,6 +222,18 @@ it.live.each([
         expect((yield* memory.readPromptSnapshot(orgA, prepared.head)).index).toBe(
           yield* memory.readIndex(orgA),
         );
+        // A tap cancelled the deferral: the turn reads it cancelled, and its index leaves it out.
+        const before = yield* memory.readPromptSnapshot(orgA, prepared.head);
+        const deferral = before.items.find((item) => item.id === "def-001");
+        expect(before.index).toContain("def-001");
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due,
+            snapshot_json, updated_at)
+          VALUES (${orgA}, 'def-001', 'undone', ${Date.parse(deferral?.due ?? "")}, 'start', '{}', 0)`;
+        const cancelled = yield* memory.readPromptSnapshot(orgA, prepared.head);
+        expect(cancelled.items.find((item) => item.id === "def-001")?.status).toBe("cancelled");
+        expect(cancelled.index).not.toContain("def-001");
+        yield* sql`DELETE FROM kin_deferral_runs WHERE org_id = ${orgA}`;
         expect(
           yield* memory.readPromptSnapshot(orgA, "wrong-head").pipe(Effect.result),
         ).toMatchObject({ _tag: "Failure", failure: { _tag: "MemoryError" } });
@@ -243,7 +257,10 @@ it.live.each([
           { query: { kind: "deferral" }, ids: ["def-001"] },
 
           { query: { dueBefore: "2026-11-14", dueAfter: "2026-11-12" }, ids: ["def-001"] },
-          { query: { reviewOverdue: true, kind: "commitment" }, ids: ["com-001"] },
+          // com-001 is invalid: not open, and past its review date it needs no review.
+          { query: { status: "open" }, ids: ["def-001"] },
+          { query: { reviewOverdue: true, kind: "commitment" }, ids: [] },
+          { query: { reviewOverdue: false, kind: "commitment" }, ids: ["com-001"] },
           { query: { excludeInvalid: true }, ids: ["def-001"] },
           { query: {}, ids: ["com-001", "def-001"] },
         ];
@@ -353,6 +370,65 @@ it.live.each([
       Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
       Effect.scoped,
     ),
+);
+
+it.effect("does not use an invalid prefetch made while the memory writer holds the lock", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+    const writer = `${root}/a/memory`;
+    yield* fs.makeDirectory(`${writer}/.git/objects`, { recursive: true });
+    yield* fs.makeDirectory(`${writer}/.git/refs`, { recursive: true });
+    const repo = fakeRepository(fs);
+    repo.files.set("rules.md", "Fixture rules");
+    const entered = yield* Deferred.make<void>();
+    const prefetched = yield* Deferred.make<void>();
+    let missing = 0;
+    const watching = Layer.succeed(FileSystem.FileSystem, {
+      ...fs,
+      lstat: (file) =>
+        fs
+          .lstat(file)
+          .pipe(
+            Effect.tapError(() =>
+              file === `${writer}/.git` && ++missing === 2
+                ? Deferred.succeed(prefetched, undefined)
+                : Effect.void,
+            ),
+          ),
+    });
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      const head = yield* memory.anchor(orgA, "main", repo.head());
+      const write = yield* memory
+        .withWriterLock(
+          orgA,
+          fs
+            .rename(`${writer}/.git`, `${writer}/.git-repair`)
+            .pipe(
+              Effect.andThen(Deferred.succeed(entered, undefined)),
+              Effect.andThen(Deferred.await(prefetched)),
+              Effect.ensuring(
+                fs.rename(`${writer}/.git-repair`, `${writer}/.git`).pipe(Effect.orDie),
+              ),
+            ),
+        )
+        .pipe(Effect.forkChild);
+      yield* Deferred.await(entered);
+      const prepared = yield* memory.prepareWakeup(orgA).pipe(Effect.result);
+      yield* Fiber.join(write);
+      expect(prepared).toMatchObject({ _tag: "Success", success: { head } });
+      expect(yield* fs.readFileString(`${root}/a/memory-read/rules.md`)).toBe("Fixture rules");
+    }).pipe(
+      Effect.provide(
+        memoryTestLayer.pipe(
+          Layer.provide(configLayer(root, "unused")),
+          Layer.provide(repo.layer),
+          Layer.provide(watching),
+        ),
+      ),
+    );
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, databaseLayer)), Effect.scoped),
 );
 
 it.effect(
@@ -702,6 +778,63 @@ it.effect.each([
   ),
 );
 
+it.effect("a snapshot read takes no lock and makes no git call, trigger sync or repair", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+    const repository = fakeRepository(fs);
+    repository.files.set("deferrals/def-001.md", fixtureItem({}));
+    yield* fs.makeDirectory(`${root}/a/memory-read/deferrals`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/a/memory/.git/objects`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/a/memory/.git/refs`, { recursive: true });
+    const synced: Array<string> = [];
+    const holding = yield* Deferred.make<void>();
+    const release = yield* Deferred.make<void>();
+    let hold = false;
+    const hooks = Layer.succeed(Memory.MemorySyncHooks, {
+      // A load syncs triggers under the memory lock; while `hold`, it waits there.
+      syncItems: (orgId) =>
+        Effect.gen(function* () {
+          synced.push(orgId);
+          if (!hold) return;
+          yield* Deferred.succeed(holding, undefined);
+          yield* Deferred.await(release);
+        }),
+    });
+    const layer = memoryTestLayer.pipe(
+      Layer.provide(hooks),
+      Layer.provide(configLayer(root, "unused")),
+      Layer.provide(repository.layer),
+      Layer.provide(NodeServices.layer),
+    );
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      const sql = yield* SqlClient.SqlClient;
+      const changes = sql<{ n: number }>`SELECT total_changes() AS n`;
+      const untouched = { counts: repository.counts(), writes: yield* changes };
+      // Before any load there is nothing to read, and reading it touched nothing.
+      expect(yield* memory.snapshotItems(orgA)).toBeUndefined();
+      expect(repository.counts()).toEqual(untouched.counts);
+      expect(yield* changes).toEqual(untouched.writes);
+      expect(synced).toEqual([]);
+      yield* memory.anchor(orgA, "main", repository.head());
+      const loaded = yield* memory.items(orgA);
+      const after = { counts: repository.counts(), writes: yield* changes, syncs: synced.length };
+      expect(yield* memory.snapshotItems(orgA)).toEqual(loaded);
+      expect(repository.counts()).toEqual(after.counts);
+      expect(yield* changes).toEqual(after.writes);
+      expect(synced).toHaveLength(after.syncs);
+      // Another load holds the memory lock, stopped in its trigger sync: a snapshot still reads.
+      hold = true;
+      const blocked = yield* Effect.forkChild(memory.items(orgA));
+      yield* Deferred.await(holding);
+      expect(yield* memory.snapshotItems(orgA)).toEqual(loaded);
+      yield* Deferred.succeed(release, undefined);
+      yield* Fiber.join(blocked);
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(Layer.merge(NodeServices.layer, databaseLayer)), Effect.scoped),
+);
+
 it.live("a dev server with no memory repository set makes a seeded local one, once", () =>
   Effect.gen(function* () {
     const vcs = yield* VcsProcess.VcsProcess;
@@ -907,11 +1040,69 @@ it.live("gives each lead its own read checkout, swapped in whole on prepare", ()
   ),
 );
 
+it.effect.each(["missing", "dangling", "unfinished"] as const)(
+  "prepares or holds a $0 default ref without touching local work",
+  (scenario) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const { root, source, git, commit } = yield* fixtureRepository();
+      const base = `${root}/state`;
+      yield* Effect.gen(function* () {
+        const memory = yield* Memory.Memory;
+        const { writer } = yield* memory.ensureCheckouts(orgA);
+        const head = yield* memory.anchor(orgA, "main");
+        yield* git(writer, ["branch", "local", head]);
+        yield* fs.writeFileString(`${writer}/local.md`, "Only present in this checkout");
+        if (scenario === "unfinished") {
+          yield* memory.prepareWakeup(orgA);
+          const moved = yield* commit(writer);
+          yield* fs.writeFileString(
+            `${writer}/.git/MERGE_HEAD`,
+            `${head}
+`,
+          );
+          expect(yield* memory.prepareWakeup(orgA).pipe(Effect.result)).toMatchObject({
+            _tag: "Failure",
+            failure: { _tag: "MemoryCheckoutInvalid", reason: "Unfinished Git operation" },
+          });
+          expect(yield* git(writer, ["rev-parse", "refs/heads/main"])).toBe(moved);
+          expect(yield* memory.syncCheckout(orgA).pipe(Effect.result)).toMatchObject({
+            _tag: "Failure",
+            failure: { _tag: "MemoryCheckoutInvalid", reason: "Unfinished Git operation" },
+          });
+          expect(yield* git(writer, ["rev-parse", "refs/heads/main"])).toBe(moved);
+        } else {
+          yield* git(writer, ["update-ref", "-d", "refs/heads/main", head]);
+          if (scenario === "dangling") {
+            yield* git(writer, ["symbolic-ref", "refs/heads/main", "refs/heads/not-main"]);
+            expect(yield* memory.prepareWakeup(orgA).pipe(Effect.result)).toMatchObject({
+              _tag: "Failure",
+              failure: { _tag: "MemoryCheckoutInvalid" },
+            });
+            expect(
+              yield* git(writer, ["for-each-ref", "--format=%(refname)", "refs/heads"]),
+            ).not.toContain("refs/heads/not-main");
+          } else {
+            expect((yield* memory.prepareWakeup(orgA)).head).toBe(head);
+          }
+        }
+        expect(yield* git(writer, ["rev-parse", "refs/heads/local"])).toBe(head);
+        expect(yield* fs.readFileString(`${writer}/local.md`)).toBe(
+          "Only present in this checkout",
+        );
+      }).pipe(Effect.provide(memoryLayer(base, source)));
+    }).pipe(
+      Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer)),
+      Effect.scoped,
+    ),
+);
+
 it.live.each([
   "missing HEAD",
   "missing objects",
   "empty git",
-  "permission denied",
+  // Root reads through any mode, so a chmod cannot deny it the checkout.
+  ...(process.getuid?.() === 0 ? [] : (["permission denied"] as const)),
   "parent repository",
   "non-repository directory",
 ])("preserves the existing writer on $0", (damage) =>

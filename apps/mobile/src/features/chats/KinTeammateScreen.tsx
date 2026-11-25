@@ -1,7 +1,4 @@
-import {
-  kinLeadMessageable,
-  KIN_AGENTS_COPY,
-} from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import { KIN_REACH_COPY } from "@t3tools/client-runtime/kin/kinReach";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
@@ -9,12 +6,13 @@ import {
   KIN_PLACE_SWITCHES,
   kinAccessChangeCopy,
   kinRemoveAccessCopy,
+  KIN_TEAMMATE_FOLDS,
+  kinFoldCount,
   kinTeamView,
   kinTeammateActions,
   kinTeammateAgentsLine,
   kinTeammateKind,
-  kinTeammateKindEditable,
-  kinTeammateLeadLine,
+  kinTeammatePage,
   type KinMadeInvite,
   type KinTeammate,
   KIN_TEAM_COPY,
@@ -23,7 +21,6 @@ import {
   EnvironmentId,
   KinOrgId,
   kinOwnerLevel,
-  type KinLeadProfile,
   type KinPersonAccess,
   type KinPersonId,
   type KinPersonPlaceSwitches,
@@ -36,6 +33,8 @@ import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 import { KIN_PROFILE_COPY } from "@t3tools/client-runtime/kin/kinProfiles";
 import { KIN_HAND_OVER } from "@t3tools/client-runtime/kin/kinHandOver";
+import { kinAwayLine } from "@t3tools/client-runtime/kin/kinAway";
+import { kinActiveDevices } from "@t3tools/client-runtime/kin/kinDevices";
 import { runAtomCommand, squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
@@ -57,9 +56,9 @@ import { ListChoiceRow } from "../../components/ui/ListChoiceRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Menu } from "../../components/ui/Menu";
 import { cn } from "../../lib/cn";
+import { useNowMinuteMs } from "../../lib/clock";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -69,10 +68,12 @@ import { KinAwaySection, KinHandOverRow } from "./components/KinAway";
 import { KinPersonTasks } from "./components/KinPersonTasks";
 import { KinDeviceList } from "./KinDevicesScreen";
 import { KinInviteLink } from "./components/KinInviteLink";
-import { KinTasksKeysSection } from "./components/KinTasksKeys";
+import { KinPageFold } from "./components/KinPageFold";
 import { kinClient } from "./state/kinClient";
+import { KinPersonReachSections } from "./KinReachSections";
 import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
 import { useKinOpenCounts, useKinProfiles } from "./state/useKinProfiles";
+import { KinWorkToggleRow } from "./components/KinWorkPieces";
 
 export type KinTeammateParams = {
   readonly environmentId: string;
@@ -244,6 +245,47 @@ function KinTeammateDetails(props: {
   };
 
   const shown = problem ?? props.problem;
+  const page = kinTeammatePage(teammate, props.viewer);
+  const away = profile === null ? null : kinAwayLine(profile, { mine: false });
+  const linkSection =
+    offered.link === null ? null : (
+      <ListSection title="Invite link" footer={offered.link.hint}>
+        <ListActionRow
+          label={offered.link.label}
+          icon="link"
+          loading={busy}
+          disabled={busy}
+          onPress={() => void makeLink()}
+        />
+        {offered.cancel === null ? null : (
+          <View className="border-t border-border-subtle">
+            <ListActionRow
+              label={offered.cancel.label}
+              icon="xmark"
+              disabled={busy}
+              onPress={() => {
+                const { inviteId } = teammate;
+                const { cancel } = offered;
+                if (inviteId === null || cancel === null) return;
+                Dialog.confirm({
+                  title: cancel.title,
+                  message: cancel.detail,
+                  confirmText: cancel.label,
+                  cancelText: cancel.keep,
+                  destructive: true,
+                  onConfirm: () => {
+                    // Shown at once; the Team page says so if the host refuses.
+                    void actions.cancelInvite(inviteId);
+                    if (teammate.personId === null) props.onClose();
+                  },
+                });
+              }}
+            />
+          </View>
+        )}
+      </ListSection>
+    );
+  const { personId } = teammate;
   return (
     <>
       <View className="items-center gap-3 pt-2">
@@ -255,64 +297,23 @@ function KinTeammateDetails(props: {
           <Text textRole="footnote" className="text-center text-foreground-muted">
             {teammate.detail}
           </Text>
+          {teammate.roles === "" ? null : (
+            <Text textRole="footnote" className="text-center text-foreground-muted">
+              {teammate.roles}
+            </Text>
+          )}
+          {away === null ? null : (
+            <Text textRole="footnote" className="text-center text-foreground">
+              {away}
+            </Text>
+          )}
         </View>
       </View>
       {shown === null ? null : <ErrorBanner message={shown} />}
-      {teammate.personId === null ? null : (
-        <ListSection>
-          <ListRow
-            label="Profile"
-            {...(teammate.roles === "" ? {} : { description: teammate.roles })}
-            icon="person.crop.circle"
-            onPress={() => {
-              const { personId } = teammate;
-              if (personId === null) return;
-              navigation.navigate("KinProfile", { ...props.target, personId, over: "teammate" });
-            }}
-          />
-          {/* Their page is the record: their profile is edited in a sheet on it. */}
-          {mayEdit ? (
-            <ListActionRow
-              icon="pencil"
-              label={KIN_PROFILE_COPY.edit}
-              onPress={() => {
-                const { personId } = teammate;
-                if (personId === null) return;
-                navigation.navigate("KinProfileEdit", { ...props.target, personId });
-              }}
-            />
-          ) : null}
-        </ListSection>
-      )}
-      {profile === null ? null : (
-        <KinAwaySection
-          environmentId={props.target.environmentId}
-          orgId={props.target.orgId}
-          profile={profile}
-          mine={false}
-          mayEdit={profile.canEdit === true}
-        />
-      )}
-      {teammate.personId === null ? null : (
-        <KinPersonTasks
-          environmentId={props.target.environmentId}
-          orgId={props.target.orgId}
-          personId={teammate.personId}
-          {...(offered.remove && openTasks > 0
-            ? { footer: KIN_HAND_OVER.removeOffer(openTasks, teammate.name) }
-            : {})}
-        >
-          {profile === null || openTasks === 0 ? null : (
-            <KinHandOverRow
-              environmentId={props.target.environmentId}
-              orgId={props.target.orgId}
-              from={{ _tag: "person", personId: profile.personId }}
-              fromName={profile.displayName}
-            />
-          )}
-        </KinPersonTasks>
-      )}
-      {kinTeammateKindEditable(teammate, props.viewer) ? (
+      {page.canSee && teammate.places !== null && personId !== null ? (
+        <KinTeammatePlaces target={props.target} personId={personId} places={teammate.places} />
+      ) : null}
+      {page.canDo ? (
         <ListSection
           title={teammate.backAs === null ? KIN_TEAM_COPY.canDo : KIN_TEAM_COPY.canDoBack}
         >
@@ -329,84 +330,121 @@ function KinTeammateDetails(props: {
           ))}
         </ListSection>
       ) : null}
-      {teammate.places === null || teammate.personId === null ? null : (
-        <KinTeammatePlaces
-          target={props.target}
-          personId={teammate.personId}
-          places={teammate.places}
-        />
-      )}
-      {teammate.personId === null ? (
-        <ListSection
-          title="Agents"
-          footer={`Once ${teammate.name} joins, open an agent's details to let them message it.`}
-        >
-          <View className="px-4 py-3">
-            <Text textRole="body" className="text-foreground-muted">
-              None yet.
-            </Text>
-          </View>
-        </ListSection>
-      ) : kinTeammateAgentsLine(teammate) !== null ? (
+      {personId === null ? (
         <ListSection title="Agents">
           <View className="px-4 py-3">
             <Text textRole="body" className="text-foreground-muted">
-              {kinTeammateAgentsLine(teammate)}
+              {KIN_REACH_COPY.notJoined(teammate.name)}
             </Text>
           </View>
         </ListSection>
       ) : (
-        <KinTeammateLeads target={props.target} personId={teammate.personId} name={teammate.name} />
+        page.folds.map((fold) => {
+          switch (fold) {
+            case "tasks":
+              return (
+                <KinPageFold
+                  key={fold}
+                  title={KIN_TEAMMATE_FOLDS.tasks}
+                  summary={teammate.load === "" ? null : teammate.load}
+                >
+                  <KinPersonTasks
+                    environmentId={props.target.environmentId}
+                    orgId={props.target.orgId}
+                    personId={personId}
+                    {...(offered.remove && openTasks > 0
+                      ? { footer: KIN_HAND_OVER.removeOffer(openTasks, teammate.name) }
+                      : {})}
+                  >
+                    {profile === null || openTasks === 0 ? null : (
+                      <KinHandOverRow
+                        environmentId={props.target.environmentId}
+                        orgId={props.target.orgId}
+                        from={{ _tag: "person", personId: profile.personId }}
+                        fromName={profile.displayName}
+                      />
+                    )}
+                  </KinPersonTasks>
+                </KinPageFold>
+              );
+            case "projects":
+              return (
+                <KinTeammateProjectsFold key={fold} target={props.target} personId={personId} />
+              );
+            case "reach":
+              return (
+                <KinPageFold key={fold} title={KIN_TEAMMATE_FOLDS.reach} summary={null}>
+                  {kinTeammateAgentsLine(teammate) === null ? null : (
+                    <ListSection title="Agents">
+                      <View className="px-4 py-3">
+                        <Text textRole="body" className="text-foreground-muted">
+                          {kinTeammateAgentsLine(teammate)}
+                        </Text>
+                      </View>
+                    </ListSection>
+                  )}
+                  <KinPersonReachSections
+                    environmentId={props.target.environmentId}
+                    orgId={props.target.orgId}
+                    personId={personId}
+                    name={teammate.name}
+                    ownerLevel={kinTeammateAgentsLine(teammate) !== null}
+                  />
+                </KinPageFold>
+              );
+            case "profile":
+              return (
+                <KinPageFold key={fold} title={KIN_TEAMMATE_FOLDS.profile} summary={null}>
+                  <ListSection>
+                    <ListRow
+                      label={KIN_PROFILE_COPY.title}
+                      description={KIN_TEAM_COPY.profileRow}
+                      icon="person.crop.circle"
+                      onPress={() =>
+                        navigation.navigate("KinProfile", {
+                          ...props.target,
+                          personId,
+                          over: "teammate",
+                        })
+                      }
+                    />
+                    {/* Their page is the record: their profile is edited in a sheet on it. */}
+                    {mayEdit ? (
+                      <View className="border-t border-border-subtle">
+                        <ListActionRow
+                          icon="pencil"
+                          label={KIN_PROFILE_COPY.edit}
+                          onPress={() =>
+                            navigation.navigate("KinProfileEdit", { ...props.target, personId })
+                          }
+                        />
+                      </View>
+                    ) : null}
+                  </ListSection>
+                  {profile === null ? null : (
+                    <KinAwaySection
+                      environmentId={props.target.environmentId}
+                      orgId={props.target.orgId}
+                      profile={profile}
+                      mine={false}
+                      mayEdit={profile.canEdit === true}
+                    />
+                  )}
+                </KinPageFold>
+              );
+            case "devices":
+              return (
+                <KinTeammateDevicesFold
+                  key={fold}
+                  target={{ ...props.target, personId }}
+                  link={page.link === "devices" ? linkSection : null}
+                />
+              );
+          }
+        })
       )}
-      {offered.link === null ? null : (
-        <ListSection title="Invite link" footer={offered.link.hint}>
-          <ListActionRow
-            label={offered.link.label}
-            icon="link"
-            loading={busy}
-            disabled={busy}
-            onPress={() => void makeLink()}
-          />
-          {offered.cancel === null ? null : (
-            <View className="border-t border-border-subtle">
-              <ListActionRow
-                label={offered.cancel.label}
-                icon="xmark"
-                disabled={busy}
-                onPress={() => {
-                  const { inviteId } = teammate;
-                  const { cancel } = offered;
-                  if (inviteId === null || cancel === null) return;
-                  Dialog.confirm({
-                    title: cancel.title,
-                    message: cancel.detail,
-                    confirmText: cancel.label,
-                    cancelText: cancel.keep,
-                    destructive: true,
-                    onConfirm: () => {
-                      // Shown at once; the Team page says so if the host refuses.
-                      void actions.cancelInvite(inviteId);
-                      if (teammate.personId === null) props.onClose();
-                    },
-                  });
-                }}
-              />
-            </View>
-          )}
-        </ListSection>
-      )}
-      {offered.remove && teammate.personId !== null && teammate.state === "joined" ? (
-        <KinDeviceList target={{ ...props.target, personId: teammate.personId }} self={false} />
-      ) : null}
-      {teammate.personId !== null && teammate.state !== "you" && kinOwnerLevel(props.viewer) ? (
-        <KinTasksKeysSection
-          environmentId={props.target.environmentId}
-          orgId={props.target.orgId}
-          personId={teammate.personId}
-          holder={teammate.name}
-        />
-      ) : null}
-      {offered.remove ? (
+      {page.link === "open" ? linkSection : null}
+      {page.remove ? (
         <ListSection>
           <ListActionRow
             label="Remove access"
@@ -421,79 +459,56 @@ function KinTeammateDetails(props: {
   );
 }
 
-/** The owner's leads and whether this person can message each. A lead's own details change it. */
-function KinTeammateLeads(props: {
+/** Their projects, folded under a count. */
+function KinTeammateProjectsFold(props: {
   readonly target: KinTeamTarget;
   readonly personId: KinPersonId;
-  readonly name: string;
 }) {
   const { environmentId, orgId } = props.target;
-  const result = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
-  const leads = Option.getOrNull(AsyncResult.value(result))?.leads ?? null;
+  const read = Option.getOrNull(
+    AsyncResult.value(
+      useAtomValue(
+        kinClient.teammateProjects({ environmentId, input: { orgId, person: props.personId } }),
+      ),
+    ),
+  );
+  const count =
+    read === null ? null : kinTeammateProjects(props.personId, read.theirs, read.open).rows.length;
   return (
-    <ListSection
-      title="Agents"
-      footer={
-        leads === null || leads.length === 0
-          ? undefined
-          : KIN_TEAM_COPY.openAgentToChange(props.name)
-      }
+    <KinPageFold
+      title={KIN_TEAMMATE_FOLDS.projects}
+      summary={kinFoldCount(count, "project", "projects")}
     >
-      {leads === null || leads.length === 0 ? (
-        <View className="px-4 py-3">
-          <Text textRole="body" className="text-foreground-muted">
-            {leads !== null
-              ? KIN_AGENTS_COPY.none
-              : AsyncResult.isFailure(result)
-                ? KIN_AGENTS_COPY.loadFailed
-                : "Loading…"}
-          </Text>
-        </View>
-      ) : (
-        leads.map((lead, index) => (
-          <View
-            key={lead.agentId}
-            className={index === 0 ? undefined : "border-t border-border-subtle"}
-          >
-            <KinTeammateLead lead={lead} personId={props.personId} environmentId={environmentId} />
-          </View>
-        ))
-      )}
-    </ListSection>
+      <KinTeammateProjects target={props.target} personId={props.personId} />
+    </KinPageFold>
   );
 }
 
-function KinTeammateLead(props: {
-  readonly lead: KinLeadProfile;
-  readonly personId: KinPersonId;
-  readonly environmentId: EnvironmentId;
+/** The devices signed in as them, and a link for another one, folded under a count. */
+function KinTeammateDevicesFold(props: {
+  readonly target: KinTeamTarget & { readonly personId: KinPersonId };
+  readonly link: React.ReactNode;
 }) {
-  const navigation = useNavigation();
-  const { lead, environmentId } = props;
-  const access = useAtomValue(
-    kinClient.leadAccess({ environmentId, input: { orgId: lead.orgId, agentId: lead.agentId } }),
+  const { environmentId, orgId, personId } = props.target;
+  const held = Option.getOrNull(
+    AsyncResult.value(
+      useAtomValue(kinClient.devices({ environmentId, input: { orgId, personId } })),
+    ),
   );
-  const read = Option.getOrNull(AsyncResult.value(access));
+  const nowMs = useNowMinuteMs();
+  const count = held === null ? null : kinActiveDevices(held.devices, nowMs).length;
   return (
-    <ListRow
-      label={lead.name}
-      detail={
-        read === null && AsyncResult.isFailure(access)
-          ? undefined
-          : kinTeammateLeadLine(kinLeadMessageable(read, props.personId))
-      }
-      onPress={() =>
-        navigation.navigate("KinLead", {
-          environmentId,
-          orgId: lead.orgId,
-          agentId: lead.agentId,
-        })
-      }
-    />
+    <KinPageFold
+      title={KIN_TEAMMATE_FOLDS.devices}
+      summary={kinFoldCount(count, "device", "devices")}
+    >
+      <KinDeviceList target={props.target} self={false} />
+      {props.link}
+    </KinPageFold>
   );
 }
 
-/** A member's places beyond Tasks, and the projects they are on. */
+/** A member's places beyond Tasks. */
 function KinTeammatePlaces(props: {
   readonly target: KinTeamTarget;
   readonly personId: KinPersonId;
@@ -516,7 +531,7 @@ function KinTeammatePlaces(props: {
       { label: "kin:person:set-places", reportFailure: false, reportDefect: true },
     );
     if (AsyncResult.isFailure(result))
-      setProblem(kinFailureText(squashAtomCommandFailure(result), "That didn't save."));
+      setProblem(kinFailureText(squashAtomCommandFailure(result), KIN_TEAM_COPY.saveFailed));
     await refreshKinTeam(target);
     setAsked((held) => {
       const rest = { ...held };
@@ -532,7 +547,7 @@ function KinTeammatePlaces(props: {
             key={entry.place}
             className={index === 0 ? undefined : "border-t border-border-subtle"}
           >
-            <ListToggleRow
+            <KinWorkToggleRow
               label={entry.label}
               description={entry.detail}
               value={asked[entry.place] ?? places[entry.place]}
@@ -542,7 +557,6 @@ function KinTeammatePlaces(props: {
           </View>
         ))}
       </ListSection>
-      <KinTeammateProjects target={target} personId={personId} />
     </>
   );
 }

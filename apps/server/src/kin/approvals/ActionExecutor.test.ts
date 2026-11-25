@@ -25,6 +25,10 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import { McpSchema } from "effect/ai";
+import * as McpInvocationContext from "../../mcp/McpInvocationContext.ts";
+import { WorkflowToolkit } from "../../mcp/toolkits/workflow/tools.ts";
+import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -1275,7 +1279,18 @@ describe("KinActionExecutor", () => {
     const opaqueImports = new Map([
       // Inside the speech worker's source text, which a separate Node process runs.
       ["speech/native.ts", ["import(moduleUrl)"]],
+      // Inside the hostile test page's text, which only a sealed browser page runs.
+      ["kin/visualSeal.testkit.ts", ['import("${http}/dynamic-import")']],
+      // A workflow file from Labs → Workflows, which only the CLI or an outside client starts;
+      // pinned below: no thread lists the workflow tool.
+      ["workflows/WorkflowRuntime.ts", ["import(url)"]],
     ]);
+    const workflowTool = WorkflowToolkit.tools.t3_workflow;
+    assert.strictEqual(
+      Context.getOrUndefined(workflowTool.annotations, McpSchema.EnabledWhen),
+      McpInvocationContext.hiddenFromThreads,
+    );
+    assert.notInclude(LEAD_T3_TOOLS as ReadonlyArray<string>, workflowTool.name);
     const unfollowable: Array<string> = [];
     const imports = (file: string) => {
       const text = source(file);
@@ -1323,10 +1338,20 @@ describe("KinActionExecutor", () => {
         ],
       ],
       ["outboundHttp.ts", ["const requireUndici = NodeModule.createRequire(import.meta.url);"]],
+      // Only forgets a workflow file from require's cache before it loads again; requires nothing.
+      [
+        "workflows/WorkflowRuntime.ts",
+        ["const required = NodeModule.createRequire(import.meta.url);"],
+      ],
       // Only resolves where a chart library's file is on disk; nothing is loaded into the server.
       [
         "kin/visualLibraries.ts",
         ["const requireFromHere = NodeModule.createRequire(import.meta.url);"],
+      ],
+      // Loads ffi-rs and @napi-rs/keyring by package name, as the check below pins.
+      [
+        "provider/antigravityUsageLimits.ts",
+        ["const requireExternal = NodeModule.createRequire(import.meta.url);"],
       ],
       [
         "policy/ManagedPolicy.ts",
@@ -1575,8 +1600,29 @@ describe("KinActionExecutor", () => {
     );
     assert.notMatch(
       source("kin/chat/refreshes.ts"),
-      /\bLeadProvision\.(?!profiles\b|contacts\b|ts\b)\w+/,
+      /\bLeadProvision\.(?!profiles\b|contacts\b|messageable\b|ts\b)\w+/,
     );
+    // `messageable` only reads the caller's own list of agents they may message: one SELECT,
+    // scoped to their person row, that writes nothing and opens no chat.
+    const messageable = /export const messageable = [\s\S]*?\n\}\);/.exec(
+      source("kin/lead/messageable.ts"),
+    )?.[0];
+    // Its own module, so a person's coding agent key lists who it may message without reaching
+    // the provisioning module: that one read is all the module holds, and it is all the key takes.
+    assert.deepStrictEqual(importers("kin/lead/messageable.ts"), [
+      "kin/lead/KinLeadProvision.ts",
+      "kin/tasksKey/people.ts",
+    ]);
+    assert.strictEqual(
+      source("kin/lead/messageable.ts")
+        .match(/^export const \w+/gm)
+        ?.join(),
+      "export const messageable",
+    );
+    assert.isDefined(messageable);
+    assert.match(messageable!, /me\.person_id = \$\{person\.personId\}/);
+    assert.match(messageable!, /WHERE l\.org_id = \$\{person\.orgId\}/);
+    assert.notMatch(messageable!, /\b(INSERT|UPDATE|DELETE)\b|createDirect|\bchats\./);
     assert.deepStrictEqual(importers("kin/chat/refreshes.ts"), ["kin/work/rpcHandlers.ts"]);
     assert.deepStrictEqual(importers("kin/chat/rpcHandlers.ts"), [
       "kin/people/rpcHandlers.ts",
@@ -1584,13 +1630,13 @@ describe("KinActionExecutor", () => {
     ]);
     assert.notMatch(
       source("kin/chat/rpcHandlers.ts"),
-      /\bLeadProvision\.(?!create\b|update\b|retire\b|restore\b|setPaused\b|agentDefaults\b|setAgentDefaults\b|profiles\b|contacts\b|access\b|allow\b|disallow\b|teamAgent\b|KinLeadProvisionError\b|ts\b)\w+/,
+      /\bLeadProvision\.(?!create\b|update\b|retire\b|restore\b|setPaused\b|agentDefaults\b|setAgentDefaults\b|profiles\b|contacts\b|messageable\b|access\b|allow\b|disallow\b|reachList\b|reachSet\b|teamAgent\b|KinLeadProvisionError\b|ts\b)\w+/,
     );
     // The refresh stream reads only the caller's own lead list to tell them it moved.
     assert.deepStrictEqual(importers("kin/chat/refreshes.ts"), ["kin/work/rpcHandlers.ts"]);
     assert.notMatch(
       source("kin/chat/refreshes.ts"),
-      /\bLeadProvision\.(?!profiles\b|contacts\b|ts\b)\w+/,
+      /\bLeadProvision\.(?!profiles\b|contacts\b|messageable\b|ts\b)\w+/,
     );
     assert.deepStrictEqual(importers("kin/cli/lead.ts"), ["binCli.ts"]);
     const served = new Set<string>();

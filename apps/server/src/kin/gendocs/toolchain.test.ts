@@ -2,6 +2,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Digest from "effect/crypto/Digest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
@@ -12,7 +13,15 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
 import * as ProcessRunner from "../../processRunner.ts";
-import { KinToolchain, layer, tarProblem, toolDirectories } from "./toolchain.ts";
+import { KIN_VISUAL_FONTS } from "@t3tools/shared/kinVisual";
+
+import {
+  KinToolchain,
+  layer,
+  PINNED_FONT_FILES,
+  tarProblem,
+  toolDirectories,
+} from "./toolchain.ts";
 
 const LINUX_X64 = "a6d077d0a95eed5a2eba715b2dae06be954f624ccbf85758a03f389ded33118c";
 const MiB = 1024 * 1024;
@@ -20,6 +29,19 @@ const MiB = 1024 * 1024;
 it.effect("re-checks the installed Typst, and stops a download as it passes the cap", () => {
   let requests = 0;
   let sent = 0;
+  let hashes = 0;
+  const counted = Layer.effect(
+    Digest.Digest,
+    Effect.map(Digest.Digest, (real) =>
+      Digest.Digest.of({
+        ...real,
+        digest: (algorithm, bytes) => {
+          hashes += 1;
+          return real.digest(algorithm, bytes);
+        },
+      }),
+    ),
+  ).pipe(Layer.provide(NodeCrypto.layer));
   // An endless body with no length: only counting bytes as they arrive stops it.
   const http = HttpClient.make((request) =>
     Effect.sync(() => {
@@ -38,9 +60,17 @@ it.effect("re-checks the installed Typst, and stops a download as it passes the 
     const [directory] = toolDirectories((yield* ServerConfig).baseDir);
     // A stamp that names the pinned release, beside a program that isn't the one it was made from.
     yield* fs.makeDirectory(directory!, { recursive: true });
+    const program = "#!/bin/sh\necho typst 0\n";
+    yield* fs.writeFileString(`${directory!}/typst`, program);
+    const programSum = "94664bcae2b687b4c3da4d0eeb4a4d944e1236127c10b8750485da6eb99483ef";
+    yield* fs.writeFileString(`${directory!}/.sha256`, `${LINUX_X64}\n${programSum}\n`);
+    const toolchain = yield* KinToolchain;
+    // Hashed once, then trusted while the file is unchanged.
+    yield* toolchain.ensure();
+    yield* toolchain.ensure();
+    assert.deepStrictEqual({ requests, hashes }, { requests: 0, hashes: 1 });
     yield* fs.writeFileString(`${directory!}/typst`, "#!/bin/sh\necho tampered\n");
-    yield* fs.writeFileString(`${directory!}/.sha256`, `${LINUX_X64}\n`);
-    const failed = yield* (yield* KinToolchain).ensure().pipe(Effect.flip);
+    const failed = yield* toolchain.ensure().pipe(Effect.flip);
     assert.strictEqual(requests, 1);
     assert.strictEqual(failed.message, "Typst's download was larger than expected.");
     assert.isAtMost(sent, 66 * MiB);
@@ -50,7 +80,7 @@ it.effect("re-checks the installed Typst, and stops a download as it passes the 
         Layer.provideMerge(Layer.succeed(HttpClient.HttpClient, http)),
         Layer.provideMerge(ProcessRunner.layer),
         Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-tools-" })),
-        Layer.provideMerge(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
+        Layer.provideMerge(Layer.mergeAll(NodeServices.layer, counted)),
         Layer.provideMerge(Layer.succeed(HostProcess.Platform, "linux")),
         Layer.provideMerge(Layer.succeed(HostProcess.Architecture, "x64")),
       ),
@@ -126,4 +156,11 @@ it("trusts a Typst archive only when every member is a plain file or folder in i
     [ok, verbose(ok.slice(0, 2)), "a listing that doesn't add up"],
   ] as const)
     assert.include(tarProblem(names, lines, root) ?? "", why);
+});
+
+it("serves pages exactly the fonts it fetches", () => {
+  assert.sameMembers(
+    KIN_VISUAL_FONTS.map((font) => font.file),
+    [...PINNED_FONT_FILES],
+  );
 });

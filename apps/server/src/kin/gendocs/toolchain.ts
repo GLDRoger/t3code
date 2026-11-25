@@ -8,6 +8,7 @@ import * as Hex from "effect/encoding/Hex";
 import * as FileSystem from "effect/FileSystem";
 import { HttpClient } from "effect/http";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
@@ -108,6 +109,13 @@ const FONT_FETCH_TIMEOUT = "1 minute";
 const FONT_RETRY_PAUSE_MS = 10 * 60_000;
 const fontsDirectory = (baseDir: string) =>
   `${toolsRoot(baseDir)}/fonts-${FONTS_COMMIT.slice(0, 12)}`;
+/** The pinned fonts' file names, as a page loads them (`KIN_VISUAL_FONTS`). */
+export const PINNED_FONT_FILES = FONT_FILES.map((font) =>
+  font.path.slice(font.path.lastIndexOf("/") + 1),
+);
+/** Where a pinned font's file is once fetched; `undefined` for a name that isn't one of them. */
+export const pinnedFontPath = (baseDir: string, file: string) =>
+  PINNED_FONT_FILES.includes(file) ? `${fontsDirectory(baseDir)}/${file}` : undefined;
 
 export class KinToolchain extends Context.Service<
   KinToolchain,
@@ -139,6 +147,8 @@ export const layer = Layer.effect(
 
     const sha256 = (bytes: Uint8Array) =>
       digest.digest(Digest.sha256, bytes).pipe(Effect.map(Hex.encode));
+    // The program is hashed again only when the file changed since it last matched.
+    const verified = yield* Ref.make<string | undefined>(undefined);
     /** The stamp names the pinned archive and the program it held; the program must still be it. */
     const installed = Effect.fn("KinToolchain.installed")(
       function* (archive: string) {
@@ -146,7 +156,18 @@ export const layer = Layer.effect(
           .trim()
           .split("\n");
         if (stamped !== archive || program === "") return false;
-        return (yield* sha256(yield* fs.readFile(binary))) === program;
+        const info = yield* fs.stat(binary);
+        const seen = [
+          program,
+          info.dev,
+          Option.getOrUndefined(info.ino),
+          info.size,
+          Option.getOrUndefined(info.mtime)?.getTime(),
+        ].join(":");
+        if ((yield* Ref.get(verified)) === seen) return true;
+        const same = (yield* sha256(yield* fs.readFile(binary))) === program;
+        yield* Ref.set(verified, same ? seen : undefined);
+        return same;
       },
       Effect.orElseSucceed(() => false),
     );

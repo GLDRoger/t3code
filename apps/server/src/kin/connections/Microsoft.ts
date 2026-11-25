@@ -8,7 +8,9 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as Schema from "effect/Schema";
 
 import {
+  ACTIVITY_MAIL,
   isPlainAddress,
+  type MailArrival,
   type MailCalendarEvent,
   type MailContext,
   type MailEvent,
@@ -18,10 +20,11 @@ import {
 import { htmlToText } from "./MailText.ts";
 import { answeredWith, failure, mailProvider, unreached, vendorAnswer } from "./MailTools.ts";
 import type { AuthServer } from "./OAuth.ts";
+import { DAY_MS } from "../durations.ts";
 
 /**
  * Microsoft's sign-in for work or school accounts in any organization and personal accounts.
- * The owner's app registration is a public client, so the code is redeemed with PKCE alone.
+ * A public-client app redeems the code with PKCE alone; a Web app sends its secret with it too.
  */
 const MICROSOFT_SERVER: AuthServer = {
   issuer: "https://login.microsoftonline.com/common/v2.0",
@@ -138,7 +141,17 @@ const bodyText = (message: unknown) => {
 const SUMMARY =
   "id,conversationId,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,bodyPreview";
 const FULL = `${SUMMARY},replyTo,internetMessageId,hasAttachments,body,internetMessageHeaders`;
+const automationOf = (message: unknown) => ({
+  listUnsubscribe: internetHeader(message, "List-Unsubscribe").length > 0,
+  precedence: internetHeader(message, "Precedence")[0] ?? null,
+  autoSubmitted: internetHeader(message, "Auto-Submitted")[0] ?? null,
+  bulk: false,
+});
 
+const receivedOf = (message: unknown) => {
+  const at = Date.parse(text(field(message, "receivedDateTime")) ?? "");
+  return Number.isFinite(at) ? at : null;
+};
 const messageOf = (message: unknown, files?: unknown): MailMessage => ({
   threadId: text(field(message, "conversationId")) ?? "",
   from: nameOf(field(message, "from")),
@@ -149,6 +162,7 @@ const messageOf = (message: unknown, files?: unknown): MailMessage => ({
   ccLine: recipientLine(message, "ccRecipients"),
   deliveredTo: [...recipients(message, "toRecipients"), ...recipients(message, "ccRecipients")],
   date: text(field(message, "receivedDateTime")) ?? null,
+  receivedAt: receivedOf(message),
   subject: text(field(message, "subject")) ?? "",
   preview: text(field(message, "bodyPreview")) ?? "",
   unread: field(message, "isRead") === false,
@@ -169,12 +183,16 @@ const messageOf = (message: unknown, files?: unknown): MailMessage => ({
 });
 
 /** Graph lists messages, newest first; Kin shows conversations, each oldest message first. */
-const conversations = (messages: ReadonlyArray<unknown>, max: number) => {
+const conversations = (messages: ReadonlyArray<unknown>, max: number, watch = false) => {
   const byConversation = new Map<string, Array<MailMessage>>();
   for (const message of messages) {
     const id = text(field(message, "conversationId"));
     if (id === undefined) continue;
-    byConversation.set(id, [messageOf(message), ...(byConversation.get(id) ?? [])]);
+    const mapped = messageOf(message);
+    byConversation.set(id, [
+      watch ? { ...mapped, automation: automationOf(message) } : mapped,
+      ...(byConversation.get(id) ?? []),
+    ]);
   }
   return [...byConversation.values()].slice(0, max);
 };
@@ -214,7 +232,6 @@ const EVENT_FIELDS =
   "id,subject,start,end,isAllDay,location,organizer,attendees,isCancelled,bodyPreview";
 const UTC = 'outlook.timezone="UTC"';
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
 const calendarBase = (calendarId: string | undefined) =>
   calendarId === undefined || calendarId === "primary"
@@ -295,6 +312,8 @@ const calendarChanges = Effect.fn("KinMicrosoft.calendarChanges")(function* (
       const next = text(field(answer, "@odata.nextLink"));
       link = delta ?? next ?? link;
       if (delta !== undefined || next === undefined) break;
+      if (page === DELTA_PAGES - 1)
+        yield* Effect.logInfo("Kin read its most calendar pages; the next read goes on from there");
       url = next;
       params = {};
     }
@@ -319,10 +338,145 @@ const calendarChanges = Effect.fn("KinMicrosoft.calendarChanges")(function* (
           field(event, "@removed") !== undefined ||
           Date.parse(text(field(event, "lastModifiedDateTime")) ?? "") >= since,
       )
-      .slice(0, 50)
       .map(eventOf),
     cursor: found.cursor,
   };
+});
+
+/**
+ * Inbox mail since `since`, oldest first, at most `ACTIVITY_MAIL` messages; a read that stops
+ * there says until when it read everything.
+ */
+const inboxSince = Effect.fn("KinMicrosoft.inboxSince")(function* (
+  context: MailContext,
+  since: number,
+) {
+  const messages: Array<unknown> = [];
+  let url = `${GRAPH}/mailFolders/inbox/messages`;
+  let params: Request["params"] = {
+    $filter: `receivedDateTime ge ${iso(since)}`,
+    $orderby: "receivedDateTime asc",
+    $select: `${SUMMARY},internetMessageHeaders`,
+    $top: "50",
+  };
+  let next: string | undefined;
+  do {
+    const answer = yield* api(context, url, { params });
+    messages.push(...list(field(answer, "value")));
+    next = text(field(answer, "@odata.nextLink"));
+    url = next ?? url;
+    params = {};
+  } while (next !== undefined && messages.length < ACTIVITY_MAIL);
+  const last = Date.parse(text(field(messages.at(-1), "receivedDateTime")) ?? "");
+  return {
+    threads: conversations(messages.toReversed(), Infinity, true),
+    until: next === undefined || Number.isNaN(last) ? undefined : last,
+  };
+});
+
+const INBOX_DELTA = `${GRAPH}/mailFolders/inbox/messages/delta`;
+const DELTA_PAGE = "odata.maxpagesize=50";
+const ARRIVAL_FIELDS =
+  "id,conversationId,receivedDateTime,from,toRecipients,ccRecipients,subject,hasAttachments,internetMessageId,internetMessageHeaders";
+
+/**
+ * A new round of the Inbox's delta that starts now: Graph documents `$deltatoken=latest` only for
+ * directory resources, so the first round asks for mail received after now, which is none.
+ */
+const inboxStart = Effect.fn("KinMicrosoft.inboxStart")(function* (
+  context: MailContext,
+  now: number,
+) {
+  let url = INBOX_DELTA;
+  let params: Request["params"] = {
+    changeType: "created",
+    $select: "id",
+    $filter: `receivedDateTime gt ${iso(now)}`,
+  };
+  for (let page = 0; page < DELTA_PAGES; page++) {
+    const answer = yield* api(context, url, { params, prefer: DELTA_PAGE });
+    const delta = text(field(answer, "@odata.deltaLink"));
+    if (delta !== undefined) return delta;
+    const next = text(field(answer, "@odata.nextLink"));
+    if (next === undefined) break;
+    url = next;
+    params = {};
+  }
+  return yield* failure("protocol", "Microsoft didn't say where its mail changes start.");
+});
+
+/** One page of the Inbox's delta at a link Graph gave; 410 is Graph's own reset. */
+const inboxChanges = Effect.fn("KinMicrosoft.inboxChanges")(function* (
+  context: MailContext,
+  position: string,
+) {
+  const page = yield* api(context, position, { prefer: DELTA_PAGE }).pipe(
+    Effect.map((answer) => ({ answer, expired: false })),
+    Effect.catchIf(
+      (error) => answeredWith(error, 410),
+      () => Effect.succeed({ answer: undefined, expired: true }),
+    ),
+  );
+  if (page.expired) return { _tag: "expired" } as const;
+  const next = text(field(page.answer, "@odata.nextLink"));
+  const delta = text(field(page.answer, "@odata.deltaLink"));
+  const at = next ?? delta;
+  if (at === undefined)
+    return yield* failure("protocol", "Microsoft sent an answer Kin couldn't read.");
+  return {
+    _tag: "read",
+    // A removed entry left the Inbox; a moved-in one comes back as created and is judged by date.
+    changes: list(field(page.answer, "value")).flatMap((entry) => {
+      const messageId = text(field(entry, "id"));
+      return messageId === undefined || field(entry, "@removed") !== undefined
+        ? []
+        : [{ messageId, threadId: text(field(entry, "conversationId")) ?? null }];
+    }),
+    position: at,
+    more: next !== undefined,
+  } as const;
+});
+
+/** Graph's delta doesn't carry `internetMessageHeaders`, so each new message is read once. */
+const arrivalOf = Effect.fn("KinMicrosoft.arrival")(function* (
+  context: MailContext,
+  messageId: string,
+) {
+  const found = yield* api(context, `${GRAPH}/messages/${encodeURIComponent(messageId)}`, {
+    params: { $select: ARRIVAL_FIELDS },
+  }).pipe(
+    Effect.map((message) => ({ message, gone: false })),
+    Effect.catchIf(
+      (error) => answeredWith(error, 404),
+      () => Effect.succeed({ message: null, gone: true }),
+    ),
+  );
+  if (found.gone) return null;
+  const { message } = found;
+  const receivedAt = Date.parse(text(field(message, "receivedDateTime")) ?? "");
+  const threadId = text(field(message, "conversationId"));
+  if (
+    text(field(message, "id")) !== messageId ||
+    threadId === undefined ||
+    Number.isNaN(receivedAt)
+  )
+    return yield* failure("protocol", "Microsoft sent an answer Kin couldn't read.");
+  return {
+    messageId,
+    threadId,
+    receivedAt,
+    from: nameOf(field(message, "from")),
+    fromAddress: addressOf(field(message, "from")),
+    to: recipients(message, "toRecipients"),
+    cc: recipients(message, "ccRecipients"),
+    deliveredTo: [...recipients(message, "toRecipients"), ...recipients(message, "ccRecipients")],
+    subject: text(field(message, "subject")) ?? "",
+    date: text(field(message, "receivedDateTime")) ?? null,
+    internetId: text(field(message, "internetMessageId")) ?? null,
+    authResults: internetHeader(message, "Authentication-Results"),
+    ...automationOf(message),
+    hasFile: field(message, "hasAttachments") === true,
+  } satisfies MailArrival;
 });
 
 const profile = (http: HttpClient.HttpClient, token: string) =>
@@ -536,24 +690,25 @@ const microsoft: MailVendor = {
     api(context, `${calendarBase(calendarId)}/events/${encodeURIComponent(eventId)}`, {
       prefer: `${UTC}, outlook.body-content-type="html"`,
     }).pipe(Effect.map(eventOf)),
+  calendarName: (context, calendarId) =>
+    api(context, calendarId === "primary" ? `${GRAPH}/calendar` : calendarBase(calendarId)).pipe(
+      Effect.map((calendar) => text(field(calendar, "name")) ?? null),
+    ),
   activity: (context, since, cursor) =>
     Effect.all({
-      mail: api(context, `${GRAPH}/mailFolders/inbox/messages`, {
-        params: {
-          $filter: `receivedDateTime ge ${iso(since)}`,
-          $orderby: "receivedDateTime desc",
-          $select: SUMMARY,
-          $top: "50",
-        },
-      }),
+      mail: inboxSince(context, since),
       calendar: calendarChanges(context, since, cursor),
     }).pipe(
       Effect.map(({ mail, calendar }) => ({
-        threads: conversations(list(field(mail, "value")), 25),
+        threads: mail.threads,
         events: calendar.events,
         cursor: calendar.cursor,
+        ...(mail.until === undefined ? {} : { until: mail.until }),
       })),
     ),
+  mailStart: inboxStart,
+  changes: inboxChanges,
+  arrival: arrivalOf,
   account: (http, token) => profile(http, token).pipe(Effect.map(accountOf)),
   sendAs: microsoftSendAs,
   sendMessage,

@@ -108,7 +108,8 @@ it.prop(
       {
         days,
         start: clock(start * 15),
-        end: clock(Math.min(start * 15 + length * 15, 23 * 60 + 59)),
+        // Past midnight it wraps: a night shift.
+        end: clock((start * 15 + length * 15) % (24 * 60)),
       },
     );
     const now = YEAR_START + minute * MINUTE + 17_000;

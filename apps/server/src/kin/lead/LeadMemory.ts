@@ -1,6 +1,7 @@
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import type { KinOrgId, KinAgentId, MemoryTrust } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import * as Struct from "effect/Struct";
 import * as Digest from "effect/crypto/Digest";
 import * as Hex from "effect/encoding/Hex";
 import {
@@ -9,6 +10,7 @@ import {
   KinEvent,
   KinEventId,
   KinMemoryItemId,
+  KinMessageId,
   KinPersonId,
   MemoryItemEvery,
   MemoryItemFrontMatter,
@@ -27,12 +29,15 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { stringify } from "yaml";
 import { isSqlError } from "effect/sql/SqlError";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import {
   SHARED_REFUSAL,
   aborted,
+  askedIn,
   askersDirectChat,
   effectiveAudience,
   turnChat,
@@ -42,7 +47,12 @@ import * as KinLevels from "./KinLevels.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
 import * as Cache from "../memory/MemoryCache.ts";
-import { MemoryItemError, memoryDateMillis, parseFrontMatter } from "../memory/frontMatter.ts";
+import {
+  MemoryItemError,
+  memoryDateMillis,
+  parseFrontMatter,
+  reviewOverdueBy,
+} from "../memory/frontMatter.ts";
 import { leadOwner, withReadableQuotes } from "../memory/quoteAccess.ts";
 import { QUOTE_MAX, QUOTE_REFUSALS, writeRefusal } from "../memory/keeping.ts";
 import {
@@ -61,18 +71,36 @@ import {
   suggest,
   teamMemoryOn,
 } from "../memory/sensitivity.ts";
-import { ownerLevelSql } from "../people/KinAccess.ts";
+import { ownerLevel, ownerLevelSql } from "../people/KinAccess.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
-import { deferralOrigin } from "../triggers/deferralOrigin.ts";
+import {
+  askerOf,
+  deferralOrigin,
+  directChatWith,
+  sharedChatOf,
+} from "../triggers/deferralOrigin.ts";
 import { cancelDeferralRun } from "../triggers/KinTriggerService.ts";
+import { withRuns } from "../triggers/deferralRuns.ts";
 import { scheduledTaskTriggerId } from "../widgets/scheduledTaskCard.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
+import { feedOf, isFeedSchedule } from "../numbers/numberRows.ts";
 import { slug } from "../work/docBody.ts";
 import { turnSensitive } from "../work/sensitiveReads.ts";
 import { TurnEvent } from "./eventIds.ts";
+import {
+  OUTSIDE_REFUSAL,
+  followsOutsideRead,
+  outsideRead,
+  snapshotSource,
+} from "./OutsideContent.ts";
 import { validZone } from "../triggers/quietHold.ts";
 import { stillAway } from "../triggers/quietHours.ts";
+import { onHostClock } from "../pulse/checkInSeeds.ts";
 import { ownerZone } from "../work/recordRows.ts";
+import { pauseTriggers } from "../triggers/KinTriggerStore.ts";
+import { DAY_MS } from "../durations.ts";
+import { keySentSql } from "../chat/keySent.ts";
+import { ownTypedSql } from "./awaySet.ts";
 
 const text = Schema.String.check(Schema.isMaxLength(100_000));
 const date = Schema.String.check(
@@ -105,6 +133,7 @@ const {
   sensitive: _sensitive,
   shared_by: _sharedBy,
   shared_from: _sharedFrom,
+  for_chat: _forChat,
   ...writableFields
 } = MemoryItemFrontMatter.fields;
 export const WriteInput = Schema.Struct({
@@ -121,7 +150,10 @@ export const WriteInput = Schema.Struct({
   // Checked against that event's message, never trusted as sent (`MemoryWriter`).
   quote: Schema.optional(Schema.String.check(Schema.isMaxLength(QUOTE_MAX))),
   supersedes: Schema.optional(KinMemoryItemId),
+  besides: Schema.optional(Schema.Array(KinMemoryItemId).check(Schema.isMaxLength(100))),
 });
+const ALONE =
+  'In a chat with other people it fires there; true sends it to the asker\'s own chat with you ("remind me").';
 export const DeferInput = Schema.Struct({
   itemId: Schema.optional(itemId),
   what: TrimmedNonEmptyString.check(Schema.isMaxLength(8000)),
@@ -132,6 +164,7 @@ export const DeferInput = Schema.Struct({
       "With onDue ask or chase: the person you will ask or chase when it comes due, by name; omit it when that is whoever asked you.",
   }),
   chatId: KinChatId,
+  alone: Schema.optional(Schema.Boolean).annotate({ description: ALONE }),
   sourceEventId: TurnEvent,
   replaces: Schema.optional(KinMemoryItemId),
 });
@@ -142,6 +175,7 @@ export const ScheduleInput = Schema.Struct({
   at: MemoryItemEvery.fields.at,
   days: MemoryItemEvery.fields.days,
   chatId: KinChatId,
+  alone: Schema.optional(Schema.Boolean).annotate({ description: ALONE }),
   sourceEventId: TurnEvent,
   replaces: Schema.optional(KinMemoryItemId),
   around: Schema.optional(Schema.Boolean).annotate({
@@ -208,11 +242,27 @@ export const ReadResult = Schema.Union([
   }),
   Schema.Struct({ item: SharedItem }),
 ]);
+/** What the owner's search returns of an item: enough to choose what to read, nothing more. */
+const SearchHit = Schema.Struct({
+  ...Struct.pick(MemoryItemFrontMatter.fields, ["id", "kind", "title", "what", "status", "due"]),
+  reviewOverdue: Schema.Boolean,
+  misleading: Schema.optional(Schema.Literal(true)),
+  supersededBy: Schema.optional(KinMemoryItemId),
+  duplicate: Schema.Boolean,
+  // Another lead's deferral: that lead's name, so the owner's word can name it (`ownersOther`).
+  agent: Schema.optional(Schema.String),
+});
+const SEARCH_WHAT_CHARS = 200;
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+const NOTICE_TITLE_GRAPHEMES = 120;
+const clipTitle = (title: string) => {
+  const parts = Array.from(graphemes.segment(title), (part) => part.segment);
+  return parts.length <= NOTICE_TITLE_GRAPHEMES
+    ? title
+    : `${parts.slice(0, NOTICE_TITLE_GRAPHEMES).join("")}…`;
+};
 export const SearchResult = Schema.Array(
-  Schema.Union([
-    Schema.Struct({ ...MemoryItemHead.fields, duplicate: Schema.Boolean }),
-    Schema.Struct({ ...SharedHead.fields, duplicate: Schema.Boolean }),
-  ]),
+  Schema.Union([SearchHit, Schema.Struct({ ...SharedHead.fields, duplicate: Schema.Boolean })]),
 );
 /** An authority refusal: who is calling, or when. Its reason is never spelled out. */
 const denied = () =>
@@ -230,6 +280,8 @@ const TEAM_CLAIMS_ONLY =
 const TEAM_OWN_ITEMS =
   "From a chat other people read you can change only what was saved from this same chat.";
 const TEAM_SOURCE = "sourceEventId must be the message, in this chat, of the person who said it.";
+const OTHERS_REMINDER =
+  "Another agent's reminder: use kin_cancel, which works on the owner's word in his own chat with you.";
 const TEAM_CAP_REFUSAL =
   "That is as much as can be saved from one person's messages today, so it was not saved.";
 const TEAM_FILTERS = "From a chat other people read, search memory only by kind or linksTo.";
@@ -244,7 +296,6 @@ const SHARE_NEEDS_OWNER =
 // What a teammate's messages can cause shared turns to save, per person per day.
 const SHARED_WRITES_PER_DAY = 20;
 const SHARED_BYTES_PER_DAY = 20_000;
-const DAY_MS = 24 * 60 * 60 * 1000;
 const busy = () =>
   new KinChatError({
     reason: "unavailable",
@@ -261,6 +312,7 @@ const authorityRejections = new Set([
   "Invalid dream branch",
   "Invalid undo target",
 ]);
+const TITLES_SHOWN = 5;
 const isChatError = Schema.is(KinChatError);
 const isNotFound = Schema.is(Memory.MemoryNotFound);
 const isDuplicate = Schema.is(Memory.MemoryDuplicateId);
@@ -271,11 +323,26 @@ const isQueryError = Schema.is(Memory.MemoryQueryDecodeError);
 const failure = (error: unknown) => {
   if (isChatError(error)) return error;
   if (isNotFound(error)) return missing();
-  if (isConflict(error))
+  if (isConflict(error)) {
+    if (error.shared === undefined || error.shared.length === 0)
+      return new KinChatError({
+        reason: "conflict",
+        message: `Memory item ${error.existingId} already exists. Update it, or leave out \`id\` to make a new item.`,
+      });
+    const more = error.shared.slice(TITLES_SHOWN).map((item) => item.id);
+    const listed = error.shared
+      .slice(0, TITLES_SHOWN)
+      .map((item) => `${item.id} ${JSON.stringify(item.title.slice(0, 80))}`)
+      .join(", ");
     return new KinChatError({
       reason: "conflict",
-      message: `Memory item ${error.existingId} already exists. Update or supersede it instead of creating it again.`,
+      message: `Open items of the same kind share a link with it: ${listed}${
+        more.length > 0 ? `, and ${more.join(", ")}` : ""
+      }. If it says the same, there is nothing to save; if it replaces one, supersede that id; if it is a different matter, send the same write again with besides: [${error.shared
+        .map((item) => JSON.stringify(item.id))
+        .join(", ")}].`,
     });
+  }
   if (isRejected(error)) {
     if (error.reason === "Another wake-up owns the writer") return busy();
     return authorityRejections.has(error.reason)
@@ -337,6 +404,8 @@ export const authority = Layer.effect(
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
     const cache = yield* Cache.MemoryCache;
+    // A wake-up that began before this server did lived through a restart; no other one did.
+    const serverStartedAt = yield* Clock.currentTimeMillis;
     return Writer.MemoryWriterAuthority.of({
       resolve: Effect.fn("LeadMemory.writerAuthority")(
         function* (orgId, wakeupId) {
@@ -407,9 +476,11 @@ export const authority = Layer.effect(
             eventIds: [...sources.keys()],
             sources,
             stagedReceipts:
+              row.startedAt < serverStartedAt &&
               (yield* sql`SELECT 1 FROM kin_lead_tool_calls WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}
-                -- A schedule is saved when its call runs; nothing of it waits for the turn's end.
-                AND call_key NOT LIKE 'schedule:%' LIMIT 1`).length > 0,
+                -- A schedule is saved, and a review posted, when its call runs; neither waits for the turn's end.
+                AND call_key NOT LIKE 'schedule:%' AND call_key NOT LIKE 'github-review:%' LIMIT 1`)
+                .length > 0,
           };
         },
         Effect.mapError((error) =>
@@ -450,6 +521,8 @@ const make = Effect.gen(function* () {
   const writerAuthority = yield* Writer.MemoryWriterAuthority;
   const sql = yield* SqlClient.SqlClient;
   const schedules = yield* KinSchedules.KinSchedules;
+  const chats = yield* KinChatRepository.KinChatRepository;
+  const hub = yield* Effect.serviceOption(KinChatHub);
   // A lead runs one wake-up at a time, so the lock that orders its receipts is per lead:
   // keyed per wake-up, these maps would grow with every wake-up ever run.
   const locks = new Map<string, Semaphore.Semaphore>();
@@ -495,17 +568,122 @@ const make = Effect.gen(function* () {
     if (audience !== "owner_only") return yield* invalid(SHARED_REFUSAL);
     return ctx;
   });
-  /** A turn someone else reads sets only its asker's own reminder, in their chat with this lead. */
+  /** Whether this turn was asked in `chatId` and it is an open chat that is not a direct one. */
+  const sharedHere = Effect.fn("LeadMemory.sharedHere")(function* (
+    ctx: Effect.Success<ReturnType<typeof resolve>>,
+    chatId: string,
+  ) {
+    if (!(yield* askedIn(ctx, chatId).pipe(provideSql))) return false;
+    const [row] = yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${ctx.orgId}
+      AND chat_id = ${chatId} AND kind <> 'direct' AND archived_at IS NULL`;
+    return row !== undefined;
+  });
+  /**
+   * Where a reminder or routine set this turn fires: with `alone`, the asker's own chat with this
+   * lead; else the chat named. `shared` when that is the chat with other people this turn was
+   * asked in: only on a person's own message there, never after an outside read it didn't make.
+   */
+  const placeFor = Effect.fn("LeadMemory.placeFor")(function* (
+    ctx: Effect.Success<ReturnType<typeof resolve>>,
+    input: {
+      readonly chatId: KinChatId;
+      readonly alone?: boolean | undefined;
+      readonly sourceEventId: string;
+    },
+  ) {
+    if (input.alone === true) {
+      const asker = yield* speaker(ctx, input.sourceEventId);
+      if (asker === undefined) return yield* invalid(TEAM_SOURCE);
+      const chatId = yield* directChatWith(sql, ctx.orgId, asker.person, ctx.agentId);
+      if (chatId === undefined)
+        return yield* invalid(
+          `${asker.name} has no open chat with you, so it can't come to them alone. Set it for this chat instead.`,
+        );
+      return { chatId, shared: false, alone: true };
+    }
+    if (!(yield* sharedHere(ctx, input.chatId)))
+      return { chatId: input.chatId, shared: false, alone: false };
+    const asker = yield* speaker(ctx, input.sourceEventId);
+    if (asker === undefined || asker.chat !== input.chatId) return yield* invalid(TEAM_SOURCE);
+    // Read in this turn or followed from an earlier one: it offers it to a person instead.
+    if (
+      (yield* outsideRead(ctx).pipe(provideSql)) ||
+      (yield* followsOutsideRead(ctx.orgId, ctx.wakeupId).pipe(provideSql))
+    )
+      return yield* invalid(OUTSIDE_REFUSAL);
+    return { chatId: input.chatId, shared: true, alone: false };
+  });
+  /**
+   * A turn someone else reads sets only a reminder: its asker's own, in their chat with this lead,
+   * or one for the chat it was asked in.
+   */
   const reminderTurn = Effect.fn("LeadMemory.reminderTurn")(function* (
     scope: McpInvocationScope,
     input: typeof DeferInput.Type,
   ) {
     const { ctx, audience } = yield* turn(scope);
-    if (audience === "owner_only") return ctx;
-    // `replaces` is checked in `cancelOwn`: only the asker's own reminder in this same chat.
-    if (input.onDue !== "remind" || !(yield* askersDirectChat(ctx, input.chatId).pipe(provideSql)))
+    const place = yield* placeFor(ctx, input);
+    if (audience === "owner_only") return { ctx, chatId: place.chatId, forChat: place.shared };
+    // `replaces` is checked in `cancelOwn`: only a reminder this asker may change, in this chat.
+    if (
+      input.onDue !== "remind" ||
+      !(
+        place.alone ||
+        place.shared ||
+        (yield* askersDirectChat(ctx, input.chatId).pipe(provideSql))
+      )
+    )
       return yield* invalid(SHARED_REFUSAL);
-    return ctx;
+    return { ctx, chatId: place.chatId, forChat: place.shared };
+  });
+  /** A routine: in a turn someone else reads, only for the chat it was asked in or the asker alone. */
+  const routineTurn = Effect.fn("LeadMemory.routineTurn")(function* (
+    scope: McpInvocationScope,
+    input: typeof ScheduleInput.Type,
+  ) {
+    const { ctx, audience } = yield* turn(scope);
+    const place = yield* placeFor(ctx, input);
+    if (audience !== "owner_only" && !place.alone && !place.shared)
+      return yield* invalid(SHARED_REFUSAL);
+    return { ctx, chatId: place.chatId, forChat: place.shared };
+  });
+  /**
+   * A shared chat's own reminder or routine, set by this lead, changed from a turn asked in that
+   * chat: by whoever asked for it, the owner or a co-owner. Anyone else is told who can.
+   */
+  const chatsOwn = Effect.fn("LeadMemory.chatsOwn")(function* (
+    ctx: Effect.Success<ReturnType<typeof resolve>>,
+    item: {
+      readonly chat?: string | undefined;
+      readonly source_event?: string | undefined;
+      readonly said_by: string;
+      readonly for_chat?: true | undefined;
+    },
+    sourceEventId: string,
+  ) {
+    const shared = yield* sharedChatOf(sql, ctx.orgId, {
+      chat: item.chat === undefined ? undefined : KinChatId.make(item.chat),
+      source_event:
+        item.source_event === undefined ? undefined : KinEventId.make(item.source_event),
+      ...(item.for_chat === true ? { for_chat: true as const } : {}),
+    });
+    if (
+      shared === undefined ||
+      shared.agentId !== ctx.agentId ||
+      !(yield* sharedHere(ctx, shared.chatId))
+    )
+      return false;
+    const asker = yield* speaker(ctx, sourceEventId);
+    if (asker === undefined || asker.chat !== shared.chatId) return false;
+    const setter = yield* askerOf(sql, ctx.orgId, item.said_by);
+    if (
+      setter?.personId === asker.person ||
+      (yield* ownerLevel(ctx.orgId, asker.person).pipe(provideSql))
+    )
+      return true;
+    return yield* invalid(
+      `Only ${setter === undefined ? "whoever asked for it" : `${setter.name} (who asked for it)`}, the owner or a co-owner can change it.`,
+    );
   });
   /** The handle of the person a deferral will ask or chase, as the deferral flow reads it. */
   const askedHandle = Effect.fn("LeadMemory.askedHandle")(function* (
@@ -536,13 +714,15 @@ const make = Effect.gen(function* () {
     const source = (yield* writerAuthority.resolve(ctx.orgId, ctx.wakeupId)).sources.get(
       sourceEventId,
     );
-    return (
+    if (
       source !== undefined &&
       (source.trust === "owner" || source.trust === "member") &&
       source.saidBy === head.said_by &&
       source.source.startsWith(`kin:chat:${head.chat}:`) &&
       (yield* askersDirectChat(ctx, head.chat).pipe(provideSql))
-    );
+    )
+      return true;
+    return yield* chatsOwn(ctx, head, sourceEventId);
   });
   /**
    * Who said the cited message and where, from stored rows: a person's own message in the chat
@@ -563,6 +743,7 @@ const make = Effect.gen(function* () {
         c.title, c.kind
       FROM kin_events e
       JOIN kin_messages m ON m.org_id = e.org_id AND m.author_kind = 'human'
+        AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
         AND m.message_id = json_extract(e.json, '$.messageId')
         AND m.chat_id = json_extract(e.json, '$.chatId') AND m.origin_json IS NULL
       JOIN kin_people p ON p.org_id = m.org_id AND p.person_id = m.author_person_id
@@ -587,6 +768,7 @@ const make = Effect.gen(function* () {
       FROM kin_events e
       JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
       JOIN kin_messages m ON m.org_id = e.org_id AND m.author_kind = 'human'
+        AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
         AND m.message_id = json_extract(e.json, '$.messageId')
         AND m.chat_id = json_extract(e.json, '$.chatId') AND m.origin_json IS NULL
         AND (m.author_person_id = a.owner_person_id
@@ -666,9 +848,100 @@ const make = Effect.gen(function* () {
       : done.outcome === "not_armed"
         ? "Cancelled: nothing had been armed yet."
         : `Not stopped: its due run already handed off ${HANDED_OFF[done.handedOff ?? "start"]}.`;
+  /** Once, in the reminder's own chat: which lead cancelled or replaced it, and on whose word. */
+  const tellMaker = Effect.fn("LeadMemory.tellMaker")(function* (
+    ctx: Effect.Success<ReturnType<typeof resolve>>,
+    other: { readonly chatId: KinChatId; readonly by: string; readonly asker: string },
+    head: MemoryItemHead,
+    replacing: boolean,
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    const messageId = KinMessageId.make(`kin-reminder-changed:${head.id}`);
+    const [told] = yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${ctx.orgId}
+      AND message_id = ${messageId}`;
+    if (told !== undefined) return;
+    const message = yield* chats.insertMessage({
+      orgId: ctx.orgId,
+      chatId: other.chatId,
+      audience: "owner",
+      messageId,
+      author: { _tag: "system" },
+      kind: "text",
+      body: `${other.by} ${replacing ? "replaced" : "cancelled"} the reminder "${clipTitle(head.title)}" on ${other.asker}'s word.`,
+      intent: null,
+      mentions: [],
+      replyTo: null,
+      widgetId: null,
+      floorRunId: null,
+      status: "posted",
+      sentBy: null,
+      clientMessageId: null,
+      createdAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
+      editedAt: null,
+      silent: true,
+    });
+    if (Option.isSome(hub))
+      yield* sql.afterCommit(
+        hub.value.publish({ type: "message.posted", orgId: ctx.orgId, message }),
+      );
+  });
+  /**
+   * Another lead's one-time reminder, set in an owner-level person's direct chat with it by them or
+   * no one, changed on their own typed word in their direct chat with this lead, no outside read.
+   * By decision the wake-up need only hold that word: the rest of an owner-only one is his own
+   * agents' text, and a teammate's or outside text already turns this off.
+   */
+  const ownersOther = Effect.fn("LeadMemory.ownersOther")(function* (
+    ctx: Effect.Success<ReturnType<typeof resolve>>,
+    head: MemoryItemHead,
+    sourceEventId: string,
+  ) {
+    if (
+      head.kind !== "deferral" ||
+      head.every !== undefined ||
+      head.for_chat === true ||
+      head.chat === undefined ||
+      head.source_event === undefined ||
+      (yield* effectiveAudience(ctx).pipe(provideSql)) !== "owner_only" ||
+      (yield* outsideRead(ctx).pipe(provideSql)) ||
+      (yield* followsOutsideRead(ctx.orgId, ctx.wakeupId).pipe(provideSql))
+    )
+      return undefined;
+    const asker = yield* speaker(ctx, sourceEventId);
+    const [typed] = yield* sql`SELECT 1 FROM kin_events e JOIN kin_messages m
+        ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
+        AND m.chat_id = json_extract(e.json, '$.chatId') AND ${sql.literal(ownTypedSql("m"))}
+      WHERE e.org_id = ${ctx.orgId} AND e.event_id = ${sourceEventId}
+        AND json_extract(e.json, '$.origin') IS NULL ORDER BY e.event_id`;
+    if (
+      asker === undefined ||
+      typed === undefined ||
+      !(yield* ownerLevel(ctx.orgId, asker.person).pipe(provideSql)) ||
+      (yield* directChatWith(sql, ctx.orgId, asker.person, ctx.agentId)) !== asker.chat
+    )
+      return undefined;
+    const [maker] = yield* sql<{ agentId: string; by: string }>`SELECT e.agent_id AS "agentId",
+        me.name AS by
+      FROM kin_events e
+      JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
+      JOIN kin_agents mine ON mine.org_id = e.org_id AND mine.agent_id = ${ctx.agentId}
+        AND mine.owner_person_id = a.owner_person_id
+      JOIN kin_leads me ON me.org_id = e.org_id AND me.agent_id = mine.agent_id
+      WHERE e.org_id = ${ctx.orgId} AND e.event_id = ${head.source_event}
+        AND e.agent_id <> ${ctx.agentId} ORDER BY e.event_id`;
+    if (
+      maker === undefined ||
+      (yield* directChatWith(sql, ctx.orgId, asker.person, maker.agentId)) !== head.chat
+    )
+      return undefined;
+    const setter = yield* askerOf(sql, ctx.orgId, head.said_by);
+    if (setter !== undefined && setter.personId !== asker.person) return undefined;
+    return { chatId: KinChatId.make(head.chat), by: maker.by, asker: asker.name };
+  });
   /**
    * Only the lead that set an item up cancels it, asked from the chat it was set up in or that
-   * lead's owner chat. The run stops in the same transaction as the checks; memory follows at commit.
+   * lead's owner chat, or another lead's on the owner's word (`ownersOther`). The run stops in the
+   * same transaction as the checks; memory follows at commit.
    */
   const cancelOwn = Effect.fn("LeadMemory.cancelOwn")(function* (
     ctx: Effect.Success<ReturnType<typeof resolve>>,
@@ -689,6 +962,7 @@ const make = Effect.gen(function* () {
     if (sharedTurn && !askers) return yield* invalid(SHARED_REFUSAL);
     if (head.kind !== "deferral")
       return yield* invalid(`${itemId} is not a deferral or scheduled task.`);
+    const other = sharedTurn ? undefined : yield* ownersOther(ctx, head, sourceEventId);
     // Cancelled already, by this lead or the owner's card: a repeat cancel changes nothing.
     const already = head.status === "cancelled" && !replacing;
     if (
@@ -712,35 +986,42 @@ const make = Effect.gen(function* () {
             ? []
             : yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId" FROM kin_events
                 WHERE org_id = ${ctx.orgId} AND event_id = ${head.source_event} ORDER BY event_id`;
-        if (creator?.agentId !== ctx.agentId) return false;
-        const [lead] = yield* sql<{ ownerChatId: string }>`SELECT owner_chat_id AS "ownerChatId"
-          FROM kin_leads WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId} ORDER BY agent_id`;
-        if (lead === undefined) return false;
-        const asked = yield* deferralOrigin(
-          sql,
-          ctx.orgId,
-          { source_event: KinEventId.make(sourceEventId), chat: undefined },
-          { agentId: ctx.agentId, ownerChatId: KinChatId.make(lead.ownerChatId) },
-        );
-        if (asked !== undefined && asked.chatId !== head.chat) return false;
+        if (other === undefined) {
+          if (creator?.agentId !== ctx.agentId) return false;
+          const [lead] = yield* sql<{ ownerChatId: string }>`SELECT owner_chat_id AS "ownerChatId"
+            FROM kin_leads WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId} ORDER BY agent_id`;
+          if (lead === undefined) return false;
+          const asked = yield* deferralOrigin(
+            sql,
+            ctx.orgId,
+            { source_event: KinEventId.make(sourceEventId), chat: undefined },
+            { agentId: ctx.agentId, ownerChatId: KinChatId.make(lead.ownerChatId) },
+          );
+          if (asked !== undefined && asked.chatId !== head.chat) return false;
+        }
         const now = yield* Clock.currentTimeMillis;
         if (head.every !== undefined) {
-          yield* sql`UPDATE kin_triggers SET enabled = 0, next_run_at = NULL,
-            updated_at = max(updated_at, ${now})
-            WHERE org_id = ${ctx.orgId} AND trigger_id = ${scheduledTaskTriggerId(itemId)}`;
+          yield* pauseTriggers(ctx.orgId, [scheduledTaskTriggerId(itemId)], now).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
           return { outcome: "stopped" as const };
         }
         const stopped = yield* cancelDeferralRun({ orgId: ctx.orgId, itemId, now }).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
         );
-        if (stopped) return { outcome: "stopped" as const };
-        const [run] = yield* sql<{ state: string; onDue: string }>`SELECT state, on_due AS "onDue"
-          FROM kin_deferral_runs WHERE org_id = ${ctx.orgId} AND item_id = ${itemId}`;
-        if (run === undefined || run.state === "disarmed")
-          return { outcome: already ? ("stopped" as const) : ("not_armed" as const) };
-        return run.state === "undone"
-          ? { outcome: "stopped" as const }
-          : { outcome: "handed_off" as const, handedOff: handedOffBy(run) };
+        const [run] = stopped
+          ? []
+          : yield* sql<{ state: string; onDue: string }>`SELECT state, on_due AS "onDue"
+              FROM kin_deferral_runs WHERE org_id = ${ctx.orgId} AND item_id = ${itemId}`;
+        const done =
+          stopped || run?.state === "undone"
+            ? { outcome: "stopped" as const }
+            : run === undefined || run.state === "disarmed"
+              ? { outcome: already ? ("stopped" as const) : ("not_armed" as const) }
+              : { outcome: "handed_off" as const, handedOff: handedOffBy(run) };
+        if (other !== undefined && !already && !replacing && done.outcome !== "handed_off")
+          yield* tellMaker(ctx, other, head, false);
+        return done;
       }),
     );
     if (allowed === "shared") return yield* invalid(SHARED_REFUSAL);
@@ -755,7 +1036,7 @@ const make = Effect.gen(function* () {
       note: cancelNote(allowed),
     };
     // Already cancelled, or past stopping: a cancel that stopped nothing changes nothing.
-    if (already || allowed.outcome === "handed_off") return cancelled;
+    if (already || allowed.outcome === "handed_off") return { ...cancelled, told: Effect.void };
     const { orgId: _org, path, ...frontMatter } = head;
     yield* receipt(
       ctx,
@@ -767,7 +1048,9 @@ const make = Effect.gen(function* () {
         sourceEventId,
       }),
     );
-    return cancelled;
+    // A replace's maker is told by its caller, once the new item is staged.
+    const told = replacing && other !== undefined ? tellMaker(ctx, other, head, true) : Effect.void;
+    return { ...cancelled, told };
   });
   /** cancelOwn's rule for a native schedule: its own lead, asked from its chat or the owner chat. */
   const ownSchedule = Effect.fn("LeadMemory.ownSchedule")(function* (
@@ -781,7 +1064,19 @@ const make = Effect.gen(function* () {
     if (schedule.deletedAt !== null && !cancelling)
       return yield* invalid(`${schedule.scheduleId} is already cancelled.`);
     // Checked again here: a join may have aborted the turn since `notes`.
-    if ((yield* effectiveAudience(ctx).pipe(provideSql)) !== "owner_only")
+    if (
+      (yield* effectiveAudience(ctx).pipe(provideSql)) !== "owner_only" &&
+      !(yield* chatsOwn(
+        ctx,
+        {
+          chat: schedule.chatId,
+          source_event: schedule.sourceEvent,
+          said_by: schedule.saidBy,
+          ...(schedule.audience === "shared" ? { for_chat: true as const } : {}),
+        },
+        sourceEventId,
+      ))
+    )
       return yield* invalid(SHARED_REFUSAL);
     const [lead] = yield* sql<{ ownerChatId: string }>`SELECT owner_chat_id AS "ownerChatId"
       FROM kin_leads WHERE org_id = ${ctx.orgId} AND agent_id = ${ctx.agentId} ORDER BY agent_id`;
@@ -845,8 +1140,11 @@ const make = Effect.gen(function* () {
     )
       return failure(error);
     if (isConflict(error)) {
-      const visible = yield* visibleItems(ctx, audience);
-      if (visible.some((item) => item.head.id === error.existingId)) return failure(error);
+      const visible = new Set<string>(
+        (yield* visibleItems(ctx, audience)).map((item) => item.head.id),
+      );
+      if ((error.shared ?? [{ id: error.existingId }]).every((item) => visible.has(item.id)))
+        return failure(error);
     }
     if (isConflict(error) || isRejected(error) || isNotFound(error) || isDuplicate(error))
       return invalid(TEAM_REFUSAL);
@@ -937,6 +1235,11 @@ const make = Effect.gen(function* () {
       .readItemQuietly(ctx.orgId, fields.id, { lead: ctx.agentId })
       .pipe(Effect.asSome, Effect.catchTags({ MemoryNotFound: () => Effect.succeedNone }));
     const known = yield* storedLabels(ctx.orgId).pipe(provideSql);
+    // Only what this turn can see may be named, so `besides` never tells what is there.
+    if (shared && input.besides !== undefined && input.besides.length > 0) {
+      const visible = new Set((yield* visibleItems(ctx, audience)).map((item) => item.head.id));
+      if (input.besides.some((id) => !visible.has(id))) return yield* invalid(TEAM_REFUSAL);
+    }
     if (shared && current._tag === "Some") {
       // What this turn can't see refuses like any other refused write; what an owner's turn
       // wrote is not its to change.
@@ -979,6 +1282,17 @@ const make = Effect.gen(function* () {
           : { shared_from: from }),
       ...(sensitive || stored?.shared_by === undefined ? {} : { shared_by: stored.shared_by }),
     };
+    // Another lead's reminder changes only through kin_cancel, under its gate (`ownersOther`).
+    if (current._tag === "Some" && current.value.head.kind === "deferral") {
+      const [maker] =
+        current.value.head.source_event === undefined
+          ? []
+          : yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId" FROM kin_events
+              WHERE org_id = ${ctx.orgId} AND event_id = ${current.value.head.source_event}
+              ORDER BY event_id`;
+      if (maker !== undefined && maker.agentId !== ctx.agentId)
+        return yield* invalid(OTHERS_REMINDER);
+    }
     if (fields.kind === "deferral") {
       if (current._tag === "None" || current.value.head.kind !== "deferral")
         return yield* invalid(`${fields.id} is not a deferral. Use kin_defer to make one.`);
@@ -1033,6 +1347,7 @@ const make = Effect.gen(function* () {
               content: text,
               sourceEventId: input.sourceEventId,
               ...(input.supersedes === undefined ? {} : { supersedes: input.supersedes }),
+              ...(input.besides === undefined ? {} : { besides: input.besides }),
             }),
           (reserved, exit) =>
             !reserved || Exit.isSuccess(exit)
@@ -1103,14 +1418,49 @@ const make = Effect.gen(function* () {
         },
         { lead: ctx.agentId },
       );
-      const counts = new Map<string, number>();
-      for (const item of found) counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
-      return yield* ownersView(
-        ctx,
-        found
-          .map((item) => ({ ...item, duplicate: (counts.get(item.id) ?? 0) > 1 }))
-          .slice(0, input.limit ?? 50),
+      const now = DateTime.toEpochMillis(yield* DateTime.now);
+      // A deferral as its run makes it: a status filter judges what the run says, not memory.
+      const projected = (yield* withRuns(ctx.orgId, found).pipe(provideSql)).filter(
+        (item) => input.status === undefined || item.status === input.status,
       );
+      const counts = new Map<string, number>();
+      for (const item of projected) counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
+      const shown = projected.slice(0, input.limit ?? 50);
+      const made = shown.flatMap((item) =>
+        item.kind === "deferral" && item.source_event !== undefined ? [item.source_event] : [],
+      );
+      const makers = new Map(
+        made.length === 0
+          ? []
+          : (yield* sql<{ eventId: string; name: string }>`SELECT e.event_id AS "eventId", l.name
+              FROM kin_events e JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
+              WHERE e.org_id = ${ctx.orgId} AND e.event_id IN ${sql.in(made)}
+                AND e.agent_id <> ${ctx.agentId} ORDER BY e.event_id`).map(
+              (row) => [row.eventId, row.name] as const,
+            ),
+      );
+      return shown.map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        title: item.title,
+        ...(item.what === undefined
+          ? {}
+          : {
+              what:
+                item.what.length <= SEARCH_WHAT_CHARS
+                  ? item.what
+                  : `${item.what.slice(0, SEARCH_WHAT_CHARS - 1)}…`,
+            }),
+        status: item.status,
+        due: item.due,
+        reviewOverdue: reviewOverdueBy(item, now),
+        ...(item.invalid_at === null ? {} : { misleading: true as const }),
+        ...(item.superseded_by === null ? {} : { supersededBy: item.superseded_by }),
+        duplicate: (counts.get(item.id) ?? 0) > 1,
+        ...(item.source_event !== undefined && makers.has(item.source_event)
+          ? { agent: makers.get(item.source_event)! }
+          : {}),
+      }));
     }, Effect.mapError(failure)),
     read: Effect.fn("LeadMemory.read")(function* (scope, input) {
       const { ctx, audience } = yield* turn(scope);
@@ -1127,11 +1477,14 @@ const make = Effect.gen(function* () {
       // Review dates and invalidation are not in the projection, so a shared turn never gets them.
       if (shared) return { item: shareable(item) };
       const now = DateTime.toEpochMillis(yield* DateTime.now);
-      const [head] = yield* ownersView(ctx, [item.head]);
+      const [head] = yield* ownersView(
+        ctx,
+        yield* withRuns(ctx.orgId, [item.head]).pipe(provideSql),
+      );
       return {
         ...item,
         head: head!,
-        reviewOverdue: item.head.review_by !== null && memoryDateMillis(item.head.review_by) < now,
+        reviewOverdue: reviewOverdueBy(item.head, now),
         misleading: item.head.invalid_at !== null,
       };
     }, Effect.mapError(failure)),
@@ -1207,20 +1560,20 @@ const make = Effect.gen(function* () {
       );
     }, Effect.mapError(failure)),
     defer: Effect.fn("LeadMemory.defer")(function* (scope, input) {
-      const ctx = yield* reminderTurn(scope, input);
+      const { ctx } = yield* reminderTurn(scope, input);
       return yield* locked(
         ctx.orgId,
         ctx.agentId,
         Effect.gen(function* () {
           // Again under the lock: a join may have aborted the turn since.
-          const ctx = yield* reminderTurn(scope, input);
+          const { ctx, chatId, forChat } = yield* reminderTurn(scope, input);
           yield* checkSource(ctx, input.sourceEventId);
           const source = (yield* writerAuthority.resolve(ctx.orgId, ctx.wakeupId)).sources.get(
             input.sourceEventId,
           );
           if (!source) return yield* missing();
           const [chat] =
-            yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${ctx.orgId} AND chat_id = ${input.chatId}`;
+            yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${ctx.orgId} AND chat_id = ${chatId}`;
           if (!chat) return yield* missing();
           const asked = input.ask === undefined ? undefined : yield* askedHandle(ctx, input);
           const id =
@@ -1238,10 +1591,11 @@ const make = Effect.gen(function* () {
               ? undefined
               : yield* KinSchedules.readSchedule(sql, ctx.orgId, input.replaces);
           // A native schedule is cancelled only once its replacement is staged.
-          if (replaced === undefined) {
-            if (input.replaces !== undefined && !retried)
-              yield* cancelOwn(ctx, input.replaces, input.sourceEventId, true);
-          } else if (replaced.deletedAt === null)
+          const cut =
+            replaced === undefined && input.replaces !== undefined && !retried
+              ? yield* cancelOwn(ctx, input.replaces, input.sourceEventId, true)
+              : undefined;
+          if (replaced !== undefined && replaced.deletedAt === null)
             yield* ownSchedule(ctx, replaced, input.sourceEventId);
           const recorded = DateTime.formatIso(DateTime.makeUnsafe(ctx.startedAt));
           const fields = {
@@ -1261,7 +1615,8 @@ const make = Effect.gen(function* () {
             links: [],
             what: input.what,
             ...(asked === undefined ? {} : { owner: asked }),
-            chat: input.chatId,
+            chat: chatId,
+            ...(forChat ? { for_chat: true as const } : {}),
             source_event: input.sourceEventId,
             // Out of the team's memory, whoever set it.
             sensitive: true,
@@ -1276,6 +1631,9 @@ const make = Effect.gen(function* () {
               sourceEventId: input.sourceEventId,
             }),
           );
+          if (cut !== undefined) yield* cut.told;
+          // What it was set up after, as of now: a later read in this turn is not its source.
+          yield* snapshotSource(ctx, id).pipe(provideSql);
           if (replaced !== undefined && replaced.deletedAt === null)
             yield* schedules.cancel(ctx.orgId, replaced.scheduleId);
           const other = asked !== undefined && asked !== source.saidBy;
@@ -1313,7 +1671,8 @@ const make = Effect.gen(function* () {
           const to = person === undefined ? "" : ` ${person.name}`;
           const set = {
             reminder: "a reminder",
-            start: "a start",
+            // A due start asks first while LEAD-11's stop switch is unbuilt (`KinDeferralStopSwitch`).
+            start: "a card asking to start, move or cancel it",
             ask_follow_up: `a follow-up to ask${to}`,
             due_card: "a card asking to start, move or cancel it",
             chase_ping: `a ping${to === "" ? "" : ` to${to}`}`,
@@ -1322,8 +1681,10 @@ const make = Effect.gen(function* () {
             itemId: id,
             scheduled,
             note: `No question was posted. Planned for its due time: ${set}; Kin checks then who and what still stand.${
-              back === undefined ? "" : ` Recorded return date: ${back}.`
-            }`,
+              scheduled === "start" || scheduled === "due_card"
+                ? " Nothing starts on its own then, so confirm that they will be asked, not that it will start."
+                : ""
+            }${back === undefined ? "" : ` Recorded return date: ${back}.`}`,
             ...(person === undefined
               ? {}
               : { asks: { name: person.name, ...(back === undefined ? {} : { back }) } }),
@@ -1332,13 +1693,25 @@ const make = Effect.gen(function* () {
       );
     }, Effect.mapError(failure)),
     schedule: Effect.fn("LeadMemory.schedule")(function* (scope, input) {
-      const ctx = yield* notes(scope);
+      const { ctx } = yield* routineTurn(scope, input);
       return yield* locked(
         ctx.orgId,
         ctx.agentId,
         Effect.gen(function* () {
           // Again under the lock: a join may have aborted the turn since.
-          const ctx = yield* notes(scope);
+          const { ctx, chatId, forChat } = yield* routineTurn(scope, input);
+          // A feed of watched numbers is the numbers card's to change, and its ids are its own.
+          if (
+            input.replaces !== undefined &&
+            (yield* feedOf(ctx.orgId, input.replaces).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            )) !== undefined
+          )
+            return yield* invalid(
+              "That schedule fetches watched numbers. Change it with numbers_watch, or archive the number to stop it.",
+            );
+          if (input.itemId !== undefined && isFeedSchedule(input.itemId))
+            return yield* invalid("That id is a feed's. Leave itemId out and Kin picks one.");
           yield* checkSource(ctx, input.sourceEventId);
           const source = (yield* writerAuthority.resolve(ctx.orgId, ctx.wakeupId)).sources.get(
             input.sourceEventId,
@@ -1358,7 +1731,7 @@ const make = Effect.gen(function* () {
             WHERE org_id = ${ctx.orgId} AND message_id = ${decoded.messageId}
               AND chat_id = ${decoded.chatId} ORDER BY message_id`;
           const [chat] =
-            yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${ctx.orgId} AND chat_id = ${input.chatId}`;
+            yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${ctx.orgId} AND chat_id = ${chatId}`;
           if (!chat || !message) return yield* missing();
           const owner = yield* ownerSaid(ctx, input.sourceEventId);
           if (owner === undefined)
@@ -1372,6 +1745,9 @@ const make = Effect.gen(function* () {
             );
           if (input.replaces === id) return yield* invalid("`replaces` names this same item.");
           // The native task is the record; its prompt is the instruction, its row the authority.
+          // Said in the owner's time; the native task runs on the host's (`followOwnerZone`).
+          const zone = yield* ownerZone(ctx.orgId).pipe(provideSql);
+          const days = [...new Set(input.days)].toSorted((a, b) => a - b);
           const save = (
             scheduleId: KinMemoryItemId,
             existing: boolean,
@@ -1384,15 +1760,14 @@ const make = Effect.gen(function* () {
                   agentId: ctx.agentId,
                   scheduleId,
                   existing,
-                  chatId: input.chatId,
+                  chatId,
+                  ...(forChat ? { audience: "shared" as const } : {}),
                   sourceEvent: input.sourceEventId,
                   saidBy: owner.person,
                   title: input.title ?? input.what.slice(0, 120),
                   prompt: input.what,
-                  every: {
-                    at: input.at,
-                    days: [...new Set(input.days)].toSorted((a, b) => a - b),
-                  },
+                  every: onHostClock(input.at, days, zone, KinSchedules.hostTimeZone(), now),
+                  ownerTime: { at: input.at, days },
                   around: input.around ?? (kept !== undefined && kept.looseAt !== null),
                   checkIn: input.checkIn ?? kept?.checkIn === 1,
                   now,
@@ -1403,6 +1778,23 @@ const make = Effect.gen(function* () {
             input.replaces === undefined
               ? undefined
               : yield* KinSchedules.readSchedule(sql, ctx.orgId, input.replaces);
+          // Another place to report is another routine: the old one ends, its card closing there.
+          if (
+            replaced !== undefined &&
+            (replaced.chatId !== chatId || (replaced.audience === "shared") !== forChat)
+          ) {
+            yield* ownSchedule(ctx, replaced, input.sourceEventId);
+            yield* receipt(
+              ctx,
+              `schedule:${id}`,
+              { ...input, itemId: id },
+              save(id, false, replaced).pipe(
+                Effect.andThen(schedules.cancel(ctx.orgId, replaced.scheduleId)),
+              ),
+            );
+            yield* snapshotSource(ctx, id).pipe(provideSql);
+            return { itemId: id };
+          }
           if (replaced !== undefined) {
             // Changed in place, so the Scheduled tasks screen and the card keep one row.
             yield* ownSchedule(ctx, replaced, input.sourceEventId);
@@ -1412,11 +1804,16 @@ const make = Effect.gen(function* () {
               { ...input, itemId: replaced.scheduleId },
               save(replaced.scheduleId, true, replaced),
             );
+            yield* snapshotSource(ctx, replaced.scheduleId, true).pipe(provideSql);
             return { itemId: replaced.scheduleId };
           }
-          if (input.replaces !== undefined)
-            yield* cancelOwn(ctx, input.replaces, input.sourceEventId, true);
+          const cut =
+            input.replaces === undefined
+              ? undefined
+              : yield* cancelOwn(ctx, input.replaces, input.sourceEventId, true);
           yield* receipt(ctx, `schedule:${id}`, { ...input, itemId: id }, save(id, false));
+          if (cut !== undefined) yield* cut.told;
+          yield* snapshotSource(ctx, id).pipe(provideSql);
           return { itemId: id };
         }),
       );
@@ -1430,11 +1827,14 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const { ctx } = yield* turn(scope);
           const schedule = yield* KinSchedules.readSchedule(sql, ctx.orgId, input.itemId);
-          if (schedule === undefined)
-            return {
-              itemId: input.itemId,
-              ...(yield* cancelOwn(ctx, input.itemId, input.sourceEventId)),
-            };
+          if (schedule === undefined) {
+            const { told: _told, ...cancelled } = yield* cancelOwn(
+              ctx,
+              input.itemId,
+              input.sourceEventId,
+            );
+            return { itemId: input.itemId, ...cancelled };
+          }
           yield* ownSchedule(ctx, schedule, input.sourceEventId, true);
           // Read first: the cancel deletes the native task, and Kin's tick then its row.
           const task = yield* KinSchedules.readNativeTask(sql, schedule.taskId);

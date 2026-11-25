@@ -18,17 +18,18 @@ import { waitingFor } from "../chat/KinChatService.ts";
 import { carriesEntry } from "../connections/ConnectionRows.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import { screenFacts } from "../pulse/people.ts";
-import { iso } from "../pulse/senses/shared.ts";
+import { iso, type SensedFact } from "../pulse/senses/shared.ts";
 import { validZone } from "../triggers/quietHold.ts";
 import { dayIn } from "../work/money.ts";
 import { moneyViewer } from "../work/ownerMoney.ts";
 import { endOfDay, owedInvoices, ownerZone } from "../work/recordRows.ts";
 import { viewSees } from "../work/teamView.ts";
+import { placeMoves } from "../work/workMoves.ts";
 
 /**
  * Everything open for one person, built at read time from the reads that already exist: the
- * pulse's facts, what waits on them in chats, their own tasks due today, and overdue invoices.
- * Nothing is stored; every visibility rule is the source's own.
+ * pulse's facts, what waits on them in chats, the tasks Tasks counts under their Needs you, and
+ * overdue invoices. Nothing is stored; every visibility rule is the source's own.
  */
 
 const ROW_CAP = 200;
@@ -44,13 +45,15 @@ export type OpenViewer = {
 /** Why an open waiting row no longer counts: its card's approval, send or question settled. */
 export type WaitingSettled = "approval_not_live" | "send_not_open" | "question_settled";
 
-export type OwnTask = {
+export type NeedsTask = {
   readonly key: string;
   readonly title: string;
-  readonly dueAt: number;
+  readonly dueAt: number | null;
   readonly dueAllDay: boolean;
   readonly projectTitle: string | null;
   readonly clientTitle: string | null;
+  /** A card about it waits on them: that card's row stands for it. */
+  readonly card: boolean;
 };
 
 /** The person's day end: the start of tomorrow in their zone, or the company's. */
@@ -66,32 +69,43 @@ export const dayEndFor = Effect.fn("KinOpen.dayEnd")(function* (
   return endOfDay(dayIn(at, zone), zone) + 1;
 });
 
-/** The person's tasks not closed and due by `dayEnd`, every one of them, soonest first. */
-export const ownTasks = Effect.fn("KinOpen.ownTasks")(function* (input: {
-  readonly orgId: KinOrgId;
-  readonly personId: KinPersonId;
-  readonly dayEnd: number;
-  readonly limit?: number | undefined;
-}) {
+/** The tasks Tasks counts under this viewer's Needs you (`placeMoves`), in Tasks' order. */
+const needsTasks = Effect.fn("KinOpen.needsTasks")(function* (
+  orgId: KinOrgId,
+  viewer: OpenViewer,
+  at: number,
+) {
   const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{
-    key: string;
-    title: string;
-    dueAt: number;
-    dueAllDay: number;
-    projectTitle: string | null;
-    clientTitle: string | null;
-  }>`SELECT r.key, r.title, r.due_at AS "dueAt", r.due_all_day AS "dueAllDay",
-      p.title AS "projectTitle", c.title AS "clientTitle"
-    FROM kin_records r
-      LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
-      LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = COALESCE(r.party_id, p.party_id)
-    WHERE r.org_id = ${input.orgId} AND r.register_id = 'work' AND r.owner_kind = 'person'
-      AND r.owner_id = ${input.personId} AND r.state NOT IN ('done', 'dropped')
-      AND r.due_at IS NOT NULL AND r.due_at <= ${input.dayEnd}
-    ORDER BY r.due_at, r.key
-    ${input.limit === undefined ? sql`` : sql`LIMIT ${input.limit}`}`;
-  return rows.map((row): OwnTask => ({ ...row, dueAllDay: row.dueAllDay === 1 }));
+  const { placed, cards } = yield* placeMoves({
+    orgId,
+    personId: viewer.personId,
+    ownerLevel: viewer.ownerLevel,
+    filter: { at, ...(viewer.ownerLevel ? {} : { team: viewer.personId }) },
+    at,
+  });
+  const counted = placed.filter((one) => one.group === "needsYou" && one.under === null);
+  const byKey = new Map<string, Omit<NeedsTask, "card">>();
+  for (let start = 0; start < counted.length; start += CHUNK)
+    for (const row of yield* sql<{
+      key: string;
+      title: string;
+      dueAt: number | null;
+      dueAllDay: number;
+      projectTitle: string | null;
+      clientTitle: string | null;
+    }>`SELECT r.key, r.title, r.due_at AS "dueAt", r.due_all_day AS "dueAllDay",
+        p.title AS "projectTitle", c.title AS "clientTitle"
+      FROM kin_records r
+        LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
+        LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = COALESCE(r.party_id, p.party_id)
+      WHERE r.org_id = ${orgId}
+        AND r.record_id IN ${sql.in(counted.slice(start, start + CHUNK).map((one) => one.row.recordId))}
+      ORDER BY r.key`)
+      byKey.set(row.key, { ...row, dueAllDay: row.dueAllDay === 1 });
+  return counted.flatMap((one): ReadonlyArray<NeedsTask> => {
+    const task = byKey.get(one.key);
+    return task === undefined ? [] : [{ ...task, card: cards.has(one.row.recordId) }];
+  });
 });
 
 /** Of these open waiting rows, the ones whose card settled another way, and how. */
@@ -169,28 +183,33 @@ export const sources = Effect.fn("KinOpen.sources")(function* (input: {
   readonly viewer: OpenViewer;
   readonly at: number;
   readonly acceptSenses?: ReadonlyArray<string> | undefined;
+  /** What a tick already sensed (`KinPulse.lastTick`), instead of sensing again. */
+  readonly sensed?: ReadonlyArray<SensedFact> | undefined;
 }) {
   const { orgId, viewer, at } = input;
   const pulse = yield* KinPulse.read({
     orgId,
     at,
+    sensed: input.sensed,
     viewer: viewer.ownerLevel ? { _tag: "owner" } : { _tag: "people", people: [viewer.personId] },
     includeHandled: true,
+    excludeOverflow: !input.acceptSenses?.includes("sense_overflow"),
     limit: FACT_CAP,
   });
   const facts = screenFacts(pulse.facts, input.acceptSenses);
   // A fact on a record stands for its task, handled or not, as Needs you shows it today.
   const covered = new Set(facts.flatMap((fact) => kinPulseFactRecord(fact) ?? []));
-  const waiting = yield* waitingFor({ _tag: "person", orgId, personId: viewer.personId });
-  const dayEnd = yield* dayEndFor(orgId, viewer.personId, at);
+  const waiting = yield* waitingFor(
+    { _tag: "person", orgId, personId: viewer.personId },
+    { others: true },
+  );
   return {
     facts: facts.filter((fact) => fact.handled === null),
     covered,
     invoiceFact: facts.some((fact) => fact.key.startsWith("invoice_overdue:")),
     waiting,
     settled: yield* settledWaiting(orgId, at, waiting),
-    dayEnd,
-    tasks: yield* ownTasks({ orgId, personId: viewer.personId, dayEnd }),
+    tasks: yield* needsTasks(orgId, viewer, at),
     overdue: yield* overdueFor(orgId, viewer, at),
   };
 });
@@ -208,12 +227,12 @@ export const rowsOf = (from: OpenSources, at: number, cap = ROW_CAP): KinOpenRea
       row: { id: `fact:${fact.key}`, late: urgent, item: { _tag: "fact", fact } },
     });
   }
-  for (const task of from.tasks) {
-    if (from.covered.has(task.key)) continue;
-    const late = task.dueAt < at;
+  from.tasks.forEach((task, index) => {
+    if (from.covered.has(task.key) || task.card) return;
+    const late = task.dueAt !== null && task.dueAt < at;
     ranked.push({
       rank: late ? 3 : 6,
-      at: task.dueAt,
+      at: index,
       row: {
         id: `task:${task.key}`,
         late,
@@ -221,14 +240,14 @@ export const rowsOf = (from: OpenSources, at: number, cap = ROW_CAP): KinOpenRea
           _tag: "task",
           key: KinRecordKey.make(task.key),
           title: task.title,
-          dueAt: iso(task.dueAt),
+          ...(task.dueAt === null ? {} : { dueAt: iso(task.dueAt) }),
           ...(task.dueAllDay ? { dueAllDay: true } : {}),
           ...(task.projectTitle === null ? {} : { projectTitle: task.projectTitle }),
           ...(task.clientTitle === null ? {} : { clientTitle: task.clientTitle }),
         },
       },
     });
-  }
+  });
   if (from.overdue !== null && from.overdue > 0 && !from.invoiceFact)
     ranked.push({
       rank: 4,
@@ -236,11 +255,14 @@ export const rowsOf = (from: OpenSources, at: number, cap = ROW_CAP): KinOpenRea
       row: { id: "money:overdue", late: true, item: { _tag: "money", invoices: from.overdue } },
     });
   let waiting = 0;
+  let others = 0;
   for (const item of from.waiting) {
     if (from.settled.has(item.waitingId)) continue;
-    waiting += 1;
+    // Someone else's, to look at only: listed last, and counted as nobody's need here.
+    if (item.waitsFor === undefined) waiting += 1;
+    else others += 1;
     ranked.push({
-      rank: 5,
+      rank: item.waitsFor === undefined ? 5 : 7,
       at: DateTime.toEpochMillis(DateTime.makeUnsafe(item.createdAt)),
       row: {
         id: `waiting:${item.waitingId}`,
@@ -255,7 +277,7 @@ export const rowsOf = (from: OpenSources, at: number, cap = ROW_CAP): KinOpenRea
   );
   return {
     asOf: iso(at),
-    counts: { needsYou: ranked.length, waiting },
+    counts: { needsYou: ranked.length - others, waiting, tasks: from.tasks.length },
     rows: ranked.slice(0, cap).map((one) => one.row),
   };
 };
@@ -266,6 +288,7 @@ export const compute = Effect.fn("KinOpen.compute")(function* (input: {
   readonly viewer: OpenViewer;
   readonly at: number;
   readonly acceptSenses?: ReadonlyArray<string> | undefined;
+  readonly sensed?: ReadonlyArray<SensedFact> | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const from = yield* sql.withTransaction(sources(input)).pipe(NodeSqliteClient.readOnly);

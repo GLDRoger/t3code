@@ -34,11 +34,12 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { cn } from "../../lib/cn";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { KinDayField } from "./components/KinDayField";
 import { KinWorkTextField } from "./components/KinWorkPieces";
 import { kinClient } from "./state/kinClient";
 import { useKinCompanyProfile } from "./state/useKinMoney";
 import { kinHostConnected } from "./state/useKinHost";
-import type { KinWorkTarget } from "./state/useKinWork";
+import { useKinWorkZone, type KinWorkTarget } from "./state/useKinWork";
 
 /** "about ₹x" in a quieter style; a tap says what rate and day it is from. */
 export function KinEstimateText(props: {
@@ -191,6 +192,8 @@ function KinRatesForm(
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const { zone } = useKinWorkZone(props);
+  const [opened] = useState(() => new Date());
   const send = async (next: KinRateDraft, remove: boolean) => {
     const made = kinRateInput(orgId, profile, next, remove);
     if ("problem" in made) return setProblem(made.problem);
@@ -274,13 +277,14 @@ function KinRatesForm(
             disabled={saving}
             onChangeText={(rate) => setDraft({ ...draft, rate })}
           />
-          <KinWorkTextField
+          <KinDayField
             label={KIN_CURRENCY.asOf}
-            value={draft.asOf}
-            placeholder="YYYY-MM-DD"
-            keyboard="plain"
+            day={draft.asOf}
+            zone={zone}
+            now={opened}
+            none={null}
             disabled={saving}
-            onChangeText={(asOf) => setDraft({ ...draft, asOf })}
+            onPick={(asOf) => setDraft({ ...draft, asOf: asOf ?? draft.asOf })}
           />
         </ListSection>
       ) : null}

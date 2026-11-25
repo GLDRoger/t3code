@@ -7,10 +7,14 @@ import { KinOrgId, KinPersonId } from "./kinChat.ts";
 import { kinOpenApply, kinOpenDiff, type KinOpenRead, type KinOpenRow } from "./kinOpen.ts";
 import type { KinPulseFact } from "./kinPulse.ts";
 import {
+  KinContact,
   KinPartyKind,
   KinPartyPage,
   KinPartyRow,
+  KinProjectRow,
   type KinRecord,
+  KinRecordChange,
+  KinRecordComment,
   type KinRecordCan,
   type KinWorkListResult,
 } from "./kinWork.ts";
@@ -164,6 +168,115 @@ describe("a prospect on the wire", () => {
   });
 });
 
+describe("a campaign and tags on the wire", () => {
+  const decode = (schema: Schema.Codec<unknown, unknown>, input: unknown) =>
+    Schema.decodeUnknownSync(schema)(input);
+  it("read to an app from before campaigns as an ordinary project, and a contact without tags", () => {
+    const { campaign: _campaign, ...projectBefore } = KinProjectRow.fields;
+    const project = {
+      recordId: "rec-P-3",
+      key: "P-3",
+      name: "Invented harbour fair",
+      party: null,
+      owner: { _tag: "person", personId: "arjun" },
+      state: "open",
+      targetAt: null,
+      targetAllDay: true,
+      open: 2,
+      late: 0,
+      health: "on_track",
+      sensitive: false,
+      sensitiveInherited: false,
+      campaign: true,
+      rev: 1,
+    };
+    expect(decode(KinProjectRow, project)).toMatchObject({ campaign: true });
+    expect(decode(Schema.Struct(projectBefore), project)).not.toHaveProperty("campaign");
+    const { tags: _tags, ...contactBefore } = KinContact.fields;
+    const contact = {
+      recordId: "rec-CT-4",
+      key: "CT-4",
+      party: { recordId: "rec-C-3", key: "C-3", title: "Invented Tallmoor" },
+      name: "Invented Ingrid",
+      role: null,
+      email: null,
+      phone: null,
+      emails: [],
+      phones: [],
+      tags: ["harbour"],
+      notes: "",
+      active: true,
+      sensitive: false,
+      sensitiveFields: [],
+      rev: 1,
+      updatedAt: "2026-11-01T00:00:00.000Z",
+    };
+    expect(decode(KinContact, contact)).toMatchObject({ tags: ["harbour"] });
+    expect(decode(Schema.Struct(contactBefore), contact)).toMatchObject({ key: "CT-4" });
+    // A client that came from a campaign reads by the campaign's name, as plain words to an older app.
+    const { campaign: _from, ...partyBefore } = KinPartyRow.fields;
+    expect(
+      decode(Schema.Struct(partyBefore), {
+        recordId: "rec-C-3",
+        key: "C-3",
+        name: "Invented Tallmoor",
+        kind: "client",
+        source: "Invented harbour fair",
+        campaign: { recordId: "rec-P-3", key: "P-3", title: "Invented harbour fair" },
+        owner: { _tag: "person", personId: "zoya" },
+        active: true,
+        sensitive: false,
+        weOwe: 0,
+        theyOwe: 0,
+        late: 0,
+        overdue: 0,
+        next: null,
+        rev: 1,
+      }),
+    ).toMatchObject({ source: "Invented harbour fair" });
+  });
+});
+
+// As an app from before the mark decodes a change and a note: without `codingAgent`.
+const { codingAgent: _changeMark, ...changeBefore } = KinRecordChange.fields;
+const { codingAgent: _commentMark, ...commentBefore } = KinRecordComment.fields;
+const decodeOlderChange = Schema.decodeUnknownSync(Schema.Struct(changeBefore));
+const decodeOlderComment = Schema.decodeUnknownSync(Schema.Struct(commentBefore));
+const decodeChange = Schema.decodeUnknownSync(KinRecordChange);
+const decodeComment = Schema.decodeUnknownSync(KinRecordComment);
+
+describe("a coding agent's mark on the wire", () => {
+  const by = { _tag: "person", personId: "zoya" };
+  const change = {
+    seq: 5,
+    at: "2026-11-10T15:00:00.000Z",
+    by,
+    via: "owner",
+    kind: "updated",
+    fields: [{ field: "state", from: "open", to: "doing" }],
+    codingAgent: "Invented laptop",
+  };
+  const comment = {
+    commentId: "comment-3",
+    seq: 3,
+    at: "2026-11-10T15:00:00.000Z",
+    by,
+    codingAgent: "Invented laptop",
+    body: "Invented: logo draft checked.",
+    files: [],
+  };
+
+  it("reads as the person's own change and note to an older app, and names the key to a newer one", () => {
+    expect(decodeOlderChange(change)).toMatchObject({ seq: 5, by });
+    expect(decodeOlderComment(comment)).toMatchObject({
+      body: "Invented: logo draft checked.",
+      by,
+    });
+    expect(decodeChange(change).codingAgent).toBe("Invented laptop");
+    expect(decodeComment(comment).codingAgent).toBe("Invented laptop");
+  });
+});
+
 describe("kinPulsePage", () => {
   const fact = (key: string, family: string, sense: string, handled = false) =>
     ({
@@ -191,6 +304,11 @@ describe("kinPulsePage", () => {
       records: ["M1", "T1", "T2", "H1", "T3"],
       invoiceOverdue: false,
     });
+    // "N more not listed" is not a thing to answer: always on the page, never counted.
+    const more = fact("sense_overflow:task_late", "work", "sense_overflow");
+    const withMore = kinPulsePage([...facts, more], 2);
+    expect(withMore.facts.map((one) => one.key)).toEqual(["t2", "t1", more.key, "h1"]);
+    expect(withMore.outline).toMatchObject({ open: 4, money: 1 });
   });
 });
 

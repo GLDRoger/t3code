@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import { kinNow } from "./kinNow.ts";
 import { kinFailureText } from "./kinAnswers.ts";
+import { kinMidSentence, kinWorkName } from "./kinWork.ts";
 import {
   KIN_MEMORY_CONFIRM_MAX,
   KinChatError,
@@ -17,6 +18,8 @@ import {
   type KinMemorySetVisibilityResult,
   type KinMemoryVisibility,
   type KinOrgId,
+  KinAgentId,
+  KinPersonId,
   kinWhenFormat,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
@@ -101,6 +104,8 @@ export interface KinMemoryOriginView {
   readonly line: string;
   /** The person's exact words, when the owner can still open the message. */
   readonly quote: string | null;
+  /** The chat and message the line opens, only while the owner can open that message now. */
+  readonly opens: NonNullable<NonNullable<KinMemoryListItem["provenance"]>["message"]> | null;
 }
 
 const dayFormat = kinWhenFormat("date");
@@ -130,25 +135,39 @@ function originOf(
   const from = item.provenance;
   if (from === undefined) return null;
   const quote = from.quote?.trim() || null;
+  const opens = from.message ?? null;
   const said = quote === null || from.saidAt === null ? null : dayOf(from.saidAt, now);
   const saved = dayOf(from.recordedAt, now);
   if (from.trust === "agent") {
-    const agent = names.agents.get(from.saidBy) ?? "an agent";
+    const agent = kinMidSentence(
+      kinWorkName({ _tag: "agent", agentId: KinAgentId.make(from.saidBy) }, names),
+    );
     const day = said ?? saved;
     return {
       kind: "worked_out",
       line: `Worked out by ${agent}${day === null ? "" : `, ${day}`}`,
       quote,
+      opens,
     };
   }
   const savedOn = saved === null ? "" : `, saved ${saved}`;
   if (from.trust === "external")
-    return { kind: "outside", line: `From outside your chats${savedOn}`, quote };
+    return { kind: "outside", line: `From outside your chats${savedOn}`, quote, opens };
   const place = item.from === null ? "" : ` in ${item.from.chatName}`;
   const who =
     from.trust === "owner"
       ? null
-      : (names.people.get(from.saidBy) ?? item.from?.name ?? "a teammate");
+      : kinMidSentence(
+          kinWorkName(
+            { _tag: "person", personId: KinPersonId.make(from.saidBy) },
+            {
+              people:
+                item.from === null
+                  ? names.people
+                  : new Map([[from.saidBy, item.from.name], ...names.people]),
+            },
+          ),
+        );
   // Without their words on screen, only the day it was saved is known.
   return {
     kind: "said",
@@ -157,6 +176,7 @@ function originOf(
         ? `From ${who ?? "you"}${place}${savedOn}`
         : `${who === null ? "You" : capitalised(who)} said${place}${said === null ? "" : `, ${said}`}`,
     quote,
+    opens,
   };
 }
 const capitalised = (text: string) => text.charAt(0).toUpperCase() + text.slice(1);
@@ -553,6 +573,25 @@ export function createKinMemoryActions(options: {
 }
 
 export type KinMemoryActions = ReturnType<typeof createKinMemoryActions>;
+
+/** Settings → Memory on the web: one row per memory, each opening on its own. */
+export const KIN_MEMORY_SETTINGS = {
+  purpose:
+    "What your agents remember from working with you, and whether your teammates' chats use it.",
+  teamRow: "Use team memory in teammates' chats",
+  remembered: "Remembered",
+  empty: "What your agents learn while working with you shows up here.",
+  open: "Open memory",
+  /** Who may know one memory, said on its own page. */
+  whoKnows: (state: KinMemoryVisibility, teamOff: boolean) =>
+    state === "suggested"
+      ? "Your agents think the team could know this. Until you say yes, only you can."
+      : state === "only_owner"
+        ? "Your agents use this only when they work with you."
+        : teamOff
+          ? "The team can know this, once team memory is on for their chats."
+          : "Your agents can use this when they work with teammates.",
+} as const;
 
 /** What the agents remember, for the owner, and the dead end for everyone else. */
 export const KIN_MEMORY_COPY = {

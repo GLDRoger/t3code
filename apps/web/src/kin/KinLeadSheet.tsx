@@ -1,3 +1,4 @@
+import { KIN_AGENT_PAGE } from "@t3tools/client-runtime/kin/kinAgentPage";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import {
@@ -43,6 +44,7 @@ import { KinAgentDetails } from "./KinAgentPage";
 import { KinAvatar } from "./KinAvatar";
 import { openKinSettings } from "./kinSettingsAddress";
 import { kinClient } from "./kinClient";
+import { KinPinSwitch } from "./KinPinSwitch";
 import { useKinWorkingAgents } from "./useKinHost";
 import { announceKinClearKept, useKinClearPreview } from "./useKinClearPreview";
 import { useNowMinuteMs } from "./useKinClock";
@@ -72,8 +74,9 @@ export function KinLeadSheet(props: {
   readonly avatar: KinAvatarView;
   readonly environmentId: EnvironmentId;
   readonly chatId: KinChatId;
-  readonly personId: string | null;
   readonly muted: boolean;
+  /** The viewer's pin on this chat; null where none is offered, as on the main agent's chat. */
+  readonly pinned: boolean | null;
   /** The viewer is the one person in this chat, so it is theirs to clear. */
   readonly ownsChat: boolean;
   /** How many of the viewer's own agents are active: the last one can't be retired. */
@@ -84,7 +87,10 @@ export function KinLeadSheet(props: {
   const nowMs = useNowMinuteMs();
   const retired = about.kind === "own" ? about.lead.retired : undefined;
   const canMute = useAtomValue(kinClient.mute.permissionAtom(environmentId));
-  const working = useKinWorkingAgents(environmentId);
+  const working = useKinWorkingAgents(
+    environmentId,
+    about.kind === "own" ? about.lead.orgId : about.contact.orgId,
+  );
   const mute = useAtomCommand(kinClient.mute, { reportFailure: false });
   const [muteState, setMuteState] = useState<"idle" | "saving" | "failed">("idle");
   const [muteProblem, setMuteProblem] = useState<string | null>(null);
@@ -100,7 +106,7 @@ export function KinLeadSheet(props: {
     const result = await mute({ environmentId, input: { chatId: props.chatId, muted } });
     setMuteProblem(
       AsyncResult.isFailure(result)
-        ? kinFailureText(squashAtomCommandFailure(result), "Couldn't change that.")
+        ? kinFailureText(squashAtomCommandFailure(result), KIN_AGENT_PAGE.changeFailed)
         : null,
     );
     setMuteState(AsyncResult.isFailure(result) ? "failed" : "idle");
@@ -150,7 +156,6 @@ export function KinLeadSheet(props: {
               environmentId={environmentId}
               orgId={about.lead.orgId}
               agentId={about.lead.agentId}
-              personId={props.personId}
               activeAgents={props.activeAgents}
               onClose={() => props.onOpenChange(false)}
               onOpenSettings={(section) => {
@@ -184,6 +189,13 @@ export function KinLeadSheet(props: {
                   {muteProblem}
                 </p>
               ) : null}
+              {props.pinned === null ? null : (
+                <KinPinSwitch
+                  environmentId={environmentId}
+                  chatId={props.chatId}
+                  pinned={props.pinned}
+                />
+              )}
             </Section>
           ) : null}
           {canClear ? (

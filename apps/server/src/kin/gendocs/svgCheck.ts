@@ -1,5 +1,7 @@
 import { SaxesParser } from "saxes";
 
+import { withArticle } from "../article.ts";
+
 /**
  * Whether an SVG is only a drawing: parsed as namespace-aware XML, every element and attribute on
  * a fixed list of shapes, text, paint and filters, every reference inside the file. Anything that
@@ -231,7 +233,7 @@ export const svgProblem = (text: string): string | undefined => {
   let style: Array<string> | undefined;
   parser.on("xmldecl", (decl) => {
     if (decl.encoding !== undefined && decl.encoding.toLowerCase() !== "utf-8")
-      refuse(`a ${decl.encoding} encoding`);
+      refuse(`${withArticle(decl.encoding)} encoding`);
   });
   parser.on("doctype", () => refuse("a DOCTYPE"));
   parser.on("processinginstruction", () => refuse("a processing instruction"));
@@ -251,7 +253,7 @@ export const svgProblem = (text: string): string | undefined => {
           : uri === XLINK
             ? local === "href"
             : uri === XML && (local === "space" || local === "lang");
-      if (!allowed) refuse(`a ${name} attribute`);
+      if (!allowed) refuse(`${withArticle(name)} attribute`);
       if (local === "href" && !internal(value)) refuse("a link to something outside the file");
       const css = uri === "" && !PLAIN.has(local) ? cssProblem(value) : undefined;
       if (css !== undefined) refuse(css);

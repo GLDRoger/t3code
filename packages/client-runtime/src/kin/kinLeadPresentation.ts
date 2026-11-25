@@ -3,10 +3,8 @@ import { kinNow } from "./kinNow.ts";
 import type {
   KinAgentId,
   KinChatSummary,
-  KinLeadAccessResult,
   KinLeadProfile,
   KinLeadTracking,
-  KinPerson,
   ModelSelection,
   ServerProviderModel,
 } from "@t3tools/contracts";
@@ -158,7 +156,7 @@ export function kinLeadTrackingDetail(
   // A due day has no time: the day where the owner is, as Tasks says it.
   const when =
     item.dueAllDay === true && item.dueAt !== undefined
-      ? `due ${kinWorkDueText({ dueAt: item.dueAt, dueAllDay: true }, { zone: timeZone ?? null }, now)}`
+      ? `due ${kinWorkDueText({ dueAt: item.dueAt, dueAllDay: true }, { zone: timeZone ?? names?.zone ?? null }, now)}`
       : formatKinDeferralTime(due, timeZone);
   return kind === null ? when : `${kind}, ${when}`;
 }
@@ -205,6 +203,10 @@ const switched = KIN_PROVIDER_FACTS.filter((facts) => facts.behindSwitch && !fac
 
 /** The host's switch for the providers behind it, shown beside the model new agents start on. */
 export const KIN_OTHER_PROVIDER_AGENTS = {
+  /** Settings → Agents' row, last on the page. */
+  section: "Experiments",
+  row: `Let agents run on ${switched.map((facts) => facts.label).join(" and ")} models`,
+  rowDetail: `Set ${switched.map((facts) => facts.label).join(" and ")} up first, under This computer, Providers and models.`,
   title: "Agents on other providers",
   detail: `An experiment: agents may also run on ${switched.map((facts) => facts.label).join(" and ")} models. As on Claude, in your own chats they have a shell, files and the web, each step checked by Kin, and in chats others read only their Kin tools. Set the provider up under Settings, Providers first.`,
 };
@@ -272,30 +274,6 @@ export function kinLeadSaveProblem(error: unknown, creating: boolean): string {
   }
 }
 
-/** The people of the org the owner could still let message a lead, by name. */
-export function kinLeadAccessCandidates(
-  people: ReadonlyArray<Pick<KinPerson, "personId" | "displayName">>,
-  allowed: KinLeadAccessResult["people"],
-  ownerPersonId: string | null,
-): ReadonlyArray<Pick<KinPerson, "personId" | "displayName">> {
-  const taken = new Set<string>(allowed.map((person) => person.personId));
-  return people
-    .filter((person) => person.personId !== ownerPersonId && !taken.has(person.personId))
-    .sort((a, b) => a.displayName.localeCompare(b.displayName));
-}
-
-/** The team agent's "Who can message": everyone, so no one is added or removed there. */
-export const KIN_LEAD_EVERYONE = "Everyone on the team. This is the team agent.";
-
-/** Whether this person may message the lead, by the server's answer; null while it loads. */
-export function kinLeadMessageable(
-  access: KinLeadAccessResult | null,
-  personId: string,
-): boolean | null {
-  if (access === null) return null;
-  return access.everyone === true || access.people.some((one) => one.personId === personId);
-}
-
 /** A teammate's card for someone else's agent: what its owner wrote under What teammates see. */
 export function kinLeadContactAbout(contact: { readonly name: string; readonly intro: string }) {
   const intro = contact.intro.trim();
@@ -307,37 +285,6 @@ export function kinLeadOwnerSeesLine(ownerName: string | undefined): string {
   return ownerName === undefined
     ? "Whoever runs this workspace can see chats with agents."
     : `${ownerName} runs this workspace and can see chats with agents.`;
-}
-
-/**
- * Said once after the owner changes who can message a lead. `ownerLevel` is the server's word on
- * the person removed (a co-owner messages every lead); without it, nothing is claimed either way.
- */
-export function kinLeadAccessChanged(
-  person: string,
-  lead: string,
-  allowed: boolean,
-  ownerLevel?: boolean,
-): string {
-  if (allowed) return `${person} can now message ${lead}.`;
-  if (ownerLevel === undefined) return `Removed ${person}'s own access to ${lead}.`;
-  return ownerLevel
-    ? `${person} can still message ${lead} as a co-owner.`
-    : `${person} can no longer message ${lead}.`;
-}
-
-/** Why changing who can message a lead was refused, in the owner's terms. */
-export function kinLeadAccessProblem(error: unknown): string {
-  const reason =
-    typeof error === "object" && error !== null && "reason" in error ? error.reason : null;
-  switch (reason) {
-    case "not_allowed":
-      return "Only the person who set up this agent can choose who messages it.";
-    case "not_found":
-      return "That person or this agent is no longer here.";
-    default:
-      return kinFailureText(error, "Couldn't change that.");
-  }
 }
 
 /**
@@ -358,37 +305,72 @@ export function kinChatReadOnly(
   );
 }
 
-/** The one line where the composer was, in a chat the viewer can only read. */
-export function kinChatReadOnlyLine(leadName: string | null): string {
-  return `You can read this chat, but you can no longer message ${leadName ?? "this agent"}.`;
+/** The one line where the composer was, in a chat the viewer can only read: with an agent or a person. */
+export function kinChatReadOnlyLine(other: {
+  readonly kind: "agent" | "person";
+  readonly name: string | null;
+}): string {
+  if (other.kind === "person")
+    return other.name === null
+      ? "You can read this chat, but you two can no longer message each other."
+      : `You can read this chat, but you and ${other.name} can no longer message each other.`;
+  return `You can read this chat, but you can no longer message ${other.name ?? "this agent"}.`;
 }
+
+/**
+ * An agent's line in a list: what it does, never its name again. The intro its owner wrote for
+ * people, else its roles, else its area when that says more than the name; null when nothing does.
+ * Never the charter: that is written for the agent.
+ */
+export function kinAgentRowLine(
+  lead: Pick<KinLeadProfile, "name" | "domain" | "intro" | "roleTags">,
+): string | null {
+  const intro = lead.intro?.trim() ?? "";
+  if (intro !== "") return intro;
+  if ((lead.roleTags ?? []).length > 0) return (lead.roleTags ?? []).join(", ");
+  const area = kinDomainLabel(lead.domain);
+  return area === "" || lead.name.toLowerCase().includes(area.toLowerCase()) ? null : area;
+}
+
+/** Settings → Agents. */
+export const KIN_AGENTS_PAGE = {
+  purpose: "The agents that look after parts of your company.",
+  add: "New agent",
+  open: (name: string) => `Open ${name}`,
+  working: "Working",
+  paused: "Paused",
+  forNew: "For new agents",
+  model: "Model",
+  defaultsTitle: "Choose what new agents run on",
+  defaultsLabel: "Model",
+  /** The row's line while nobody has chosen: what they start on meanwhile. */
+  unchosen: (line: string) => `${line}, as your first agent`,
+  save: "Save model",
+} as const;
 
 /** The owner's list of agents, and what a teammate is shown of one. */
 export const KIN_AGENTS_COPY = {
-  accessFailed: "Couldn't load who can message it.",
+  saveFailed: "Couldn't save that.",
+  noneTitle: "No agents yet",
+  introLabel: "What teammates see",
   seesIntro: (intro: string) => `They see its name and this: ${intro}`,
   charterExample: "Handles billing questions and invoices.",
   charterLabel: "What it's responsible for",
-  removeAccess: (person: string, agent: string, ownerLevel?: boolean) =>
-    ownerLevel === undefined
-      ? `This removes ${person}'s own access to ${agent}. You can add them back any time.`
-      : ownerLevel
-        ? `${person} is a co-owner, so they can still message ${agent}. This matters only if they stop being one.`
-        : `${person} keeps their chat with ${agent} to read, but can't send it anything more. You can add them back any time.`,
-  /** Under "Who can message" with nobody added: owner-level people message every agent. */
-  onlyOwners: "Only the owner and co-owners.",
   nameOnly: "They see its name only. Add what teammates see when you edit this agent.",
   none: "You have no agents yet.",
   explain:
     "An agent looks after one part of the company, such as engineering or finance, and you talk to it in a chat.",
   loadFailed: "Couldn't load your agents.",
-  teammateViewHint: "Optional. People you let message this agent see this and nothing above.",
+  /** The heading form, for a failure with Retry. */
+  loadFailedTitle: "Couldn't load your agents",
+  teammateViewHint: "Optional. Teammates see this and nothing above.",
 } as const;
 
 /**
  * The agents on a live run, from the chat list's live rows, whose `working` follows each run: a
- * direct chat with an agent says it is working. The leads list's own flag is only as fresh as its
- * last read, so the Agents list and an agent's page say "Working" from this instead.
+ * direct chat with an agent says it is working. A group's or the Team room's row names only the
+ * viewer, so while one works the leads list's own flag says which agents are on a run; it is
+ * reread whenever a row's flag flips (`onKinDirectChatsChange`), and trusted only then.
  */
 export function kinWorkingAgents(
   chats: ReadonlyArray<
@@ -396,13 +378,18 @@ export function kinWorkingAgents(
       readonly members: ReadonlyArray<Pick<KinChatSummary["members"][number], "principal">>;
     }
   > | null,
+  leads: ReadonlyArray<Pick<KinLeadProfile, "agentId" | "working">> = [],
 ): ReadonlySet<KinAgentId> {
   const working = new Set<KinAgentId>();
+  let unnamed = false;
   for (const chat of chats ?? []) {
     if (chat.working !== true) continue;
-    for (const member of chat.members) {
-      if (member.principal._tag === "agent") working.add(member.principal.agentId);
-    }
+    const agents = chat.members.flatMap((member) =>
+      member.principal._tag === "agent" ? [member.principal.agentId] : [],
+    );
+    if (agents.length === 0) unnamed = true;
+    for (const agentId of agents) working.add(agentId);
   }
+  if (unnamed) for (const lead of leads) if (lead.working) working.add(lead.agentId);
   return working;
 }

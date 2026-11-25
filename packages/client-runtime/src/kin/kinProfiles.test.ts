@@ -1,12 +1,17 @@
 import { describe, expect, it } from "@effect/vitest";
-import { KinPersonId } from "@t3tools/contracts";
+import { KinChatError, KinPersonId } from "@t3tools/contracts";
 
 import {
+  KIN_GITHUB_LOGIN,
+  kinAnswersRing,
+  kinGithubLoginFailure,
+  kinGithubLoginInput,
   kinHoursLine,
   kinParseRoleTags,
   kinProfileChanges,
   kinProfileDraft,
   kinProfileShowsTasks,
+  kinQuietSource,
   kinTimeZoneChoices,
 } from "./kinProfiles.ts";
 
@@ -57,6 +62,15 @@ describe("kinProfiles", () => {
     const company = { companyQuiet: { from: "21:00", to: "08:00" }, isOwner: false };
     const own = kinProfileDraft(profile, company);
     expect([own.quietFrom, own.quietTo, own.holdOutside]).toEqual(["21:00", "08:00", true]);
+    // Settings › Notifications says whose quiet hours apply, and the answers switch is on unset.
+    expect(kinQuietSource(profile, company)).toBe("The company's quiet hours, 21:00 to 08:00");
+    expect(
+      kinQuietSource({ ...profile, quietHours: { from: "23:00", to: "06:30" } }, company),
+    ).toBe("Your own quiet hours, 23:00 to 06:30");
+    expect([kinAnswersRing(profile), kinAnswersRing({ ...profile, answersRing: false })]).toEqual([
+      true,
+      false,
+    ]);
     const mine = { ...company, mine: true };
     expect(kinProfileChanges(profile, own, mine)).toEqual({ ok: true, changes: {} });
     expect(
@@ -96,6 +110,33 @@ describe("kinProfiles", () => {
     expect(kinProfileShowsTasks({ mine: false, overTheirTasks: false })).toBe(true);
     expect(kinProfileShowsTasks({ mine: true, overTheirTasks: false })).toBe(false);
     expect(kinProfileShowsTasks({ mine: false, overTheirTasks: true })).toBe(false);
+  });
+});
+
+describe("a GitHub username", () => {
+  it("takes what GitHub allows, drops a leading @, and reads an empty field as clearing it", () => {
+    for (const [typed, login] of [
+      [" meera-dev ", "meera-dev"],
+      ["@Zoya7", "Zoya7"],
+      ["a", "a"],
+      ["a".repeat(39), "a".repeat(39)],
+      ["", null],
+      ["  ", null],
+    ] as const)
+      expect(kinGithubLoginInput(typed)).toEqual({ ok: true, login });
+    for (const typed of ["-dev", "dev-", "de--v", "dev arjun", "a".repeat(40), "dev_arjun", "@"])
+      expect(kinGithubLoginInput(typed)).toEqual({ ok: false, problem: KIN_GITHUB_LOGIN.invalid });
+  });
+
+  it("says a refusal is someone else's username and anything unanswered is a failed save", () => {
+    const refused = new KinChatError({
+      reason: "not_allowed",
+      message: "That GitHub login is already linked to someone.",
+    });
+    expect(kinGithubLoginFailure(refused)).toBe(KIN_GITHUB_LOGIN.taken);
+    expect(kinGithubLoginFailure(new Error("socket closed"))).toBe(
+      `${KIN_GITHUB_LOGIN.failed} Check your connection to the server and try again.`,
+    );
   });
 });
 

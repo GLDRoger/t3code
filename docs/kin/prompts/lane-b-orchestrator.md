@@ -17,7 +17,7 @@ vp i   # needs Node 26 and the vite-plus `vp` CLI
 
 `kin` and `main` are protected: pushes to them are refused, so all work lands through PRs.
 
-APPR-6 and the mobile tasks need a Mac with Xcode and an iOS Simulator, plus Android Studio for the Android half. Upstream's [development runbook](../../operations/development.md#first-checkout) has the rest.
+APPR-6 and the mobile tasks need a Mac with Xcode and an iOS Simulator, plus Android Studio for the Android half. Upstream's [development runbook](../../operations/00_development.md#first-checkout) has the rest.
 
 ## Prompt
 

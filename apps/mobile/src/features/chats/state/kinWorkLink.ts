@@ -2,36 +2,37 @@ import { CommonActions, StackActions, useNavigation } from "@react-navigation/na
 import type { KinSearchHitView } from "@t3tools/client-runtime/kin/kinDocs";
 import { kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
 
-import { kinLinkKeeps } from "./kinLinkStack";
+import { kinLinkPlace } from "./kinLinkStack";
 import type { KinWorkTarget } from "./useKinWork";
 
 type Params = ReactNavigation.RootParamList;
 type RecordRoute = "KinWorkItem" | "KinClient" | "KinProject" | "KinDoc" | "KinDeal";
 
 /**
- * Opens a task, client, project or doc. Followed from inside one, a page takes the place of
- * every record above the list it was opened from, and a sheet takes the place of the sheets
- * above the record page under it. So a sheet closes back to its record, Back returns to the list
- * the person started from, and records never stack.
+ * Opens a task, client, project or doc. Followed from inside one, it opens over that page, so Back
+ * retraces each step; one already open below is gone back to rather than opened twice, and one
+ * opened from a search or concern sheet takes the sheet's place (`kinLinkPlace`).
  */
 export function useKinWorkLink() {
   const navigation = useNavigation();
   const go = <Name extends RecordRoute>(name: Name, params: Params[Name]) => {
     const state = navigation.getState();
     const routes = state?.routes ?? [];
-    const keep = kinLinkKeeps(
-      routes.map((route) => route.name),
-      name,
-    );
-    if (state === undefined || keep === routes.length) {
+    const place = kinLinkPlace(routes, { name, params });
+    if (state === undefined || (!place.again && place.keep === routes.length)) {
       navigation.dispatch(StackActions.push(name, params));
       return;
     }
+    const back = place.again ? routes[place.keep] : undefined;
     navigation.dispatch(
       CommonActions.reset({
         ...state,
-        index: keep,
-        routes: [...routes.slice(0, keep), { name, params }],
+        index: place.keep,
+        routes: [
+          ...routes.slice(0, place.keep),
+          // The page already open keeps its place on the stack, with what this link asked of it.
+          back === undefined ? { name, params } : { ...back, params },
+        ],
       }),
     );
   };
@@ -61,6 +62,8 @@ export function useKinOpenHit(target: KinWorkTarget) {
       });
     else if (hit.kind === "clients") openRecord("KinClient", { ...base, party: hit.key });
     else if (hit.kind === "projects") openRecord("KinProject", { ...base, project: hit.key });
+    // A contact has no page of its own: its client's opens.
+    else if (hit.clientKey !== null) openRecord("KinClient", { ...base, party: hit.clientKey });
     else openRecord("KinWorkItem", { ...base, task: hit.key });
   };
 }

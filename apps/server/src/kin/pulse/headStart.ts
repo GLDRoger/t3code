@@ -4,6 +4,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { liveConnections } from "../connections/ConnectionRows.ts";
 import { mailProviderOf } from "../connections/mailProviders.ts";
+import { billedParty, billingClientFromProject } from "../work/billTo.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 
@@ -48,6 +49,7 @@ export interface HeadStart {
 export const headStarts = Effect.fn("KinPulse.headStarts")(function* (
   orgId: KinOrgId,
   facts: ReadonlyArray<KinPulseFact>,
+  own: ReadonlyArray<{ readonly connection: string; readonly account: string }> = [],
 ) {
   const sql = yield* SqlClient.SqlClient;
   const recordIds = [
@@ -58,13 +60,21 @@ export const headStarts = Effect.fn("KinPulse.headStarts")(function* (
   const byFact = new Map<string, HeadStart>();
   if (recordIds.length === 0) return { byFact, mail: undefined };
   const clients = new Map(
-    (yield* sql<{ recordId: string; partyId: string | null; partyTitle: string | null }>`
-      SELECT r.record_id AS "recordId", c.record_id AS "partyId", c.title AS "partyTitle"
+    (yield* sql<{
+      recordId: string;
+      partyId: string | null;
+      partyTitle: string | null;
+      registerId: string;
+      fieldsJson: string | null;
+    }>`
+      SELECT r.record_id AS "recordId", c.record_id AS "partyId", c.title AS "partyTitle",
+        r.register_id AS "registerId",
+        CASE WHEN c.record_id IS NULL AND r.register_id IN ('invoices', 'quotes') THEN r.fields_json END AS "fieldsJson"
       FROM kin_records r
       LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
       LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.register_id = 'clients'
         AND c.record_id = CASE WHEN r.register_id = 'clients' THEN r.record_id
-          ELSE COALESCE(r.party_id, p.party_id) END
+          ELSE ${billingClientFromProject(sql, sql`p.party_id`)} END
       WHERE r.org_id = ${orgId} AND r.record_id IN ${sql.in(recordIds)}
       ORDER BY r.record_id`).map((row) => [row.recordId, row]),
   );
@@ -133,13 +143,24 @@ export const headStarts = Effect.fn("KinPulse.headStarts")(function* (
     if (recordId === undefined) continue;
     const client = clients.get(recordId);
     const contact = client?.partyId == null ? undefined : contacts.get(client.partyId);
+    const billTo =
+      client?.fieldsJson == null
+        ? undefined
+        : billedParty(
+            {
+              registerId: client.registerId,
+              fieldsJson: client.fieldsJson,
+            },
+            undefined,
+          );
     const writeTo = !TO_CLIENT.has(fact.sense)
       ? undefined
-      : contact !== undefined
-        ? contact
-        : client?.partyId == null
-          ? "no client on it, so nobody to write to"
-          : `${client.partyTitle ?? "this client"} has no contact with an email`;
+      : (contact ??
+        (billTo?.email != null
+          ? { name: billTo.name, email: billTo.email }
+          : client?.partyId != null || billTo !== undefined
+            ? `${billTo?.name ?? client?.partyTitle ?? "this client"} has no contact with an email`
+            : "no client on it, so nobody to write to"));
     const document = !WITH_FILE.has(fact.sense)
       ? undefined
       : (files.get(recordId) ?? "no document made for it yet");
@@ -160,18 +181,19 @@ export const headStarts = Effect.fn("KinPulse.headStarts")(function* (
     if (Object.keys(start).length > 0) byFact.set(fact.key, start);
   }
   const wantsMail = [...byFact.values()].some((start) => typeof start.writeTo === "object");
-  return { byFact, mail: wantsMail ? yield* mailAccounts(orgId) : undefined };
+  return { byFact, mail: wantsMail ? yield* mailAccounts(orgId, own) : undefined };
 });
 
-/** The mail accounts a draft can go from now, or that there is none. */
-const mailAccounts = Effect.fn("KinPulse.mailAccounts")(function* (orgId: KinOrgId) {
-  const ready = (yield* liveConnections(orgId)).filter(
-    (row) => mailProviderOf(row) !== undefined && row.pausedAt === null && row.state === "active",
-  );
-  return ready.length === 0
-    ? "no mail account is connected"
-    : ready.map((row) => ({
-        connection: row.connectionId,
-        account: row.accountLabel ?? row.label,
-      }));
+/** The mail accounts a draft can go from now, the turn's own mailboxes after, or that there is none. */
+const mailAccounts = Effect.fn("KinPulse.mailAccounts")(function* (
+  orgId: KinOrgId,
+  own: ReadonlyArray<{ readonly connection: string; readonly account: string }>,
+) {
+  const ready = (yield* liveConnections(orgId))
+    .filter(
+      (row) => mailProviderOf(row) !== undefined && row.pausedAt === null && row.state === "active",
+    )
+    .map((row) => ({ connection: row.connectionId, account: row.accountLabel ?? row.label }));
+  const all = [...ready, ...own.map((one) => ({ ...one, own: true as const }))];
+  return all.length === 0 ? "no mail account is connected" : all;
 });

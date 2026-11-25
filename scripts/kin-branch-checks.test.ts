@@ -18,9 +18,12 @@ import {
   checkPeopleChange,
   checkProductName,
   checkSharedCopy,
+  checkKinHookCopies,
+  KIN_HOOK_FILES_IN_BOTH,
   checkMigrations,
   checkSurvival,
   checkT3Footprint,
+  standingT3Footprint,
   declarationOf,
   explainedT3Files,
   FOOTPRINT,
@@ -28,6 +31,7 @@ import {
   type ApprovedGuard,
   type BranchCommit,
   kinSentences,
+  MIGRATIONS,
   migrationIds,
   supersededIn,
 } from "./kin-branch-checks.ts";
@@ -118,7 +122,7 @@ describe("kin branch checks", () => {
     );
   });
 
-  it("refuses a sentence of four or more words typed into both Kin clients", () => {
+  it("refuses a sentence of three or more words typed into both Kin clients, or its twin", () => {
     const web = `
       // Comments are not copy: Couldn't load the rates.
       export const Rates = (props: { host: string }) => (
@@ -128,24 +132,80 @@ describe("kin branch checks", () => {
       );
       const done = "Saved.";
       const label = \`Open the chat with \${props.host}\`;
+      const font = "New Computer Modern";
     `;
     const phone = `
       const title = "Couldn't load the rates";
       const fragment = \`\${host}\${unicode === null ? "" : \`(shown as \${unicode})\`}\\n\\nThis visual asks to load from it.\`;
       const done = "Saved.";
       const label = \`Open the chat with \${title}\`;
+      const font = "New Computer Modern";
     `;
     assert.deepStrictEqual(kinSentences(web).toSorted(), [
       "Couldn't load the rates.",
+      "New Computer Modern",
       "Open the chat with",
       "This visual asks to load from",
     ]);
     const said = checkSharedCopy(new Map([["web.tsx", web]]), new Map([["phone.tsx", phone]]));
-    // The same words with different punctuation, and short words, are left alone.
+    // A twin differing only in its full stop counts; short words and a listed one are left alone.
     assert.deepStrictEqual(
-      said.map((problem) => problem.split('"')[1]),
-      ["Open the chat with"],
+      said.map((problem) => problem.split(" is typed")[0]),
+      [
+        'kin copy: "Open the chat with"',
+        'kin copy: "Couldn\'t load the rates." / "Couldn\'t load the rates"',
+      ],
     );
+    const more = checkSharedCopy(
+      new Map([["web.tsx", `const more = "Couldn't load more.";`]]),
+      new Map([["phone.tsx", `const more = "Could not load more";`]]),
+    );
+    assert.strictEqual(more.length, 1);
+  });
+
+  it("keeps each Kin data hook in one shared factory, by file and hook name", () => {
+    const factory = `export function makeKinDealsHooks(app) {
+  function useKinDeals() {}
+  return { useKinDeals };
+}
+`;
+    const shared = new Map([["packages/client-runtime/src/kin/react/kinDealsHooks.ts", factory]]);
+    const caller = `import { makeKinDealsHooks } from "@t3tools/client-runtime/kin/react/kinDealsHooks";
+export const { useKinDeals } = makeKinDealsHooks(kinHookApp);
+`;
+    // Every listed pair still in both apps, so only the case under test speaks.
+    const listed = (dir: string) =>
+      Object.keys(KIN_HOOK_FILES_IN_BOTH).map((name) => [`${dir}/${name}`, ""] as const);
+    const check = (web: Record<string, string>, phone: Record<string, string>) =>
+      checkKinHookCopies(
+        new Map([...listed("apps/web/src/kin"), ...Object.entries(web)]),
+        new Map([...listed("apps/mobile/src/features/chats/state"), ...Object.entries(phone)]),
+        shared,
+      ).map((problem) => problem.split(":")[1]!.trim().split(" ")[0]);
+    const web = "apps/web/src/kin/";
+    const phone = "apps/mobile/src/features/chats/state/";
+    assert.deepStrictEqual(
+      check({ [`${web}useKinDeals.ts`]: caller }, { [`${phone}useKinDeals.ts`]: caller }),
+      [],
+    );
+    assert.deepStrictEqual(
+      check(
+        { [`${web}useKinPeople.ts`]: "export function useKinPeople() {}\n" },
+        { [`${phone}useKinPeople.ts`]: "export function useKinPeople() {}\n" },
+      ),
+      [`${web}useKinPeople.ts`],
+    );
+    const both = caller + "export function useKinDealCount() {}\n";
+    assert.deepStrictEqual(
+      check({ [`${web}useKinDeals.ts`]: both }, { [`${phone}useKinDeals.ts`]: both }),
+      ["useKinDealCount"],
+    );
+    assert.deepStrictEqual(
+      check({ [`${web}KinDeals.tsx`]: "export function useKinDeals() {}\n" }, {}),
+      [`${web}KinDeals.tsx`],
+    );
+    const gone = checkKinHookCopies(new Map(), new Map(), shared);
+    assert.deepStrictEqual(gone.length, Object.keys(KIN_HOOK_FILES_IN_BOTH).length);
   });
 
   it("asks a branch people will notice to say what changes for them, and prints what it says", () => {
@@ -183,7 +243,7 @@ describe("kin branch checks", () => {
         .problems,
       1,
     );
-    // Any one commit may carry the line; every line is printed for whoever merges.
+    // A line on a later commit covers earlier ones; every line is printed for whoever merges.
     const said = check(
       { sha: "d4", message: "fix(kin): one\n\nPeople-change: none", files: [] },
       screen,
@@ -199,6 +259,31 @@ describe("kin branch checks", () => {
       "  d4 none",
       "  e5 the brief's Money title reads Cash",
     ]);
+    // A line speaks for its own commit and earlier ones, not for a screen changed after it.
+    const later = check(screen, {
+      sha: "f6",
+      message: "fix(kin): x\n\nPeople-change: none",
+      files: [],
+    });
+    assert.lengthOf(later.problems, 1);
+    assert.include(later.problems[0], "commits after f6");
+    assert.include(later.problems[0], "apps/web/src/kin/Brief.tsx");
+    // Every file changed after the last line is named.
+    const two = check({ ...screen, sha: "f7", files: ["apps/web/src/kin/Money.tsx"] }, screen, {
+      sha: "f8",
+      message: "fix(kin): x\n\nPeople-change: none",
+      files: [],
+    });
+    assert.lengthOf(two.problems, 1);
+    assert.include(two.problems[0], "apps/web/src/kin/Money.tsx");
+    assert.include(two.problems[0], "apps/web/src/kin/Brief.tsx");
+    // The last commit restates the branch's lines, even when only tests came after them.
+    const stale = check(
+      { sha: "g9", message: "test: more", files: ["apps/web/src/kin/Brief.browser.test.tsx"] },
+      { ...screen, sha: "h1", message: "fix(kin): the brief\n\nPeople-change: none" },
+    );
+    assert.lengthOf(stale.problems, 1);
+    assert.include(stale.problems[0], "g9");
     // The word alone is not a line.
     assert.lengthOf(check({ ...screen, message: "fix: x\n\nPeople-change:" }).problems, 1);
   });
@@ -351,7 +436,12 @@ describe("kin branch checks", () => {
   });
 
   it("refuses more than ten added lines in a T3 file unless a commit says why", () => {
-    const kinOwned = ["apps/server/src/kin/**", "packages/contracts/src/kin*"];
+    const kinOwned = [
+      "apps/server/src/kin/**",
+      "packages/contracts/src/kin*",
+      "**/*.kin.test.ts",
+      "**/*.kin.*.test.tsx",
+    ];
     const t3 = "apps/server/src/server.ts";
     const check = (
       changes: ReadonlyArray<{ file: string; added: number; isNew?: boolean }>,
@@ -368,13 +458,15 @@ describe("kin branch checks", () => {
         { file: "packages/contracts/src/kinHost.ts", added: 40 },
         { file: t3, added: 10 },
         { file: "apps/server/src/brandNew.ts", added: 300, isNew: true },
-        { file: "apps/server/src/server.test.ts", added: 200 },
-        { file: "apps/web/src/components/Sidebar.browser.test.tsx", added: 50 },
+        { file: "apps/server/src/server.kin.test.ts", added: 200 },
+        { file: "apps/web/src/components/Sidebar.kin.browser.test.tsx", added: 50 },
         { file: "apps/web/src/routeTree.gen.ts", added: 120 },
         { file: "pnpm-lock.yaml", added: 500 },
       ]),
       [],
     );
+    // Kin's cases in T3's own test file count as Kin lines in a T3 file.
+    assert.lengthOf(check([{ file: "apps/server/src/server.test.ts", added: 11 }]), 1);
     assert.deepStrictEqual(check([{ file: t3, added: 11 }]), [
       `Kin adds 11 lines to T3's ${t3}. Put the code in a Kin file and reach it through a hook (an import, one list entry, one call). If it truly belongs here, say why in the commit: "T3-file: ${t3}: <why>".`,
     ]);
@@ -384,6 +476,30 @@ describe("kin branch checks", () => {
     );
     // A line without a reason lets nothing pass.
     assert.lengthOf(check([{ file: t3, added: 11 }], `T3-file: ${t3}:`), 1);
+
+    // What Kin already holds in T3's files is shown, not refused: largest first, tests counted.
+    const standing = (changes: ReadonlyArray<{ file: string; added: number; isNew?: boolean }>) =>
+      standingT3Footprint({
+        from: "803f21f6a5211dd83ca26e02f7382a2396338bee",
+        changes: changes.map((change) => ({ isNew: false, removed: 1, ...change })),
+        kinOwned,
+      });
+    assert.deepStrictEqual(
+      standing([
+        { file: t3, added: 4 },
+        { file: "apps/server/src/kin/lead/deep/Big.ts", added: 900 },
+        { file: "apps/server/src/brandNew.ts", added: 300, isNew: true },
+        { file: "apps/server/src/server.test.ts", added: 30 },
+        { file: "apps/web/src/routeTree.gen.ts", added: 120 },
+        { file: ".repos/effect/packages/effect/src/Effect.ts", added: 80 },
+      ]),
+      [
+        "T3 footprint since upstream 803f21f6a5: Kin adds 34 lines to 2 T3 files (30 of them in 1 test files). Largest:",
+        "  +30 -1 apps/server/src/server.test.ts",
+        `  +4 -1 ${t3}`,
+      ],
+    );
+    assert.deepStrictEqual(standing([{ file: "packages/contracts/src/kinHost.ts", added: 9 }]), []);
   });
 
   it.effect("counts a T3 file's lines only after the branch's last upstream sync", () => {
@@ -442,6 +558,56 @@ describe("kin branch checks", () => {
         (yield* run).map((problem) => problem.split(".")[0]),
         [`Kin adds 11 lines to T3's apps/server/src/server`],
       );
+    }).pipe(
+      Effect.provide(NodeServices.layer),
+      Effect.ensuring(Effect.sync(() => NodeFS.rmSync(root, { recursive: true, force: true }))),
+    );
+  });
+
+  it.effect("checks migrations against the Kin trunk when the ref is upstream's main", () => {
+    const root = NodeFS.realpathSync(
+      NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3-kin-trunk-")),
+    );
+    const env = {
+      ...Object.fromEntries(
+        Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_")),
+      ),
+      GIT_CONFIG_GLOBAL: NodeOS.devNull,
+      GIT_CONFIG_NOSYSTEM: "1",
+    };
+    const git = (...args: Array<string>) =>
+      NodeChildProcess.execFileSync(
+        "git",
+        ["-c", "user.name=Rhea", "-c", "user.email=rhea@ambermill.invalid", ...args],
+        { cwd: root, encoding: "utf8", env },
+      ).trim();
+    const migrations = (...ids: ReadonlyArray<string>) => {
+      NodeFS.mkdirSync(NodePath.dirname(NodePath.join(root, MIGRATIONS)), { recursive: true });
+      NodeFS.writeFileSync(NodePath.join(root, MIGRATIONS), loader(...ids));
+      git("add", ".");
+    };
+    return Effect.gen(function* () {
+      git("init", "-q", "-b", "main");
+      NodeFS.writeFileSync(NodePath.join(root, "README.md"), "T3\n");
+      git("add", ".");
+      git("commit", "-q", "-m", "upstream");
+      git("checkout", "-q", "-b", "kin");
+      migrations("1_First");
+      git("commit", "-q", "-m", "feat(kin): first");
+      git("checkout", "-q", "-b", "mine");
+      migrations("1_First", "3_Gap");
+      git("commit", "-q", "-m", "feat(kin): a gap\n\nPeople-change: none");
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      const { problems, notes } = yield* kinBranchChecks(root, "main", 14).pipe(
+        Effect.provideService(
+          ChildProcessSpawner.ChildProcessSpawner,
+          ChildProcessSpawner.make((command) => spawner.spawn(ChildProcess.setEnv(command, env))),
+        ),
+      );
+      assert.deepStrictEqual(problems, [
+        "Kin migration 3_Gap must be 2: the next free number above the base's highest (1), with no gap.",
+      ]);
+      assert.include(notes[0], "ran against kin");
     }).pipe(
       Effect.provide(NodeServices.layer),
       Effect.ensuring(Effect.sync(() => NodeFS.rmSync(root, { recursive: true, force: true }))),

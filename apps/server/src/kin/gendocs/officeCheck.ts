@@ -1,6 +1,7 @@
 import { SaxesParser, type SaxesTagNS } from "saxes";
 
 import { openZip, refuse, Refusal, ZIP_CAPS, type ZipCaps } from "../files/zipParts.ts";
+import { withArticle } from "../article.ts";
 import { svgProblem } from "./svgCheck.ts";
 
 // Whether an XLSX, DOCX or PPTX is only a document: its ZIP read under Kin's caps, each XML part
@@ -183,16 +184,18 @@ const relationshipsProblem = (read: Source, part: string) =>
       if (tag.local !== "Relationship") return;
       const type = plain(tag, "Type") ?? "";
       const kindName = type.split("/").at(-1) ?? type;
-      if (ACTIVE_RELATIONSHIP.test(type)) refuse(`has a ${kindName} relationship`);
+      if (ACTIVE_RELATIONSHIP.test(type)) refuse(`has ${withArticle(kindName)} relationship`);
       const mode = (plain(tag, "TargetMode") ?? "Internal").trim().toLowerCase();
       const target = (plain(tag, "Target") ?? "").trim();
       if (mode === "internal") {
         if (/^(?:[a-z][a-z0-9+.-]*:|[\\/]{2})/i.test(target))
-          refuse(`has a ${kindName} relationship inside the file that points outside it`);
+          refuse(
+            `has ${withArticle(kindName)} relationship inside the file that points outside it`,
+          );
         return;
       }
-      if (mode !== "external") refuse(`has a ${kindName} relationship Kin can't read`);
-      if (!HYPERLINK.test(type)) refuse(`links a ${kindName} from outside the file`);
+      if (mode !== "external") refuse(`has ${withArticle(kindName)} relationship Kin can't read`);
+      if (!HYPERLINK.test(type)) refuse(`links ${withArticle(kindName)} from outside the file`);
       const problem = linkProblem(target);
       if (problem !== undefined) refuse(`has ${problem}`);
     },

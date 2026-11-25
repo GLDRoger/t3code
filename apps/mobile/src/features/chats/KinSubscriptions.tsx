@@ -1,23 +1,21 @@
+import { KIN_MONEY } from "@t3tools/client-runtime/kin/kinMoney";
 import { KIN_RETRY, KIN_CHECK_CONNECTION } from "@t3tools/client-runtime/kin/kinAnswers";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
-import { kinListSend, KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
+import { KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
 import {
   KIN_SUBSCRIPTIONS,
   kinFinancialYearStart,
+  kinSubscriptionActions,
   kinSubscriptionsList,
   kinSubscriptionsView,
   type KinFigureLine,
   type KinSubscriptionRow,
+  type KinSubscriptionUndo,
   type KinSubscriptionsView,
 } from "@t3tools/client-runtime/kin/kinSubscriptions";
-import type { KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
-import {
-  EnvironmentId,
-  KinOrgId,
-  type KinListDefinition,
-  type KinRecordKey,
-} from "@t3tools/contracts";
+import { kinRateDay, type KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
+import { EnvironmentId, KinOrgId, type KinListDefinition } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { useState } from "react";
@@ -39,6 +37,7 @@ import { KinFoldSection, KinWorkLoading, KinWorkStaleNotice } from "./components
 import { KinEstimateText, KinSetRateLink } from "./KinMoneyEstimate";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 import {
   kinListsOf,
   useKinAskAgent,
@@ -123,6 +122,7 @@ function SubscriptionRow(props: {
   readonly onCancel?: () => void;
   readonly onUndo?: () => void;
 }) {
+  const grows = useKinTextGrows();
   const { row } = props;
   return (
     <View className="flex-row items-center gap-3 bg-grouped-card px-4 py-2.5">
@@ -135,7 +135,7 @@ function SubscriptionRow(props: {
         <View className="min-w-0 flex-1 gap-0.5">
           <Text
             textRole="body"
-            numberOfLines={1}
+            numberOfLines={kinLines(1, grows)}
             className={row.cancelled ? "text-foreground-muted" : "text-foreground"}
           >
             {row.title}
@@ -286,7 +286,7 @@ function Frame(props: {
                 {
                   accessibilityLabel: `Ask ${agent.name}`,
                   icon: "bubble.left" as const,
-                  onPress: () => agent.ask("About our subscriptions: "),
+                  onPress: () => agent.ask(KIN_SUBSCRIPTIONS.askAbout),
                 },
                 {
                   accessibilityLabel: KIN_SUBSCRIPTIONS.add,
@@ -322,7 +322,7 @@ function KinSubscriptionsGate(props: KinWorkTarget) {
   if (work._tag === "refused" || lists.state._tag === "refused")
     return (
       <Frame target={props} onBack={back}>
-        <EmptyState variant="plain" title="Not available" detail={KIN_SUBSCRIPTIONS.moneyKept} />
+        <EmptyState variant="plain" {...KIN_MONEY.onlyOwner} />
       </Frame>
     );
   if (!ready || lists.state._tag !== "ready")
@@ -331,7 +331,7 @@ function KinSubscriptionsGate(props: KinWorkTarget) {
         {lists.state._tag === "failed" ? (
           <EmptyState
             variant="plain"
-            title="Couldn't load subscriptions"
+            title={KIN_SUBSCRIPTIONS.loadFailed}
             detail={KIN_CHECK_CONNECTION}
             action={<Button tone="secondary" label={KIN_RETRY} onPress={lists.refresh} />}
           />
@@ -380,44 +380,16 @@ function KinSubscriptionsBody(
   const canChange = useAtomValue(kinClient.workUpdate.permissionAtom(environmentId));
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
-  const [undo, setUndo] = useState<{
-    key: KinRecordKey;
-    title: string;
-    repeat: KinSubscriptionRow["repeat"];
-  } | null>(null);
-  const cancellable = props.def.states.includes("dropped");
-  const setState = async (
-    row: KinSubscriptionRow,
-    cancel: boolean,
-    repeat: KinSubscriptionRow["repeat"] = null,
-  ) => {
-    setBusy(row.key);
-    setProblem(null);
-    const outcome = await kinListSend({
-      online: () => kinHostConnected(environmentId),
-      send: () =>
-        update({
-          environmentId,
-          input: {
-            orgId,
-            key: row.key as KinRecordKey,
-            rev: row.rev,
-            state: cancel
-              ? "dropped"
-              : props.def.defaultState === "dropped"
-                ? "open"
-                : props.def.defaultState,
-            // A cancelled one must not renew itself; undo puts its cycle back.
-            ...(cancel && row.repeat !== null ? { repeat: null } : {}),
-            ...(!cancel && repeat !== null ? { repeat } : {}),
-          },
-        }),
-    });
-    setBusy(null);
-    entries.refresh();
-    if (!outcome.ok) return setProblem(outcome.problem);
-    setUndo(cancel ? { key: row.key as KinRecordKey, title: row.title, repeat: row.repeat } : null);
-  };
+  const [undo, setUndo] = useState<KinSubscriptionUndo | null>(null);
+  const actions = kinSubscriptionActions({
+    environmentId,
+    orgId,
+    def: props.def,
+    online: () => kinHostConnected(environmentId),
+    update,
+    refresh: entries.refresh,
+    set: { busy: setBusy, problem: setProblem, undo: setUndo },
+  });
   const open = (key: string) =>
     navigation.navigate("KinWorkItem", {
       environmentId: String(environmentId),
@@ -431,7 +403,7 @@ function KinSubscriptionsBody(
   };
   const basis = view.monthly.flatMap((line) => (line.estimate === null ? [] : [line.estimate]));
   const rateBasis = (props.rates?.rates ?? []).map(
-    (rate) => `${rate.currency}: ${rate.rate} as of ${rate.asOf}`,
+    (rate) => `${rate.currency}: ${rate.rate} as of ${kinRateDay(rate.asOf)}`,
   );
   const rows = (list: ReadonlyArray<KinSubscriptionRow>, cancelled: boolean) =>
     list.map((row) => (
@@ -439,11 +411,11 @@ function KinSubscriptionsBody(
         key={row.key}
         row={row}
         busy={busy !== null}
-        canChange={canChange && cancellable}
+        canChange={canChange && actions.cancellable}
         onOpen={() => open(row.key)}
         {...(cancelled
-          ? { onUndo: () => void setState(row, false) }
-          : { onCancel: () => void setState(row, true) })}
+          ? { onUndo: () => void actions.restore(row) }
+          : { onCancel: () => void actions.cancel(row) })}
       />
     ));
   return (
@@ -459,11 +431,7 @@ function KinSubscriptionsBody(
           message={`Marked ${undo.title} cancelled.`}
           action={{
             label: "Undo",
-            onPress: () => {
-              const row = view.cancelled.find((one) => one.key === undo.key);
-              if (row !== undefined) void setState(row, false, undo.repeat);
-              setUndo(null);
-            },
+            onPress: () => actions.undo(undo, view.cancelled),
           }}
           onDismiss={() => setUndo(null)}
         />

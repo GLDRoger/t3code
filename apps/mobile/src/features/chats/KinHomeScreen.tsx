@@ -1,8 +1,18 @@
 import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import { KIN_TEAMMATE_WELCOME } from "@t3tools/client-runtime/kin/kinChatListRows";
-import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
-import { kinDockSelection, kinDockShown } from "@t3tools/client-runtime/kin/kinNavigation";
+import {
+  kinDockSelection,
+  kinDockShown,
+  type KinDestination,
+} from "@t3tools/client-runtime/kin/kinNavigation";
+import {
+  kinDockWithLists,
+  kinIsListSection,
+  kinListOfSection,
+  kinSectionName,
+  kinSectionRenamed,
+} from "@t3tools/client-runtime/kin/kinShell";
 import { kinAttentionBadge } from "@t3tools/client-runtime/kin/kinAttention";
 import { kinBadgeCount } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
@@ -10,10 +20,10 @@ import {
   kinDockTabs,
   type KinDockTab,
 } from "@t3tools/client-runtime/kin/kinJoin";
-import { kinWorkHostClients } from "@t3tools/client-runtime/kin/kinWork";
-import type { SessionGrantInput } from "@t3tools/contracts";
+import { KinListId, type SessionGrantInput } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useEffect } from "react";
+import * as Schema from "effect/Schema";
+import { useEffect, useState } from "react";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
@@ -29,24 +39,19 @@ import { NativeStackScreenOptions } from "../../native/StackHeader";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { environmentSession } from "../../state/session";
 import { KinChatsList } from "./KinChatsScreen";
+import { KinListTab } from "./KinListScreen";
 import { KinDock, kinDockClearance, type KinDockProps } from "./components/KinDock";
-import { useKinTasksBadge } from "./state/useKinTasksBadge";
-import { connectionAtomRuntime } from "../../connection/runtime";
+import { useKinTasksNeedsYou } from "./state/useKinAttention";
 import { KinPlace } from "./KinWorkScreen";
 import { KinTabContext, kinTabFoot } from "./components/KinTab";
 import { kinHomeTabAtom } from "./state/kinHomeTab";
-import {
-  useKinAccessEnded,
-  useKinAppShell,
-  useKinOwnerLevel,
-  useKinPlaceReach,
-} from "./state/kinChatOnly";
+import { kinPlacesAtom, useKinAccessEnded, useKinAppShell } from "./state/kinChatOnly";
 import { kinCachedDockAtom, saveKinDockAtom } from "./state/kinClient";
-import { useKinDocsLive } from "./state/useKinDocs";
 import { useKinHost } from "./state/useKinHost";
 import { useKinInbox } from "./state/useKinInbox";
-import { useKinMoneySummary } from "./state/useKinMoney";
-import { useKinWork, type KinWorkTarget } from "./state/useKinWork";
+import { kinListsOf, useKinLists } from "./state/useKinMoney";
+import { useKinShell } from "./state/useKinShell";
+import type { KinWorkTarget } from "./state/useKinWork";
 
 const ACCESS_ENDED = kinAccessEndedCopy("phone");
 
@@ -90,27 +95,9 @@ function KinHomeWithWork(props: {
   readonly session: SessionGrantInput | null;
   readonly workTarget: KinWorkTarget;
 }) {
-  const work = useKinWork(props.workTarget);
-  const money = useKinMoneySummary(props.workTarget, { enabled: true }).state;
-  const docs = useKinDocsLive(props.workTarget);
-  const ownerLevel = useKinOwnerLevel(props.workTarget.environmentId, props.session);
   const { environmentId } = props.workTarget;
-  const reach = useKinPlaceReach(environmentId);
-  const me = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId));
-  const live =
-    props.session === null || me === null
-      ? null
-      : kinDockTabs(
-          props.session,
-          ownerLevel,
-          {
-            money: money._tag === "refused",
-            // Only an answer from an older host takes Clients away, never one still on its way.
-            clients: work._tag === "ready" && !kinWorkHostClients(work.live.summary),
-            docs: docs.refused,
-          },
-          reach,
-        );
+  const places = useAtomValue(kinPlacesAtom(props.workTarget));
+  const live = props.session === null || !places.answered ? null : places.destinations;
   const cachedResult = useAtomValue(kinCachedDockAtom(environmentId));
   const cached = AsyncResult.getOrElse(cachedResult, () => null);
   const dock = kinDockShown({ live, cached });
@@ -125,13 +112,36 @@ function KinHomeWithWork(props: {
   useEffect(() => {
     if (toSave !== null) save({ environmentId, tabs: kinDockTabsOf(toSave) });
   }, [toSave, environmentId, save]);
-  return <KinHomeTabs tabs={dock.tabs} known={dock.known} workTarget={props.workTarget} />;
+  // List sections docked by the company fill the places left, once the host has said and their
+  // names are read; the device keeps only Kin's own places for a cold start.
+  const shell = useKinShell(environmentId);
+  const withLists = kinDockWithLists(dock.tabs, dock.known ? shell : null);
+  const lists = useKinLists(props.workTarget, { enabled: withLists.length > dock.tabs.length });
+  const names = new Map(kinListsOf(lists).map((def) => [def.list, def.name]));
+  const tabs = withLists.filter((tab) => {
+    const list = kinListOfSection(tab);
+    return list === null || names.has(list);
+  });
+  const titles = Object.fromEntries([
+    ...tabs.flatMap((tab) => {
+      const name = names.get(kinListOfSection(tab) ?? "");
+      return name === undefined ? [] : [[tab, name]];
+    }),
+    // The company's word for Clients ("Patients"), as every screen says it.
+    ...(kinSectionRenamed(shell) ? [["clients", kinSectionName(shell, "clients")]] : []),
+  ]);
+  return (
+    <KinHomeTabs tabs={tabs} titles={titles} known={dock.known} workTarget={props.workTarget} />
+  );
 }
 
-const kinDockTabsOf = (key: string) => key.split(",") as ReadonlyArray<KinDockTab>;
+const kinDockTabsOf = (key: string) => key.split(",") as ReadonlyArray<KinDestination>;
+const isListId = Schema.is(KinListId);
 
 function KinHomeTabs(props: {
   readonly tabs: ReadonlyArray<KinDockTab>;
+  /** A list section's tab is called by the list's own name. */
+  readonly titles?: Readonly<Record<string, string>>;
   /** The host has said which places these are; a cached or not-yet-known dock moves nobody. */
   readonly known: boolean;
   readonly workTarget: KinWorkTarget | null;
@@ -142,7 +152,12 @@ function KinHomeTabs(props: {
   const accessEnded = useKinAccessEnded().length > 0;
   const insets = useSafeAreaInsets();
   const held = useAtomValue(kinHomeTabAtom);
-  const { shown: tab, leave } = kinDockSelection({ held: held.tab, tabs, known: props.known });
+  const { shown: tab, leave } = kinDockSelection<KinDockTab>({
+    held: held.tab,
+    tabs,
+    known: props.known,
+  });
+  const list = kinListOfSection(tab);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the host took the open place away: let it go, so switching it back on doesn't reopen it
   useEffect(() => {
     if (leave) {
@@ -172,7 +187,9 @@ function KinHomeTabs(props: {
         }}
       />
       <KinTabContext value={docked ? { bottomClearance } : null}>
-        {tab !== "chats" && workTarget !== null ? (
+        {list !== null && isListId(list) && workTarget !== null ? (
+          <KinListTab key={tab} {...workTarget} list={list} />
+        ) : tab !== "chats" && !kinIsListSection(tab) && workTarget !== null ? (
           <KinPlace
             // Asked again to narrow Tasks, it starts again from what it was asked.
             key={`${tab}:${held.opened}`}
@@ -209,6 +226,7 @@ function KinHomeTabs(props: {
       ) : (
         <KinBadgedDock
           {...workTarget}
+          {...(props.titles === undefined ? {} : { titles: props.titles })}
           tabs={tabs}
           selectedTab={tab}
           onSelect={select}
@@ -221,16 +239,17 @@ function KinHomeTabs(props: {
 
 /**
  * The dock, with unread messages counted on Chats, and on Tasks what Needs you holds: the same
- * number as that heading (`useKinTasksBadge`).
+ * number as that heading (`useKinTasksNeedsYou`).
  */
 function KinBadgedDock(props: KinWorkTarget & KinDockProps) {
-  const count = useKinTasksBadge({ environmentId: props.environmentId, orgId: props.orgId });
+  const count = useKinTasksNeedsYou({ environmentId: props.environmentId, orgId: props.orgId });
   const badge = count === null ? null : kinAttentionBadge(count);
   return (
     <KinDock
       tabs={props.tabs}
       selectedTab={props.selectedTab}
       onSelect={props.onSelect}
+      {...(props.titles === undefined ? {} : { titles: props.titles })}
       badges={{ ...props.badges, ...(badge === null ? {} : { tasks: badge }) }}
     />
   );
@@ -238,8 +257,14 @@ function KinBadgedDock(props: KinWorkTarget & KinDockProps) {
 
 /** The Chats list's unread total, the same count as the app icon's badge. */
 function useKinUnreadBadge() {
-  const { state } = useKinInbox();
-  return state._tag === "ready" ? kinAttentionBadge(kinBadgeCount(state.inbox.value)) : null;
+  const { host, state } = useKinInbox();
+  const known = state._tag === "ready" ? kinBadgeCount(state.inbox.value) : null;
+  // Offline before the inbox is read again, the badge keeps the last number it showed.
+  const key = host._tag === "host" ? host.environmentId : null;
+  const [last, setLast] = useState({ key, count: known });
+  if (known !== null && (known !== last.count || key !== last.key)) setLast({ key, count: known });
+  const count = known ?? (last.key === key ? last.count : null);
+  return count === null ? null : kinAttentionBadge(count);
 }
 
 /** A tab's state that isn't its list, inside the scroll view that clears the floating bar. */

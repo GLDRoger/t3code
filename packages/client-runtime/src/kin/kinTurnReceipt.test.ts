@@ -70,6 +70,22 @@ describe("a turn's receipt", () => {
   });
 
   it.each([
+    ["a task", "W-1", "task", undefined, { key: "W-1", kind: "task" }],
+    ["a milestone", "M-1", "task", undefined, { key: "M-1", kind: "task" }],
+    ["a client", "C-1", "client", undefined, { key: "C-1", kind: "client" }],
+    ["a project", "P-1", "project", undefined, { key: "P-1", kind: "project" }],
+    ["a doc", "D-1", "doc", undefined, { key: "D-1", kind: "doc" }],
+    ["a deal", "DL-1", "entry", undefined, { key: "DL-1", kind: "entry" }],
+    ["a list's entry", "INV-1", "entry", undefined, { key: "INV-1", kind: "entry" }],
+    ["a contact, at its client", "CT-4", "entry", "C-2", { key: "C-2", kind: "client" }],
+  ] as const)("opens %s where it lives", (_name, key, kind, party, opens) => {
+    const [row] = kinTurnReceiptRows(
+      turn([item(key, 1, { kind, ...(party === undefined ? {} : { party }) })]),
+    ).rows;
+    expect(kinTurnReceiptTarget(row!, undefined)).toEqual({ _tag: "record", ...opens });
+  });
+
+  it.each([
     ["the change's own kind", "client", "client"],
     ["the reply's link, from an older host", undefined, "project"],
   ] as const)("opens as %s", (_name, kind, opens) => {

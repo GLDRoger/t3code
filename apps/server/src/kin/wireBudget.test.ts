@@ -1,409 +1,102 @@
 // @effect-diagnostics globalDate:off anyUnknownInErrorContext:off -- fixed invented dates; each read fails in its own way and a failure is recorded as a refusal.
-// Loaded first: the chat and trigger modules import each other.
-import "./chat/KinChatService.ts";
-import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, layer as withLayer } from "@effect/vitest";
 import {
+  AuthSessionId,
+  AuthStandardClientScopes,
+  KinAccessMeResult,
   KIN_REFRESH_TOPICS,
-  KinChatError,
-  KinDocsEvent,
-  KinDocsRpcs,
-  KinFinanceRpcs,
-  KIN_MONEY_PARTS,
+  KinAgentId,
+  KinChatHistoryResult,
+  KinChatListEvent,
+  KinChatSummary,
+  KinChatStreamEvent,
   KinMoneyAnswerRpcs,
-  KinMoneyEvent,
+  KinNumbersRpcs,
+  KIN_MONEY_PARTS,
   type KinMoneyPart,
-  KinOrgId,
   KinPersonId,
+  KinFinanceRpcs,
   KinPulseRpcs,
-  KinPulseEvent,
+  type KinPulseEvent,
   type KinPulseScreenRead,
   kinPulseApply,
-  KinRefreshes,
-  KinWorkEvent,
-  KinWorkRpcs,
+  type KinWorkEvent,
+  ThreadId,
 } from "@t3tools/contracts";
-import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
-import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
-import * as ServerConfig from "../config.ts";
+import { SessionStore } from "../auth/SessionStore.ts";
+import * as KinPeople from "./people/KinPeople.ts";
+import * as KinShell from "./shell/KinShell.ts";
+import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
+import { OrchestratorV2 } from "../orchestration-v2/Orchestrator.ts";
 import * as Sqlite from "../persistence/Sqlite.ts";
-import { KinIdentity, type PersonIdentity } from "./chat/KinIdentity.ts";
+import { previewRow } from "./chat/chatRowPreview.ts";
+import * as ChatHub from "./chat/KinChatHub.ts";
+import * as ChatRepository from "./chat/KinChatRepository.ts";
+import * as ChatService from "./chat/KinChatService.ts";
+import * as Groups from "./chat/KinGroups.ts";
+import {
+  type AgentIdentity,
+  KinIdentity,
+  KinIdentityConfig,
+  type PersonIdentity,
+} from "./chat/KinIdentity.ts";
 import * as RefreshHub from "./chat/KinRefreshHub.ts";
-import { subscribeRefreshes } from "./chat/refreshes.ts";
+import { environment } from "./chat/TaskCard.testkit.ts";
 import * as KinEventQueue from "./lead/KinEventQueue.ts";
-import { KinLevelGate } from "./lead/LevelGate.ts";
 import * as KinPersistence from "./persistence/KinPersistence.ts";
+import * as Presence from "./reply/KinPresence.ts";
+import { subscribeRefreshes } from "./chat/refreshes.ts";
 import * as KinPulse from "./pulse/KinPulse.ts";
 import * as Pulse from "./pulse/people.ts";
 import budget from "./kinWireBudget.json" with { type: "json" };
 import * as Docs from "./work/docs.ts";
+import * as Numbers from "./numbers/KinNumbers.ts";
 import * as Goals from "./work/goals.ts";
-import * as KinImport from "./work/KinImport.ts";
 import * as KinRecords from "./work/KinRecords.ts";
-import * as Clients from "./work/ownerClients.ts";
 import * as OwnerDocs from "./work/ownerDocs.ts";
 import { demandOfTick, makeMoneyStream } from "./work/moneyStream.ts";
 import * as Money from "./work/ownerMoney.ts";
 import * as MoneyAnswers from "./work/ownerMoneyAnswers.ts";
 import * as Work from "./work/ownerWork.ts";
 import * as WorkStream from "./work/workStream.ts";
+import {
+  as,
+  BASE_SIZE,
+  coOwnerId,
+  created,
+  day,
+  layer,
+  memberId,
+  NOW,
+  orgId,
+  ownerId,
+  ownerWriter,
+  READS,
+  rowsOf,
+  SCHEMAS,
+  type Services,
+  seed,
+  successOf,
+  UNPAGED_CEILING,
+  VIEWERS,
+  wireBytes,
+} from "./wireBudget.testkit.ts";
 
-// What Kin's hot reads send each kind of person, on a deterministic invented company. Like
-// AgentContextBudget.test.ts, kinWireBudget.json must equal the measurement, so an answer that
-// grows shows as an edit to that file in the same PR. Invented org, people and amounts only.
-
-const orgId = KinOrgId.make("org");
-const ownerId = KinPersonId.make("owner");
-const coOwnerId = KinPersonId.make("meera");
-const memberId = KinPersonId.make("zoya");
-const NOW = Date.parse("2026-11-12T06:00:00.000Z");
-const created = "2026-01-01T00:00:00.000Z";
-/** An answer with no `limit` a client could pass; paged answers are bounded by their page. */
-const UNPAGED_CEILING = 32 * 1024;
-
-const SIZE = { clients: 60, projects: 12, tasks: 200, invoices: 60, expenses: 60, docs: 100 };
-
-const day = (offset: number) => new Date(NOW + offset * 86_400_000).toISOString().slice(0, 10);
-const pick = <A>(list: ReadonlyArray<A>, index: number) => list[index % list.length]!;
-const THINGS = ["the booking API", "the pricing page", "the release notes", "the clinic dashboard"];
-
-/** The bench seed's shape, smaller: clients, projects, tasks and a year of money. */
-function importLines(): ReadonlyArray<string> {
-  const rows: Array<unknown> = [
-    {
-      format: "kin-import",
-      version: 1,
-      batch: "wire-budget",
-      source: "wire budget",
-      lists: [
-        { list: "invoices", template: "invoices" },
-        { list: "expenses", template: "expenses" },
-      ],
-    },
-  ];
-  for (let i = 0; i < SIZE.clients; i++)
-    rows.push({
-      client: { source: `c${i}`, name: `Invented Client ${i + 1}`, createdAt: day(-300) },
-    });
-  for (let i = 0; i < SIZE.projects; i++)
-    rows.push({
-      project: {
-        source: `p${i}`,
-        name: `Project ${i + 1}`,
-        client: `c${i * 5}`,
-        createdAt: day(-200),
-      },
-    });
-  for (let i = 0; i < SIZE.tasks; i++)
-    rows.push({
-      entry: {
-        source: `t${i}`,
-        list: "work",
-        title: `${pick(["Design", "Review", "Ship", "Fix"], i)} ${pick(THINGS, i)} (${i + 1})`,
-        project: `p${i % SIZE.projects}`,
-        state: i % 3 === 0 ? "done" : i % 5 === 0 ? "waiting" : "open",
-        due: day((i % 60) - 20),
-        createdAt: day(-90),
-        ...(i % 3 === 0 ? { closedAt: day(-2) } : {}),
-      },
-    });
-  for (let i = 0; i < SIZE.invoices; i++) {
-    const paid = i % 4 !== 0;
-    const amount = `${20_000 + i * 1_000}.00`;
-    rows.push({
-      entry: {
-        source: `i${i}`,
-        list: "invoices",
-        title: `Invoice ${i + 1}`,
-        client: `c${i % SIZE.clients}`,
-        project: `p${i % SIZE.projects}`,
-        state: paid ? "done" : "waiting",
-        date: day(-6 * i),
-        due: day(-6 * i + 15),
-        amount,
-        number: `WB/${i + 1}`,
-        createdAt: day(-6 * i),
-        ...(paid ? { payments: [{ source: `pay${i}`, amount, paidOn: day(-6 * i + 5) }] } : {}),
-      },
-    });
-  }
-  for (let i = 0; i < SIZE.expenses; i++)
-    rows.push({
-      entry: {
-        source: `e${i}`,
-        list: "expenses",
-        title: `Expense ${i + 1}`,
-        category: pick(["software", "travel", "rent"], i),
-        state: "done",
-        date: day(-6 * i),
-        amount: `${500 + i * 100}.00`,
-        createdAt: day(-6 * i),
-      },
-    });
-  return rows.map((row) => JSON.stringify(row));
-}
-
-const ownerWriter = {
-  actor: { _tag: "person" as const, personId: ownerId },
-  via: "owner" as const,
-};
-
-const seed = Effect.gen(function* () {
-  const sql = yield* SqlClient.SqlClient;
-  yield* TestClock.setTime(NOW);
-  yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Invented Studio', ${created})`;
-  yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
-      dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
-    VALUES (${orgId}, 'Asia/Kolkata', '08:00', '18:00', '02:00', 0, 1, '09:00', '[]')`;
-  for (const [person, access] of [
-    [ownerId, "owner"],
-    [coOwnerId, "co_owner"],
-    [memberId, "member"],
-  ] as const)
-    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access,
-        sees_docs, sees_clients)
-      VALUES (${person}, ${orgId}, ${person}, ${person}, ${created}, ${access}, 1, 1)`;
-  // Change numbers are kept for teammates who have signed in.
-  yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
-    VALUES ('session-zoya', ${orgId}, ${memberId}, 0)`;
-  yield* (yield* KinImport.KinImport).apply(orgId, ownerId, Stream.fromIterable(importLines()));
-  for (let i = 0; i < SIZE.docs; i++)
-    yield* Docs.create(
-      orgId,
-      ownerWriter,
-      {},
-      {
-        title: `Invented doc ${i + 1}`,
-        body: `# Invented doc ${i + 1}\n\nWhat was agreed, in a few invented lines.\n`,
-        owner: { _tag: "person", personId: ownerId },
-        summary: "Created",
-        originKey: `wire-budget:doc:${i}`,
-        ...(i % 4 === 0 ? { company: true } : {}),
-      },
-    );
-  // Some open tasks are the member's, as the owner hands them out.
-  const open = yield* sql<{ key: string }>`SELECT key FROM kin_records
-    WHERE org_id = ${orgId} AND register_id = 'work' AND state NOT IN ('done', 'dropped')
-    ORDER BY key LIMIT 30`;
-  for (const { key } of open.filter((_, i) => i % 2 === 0))
-    yield* Work.assign(as(ownerId), {
-      orgId,
-      key,
-      to: { _tag: "person", personId: memberId },
-    });
-});
-
-const as = (personId: KinPersonId): ReadonlyArray<PersonIdentity> => [
-  { _tag: "person", orgId, personId },
-];
-
-const successOf = (
-  rpcs: ReadonlyArray<{ readonly _tag: string; readonly successSchema: Schema.Top }>,
-  tag: string,
-) => rpcs.find((rpc) => rpc._tag === tag)!.successSchema;
-/** Bytes of the JSON the socket carries: the RPC's success schema, encoded. */
-const wireBytes = (schema: Schema.Top, value: unknown) =>
-  Buffer.byteLength(
-    JSON.stringify(Schema.encodeUnknownSync(schema as Schema.Codec<unknown>)(value)),
-  );
-
-const SCHEMAS = {
-  list: successOf(KinWorkRpcs, "kin.work.list"),
-  summary: successOf(KinWorkRpcs, "kin.work.summary"),
-  parties: successOf(KinWorkRpcs, "kin.work.parties"),
-  projects: successOf(KinWorkRpcs, "kin.work.projects"),
-  subscribe: KinWorkEvent,
-  money: successOf(KinFinanceRpcs, "kin.work.money"),
-  lists: successOf(KinFinanceRpcs, "kin.work.lists"),
-  docs: successOf(KinDocsRpcs, "kin.docs.list"),
-  pulse: successOf(KinPulseRpcs, "kin.pulse.read"),
-  pulseEvent: KinPulseEvent,
-  docsEvent: KinDocsEvent,
-  moneyEvent: KinMoneyEvent,
-  refreshes: KinRefreshes,
-};
-
-type Services = Layer.Success<typeof layer>;
-type Run = (
-  people: ReadonlyArray<PersonIdentity>,
-  me: KinPersonId,
-) => Effect.Effect<object, unknown, Services>;
-
-interface Read {
-  readonly name: string;
-  /** A client can pass a `limit`; unpaged answers are held under `UNPAGED_CEILING`. */
-  readonly paged: boolean;
-  readonly schema: Schema.Top;
-  /** The answer's field that holds its rows; none for a summary. */
-  readonly rows?: string;
-  readonly run: Run;
-}
-
-const endOfToday = new Date(NOW + 86_400_000).toISOString();
-const weekAgo = new Date(NOW - 7 * 86_400_000).toISOString();
-
-/** Each hot read as today's web and phone ask it; `Legacy` ones as an older phone app still does. */
-const READS: ReadonlyArray<Read> = [
-  {
-    name: "taskPage",
-    paged: true,
-    schema: SCHEMAS.list,
-    rows: "rows",
-    run: (people) => Work.list(people, { orgId, open: true, acceptCompactRows: true }),
-  },
-  {
-    name: "taskPageLegacy",
-    paged: true,
-    schema: SCHEMAS.list,
-    rows: "records",
-    run: (people) => Work.list(people, { orgId, open: true }),
-  },
-  {
-    name: "dueToday",
-    paged: true,
-    schema: SCHEMAS.list,
-    rows: "rows",
-    run: (people, me) =>
-      Work.list(people, {
-        orgId,
-        owner: { _tag: "person", personId: me },
-        open: true,
-        dueBy: endOfToday,
-        limit: 20,
-        acceptCompactRows: true,
-      }),
-  },
-  {
-    name: "summary",
-    paged: false,
-    schema: SCHEMAS.summary,
-    run: (people) => Work.summary(people, { orgId }),
-  },
-  {
-    name: "money",
-    paged: false,
-    schema: SCHEMAS.money,
-    run: (people) => Money.money(people, { orgId, upcomingRows: false }),
-  },
-  {
-    name: "moneyLegacy",
-    paged: true,
-    schema: SCHEMAS.money,
-    rows: "upcoming",
-    run: (people) => Money.money(people, { orgId }),
-  },
-  {
-    name: "lists",
-    paged: false,
-    schema: SCHEMAS.lists,
-    rows: "lists",
-    run: (people) => Money.lists(people, { orgId }),
-  },
-  {
-    name: "docsPage",
-    paged: true,
-    schema: SCHEMAS.docs,
-    rows: "docs",
-    run: (people) => OwnerDocs.list(people, { orgId, acceptSlimLatest: true }),
-  },
-  {
-    name: "docsPageLegacy",
-    paged: true,
-    schema: SCHEMAS.docs,
-    rows: "docs",
-    run: (people) => OwnerDocs.list(people, { orgId }),
-  },
-  {
-    name: "docsTotal",
-    paged: false,
-    schema: SCHEMAS.docs,
-    run: (people) => OwnerDocs.list(people, { orgId, limit: 1, acceptSlimLatest: true }),
-  },
-  {
-    name: "docsChangedThisWeek",
-    paged: false,
-    schema: SCHEMAS.docs,
-    run: (people) =>
-      OwnerDocs.list(people, { orgId, limit: 1, changedSince: weekAgo, acceptSlimLatest: true }),
-  },
-  {
-    name: "needsYou",
-    paged: true,
-    schema: SCHEMAS.pulse,
-    rows: "facts",
-    run: (people) => Pulse.read(people, { orgId, includeHandled: true, limit: 8 }),
-  },
-  {
-    name: "attentionAll",
-    paged: true,
-    schema: SCHEMAS.pulse,
-    rows: "facts",
-    run: (people) => Pulse.read(people, { orgId, includeHandled: true }),
-  },
-  {
-    name: "attentionMoney",
-    paged: true,
-    schema: SCHEMAS.pulse,
-    rows: "facts",
-    run: (people) =>
-      Pulse.read(people, { orgId, includeHandled: true, scope: { family: "money" } }),
-  },
-  {
-    name: "clients",
-    paged: true,
-    schema: SCHEMAS.parties,
-    rows: "parties",
-    run: (people) => Clients.parties(people, { orgId }),
-  },
-  {
-    name: "projects",
-    paged: true,
-    schema: SCHEMAS.projects,
-    rows: "projects",
-    run: (people) => Clients.projects(people, { orgId }),
-  },
-];
-
-const rowsOf = (value: object, field: string | undefined) => {
-  if (field === undefined) return 1;
-  const held: unknown = (value as Record<string, unknown>)[field];
-  return Array.isArray(held) ? held.length : 0;
-};
-
-const VIEWERS = [
-  ["owner", ownerId],
-  ["coOwner", coOwnerId],
-  ["member", memberId],
-] as const;
-
-const identity = Layer.mock(KinIdentity)({
-  owner: { _tag: "person" as const, orgId, personId: ownerId },
-  isAgentThread: () => false,
-  isLeadThread: () => false,
-});
-const gate = Layer.mock(KinLevelGate)({
-  ask: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
-});
-const layer = KinImport.layer.pipe(
-  Layer.provideMerge(Layer.mergeAll(KinRecords.layer, identity, gate)),
-  Layer.provideMerge(RefreshHub.layer),
-  Layer.provideMerge(KinEventQueue.layer),
-  Layer.provideMerge(KinPersistence.layer),
-  Layer.provideMerge(Sqlite.layerMemory),
-  Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-wire-budget-" })),
-  Layer.provideMerge(NodeServices.layer),
-  Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
-);
+// What Kin's hot reads send each kind of person on an invented company; kinWireBudget.json must
+// equal the measurement, so growth shows as that file's diff in the PR. At a real company's size,
+// with a time ceiling per read, it runs nightly, and by hand from the repo root:
+//   KIN_WIRE_ENTRIES=20000 node apps/server/scripts/kin-wire-scaled.ts
 
 /**
  * Every viewer's `kin.work.subscribe` items for one create and one assignment, up to the
@@ -418,7 +111,7 @@ const oneChange = Effect.fn("KinWireBudget.oneChange")(function* (
     Effect.gen(function* () {
       const ready = yield* Deferred.make<void>();
       let count = 0;
-      const fiber = yield* Work.subscribe(as(personId), { orgId }).pipe(
+      const fiber = yield* WorkStream.subscribeChanged(as(personId), { orgId }).pipe(
         Stream.tap(() => (count++ === 0 ? Deferred.succeed(ready, undefined) : Effect.void)),
         // The first item is where things stand; the next one without a key closes the window.
         Stream.takeUntil((item) => count > 1 && item.key === undefined),
@@ -782,10 +475,166 @@ const moneyChange = Effect.fn("KinWireBudget.moneyChange")(function* () {
   return measured;
 });
 
+/**
+ * The chat list at 300 chats whose last message is an agent's 1,500-character page: the
+ * snapshot every app open and reconnect sends, and one chat's row after a message.
+ */
+const chatList = () => {
+  const section = "- An invented invoice for the venue was paid in full today.\n".repeat(25);
+  const body = `## Needs you\n- Approve the venue deposit\n\n## Money\n${section}`.slice(0, 1_500);
+  const decode = Schema.decodeUnknownSync(KinChatSummary);
+  const chat = (i: number) =>
+    decode({
+      orgId,
+      chatId: `chat-${i}`,
+      kind: "direct",
+      title: null,
+      teamId: null,
+      lastSeq: 400,
+      lastMessageAt: created,
+      createdAt: created,
+      archivedAt: null,
+      members: [
+        { principal: { _tag: "person", personId: ownerId }, role: "owner" },
+        { principal: { _tag: "agent", agentId: `agent-${i % 8}` }, role: "member" },
+      ].map((member, m) => ({
+        ...member,
+        orgId,
+        chatId: `chat-${i}`,
+        memberId: `member-${i}-${m}`,
+        joinedAt: created,
+        leftAt: null,
+        mutedUntil: null,
+      })),
+      lastMessage: {
+        orgId,
+        chatId: `chat-${i}`,
+        messageId: `message-${i}`,
+        seq: 400,
+        author: {
+          _tag: "agent",
+          agentId: `agent-${i % 8}`,
+          memberId: `member-${i}-1`,
+          ownerPersonId: ownerId,
+          threadId: `thread-${i % 8}`,
+        },
+        authorRole: "member",
+        kind: "text",
+        body,
+        intent: "answer",
+        mentions: [],
+        replyTo: null,
+        widgetId: null,
+        floorRunId: null,
+        status: "posted",
+        sentBy: null,
+        createdAt: created,
+        editedAt: null,
+      },
+      unread: i % 4,
+    });
+  const chats = Array.from({ length: 300 }, (_, i) => chat(i));
+  const measured: Record<string, number> = {};
+  for (const [name, row] of [
+    ["whole", (summary: KinChatSummary) => summary],
+    ["preview", (summary: KinChatSummary) => previewRow(summary, () => false)],
+  ] as const) {
+    measured[`chatList.${name}.snapshotBytes`] = wireBytes(KinChatListEvent, {
+      _tag: "snapshot",
+      chats: chats.map(row),
+      waiting: [],
+    });
+    measured[`chatList.${name}.chatBytes`] = wireBytes(KinChatListEvent, {
+      _tag: "chat",
+      chat: row(chats[0]!),
+    });
+  }
+  return measured;
+};
+
+const accessBytes = Effect.fn("KinWireBudget.accessBytes")(function* () {
+  const identity = yield* KinIdentity;
+  const people = yield* KinPeople.make.pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        Layer.mock(SessionStore)({ cookieName: "test", legacyCookieName: undefined }),
+        Layer.mock(ChatRepository.KinChatRepository)({}),
+        Layer.mock(ChatHub.KinChatHub)({}),
+        Layer.succeed(KinIdentity, {
+          ...identity,
+          resolve: (session) => Effect.succeed(as(KinPersonId.make(session.subject))),
+        }),
+      ),
+    ),
+  );
+  const shell = yield* KinShell.KinShell;
+  const measured: Record<string, number> = {};
+  for (const [label, on] of [
+    ["accessMe", true],
+    ["accessMeDealsOff", false],
+    ["accessMeClientsRenamed", true],
+  ] as const) {
+    if (!on) yield* shell.set(orgId, ownerId, 0, [{ id: "deals", on }]);
+    if (label === "accessMeClientsRenamed")
+      yield* shell.set(orgId, ownerId, 1, [
+        { id: "clients", on: true, name: "Donors", noun: "donor" },
+      ]);
+    for (const [name, personId] of VIEWERS) {
+      const result = yield* people.accessMe(
+        {
+          sessionId: AuthSessionId.make(personId),
+          subject: personId,
+          method: "browser-session-cookie",
+          scopes: AuthStandardClientScopes,
+        },
+        { orgId },
+      );
+      expect(result.shell?.sections.find((section) => section.id === "deals")?.on).toBe(on);
+      measured[`${name}.${label}.bytes`] = wireBytes(KinAccessMeResult, result);
+      measured[`${name}.${label}.rows`] = rowsOf(result, undefined);
+    }
+  }
+  return measured;
+});
+
+const numbersBytes = Effect.fn("KinWireBudget.numbers")(function* () {
+  const owner = as(ownerId)[0]!;
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+    VALUES (${orgId}, 'goals', 'Goals', 'G', 1, ${NOW}) ON CONFLICT DO NOTHING`;
+  yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+      owner_id, created_by_kind, origin_key, fields_json, created_at, updated_at)
+    VALUES (${orgId}, 'wire-number', 'goals', 'G-1', 'Daily users', 'person', ${ownerId},
+      'system', 'wire-number', '{"measure":"manual","unit":"users","direction":"up","below":"4000"}',
+      ${NOW}, ${NOW})`;
+  const asOf = day(0);
+  yield* Numbers.record(owner, [
+    { number: "G-1", value: "4210", asOf, source: "Invented daily report" },
+  ]);
+  const list = yield* Numbers.list(owner);
+  const history = yield* Numbers.values(owner, "G-1", asOf, asOf);
+  expect(list.numbers).toHaveLength(1);
+  expect(history.values).toHaveLength(1);
+  expect((yield* Numbers.list(as(memberId)[0]!)).numbers).toEqual([]);
+  return {
+    "owner.numbers.list.bytes": wireBytes(successOf(KinNumbersRpcs, "kin.numbers.list"), list),
+    "owner.numbers.list.rows": list.numbers.length,
+    "owner.numbers.values.bytes": wireBytes(
+      successOf(KinNumbersRpcs, "kin.numbers.values"),
+      history,
+    ),
+    "owner.numbers.values.rows": history.values.length,
+  };
+});
+
+/** The pinned keys of one test: chat's are `chat.`, every other key is the hot reads'. */
+const pinned = (chat: boolean) =>
+  Object.fromEntries(Object.entries(budget).filter(([key]) => key.startsWith("chat.") === chat));
+
 withLayer(layer)("Kin wire budget", (it) => {
   it.effect("hot reads and one change's stream match kinWireBudget.json", () =>
     Effect.gen(function* () {
-      yield* seed;
+      yield* seed(BASE_SIZE);
       const measured: Record<string, number> = {};
       const over: Array<string> = [];
       const rereadBytes = new Map<string, number>();
@@ -813,12 +662,197 @@ withLayer(layer)("Kin wire budget", (it) => {
       Object.assign(measured, yield* reconnect());
       Object.assign(measured, yield* Effect.scoped(attentionMove()));
       Object.assign(measured, yield* Effect.scoped(moneyChange()));
+      Object.assign(measured, chatList());
+      Object.assign(measured, yield* numbersBytes());
+      Object.assign(measured, yield* accessBytes().pipe(Effect.provide(KinShell.layer)));
 
       expect(over, `Unpaged Kin reads over ${UNPAGED_CEILING} bytes: page them.`).toEqual([]);
       expect(
         measured,
         "Set kinWireBudget.json to the measured values. Growth shows in review as that file's diff; say why in the PR.",
-      ).toEqual(budget);
+      ).toEqual(pinned(false));
+    }),
+  );
+});
+
+// Chat on its own layer, without the records and pulse the reads above need.
+const chatLayer = Layer.mergeAll(Groups.layer, ChatService.layer, KinEventQueue.layer).pipe(
+  Layer.provideMerge(
+    KinIdentity.layer.pipe(
+      Layer.provide(
+        Layer.succeed(KinIdentityConfig, {
+          orgName: "Ambermill",
+          ownerHandle: "rhea",
+          ownerDisplayName: "Rhea",
+        }),
+      ),
+    ),
+  ),
+  Layer.provideMerge(Presence.layer),
+  Layer.provideMerge(ChatHub.layer),
+  Layer.provideMerge(ChatRepository.layer),
+  Layer.provideMerge(Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory)),
+  Layer.provideMerge(environment),
+);
+
+const LINES = [
+  "Morning all. The venue wants the final floor plan by Thursday; can we close it today?",
+  "Yes. The plan from Tuesday still has the old stage. I'll draft the change and send it over.",
+  "I spoke to the caterer: numbers are due Friday, and they hold the menu until then.",
+  "Noted. I've put Friday on the guest list task and moved the menu tasting to next week.",
+  "The pricing page copy is ready for a look. Two lines still need a number from Finance.",
+  "Finance says the early bird price stays at the same amount. I've added it to the draft.",
+];
+
+/**
+ * The team room as each kind of person reads it: the chat list's first item, one page of
+ * history, and what their open chat is sent for a task card and for one reaction.
+ */
+const chatBudget = Effect.fn("KinWireBudget.chat")(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const repo = yield* ChatRepository.KinChatRepository;
+  const chats = yield* ChatService.KinChatService;
+  const groups = yield* Groups.KinGroups;
+  const identity = yield* KinIdentity;
+  const { owner } = identity;
+  const { orgId: chatOrg } = owner;
+  yield* TestClock.setTime(NOW);
+  const at = "2026-11-01T00:00:00.000Z";
+  const agentId = KinAgentId.make("chief");
+  const threadId = ThreadId.make("chief-thread");
+  yield* repo.insertAgent({
+    orgId: chatOrg,
+    agentId,
+    ownerPersonId: owner.personId,
+    displayName: "Chief of staff",
+    role: "lead",
+    createdAt: at,
+  });
+  yield* identity.registerAgentThread({ orgId: chatOrg, agentId, threadId });
+  const direct = yield* chats.createDirect(owner, { orgId: chatOrg, agentId });
+  yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json,
+      worker_projects_json, owner_chat_id)
+    VALUES (${agentId}, ${chatOrg}, 'Chief of staff', 0, '{}', '[]', ${direct.chatId})`;
+  const teammate = Effect.fn("KinWireBudget.teammate")(function* (
+    id: string,
+    name: string,
+    access: "co_owner" | "member",
+  ) {
+    const personId = KinPersonId.make(id);
+    yield* repo.insertPerson({
+      orgId: chatOrg,
+      personId,
+      handle: id,
+      displayName: name,
+      githubLogin: null,
+      access,
+      createdAt: at,
+    });
+    return { _tag: "person" as const, orgId: chatOrg, personId };
+  });
+  const meera = yield* teammate("meera", "Meera", "co_owner");
+  const zoya = yield* teammate("zoya", "Zoya", "member");
+  const room = yield* groups.create([owner], {
+    orgId: chatOrg,
+    title: "Ambermill launch",
+    agentIds: [agentId],
+    personIds: [meera.personId, zoya.personId],
+  });
+  const lead: AgentIdentity = {
+    _tag: "agent",
+    orgId: chatOrg,
+    agentId,
+    ownerPersonId: owner.personId,
+    threadId,
+    hostPosted: true,
+  };
+  const speakers = [owner, lead, meera, lead, zoya, lead] as const;
+  let last = 0;
+  for (let i = 0; i < 30; i++) {
+    const who = speakers[i % speakers.length]!;
+    const sent = yield* chats.send(who, {
+      chatId: room.chatId,
+      clientMessageId: `wire-budget-chat-${i}`,
+      body: LINES[i % LINES.length]!,
+      ...(who._tag === "agent" ? { intent: "answer" as const } : {}),
+    });
+    last = sent.seq;
+  }
+  const viewers = [
+    ["owner", owner],
+    ["coOwner", meera],
+    ["member", zoya],
+  ] as const;
+  const measured: Record<string, number> = {};
+  const watching = yield* Effect.forEach(viewers, ([name, viewer]) =>
+    Effect.gen(function* () {
+      const inbox = yield* Stream.runHead(chats.subscribeChats([viewer], {})).pipe(
+        Effect.map(Option.getOrThrow),
+      );
+      measured[`chat.${name}.inbox.bytes`] = wireBytes(KinChatListEvent, inbox);
+      const page = yield* chats.history(viewer, {
+        chatId: room.chatId,
+        beforeSeq: last + 1,
+        limit: 50,
+      });
+      measured[`chat.${name}.history.bytes`] = wireBytes(KinChatHistoryResult, page);
+      measured[`chat.${name}.history.rows`] = page.messages.length;
+      const events = yield* Queue.unbounded<KinChatStreamEvent>();
+      yield* chats.subscribe(viewer, { chatId: room.chatId }).pipe(
+        Stream.runForEach((event) => Queue.offer(events, event)),
+        Effect.forkScoped,
+      );
+      const first = yield* Queue.take(events);
+      if (first._tag !== "backlog") return yield* Effect.die(new Error(`${name}: no backlog`));
+      return { name, events };
+    }),
+  );
+  /** Each viewer's stream up to and including the event `done` names. */
+  const heard = Effect.fn("KinWireBudget.heard")(function* (
+    change: string,
+    done: (event: KinChatStreamEvent) => boolean,
+  ) {
+    for (const { name, events } of watching) {
+      const items: Array<KinChatStreamEvent> = [];
+      while (items.length === 0 || !done(items.at(-1)!)) items.push(yield* Queue.take(events));
+      measured[`chat.${name}.${change}.items`] = items.length;
+      measured[`chat.${name}.${change}.bytes`] = items.reduce(
+        (sum, item) => sum + wireBytes(KinChatStreamEvent, item),
+        0,
+      );
+    }
+  });
+  const card = yield* chats
+    .createTaskCard({
+      audience: "chat",
+      orgId: chatOrg,
+      chatId: room.chatId,
+      authorAgentId: agentId,
+      threadId: ThreadId.make("chief-task"),
+      title: "Invented: redraw the floor plan with the new stage",
+      model: "invented-model",
+    })
+    .pipe(
+      Effect.provide(
+        Layer.mock(OrchestratorV2)({ getThreadShell: (id) => Effect.succeed(liveThreadShell(id)) }),
+      ),
+    );
+  yield* heard("messageWithCard", (event) =>
+    event._tag === "widget" ? event.widget.widgetId === card.widgetId : false,
+  );
+  yield* chats.react(owner, { messageId: card.messageId, emoji: "👍", on: true });
+  yield* heard("reaction", (event) => event._tag === "reaction");
+  return measured;
+});
+
+withLayer(chatLayer)("Kin chat wire budget", (it) => {
+  it.effect("the team room's list, history, card and reaction match kinWireBudget.json", () =>
+    Effect.gen(function* () {
+      const measured = yield* Effect.scoped(chatBudget());
+      expect(
+        measured,
+        "Set kinWireBudget.json's chat keys to the measured values; say why in the PR.",
+      ).toEqual(pinned(true));
     }),
   );
 });

@@ -12,16 +12,20 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import * as McpToolAccess from "../../../mcp/McpToolAccess.ts";
 import { withAgentsAs } from "../../github/appRepos.ts";
-import { ghApiLayer, ownerGitHubReview } from "../../github/GitHubWatch.ts";
+import { ghApiLayer } from "../../github/GitHubWatch.ts";
 import { agentsView, gitHubApp } from "../../github/KinGitHubApp.ts";
 import { isMemoryRepo, repoList, setRepo } from "../../github/githubWatchStore.ts";
 import { linkGithubItem } from "../../github/githubLink.ts";
+import { askReview, postReview } from "../../github/reviewAsk.ts";
 import { SHARED_REFUSAL } from "../Audience.ts";
 import { toolAdmitted } from "../SharedTools.ts";
 import { laneFor } from "../../reply/replyLane.ts";
 import { KinChatService } from "../../chat/KinChatService.ts";
 import { KinServer } from "../../KinServer.ts";
 import * as Questions from "../../questions/openQuestions.ts";
+import { askPerson } from "../../questions/askPerson.ts";
+import { reopenAsked, turnTaskKeys } from "../../questions/cardTask.ts";
+import { normaliseAbout } from "../../questions/rules.ts";
 import * as CardActions from "../../widgets/cardActions.ts";
 import * as CardPlans from "../../widgets/cardPlans.ts";
 import * as ChoiceCard from "../../widgets/choiceCard.ts";
@@ -31,10 +35,13 @@ import { KinTeam } from "../../team/KinTeam.ts";
 import { KinLevelGate } from "../LevelGate.ts";
 import { LeadMemory, resolveLead } from "../LeadMemory.ts";
 import { readPeople } from "../peopleRead.ts";
+import { readKinComputer } from "../../host/agentRead.ts";
 import { updatePeople } from "../peopleUpdate.ts";
 import { setAway } from "../awaySet.ts";
 import { updateAgent } from "../agentUpdate.ts";
 import { wordOf } from "../../pulse/holds.ts";
+import * as OwnMessages from "../../chat/ownMessages.ts";
+import { KinPushSender } from "../../push/KinPushSender.ts";
 import { KinLeadToolkit } from "./tools.ts";
 
 const isKinChatError = Schema.is(KinChatError);
@@ -68,6 +75,11 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
     Effect.fn("KinLeadToolkit.leads")(function* () {
       return yield* (yield* KinHandoff).leads(yield* McpInvocationContext);
     }),
+  ),
+  kin_computer: McpToolAccess.reads(
+    Effect.fn("KinLeadToolkit.computer")(function* () {
+      return yield* readKinComputer(yield* resolveLead(yield* McpInvocationContext));
+    }, Effect.mapError(failure)),
   ),
   people_read: McpToolAccess.reads(
     Effect.fn("KinLeadToolkit.peopleRead")(function* () {
@@ -121,6 +133,15 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       return yield* (yield* KinTeam).say(yield* McpInvocationContext, input);
     }),
   ),
+  kin_ask_person: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.askPerson")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      return yield* askPerson({ ...lead, wakeupId: KinWakeupId.make(lead.wakeupId) }, input, {
+        chat: yield* KinChatService,
+        gate: yield* KinLevelGate,
+      });
+    }, Effect.mapError(failure)),
+  ),
   kin_ask: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.ask")(function* (input) {
       if (input.options.length < 2)
@@ -148,6 +169,12 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       const drawn = yield* drawAll;
       const asked = { ...card, actions: drawn };
       const options = ChoiceCard.choiceCardState(asked).options;
+      const room = ChoiceCard.detailRoom(options);
+      if (card.detail !== undefined && card.detail.trim() !== "" && card.detail.length > room)
+        return yield* new KinChatError({
+          reason: "invalid_state",
+          message: ChoiceCard.detailTooLong(card.detail.length, room),
+        });
       const plans = options.flatMap((option, index) => {
         const one = drawn[index];
         return one === undefined ? [] : [{ optionId: option.optionId, plan: one.plan }];
@@ -179,7 +206,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       const at = named[0];
       const defaultPlan = at === undefined ? undefined : drawn[at]?.plan;
       // A refused repeat posts nothing; an allowed one is stored in its card's own transaction.
-      const plan = yield* Questions.planAsk({
+      const planned = yield* Questions.planAsk({
         orgId: lead.orgId,
         agentId: lead.agentId,
         chatId,
@@ -199,7 +226,18 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         ownerLevelAsked:
           (yield* wordOf({ orgId: lead.orgId, agentId: lead.agentId, wakeupId }))?.ownerLevel ===
           true,
+        wakeupId,
+        detail: card.detail,
       });
+      // Asked in a task's own turn, the card is about that task too: it can't close under it.
+      const turn = { orgId: lead.orgId, agentId: lead.agentId, wakeupId };
+      const plan =
+        planned === undefined
+          ? undefined
+          : {
+              ...planned,
+              about: normaliseAbout([...planned.about, ...(yield* turnTaskKeys(turn))]),
+            };
       // Drawn again inside the card's transaction: what was checked is what is stored.
       const recheck = drawAll.pipe(
         Effect.flatMap((again) =>
@@ -241,6 +279,8 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
                 });
               }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       );
+      if (plan !== undefined)
+        yield* reopenAsked({ ...turn, personId: plan.personId, about: plan.about });
       return plan === undefined
         ? {
             widgetId: result.widgetId,
@@ -360,6 +400,70 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       );
     }, Effect.mapError(failure)),
   ),
+  message_withdraw: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.messageWithdraw")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      const wakeupId = KinWakeupId.make(lead.wakeupId);
+      const services = Option.getOrThrow((yield* KinServer).services);
+      const chatId = yield* OwnMessages.chatOfMessage(lead.orgId, input.messageId).pipe(
+        Effect.provideContext(services),
+      );
+      if (chatId === undefined)
+        return yield* new KinChatError({
+          reason: "not_found",
+          message: OwnMessages.OWN_MESSAGE_REFUSALS.unknown,
+        });
+      const withdrawn = yield* Context.get(services, KinLevelGate).amend(
+        { ...lead, wakeupId },
+        chatId,
+        OwnMessages.withdrawOwn(
+          { ...lead, ...input, now: yield* Clock.currentTimeMillis },
+          Context.get(services, KinChatService),
+          Context.get(services, KinEventQueue),
+        ).pipe(Effect.provideContext(services), Effect.mapError(failure)),
+      );
+      // Its chat's banner shows the words still unread there, quietly, or goes.
+      yield* Context.get(services, KinPushSender).notify({
+        _tag: "restate",
+        orgId: lead.orgId,
+        chatId,
+        messageId: input.messageId,
+      });
+      return withdrawn;
+    }, Effect.mapError(failure)),
+  ),
+  message_replace: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.messageReplace")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      const wakeupId = KinWakeupId.make(lead.wakeupId);
+      const services = Option.getOrThrow((yield* KinServer).services);
+      const chatId = yield* OwnMessages.chatOfMessage(lead.orgId, input.messageId).pipe(
+        Effect.provideContext(services),
+      );
+      if (chatId === undefined)
+        return yield* new KinChatError({
+          reason: "not_found",
+          message: OwnMessages.OWN_MESSAGE_REFUSALS.unknown,
+        });
+      const { changed, ...replaced } = yield* Context.get(services, KinLevelGate).amend(
+        { ...lead, wakeupId },
+        chatId,
+        OwnMessages.replaceOwn({ ...lead, ...input, now: yield* Clock.currentTimeMillis }).pipe(
+          Effect.provideContext(services),
+          Effect.mapError(failure),
+        ),
+      );
+      // The banner showing it takes the new words quietly, never a new ring.
+      if (changed)
+        yield* Context.get(services, KinPushSender).notify({
+          _tag: "restate",
+          orgId: lead.orgId,
+          chatId,
+          messageId: input.messageId,
+        });
+      return replaced;
+    }, Effect.mapError(failure)),
+  ),
   memory_search: McpToolAccess.reads(
     Effect.fn("KinLeadToolkit.search")(function* (input) {
       return yield* (yield* LeadMemory).search(yield* McpInvocationContext, input);
@@ -404,12 +508,21 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
     Effect.fn("KinLeadToolkit.githubReview")(function* (input) {
       const lead = yield* resolveLead(yield* McpInvocationContext);
       yield* admitted(lead, "kin_github_review", input);
-      const asOwner = yield* ownerGitHubReview(lead, input).pipe(Effect.provide(ghApiLayer));
+      const asOwner = yield* postReview(lead, input).pipe(Effect.provide(ghApiLayer));
       if (asOwner !== undefined) return asOwner;
       return yield* new KinChatError({
         reason: "unavailable",
         message: "GitHub isn't connected. The owner connects it in Settings, Connections.",
       });
+    }, Effect.mapError(failure)),
+  ),
+  kin_github_review_ask: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.githubReviewAsk")(function* (input) {
+      const services = Option.getOrThrow((yield* KinServer).services);
+      return yield* askReview(yield* McpInvocationContext, input).pipe(
+        Effect.provide(ghApiLayer),
+        Effect.provideService(KinEventQueue, Context.get(services, KinEventQueue)),
+      );
     }, Effect.mapError(failure)),
   ),
   kin_github_watch: McpToolAccess.actsAsCaller(

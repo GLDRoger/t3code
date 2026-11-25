@@ -1,5 +1,5 @@
 import { HOSTED_APP_CHANNEL } from "~/branding";
-import { isElectron, isSecretsFeatureEnabled } from "~/env";
+import { isElectron } from "~/env";
 import { isMacPlatform, isWindowsPlatform, normalizeSearchText } from "~/lib/utils";
 import { STATIC_KEYBINDING_COMMANDS, type KeybindingCommand } from "@t3tools/contracts";
 import type { EnvironmentId } from "@t3tools/contracts";
@@ -16,9 +16,15 @@ import { writeLocalStorageValue } from "../../hooks/useLocalStorage";
 import type { MessageResolver } from "../../i18n/messages";
 import { commandLabel } from "./KeybindingsSettings.logic";
 import type { ResolvedSettingsScope } from "./settingsScope";
-import { KIN_PROFILE_SETTINGS_SEARCH_ITEMS } from "../../kin/kinSettingsSearch";
+import {
+  KIN_SETTINGS_CATEGORY_SCOPES,
+  KIN_SETTINGS_SEARCH_ITEMS,
+  KIN_SETTINGS_SECTION_LABELS,
+  type KinSettingsPath,
+} from "../../kin/kinSettingsSearch";
 
 export type SettingsPath =
+  | KinSettingsPath
   | "/settings/projects"
   | "/settings/general"
   | "/settings/diagnostics"
@@ -37,13 +43,7 @@ export type SettingsPath =
   | "/settings/worktrees"
   | "/settings/connections"
   | "/settings/access"
-  | "/settings/approvals"
   | "/settings/secrets"
-  | "/settings/company"
-  | "/settings/check-ins"
-  | "/settings/deals"
-  | "/settings/kin-connections"
-  | "/settings/kin-profile"
   | "/settings/maintenance"
   | "/settings/labs"
   | "/settings/about"
@@ -68,7 +68,7 @@ export interface SettingsSearchItem {
   readonly macOnly?: boolean;
   readonly windowsOnly?: boolean;
   readonly releaseChannelOnly?: boolean;
-  readonly secretsFeatureOnly?: boolean;
+  readonly secretProvidersOnly?: boolean;
   readonly cloudOnly?: boolean;
   readonly environmentOnly?: boolean;
   readonly providerSettingsOnly?: boolean;
@@ -79,7 +79,10 @@ export interface SettingsSearchItem {
   readonly managedTunnelOnly?: boolean;
   readonly peerLinksOnly?: boolean;
   readonly kinOnly?: boolean;
+  /** A Kin section the setting belongs to; it hides while that section is off. */
+  readonly kinSection?: string;
   readonly fastWorktreeCheckoutOnly?: boolean;
+  readonly agentFeedbackOnly?: boolean;
   readonly textGeneratorsOnly?: boolean;
   readonly secondary?: boolean;
   readonly requiresThreadAutoSettlement?: boolean;
@@ -96,10 +99,14 @@ export interface SettingsSearchAvailability {
   readonly managedTunnelActive?: boolean;
   readonly hasPeerLinkHost?: boolean;
   readonly hasKinHost?: boolean;
+  /** The Kin sections the company has switched off. */
+  readonly kinSectionsOff?: ReadonlyArray<string>;
   readonly hasFastWorktreeCheckoutEnvironment?: boolean;
+  readonly hasAgentFeedbackEnvironment?: boolean;
   /** An environment without a provider allow-list, which hides text generators. */
   readonly hasTextGeneratorsEnvironment?: boolean;
   readonly hasPrimaryEnvironment?: boolean;
+  readonly hasSecretProvidersEnvironment?: boolean;
 }
 
 export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
@@ -120,18 +127,13 @@ export const SETTINGS_SECTION_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/worktrees": msg("Worktrees"),
   "/settings/connections": msg("Environments"),
   "/settings/access": msg("Sharing & access"),
-  "/settings/approvals": msg("Approvals"),
   "/settings/secrets": msg("Secrets"),
-  "/settings/company": msg("Company details"),
-  "/settings/check-ins": msg("Check-ins"),
-  "/settings/deals": msg("Deals"),
-  "/settings/kin-connections": msg("Connections"),
-  "/settings/kin-profile": msg("Profile"),
   "/settings/maintenance": msg("Maintenance"),
   "/settings/labs": msg("Labs"),
   "/settings/about": msg("About"),
   "/settings/voice": msg("Voice"),
   "/settings/archived": msg("Archive"),
+  ...KIN_SETTINGS_SECTION_LABELS,
 };
 
 /** Sidebar labels; an entry of its own lets a translator shorten one below its page title. */
@@ -143,31 +145,14 @@ export const SETTINGS_NAV_LABELS: Readonly<Record<SettingsPath, string>> = {
   "/settings/access": msg("Sharing & access", { $context: "settings navigation item" }),
 };
 
-/** Pages that exist only while a connected host runs Kin. */
-export const KIN_ONLY_SETTINGS_PATHS: ReadonlySet<SettingsPath> = new Set([
-  "/settings/approvals",
-  "/settings/check-ins",
-  "/settings/deals",
-  "/settings/kin-connections",
-  "/settings/kin-profile",
-]);
-
-/** Kin's pages, which Kin's own Settings holds while a host runs Kin. */
-export const KIN_MOVED_SETTINGS_PATHS: ReadonlySet<SettingsPath> = new Set([
-  "/settings/approvals",
-  "/settings/check-ins",
-  "/settings/company",
-  "/settings/deals",
-  "/settings/kin-connections",
-  "/settings/kin-profile",
-]);
-
-/** Sidebar order. A group with a hidden heading is set apart on screen by space alone. */
-export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
+type SettingsNavGroup = {
   readonly heading: string;
   readonly headingHidden?: true;
   readonly paths: ReadonlyArray<SettingsPath>;
-}> = [
+};
+
+/** Sidebar order. A group with a hidden heading is set apart on screen by space alone. */
+const ALL_SETTINGS_NAV_GROUPS: ReadonlyArray<SettingsNavGroup> = [
   {
     heading: msg("Preferences"),
     headingHidden: true,
@@ -197,21 +182,7 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
   },
   {
     heading: msg("Connections"),
-    paths: [
-      "/settings/connections",
-      "/settings/access",
-      "/settings/approvals",
-      ...(isSecretsFeatureEnabled ? (["/settings/secrets"] as const) : []),
-    ],
-  },
-  {
-    heading: msg("Kin"),
-    paths: [
-      "/settings/company",
-      "/settings/check-ins",
-      "/settings/deals",
-      "/settings/kin-connections",
-    ],
+    paths: ["/settings/connections", "/settings/access", "/settings/secrets"],
   },
   {
     heading: msg("More"),
@@ -219,6 +190,18 @@ export const SETTINGS_NAV_GROUPS: ReadonlyArray<{
     paths: ["/settings/maintenance", "/settings/labs", "/settings/about", "/settings/archived"],
   },
 ];
+
+const SETTINGS_NAV_GROUPS_WITHOUT_SECRETS = ALL_SETTINGS_NAV_GROUPS.map((group) => ({
+  ...group,
+  paths: group.paths.filter((path) => path !== "/settings/secrets"),
+}));
+
+/** Sidebar groups; Secrets shows only when some environment's server enables secret providers. */
+export function settingsNavGroups(hasSecretProvidersEnvironment: boolean) {
+  return hasSecretProvidersEnvironment
+    ? ALL_SETTINGS_NAV_GROUPS
+    : SETTINGS_NAV_GROUPS_WITHOUT_SECRETS;
+}
 
 export function keybindingSearchAnchorId<Command extends KeybindingCommand>(command: Command) {
   return `keybinding-${command}` as const;
@@ -494,16 +477,6 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/appearance",
   },
   {
-    id: "approval-phones",
-    kinOnly: true,
-    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-    title: "Phones that can approve",
-    to: "/settings/approvals",
-    searchTerms: [
-      "kin approvals approve phone face id set up remove key device lost new recent changes",
-    ],
-  },
-  {
     id: "project-grouping",
     title: msg("Project grouping"),
     to: "/settings/general",
@@ -555,6 +528,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     targetId: "boring-sidebar",
     searchTerms: [msg("beta boring sidebar folder rows multiline branch pull request details")],
   },
+
   {
     id: "tool-call-visibility",
     title: msg("Tool calls in chat"),
@@ -598,6 +572,13 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/labs",
     scope: "environment",
     searchTerms: [msg("beta link another machine vps peer agents work there delegate")],
+  },
+  {
+    id: "workflows-beta",
+    title: msg("Workflows"),
+    to: "/settings/labs",
+    scope: "environment",
+    searchTerms: [msg("beta workflow durable runs automation steps schedule webhook folder")],
   },
   {
     id: "prompt-suggestions-beta",
@@ -860,6 +841,16 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("queue steer running turn send default behavior composer")],
   },
   {
+    id: "side-thread-open-target",
+    title: msg("Open subagents and side chats in"),
+    to: "/settings/chat",
+    searchTerms: [
+      msg(
+        "subagent side chat linked thread click right panel side panel main view command ctrl middle click",
+      ),
+    ],
+  },
+  {
     id: "provider-update-checks",
     title: msg("Provider update checks"),
     to: "/settings/maintenance",
@@ -1029,6 +1020,16 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Diagnostics"),
     to: "/settings/maintenance",
     searchTerms: [msg("logs traces processes resource history failures spans cpu memory")],
+  },
+  {
+    id: "agent-feedback",
+    title: msg("Agent feedback"),
+    to: "/settings/labs",
+    scope: "environment-defaults",
+    agentFeedbackOnly: true,
+    searchTerms: [
+      msg("report bug problem t3 team send feedback agents tools automatic when i ask"),
+    ],
   },
   {
     id: "open-source-licenses",
@@ -1361,6 +1362,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("commands scripts setup run dev server checkout worktree t3.json import")],
   },
   {
+    id: "project-repositories",
+    title: msg("Repositories"),
+    to: "/settings/projects",
+    searchTerms: [msg("tracked folders multi repo workspace code-workspace rescan add folder")],
+  },
+  {
     id: "environment-icon",
     title: msg("Environment icon"),
     to: "/settings/access",
@@ -1374,56 +1381,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("turn off on disable enable local server agents remote only restart")],
     desktopOnly: true,
   },
-  {
-    id: "company-details",
-    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-    title: "Company details",
-    to: "/settings/company",
-    searchTerms: ["kin legal name address gstin pan tax bank account ifsc upi invoice"],
-  },
-  {
-    id: "kin-connections",
-    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-    title: "Connections",
-    to: "/settings/kin-connections",
-    searchTerms: ["kin connected services tools posthog github key agents read"],
-  },
-  {
-    id: "kin-time-zone",
-    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-    title: "Time zone",
-    to: "/settings/company",
-    searchTerms: ["kin timezone zone check-ins due dates hours clock"],
-  },
-  {
-    id: "kin-agents",
-    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-    title: "Agents",
-    to: "/settings/company",
-    searchTerms: ["kin agents model character personality pause retire new agents default"],
-  },
-  {
-    id: "kin-daily-limit",
-    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-    title: "Daily limit",
-    to: "/settings/company",
-    searchTerms: ["kin budget agents usage spend limit"],
-  },
-  {
-    id: "kin-check-ins",
-    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-    title: "Check-ins",
-    to: "/settings/check-ins",
-    searchTerms: ["kin schedule morning afternoon weekly brief routine time run now"],
-  },
-  ...KIN_PROFILE_SETTINGS_SEARCH_ITEMS,
-  {
-    id: "kin-deals",
-    // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
-    title: "Deal stages",
-    to: "/settings/deals",
-    searchTerms: ["kin deals stages pipeline won lost sales prospect"],
-  },
+  ...KIN_SETTINGS_SEARCH_ITEMS,
   {
     id: "network-access",
     title: msg("Network access"),
@@ -1496,6 +1454,15 @@ export const SETTINGS_SEARCH_ITEMS = [
     cloudOnly: true,
   },
   {
+    id: "preview-tunnel",
+    title: msg("Preview tunnel"),
+    to: "/settings/access",
+    targetId: "connections-environment",
+    searchTerms: [
+      msg("localhost loopback port forwarding open on this device browser tabs stream security"),
+    ],
+  },
+  {
     id: "connections-environment",
     title: msg("This machine"),
     to: "/settings/access",
@@ -1542,7 +1509,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     title: msg("Secret providers"),
     to: "/settings/secrets",
     searchTerms: [msg("1password vault credentials api key")],
-    secretsFeatureOnly: true,
+    secretProvidersOnly: true,
   },
   {
     id: "secret-providers-add",
@@ -1550,7 +1517,7 @@ export const SETTINGS_SEARCH_ITEMS = [
     to: "/settings/secrets",
     targetId: "secret-providers",
     searchTerms: [msg("new 1password vault op cli account")],
-    secretsFeatureOnly: true,
+    secretProvidersOnly: true,
   },
   {
     id: "archive",
@@ -1582,18 +1549,13 @@ const SETTINGS_CATEGORY_SCOPES: Readonly<Record<SettingsPath, SettingsSearchScop
   "/settings/worktrees": "project-defaults",
   "/settings/connections": "connections",
   "/settings/access": "connections",
-  "/settings/approvals": null,
   "/settings/secrets": null,
-  "/settings/company": null,
-  "/settings/check-ins": null,
-  "/settings/deals": null,
-  "/settings/kin-connections": null,
-  "/settings/kin-profile": null,
   "/settings/scheduled-tasks": null,
   "/settings/maintenance": null,
   "/settings/labs": null,
   "/settings/about": null,
   "/settings/archived": "project-defaults",
+  ...KIN_SETTINGS_CATEGORY_SCOPES,
 };
 
 const RENAMED_SETTINGS_PATHS: Readonly<Record<string, SettingsPath>> = {
@@ -1637,6 +1599,7 @@ export function getSettingsSearchTargetScope(targetId: string) {
         title: item.title,
         scope: item.scope ?? SETTINGS_CATEGORY_SCOPES[item.to],
         ...(item.requiresThreadAutoSettlement ? { requiresThreadAutoSettlement: true } : {}),
+        ...(item.agentFeedbackOnly ? { agentFeedbackOnly: true } : {}),
       }
     : null;
 }
@@ -1728,9 +1691,13 @@ export function filterAvailableSettingsSearchItems(
       (!item.managedTunnelOnly || availability.managedTunnelActive === true) &&
       (!item.peerLinksOnly || availability.hasPeerLinkHost === true) &&
       (!item.kinOnly || availability.hasKinHost === true) &&
+      (item.kinSection === undefined ||
+        availability.kinSectionsOff?.includes(item.kinSection) !== true) &&
       (!item.fastWorktreeCheckoutOnly ||
         availability.hasFastWorktreeCheckoutEnvironment === true) &&
-      (!item.textGeneratorsOnly || availability.hasTextGeneratorsEnvironment === true),
+      (!item.agentFeedbackOnly || availability.hasAgentFeedbackEnvironment === true) &&
+      (!item.textGeneratorsOnly || availability.hasTextGeneratorsEnvironment === true) &&
+      (!item.secretProvidersOnly || availability.hasSecretProvidersEnvironment === true),
   );
 }
 
@@ -1743,7 +1710,6 @@ export function settingsForThisPlatform(
     (item) =>
       (isElectron || item.desktopOnly !== true) &&
       (!item.releaseChannelOnly || isElectron || HOSTED_APP_CHANNEL !== null) &&
-      (!item.secretsFeatureOnly || isSecretsFeatureEnabled) &&
       (!item.macOnly || isMacPlatform(platform)) &&
       (!item.windowsOnly || isWindowsPlatform(platform)),
   );

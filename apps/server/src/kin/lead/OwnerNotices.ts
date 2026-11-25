@@ -1,4 +1,4 @@
-import { KinMessageId } from "@t3tools/contracts";
+import { KinMessageId, kinTroubleWords } from "@t3tools/contracts";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -11,6 +11,10 @@ import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as Memory from "../memory/Memory.ts";
 import { holdIfQuiet } from "../triggers/quietHold.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./orgLeads.ts";
+
+/** A restart cut an agent's turn after it noted something: which agent, and what to do. */
+const restartNotice = (name: string) =>
+  `${kinTroubleWords({ cause: "restart", agents: [{ name }], count: 0 }, String).what} Something it said it saved may not have been kept. If it matters, tell ${name} again.`;
 
 /**
  * Memory's notices for the owner, in one chat: theirs with the Chief of staff, else the first
@@ -29,13 +33,20 @@ export const layer = Layer.effect(
           if (notice.owner === undefined) return;
           const lead = yield* liveLead(sql, notice.orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
           if (lead === undefined) return;
+          const [agent] =
+            notice.restartOf === undefined
+              ? []
+              : yield* sql<{ name: string }>`SELECT name FROM kin_leads
+                  WHERE org_id = ${notice.orgId} AND agent_id = ${notice.restartOf}
+                  ORDER BY agent_id`;
+          const body = agent === undefined ? notice.owner : restartNotice(agent.name);
           // A night job's line waits out his quiet hours, merged with any others held for him.
           const held = yield* holdIfQuiet({
             orgId: notice.orgId,
             chatId: lead.ownerChatId,
             personId: lead.ownerPersonId,
             kind: "memory",
-            body: notice.owner,
+            body,
             audience: "owner",
           }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
           if (held) return;
@@ -46,7 +57,7 @@ export const layer = Layer.effect(
             messageId: KinMessageId.make(`kin-memory:${SecureRandom.uuidV4Unsafe()}`),
             author: { _tag: "system" },
             kind: "text",
-            body: notice.owner,
+            body,
             intent: null,
             mentions: [],
             replyTo: null,

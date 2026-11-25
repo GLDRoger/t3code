@@ -23,6 +23,10 @@ export interface FakeRepo {
   empty?: boolean;
   /** Classic branch protection on the default branch, as GitHub returns it. */
   classic?: Record<string, unknown>;
+  /** Logins GitHub lists as able to read it, besides the user. */
+  collaborators?: string[];
+  /** Each login's role here as GitHub's permission read says it; unlisted, see `permissionOf`. */
+  roles?: Record<string, "admin" | "maintain" | "write" | "triage" | "read" | "none">;
 }
 export interface FakeRuleset {
   id: number;
@@ -78,6 +82,12 @@ export interface FakeItem {
   deletions: number;
   changed_files: number;
   diff: string;
+  /** When GitHub last changed it: opened, commented on, labelled, pushed to. */
+  updated_at?: number;
+  /** Each push to the PR: the head it moved from and to, and what it changed. */
+  pushes?: { from: string; to: string; diff: string; force?: boolean }[];
+  /** Its timeline's label events, oldest first, as `issues/{n}/events` lists them. */
+  labelEvents?: { label: string; actor: string }[];
 }
 export interface FakeComment {
   id: number;
@@ -100,6 +110,14 @@ export interface FakeApp {
   /** The account that owns the App; a private App installs only there. Default: the user, public. */
   owner?: string;
   public?: boolean;
+  /** The events ticked on its "Permissions & events" page. */
+  events?: string[];
+  /** Its webhook as `app/hook/config` holds it; the secret is never read back. */
+  hook?: { url: string; content_type: string; insecure_ssl: string; secret?: string };
+  /** GitHub applies a hook change but the answer never arrives. */
+  patchLost?: boolean;
+  /** What `app/hook/deliveries` lists, newest first. */
+  deliveries?: { delivered_at: string; status_code: number }[];
   installations: {
     id: number;
     account: string;
@@ -139,6 +157,10 @@ export interface FakeWorld {
   down: number | null;
   /** Paths GitHub refuses this login with 403, as for a token without that permission. */
   refused?: string[];
+  /** Paths that answer 502 while listed, as GitHub does in a short outage. */
+  failing?: string[];
+  /** Paths GitHub refuses while listed (422), having done nothing. */
+  refusing?: string[];
   /** The seconds GitHub asks between looks; real GitHub says 60. */
   pollInterval?: number;
   repos: FakeRepo[];
@@ -151,6 +173,7 @@ export interface FakeWorld {
     user: string;
     event: string;
     body: string;
+    commit_id?: string;
   }[];
   reactions: { on: string; content: string; by?: string }[];
   checks: Record<string, string[]>;
@@ -200,6 +223,8 @@ const httpDate = (ms: number) => new Date(Math.floor(ms / 1000) * 1000).toUTCStr
 
 export class FakeGitHub {
   readonly world: FakeWorld;
+  /** Every call, and whether it asked only for what changed (an ETag or a date). */
+  readonly requests: Array<{ readonly call: string; readonly conditional: boolean }> = [];
   constructor(world: FakeWorld) {
     this.world = world;
   }
@@ -224,6 +249,10 @@ export class FakeGitHub {
     reason = "subscribed",
   ) {
     const at = this.world.now;
+    const touched = this.world.items.find(
+      (item) => item.repo.toLowerCase() === repo.toLowerCase() && item.number === number,
+    );
+    if (touched !== undefined) touched.updated_at = at;
     if (actor.toLowerCase() === this.world.user.toLowerCase()) {
       this.world.events.unshift({ id: String(this.next()), type, repo, number, created_at: at });
       this.world.eventsVersion += 1;
@@ -276,7 +305,9 @@ export class FakeGitHub {
       draft: input.draft ?? false,
       merged: false,
       created_at: this.world.now,
+      updated_at: this.world.now,
       labels: input.labels ?? [],
+      labelEvents: (input.labels ?? []).map((label) => ({ label, actor: input.author })),
       head_ref: input.headRef ?? `change-${number}`,
       head_sha: `sha${this.next()}`,
       fork: input.fork ?? false,
@@ -325,7 +356,9 @@ export class FakeGitHub {
     return id;
   }
   label(input: { repo: string; number: number; label: string; actor: string }) {
-    this.item(input.repo, input.number).labels.push(input.label);
+    const item = this.item(input.repo, input.number);
+    item.labels.push(input.label);
+    (item.labelEvents ??= []).push({ label: input.label, actor: input.actor });
     this.happened(input.repo, input.number, input.actor, "IssuesEvent");
   }
   ready(input: { repo: string; number: number; actor: string }) {
@@ -345,9 +378,16 @@ export class FakeGitHub {
     item.merged = true;
     this.happened(input.repo, input.number, input.actor, "PullRequestEvent");
   }
+  /** Closed: an issue, or a pull request without a merge. */
   close(input: { repo: string; number: number; actor: string }) {
-    this.item(input.repo, input.number).state = "closed";
-    this.happened(input.repo, input.number, input.actor, "IssuesEvent");
+    const item = this.item(input.repo, input.number);
+    item.state = "closed";
+    this.happened(
+      input.repo,
+      input.number,
+      input.actor,
+      item.pull ? "PullRequestEvent" : "IssuesEvent",
+    );
   }
   reopen(input: { repo: string; number: number; actor: string }) {
     this.item(input.repo, input.number).state = "open";
@@ -373,8 +413,46 @@ export class FakeGitHub {
     });
     return id;
   }
-  push(input: { repo: string; number: number }) {
-    this.item(input.repo, input.number).head_sha = `sha${this.next()}`;
+  /** New commits on a PR's branch: GitHub sends no notification, but the PR's `updated_at` moves. */
+  push(input: { repo: string; number: number; diff?: string; force?: boolean }) {
+    const item = this.item(input.repo, input.number);
+    const from = item.head_sha;
+    item.head_sha = `sha${this.next()}`;
+    item.updated_at = this.world.now;
+    const diff = input.diff ?? `diff --git a/CHANGES.md b/CHANGES.md\n+pushed ${item.head_sha}\n`;
+    (item.pushes ??= []).push({
+      from,
+      to: item.head_sha,
+      diff,
+      ...(input.force === true ? { force: true } : {}),
+    });
+    item.diff += diff;
+    return item.head_sha;
+  }
+
+  /**
+   * A login's role on a repo: the user's is admin; one the test names is that; otherwise someone
+   * whose items or comments GitHub marks as the repo's owner, member or collaborator can write,
+   * a listed collaborator or anyone on a public repo can read, and no one else has any.
+   */
+  permissionOf(repo: string, login: string) {
+    const entry = this.world.repos.find(
+      (one) => one.full_name.toLowerCase() === repo.toLowerCase(),
+    );
+    const who = login.toLowerCase();
+    if (who === this.world.user.toLowerCase()) return "admin";
+    const named = Object.entries(entry?.roles ?? {}).find(([one]) => one.toLowerCase() === who);
+    if (named !== undefined) return named[1];
+    const inside = (user: string, association: string) =>
+      user.toLowerCase() === who && ["OWNER", "MEMBER", "COLLABORATOR"].includes(association);
+    const same = (other: string) => other.toLowerCase() === repo.toLowerCase();
+    if (
+      this.world.items.some((item) => same(item.repo) && inside(item.user, item.association)) ||
+      this.world.comments.some((one) => same(one.repo) && inside(one.user, one.association))
+    )
+      return "write";
+    if ((entry?.collaborators ?? []).some((one) => one.toLowerCase() === who)) return "read";
+    return entry?.private === false ? "read" : "none";
   }
 
   private issueJson(item: FakeItem) {
@@ -387,6 +465,7 @@ export class FakeGitHub {
       state: item.state,
       labels: item.labels.map((name) => ({ name })),
       created_at: iso(item.created_at),
+      updated_at: iso(item.updated_at ?? item.created_at),
       html_url: `https://github.com/${item.repo}/${item.pull ? "pull" : "issues"}/${item.number}`,
       ...(item.pull ? { pull_request: { url: "" } } : {}),
     };
@@ -649,6 +728,11 @@ export class FakeGitHub {
     const url = new URL(rawPath.replace(/^\/?/, "/"), "https://api.github.com");
     const path = url.pathname.replace(/^\//, "");
     this.world.calls.push(`${method} ${path}`);
+    this.requests.push({
+      call: `${method} ${path}`,
+      conditional:
+        headers["if-none-match"] !== undefined || headers["if-modified-since"] !== undefined,
+    });
     const ok = (value: unknown, extra: Record<string, string> = {}): FakeAnswer => ({
       status: method === "POST" ? 201 : 200,
       headers: extra,
@@ -663,6 +747,10 @@ export class FakeGitHub {
         headers: {},
         body: { message: "Resource not accessible by personal access token" },
       };
+    if (this.world.failing?.includes(path) === true)
+      return { status: 502, headers: {}, body: { message: "Server Error" } };
+    if (this.world.refusing?.includes(path) === true)
+      return { status: 422, headers: {}, body: { message: "Validation Failed" } };
     const app = this.world.app ?? null;
     const bearer = /^bearer (.+)$/i.exec(headers.authorization ?? "")?.[1];
     const asApp = app !== null && bearer !== undefined && bearer.split(".").length === 3;
@@ -692,7 +780,31 @@ export class FakeGitHub {
         : ok({ slug: app.slug, name: app.name, owner: this.ownerJson(app) });
     if (asApp) {
       if (method === "GET" && path === "app")
-        return ok({ slug: app.slug, name: app.name, owner: this.ownerJson(app) });
+        return ok({
+          slug: app.slug,
+          name: app.name,
+          owner: this.ownerJson(app),
+          events: app.events ?? [],
+        });
+      if (path === "app/hook/config" && (method === "GET" || method === "PATCH")) {
+        if (method === "PATCH") {
+          app.hook = {
+            url: String(body.url ?? ""),
+            content_type: String(body.content_type ?? "form"),
+            insecure_ssl: String(body.insecure_ssl ?? "0"),
+            ...(typeof body.secret === "string" ? { secret: body.secret } : {}),
+          };
+          if (app.patchLost === true) return { status: 502, headers: {}, body: null };
+        }
+        const hook = app.hook ?? { url: "", content_type: "form", insecure_ssl: "0" };
+        return ok({
+          url: hook.url,
+          content_type: hook.content_type,
+          insecure_ssl: hook.insecure_ssl,
+          ...(hook.secret === undefined ? {} : { secret: "********" }),
+        });
+      }
+      if (method === "GET" && path === "app/hook/deliveries") return ok(app.deliveries ?? []);
       if (method === "GET" && path === "app/installations")
         return ok(
           app.installations.map((entry) => {
@@ -923,6 +1035,15 @@ export class FakeGitHub {
         })),
       );
     }
+    const whole = /^repos\/([^/]+\/[^/]+)$/.exec(path);
+    if (method === "GET" && whole !== null) {
+      const repo = this.world.repos.find(
+        (entry) => entry.full_name.toLowerCase() === whole[1]!.toLowerCase(),
+      );
+      return repo === undefined
+        ? missing
+        : ok({ full_name: repo.full_name, private: repo.private });
+    }
     const match = /^repos\/([^/]+\/[^/]+)\/(.*)$/.exec(path);
     if (match === null) return missing;
     const repo = match[1]!;
@@ -971,26 +1092,110 @@ export class FakeGitHub {
           })),
         });
       }
+      if (method === "GET" && (found = /^collaborators\/([^/]+)\/permission$/.exec(rest))) {
+        const login = decodeURIComponent(found[1]!);
+        const role = this.permissionOf(repo, login);
+        const legacy = role === "maintain" ? "write" : role === "triage" ? "read" : role;
+        return ok({ permission: legacy, role_name: role, user: { login } });
+      }
+      if (method === "GET" && (found = /^issues\/(\d+)\/events$/.exec(rest)))
+        return ok(
+          (this.item(repo, Number(found[1])).labelEvents ?? []).map((one) => ({
+            event: "labeled",
+            actor: { login: one.actor },
+            label: { name: one.label },
+          })),
+        );
+      if (method === "GET" && (found = /^collaborators\/([^/]+)$/.exec(rest))) {
+        const login = decodeURIComponent(found[1]!).toLowerCase();
+        const entry = this.world.repos.find(
+          (one) => one.full_name.toLowerCase() === repo.toLowerCase(),
+        );
+        return entry !== undefined &&
+          (login === this.world.user.toLowerCase() ||
+            (entry.collaborators ?? []).some((one) => one.toLowerCase() === login))
+          ? { status: 204, headers: {}, body: null }
+          : missing;
+      }
+      // A head's changes against the base, as a PR's diff reads at that head; against an earlier
+      // head of the PR, what the pushes since it changed.
+      // A three-dot compare, as GitHub's: from where the two meet. After a force-push the old
+      // head isn't an ancestor, so the diff is only what the rewrite added past their meeting.
+      if (method === "GET" && (found = /^compare\/([^/]+)\.\.\.([^/]+)$/.exec(rest))) {
+        const base = decodeURIComponent(found[1]!);
+        const item = this.world.items.find(
+          (one) => one.repo.toLowerCase() === repo.toLowerCase() && one.head_sha === found![2],
+        );
+        if (item === undefined) return missing;
+        const pushes = item.pushes ?? [];
+        const since = pushes.findIndex((push) => push.from === base);
+        const known = since >= 0 || pushes.some((push) => push.to === base);
+        const forced = since >= 0 && pushes.slice(since).some((push) => push.force === true);
+        const status = !known
+          ? "ahead"
+          : base === item.head_sha
+            ? "identical"
+            : forced
+              ? "diverged"
+              : "ahead";
+        if (!(headers.accept ?? "").includes("diff"))
+          return ok({
+            status,
+            ahead_by: Math.max(0, pushes.length - since),
+            behind_by: forced ? 1 : 0,
+          });
+        if (!known) return ok(item.diff);
+        if (forced) return ok(pushes.findLast((push) => push.force === true)!.diff);
+        return ok(
+          pushes
+            .slice(since)
+            .map((push) => push.diff)
+            .join(""),
+        );
+      }
       if (method === "GET" && (found = /^issues\/(\d+)$/.exec(rest)))
         return ok(this.issueJson(this.item(repo, Number(found[1]))));
+      // Open pull requests only, as `state=open` asks; each as GitHub lists it, newest first.
+      if (method === "GET" && rest === "pulls")
+        return ok(
+          this.world.items
+            .filter(
+              (item) =>
+                item.pull &&
+                item.state === "open" &&
+                item.repo.toLowerCase() === repo.toLowerCase(),
+            )
+            .toReversed()
+            .map((item) => ({
+              ...this.issueJson(item),
+              draft: item.draft,
+              head: { sha: item.head_sha },
+            })),
+        );
       if (method === "GET" && (found = /^pulls\/(\d+)$/.exec(rest))) {
         const item = this.item(repo, Number(found[1]));
         if (!item.pull) return missing;
         if ((headers.accept ?? "").includes("diff")) return ok(item.diff);
-        return ok({
-          ...this.issueJson(item),
-          draft: item.draft,
-          merged: item.merged,
-          head: {
-            ref: item.head_ref,
-            sha: item.head_sha,
-            repo: { full_name: item.fork ? `someone/${repo.split("/")[1]}` : repo },
+        const etag = `"p${item.updated_at ?? item.created_at}-${item.head_sha}-${item.state}"`;
+        if (headers["if-none-match"] === etag)
+          return { status: 304, headers: { etag }, body: null };
+        return ok(
+          {
+            ...this.issueJson(item),
+            draft: item.draft,
+            merged: item.merged,
+            head: {
+              ref: item.head_ref,
+              sha: item.head_sha,
+              repo: { full_name: item.fork ? `someone/${repo.split("/")[1]}` : repo },
+            },
+            base: { ref: "main" },
+            additions: item.additions,
+            deletions: item.deletions,
+            changed_files: item.changed_files,
           },
-          base: { ref: "main" },
-          additions: item.additions,
-          deletions: item.deletions,
-          changed_files: item.changed_files,
-        });
+          { etag },
+        );
       }
       if (method === "GET" && (found = /^(issues|pulls)\/(\d+)\/comments$/.exec(rest))) {
         const kind = found[1] === "issues" ? "issue" : "review";
@@ -1052,6 +1257,7 @@ export class FakeGitHub {
           user: actor,
           event: String(body.event ?? "COMMENT"),
           body: String(body.body ?? ""),
+          ...(typeof body.commit_id === "string" ? { commit_id: body.commit_id } : {}),
         });
         const inlines: ReadonlyArray<Record<string, unknown>> = Array.isArray(body.comments)
           ? body.comments
@@ -1146,7 +1352,7 @@ const flagValue = (args: ReadonlyArray<string>, ...flags: string[]) => {
 };
 
 /** Runs one `gh` command against the world; returns its exit code and output. */
-const runGh = (world: FakeGitHub, args: ReadonlyArray<string>, stdin: string) => {
+export const runGh = (world: FakeGitHub, args: ReadonlyArray<string>, stdin: string) => {
   const repo = flagValue(args, "--repo", "-R") ?? world.world.repos[0]?.full_name ?? "";
   const body = flagValue(args, "--body", "-b") ?? "";
   if (args[0] === "api") {

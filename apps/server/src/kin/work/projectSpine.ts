@@ -21,13 +21,13 @@ import { iso, principal, type RecordRow, selectRecords, toRecord } from "./recor
 import { playbookThreshold } from "./playbooks.ts";
 import { listDef } from "./registers.ts";
 import { seenBy, type KinViewer } from "./teamView.ts";
+import { DAY_MS } from "../durations.ts";
 
 /**
  * The project spine on read: milestones and their progress, the people on it, its meetings, the
  * tasks whose spec section changed, and its money. Computed from entries every time; nothing stored.
  */
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const OPEN = ["open", "doing", "waiting"] as const;
 const titled = (title: string) => title as KinRecordRef["title"];
 const ref = (recordId: string, key: string, title: string): KinRecordRef => ({
@@ -263,24 +263,32 @@ export const projectSpecChanges = Effect.fn("KinProjectSpine.projectSpecChanges"
   return yield* specChangesOf(orgId, tasks, viewer);
 });
 
-/** Quotes, invoices and receipts filed under the project, by the counted rule, per currency. */
+/**
+ * Quotes, invoices and receipts filed under the project, by the counted rule, per currency. A
+ * draft quote or invoice is no figure yet, as in what is still to invoice; a Draft receipt only
+ * lacks its number, so receipts count unless void.
+ */
 export const moneyOf = Effect.fn("KinProjectSpine.money")(function* (
   orgId: KinOrgId,
   projectId: string,
   viewer: KinViewer,
 ) {
   const records = yield* KinRecords;
-  const sums = Effect.fn("KinProjectSpine.sums")(function* (list: string) {
-    if ((yield* listDef(orgId, list)) === undefined) return undefined;
+  const sums = Effect.fn("KinProjectSpine.sums")(function* (list: string, issuedOnly: boolean) {
+    const def = yield* listDef(orgId, list);
+    if (def === undefined) return undefined;
     return yield* records.totals(orgId, {
       list,
       projectId,
+      ...(issuedOnly
+        ? { states: def.states.filter((state) => state !== "open" && state !== "dropped") }
+        : {}),
       ...(viewer._tag === "ownerLevel" ? {} : { view: viewer.people }),
     });
   });
-  const quotes = yield* sums("quotes");
-  const invoices = yield* sums("invoices");
-  const receipts = yield* sums("receipts");
+  const quotes = yield* sums("quotes", true);
+  const invoices = yield* sums("invoices", true);
+  const receipts = yield* sums("receipts", false);
   const of = (money: ReadonlyArray<KinMoney> | undefined) => [...(money ?? [])];
   return {
     quoted: of(quotes?.total),

@@ -34,11 +34,15 @@ describe("Kin cache", () => {
         ["kin|index", JSON.stringify({ identity: "p1", keys: ["inbox"] })],
         ["kin|v1:inbox", "p1's inbox"],
       ]);
-      yield* syncKinCacheIdentity(environmentId, "p2").pipe(
-        Effect.provideService(MobileDatabase, fakeDatabase(rows)),
-      );
+      const sync = (identity: string) =>
+        syncKinCacheIdentity(environmentId, identity).pipe(
+          Effect.provideService(MobileDatabase, fakeDatabase(rows)),
+        );
+      // The outbox drops what is not the new person's on this answer.
+      expect(yield* sync("p2")).toBe(true);
       expect([...rows.keys()]).toEqual(["kin|index"]);
       expect(JSON.parse(rows.get("kin|index") ?? "")).toEqual({ identity: "p2", keys: [] });
+      expect(yield* sync("p2")).toBe(false);
     }),
   );
 

@@ -5,8 +5,7 @@ import {
   kinHostCandidate,
   kinHostLink,
   kinHostIdToSave,
-  resolveKinHost,
-  resolveKinHostAt,
+  makeKinHostAtoms,
   type KinHost,
   type KinHostCandidate,
   type KinRouteHost,
@@ -18,13 +17,18 @@ import {
 } from "@t3tools/client-runtime/kin/kinScreenState";
 import type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 import { kinWorkingAgents } from "@t3tools/client-runtime/kin/kinLeadPresentation";
-import { EnvironmentId, type KinAgentId, type KinOrgsListResult } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  type KinAgentId,
+  type KinOrgId,
+  type KinOrgsListResult,
+} from "@t3tools/contracts";
 import { Atom, type AsyncResult } from "effect/reactivity";
 
 import { environmentCatalog } from "../connection/catalog";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentPresentations } from "../state/presentation";
-import { kinClient } from "./kinClient";
+import { kinClient, markKinHostKnown } from "./kinClient";
 
 const KIN_HOST_STORAGE_KEY = "t3code:kin:host";
 
@@ -59,14 +63,18 @@ const kinProbe = (get: Atom.AtomContext) => (environmentId: EnvironmentId) => {
 };
 const cachedOrgs = (environmentId: EnvironmentId) => lastOrgs.get(environmentId) ?? null;
 
+const kinHostAtoms = makeKinHostAtoms({
+  ready: (get) => get(environmentCatalog.catalogValueAtom).isReady,
+  candidates: kinHostCandidates,
+  probe: kinProbe,
+  cachedOrgs: () => cachedOrgs,
+  savedHostId: () => savedHost.id,
+  markKnown: markKinHostKnown,
+});
+const kinHostAtAtom = kinHostAtoms.hostAtAtom;
+
 export const kinHostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
-  if (!get(environmentCatalog.catalogValueAtom).isReady) return { _tag: "searching" };
-  const host = resolveKinHost({
-    candidates: kinHostCandidates(get),
-    savedHostId: savedHost.id,
-    probe: kinProbe(get),
-    cachedOrgs,
-  });
+  const host = get(kinHostAtoms.hostAtom);
   const toSave = kinHostIdToSave(host);
   if (toSave !== null && toSave !== savedHost.id) {
     savedHost.id = toSave;
@@ -77,19 +85,7 @@ export const kinHostAtom: Atom.Atom<KinHost> = Atom.make((get): KinHost => {
     }
   }
   return host;
-}).pipe(Atom.withLabel("kin:host"));
-
-const kinHostAtAtom = Atom.family((environmentId: EnvironmentId) =>
-  Atom.make((get): KinRouteHost => {
-    if (!get(environmentCatalog.catalogValueAtom).isReady) return { _tag: "searching" };
-    return resolveKinHostAt({
-      candidates: kinHostCandidates(get),
-      environmentId,
-      probe: kinProbe(get),
-      cachedOrgs,
-    });
-  }).pipe(Atom.withLabel(`kin:host:${environmentId}`)),
-);
+}).pipe(Atom.withLabel("kin:host:saved"));
 
 /** Whether the host a route names is reachable right now, asked at the moment of a change. */
 export function kinHostConnected(environmentId: EnvironmentId): boolean {
@@ -108,7 +104,19 @@ export function chooseKinHost(environmentId: EnvironmentId) {
   } catch {
     // Storage can be full or blocked; this page still uses it until reload.
   }
-  appAtomRegistry.refresh(kinHostAtom);
+  appAtomRegistry.refresh(kinHostAtoms.hostAtom);
+}
+
+/** The company this browser's Kin host names first; null until a connected host has answered. */
+export function kinHostTarget(host: KinHost) {
+  return host._tag === "host" && host.connected ? kinHostKeptTarget(host) : null;
+}
+
+/** The same company while its host is offline too, from its last answer: for finding your way. */
+export function kinHostKeptTarget(host: KinHost) {
+  if (host._tag !== "host" || host.probe._tag !== "ready") return null;
+  const me = host.probe.orgs.me[0];
+  return me === undefined ? null : { environmentId: host.environmentId, orgId: me.orgId };
 }
 
 /** The connected environment that hosts Kin. `none` on plain T3 servers and with Kin off. */
@@ -134,15 +142,24 @@ const noInboxAtom: Atom.Atom<InboxResult> = Atom.make<InboxResult>(null);
 
 /** The Kin host's inbox as one screen state, plus a retry for whichever read failed. */
 /** The agents on a live run, from the chat list's live rows (`kinWorkingAgents`). */
-export function useKinWorkingAgents(environmentId: EnvironmentId): ReadonlySet<KinAgentId> {
+export function useKinWorkingAgents(
+  environmentId: EnvironmentId,
+  orgId: KinOrgId,
+): ReadonlySet<KinAgentId> {
   const inbox = useAtomValue(kinClient.inbox({ environmentId, input: {} }));
-  return kinWorkingAgents(inbox._tag === "Success" ? inbox.value.value.chats : null);
+  const leads = useAtomValue(kinClient.leads({ environmentId, input: { orgId } }));
+  return kinWorkingAgents(
+    inbox._tag === "Success" ? inbox.value.value.chats : null,
+    leads._tag === "Success" ? leads.value.leads : [],
+  );
 }
 
 export function useKinInbox(): {
   readonly host: KinHost;
   readonly state: KinInboxScreenState;
   readonly retry: () => void;
+  /** Reads the inbox again, for a row the host says has moved on. */
+  readonly reread: () => void;
 } {
   const host = useKinHost();
   const environmentId = host._tag === "host" ? host.environmentId : null;
@@ -155,5 +172,8 @@ export function useKinInbox(): {
       appAtomRegistry.refresh(kinClient.orgs({ environmentId, input: {} }));
     else appAtomRegistry.refresh(inboxAtom);
   };
-  return { host, state, retry };
+  const reread = () => {
+    if (environmentId !== null) appAtomRegistry.refresh(inboxAtom);
+  };
+  return { host, state, retry, reread };
 }

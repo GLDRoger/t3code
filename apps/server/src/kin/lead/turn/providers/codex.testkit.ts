@@ -87,8 +87,8 @@ export const codexFake: ProviderFake = {
         sent.find(({ method }) => method === "thread/start")?.params ?? original;
       const config = (started.config ?? {}) as Config;
       const server = (name: string) => config[`mcp_servers.${name}`] as Config | undefined;
-      const rare = server(KIN_RARE_SERVER)?.enabled_tools;
-      const hidden = server("t3-code")?.disabled_tools;
+      const rare = server(KIN_RARE_SERVER);
+      const core = server("t3-code")?.enabled_tools;
       const patterns = config["shell_environment_policy.include_only"];
       const shellPath = config["shell_environment_policy.set.PATH"];
       const agentName = config["shell_environment_policy.set.KIN_AGENT_NAME"];
@@ -122,18 +122,20 @@ export const codexFake: ProviderFake = {
         instructions:
           typeof started.baseInstructions === "string" ? started.baseInstructions : undefined,
         kinToolsUpFront: (server("t3-code")?.omit_tools_from as unknown) !== undefined,
-        heldBack: Array.isArray(rare) ? (rare as ReadonlyArray<string>) : [],
-        // Codex gives a model outside its catalog fallback metadata: no tool search.
+        holdsBack: rare !== undefined,
+        // Codex gives a model outside its catalog fallback metadata: no tool search. The second
+        // mount serves exactly what the first leaves out.
         deferredFindable:
           CATALOG.includes(model) &&
-          Array.isArray(rare) &&
-          rare.length > 0 &&
-          Array.isArray(hidden) &&
-          rare.every((tool) => hidden.includes(tool)),
+          Array.isArray(core) &&
+          Array.isArray(rare?.disabled_tools) &&
+          core.every((tool) => (rare.disabled_tools as ReadonlyArray<unknown>).includes(tool)) &&
+          rare.enabled_tools === undefined,
         personalConfig:
           config["mcp_servers.chrome.enabled"] !== false ||
           config["skills.include_instructions"] !== false,
         builtins: !(Array.isArray(started.environments) && started.environments.length === 0),
+        webSearch: config["web_search"] !== "disabled",
         shell:
           typeof shellPath !== "string"
             ? undefined

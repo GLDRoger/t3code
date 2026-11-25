@@ -46,7 +46,7 @@ BACKUP="$DEST/kin-$DAY"
 5. Check it worked:
    - `environment-id` is unchanged, so clients, the relay and linked environments see the same machine. A missing `environment-id` would make the server mint a new one.
    - The phone reaches the host over T3 Connect. The relay link is restored with `secrets/`, so no new sign-in should be needed.
-   - `trigger_reconcile` runs at startup. It re-arms deferrals and routines from memory (GitHub is the source of truth), recreates missing webhook tasks, and reports any it can't fix. Triggers the backup missed come back this way, and overdue ones fire with when they were due. Until the deferral half of `trigger_reconcile` ships (see the triggers spec), deferrals re-arm on the next memory head.
+   - `trigger_reconcile` runs at startup. It re-arms deferrals and routines from memory (GitHub is the source of truth), recreates missing webhook tasks, and reports any it can't fix. Triggers the backup missed come back this way, and overdue ones fire with when they were due.
    - Held webhooks the relay kept while the server was down arrive on reconnect (Hold webhooks while offline). `github_recheck` covers anything older than 24 h.
 
 When the restored server looks right, delete the `before-restore-*` directory. To roll back instead: stop the server, `mv "$T3/userdata" "$T3/userdata.failed-restore"`, move `"$aside/userdata"` and `"$aside/service.env"` back into `$T3`, and start it.

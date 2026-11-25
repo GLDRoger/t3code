@@ -1,6 +1,13 @@
+import { KIN_MARKETING } from "@t3tools/client-runtime/kin/kinMarketing";
 import {
+  KIN_DEAL_NUMBERS,
   KIN_DEALS,
   KIN_DEALS_STATES,
+  kinDealFigures,
+  kinDealMonthRows,
+  kinDealPeopleRows,
+  kinDealWeekGroups,
+  kinDealConcernRows,
   kinDealDrop,
   kinDealMoves,
   kinDealRow,
@@ -9,18 +16,24 @@ import {
   kinDealsNothing,
   kinDealsNotRead,
   kinDealsQuery,
+  kinDealsRaised,
+  kinDealsRaisedInput,
   kinDealsSection,
+  kinDealStepHint,
+  kinDealValueRead,
   kinDealStageBeside,
   type KinDealNextView,
   type KinDealRowView,
   type KinDealsFilter,
 } from "@t3tools/client-runtime/kin/kinDeals";
-import { kinParseMoney } from "@t3tools/client-runtime/kin/kinLists";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import type {
   KinDealMove,
+  KinDealNumbers,
   KinDealRow,
   KinDealStage,
+  KinDealsInput,
+  KinDealsResult,
   KinPersonId,
   KinRecordKey,
 } from "@t3tools/contracts";
@@ -41,6 +54,7 @@ import {
   DialogTitle,
 } from "../components/ui/dialog";
 import { Input } from "../components/ui/input";
+import { Textarea } from "../components/ui/textarea";
 import { Label } from "../components/ui/label";
 import {
   Menu,
@@ -63,7 +77,7 @@ import {
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import { cn, randomUUID } from "../lib/utils";
 import { KinPlaceCombobox } from "./KinPlaceCombobox";
-import { Field, FormShell } from "./KinWorkForms";
+import { Field, FormShell, oneParagraph } from "./KinWorkForms";
 import {
   KinLoadFailed,
   KinWorkNotice,
@@ -362,6 +376,7 @@ export function KinDealsTab(
   const [problem, setProblem] = useState<string | null>(null);
   const [losing, setLosing] = useState<KinDealRow | null>(null);
   const [said, setSaid] = useState("");
+  const [concern, setConcern] = useState<string | null>(null);
 
   const move = async (deal: KinDealRow, to: KinDealMove) => {
     setPending({ key: deal.key });
@@ -430,8 +445,18 @@ export function KinDealsTab(
             </span>
           )}
         </div>
-        <div className="ms-auto">
+        <DealFigures numbers={result.numbers} />
+        <div className="ms-auto flex flex-wrap items-center justify-end gap-1">
           <DealsFilters filter={filter} directory={props.directory} onFilter={setFilter} />
+          {/* At phone width the page header has no room for it, so it wraps here instead. */}
+          {props.onNew === null ? null : (
+            <span className="sm:hidden">
+              <Button size="sm" onClick={props.onNew}>
+                <PlusIcon />
+                {KIN_DEALS.newDeal}
+              </Button>
+            </span>
+          )}
         </div>
       </div>
       <p className="sr-only" aria-live="polite">
@@ -514,6 +539,22 @@ export function KinDealsTab(
       {result.more === 0 ? null : (
         <p className="px-4 py-2 text-xs text-muted-foreground">{KIN_DEALS.more(result.more)}</p>
       )}
+      {result.numbers === undefined ? null : (
+        <DealNumbers numbers={result.numbers} names={props.directory.names} onFilter={setFilter} />
+      )}
+      <WhatWeHear concerns={result.concerns} onOpen={setConcern} />
+      {concern === null || query === null ? null : (
+        <ConcernDealsDialog
+          {...props}
+          label={concern}
+          input={kinDealsRaisedInput(query.input, concern)}
+          onOpen={(key) => {
+            setConcern(null);
+            props.onOpen(key);
+          }}
+          onClose={() => setConcern(null)}
+        />
+      )}
       {board ? (
         <p className="px-4 py-2 text-xs text-muted-foreground">{KIN_DEALS.boardHint}</p>
       ) : null}
@@ -530,6 +571,260 @@ export function KinDealsTab(
         />
       )}
     </div>
+  );
+}
+
+/** Won this month and this week, beside Open: Kin's counts, nothing until a deal exists. */
+function DealFigures(props: { readonly numbers: KinDealNumbers | undefined }) {
+  const figures = kinDealFigures(props.numbers);
+  if (figures === null) return null;
+  return (
+    <>
+      <div className="flex flex-col" aria-label={`${figures.won.label}: ${figures.won.count}`}>
+        <span className="text-xs text-muted-foreground">{figures.won.label}</span>
+        {figures.won.values.map((line) => (
+          <span key={line} className="text-lg font-medium tabular-nums">
+            {line}
+          </span>
+        ))}
+        <span className="text-xs text-muted-foreground">{figures.won.count}</span>
+      </div>
+      {figures.week === null ? null : (
+        <div className="flex flex-col" aria-label={`${KIN_DEAL_NUMBERS.thisWeek}: ${figures.week}`}>
+          <span className="text-xs text-muted-foreground">{KIN_DEAL_NUMBERS.thisWeek}</span>
+          <span className="text-sm font-medium tabular-nums">{figures.week}</span>
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
+ * The figures' sections, folded as the page's others: this week in deals, each person's (only
+ * their own for a sales person), and the owner level's month. A person's open value opens their
+ * open deals through the list's own filter.
+ */
+function DealNumbers(props: {
+  readonly numbers: KinDealNumbers;
+  readonly names: KinWorkDirectory["names"];
+  readonly onFilter: (filter: KinDealsFilter) => void;
+}) {
+  const figures = kinDealFigures(props.numbers);
+  const groups = kinDealWeekGroups(props.numbers, props.names);
+  const people = kinDealPeopleRows(props.numbers, props.names);
+  const month = kinDealMonthRows(props.numbers);
+  return (
+    <div
+      aria-label={KIN_DEAL_NUMBERS.thisWeekInDeals}
+      className="flex max-h-80 shrink-0 flex-col gap-1 overflow-y-auto border-t border-border px-2 py-2"
+    >
+      {groups.length === 0 ? null : (
+        <KinWorkSection
+          title={KIN_DEAL_NUMBERS.thisWeekInDeals}
+          fold={{ summary: figures?.week ?? null }}
+        >
+          <p className="px-2 text-xs text-muted-foreground">
+            {KIN_DEAL_NUMBERS.since(props.numbers.weekStart)}
+          </p>
+          {groups.map((group) => (
+            <section key={group.id} aria-label={group.title} className="px-2">
+              <h4 className="text-xs font-medium text-muted-foreground">{group.title}</h4>
+              <ul className="flex flex-col">
+                {group.rows.map((row) => (
+                  <li key={row.key} className="flex items-baseline gap-3 py-0.5 text-sm">
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="truncate text-foreground">{row.title}</span>
+                      {row.line === null ? null : (
+                        <span className="truncate text-xs text-muted-foreground">{row.line}</span>
+                      )}
+                    </span>
+                    {row.value === null ? null : <span className="tabular-nums">{row.value}</span>}
+                  </li>
+                ))}
+              </ul>
+              {group.more === 0 ? null : (
+                <p className="text-xs text-muted-foreground">{KIN_DEAL_NUMBERS.more(group.more)}</p>
+              )}
+            </section>
+          ))}
+        </KinWorkSection>
+      )}
+      {people.length === 0 ? null : (
+        <KinWorkSection
+          // Only the owner level is sent the rate, and everyone's rows with it.
+          title={
+            props.numbers.winRate === undefined ? KIN_DEAL_NUMBERS.yours : KIN_DEAL_NUMBERS.byPerson
+          }
+          fold={{ summary: null }}
+        >
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-muted-foreground">
+                <th className="px-2 py-1 text-start font-medium">{KIN_DEAL_NUMBERS.person}</th>
+                <th className="px-2 py-1 text-end font-medium">{KIN_DEAL_NUMBERS.openValue}</th>
+                <th className="px-2 py-1 text-end font-medium">{KIN_DEAL_NUMBERS.wonThisMonth}</th>
+                <th className="px-2 py-1 text-end font-medium">{KIN_DEAL_NUMBERS.lateFollowUps}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {people.map((row) => {
+                const filter = row.filter;
+                return (
+                  <tr key={row.id}>
+                    <td className="px-2 py-1 text-foreground">{row.name}</td>
+                    <td className="px-2 py-1 text-end tabular-nums">
+                      {filter === null || row.openCount === 0 ? (
+                        row.open.join(" · ")
+                      ) : (
+                        <Button
+                          variant="link"
+                          size="xs"
+                          aria-label={KIN_DEAL_NUMBERS.openDeals(row.name)}
+                          onClick={() => props.onFilter(filter)}
+                        >
+                          {row.open.join(" · ")}
+                        </Button>
+                      )}
+                    </td>
+                    <td className="px-2 py-1 text-end tabular-nums">{row.won.join(" · ")}</td>
+                    <td className="px-2 py-1 text-end tabular-nums">{row.late}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </KinWorkSection>
+      )}
+      {month.rows.length <= 1 ? null : (
+        <KinWorkSection title={KIN_DEAL_NUMBERS.month} fold={{ summary: null }}>
+          <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 px-2 text-sm">
+            {month.rows.map((row) => (
+              <div key={row.label} className="contents">
+                <dt className="text-muted-foreground">{row.label}</dt>
+                <dd className="text-end tabular-nums">{row.value}</dd>
+              </div>
+            ))}
+          </dl>
+          {month.sources.length === 0 ? null : (
+            <>
+              <h4 className="px-2 pt-2 text-xs font-medium text-muted-foreground">
+                {KIN_DEAL_NUMBERS.sources}
+              </h4>
+              <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1 px-2 text-sm">
+                {month.sources.map((row) => (
+                  <div key={row.label} className="contents">
+                    <dt className="text-muted-foreground">{row.label}</dt>
+                    <dd className="text-end tabular-nums">{row.value}</dd>
+                  </div>
+                ))}
+              </dl>
+            </>
+          )}
+        </KinWorkSection>
+      )}
+    </div>
+  );
+}
+
+/** The concerns raised on the deals shown, counted by Kin; nothing at all until one is raised. */
+function WhatWeHear(props: {
+  readonly concerns: KinDealsResult["concerns"];
+  readonly onOpen: (label: string) => void;
+}) {
+  const rows = kinDealConcernRows(props.concerns);
+  if (rows.length === 0) return null;
+  return (
+    <section
+      aria-label={KIN_DEALS.whatWeHear}
+      className="max-h-64 shrink-0 overflow-y-auto border-t border-border px-4 py-3"
+    >
+      <h2 className="text-xs font-medium text-muted-foreground">{KIN_DEALS.whatWeHear}</h2>
+      <ul className="mt-1 flex flex-col">
+        {rows.map((row) => (
+          <li key={row.label}>
+            <button
+              type="button"
+              aria-label={`${KIN_DEALS.openConcern(row.label)}: ${row.deals}, ${row.stands}`}
+              onClick={() => props.onOpen(row.label)}
+              className="-mx-2 flex w-[calc(100%+--spacing(4))] flex-wrap items-baseline gap-x-3 rounded-md px-2 py-1 text-start text-sm outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+            >
+              <span className="min-w-0 flex-1 text-foreground">{row.label}</span>
+              <span className="tabular-nums">{row.deals}</span>
+              <span className="text-xs tabular-nums text-muted-foreground">{row.stands}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-2 text-xs text-muted-foreground">{KIN_DEALS.whatWeHearHint}</p>
+    </section>
+  );
+}
+
+/** The deals one concern was raised on, as the reader sees them; one opens its page. */
+function ConcernDealsDialog(
+  props: KinWorkTarget & {
+    readonly directory: KinWorkDirectory;
+    readonly label: string;
+    readonly input: KinDealsInput;
+    readonly onOpen: (key: KinRecordKey) => void;
+    readonly onClose: () => void;
+  },
+) {
+  const { state, refresh } = useKinDeals(props, props.input);
+  const now = new Date(useNowMinuteMs());
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open) props.onClose();
+      }}
+    >
+      <DialogPopup className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{props.label}</DialogTitle>
+          <DialogDescription>{KIN_DEALS.raisedBy}</DialogDescription>
+        </DialogHeader>
+        <DialogPanel>
+          {state._tag === "ready" ? (
+            <ul className="-mx-2 flex flex-col">
+              {kinDealsRaised(
+                state.value.stages,
+                state.value.deals,
+                props.directory.names,
+                now,
+              ).map((row) => (
+                <li key={row.key}>
+                  <DealRowButton
+                    row={row}
+                    pill={row.pill}
+                    selected={false}
+                    onOpen={() => props.onOpen(row.key)}
+                  />
+                </li>
+              ))}
+              {state.value.more === 0 ? null : (
+                <li className="px-2 py-1 text-xs text-muted-foreground">
+                  {KIN_DEALS.more(state.value.more)}
+                </li>
+              )}
+            </ul>
+          ) : state._tag === "loading" ? (
+            <div role="status" aria-label={`Loading ${KIN_DEALS.openConcern(props.label)}`}>
+              <KinWorkRowSkeletons />
+            </div>
+          ) : kinDealsNotRead(state) !== null || state._tag !== "failed" ? (
+            <KinWorkNotice {...(kinDealsNotRead(state) ?? KIN_DEALS.refused)} />
+          ) : (
+            <KinLoadFailed what={KIN_DEALS.loadFailed} cause={state.cause} onRetry={refresh} />
+          )}
+        </DialogPanel>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={props.onClose}>
+            {KIN_DEALS.close}
+          </Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
   );
 }
 
@@ -767,6 +1062,64 @@ export function KinClientDeals(
   );
 }
 
+/** The deals a campaign's count counts, each opening its page; the host filters and caps them. */
+export function KinCampaignDealsDialog(
+  props: KinWorkTarget & {
+    readonly input: KinDealsInput;
+    readonly title: string;
+    readonly directory: KinWorkDirectory;
+    readonly onOpen: (key: KinRecordKey) => void;
+    readonly onClose: () => void;
+  },
+) {
+  const { state, refresh } = useKinDeals(props, props.input);
+  const now = new Date(useNowMinuteMs());
+  const notRead =
+    state._tag === "ready" || state._tag === "loading" ? null : kinDealsNotRead(state);
+  return (
+    <Dialog open onOpenChange={(open) => (open ? undefined : props.onClose())}>
+      <DialogPopup className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>{props.title}</DialogTitle>
+        </DialogHeader>
+        <DialogPanel>
+          {state._tag === "loading" ? (
+            <KinWorkRowSkeletons />
+          ) : state._tag !== "ready" ? (
+            notRead !== null || state._tag !== "failed" ? (
+              <KinWorkNotice {...(notRead ?? KIN_DEALS.refused)} />
+            ) : (
+              <KinLoadFailed what={KIN_DEALS.loadFailed} cause={state.cause} onRetry={refresh} />
+            )
+          ) : state.value.deals.length === 0 ? (
+            <p className="text-sm text-muted-foreground">{KIN_MARKETING.dealsEmpty}</p>
+          ) : (
+            <ul className="-mx-2 flex flex-col">
+              {state.value.deals.map((deal) => (
+                <li key={deal.key}>
+                  <DealRowButton
+                    row={kinDealRow(deal, props.directory.names, now)}
+                    selected={false}
+                    onOpen={() => props.onOpen(deal.key)}
+                  />
+                </li>
+              ))}
+              {state.value.more === 0 ? null : (
+                <li className="px-2 py-1 text-xs text-muted-foreground">{state.value.more} more</li>
+              )}
+            </ul>
+          )}
+        </DialogPanel>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={props.onClose}>
+            Close
+          </Button>
+        </DialogFooter>
+      </DialogPopup>
+    </Dialog>
+  );
+}
+
 const ME = "me";
 
 /**
@@ -790,6 +1143,7 @@ export function KinDealNewDialog(
   const [party, setParty] = useState<KinWorkRef | null>(props.party);
   const [title, setTitle] = useState("");
   const [value, setValue] = useState("");
+  const [notes, setNotes] = useState("");
   const [expected, setExpected] = useState("");
   const stagesRead = useKinDealStages(props).state;
   const stages = stagesRead._tag === "ready" ? stagesRead.value.stages : [];
@@ -805,6 +1159,7 @@ export function KinDealNewDialog(
   const ids = {
     title: useId(),
     value: useId(),
+    notes: useId(),
     expected: useId(),
     stage: useId(),
     owner: useId(),
@@ -813,10 +1168,11 @@ export function KinDealNewDialog(
     stepDay: useId(),
     none: useId(),
   };
-  const money = value.trim() === "" ? null : kinParseMoney(value, home);
-  const moneyBad = value.trim() !== "" && money === null;
-  const canSave =
-    party !== null && title.trim() !== "" && !moneyBad && (noneYet || step.trim() !== "");
+  const read = kinDealValueRead(value, home);
+  const { money } = read;
+  const moneyBad = read.bad;
+  const stepHint = kinDealStepHint(step, noneYet);
+  const canSave = party !== null && title.trim() !== "" && !moneyBad && stepHint === undefined;
   const people = [...props.directory.names.people.entries()].filter(
     ([id]) => id !== props.directory.names.me,
   );
@@ -831,6 +1187,7 @@ export function KinDealNewDialog(
       ...(money === null ? {} : { value: money }),
       ...(expected === "" ? {} : { expectedOn: expected }),
       ...(source.trim() === "" ? {} : { source: source.trim() }),
+      ...(notes.trim() === "" ? {} : { notes: notes.trim() }),
       ...(owner === ME ? {} : { owner: { _tag: "person", personId: owner as KinPersonId } }),
       ...(noneYet || step.trim() === ""
         ? {}
@@ -853,9 +1210,19 @@ export function KinDealNewDialog(
       saving={busy}
       canSave={canSave}
       problem={problem === null ? null : { kind: "invalid", text: problem }}
+      waitsOn={stepHint === undefined ? undefined : ids.step}
       onOpenExisting={() => {}}
       onSave={() => void save()}
       onClose={props.onClose}
+      typed={
+        (party === null ? null : party.key) !== (props.party === null ? null : props.party.key) ||
+        [title, value, notes, expected, source, step, stepDay].some(
+          (typed) => typed.trim() !== "",
+        ) ||
+        picked !== null ||
+        owner !== ME ||
+        noneYet
+      }
     >
       {props.party !== null ? (
         <p className="text-sm text-muted-foreground">For {props.party.title}</p>
@@ -870,23 +1237,22 @@ export function KinDealNewDialog(
         />
       )}
       <Field id={ids.title} label={KIN_DEALS.what}>
-        <Input
+        <Textarea
           id={ids.title}
           autoFocus
+          rows={1}
           maxLength={280}
+          placeholder={KIN_DEALS.whatPlaceholder}
           value={title}
+          onKeyDown={oneParagraph}
           onChange={(event) => setTitle(event.target.value)}
         />
       </Field>
       <div className="grid grid-cols-2 gap-3">
-        <Field
-          id={ids.value}
-          label={KIN_DEALS.value}
-          hint={moneyBad ? KIN_DEALS.notAmount : KIN_DEALS.valueHint}
-        >
+        <Field id={ids.value} label={KIN_DEALS.value} hint={read.hint}>
           <Input
             id={ids.value}
-            inputMode="decimal"
+            placeholder={KIN_DEALS.valuePlaceholder}
             value={value}
             onChange={(event) => setValue(event.target.value)}
           />
@@ -900,6 +1266,16 @@ export function KinDealNewDialog(
           />
         </Field>
       </div>
+      <Field id={ids.notes} label={KIN_DEALS.notes} hint={KIN_DEALS.notesHint}>
+        <Textarea
+          id={ids.notes}
+          rows={2}
+          maxLength={4_000}
+          placeholder={KIN_DEALS.notesPlaceholder}
+          value={notes}
+          onChange={(event) => setNotes(event.target.value)}
+        />
+      </Field>
       <div className="grid grid-cols-2 gap-3">
         <Field id={ids.stage} label={KIN_DEALS.stage}>
           <Select value={stage} onValueChange={(next) => setPicked(String(next))}>
@@ -943,8 +1319,8 @@ export function KinDealNewDialog(
           onChange={(event) => setSource(event.target.value)}
         />
       </Field>
-      <div className="grid grid-cols-[1fr_auto] items-end gap-3">
-        <Field id={ids.step} label={KIN_DEALS.nextStep}>
+      <Field id={ids.step} label={KIN_DEALS.nextStep} hint={stepHint}>
+        <div className="grid grid-cols-[1fr_auto] gap-3">
           <Input
             id={ids.step}
             disabled={noneYet}
@@ -952,16 +1328,16 @@ export function KinDealNewDialog(
             value={step}
             onChange={(event) => setStep(event.target.value)}
           />
-        </Field>
-        <Input
-          id={ids.stepDay}
-          type="date"
-          aria-label="Next step's day"
-          disabled={noneYet}
-          value={stepDay}
-          onChange={(event) => setStepDay(event.target.value)}
-        />
-      </div>
+          <Input
+            id={ids.stepDay}
+            type="date"
+            aria-label="Next step's day"
+            disabled={noneYet}
+            value={stepDay}
+            onChange={(event) => setStepDay(event.target.value)}
+          />
+        </div>
+      </Field>
       <div className="flex items-center gap-2">
         <Checkbox
           id={ids.none}

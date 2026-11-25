@@ -2,10 +2,15 @@
 // Keyed by build and kept across boots: a chunk loaded after boot can fail on every visit.
 const CHUNK_RELOAD_GUARD_KEY = "t3code:chunk-load-reloaded";
 
+// The hashed entry script names the build; deploys of one version share APP_VERSION.
+const pageEntryBuild = () =>
+  globalThis.document?.querySelector?.<HTMLScriptElement>('script[type="module"][src]')?.src ??
+  import.meta.env.APP_VERSION;
+
 export function reloadOnceForChunkLoadError(
   getStorage: () => Storage = () => window.sessionStorage,
   reload: () => void = () => window.location.reload(),
-  build = import.meta.env.APP_VERSION,
+  build = pageEntryBuild(),
 ): boolean {
   let alreadyReloaded: boolean;
   try {
@@ -33,4 +38,17 @@ export function isChunkLoadError(error: unknown): boolean {
   return (
     message !== undefined && CHUNK_LOAD_ERROR_PREFIXES.some((prefix) => message.startsWith(prefix))
   );
+}
+
+// `reload` is replaceable once main loads: Kin carries unsent drafts across it.
+export const chunkLoadState = { reloadScheduled: false, reload: () => window.location.reload() };
+
+// Registered from the entry before main loads, so main-chunk and route-chunk failures share one decision.
+export function handleChunkLoadErrors() {
+  window.addEventListener("vite:preloadError", (event) => {
+    if (reloadOnceForChunkLoadError(undefined, () => chunkLoadState.reload())) {
+      chunkLoadState.reloadScheduled = true;
+      event.preventDefault();
+    }
+  });
 }

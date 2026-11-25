@@ -1,16 +1,22 @@
 // @effect-diagnostics globalDate:off - Pure view helpers count renewals for React render, outside an Effect runtime.
 import { kinWhenFormat } from "@t3tools/contracts";
 import type {
+  EnvironmentId,
   KinListDefinition,
   KinListField,
   KinMoney,
   KinMoneyTotals,
+  KinOrgId,
   KinRecord,
+  KinRecordKey,
+  KinWorkUpdateInput,
 } from "@t3tools/contracts";
 
+import type { AtomCommandResult } from "../state/runtime.ts";
 import { kinEstimate, kinTotalsEstimate, type KinRates } from "./kinCurrency.ts";
 import {
   kinFieldText,
+  kinListSend,
   kinMinorDigits,
   kinMoneyText,
   kinTotalsLines,
@@ -25,7 +31,8 @@ import {
  */
 
 export const KIN_SUBSCRIPTIONS = {
-  moneyKept: "Money is kept by whoever runs this Kin.",
+  loadFailed: "Couldn't load subscriptions",
+  askAbout: "About our subscriptions: ",
   title: "Subscriptions",
   renewing: "Renewing in the next 30 days",
   nothingRenewing: "Nothing renews in the next 30 days.",
@@ -416,3 +423,70 @@ export function kinSubscriptionsView(
  */
 export const kinFinancialYearStart = (now: Date, startMonth = 4) =>
   `${now.getMonth() + 1 >= startMonth ? now.getFullYear() : now.getFullYear() - 1}-${pad(startMonth)}-01`;
+
+/** The one just marked cancelled, so the notice can put it back with its cycle. */
+export interface KinSubscriptionUndo {
+  readonly key: string;
+  readonly title: string;
+  readonly repeat: KinSubscriptionRow["repeat"];
+}
+
+/** What Cancel and Undo on a subscription do, the same on every client; each app holds the state. */
+export function kinSubscriptionActions<A>(options: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly def: KinListDefinition;
+  readonly online: () => boolean;
+  readonly update: (value: {
+    readonly environmentId: EnvironmentId;
+    readonly input: KinWorkUpdateInput;
+  }) => Promise<AtomCommandResult<A, unknown>>;
+  /** Reads the list again after every answer, refused or not. */
+  readonly refresh: () => void;
+  readonly set: {
+    readonly busy: (key: string | null) => void;
+    readonly problem: (problem: string | null) => void;
+    readonly undo: (undo: KinSubscriptionUndo | null) => void;
+  };
+}) {
+  const { environmentId, orgId, def, set } = options;
+  const setState = async (
+    row: KinSubscriptionRow,
+    cancel: boolean,
+    repeat: KinSubscriptionRow["repeat"] = null,
+  ) => {
+    set.busy(row.key);
+    set.problem(null);
+    const outcome = await kinListSend({
+      online: options.online,
+      send: () =>
+        options.update({
+          environmentId,
+          input: {
+            orgId,
+            key: row.key as KinRecordKey,
+            rev: row.rev,
+            state: cancel ? "dropped" : def.defaultState === "dropped" ? "open" : def.defaultState,
+            // A cancelled one must not renew itself; undo puts its cycle back.
+            ...(cancel && row.repeat !== null ? { repeat: null } : {}),
+            ...(!cancel && repeat !== null ? { repeat } : {}),
+          },
+        }),
+    });
+    set.busy(null);
+    options.refresh();
+    if (!outcome.ok) return set.problem(outcome.problem);
+    set.undo(cancel ? { key: row.key, title: row.title, repeat: row.repeat } : null);
+  };
+  return {
+    cancellable: def.states.includes("dropped"),
+    cancel: (row: KinSubscriptionRow) => setState(row, true),
+    restore: (row: KinSubscriptionRow) => setState(row, false),
+    /** The notice's Undo: puts back the one it names, if it is still cancelled, with its cycle. */
+    undo: (undo: KinSubscriptionUndo, cancelled: ReadonlyArray<KinSubscriptionRow>) => {
+      const row = cancelled.find((one) => one.key === undo.key);
+      if (row !== undefined) void setState(row, false, undo.repeat);
+      set.undo(null);
+    },
+  };
+}

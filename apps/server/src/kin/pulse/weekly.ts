@@ -1,13 +1,20 @@
 import { formatKinWhen, KIN_TEXT_LOCALE } from "@t3tools/contracts";
-import type { KinEvent, KinMoney, KinOrgId } from "@t3tools/contracts";
+import type { KinChatId, KinEvent, KinMoney, KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { sentMail } from "../connections/Sending.ts";
 import { goalLine, goalsNow } from "../work/goals.ts";
-import { homeCurrency } from "../work/companyProfile.ts";
-import { addUp, dayIn, formatMoney } from "../work/money.ts";
+import { billedParty } from "../work/billTo.ts";
+import { homeCurrency, readProfile } from "../work/companyProfile.ts";
+import { projectHealths } from "../work/crm.ts";
+import * as KinShell from "../shell/KinShell.ts";
+import { sectionOfList } from "../shell/sections.ts";
+import { weeklyPipelineOf } from "../work/dealStages.ts";
+import { mondayCounts } from "../work/deals.ts";
+import { aboutTotal, addUp, dayIn, formatMoney, formatMoneyPlain } from "../work/money.ts";
 import { playbookThreshold } from "../work/playbooks.ts";
+import { companyCashOut, partnerRepaidDay } from "../work/reimbursement.ts";
 import {
   countedEntry,
   countedPayment,
@@ -19,10 +26,12 @@ import {
   recordName,
 } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
-import { DAY_MS } from "./thresholds.ts";
+import { DAY_MS, WEEK_MS } from "../durations.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
+import { lastCompleteWeek, weekMeasure } from "./weekMeasure.ts";
 
 export const WEEKLY_RULE =
-  "This is the weekly brief, the owner's one post this morning. Kin writes the week's figures into the page as its own section: goals, money, overdue invoices, open quotes, renewals, cold and quiet clients, projects behind and meetings. Below is the rest of the week, for your judgement: how projects moved, last week's meetings, who is overloaded or free, and what falls due next week. In a few short lines: what matters most this week and why, and each decision as what you did or will do and how to stop it. A meeting that already happened is not coming up; a follow-up you set is not a meeting. An overdue invoice's fact says what mail went and what waits on a Confirm, as recorded now: never call something sent a draft.";
+  "This is the weekly brief, the owner's one post this morning. Kin writes the week's figures into the page as its own section: goals, money, overdue invoices, open quotes, renewals, cold and quiet clients, projects behind, meetings, and how many of its promises were late or missed, which you don't see: never say nothing slipped. Below is the rest of the week, for your judgement: how projects moved, last week's meetings, who is overloaded or free, and what falls due next week. In a few short lines: what matters most this week and why, and each decision as what you did or will do and how to stop it. A meeting that already happened is not coming up; a follow-up you set is not a meeting. An overdue invoice's fact says what mail went and what waits on a Confirm, as recorded now: never call something sent a draft.";
 /** The seeded weekly check-in's schedule (`checkin-<slug>`), which arrives as a pulse event. */
 const WEEKLY_CHECK_IN = "checkin-weekly";
 /** A page the week's figures go on: the weekly brief, or the morning one on its day. */
@@ -41,7 +50,6 @@ export const isMorningCheckIn = (event: KinEvent) =>
 const EVENING_CHECK_IN = "checkin-evening";
 export const isEveningCheckIn = (event: KinEvent) =>
   event._tag === "pulse" && event.checkIn?.scheduleId === EVENING_CHECK_IN;
-const WEEK_MS = 7 * DAY_MS;
 const FREE_HORIZON_MS = 3 * DAY_MS;
 const LATE_OVERLOAD = 3;
 const CAP = 20;
@@ -71,6 +79,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
   );
 
   const projects = yield* sql<{
+    recordId: string;
     key: string;
     title: string;
     state: string;
@@ -80,7 +89,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     late: number;
     done: number;
     changes: number;
-  }>`SELECT p.key, p.title, p.state, p.due_at AS "dueAt", c.title AS client,
+  }>`SELECT p.record_id AS "recordId", p.key, p.title, p.state, p.due_at AS "dueAt", c.title AS client,
       (SELECT COUNT(*) FROM kin_records t WHERE t.org_id = p.org_id
         AND t.project_id = p.record_id AND t.register_id = 'work'
         AND t.state IN ${sql.in(OPEN)}) AS open,
@@ -100,6 +109,11 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
       AND (p.state = 'open' OR (p.state = 'done' AND p.closed_at >= ${weekAgo}))
     ORDER BY p.due_at IS NULL, p.due_at, p.key
     LIMIT ${CAP}`;
+  const health = yield* projectHealths(
+    orgId,
+    now,
+    projects.map((project) => project.recordId),
+  );
   const byStatus: Record<"behind" | "moving" | "quiet" | "done", Array<string>> = {
     behind: [],
     moving: [],
@@ -107,10 +121,13 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     done: [],
   };
   for (const project of projects) {
+    // Off track, less an overdue invoice or a quiet client: Overdue and Quiet clients list those.
+    const because = health.get(project.recordId)?.because;
+    const waiting = because?.waitingOverAWeek ?? 0;
     const status =
       project.state === "done"
         ? "done"
-        : project.late > 0 || (project.dueAt !== null && project.dueAt < now)
+        : because !== undefined && (because.targetPassed || because.late > 0 || waiting > 0)
           ? "behind"
           : project.changes === 0
             ? "quiet"
@@ -121,6 +138,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
         project.done > 0 ? `${project.done} done this week` : null,
         project.state === "done" ? null : `${project.open} open`,
         project.late > 0 ? `${project.late} late` : null,
+        waiting > 0 ? `${waiting} waiting over a week` : null,
         project.dueAt === null ? null : `target ${dayIn(project.dueAt, zone)}`,
       ]
         .filter((part) => part !== null)
@@ -128,18 +146,32 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     );
   }
 
-  const received = yield* sql<KinMoney>`SELECT p.amount_minor AS minor, p.currency
+  const shell = yield* KinShell.get(orgId);
+  const clientsOn = KinShell.sectionOn(shell, "clients");
+  const moneyOn = KinShell.sectionOn(shell, "money");
+  const invoicesOn = KinShell.sectionOn(shell, "invoices");
+  const moneyLists = invoicesOn ? ["invoices", "receipts"] : ["receipts"];
+  const received = !moneyOn
+    ? []
+    : yield* sql<KinMoney>`SELECT p.amount_minor AS minor, p.currency
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND ${countedPayment(sql)} AND p.withheld = 0
-      AND r.register_id IN ('invoices', 'receipts') AND p.paid_on >= ${dayIn(weekAgo, zone)}
+      AND r.register_id IN ${sql.in(moneyLists)} AND p.paid_on >= ${dayIn(weekAgo, zone)}
+      AND p.paid_on <= ${dayIn(now, zone)}
     ORDER BY p.paid_on, p.payment_id`;
-  const spent = yield* sql<KinMoney>`SELECT r.amount_minor AS minor, r.currency
+  // Cash out, as runway counts it: a partner's expense on the day it was paid back.
+  const repaid = partnerRepaidDay(sql);
+  const spent = !moneyOn
+    ? []
+    : yield* sql<KinMoney>`SELECT r.amount_minor AS minor, r.currency
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND ${countedEntry(sql)}
-      AND r.state = 'done' AND r.amount_minor IS NOT NULL AND ${moneyDay(sql)} >= ${weekAgo}
+      AND r.state = 'done' AND r.amount_minor IS NOT NULL AND ${companyCashOut(sql)}
+      AND CASE WHEN ${repaid} IS NULL THEN ${moneyDay(sql)} >= ${weekAgo} AND ${moneyDay(sql)} <= ${now}
+        ELSE ${repaid} >= ${dayIn(weekAgo, zone)} AND ${repaid} <= ${dayIn(now, zone)} END
     ORDER BY r.key`;
-  const owed = (yield* owedInvoices({ orgId, now })).slice(0, CAP);
+  const owed = invoicesOn ? (yield* owedInvoices({ orgId, now })).slice(0, CAP) : [];
   const isOverdue = (one: (typeof owed)[number]) => one.overdue;
   // What went out about an overdue invoice, and what waits on a Confirm, as recorded now.
   const recent = owed.some(isOverdue) ? yield* sentMail({ orgId, limit: 50 }) : [];
@@ -164,14 +196,17 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
   const overdueMail = new Map<string, string>();
   for (const one of owed.filter(isOverdue)) overdueMail.set(one.recordId, yield* mailState(one));
 
-  const quotes = yield* sql<{
-    key: string;
-    client: string | null;
-    minor: number | null;
-    currency: string | null;
-    state: string;
-    number: unknown;
-  }>`SELECT r.key, c.title AS client, r.amount_minor AS minor, r.currency, r.state,
+  const quotes = !invoicesOn
+    ? []
+    : yield* sql<{
+        key: string;
+        client: string | null;
+        fieldsJson: string;
+        minor: number | null;
+        currency: string | null;
+        state: string;
+        number: unknown;
+      }>`SELECT r.key, c.title AS client, r.fields_json AS "fieldsJson", r.amount_minor AS minor, r.currency, r.state,
       json_extract(r.fields_json, '$.number') AS number
     FROM kin_records r
     LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
@@ -181,14 +216,18 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     LIMIT ${CAP}`;
 
   // Renewals within the month: Dates and Subscriptions entries, and open projects' renews-on day.
-  const renewals = yield* sql<{ key: string; title: string; on: string }>`SELECT r.key, r.title,
+  const renewals = !clientsOn
+    ? []
+    : yield* sql<{ key: string; title: string; on: string }>`SELECT r.key, r.title,
       json_extract(r.fields_json, '$.renewsOn') AS "on"
     FROM kin_records r
     WHERE r.org_id = ${orgId} AND r.register_id = 'projects' AND r.state = 'open'
       AND json_extract(r.fields_json, '$.renewsOn') BETWEEN ${dayIn(now, zone)}
         AND ${dayIn(now + RENEWALS_AHEAD_MS, zone)}
     ORDER BY "on", r.key LIMIT ${CAP}`;
-  const listedRenewals = yield* sql<{ key: string; title: string; dueAt: number }>`SELECT r.key,
+  const listedRenewals = !moneyOn
+    ? []
+    : yield* sql<{ key: string; title: string; dueAt: number }>`SELECT r.key,
       r.title, r.due_at AS "dueAt"
     FROM kin_records r
     WHERE r.org_id = ${orgId}
@@ -234,10 +273,14 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
   );
   const free = people.filter((person) => !busy.has(person.id)).map((person) => person.name);
 
+  const nextLists = ["work", "milestones", "invoices", "projects"].filter((list) => {
+    const section = sectionOfList(list);
+    return section === null || KinShell.sectionOn(shell, section);
+  });
   const next = yield* sql<{ key: string; title: string; dueAt: number; list: string }>`SELECT
       r.key, r.title, r.due_at AS "dueAt", r.register_id AS list
     FROM kin_records r
-    WHERE r.org_id = ${orgId} AND r.register_id IN ('work', 'milestones', 'invoices', 'projects')
+    WHERE r.org_id = ${orgId} AND r.register_id IN ${sql.in(nextLists)}
       AND r.state IN ${sql.in(OPEN)} AND r.due_at >= ${now} AND r.due_at < ${now + WEEK_MS}
       AND (r.register_id <> 'invoices' OR ${keptEntry(sql)})
     ORDER BY r.due_at, r.key
@@ -253,27 +296,33 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
     limit: CAP,
   })).facts.filter((fact) => fact.sense === "client_cold" || fact.sense === "client_quiet");
 
-  const unpaidLine = (one: (typeof owed)[number]) =>
-    `${recordName(one.key, one.number)}${one.partyTitle === null ? "" : ` ${one.partyTitle}`}: ${formatMoney(one.balance)} ${
+  const unpaidLine = (one: (typeof owed)[number]) => {
+    const name = one.partyTitle ?? one.billTo;
+    return `${recordName(one.key, one.number)}${name === undefined ? "" : ` ${name}`}: ${formatMoney(one.balance)} ${
       one.dueAt === null
         ? "unpaid, no due date"
         : isOverdue(one)
           ? `unpaid, overdue ${overdueFor(one.dueAt, one.daysOverdue, now, zone)}; ${overdueMail.get(one.recordId)}`
           : `due ${dayIn(one.dueAt, zone)}`
     }`;
+  };
   const section = {
     week: `${dayIn(weekAgo, zone)} to ${dayIn(now, zone)}`,
     goals: goals.map(goalLine),
-    projects: Object.fromEntries(Object.entries(byStatus).filter(([, rows]) => rows.length > 0)),
+    projects: clientsOn
+      ? Object.fromEntries(Object.entries(byStatus).filter(([, rows]) => rows.length > 0))
+      : {},
     money: {
       inThisWeek: totals(received),
       outThisWeek: totals(spent),
       unpaidTotal: totals(owed.map((one) => one.balance)),
       unpaid: owed.map(unpaidLine),
-      openQuotes: quotes.map(
-        (one) =>
-          `${recordName(one.key, one.number)}${one.client === null ? "" : ` ${one.client}`}${one.minor === null || one.currency === null ? "" : `: ${formatMoney({ minor: one.minor, currency: one.currency })}`}, ${one.state === "open" ? "draft, not sent" : "sent, no answer yet"}`,
-      ),
+      openQuotes: quotes.map((one) => {
+        const name =
+          one.client ??
+          billedParty({ registerId: "quotes", fieldsJson: one.fieldsJson }, undefined)?.name;
+        return `${recordName(one.key, one.number)}${name === undefined ? "" : ` ${name}`}${one.minor === null || one.currency === null ? "" : `: ${formatMoney({ minor: one.minor, currency: one.currency })}`}, ${one.state === "open" ? "draft, not sent" : "sent, no answer yet"}`;
+      }),
       renewalsThisMonth: [
         ...renewals.map((one) => `${one.on} ${one.key} ${one.title} renews`),
         ...listedRenewals.map((one) => `${dayIn(one.dueAt, zone)} ${one.key} ${one.title}`),
@@ -306,6 +355,7 @@ const weekRows = Effect.fn("KinWeekly.rows")(function* (input: {
   };
   return {
     section,
+    shell,
     overdue: owed.filter(isOverdue).map(unpaidLine),
     notYetDue: owed.filter((one) => !isOverdue(one)).map(unpaidLine),
   };
@@ -328,6 +378,129 @@ export const buildWeeklySection = Effect.fn("KinLeadPrompt.weekly")(function* (i
   };
 });
 
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+/** "a, b and c", or "a, and b" for two parts led by a clause of their own. */
+const listed = (parts: ReadonlyArray<string>) =>
+  parts.length < 2 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+
+/**
+ * The pipeline's three lines on Monday's page (Settings → Check-ins, the weekly brief's switch),
+ * at the owner level, over [from, now): each amount in its own currency; beside a foreign one,
+ * only when the line has a second currency, its estimate at the owner's rate and that rate's day.
+ */
+export const pipelineLines = Effect.fn("KinWeekly.pipeline")(function* (
+  orgId: KinOrgId,
+  from: number,
+  now: number,
+) {
+  const counts = yield* mondayCounts(orgId, from, now);
+  const home = yield* homeCurrency(orgId);
+  const { rates } = yield* readProfile(orgId);
+  const valued = (rows: typeof counts.open) =>
+    rows
+      .flatMap((row) =>
+        row.currency === null || row.minor === null
+          ? []
+          : [{ money: { minor: row.minor, currency: row.currency }, count: row.count }],
+      )
+      .toSorted((a, b) =>
+        a.money.currency === b.money.currency
+          ? 0
+          : a.money.currency === home
+            ? -1
+            : b.money.currency === home
+              ? 1
+              : a.money.currency.localeCompare(b.money.currency),
+      );
+  /** " (about €20,300 at your rate of 17 Nov)" beside a foreign amount that has a rate. */
+  const about = (money: KinMoney, several: boolean) => {
+    const rate = rates.find((one) => one.currency === money.currency);
+    const estimate =
+      !several || money.currency === home || rate === undefined
+        ? undefined
+        : aboutTotal([{ minor: 0, currency: home }, money], home, rates);
+    return estimate === undefined || estimate.missing.length > 0
+      ? ""
+      : ` (about ${formatMoneyPlain(estimate.total)} at your rate of ${formatKinWhen(
+          Date.parse(`${rate!.asOf}T12:00:00Z`),
+          "date",
+          { zone: "UTC", locale: KIN_TEXT_LOCALE },
+        )})`;
+  };
+  const total = (rows: typeof counts.open) => rows.reduce((sum, row) => sum + row.count, 0);
+
+  const open = valued(counts.open);
+  const unvalued = total(counts.open) - open.reduce((sum, one) => sum + one.count, 0);
+  const several = open.length > 1;
+  const openParts = open.map((one, index) =>
+    index === 0
+      ? `${formatMoneyPlain(one.money)} open in ${plural(one.count, "deal", "deals")}${about(one.money, several)}`
+      : `${formatMoneyPlain(one.money)} in ${one.count}${about(one.money, several)}`,
+  );
+  const pipeline =
+    total(counts.open) === 0
+      ? "no open deals"
+      : open.length === 0
+        ? `${plural(unvalued, "open deal", "open deals")}, none with a value yet`
+        : `${openParts.length < 2 ? openParts.join("") : `${openParts.slice(0, -1).join(", ")}, and ${openParts.at(-1)}`}${
+            unvalued === 0 ? "" : `; ${unvalued} more with no value yet`
+          }`;
+  const closed = (verb: string, rows: typeof counts.open) => {
+    const values = valued(rows);
+    return `${verb} ${total(rows)}${
+      values.length === 0
+        ? ""
+        : ` for ${listed(values.map((one) => `${formatMoneyPlain(one.money)}${about(one.money, values.length > 1)}`))}`
+    }`;
+  };
+  const lateCount = counts.late.reduce((sum, one) => sum + one.count, 0);
+  return [
+    `Pipeline: ${pipeline}.`,
+    `Last week: ${closed("won", counts.won)}, ${closed("lost", counts.lost)}; ${plural(counts.added, "new deal", "new deals")}.`,
+    `Follow-ups late: ${
+      lateCount === 0
+        ? "none"
+        : `${lateCount} (${counts.late.map((one) => `${one.name} ${one.count}`).join(", ")})`
+    }.`,
+  ];
+});
+
+const measureLines = Effect.fn("KinWeekly.measureLines")(function* (
+  orgId: KinOrgId,
+  chatId: KinChatId,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [audience] = yield* sql<{ people: number; others: number }>`SELECT COUNT(*) AS people,
+      COUNT(*) FILTER (WHERE NOT ${sql.literal(ownerLevelSql("m.org_id", "m.person_id"))}) AS others
+    FROM kin_chat_members m WHERE m.org_id = ${orgId} AND m.chat_id = ${chatId}
+      AND m.principal_kind = 'person' AND m.left_at IS NULL`;
+  if (audience === undefined || audience.people === 0 || audience.others > 0) return [];
+  const counts = yield* weekMeasure({ orgId, ...(yield* lastCompleteWeek(orgId, now)) });
+  return [
+    ...(counts.unasked === 0
+      ? []
+      : [
+          `Unasked: ${plural(counts.unasked, "turn", "turns")} with a message, ${counts.withCard} with something ready to act on.`,
+        ]),
+    ...(counts.withCard === 0
+      ? []
+      : [
+          `Of those: ${counts.acted} acted on as shown, ${counts.changed} changed first, ${counts.dismissed} dismissed, ${counts.left} unanswered.`,
+        ]),
+    ...(counts.asked === 0
+      ? []
+      : [
+          `Asked: ${plural(counts.asked, "turn", "turns")}, ${counts.askedCorrected} followed by a same-day message after a card was dismissed or changed.`,
+        ]),
+    ...(counts.due === 0
+      ? []
+      : [
+          `Things Kin said it would do: ${counts.due} came due, ${counts.kept} on time, ${counts.late} late, ${counts.missed} missed.`,
+        ]),
+  ];
+});
+
 export const WEEK_FIGURES_TITLE = "The week, from Kin's records";
 
 /**
@@ -337,8 +510,9 @@ export const WEEK_FIGURES_TITLE = "The week, from Kin's records";
 export const weeklyFigures = Effect.fn("KinWeekly.figures")(function* (input: {
   readonly orgId: KinOrgId;
   readonly now: number;
+  readonly chatId?: KinChatId;
 }) {
-  const { section: week, overdue, notYetDue } = yield* weekRows(input);
+  const { section: week, shell, overdue, notYetDue } = yield* weekRows(input);
   const block = (title: string, lines: ReadonlyArray<string>, empty?: string) =>
     lines.length === 0
       ? empty === undefined
@@ -357,10 +531,17 @@ export const weeklyFigures = Effect.fn("KinWeekly.figures")(function* (input: {
   const blocks = [
     block("Goals", week.goals, "none set"),
     block("Money", money),
-    block("Overdue", overdue, "nothing"),
+    KinShell.sectionOn(shell, "invoices") ? block("Overdue", overdue, "nothing") : [],
     block("Invoices not yet due", notYetDue),
-    block("Open quotes", week.money.openQuotes, "none"),
-    block("Renewals this month", week.money.renewalsThisMonth, "none"),
+    KinShell.sectionOn(shell, "invoices")
+      ? block("Open quotes", week.money.openQuotes, "none")
+      : [],
+    KinShell.sectionOn(shell, "money")
+      ? block("Renewals this month", week.money.renewalsThisMonth, "none")
+      : [],
+    KinShell.sectionOn(shell, "deals") && (yield* weeklyPipelineOf(input.orgId))
+      ? yield* pipelineLines(input.orgId, input.now - WEEK_MS, input.now)
+      : [],
     block("Cold clients", week.clients.cold),
     block("Quiet clients", week.clients.quiet),
     block("Behind", week.projects.behind ?? []),
@@ -369,6 +550,16 @@ export const weeklyFigures = Effect.fn("KinWeekly.figures")(function* (input: {
       week.meetings.lastWeek.filter((line) => line.endsWith(NO_OUTCOME)),
     ),
     block("Coming up", week.meetings.comingUp),
+    block(
+      "How Kin did",
+      input.chatId === undefined
+        ? []
+        : yield* measureLines(input.orgId, input.chatId, input.now).pipe(
+            Effect.catch(() =>
+              Effect.logWarning("Kin weekly measure unavailable").pipe(Effect.as([])),
+            ),
+          ),
+    ),
   ].filter((lines) => lines.length > 0);
   return [`## ${WEEK_FIGURES_TITLE}`, week.week, ...blocks.map((lines) => lines.join("\n"))].join(
     "\n\n",

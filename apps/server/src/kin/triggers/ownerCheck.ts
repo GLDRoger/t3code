@@ -23,13 +23,14 @@ import { stringify } from "yaml";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryWriter from "../memory/MemoryWriter.ts";
-import { memoryDateMillis } from "../memory/frontMatter.ts";
+import { memoryDateMillis, openBy } from "../memory/frontMatter.ts";
 import * as Chat from "../chat/KinChatService.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
+import { DAY_MS } from "../durations.ts";
+import { withRuns } from "./deferralRuns.ts";
 
-const day = 86_400_000;
 // "misleading" came from worker reports; it stays decodable for cards already posted.
 const reasons = ["past_review", "misleading", "old_low_trust", "no_evidence"] as const;
 const ranked = ["past_review", "old_low_trust", "no_evidence"] as const;
@@ -63,13 +64,7 @@ export function pickOwnerCheckItems(
   now: number,
 ): ReadonlyArray<Selection> {
   return items
-    .filter(
-      (item) =>
-        item.orgId === orgId &&
-        !item.duplicate &&
-        item.invalid_at === null &&
-        item.superseded_by === null,
-    )
+    .filter((item) => item.orgId === orgId && !item.duplicate && openBy(item, now))
     .map((item) => {
       const review = memoryDateMillis(item.review_by);
       const rank =
@@ -77,7 +72,7 @@ export function pickOwnerCheckItems(
           ? 0
           : item.kind === "claim" &&
               item.trust !== "owner" &&
-              memoryDateMillis(item.recorded_at) < now - 30 * day
+              memoryDateMillis(item.recorded_at) < now - 30 * DAY_MS
             ? 1
             : item.kind === "claim" && item.links.length === 0
               ? 2
@@ -101,7 +96,7 @@ export function pickOwnerCheckItems(
 }
 
 /** Verifies a claimed widget tap as the org owner's own action on an open card of `type`. */
-export const verifyOwnerTap = Effect.fn("OwnerCheck.verifyOwnerTap")(function* (
+const verifyOwnerTap = Effect.fn("OwnerCheck.verifyOwnerTap")(function* (
   orgId: KinOrgId,
   wakeupId: string,
   eventId: KinEventId,
@@ -202,7 +197,10 @@ const make = Effect.gen(function* () {
       orgId,
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
-        const items = yield* memory.query(orgId, { excludeInvalid: true });
+        const items = yield* withRuns(
+          orgId,
+          yield* memory.query(orgId, { excludeInvalid: true }),
+        ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
         return pickOwnerCheckItems(orgId, items, now);
       }),
     ),
@@ -300,7 +298,7 @@ const make = Effect.gen(function* () {
           if (verified.action.actionId !== "update") {
             const { orgId: _org, path, ...frontMatter } = item.head;
             const now = yield* Clock.currentTimeMillis;
-            const period = (frontMatter.kind === "person" ? 90 : 30) * day;
+            const period = (frontMatter.kind === "person" ? 90 : 30) * DAY_MS;
             const updated =
               verified.action.actionId === "keep"
                 ? {

@@ -1,3 +1,4 @@
+import { keyRequestSql } from "../chat/keySent.ts";
 import {
   KinChatError,
   KinRecordId,
@@ -14,15 +15,13 @@ import type * as Statement from "effect/sql/Statement";
 import { type playbookThreshold, playbookThresholds } from "./playbooks.ts";
 import { iso, issuedNumber, keptEntry } from "./recordRows.ts";
 import { crmSeenBy, KIN_OWNER_LEVEL, type KinViewer } from "./teamView.ts";
+import { DAY_MS, HOUR_MS } from "../durations.ts";
 
 /**
  * Contact with a client: what someone logged, and what Kin already holds (an invoice or quote
  * issued, a payment received, a meeting entry that has passed), read together on every read.
  * A chat that mentions a client is not contact. Last contact is the newest of these.
  */
-
-const DAY_MS = 24 * 60 * 60 * 1000;
-const HOUR_MS = 60 * 60 * 1000;
 
 type Sql = SqlClient.SqlClient;
 type TouchSql = {
@@ -53,7 +52,9 @@ const touchColumns = (sql: Sql) =>
 
 /** One logged contact as a row of the union; removed ones only when `removed` is asked. */
 const loggedRows = (sql: Sql) => sql`SELECT t.party_id AS "partyId", t.touch_id AS id, t.at,
-      t.kind, t.note, COALESCE(wp.display_name, lp.display_name) AS who, 1 AS logged,
+      t.kind, t.note, COALESCE(wp.display_name, lp.display_name)
+        || CASE WHEN ${sql.literal(keyRequestSql("t.origin_key"))} THEN ' (coding agent)' ELSE '' END
+        AS who, 1 AS logged,
       t.logged_by_kind AS "byKind", COALESCE(lp.handle, t.logged_by_id) AS "byName",
       NULL AS "recordId", NULL AS key, NULL AS title, NULL AS "number", t.created_at AS recorded
     FROM kin_client_touches t
@@ -68,13 +69,17 @@ const loggedRows = (sql: Sql) => sql`SELECT t.party_id AS "partyId", t.touch_id 
 const touchUnion = (
   sql: Sql,
   orgId: KinOrgId,
-  partyIds: ReadonlyArray<string> | "all",
+  partyIds: ReadonlyArray<string> | "all" | { readonly within: Statement.Fragment },
   now: number,
   viewer: KinViewer,
 ) => {
   const seen = crmSeenBy(sql, viewer);
   const of = (column: Statement.Fragment) =>
-    partyIds === "all" ? sql`${column} IS NOT NULL` : sql`${column} IN ${sql.in(partyIds)}`;
+    partyIds === "all"
+      ? sql`${column} IS NOT NULL`
+      : "within" in partyIds
+        ? sql`${column} IN (${partyIds.within})`
+        : sql`${column} IN ${sql.in(partyIds)}`;
   // An invoice or quote with no date was sent when it was issued; later edits are not contact.
   const issued = sql`COALESCE(r.date_at, (SELECT n.issued_at FROM kin_issued_numbers n
       WHERE n.org_id = r.org_id AND n.record_id = r.record_id), r.created_at)`;
@@ -142,15 +147,29 @@ const newestContacts = Effect.fn("KinTouches.newest")(function* (
   partyIds: ReadonlyArray<string>,
   now: number,
   viewer: KinViewer,
+  sections = { invoices: true, money: true },
 ) {
   if (partyIds.length === 0) return new Map<string, { at: number; kind: TouchSql["kind"] }>();
   const sql = yield* SqlClient.SqlClient;
   // SQLite takes the bare `kind` from the row MAX(at) picks.
   const rows = yield* sql<{ partyId: string; at: number; kind: TouchSql["kind"] }>`SELECT
       "partyId", MAX(at) AS at, kind
-    FROM (${touchUnion(sql, orgId, partyIds, now, viewer)}) GROUP BY "partyId" ORDER BY "partyId"`;
+    FROM (${touchUnion(sql, orgId, partyIds, now, viewer)})
+    WHERE (${sections.invoices} OR kind NOT IN ('invoice', 'quote'))
+      AND (${sections.money} OR kind != 'payment')
+    GROUP BY "partyId" ORDER BY "partyId"`;
   return new Map(rows.map((row) => [row.partyId, { at: row.at, kind: row.kind }]));
 });
+
+/** Each client's last contact as rows `("partyId", at)`, for the clients a subquery names. */
+export const lastContactRows = (
+  sql: Sql,
+  orgId: KinOrgId,
+  within: Statement.Fragment,
+  now: number,
+  viewer: KinViewer,
+) => sql`SELECT "partyId", MAX(at) AS at
+  FROM (${touchUnion(sql, orgId, { within }, now, viewer)}) GROUP BY "partyId"`;
 
 /** Each client's last contact, epoch ms; clients with none are absent. */
 export const lastContacts = Effect.fn("KinTouches.last")(function* (
@@ -164,6 +183,19 @@ export const lastContacts = Effect.fn("KinTouches.last")(function* (
 });
 
 export const daysSince = (at: number, now: number) => Math.max(0, Math.floor((now - at) / DAY_MS));
+/** When we last finished a project for this client, epoch ms, as a scalar subquery; null if never. */
+export const lastProjectDone = (
+  sql: Sql,
+  org: Statement.Fragment,
+  party: Statement.Fragment,
+  now: number,
+) => sql`(SELECT MAX(dp.closed_at) FROM kin_records dp WHERE dp.org_id = ${org}
+    AND dp.register_id = 'projects' AND dp.party_id = ${party} AND dp.state = 'done'
+    AND dp.closed_at <= ${now})`;
+
+/** `daysSince(at, now) >= days` in SQL, for days of 1 or more. */
+export const quietFor = (sql: Sql, at: Statement.Fragment, now: number, days: Statement.Fragment) =>
+  sql`${now} - ${at} >= ${DAY_MS} * ${days}`;
 
 /** "No logged contact for 12 days", or null while contact is recent. */
 export const quietLine = (lastAt: number | null, createdAt: number, now: number) => {
@@ -266,17 +298,15 @@ export type ClientSense = {
 };
 
 /**
- * The client senses on each client's playbook values: cold (`client_cold_after_days`, no open
- * project), quiet (`client_checkin_days`, during one), waiting on us (`reply_owed_hours` past an
- * obligation's due). Days count from the last contact or finished project, else its adding. A
- * prospect is no client yet: never cold or quiet, though what we owe it still waits on us.
+ * Each open client or prospect with its project and owed-work facts. Grouped once per register,
+ * not per client: a correlated subquery per client walks every open work row on the register index.
  */
-export const clientSenses = Effect.fn("KinTouches.senses")(function* (
+export const clientRows = Effect.fn("KinTouches.clientRows")(function* (
   orgId: KinOrgId,
   now: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const clients = yield* sql<{
+  return yield* sql<{
     partyId: string;
     key: string;
     title: string;
@@ -288,25 +318,43 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
     dueAt: number | null;
   }>`SELECT c.record_id AS "partyId", c.key, c.title, c.sensitive, c.created_at AS "createdAt",
       COALESCE(c.category, 'client') = 'prospect' AS prospect,
-      (SELECT MAX(p.closed_at) FROM kin_records p WHERE p.org_id = c.org_id
-        AND p.register_id = 'projects' AND p.party_id = c.record_id AND p.state = 'done'
-        AND p.closed_at <= ${now}) AS "lastProjectAt",
-      (SELECT COUNT(*) FROM kin_records p WHERE p.org_id = c.org_id
-        AND p.register_id = 'projects' AND p.party_id = c.record_id AND p.state = 'open')
-        AS "openProjects",
-      (SELECT MIN(w.due_at) FROM kin_records w WHERE w.org_id = c.org_id
-        AND w.register_id = 'work' AND w.party_id = c.record_id AND w.side = 'ours'
-        AND w.category = 'obligation' AND w.state IN ('open', 'doing', 'waiting') AND w.due_at < ${now}) AS "dueAt"
+      p.last_at AS "lastProjectAt", COALESCE(p.open, 0) AS "openProjects", w.due_at AS "dueAt"
     FROM kin_records c
+    LEFT JOIN (SELECT party_id,
+        -- lastProjectDone, grouped once per register; project health reads the same rule.
+        MAX(CASE WHEN state = 'done' AND closed_at <= ${now} THEN closed_at END) AS last_at,
+        SUM(state = 'open') AS open
+      FROM kin_records WHERE org_id = ${orgId} AND register_id = 'projects'
+        AND state IN ('done', 'open')
+      GROUP BY party_id) p ON p.party_id = c.record_id
+    LEFT JOIN (SELECT party_id, MIN(due_at) AS due_at FROM kin_records
+      WHERE org_id = ${orgId} AND register_id = 'work' AND side = 'ours'
+        AND category = 'obligation' AND state IN ('open', 'doing', 'waiting') AND due_at < ${now}
+      GROUP BY party_id) w ON w.party_id = c.record_id
     WHERE c.org_id = ${orgId} AND c.register_id = 'clients' AND c.state = 'open'
       AND COALESCE(c.category, 'client') IN ('client', 'prospect')
     ORDER BY c.key`;
+});
+
+/**
+ * The client senses on each client's playbook values: cold (`client_cold_after_days`, no open
+ * project), quiet (`client_checkin_days`, during one), waiting on us (`reply_owed_hours` past an
+ * obligation's due). Days count from the last contact or finished project, else its adding. A
+ * prospect is no client yet: never cold or quiet, though what we owe it still waits on us.
+ */
+export const clientSenses = Effect.fn("KinTouches.senses")(function* (
+  orgId: KinOrgId,
+  now: number,
+  sections?: { readonly invoices: boolean; readonly money: boolean },
+) {
+  const clients = yield* clientRows(orgId, now);
   const lookup = yield* playbookThresholds(orgId);
   const last = yield* newestContacts(
     orgId,
     clients.map((client) => client.partyId),
     now,
     KIN_OWNER_LEVEL,
+    sections,
   );
   const senses: Array<ClientSense> = [];
   for (const client of clients) {

@@ -1,3 +1,4 @@
+import { KIN_WAITING_TITLE } from "@t3tools/client-runtime/kin/kinInboxModel";
 import type { KinWaitingBannerView } from "@t3tools/client-runtime/kin/kinScreenState";
 
 import { KinListBanner } from "./KinListBanner";
@@ -9,7 +10,7 @@ export function KinWaitingBanner(props: {
 }) {
   return (
     <KinListBanner
-      title="Waiting on you"
+      title={KIN_WAITING_TITLE}
       summary={props.view.summary}
       symbol="exclamationmark.shield"
       tone="warning"
