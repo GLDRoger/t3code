@@ -258,7 +258,8 @@ export function KinPlace(
         </KinWorkMessage>
       );
     }
-    if (place.place === "docs") return <KinDocsPlace {...shared} />;
+    if (place.place === "docs")
+      return <KinDocsPlace key={`${target.environmentId}:${target.orgId}`} {...shared} />;
     if (place.place === "clients") return <KinClientsList {...shared} projects={place.projects} />;
     if (place.place === "money") return <KinMoneyArea {...shared} />;
     return (

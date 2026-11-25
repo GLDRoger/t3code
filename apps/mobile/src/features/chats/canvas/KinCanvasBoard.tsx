@@ -1,5 +1,4 @@
 import {
-  KIN_CANVAS_MAX_SCALE,
   KIN_CANVAS_MIN_SCALE,
   kinCanvasDetail,
   kinCanvasVisible,
@@ -31,6 +30,7 @@ import { AppText as Text } from "../../../components/ui/AppText";
 import { cn } from "../../../lib/cn";
 import type { KinWorkTarget } from "../state/useKinWork";
 import { KinCanvasCard, KIN_CANVAS_WORLD_HALF } from "./KinCanvasCard";
+import { detailBand, maxScale } from "./canvasZoom";
 import type { CanvasCamera } from "./useCanvasCamera";
 
 /** Past this many cards, only those near the view are mounted. */
@@ -38,16 +38,6 @@ const CULL_FROM = 60;
 /** Docs read whole at the nearest zoom at once, nearest the middle first, as on web. */
 const NEAR_READS = 3;
 const DETAILS: ReadonlyArray<KinCanvasDetail> = ["dots", "titles", "cards", "near"];
-
-/** `kinCanvasNearScale` and `kinCanvasMaxScale` again, as worklets for the UI thread. */
-const nearScale = (width: number) => {
-  "worklet";
-  return Math.max(1, Math.min(1.6, (width * 0.75) / 240));
-};
-const maxScale = (width: number) => {
-  "worklet";
-  return Math.max(nearScale(width) * 1.15, Math.min(KIN_CANVAS_MAX_SCALE, (width - 24) / 240));
-};
 
 export interface KinCanvasBoardProps {
   readonly target: KinWorkTarget;
@@ -76,8 +66,7 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
   // kinCanvasDetail's bands, worked out again on the UI thread; React hears only a change of band.
   useAnimatedReaction(
     () => {
-      const s = scale.get();
-      return s < 0.22 ? 0 : s < 0.55 ? 1 : s < nearScale(width.get()) ? 2 : 3;
+      return detailBand(scale.get(), width.get());
     },
     (band, previous) => {
       if (band !== previous) runOnJS(setDetail)(DETAILS[band] ?? "cards");
@@ -129,9 +118,12 @@ export function KinCanvasBoard(props: KinCanvasBoardProps) {
   });
   const zoomIn = (sx: number, sy: number) => {
     const s = camera.get();
-    const next = Math.min(maxScale(width.get()), s.scale * 1.8);
     const fx = sx - width.get() / 2;
     const fy = sy - height.get() / 2;
+    // The first tap of a double tap on a card already opened its peek; zooming too would pull it away.
+    const point = { x: s.x + fx / s.scale, y: s.y + fy / s.scale, w: 0, h: 0 };
+    for (const box of layout.cards.values()) if (kinCanvasOverlaps(box, point)) return;
+    const next = Math.min(maxScale(width.get()), s.scale * 1.8);
     camera.flyTo({
       x: s.x + fx / s.scale - fx / next,
       y: s.y + fy / s.scale - fy / next,

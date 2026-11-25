@@ -96,6 +96,7 @@ function KinDocsMapReady(
   },
 ) {
   const { data, environmentId, orgId } = props;
+  const target = { environmentId, orgId };
   const tab = useKinTab();
   const insets = useSafeAreaInsets();
   const barOverlap = useBarOverlap();
@@ -171,7 +172,7 @@ function KinDocsMapReady(
       {props.bar}
       <View className="flex-1" style={{ marginTop: barOverlap }}>
         <KinCanvasBoard
-          target={props}
+          target={target}
           camera={camera}
           layout={layout}
           model={data.model}
@@ -230,7 +231,7 @@ function KinDocsMapReady(
         </KinCanvasBoard>
       </View>
       {peek !== null ? (
-        <KinCanvasPeek target={props} card={peek} onClose={() => setPeek(null)} onOpen={open} />
+        <KinCanvasPeek target={target} card={peek} onClose={() => setPeek(null)} onOpen={open} />
       ) : null}
     </View>
   );
