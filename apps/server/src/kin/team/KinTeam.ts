@@ -97,7 +97,7 @@ export const TeamSayInput = Schema.Struct({
   end: Schema.optional(
     Schema.Literals(["decide", "park", "bring"]).annotate({
       description:
-        "decide: the decider or the Chief of staff settles it. park: the Chief of staff stops it for now, saying where it stands. bring: the Chief of staff takes a disagreement that is the owner's to decide to him.",
+        "decide: the decider or the Chief of staff settles it. park: the Chief of staff stops it for now, saying where it stands. bring: the Chief of staff takes a disagreement that is the owner's to decide to them.",
     }),
   ),
   outcome: Schema.optional(
@@ -1031,7 +1031,7 @@ const make = Effect.gen(function* () {
           (input.positions === undefined || input.lean === undefined || input.options === undefined)
         )
           return yield* refuse(
-            "To bring it to the owner, give both positions, your lean and his two options.",
+            "To bring it to the owner, give both positions, your lean and the owner's two options.",
           );
         yield* post(ctx, row, {
           text: input.text,

@@ -8,6 +8,7 @@ import * as RpcGroup from "effect/rpc/RpcGroup";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinServer, type Services } from "../KinServer.ts";
+import * as FollowUps from "./followUps.ts";
 import * as KinWatches from "./KinWatches.ts";
 import * as WatchReads from "./readRpcs.ts";
 
@@ -36,12 +37,16 @@ export const makeKinWatchHandlers = Effect.fn("makeKinWatchHandlers")(function* 
     Effect.mapError((error) => (isKinError(error) ? error : unavailable)),
   );
   return group.of({
+    "kin.watches.followUps": (input) =>
+      run(input.orgId, (reader) => FollowUps.list(input.orgId, reader)),
     "kin.watches.list": (input) =>
       run(input.orgId, (reader) => WatchReads.list(input.orgId, reader, input)),
     "kin.watches.log": (input) =>
       run(input.orgId, (reader) => WatchReads.log(input.orgId, reader, input)),
     "kin.watches.look": (input) =>
       run(input.orgId, (reader) => KinWatches.look(input.orgId, reader, input.watchId)),
+    "kin.watches.stopFollowUp": (input) =>
+      run(input.orgId, (reader) => FollowUps.stop(input.orgId, reader, input.itemId)),
     "kin.watches.stop": (input) =>
       run(input.orgId, (reader) => KinWatches.stop(input.orgId, reader, input.watchId)),
     "kin.watches.again": (input) =>

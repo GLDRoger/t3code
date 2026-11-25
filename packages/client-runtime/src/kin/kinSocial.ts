@@ -23,6 +23,7 @@ import {
   type KinSocialPlatform,
   type KinSocialView,
   type KinSocialWeekCardAction,
+  type KinShell,
   type KinWidget,
   type KinWidgetsActInput,
 } from "@t3tools/contracts";
@@ -33,6 +34,7 @@ import * as Schema from "effect/Schema";
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { kinFailureText } from "./kinAnswers.ts";
 import type { KinConnectionTone } from "./kinConnections.ts";
+import { kinSectionNamed } from "./kinShell.ts";
 import {
   createKinCardActions,
   kinActionFailureNotice,
@@ -287,6 +289,7 @@ export const kinSocialPostActions = (
 export interface KinSocialWeekView {
   readonly widgetId: KinWidget["widgetId"];
   readonly revision: number;
+  readonly group: KinSocialWeekGroup;
   readonly eyebrow: string;
   readonly title: string;
   readonly posts: ReadonlyArray<KinSocialPostView>;
@@ -324,6 +327,14 @@ const STATE_WORDS: Record<
 };
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
+type KinSocialWeekGroup = { readonly kind: "own" | "client"; readonly label: string };
+
+/** Whose week it is, over the card: "Our own accounts", or "Tidewater Freight · client". */
+export const kinSocialWeekEyebrow = (group: KinSocialWeekGroup, shell?: KinShell | null) =>
+  group.kind === "own"
+    ? "Our own accounts"
+    : `${group.label} · ${kinSectionNamed(shell, "client")}`;
 
 /** The week's posts for one group, in the owner's zone, with only the taps that still work. */
 export function kinSocialWeekView(widget: KinWidget): KinSocialWeekView | null {
@@ -378,7 +389,8 @@ export function kinSocialWeekView(widget: KinWidget): KinSocialWeekView | null {
   return {
     widgetId: widget.widgetId,
     revision: widget.revision,
-    eyebrow: card.group.kind === "own" ? "Our own accounts" : `${card.group.label} · client`,
+    group: { kind: card.group.kind, label: card.group.label },
+    eyebrow: kinSocialWeekEyebrow(card.group),
     title: card.title,
     posts,
     status,

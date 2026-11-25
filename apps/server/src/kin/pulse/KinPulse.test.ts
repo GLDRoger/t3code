@@ -21,6 +21,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import * as ArrivalStore from "../arrivals/ArrivalStore.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as Chat from "../chat/layer.ts";
@@ -442,6 +443,81 @@ const holderWakes = Effect.fn("test.holderWakes")(function* () {
 });
 
 describe("KinPulse", () => {
+  it.effect("tells a recent mailbox gap once, only to readers who can see the mailbox", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const zone = "Asia/Kolkata";
+      yield* sql`UPDATE kin_trigger_settings SET time_zone = ${zone} WHERE org_id = ${orgId}`;
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+          url_host, auth, reach, state, account_label, created_at, updated_at, person_id, removed_at)
+        VALUES (${orgId}, 'company', 'google', 'Company mail', 'builtin', 'google.example',
+          'oauth', 'closed', 'active', 'rhea@tidewater.example', 1, 1, NULL, NULL),
+          (${orgId}, 'own', 'google', 'Own mail', 'builtin', 'google.example',
+          'oauth', 'closed', 'active', NULL, 1, 1, ${mate}, NULL),
+          (${orgId}, 'removed', 'google', 'Removed mail', 'builtin', 'google.example',
+          'oauth', 'closed', 'active', NULL, 1, 1, ${mate}, 2)`;
+      const from = Date.UTC(2026, 10, 25, 3, 30);
+      const to = from + 5 * HOUR;
+      const at = to + MINUTE;
+      for (const connection of ["company", "own", "removed"])
+        yield* ArrivalStore.gap(orgId, connection, { from, to }, "Feed gap");
+      yield* ArrivalStore.gap(
+        orgId,
+        "company",
+        { from: from - 7 * DAY, to: to - 7 * DAY },
+        "Old gap",
+      );
+      const [stored] = yield* sql<{ id: string }>`SELECT arrival_id AS id FROM kin_arrivals
+        WHERE org_id = ${orgId} AND connection_id = 'company' AND noticed_at = ${to}
+        ORDER BY arrival_id`;
+
+      const gaps = (viewer?: KinPulse.Viewer) =>
+        read(at, viewer).pipe(
+          Effect.map(({ facts }) => facts.filter((fact) => fact.key.startsWith("mail_gap:"))),
+        );
+      const ownerGaps = yield* gaps();
+      assert.lengthOf(ownerGaps, 2);
+      const line =
+        "Kin couldn't read mail for rhea@tidewater.example between Wed 25 Nov, 09:00 and Wed 25 Nov, 14:00; anything that arrived then hasn't been looked at.";
+      const company = ownerGaps.find((fact) => fact.key === `mail_gap:${stored!.id}`)!;
+      assert.include(company, {
+        sense: "mail_gap",
+        family: "system",
+        wake: "brief",
+        consequence: line,
+      });
+      assert.deepStrictEqual(company.actor, { _tag: "owner" });
+      assert.strictEqual(DateTime.toEpochMillis(company.since), to);
+
+      const personal = yield* gaps({ _tag: "people", people: [mate] });
+      assert.lengthOf(personal, 1);
+      assert.deepStrictEqual(personal[0]!.actor, { _tag: "person", personId: mate });
+      assert.include(personal[0]!.consequence, "for Own mail between");
+      assert.includeDeepMembers(ownerGaps, personal);
+      assert.isEmpty(yield* gaps({ _tag: "people", people: [KinPersonId.make("zoya")] }));
+      assert.isEmpty(yield* gaps({ _tag: "people", people: [mate, owner] }));
+      assert.isEmpty(yield* gaps({ _tag: "people", people: [mate], excludeOwnMail: true }));
+      assert.isEmpty(screenFacts(ownerGaps, undefined));
+      assert.lengthOf(screenFacts(ownerGaps, ["mail_gap"]), 2);
+
+      const checkIn = yield* buildPulseSection({
+        orgId,
+        agentId: chief,
+        now: at,
+        wokeFor: [],
+        checkIn: new Set([company.key]),
+      });
+      assert.strictEqual(checkIn?.byProject[0]?.facts[0]?.consequence, line);
+      const told = { orgId, personId: owner, at, zone, facts: [company], anyState: true };
+      assert.lengthOf(yield* untold(told), 1);
+      yield* markTold({ ...told, eventId: "mail-gap-checkin" });
+      const next = (yield* read(at + DAY)).facts.filter((fact) => fact.key === company.key);
+      assert.lengthOf(next, 1);
+      assert.isEmpty(yield* untold({ ...told, at: at + DAY, facts: next }));
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("each sense is absent a minute before its line and present at it", () =>
     Effect.gen(function* () {
       yield* seed;

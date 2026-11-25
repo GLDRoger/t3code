@@ -128,4 +128,32 @@ describe("Settings → Company details form", () => {
     await expect.element(companyForm()).not.toBeInTheDocument();
     expect(host.saved).toEqual([]);
   });
+
+  it("shows the country by name, searches by name or code, and saves the ISO code", async () => {
+    setup();
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <KinCompanyProfileSettings />
+      </AppAtomRegistryProvider>,
+    );
+    await userEvent.click(page.getByRole("button", { name: "Edit", exact: true }));
+    const country = companyForm().getByRole("combobox", { name: "Country" });
+    await expect.element(country).toHaveValue("United Kingdom");
+
+    await userEvent.fill(country, "Atlantis");
+    await expect.element(page.getByText("No country matches that.")).toBeVisible();
+    await userEvent.keyboard("{Escape}");
+    await expect.element(ask()).not.toBeInTheDocument();
+    await userEvent.click(companyForm().getByRole("button", { name: "Save details" }));
+    await expect
+      .element(companyForm().getByText("Pick a country from the list, or type its name or code."))
+      .toBeVisible();
+    expect(host.saved).toEqual([]);
+
+    await userEvent.fill(country, "japan");
+    await userEvent.click(page.getByRole("option", { name: /Japan/ }));
+    await expect.element(country).toHaveValue("Japan");
+    await userEvent.click(companyForm().getByRole("button", { name: "Save details" }));
+    expect(host.saved).toEqual([{ orgId: "org-1", rev: 3, country: "JP" }]);
+  });
 });

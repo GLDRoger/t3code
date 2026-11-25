@@ -37,6 +37,7 @@ import { SecretTextInput } from "../../../components/ui/SecretTextInput";
 import { tryCopyTextWithHaptic } from "../../../lib/copyTextWithHaptic";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
+import { useKinSectionNamed } from "../state/useKinShell";
 import {
   decodeConnectionsTarget,
   KinConnectionsMissing,
@@ -89,6 +90,7 @@ export function KinSocialSection(props: {
     props.target.environmentId,
     props.target.orgId,
   );
+  const named = useKinSectionNamed(props.target.environmentId);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   if (view === null)
@@ -122,7 +124,7 @@ export function KinSocialSection(props: {
   return (
     <View className="gap-2">
       {problem === null ? null : <ErrorBanner message={problem} />}
-      <ListSection title={COPY.title} footer={rows.length === 0 ? COPY.empty : COPY.intro}>
+      <ListSection title={COPY.title} footer={rows.length === 0 ? COPY.empty : named(COPY.intro)}>
         {rows.map((row) => (
           <View key={row.groupId}>
             <ListRow
@@ -182,6 +184,7 @@ function ConnectSheet(props: {
 }) {
   const navigation = useNavigation();
   const { result, view, actions } = useSocial(props.target.environmentId, props.target.orgId);
+  const named = useKinSectionNamed(props.target.environmentId);
   const rekey =
     props.groupId === null || view === null
       ? null
@@ -263,7 +266,7 @@ function ConnectSheet(props: {
           ) : (
             <>
               <Text textRole="body" className="px-2 text-foreground-muted">
-                {COPY.intro}
+                {named(COPY.intro)}
               </Text>
               {problem === null ? null : <ErrorBanner message={problem} />}
               {checked === null ? (
@@ -271,7 +274,7 @@ function ConnectSheet(props: {
                   {rekey === null ? (
                     <ListSection
                       title={COPY.whose}
-                      footer={choices.length === 0 ? COPY.noClients : undefined}
+                      footer={choices.length === 0 ? named(COPY.noClients) : undefined}
                     >
                       {choices.map((choice, index) => (
                         <ListRow
@@ -348,6 +351,7 @@ export function KinSocialLinkScreen({ route }: StaticScreenProps<KinSocialParams
 function LinkSheet(props: { readonly target: KinConnectionsTarget; readonly groupId: string }) {
   const navigation = useNavigation();
   const { view, actions } = useSocial(props.target.environmentId, props.target.orgId);
+  const named = useKinSectionNamed(props.target.environmentId);
   const row =
     view === null
       ? null
@@ -399,7 +403,7 @@ function LinkSheet(props: { readonly target: KinConnectionsTarget; readonly grou
           ) : (
             <>
               <Text textRole="body" className="px-2 text-foreground-muted">
-                {row.kind === "client" ? COPY.forwardLink : COPY.openSignedIn}
+                {row.kind === "client" ? named(COPY.forwardLink) : COPY.openSignedIn}
               </Text>
               {problem === null ? null : <ErrorBanner message={problem} />}
               {made === null ? (
