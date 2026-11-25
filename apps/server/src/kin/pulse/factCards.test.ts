@@ -718,3 +718,25 @@ it.effect("the holder's notice of Not mine names the person, not a pronoun", () 
     }),
   ),
 );
+
+it.effect(
+  "Not mine quiets only the person who said it, and the answer stays on the task as Kin's comment",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW);
+        yield* tickAt(ctx, NOW);
+        const [card] = yield* cards(ctx);
+        yield* tap(ctx, arjunId, card!, "Not mine");
+        assert.isFalse(yield* personSees(ctx, arjunId, "waiting_long", "W-1", NOW + HOUR));
+        assert.isTrue(yield* ownerSees(ctx, "waiting_long", "W-1", NOW + HOUR));
+        const comments = yield* ctx.sql<{ kind: string; body: string }>`SELECT
+            c.author_kind AS kind, c.body FROM kin_record_comments c
+          JOIN kin_records r ON r.org_id = c.org_id AND r.record_id = c.record_id
+          WHERE c.org_id = ${ctx.orgId} AND r.key = 'W-1' ORDER BY c.seq`;
+        assert.deepStrictEqual(comments, [
+          { kind: "agent", body: "Arjun answered Kin's card: W-1 doesn't wait on Arjun." },
+        ]);
+      }),
+    ),
+);

@@ -13,6 +13,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { ownerLevel } from "../people/KinAccess.ts";
 import type { DuePlan, FactCardPlan, StallPlan, WaitedPlan } from "../widgets/cardPlans.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
+import { insertComment, requestHashOf } from "../work/recordComments.ts";
 import { milestoneProposal } from "./factCards.ts";
 import { noticeHolder } from "./holderNotice.ts";
 import * as KinPulse from "./KinPulse.ts";
@@ -159,9 +160,22 @@ const runWaited = Effect.fn("KinFactCards.runWaited")(function* (
         action: "got_it",
         until: tap.now + NOT_MINE_MS,
         note: `${plan.personName}: not mine`,
-        view: "company",
+        view: "theirs",
       });
       if (!held) return notWaiting;
+      // The answer outlasts the hold: the owner reading the task sees who said it isn't theirs.
+      const body = `${plan.personName} answered Kin's card: ${plan.key} doesn't wait on ${plan.personName}.`;
+      yield* insertComment({
+        orgId: tap.orgId,
+        key: plan.key,
+        author: { _tag: "agent", agentId: KinAgentId.make(plan.agentId), askedBy: null },
+        requestId: `fact-card:${tap.widget.widgetId}`,
+        requestHash: requestHashOf(body, []),
+        body,
+        files: [],
+        now: tap.now,
+        sees: () => Effect.succeed(true),
+      });
       yield* tellHolder(
         tap,
         plan,
