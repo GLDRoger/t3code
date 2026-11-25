@@ -258,6 +258,13 @@ const make = Effect.gen(function* () {
           message: `Provider instance ${named.providerInstanceId} there uses driver ${named.driverKind}, not ${requested.driverKind}.`,
         });
       }
+      // A box from before `unavailableProviders` still lists those instances here.
+      if (named !== undefined && !named.canRunChildTask) {
+        return yield* new OrchestratorMcpFailure({
+          code: "provider_unavailable",
+          message: `Provider instance ${namedId} there can't run a child task: ${named.constraints.join(" ")}`,
+        });
+      }
       return namedId;
     }
     const candidates = providers.filter(
