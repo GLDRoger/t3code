@@ -718,7 +718,12 @@ type Prepared = {
     /** The id the person sent it under, before the claim renamed it. */
     readonly sentId?: string | undefined;
   }>;
-  readonly refused: ReadonlyArray<{ readonly name: string; readonly reason: string }>;
+  readonly refused: ReadonlyArray<{
+    readonly name: string;
+    readonly reason: string;
+    /** The id the person sent it under, so a client can mark that chosen file refused. */
+    readonly sentId?: string | undefined;
+  }>;
 };
 
 /**
@@ -809,7 +814,11 @@ const startBatch = Effect.fn("KinBills.startBatch")(function* (input: {
       .filter((file) => added.includes(file.sha256))
       .map((file) => ({ name: answerName(file.attachment.name), sha256: file.sha256 })),
     already,
-    refused: input.prepared.refused.map((file) => ({ ...file, name: answerName(file.name) })),
+    refused: input.prepared.refused.map((file) => ({
+      name: answerName(file.name),
+      reason: file.reason,
+      ...(file.sentId === undefined ? {} : { attachmentId: file.sentId }),
+    })),
   } satisfies KinBillsAddResult;
 });
 
@@ -855,7 +864,7 @@ export const add = Effect.fn("KinBills.add")(function* (
     return yield* invalid(`Open your chat with ${reader.name} first: its card goes there.`);
   const refused = input.attachments
     .filter((file) => !isBillFile(file))
-    .map((file) => ({ name: file.name, reason: NOT_A_BILL }));
+    .map((file) => ({ name: file.name, reason: NOT_A_BILL, sentId: file.id }));
   const wanted = input.attachments.filter(isBillFile);
   const store = yield* Effect.serviceOption(KinAttachmentStore);
   if (wanted.length > 0 && Option.isNone(store)) return yield* invalid("Files are unavailable.");

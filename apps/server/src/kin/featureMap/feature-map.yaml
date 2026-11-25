@@ -1806,6 +1806,7 @@ unlisted:
   "web:?person": Starts Tasks narrowed to what one person holds, from their page's See all in Tasks; not a screen.
   "web:?section": Scrolls the open doc to a section; not a screen.
   "web:?from": The base version of the compare view (`?changes`); not a screen.
+  "web:?invalidLink": Keeps the one-line "doesn't exist or isn't shared with you" notice over the place after a link held a malformed key; not a screen.
   "rpc:kin.lead.access.list": Served; no client shows an agent's access grants yet.
   "rpc:kin.lead.access.grant": Served; no client grants an agent access yet.
   "rpc:kin.lead.access.revoke": Served; no client revokes an agent's access yet.

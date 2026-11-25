@@ -60,6 +60,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/ui/select";
+import { Spinner } from "../components/ui/spinner";
 import { Textarea } from "../components/ui/textarea";
 import { randomUUID } from "../lib/utils";
 import { KinLinesEditor } from "./KinMoneyAnswers";
@@ -110,7 +111,7 @@ function FormDialog(props: {
             className="contents"
             onSubmit={(event) => {
               event.preventDefault();
-              props.onSave();
+              if (!props.busy) props.onSave();
             }}
           >
             <DialogHeader>
@@ -127,7 +128,14 @@ function FormDialog(props: {
                 {KIN_WORK_COPY.cancel}
               </Button>
               <Button type="submit" disabled={props.busy} aria-busy={props.busy}>
-                {props.saveLabel}
+                {props.busy ? (
+                  <>
+                    <Spinner aria-hidden />
+                    {KIN_WORK_COPY.saving}
+                  </>
+                ) : (
+                  props.saveLabel
+                )}
               </Button>
             </DialogFooter>
           </form>
