@@ -489,6 +489,72 @@ it.live("a fixture dream lands its changes on the default branch and records dre
   ),
 );
 
+it.live("a night lands without a new item refused only for its edit quote, and says so", () =>
+  fixture(({ git, remote, root, hooks }) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      // The owner changed the rate in the lead's draft; she left the payment terms as they were.
+      yield* sql`UPDATE kin_people SET access = 'owner' WHERE person_id = 'owner'`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'docs', 'Docs', 'D', 1, 0)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, created_by_kind, origin_key, sensitive, created_at, updated_at)
+        VALUES (${orgId}, 'r-D-1', 'docs', 'D-1', 'Invented rates', 'agent', 'lead', 'agent',
+          'r-D-1', 0, 0, 0)`;
+      for (const [version, by, body] of [
+        [1, "lead", "Our rate is 45 an hour. Invoices are due within 30 days."],
+        [2, "owner", "Our rate is 50 an hour. Invoices are due within 30 days."],
+      ] as const)
+        yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind,
+            summary, operations_json, actor_kind, actor_id, via, origin_key, created_at)
+          VALUES (${orgId}, 'r-D-1', ${version}, ${body}, 'D-1', 'rewritten', 's', '[]',
+            ${by === "lead" ? "agent" : "person"}, ${by}, 'kin', ${`D-1-${version}`},
+            ${Date.parse(timestamp) + version * 60_000})`;
+      const editRef = "kin:doc:r-D-1:version:1..2";
+      const fs = yield* FileSystem.FileSystem;
+      hooks.extracted = (workspace) =>
+        Effect.gen(function* () {
+          yield* fs.writeFileString(
+            `${workspace}/claims/terms.md`,
+            fixtureItem({
+              id: "clm-terms",
+              kind: "claim",
+              source: editRef,
+              said_by: "owner",
+              trust: "owner",
+              sensitive: true,
+              quote: "Invoices are due within 30 days",
+            }),
+          );
+          const report = JSON.parse(dreamJson());
+          report.changes.push({ path: "claims/terms.md", sources: [editRef] });
+          yield* fs.writeFileString(`${workspace}/.kin-dream/dream.json`, JSON.stringify(report));
+        }).pipe(Effect.orDie);
+      const runner = yield* DreamRunner.DreamRunner;
+      const outcome = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-08" });
+      expect(outcome._tag).toBe("succeeded");
+      if (outcome._tag !== "succeeded") return;
+      const landed = yield* git(root, [
+        "--git-dir",
+        remote,
+        "ls-tree",
+        "-r",
+        "--name-only",
+        outcome.head,
+      ]);
+      expect(landed).toContain("claims/new.md");
+      expect(landed).not.toContain("claims/terms.md");
+      const [row] = yield* runRow();
+      expect(row).toMatchObject({
+        status: "succeeded",
+        failure:
+          "Left out claims/terms.md: an item from an edit quotes only what the person typed in it",
+      });
+      expect(row?.dreamJson).not.toContain("claims/terms.md");
+    }),
+  ),
+);
+
 it.live.each([
   { moved: "claims/existing.md", lands: true },
   { moved: "journal/2026/11-07.md", lands: false },

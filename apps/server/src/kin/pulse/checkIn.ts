@@ -229,9 +229,16 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   const heldPast =
     day === undefined
       ? []
-      : (yield* sql<{ eventId: string; notBefore: number; day: string; outside: string | null }>`
+      : (yield* sql<{
+          eventId: string;
+          notBefore: number;
+          day: string;
+          outside: string | null;
+          notListed: number | null;
+        }>`
           SELECT event_id AS "eventId", not_before AS "notBefore",
-            json_extract(json, '$.checkIn.day') AS day, json_extract(json, '$.outside') AS outside
+            json_extract(json, '$.checkIn.day') AS day, json_extract(json, '$.outside') AS outside,
+            json_extract(json, '$.outsideNotListed') AS "notListed"
           FROM kin_events WHERE org_id = ${orgId} AND agent_id = ${input.agentId}
             AND tag = 'pulse' AND state = 'queued' AND not_before IS NOT NULL
             AND json_extract(json, '$.checkIn.scheduleId') = ${input.scheduleId}
@@ -272,6 +279,8 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   const sent = [...byId.values()]
     .toSorted((a, b) => Number(b.matched !== undefined) - Number(a.matched !== undefined))
     .slice(0, OUTSIDE_CAP);
+  const notListed =
+    byId.size - sent.length + heldPast.reduce((sum, row) => sum + (row.notListed ?? 0), 0);
   const open =
     input.manualId !== undefined
       ? undefined
@@ -345,6 +354,7 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
             ...(day === undefined ? {} : { day }),
           },
           ...(sent.length === 0 ? {} : { outside: sent }),
+          ...(notListed > 0 ? { outsideNotListed: notListed } : {}),
         }),
         notBefore === undefined ? undefined : { notBefore },
       )

@@ -10,6 +10,7 @@ import {
   type KinLeadRoutine,
   type KinWidget,
   type MemoryItemHead,
+  ThreadId,
   formatKinWhen,
   KIN_TEXT_LOCALE,
 } from "@t3tools/contracts";
@@ -23,6 +24,7 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
+import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
@@ -33,6 +35,7 @@ import * as MemoryCache from "../memory/MemoryCache.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { deferralWidgetId } from "../triggers/deferrals.ts";
 import { withRuns } from "../triggers/deferralRuns.ts";
+import { draftOpening } from "../work/draftOpening.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { dayRecord, dayRecordEmpty, shownDay } from "./dayRecord.ts";
 import {
@@ -127,14 +130,36 @@ const GITHUB_BUDGET = "10 seconds";
 const STUCK: ReadonlySet<string> = new Set(["needs_decision", "blocked", "failed"]);
 /** Tasks agents delegated, by their cards updated since `since`: Kin's own copy of T3's state. */
 const taskCards = (sql: SqlClient.SqlClient, orgId: KinOrgId, since: number) =>
-  sql<{ title: string; status: string; link: string | null }>`
+  sql<{
+    title: string;
+    status: string;
+    link: string | null;
+    thread: string | null;
+    starter: string | null;
+  }>`
     SELECT json_extract(w.state_json, '$.title') AS title,
       json_extract(w.state_json, '$.status') AS status,
-      json_extract(w.state_json, '$.pullRequests[0].url') AS link
+      json_extract(w.state_json, '$.pullRequests[0].url') AS link,
+      json_extract(w.state_json, '$.threadId') AS thread, a.display_name AS starter
     FROM kin_widgets w
+    LEFT JOIN kin_messages m ON m.org_id = w.org_id AND m.message_id = w.message_id
+    LEFT JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.author_agent_id
     WHERE w.org_id = ${orgId} AND w.type = 'task' AND w.closed_at IS NULL
       AND w.updated_at >= ${DateTime.formatIso(DateTime.makeUnsafe(since))}
     ORDER BY w.updated_at, w.widget_id`;
+/** Done tasks whose child thread the evening reads for what it found; older ones name only who started them. */
+const OUTCOMES_CAP = 8;
+const OUTCOME_CHARS = 240;
+const outcomeNote = (starter: string | null, found: string | null | undefined) => {
+  const who = starter === null ? "An agent's task" : `${starter}'s task`;
+  if (found === undefined) return who;
+  if (found === null) return `${who}; Kin couldn't read what it found`;
+  const whole = found.trim().replace(/\s+/g, " ");
+  const opening = draftOpening(whole, OUTCOME_CHARS - 1);
+  return opening.length === whole.length
+    ? `${who}; it reported: ${whole}`
+    : `${who}; it reported (${Array.from(whole).length} characters, this is the start): ${opening.replace(/…$/, "")}…`;
+};
 const decodeTokens = Schema.decodeUnknownOption(
   Schema.fromJsonString(
     Schema.Array(
@@ -166,6 +191,27 @@ const make = Effect.gen(function* () {
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
   const reader = yield* KinRoutineGithubReader;
+  const threads = yield* ThreadManagement.ThreadManagementService;
+
+  // The last assistant message of the child thread's latest run; null when it can't be read or has none.
+  const taskFound = Effect.fn("KinRoutineContent.taskFound")(
+    function* (thread: string | null) {
+      if (thread === null) return null;
+      const threadId = ThreadId.make(thread);
+      const { runs } = yield* threads.getThreadRecords(threadId, ["runs"], { latestRunLimit: 1 });
+      const latest = runs.at(-1);
+      if (latest === undefined) return null;
+      const { messages } = yield* threads.getThreadRecords(threadId, ["messages"], {
+        messageRoles: ["assistant"],
+        messageRunIds: [latest.id],
+      });
+      return (
+        messages.findLast((message) => !message.streaming && message.text.trim() !== "")?.text ??
+        null
+      );
+    },
+    Effect.catchCause(() => Effect.succeed(null)),
+  );
 
   const lead = Effect.fn("KinRoutineContent.lead")(function* (
     orgId: KinOrgId,
@@ -355,11 +401,19 @@ const make = Effect.gen(function* () {
       return { day, dayLabel, timeLabel, facts, dayStart, dayEnd };
     }
 
-    const done = (yield* taskCards(sql, orgId, dayStart)).flatMap(
-      (task): ReadonlyArray<RoutineRow> =>
-        task.status === "done"
-          ? [{ title: task.title, ...(task.link === null ? {} : { link: task.link }) }]
-          : [],
+    const doneCards = (yield* taskCards(sql, orgId, dayStart)).filter(
+      (task) => task.status === "done",
+    );
+    const done = yield* Effect.forEach(doneCards, (task, index) =>
+      Effect.gen(function* () {
+        const found =
+          index < doneCards.length - OUTCOMES_CAP ? undefined : yield* taskFound(task.thread);
+        return {
+          title: task.title,
+          note: outcomeNote(task.starter, found),
+          ...(task.link === null ? {} : { link: task.link }),
+        } satisfies RoutineRow;
+      }),
     );
     const recordedToday = (item: MemoryItemHead) => {
       const recorded = memoryDateMillis(item.recorded_at);

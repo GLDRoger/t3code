@@ -68,6 +68,7 @@ export const mailLine = (
   ...(account === null ? {} : { account: cut(account, 320)! }),
   ...(mail.receivedBy === null ? {} : { to: cut(mail.receivedBy, 320)! }),
   id: cut(`${mail.threadId}:${mail.date ?? ""}`, 200)!,
+  thread: cut(mail.threadId, 200)!,
   at: cut(mail.date, 60),
   who: cut(mail.from, 300),
   subject: cut(mail.subject, 300),
