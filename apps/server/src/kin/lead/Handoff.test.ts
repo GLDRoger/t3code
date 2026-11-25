@@ -46,6 +46,7 @@ import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
 import { deferralOrigin } from "../triggers/deferralOrigin.ts";
+import { deliverHeld } from "../triggers/heldDelivery.ts";
 import { SHARED_REFUSAL, recordAudience, turnAudience, turnPeople } from "./Audience.ts";
 import { wakeEvent } from "./ChatWake.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
@@ -53,6 +54,7 @@ import * as Handoff from "./Handoff.ts";
 import * as KinLevels from "./KinLevels.ts";
 import * as LeadProvision from "./KinLeadProvision.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
+import { KinLevelGate } from "./LevelGate.ts";
 import { toolAdmitted } from "./SharedTools.ts";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { workFor } from "./workFor.ts";
@@ -2202,6 +2204,148 @@ it.effect(
         assert.strictEqual(yield* turnAudience(turn), "owner_only");
       }),
     ),
+);
+
+const passedOnRequest = (holdAnswer: boolean) =>
+  run(({ ctx, handoff }) =>
+    Effect.gen(function* () {
+      const { sql, orgId, owner, chats, techChat, services } = ctx;
+      yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'America/Los_Angeles',
+          '08:30', '18:30', '03:00', 0, 1, '09:00', '{"from":"22:00","to":"08:00"}')`;
+      yield* sql`UPDATE kin_people SET display_name = 'Rhea' WHERE org_id = ${orgId}
+          AND person_id = ${owner.personId}`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+          VALUES ('zoya', ${orgId}, 'zoya', 'Zoya', ${at})`;
+      yield* sql`INSERT INTO kin_team_agents (org_id, agent_id, set_by, set_at)
+          VALUES (${orgId}, ${tech}, ${owner.personId}, 0)`;
+      yield* sql`UPDATE kin_leads SET level = 'L2' WHERE org_id = ${orgId}
+          AND agent_id = ${tech}`;
+      const agent = {
+        _tag: "agent" as const,
+        hostPosted: true as const,
+        orgId,
+        agentId: tech,
+        ownerPersonId: owner.personId,
+        threadId: ThreadId.make("tech-thread"),
+      };
+      const card = yield* chats.ask(agent, {
+        chatId: techChat,
+        clientMessageId: "unrelated-card",
+        question: "Which room should host the demo?",
+        options: [{ label: "Cedar" }, { label: "Maple" }],
+      });
+      const zoya = { _tag: "person" as const, orgId, personId: KinPersonId.make("zoya") };
+      const zoyaChat = (yield* chats.createDirect(zoya, { orgId, agentId: tech })).chatId;
+      const request = yield* chats.send(zoya, {
+        chatId: zoyaChat,
+        body: "Can the rollout move to Friday?",
+        clientMessageId: "rollout-request",
+      });
+      yield* ctx.claim("rollout-request", tech, {
+        chatId: zoyaChat,
+        messageId: request.messageId,
+        provenance: request.author,
+      });
+      const { postTo } = Context.get(services, KinLevelGate);
+      yield* handoff.relay(
+        scopeFor(tech),
+        { to: "Rhea", text: request.body, sourceEventId: "rollout-request" },
+        postTo,
+      );
+      const requestWaiting = sql<{ resolution: string | null }>`SELECT w.resolution
+          FROM kin_waiting w JOIN kin_messages m ON m.org_id = w.org_id
+            AND m.message_id = w.message_id
+          WHERE w.org_id = ${orgId} AND w.person_id = ${owner.personId}
+            AND w.chat_id = ${techChat} AND w.reason = 'question'
+            AND json_extract(m.relay_json, '$.personId') = ${zoya.personId}
+          ORDER BY m.seq`;
+      const assertRequestOpen = Effect.gen(function* () {
+        assert.deepStrictEqual(yield* requestWaiting, [{ resolution: null }]);
+      });
+      yield* assertRequestOpen;
+      yield* tap(ctx, card.widgetId, "option-1");
+      yield* assertRequestOpen;
+      const question = yield* chats.send(agent, {
+        chatId: techChat,
+        clientMessageId: "unrelated-question",
+        body: "Which team should test the demo?",
+        intent: "question",
+      });
+      yield* chats.send(owner, {
+        chatId: techChat,
+        body: "Support can test the demo.",
+        clientMessageId: "unrelated-words",
+      });
+      yield* assertRequestOpen;
+      assert.deepStrictEqual(
+        yield* sql`SELECT resolution FROM kin_waiting WHERE org_id = ${orgId}
+            AND person_id = ${owner.personId} AND message_id = ${question.messageId}
+            ORDER BY waiting_id`,
+        [{ resolution: "answered" }],
+      );
+
+      yield* chats.ask(agent, {
+        chatId: techChat,
+        clientMessageId: "another-card",
+        question: "Which design goes in the demo?",
+        options: [{ label: "First" }, { label: "Second" }],
+      });
+      yield* assertRequestOpen;
+
+      yield* chats.notice({
+        orgId,
+        chatId: techChat,
+        audience: "chat",
+        messageId: KinMessageId.make("zoya-demo-request"),
+        waitingFor: owner.personId,
+        body: 'Zoya asked Tech lead:\n"Can we move the demo to Monday?"',
+        from: tech,
+        relay: { kind: "sent_by", agentId: tech, personId: zoya.personId, personName: "Zoya" },
+      });
+      if (holdAnswer) {
+        yield* TestClock.adjust("11 minutes");
+        yield* sql`UPDATE kin_people SET quiet_hours_json = '{"from":"15:00","to":"16:12"}'
+          WHERE org_id = ${orgId} AND person_id = ${zoya.personId}`;
+      }
+      const decision = yield* chats.send(owner, {
+        chatId: techChat,
+        body: "Tell Zoya the rollout can move to Friday.",
+        clientMessageId: "rollout-decision",
+      });
+      yield* sql`UPDATE kin_events SET state = 'done', wakeup_id = NULL
+          WHERE org_id = ${orgId} AND event_id = 'rollout-request'`;
+      yield* sql`UPDATE kin_wakeups SET audience = NULL
+          WHERE org_id = ${orgId} AND wakeup_id = 'tech-wake'`;
+      yield* ctx.claim("rollout-decision", tech, {
+        chatId: techChat,
+        messageId: decision.messageId,
+        provenance: decision.author,
+      });
+      const sendAnswer = handoff.relay(
+        scopeFor(tech),
+        { to: "Zoya", text: "The rollout can move to Friday.", sourceEventId: "rollout-decision" },
+        postTo,
+      );
+      yield* sendAnswer;
+      if (holdAnswer) {
+        assert.deepStrictEqual(yield* requestWaiting, [{ resolution: null }, { resolution: null }]);
+        yield* TestClock.adjust("1 minute");
+        yield* deliverHeld(orgId, chats);
+      }
+      const firstAnswered = [{ resolution: "answered" }, { resolution: null }];
+      assert.deepStrictEqual(yield* requestWaiting, firstAnswered);
+      yield* sendAnswer;
+      assert.deepStrictEqual(yield* requestWaiting, firstAnswered);
+    }),
+  );
+
+it.effect(
+  "a teammate's passed-on request waits until word goes back, whatever else the owner does in that chat",
+  () => passedOnRequest(false),
+);
+
+it.effect("a held answer closes a passed-on request only when the answer posts", () =>
+  passedOnRequest(true),
 );
 
 it.effect(

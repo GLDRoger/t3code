@@ -133,7 +133,10 @@ import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
 import * as Reactions from "./reactions.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
-import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
+import { ownerLevel, ownerLevelSql, ownsAgent } from "../people/KinAccess.ts";
+import { HELD_ID } from "../triggers/heldDelivery.ts";
+import { relayWakeup } from "../triggers/quietHold.ts";
+import { keySentSql } from "./keySent.ts";
 import { memberReads } from "./sharing.ts";
 
 const decodeChoiceCard = Schema.decodeUnknownEffect(KinChoiceCardState);
@@ -633,6 +636,9 @@ const decodeTapBody = Schema.decodeUnknownOption(
 );
 const invalidState = new KinChatError({ reason: "invalid_state", message: "Invalid chat input." });
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+const relayPerson = (message: KinMessage) =>
+  message.relay?.kind === "sent_by" ? message.relay.personId : undefined;
+
 /** How a dismissed card's waiting rows read as resolved. */
 const DISMISSED = "dismissed";
 /** An agent's question in words that its card in the same chat now asks. */
@@ -1146,6 +1152,52 @@ const make = Effect.gen(function* () {
     }
     return item;
   });
+  const resolveRelayedRequest = Effect.fn("KinChatService.resolveRelayedRequest")(function* (
+    message: KinMessage,
+    relayKey: string,
+  ) {
+    const sender = relayPerson(message);
+    const wakeupId = relayWakeup(relayKey);
+    if (sender === undefined || wakeupId === undefined || message.author._tag !== "agent") return;
+    const { orgId, chatId } = message;
+    const { agentId } = message.author;
+    const [request] = yield* sql<{ waitingId: KinWaitingId }>`SELECT w.waiting_id AS "waitingId"
+      FROM kin_chats c
+      JOIN kin_chat_members recipient ON recipient.org_id = c.org_id AND recipient.chat_id = c.chat_id
+        AND recipient.principal_kind = 'person' AND recipient.left_at IS NULL
+        AND c.direct_key = recipient.person_id || ':' || ${agentId}
+      JOIN kin_waiting w ON w.org_id = c.org_id AND w.person_id = ${sender}
+        AND w.reason = 'question' AND w.widget_id IS NULL AND w.resolved_at IS NULL
+      JOIN kin_messages r ON r.org_id = w.org_id AND r.message_id = w.message_id
+        AND r.chat_id = w.chat_id AND r.status = 'posted' AND r.author_agent_id = ${agentId}
+        AND json_extract(r.relay_json, '$.kind') = 'sent_by'
+        AND json_extract(r.relay_json, '$.personId') = recipient.person_id
+      WHERE c.org_id = ${orgId} AND c.chat_id = ${chatId} AND c.kind = 'direct'
+        AND w.chat_id <> c.chat_id AND ${sql.literal(ownerLevelSql("w.org_id", "w.person_id"))}
+        AND EXISTS (SELECT 1 FROM kin_events e JOIN kin_messages m ON m.org_id = e.org_id
+          AND m.message_id = json_extract(e.json, '$.messageId')
+          WHERE e.org_id = w.org_id AND e.agent_id = ${agentId} AND e.wakeup_id = ${wakeupId}
+            AND e.tag = 'chat.message' AND json_extract(e.json, '$.origin') IS NULL
+            AND m.chat_id = w.chat_id AND m.seq > r.seq AND m.kind = 'text'
+            AND m.status = 'posted' AND m.author_kind = 'human' AND m.author_person_id = w.person_id
+            AND m.origin_json IS NULL AND trim(m.body) <> ''
+            AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
+            AND NOT EXISTS (SELECT 1 FROM kin_handoffs h WHERE h.org_id = m.org_id
+              AND m.client_message_id = ${Repository.storedClientId("send", "")} || h.message_id))
+        AND NOT EXISTS (SELECT 1 FROM kin_messages sent WHERE sent.org_id = c.org_id
+          AND sent.chat_id = c.chat_id AND sent.author_agent_id = ${agentId}
+          AND sent.seq < ${message.seq}
+          AND (sent.client_message_id = ${Repository.storedClientId("send", relayKey)}
+            OR sent.message_id IN (SELECT ${HELD_ID} || h.hold_id FROM kin_held_posts h
+              WHERE h.org_id = c.org_id AND h.chat_id = c.chat_id AND h.kind = ${relayKey}
+                AND h.agent_id = ${agentId})))
+      ORDER BY r.seq, w.waiting_id LIMIT 1`.pipe(
+      Effect.mapError(toPersistenceSqlError("KinChatService.resolveRelayedRequest")),
+    );
+    if (request !== undefined)
+      yield* resolve(yield* requireRecord(repo.getWaiting({ orgId, ...request })), "answered");
+  });
+
   const closeTerminalChoice = Effect.fn("KinChatService.closeTerminalChoice")(function* (
     widget: KinWidget,
     outcome: KinChoiceOutcome,
@@ -1210,7 +1262,8 @@ const make = Effect.gen(function* () {
       if (
         Option.isSome(asked) &&
         asked.value.author._tag === "agent" &&
-        asked.value.author.agentId === input.agentId
+        asked.value.author.agentId === input.agentId &&
+        relayPerson(asked.value) === undefined
       )
         rows.push(item);
     }
@@ -1290,6 +1343,13 @@ const make = Effect.gen(function* () {
       yield* floor.open(message, yield* requireRecord(repo.getChat(member)));
     }
     if (input.publish === false) return message;
+    if (
+      identity._tag === "agent" &&
+      identity.wakeupId !== undefined &&
+      input.clientId?.kind === "send" &&
+      relayWakeup(input.clientId.id) === identity.wakeupId
+    )
+      yield* resolveRelayedRequest(message, input.clientId.id);
     yield* hub.publish({ type: "message.posted", orgId: identity.orgId, message });
     if (message.author._tag === "agent" && message.intent === "question") {
       const chat = yield* requireRecord(repo.getChat(member));
@@ -1340,6 +1400,7 @@ const make = Effect.gen(function* () {
         const question = yield* requireRecord(
           repo.getMessage({ orgId: identity.orgId, messageId: item.messageId }),
         );
+        if (relayPerson(question) !== undefined) continue;
         if (question.seq < message.seq) yield* resolve(item, "answered");
       }
     }
@@ -2640,6 +2701,18 @@ const make = Effect.gen(function* () {
         createdAt: yield* now,
         editedAt: null,
       });
+      if (
+        input.waitingFor === undefined &&
+        agent !== undefined &&
+        relayPerson(message) !== undefined &&
+        messageId.startsWith(HELD_ID)
+      ) {
+        const [hold] = yield* sql<{ kind: string }>`SELECT kind FROM kin_held_posts
+          WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND agent_id = ${input.from}
+            AND hold_id = ${messageId.slice(HELD_ID.length)} AND delivered_at IS NULL AND waits = 0
+          ORDER BY hold_id`.pipe(Effect.mapError(toPersistenceSqlError("KinChatService.notice")));
+        if (hold !== undefined) yield* resolveRelayedRequest(message, hold.kind);
+      }
       yield* sql.afterCommit(hub.publish({ type: "message.posted", orgId: input.orgId, message }));
       let waiting: KinWaitingItem | null = null;
       if (input.waitingFor !== undefined) {
@@ -4485,6 +4558,8 @@ const make = Effect.gen(function* () {
           : yield* requireRecord(
               repo.getMessage({ orgId: identity.orgId, messageId: item.messageId }),
             );
+      if (input.resolution === "answered" && message !== null && relayPerson(message) !== undefined)
+        return yield* notAllowed;
       if (message !== null && (yield* repo.approvalAtMessage(message))) return yield* notAllowed;
       for (const widgetId of new Set([item.widgetId, message?.widgetId ?? null])) {
         if (widgetId === null) continue;
