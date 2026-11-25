@@ -135,7 +135,7 @@ import * as LeadAccess from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
 import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { arrivalNoteId, isDismissedArrival } from "./arrivalNotes.ts";
-import { memberReads } from "./sharing.ts";
+import { memberReads, visibleToPeople } from "./sharing.ts";
 
 const decodeChoiceCard = Schema.decodeUnknownEffect(KinChoiceCardState);
 const decodeDocCard = Schema.decodeUnknownEffect(KinDocCardState);
@@ -2119,9 +2119,23 @@ const make = Effect.gen(function* () {
             yield* repo.getPerson({ orgId: chat.orgId, personId: other.principal.personId }),
           )?.displayName
         : undefined;
+    let lastMessageAt = chat.lastMessageAt;
+    if (lastMessageAt !== null && history.messages.at(-1)?.seq !== chat.lastSeq) {
+      const [latest] = yield* sql<{ at: KinChat["lastMessageAt"] }>`SELECT (
+          SELECT created_at FROM kin_messages
+          WHERE org_id = ${chat.orgId} AND chat_id = ${chat.chatId} AND seq < ${chat.lastSeq}
+            AND ${visibleToPeople(sql)}
+          ORDER BY seq DESC LIMIT 1
+        ) AS at FROM kin_messages
+        WHERE org_id = ${chat.orgId} AND chat_id = ${chat.chatId} AND seq = ${chat.lastSeq}
+          AND NOT ${visibleToPeople(sql)}`.pipe(
+        Effect.mapError(toPersistenceSqlError("KinChatService.unlinkedSummary")),
+      );
+      if (latest !== undefined) lastMessageAt = latest.at;
+    }
     return {
       ...chat,
-      lastMessageAt: history.messages.at(-1)?.createdAt ?? null,
+      lastMessageAt,
       ...(otherName === undefined ? {} : { title: otherName }),
       // A list row never carries a group's member list, but a pair's two are who it is with.
       members: pair ?? (group ? [member] : yield* repo.listMembers(chat)),
