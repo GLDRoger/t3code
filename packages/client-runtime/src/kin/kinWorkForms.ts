@@ -315,21 +315,21 @@ export const kinClientDraftCheck = (
   return draft.name.trim() === ""
     ? "Give them a name."
     : (tooLong(draft.name, NAME_MAX, "the name") ??
-      tooLong(draft.source, SOURCE_MAX, "where they came from") ??
-      tagsCheck(draft.tags) ??
-      tooLong(draft.terms, NOTES_MAX, "the terms") ??
-      tooLong(draft.address, ADDRESS_MAX, "the address") ??
-      (india
-        ? draft.gstin.trim() !== "" && kinGstinTyped(draft.gstin) === null
-          ? KIN_GSTIN_WRONG
-          : null
-        : tooLong(draft.gstin, TAX_NUMBER_MAX, "the tax number")) ??
-      (draft.accountsForTax && draft.gstin.trim() === ""
-        ? kinSectionNamed(options?.shell, KIN_WORK_FORM_COPY.party.accountsForTaxNeedsNumber)
-        : null) ??
-      tooLong(draft.placeOfSupply, PLACE_MAX, "the country") ??
-      tooLong(draft.notes, NOTES_MAX, "the notes") ??
-      firstContactCheck(draft));
+        tooLong(draft.source, SOURCE_MAX, "where they came from") ??
+        tagsCheck(draft.tags) ??
+        tooLong(draft.terms, NOTES_MAX, "the terms") ??
+        tooLong(draft.address, ADDRESS_MAX, "the address") ??
+        (india
+          ? draft.gstin.trim() !== "" && kinGstinTyped(draft.gstin) === null
+            ? KIN_GSTIN_WRONG
+            : null
+          : tooLong(draft.gstin, TAX_NUMBER_MAX, "the tax number")) ??
+        (draft.accountsForTax && draft.gstin.trim() === ""
+          ? kinSectionNamed(options?.shell, KIN_WORK_FORM_COPY.party.accountsForTaxNeedsNumber)
+          : null) ??
+        tooLong(draft.placeOfSupply, PLACE_MAX, "the country") ??
+        tooLong(draft.notes, NOTES_MAX, "the notes") ??
+        firstContactCheck(draft));
 };
 
 export const kinClientCreateInput = (

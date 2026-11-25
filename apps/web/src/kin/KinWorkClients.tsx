@@ -1093,7 +1093,9 @@ function ClientPage(
                 </KinWorkSection>
               )}
               {!can.owner ||
-              ((view.vendor || !india) && view.tax === null && view.accountsForTax === null) ? null : (
+              ((view.vendor || !india) &&
+                view.tax === null &&
+                view.accountsForTax === null) ? null : (
                 <KinWorkSection title={KIN_CLIENTS.tax}>
                   {view.tax === null && !india ? null : (
                     <p

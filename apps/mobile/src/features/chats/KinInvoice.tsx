@@ -96,7 +96,6 @@ import {
 import { useKinSectionNamed } from "./state/useKinShell";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinGate } from "./state/useKinHost";
-import { useKinSectionNamed } from "./state/useKinShell";
 import { KinGateView } from "./components/KinWorkPieces";
 import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 

@@ -493,7 +493,14 @@ describe("kinClientPageView", () => {
       "Accounts for the tax themselves: invoices carry no tax.",
     ]);
     expect(
-      kinClientPageView(page({ gstin: "27ABCDE1234F1Z5", accountsForTax: true }), names, now, true, null, "IN"),
+      kinClientPageView(
+        page({ gstin: "27ABCDE1234F1Z5", accountsForTax: true }),
+        names,
+        now,
+        true,
+        null,
+        "IN",
+      ),
     ).toMatchObject({
       tax: "GSTIN 27ABCDE1234F1Z5",
       accountsForTax: "Accounts for the tax themselves: invoices carry no tax.",

@@ -205,8 +205,9 @@ describe("createKinWorkForm", () => {
       taxNumber: "GB123456789",
       accountsForTax: true,
     });
-    expect(kinClientUpdateInput({ gstin: " GB123456789 ", accountsForTax: true }, { india: false }))
-      .toEqual({ taxNumber: "GB123456789", accountsForTax: true });
+    expect(
+      kinClientUpdateInput({ gstin: " GB123456789 ", accountsForTax: true }, { india: false }),
+    ).toEqual({ taxNumber: "GB123456789", accountsForTax: true });
     expect(kinClientUpdateInput({ gstin: " ", accountsForTax: false }, { india: false })).toEqual({
       taxNumber: null,
       accountsForTax: false,
@@ -214,7 +215,10 @@ describe("createKinWorkForm", () => {
     expect(kinClientDraftCheck({ ...blank, accountsForTax: true }, { india: false })).toBe(
       "Add the client's tax number: invoices that leave the tax to the client print it.",
     );
-    const patients = { rev: 1, sections: [{ id: "clients" as const, on: true, name: "Patients", noun: "patient" }] };
+    const patients = {
+      rev: 1,
+      sections: [{ id: "clients" as const, on: true, name: "Patients", noun: "patient" }],
+    };
     expect(
       kinClientDraftCheck({ ...blank, accountsForTax: true }, { india: false, shell: patients }),
     ).toBe("Add the patient's tax number: invoices that leave the tax to the patient print it.");

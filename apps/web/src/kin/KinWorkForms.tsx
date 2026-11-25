@@ -387,7 +387,9 @@ export function KinClientDialog(
     appAtomRegistry.refresh(kinWorkChoicesAtom(props));
     const saved = outcome.value?.key ?? key;
     if (saved !== null) {
-      appAtomRegistry.refresh(kinClient.workClient({ environmentId, input: { orgId, key: saved } }));
+      appAtomRegistry.refresh(
+        kinClient.workClient({ environmentId, input: { orgId, key: saved } }),
+      );
       props.onSaved(saved);
     }
   };

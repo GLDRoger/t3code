@@ -1030,9 +1030,7 @@ export function KinLinesEditor(props: {
       <div className="flex flex-col">
         <span className="text-sm font-medium text-foreground">{KIN_LINES.title}</span>
         <span className="text-xs text-muted-foreground">{props.detail ?? KIN_LINES.detail}</span>
-        {taxNote === null ? null : (
-          <span className="text-xs text-muted-foreground">{taxNote}</span>
-        )}
+        {taxNote === null ? null : <span className="text-xs text-muted-foreground">{taxNote}</span>}
       </div>
       {props.lines.map((_, index) => (
         <div
