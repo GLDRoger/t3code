@@ -184,10 +184,12 @@ const gate = Layer.unwrap(
               ${ownerId}, 'lead-thread', 'lead-chat-lead', 'member', 'text', '', '[]', 'posted',
               ${at}, ${`send:${input.clientMessageId}`})
             ON CONFLICT DO NOTHING`;
+          // Posted now, as the chat stamps it, so it takes taps for its day from now.
+          const postedAt = new Date(yield* Clock.currentTimeMillis).toISOString();
           yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class,
               type, revision, state_json, awaiting_json, updated_at)
             VALUES (${widgetId}, ${agent.orgId}, ${input.chatId}, ${messageId}, 'native', 'choice', 1,
-              ${JSON.stringify(state)}, ${JSON.stringify([ownerId])}, ${at})
+              ${JSON.stringify(state)}, ${JSON.stringify([ownerId])}, ${postedAt})
             ON CONFLICT DO NOTHING`;
           if (bind !== undefined) yield* bind({ widgetId } as never);
           return { widgetId } as never;
@@ -3298,6 +3300,52 @@ describe("the owner's taps", () => {
           "The owner confirmed this tax the client withheld on its card, so Kin recorded it. Tax withheld isn't money received, so it gets no receipt.",
         );
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("describe a payment card asked again as it was drawn, and never a closed one", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "invoices" });
+      const asked = yield* turn(3, "Invoice Invented Acme");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          { list: "invoices", title: "Invented retainer", amount: "1 lakh", date: "2026-10-01" },
+        ],
+      });
+      yield* LeadDocuments.issue(scope, {
+        sourceEventId: asked,
+        entry: KinRecordKey.make("INV-1"),
+      });
+      const said = {
+        sourceEventId: yield* turn(4, "Acme paid 200"),
+        key: "INV-1",
+        amount: "200",
+        paidOn: "2026-11-05",
+      };
+      const first = yield* LeadMoney.payment(scope, said);
+      if (!("status" in first) || first.status !== "proposed")
+        return assert.fail("expected a card");
+      // Money the owner records meanwhile doesn't change what the one card says.
+      yield* OwnerMoney.recordPayment(people, {
+        orgId,
+        key: "INV-1",
+        amount: { minor: 10_000, currency: "INR" },
+        paidOn: "2026-11-06",
+        clientRequestId: "meanwhile",
+      });
+      const again = yield* LeadMoney.payment(scope, said);
+      assert.deepInclude(again, { status: "proposed", shown: first.shown });
+      // Closed unanswered, it is not put to the agent as there to confirm.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_widgets SET closed_at = 1 WHERE widget_id = (SELECT widget_id
+        FROM kin_receipt_proposals WHERE proposal_id = ${first.proposal})`;
+      const closed = yield* Effect.flip(LeadMoney.payment(scope, said));
+      assert.strictEqual(
+        closed.message,
+        "The owner's card for this payment closed before they answered it, so nothing was recorded. Ask them to record it themselves in Money.",
+      );
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("settle an invoice from its balance when the amount is edited", () =>

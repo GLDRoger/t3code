@@ -117,6 +117,7 @@ import {
 import { TurnEvent } from "../lead/eventIds.ts";
 import { DAY_MS } from "../durations.ts";
 import { setAsideOverdue } from "../pulse/invoiceAsides.ts";
+import { choiceExpired } from "../widgets/choiceCard.ts";
 
 /** The lead tools for lists and money. Model-facing text lives in `mcp/tools.ts`. */
 
@@ -200,18 +201,42 @@ export const proposeMoney = Effect.fn("KinOwnerCards.proposeMoney")(function* (
     snapshot,
     now: yield* Clock.currentTimeMillis,
   });
-  if (request.received !== undefined) {
-    const sql = yield* SqlClient.SqlClient;
-    const [row] = yield* sql<{ state: string }>`SELECT state FROM kin_receipt_proposals
-      WHERE org_id = ${lead.orgId} AND proposal_id = ${proposal}`;
-    if (row !== undefined && row.state !== "open")
-      return yield* new KinChatError({
-        reason: "conflict",
-        message:
-          "The owner already answered the card for this same payment in this turn, so nothing more was recorded. Don't ask again unless they do.",
-      });
-  }
-  const shown = cardLines(snapshot, asked);
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{
+    state: string;
+    snapshot: string;
+    closed: number;
+    updatedAt: string | null;
+    card: string | null;
+  }>`SELECT p.state, p.snapshot_json AS snapshot, w.closed_at IS NOT NULL AS closed,
+      w.updated_at AS "updatedAt", w.state_json AS card
+    FROM kin_receipt_proposals p
+    LEFT JOIN kin_widgets w ON w.org_id = p.org_id AND w.widget_id = p.widget_id
+    WHERE p.org_id = ${lead.orgId} AND p.proposal_id = ${proposal}`;
+  if (request.received !== undefined && row !== undefined && row.state !== "open")
+    return yield* new KinChatError({
+      reason: "conflict",
+      message:
+        "The owner already answered the card for this same payment in this turn, so nothing more was recorded. Don't ask again unless they do.",
+    });
+  // A card that closed or stopped taking taps is never put to the agent as there to confirm.
+  if (
+    row?.updatedAt != null &&
+    (row.closed === 1 ||
+      choiceExpired(
+        { updatedAt: row.updatedAt, state: JSON.parse(row.card ?? "{}") },
+        yield* Clock.currentTimeMillis,
+      ))
+  )
+    return yield* new KinChatError({
+      reason: "conflict",
+      message: `The owner's card for this ${request.received === undefined ? "money" : "payment"} closed before they answered it, so nothing was recorded. Ask them to record it themselves in Money.`,
+    });
+  // Asked again, it is the card already drawn, as it was drawn: its first figures stand.
+  const shown = cardLines(
+    row === undefined ? snapshot : (JSON.parse(row.snapshot) as typeof snapshot),
+    asked,
+  );
   const card = yield* askOwner(
     lead,
     {
