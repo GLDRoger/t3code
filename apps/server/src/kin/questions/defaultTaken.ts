@@ -11,6 +11,7 @@ import {
   KinWidgetId,
   KIN_TAKEN_DEFAULT_FIELD,
   ThreadId,
+  formatKinWhen,
 } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
@@ -27,6 +28,7 @@ import { ownerLevel } from "../people/KinAccess.ts";
 import { holdFor, holdLine } from "../triggers/quietHold.ts";
 import { type TakenPlan, isTaken, plansOf, sealPlans } from "../widgets/cardPlans.ts";
 import type { KinRecords, Patch, Writer } from "../work/KinRecords.ts";
+import { textLocale } from "../work/companyProfile.ts";
 import { type RecordRow, parseChanges } from "../work/recordRows.ts";
 import { KIN_OWNER_LEVEL, seenBy, teamGuard, viewerOfPeople } from "../work/teamView.ts";
 
@@ -44,12 +46,13 @@ const quoted = (text: string, max = 80) => {
   return `“${flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`}”`;
 };
 
-/** "Nobody answered, so I went with “Mark W-8 done” for W-8 Apex review." */
+/** "You didn't answer by 18:00 (Tue 17 Nov), so I went with “Mark W-8 done” for W-8 Apex review." */
 const takenLine = (
   label: string,
   about: { readonly key: string; readonly title: string } | { readonly question: string },
+  by: string,
 ) =>
-  `Nobody answered, so I went with ${quoted(label, 60)} ${
+  `You didn't answer by ${by}, so I went with ${quoted(label, 60)} ${
     "key" in about ? `for ${about.key} ${about.title}` : `on ${quoted(about.question, 120)}`
   }.`;
 
@@ -134,7 +137,9 @@ const putBackSince = Effect.fn("KinDefaultTaken.putBackSince")(function* (
 });
 
 /**
- * Tells the person asked, once, in their chat with the asking agent, what Kin went with. When the
+ * Tells the person asked, once, in their chat with the asking agent, what Kin went with once
+ * `dueAt` passed, on `zone` (their clock): a question is only ever one person's, in their direct
+ * chat (`personOfChat`), so it says "you". When the
  * default changed a record, the note is a card whose Undo puts that change back; else a line, as
  * it is when that change was put back before they were told, saying so. Read in the caller's
  * transaction and marked told there, so a retried or overtaken pass posts nothing more.
@@ -149,6 +154,8 @@ export const tellTaken = Effect.fn("KinDefaultTaken.tell")(function* (
     readonly label: string;
     readonly question: string;
     readonly about: ReadonlyArray<string>;
+    readonly dueAt: number;
+    readonly zone: string;
     readonly now: number;
   },
   chat: Pick<KinChatService["Service"], "ask" | "notice">,
@@ -171,7 +178,11 @@ export const tellTaken = Effect.fn("KinDefaultTaken.tell")(function* (
       : yield* sql<{ key: string; title: string }>`SELECT r.key, r.title FROM kin_records r
           WHERE r.org_id = ${orgId} AND r.key IN ${sql.in(input.about)} AND ${sees}
           ORDER BY r.key LIMIT 1`;
-  const line = takenLine(input.label, shown ?? named ?? { question: input.question });
+  const locale = yield* textLocale(orgId);
+  const part = (style: "time" | "day") =>
+    formatKinWhen(input.dueAt, style, { zone: input.zone, locale }).replace(/,/g, "");
+  const by = `${part("time")} (${part("day")})`;
+  const line = takenLine(input.label, shown ?? named ?? { question: input.question }, by);
   const since = change === undefined ? undefined : yield* putBackSince(orgId, change);
   const [agent] = yield* sql<{ owner: string; threadId: string | null }>`SELECT
       a.owner_person_id AS owner, l.thread_id AS "threadId"
@@ -241,6 +252,8 @@ export const tellTaken = Effect.fn("KinDefaultTaken.tell")(function* (
                 ? "It has since been put back."
                 : `${since.name} has since put it back.`
           }`,
+    // Each of their devices says the time on its own clock; a card's words can't carry one.
+    when: { at: DateTime.formatIso(DateTime.makeUnsafe(input.dueAt)), zone: input.zone, text: by },
     ...(agent === undefined ? {} : { from: input.agentId }),
   });
   yield* markTaken(orgId, input.personId, input.questionId, messageId, input.now);
