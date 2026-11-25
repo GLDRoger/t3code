@@ -1,3 +1,4 @@
+import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, it } from "@effect/vitest";
 import { KinChatError, KinInviteId } from "@t3tools/contracts";
@@ -42,6 +43,7 @@ vi.mock("./openRemote.ts", () => ({
 
 const layer = Layer.mergeAll(
   NodeServices.layer,
+  NodeCrypto.layer,
   NetService.layer,
   TestConsole.layer,
   ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true })),
