@@ -2609,6 +2609,49 @@ describe("receipts", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("set an advance against an invoice on the day its money came in", () =>
+    Effect.gen(function* () {
+      const asked = yield* seed;
+      yield* issuedInvoice(asked, "INV-1");
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const owner = {
+        actor: { _tag: "person" as const, personId: ownerId },
+        via: "owner" as const,
+      };
+      const [client] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'clients'`;
+      const advance = yield* recordReceipt({
+        orgId,
+        writer: owner,
+        advance: {
+          client: client!.key,
+          amount: { minor: 500_00, currency: "INR" },
+          receivedOn: "2026-11-05",
+          originKey: "owner:advance:day",
+        },
+        extras: {},
+      });
+      // The receipt's date is edited later; the money still came in on the 5th.
+      yield* records.update(orgId, owner, advance.key, {
+        dateAt: Date.parse("2026-12-01T18:29:59.999Z"),
+      });
+      yield* recordReceipt({
+        orgId,
+        writer: owner,
+        key: advance.key,
+        against: "INV-1",
+        extras: {},
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT p.paid_on AS "paidOn" FROM kin_record_payments p
+          JOIN kin_records r ON r.record_id = p.record_id
+          WHERE r.key = 'INV-1' AND p.voided_at IS NULL`,
+        [{ paidOn: "2026-11-05" }],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("set an advance against an issued invoice only, never a draft", () =>
     Effect.gen(function* () {
       const asked = yield* seed;

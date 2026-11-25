@@ -120,6 +120,12 @@ export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
     named && entry !== undefined && request.against !== undefined
       ? (yield* standing(orgId, entry)) === "live"
       : false;
+  // Moved, it keeps the day its money came in (`setAgainst`), which the card shows.
+  const [movedDay] = moved
+    ? yield* (yield* SqlClient.SqlClient)<{ paidOn: string }>`SELECT paid_on AS "paidOn"
+        FROM kin_record_payments WHERE org_id = ${orgId}
+          AND payment_id = ${String(parseFields(entry!.fieldsJson).payment)}`
+    : [];
   // An invoice to a typed bill-to name with no client record is from that name.
   const billedTo =
     named && client === undefined && against !== undefined
@@ -160,6 +166,7 @@ export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
     receivedOn:
       request.advance?.receivedOn ??
       received?.paidOn ??
+      movedDay?.paidOn ??
       (entry?.dateAt == null ? null : dayIn(entry.dateAt, zone)),
     against:
       against === undefined

@@ -518,10 +518,10 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
     );
   const sql = yield* SqlClient.SqlClient;
   const held = typeof fields.payment === "string" ? fields.payment : undefined;
-  let own: string | undefined;
+  let own: { readonly id: string; readonly paidOn: string } | undefined;
   if (held !== undefined) {
-    const [payment] = yield* sql<{ voidedAt: number | null; recordId: string }>`SELECT
-        voided_at AS "voidedAt", record_id AS "recordId"
+    const [payment] = yield* sql<{ voidedAt: number | null; recordId: string; paidOn: string }>`
+      SELECT voided_at AS "voidedAt", record_id AS "recordId", paid_on AS "paidOn"
       FROM kin_record_payments WHERE org_id = ${orgId} AND payment_id = ${held}`;
     // Void stays void: the money it stood on was taken back, so it stands on nothing new.
     if (payment === undefined || payment.voidedAt !== null)
@@ -529,7 +529,7 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
         `${receipt.key} stood on a payment that was taken back, so it is void. Nothing changed. If the money did come in, record it as a new payment or advance.`,
       );
     // Its own payment moves onto the invoice; one an invoice already took was set before.
-    if (payment.recordId === receipt.recordId) own = held;
+    if (payment.recordId === receipt.recordId) own = { id: held, paidOn: payment.paidOn };
     else {
       if (fields.invoice === invoice.key) return receipt.key;
       return yield* invalid(
@@ -544,7 +544,8 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
       `${receipt.key} was received from another client than ${invoice.key}'s. Nothing changed.`,
     );
   const advance = { minor: receipt.amountMinor, currency: receipt.currency };
-  const paidOn = dayIn(receipt.dateAt, yield* ownerZone(orgId));
+  // Moved, the money keeps the day it came in, whatever the receipt's date says since.
+  const paidOn = own?.paidOn ?? dayIn(receipt.dateAt, yield* ownerZone(orgId));
   if (invoice.amountMinor !== null) {
     const owed = { minor: invoice.amountMinor - invoice.paid, currency: invoice.currency ?? "" };
     if (owed.currency !== advance.currency || owed.minor < advance.minor)
@@ -558,7 +559,7 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
     Effect.gen(function* () {
       if (own !== undefined) {
         yield* sql`UPDATE kin_record_payments SET voided_at = ${yield* Clock.currentTimeMillis}
-          WHERE org_id = ${orgId} AND payment_id = ${own}`;
+          WHERE org_id = ${orgId} AND payment_id = ${own.id}`;
         yield* records.update(orgId, writer, receipt.key, {}, undefined, [
           {
             field: "payment",
