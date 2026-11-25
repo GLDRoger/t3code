@@ -77,6 +77,8 @@ const FinishInput = Schema.Struct({
    * nothing goes back to the queue until then without spending an attempt, so nothing is lost.
    */
   holdUntil: Schema.optional(NonNegativeInt),
+  /** Stopped for certain after it ignored a stop: what it held fails here, never tried again. */
+  final: Schema.optional(Schema.Boolean),
 });
 
 const SteerInput = Schema.Struct({
@@ -1067,13 +1069,15 @@ const make = Effect.gen(function* () {
             SELECT 1 FROM kin_events WHERE org_id = ${input.orgId}
               AND wakeup_id = ${input.wakeupId} AND state = 'claimed' LIMIT 1 OFFSET 1
           ) AS split`;
-          const split = batch?.split === 1;
+          const split = batch?.split === 1 && input.final !== true;
+          const ends = input.final === true;
           const rows = yield* sql<{
             event_id: string;
             state: string;
             not_before: number;
           }>`UPDATE kin_events SET attempts = attempts + ${split ? 0 : 1},
-            state = CASE WHEN NOT ${split} AND attempts + 1 >= ${RUN_ATTEMPTS} THEN 'failed' ELSE 'queued' END,
+            state = CASE WHEN ${ends} OR (NOT ${split} AND attempts + 1 >= ${RUN_ATTEMPTS}) THEN 'failed'
+              ELSE 'queued' END,
             json = CASE WHEN ${split} THEN json_set(json, '$._retryAlone', 1) ELSE json END,
             wakeup_id = NULL,
             not_before = ${now} + CASE WHEN ${split} OR attempts = 0 THEN ${FIRST_RETRY_MS}

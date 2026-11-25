@@ -22,7 +22,9 @@ import * as TestClock from "effect/testing/TestClock";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { normaliseAbout } from "../questions/rules.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { isAgentText, postKey, signed } from "./agentMark.ts";
@@ -187,7 +189,13 @@ const database = KinPersistence.layer.pipe(
   Layer.provideMerge(NodeServices.layer),
 );
 
-const setup = (options: { readonly app?: boolean; readonly signedIn?: () => boolean } = {}) => {
+const setup = (
+  options: {
+    readonly app?: boolean;
+    readonly signedIn?: () => boolean;
+    readonly chat?: Layer.Layer<KinChatService>;
+  } = {},
+) => {
   const github = new FakeGitHub(emptyWorld("invented-owner", T0));
   github.addRepo({ full_name: REPO, private: false });
   github.addRepo({ full_name: "invented-co/old-fork", fork: true });
@@ -195,6 +203,7 @@ const setup = (options: { readonly app?: boolean; readonly signedIn?: () => bool
     Layer.provideMerge(KinEventQueue.layer),
     Layer.provideMerge(fakeApi(github, options.signedIn ?? (() => true))),
     Layer.provideMerge(options.app === true ? fakeApp(github) : Layer.empty),
+    Layer.provideMerge(options.chat ?? Layer.empty),
     Layer.provideMerge(database),
   );
   return { github, layer };
@@ -257,6 +266,68 @@ describe("parseGhApi", () => {
 });
 
 describe("KinGitHubWatch", () => {
+  it.effect(
+    "a question about a pull request closes when it is merged or closed; the rest stay open",
+    () => {
+      const closed: Array<{ readonly widgetId: string; readonly text: string }> = [];
+      const chat = Layer.mock(KinChatService)({
+        closeReplaced: (input) =>
+          Effect.sync(
+            () => void closed.push({ widgetId: input.widgetId, text: input.outcome?.text ?? "" }),
+          ),
+      });
+      const { github, layer } = setup({ chat });
+      return Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* start(github);
+        const pull = (title: string) =>
+          github.openItem({
+            repo: REPO,
+            pull: true,
+            author: "teammate-a",
+            association: "COLLABORATOR",
+            title,
+          });
+        const merged = pull("Tidewater Freight rates");
+        const dropped = pull("Old rates table");
+        const other = pull("Invoice footer");
+        const url = (number: number) => `https://github.com/Invented-Co/App/pull/${number}`;
+        for (const [id, about] of [
+          ["q-merged", [url(merged)]],
+          ["q-dropped", [url(dropped)]],
+          ["q-other", [url(other)]],
+          ["q-record", ["w-7"]],
+        ] as const)
+          yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id,
+              kind, widget_id, question, safe, about, asked_at, due_at, act_at, state)
+            VALUES (${id}, ${orgId}, 'tech', 'owner', 'chat-tech', 'card', ${`card-${id}`},
+              'May I merge it?', 0, ${normaliseAbout(about).join(" ")}, 0, ${T0 + 48 * HOUR},
+              ${T0 + 48 * HOUR}, 'open')`;
+        yield* look(github);
+        github.merge({ repo: REPO, number: merged, actor: "invented-owner" });
+        github.close({ repo: REPO, number: dropped, actor: "invented-owner" });
+        yield* look(github);
+        assert.deepStrictEqual(
+          yield* sql`SELECT question_id AS id, state FROM kin_questions ORDER BY question_id`,
+          [
+            { id: "q-dropped", state: "withdrawn" },
+            { id: "q-merged", state: "withdrawn" },
+            { id: "q-other", state: "open" },
+            { id: "q-record", state: "open" },
+          ],
+        );
+        assert.sameDeepMembers(closed, [
+          { widgetId: "card-q-merged", text: "Closed: the pull request was merged." },
+          { widgetId: "card-q-dropped", text: "Closed: the pull request was closed." },
+        ]);
+        // Its asker is not woken for it, and another look closes nothing more.
+        assert.deepStrictEqual(yield* sql`SELECT tag FROM kin_events WHERE tag <> 'github'`, []);
+        yield* look(github);
+        assert.lengthOf(closed, 2);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("a teammate's PR is reviewed once; an unchanged look reads nothing more", () => {
     const { github, layer } = setup();
     return Effect.gen(function* () {

@@ -92,7 +92,7 @@ export const AskPersonInput = Schema.Struct({
   detail: Schema.optional(KinText.check(Schema.isMaxLength(DOC_BODY_MAX))),
   by: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(10))),
   about: Schema.optional(
-    Schema.Array(KinTrimmedText.check(Schema.isMaxLength(20))).check(Schema.isMaxLength(8)),
+    Schema.Array(KinTrimmedText.check(Schema.isMaxLength(200))).check(Schema.isMaxLength(8)),
   ),
   intent: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(120))),
   draft: Schema.optional(

@@ -9,7 +9,6 @@ import {
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
-import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { sentMail, type SentMail } from "../connections/Sending.ts";
@@ -22,7 +21,7 @@ import { covers, endedHolds } from "./holds.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import * as KinPulse from "./KinPulse.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
-import { onHostClock } from "./checkInSeeds.ts";
+import { inOwnerTime } from "./checkInSeeds.ts";
 import { teamHoursNow } from "./nudge.ts";
 import { lateReminders } from "./told.ts";
 import { LOOKED_AFTER_SENSES } from "./senses/deals.ts";
@@ -290,16 +289,10 @@ export const checkInIndex = Effect.fn("KinLeadPrompt.checkIns")(function* (
     const hostDays =
       Array.isArray(listed) && listed.length > 0 ? listed.map(Number) : [0, 1, 2, 3, 4, 5, 6];
     const hostAt = row.looseAt ?? row.timeOfDay;
-    const kept =
-      row.ownerTime === null
-        ? undefined
-        : Option.getOrUndefined(KinSchedules.decodeOwnerTime(row.ownerTime));
     const own =
       hostAt === null
         ? undefined
-        : kept !== undefined && kept.host.at === hostAt && kept.host.days.join() === hostDays.join()
-          ? kept
-          : onHostClock(hostAt, hostDays, host, zone, now);
+        : inOwnerTime({ at: hostAt, days: hostDays }, row.ownerTime, zone, now, host);
     const days = own?.days ?? hostDays;
     const named =
       days.length > 0 && days.length < 7

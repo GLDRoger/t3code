@@ -116,13 +116,24 @@ export const normaliseIntent = (intent: string | undefined) =>
     .slice(0, 12)
     .join(" ");
 
-/** The records a question is about, as their keys (INV-8, C-2); anything else is dropped. */
+/** A pull request as Kin's GitHub events and `kin_github_link` name it, in one spelling. */
+export const pullRequestAbout = (repo: string, number: number) =>
+  `https://github.com/${repo.toLowerCase()}/pull/${number}`;
+const PULL_URL = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/([1-9]\d{0,8})\/?$/i;
+
+/**
+ * What a question is about: records by their keys (INV-8, C-2) and pull requests by their URL;
+ * anything else is dropped.
+ */
 export const normaliseAbout = (about: ReadonlyArray<string> | undefined) =>
   [
     ...new Set(
-      (about ?? [])
-        .map((key) => key.trim().toUpperCase())
-        .filter((key) => /^[A-Z]{1,6}-\d{1,6}$/.test(key)),
+      (about ?? []).flatMap((said) => {
+        const pull = PULL_URL.exec(said.trim());
+        if (pull !== null) return [pullRequestAbout(pull[1]!, Number(pull[2]))];
+        const key = said.trim().toUpperCase();
+        return /^[A-Z]{1,6}-\d{1,6}$/.test(key) ? [key] : [];
+      }),
     ),
   ]
     .toSorted()

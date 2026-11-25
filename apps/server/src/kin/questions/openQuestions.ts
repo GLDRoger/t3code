@@ -1448,9 +1448,9 @@ export const closeHeldQuestions = Effect.fn("KinQuestions.closeHeld")(function* 
 });
 
 /**
- * Closes every open question about a record that just closed (`about` names its key), or asked
- * on one of `cards`, in the caller's transaction. One on a card in `sparing` is left to the tap
- * that settles it.
+ * Closes every open question about a record that just closed (`about` names its key) or a pull
+ * request merged or closed (its URL), or asked on one of `cards`, in the caller's transaction.
+ * One on a card in `sparing` is left to the tap that settles it.
  */
 export const closeQuestionsAbout = Effect.fn("KinQuestions.closeAbout")(function* (
   input: {
@@ -1473,7 +1473,7 @@ export const closeQuestionsAbout = Effect.fn("KinQuestions.closeAbout")(function
       : sql`(q.widget_id IN ${sql.in(input.cards)} OR q.raise_widget_id IN ${sql.in(input.cards)})`;
   const rows = (yield* sql<Raw>`SELECT ${sql.literal(COLUMNS)} ${sql.literal(FROM)}
     WHERE q.org_id = ${input.orgId} AND q.state = 'open'
-      AND ((' ' || q.about || ' ') LIKE ${`% ${input.key} %`} OR ${onCards})
+      AND (instr(' ' || q.about || ' ', ${` ${input.key} `}) > 0 OR ${onCards})
     ORDER BY q.asked_at, q.question_id`)
     .map(toRow)
     .filter((row) => !input.sparing.some((id) => id === row.widgetId || id === row.raiseWidgetId));

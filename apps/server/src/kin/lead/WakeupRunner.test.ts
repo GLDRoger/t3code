@@ -1935,11 +1935,26 @@ describe("WakeupRunner", () => {
   );
 
   it.effect(
-    "ends a run silent from the start 15 minutes after it began, without leaving the organization busy",
+    "ends a run silent from the start 15 minutes after it began, for certain when it ignores Stop, without leaving the organization busy",
     () =>
       Effect.gen(function* () {
         const entered = yield* Deferred.make<void>();
         const hold = yield* Deferred.make<void>();
+        const outcomes: Array<string> = [];
+        const bridge = Layer.mock(KinReplyBridge)({
+          lane: () =>
+            Effect.succeedSome({
+              chatId: KinChatId.make("owner-chat"),
+              mode: "reply" as const,
+              owed: true,
+              leadName: "Lead",
+            }),
+          preparing: () => Effect.void,
+          begin: () => Effect.void,
+          complete: () => Effect.void,
+          end: () => Effect.void,
+          failed: (input) => Effect.sync(() => void outcomes.push(input.outcome)),
+        });
         yield* Effect.gen(function* () {
           yield* seed;
           const queue = yield* KinEventQueue.KinEventQueue;
@@ -1959,8 +1974,23 @@ describe("WakeupRunner", () => {
             ),
           );
           const launch = yield* ThreadLaunch.ThreadLaunchService;
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          const stops: Array<string> = [];
           const runner = yield* WakeupRunner.WakeupRunner.pipe(
             Effect.provide(Layer.fresh(WakeupRunner.layer)),
+            Effect.provideService(ThreadManagement.ThreadManagementService, {
+              ...threads,
+              // A provider that ignores Stop: the run stays on after Kin's interrupt.
+              interruptThread: () => Effect.succeed({ type: "no_active_run" as const }),
+              stopDelegatedTasks: (input) =>
+                Effect.sync(() => void stops.push("tasks")).pipe(
+                  Effect.andThen(threads.stopDelegatedTasks(input)),
+                ),
+              forceStopThread: (input) =>
+                Effect.sync(() => void stops.push("agent")).pipe(
+                  Effect.andThen(threads.forceStopThread(input)),
+                ),
+            }),
             Effect.provideService(ThreadLaunch.ThreadLaunchService, {
               ...launch,
               launch: (input) =>
@@ -2010,13 +2040,16 @@ describe("WakeupRunner", () => {
           assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups`, [
             { status: "timed_out" },
           ]);
-          // Nothing showed, so its event is retried as any failed wake-up's is.
+          // It ignored the interrupt: its tasks and agent are stopped for certain, and what it was
+          // asked ends there, told once as stopped, never run again on its own.
+          assert.deepStrictEqual(stops, ["tasks", "agent"]);
           assert.deepStrictEqual(yield* sql`SELECT state, attempts FROM kin_events`, [
-            { state: "queued", attempts: 1 },
+            { state: "failed", attempts: 1 },
           ]);
+          assert.deepStrictEqual(outcomes, ["stopped"]);
           yield* Deferred.succeed(hold, undefined);
           yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
-        }).pipe(Effect.provide(harness({ entered, hold })));
+        }).pipe(Effect.provide(harness({ entered, hold }).pipe(Layer.provideMerge(bridge))));
       }).pipe(provideDeterministicTestRuntime),
   );
 
