@@ -759,6 +759,28 @@ const milestoneCards = Effect.fn("KinFactCards.milestones")(function* (input: {
   }
 });
 
+/** A `YYYY-MM-DD` day as a card names it, such as "Thu 31 Dec". */
+const calendarDay = (day: string, zone: string) => dayWord(startOfDay(day, zone), zone);
+
+/**
+ * A notice-day card's question, its days `YYYY-MM-DD` in the company's `zone`; `ago` once the
+ * notice day has passed. Kin's evals quote it.
+ */
+export const noticeQuestion = (input: {
+  readonly client: string;
+  readonly key: string;
+  readonly renewsOn: string;
+  readonly noticeDay: string;
+  readonly zone: string;
+  readonly ago?: string;
+}) => {
+  const by = calendarDay(input.noticeDay, input.zone);
+  const contract = `${input.client}'s contract ${input.key} renews ${calendarDay(input.renewsOn, input.zone)}`;
+  return input.ago === undefined
+    ? `${contract}, and notice is due by ${by}. Let it renew, or give notice?`
+    : `${contract}; notice was due by ${by}, ${input.ago}. Let it renew, or give notice anyway?`;
+};
+
 /**
  * A contract's notice day: one card per project and day, to whoever looks after the client when
  * they may see the project, else the owner, in their chat with the agent that would draft the
@@ -840,10 +862,9 @@ const noticeCards = Effect.fn("KinFactCards.notices")(function* (input: {
       key: row.key,
       title: row.title,
       rev: row.rev,
-      noticeBy: dayWord(startOfDay(day, zone), zone),
-      renewsOn: dayWord(startOfDay(row.renewsOn, zone), zone),
+      noticeBy: calendarDay(day, zone),
+      renewsOn: calendarDay(row.renewsOn, zone),
     } satisfies NoticePlan;
-    const contract = `${client?.title ?? row.title}'s contract ${row.key} renews ${plan.renewsOn}`;
     const until = `Until you choose, nothing is sent and it renews as agreed. Give notice and ${names.agent} drafts the notice mail to ${contact?.name ?? "the client"} for your Confirm.`;
     const card = yield* postFactCard({
       ctx,
@@ -851,10 +872,14 @@ const noticeCards = Effect.fn("KinFactCards.notices")(function* (input: {
       agentId,
       factKey: fact.key,
       round: 0,
-      question:
-        by < at
-          ? `${contract}; notice was due by ${plan.noticeBy}, ${daysAgoText(ctx, by)}. Let it renew, or give notice anyway?`
-          : `${contract}, and notice is due by ${plan.noticeBy}. Let it renew, or give notice?`,
+      question: noticeQuestion({
+        client: client?.title ?? row.title,
+        key: row.key,
+        renewsOn: row.renewsOn,
+        noticeDay: day,
+        zone,
+        ...(by < at ? { ago: daysAgoText(ctx, by) } : {}),
+      }),
       detail: until,
       whileOpen: until,
       options: [{ label: factCardShown(plan).label, plan }, { label: "Give notice" }],
