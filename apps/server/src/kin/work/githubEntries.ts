@@ -74,7 +74,8 @@ export interface GitHubOpenItem {
 /**
  * Keeps one open Work entry per item that is open on GitHub now, held by `owner`. An open entry
  * of `prefix` that `open` doesn't name closes when `closedBy` says what closed it. An entry a
- * person or agent closed stays closed while its issue is open; one GitHub closed starts again.
+ * person or agent closed stays closed while its issue is open; one GitHub closed starts again,
+ * and one dropped because Kin stopped watching the repo opens again.
  */
 export const githubOpenWork = Effect.fn("KinGitHubEntries.githubOpenWork")(function* (input: {
   readonly orgId: KinOrgId;
@@ -88,25 +89,30 @@ export const githubOpenWork = Effect.fn("KinGitHubEntries.githubOpenWork")(funct
 }) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
-  // Open entries, and closed ones whose last state change wasn't GitHub's: someone closed them.
+  // Open entries, closed ones whose last state change wasn't GitHub's (someone closed them), and
+  // ones Kin dropped when it stopped watching the repo (GitHub only ever closes as done).
   const rows = yield* sql<{
     recordId: string;
     key: string;
     title: string;
     originKey: string;
     state: string;
+    lastVia: string;
   }>`
-    SELECT r.record_id AS "recordId", r.key, r.title, r.origin_key AS "originKey", r.state
-    FROM kin_records r
-    WHERE r.org_id = ${input.orgId} AND r.register_id = 'work'
-      AND substr(r.origin_key, 1, ${input.prefix.length}) = ${input.prefix}
-      AND (r.state NOT IN ('done', 'dropped') OR COALESCE((SELECT c.via FROM kin_record_changes c
+    SELECT "recordId", key, title, "originKey", state, "lastVia" FROM (SELECT r.record_id AS "recordId", r.key, r.title,
+      r.origin_key AS "originKey", r.state, COALESCE((SELECT c.via FROM kin_record_changes c
         WHERE c.org_id = r.org_id AND c.record_id = r.record_id AND (c.kind = 'created'
           OR EXISTS (SELECT 1 FROM json_each(c.fields_json) f
             WHERE json_extract(f.value, '$.field') = 'state'))
-        ORDER BY c.seq DESC LIMIT 1), '') <> 'github')
-    ORDER BY r.created_at, r.record_id`;
+        ORDER BY c.seq DESC LIMIT 1), '') AS "lastVia", r.created_at
+      FROM kin_records r
+      WHERE r.org_id = ${input.orgId} AND r.register_id = 'work'
+        AND substr(r.origin_key, 1, ${input.prefix.length}) = ${input.prefix})
+    WHERE NOT (state = 'done' AND "lastVia" = 'github')
+    ORDER BY created_at, "recordId"`;
   const isOpen = (row: (typeof rows)[number]) => row.state !== "done" && row.state !== "dropped";
+  const unwatched = (row: (typeof rows)[number]) =>
+    row.state === "dropped" && row.lastVia === "github";
   const named = new Set(input.open.map((item) => item.group));
   for (const item of input.open) {
     const mine = rows.filter((row) => groupOf(row.originKey) === item.group);
@@ -116,7 +122,16 @@ export const githubOpenWork = Effect.fn("KinGitHubEntries.githubOpenWork")(funct
         yield* records.update(input.orgId, writer, open.key, { title: item.title });
       continue;
     }
-    if (item.quiet === true || (item.originKey === undefined && mine.length > 0)) continue;
+    if (item.quiet === true) continue;
+    const back = mine.findLast(unwatched);
+    if (back !== undefined) {
+      yield* records.update(input.orgId, writer, back.key, {
+        state: "open",
+        ...(back.title === item.title ? {} : { title: item.title }),
+      });
+      continue;
+    }
+    if (item.originKey === undefined && mine.length > 0) continue;
     let originKey = item.originKey;
     if (originKey === undefined) {
       const episode = `${item.group}:open:`;

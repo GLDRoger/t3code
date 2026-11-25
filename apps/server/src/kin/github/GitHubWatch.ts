@@ -769,7 +769,6 @@ export const make = Effect.gen(function* () {
   const workNotes = new Map<string, string>();
   /** The watch line's words when GitHub refused to list the owner's organisations. */
   const orgsRefused = new Map<KinOrgId, string>();
-  /** What agents' shells sent this past week (`ghSign.ts`): their words, signed or not. */
   /**
    * What agents' shells sent this past week (`ghSign.ts`): their words, signed or not. The log
    * is read on from where the last look stopped; once its first line is past the week it moves

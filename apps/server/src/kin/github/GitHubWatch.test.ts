@@ -2103,6 +2103,11 @@ describe("KinGitHubWatch keeps Work entries of GitHub", () => {
       yield* look(github, 10);
       assert.deepStrictEqual(yield* entries, open);
 
+      // A second failing run while the first's task is open is the same task.
+      github.run({ repo: REPO, workflow: 1, name: "CI", conclusion: "failure" });
+      yield* look(github, 10);
+      assert.deepStrictEqual(yield* entries, open);
+
       github.close({ repo: REPO, number: issue, actor: "teammate-a" });
       github.run({ repo: REPO, workflow: 1, name: "CI", conclusion: "success" });
       yield* look(github, 10);
@@ -2235,6 +2240,14 @@ describe("KinGitHubWatch keeps Work entries of GitHub", () => {
       const notes = yield* sql<{ label: string }>`SELECT DISTINCT label FROM kin_record_links
         WHERE org_id = ${orgId} AND relation = 'relates'`;
       assert.deepStrictEqual(notes, [{ label: `Kin stopped watching ${REPO}` }]);
+
+      // Watched again, the same tasks open again: Kin dropped them, no person did.
+      yield* setRepo({ orgId, repo: REPO, watched: true }, T0);
+      yield* look(github, 10);
+      assert.deepStrictEqual(
+        (yield* entries).map((row) => row.state),
+        ["open", "open"],
+      );
     }).pipe(Effect.provide(layer));
   });
 
