@@ -41,7 +41,7 @@ export const KIN_MONEY = {
   noClient: "No client",
   nothingOwed: "Nobody owes you anything right now.",
   received: "Received",
-  tdsDeducted: "TDS deducted",
+  tdsDeducted: "Tax withheld",
   spent: "Spent",
   byCategory: "Spent by category",
   uncategorised: "No category",

@@ -53,7 +53,7 @@ export const KIN_INVOICES = {
   voidNote: "Kept with its number so the series stays complete. It counts for nothing.",
   total: "Total",
   received: "Received",
-  tdsDeducted: "TDS deducted",
+  tdsDeducted: "Tax withheld",
   balance: "Balance due",
   paidInFull: "Paid in full",
   documents: "Documents",

@@ -209,7 +209,7 @@ export const KIN_LISTS = {
     payDay: "Received on",
     payNote: "Note",
     payNotePlaceholder: "How it was paid, or its reference",
-    payTds: "TDS deducted",
+    payTds: "Tax withheld",
     paySave: "Record payment",
     takeBack: "Take back",
     takenBack: "Taken back",
@@ -1668,7 +1668,7 @@ export function kinPaymentCheck(
   const tdsText = draft.tds?.trim() ?? "";
   const tds = tdsText === "" ? null : kinParseAmount(tdsText, left.currency);
   if (tdsText !== "" && (tds === null || tds.minor === 0))
-    return { ok: false, problem: "Enter the TDS deducted, like 4,000, or leave it blank." };
+    return { ok: false, problem: "Enter the tax withheld, like 4,000, or leave it blank." };
   // With TDS, the cash received may be left blank: the client kept it all as tax.
   const amount =
     tds !== null && draft.amount.trim() === ""
