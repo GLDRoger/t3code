@@ -55,7 +55,10 @@ const isKinPushError = Schema.is(KinPushError);
 const fail = (reason: KinPushError["reason"], message: string) =>
   Effect.fail(new KinPushError({ reason, message }));
 
-export const personIn = (caller: KinPushCaller, orgId: KinOrgId) => {
+export const personIn = (
+  caller: KinPushCaller,
+  orgId: KinOrgId,
+): Effect.Effect<PersonIdentity, KinPushError> => {
   const person = caller.people.find((candidate) => candidate.orgId === orgId);
   return person === undefined
     ? fail("not_member", "Only a person in this org can get its notifications.")
