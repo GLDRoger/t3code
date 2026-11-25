@@ -6,7 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { homeCurrency } from "./companyProfile.ts";
-import { aboutInHome } from "./recordedRate.ts";
+import { aboutInHome, recordedRate } from "./recordedRate.ts";
 import {
   addUp,
   dayIn,
@@ -133,6 +133,7 @@ export const budgetsView = Effect.fn("KinBudgets.view")(function* (
   now: number,
   month?: string,
   keyed = false,
+  read: typeof recordedRate = recordedRate,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
@@ -193,16 +194,7 @@ export const budgetsView = Effect.fn("KinBudgets.view")(function* (
       onTarget.filter((one) => !budgeted.has(one.currency)),
       budget.currency,
     );
-    const minor = Number(total);
-    const about =
-      notCounted.length === 0 || !Number.isSafeInteger(minor)
-        ? undefined
-        : yield* aboutInHome(
-            orgId,
-            [{ currency: budget.currency, minor }, ...notCounted],
-            home,
-            now,
-          );
+    const about = yield* aboutInHome(orgId, onTarget, home, now, read);
     rows.push({
       ...budget,
       spent: total,
@@ -264,5 +256,7 @@ export const budgetsAnswer = (view: BudgetsView) => ({
 export const budgetFlags = Effect.fn("KinBudgets.flags")(function* (orgId: KinOrgId, now: number) {
   const answer = budgetsAnswer(yield* budgetsView(orgId, now));
   const flagged = answer.budgets.filter((one) => one.status !== "ok");
-  return flagged.length === 0 ? undefined : { month: answer.month, budgets: flagged };
+  return flagged.length === 0
+    ? undefined
+    : { month: answer.month, budgets: flagged, basis: answer.basis };
 });

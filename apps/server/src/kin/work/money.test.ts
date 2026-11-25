@@ -5812,6 +5812,44 @@ describe("money answers", () => {
             ["$500.00", false],
           ],
         );
+        yield* records.create(orgId, system, {
+          list: "expenses",
+          title: "Invented train fare",
+          owner,
+          state: "done",
+          category: "travel",
+          amount: { minor: 2_500_00, currency: "INR" },
+          dateAt: on("2026-11-05"),
+          originKey: "train",
+        });
+        yield* OwnerMoneyAnswers.setBudget(people, {
+          orgId,
+          category: "travel",
+          project: null,
+          currency: "INR",
+          limitMinor: 5_000_00,
+          clientRequestId: "travel-inr",
+        });
+        yield* sql`DELETE FROM kin_money_budgets
+          WHERE org_id = ${orgId} AND category = 'travel' AND currency = 'EUR'`;
+        const rates: Record<string, RecordedRate> = {
+          EUR: { invoiceCurrency: "EUR", receivedCurrency: "USD", rate: "1.10", day: "2026-11-10" },
+          INR: { invoiceCurrency: "INR", receivedCurrency: "USD", rate: "0.01", day: "2026-11-12" },
+        };
+        const read = (org: typeof orgId, from: string, to: string, asOf: number) =>
+          Effect.succeed(org === orgId && to === "USD" && asOf === now ? rates[from] : undefined);
+        const view = yield* budgetsView(orgId, now, undefined, false, read);
+        const about = {
+          total: { minor: 120_500, currency: "USD" },
+          rateDays: ["2026-11-10", "2026-11-12"],
+        };
+        assert.deepStrictEqual(
+          view.budgets.map((one) => [one.currency, one.about]),
+          [
+            ["INR", about],
+            ["USD", about],
+          ],
+        );
       }).pipe(Effect.provide(layer)),
   );
 
@@ -7127,7 +7165,8 @@ describe("money answers", () => {
         assert.include(refused.message, "Expenses have no category Invented snacks");
 
         const now = yield* Clock.currentTimeMillis;
-        assert.deepStrictEqual(budgetsAnswer(yield* budgetsView(orgId, now)).budgets, [
+        const answer = budgetsAnswer(yield* budgetsView(orgId, now));
+        assert.deepStrictEqual(answer.budgets, [
           {
             for: "software",
             limit: "₹5,000.00",
@@ -7153,8 +7192,10 @@ describe("money answers", () => {
             status: "ok",
           },
         ]);
+        const flags = yield* budgetFlags(orgId, now);
+        assert.strictEqual(flags?.basis, answer.basis);
         assert.deepStrictEqual(
-          (yield* budgetFlags(orgId, now))?.budgets.map((one) => [one.for, one.status]),
+          flags?.budgets.map((one) => [one.for, one.status]),
           [
             ["software", "near"],
             ["travel", "over"],
