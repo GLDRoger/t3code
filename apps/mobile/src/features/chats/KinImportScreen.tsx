@@ -1,4 +1,5 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { kinCurrencyName } from "@t3tools/client-runtime/kin/kinCurrency";
 import {
   KIN_IMPORT,
   KIN_IMPORT_DATE_FORMATS,
@@ -425,7 +426,7 @@ function Importing(props: KinWorkTarget) {
                     ...(mapping.currency === undefined ? [] : [mapping.currency]),
                   ]),
                 ]
-                  .map((id) => ({ id, label: id }))
+                  .map((id) => ({ id, label: kinCurrencyName(id) }))
                   .concat([{ id: OTHER, label: KIN_IMPORT.otherCurrency }])}
                 disabled={working}
                 onPick={(id) =>

@@ -38,6 +38,7 @@ import {
   kinImportWriting,
   type KinImportChoices,
 } from "@t3tools/client-runtime/kin/kinImport";
+import { kinCurrencyName } from "@t3tools/client-runtime/kin/kinCurrency";
 import type { KinWorkNames } from "@t3tools/client-runtime/kin/kinWork";
 import type {
   KinImportApplied,
@@ -454,7 +455,7 @@ export function KinImportView(
                   placeholder={KIN_IMPORT.currencyPick}
                   options={kinImportCurrencies(checked.homeCurrency).map((id) => ({
                     id,
-                    label: id,
+                    label: kinCurrencyName(id),
                   }))}
                   onChange={(value) => recheck({ ...mapping, currency: value })}
                 />
