@@ -316,6 +316,19 @@ it.effect(
           ["Invented Ravi", "ravi@x.invalid"],
         ],
       );
+      // Who gets the invoices: marking another moves it there.
+      for (const key of ["CT-2", "CT-1"])
+        yield* LeadWork.update(scope, { key, sourceEventId: "again-event", billingContact: true });
+      assert.deepStrictEqual(
+        (yield* LeadWork.get(scope, { key: "C-1" })).contacts!.map((row) => [
+          row.title,
+          row.billingContact ?? false,
+        ]),
+        [
+          ["Invented Mira", true],
+          ["Invented Ravi", false],
+        ],
+      );
       assert.deepStrictEqual(client.projects, [
         { key: "P-1", title: "Invented site", health: "on_track" },
       ]);
@@ -1323,6 +1336,65 @@ it.effect(
         email: "bo2@x.invalid",
         phone: "+1 555 0101",
       });
+      // One billing contact per client: marking another takes it off the first, made or changed,
+      // and false clears it. Removed, they stop being it, and can't be made it until restored.
+      assert.strictEqual(
+        (yield* Clients.updateContact([owner], { orgId, key: "CT-1", rev: 2, billing: true }))
+          .billing,
+        true,
+      );
+      const cy = yield* Clients.createContact([owner], {
+        orgId,
+        party: "C-1",
+        name: "Invented Cy",
+        email: "cy@x.invalid",
+        billing: true,
+        clientRequestId: "cy",
+      });
+      assert.strictEqual(cy.billing, true);
+      assert.notProperty(yield* storedFields("CT-1"), "billing");
+      const bo = yield* Clients.updateContact([owner], {
+        orgId,
+        key: several.key,
+        rev: cleared.rev,
+        billing: true,
+      });
+      assert.deepStrictEqual(
+        (yield* Clients.party([owner], { orgId, key: "C-1" })).contacts
+          .filter((one) => one.billing === true)
+          .map((one) => one.key),
+        [several.key],
+      );
+      assert.notProperty(yield* storedFields(cy.key), "billing");
+      const gone = yield* Clients.updateContact([owner], {
+        orgId,
+        key: several.key,
+        rev: bo.rev,
+        active: false,
+      });
+      assert.notProperty(gone, "billing");
+      assert.include(
+        yield* Effect.flip(
+          Clients.updateContact([owner], { orgId, key: several.key, rev: gone.rev, billing: true }),
+        ),
+        { reason: "invalid_state" },
+      );
+      const back = yield* Clients.updateContact([owner], {
+        orgId,
+        key: several.key,
+        rev: gone.rev,
+        active: true,
+      });
+      assert.notProperty(back, "billing");
+      assert.notProperty(
+        yield* Clients.updateContact([owner], {
+          orgId,
+          key: cy.key,
+          rev: cy.rev + 1,
+          billing: false,
+        }),
+        "billing",
+      );
       // An entry for the client: its client, project and side are the owner's to set and clear.
       const entry = yield* OwnerWork.create([owner], {
         orgId,
@@ -2133,7 +2205,19 @@ it.effect(
         ),
         "not_allowed",
       );
-      for (const change of [{ sensitive: true }, { party: "C-1" }])
+      assert.strictEqual(
+        yield* refused(
+          Clients.createContact([mate], {
+            orgId,
+            party: key,
+            name: "Invented Ola",
+            billing: true,
+            clientRequestId: "ola-billing",
+          }),
+        ),
+        "not_allowed",
+      );
+      for (const change of [{ sensitive: true }, { party: "C-1" }, { billing: true }])
         assert.strictEqual(
           yield* refused(
             Clients.updateContact([mate], { orgId, key: ingrid.key, rev: ingrid.rev, ...change }),

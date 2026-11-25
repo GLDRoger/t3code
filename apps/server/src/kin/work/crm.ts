@@ -677,6 +677,7 @@ export const toContact = (row: RecordRow): KinContact => {
     ...(fieldList(fields, "tags").length === 0
       ? {}
       : { tags: fieldList(fields, "tags").map(titled) }),
+    ...(fields.billing === undefined ? {} : { billing: true as const }),
     notes: row.notes,
     active: row.state === "open",
     sensitive: row.sensitive === 1 || row.inheritedSensitive === 1,

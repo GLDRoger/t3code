@@ -381,6 +381,7 @@ const Row = Schema.Struct({
   phone: Schema.optional(Schema.String),
   emails: Schema.optional(Schema.Array(Schema.String)),
   phones: Schema.optional(Schema.Array(Schema.String)),
+  billingContact: Schema.optional(Schema.Literal(true)),
   terms: Schema.optional(Schema.String),
   repos: Schema.optional(Schema.Array(Schema.String)),
   address: Schema.optional(Schema.String),
@@ -600,6 +601,7 @@ const CreateRow = Schema.Struct({
   phone: Schema.optional(Detail),
   emails: Schema.optional(Details),
   phones: Schema.optional(Details),
+  billingContact: Schema.optional(Schema.Literal(true)),
   terms: Schema.optional(Terms),
   repos: Schema.optional(Repos),
   address: Schema.optional(Address),
@@ -713,6 +715,7 @@ export const UpdateInput = Schema.Struct({
   phone: Schema.optional(Schema.NullOr(Detail)),
   emails: Schema.optional(Details),
   phones: Schema.optional(Details),
+  billingContact: Schema.optional(Schema.Boolean),
   terms: Schema.optional(Schema.NullOr(Terms)),
   repos: Schema.optional(Repos),
   address: Schema.optional(Schema.NullOr(Address)),
@@ -1361,6 +1364,9 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     ...text("phone"),
     ...several("emails"),
     ...several("phones"),
+    ...(list === "contacts" && fields.billing !== undefined
+      ? { billingContact: true as const }
+      : {}),
     ...text("terms"),
     ...(repos.length === 0 ? {} : { repos: [...repos] }),
     ...(defined ? {} : { ...text("address"), ...text("gstin"), ...text("placeOfSupply") }),
@@ -1665,6 +1671,7 @@ const fieldsFrom = (row: {
   readonly phone?: string | null | undefined;
   readonly emails?: ReadonlyArray<string> | undefined;
   readonly phones?: ReadonlyArray<string> | undefined;
+  readonly billingContact?: boolean | undefined;
   readonly terms?: string | null | undefined;
   readonly repos?: ReadonlyArray<string> | undefined;
   readonly address?: string | null | undefined;
@@ -1685,7 +1692,11 @@ const fieldsFrom = (row: {
         "gstin",
         "placeOfSupply",
       ] as const
-    ).flatMap((key) => (row[key] === undefined ? [] : [[key, row[key]]])),
+    )
+      .flatMap((key) => (row[key] === undefined ? [] : [[key, row[key]]]))
+      .concat(
+        row.billingContact === undefined ? [] : [["billing", row.billingContact ? "true" : null]],
+      ),
   ) as Record<string, string | ReadonlyArray<string> | null>;
 
 /** A client's printed details a write sets, beside what it holds; a new client's name is its own. */
@@ -1892,6 +1903,7 @@ const OWNERS_INPUTS = [
   "phone",
   "emails",
   "phones",
+  "billingContact",
   "terms",
   "repos",
   "address",
@@ -2885,7 +2897,11 @@ const createRow = Effect.fnUntraced(function* (
     yield* memberAddsContact(lead.orgId, contactFor, {
       party: { recordId: partyId },
       owner,
-      ownersFields: row.sensitive !== undefined || row.state === "done" || row.state === "dropped",
+      ownersFields:
+        row.sensitive !== undefined ||
+        row.billingContact !== undefined ||
+        row.state === "done" ||
+        row.state === "dropped",
     });
   const projectId = yield* refOrNull(lead, row.project, "projects");
   // Setting up a client twice finds the one that is there instead of making another.

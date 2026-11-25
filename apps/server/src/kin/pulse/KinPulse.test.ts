@@ -2776,6 +2776,15 @@ describe("KinPulse", () => {
       assert.strictEqual(oldClient.scope.clientTitle, "Lumen");
       assert.notProperty(oldClient.scope, "clientKey");
 
+      // Money owed goes to the client's billing contact ahead of the first by name.
+      yield* contact(orgId, "K-3", "Zara", "zara@lumen.example");
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.billing', 'true')
+        WHERE org_id = ${orgId} AND record_id = 'r-K-3'`;
+      assert.deepInclude(rows(yield* section()).get(keys[0]!), {
+        writeTo: { name: "Zara", email: "zara@lumen.example", billing: true },
+      });
+      yield* sql`DELETE FROM kin_records WHERE org_id = ${orgId} AND record_id = 'r-K-3'`;
+
       // No address on file and no mail connected: each fact says so, once, in plain words.
       yield* sql`UPDATE kin_records SET fields_json = '{}' WHERE org_id = ${orgId} AND record_id = 'r-K-2'`;
       yield* sql`UPDATE kin_connections SET removed_at = 1 WHERE org_id = ${orgId}`;

@@ -654,6 +654,8 @@ export function KinContactDialog(
   props: KinWorkTarget & {
     readonly party: KinWorkRef;
     readonly editing: KinContact | null;
+    /** Who gets the invoices is the owner level's to choose. */
+    readonly owner: boolean;
     readonly onSaved: () => void;
     readonly onClose: () => void;
   },
@@ -792,6 +794,15 @@ export function KinContactDialog(
         />
       </div>
       <p className="text-xs text-muted-foreground">{COPY.contact.detailsHint}</p>
+      {props.owner ? (
+        <PrivateSwitch
+          label={COPY.contact.billing}
+          note={COPY.contact.billingNote}
+          checked={draft.billing === true}
+          disabled={state.saving || (editing !== null && !editing.active)}
+          onChange={(billing) => form.edit({ billing })}
+        />
+      ) : null}
       <Field
         id={ids.tags}
         label={KIN_MARKETING.tags}

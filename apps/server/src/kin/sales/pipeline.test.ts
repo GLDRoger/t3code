@@ -603,6 +603,17 @@ it.effect(
         sourceEventId: "ask-event",
         phone: "+46 8 555 0199",
       });
+      // Who gets the invoices is the owner's to say, through her agent too.
+      assert.strictEqual(
+        yield* outcome(
+          LeadWork.update(scope, {
+            key: KinRecordKey.make(tomas.records[0]!.key),
+            sourceEventId: "ask-event",
+            billingContact: true,
+          }),
+        ),
+        "not_allowed",
+      );
       assert.strictEqual(
         yield* outcome(
           LeadWork.create(scope, {

@@ -3263,7 +3263,10 @@ const make = Effect.gen(function* () {
           ),
         );
     }
-    const called: Prepared =
+    const {
+      prepared: called,
+      picked,
+    }: { readonly prepared: Prepared; readonly picked: string | null } =
       provider !== undefined
         ? yield* prepareMail({
             provider,
@@ -3284,7 +3287,7 @@ const make = Effect.gen(function* () {
               ),
             ),
           )
-        : { _tag: "call", args };
+        : { prepared: { _tag: "call", args }, picked: null };
     if (
       row.personId != null &&
       (yield* confirmRefusal(turn.orgId, row, row.personId, called).pipe(provideSql)) !== null
@@ -3561,7 +3564,9 @@ const make = Effect.gen(function* () {
     yield* record(turn, { ...entry, status: "awaiting_approval" });
     const asked = row.personId != null ? ASKED_OWN : outside === undefined ? ASKED : DRAFTED;
     const older = new Set(replaced).size;
-    const note = older === 0 ? asked : `${asked} ${REPLACED(older)}`;
+    const note = [asked, older === 0 ? null : REPLACED(older), picked]
+      .filter((part) => part !== null)
+      .join(" ");
     const names = [...new Set(savedOver.map((one) => one.name))].join(" and ");
     return savedOver.length === 0
       ? { note }

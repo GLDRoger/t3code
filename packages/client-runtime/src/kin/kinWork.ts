@@ -1436,6 +1436,9 @@ export function kinWorkChangeText(
   if (field("terms") !== undefined) clauses.push("changed the terms");
   if (["role", "email", "phone", "emails", "phones"].some((name) => field(name) !== undefined))
     clauses.push("changed their details");
+  const billing = field("billing");
+  if (billing !== undefined)
+    clauses.push(billing.to === null ? "stopped their invoices" : "made them get the invoices");
   if (field("repos") !== undefined) clauses.push("changed its repos");
   const repeat = field("repeat");
   if (repeat !== undefined)

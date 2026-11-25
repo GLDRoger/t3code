@@ -752,6 +752,8 @@ function ContactFormRead(
   },
 ) {
   const { environmentId, orgId, clientKey, contactKey } = props;
+  // A host before prospects sends no `can`: there only the owner level changes a client.
+  const ownerLevel = useKinIsOwnerLevel(environmentId);
   const gate = useKinGate(
     (contactKey === null
       ? kinClient.workContactCreate
@@ -775,7 +777,7 @@ function ContactFormRead(
         )}
       </FormMessage>
     );
-  const { party, contacts } = state.value;
+  const { party, contacts, can } = state.value;
   const editing =
     contactKey === null ? null : (contacts.find((held) => held.key === contactKey) ?? null);
   if (contactKey !== null && editing === null)
@@ -794,12 +796,18 @@ function ContactFormRead(
       orgId={orgId}
       party={{ key: party.key, title: party.name }}
       editing={editing}
+      owner={can?.owner ?? ownerLevel}
     />
   );
 }
 
 function ContactForm(
-  props: KinWorkTarget & { readonly party: KinWorkRef; readonly editing: KinContact | null },
+  props: KinWorkTarget & {
+    readonly party: KinWorkRef;
+    readonly editing: KinContact | null;
+    /** Who gets the invoices is the owner level's to choose. */
+    readonly owner: boolean;
+  },
 ) {
   const navigation = useNavigation();
   const { environmentId, orgId, editing, party } = props;
@@ -920,6 +928,17 @@ function ContactForm(
           onChange={(phones) => form.edit({ phones })}
         />
       </ListSection>
+      {props.owner ? (
+        <ListSection footer={COPY.contact.billingNote}>
+          <KinWorkToggleRow
+            icon="doc.text"
+            label={COPY.contact.billing}
+            value={draft.billing === true}
+            disabled={busy || (editing !== null && !editing.active)}
+            onValueChange={(billing) => form.edit({ billing })}
+          />
+        </ListSection>
+      ) : null}
       <KinTagFields
         tags={draft.tags ?? []}
         company={marketing.tags}

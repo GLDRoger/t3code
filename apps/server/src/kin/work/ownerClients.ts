@@ -496,6 +496,7 @@ const detailsOf = (input: KinContactCreateInput | KinContactUpdateInput) => ({
   emails: input.emails,
   phones: input.phones,
   tags: input.tags === undefined ? undefined : input.tags.length === 0 ? null : input.tags,
+  billing: input.billing === undefined ? undefined : input.billing ? "true" : null,
 });
 const activeState = (active: boolean | undefined) =>
   active === undefined ? {} : { state: active ? ("open" as const) : ("dropped" as const) };
@@ -565,7 +566,7 @@ const looksAfter = (row: RecordRow, personId: KinPersonId) =>
 const MEMBER_FIELDS = new KinChatError({
   reason: "not_allowed",
   message:
-    "Only the owner or a co-owner sets a client's terms, tax details, address, Keep private or who looks after it, closes it, or makes it a vendor.",
+    "Only the owner or a co-owner sets a client's terms, tax details, address, billing contact, Keep private or who looks after it, closes it, or makes it a vendor.",
 });
 const PROSPECTS_ONLY = new KinChatError({
   reason: "not_allowed",
@@ -884,7 +885,7 @@ const contactIn = Effect.fn("KinWork.crm.contactIn")(function* (
   yield* memberAddsContact(input.orgId, person.personId, {
     party: { key: input.party },
     owner: undefined,
-    ownersFields: input.sensitive !== undefined,
+    ownersFields: input.sensitive !== undefined || input.billing !== undefined,
   });
   return yield* stillSeen(person, yield* write, input.name);
 });
@@ -928,7 +929,8 @@ export const updateContact = Effect.fn("KinWork.updateContact")(function* (
     viewer,
     Effect.gen(function* () {
       yield* memberChangesContact(input.orgId, person.personId, input.key, {
-        ownersFields: input.sensitive !== undefined || input.party !== undefined,
+        ownersFields:
+          input.sensitive !== undefined || input.party !== undefined || input.billing !== undefined,
       });
       return yield* write;
     }),

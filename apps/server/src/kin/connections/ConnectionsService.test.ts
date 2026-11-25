@@ -2748,6 +2748,102 @@ describe("KinConnections sending", () => {
     ),
   );
 
+  it.effect("an invoice mail that names nobody goes to its client's billing contact", () =>
+    withGoogle((vendor, cards) =>
+      Effect.gen(function* () {
+        yield* connectGoogle(vendor);
+        const sql = yield* SqlClient.SqlClient;
+        const mail = (subject: string) =>
+          sendCall("mail_send", { subject, body: "Attached.", attachments: ["INV-1"] });
+        assert.include(
+          (yield* Effect.flip(mail("Invoice"))).message,
+          "mail_send needs to: it has no client.",
+        );
+        // A plain mail with no `to` and nothing billed attached is still refused for it.
+        assert.include(
+          (yield* Effect.flip(sendCall("mail_send", { subject: "Hello", body: "Hi." }))).message,
+          "mail_send needs to.",
+        );
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+          VALUES (${orgId}, 'clients', 'Clients', 'C', 0), (${orgId}, 'contacts', 'Contacts', 'CT', 0)`;
+        const row = (id: string, list: string, title: string, fields: object) =>
+          sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+              owner_id, created_by_kind, origin_key, created_at, updated_at, party_id, fields_json)
+            VALUES (${orgId}, ${id}, ${list}, ${id}, ${title}, 'person', ${ownerId}, 'person',
+              ${id}, 0, 0, ${list === "contacts" ? "rec_client" : null}, ${JSON.stringify(fields)})`;
+        yield* row("rec_client", "clients", "Invented Client", {});
+        yield* sql`UPDATE kin_records SET party_id = 'rec_client' WHERE record_id = 'rec_inv'`;
+        yield* row("ct-a", "contacts", "Aaron", { email: "aaron@client.example" });
+        yield* row("ct-z", "contacts", "Zed", { email: "zed@client.example", billing: "true" });
+        const billed = yield* mail("Invoice");
+        assert.include(
+          billed.note ?? "",
+          "It goes to Zed (zed@client.example), Invented Client's billing contact.",
+        );
+        assert.deepStrictEqual(cards[0]?.send?.to, ["zed@client.example"]);
+        // With none, the first contact with an email, as a Pulse draft has always gone.
+        yield* sql`UPDATE kin_records SET fields_json = '{"email":"zed@client.example"}'
+          WHERE record_id = 'ct-z'`;
+        assert.include(
+          (yield* mail("Invoice again")).note ?? "",
+          "Invented Client has no billing contact, so it goes to Aaron (aaron@client.example)",
+        );
+        assert.deepStrictEqual(cards.at(-1)?.send?.to, ["aaron@client.example"]);
+        // Someone named is who it goes to.
+        yield* sendCall("mail_send", {
+          to: ["ana@client.example"],
+          subject: "Invoice for Ana",
+          body: "Attached.",
+          attachments: ["INV-1"],
+        });
+        assert.deepStrictEqual(cards.at(-1)?.send?.to, ["ana@client.example"]);
+        yield* sendCall("mail_send", {
+          to: "bea@client.example",
+          subject: "Invoice for Bea",
+          body: "Attached.",
+          attachments: ["INV-1"],
+        });
+        assert.deepStrictEqual(cards.at(-1)?.send?.to, ["bea@client.example"]);
+        // A bad address is refused as one, not swapped for the billing contact.
+        const cardsBefore = cards.length;
+        assert.include(
+          (yield* Effect.flip(
+            sendCall("mail_send", {
+              to: "not-an-address",
+              subject: "Invoice for nobody",
+              body: "Attached.",
+              attachments: ["INV-1"],
+            }),
+          )).message,
+          "not-an-address",
+        );
+        assert.lengthOf(cards, cardsBefore);
+        // A name typed on the invoice is who it bills, over its project's client and contacts.
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+          VALUES (${orgId}, 'projects', 'Projects', 'P', 0)`;
+        yield* row("rec_proj", "projects", "Invented Project", {});
+        yield* sql`UPDATE kin_records SET party_id = 'rec_client' WHERE record_id = 'rec_proj'`;
+        yield* sql`UPDATE kin_records SET fields_json = '{"email":"zed@client.example","billing":"true"}'
+          WHERE record_id = 'ct-z'`;
+        yield* sql`UPDATE kin_records SET party_id = NULL, project_id = 'rec_proj',
+            fields_json = json_set(fields_json, '$.billToName', 'Walk-in Ltd')
+          WHERE record_id = 'rec_inv'`;
+        assert.include(
+          (yield* Effect.flip(mail("Invoice by name"))).message,
+          "mail_send needs to: it bills Walk-in Ltd by name, with no email.",
+        );
+        yield* sql`UPDATE kin_records
+          SET fields_json = json_set(fields_json, '$.billToEmail', 'pay@walkin.example')
+          WHERE record_id = 'rec_inv'`;
+        assert.include(
+          (yield* mail("Invoice by name again")).note ?? "",
+          "It goes to Walk-in Ltd (pay@walkin.example), who it bills.",
+        );
+        assert.deepStrictEqual(cards.at(-1)?.send?.to, ["pay@walkin.example"]);
+      }),
+    ),
+  );
+
   it.effect(
     "refuses a changed invoice with a fresh card, replies in a thread, and books events",
     () =>

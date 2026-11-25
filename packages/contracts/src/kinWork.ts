@@ -1229,6 +1229,8 @@ export const KinContact = Schema.Struct({
   phones: ContactDetailsRead,
   /** Absent from older hosts and when it has none. */
   tags: Schema.optional(Tags),
+  /** Gets the client's invoices and receipts; at most one per client. Absent when not, and from older hosts. */
+  billing: Schema.optional(Schema.Literal(true)),
   notes: KinText,
   active: Schema.Boolean,
   /** The contact's own label, or its client's. */
@@ -1351,7 +1353,7 @@ export type KinClientTouch = typeof KinClientTouch.Type;
 /**
  * What the reader may do on a client page, decided by the checks its writes run. `edit`: name,
  * notes, came from, tags, prospect or client, and contacts. `owner`: terms, tax, who looks after
- * it, Keep private and closing it. Absent from hosts before prospects: the owner level does all.
+ * it, its billing contact, Keep private and closing it. Absent from hosts before prospects: the owner level does all.
  */
 export const KinPartyCan = Schema.Struct({
   edit: Schema.Boolean,
@@ -1647,6 +1649,8 @@ export const KinContactCreateInput = Schema.Struct({
   emails: Schema.optional(ContactDetails),
   phones: Schema.optional(ContactDetails),
   tags: Schema.optional(Tags),
+  /** Makes them the client's billing contact, in place of any other. Owner level only. */
+  billing: Schema.optional(Schema.Boolean),
   notes: Schema.optional(Notes),
   sensitive: Schema.optional(Schema.Boolean),
   clientRequestId: RequestId,
@@ -1693,6 +1697,8 @@ export const KinContactUpdateInput = Schema.Struct({
   phones: Schema.optional(ContactDetails),
   /** The whole list; empty clears it. */
   tags: Schema.optional(Tags),
+  /** `true` makes them the client's billing contact in place of any other; `false` clears it. Owner level only. */
+  billing: Schema.optional(Schema.Boolean),
   notes: Schema.optional(Notes),
   sensitive: Schema.optional(Schema.Boolean),
   active: Schema.optional(Schema.Boolean),
