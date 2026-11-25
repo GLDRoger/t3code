@@ -13,6 +13,7 @@ import {
 } from "../kinCanvasView.ts";
 import { kinHostLink, type KinRouteHost } from "../kinHost.ts";
 import type { KinScreenTarget } from "../kinScreenReads.ts";
+import { runKinCommand } from "../kinRunCommand.ts";
 import { KIN_WORK_DEFAULT_FILTER, kinWorkHostEdits, type KinWorkFilter } from "../kinWork.ts";
 import { createKinWorkList, kinListShown } from "../kinWorkList.ts";
 import type { KinDocsHooks } from "./kinDocsHooks.ts";
@@ -78,7 +79,7 @@ export function makeKinCanvasHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinCanva
           orgId,
           initial: tasksFilter("doing"),
           read: (input) =>
-            kinClient.workList.run(registry, {
+            runKinCommand(registry, kinClient.workList, {
               environmentId,
               input: { ...input, limit: TASK_PAGE },
             }),
