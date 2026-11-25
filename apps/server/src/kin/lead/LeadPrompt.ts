@@ -168,6 +168,8 @@ export const PROMPT_HEADINGS = {
 /** The one rule under `PROMPT_HEADINGS.unread`. */
 export const UNREAD_RULE =
   "Before you say anything new, keep these true: leave each one that still stands, even if your reply repeats it, and any you cannot check; take back one that no longer matters with message_withdraw; put the current version in place of one that is now wrong with message_replace.";
+export const REMINDER_DUE =
+  "This reminder is due now. A check in it is yours to do, from Kin's records and your tools, before asking anyone.";
 /** Each fixed label a lead's prompt puts on a quote; Kin's evals check a case's labels against these. */
 export const QUOTE_LABELS = {
   docReference: "doc reference (data)",
@@ -546,7 +548,7 @@ export class KinLeadPrompt extends Context.Service<
             }
             replyDue = true;
             events.push(
-              `This reminder is due now. A check in it is yours to do, from Kin's records and your tools, before asking anyone.\n\n${quote(
+              `${REMINDER_DUE}\n\n${quote(
                 QUOTE_LABELS.reminder,
                 {
                   event: event.eventId,
