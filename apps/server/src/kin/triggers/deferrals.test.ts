@@ -1262,11 +1262,26 @@ it.effect(
 
 it.effect("a record a person set aside skips an agent's own start at heads-up", () => {
   const start = makeDeferral("def-held", { trust: "agent", links: ["TF/26/012"] });
+  const closed = makeDeferral("def-already-closed", { trust: "agent", links: ["INV-12"] });
   return Effect.gen(function* () {
     yield* setup();
     yield* seedInvoice(dueAt);
-    yield* (yield* TriggerService.KinTriggerService).syncItem(start);
+    const service = yield* TriggerService.KinTriggerService;
+    yield* service.syncItem(start);
+    yield* service.syncItem(closed);
     const repo = yield* Repository.KinChatRepository;
+    const openText = (yield* cardOf(start.id)).text;
+    const readClosed = () => repo.getWidget({ orgId, widgetId: widgetFor(closed.id) });
+    const closing = Option.getOrThrow(yield* readClosed());
+    const at = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+    const alreadyClosed = yield* repo.updateWidget({
+      ...closing,
+      audience: "chat",
+      expectedRevision: closing.revision,
+      state: { ...decodeCard(encodeJson(closing.state)), actions: [] },
+      closedAt: at,
+      updatedAt: at,
+    });
     yield* KinPulse.aside({
       orgId,
       at: yield* Clock.currentTimeMillis,
@@ -1286,7 +1301,11 @@ it.effect("a record a person set aside skips an agent's own start at heads-up", 
     assert.equal(widget.closedAt, DateTime.formatIso(DateTime.makeUnsafe(headsUpAt)));
     const card = decodeCard(encodeJson(widget.state));
     assert.isEmpty(card.actions ?? []);
-    assert.equal(card.text, "Skipped: a person set INV-12 aside, so this follow-up didn't run.");
+    assert.equal((yield* runOf(closed.id))?.state, "undone");
+    assert.deepStrictEqual(
+      { openText: card.text, closedCard: Option.getOrThrow(yield* readClosed()) },
+      { openText, closedCard: alreadyClosed },
+    );
     assert.deepStrictEqual(
       (yield* triggersOf()).filter(({ id }) => id.includes(start.id)),
       [
@@ -1297,7 +1316,7 @@ it.effect("a record a person set aside skips an agent's own start at heads-up", 
     assert.isEmpty(yield* pendingFires());
     yield* tick(dueAt);
     assert.isEmpty(yield* starts());
-  }).pipe(openGates(new Map()), Effect.provide(layerFor([start])));
+  }).pipe(openGates(new Map()), Effect.provide(layerFor([start, closed])));
 });
 
 it.effect("an agent's own follow-up naming a held record in its title is skipped", () => {

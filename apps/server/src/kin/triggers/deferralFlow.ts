@@ -684,7 +684,7 @@ const make = Effect.gen(function* () {
           yield* inbox.markConsumed(orgId, [fire.fireId]);
           const widgetId = KinWidgetId.make(deferralWidgetId(orgId, itemId));
           const existing = yield* repo.getWidget({ orgId, widgetId });
-          if (Option.isSome(existing)) {
+          if (Option.isSome(existing) && existing.value.closedAt === null) {
             const widget = existing.value;
             const card = yield* decodeCard(widget.state);
             const at = iso(now);
@@ -692,11 +692,7 @@ const make = Effect.gen(function* () {
               ...widget,
               audience: "chat",
               expectedRevision: widget.revision,
-              state: {
-                ...card,
-                actions: [],
-                text: `Skipped: a person set ${skippedRecord} aside, so this follow-up didn't run.`,
-              },
+              state: { ...card, actions: [] },
               closedAt: at,
               updatedAt: at,
             });
