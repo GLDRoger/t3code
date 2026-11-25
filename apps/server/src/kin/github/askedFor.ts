@@ -57,13 +57,64 @@ export const blocksLine = (input: {
 }) =>
   `${input.agent} found something that blocks ${quotedTitle(input.title)} (${input.ref}), ${input.author}'s pull request, in the review ${input.asker} asked for: hold the merge until it is fixed. ${input.url}`;
 
-/** The owner's line on a review of an outsider's pull request: Kin's own, never the model's. */
-export const outsideLine = (ref: string, receipt: ReturnType<typeof receiptOf>, pullUrl: string) =>
-  receipt._tag === "posted"
-    ? `Reviewed ${ref}, opened by someone outside the company: ${receipt.url}`
-    : receipt._tag === "unknown"
-      ? `Kin sent a review of ${ref}, opened by someone outside the company, and GitHub didn't confirm it: ${pullUrl}`
-      : `The review of ${ref}, opened by someone outside the company, did not post: ${pullUrl}`;
+/** The owner's line on Kin's own review of an outsider's pull request that blocks it. */
+export const outsideBlocksLine = (input: {
+  readonly agent: string;
+  readonly title: string;
+  readonly ref: string;
+  readonly author: string;
+  readonly url: string;
+}) =>
+  `${input.agent} found something that blocks ${quotedTitle(input.title)} (${input.ref}), opened by ${input.author} from outside the company: hold the merge until it is fixed. ${input.url}`;
+
+/** The owner's line on Kin's own review of an outsider's pull request that didn't surely post. */
+export const outsideLine = (
+  ref: string,
+  receipt: Exclude<ReturnType<typeof receiptOf>, { _tag: "posted" }>,
+  pullUrl: string,
+) =>
+  receipt._tag === "unknown"
+    ? `Kin sent a review of ${ref}, opened by someone outside the company, and GitHub didn't confirm it: ${pullUrl}`
+    : `The review of ${ref}, opened by someone outside the company, did not post: ${pullUrl}`;
+
+/**
+ * An asked review queued before its event carried the asker's chat: the claim gives it their
+ * direct chat with the agent, found as an ask finds it (`reviewAsk.ts`), or ends it unheard when
+ * that chat or the person is gone, so its turn never answers the owner's chat as theirs.
+ */
+export const fillAskedChats = Effect.fn("KinGitHubReviewAsk.fillChats")(function* (
+  orgId: KinOrgId,
+  agentId: KinAgentId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const queued = yield* sql<{ eventId: string; personId: string }>`SELECT event_id AS "eventId",
+      json_extract(json, '$.askedBy') AS "personId"
+    FROM kin_events WHERE org_id = ${orgId} AND agent_id = ${agentId} AND state = 'queued'
+      AND tag = 'github' AND json_extract(json, '$.askedBy') IS NOT NULL
+      AND json_extract(json, '$.chatId') IS NULL
+    ORDER BY event_id`;
+  for (const event of queued) {
+    const personId = KinPersonId.make(event.personId);
+    const [chat] = yield* sql<{ chatId: string }>`SELECT c.chat_id AS "chatId" FROM kin_chats c
+      JOIN kin_people p ON p.org_id = c.org_id AND p.person_id = ${personId}
+        AND p.removed_at IS NULL
+      WHERE c.org_id = ${orgId} AND c.kind = 'direct' AND c.archived_at IS NULL
+        AND c.direct_key = ${directKey(personId, agentId)}
+        AND EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = c.org_id
+          AND m.chat_id = c.chat_id AND m.principal_kind = 'person' AND m.person_id = ${personId}
+          AND m.left_at IS NULL)
+      ORDER BY c.chat_id LIMIT 1`;
+    if (chat !== undefined) {
+      yield* sql`UPDATE kin_events SET json = json_set(json, '$.chatId', ${chat.chatId})
+        WHERE org_id = ${orgId} AND event_id = ${event.eventId} AND state = 'queued'`;
+      continue;
+    }
+    const reason = "skipped: the person who asked, or their chat with the agent, is gone";
+    yield* sql`UPDATE kin_events SET state = 'expired', json = json_set(json, '$._skipped', ${reason})
+      WHERE org_id = ${orgId} AND event_id = ${event.eventId} AND state = 'queued'`;
+    yield* Effect.logInfo("Kin asked review skipped", { eventId: event.eventId, reason });
+  }
+});
 
 const notice = Effect.fn("KinGitHubReviewAsk.notice")(function* (
   deps: {
@@ -179,14 +230,30 @@ export const settleReviews = Effect.fn("KinGitHubReviewAsk.settle")(function* (
           AND review_url IS NULL`;
     if (Option.isNone(deps.repo)) continue;
     const agentId = KinAgentId.make(event.agentId);
-    if (event.outside === 1 && event.ownerChatId !== null)
+    // Kin's own review of an outsider's pull request: the model's words go nowhere, so Kin tells
+    // the owner of a block or a post not made, and nothing of a clean one.
+    const outsideBody =
+      event.outside !== 1 || event.personId !== null
+        ? undefined
+        : receipt._tag !== "posted"
+          ? outsideLine(ref, receipt, event.pullUrl)
+          : blocks === undefined
+            ? undefined
+            : outsideBlocksLine({
+                agent: event.agentName ?? "The agent",
+                title: event.title ?? ref,
+                ref,
+                author: event.author ?? "someone",
+                url: receipt.url,
+              });
+    if (outsideBody !== undefined && event.ownerChatId !== null)
       yield* notice(
         { repo: deps.repo.value, hub: deps.hub },
         {
           orgId,
           chatId: KinChatId.make(event.ownerChatId),
           id: `kin-review-outside:${event.eventId}`,
-          body: outsideLine(ref, receipt, event.pullUrl),
+          body: outsideBody,
           now,
         },
       );
@@ -196,7 +263,6 @@ export const settleReviews = Effect.fn("KinGitHubReviewAsk.settle")(function* (
     if (
       receipt._tag === "posted" &&
       blocks !== undefined &&
-      event.outside !== 1 &&
       event.ownerChatId !== null &&
       !(yield* mayActAsOwner(orgId, personId, { personId: event.ownerPersonId ?? "" }))
     )
@@ -238,8 +304,6 @@ export const settleReviews = Effect.fn("KinGitHubReviewAsk.settle")(function* (
       !KinLevels.atLeast(yield* KinLevels.effectiveLevel({ orgId, agentId, chatId }), "L1")
     )
       continue;
-    // The owner's own chat already has the outside line.
-    if (event.outside === 1 && chat.chatId === event.ownerChatId) continue;
     yield* notice(
       { repo: deps.repo.value, hub: deps.hub },
       {

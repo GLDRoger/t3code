@@ -728,8 +728,8 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     $error: { _tag: "KinChatError", reason: "not_allowed", message: DIFF_REFUSAL.unread },
   }),
   // kin_github_review's answer for a review GitHub took (`GitHubWatch.ts` postedResult).
-  reviewPosted: (input: { url: string; asked?: boolean; asOwner?: boolean }) =>
-    postedResult({ _tag: "posted", url: input.url, asOwner: input.asOwner ?? false }, input.asked),
+  reviewPosted: (input: { url: string; review?: "asked" | "kins" | "outside"; asOwner?: boolean }) =>
+    postedResult({ _tag: "posted", url: input.url, asOwner: input.asOwner ?? false }, input.review),
   // bills_add's and bill_read's answers, as Kin words them (`leadBills.ts`, `bills.ts`).
   billsAdd: (input: { added: number; alreadyAdded: number; notBills: number }) => addAnswer(input),
   billRead: (input: { bill: string; outcome: "read" | "duplicate" | "unreadable" }) =>

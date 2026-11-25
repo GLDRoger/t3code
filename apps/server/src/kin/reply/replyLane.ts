@@ -26,8 +26,8 @@ export type Lane = {
   /** A Team-room turn: it speaks only through `team_say`, and passing says nothing. */
   readonly team?: true;
   /**
-   * An outsider's pull request's review (Kin tells the owner from the post, `askedFor.ts`), or
-   * bills read in the background: nothing the model writes reaches a chat.
+   * Kin's own review of an outsider's pull request (Kin tells the owner from the post,
+   * `askedFor.ts`), or bills read in the background: nothing the model writes reaches a chat.
    */
   readonly quiet?: true;
   /** Bills read in the background: their card tells what wasn't read, so a failure says nothing. */
@@ -63,8 +63,10 @@ export const laneFor = Effect.fn("KinReplyBridge.lane")(
       ORDER BY priority, received_at, event_id LIMIT 1`;
     const chatId = first?.chatId ?? lead?.ownerChatId;
     if (chatId === undefined) return Option.none<Lane>();
-    // Nothing the model writes there reaches a chat, so no reply can become a question either.
-    if ((yield* outsideReview(input)) !== undefined)
+    // Kin's own review of an outsider's: nothing the model writes reaches a chat, so no reply can
+    // become a question either. One someone asked for answers them.
+    const outside = yield* outsideReview(input);
+    if (outside !== undefined && !outside.asked)
       return Option.some<Lane>({
         chatId: KinChatId.make(chatId),
         mode: "notice",

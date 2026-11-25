@@ -782,6 +782,8 @@ export const KinGithubTrigger = Schema.Struct({
       ownersOwn: Schema.Boolean,
       /** The head commit Kin read; a review someone asked for is posted against it. */
       headSha: Schema.optional(Schema.String),
+      /** The base commit when Kin read it: the diff is read from it, so every read is the same. */
+      baseSha: Schema.optional(Schema.String),
       /** For an outside PR, whose turn gets no shell: the diff as the server read it, clipped. */
       diff: Schema.optional(Schema.String),
       /**

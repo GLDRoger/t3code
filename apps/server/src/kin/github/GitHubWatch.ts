@@ -27,6 +27,7 @@ import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
 import { KinServer } from "../KinServer.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { ENGINEERING_DOMAIN, liveLead } from "../lead/orgLeads.ts";
+import { SILENT_REPLY } from "../reply/classify.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { githubClosed } from "../work/githubEntries.ts";
 import { agentPostKeys, agentPostLines, signed } from "./agentMark.ts";
@@ -103,6 +104,8 @@ export interface ApiAnswer {
   readonly headers: Readonly<Record<string, string>>;
   readonly body: unknown;
   readonly text: string;
+  /** gh's output was cut at Kin's limit: the body is only its start. */
+  readonly truncated?: true;
 }
 
 const parseJson = (text: string): { readonly ok: boolean; readonly value: unknown } => {
@@ -184,7 +187,8 @@ export const ghApiLayer = Layer.effect(
           args,
           request.body === undefined ? undefined : toJson(request.body),
         );
-        return parseGhApi(run.out);
+        const answer = parseGhApi(run.out);
+        return run.truncated === true ? { ...answer, truncated: true as const } : answer;
       }),
     });
   }),
@@ -252,7 +256,7 @@ const Pull = Schema.Struct({
     sha: Schema.String,
     repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })),
   }),
-  base: Schema.Struct({ ref: Schema.String }),
+  base: Schema.Struct({ ref: Schema.String, sha: Schema.optional(Schema.String) }),
   updated_at: Schema.optional(Schema.String),
   additions: Schema.optional(Schema.Int),
   deletions: Schema.optional(Schema.Int),
@@ -392,6 +396,7 @@ export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
               headRef: facts.head.ref,
               baseRef: facts.base.ref,
               headSha: facts.head.sha,
+              ...(facts.base.sha === undefined ? {} : { baseSha: facts.base.sha }),
               fork: (facts.head.repo?.full_name ?? "").toLowerCase() !== thread.repo.toLowerCase(),
               ...(facts.updated_at === undefined ? {} : { updatedAt: parsed(facts.updated_at) }),
             },
@@ -466,6 +471,7 @@ const triggerFacts = (
           deletions: thread.pull.deletions,
           headRef: thread.pull.headRef,
           baseRef: thread.pull.baseRef,
+          ...(thread.pull.baseSha === undefined ? {} : { baseSha: thread.pull.baseSha }),
           fork: thread.pull.fork,
           ownersOwn: thread.author.toLowerCase() === ownerLogin.toLowerCase(),
           headSha: thread.pull.headSha,
@@ -476,37 +482,50 @@ const triggerFacts = (
   ...(trigger.kind === "checks" ? { failing: trigger.text.split(", ") } : {}),
 });
 
-/** A PR's whole diff as GitHub gives it; at `at`, from that base to that head. */
+/**
+ * A PR's diff as GitHub gives it, from `base` (a commit, so every read compares the same) to that
+ * head; `partial` when GitHub's answer ran past what Kin keeps of it.
+ */
 export const wholeDiff = (
   get: (path: string, headers?: Record<string, string>) => Effect.Effect<ApiAnswer>,
   repo: string,
-  number: number,
-  at?: { readonly baseRef: string; readonly headSha: string },
+  at: { readonly base: string; readonly headSha: string },
 ) =>
-  get(
-    at === undefined
-      ? `repos/${repo}/pulls/${number}`
-      : `repos/${repo}/compare/${encodeURIComponent(at.baseRef)}...${at.headSha}`,
-    { Accept: "application/vnd.github.diff" },
-  ).pipe(Effect.map((answer) => (answer.status === 200 ? answer.text : undefined)));
+  get(`repos/${repo}/compare/${encodeURIComponent(at.base)}...${at.headSha}`, {
+    Accept: "application/vnd.github.diff",
+  }).pipe(
+    Effect.map((answer) =>
+      answer.status === 200 ? { text: answer.text, partial: answer.truncated === true } : undefined,
+    ),
+  );
+
+/** Where a piece of `text` read up to `at` ends: never between the two halves of one character. */
+export const pieceEnd = (text: string, at: number) =>
+  at > 0 && at < text.length && /[\uD800-\uDBFF]/.test(text[at - 1]!) ? at - 1 : at;
 
 /** Where a diff a turn reads goes on past its prompt: `kin_github_diff` reads on from there. */
 export const diffGoesOn = (rest: number, from: number) =>
   `…[the diff goes on for ${rest} more characters: read them with kin_github_diff, from ${from}]`;
+/** Where Kin's read of a diff stopped short of its end. */
+export const DIFF_CUT_SHORT =
+  "…[GitHub's answer stopped here, so Kin couldn't read the rest of this diff: your review is partial]";
 
 /** A PR's diff as the server reads it for a turn with no shell, its first `DIFF_CAP` characters. */
 export const readDiff = (
   get: (path: string, headers?: Record<string, string>) => Effect.Effect<ApiAnswer>,
   repo: string,
-  number: number,
-  at?: { readonly baseRef: string; readonly headSha: string },
+  at: { readonly base: string; readonly headSha: string },
 ) =>
-  wholeDiff(get, repo, number, at).pipe(
-    Effect.map((text) =>
-      text === undefined || text.length <= DIFF_CAP
-        ? text
-        : `${text.slice(0, DIFF_CAP)}\n${diffGoesOn(text.length - DIFF_CAP, DIFF_CAP)}`,
-    ),
+  wholeDiff(get, repo, at).pipe(
+    Effect.map((read) => {
+      if (read === undefined) return undefined;
+      const { text, partial } = read;
+      if (text.length > DIFF_CAP) {
+        const cut = pieceEnd(text, DIFF_CAP);
+        return `${text.slice(0, cut)}\n${diffGoesOn(text.length - cut, cut)}`;
+      }
+      return partial ? `${text}\n${DIFF_CUT_SHORT}` : text;
+    }),
   );
 
 /** The head a first review (`review:<repo>#<n>`) read, kept under that head's own key. */
@@ -1093,7 +1112,7 @@ export const make = Effect.gen(function* () {
     from: string,
   ) {
     if (thread.pull === undefined) return null;
-    const { headSha, baseRef } = thread.pull;
+    const { headSha, baseRef, baseSha } = thread.pull;
     // A three-dot compare is from where the heads meet: what changed since only when the new
     // head builds on the reviewed one.
     const range = yield* get(`repos/${thread.repo}/compare/${from}...${headSha}`);
@@ -1101,10 +1120,10 @@ export const make = Effect.gen(function* () {
       range.status === 200 &&
       Option.exists(decodeCompare(range.body), (found) => found.status === "ahead");
     const since = ahead
-      ? yield* readDiff(get, thread.repo, thread.number, { baseRef: from, headSha })
+      ? yield* readDiff(get, thread.repo, { base: from, headSha })
       : undefined;
     if (since !== undefined) return { diff: since, reReview: { from, whole: false } };
-    const whole = yield* readDiff(get, thread.repo, thread.number, { baseRef, headSha });
+    const whole = yield* readDiff(get, thread.repo, { base: baseSha ?? baseRef, headSha });
     return whole === undefined ? null : { diff: whole, reReview: { from, whole: true } };
   });
 
@@ -1275,8 +1294,11 @@ export const make = Effect.gen(function* () {
       const diff =
         moved !== undefined
           ? moved.diff
-          : !trigger.inside && current.item === "pull"
-            ? yield* readDiff(get, current.repo, current.number)
+          : !trigger.inside && current.pull !== undefined
+            ? yield* readDiff(get, current.repo, {
+                base: current.pull.baseSha ?? current.pull.baseRef,
+                headSha: current.pull.headSha,
+              })
             : undefined;
       const outcome = yield* handle({
         orgId,
@@ -1710,20 +1732,31 @@ export const sendReview = Effect.fn("KinGitHubWatch.sendReview")(function* (
   });
 });
 
-/** What `kin_github_review` answers for a review GitHub took. */
+/**
+ * What `kin_github_review` answers for a review GitHub took. A review someone asked for is told to
+ * them in their chat (`askedFor.ts`); Kin's own review of one pull request (`boundReview`) tells the
+ * owner only of a block, as its turn's closing line says (`eventPrompt.ts`).
+ */
 export const postedResult = (
   sent: Extract<Sent, { _tag: "posted" }>,
-  /** A review someone asked for is told to them, in their chat (`askedFor.ts`). */
-  asked = false,
-) => ({
-  status: "posted" as const,
-  url: sent.url,
-  next: asked
-    ? `Posted on the PR${sent.asOwner ? " as the owner: Kin's GitHub App can't write there" : ""}. Tell the person who asked, in one or two sentences, what it found, with the link.`
-    : sent.asOwner
-      ? "Posted on the PR as the owner: Kin's GitHub App can't write there. Tell the owner in one line with the link, and that it went out as him."
-      : "Posted on the PR. Tell the owner in one line with the link.",
-});
+  review?: "asked" | "kins" | "outside",
+) => {
+  const asOwner = sent.asOwner ? " as the owner: Kin's GitHub App can't write there" : "";
+  return {
+    status: "posted" as const,
+    url: sent.url,
+    next:
+      review === "asked"
+        ? `Posted on the PR${asOwner}. Tell the person who asked, in one or two sentences, what it found, with the link.`
+        : review === "kins"
+          ? `Posted on the PR${asOwner}. If nothing in it blocks, write exactly ${SILENT_REPLY}; if it blocks, tell the owner in the one sentence your instructions shape, with the link.`
+          : review === "outside"
+            ? "Posted on the PR as a comment. Kin tells the owner itself if it blocks; write nothing more."
+            : sent.asOwner
+              ? "Posted on the PR as the owner: Kin's GitHub App can't write there. Tell the owner in one line with the link, and that it went out as him."
+              : "Posted on the PR. Tell the owner in one line with the link.",
+  };
+};
 
 /**
  * `kin_github_review` with the owner's GitHub connected: posted at once on the company's repos and

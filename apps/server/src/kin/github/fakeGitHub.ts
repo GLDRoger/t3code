@@ -77,6 +77,10 @@ export interface FakeItem {
   labels: string[];
   head_ref: string;
   head_sha: string;
+  /** The base branch's commit; a compare from it reads the PR as it was opened. */
+  base_sha: string;
+  /** What a compare from the base branch by name gives once that branch moved on (`moveBase`). */
+  baseMoved?: string;
   fork: boolean;
   additions: number;
   deletions: number;
@@ -298,6 +302,7 @@ export class FakeGitHub {
       labelEvents: (input.labels ?? []).map((label) => ({ label, actor: input.author })),
       head_ref: input.headRef ?? `change-${number}`,
       head_sha: `sha${this.next()}`,
+      base_sha: `base${number}`,
       fork: input.fork ?? false,
       additions: 12,
       deletions: 3,
@@ -370,6 +375,15 @@ export class FakeGitHub {
   close(input: { repo: string; number: number; actor: string }) {
     this.item(input.repo, input.number).state = "closed";
     this.happened(input.repo, input.number, input.actor, "PullRequestEvent");
+  }
+  /**
+   * The base branch moves on (a merge into it): a compare from the branch by name now gives
+   * `diff`, one from the commit the PR had as its base still gives the PR's own.
+   */
+  moveBase(input: { repo: string; number: number; diff: string }) {
+    const item = this.item(input.repo, input.number);
+    item.base_sha = `${item.base_sha}-moved`;
+    item.baseMoved = input.diff;
   }
   /** New commits on a PR's branch: GitHub sends no notification, but the PR's `updated_at` moves. */
   push(input: { repo: string; number: number; diff?: string; force?: boolean }) {
@@ -1050,7 +1064,7 @@ export class FakeGitHub {
             ahead_by: Math.max(0, pushes.length - since),
             behind_by: forced ? 1 : 0,
           });
-        if (!known) return ok(item.diff);
+        if (!known) return ok(base === "main" ? (item.baseMoved ?? item.diff) : item.diff);
         if (forced) return ok(pushes.findLast((push) => push.force === true)!.diff);
         return ok(
           pushes
@@ -1081,7 +1095,7 @@ export class FakeGitHub {
       if (method === "GET" && (found = /^pulls\/(\d+)$/.exec(rest))) {
         const item = this.item(repo, Number(found[1]));
         if (!item.pull) return missing;
-        if ((headers.accept ?? "").includes("diff")) return ok(item.diff);
+        if ((headers.accept ?? "").includes("diff")) return ok(item.baseMoved ?? item.diff);
         const etag = `"p${item.updated_at ?? item.created_at}-${item.head_sha}-${item.state}"`;
         if (headers["if-none-match"] === etag)
           return { status: 304, headers: { etag }, body: null };
@@ -1095,7 +1109,7 @@ export class FakeGitHub {
               sha: item.head_sha,
               repo: { full_name: item.fork ? `someone/${repo.split("/")[1]}` : repo },
             },
-            base: { ref: "main" },
+            base: { ref: "main", sha: item.base_sha },
             additions: item.additions,
             deletions: item.deletions,
             changed_files: item.changed_files,

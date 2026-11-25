@@ -35,6 +35,7 @@ import {
   sendReview,
   DIFF_CAP,
   readDiff,
+  pieceEnd,
   wholeDiff,
   readThread,
   reclaimable,
@@ -100,7 +101,6 @@ export const POST_REFUSAL = {
   other: (ref: string) =>
     `This turn reviews only ${ref}, the pull request someone asked for. Nothing was posted.`,
   only: (ref: string) => `This turn reviews only ${ref}. Nothing was posted.`,
-  comment: "This review posts as a comment only: event COMMENT. Nothing was posted.",
   again: (ref: string) => `The review of ${ref} is already posted. Nothing more was posted.`,
   unsure: (ref: string) =>
     `A review of ${ref} was sent and GitHub never said whether it took it, so Kin sends no other. Nothing was posted.`,
@@ -339,8 +339,8 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
       continue;
     }
     // This turn has no shell: the server reads the diff of the head it admits.
-    const diff = yield* readDiff(get, thread.repo, thread.number, {
-      baseRef: pull.baseRef,
+    const diff = yield* readDiff(get, thread.repo, {
+      base: pull.baseSha ?? pull.baseRef,
       headSha: pull.headSha,
     });
     if (diff === undefined) {
@@ -404,9 +404,16 @@ export const DIFF_REFUSAL = {
     "kin_github_diff reads only the pull request a review turn is for; read any other with gh. Nothing was read.",
   unread: "Kin couldn't read that pull request's changes just now. Nothing was read.",
 } as const;
+/** How `kin_github_diff` ends: the diff's end, or as far as GitHub's answer went. */
+export const DIFF_NEXT = {
+  end: "That is the end of the diff.",
+  partial:
+    "That is as far as Kin could read: GitHub's answer stopped there, so the rest of the diff stays unread and your review is partial.",
+} as const;
 const decodeRange = Schema.decodeUnknownOption(
   Schema.Struct({
     baseRef: Schema.String,
+    baseSha: Schema.NullOr(Schema.String),
     from: Schema.NullOr(Schema.String),
     whole: Schema.NullOr(Schema.Number),
   }),
@@ -425,30 +432,32 @@ export const readReviewDiff = Effect.fn("KinGitHubReviewAsk.diff")(function* (
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{
     baseRef: string;
+    baseSha: string | null;
     from: string | null;
     whole: number | null;
   }>`SELECT json_extract(json, '$.trigger.pull.baseRef') AS "baseRef",
+      json_extract(json, '$.trigger.pull.baseSha') AS "baseSha",
       json_extract(json, '$.trigger.pull.reReview.from') AS "from",
       json_extract(json, '$.trigger.pull.reReview.whole') AS whole
     FROM kin_events WHERE org_id = ${lead.orgId} AND event_id = ${bound.eventId}`;
   const range = decodeRange(row);
   if (Option.isNone(range)) return yield* refuse(DIFF_REFUSAL.unread);
   const api = yield* KinGitHubApi;
-  const text = yield* wholeDiff(
+  const read = yield* wholeDiff(
     (path, headers) => api.call({ path, ...(headers === undefined ? {} : { headers }) }),
     bound.repo,
-    bound.number,
     {
-      baseRef:
+      base:
         range.value.from !== null && range.value.whole !== 1
           ? range.value.from
-          : range.value.baseRef,
+          : (range.value.baseSha ?? range.value.baseRef),
       headSha: bound.head,
     },
   );
-  if (text === undefined) return yield* refuse(DIFF_REFUSAL.unread);
+  if (read === undefined) return yield* refuse(DIFF_REFUSAL.unread);
+  const { text, partial } = read;
   const from = Math.min(input.from ?? 0, text.length);
-  const to = Math.min(text.length, from + DIFF_CAP);
+  const to = pieceEnd(text, Math.min(text.length, from + DIFF_CAP));
   return {
     diff: text.slice(from, to),
     from,
@@ -457,7 +466,9 @@ export const readReviewDiff = Effect.fn("KinGitHubReviewAsk.diff")(function* (
     next:
       to < text.length
         ? `More follows: call again with from ${to}.`
-        : "That is the end of the diff.",
+        : partial
+          ? DIFF_NEXT.partial
+          : DIFF_NEXT.end,
   };
 });
 
@@ -485,8 +496,6 @@ export const postReview = Effect.fn("KinGitHubReviewAsk.post")(function* (
       : bound.outside
         ? yield* refuse(POST_REFUSAL.only(ref))
         : yield* ownerGitHubReview(lead, input);
-  if (bound.outside && (input.event ?? "COMMENT") !== "COMMENT")
-    return yield* refuse(POST_REFUSAL.comment);
   const receipt = receiptOf(bound.url);
   if (receipt._tag !== "none")
     return yield* refuse(
@@ -518,8 +527,13 @@ export const postReview = Effect.fn("KinGitHubReviewAsk.post")(function* (
         AND trigger_key = ${blocksKey(bound.key)}`,
     ),
   );
-  // Nothing left this server before a failure here: the head is given back.
-  const sent = yield* sendReview(lead, input, bound.head).pipe(Effect.tapError(() => giveBack));
+  // Nothing left this server before a failure here: the head is given back. An outsider's pull
+  // request gets a comment only; whether it blocks is kept above, for the owner.
+  const sent = yield* sendReview(
+    lead,
+    bound.outside ? { ...input, event: "COMMENT" } : input,
+    bound.head,
+  ).pipe(Effect.tapError(() => giveBack));
   if (sent === undefined) {
     yield* giveBack;
     return undefined;
@@ -528,7 +542,7 @@ export const postReview = Effect.fn("KinGitHubReviewAsk.post")(function* (
     case "posted":
       yield* sql`UPDATE kin_github_handled SET review_url = ${sent.url}
         WHERE org_id = ${lead.orgId} AND trigger_key = ${bound.key}`;
-      return postedResult(sent, bound.asked);
+      return postedResult(sent, bound.asked ? "asked" : bound.outside ? "outside" : "kins");
     case "refused":
       yield* giveBack;
       return yield* new KinChatError({ reason: sent.reason, message: sent.message });

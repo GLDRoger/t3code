@@ -47,6 +47,11 @@ const CODE_LIFETIME_MS = 15 * 60_000;
 const SIGN_IN_LIMIT = "16 minutes";
 const ACCOUNT_TTL_MS = 60_000;
 const MAX_OUTPUT = 512 * 1024;
+/** What Kin keeps of one run's output, and whether it was cut. */
+export const cappedOutput = (out: string) =>
+  out.length > MAX_OUTPUT
+    ? { out: out.slice(0, MAX_OUTPUT), truncated: true as const }
+    : { out };
 const LOGIN_ARGS = ["auth", "login", "--hostname", HOST, "--git-protocol", "https"];
 /** `workflow` lets agents change CI files too; gh adds `repo`, `read:org` and `gist`. */
 const DEVICE_ARGS = [...LOGIN_ARGS, "--web", "--scopes", "workflow"];
@@ -133,7 +138,12 @@ export class KinGitHubLogin extends Context.Service<
     readonly gh: (
       args: ReadonlyArray<string>,
       stdin?: string,
-    ) => Effect.Effect<{ readonly code: number; readonly out: string }>;
+    ) => Effect.Effect<{
+      readonly code: number;
+      readonly out: string;
+      /** The output ran past what Kin keeps of one run, and was cut there. */
+      readonly truncated?: true;
+    }>;
   }
 >()("t3/kin/connections/GitHubLogin/KinGitHubLogin") {}
 
@@ -201,7 +211,7 @@ export const make = Effect.fn("KinGitHubLogin.make")(function* (
           [handle.all.pipe(Stream.decodeText(), Stream.mkString), handle.exitCode],
           { concurrency: 2 },
         );
-        return { code: Number(code), out: out.slice(0, MAX_OUTPUT) };
+        return { code: Number(code), ...cappedOutput(out) };
       }),
     ).pipe(
       Effect.timeout("1 minute"),

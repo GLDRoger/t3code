@@ -25,6 +25,10 @@ const PARTIAL =
 /** Where a server-read diff stops, the turn reads on with `kin_github_diff` (`reviewAsk.ts`). */
 const READ_ON = "Where the diff below stops, read the rest with kin_github_diff before you post.";
 
+/** An asked review's closing line: its reply goes to the asker's chat (`replyLane.ts`). */
+const ASKED_REPLY =
+  "Your reply goes to the person who asked, in their own chat with you: at most two sentences, under 300 characters, on what the review found, ending with the review's link from kin_github_review. Kin tells them itself whether it was posted, and tells the owner when it blocks. The details are on GitHub; don't repeat them. No card and no question.";
+
 const OWNERS_OWN = (trigger: KinGithubTrigger) =>
   trigger.pull?.ownersOwn === true
     ? "The owner's own account opened this PR, so GitHub allows only a comment review on it."
@@ -86,7 +90,7 @@ const OUTSIDE = (trigger: KinGithubTrigger) =>
 
 /**
  * A review of a pull request by someone who can't write to its repo: what that seat can do and
- * nothing else. Its one tool posts a comment there once; Kin tells the owner from the receipt.
+ * nothing else. Its review posts there once as a comment; Kin tells the owner from the receipt.
  */
 const SEAT = (repo: string, trigger: KinGithubTrigger, askedBy: string | undefined) => {
   const head = short(trigger.pull?.headSha);
@@ -111,8 +115,10 @@ const SEAT = (repo: string, trigger: KinGithubTrigger, askedBy: string | undefin
     'Lead with a bug, lost data, a security hole, a broken build or test, or code that does something other than the PR says. Anything else is a nit: mark it "nit", say it once and briefly, or leave it out.',
     REVIEW_SPECIFIC,
     PARTIAL,
-    `Your tools are kin_github_diff and kin_github_review: post once, on this pull request, event COMMENT; Kin places it on head ${head}. The review is public, so write only about this pull request.`,
-    "Kin tells the owner itself whether the review posted; nothing else you write goes anywhere.",
+    `Your tools are kin_github_diff and kin_github_review: post once, on this pull request, event COMMENT, or REQUEST_CHANGES when something in it blocks; Kin posts it on GitHub as a comment either way, on head ${head}. The review is public, so write only about this pull request.`,
+    askedBy === undefined
+      ? "Kin tells the owner itself when the review blocks or didn't post; nothing else you write goes anywhere."
+      : ASKED_REPLY,
   ].filter((line) => line !== "");
 };
 
@@ -142,7 +148,7 @@ export const githubTriggerText = (
     "Stop and ask the owner in chat instead when the work would delete data or history, force-push, touch secrets, billing or repo settings, or post outside the company's repos.",
     `Don't repeat yourself: if you already answered this in the thread and nothing changed, post nothing on GitHub.`,
     askedBy !== undefined
-      ? "Your reply goes to the person who asked, in their own chat with you: at most two sentences, under 300 characters, on what the review found, ending with the review's link from kin_github_review. Kin tells them itself whether it was posted, and tells the owner when it blocks. The details are on GitHub; don't repeat them. No card and no question."
+      ? ASKED_REPLY
       : trigger.kind === "review" || trigger.kind === "review_request"
         ? `A review that blocks nothing tells no one in chat: write exactly ${silent}. The owner hears only of a block, or of what the owner's standing rules ask of the owner on this PR: one sentence to the owner's chat, under 200 characters, carrying the PR's title and number, whose it is, what is wrong and what the owner should do, shaped like: \"Fix login\" (#12), Dev's, logs everyone out on refresh: hold the merge. Already merged, the same sentence says so: \"Fix login\" (#12), Dev's, merged, logs everyone out on refresh, and that is on ${trigger.pull?.baseRef ?? "the branch it was merged into"} now: it needs a fix. End with the link (${trigger.url}). No card.`
         : `Your reply goes to the owner's chat as one line: one sentence, under 200 characters, saying what you did and ending with the link (${trigger.url}). The details are on GitHub; don't repeat them. No card, and no question unless you stopped to ask him. A task you started is news to him; only when you did nothing new, write exactly ${silent}.`,
