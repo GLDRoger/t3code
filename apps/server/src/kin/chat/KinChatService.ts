@@ -1177,10 +1177,15 @@ const make = Effect.gen(function* () {
         AND EXISTS (SELECT 1 FROM kin_events e JOIN kin_messages m ON m.org_id = e.org_id
           AND m.message_id = json_extract(e.json, '$.messageId')
           WHERE e.org_id = w.org_id AND e.agent_id = ${agentId} AND e.wakeup_id = ${wakeupId}
-            AND e.tag = 'chat.message' AND json_extract(e.json, '$.origin') IS NULL
-            AND m.chat_id = w.chat_id AND m.seq > r.seq AND m.kind = 'text'
+            AND json_extract(e.json, '$.origin') IS NULL
+            AND m.chat_id = w.chat_id AND m.seq > r.seq
             AND m.status = 'posted' AND m.author_kind = 'human' AND m.author_person_id = w.person_id
-            AND m.origin_json IS NULL AND trim(m.body) <> ''
+            AND m.origin_json IS NULL
+            AND ((e.tag = 'chat.message' AND m.kind = 'text' AND trim(m.body) <> '')
+              OR (e.tag = 'widget.action' AND m.kind = 'widget_action'
+                AND json_extract(e.json, '$.chatId') = m.chat_id
+                AND EXISTS (SELECT 1 FROM kin_widgets card WHERE card.org_id = m.org_id
+                  AND card.widget_id = m.widget_id AND card.chat_id = w.chat_id)))
             AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
             AND NOT EXISTS (SELECT 1 FROM kin_handoffs h WHERE h.org_id = m.org_id
               AND m.client_message_id = ${Repository.storedClientId("send", "")} || h.message_id))
