@@ -807,7 +807,7 @@ export const UpdateResult = Schema.Struct({
 
 const Why = KinToolText(
   200,
-  'One line on why them, from what people_read shows, such as "iOS, 2 open, free Thursday". Kin shows it on the task and tells them.',
+  'One line on why them, from what people_read shows, such as "iOS, 2 open, free Thursday". Kin shows it on the task and tells them, so it reads right to them and anyone opening the task: never their name and a colon, never about them in the third person.',
 );
 export const AssignInput = Schema.Struct({
   sourceEventId: TurnEvent,
