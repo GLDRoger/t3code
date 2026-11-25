@@ -57,6 +57,7 @@ import { gatherFacts, jobSensitive } from "./facts.ts";
 import { codingAgentSource } from "../lead/OutsideContent.ts";
 import * as LeadDocuments from "./leadDocuments.ts";
 import { answerReceiptCard } from "./receiptProposals.ts";
+import { createsMoney, recordReceipt } from "./receipts.ts";
 import { assembleInputs, needsEntry, parseRecipe } from "./recipe.ts";
 import { labelChange } from "./recipeLabels.ts";
 import { checkReferences } from "./references.ts";
@@ -2540,6 +2541,57 @@ describe("receipts", () => {
         );
         yield* answerCard(`kin-receipt:${onInvoice.proposal}`, "yes");
         assert.deepStrictEqual(yield* invoicePaid, [{ minor: 400_00 }, { minor: 500_00 }]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "never let an agent's direct receipt move money that appeared after it was judged to move none",
+    () =>
+      Effect.gen(function* () {
+        const asked = yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const owner = {
+          actor: { _tag: "person" as const, personId: ownerId },
+          via: "owner" as const,
+        };
+        const agent = { actor: { _tag: "agent" as const, agentId: lead }, via: "lead" as const };
+        const [client] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+          WHERE org_id = ${orgId} AND register_id = 'clients'`;
+        const ownerAdvance = (originKey: string) =>
+          recordReceipt({
+            orgId,
+            writer: owner,
+            advance: {
+              client: client!.key,
+              amount: { minor: 500_00, currency: "INR" },
+              receivedOn: "2026-11-05",
+              originKey,
+            },
+            extras: {},
+          });
+        const onInvoice = sql<{ minor: number }>`SELECT p.amount_minor AS minor
+          FROM kin_record_payments p JOIN kin_records r ON r.record_id = p.record_id
+          WHERE r.key = 'INV-1' AND p.voided_at IS NULL`;
+        // Judged first, while the entry is not there: it creates no money, so the direct path
+        // runs. The owner's advance lands in between; the agent's write moves none of it.
+        const first = { key: "RCT-1", against: "INV-1" };
+        assert.isFalse(yield* createsMoney(orgId, first));
+        const made = yield* ownerAdvance("owner:advance:1");
+        assert.strictEqual(made.key, first.key);
+        const raced = yield* Effect.flip(
+          recordReceipt({ orgId, writer: agent, ...first, extras: {}, receiptOnly: true }),
+        );
+        assert.match(raced.message, /nothing was made or recorded/);
+        assert.deepStrictEqual(yield* onInvoice, []);
+        // The other order: the advance is there first, so the agent's ask is a card, no write.
+        const second = yield* ownerAdvance("owner:advance:2");
+        const result = yield* LeadDocuments.receipt(scope, {
+          sourceEventId: asked,
+          entry: KinRecordKey.make(second.key),
+          against: KinRecordKey.make("INV-1"),
+        });
+        assert.strictEqual(result.status, "proposed");
+        assert.deepStrictEqual(yield* onInvoice, []);
       }).pipe(Effect.provide(layer)),
   );
 

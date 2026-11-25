@@ -636,6 +636,7 @@ export const receipt = leadTool("KinDocuments.receipt", (lead, input: typeof Rec
             },
       against: request.against,
       extras: { towards: request.towards, mode: request.mode, reference: request.reference },
+      receiptOnly: true,
       admit: stillAdmitted(lead, "kin_receipt", input),
     });
     for (const written of made.made?.written ?? []) yield* shown(lead, written, true);

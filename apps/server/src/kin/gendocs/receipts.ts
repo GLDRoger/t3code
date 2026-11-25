@@ -337,6 +337,7 @@ const backed = Effect.fn("KinReceipts.backed")(function* (
   orgId: KinOrgId,
   writer: Writer,
   key: string,
+  receiptOnly: boolean,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
@@ -361,6 +362,7 @@ const backed = Effect.fn("KinReceipts.backed")(function* (
     return yield* invalid(
       `${receipt.key} has no amount or day received, so it can't be recorded as money received. Set both, then ask again. Nothing was numbered.`,
     );
+  if (receiptOnly) return yield* invalid(MOVED_SINCE);
   const amount = { minor: receipt.amountMinor, currency: receipt.currency };
   const paidOn = dayIn(receipt.dateAt, yield* ownerZone(orgId));
   const [count] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_record_payments
@@ -441,7 +443,7 @@ const forAdvance = Effect.fn("KinReceipts.forAdvance")(function* (
       ...(extras.reference === undefined ? {} : { reference: extras.reference }),
     },
   });
-  if (back) yield* backed(orgId, writer, row.key);
+  if (back) yield* backed(orgId, writer, row.key, false);
   return yield* settle(orgId, writer, row.key, undefined);
 });
 
@@ -451,9 +453,10 @@ const forEntry = Effect.fn("KinReceipts.forEntry")(function* (
   writer: Writer,
   key: string,
   back: boolean,
+  receiptOnly: boolean,
 ) {
   yield* receiptsList(orgId);
-  if (back) yield* backed(orgId, writer, key);
+  if (back) yield* backed(orgId, writer, key, receiptOnly);
   return yield* settle(orgId, writer, key, undefined);
 });
 
@@ -468,6 +471,7 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
   writer: Writer,
   receiptKey: string,
   invoiceKey: string,
+  receiptOnly: boolean,
 ) {
   const records = yield* KinRecords;
   const receipt = yield* records.get(orgId, receiptKey);
@@ -524,6 +528,7 @@ const setAgainst = Effect.fn("KinReceipts.setAgainst")(function* (
         `${invoice.key} has ${formatMoney(owed)} left to pay, less than the ${formatMoney(advance)} advance ${receipt.key}. Nothing changed.`,
       );
   }
+  if (receiptOnly) return yield* invalid(MOVED_SINCE);
   const number = (yield* Numbers.issuedNumber(orgId, receipt.recordId)) ?? receipt.key;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
@@ -571,7 +576,13 @@ type ReceiptAsk = {
     | undefined;
   readonly against?: string | undefined;
   readonly extras: Extras;
+  /** An agent's own write: a receipt on money already recorded where it is, moving none. */
+  readonly receiptOnly?: boolean | undefined;
 };
+
+/** An agent's receipt judged to move no money finds that it would, in its own transaction. */
+const MOVED_SINCE =
+  "What this receipt stands on changed while Kin was making it, so nothing was made or recorded. Call kin_receipt again.";
 
 /** The receipt recorded and numbered, on the money it stands on; no PDF yet. */
 export const recordReceipt = Effect.fn("KinReceipts.record")(function* (input: ReceiptAsk) {
@@ -583,6 +594,8 @@ export const recordReceipt = Effect.fn("KinReceipts.record")(function* (input: R
   const sql = yield* SqlClient.SqlClient;
   // Numbered and set against an invoice together, or neither: never a number on no money.
   const back = input.against === undefined;
+  const receiptOnly = input.receiptOnly === true;
+  if (receiptOnly && input.advance !== undefined) return yield* invalid(MOVED_SINCE);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const numbered =
@@ -590,9 +603,9 @@ export const recordReceipt = Effect.fn("KinReceipts.record")(function* (input: R
           ? yield* forPayment(input.orgId, input.writer, input.paymentId, input.extras)
           : input.advance !== undefined
             ? yield* forAdvance(input.orgId, input.writer, input.advance, input.extras, back)
-            : yield* forEntry(input.orgId, input.writer, input.key!, back);
+            : yield* forEntry(input.orgId, input.writer, input.key!, back, receiptOnly);
       if (input.against !== undefined)
-        yield* setAgainst(input.orgId, input.writer, numbered.key, input.against);
+        yield* setAgainst(input.orgId, input.writer, numbered.key, input.against, receiptOnly);
       return numbered;
     }),
   );
