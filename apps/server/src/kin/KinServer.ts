@@ -43,7 +43,10 @@ import type { KinShell } from "./shell/KinShell.ts";
 
 import type { KinNumbers } from "./numbers/KinNumbers.ts";
 
+import type { KinFollowUpItems } from "./watches/followUps.ts";
+
 export type Services =
+  | KinFollowUpItems
   | KinNumbers
   | KinShell
   | KinIdentity

@@ -695,6 +695,7 @@ const reach: Readonly<Record<string, ReadonlyArray<string> | string>> = {
   "kin.host.freeSpace": "stays in the app: 5 (host, company sections and settings)",
   "kin.host.backUpNow": "stays in the app: 5 (host, company sections and settings)",
   "kin.host.retry": "stays in the app: 5 (host, company sections and settings)",
+  "kin.watches.followUps": "not a person action (screens only: What Kin checked)",
   "kin.watches.list": "not a person action (screens only: Kin keeps watch screen)",
   "kin.watches.log": "not a person action (screens only: watch log)",
   "kin.watches.look": "not a person action (screens only: watch detail)",

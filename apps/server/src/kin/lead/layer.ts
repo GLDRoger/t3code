@@ -64,6 +64,7 @@ import { KinBillToolkit } from "../work/mcp/billTools.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import * as ArrivalFeed from "../arrivals/ArrivalFeed.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
+import * as FollowUps from "../watches/followUps.ts";
 import * as KinWatchRounds from "../watches/KinWatchRounds.ts";
 import * as KinRecommend from "../recommend/KinRecommend.ts";
 import { handlers as pulseHandlers, KinPulseToolkit } from "../pulse/mcp.ts";
@@ -324,7 +325,8 @@ const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
     ),
     Layer.provide(OwnerNotices.layer.pipe(Layer.provide(KinChatRepository.layer))),
     Layer.provide(
-      TriggerService.syncHooksLayer.pipe(
+      FollowUps.rememberSnapshots.pipe(
+        Layer.provide(TriggerService.syncHooksLayer),
         Layer.provide(TriggerService.layer),
         Layer.provide(KinChatRepository.layer),
       ),

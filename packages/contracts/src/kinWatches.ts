@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { IsoDateTime, KinText, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinAgentId, KinChatError, KinOrgId } from "./kinChat.ts";
+import { KinCardAsker, KinDeferralCard, KinMemoryItemId } from "./kinLead.ts";
 import { TimeZone } from "./kinTime.ts";
 
 /**
@@ -177,7 +178,30 @@ export type KinWatchActInput = typeof KinWatchActInput.Type;
 export const KinWatchActResult = Schema.Struct({ watch: KinWatch });
 export type KinWatchActResult = typeof KinWatchActResult.Type;
 
+export const KinWatchesFollowUpsInput = Schema.Struct({ orgId: KinOrgId });
+export type KinWatchesFollowUpsInput = typeof KinWatchesFollowUpsInput.Type;
+
+export const KinFollowUp = Schema.Struct({
+  itemId: Schema.suspend(() => KinMemoryItemId),
+  title: Schema.String,
+  dueAt: IsoDateTime,
+  onDue: Schema.suspend(() => KinDeferralCard.fields.onDue),
+  agent: Schema.NullOr(Schema.Struct({ agentId: KinAgentId, name: KinText })),
+  askedBy: Schema.optional(Schema.suspend(() => KinCardAsker)),
+  held: Schema.optional(
+    Schema.Struct({
+      section: Schema.Literals(["clients", "deals", "money", "invoices", "docs"]),
+      sectionName: KinText,
+    }),
+  ),
+});
+export type KinFollowUp = typeof KinFollowUp.Type;
+
+export const KinWatchesFollowUpsResult = Schema.Struct({ followUps: Schema.Array(KinFollowUp) });
+export type KinWatchesFollowUpsResult = typeof KinWatchesFollowUpsResult.Type;
+
 const KIN_WATCH_WS_METHODS = {
+  followUps: "kin.watches.followUps",
   list: "kin.watches.list",
   log: "kin.watches.log",
   look: "kin.watches.look",
@@ -188,6 +212,11 @@ const KIN_WATCH_WS_METHODS = {
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 
 export const KinWatchRpcs = [
+  Rpc.make(KIN_WATCH_WS_METHODS.followUps, {
+    payload: KinWatchesFollowUpsInput,
+    success: KinWatchesFollowUpsResult,
+    error,
+  }),
   Rpc.make(KIN_WATCH_WS_METHODS.list, {
     payload: KinWatchesListInput,
     success: KinWatchesListResult,
@@ -216,6 +245,7 @@ export const KinWatchRpcs = [
 ] as const;
 
 export const KIN_WATCH_RPC_SCOPES = {
+  [KIN_WATCH_WS_METHODS.followUps]: AuthKinChatScope,
   [KIN_WATCH_WS_METHODS.list]: AuthKinChatScope,
   [KIN_WATCH_WS_METHODS.log]: AuthKinChatScope,
   [KIN_WATCH_WS_METHODS.look]: AuthKinChatScope,

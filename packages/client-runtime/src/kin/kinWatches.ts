@@ -5,6 +5,7 @@ import {
   type EnvironmentId,
   type KinWatchActor,
   type KinWatchDid,
+  type KinWatchesFollowUpsInput,
   type KinWatchesListInput,
   type KinWatchesLogInput,
   type KinWatchLine,
@@ -233,6 +234,12 @@ export function makeKinWatches<R, ER>(
   const readList = guardedRead(
     createKinRpcCommand(runtime, { label: "kin:watches:read", tag: "kin.watches.list" }),
   );
+  const readFollowUps = guardedRead(
+    createKinRpcCommand(runtime, {
+      label: "kin:watches:follow-ups:read",
+      tag: "kin.watches.followUps",
+    }),
+  );
   const readLog = guardedRead(
     createKinRpcCommand(runtime, { label: "kin:watches:log:read", tag: "kin.watches.log" }),
   );
@@ -247,6 +254,15 @@ export function makeKinWatches<R, ER>(
       refreshTrigger: (target: {
         readonly environmentId: EnvironmentId;
         readonly input: KinWatchesListInput;
+      }) => refreshOn("watches")(target),
+    }),
+    followUps: createKinQueryAtomFamily(runtime, {
+      label: "kin:watches:follow-ups",
+      execute: readFollowUps,
+      staleTimeMs: 30_000,
+      refreshTrigger: (target: {
+        readonly environmentId: EnvironmentId;
+        readonly input: KinWatchesFollowUpsInput;
       }) => refreshOn("watches")(target),
     }),
     /** One day of What Kin checked. */

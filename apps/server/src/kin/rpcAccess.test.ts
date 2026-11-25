@@ -107,6 +107,7 @@ const MEMBER = [
   // What Kin keeps watch on: the service shows and acts on only the watches this person may see.
   "kin.watches.again",
   "kin.watches.list",
+  "kin.watches.followUps",
   "kin.watches.log",
   "kin.watches.look",
   "kin.watches.stop",

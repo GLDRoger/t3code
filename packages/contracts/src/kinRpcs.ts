@@ -533,6 +533,7 @@ const KIN_RPC_ACCESS = {
   "kin.host.retry": "owner_level",
   // What Kin keeps watch on: the service shows and acts on only the watches this person may see.
   "kin.watches.list": "person",
+  "kin.watches.followUps": "person",
   "kin.watches.log": "person",
   "kin.watches.look": "person",
   "kin.watches.stop": "person",
@@ -645,6 +646,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.host.backUpNow": "kin-host",
   "kin.host.retry": "kin-host",
   "kin.watches.list": "kin-watches",
+  "kin.watches.followUps": "kin-watches",
   "kin.watches.log": "kin-watches",
   "kin.watches.look": "kin-watches",
   "kin.watches.stop": "kin-watches",
