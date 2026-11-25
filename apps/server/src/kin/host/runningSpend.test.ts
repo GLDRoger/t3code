@@ -150,19 +150,32 @@ it.effect(
           revision, state_json, awaiting_json, updated_at)
         VALUES ('task-card', ${orgId}, 'rhea-finance', 'task-msg', 'native', 'task', 1,
           '{"threadId":"task-thread","status":"working"}', '[]', '2026-11-25T00:00:00.000Z')`;
-      // Its running ledger, not its last 60k request, is what it has used, so "at least" goes.
+      // Its running ledger, not its last 60k request, is what it has used so far, still a floor.
       used.set(ThreadId.make("task-thread"), 60_000);
-      ledgers.set(ThreadId.make("task-thread"), {
-        usageStatus: "partial",
-        usageScope: "main_agent",
+      const running = {
+        usageStatus: "partial" as const,
+        usageScope: "main_agent" as const,
         hasSubagents: false,
         inputTokens: 1_000_000,
         cachedInputTokens: 0,
         outputTokens: 150_000,
+      };
+      ledgers.set(ThreadId.make("task-thread"), running);
+      yield* RunningSpend.check(read);
+      assert.deepStrictEqual((yield* notices).at(-1), {
+        body: "A task Finance started has used a quarter of a usual day's limit in one go\n\nA task Finance started has been running 30 minutes and has used at least 1.6M units so far, past a quarter of a usual day's limit for tasks your agents start (you have set no daily limit). It is still running; Kin hasn't stopped or slowed it. To watch it or stop it, open its card in Finance's chat.",
+        open: 1,
+      });
+      // A complete ledger is the total, so the figure stands without "at least".
+      ledgers.set(ThreadId.make("task-thread"), {
+        ...running,
+        usageStatus: "complete",
+        inputTokens: 4_000_000,
+        outputTokens: 600_000,
       });
       yield* RunningSpend.check(read);
       assert.deepStrictEqual((yield* notices).at(-1), {
-        body: "A task Finance started has used a quarter of a usual day's limit in one go\n\nA task Finance started has been running 30 minutes and has used 1.6M units so far, past a quarter of a usual day's limit for tasks your agents start (you have set no daily limit). It is still running; Kin hasn't stopped or slowed it. To watch it or stop it, open its card in Finance's chat.",
+        body: "A task Finance started has used all of a usual day's limit in one go\n\nA task Finance started has been running 30 minutes and has used 6.4M units so far, past the whole of a usual day's limit for tasks your agents start (you have set no daily limit). It is still running; Kin hasn't stopped or slowed it. To watch it or stop it, open its card in Finance's chat.",
         open: 1,
       });
     }).pipe(Effect.provide(services)),

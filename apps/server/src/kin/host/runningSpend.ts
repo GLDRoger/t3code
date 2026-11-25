@@ -15,7 +15,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { episodeNotice } from "../hostBackup.ts";
-import { fromLedgers, unitsOf, USUAL_LIMITS, type Usage } from "../lead/KinBudget.ts";
+import { fromCompleteLedgers, unitsOf, USUAL_LIMITS, type Usage } from "../lead/KinBudget.ts";
 import { runsFrom } from "../lead/wakeupRuns.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 
@@ -57,7 +57,7 @@ const runningSpendNotice = (input: {
   readonly task: boolean;
   readonly ranMs: number;
   readonly units: number;
-  // A provider turn without a ledger only gave its last request's size.
+  // Short of a complete ledger the figure is a floor: a partial one or a last request's size.
   readonly atLeast: boolean;
   readonly step: (typeof STEPS)[number];
   readonly limitSet: boolean;
@@ -156,7 +156,7 @@ const checkOrg = Effect.fn("KinRunningSpend.checkOrg")(function* (
           task: turn.task,
           ranMs: now - turn.startedAt,
           units,
-          atLeast: !fromLedgers(usage),
+          atLeast: !fromCompleteLedgers(usage),
           step,
           limitSet: limit !== null,
         }),

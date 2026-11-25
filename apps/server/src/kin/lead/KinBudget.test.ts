@@ -236,15 +236,29 @@ describe("KinBudget", () => {
             turnTokenUsage: { ...usage[0]!.turnTokenUsage, usageStatus: "partial" as const },
             // A stopped turn costs what its partial ledger says it used, not its last request.
             units: 55.5,
+            total: false,
           },
-          { id: "missing-fields", usedTokens: 30, turnTokenUsage: undefined, units: 30 },
+          {
+            id: "missing-fields",
+            usedTokens: 30,
+            turnTokenUsage: undefined,
+            units: 30,
+            total: false,
+          },
           {
             id: "unavailable",
             usedTokens: 30,
             turnTokenUsage: { ...usage[0]!.turnTokenUsage, usageStatus: "unavailable" as const },
             units: 30,
+            total: false,
           },
-          { id: "no-usage", usedTokens: undefined, turnTokenUsage: undefined, units: 0 },
+          {
+            id: "no-usage",
+            usedTokens: undefined,
+            turnTokenUsage: undefined,
+            units: 0,
+            total: false,
+          },
           {
             id: "pi-normalized",
             usedTokens: 150,
@@ -254,12 +268,14 @@ describe("KinBudget", () => {
               cachedInputTokens: 100,
             },
             units: 90,
+            total: true,
           },
           {
             id: "clamp",
             usedTokens: undefined,
             turnTokenUsage: { ...usage[0]!.turnTokenUsage, cachedInputTokens: 100 },
             units: 42,
+            total: true,
           },
           {
             id: "other-usage",
@@ -269,12 +285,14 @@ describe("KinBudget", () => {
               otherUsage: { inputTokens: 10, outputTokens: 2 },
             },
             units: 73.5,
+            total: true,
           },
           ...[-1, NaN, Infinity].map((bad, i) => ({
             id: `garbage-${i}`,
             usedTokens: 30,
             turnTokenUsage: { ...usage[0]!.turnTokenUsage, inputTokens: bad },
             units: 30,
+            total: false,
           })),
         ];
         for (const row of cases) {
@@ -289,8 +307,10 @@ describe("KinBudget", () => {
           ];
           const charge = yield* budget.charge({ orgId, wakeupId, usage: turn });
           assert.strictEqual(charge.units, row.units, row.id);
-          // The running-spend notice reads a turn with the formula its charge uses.
+          // The running-spend notice reads a turn with the formula its charge uses, and states it
+          // without "at least" only when a complete ledger gave it.
           assert.strictEqual(Budget.unitsOf(turn), row.units, row.id);
+          assert.strictEqual(Budget.fromCompleteLedgers(turn), row.total, row.id);
           yield* (yield* Queue.KinEventQueue).finish({ orgId, wakeupId, status: "completed" });
           assert.deepStrictEqual(
             yield* sql`SELECT status FROM kin_wakeups WHERE wakeup_id = ${wakeupId}`,
@@ -307,6 +327,8 @@ describe("KinBudget", () => {
             assert.deepStrictEqual(yield* budget.charge({ orgId, wakeupId, usage: [] }), full);
           }
         }
+        // A read that found no provider turn is no total.
+        assert.isFalse(Budget.fromCompleteLedgers([]));
         const spent = yield* budget.get(orgId);
         assert.strictEqual(spent.leadUnits, 411);
         // Lead turns' otherUsage (Claude subagents) is lead spend, never worker units.
