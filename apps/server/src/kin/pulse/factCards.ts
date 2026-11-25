@@ -236,8 +236,9 @@ type NudgeBudget = ReturnType<typeof nudgeBudget>;
  * agent, as holder notices go), opened if needed, its plans sealed in the same transaction. Posts
  * nothing while they are in quiet hours, away or outside their hours (the next pass posts it),
  * nor once a card for this fact and round was posted to them. Returns the card, or undefined.
+ * @public the next card about a fact (a contract's notice day) posts through it.
  */
-const postFactCard = Effect.fn("KinFactCards.post")(function* (input: {
+export const postFactCard = Effect.fn("KinFactCards.post")(function* (input: {
   readonly ctx: SenseContext;
   readonly personId: KinPersonId;
   readonly agentId: KinAgentId;
