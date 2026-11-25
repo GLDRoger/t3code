@@ -678,7 +678,7 @@ it.effect.each<{
       "## Needs you\n- One card waits.\n\n## Money\n- Nothing new came in.\n\n## Coming up\n- M-1 on 5 Dec.",
     ],
     stored: [
-      "## Needs you\n- One card waits.\n\n## Money\n- Nothing new came in.\n- Corran Tiles owes €1,200 on CT/101, 14 days overdue.\n\n## Coming up\n- M-1 on 5 Dec.",
+      "## Needs you\n- One card waits.\n\n## Money\n- Nothing new came in.\n- Corran Tiles owes €1,200 on CT/101, 14 days overdue; no reminder sent through Kin yet.\n\n## Coming up\n- M-1 on 5 Dec.",
     ],
   },
   {
@@ -705,7 +705,7 @@ it.effect.each<{
     overdue: true,
     written: [],
     stored: [
-      `${ReplyBridge.QUIET_PAGE}\n\n## Money\n\n- Corran Tiles owes €1,200 on CT/101, 14 days overdue.`,
+      `${ReplyBridge.QUIET_PAGE}\n\n## Money\n\n- Corran Tiles owes €1,200 on CT/101, 14 days overdue; no reminder sent through Kin yet.`,
     ],
   },
   {
