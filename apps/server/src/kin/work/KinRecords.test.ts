@@ -312,6 +312,22 @@ it.effect("record_create makes many entries in one call and a retry makes none",
     const after = yield* LeadWork.get(scopeOf(lead), { key });
     assert.deepStrictEqual(after.steps, [{ title: "Wireframe", done: true }]);
     assert.notProperty(after, "urgent");
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+      created_at, definition_json)
+      VALUES (${orgId}, 'expenses', 'Expenses', 'EXP', 0, 0, ${JSON.stringify(presetDefinition("expenses", "INR"))})`;
+    const bill = (yield* LeadWork.create(scopeOf(lead), {
+      sourceEventId: "ask-event",
+      records: [
+        {
+          list: "expenses",
+          title: "Acme Hosting",
+          amount: "4500",
+          state: "open",
+          due: "2026-12-05",
+        },
+      ],
+    })).records[0]!;
+    assert.include(bill, { state: "open", suggested: true });
   }).pipe(Effect.provide(layer)),
 );
 
@@ -656,6 +672,107 @@ it.effect("record_update changes only named fields, logs each change, and both o
     yield* turn();
     yield* LeadWork.create(scopeOf(lead), { sourceEventId: "ask-event", records: steps });
     const records = yield* KinRecords.KinRecords;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+      created_at, definition_json)
+      VALUES (${orgId}, 'expenses', 'Expenses', 'EXP', 0, 0, ${JSON.stringify(presetDefinition("expenses", "INR"))})`;
+    const bill = (yield* LeadWork.create(scopeOf(lead), {
+      sourceEventId: "ask-event",
+      records: [
+        {
+          list: "expenses",
+          title: "Acme Hosting",
+          amount: "4500",
+          state: "open",
+          due: "2026-12-05",
+        },
+      ],
+    })).records[0]!;
+    yield* LeadWork.update(scopeOf(lead), {
+      sourceEventId: "ask-event",
+      key: bill.key,
+      confirmed: true,
+    });
+    assert.strictEqual((yield* records.get(orgId, bill.key))?.confirmed, 0);
+    yield* records.update(orgId, { actor: owner, via: "owner" }, bill.key, { confirmed: true });
+    const unchanged = yield* records.get(orgId, bill.key);
+    assert.strictEqual(unchanged?.confirmed, 1);
+    const paid = yield* Effect.result(
+      LeadWork.update(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        key: bill.key,
+        state: "done",
+      }),
+    );
+    assert.strictEqual(paid._tag, "Failure");
+    if (paid._tag === "Failure")
+      assert.include(paid.failure, {
+        reason: "invalid_state",
+        message:
+          "Only the owner or a co-owner marks a bill paid, by a tap. Nothing changed. If a bank debit paid it, offer kin_ask with action mark_bill_paid on that debit's key; else say the owner or a co-owner marks it paid on EXP-1's page in Money.",
+      });
+    assert.deepStrictEqual(yield* records.get(orgId, bill.key), unchanged);
+    const createExpense = (title: string, state: "open" | "done") =>
+      LeadWork.create(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        records: [{ list: "expenses", title, state, amount: "4500" }],
+      }).pipe(Effect.map(({ records }) => records[0]!.key));
+    const suggestedVoid = yield* createExpense("Invented suggested void", "open");
+    const createdPaid = yield* createExpense("Invented paid receipt", "done");
+    const keptVoid = yield* createExpense("Invented kept void", "open");
+    for (const [key, confirmed] of [
+      [bill.key, false],
+      [suggestedVoid, false],
+      [keptVoid, true],
+    ] as const) {
+      yield* LeadWork.update(scopeOf(lead), {
+        sourceEventId: "ask-event",
+        key,
+        state: "dropped",
+        ...(confirmed ? { confirmed } : {}),
+      });
+    }
+    const transitions = [
+      [bill.key, { state: "done" }, { state: "dropped", confirmed: 1 }],
+      [suggestedVoid, { state: "done", confirmed: true }, { state: "dropped", confirmed: 0 }],
+      [createdPaid, { state: "open" }, { state: "done", confirmed: 1 }],
+      [keptVoid, { state: "open" }, { state: "dropped", confirmed: 1 }],
+    ] as const;
+    const outcomes = [];
+    for (const [key, patch, before] of transitions) {
+      const row = yield* records.get(orgId, key);
+      assert.include(row, before);
+      const result = yield* Effect.result(
+        LeadWork.update(scopeOf(lead), { sourceEventId: "ask-event", key, ...patch }),
+      );
+      outcomes.push({
+        key,
+        reason:
+          result._tag === "Success"
+            ? "accepted"
+            : "reason" in result.failure
+              ? result.failure.reason
+              : result.failure._tag,
+        message: result._tag === "Failure" ? result.failure.message : undefined,
+        unchanged: (yield* records.get(orgId, key))?.rev === row?.rev,
+      });
+    }
+    assert.deepStrictEqual(
+      outcomes,
+      transitions.map(([key, patch]) => ({
+        key,
+        reason: "invalid_state",
+        message:
+          patch.state === "done"
+            ? `Only the owner or a co-owner marks a bill paid, by a tap. Nothing changed. If a bank debit paid it, offer kin_ask with action mark_bill_paid on that debit's key; else say the owner or a co-owner marks it paid on ${key}'s page in Money.`
+            : `Only the owner or a co-owner puts a bill back to pay, on ${key}'s page in Money. Nothing changed.`,
+        unchanged: true,
+      })),
+    );
+    for (const [key, patch] of transitions) {
+      const updated = yield* records.update(orgId, { actor: owner, via: "owner" }, key, patch);
+      assert.include(updated, { state: patch.state, confirmed: 1 });
+    }
     const moved = yield* LeadWork.update(scopeOf(lead), {
       key: "W-2",
       sourceEventId: "ask-event",
@@ -742,7 +859,6 @@ it.effect("record_update changes only named fields, logs each change, and both o
     );
     // "Moved to Monday 10:00": a time given for a task lands in its due, which its page shows,
     // and the answer says the date as the page does, in the company's zone.
-    const sql = yield* SqlClient.SqlClient;
     yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Kolkata', '08:30',
         '18:30', '03:00', 0, 1, '09:00', '{"from":"22:00","to":"07:00"}')
       ON CONFLICT (org_id) DO UPDATE SET time_zone = 'Asia/Kolkata'`;

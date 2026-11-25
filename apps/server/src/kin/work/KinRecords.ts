@@ -1917,7 +1917,7 @@ const make = Effect.gen(function* () {
     const key = `${next.prefix}-${next.next}`;
     const approved =
       options.kept === undefined ? yield* approvalKeeps(orgId, writer, list, partyId) : undefined;
-    const kept =
+    const startsConfirmed =
       options.kept ??
       (!unaskedFunding &&
         (approved === undefined ? yield* startsKept(orgId, writer, list, input) : approved.keeps) &&
@@ -1926,7 +1926,7 @@ const make = Effect.gen(function* () {
     // Only Issue makes an invoice owed, with its number; an agent sets none, so it starts a draft.
     // An approval's entry is the owner's Draft whatever state it was given.
     const state =
-      (!kept && ISSUED_LISTS.has(list)) ||
+      (!startsConfirmed && ISSUED_LISTS.has(list)) ||
       (writer.actor._tag === "agent" && list === "invoices") ||
       approved?.keeps === true
         ? "open"
@@ -1940,6 +1940,9 @@ const make = Effect.gen(function* () {
                 ? yield* ownerZone(orgId).pipe(provideSql)
                 : "UTC",
           }));
+    const kept =
+      startsConfirmed &&
+      !(writer.actor._tag === "agent" && list === "expenses" && state === "open");
     if ((yield* markedKey(writer)) !== undefined) {
       const refused = keyRefusal({
         list,
@@ -2764,6 +2767,17 @@ const make = Effect.gen(function* () {
           )
             return yield* invalid("A credit note keeps the invoice it was drafted from.");
         }
+        const agentExpense = writer.actor._tag === "agent" && list === "expenses";
+        if (agentExpense && row.state !== wanted) {
+          if (wanted === "done")
+            return yield* invalid(
+              `Only the owner or a co-owner marks a bill paid, by a tap. Nothing changed. If a bank debit paid it, offer kin_ask with action mark_bill_paid on that debit's key; else say the owner or a co-owner marks it paid on ${row.key}'s page in Money.`,
+            );
+          if (wanted === "open" && !isSuggestion(row))
+            return yield* invalid(
+              `Only the owner or a co-owner puts a bill back to pay, on ${row.key}'s page in Money. Nothing changed.`,
+            );
+        }
         // A turn no person started settles nothing paid over time, and voids or reopens no
         // numbered entry, by its state: the other ways to a payment or a void (`refuseKinOwn`).
         const settles = wanted === "done" && row.takesPayments === 1;
@@ -2809,7 +2823,10 @@ const make = Effect.gen(function* () {
         // Only who may keep one keeps a suggestion, and only an owner-level person takes it back;
         // anyone else's `confirmed` changes nothing, so an agent's slip ack stays only that.
         const keeping =
-          patch.confirmed === true && isSuggestion(row) && (yield* mayKeep(orgId, writer));
+          patch.confirmed === true &&
+          isSuggestion(row) &&
+          (!agentExpense || state === "dropped") &&
+          (yield* mayKeep(orgId, writer));
         const unkeeping =
           patch.confirmed === false &&
           !isSuggestion(row) &&

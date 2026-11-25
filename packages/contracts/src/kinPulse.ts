@@ -62,6 +62,8 @@ const KIN_PULSE_SENSES = [
   "payment_seen",
   "repaid_seen",
   "mail_gap",
+  "bill_due",
+  "bill_paid_seen",
 ] as const;
 /**
  * Senses newer than the first phones: a screen read sends them only to a client that lists them
@@ -83,6 +85,8 @@ export const KIN_PULSE_LATER_SENSES = [
   "payment_seen",
   "repaid_seen",
   "mail_gap",
+  "bill_due",
+  "bill_paid_seen",
 ] as const;
 export const KinPulseSense = Schema.Literals(KIN_PULSE_SENSES);
 export type KinPulseSense = typeof KinPulseSense.Type;

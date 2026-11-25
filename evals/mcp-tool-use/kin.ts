@@ -34,7 +34,20 @@ import {
 import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
 import { alreadyOnIt, leftNote } from "../../apps/server/src/kin/lead/Handoff.ts";
-import { dueShows, madeIn, repeatedPromise } from "../../apps/server/src/kin/work/leadWork.ts";
+import {
+  billPaidConsequence,
+  overpaymentConsequence,
+} from "../../apps/server/src/kin/pulse/senses/bank.ts";
+import {
+  billDueConsequence,
+  noticeConsequence,
+} from "../../apps/server/src/kin/pulse/senses/money.ts";
+import {
+  dueShows,
+  madeIn,
+  repeatedPromise,
+  suggestedBillResult,
+} from "../../apps/server/src/kin/work/leadWork.ts";
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import {
   endOfDay,
@@ -74,7 +87,6 @@ import {
   countryFirstMessage,
   notRegisteredFact,
 } from "../../apps/server/src/kin/work/companyProfile.ts";
-import { overpaymentConsequence } from "../../apps/server/src/kin/pulse/senses/bank.ts";
 import { bankAnswer, shortDay } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
 import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyAnswers.ts";
 import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
@@ -193,7 +205,6 @@ import {
   RESCUE_PROMPT,
 } from "../../apps/server/src/kin/reply/classify.ts";
 import { TURN_EVENT_TOOLS } from "../../apps/server/src/kin/lead/eventIds.ts";
-import { noticeConsequence } from "../../apps/server/src/kin/pulse/senses/money.ts";
 import { noticeDay } from "../../apps/server/src/kin/work/crm.ts";
 import type { McpToolUseCase } from "./run.ts";
 
@@ -622,6 +633,16 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{MONEY_RULE}}", MONEY_RULE)
     .replaceAll("{{PULSE_RULE}}", PULSE_RULE)
     .replaceAll("{{OVERPAYMENT_CASE}}", overpaymentCase())
+    .replace(
+      /\{\{BILL_PAID_FACT:([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|([^|{}]+)\}\}/g,
+      (_, bank, amount, day, bill, vendor, due) =>
+        billPaidConsequence(bank, amount, day, bill, vendor, due),
+    )
+    .replace(
+      /\{\{BILL_DUE_FACT:([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|(\d+)\}\}/g,
+      (_, amount, vendor, day, days) =>
+        billDueConsequence(amount, vendor, day, Number(days), false),
+    )
     .replaceAll("{{CHECK_IN_PULSE_RULE}}", CHECK_IN_PULSE_RULE)
     .replaceAll("{{LEFT_RULE}}", LEFT_RULE)
     .replaceAll("{{OUTSIDE_THREAD_LINE}}", OUTSIDE_THREAD_LINE)
@@ -818,6 +839,11 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       message: `${input.key} names ${input.partner} but doesn't add up exactly to their oldest owed expenses, so Kin marks nothing and offers no card for it. Nothing was asked; tell the owner what you see instead.`,
     },
   }),
+  suggestedBill: (input: { key: string }) => suggestedBillResult(input.key),
+  billSuggestedLabel: (input: { state: "open" | "done" }) =>
+    suggestedStateLabel("expenses", input.state),
+  billDueFact: (input: { amount: string; vendor: string; day: string; days: number }) =>
+    billDueConsequence(input.amount, input.vendor, input.day, input.days, false),
   // bills_add's and bill_read's answers, as Kin words them (`leadBills.ts`, `bills.ts`).
   billsAdd: (input: { added: number; alreadyAdded: number; notBills: number }) => addAnswer(input),
   billRead: (input: { bill: string; outcome: "read" | "duplicate" | "unreadable" }) =>

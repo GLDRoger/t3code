@@ -681,6 +681,7 @@ export const CreateResult = Schema.Struct({
       state: Schema.optional(KinRecordState),
       stateLabel: Schema.optional(Schema.String),
       suggested: Schema.optional(Schema.Literal(true)),
+      bill: Schema.optional(Schema.String),
       ...Marks.fields,
       /** Open entries close to this one that it was made beside. */
       alsoOpen: Schema.optional(Schema.Array(Near)),
@@ -3185,9 +3186,23 @@ const createRow = Effect.fnUntraced(function* (
     ...(alsoNamed === undefined ? {} : { alsoNamed }),
     ...(sameEmail === undefined ? {} : { sameEmail }),
     ...(created ? closedNotWoken(lead, [], stored) : {}),
+    ...(writer.actor._tag !== "agent" || stored.registerId !== "expenses" || stored.state !== "open"
+      ? {}
+      : pair?.receipt === true
+        ? {
+            bill: `${stored.key} keeps the receipt and stays To pay: only the owner or a co-owner marks it paid. Say so, or offer mark_bill_paid if a bank debit paid it.`,
+          }
+        : isSuggestion(stored) && stored.amountMinor !== null
+          ? {
+              bill: suggestedBillResult(stored.key),
+            }
+          : {}),
     ...(yield* unconfirmedOn(stored)),
   };
 });
+export const suggestedBillResult = (key: string) =>
+  `${key} waits as a suggested bill to pay; it counts in To pay once the owner records it. Ask once with kin_ask, an option with action record_bill on ${key}.`;
+
 const DEAL_FIELDS = ["stage", "source", "lostReason", "concerns"];
 const dealFields = (fields: FieldInputs | undefined) => {
   const given = fields ?? {};
@@ -3722,12 +3737,13 @@ const keepPairedFiles = Effect.fn("KinWorkTools.keepPairedFiles")(function* (
         ),
       )
     : {};
+  const settles = paid.receipt && !(writer.actor._tag === "agent" && entry.state === "open");
   const patch = {
     ...(Object.keys(added).length + Object.keys(how).length === 0
       ? {}
       : { fields: { ...added, ...how } }),
-    ...(paid.receipt && entry.state !== "done" ? { state: "done" as const } : {}),
-    ...(paid.receipt && paid.dateAt !== undefined && paid.dateAt !== entry.dateAt
+    ...(settles && entry.state !== "done" ? { state: "done" as const } : {}),
+    ...(settles && paid.dateAt !== undefined && paid.dateAt !== entry.dateAt
       ? { dateAt: paid.dateAt, dateAllDay: paid.dateAllDay ?? true }
       : {}),
   };

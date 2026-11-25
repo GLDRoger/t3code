@@ -280,6 +280,15 @@ export const KinMoneySummary = Schema.Struct({
     /** Owing clients past the first 20 a screen is sent, when there are more; absent otherwise. */
     byClientMore: Schema.optional(NonNegativeInt),
   }),
+  toPay: Schema.optional(
+    Schema.Struct({
+      total: KinMoneyTotals,
+      dueSoon: KinMoneyTotals,
+      bills: NonNegativeInt,
+      dueSoonBills: NonNegativeInt,
+      lateBills: NonNegativeInt,
+    }),
+  ),
   /** Money paid in: tax a client deducted at source settles an invoice but isn't counted here. */
   received: Schema.Struct({ thisMonth: KinMoneyTotals, lastMonth: KinMoneyTotals }),
   receivedThisFinancialYear: KinMoneyTotals,
