@@ -11,9 +11,11 @@ import type {
   KinRecipe,
   KinRecordDetail,
   KinRecordKey,
+  KinShell,
 } from "@t3tools/contracts";
 
 import { kinBilledName } from "./kinBillTo.ts";
+import { kinSectionNamed } from "./kinShell.ts";
 import { kinWorkDayOfTime, kinWorkDueLabel, type KinWorkNames } from "./kinWork.ts";
 import {
   kinDraftShowsNoBalance,
@@ -102,9 +104,15 @@ export const KIN_INVOICES = {
     `${number === null ? "The receipt" : `Receipt ${number}`} is set against ${invoice}.`,
   receiptProblems: "The receipt and its number stand, but Kin couldn't make its PDF:",
   amountTitle: "Change an issued invoice?",
-  amountDetail: (number: string, was: string, next: string, sent: boolean) =>
+  amountDetail: (
+    number: string,
+    was: string,
+    next: string,
+    sent: boolean,
+    shell?: KinShell | null,
+  ) =>
     sent
-      ? `${number} was issued and sent for ${was}. Change its total to ${next}? Your client's copy still says ${was}. The change is kept in its history with your name.`
+      ? `${number} was issued and sent for ${was}. Change its total to ${next}? ${kinSectionNamed(shell, "Your client's copy still says")} ${was}. The change is kept in its history with your name.`
       : `${number} was issued for ${was}. Change its total to ${next}? Its number stays, and the change is kept in its history with your name.`,
   noAmount: "no amount",
   amountConfirm: "Change total",
@@ -197,6 +205,7 @@ const numberFieldOf = (item: Pick<KinRecordDetail, "fields">) => {
 export function kinIssuedAmountQuestion(
   item: Pick<KinRecordDetail, "list" | "state" | "fields" | "amount" | "sent">,
   next: KinMoney | null,
+  shell?: KinShell | null,
 ) {
   const number = numberFieldOf(item)?.trim() ?? "";
   if (!kinIsInvoice(item) || item.state === "dropped" || number === "") return null;
@@ -210,6 +219,7 @@ export function kinIssuedAmountQuestion(
       kinMoneyText(was, true),
       next === null ? KIN_INVOICES.noAmount : kinMoneyText(next, true),
       (item.sent?.length ?? 0) > 0,
+      shell,
     ),
     confirm: KIN_INVOICES.amountConfirm,
   };

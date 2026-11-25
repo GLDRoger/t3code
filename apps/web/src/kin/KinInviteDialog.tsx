@@ -39,6 +39,7 @@ import { namedClipboardTarget, useCopyToClipboard } from "../hooks/useCopyToClip
 import { usePreparedConnection } from "../state/session";
 import { useKinFormDiscard } from "./KinFormDiscard";
 import { useKinPublicUrl } from "./useKinOwnerLevel";
+import { useKinSectionNamed } from "./useKinShell";
 
 /** What the dialog is showing: the name form, or a link the host just made. */
 export type KinInviteDialogState =
@@ -58,6 +59,7 @@ export function KinInviteDialog(props: {
   readonly onClose: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const named = useKinSectionNamed(props.environmentId);
   // Only the name form asks before closing; once the link is made there is nothing left to lose.
   const [typed, setTyped] = useState(false);
   const { close, ask } = useKinFormDiscard(props.state.stage === "name" && typed, props.onClose);
@@ -76,6 +78,7 @@ export function KinInviteDialog(props: {
             actions={props.actions}
             list={props.list}
             onMade={props.onMade}
+            named={named}
             onTyped={setTyped}
             onClose={close}
           />
@@ -98,6 +101,7 @@ function NameForm(props: {
   readonly actions: KinTeamActions;
   readonly list: KinTeamList;
   readonly onMade: (invite: KinMadeInvite) => void;
+  readonly named: (text: string) => string;
   /** Whether what is typed would be lost on closing (`kinInviteTyped`), told as it changes. */
   readonly onTyped: (typed: boolean) => void;
   readonly onClose: () => void;
@@ -186,8 +190,10 @@ function NameForm(props: {
               return (
                 <div key={entry.place} className="flex items-start justify-between gap-3">
                   <label htmlFor={id} className="flex min-w-0 flex-col gap-0.5">
-                    <span className="text-sm text-foreground">{entry.label}</span>
-                    <span className="text-xs text-muted-foreground">{entry.detail}</span>
+                    <span className="text-sm text-foreground">{props.named(entry.label)}</span>
+                    <span className="text-xs text-muted-foreground">
+                      {props.named(entry.detail)}
+                    </span>
                   </label>
                   <Switch
                     id={id}

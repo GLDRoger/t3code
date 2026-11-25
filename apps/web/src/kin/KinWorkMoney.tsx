@@ -68,7 +68,7 @@ import {
   type KinListsHandle,
 } from "./useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
-import { useKinSectionOn } from "./useKinShell";
+import { useKinSectionOn, useKinShell } from "./useKinShell";
 
 const OPENS =
   "rounded-md outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset";
@@ -249,6 +249,7 @@ function MoneyScreen(props: MoneyProps) {
   const canReceipt = useAtomValue(kinClient.makeReceipt.permissionAtom(props.environmentId));
   // Invoices and quotes off: no way to make one, and what clients owe (invoices) leaves the page.
   const invoicesOn = useKinSectionOn(props.environmentId, "invoices");
+  const shell = useKinShell(props.environmentId);
   const canInvoice =
     useAtomValue(kinClient.workNewInvoice.permissionAtom(props.environmentId)) && invoicesOn;
   const canExpense = useAtomValue(kinClient.workNewExpense.permissionAtom(props.environmentId));
@@ -407,12 +408,12 @@ function MoneyScreen(props: MoneyProps) {
     );
   }
   const summary = state.value;
-  const view = kinMoneyView(summary, kinListsOf(props.lists));
+  const view = kinMoneyView(summary, kinListsOf(props.lists), shell);
   const owing = allClients && every.state._tag === "ready" ? every.state.value.owed : summary.owed;
   const clients =
     owing === summary.owed
       ? view.clients
-      : kinMoneyView({ ...summary, owed: owing }, kinListsOf(props.lists)).clients;
+      : kinMoneyView({ ...summary, owed: owing }, kinListsOf(props.lists), shell).clients;
   if (view.empty) {
     const first = !scope.all ? null : agent !== null ? (
       <Button onClick={() => agent.ask(KIN_MONEY.askMessage)}>
