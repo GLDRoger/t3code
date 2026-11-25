@@ -1039,7 +1039,7 @@ function WatchPick(props: {
       }}
     >
       <View pointerEvents="none">
-        <ListRowLayout label={shown} detail={props.label} disabled={props.disabled} />
+        <ListRowLayout label={props.label} detail={shown} disabled={props.disabled} />
       </View>
     </Menu>
   );
@@ -1081,7 +1081,10 @@ function KinListWatchControls(props: KinWorkTarget & { readonly def: KinListDefi
         />
         {numbers.length === 0 && rule === null ? null : draft === null ? (
           <>
-            <ListRowLayout label={rule ?? KIN_LIST_WATCH.notSet} detail={KIN_LIST_WATCH.warnWhen} />
+            <ListRowLayout
+              label={KIN_LIST_WATCH.warnWhen}
+              description={rule ?? KIN_LIST_WATCH.notSet}
+            />
             {numbers.length === 0 ? null : (
               <ListActionRow
                 label={KIN_LIST_WATCH.change}
