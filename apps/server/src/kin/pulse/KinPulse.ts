@@ -448,8 +448,7 @@ export const read = Effect.fn("KinPulse.read")(function* (input: {
   readonly withAside?: boolean | undefined;
   /** The person reading, for "by you" and "on your word". */
   readonly personId?: string | undefined;
-  /** Null gives internal callers all visible facts. */
-  readonly limit?: number | null | undefined;
+  readonly limit?: number | undefined;
   readonly factKeys?: ReadonlySet<string> | undefined;
   /** What a tick already sensed (`lastTick`), instead of sensing again. */
   readonly sensed?: ReadonlyArray<SensedFact> | undefined;
@@ -512,10 +511,7 @@ export const read = Effect.fn("KinPulse.read")(function* (input: {
   return {
     asOf: iso(at),
     total: facts.length,
-    facts:
-      input.limit === null
-        ? facts
-        : facts.slice(0, Math.max(1, Math.min(input.limit ?? READ_CAP, 200))),
+    facts: facts.slice(0, Math.max(1, Math.min(input.limit ?? READ_CAP, 200))),
     ...((input.includeHandled === true || input.withAside === true) && shownHolds.length > 0
       ? { setAside: shownHolds.map((hold) => asideView(hold, input.viewer, input.personId)) }
       : {}),

@@ -41,7 +41,7 @@ import { isOrgPaused } from "../lead/orgState.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import { holdCoversRecord, liveHolds, recordHoldScopes } from "../pulse/holds.ts";
-import * as KinPulse from "../pulse/KinPulse.ts";
+import { personHandledRecords } from "../pulse/factState.ts";
 import { pauseTriggers } from "./KinTriggerStore.ts";
 import { readGithubLinks } from "./deferralGithub.ts";
 import {
@@ -556,26 +556,8 @@ const make = Effect.gen(function* () {
       if (pending.size === 0) return firstKey;
     }
 
-    const { facts } = yield* KinPulse.read({
-      orgId,
-      at: now,
-      viewer: { _tag: "owner" },
-      includeHandled: true,
-      limit: null,
-    });
-    for (const { subject, aside, handled } of facts) {
-      if (subject.kind !== "record" || subject.recordId === undefined) continue;
-      if (
-        handled?.by._tag === "person" ||
-        (aside !== undefined &&
-          !aside.mine &&
-          (aside.by._tag === "person" || aside.onWordOf !== null))
-      ) {
-        pending.delete(subject.recordId);
-        if (pending.size === 0) return firstKey;
-      }
-    }
-    return undefined;
+    const handled = yield* personHandledRecords(orgId, pending, now);
+    return handled.size === pending.size ? firstKey : undefined;
   });
 
   const process = Effect.fn("KinDeferralFlow.process")(function* (
