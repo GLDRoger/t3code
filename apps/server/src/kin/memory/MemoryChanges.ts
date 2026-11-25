@@ -126,7 +126,7 @@ export class KinMemoryChanges extends Context.Service<
     /**
      * Current items that hold every word, newest first, for search; the owner level only, and
      * nothing for anyone else or while memory isn't running here. `teamOnly` keeps to what the
-     * team may know, before the limit.
+     * team may know, before the limit. A failed read fails with "unavailable".
      */
     readonly search: (
       people: ReadonlyArray<PersonIdentity>,
@@ -138,7 +138,7 @@ export class KinMemoryChanges extends Context.Service<
         /** From the items as last loaded (`KinMemoryPort.snapshot`): no lock, sync or repair. */
         readonly snapshot?: boolean;
       },
-    ) => Effect.Effect<ReadonlyArray<KinMemoryHit>>;
+    ) => Effect.Effect<ReadonlyArray<KinMemoryHit>, KinChatError>;
     /** The owner's switch for team memory in chats with teammates; owner level only. */
     readonly setTeamMemory: (
       people: ReadonlyArray<PersonIdentity>,
@@ -574,13 +574,14 @@ const make = Effect.gen(function* () {
       const { port } = allowed.success;
       const all =
         input.snapshot === true
-          ? ((yield* port.snapshot?.(input.orgId) ?? Effect.undefined) ?? [])
+          ? yield* port.snapshot?.(input.orgId) ?? Effect.undefined
           : yield* port.items(input.orgId).pipe(
               Effect.tapError((error) =>
                 Effect.logWarning("Kin memory search failed", { errorTag: error._tag }),
               ),
-              Effect.orElseSucceed((): ReadonlyArray<MemoryItem> => []),
+              Effect.mapError(() => unavailable),
             );
+      if (all === undefined) return [];
       const now = yield* Clock.currentTimeMillis;
       const labels =
         input.teamOnly === true
@@ -589,13 +590,12 @@ const make = Effect.gen(function* () {
               Effect.tapError((error) =>
                 Effect.logWarning("Kin memory search failed", { errorTag: error._tag }),
               ),
-              Effect.option,
+              Effect.mapError(() => unavailable),
             )
           : undefined;
-      if (labels !== undefined && labels._tag === "None") return [];
       return current(all, now)
         .flatMap((item): ReadonlyArray<KinMemoryHit> => {
-          if (labels !== undefined && visibility(item, labels.value) !== "team") return [];
+          if (labels !== undefined && visibility(item, labels) !== "team") return [];
           const text = `${item.head.title}\n${item.head.what ?? ""}\n${item.body}`;
           const lower = text.toLowerCase();
           if (!words.every((word) => lower.includes(word))) return [];

@@ -615,6 +615,8 @@ export const KinSearchResult = Schema.Struct({
   hits: Schema.Array(KinSearchHit),
   indexed: Schema.Boolean,
   asOf: IsoDateTime,
+  /** True when what Kin remembers could not be read for this search, so no memory hit is among `hits`: say so; it is not "nothing found". */
+  memoryUnavailable: Schema.optional(Schema.Boolean),
 });
 export type KinSearchResult = typeof KinSearchResult.Type;
 

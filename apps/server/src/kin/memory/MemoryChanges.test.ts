@@ -30,6 +30,8 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as Kin from "../layer.ts";
 import { dormantLeadDependencies } from "../lead/layer.testkit.ts";
+import { KinRecords } from "../work/KinRecords.ts";
+import * as OwnerDocs from "../work/ownerDocs.ts";
 import { KinMemoryChanges, type KinMemoryUndo } from "./MemoryChanges.ts";
 import { authorise, fingerprint, suggest } from "./sensitivity.ts";
 
@@ -470,6 +472,69 @@ it.effect("only the owner sees what the leads remember and chooses who may know 
         .setVisibility([owner], { ...flip, itemId: KinMemoryItemId.make("missing") })
         .pipe(Effect.flip),
       { reason: "not_found" },
+    );
+  }).pipe(Effect.scoped, Effect.provide(root)),
+);
+
+it.effect("a search while memory can't be read fails as unavailable, never as nothing found", () =>
+  Effect.gen(function* () {
+    const kin = yield* Kin.KinServer;
+    const services = Option.getOrThrow(kin.services);
+    const memory = Context.get(services, KinMemoryChanges);
+    const records = Context.get(services, KinRecords);
+    yield* pairSession(session.sessionId);
+    const [owner] = yield* Context.get(services, KinIdentity).resolve(session);
+    assert.isDefined(owner);
+    const { orgId } = owner;
+    const teammate = { _tag: "person" as const, orgId, personId: KinPersonId.make("zoya") };
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES (${teammate.personId}, ${orgId}, 'zoya', 'Zoya', '1970-01-01T00:00:00.000Z')`;
+    let unreadable = true;
+    yield* memory.attachWriter({
+      undo: () => Effect.die("Unused"),
+      retire: () => Effect.die("Unused"),
+      restore: () => Effect.die("Unused"),
+      recordDecision: () => Effect.die("Unused"),
+      relabel: () => Effect.die("Unused"),
+      items: () => (unreadable ? Effect.fail({ _tag: "MemoryRepoError" }) : Effect.succeed([])),
+    });
+
+    const input = { orgId, text: "invented terms", limit: 5 };
+    const failed = yield* memory.search([owner], input).pipe(Effect.result);
+    assert.strictEqual(failed._tag, "Failure");
+    if (failed._tag === "Failure") assert.include(failed.failure, { reason: "unavailable" });
+    assert.deepStrictEqual(yield* memory.search([teammate], input), []);
+    assert.deepStrictEqual(yield* memory.search([owner], { ...input, text: "  " }), []);
+
+    const { row } = yield* records.create(
+      orgId,
+      {
+        actor: { _tag: "person", personId: owner.personId },
+        via: "owner",
+        askedBy: owner.personId,
+      },
+      {
+        originKey: "invented-terms",
+        title: "Invented terms",
+        owner: { _tag: "person", personId: owner.personId },
+      },
+    );
+    const searchInput = { ...input, everything: true as const };
+    const result = yield* OwnerDocs.search([owner], searchInput).pipe(Effect.provide(services));
+    assert.deepStrictEqual(
+      result.hits.map((hit) => hit.recordId),
+      [row.recordId],
+    );
+    assert.propertyVal(result, "memoryUnavailable", true);
+    assert.notProperty(
+      yield* OwnerDocs.search([teammate], searchInput).pipe(Effect.provide(services)),
+      "memoryUnavailable",
+    );
+    unreadable = false;
+    assert.notProperty(
+      yield* OwnerDocs.search([owner], searchInput).pipe(Effect.provide(services)),
+      "memoryUnavailable",
     );
   }).pipe(Effect.scoped, Effect.provide(root)),
 );

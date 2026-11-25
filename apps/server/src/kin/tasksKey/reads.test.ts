@@ -462,6 +462,11 @@ it.effect("money and memory reach only those whose own screens open them", () =>
       assert.isFalse(yield* readsMoney(one.key));
       assert.strictEqual((yield* errorOf(moneySummary(one.key))).reason, "not_allowed");
     }
+    yield* sql`DROP TABLE kin_memory_labels`;
+    assert.include(yield* errorOf(searchMemory(seeded.rhea.key, "kiln")), {
+      reason: "unavailable",
+      message: "Kin memory is unavailable. Try again.",
+    });
   }).pipe(Effect.provide(MemoryChanges.layer.pipe(Layer.provideMerge(layer)))),
 );
 

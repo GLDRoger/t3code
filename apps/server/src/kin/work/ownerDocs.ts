@@ -647,8 +647,10 @@ export const search = Effect.fn("KinDocs.search")(
                     limit: Math.min(MEMORY_HITS, limit),
                   }),
             ),
+            Effect.orElseSucceed(() => null),
           )
         : [];
+    const memoryHits = memory ?? [];
     const deals = input.deals === true || recordKinds.length === 0 || recordKinds.includes("work");
     const found =
       asked.length > 0 && recordKinds.length === 0
@@ -658,14 +660,14 @@ export const search = Effect.fn("KinDocs.search")(
             kinds:
               recordKinds.length > 0 ? recordKinds : everything ? EVERY_RECORD_KIND : undefined,
             closed: input.closed,
-            limit: limit - memory.length,
+            limit: limit - memoryHits.length,
             viewer: team === undefined ? "owner" : "team",
             scope: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
             deals,
           });
     return {
       hits: [
-        ...memory.map((hit) => ({
+        ...memoryHits.map((hit) => ({
           recordId: KinRecordId.make(`memory:${hit.itemId}`),
           key: hit.itemId,
           kind: "memory" as const,
@@ -692,6 +694,7 @@ export const search = Effect.fn("KinDocs.search")(
       ],
       indexed: found.indexed,
       asOf: iso(now),
+      ...(memory === null ? { memoryUnavailable: true } : {}),
     };
   },
   Effect.catchTags({ SqlError: () => unavailable }),
