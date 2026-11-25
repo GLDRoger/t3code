@@ -221,6 +221,38 @@ const widgetsPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
   },
 ];
 
+// What Kin opens from another app on its import screens (kinSharedFileInbox, which removes iOS's
+// Documents/Inbox copy). Mirrors kinSharedFile.ts: importing it would tie the fingerprint to it.
+const KIN_SHARED_FILE_TYPES = [
+  "application/pdf",
+  "image/*",
+  "text/csv",
+  "text/comma-separated-values",
+  "application/csv",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+];
+const KIN_OPENS_FILES_IOS = {
+  CFBundleDocumentTypes: [
+    {
+      CFBundleTypeName: "Files Kin imports",
+      CFBundleTypeRole: "Viewer",
+      LSHandlerRank: "Alternate",
+      LSItemContentTypes: [
+        "com.adobe.pdf",
+        "public.image",
+        "public.comma-separated-values-text",
+        "org.openxmlformats.spreadsheetml.sheet",
+      ],
+    },
+  ],
+  LSSupportsOpeningDocumentsInPlace: false,
+};
+const KIN_OPENS_FILES_ANDROID = {
+  action: "VIEW",
+  data: KIN_SHARED_FILE_TYPES.map((mimeType) => ({ scheme: "content", mimeType })),
+  category: ["DEFAULT"],
+};
+
 const sharingPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
   "expo-sharing",
   {
@@ -237,11 +269,14 @@ const sharingPlugin: NonNullable<ExpoConfig["plugins"]>[number] = [
         supportsFileWithMaxCount: 8,
       },
     },
-    android: {
-      enabled: !isKinOnly,
-      singleShareMimeTypes: ["*/*"],
-      multipleShareMimeTypes: ["*/*"],
-    },
+    // Kin takes one file of the types its import screens read; coding threads take anything.
+    android: isKinOnly
+      ? {
+          enabled: true,
+          singleShareMimeTypes: [...KIN_SHARED_FILE_TYPES],
+          multipleShareMimeTypes: [],
+        }
+      : { enabled: true, singleShareMimeTypes: ["*/*"], multipleShareMimeTypes: ["*/*"] },
   },
 ];
 
@@ -294,6 +329,7 @@ const config: ExpoConfig = {
         "Allow T3 Code to connect to T3 Code servers on your local network or tailnet.",
       // Built with the iOS 27 SDK, only view controllers can hide or style the status bar.
       UIViewControllerBasedStatusBarAppearance: true,
+      ...(isKinOnly ? KIN_OPENS_FILES_IOS : {}),
       NSPhotoLibraryAddUsageDescription: "Allow T3 Code to save images to your photo library.",
       // System picture in picture needs background audio to start and survive outside the app.
       UIBackgroundModes: ["audio"],
@@ -330,6 +366,7 @@ const config: ExpoConfig = {
     // expo-sensors declares this for its pedometer, which the app does not use.
     blockedPermissions: ["android.permission.ACTIVITY_RECOGNITION"],
     intentFilters: [
+      ...(isKinOnly ? [KIN_OPENS_FILES_ANDROID] : []),
       {
         action: "VIEW",
         autoVerify: true,
