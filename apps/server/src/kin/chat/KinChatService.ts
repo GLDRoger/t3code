@@ -1411,7 +1411,10 @@ const make = Effect.gen(function* () {
         );
         if (
           relayPerson(question) !== undefined &&
-          (message.kind !== "text" || (yield* ownerLevel(identity.orgId, identity.personId)))
+          (message.kind !== "text" ||
+            (yield* ownerLevel(identity.orgId, identity.personId).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            )))
         )
           continue;
         if (question.seq < message.seq) yield* resolve(item, "answered");
