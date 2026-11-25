@@ -226,9 +226,7 @@ function KinWatchLogDay(
     <ListSection title={title}>
       {value.rows.length === 0 ? (
         <View className="bg-grouped-card">
-          <ListRowLayout
-            label={kinWatchEmptyLine(value, { ownerLevel, followUps })}
-          />
+          <ListRowLayout label={kinWatchEmptyLine(value, { ownerLevel, followUps })} />
         </View>
       ) : null}
       {limitFrom === null ? null : (

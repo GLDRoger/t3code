@@ -192,9 +192,7 @@ function KinWatchLogDay(
   return (
     <KinSettingsSection title={title}>
       {value.rows.length === 0 ? (
-        <KinSettingsEmpty>
-          {kinWatchEmptyLine(value, { ownerLevel, followUps })}
-        </KinSettingsEmpty>
+        <KinSettingsEmpty>{kinWatchEmptyLine(value, { ownerLevel, followUps })}</KinSettingsEmpty>
       ) : null}
       {limitFrom === null ? null : (
         <KinSettingsEmpty>{kinWatchLimitLine(limitFrom)}</KinSettingsEmpty>

@@ -48,7 +48,10 @@ module.exports = function withKinOpensFiles(config) {
     const activity = AndroidConfig.Manifest.getMainActivityOrThrow(next.modResults);
     activity["intent-filter"] = [
       ...(activity["intent-filter"] ?? []),
-      filter("SEND", MIME_TYPES.map((mimeType) => ({ "android:mimeType": mimeType }))),
+      filter(
+        "SEND",
+        MIME_TYPES.map((mimeType) => ({ "android:mimeType": mimeType })),
+      ),
       filter(
         "VIEW",
         MIME_TYPES.map((mimeType) => ({
