@@ -11,7 +11,7 @@ import type {
   KinRecordKey,
 } from "@t3tools/contracts";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import {
   kinAmountAsking,
@@ -232,6 +232,7 @@ export function makeKinMoneyAnswersHooks<R, ER>(
    * amount is the one asked about, and the next save of it keeps it.
    */
   function useAsking(target: KinScreenTarget) {
+    const inFlight = useRef(false);
     const [busy, setBusy] = useState(false);
     const [problem, setProblem] = useState<string | null>(null);
     const [asked, setAsked] = useState<KinAmountAsk | null>(null);
@@ -245,12 +246,15 @@ export function makeKinMoneyAnswersHooks<R, ER>(
           readonly amountConfirmed: boolean;
         }) => Promise<AtomCommandResult<A, unknown>>,
       ) => {
+        if (inFlight.current) return null;
+        inFlight.current = true;
         setBusy(true);
         setProblem(null);
         const outcome = await kinListSend({
           online: () => kinHostConnected(target.environmentId),
           send: () => send(kinAmountConfirmed(asked, about)),
         });
+        inFlight.current = false;
         setBusy(false);
         if (!outcome.ok && outcome.slip !== undefined) setAsked({ line: outcome.slip, about });
         else if (!outcome.ok) setProblem(outcome.problem);
