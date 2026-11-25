@@ -942,6 +942,60 @@ describe("KinPulse", () => {
     }).pipe(Effect.provide(chatLayer)),
   );
 
+  it.effect("a teammate's late promise reaches the person it was promised to, at its bands", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* letMate;
+      const sql = yield* SqlClient.SqlClient;
+      const zoya = KinPersonId.make("zoya");
+      const dev = KinPersonId.make("dev");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+        VALUES (${zoya}, ${orgId}, 'zoya', 'Zoya', 'member', ${stamp}),
+          (${dev}, ${orgId}, 'dev', 'Dev', 'member', ${stamp})`;
+      yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+        VALUES (${orgId}, ${chief}, ${zoya}, ${owner}, 0), (${orgId}, ${chief}, ${dev}, ${owner}, 0)`;
+      yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-W-8'`;
+      const promised = (id: string, to: KinPersonId, title = `Invented ${id}`) =>
+        insert({
+          id,
+          title,
+          dueAt: B + 2 * DAY,
+          ownerKind: "person",
+          ownerId: zoya,
+          // Recorded in the team room, so the team sees it.
+          teamShared: 1,
+          fields: JSON.stringify({ promisedTo: `person:${to}` }),
+        });
+      yield* promised("W-42", mate, "Homepage mockups");
+      // Kept Only me by Zoya: Meera may not see it, so she hears nothing of it.
+      yield* promised("W-50", mate);
+      yield* sql`UPDATE kin_records SET sensitive = 1, marked_by_person_id = ${zoya}
+        WHERE record_id = 'r-W-50'`;
+      // The owner hears a teammate's late work in his check-in; Dev has left.
+      yield* promised("W-51", owner);
+      yield* promised("W-52", dev);
+      yield* sql`UPDATE kin_people SET removed_at = 0 WHERE person_id = ${dev}`;
+      const line =
+        "W-42 Homepage mockups, which Zoya promised you by Tue 3 Nov, is late. Kin has told Zoya.";
+      const late = (days: number) => B + (2 + days) * DAY + 12 * HOUR;
+      for (const at of [late(1), late(2), late(3), late(6), late(7)]) {
+        yield* TestClock.setTime(at);
+        yield* KinPulse.tick(orgId, at);
+      }
+      assert.deepStrictEqual(yield* mateNotices, [line, line, line]);
+      assert.deepStrictEqual(yield* noticesTo(owner), []);
+      assert.deepStrictEqual(yield* noticesTo(dev), []);
+      const told = yield* sql<{ key: string; at: number }>`SELECT fact_key AS key, told_at AS at
+        FROM kin_pulse_told WHERE org_id = ${orgId} AND person_id = ${mate} ORDER BY told_at`;
+      assert.deepStrictEqual(
+        told.map((row) => [row.key, row.at]),
+        [late(1), late(3), late(7)].map((at) => [`task_late:W-42:due=${B + 2 * DAY}`, at]),
+      );
+      // Zoya's own notices are as they were: she alone holds it.
+      assert.include((yield* noticesTo(zoya))[0], "• W-42 Homepage mockups, was due yesterday");
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
   // The sales seat, Meera with Clients on in Los Angeles and allowed to message it, and her
   // late follow-up W-30 to Lumen: 4 Nov 20:00 UTC is noon on 4 Nov in Los Angeles.
   const salesDay = Effect.gen(function* () {
@@ -3151,6 +3205,98 @@ describe("KinPulse", () => {
           VALUES (${orgId}, 'pay-30', 'r-INV-30', 50_000_00, 'INR', '2026-11-10', 'pay-30', 0,
             'person')`;
         assert.isUndefined(yield* factOf("BNK-9"));
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a debit that pays a partner back exactly wakes Finance once; a short one is a line",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const at = B + 25 * DAY;
+        yield* ensureBankList(orgId, B);
+        // Meera paid three bills from her own card; the company owes her for them.
+        const owedTo = JSON.stringify({ fundedBy: `person:${mate}`, reimbursement: "owed" });
+        for (const [id, rupees, day] of [
+          ["EXP-4", 5_000, 1],
+          ["EXP-7", 4_200, 8],
+          ["EXP-9", 3_200, 15],
+        ] as const)
+          yield* insert({
+            id,
+            list: "expenses",
+            state: "done",
+            amount: rupees * 100,
+            dateAt: B + day * DAY,
+            fields: owedTo,
+          });
+        const debit = (id: string, rupees: number, day: number) =>
+          insert({
+            id,
+            list: "bank_transactions",
+            title: "UPI/Meera/reimb",
+            amount: rupees * 100,
+            dateAt: B + day * DAY,
+            ownerKind: "person",
+            ownerId: owner,
+            fields: '{"direction":"debit"}',
+          });
+        const seen = (viewer?: KinPulse.Viewer) =>
+          read(at, viewer).pipe(
+            Effect.map((pulse) => pulse.facts.filter((fact) => fact.sense === "repaid_seen")),
+          );
+        yield* debit("BNK-9", 12_400, 23);
+        yield* debit("BNK-11", 9_000, 24);
+        const facts = yield* seen();
+        const exact = facts.find((fact) => fact.key === "repaid_seen:BNK-9");
+        assert.deepInclude(exact!, {
+          family: "money",
+          subject: {
+            kind: "record",
+            key: "BNK-9",
+            title: "Bank debit",
+            recordId: KinRecordId.make("r-BNK-9"),
+          },
+          scope: {},
+          consequence:
+            "BNK-9, ₹12,400 paid 24 Nov, names Meera and adds up exactly to their 3 oldest owed expenses: EXP-4, EXP-7 and EXP-9. They aren't marked repaid until the owner confirms.",
+          actor: { _tag: "agent", agentId: finance },
+          sensitive: true,
+          wake: "now",
+          handled: null,
+        });
+        // One that doesn't add up is told once, as a line: Kin marks nothing and offers no card.
+        assert.deepInclude(
+          facts.find((fact) => fact.key === "repaid_seen:BNK-11:short")!,
+          {
+            consequence:
+              "BNK-11, ₹9,000 paid 25 Nov, names Meera but doesn't add up to their oldest owed expenses (₹12,400 over 3 expenses), so Kin marks nothing. Mark what it repaid on the expenses in Money.",
+            actor: { _tag: "agent", agentId: finance },
+            wake: "brief",
+          },
+        );
+        assert.lengthOf(facts, 2);
+        // Only owner-level people hear of it, and only a build that knows the sense shows it.
+        assert.isEmpty(yield* seen({ _tag: "people", people: [mate] }));
+        assert.isEmpty(screenFacts([exact!], undefined));
+        assert.lengthOf(screenFacts([exact!], ["repaid_seen"]), 1);
+
+        // Finance wakes once for the exact one, and never for the short one.
+        const first = yield* KinPulse.tick(orgId, at);
+        assert.include(first.woken, exact!.key);
+        assert.notInclude(first.woken, "repaid_seen:BNK-11:short");
+        const [woke, ...more] = yield* sql<{ agent: string; json: string }>`SELECT
+          agent_id AS agent, json FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
+          AND dedupe_key LIKE 'repaid_seen:%' ORDER BY event_id`;
+        assert.isEmpty(more);
+        assert.strictEqual(woke!.agent, finance);
+        assert.deepInclude(JSON.parse(woke!.json), { factKeys: [exact!.key] });
+        assert.notInclude((yield* KinPulse.tick(orgId, at + MINUTE)).woken, exact!.key);
+
+        // Explained, it is no longer told.
+        yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id IN ('r-BNK-9', 'r-BNK-11')`;
+        assert.isEmpty(yield* seen());
       }).pipe(Effect.provide(layer)),
   );
 

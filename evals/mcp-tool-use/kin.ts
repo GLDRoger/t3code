@@ -34,7 +34,7 @@ import {
 import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
 import { alreadyOnIt, leftNote } from "../../apps/server/src/kin/lead/Handoff.ts";
-import { dueShows } from "../../apps/server/src/kin/work/leadWork.ts";
+import { dueShows, repeatedPromise } from "../../apps/server/src/kin/work/leadWork.ts";
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import {
   endOfDay,
@@ -54,6 +54,7 @@ import { microsoftMail } from "../../apps/server/src/kin/connections/Microsoft.t
 import { readLine } from "../../apps/server/src/kin/connections/ConnectionRows.ts";
 import { resultText } from "../../apps/server/src/kin/connections/ResultText.ts";
 import { outlineOf, sectionsOf, WHOLE_DOC } from "../../apps/server/src/kin/work/docBody.ts";
+import { privateNowLine } from "../../apps/server/src/kin/work/docs.ts";
 import { parseRecipe } from "../../apps/server/src/kin/gendocs/recipe.ts";
 import { STARTER_FILES } from "../../apps/server/src/kin/gendocs/starter.ts";
 import { quote } from "../../apps/server/src/kin/lead/quote.ts";
@@ -759,6 +760,15 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       message: helperRefusal(input.holder, input.key),
     },
   }),
+  // doc_read of a draft filed for the reader that an owner since kept to owners only (`docRow`).
+  docPrivateNow: (input: { key: string; owner: string }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "not_found",
+      message: privateNowLine(input.key, input.owner),
+      privateNow: { by: input.owner },
+    },
+  }),
   // An approved draft's one make that changed the approved words, refused at Kin's gate.
   approvedWords: (input: { tool: string }) => ({
     $error: { _tag: "KinChatError", reason: "not_allowed", message: approvedWords(input.tool) },
@@ -783,6 +793,29 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
           },
         };
   },
+  // A suggestion's stateLabel, as record_get, records_query and record_create show it.
+  suggestedState: (input: { list: string; state: string }) =>
+    suggestedStateLabel(input.list, input.state),
+  // record_create's refusal of a task or promise already open (`leadWork.ts` repeatsOf).
+  repeatRefusal: (input: {
+    key: string;
+    title: string;
+    client: boolean;
+    holder: string;
+    due: string | null;
+    zone: string;
+  }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "conflict",
+      message: repeatedPromise({
+        ...input,
+        also: "",
+        dueAt: input.due === null ? null : endOfDay(input.due, input.zone),
+        besides: `besides: ["${input.key}"]`,
+      }),
+    },
+  }),
   // kin_relay's answer for a line left for the owner's next check-in (`KinHandoff.relay`).
   relayLeft: (input: { to: string; title: string; when: string; asker: string }) => ({
     to: input.to,

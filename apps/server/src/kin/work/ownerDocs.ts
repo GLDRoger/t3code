@@ -72,6 +72,7 @@ import {
   workFailure,
 } from "./recordRows.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 import { EVERY_RECORD_KIND, search as runSearch } from "./search.ts";
 import { docKindWords, searchIndexed } from "./searchIndex.ts";
 import {
@@ -232,6 +233,19 @@ const kindLabelOf = Effect.fn("KinDocs.kindLabel")(function* (
   };
 });
 
+/** For an owner's menu: the teammate a doc was drafted for, while the label on it is not theirs. */
+const draftOfFor = Effect.fn("KinDocs.draftOf")(function* (orgId: KinOrgId, row: RecordRow) {
+  const sql = yield* SqlClient.SqlClient;
+  const [teammate] = yield* sql<{ name: string }>`SELECT p.display_name AS name FROM kin_records r
+    JOIN kin_people p ON p.org_id = r.org_id AND p.removed_at IS NULL
+      AND p.person_id = json_extract(r.fields_json, '$.draftFor')
+    WHERE r.org_id = ${orgId} AND r.record_id = ${row.recordId} AND r.register_id = 'docs'
+      AND r.marked_by_person_id IS NOT p.person_id
+      AND NOT ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))}
+    ORDER BY p.person_id LIMIT 1`;
+  return teammate === undefined ? {} : { draftOf: { name: teammate.name } };
+});
+
 const detailOf = Effect.fn("KinDocs.detail")(function* (
   orgId: KinOrgId,
   ref: { readonly key: string } | { readonly recordId: string },
@@ -289,6 +303,7 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
       ? { editable: true as const }
       : {}),
     ...(yield* kindLabelOf(orgId, row, readerId)),
+    ...(viewer._tag === "ownerLevel" ? yield* draftOfFor(orgId, row) : {}),
   } satisfies KinDocDetail;
 });
 

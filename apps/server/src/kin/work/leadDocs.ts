@@ -613,7 +613,7 @@ export const draftNote = (
     ...(draft.noAccount === undefined
       ? []
       : [
-          `No ${draft.noAccount.service} account is connected, so Kin can't post it; ${draft.noAccount.by.name} can connect one in Settings on a computer. Say so.`,
+          `No ${draft.noAccount.service} account is connected, so Kin can't post it; ${draft.noAccount.by.name} can connect one in Settings on a computer. Say both: it can't be posted yet, and ${draft.noAccount.by.name} can connect one.`,
         ]),
   ].join(" ");
 const NOT_A_REDRAFT =

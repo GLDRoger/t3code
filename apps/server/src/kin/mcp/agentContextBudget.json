@@ -2,20 +2,20 @@
   "mcpToolListJsonBytes": 64767,
   "kinToolListJsonBytes": 3044,
   "kinInstructionsBytes": {
-    "owner": 39352,
-    "confined": 39300
+    "owner": 39635,
+    "confined": 39583
   },
-  "kinSharedInstructionsHash": "b43b2040a44f885ba00ebb2cf7a2df4ba0773516e969647779191aaf536bfc80",
+  "kinSharedInstructionsHash": "0fd630e6a6d6fd09636923d4e48c48a879bf20955f9e462cba3d70ad1e05cbf0",
   "kinLeadToolListJsonBytes": {
-    "engineering": 166692,
-    "engineeringBesideFinanceAndSales": 151630,
-    "finance": 145870,
-    "shared": 95250,
-    "social": 148943,
-    "socialBesideFinanceAndSales": 133881,
-    "support": 145870
+    "engineering": 167385,
+    "engineeringBesideFinanceAndSales": 152323,
+    "finance": 146563,
+    "shared": 95884,
+    "social": 149636,
+    "socialBesideFinanceAndSales": 134574,
+    "support": 146563
   },
-  "kinLeadAlwaysLoadedToolBytes": 73036,
+  "kinLeadAlwaysLoadedToolBytes": 73670,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -94,8 +94,8 @@
       "schema": 490
     },
     "kin_ask": {
-      "desc": 1273,
-      "schema": 752
+      "desc": 1424,
+      "schema": 766
     },
     "kin_ask_close": {
       "desc": 244,
@@ -134,7 +134,7 @@
       "schema": 153
     },
     "kin_connection_offer": {
-      "desc": 262,
+      "desc": 321,
       "schema": 98
     },
     "kin_connection_tools": {
@@ -310,8 +310,8 @@
       "schema": 239
     },
     "record_create": {
-      "desc": 5482,
-      "schema": 8555
+      "desc": 5611,
+      "schema": 8725
     },
     "record_get": {
       "desc": 1239,
@@ -327,7 +327,7 @@
     },
     "record_update": {
       "desc": 2272,
-      "schema": 8337
+      "schema": 8507
     },
     "records_query": {
       "desc": 1324,

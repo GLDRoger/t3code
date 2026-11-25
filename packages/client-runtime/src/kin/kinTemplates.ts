@@ -170,22 +170,31 @@ export function kinNotesVersions(
 
 /**
  * The doc menu's way to raise or lower its private label; none while its client's label holds it.
- * While a teammate still reads it as their draft, the item makes the label yours and ends that read.
+ * A teammate's draft is named: raising takes it from them, lowering gives it back.
  */
 export function kinDocLabelAction(doc: {
   readonly sensitive: boolean;
   readonly sensitiveInherited?: true | undefined;
   readonly kindLabel?: KinDocDetail["kindLabel"];
+  readonly draftOf?: KinDocDetail["draftOf"];
 }) {
   if (doc.sensitiveInherited === true) return null;
-  // Only while a teammate still reads it as their draft: any other kind-only label lowers in one tap.
   const reader = doc.kindLabel?.reader;
-  if (doc.sensitive && reader !== undefined && reader.you !== true)
+  // The teammate it is drafted for: while they read it, under its kind's label or none, or not now.
+  const keeps = reader !== undefined && reader.you !== true ? reader.name : doc.draftOf?.name;
+  if (keeps !== undefined && (!doc.sensitive || reader !== undefined))
     return {
       sensitive: true,
       label: "Keep to owners only",
       title: "Keep this doc to owners only?",
-      detail: `${reader.name} won't be able to read it any more. Only owners will, and agents only in your own chats.`,
+      detail: `${keeps} won't be able to read it any more, and will see that you kept it to owners only. Only owners will read it, and agents only in your own chats.`,
+    };
+  if (keeps !== undefined)
+    return {
+      sensitive: false,
+      label: `Let ${keeps} read it again`,
+      title: `Let ${keeps} read this doc again?`,
+      detail: `${keeps} will read it again, and it won't be private any more. Agents can't do this; only you can.`,
     };
   return doc.sensitive
     ? {

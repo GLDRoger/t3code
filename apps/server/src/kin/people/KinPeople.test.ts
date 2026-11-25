@@ -1608,13 +1608,22 @@ it.effect(
         }),
         [],
       );
-      // Leaving lowers the group's floor only to what Tomas, still there, could always read.
+      // Leaving lowers the group's floor only to what Tomas, still there, could always read; each
+      // join said once that it left a question unanswered.
+      const unanswered =
+        "Tech lead didn't reply: someone joined before it answered. Send it again.";
       const turn = yield* wake();
       assert.deepStrictEqual(
         (yield* chats.read(turn, { chatId: group.chatId, afterSeq: 0, limit: 100 })).map(
           (message) => message.body,
         ),
-        ["Invented-tomas-early", "Invented-mira-in-group", "Invented-tomas-in-group"],
+        [
+          unanswered,
+          "Invented-tomas-early",
+          unanswered,
+          "Invented-mira-in-group",
+          "Invented-tomas-in-group",
+        ],
       );
       yield* queue.finish({ orgId, wakeupId: turn.wakeupId, status: "completed" });
 

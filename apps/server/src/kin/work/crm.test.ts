@@ -920,6 +920,51 @@ it.effect("an overdue invoice or a long silence with the client puts a project a
 );
 
 it.effect(
+  "a promise to a teammate keeps whom it was made to, never its holder, until given to them",
+  () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const made = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ title: "Invented homepage mockups", promisedTo: "Mate", due: "1970-01-05" }],
+      });
+      const key = made.records[0]!.key;
+      const stored = sql<{ to: string | null }>`SELECT json_extract(fields_json, '$.promisedTo') AS
+        "to" FROM kin_records WHERE org_id = ${orgId} AND key = ${key}`;
+      assert.deepStrictEqual(yield* stored, [{ to: `person:${mateId}` }]);
+      assert.include(yield* LeadWork.get(scope, { key }), { promisedTo: "Mate" });
+      // Its holder is never the one it is owed to, and an agent never is.
+      assert.include(
+        yield* Effect.flip(
+          LeadWork.create(scope, {
+            sourceEventId: "again-event",
+            records: [{ title: "Invented report", owner: "Mate", promisedTo: "Mate" }],
+          }),
+        ),
+        { reason: "invalid_state" },
+      );
+      assert.include(
+        yield* Effect.flip(
+          LeadWork.update(scope, { key, sourceEventId: "again-event", promisedTo: "Lead lead" }),
+        ),
+        { reason: "invalid_state" },
+      );
+      // Given to Mate, it is hers and owed to no one; null clears it too.
+      yield* LeadWork.update(scope, { key, sourceEventId: "again-event", owner: "Mate" });
+      assert.deepStrictEqual(yield* stored, [{ to: null }]);
+      yield* LeadWork.update(scope, {
+        key,
+        sourceEventId: "third-event",
+        owner: "me",
+        promisedTo: "Mate",
+      });
+      yield* LeadWork.update(scope, { key, sourceEventId: "third-event", promisedTo: null });
+      assert.deepStrictEqual(yield* stored, [{ to: null }]);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
   "a row repeating an open entry from another turn is refused by name; a near one is made and said",
   () =>
     Effect.gen(function* () {
@@ -935,7 +980,7 @@ it.effect(
       assert.include(yield* Effect.flip(make("again-event", [report])), {
         reason: "conflict",
         message:
-          'W-1 "Invented monthly report" is open with the same title, client and due day. Use W-1, or pass besides: ["W-1"] to add another.',
+          'W-1 "Invented monthly report" is open with the same title, client and due day: it is tracked already, held by Lead lead (you), due Mon 5 Jan. Tell them so in one line, and nothing about when or how to do it; Kin tells its holder on its day. Pass besides: ["W-1"] only if this is another one.',
       });
       // Named as known, a second is made.
       assert.deepStrictEqual(shown(yield* make("again-event", [{ ...report, besides: ["W-1"] }])), [

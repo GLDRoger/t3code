@@ -1209,7 +1209,7 @@ describe("recipe documents", () => {
         [
           "₹2,360.00",
           { tax: "₹360.00" },
-          "Draft, suggested: waits for the owner or a co-owner to keep it",
+          "Suggested invoice, not kept: nobody has kept it yet, so it can't be issued, sent, paid or receipted. The owner or a co-owner keeps it with Keep on its page; call it a suggestion until then.",
           true,
         ],
       );
