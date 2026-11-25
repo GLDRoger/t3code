@@ -317,6 +317,8 @@ export class KinChatService extends Context.Service<
         readonly body: string;
         readonly lead?: true;
         readonly money?: ReadonlyArray<string>;
+        /** An earlier turn's message: joined only while nothing but Kin's lines came after it. */
+        readonly onlyIfLast?: true;
       },
     ) => Effect.Effect<KinMessage, ServiceError>;
     /** Whether this person is in the chat whose message carries the stored file. */
@@ -3423,8 +3425,13 @@ const make = Effect.gen(function* () {
           wakeupId: agent.wakeupId,
           audience: yield* authorAudience(agent),
         });
+        // A message already shown, and rung, grows in place: no second ring for it.
         yield* sql.afterCommit(
-          hub.publish({ type: "message.posted", orgId: agent.orgId, message }),
+          hub.publish({
+            type: input.onlyIfLast === true ? "message.changed" : "message.posted",
+            orgId: agent.orgId,
+            message,
+          }),
         );
         return message;
       },
