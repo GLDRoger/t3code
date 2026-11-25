@@ -2693,6 +2693,36 @@ describe("receipts", () => {
       );
       assert.strictEqual(writing.message, draft);
       assert.lengthOf(yield* onDraft, 0);
+      // Nor one against a void invoice, nor one of an entry with no amount to move.
+      yield* issuedInvoice(asked, "INV-1");
+      const records = yield* KinRecords.KinRecords;
+      const { row: empty } = yield* records.create(orgId, owner, {
+        list: "receipts",
+        originKey: "owner:receipt:empty",
+        title: "Received",
+        owner: { _tag: "person", personId: ownerId },
+        state: "open",
+        partyId: (yield* records.get(orgId, client!.key))!.recordId,
+      });
+      const ask = (entry: string) =>
+        LeadDocuments.receipt(scope, {
+          sourceEventId: asked,
+          entry: KinRecordKey.make(entry),
+          against: KinRecordKey.make("INV-1"),
+        }).pipe(
+          Effect.flip,
+          Effect.map((error) => error.message),
+        );
+      assert.strictEqual(
+        yield* ask(empty.key),
+        `${empty.key} has no amount or day received, so it can't be recorded as money received. Set both, then ask again. Nothing was numbered.`,
+      );
+      yield* OwnerMoney.voidEntry(people, { orgId, key: "INV-1" });
+      assert.strictEqual(
+        yield* ask(advance.key),
+        "INV-1 is void; it takes no payments. Nothing changed.",
+      );
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_receipt_proposals`, 0);
     }).pipe(Effect.provide(layer)),
   );
 

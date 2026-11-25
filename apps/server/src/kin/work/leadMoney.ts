@@ -8,6 +8,7 @@ import {
   kinDateRowLate,
   KinDay,
   KinGstin,
+  type KinMoney,
   KinWritableListFieldType,
   KinListId,
   type KinOrgId,
@@ -616,14 +617,30 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
         "A payment needs amount (cash received), withheld (tax the client withheld) or both, and paidOn; or void to take one back.",
       );
     if (isSuggestion(before)) return yield* invalid(stillSuggestion(before.key));
+    // Refused now as the tap's write would refuse it, rather than on a card nobody can confirm.
+    if (before.takesPayments !== 1)
+      return yield* invalid(
+        `${before.key} is not an invoice or in a list paid over time; payments are recorded on those. Nothing was recorded.`,
+      );
+    if (before.state === "dropped")
+      return yield* invalid(`${before.key} is void; it takes no payments. Nothing was recorded.`);
+    if (before.amountMinor === null)
+      return yield* invalid(
+        `${before.key} has no amount yet; set it before recording payments. Nothing was recorded.`,
+      );
     const fallback = before.currency ?? (yield* homeCurrency(lead.orgId));
     const parsed = (text: string | undefined) => {
       if (text === undefined) return Effect.undefined;
       const one = parseAmount(text, fallback);
       return "error" in one ? Effect.fail(one.error) : Effect.succeed(one.money);
     };
-    const cash = yield* parsed(input.amount);
-    const tds = yield* parsed(input.withheld);
+    // A part of nothing is no part, as the owner's own form takes tax alone with no cash.
+    const part = (money: KinMoney | undefined) =>
+      money === undefined || money.minor <= 0 ? undefined : money;
+    const cash = part(yield* parsed(input.amount));
+    const tds = part(yield* parsed(input.withheld));
+    if (cash === undefined && tds === undefined)
+      return yield* invalid("A payment is more than nothing. Nothing was recorded.");
     // Refused now, as the tap would refuse it, rather than on a card nobody can confirm.
     for (const money of [cash, tds])
       if (money !== undefined && before.currency !== null && money.currency !== before.currency)

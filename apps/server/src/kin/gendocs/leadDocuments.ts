@@ -506,8 +506,7 @@ export const ReceiptInput = Schema.Struct({
       "A receipt proposal this tool returned in an earlier turn: returns the receipt the owner's Confirm on its card made, with its PDF.",
   }),
   payment: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(120))).annotate({
-    description:
-      "The paymentId of a payment recorded on an invoice (payment_record returns it; record_get lists them).",
+    description: "The paymentId of a payment recorded on an invoice, as record_get lists them.",
   }),
   entry: Schema.optional(KinRecordKey).annotate({
     description: "A receipt entry already made, such as an advance, to number and make again.",
@@ -609,6 +608,21 @@ export const receipt = leadTool("KinDocuments.receipt", (lead, input: typeof Rec
       if (unpayable !== undefined) return yield* unpayable;
       // Money received no live payment holds yet is the owner's to confirm, never the agent's.
       if (yield* createsMoney(lead.orgId, request)) {
+        // Refused now as the tap would refuse it: an entry with no amount or day to record.
+        const entry =
+          request.key === undefined
+            ? undefined
+            : yield* (yield* KinRecords).get(lead.orgId, request.key);
+        if (
+          entry !== undefined &&
+          (entry.amountMinor === null ||
+            entry.amountMinor <= 0 ||
+            entry.currency === null ||
+            entry.dateAt === null)
+        )
+          return yield* invalid(
+            `${entry.key} has no amount or day received, so it can't be recorded as money received. Set both, then ask again. Nothing was numbered.`,
+          );
         // Setting an advance against an invoice was refused in a turn no person started; still is.
         if (request.key !== undefined && request.against !== undefined)
           yield* refuseKinOwn(lead.orgId, requester.writer, KIN_OWN_REFUSAL.payment);

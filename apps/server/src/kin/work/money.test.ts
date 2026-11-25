@@ -3224,6 +3224,82 @@ describe("the owner's taps", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect(
+    "refuse before a card what Confirm would refuse, and take tax alone as the owner's form does",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* defined(1, { template: "invoices" });
+        const asked = yield* turn(3, "Invoice Invented Acme");
+        const made = yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            { list: "clients", title: "Invented Acme" },
+            { list: "invoices", title: "Invented retainer", amount: "1 lakh", date: "2026-10-01" },
+            { list: "invoices", title: "Invented spare", amount: "500", date: "2026-10-01" },
+          ],
+        });
+        for (const key of ["INV-1", "INV-2"])
+          yield* LeadDocuments.issue(scope, {
+            sourceEventId: asked,
+            entry: KinRecordKey.make(key),
+          });
+        yield* OwnerMoney.voidEntry(people, { orgId, key: "INV-2" });
+        const sql = yield* SqlClient.SqlClient;
+        const proposals = sql`SELECT 1 FROM kin_receipt_proposals WHERE org_id = ${orgId}`;
+        const said = yield* turn(4, "Acme paid");
+        const refusal = (key: string, more: { amount?: string; withheld?: string }) =>
+          LeadMoney.payment(scope, {
+            sourceEventId: said,
+            key,
+            paidOn: "2026-11-05",
+            ...more,
+          }).pipe(
+            Effect.flip,
+            Effect.map((error) => error.message),
+          );
+        assert.deepStrictEqual(
+          [
+            yield* refusal("INV-2", { amount: "100" }),
+            yield* refusal(made.records[0]!.key, { amount: "100" }),
+            yield* refusal("INV-1", { amount: "0" }),
+          ],
+          [
+            "INV-2 is void; it takes no payments. Nothing was recorded.",
+            `${made.records[0]!.key} is not an invoice or in a list paid over time; payments are recorded on those. Nothing was recorded.`,
+            "A payment is more than nothing. Nothing was recorded.",
+          ],
+        );
+        assert.lengthOf(yield* proposals, 0);
+        // No cash and only the tax the client withheld is the owner's own form's TDS alone.
+        const tax = {
+          sourceEventId: said,
+          key: "INV-1",
+          amount: "0",
+          withheld: "4k",
+          paidOn: "2026-11-05",
+        };
+        const card = yield* LeadMoney.payment(scope, tax);
+        if (!("status" in card) || card.status !== "proposed")
+          return assert.fail("expected a card");
+        assert.include(card.shown, "Received: nothing in cash");
+        yield* agentPaid(scope, orgId, ownerId, tax);
+        assert.deepStrictEqual(
+          yield* sql`SELECT amount_minor AS minor, withheld FROM kin_record_payments
+            WHERE org_id = ${orgId} AND voided_at IS NULL`,
+          [{ minor: 400_000, withheld: 1 }],
+        );
+        // Asked what it made, the agent is told tax gets no receipt, not to make one.
+        const read = yield* Effect.flip(
+          LeadDocuments.receipt(scope, { sourceEventId: said, proposal: card.proposal }),
+        );
+        assert.strictEqual(
+          read.message,
+          "The owner confirmed this tax the client withheld on its card, so Kin recorded it. Tax withheld isn't money received, so it gets no receipt.",
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("settle an invoice from its balance when the amount is edited", () =>
     Effect.gen(function* () {
       yield* seed;

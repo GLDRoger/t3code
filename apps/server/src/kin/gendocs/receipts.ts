@@ -475,6 +475,8 @@ export const againstRefusal = Effect.fn("KinReceipts.againstRefusal")(function* 
     return invalid(
       `${target.key} is not an invoice, so nothing can be set against it. Nothing changed.`,
     );
+  if (target.state === "dropped")
+    return invalid(`${target.key} is void; it takes no payments. Nothing changed.`);
   if (yield* isUnissuedDraft(orgId, target))
     return invalid(
       `${target.key} is a draft, so nothing is owed on it yet. Issue it first, then set the advance against it. Nothing changed.`,

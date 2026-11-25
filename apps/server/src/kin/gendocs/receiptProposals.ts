@@ -506,8 +506,8 @@ export const proposalOutcome = Effect.fn("KinReceipts.outcome")(function* (input
 }) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<
-    Pick<ProposalRow, "state" | "receiptKey"> & { readonly cardClosed: number }
-  >`SELECT p.state, p.receipt_key AS "receiptKey",
+    Pick<ProposalRow, "state" | "receiptKey" | "json"> & { readonly cardClosed: number }
+  >`SELECT p.state, p.receipt_key AS "receiptKey", p.request_json AS json,
       EXISTS (SELECT 1 FROM kin_widgets w WHERE w.org_id = p.org_id
         AND w.widget_id = p.widget_id AND w.closed_at IS NOT NULL) AS "cardClosed"
     FROM kin_receipt_proposals p
@@ -519,6 +519,11 @@ export const proposalOutcome = Effect.fn("KinReceipts.outcome")(function* (input
       message: `No receipt proposal ${input.proposalId.slice(0, 40)} of yours. Call kin_receipt with what the owner asked for first.`,
     });
   if (row.state === "made" && row.receiptKey !== null) return row.receiptKey;
+  const received = Option.getOrUndefined(decodeRequest(row.json))?.received;
+  if (row.state === "made" && received !== undefined && received.amount === undefined)
+    return yield* refused(
+      "The owner confirmed this tax the client withheld on its card, so Kin recorded it. Tax withheld isn't money received, so it gets no receipt.",
+    );
   if (row.state === "made")
     return yield* refused(
       "The owner confirmed this payment on its card, so Kin recorded it; it has no receipt. For one, call kin_receipt with its paymentId from record_get.",
