@@ -59,24 +59,19 @@ const block = (content: McpSchema.ContentBlock): string => {
 
 /**
  * A tool's result as the agent sees it: cleaned, cut at `resultChars` with how to get the rest,
- * and quoted as outside text. `chars` is what the turn's budget counts.
+ * and quoted as outside text. `chars` is what the call log records.
  */
 export const resultText = (input: {
   readonly label: string;
   readonly tool: McpSchema.Tool;
   readonly result: McpSchema.CallToolResult;
-  /** What the turn has left to read, at most `resultChars`. */
-  readonly limit?: number;
 }) => {
   const texts = input.result.content.map(block);
   const structured = input.result.structuredContent;
   if (structured !== undefined && !texts.some((text) => sameJson(text, structured)))
     texts.push(JSON.stringify(structured));
   const full = clean(texts.join("\n\n"));
-  const limit = Math.min(
-    input.limit ?? CONNECTION_LIMITS.resultChars,
-    CONNECTION_LIMITS.resultChars,
-  );
+  const limit = CONNECTION_LIMITS.resultChars;
   const code = full.charCodeAt(limit - 1);
   const at = code >= 0xd800 && code <= 0xdbff ? limit - 1 : limit;
   const cut = full.length > limit;

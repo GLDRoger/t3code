@@ -5,7 +5,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Chat from "../chat/KinChatRepository.ts";
 import { directKey } from "./LeadAccess.ts";
-import * as KinSchedules from "../triggers/kinSchedules.ts";
 import contextBudget from "../mcp/agentContextBudget.json" with { type: "json" };
 import { KinLeadPrompt } from "./LeadPrompt.ts";
 import {
@@ -172,10 +171,8 @@ it.effect.each(Object.keys(TURN_KINDS) as Array<keyof typeof TURN_KINDS>)(
         lane: { chatId, mode: turn.mode },
         events: [event],
       });
-      // The owner's zone is pinned to UTC; a machine on another zone adds this clause.
-      const hostClock = `; scheduled tasks run on the host clock, ${JSON.stringify(KinSchedules.hostTimeZone())}`;
       expect(
-        Buffer.byteLength(built.replace(hostClock, ""), "utf8"),
+        Buffer.byteLength(built, "utf8"),
         "Set kinLeadPromptBytes in agentContextBudget.json to the measured value. Before you cut text to fit, run the evals that cover it (evals/README.md).",
       ).toBe(contextBudget.kinLeadPromptBytes[kind]);
     }).pipe(Effect.provide(layer)),

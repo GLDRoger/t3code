@@ -6,8 +6,10 @@ import {
   type KinPulseActor,
   type KinPulseFact,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { sentMail, type SentMail } from "../connections/Sending.ts";
@@ -19,6 +21,8 @@ import { headStarts } from "./headStart.ts";
 import { covers, endedHolds } from "./holds.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import * as KinPulse from "./KinPulse.ts";
+import * as KinSchedules from "../triggers/kinSchedules.ts";
+import { onHostClock } from "./checkInSeeds.ts";
 import { teamHoursNow } from "./nudge.ts";
 import { lateReminders } from "./told.ts";
 import { LOOKED_AFTER_SENSES } from "./senses/deals.ts";
@@ -253,12 +257,18 @@ const asideEnded = Effect.fn("KinLeadPrompt.asideEnded")(function* (
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-/** This agent's check-ins, one line each, so the owner can move or drop one in plain words. */
+/**
+ * This agent's check-ins, one line each in the owner's own time, so the owner can move or drop
+ * one in plain words. A row whose native task was moved since Kin wrote it reads from its host time.
+ */
 export const checkInIndex = Effect.fn("KinLeadPrompt.checkIns")(function* (
   orgId: KinOrgId,
   agentId: KinAgentId,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const zone = yield* ownerZone(orgId);
+  const host = KinSchedules.hostTimeZone();
+  const now = yield* Clock.currentTimeMillis;
   const rows = yield* sql<{
     scheduleId: string;
     title: string;
@@ -266,20 +276,36 @@ export const checkInIndex = Effect.fn("KinLeadPrompt.checkIns")(function* (
     timeOfDay: string | null;
     weekdays: string | null;
     enabled: number;
+    ownerTime: string | null;
   }>`SELECT s.schedule_id AS "scheduleId", t.title, s.loose_at AS "looseAt",
       json_extract(t.schedule_json, '$.timeOfDay') AS "timeOfDay",
-      json_extract(t.schedule_json, '$.weekdays') AS weekdays, t.enabled
+      json_extract(t.schedule_json, '$.weekdays') AS weekdays, t.enabled,
+      s.owner_time_json AS "ownerTime"
     FROM kin_schedules s JOIN scheduled_tasks t ON t.task_id = s.task_id
     WHERE s.org_id = ${orgId} AND s.agent_id = ${agentId} AND s.check_in = 1
       AND s.deleted_at IS NULL
     ORDER BY json_extract(t.schedule_json, '$.timeOfDay'), s.schedule_id`;
   return rows.map((row) => {
-    const days: unknown = row.weekdays === null ? null : JSON.parse(row.weekdays);
+    const listed: unknown = row.weekdays === null ? null : JSON.parse(row.weekdays);
+    const hostDays =
+      Array.isArray(listed) && listed.length > 0 ? listed.map(Number) : [0, 1, 2, 3, 4, 5, 6];
+    const hostAt = row.looseAt ?? row.timeOfDay;
+    const kept =
+      row.ownerTime === null
+        ? undefined
+        : Option.getOrUndefined(KinSchedules.decodeOwnerTime(row.ownerTime));
+    const own =
+      hostAt === null
+        ? undefined
+        : kept !== undefined && kept.host.at === hostAt && kept.host.days.join() === hostDays.join()
+          ? kept
+          : onHostClock(hostAt, hostDays, host, zone, now);
+    const days = own?.days ?? hostDays;
     const named =
-      Array.isArray(days) && days.length > 0 && days.length < 7
-        ? ` ${days.map((day) => DAY_NAMES[Number(day)] ?? "?").join(", ")}`
+      days.length > 0 && days.length < 7
+        ? ` ${days.map((day) => DAY_NAMES[day] ?? "?").join(", ")}`
         : " every day";
-    const time = row.looseAt === null ? `at ${row.timeOfDay ?? "?"}` : `around ${row.looseAt}`;
+    const time = `${row.looseAt === null ? "at" : "around"} ${own?.at ?? "?"}`;
     return `${row.scheduleId} ${row.title}: ${time}${named}${row.enabled === 1 ? "" : " (paused)"}`;
   });
 });

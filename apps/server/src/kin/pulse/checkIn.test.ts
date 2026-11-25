@@ -1185,54 +1185,57 @@ describe("pulse check-ins", () => {
         assert.isTrue(saved.every((input) => input.keepWording === true));
       }).pipe(Effect.provide(layer)),
   );
-  it.effect("a check-in set in Settings keeps the owner's time across a clock change", () =>
-    Effect.gen(function* () {
-      yield* seed;
-      const sql = yield* SqlClient.SqlClient;
-      yield* companyClock("America/New_York");
-      using _hostClock = vi.spyOn(KinSchedules, "hostTimeZone").mockReturnValue("UTC");
-      const weekdays = [1, 2, 3, 4, 5];
-      const JULY = Date.UTC(2026, 6, 13);
-      const DECEMBER = Date.UTC(2026, 11, 14);
-      // Set at 09:00 his time in July; "moved" was changed on T3's screen since.
-      const july = { at: "13:00", days: weekdays };
-      for (const slug of ["mine", "moved"]) {
-        const at = slug === "moved" ? { ...july, at: "11:00" } : july;
-        yield* scheduleRow({ slug, at: at.at, days: at.days, source: "kin-settings:check-ins" });
-        yield* sql`UPDATE kin_schedules SET owner_time_json = ${JSON.stringify({
-          at: "09:00",
-          days: weekdays,
-          host: july,
-        })} WHERE schedule_id = ${`checkin-${slug}`}`;
-      }
-      const saved: Array<KinSchedules.SaveInput> = [];
-      const schedules = KinSchedules.KinSchedules.of({
-        save: (input) => Effect.sync(() => void saved.push(input)),
-        cancel: () => Effect.void,
-        applyTaps: () => Effect.void,
-      });
-      yield* TestClock.setTime(JULY);
-      yield* followOwnerZone(orgId, schedules);
-      assert.deepStrictEqual(saved, []);
-      yield* TestClock.setTime(DECEMBER);
-      yield* followOwnerZone(orgId, schedules);
-      assert.deepStrictEqual(
-        saved.map(({ scheduleId, every, ownerTime, keepWording }) => ({
-          scheduleId,
-          every,
-          ownerTime,
-          keepWording,
-        })),
-        [
-          {
-            scheduleId: KinMemoryItemId.make("checkin-mine"),
+  it.effect(
+    "a check-in set in Settings or in chat keeps the owner's time across a clock change",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* companyClock("America/New_York");
+        using _hostClock = vi.spyOn(KinSchedules, "hostTimeZone").mockReturnValue("UTC");
+        const weekdays = [1, 2, 3, 4, 5];
+        const JULY = Date.UTC(2026, 6, 13);
+        const DECEMBER = Date.UTC(2026, 11, 14);
+        // Set at 09:00 his time in July, in Settings or in chat; "moved" was changed on T3's screen since.
+        const july = { at: "13:00", days: weekdays };
+        for (const slug of ["mine", "moved", "said"]) {
+          const at = slug === "moved" ? { ...july, at: "11:00" } : july;
+          const source = slug === "said" ? "chat-event" : "kin-settings:check-ins";
+          yield* scheduleRow({ slug, at: at.at, days: at.days, source });
+          yield* sql`UPDATE kin_schedules SET owner_time_json = ${JSON.stringify({
+            at: "09:00",
+            days: weekdays,
+            host: july,
+          })} WHERE schedule_id = ${`checkin-${slug}`}`;
+        }
+        const saved: Array<KinSchedules.SaveInput> = [];
+        const schedules = KinSchedules.KinSchedules.of({
+          save: (input) => Effect.sync(() => void saved.push(input)),
+          cancel: () => Effect.void,
+          applyTaps: () => Effect.void,
+        });
+        yield* TestClock.setTime(JULY);
+        yield* followOwnerZone(orgId, schedules);
+        assert.deepStrictEqual(saved, []);
+        yield* TestClock.setTime(DECEMBER);
+        yield* followOwnerZone(orgId, schedules);
+        assert.deepStrictEqual(
+          saved
+            .map(({ scheduleId, every, ownerTime, keepWording }) => ({
+              scheduleId,
+              every,
+              ownerTime,
+              keepWording,
+            }))
+            .toSorted((a, b) => a.scheduleId.localeCompare(b.scheduleId)),
+          ["checkin-mine", "checkin-said"].map((scheduleId) => ({
+            scheduleId: KinMemoryItemId.make(scheduleId),
             every: { at: "14:00", days: weekdays },
             ownerTime: { at: "09:00", days: weekdays },
             keepWording: true,
-          },
-        ],
-      );
-    }).pipe(Effect.provide(layer)),
+          })),
+        );
+      }).pipe(Effect.provide(layer)),
   );
   it.effect.each([
     { name: "Friday taken off", days: [1, 2, 3, 4] },

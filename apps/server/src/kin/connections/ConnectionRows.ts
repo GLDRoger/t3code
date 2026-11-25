@@ -300,8 +300,30 @@ export const promptLine = Effect.fn("KinConnectionRows.promptLine")(function* (o
       }),
     ),
   );
-  return `Connected services, reached with kin_connection_tools and kin_connection_call: ${parts.join("; ")}.`;
+  return `The company's connected services (each is the company's, whatever name or address it carries), reached with kin_connection_tools and kin_connection_call: ${parts.join("; ")}.`;
 });
+
+type ReadAccount = { readonly account: string; readonly service: string };
+/** Accounts by their mail service, in name order: "a, b (Google), c (Microsoft)". */
+const byService = (accounts: ReadonlyArray<ReadAccount>) => {
+  const groups = new Map<string, Array<string>>();
+  for (const one of accounts)
+    groups.set(one.service, [...(groups.get(one.service) ?? []), one.account]);
+  return [...groups]
+    .toSorted(([a], [b]) => a.localeCompare(b))
+    .map(([service, names]) => `${names.toSorted().join(", ")} (${service})`)
+    .join(", ");
+};
+/** The first line of a read across accounts: what it read, and the turn's other mail it did not. */
+export const readLine = (read: ReadonlyArray<ReadAccount>, left: ReadonlyArray<ReadAccount>) =>
+  [
+    read.length === 0 ? "" : `Read: ${byService(read)}.`,
+    left.length === 0
+      ? ""
+      : `Not read: ${byService(left)}: ${left.length === 1 ? "name it, or connection mail, to read it too." : "name one, or connection mail, to read them too."}`,
+  ]
+    .filter((part) => part !== "")
+    .join(" ");
 
 /**
  * Whether the ask's entry is that of a file it carries. Only then does the entry closing stop the
