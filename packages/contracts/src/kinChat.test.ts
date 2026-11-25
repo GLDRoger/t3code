@@ -632,6 +632,16 @@ describe("Kin chat contracts", () => {
     expect(() => Schema.decodeSync(codec)(value)).toThrow();
   });
 
+  it("a list update's null still stops a watch once it has crossed the wire as JSON", () => {
+    const decode = Schema.decodeUnknownSync(Schema.toCodecJson(KinListUpdateInput));
+    const base = { orgId: "org", list: "stock", rev: 1 };
+    expect(decode({ ...base, remindOn: null, check: null })).toEqual({
+      ...base,
+      remindOn: null,
+      check: null,
+    });
+  });
+
   it.each([0, 101, 1.5])("rejects history limit %s", (limit) => {
     expect(() => decodeHistory({ chatId: "chat-1", beforeSeq: 2, limit })).toThrow();
   });
