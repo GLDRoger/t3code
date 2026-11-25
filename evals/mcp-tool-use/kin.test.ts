@@ -392,8 +392,15 @@ it.each([
     [
       "Filed as a card in your chat. Press Send to Rhea; add Kabir's address when it's sent.",
       "To get it sent today, press Send to Rhea on the card; once it is sent Kabir has it.",
+      "Once the mail has been sent, Kabir has it.",
     ],
-    ["It's been sent to Kabir.", "It is sent.", "Mail sent to the client.", "Email already sent."],
+    [
+      "It's been sent to Kabir.",
+      "It is sent.",
+      "Mail sent to the client.",
+      "Email already sent.",
+      "The mail has been sent to Kabir.",
+    ],
   ],
   [
     "kin-head-start.ndjson",
@@ -406,6 +413,7 @@ it.each([
     [
       "The follow-up waits for your Confirm; the mail doesn't say it was sent before.",
       "Nothing has been sent: it waits for your Confirm.",
+      "The quote QT-7 was sent on 18 Nov; the follow-up waits for your Confirm.",
     ],
     ["The follow-up was sent to the client.", "The mail has been sent to Anita."],
   ],
