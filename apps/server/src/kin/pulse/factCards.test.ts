@@ -1,0 +1,357 @@
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { kinSecretsTest } from "../lead/layer.testkit.ts";
+import { assert, it } from "@effect/vitest";
+import {
+  AuthSessionId,
+  AuthStandardClientScopes,
+  KIN_WAITED_DONE_FIELD,
+  KinAgentId,
+  KinChatError,
+  KinPersonId,
+  KinWidgetId,
+  ProviderInstanceId,
+  ThreadId,
+  type KinWorkPrincipal,
+} from "@t3tools/contracts";
+import * as ConfigProvider from "effect/ConfigProvider";
+import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as TestClock from "effect/testing/TestClock";
+
+import { KinChatService } from "../chat/KinChatService.ts";
+import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
+import { environment } from "../chat/TaskCard.testkit.ts";
+import { authorityLayer } from "../chat/WakeupAuthority.testkit.ts";
+import * as Kin from "../layer.ts";
+import type { Services } from "../KinServer.ts";
+import { KinRecords } from "../work/KinRecords.ts";
+import * as KinPulse from "./KinPulse.ts";
+
+// Invented: Rhea's Ambermill. Zoya's W-1 waits on Arjun, W-2 on Rhea; Meera is a co-owner.
+const stamp = "1970-01-01T00:00:00.000Z";
+const chief = KinAgentId.make("chief");
+const models = JSON.stringify({ instanceId: ProviderInstanceId.make("codex"), model: "gpt-5.1" });
+const ownerSession = {
+  sessionId: AuthSessionId.make("owner"),
+  subject: "browser",
+  method: "browser-session-cookie" as const,
+  scopes: AuthStandardClientScopes,
+};
+const isChatError = Schema.is(KinChatError);
+const zoyaId = KinPersonId.make("zoya");
+const arjunId = KinPersonId.make("arjun");
+const meeraId = KinPersonId.make("meera");
+const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
+/** Thu 19 Nov 2026, 10:00 UTC: W-1 starts waiting on Arjun. */
+const THURSDAY = Date.UTC(2026, 10, 19, 10);
+/** Wed 25 Nov 2026, 10:00 UTC: six days on, inside everyone's hours. */
+const NOW = THURSDAY + 6 * DAY;
+
+/** Every change on `key` as made at `at`, so it has waited since then (`waitingSince`). */
+const startedWaiting = (sql: SqlClient.SqlClient, orgId: string, key: string, at: number) =>
+  sql`UPDATE kin_record_changes SET at = ${at} WHERE org_id = ${orgId}
+    AND record_id = (SELECT record_id FROM kin_records WHERE org_id = ${orgId} AND key = ${key})`;
+
+const seed = Effect.fn("FactCardsTest.seed")(function* (services: Context.Context<Services>) {
+  const identity = Context.get(services, KinIdentity);
+  const chats = Context.get(services, KinChatService);
+  const records = Context.get(services, KinRecords);
+  const sql = yield* SqlClient.SqlClient;
+  yield* pairSession(ownerSession.sessionId);
+  const owner = (yield* identity.resolve(ownerSession))[0]!;
+  const { orgId } = owner;
+  yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+    VALUES (${chief}, ${orgId}, 'Chief of staff', 'lead', ${owner.personId}, ${stamp})`;
+  const ownerChat = yield* chats.createDirect(owner, { orgId, agentId: chief });
+  const threadId = ThreadId.make("chief-thread");
+  yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, thread_id, models_json, worker_projects_json, owner_chat_id, domain, charter)
+    VALUES (${chief}, ${orgId}, 'Chief of staff', 'L0', 0, ${threadId}, ${models}, '[]',
+      ${ownerChat.chatId}, 'chief-of-staff', 'Runs the company.')`;
+  yield* identity.registerAgentThread({ orgId, agentId: chief, threadId });
+  yield* sql`UPDATE kin_people SET display_name = 'Rhea' WHERE person_id = ${owner.personId}`;
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access,
+      sees_clients) VALUES (${zoyaId}, ${orgId}, 'zoya', 'Zoya', ${stamp}, 'member', 1),
+      (${arjunId}, ${orgId}, 'arjun', 'Arjun', ${stamp}, 'member', 1),
+      (${meeraId}, ${orgId}, 'meera', 'Meera', ${stamp}, 'co_owner', 1)`;
+  for (const person of [zoyaId, arjunId])
+    yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+      VALUES (${orgId}, ${chief}, ${person}, ${owner.personId}, 0)`;
+  // The company's clock and everyone's own: UTC, whatever zone the tests run in.
+  yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+      dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+    VALUES (${orgId}, 'UTC', '08:30', '18:00', '02:00', 0, 1, '09:00', '{}')
+    ON CONFLICT (org_id) DO UPDATE SET time_zone = 'UTC'`;
+  yield* sql`UPDATE kin_people SET time_zone = 'UTC' WHERE org_id = ${orgId}`;
+  const byOwner = {
+    actor: { _tag: "person" as const, personId: owner.personId },
+    via: "owner" as const,
+  };
+  const person = (personId: KinPersonId): PersonIdentity => ({ _tag: "person", orgId, personId });
+  const zoya: KinWorkPrincipal = { _tag: "person", personId: zoyaId };
+  const task = (title: string, waitingOn: KinPersonId) =>
+    Effect.gen(function* () {
+      const made = yield* records.create(orgId, byOwner, {
+        title,
+        owner: zoya,
+        originKey: title,
+        team: true,
+      });
+      yield* records.update(orgId, byOwner, made.row.key, {
+        state: "waiting",
+        waitingOn: { _tag: "person", personId: waitingOn },
+      });
+      return made.row.key;
+    });
+  const quote = yield* task("Revised pilot quote", arjunId);
+  const brief = yield* task("Pilot brief sign-off", owner.personId);
+  for (const key of [quote, brief]) yield* startedWaiting(sql, orgId, key, THURSDAY);
+  return { services, sql, orgId, owner, chats, records, person, byOwner, quote, brief };
+});
+const setup = Effect.gen(function* () {
+  const services = Option.getOrThrow((yield* Kin.KinServer).services);
+  return yield* seed(services).pipe(Effect.provideContext(services));
+});
+type Ctx = Effect.Success<typeof setup>;
+
+/** Kin starts at 03:00 on the day, inside everyone's quiet hours: its clock only moves hours. */
+const run = <A, E>(test: (ctx: Ctx) => Effect.Effect<A, E, SqlClient.SqlClient | Services>) =>
+  Effect.andThen(
+    TestClock.setTime(NOW - 7 * HOUR),
+    Effect.gen(function* () {
+      const ctx = yield* setup;
+      return yield* test(ctx).pipe(Effect.provideContext(ctx.services));
+    }).pipe(
+      Effect.provide(
+        Kin.layer.pipe(
+          Layer.provide(kinSecretsTest),
+          Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+          Layer.provideMerge(environment),
+          Layer.provideMerge(authorityLayer),
+        ),
+      ),
+    ),
+  );
+
+type Card = {
+  readonly widgetId: KinWidgetId;
+  readonly who: string;
+  readonly closed: boolean;
+  readonly question: string;
+  readonly labels: ReadonlyArray<string>;
+  readonly lines: ReadonlyArray<string | undefined>;
+  readonly outcome: { readonly title: string; readonly text: string } | undefined;
+};
+/** Kin's cards about facts, oldest first, with whose direct chat each is in. */
+const cards = (ctx: Ctx) =>
+  ctx.sql<{ widgetId: string; who: string; closedAt: string | null; state: string }>`SELECT
+      DISTINCT w.widget_id AS "widgetId", m.person_id AS who, w.closed_at AS "closedAt",
+      w.state_json AS state, msg.seq
+    FROM kin_card_plans p JOIN kin_widgets w ON w.org_id = p.org_id AND w.widget_id = p.widget_id
+    JOIN kin_messages msg ON msg.org_id = w.org_id AND msg.message_id = w.message_id
+    JOIN kin_chat_members m ON m.org_id = w.org_id AND m.chat_id = w.chat_id
+      AND m.principal_kind = 'person'
+    WHERE p.org_id = ${ctx.orgId} AND json_extract(p.plan_json, '$.factKey') IS NOT NULL
+    ORDER BY msg.seq, w.widget_id`.pipe(
+    Effect.map((rows) =>
+      rows.map((row): Card => {
+        const state = JSON.parse(row.state) as {
+          question: string;
+          options: ReadonlyArray<{ label: string; action?: { line: string } }>;
+          outcome?: { title: string; text: string };
+        };
+        return {
+          widgetId: KinWidgetId.make(row.widgetId),
+          who: row.who,
+          closed: row.closedAt !== null,
+          question: state.question,
+          labels: state.options.map((option) => option.label),
+          lines: state.options.map((option) => option.action?.line),
+          outcome: state.outcome,
+        };
+      }),
+    ),
+  );
+const tap = (ctx: Ctx, personId: KinPersonId, card: Card, label: string) =>
+  ctx.chats.act(ctx.person(personId), {
+    widgetId: card.widgetId,
+    revision: 1,
+    actionId: "choose",
+    value: `option-${card.labels.indexOf(label) + 1}`,
+    clientActionId: `${card.widgetId}:${personId}:${label}`,
+  });
+/** A pass of the pulse as of `at`; who is in their hours is read from Kin's own clock. */
+const tickAt = (ctx: Ctx, at: number) => KinPulse.tick(ctx.orgId, at);
+/** Kin's own notices in someone's direct chat with the Chief of staff, oldest first. */
+const noticesTo = (ctx: Ctx, personId: KinPersonId) =>
+  ctx.sql<{ body: string }>`SELECT m.body FROM kin_messages m
+    JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+    WHERE m.org_id = ${ctx.orgId} AND c.direct_key = ${`${personId}:${chief}`}
+      AND m.author_kind = 'system' AND m.status = 'posted'
+    ORDER BY m.seq`.pipe(Effect.map((rows) => rows.map((row) => row.body)));
+/** Whether the owner's Needs attention holds an open fact about `key` of this sense. */
+const ownerSees = (ctx: Ctx, sense: string, key: string, at: number) =>
+  KinPulse.read({ orgId: ctx.orgId, at, viewer: { _tag: "owner" }, limit: 200 }).pipe(
+    Effect.map((read) =>
+      read.facts.some((fact) => fact.sense === sense && fact.subject.key === key),
+    ),
+  );
+const freshDay = (ctx: Ctx) => ctx.sql`DELETE FROM kin_pulse_nudges WHERE org_id = ${ctx.orgId}`;
+const waitOnArjun = (ctx: Ctx) =>
+  ctx.records.update(ctx.orgId, ctx.byOwner, "W-1", {
+    state: "waiting",
+    waitingOn: { _tag: "person", personId: arjunId },
+  });
+
+it.effect(
+  "a teammate waited on too long gets one card, never the owner level; By a day hides it from the owner's check-in until that day ends and tells the holder once; only they may answer",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        assert.deepStrictEqual([ctx.quote, ctx.brief], ["W-1", "W-2"]);
+        // 03:00 is inside their quiet hours: nothing yet; the next pass in their hours posts it.
+        yield* tickAt(ctx, NOW - 7 * HOUR);
+        assert.deepStrictEqual(yield* cards(ctx), []);
+        yield* TestClock.setTime(NOW);
+        yield* tickAt(ctx, NOW);
+        yield* tickAt(ctx, NOW + HOUR);
+        const [card, ...more] = yield* cards(ctx);
+        assert.deepStrictEqual(more, []);
+        assert.strictEqual(card!.who, arjunId);
+        assert.strictEqual(
+          card!.question,
+          "Zoya's W-1 Revised pilot quote has waited on you for 6 days. Where is it?",
+        );
+        assert.deepStrictEqual(card!.labels, ["Done", "By Thu 26 Nov", "By Wed 2 Dec", "Not mine"]);
+        assert.deepStrictEqual(card!.lines, [
+          "W-1 goes back to Zoya, who is told you said it's done",
+          "Zoya is told; it comes back after Thu 26 Nov if it still waits on you",
+          "Zoya is told; it comes back after Wed 2 Dec if it still waits on you",
+          "Zoya is told it doesn't wait on you, to change who it does",
+        ]);
+        // It is Arjun's nudge of the day, so an agent's text nudge waits for tomorrow.
+        const [nudged] = yield* ctx.sql<{ factKey: string }>`SELECT fact_key AS "factKey"
+          FROM kin_pulse_nudges WHERE org_id = ${ctx.orgId} AND person_id = ${arjunId}`;
+        assert.match(nudged!.factKey, /^waiting_long:W-1:/);
+
+        // Only Arjun answers it: Zoya's tap is refused and the card stays open.
+        const refused = yield* tap(ctx, zoyaId, card!, "Done").pipe(
+          Effect.flip,
+          Effect.map((error) => (isChatError(error) ? error.reason : "not a refusal")),
+        );
+        assert.notStrictEqual(refused, "not a refusal");
+        assert.isFalse((yield* cards(ctx))[0]!.closed);
+
+        assert.isTrue(yield* ownerSees(ctx, "waiting_long", "W-1", NOW + HOUR));
+        yield* tap(ctx, arjunId, card!, "By Thu 26 Nov");
+        assert.deepStrictEqual((yield* cards(ctx))[0]!.outcome, {
+          title: "Told Zoya",
+          text: "W-1 comes back after Thu 26 Nov if it still waits on you.",
+        });
+        assert.isFalse(yield* ownerSees(ctx, "waiting_long", "W-1", NOW + 2 * HOUR));
+        assert.isFalse(yield* ownerSees(ctx, "waiting_long", "W-1", Date.UTC(2026, 10, 26, 23)));
+        assert.isTrue(yield* ownerSees(ctx, "waiting_long", "W-1", Date.UTC(2026, 10, 27, 1)));
+        assert.deepStrictEqual(yield* noticesTo(ctx, zoyaId), [
+          "Arjun says W-1 Revised pilot quote will have what it waits on by Thu 26 Nov.",
+        ]);
+        assert.strictEqual((yield* ctx.records.get(ctx.orgId, "W-1"))?.state, "waiting");
+        // Once per wait: back on Friday, it is told as today and asked no more.
+        yield* freshDay(ctx);
+        yield* tickAt(ctx, Date.UTC(2026, 10, 27, 10));
+        assert.strictEqual((yield* cards(ctx)).length, 1);
+      }),
+    ),
+);
+
+it.effect(
+  "Done puts the teammate's task back to open and nothing else, its history saying who and from which card, and tells its holder; a tap after the task changed does nothing; a card whose fact cleared closes",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW);
+        yield* tickAt(ctx, NOW);
+        const [card] = yield* cards(ctx);
+        const before = yield* ctx.records.get(ctx.orgId, "W-1");
+        yield* tap(ctx, arjunId, card!, "Done");
+        const after = yield* ctx.records.get(ctx.orgId, "W-1");
+        assert.strictEqual(after?.state, "open");
+        assert.deepStrictEqual(
+          [after?.ownerId, after?.dueAt, after?.title],
+          [before?.ownerId, before?.dueAt, before?.title],
+        );
+        const [change] = yield* ctx.sql<{ actor: string; fields: string }>`SELECT
+            c.actor_id AS actor, c.fields_json AS fields FROM kin_record_changes c
+          WHERE c.org_id = ${ctx.orgId} AND c.record_id = ${after!.recordId}
+          ORDER BY c.seq DESC LIMIT 1`;
+        assert.strictEqual(change!.actor, arjunId);
+        const fields = JSON.parse(change!.fields) as ReadonlyArray<{ field: string; to: string }>;
+        assert.strictEqual(
+          fields.find((one) => one.field === KIN_WAITED_DONE_FIELD)?.to,
+          card!.widgetId,
+        );
+        assert.deepStrictEqual((yield* cards(ctx))[0]!.outcome, {
+          title: "Told Zoya",
+          text: "W-1 is back with Zoya.",
+        });
+        assert.deepStrictEqual(yield* noticesTo(ctx, zoyaId), [
+          "Arjun says what W-1 Revised pilot quote waited on is done, so it is back with you.",
+        ]);
+
+        // It waits on him again, and changes after its card was posted: the tap does nothing.
+        yield* waitOnArjun(ctx);
+        yield* startedWaiting(ctx.sql, ctx.orgId, "W-1", NOW - 7 * DAY);
+        yield* freshDay(ctx);
+        yield* tickAt(ctx, NOW + HOUR);
+        const second = (yield* cards(ctx)).find((one) => !one.closed)!;
+        yield* ctx.records.update(ctx.orgId, ctx.byOwner, "W-1", { notes: "Cost sheet v2" });
+        yield* tap(ctx, arjunId, second, "Not mine");
+        assert.deepStrictEqual(
+          (yield* cards(ctx)).find((one) => one.widgetId === second.widgetId)?.outcome,
+          {
+            title: "Nothing was done",
+            text: "W-1 changed since this was offered, so nothing was done.",
+          },
+        );
+
+        // And again: Zoya stops it waiting before anyone answers, and its card closes saying why.
+        yield* ctx.records.update(ctx.orgId, ctx.byOwner, "W-1", { state: "open" });
+        yield* waitOnArjun(ctx);
+        yield* startedWaiting(ctx.sql, ctx.orgId, "W-1", NOW - 8 * DAY);
+        yield* freshDay(ctx);
+        yield* tickAt(ctx, NOW + 2 * HOUR);
+        const third = (yield* cards(ctx)).find((one) => !one.closed)!;
+        yield* ctx.records.update(ctx.orgId, ctx.byOwner, "W-1", { state: "doing" });
+        yield* tickAt(ctx, NOW + 3 * HOUR);
+        assert.deepStrictEqual(
+          (yield* cards(ctx)).find((one) => one.widgetId === third.widgetId)?.outcome,
+          { title: "No longer needed", text: "W-1 no longer waits on you." },
+        );
+      }),
+    ),
+);
+
+it.effect("no card while an agent already nudged them today, nor on a task they can't see", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const chat = yield* ctx.chats.createDirect(ctx.person(arjunId), {
+        orgId: ctx.orgId,
+        agentId: chief,
+      });
+      yield* ctx.sql`INSERT INTO kin_pulse_nudges (org_id, person_id, day, agent_id, chat_id,
+          fact_key, sent_at)
+        VALUES (${ctx.orgId}, ${arjunId}, '2026-11-25', ${chief}, ${chat.chatId}, 'other',
+          ${NOW - HOUR})`;
+      yield* TestClock.setTime(NOW);
+      yield* tickAt(ctx, NOW);
+      assert.deepStrictEqual(yield* cards(ctx), []);
+      yield* ctx.records.update(ctx.orgId, ctx.byOwner, "W-1", { sensitive: true });
+      yield* freshDay(ctx);
+      yield* tickAt(ctx, NOW + HOUR);
+      assert.deepStrictEqual(yield* cards(ctx), []);
+    }),
+  ),
+);

@@ -1,0 +1,187 @@
+import {
+  KIN_WAITED_DONE_FIELD,
+  KinAgentId,
+  KinChatError,
+  type KinChoiceOutcome,
+  type KinOrgId,
+  KinPersonId,
+  type KinWidget,
+} from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
+
+import { ownerLevel } from "../people/KinAccess.ts";
+import type { FactCardPlan, WaitedPlan } from "../widgets/cardPlans.ts";
+import type { KinRecords } from "../work/KinRecords.ts";
+import { noticeHolder } from "./holderNotice.ts";
+import * as KinPulse from "./KinPulse.ts";
+import { DAY_MS } from "./thresholds.ts";
+
+/** "Not mine" sets the fact aside this long, for its holder to change who it waits on. */
+const NOT_MINE_MS = 2 * DAY_MS;
+
+type FactTap = {
+  readonly orgId: KinOrgId;
+  readonly widget: KinWidget;
+  readonly personId: KinPersonId;
+  readonly now: number;
+};
+
+const nothingDone = (why: string): KinChoiceOutcome => ({
+  title: "Nothing was done",
+  text: `${why.charAt(0).toUpperCase()}${why.slice(1)}, so nothing was done.`,
+});
+
+/**
+ * Has the fact in hand for the tapper until `until`: an owner-level tapper's own, a teammate's on
+ * their word through the card's agent, so the owner's check-ins hold it too. False when the fact
+ * no longer stands.
+ */
+const holdFact = Effect.fn("KinFactCards.holdFact")(function* (
+  tap: FactTap,
+  plan: FactCardPlan,
+  input: {
+    readonly factKey: string;
+    readonly action: "got_it" | "not_a_problem";
+    readonly until?: number;
+    readonly note: string;
+  },
+) {
+  const own = yield* ownerLevel(tap.orgId, tap.personId);
+  return yield* KinPulse.handle({
+    orgId: tap.orgId,
+    at: tap.now,
+    viewer: { _tag: "owner" },
+    by: own
+      ? { _tag: "person", personId: tap.personId }
+      : { _tag: "agent", agentId: KinAgentId.make(plan.agentId) },
+    factKey: input.factKey,
+    action: input.action,
+    ...(input.until === undefined ? {} : { until: input.until }),
+    note: input.note,
+  }).pipe(
+    Effect.as(true),
+    Effect.catchIf(
+      (error) => error._tag === "KinChatError" && error.reason === "not_found",
+      () => Effect.succeed(false),
+    ),
+  );
+});
+
+/** Tells the task's holder what the person it waited on answered, once per card. */
+const tellHolder = (tap: FactTap, plan: WaitedPlan, body: string) =>
+  plan.holder.personId === tap.personId
+    ? Effect.void
+    : noticeHolder({
+        orgId: tap.orgId,
+        personId: KinPersonId.make(plan.holder.personId),
+        agentId: KinAgentId.make(plan.agentId),
+        body,
+        key: `fact-card-${tap.widget.widgetId.replace(/[^A-Za-z0-9-]/g, "-")}`,
+      }).pipe(Effect.asVoid);
+
+const runWaited = Effect.fn("KinFactCards.runWaited")(function* (
+  tap: FactTap,
+  plan: WaitedPlan,
+  records: KinRecords["Service"],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{
+    state: string;
+    rev: number;
+    waitingKind: string | null;
+    waitingId: string | null;
+  }>`SELECT state, rev, waiting_on_kind AS "waitingKind", waiting_on_id AS "waitingId"
+    FROM kin_records WHERE org_id = ${tap.orgId} AND record_id = ${plan.recordId}`;
+  const notWaiting = nothingDone(`${plan.key} no longer waits on you`);
+  if (
+    row === undefined ||
+    row.state !== "waiting" ||
+    row.waitingKind !== "person" ||
+    row.waitingId !== tap.personId
+  )
+    return notWaiting;
+  if (row.rev !== plan.rev) return nothingDone(`${plan.key} changed since this was offered`);
+  const named = `${plan.key} ${plan.title}`;
+  const holder = plan.holder.name;
+  const told = `Told ${holder}`;
+  switch (plan.answer) {
+    case "done": {
+      // The one change the person it waited on may make to someone else's task: waiting to open.
+      yield* records.update(
+        tap.orgId,
+        {
+          actor: { _tag: "person", personId: tap.personId },
+          via: "owner",
+          chatId: tap.widget.chatId,
+          answering: [tap.widget.widgetId],
+        },
+        plan.key,
+        { state: "open" },
+        plan.rev,
+        [{ field: KIN_WAITED_DONE_FIELD, from: null, to: tap.widget.widgetId }],
+      );
+      yield* tellHolder(
+        tap,
+        plan,
+        `${plan.personName} says what ${named} waited on is done, so it is back with you.`,
+      );
+      return { title: told, text: `${plan.key} is back with ${holder}.` };
+    }
+    case "by": {
+      if (plan.until === null || plan.day === null || plan.until <= tap.now)
+        return nothingDone(`${plan.day ?? "that day"} has passed`);
+      const held = yield* holdFact(tap, plan, {
+        factKey: plan.factKey,
+        action: "got_it",
+        until: plan.until,
+        note: `${plan.personName}: by ${plan.day}`,
+      });
+      if (!held) return notWaiting;
+      yield* tellHolder(
+        tap,
+        plan,
+        `${plan.personName} says ${named} will have what it waits on by ${plan.day}.`,
+      );
+      return {
+        title: told,
+        text: `${plan.key} comes back after ${plan.day} if it still waits on you.`,
+      };
+    }
+    case "not_mine": {
+      const held = yield* holdFact(tap, plan, {
+        factKey: plan.factKey,
+        action: "got_it",
+        until: tap.now + NOT_MINE_MS,
+        note: `${plan.personName}: not mine`,
+      });
+      if (!held) return notWaiting;
+      yield* tellHolder(
+        tap,
+        plan,
+        `${plan.personName} says ${named} doesn't wait on them. Change who it waits on, or pick it up.`,
+      );
+      return { title: told, text: `${holder} will change who ${plan.key} waits on.` };
+    }
+  }
+});
+
+/**
+ * A tap on Kin's card about a fact, in the tap's transaction: only the person it asks may answer,
+ * and only while what it asked about is as it was; else nothing is done and the card says why.
+ */
+export const runFactCard = Effect.fn("KinFactCards.run")(function* (
+  tap: FactTap,
+  plan: FactCardPlan,
+  records: KinRecords["Service"],
+) {
+  if (tap.personId !== plan.personId)
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: "Only the person this card asks can answer it.",
+    });
+  switch (plan.kind) {
+    case "waited_answer":
+      return yield* runWaited(tap, plan, records);
+  }
+});
