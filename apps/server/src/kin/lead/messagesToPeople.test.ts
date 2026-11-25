@@ -1269,8 +1269,8 @@ it.effect(
           notice?.body,
           [
             "Chief of staff gave you 2 tasks:",
-            `• ${prices} Invented price sheet. Why: She knows the client`,
-            `• ${poster} Invented poster. Why: She drew the last one`,
+            `• ${prices} Invented price sheet`,
+            `• ${poster} Invented poster`,
           ].join("\n"),
         );
         assert.deepStrictEqual(
@@ -1473,7 +1473,7 @@ const awayThenBack = (how: "date" | "early" | "restart") =>
       assert.strictEqual(yield* deliverHeld(orgId, chats), 0);
       assert.deepStrictEqual(yield* arjunReads, [
         {
-          body: `Chief of staff gave you ${phone} Invented phone number screen. Why: He built the reminders.`,
+          body: `Chief of staff gave you ${phone} Invented phone number screen.`,
         },
       ]);
       // What the owner and the co-owner gave on their screens is no chat line: one banner each
