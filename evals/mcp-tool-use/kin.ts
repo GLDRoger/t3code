@@ -835,7 +835,7 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
         title: typeof one.title === "string" ? one.title : "",
         created: true,
         state: "open",
-        stateLabel: suggestedStateLabel(list, "open", ""),
+        stateLabel: suggestedStateLabel(list, "open"),
         suggested: true,
         ...(list === "work" && Number.isFinite(at) ? { shows: dueShows(at, day, input.zone) } : {}),
       };
