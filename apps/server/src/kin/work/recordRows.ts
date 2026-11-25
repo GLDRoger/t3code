@@ -804,6 +804,16 @@ const changesOf = Effect.fn("KinRecords.changesOf")(function* (
 
 const HAND_OFF_FIELDS = new Set(["owner", "handedBack", "reason", "state"]);
 
+const isHandOffByProduct = (field: FieldChange, newHolder: string | null | undefined) => {
+  if (newHolder == null) return false;
+  if (field.field === "promisedTo") return field.from === newHolder && field.to === null;
+  if (field.field === "untold") return field.to === null;
+  if (field.field !== "alsoOn" || field.from === null) return false;
+  const before = field.from.split(", ");
+  const after = before.filter((principal) => principal !== newHolder);
+  return after.length < before.length && field.to === (after.length === 0 ? null : after.join(", "));
+};
+
 /** G13: the hand-back that blocks giving this task again until it changes or the owner asks. */
 export const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function* (
   orgId: KinOrgId,
@@ -821,7 +831,13 @@ export const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function*
       back = { seq: change.seq, to: returned.to };
       break;
     }
-    if (change.fields.some((field) => !HAND_OFF_FIELDS.has(field.field))) return;
+    const newHolder = change.fields.find((field) => field.field === "owner")?.to;
+    if (
+      change.fields.some(
+        (field) => !HAND_OFF_FIELDS.has(field.field) && !isHandOffByProduct(field, newHolder),
+      )
+    )
+      return;
   }
   if (back === undefined) return;
   const sql = yield* SqlClient.SqlClient;
