@@ -3430,6 +3430,7 @@ describe("KinChatService", () => {
           (${orgId}, 'projects', 'Projects', 'P', 1, 0, '{}'),
           (${orgId}, 'clients', 'Clients', 'C', 1, 0, '{}'),
           (${orgId}, 'docs', 'Docs', 'D', 1, 0, '{}'),
+          (${orgId}, 'invoices', 'Invoices', 'INV', 1, 0, '{}'),
           (${orgId}, 'orders', 'Orders', 'ORD', 0, 0, '{"fields":[{"key":"number","sensitive":true}]}')`;
         yield* sql`INSERT INTO kin_records
           (org_id, record_id, register_id, key, title, owner_kind, owner_id, created_by_kind,
@@ -3471,6 +3472,22 @@ describe("KinChatService", () => {
         const original = stampOf(yield* Queue.take(events));
         assert.strictEqual(yield* stamp, original);
 
+        const ownerStamp = Stream.runHead(
+          service.subscribe(rhea, { chatId: chat.chatId, afterSeq: 1 }),
+        ).pipe(Effect.map(Option.getOrThrow), Effect.map(stampOf));
+        const ownerBefore = yield* ownerStamp;
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, created_by_kind, origin_key, created_at, updated_at)
+          VALUES (${orgId}, 'invoice-40', 'invoices', 'INV-40', 'Tidewater Freight', 'person',
+            ${rhea.personId}, 'person', 'invoice-40', 0, 0)`;
+        assert.strictEqual(yield* ownerStamp, ownerBefore, "creating INV-40");
+        assert.strictEqual(yield* stamp, original, "creating INV-40");
+
+        yield* sql`UPDATE kin_records SET title = 'Tidewater Freight November', state = 'dropped'
+          WHERE org_id = ${orgId} AND record_id = 'invoice-40'`;
+        assert.strictEqual(yield* ownerStamp, ownerBefore, "editing INV-40");
+        assert.strictEqual(yield* stamp, original, "editing INV-40");
+
         const personAccess = (personId: KinPersonId, access: "member" | "co_owner") =>
           sql`UPDATE kin_people SET access = ${access}
             WHERE org_id = ${orgId} AND person_id = ${personId}`;
@@ -3494,27 +3511,22 @@ describe("KinChatService", () => {
           return sql`UPDATE kin_registers SET definition_json = ${JSON.stringify(definition)}
             WHERE org_id = ${orgId} AND register_id = 'orders'`;
         };
-        const moneySection = (on: boolean) =>
+        const sectionSwitch = (id: "clients" | "deals" | "money", on: boolean) =>
           sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_at)
-            VALUES (${orgId}, ${JSON.stringify([{ id: "money", on }])}, 1, 0)
+            VALUES (${orgId}, ${JSON.stringify([{ id, on }])}, 1, 0)
             ON CONFLICT (org_id) DO UPDATE SET shell_json = excluded.shell_json`;
+        const listDefaultLabel = (sensitive: boolean) =>
+          sql`UPDATE kin_registers SET definition_json = json_set(definition_json,
+            '$.sensitive', json(${JSON.stringify(sensitive)}))
+            WHERE org_id = ${orgId} AND register_id = 'orders'`;
         const docLabel = (sensitive: number) =>
           sql`UPDATE kin_records SET sensitive = ${sensitive}
             WHERE org_id = ${orgId} AND record_id = 'company-doc'`;
-        const directoryRemoval = (removedAt: string | null) =>
-          sql`UPDATE kin_people SET removed_at = ${removedAt}
-            WHERE org_id = ${orgId} AND person_id = ${arjun.personId}`;
         const chatAgentRetirement = (retiredAt: string | null) =>
           sql`UPDATE kin_agents SET retired_at = ${retiredAt}
             WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
-        const sharedTask = (shared: number) =>
-          sql`UPDATE kin_records SET team_shared = ${shared}
-            WHERE org_id = ${orgId} AND record_id = 'work'`;
         const draftFor = (personId: KinPersonId | null) =>
           recordFields("company-doc", { home: "company", draftFor: personId });
-        const pictureAudience = (audience: "shared" | "owner_only") =>
-          sql`UPDATE kin_doc_versions SET audience = ${audience}
-            WHERE org_id = ${orgId} AND record_id = 'picture' AND version = 1`;
         for (const [grant, restore, label] of [
           [
             personAccess(zoya.personId, "co_owner"),
@@ -3524,6 +3536,9 @@ describe("KinChatService", () => {
           [places(1, 0, 0), places(0, 0, 0), "Clients"],
           [places(0, 1, 0), places(0, 0, 0), "Docs"],
           [places(0, 0, 1), places(0, 0, 0), "Money"],
+          [sectionSwitch("clients", false), sectionSwitch("clients", true), "Clients section"],
+          [sectionSwitch("deals", false), sectionSwitch("deals", true), "Deals section"],
+          [listDefaultLabel(true), listDefaultLabel(false), "list default privacy"],
           [
             recordFields("project", { members: ["person:zoya"] }),
             recordFields("project", {}),
@@ -3545,11 +3560,8 @@ describe("KinChatService", () => {
             recordFields("work", {}),
             "task attendee",
           ],
-          [sharedTask(1), sharedTask(0), "team task"],
           [draftFor(zoya.personId), draftFor(null), "document draft"],
-          [pictureAudience("shared"), pictureAudience("owner_only"), "picture reply audience"],
           [teamList(true, true), teamList(false, true), "team list"],
-          [directoryRemoval(timestamp), directoryRemoval(null), "directory person"],
           [chatAgentRetirement(timestamp), chatAgentRetirement(null), "direct agent chat"],
         ] as const) {
           yield* grant;
@@ -3560,7 +3572,7 @@ describe("KinChatService", () => {
         yield* places(0, 1, 0);
         const docs = yield* stamp;
         yield* docLabel(1);
-        assert.strictEqual(yield* stamp, original, "document label");
+        assert.strictEqual(yield* stamp, docs, "document label");
         yield* docLabel(0);
         assert.strictEqual(yield* stamp, docs);
         yield* places(0, 0, 0);
@@ -3568,18 +3580,38 @@ describe("KinChatService", () => {
         yield* teamList(true, true);
         const shared = yield* stamp;
         yield* teamList(true, true, 1);
-        assert.strictEqual(yield* stamp, original, "team list cutoff");
+        assert.notStrictEqual(yield* stamp, shared, "team list cutoff");
         yield* teamList(true, true);
         assert.strictEqual(yield* stamp, shared);
         yield* teamList(true, false);
         assert.notStrictEqual(yield* stamp, shared, "printed number");
         yield* teamList(true, true);
         assert.strictEqual(yield* stamp, shared);
-        yield* moneySection(false);
+        yield* sectionSwitch("money", false);
         assert.notStrictEqual(yield* stamp, shared, "Money section");
-        yield* moneySection(true);
+        yield* sectionSwitch("money", true);
         assert.strictEqual(yield* stamp, shared);
         yield* teamList(false, true);
+
+        yield* sql`INSERT INTO kin_chats (org_id, chat_id, kind, last_seq, created_at)
+          VALUES (${orgId}, 'stage-group', 'project_group', 0, ${timestamp})`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, role, joined_at, joined_seq) VALUES ('zoya-stage', ${orgId}, 'stage-group',
+          'person', ${zoya.personId}, 'member', ${timestamp}, 1)`;
+        const group = yield* stamp;
+        assert.notStrictEqual(group, original, "group chat membership");
+        yield* sql`UPDATE kin_chat_members SET joined_seq = 2
+          WHERE org_id = ${orgId} AND member_id = 'zoya-stage'`;
+        assert.notStrictEqual(yield* stamp, group, "group chat join floor");
+        yield* sql`UPDATE kin_chat_members SET left_at = ${timestamp}
+          WHERE org_id = ${orgId} AND member_id = 'zoya-stage'`;
+        assert.strictEqual(yield* stamp, original, "leaving group chat");
+
+        yield* service.createDirect(zoya, { orgId, agentId });
+        assert.strictEqual(yield* stamp, original, "opening a new direct agent chat");
+        yield* sql`UPDATE kin_doc_versions SET audience = 'shared'
+          WHERE org_id = ${orgId} AND record_id = 'picture' AND version = 1`;
+        assert.strictEqual(yield* stamp, original, "editing a picture version");
 
         yield* personAccess(arjun.personId, "co_owner");
         yield* service.send(rhea, {

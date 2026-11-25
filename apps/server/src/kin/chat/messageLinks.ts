@@ -26,6 +26,7 @@ import { turnChanges } from "../lead/turnChanges.ts";
 import { accessSql, ownerLevel } from "../people/KinAccess.ts";
 import {
   KIN_OWNER_LEVEL,
+  linkRecordGrants,
   seenBy,
   viewerOfPeople,
   listNumberSeenBy,
@@ -176,27 +177,48 @@ export const linkAccessStamp = Effect.fn("KinMessageLinks.accessStamp")(function
   personId: KinPersonId,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const viewer = viewerOfPeople([personId]);
-  const [row] = yield* sql<{ targets: string }>`
+  const [row] = yield* sql<{ grants: string }>`
     WITH reader AS (
-      SELECT ${sql.literal(accessSql("p"))} IN ('owner', 'co_owner') AS owner
-      FROM kin_people p WHERE p.org_id = ${orgId} AND p.person_id = ${personId}
-    ), targets(kind, target) AS (
-      SELECT 'settings', '' FROM reader WHERE owner
-      UNION ALL
-      SELECT 'person', person_id FROM kin_people
-        WHERE org_id = ${orgId} AND removed_at IS NULL AND person_id <> ${personId}
-      UNION ALL
-      SELECT DISTINCT 'chat', c.chat_id ${directAgentChats(sql, orgId, personId)}
-      UNION ALL
-      SELECT 'record', json_array(r.key, CASE
-        WHEN json_type(r.fields_json, '$.number') = 'text'
-          AND (reader.owner OR ${listNumberSeenBy(sql, viewer)}) THEN 1 ELSE 0 END)
-        FROM kin_records r CROSS JOIN reader
-        WHERE r.org_id = ${orgId} AND (reader.owner OR ${seenBy(sql, viewer)})
+      SELECT ${sql.literal(accessSql("p"))} AS access, sees_clients, sees_docs, sees_money
+        FROM kin_people p WHERE p.org_id = ${orgId} AND p.person_id = ${personId}
+    ), openAgentChats AS (
+      SELECT c.chat_id ${directAgentChats(sql, orgId, personId)}
+    ), closedAgentChats AS (
+      SELECT DISTINCT c.chat_id FROM kin_chat_members me
+        JOIN kin_chats c ON c.org_id = me.org_id AND c.chat_id = me.chat_id
+        WHERE me.org_id = ${orgId} AND me.person_id = ${personId} AND c.kind = 'direct'
+          AND EXISTS (SELECT 1 FROM kin_chat_members am WHERE am.org_id = c.org_id
+            AND am.chat_id = c.chat_id AND am.principal_kind = 'agent')
+          AND c.chat_id NOT IN (SELECT chat_id FROM openAgentChats)
     )
-    SELECT json_group_array(json_array(kind, target) ORDER BY kind, target) AS targets FROM targets`;
-  return NodeCrypto.createHash("sha256").update(row!.targets).digest("hex").slice(0, 16);
+    SELECT json_array(
+      access, sees_clients, sees_docs, sees_money,
+      (SELECT json_group_array(id ORDER BY id) FROM (
+        SELECT DISTINCT json_extract(j.value, '$.id') AS id
+        FROM kin_company_shell sh, json_each(sh.shell_json) j
+        WHERE sh.org_id = ${orgId} AND (
+          (json_extract(j.value, '$.id') = 'money' AND json_type(j.value, '$.on') = 'false')
+          OR (json_extract(j.value, '$.id') IN ('clients', 'deals')
+            AND json_extract(j.value, '$.on') = 0)
+        )
+      )),
+      (SELECT json_group_array(chat_id ORDER BY chat_id) FROM closedAgentChats),
+      CASE WHEN access NOT IN ('owner', 'co_owner') THEN (
+        SELECT json_group_array(json_array(kind, grant_id) ORDER BY kind, grant_id)
+        FROM (
+          ${linkRecordGrants(sql, orgId, personId)}
+          UNION ALL
+          SELECT 'groupChat', json_array(me.chat_id, me.joined_seq) FROM kin_chat_members me
+            JOIN kin_chats c ON c.org_id = me.org_id AND c.chat_id = me.chat_id
+            WHERE me.org_id = ${orgId} AND me.person_id = ${personId}
+              AND me.left_at IS NULL AND c.kind IN ('team_group', 'project_group')
+        )
+      ) END
+    ) AS grants FROM reader`;
+  return NodeCrypto.createHash("sha256")
+    .update(row?.grants ?? "null")
+    .digest("hex")
+    .slice(0, 16);
 });
 
 /** What this viewer may open, read once for a batch of messages. */
