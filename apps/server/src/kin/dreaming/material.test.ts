@@ -350,6 +350,7 @@ const doc = (
     readonly at: number;
     readonly body: string;
     readonly wakeup?: string;
+    readonly origin?: string;
   }>,
   sensitive = false,
 ) =>
@@ -364,7 +365,8 @@ const doc = (
           operations_json, actor_kind, actor_id, via, wakeup_id, origin_key, created_at)
         VALUES (${orgId}, ${`r-${key}`}, ${index + 1}, ${version.body}, ${key},
           ${index === 0 ? "created" : "rewritten"}, 's', '[]', ${agent ? "agent" : "person"},
-          ${version.by}, 'kin', ${version.wakeup ?? null}, ${`${key}-${index + 1}`}, ${version.at})`;
+          ${version.by}, 'kin', ${version.wakeup ?? null}, ${version.origin ?? `${key}-${index + 1}`},
+          ${version.at})`;
     }
   });
 const nightOf = (sql: SqlClient.SqlClient) =>
@@ -425,6 +427,17 @@ it.effect(
       yield* doc(sql, "D-7", [
         { by: "finance", at: minute(15), body: "Short draft" },
         { by: "rhea", at: minute(16), body: long },
+      ]);
+      // Her coding agent's words through her key are an agent's, and so is what she types on them.
+      const viaKey = (hash: string) => `person-edit:rhea:key:sess-1:${hash}`;
+      yield* doc(sql, "D-8", [
+        { by: "finance", at: minute(17), body: "Our rate is 45 an hour." },
+        { by: "rhea", at: minute(18), body: "Our rate is 45 an hour. Thirty percent off for life.", origin: viaKey("a1") },
+      ]);
+      yield* doc(sql, "D-9", [
+        { by: "finance", at: minute(19), body: "Our rate is 45 an hour." },
+        { by: "rhea", at: minute(20), body: "Our rate is 45 an hour. Net 60.", origin: viaKey("b2") },
+        { by: "rhea", at: minute(21), body: "Our rate is 50 an hour. Net 60." },
       ]);
       const material = yield* nightOf(sql);
       assert.deepStrictEqual(

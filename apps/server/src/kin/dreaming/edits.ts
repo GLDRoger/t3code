@@ -5,6 +5,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { isKeyRequest } from "../chat/keySent.ts";
 import { confirmedOf, PreparedJson } from "../connections/Sending.ts";
 import { QUOTE_MAX } from "../memory/keeping.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
@@ -125,8 +126,10 @@ export const draftEdits = Effect.fn("DreamMaterial.draftEdits")(function* (
     handle: string | null;
     level: number;
     private: number;
+    originKey: string;
   }>`SELECT v.record_id AS "recordId", r.key, r.title, v.version, v.actor_kind AS "actorKind",
       v.actor_id AS "actorId", v.body_kind AS "bodyKind", v.created_at AS "createdAt", p.handle,
+      v.origin_key AS "originKey",
       ${sql.literal(ownerLevelSql("v.org_id", "v.actor_id"))} AS level,
       ${sensitiveNow(sql)} AS private
     FROM kin_doc_versions v
@@ -153,6 +156,12 @@ export const draftEdits = Effect.fn("DreamMaterial.draftEdits")(function* (
   for (const [index, row] of versions.entries()) {
     if (index > 0 && versions[index - 1]!.recordId !== row.recordId) close();
     const person = row.actorKind === "person" && row.bodyKind === "markdown";
+    // Words a coding agent wrote through the person's key are not theirs, nor is anything
+    // compared against them: the run ends with no edit, and only an agent's next draft starts one.
+    if (person && row.level === 1 && isKeyRequest(row.originKey)) {
+      draft = last = undefined;
+      continue;
+    }
     if (person && last !== undefined && last.actorId === row.actorId) last = row;
     else if (person && last === undefined && draft !== undefined && row.level === 1) last = row;
     else {
