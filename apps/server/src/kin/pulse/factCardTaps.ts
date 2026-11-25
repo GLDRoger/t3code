@@ -14,7 +14,7 @@ import { ownerLevel } from "../people/KinAccess.ts";
 import type { DuePlan, FactCardPlan, StallPlan, WaitedPlan } from "../widgets/cardPlans.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { insertComment, requestHashOf } from "../work/recordComments.ts";
-import { milestoneProposal } from "./factCards.ts";
+import { DID_NOTHING, milestoneProposal } from "./factCards.ts";
 import { noticeHolder } from "./holderNotice.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { DAY_MS } from "./thresholds.ts";
@@ -30,7 +30,7 @@ type FactTap = {
 };
 
 const nothingDone = (why: string): KinChoiceOutcome => ({
-  title: "Nothing was done",
+  title: DID_NOTHING,
   text: `${why.charAt(0).toUpperCase()}${why.slice(1)}, so nothing was done.`,
 });
 
@@ -95,9 +95,13 @@ const runWaited = Effect.fn("KinFactCards.runWaited")(function* (
   const [row] = yield* sql<{
     state: string;
     rev: number;
+    title: string;
+    ownerKind: string;
+    ownerId: string;
     waitingKind: string | null;
     waitingId: string | null;
-  }>`SELECT state, rev, waiting_on_kind AS "waitingKind", waiting_on_id AS "waitingId"
+  }>`SELECT state, rev, title, owner_kind AS "ownerKind", owner_id AS "ownerId",
+      waiting_on_kind AS "waitingKind", waiting_on_id AS "waitingId"
     FROM kin_records WHERE org_id = ${tap.orgId} AND record_id = ${plan.recordId}`;
   const notWaiting = nothingDone(`${plan.key} no longer waits on you`);
   if (
@@ -107,7 +111,12 @@ const runWaited = Effect.fn("KinFactCards.runWaited")(function* (
     row.waitingId !== tap.personId
   )
     return notWaiting;
-  if (row.rev !== plan.rev) return nothingDone(`${plan.key} changed since this was offered`);
+  // Done writes the task: only while it is the one the card names. By and Not mine write none.
+  if (
+    plan.answer === "done" &&
+    (row.ownerKind !== "person" || row.ownerId !== plan.holder.personId || row.title !== plan.title)
+  )
+    return nothingDone(`${plan.key} changed since this was offered`);
   const named = `${plan.key} ${plan.title}`;
   const holder = plan.holder.name;
   const told = `Told ${holder}`;
@@ -128,7 +137,7 @@ const runWaited = Effect.fn("KinFactCards.runWaited")(function* (
         },
         plan.key,
         { state: "open" },
-        plan.rev,
+        row.rev,
         [{ field: KIN_WAITED_DONE_FIELD, from: null, to: tap.widget.widgetId }],
       );
       const reached = yield* tellHolder(

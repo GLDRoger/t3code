@@ -121,18 +121,34 @@ const factCardRows = Effect.fn("KinFactCards.rows")(function* (orgId: KinOrgId) 
     answer: string;
     ran: string | null;
     open: number;
+    outcome: string | null;
   }>`SELECT p.widget_id AS "widgetId", json_extract(p.plan_json, '$.factKey') AS "factKey",
       json_extract(p.plan_json, '$.round') AS round,
       json_extract(p.plan_json, '$.personId') AS "personId",
       json_extract(p.plan_json, '$.kind') AS kind,
       json_extract(p.plan_json, '$.answer') AS answer, p.ran_message_id AS ran,
-      w.closed_at IS NULL AS open
+      w.closed_at IS NULL AS open, json_extract(w.state_json, '$.outcome.title') AS outcome
     FROM kin_card_plans p JOIN kin_widgets w ON w.org_id = p.org_id AND w.widget_id = p.widget_id
     WHERE p.org_id = ${orgId}
       AND json_extract(p.plan_json, '$.kind') IN ${sql.in(FACT_CARD_KIND_LIST)}
     ORDER BY p.widget_id, p.option_id`;
 });
 type CardRow = Effect.Success<ReturnType<typeof factCardRows>>[number];
+/** A card closed with "Nothing was done" asked nothing: it counts for no one. */
+export const DID_NOTHING = "Nothing was done";
+const asked = (
+  posted: ReadonlyArray<CardRow>,
+  factKey: string,
+  personId?: string,
+  round?: number,
+) =>
+  posted.some(
+    (row) =>
+      row.factKey === factKey &&
+      (personId === undefined || row.personId === personId) &&
+      (round === undefined || row.round === round) &&
+      row.outcome !== DID_NOTHING,
+  );
 
 /**
  * A teammate's card counts as their nudge for the day (`kin_pulse_nudges`), so an agent's text
@@ -193,13 +209,19 @@ const postFactCard = Effect.fn("KinFactCards.post")(function* (input: {
   const { orgId, at } = ctx;
   const chats = yield* Effect.serviceOption(KinChatService);
   if (Option.isNone(chats)) return undefined;
-  if (
-    input.posted.some(
-      (row) =>
-        row.factKey === input.factKey && row.round === input.round && row.personId === personId,
-    )
-  )
-    return undefined;
+  if (asked(input.posted, input.factKey, personId, input.round)) return undefined;
+  // Each card that did nothing on this fact and round needs a key of its own for the next.
+  const tries = new Set(
+    input.posted
+      .filter(
+        (row) =>
+          row.factKey === input.factKey &&
+          row.round === input.round &&
+          row.personId === personId &&
+          row.outcome === DID_NOTHING,
+      )
+      .map((row) => row.widgetId),
+  ).size;
   if ((yield* holdFor({ orgId, personId, chatId: undefined })) !== undefined) return undefined;
   const sql = yield* SqlClient.SqlClient;
   const via = yield* Reach.carrierFor(orgId, personId, input.agentId);
@@ -257,7 +279,7 @@ const postFactCard = Effect.fn("KinFactCards.post")(function* (input: {
           },
           {
             chatId,
-            clientMessageId: `kin-fact-card:${input.factKey}:${input.round}:${personId}`,
+            clientMessageId: `kin-fact-card:${input.factKey}:${input.round}:${personId}${tries === 0 ? "" : `:${tries}`}`,
             question: clamp(input.question, QUESTION_MAX),
             ...(input.detail === undefined ? {} : { detail: input.detail }),
             options: input.options.map((one) => ({ label: one.label })),
@@ -359,7 +381,7 @@ const waitedCards = Effect.fn("KinFactCards.waited")(function* (input: {
     if (fact.sense !== "waiting_long" || fact.subject.recordId === undefined) continue;
     if (fact.actor._tag !== "person" || input.level.has(fact.actor.personId)) continue;
     const personId = fact.actor.personId;
-    if (input.posted.some((row) => row.factKey === fact.key && row.personId === personId)) continue;
+    if (asked(input.posted, fact.key, personId)) continue;
     const [row] = yield* sql<{
       key: string;
       title: string;
@@ -452,14 +474,10 @@ const stallCards = Effect.fn("KinFactCards.stalled")(function* (input: {
         row.factKey === fact.key &&
         row.personId === personId &&
         row.answer === "still" &&
-        row.ran !== null,
+        row.ran !== null &&
+        row.outcome !== DID_NOTHING,
     ).length;
-    if (
-      input.posted.some(
-        (row) => row.factKey === fact.key && row.personId === personId && row.round === round,
-      )
-    )
-      continue;
+    if (asked(input.posted, fact.key, personId, round)) continue;
     const [row] = yield* sql<{
       key: string;
       title: string;
@@ -576,7 +594,7 @@ const milestoneCards = Effect.fn("KinFactCards.milestones")(function* (input: {
   for (const fact of input.open) {
     if (!MILESTONE_SENSES.has(fact.sense) || fact.subject.recordId === undefined) continue;
     const [, cardKey] = standKeys(fact);
-    if (cardKey === undefined || input.posted.some((row) => row.factKey === cardKey)) continue;
+    if (cardKey === undefined || asked(input.posted, cardKey)) continue;
     const [row] = yield* sql<{
       key: string;
       title: string;

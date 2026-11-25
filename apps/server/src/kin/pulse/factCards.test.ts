@@ -306,14 +306,14 @@ it.effect(
           "Arjun says what W-1 Revised pilot quote waited on is done, so it is back with you.",
         ]);
 
-        // It waits on him again, and changes after its card was posted: the tap does nothing.
+        // It waits on him again, and is renamed after its card was posted: Done does nothing.
         yield* waitOnArjun(ctx);
         yield* startedWaiting(ctx.sql, ctx.orgId, "W-1", NOW - 7 * DAY);
         yield* freshDay(ctx);
         yield* tickAt(ctx, NOW + HOUR);
         const second = (yield* cards(ctx)).find((one) => !one.closed)!;
-        yield* ctx.records.update(ctx.orgId, ctx.byOwner, "W-1", { notes: "Cost sheet v2" });
-        yield* tap(ctx, arjunId, second, "Not mine");
+        yield* ctx.records.update(ctx.orgId, ctx.byOwner, "W-1", { title: "Revised quote" });
+        yield* tap(ctx, arjunId, second, "Done");
         assert.deepStrictEqual(
           (yield* cards(ctx)).find((one) => one.widgetId === second.widgetId)?.outcome,
           {
@@ -769,4 +769,41 @@ it.effect(
         assert.isFalse(yield* personSees(ctx, arjunId, "waiting_long", "W-1", NOW + HOUR));
       }),
     ),
+);
+
+it.effect("a note on the task leaves its card good: Done still puts it back to open", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      yield* tickAt(ctx, NOW);
+      const [card] = yield* cards(ctx);
+      yield* ctx.records.update(ctx.orgId, ctx.byOwner, "W-1", { notes: "Pinged Arjun on Friday" });
+      yield* tap(ctx, arjunId, card!, "Done");
+      assert.strictEqual((yield* ctx.records.get(ctx.orgId, "W-1"))?.state, "open");
+      assert.deepStrictEqual((yield* cards(ctx))[0]!.outcome, {
+        title: "Told Zoya",
+        text: "W-1 is back with Zoya.",
+      });
+    }),
+  ),
+);
+
+it.effect("a card that did nothing doesn't count as asked: the next pass asks again", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      yield* tickAt(ctx, NOW);
+      const [card] = yield* cards(ctx);
+      yield* ctx.records.update(ctx.orgId, ctx.byOwner, "W-1", { title: "Revised quote" });
+      yield* tap(ctx, arjunId, card!, "Done");
+      assert.strictEqual((yield* cards(ctx))[0]!.outcome?.title, "Nothing was done");
+      yield* freshDay(ctx);
+      yield* tickAt(ctx, NOW + HOUR);
+      const again = (yield* cards(ctx)).filter((one) => !one.closed);
+      assert.deepStrictEqual(
+        again.map((one) => one.question),
+        ["Zoya's W-1 Revised quote has waited on you for 6 days. Where is it?"],
+      );
+    }),
+  ),
 );
