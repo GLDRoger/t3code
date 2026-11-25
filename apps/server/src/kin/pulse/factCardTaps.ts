@@ -5,12 +5,15 @@ import {
   type KinChoiceOutcome,
   type KinOrgId,
   KinPersonId,
+  type KinPulseSense,
   type KinWidget,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { ownerLevel } from "../people/KinAccess.ts";
+import * as KinShell from "../shell/KinShell.ts";
+import { sectionOfKey, sectionOfSense } from "../shell/sections.ts";
 import type {
   DuePlan,
   FactCardPlan,
@@ -370,6 +373,31 @@ export const runFactCard = Effect.fn("KinFactCards.run")(function* (
     const seen = yield* sql`SELECT 1 FROM kin_records r WHERE r.org_id = ${tap.orgId}
       AND r.record_id = ${plan.recordId} AND ${viewSees(sql, [tap.personId])}`;
     if (seen.length === 0) return nothingDone(`you can no longer see ${plan.key}`);
+  }
+  let sense: KinPulseSense;
+  switch (plan.kind) {
+    case "waited_answer":
+      sense = "waiting_long";
+      break;
+    case "stall_answer":
+      sense = "task_stalled";
+      break;
+    case "move_due":
+    case "keep_due":
+      sense = "milestone_late";
+      break;
+    case "notice_renew":
+      sense = "notice_due";
+      break;
+  }
+  const shell = yield* KinShell.get(tap.orgId);
+  // The pass's own rule: a card it would still draw, such as a notice day's, is still answered.
+  if (KinPulse.quiet({ sense, subject: { key: plan.key } }, shell)) {
+    const section = [sectionOfSense(sense), sectionOfKey(plan.key)].find(
+      (id) => id !== null && !KinShell.sectionOn(shell, id),
+    );
+    if (section != null)
+      return nothingDone(`${KinShell.sectionName(shell, section)} is turned off for this company`);
   }
   switch (plan.kind) {
     case "waited_answer":
