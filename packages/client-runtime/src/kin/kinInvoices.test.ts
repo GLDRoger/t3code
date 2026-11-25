@@ -16,6 +16,9 @@ import {
   kinAdvanceInput,
   KIN_INVOICES,
   kinConfirmTotal,
+  kinCreditNoteActions,
+  kinCreditNoteDraftCheck,
+  kinCreditNoteView,
   kinInvoiceActions,
   kinInvoiceDraftNote,
   kinInvoiceTitle,
@@ -293,6 +296,188 @@ describe("kinInvoiceView", () => {
       null,
     ]);
     expect(figures({})).toEqual(["₹1,00,000.00", "₹60,000.00", "₹40,000.00"]);
+  });
+
+  it("shows credit offer, credited figure, split/applied/credit-note payment rows and credit note action", () => {
+    const view = kinInvoiceView(
+      invoice({
+        key: "INV-14",
+        title: "Freight handling",
+        confirmed: true,
+        party: { recordId: KinRecordId.make("rec-tf"), key: "C-9", title: "Tidewater Freight" },
+        fields: { number: "INV-14" },
+        amount: { minor: 500_000, currency: "USD" },
+        balance: { minor: 380_000, currency: "USD" },
+        received: { minor: 0, currency: "USD" },
+        credited: { minor: 120_000, currency: "USD" },
+        creditOffer: {
+          receipt: "RCT-3",
+          amount: { minor: 120_000, currency: "USD" },
+          receivedOn: "2026-11-04",
+        },
+        payments: [
+          {
+            ...payment("p-split", null),
+            amount: { minor: 100_000, currency: "USD" },
+            splitCredit: "BNK-4",
+          },
+          {
+            ...payment("p-apply", null),
+            amount: { minor: 120_000, currency: "USD" },
+            appliedCredit: "RCT-3",
+          },
+          {
+            ...payment("p-cn", null, null, "CN/26-27/001"),
+            amount: { minor: 120_000, currency: "USD" },
+            withheld: true,
+            creditNote: { key: "CN-1", number: "CN/26-27/001" },
+          },
+        ] as never,
+      }),
+      invoices,
+      now,
+    );
+    expect(view.credited).toBe("$1,200.00");
+    expect(view.creditOffer).toEqual({
+      receipt: "RCT-3",
+      line: "Apply $1,200.00 credit from 4 Nov?",
+      title: "Set the $1,200.00 credit from 4 Nov against INV-14?",
+      detail: "$2,600.00 stays owed.",
+      action: "Apply",
+    });
+    expect(view.payments[0]?.splitCredit).toEqual({
+      key: "BNK-4",
+      line: "From BNK-4 with other invoices",
+      title: "Undo everything BNK-4 paid?",
+      detail: "Each invoice owes again, its credit goes, and BNK-4 is Unexplained again.",
+      action: "Undo",
+    });
+    expect(view.payments[1]?.appliedCredit).toEqual({
+      key: "RCT-3",
+      title: "Un-apply the $1,200.00 credit?",
+      detail: "It goes back to Tidewater Freight's credit.",
+      action: "Un-apply",
+    });
+    expect(view.payments[2]).toMatchObject({
+      tds: false,
+      note: null,
+      receipt: null,
+      creditNote: { key: "CN-1", number: "CN/26-27/001", label: "Credit note CN/26-27/001" },
+    });
+    expect(
+      kinInvoiceActions(view, invoices, {
+        render: true,
+        issue: true,
+        receipt: true,
+        creditNote: true,
+      }).creditNote,
+    ).toBe(true);
+    expect(
+      kinInvoiceActions(
+        kinInvoiceView(
+          invoice({ state: "done", balance: { minor: 0, currency: "USD" } }),
+          invoices,
+          now,
+        ),
+        invoices,
+        { render: true, issue: true, receipt: true, creditNote: true },
+      ).creditNote,
+    ).toBe(false);
+  });
+});
+
+describe("credit notes", () => {
+  it("reads draft, issued and void credit notes with their confirms, actions and draft check", () => {
+    const base = {
+      recordId: KinRecordId.make("rec-cn"),
+      orgId,
+      key: "CN-1",
+      title: "Credit note for INV-12",
+      state: "open" as const,
+      list: KinListId.make("credit_notes"),
+      amount: { minor: 120_000, currency: "USD" },
+      party: { recordId: KinRecordId.make("rec-tf"), key: "C-9", title: "Tidewater Freight" },
+      fields: { invoice: "INV-12", reason: "Scope reduced" },
+      links: [
+        {
+          kind: "record",
+          relation: "relates",
+          target: "rec-inv-12",
+          record: { recordId: "rec-inv-12", key: "INV-12", title: "Freight" },
+          number: "INV/26-27/012",
+        },
+        {
+          kind: "record",
+          relation: "relates",
+          target: "rec-doc-7",
+          record: { recordId: "rec-doc-7", key: "D-7", title: "Credit note CN-1" },
+        },
+      ],
+      changes: [],
+      notes: "",
+    } as unknown as KinRecordDetail;
+
+    const draft = kinCreditNoteView(base);
+    expect(draft).toMatchObject({
+      state: "draft",
+      stateLabel: "Draft",
+      takesOff: "Takes $1,200.00 off INV/26-27/012",
+      documents: [{ key: "D-7", title: "Credit note CN-1" }],
+    });
+    expect(draft.issueAsk("CN/26-27/001")).toEqual({
+      title: "Issue CN/26-27/001?",
+      detail: "It takes $1,200.00 off what Tidewater Freight owes on INV/26-27/012.",
+      action: "Issue",
+    });
+    expect(kinCreditNoteActions(draft, { issue: true, render: true })).toEqual({
+      issue: true,
+      void: true,
+      makePdf: true,
+    });
+
+    const issued = kinCreditNoteView({
+      ...base,
+      state: "waiting",
+      fields: { ...base.fields, number: "CN/26-27/001" },
+    });
+    expect(issued).toMatchObject({
+      state: "issued",
+      stateLabel: "Issued",
+      heading: "CN/26-27/001",
+      voidAsk: {
+        title: "Void CN/26-27/001?",
+        detail: "INV/26-27/012 owes the $1,200.00 again. Its number is kept.",
+        action: "Void",
+        destructive: true,
+      },
+    });
+    expect(kinCreditNoteActions(issued, { issue: true, render: true })).toEqual({
+      issue: false,
+      void: true,
+      makePdf: true,
+    });
+
+    const voided = kinCreditNoteView({
+      ...base,
+      state: "dropped",
+      fields: { ...base.fields, number: "CN/26-27/001" },
+    });
+    expect(voided.stateLabel).toBe("Void");
+    expect(voided.takesOff).toBeNull();
+    expect(kinCreditNoteActions(voided, { issue: true, render: true })).toEqual({
+      issue: false,
+      void: false,
+      makePdf: false,
+    });
+
+    const owed = { minor: 200_000, currency: "USD" };
+    expect(kinCreditNoteDraftCheck("1,200", " Scope reduced ", owed)).toEqual({
+      ok: true,
+      amount: { minor: 120_000, currency: "USD" },
+      reason: "Scope reduced",
+    });
+    expect(kinCreditNoteDraftCheck("3,000", "Too much", owed)).toMatchObject({ ok: false });
+    expect(kinCreditNoteDraftCheck("1,200", "   ", owed)).toMatchObject({ ok: false });
   });
 });
 

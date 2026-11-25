@@ -632,6 +632,17 @@ function KinClientBody(
           />
         ) : null}
       </ListSection>
+      {view.credit.length === 0 ? null : (
+        <ListSection title={KIN_CLIENTS_WORDS.credit}>
+          {view.credit.map((one) => (
+            <ListRow
+              key={one.key}
+              label={one.line}
+              onPress={() => openRecord("KinWorkItem", { environmentId, orgId, task: one.key })}
+            />
+          ))}
+        </ListSection>
+      )}
       <KinPlaceLists
         environmentId={environmentId}
         orgId={orgId}

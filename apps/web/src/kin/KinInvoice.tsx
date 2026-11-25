@@ -1,5 +1,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import {
+  KIN_CREDIT_NOTES_LIST,
   KIN_INVOICES,
   kinBase64Bytes,
   kinConfirmTotal,
@@ -71,6 +72,7 @@ import {
 } from "../components/ui/select";
 import { Spinner } from "../components/ui/spinner";
 import { cn, randomUUID } from "../lib/utils";
+import { KinConfirm } from "./KinConfirm";
 import { KinWorkSection as Section } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
 import { KinLinesEditor } from "./KinMoneyAnswers";
@@ -116,6 +118,8 @@ export function KinInvoiceActions(
     readonly busy: boolean;
     /** Opens Make invoice as the sheet's next step. */
     readonly onMake: () => void;
+    /** Opens the small form to draft a credit note on an issued open invoice. */
+    readonly onCreditNote?: () => void;
   },
 ) {
   const { environmentId, orgId, invoice, actions } = props;
@@ -123,6 +127,7 @@ export function KinInvoiceActions(
     render: useAtomValue(kinClient.docRender.permissionAtom(environmentId)),
     issue: useAtomValue(kinClient.workIssue.permissionAtom(environmentId)),
     receipt: useAtomValue(kinClient.makeReceipt.permissionAtom(environmentId)),
+    creditNote: useAtomValue(kinClient.draftCreditNote.permissionAtom(environmentId)),
   };
   const can = kinInvoiceActions(invoice, props.def, allowed);
   const [asking, setAsking] = useState<"issue" | "void" | null>(null);
@@ -138,7 +143,8 @@ export function KinInvoiceActions(
     setNext(read.ok ? read.value : null);
   };
   const busy = props.busy || actions.busy;
-  if (!can.make && !can.issue && !can.void && !can.unvoid) return null;
+  const offersCreditNote = can.creditNote && props.onCreditNote !== undefined;
+  if (!can.make && !can.issue && !can.void && !can.unvoid && !offersCreditNote) return null;
   return (
     <>
       <div className="flex flex-wrap items-center gap-2">
@@ -160,6 +166,19 @@ export function KinInvoiceActions(
           <Button size="sm" variant="outline" disabled={busy} onClick={() => void askIssue()}>
             <StampIcon />
             {KIN_INVOICES.issue}
+          </Button>
+        ) : null}
+        {offersCreditNote ? (
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => {
+              actions.dismiss();
+              props.onCreditNote?.();
+            }}
+          >
+            {KIN_INVOICES.creditNoteButton}
           </Button>
         ) : null}
         {can.void ? (
@@ -412,11 +431,13 @@ export function KinMakeDocumentStep(
   },
 ) {
   const { actions } = props;
+  const hasLines = props.list !== KIN_CREDIT_NOTES_LIST;
   const readLines = useKinEntryLines(props);
-  const [lines, setLines] = useState<ReadonlyArray<KinLineDraft> | null>(null);
+  const [lines, setLines] = useState<ReadonlyArray<KinLineDraft> | null>(hasLines ? null : []);
   const [linesProblem, setLinesProblem] = useState<string | null>(null);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the lines its last document was made with from the host once, when the form opens
   useEffect(() => {
+    if (!hasLines) return;
     let live = true;
     void readLines(props.itemKey).then((held) => {
       if (live) setLines(kinLineDrafts(held));
@@ -425,8 +446,9 @@ export function KinMakeDocumentStep(
       live = false;
     };
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- once per entry; the reader is remade every render
-  }, [props.itemKey]);
+  }, [props.itemKey, hasLines]);
   const inputsOf = () => {
+    if (!hasLines) return {};
     const checked = kinLinesInput(lines ?? [], props.currency);
     if (!checked.ok) {
       setLinesProblem(checked.problem);
@@ -518,7 +540,7 @@ export function KinMakeDocumentStep(
             </Select>
           </div>
         ) : null}
-        {recipe === null || shown !== null ? null : lines === null ? (
+        {!hasLines || recipe === null || shown !== null ? null : lines === null ? (
           <p role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
             <Spinner />
             {KIN_LINES.title}…
@@ -627,6 +649,12 @@ export function KinInvoiceFigures(props: { readonly invoice: KinInvoiceView }) {
         <dt className="text-xs text-muted-foreground">{KIN_INVOICES.received}</dt>
         <dd className="text-foreground tabular-nums">{invoice.received}</dd>
       </div>
+      {invoice.credited === null ? null : (
+        <div className="flex flex-col">
+          <dt className="text-xs text-muted-foreground">{KIN_INVOICES.credited}</dt>
+          <dd className="text-foreground tabular-nums">{invoice.credited}</dd>
+        </div>
+      )}
       {invoice.tdsDeducted === null ? null : (
         <div className="flex flex-col">
           <dt className="text-xs text-muted-foreground">{KIN_INVOICES.tdsDeducted}</dt>
@@ -645,6 +673,50 @@ export function KinInvoiceFigures(props: { readonly invoice: KinInvoiceView }) {
   );
 }
 
+/** Offers an unapplied client credit that fits this invoice, owner level only. */
+export function KinInvoiceCreditOffer(
+  props: KinWorkTarget & {
+    readonly itemKey: KinRecordKey;
+    readonly invoice: KinInvoiceView;
+    readonly actions: MoneyActions;
+    readonly busy: boolean;
+  },
+) {
+  const { invoice, actions } = props;
+  const offer = invoice.creditOffer;
+  const canApply = useAtomValue(kinClient.makeReceipt.permissionAtom(props.environmentId));
+  const [requestId, setRequestId] = useState<string | null>(null);
+  if (offer === null || !canApply) return null;
+  const busy = props.busy || actions.busy;
+  return (
+    <>
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border px-3 py-2 text-sm">
+        <span className="text-foreground">{offer.line}</span>
+        <Button
+          size="xs"
+          variant="outline"
+          disabled={busy}
+          onClick={() => setRequestId(randomUUID())}
+        >
+          {offer.action}
+        </Button>
+      </div>
+      <KinConfirm
+        ask={requestId === null ? null : offer}
+        onConfirm={() => {
+          if (requestId === null) return;
+          void actions.makeReceipt(
+            props.itemKey,
+            { key: offer.receipt, against: props.itemKey },
+            requestId,
+          );
+        }}
+        onClose={() => setRequestId(null)}
+      />
+    </>
+  );
+}
+
 /** Each payment with its receipt: open it, or make one. Taking a payment back stays here too. */
 export function KinInvoicePayments(
   props: KinWorkTarget & {
@@ -655,10 +727,24 @@ export function KinInvoicePayments(
     readonly busy: boolean;
     readonly onTakeBack: (paymentId: string) => void;
     readonly onOpenDoc: (key: KinRecordKey) => void;
+    readonly onOpenKey?: (key: KinRecordKey) => void;
   },
 ) {
   const { invoice, actions } = props;
   const canReceipt = useAtomValue(kinClient.makeReceipt.permissionAtom(props.environmentId));
+  const canUnapply = useAtomValue(kinClient.unapplyCredit.permissionAtom(props.environmentId));
+  const canUndoSplit = useAtomValue(
+    kinClient.undoCreditPayment.permissionAtom(props.environmentId),
+  );
+  const [confirming, setConfirming] = useState<{
+    readonly ask: {
+      readonly title: string;
+      readonly detail: string;
+      readonly action: string;
+      readonly destructive?: boolean;
+    };
+    readonly run: () => void;
+  } | null>(null);
   const busy = props.busy || actions.busy;
   return (
     <Section title={KIN_INVOICES.payments}>
@@ -667,7 +753,7 @@ export function KinInvoicePayments(
       ) : (
         <ul className="flex flex-col divide-y divide-border/60">
           {invoice.payments.map((payment) => {
-            const { receipt } = payment;
+            const { receipt, creditNote, splitCredit, appliedCredit } = payment;
             const number = receipt === null || receipt._tag === "none" ? null : receipt.number;
             return (
               <li key={payment.paymentId} className="flex items-start gap-3 py-2 text-sm">
@@ -680,6 +766,20 @@ export function KinInvoicePayments(
                   >
                     {payment.amount}
                   </span>
+                  {creditNote === null ? null : props.onOpenKey === undefined ? (
+                    <span className="text-xs text-muted-foreground">{creditNote.label}</span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => props.onOpenKey?.(creditNote.key)}
+                      className="self-start rounded text-xs text-muted-foreground underline-offset-2 outline-none ring-ring hover:underline focus-visible:ring-2 focus-visible:ring-inset"
+                    >
+                      {creditNote.label}
+                    </button>
+                  )}
+                  {splitCredit === null ? null : (
+                    <span className="text-xs text-muted-foreground">{splitCredit.line}</span>
+                  )}
                   <span className="text-xs break-words text-muted-foreground">
                     {[
                       payment.tds ? KIN_INVOICES.tdsDeducted : null,
@@ -732,7 +832,51 @@ export function KinInvoicePayments(
                       {receipt._tag === "noPdf" ? KIN_INVOICES.makePdf : KIN_INVOICES.makeReceipt}
                     </Button>
                   )}
-                  {payment.voided || !props.canPay ? null : (
+                  {payment.voided || creditNote !== null ? null : splitCredit !== null ? (
+                    canUndoSplit ? (
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        disabled={busy}
+                        aria-label={`${splitCredit.action}: ${splitCredit.key}`}
+                        onClick={() =>
+                          setConfirming({
+                            ask: {
+                              title: splitCredit.title,
+                              detail: splitCredit.detail,
+                              action: splitCredit.action,
+                              destructive: true,
+                            },
+                            run: () =>
+                              void actions.undoCreditPayment(props.itemKey, splitCredit.key),
+                          })
+                        }
+                      >
+                        {splitCredit.action}
+                      </Button>
+                    ) : null
+                  ) : appliedCredit !== null ? (
+                    canUnapply ? (
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        disabled={busy}
+                        aria-label={`${appliedCredit.action}: ${payment.amount}`}
+                        onClick={() =>
+                          setConfirming({
+                            ask: {
+                              title: appliedCredit.title,
+                              detail: appliedCredit.detail,
+                              action: appliedCredit.action,
+                            },
+                            run: () => void actions.unapplyCredit(props.itemKey, appliedCredit.key),
+                          })
+                        }
+                      >
+                        {appliedCredit.action}
+                      </Button>
+                    ) : null
+                  ) : props.canPay ? (
                     <Button
                       size="xs"
                       variant="ghost"
@@ -742,13 +886,18 @@ export function KinInvoicePayments(
                     >
                       {KIN_LISTS.entry.takeBack}
                     </Button>
-                  )}
+                  ) : null}
                 </span>
               </li>
             );
           })}
         </ul>
       )}
+      <KinConfirm
+        ask={confirming?.ask ?? null}
+        onConfirm={() => confirming?.run()}
+        onClose={() => setConfirming(null)}
+      />
     </Section>
   );
 }

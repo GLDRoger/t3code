@@ -2137,6 +2137,21 @@ export function makeKinClient<R, ER>(
       tag: "kin.work.voidPayment",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.paymentId },
     }),
+    undoCreditPayment: createKinRpcCommand(runtime, {
+      label: "kin:work:credit-payment:undo",
+      tag: "kin.work.undoCreditPayment",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
+    unapplyCredit: createKinRpcCommand(runtime, {
+      label: "kin:work:credit:unapply",
+      tag: "kin.work.unapplyCredit",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
+    draftCreditNote: createKinRpcCommand(runtime, {
+      label: "kin:work:credit-note:draft",
+      tag: "kin.work.draftCreditNote",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.originKey },
+    }),
     /** One page of the files in the owner's chats, for keeping one on an entry. */
     workFiles: workFilesRead,
     /** Its `permissionAtom` says whether this session may read company details at all. */
