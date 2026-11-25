@@ -58,6 +58,8 @@ export type DreamOutcome =
       readonly branch: string;
       readonly head: string;
       readonly dream: DreamJson;
+      /** Items the checks left out of a night that landed, each with why. */
+      readonly leftOut: ReadonlyArray<string>;
     }
   | {
       readonly _tag: "failed";
@@ -98,6 +100,9 @@ const EMPTY_DREAM_CONSUMES_MATERIAL = true;
 /** The owner's choice: whether a dream may start once the day's budget is spent. Off, it waits. */
 const DREAM_RUNS_ON_A_SPENT_BUDGET = false;
 const emptyDream: DreamJson = { changes: [], merges: [], supersessions: [], contradictions: [] };
+/** Where a failed night says why, a night that landed says what it left out. */
+const leftOutLine = (leftOut: ReadonlyArray<string>) =>
+  leftOut.length === 0 ? null : leftOut.join("\n").slice(0, 4000);
 const zoned = (ms: number, timeZone: string) => DateTime.makeZonedUnsafe(ms, { timeZone });
 
 const extractPrompt = (input: { orgId: string; head: string; full: boolean }) =>
@@ -225,6 +230,7 @@ const make = Effect.gen(function* () {
     if (outcome._tag === "succeeded") {
       yield* sql`UPDATE kin_dream_runs SET status = 'succeeded', head = ${outcome.head},
         dream_json = ${yield* encodeDream(outcome.dream)}, ended_at = ${now},
+        failure = ${leftOutLine(outcome.leftOut)},
         material_until = ${EMPTY_DREAM_CONSUMES_MATERIAL ? sql`material_until` : sql`material_from`}
         WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running' RETURNING dream_id`;
       return;
@@ -454,6 +460,7 @@ const make = Effect.gen(function* () {
         branch,
         head: base.head,
         dream: emptyDream,
+        leftOut: [],
       } satisfies DreamOutcome;
     }
     const root = yield* prepareCheckout(orgId, dreamId, files, material);
@@ -548,6 +555,12 @@ const make = Effect.gen(function* () {
         ...(credential ? ["The dream output contains a live T3 credential"] : []),
       ];
       if (failures.length > 0 || checked.dream === undefined) return failed(failures);
+      if (checked.leftOut.length > 0)
+        yield* Effect.logWarning("Kin dream left items out", {
+          orgId,
+          dreamId,
+          leftOut: checked.leftOut,
+        });
       const { commit } = yield* writer.value.commitDream(orgId, {
         branch,
         base: base.head,
@@ -572,6 +585,7 @@ const make = Effect.gen(function* () {
           branch,
           head: commit,
           dream: checked.dream,
+          leftOut: checked.leftOut,
         } satisfies DreamOutcome;
       // From here a cancel loses: memory lands as a wake-up's does, and the run is settled
       // in the transaction that records it, so its material counts as dreamed only once landed.
@@ -587,7 +601,7 @@ const make = Effect.gen(function* () {
               const now = yield* Clock.currentTimeMillis;
               const rows =
                 yield* sql`UPDATE kin_dream_runs SET status = 'succeeded', head = ${head},
-                dream_json = ${dreamText}, ended_at = ${now}
+                dream_json = ${dreamText}, ended_at = ${now}, failure = ${leftOutLine(checked.leftOut)}
               WHERE org_id = ${orgId} AND dream_id = ${dreamId} AND status = 'running'
               RETURNING dream_id`;
               if (rows.length !== 1)
@@ -603,6 +617,7 @@ const make = Effect.gen(function* () {
         branch,
         head: landed.commit,
         dream: checked.dream,
+        leftOut: checked.leftOut,
       } satisfies DreamOutcome;
     }).pipe(Effect.ensuring(fs.remove(root, { recursive: true, force: true }).pipe(Effect.ignore)));
   });

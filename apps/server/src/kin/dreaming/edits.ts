@@ -5,6 +5,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { isKeyRequest } from "../chat/keySent.ts";
 import { confirmedOf, PreparedJson } from "../connections/Sending.ts";
 import { QUOTE_MAX } from "../memory/keeping.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
@@ -40,17 +41,23 @@ export const editSide = (text: string) =>
 const CHANGED_PER_EDIT = 12;
 /** A longer middle is not compared, so no part of it counts as typed. */
 const COMPARED_MAX = 4_000_000;
-const words = new Intl.Segmenter(undefined, { granularity: "word" });
+// Pinned, so which words an edit lists does not depend on the server's locale.
+const words = new Intl.Segmenter("en", { granularity: "word" });
 const wordsOf = (text: string) =>
-  [...words.segment(text)].flatMap(({ segment, index }) =>
-    segment.trim() === "" ? [] : [{ word: segment, start: index, end: index + segment.length }],
+  [...words.segment(text)].flatMap(({ segment, index, isWordLike }) =>
+    segment.trim() === ""
+      ? []
+      : [{ word: segment, start: index, end: index + segment.length, wordLike: isWordLike }],
   );
+/** A run this long that the draft already holds word for word was moved or copied, not typed. */
+const MOVED_MIN_WORDS = 3;
+const SEP = "\u0000";
 const capped = (text: string) => text.slice(0, cutAt(text, QUOTE_MAX));
 
 /**
  * The runs of words in `after` that are not in `before`, in order, each with the words it
  * replaced (`was` empty for an insert). Word by word, punctuation its own word, spacing ignored;
- * a cut alone leaves no run.
+ * a cut alone leaves no run, nor does a run of three or more words found as it is in `before`.
  */
 export const changedParts = (before: string, after: string) => {
   const was = wordsOf(before);
@@ -76,6 +83,14 @@ export const changedParts = (before: string, after: string) => {
         a[i]!.word === b[j]!.word
           ? lcs[(i + 1) * width + j + 1]! + 1
           : Math.max(lcs[(i + 1) * width + j]!, lcs[i * width + j + 1]!);
+  const drafted = `${SEP}${was.map((one) => one.word).join(SEP)}${SEP}`;
+  const moved = (from: number, to: number) => {
+    const run = b.slice(from, to);
+    return (
+      run.filter((one) => one.wordLike === true).length >= MOVED_MIN_WORDS &&
+      drafted.includes(`${SEP}${run.map((one) => one.word).join(SEP)}${SEP}`)
+    );
+  };
   const span = (text: string, list: typeof a, from: number, to: number) =>
     from < to ? capped(text.slice(list[from]!.start, list[to - 1]!.end)) : "";
   const parts: Array<{ readonly was: string; readonly now: string }> = [];
@@ -96,7 +111,8 @@ export const changedParts = (before: string, after: string) => {
       if (j < b.length && (i === a.length || lcs[i * width + j + 1]! >= lcs[(i + 1) * width + j]!))
         j++;
       else i++;
-    if (j > fromJ) parts.push({ was: span(before, a, fromI, i), now: span(after, b, fromJ, j) });
+    if (j > fromJ && !moved(fromJ, j))
+      parts.push({ was: span(before, a, fromI, i), now: span(after, b, fromJ, j) });
   }
   return parts;
 };
@@ -125,8 +141,11 @@ export const draftEdits = Effect.fn("DreamMaterial.draftEdits")(function* (
     handle: string | null;
     level: number;
     private: number;
+    originKey: string;
+    restoredFrom: number | null;
   }>`SELECT v.record_id AS "recordId", r.key, r.title, v.version, v.actor_kind AS "actorKind",
       v.actor_id AS "actorId", v.body_kind AS "bodyKind", v.created_at AS "createdAt", p.handle,
+      v.origin_key AS "originKey", v.restored_from AS "restoredFrom",
       ${sql.literal(ownerLevelSql("v.org_id", "v.actor_id"))} AS level,
       ${sensitiveNow(sql)} AS private
     FROM kin_doc_versions v
@@ -153,6 +172,13 @@ export const draftEdits = Effect.fn("DreamMaterial.draftEdits")(function* (
   for (const [index, row] of versions.entries()) {
     if (index > 0 && versions[index - 1]!.recordId !== row.recordId) close();
     const person = row.actorKind === "person" && row.bodyKind === "markdown";
+    // Words a coding agent wrote through the person's key, or a Restore brought back, are not
+    // theirs, nor is anything compared against them: the run ends with no edit, and only an
+    // agent's next draft starts one.
+    if (person && row.level === 1 && (row.restoredFrom !== null || isKeyRequest(row.originKey))) {
+      draft = last = undefined;
+      continue;
+    }
     if (person && last !== undefined && last.actorId === row.actorId) last = row;
     else if (person && last === undefined && draft !== undefined && row.level === 1) last = row;
     else {

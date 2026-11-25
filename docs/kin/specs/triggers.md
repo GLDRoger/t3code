@@ -311,6 +311,8 @@ The builder takes item heads (optionally marked `misleading` by the caller), las
    - a new item, or one whose `source`, `said_by` or `trust` changed, has `source` set to a material ref whose verified author gives exactly its `said_by` and `trust`;
    - every contradiction has a `resolution` or a `question`.
 
+   One exception: a new item whose only failure is that it cites a draft edit without quoting words the person typed there, and that nothing else in the night names, is left out instead of failing the dream. The rest lands, and the run's `failure` names each item left out and why.
+
    The dream may propose `decisions/`, `people/` and `objectives/` changes; they only ever reach `main` through the review PR (step 7). As built, TRIG-13 lands every checked dream on `main` itself, through the writer's owner-change path, and only when none of its files changed on `main` since its base; steps 6 and 7 are not built.
 
 5. **Recheck** evidence and `review_by`, then rebuild `INDEX.md` (code).
