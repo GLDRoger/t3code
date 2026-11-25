@@ -27,6 +27,7 @@ import { openKinSettings } from "./kinSettingsAddress";
 import { useKinPaletteHits } from "./useKinDocs";
 import { useKinHost } from "./useKinHost";
 import { useKinListSwitch } from "./useKinListSwitch";
+import { useKinShell } from "./useKinShell";
 
 type PaletteItem = CommandPaletteActionItem | CommandPaletteSubmenuItem;
 
@@ -73,6 +74,7 @@ export function useKinPalette(input: {
       : kinClient.inviteCreate.permissionAtom(kinNewLead.environmentId),
   );
   const kinAgents = useKinPaletteAgents(kinNewLead, canCreateKinLead);
+  const kinShell = useKinShell(kinNewLead?.environmentId ?? null);
   const kinChatRows = useKinChatRows(
     kinNewLead?.environmentId ?? null,
     !input.isActionsOnly && input.query.trim() !== "",
@@ -165,7 +167,7 @@ export function useKinPalette(input: {
     kinNewLead === null || inView
       ? []
       : kinHits.map((raw) => {
-          const hit = kinSearchHit(raw);
+          const hit = kinSearchHit(raw, kinShell);
           const Icon = hit.kind === "docs" ? FileTextIcon : ListChecksIcon;
           return {
             kind: "action" as const,
