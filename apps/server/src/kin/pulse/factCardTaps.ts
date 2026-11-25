@@ -11,8 +11,9 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { ownerLevel } from "../people/KinAccess.ts";
-import type { FactCardPlan, StallPlan, WaitedPlan } from "../widgets/cardPlans.ts";
+import type { DuePlan, FactCardPlan, StallPlan, WaitedPlan } from "../widgets/cardPlans.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
+import { milestoneProposal } from "./factCards.ts";
 import { noticeHolder } from "./holderNotice.ts";
 import * as KinPulse from "./KinPulse.ts";
 import { DAY_MS } from "./thresholds.ts";
@@ -212,6 +213,56 @@ const runStall = Effect.fn("KinFactCards.runStall")(function* (
   return { title: "Marked done", text: `${plan.key} is done.` };
 });
 
+const runDue = Effect.fn("KinFactCards.runDue")(function* (
+  tap: FactTap,
+  plan: DuePlan,
+  records: KinRecords["Service"],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ state: string; rev: number; dueAt: number | null }>`SELECT state,
+      rev, due_at AS "dueAt" FROM kin_records
+    WHERE org_id = ${tap.orgId} AND record_id = ${plan.recordId}`;
+  const changed = nothingDone(`${plan.key} or its tasks changed since this was offered`);
+  if (row === undefined || row.state !== "open" || row.dueAt !== plan.from) return changed;
+  if (plan.kind === "keep_due") {
+    const facts = [
+      `milestone_late:${plan.key}:due=${plan.from}`,
+      `milestone_at_risk:${plan.key}:due=${plan.from}`,
+    ];
+    for (const factKey of facts)
+      if (
+        yield* holdFact(tap, plan, {
+          factKey,
+          action: "not_a_problem",
+          note: `${plan.personName}: leave it`,
+        })
+      )
+        return { title: "Left as it is", text: `${plan.key} stays due ${plan.fromDay}.` };
+    return nothingDone(`${plan.key} no longer needs a new date`);
+  }
+  const proposal = yield* milestoneProposal(
+    tap.orgId,
+    { key: plan.key, dueAt: plan.from },
+    tap.now,
+  );
+  if (row.rev !== plan.rev || proposal?.dueAt !== plan.to) return changed;
+  const own = yield* ownerLevel(tap.orgId, tap.personId);
+  yield* records.update(
+    tap.orgId,
+    {
+      actor: { _tag: "person", personId: tap.personId },
+      via: "owner",
+      chatId: tap.widget.chatId,
+      answering: [tap.widget.widgetId],
+      ...(own ? {} : { teammate: true }),
+    },
+    plan.key,
+    { dueAt: plan.to },
+    plan.rev,
+  );
+  return { title: "Milestone moved", text: `${plan.key} ${plan.title} is due ${plan.toDay}.` };
+});
+
 /**
  * A tap on Kin's card about a fact, in the tap's transaction: only the person it asks may answer,
  * and only while what it asked about is as it was; else nothing is done and the card says why.
@@ -231,5 +282,8 @@ export const runFactCard = Effect.fn("KinFactCards.run")(function* (
       return yield* runWaited(tap, plan, records);
     case "stall_answer":
       return yield* runStall(tap, plan, records);
+    case "move_due":
+    case "keep_due":
+      return yield* runDue(tap, plan, records);
   }
 });

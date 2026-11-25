@@ -256,6 +256,19 @@ const StallPlan = Schema.Struct({
   day: Schema.String,
 });
 export type StallPlan = typeof StallPlan.Type;
+/**
+ * A milestone slipping behind its open tasks: move its due day from `from` to `to`, its last open
+ * task's, or leave it. `factKey` names the milestone and its day, whether late or at risk.
+ */
+const DuePlan = Schema.Struct({
+  kind: Schema.Literals(["move_due", "keep_due"]),
+  ...FactCardFields,
+  from: Schema.Number,
+  to: Schema.Number,
+  fromDay: Schema.String,
+  toDay: Schema.String,
+});
+export type DuePlan = typeof DuePlan.Type;
 export const CardPlan = Schema.Union([
   RecordPlan,
   StartPlan,
@@ -269,12 +282,15 @@ export const CardPlan = Schema.Union([
   LeaverPlan,
   WaitedPlan,
   StallPlan,
+  DuePlan,
 ]);
 export type CardPlan = typeof CardPlan.Type;
-export type FactCardPlan = WaitedPlan | StallPlan;
+export type FactCardPlan = WaitedPlan | StallPlan | DuePlan;
 const FACT_CARD_KINDS: ReadonlySet<string> = new Set<FactCardPlan["kind"]>([
   "waited_answer",
   "stall_answer",
+  "move_due",
+  "keep_due",
 ]);
 /** Kin's own card about a pulse fact: it answers nothing else and no agent draws or redraws it. */
 export const isFactCard = (plan: CardPlan): plan is FactCardPlan => FACT_CARD_KINDS.has(plan.kind);

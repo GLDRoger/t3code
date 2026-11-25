@@ -5,7 +5,7 @@ import {
   type KinChoiceOutcome,
   KinPersonId,
   KinWidgetId,
-  type KinAgentId,
+  KinAgentId,
   type KinOrgId,
   type KinPulseFact,
   ThreadId,
@@ -27,13 +27,16 @@ import {
   type FactCardPlan,
   isFactCard,
   plansOf,
+  type DuePlan,
   sealPlans,
   type StallPlan,
   type WaitedPlan,
 } from "../widgets/cardPlans.ts";
 import { dayIn } from "../work/money.ts";
-import { startOfDay } from "../work/recordRows.ts";
+import { daysOverdue, startOfDay } from "../work/recordRows.ts";
+import { teamGuard } from "../work/teamView.ts";
 import { daysText, type SenseContext } from "./senses/shared.ts";
+import { markTold } from "./told.ts";
 import { DAY_MS, thresholds, toMs } from "./thresholds.ts";
 
 /*
@@ -53,10 +56,27 @@ export const dayWord = (ms: number, zone: string) =>
 
 /** The card's button and the line under it, for each sealed answer. */
 export const factCardShown = (plan: FactCardPlan) => {
-  if (plan.kind === "stall_answer")
-    return plan.answer === "still"
-      ? { label: "Still on it", line: `Kin asks again on ${plan.day} if it hasn't moved` }
-      : { label: "Done", line: `Mark ${plan.key} done` };
+  switch (plan.kind) {
+    case "move_due":
+      return {
+        label: `Move to ${plan.toDay}`,
+        line: `${plan.key}'s due day becomes ${plan.toDay}; its tasks don't change`,
+      };
+    case "keep_due":
+      return {
+        label: "Leave it",
+        line: `${plan.key} stays due ${plan.fromDay}; Kin doesn't ask again for this day`,
+      };
+    case "stall_answer":
+      return plan.answer === "still"
+        ? { label: "Still on it", line: `Kin asks again on ${plan.day} if it hasn't moved` }
+        : { label: "Done", line: `Mark ${plan.key} done` };
+    case "waited_answer":
+      return waitedShown(plan);
+  }
+};
+
+const waitedShown = (plan: WaitedPlan) => {
   switch (plan.answer) {
     case "done":
       return {
@@ -484,6 +504,164 @@ const stallCards = Effect.fn("KinFactCards.stalled")(function* (input: {
   }
 });
 
+const MILESTONE_SENSES: ReadonlySet<string> = new Set(["milestone_late", "milestone_at_risk"]);
+/** One card per milestone and due day, whether it is at risk or late by the time it is asked. */
+export const milestoneCardKey = (recordId: string, dueAt: number) =>
+  `milestone_due:${recordId}:due=${dueAt}`;
+/** What a card stands on: a fact's key, and a milestone's day for its card. */
+const standKeys = (fact: {
+  readonly key: string;
+  readonly sense: string;
+  readonly subject: { readonly recordId?: string | undefined };
+}) => {
+  const due = Number(fact.key.split(":due=")[1]);
+  return MILESTONE_SENSES.has(fact.sense) && fact.subject.recordId !== undefined && due > 0
+    ? [fact.key, milestoneCardKey(fact.subject.recordId, due)]
+    : [fact.key];
+};
+
+/**
+ * The day a milestone's open tasks give it: the latest one's due, when every open task has a due
+ * still ahead and it is after the milestone's own; else undefined, and a person plans it.
+ */
+export const milestoneProposal = Effect.fn("KinFactCards.milestoneProposal")(function* (
+  orgId: KinOrgId,
+  milestone: { readonly key: string; readonly dueAt: number },
+  at: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const tasks = yield* sql<{ key: string; title: string; dueAt: number | null }>`SELECT key,
+      title, due_at AS "dueAt" FROM kin_records
+    WHERE org_id = ${orgId} AND register_id = 'work'
+      AND json_extract(fields_json, '$.milestone') = ${milestone.key}
+      AND state IN ('open', 'doing', 'waiting')
+    ORDER BY due_at, key`;
+  const last = tasks.at(-1);
+  if (last?.dueAt == null || tasks.some((task) => task.dueAt === null || task.dueAt <= at))
+    return undefined;
+  return last.dueAt > milestone.dueAt ? { ...last, dueAt: last.dueAt } : undefined;
+});
+
+/**
+ * A milestone late or at risk whose open tasks give it a day: one card proposing it, to the
+ * project's holder when a person who may change the milestone, else the owner, in their chat with
+ * the project's lead agent (else the Chief of staff). It is told to them by the card: the check-in
+ * skips it.
+ */
+const milestoneCards = Effect.fn("KinFactCards.milestones")(function* (input: {
+  readonly ctx: SenseContext;
+  readonly open: ReadonlyArray<KinPulseFact>;
+  readonly sees: (
+    personId: KinPersonId,
+    facts: ReadonlyArray<KinPulseFact>,
+  ) => Effect.Effect<ReadonlyArray<{ readonly key: string }>, SqlError, SqlClient.SqlClient>;
+  readonly level: ReadonlySet<string>;
+  readonly posted: ReadonlyArray<CardRow>;
+}) {
+  const { ctx } = input;
+  const { orgId, chief, at } = ctx;
+  if (chief === undefined) return;
+  const sql = yield* SqlClient.SqlClient;
+  const [owner] = yield* sql<{ personId: string }>`SELECT owner_person_id AS "personId"
+    FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${chief}`;
+  if (owner === undefined) return;
+  for (const fact of input.open) {
+    if (!MILESTONE_SENSES.has(fact.sense) || fact.subject.recordId === undefined) continue;
+    const [, cardKey] = standKeys(fact);
+    if (cardKey === undefined || input.posted.some((row) => row.factKey === cardKey)) continue;
+    const [row] = yield* sql<{
+      key: string;
+      title: string;
+      rev: number;
+      dueAt: number;
+      holderKind: string | null;
+      holderId: string | null;
+    }>`SELECT r.key, r.title, r.rev, r.due_at AS "dueAt", p.owner_kind AS "holderKind",
+        p.owner_id AS "holderId"
+      FROM kin_records r
+      LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
+      WHERE r.org_id = ${orgId} AND r.record_id = ${fact.subject.recordId}
+        AND r.register_id = 'milestones' AND r.state = 'open' AND r.due_at IS NOT NULL`;
+    if (row === undefined || cardKey !== milestoneCardKey(fact.subject.recordId, row.dueAt))
+      continue;
+    const proposal = yield* milestoneProposal(orgId, row, at);
+    if (proposal === undefined) continue;
+    const lead =
+      row.holderKind === "person" && row.holderId !== null
+        ? KinPersonId.make(row.holderId)
+        : undefined;
+    const mayMove =
+      lead !== undefined &&
+      (input.level.has(lead) ||
+        ((yield* input.sees(lead, [fact])).length > 0 &&
+          (yield* mayChange(orgId, lead, { recordId: fact.subject.recordId, key: row.key }))));
+    const personId = mayMove ? lead : KinPersonId.make(owner.personId);
+    const agentId =
+      row.holderKind === "agent" && row.holderId !== null && ctx.liveAgents.has(row.holderId)
+        ? KinAgentId.make(row.holderId)
+        : chief;
+    const [person] = yield* sql<{ name: string; zone: string | null }>`SELECT
+        display_name AS name, time_zone AS zone FROM kin_people
+      WHERE org_id = ${orgId} AND person_id = ${personId} AND removed_at IS NULL`;
+    if (person === undefined) continue;
+    const zone = person.zone ?? ctx.zone;
+    const base = {
+      factKey: cardKey,
+      round: 0,
+      personId,
+      personName: person.name,
+      agentId,
+      recordId: fact.subject.recordId,
+      key: row.key,
+      title: row.title,
+      rev: row.rev,
+      from: row.dueAt,
+      to: proposal.dueAt,
+      fromDay: dayWord(row.dueAt, zone),
+      toDay: dayWord(proposal.dueAt, zone),
+    };
+    const plans = (["move_due", "keep_due"] as const).map(
+      (kind) => ({ kind, ...base }) satisfies DuePlan,
+    );
+    const question =
+      fact.sense === "milestone_late"
+        ? `${row.key} ${row.title} was due ${base.fromDay}, ${daysText(Math.max(1, daysOverdue(row.dueAt, at, zone)))} ago; its open tasks are due by ${base.toDay}. Move ${row.key} to ${base.toDay}?`
+        : `${row.key} ${row.title} is due ${base.fromDay}, but its last open task, ${proposal.key} ${proposal.title}, is due ${base.toDay}. Move ${row.key} to ${base.toDay}?`;
+    const card = yield* postFactCard({
+      ctx,
+      personId,
+      agentId,
+      factKey: cardKey,
+      round: 0,
+      question,
+      options: plans.map((plan) => ({ label: factCardShown(plan).label, plan })),
+      nudge: false,
+      posted: input.posted,
+    });
+    if (card !== undefined)
+      yield* markTold({
+        orgId,
+        personId,
+        eventId: card.messageId,
+        facts: [fact],
+        at,
+        zone: ctx.zone,
+      });
+  }
+});
+
+/** Whether a teammate may make this change to a record, as their own screens would. */
+const mayChange = (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  row: { readonly recordId: string; readonly key: string },
+) =>
+  // A due day is no owner's field: whoever may change the record may change it.
+  teamGuard(orgId, personId, { row, changes: true, input: {} }).pipe(
+    Effect.as(true),
+    Effect.catchTags({ KinChatError: () => Effect.succeed(false) }),
+  );
+
 /**
  * In the pulse's tick, after holders are told: Kin's cards about facts that stand open, and the
  * way out of each whose fact cleared. A card that can't be posted is logged and never fails it.
@@ -491,7 +669,7 @@ const stallCards = Effect.fn("KinFactCards.stalled")(function* (input: {
 export const factCards = Effect.fn("KinFactCards.pass")(function* (input: {
   readonly ctx: SenseContext;
   /** Every fact sensed now, handled or not: what a card stands on. */
-  readonly sensed: ReadonlyArray<{ readonly key: string }>;
+  readonly sensed: ReadonlyArray<Parameters<typeof standKeys>[0]>;
   /** Those open: not handled, not set aside, not quiet. */
   readonly open: ReadonlyArray<KinPulseFact>;
   readonly sees: (
@@ -501,8 +679,9 @@ export const factCards = Effect.fn("KinFactCards.pass")(function* (input: {
 }) {
   const { orgId } = input.ctx;
   const posted = yield* factCardRows(orgId);
-  yield* settleFactCards(orgId, posted, new Set(input.sensed.map((fact) => fact.key)));
+  yield* settleFactCards(orgId, posted, new Set(input.sensed.flatMap(standKeys)));
   const level = yield* ownerLevelPeople(orgId);
   yield* waitedCards({ ...input, level, posted });
   yield* stallCards({ ...input, level, posted });
+  yield* milestoneCards({ ...input, level, posted });
 });

@@ -445,3 +445,162 @@ it.effect(
       }),
     ),
 );
+
+/** Thu 26, Fri 27 and Mon 30 Nov 2026, 17:00 UTC: the milestone is due inside its 3-day heads-up. */
+const NOV_26 = Date.UTC(2026, 10, 26, 17);
+const NOV_27 = Date.UTC(2026, 10, 27, 17);
+const NOV_30 = Date.UTC(2026, 10, 30, 17);
+/** A project `holder` leads, with one milestone due `dueAt` and its open tasks due as given. */
+const plan = (
+  ctx: Ctx,
+  title: string,
+  holder: KinWorkPrincipal,
+  dueAt: number,
+  tasks: ReadonlyArray<{ readonly title: string; readonly dueAt?: number }>,
+) =>
+  Effect.gen(function* () {
+    const project = yield* ctx.records.create(ctx.orgId, ctx.byOwner, {
+      list: "projects",
+      title: `${title} project`,
+      owner: holder,
+      originKey: `${title} project`,
+    });
+    const milestone = yield* ctx.records.create(ctx.orgId, ctx.byOwner, {
+      list: "milestones",
+      title,
+      owner: holder,
+      projectId: project.row.recordId,
+      dueAt,
+      originKey: title,
+    });
+    const keys: Array<string> = [];
+    for (const task of tasks) {
+      const made = yield* ctx.records.create(ctx.orgId, ctx.byOwner, {
+        title: task.title,
+        owner: { _tag: "person", personId: zoyaId },
+        originKey: task.title,
+        team: true,
+        projectId: project.row.recordId,
+        ...(task.dueAt === undefined ? {} : { dueAt: task.dueAt }),
+      });
+      yield* ctx.sql`UPDATE kin_records
+        SET fields_json = json_set(fields_json, '$.milestone', ${milestone.row.key})
+        WHERE org_id = ${ctx.orgId} AND record_id = ${made.row.recordId}`;
+      keys.push(made.row.key);
+    }
+    return { project: project.row.key, milestone: milestone.row.key, tasks: keys };
+  });
+
+it.effect(
+  "a slipping milestone whose open tasks all have a day ahead gets one card proposing the last one's; Move changes only its day, Leave it holds the fact; told by the card, not the check-in; none when a task is late or has no day",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW);
+        for (const key of ["W-1", "W-2"])
+          yield* ctx.records.update(ctx.orgId, ctx.byOwner, key, { state: "done" });
+        const rhea: KinWorkPrincipal = { _tag: "person", personId: ctx.owner.personId };
+        const live = yield* plan(ctx, "Pilot live", rhea, NOV_27, [
+          { title: "Wire the feed", dueAt: NOV_26 },
+          { title: "Load test", dueAt: NOV_30 },
+        ]);
+        yield* plan(ctx, "Pilot data", rhea, NOV_27, [
+          { title: "Clean the import", dueAt: NOW - DAY },
+          { title: "Check the totals", dueAt: NOV_30 },
+        ]);
+        yield* plan(ctx, "Pilot docs", rhea, NOV_27, [
+          { title: "Write the guide" },
+          { title: "Record the walkthrough", dueAt: NOV_30 },
+        ]);
+        const kept = yield* plan(ctx, "Pilot review", rhea, NOV_27, [
+          { title: "Book the room", dueAt: NOV_30 },
+        ]);
+        yield* tickAt(ctx, NOW);
+        const shown = yield* cards(ctx);
+        assert.deepStrictEqual(
+          shown.map((card) => [card.who, card.question]),
+          [
+            [
+              ctx.owner.personId,
+              `${live.milestone} Pilot live is due Fri 27 Nov, but its last open task, ${live.tasks[1]} Load test, is due Mon 30 Nov. Move ${live.milestone} to Mon 30 Nov?`,
+            ],
+            [
+              ctx.owner.personId,
+              `${kept.milestone} Pilot review is due Fri 27 Nov, but its last open task, ${kept.tasks[0]} Book the room, is due Mon 30 Nov. Move ${kept.milestone} to Mon 30 Nov?`,
+            ],
+          ],
+        );
+        assert.deepStrictEqual(shown[0]!.labels, ["Move to Mon 30 Nov", "Leave it"]);
+        assert.deepStrictEqual(shown[0]!.lines, [
+          `${live.milestone}'s due day becomes Mon 30 Nov; its tasks don't change`,
+          `${live.milestone} stays due Fri 27 Nov; Kin doesn't ask again for this day`,
+        ]);
+        // Told to Rhea by the card: her check-in has nothing more to tell of it.
+        const told = yield* ctx.sql<{ factKey: string }>`SELECT fact_key AS "factKey"
+          FROM kin_pulse_told WHERE org_id = ${ctx.orgId} AND person_id = ${ctx.owner.personId}
+            AND fact_key LIKE 'milestone_at_risk:%' ORDER BY fact_key`;
+        assert.deepStrictEqual(
+          told.map((row) => row.factKey.split(":due=")[0]),
+          [`milestone_at_risk:${live.milestone}`, `milestone_at_risk:${kept.milestone}`],
+        );
+
+        yield* tap(ctx, ctx.owner.personId, shown[0]!, "Move to Mon 30 Nov");
+        assert.strictEqual((yield* ctx.records.get(ctx.orgId, live.milestone))?.dueAt, NOV_30);
+        assert.strictEqual((yield* ctx.records.get(ctx.orgId, live.tasks[1]!))?.dueAt, NOV_30);
+        assert.strictEqual((yield* ctx.records.get(ctx.orgId, live.tasks[0]!))?.dueAt, NOV_26);
+        assert.deepStrictEqual((yield* cards(ctx))[0]!.outcome, {
+          title: "Milestone moved",
+          text: `${live.milestone} Pilot live is due Mon 30 Nov.`,
+        });
+        assert.isFalse(yield* ownerSees(ctx, "milestone_at_risk", live.milestone, NOW + HOUR));
+
+        yield* tap(ctx, ctx.owner.personId, shown[1]!, "Leave it");
+        assert.deepStrictEqual((yield* cards(ctx))[1]!.outcome, {
+          title: "Left as it is",
+          text: `${kept.milestone} stays due Fri 27 Nov.`,
+        });
+        assert.isFalse(yield* ownerSees(ctx, "milestone_at_risk", kept.milestone, NOW + HOUR));
+        assert.strictEqual((yield* ctx.records.get(ctx.orgId, kept.milestone))?.dueAt, NOV_27);
+        yield* tickAt(ctx, NOW + HOUR);
+        assert.strictEqual((yield* cards(ctx)).length, 2);
+      }),
+    ),
+);
+
+it.effect(
+  "the project's teammate lead gets the card; an agent's project goes to the owner in that agent's chat; a task moved since makes the tap do nothing",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW);
+        for (const key of ["W-1", "W-2"])
+          yield* ctx.records.update(ctx.orgId, ctx.byOwner, key, { state: "done" });
+        const zoya: KinWorkPrincipal = { _tag: "person", personId: zoyaId };
+        const hers = yield* plan(ctx, "Pilot live", zoya, NOV_27, [
+          { title: "Load test", dueAt: NOV_30 },
+        ]);
+        const agents = yield* plan(ctx, "Pilot data", { _tag: "agent", agentId: chief }, NOV_27, [
+          { title: "Check the totals", dueAt: NOV_30 },
+        ]);
+        yield* tickAt(ctx, NOW);
+        const shown = (yield* cards(ctx)).toSorted((a, b) => a.question.localeCompare(b.question));
+        assert.deepStrictEqual(
+          shown.map((card) => [card.who, card.question.split(" ")[0]]),
+          [
+            [zoyaId, hers.milestone],
+            [ctx.owner.personId, agents.milestone],
+          ],
+        );
+        yield* ctx.records.update(ctx.orgId, ctx.byOwner, hers.tasks[0]!, {
+          dueAt: NOV_30 + DAY,
+        });
+        yield* tap(ctx, zoyaId, shown[0]!, "Move to Mon 30 Nov");
+        const after = (yield* cards(ctx)).find((card) => card.widgetId === shown[0]!.widgetId);
+        assert.deepStrictEqual(after!.outcome, {
+          title: "Nothing was done",
+          text: `${hers.milestone} or its tasks changed since this was offered, so nothing was done.`,
+        });
+        assert.strictEqual((yield* ctx.records.get(ctx.orgId, hers.milestone))?.dueAt, NOV_27);
+      }),
+    ),
+);
