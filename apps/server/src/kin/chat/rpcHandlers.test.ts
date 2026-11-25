@@ -1,3 +1,4 @@
+import * as NodeURL from "node:url";
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { kinHostDependencies } from "../lead/layer.testkit.ts";
 import { assert, it } from "@effect/vitest";
@@ -58,7 +59,6 @@ import { KinIdentity } from "./KinIdentity.ts";
 import { KinChatService } from "./KinChatService.ts";
 import * as Repository from "./KinChatRepository.ts";
 import { makeKinHandlers } from "../rpcHandlers.ts";
-import { KIN_OPEN_CHATS_PER_CONNECTION } from "./rpcHandlers.ts";
 
 const decodeTaskState = Schema.decodeEffect(KinTaskCardState);
 
@@ -367,12 +367,15 @@ it.effect(
       const backlog = yield* Queue.take(events);
       assert.strictEqual(backlog._tag, "backlog");
       if (backlog._tag === "backlog") assert.deepStrictEqual(backlog.messages, [concurrent]);
+      // A person's own send moves their read mark to it.
+      assert.include(yield* Queue.take(events), { _tag: "read", seq: concurrent.seq });
       const live = yield* chat.send(person, {
         chatId: direct.chatId,
         body: "After read",
         clientMessageId: "live",
       });
       assert.deepStrictEqual(yield* Queue.take(events), { _tag: "message", message: live });
+      assert.include(yield* Queue.take(events), { _tag: "read", seq: live.seq });
       const delayed = yield* repo.insertMessage({
         audience: "chat",
         ...live,
@@ -393,32 +396,65 @@ it.effect(
     }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 
-// QA Q17: one socket held 1,000 subscriptions to a chat, about 240 KB of server memory each.
-it.effect("caps the chats one connection keeps open with a plain refusal", () =>
-  Effect.gen(function* () {
-    const { direct } = yield* seed;
-    const handlers = yield* makeKinHandlers(session);
-    const client = yield* RpcTest.makeClient(group).pipe(
-      Effect.provide(
-        Layer.merge(
-          group.toLayer({ ...handlers, "server.probe": () => Effect.succeed({}) }),
-          RpcAuthorization.layer(AuthStandardClientScopes),
+it.effect(
+  "replaces repeated subscriptions without disturbing a second chat on the same connection",
+  () =>
+    Effect.gen(function* () {
+      const { direct, chat, person, repo } = yield* seed;
+      const agentId = KinAgentId.make("second-lead");
+      yield* repo.insertAgent({
+        ...person,
+        agentId,
+        ownerPersonId: person.personId,
+        displayName: "Finance",
+        role: "lead",
+        createdAt: "1970-01-01T00:00:00.000Z",
+      });
+      const second = yield* chat.createDirect(person, { ...person, agentId });
+      const handlers = yield* makeKinHandlers(session);
+      const client = yield* RpcTest.makeClient(group).pipe(
+        Effect.provide(
+          Layer.merge(
+            group.toLayer({ ...handlers, "server.probe": () => Effect.succeed({}) }),
+            RpcAuthorization.layer(AuthStandardClientScopes),
+          ),
         ),
-      ),
-    );
-    const subscribe = () => client["kin.chat.subscribe"]({ chatId: direct.chatId });
-    for (let open = 0; open < KIN_OPEN_CHATS_PER_CONNECTION; open++) {
-      const events = yield* Stream.toQueue(subscribe(), { capacity: "unbounded" });
-      assert.include(yield* Queue.take(events), { _tag: "backlog" });
-    }
-    assert.include(yield* Stream.runHead(subscribe()).pipe(Effect.flip), { reason: "limit" });
-  }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+      );
+      const subscribe = (chatId: KinChatId) =>
+        Stream.toQueue(client["kin.chat.subscribe"]({ chatId }), { capacity: "unbounded" });
+      const other = yield* subscribe(second.chatId);
+      assert.include(yield* Queue.take(other), { _tag: "backlog" });
+      const streams = [];
+      for (let open = 0; open < 1_000; open++) {
+        const events = yield* subscribe(direct.chatId);
+        assert.include(yield* Queue.take(events), { _tag: "backlog" });
+        streams.push(events);
+      }
+      for (const stale of streams.slice(0, -1))
+        assert.isTrue(yield* Effect.isFailure(Queue.take(stale)));
+      for (const [id, events] of [
+        [direct.chatId, streams.at(-1)!],
+        [second.chatId, other],
+      ] as const) {
+        for (const body of ["Invented first", "Invented second"]) {
+          const message = yield* client["kin.messages.send"]({
+            chatId: id,
+            body,
+            clientMessageId: body,
+          });
+          assert.deepStrictEqual(yield* Queue.take(events), { _tag: "message", message });
+          assert.include(yield* Queue.take(events), { _tag: "read", seq: message.seq });
+        }
+      }
+    }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 
 it.effect("keeps transport handlers out of persistence", () =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const source = yield* fs.readFileString(new URL("./rpcHandlers.ts", import.meta.url).pathname);
+    const source = yield* fs.readFileString(
+      NodeURL.fileURLToPath(new URL("./rpcHandlers.ts", import.meta.url)),
+    );
     assert.notMatch(source, /KinChatRepository|sql\/SqlClient|(?:kin|\.\.)\/persistence/);
   }).pipe(Effect.provide(NodeServices.layer)),
 );
@@ -468,22 +504,24 @@ it.effect("resets large backlogs and bounds a resume to the current snapshot", (
     );
     let cursor = yield* Queue.take(events);
     assert.strictEqual(cursor._tag, "backlog");
-    for (let i = 0; i < 201; i++)
-      yield* chat.send(person, {
+    const held = new Set<string>();
+    let afterSeq = 201;
+    // A screen that keeps up: each message read as it arrives, with every hundredth's checkpoint.
+    for (let i = 0; i < 201; i++) {
+      const sent = yield* chat.send(person, {
         chatId: direct.chatId,
         body: `Live ${i}`,
         clientMessageId: `live-${i}`,
       });
-    const held = new Set<string>();
-    let afterSeq = 201;
-    for (let i = 0; i < 201; i++) {
-      const event = yield* Queue.take(events);
-      if (event._tag === "message") {
-        held.add(event.message.messageId);
-        afterSeq = Math.max(afterSeq, event.message.seq);
-      } else if (event._tag === "backlog") {
-        assert.isFalse(event.messages.some((m) => held.has(m.messageId)));
-        cursor = event;
+      while (!held.has(sent.messageId)) {
+        const event = yield* Queue.take(events);
+        if (event._tag === "message") {
+          held.add(event.message.messageId);
+          afterSeq = Math.max(afterSeq, event.message.seq);
+        } else if (event._tag === "backlog") {
+          assert.isFalse(event.messages.some((m) => held.has(m.messageId)));
+          cursor = event;
+        }
       }
     }
     assert.strictEqual(cursor._tag, "backlog");
@@ -1011,15 +1049,28 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
       (yield* operator["kin.leads.list"](org).pipe(Effect.flip))._tag,
       "EnvironmentAuthorizationError",
     );
-    assert.deepStrictEqual(yield* member["kin.leads.list"](org), {
+    // A teammate gets none of the owner's leads, only the agents she may start a chat with.
+    const { messageable, ...rest } = yield* member["kin.leads.list"](org);
+    assert.deepStrictEqual(rest, {
       leads: [],
       contacts: [],
       teamAgentId: null,
       companyChat: null,
     });
+    assert.sameDeepMembers(
+      [...(messageable ?? [])],
+      [growth, social].map(({ orgId, agentId, name }) => ({
+        orgId,
+        agentId,
+        name,
+        intro: "",
+        ownerName: "Owner",
+      })),
+    );
     assert.deepStrictEqual(yield* client["kin.leads.list"]({ orgId: KinOrgId.make("foreign") }), {
       leads: [],
       contacts: [],
+      messageable: [],
       teamAgentId: null,
       companyChat: null,
     });
@@ -1089,7 +1140,7 @@ it.effect("creates many leads over RPC for the owner only, through the CLI's cre
 );
 
 it.effect(
-  "a teammate's chat-only session messages only the leads the owner allowed, in a chat outside the owner's list",
+  "a teammate's chat-only session messages any lead not restricted for them, in a chat outside the owner's list",
   () =>
     Effect.gen(function* () {
       const { person, repo, direct } = yield* seed;
@@ -1186,57 +1237,37 @@ it.effect(
         yield* refused(priya["kin.lead.update"]({ ...lead, intro: "Mine now." })),
         unauthorized,
       );
-      // Nothing is hers until the owner says so.
-      assert.deepStrictEqual(yield* priya["kin.leads.list"](org), {
-        leads: [],
-        contacts: [],
-        teamAgentId: null,
-        companyChat: null,
-      });
-      assert.include(yield* priya["kin.chats.createDirect"](lead).pipe(Effect.flip), {
-        reason: "not_allowed",
-      });
-
-      assert.strictEqual(
-        (yield* owner["kin.leads.list"](org)).leads.find((held) => held.agentId === finance.agentId)
-          ?.intro,
-        "Finance questions.",
-      );
+      // Anyone in the company may message any agent: no grant is needed to start.
       yield* owner["kin.lead.update"]({ ...lead, intro: "Handles invoices." });
-      assert.deepStrictEqual(
-        (yield* owner["kin.lead.access.grant"]({ ...lead, personId: priyaId })).people.map(
-          ({ personId, displayName }) => ({ personId, displayName }),
-        ),
-        [{ personId: priyaId, displayName: "Priya" }],
-      );
       const chat = yield* priya["kin.chats.createDirect"](lead);
       // All she is told about it: no charter, domain, model or work, and none of the owner's leads.
       // She is told whose workspace it is, since that person can see the chat.
-      assert.deepStrictEqual(yield* priya["kin.leads.list"](org), {
+      const financeContact = {
+        ...lead,
+        name: "Finance",
+        intro: "Handles invoices.",
+        chatId: chat.chatId,
+        ownerName: "Owner",
+      };
+      const contacts = Effect.map(priya["kin.leads.list"](org), (list) => ({
+        ...list,
+        contacts: list.contacts?.filter((one) => one.agentId === finance.agentId),
+        messageable: list.messageable?.filter((one) => one.agentId === finance.agentId),
+      }));
+      const { chatId: _chatId, ...startable } = financeContact;
+      assert.deepStrictEqual(yield* contacts, {
         leads: [],
-        contacts: [
-          {
-            ...lead,
-            name: "Finance",
-            intro: "Handles invoices.",
-            chatId: chat.chatId,
-            ownerName: "Owner",
-          },
-        ],
+        contacts: [financeContact],
+        messageable: [startable],
         teamAgentId: null,
         companyChat: null,
       });
       assert.strictEqual((yield* priya["kin.chats.createDirect"](lead)).chatId, chat.chatId);
       yield* send(priya, chat.chatId, "hers-1");
       assert.lengthOf((yield* page(priya, chat.chatId)).messages, 1);
+      yield* priya["kin.chats.createDirect"]({ ...org, agentId: growth.agentId });
 
-      // Her access is to that lead, in her own chat: not another lead, the owner's chats with
-      // either, or someone else's chat.
-      for (const attempt of [
-        priya["kin.chats.createDirect"]({ ...org, agentId: growth.agentId }),
-        priya["kin.chats.createDirect"]({ ...org, agentId: KinAgentId.make("lead") }),
-      ])
-        assert.include(yield* attempt.pipe(Effect.flip), { reason: "not_allowed" });
+      // Her own chat: not the owner's chats with either lead, or someone else's chat.
       for (const chatId of [finance.ownerChatId, growth.ownerChatId, direct.chatId]) {
         assert.include(yield* page(priya, chatId).pipe(Effect.flip), { reason: "not_found" });
         assert.include(yield* send(priya, chatId, `into-${chatId}`).pipe(Effect.flip), {
@@ -1247,22 +1278,28 @@ it.effect(
           { reason: "not_found" },
         );
       }
-      // Sam was not allowed, and Priya's chat is not his.
-      assert.include(yield* sam["kin.chats.createDirect"](lead).pipe(Effect.flip), {
-        reason: "not_allowed",
-      });
+      // Sam has a chat of his own with it, and Priya's chat is not his.
+      assert.notStrictEqual((yield* sam["kin.chats.createDirect"](lead)).chatId, chat.chatId);
       assert.include(yield* page(sam, chat.chatId).pipe(Effect.flip), { reason: "not_found" });
       // Nor is it in the owner's Kin chats, though the owner can still see it on the machine.
       assert.include(yield* page(owner, chat.chatId).pipe(Effect.flip), { reason: "not_found" });
       assert.include(yield* send(owner, chat.chatId, "owner-in").pipe(Effect.flip), {
         reason: "not_found",
       });
-      assert.lengthOf((yield* owner["kin.lead.access.list"](lead)).people, 1);
+      const listed = Effect.map(owner["kin.lead.access.list"](lead), (result) =>
+        result.people.map((one) => one.personId),
+      );
+      assert.includeMembers(yield* listed, [priyaId, samId]);
 
-      // Taken away: she reads what was said and can add nothing, and can't start over.
-      assert.deepStrictEqual(
-        yield* owner["kin.lead.access.revoke"]({ ...lead, personId: priyaId }),
-        { everyone: false, people: [] },
+      // Restricted: she reads what was said and can add nothing, and can't start over.
+      const revoked = yield* owner["kin.lead.access.revoke"]({ ...lead, personId: priyaId });
+      assert.notInclude(
+        revoked.people.map((one) => one.personId),
+        priyaId,
+      );
+      assert.include(
+        revoked.people.map((one) => one.personId),
+        samId,
       );
       assert.include(yield* send(priya, chat.chatId, "hers-2").pipe(Effect.flip), {
         reason: "not_allowed",
@@ -1271,16 +1308,79 @@ it.effect(
         reason: "not_allowed",
       });
       assert.lengthOf((yield* page(priya, chat.chatId)).messages, 1);
-      assert.deepStrictEqual(yield* priya["kin.leads.list"](org), {
-        leads: [],
-        contacts: [],
-        teamAgentId: null,
-        companyChat: null,
-      });
-      // Allowed again: the same chat.
+      assert.deepStrictEqual((yield* contacts).contacts, []);
+      assert.deepStrictEqual((yield* contacts).messageable, []);
+      // Lifted: the same chat.
       yield* owner["kin.lead.access.grant"]({ ...lead, personId: priyaId });
       yield* send(priya, chat.chatId, "hers-3");
-      assert.strictEqual((yield* priya["kin.leads.list"](org)).contacts?.[0]?.chatId, chat.chatId);
+      assert.strictEqual((yield* contacts).contacts?.[0]?.chatId, chat.chatId);
+
+      // Settings' list of restricted pairs: two people too, whose own chat turns read-only, and
+      // the groups both stay in.
+      const theirs = yield* priya["kin.chats.withPerson"]({ ...org, personId: samId });
+      yield* owner["kin.groups.create"]({
+        ...org,
+        title: "Shoot crew",
+        agentIds: [],
+        personIds: [samId, priyaId],
+      });
+      const pair = {
+        ...org,
+        a: { kind: "person" as const, personId: samId },
+        b: { kind: "person" as const, personId: priyaId },
+      };
+      assert.deepStrictEqual(
+        (yield* owner["kin.reach.set"]({ ...pair, restricted: true })).limits.map((limit) => [
+          limit.one,
+          limit.other,
+          limit.groups,
+        ]),
+        [[pair.b, pair.a, ["Shoot crew"]]],
+      );
+      assert.strictEqual(
+        yield* refused(priya["kin.reach.set"]({ ...pair, restricted: false })),
+        unauthorized,
+      );
+      assert.include(yield* send(priya, theirs.chatId, "to-sam").pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      // Whatever its member rows say, a write between the pair is refused.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_chat_members SET role = 'member' WHERE chat_id = ${theirs.chatId}`;
+      assert.include(yield* send(priya, theirs.chatId, "to-sam-by-rows").pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      assert.include(
+        yield* sam["kin.chats.withPerson"]({ ...org, personId: priyaId }).pipe(Effect.flip),
+        { reason: "not_allowed" },
+      );
+      assert.deepStrictEqual(
+        (yield* owner["kin.reach.set"]({ ...pair, restricted: false })).limits,
+        [],
+      );
+      yield* send(priya, theirs.chatId, "to-sam-again");
+      assert.deepStrictEqual((yield* owner["kin.reach.list"](org)).limits, []);
+      // The owner is never restricted.
+      yield* owner["kin.reach.set"]({
+        ...pair,
+        a: { kind: "person", personId: person.personId },
+        restricted: true,
+      }).pipe(Effect.flip);
+      assert.deepStrictEqual((yield* owner["kin.reach.list"](org)).limits, []);
+      // Lifting one for someone since removed lifts the row and opens no chat.
+      const samFinance = {
+        ...org,
+        a: { kind: "person" as const, personId: samId },
+        b: { kind: "agent" as const, agentId: finance.agentId },
+      };
+      yield* owner["kin.reach.set"]({ ...samFinance, restricted: true });
+      yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = ${samId}`;
+      yield* owner["kin.reach.set"]({ ...samFinance, restricted: false });
+      assert.deepStrictEqual(
+        yield* sql`SELECT 1 AS live FROM kin_reach_limits WHERE other_id = ${samId}
+          AND lifted_at IS NULL`,
+        [],
+      );
     }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 

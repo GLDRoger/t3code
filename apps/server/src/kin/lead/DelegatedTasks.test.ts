@@ -28,6 +28,7 @@ import * as Presence from "../reply/KinPresence.ts";
 import * as DelegatedTasks from "./DelegatedTasks.ts";
 import { KinBudget } from "./KinBudget.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
+import { KinRefusedModels } from "./refusedModels.ts";
 
 const at = "1970-01-01T00:00:00.000Z";
 const session = ThreadId.make("kin:tech-session");
@@ -104,6 +105,9 @@ it.effect(
         VALUES (${agentId}, ${owner.orgId}, 'Tech lead', 0, '{}', '[]', ${direct.chatId})`;
 
       const charges: Array<{ readonly threadId: string; readonly turns: number }> = [];
+      const refused: Array<Parameters<KinRefusedModels["Service"]["refused"]>[0]> = [];
+      const refusedChild = ThreadId.make("invented-refused-child");
+      const wren = { instanceId: ProviderInstanceId.make("claudeAgent"), model: "invented-wren-4" };
       const turns = [{ id: "invented-turn", turnTokenUsage: undefined, tokenUsage: undefined }];
       const tasks = yield* DelegatedTasks.make.pipe(
         Effect.provide(
@@ -122,7 +126,21 @@ it.effect(
                 } as unknown as OrchestrationV2ThreadProjection),
             }),
             Layer.mock(OrchestratorV2)({
-              getThreadShell: (id) => Effect.succeed(liveThreadShell(id)),
+              getThreadShell: (id) =>
+                Effect.succeed(
+                  id === refusedChild
+                    ? {
+                        ...liveThreadShell(id),
+                        modelSelection: wren,
+                        status: "failed" as const,
+                        lastErrorCode: "api_error_400",
+                        lastError: "API Error: 400 unknown provider for model invented-wren-4",
+                      }
+                    : liveThreadShell(id),
+                ),
+            }),
+            Layer.succeed(KinRefusedModels, {
+              refused: (input) => Effect.sync(() => refused.push(input)).pipe(Effect.as(true)),
             }),
           ),
         ),
@@ -137,6 +155,7 @@ it.effect(
       yield* tasks.observe(task("completed"));
       yield* tasks.observe(task("completed"));
       assert.deepStrictEqual(charges, [{ threadId: child, turns: 1 }]);
+      assert.deepStrictEqual(refused, []);
 
       const cards = yield* sql<{ chatId: string; state: string }>`SELECT chat_id AS "chatId",
           state_json AS state FROM kin_widgets WHERE type = 'task' ORDER BY widget_id`;
@@ -147,5 +166,19 @@ it.effect(
         threadId: child,
         title: "Invented: add a dark mode toggle",
       });
+      // The incident: a helper on a model the provider turns away. Kin stops offering it, once.
+      const turnedAway = task("failed", {
+        id: NodeId.make("invented-refused-task"),
+        childThreadId: refusedChild,
+        model: "invented-wren-4",
+        completedAt: DateTime.makeUnsafe("2026-11-16T10:00:01.000Z"),
+      });
+      yield* tasks.observe(turnedAway);
+      yield* tasks.observe(turnedAway);
+      assert.deepStrictEqual(refused, [{ orgId: owner.orgId, selection: wren }]);
+      yield* tasks.observe(
+        task("failed", { completedAt: DateTime.makeUnsafe("2026-11-16T10:00:02.000Z") }),
+      );
+      assert.lengthOf(refused, 1);
     }).pipe(Effect.provide(layer)),
 );

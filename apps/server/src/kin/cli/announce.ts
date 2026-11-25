@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import { FetchHttpClient } from "effect/http";
 import { RpcGroup } from "effect/rpc";
 
@@ -50,6 +51,26 @@ export const cliChanges = () => {
         topics: [...held.topics],
         records: held.records,
       })),
+  };
+};
+
+/** Like `cliChanges`, but only what committed: a host auth revoke that rolls back tells nobody. */
+export const cliCommits = () => {
+  const touched = new Map<KinOrgId, Set<KinRefreshTopic>>();
+  return {
+    layer: Layer.effect(
+      KinRefreshObserver,
+      Effect.map(SqlClient.SqlClient, (sql) => ({
+        touch: (orgId: KinOrgId, topic: KinRefreshTopic) =>
+          sql.afterCommit(
+            Effect.sync(() => {
+              touched.set(orgId, (touched.get(orgId) ?? new Set()).add(topic));
+            }),
+          ),
+      })),
+    ),
+    all: () =>
+      [...touched].map(([orgId, topics]) => ({ orgId, topics: [...topics], records: false })),
   };
 };
 

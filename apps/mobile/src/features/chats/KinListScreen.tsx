@@ -1,9 +1,11 @@
 import {
+  KIN_MORE_FAILED,
   KIN_CHECK_CONNECTION,
   KIN_RETRY,
   kinFailure,
 } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
+import { kinBillsEntry } from "@t3tools/client-runtime/kin/kinBills";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
@@ -15,7 +17,10 @@ import {
   kinOwnerToday,
   kinShiftMonth,
 } from "@t3tools/client-runtime/kin/kinDates";
+import { kinEntryFacts } from "@t3tools/client-runtime/kin/kinAttention";
 import {
+  KIN_LIST_DEFAULT_FILTER,
+  KIN_LIST_WATCHES_CHANGE,
   KIN_LISTS,
   kinCategoryLabel,
   kinListChips,
@@ -28,10 +33,13 @@ import {
   kinListFilterLabel,
   kinListNothing,
   kinListRow,
+  kinListWatches,
   type KinListColumn,
   type KinListFilter,
   type KinListRowView,
 } from "@t3tools/client-runtime/kin/kinLists";
+import { kinListSettingsOnPhone } from "@t3tools/client-runtime/kin/kinMoney";
+import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_HOME } from "@t3tools/client-runtime/kin/kinWorkHome";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
@@ -53,16 +61,23 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { Chip } from "../../components/ui/Chip";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { ListRow } from "../../components/ui/ListRow";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { KinMonthGrid } from "./components/KinMonthGrid";
-import { KinWorkFrame, KinWorkLoading, KinWorkStaleNotice } from "./components/KinWorkPieces";
+import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
+import {
+  KinWorkFrame,
+  KinWorkLoading,
+  KinWorkStaleNotice,
+  KinWorkToggleRow,
+} from "./components/KinWorkPieces";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
 import { KinDateRowLine } from "./KinWorkMoney";
 import { kinClient } from "./state/kinClient";
+import { useKinBillBatches } from "./state/useKinBills";
 import {
   useKinDates,
   useKinListContext,
@@ -78,6 +93,10 @@ import {
   type KinWorkTarget,
 } from "./state/useKinWork";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { kinTabBar, kinTabFoot, useKinTab } from "./components/KinTab";
+import { useKinAttention } from "./state/useKinAttention";
+import { useKinSectionOn } from "./state/useKinShell";
+import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 
 export type KinListParams = {
   readonly environmentId: string;
@@ -90,6 +109,8 @@ export type KinListParams = {
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
 const decodeList = Schema.decodeUnknownOption(KinListId);
+// "No client" in the client filter: not a client, so its key can never be a record's.
+const NO_CLIENT: KinWorkRef = { key: "none", title: KIN_LISTS.noClient };
 
 /** One list an agent set up, whatever it holds: its entries, narrowed and added up. */
 export function KinListScreen({ route }: StaticScreenProps<KinListParams>) {
@@ -120,10 +141,16 @@ export function KinListScreen({ route }: StaticScreenProps<KinListParams>) {
   );
 }
 
+/** A list shown as a section in the phone's dock: its page, as a tab. */
+export function KinListTab(props: KinWorkTarget & { readonly list: KinListId }) {
+  return <KinListGate {...props} initial={KIN_LIST_DEFAULT_FILTER} />;
+}
+
 function KinListGate(
   props: KinWorkTarget & { readonly list: KinListId; readonly initial: KinListFilter },
 ) {
   const navigation = useNavigation();
+  const tab = useKinTab();
   const work = useKinWork(props);
   const ready = work._tag === "ready";
   const directory = useKinWorkDirectory(props, ready);
@@ -131,7 +158,8 @@ function KinListGate(
     enabled: ready,
     archived: true,
   });
-  const back = () => navigation.goBack();
+  // A tab has no Back: the dock is the way out.
+  const back = tab === null ? () => navigation.goBack() : undefined;
   if (work._tag === "refused" || lists.state._tag === "refused") {
     return (
       <KinWorkFrame title={KIN_LISTS.title} onBack={back}>
@@ -169,11 +197,13 @@ function KinListGate(
           title={found ? KIN_LISTS.listGone : KIN_LISTS.loadFailed}
           detail={found ? KIN_LISTS.goneDetail : failure.text.trim()}
           action={
-            <Button
-              tone="secondary"
-              label={retry ? KIN_RETRY : "Back"}
-              onPress={retry ? lists.refresh : back}
-            />
+            retry || back !== undefined ? (
+              <Button
+                tone="secondary"
+                label={retry ? KIN_RETRY : "Back"}
+                onPress={retry || back === undefined ? lists.refresh : back}
+              />
+            ) : undefined
           }
         />
       </KinWorkFrame>
@@ -284,7 +314,6 @@ function KinListTable(props: {
 function kinListFilterMenu(props: {
   readonly def: KinListDefinition;
   readonly filter: KinListFilter;
-  readonly clients: ReadonlyArray<KinWorkRef>;
   readonly groupings: ReadonlyArray<KinListFilter["groupBy"]>;
   readonly table: boolean;
   readonly onTable: (table: boolean) => void;
@@ -334,30 +363,6 @@ function kinListFilterMenu(props: {
               ],
             },
           ]),
-      {
-        id: "client",
-        title: KIN_LISTS.clientFilter,
-        items: [
-          {
-            id: "client:any",
-            title: KIN_LISTS.anyClient,
-            selected: filter.party === null && !filter.noParty,
-            onPress: () => onChange({ ...filter, party: null, noParty: false }),
-          },
-          ...props.clients.map((client) => ({
-            id: `client:${client.key}`,
-            title: client.title,
-            selected: filter.party?.key === client.key,
-            onPress: () => onChange({ ...filter, party: client, noParty: false }),
-          })),
-          {
-            id: "client:none",
-            title: KIN_LISTS.noClient,
-            selected: filter.noParty,
-            onPress: () => onChange({ ...filter, party: null, noParty: true }),
-          },
-        ],
-      },
       ...(props.groupings.length <= 1
         ? []
         : [
@@ -405,9 +410,16 @@ function KinListEntries(
   },
 ) {
   const navigation = useNavigation();
+  const tab = useKinTab();
   const { def, environmentId, orgId } = props;
   const context = useKinListContext(props, props.directory);
+  const watches = kinListWatches(def);
+  const ownerLevel = useKinIsOwnerLevel(environmentId);
+  // Late, due today or off its check, in the host's own words: the pulse read Tasks shares.
+  const facts = kinEntryFacts(useKinAttention(props));
   const canEdit = useAtomValue(kinClient.workListUpdate.permissionAtom(environmentId));
+  const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
+  const canExpense = useAtomValue(kinClient.workNewExpense.permissionAtom(environmentId));
   const { state, entries, totals } = useKinListEntries(
     props,
     def.list,
@@ -423,12 +435,13 @@ function KinListEntries(
     rev.current = def.rev;
     refresh();
   }, [def.rev, refresh]);
-  const header = kinListHeader(def, filter, totals, state.total);
+  const header = kinListHeader(def, filter, totals, state.total, context.yearStartMonth);
   const rows = state.records.map((record) =>
     kinListRow(record, def, context, { party: filter.party?.key ?? null }),
   );
   const narrowed = kinListFilterLabel(def, filter);
   const { clients } = useKinWorkChoices(props, true);
+  const clientsOn = useKinSectionOn(environmentId, "clients");
   const [table, setTable] = useState(false);
   const columns = kinListColumns(def, state.records);
   const groupings = kinListGroupings(def);
@@ -440,50 +453,73 @@ function KinListEntries(
     refreshKinWorkLive(props);
     entries.refresh();
   };
+  const target = { environmentId: String(environmentId), orgId: String(orgId) };
+  // Invoices and Expenses take a new one typed by hand; no other list has a form of its own.
+  const add =
+    def.archivedAt !== null
+      ? null
+      : def.list === "invoices" && canInvoice
+        ? {
+            accessibilityLabel: KIN_MONEY_FORMS.invoice.title,
+            icon: "plus" as const,
+            onPress: () =>
+              navigation.navigate("KinInvoiceNew", {
+                ...target,
+                ...(filter.party === null
+                  ? {}
+                  : { party: filter.party.key, partyName: filter.party.title }),
+              }),
+          }
+        : def.list === "expenses" && canExpense
+          ? {
+              accessibilityLabel: KIN_MONEY_FORMS.expense.title,
+              icon: "plus" as const,
+              onPress: () => navigation.navigate("KinExpenseNew", target),
+            }
+          : null;
+  const actions = [
+    ...(add === null ? [] : [add]),
+    ...(canEdit && kinListSettingsOnPhone(def)
+      ? [
+          {
+            accessibilityLabel: KIN_LISTS.edit.title,
+            icon: "slider.horizontal.3" as const,
+            onPress: () =>
+              navigation.navigate("KinListSettings", {
+                environmentId,
+                orgId,
+                list: def.list,
+              }),
+          },
+        ]
+      : []),
+  ];
   return (
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
         title={def.name}
-        onBack={() => navigation.goBack()}
+        {...kinTabBar(tab, {
+          onBack: () => navigation.goBack(),
+          search: {
+            value: filter.text,
+            onChangeText: (text) => entries.setFilter({ ...filter, text }),
+            placeholder: KIN_LISTS.search,
+            closeAccessibilityLabel: "Close search",
+            clearAccessibilityLabel: "Clear search",
+          },
+        })}
         refresh={{ accessibilityLabel: "Refresh", onPress: retry }}
         menus={[
           kinListFilterMenu({
             def,
             filter,
-            // A client arrived at from elsewhere stays named though it isn't a choice.
-            clients:
-              filter.party === null || clients.some((held) => held.key === filter.party?.key)
-                ? clients
-                : [...clients, filter.party],
             groupings,
             table,
             onTable: setTable,
             onChange: entries.setFilter,
           }),
         ]}
-        {...(canEdit && !def.builtIn
-          ? {
-              actions: [
-                {
-                  accessibilityLabel: KIN_LISTS.edit.title,
-                  icon: "slider.horizontal.3" as const,
-                  onPress: () =>
-                    navigation.navigate("KinListSettings", {
-                      environmentId,
-                      orgId,
-                      list: def.list,
-                    }),
-                },
-              ],
-            }
-          : {})}
-        search={{
-          value: filter.text,
-          onChangeText: (text) => entries.setFilter({ ...filter, text }),
-          placeholder: KIN_LISTS.search,
-          closeAccessibilityLabel: "Close search",
-          clearAccessibilityLabel: "Clear search",
-        }}
+        {...(actions.length === 0 ? {} : { actions })}
       />
       <ScreenContent surface="screen">
         <LegendList<KinListRowView>
@@ -492,8 +528,10 @@ function KinListEntries(
           contentInsetAdjustmentBehavior="automatic"
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
-          // The search field floats over the foot of the list.
-          contentContainerStyle={{ paddingBottom: 96 }}
+          // The search field, or the dock on a tab, floats over the foot of the list.
+          contentContainerStyle={{
+            paddingBottom: tab === null ? 96 : kinTabFoot(tab.bottomClearance),
+          }}
           data={table ? [] : rows}
           keyExtractor={(row) => row.key}
           extraData={state}
@@ -503,11 +541,50 @@ function KinListEntries(
           onEndReachedThreshold={0.5}
           ListHeaderComponent={
             <View className="gap-3 pb-1 pt-2">
+              {watches.length === 0 ? null : (
+                <View className="px-5">
+                  {watches.map((line) => (
+                    <Text key={line} textRole="footnote" className="text-foreground-muted">
+                      {line}
+                    </Text>
+                  ))}
+                  {ownerLevel ? (
+                    <Text textRole="footnote" className="text-foreground-muted">
+                      {KIN_LIST_WATCHES_CHANGE}
+                    </Text>
+                  ) : null}
+                </View>
+              )}
               {props.stale || state.stale ? (
                 <View className="px-4">
                   <KinWorkStaleNotice environmentId={environmentId} onRetry={retry} />
                 </View>
               ) : null}
+              {def.list === "expenses" ? <KinBillsAddedRow {...props} /> : null}
+              {!clientsOn ? null : (
+                <View className="px-4">
+                  <ListSection>
+                    <KinWorkPlacePicker
+                      target={props}
+                      noun="client"
+                      icon="person.2"
+                      label={KIN_LISTS.clientFilter}
+                      none={KIN_LISTS.anyClient}
+                      extra={NO_CLIENT}
+                      held={filter.noParty ? NO_CLIENT : filter.party}
+                      choices={clients}
+                      disabled={false}
+                      onPick={(party) =>
+                        entries.setFilter(
+                          party?.key === NO_CLIENT.key
+                            ? { ...filter, noParty: true, party: null }
+                            : { ...filter, noParty: false, party },
+                        )
+                      }
+                    />
+                  </ListSection>
+                </View>
+              )}
               {narrowed === null ? null : (
                 <View className="flex-row px-4">
                   <Chip
@@ -642,7 +719,7 @@ function KinListEntries(
             footer === null ? null : (
               <View className="items-start gap-2 px-5 py-4">
                 <Text textRole="footnote" className="text-foreground-muted">
-                  {state.moreFailed ? "Couldn't load more." : footer}
+                  {state.moreFailed ? KIN_MORE_FAILED : footer}
                 </Text>
                 {state.more ? (
                   <Button
@@ -657,7 +734,9 @@ function KinListEntries(
               </View>
             )
           }
-          renderItem={({ item: row }) => <KinListRowLine row={row} onPress={() => open(row.key)} />}
+          renderItem={({ item: row }) => (
+            <KinListRowLine row={row} facts={facts.get(row.key)} onPress={() => open(row.key)} />
+          )}
         />
       </ScreenContent>
     </View>
@@ -667,6 +746,8 @@ function KinListEntries(
 /** One entry of any list: its name, what the list says about it, and its amount when it has one. */
 export function KinListRowLine(props: {
   readonly row: KinListRowView;
+  /** What the host says of it being late, due today or off its check. */
+  readonly facts?: ReadonlyArray<string> | undefined;
   readonly onPress: () => void;
   /** Inside a rounded section the row keeps to the section's edges. */
   readonly inset?: boolean;
@@ -698,6 +779,11 @@ export function KinListRowLine(props: {
           <Text textRole="footnote" numberOfLines={2} className="text-foreground-muted">
             {row.line}
           </Text>
+          {props.facts === undefined ? null : (
+            <Text textRole="footnote" className="text-danger-foreground">
+              {props.facts.join(" ")}
+            </Text>
+          )}
         </View>
         <View className="items-end gap-0.5 py-3 pl-3">
           {row.amount === null ? null : (
@@ -798,7 +884,11 @@ function KinDatesBody(props: KinWorkTarget) {
       <KinWorkFrame {...frame}>
         {modes}
         <ListSection>
-          <ListToggleRow label={KIN_DATES.openOnly} value={openOnly} onValueChange={setOpenOnly} />
+          <KinWorkToggleRow
+            label={KIN_DATES.openOnly}
+            value={openOnly}
+            onValueChange={setOpenOnly}
+          />
         </ListSection>
         <KinMonthGrid
           label={grid.label}
@@ -850,7 +940,7 @@ function KinDatesBody(props: KinWorkTarget) {
     <KinWorkFrame {...frame}>
       {modes}
       <ListSection>
-        <ListToggleRow label={KIN_DATES.openOnly} value={openOnly} onValueChange={setOpenOnly} />
+        <KinWorkToggleRow label={KIN_DATES.openOnly} value={openOnly} onValueChange={setOpenOnly} />
       </ListSection>
       {days.length === 0 ? (
         <EmptyState variant="plain" {...KIN_DATES.none} />
@@ -873,5 +963,34 @@ function KinDatesBody(props: KinWorkTarget) {
         </Text>
       ) : null}
     </KinWorkFrame>
+  );
+}
+
+/** On Expenses, once there are bills added in bulk: one quiet row to them. */
+function KinBillsAddedRow(props: KinWorkTarget) {
+  const navigation = useNavigation();
+  const { allowed, state } = useKinBillBatches(props);
+  const nowMs = useNowMinuteMs();
+  if (!allowed || state._tag !== "ready") return null;
+  const entry = kinBillsEntry(state.value.batches, new Date(nowMs));
+  if (entry === null) return null;
+  const { batchId } = entry;
+  return (
+    <View className="px-4">
+      <ListSection>
+        <ListRow
+          icon="doc.text"
+          label={entry.label}
+          description={entry.detail}
+          onPress={() =>
+            navigation.navigate("KinBills", {
+              environmentId: String(props.environmentId),
+              orgId: String(props.orgId),
+              ...(batchId === null ? {} : { batch: batchId }),
+            })
+          }
+        />
+      </ListSection>
+    </View>
   );
 }

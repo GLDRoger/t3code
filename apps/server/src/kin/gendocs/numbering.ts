@@ -10,11 +10,17 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { billedParty, billingClientId } from "../work/billTo.ts";
 import type { Documented } from "./amounts.ts";
+import { followsCodingAgent } from "../lead/OutsideContent.ts";
+import { markedKey } from "../work/keyCall.ts";
+import { companyMoney } from "../work/companyProfile.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
+import { KIN_OWN_REFUSAL, refuseKinOwn } from "../people/KinAccess.ts";
 import { isMoney, parseFields } from "../work/lists.ts";
 import { dayIn, financialYearOf, formatMoney } from "../work/money.ts";
 import {
+  stillSuggestion,
   endOfDay,
   notFound,
   ownerZone,
@@ -39,15 +45,20 @@ export const IMPORTED_SERIES = "imported";
 
 /**
  * Where an issued number sits: `OBK/2026-27/013` and `OBK/26-27/013` in the list's series for
- * 26-27, `OBK/13` in a running one, anything else in a series of its own Kin never continues.
+ * 26-27, `INV/2026/004` in the one for 2026 when the company's year starts in January
+ * (`startMonth` 1), `OBK/13` in a running one, anything else in a series Kin never continues.
  */
-export const seriesOf = (rule: KinNumberingRule, number: string) => {
+export const seriesOf = (rule: KinNumberingRule, number: string, startMonth: number) => {
   const prefix = rule.prefix.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
   if (rule.series === "running") {
     const found = new RegExp(`^${prefix}[/-](\\d{1,9})$`).exec(number);
     if (found !== null)
       return { series: `${rule.prefix}|running`, seq: Number.parseInt(found[1]!, 10) };
   } else {
+    const calendar =
+      startMonth === 1 ? new RegExp(`^${prefix}[/-](\\d{4})[/-](\\d{1,9})$`).exec(number) : null;
+    if (calendar !== null)
+      return { series: `${rule.prefix}|${calendar[1]}`, seq: Number.parseInt(calendar[2]!, 10) };
     const found = new RegExp(`^${prefix}[/-](?:\\d{2})?(\\d{2})-(\\d{2})[/-](\\d{1,9})$`).exec(
       number,
     );
@@ -64,8 +75,11 @@ const isChatError = Schema.is(KinChatError);
 /** As every issue answers, so a caller reads `notice` whichever way it went. */
 const answered = (issued: Issued): Issued => issued;
 
-/** `26-27` for any day from 1 April 2026 to 31 March 2027. */
-const financialYear = (day: string) => financialYearOf(day).slice(4);
+/** `26-27` for any day from 1 April 2026 to 31 March 2027 in a year from April; `2026` from January. */
+const financialYear = (day: string, startMonth: number) => {
+  const year = financialYearOf(day, startMonth);
+  return startMonth === 1 ? year.slice(2) : year.slice(4);
+};
 
 const formatNumber = (rule: KinNumberingRule, year: string | null, seq: number) =>
   [
@@ -111,10 +125,12 @@ const seriesToday = Effect.fn("KinNumbers.seriesToday")(function* (
   const now = yield* Clock.currentTimeMillis;
   const zone = yield* ownerZone(orgId);
   const day = dayIn(now, zone);
-  const year = rule.series === "financial_year" ? financialYear(day) : null;
+  const { financialYearStartMonth: startMonth } = yield* companyMoney(orgId);
+  const year = rule.series === "financial_year" ? financialYear(day, startMonth) : null;
   const series = `${rule.prefix}|${year ?? "running"}`;
   // A receipt number the old system issued may still sit only in a payment's note: past it.
-  const floor = registerId === "receipts" ? yield* notedFloor(orgId, rule, year, series) : 0;
+  const floor =
+    registerId === "receipts" ? yield* notedFloor(orgId, rule, year, series, startMonth) : 0;
   return { now, zone, day, year, series, floor };
 });
 
@@ -130,12 +146,14 @@ const paymentDays = Effect.fn("KinNumbers.paymentDays")(function* (
   row: RecordRow,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const partyId = billingClientId(row);
+  const inheritsProject = partyId === null && billedParty(row, undefined) === undefined;
   const [client] = yield* sql<{ id: string; terms: string | null }>`SELECT c.record_id AS id,
       json_extract(c.fields_json, '$.terms') AS terms
     FROM kin_records c
     WHERE c.org_id = ${orgId} AND c.register_id = 'clients' AND c.record_id = COALESCE(
-      ${row.partyId}, (SELECT p.party_id FROM kin_records p
-        WHERE p.org_id = ${orgId} AND p.record_id = ${row.projectId}))`;
+      ${partyId}, (SELECT p.party_id FROM kin_records p
+        WHERE p.org_id = ${orgId} AND p.record_id = ${inheritsProject ? row.projectId : null}))`;
   return (
     termsDays(client?.terms) ??
     (yield* playbookThreshold(orgId, "payment_due_days", client?.id)).value
@@ -176,8 +194,10 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
   /** What the entry's documents come to (`amounts.ts`): the amount and tax it is issued with. */
   documented?: Documented,
 ) {
+  yield* byAPerson(orgId, writer);
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
+  yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.number);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const row = yield* records.get(orgId, key);
@@ -191,6 +211,8 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
         return answered({ key: row.key, number: had, state: row.state, issued: false });
       if (row.state === "dropped")
         return yield* invalid(`${row.key} is void, so it gets no number. Make a new one instead.`);
+      // A suggestion takes no number in the company's series until a person keeps it.
+      if (row.confirmed === 0) return yield* invalid(stillSuggestion(row.key));
       // An issued entry always carries its amount, whatever its list says about amounts.
       if (!def.amount)
         return yield* invalid(
@@ -334,6 +356,7 @@ const notedFloor = Effect.fn("KinNumbers.notedFloor")(function* (
   rule: KinNumberingRule,
   year: string | null,
   series: string,
+  startMonth: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const notes = yield* sql<{ note: string }>`SELECT note FROM kin_record_payments
@@ -343,7 +366,7 @@ const notedFloor = Effect.fn("KinNumbers.notedFloor")(function* (
   let highest = 0;
   for (const { note } of notes)
     for (const number of receiptNumbersIn(note)) {
-      const at = seriesOf(rule, number);
+      const at = seriesOf(rule, number, startMonth);
       if (at.series === series && formatNumber(rule, year, at.seq).length <= MAX_NUMBER_LENGTH)
         highest = Math.max(highest, at.seq);
     }
@@ -363,6 +386,7 @@ export const adopt = Effect.fn("KinNumbers.adopt")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
+  yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.number);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const row = yield* records.get(orgId, key);
@@ -379,7 +403,11 @@ export const adopt = Effect.fn("KinNumbers.adopt")(function* (
       }
       if (!/^[A-Za-z0-9/-]{1,32}$/.test(number))
         return yield* invalid(`${number.slice(0, 40)} isn't a number Kin can keep.`);
-      const { series, seq } = seriesOf(rule, number);
+      const { series, seq } = seriesOf(
+        rule,
+        number,
+        (yield* companyMoney(orgId)).financialYearStartMonth,
+      );
       if (
         !series.startsWith(`${IMPORTED_SERIES}|`) &&
         formatNumber(rule, series.split("|")[1] ?? null, seq + 1).length > MAX_NUMBER_LENGTH
@@ -436,6 +464,7 @@ export const unvoidEntry = Effect.fn("KinNumbers.unvoid")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
+  yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.number);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const row = yield* records.get(orgId, key);
@@ -460,14 +489,35 @@ export const unvoidEntry = Effect.fn("KinNumbers.unvoid")(function* (
   );
 }, workFailure);
 
+const BY_THE_PERSON = new KinChatError({
+  reason: "not_allowed",
+  message:
+    "Words from a person's coding agent can't issue or void an entry: the person issues or voids it in Kin.",
+});
+/**
+ * Issuing and voiding need a person: never a write through a coding agent's key, nor a turn that
+ * follows words it sent or wrote, directly or passed on.
+ */
+const byAPerson = Effect.fn("KinNumbers.byAPerson")(function* (orgId: KinOrgId, writer: Writer) {
+  if ((yield* markedKey(writer)) !== undefined) return yield* BY_THE_PERSON;
+  if (
+    writer.actor._tag === "agent" &&
+    writer.wakeupId !== undefined &&
+    (yield* followsCodingAgent({ orgId, wakeupId: writer.wakeupId }))
+  )
+    return yield* BY_THE_PERSON;
+});
+
 /** Voids the entry: kept, with its number if it was issued. Voiding a void entry changes nothing. */
 export const voidEntry = Effect.fn("KinNumbers.void")(function* (
   orgId: KinOrgId,
   writer: Writer,
   key: string,
 ) {
+  yield* byAPerson(orgId, writer);
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
+  yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.number);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const row = yield* records.get(orgId, key);

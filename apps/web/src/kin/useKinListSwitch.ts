@@ -10,11 +10,12 @@ import { useLocation, useNavigate } from "@tanstack/react-router";
 import {
   kinInboxAttentionAtom,
   kinListShownAt,
-  kinListSwitchHref,
+  kinReturnHref,
   noAttentionAtom,
-  threadsAttentionAtom,
 } from "./kinListSwitch";
+import { isChatOnlySession } from "../environments/primary";
 import { useKinHost } from "./useKinHost";
+import { KIN_WEB_ONLY } from "./kinWebOnly";
 
 export interface KinListSwitch {
   readonly current: KinList;
@@ -24,25 +25,32 @@ export interface KinListSwitch {
   readonly switchList: () => void;
 }
 
-/** The switch between coding threads and Kin (palette and shortcut); null while no host runs Kin. */
+/** The way from coding threads into Kin (palette and shortcut); null while no host runs Kin. */
 export function useKinListSwitch(): KinListSwitch | null {
   const host = useKinHost();
   const navigate = useNavigate();
   const current = useLocation({ select: (location) => kinListShownAt(location.pathname) });
   const hosted = host._tag === "host";
-  // Each side is read only while it is the other list, so the dot costs nothing it doesn't show.
+  // Read only over the threads, so the dot costs nothing it doesn't show.
   const kin = useAtomValue(
     hosted && current === "threads" ? kinInboxAttentionAtom(host.environmentId) : noAttentionAtom,
   );
-  const threads = useAtomValue(
-    hosted && current === "kin" ? threadsAttentionAtom : noAttentionAtom,
-  );
   if (!hosted) return null;
-  const dot = kinSwitcherDot({ current, kin, threads });
+  const dot = kinSwitcherDot(kin);
   return {
     current,
     dot,
-    ...kinSwitcherLabel({ current, dot }),
-    switchList: () => void navigate({ href: kinListSwitchHref(current) }),
+    ...kinSwitcherLabel(dot),
+    switchList: () => void navigate({ href: kinReturnHref() }),
   };
+}
+
+/** What the sidebar's mark names, or null where it stays T3 Code's home link. */
+export function useKinBrandProduct(): "Kin" | "Code" | null {
+  const kinSwitch = useKinListSwitch();
+  // A teammate's session and the Kin web app have no coding threads to switch to or go home to.
+  if (isChatOnlySession() || KIN_WEB_ONLY) return "Kin";
+  // With Kin on, the mark names the area you're in; the destinations above the list move between them.
+  if (kinSwitch !== null) return kinSwitch.current === "kin" ? "Kin" : "Code";
+  return null;
 }

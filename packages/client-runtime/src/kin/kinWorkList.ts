@@ -1,24 +1,44 @@
 import {
   kinPatchWorkPage,
   kinWorkHeldPage,
+  type EnvironmentId,
   type KinOrgId,
+  type KinPartiesInput,
+  type KinPartiesResult,
+  type KinProjectsInput,
+  type KinProjectsResult,
   type KinRecord,
   type KinWorkHeldPage,
   type KinWorkListInput,
   type KinWorkListResult,
+  type KinWorkMoveCounts,
+  type KinWorkRowMove,
   type KinWorkRows,
 } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import {
+  isKinChatError,
   KIN_WORK_DEFAULT_FILTER,
+  kinWorkByMove,
   kinWorkListQuery,
+  kinWorkRefsMatching,
+  kinWorkRefused,
   kinWorkSameFilter,
   type KinWorkFilter,
+  type KinWorkRef,
 } from "./kinWork.ts";
+import { kinFailure } from "./kinAnswers.ts";
+import { kinNowMs } from "./kinNow.ts";
+import type { KinLink } from "./kinHost.ts";
+import { kinWorkRefOf } from "./kinWorkClients.ts";
 
 export const KIN_WORK_PAGE = 50;
+
+/** The host refused the read, or no longer finds what it reads: not a failure that may pass. */
+const kinWorkDenied = (error: unknown) =>
+  kinWorkRefused(error) || (isKinChatError(error) && error.reason === "not_found");
 /** Typing in the search box reads once the owner pauses, not per letter. */
 const KIN_WORK_TYPING_MS = 250;
 
@@ -41,6 +61,8 @@ export interface KinPagedListState<Filter, Row> {
   readonly moreFailed: boolean;
   /** A read-again failed, so the rows shown are older than the host's. */
   readonly stale: boolean;
+  /** When the rows shown were last read or caught up, epoch ms; null before the first answer. */
+  readonly readAt: number | null;
 }
 
 export type KinWorkListState = KinPagedListState<KinWorkFilter, KinRecord>;
@@ -57,7 +79,23 @@ const emptyState = <Filter, Row>(filter: Filter): KinPagedListState<Filter, Row>
   loadingMore: false,
   moreFailed: false,
   stale: false,
+  readAt: null,
 });
+
+/**
+ * What a list screen shows where its rows go: the rows once any were read for this filter, kept
+ * through a failed or offline read again; with none held, offline says so rather than a spinner
+ * or a failure, which is all a read the connection can't carry would show.
+ */
+export function kinListShown(
+  state: Pick<KinPagedListState<unknown, unknown>, "seq" | "loading" | "failed">,
+  link: KinLink,
+): "rows" | "loading" | "offline" | "failed" {
+  if (state.seq !== null) return "rows";
+  if (link === "offline") return "offline";
+  if (state.loading) return "loading";
+  return state.failed === null ? "rows" : "failed";
+}
 
 export const kinPagedListInitial = emptyState;
 export const KIN_WORK_LIST_INITIAL: KinWorkListState = emptyState(KIN_WORK_DEFAULT_FILTER);
@@ -89,6 +127,7 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
   readonly onChange: (state: KinPagedListState<Filter, Row>) => void;
   /** Runs `run` after `ms`; returns its cancel. */
   readonly schedule: (run: () => void, ms: number) => () => void;
+  readonly now?: () => number;
   /**
    * The rows held brought up to date without a read, from what the host already sent; null when
    * only a read can. `moved` says rows came or went, so the next page reads from the top.
@@ -107,6 +146,7 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
     return [...held, ...page.filter((row) => !seen.has(options.idOf(row)))];
   };
   const sameFilter = options.sameFilter;
+  const now = options.now ?? kinNowMs;
   let state: State = emptyState(options.initial);
   // Bumped whenever what is being read stops mattering: a new filter, a manual refresh, the end.
   let generation = 0;
@@ -152,16 +192,14 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
       });
       if (mine !== generation) return;
       if (!AsyncResult.isSuccess(result)) {
-        // Rows read for other words can't stand in for these, so only the same filter's stay up.
-        if (shownFor !== null && sameFilter(shownFor, state.filter))
+        const failed = squashAtomCommandFailure(result);
+        // Rows read for other words can't stand in for these, so only the same filter's stay up,
+        // and only through a failure that may pass: a refusal means they are no longer theirs.
+        if (shownFor !== null && sameFilter(shownFor, state.filter) && !kinWorkDenied(failed))
           set({ refreshing: false, stale: true });
         else {
           shownFor = null;
-          set({
-            ...emptyState<Filter, Row>(state.filter),
-            loading: false,
-            failed: squashAtomCommandFailure(result),
-          });
+          set({ ...emptyState<Filter, Row>(state.filter), loading: false, failed });
         }
         return afterRead();
       }
@@ -185,6 +223,7 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
       loadingMore: false,
       moreFailed: false,
       stale: false,
+      readAt: now(),
     });
     afterRead();
   };
@@ -215,8 +254,9 @@ export function createKinPagedList<Filter extends { readonly text: string }, Row
       caught.records.length === state.records.length &&
       caught.records.every((row, index) => row === state.records[index]);
     // Nothing shown moved: the number advances without a redraw.
-    if (same) state = { ...state, seq };
-    else set({ records: caught.records, total: caught.total, more: caught.more, seq });
+    if (same) state = { ...state, seq, readAt: now() };
+    else
+      set({ records: caught.records, total: caught.total, more: caught.more, seq, readAt: now() });
   }
 
   const abandon = () => {
@@ -315,24 +355,42 @@ export function createKinWorkList(options: {
   readonly rows?: () => KinWorkRows | null;
 }) {
   const follow = kinWorkPageFollower(options.rows ?? (() => null));
+  // A `byMove` read's steps by key and its counts, kept beside the rows they came with.
+  let moves = new Map<string, KinWorkRowMove>();
+  let counts: KinWorkMoveCounts | null = null;
+  let movesFor: KinWorkFilter | null = null;
   const list = createKinPagedList<KinWorkFilter, KinRecord>({
     initial: options.initial ?? KIN_WORK_DEFAULT_FILTER,
     sameFilter: kinWorkSameFilter,
     idOf: (record) => record.recordId,
     onChange: options.onChange,
     schedule: options.schedule,
+    now: options.now,
     read: async (filter, page) => {
       const input = {
         ...kinWorkListQuery(options.orgId, filter, options.now(), options.hostFilters()),
         ...page,
       };
       const result = await follow.read(input, options.read);
+      if (AsyncResult.isSuccess(result)) {
+        const top = page.cursor === undefined;
+        if (top || movesFor === null || !kinWorkSameFilter(movesFor, filter)) moves = new Map();
+        movesFor = filter;
+        for (const move of result.value.moves ?? []) moves.set(move.key, move);
+        if (top || result.value.counts !== undefined) counts = result.value.counts ?? null;
+      }
       return mapPage(result, (value) => ({ ...value, rows: value.records }));
     },
-    catchUp: (state) => follow.catchUp(state.records),
+    // Grouped by whose move, a change can move a row between groups: only a read says where.
+    catchUp: (state) => (kinWorkByMove(state.filter) ? null : follow.catchUp(state.records)),
   });
+  const current = () => movesFor !== null && kinWorkSameFilter(movesFor, list.getState().filter);
   return {
     ...list,
+    /** Each row's step from the last `byMove` read; empty from an older host or another read. */
+    moves: (): ReadonlyMap<string, KinWorkRowMove> => (current() ? moves : new Map()),
+    /** The groups' counts from the last `byMove` read; null from an older host or another read. */
+    counts: () => (current() ? counts : null),
     /** The host announced `seq`: rows it sent apply in place, and anything else reads again. */
     changed: (seq: number) => list.changed(seq, follow.newEpoch()),
     resume: () => (follow.newEpoch() ? list.refresh() : list.resume()),
@@ -385,19 +443,27 @@ export function createKinListEntries<Filter extends { readonly text: string }>(o
   };
 }
 
-/** How long a list off screen is kept to come back to; past this its dates may have moved on. */
+/** How long a list off screen is caught up from the stream; past this it is read again. */
 const KIN_LIST_KEPT_MS = 5 * 60_000;
 const KIN_LISTS_KEPT = 4;
 
 /**
- * Lists kept while their screen is away, so coming back shows what was held and catches up from
- * the stream instead of reading the page again. One screen holds a list at a time; a few are kept.
+ * Lists kept while their screen is away, so coming back shows what was held: caught up from the
+ * stream when recent, else read again with the rows still up, which stay if that read can't be
+ * made. One screen holds a list at a time; a few are kept.
  */
-export function createKinListKeeper<List extends { readonly dispose: () => void }, State>(
-  now: () => number,
-) {
+export function createKinListKeeper<
+  List extends {
+    readonly dispose: () => void;
+    readonly resume: () => void;
+    readonly refresh: () => void;
+  },
+  State,
+>(now: () => number) {
   type Kept = {
     readonly key: string;
+    /** Who it was read for; null when not yet known, and then never handed back. */
+    readonly viewer: string | null;
     readonly list: List;
     /** Where the list's changes go: the screen showing it now. */
     readonly sink: { current: (state: State) => void };
@@ -406,12 +472,24 @@ export function createKinListKeeper<List extends { readonly dispose: () => void 
   };
   const kept = new Map<string, Kept>();
   return {
-    /** The list kept under `key` when no screen shows it and it is recent, else a new one. */
-    take: (key: string, make: (onChange: (state: State) => void) => List): Kept => {
+    /** The list kept under `key` for this viewer when no screen shows it, else a new one. */
+    take: (
+      key: string,
+      make: (onChange: (state: State) => void) => List,
+      viewer: string | null,
+    ): Kept => {
       const held = kept.get(key);
-      if (held !== undefined && !held.shown && now() - held.at < KIN_LIST_KEPT_MS) return held;
+      if (held !== undefined && !held.shown && viewer !== null && held.viewer === viewer)
+        return held;
       const sink = { current: (_state: State) => {} };
-      return { key, list: make((state) => sink.current(state)), sink, shown: false, at: now() };
+      return {
+        key,
+        viewer,
+        list: make((state) => sink.current(state)),
+        sink,
+        shown: false,
+        at: now(),
+      };
     },
     /** A screen shows it; its changes go to `onChange`. */
     show: (entry: Kept, onChange: (state: State) => void) => {
@@ -424,6 +502,9 @@ export function createKinListKeeper<List extends { readonly dispose: () => void 
         if (!old.shown) kept.delete(old.key);
       }
     },
+    /** A kept list back on screen: caught up when recent, else read again over what it holds. */
+    resume: (entry: Kept) =>
+      now() - entry.at < KIN_LIST_KEPT_MS ? entry.list.resume() : entry.list.refresh(),
     /** Its screen left: reads in flight stop, and it waits to be taken again. */
     hide: (entry: Kept) => {
       entry.list.dispose();
@@ -579,3 +660,205 @@ export function mapPage<A, Row>(
 }
 
 export type KinWorkList = ReturnType<typeof createKinWorkList>;
+
+/** A picker's search answers at most this many names; past it, the picker asks for more letters. */
+export const KIN_PICKER_SEARCH_CAP = 30;
+
+export const KIN_PICKER_COPY = {
+  searching: "Searching…",
+  failed: "Couldn't search.",
+  narrow: "Type more to narrow",
+  nothing: (noun: string, words: string) => `No ${noun} named “${words}”`,
+} as const;
+
+export interface KinPickerSearchState {
+  /** What is typed, as typed. */
+  readonly text: string;
+  /** The host's answer for what is typed; null before it, and with nothing typed. */
+  readonly found: {
+    readonly open: ReadonlyArray<KinWorkRef>;
+    readonly done: ReadonlyArray<KinWorkRef>;
+    readonly more: boolean;
+  } | null;
+  readonly loading: boolean;
+  /** Why the last search failed; null otherwise. */
+  readonly failed: unknown;
+}
+
+export const KIN_PICKER_SEARCH_IDLE: KinPickerSearchState = {
+  text: "",
+  found: null,
+  loading: false,
+  failed: null,
+};
+
+/**
+ * A client or project picker's search over every one the person may see, not only the first page
+ * it holds: one read once typing pauses, none while nothing is typed.
+ */
+export function createKinPickerSearch(options: {
+  readonly orgId: KinOrgId;
+  readonly kind: "clients" | "projects";
+  /** Projects only: the done ones too, so a late task can still be filed there. */
+  readonly done: boolean;
+  readonly readClients: (
+    input: KinPartiesInput,
+  ) => Promise<AtomCommandResult<KinPartiesResult, unknown>>;
+  readonly readProjects: (
+    input: KinProjectsInput,
+  ) => Promise<AtomCommandResult<KinProjectsResult, unknown>>;
+  readonly onChange: (state: KinPickerSearchState) => void;
+  /** Runs `run` after `ms`; returns its cancel. */
+  readonly schedule: (run: () => void, ms: number) => () => void;
+}) {
+  let state = KIN_PICKER_SEARCH_IDLE;
+  let generation = 0;
+  let cancelTyping: (() => void) | null = null;
+  const set = (patch: Partial<KinPickerSearchState>) => {
+    state = { ...state, ...patch };
+    options.onChange(state);
+  };
+  const query = { orgId: options.orgId, limit: KIN_PICKER_SEARCH_CAP };
+  const refsOf = (value: KinPartiesResult | KinProjectsResult) => ({
+    refs: ("parties" in value ? value.parties : value.projects).map(kinWorkRefOf),
+    more: value.nextCursor !== null,
+  });
+  const read = async (words: string) => {
+    const mine = ++generation;
+    const text = words.slice(0, 200);
+    const reads: ReadonlyArray<
+      Promise<AtomCommandResult<KinPartiesResult | KinProjectsResult, unknown>>
+    > =
+      options.kind === "clients"
+        ? [options.readClients({ ...query, text })]
+        : [
+            options.readProjects({ ...query, text }),
+            ...(options.done ? [options.readProjects({ ...query, text, state: "done" })] : []),
+          ];
+    const results = await Promise.all(reads);
+    if (mine !== generation) return;
+    const [open, done] = results.flatMap((result) =>
+      AsyncResult.isSuccess(result) ? [refsOf(result.value)] : [],
+    );
+    // A failed read is kept whole: `kinFailure` reads its cause.
+    const failed = results.find((result) => !AsyncResult.isSuccess(result));
+    if (failed !== undefined || open === undefined)
+      return set({ loading: false, failed: failed ?? "failed" });
+    set({
+      loading: false,
+      failed: null,
+      found: { open: open.refs, done: done?.refs ?? [], more: open.more || done?.more === true },
+    });
+  };
+  const abandon = () => {
+    generation += 1;
+    cancelTyping?.();
+    cancelTyping = null;
+  };
+  return {
+    getState: () => state,
+    type: (text: string) => {
+      const words = text.trim();
+      if (words === state.text.trim() && state.failed === null) {
+        if (text !== state.text) set({ text });
+        return;
+      }
+      abandon();
+      if (words === "") return set(KIN_PICKER_SEARCH_IDLE);
+      set({ text, found: null, loading: true, failed: null });
+      cancelTyping = options.schedule(() => {
+        cancelTyping = null;
+        void read(words);
+      }, KIN_WORK_TYPING_MS);
+    },
+    /** Reads what is typed again now, after a failure. */
+    retry: () => {
+      const words = state.text.trim();
+      if (words === "") return Promise.resolve();
+      abandon();
+      set({ loading: true, failed: null });
+      return read(words);
+    },
+    dispose: abandon,
+  };
+}
+
+export type KinPickerSearch = ReturnType<typeof createKinPickerSearch>;
+
+/** What a picker searches: whose host, which company, and clients or projects. */
+export interface KinPickerSearchTarget {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly kind: "clients" | "projects";
+  readonly done: boolean;
+}
+
+/**
+ * The search a mounted picker holds: the same one while its target stays, a fresh one once the
+ * host, company or what it searches changes, so a reused picker never asks the old company.
+ */
+export function createKinPickerSearchSlot<S>(create: (target: KinPickerSearchTarget) => S) {
+  let held: { readonly key: string; readonly search: S } | null = null;
+  return (target: KinPickerSearchTarget) => {
+    const key = JSON.stringify([target.environmentId, target.orgId, target.kind, target.done]);
+    if (held?.key !== key) held = { key, search: create(target) };
+    return held.search;
+  };
+}
+
+/**
+ * What a picker lists: the page it holds until something is typed, then the host's answer, with
+ * the held page's matches meanwhile. The current value stays listed whenever its name matches.
+ */
+export function kinPickerSearchView(input: {
+  readonly noun: "client" | "project";
+  readonly search: KinPickerSearchState;
+  readonly loaded: {
+    readonly open: ReadonlyArray<KinWorkRef>;
+    readonly done: ReadonlyArray<KinWorkRef>;
+  };
+  readonly held: KinWorkRef | null;
+  /** The only keys this viewer may pick, such as a teammate's led projects; null for any. */
+  readonly only?: ReadonlySet<string> | null;
+  /** What the company calls one (`kinSectionNoun`), where it isn't `noun`. */
+  readonly called?: string;
+}) {
+  const { search, held } = input;
+  const words = search.text.trim();
+  const found =
+    words === ""
+      ? input.loaded
+      : (search.found ?? {
+          open: kinWorkRefsMatching(input.loaded.open, words),
+          done: kinWorkRefsMatching(input.loaded.done, words),
+        });
+  const only = input.only ?? null;
+  const shown =
+    only === null
+      ? found
+      : {
+          open: found.open.filter((ref) => only.has(ref.key)),
+          done: found.done.filter((ref) => only.has(ref.key)),
+        };
+  const listed = (ref: KinWorkRef) =>
+    shown.open.some((one) => one.key === ref.key) || shown.done.some((one) => one.key === ref.key);
+  const keep =
+    held !== null && !listed(held) && kinWorkRefsMatching([held], words).length > 0 ? held : null;
+  const open = keep === null ? shown.open : [keep, ...shown.open];
+  const settled = words !== "" && search.found !== null && !search.loading;
+  return {
+    open,
+    done: shown.done,
+    loading: search.loading,
+    /** What to say about a failed search, and whether Try again can help. */
+    failure: search.failed === null ? null : kinFailure(search.failed, KIN_PICKER_COPY.failed),
+    /** "No client named …" or "Type more to narrow", once the host has answered. */
+    note: !settled
+      ? null
+      : open.length + shown.done.length === 0
+        ? KIN_PICKER_COPY.nothing(input.called ?? input.noun, words)
+        : search.found?.more === true
+          ? KIN_PICKER_COPY.narrow
+          : null,
+  };
+}

@@ -283,6 +283,7 @@ export function KinChatsCatalog() {
           key={fixture.label}
           state={fixture.state}
           directory={directory}
+          mainAgentId={lead}
           onRetry={() => setNote("Retry pressed")}
           memory={
             <>

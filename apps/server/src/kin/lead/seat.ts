@@ -1,7 +1,6 @@
 import {
   type KinAgentId,
   KinRoleTags,
-  KinWorkHours,
   type KinOrgId,
   type MemoryItemHead,
 } from "@t3tools/contracts";
@@ -11,12 +10,12 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { characterForTurn, characters, colleagueLine } from "./characters.ts";
 import { validZone } from "../triggers/quietHold.ts";
-import { stillAway, workingAt } from "../triggers/quietHours.ts";
+import { stillAway, storedWorkHours, workingAt } from "../triggers/quietHours.ts";
+import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { describeHours, loads } from "./peopleRead.ts";
 
 const decodeTags = Schema.decodeUnknownOption(Schema.fromJsonString(KinRoleTags));
-const decodeHours = Schema.decodeUnknownOption(Schema.fromJsonString(KinWorkHours));
 const ACCESS_WORDS: Record<string, string> = {
   owner: "owner",
   co_owner: "co-owner",
@@ -60,6 +59,15 @@ export type Seat = {
  * Who this agent is and who it works with, compactly, for every turn. A turn others read gets the
  * character's voice without its examples (they may carry figures), and no loads, focus or seat.
  */
+/** The day a stamp falls on in the company's zone; a bare day is already one. */
+const companyDay = (stamp: string, zone: string) => {
+  const at = /^\d{4}-\d{2}-\d{2}$/.test(stamp) ? Number.NaN : Date.parse(stamp);
+  return Number.isFinite(at) ? dayIn(at, zone) : stamp.slice(0, 10);
+};
+/** The lead's own positions, each with the company's day it took it. */
+export const positionsLine = (positions: ReadonlyArray<MemoryItemHead>, zone: string) =>
+  `- Your positions: ${positions.map((item) => `${JSON.stringify(clip(item.title, 100))} (${companyDay(item.recorded_at, zone)})`).join("; ")}.`;
+
 export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
@@ -78,14 +86,14 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
     .filter((one) => one.agentId !== agentId)
     .map((one) => {
       const held = load?.("agent", one.agentId);
-      return `${colleagueLine(one.name, one.body)}${
+      return `${colleagueLine(one)}${
         held === undefined
           ? ""
           : ` (${held.open} open${held.late > 0 ? `, ${held.late} late` : ""})`
       }`;
     });
 
-  const people = yield* sql<{
+  const found = yield* sql<{
     id: string;
     name: string;
     access: string | null;
@@ -101,7 +109,15 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
       AND EXISTS (SELECT 1 FROM kin_session_bindings b WHERE b.org_id = p.org_id
         AND b.person_id = p.person_id AND b.revoked_at IS NULL)
     ORDER BY CASE access WHEN 'owner' THEN 0 WHEN 'co_owner' THEN 1 ELSE 2 END, display_name
-    LIMIT ${PEOPLE_CAP}`;
+    LIMIT ${PEOPLE_CAP + 1}`;
+  const unlisted =
+    found.length > PEOPLE_CAP
+      ? ((yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_people p
+          WHERE p.org_id = ${orgId} AND p.removed_at IS NULL
+            AND EXISTS (SELECT 1 FROM kin_session_bindings b WHERE b.org_id = p.org_id
+              AND b.person_id = p.person_id AND b.revoked_at IS NULL)`)[0]?.n ?? 0) - PEOPLE_CAP
+      : 0;
+  const people = found.slice(0, PEOPLE_CAP);
   // What each is on now: their newest task in progress that isn't private. Owner-only turns.
   const focus = ownerOnly
     ? new Map(
@@ -120,7 +136,7 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
   const team = people.map((person) => {
     const away = stillAway(person.away, validZone(person.timeZone) ?? company, now);
     const tags = decodeTags(person.roleTags);
-    const hours = person.workHours === null ? undefined : decodeHours(person.workHours);
+    const hours = storedWorkHours(person.workHours);
     const held = load?.("person", person.id);
     const leads = led.filter((row) => row.id === person.id).map((row) => row.title);
     const parts = [
@@ -130,12 +146,12 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
         ...(leads.length === 0 ? [] : [`leads ${leads.slice(0, 2).join(", ")}`]),
       ].join(", "),
       away ? `away until ${person.away}` : undefined,
-      hours === undefined || hours._tag === "None"
+      hours === undefined
         ? undefined
-        : `${describeHours(hours.value)}${person.timeZone === null ? "" : ` ${person.timeZone}`}${
+        : `${describeHours(hours)}${person.timeZone === null ? "" : ` ${person.timeZone}`}${
             person.timeZone === null || away
               ? ""
-              : workingAt(hours.value, person.timeZone, now)
+              : workingAt(hours, person.timeZone, now)
                 ? ", working now"
                 : ", off now"
           }`,
@@ -149,6 +165,7 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
     ].filter((part) => part !== undefined && part !== "");
     return `- ${JSON.stringify(clip(person.name, 80))}: ${parts.join("; ")}`;
   });
+  if (unlisted > 0) team.push(`- ${unlisted} more: people_read lists everyone.`);
 
   const self = all.find((one) => one.agentId === agentId)?.name ?? "";
   const seat: Array<string> = [];
@@ -165,10 +182,7 @@ export const buildSeat = Effect.fn("KinLeadPrompt.seat")(function* (input: {
         `- Standing permissions from the owner: ${permissions.map((item) => JSON.stringify(clip(item.title, 100))).join("; ")}.`,
       );
     const positions = linked(memory, [`position:${self}`]);
-    if (positions.length > 0)
-      seat.push(
-        `- Your positions: ${positions.map((item) => `${JSON.stringify(clip(item.title, 100))} (${item.recorded_at.slice(0, 10)})`).join("; ")}.`,
-      );
+    if (positions.length > 0) seat.push(positionsLine(positions, yield* ownerZone(orgId)));
   }
   return { character, colleagues, seat, team } satisfies Seat;
 });

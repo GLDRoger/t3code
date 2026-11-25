@@ -9,6 +9,7 @@ import {
   KinMemberId,
   KinMessageRef,
   type KinMessage,
+  type KinOrgsListResult,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 import { Atom, type AtomRegistry } from "effect/reactivity";
@@ -29,6 +30,8 @@ const KinOutboxRecord = Schema.Struct({
   environmentId: EnvironmentId,
   chatId: KinChatId,
   clientMessageId: Schema.String,
+  /** Who the session was when it was written (`identity`); absent from older builds. */
+  author: Schema.optional(Schema.NullOr(Schema.String)),
   body: Schema.String,
   /** Uploads the host already holds; the bytes never wait here. */
   attachments: Schema.optional(Schema.Array(KinAttachment)),
@@ -76,6 +79,11 @@ export interface KinOutboxOptions {
   readonly registry: AtomRegistry.AtomRegistry;
   readonly storage: KinOutboxStorage;
   readonly send: (record: KinOutboxRecord) => Promise<KinSendOutcome>;
+  /**
+   * Who the environment's current session is, as `syncIdentity` names them; undefined until the
+   * host has said. A record goes out only while its author is that person.
+   */
+  readonly identity: (environmentId: EnvironmentId) => string | null | undefined;
   readonly makeId: () => string;
   readonly now?: () => Date;
   readonly sendTimeoutMs?: number;
@@ -172,7 +180,17 @@ export function createKinOutbox(options: KinOutboxOptions) {
   const fullAtom = Atom.family((_environmentId: EnvironmentId) =>
     Atom.make(false).pipe(Atom.keepAlive, Atom.withLabel("kin:outbox:full")),
   );
+  const waitingAtom = Atom.family((_environmentId: EnvironmentId) =>
+    Atom.make(false).pipe(Atom.keepAlive, Atom.withLabel("kin:outbox:waiting")),
+  );
   const entries = new Map<string, KinOutboxEntry>();
+  // Another instance (a second tab) saves to the same storage: what it holds is kept on save,
+  // unless this one ever held that entry, or dropped its environment or person after it was written.
+  const held = new Set<string>();
+  const dropped = new Map<
+    EnvironmentId,
+    { readonly at: number; readonly keeps: string | null | undefined }
+  >();
   const delivering = new Set<EnvironmentId>();
   const deliverAgain = new Set<EnvironmentId>();
   let loaded: Promise<void> | null = null;
@@ -195,9 +213,16 @@ export function createKinOutbox(options: KinOutboxOptions) {
       forChat.length ? forChat : EMPTY,
     );
     options.registry.set(fullAtom(environmentId), unsentIn(environmentId) >= maxEntries);
+    options.registry.set(
+      waitingAtom(environmentId),
+      [...entries.values()].some(
+        (entry) => entry.environmentId === environmentId && entry.state === "waiting",
+      ),
+    );
   };
 
   const set = (entry: KinOutboxEntry) => {
+    held.add(entry.clientMessageId);
     entries.set(entry.clientMessageId, entry);
     publish(entry.environmentId, entry.chatId);
   };
@@ -207,16 +232,33 @@ export function createKinOutbox(options: KinOutboxOptions) {
     publish(entry.environmentId, entry.chatId);
   };
 
+  const othersIn = async (): Promise<ReadonlyArray<unknown>> => {
+    const payload = await options.storage.load().catch(() => null);
+    if (payload === null) return [];
+    const file = decodeFile(payload);
+    if (file._tag === "None") return [];
+    return file.value.entries.filter((raw) => {
+      const record = decodeRecord(raw);
+      if (record._tag === "None" || held.has(record.value.clientMessageId)) return false;
+      const drop = dropped.get(record.value.environmentId);
+      return (
+        drop === undefined ||
+        Date.parse(record.value.createdAt) > drop.at ||
+        (drop.keeps !== undefined && record.value.author === drop.keeps)
+      );
+    });
+  };
+
   // Acked entries stay in memory only: the host holds them, so a restart must not resend them.
   const persist = (): Promise<void> => {
-    const records = [...entries.values()]
-      .filter((entry) => entry.state !== "sent")
-      .map(({ state: _state, sent: _sent, ...record }) => encodeRecord(record));
-    const payload = JSON.stringify({ version: 1, entries: records });
-    writes = writes.then(
-      () => options.storage.save(payload),
-      () => options.storage.save(payload),
-    );
+    const save = async () => {
+      const others = await othersIn();
+      const records = [...entries.values()]
+        .filter((entry) => entry.state !== "sent")
+        .map(({ state: _state, sent: _sent, ...record }) => encodeRecord(record));
+      await options.storage.save(JSON.stringify({ version: 1, entries: [...others, ...records] }));
+    };
+    writes = writes.then(save, save);
     return writes.catch((error) => warn("[kin-outbox] save failed", error));
   };
 
@@ -260,6 +302,11 @@ export function createKinOutbox(options: KinOutboxOptions) {
     return Promise.race([sent, timeout]);
   };
 
+  const sendable = (entry: KinOutboxEntry) =>
+    entry.state === "waiting" &&
+    entry.author !== undefined &&
+    entry.author === options.identity(entry.environmentId);
+
   const deliverOne = async (entry: KinOutboxEntry): Promise<"next" | "stop"> => {
     set({ ...entry, state: "sending", attempted: true });
     // On disk before the host can see it, so a restart never offers to delete a posted message.
@@ -296,7 +343,7 @@ export function createKinOutbox(options: KinOutboxOptions) {
         deliverAgain.delete(environmentId);
         for (;;) {
           const next = [...entries.values()].find(
-            (entry) => entry.environmentId === environmentId && entry.state === "waiting",
+            (entry) => entry.environmentId === environmentId && sendable(entry),
           );
           if (next === undefined || (await deliverOne(next)) === "stop") break;
         }
@@ -313,6 +360,8 @@ export function createKinOutbox(options: KinOutboxOptions) {
     readonly attachments?: ReadonlyArray<KinAttachment>;
     readonly mentions?: ReadonlyArray<KinMemberId>;
     readonly refs?: ReadonlyArray<KinMessageRef>;
+    /** Starts its `clientMessageId`, such as `KIN_SET_UP_MESSAGE_PREFIX` for the host to know it. */
+    readonly idPrefix?: string;
   }): Promise<
     | { readonly _tag: "queued"; readonly entry: KinOutboxEntry }
     | { readonly _tag: "full" }
@@ -321,10 +370,12 @@ export function createKinOutbox(options: KinOutboxOptions) {
     if (input.body.length > KIN_MESSAGE_MAX_LENGTH) return { _tag: "too_long" };
     await load();
     if (unsentIn(input.environmentId) >= maxEntries) return { _tag: "full" };
+    const author = options.identity(input.environmentId);
     const entry: KinOutboxEntry = {
       environmentId: input.environmentId,
       chatId: input.chatId,
-      clientMessageId: options.makeId(),
+      clientMessageId: `${input.idPrefix ?? ""}${options.makeId()}`,
+      ...(author === undefined ? {} : { author }),
       body: input.body,
       ...(input.attachments === undefined || input.attachments.length === 0
         ? {}
@@ -370,15 +421,35 @@ export function createKinOutbox(options: KinOutboxOptions) {
     for (const entry of entries.values()) {
       if (entry.environmentId === environmentId) remove(entry);
     }
+    dropped.set(environmentId, { at: now().getTime(), keeps: undefined });
     await persist();
   };
 
+  /**
+   * The host said who this session is. When that person `changed` since this device last knew,
+   * what is not provably theirs goes unsent; otherwise an entry with no author was this person's.
+   */
+  const syncIdentity = async (
+    environmentId: EnvironmentId,
+    identity: string | null,
+    changed: boolean,
+  ): Promise<void> => {
+    await load();
+    // What another instance saved under the person before goes too.
+    if (changed) dropped.set(environmentId, { at: now().getTime(), keeps: identity });
+    let touched = changed;
+    for (const entry of entries.values()) {
+      if (entry.environmentId !== environmentId || entry.author === identity) continue;
+      if (changed) remove(entry);
+      else if (entry.author === undefined) set({ ...entry, author: identity });
+      else continue;
+      touched = true;
+    }
+    if (touched) await persist();
+  };
+
   const waitingEnvironments = (): ReadonlySet<EnvironmentId> =>
-    new Set(
-      [...entries.values()]
-        .filter((entry) => entry.state === "waiting")
-        .map((entry) => entry.environmentId),
-    );
+    new Set([...entries.values()].filter(sendable).map((entry) => entry.environmentId));
 
   /** Delivers what waits for each connected environment; true while one still has sends left. */
   const deliverConnected = async (
@@ -399,16 +470,23 @@ export function createKinOutbox(options: KinOutboxOptions) {
     discard,
     forgetEchoed,
     clearEnvironment,
+    syncIdentity,
     chatAtom: (environmentId: EnvironmentId, chatId: KinChatId) =>
       chatAtom(chatKey(environmentId, chatId)),
     /** True while the environment holds as many unsent messages as the outbox takes. */
     fullAtom,
+    /** True while the environment holds a message waiting to go out, whoever wrote it. */
+    waitingAtom,
     /** Resolves once every queued save has reached storage. */
     flushWrites: () => writes.catch(() => undefined),
   };
 }
 
 export type KinOutbox = ReturnType<typeof createKinOutbox>;
+
+/** Who a directory answer says this session is, for `identity`; undefined before one. */
+export const kinOutboxIdentity = (orgs: KinOrgsListResult | null): string | null | undefined =>
+  orgs === null ? undefined : (orgs.me[0]?.personId ?? null);
 
 /**
  * Splits a chat's outbox for the feed: acked messages join the stream's (its copy wins once it

@@ -1,9 +1,18 @@
 // @effect-diagnostics globalDate:off - Fixtures build days relative to a fixed clock.
-import { KinOrgId, type KinCash, type KinMoneyBudget, type KinRunway } from "@t3tools/contracts";
+import {
+  KinOrgId,
+  KinPersonId,
+  type KinCash,
+  type KinOutlook,
+  type KinMoneyBudget,
+  type KinRecord,
+  type KinRunway,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
   KIN_OUTLOOK,
+  kinBudgetDraftOf,
   kinBudgetInput,
   kinBudgetRemoval,
   kinBudgetsSummary,
@@ -11,8 +20,10 @@ import {
   kinCashView,
   kinLinesInput,
   kinQuoteActions,
+  kinQuoteRow,
   kinQuoteState,
   kinQuotesSummary,
+  kinOutlookView,
   kinRunwayText,
 } from "./kinMoneyAnswers.ts";
 
@@ -33,6 +44,25 @@ describe("kinQuoteState", () => {
       at("done", "2026-11-10T18:29:59.999Z"),
       at("dropped", null),
     ]).toEqual(["draft", "sent", "expired", "sent", "accepted", "declined"]);
+    // A quote nobody kept was sent by nobody: it reads Suggested, and says so before Draft.
+    const quote = (state: "open" | "waiting", confirmed: boolean) =>
+      kinQuoteRow(
+        {
+          key: "QT-2",
+          title: "Invented recall dashboard",
+          list: "quotes",
+          state,
+          confirmed,
+          dueAt: "2026-11-30T18:29:59.999Z",
+        } as unknown as KinRecord,
+        null,
+        now,
+      ).stateLabel;
+    expect([quote("waiting", false), quote("open", false), quote("waiting", true)]).toEqual([
+      "Suggested",
+      "Suggested · Draft",
+      "Sent",
+    ]);
   });
 
   it("offers each way in with its way back", () => {
@@ -44,6 +74,12 @@ describe("kinQuoteState", () => {
     });
     expect(kinQuoteActions("draft", false).send).toBe(false);
     expect(kinQuoteActions("accepted", true, true).makeInvoice).toBe(false);
+    // Opened by its link while Invoices and quotes is off (or Money): no new invoice from it.
+    const moneyOff = { rev: 2, sections: [{ id: "money", on: false }] };
+    expect(kinQuoteActions("accepted", true, false, moneyOff)).toMatchObject({
+      makeInvoice: false,
+      unaccept: true,
+    });
   });
 });
 
@@ -110,6 +146,27 @@ describe("kinBudgets", () => {
       ["b", "₹2,000 over", null],
       ["a", "$99 left", "about ₹8,400"],
     ]);
+    const euros = kinBudgetsView(
+      {
+        month: "2026-11",
+        budgets: [
+          {
+            ...budget("c", 30_000, 50_000, "ok", "USD"),
+            notCounted: [{ currency: "EUR", spent: { minor: 76_800, currency: "EUR" } }],
+          },
+        ],
+      },
+      null,
+      null,
+    );
+    expect(euros.map((one) => one.notCounted)).toEqual(["+ €768 not counted in this USD budget"]);
+    // A project the host gives no name for is gone: never shown by its key.
+    const nameless = { ...budget("d", -500, 100, "ok"), project: { key: "P-7", title: null } };
+    expect(kinBudgetsView({ month: "2026-11", budgets: [nameless] }, null, null)[0]?.label).toBe(
+      "travel in a removed project",
+    );
+    expect(kinBudgetDraftOf(nameless).project).toBeNull();
+    expect(kinBudgetsView({ month: "2026-11", budgets: [nameless] }, null, null)[0]?.share).toBe(0);
   });
 
   it("says in a line what is over or near, else that all are within their limits", () => {
@@ -210,6 +267,61 @@ describe("kinCashView", () => {
       ["INR", null, null],
       ["USD", "$1,000.00", "$950"],
     ]);
+    // How far Kin sees the bank, quietly; an older host says nothing, and with no balance at all
+    // Money's own line already says no statement is confirmed.
+    expect(view.bank).toBeNull();
+    const bank = (known: boolean, through: string | null) =>
+      kinCashView({ ...cash, known, bankKnown: { through } }, rates, now).bank;
+    expect(bank(true, "2026-10-31")).toBe("Bank known to Oct 31");
+    expect(bank(true, null)).toBe("Kin can't see the bank yet: upload a statement");
+    expect(bank(false, null)).toBeNull();
+  });
+});
+
+describe("kinCashView with bank alerts", () => {
+  it("shows a newer alert's Avl bal as the balance, says it is one, and lists alert-only accounts", () => {
+    const statement = {
+      label: "HDFC Bank Account ••4821",
+      kind: "account" as const,
+      balance: inr(4_00_000_00),
+      on: "2026-10-31",
+      ageDays: 15,
+      stale: true,
+      check: "adds_up" as const,
+      cannotTellApart: false,
+      newerRead: null,
+    };
+    const cash: KinCash = {
+      asOf: "2026-11-15T06:00:00.000Z",
+      today: "2026-11-15",
+      timeZone: "Asia/Kolkata",
+      known: true,
+      accounts: [
+        { ...statement, alert: { balance: inr(4_10_250_50), at: "2026-11-14T08:35:09.000Z" } },
+      ],
+      notOfRecord: [],
+      byCurrency: [],
+      alertAccounts: [
+        {
+          label: "HDFC Bank ••9001",
+          alert: { balance: inr(12_000_00), at: "2026-11-13T04:00:00.000Z" },
+        },
+      ],
+    };
+    const view = kinCashView(cash, rates, now);
+    expect(view.accounts.map((one) => [one.label, one.amount, one.flag, one.stale])).toEqual([
+      ["HDFC Bank Account ••4821", "₹4,10,250.50", "From a bank alert", false],
+      ["HDFC Bank ••9001", "₹12,000.00", "From a bank alert", false],
+    ]);
+    expect(view.accounts[0]!.when).not.toContain("bank alert");
+    expect(view.accounts[0]!.notes).toEqual([
+      "This is the available balance in the newest bank alert mail, not a confirmed statement. The last confirmed statement closed at ₹4,00,000.00 (Sat, Oct 31).",
+    ]);
+    // With no confirmed statement at all, an alert's balance is still a balance to show.
+    expect(kinCashView({ ...cash, known: false, accounts: [] }, rates, now).known).toBe(true);
+    expect(kinCashView({ ...cash, accounts: [statement] }, rates, now).accounts[0]!.amount).toBe(
+      "₹4,00,000.00",
+    );
   });
 });
 
@@ -229,5 +341,55 @@ describe("kinRunwayText", () => {
     expect(
       kinRunwayText({ ...runway, runwayTenths: null, enoughHistory: false, historySince: null }),
     ).toBe("Runway needs three full months of history.");
+  });
+});
+
+describe("kinOutlookView", () => {
+  it("lists every partner balance under the figure it counts in, never one against another", () => {
+    const partner = (id: string, name: string, owed: KinOutlook["expectedOut"]) => ({
+      personId: KinPersonId.make(id),
+      name,
+      address: null,
+      owed,
+      expenses: 2,
+      oldest: "2026-10-02",
+    });
+    const view = kinOutlookView(
+      {
+        today: "2026-11-15",
+        days: 30,
+        through: "2026-12-14",
+        expectedIn: [inr(3_000)],
+        expectedOut: [inr(10_000)],
+        net: [inr(-7_000)],
+        comingIn: [],
+        moreComingIn: 0,
+        goingOut: [],
+        moreGoingOut: 0,
+        pastDueOut: [],
+        overdueIn: [],
+        owedToPartners: [
+          partner("meera", "Meera Rao", [inr(10_000)]),
+          partner("zoya", "Zoya Sheikh", [inr(-3_000)]),
+        ],
+        incomplete: [],
+        runway: [],
+      },
+      rates,
+      now,
+    );
+    expect([
+      view.goingOut,
+      view.outgoing.map((row) => [row.title, row.amount, row.key]),
+      view.comingIn,
+      view.incoming.map((row) => [row.title, row.amount, row.key]),
+      view.partners,
+    ]).toEqual([
+      ["₹100"],
+      [["Owed back to Meera Rao", "₹100", null]],
+      ["₹30"],
+      [["Refunds Zoya Sheikh holds, coming back", "₹30", null]],
+      [],
+    ]);
   });
 });

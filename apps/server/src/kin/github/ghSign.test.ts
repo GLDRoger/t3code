@@ -352,6 +352,7 @@ const watchContext = (agentPosts?: ReadonlySet<string>): DecideContext => ({
   draftSeen: false,
   botLogin: BOT,
   agentPosts,
+  writes: (login) => login === "invented-owner",
 });
 
 describe("the gh a Kin agent's shell runs", () => {
@@ -1008,7 +1009,8 @@ describe("kin-as-owner", () => {
     expect(shell.ownerUses().map((use) => use[4])).toEqual(["gh pr list -R invented-co/app"]);
   });
 
-  it("refuses to run what Kin can't record", () => {
+  // Root writes through any mode, so the chmod below cannot make the record unwritable.
+  it.skipIf(process.getuid?.() === 0)("refuses to run what Kin can't record", () => {
     using shell = makeShell({ app: true });
     NodeFS.chmodSync(shell.app, 0o500);
     const result = shell.run("kin-as-owner", ["gh", "pr", "list"], { name: "Tech lead" });

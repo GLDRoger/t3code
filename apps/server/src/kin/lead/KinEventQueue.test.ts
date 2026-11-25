@@ -237,6 +237,19 @@ describe("KinEventQueue", () => {
         yield* sql`UPDATE kin_chat_members SET role = 'member'`;
         yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = 'person-lead-a'`;
         yield* queue.enqueue(yield* event("member", "chat.message"));
+        // Their turn in the budget, not the machine window: a person's words start as an owner's do.
+        const said = yield* Effect.scoped(queue.claim(input("member-said"))).pipe(Effect.forkChild);
+        yield* TestClock.adjust("299 millis");
+        assert.deepStrictEqual(
+          yield* sql`SELECT 1 FROM kin_wakeups WHERE wakeup_id = 'member-said'`,
+          [],
+        );
+        yield* TestClock.adjust("1 millis");
+        assert.deepStrictEqual(
+          (yield* Fiber.join(said)).map((entry) => [entry.eventId, entry.priority]),
+          [["member", "P2"]],
+        );
+        yield* finish("member-said");
         const forged = yield* event("forged", "widget.action", "a", "other");
         yield* queue.enqueue({
           ...forged,
@@ -244,7 +257,7 @@ describe("KinEventQueue", () => {
         });
         assert.deepStrictEqual(
           yield* sql`SELECT priority FROM kin_events WHERE state = 'queued' ORDER BY event_id`,
-          [{ priority: "P2" }, { priority: "P2" }],
+          [{ priority: "P2" }],
         );
         yield* sql`UPDATE kin_people SET access = NULL WHERE person_id = 'person-lead-a'`;
         yield* seed("a", "lead-a2");
@@ -576,6 +589,173 @@ describe("KinEventQueue", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect(
+    "the morning page is a turn of its own: it waits one turn for a message, which neither joins nor steers into it",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const sql = yield* SqlClient.SqlClient;
+        const message = (id: string) =>
+          stored(id, "chat-lead-a").pipe(Effect.andThen(event(id, "chat.message")));
+        const ids = (events: ReadonlyArray<{ readonly eventId: string }>) =>
+          events.map((entry) => entry.eventId);
+        yield* queue.enqueue(
+          yield* decodeEvent({
+            _tag: "pulse",
+            eventId: "morning",
+            orgId: "a",
+            agentId: "lead-a",
+            receivedAt: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+            dedupeKey: "checkin:checkin-morning:2026-11-09",
+            provenance: { _tag: "system" },
+            factKeys: [],
+            checkIn: { scheduleId: "checkin-morning", title: "Morning", what: "Look.", slot: "s" },
+          }),
+        );
+        yield* queue.enqueue(yield* message("owner-ask"));
+        yield* TestClock.adjust("2 seconds");
+        // The owner's message first, on its own; the morning brief right after, alone, though
+        // the owner wrote again in the meantime.
+        assert.deepStrictEqual(ids(yield* Effect.scoped(queue.claim(input("ask")))), ["owner-ask"]);
+        yield* TestClock.adjust("5 seconds");
+        yield* queue.enqueue(yield* message("owner-more"));
+        yield* finish("ask");
+        yield* TestClock.adjust("20 seconds");
+        const morning = input("morning");
+        assert.deepStrictEqual(ids(yield* Effect.scoped(queue.claim(morning))), ["morning"]);
+        yield* sql`UPDATE kin_wakeups SET run_id = 'run' WHERE wakeup_id = 'morning'`;
+        yield* queue.enqueue(yield* message("owner-again"));
+        assert.deepStrictEqual(yield* queue.steer(morning), []);
+        yield* finish("morning");
+        yield* TestClock.adjust("20 seconds");
+        assert.deepStrictEqual(ids(yield* Effect.scoped(queue.claim(input("again")))), [
+          "owner-more",
+          "owner-again",
+        ]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a head start runs alone: never beside a message or a check-in, ten facts at a time",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const sql = yield* SqlClient.SqlClient;
+        const ids = (events: ReadonlyArray<{ readonly eventId: string }>) =>
+          events.map((entry) => entry.eventId);
+        const pulse = (id: string, extra: Record<string, unknown>) =>
+          Effect.gen(function* () {
+            return yield* decodeEvent({
+              _tag: "pulse",
+              eventId: id,
+              orgId: "a",
+              agentId: "lead-a",
+              receivedAt: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+              dedupeKey: id,
+              provenance: { _tag: "system" },
+              factKeys: [],
+              ...extra,
+            });
+          });
+        const quotes = Array.from({ length: 12 }, (_, n) => `quote-${String(n).padStart(2, "0")}`);
+        for (const id of quotes)
+          yield* queue.enqueue(yield* pulse(id, { factKeys: [`quote_unanswered:${id}:last=1`] }));
+        yield* queue.enqueue(
+          yield* pulse("noon", {
+            checkIn: { scheduleId: "checkin-noon", title: "Noon", what: "Look.", slot: "s" },
+          }),
+        );
+        yield* queue.enqueue(
+          yield* stored("owner-ask", "chat-lead-a").pipe(
+            Effect.andThen(event("owner-ask", "chat.message")),
+          ),
+        );
+        yield* TestClock.adjust("2 seconds");
+        // The owner's message and the check-in share his chat; no head start joins them.
+        assert.deepStrictEqual(ids(yield* Effect.scoped(queue.claim(input("ask")))), [
+          "owner-ask",
+          "noon",
+        ]);
+        yield* finish("ask");
+        yield* TestClock.adjust("20 seconds");
+        const prep = input("prep");
+        assert.deepStrictEqual(ids(yield* Effect.scoped(queue.claim(prep))), quotes.slice(0, 10));
+        // A message while it runs waits for a turn of its own.
+        yield* sql`UPDATE kin_wakeups SET run_id = 'run' WHERE wakeup_id = 'prep'`;
+        yield* queue.enqueue(
+          yield* stored("owner-again", "chat-lead-a").pipe(
+            Effect.andThen(event("owner-again", "chat.message")),
+          ),
+        );
+        assert.deepStrictEqual(yield* queue.steer(prep), []);
+        yield* finish("prep");
+        yield* TestClock.adjust("20 seconds");
+        assert.deepStrictEqual(ids(yield* Effect.scoped(queue.claim(input("again")))), [
+          "owner-again",
+        ]);
+        yield* finish("again");
+        assert.deepStrictEqual(
+          ids(yield* Effect.scoped(queue.claim(input("rest")))),
+          quotes.slice(10),
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("bills to read run alone, and no message is steered into their turn", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const sql = yield* SqlClient.SqlClient;
+      const ids = (events: ReadonlyArray<{ readonly eventId: string }>) =>
+        events.map((entry) => entry.eventId);
+      const system = (id: string, extra: Record<string, unknown>) =>
+        Effect.gen(function* () {
+          return yield* decodeEvent({
+            eventId: id,
+            orgId: "a",
+            agentId: "lead-a",
+            receivedAt: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+            dedupeKey: id,
+            provenance: { _tag: "system" },
+            ...extra,
+          });
+        });
+      yield* queue.enqueue(
+        yield* system("bills", {
+          _tag: "bills.read",
+          chatId: "chat-lead-a",
+          batchId: "b-1",
+          bills: ["a".repeat(64)],
+        }),
+      );
+      yield* TestClock.adjust("1 second");
+      // Another notice of the same priority, for the same agent: it never rides along.
+      yield* queue.enqueue(
+        yield* system("stale", { _tag: "watchdog", finding: "A note is stale.", itemIds: [] }),
+      );
+      yield* TestClock.adjust("3 minutes");
+      const turn = input("bills-turn");
+      assert.deepStrictEqual(ids(yield* Effect.scoped(queue.claim(turn))), ["bills"]);
+      yield* sql`UPDATE kin_wakeups SET run_id = 'run' WHERE wakeup_id = 'bills-turn'`;
+      // The owner writes to the reader meanwhile: a turn of its own, never this one.
+      yield* queue.enqueue(
+        yield* stored("owner-ask", "chat-lead-a").pipe(
+          Effect.andThen(event("owner-ask", "chat.message")),
+        ),
+      );
+      assert.deepStrictEqual(yield* queue.steer(turn), []);
+      yield* finish("bills-turn");
+      yield* TestClock.adjust("20 seconds");
+      // The notice the bills turn left rides with the owner's message, as notices do.
+      assert.deepStrictEqual(ids(yield* Effect.scoped(queue.claim(input("ask")))), [
+        "owner-ask",
+        "stale",
+      ]);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("claims one chat per wake-up and steers only that chat's human messages into it", () =>
     Effect.gen(function* () {
       yield* seed();
@@ -639,6 +819,39 @@ describe("KinEventQueue", () => {
       const memberClaimed = later.find((entry) => entry.eventId === "member-again");
       assert.deepStrictEqual(memberClaimed?.provenance, member.provenance);
       assert.strictEqual(memberClaimed?.priority, "P2");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a split retry neither steers into an ordinary turn nor accepts a steer", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const sql = yield* SqlClient.SqlClient;
+      const message = (id: string) =>
+        stored(id, "chat-lead-a").pipe(Effect.andThen(event(id, "chat.message")));
+      yield* TestClock.adjust("1 second");
+      yield* queue.enqueue(yield* message("first"));
+      yield* queue.enqueue(yield* message("second"));
+      yield* TestClock.adjust("2 seconds");
+      const batch = input("batch");
+      const claimIds = (turn: ReturnType<typeof input>) =>
+        Effect.scoped(queue.claim(turn)).pipe(Effect.map((events) => events.map((e) => e.eventId)));
+      assert.deepStrictEqual(yield* claimIds(batch), ["first", "second"]);
+      const failed = yield* queue.finish({ ...batch, status: "failed" });
+      assert.strictEqual(failed.retryInMs, 15_000);
+      yield* queue.enqueue({ ...(yield* message("fresh")), receivedAt: DateTime.makeUnsafe(0) });
+      yield* TestClock.adjust("2 seconds");
+      const ordinary = input("ordinary");
+      assert.deepStrictEqual(yield* claimIds(ordinary), ["fresh"]);
+      yield* sql`UPDATE kin_wakeups SET run_id = 'ordinary-run' WHERE wakeup_id = 'ordinary'`;
+      assert.deepStrictEqual(yield* queue.steer(ordinary), []);
+      yield* finish("ordinary");
+      const solo = input("solo");
+      assert.deepStrictEqual(yield* claimIds(solo), ["first"]);
+      yield* sql`UPDATE kin_wakeups SET run_id = 'solo-run' WHERE wakeup_id = 'solo'`;
+      yield* queue.enqueue(yield* message("new-request"));
+      assert.deepStrictEqual(yield* queue.steer(solo), []);
+      yield* finish("solo");
     }).pipe(Effect.provide(layer)),
   );
 
@@ -723,7 +936,7 @@ describe("KinEventQueue", () => {
       }).pipe(Effect.provide(layer)),
   );
 
-  it.effect("retries failed provider runs soon and fails the third attempt", () =>
+  it.effect("retries failed provider runs soon, then after a quarter hour, then fails them", () =>
     Effect.gen(function* () {
       yield* seed();
       const queue = yield* KinEventQueue.KinEventQueue;
@@ -732,7 +945,9 @@ describe("KinEventQueue", () => {
         const id = `failure-${mode}`;
         yield* queue.enqueue(yield* event(id));
         yield* TestClock.adjust("20 seconds");
-        for (let attempt = 1; attempt <= 3; attempt++) {
+        // A counted release still fails its third; a failed or timed-out run its fourth.
+        const last = mode === "release" ? 3 : 4;
+        for (let attempt = 1; attempt <= last; attempt++) {
           const claimInput = input(`${id}-${attempt}`);
           yield* Effect.scoped(queue.claim(claimInput));
           yield* queue.finish({ ...claimInput, orgId: KinOrgId.make("b"), status: "completed" });
@@ -743,24 +958,31 @@ describe("KinEventQueue", () => {
           const terminal = yield* failed;
           assert.deepStrictEqual(
             terminal.failedEventIds,
-            attempt === 3 ? [KinEventId.make(id)] : [],
+            attempt === last ? [KinEventId.make(id)] : [],
           );
-          if ("retried" in terminal) assert.strictEqual(terminal.retried, attempt === 3 ? 0 : 1);
+          if ("retried" in terminal) assert.strictEqual(terminal.retried, attempt === last ? 0 : 1);
           assert.deepStrictEqual((yield* failed).failedEventIds, []);
           const now = yield* Clock.currentTimeMillis;
           // A run that showed nothing retries soon; a counted release keeps its five minutes.
-          const delay = mode === "release" ? 300_000 : attempt === 1 ? 15_000 : 60_000;
+          const delay =
+            mode === "release"
+              ? 300_000
+              : attempt === 1
+                ? 15_000
+                : attempt === 2
+                  ? 60_000
+                  : 900_000;
           assert.deepStrictEqual(
             yield* sql`SELECT state, attempts, not_before FROM kin_events WHERE event_id = ${id}`,
             [
               {
-                state: attempt === 3 ? "failed" : "queued",
+                state: attempt === last ? "failed" : "queued",
                 attempts: attempt,
                 not_before: now + delay,
               },
             ],
           );
-          if (attempt < 3) {
+          if (attempt < last) {
             const retry = yield* Effect.scoped(queue.claim(input(`${id}-early-${attempt}`))).pipe(
               Effect.forkChild,
             );

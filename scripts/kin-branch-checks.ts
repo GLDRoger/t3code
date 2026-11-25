@@ -1,6 +1,6 @@
 // Against the ref a branch merges into: merged PRs' lines kept unless superseded, Kin migrations
-// numbered on with no gap, the instructions version moved exactly when their text did, no
-// sentence typed into both Kin clients, and no upstream identity the Kin build's branding rejects.
+// numbered on with no gap, the instructions version moved exactly when their text did, no sentence
+// typed into both Kin clients, no identity Kin's branding rejects, a `People-change:` line, hooks only in T3's files.
 //   node scripts/kin-branch-checks.ts <ref> [--days 14] [--root <checkout>]
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -9,10 +9,13 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Schema from "effect/Schema";
 import { Argument, Command, Flag } from "effect/cli";
 
 import { git, gitLines } from "./check-changed.ts";
 
+/** The branch the fork ships from; with no ref, check:changed also tries `<remote>/kin`. */
+export const SHIPPING_BRANCH = "kin";
 export const MIGRATIONS = "apps/server/src/kin/persistence/KinMigrations.ts";
 export const INSTRUCTIONS = "apps/server/src/kin/lead/instructions.ts";
 const SURVIVAL_SKIP = /(?:\.test\.|\.ndjson$|pnpm-lock|instructions\.ts$|KinMigrations\.ts$)/;
@@ -92,7 +95,7 @@ export const checkInstructions = (input: {
 };
 
 /** Distinct added lines long enough to be someone's work, per file, from a `-U0` diff. */
-export const addedLines = (diff: string) => {
+export const addedLines = (diff: string, min = MIN_LINE) => {
   const files = new Map<string, Set<string>>();
   let current: Set<string> | undefined;
   for (const line of diff.split("\n")) {
@@ -102,7 +105,7 @@ export const addedLines = (diff: string) => {
       if (current !== undefined) files.set(path, current);
     } else if (current !== undefined && line.startsWith("+") && !line.startsWith("+++")) {
       const text = line.slice(1).trim();
-      if (text.length >= MIN_LINE) current.add(text);
+      if (text.length >= min) current.add(text);
     }
   }
   return files;
@@ -164,13 +167,13 @@ export const KIN_COPY_DIRS = {
   web: "apps/web/src/kin",
   phone: "apps/mobile/src/features",
 } as const;
-const MIN_WORDS = 4;
+const MIN_WORDS = 3;
 const HOLE = /\$\{(?:[^{}`]|`[^`]*`|\{[^{}]*\})*\}/;
 const TEMPLATE = /`((?:[^`\\$]|\\.|\$(?!\{)|\$\{(?:[^{}`]|`[^`]*`|\{[^{}]*\})*\})*)`/g;
 
 /**
  * The sentences a source file shows people: string literals and JSX text, split at sentence ends,
- * kept when they start with a capital and have four or more words.
+ * kept when they start with a capital and have three or more words.
  */
 export const kinSentences = (source: string) => {
   const code = source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
@@ -200,31 +203,466 @@ export const kinSentences = (source: string) => {
     );
 };
 
+/** Words typed into both Kin clients on purpose, each for a reason. */
+export const KIN_COPY_IN_BOTH: Readonly<Record<string, string>> = {
+  "New Computer Modern":
+    "a font's name, matched against the brand's font, not words a person reads",
+  "A link in “":
+    "web shows the address in a box under the sentence; the phone's alert writes it into the sentence",
+};
+
+/** One key for a sentence and its drifted twin: end punctuation, capitals, "Could not", "...". */
+const copyKey = (sentence: string) =>
+  sentence
+    .toLowerCase()
+    .replace(/\bcould not\b/g, "couldn't")
+    .replace(/\.\.\./g, "…")
+    .replace(/[.!?:…]+$/, "");
+
 /** A sentence typed into both Kin clients belongs in client-runtime, which both render. */
 export const checkSharedCopy = (
   web: ReadonlyMap<string, string>,
   phone: ReadonlyMap<string, string>,
 ) => {
   const where = (files: ReadonlyMap<string, string>) => {
-    const found = new Map<string, string>();
+    const found = new Map<string, { readonly sentence: string; readonly file: string }>();
     for (const [file, source] of files)
-      for (const sentence of kinSentences(source))
-        if (!found.has(sentence)) found.set(sentence, file);
+      for (const sentence of kinSentences(source)) {
+        const key = copyKey(sentence);
+        if (!(sentence in KIN_COPY_IN_BOTH) && !found.has(key)) found.set(key, { sentence, file });
+      }
     return found;
   };
   const onPhone = where(phone);
-  return [...where(web)]
-    .filter(([sentence]) => onPhone.has(sentence))
+  return [...where(web)].flatMap(([key, { sentence, file }]) => {
+    const twin = onPhone.get(key);
+    if (twin === undefined) return [];
+    const words =
+      twin.sentence === sentence ? `"${sentence}"` : `"${sentence}" / "${twin.sentence}"`;
+    return [
+      `kin copy: ${words} is typed into ${file} and ${twin.file}; move it into a client-runtime/src/kin presentation module and render it from both.`,
+    ];
+  });
+};
+
+export const KIN_SHARED_HOOKS_DIR = "packages/client-runtime/src/kin/react";
+/** Hook files still in both apps, each for a reason; an entry goes when its pair does. */
+export const KIN_HOOK_FILES_IN_BOTH: Readonly<Record<string, string>> = {
+  "useKinHost.ts": "each app finds its host through its own connection and pairing",
+  "useKinMoneyLive.ts": "web counts its own session as owner level; the phone reads the host",
+  "useKinOpenChat.ts": "each app opens a chat through its own navigation and draft store",
+};
+/** Hooks written in both apps' copies of one file, each for a reason; an entry goes with its copy. */
+export const KIN_HOOKS_IN_BOTH: Readonly<Record<string, string>> = {};
+
+const hookFileName = (file: string) => /\/(use[A-Z]\w*\.tsx?)$/.exec(file)?.[1];
+const callsSharedHooks = (source: string) =>
+  /from "@t3tools\/client-runtime\/kin\/react\/\w+"/.test(source) &&
+  /\bmakeKin\w*Hooks\(/.test(source);
+const declaredHooks = (source: string) =>
+  new Set(
+    [...source.matchAll(/^export (?:async )?(?:function|const) (use[A-Z]\w*)\b/gm)].map(
+      (match) => match[1]!,
+    ),
+  );
+/** What the shared factories hand back: the names in each `makeKin…Hooks` return. */
+export const sharedHookNames = (shared: ReadonlyMap<string, string>) =>
+  new Set(
+    [...shared.values()].flatMap((source) =>
+      [...source.matchAll(/^ {2}return \{([^}]*)\};\n\}/gm)].flatMap((match) =>
+        match[1]!
+          .split(",")
+          .map((name) => name.trim())
+          .filter((name) => /^use[A-Z]/.test(name)),
+      ),
+    ),
+  );
+
+/**
+ * A Kin data hook is written once, in client-runtime's kin/react factories. Fails on a hook file
+ * named the same in both apps that doesn't call a factory, a hook written in both apps' copies of
+ * one file, or an app writing a hook a factory already hands back. Name-based, never look-alike.
+ */
+export const checkKinHookCopies = (
+  web: ReadonlyMap<string, string>,
+  phone: ReadonlyMap<string, string>,
+  shared: ReadonlyMap<string, string>,
+) => {
+  const problems: Array<string> = [];
+  const byName = (files: ReadonlyMap<string, string>) => {
+    const named = new Map<string, { readonly file: string; readonly source: string }>();
+    for (const [file, source] of files) {
+      const name = hookFileName(file);
+      if (name !== undefined) named.set(name, { file, source });
+    }
+    return named;
+  };
+  const [onWeb, onPhone] = [byName(web), byName(phone)];
+  const both = [...onWeb.keys()].filter((name) => onPhone.has(name)).toSorted();
+  for (const name of both) {
+    const [a, b] = [onWeb.get(name)!, onPhone.get(name)!];
+    if (name in KIN_HOOK_FILES_IN_BOTH) continue;
+    if (!callsSharedHooks(a.source) || !callsSharedHooks(b.source)) {
+      problems.push(
+        `kin hooks: ${a.file} and ${b.file} are one hook file in both apps; write it once in ${KIN_SHARED_HOOKS_DIR} as a makeKin…Hooks factory and call it from both.`,
+      );
+      continue;
+    }
+    const twice = [...declaredHooks(a.source)].filter((hook) => declaredHooks(b.source).has(hook));
+    for (const hook of twice.filter((hook) => !(hook in KIN_HOOKS_IN_BOTH)))
+      problems.push(
+        `kin hooks: ${hook} is written in both ${a.file} and ${b.file}; move it into the factory they call.`,
+      );
+  }
+  // A checkout without the shared factories (a fixture) has no Kin hooks to list.
+  for (const name of shared.size === 0 ? [] : Object.keys(KIN_HOOK_FILES_IN_BOTH))
+    if (!both.includes(name))
+      problems.push(
+        `kin hooks: ${name} is no longer in both apps; take it out of KIN_HOOK_FILES_IN_BOTH.`,
+      );
+  const declaredAnywhere = new Set(
+    [...web.values(), ...phone.values()].flatMap((source) => [...declaredHooks(source)]),
+  );
+  for (const hook of shared.size === 0 ? [] : Object.keys(KIN_HOOKS_IN_BOTH))
+    if (!declaredAnywhere.has(hook))
+      problems.push(`kin hooks: ${hook} is gone; take it out of KIN_HOOKS_IN_BOTH.`);
+  const shipped = sharedHookNames(shared);
+  for (const [file, source] of [...web, ...phone])
+    for (const hook of declaredHooks(source))
+      if (shipped.has(hook))
+        problems.push(
+          `kin hooks: ${file} writes ${hook}, which ${KIN_SHARED_HOOKS_DIR} already hands back; use the shared one.`,
+        );
+  return problems;
+};
+
+const PEOPLE_READ = [
+  "apps/web/src/kin/",
+  "apps/web/src/components/sidebar/",
+  "apps/mobile/src/",
+  "packages/client-runtime/src/kin/",
+  "apps/server/src/kin/",
+  "branding/",
+];
+const TEST_FILE = /(?:\.test\.|\/test\/|\/__tests__\/)/;
+
+/** A file whose result a person or an agent reads: its change says what they will notice. */
+export const readByPeople = (file: string) =>
+  !TEST_FILE.test(file) &&
+  !file.startsWith("apps/server/src/kin/persistence/migrations/") &&
+  (PEOPLE_READ.some((dir) => file.startsWith(dir)) ||
+    /^evals\/mcp-tool-use\/cases\/kin[^/]*\.ndjson$/.test(file));
+
+export const APPROVED_GUARDS = "scripts/kin-approved-guards.json";
+/** Something the owner approved; see `checkPeopleChange`. */
+const ApprovedGuard = Schema.Struct({
+  name: Schema.String,
+  approved: Schema.String,
+  /** Any change to these files. */
+  files: Schema.optional(Schema.Array(Schema.String)),
+  /** An added line containing this text, in a file under `under` (or anywhere). */
+  added: Schema.optional(Schema.String),
+  under: Schema.optional(Schema.Array(Schema.String)),
+  /** Any change to these top-level declarations, by file. */
+  declarations: Schema.optional(Schema.Record(Schema.String, Schema.Array(Schema.String))),
+});
+export type ApprovedGuard = typeof ApprovedGuard.Type;
+export const ApprovedGuards = Schema.fromJsonString(Schema.Array(ApprovedGuard));
+const decodeGuards = Schema.decodeEffect(ApprovedGuards);
+
+/** `export const|function <name>` up to the next line that starts a new top-level statement. */
+export const declarationOf = (source: string | undefined, name: string) => {
+  const lines = (source ?? "").split("\n");
+  const start = lines.findIndex((line) =>
+    new RegExp(`^export (?:const|function) ${name}\\b`).test(line),
+  );
+  if (start === -1) return undefined;
+  const end = lines.findIndex((line, index) => index > start && /^[^\s})\]]/.test(line));
+  return lines
+    .slice(start, end === -1 ? undefined : end)
+    .join("\n")
+    .trimEnd();
+};
+
+export type BranchCommit = {
+  readonly sha: string;
+  readonly message: string;
+  readonly files: ReadonlyArray<string>;
+};
+
+/**
+ * A branch that changes what a person or an agent reads says so in a `People-change:` line; one
+ * that changes something the owner approved says `People-change: approved-item <name>: …`.
+ * `added` is the branch's added lines per changed file; `before`/`after` read a file at its ends.
+ */
+export const checkPeopleChange = (input: {
+  readonly commits: ReadonlyArray<BranchCommit>;
+  readonly guards: ReadonlyArray<ApprovedGuard>;
+  readonly added: ReadonlyMap<string, ReadonlySet<string>>;
+  readonly before: (file: string) => string | undefined;
+  readonly after: (file: string) => string | undefined;
+}) => {
+  const said = input.commits.flatMap((commit) =>
+    [...commit.message.matchAll(/^People-change:[ \t]*(\S.*)$/gm)].map((match) => ({
+      sha: commit.sha,
+      text: match[1]!.trim(),
+    })),
+  );
+  const changed = [...new Set(input.commits.flatMap((commit) => commit.files))].filter(
+    (file) => !TEST_FILE.test(file),
+  );
+  const problems: Array<string> = [];
+  // Commits are newest first; a line speaks for its own commit and those before it, not later ones.
+  const newestSaid = input.commits.findIndex((commit) =>
+    said.some(({ sha }) => sha === commit.sha),
+  );
+  const read = [
+    ...new Set(
+      input.commits
+        .slice(0, newestSaid === -1 ? undefined : newestSaid)
+        .flatMap((commit) => commit.files),
+    ),
+  ].filter(readByPeople);
+  const ask =
+    "Add a line to the last commit message: `People-change: <what a person already had that now looks, reads or works differently, or is gone>`, or `People-change: none`.";
+  if (read.length > 0)
+    problems.push(
+      (newestSaid === -1
+        ? `People-change: this branch changes what a person or an agent reads (${read.join(", ")}), and no commit says what they will notice.\n`
+        : `People-change: commits after ${input.commits[newestSaid]!.sha}, the last with a People-change line, change what a person or an agent reads (${read.join(", ")}), and none says what they will notice.\n`) +
+        ask,
+    );
+  // The last commit restates the branch's lines, so whoever merges reads them in one place.
+  else if (newestSaid > 0 && changed.some(readByPeople))
+    problems.push(
+      `People-change: the last commit, ${input.commits[0]!.sha}, has no People-change line, and this branch changes what a person or an agent reads.\n${ask}`,
+    );
+  const approvedItems = new Set(
+    said.flatMap(({ text }) => /^approved-item\s+(\S+?):\s*\S/.exec(text)?.[1] ?? []),
+  );
+  for (const guard of input.guards) {
+    if (approvedItems.has(guard.name)) continue;
+    const touched = [
+      ...changed.filter((file) => guard.files?.includes(file)),
+      ...changed.filter((file) => {
+        const text = guard.added;
+        if (text === undefined) return false;
+        if (guard.under !== undefined && !guard.under.some((dir) => file.startsWith(dir)))
+          return false;
+        return [...(input.added.get(file) ?? [])].some((line) => line.includes(text));
+      }),
+      ...Object.entries(guard.declarations ?? {}).flatMap(([file, names]) =>
+        changed.includes(file)
+          ? names
+              .filter(
+                (name) =>
+                  declarationOf(input.before(file), name) !==
+                  declarationOf(input.after(file), name),
+              )
+              .map((name) => `${name} in ${file}`)
+          : [],
+      ),
+    ];
+    if (touched.length > 0)
+      problems.push(
+        `People-change: this branch changes ${[...new Set(touched)].join(", ")}, which the owner approved as it is: ${guard.approved}\n` +
+          `Change it only with his yes on the before and after, then add to the last commit message: \`People-change: approved-item ${guard.name}: <what changes>\`.`,
+      );
+  }
+  const notes =
+    said.length === 0 ? [] : ["People-change:", ...said.map(({ sha, text }) => `  ${sha} ${text}`)];
+  return { problems, notes };
+};
+
+/** The branch's own commits since `from`, merges left out: a merge says nothing of its own. */
+export const branchCommits = Effect.fn("kinBranchChecks.commits")(function* (
+  root: string,
+  from: string,
+) {
+  const log = (yield* git(root, [
+    "log",
+    "--no-merges",
+    "--no-renames",
+    "--name-only",
+    "--format=%x1e%h%x1f%B%x1f",
+    `${from}..HEAD`,
+  ])).toString();
+  return log
+    .split("\x1e")
+    .slice(1)
+    .map((record) => {
+      const [sha = "", message = "", files = ""] = record.split("\x1f");
+      return { sha, message, files: files.split("\n").filter((file) => file !== "") };
+    });
+});
+
+/** Kin's own screens and messages: the web and phone clients', the server's and client-runtime's. */
+const KIN_NAME_DIRS = [
+  KIN_COPY_DIRS.web,
+  "apps/mobile/src/features/chats",
+  "apps/server/src/kin",
+  "packages/client-runtime/src/kin",
+];
+// isTestPath in scripts/lib/kinBrandEngine.ts; that module loads a native parser this script avoids.
+const TEST_PATH =
+  /(^|\/)(test|tests|__tests__|testkit|fixtures)\/|\.(test|spec|testkit|fixture)\.[^/]+$/;
+const LITERAL_OR_COMMENT =
+  /("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|\/\*[\s\S]*?\*\/|\/\/[^\n]*/g;
+
+/** The product is Kin; "T3 Kin" is not its name anywhere a person reads it. Comments don't count. */
+export const checkProductName = (files: ReadonlyMap<string, string>) =>
+  [...files]
+    .filter(([file]) => !TEST_PATH.test(file))
+    .flatMap(([file, source]) =>
+      source
+        // A comment goes, keeping its line breaks so line numbers stay right.
+        .replace(
+          LITERAL_OR_COMMENT,
+          (match, literal: string | undefined) => literal ?? match.replace(/[^\n]/g, ""),
+        )
+        .split("\n")
+        .flatMap((line, index) =>
+          /\bT3 Kin\b/.test(line)
+            ? [`kin name: ${file}:${index + 1} says "T3 Kin"; the product is called Kin.`]
+            : [],
+        ),
+    );
+
+export const FOOTPRINT = "scripts/kin-t3-footprint.json";
+/** Kin's own paths, as globs (`*` within a folder, `**` across folders); every other file is T3's. */
+export const KinT3Footprint = Schema.fromJsonString(
+  Schema.Struct({ kinOwned: Schema.Array(Schema.String) }),
+);
+const decodeFootprint = Schema.decodeEffect(KinT3Footprint);
+const MAX_T3_LINES = 10;
+// A T3 test file counts too: Kin's cases go in a sibling `*.kin.test.ts`, which Kin owns.
+const FOOTPRINT_SKIP = /(?:(?:^|\/)routeTree\.gen\.ts$|(?:^|\/)pnpm-lock\.yaml$)/;
+
+export const globPattern = (glob: string) =>
+  new RegExp(
+    `^${glob
+      .split(/(\*\*\/|\*\*|\*)/)
+      .map((part) =>
+        part === "**/"
+          ? "(?:.*/)?"
+          : part === "**"
+            ? ".*"
+            : part === "*"
+              ? "[^/]*"
+              : part.replace(/[.+?^${}()|[\]\\]/g, "\\$&"),
+      )
+      .join("")}$`,
+  );
+
+/** Files a `T3-file: <file>: <why>` commit line lets grow. */
+export const explainedT3Files = (messages: string) =>
+  new Set([...messages.matchAll(/^T3-file:[ \t]*(\S+?):[ \t]*\S/gm)].map((match) => match[1]!));
+
+/** An upstream sync's merge says `Sync-upstream:`; only what the branch adds after it counts. */
+export const lastSyncMerge = (merges: ReadonlyArray<{ sha: string; message: string }>) =>
+  merges.find(({ message }) => /^Sync-upstream:/m.test(message))?.sha;
+
+/** Inside a file T3 owns, Kin adds a hook (an import, one list entry, one call), not its code. */
+export const checkT3Footprint = (input: {
+  readonly changes: ReadonlyArray<{
+    readonly file: string;
+    readonly added: number;
+    readonly isNew: boolean;
+  }>;
+  readonly kinOwned: ReadonlyArray<string>;
+  readonly explained: ReadonlySet<string>;
+}) => {
+  const owned = input.kinOwned.map(globPattern);
+  return input.changes
+    .filter(
+      ({ file, added, isNew }) =>
+        !isNew &&
+        added > MAX_T3_LINES &&
+        !FOOTPRINT_SKIP.test(file) &&
+        !input.explained.has(file) &&
+        !owned.some((pattern) => pattern.test(file)),
+    )
     .map(
-      ([sentence, file]) =>
-        `kin copy: "${sentence}" is typed into ${file} and ${onPhone.get(sentence)}; move it into a client-runtime/src/kin presentation module and render it from both.`,
+      ({ file, added }) =>
+        `Kin adds ${added} lines to T3's ${file}. Put the code in a Kin file and reach it through a hook (an import, one list entry, one call). If it truly belongs here, say why in the commit: "T3-file: ${file}: <why>".`,
     );
 };
 
-/** All four checks for the branch at `root` against `ref`; problems, or none. */
-export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
+/**
+ * Kin's checks read Kin's files at the ref. Upstream's `main` (check:changed's default) has none, so
+ * against it they would skip silently; they run against the closest Kin trunk instead.
+ */
+export const kinTrunk = Effect.fn("kinBranchChecks.kinTrunk")(function* (
   root: string,
   ref: string,
+) {
+  const hasKin = (rev: string) =>
+    git(root, ["cat-file", "-e", `${rev}:${MIGRATIONS}`]).pipe(
+      Effect.as(true),
+      Effect.orElseSucceed(() => false),
+    );
+  if (yield* hasKin(ref)) return { ref, note: undefined };
+  let closest: { ref: string; ahead: number } | undefined;
+  for (const trunk of yield* gitLines(root, [
+    "for-each-ref",
+    "--format=%(refname:short)",
+    "refs/heads/kin",
+    "refs/remotes/*/kin",
+  ])) {
+    if (!(yield* hasKin(trunk))) continue;
+    const ahead = Number(
+      (yield* git(root, ["rev-list", "--count", `${trunk}..HEAD`])).toString().trim(),
+    );
+    if (closest === undefined || ahead < closest.ahead) closest = { ref: trunk, ahead };
+  }
+  if (closest === undefined)
+    return yield* Effect.fail(
+      `kin branch: ${ref} has no ${MIGRATIONS}, so the migration and instructions checks can't run against it, and no Kin trunk (kin, <remote>/kin) was found. Pass the Kin branch this one merges into.`,
+    );
+  return {
+    ref: closest.ref,
+    note: `kin branch: ${ref} has no Kin files, so these checks ran against ${closest.ref}.`,
+  };
+});
+const UPSTREAM_REF = "upstream/main";
+const STANDING_TOP = 10;
+const STANDING_SKIP = /(?:^\.repos\/|(?:^|\/)(?:routeTree\.gen\.ts|pnpm-lock\.yaml)$)/;
+
+/** Every Kin line already inside T3's files since the fork left upstream, largest first. */
+export const standingT3Footprint = (input: {
+  readonly from: string;
+  readonly changes: ReadonlyArray<{
+    readonly file: string;
+    readonly added: number;
+    readonly removed: number;
+    readonly isNew: boolean;
+  }>;
+  readonly kinOwned: ReadonlyArray<string>;
+}) => {
+  const owned = input.kinOwned.map(globPattern);
+  const files = input.changes
+    .filter(
+      ({ file, isNew }) =>
+        !isNew && !STANDING_SKIP.test(file) && !owned.some((pattern) => pattern.test(file)),
+    )
+    .toSorted(
+      (a, b) => b.added + b.removed - (a.added + a.removed) || a.file.localeCompare(b.file),
+    );
+  if (files.length === 0) return [];
+  const sum = (list: typeof files) => list.reduce((total, one) => total + one.added, 0);
+  const tests = files.filter(({ file }) => /\.test\.tsx?$/.test(file));
+  return [
+    `T3 footprint since upstream ${input.from.slice(0, 10)}: Kin adds ${sum(files)} lines to ${files.length} T3 files (${sum(tests)} of them in ${tests.length} test files). Largest:`,
+    ...files
+      .slice(0, STANDING_TOP)
+      .map(({ file, added, removed }) => `  +${added} -${removed} ${file}`),
+  ];
+};
+
+/** All checks for the branch at `root` against `ref`: problems, or none, and notes to print. */
+export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
+  root: string,
+  asked: string,
   days: number,
 ) {
   const fs = yield* FileSystem.FileSystem;
@@ -235,6 +673,10 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
       Effect.option,
     );
   const onDisk = (file: string) => fs.readFileString(path.join(root, file)).pipe(Effect.option);
+  const trunk = (yield* fs.exists(path.join(root, MIGRATIONS)))
+    ? yield* kinTrunk(root, asked)
+    : { ref: asked, note: undefined };
+  const ref = trunk.ref;
   const mergeBase = (yield* git(root, ["merge-base", "HEAD", ref])).toString().trim();
   // PRs already merged between the ref and head, newest first: a release range, not one branch.
   const prMerges = (yield* gitLines(root, [
@@ -286,9 +728,17 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
     }
     return files;
   });
+  const [webFiles, phoneFiles] = [
+    yield* copyFiles(KIN_COPY_DIRS.web),
+    yield* copyFiles(KIN_COPY_DIRS.phone),
+  ];
+  problems.push(...checkSharedCopy(webFiles, phoneFiles));
   problems.push(
-    ...checkSharedCopy(yield* copyFiles(KIN_COPY_DIRS.web), yield* copyFiles(KIN_COPY_DIRS.phone)),
+    ...checkKinHookCopies(webFiles, phoneFiles, yield* copyFiles(KIN_SHARED_HOOKS_DIR)),
   );
+  const named = new Map<string, string>();
+  for (const dir of KIN_NAME_DIRS) for (const entry of yield* copyFiles(dir)) named.set(...entry);
+  problems.push(...checkProductName(named));
 
   // The iOS build brands a copy and fails on any upstream identity left; catch that here.
   if (yield* fs.exists(path.join(root, "branding/rules.yaml"))) {
@@ -307,6 +757,80 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
     );
     if (branding !== undefined)
       problems.push(`Kin branding (node scripts/kin-brand.ts --scan): ${branding}`);
+  }
+
+  const guardsText = yield* onDisk(APPROVED_GUARDS);
+  const guards = Option.isNone(guardsText)
+    ? []
+    : yield* decodeGuards(guardsText.value).pipe(
+        Effect.catch((error) =>
+          Effect.sync(() => {
+            problems.push(`${APPROVED_GUARDS}: ${error.message}`);
+            return [];
+          }),
+        ),
+      );
+  const commits = yield* branchCommits(root, mergeBase);
+  const declared = new Set(guards.flatMap((guard) => Object.keys(guard.declarations ?? {})));
+  const before = new Map<string, string | undefined>();
+  const after = new Map<string, string | undefined>();
+  for (const file of declared) {
+    before.set(file, Option.getOrUndefined(yield* show(mergeBase, file)));
+    after.set(file, Option.getOrUndefined(yield* show("HEAD", file)));
+  }
+  const people = checkPeopleChange({
+    commits,
+    guards,
+    added: addedLines(
+      (yield* git(root, ["diff", "-U0", "--no-renames", mergeBase, "HEAD"])).toString(),
+      1,
+    ),
+    before: (file) => before.get(file),
+    after: (file) => after.get(file),
+  });
+  problems.push(...people.problems);
+
+  const footprintText = yield* onDisk(FOOTPRINT);
+  const footprint = Option.isNone(footprintText)
+    ? undefined
+    : yield* decodeFootprint(footprintText.value).pipe(
+        Effect.catch((error) =>
+          Effect.sync(() => {
+            problems.push(`${FOOTPRINT}: ${error.message}`);
+            return undefined;
+          }),
+        ),
+      );
+  if (footprint !== undefined) {
+    const merges = (yield* git(root, [
+      "log",
+      "--merges",
+      "--format=%x1e%H%x1f%B",
+      `${mergeBase}..HEAD`,
+    ]))
+      .toString()
+      .split("\x1e")
+      .slice(1)
+      .map((record) => {
+        const [sha = "", message = ""] = record.split("\x1f");
+        return { sha, message };
+      });
+    const from = lastSyncMerge(merges) ?? mergeBase;
+    const created = new Set(
+      yield* gitLines(root, ["diff", "--name-only", "--no-renames", "--diff-filter=A", from]),
+    );
+    const changes = (yield* gitLines(root, ["diff", "--numstat", "--no-renames", from]))
+      .map((line) => line.split("\t"))
+      .flatMap(([added = "", , file]) =>
+        file === undefined ? [] : [{ file, added: Number(added) || 0, isNew: created.has(file) }],
+      );
+    problems.push(
+      ...checkT3Footprint({
+        changes,
+        kinOwned: footprint.kinOwned,
+        explained: explainedT3Files(commits.map(({ message }) => message).join("\n")),
+      }),
+    );
   }
 
   if (changed.length > 0) {
@@ -350,7 +874,33 @@ export const kinBranchChecks = Effect.fn("kinBranchChecks")(function* (
       }),
     );
   }
-  return problems;
+  const notes = [...(trunk.note === undefined ? [] : [trunk.note]), ...people.notes];
+  const upstreamBase = yield* git(root, ["merge-base", "HEAD", UPSTREAM_REF]).pipe(
+    Effect.map((out) => out.toString().trim()),
+    Effect.option,
+  );
+  if (footprint !== undefined && Option.isSome(upstreamBase)) {
+    const from = upstreamBase.value;
+    const created = new Set(
+      yield* gitLines(root, ["diff", "--name-only", "--no-renames", "--diff-filter=A", from]),
+    );
+    const changes = (yield* gitLines(root, ["diff", "--numstat", "--no-renames", from]))
+      .map((line) => line.split("\t"))
+      .flatMap(([added = "", removed = "", file]) =>
+        file === undefined
+          ? []
+          : [
+              {
+                file,
+                added: Number(added) || 0,
+                removed: Number(removed) || 0,
+                isNew: created.has(file),
+              },
+            ],
+      );
+    notes.push(...standingT3Footprint({ from, changes, kinOwned: footprint.kinOwned }));
+  }
+  return { problems, notes };
 });
 
 export const kinBranchChecksCommand = Command.make(
@@ -372,7 +922,8 @@ export const kinBranchChecksCommand = Command.make(
       const root = Option.isSome(input.root)
         ? input.root.value
         : yield* path.fromFileUrl(new URL("..", import.meta.url));
-      const problems = yield* kinBranchChecks(root, input.ref, input.days);
+      const { problems, notes } = yield* kinBranchChecks(root, input.ref, input.days);
+      for (const note of notes) yield* Console.log(note);
       if (problems.length === 0) return yield* Console.log("kin branch checks: clean");
       for (const problem of problems) yield* Console.error(problem);
       yield* Effect.sync(() => {
@@ -391,7 +942,7 @@ export const kinBranchChecksCommand = Command.make(
     ),
 ).pipe(
   Command.withDescription(
-    "Kin's merge-survival, migration, instructions, shared-copy and branding checks.",
+    "Kin's merge-survival, migration, instructions, shared-copy, branding, People-change and T3-footprint checks.",
   ),
 );
 

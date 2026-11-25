@@ -96,8 +96,7 @@ export const repoList = Effect.fn("KinGitHubWatchStore.repos")(function* (orgId:
       return {
         repo: entry.repo,
         fork: entry.fork,
-        watched:
-          pref?.watched === null || pref?.watched === undefined ? !entry.fork : pref.watched === 1,
+        watched: pref?.watched === null || pref?.watched === undefined || pref.watched === 1,
         mentions: pref?.mentions === 1,
       };
     })
@@ -146,6 +145,19 @@ export const withGuards = Effect.fn("KinGitHubWatchStore.withGuards")(function* 
           },
         };
   });
+});
+
+/** The accounts the company's repos are under (the owner's login, his organisations), by name. */
+export const companyAccounts = Effect.fn("KinGitHubWatchStore.companyAccounts")(function* (
+  orgId: KinOrgId,
+) {
+  const accounts = new Map<string, string>();
+  for (const entry of yield* knownRepos(orgId)) {
+    const account = entry.repo.split("/")[0] ?? "";
+    if (account !== "" && !accounts.has(account.toLowerCase()))
+      accounts.set(account.toLowerCase(), account);
+  }
+  return [...accounts.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([, name]) => name);
 });
 
 /** A repo of the company's (the owner's or his organisations', where he can push), if it is one. */

@@ -6,6 +6,7 @@ import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import { KinChatError, KinOrgId } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -117,6 +118,21 @@ it.live("stops a child at the time cap and at the output cap, and gives it no en
       maxStdout: 1000,
     });
     assert.deepStrictEqual(spun._tag === "exited" ? spun.signal : spun._tag, "SIGXCPU");
+    // A child that ignores the signal is still killed at the hard limit, a second later.
+    if ((yield* HostProcess.Platform) === "linux") {
+      const deaf = Render.limitedCommand("/bin/sh", ["-c", "trap '' XCPU; while :; do :; done"], {
+        cpuSeconds: 1,
+        addressSpaceKiB: undefined,
+      });
+      const held = yield* Render.runCapped({
+        ...deaf,
+        env: {},
+        cwd: "/",
+        timeoutMs: 10_000,
+        maxStdout: 1000,
+      });
+      assert.deepStrictEqual(held._tag === "exited" ? held.signal : held._tag, "SIGKILL");
+    }
     const exited = yield* run("printf '%s' \"$HOME$USER$T3CODE_HOME\"; echo broken >&2; exit 3");
     assert.deepStrictEqual(
       exited._tag === "exited"
@@ -182,6 +198,7 @@ it.layer(layerOf())("KinDocRenderer", (it) => {
           "tds-2026-10.csv",
           "expenses-2026-10.csv",
           "unpaid-expenses-2026-10.csv",
+          "owed-to-partners-2026-10.csv",
           "bank-2026-10.csv",
         ],
       );

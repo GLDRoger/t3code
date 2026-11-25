@@ -21,7 +21,7 @@ import * as KinSchedules from "./kinSchedules.ts";
 import * as KinTriggerSink from "./KinTriggerSink.ts";
 import { projection } from "./threadProjection.testkit.ts";
 
-/** Saves and tombstones rows as the real service would, with no native task behind them. */
+/** Saves and tombstones rows as the real service would; a native task a test seeds goes on cancel. */
 export const recordingSchedules = (saves: KinSchedules.SaveInput[], cancels: string[]) =>
   Layer.effect(
     KinSchedules.KinSchedules,
@@ -29,17 +29,24 @@ export const recordingSchedules = (saves: KinSchedules.SaveInput[], cancels: str
       KinSchedules.KinSchedules.of({
         save: (input) =>
           sql`INSERT OR REPLACE INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
-              source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at)
+              source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at,
+              pending_enabled)
             VALUES (${KinSchedules.scheduleTaskId(input.orgId, input.scheduleId)}, ${input.orgId},
               ${input.scheduleId}, ${input.agentId}, ${input.chatId}, ${input.sourceEvent},
-              ${input.saidBy}, 'owner_only', 'hash', 'inbox', ${input.now}, ${input.now})`.pipe(
+              ${input.saidBy}, ${input.audience ?? "owner_only"}, 'hash', 'inbox', ${input.now},
+              ${input.now}, CASE WHEN ${input.resume === true ? 1 : 0} THEN NULL
+                ELSE (SELECT pending_enabled FROM kin_schedules
+                  WHERE task_id = ${KinSchedules.scheduleTaskId(input.orgId, input.scheduleId)})
+                END)`.pipe(
             Effect.tap(() => Effect.sync(() => saves.push(input))),
             Effect.asVoid,
             Effect.orDie,
           ),
         cancel: (orgId, scheduleId) =>
-          sql`UPDATE kin_schedules SET deleted_at = COALESCE(deleted_at, 1)
-            WHERE org_id = ${orgId} AND schedule_id = ${scheduleId}`.pipe(
+          sql`DELETE FROM scheduled_tasks
+            WHERE task_id = ${KinSchedules.scheduleTaskId(orgId, scheduleId)}`.pipe(
+            Effect.andThen(sql`UPDATE kin_schedules SET deleted_at = COALESCE(deleted_at, 1)
+              WHERE org_id = ${orgId} AND schedule_id = ${scheduleId}`),
             Effect.tap(() => Effect.sync(() => cancels.push(scheduleId))),
             Effect.asVoid,
             Effect.orDie,
@@ -76,6 +83,7 @@ const knownProjects = (made: Set<string>) =>
           project: project(input.projectId, input.title, input.workspaceRoot),
         };
       }),
+    update: (input) => Effect.succeed(project(input.projectId, "Kin", "/memory")),
   });
 
 /** An archived thread in the lead's project, standing in for its scheduled-runs inbox. */

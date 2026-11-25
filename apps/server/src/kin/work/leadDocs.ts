@@ -5,7 +5,11 @@ import {
   KinChatId,
   KinDocKind,
   KinDocSectionId,
+  type KinDocCardDraft,
   type KinDocCardState,
+  KinDraftKind,
+  KIN_SOCIAL_PLATFORM_LABELS,
+  KinSocialPlatform,
   KinMessageId,
   KinPersonId,
   KinRecordId,
@@ -13,19 +17,33 @@ import {
   KinSearchKind,
   KinWakeupId,
   type KinWorkPrincipal,
-  TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import { stableStringify } from "@t3tools/shared/relaySigning";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { effectiveAudience } from "../lead/Audience.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
+import { mayActAsOwner } from "../people/KinAccess.ts";
+import {
+  type Redraft,
+  redo,
+  redoOf,
+  redoRaised,
+  redoRefused,
+  redraftWaits,
+} from "../questions/askPerson.ts";
+import { effectiveAudience, turnChat, turnPeople } from "../lead/Audience.ts";
+import { directKey } from "../lead/LeadAccess.ts";
+import { docHeadStart } from "../pulse/draftWake.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
-import { laneFor } from "../reply/KinReplyBridge.ts";
+import { laneFor } from "../reply/replyLane.ts";
 import { DOC_BODY_MAX, outlineOf, sectionsOf, WHOLE_DOC } from "./docBody.ts";
 import * as Docs from "./docs.ts";
+import { startOfferings } from "./offerings.ts";
 import {
   admitted,
   Client,
@@ -42,23 +60,29 @@ import {
   Who,
   writerFor,
 } from "./leadWork.ts";
-import { iso, type RecordRow } from "./recordRows.ts";
+import { iso, type RecordRow, unavailable } from "./recordRows.ts";
+import { docCardId, draftCardOf } from "./draftCards.ts";
+import { isLongDraft } from "./draftOpening.ts";
 import { search } from "./search.ts";
-import { KIN_OWNER_LEVEL, viewSees, viewerOfPeople } from "./teamView.ts";
+import {
+  DRAFT_OWN_CHAT_ONLY,
+  KIN_OWNER_LEVEL,
+  PICTURE_DOC_ORIGIN,
+  viewSees,
+  viewerOfPeople,
+} from "./teamView.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 
 /** The doc tools' inputs, results and the one call each makes. Model-facing text is in `mcp/docTools.ts`. */
 
 const Key = KinRecordKey.annotate({ description: "The doc's key, such as D-4." });
-const Summary = TrimmedNonEmptyString.check(
-  Schema.isMaxLength(200),
-  Schema.isPattern(/^[^\n]*$/),
-).annotate({
-  description: 'One line saying what changed, for the reader: "Moved launch to 14 Dec".',
-});
+const Summary = KinToolText(
+  200,
+  'One line saying what changed, for the reader: "Moved launch to 14 Dec".',
+).check(Schema.isPattern(/^[^\n]*$/));
 const Body = Schema.String.check(Schema.isMaxLength(DOC_BODY_MAX));
 const Text = Schema.String.check(Schema.isMaxLength(50_000));
-const Title = TrimmedNonEmptyString.check(Schema.isMaxLength(200));
+const Title = KinToolText(200);
 const Section = KinDocSectionId.annotate({ description: "A section id from the outline." });
 const SourceEvent = TurnEvent;
 const Card = Schema.optional(Schema.Boolean).annotate({
@@ -101,7 +125,22 @@ export const CreateInput = Schema.Struct({
   links: Schema.optional(Schema.Array(KinRecordKey).check(Schema.isMaxLength(20))).annotate({
     description: "Keys of entries or docs to link it to.",
   }),
-  card: Card,
+  card: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "The doc shows in this chat as a card the owner can open. Pass false only for a doc nobody asked for in this chat.",
+  }),
+  whatWeSell: Schema.optional(Schema.Literal(true)),
+  draft: Schema.optional(
+    Schema.Struct({
+      kind: KinDraftKind,
+      on: Schema.optional(KinSocialPlatform).annotate({
+        description: "For a post: where it goes.",
+      }),
+    }),
+  ).annotate({
+    description:
+      "This doc is one draft (a post, a mail, a proposal…): one doc per draft. Kin shows it as its own card with Copy text, and in a teammate's own chat Send to the owner.",
+  }),
 });
 export const WriteResult = Schema.Struct({
   key: Schema.String,
@@ -112,6 +151,7 @@ export const WriteResult = Schema.Struct({
   outline: Schema.Array(OutlineEntry),
   ...Filed,
   ...Marks,
+  note: Schema.optional(Schema.String),
 });
 
 export const ReadInput = Schema.Struct({
@@ -142,6 +182,10 @@ export const ReadResult = Schema.Struct({
     ),
   ),
   note: Schema.optional(Schema.String),
+  /** A drawn picture's page, as kin_picture took it. */
+  page: Schema.optional(Schema.String),
+  /** A generated picture's whole prompt, as kin_picture took it. */
+  prompt: Schema.optional(Schema.String),
   owner: Schema.String,
   client: Schema.optional(Schema.String),
   project: Schema.optional(Schema.String),
@@ -163,9 +207,7 @@ const Operation = Schema.Union([
   Schema.Struct({ op: Schema.Literal("append"), text: Text }),
   Schema.Struct({
     op: Schema.Literal("replace_phrase"),
-    find: TrimmedNonEmptyString.check(Schema.isMaxLength(2_000)).annotate({
-      description: "Exact text that appears once in the doc.",
-    }),
+    find: KinToolText(2_000, "Exact text that appears once in the doc."),
     replace: Schema.String.check(Schema.isMaxLength(2_000)),
   }),
   Schema.Struct({ op: Schema.Literal("retitle"), title: Title }),
@@ -220,7 +262,7 @@ export const LinkResult = Schema.Struct({
   linked: Schema.Array(Schema.Struct({ key: Schema.String, title: Schema.String, ...Marks })),
 });
 export const SearchInput = Schema.Struct({
-  text: TrimmedNonEmptyString.check(Schema.isMaxLength(200)),
+  text: KinToolText(200),
   kinds: Schema.optional(Schema.Array(KinSearchKind).check(Schema.isMaxLength(5))).annotate({
     description: "work, clients, contacts, projects, docs. Leave out for all.",
   }),
@@ -231,7 +273,10 @@ export const SearchInput = Schema.Struct({
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(20)),
   ),
 });
+const WIDENED = "Nothing has every word, so these have some of them.";
 export const SearchResult = Schema.Struct({
+  /** Said when no entry has every word and the hits share only some. */
+  widened: Schema.optional(Schema.String),
   hits: Schema.Array(
     Schema.Struct({
       key: Schema.String,
@@ -282,6 +327,7 @@ export const RestoreInput = Schema.Struct({
 });
 
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
+const isChatError = Schema.is(KinChatError);
 
 /** The event the lead says it acts on, which must be its own turn's, and who wrote its message. */
 const answering = Effect.fn("KinDocTools.answering")(function* (lead: Lead, eventId: string) {
@@ -379,19 +425,35 @@ const ownerOf = (row: RecordRow): KinWorkPrincipal =>
 export const shown = Effect.fn("KinDocTools.shown")(function* (
   lead: Lead,
   written: Docs.Written,
-  card: boolean | undefined,
+  card: boolean | "answer" | undefined,
+  draft?: KinDocCardDraft,
 ) {
-  if (card !== true) return;
-  const wakeupId = KinWakeupId.make(lead.wakeupId);
-  const lane = yield* laneFor({ orgId: lead.orgId, agentId: lead.agentId, wakeupId });
-  if (Option.isNone(lane)) return;
+  if (card !== true && card !== "answer") return false;
+  const turn = {
+    orgId: lead.orgId,
+    agentId: lead.agentId,
+    wakeupId: KinWakeupId.make(lead.wakeupId),
+  };
+  const lane = yield* laneFor(turn);
+  if (Option.isNone(lane)) return false;
+  if (card === "answer") {
+    if (lane.value.team === true) return false;
+    if (lane.value.mode !== "reply") {
+      const sql = yield* SqlClient.SqlClient;
+      const checkIn = yield* sql`SELECT 1 FROM kin_events
+        WHERE org_id = ${turn.orgId} AND agent_id = ${turn.agentId} AND wakeup_id = ${turn.wakeupId}
+          AND tag = 'pulse' AND json_type(json, '$.checkIn') = 'object' LIMIT 1`;
+      if (checkIn.length === 0) return false;
+    }
+  }
   const version = Docs.toVersion(written.version);
-  yield* (yield* KinLevelGate).showCard(
-    { ...lead, wakeupId },
+  const posted = (yield* KinLevelGate).showCard(
+    { ...lead, wakeupId: turn.wakeupId },
     {
       chatId: lane.value.chatId,
-      clientMessageId: `kin-doc:${wakeupId}:${written.row.recordId}:${written.version.version}`,
+      clientMessageId: docCardId(turn.wakeupId, written.row.recordId, written.version.version),
       type: KIN_DOC_CARD,
+      intent: lane.value.mode === "reply" ? "answer" : "evidence",
       state: {
         recordId: KinRecordId.make(written.row.recordId),
         key: written.row.key,
@@ -404,8 +466,18 @@ export const shown = Effect.fn("KinDocTools.shown")(function* (
           summary: version.summary,
         },
         previousVersion: version.baseVersion,
+        ...(draft === undefined ? {} : { draft }),
       } satisfies KinDocCardState,
     },
+  );
+  if (draft === undefined) {
+    yield* posted;
+    return true;
+  }
+  // A draft is filed whatever its card meets: the agent is told so instead.
+  return yield* posted.pipe(
+    Effect.as(true),
+    Effect.catchTags({ KinChatError: () => Effect.succeed(false) }),
   );
 });
 
@@ -458,16 +530,179 @@ const projectFor = Effect.fn("KinDocTools.projectFor")(function* (
     : only(projects.filter((row) => row.partyId === partyId));
 });
 
+const OFFERINGS_OWNERS =
+  "Only the owner or a co-owner starts What we sell, in a chat only they are in. Nothing was written.";
+
+/** What we sell, as the Docs card starts it: only in a turn no teammate is behind. */
+const runStartOfferings = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
+  yield* admitted(lead, "doc_create", input);
+  const behind = yield* turnPeople(lead);
+  if (behind === undefined || behind.people.length > 0)
+    return yield* new KinChatError({ reason: "not_allowed", message: OFFERINGS_OWNERS });
+  const answered = yield* answering(lead, input.sourceEventId);
+  const started = yield* startOfferings(lead.orgId, yield* writerFor(lead), behind.owner, {
+    body: input.body,
+    ...(input.summary === undefined ? {} : { summary: input.summary }),
+    provenance: {
+      audience: yield* effectiveAudience(lead),
+      ...(answered === undefined
+        ? {}
+        : { answered: { messageId: answered.messageId, author: answered.author } }),
+    },
+  });
+  const version = yield* Docs.versionOf(lead.orgId, started.row.recordId);
+  if (version === undefined) return yield* Docs.docNotFound(started.row.key);
+  const written = { row: started.row, version };
+  if (started.made) yield* shown(lead, { ...written, created: true }, input.card ?? "answer");
+  const key = started.row.key;
+  return {
+    ...writeResult(written, started.made),
+    ...(started.made
+      ? {}
+      : {
+          note: started.restored
+            ? `What we sell is ${key}. It was archived; this call brought it back as it was and wrote nothing else. Change it with doc_edit.`
+            : `What we sell is already ${key}; this call wrote nothing. Change it with doc_edit.`,
+        }),
+  };
+});
+
+/** What a refused doc for a teammate's own ask tells the agent to do instead: draft it for the owner. */
+const draftUpLine = (owner: string, asker: string) =>
+  `Nothing was written. Draft it for ${owner} instead: put the draft in kin_ask_person to ${owner} as its detail, with draft naming its kind and the client or deal key, keeping a price or term ${asker} gave, named as theirs, and leaving blank any other only ${owner} decides; Kin adds the buttons Approve and Changes first. Then tell ${asker} in one line that it is with ${owner} to approve.`;
+
+/**
+ * A doc refused for the one teammate behind the turn, asked in their own direct chat with this
+ * agent, names the way on: the draft goes to the owner on a card, which only such a turn may post.
+ */
+const draftUp = Effect.fn("KinDocTools.draftUp")(function* (lead: Lead, refused: KinChatError) {
+  // Sent up, it would be refused for the same reason (`askPerson`'s `draftSource`).
+  if (refused.message === DRAFT_OWN_CHAT_ONLY.message) return refused;
+  const behind = yield* turnPeople(lead);
+  const asker = behind?.people.length === 1 ? behind.askers[0] : undefined;
+  const chat = yield* turnChat(lead);
+  if (behind === undefined || asker === undefined || chat?.asked !== true) return refused;
+  const sql = yield* SqlClient.SqlClient;
+  const [names] = yield* sql<{ asker: string; owner: string | null }>`SELECT
+      p.display_name AS asker, (SELECT o.display_name FROM kin_people o
+        WHERE o.org_id = c.org_id AND o.person_id = ${behind.owner}) AS owner
+    FROM kin_chats c JOIN kin_people p ON p.org_id = c.org_id AND p.person_id = ${asker}
+    WHERE c.org_id = ${lead.orgId} AND c.chat_id = ${chat.chatId} AND c.kind = 'direct'
+      AND c.archived_at IS NULL AND c.direct_key = ${directKey(asker, lead.agentId)}
+    ORDER BY c.chat_id`;
+  if (names === undefined) return refused;
+  return new KinChatError({
+    reason: refused.reason,
+    message: `${refused.message} ${draftUpLine(names.owner?.trim() || "the owner", names.asker)}`,
+  });
+});
+
+/**
+ * What the agent is told of a draft it filed: its own card, when one was placed, and where it is,
+ * which a client without draft cards shows only as a doc; and what Kin can't do with it.
+ */
+export const draftNote = (
+  draft: Pick<KinDocCardDraft, "sendTo" | "noAccount">,
+  key: string,
+  placed: boolean,
+) =>
+  [
+    placed
+      ? `This draft is its own card in the chat, with Copy text${draft.sendTo === undefined ? "" : ` and Send to ${draft.sendTo.name}`}: don't repeat it or name ${key}; say in one line what it is${draft.sendTo === undefined ? "; nothing on the card sends it to anyone, so don't say anyone will send or approve it" : `; ${draft.sendTo.name} hasn't seen it, and it reaches ${draft.sendTo.name} only when the person in this chat presses Send to ${draft.sendTo.name}: that tap is the whole way up, so don't also put it to ${draft.sendTo.name} with kin_ask_person or kin_ask, and don't mention the card's length`}.`
+      : `Filed as ${key}, but its card couldn't be shown here: give the draft in your reply.`,
+    ...(draft.noAccount === undefined
+      ? []
+      : [
+          `No ${draft.noAccount.service} account is connected, so Kin can't post it; ${draft.noAccount.by.name} can connect one in Settings on a computer. Say both: it can't be posted yet, and ${draft.noAccount.by.name} can connect one.`,
+        ]),
+  ].join(" ");
+const NOT_A_REDRAFT =
+  "Kin couldn't tie it to a draft waiting on Changes first here, so no Approve card was made for it: never say it waits to be approved.";
+const DRAFT_BLANK = "A draft needs its text. Nothing was written.";
+const DRAFT_CARD_FULL =
+  "With who asks and who it is for, this draft is too long for the card it goes up on. Shorten it, or file it without draft. Nothing was written.";
+
+/**
+ * The one teammate's draft the owner answered Changes first on that this turn's redraft is, with
+ * what raising it needs; undefined when it is none (`redoOf`).
+ */
+const redraftOf = Effect.fn("KinDocTools.redraftOf")(function* (
+  lead: Lead,
+  redraft: Parameters<typeof redoOf>[1],
+  on?: KinSocialPlatform,
+  edited?: Pick<RecordRow, "recordId" | "partyId">,
+) {
+  const turn = {
+    orgId: lead.orgId,
+    agentId: lead.agentId,
+    wakeupId: KinWakeupId.make(lead.wakeupId),
+  };
+  const chat = yield* Effect.serviceOption(KinChatService);
+  if (Option.isNone(chat)) return undefined;
+  // An edited doc goes to her chat only while she sees it and its client now.
+  const seen =
+    edited === undefined ? [] : [edited.recordId, edited.partyId].filter((id) => id !== null);
+  const found = yield* redoOf(turn, redraft, seen);
+  if (found === undefined) return undefined;
+  return {
+    lead: { ...lead, wakeupId: turn.wakeupId },
+    of:
+      on === undefined
+        ? found
+        : { ...found, draft: { ...found.draft, on: KIN_SOCIAL_PLATFORM_LABELS[on] } },
+    deps: { chat: chat.value, gate: yield* KinLevelGate },
+  };
+});
+type Redrafting = NonNullable<Effect.Success<ReturnType<typeof redraftOf>>>;
+
+/**
+ * The redraft goes back to the owner on a new Approve card (`redo`): whole, or a long one bound
+ * to the doc version it was filed as. Fails as the ask does, so a caller's write rolls back.
+ */
+const raiseRedraft = (redrafting: Redrafting, text: string, written?: Docs.Written) =>
+  redo(
+    redrafting.lead,
+    redrafting.of,
+    text,
+    redrafting.deps,
+    written === undefined
+      ? undefined
+      : {
+          recordId: written.row.recordId,
+          key: written.row.key,
+          version: written.version.version,
+          text: written.version.body,
+        },
+  ).pipe(Effect.map((asked) => redoRaised(redrafting.of, asked.state)));
+
+/** A redraft the ask refused: what the turn is told, and it is filed as any doc. */
+const refusedBy = (of: Redraft) => (error: KinChatError) =>
+  Effect.succeed({ _tag: "refused" as const, note: redoRefused(of, error) });
+
 const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateInput.Type) {
+  if (input.whatWeSell === true) return yield* runStartOfferings(lead, input);
+  if (input.draft !== undefined && input.body.trim() === "") return yield* invalid(DRAFT_BLANK);
   const context = yield* writeContext(lead, "doc_create", input);
-  const owner = yield* resolveWho(lead, input.owner ?? "me");
+  // A doc head start's one doc is filed for its task's holder, linked to that task.
+  const headStart = yield* docHeadStart(lead.orgId, lead.agentId, lead.wakeupId);
+  const writer = {
+    ...context.writer,
+    ...(headStart === undefined ? {} : { headStartFor: headStart.personId }),
+    ...(input.draft === undefined ? {} : { draftCard: true as const }),
+  };
+  const links =
+    headStart === undefined
+      ? (input.links ?? [])
+      : [...new Set([KinRecordKey.make(headStart.key), ...(input.links ?? [])])];
+  const owner = yield* resolveWho(lead, input.owner ?? "you");
   const partyId = yield* refOrNull(lead, input.client, "clients");
   const projectId =
     (yield* refOrNull(lead, input.project, "projects")) ??
     (input.project === undefined && input.company !== true
       ? yield* projectFor(lead, input, partyId ?? undefined)
       : undefined);
-  const written = yield* Docs.create(lead.orgId, context.writer, context.provenance, {
+  const sql = yield* SqlClient.SqlClient;
+  const filing = {
     title: input.title,
     body: input.body,
     owner,
@@ -486,28 +721,131 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
           },
         }
       : {}),
-  });
-  if (input.links !== undefined && input.links.length > 0)
-    yield* Docs.link(lead.orgId, context.writer, { key: written.row.key }, input.links, "relates");
-  yield* shown(lead, written, input.card);
-  return writeResult(written, written.created);
+  };
+  const linked = (written: Docs.Written) =>
+    links.length === 0
+      ? Effect.succeed(written)
+      : Effect.as(
+          Docs.link(lead.orgId, writer, { key: written.row.key }, links, "relates"),
+          written,
+        );
+  // Kin makes the redraft once the owner approves it: none of its body reaches the teammate.
+  // A short one goes up whole and is not filed; a long one is its own doc, marked sensitive so
+  // only the owner level and the agent read it, and goes up bound to it. It never writes the
+  // teammate's doc. Refused, nothing of it stays, and it is filed as any doc below.
+  const redrafting =
+    input.draft === undefined
+      ? undefined
+      : yield* redraftOf(
+          lead,
+          { kind: input.draft.kind, partyId: partyId ?? null },
+          input.draft.kind === "post" ? input.draft.on : undefined,
+        );
+  const back =
+    redrafting === undefined
+      ? undefined
+      : isLongDraft(input.body)
+        ? yield* sql
+            .withTransaction(
+              Effect.gen(function* () {
+                const written = yield* linked(
+                  yield* Docs.create(lead.orgId, writer, context.provenance, {
+                    ...filing,
+                    sensitive: true,
+                  }),
+                );
+                const note = yield* raiseRedraft(redrafting, written.version.body, written);
+                return { _tag: "filed" as const, written, note };
+              }),
+            )
+            .pipe(Effect.catchTags({ KinChatError: refusedBy(redrafting.of) }))
+        : yield* raiseRedraft(redrafting, input.body).pipe(
+            Effect.map((note) => ({ _tag: "raised" as const, note })),
+            Effect.catchTags({ KinChatError: refusedBy(redrafting.of) }),
+          );
+  if (back?._tag === "filed")
+    return { ...writeResult(back.written, back.written.created), note: `This is ${back.note}` };
+  if (back?._tag === "raised") {
+    const putUp: typeof WriteResult.Type = {
+      key: "",
+      title: input.title,
+      version: 0,
+      changed: false,
+      outline: [],
+      kind: input.kind ?? input.draft?.kind ?? "other",
+      note: `Not filed: this is ${back.note}`,
+    };
+    return putUp;
+  }
+  const filed = Docs.create(lead.orgId, writer, context.provenance, filing).pipe(
+    Effect.catchIf(
+      (error): error is KinChatError =>
+        isChatError(error) && error.reason === "not_allowed" && headStart === undefined,
+      (error) => Effect.flatMap(draftUp(lead, error), Effect.fail),
+    ),
+  );
+  // Its links go in with it, so a refused link leaves no doc behind.
+  // Its Approve card must carry a short one whole, worked out on the doc as filed: else nothing is.
+  const { written, draft } = yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const written = yield* linked(yield* filed);
+      if (input.draft === undefined) return { written, draft: undefined };
+      const drawn = yield* draftCardOf(lead, input.draft, {
+        text: written.version.body,
+        partyId: written.row.partyId,
+        version: written.version.version,
+        key: written.row.key,
+      });
+      if (!drawn.fits) return yield* invalid(DRAFT_CARD_FULL);
+      return { written, draft: drawn.card };
+    }),
+  );
+  const placed = yield* shown(
+    lead,
+    written,
+    draft !== undefined || headStart !== undefined ? true : (input.card ?? "answer"),
+    draft,
+  );
+  const untied =
+    draft !== undefined &&
+    (yield* redraftWaits({
+      orgId: lead.orgId,
+      agentId: lead.agentId,
+      wakeupId: KinWakeupId.make(lead.wakeupId),
+    }));
+  const notes = [
+    ...(draft === undefined ? [] : [draftNote(draft, written.row.key, placed)]),
+    ...(untied ? [NOT_A_REDRAFT] : []),
+    ...(back === undefined ? [] : [back.note]),
+  ];
+  return {
+    ...writeResult(written, written.created),
+    ...(notes.length === 0 ? {} : { note: notes.join(" ") }),
+  };
 });
 export const create = leadTool("KinDocTools.create", runCreate);
 
-/** A doc this turn may read: in one others read, only one they all see, else none at all. */
+/**
+ * A doc this turn may read, and which of its versions: in one others read, only one they all see,
+ * else none at all.
+ */
 const readable = Effect.fn("KinDocTools.readable")(function* (lead: Lead, key: string) {
   const team = yield* viewOf(lead);
-  return yield* Docs.docRow(
-    lead.orgId,
-    { key },
-    team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
-  );
+  const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
+  const row = yield* Docs.docRow(lead.orgId, { key }, viewer);
+  return { row, seen: yield* Docs.versionsSeen(lead.orgId, viewer, row) };
 });
 
+/** What a picture's doc is and how to change it: from its page when drawn, else its prompt. */
+export const pictureNote = (key: string, drawn: boolean) =>
+  drawn
+    ? `${key} is a picture, and page is the page it was drawn from. To change it, call kin_picture with doc ${key} and that page, changed.`
+    : `${key} is a generated picture, and prompt is the prompt it was made from. To change it, call kin_picture with doc ${key} and that prompt, changed.`;
 const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput.Type) {
-  const row = yield* readable(lead, input.key);
+  const { row, seen } = yield* readable(lead, input.key);
   const latest = yield* Docs.versionOf(lead.orgId, row.recordId);
-  const version = yield* Docs.versionOf(lead.orgId, row.recordId, input.version);
+  const found = yield* Docs.versionOf(lead.orgId, row.recordId, input.version);
+  const version = found !== undefined && seen(found.version) ? found : undefined;
   if (latest === undefined) return yield* Docs.docNotFound(input.key);
   if (version === undefined)
     return yield* invalid(
@@ -527,6 +865,16 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
         });
   const whole = asked === undefined && version.body.length <= WHOLE_DOC;
   const by = Docs.toVersion(version).provenance.by;
+  const sql = yield* SqlClient.SqlClient;
+  const pages = row.originKey.startsWith(PICTURE_DOC_ORIGIN)
+    ? yield* sql<{
+        page: string | null;
+        prompt: string | null;
+      }>`SELECT page, prompt FROM kin_picture_images
+        WHERE org_id = ${lead.orgId} AND record_id = ${row.recordId}
+          AND version = ${version.version} ORDER BY version`
+    : undefined;
+  const picture = pages === undefined ? undefined : (pages[0] ?? { page: null, prompt: null });
   return {
     key: row.key,
     title: row.title,
@@ -541,9 +889,15 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
     outline: [...outlineOf(version.body)],
     ...(whole ? { body: version.body } : {}),
     ...(asked === undefined ? {} : { sections: asked }),
-    ...(whole || asked !== undefined
-      ? {}
-      : { note: "A long doc: read the sections you need by id." }),
+    ...(picture !== undefined
+      ? {
+          ...(picture.page === null ? {} : { page: picture.page }),
+          ...(picture.prompt === null ? {} : { prompt: picture.prompt }),
+          note: pictureNote(row.key, picture.page !== null),
+        }
+      : whole || asked !== undefined
+        ? {}
+        : { note: "A long doc: read the sections you need by id." }),
     owner: name(ownerOf(row)) ?? "someone",
     ...(row.partyKey === null || unseen.has(row.partyId ?? "")
       ? {}
@@ -557,6 +911,36 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
 });
 export const read = leadTool("KinDocTools.read", runRead);
 
+/** A changed doc a waiting Changes first was about goes back up on its Approve card, not as a doc card. */
+const putBackOrShow = Effect.fnUntraced(function* (
+  lead: Lead,
+  written: Docs.Written,
+  card: boolean | undefined,
+) {
+  const redrafting =
+    written.created && !sensitiveOf(written.row)
+      ? yield* redraftOf(lead, { docKey: written.row.key }, undefined, written.row)
+      : undefined;
+  const back =
+    redrafting === undefined
+      ? undefined
+      : yield* raiseRedraft(
+          redrafting,
+          written.version.body,
+          isLongDraft(written.version.body) ? written : undefined,
+        ).pipe(
+          Effect.map((note) => ({ _tag: "raised" as const, note })),
+          Effect.catchTags({ KinChatError: refusedBy(redrafting.of) }),
+        );
+  if (back?._tag !== "raised") yield* shown(lead, written, card);
+  return {
+    ...writeResult(written, written.created),
+    ...(back === undefined
+      ? {}
+      : { note: back._tag === "raised" ? `This is ${back.note}` : back.note }),
+  };
+});
+
 const runEdit = Effect.fnUntraced(function* (lead: Lead, input: typeof EditInput.Type) {
   const context = yield* writeContext(lead, "doc_edit", input);
   const written = yield* Docs.edit(lead.orgId, context.writer, context.provenance, input, {
@@ -564,8 +948,7 @@ const runEdit = Effect.fnUntraced(function* (lead: Lead, input: typeof EditInput
     summary: input.summary,
     originKey: context.originKey,
   });
-  yield* shown(lead, written, input.card);
-  return writeResult(written, written.created);
+  return yield* putBackOrShow(lead, written, input.card);
 });
 export const edit = leadTool("KinDocTools.edit", runEdit);
 
@@ -577,13 +960,38 @@ const runRewrite = Effect.fnUntraced(function* (lead: Lead, input: typeof Rewrit
     summary: input.summary,
     originKey: context.originKey,
   });
-  yield* shown(lead, written, input.card);
-  return writeResult(written, written.created);
+  return yield* putBackOrShow(lead, written, input.card);
 });
 export const rewrite = leadTool("KinDocTools.rewrite", runRewrite);
 
+/**
+ * An agent deletes a doc a person wrote part of only when the message its call answers is from
+ * one of those people or the owner level; any other doc as before.
+ */
+const mayDelete = Effect.fn("KinDocTools.mayDelete")(
+  function* (lead: Lead, key: string, answered: { readonly author: KinWorkPrincipal } | undefined) {
+    const sql = yield* SqlClient.SqlClient;
+    const writers = yield* sql<{ personId: string }>`SELECT DISTINCT v.actor_id AS "personId"
+    FROM kin_doc_versions v JOIN kin_records r ON r.org_id = v.org_id AND r.record_id = v.record_id
+    WHERE v.org_id = ${lead.orgId} AND r.key = ${key} AND r.register_id = 'docs'
+      AND v.actor_kind = 'person' AND v.actor_id IS NOT NULL
+    ORDER BY v.actor_id`;
+    if (writers.length === 0) return;
+    const asker = answered?.author._tag === "person" ? answered.author.personId : undefined;
+    if (asker !== undefined && writers.some((one) => one.personId === asker)) return;
+    const { owner } = yield* KinIdentity;
+    if (asker !== undefined && (yield* mayActAsOwner(lead.orgId, asker, owner))) return;
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: `A person wrote part of ${key}, so it is deleted only when they or the owner ask for it in this turn. Nothing was deleted.`,
+    });
+  },
+  Effect.mapError((error) => (isChatError(error) ? error : unavailable)),
+);
+
 const runMove = Effect.fnUntraced(function* (lead: Lead, input: typeof MoveInput.Type) {
   const context = yield* writeContext(lead, "doc_move", input);
+  if (input.archived === true) yield* mayDelete(lead, input.key, context.answered);
   const partyId = yield* refOrNull(lead, input.client, "clients");
   const projectId = yield* refOrNull(lead, input.project, "projects");
   const owner = input.owner === undefined ? undefined : yield* resolveWho(lead, input.owner);
@@ -631,15 +1039,19 @@ export const link = leadTool("KinDocTools.link", runLink);
 
 const runSearch = Effect.fnUntraced(function* (lead: Lead, input: typeof SearchInput.Type) {
   const team = yield* viewOf(lead);
-  const { hits } = yield* search(lead.orgId, {
+  const { hits, widened } = yield* search(lead.orgId, {
     text: input.text,
     kinds: input.kinds,
     closed: input.closed,
     limit: input.limit ?? 10,
     viewer: team === undefined ? "owner" : "team",
     scope: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people),
+    widen: true,
+    // A deal reads as a Work entry; any seat may name one, as record_get reads it.
+    deals: input.kinds === undefined || input.kinds.length === 0 || input.kinds.includes("work"),
   });
   return {
+    ...(widened ? { widened: WIDENED } : {}),
     hits: hits.map((hit) => ({
       key: hit.key,
       kind: hit.kind,
@@ -654,7 +1066,7 @@ const runSearch = Effect.fnUntraced(function* (lead: Lead, input: typeof SearchI
 export const searchTool = leadTool("KinDocTools.search", runSearch);
 
 const runHistory = Effect.fnUntraced(function* (lead: Lead, input: typeof HistoryInput.Type) {
-  const row = yield* readable(lead, input.key);
+  const { row, seen } = yield* readable(lead, input.key);
   const latest = yield* Docs.versionOf(lead.orgId, row.recordId);
   if (latest === undefined) return yield* Docs.docNotFound(input.key);
   const rows = yield* Docs.history(lead.orgId, row.recordId, {
@@ -665,24 +1077,26 @@ const runHistory = Effect.fnUntraced(function* (lead: Lead, input: typeof Histor
   return {
     key: row.key,
     latestVersion: latest.version,
-    versions: rows.map((one) => {
-      const version = Docs.toVersion(one);
-      const sections = version.operations.flatMap((op) =>
-        op.section === undefined ? [] : [op.section],
-      );
-      return {
-        version: version.version,
-        at: version.at,
-        by:
-          version.provenance.by._tag === "system"
-            ? "Kin"
-            : (name(version.provenance.by) ?? "someone"),
-        kind: version.kind,
-        summary: version.summary,
-        ...(version.restoredFrom === null ? {} : { restoredFrom: version.restoredFrom }),
-        ...(sections.length === 0 ? {} : { sections: [...new Set(sections)] }),
-      };
-    }),
+    versions: rows
+      .filter((one) => seen(one.version))
+      .map((one) => {
+        const version = Docs.toVersion(one);
+        const sections = version.operations.flatMap((op) =>
+          op.section === undefined ? [] : [op.section],
+        );
+        return {
+          version: version.version,
+          at: version.at,
+          by:
+            version.provenance.by._tag === "system"
+              ? "Kin"
+              : (name(version.provenance.by) ?? "someone"),
+          kind: version.kind,
+          summary: version.summary,
+          ...(version.restoredFrom === null ? {} : { restoredFrom: version.restoredFrom }),
+          ...(sections.length === 0 ? {} : { sections: [...new Set(sections)] }),
+        };
+      }),
     ...(sensitiveOf(row) ? { sensitive: true as const } : {}),
   };
 });

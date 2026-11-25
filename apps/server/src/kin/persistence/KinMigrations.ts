@@ -94,6 +94,52 @@ import OneSocialProfile from "./migrations/K170_OneSocialProfile.ts";
 import GitHubBranchGuards from "./migrations/K171_GitHubBranchGuards.ts";
 import CalendarCursor from "./migrations/K172_CalendarCursor.ts";
 import NoMemoryReviewPulls from "./migrations/K173_NoMemoryReviewPulls.ts";
+import AnswerPages from "./migrations/K174_AnswerPages.ts";
+import HandoffWantsAnswer from "./migrations/K175_HandoffWantsAnswer.ts";
+import RecordComments from "./migrations/K176_RecordComments.ts";
+import RecordChangesByWakeup from "./migrations/K177_RecordChangesByWakeup.ts";
+import AskOutsideAndDispatch from "./migrations/K178_AskOutsideAndDispatch.ts";
+import DeviceLinks from "./migrations/K179_DeviceLinks.ts";
+import CardPlans from "./migrations/K180_CardPlans.ts";
+import TasksKeys from "./migrations/K181_TasksKeys.ts";
+import HandoffRoutes from "./migrations/K182_HandoffRoutes.ts";
+import TasksKeyMakers from "./migrations/K183_TasksKeyMakers.ts";
+import Recommendations from "./migrations/K184_Recommendations.ts";
+import AskedFor from "./migrations/K185_AskedFor.ts";
+import TasksKeysWithoutMaker from "./migrations/K186_TasksKeysWithoutMaker.ts";
+import Holds from "./migrations/K187_Holds.ts";
+import ReachLimits from "./migrations/K188_ReachLimits.ts";
+import MorningPages from "./migrations/K189_MorningPages.ts";
+import RecordTitleIndex from "./migrations/K190_RecordTitleIndex.ts";
+import HistoryIndexes from "./migrations/K191_HistoryIndexes.ts";
+import RecordOwnerListIndex from "./migrations/K192_RecordOwnerListIndex.ts";
+import ScheduleOwnerTime from "./migrations/K193_ScheduleOwnerTime.ts";
+import DropWebhookSources from "./migrations/K194_DropWebhookSources.ts";
+import DreamCharges from "./migrations/K195_DreamCharges.ts";
+import GitHubReviewReceipts from "./migrations/K196_GitHubReviewReceipts.ts";
+import InvitePlaces from "./migrations/K197_InvitePlaces.ts";
+import ChatPins from "./migrations/K198_ChatPins.ts";
+import TaskStepsAndUrgent from "./migrations/K199_TaskStepsAndUrgent.ts";
+import SentUpDrafts from "./migrations/K200_SentUpDrafts.ts";
+import SearchDocKinds from "./migrations/K201_SearchDocKinds.ts";
+import AndroidPushDevices from "./migrations/K202_AndroidPushDevices.ts";
+import Watches from "./migrations/K203_Watches.ts";
+import BankAlerts from "./migrations/K204_BankAlerts.ts";
+import Arrivals from "./migrations/K205_Arrivals.ts";
+import CompanyShell from "./migrations/K206_CompanyShell.ts";
+import HostTroubles from "./migrations/K207_HostTroubles.ts";
+import QuietDelivery from "./migrations/K208_QuietDelivery.ts";
+import Pictures from "./migrations/K209_Pictures.ts";
+import PartnerReimbursements from "./migrations/K210_PartnerReimbursements.ts";
+import PersonMailbox from "./migrations/K211_PersonMailbox.ts";
+import NumberValues from "./migrations/K212_NumberValues.ts";
+import PushSent from "./migrations/K213_PushSent.ts";
+import MessageWithdrawn from "./migrations/K214_MessageWithdrawn.ts";
+import OfflineCatchUp from "./migrations/K215_OfflineCatchUp.ts";
+import OfflineSkips from "./migrations/K216_OfflineSkips.ts";
+import BillReads from "./migrations/K217_BillReads.ts";
+import AnsweredSeq from "./migrations/K218_AnsweredSeq.ts";
+import SeveralOwnMailboxes from "./migrations/K219_SeveralOwnMailboxes.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -136,7 +182,7 @@ import RetireLevelCards from "./migrations/K035_RetireLevelCards.ts";
 
 const table = "kin_sql_migrations";
 const run = Migrator.make({});
-const loader = Migrator.fromRecord({
+const migrations = {
   "1_ChatCore": ChatCore,
   "2_Lead": Lead,
   "3_Triggers": Triggers,
@@ -268,7 +314,62 @@ const loader = Migrator.fromRecord({
   "171_GitHubBranchGuards": GitHubBranchGuards,
   "172_CalendarCursor": CalendarCursor,
   "173_NoMemoryReviewPulls": NoMemoryReviewPulls,
-});
+  "174_AnswerPages": AnswerPages,
+  "175_HandoffWantsAnswer": HandoffWantsAnswer,
+  "176_RecordComments": RecordComments,
+  "177_RecordChangesByWakeup": RecordChangesByWakeup,
+  "178_AskOutsideAndDispatch": AskOutsideAndDispatch,
+  "179_DeviceLinks": DeviceLinks,
+  "180_CardPlans": CardPlans,
+  "181_TasksKeys": TasksKeys,
+  "182_HandoffRoutes": HandoffRoutes,
+  "183_TasksKeyMakers": TasksKeyMakers,
+  "184_Recommendations": Recommendations,
+  "185_AskedFor": AskedFor,
+  "186_TasksKeysWithoutMaker": TasksKeysWithoutMaker,
+  "187_Holds": Holds,
+  "188_ReachLimits": ReachLimits,
+  "189_MorningPages": MorningPages,
+  "190_RecordTitleIndex": RecordTitleIndex,
+  "191_HistoryIndexes": HistoryIndexes,
+  "192_RecordOwnerListIndex": RecordOwnerListIndex,
+  "193_ScheduleOwnerTime": ScheduleOwnerTime,
+  "194_DropWebhookSources": DropWebhookSources,
+  "195_DreamCharges": DreamCharges,
+  "196_GitHubReviewReceipts": GitHubReviewReceipts,
+  "197_InvitePlaces": InvitePlaces,
+  "198_ChatPins": ChatPins,
+  "199_TaskStepsAndUrgent": TaskStepsAndUrgent,
+  "200_SentUpDrafts": SentUpDrafts,
+  "201_SearchDocKinds": SearchDocKinds,
+  "202_AndroidPushDevices": AndroidPushDevices,
+  "203_Watches": Watches,
+  "204_BankAlerts": BankAlerts,
+  "205_Arrivals": Arrivals,
+  "206_CompanyShell": CompanyShell,
+  "207_HostTroubles": HostTroubles,
+  "208_QuietDelivery": QuietDelivery,
+  "209_Pictures": Pictures,
+  "210_PartnerReimbursements": PartnerReimbursements,
+  "211_PersonMailbox": PersonMailbox,
+  "212_NumberValues": NumberValues,
+  "213_PushSent": PushSent,
+  "214_MessageWithdrawn": MessageWithdrawn,
+  "215_OfflineCatchUp": OfflineCatchUp,
+  "216_OfflineSkips": OfflineSkips,
+  "217_BillReads": BillReads,
+  "218_AnsweredSeq": AnsweredSeq,
+  "219_SeveralOwnMailboxes": SeveralOwnMailboxes,
+};
+const loader = Migrator.fromRecord(migrations);
+
+/** Every Kin migration as `[id, name]`, in the order they run. */
+export const kinMigrations = Object.keys(migrations)
+  .map((key) => {
+    const at = key.indexOf("_");
+    return [Number(key.slice(0, at)), key.slice(at + 1)] as const;
+  })
+  .toSorted(([a], [b]) => a - b);
 
 // The Migrator skips every id at or below the latest applied one, so a migration that
 // merged out of order would silently never run. Refuse to start instead.

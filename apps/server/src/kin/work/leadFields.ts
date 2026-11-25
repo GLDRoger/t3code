@@ -12,7 +12,7 @@ import type { SqlError } from "effect/sql/SqlError";
 
 import type { FieldValue } from "./lists.ts";
 import { parseAmount } from "./money.ts";
-import { describe, type ListDef } from "./registers.ts";
+import { describe, type ListDef, typedText } from "./registers.ts";
 
 /**
  * A lead's words for a defined list's fields, as the values the list stores: a choice by its
@@ -30,7 +30,7 @@ export const FieldInputs = Schema.Record(
   ),
 ).annotate({
   description:
-    'The list\'s own fields by key, as list_define named them: text, a choice, a day (2026-11-20), "me"/"owner"/an agentId, a client or project, an amount (4,200 or 4.2 lakh), or file names from this turn\'s messages. null clears one.',
+    'The list\'s own fields by key, as list_define named them: text, a choice, a day (2026-11-20), "you"/"me" (whoever asked)/"owner"/an agentId, a client or project, an amount (4,200.50 or 12k), or file names from this turn\'s messages. null clears one.',
 });
 export type FieldInputs = typeof FieldInputs.Type;
 
@@ -107,12 +107,20 @@ export const typedFields = Effect.fn("KinWorkTools.typedFields")(function* (
         break;
       }
       case "link":
+        if (spec.link === "list") return yield* wrong;
         out[key] = yield* resolve.ref(text, spec.link ?? "clients");
         break;
       case "money": {
         const parsed = parseAmount(text, def.currency);
         if ("error" in parsed) return yield* parsed.error;
         out[key] = parsed.money;
+        break;
+      }
+      case "number":
+      case "yesno": {
+        const typed = typedText(spec.type, text);
+        if (typed === undefined) return yield* wrong;
+        out[key] = typed;
         break;
       }
       case "file": {
@@ -132,6 +140,8 @@ export const typedFields = Effect.fn("KinWorkTools.typedFields")(function* (
         out[key] = [...new Set(ids)];
         break;
       }
+      default:
+        return yield* wrong;
     }
   }
   return out;

@@ -14,6 +14,7 @@ export function isSidebarUtilityPage(pathname: string) {
     pathname.startsWith("/projects/") ||
     pathname === "/pull-requests" ||
     pathname === "/issues" ||
+    pathname === "/workflows" ||
     pathname === "/kin" ||
     pathname.startsWith("/kin/")
   );
@@ -50,10 +51,6 @@ export function startMainAppLocationTracking(router: AnyRouter): () => void {
   return router.subscribe("onResolved", record);
 }
 
-export function mainAppReturnHref(): string {
-  return mainAppHref ?? "/";
-}
-
 /** The thread Settings or Usage opened over, for views mounted while the modal is open. */
 export function getAppModalReturnThreadTarget() {
   return appModalReturnThreadTarget;
@@ -61,7 +58,7 @@ export function getAppModalReturnThreadTarget() {
 
 export function useNavigateToMainApp() {
   const navigate = useNavigate();
-  return () => navigate({ href: mainAppReturnHref() });
+  return () => navigate({ href: mainAppHref ?? "/" });
 }
 
 /** Leaves Settings or Usage for the page that opened it. */

@@ -15,6 +15,7 @@ import {
   type KinChatMember,
   type KinChatMembersInput,
   type KinChatMembersResult,
+  type KinChatWorkingResult,
   type KinChatsWithPersonInput,
   type KinGroupAddMemberInput,
   type KinGroupDeleteInput,
@@ -39,6 +40,7 @@ import * as SqlError from "effect/sql/SqlError";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { freezeMovedCard, onPersonJoined, settleCards } from "../lead/ChatSharing.ts";
 import { KinStop } from "../lead/KinStop.ts";
+import * as Reach from "../lead/Reach.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import * as Hub from "./KinChatHub.ts";
@@ -73,6 +75,11 @@ export class KinGroups extends Context.Service<
       caller: Viewers,
       input: KinChatMembersInput,
     ) => Effect.Effect<KinChatMembersResult, GroupError>;
+    /** What the chat's messages were handed to other agents for, while queued or running. */
+    readonly working: (
+      caller: Viewers,
+      input: KinChatMembersInput,
+    ) => Effect.Effect<KinChatWorkingResult, GroupError>;
     readonly addMember: (
       caller: Viewers,
       input: KinGroupAddMemberInput,
@@ -123,6 +130,11 @@ const invalid = (message: string) => new KinChatError({ reason: "invalid_state",
 const CHAT_EVENT_TAGS = ["chat.message", "widget.action", "chat.reaction"] as const;
 const COMPANY_OFF = `${KIN_COMPANY_CHAT_TEAM_ID}:off`;
 const COMPANY_TITLE = "Company chat";
+
+const openingWords = (body: string) => {
+  const line = body.replace(/\s+/g, " ").trim();
+  return line.length <= 80 ? line : `${line.slice(0, 79).trimEnd()}…`;
+};
 
 /** The company chat while it is on, and who answers there by default. */
 export const companyChatOf = Effect.fn("KinGroups.companyChatOf")(function* (orgId: KinOrgId) {
@@ -461,10 +473,23 @@ const make = Effect.gen(function* () {
       if (person === undefined) return yield* notFound;
       if (input.personId === person.personId)
         return yield* invalid("Pick a teammate other than yourself.");
-      const [other] = yield* query("KinGroups.withPerson")(sql<{ personId: string }>`
-        SELECT person_id AS "personId" FROM kin_people
+      const [other] = yield* query("KinGroups.withPerson")(sql<{ name: string }>`
+        SELECT display_name AS name FROM kin_people
         WHERE org_id = ${input.orgId} AND person_id = ${input.personId} AND removed_at IS NULL`);
       if (other === undefined) return yield* notFound;
+      const reach = yield* query("KinGroups.withPerson")(
+        Reach.mayReach(
+          input.orgId,
+          Reach.person(person.personId),
+          Reach.person(input.personId),
+        ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+      );
+      if (reach === "restricted")
+        return yield* new KinChatError({
+          reason: "not_allowed",
+          message: `You and ${other.name} can't message each other here.`,
+        });
+      if (reach !== "allowed") return yield* notFound;
       const teamId = kinPeopleChatTeamId(person.personId, input.personId);
       const [held] = yield* query("KinGroups.withPerson")(sql<{ chatId: string }>`
         SELECT chat_id AS "chatId" FROM kin_chats
@@ -598,6 +623,43 @@ const make = Effect.gen(function* () {
       if (chat === undefined || chat.teamId !== KIN_COMPANY_CHAT_TEAM_ID) return;
       yield* admit(chat, { _tag: "person", personId });
     }, transaction),
+
+    working: Effect.fn("KinGroups.working")(function* (caller, input) {
+      const { person, chat } = yield* memberOf(caller, input.chatId);
+      const rows = yield* query("KinGroups.working")(sql<{
+        agentId: string;
+        toChatId: string | null;
+        wakeupId: string | null;
+        since: number;
+        body: string;
+        inTarget: number;
+      }>`SELECT h.to_agent_id AS "agentId", h.to_chat_id AS "toChatId",
+          w.wakeup_id AS "wakeupId", COALESCE(w.started_at, e.queued_at) AS "since",
+          m.body AS "body",
+          EXISTS (SELECT 1 FROM kin_chat_members cm WHERE cm.org_id = h.org_id
+            AND cm.chat_id = h.to_chat_id AND cm.principal_kind = 'person'
+            AND cm.person_id = ${person.personId} AND cm.left_at IS NULL) AS "inTarget"
+        FROM kin_handoffs h
+        JOIN kin_messages m ON m.org_id = h.org_id AND m.message_id = h.message_id
+        JOIN kin_events e ON e.org_id = h.org_id AND e.event_id = h.event_id
+        LEFT JOIN kin_wakeups w ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
+          AND w.status = 'running'
+        WHERE h.org_id = ${chat.orgId} AND m.chat_id = ${chat.chatId}
+          AND m.author_kind = 'human' AND m.status = 'posted'
+          AND (h.to_chat_id IS NULL OR h.to_chat_id <> m.chat_id)
+          AND (e.state = 'queued' OR (e.state = 'claimed' AND w.wakeup_id IS NOT NULL))
+        ORDER BY "since", h.message_id`);
+      return {
+        handoffs: rows.map((row) => ({
+          agentId: KinAgentId.make(row.agentId),
+          chatId: row.toChatId !== null && row.inTarget === 1 ? KinChatId.make(row.toChatId) : null,
+          wakeupId: row.wakeupId === null ? null : KinWakeupId.make(row.wakeupId),
+          state: row.wakeupId === null ? ("queued" as const) : ("running" as const),
+          asked: openingWords(row.body),
+          since: DateTime.formatIso(DateTime.makeUnsafe(row.since)),
+        })),
+      };
+    }),
 
     members: Effect.fn("KinGroups.members")(function* (caller, input) {
       const { chat } = yield* memberOf(caller, input.chatId);

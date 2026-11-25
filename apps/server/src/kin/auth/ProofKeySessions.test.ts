@@ -37,6 +37,14 @@ const makeLayer = (enabled: boolean) =>
     Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-auth-keys-" })),
   );
 const layer = makeLayer(true);
+const kinOffCli = <A, E, R>(runtime: Layer.Layer<A, E, R>) =>
+  runtime.pipe(
+    Layer.provide(
+      Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ env: {} })),
+    ),
+    Layer.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-auth-cli-off-" })),
+    Layer.orDie,
+  );
 const metadata = { deviceType: "mobile" } as const;
 
 const recordRepair = (thumbprint: string, linkId: string) =>
@@ -96,7 +104,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
     }),
   );
 
-  it.effect.each(["server", "cli"] as const)(
+  // `cli` is Kin's host CLI runtime; `t3` is T3's, which `t3 thread` and `t3 feedback` take.
+  it.effect.each(["server", "cli", "t3"] as const)(
     "Kin disabled %s neither migrates nor blocks revoked keys",
     (runtime) =>
       Effect.gen(function* () {
@@ -123,63 +132,59 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
         yield* sessions.revoke((yield* sessions.verify(first.access_token)).sessionId);
         yield* exchange();
         expect(yield* sql`SELECT name FROM sqlite_master WHERE name GLOB 'kin_*'`).toEqual([]);
-      }).pipe(
-        Effect.provide(
-          runtime === "server"
-            ? makeLayer(false)
-            : CliAuth.layerRuntime.pipe(
-                Layer.provide(
-                  Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ env: {} })),
-                ),
-                Layer.provide(
-                  ServerConfig.layerTest(process.cwd(), { prefix: "kin-auth-cli-off-" }),
-                ),
-              ),
-        ),
+      }).pipe((test) =>
+        runtime === "server"
+          ? Effect.provide(test, makeLayer(false))
+          : runtime === "cli"
+            ? Effect.provide(test, kinOffCli(CliAuth.layerRuntime))
+            : Effect.provide(test, kinOffCli(EnvironmentAuth.layerRuntime)),
       ),
   );
 
-  it.effect("Kin-off CLI revoke blocks exchanges on a Kin-on server sharing its database", () =>
-    Effect.gen(function* () {
-      const server = yield* Layer.build(
-        layerAuth.pipe(
-          Layer.provide(ManagedPolicy.layerTest()),
-          Layer.provide(
-            Layer.succeed(
-              ConfigProvider.ConfigProvider,
-              ConfigProvider.fromEnv({ env: { KIN_ENABLED: "true" } }),
+  // `t3 thread` and `t3 feedback` take T3's runtime; Kin's other host CLIs take Kin's.
+  it.effect.each(["kin", "t3"] as const)(
+    "Kin-off CLI revoke through the %s runtime blocks exchanges on a Kin-on server sharing its database",
+    (runtime) =>
+      Effect.gen(function* () {
+        const server = yield* Layer.build(
+          layerAuth.pipe(
+            Layer.provide(ManagedPolicy.layerTest()),
+            Layer.provide(
+              Layer.succeed(
+                ConfigProvider.ConfigProvider,
+                ConfigProvider.fromEnv({ env: { KIN_ENABLED: "true" } }),
+              ),
             ),
           ),
-        ),
-      );
-      const auth = Context.get(server, EnvironmentAuth.EnvironmentAuth);
-      const sessions = Context.get(server, SessionStore.SessionStore);
-      const first = yield* sessions.issue({ proofKeyThumbprint: "device" });
-      const sql = Context.get(server, SqlClient.SqlClient);
-      yield* sql`DROP TABLE kin_sql_migrations`;
-      const cli = yield* Layer.build(
-        CliAuth.layerRuntime.pipe(
-          Layer.provide(
-            Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ env: {} })),
+        );
+        const auth = Context.get(server, EnvironmentAuth.EnvironmentAuth);
+        const sessions = Context.get(server, SessionStore.SessionStore);
+        const first = yield* sessions.issue({ proofKeyThumbprint: "device" });
+        const sql = Context.get(server, SqlClient.SqlClient);
+        yield* sql`DROP TABLE kin_sql_migrations`;
+        const cli = yield* Layer.build(
+          (runtime === "kin" ? CliAuth.layerRuntime : EnvironmentAuth.layerRuntime).pipe(
+            Layer.provide(
+              Layer.succeed(ConfigProvider.ConfigProvider, ConfigProvider.fromEnv({ env: {} })),
+            ),
           ),
-        ),
-      );
-      yield* Context.get(cli, EnvironmentAuth.EnvironmentAuth).revokeSession(first.sessionId);
-      expect(yield* sql`SELECT name FROM sqlite_master WHERE name = 'kin_sql_migrations'`).toEqual(
-        [],
-      );
-      const link = yield* auth.createPairingLink({ proofKeyThumbprint: "device" });
-      expect(
-        (yield* auth
-          .exchangeBootstrapCredentialForAccessToken(link.credential, undefined, metadata, {
-            proofKeyThumbprint: "device",
-          })
-          .pipe(Effect.flip))._tag,
-      ).toBe("ServerAuthInvalidCredentialError");
-    }).pipe(
-      Effect.scoped,
-      Effect.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-auth-cli-" })),
-    ),
+        );
+        yield* Context.get(cli, EnvironmentAuth.EnvironmentAuth).revokeSession(first.sessionId);
+        expect(
+          yield* sql`SELECT name FROM sqlite_master WHERE name = 'kin_sql_migrations'`,
+        ).toEqual([]);
+        const link = yield* auth.createPairingLink({ proofKeyThumbprint: "device" });
+        expect(
+          (yield* auth
+            .exchangeBootstrapCredentialForAccessToken(link.credential, undefined, metadata, {
+              proofKeyThumbprint: "device",
+            })
+            .pipe(Effect.flip))._tag,
+        ).toBe("ServerAuthInvalidCredentialError");
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(ServerConfig.layerTest(process.cwd(), { prefix: "kin-auth-cli-" })),
+      ),
   );
 
   it.effect.each([
@@ -244,7 +249,8 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
           "device",
         );
       } else if (action === "expired-revocation") {
-        yield* TestClock.adjust(Duration.minutes(61));
+        // A pairing link's session renews, so it lapses only once its renewal window has passed.
+        yield* TestClock.adjust(Duration.sum(Duration.days(30), Duration.minutes(1)));
         yield* sessions.revoke(original.sessionId);
         yield* exchange();
       } else if (
@@ -441,6 +447,37 @@ it.layer(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))("Kin proof key se
             { type: "clientRemoved", sessionId: sibling.sessionId },
           ]),
         );
+
+        // Replacement and proof-key revoke run the plain store inside Kin's own write, so a
+        // failure later in that write must take back what the store would have announced.
+        const phone = yield* sessions.issue({ proofKeyThumbprint: "phone" });
+        const linked = yield* sessions.issue({ proofKeyThumbprint: "linked" });
+        yield* sessions.markConnected(phone.sessionId);
+        for (let i = 0; i < 3; i++)
+          expect((yield* Queue.take(changes)).type).toBe("clientUpserted");
+        yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Org', '')`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES ('asha', 'org', 'asha', 'Asha', '', 'member')`;
+        yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at, parent_session_id)
+          VALUES (${phone.sessionId}, 'org', 'asha', 0, NULL), (${linked.sessionId}, 'org', 'asha', 0, ${phone.sessionId})`;
+        yield* sql`DELETE FROM reject_revoke_ids`;
+        yield* sql`INSERT INTO reject_revoke_ids VALUES (${linked.sessionId})`;
+        yield* sql`CREATE TRIGGER reject_revoke BEFORE UPDATE ON auth_sessions WHEN NEW.session_id IN (SELECT session_id FROM reject_revoke_ids) BEGIN SELECT RAISE(ABORT, 'cannot revoke'); END`;
+        expect(
+          Exit.isFailure(
+            yield* sessions
+              .issue({ proofKeyThumbprint: "phone", replaceSessionId: phone.sessionId })
+              .pipe(Effect.exit),
+          ),
+        ).toBe(true);
+        expect(Exit.isFailure(yield* sessions.revokeByProofKey("phone").pipe(Effect.exit))).toBe(
+          true,
+        );
+        expect(yield* Queue.size(changes)).toBe(0);
+        expect(
+          (yield* sessions.listActive()).find((session) => session.sessionId === phone.sessionId)
+            ?.connected,
+        ).toBe(true);
       }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 

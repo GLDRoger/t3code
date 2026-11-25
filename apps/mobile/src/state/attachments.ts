@@ -1,13 +1,15 @@
+import { mayUploadAttachments } from "@t3tools/client-runtime/kin/kinAttachmentAccess";
 import { createAttachmentEnvironmentAtoms } from "@t3tools/client-runtime/state/attachments";
 import type { AtomCommand } from "@t3tools/client-runtime/state/runtime";
 import {
-  AuthKinChatScope,
   AuthOrchestrationOperateScope,
+  type AuthEnvironmentScope,
   EnvironmentAuthorizationError,
   type EnvironmentId,
 } from "@t3tools/contracts";
-import * as Cause from "effect/Cause";
-import { AsyncResult } from "effect/reactivity";
+import * as Effect from "effect/Effect";
+import { msg } from "gt-react-native";
+import { m } from "../i18n/messages";
 
 import { connectionAtomRuntime } from "../connection/runtime";
 import { readEnvironmentScope } from "./session";
@@ -18,22 +20,21 @@ function requireAttachmentWriteAccess<W extends { readonly environmentId: Enviro
 ): AtomCommand<W, A, E | EnvironmentAuthorizationError> {
   return {
     ...command,
-    run: async (registry, input) => {
-      if (
-        !readEnvironmentScope(input.environmentId, AuthOrchestrationOperateScope) &&
-        !(allowKinChat && readEnvironmentScope(input.environmentId, AuthKinChatScope))
-      ) {
-        return AsyncResult.failure(
-          Cause.fail(
-            new EnvironmentAuthorizationError({
-              message: "This connection cannot change attachments.",
-              requiredScope: AuthOrchestrationOperateScope,
-            }),
-          ),
-        );
-      }
-      return command.run(registry, input);
-    },
+    run: (registry, input) =>
+      Effect.suspend((): Effect.Effect<A, E | EnvironmentAuthorizationError> => {
+        const hasScope = (scope: AuthEnvironmentScope) =>
+          readEnvironmentScope(input.environmentId, scope);
+        return (
+          allowKinChat ? mayUploadAttachments(hasScope) : hasScope(AuthOrchestrationOperateScope)
+        )
+          ? command.run(registry, input)
+          : Effect.fail(
+              new EnvironmentAuthorizationError({
+                message: m(msg("This connection cannot change attachments.")),
+                requiredScope: AuthOrchestrationOperateScope,
+              }),
+            );
+      }),
   };
 }
 

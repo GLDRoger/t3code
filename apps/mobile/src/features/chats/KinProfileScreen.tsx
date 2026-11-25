@@ -11,6 +11,7 @@ import {
   KIN_PROFILE_TALK_MAX,
   kinHoursLine,
   kinMayEditProfile,
+  kinProfileShowsTasks,
   kinPersonSeed,
   kinProfileChanges,
   kinProfileDraft,
@@ -28,7 +29,7 @@ import {
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
-import { useRef, useState, type ComponentProps, type ReactNode } from "react";
+import { useRef, useState, type ComponentProps, type ComponentRef, type ReactNode } from "react";
 import { TextInput, View } from "react-native";
 
 import { AppActivityIndicator } from "../../components/ui/AppActivityIndicator";
@@ -40,8 +41,8 @@ import * as Dialog from "../../components/ui/Dialog";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { ListActionRow } from "../../components/ui/ListActionRow";
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -51,13 +52,19 @@ import { pickKinPicture } from "./state/kinPicture";
 import { useKinHostAt } from "./state/useKinHost";
 import { useKinProfiles } from "./state/useKinProfiles";
 import { KinAwaySection } from "./components/KinAway";
+import { KinPersonTasks } from "./components/KinPersonTasks";
+import { KinPageFold } from "./components/KinPageFold";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { kinZoneLabel } from "@t3tools/client-runtime/kin/kinTimeZone";
+import { KinWorkFieldBox, KinWorkToggleRow } from "./components/KinWorkPieces";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 
 export type KinProfileParams = {
   readonly environmentId: string;
   readonly orgId: string;
   readonly personId: string;
+  /** Opened from their teammate page, which already lists their tasks. */
+  readonly over?: "teammate";
 };
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
@@ -178,6 +185,14 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
       </Frame>
     );
   const hours = kinHoursLine(profile.workHours);
+  const editButton = target.mayEdit ? (
+    <Button
+      tone="secondary"
+      fullWidth
+      label={KIN_PROFILE_COPY.edit}
+      onPress={() => navigation.navigate("KinProfileEdit", route.params)}
+    />
+  ) : null;
   return (
     <Frame title={title} onClose={close}>
       <View className="items-center gap-3 pt-2">
@@ -191,7 +206,7 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
           </Text>
           {target.runsWorkspace ? (
             <Text textRole="footnote" className="text-center text-foreground-muted">
-              Runs this workspace
+              {KIN_PROFILE_COPY.runsWorkspace}
             </Text>
           ) : null}
         </View>
@@ -210,66 +225,131 @@ export function KinProfileScreen({ route }: StaticScreenProps<KinProfileParams>)
           />
         )}
       </View>
-      <ListSection title={KIN_PROFILE_COPY.skillsLabel}>
-        <View className="px-4 py-3">
-          <Text
-            textRole="body"
-            className={profile.skills === "" ? "text-foreground-muted" : "text-foreground"}
-          >
-            {profile.skills === "" ? KIN_PROFILE_COPY.noSkills : profile.skills}
-          </Text>
-        </View>
-      </ListSection>
-      <ListSection title={KIN_PROFILE_COPY.talkLabel}>
-        <View className="px-4 py-3">
-          <Text
-            textRole="body"
-            className={
-              (profile.talkStyle ?? "") === "" ? "text-foreground-muted" : "text-foreground"
-            }
-          >
-            {(profile.talkStyle ?? "") === "" ? KIN_PROFILE_COPY.noTalk : profile.talkStyle}
-          </Text>
-        </View>
-      </ListSection>
-      <ListSection title={KIN_PROFILE_COPY.hoursLabel}>
-        <View className="gap-0.5 px-4 py-3">
-          <Text
-            textRole="body"
-            className={hours === null ? "text-foreground-muted" : "text-foreground"}
-          >
-            {hours ?? KIN_PROFILE_COPY.noHours}
-          </Text>
-          {profile.timeZone === null ? null : (
-            <Text textRole="footnote" className="text-foreground-muted">
-              {profile.timeZone}
-            </Text>
-          )}
-        </View>
-      </ListSection>
-      <KinAwaySection
-        environmentId={target.environmentId}
-        orgId={target.orgId}
-        profile={profile}
-        mine={target.mine}
-        mayEdit={target.mayEdit}
-      />
-      <ListSection title={KIN_PROFILE_COPY.quietLabel}>
-        <View className="px-4 py-3">
-          <Text textRole="body" className="text-foreground">
-            {kinQuietLine(profile, target.holding)}
-          </Text>
-        </View>
-      </ListSection>
-      {target.mayEdit ? (
-        <Button
-          tone="secondary"
-          fullWidth
-          label={KIN_PROFILE_COPY.edit}
-          onPress={() => navigation.navigate("KinProfileEdit", route.params)}
-        />
-      ) : null}
+      {target.mine ? (
+        <>
+          <KinAwaySection
+            environmentId={target.environmentId}
+            orgId={target.orgId}
+            profile={profile}
+            mine
+            mayEdit={target.mayEdit}
+          />
+          <HoursSection profile={profile} hours={hours} />
+          <QuietSection profile={profile} holding={target.holding} />
+          {editButton}
+          <KinPageFold title={KIN_PROFILE_COPY.aboutYou} summary={null}>
+            <AboutSections profile={profile} />
+          </KinPageFold>
+          <KinPageFold title={KIN_PROFILE_COPY.yourTasks} summary={null}>
+            <KinPersonTasks
+              environmentId={target.environmentId}
+              orgId={target.orgId}
+              personId={profile.personId}
+            />
+          </KinPageFold>
+        </>
+      ) : (
+        <>
+          <AboutSections profile={profile} />
+          <HoursSection profile={profile} hours={hours} />
+          <KinAwaySection
+            environmentId={target.environmentId}
+            orgId={target.orgId}
+            profile={profile}
+            mine={false}
+            mayEdit={target.mayEdit}
+          />
+          {kinProfileShowsTasks({
+            mine: target.mine,
+            overTheirTasks: route.params.over === "teammate",
+          }) ? (
+            <KinPersonTasks
+              environmentId={target.environmentId}
+              orgId={target.orgId}
+              personId={profile.personId}
+            />
+          ) : null}
+          <QuietSection profile={profile} holding={target.holding} />
+          {editButton}
+        </>
+      )}
     </Frame>
+  );
+}
+
+function TextSection(props: {
+  readonly title: string;
+  readonly text: string;
+  readonly empty: string;
+}) {
+  return (
+    <ListSection title={props.title}>
+      <View className="px-4 py-3">
+        <Text
+          textRole="body"
+          className={props.text === "" ? "text-foreground-muted" : "text-foreground"}
+        >
+          {props.text === "" ? props.empty : props.text}
+        </Text>
+      </View>
+    </ListSection>
+  );
+}
+
+function AboutSections(props: { readonly profile: KinPersonProfile }) {
+  return (
+    <>
+      <TextSection
+        title={KIN_PROFILE_COPY.skillsLabel}
+        text={props.profile.skills}
+        empty={KIN_PROFILE_COPY.noSkills}
+      />
+      <TextSection
+        title={KIN_PROFILE_COPY.talkLabel}
+        text={props.profile.talkStyle ?? ""}
+        empty={KIN_PROFILE_COPY.noTalk}
+      />
+    </>
+  );
+}
+
+function HoursSection(props: {
+  readonly profile: KinPersonProfile;
+  readonly hours: string | null;
+}) {
+  const { profile, hours } = props;
+  return (
+    <ListSection title={KIN_PROFILE_COPY.hoursLabel}>
+      <View className="px-4 py-3">
+        <Text
+          textRole="body"
+          className={hours === null ? "text-foreground-muted" : "text-foreground"}
+        >
+          {hours ?? KIN_PROFILE_COPY.noHours}
+        </Text>
+      </View>
+      {profile.timeZone === null ? null : (
+        <ListRowLayout
+          label={KIN_PROFILE_COPY.timeZoneLabel}
+          detail={kinZoneLabel(profile.timeZone)}
+        />
+      )}
+    </ListSection>
+  );
+}
+
+function QuietSection(props: {
+  readonly profile: KinPersonProfile;
+  readonly holding: KinProfileHolding;
+}) {
+  return (
+    <ListSection title={KIN_PROFILE_COPY.quietLabel}>
+      <View className="px-4 py-3">
+        <Text textRole="body" className="text-foreground">
+          {kinQuietLine(props.profile, props.holding)}
+        </Text>
+      </View>
+    </ListSection>
   );
 }
 
@@ -310,6 +390,8 @@ function ProfileForm(props: {
   const [draft, setDraft] = useState<KinProfileDraft>(initial);
   const [busy, setBusy] = useState<"saving" | "picture" | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
+  // The picture saves the moment it is chosen; this says so, and lets Save close the sheet.
+  const [pictureDone, setPictureDone] = useState<string | null>(null);
   const saved = useRef(false);
   const dirty = JSON.stringify(draft) !== JSON.stringify(initial);
   const set = (change: Partial<KinProfileDraft>) => {
@@ -351,11 +433,21 @@ function ProfileForm(props: {
       const picture = await pickKinPicture(environmentId);
       if (picture !== null) {
         const outcome = await send({ picture });
-        if (!AsyncResult.isSuccess(outcome)) setProblem(KIN_PROFILE_COPY.pictureFailed);
+        if (AsyncResult.isSuccess(outcome)) setPictureDone(KIN_PROFILE_COPY.pictureSaved);
+        else setProblem(KIN_PROFILE_COPY.pictureFailed);
       }
     } catch {
       setProblem(KIN_PROFILE_COPY.pictureFailed);
     }
+    setBusy(null);
+  };
+
+  const removePicture = async () => {
+    setBusy("picture");
+    setProblem(null);
+    const outcome = await send({ picture: null });
+    if (AsyncResult.isSuccess(outcome)) setPictureDone(KIN_PROFILE_COPY.pictureRemoved);
+    else setProblem(kinFailureText(squashAtomCommandFailure(outcome), KIN_PROFILE_COPY.failed));
     setBusy(null);
   };
 
@@ -367,7 +459,7 @@ function ProfileForm(props: {
         label: KIN_PROFILE_COPY.save,
         onPress: () => void save(),
         loading: busy === "saving",
-        disabled: busy !== null || !dirty,
+        disabled: busy !== null || (!dirty && pictureDone === null),
       }}
     >
       {problem === null ? null : <ErrorBanner message={problem} />}
@@ -395,11 +487,20 @@ function ProfileForm(props: {
               label={KIN_PROFILE_COPY.pictureRemove}
               icon="trash"
               disabled={busy !== null}
-              onPress={() => void send({ picture: null })}
+              onPress={() => void removePicture()}
             />
           </View>
         )}
       </ListSection>
+      {pictureDone === null ? null : (
+        <Text
+          textRole="footnote"
+          accessibilityLiveRegion="polite"
+          className="-mt-3 px-4 text-foreground-muted"
+        >
+          {pictureDone}
+        </Text>
+      )}
       <ListSection>
         <Field
           label={KIN_PROFILE_COPY.nameLabel}
@@ -408,82 +509,6 @@ function ProfileForm(props: {
           autoCapitalize="words"
           onChange={(displayName) => set({ displayName })}
         />
-        <Field
-          label={KIN_PROFILE_COPY.tagsLabel}
-          value={draft.tags}
-          placeholder="tech, ios"
-          maxLength={200}
-          autoCapitalize="none"
-          borderTop
-          onChange={(tags) => set({ tags })}
-        />
-      </ListSection>
-      <Text textRole="footnote" className="-mt-3 px-4 text-foreground-muted">
-        {KIN_PROFILE_COPY.tagsHint}
-      </Text>
-      <ListSection title={KIN_PROFILE_COPY.skillsLabel} footer={KIN_PROFILE_COPY.skillsHint}>
-        <TextInput
-          multiline
-          accessibilityLabel={KIN_PROFILE_COPY.skillsLabel}
-          value={draft.skills}
-          maxLength={KIN_PROFILE_SKILLS_MAX}
-          onChangeText={(skills) => set({ skills })}
-          placeholder={KIN_PROFILE_COPY.skillsExample}
-          placeholderTextColorClassName="accent-placeholder"
-          textAlignVertical="top"
-          className="min-h-24 px-4 py-3 font-sans text-base leading-normal text-foreground"
-        />
-      </ListSection>
-      {props.mine ? (
-        <ListSection title={KIN_PROFILE_COPY.talkLabel} footer={KIN_PROFILE_COPY.talkHint}>
-          <TextInput
-            multiline
-            accessibilityLabel={KIN_PROFILE_COPY.talkLabel}
-            value={draft.talkStyle}
-            maxLength={KIN_PROFILE_TALK_MAX}
-            onChangeText={(talkStyle) => set({ talkStyle })}
-            placeholder={KIN_PROFILE_COPY.talkPlaceholder}
-            placeholderTextColorClassName="accent-placeholder"
-            textAlignVertical="top"
-            className="min-h-20 px-4 py-3 font-sans text-base leading-normal text-foreground"
-          />
-        </ListSection>
-      ) : null}
-      <ListSection title={KIN_PROFILE_COPY.hoursLabel}>
-        <View className="flex-row flex-wrap gap-1.5 px-4 py-3">
-          {KIN_DAY_LABELS.map((label, day) => (
-            <Chip
-              key={label}
-              label={label}
-              selected={draft.days.includes(day)}
-              onPress={() =>
-                set({
-                  days: draft.days.includes(day)
-                    ? draft.days.filter((held) => held !== day)
-                    : [...draft.days, day],
-                })
-              }
-            />
-          ))}
-        </View>
-        <Field
-          label="Starts"
-          value={draft.start}
-          placeholder="09:00"
-          maxLength={5}
-          autoCapitalize="none"
-          borderTop
-          onChange={(start) => set({ start })}
-        />
-        <Field
-          label="Ends"
-          value={draft.end}
-          placeholder="18:00"
-          maxLength={5}
-          autoCapitalize="none"
-          borderTop
-          onChange={(end) => set({ end })}
-        />
       </ListSection>
       <KinTimeZonePicker value={draft.timeZone} onChange={(timeZone) => set({ timeZone })} />
       {props.mine ? (
@@ -491,7 +516,7 @@ function ProfileForm(props: {
           <Field
             label="From"
             value={draft.quietFrom}
-            placeholder="22:00"
+            placeholder="HH:MM"
             maxLength={5}
             autoCapitalize="none"
             onChange={(quietFrom) => set({ quietFrom })}
@@ -499,7 +524,7 @@ function ProfileForm(props: {
           <Field
             label="Until"
             value={draft.quietTo}
-            placeholder="07:00"
+            placeholder="HH:MM"
             maxLength={5}
             autoCapitalize="none"
             borderTop
@@ -507,15 +532,97 @@ function ProfileForm(props: {
           />
         </ListSection>
       ) : null}
-      {props.mine ? (
-        <ListSection footer={KIN_PROFILE_COPY.holdHint}>
-          <ListToggleRow
-            label={KIN_PROFILE_COPY.holdLabel}
-            value={draft.holdOutside}
-            onValueChange={(holdOutside) => set({ holdOutside })}
+      <KinPageFold
+        title={props.mine ? KIN_PROFILE_COPY.moreAboutYou : KIN_PROFILE_COPY.moreAboutThem}
+        summary={null}
+      >
+        <View className="gap-2">
+          <ListSection>
+            <Field
+              label={KIN_PROFILE_COPY.tagsLabel}
+              value={draft.tags}
+              maxLength={200}
+              autoCapitalize="none"
+              onChange={(tags) => set({ tags })}
+            />
+          </ListSection>
+          <Text textRole="footnote" className="px-4 text-foreground-muted">
+            {KIN_PROFILE_COPY.tagsHint}
+          </Text>
+        </View>
+        <ListSection title={KIN_PROFILE_COPY.skillsLabel} footer={KIN_PROFILE_COPY.skillsHint}>
+          <TextInput
+            multiline
+            accessibilityLabel={KIN_PROFILE_COPY.skillsLabel}
+            value={draft.skills}
+            maxLength={KIN_PROFILE_SKILLS_MAX}
+            onChangeText={(skills) => set({ skills })}
+            placeholder={KIN_PROFILE_COPY.skillsExample}
+            placeholderTextColorClassName="accent-placeholder"
+            textAlignVertical="top"
+            className="min-h-24 px-4 py-3 font-sans text-base leading-normal text-foreground"
           />
         </ListSection>
-      ) : null}
+        {props.mine ? (
+          <ListSection title={KIN_PROFILE_COPY.talkLabel} footer={KIN_PROFILE_COPY.talkHint}>
+            <TextInput
+              multiline
+              accessibilityLabel={KIN_PROFILE_COPY.talkLabel}
+              value={draft.talkStyle}
+              maxLength={KIN_PROFILE_TALK_MAX}
+              onChangeText={(talkStyle) => set({ talkStyle })}
+              placeholderTextColorClassName="accent-placeholder"
+              textAlignVertical="top"
+              className="min-h-20 px-4 py-3 font-sans text-base leading-normal text-foreground"
+            />
+          </ListSection>
+        ) : null}
+        <ListSection title={KIN_PROFILE_COPY.hoursLabel}>
+          <View className="flex-row flex-wrap gap-1.5 px-4 py-3">
+            {KIN_DAY_LABELS.map((label, day) => (
+              <Chip
+                key={label}
+                label={label}
+                selected={draft.days.includes(day)}
+                onPress={() =>
+                  set({
+                    days: draft.days.includes(day)
+                      ? draft.days.filter((held) => held !== day)
+                      : [...draft.days, day],
+                  })
+                }
+              />
+            ))}
+          </View>
+          <Field
+            label="Starts"
+            value={draft.start}
+            placeholder="HH:MM"
+            maxLength={5}
+            autoCapitalize="none"
+            borderTop
+            onChange={(start) => set({ start })}
+          />
+          <Field
+            label="Ends"
+            value={draft.end}
+            placeholder="HH:MM"
+            maxLength={5}
+            autoCapitalize="none"
+            borderTop
+            onChange={(end) => set({ end })}
+          />
+        </ListSection>
+        {props.mine ? (
+          <ListSection footer={KIN_PROFILE_COPY.holdHint}>
+            <KinWorkToggleRow
+              label={KIN_PROFILE_COPY.holdLabel}
+              value={draft.holdOutside}
+              onValueChange={(holdOutside) => set({ holdOutside })}
+            />
+          </ListSection>
+        ) : null}
+      </KinPageFold>
     </Frame>
   );
 }
@@ -529,14 +636,15 @@ function Field(props: {
   readonly borderTop?: boolean;
   readonly onChange: (value: string) => void;
 }) {
+  const input = useRef<ComponentRef<typeof TextInput>>(null);
   return (
-    <View
-      className={
-        props.borderTop ? "gap-2 border-t border-border-subtle px-4 py-3" : "gap-2 px-4 py-3"
-      }
+    <KinWorkFieldBox
+      label={props.label}
+      input={input}
+      className={props.borderTop ? "border-t border-border-subtle" : undefined}
     >
-      <Text className="text-sm text-foreground-muted">{props.label}</Text>
       <TextInput
+        ref={input}
         accessibilityLabel={props.label}
         value={props.value}
         autoCapitalize={props.autoCapitalize}
@@ -547,6 +655,6 @@ function Field(props: {
         placeholderTextColorClassName="accent-placeholder"
         className="min-h-8 font-sans text-base text-foreground"
       />
-    </View>
+    </KinWorkFieldBox>
   );
 }

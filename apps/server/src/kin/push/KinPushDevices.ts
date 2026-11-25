@@ -7,6 +7,7 @@ import {
   type KinApsEnvironment,
   type KinOrgId,
   type KinPersonId,
+  type KinPushPlatform,
   type KinPushRegisterDeviceInput,
   type KinPushToken,
   type KinPushUnregisterDeviceInput,
@@ -34,8 +35,13 @@ export type KinPushDevice = {
   readonly orgId: KinOrgId;
   readonly token: KinPushToken;
   readonly personId: KinPersonId;
+  readonly platform: KinPushPlatform;
   readonly apsEnvironment: KinApsEnvironment;
   readonly sessionId: AuthSessionId;
+  /** An Android build that made the quiet channel (`KinPushRegisterDeviceInput.quietChannel`). */
+  readonly quietChannel: boolean;
+  /** A build that matches notifications by topic (`KinPushRegisterDeviceInput.withdraws`). */
+  readonly withdraws: boolean;
 };
 
 /** What logs and clients see instead of a token: 12 hex characters of its SHA-256. */
@@ -66,7 +72,7 @@ export class KinPushDevices extends Context.Service<
       people: ReadonlyArray<KinPersonId>,
     ) => Effect.Effect<ReadonlyArray<KinPushDevice>, KinPushError>;
     /**
-     * APNs said the token is dead. With `invalidSince` (a 410's timestamp), a row registered
+     * APNs or FCM said the token is dead. With `invalidSince` (a 410's timestamp), a row registered
      * after it survives, because the phone has since handed it to us again.
      */
     readonly forget: (
@@ -134,6 +140,8 @@ const make = Effect.gen(function* () {
             platform: input.platform,
             aps_environment: input.apsEnvironment,
             device_label: input.deviceLabel ?? null,
+            quiet_channel: input.quietChannel === true ? 1 : 0,
+            withdraws: input.withdraws === true ? 1 : 0,
             session_id: caller.session.sessionId,
             proof_key_thumbprint: caller.session.proofKeyThumbprint ?? null,
             created_at: now,
@@ -144,6 +152,8 @@ const make = Effect.gen(function* () {
           platform = excluded.platform,
           aps_environment = excluded.aps_environment,
           device_label = excluded.device_label,
+          quiet_channel = excluded.quiet_channel,
+          withdraws = excluded.withdraws,
           session_id = excluded.session_id,
           proof_key_thumbprint = excluded.proof_key_thumbprint,
           updated_at = excluded.updated_at
@@ -190,17 +200,24 @@ const make = Effect.gen(function* () {
       const rows = yield* sql<{
         token: KinPushToken;
         person_id: KinPersonId;
+        platform: KinPushPlatform;
         aps_environment: KinApsEnvironment;
         session_id: AuthSessionId;
-      }>`SELECT token, person_id, aps_environment, session_id FROM kin_push_devices
+        quiet_channel: number;
+        withdraws: number;
+      }>`SELECT token, person_id, platform, aps_environment, session_id, quiet_channel, withdraws
+        FROM kin_push_devices
         WHERE org_id = ${orgId} AND person_id IN ${sql.in(people)}
         ORDER BY person_id, token`;
       return rows.map((row): KinPushDevice => ({
         orgId,
         token: row.token,
         personId: row.person_id,
+        platform: row.platform,
         apsEnvironment: row.aps_environment,
         sessionId: row.session_id,
+        quietChannel: row.quiet_channel === 1,
+        withdraws: row.withdraws === 1,
       }));
     },
     Effect.catch(internal("KinPushDevices.forPeople")),

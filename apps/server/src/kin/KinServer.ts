@@ -27,15 +27,27 @@ import type { KinPushSender } from "./push/KinPushSender.ts";
 import type { KinPresence } from "./reply/KinPresence.ts";
 import type { KinDocRenderer } from "./gendocs/render.ts";
 import type { KinWorkspace } from "./gendocs/workspace.ts";
+import type { KinImport } from "./work/KinImport.ts";
 import type { KinRecords } from "./work/KinRecords.ts";
 import type { KinConnections } from "./connections/ConnectionsService.ts";
 import type { KinGitHubLogin } from "./connections/GitHubLogin.ts";
 import type { KinGitHubApp } from "./github/KinGitHubApp.ts";
 import type { KinAgentSessionPolicy } from "./lead/sessionPolicy.ts";
 import type { KinSocial } from "./social/SocialService.ts";
+import type { KinPictures } from "./pictures/KinPictures.ts";
+import type { KinDevClock } from "./DevClock.ts";
+import type { KinHostCare } from "./host/KinHostCare.ts";
+import type { KinRefusedModels } from "./lead/refusedModels.ts";
+
+import type { KinShell } from "./shell/KinShell.ts";
+
+import type { KinNumbers } from "./numbers/KinNumbers.ts";
 
 export type Services =
+  | KinNumbers
+  | KinShell
   | KinIdentity
+  | KinDevClock
   | KinChatService
   | KinGroups
   | KinBudget
@@ -59,13 +71,17 @@ export type Services =
   | KinPushSender
   | KinPresence
   | KinRecords
+  | KinImport
   | KinWorkspace
   | KinDocRenderer
   | KinConnections
   | KinGitHubLogin
   | KinGitHubApp
   | KinAgentSessionPolicy
-  | KinSocial;
+  | KinSocial
+  | KinPictures
+  | KinHostCare
+  | KinRefusedModels;
 
 export class KinServer extends Context.Service<
   KinServer,

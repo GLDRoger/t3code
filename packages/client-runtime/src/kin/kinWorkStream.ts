@@ -139,6 +139,9 @@ export function kinWorkListsMoved(
  */
 export const KIN_WORK_NOT_TASKS = { except: ["work"] } as const;
 
+/** What a deal shows: its follow-ups, itself, its client, and its client's quotes. */
+export const KIN_WORK_DEAL_LISTS = ["work", "deals", "clients", "quotes"] as const;
+
 type KinWorkTarget = {
   readonly environmentId: EnvironmentId;
   readonly input: { readonly orgId: KinOrgId };

@@ -8,7 +8,7 @@ const ofQ = (value: Value | undefined, q: number): Value | undefined =>
 export const title = "A question an agent asks you, its default and its day";
 
 export const guide =
-  "Finance and the Chief of staff may each want to ask you the same thing (say, whether to draft VIOM's reminder). Each box is where the questions stand; each arrow is something that happens: an agent asks, you tap an answer, an agent marks it answered or withdraws it, a day passes, Kin's host stops or starts, the day comes and the default is taken, a question with no safe default is raised once more, or the agent does its default. Red boxes are where a rule below breaks.";
+  "Finance and the Chief of staff may each want to ask you the same thing (say, whether to draft VIOM's reminder), for themselves or for someone else's chat. Each box is where the questions stand; each arrow is something that happens: an agent asks, a question held for your quiet hours reaches you, you tap an answer, an agent marks it answered or withdraws it, a day passes, Kin's host stops or starts, the day comes and the default is taken, a question with no safe default is raised once more, the agent does its default, or a question asked for someone else's chat lapses with nobody answering. Red boxes are where a rule below breaks.";
 
 /** The chart is drawn without restarts; the rules are checked with one. */
 export const chartConstants = { MaxOutages: "0" };
@@ -16,6 +16,8 @@ export const chartConstants = { MaxOutages: "0" };
 export const rules: Record<string, string> = {
   OnceWhileOpen:
     "While a question is open, no agent asks you the same thing again: Kin refuses the second ask.",
+  DismissalStands:
+    "For seven days after you dismiss a question, Kin refuses a repeat unless you bring it up again yourself.",
   NeverBeforeItsDay: "An agent never takes its default before the day it named.",
   TakenOnce: "A default is taken at most once, and done at most once, however often Kin restarts.",
   AnsweredOrTaken:
@@ -26,7 +28,21 @@ export const rules: Record<string, string> = {
     "While a question is open, its card takes your tap, however long ago it was asked.",
   RaisedOnce: "A question with no safe default is raised once more, never twice.",
   AlwaysEnds:
-    "Every question ends: you answer it, the default is taken and done, or it is withdrawn; one with no safe default is raised once and then waits in Waiting on you. A restart loses none.",
+    "Every question ends: you answer it, the default is taken and done, or it is withdrawn, dismissed or lapsed; one with no safe default asked for the agent itself is raised once and then waits in Waiting on you, and one asked for someone else's chat lapses. One held for your quiet hours reaches you first. A restart loses none.",
+  NoDefaultForOther:
+    "A question asked for someone else's chat has no default: nobody answers it for you, and it waits for you.",
+  OneWake:
+    "Your answer to a question asked for someone else's chat wakes the agent once, in the chat that asked, and starts no turn in your own chat.",
+  AnswerGoesBack:
+    "Your answer to a question asked for someone else's chat always reaches the chat that asked, however Kin restarts.",
+  ToldOnce:
+    "When a question asked for someone else's chat lapses, that chat is told once, however often the sweep runs or Kin restarts.",
+  ToldWhenLapsed:
+    "Only a question asked for someone else's chat lapses, and whenever one does, that chat is told and its agent woken there.",
+  LapsesAfterItsDay:
+    "A question raised once more never lapses before the raised card has had a day of its own.",
+  UnsignedNotAskedAgain:
+    "Someone who never signed in is not asked again: their question lapses at its day instead.",
 };
 
 export const variants = [
@@ -34,6 +50,11 @@ export const variants = [
     name: "no-repeat-check",
     breaks: "OnceWhileOpen",
     what: "Kin lets a second agent ask the same thing while the first question is open",
+  },
+  {
+    name: "forget-dismissal",
+    breaks: "DismissalStands",
+    what: "an agent asks the same question again right after you dismissed it",
   },
   {
     name: "early",
@@ -70,6 +91,41 @@ export const variants = [
     breaks: "AlwaysEnds",
     what: "the day is kept by a timer in memory, which a restart loses",
   },
+  {
+    name: "default-for-other",
+    breaks: "NoDefaultForOther",
+    what: "a question asked for someone else's chat keeps the default the agent named",
+  },
+  {
+    name: "tap-wakes-there",
+    breaks: "OneWake",
+    what: "the tap on a question asked for someone else also starts a turn in the chat it was tapped in",
+  },
+  {
+    name: "after-commit",
+    breaks: "AnswerGoesBack",
+    what: "the answer is sent back after the tap commits, from memory, which a restart loses",
+  },
+  {
+    name: "lapse-repeats",
+    breaks: "ToldOnce",
+    what: "the sweep tells the chat again each time it finds the lapsed question",
+  },
+  {
+    name: "lapse-silent",
+    breaks: "ToldWhenLapsed",
+    what: "a question lapses with nobody told",
+  },
+  {
+    name: "early-lapse",
+    breaks: "LapsesAfterItsDay",
+    what: "a question lapses the moment it is raised once more",
+  },
+  {
+    name: "raise-unsigned",
+    breaks: "UnsignedNotAskedAgain",
+    what: "a question to someone who never signed in is raised once more anyway",
+  },
 ];
 
 const WORDS: Record<string, string> = {
@@ -78,6 +134,8 @@ const WORDS: Record<string, string> = {
   answered: "answered",
   default_taken: "default taken",
   withdrawn: "withdrawn",
+  dismissed: "dismissed",
+  lapsed: "lapsed",
 };
 
 const one = (vars: Vars, q: number) => {
@@ -87,9 +145,14 @@ const one = (vars: Vars, q: number) => {
   const safe = ofQ(vars["safe"], q) === true;
   const raised = ofQ(vars["raised"], q) === true;
   const done = Number(ofQ(vars["done"], q) ?? 0);
-  return `${who}'s ${safe ? "" : "no-default "}question ${WORDS[st] ?? st}${
-    raised ? ", raised again" : ""
-  }${done > 0 ? ", done" : ""}`;
+  const other = ofQ(vars["other"], q) === true;
+  const held = other && ofQ(vars["posted"], q) !== true;
+  const back = Number(ofQ(vars["back"], q) ?? 0);
+  return `${who}'s ${safe ? "" : "no-default "}question${other ? " for another chat" : ""} ${
+    WORDS[st] ?? st
+  }${held ? ", held" : ""}${raised ? ", raised again" : ""}${done > 0 ? ", done" : ""}${
+    back > 0 ? ", answer sent back" : ""
+  }`;
 };
 
 export const state = (vars: Vars) => {
@@ -99,14 +162,18 @@ export const state = (vars: Vars) => {
   }`;
 };
 
-export const step = (action: string) => {
+export const step = (action: string, from: Vars, to: Vars) => {
   switch (action) {
     case "Ask":
       return "An agent asks you, with its default and day";
     case "Tap":
       return "You tap an answer";
     case "Close":
-      return "An agent marks it answered, or withdraws it";
+      return [1, 2].some(
+        (q) => ofQ(from["st"], q) !== "dismissed" && ofQ(to["st"], q) === "dismissed",
+      )
+        ? "You dismiss the question"
+        : "An agent marks it answered or withdraws it";
     case "Expire":
       return "A day passes on the card";
     case "Tick":
@@ -121,6 +188,12 @@ export const step = (action: string) => {
       return "The next morning: Kin raises it once more";
     case "RunTurn":
       return "The agent does its default and says so";
+    case "Post":
+      return "Your quiet hours end: the held question reaches you";
+    case "Deliver":
+      return "The answer, kept in memory, is sent back";
+    case "Lapse":
+      return "Nobody answered: it lapses, and the chat that asked is told";
     default:
       return null;
   }

@@ -1,3 +1,5 @@
+import { useMessages } from "gt-react";
+import { hasFeatureFlag } from "@t3tools/client-runtime/state/server";
 import { AuthEnvironmentMaintainScope } from "@t3tools/contracts";
 
 import { usePrimaryCloudLinkState } from "~/cloud/cloudLinkState";
@@ -9,13 +11,26 @@ import { useEnvironments, usePrimaryEnvironmentId } from "~/state/environments";
 import { usePeerLinkHosts } from "~/state/peerLinks";
 import { useEnvironmentQuery } from "~/state/query";
 import { useEnvironmentScope } from "~/state/session";
-import { useKinHost } from "~/kin/useKinHost";
+import { kinSettingsShown } from "~/kin/kinNoCode";
+import { kinHostKeptTarget, useKinHost } from "~/kin/useKinHost";
+import { useKinSectionOn } from "~/kin/useKinShell";
 import { isWslSettingsRowVisible } from "./ConnectionsSettings.logic";
 import { isProviderSettingsEnvironmentAvailable } from "./ProviderSettingsPanel.logic";
 import {
   filterAvailableSettingsSearchItems,
   getThreadAutoSettlementSearchAvailability,
 } from "./settingsSearch";
+
+const NO_SECTIONS_OFF: ReadonlyArray<string> = [];
+const DEALS_OFF: ReadonlyArray<string> = ["deals"];
+
+/** Any environment whose server enables secret providers; gates the Secrets page, nav and search. */
+export function useHasSecretProvidersEnvironment() {
+  const { environments } = useEnvironments();
+  return environments.some((environment) =>
+    hasFeatureFlag(environment.serverConfig, "secretProviders"),
+  );
+}
 
 export function useAvailableSettingsSearchItems() {
   const { environments } = useEnvironments();
@@ -36,18 +51,27 @@ export function useAvailableSettingsSearchItems() {
         environment.connection.phase === "connected" &&
         environment.serverConfig?.environment.capabilities.fastWorktreeCheckout === true,
     ) === true;
+  const hasAgentFeedbackEnvironment =
+    environments.some(
+      (environment) =>
+        environment.connection.phase === "connected" &&
+        environment.serverConfig?.environment.capabilities.agentFeedback === true,
+    ) === true;
   const hasTextGeneratorsEnvironment =
     environments.some(
       (environment) =>
         environment.serverConfig !== null &&
         environment.serverConfig.managedPolicy?.limits?.providers?.allowedDrivers === undefined,
     ) === true;
+  const hasSecretProvidersEnvironment = useHasSecretProvidersEnvironment();
   const hasThreadAutoSettlement =
     getThreadAutoSettlementSearchAvailability(environments).eligibleEnvironmentIds.length > 0;
   const primaryEnvironmentId = usePrimaryEnvironmentId();
   const canMaintain = useEnvironmentScope(primaryEnvironmentId, AuthEnvironmentMaintainScope);
   const hasPeerLinkHost = usePeerLinkHosts().length > 0;
-  const hasKinHost = useKinHost()._tag === "host";
+  const kinHost = useKinHost();
+  const hasKinHost = kinHost._tag === "host";
+  const kinDealsOn = useKinSectionOn(kinHostKeptTarget(kinHost)?.environmentId ?? null, "deals");
   const cloudLinkState = usePrimaryCloudLinkState().data;
   // Same fallback as the Connections row: older servers imply a tunnel from `linked`.
   const managedTunnelActive =
@@ -57,12 +81,13 @@ export function useAvailableSettingsSearchItems() {
   const canManageLocalBackend = !localEnvironmentDisabled && canMaintain;
   const desktopWsl = useEnvironmentQuery(
     isElectron && canManageLocalBackend ? desktopWslStateAtom : null,
+    useMessages(),
   );
   const cloudPublicConfig = hasCloudPublicConfig() === true;
   const wslSettingsRowVisible =
     isWslSettingsRowVisible({ state: desktopWsl.data, error: desktopWsl.error }) === true;
 
-  return filterAvailableSettingsSearchItems({
+  const available = filterAvailableSettingsSearchItems({
     localEnvironmentDisabled,
     hasCloudPublicConfig: cloudPublicConfig,
     hasEnvironment,
@@ -73,8 +98,12 @@ export function useAvailableSettingsSearchItems() {
     managedTunnelActive,
     hasPeerLinkHost,
     hasKinHost,
+    kinSectionsOff: kinDealsOn ? NO_SECTIONS_OFF : DEALS_OFF,
     hasFastWorktreeCheckoutEnvironment,
+    hasAgentFeedbackEnvironment,
     hasTextGeneratorsEnvironment,
     hasPrimaryEnvironment: primaryEnvironmentId !== null,
+    hasSecretProvidersEnvironment,
   });
+  return kinSettingsShown(available);
 }

@@ -3,8 +3,9 @@ import * as Schema from "effect/Schema";
 
 import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { KinChartCardState } from "./kinChart.ts";
+import { KinEmbed } from "./kinEmbed.ts";
 import { KinMemoryItemId, KinWorkerId } from "./kinLead.ts";
+import { KinSocialPlatform } from "./kinSocial.ts";
 import {
   KinAgentId,
   KinChatError,
@@ -15,11 +16,13 @@ import {
   KinPersonId,
   KinText,
   KinTrimmedText,
+  KinWidgetId,
 } from "./kinChat.ts";
 import {
   KinRecordChangeVia,
   KinRecordId,
   KinRecordKey,
+  KinLinkedFromFields,
   KinRecordLink,
   KinRecordRef,
   KinWorkActor,
@@ -162,6 +165,14 @@ export const KinDocRow = Schema.Struct({
   /** The owner shared it with the team: members who can see Docs read it. */
   shared: Schema.optional(Schema.Literal(true)),
   archived: Schema.Boolean,
+  /** For a deleted (archived) doc: who deleted it and when. Absent from older hosts. */
+  deleted: Schema.optional(Schema.Struct({ at: IsoDateTime, by: KinWorkActor })),
+  /** This viewer may delete it, or bring it back (`kin.docs.delete`); the host decides again. */
+  deletable: Schema.optional(Schema.Literal(true)),
+  /** The company's What we sell, pinned first in Docs. */
+  whatWeSell: Schema.optional(Schema.Literal(true)),
+  /** An agent's character, which its page changes; the phone's Docs leaves it out. */
+  character: Schema.optional(Schema.Literal(true)),
   bodyKind: KinDocBodyKind,
   /** The latest version, with its "what changed" line. */
   latest: KinDocVersion,
@@ -193,16 +204,8 @@ export type KinDocListRow = typeof KinDocListRow.Type;
  * What one `kin_chart` or `kin_visual` block of a doc's body draws, in the order the blocks
  * appear. `broken` says why a block can't be drawn, so the rest still line up.
  */
-export const KinDocEmbed = Schema.Union([
-  Schema.TaggedStruct("chart", { chart: KinChartCardState }),
-  Schema.TaggedStruct("visual", {
-    title: KinTrimmedText,
-    attachmentId: TrimmedNonEmptyString,
-    height: PositiveInt,
-  }),
-  Schema.TaggedStruct("broken", { message: KinTrimmedText }),
-]);
-export type KinDocEmbed = typeof KinDocEmbed.Type;
+export const KinDocEmbed = KinEmbed;
+export type KinDocEmbed = KinEmbed;
 
 export const KinDocDetail = Schema.Struct({
   ...KinDocRow.fields,
@@ -211,10 +214,24 @@ export const KinDocDetail = Schema.Struct({
   body: KinText,
   outline: Schema.Array(KinDocSection),
   links: Schema.Array(KinRecordLink),
+  ...KinLinkedFromFields,
   /** This doc's latest change number: compare with a `changed` event's. */
   seq: NonNegativeInt,
   /** Absent from servers that draw no blocks. */
   embeds: Schema.optional(Schema.Array(KinDocEmbed)),
+  /** This reader may change a section by hand (`kin.docs.editSection`); the host decides again. */
+  editable: Schema.optional(Schema.Literal(true)),
+  /**
+   * Private by its kind alone, no person's label. `reader`: the teammate whose priced draft it is,
+   * while they still read it; `you` when that is this reader. Absent from older hosts.
+   */
+  kindLabel: Schema.optional(
+    Schema.Struct({
+      reader: Schema.optional(
+        Schema.Struct({ name: Schema.String, you: Schema.optional(Schema.Literal(true)) }),
+      ),
+    }),
+  ),
 });
 export type KinDocDetail = typeof KinDocDetail.Type;
 
@@ -241,6 +258,8 @@ export const KinDocsListInput = Schema.Struct({
   files: Schema.optional(Schema.Boolean),
   /** Only docs changed at or after this time; `total` then counts those. */
   changedSince: Schema.optional(IsoDateTime),
+  /** Only the company's What we sell, unarchived and seen by this viewer; none when there is none. */
+  whatWeSell: Schema.optional(Schema.Boolean),
   /** Rows carry `KinDocLatestSlim`; the full version stays on `kin.docs.get`. */
   acceptSlimLatest: Schema.optional(Schema.Boolean),
   cursor: Schema.optional(PageCursor),
@@ -257,7 +276,16 @@ export const KinDocsListResult = Schema.Struct({
 export type KinDocsListResult = typeof KinDocsListResult.Type;
 
 export const KinDocGetInput = Schema.Union([
-  Schema.Struct({ orgId: KinOrgId, key: KinRecordKey, version: Schema.optional(PositiveInt) }),
+  Schema.Struct({
+    orgId: KinOrgId,
+    key: KinRecordKey,
+    version: Schema.optional(PositiveInt),
+    /**
+     * A long draft's chat card this read comes from: its viewer reads the version it holds
+     * without the Docs place, if they still see the doc.
+     */
+    card: Schema.optional(KinWidgetId),
+  }),
   Schema.Struct({
     orgId: KinOrgId,
     recordId: KinRecordId,
@@ -316,6 +344,44 @@ export const KinDocRestoreInput = Schema.Struct({
   latest: PositiveInt,
 });
 export type KinDocRestoreInput = typeof KinDocRestoreInput.Type;
+
+/**
+ * One section changed by hand, as a new version: by the owner level, or the lead of the project
+ * the doc is filed under. A section whose hash is no longer `hash` is refused, and nothing changes.
+ */
+export const KinDocEditSectionInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  section: KinDocSectionId,
+  /** The section's hash in the outline that was read. */
+  hash: TrimmedNonEmptyString.check(Schema.isMaxLength(64)),
+  /** Its new markdown; without a heading line the heading stays. */
+  text: Schema.String.check(Schema.isMaxLength(200_000)),
+  /** The same id and text again returns what that request made. */
+  clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
+});
+export type KinDocEditSectionInput = typeof KinDocEditSectionInput.Type;
+
+/**
+ * A person deletes a doc, or brings a deleted one back with `deleted: false`, exactly as it was.
+ * Whoever may change it by hand may; never an agent's character or What we sell. Again is harmless.
+ */
+export const KinDocDeleteInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  deleted: Schema.Boolean,
+});
+export type KinDocDeleteInput = typeof KinDocDeleteInput.Type;
+
+/** The longest answer to "What does your company sell, and to whom?". */
+export const KIN_SELLS_MAX = 300;
+/** The owner level starts What we sell: Kin writes its outline once, or brings an archived one back. */
+export const KinDocStartWhatWeSellInput = Schema.Struct({
+  orgId: KinOrgId,
+  /** A new company's answer to what it sells and to whom, written first; older hosts ignore it. */
+  sells: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(KIN_SELLS_MAX))),
+});
+export type KinDocStartWhatWeSellInput = typeof KinDocStartWhatWeSellInput.Type;
 
 /** One input a recipe asks for, as its RECIPE.md declares it. */
 export const KinRecipeInput = Schema.Struct({
@@ -515,6 +581,8 @@ export const KinSearchInput = Schema.Struct({
   closed: Schema.optional(Schema.Boolean),
   /** Money entries and memory too: a client that can open them asks, so an older one never gets them. */
   everything: Schema.optional(Schema.Literal(true)),
+  /** Deals too, by their words and their key, when `kinds` leaves out `work`. */
+  deals: Schema.optional(Schema.Literal(true)),
   limit: Schema.optional(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(1), Schema.isLessThanOrEqualTo(50)),
   ),
@@ -530,6 +598,8 @@ export const KinSearchHit = Schema.Struct({
   snippet: KinText,
   /** For a doc, the section the match is in, to open it there. */
   section: Schema.optional(Schema.Struct({ id: KinDocSectionId, title: KinText })),
+  /** For a contact, which has no page of its own, its client's key, to open that client's page. */
+  client: Schema.optional(KinRecordKey),
   sensitive: Schema.Boolean,
   closed: Schema.Boolean,
   updatedAt: IsoDateTime,
@@ -542,6 +612,59 @@ export const KinSearchResult = Schema.Struct({
   asOf: IsoDateTime,
 });
 export type KinSearchResult = typeof KinSearchResult.Type;
+
+/** What an agent's draft is of; the owner's Approve on it makes that one thing. */
+const KIN_DRAFT_KINDS = ["proposal", "quote", "invoice", "terms", "mail", "post"] as const;
+export const KinDraftKind = Schema.Literals(KIN_DRAFT_KINDS);
+export type KinDraftKind = typeof KinDraftKind.Type;
+
+const KinNamedPerson = Schema.Struct({ personId: KinPersonId, name: KinTrimmedText });
+
+/** A doc card that is one draft: its text to copy, and where it goes up to be approved. */
+export const KinDocCardDraft = Schema.Struct({
+  kind: KinDraftKind,
+  /** The draft as filed, in markdown; Copy text takes it without the marks. */
+  text: KinText,
+  /** For a post: where it goes. */
+  on: Schema.optional(KinSocialPlatform),
+  /** The client it was filed for; Send to sends it for this client only. */
+  client: Schema.optional(KinRecordRef),
+  /** Who "Send to" sends it up to: set only in a teammate's own chat with the agent. */
+  sendTo: Schema.optional(KinNamedPerson),
+  /** Sent up: to whom, and when; `held` while it waits for them to be back. */
+  sent: Schema.optional(
+    Schema.Struct({
+      name: KinTrimmedText,
+      at: IsoDateTime,
+      held: Schema.optional(Schema.Literal(true)),
+    }),
+  ),
+  /** Its owner answered Changes first on what went up, and when: it may go up again. */
+  changesFirst: Schema.optional(Schema.Struct({ name: KinTrimmedText, at: IsoDateTime })),
+  /** Kin can't post it: no account on this service is connected, and who can connect one. */
+  noAccount: Schema.optional(Schema.Struct({ service: KinTrimmedText, by: KinNamedPerson })),
+  /**
+   * Set when `text` is only the draft's opening (and `kinDraftOpeningLine`): the whole is this
+   * version of the doc, this many characters long. Copy text fetches that version.
+   */
+  whole: Schema.optional(Schema.Struct({ version: PositiveInt, chars: PositiveInt })),
+  /** What went up changed before its owner approved it, so nothing was: it may go up again. */
+  changed: Schema.optional(Schema.Struct({ at: IsoDateTime })),
+});
+export type KinDocCardDraft = typeof KinDocCardDraft.Type;
+
+/**
+ * The line a long draft's card `text` ends with after its opening, for clients that read `text`
+ * as the whole draft; one that reads `whole` leaves it out (`kinDraftOpeningOf`).
+ */
+export const kinDraftOpeningLine = (key: string) =>
+  `This is only the opening. Open ${key} to read the whole draft.`;
+
+/** A long draft card's opening without the line `kinDraftOpeningLine` adds for older clients. */
+export const kinDraftOpeningOf = (text: string, key: string) => {
+  const line = `\n\n${kinDraftOpeningLine(key)}`;
+  return text.endsWith(line) ? text.slice(0, -line.length) : text;
+};
 
 export const KIN_DOC_CARD = "doc";
 /** The chat card an agent shows a doc with. Filled by the server from stored rows. */
@@ -559,8 +682,24 @@ export const KinDocCardState = Schema.Struct({
   }),
   /** The version before, to open "See changes"; `null` for a new doc. */
   previousVersion: Schema.NullOr(PositiveInt),
+  draft: Schema.optional(KinDocCardDraft),
 });
 export type KinDocCardState = typeof KinDocCardState.Type;
+
+/** "Send to" on a teammate's draft card: it goes up to the agent's owner as one card to approve. */
+export const KinDocSendUpInput = Schema.Struct({
+  orgId: KinOrgId,
+  chatId: KinChatId,
+  widgetId: KinWidgetId,
+});
+export type KinDocSendUpInput = typeof KinDocSendUpInput.Type;
+export const KinDocSendUpResult = Schema.Struct({
+  /** Who it went up to. */
+  to: KinTrimmedText,
+  /** Waiting for their quiet hours to end before it reaches them. */
+  held: Schema.Boolean,
+});
+export type KinDocSendUpResult = typeof KinDocSendUpResult.Type;
 
 const KIN_DOCS_WS_METHODS = {
   list: "kin.docs.list",
@@ -578,6 +717,10 @@ const KIN_DOCS_WS_METHODS = {
   clearRecipeLabel: "kin.docs.clearRecipeLabel",
   labelRecipe: "kin.docs.labelRecipe",
   setDefaultRecipe: "kin.docs.setDefaultRecipe",
+  startWhatWeSell: "kin.docs.startWhatWeSell",
+  editSection: "kin.docs.editSection",
+  sendUp: "kin.docs.sendUp",
+  delete: "kin.docs.delete",
 } as const;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
@@ -643,6 +786,26 @@ export const KinDocsRpcs = [
     success: KinRecipeDefaultResult,
     error,
   }),
+  Rpc.make(KIN_DOCS_WS_METHODS.startWhatWeSell, {
+    payload: KinDocStartWhatWeSellInput,
+    success: KinDocDetail,
+    error,
+  }),
+  Rpc.make(KIN_DOCS_WS_METHODS.editSection, {
+    payload: KinDocEditSectionInput,
+    success: KinDocDetail,
+    error,
+  }),
+  Rpc.make(KIN_DOCS_WS_METHODS.sendUp, {
+    payload: KinDocSendUpInput,
+    success: KinDocSendUpResult,
+    error,
+  }),
+  Rpc.make(KIN_DOCS_WS_METHODS.delete, {
+    payload: KinDocDeleteInput,
+    success: KinDocDetail,
+    error,
+  }),
 ] as const;
 
 export const KIN_DOCS_RPC_SCOPES = {
@@ -666,4 +829,12 @@ export const KIN_DOCS_RPC_SCOPES = {
   [KIN_DOCS_WS_METHODS.labelRecipe]: AuthKinChatScope,
   // Which recipe makes a list's documents, as undoing a recipe's change is.
   [KIN_DOCS_WS_METHODS.setDefaultRecipe]: AuthKinChatScope,
+  // Writes Kin's outline once, as restore writes a version; it starts no agent work.
+  [KIN_DOCS_WS_METHODS.startWhatWeSell]: AuthKinChatScope,
+  // Writes a version, as restore does; it starts no agent work.
+  [KIN_DOCS_WS_METHODS.editSection]: AuthKinChatScope,
+  // Asks the agent's owner on a card, as a chat message to the agent would; it starts no turn.
+  [KIN_DOCS_WS_METHODS.sendUp]: AuthKinChatScope,
+  // Moves a doc in or out of Deleted, as filing it does; it starts no agent work.
+  [KIN_DOCS_WS_METHODS.delete]: AuthKinChatScope,
 } as const;

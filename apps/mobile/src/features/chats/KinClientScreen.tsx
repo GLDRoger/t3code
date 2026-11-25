@@ -1,10 +1,17 @@
-import { KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
+import { KIN_MARKETING } from "@t3tools/client-runtime/kin/kinMarketing";
+import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { KIN_PROMISES, type KinPromiseView } from "@t3tools/client-runtime/kin/kinPromises";
 import { kinWorkHostEdits } from "@t3tools/client-runtime/kin/kinWork";
-import { kinWorkApplied, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
-  KIN_CLIENTS,
+  KIN_WORK_COPY,
+  kinWorkApplied,
+  type KinWorkAction,
+} from "@t3tools/client-runtime/kin/kinWorkChanges";
+import {
+  KIN_CLIENTS as KIN_CLIENTS_WORDS,
   KIN_CLIENT_FAILED,
   KIN_CLIENT_REFUSED,
   KIN_CLIENT_GONE,
@@ -15,6 +22,7 @@ import {
   type KinOwedView,
   type KinTouchView,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
+import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import {
   KIN_WORK_FORM_COPY,
   kinWorkSend,
@@ -32,6 +40,7 @@ import * as Schema from "effect/Schema";
 import { useState } from "react";
 import { Alert, View } from "react-native";
 
+import { Chip } from "../../components/ui/Chip";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { EmptyState } from "../../components/ui/EmptyState";
@@ -39,9 +48,9 @@ import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
-import { ListToggleRow } from "../../components/ui/ListToggleRow";
 import { Notice } from "../../components/ui/Notice";
 import { useNowMinuteMs } from "../../lib/clock";
+import { cn } from "../../lib/cn";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
@@ -53,8 +62,25 @@ import {
   KinWorkStaleNotice,
   KinWorkTaskRow,
   KinWorkTimelineLines,
+  KinWorkToggleRow,
 } from "./components/KinWorkPieces";
+import { KinClientDeals } from "./KinDealsList";
+import {
+  useKinSectionNamed,
+  useKinSectionOn,
+  useKinSectionWords,
+  useKinShell,
+} from "./state/useKinShell";
+import {
+  kinSectionNamed,
+  kinSectionNamedWords,
+  kinSectionOffLine,
+  kinSectionOn,
+} from "@t3tools/client-runtime/kin/kinShell";
 import { KinWorkNamedRow } from "./KinWorkLists";
+import { KinAvatar } from "./components/KinAvatar";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
+import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 import { KinPlaceLists } from "./KinPlaceLists";
 import { KinDocsUnder } from "./KinDocsList";
 import { kinClient } from "./state/kinClient";
@@ -67,9 +93,10 @@ import {
   useKinWorkHistory,
   type KinWorkTarget,
 } from "./state/useKinWork";
-import { KinAttentionSection } from "./KinAttention";
+import { KinAsideNote, KinAttentionSection } from "./KinAttention";
 import { useKinOpenPlace } from "./state/kinHomeTab";
 import { useKinWorkLink } from "./state/kinWorkLink";
+import { KinWatchLine } from "./KinWatchLine";
 
 export type KinClientParams = {
   readonly environmentId: string;
@@ -88,12 +115,14 @@ export function KinClientScreen({ route }: StaticScreenProps<KinClientParams>) {
   const environmentId = Option.getOrNull(decodeEnvironmentId(route.params.environmentId));
   const orgId = Option.getOrNull(decodeOrgId(route.params.orgId));
   const key = Option.getOrNull(decodeKey(route.params.party));
+  const KIN_CLIENTS = useKinSectionWords(environmentId, KIN_CLIENTS_WORDS);
+  const named = useKinSectionNamed(environmentId);
   if (environmentId === null || orgId === null || key === null) {
     return (
       <KinWorkFrame title={KIN_CLIENTS.title} onBack={() => navigation.goBack()}>
         <EmptyState
           variant="plain"
-          title="This link doesn't name a client"
+          title={named("This link doesn't name a client")}
           detail="Open Work from your Kin chats."
         />
       </KinWorkFrame>
@@ -106,12 +135,14 @@ type ClientTarget = KinWorkTarget & { readonly clientKey: KinRecordKey };
 
 function KinClientGate(props: ClientTarget) {
   const navigation = useNavigation();
+  const KIN_CLIENTS = useKinSectionWords(props.environmentId, KIN_CLIENTS_WORDS);
+  const shell = useKinShell(props.environmentId);
   const allowed = useAtomValue(kinClient.workRead.permissionAtom(props.environmentId));
   // A teammate who follows a link asks the host nothing.
   if (!allowed) {
     return (
       <KinWorkFrame title={KIN_CLIENTS.title} onBack={() => navigation.goBack()}>
-        <EmptyState variant="plain" {...KIN_CLIENT_REFUSED} />
+        <EmptyState variant="plain" {...kinSectionNamedWords(shell, KIN_CLIENT_REFUSED)} />
       </KinWorkFrame>
     );
   }
@@ -120,6 +151,8 @@ function KinClientGate(props: ClientTarget) {
 
 function KinClientStates(props: ClientTarget) {
   const navigation = useNavigation();
+  const KIN_CLIENTS = useKinSectionWords(props.environmentId, KIN_CLIENTS_WORDS);
+  const shell = useKinShell(props.environmentId);
   const { state, refresh } = useKinClientPage(props, props.clientKey);
   if (state._tag === "ready") {
     return <KinClientBody {...props} page={state.value} stale={state.stale} onRefresh={refresh} />;
@@ -127,15 +160,15 @@ function KinClientStates(props: ClientTarget) {
   return (
     <KinWorkFrame title={KIN_CLIENTS.title} onBack={() => navigation.goBack()}>
       {state._tag === "loading" ? (
-        <KinWorkLoading label="Loading client" />
+        <KinWorkLoading label={kinSectionNamed(shell, "Loading client")} />
       ) : state._tag === "gone" ? (
-        <EmptyState variant="plain" {...KIN_CLIENT_GONE} />
+        <EmptyState variant="plain" {...kinSectionNamedWords(shell, KIN_CLIENT_GONE)} />
       ) : state._tag === "refused" ? (
-        <EmptyState variant="plain" {...KIN_CLIENT_REFUSED} />
+        <EmptyState variant="plain" {...kinSectionNamedWords(shell, KIN_CLIENT_REFUSED)} />
       ) : (
         <EmptyState
           variant="plain"
-          {...KIN_CLIENT_FAILED}
+          {...kinSectionNamedWords(shell, KIN_CLIENT_FAILED)}
           action={<Button tone="secondary" label={KIN_RETRY} onPress={refresh} />}
         />
       )}
@@ -159,8 +192,16 @@ function KinClientBody(
   const directory = useKinWorkDirectory(target, true);
   const { names } = directory;
   const { state: changed, changes } = useKinWorkChanges(target);
-  const canChange = useAtomValue(kinClient.workClientUpdate.permissionAtom(environmentId));
+  const ownerLevel = useKinIsOwnerLevel(environmentId);
   const canAddTask = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
+  const KIN_CLIENTS = useKinSectionWords(environmentId, KIN_CLIENTS_WORDS);
+  const shell = useKinShell(environmentId);
+  // A client opened by its link while Clients is off says so; Invoices off takes its invoicing.
+  const offLine = kinSectionOffLine(shell, "clients", ownerLevel);
+  const canInvoice =
+    useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId)) &&
+    kinSectionOn(shell, "invoices");
+  const dealsOn = useKinSectionOn(environmentId, "deals");
   const canChangeTasks =
     useAtomValue(kinClient.workUpdate.permissionAtom(environmentId)) &&
     kinWorkHostEdits(work._tag === "ready" ? work.live.summary : null);
@@ -171,6 +212,8 @@ function KinClientBody(
   const [unopened, setUnopened] = useState<string | null>(null);
   const history = useKinWorkHistory(target, props.clientKey, page.seq);
   const removeTouch = useAtomCommand(kinClient.workTouchRemove, { reportFailure: false });
+  const [refused, setRefused] = useState<string | null>(null);
+  const grows = useKinTextGrows();
   // A logged contact taken back, after a plain confirm; what Kin read from its records stays.
   const askRemoveTouch = (touch: KinTouchView) =>
     Alert.alert(KIN_CLIENTS.touchRemoveTitle, `${touch.title}, ${touch.when}`, [
@@ -178,9 +221,17 @@ function KinClientBody(
       {
         text: KIN_CLIENTS.touchRemove,
         style: "destructive",
+        // A teammate removes only what they logged; the host says so for anyone else's.
         onPress: () =>
           void removeTouch({ environmentId, input: { orgId, touchId: touch.id } }).then(
-            props.onRefresh,
+            (result) => {
+              setRefused(
+                result._tag === "Success"
+                  ? null
+                  : kinFailureText(squashAtomCommandFailure(result), KIN_CLIENTS.touchFailed),
+              );
+              props.onRefresh();
+            },
           ),
       },
     ]);
@@ -195,14 +246,24 @@ function KinClientBody(
     },
     names,
     now,
+    ownerLevel,
+    shell,
   );
+  const { can } = view;
+  // Clients on, or the owner level: what's owed, the contact log, notes and history show.
+  const full = can.log;
+  const keepsContacts = can.contacts ?? can.edit;
   const act = (key: KinRecordKey, action: KinWorkAction) => {
     const record = [...page.weOwe.records, ...page.theyOwe.records].find(
       (held) => held.key === key,
     );
     if (record !== undefined) void changes.run(kinWorkApplied(record, changed), action, names);
   };
-  const change = async (input: { readonly active?: boolean; readonly sensitive?: boolean }) => {
+  const change = async (input: {
+    readonly active?: boolean;
+    readonly sensitive?: boolean;
+    readonly prospect?: boolean;
+  }) => {
     if (busy) return;
     setBusy(true);
     setProblem(null);
@@ -227,6 +288,23 @@ function KinClientBody(
       setUnopened(`This phone has nothing set up to ${what}.`);
   };
   const about = { party: view.key, partyName: view.name };
+  const promiseRow = (promise: KinPromiseView | null) => {
+    if (promise === null) return null;
+    const { open: at } = promise;
+    return {
+      from: promise.from,
+      onOpen:
+        at === null
+          ? null
+          : () =>
+              navigation.navigate("KinChat", {
+                environmentId,
+                orgId,
+                chatId: at.chatId,
+                message: at.messageId,
+              }),
+    };
+  };
   const owed = (
     title: string,
     side: KinOwedView,
@@ -246,6 +324,7 @@ function KinClientBody(
             saving={changed.pending[row.key] !== undefined}
             onPress={() => openRecord("KinWorkItem", { environmentId, orgId, task: row.key })}
             onAct={canChangeTasks ? (action) => act(row.key, action) : null}
+            promise={promiseRow(row.promise)}
           />
         ))
       )}
@@ -257,7 +336,7 @@ function KinClientBody(
           }
         />
       )}
-      {canAddTask && !view.closed ? (
+      {canAddTask && view.adds && !view.closed ? (
         <ListActionRow
           label={add.label}
           onPress={() =>
@@ -265,7 +344,7 @@ function KinClientBody(
           }
         />
       ) : null}
-      {also !== undefined && canAddTask && !view.closed ? (
+      {also !== undefined && canAddTask && view.adds && !view.closed ? (
         <ListActionRow
           label={also.label}
           onPress={() =>
@@ -276,39 +355,106 @@ function KinClientBody(
     </ListSection>
   );
   const waitingNone = view.theyOwe.total === 0 && view.theyOwe.rows.length === 0;
+  const contactsFooter = [
+    view.contacts.length === 0 || !full ? null : KIN_CLIENTS.detailsPrivate,
+    view.contactsWho,
+  ]
+    .filter((line) => line !== null)
+    .join(" ");
   return (
     <KinWorkFrame
-      title={view.vendor ? "Vendor" : "Client"}
+      title={
+        view.vendor
+          ? KIN_CLIENTS.kindVendor
+          : view.prospect
+            ? KIN_CLIENTS.kindProspect
+            : KIN_CLIENTS.kindClient
+      }
       onBack={() => navigation.goBack()}
       refresh={{ accessibilityLabel: "Refresh", onPress: props.onRefresh }}
-      {...(canChange
+      {...(can.edit || can.owner || canInvoice
         ? {
-            actions: [
-              {
-                accessibilityLabel: KIN_CLIENTS.edit,
-                icon: "pencil" as const,
-                disabled: busy,
-                onPress: () =>
-                  navigation.navigate("KinClientForm", { environmentId, orgId, party: view.key }),
-              },
-            ],
+            actions: can.edit
+              ? [
+                  {
+                    accessibilityLabel: KIN_CLIENTS.edit,
+                    icon: "pencil" as const,
+                    disabled: busy,
+                    onPress: () =>
+                      navigation.navigate("KinClientForm", {
+                        environmentId,
+                        orgId,
+                        party: view.key,
+                      }),
+                  },
+                ]
+              : [],
             menus: [
               {
                 title: "More",
                 icon: "ellipsis" as const,
                 items: [
-                  {
-                    id: "close",
-                    title: view.closed ? KIN_CLIENTS.reopen : KIN_CLIENTS.close,
-                    disabled: busy,
-                    onPress: () => void change({ active: view.closed }),
-                  },
+                  ...(canInvoice && !view.vendor && !view.closed
+                    ? [
+                        {
+                          id: "invoice",
+                          title: KIN_MONEY_FORMS.invoice.title,
+                          disabled: busy,
+                          onPress: () =>
+                            navigation.navigate("KinInvoiceNew", {
+                              environmentId,
+                              orgId,
+                              party: view.key,
+                              partyName: view.name,
+                            }),
+                        },
+                      ]
+                    : []),
+                  ...(can.edit && !view.vendor
+                    ? [
+                        {
+                          id: "kind",
+                          title: view.prospect ? KIN_CLIENTS.makeClient : KIN_CLIENTS.makeProspect,
+                          disabled: busy,
+                          onPress: () => void change({ prospect: !view.prospect }),
+                        },
+                      ]
+                    : []),
+                  ...(can.owner
+                    ? [
+                        {
+                          id: "close",
+                          title: view.closed ? KIN_CLIENTS.reopen : KIN_CLIENTS.close,
+                          disabled: busy,
+                          onPress: () =>
+                            view.closed
+                              ? void change({ active: true })
+                              : Alert.alert(
+                                  KIN_CLIENTS.closeAsk(view.name),
+                                  KIN_CLIENTS.closeDetail,
+                                  [
+                                    { text: KIN_WORK_COPY.cancel, style: "cancel" },
+                                    {
+                                      text: KIN_CLIENTS.close,
+                                      style: "destructive",
+                                      onPress: () => void change({ active: false }),
+                                    },
+                                  ],
+                                ),
+                        },
+                      ]
+                    : []),
                 ],
               },
             ],
           }
         : {})}
     >
+      {offLine === null ? null : (
+        <Text textRole="footnote" className="px-2 text-foreground-muted">
+          {offLine}
+        </Text>
+      )}
       <View className="gap-1 px-2">
         <Text
           textRole="headline"
@@ -317,9 +463,34 @@ function KinClientBody(
         >
           {view.name}
         </Text>
-        <Text textRole="footnote" className="text-foreground-muted">
+        <Text
+          textRole="footnote"
+          className={view.prospect ? "font-t3-medium text-primary-text" : "text-foreground-muted"}
+        >
           {view.line}
         </Text>
+        <View className={cn("flex-row items-center gap-1.5", grows && "flex-wrap")}>
+          <Text textRole="footnote" className="text-foreground-muted">
+            {KIN_CLIENTS.lookedAfterBy}
+          </Text>
+          <KinAvatar avatar={view.lookedAfter.avatar} size="mini" />
+          <Text
+            textRole="footnote"
+            numberOfLines={kinLines(1, grows)}
+            className="shrink text-foreground"
+          >
+            {view.lookedAfter.name}
+          </Text>
+        </View>
+        {view.contract === null ? null : (
+          <Text
+            textRole="footnote"
+            accessibilityLabel={`${KIN_PROMISES.contract}: ${view.contract.text}`}
+            className={view.contract.soon ? "text-warning-foreground" : "text-foreground-muted"}
+          >
+            {view.contract.text}
+          </Text>
+        )}
         {view.privacy.private ? <KinWorkPrivateMark /> : null}
       </View>
       {props.stale ? (
@@ -328,6 +499,8 @@ function KinClientBody(
       {problem === null ? null : (
         <KinWorkProblemNotice problem={problem} onDismiss={() => setProblem(null)} />
       )}
+      <KinAsideNote {...target} record={view.key} names={names} />
+      <KinWatchLine {...target} recordKey={view.key} />
       <KinAttentionSection
         {...target}
         scope={{ type: "client", key: view.key }}
@@ -337,8 +510,40 @@ function KinClientBody(
             openRecord("KinWorkItem", { environmentId, orgId, task: to.key });
         }}
       />
-      {/* What's owed, the contact log, tax, terms, notes and history are the owner's. */}
-      {!canChange
+      {view.nextStep === null || !full ? null : (
+        <ListSection title={KIN_CLIENTS.nextStep}>
+          {view.nextStep.next === null ? (
+            <>
+              <ListRowLayout label={KIN_CLIENTS.noNextStep} disabled />
+              {canAddTask && view.adds && !view.closed ? (
+                <ListActionRow
+                  label={KIN_CLIENTS.addNextStep}
+                  onPress={() =>
+                    navigation.navigate("KinWorkNew", {
+                      environmentId,
+                      orgId,
+                      ...about,
+                      side: "ours",
+                    })
+                  }
+                />
+              ) : null}
+            </>
+          ) : (
+            <ListRow
+              label={view.nextStep.next.title}
+              description={view.nextStep.next.line}
+              onPress={() => {
+                const next = view.nextStep?.next;
+                if (next != null)
+                  openRecord("KinWorkItem", { environmentId, orgId, task: next.key });
+              }}
+            />
+          )}
+        </ListSection>
+      )}
+      {/* Tax, terms, Keep private and closing stay the owner level's. */}
+      {!full
         ? null
         : owed(
             KIN_CLIENTS.weOwe,
@@ -348,13 +553,13 @@ function KinClientBody(
             // With nothing waiting on them, that section is absent and its add sits here.
             waitingNone ? { label: KIN_CLIENTS.addTheyOwe, side: "theirs" } : undefined,
           )}
-      {waitingNone || !canChange
+      {waitingNone || !full
         ? null
         : owed(KIN_CLIENTS.theyOwe, view.theyOwe, KIN_CLIENTS.nothingOwing, {
             label: KIN_CLIENTS.addTheyOwe,
             side: "theirs",
           })}
-      {!canChange && view.projects.length === 0 ? null : (
+      {!full && view.projects.length === 0 ? null : (
         <ListSection title={KIN_CLIENTS.projects}>
           {view.projects.length === 0 ? (
             <ListRowLayout label={KIN_CLIENTS.noProjects} disabled />
@@ -368,7 +573,7 @@ function KinClientBody(
               />
             ))
           )}
-          {canChange && !view.closed ? (
+          {can.owner && view.adds && !view.closed ? (
             <ListActionRow
               label={KIN_PROJECTS.add}
               onPress={() =>
@@ -378,15 +583,21 @@ function KinClientBody(
           ) : null}
         </ListSection>
       )}
+      {view.vendor || !dealsOn ? null : (
+        <KinClientDeals
+          {...target}
+          party={{ key: view.key, title: view.name }}
+          closed={view.closed}
+          names={names}
+        />
+      )}
       <ListSection
         title={KIN_CLIENTS.contacts}
-        {...(view.contacts.length === 0 || !canChange
-          ? {}
-          : { footer: KIN_CLIENTS.detailsPrivate })}
+        {...(contactsFooter === "" ? {} : { footer: contactsFooter })}
       >
         {view.contacts.length === 0 ? (
           <ListRowLayout
-            label={canChange ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
+            label={keepsContacts && view.adds ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
             disabled
           />
         ) : (
@@ -395,8 +606,11 @@ function KinClientBody(
               key={contact.key}
               contact={contact}
               onOpen={(href, what) => void open(href, what)}
+              onTag={(tag) =>
+                navigation.navigate("KinMarketingList", { environmentId, orgId, title: tag, tag })
+              }
               onEdit={
-                canChange
+                keepsContacts
                   ? () =>
                       navigation.navigate("KinContactForm", {
                         environmentId,
@@ -409,7 +623,7 @@ function KinClientBody(
             />
           ))
         )}
-        {canChange ? (
+        {keepsContacts && view.adds ? (
           <ListActionRow
             label={KIN_CLIENTS.addContact}
             onPress={() =>
@@ -426,15 +640,16 @@ function KinClientBody(
         directory={directory}
       />
       {unopened === null ? null : <Notice message={unopened} onDismiss={() => setUnopened(null)} />}
+      {refused === null ? null : <Notice message={refused} onDismiss={() => setRefused(null)} />}
       <KinDocsUnder {...target} names={names} under={{ party: props.clientKey }} />
       <View className="gap-2">
-        {view.touches === null || !canChange ? null : (
+        {view.touches === null || !full ? null : (
           <KinFoldSection title={KIN_CLIENTS.recentContact} summary={view.lastContact}>
             {view.touches.length === 0 ? (
               <ListRowLayout label={KIN_CLIENTS.noTouches} disabled />
             ) : (
               view.touches.map((touch) =>
-                canChange && touch.removable ? (
+                touch.removable ? (
                   <ListRow
                     key={touch.id}
                     label={touch.title}
@@ -453,7 +668,7 @@ function KinClientBody(
                 ),
               )
             )}
-            {canChange && !view.closed ? (
+            {!view.closed ? (
               <ListActionRow
                 label={KIN_CLIENTS.logContact}
                 onPress={() =>
@@ -463,12 +678,32 @@ function KinClientBody(
             ) : null}
           </KinFoldSection>
         )}
-        {!canChange && view.address === null ? null : (
+        {!full && view.address === null ? null : (
           <KinFoldSection
             title={KIN_CLIENTS.details}
-            summary={canChange ? KIN_CLIENTS.detailsSummary : null}
+            summary={can.owner ? KIN_CLIENTS.detailsSummary : null}
           >
             <View className="gap-3 bg-grouped-card px-4 py-3">
+              {!full || view.source === null ? null : (
+                <View className="gap-1">
+                  <Text textRole="footnote" className="text-foreground-muted">
+                    {KIN_CLIENTS.cameFrom}
+                  </Text>
+                  <Text textRole="body" selectable className="text-foreground">
+                    {view.source}
+                  </Text>
+                </View>
+              )}
+              {!full || view.tags.length === 0 ? null : (
+                <View className="gap-1">
+                  <Text textRole="footnote" className="text-foreground-muted">
+                    {KIN_CLIENTS.tags}
+                  </Text>
+                  <Text textRole="body" selectable className="text-foreground">
+                    {view.tags.join(", ")}
+                  </Text>
+                </View>
+              )}
               {view.address === null ? null : (
                 <View className="gap-1">
                   <Text textRole="footnote" className="text-foreground-muted">
@@ -479,7 +714,7 @@ function KinClientBody(
                   </Text>
                 </View>
               )}
-              {!canChange ? null : (
+              {!can.owner ? null : (
                 <>
                   {view.vendor && view.tax === null ? null : (
                     <View className="gap-1">
@@ -513,23 +748,25 @@ function KinClientBody(
                       {KIN_CLIENTS.termsPrivate}
                     </Text>
                   </View>
-                  <View className="gap-1">
-                    <Text textRole="footnote" className="text-foreground-muted">
-                      {KIN_CLIENTS.notes}
-                    </Text>
-                    <Text
-                      textRole="body"
-                      selectable
-                      className={view.notes === null ? "text-foreground-muted" : "text-foreground"}
-                    >
-                      {view.notes ?? KIN_CLIENTS.noNotes}
-                    </Text>
-                  </View>
                 </>
               )}
+              {!full ? null : (
+                <View className="gap-1">
+                  <Text textRole="footnote" className="text-foreground-muted">
+                    {KIN_CLIENTS.notes}
+                  </Text>
+                  <Text
+                    textRole="body"
+                    selectable
+                    className={view.notes === null ? "text-foreground-muted" : "text-foreground"}
+                  >
+                    {view.notes ?? KIN_CLIENTS.noNotes}
+                  </Text>
+                </View>
+              )}
             </View>
-            {canChange ? (
-              <ListToggleRow
+            {can.owner ? (
+              <KinWorkToggleRow
                 icon="lock"
                 label={KIN_CLIENTS.privateLabel}
                 description={view.privacy.note}
@@ -540,7 +777,7 @@ function KinClientBody(
             ) : null}
           </KinFoldSection>
         )}
-        {!canChange ? null : (
+        {!full ? null : (
           <KinFoldSection title={KIN_CLIENTS.history} summary={null}>
             <View className="gap-2 bg-grouped-card px-4 py-3">
               {history.state.loading ? (
@@ -591,10 +828,26 @@ function KinClientBody(
 function KinContactRows(props: {
   readonly contact: KinContactView;
   readonly onOpen: (href: string, what: string) => void;
+  readonly onTag: (tag: string) => void;
   readonly onEdit: (() => void) | null;
 }) {
   const { contact, onEdit } = props;
-  const { email, phone } = contact;
+  const reach = (
+    icon: "envelope" | "phone",
+    one: KinContactView["emails"][number],
+    at: number,
+    what: string,
+  ) =>
+    one.href === null ? (
+      <ListRowLayout key={`${icon}-${at}`} icon={icon} label={one.text} />
+    ) : (
+      <ListActionRow
+        key={`${icon}-${at}`}
+        icon={icon}
+        label={one.text}
+        onPress={() => props.onOpen(one.href ?? "", what)}
+      />
+    );
   const who = {
     icon: "person.crop.circle" as const,
     label: contact.name,
@@ -610,23 +863,17 @@ function KinContactRows(props: {
   return (
     <>
       {onEdit === null ? <ListRowLayout {...who} /> : <ListRow {...who} onPress={onEdit} />}
-      {email === null ? null : email.href === null ? (
-        <ListRowLayout icon="envelope" label={email.text} />
-      ) : (
-        <ListActionRow
-          icon="envelope"
-          label={email.text}
-          onPress={() => props.onOpen(email.href ?? "", "send email")}
-        />
-      )}
-      {phone === null ? null : phone.href === null ? (
-        <ListRowLayout icon="phone" label={phone.text} />
-      ) : (
-        <ListActionRow
-          icon="phone"
-          label={phone.text}
-          onPress={() => props.onOpen(phone.href ?? "", "make calls")}
-        />
+      {contact.emails.map((one, at) => reach("envelope", one, at, "send email"))}
+      {contact.phones.map((one, at) => reach("phone", one, at, "make calls"))}
+      {contact.tags.length === 0 ? null : (
+        <View
+          className="flex-row flex-wrap gap-2 px-4 py-2"
+          accessibilityLabel={KIN_MARKETING.tags}
+        >
+          {contact.tags.map((tag) => (
+            <Chip key={tag} label={tag} size="small" icon="tag" onPress={() => props.onTag(tag)} />
+          ))}
+        </View>
       )}
     </>
   );

@@ -1,5 +1,13 @@
 // @effect-diagnostics globalDate:off - Fixtures read a thread date against a fixed now.
-import { KinChatError, type EnvironmentId, type KinWidget } from "@t3tools/contracts";
+import {
+  formatKinWhen,
+  KinChatError,
+  KinPersonId,
+  type EnvironmentId,
+  type KinWidget,
+} from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -10,14 +18,51 @@ import {
   kinScheduledTaskCardView,
 } from "./kinCardPresentation.ts";
 import {
+  kinChoiceAccessibilityLabel,
+  kinChoiceActInput,
+  KIN_CARD_REREAD_COPY,
+  kinChoiceCardActions,
+  kinChoiceCardTaps,
   kinChoiceOutcomeSentence,
   kinChoiceAnswered,
   kinChoiceFailureNotice,
   kinChoicePhase,
+  kinChoiceDecidedLine,
+  kinChoiceDismissedLine,
+  kinChoiceDismissible,
+  kinChoiceDismissInput,
+  kinChoiceUndoneLine,
+  kinChoiceClosedLine,
+  createKinHeldPress,
+  kinMailCancels,
   kinQuotedInZone,
   kinAddressPieces,
+  kinSendEditFailure,
+  kinSendEditBound,
+  kinSendEditHeld,
+  kinSendEditHeldKey,
+  kinSendEditControls,
+  kinSendEditDiscardInput,
+  kinSendEditedLine,
+  kinSendEditInput,
+  KIN_SEND_COPY,
+  kinSendEditKept,
+  kinSendEditLeaveSaves,
+  kinSendEditOffered,
+  kinSendEditRefused,
+  kinSendEditSaveInput,
+  kinSendEditShown,
+  kinSendEditStart,
+  kinMayHaveGoneLine,
+  kinSendCheckPending,
+  kinSendTicked,
+  kinSendTry,
+  kinSendEditWarned,
   kinThreadDate,
+  type KinChoiceCardStatus,
+  type KinSendEditing,
 } from "./kinChoicePresentation.ts";
+import { kinListedModelName } from "./kinLeadPresentation.ts";
 import { formatKinTime } from "./kinScreenState.ts";
 import { kinCardStatusAfter, kinDeferralCountdown } from "./kinDeferralPresentation.ts";
 import { kinMemoryUndoFailureText } from "./kinMemoryChangesPresentation.ts";
@@ -28,7 +73,7 @@ const taskState = (overrides: Record<string, unknown> = {}) => ({
   threadId: "thread-1",
   remoteEnvironmentId: null,
   title: "Fix the payments test",
-  model: "GPT-6.1 Sol",
+  model: "gpt-6.1-sol",
   status: "working",
   pullRequests: [],
   lastError: null,
@@ -60,8 +105,11 @@ const known =
   (id: EnvironmentId) =>
     ids.includes(id);
 const HOST = "env-home" as EnvironmentId;
+// The name Settings shows for a model; an id no provider lists has none.
+const PROVIDERS = [{ models: [{ slug: "gpt-6.1-sol", name: "GPT-6.1 Sol" }] }];
+const modelName = (model: string) => kinListedModelName(model, PROVIDERS);
 const task = (w: KinWidget, isKnown = known("env-home", "env-vps", "env-other")) => {
-  const view = kinCardView(w, HOST, isKnown);
+  const view = kinCardView(w, HOST, isKnown, null, undefined, modelName);
   if (view.kind !== "task") throw new Error(`expected a task card, got ${view.kind}`);
   return view.task;
 };
@@ -84,6 +132,16 @@ describe("kinCardView", () => {
     expect(kinCardView(widget({ type: "poll", state: { options: [] } }), HOST, known())).toEqual({
       kind: "unknown",
       text: null,
+    });
+    // A bills card from before this build, or one it can't read, says the host's own sentence.
+    const bills = { text: "Reading 12 bills: 4 done.", batchId: "b-1", status: "reading" };
+    expect(kinCardView(widget({ type: "bill_batch_v2", state: bills }), HOST, known())).toEqual({
+      kind: "unknown",
+      text: "Reading 12 bills: 4 done.",
+    });
+    expect(kinCardView(widget({ type: "bill_batch", state: bills }), HOST, known())).toEqual({
+      kind: "unknown",
+      text: "Reading 12 bills: 4 done.",
     });
     // A chart from a newer host, of a kind this build can't draw, still says its title.
     const pie = widget({ type: "chart", state: { chart: "pie", title: "Spend by team" } });
@@ -150,15 +208,39 @@ describe("kinCardView", () => {
     expect(task(widget({ state: taskState({ status: "done" }) })).working).toBe(false);
   });
 
-  it("shows the last error whenever there is one, whatever the status", () => {
+  it("says why a failed task stopped in plain words, and shows any other error as it is", () => {
     const error = { lastError: "Tests failed\n\n  3 of 120" };
-    expect(task(widget({ state: taskState({ ...error, status: "failed" }) })).detail).toBe(
+    const lines = (overrides: Record<string, unknown>) => {
+      const view = task(widget({ state: taskState(overrides) }));
+      return [view.detail, view.detailNote];
+    };
+    expect(lines({ ...error, status: "failed" })).toEqual([
+      "The helper stopped with an error.",
       "Tests failed 3 of 120",
-    );
-    expect(task(widget({ state: taskState({ ...error, status: "cancelled" }) })).detail).toBe(
+    ]);
+    expect(lines({ ...error, status: "failed", failure: null })).toEqual([
+      "The helper stopped with an error.",
       "Tests failed 3 of 120",
-    );
-    expect(task(widget({ state: taskState({ status: "failed" }) })).detail).toBeNull();
+    ]);
+    expect(lines({ status: "failed" })).toEqual(["The helper stopped with an error.", null]);
+    expect(lines({ ...error, status: "cancelled" })).toEqual(["Tests failed 3 of 120", null]);
+    const stopped = { status: "failed", lastError: "API Error: 400 no route for invented-model" };
+    expect(lines({ ...stopped, failure: "model_not_offered" })).toEqual([
+      "This server's AI provider doesn't offer the model this task asked for. Ask the agent to start it again on its own model.",
+      null,
+    ]);
+    expect(lines({ ...stopped, failure: "signed_out" })).toEqual([
+      "This server's AI provider is signed out. Sign it in again in Settings, then ask the agent to start the task again.",
+      null,
+    ]);
+    expect(lines({ ...stopped, failure: "unreachable" })).toEqual([
+      "This server couldn't reach its AI provider. Ask the agent to start the task again in a few minutes.",
+      null,
+    ]);
+    expect(lines({ ...stopped, failure: "usage_limit" })).toEqual([
+      "The AI provider's usage limit is reached. Ask the agent to start the task again once it resets.",
+      null,
+    ]);
   });
 
   it.each([
@@ -166,12 +248,17 @@ describe("kinCardView", () => {
     [
       "an error that ends a sentence",
       { status: "failed", lastError: "Tests also fail." },
-      "Task: Fix the payments test. Failed. Tests also fail. GPT-6.1 Sol. Opens the thread.",
+      "Task: Fix the payments test. Failed. The helper stopped with an error. Tests also fail. GPT-6.1 Sol. Opens the thread.",
     ],
     [
       "a title that ends a question",
       { title: "Why is CI red?", model: null },
       "Task: Why is CI red? Working. Opens the thread.",
+    ],
+    [
+      "a model Settings has no name for, shown as nothing rather than its raw id",
+      { model: "claude-sonnet-5-5" },
+      "Task: Fix the payments test. Working. Opens the thread.",
     ],
     [
       "an error that trails off",
@@ -292,10 +379,120 @@ describe("choice cards", () => {
     return view.choice;
   };
 
+  // A sent-up draft renders as a doc between the card's own lines; a long one's opening never
+  // folds under Show all and opens the version that went up. An older host's has no doc: as before.
+  it("a sent-up draft: short as written, a long one's opening opens its version", () => {
+    const head = "Zoya Sheikh asks, through Chief of staff.";
+    const text = Array.from({ length: 14 }, (_, n) => `Phase ${n + 1} is priced as agreed.`).join(
+      "\n",
+    );
+    const note = "This is only the opening. Open D-12 to read the whole draft before you approve.";
+    const sentUp = (draftDoc?: object, more = "") =>
+      choice({
+        state: {
+          ...choiceState(),
+          detail: `${head}\n\n${text}\n\n${more}Proposal for Harbourline Hotels`,
+          draft: text,
+          ...(draftDoc === undefined ? {} : { draftDoc }),
+        },
+      }).draft;
+    const short = sentUp();
+    expect(short).toMatchObject({ before: head, folds: true, open: null });
+    expect(sentUp({ recordId: "rec-d12", key: "D-12", version: 4 }, `${note}\n\n`)).toEqual({
+      ...short,
+      after: `${note}\n\nProposal for Harbourline Hotels`,
+      folds: false,
+      open: { key: "D-12", version: 4 },
+    });
+    // Refused as moved: nothing is left to approve, so it neither asks for a read first nor says
+    // anyone chose Approve.
+    const refused = choice({
+      revision: 2,
+      state: {
+        ...choiceState({
+          optionId: "option-1",
+          personId: "rhea",
+          via: "tap",
+          emoji: null,
+          answeredAt: "2026-11-08T09:05:00.000Z",
+        }),
+        detail: `${head}\n\n${text}\n\n${note}\n\nProposal for Harbourline Hotels`,
+        draft: text,
+        draftDoc: { recordId: "rec-d12", key: "D-12", version: 4 },
+        outcome: { title: "Not approved", text: "This draft changed.", refused: true },
+        decidedBy: { personId: "rhea", name: "Rhea Rao" },
+      },
+    });
+    expect(refused.draft?.after).toBe("Proposal for Harbourline Hotels");
+    expect(kinChoiceDecidedLine(refused, "meera" as never)).toBeNull();
+  });
+
   it("takes taps until it is answered, closed or a day old", () => {
     const open = choice();
     expect(open.question).toBe("Ship today?");
     expect(open.options.map((option) => option.label)).toEqual(["Ship it", "Wait"]);
+    // An option that runs an action is labelled by the server and shows its line under it; the
+    // card's text no longer repeats the line it carries for older clients.
+    const acts = choice({
+      state: {
+        ...choiceState(),
+        detail: "Dev says it is live.\n\nMark W-4 done: Mark W-4 “Ship the API” done",
+        options: [
+          {
+            optionId: "option-1",
+            label: "Mark W-4 done",
+            action: { line: "Mark W-4 “Ship the API” done" },
+          },
+          { optionId: "option-2", label: "Wait" },
+        ],
+      },
+    });
+    expect(acts.options).toEqual([
+      {
+        id: "option-1",
+        label: "Mark W-4 done",
+        action: "Mark W-4 “Ship the API” done",
+        kind: null,
+      },
+      { id: "option-2", label: "Wait", action: null, kind: null },
+    ]);
+    expect(acts.detail).toBe("Dev says it is live.");
+    expect(open.askedBy).toBeNull();
+    // Asked for someone else, who asks comes first; the line `detail` repeats is shown once.
+    const askedFor = (detail: string) =>
+      choice({
+        state: { ...choiceState(), askedBy: "Zoya Sheikh asks, through Chief of staff.", detail },
+      });
+    const forZoya = askedFor(
+      "Zoya Sheikh asks, through Chief of staff.\n\nThe pilot clinics wait on it.",
+    );
+    expect([forZoya.askedBy, forZoya.question, forZoya.detail]).toEqual([
+      "Zoya Sheikh asks, through Chief of staff.",
+      "Ship today?",
+      "The pilot clinics wait on it.",
+    ]);
+    expect(askedFor("Zoya Sheikh asks, through Chief of staff.").detail).toBeNull();
+    expect(kinChoiceAccessibilityLabel(forZoya, null)).toMatch(
+      /^Question\. Zoya Sheikh asks, through Chief of staff\. Ship today\?/,
+    );
+    // What holds only while nobody has chosen shows while open, on no settled copy.
+    const waiting = "Until someone chooses, they stay in Zoya's name and can still be found.";
+    const handOver = (change: Record<string, unknown>, state: Record<string, unknown> = {}) =>
+      choice({
+        ...change,
+        state: { ...choiceState(), detail: waiting, whileOpen: waiting, ...state },
+      }).detail;
+    const given = { title: "Given to Meera", text: "Meera now looks after 2 clients." };
+    const tapped = {
+      optionId: "option-1",
+      personId: "rhea",
+      via: "tap",
+      emoji: null,
+      answeredAt: "2026-11-08T09:01:00.000Z",
+    };
+    expect(handOver({})).toBe(waiting);
+    expect(handOver({}, { answer: tapped, outcome: given })).toBeNull();
+    expect(handOver({ closedAt: "2026-11-08T09:01:00.000Z" }, { outcome: given })).toBeNull();
     expect(kinChoicePhase(open, posted + 60_000)).toBe("open");
     expect(kinChoicePhase(open, posted + 24 * 60 * 60 * 1000)).toBe("expired");
     expect(kinChoicePhase(choice({ closedAt: "2026-11-08T10:00:00.000Z" }), posted)).toBe(
@@ -310,6 +507,64 @@ describe("choice cards", () => {
       "expired",
       "Replaced by a newer one.",
     ]);
+    // Dismissed by the person it asked: "Dismissed" with Undo for them, who did it for others.
+    const rhea = KinPersonId.make("rhea");
+    const meera = KinPersonId.make("meera");
+    const dismissed = choice({
+      closedAt: "2026-11-08T10:00:00.000Z",
+      state: {
+        ...choiceState(),
+        dismissed: { personId: "rhea", name: "Rhea Rao", at: "2026-11-08T10:00:00.000Z" },
+      },
+    });
+    expect(kinChoicePhase(dismissed, posted)).toBe("dismissed");
+    expect(kinChoiceDismissedLine(dismissed, rhea)).toEqual({ text: "Dismissed", undo: true });
+    expect(kinChoiceDismissedLine(dismissed, meera)).toEqual({
+      text: "Dismissed by Rhea Rao",
+      undo: false,
+    });
+    expect(kinChoiceDismissedLine(open, rhea)).toBeNull();
+    // Offered only on an open card that asks the viewer; a Confirm card keeps its own Cancel.
+    const asks = choice({ awaiting: [rhea] });
+    const confirm = choice({
+      awaiting: [rhea],
+      state: {
+        ...choiceState(),
+        send: {
+          service: "Gmail",
+          action: "email",
+          from: "rhea@ambermill.example",
+          to: ["anita@orbitdental.example"],
+          cc: [],
+          subject: "Invoice",
+          body: "Attached.",
+          attachments: [],
+          outcome: null,
+        },
+      },
+    });
+    expect([
+      kinChoiceDismissible(asks, "open", rhea),
+      kinChoiceDismissible(asks, "open", meera),
+      kinChoiceDismissible(asks, "expired", rhea),
+      kinChoiceDismissible(confirm, "open", rhea),
+    ]).toEqual([true, false, false, false]);
+    expect(kinChoiceDismissInput(asks, true, "undo-1")).toEqual({
+      widgetId: asks.widgetId,
+      revision: asks.revision,
+      actionId: "undismiss",
+      clientActionId: "undo-1",
+    });
+    // Once the newer card is answered, the one it replaced says who chose what on it.
+    const told = choice({
+      closedAt: "2026-11-08T10:00:00.000Z",
+      state: {
+        ...choiceState(),
+        replaced: true,
+        replacedBy: { widgetId: "choice:newer", decided: { name: "Meera Shah", label: "Cancel" } },
+      },
+    });
+    expect(told.closedText).toBe("Replaced by a newer one, where Meera Shah chose “Cancel”.");
     // An agent's open question takes taps until the host closes it, then says what became of it.
     const asked = choice({ state: { ...choiceState(), untilAnswered: true } });
     expect(kinChoicePhase(asked, posted + 30 * 24 * 60 * 60 * 1000)).toBe("open");
@@ -328,6 +583,54 @@ describe("choice cards", () => {
       "expired",
       "No answer by Tuesday, so Finance went with “Wait”.",
     ]);
+    expect(kinChoiceUndoneLine(taken, null)).toBeNull();
+    // A host's closing words, from an older host too, read as they are.
+    expect(kinChoiceClosedLine(taken, null)).toBe(taken.closedText);
+    // Lapsed unanswered: who was asked and the day, "you" to them; the text for older clients.
+    const lapsedAt = new Date(2026, 10, 19, 19, 30);
+    const lapsed = choice({
+      closedAt: lapsedAt.toISOString(),
+      state: {
+        ...choiceState(),
+        untilAnswered: true,
+        outcome: {
+          title: "Lapsed",
+          text: "Lapsed on Thu 19 Nov: Zoya Sheikh didn't answer.",
+          lapsed: { personId: "zoya", name: "Zoya Sheikh", at: lapsedAt.toISOString() },
+        },
+      },
+    });
+    expect([kinChoicePhase(lapsed, posted), lapsed.closedText]).toEqual([
+      "expired",
+      "Lapsed on Thu 19 Nov: Zoya Sheikh didn't answer.",
+    ]);
+    expect(kinChoiceClosedLine(lapsed, "zoya" as never, new Date(2026, 10, 19, 21))).toBe(
+      "Lapsed today: you didn't answer.",
+    );
+    expect(kinChoiceClosedLine(lapsed, "rhea" as never, new Date(2026, 10, 21))).toBe(
+      `Lapsed on ${formatKinWhen(lapsedAt, "day")}: Zoya Sheikh didn't answer.`,
+    );
+    // A taken default's note, undone from Settings: who and when, said to each reader.
+    const at = new Date(2026, 10, 10, 9, 52);
+    const undone = choice({
+      closedAt: at.toISOString(),
+      state: {
+        ...choiceState(),
+        untilAnswered: true,
+        outcome: {
+          title: "Undone",
+          text: "Put W-3 “Clinic deck” back as it was.",
+          undone: { personId: "owner", name: "Rhea Rao", at: at.toISOString() },
+        },
+      },
+    });
+    const later = new Date(2026, 10, 10, 18, 0);
+    expect(kinChoiceUndoneLine(undone, "owner" as never, later)).toBe(
+      `Undone by you at ${formatKinWhen(at, "time")}.`,
+    );
+    expect(kinChoiceUndoneLine(undone, "zoya" as never, new Date(2026, 10, 12))).toBe(
+      `Undone by Rhea Rao on ${formatKinWhen(at, "dayTime")}.`,
+    );
     expect(
       kinCardView(
         widget({ type: "choice", state: { ...choiceState(), options: [] } }),
@@ -373,6 +676,24 @@ describe("choice cards", () => {
     }
     const sent = { ...tapped, send: { outcome: { tone: "ok", text: "Sent" } } } as never;
     expect(kinChoiceAnswered(sent, "owner" as never, null)).toEqual({ text: null });
+    // Who decided, under the card: by name to others, nothing more to the one who chose.
+    const decided = choice({
+      revision: 2,
+      state: {
+        ...choiceState({
+          optionId: "option-2",
+          personId: "rhea",
+          via: "tap",
+          emoji: null,
+          answeredAt: "2026-11-08T09:05:00.000Z",
+        }),
+        decidedBy: { personId: "rhea", name: "Rhea Rao" },
+      },
+    });
+    expect(kinChoiceDecidedLine(decided, "meera" as never)).toBe("Rhea Rao chose “Wait”.");
+    expect(kinChoiceDecidedLine(decided, "rhea" as never)).toBeNull();
+    expect(kinChoiceDecidedLine(tapped, "meera" as never)).toBeNull();
+    expect(kinChoiceDecidedLine({ ...decided, answer: null }, "meera" as never)).toBeNull();
   });
 
   it("says what an answered card of Kin's own did, in a past-tense title, not the button", () => {
@@ -420,13 +741,568 @@ describe("choice cards", () => {
     ]);
   });
 
+  it("offers a mail's own words to edit before it goes, and hands them over as typed", () => {
+    const mail = (send: Record<string, unknown>, answer: unknown = null) =>
+      choice({
+        state: {
+          ...choiceState(answer),
+          send: {
+            service: "Gmail",
+            action: "email",
+            from: "rhea@ambermill.example",
+            to: ["anita@orbitdental.example", "dev@orbitdental.example"],
+            cc: [],
+            subject: "Invoice",
+            body: "Hi Anita,\n\nAttached.",
+            attachments: [],
+            outcome: null,
+            ...send,
+          },
+        },
+      });
+    const open = mail({});
+    // Cancel on a mail asks first and waits for Undo; Confirm, and other cards' answers, don't.
+    expect([kinMailCancels(open, "option-2"), kinMailCancels(open, "option-1")]).toEqual([
+      true,
+      false,
+    ]);
+    expect(kinMailCancels(choice(), "option-2")).toBe(false);
+    // Settled, it says who confirmed it, sent it once it went, or chose not to, to everyone.
+    const by = (optionId: string, send: Record<string, unknown> = {}) =>
+      mail(send, {
+        optionId,
+        personId: "meera",
+        via: "tap",
+        emoji: null,
+        answeredAt: "2026-11-08T09:05:00.000Z",
+      });
+    const withDecider = (view: ReturnType<typeof by>) => ({
+      ...view,
+      decidedBy: { personId: "meera" as never, name: "Meera Shah" },
+    });
+    const went = (state: string, action = "email") => ({
+      action,
+      outcome: { state, reason: null, at: "2026-11-08T09:06:00.000Z" },
+    });
+    expect(
+      [
+        by("option-1"),
+        by("option-1", went("sending")),
+        by("option-1", went("sent")),
+        by("option-1", went("failed")),
+        by("option-1", went("sending", "event")),
+        by("option-1", went("sent", "event")),
+        by("option-1", went("failed", "event")),
+      ].map((view) => kinChoiceDecidedLine(withDecider(view), "rhea" as never)),
+    ).toEqual([
+      "Meera Shah confirmed it.",
+      "Meera Shah confirmed it.",
+      "Meera Shah sent it.",
+      "Meera Shah confirmed it.",
+      "Meera Shah confirmed it.",
+      "Meera Shah confirmed it.",
+      "Meera Shah confirmed it.",
+    ]);
+    expect(kinChoiceDecidedLine(withDecider(by("option-2")), "meera" as never)).toBe(
+      "You chose not to send it.",
+    );
+    expect(open.send?.edit).toEqual({
+      to: "anita@orbitdental.example, dev@orbitdental.example",
+      cc: "",
+      subject: "Invoice",
+      body: "Hi Anita,\n\nAttached.",
+    });
+    expect(kinSendEditOffered(open, "open", true)).toBe(true);
+    expect(kinSendEditOffered(open, "open", false)).toBe(false);
+    expect(kinSendEditOffered(open, "expired", true)).toBe(false);
+    const sending = mail({
+      outcome: { state: "sending", reason: null, at: "2026-11-08T09:06:00.000Z" },
+    });
+    expect(kinSendEditOffered(sending, "open", true)).toBe(false);
+    const answered = mail(
+      {},
+      {
+        optionId: "option-1",
+        personId: "owner",
+        via: "tap",
+        emoji: null,
+        answeredAt: "2026-11-08T09:05:00.000Z",
+      },
+    );
+    expect(kinSendEditOffered(answered, "answered", true)).toBe(false);
+    // An event or a plain call keeps Confirm and Cancel only.
+    expect(mail({ action: "event" }).send?.edit).toBeNull();
+    expect(mail({ action: "call" }).send?.edit).toBeNull();
+    // A mail's words fold under Read the whole email; an event's time and a call's tool don't.
+    expect(open.send?.folds).toBe(true);
+    expect(mail({ action: "event" }).send?.folds).toBe(false);
+    // An invoice attached while the company has no bank details says what is missing and where.
+    const file = { name: "INV-26-27-005.pdf", label: "Invoice INV/26-27/005", bytes: 2048 };
+    expect(mail({ attachments: [file] }).send?.noBank).toBeNull();
+    expect(mail({ attachments: [{ ...file, bankMissing: true }] }).send?.noBank).toBe(
+      KIN_SEND_COPY.noBank,
+    );
+
+    const started = kinSendEditStart(open)!;
+    expect(started).toEqual({
+      revision: 1,
+      opened: open.send?.edit,
+      draft: open.send?.edit,
+      problem: null,
+    });
+    const typed = {
+      ...started,
+      draft: {
+        to: " anita@orbitdental.example,dev@orbitdental.example; ",
+        cc: "rhea@ambermill.example",
+        subject: "Invoice for November",
+        body: "Hi Anita,\n\nAttached, with the GST line.\n",
+      },
+    };
+    // Someone changed From on another device: the editor still sends the card it opened on.
+    const moved = mail({
+      account: "billing@ambermill.example",
+      from: "billing@ambermill.example",
+    });
+    const sent = { ...moved, revision: 2 };
+    expect(kinSendEditInput(sent, typed, "press-1")).toEqual({
+      orgId: "org",
+      widgetId: "w1",
+      revision: 1,
+      clientActionId: "press-1",
+      to: ["anita@orbitdental.example", "dev@orbitdental.example"],
+      cc: ["rhea@ambermill.example"],
+      subject: "Invoice for November",
+      body: "Hi Anita,\n\nAttached, with the GST line.\n",
+    });
+    // The host's refusal is the line under the fields, in its own words, and the words stay.
+    const said = "anita at orbit in To isn't a plain address such as ana@example.com.";
+    expect(kinSendEditFailure(new KinChatError({ reason: "invalid_state", message: said }))).toBe(
+      said,
+    );
+    expect(kinSendEditFailure(new Error("socket closed"))).not.toBe("");
+    const invalid = new KinChatError({ reason: "invalid_state", message: said });
+    expect(kinSendEditRefused(typed, sent, invalid)).toEqual({ ...typed, problem: said });
+    // "This card changed" kills the card that press carried. Send then waits for a newer card and
+    // carries the one on screen, whose From the editor shows again beside it.
+    const changed = new KinChatError({
+      reason: "widget_changed",
+      message: "This card changed or was answered. Look at it again.",
+    });
+    expect(kinSendEditBound(typed, sent)).toEqual({ revision: 1, ready: true, review: false });
+    // The refusal can arrive before the card's update does: nothing newer to send yet.
+    const early = kinSendEditRefused(typed, open, changed);
+    expect(early).toEqual({ ...typed, problem: changed.message, stale: true });
+    expect(kinSendEditBound(early, open)).toEqual({ revision: 1, ready: false, review: true });
+    expect(kinSendEditBound(early, sent)).toEqual({ revision: 2, ready: true, review: true });
+    expect(kinSendEditInput(sent, early, "press-2").revision).toBe(2);
+    // That one changed too before the second press landed: it is dead in its turn.
+    const again = kinSendEditRefused(early, sent, changed);
+    expect(again.revision).toBe(2);
+    expect(kinSendEditBound(again, sent).ready).toBe(false);
+    expect(kinSendEditBound(again, { revision: 3 })).toEqual({
+      revision: 3,
+      ready: true,
+      review: true,
+    });
+    // Another refusal after that keeps Send waiting on the card, not on the words.
+    expect(kinSendEditRefused(again, { revision: 3 }, invalid)).toEqual({
+      ...again,
+      problem: said,
+    });
+
+    // What the editor shows besides the fields: who it goes from, and the quote that goes too.
+    expect(sent.send?.from).toEqual([{ label: "From", value: "billing@ambermill.example" }]);
+    const reply = mail({
+      action: "reply",
+      account: "rhea@ambermill.example",
+      from: "billing@ambermill.example",
+      fromName: "Ambermill Billing",
+      quoted: "On Mon, Anita wrote:\n> Could you resend it?",
+    });
+    expect([reply.send?.from, reply.send?.quoted]).toEqual([
+      [
+        { label: "From", value: "Ambermill Billing <billing@ambermill.example>" },
+        { label: "Account", value: "rhea@ambermill.example" },
+      ],
+      "On Mon, Anita wrote:\n> Could you resend it?",
+    ]);
+    // The phone's card is one spoken group: it says the words that go, and the quote under them.
+    const spoken = kinChoiceAccessibilityLabel(reply, null, null, { message: true });
+    expect(spoken).toContain(
+      "Subject: Invoice. Message: Hi Anita,\n\nAttached. On Mon, Anita wrote:",
+    );
+    expect(spoken).toContain("> Could you resend it?");
+    expect(kinChoiceAccessibilityLabel(reply, null)).not.toContain("Message:");
+    expect(mail({ action: "event" }).send?.from).toEqual([]);
+  });
+
+  it("keeps a person's unsent words on the card, and offers Save, Send and Discard by state", () => {
+    const send = {
+      service: "Gmail",
+      action: "email",
+      from: "rhea@ambermill.example",
+      to: ["anita@orbitdental.example"],
+      cc: [],
+      subject: "Invoice",
+      body: "Hi Anita,\n\nAttached.",
+      attachments: [],
+      outcome: null,
+    };
+    const drafted = choice({ state: { ...choiceState(null), send } });
+    expect(drafted.send?.edited).toBeNull();
+    expect(kinSendEditedLine(drafted, KinPersonId.make("rhea"))).toBeNull();
+    const started = kinSendEditStart(drafted)!;
+    expect(kinSendEditDiscardInput(drafted, started, true)).toBeNull();
+    // Nothing typed: leaving keeps nothing, and a closed card takes the editor with it.
+    expect(kinSendEditLeaveSaves(started, null, true)).toBe(false);
+    expect(kinSendEditShown(started, false)).toBe(false);
+    const typed = {
+      ...started,
+      draft: { ...started.draft, body: "Hi Anita,\n\nAttached, with GST." },
+    };
+    expect(kinSendEditSaveInput(drafted, typed)).toEqual({
+      orgId: "org",
+      widgetId: "w1",
+      revision: 1,
+      edit: {
+        to: ["anita@orbitdental.example"],
+        cc: [],
+        subject: "Invoice",
+        body: "Hi Anita,\n\nAttached, with GST.",
+      },
+    });
+    expect(kinSendEditLeaveSaves(typed, null, true)).toBe(true);
+    // Not while a press is on its way, nor once the card stopped taking edits.
+    expect(kinSendEditLeaveSaves(typed, "sending", true)).toBe(false);
+    expect(kinSendEditLeaveSaves(typed, null, false)).toBe(false);
+    // Saved on leaving, the editor stays over the saved card, with nothing left unsaved.
+    const kept = kinSendEditKept(typed, 2);
+    expect(kept).toEqual({
+      revision: 2,
+      opened: typed.draft,
+      draft: typed.draft,
+      problem: null,
+      saved: true,
+    });
+    expect(kinSendEditLeaveSaves(kept, null, true)).toBe(false);
+    // The save's answer came before the card's update: Discard still puts the draft back, bound
+    // to the revision the host acknowledged, never only closing the editor.
+    expect(kinSendEditDiscardInput(drafted, kept, true)).toEqual({
+      orgId: "org",
+      widgetId: "w1",
+      revision: 2,
+      edit: null,
+    });
+    // Save closed the editor and the card's update is late: Edit opens over the saved words, and
+    // its Discard is the reset bound to the revision the host acknowledged.
+    const acked = { revision: 2, saved: typed.draft };
+    const late = kinSendEditStart(drafted, acked)!;
+    expect(late).toEqual(kept);
+    expect(kinSendEditDiscardInput(drafted, late, true)).toEqual({
+      orgId: "org",
+      widgetId: "w1",
+      revision: 2,
+      edit: null,
+    });
+
+    const label = (controls: ReturnType<typeof kinSendEditControls>) => ({
+      save: [controls.save.label, controls.save.disabled],
+      send: [controls.send.label, controls.send.disabled],
+      discard: [controls.discard.label, controls.discard.disabled],
+      notice: controls.notice,
+    });
+    expect(label(kinSendEditControls(typed, drafted, null, true))).toEqual({
+      save: ["Save", false],
+      send: ["Send edited mail", false],
+      discard: ["Discard edits", false],
+      notice: null,
+    });
+    expect(label(kinSendEditControls(typed, drafted, "saving", true))).toEqual({
+      save: ["Saving…", true],
+      send: ["Send edited mail", true],
+      discard: ["Discard edits", true],
+      notice: null,
+    });
+    expect(label(kinSendEditControls(typed, drafted, "discarding", true)).discard).toEqual([
+      "Discarding…",
+      true,
+    ]);
+    // The host said the card changed: Save and Send wait for the newer card, then carry it.
+    const changed = new KinChatError({
+      reason: "widget_changed",
+      message: "This card changed or was answered. Look at it again.",
+    });
+    const stale = kinSendEditRefused(typed, drafted, changed);
+    expect(label(kinSendEditControls(stale, drafted, null, true)).save).toEqual(["Save", true]);
+    expect(kinSendEditSaveInput({ ...drafted, revision: 2 }, stale).revision).toBe(2);
+    // Leaving never puts the words over a card the host said changed: the person chooses.
+    expect(kinSendEditLeaveSaves(stale, null, true)).toBe(false);
+    // The agent's newer card closed this one: the words stay, with only Discard.
+    expect(kinSendEditShown(typed, false)).toBe(true);
+    expect(label(kinSendEditControls(typed, drafted, null, false))).toEqual({
+      save: ["Save", true],
+      send: ["Send edited mail", true],
+      discard: ["Discard edits", false],
+      notice:
+        "This card closed while you were editing, so your words weren't saved. They stay here until you discard them.",
+    });
+
+    // Saved, the card shows the person's words as theirs, and Discard puts the draft back.
+    const saved = choice({
+      revision: 2,
+      state: {
+        ...choiceState(null),
+        send: { ...send, body: typed.draft.body, edited: { personId: "rhea", name: "Rhea" } },
+      },
+    });
+    expect(saved.send?.body).toBe(typed.draft.body);
+    expect(kinSendEditStart(saved)?.draft.body).toBe(typed.draft.body);
+    expect(kinSendEditedLine(saved, KinPersonId.make("rhea"))).toBe("Edited by you");
+    expect(kinSendEditedLine(saved, KinPersonId.make("meera"))).toBe("Edited by Rhea");
+    const reopened = kinSendEditStart(saved)!;
+    expect(kinSendEditDiscardInput(saved, reopened, true)).toEqual({
+      orgId: "org",
+      widgetId: "w1",
+      revision: 2,
+      edit: null,
+    });
+    expect(kinSendEditDiscardInput(saved, reopened, false)).toBeNull();
+    // That Discard was taken and the update is late: Edit binds to the reset card, whose Discard
+    // only closes the editor, though the card on screen still shows the saved words.
+    const reset = kinSendEditStart(saved, { revision: 3, saved: null })!;
+    expect(reset.revision).toBe(3);
+    expect(kinSendEditDiscardInput(saved, reset, true)).toBeNull();
+    // Once the card has caught up, or moved past, the card itself is what Edit opens.
+    expect(kinSendEditStart(saved, { revision: 2, saved: null })).toEqual(reopened);
+  });
+
+  it("warns while an earlier try at the mail may have gone, and holds Confirm and Send edited for the tick", () => {
+    const at = "2026-11-08T09:05:00.000Z";
+    const tried = new Date(at);
+    const tick = { tryId: "ask-a", at };
+    const send = {
+      service: "Gmail",
+      action: "reply",
+      from: "rhea@ambermill.example",
+      to: ["anita@orbitdental.example"],
+      cc: [],
+      subject: "Re: Invoice",
+      body: "Attached.",
+      attachments: [],
+      outcome: null,
+      mayHaveGone: tick,
+    };
+    const open = choice({ state: { ...choiceState(null), send } });
+    const line = kinMayHaveGoneLine(at);
+    expect(open.send?.mayHaveGone).toEqual({ line, ...tick, confirmId: "option-1" });
+    expect(kinSendTry(open)).toEqual(tick);
+    expect(kinMayHaveGoneLine(at, tried)).toBe(
+      `An earlier try at this mail at ${formatKinWhen(tried, "time")} may already have gone. Check the account's sent mail before you confirm.`,
+    );
+    expect(kinMayHaveGoneLine(at, new Date(tried.getTime() + 3 * 86_400_000))).toContain(
+      `on ${formatKinWhen(tried, "dayTime")}`,
+    );
+    expect(kinChoiceAccessibilityLabel(open, null)).toContain("may already have gone");
+    // Confirm and Send edited wait for the tick; Cancel never does.
+    expect(kinSendCheckPending(open, null, "option-1")).toBe(true);
+    expect(kinSendCheckPending(open, null, "option-2")).toBe(false);
+    expect(kinSendCheckPending(open, null)).toBe(true);
+    expect(kinSendCheckPending(open, tick, "option-1")).toBe(false);
+    // A tick is for one try: once the warning names a later one, it no longer counts, nor does a
+    // tick for another try that ended at the same time.
+    const later = { tryId: "ask-b", at: "2026-11-08T09:40:00.000Z" };
+    const moved = choice({
+      state: { ...choiceState(null), send: { ...send, mayHaveGone: later } },
+    });
+    expect(kinSendTicked(open, tick)).toBe(tick);
+    expect(kinSendTicked(open, { tryId: "ask-b", at })).toBeNull();
+    expect(kinSendTicked(moved, tick)).toBeNull();
+    expect(kinSendCheckPending(moved, tick, "option-1")).toBe(true);
+    expect(kinSendCheckPending(moved, tick)).toBe(true);
+    expect(kinSendCheckPending(moved, later, "option-1")).toBe(false);
+    const editing = kinSendEditStart(open)!;
+    expect(kinSendEditControls(editing, open, null, true, true).send.disabled).toBe(true);
+    expect(kinSendEditControls(editing, open, null, true, false).send.disabled).toBe(false);
+    // Ticked, both presses carry the try it is for; unticked, they carry nothing new.
+    expect(kinChoiceActInput(open, "option-1", "tap-1", tick)).toMatchObject({ checkedSent: tick });
+    expect(kinChoiceActInput(open, "option-1", "tap-1")).not.toHaveProperty("checkedSent");
+    expect(kinSendEditInput(open, editing, "press-1", tick)).toMatchObject({ checkedSent: tick });
+    expect(kinSendEditInput(open, editing, "press-1")).not.toHaveProperty("checkedSent");
+    // Once that card's own try is on its way, the outcome line takes over.
+    const sending = choice({
+      state: {
+        ...choiceState(null),
+        send: { ...send, outcome: { state: "sending", reason: null, at } },
+      },
+    });
+    expect(sending.send?.mayHaveGone).toBeNull();
+    const { mayHaveGone: _gone, ...settled } = send;
+    const plain = choice({ state: { ...choiceState(null), send: settled } });
+    expect(plain.send?.mayHaveGone).toBeNull();
+    expect(kinSendCheckPending(plain, null)).toBe(false);
+    expect(kinSendTicked(plain, tick)).toBeNull();
+    // Send edited refused for words an earlier try reached: the refusal names that try, the
+    // editor's tick is for it, and the shared card keeps its own (no) warning.
+    const typing = kinSendEditStart(plain)!;
+    expect(kinSendEditWarned(plain, typing)).toBe(plain);
+    const refused = kinSendEditRefused(
+      typing,
+      plain,
+      new KinChatError({ reason: "conflict", message: "Tick first.", mayHaveGone: later }),
+    );
+    expect(refused).toEqual({ ...typing, problem: "Tick first.", mayHaveGone: later });
+    const warned = kinSendEditWarned(plain, refused, tried);
+    expect(warned.send?.mayHaveGone).toEqual({
+      line: kinMayHaveGoneLine(later.at, tried),
+      ...later,
+      confirmId: null,
+    });
+    expect(kinSendCheckPending(warned, null)).toBe(true);
+    expect(kinSendCheckPending(warned, later)).toBe(false);
+    expect(kinSendEditInput(plain, refused, "press-2", kinSendTicked(warned, later))).toMatchObject(
+      { revision: refused.revision, checkedSent: later },
+    );
+    expect(kinSendCheckPending(plain, null, "option-1")).toBe(false);
+  });
+
+  it("posts one tap at a time, and binds a late refusal to the card the press carried", async () => {
+    const mailCard = (revision: number) =>
+      choice({
+        revision,
+        state: {
+          ...choiceState(),
+          send: {
+            service: "Gmail",
+            action: "email",
+            from: "rhea@ambermill.example",
+            to: ["anita@orbitdental.example"],
+            cc: [],
+            subject: "Invoice",
+            body: "Hi Anita,",
+            attachments: [],
+            outcome: null,
+          },
+        },
+      });
+    const first = mailCard(1);
+    const changed = new KinChatError({
+      reason: "widget_changed",
+      message: "This card changed or was answered. Look at it again.",
+    });
+    const sent: Array<string> = [];
+    const replies: Array<() => void> = [];
+    const later = <A>(name: string, result: AsyncResult.Failure<A, unknown>) =>
+      new Promise<AsyncResult.Success<A, unknown> | AsyncResult.Failure<A, unknown>>((resolve) => {
+        sent.push(name);
+        replies.push(() => resolve(result));
+      });
+    const refused = <A>() => AsyncResult.failure<A, unknown>(Cause.fail(changed));
+    const taps = kinChoiceCardTaps();
+    const heldKey = kinSendEditHeldKey("env", null, first.widgetId);
+    const typed: KinSendEditing = {
+      ...kinSendEditStart(first)!,
+      draft: {
+        to: "anita@orbitdental.example",
+        cc: "",
+        subject: "Invoice",
+        body: "Hi Anita, paid",
+      },
+    };
+    const seen = {
+      pending: [] as Array<string | null>,
+      status: [] as Array<KinChoiceCardStatus>,
+      editing: [] as Array<KinSendEditing | null>,
+    };
+    const actions = (card: typeof first, pending: string | null, editing: KinSendEditing | null) =>
+      kinChoiceCardActions({
+        choice: card,
+        environmentId: "env" as EnvironmentId,
+        newId: () => `id-${sent.length}`,
+        taps,
+        heldKey,
+        state: {
+          pending,
+          switching: false,
+          editing,
+          editBusy: null,
+          editable: true,
+          ticked: null,
+          nowMs: posted,
+        },
+        commands: {
+          post: () => later("post", refused()),
+          setSendFrom: () => later("from", refused()),
+          sendEdited: () => later("send", refused()),
+          saveEdited: () => later("save", refused()),
+        },
+        set: {
+          pending: (pending) => seen.pending.push(pending),
+          lastStatus: (status) => seen.status.push(status),
+          switching: () => {},
+          switchProblem: () => {},
+          editBusy: () => {},
+          editing: (editing) => seen.editing.push(editing),
+          ack: () => {},
+          ticked: () => {},
+        },
+      });
+
+    // A second tap in the same render, and one drawn while the first is pending, post nothing.
+    const tap = actions(first, null, null);
+    const pressed = tap.press("option-1");
+    await tap.press("option-2");
+    await actions(first, "option-1", null).press("option-2");
+    await actions(first, "option-1", null).pickFrom("billing");
+    expect(sent).toEqual(["post"]);
+    // The newer card arrives before the refusal: the notice is tied to the card the tap was on.
+    const newer = mailCard(2);
+    replies.shift()!();
+    await pressed;
+    expect(seen.pending).toEqual(["option-1", null]);
+    expect(seen.status).toEqual([
+      null,
+      {
+        revision: 1,
+        optionId: "option-1",
+        notice: { kind: "stale", text: KIN_CARD_REREAD_COPY.settled },
+        holding: false,
+        // Settled or changed on the host: the card shows no answers until its newer one arrives.
+        behind: true,
+      },
+    ]);
+
+    // Send edited, refused as changed after the card moved on: every typed word stays, and the
+    // next Send goes against the card now on screen.
+    const sending = actions(first, null, typed).sendEdit();
+    replies.shift()!();
+    await sending;
+    const kept = seen.editing.at(-1)!;
+    expect(kept).toEqual({ ...typed, problem: changed.message, stale: true });
+    expect(kinSendEditHeld(heldKey)).toEqual(kept);
+    expect(kinSendEditBound(kept, newer)).toEqual({ revision: 2, ready: true, review: true });
+    expect(sent).toEqual(["post", "send"]);
+  });
+
   it("says a refused answer in the host's words when its figures changed", () => {
-    const refusal = (reason: "conflict" | "widget_changed" | "not_allowed", message: string) =>
-      kinChoiceFailureNotice(new KinChatError({ reason, message }));
+    const refusal = (
+      reason: "conflict" | "widget_changed" | "not_allowed" | "unavailable",
+      message: string,
+    ) => kinChoiceFailureNotice(new KinChatError({ reason, message }));
     expect(refusal("conflict", "The figures changed since this card was made.")).toEqual({
       kind: "error",
       text: "The figures changed since this card was made.",
     });
+    // A mail whose account needs signing in: which one, that nothing went, where to sign in.
+    const signedOut =
+      "hello@ambermill.example needs signing in again in Settings › Connections. Nothing was sent; send it again once it's back.";
+    expect(refusal("unavailable", signedOut)).toEqual({ kind: "error", text: signedOut });
+    expect(
+      kinSendEditFailure(new KinChatError({ reason: "unavailable", message: signedOut })),
+    ).toBe(signedOut);
+    expect(refusal("unavailable", "Kin couldn't read mail_send's definition.").text).not.toContain(
+      "mail_send",
+    );
     expect(refusal("widget_changed", "This receipt was already answered.").kind).toBe("stale");
     expect(refusal("not_allowed", "Chat operation not allowed.").text).not.toContain("Chat");
   });
@@ -493,6 +1369,31 @@ describe("reminder and scheduled task cards", () => {
     expect(teammate({ theirs: false })).toContain("done");
     expect(teammate({})).toEqual([]);
     expect(kinReminderCardView(reminder({ status: "due" }), zone, true)!.actions).toHaveLength(5);
+    // A group's own says who asked, to everyone there, and offers no Change.
+    const asked = { askedBy: { personId: "meera", name: "Meera" } };
+    const group = kinReminderCardView(reminder({ status: "due", ...asked }), zone, false)!;
+    expect(group.lines).toEqual(["Due Fri, Nov 13, 9:00 AM.", "Asked by Meera."]);
+    expect(group.actions.map((action) => action.id)).not.toContain("change");
+    expect(group.actions).toHaveLength(4);
+    const routine = kinScheduledTaskCardView(
+      scheduled({ askedBy: { personId: "meera", name: "Meera", left: true } }),
+      zone,
+    )!;
+    expect(routine.lines.at(-1)).toBe("Asked by someone who has left.");
+    // Slots skipped while the run before was still going are counted on it.
+    const busy = kinScheduledTaskCardView(
+      scheduled({
+        lastRun: {
+          at: "2026-11-09T02:30:00.000Z",
+          status: "skipped",
+          note: "the last run was still going",
+        },
+        overlapSkipped: 3,
+      }),
+      zone,
+    )!;
+    expect(busy.lines).toContain("Skipped 3 runs in a row.");
+    expect(routine.actions.map((action) => action.id)).toContain("pause");
   });
 
   it("shows when a scheduled task runs, how the last run went, and its controls", () => {
@@ -506,7 +1407,7 @@ describe("reminder and scheduled task cards", () => {
       "delete",
     ]);
     expect(kinScheduledTaskCardView(scheduled({}), "UTC")!.lines[0]).toBe(
-      "Weekdays at 8:00 (Asia/Kolkata).",
+      "Weekdays at 8:00 (India Standard Time).",
     );
     expect(kinScheduledTaskCardView(scheduled({}), "Asia/Calcutta")!.lines[0]).toBe(
       "Weekdays at 8:00.",
@@ -531,6 +1432,20 @@ describe("reminder and scheduled task cards", () => {
       zone,
     )!;
     expect(running.actions.map((action) => action.id)).toEqual(["pause", "edit", "delete"]);
+    expect(running.lines).toContain("Running now.");
+    // Held by a trouble on Kin's computer: it waits, in the trouble card's own words.
+    expect(
+      kinScheduledTaskCardView(
+        scheduled({
+          lastRun: {
+            at: "2026-11-10T02:30:00.000Z",
+            status: "running",
+            note: "Kin's computer ran out of space",
+          },
+        }),
+        zone,
+      )!.lines,
+    ).toContain("Waiting to run: Kin's computer ran out of space.");
 
     const paused = kinScheduledTaskCardView(
       scheduled({ status: "paused", nextRunAt: null }),
@@ -670,5 +1585,49 @@ describe("memory change card", () => {
         }),
       ),
     ).toBe("This changed again since, so it wasn't undone.");
+  });
+});
+
+describe("a held press", () => {
+  // Timers the test runs by hand: what is set, and what is still waiting.
+  const timers = () => {
+    const set = new Map<number, () => void>();
+    let next = 0;
+    return {
+      set: (run: () => void, _ms: number) => {
+        next += 1;
+        set.set(next, run);
+        return next;
+      },
+      clear: (handle: number) => void set.delete(handle),
+      elapse: () => [...set.values()].forEach((run) => run()),
+      size: () => set.size,
+    };
+  };
+
+  it("sends once when its time runs out, never after Undo, and at once when flushed", () => {
+    const sent: Array<string> = [];
+    const clock = timers();
+    const press = createKinHeldPress({
+      delayMs: 5_000,
+      send: () => sent.push("cancel"),
+      timers: clock,
+    });
+    press.hold();
+    press.hold();
+    expect([press.waiting(), clock.size()]).toEqual([true, 1]);
+    press.undo();
+    clock.elapse();
+    expect([sent, press.waiting()]).toEqual([[], false]);
+    press.hold();
+    clock.elapse();
+    clock.elapse();
+    expect(sent).toEqual(["cancel"]);
+    // Leaving the screen sends a waiting press now, and only once.
+    press.hold();
+    press.flush();
+    press.flush();
+    clock.elapse();
+    expect([sent, clock.size()]).toEqual([["cancel", "cancel"], 0]);
   });
 });

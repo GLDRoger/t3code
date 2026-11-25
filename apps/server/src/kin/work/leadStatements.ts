@@ -13,13 +13,13 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { homeCurrency } from "./companyProfile.ts";
+import { countryFirst, homeCurrency } from "./companyProfile.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { turnChat } from "../lead/Audience.ts";
-import { quote } from "../lead/LeadPrompt.ts";
+import { quote } from "../lead/quote.ts";
 import { turnFiles } from "./leadFields.ts";
-import { admitted, type Lead, leadTool, ownerTurn, sourceOf } from "./leadWork.ts";
+import { admitted, countryWorded, type Lead, leadTool, ownerTurn, sourceOf } from "./leadWork.ts";
 import { formatMoney } from "./money.ts";
 import { bankStates, findBankList, originKeyOf, rowFingerprints } from "./statements/bankList.ts";
 import {
@@ -46,6 +46,7 @@ import {
 import { type Review, reviewHash } from "./statements/statementCard.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 import { fileNamed as namedIn } from "../gendocs/brand.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 /** The lead tools for statements. Kin reads and matches; the owner confirms on Kin's card. */
 
@@ -192,6 +193,7 @@ const fileNamed = Effect.fn("KinStatements.fileNamed")(function* (
       json_each(COALESCE(m.attachments_json, '[]')) f
     WHERE m.org_id = ${lead.orgId} AND m.chat_id = ${chatId} AND m.status <> 'deleted'
       AND m.author_kind = 'human' AND m.author_person_id = a.owner_person_id
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
     ORDER BY m.seq DESC`;
   const row = namedIn(earlier, named);
   if (row === undefined)
@@ -224,6 +226,10 @@ const describe = (statementId: string, file: string, review: Review, applied: bo
       : fit === "part"
         ? " (part payment)"
         : "";
+  const target = (one: (typeof entries)[number][1]["candidates"][number]) =>
+    one.repays === undefined
+      ? `${one.key}${note(one.fit, one.tdsMinor)}`
+      : `${one.repays.map((each) => each.key).join(", ")} (${one.title}, marked repaid on Confirm)`;
   const matched = of("matched");
   const choose = of("choose");
   const unmatched = of("unmatched");
@@ -248,11 +254,11 @@ const describe = (statementId: string, file: string, review: Review, applied: bo
     },
     matched: matched.slice(0, LIST).map(([index, match]) => ({
       ...shown(index),
-      to: `${match.candidates[0]!.key}${note(match.candidates[0]!.fit, match.candidates[0]!.tdsMinor)}`,
+      to: target(match.candidates[0]!),
     })),
     choose: choose.slice(0, LIST).map(([index, match]) => ({
       ...shown(index),
-      options: match.candidates.map((one) => `${one.key}${note(one.fit, one.tdsMinor)}`),
+      options: match.candidates.map(target),
     })),
     unmatched: unmatched.slice(0, LIST).map(([index, match]) => ({
       ...shown(index),
@@ -331,6 +337,7 @@ const hideTyped = Effect.fn("KinStatements.hideTyped")(function* (
     WHERE m.org_id = ${lead.orgId} AND m.chat_id = ${chatId} AND m.kind = 'text'
       AND m.status <> 'deleted' AND m.author_kind = 'human'
       AND m.author_person_id = a.owner_person_id AND instr(m.body, ${words}) > 0
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
     ORDER BY m.seq DESC LIMIT 200`;
   for (const row of rows) {
     yield* sql`UPDATE kin_messages SET body = ${row.body.replaceAll(words, HIDDEN)}
@@ -355,7 +362,7 @@ const ownerSaid = Effect.fn("KinStatements.ownerSaid")(function* (lead: Lead, ev
       AND m.chat_id = json_extract(e.json, '$.chatId')
     WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId} AND e.wakeup_id = ${lead.wakeupId}
       AND e.event_id = ${eventId} AND e.tag = 'chat.message' AND m.author_kind = 'human'
-      AND m.author_person_id = a.owner_person_id`;
+      AND m.author_person_id = a.owner_person_id AND m.origin_json IS NULL`;
   return row !== undefined;
 });
 
@@ -374,7 +381,8 @@ const ownerWrote = Effect.fn("KinStatements.ownerWrote")(function* (
     JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = ${lead.agentId}
     WHERE m.org_id = ${lead.orgId} AND m.chat_id = ${chatId} AND m.kind = 'text'
       AND m.status <> 'deleted' AND m.author_kind = 'human'
-      AND m.author_person_id = a.owner_person_id
+      AND m.author_person_id = a.owner_person_id AND m.origin_json IS NULL
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
       AND m.seq >= COALESCE((SELECT MIN(f.seq) FROM kin_messages f,
           json_each(COALESCE(f.attachments_json, '[]')) one
         WHERE f.org_id = m.org_id AND f.chat_id = m.chat_id
@@ -388,6 +396,13 @@ const CHAT_LIMIT =
 
 const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput.Type) {
   yield* admitted(lead, "statement_read", input);
+  // Again, a refresh, a password or pages go on with a statement already read.
+  const reread =
+    input.again === true ||
+    input.refresh === true ||
+    input.password !== undefined ||
+    input.pages !== undefined;
+  yield* countryWorded(lead, reread, countryFirst(lead.orgId));
   yield* sourceOf(lead, input.sourceEventId);
   const chat = yield* turnChat(lead);
   if (chat === undefined) return yield* invalid("This turn has no chat to read a statement in.");

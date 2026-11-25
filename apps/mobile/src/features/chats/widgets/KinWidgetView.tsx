@@ -13,21 +13,31 @@ import { View } from "react-native";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { environmentCatalog } from "../../../connection/catalog";
 import { connectionAtomRuntime } from "../../../connection/runtime";
+import { serverEnvironment } from "../../../state/server";
+import { kinListedModelName } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import {
   KIN_MISSING_CARD_TEXT,
   kinCardView,
 } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { KinApprovalCard } from "./KinApprovalCard";
+import { KinBillBatchCard } from "./KinBillBatchCard";
 import { KinChart } from "./KinChart";
 import { KinChoiceCard } from "./KinChoiceCard";
 import { KinDeferralCard } from "./KinDeferralCard";
 import { KinDigestCard } from "./KinDigestCard";
 import { KinDocCard } from "./KinDocCard";
+import { KinHostTroubleCard } from "./KinHostTroubleCard";
 import { KinMemoryChangesCard } from "./KinMemoryChangesCard";
 import { KinSocialPackCard, KinSocialWeekCard } from "./KinSocialCards";
 import { KinStatementPasswordCard, KinStatementReviewCard } from "./KinStatementCards";
 import { KinTaskCard } from "./KinTaskCard";
 import { KinVisual } from "./KinVisual";
+
+/** A model id as Settings names it on this environment, or null where it has no name. */
+export function useKinModelName(environmentId: EnvironmentId) {
+  const providers = useAtomValue(serverEnvironment.providersValueAtom(environmentId));
+  return (model: string) => kinListedModelName(model, providers);
+}
 
 /** A chart in a card's frame, in a chat or a doc alike. */
 export function KinChartCard(props: { readonly view: KinChartView }) {
@@ -47,11 +57,16 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
   readonly onOpenLink: (url: string) => void;
   /** The card's agent by name when it is retired, so its reminders and schedules read as on hold. */
   readonly heldFor?: string | null;
+  /** The viewer may only read this chat: a draft's card offers no Send to. */
+  readonly readOnly?: boolean;
   /** The chat's agents by id, for the doc card's "by Growth". */
   readonly agentNames?: ReadonlyMap<string, string>;
+  /** The message's own long press, for a card that takes presses across its whole face. */
+  readonly onLongPress?: () => void;
 }) {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const access = useAtomValue(kinAccessAtom(connectionAtomRuntime, props.environmentId));
+  const modelName = useKinModelName(props.environmentId);
   // Before the catalog loads, assume the environment is known; the thread screen handles the rest.
   const view = kinCardView(
     props.widget,
@@ -59,6 +74,7 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
     (environmentId) => !catalog.isReady || catalog.entries.has(environmentId),
     props.heldFor ?? null,
     access === null ? undefined : kinOwnerLevel(access),
+    modelName,
   );
   switch (view.kind) {
     case "task":
@@ -97,7 +113,10 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
           doc={view.doc}
           environmentId={props.environmentId}
           orgId={props.widget.orgId}
+          ownerLevel={access === null || kinOwnerLevel(access)}
+          readOnly={props.readOnly === true}
           {...(props.agentNames === undefined ? {} : { agentNames: props.agentNames })}
+          {...(props.onLongPress === undefined ? {} : { onLongPress: props.onLongPress })}
         />
       );
     case "statement_review":
@@ -106,10 +125,20 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
       return (
         <KinStatementPasswordCard password={view.password} environmentId={props.environmentId} />
       );
+    case "bill_batch":
+      return (
+        <KinBillBatchCard
+          bills={view.bills}
+          environmentId={String(props.environmentId)}
+          ownerLevel={access === null || kinOwnerLevel(access)}
+        />
+      );
     case "social_week":
       return <KinSocialWeekCard week={view.week} environmentId={props.environmentId} />;
     case "social_pack":
       return <KinSocialPackCard pack={view.pack} environmentId={props.environmentId} />;
+    case "host_trouble":
+      return <KinHostTroubleCard widget={view.widget} environmentId={props.environmentId} />;
     case "missing":
       return (
         <View className="rounded-[20px] border border-border bg-card-alt px-4 py-3">

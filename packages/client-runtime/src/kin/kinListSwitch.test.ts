@@ -1,41 +1,65 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { kinStartListFor, kinSwitcherDot } from "./kinListSwitch.ts";
+import { installForPhoneHome, kinPhoneHome, kinSwitcherDot } from "./kinListSwitch.ts";
 
-describe("kinStartListFor", () => {
+describe("kinPhoneHome", () => {
   it.each([
-    { setting: "lastUsed", lastUsed: null, kinSeen: true, expected: "threads" },
-    { setting: "lastUsed", lastUsed: "kin", kinSeen: true, expected: "kin" },
-    { setting: "lastUsed", lastUsed: "threads", kinSeen: true, expected: "threads" },
-    { setting: "kin", lastUsed: "threads", kinSeen: true, expected: "kin" },
-    { setting: "threads", lastUsed: "kin", kinSeen: true, expected: "threads" },
-    // A client that never reached a Kin host stays on threads whatever was saved.
-    { setting: "kin", lastUsed: "kin", kinSeen: false, expected: "threads" },
-    { setting: "lastUsed", lastUsed: "kin", kinSeen: false, expected: "threads" },
-  ] as const)("$setting, last $lastUsed, seen $kinSeen opens $expected", (row) => {
-    expect(kinStartListFor(row)).toBe(row.expected);
+    { kinOnly: false, shell: "loading", host: "host", savedHost: true, expected: "loading" },
+    // A phone with a Kin host opens Kin, whatever list it showed last.
+    { kinOnly: false, shell: "coding", host: "host", savedHost: true, expected: "kin" },
+    { kinOnly: false, shell: "coding", host: "searching", savedHost: true, expected: "kin" },
+    { kinOnly: false, shell: "coding", host: "searching", savedHost: null, expected: "loading" },
+    // A phone that never reached a Kin host, or whose host turned Kin off, is T3 as it was.
+    { kinOnly: false, shell: "coding", host: "searching", savedHost: false, expected: "coding" },
+    { kinOnly: false, shell: "coding", host: "none", savedHost: true, expected: "coding" },
+    { kinOnly: false, shell: "coding", host: "none", savedHost: false, expected: "coding" },
+    { kinOnly: false, shell: "chatOnly", host: "none", savedHost: false, expected: "kin" },
+    { kinOnly: true, shell: "coding", host: "none", savedHost: false, expected: "kin" },
+  ] as const)("$shell, host $host, saved $savedHost, Kin-only $kinOnly: $expected", (row) => {
+    expect(kinPhoneHome(row)).toBe(row.expected);
+  });
+});
+
+describe("installForPhoneHome", () => {
+  it.each([
+    // Launcher shortcuts and shares start coding threads: off where Kin is Home.
+    { homes: ["loading", "kin"], log: ["kin on"] },
+    { homes: ["loading", "coding", "coding"], log: ["coding on"] },
+    // A host turning Kin on or off swaps them, each once.
+    {
+      homes: ["coding", "kin", "loading", "kin", "coding"],
+      log: ["coding on", "coding off", "kin on", "kin off", "coding on"],
+    },
+    { homes: ["loading"], log: [] },
+  ] as const)("Home $homes runs $log", (row) => {
+    const log: Array<string> = [];
+    let push: (home: (typeof row.homes)[number]) => void = () => {};
+    const install = (name: string) => () => {
+      log.push(`${name} on`);
+      return () => log.push(`${name} off`);
+    };
+    const stop = installForPhoneHome(
+      (onHome) => {
+        push = onHome;
+        return () => log.push("unsubscribed");
+      },
+      { kin: install("kin"), coding: install("coding") },
+    );
+    for (const home of row.homes) push(home);
+    expect(log).toEqual(row.log);
+    stop();
+    expect(log.slice(row.log.length)).toEqual(
+      row.log.length === 0 ? ["unsubscribed"] : ["unsubscribed", `${row.homes.at(-1)} off`],
+    );
   });
 });
 
 describe("kinSwitcherDot", () => {
-  const none = { waiting: false, unread: false };
   it.each([
-    {
-      current: "threads",
-      kin: { waiting: false, unread: true },
-      threads: none,
-      expected: "unread",
-    },
-    {
-      current: "threads",
-      kin: { waiting: true, unread: true },
-      threads: none,
-      expected: "waiting",
-    },
-    // Your own list never lights the dot.
-    { current: "kin", kin: { waiting: true, unread: true }, threads: none, expected: null },
-    { current: "kin", kin: none, threads: { waiting: true, unread: false }, expected: "waiting" },
-  ] as const)("in $current shows $expected", (row) => {
-    expect(kinSwitcherDot(row)).toBe(row.expected);
+    { kin: { waiting: false, unread: false }, expected: null },
+    { kin: { waiting: false, unread: true }, expected: "unread" },
+    { kin: { waiting: true, unread: true }, expected: "waiting" },
+  ] as const)("Kin $kin shows $expected", (row) => {
+    expect(kinSwitcherDot(row.kin)).toBe(row.expected);
   });
 });

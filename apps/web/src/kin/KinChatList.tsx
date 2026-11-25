@@ -1,15 +1,25 @@
+import { KIN_HOST_OFFLINE } from "@t3tools/client-runtime/kin/kinAnswers";
 import { KIN_CHAT_COPY } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_MONEY } from "@t3tools/client-runtime/kin/kinMoney";
 import {
+  kinChatListAgents,
+  kinChatListFold,
   kinChatListRowLabel,
   kinChatListRows,
+  kinChatsKeptUp,
+  KIN_CHATS_SETTLED,
+  KIN_CHATS_AGENTS_TITLE,
   KIN_TEAMMATE_WELCOME,
   type KinChatListRow,
   kinRoomLine,
   KIN_CHATS_EMPTY,
 } from "@t3tools/client-runtime/kin/kinChatListRows";
-import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
+import {
+  KIN_WAITING_TITLE,
+  selectKinInboxView,
+  type KinWaitsForGroup,
+} from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   formatKinTime,
   kinDirectory,
@@ -28,6 +38,7 @@ import { KIN_CHIEF_OF_STAFF } from "@t3tools/client-runtime/kin/kinLeadPresentat
 import type {
   EnvironmentId,
   KinAgentId,
+  KinChatId,
   KinChatSummary,
   KinLeadsListResult,
   KinOrgId,
@@ -36,8 +47,9 @@ import type {
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { Link, useParams } from "@tanstack/react-router";
-import { BellOffIcon, ChevronDownIcon, ChevronRightIcon, BotIcon } from "lucide-react";
-import { useState } from "react";
+import * as Schema from "effect/Schema";
+import { BellOffIcon, ChevronDownIcon, ChevronRightIcon, BotIcon, PinIcon } from "lucide-react";
+import { useState, useSyncExternalStore } from "react";
 
 import { Alert, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
@@ -45,31 +57,37 @@ import { Button } from "../components/ui/button";
 import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/ui/empty";
 import { useSidebar } from "../components/ui/sidebar";
 import { Skeleton } from "../components/ui/skeleton";
+import { toastManager } from "../components/ui/toast";
+import { useLocalStorage } from "../hooks/useLocalStorage";
 import { cn } from "../lib/utils";
+import { ApproveOnPhone } from "./ApproveOnPhone";
 import { KinRestoreButton, useKinRestore } from "./KinAgentRetire";
 import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
-import { ApproveOnPhone } from "./KinCards";
 import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
 import type { KinLeadFormTarget } from "./kinLeadForm";
 import { useNowMinuteMs } from "./useKinClock";
 import { KinWaitingAsk } from "./KinWaitingAsk";
+import { KinWaitsForFolds } from "./KinWaitsFor";
 import { kinWaitingAskView } from "@t3tools/client-runtime/kin/kinWaitingAsk";
 import { KinStandInLine } from "./KinStandInLine";
 import { kinAccessCopy } from "./kinTeammateMark";
-import { useKinInbox } from "./useKinHost";
+import { useKinInboxShown } from "./useKinAttention";
+import { kinHostKeptTarget, useKinInbox } from "./useKinHost";
+import { useKinOpenAgentChat } from "./useKinOpenChat";
+import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
 
 const STATE_COPY: Record<
   Exclude<KinInboxScreenState["_tag"], "ready" | "loading" | "error">,
   { readonly title: string; readonly detail: string }
 > = {
   offline: {
-    title: "Kin is offline",
+    title: KIN_HOST_OFFLINE,
     detail: "Your chats come back when the connection does.",
   },
   noHost: {
     title: "Kin isn't set up here",
-    detail: "Connect to a T3 server that runs Kin to see your chats.",
+    detail: "Connect to a server that runs Kin to see your chats.",
   },
   unauthorized: {
     title: KIN_DEVICE_COPY.cantReadChats("browser"),
@@ -85,7 +103,9 @@ const STATE_COPY: Record<
 export function KinChatList() {
   const params = useParams({ strict: false });
   const openChatId = "chatId" in params ? (params.chatId ?? null) : null;
-  const { host, state, retry } = useKinInbox();
+  const held = useKinInbox();
+  const { host, retry, reread } = held;
+  const state = useKinInboxShown(held.state, kinHostKeptTarget(host));
   const nowMs = useNowMinuteMs();
   const { isMobile, setOpenMobile } = useSidebar();
   if (state._tag === "loading") {
@@ -149,15 +169,17 @@ export function KinChatList() {
       )}
       <KinWaiting
         waiting={view.waiting}
+        waitsFor={view.waitsFor}
         chats={inbox.chats}
         directory={directory}
         environmentId={state.environmentId}
+        onReread={reread}
       />
       {rows.length === 0 ? (
         mine === null ? (
           <Empty size="compact">
             <EmptyHeader>
-              <EmptyTitle>No chats yet</EmptyTitle>
+              <EmptyTitle>{KIN_CHATS_EMPTY.title}</EmptyTitle>
               <EmptyDescription>{KIN_CHATS_EMPTY.none}</EmptyDescription>
             </EmptyHeader>
           </Empty>
@@ -165,19 +187,24 @@ export function KinChatList() {
           <KinFirstAgent target={mine} />
         )
       ) : (
-        <ul className="flex flex-col gap-0.5">
-          {liveRows.map((row) => (
-            <KinChatListItem
-              key={row.chat.chatId}
-              row={row}
-              me={directory.me}
-              environmentId={state.environmentId}
-              active={row.chat.chatId === openChatId}
-              now={now}
-              onOpen={closeSidebar}
-            />
-          ))}
-        </ul>
+        <KinFoldedChats
+          rows={liveRows}
+          me={directory.me}
+          environmentId={state.environmentId}
+          target={mine}
+          openChatId={openChatId}
+          now={now}
+          onOpen={closeSidebar}
+        />
+      )}
+      {mine === null ? null : (
+        <KinAgentsToMessage
+          environmentId={mine.environmentId}
+          orgId={mine.orgId}
+          chats={inbox.chats}
+          me={directory.me}
+          onOpen={closeSidebar}
+        />
       )}
       {retiredRows.length === 0 ? null : (
         <KinRetiredChats
@@ -190,6 +217,156 @@ export function KinChatList() {
           onOpen={closeSidebar}
         />
       )}
+    </div>
+  );
+}
+
+const SETTLED_OPEN_KEY = "kin:chats:settled-open";
+const NOBODY_KEPT: ReadonlySet<KinChatId> = new Set();
+type LeadsResult = AsyncResult.AsyncResult<KinLeadsListResult, unknown>;
+const noLeadsAtom: Atom.Atom<LeadsResult> = Atom.make<LeadsResult>(AsyncResult.initial());
+
+const subscribeVisibility = (onChange: () => void) => {
+  document.addEventListener("visibilitychange", onChange);
+  return () => document.removeEventListener("visibilitychange", onChange);
+};
+const pageVisible = () => document.visibilityState === "visible";
+
+/**
+ * The chats on top, then "Settled (N)" over the rest, opened or closed as this browser last left
+ * it. Who is up is worked out when the page comes back into view; while it is in view a row only
+ * ever joins the top, so nothing moves from under the pointer.
+ */
+function KinFoldedChats(props: {
+  readonly rows: ReadonlyArray<KinChatListRow>;
+  readonly me: ReadonlySet<string>;
+  readonly environmentId: EnvironmentId;
+  readonly target: KinLeadFormTarget | null;
+  readonly openChatId: string | null;
+  readonly now: Date;
+  readonly onOpen: () => void;
+}) {
+  const { target } = props;
+  const leads = Option.getOrNull(
+    AsyncResult.value(
+      useAtomValue(
+        target === null
+          ? noLeadsAtom
+          : kinClient.leads({
+              environmentId: target.environmentId,
+              input: { orgId: target.orgId },
+            }),
+      ),
+    ),
+  );
+  const inView = useSyncExternalStore(subscribeVisibility, pageVisible, () => true);
+  const [kept, setKept] = useState({ inView: false, ids: NOBODY_KEPT });
+  const entering = inView && !kept.inView;
+  const fold = kinChatListFold(props.rows, {
+    mainAgentId: leads?.teamAgentId ?? null,
+    keptUp: entering ? NOBODY_KEPT : kept.ids,
+  });
+  const keptNext = kinChatsKeptUp(entering ? NOBODY_KEPT : kept.ids, fold.up);
+  if (inView !== kept.inView || keptNext !== kept.ids) setKept({ inView, ids: keptNext });
+  const [open, setOpen] = useLocalStorage(SETTLED_OPEN_KEY, false, Schema.Boolean);
+  const [toggled, setToggled] = useState<boolean | null>(null);
+  // The open chat's row is in sight until the fold is closed by hand.
+  const showSettled =
+    toggled ?? (open || fold.settled.some((row) => row.chat.chatId === props.openChatId));
+  const item = (row: KinChatListRow) => (
+    <KinChatListItem
+      key={row.chat.chatId}
+      row={row}
+      me={props.me}
+      environmentId={props.environmentId}
+      active={row.chat.chatId === props.openChatId}
+      pinned={!fold.fixed.has(row.chat.chatId) && row.pinnedAt !== null}
+      now={props.now}
+      onOpen={props.onOpen}
+    />
+  );
+  return (
+    <>
+      <ul className="flex flex-col gap-0.5">{fold.up.map(item)}</ul>
+      {fold.settled.length === 0 ? null : (
+        <div className="mt-1 flex flex-col">
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-expanded={showSettled}
+            className="justify-start"
+            onClick={() => {
+              setToggled(!showSettled);
+              setOpen(!showSettled);
+            }}
+          >
+            {showSettled ? <ChevronDownIcon /> : <ChevronRightIcon />}
+            <span className="min-w-0 flex-1 text-start font-normal text-sidebar-muted-foreground">
+              {KIN_CHATS_SETTLED}
+            </span>
+            <span className="text-xs font-normal text-sidebar-muted-foreground tabular-nums">
+              {fold.settled.length}
+            </span>
+          </Button>
+          {showSettled ? <ul className="flex flex-col gap-0.5">{fold.settled.map(item)}</ul> : null}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** Agents the host lets this person message that they have no chat with yet; never counted unread. */
+function KinAgentsToMessage(props: {
+  readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId;
+  readonly chats: ReadonlyArray<KinChatSummary>;
+  readonly me: ReadonlySet<string>;
+  readonly onOpen: () => void;
+}) {
+  const leads = Option.getOrNull(
+    AsyncResult.value(
+      useAtomValue(
+        kinClient.leads({ environmentId: props.environmentId, input: { orgId: props.orgId } }),
+      ),
+    ),
+  );
+  const openAgentChat = useKinOpenAgentChat();
+  const agents = kinChatListAgents(props.chats, leads, props.me);
+  if (agents.length === 0) return null;
+  return (
+    <div className="mt-2 flex flex-col">
+      <p className="px-2 py-1 text-xs text-sidebar-muted-foreground">{KIN_CHATS_AGENTS_TITLE}</p>
+      <ul className="flex flex-col gap-0.5">
+        {agents.map((agent) => (
+          <li key={agent.agentId}>
+            <button
+              type="button"
+              aria-label={`Message ${agent.name}`}
+              onClick={() => {
+                props.onOpen();
+                void openAgentChat(props.environmentId, props.orgId, agent.agentId).then(
+                  (problem) => {
+                    if (problem !== null) toastManager.add({ type: "error", title: problem });
+                  },
+                );
+              }}
+              className="flex w-full items-center gap-2.5 rounded-md px-2 py-2 text-start outline-none ring-ring hover:bg-sidebar-row-hover focus-visible:ring-2 focus-visible:ring-inset"
+            >
+              <KinAvatar avatar={kinAgentAvatar(agent.agentId)} />
+              <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                <span className="truncate text-sm font-medium text-sidebar-foreground">
+                  {agent.name}
+                </span>
+                {agent.intro === null ? null : (
+                  <span className="truncate text-xs text-sidebar-muted-foreground">
+                    {agent.intro}
+                  </span>
+                )}
+              </span>
+            </button>
+          </li>
+        ))}
+      </ul>
     </div>
   );
 }
@@ -335,6 +512,8 @@ function KinChatListItem(props: {
   readonly me?: ReadonlySet<string>;
   readonly environmentId: EnvironmentId;
   readonly active: boolean;
+  /** Pinned to the top by this person; the rows always on top show no pin. */
+  readonly pinned?: boolean;
   readonly now: Date;
   readonly onOpen: () => void;
 }) {
@@ -364,6 +543,9 @@ function KinChatListItem(props: {
             >
               {view.title ?? <Skeleton className="h-3.5 w-1/2" aria-hidden />}
             </span>
+            {props.pinned === true ? (
+              <PinIcon aria-hidden className="size-3 shrink-0 text-sidebar-muted-foreground" />
+            ) : null}
             {view.sentAt === null ? null : (
               <span className="shrink-0 text-xs text-sidebar-muted-foreground tabular-nums">
                 {time(new Date(view.sentAt))}
@@ -436,17 +618,20 @@ function KinRoomLine(props: {
 
 /**
  * What waits on the viewer, oldest first. Approvals are signed with the phone's device key, so
- * they point there; everything else opens its chat.
+ * they point there; everything else opens its chat. Then, folded, what waits on someone else
+ * that the viewer may see, to look at only.
  */
 function KinWaiting(props: {
   readonly waiting: ReadonlyArray<KinWaitingItem>;
+  readonly waitsFor: ReadonlyArray<KinWaitsForGroup>;
   readonly chats: ReadonlyArray<KinChatSummary>;
   readonly directory: KinDirectory;
   readonly environmentId: EnvironmentId;
+  readonly onReread: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const nowMs = useNowMinuteMs();
-  const banner = kinWaitingBannerView(props.waiting);
+  const banner = kinWaitingBannerView(props.waiting, props.waitsFor);
   if (banner === null) return null;
   return (
     <div className="mb-1 flex flex-col">
@@ -460,12 +645,12 @@ function KinWaiting(props: {
       >
         {open ? <ChevronDownIcon /> : <ChevronRightIcon />}
         <span className="flex min-w-0 flex-1 flex-col items-start text-start">
-          <span className="font-medium">Waiting on you</span>
+          <span className="font-medium">{KIN_WAITING_TITLE}</span>
           <span className="line-clamp-2 text-xs font-normal text-muted-foreground">
             {banner.summary}
           </span>
         </span>
-        <Badge size="sm">{banner.count}</Badge>
+        {banner.count === 0 ? null : <Badge size="sm">{banner.count}</Badge>}
       </Button>
       {open ? (
         <ul className="flex flex-col p-1">
@@ -481,6 +666,7 @@ function KinWaiting(props: {
                     orgId: item.orgId,
                     chatId: item.chatId,
                   }}
+                  search={item.messageId === null ? {} : { message: item.messageId }}
                   className="flex flex-col gap-0.5 rounded-md px-2 py-1.5 outline-none hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                 >
                   <span className="text-xs font-medium text-foreground">
@@ -489,15 +675,28 @@ function KinWaiting(props: {
                   <span className="line-clamp-2 text-xs text-muted-foreground">
                     {row.text ?? KIN_CHAT_COPY.openChatWith(row.chatTitle)}
                   </span>
+                  {row.excerpt === null ? null : (
+                    <span className="line-clamp-3 whitespace-pre-line text-xs text-foreground">
+                      {row.excerpt}
+                    </span>
+                  )}
                   {item.reason === "approval" ? <ApproveOnPhone /> : null}
                 </Link>
                 {ask === null ? null : (
-                  <KinWaitingAsk ask={ask} environmentId={props.environmentId} />
+                  <KinWaitingAsk
+                    ask={ask}
+                    item={item}
+                    environmentId={props.environmentId}
+                    onReread={props.onReread}
+                  />
                 )}
               </li>
             );
           })}
         </ul>
+      ) : null}
+      {open ? (
+        <KinWaitsForFolds groups={props.waitsFor} chats={props.chats} directory={props.directory} />
       ) : null}
     </div>
   );

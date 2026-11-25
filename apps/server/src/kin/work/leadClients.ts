@@ -1,13 +1,8 @@
-import {
-  calendarTimeMillis,
-  isCalendarDay,
-  KinRecordKey,
-  KinTouchKind,
-  TrimmedNonEmptyString,
-} from "@t3tools/contracts";
+import { calendarTimeMillis, isCalendarDay, KinRecordKey, KinTouchKind } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { turnPeople } from "../lead/Audience.ts";
@@ -15,6 +10,8 @@ import { KinRecords } from "./KinRecords.ts";
 import {
   askedBy,
   Client,
+  ClientOnRecord,
+  clientOnRecord,
   type Lead,
   leadTool,
   ownerTurn,
@@ -22,7 +19,7 @@ import {
   retryKey,
   sourceOf,
 } from "./leadWork.ts";
-import { endOfDay, iso, ownerZone } from "./recordRows.ts";
+import { endOfDay, iso, ownerZone, recordName } from "./recordRows.ts";
 import * as Touches from "./touches.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 
@@ -33,19 +30,15 @@ const TOUCHES_READ = 10;
 export const TouchInput = Schema.Struct({
   client: Client,
   kind: KinTouchKind,
-  note: TrimmedNonEmptyString.check(Schema.isMaxLength(1_000)).annotate({
-    description: "What happened and what was agreed, in a line, as the person told it.",
-  }),
+  note: KinToolText(1_000, "What happened and what was agreed, in a line, as the person told it."),
   at: Schema.optional(
-    TrimmedNonEmptyString.check(Schema.isMaxLength(40)).annotate({
-      description:
-        "When: a day (2026-11-14) in the owner's time zone or a time with offset. Default now.",
-    }),
+    KinToolText(
+      40,
+      "When: a day (2026-11-14) in the owner's time zone or a time with offset. Default now.",
+    ),
   ),
   who: Schema.optional(
-    TrimmedNonEmptyString.check(Schema.isMaxLength(120)).annotate({
-      description: "Who on our side, by handle or name; default the person who told you.",
-    }),
+    KinToolText(120, "Who on our side, by handle or name; default the person who told you."),
   ),
   sourceEventId: TurnEvent,
 });
@@ -56,7 +49,14 @@ export const Touch = Schema.Struct({
   who: Schema.optional(Schema.String),
   from: Schema.optional(Schema.String),
 });
-export const TouchResult = Schema.Struct({ client: Schema.String, touch: Touch });
+export const TouchResult = Schema.Struct({
+  client: Schema.String,
+  touch: Touch,
+  onRecord: ClientOnRecord.annotate({
+    description:
+      "What the client's record holds now: its open deals (none is no deal yet) and its contacts (none is no one).",
+  }),
+});
 export const ContactInput = Schema.Struct({ key: KinRecordKey });
 export const ContactResult = Schema.Struct({
   lastContact: Schema.NullOr(Schema.Struct({ at: Schema.String, days: Schema.Number })),
@@ -70,7 +70,7 @@ const toShown = (touch: Effect.Success<ReturnType<typeof Touches.touchesOf>>[num
   kind: touch.kind,
   note: touch.note,
   ...(touch.who === null ? {} : { who: touch.who }),
-  ...(touch.record === null ? {} : { from: touch.record.key }),
+  ...(touch.record === null ? {} : { from: recordName(touch.record.key, touch.number) }),
 });
 
 /** The person on our side: named, else the one teammate or the owner whose message this answers. */
@@ -119,8 +119,12 @@ const runLog = Effect.fnUntraced(function* (lead: Lead, input: typeof TouchInput
     )}`,
     now,
   });
-  yield* (yield* KinRecords).announce(lead.orgId);
-  return { client: `${client.name} (${client.key})`, touch: toShown(touch) };
+  yield* (yield* KinRecords).announce(lead.orgId, [partyId]);
+  return {
+    client: `${client.name} (${client.key})`,
+    touch: toShown(touch),
+    onRecord: yield* clientOnRecord(lead, partyId),
+  };
 });
 export const logTouch = leadTool("KinClientTools.logTouch", runLog);
 

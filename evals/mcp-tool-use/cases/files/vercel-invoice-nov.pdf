@@ -1,0 +1,49 @@
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [5 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<<  /Length 761 >>
+stream
+BT /F1 14 Tf 34 800 Td (Vercel Inc.) Tj ET
+BT /F1 8 Tf 34 788 Td (Invoice  #8840-1102) Tj ET
+BT /F1 8 Tf 34 776 Td (Date of issue  Dec 1, 2026) Tj ET
+BT /F1 8 Tf 34 764 Td (Bill to  Acme Studio) Tj ET
+BT /F1 8 Tf 34 740 Td (Description) Tj ET
+BT /F1 8 Tf 330 740 Td (Qty) Tj ET
+BT /F1 8 Tf 400 740 Td (Unit price) Tj ET
+BT /F1 8 Tf 500 740 Td (Amount) Tj ET
+BT /F1 8 Tf 34 728 Td (Hobby plan, Nov 1 - Nov 30, 2026) Tj ET
+BT /F1 8 Tf 330 728 Td (1) Tj ET
+BT /F1 8 Tf 400 728 Td ($0.00) Tj ET
+BT /F1 8 Tf 500 728 Td ($0.00) Tj ET
+BT /F1 8 Tf 400 704 Td (Subtotal) Tj ET
+BT /F1 8 Tf 500 704 Td ($0.00) Tj ET
+BT /F1 8 Tf 400 692 Td (Total) Tj ET
+BT /F1 8 Tf 500 692 Td ($0.00) Tj ET
+BT /F1 8 Tf 400 680 Td (Amount due) Tj ET
+BT /F1 8 Tf 500 680 Td ($0.00 USD) Tj ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 638 842] /Resources << /Font << /F1 3 0 R >> >> /Contents 4 0 R >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000185 00000 n 
+0000000998 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1124
+%%EOF

@@ -163,11 +163,11 @@ export const bankStates = (def: ListDef) => {
   };
 };
 
-const last4 = (text: string | null) =>
+export const last4 = (text: string | null) =>
   text === null ? null : (/(\d{4})\D*$/.exec(text)?.[1] ?? null);
 const squash = (text: string) => text.toLowerCase().replace(/[^a-z0-9]+/g, "");
 /** A reference as one bank or reader prints it and another drops its leading zeros or spaces. */
-const referenceKey = (text: string) => squash(text).replace(/^0+/, "");
+export const referenceKey = (text: string) => squash(text).replace(/^0+/, "");
 /** How a statement names its account on each row: "HDFC Bank ••4821". */
 export const accountLabel = (statement: Pick<Statement, "bank" | "account" | "kind">) =>
   statement.account === null
@@ -247,6 +247,13 @@ export const rowTitle = (row: StatementRow) => {
     : cleaned;
 };
 
+/** A card's payment from a Bank transactions credit: `bank-credit:<credit id>:<card>:<part>`. */
+export const BANK_CREDIT_ORIGIN = "bank-credit:";
+
+/** An entry Kin made from a bank alert mail (`bankAlerts.ts`). */
+const isAlertEntry = (entry: { readonly originKey: string }) =>
+  entry.originKey.startsWith("alert:");
+
 export type KnownRow = {
   readonly recordId: string;
   readonly key: string;
@@ -312,7 +319,8 @@ export const knownRows = Effect.fn("KinBankList.known")(function* (
   const claimed = new Set([...known.values()].map((one) => one.recordId));
   for (const [index, row] of statement.rows.entries()) {
     if (known.has(index)) continue;
-    const match = others.find((other) => {
+    /** The same day, amount, currency, way and account, as far as an entry says them. */
+    const alike = (other: (typeof others)[number]) => {
       if (
         claimed.has(other.recordId) ||
         other.amountMinor !== row.amountMinor ||
@@ -326,24 +334,37 @@ export const knownRows = Effect.fn("KinBankList.known")(function* (
       if (direction !== null && !(row.direction === "debit" ? DEBIT : CREDIT).test(direction))
         return false;
       const account = last4(typeof fields.account === "string" ? fields.account : null);
-      if (account !== null && statement.account !== null && account !== statement.account)
-        return false;
-      const reference = typeof fields.reference === "string" ? referenceKey(fields.reference) : "";
-      if (reference !== "" && row.reference !== null && referenceKey(row.reference) !== "")
-        return reference === referenceKey(row.reference);
-      const said = squash(`${other.title} ${other.notes}`);
+      return account === null || statement.account === null || account === statement.account;
+    };
+    const referenceOf = (other: (typeof others)[number]) => {
+      const fields = parseFields(other.fieldsJson);
+      return typeof fields.reference === "string" ? referenceKey(fields.reference) : "";
+    };
+    const said = row.reference === null ? "" : referenceKey(row.reference);
+    const found = others.find((other) => {
+      if (!alike(other)) return false;
+      const reference = referenceOf(other);
+      if (reference !== "" && said !== "") return reference === said;
+      const words = squash(`${other.title} ${other.notes}`);
       const narration = squash(row.description);
       return (
-        said.includes(narration.slice(0, 24)) ||
+        words.includes(narration.slice(0, 24)) ||
         narration.includes(squash(other.title).slice(0, 24))
       );
     });
+    // A bank alert's entry is the row it is by reference, else by day and amount when it is the
+    // only alert like it; one whose reference reads otherwise is only possibly that row.
+    const alerts =
+      found === undefined ? others.filter((other) => isAlertEntry(other) && alike(other)) : [];
+    const match = found ?? (alerts.length === 1 ? alerts[0] : undefined);
     if (match === undefined) continue;
     claimed.add(match.recordId);
     // Kin's own row with another identity may be another account's that ends the same way.
-    const sure =
-      statement.accountId === undefined ||
-      (statement.accountId !== null && !match.originKey.startsWith("bank:"));
+    const sure = isAlertEntry(match)
+      ? statement.account !== null &&
+        (found !== undefined || referenceOf(match) === "" || said === "")
+      : statement.accountId === undefined ||
+        (statement.accountId !== null && !match.originKey.startsWith("bank:"));
     (sure ? known : possible).set(index, {
       recordId: match.recordId,
       key: match.key,

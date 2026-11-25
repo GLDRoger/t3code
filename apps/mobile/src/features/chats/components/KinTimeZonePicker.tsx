@@ -1,3 +1,4 @@
+import { KIN_TIME_ZONE_PLACEHOLDER } from "@t3tools/client-runtime/kin/kinTimeZone";
 import { KIN_PROFILE_COPY, kinTimeZoneChoices } from "@t3tools/client-runtime/kin/kinProfiles";
 import { useRef, useState } from "react";
 import { View, type TextInputInstance } from "react-native";
@@ -35,7 +36,7 @@ export function KinTimeZonePicker(props: {
               inputRef={inputRef}
               accessibilityLabel="Search time zones"
               clearAccessibilityLabel="Clear search"
-              placeholder="City or region"
+              placeholder={KIN_TIME_ZONE_PLACEHOLDER}
               value={query}
               onChangeText={setQuery}
             />

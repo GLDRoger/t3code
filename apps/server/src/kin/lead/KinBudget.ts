@@ -45,6 +45,57 @@ export type Usage = {
   readonly usedTokens?: number | undefined;
 };
 type BudgetError = KinChatError | PersistenceSqlError;
+const validCount = (value: number | undefined) =>
+  value !== undefined && Number.isFinite(value) && value >= 0;
+const count = (value: number | undefined) => (validCount(value) ? value! : 0);
+const validLedger = (ledger: TurnTokenUsage) =>
+  validCount(ledger.inputTokens) &&
+  validCount(ledger.outputTokens) &&
+  (ledger.cachedInputTokens === undefined || validCount(ledger.cachedInputTokens));
+const completeLedger = (ledger: TurnTokenUsage | undefined) =>
+  ledger?.usageStatus === "complete" && validLedger(ledger);
+// A partial ledger counts what a running or stopped turn has used so far, which is still a floor.
+const countedLedger = (ledger: TurnTokenUsage | undefined) =>
+  (ledger?.usageStatus === "complete" || ledger?.usageStatus === "partial") && validLedger(ledger);
+const rawUnits = (usage: ReadonlyArray<Usage>) => {
+  let units = 0;
+  const ids = new Set<string>();
+  for (const turn of usage) {
+    if (ids.has(turn.providerTurnId)) continue;
+    ids.add(turn.providerTurnId);
+    const ledger = turn.turnTokenUsage;
+    if (!countedLedger(ledger) && validCount(turn.usedTokens)) {
+      units += count(turn.usedTokens);
+      continue;
+    }
+    const incoming = count(ledger?.inputTokens);
+    const cached = Math.min(incoming, count(ledger?.cachedInputTokens));
+    units +=
+      incoming -
+      cached +
+      0.1 * cached +
+      4 * count(ledger?.outputTokens) +
+      count(ledger?.otherUsage?.inputTokens) +
+      4 * count(ledger?.otherUsage?.outputTokens);
+  }
+  return units;
+};
+/**
+ * The units a turn's provider turns cost, as the daily limit charges them. A provider turn without
+ * a complete ledger counts its partial ledger or its last request's size: a floor until it ends.
+ */
+export const unitsOf = (usage: ReadonlyArray<Usage>) => {
+  const units = rawUnits(usage);
+  return Number.isFinite(units) ? units : 0;
+};
+/** Whether `unitsOf` read a total: some provider turn's complete ledger, and no floor beside it. */
+export const fromCompleteLedgers = (usage: ReadonlyArray<Usage>) =>
+  usage.some((turn) => completeLedger(turn.turnTokenUsage)) &&
+  usage.every(
+    (turn) =>
+      completeLedger(turn.turnTokenUsage) ||
+      (!countedLedger(turn.turnTokenUsage) && !validCount(turn.usedTokens)),
+  );
 /** Whose work a limit held back: the owner's own, or a teammate's. */
 export type HeldBy = "org" | "teammates";
 type Admission = {
@@ -59,6 +110,7 @@ export const askedByTeammate = (event: KinEvent, ownerLevel: ReadonlySet<string>
   ("origin" in event &&
     event.origin?.personId !== undefined &&
     !ownerLevel.has(event.origin.personId)) ||
+  (event._tag === "github" && event.askedBy !== undefined && !ownerLevel.has(event.askedBy)) ||
   (event.provenance._tag === "human" && !ownerLevel.has(event.provenance.personId));
 type Charge = {
   readonly orgId: KinOrgId;
@@ -126,6 +178,24 @@ export const heldWork = Effect.fn("KinBudget.waiting")(function* (orgId: KinOrgI
   };
 });
 
+/**
+ * Whether teammates' turns have any daily limit: their own, else the agents'. With none, the
+ * per-teammate turn cap (`LeadAccess.dailyTurns`) is lifted too; with any, it stays.
+ */
+export const teammatesLimited = Effect.fn("KinBudget.teammatesLimited")(function* (
+  orgId: KinOrgId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [stored] = yield* sql<{ limits: string }>`SELECT limits_json AS limits
+    FROM kin_budget_limits WHERE org_id = ${orgId}`;
+  if (stored === undefined) return false;
+  // Unreadable limits keep the cap, as they would keep a limit.
+  return yield* decodeStoredLimits(stored.limits).pipe(
+    Effect.map((limits) => (limits.teammateUnits ?? limits.leadUnits) !== null),
+    Effect.orElseSucceed(() => true),
+  );
+});
+
 export class KinBudget extends Context.Service<
   KinBudget,
   {
@@ -166,6 +236,12 @@ export class KinBudget extends Context.Service<
       readonly usage: ReadonlyArray<Usage>;
     }) => Effect.Effect<Charge, BudgetError>;
     /** A delegated task's thread bills `workerUnits` only, on the day it was first charged. */
+    /** A nightly dream turn's usage, against the agents' limit as the owner's own work. */
+    readonly chargeDream: (input: {
+      readonly orgId: KinOrgId;
+      readonly threadId: ThreadId;
+      readonly usage: ReadonlyArray<Usage>;
+    }) => Effect.Effect<{ readonly day: string; readonly units: number }, BudgetError>;
     readonly chargeTask: (input: {
       readonly orgId: KinOrgId;
       readonly threadId: ThreadId;
@@ -223,7 +299,9 @@ const make = Effect.gen(function* () {
             AND NOT ${sql.literal(ownerLevelSql("e.org_id", "json_extract(e.json, '$.origin.personId')"))})
           OR (json_extract(e.json, '$.provenance._tag') = 'human'
             AND json_extract(e.json, '$.provenance.personId') <> a.owner_person_id
-            AND NOT ${sql.literal(ownerLevelSql("e.org_id", "json_extract(e.json, '$.provenance.personId')"))})))`;
+            AND NOT ${sql.literal(ownerLevelSql("e.org_id", "json_extract(e.json, '$.provenance.personId')"))})
+          OR (e.tag = 'github' AND json_extract(e.json, '$.askedBy') <> a.owner_person_id
+            AND NOT ${sql.literal(ownerLevelSql("e.org_id", "json_extract(e.json, '$.askedBy')"))})))`;
   const waiting = (orgId: KinOrgId) =>
     heldWork(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   const limitsOf = Effect.fn("KinBudget.limitsOf")(function* (stored: string | null) {
@@ -250,6 +328,16 @@ const make = Effect.gen(function* () {
       WHERE b.org_id = ${orgId} AND b.day = ${day}`;
     if (row === undefined) return yield* notFound;
     const teammates = row.teammates;
+    // Whether turns found their fixed prefix cached: the day's input against its cached part.
+    const [input] = full
+      ? yield* sql<{ inputTokens: number; cachedInputTokens: number }>`
+          SELECT COALESCE(SUM(json_extract(u.value, '$.turnTokenUsage.inputTokens')), 0)
+              AS "inputTokens",
+            COALESCE(SUM(json_extract(u.value, '$.turnTokenUsage.cachedInputTokens')), 0)
+              AS "cachedInputTokens"
+          FROM kin_budget_charges c, json_each(c.tokens_json) u
+          WHERE c.org_id = ${orgId} AND c.day = ${day}`
+      : [];
     return {
       orgId,
       day,
@@ -260,6 +348,8 @@ const make = Effect.gen(function* () {
       ...(full
         ? {
             ownerUnits: Math.max(0, row.leadUnits - teammates),
+            inputTokens: input?.inputTokens ?? 0,
+            cachedInputTokens: input?.cachedInputTokens ?? 0,
             teammateUnits: teammates,
             usual: USUAL_LIMITS,
             waiting: yield* waiting(orgId),
@@ -417,10 +507,6 @@ const make = Effect.gen(function* () {
     usage: ReadonlyArray<Usage>,
     context: Readonly<Record<string, string>>,
   ) {
-    let units = 0;
-    const valid = (value: number | undefined) =>
-      value !== undefined && Number.isFinite(value) && value >= 0;
-    const count = (value: number | undefined) => (valid(value) ? value! : 0);
     const ids = new Set<string>();
     if (usage.length === 0)
       yield* Effect.logWarning("Kin budget turn usage unavailable", {
@@ -430,43 +516,27 @@ const make = Effect.gen(function* () {
       if (ids.has(turn.providerTurnId)) continue;
       ids.add(turn.providerTurnId);
       const ledger = turn.turnTokenUsage;
-      const complete =
-        ledger?.usageStatus === "complete" &&
-        valid(ledger.inputTokens) &&
-        valid(ledger.outputTokens) &&
-        (ledger.cachedInputTokens === undefined || valid(ledger.cachedInputTokens));
-      if (!complete) {
+      if (!countedLedger(ledger)) {
         yield* Effect.logWarning("Kin budget using fallback usage", {
           ...context,
           usageStatus: ledger?.usageStatus ?? "missing",
-          hasUsedTokens: valid(turn.usedTokens),
+          hasUsedTokens: validCount(turn.usedTokens),
         });
       }
-      if (!complete && valid(turn.usedTokens)) {
-        units += count(turn.usedTokens);
-        continue;
-      }
-      const incoming = count(ledger?.inputTokens);
-      const cached = Math.min(incoming, count(ledger?.cachedInputTokens));
-      if (cached !== count(ledger?.cachedInputTokens))
+      if (
+        (countedLedger(ledger) || !validCount(turn.usedTokens)) &&
+        Math.min(count(ledger?.inputTokens), count(ledger?.cachedInputTokens)) !==
+          count(ledger?.cachedInputTokens)
+      )
         yield* Effect.logWarning("Kin budget clamped cached usage", {
           ...context,
         });
-      units +=
-        incoming -
-        cached +
-        0.1 * cached +
-        4 * count(ledger?.outputTokens) +
-        count(ledger?.otherUsage?.inputTokens) +
-        4 * count(ledger?.otherUsage?.outputTokens);
     }
-    if (!Number.isFinite(units)) {
+    if (!Number.isFinite(rawUnits(usage)))
       yield* Effect.logWarning("Kin budget usage overflow", {
         ...context,
       });
-      units = 0;
-    }
-    return units;
+    return unitsOf(usage);
   });
   return KinBudget.of({
     get,
@@ -581,6 +651,8 @@ const make = Effect.gen(function* () {
           // Each chat reads the time on the clock of the person who asked there.
           const chats = new Map<string, KinPersonId | undefined>();
           for (const event of input.events) {
+            // Bills read in the background say it on their batch's card (`Bills.paused`).
+            if (event._tag === "bills.read") continue;
             const chatId =
               "chatId" in event && event.chatId !== undefined ? event.chatId : lead.ownerChatId;
             const asker =
@@ -660,6 +732,37 @@ const make = Effect.gen(function* () {
             units: chargedUnits,
             tokensJson,
           };
+        }),
+      );
+    }, Effect.mapError(mapError)),
+    chargeDream: Effect.fn("KinBudget.chargeDream")(function* (input) {
+      const units = yield* measure(input.usage, { orgId: input.orgId, threadId: input.threadId });
+      const tokensJson = yield* encodeJson(usageJsonValue(input.usage));
+      const { day } = yield* period(input.orgId);
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const [stored] = yield* sql<{
+            day: string;
+            units: number;
+            tokensJson: string;
+          }>`SELECT day, units, tokens_json AS "tokensJson" FROM kin_dream_charges WHERE org_id = ${input.orgId} AND thread_id = ${input.threadId} ORDER BY thread_id`;
+          if (stored !== undefined && (stored.tokensJson === tokensJson || units <= stored.units))
+            return { day: stored.day, units: stored.units };
+          const delta = Math.max(0, units - (stored?.units ?? 0));
+          const charged = stored?.day ?? day;
+          yield* ensure(input.orgId, charged);
+          const before = yield* snapshot(input.orgId, charged);
+          if (!Number.isFinite(before.leadUnits + delta)) return yield* invalid;
+          yield* sql`INSERT INTO kin_dream_charges (org_id, thread_id, day, units, tokens_json)
+            VALUES (${input.orgId}, ${input.threadId}, ${charged}, ${units}, ${tokensJson})
+            ON CONFLICT (org_id, thread_id) DO UPDATE SET units = excluded.units,
+              tokens_json = excluded.tokens_json`;
+          yield* sql`UPDATE kin_budget SET lead_units = lead_units + ${delta} WHERE org_id = ${input.orgId} AND day = ${charged}`;
+          const limit = before.limits.leadUnits;
+          const ownerSpent = Math.max(0, before.leadUnits - before.teammates) + delta;
+          if (limit !== null && limit > 0 && ownerSpent >= WARN_AT * limit)
+            yield* ownerNotice(input.orgId, "warning");
+          return { day: charged, units };
         }),
       );
     }, Effect.mapError(mapError)),

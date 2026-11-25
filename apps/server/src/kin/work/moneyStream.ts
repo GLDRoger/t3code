@@ -3,6 +3,7 @@ import {
   type KinMoneyLive,
   type KinMoneyPart,
   type KinMoneySubscribeInput,
+  type KinOrgId,
   type KinRefreshes,
   kinMoneyApply,
   kinMoneyDiff,
@@ -51,10 +52,12 @@ const TOPIC_PARTS: Partial<Record<keyof KinRefreshes, ReadonlyArray<KinMoneyPart
   timeZone: KIN_MONEY_PARTS,
   company: KIN_MONEY_PARTS,
   people: KIN_MONEY_PARTS,
+  // A section switched leaves out or brings back what Money counts (invoices in the outlook).
+  shell: KIN_MONEY_PARTS,
 };
 
 /** What a move of the refresh topics can move. */
-const demandOfTopics = (before: KinRefreshes, after: KinRefreshes): MoneyDemand => {
+export const demandOfTopics = (before: KinRefreshes, after: KinRefreshes): MoneyDemand => {
   const parts = new Set<KinMoneyPart>();
   for (const [topic, moves] of Object.entries(TOPIC_PARTS) as Array<
     [keyof KinRefreshes, ReadonlyArray<KinMoneyPart>]
@@ -72,6 +75,36 @@ const hashOf = (live: KinMoneyLive) =>
     JSON.stringify(KIN_MONEY_PARTS.map((part) => kinMoneySettled(part, live[part]) ?? null)),
   );
 
+const build = Effect.fn("KinMoneyStream.build")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  orgId: KinOrgId,
+  part: KinMoneyPart,
+) {
+  switch (part) {
+    case "summary":
+      return { summary: yield* Money.money(people, { orgId, upcomingRows: false }) };
+    case "cash":
+      return { cash: yield* MoneyAnswers.cash(people, { orgId }) };
+    case "outlook":
+      return { outlook: yield* MoneyAnswers.outlook(people, { orgId }) };
+    case "budgets":
+      return { budgets: yield* MoneyAnswers.budgets(people, { orgId }) };
+    case "receipts":
+      return { receipts: yield* Money.receipts(people, { orgId }) };
+    case "goals":
+      return { goals: yield* Goals.list(people, orgId) };
+    case "lists":
+      return { lists: yield* Money.lists(people, { orgId }) };
+  }
+});
+
+/**
+ * Each part's last build per company, by what its screens had heard. Every owner-level person
+ * reads Money alike (`KIN_OWNER_LEVEL`), so their screens share it; one server's KinRecords keys it.
+ */
+type Built = Map<string, { readonly heard: string; readonly built: ReturnType<typeof build> }>;
+const lastBuilt = new WeakMap<object, Built>();
+
 /**
  * One subscriber's side: `start` builds what they asked for, `apply` builds again what a burst
  * can move and says only what differs. `subscribe` runs it over the live changes; tests drive it.
@@ -83,6 +116,9 @@ export const makeMoneyStream = Effect.fn("KinMoneyStream.make")(function* (
   const { orgId } = input;
   const asked = new Set(input.parts);
   yield* theOwner(people, orgId);
+  const records = yield* KinRecords;
+  const built: Built = lastBuilt.get(records) ?? new Map();
+  lastBuilt.set(records, built);
   const live = hashedLive({
     held: input.held,
     hash: hashOf,
@@ -91,39 +127,32 @@ export const makeMoneyStream = Effect.fn("KinMoneyStream.make")(function* (
     apply: (held, change) => kinMoneyApply(held, { ...change, _tag: "changed", hash: "" }),
   });
 
-  const build = Effect.fn("KinMoneyStream.build")(function* (part: KinMoneyPart) {
-    switch (part) {
-      case "summary":
-        return { summary: yield* Money.money(people, { orgId, upcomingRows: false }) };
-      case "cash":
-        return { cash: yield* MoneyAnswers.cash(people, { orgId }) };
-      case "outlook":
-        return { outlook: yield* MoneyAnswers.outlook(people, { orgId }) };
-      case "budgets":
-        return { budgets: yield* MoneyAnswers.budgets(people, { orgId }) };
-      case "receipts":
-        return { receipts: yield* Money.receipts(people, { orgId }) };
-      case "goals":
-        return { goals: yield* Goals.list(people, orgId) };
-      case "lists":
-        return { lists: yield* Money.lists(people, { orgId }) };
-    }
+  /** With `heard`, a part another screen built after hearing the same is reused. */
+  const shared = Effect.fn("KinMoneyStream.shared")(function* (part: KinMoneyPart, heard: string) {
+    const key = `${orgId}:${part}`;
+    const last = built.get(key);
+    if (last?.heard === heard) return yield* last.built;
+    const once = yield* Effect.cached(build(people, orgId, part));
+    built.set(key, { heard, built: once });
+    return yield* once;
   });
-  const buildAll = (parts: ReadonlyArray<KinMoneyPart>) =>
-    Effect.forEach(parts, build, { concurrency: "unbounded" }).pipe(
-      Effect.map((built): KinMoneyLive => Object.assign({}, ...built)),
-    );
+  const buildAll = (parts: ReadonlyArray<KinMoneyPart>, heard?: string) =>
+    Effect.forEach(
+      parts,
+      (part) => (heard === undefined ? build(people, orgId, part) : shared(part, heard)),
+      { concurrency: "unbounded" },
+    ).pipe(Effect.map((each): KinMoneyLive => Object.assign({}, ...each)));
 
   const start = Effect.fn("KinMoneyStream.start")(function* () {
     return live.first(yield* buildAll(KIN_MONEY_PARTS.filter((part) => asked.has(part))));
   });
 
-  const apply = Effect.fn("KinMoneyStream.apply")(function* (demand: MoneyDemand) {
+  const apply = Effect.fn("KinMoneyStream.apply")(function* (demand: MoneyDemand, heard?: string) {
     const parts = KIN_MONEY_PARTS.filter((part) => asked.has(part) && demand.has(part));
     if (parts.length === 0) return [];
     // Someone no longer owner level gets nothing more; their client subscribes again and is refused.
     yield* theOwner(people, orgId);
-    return live.next(yield* buildAll(parts));
+    return live.next(yield* buildAll(parts, heard));
   });
 
   return { start, apply };
@@ -139,10 +168,12 @@ export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinMoney
       const hub = yield* KinRefreshHub;
       const session = yield* makeMoneyStream(people, input);
       let started = false;
+      let seq = 0;
       // The first tick is where Work stands, read after subscribing: the build that starts from it
       // misses nothing.
       const ticks = records.changes(input.orgId).pipe(
         Stream.map((tick) => {
+          seq = Math.max(seq, tick.seq);
           if (started) return demandOfTick(tick);
           started = true;
           return START;
@@ -163,7 +194,11 @@ export const subscribe = (people: ReadonlyArray<PersonIdentity>, input: KinMoney
         (asked) =>
           asked.includes(START)
             ? session.start().pipe(Effect.map((event) => [event]))
-            : session.apply(joined(asked.filter((one): one is MoneyDemand => one !== START))),
+            : session.apply(
+                joined(asked.filter((one): one is MoneyDemand => one !== START)),
+                // Read after the burst's wait, so a build kept under what was heard is no older.
+                JSON.stringify([seq, topics]),
+              ),
         // The first build answers at once; a change waits a moment for the rest of its burst.
         (asked) => (asked.includes(START) ? undefined : BATCH_WINDOW),
       );

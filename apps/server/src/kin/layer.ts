@@ -5,6 +5,9 @@ import * as TaskCardUpdater from "./chat/TaskCardUpdater.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as KinEnabled from "./KinEnabled.ts";
+import * as HostPolicy from "./hostPolicy.ts";
+import { checkPublicUrl } from "./publicAddress.ts";
+import * as ManagedPolicy from "../policy/ManagedPolicy.ts";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -18,18 +21,28 @@ import * as KeySeal from "./approvals/KeySeal.ts";
 import * as ApprovalCards from "./chat/approvalCards.ts";
 import * as ExecutionNotices from "./chat/executionNotices.ts";
 import * as KinPush from "./push/layer.ts";
+import * as KinPushDispatch from "./push/KinPushDispatch.ts";
+import * as KinHostCare from "./host/KinHostCare.ts";
 import * as LevelControl from "./levels/LevelControl.ts";
 import * as MemoryChanges from "./memory/MemoryChanges.ts";
+import * as KinImport from "./work/KinImport.ts";
 import * as KinRecords from "./work/KinRecords.ts";
 import { KinChatHub } from "./chat/KinChatHub.ts";
 import { KinChatService } from "./chat/KinChatService.ts";
 import * as FileSystem from "effect/FileSystem";
 import { ServerConfig } from "../config.ts";
-import { answerChoice, resumeInterruptedSends } from "./work/cardAnswers.ts";
+import {
+  answerChoice,
+  dismissChoice,
+  refusedChoice,
+  resumeInterruptedSends,
+} from "./work/cardAnswers.ts";
 import { requireRefreshObserver } from "./chat/KinRefreshHub.ts";
-import { KinIdentity } from "./chat/KinIdentity.ts";
+import { KinIdentity, KinNewCompanyCountryUnset } from "./chat/KinIdentity.ts";
+import { indexStoredSteps } from "./work/searchIndex.ts";
 import { seedPlaybooks } from "./work/playbookSeeds.ts";
-import { seedCharacters } from "./lead/characters.ts";
+import { seedCharacters, splitCharacters } from "./lead/characters.ts";
+import { closeSubject } from "./open/closeSubject.ts";
 
 import { KinServer, type Services } from "./KinServer.ts";
 export { KinServer } from "./KinServer.ts";
@@ -37,6 +50,7 @@ import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as KinMcp from "./mcp/layer.ts";
+import * as KinTasksKeyMcp from "./tasksKey/mcp.ts";
 import * as Render from "./gendocs/render.ts";
 import * as Toolchain from "./gendocs/toolchain.ts";
 import * as GhTool from "./connections/ghTool.ts";
@@ -44,9 +58,11 @@ import * as GitHubLogin from "./connections/GitHubLogin.ts";
 import { devAppStandIn } from "./github/devAppStandIn.ts";
 import * as KinGitHubApp from "./github/KinGitHubApp.ts";
 import * as KinGitHubAppKey from "./github/appKey.ts";
+import * as KinGitHubHook from "./github/appHook.ts";
 import * as KinGitHubAppSetup from "./github/appSetup.ts";
 import * as Keychain from "./github/Keychain.ts";
 import * as AgentSession from "./lead/AgentSession.ts";
+import * as KinRefusedModels from "./lead/refusedModels.ts";
 import * as Workspace from "./gendocs/workspace.ts";
 import * as Vcs from "../vcs/VcsProcess.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -54,8 +70,13 @@ import { FetchHttpClient } from "effect/http";
 import * as Connections from "./connections/ConnectionsService.ts";
 import * as ConnectionSecrets from "./connections/ConnectionSecrets.ts";
 import * as DevFakeMail from "./connections/DevFakeMail.ts";
+import * as DevClock from "./DevClock.ts";
 import * as McpGateway from "./connections/McpGateway.ts";
 import * as DevFakeSocial from "./social/DevFakeSocial.ts";
+import * as DevFakeImages from "./pictures/DevFakeImages.ts";
+
+import * as KinNumbers from "./numbers/KinNumbers.ts";
+import * as KinShell from "./shell/KinShell.ts";
 
 const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
   Layer.effect(
@@ -63,7 +84,17 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
     Effect.gen(function* () {
       const services = yield* Effect.context<Services>();
       yield* requireRefreshObserver(services);
+      const chat = yield* KinChatService;
+      yield* (yield* KinRecords.KinRecords).attachClosing((subject) =>
+        closeSubject(subject, chat).pipe(Effect.provide(services)),
+      );
       const { owner } = yield* KinIdentity;
+      yield* HostPolicy.check();
+      yield* checkPublicUrl();
+      yield* indexStoredSteps(owner.orgId).pipe(
+        Effect.provide(services),
+        Effect.catch((error) => Effect.logWarning("Kin could not index saved task steps", error)),
+      );
       // A failed seed leaves Kin running; the next start tries the missing ones again.
       yield* seedPlaybooks(owner.orgId, owner.personId).pipe(
         Effect.provide(services),
@@ -77,13 +108,36 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           Effect.logWarning("Kin default characters not written", Cause.pretty(cause)),
         ),
       );
+      yield* splitCharacters(owner.orgId, chat).pipe(
+        Effect.provide(services),
+        Effect.catchCause((cause) =>
+          Effect.logWarning(
+            "Kin couldn't separate Kin's part of the characters",
+            Cause.pretty(cause),
+          ),
+        ),
+      );
+
       yield* DevFakeMail.connectFakeAccounts(owner).pipe(Effect.provide(services));
       const hub = yield* KinChatHub;
       const scope = yield* Effect.scope;
+      // What pushes told of a task is withdrawn once it is done, dropped or handed on.
+      yield* KinPushDispatch.settleTasks(
+        owner.orgId,
+        (yield* KinRecords.KinRecords).changes(owner.orgId),
+      );
       const files = yield* Effect.context<FileSystem.FileSystem | ServerConfig>();
       // Receipt and statement cards' answers carry out their work here, in the tap's transaction.
-      yield* (yield* KinChatService).attachChoiceAnswers((input) =>
-        answerChoice(input, scope).pipe(Effect.provide(services), Effect.provide(files)),
+      yield* chat.attachChoiceAnswers(
+        (input) => answerChoice(input, scope).pipe(Effect.provide(services), Effect.provide(files)),
+        (input) =>
+          refusedChoice(input).pipe(
+            Effect.provide(services),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin couldn't show a card's sent-mail check", Cause.pretty(cause)),
+            ),
+          ),
+        (input) => dismissChoice(input).pipe(Effect.provide(services)),
       );
       yield* resumeInterruptedSends(owner.orgId, yield* Clock.currentTimeMillis).pipe(
         Effect.provide(services),
@@ -114,9 +168,11 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           Layer.provideMerge(
             Layer.mergeAll(
               KinPush.layer,
+              KinHostCare.layer,
+              KinRefusedModels.layer,
               LevelControl.layer,
               MemoryChanges.layer,
-              KinRecords.layer,
+              KinImport.layer,
               Render.layer.pipe(
                 Layer.provideMerge(Workspace.layer),
                 Layer.provide(
@@ -144,6 +200,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           // Kin's GitHub App: the identity agents' shells and Kin's own GitHub writes use.
           Layer.provideMerge(
             KinGitHubAppSetup.layer.pipe(
+              Layer.provideMerge(KinGitHubHook.layer.pipe(Layer.provide(ServerSecretStore.layer))),
               Layer.provideMerge(KinGitHubApp.layer),
               Layer.provide(KinGitHubApp.KinGitHubAppConfig.layer),
               Layer.provide(KinGitHubAppKey.layer.pipe(Layer.provide(ServerSecretStore.layer))),
@@ -177,17 +234,29 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           ),
         ),
       ).pipe(
-        Layer.provideMerge(KinChat.layer),
+        Layer.merge(KinShell.layer),
+        Layer.merge(KinNumbers.layer),
+        Layer.provideMerge(KinChat.layerWithWork),
         // Social's posting service sits on top: it reads cards, chats and the document renderer.
         (core) =>
           DevFakeSocial.layer.pipe(
             Layer.provide(ConnectionSecrets.layer),
             Layer.provideMerge(core),
           ),
+        // Pictures read the secret store, chats for the 80% notice, and the document store.
+        (withSocial) =>
+          DevFakeImages.layer.pipe(
+            Layer.provide(ConnectionSecrets.layer),
+            Layer.provideMerge(withSocial),
+          ),
       ),
     ),
+    // Everything Kin builds above reads the time from here: a play-test's moved clock in dev.
+    Layer.provide(DevClock.layer),
     // Inside `enabled`: built only with Kin on, and a secret store failure disables Kin, not the server.
     Layer.provide(seal),
+    // The server's own instance: layers are shared by reference.
+    Layer.provide(ManagedPolicy.layer),
   );
 const disabled = Layer.succeed(KinServer, {
   taskCardUpdater: Layer.empty,
@@ -259,13 +328,15 @@ const taskCardUpdater = Layer.unwrap(
 );
 
 export const mcpLayer = (base: Parameters<typeof KinMcp.transport>[0]) =>
-  Layer.mergeAll(KinMcp.transport(base), taskCardUpdater);
+  Layer.mergeAll(KinMcp.transport(base), KinTasksKeyMcp.layer, taskCardUpdater);
 
 export const mcpRegistryLayer = <E, R>(
   base: Layer.Layer<McpSessionRegistry.McpSessionRegistry, E, R>,
 ) =>
   KinMcp.registry(base).pipe(
     Layer.provideMerge(layer),
+    // Only the running server creates companies whose country starts not chosen; tests keep India's.
+    Layer.provide(Layer.succeed(KinNewCompanyCountryUnset, true)),
     // The chat service takes this optionally, so the running server names it here.
     Layer.provide(KinAttachmentStore.layer),
     Layer.provide(SqlitePersistence.layerConfig),

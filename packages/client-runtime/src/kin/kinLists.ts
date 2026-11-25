@@ -9,19 +9,29 @@ import type {
   KinListTotals,
   KinListUpdateInput,
   KinMoney,
+  KinBankKnown,
   KinMoneyTotals,
   KinOrgId,
   KinPayment,
+  KinPaymentSource,
   KinRecord,
   KinRecordDetail,
   KinRecordKey,
   KinRecordState,
   KinWorkListInput,
+  KinWritableListFieldType,
   KinWorkPrincipal,
 } from "@t3tools/contracts";
 import {
+  KIN_BILL_TO_NAME,
+  kinBillToEditable,
+  kinBillToName,
+  kinIsBillToField,
+} from "./kinBillTo.ts";
+import {
   formatKinMoney,
   KIN_DEFAULT_HOME_CURRENCY,
+  KIN_LISTS_NEVER_TEAM,
   kinCurrency,
   parseKinMoney,
   kinWhenFormat,
@@ -47,11 +57,102 @@ import {
  * amounts, dates, files and repeats. Nothing here knows what a list is for.
  */
 
+/** How far Kin sees the bank, and where a payment came from, as people read it. */
+export const KIN_BANK = {
+  knownTo: (day: string) => `Bank known to ${day}`,
+  unseen: "Kin can't see the bank yet: upload a statement",
+  upload: "Upload a statement",
+  /** The chat it opens starts with this; the statement is attached there, as always. */
+  uploadMessage: "Here is the bank statement: ",
+  notPaid: (day: string | null) =>
+    day === null
+      ? "Not recorded as paid. Kin can't see the bank yet."
+      : `Not recorded as paid. Bank known to ${day}.`,
+  restNotPaid: (day: string | null) =>
+    day === null
+      ? "The rest isn't recorded as paid. Kin can't see the bank yet."
+      : `The rest isn't recorded as paid. Bank known to ${day}.`,
+  fromStatement: "from the bank statement",
+  recordedBy: (name: string) => `recorded by ${name}`,
+  recordedOnWord: (agent: string, person: string) => `recorded by ${agent} on ${person}'s word`,
+  recordedHere: "recorded in Kin",
+};
+
+const bankDayFormat = kinWhenFormat("date", { zone: "UTC" });
+const bankDayYearFormat = kinWhenFormat("dateYear", { zone: "UTC" });
+/** "31 Oct", with its year when it isn't this one. */
+const kinBankDay = (day: string, now: Date) => {
+  const at = new Date(`${day}T00:00:00Z`);
+  if (Number.isNaN(at.getTime())) return day;
+  return day.slice(0, 4) === String(now.getFullYear())
+    ? bankDayFormat.format(at)
+    : bankDayYearFormat.format(at);
+};
+
+/** Money's quiet line: how far Kin sees the bank; null from a host that doesn't say. */
+export const kinBankKnownText = (known: KinBankKnown | undefined, now: Date) =>
+  known === undefined
+    ? null
+    : known.through === null
+      ? KIN_BANK.unseen
+      : KIN_BANK.knownTo(kinBankDay(known.through, now));
+
+/**
+ * An Invoices draft nothing came in on shows no balance: it is owed once issued. Display only;
+ * `balance` stays on the record, as Mark paid and older phones record a payment from it.
+ */
+export const kinDraftShowsNoBalance = (
+  item: Pick<KinRecord, "list" | "state" | "amount" | "balance">,
+) =>
+  item.list === "invoices" &&
+  item.state === "open" &&
+  item.balance !== undefined &&
+  item.amount !== undefined &&
+  item.balance.minor >= item.amount.minor;
+
+/** An issued invoice's line while some of it is owed: never more certain than the bank. */
+export const kinInvoiceBankText = (
+  item: Pick<KinRecordDetail, "state" | "bankKnown" | "balance" | "amount">,
+  now: Date,
+) => {
+  const known = item.bankKnown;
+  if (known === undefined || item.state !== "waiting" || item.balance === undefined) return null;
+  if (item.balance.minor === 0) return null;
+  const day = known.through === null ? null : kinBankDay(known.through, now);
+  return item.amount !== undefined && item.balance.minor < item.amount.minor
+    ? KIN_BANK.restNotPaid(day)
+    : KIN_BANK.notPaid(day);
+};
+
+/** Where a payment came from; null from a host that doesn't say. */
+export const kinPaymentSourceText = (
+  source: KinPaymentSource | undefined,
+  names: Pick<KinWorkNames, "people" | "agents">,
+) => {
+  if (source === undefined) return null;
+  switch (source._tag) {
+    case "statement":
+      return KIN_BANK.fromStatement;
+    case "person": {
+      const person = names.people.get(source.personId) ?? "someone";
+      return source.agentId === undefined
+        ? KIN_BANK.recordedBy(person)
+        : KIN_BANK.recordedOnWord(names.agents.get(source.agentId) ?? "an agent", person);
+    }
+    case "agent":
+      return KIN_BANK.recordedBy(names.agents.get(source.agentId) ?? "an agent");
+    case "recorded":
+      return KIN_BANK.recordedHere;
+  }
+};
+
 export const KIN_LISTS = {
   listGone: "This list isn't here",
   goneDetail: "It may have been renamed. Open Docs to see the lists there are.",
   title: "Lists",
   search: "Search this list",
+  /** A list opened from a Money figure: only what the figure counted. */
+  kept: "Counted in Money",
   loadFailed: "Couldn't load your lists",
   entriesFailed: "Couldn't load this list",
   none: {
@@ -74,6 +175,9 @@ export const KIN_LISTS = {
   billed: "Billed",
   sentWaiting: "Sent, waiting",
   accepted: "Accepted",
+  moneyIn: "Money in",
+  moneyOut: "Money out",
+  net: "Net",
   owed: "Still owed",
   received: "Received",
   paidOut: "Paid",
@@ -104,9 +208,8 @@ export const KIN_LISTS = {
     payAmount: "Amount received",
     payDay: "Received on",
     payNote: "Note",
-    payNotePlaceholder: "Bank transfer, UPI reference…",
+    payNotePlaceholder: "How it was paid, or its reference",
     payTds: "TDS deducted",
-    payTdsPlaceholder: "0",
     paySave: "Record payment",
     takeBack: "Take back",
     takenBack: "Taken back",
@@ -129,9 +232,9 @@ export const KIN_LISTS = {
     filesNone: "No files in your chats yet. Send one to an agent, then add it here.",
     filesNoMatch: "No file with that name.",
     filesFailed: "Couldn't load your files.",
-    amountPlaceholder: "40,000 or $120.50",
+    amountPlaceholder: "Amount, and its currency if it isn't yours",
     retiredField: "No longer used",
-    private: "Private. Only you see this.",
+    private: "Private. Only owners see this.",
     gone: {
       title: "This entry isn't here any more",
       detail: "Open its list to see what there is now.",
@@ -148,6 +251,9 @@ export const KIN_LISTS = {
     categories: "What it calls each category",
     payments: "Entries are paid in parts",
     paymentsDetail: "Each entry keeps its payments and what is still owed, as invoices do.",
+    team: "The team works on this list",
+    teamDetail:
+      "Everyone on the team sees the entries added after this is turned on, and can add and update them. Entries marked sensitive stay private, and amounts and private details stay hidden from anyone without Money. Turn it off to hide the list from the team again.",
     archive: "Put this list away",
     archiveDetail:
       "It stops taking new entries. Nothing is deleted, and you can bring it back here in its settings.",
@@ -157,7 +263,7 @@ export const KIN_LISTS = {
     cancel: "Cancel",
   },
   onlyOwner: {
-    title: "Not available",
+    title: "Lists aren't open to you",
     detail: "Lists and money are kept by whoever runs this Kin.",
   },
 };
@@ -166,6 +272,13 @@ export const KIN_LISTS = {
 
 /** How many digits follow the point in `currency`: 2 for rupees, 0 for yen. */
 export const kinMinorDigits = (currency: string) => kinCurrency(currency).decimals;
+
+/**
+ * What a person calls an entry: its issued number (INV/26-27/004), else its key while it has none.
+ * `number` is a ref's own, or an entry's `fields.number`.
+ */
+export const kinRecordName = (key: string, number: unknown) =>
+  typeof number === "string" && number.trim() !== "" ? number.trim() : key;
 
 /** An exact amount: "₹4,20,000", with paise only when there are some unless `paise` keeps them. */
 export const kinMoneyText = (money: KinMoney, paise = false) =>
@@ -184,7 +297,7 @@ export const kinCategoryLabel = (
 ) => def?.categoryLabels?.[category] ?? category;
 
 /** "Today" reads as "today" after a label; a date keeps its capitals. */
-const afterLabel = (when: string) =>
+export const afterLabel = (when: string) =>
   /^(Today|Tomorrow|Yesterday)/.test(when) ? when.charAt(0).toLowerCase() + when.slice(1) : when;
 
 /** Totals in a sentence: "₹4,20,000 and $13", or "Nothing". */
@@ -230,8 +343,12 @@ export function kinMonthLabel(month: string, short = false): string {
   return `${short ? name.slice(0, 3) : name} ${month.slice(0, 4)}`;
 }
 
-/** "FY 2026–27" for `FY2026-27`. */
-export const kinFinancialYearLabel = (year: string) => `FY ${year.slice(2, 6)}–${year.slice(7)}`;
+/** "FY 2026–27" for `FY2026-27`, "FY 2026" for `FY2026`. */
+export const kinFinancialYearLabel = (year: string) =>
+  year.length > 6 ? `FY ${year.slice(2, 6)}–${year.slice(7)}` : `FY ${year.slice(2, 6)}`;
+/** "April to March": the months a financial year starting in `startMonth` runs. */
+export const kinFinancialYearMonths = (startMonth: number) =>
+  `${MONTHS[startMonth - 1]} to ${MONTHS[(startMonth + 10) % 12]}`;
 
 export interface KinPeriod {
   readonly from: string;
@@ -246,10 +363,16 @@ export function kinMonthPeriod(month: string): KinPeriod {
   return { from: `${month}-01`, to: `${month}-${pad(last)}` };
 }
 
-/** April to March. */
-export function kinFinancialYearPeriod(year: string): KinPeriod {
+/**
+ * A financial year's days. `FY2026` is the calendar year; one across two years starts in
+ * `startMonth`, April where the host didn't say, as hosts before company years were set.
+ */
+export function kinFinancialYearPeriod(year: string, startMonth?: number): KinPeriod {
   const start = Number(year.slice(2, 6));
-  return { from: `${start}-04-01`, to: `${start + 1}-03-31` };
+  const first = year.length > 6 ? (startMonth ?? 4) : 1;
+  if (first === 1) return { from: `${start}-01-01`, to: `${start}-12-31` };
+  const end = kinMonthPeriod(`${start + 1}-${pad(first - 1)}`);
+  return { from: `${start}-${pad(first)}-01`, to: end.to };
 }
 
 const DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -265,10 +388,12 @@ export function kinPeriodLabel(period: KinPeriod): string {
   const month = period.from.slice(0, 7);
   const whole = kinMonthPeriod(month);
   if (whole.from === period.from && whole.to === period.to) return kinMonthLabel(month);
-  if (period.from.endsWith("-04-01") && period.to.endsWith("-03-31")) {
-    const start = Number(period.from.slice(0, 4));
-    if (Number(period.to.slice(0, 4)) === start + 1)
-      return kinFinancialYearLabel(`FY${start}-${String(start + 1).slice(2)}`);
+  const start = Number(period.from.slice(0, 4));
+  const first = Number(period.from.slice(5, 7));
+  const year = `FY${start}-${String(start + 1).slice(2)}`;
+  if (first > 1 && period.from.endsWith("-01")) {
+    const fy = kinFinancialYearPeriod(year, first);
+    if (fy.from === period.from && fy.to === period.to) return kinFinancialYearLabel(year);
   }
   const from = localDay(period.from);
   const to = localDay(period.to);
@@ -293,6 +418,108 @@ export const kinListStateLabel = (
   state: KinRecordState,
 ) => def?.stateLabels[state] ?? STATE_NAMES[state];
 
+export const KIN_SUGGESTED = "Suggested";
+/**
+ * An entry nobody with the right has kept or dropped, whatever its state or amount: it waits on
+ * Keep. The host counts it in no figure.
+ */
+export const kinSuggestion = (record: Pick<KinRecord, "confirmed" | "state">) =>
+  !record.confirmed && record.state !== "dropped";
+/** Lists whose every entry is money: a suggestion there is owed, due or overdue nowhere. */
+const KIN_MONEY_LISTS: ReadonlySet<string> = new Set([
+  "quotes",
+  "invoices",
+  "expenses",
+  "receipts",
+  "subscriptions",
+]);
+export const KIN_SUGGESTION_NOTE = "Not in any Money figure until you keep it.";
+/** A draft invoice kept is still a draft: owed nowhere until it is issued. */
+const KIN_SUGGESTED_DRAFT_NOTE =
+  "Not in any Money figure until you keep it, and not owed until it's issued.";
+/**
+ * On a suggestion's own page: the note when Money would count it once kept, and whether Not
+ * needed works there, which drops it: a list with no Dropped state offers only Keep.
+ */
+export const kinSuggestionKeep = (
+  record: Pick<KinRecord, "list" | "amount"> & Partial<Pick<KinRecord, "state">>,
+  def: Pick<KinListDefinition, "states"> | null,
+) => ({
+  note:
+    record.list === "invoices" && record.state === "open"
+      ? KIN_SUGGESTED_DRAFT_NOTE
+      : KIN_MONEY_LISTS.has(record.list ?? "work") || record.amount !== undefined
+        ? KIN_SUGGESTION_NOTE
+        : null,
+  declines: def === null ? (record.list ?? "work") === "work" : def.states.includes("dropped"),
+});
+/** Lists whose Waiting is issued or sent, which nobody made a suggestion. */
+const KIN_ISSUED_LISTS: ReadonlySet<string> = new Set(["quotes", "invoices"]);
+/**
+ * A state's words for a person, a suggestion's first saying so: "Suggested · Paid", and only
+ * "Suggested" where its state would read issued or sent.
+ */
+export const kinSuggestionText = (
+  record: Pick<KinRecord, "confirmed" | "state" | "list">,
+  label: string,
+) =>
+  !kinSuggestion(record)
+    ? label
+    : record.state === "waiting" && KIN_ISSUED_LISTS.has(record.list ?? "work")
+      ? KIN_SUGGESTED
+      : `${KIN_SUGGESTED} · ${label}`;
+const KIN_DAY = "Date";
+/** The day's label, or the plain one on a suggestion or draft where it names a state, as Issued does. */
+const kinDayLabel = (
+  def: Pick<KinListDefinition, "dateLabel" | "states" | "stateLabels">,
+  notIssued: boolean,
+) =>
+  notIssued && def.states.some((state) => kinListStateLabel(def, state) === def.dateLabel)
+    ? KIN_DAY
+    : def.dateLabel;
+/** Not gone out yet: a suggestion or a draft, whose day is no issue day. */
+const kinNotIssued = (item: Pick<KinRecord, "confirmed" | "state">) =>
+  kinSuggestion(item) || item.state === "open";
+/** Late as a figure would read it: never for a suggestion in a money list. */
+const kinLateShown = (record: Pick<KinRecord, "late" | "confirmed" | "list">) =>
+  record.late && (record.confirmed || !KIN_MONEY_LISTS.has(record.list ?? "work"));
+const kinSuggestionStateLabel = (
+  def: Pick<KinListDefinition, "stateLabels"> | null,
+  record: Pick<KinRecord, "confirmed" | "state" | "list">,
+) => kinSuggestionText(record, kinListStateLabel(def, record.state));
+
+/**
+ * What Kin watches on a list shown as a section, read only: its check and the day it reminds on.
+ * They are set by asking Kin (an agent's `list_define`), so the owner level reads where to change them.
+ */
+export function kinListWatches(
+  def: Pick<KinListDefinition, "fields" | "check" | "remindOn" | "dateLabel">,
+): ReadonlyArray<string> {
+  const label = (key: string) => def.fields.find((field) => field.key === key)?.label ?? key;
+  const check = def.check;
+  const other = check === undefined ? undefined : (check.below ?? check.above);
+  const warns =
+    check === undefined || other === undefined
+      ? []
+      : [
+          `Kin warns when ${label(check.field)} is ${check.below === undefined ? "above" : "below"} ${
+            typeof other === "number" ? String(other) : label(other)
+          }`,
+        ];
+  const remind = def.remindOn;
+  const day =
+    remind === undefined
+      ? null
+      : def.fields.some((field) => field.key === remind)
+        ? label(remind)
+        : remind === "date"
+          ? (def.dateLabel ?? "its date")
+          : remind;
+  return [...warns, ...(day === null ? [] : [`Kin reminds on ${day}`])];
+}
+
+export const KIN_LIST_WATCHES_CHANGE = "Ask Kin to change this.";
+
 export interface KinListIndexRow {
   readonly list: KinListId;
   readonly name: string;
@@ -302,14 +529,25 @@ export interface KinListIndexRow {
   readonly amount: boolean;
 }
 
-/** The lists people defined, by name; Work and the clients directory have screens of their own. */
-export function kinListsIndex(lists: ReadonlyArray<KinListDefinition>): {
+/**
+ * The lists people defined, by name; Work and the clients directory have screens of their own.
+ * `first`: lists shown as sections, which lead in that order (the phone's way in to those it
+ * has no dock place for).
+ */
+export function kinListsIndex(
+  lists: ReadonlyArray<KinListDefinition>,
+  first: ReadonlyArray<string> = [],
+): {
   readonly active: ReadonlyArray<KinListIndexRow>;
   readonly archived: ReadonlyArray<KinListIndexRow>;
 } {
+  const rank = (list: string) => {
+    const at = first.indexOf(list);
+    return at < 0 ? first.length : at;
+  };
   const rows = lists
     .filter((def) => !def.builtIn)
-    .sort((a, b) => a.name.localeCompare(b.name))
+    .sort((a, b) => rank(a.list) - rank(b.list) || a.name.localeCompare(b.name))
     .map((def) => ({
       list: def.list,
       name: def.name,
@@ -330,7 +568,8 @@ export function kinListsIndex(lists: ReadonlyArray<KinListDefinition>): {
 
 // Filters
 
-export type KinListShow = "all" | "open" | KinRecordState;
+/** `notClosed`: every entry not yet closed; a state alone, `open` included, is just that state. */
+export type KinListShow = "all" | "notClosed" | KinRecordState;
 
 export interface KinListFilter {
   readonly text: string;
@@ -346,8 +585,12 @@ export interface KinListFilter {
   readonly period: KinPeriod | null;
   /** A payment came in between these days. */
   readonly paid: KinPeriod | null;
+  /** Money left the company's accounts between these days, as Money's spent counts it. */
+  readonly spent: KinPeriod | null;
   readonly party: KinWorkRef | null;
   readonly project: KinWorkRef | null;
+  /** `true`: only what Money's figures count, as a figure opens it; `false`: only suggestions. */
+  readonly kept: boolean | null;
   readonly groupBy: KinListGroupBy;
 }
 
@@ -360,8 +603,10 @@ export const KIN_LIST_DEFAULT_FILTER: KinListFilter = {
   noParty: false,
   period: null,
   paid: null,
+  spent: null,
   party: null,
   project: null,
+  kept: null,
   groupBy: "none",
 };
 
@@ -378,8 +623,10 @@ export const kinListSameFilter = (a: KinListFilter, b: KinListFilter) =>
   a.noParty === b.noParty &&
   samePeriod(a.period, b.period) &&
   samePeriod(a.paid, b.paid) &&
+  samePeriod(a.spent, b.spent) &&
   a.party?.key === b.party?.key &&
   a.project?.key === b.project?.key &&
+  a.kept === b.kept &&
   a.groupBy === b.groupBy;
 
 export function kinListQuery(
@@ -393,7 +640,7 @@ export function kinListQuery(
     list,
     ...(filter.show === "all"
       ? {}
-      : filter.show === "open"
+      : filter.show === "notClosed"
         ? { open: true }
         : { states: [filter.show] }),
     ...(filter.late ? { late: true } : {}),
@@ -404,12 +651,14 @@ export function kinListQuery(
         : { listCategory: filter.category as NonNullable<KinWorkListInput["listCategory"]> }),
     ...(filter.period === null ? {} : { dateFrom: filter.period.from, dateTo: filter.period.to }),
     ...(filter.paid === null ? {} : { paidFrom: filter.paid.from, paidTo: filter.paid.to }),
+    ...(filter.spent === null ? {} : { spentFrom: filter.spent.from, spentTo: filter.spent.to }),
     ...(filter.noParty
       ? { party: null }
       : filter.party === null
         ? {}
         : { party: filter.party.key }),
     ...(filter.project === null ? {} : { project: filter.project.key }),
+    ...(filter.kept === null ? {} : { kept: filter.kept }),
     ...(text === "" ? {} : { text }),
     totalsBy: filter.groupBy,
   };
@@ -432,7 +681,7 @@ export function kinListChips(
     {
       id: "all",
       label: KIN_LISTS.all,
-      selected: plain && (filter.show === "all" || filter.show === "open"),
+      selected: plain && (filter.show === "all" || filter.show === "notClosed"),
       filter: { ...filter, show: "all", late: false },
     },
     ...def.states.map((state) => ({
@@ -502,6 +751,15 @@ export function kinListNarrowings(
             cleared: { ...filter, paid: null },
           },
         ]),
+    ...(filter.spent === null
+      ? []
+      : [
+          {
+            id: "spent",
+            label: `Spent in ${kinPeriodLabel(filter.spent)}`,
+            cleared: { ...filter, spent: null },
+          },
+        ]),
     ...(filter.noParty
       ? [{ id: "party", label: KIN_LISTS.noClient, cleared: { ...filter, noParty: false } }]
       : filter.party === null
@@ -510,6 +768,15 @@ export function kinListNarrowings(
     ...(filter.project === null
       ? []
       : [{ id: "project", label: filter.project.title, cleared: { ...filter, project: null } }]),
+    ...(filter.kept === null
+      ? []
+      : [
+          {
+            id: "kept",
+            label: filter.kept ? KIN_LISTS.kept : KIN_SUGGESTED,
+            cleared: { ...filter, kept: null },
+          },
+        ]),
   ];
 }
 
@@ -541,13 +808,16 @@ export const kinListGroupings = (def: KinListDefinition): ReadonlyArray<KinListG
 
 /** One figure over a list: "Still owed" with a line per currency. */
 export interface KinListFigure {
-  readonly id: "total" | "owed" | "received" | "sent" | "accepted";
+  readonly id: "total" | "owed" | "received" | "sent" | "accepted" | "moneyIn" | "moneyOut" | "net";
   /** Null for the only figure of a list that isn't paid over time: it needs no name. */
   readonly label: string | null;
   readonly lines: ReadonlyArray<string>;
 }
 
-type Sums = Pick<KinListTotals, "total" | "owed" | "received" | "sent" | "accepted">;
+type Sums = Pick<
+  KinListTotals,
+  "total" | "owed" | "received" | "sent" | "accepted" | "moneyIn" | "moneyOut" | "net"
+>;
 
 /**
  * The figures a filter's sums make, the one the filter is about first: what was received in a
@@ -558,6 +828,13 @@ function figuresOf(def: KinListDefinition, sums: Sums): ReadonlyArray<KinListFig
   const some = (totals: KinMoneyTotals) =>
     totals.length === 0 ? [KIN_MONEY_NOTHING] : kinTotalsLines(totals);
   const billed = { id: "total" as const, label: KIN_LISTS.billed, lines: some(sums.total) };
+  // Bank rows: money in and out apart, then the net, never one sum across both.
+  if (sums.net !== undefined)
+    return [
+      { id: "moneyIn", label: KIN_LISTS.moneyIn, lines: some(sums.moneyIn ?? []) },
+      { id: "moneyOut", label: KIN_LISTS.moneyOut, lines: some(sums.moneyOut ?? []) },
+      { id: "net", label: KIN_LISTS.net, lines: some(sums.net) },
+    ];
   // Quotes add up only what is out and what was won; a draft is not money yet.
   if (sums.sent !== undefined || sums.accepted !== undefined)
     return [
@@ -611,14 +888,24 @@ export function kinListHeader(
   filter: KinListFilter,
   totals: KinListTotals | null,
   total: number | null,
+  /** The month the company's year starts in, which a financial-year group runs from. */
+  yearStartMonth?: number,
 ): KinListHeaderView {
   const groups = (totals?.groups ?? []).map((group): KinListGroupView => {
     const figures = figuresOf(def, group);
+    const flows = figures[0]?.id === "moneyIn";
+    const ways = [
+      ...((group.moneyIn ?? []).length > 0 ? [`${kinTotalsText(group.moneyIn ?? [])} in`] : []),
+      ...((group.moneyOut ?? []).length > 0 ? [`${kinTotalsText(group.moneyOut ?? [])} out`] : []),
+    ];
     const base = {
       count: countText(group.count),
-      totals: figures[0]?.lines ?? [],
-      billed:
-        figures.length > 1 && group.total.length > 0
+      totals: (flows ? figures[2] : figures[0])?.lines ?? [],
+      billed: flows
+        ? ways.length === 0
+          ? null
+          : ways.join(" · ")
+        : figures.length > 1 && group.total.length > 0
           ? `${kinTotalsText(group.total)} ${KIN_LISTS.billed.toLowerCase()}`
           : null,
     };
@@ -643,7 +930,7 @@ export function kinListHeader(
         ? null
         : filter.groupBy === "month"
           ? kinMonthPeriod(group.group)
-          : kinFinancialYearPeriod(group.group);
+          : kinFinancialYearPeriod(group.group, yearStartMonth);
     const selected = period !== null && samePeriod(filter.period, period);
     return {
       ...base,
@@ -659,12 +946,12 @@ export function kinListHeader(
     };
   });
   const figures = totals === null ? [] : figuresOf(def, totals);
-  const quotes = figures[0]?.id === "sent";
-  const full = def.amount && totals !== null && !quotes ? kinTotalsLines(totals.total) : [];
+  const apart = figures[0]?.id === "sent" || figures[0]?.id === "moneyIn";
+  const full = def.amount && totals !== null && !apart ? kinTotalsLines(totals.total) : [];
   return {
     figures,
     totals: full,
-    summary: quotes
+    summary: apart
       ? figures.map((figure) => `${figure.label}: ${figure.lines.join(" and ")}`).join(" · ")
       : full.length === 0 || (total ?? 0) < 2
         ? null
@@ -703,6 +990,8 @@ export interface KinListContext {
   /** Clients and projects by record id, which is how a link field stores one. */
   readonly refs: ReadonlyMap<string, KinWorkRef>;
   readonly now: Date;
+  /** The month the company's year starts in; absent from an older host, whose years start in April. */
+  readonly yearStartMonth?: number;
 }
 
 const isMoney = (value: KinFieldValue): value is KinMoney =>
@@ -721,11 +1010,28 @@ const principalOf = (value: string): KinWorkPrincipal | null => {
       : null;
 };
 
-const dayText = (day: string, now: Date) => (DAY.test(day) ? kinWorkDueLabel(day, now) : day);
+const dayText = (day: string, now: Date, zone: string | null) =>
+  DAY.test(day) ? kinWorkDueLabel(day, now, zone) : day;
+
+// A link to another list is read as its text; number and yes or no arrive typed (`KIN_LIST_ACCEPT`).
+const shownFieldType = ({ type, link }: Pick<KinListField, "type" | "link">) =>
+  type === "link" && link === "list" ? "text" : type;
+
+/** What `kin.work.lists` sends this build beyond the first clients' shape. */
+export const KIN_LIST_ACCEPT = ["number", "yesno", "remindOn", "check"] as const;
+
+/** A yes or no field's two answers, as stored and as read. */
+export const KIN_YES_NO = [
+  { value: "yes", label: "Yes" },
+  { value: "no", label: "No" },
+] as const;
+
+const yesNoText = (value: string) =>
+  KIN_YES_NO.find((one) => one.value === value.trim().toLowerCase())?.label ?? value;
 
 /** A field's value as its type reads: a name, a day, an amount, how many files. */
 export function kinFieldText(
-  field: Pick<KinListField, "type">,
+  field: Pick<KinListField, "type" | "link">,
   value: KinFieldValue | undefined,
   context: KinListContext,
 ): string | null {
@@ -740,9 +1046,11 @@ export function kinFieldText(
       : value.join(", ");
   }
   if (value.trim() === "") return null;
-  switch (field.type) {
+  switch (shownFieldType(field)) {
+    case "yesno":
+      return yesNoText(value);
     case "date":
-      return dayText(value, context.now);
+      return dayText(value, context.now, context.names.zone);
     case "person": {
       const who = principalOf(value);
       return who === null ? value : kinWorkName(who, context.names);
@@ -804,7 +1112,9 @@ export function kinListColumns(
     text("title", "Entry"),
     text("state", KIN_LISTS.entry.status),
     ...(def.categories.length > 0 ? [text("category", KIN_LISTS.entry.category)] : []),
-    ...(def.dateLabel === undefined ? [] : [text("date", def.dateLabel)]),
+    ...(def.dateLabel === undefined
+      ? []
+      : [text("date", kinDayLabel(def, records.some(kinNotIssued)) ?? def.dateLabel)]),
     ...(def.dueLabel === undefined ? [] : [text("due", def.dueLabel)]),
     ...(records.some((record) => record.party !== undefined)
       ? [text("party", KIN_LISTS.entry.client)]
@@ -814,14 +1124,17 @@ export function kinListColumns(
       .map((field) => ({
         id: `field:${field.key}`,
         label: field.label,
-        numeric: field.type === "money",
+        numeric: field.type === "money" || field.type === "number",
       })),
     ...(def.amount ? [{ id: "amount", label: KIN_LISTS.entry.amount, numeric: true }] : []),
-    ...(records.some((record) => record.balance !== undefined)
+    ...(records.some((record) => record.balance !== undefined && !kinDraftShowsNoBalance(record))
       ? [{ id: "owed", label: KIN_LISTS.entry.left, numeric: true }]
       : []),
   ];
 }
+
+/** A day phrase, "Due Sun, Nov 8", that wraps as one piece on a narrow row. */
+const keepTogether = (text: string) => text.replaceAll(" ", "\u00a0");
 
 export function kinListRow(
   record: KinRecord,
@@ -832,7 +1145,8 @@ export function kinListRow(
 ): KinListRowView {
   const { names, now } = context;
   const closed = kinWorkClosed(record.state);
-  const stateLabel = kinListStateLabel(def, record.state);
+  const stateLabel = kinSuggestionStateLabel(def, record);
+  const late = kinLateShown(record);
   const date = whenText(record.dateAt, record.dateAllDay ?? true, names, now);
   const due = whenText(record.dueAt, record.dueAllDay, names, now);
   const amount = record.amount === undefined ? null : kinMoneyText(record.amount);
@@ -842,11 +1156,17 @@ export function kinListRow(
     record.balance.minor > 0 &&
     record.balance.minor < record.amount.minor;
   const owed = partPaid ? `${kinMoneyText(record.balance!)} still owed` : null;
+  // An invoice or quote with no client bills its typed name, said in the client's place.
+  const billed = record.party === undefined ? kinBillToName(record.fields) : null;
   const party =
-    record.party === undefined || record.party.key === within?.party ? null : record.party.title;
+    record.party === undefined
+      ? billed
+      : record.party.key === within?.party
+        ? null
+        : record.party.title;
   const dueLine = due === null || closed ? null : `${def?.dueLabel ?? "Due"} ${afterLabel(due)}`;
   const parts = [
-    record.key,
+    kinRecordName(record.key, record.fields?.number),
     within?.list === false && def !== null ? def.name : null,
     record.listCategory === undefined ? null : kinCategoryLabel(record.listCategory, def),
     stateLabel,
@@ -854,7 +1174,6 @@ export function kinListRow(
     dueLine,
     party,
     record.repeat === undefined ? null : kinRepeatText(record.repeat).toLowerCase(),
-    record.confirmed || closed ? null : "Suggested",
   ].filter((part) => part !== null);
   const cells: Record<string, string> = {
     title: record.title,
@@ -864,9 +1183,15 @@ export function kinListRow(
       : { category: kinCategoryLabel(record.listCategory, def) }),
     ...(date === null ? {} : { date }),
     ...(due === null ? {} : { due }),
-    ...(record.party === undefined ? {} : { party: record.party.title }),
+    ...(record.party === undefined
+      ? billed === null
+        ? {}
+        : { party: billed }
+      : { party: record.party.title }),
     ...(record.amount === undefined ? {} : { amount: kinMoneyText(record.amount, true) }),
-    ...(record.balance === undefined ? {} : { owed: kinMoneyText(record.balance, true) }),
+    ...(record.balance === undefined || kinDraftShowsNoBalance(record)
+      ? {}
+      : { owed: kinMoneyText(record.balance, true) }),
   };
   for (const field of def?.fields ?? []) {
     const shown = kinFieldText(field, record.fields?.[field.key], context);
@@ -878,17 +1203,19 @@ export function kinListRow(
     state: record.state,
     stateLabel,
     closed,
-    late: record.late,
-    suggested: !record.confirmed && !closed,
+    late,
+    suggested: kinSuggestion(record),
     amount,
     owed,
-    line: parts.join(" · "),
+    line: parts
+      .map((part) => (part === date || part === dueLine ? keepTogether(part) : part))
+      .join(" · "),
     accessibilityLabel: [
       record.title,
       amount,
       owed,
       ...parts.slice(1),
-      record.late ? (def?.list === "quotes" ? KIN_LISTS.expired : KIN_LISTS.late) : null,
+      late ? (def?.list === "quotes" ? KIN_LISTS.expired : KIN_LISTS.late) : null,
     ]
       .filter((part) => part !== null)
       .join(". "),
@@ -897,6 +1224,9 @@ export function kinListRow(
 }
 
 // One entry
+
+/** What only a kept entry in a money list may move to: issued or sent, and paid or accepted. */
+const MONEY_MOVES: ReadonlySet<KinRecordState> = new Set(["waiting", "done"]);
 
 export interface KinListFactView {
   readonly id: "category" | "party" | "project" | "owner";
@@ -914,7 +1244,7 @@ export interface KinListFactView {
 export interface KinListFieldView {
   readonly key: string;
   readonly label: string;
-  readonly type: KinListField["type"];
+  readonly type: typeof KinWritableListFieldType.Type | "number" | "yesno";
   /** Null when the entry has nothing in it. */
   readonly text: string | null;
   /** As stored; null with nothing in it. */
@@ -938,6 +1268,8 @@ export interface KinPaymentView {
   readonly when: string;
   readonly note: string | null;
   readonly voided: boolean;
+  /** "from the bank statement", "recorded by Rhea"; null from an older host. */
+  readonly source: string | null;
 }
 
 export interface KinListEntryView {
@@ -945,6 +1277,8 @@ export interface KinListEntryView {
   readonly heading: string;
   readonly state: KinRecordState;
   readonly stateLabel: string;
+  /** Nobody kept or dropped it yet: it offers Keep and Not needed, whatever its state. */
+  readonly suggested: boolean;
   readonly closed: boolean;
   readonly late: boolean;
   readonly amount: string | null;
@@ -953,6 +1287,8 @@ export interface KinListEntryView {
     readonly draft: string;
     readonly currency: string;
     readonly received: KinMoney | null;
+    /** An expense's amount goes below zero as a refund or credit, as when it was added. */
+    readonly belowZero: boolean;
   } | null;
   /** Entries that take payments: what is still owed and what came in. */
   readonly balance: {
@@ -965,6 +1301,18 @@ export interface KinListEntryView {
   } | null;
   readonly facts: ReadonlyArray<KinListFactView>;
   readonly fields: ReadonlyArray<KinListFieldView>;
+  /**
+   * An invoice's or quote's typed bill-to, kept out of `fields`: its name and the details this
+   * reader was sent. Null on any other list, and from a host older than it.
+   */
+  readonly billTo: {
+    readonly name: KinListFieldView;
+    readonly details: ReadonlyArray<KinListFieldView>;
+    /** It bills that name: there is one and no client. */
+    readonly typed: boolean;
+    /** Still a draft, so who it bills can change. */
+    readonly editable: boolean;
+  } | null;
   /** Files no field of the list holds any more. */
   readonly otherFiles: ReadonlyArray<KinFileRef>;
   readonly payments: ReadonlyArray<KinPaymentView>;
@@ -1002,9 +1350,10 @@ export function kinListEntryView(
   const closed = kinWorkClosed(item.state);
   const filesById = new Map((item.files ?? []).map((file) => [file.attachmentId, file]));
   const held = new Set<string>();
-  const fields = (def?.fields ?? []).flatMap((field): ReadonlyArray<KinListFieldView> => {
+  const allFields = (def?.fields ?? []).flatMap((field): ReadonlyArray<KinListFieldView> => {
+    const type = shownFieldType(field);
     const value = item.fields?.[field.key];
-    const ids = field.type === "file" && value !== undefined && isList(value) ? value : [];
+    const ids = type === "file" && value !== undefined && isList(value) ? value : [];
     const files = ids.flatMap((id) => {
       const file = filesById.get(id);
       if (file !== undefined) held.add(id);
@@ -1013,13 +1362,13 @@ export function kinListEntryView(
     const text = kinFieldText(field, value, context);
     // A field nobody uses any more only shows where an entry still has something in it.
     if (field.retired === true && text === null) return [];
-    const link =
-      field.type === "link" && typeof value === "string" ? context.refs.get(value) : undefined;
+    const target = type === "link" && field.link !== "list" ? (field.link ?? "clients") : null;
+    const link = target !== null && typeof value === "string" ? context.refs.get(value) : undefined;
     return [
       {
         key: field.key,
         label: field.label,
-        type: field.type,
+        type,
         text,
         value: value === undefined || text === null ? null : value,
         draft:
@@ -1031,17 +1380,21 @@ export function kinListEntryView(
                 ? value
                 : "",
         choices: field.choices ?? [],
-        link: field.type === "link" ? (field.link ?? "clients") : null,
+        link: target,
         private: field.sensitive,
         retired: field.retired === true,
         files,
-        opens:
-          link === undefined
-            ? null
-            : { list: field.link === "projects" ? "projects" : "clients", key: link.key },
+        opens: link === undefined || target === null ? null : { list: target, key: link.key },
       },
     ];
   });
+  const billsByName = item.list === "invoices" || item.list === "quotes";
+  const fields = billsByName
+    ? allFields.filter((field) => !kinIsBillToField(field.key))
+    : allFields;
+  const billToName = billsByName
+    ? allFields.find((field) => field.key === KIN_BILL_TO_NAME)
+    : undefined;
   const date = whenText(item.dateAt, item.dateAllDay ?? true, names, now);
   const due = whenText(item.dueAt, item.dueAllDay, names, now);
   const categories = [
@@ -1095,13 +1448,20 @@ export function kinListEntryView(
       ? null
       : { minor: item.amount.minor - item.balance.minor, currency: item.amount.currency };
   const doneLabel = kinListStateLabel(def, "done");
-  const canFinish = !closed && (def === null || def.states.includes("done"));
+  const suggested = kinSuggestion(item);
+  // A suggestion is paid, issued or sent by nobody until it is kept (the host refuses each).
+  const canFinish = !closed && !suggested && (def === null || def.states.includes("done"));
+  const moves = suggested && KIN_MONEY_LISTS.has(item.list ?? "work") ? MONEY_MOVES : null;
   return {
-    heading: def === null ? item.key : `${item.key} · ${def.name}`,
+    heading:
+      def === null
+        ? kinRecordName(item.key, item.fields?.number)
+        : `${kinRecordName(item.key, item.fields?.number)} · ${def.name}`,
     state: item.state,
-    stateLabel: kinListStateLabel(def, item.state),
+    stateLabel: kinSuggestionStateLabel(def, item),
+    suggested,
     closed,
-    late: item.late,
+    late: kinLateShown(item),
     amount: item.amount === undefined ? null : kinMoneyText(item.amount, true),
     amountEdit:
       def?.amount === true || item.amount !== undefined
@@ -1112,6 +1472,7 @@ export function kinListEntryView(
                 : kinMoneyDraft(item.amount, def?.currency ?? item.amount.currency),
             currency: item.amount?.currency ?? def?.currency ?? KIN_DEFAULT_HOME_CURRENCY,
             received: received !== null && received.minor > 0 ? received : null,
+            belowZero: item.list === "expenses",
           }
         : null,
     balance:
@@ -1126,23 +1487,37 @@ export function kinListEntryView(
           },
     facts,
     fields,
+    billTo:
+      billToName === undefined
+        ? null
+        : {
+            name: billToName,
+            details: allFields.filter(
+              (field) => kinIsBillToField(field.key) && field.key !== KIN_BILL_TO_NAME,
+            ),
+            typed: item.party === undefined && billToName.text !== null,
+            editable: kinBillToEditable(item),
+          },
     otherFiles: (item.files ?? []).filter((file) => !held.has(file.attachmentId)),
     takesTds: item.list === "invoices",
     payments: (item.payments ?? []).map((payment: KinPayment) => ({
       paymentId: payment.paymentId,
       amount: kinMoneyText(payment.amount, true),
-      when: dayText(payment.paidOn, now),
+      when: dayText(payment.paidOn, now, names.zone),
       note:
         [payment.withheld === true ? KIN_LISTS.entry.payTds : null, payment.note.trim()]
           .filter((part) => part !== null && part !== "")
           .join(" · ") || null,
       voided: payment.voidedAt !== null,
+      source: kinPaymentSourceText(payment.source, names),
     })),
-    states: (def?.states ?? [item.state]).map((state) => ({
-      state,
-      label: kinListStateLabel(def, state),
-      current: state === item.state,
-    })),
+    states: (def?.states ?? [item.state])
+      .filter((state) => state === item.state || moves === null || !moves.has(state))
+      .map((state) => ({
+        state,
+        label: kinListStateLabel(def, state),
+        current: state === item.state,
+      })),
     finish: canFinish
       ? {
           label: `Mark ${doneLabel.toLowerCase()}`,
@@ -1150,7 +1525,12 @@ export function kinListEntryView(
         }
       : null,
     dueLabel: def === null ? (item.dueAt === null ? null : "Due") : (def.dueLabel ?? null),
-    dateLabel: def === null ? (item.dateAt === undefined ? null : "Date") : (def.dateLabel ?? null),
+    dateLabel:
+      def === null
+        ? item.dateAt === undefined
+          ? null
+          : KIN_DAY
+        : (kinDayLabel(def, kinNotIssued(item)) ?? null),
     dueDay: kinWorkAllDay(item.dueAt, item.dueAllDay, names),
     dateDay: kinWorkAllDay(item.dateAt ?? null, item.dateAllDay ?? true, names),
     due,
@@ -1171,6 +1551,22 @@ export function kinMoneyDraft(money: KinMoney, listCurrency: string): string {
 export const kinPrincipalValue = (who: KinWorkPrincipal) =>
   who._tag === "agent" ? `agent:${who.agentId}` : `person:${who.personId}`;
 
+/**
+ * A private entry's line for an owner-level reader: every owner-level person sees it, so it never
+ * says "only you"; a reader it isn't theirs is told whose it is.
+ */
+export function kinEntryPrivateLine(
+  owner: KinWorkPrincipal,
+  names: { readonly people: ReadonlyMap<string, string>; readonly me: string | null },
+) {
+  if (names.me === null || (owner._tag === "person" && owner.personId === names.me))
+    return KIN_LISTS.entry.private;
+  const name = owner._tag === "person" ? names.people.get(owner.personId) : undefined;
+  return name === undefined
+    ? "Private. Only owners see this."
+    : `Private to ${name}. Only owners see this.`;
+}
+
 type Checked<A> =
   | { readonly ok: true; readonly value: A }
   | { readonly ok: false; readonly problem: string };
@@ -1182,12 +1578,17 @@ export function kinAmountCheck(
   text: string,
   currency: string,
   received: KinMoney | null,
+  belowZero = false,
 ): Checked<KinMoney | null> {
   if (text.trim() === "")
     return received === null
       ? { ok: true, value: null }
       : { ok: false, problem: "This entry has payments, so it needs an amount." };
-  const amount = kinParseMoney(text, currency);
+  const read = parseKinMoney(text, currency);
+  const amount =
+    "money" in read && (read.money.minor > 0 || (belowZero && read.money.minor < 0))
+      ? read.money
+      : null;
   if (amount === null) return { ok: false, problem: AMOUNT_PROBLEM };
   if (received === null) return { ok: true, value: amount };
   if (amount.currency !== received.currency)
@@ -1204,6 +1605,7 @@ export function kinAmountCheck(
 }
 
 const FIELD_TEXT_MAX = 500;
+const NUMBER = /^-?\d{1,15}(\.\d{1,6})?$/;
 export const KIN_FIELD_FILES_MAX = 10;
 
 /**
@@ -1229,6 +1631,19 @@ export function kinFieldCheck(
     return amount === null ? { ok: false, problem: AMOUNT_PROBLEM } : { ok: true, value: amount };
   }
   if (field.type === "date" && !DAY.test(text)) return { ok: false, problem: "Pick a day." };
+  if (field.type === "number") {
+    // Stored as plain digits, as the host takes them: "1,200" is 1200.
+    const digits = text.replace(/[\s,]/g, "");
+    return NUMBER.test(digits)
+      ? { ok: true, value: digits }
+      : { ok: false, problem: `${field.label} takes a number, such as 12 or 3.5.` };
+  }
+  if (field.type === "yesno") {
+    const answer = KIN_YES_NO.find((one) => one.value === text.toLowerCase());
+    return answer === undefined
+      ? { ok: false, problem: `${field.label} takes yes or no.` }
+      : { ok: true, value: answer.value };
+  }
   if (text.length > FIELD_TEXT_MAX)
     return { ok: false, problem: `${field.label} can be ${FIELD_TEXT_MAX} characters at most.` };
   return { ok: true, value: text };
@@ -1277,7 +1692,43 @@ export type KinListOutcome<A> =
       readonly problem: string;
       /** It moved on since it was read: the latest is on screen now. */
       readonly changed: boolean;
+      /** The amount reads like a slip: the one line the form asks, `problem` too. */
+      readonly slip?: string;
     };
+
+export const KIN_AMOUNT_SLIP = {
+  far: (list: string, largest: string) =>
+    `That is far above anything in ${list} so far (the largest is ${largest}). Save it anyway?`,
+  empty: (list: string) => `That is far above what ${list} holds so far. Save it anyway?`,
+  save: "Save anyway",
+};
+
+/** The line a form asks when the host found its amount far above its list; null for other errors. */
+export function kinAmountSlipLine(error: unknown): string | null {
+  if (!isKinChatError(error) || error.farAbove === undefined) return null;
+  const { list, largest } = error.farAbove;
+  return largest === null
+    ? KIN_AMOUNT_SLIP.empty(list)
+    : KIN_AMOUNT_SLIP.far(list, kinMoneyText(largest));
+}
+
+/** A form's question about one amount, `about` being that amount as the form holds it. */
+export interface KinAmountAsk {
+  readonly line: string;
+  readonly about: string;
+}
+
+/** The question while the amount is still the one asked about; changing it clears the question. */
+export const kinAmountAsking = (ask: KinAmountAsk | null, about: string) =>
+  ask !== null && ask.about === about ? ask : null;
+
+/**
+ * What a form that asks sends with its amount: false asks the host to check it, true, once the
+ * person was asked about this very amount and saves again, keeps it.
+ */
+export const kinAmountConfirmed = (ask: KinAmountAsk | null, about: string) => ({
+  amountConfirmed: kinAmountAsking(ask, about) !== null,
+});
 
 /** One change to an entry or a list, answered with the new value or a reason in words. */
 export async function kinListSend<A>(input: {
@@ -1288,6 +1739,8 @@ export async function kinListSend<A>(input: {
   const result = await input.send();
   if (AsyncResult.isSuccess(result)) return { ok: true, value: result.value };
   const error = squashAtomCommandFailure(result);
+  const slip = kinAmountSlipLine(error);
+  if (slip !== null) return { ok: false, problem: slip, changed: false, slip };
   // A retry key reused for something else: the form's id is stale, not the person's rights.
   if (isKinChatError(error) && error.reason === "not_allowed" && /retry key/i.test(error.message))
     return {
@@ -1307,6 +1760,7 @@ export interface KinListEditDraft {
   /** By category as stored. */
   readonly categoryLabels: Readonly<Record<string, string>>;
   readonly payments: boolean;
+  readonly team: boolean;
 }
 
 export const kinListEditDraftOf = (def: KinListDefinition): KinListEditDraft => ({
@@ -1318,11 +1772,20 @@ export const kinListEditDraftOf = (def: KinListDefinition): KinListEditDraft => 
     def.categories.map((category) => [category, kinCategoryLabel(category, def)]),
   ),
   payments: def.payments === true,
+  team: def.team === true,
 });
 
 /** Whether the list's settings offer "paid in parts": a list with amounts that isn't Invoices. */
 export const kinListCanTogglePayments = (def: KinListDefinition) =>
   def.amount && !def.builtIn && def.list !== "invoices";
+
+/** Whether the list's settings offer opening it to the team: a company-made list that isn't sensitive. */
+export const kinListCanOpenToTeam = (def: KinListDefinition) =>
+  def.team === true ||
+  (!def.builtIn &&
+    !def.sensitive &&
+    !(KIN_LISTS_NEVER_TEAM as ReadonlyArray<string>).includes(def.list) &&
+    def.name.trim().toLowerCase() !== "bank transactions");
 
 const LABEL_MAX = 60;
 export const KIN_LIST_LABEL_MAX = LABEL_MAX;
@@ -1352,9 +1815,11 @@ export function kinListEditInput(
   }
   const renamed = name !== def.name;
   const payments = draft.payments !== (def.payments === true);
+  const team = draft.team !== (def.team === true);
   if (
     !renamed &&
     !payments &&
+    !team &&
     Object.keys(labels).length === 0 &&
     Object.keys(categories).length === 0
   )
@@ -1373,11 +1838,20 @@ export function kinListEditInput(
         ? {}
         : { categoryLabels: categories as KinListUpdateInput["categoryLabels"] }),
       ...(payments ? { payments: draft.payments } : {}),
+      ...(team ? { team: draft.team } : {}),
     },
   };
 }
 
-const SHOWS: ReadonlyArray<string> = ["all", "open", "doing", "waiting", "done", "dropped"];
+const SHOWS: ReadonlyArray<string> = [
+  "all",
+  "notClosed",
+  "open",
+  "doing",
+  "waiting",
+  "done",
+  "dropped",
+];
 const GROUPS: ReadonlyArray<string> = ["none", "category", "month", "financialYear"];
 const DAY_TEXT = /^\d{4}-\d{2}-\d{2}$/;
 
@@ -1420,7 +1894,9 @@ export function kinListFilterParam(text: string | undefined): KinListFilter {
     noParty: from.noParty === true,
     period: period(from.period),
     paid: period(from.paid),
+    spent: period(from.spent),
     party: from.noParty === true ? null : ref(from.party),
+    ...(typeof from.kept === "boolean" ? { kept: from.kept } : {}),
     project: ref(from.project),
     ...(typeof from.groupBy === "string" && GROUPS.includes(from.groupBy)
       ? { groupBy: from.groupBy as KinListGroupBy }

@@ -129,7 +129,6 @@ export type Recipe = {
 };
 
 const ENTRY_KEYS = ["key", "title", "state", "amount", "tax", "date", "due", "notes", "number"];
-const CLIENT_KEYS = ["name", "address", "gstin", "placeOfSupply", "terms"];
 const COMPANY_KEYS = [
   "legalName",
   "tradeName",
@@ -163,6 +162,8 @@ const ROW_COLUMNS = [
   "matched",
 ];
 const PAYMENT_COLUMNS = ["invoice", "client", "amount", "paidOn", "receipt"];
+/** Partners' expenses still owed at the month's end or repaid in it; `state` says which. */
+const REIMBURSEMENT_COLUMNS = ["key", "title", "date", "partner", "state", "repaidOn", "amount"];
 /** An entry's live payments; `kind` is advance, tds or received. */
 const ENTRY_PAYMENT_COLUMNS = ["receipt", "amount", "paidOn", "kind"];
 
@@ -178,12 +179,15 @@ export type Source =
   | { readonly _tag: "rows"; readonly list: string }
   /** Money received in the month, or with `tds` the tax clients deducted instead. */
   | { readonly _tag: "payments"; readonly tds: boolean }
+  /** Partner-funded expenses owed at the month's end or repaid in it. */
+  | { readonly _tag: "reimbursements" }
   /** `entry.payments`, or `entry.advances`: those received before its date or from an advance. */
   | { readonly _tag: "entryPayments"; readonly advancesOnly: boolean }
   | { readonly _tag: "system"; readonly key: string };
 export const sourceOf = (from: string): Source | undefined => {
   if (from === "agent") return { _tag: "agent" };
   if (from === "payments" || from === "tds") return { _tag: "payments", tds: from === "tds" };
+  if (from === "reimbursements") return { _tag: "reimbursements" };
   const [head, ...rest] = from.split(".");
   const tail = rest.join(".");
   switch (head) {
@@ -194,7 +198,7 @@ export const sourceOf = (from: string): Source | undefined => {
         return { _tag: "entryField", field: rest[1]! };
       return ENTRY_KEYS.includes(tail) ? { _tag: "entry", key: tail } : undefined;
     case "client":
-      return CLIENT_KEYS.includes(tail) ? { _tag: "client", key: tail } : undefined;
+      return /^[a-z][a-zA-Z0-9]{0,39}$/.test(tail) ? { _tag: "client", key: tail } : undefined;
     case "company":
       if (tail === "logo") return { _tag: "logo" };
       return COMPANY_KEYS.includes(tail) ||
@@ -232,7 +236,10 @@ export const parseRecipe = (text: string): Recipe | RecipeProblem => {
     if (source === undefined)
       return problem(`input ${name} reads from ${from}, which Kin doesn't supply`);
     const isTable =
-      source._tag === "rows" || source._tag === "payments" || source._tag === "entryPayments";
+      source._tag === "rows" ||
+      source._tag === "payments" ||
+      source._tag === "reimbursements" ||
+      source._tag === "entryPayments";
     if (isTable !== (declared.type === "table") && source._tag !== "agent")
       return problem(`input ${name}: its type doesn't match what ${from} gives`);
     if (declared.type === "month" && source._tag !== "agent")
@@ -248,13 +255,19 @@ export const parseRecipe = (text: string): Recipe | RecipeProblem => {
       const allowed =
         source._tag === "payments"
           ? PAYMENT_COLUMNS
-          : source._tag === "entryPayments"
-            ? ENTRY_PAYMENT_COLUMNS
-            : ROW_COLUMNS;
+          : source._tag === "reimbursements"
+            ? REIMBURSEMENT_COLUMNS
+            : source._tag === "entryPayments"
+              ? ENTRY_PAYMENT_COLUMNS
+              : ROW_COLUMNS;
       const extra = Object.keys(declared.columns ?? {}).filter(
         (column) =>
           !allowed.includes(column) &&
-          !(source._tag !== "entryPayments" && column.startsWith("field_")),
+          !(
+            source._tag !== "entryPayments" &&
+            source._tag !== "reimbursements" &&
+            column.startsWith("field_")
+          ),
       );
       if (extra.length > 0)
         return problem(`input ${name} asks for columns Kin doesn't have: ${extra.join(", ")}`);
@@ -484,6 +497,25 @@ export type Facts = (
  * else from `facts`. Anything the recipe doesn't declare as the agent's is refused, so an agent
  * can't supply a figure Kin stores.
  */
+/** Whether the requester gives an amount: a money input, or a money cell with a value in a row. */
+export const givesMoney = (recipe: Recipe, given: Readonly<Record<string, unknown>>) =>
+  recipe.inputs.some((input) => {
+    const value = given[input.name];
+    if (input.from !== "agent" || value === undefined || value === null) return false;
+    if (input.type === "money") return true;
+    if (input.type !== "table" || !Array.isArray(value)) return false;
+    const money = Object.keys(input.columns).filter((column) => input.columns[column] === "money");
+    return value.some(
+      (row: unknown) =>
+        typeof row === "object" &&
+        row !== null &&
+        money.some((column) => {
+          const cell: unknown = Reflect.get(row, column);
+          return cell !== undefined && cell !== null;
+        }),
+    );
+  });
+
 export const assembleInputs = (
   recipe: Recipe,
   given: Readonly<Record<string, unknown>>,

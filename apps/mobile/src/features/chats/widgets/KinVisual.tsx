@@ -1,3 +1,4 @@
+import { KIN_VISUAL_HOSTS } from "@t3tools/client-runtime/kin/kinConnections";
 import { KIN_CARD_COPY } from "@t3tools/client-runtime/kin/kinCardPresentation";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
@@ -19,7 +20,7 @@ import {
 } from "@t3tools/shared/kinVisual";
 import { kinVisualSaveBytes } from "@t3tools/shared/kinVisualSvg";
 import { AsyncResult } from "effect/reactivity";
-import { memo, useEffect, useRef, useState } from "react";
+import { createContext, memo, use, useEffect, useRef, useState } from "react";
 import { Modal, Platform, Pressable, View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
@@ -28,7 +29,10 @@ import { AppActivityIndicator } from "../../../components/ui/AppActivityIndicato
 import { AppText as Text } from "../../../components/ui/AppText";
 import { REVIEW_MONO_FONT_FAMILY } from "../../review/reviewDiffRendering";
 import * as Dialog from "../../../components/ui/Dialog";
-import { shareGeneratedAttachment } from "../../../lib/attachmentDownload";
+import {
+  downloadAndShareAttachment,
+  shareGeneratedAttachment,
+} from "../../../lib/attachmentDownload";
 import { tryOpenExternalUrl } from "../../../lib/openExternalUrl";
 import { useAssetUrlState, useRefreshAssetUrl } from "../../../state/assets";
 import { useAtomCommand } from "../../../state/use-atom-command";
@@ -41,6 +45,10 @@ import { fromVisualPage } from "./kinVisualMessage";
 const TOUCH_WINDOW_MS = 1500;
 // Kept across remounts, so a card scrolled back into view does not jump.
 const measuredHeights = new Map<string, number>();
+let mountedFrames = 0;
+
+/** Whether the row holding a frame is on screen; a list row says so, anywhere else it is. */
+export const KinVisualInView = createContext(true);
 
 const location = (url: string) => url.split(/[?#]/, 1)[0];
 
@@ -84,6 +92,16 @@ function KinVisualWebView(props: {
     shownTheme.current = theme;
     postTheme(webView.current, theme);
   }, [theme]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- counts live WebViews for the dev-only cost check in Metro's log
+  useEffect(() => {
+    if (!__DEV__) return;
+    mountedFrames += 1;
+    console.debug(`[kin-visual] frames mounted: ${mountedFrames}`);
+    return () => {
+      mountedFrames -= 1;
+      console.debug(`[kin-visual] frames mounted: ${mountedFrames}`);
+    };
+  }, []);
   const restart = () => {
     crashes.current += 1;
     if (crashes.current > 1) {
@@ -135,7 +153,7 @@ function KinVisualWebView(props: {
       asking.current = false;
     };
     Dialog.confirm({
-      title: "Open this link?",
+      title: KIN_VISUAL_HOSTS.openLink,
       message: `A link in “${props.title}” goes to:\n\n${url}`,
       confirmText: "Open link",
       onCancel: done,
@@ -213,6 +231,41 @@ function KinVisualWebView(props: {
   );
 }
 
+/**
+ * The phone's share sheet for the page itself, which offers Save to Files and every app that
+ * takes a file. The host keeps the page, not a picture of it, so there is no image to save yet.
+ */
+function KinVisualShare(props: { readonly uri: string; readonly title: string }) {
+  const [sharing, setSharing] = useState(false);
+  const share = () => {
+    setSharing(true);
+    downloadAndShareAttachment({
+      url: props.uri,
+      attachment: { name: htmlRenderFileName(props.title), mimeType: "text/html" },
+      signal: new AbortController().signal,
+    }).then(
+      () => setSharing(false),
+      () => {
+        setSharing(false);
+        Dialog.alert(KIN_CARD_COPY.saveFileFailed, "Sharing didn't finish.");
+      },
+    );
+  };
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ disabled: sharing }}
+      disabled={sharing}
+      hitSlop={12}
+      onPress={share}
+    >
+      <Text textRole="footnote" className="font-t3-medium text-primary">
+        {sharing ? "Opening…" : "Save or share"}
+      </Text>
+    </Pressable>
+  );
+}
+
 function KinVisualFullScreen(props: {
   readonly uri: string;
   readonly title: string;
@@ -237,6 +290,7 @@ function KinVisualFullScreen(props: {
               >
                 {props.title}
               </Text>
+              <KinVisualShare uri={props.uri} title={props.title} />
               <Pressable accessibilityRole="button" hitSlop={12} onPress={props.onClose}>
                 <Text textRole="body" className="font-t3-medium text-primary">
                   Close
@@ -260,7 +314,9 @@ function KinVisualFullScreen(props: {
 export const KinVisual = memo(function KinVisual(props: {
   readonly environmentId: EnvironmentId;
   readonly orgId: KinOrgId;
-  readonly visual: KinVisualCardState;
+  readonly visual: KinVisualCardState & {
+    readonly heights?: ReadonlyArray<readonly [number, number]> | undefined;
+  };
 }) {
   const { attachmentId, title } = props.visual;
   const resource = {
@@ -288,11 +344,20 @@ export const KinVisual = memo(function KinVisual(props: {
   const canAllow = useAtomValue(kinClient.visualHostAllow.permissionAtom(props.environmentId));
   const allow = useAtomCommand(kinClient.visualHostAllow, { reportFailure: false });
   const height = htmlRenderFrameHeight(
-    { attachmentId, title, height: props.visual.height },
+    {
+      attachmentId,
+      title,
+      height: props.visual.height,
+      ...(props.visual.heights === undefined ? {} : { heights: props.visual.heights }),
+    },
     width,
     contentHeight,
   );
   const showing = uri !== null && failed === null;
+  // A frame off screen gives back its WebView; its box keeps the height, so nothing moves. It
+  // comes back on the address minted since, as the one it first loaded may have expired.
+  const inView = use(KinVisualInView);
+  if (!inView && asset._tag === "Success" && uri !== null && uri !== asset.url) setUri(asset.url);
   const retry = async () => {
     const next = await refresh().catch(() => null);
     if (next === null) {
@@ -318,7 +383,9 @@ export const KinVisual = memo(function KinVisual(props: {
         }).then((result) => {
           setAllowing(null);
           if (!AsyncResult.isSuccess(result)) {
-            setProblem(kinFailureText(squashAtomCommandFailure(result), "Couldn't allow it."));
+            setProblem(
+              kinFailureText(squashAtomCommandFailure(result), KIN_VISUAL_HOSTS.allowFailed),
+            );
             return;
           }
           setBlocked(null);
@@ -335,6 +402,7 @@ export const KinVisual = memo(function KinVisual(props: {
           {title}
         </Text>
         {props.visual.sensitive === true ? <KinWorkPrivateMark label="" /> : null}
+        {showing ? <KinVisualShare uri={uri} title={title} /> : null}
         {showing ? (
           <Pressable accessibilityRole="button" hitSlop={12} onPress={() => setExpanded(true)}>
             <Text textRole="footnote" className="font-t3-medium text-primary">
@@ -344,7 +412,7 @@ export const KinVisual = memo(function KinVisual(props: {
         ) : null}
       </View>
       <View style={{ height }} onLayout={(event) => setWidth(event.nativeEvent.layout.width)}>
-        {showing ? (
+        {showing && !inView ? null : showing ? (
           <KinVisualWebView
             key={`${uri}:${attempt}`}
             uri={uri}

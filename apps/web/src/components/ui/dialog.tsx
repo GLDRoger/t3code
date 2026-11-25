@@ -1,5 +1,6 @@
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { useRender } from "@base-ui/react/use-render";
+import { useGT } from "gt-react";
 import { XIcon } from "lucide-react";
 import {
   type ComponentProps,
@@ -15,6 +16,7 @@ import { useNativeTitlebarHeight } from "~/lib/windowControlsOverlay";
 import { Button, type ButtonVariant } from "~/components/ui/button";
 import {
   DIALOG_BACKDROP_CLASS,
+  DIALOG_DIM_BACKDROP_CLASS,
   DIALOG_MEDIA_BACKDROP_CLASS,
   DIALOG_MEDIA_POPUP_CLASS,
   DIALOG_MOBILE_SHEET_CLASS,
@@ -78,12 +80,16 @@ function DialogBackdrop({
   className,
   variant = "default",
   ...props
-}: DialogPrimitive.Backdrop.Props & { variant?: "default" | "media" }) {
+}: DialogPrimitive.Backdrop.Props & { variant?: "default" | "dim" | "media" }) {
   return (
     <DialogPrimitive.Backdrop
       forceRender
       className={cn(
-        variant === "media" ? DIALOG_MEDIA_BACKDROP_CLASS : DIALOG_BACKDROP_CLASS,
+        variant === "media"
+          ? DIALOG_MEDIA_BACKDROP_CLASS
+          : variant === "dim"
+            ? DIALOG_DIM_BACKDROP_CLASS
+            : DIALOG_BACKDROP_CLASS,
         className,
       )}
       data-slot="dialog-backdrop"
@@ -120,6 +126,7 @@ function DialogPopup({
   variant?: "default" | "media";
   mediaControlsPlacement?: "inside" | "outside";
 }) {
+  const gt = useGT();
   const { popupRef, initialFocus } = useDialogActionInitialFocus();
   const popup = useRender({
     ref: popupRef,
@@ -140,7 +147,7 @@ function DialogPopup({
         {children}
         {showCloseButton && (
           <DialogPrimitive.Close
-            aria-label="Close"
+            aria-label={gt("Close", { $context: "button, closes the dialog" })}
             className="absolute end-2 top-2"
             render={<Button size="icon" variant="ghost" />}
           >

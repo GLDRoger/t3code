@@ -1,6 +1,12 @@
 import { useAtomValue } from "@effect/atom-react";
 import { kinAccessAtom, kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import {
+  kinClientsStartFilter,
+  kinSeesClients,
+  type KinClientsFilter,
+} from "@t3tools/client-runtime/kin/kinWorkClients";
 import { kinPlaceReach, type KinPlaceReach } from "@t3tools/client-runtime/kin/kinJoin";
+import { makeKinPlaces } from "@t3tools/client-runtime/kin/kinPlaces";
 import { kinViewerScope, type KinViewerScope } from "@t3tools/client-runtime/kin/kinViewerScope";
 import {
   kinAccessEnded,
@@ -19,12 +25,14 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
+import { useEffect } from "react";
 
 import { environmentCatalog } from "../../../connection/catalog";
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import * as MobileSecureStorage from "../../../persistence/mobile-secure-storage";
 import { appAtomRegistry } from "../../../state/atom-registry";
 import { environmentSession } from "../../../state/session";
+import { kinClient, refreshKinAccessMe } from "./kinClient";
 
 const KIN_CHAT_ONLY_STORAGE_KEY = "kin.chatOnlyEnvironmentIds";
 const RememberedIds = Schema.fromJsonString(Schema.Array(EnvironmentId));
@@ -84,7 +92,7 @@ const chatOnlyStateAtom = Atom.make((get): ChatOnlyState => {
 const sameIds = (left: ReadonlyArray<EnvironmentId>, right: ReadonlySet<EnvironmentId>) =>
   left.length === right.size && left.every((id) => right.has(id));
 
-const appShellAtom = Atom.make((get): KinAppShell => {
+export const kinAppShellAtom = Atom.make((get): KinAppShell => {
   const state = get(chatOnlyStateAtom);
   return kinAppShell({ ready: state.ready, saved: state.saved, chatOnly: state.chatOnly.length });
 });
@@ -95,11 +103,11 @@ const environmentChatOnlyAtom = Atom.family((environmentId: EnvironmentId) =>
 
 /** Whether the app is the coding app or, on a teammate's phone, only Kin. */
 export function useKinAppShell(): KinAppShell {
-  return useAtomValue(appShellAtom);
+  return useAtomValue(kinAppShellAtom);
 }
 
 export function readKinAppShell(): KinAppShell {
-  return appAtomRegistry.get(appShellAtom);
+  return appAtomRegistry.get(kinAppShellAtom);
 }
 
 /** The saved environments this device reaches as a teammate. */
@@ -166,20 +174,8 @@ export function installKinChatOnlyMemory(): () => void {
   );
 }
 
-/**
- * Home is a different screen in each shell, and a route keeps the bar its last screen set. When
- * the shell changes under a running app (a first join, leaving the last team), start Home afresh.
- */
-export function installKinShellReset(resetToHome: () => void): () => void {
-  let last = appAtomRegistry.get(appShellAtom);
-  return appAtomRegistry.subscribe(appShellAtom, (shell) => {
-    const changed = last !== "loading" && shell !== "loading" && shell !== last;
-    last = shell;
-    if (changed) resetToHome();
-  });
-}
-
 const noAccessAtom = Atom.make<KinPersonAccess | null>(null);
+const noMeAtom = Atom.make(null);
 
 /** Whether the viewer is the owner or a co-owner on this host: their own kind, from the host. */
 export function useKinOwnerLevel(
@@ -191,6 +187,20 @@ export function useKinOwnerLevel(
   );
   return kinViewerOwnerLevel(access, session);
 }
+
+/** The destinations this session has here: the dock's, with the owner level as `useKinOwnerLevel`. */
+export const kinPlacesAtom = makeKinPlaces({
+  kinClient,
+  runtime: connectionAtomRuntime,
+  ownerLevel: Atom.family((environmentId: EnvironmentId) =>
+    Atom.make((get) =>
+      kinViewerOwnerLevel(
+        get(kinAccessAtom(connectionAtomRuntime, environmentId)),
+        get(environmentSession.sessionStateValueAtom(environmentId)),
+      ),
+    ),
+  ),
+});
 
 /** The places a member reaches (switched on, or a project they lead); null until the host says. */
 export function useKinPlaceReach(environmentId: EnvironmentId): KinPlaceReach | null {
@@ -211,4 +221,31 @@ export function useKinOpensClients(environmentId: EnvironmentId): boolean {
 /** Whether the host says the viewer is the owner or a co-owner here; false until it has. */
 export function useKinIsOwnerLevel(environmentId: EnvironmentId): boolean {
   return kinOwnerLevel(useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId))?.access);
+}
+
+/**
+ * Whether the viewer sees every client and may add a prospect: owner level, or Clients on. Null
+ * until the host says who they are.
+ */
+export function useKinSeesClients(environmentId: EnvironmentId | null): boolean | null {
+  const me = useAtomValue(
+    environmentId === null ? noMeAtom : kinAccessMeAtom(connectionAtomRuntime, environmentId),
+  );
+  return me == null ? null : kinSeesClients(me);
+}
+
+/** Where the clients list starts: a teammate with Clients on, on their own. */
+export function useKinClientsStart(environmentId: EnvironmentId): KinClientsFilter {
+  return kinClientsStartFilter(useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId)));
+}
+
+/**
+ * The host's public address, for a link shown to another device; undefined when it has none or
+ * is older. Read again as the link shows: the address follows the host's tunnel.
+ */
+export function useKinPublicUrl(environmentId: EnvironmentId): string | undefined {
+  const publicUrl = useAtomValue(kinAccessMeAtom(connectionAtomRuntime, environmentId))?.publicUrl;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- nothing announces a tunnel coming up or going down, so a shown link reads the host again.
+  useEffect(() => refreshKinAccessMe(environmentId), [environmentId]);
+  return publicUrl;
 }

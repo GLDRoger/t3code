@@ -1,6 +1,16 @@
 import { minuteTick } from "@t3tools/client-runtime/clock";
 import { KIN_PRESENCE_TICK_MS } from "@t3tools/client-runtime/kin/kinLive";
+import {
+  kinClockOffsetMs,
+  kinNowMs,
+  setKinDevClockOffset,
+} from "@t3tools/client-runtime/kin/kinNow";
 import { useEffect, useState, useSyncExternalStore } from "react";
+
+/** `kv clock` keeps its dev server's offset here (whole minutes); a built client never reads it. */
+export const KIN_DEV_CLOCK_KEY = "kin-dev-clock-offset";
+if (import.meta.env.DEV)
+  setKinDevClockOffset(Number(globalThis.localStorage?.getItem(KIN_DEV_CLOCK_KEY) ?? 0));
 
 /** Epoch ms floored to the minute, from the shared minute tick (UTC `YYYY-MM-DDTHH:mm`). */
 export function useNowMinuteMs(): number {
@@ -9,7 +19,7 @@ export function useNowMinuteMs(): number {
     minuteTick.getSnapshot,
     minuteTick.getSnapshot,
   );
-  return Date.parse(`${minute}:00Z`);
+  return Date.parse(`${minute}:00Z`) + kinClockOffsetMs();
 }
 
 /**
@@ -17,7 +27,7 @@ export function useNowMinuteMs(): number {
  * one presence changes text on the same tick. Static in between; nothing repaints.
  */
 export function useKinPresenceNow(active: boolean): number {
-  const [now, setNow] = useState(() => Date.now());
+  const [now, setNow] = useState(() => kinNowMs());
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a timer for the presence line's elapsed text
   useEffect(() => {
     if (!active) return;
@@ -25,7 +35,7 @@ export function useKinPresenceNow(active: boolean): number {
     const schedule = () => {
       const wait = KIN_PRESENCE_TICK_MS - (Date.now() % KIN_PRESENCE_TICK_MS);
       timer = setTimeout(() => {
-        setNow(Date.now());
+        setNow(kinNowMs());
         schedule();
       }, wait);
     };

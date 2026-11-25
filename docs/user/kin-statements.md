@@ -32,6 +32,17 @@ One review card shows the statement in three groups:
 - **Matched**: credits that pay an open invoice, and debits that pay an expense. A credit for
   the invoice less 10% or 2% shows as paid with TDS deducted, and records the TDS as its own
   line. Untick any you want to leave.
+- **Paying a partner back**: a debit whose narration names a partner and that adds up exactly to
+  their oldest expenses owed by its day, less refunds on them, shows under Matched as repaying them.
+  One payment often covers several. A credit from a partner whose refunds outweigh what they paid
+  settles with them the same way. Confirm marks those expenses repaid on the row's day and links
+  them to its bank row. If any of them was edited, voided or repaid since Kin read the statement,
+  Confirm records nothing and asks you to read it again. A row that names a partner is never
+  offered as a new expense: when it doesn't add up to their oldest expenses, they're owed nothing
+  in its currency, or it looks like a repayment you already marked, it stays in Not matched, left
+  for later, with why. Part repayments aren't tracked yet. A debit that doesn't name the partner
+  is never offered as repaying them, and expenses a partner paid themselves are never matched to
+  the company's own debits.
 - **Pick a match**: rows that fit more than one entry. Pick one, or leave it for later.
 - **Not matched**: each row starts as left for later, with what Kin suggests beside it. Make a
   debit a new expense, mark a row a transfer between your own accounts, or ignore it. **Use
@@ -49,6 +60,17 @@ unexplained. If you already keep a list called Bank transactions, Kin uses it an
 already in it. Sending the same statement again, or one that overlaps the last, adds no row
 twice. Bank transactions never count as spending or income in Money.
 
+## How far Kin sees your bank
+
+Kin sees your bank only through the statements you confirm. Money shows the day it sees your bank
+to, such as **Bank known to Oct 31**, with **Upload a statement** to send the next one. An invoice
+still owed says it isn't recorded as paid and where the bank is known to, and each payment says
+whether it came from a statement or who recorded it.
+
+A missing month holds that day back, even when later months are in: send the gap to move it on.
+Once a month has been over for five days without its statement, the morning brief says so once,
+with how many invoices it would confirm. A playbook's `statement_due_days` changes the five days.
+
 ## Reading a statement again
 
 **Read again** on a statement's card reads its file afresh, using a remembered password or asking
@@ -63,6 +85,7 @@ the command only reports where the statement stands and changes nothing.
 ## Undoing a statement
 
 **Undo this statement** on the card takes back everything it recorded: payments, TDS lines,
-expenses marked paid and expenses it created, across every confirm since a read again; the card
-says how many rows came from each. Each entry's history shows both the change and the
-undo. You can confirm the card again afterwards.
+expenses marked paid, partners' expenses marked repaid, and expenses it created, across every
+confirm since a read again; the card says how many rows came from each. Each entry's history
+shows both the change and the undo. An entry someone changed by hand since, such as a repaid
+day, keeps its whole row. You can confirm the card again afterwards.

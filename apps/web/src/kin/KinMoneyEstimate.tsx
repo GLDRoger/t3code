@@ -1,3 +1,4 @@
+import { kinNow } from "@t3tools/client-runtime/kin/kinNow";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_CURRENCY,
@@ -106,7 +107,7 @@ export function KinSetRateButton(
 
 const pad = (value: number) => String(value).padStart(2, "0");
 const todayDay = () => {
-  const now = new Date();
+  const now = kinNow();
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
 };
 
@@ -272,7 +273,6 @@ function KinRatesForm(
                   id={ids.rate}
                   value={draft.rate}
                   inputMode="decimal"
-                  placeholder="84.25"
                   autoComplete="off"
                   onChange={(event) => setDraft({ ...draft, rate: event.target.value })}
                 />
@@ -344,7 +344,7 @@ export function KinInvoiceCurrency(
       {settled === null ? (
         props.settled ? (
           <p className="text-xs text-muted-foreground">
-            {KIN_CURRENCY.paidUnlinked(view.currency)}
+            {KIN_CURRENCY.paidUnlinked(view.currency, view.home)}
           </p>
         ) : null
       ) : (

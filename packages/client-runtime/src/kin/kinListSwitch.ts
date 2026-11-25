@@ -1,26 +1,47 @@
-import type { KinStartList } from "@t3tools/contracts/settings";
-
+import type { KinHost } from "./kinHost.ts";
 import { selectKinInboxView, type KinInboxState } from "./kinInboxModel.ts";
+import type { KinAppShell } from "./kinJoin.ts";
 
-/** The two lists the brand mark switches between. */
+/** The two lists a client shows: T3's coding threads, or Kin. */
 export type KinList = "threads" | "kin";
 
-export function kinOtherList(list: KinList): KinList {
-  return list === "threads" ? "kin" : "threads";
+/**
+ * Whether the phone's Home is Kin. Kin stays non-coding, so a device with a Kin host is Kin's
+ * whatever it showed last; a host still being looked for keeps the one this device saved.
+ */
+export function kinPhoneHome(input: {
+  readonly kinOnly: boolean;
+  readonly shell: KinAppShell;
+  readonly host: KinHost["_tag"];
+  /** Whether this device saved a Kin host; null while that is still being read. */
+  readonly savedHost: boolean | null;
+}): "loading" | "kin" | "coding" {
+  if (input.shell === "loading") return "loading";
+  if (input.kinOnly || input.shell === "chatOnly" || input.host === "host") return "kin";
+  if (input.host === "none") return "coding";
+  if (input.savedHost === null) return "loading";
+  return input.savedHost ? "kin" : "coding";
 }
 
 /**
- * The list a fresh launch opens to. Kin only when this device has seen a Kin host, so a client
- * that never used Kin always opens to threads.
+ * Runs `kin` while Kin is the phone's Home and `coding` while the coding workspace is, swapping
+ * when Home changes. Nothing runs until Home is known.
  */
-export function kinStartListFor(input: {
-  readonly setting: KinStartList;
-  readonly lastUsed: KinList | null;
-  readonly kinSeen: boolean;
-}): KinList {
-  if (!input.kinSeen) return "threads";
-  if (input.setting === "lastUsed") return input.lastUsed ?? "threads";
-  return input.setting;
+export function installForPhoneHome(
+  subscribe: (onHome: (home: ReturnType<typeof kinPhoneHome>) => void) => () => void,
+  installs: { readonly kin: () => () => void; readonly coding: () => () => void },
+): () => void {
+  let running: { readonly home: "kin" | "coding"; readonly stop: () => void } | null = null;
+  const unsubscribe = subscribe((home) => {
+    if (home === "loading" || home === running?.home) return;
+    running?.stop();
+    running = { home, stop: installs[home]() };
+  });
+  return () => {
+    unsubscribe();
+    running?.stop();
+    running = null;
+  };
 }
 
 /** What a list holds for the viewer. */
@@ -39,23 +60,22 @@ export function kinInboxAttention(inbox: KinInboxState | null): KinListAttention
 
 export type KinSwitcherDot = "waiting" | "unread" | null;
 
-/** The mark's dot speaks for the list you are not in; waiting on you outranks unread. */
-export function kinSwitcherDot(input: {
-  readonly current: KinList;
-  readonly kin: KinListAttention;
-  readonly threads: KinListAttention;
-}): KinSwitcherDot {
-  const other = input.current === "threads" ? input.kin : input.threads;
-  if (other.waiting) return "waiting";
-  return other.unread ? "unread" : null;
+/** The dot on the way into Kin from the coding threads; waiting on you outranks unread. */
+export function kinSwitcherDot(kin: KinListAttention): KinSwitcherDot {
+  if (kin.waiting) return "waiting";
+  return kin.unread ? "unread" : null;
 }
 
 const DOT_SUFFIX = { waiting: ", something is waiting on you", unread: ", unread" } as const;
 
-export function kinSwitcherLabel(input: {
-  readonly current: KinList;
-  readonly dot: KinSwitcherDot;
-}): { readonly title: string; readonly accessibilityLabel: string } {
-  const title = `Switch to ${input.current === "threads" ? "Kin chats" : "coding threads"}`;
-  return { title, accessibilityLabel: input.dot === null ? title : title + DOT_SUFFIX[input.dot] };
+const KIN_SWITCH_TITLE = "Switch to Kin chats";
+
+export function kinSwitcherLabel(dot: KinSwitcherDot): {
+  readonly title: string;
+  readonly accessibilityLabel: string;
+} {
+  return {
+    title: KIN_SWITCH_TITLE,
+    accessibilityLabel: dot === null ? KIN_SWITCH_TITLE : KIN_SWITCH_TITLE + DOT_SUFFIX[dot],
+  };
 }

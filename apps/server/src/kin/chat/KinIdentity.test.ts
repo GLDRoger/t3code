@@ -30,6 +30,7 @@ import * as EnvironmentAuth from "../../auth/EnvironmentAuth.ts";
 import * as SessionStore from "../../auth/SessionStore.ts";
 import { layerKinAuthTest, pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { startWakeupRun, authorityLayer } from "./WakeupAuthority.testkit.ts";
+import { companyMoney, countryNeeded, readProfile, setProfile } from "../work/companyProfile.ts";
 
 const database = authorityLayer;
 const repositoryLayer = Layer.provideMerge(Repository.layer, database);
@@ -305,6 +306,14 @@ describe("KinIdentity", () => {
         assert.deepStrictEqual(yield* restarted.resolve(session), [owner]);
         assert.deepStrictEqual(yield* repository.listAllOrgs(), orgs);
         assert.deepStrictEqual(yield* repository.listPeople(owner), people);
+        // A company made without the running server's marker has no profile row: India's, as before.
+        assert.deepStrictEqual(yield* companyMoney(owner.orgId), {
+          homeCurrency: "INR",
+          country: "IN",
+          financialYearStartMonth: 4,
+          tax: null,
+        });
+        assert.isFalse(yield* countryNeeded(owner.orgId));
         for (const missing of AuthStandardClientScopes) {
           assert.deepStrictEqual(
             yield* restarted.resolve({
@@ -315,6 +324,35 @@ describe("KinIdentity", () => {
           );
         }
         assert.deepStrictEqual(yield* restarted.resolve({ ...session, scopes: [] }), []);
+      }).pipe(Effect.provide(repositoryLayer)),
+  );
+
+  it.effect(
+    "a company created now starts with its country not chosen until the owner picks one",
+    () =>
+      Effect.gen(function* () {
+        const created = Identity.KinIdentity.pipe(
+          Effect.provide(identityLayer),
+          Effect.provideService(Identity.KinNewCompanyCountryUnset, true),
+        );
+        const { owner } = yield* created;
+        const notChosen = { country: null, financialYearStartMonth: 1, tax: null };
+        assert.deepInclude(yield* companyMoney(owner.orgId), notChosen);
+        // Never saved: its form still offers the device's country, and a restart writes nothing.
+        assert.deepInclude(yield* readProfile(owner.orgId), { rev: 0, updatedAt: null });
+        yield* created;
+        assert.deepInclude(yield* readProfile(owner.orgId), { ...notChosen, rev: 0 });
+        // Nothing that records money is made until the owner chooses it.
+        assert.isTrue(yield* countryNeeded(owner.orgId));
+        const writer = { _tag: "person" as const, personId: owner.personId };
+        yield* setProfile(owner.orgId, writer, { country: "GB" }, 0);
+        assert.isFalse(yield* countryNeeded(owner.orgId));
+        assert.deepStrictEqual(yield* companyMoney(owner.orgId), {
+          homeCurrency: "GBP",
+          country: "GB",
+          financialYearStartMonth: 4,
+          tax: { name: "VAT", rate: null, pricesInclude: null },
+        });
       }).pipe(Effect.provide(repositoryLayer)),
   );
 

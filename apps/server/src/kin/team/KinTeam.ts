@@ -13,6 +13,7 @@ import {
   TrimmedNonEmptyString,
   type KinAuthor,
   type KinChat,
+  type KinMessage,
   type KinOrgId,
   type KinPrincipal,
 } from "@t3tools/contracts";
@@ -37,6 +38,7 @@ import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { SHARED_REFUSAL, aborted } from "../lead/Audience.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
+import { outsideStamp, stampEvent } from "../lead/OutsideContent.ts";
 import { teamAgent } from "../lead/LeadAccess.ts";
 import { resolveLead } from "../lead/LeadMemory.ts";
 import { CHIEF_OF_STAFF_DOMAIN } from "../lead/orgLeads.ts";
@@ -48,8 +50,9 @@ import { changesIn } from "../lead/undoSection.ts";
 import { discussionDecision } from "../memory/decisions.ts";
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import { stakeholders } from "./stakes.ts";
-import { TEAM_ROOM_MUTED, TEAM_ROOM_TITLE, teamRoomOf } from "./teamRoom.ts";
+import { TEAM_ROOM_MUTED, TEAM_ROOM_TITLE, namedAgents, teamRoomOf } from "./teamRoom.ts";
 import * as Turns from "./turns.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 const Name = TrimmedNonEmptyString.check(Schema.isMaxLength(80));
 const Intent = Schema.Literals(["answer", "evidence", "objection", "decision", "question"]);
@@ -210,6 +213,8 @@ export class KinTeam extends Context.Service<
       scope: McpInvocationScope,
       input: typeof TeamOpenInput.Type,
     ) => Effect.Effect<typeof TeamResult.Type, KinChatError>;
+    /** Whether a person's Team-room message has a discussion of its agents, opened now or before. */
+    readonly personAsked: (message: KinMessage) => Effect.Effect<boolean, KinChatError>;
     readonly say: (
       scope: McpInvocationScope,
       input: typeof TeamSayInput.Type,
@@ -412,6 +417,8 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     row: Row,
     turn: Turns.Turn,
+    /** The speaker's turn had read outside text: the next one starts from it (`stampEvent`). */
+    outside?: string,
   ) {
     const message = yield* latest(orgId, row);
     if (message === undefined) return null;
@@ -431,6 +438,7 @@ const make = Effect.gen(function* () {
         messageId: message.messageId,
       })
       .pipe(
+        Effect.tap(() => stampEvent(orgId, eventId, outside).pipe(access)),
         Effect.catchTags({
           KinEventQueueConflict: () => Effect.void,
           KinEventQueueRetiredAgent: () => Effect.void,
@@ -451,6 +459,8 @@ const make = Effect.gen(function* () {
       readonly outcome?: string;
       readonly card?: HeldCard;
       readonly lastAt?: number;
+      /** The speaking turn's outside stamp, which the next speaker's wake carries. */
+      readonly outside?: string | undefined;
     } = {},
   ) {
     const now = yield* Clock.currentTimeMillis;
@@ -473,8 +483,24 @@ const make = Effect.gen(function* () {
         last_at = ${changes.lastAt ?? row.lastAt}, ended_at = ${d.final ? now : null}
       WHERE org_id = ${orgId} AND discussion_id = ${row.discussionId}`;
     const next = { ...row, d, turn, question: changes.question ?? row.question };
+    // Its latest message is read again, so an open room stops saying it is still going.
+    if (d.final && !row.d.final) {
+      const touched = yield* sql<{ messageId: KinMessageId }>`UPDATE kin_messages
+        SET edited_at = edited_at WHERE org_id = ${orgId} AND message_id = (
+          SELECT message_id FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${row.chatId}
+            AND discussion_id = ${row.discussionId} AND status = 'posted'
+          ORDER BY seq DESC LIMIT 1)
+        RETURNING message_id AS "messageId"`;
+      for (const { messageId } of touched) {
+        const message = yield* repo.getMessage({ orgId, messageId });
+        if (Option.isSome(message))
+          yield* sql.afterCommit(
+            hub.publish({ type: "message.changed", orgId, message: message.value }),
+          );
+      }
+    }
     if (turn !== null && turn.eventId === null) {
-      const eventId = yield* wakeTurn(orgId, next, turn);
+      const eventId = yield* wakeTurn(orgId, next, turn, changes.outside);
       if (eventId !== null)
         yield* sql`UPDATE kin_discussions SET turn_json = ${encodeJson({ ...turn, eventId })}
           WHERE org_id = ${orgId} AND discussion_id = ${row.discussionId}`;
@@ -612,9 +638,7 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => []),
     );
     return [
-      ...new Set(
-        owed.flatMap((invoice) => (invoice.partyTitle === null ? [] : [invoice.partyTitle])),
-      ),
+      ...new Set(owed.flatMap((invoice) => invoice.partyTitle ?? invoice.billTo ?? [])),
     ].filter((name) => name.trim().length >= 3);
   });
 
@@ -682,6 +706,7 @@ const make = Effect.gen(function* () {
     const rows = yield* sql<{ personId: KinPersonId }>`SELECT m.author_person_id AS "personId"
       FROM kin_events e JOIN kin_messages m ON m.org_id = e.org_id
         AND m.message_id = json_extract(e.json, '$.messageId') AND m.author_kind = 'human'
+        AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
       WHERE e.org_id = ${ctx.orgId} AND e.agent_id = ${ctx.agentId} AND e.wakeup_id = ${ctx.wakeupId}
         AND e.tag = 'chat.message' AND json_extract(e.json, '$.origin') IS NULL`;
     for (const row of rows)
@@ -705,6 +730,62 @@ const make = Effect.gen(function* () {
     return (spent?.units ?? 0) >= limit.lead * Turns.TEAM_DAILY_SHARE * 0.8;
   });
 
+  /**
+   * The one way a discussion is made, for team_open and for a person's ask: the open caps (an
+   * owner-level ask always opens), the same opening retried by `key`, then its row holding `d`.
+   */
+  const create = Effect.fn("KinTeam.create")(function* (input: {
+    readonly orgId: KinOrgId;
+    readonly roomId: KinChatId;
+    readonly key: string;
+    readonly topic: string;
+    readonly question: string;
+    readonly opener: Agent;
+    readonly decider: Agent;
+    readonly byOwner: boolean;
+    readonly d: Turns.Discussion;
+  }) {
+    const { orgId } = input;
+    const now = yield* Clock.currentTimeMillis;
+    const zone = yield* ownerZone(orgId).pipe(access);
+    const since = startOfDay(dayIn(now, zone), zone);
+    const [counts] = yield* sql<{ today: number; openNow: number }>`SELECT
+        COALESCE(SUM(CASE WHEN origin = 'agent' AND created_at >= ${since} THEN 1 ELSE 0 END), 0) AS today,
+        COALESCE(SUM(CASE WHEN origin = 'agent' AND final = 0 THEN 1 ELSE 0 END), 0) AS "openNow"
+      FROM kin_discussions WHERE org_id = ${orgId}`;
+    const refusal = Turns.openRefusal({
+      byOwner: input.byOwner,
+      agentStartedToday: counts?.today ?? 0,
+      openNow: counts?.openNow ?? 0,
+      overShare: yield* overShare(orgId, since),
+    });
+    if (refusal !== null) return yield* refuse(`${refusal} Work it out in your own lane.`);
+    const [again] = yield* sql<{ discussionId: string }>`SELECT discussion_id AS "discussionId"
+      FROM kin_discussions WHERE org_id = ${orgId} AND open_key = ${input.key}`.pipe(
+      Effect.orElseSucceed(() => []),
+    );
+    if (again !== undefined) {
+      const row = yield* read(orgId, again.discussionId);
+      if (row !== undefined) return { row, again: true };
+    }
+    const [max] = yield* sql<{
+      n: number | null;
+    }>`SELECT MAX(CAST(SUBSTR(discussion_id, 4) AS INTEGER)) AS n
+      FROM kin_discussions WHERE org_id = ${orgId}`;
+    const discussionId = KinDiscussionId.make(`TD-${(max?.n ?? 0) + 1}`);
+    yield* sql`INSERT INTO kin_discussions (org_id, discussion_id, chat_id, topic, question,
+        decider_agent_id, opened_by_agent_id, origin, ask_chat_id, ask_agent_id, state,
+        pending_json, turn_json, created_at, last_at, open_key)
+      VALUES (${orgId}, ${discussionId}, ${input.roomId}, ${oneLine(input.topic)},
+        ${oneLine(input.question)}, ${input.decider.agentId}, ${input.opener.agentId},
+        ${input.byOwner ? "owner" : "agent"}, ${input.opener.ownerChatId}, ${input.opener.agentId},
+        'open', ${encodeJson(input.d.pending)},
+        ${encodeJson({ ...input.d.turn, eventId: null, said: false })}, ${now}, ${now}, ${input.key})`;
+    const row = yield* read(orgId, discussionId);
+    if (row === undefined) return yield* missing();
+    return { row, again: false };
+  });
+
   const open = Effect.fn("KinTeam.open")(function* (
     scope: McpInvocationScope,
     input: typeof TeamOpenInput.Type,
@@ -713,6 +794,16 @@ const make = Effect.gen(function* () {
     if (yield* aborted(ctx).pipe(access)) return yield* refuse(SHARED_REFUSAL);
     return yield* sql.withTransaction(
       Effect.gen(function* () {
+        // Kin opened one for a person's ask and this agent holds its turn: a second would split it.
+        const [mine] = yield* sql<{ discussionId: string }>`SELECT discussion_id AS "discussionId"
+          FROM kin_discussions WHERE org_id = ${ctx.orgId} AND final = 0
+            AND open_key LIKE 'message:%'
+            AND json_extract(turn_json, '$.agentId') = ${ctx.agentId}
+          ORDER BY created_at LIMIT 1`;
+        if (mine !== undefined)
+          return yield* refuse(
+            `Kin already opened ${mine.discussionId} for what was asked, and it is your turn in it. Answer there with team_say.`,
+          );
         const room = yield* ensureRoom(ctx.orgId);
         const all = yield* agents(ctx.orgId);
         const self = all.find((agent) => agent.agentId === ctx.agentId);
@@ -721,55 +812,31 @@ const make = Effect.gen(function* () {
         const decider = yield* pick(all, input.decider);
         const to = yield* Effect.forEach(input.to ?? [], (name) => pick(all, name));
         const byOwner = yield* askedByOwner(ctx);
-        const now = yield* Clock.currentTimeMillis;
-        const zone = yield* ownerZone(ctx.orgId).pipe(access);
-        const since = startOfDay(dayIn(now, zone), zone);
-        const [counts] = yield* sql<{ today: number; openNow: number }>`SELECT
-            COALESCE(SUM(CASE WHEN origin = 'agent' AND created_at >= ${since} THEN 1 ELSE 0 END), 0) AS today,
-            COALESCE(SUM(CASE WHEN origin = 'agent' AND final = 0 THEN 1 ELSE 0 END), 0) AS "openNow"
-          FROM kin_discussions WHERE org_id = ${ctx.orgId}`;
-        const refusal = Turns.openRefusal({
-          byOwner,
-          agentStartedToday: counts?.today ?? 0,
-          openNow: counts?.openNow ?? 0,
-          overShare: yield* overShare(ctx.orgId, since),
-        });
-        if (refusal !== null) return yield* refuse(`${refusal} Work it out in your own lane.`);
-        // The same opening retried in this wake-up is the same discussion.
-        const key = `${ctx.wakeupId}:${fold(input.topic)}`;
-        const [again] = yield* sql<{ discussionId: string }>`SELECT discussion_id AS "discussionId"
-          FROM kin_discussions WHERE org_id = ${ctx.orgId} AND open_key = ${key}`.pipe(
-          Effect.orElseSucceed(() => []),
-        );
-        if (again !== undefined) {
-          const row = yield* read(ctx.orgId, again.discussionId);
-          if (row !== undefined)
-            return {
-              discussion: row.discussionId,
-              next: nameOf(all, row.d.turn?.agentId),
-              state: row.d.state,
-            };
-        }
-        const [max] = yield* sql<{
-          n: number | null;
-        }>`SELECT MAX(CAST(SUBSTR(discussion_id, 4) AS INTEGER)) AS n
-          FROM kin_discussions WHERE org_id = ${ctx.orgId}`;
-        const discussionId = KinDiscussionId.make(`TD-${(max?.n ?? 0) + 1}`);
         const d = Turns.opened({
           openedBy: ctx.agentId,
           decider: decider.agentId,
           chair: chair.agentId,
         });
-        yield* sql`INSERT INTO kin_discussions (org_id, discussion_id, chat_id, topic, question,
-            decider_agent_id, opened_by_agent_id, origin, ask_chat_id, ask_agent_id, state,
-            turn_json, created_at, last_at, open_key)
-          VALUES (${ctx.orgId}, ${discussionId}, ${room.chatId}, ${oneLine(input.topic)},
-            ${oneLine(input.question)}, ${decider.agentId}, ${ctx.agentId},
-            ${byOwner ? "owner" : "agent"}, ${self.ownerChatId}, ${ctx.agentId}, 'open',
-            ${encodeJson({ agentId: ctx.agentId, kind: "named", eventId: null, said: false })},
-            ${now}, ${now}, ${key})`;
-        const row = yield* read(ctx.orgId, discussionId);
-        if (row === undefined) return yield* missing();
+        // The same opening retried in this wake-up is the same discussion.
+        const { row, again } = yield* create({
+          orgId: ctx.orgId,
+          roomId: room.chatId,
+          key: `${ctx.wakeupId}:${fold(input.topic)}`,
+          topic: input.topic,
+          question: input.question,
+          opener: self,
+          decider,
+          byOwner,
+          d,
+        });
+        if (again)
+          return {
+            discussion: row.discussionId,
+            next: nameOf(all, row.d.turn?.agentId),
+            state: row.d.state,
+          };
+        const now = yield* Clock.currentTimeMillis;
+        const discussionId = row.discussionId;
         const asked = to.length > 0 ? to : [decider];
         const message = yield* post(ctx, row, {
           text: input.text,
@@ -793,7 +860,11 @@ const make = Effect.gen(function* () {
           ),
         };
         const next = Turns.afterSay(d, said);
-        yield* settle(ctx.orgId, row, next, { said: true, lastAt: now });
+        yield* settle(ctx.orgId, row, next, {
+          said: true,
+          lastAt: now,
+          outside: yield* outsideStamp(ctx).pipe(access),
+        });
         // Asked by the owner: the agent it went to shows it in its chat with him, sent by the opener.
         const receiver = asked.find((agent) => agent.agentId !== ctx.agentId);
         if (byOwner && receiver !== undefined)
@@ -807,6 +878,19 @@ const make = Effect.gen(function* () {
             discussionId,
             silent: true,
           });
+        // Where he asked, one quiet line that it started, linking to it.
+        if (byOwner)
+          yield* chat.notice({
+            orgId: ctx.orgId,
+            chatId: self.ownerChatId,
+            audience: "owner",
+            messageId: KinMessageId.make(
+              `kin-team-started:${hash(`${ctx.orgId}:${discussionId}`)}`,
+            ),
+            body: `Started a Team room discussion: ${oneLine(input.topic)}`,
+            discussionId,
+            silent: true,
+          });
         return {
           discussion: discussionId,
           next: nameOf(all, next.turn?.agentId),
@@ -815,6 +899,83 @@ const make = Effect.gen(function* () {
       }),
     );
   }, guarded("KinTeam.open"));
+
+  /**
+   * A person's Team-room message naming two or more of the room's agents opens their discussion,
+   * as the first-named agent's team_open would, with no turn spent opening it. True when this
+   * message has its discussion, so no agent answers it as a plain reply. While another
+   * discussion is open, it stays an ordinary message.
+   */
+  const personAsked = Effect.fn("KinTeam.personAsked")(function* (message: KinMessage) {
+    const { orgId } = message;
+    if (message.author._tag !== "human") return false;
+    if ((yield* teamRoomOf(orgId).pipe(access)) !== message.chatId) return false;
+    return yield* sql.withTransaction(
+      Effect.gen(function* () {
+        // Handled again after a restart: the discussion it opened is its answer.
+        const key = `message:${message.messageId}`;
+        const [seen] = yield* sql`SELECT 1 FROM kin_discussions
+          WHERE org_id = ${orgId} AND open_key = ${key}`;
+        if (seen !== undefined) return true;
+        const stored = Option.getOrUndefined(
+          yield* repo.getMessage({ orgId, messageId: message.messageId }),
+        );
+        if (
+          stored === undefined ||
+          stored.chatId !== message.chatId ||
+          stored.author._tag !== "human" ||
+          stored.status !== "posted" ||
+          stored.kind !== "text" ||
+          stored.origin !== undefined ||
+          !(yield* ownerLevel(orgId, stored.author.personId).pipe(access))
+        )
+          return false;
+        const all = yield* agents(orgId);
+        const members = new Set(
+          (yield* sql<{ agentId: string }>`SELECT agent_id AS "agentId" FROM kin_chat_members
+            WHERE org_id = ${orgId} AND chat_id = ${message.chatId} AND principal_kind = 'agent'
+              AND left_at IS NULL ORDER BY agent_id`).map((row) => row.agentId),
+        );
+        const named = namedAgents(
+          stored.body,
+          all.filter((agent) => members.has(agent.agentId)),
+        );
+        const [first] = named;
+        if (first === undefined || named.length < 2) return false;
+        // Answered as an ordinary message once (another discussion was open): that stands.
+        const [plain] = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
+          AND dedupe_key LIKE ${`chat-message:${message.messageId}:%`} LIMIT 1`;
+        const [busy] = yield* sql`SELECT 1 FROM kin_discussions
+          WHERE org_id = ${orgId} AND final = 0 LIMIT 1`;
+        if (plain !== undefined || busy !== undefined) return false;
+        const chair = (yield* chairOf(orgId, all)) ?? first;
+        const decider = named.find((agent) => agent.agentId === chair.agentId) ?? first;
+        const d = Turns.askedByPerson({
+          first: first.agentId,
+          asked: named.map((agent) => agent.agentId),
+          decider: decider.agentId,
+          chair: chair.agentId,
+        });
+        const question = oneLine(stored.body);
+        const { row } = yield* create({
+          orgId,
+          roomId: message.chatId,
+          key,
+          topic: question.length <= 120 ? question : `${question.slice(0, 119).trimEnd()}…`,
+          question,
+          opener: first,
+          decider,
+          byOwner: true,
+          d,
+        });
+        // The discussion's first message: its first turn answers it.
+        yield* sql`UPDATE kin_messages SET discussion_id = ${row.discussionId}
+          WHERE org_id = ${orgId} AND message_id = ${message.messageId} AND discussion_id IS NULL`;
+        yield* settle(orgId, row, d);
+        return true;
+      }),
+    );
+  }, guarded("KinTeam.personAsked"));
 
   const say = Effect.fn("KinTeam.say")(function* (
     scope: McpInvocationScope,
@@ -830,12 +991,17 @@ const make = Effect.gen(function* () {
             AND (${input.discussion ?? null} IS NULL OR discussion_id = ${input.discussion ?? null})
           ORDER BY created_at`;
         const all = yield* agents(ctx.orgId);
-        if (mine.length === 0)
+        if (mine.length === 0 && input.discussion === undefined) {
+          const [open] = yield* sql`SELECT 1 FROM kin_discussions
+            WHERE org_id = ${ctx.orgId} AND final = 0 LIMIT 1`;
           return yield* refuse(
-            input.discussion === undefined
-              ? "It isn't your turn in any Team-room discussion. Kin wakes you when it is."
-              : "It isn't your turn in that discussion. Kin wakes you when it is.",
+            open === undefined
+              ? "No Team-room discussion is open. team_open starts one: the question, whose call it is and who joins."
+              : "It isn't your turn in any Team-room discussion. Kin wakes you when it is.",
           );
+        }
+        if (mine.length === 0)
+          return yield* refuse("It isn't your turn in that discussion. Kin wakes you when it is.");
         if (mine.length > 1)
           return yield* refuse(
             `You hold a turn in ${mine.map((m) => m.discussionId).join(" and ")}: say which in discussion.`,
@@ -877,6 +1043,7 @@ const make = Effect.gen(function* () {
         yield* settle(ctx.orgId, row, next, {
           said: true,
           lastAt: now,
+          outside: yield* outsideStamp(ctx).pipe(access),
           ...(input.widen === undefined ? {} : { question: oneLine(input.widen) }),
           ...(input.outcome === undefined ? {} : { outcome: oneLine(input.outcome) }),
         });
@@ -1029,6 +1196,7 @@ const make = Effect.gen(function* () {
 
   return KinTeam.of({
     open,
+    personAsked,
     say,
     wakeupEnded,
     ensureRoom: Effect.fn("KinTeam.ensureRoomNow")(

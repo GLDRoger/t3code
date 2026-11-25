@@ -1,16 +1,29 @@
 import { describe, expect, it } from "@effect/vitest";
+import { KinAccessMeResult } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 
 import { kinPlaceReach } from "./kinJoin.ts";
 import {
   kinDestinations,
   kinDockSelection,
   kinDockShown,
+  kinPhoneSettingsRows,
   kinPlaceInPlace,
   kinSettingsGroups,
   kinSettingsPageOf,
 } from "./kinNavigation.ts";
+import { kinPlacesFromMe } from "./kinPlaces.ts";
 
 const none = { money: false, clients: false, docs: false };
+// The company's sections with these switched off, as `kin.access.me` sends them.
+const sectionsOff = (...off: ReadonlyArray<string>) => ({
+  rev: 3,
+  sections: ["clients", "deals", "money", "invoices", "docs"].map((id) => ({
+    id,
+    on: !off.includes(id),
+  })),
+});
+const decodeMe = Schema.decodeSync(KinAccessMeResult);
 
 // The seeded roles: the owner and a co-owner run the company; a lead leads a project; a member
 // has Clients switched on.
@@ -48,6 +61,154 @@ describe("kinDestinations", () => {
     expect(
       kinDestinations({ work: true, refused: none, ownerLevel: false, reaches: null }),
     ).toEqual(["chats", "tasks"]);
+  });
+});
+
+describe("kinPlacesFromMe", () => {
+  const me = (
+    access: "owner" | "co_owner" | "member",
+    places: Partial<typeof none>,
+    refused: { readonly money: boolean; readonly docs: boolean } | undefined,
+    leads: ReadonlyArray<string> = [],
+    off: ReadonlyArray<string> = [],
+  ) =>
+    decodeMe({
+      personId: "rhea",
+      access,
+      places: { ...none, ...places },
+      leads: leads.map((key) => ({ recordId: key, key, title: "Invented project" })),
+      ...(refused === undefined ? {} : { refused }),
+      ...(off.length === 0 ? {} : { shell: sectionsOff(...off) }),
+    });
+  const all = ["chats", "tasks", "money", "clients", "docs"];
+  // Each role's tabs as the nav and the dock drew them from Work's, Money's and Docs' streams.
+  it.each([
+    // role, me, owner level, tabs
+    ["owner", me("owner", {}, { money: false, docs: false }), true, all],
+    ["co-owner", me("co_owner", {}, { money: false, docs: false }), true, all],
+    ["lead", me("member", {}, { money: false, docs: false }, ["P-1"]), false, all],
+    [
+      "member with Clients",
+      me("member", { clients: true }, { money: true, docs: true }),
+      false,
+      ["chats", "tasks", "clients"],
+    ],
+    [
+      "member with Money",
+      me("member", { clients: true, money: true }, { money: false, docs: true }),
+      false,
+      ["chats", "tasks", "money", "clients"],
+    ],
+    // A section the company turned off leaves everyone's places; Docs, Tasks and Chats stay.
+    [
+      "owner, Clients off",
+      me("owner", {}, { money: false, docs: false }, [], ["clients"]),
+      true,
+      ["chats", "tasks", "money", "docs"],
+    ],
+    [
+      "owner, Money off",
+      me("owner", {}, { money: false, docs: false }, [], ["money", "invoices"]),
+      true,
+      ["chats", "tasks", "clients", "docs"],
+    ],
+    // Invoices and quotes, and Deals, live inside places: no place leaves with them.
+    [
+      "owner, Invoices off",
+      me("owner", {}, { money: false, docs: false }, [], ["invoices"]),
+      true,
+      all,
+    ],
+    ["owner, Deals off", me("owner", {}, { money: false, docs: false }, [], ["deals"]), true, all],
+    [
+      "co-owner, Clients and Money off",
+      me("co_owner", {}, { money: false, docs: false }, [], ["clients", "money", "invoices"]),
+      true,
+      ["chats", "tasks", "docs"],
+    ],
+    [
+      "lead, Clients off",
+      me("member", {}, { money: false, docs: false }, ["P-1"], ["clients"]),
+      false,
+      ["chats", "tasks", "money", "docs"],
+    ],
+    [
+      "member with Clients only, Clients off",
+      me("member", { clients: true }, { money: true, docs: true }, [], ["clients"]),
+      false,
+      ["chats", "tasks"],
+    ],
+    [
+      "member with Clients only, Money off",
+      me("member", { clients: true }, { money: true, docs: true }, [], ["money"]),
+      false,
+      ["chats", "tasks", "clients"],
+    ],
+    [
+      "member with Money, Money off",
+      me("member", { clients: true, money: true }, { money: false, docs: true }, [], ["money"]),
+      false,
+      ["chats", "tasks", "clients"],
+    ],
+    ["the owner's own session before the host answers", null, true, all],
+    ["a member before the host answers", null, false, ["chats", "tasks"]],
+  ] as const)("%s", (_, held, ownerLevel, tabs) => {
+    expect(kinPlacesFromMe({ me: held, ownerLevel, work: true })).toEqual({
+      destinations: tabs,
+      answered: held !== null,
+    });
+  });
+
+  it("leaves an older host's places to their own streams, and drops all but Chats without Work", () => {
+    expect(
+      kinPlacesFromMe({ me: me("member", {}, undefined), ownerLevel: false, work: true }),
+    ).toBe(null);
+    const owner = me("owner", {}, { money: false, docs: false });
+    expect(kinPlacesFromMe({ me: owner, ownerLevel: true, work: false })?.destinations).toEqual([
+      "chats",
+    ]);
+  });
+});
+
+describe("kinPlaceReach", () => {
+  const reach = (
+    places: Partial<typeof none>,
+    leads: ReadonlyArray<string>,
+    off: ReadonlyArray<string>,
+  ) =>
+    kinPlaceReach({
+      places: { ...none, ...places },
+      leads,
+      ...(off.length === 0 ? {} : { shell: sectionsOff(...off) }),
+    });
+  it.each([
+    [
+      "Zoya, Clients only, all on",
+      { clients: true },
+      [],
+      [],
+      { money: false, clients: true, docs: false },
+    ],
+    ["Zoya, Clients off", { clients: true }, [], ["clients"], none],
+    [
+      "Arjun, Money and Clients, Money off",
+      { money: true, clients: true },
+      [],
+      ["money"],
+      { ...none, clients: true },
+    ],
+    ["a lead, Clients off", {}, ["P-1"], ["clients"], { money: true, clients: false, docs: true }],
+    ["a lead, Money off", {}, ["P-1"], ["money"], { money: false, clients: true, docs: true }],
+    // Invoices and Deals hold no place of their own; Docs can't be off.
+    [
+      "Zoya, Invoices and Deals off",
+      { clients: true },
+      [],
+      ["invoices", "deals"],
+      { ...none, clients: true },
+    ],
+  ] as const)("%s", (_, places, leads, off, reaches) => {
+    expect(reach(places, leads, off)).toEqual(reaches);
   });
 });
 
@@ -96,29 +257,70 @@ describe("kinPlaceInPlace", () => {
 
 describe("kinSettingsGroups", () => {
   const groups = (role: keyof typeof ROLES, notifications = false) =>
-    kinSettingsGroups({ ...ROLES[role], notifications });
+    kinSettingsGroups({ ...ROLES[role], notifications, recommendations: role === "owner" });
 
   it("gives everyone You, the owner level Company, and This computer only where it opens", () => {
     expect(groups("owner").map((group) => group.id)).toEqual(["you", "company", "computer"]);
     expect(groups("coOwner").map((group) => group.id)).toEqual(["you", "company"]);
-    expect(groups("lead").map((group) => group.id)).toEqual(["you"]);
-    expect(groups("member").map((group) => group.id)).toEqual(["you"]);
+    expect(groups("lead").map((group) => group.id)).toEqual(["you", "company"]);
+    expect(groups("member").map((group) => group.id)).toEqual(["you", "company"]);
+    // A teammate's Company holds What Kin checked, the watches on their own things, and
+    // Connections, with only their own mailbox there.
+    expect(groups("member")[1]?.pages).toEqual(["watches", "connections"]);
     expect(groups("member")[0]?.pages).toEqual(["profile", "appearance"]);
     expect(groups("member", true)[0]?.pages).toEqual(["profile", "notifications", "appearance"]);
     expect(groups("coOwner")[1]?.pages).toEqual([
       "team",
       "agents",
       "check-ins",
+      "watches",
       "connections",
+      "sections",
+      "deals",
       "memory",
       "company",
       "approvals",
+      "host",
     ]);
+    // Kin's computer is the owner level's: a teammate never reaches it, even by its address.
+    expect(kinSettingsPageOf("host", groups("member"))).toBe("profile");
+    // What Kin suggested is the owner's alone: a co-owner's Company has no Recommendations.
+    expect(groups("owner")[1]?.pages.at(-1)).toBe("recommendations");
+    // A teammate with Clients on reads the deal stages, and nothing else of the company's.
+    const member = kinSettingsGroups({
+      ...ROLES.member,
+      notifications: false,
+      recommendations: false,
+      deals: true,
+    });
+    expect(member.map((group) => [group.id, group.pages])).toEqual([
+      ["you", ["profile", "appearance"]],
+      ["company", ["deals", "watches", "connections"]],
+    ]);
+    expect(kinSettingsPageOf("deals", member)).toBe("deals");
+    expect(kinSettingsPageOf("deals", groups("member"))).toBe("profile");
+  });
+
+  it("keeps the phone's Settings to the day's rows: Company for the owner level, the log for a teammate", () => {
+    // Sections and Deals are the owner level's, for their switches.
+    const owner = ["team", "agents", "company", "sections", "deals", "watches", "host", "stop"];
+    expect(kinPhoneSettingsRows(ROLES.owner)).toEqual({
+      you: ["profile", "notifications", "appearance", "mailbox"],
+      company: owner,
+    });
+    expect(kinPhoneSettingsRows(ROLES.coOwner).company).toEqual(owner);
+    // Clients on or off, a teammate's Company is What Kin checked alone: no read-only Deals.
+    expect(kinPhoneSettingsRows(ROLES.member).company).toEqual(["watches"]);
+    expect(kinPhoneSettingsRows(ROLES.lead).company).toEqual(["watches"]);
   });
 
   it("opens a Company address only for the owner level; anything else lands on the profile", () => {
     expect(kinSettingsPageOf("connections", groups("coOwner"))).toBe("connections");
-    expect(kinSettingsPageOf("connections", groups("member"))).toBe("profile");
+    // A teammate's Connections is theirs too: only their own mailbox is on it.
+    expect(kinSettingsPageOf("connections", groups("member"))).toBe("connections");
+    expect(kinSettingsPageOf("company", groups("member"))).toBe("profile");
+    expect(kinSettingsPageOf("recommendations", groups("owner"))).toBe("recommendations");
+    expect(kinSettingsPageOf("recommendations", groups("coOwner"))).toBe("profile");
     expect(kinSettingsPageOf("team", groups("lead"))).toBe("profile");
     expect(kinSettingsPageOf("appearance", groups("member"))).toBe("appearance");
     expect(kinSettingsPageOf("nonsense", groups("owner"))).toBe("profile");

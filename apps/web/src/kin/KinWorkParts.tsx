@@ -64,8 +64,10 @@ export function KinWorkSection(props: {
   if (props.fold === undefined)
     return (
       <section className="flex flex-col gap-2">
-        <div className="flex min-h-6 items-center justify-between gap-2">
-          <h3 className="text-xs font-medium text-muted-foreground">{props.title}</h3>
+        <div className="flex min-h-6 flex-wrap items-center justify-between gap-x-2 gap-y-1">
+          <h3 className="text-xs font-medium whitespace-nowrap text-muted-foreground">
+            {props.title}
+          </h3>
           {props.action}
         </div>
         {props.children}
@@ -111,8 +113,13 @@ export function KinWorkSection(props: {
 export function KinWorkStaleLine(props: {
   readonly environmentId: EnvironmentId;
   readonly onRetry?: () => void;
+  /** When the rows shown were last read, said while offline. */
+  readonly readAt?: number | null;
 }) {
-  const notice = kinWorkStaleNotice(kinHostLink(useKinHostAt(props.environmentId)));
+  const notice = kinWorkStaleNotice(
+    kinHostLink(useKinHostAt(props.environmentId)),
+    props.readAt ?? null,
+  );
   if (notice === null) return null;
   return (
     <p role="status" className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -313,6 +320,8 @@ export interface KinFilterGroup {
   }>;
   readonly onChange: (value: string) => void;
   readonly long?: boolean;
+  /** Said once under the choices, such as the fixed order inside each group. */
+  readonly note?: string;
 }
 
 /** A place's one Filter control, and what it is narrowed to as one chip that clears it. */
@@ -320,15 +329,18 @@ export function KinFilter(props: {
   readonly groups: ReadonlyArray<KinFilterGroup>;
   readonly chip: string | null;
   readonly onClear: () => void;
+  /** A grouping other than the default, as its own chip that puts the default back. */
+  readonly grouped?: { readonly label: string; readonly onClear: () => void } | null;
 }) {
   const groups = props.groups.filter((group) => group.options.length > 1);
   if (groups.length === 0) return null;
   const radio = (group: KinFilterGroup) => (
     <MenuRadioGroup value={group.value} onValueChange={(value) => group.onChange(String(value))}>
       {group.options.map((option) => (
-        <MenuRadioItem key={option.value} value={option.value}>
+        // A pick is the whole job: the menu closes on it, over the rows it just narrowed.
+        <MenuRadioItem key={option.value} value={option.value} closeOnClick title={option.label}>
           <span className="flex min-w-0 items-center justify-between gap-4">
-            <span className="truncate">{option.label}</span>
+            <span className="max-w-72 truncate">{option.label}</span>
             {option.detail == null ? null : (
               <span className="shrink-0 text-xs text-muted-foreground tabular-nums">
                 {option.detail}
@@ -364,19 +376,36 @@ export function KinFilter(props: {
                 <>
                   <MenuGroupLabel>{group.label}</MenuGroupLabel>
                   {radio(group)}
+                  {group.note === undefined ? null : (
+                    <p className="max-w-64 px-2 py-1.5 text-xs text-muted-foreground">
+                      {group.note}
+                    </p>
+                  )}
                 </>
               )}
             </MenuGroup>
           ))}
         </MenuPopup>
       </Menu>
+      {props.grouped == null ? null : (
+        <Button
+          size="xs"
+          variant="secondary"
+          aria-label={`${props.grouped.label}. Clear grouping`}
+          onClick={props.grouped.onClear}
+          className="min-w-0 shrink"
+        >
+          <span className="truncate">{props.grouped.label}</span>
+          <XIcon aria-hidden />
+        </Button>
+      )}
       {props.chip === null ? null : (
         <Button
           size="xs"
           variant="secondary"
           aria-label={`Filtered to ${props.chip}. Clear filter`}
           onClick={props.onClear}
-          className="min-w-0"
+          className="min-w-0 shrink"
         >
           <span className="truncate">{props.chip}</span>
           <XIcon aria-hidden />

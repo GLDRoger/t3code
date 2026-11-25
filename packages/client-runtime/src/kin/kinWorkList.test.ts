@@ -1,4 +1,5 @@
 import {
+  EnvironmentId,
   KinChatError,
   kinApplyWorkRow,
   kinCompactRecord,
@@ -6,25 +7,38 @@ import {
   KinOrgId,
   KinPersonId,
   KinRecordId,
+  KinRecordKey,
+  type KinPartiesInput,
+  type KinPartiesResult,
+  type KinProjectsInput,
   type KinRecord,
   type KinWorkListInput,
   type KinWorkListResult,
   type KinWorkRows,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
+import * as Schema from "effect/Schema";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it, vi } from "vite-plus/test";
 
+import type { AtomCommandResult } from "../state/runtime.ts";
 import { KIN_WORK_DEFAULT_FILTER } from "./kinWork.ts";
 import {
+  KIN_PICKER_COPY,
+  KIN_PICKER_SEARCH_CAP,
   KIN_WORK_PAGE,
+  createKinPickerSearch,
+  createKinPickerSearchSlot,
+  kinPickerSearchView,
   createKinListEntries,
   createKinListKeeper,
+  kinListShown,
   createKinWorkList,
   type KinWorkList,
   type KinWorkListState,
 } from "./kinWorkList.ts";
 
+const isChatError = Schema.is(KinChatError);
 const orgId = KinOrgId.make("invented-org");
 const owner = { _tag: "person", personId: KinPersonId.make("invented-owner") } as const;
 const record = (n: number): KinRecord => ({
@@ -61,7 +75,7 @@ const page = (from: number, count: number, total: number, seq: number): KinWorkL
 function harness(rows?: () => KinWorkRows | null) {
   const states: Array<KinWorkListState> = [];
   const asked: Array<KinWorkListInput> = [];
-  const waiting: Array<(result: KinWorkListResult | null) => void> = [];
+  const waiting: Array<(result: KinWorkListResult | KinChatError | null) => void> = [];
   const timers: Array<() => void> = [];
   const list = createKinWorkList({
     orgId,
@@ -70,9 +84,11 @@ function harness(rows?: () => KinWorkRows | null) {
       return new Promise((resolve) =>
         waiting.push((result) =>
           resolve(
-            result === null
+            result === null || isChatError(result)
               ? AsyncResult.failure(
-                  Cause.fail(new KinChatError({ reason: "unavailable", message: "Down." })),
+                  Cause.fail(
+                    result ?? new KinChatError({ reason: "unavailable", message: "Down." }),
+                  ),
                 )
               : AsyncResult.success(result),
           ),
@@ -88,7 +104,7 @@ function harness(rows?: () => KinWorkRows | null) {
     },
     ...(rows === undefined ? {} : { rows }),
   });
-  const answer = async (result: KinWorkListResult | null) => {
+  const answer = async (result: KinWorkListResult | KinChatError | null) => {
     waiting.shift()?.(result);
     // The controller continues on the promise's microtasks.
     await Promise.resolve();
@@ -198,7 +214,13 @@ describe("createKinWorkList", () => {
     await h.answer(page(1, 3, 3, 7));
     h.list.changed(8);
     await h.answer(null);
-    expect(h.state()).toMatchObject({ stale: true, failed: null, refreshing: false });
+    // Offline, the list says when its rows were read, as a chat does.
+    expect(h.state()).toMatchObject({
+      stale: true,
+      failed: null,
+      refreshing: false,
+      readAt: Date.parse("2026-11-11T08:00:00.000Z"),
+    });
     expect(h.state().records).toHaveLength(3);
 
     // Reconnecting announces the same number again; stale rows are read anyway.
@@ -215,6 +237,19 @@ describe("createKinWorkList", () => {
     await h.answer(page(1, 5, 5, 9));
     expect(h.state()).toMatchObject({ stale: false, refreshing: false, seq: 9 });
     expect(h.state().records).toHaveLength(5);
+
+    // A refusal is no passing failure: the rows were someone else's to show, so they go.
+    for (const [seq, reason] of [
+      [10, "not_allowed"],
+      [11, "not_found"],
+    ] as const) {
+      h.list.changed(seq);
+      const refused = new KinChatError({ reason, message: "Not yours." });
+      await h.answer(refused);
+      expect(h.state()).toMatchObject({ records: [], stale: false, failed: refused });
+      h.list.refresh();
+      await h.answer(page(1, 5, 5, seq));
+    }
   });
 
   it("says so when the first read fails, and retries on demand or when the host is heard again", async () => {
@@ -267,7 +302,7 @@ describe("createKinWorkList", () => {
     let clock = 0;
     const keeper = createKinListKeeper<KinWorkList, KinWorkListState>(() => clock);
     const h = harness(() => rows);
-    const first = keeper.take("tasks", () => h.list);
+    const first = keeper.take("tasks", () => h.list, "rhea");
     expect(keeper.wasKept(first)).toBe(false);
     keeper.show(first, () => {});
     h.list.start();
@@ -280,20 +315,34 @@ describe("createKinWorkList", () => {
       { _tag: "upsert", seq: 8, list: "work", record: kinCompactRecord(record(4)), fresh: true },
       orgId,
     );
-    const again = keeper.take("tasks", () => harness().list);
+    const again = keeper.take("tasks", () => harness().list, "rhea");
     expect(again).toBe(first);
     expect(keeper.wasKept(again)).toBe(true);
     keeper.show(again, () => {});
-    again.list.resume();
+    keeper.resume(again);
     again.list.changed(8);
     expect(h.asked).toHaveLength(1);
     expect(h.state().records.map((held) => held.key)).toEqual(["W-1", "W-2", "W-3", "W-4"]);
 
-    // Shown elsewhere, or left too long, it isn't handed out again.
-    expect(keeper.take("tasks", () => harness().list)).not.toBe(first);
+    // Shown elsewhere, it isn't handed out again.
+    expect(keeper.take("tasks", () => harness().list, "rhea")).not.toBe(first);
     keeper.hide(again);
+
+    // Someone else signed in on this phone, or not yet known: never another person's list.
+    expect(keeper.take("tasks", () => harness().list, "arjun")).not.toBe(first);
+    expect(keeper.take("tasks", () => harness().list, null)).not.toBe(first);
+
+    // Left too long, it is read again; what it held stays up, and through a read that fails.
     clock += 10 * 60_000;
-    expect(keeper.take("tasks", () => harness().list)).not.toBe(first);
+    const later = keeper.take("tasks", () => harness().list, "rhea");
+    expect(later).toBe(first);
+    keeper.show(later, () => {});
+    keeper.resume(later);
+    expect(h.asked).toHaveLength(2);
+    expect(h.state()).toMatchObject({ refreshing: true, failed: null });
+    await h.answer(null);
+    expect(h.state()).toMatchObject({ stale: true, failed: null });
+    expect(h.state().records.map((held) => held.key)).toEqual(["W-1", "W-2", "W-3", "W-4"]);
   });
 });
 
@@ -347,5 +396,218 @@ describe("createKinListEntries", () => {
     );
     entries.changed(10);
     expect(asked).toHaveLength(2);
+  });
+});
+
+describe("createKinPickerSearch", () => {
+  // Only names and keys reach a picker; the rest of a row is the host's.
+  const named = (names: ReadonlyArray<string>, more = false) =>
+    AsyncResult.success({
+      parties: names.map((name, index) => ({ key: KinRecordKey.make(`C-${index + 101}`), name })),
+      total: names.length,
+      nextCursor: more ? `o:${names.length}` : null,
+      seq: 1,
+      asOf: "2026-11-11T08:00:00.000Z",
+    } as unknown as KinPartiesResult);
+  function harness(
+    answer: (input: KinPartiesInput) => AtomCommandResult<KinPartiesResult, unknown>,
+  ) {
+    const asked: Array<KinPartiesInput> = [];
+    const timers: Array<() => void> = [];
+    const settled: Array<() => void> = [];
+    const search = createKinPickerSearch({
+      orgId,
+      kind: "clients",
+      done: false,
+      readClients: async (input) => {
+        asked.push(input);
+        return answer(input);
+      },
+      readProjects: (_input: KinProjectsInput) => {
+        throw new Error("A client picker never reads projects.");
+      },
+      onChange: (state) => {
+        if (!state.loading) settled.splice(0).forEach((resolve) => resolve());
+      },
+      schedule: (run) => {
+        timers.push(run);
+        return () => timers.splice(timers.indexOf(run), 1);
+      },
+    });
+    // The host's answer has landed once the search stops loading.
+    const pause = () => {
+      const answered = new Promise<void>((resolve) => settled.push(resolve));
+      timers.shift()?.();
+      return answered;
+    };
+    return { search, asked, timers, pause };
+  }
+  const loaded = {
+    open: [{ key: KinRecordKey.make("C-1"), title: "Invented Orbit Dental" }],
+    done: [],
+  };
+  const view = (
+    state: ReturnType<typeof harness>["search"],
+    held: { key: KinRecordKey; title: string } | null,
+  ) => kinPickerSearchView({ noun: "client", search: state.getState(), loaded, held });
+
+  it("asks the host once typing pauses, with the words, and never with nothing typed", async () => {
+    const h = harness(() => named(["Invented Kestrel Freight"]));
+    expect(view(h.search, null).open).toEqual(loaded.open);
+    h.search.type("k");
+    h.search.type("ke");
+    h.search.type("kestrel ");
+    expect(h.asked).toEqual([]);
+    expect(h.timers).toHaveLength(1);
+    expect(h.search.getState().loading).toBe(true);
+    await h.pause();
+    expect(h.asked).toEqual([{ orgId, limit: KIN_PICKER_SEARCH_CAP, text: "kestrel" }]);
+    expect(view(h.search, null)).toMatchObject({
+      open: [{ key: "C-101", title: "Invented Kestrel Freight" }],
+      loading: false,
+      note: null,
+    });
+    h.search.type("");
+    expect(h.timers).toHaveLength(0);
+    expect(view(h.search, null).open).toEqual(loaded.open);
+  });
+
+  it("keeps the current value listed while its name matches, and says when nothing does", async () => {
+    const held = { key: KinRecordKey.make("C-140"), title: "Invented Zephyr Kitchens" };
+    const h = harness((input) =>
+      named(input.text === "zephyr" ? [] : ["Invented Kestrel Freight"]),
+    );
+    expect(view(h.search, held).open.map((ref) => ref.key)).toEqual(["C-140", "C-1"]);
+    h.search.type("zephyr");
+    await h.pause();
+    expect(view(h.search, held)).toMatchObject({ open: [held], note: null });
+    h.search.type("nobody");
+    await h.pause();
+    expect(view(h.search, held)).toMatchObject({ open: [{ key: "C-101" }] });
+    const empty = harness(() => named([]));
+    empty.search.type("Nobody ");
+    await empty.pause();
+    expect(view(empty.search, held)).toMatchObject({
+      open: [],
+      note: KIN_PICKER_COPY.nothing("client", "Nobody"),
+    });
+    expect(KIN_PICKER_COPY.nothing("client", "Nobody")).toBe("No client named “Nobody”");
+  });
+
+  it("lists only what this viewer may pick, from the page held and the host's answer alike", async () => {
+    const h = harness(() => named(["Invented Kestrel Freight", "Invented Kestrel Dental"]));
+    const only = new Set(["C-102"]);
+    const pick = () =>
+      kinPickerSearchView({
+        noun: "client",
+        search: h.search.getState(),
+        loaded,
+        held: null,
+        only,
+      });
+    expect(pick().open).toEqual([]);
+    h.search.type("kestrel");
+    await h.pause();
+    expect(pick().open.map((ref) => ref.key)).toEqual(["C-102"]);
+  });
+
+  it("asks for more letters at the cap, and tries again after a failure", async () => {
+    let fail = true;
+    const h = harness(() =>
+      fail
+        ? AsyncResult.failure(
+            Cause.fail(new KinChatError({ reason: "unavailable", message: "Down." })),
+          )
+        : named(
+            Array.from({ length: KIN_PICKER_SEARCH_CAP }, (_, index) => `Invented ${index}`),
+            true,
+          ),
+    );
+    h.search.type("invented");
+    await h.pause();
+    expect(view(h.search, null)).toMatchObject({
+      failure: { kind: "busy", retry: true },
+      loading: false,
+      note: null,
+    });
+    fail = false;
+    await h.search.retry();
+    expect(h.asked).toHaveLength(2);
+    expect(view(h.search, null).note).toBe(KIN_PICKER_COPY.narrow);
+  });
+
+  it("follows its target: a picker reused for another host or company asks that one", async () => {
+    const asked: Array<readonly [string, KinPartiesInput]> = [];
+    const timers: Array<() => void> = [];
+    const slot = createKinPickerSearchSlot((target) =>
+      createKinPickerSearch({
+        ...target,
+        readClients: async (input) => {
+          asked.push([target.environmentId, input]);
+          return named(["Invented Kestrel Freight"]);
+        },
+        readProjects: () => {
+          throw new Error("A client picker never reads projects.");
+        },
+        onChange: () => {},
+        schedule: (run) => {
+          timers.push(run);
+          return () => timers.splice(timers.indexOf(run), 1);
+        },
+      }),
+    );
+    const other = KinOrgId.make("invented-other-org");
+    const at = (environment: string, org: KinOrgId) =>
+      slot({
+        environmentId: EnvironmentId.make(environment),
+        orgId: org,
+        kind: "clients",
+        done: false,
+      });
+    const first = at("env-a", orgId);
+    expect(at("env-a", orgId)).toBe(first);
+    const moved = at("env-a", other);
+    expect(moved).not.toBe(first);
+    expect(moved.getState().text).toBe("");
+    moved.type("kestrel");
+    timers.shift()?.();
+    at("env-b", other).type("kestrel");
+    timers.shift()?.();
+    expect(asked.map(([environmentId, input]) => [environmentId, input.orgId])).toEqual([
+      ["env-a", other],
+      ["env-b", other],
+    ]);
+  });
+});
+
+describe("kinListShown", () => {
+  it.each([
+    ["rows held, offline", { seq: 4, loading: false, failed: null }, "offline", "rows"],
+    [
+      "nothing held, offline, the read pending",
+      { seq: null, loading: true, failed: null },
+      "offline",
+      "offline",
+    ],
+    [
+      "nothing held, offline, the read failed",
+      { seq: null, loading: false, failed: "down" },
+      "offline",
+      "offline",
+    ],
+    [
+      "nothing held, still connecting",
+      { seq: null, loading: true, failed: null },
+      "connecting",
+      "loading",
+    ],
+    [
+      "nothing held, connected, failed",
+      { seq: null, loading: false, failed: "down" },
+      "connected",
+      "failed",
+    ],
+  ] as const)("%s", (_, state, link, shown) => {
+    expect(kinListShown(state, link)).toBe(shown);
   });
 });

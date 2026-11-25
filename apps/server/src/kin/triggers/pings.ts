@@ -28,6 +28,7 @@ import { chatShared } from "../chat/sharing.ts";
 import { reaches, storedLabels } from "../memory/sensitivity.ts";
 import { isQuiet, KIN_DEFAULT_QUIET_HOURS } from "./quietHours.ts";
 import { retiredOwnerChat } from "../lead/Retirement.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 const text = Schema.String.check(
   Schema.isTrimmed(),
@@ -296,7 +297,9 @@ const make = Effect.gen(function* () {
                 yield* sql`SELECT m.message_id FROM kin_messages m JOIN kin_ping_deliveries d
               ON d.org_id = m.org_id AND d.person = ${r.person} AND d.item_id = ${r.itemId}
               WHERE m.org_id = ${orgId} AND m.chat_id = ${r.chatId} AND m.author_person_id = ${r.person}
-              AND m.author_kind = 'human' AND m.status = 'posted' AND m.seq > d.seq
+              AND m.author_kind = 'human' AND m.status = 'posted' AND m.origin_json IS NULL
+              AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
+              AND m.seq > d.seq
               AND (m.reply_to = d.message_id OR d.item_count = 1) ORDER BY m.seq LIMIT 1`;
 
               if (closed || replies.length > 0) {
@@ -328,19 +331,10 @@ const make = Effect.gen(function* () {
                 });
                 continue;
               }
-              const batch = batches.get(r.person) ?? [];
-              if (batch[0] && batch[0].request.chatId !== r.chatId) {
-                yield* stop(r, now, false, "closed");
-                yield* Effect.logWarning("Kin ping chat mismatch", {
-                  orgId,
-                  person: r.person,
-                  itemId: r.itemId,
-                  reason: "chat_mismatch",
-                });
-                continue;
-              }
+              const key = `${r.person.length}:${r.person}${r.chatId}`;
+              const batch = batches.get(key) ?? [];
               batch.push({ ...candidate, audience: shared ? "chat" : "owner" });
-              batches.set(r.person, batch);
+              batches.set(key, batch);
             }
             for (const candidates of batches.values()) {
               const batch = [];

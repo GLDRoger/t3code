@@ -18,6 +18,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import { stringify } from "yaml";
 
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
@@ -30,6 +31,8 @@ import { MemoryConfig } from "./MemoryConfig.ts";
 import { memoryIdentity } from "./memoryIdentity.ts";
 import { readObjects } from "./objects.ts";
 import { KinSecretScan, type SecretFinding } from "./secretScan.ts";
+import { dayIn } from "../work/money.ts";
+import { ownerZone } from "../work/recordRows.ts";
 
 /** `redact_text` rewrites every blob and commit message in history, so it takes no paths. */
 const PurgePlanSchema = Schema.Union([
@@ -277,6 +280,10 @@ export class KinPurge extends Context.Service<
   }
 >()("t3/kin/memory/purge/KinPurge") {}
 
+/** A tombstone's body, dated on the company's day. */
+export const purgedNote = (now: number, zone: string, actionId: string) =>
+  `Purged on ${dayIn(now, zone)} by the owner (action ${actionId}).\n`;
+
 // Gated until APPR-9 (executor), APPR-10 (audit) and LEAD-11 (queue pause) land.
 const purgeExecutorReady = false;
 /** Test seam for the release gate; production always reads `purgeExecutorReady`. */
@@ -296,6 +303,7 @@ const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const vcs = yield* VcsProcess;
+  const sql = yield* SqlClient.SqlClient;
   const provide = <A, E>(effect: Effect.Effect<A, E, FileSystem.FileSystem | VcsProcess>) =>
     effect.pipe(
       Effect.provideService(FileSystem.FileSystem, fs),
@@ -569,7 +577,11 @@ const make = Effect.gen(function* () {
         trust: "owner",
         links: [],
       },
-      `Purged on ${iso.slice(0, 10)} by the owner (action ${action.id}).\n`,
+      purgedNote(
+        now,
+        yield* ownerZone(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+        action.id,
+      ),
     );
     yield* parseFrontMatter(orgId, path, content);
     return content;

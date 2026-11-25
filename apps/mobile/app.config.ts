@@ -2,6 +2,7 @@ import type { ExpoConfig } from "expo/config";
 
 import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
+import { KIN_ONLY_BUILT } from "./src/lib/kinOnly.ts";
 
 type AppVariant = "development" | "preview" | "production";
 
@@ -12,12 +13,13 @@ process.env.EXPO_NO_TYPESCRIPT_SETUP = "1";
 
 const APP_VARIANT = resolveAppVariant(repoEnv.APP_VARIANT);
 const isIosPersonalTeamBuild = repoEnv.T3CODE_IOS_PERSONAL_TEAM === "1";
-// Kin and nothing else: no coding threads, tabs or settings. The Kin build's branding step
-// rewrites this literal, here and in src/lib/kinOnly.ts (branding/rules.yaml).
-const KIN_ONLY_BUILD: string = "kin-only:off";
-const isKinOnly = KIN_ONLY_BUILD === "kin-only:on" || repoEnv.EXPO_PUBLIC_KIN_ONLY === "1";
+// Kin and nothing else: no coding threads, tabs or settings.
+const isKinOnly = KIN_ONLY_BUILT || repoEnv.EXPO_PUBLIC_KIN_ONLY === "1";
 // The share extension and the widgets feed coding threads, so a Kin-only app ships neither.
 const shipsCodingExtensions = !isIosPersonalTeamBuild && !isKinOnly;
+// One camera permission on iOS serves both the QR scanner and Kin's photos of bills.
+const CAMERA_PURPOSE =
+  "Allow T3 Code to access your camera so you can scan pairing QR codes and take photos of bills.";
 const kinApprovalKeyOptions = {
   appAttestEnvironment: isIosPersonalTeamBuild
     ? null
@@ -290,6 +292,8 @@ const config: ExpoConfig = {
       },
       NSLocalNetworkUsageDescription:
         "Allow T3 Code to connect to T3 Code servers on your local network or tailnet.",
+      // Built with the iOS 27 SDK, only view controllers can hide or style the status bar.
+      UIViewControllerBasedStatusBarAppearance: true,
       NSPhotoLibraryAddUsageDescription: "Allow T3 Code to save images to your photo library.",
       // System picture in picture needs background audio to start and survive outside the app.
       UIBackgroundModes: ["audio"],
@@ -357,7 +361,12 @@ const config: ExpoConfig = {
             },
             {
               fontFamily: "DMSans-Bold",
-              fontDefinitions: [{ path: dmSansFonts.bold, weight: 700 }],
+              // Android picks fallback glyphs (such as Vietnamese) at the requested weight, so bold text
+              // asks for 700; the 400 entry lets a relative bold step (Typeface.BOLD) land on 700 too.
+              fontDefinitions: [
+                { path: dmSansFonts.bold, weight: 400 },
+                { path: dmSansFonts.bold, weight: 700 },
+              ],
             },
           ],
         },
@@ -407,7 +416,7 @@ const config: ExpoConfig = {
     [
       "expo-camera",
       {
-        cameraPermission: "Allow T3 Code to access your camera so you can scan pairing QR codes.",
+        cameraPermission: CAMERA_PURPOSE,
         microphonePermission: false,
         barcodeScannerEnabled: true,
         recordAudioAndroid: false,
@@ -417,6 +426,7 @@ const config: ExpoConfig = {
       "expo-image-picker",
       {
         photosPermission: false,
+        cameraPermission: CAMERA_PURPOSE,
         // `false` makes this plugin add RECORD_AUDIO to blockedPermissions, breaking Android dictation.
         microphonePermission: "Allow T3 Code to use your microphone for voice input.",
       },
@@ -480,9 +490,6 @@ const config: ExpoConfig = {
   ],
   extra: {
     appVariant: APP_VARIANT,
-    secretsFeatureEnabled: ["1", "true"].includes(
-      process.env.T3CODE_FEATURE_SECRETS?.trim().toLowerCase() ?? "",
-    ),
     iosPersonalTeamBuild: isIosPersonalTeamBuild,
     relay: {
       url: repoEnv.T3CODE_RELAY_URL ?? null,

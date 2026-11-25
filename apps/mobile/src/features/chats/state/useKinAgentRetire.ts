@@ -32,11 +32,21 @@ export function useKinAgentRetire(environmentId: EnvironmentId) {
   const runRestore = useAtomCommand(kinClient.leadRestore, { reportFailure: false });
   const [busy, setBusy] = useState<KinAgentId | null>(null);
 
-  const change = async (agent: KinAgentTarget, retiring: boolean, onDone?: () => void) => {
+  const change = async (
+    agent: KinAgentTarget,
+    retiring: boolean,
+    onDone?: () => void,
+    nextTeamAgentId?: KinAgentId,
+  ) => {
     if (busy !== null) return;
     setBusy(agent.agentId);
     const input = { orgId: agent.orgId, agentId: agent.agentId };
-    const result = await (retiring ? runRetire : runRestore)({ environmentId, input });
+    const result = await (retiring
+      ? runRetire({
+          environmentId,
+          input: nextTeamAgentId === undefined ? input : { ...input, nextTeamAgentId },
+        })
+      : runRestore({ environmentId, input }));
     setBusy(null);
     // Read again either way: a refusal usually means the list this screen holds is behind.
     refreshKinAgents(environmentId, agent.orgId);
@@ -50,14 +60,22 @@ export function useKinAgentRetire(environmentId: EnvironmentId) {
 
   return {
     busy,
-    retire: (agent: KinAgentTarget, onDone?: () => void) => {
+    /** `next`: the team agent's successor, picked before this confirmation. */
+    retire: (
+      agent: KinAgentTarget,
+      onDone?: () => void,
+      next?: { readonly agentId: KinAgentId; readonly name: string },
+    ) => {
       const copy = kinRetireCopy(agent.name);
       Dialog.confirm({
         title: copy.title,
-        message: copy.detail,
+        message:
+          next === undefined
+            ? copy.detail
+            : `${copy.detail} The team will talk to ${next.name} instead.`,
         confirmText: copy.confirm,
         destructive: true,
-        onConfirm: () => void change(agent, true, onDone),
+        onConfirm: () => void change(agent, true, onDone, next?.agentId),
       });
     },
     restore: (agent: KinAgentTarget, onDone?: () => void) => {

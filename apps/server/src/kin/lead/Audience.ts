@@ -3,6 +3,7 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 import { ownerLevelPeople, ownerLevelSql } from "../people/KinAccess.ts";
+import { outsideReview } from "./outsideReview.ts";
 
 /**
  * Who can read a lead turn's reply. Invariant: only an `owner_only` turn sees or changes the
@@ -14,7 +15,9 @@ export type TurnAudience = "owner_only" | "shared";
 
 /**
  * Events that answer in the chat they name: a finished task names the chat its work was asked in,
- * and a teammate's task their direct chat with the lead.
+ * a teammate's task their direct chat with the lead, an answer the chat that asked for it, and a
+ * pulse made for one person (`draftWake.ts`) their direct chat with the lead, and bills to read
+ * the chat of their batch's card.
  */
 export const CHAT_ANSWER_TAGS = [
   "chat.message",
@@ -22,6 +25,9 @@ export const CHAT_ANSWER_TAGS = [
   "chat.reaction",
   "record.changed",
   "task.finished",
+  "deferral.due",
+  "pulse",
+  "bills.read",
 ];
 
 /**
@@ -55,6 +61,8 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
     readonly wakeupId: string;
   }) {
     const sql = yield* SqlClient.SqlClient;
+    // A stranger's pull request is reviewed as the team would read it.
+    if ((yield* outsideReview(input)) !== undefined) return "shared" as const;
     const [lead] = yield* sql<{ owner: string; ownerChatId: string }>`
       SELECT a.owner_person_id AS owner, l.owner_chat_id AS "ownerChatId" FROM kin_leads l
       JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
@@ -73,6 +81,7 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
       messageChatId: string | null;
       authorKind: string | null;
       authorPersonId: string | null;
+      subjectType: string | null;
     }>`
       SELECT e.tag, json_extract(e.json, '$.chatId') AS "chatId",
         json_extract(e.json, '$.origin.chatId') AS "originChatId",
@@ -80,7 +89,8 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
         json_extract(e.json, '$.provenance._tag') AS provenance,
         json_extract(e.json, '$.provenance.personId') AS "provenancePersonId",
         m.chat_id AS "messageChatId", m.author_kind AS "authorKind",
-        m.author_person_id AS "authorPersonId"
+        m.author_person_id AS "authorPersonId",
+        json_extract(e.json, '$.subject.type') AS "subjectType"
       FROM kin_events e
       LEFT JOIN kin_messages m ON m.org_id = e.org_id AND e.tag IN ('chat.message', 'widget.action')
         AND m.message_id = json_extract(e.json, '$.messageId')
@@ -90,6 +100,7 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
       ORDER BY e.event_id`;
     if (events.length === 0) return "shared" as const;
     const chats = new Set<string>();
+    const fired = new Set<string>();
     let answersChat = false;
     for (const event of events) {
       if (event.tag === "chat.message" || event.tag === "widget.action") {
@@ -105,16 +116,26 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
           return "shared" as const;
         chats.add(event.chatId);
       } else if (
-        (event.tag === "record.changed" || event.tag === "task.finished") &&
+        (event.tag === "record.changed" ||
+          event.tag === "task.finished" ||
+          event.tag === "deferral.due") &&
         event.chatId !== null
       ) {
-        // A finished task answers in the chat it was asked for in, read by everyone there.
+        if (event.subjectType === "reminder" || event.subjectType === "scheduled_task")
+          fired.add(event.chatId);
+        // A finished task, or an answer, answers where it was asked for, read by everyone there.
         answersChat = true;
         chats.add(event.chatId);
       }
       if (event.originPersonId !== null && !level.has(event.originPersonId))
         return "shared" as const;
       if (event.originChatId !== null) chats.add(event.originChatId);
+    }
+    // A room's own reminder or routine fired there never gets anyone's "Only you" memory.
+    if (fired.size > 0) {
+      const rooms = yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${input.orgId}
+        AND chat_id IN ${sql.in([...fired])} AND kind <> 'direct' LIMIT 1`;
+      if (rooms.length > 0) return "shared" as const;
     }
     if (!answersChat) chats.add(lead.ownerChatId);
     const rows = yield* sql<ChatPeople>`
@@ -142,10 +163,10 @@ type Turn = {
 /**
  * The people behind a turn, from stored rows only. Readers: every current human member of each
  * chat it answers in or was asked from (else the lead's owner chat). Askers: whoever's act it
- * carries out, by stored author, reactor, `origin.personId` or a task's assigner. Someone whose
- * words a task quotes is neither. `owner` is the lead's owner.
+ * carries out, by stored author, reactor, `origin.personId` or a task's assigner. Whoever put it
+ * on a task (`joined`) and someone whose words a task quotes only read. `owner` is the lead's owner.
  */
-const peopleBehind = Effect.fn("KinAudience.peopleBehind")(function* (turn: Turn) {
+export const peopleBehind = Effect.fn("KinAudience.peopleBehind")(function* (turn: Turn) {
   const sql = yield* SqlClient.SqlClient;
   const [lead] = yield* sql<{ owner: string; ownerChatId: string }>`
     SELECT a.owner_person_id AS owner, l.owner_chat_id AS "ownerChatId" FROM kin_leads l
@@ -157,6 +178,7 @@ const peopleBehind = Effect.fn("KinAudience.peopleBehind")(function* (turn: Turn
     originChatId: string | null;
     asker: string | null;
     originPersonId: string | null;
+    joined: number;
   }>`
     SELECT CASE WHEN e.tag IN ${sql.in(CHAT_ANSWER_TAGS)} THEN json_extract(e.json, '$.chatId') END AS "chatId",
       json_extract(e.json, '$.origin.chatId') AS "originChatId",
@@ -169,12 +191,14 @@ const peopleBehind = Effect.fn("KinAudience.peopleBehind")(function* (turn: Turn
         WHEN e.tag IN ('chat.reaction', 'record.changed')
           AND json_extract(e.json, '$.provenance._tag') = 'human'
           THEN json_extract(e.json, '$.provenance.personId')
-        END AS asker
+        END AS asker,
+      (e.tag = 'record.changed' AND json_extract(e.json, '$.reason') = 'joined') AS joined
     FROM kin_events e
     WHERE e.org_id = ${turn.orgId} AND e.agent_id = ${turn.agentId} AND e.wakeup_id = ${turn.wakeupId}
     ORDER BY e.event_id`;
   const chats = new Set<string>();
   const askers = new Set<KinPersonId>();
+  const joiners = new Set<KinPersonId>();
   let answersChat = false;
   for (const event of events) {
     if (event.chatId !== null) {
@@ -182,8 +206,9 @@ const peopleBehind = Effect.fn("KinAudience.peopleBehind")(function* (turn: Turn
       chats.add(event.chatId);
     }
     if (event.originChatId !== null) chats.add(event.originChatId);
-    if (event.asker !== null) askers.add(KinPersonId.make(event.asker));
-    if (event.originPersonId !== null) askers.add(KinPersonId.make(event.originPersonId));
+    const into = event.joined === 1 ? joiners : askers;
+    if (event.asker !== null) into.add(KinPersonId.make(event.asker));
+    if (event.originPersonId !== null) into.add(KinPersonId.make(event.originPersonId));
   }
   if (!answersChat) chats.add(lead.ownerChatId);
   const members = yield* sql<{ personId: string }>`SELECT DISTINCT person_id AS "personId"
@@ -192,7 +217,7 @@ const peopleBehind = Effect.fn("KinAudience.peopleBehind")(function* (turn: Turn
     ORDER BY person_id`;
   return {
     owner: KinPersonId.make(lead.owner),
-    readers: new Set(members.map((row) => KinPersonId.make(row.personId))),
+    readers: new Set([...members.map((row) => KinPersonId.make(row.personId)), ...joiners]),
     askers,
     level: (yield* ownerLevelPeople(turn.orgId)).add(lead.owner),
   };
@@ -347,6 +372,16 @@ export const askersDirectChat = Effect.fn("KinAudience.askersDirectChat")(functi
   return rows.length > 0;
 });
 
+/** Whether the turn may read `chatId`, by the rule its chat reads use (`KinLevelGate.read`). */
+export const mayReadChat = Effect.fn("KinAudience.mayReadChat")(function* (
+  turn: Turn,
+  chatId: string,
+) {
+  if (yield* aborted(turn)) return false;
+  if ((yield* effectiveAudience(turn)) === "shared") return yield* askedIn(turn, chatId);
+  return (yield* ownerAlone(turn)) || (yield* behindAllIn(turn, chatId));
+});
+
 /**
  * Everyone who is or ever was in the chat is owner-level; none is, in a chat that isn't this
  * org's. A chat someone else could once read stays out of owner-tier reach.
@@ -466,6 +501,8 @@ export const SESSION_REFUSAL = {
   outside:
     "Blocked: this turn read outside content, so it has no shell now. Ask the owner to start it in a fresh turn.",
   none: "Blocked: no owner's turn backs this session, so it has no shell. Ask the owner in their own chat.",
+  approved:
+    "Blocked: this turn only makes the draft the owner approved, so it has no shell, file edits, web fetch or sub-agents.",
 } as const;
 export const SHARED_ELSEWHERE =
   "In a chat with other people you post only in the chat you were asked in. Nothing was sent.";

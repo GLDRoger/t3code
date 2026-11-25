@@ -11,6 +11,7 @@ import {
   type KinPeopleSetAccessInput,
   type KinPersonAccess,
   type KinPersonId,
+  type KinPersonPlaceSwitches,
   type KinPersonPlaces,
   type KinPersonProfile,
   kinIsLocalOnlyHost,
@@ -31,17 +32,62 @@ export const KIN_TEAM_ADD = "Add teammate";
 export const KIN_TEAM_LOAD_FAILED = "Couldn't load your team";
 export const KIN_TEAMMATE_NAME_MAX = 80;
 
+/** What a teammate never sees. Where Kin is the whole app there is no code to name. */
+const kinTeamPrivacy = (kinOnly: boolean) =>
+  kinOnly
+    ? "They see only what you let them, and none of your settings."
+    : "They can't see your code or settings.";
+
+/** Under the list of teammates. */
+export const kinTeamFooter = (kinOnly: boolean) =>
+  `Teammates chat with you, your agents and the groups you add them to. ${kinTeamPrivacy(kinOnly)}`;
+
 export const KIN_TEAM_ADD_COPY = {
   linkDropped: (name: string) =>
     `The connection dropped before the link could be shown. Make a new link for ${name} from Team once you're back online.`,
   title: "Add a teammate",
-  detail:
-    "Kin makes a link for you to send them. Opening it lets them chat with you and with the agents and groups you add them to. They can't see your code or settings.",
+  detail: (kinOnly: boolean) =>
+    `Kin makes a link for you to send them. Opening it lets them chat with you, your agents and the groups you add them to. ${kinTeamPrivacy(kinOnly)}`,
   nameLabel: "Their name",
-  namePlaceholder: "Sami Okafor",
   nameHint: "This is how they appear in chats.",
   submit: "Make link",
+  someoneElse: "Someone else with the same name",
+  seesFooter: "Tasks shared with the team, always. You can change these on their page later.",
 } as const;
+
+/** Where a new teammate's switches start: client names and shared docs, money off, as the host. */
+export const KIN_NEW_TEAMMATE_SEES: KinPersonPlaceSwitches = {
+  clients: true,
+  docs: true,
+  money: false,
+};
+
+const firstName = (name: string) => name.trim().toLowerCase().split(/\s+/)[0] ?? "";
+
+/**
+ * A warning, never a refusal, when the typed name shares a first name with someone on the team or
+ * with an unopened invite. Removed people are the host's bring-back offer instead.
+ */
+export function kinTeammateNameMatch(
+  list: Pick<KinTeamList, "people" | "invites" | "removed"> | null,
+  name: string,
+): string | null {
+  const typed = firstName(name);
+  if (list === null || typed === "") return null;
+  const removed = new Set<string>((list.removed ?? []).map((gone) => gone.personId));
+  const same = (other: string) => firstName(other) === typed;
+  const onTeam = list.people.find(
+    (person) => !removed.has(person.personId) && same(person.displayName),
+  );
+  if (onTeam !== undefined)
+    return `Someone called ${onTeam.displayName} is already on the team. Make the link only if this is someone else.`;
+  const invited = list.invites.find(
+    (invite) => invite.personId === null && same(invite.displayName),
+  );
+  return invited === undefined
+    ? null
+    : `${invited.displayName} already has an invite that hasn't been opened. Make the link only if this is someone else.`;
+}
 
 export const KIN_TEAM_EMPTY = {
   title: "No teammates yet",
@@ -62,6 +108,8 @@ export interface KinTeamList {
   readonly profiles?: ReadonlyArray<KinPersonProfile> | undefined;
   /** What each person sees beyond Tasks, from a host that has places. */
   readonly places?: ReadonlyArray<KinPersonPlaces> | undefined;
+  /** Whose access was removed, from a host that says. */
+  readonly removed?: KinPeopleListResult["removed"] | undefined;
 }
 
 /** What the owner did that the host hasn't confirmed yet, and the last refusal. */
@@ -99,7 +147,18 @@ export interface KinTeammate {
   readonly load: string;
   /** Their places and the projects they lead; null for the owner-level and invites. */
   readonly places: KinPersonPlaces | null;
+  /** Their access was removed; a new link lets them back in. */
+  readonly removed: boolean;
+  /** Removed, the level a new link brings them back at, as only the owner reads it. */
+  readonly backAs: KinPeopleSetAccessInput["access"] | null;
+  /** The Team list's one secondary line: their roles and kind ("design · Co-owner"); "" when none. */
+  readonly line: string;
+  /** Said on the Team list only when they can't be reached as usual; null when all is well. */
+  readonly status: KinTeammateStatus | null;
 }
+
+/** What the Team list says beside someone who isn't simply here: quiet words, never a badge. */
+export type KinTeammateStatus = "Away" | "Invited" | "No access";
 
 /** "3 open, 1 late", "2 open" or "Nothing open". */
 const kinLoadLine = (load: { readonly open: number; readonly late: number }) =>
@@ -142,6 +201,14 @@ export const KIN_PLACE_SWITCHES = [
   },
 ] as const;
 
+/** Whether Add teammate asks before it closes: a name typed, or a switch moved from where it starts. */
+export const kinInviteTyped = (draft: {
+  readonly name: string;
+  readonly sees: KinPersonPlaceSwitches;
+}): boolean =>
+  draft.name.trim() !== "" ||
+  KIN_PLACE_SWITCHES.some(({ place }) => draft.sees[place] !== KIN_NEW_TEAMMATE_SEES[place]);
+
 /** "Leads Atlas, Billing": the projects someone runs, or nothing. */
 const kinLeadsLine = (places: KinPersonPlaces | null) =>
   places === null || places.leads.length === 0
@@ -168,6 +235,24 @@ const KIN_ACCESS_LABELS: Record<KinPersonAccess, string> = {
   member: "Member",
 };
 
+/** "design · Co-owner", "You", "Leads Atlas": who they are, never whether they joined. */
+const kinTeammateLine = (
+  roles: string,
+  state: KinTeammateState,
+  access: KinPersonAccess,
+  places: KinPersonPlaces | null,
+) => {
+  const kind =
+    state === "you"
+      ? "You"
+      : state === "owner"
+        ? KIN_ACCESS_LABELS.owner
+        : access === "co_owner"
+          ? KIN_ACCESS_LABELS.co_owner
+          : "";
+  return [roles, kind].filter((part) => part !== "").join(" · ") || kinLeadsLine(places);
+};
+
 /** Everyone on the team, joined or not, with the owner first. */
 export function kinTeamView(
   list: KinTeamList,
@@ -180,6 +265,11 @@ export function kinTeamView(
   const roles = new Map(
     (list.profiles ?? []).map((profile) => [profile.personId, kinRoleLine(profile.roleTags)]),
   );
+  const away = new Set(
+    (list.profiles ?? []).flatMap((profile) =>
+      profile.awayUntil === undefined ? [] : [profile.personId],
+    ),
+  );
   const loads = new Map(
     (list.profiles ?? []).flatMap((profile) =>
       profile.load === undefined ? [] : [[profile.personId, kinLoadLine(profile.load)] as const],
@@ -189,20 +279,24 @@ export function kinTeamView(
     const you = person.personId === ownerPersonId;
     const access = person.access ?? "member";
     // Removing access also cancels the person's unused links.
-    const removed = edits.removed.has(person.personId);
-    const invite = removed ? undefined : invites.find((held) => held.personId === person.personId);
+    const removing = edits.removed.has(person.personId);
+    const invite = removing ? undefined : invites.find((held) => held.personId === person.personId);
     const state: KinTeammateState = you
       ? "you"
       : access === "owner"
         ? "owner"
-        : joined.has(person.personId) && !removed
+        : joined.has(person.personId) && !removing
           ? "joined"
           : "no_access";
     const until = invite === undefined ? "" : formatKinInviteDay(invite.expiresAt);
+    const gone = list.removed?.find((held) => held.personId === person.personId);
+    const backAs = gone?.access ?? null;
     const places =
       access === "member"
         ? (list.places?.find((held) => held.personId === person.personId) ?? null)
         : null;
+    const namesake = kinNamesakeHandle(list.people, person);
+    const roleLine = roles.get(person.personId) ?? "";
     rows.push({
       key: `person:${person.personId}`,
       name: person.displayName,
@@ -211,10 +305,23 @@ export function kinTeamView(
       inviteId: you || state === "owner" ? null : (invite?.inviteId ?? null),
       state,
       access,
-      roles: roles.get(person.personId) ?? "",
+      roles: roleLine,
       load: loads.get(person.personId) ?? "",
       places,
-      detail:
+      removed: gone !== undefined,
+      backAs,
+      line: [namesake ?? "", kinTeammateLine(roleLine, state, access, places)]
+        .filter((part) => part !== "")
+        .join(" · "),
+      status:
+        state === "no_access"
+          ? invite === undefined
+            ? "No access"
+            : "Invited"
+          : away.has(person.personId)
+            ? "Away"
+            : null,
+      detail: `${namesake === null ? "" : `${namesake} · `}${
         state === "you"
           ? "You"
           : state === "owner"
@@ -227,7 +334,8 @@ export function kinTeamView(
                 }`
               : invite === undefined
                 ? "No access. Make a new link to let them back in."
-                : `Hasn't opened the new link. It works until ${until}.`,
+                : `Hasn't opened the new link. It works until ${until}.`
+      }`,
     });
   }
   for (const invite of invites) {
@@ -243,6 +351,10 @@ export function kinTeamView(
       roles: "",
       load: "",
       places: null,
+      removed: false,
+      backAs: null,
+      line: "",
+      status: "Invited",
       detail: `Hasn't joined yet. The link works until ${formatKinInviteDay(invite.expiresAt)}.`,
     });
   }
@@ -276,6 +388,49 @@ export function kinPickablePeople<P extends { readonly personId: KinPersonId }>(
       .map((person) => ({ person, invited: true })),
   ];
 }
+
+/**
+ * The removed person a new teammate's name matches, as the host matches it (name, or the handle
+ * the name makes): who "Bring back" makes a new link for, instead of a second person.
+ */
+export function kinRemovedNamesake(
+  list: Pick<KinTeamList, "people" | "joined"> | null,
+  name: string,
+): KinPeopleListResult["people"][number] | null {
+  const wanted = name.trim().toLowerCase();
+  const handle = wanted.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const joined = new Set<string>(list?.joined ?? []);
+  return (
+    list?.people.find(
+      (person) =>
+        !joined.has(person.personId) &&
+        person.access !== "owner" &&
+        (person.displayName.trim().toLowerCase() === wanted || person.handle === handle),
+    ) ?? null
+  );
+}
+
+/** "@meera-2" when someone else in `people` has this person's name, so the two read apart. */
+export function kinNamesakeHandle(
+  people: ReadonlyArray<{
+    readonly personId: string;
+    readonly displayName: string;
+    readonly handle: string;
+  }>,
+  person: { readonly personId: string; readonly displayName: string; readonly handle: string },
+): string | null {
+  const name = person.displayName.trim().toLowerCase();
+  return people.some(
+    (other) =>
+      other.personId !== person.personId && other.displayName.trim().toLowerCase() === name,
+  )
+    ? `@${person.handle}`
+    : null;
+}
+
+/** A picker row's second line: the handle of a namesake, then the reason it is not pickable. */
+export const kinPickLine = (namesake: string | null, unpickable: string | null): string | null =>
+  [namesake, unpickable].filter((part) => part !== null).join(" · ") || null;
 
 /** The second line of the way in from the chat list. */
 export function kinTeamEntrySummary(
@@ -317,14 +472,24 @@ export function kinInviteLink(httpBaseUrl: string, secret: string): string {
   return url.toString();
 }
 
-/** A link to this computer's own address opens nowhere else; said beside the link. */
-export function kinInviteLinkLocalOnly(httpBaseUrl: string): boolean {
-  if (!URL.canParse(httpBaseUrl)) return false;
-  return kinIsLocalOnlyHost(new URL(httpBaseUrl).hostname);
-}
-
 export const KIN_INVITE_LOCAL_ONLY_NOTE =
   "This link uses an address that only works on this device, so it won't open on anyone else's. Open Kin at the address your team can reach, then make the link there.";
+
+/**
+ * A link for another device or person: on the host's public address (`kin.access.me`
+ * `publicUrl`) when it has one, else on the address this device reaches Kin at. `note` is said
+ * beside it only when that final link opens nowhere but this machine.
+ */
+export function kinShareLink(
+  address: { readonly publicUrl: string | undefined; readonly httpBaseUrl: string },
+  secret: string,
+): { readonly link: string; readonly note: string | null } {
+  const link = kinInviteLink(address.publicUrl ?? address.httpBaseUrl, secret);
+  return {
+    link,
+    note: kinIsLocalOnlyHost(new URL(link).hostname) ? KIN_INVITE_LOCAL_ONLY_NOTE : null,
+  };
+}
 
 export const KIN_INVITE_PHONE_NOTE =
   'It opens in a browser, or in the phone app: on its first screen they tap "I have a join link".';
@@ -402,7 +567,9 @@ export function kinTeammateActions(
               : "Lets them back in as the same person, with their chats.",
           },
     cancel: replaces ? kinCancelInviteCopy(teammate) : null,
-    remove: teammate.personId !== null && (teammate.state === "joined" || replaces),
+    // Already removed, an unopened link is ended by cancelling it.
+    remove:
+      teammate.personId !== null && !teammate.removed && (teammate.state === "joined" || replaces),
   };
 }
 
@@ -416,7 +583,7 @@ export const KIN_ACCESS_CHOICES = [
   {
     access: "member",
     label: KIN_ACCESS_LABELS.member,
-    detail: "Chats with the agents you let them message, and Tasks shared with them.",
+    detail: "Chats with anyone in the company unless you restrict it, and Tasks shared with them.",
   },
 ] as const satisfies ReadonlyArray<{
   readonly access: KinPeopleSetAccessInput["access"];
@@ -424,11 +591,28 @@ export const KIN_ACCESS_CHOICES = [
   readonly detail: string;
 }>;
 
-/** What the owner is asked before changing someone's kind. */
+/** The kind the owner's picker shows as chosen: for someone removed, the one they come back at. */
+export const kinTeammateKind = (teammate: KinTeammate): KinPersonAccess =>
+  teammate.backAs ?? teammate.access;
+
+/** What the owner is asked before changing someone's kind; `back` for someone removed. */
 export function kinAccessChangeCopy(
   name: string,
   access: KinPeopleSetAccessInput["access"],
+  back = false,
 ): { readonly title: string; readonly detail: string; readonly confirm: string } {
+  if (back)
+    return access === "co_owner"
+      ? {
+          title: `Make ${name} a co-owner?`,
+          detail: `A new link brings ${name} back as a co-owner.`,
+          confirm: "Make co-owner",
+        }
+      : {
+          title: `Make ${name} a member?`,
+          detail: `A new link brings ${name} back as a member.`,
+          confirm: "Make member",
+        };
   return access === "co_owner"
     ? {
         title: `Make ${name} a co-owner?`,
@@ -452,9 +636,46 @@ export const kinTeammateAgentsLine = (teammate: KinTeammate): string | null =>
     ? `${teammate.name} can message every agent, each in their own chat.`
     : null;
 
-/** One line per lead on a teammate's details; the lead's own details change it. */
-export function kinTeammateLeadLine(allowed: boolean | null): string {
-  return allowed === null ? "Checking…" : allowed ? "Can message" : "Can't message";
+export type KinTeammateFold = "tasks" | "projects" | "reach" | "profile" | "devices";
+
+/** The folded parts of a teammate's page, as headings. */
+export const KIN_TEAMMATE_FOLDS: Record<KinTeammateFold, string> = {
+  tasks: "Tasks",
+  projects: "Projects",
+  reach: "Who can message",
+  profile: "Profile",
+  devices: "Devices",
+};
+
+/** "2 projects", "1 device": a fold's count; null while it isn't read. */
+export const kinFoldCount = (count: number | null, one: string, many: string): string | null =>
+  count === null ? null : count === 1 ? `1 ${one}` : `${count} ${many}`;
+
+/**
+ * A teammate's page, top to bottom: what they can see and do under their name, then the rest
+ * folded, the link while they haven't joined, and removing access last. Once they have joined, a
+ * link for another device sits with their devices.
+ */
+export function kinTeammatePage(teammate: KinTeammate, viewer: KinPersonAccess) {
+  const offered = kinTeammateActions(teammate, viewer);
+  const devices = offered.remove && teammate.state === "joined";
+  const folds: ReadonlyArray<KinTeammateFold> =
+    teammate.personId === null
+      ? []
+      : [
+          "tasks",
+          ...(teammate.places === null ? [] : (["projects"] as const)),
+          "reach",
+          "profile",
+          ...(devices ? (["devices"] as const) : []),
+        ];
+  return {
+    canSee: teammate.personId !== null && teammate.places !== null,
+    canDo: kinTeammateKindEditable(teammate, viewer),
+    folds,
+    link: offered.link === null ? null : devices ? ("devices" as const) : ("open" as const),
+    remove: offered.remove,
+  };
 }
 
 const isChatError = Schema.is(KinChatError);
@@ -528,9 +749,13 @@ export function createKinTeamActions(options: {
       readonly displayName: string;
       readonly personId: KinPersonId | null;
       readonly replaces: KinInviteId | null;
+      /** Someone else who shares a removed person's name, not them. */
+      readonly newPerson?: true;
+      /** What a new teammate will see once they join. */
+      readonly sees?: KinPersonPlaceSwitches;
     }): Promise<
       | { readonly ok: true; readonly invite: KinMadeInvite }
-      | { readonly ok: false; readonly problem: string }
+      | { readonly ok: false; readonly problem: string; readonly bringBack?: true }
     > => {
       if (input.replaces !== null && !(await cancelInvite(input.replaces)))
         return { ok: false, problem: kinTeamProblem(null, "make this link") };
@@ -538,6 +763,8 @@ export function createKinTeamActions(options: {
         orgId,
         displayName: input.displayName,
         ...(input.personId === null ? {} : { personId: input.personId }),
+        ...(input.newPerson === true ? { newPerson: true } : {}),
+        ...(input.sees === undefined ? {} : { sees: input.sees }),
       });
       void options.refresh();
       if (AsyncResult.isSuccess(result)) {
@@ -547,7 +774,11 @@ export function createKinTeamActions(options: {
         }
         return { ok: true, invite: { ...result.value, replaced: input.replaces !== null } };
       }
-      const problem = kinTeamProblem(squashAtomCommandFailure(result), "make this link");
+      const failure = squashAtomCommandFailure(result);
+      // The host found a removed person by this name: its words offer to bring them back.
+      if (input.personId === null && isChatError(failure) && failure.reason === "conflict")
+        return { ok: false, problem: failure.message, bringBack: true };
+      const problem = kinTeamProblem(failure, "make this link");
       return {
         ok: false,
         problem: input.replaces === null ? problem : `${problem} The earlier link was stopped.`,
@@ -597,8 +828,43 @@ export type KinTeamActions = ReturnType<typeof createKinTeamActions>;
 
 /** A teammate's page. */
 export const KIN_TEAM_COPY = {
+  loading: "Loading your team",
+  saveFailed: "That didn't save.",
+  inviteLinkFor: (name: string) => `Invite link for ${name}`,
   canDo: "What they can do",
+  canDoBack: "What they can do when they're back",
   canSee: "What they can see",
-  openAgentToChange: (name: string) => `Open an agent to change whether ${name} can message it.`,
   sharedAlways: "Tasks shared with the team, always.",
+  /** Web's section line: the same, as a sentence. */
+  sharedAlwaysLine: "They always see Tasks shared with the team.",
+  profileRow: "Their skills, how to talk to them, and their hours",
+} as const;
+
+/** Settings → Team, the page and its list, in the owner's words. */
+export const KIN_TEAM_PAGE = {
+  purpose: "The people in your company, and the agents everyone can talk to.",
+  talkTo: "Talk to",
+  people: "People",
+  teamAgentDetail: "The agent everyone on your team can chat with",
+  teamAgentRestricted: "Everyone can chat with it, except people you've restricted",
+  companyChatDetail: "One chat for the whole team; this agent answers when nobody is named",
+  suggested: (name: string) => `${name} (suggested)`,
+  /** The People section's line while nobody is restricted from messaging anyone. */
+  reachNone: "Everyone can message everyone. To restrict someone, open them.",
+  alone: "Only you so far. Add a teammate and Kin gives you a link to send them.",
+  loadFailed: "Couldn't load your team.",
+  open: (name: string) => `Open ${name}`,
+} as const;
+
+/** A teammate's own page inside Settings → Team. */
+export const KIN_TEAMMATE_PAGE = {
+  profile: "Profile",
+  openProfile: (name: string) => `Open ${name}'s profile`,
+  access: "Access",
+  link: "Invite link",
+  unopened: "Unopened link",
+  cancelDetail: "The link you gave them stops working.",
+  removeTitle: "Remove access",
+  removeDetail: "Signs them out everywhere. A new link brings them back.",
+  remove: "Remove",
 } as const;

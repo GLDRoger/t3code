@@ -1,6 +1,8 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
+  KIN_BILL_BATCH_CARD,
   KIN_DOC_CARD,
+  KIN_HOST_TROUBLE_CARD,
   KIN_MEMORY_CHANGES_CARD,
   KIN_SOCIAL_PACK_CARD,
   KIN_SOCIAL_WEEK_CARD,
@@ -22,11 +24,14 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { kinHeldLine } from "./kinAgentRetire.ts";
+import { kinBillBatchCardView, type KinBillBatchCardView } from "./kinBills.ts";
 import { kinApprovalWidgetView, type KinApprovalWidgetView } from "./kinApprovalPresentation.ts";
 import { kinChartCardView, type KinChartView } from "./kinChart.ts";
 import { kinDocCardView, type KinDocCardView } from "./kinDocs.ts";
+import { kinHostTroubleCardView } from "./kinHostCare.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinSentences } from "./kinScreenState.ts";
+import { kinZoneLabel } from "./kinTimeZone.ts";
 import {
   kinSocialPackView,
   kinSocialWeekView,
@@ -37,6 +42,7 @@ import { kinChoiceCardView, type KinChoiceCardView } from "./kinChoicePresentati
 import {
   formatKinDeferralTime,
   KIN_DEFERRAL_ACTIONS,
+  kinAskedByLine,
   kinDeferralCardView,
   kinDeferralIsBookkeeping,
   type KinDeferralCardView,
@@ -66,6 +72,8 @@ export interface KinTaskCardView {
   /** True only while the task runs; drives the static working bar. */
   readonly working: boolean;
   readonly detail: string | null;
+  /** The provider's own words under a failure Kin can't name, smaller than `detail`. */
+  readonly detailNote: string | null;
   readonly model: string | null;
   /** Null when there is no thread, or this phone doesn't know its environment. */
   readonly open: { readonly environmentId: string; readonly threadId: string } | null;
@@ -86,8 +94,11 @@ export type KinCardView =
   | { readonly kind: "doc"; readonly doc: KinDocCardView }
   | { readonly kind: "statement_review"; readonly review: KinStatementReviewView }
   | { readonly kind: "statement_password"; readonly password: KinStatementPasswordView }
+  | { readonly kind: "bill_batch"; readonly bills: KinBillBatchCardView }
   | { readonly kind: "social_week"; readonly week: KinSocialWeekView }
   | { readonly kind: "social_pack"; readonly pack: KinSocialPackView }
+  /** Drawn with the reader's clock (`kinHostTroubleCardView`), so it carries the widget. */
+  | { readonly kind: "host_trouble"; readonly widget: KinWidget }
   | { readonly kind: "missing" }
   /** A card this build can't draw: its own plain words, or nothing when it has none. */
   | { readonly kind: "unknown"; readonly text: string | null };
@@ -116,6 +127,22 @@ const clamp = (text: string, max: number) => {
 
 const OPENS_THREAD = "Opens the thread";
 
+/** A failed task's line, by the cause the server told; `stopped` leads anything else. */
+const KIN_TASK_FAILURE_COPY = {
+  model_not_offered:
+    "This server's AI provider doesn't offer the model this task asked for. Ask the agent to start it again on its own model.",
+  signed_out:
+    "This server's AI provider is signed out. Sign it in again in Settings, then ask the agent to start the task again.",
+  unreachable:
+    "This server couldn't reach its AI provider. Ask the agent to start the task again in a few minutes.",
+  usage_limit:
+    "The AI provider's usage limit is reached. Ask the agent to start the task again once it resets.",
+  stopped: "The helper stopped with an error.",
+} as const;
+
+/** A model id as Settings names it (`kinListedModelName`); null shows no model at all. */
+export type KinModelName = (model: string) => string | null;
+
 /** The task card in an app with no coding threads: nothing to open, and nothing said of one. */
 export function kinTaskCardWithoutThread(task: KinTaskCardView): KinTaskCardView {
   return {
@@ -131,11 +158,16 @@ function kinTaskCardView(
   /** The environment hosting this chat. A local card must name it; only remote cards go elsewhere. */
   hostEnvironmentId: EnvironmentId,
   isKnownEnvironment: (environmentId: EnvironmentId) => boolean,
+  modelName: KinModelName,
 ): KinTaskCardView {
   const { label, tone } = STATUS[state.status];
   const title = clamp(state.title, 200);
-  const model = state.model === null ? null : clamp(state.model, 60) || null;
-  const detail = state.lastError === null ? null : clamp(state.lastError, 280) || null;
+  const named = state.model === null ? null : modelName(state.model);
+  const model = named === null ? null : clamp(named, 60) || null;
+  const raw = state.lastError === null ? null : clamp(state.lastError, 280) || null;
+  const cause = state.status === "failed" ? (state.failure ?? null) : null;
+  const detail = state.status !== "failed" ? raw : KIN_TASK_FAILURE_COPY[cause ?? "stopped"];
+  const detailNote = state.status === "failed" && cause === null ? raw : null;
   const environmentId = state.remoteEnvironmentId ?? state.environmentId;
   const known =
     (state.remoteEnvironmentId !== null || state.environmentId === hostEnvironmentId) &&
@@ -153,6 +185,7 @@ function kinTaskCardView(
     `Task: ${title}`,
     label,
     detail,
+    detailNote,
     model,
     ...pullRequests.map((pr) => pr.label),
     open === null ? null : OPENS_THREAD,
@@ -164,6 +197,7 @@ function kinTaskCardView(
     tone,
     working: state.status === "working",
     detail,
+    detailNote,
     model,
     open,
     unknownEnvironment: state.threadId !== null && !known,
@@ -280,7 +314,7 @@ export function kinReminderCardView(
   const card = decoded.value;
   const title = clamp(card.title, 200) || "This reminder";
   const open = widget.closedAt === null && card.status !== "done";
-  const lines =
+  const lines: Array<string> =
     widget.closedAt !== null
       ? ["Closed."]
       : card.status === "done"
@@ -288,6 +322,8 @@ export function kinReminderCardView(
         : card.status === "snoozed" && card.snoozedUntil !== undefined
           ? [`Snoozed until ${formatKinDeferralTime(Date.parse(card.snoozedUntil), timeZone)}.`]
           : [`Due ${formatKinDeferralTime(Date.parse(card.dueAt), timeZone)}.`];
+  const asked = kinAskedByLine(card.askedBy);
+  if (asked !== null) lines.push(asked);
   return {
     widgetId: widget.widgetId,
     revision: widget.revision,
@@ -295,6 +331,7 @@ export function kinReminderCardView(
     phase: open ? "reminder" : "closed",
     eyebrow: "Reminder",
     title,
+    agent: null,
     lines,
     countdown: null,
     actions: open ? reminderActions(card, ownerLevel) : [],
@@ -308,6 +345,8 @@ export function kinReminderCardView(
  */
 function reminderActions(card: KinReminderCard, ownerLevel: boolean | undefined) {
   const finish = [actions.done, actions.snooze_10m, actions.snooze_1h, actions.snooze_tomorrow];
+  // A shared chat's own: its asker, the owner or a co-owner finishes it; the host says who.
+  if (card.askedBy !== undefined) return finish;
   if (ownerLevel !== false || card.theirs === true) return [...finish, actions.change];
   return card.theirs === false ? finish : [];
 }
@@ -350,7 +389,7 @@ function scheduleLine(
           : days.map((day) => WEEKDAYS[day]).join(", ");
   const [hour, minute] = every.at.split(":");
   const deviceZone = timeZone ?? new Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const zone = sameZone(deviceZone, ownerZone) ? "" : ` (${ownerZone})`;
+  const zone = sameZone(deviceZone, ownerZone) ? "" : ` (${kinZoneLabel(ownerZone)})`;
   return `${when} ${around ? "around" : "at"} ${Number(hour)}:${minute}${zone}.`;
 }
 
@@ -359,7 +398,8 @@ function lastRunLine(run: NonNullable<KinScheduledTaskCard["lastRun"]>, timeZone
   const note = run.note === undefined ? "" : clamp(run.note, 280);
   switch (run.status) {
     case "running":
-      return "Running now.";
+      // Held by a trouble on Kin's computer: the note is why, as the trouble's own card says it.
+      return note === "" ? "Running now." : `Waiting to run: ${note.replace(/\.$/, "")}.`;
     case "posted":
       return note === "" ? `Last run ${at}.` : `Last run ${at}: ${note}`;
     case "failed":
@@ -391,6 +431,10 @@ export function kinScheduledTaskCardView(
           ? [`Next run ${formatKinDeferralTime(nextMs, timeZone)}.`]
           : []),
         ...(card.lastRun === null ? [] : [lastRunLine(card.lastRun, timeZone)]),
+        ...((card.overlapSkipped ?? 0) > 1
+          ? [`Skipped ${card.overlapSkipped} runs in a row.`]
+          : []),
+        ...[kinAskedByLine(card.askedBy)].filter((line) => line !== null),
       ];
   const running = card.lastRun?.status === "running";
   return {
@@ -400,6 +444,7 @@ export function kinScheduledTaskCardView(
     phase: open ? "scheduled" : "closed",
     eyebrow: "Scheduled task",
     title,
+    agent: null,
     lines,
     countdown:
       open && card.status === "active" && nextMs !== null ? { to: nextMs, kind: "run" } : null,
@@ -482,8 +527,15 @@ export function kinCardView(
   heldFor: string | null = null,
   /** Whether the viewer is owner-level; unknown offers every tap. */
   ownerLevel?: boolean,
+  modelName: KinModelName = () => null,
 ): KinCardView {
-  const view = kinLiveCardView(widget, hostEnvironmentId, isKnownEnvironment, ownerLevel);
+  const view = kinLiveCardView(
+    widget,
+    hostEnvironmentId,
+    isKnownEnvironment,
+    ownerLevel,
+    modelName,
+  );
   if (heldFor === null || view.kind !== "deferral" || !HELD_TYPES.has(widget?.type ?? ""))
     return view;
   const { deferral } = view;
@@ -512,6 +564,7 @@ function kinLiveCardView(
   hostEnvironmentId: EnvironmentId,
   isKnownEnvironment: (environmentId: EnvironmentId) => boolean,
   ownerLevel: boolean | undefined,
+  modelName: KinModelName,
 ): KinCardView {
   if (widget === undefined) return { kind: "missing" };
   if (widget.widgetClass !== "native") return unknown(widget);
@@ -521,12 +574,12 @@ function kinLiveCardView(
       return Option.isSome(state)
         ? {
             kind: "task",
-            task: kinTaskCardView(state.value, hostEnvironmentId, isKnownEnvironment),
+            task: kinTaskCardView(state.value, hostEnvironmentId, isKnownEnvironment, modelName),
           }
         : unknown(widget);
     }
     case "deferral": {
-      const deferral = kinDeferralCardView(widget);
+      const deferral = kinDeferralCardView(widget, undefined, ownerLevel);
       return deferral === null ? unknown(widget) : { kind: "deferral", deferral };
     }
     case "reminder": {
@@ -573,6 +626,10 @@ function kinLiveCardView(
       const password = kinStatementPasswordView(widget);
       return password === null ? unknown(widget) : { kind: "statement_password", password };
     }
+    case KIN_BILL_BATCH_CARD: {
+      const bills = kinBillBatchCardView(widget);
+      return bills === null ? unknown(widget) : { kind: "bill_batch", bills };
+    }
     case KIN_MEMORY_CHANGES_CARD: {
       const changes = kinMemoryChangesView(widget);
       return changes === null ? unknown(widget) : { kind: "memory_changes", changes };
@@ -585,6 +642,10 @@ function kinLiveCardView(
       const pack = kinSocialPackView(widget);
       return pack === null ? unknown(widget) : { kind: "social_pack", pack };
     }
+    case KIN_HOST_TROUBLE_CARD:
+      return kinHostTroubleCardView(widget, String) === null
+        ? unknown(widget)
+        : { kind: "host_trouble", widget };
     default:
       return unknown(widget);
   }
@@ -603,5 +664,6 @@ export const KIN_CARD_COPY = {
   visualGone: "This visual is no longer available.",
   visualAllowAll: "Allow for every visual",
   seeHow: "See how they got there",
+  openDiscussion: "Open the discussion",
   pictureFailed: "The picture couldn't load. Open the chat to see the file.",
 } as const;

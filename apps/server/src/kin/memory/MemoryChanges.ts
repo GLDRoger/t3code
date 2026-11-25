@@ -1,7 +1,9 @@
 import {
   KIN_MEMORY_CHANGES_CARD,
   KinChatError,
+  KinChatId,
   KinMemoryChangeCard,
+  KinMessageId,
   type KinAgentId,
   type KinMemoryConfirmSuggestionsInput,
   type KinMemoryConfirmSuggestionsResult,
@@ -41,9 +43,9 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { endedBy } from "./frontMatter.ts";
-import { readableSources } from "./quoteAccess.ts";
+import { CHAT_SOURCE, readableSources } from "./quoteAccess.ts";
 import type { MemoryItem } from "./MemoryCache.ts";
-import type { KinDecision, MemoryWriter } from "./MemoryWriter.ts";
+import type { KinDecision, MemoryUndo, MemoryWriter } from "./MemoryWriter.ts";
 import {
   authorise,
   bindSuggestions,
@@ -68,12 +70,14 @@ export interface KinMemoryPort {
   readonly items: (
     orgId: KinOrgId,
   ) => Effect.Effect<ReadonlyArray<MemoryItem>, { readonly _tag: string }>;
+  /** The items as last loaded, with no lock, sync or repair (`Memory.snapshotItems`). */
+  readonly snapshot?: (orgId: KinOrgId) => Effect.Effect<ReadonlyArray<MemoryItem> | undefined>;
 }
 
 /**
  * The owner's own actions on what the leads remember: per-item Undo on the `memory_changes` cards
- * earlier versions posted, and seeing and choosing who may know each item. No MCP tool or agent
- * path reaches them, and only the organization's owner may call the rest.
+ * earlier versions posted, and seeing and choosing who may know each item. A person's coding
+ * agent key can undo a change to a team-readable line with the same card ownership check.
  */
 export class KinMemoryChanges extends Context.Service<
   KinMemoryChanges,
@@ -81,6 +85,7 @@ export class KinMemoryChanges extends Context.Service<
     readonly undo: (
       people: ReadonlyArray<PersonIdentity>,
       input: KinMemoryUndoInput,
+      checkKey?: Effect.Effect<void, KinChatError>,
     ) => Effect.Effect<KinMemoryUndoResult, KinChatError>;
     /** What the leads remember and who may know each item; the owner only. */
     readonly list: (
@@ -120,11 +125,19 @@ export class KinMemoryChanges extends Context.Service<
     readonly recordDecision: (orgId: KinOrgId, decision: KinDecision) => Effect.Effect<void>;
     /**
      * Current items that hold every word, newest first, for search; the owner level only, and
-     * nothing for anyone else or while memory isn't running here.
+     * nothing for anyone else or while memory isn't running here. `teamOnly` keeps to what the
+     * team may know, before the limit.
      */
     readonly search: (
       people: ReadonlyArray<PersonIdentity>,
-      input: { readonly orgId: KinOrgId; readonly text: string; readonly limit: number },
+      input: {
+        readonly orgId: KinOrgId;
+        readonly text: string;
+        readonly limit: number;
+        readonly teamOnly?: boolean;
+        /** From the items as last loaded (`KinMemoryPort.snapshot`): no lock, sync or repair. */
+        readonly snapshot?: boolean;
+      },
     ) => Effect.Effect<ReadonlyArray<KinMemoryHit>>;
     /** The owner's switch for team memory in chats with teammates; owner level only. */
     readonly setTeamMemory: (
@@ -141,6 +154,11 @@ export type KinMemoryHit = {
   readonly snippet: string;
   readonly sensitive: boolean;
   readonly recordedAt: number;
+  /** Who said it, as its file records them: for naming them, never to show as it is. */
+  readonly saidBy: string;
+  readonly trust: MemoryItem["head"]["trust"];
+  /** A teammate's attribution by the names kept when it was said. */
+  readonly from: { readonly name: string; readonly chatName: string } | null;
 };
 const SEARCH_SNIPPET = 160;
 const searchWords = (text: string) =>
@@ -213,12 +231,22 @@ const make = Effect.gen(function* () {
       ).pipe(provideSql);
       return ({ head }: MemoryItem): Provenance => {
         const at = saidAt.get(head.source);
+        const [, chatId, messageId] =
+          (at === undefined ? null : CHAT_SOURCE.exec(head.source)) ?? [];
         return {
           saidBy: head.said_by,
           trust: head.trust,
           recordedAt: head.recorded_at,
           saidAt: at ?? null,
           quote: at === undefined ? null : (head.quote ?? null),
+          ...(chatId === undefined || messageId === undefined
+            ? {}
+            : {
+                message: {
+                  chatId: KinChatId.make(chatId),
+                  messageId: KinMessageId.make(messageId),
+                },
+              }),
         };
       };
     },
@@ -316,9 +344,18 @@ const make = Effect.gen(function* () {
   });
 
   const undo = Effect.fn("KinMemoryChanges.undo")(
-    function* (people: ReadonlyArray<PersonIdentity>, input: KinMemoryUndoInput) {
+    function* (
+      people: ReadonlyArray<PersonIdentity>,
+      input: KinMemoryUndoInput,
+      checkKey?: Effect.Effect<void, KinChatError>,
+    ) {
       const person = people.find((candidate) => candidate.orgId === input.orgId);
       if (person === undefined) return yield* notFound;
+      if (checkKey !== undefined) {
+        yield* checkKey;
+        if (!(yield* ownerLevel(input.orgId, person.personId).pipe(provideSql)))
+          return yield* notAllowed;
+      }
       const widget = yield* repo.getWidget({ orgId: input.orgId, widgetId: input.widgetId });
       if (Option.isNone(widget) || widget.value.type !== KIN_MEMORY_CHANGES_CARD)
         return yield* notFound;
@@ -332,6 +369,46 @@ const make = Effect.gen(function* () {
         return yield* notAllowed;
       const item = card.items.find((candidate) => candidate.itemId === input.itemId);
       if (item === undefined) return yield* notFound;
+      let codingAgent: MemoryUndo["codingAgent"];
+      if (checkKey !== undefined) {
+        const reachableItem = Effect.fn("KinMemoryChanges.undoReachable")(function* (
+          locked: MemoryItem | undefined,
+        ) {
+          const snapshot = (yield* port?.snapshot?.(input.orgId) ?? Effect.undefined) ?? [];
+          const now = yield* Clock.currentTimeMillis;
+          const matches = current(snapshot, now).filter((one) => one.head.id === input.itemId);
+          const [known] = matches;
+          const labels = yield* storedLabels(input.orgId).pipe(provideSql);
+          if (known === undefined || matches.length !== 1 || visibility(known, labels) !== "team")
+            return yield* notFound;
+          if (
+            locked !== undefined &&
+            (locked.head.id !== input.itemId ||
+              current([locked], now).length !== 1 ||
+              visibility(locked, labels) !== "team")
+          )
+            return yield* notFound;
+        }, failed);
+        yield* reachableItem(undefined);
+        codingAgent = {
+          personId: person.personId,
+          admit: Effect.fn("KinMemoryChanges.admitUndo")(
+            function* (locked) {
+              yield* checkKey;
+              const owns = yield* ownerChat(input.orgId, card.agentId);
+              if (
+                !(yield* ownerLevel(input.orgId, person.personId).pipe(provideSql)) ||
+                owns?.owner !== person.personId ||
+                owns.chatId !== owner.chatId
+              )
+                return yield* notAllowed;
+              yield* reachableItem(locked);
+            },
+            transaction,
+            failed,
+          ),
+        };
+      }
       if (item.undo === "undone") return { card };
       if (item.undo === "stale") return yield* stale;
       if (port === undefined) return yield* unavailable;
@@ -343,18 +420,21 @@ const make = Effect.gen(function* () {
           branch: card.branch,
           base: card.base,
           commit: card.commit,
+          ...(codingAgent === undefined ? {} : { codingAgent }),
         })
         .pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("Kin memory undo failed", { errorTag: error._tag }).pipe(
-              Effect.andThen(
-                Effect.fail(
-                  error._tag === "MemorySecretBlocked"
-                    ? refused("invalid_state", "The earlier version looks like it has a secret.")
-                    : unavailable,
+          Effect.catchIf(
+            (error) => !isKinChatError(error),
+            (error) =>
+              Effect.logWarning("Kin memory undo failed", { errorTag: error._tag }).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    error._tag === "MemorySecretBlocked"
+                      ? refused("invalid_state", "The earlier version looks like it has a secret.")
+                      : unavailable,
+                  ),
                 ),
               ),
-            ),
           ),
         );
       const next = yield* mark(
@@ -491,15 +571,31 @@ const make = Effect.gen(function* () {
       const words = searchWords(input.text);
       const allowed = yield* ownerOf(people, input.orgId).pipe(Effect.result);
       if (words.length === 0 || allowed._tag === "Failure") return [];
-      const all = yield* allowed.success.port.items(input.orgId).pipe(
-        Effect.tapError((error) =>
-          Effect.logWarning("Kin memory search failed", { errorTag: error._tag }),
-        ),
-        Effect.orElseSucceed((): ReadonlyArray<MemoryItem> => []),
-      );
+      const { port } = allowed.success;
+      const all =
+        input.snapshot === true
+          ? ((yield* port.snapshot?.(input.orgId) ?? Effect.undefined) ?? [])
+          : yield* port.items(input.orgId).pipe(
+              Effect.tapError((error) =>
+                Effect.logWarning("Kin memory search failed", { errorTag: error._tag }),
+              ),
+              Effect.orElseSucceed((): ReadonlyArray<MemoryItem> => []),
+            );
       const now = yield* Clock.currentTimeMillis;
+      const labels =
+        input.teamOnly === true
+          ? yield* storedLabels(input.orgId).pipe(
+              provideSql,
+              Effect.tapError((error) =>
+                Effect.logWarning("Kin memory search failed", { errorTag: error._tag }),
+              ),
+              Effect.option,
+            )
+          : undefined;
+      if (labels !== undefined && labels._tag === "None") return [];
       return current(all, now)
         .flatMap((item): ReadonlyArray<KinMemoryHit> => {
+          if (labels !== undefined && visibility(item, labels.value) !== "team") return [];
           const text = `${item.head.title}\n${item.head.what ?? ""}\n${item.body}`;
           const lower = text.toLowerCase();
           if (!words.every((word) => lower.includes(word))) return [];
@@ -515,6 +611,15 @@ const make = Effect.gen(function* () {
                   : body,
               sensitive: item.head.sensitive !== false,
               recordedAt: Number.isFinite(recordedAt) ? recordedAt : 0,
+              saidBy: item.head.said_by,
+              trust: item.head.trust,
+              from:
+                item.head.shared_from === undefined
+                  ? null
+                  : {
+                      name: item.head.shared_from.name,
+                      chatName: item.head.shared_from.chat_name,
+                    },
             },
           ];
         })

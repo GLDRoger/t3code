@@ -53,7 +53,7 @@ kv as owner web click --name "Add task"    # exact name first; --role option, --
 kv as owner web type --name "What needs doing" "Check the logo files" --enter
 kv as zoya web wait "Check the logo files" # or --gone; 20 s by default
 kv as owner web screenshot /tmp/proof/new-task.png   # refuses any path under ~/.t3
-kv as owner web view --width 390 --dark       # phone width or wide, light or dark, for captures
+kv as owner web view --width 390 --dark       # phone width or wide, light or dark; the size stays until changed
 kv as dev rpc kin.work.list '{"project":"P-1"}'      # orgId is filled in
 kv as meera wire kin.work.create '{"clientRequestId":"x","title":"Plan"}' --watch owner,zoya --find Plan  # what each open page got
 kv tool finance money_summary '{}'                   # one real agent turn, no model
@@ -62,7 +62,8 @@ kv tool chief people_read '{}' --reply "Checked." --hold 12   # stays working 12
 kv mail expire hello@ambermill.example              # its sign-in stops working; --back restores it
 kv mail sent                                          # what the fake mailbox sent
 kv mail deliver --to hello@ambermill.example --from "Anita <anita@orbitdental.example>" --subject "Re: invoice" --body "Paid today"
-kv clock advance 3d                                   # every stored Kin time moves 3 days back
+kv clock set "mon 09:01"                              # now moves forward to then, company zone
+kv clock advance 3d                                   # now moves 3 days forward; nothing restarts
 kv db "select key, state from kin_records where register_id = 'invoices'"
 ```
 
@@ -79,8 +80,12 @@ kv db "select key, state from kin_records where register_id = 'invoices'"
   turn order fails the script. `"$key"` in a later call is the record key an earlier one made.
 - A check-in's reply (Run now) is `<instance>/verify/checkin-reply.md` when that file exists; the
   scripted agent posts it once and deletes it, to show a brief.
-- `clock` stops the server, rewrites stored times in one transaction and starts it again. The
-  server's own clock is untouched; `set-date` moves times so that today reads as that date.
+- `clock set|advance|show` move the instance's now forward only (`DevClock.ts`: Kin's clock and
+  T3's scheduled tasks, on a dev server with `KIN_DEV_CLOCK`); a due slot runs on the next tick.
+  T3's orchestration, which Kin's turns run through, keeps the real clock its worker reads, so a
+  turn starts at once after a move. `mail deliver` stamps mail at the moved now.
+  Kin's screens in kv's browsers follow on their next `web` command. `clock age 3d` is the old
+  move: it stops the server, moves stored times back and starts it again.
 - `db` opens the database read-only. Write through RPCs or tools, never SQL.
 
 ## Lifecycle scripts
@@ -126,14 +131,15 @@ bash .agents/skills/verify-kin/scripts/relay-owner-to-member.sh   # one, on the 
 | `hours-two-zones`          | Arjun at 12:00 his time gets the owner's relay now; Zoya at 20:00 hers is told nothing until 10:00 her time, silent, and gets it once then; her switch off lets one through                                                                                                                                                                            |
 | `relay-marked`             | the owner's relay reads "Sent by Rhea Kapoor" via Chief of staff in Zoya's chat and push; Zoya's answer reads as hers in the owner's                                                                                                                                                                                                                   |
 | `asker-is-giver`           | a task Zoya asks the agent to give Arjun reads "Zoya gave this to you, via Chief of staff" and Hand back returns it to her                                                                                                                                                                                                                             |
-| `remove-and-bring-back`    | removing Arjun keeps his task his, under Needs you, starts no agent; his browser says his access ended and Zoya's chat with him leaves her list; a new link brings back his level, chat history, task and that chat                                                                                                                                    |
+| `remove-and-bring-back`    | removing Arjun keeps his task his, under Needs you, starts no agent, and closes the question an agent asked him; his browser says his access ended and Zoya's chat with him leaves her list; adding "Arjun Rao" again offers to bring him back, and that link brings back his level, chat history, task and that chat                                  |
 | `decision-found-again`     | the owner answers Chief of staff's choice card; searching a word from it later finds it as Remembered and opens it in Settings → Memory; Zoya's search, over RPC and on screen, finds nothing                                                                                                                                                          |
 | `teammate-reminder`        | Zoya sets her own reminder and nothing for anyone else; it comes due in her chat, not the owner's, rings her phone, and her Done finishes it                                                                                                                                                                                                           |
 | `away-held`                | the owner marks Zoya away (Arjun can't); the relay to her waits with "Zoya Sheikh is away: it arrives at …" in the owner's chat; her I'm back lets it through once                                                                                                                                                                                     |
 | `hand-over-all`            | Zoya's page offers Give all open tasks to… with her count; the owner gives them to Arjun, each a recorded change, Arjun told once, Undo gives them back; Arjun can't; Zoya gives hers to Dev                                                                                                                                                           |
+| `retire-team-agent`        | retiring Chief of staff, the team agent, alone is refused; its page's Retire asks who the team talks to instead, and with Finance picked Zoya's list has Finance; restoring and picking it again puts it back                                                                                                                                          |
 | `money-place-follows`      | Zoya has Money open while the owner switches her Money place on, then off: the page follows each way without her navigating                                                                                                                                                                                                                            |
 
-`provider-conformance.sh <provider instance id> <model> [effort]` is the live half of the providers' conformance suite and is not in `run-all.sh`: it spends real model turns. It runs fourteen fixed turns (a plain reply, a Kin tool, a deferred tool, a choice card, a picture, scanned, text and compressed PDFs, a spreadsheet, the owner's signed shell and the web, then a teammate's same picture and PDF and no shell) and prints a table. Start the instance with the provider's credentials in its environment; see [Providers for Kin agents](../../../docs/kin/providers.md).
+`provider-conformance.sh <provider instance id> <model> [effort]` is the live half of the providers' conformance suite and is not in `run-all.sh`: it spends real model turns. It runs fourteen fixed turns (a plain reply, a Kin tool, a deferred tool, a choice card, a picture, scanned, text and compressed PDFs, a spreadsheet, the owner's signed shell and the web, then a teammate's same picture and PDF and no shell) and prints a table. Start the instance with `KIN_VERIFY_REAL_MODELS=1` and the provider's credentials in its environment (without it, `up` puts failing provider CLIs first on the server's `PATH` and drops provider keys); see [Providers for Kin agents](../../../docs/kin/providers.md).
 
 `node scripts/kin-release-check.ts` runs all ten with the models, property tests and UI fuzz before a release ([Releasing Kin](../../../docs/operations/kin-release.md)).
 

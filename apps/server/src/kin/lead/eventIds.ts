@@ -25,8 +25,12 @@ export const TurnEventId = KinEventId.annotate(filled).pipe(
   Schema.withDecodingDefaultKey(Effect.succeed(UNFILLED_EVENT)),
 );
 
+/** Tools whose event says only which turn asks: an id from no event of this turn is this turn's. */
+export const TURN_ONLY_EVENT_TOOLS: ReadonlySet<string> = new Set(["kin_cancel"]);
+
 /** Tools whose input names the event they act on (`KinToolGate.test.ts` keeps this complete). */
 export const TURN_EVENT_TOOLS: ReadonlySet<string> = new Set([
+  "bills_add",
   "budget_set",
   "company_profile",
   "doc_create",

@@ -14,6 +14,7 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Persistence from "../persistence/KinPersistence.ts";
 import * as EventQueue from "../lead/KinEventQueue.ts";
+import * as KinRecords from "../work/KinRecords.ts";
 import * as TriggerStore from "./KinTriggerStore.ts";
 import * as TriggerInbox from "./KinTriggerInbox.ts";
 import * as TriggerScheduler from "./KinTriggerScheduler.ts";
@@ -112,7 +113,9 @@ export function fixture<E = never>(
       Layer.succeed(Scheduler.Scheduler, { register: options.register ?? (() => Effect.void) }),
     ),
   );
-  const owner = OwnerCheck.layer.pipe(Layer.provideMerge(dependencies));
+  const owner = Layer.mergeAll(OwnerCheck.layer, KinRecords.layer).pipe(
+    Layer.provideMerge(dependencies),
+  );
   return Routines.layer.pipe(
     Layer.provideMerge(owner),
     Layer.provideMerge(

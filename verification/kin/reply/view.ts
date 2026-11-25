@@ -7,13 +7,14 @@ const first = (vars: Vars, name: string) => list(vars[name])[0];
 export const title = "Your message to an agent, and what comes back";
 
 export const guide =
-  "Each box is where your message to an agent stands, as you would see it in your chat. Each arrow is something that happens: you send, the agent starts on it, writes, writes the same answer again, posts a chart, thinks, sends you a message for someone else (a nudge or relay), its turn ends or fails, or Kin restarts. Red boxes are where a rule below breaks. The model covers two messages from you, three tries at starting, one restart, and a floor that can close; it follows your first message. “Working…” shows while the agent works on it and clears when the turn ends.";
+  "Each box is where your message to an agent stands, as you would see it in your chat. Each arrow is something that happens: you send, the agent starts on it, writes, writes the same answer again, posts a chart, thinks, sends you a message for someone else (a nudge or relay), its turn ends or fails, or Kin restarts. Red boxes are where a rule below breaks. The model covers two messages from you, four tries at starting, one restart, and a floor that can close; it follows your first message. “Working…” shows while the agent works on it and clears when the turn ends.";
 
 export const rules: Record<string, string> = {
   NeverTwo: "Each message you send gets at most one reply or one plain failure line, never two.",
   NoteOnlyForBrokenPromise:
     "After a reply, a failure adds at most one short line, and only to name something the reply promised that did not happen.",
   NeverReasoning: "The agent's private reasoning never shows up as its reply.",
+  NeverDiagnostic: "A failed run’s terminal provider error never becomes the agent’s posted reply.",
   SaidOnce:
     "The agent's reply says its answer once, even when it writes the answer again after using a tool.",
   RelayLands: "A nudge or relay the agent sends you always lands in your chat, whatever the floor.",
@@ -29,6 +30,11 @@ export const variants = [
     name: "reasoning-posted",
     breaks: "NeverReasoning",
     what: "the thinking filter (isAnswer) is removed",
+  },
+  {
+    name: "diagnostic-posted",
+    breaks: "NeverDiagnostic",
+    what: "the provider’s terminal diagnostic is posted as an answer",
   },
   {
     name: "relay-through-floor",
@@ -101,6 +107,8 @@ export const step = (action: string, from: Vars, to: Vars) => {
       return "The agent writes its answer again after using a tool";
     case "LeadShows":
       return "The agent posts a chart or file and says nothing";
+    case "TerminalDiagnostic":
+      return "The provider writes its terminal error in the transcript";
     case "LeadThinks":
       return "The agent thinks";
     case "LeadNudgesAsker":
@@ -125,8 +133,8 @@ export const step = (action: string, from: Vars, to: Vars) => {
       if (first(to, "ev") === "done")
         return "The turn fails after the reply: logged, nothing posted";
       return Number(first(to, "fails")) > Number(first(from, "fails"))
-        ? Number(first(to, "tries")) >= 3
-          ? "It fails a third time: “won't try again”"
+        ? Number(first(to, "tries")) >= 4
+          ? "It fails a fourth time: “won't try again”"
           : "The turn fails after doing something: “stopped partway”"
         : "The turn fails to start: “trying again”";
     case "Restart":

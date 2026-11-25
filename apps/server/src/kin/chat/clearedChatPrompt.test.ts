@@ -41,6 +41,7 @@ const memory = Layer.succeed(
     purgeInFlight: () => Effect.die("Unused"),
     historyGeneration: () => Effect.die("Unused"),
     items: () => Effect.die("Unused"),
+    snapshotItems: () => Effect.die("Unused"),
     readPromptSnapshot: () =>
       Effect.succeed({
         rules: "Invented rules",

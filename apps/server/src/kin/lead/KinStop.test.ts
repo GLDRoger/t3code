@@ -2,6 +2,9 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
   KinAgentId,
+  KinChatId,
+  KinMemberId,
+  KinMessageId,
   KinPersonId,
   KinWakeupId,
   MessageId,
@@ -24,6 +27,9 @@ import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { provideDeterministicTestRuntime } from "../../orchestration-v2/testkit/DeterministicRuntime.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { KinHostCare } from "../host/KinHostCare.ts";
+import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinStop from "./KinStop.ts";
@@ -173,6 +179,44 @@ describe("KinStop", () => {
   it.effect("an owner's stop answers true once, then false while the wake-up winds down", () =>
     Effect.gen(function* () {
       const entered = yield* Queue.unbounded<ThreadId>();
+      // Whatever a failure would set off: a trouble's notice, or a line in the chat.
+      const failures: Array<string> = [];
+      const care = Layer.succeed(
+        KinHostCare,
+        KinHostCare.of({
+          host: true,
+          clean: () => Effect.die("not cleaned here"),
+          spaceFailed: () => Effect.succeed(false),
+          storageFailed: () => Effect.void,
+          storageRecovered: () => Effect.void,
+          devFullDisk: Effect.void,
+          failed: (input) => Effect.sync(() => (failures.push(`notice ${input.cause}`), true)),
+          succeeded: () => Effect.void,
+          troubleOpen: () => Effect.succeed(false),
+          causeFor: () => Effect.undefined,
+          refresh: () => Effect.void,
+          checkBackup: () => Effect.void,
+          postOfflineNotice: () => Effect.die("no startup pass here"),
+          status: () => Effect.die("not read here"),
+          freeSpace: () => Effect.die("not tapped here"),
+          backUpNow: () => Effect.die("not tapped here"),
+          retry: () => Effect.die("not tapped here"),
+        }),
+      );
+      const bridge = Layer.mock(KinReplyBridge)({
+        lane: () =>
+          Effect.succeedSome({
+            chatId: KinChatId.make("owner-chat"),
+            mode: "reply" as const,
+            owed: true,
+            leadName: "Lead",
+          }),
+        preparing: () => Effect.void,
+        begin: () => Effect.void,
+        complete: () => Effect.void,
+        end: () => Effect.void,
+        failed: (input) => Effect.sync(() => void failures.push(`line ${input.outcome}`)),
+      });
       yield* Effect.gen(function* () {
         yield* seed;
         const sql = yield* SqlClient.SqlClient;
@@ -182,6 +226,7 @@ describe("KinStop", () => {
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
         yield* stop.attach(yield* KinStop.makeFanOut(Option.none()));
         yield* queue.enqueue(event("work"));
+        yield* queue.enqueue(event("more-work"));
         const run = yield* runner.runOnce(orgId, agentId).pipe(Effect.forkChild);
         yield* TestClock.adjust("20 seconds");
         yield* Queue.take(entered);
@@ -193,15 +238,105 @@ describe("KinStop", () => {
         yield* worker.drain();
         yield* Fiber.join(run);
         assert.deepStrictEqual(yield* stop.interrupt(owner, input), { interrupted: false });
+        // A deliberate stop is no failure, and the chat says who stopped it, once.
+        assert.deepStrictEqual(
+          yield* sql`SELECT status FROM kin_wakeups WHERE org_id = ${orgId} ORDER BY wakeup_id`,
+          [{ status: "interrupted" }],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT chat_id, body FROM kin_messages WHERE org_id = ${orgId} ORDER BY seq`,
+          [{ chat_id: "owner-chat", body: "Owner stopped Lead." }],
+        );
+        // Its batch is over: not split to run alone, no try spent, nothing held for a trouble.
+        assert.deepStrictEqual(
+          yield* sql`SELECT event_id, state, attempts, json_extract(json, '$._retryAlone') AS alone,
+            held_by FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`,
+          [
+            { event_id: "more-work", state: "done", attempts: 0, alone: null, held_by: null },
+            { event_id: "work", state: "done", attempts: 0, alone: null, held_by: null },
+          ],
+        );
+        assert.deepStrictEqual(failures, []);
       }).pipe(
         Effect.provide(
           harness({
             untilInterrupted: true,
             onTurn: ({ threadId }) => Queue.offer(entered, threadId).pipe(Effect.asVoid),
-          }),
+          }).pipe(Layer.provide(Layer.mergeAll(care, bridge))),
         ),
       );
     }).pipe(provideDeterministicTestRuntime),
+  );
+
+  it.effect("a stop on a turn a trouble holds drops it and says so once", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const stop = yield* KinStop.KinStop;
+      yield* stop.attach(yield* KinStop.makeFanOut(Option.none()));
+      yield* queue.enqueue(event("held"));
+      yield* queue.enqueue(event("other"));
+      const wakeupId = KinWakeupId.make("wake-held");
+      const claim = yield* Effect.scoped(
+        queue.claim({ orgId, agentId, wakeupId, model: "test-model" }),
+      ).pipe(Effect.forkChild);
+      yield* TestClock.adjust("20 seconds");
+      yield* Fiber.join(claim);
+      // Its start failed for a cause Kin waits out: the batch waits, held by that trouble.
+      const holdUntil = (yield* Clock.currentTimeMillis) + 3_600_000;
+      yield* queue.finish({ orgId, wakeupId, status: "failed", holdUntil });
+      yield* sql`UPDATE kin_events SET held_by = 'trouble-1' WHERE org_id = ${orgId}`;
+      const input = { orgId, wakeupId };
+      assert.deepStrictEqual(yield* stop.interrupt(owner, input), { interrupted: true });
+      assert.deepStrictEqual(yield* stop.interrupt(owner, input), { interrupted: false });
+      assert.deepStrictEqual(
+        yield* sql`SELECT event_id, state, held_by FROM kin_events WHERE org_id = ${orgId}
+          ORDER BY event_id`,
+        [
+          { event_id: "held", state: "done", held_by: null },
+          { event_id: "other", state: "done", held_by: null },
+        ],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT chat_id, body FROM kin_messages WHERE org_id = ${orgId} ORDER BY seq`,
+        [{ chat_id: "owner-chat", body: "Owner stopped Lead." }],
+      );
+    }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+  );
+
+  it.effect("a stopped turn of a batch split to run alone ends only that one", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const queue = yield* KinEventQueue.KinEventQueue;
+      yield* queue.enqueue(event("first"));
+      yield* queue.enqueue(event("second"));
+      const claimAs = (id: string) =>
+        Effect.gen(function* () {
+          const wakeupId = KinWakeupId.make(id);
+          const claim = yield* Effect.scoped(
+            queue.claim({ orgId, agentId, wakeupId, model: "test-model" }),
+          ).pipe(Effect.forkChild);
+          yield* TestClock.adjust("20 seconds");
+          return { wakeupId, claimed: (yield* Fiber.join(claim)).map((one) => one.eventId) };
+        });
+      const batch = yield* claimAs("wake-batch");
+      assert.deepStrictEqual(batch.claimed, ["first", "second"]);
+      // A silent batch failure: each event runs again on its own.
+      yield* queue.finish({ orgId, wakeupId: batch.wakeupId, status: "failed" });
+      const alone = yield* claimAs("wake-alone");
+      assert.strictEqual(alone.claimed.length, 1);
+      yield* queue.finish({ orgId, wakeupId: alone.wakeupId, status: "interrupted" });
+      assert.deepStrictEqual(
+        yield* sql`SELECT state, json_extract(json, '$._retryAlone') AS alone, attempts
+          FROM kin_events WHERE org_id = ${orgId} ORDER BY state`,
+        [
+          { state: "done", alone: 1, attempts: 0 },
+          { state: "queued", alone: 1, attempts: 0 },
+        ],
+      );
+    }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
   );
 
   it.effect("stops two leads' running wake-ups at once and starts none until resume", () =>
@@ -281,13 +416,56 @@ describe("KinStop", () => {
       yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at, retired_at) VALUES ('old-lead', 'org', 'Old', 'lead', 'owner', '1970-01-01T00:00:00.000Z', '1970-01-01T00:00:00.000Z')`;
       yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at) VALUES ('old-chat', 'org', 'team_group', 0, '1970-01-01T00:00:00.000Z')`;
       yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id) VALUES ('old-lead', 'org', 'Old', 0, '{}', '[]', 'old-chat')`;
-      const paused = yield* stop.pause(owner, { orgId });
+      // Each real change moves the topic open screens follow; a repeat moves nothing.
+      const touched: Array<string> = [];
+      const told = Effect.provideService(KinRefreshObserver, {
+        touch: (org, topic) => Effect.sync(() => void touched.push(`${org}:${topic}`)),
+      });
+      const paused = yield* stop.pause(owner, { orgId }).pipe(told);
+      yield* stop.pause(owner, { orgId }).pipe(told);
+      assert.deepStrictEqual(touched, [`${orgId}:stop`]);
       assert.isTrue(yield* stop.isPaused(orgId));
-      yield* queue.enqueue(event("old"));
+      const directChat = KinChatId.make("direct");
+      const groupChat = KinChatId.make("renewals");
+      const meera = KinPersonId.make("meera");
+      const createdAt = "2026-11-08T00:00:00.000Z";
+      yield* sql`UPDATE kin_chats SET title = 'Chief of staff' WHERE org_id = ${orgId} AND chat_id = 'owner-chat'`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, direct_key, last_seq, created_at)
+        VALUES (${directChat}, ${orgId}, 'direct', NULL, 'meera:lead', 1, ${createdAt}),
+          (${groupChat}, ${orgId}, 'project_group', 'Renewals', NULL, 1, ${createdAt})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES (${meera}, ${orgId}, 'meera', 'Meera', ${createdAt})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+        VALUES ('direct-lead', ${orgId}, ${directChat}, 'agent', ${agentId}, 'member', ${createdAt})`;
+      for (const [id, chatId] of [
+        ["old-direct", directChat],
+        ["old-group", groupChat],
+      ] as const) {
+        const memberId = KinMemberId.make(`member-${id}`);
+        const messageId = KinMessageId.make(`message-${id}`);
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+          VALUES (${memberId}, ${orgId}, ${chatId}, 'person', ${meera}, 'member', ${createdAt})`;
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+          VALUES (${messageId}, ${orgId}, ${chatId}, 1, 'human', ${meera}, ${memberId}, 'member',
+            'text', 'Can you check the renewal?', '[]', 'posted', ${createdAt})`;
+        yield* queue.enqueue({
+          ...event(id),
+          _tag: "chat.message",
+          provenance: { _tag: "human", personId: meera, memberId },
+          chatId,
+          messageId,
+        });
+      }
+      for (let n = 0; n < 10; n++)
+        yield* queue.enqueue({
+          ...event(`routine-${n}`),
+          receivedAt: DateTime.makeUnsafe("2026-11-08T00:01:00.000Z"),
+        });
       yield* TestClock.adjust("25 hours");
       yield* queue.enqueue(event("fresh"));
 
-      const resumed = yield* stop.resume(owner, { orgId });
+      const resumed = yield* stop.resume(owner, { orgId }).pipe(told);
       assert.deepStrictEqual(resumed, {
         orgId,
         paused: false,
@@ -295,21 +473,27 @@ describe("KinStop", () => {
         pausedBy: null,
         reason: null,
       });
-      assert.deepStrictEqual(yield* stop.resume(owner, { orgId }), resumed);
+      assert.deepStrictEqual(yield* stop.resume(owner, { orgId }).pipe(told), resumed);
+      assert.deepStrictEqual(touched, [`${orgId}:stop`, `${orgId}:stop`]);
       assert.isFalse(yield* stop.isPaused(orgId));
       assert.deepStrictEqual(
-        yield* sql`SELECT author_kind, body FROM kin_messages WHERE org_id = ${orgId} ORDER BY seq`,
+        yield* sql`SELECT body FROM kin_messages WHERE org_id = ${orgId} AND author_kind = 'system' ORDER BY seq`,
         [
-          { author_kind: "system", body: KinStop.PAUSED_NOTICE },
-          { author_kind: "system", body: "Kin resumed. 1 queued event expired." },
+          { body: KinStop.PAUSED_NOTICE },
+          {
+            body: [
+              "Kin resumed. 11 queued events expired.",
+              "Renewals (from Meera)",
+              ...Array.from({ length: 9 }, () => "Chief of staff (from Kin)"),
+              "and 1 more",
+            ].join("\n"),
+          },
         ],
       );
       assert.deepStrictEqual(
-        yield* sql`SELECT event_id, state FROM kin_events WHERE org_id = ${orgId} AND tag != 'resume' ORDER BY event_id`,
-        [
-          { event_id: "fresh", state: "queued" },
-          { event_id: "old", state: "expired" },
-        ],
+        yield* sql`SELECT event_id FROM kin_events WHERE org_id = ${orgId} AND state = 'queued'
+          AND tag != 'resume' ORDER BY event_id`,
+        [{ event_id: "fresh" }, { event_id: "old-direct" }],
       );
       const resumes = yield* sql<{
         json: string;
@@ -323,10 +507,14 @@ describe("KinStop", () => {
         _tag: "resume",
         pausedAt: paused.pausedAt === null ? null : DateTime.formatIso(paused.pausedAt),
       });
-      assert.deepStrictEqual(JSON.parse(resumes[0]!.json).expired, {
-        count: 1,
-        events: [{ eventId: "old", tag: "routine", receivedAt: "2026-11-08T00:00:00.000Z" }],
+      const expired = JSON.parse(resumes[0]!.json).expired;
+      assert.strictEqual(expired.count, 11);
+      assert.deepStrictEqual(expired.events[0], {
+        eventId: "old-group",
+        tag: "chat.message",
+        receivedAt: createdAt,
       });
+      assert.lengthOf(expired.events, 11);
 
       yield* TestClock.adjust("2 seconds");
       const batch = yield* Effect.scoped(

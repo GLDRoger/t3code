@@ -1,25 +1,25 @@
+import { T, useGT } from "gt-react-native";
 import { SymbolView } from "../../components/ui/AppSymbol";
 import { Platform, Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
-import { Button } from "../../components/ui/Button";
 import { NewThreadButton } from "../../components/NewThreadButton";
 import { FloatingActionButton } from "../../components/ui/FloatingActionButton";
 import { EmptyState } from "../../components/ui/EmptyState";
 import { ScreenContent } from "../../components/ui/ScreenContent";
-import type { WorkspaceTab } from "./workspace/workspace-tabs-state";
+import { workspaceUsesColumns, type WorkspaceTab } from "./workspace/workspace-tabs-state";
 
 export function WorkspaceEmptyDetail(props: {
   readonly tab?: WorkspaceTab | "settings";
   readonly onStartNewTask?: () => void;
   readonly onAddConnection?: () => void;
-  /** Shown with `onAddConnection`: the other way to start, for someone joining a team. */
-  readonly onJoinKin?: () => void;
 }) {
+  const gt = useGT();
   const pullRequests = props.tab === "pullRequests";
   const issues = props.tab === "issues";
   const settings = props.tab === "settings";
-  if (props.tab === "usage") return <View className="flex-1 bg-screen" />;
+  if (props.tab !== undefined && props.tab !== "settings" && !workspaceUsesColumns(props.tab))
+    return <View className="flex-1 bg-screen" />;
   return (
     <ScreenContent surface="screen">
       <View
@@ -32,22 +32,17 @@ export function WorkspaceEmptyDetail(props: {
         {props.onAddConnection ? (
           <View className="w-full max-w-[430px]">
             <EmptyState
-              title="Get started"
-              detail="Joining a team? Use the link they sent you. Running your own Kin? Connect the computer it runs on."
+              title={gt("No environments connected")}
+              detail={gt("Add an environment to load projects and start coding sessions.")}
               variant="plain"
               action={
-                <View className="items-center gap-3">
-                  {props.onJoinKin ? (
-                    <Button tone="primary" label="I have a join link" onPress={props.onJoinKin} />
-                  ) : null}
-                  <FloatingActionButton
-                    label={props.onJoinKin ? "Set up my own Kin" : "Add environment"}
-                    icon="plus"
-                    variant="extended"
-                    tone={props.onJoinKin ? "secondary" : "primary"}
-                    onPress={props.onAddConnection}
-                  />
-                </View>
+                <FloatingActionButton
+                  label={gt("Add environment")}
+                  icon="plus"
+                  variant="extended"
+                  tone="primary"
+                  onPress={props.onAddConnection}
+                />
               }
             />
           </View>
@@ -61,23 +56,23 @@ export function WorkspaceEmptyDetail(props: {
             />
             <Text className="text-center text-xl font-t3-bold">
               {settings
-                ? "Select a setting"
+                ? gt("Select a setting")
                 : pullRequests
-                  ? "Select a pull request"
+                  ? gt("Select a pull request")
                   : issues
-                    ? "Select an issue"
-                    : "Select a thread"}
+                    ? gt("Select an issue")
+                    : gt("Select a thread")}
             </Text>
             <Text className="text-center text-base text-foreground-muted">
               {settings
-                ? "Choose a page from the sidebar."
+                ? gt("Choose a page from the sidebar.")
                 : pullRequests
-                  ? "Choose a pull request from the sidebar to review it."
+                  ? gt("Choose a pull request from the sidebar to review it.")
                   : issues
-                    ? "Choose an issue from the sidebar to read it."
+                    ? gt("Choose an issue from the sidebar to read it.")
                     : Platform.OS === "android"
-                      ? "Choose a thread from the sidebar or start a new thread."
-                      : "Choose a thread from the sidebar or start a new task."}
+                      ? gt("Choose a thread from the sidebar or start a new thread.")
+                      : gt("Choose a thread from the sidebar or start a new task.")}
             </Text>
             {props.onStartNewTask && !pullRequests && !issues && !settings ? (
               Platform.OS === "android" ? (
@@ -88,7 +83,9 @@ export function WorkspaceEmptyDetail(props: {
                   className="mt-2 flex-row items-center gap-2 rounded-full bg-primary px-5 py-3 active:opacity-70"
                   onPress={props.onStartNewTask}
                 >
-                  <Text className="text-base font-t3-bold text-primary-foreground">New thread</Text>
+                  <Text className="text-base font-t3-bold text-primary-foreground">
+                    <T>New thread</T>
+                  </Text>
                 </Pressable>
               )
             ) : null}

@@ -19,9 +19,10 @@ import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import { isMoney, parseFields } from "../work/lists.ts";
 import { dayIn, formatMoney } from "../work/money.ts";
 import { ownerZone, type RecordRow } from "../work/recordRows.ts";
+import { priceDraft, pricedByDocuments, unpriced } from "./amounts.ts";
 import { gatherFacts, jobSensitive } from "./facts.ts";
 import { issuedNumber } from "./numbering.ts";
-import { computeData } from "./compute.ts";
+import { computeData, type TaxRegime } from "./compute.ts";
 import {
   amountProblem,
   assembleInputs,
@@ -126,6 +127,8 @@ const decodeGiven = Schema.decodeUnknownOption(
 
 type Plan = {
   readonly entry: RecordRow | undefined;
+  /** The draft takes what its documents come to as its amount and tax once this one is made. */
+  readonly priced: boolean;
   readonly inputs: Readonly<Record<string, Value>>;
   readonly inputsHash: string;
   readonly number: string | null;
@@ -133,6 +136,7 @@ type Plan = {
   readonly sensitive: boolean;
   readonly docOrigin: string;
   readonly logo: { readonly bytes: Uint8Array; readonly extension: string } | null;
+  readonly tax: TaxRegime;
 };
 
 /** The doc's latest text as the body (and its title as the title) of a recipe that lays out Markdown. */
@@ -182,7 +186,7 @@ const issuedFigures = (recipe: StoredRecipe, final: Plan) => {
     return undefined;
   const problem = amountProblem(recipe);
   if (problem !== undefined) return invalid(`${NOTHING} ${problem}`);
-  const computed = computeData(final.inputs, recipe.computed);
+  const computed = computeData(final.inputs, recipe.computed, final.tax);
   if ("error" in computed) return invalid(`${NOTHING} ${computed.error}`);
   const figures = declaredFigures(recipe, computed.data);
   if ("error" in figures) return invalid(`${NOTHING} The ${recipe.name} recipe: ${figures.error}.`);
@@ -214,8 +218,12 @@ const issuedFigures = (recipe: StoredRecipe, final: Plan) => {
 /** The exact inputs from stored rows and the requester's own, and what follows from them. */
 const plan = Effect.fn("KinDocMaker.plan")(function* (request: MakeRequest, recipe: StoredRecipe) {
   const records = yield* KinRecords;
-  const entry =
+  const found =
     request.entry === undefined ? undefined : yield* records.get(request.orgId, request.entry);
+  const priced =
+    found !== undefined && issuable(recipe) && (yield* pricedByDocuments(request.orgId, found));
+  // Its lines, not the amount an earlier document set, are what this document comes to.
+  const entry = priced ? unpriced(found) : found;
   if (request.entry !== undefined && entry === undefined)
     return yield* new KinChatError({
       reason: "not_found",
@@ -234,15 +242,22 @@ const plan = Effect.fn("KinDocMaker.plan")(function* (request: MakeRequest, reci
   const assembled = assembleInputs(recipe, source.given, gathered.facts, gathered.currency);
   if ("error" in assembled) return yield* assembled.error;
   // The logo's bytes are part of what was rendered, though the template sees only its path.
+  // India's GST leaves the hash as it was before other taxes, so its documents read as unchanged.
+  const plainGst = gathered.tax._tag === "gst" && gathered.tax.notRegistered === undefined;
   const inputsHash = sha256(
     canonical(
-      gathered.logo === null
+      gathered.logo === null && plainGst
         ? assembled.inputs
-        : { inputs: assembled.inputs, logo: gathered.logo.sha256 },
+        : {
+            inputs: assembled.inputs,
+            ...(gathered.logo === null ? {} : { logo: gathered.logo.sha256 }),
+            ...(plainGst ? {} : { tax: gathered.tax }),
+          },
     ),
   );
   return {
     entry,
+    priced,
     inputs: assembled.inputs,
     inputsHash,
     number: recipe.numbered ? gathered.number : null,
@@ -256,6 +271,7 @@ const plan = Effect.fn("KinDocMaker.plan")(function* (request: MakeRequest, reci
         ? `recipe:${recipe.name}:${inputsHash}`
         : `recipe:${recipe.name}:${entry.recordId}`,
     logo: gathered.logo,
+    tax: gathered.tax,
   } satisfies Plan;
 });
 
@@ -323,9 +339,12 @@ export const makeDocument = Effect.fn("KinDocMaker.make")(function* (request: Ma
     inputs: first.inputs,
     day,
     logo: first.logo,
+    tax: first.tax,
   });
   if (rendered._tag === "failed")
-    return yield* invalid(`${NOTHING} The ${recipe.name} recipe didn't render: ${rendered.reason}`);
+    return yield* invalid(
+      `${NOTHING} The ${recipe.name} recipe didn't render because ${rendered.reason}`,
+    );
   if (request.preview === true) {
     yield* request.admit;
     return {
@@ -444,6 +463,8 @@ export const makeDocument = Effect.fn("KinDocMaker.make")(function* (request: Ma
       yield* sql`UPDATE kin_doc_jobs SET collected_at = ${now},
           outcome_json = ${yield* encodeStored({ draft: final.draft, documents })}
         WHERE org_id = ${request.orgId} AND worker_id = ${jobId}`;
+      if (final.entry !== undefined && issuable(recipe))
+        yield* priceDraft(request.orgId, requester.writer, final.entry.key, final.priced);
       return {
         jobId,
         recipe: recipe.name,

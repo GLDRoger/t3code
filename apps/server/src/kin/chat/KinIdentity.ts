@@ -21,6 +21,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import type { McpThreadCaller, McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
+import { newCompanyProfileJson } from "../work/companyProfile.ts";
 import * as KinChatRepository from "./KinChatRepository.ts";
 
 export class KinIdentityConfig extends Context.Service<
@@ -45,6 +46,12 @@ export class KinIdentityConfig extends Context.Service<
   );
 }
 
+/** Whether a company created now starts with its country not chosen. The running server's does. */
+export const KinNewCompanyCountryUnset = Context.Reference<boolean>(
+  "t3/kin/chat/KinIdentity/KinNewCompanyCountryUnset",
+  { defaultValue: () => false },
+);
+
 type IdentityError = KinChatRepository.RepositoryError;
 
 /**
@@ -53,13 +60,16 @@ type IdentityError = KinChatRepository.RepositoryError;
  * landed after the turn ended, and the rescue turn (see `hasRunningWakeup`).
  */
 export const wakeupMessageId = (wakeupId: KinWakeupId) => `kin-wakeup-msg:${wakeupId}`;
+export const steerMessagePrefix = (wakeupId: KinWakeupId) => `kin-steer-msg:${wakeupId}:`;
 export const steerMessageId = (wakeupId: KinWakeupId, n: number) =>
-  `kin-steer-msg:${wakeupId}:${n}`;
+  `${steerMessagePrefix(wakeupId)}${n}`;
 export const rescueMessageId = (wakeupId: KinWakeupId) => `kin-rescue-msg:${wakeupId}`;
 export const isSteerMessage = (wakeupId: KinWakeupId, messageId: string) =>
-  messageId.startsWith(`kin-steer-msg:${wakeupId}:`);
+  messageId.startsWith(steerMessagePrefix(wakeupId));
 export const isAdoptedRunMessage = (wakeupId: KinWakeupId, messageId: string) =>
   messageId === rescueMessageId(wakeupId) || isSteerMessage(wakeupId, messageId);
+// A host holds one company: bootstrap makes org `kin-default` and refuses any other. `orgId`
+// stays on every identity and row as a seam; new code needs no per-org loops or maps.
 export type PersonIdentity = {
   readonly _tag: "person";
   readonly orgId: KinOrgId;
@@ -125,6 +135,9 @@ export class KinIdentity extends Context.Service<
       const owner = yield* repository.bootstrapIdentity({
         ...config,
         createdAt: DateTime.formatIso(yield* DateTime.now),
+        ...((yield* KinNewCompanyCountryUnset)
+          ? { companyProfileJson: yield* newCompanyProfileJson.pipe(Effect.orDie) }
+          : {}),
       });
       const rows = yield* repository.listActiveAgentThreads();
       const active = new Set(rows.map((row) => row.threadId));
@@ -152,13 +165,18 @@ export class KinIdentity extends Context.Service<
       return KinIdentity.of({
         owner: { _tag: "person", orgId: owner.orgId, personId: owner.personId },
         resolve: Effect.fn("KinIdentity.resolve")(function* (session) {
+          // Read on every call: a connection opened before a sign-out (here, from Sharing &
+          // access, or from the CLI in another process) acts as no one once its session ends.
+          const signedOut = sql`SELECT 1 FROM auth_sessions
+            WHERE session_id = ${session.sessionId} AND revoked_at IS NOT NULL`;
           if (session.scopes.includes(AuthKinChatScope)) {
             const bindings = yield* sql<{
               person_id: string;
             }>`SELECT b.person_id FROM kin_session_bindings b
               JOIN kin_people p ON p.org_id = b.org_id AND p.person_id = b.person_id
               WHERE b.org_id = ${owner.orgId} AND b.session_id = ${session.sessionId}
-              AND b.revoked_at IS NULL ORDER BY b.person_id`.pipe(
+              AND b.revoked_at IS NULL AND p.removed_at IS NULL AND NOT EXISTS (${signedOut})
+              ORDER BY b.person_id`.pipe(
               Effect.catch((cause) =>
                 Effect.logWarning(
                   "Kin could not read member bindings; treating the session as no person.",
@@ -176,6 +194,16 @@ export class KinIdentity extends Context.Service<
           }
           if (!AuthStandardClientScopes.every((scope) => session.scopes.includes(scope))) return [];
           if (!(yield* isPaired(session.sessionId))) return [];
+          const ended = yield* signedOut.pipe(
+            Effect.map((rows) => rows.length > 0),
+            Effect.catch((cause) =>
+              Effect.logWarning(
+                "Kin couldn't read the session; treating it as no person.",
+                toPersistenceSqlError("KinIdentity.live")(cause),
+              ).pipe(Effect.as(true)),
+            ),
+          );
+          if (ended) return [];
           return [{ _tag: "person", orgId: owner.orgId, personId: owner.personId }];
         }),
         resolveAgent: Effect.fn("KinIdentity.resolveAgent")(function* (scope) {

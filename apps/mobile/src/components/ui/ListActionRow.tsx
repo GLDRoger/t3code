@@ -9,6 +9,8 @@ export function ListActionRow(
   props: ListRowContentProps & {
     readonly tone?: "default" | "danger";
     readonly loading?: boolean;
+    /** When the row's label alone doesn't say what tapping it does. */
+    readonly accessibilityLabel?: string;
     readonly onPress: () => void;
   },
 ) {
@@ -17,7 +19,7 @@ export function ListActionRow(
   return (
     <RowPressable
       accessibilityRole="button"
-      accessibilityLabel={props.label}
+      accessibilityLabel={props.accessibilityLabel ?? props.label}
       accessibilityHint={props.description}
       accessibilityState={{ disabled, busy: Boolean(props.loading) }}
       disabled={disabled}

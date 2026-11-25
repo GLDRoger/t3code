@@ -1,5 +1,5 @@
 import { kinGuardedRead, makeKinClient } from "@t3tools/client-runtime/kin/kinClient";
-import type { KinDockTab } from "@t3tools/client-runtime/kin/kinJoin";
+import type { KinDestination } from "@t3tools/client-runtime/kin/kinNavigation";
 import { makeKinScreenReads } from "@t3tools/client-runtime/kin/kinScreenReads";
 import { createKinRpcCommand } from "@t3tools/client-runtime/kin/kinAccess";
 import { watchKinChatForPush } from "@t3tools/client-runtime/kin-push";
@@ -24,7 +24,10 @@ import { Atom, AtomRegistry } from "effect/reactivity";
 
 import { connectionAtomRuntime } from "../../../connection/runtime";
 import { appAtomRegistry } from "../../../state/atom-registry";
+import { kinOutboxIdentity } from "@t3tools/client-runtime/kin/kinOutbox";
+
 import { clearKinCache, syncKinCacheIdentity, withKinCache, withKinCacheStream } from "./kinCache";
+import { syncKinOutboxIdentity } from "./kinOutboxRemoval";
 
 export type { KinSynced } from "@t3tools/client-runtime/kin/kinStreams";
 
@@ -62,7 +65,10 @@ export const kinCachedDockAtom = Atom.family((environmentId: EnvironmentId) =>
 );
 
 export const saveKinDockAtom = connectionAtomRuntime.fn(
-  (input: { readonly environmentId: EnvironmentId; readonly tabs: ReadonlyArray<KinDockTab> }) =>
+  (input: {
+    readonly environmentId: EnvironmentId;
+    readonly tabs: ReadonlyArray<KinDestination>;
+  }) =>
     withKinCache(dockCache.save(input.environmentId, DOCK_CACHE_KEY, input.tabs)).pipe(
       Effect.andThen(
         Effect.sync(() => appAtomRegistry.refresh(kinCachedDockAtom(input.environmentId))),
@@ -96,7 +102,9 @@ const kin = makeKinClient(connectionAtomRuntime, appAtomRegistry, {
     environmentId: EnvironmentId,
     result: KinOrgsListResult,
   ) {
-    yield* syncKinCacheIdentity(environmentId, result.me[0]?.personId ?? null);
+    const identity = kinOutboxIdentity(result) ?? null;
+    const changed = yield* syncKinCacheIdentity(environmentId, identity);
+    yield* Effect.promise(() => syncKinOutboxIdentity(environmentId, identity, changed));
     yield* withKinCache(orgsCache.save(environmentId, ORGS_CACHE_KEY, result));
     appAtomRegistry.refresh(kinCachedOrgsAtom(environmentId));
   }),
@@ -106,7 +114,10 @@ const kin = makeKinClient(connectionAtomRuntime, appAtomRegistry, {
 export const markKinHostKnown = kin.markKinHostKnown;
 export const retryKinWorkLive = kin.retryKinWorkLive;
 export const retryKinAccess = kin.retryAccess;
+export const refreshKinAccessMe = kin.refreshAccessMe;
 export const refreshKinAgents = kin.refreshKinAgents;
+export const refreshKinBriefs = kin.refreshKinBriefs;
+export const refreshKinHost = kin.refreshKinHost;
 
 const approvalRead = createKinRpcCommand(connectionAtomRuntime, {
   label: "kin:approval:read",
@@ -157,6 +168,15 @@ export const kinClient = {
   registerPush: createKinRpcCommand(connectionAtomRuntime, {
     label: "kin:register-push",
     tag: KIN_PUSH_WS_METHODS.registerDevice,
+  }),
+  unregisterPush: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:unregister-push",
+    tag: KIN_PUSH_WS_METHODS.unregisterDevice,
+  }),
+  /** Which of this host's delivered notifications are settled, and the badge. */
+  reconcilePush: createKinRpcCommand(connectionAtomRuntime, {
+    label: "kin:reconcile-push",
+    tag: KIN_PUSH_WS_METHODS.reconcile,
   }),
   /** Mounted while a chat is on screen: the host skips this device's pushes for it. */
   pushWatch: createEnvironmentSubscriptionAtomFamily(connectionAtomRuntime, {

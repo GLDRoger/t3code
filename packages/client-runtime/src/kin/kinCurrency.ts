@@ -1,5 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format a rate's day for React render, outside an Effect runtime.
-import { kinWhenFormat } from "@t3tools/contracts";
+import { kinCurrency, kinWhenFormat } from "@t3tools/contracts";
 import type {
   KinRecordDetail,
   KinRecordKey,
@@ -7,6 +7,8 @@ import type {
   KinCompanyProfileSetInput,
   KinCurrencyRate,
   KinMoney,
+  KinMoneyAbout,
+  KinMoneySummary,
   KinMoneyTotals,
   KinOrgId,
 } from "@t3tools/contracts";
@@ -19,11 +21,17 @@ import { kinMinorDigits, kinMoneyText } from "./kinLists.ts";
  * into an exact figure, an invoice, a receipt or an export.
  */
 
+/** "rupees" for INR, a currency's code where it has no name of its own. */
+const homeUnits = (home: string) => {
+  const major = kinCurrency(home).major;
+  return major === home ? home : major.toLowerCase();
+};
+
 export const KIN_CURRENCY = {
   ratesFailed: "Couldn't load the rates",
   exactStays: "Exact figures, invoices and exports stay in their own currency.",
-  paidUnlinked: (currency: string) =>
-    `Paid in ${currency}. No bank row is linked yet, so the rupees received aren't known.`,
+  paidUnlinked: (currency: string, home: string) =>
+    `Paid in ${currency}. No bank row is linked yet, so the ${homeUnits(home)} received aren't known.`,
   noRates: "No rates yet, so no foreign amount shows an estimate.",
   rateForEstimates: "Use this rate for estimates",
   setRate: "Set a rate",
@@ -40,7 +48,13 @@ export const KIN_CURRENCY = {
   badRate: "Enter a rate above zero, like 84.25.",
   badDay: "Enter a day as YYYY-MM-DD.",
   sameAsHome: (currency: string) => `${currency} is the home currency already.`,
+  /** "About $1,540 owed at your rates; AED not included". */
+  aboutOwed: (amount: string, missing: ReadonlyArray<string>) =>
+    `About ${amount} owed at your rates${missing.length === 0 ? "" : `; ${kinAnd(missing)} not included`}`,
 };
+
+const kinAnd = (parts: ReadonlyArray<string>) =>
+  parts.length < 2 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
 
 /** The rates the owner set and the currency estimates are in. Absent until the profile loads. */
 export interface KinRates {
@@ -91,7 +105,8 @@ export interface KinEstimate {
 }
 
 const dayFormat = kinWhenFormat("dateYear", { zone: "UTC" });
-const kinRateDay = (day: string) => dayFormat.format(new Date(`${day}T00:00:00Z`));
+/** "Nov 10, 2026" for a rate's `YYYY-MM-DD` day. */
+export const kinRateDay = (day: string) => dayFormat.format(new Date(`${day}T00:00:00Z`));
 
 /** "₹84.25 per $1, as of 10 Nov 2026". */
 export function kinRateLine(rate: KinCurrencyRate, home: string): string {
@@ -167,6 +182,35 @@ export function kinTotalsEstimate(
     missing: [],
     basis,
   };
+}
+
+/**
+ * The one line beside what is owed: the host's estimate at the owner's rates, naming what it
+ * leaves out. An older host sends none; then it is this client's, only with every rate set.
+ */
+export function kinOwedAbout(
+  summary: {
+    readonly owed: Pick<KinMoneySummary["owed"], "total">;
+    readonly about?: KinMoneySummary["about"];
+  },
+  rates: KinRates | null,
+): { readonly text: string; readonly basis: ReadonlyArray<string> } | null {
+  if (summary.about === undefined) {
+    const all = kinTotalsEstimate(summary.owed.total, rates);
+    return all?.all == null
+      ? null
+      : { text: `${all.all} owed (estimate)`, basis: all.basis.map((line) => `At ${line}.`) };
+  }
+  const about: KinMoneyAbout | undefined = summary.about.owed;
+  if (about === undefined) return null;
+  const basis = summary.owed.total.flatMap((money) => {
+    const rate =
+      rates === null || money.currency === about.home || about.missing.includes(money.currency)
+        ? null
+        : kinRateFor(rates, money.currency);
+    return rate === null ? [] : [`At ${kinRateLine(rate, about.home)}.`];
+  });
+  return { text: KIN_CURRENCY.aboutOwed(kinMoneyText(about.total), about.missing), basis };
 }
 
 /** The foreign currencies among `totals` that have no rate yet. */
@@ -275,6 +319,8 @@ function kinCurrencyName(currency: string): string {
 /** How a foreign-currency invoice says what currency it is in, and what it is about worth. */
 export interface KinInvoiceCurrencyView {
   readonly currency: string;
+  /** The company's home currency, the one an estimate is in. */
+  readonly home: string;
   /** "Amounts in US Dollar (USD)". */
   readonly label: string;
   readonly estimate: KinEstimate | null;
@@ -296,6 +342,7 @@ export function kinInvoiceCurrency(
   const estimate = kinEstimate(amount, rates);
   return {
     currency: amount.currency,
+    home: rates.home,
     label: `Amounts in ${kinCurrencyName(amount.currency)}`,
     estimate,
     missingRate: estimate === null,

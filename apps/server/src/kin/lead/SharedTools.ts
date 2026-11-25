@@ -5,7 +5,11 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
+import { SALES_SHARED_TOOLS } from "../sales/policies.ts";
 import { aborted, askedIn, askersDirectChat, effectiveAudience, turnChat } from "./Audience.ts";
+import { billToolAllowed } from "./billsOnly.ts";
+import { reviewToolAllowed } from "./outsideReview.ts";
+import { mailboxPerson } from "../connections/turnMailbox.ts";
 
 type Turn = {
   readonly orgId: KinOrgId;
@@ -33,6 +37,18 @@ const inTurnChat: Condition = Effect.fnUntraced(function* (turn, args) {
   return typeof chatId === "string" && (yield* turnChat(turn))?.chatId === chatId;
 });
 
+/** A message in the chat the turn answers; `ownMessages.ts` checks the rest inside the change. */
+const messageInTurnChat: Condition = Effect.fnUntraced(function* (turn, args) {
+  const messageId = field(args, "messageId");
+  if (typeof messageId !== "string") return false;
+  const sql = yield* SqlClient.SqlClient;
+  const chatId = (yield* turnChat(turn))?.chatId;
+  if (chatId === undefined) return false;
+  const rows = yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${turn.orgId}
+    AND message_id = ${messageId} AND chat_id = ${chatId} LIMIT 1`;
+  return rows.length > 0;
+});
+
 const inAskedChat: Condition = Effect.fnUntraced(function* (turn, args) {
   const chatId = field(args, "chatId");
   return typeof chatId === "string" && (yield* askedIn(turn, chatId));
@@ -48,10 +64,43 @@ const ownReminder: Condition = Effect.fnUntraced(function* (turn, args) {
   return typeof chatId === "string" && (yield* askersDirectChat(turn, chatId));
 });
 
-/** Asked in the asker's own chat with this agent; `LeadMemory.cancelOwn` checks the item is theirs. */
+/** `chatId` is a chat with other people, not a direct one, that this turn was asked in. */
+const sharedAsked = Effect.fnUntraced(function* (turn: Turn, chatId: unknown) {
+  if (typeof chatId !== "string" || !(yield* askedIn(turn, chatId))) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${turn.orgId}
+    AND chat_id = ${chatId} AND kind <> 'direct' AND archived_at IS NULL LIMIT 1`;
+  return rows.length > 0;
+});
+
+/**
+ * A reminder for the asker in their own chat with this agent, for the chat it was asked in, or for
+ * the asker alone; `LeadMemory.placeFor` checks the speaker and source in the write.
+ */
+const chatReminder: Condition = Effect.fnUntraced(function* (turn, args) {
+  if (field(args, "onDue") !== "remind") return false;
+  if (field(args, "alone") === true) return true;
+  return (yield* ownReminder(turn, args)) || (yield* sharedAsked(turn, field(args, "chatId")));
+});
+
+/** A routine for the chat it was asked in, or the asker alone; who may set one is `LeadMemory`'s. */
+const chatRoutine: Condition = Effect.fnUntraced(function* (turn, args) {
+  return field(args, "alone") === true || (yield* sharedAsked(turn, field(args, "chatId")));
+});
+
+/**
+ * Asked in the asker's own chat with this agent, or in a chat with other people;
+ * `LeadMemory.cancelOwn` and `chatsOwn` check the item and who may change it.
+ */
 const ownReminderCancel: Condition = Effect.fnUntraced(function* (turn) {
   const chat = yield* turnChat(turn);
-  return chat !== undefined && (yield* askersDirectChat(turn, chat.chatId));
+  if (chat === undefined) return false;
+  return (yield* askersDirectChat(turn, chat.chatId)) || (yield* sharedAsked(turn, chat.chatId));
+});
+
+/** The turn is one person's own (`mailboxPerson`): it may reach their own mailbox, never the company's. */
+const ownMailboxTurn: Condition = Effect.fnUntraced(function* (turn) {
+  return (yield* mailboxPerson(turn)) !== null;
 });
 
 /** The turn answers in the company chat: what it makes is shared with the whole team. */
@@ -76,21 +125,33 @@ export const SHARED_TOOLS = {
   kin_ask: "allowed",
   // Closes a question to the person in the turn's chat; only its asker withdraws one.
   kin_ask_close: "allowed",
+  // Checked against everyone behind the turn, in its own transaction (`askPerson`).
+  kin_ask_person: "allowed",
   kin_react: "allowed",
+  // Its own unread message, only in the chat this turn answers.
+  message_withdraw: messageInTurnChat,
+  message_replace: messageInTurnChat,
   // Numbers the agent supplies, which it could have written in that chat as text; it reads nothing.
   kin_chart: "allowed",
   // Like a chart, in the sealed frame; its figures are checked against everyone behind the
   // turn (`KinLevelGate.visual`).
   kin_visual: "allowed",
+  // Its page is checked against everyone behind the turn as a visual's is; an earlier picture it
+  // revises is one they all see; its doc carries the turn's audience (`teamView.personSees`).
+  kin_picture: "view",
   kin_chat_read: inAskedChat,
   // Lists only the names of the leads in the asked chat (`KinHandoff.leads`).
   kin_leads: "allowed",
   // An agent's model is the owner's call, made in the owner's own chat.
   agent_update: "refused",
+  // Why agents can't work and the computer's state: no company data, and the asker's answer.
+  kin_computer: "allowed",
   // What everyone in the org sees on profiles; workload only in the owner's own turns.
   people_read: "allowed",
   // Saved only for the one person who asked, with their own rights.
   people_update: "allowed",
+  // Only the speaker's own date, in their own direct chat with this agent (`setAway`).
+  away_set: "allowed",
   // Only to an agent in the group asked in (`KinHandoff.passInRoom`).
   kin_hand_off: "allowed",
   // Posts only the person's own stored words in their own direct chat; nothing of this turn.
@@ -106,10 +167,12 @@ export const SHARED_TOOLS = {
   kin_journal: "team_memory",
   // Who may know an item is the owner's to decide.
   memory_label: "refused",
-  kin_defer: ownReminder,
-  kin_schedule: "refused",
+  kin_defer: chatReminder,
+  kin_schedule: chatRoutine,
   kin_cancel: ownReminderCancel,
   kin_github_review: "refused",
+  // Only from the asker's own direct chat with this agent, checked by the service (`askReview`).
+  kin_github_review_ask: "allowed",
   kin_github_link: "refused",
   kin_github_watch: "refused",
   // Work tasks every person behind the turn may see, shaped as their own screens show them.
@@ -128,6 +191,12 @@ export const SHARED_TOOLS = {
   // Giving out a task everyone there sees; handing back is the asker's own task, in their view.
   record_assign: "view",
   record_hand_back: "view",
+  // A note on a task everyone there sees, for them; it changes nothing on the task.
+  record_comment: "view",
+  // A web link on an entry each of them may edit on their own screen.
+  record_link: "view",
+  // A project's note for every task is the owner level's.
+  project_note: "refused",
   // Docs every person behind the turn may see; writes as each of them may (a project's lead in
   // their project). Restoring stays the owner's.
   doc_create: "view",
@@ -144,23 +213,34 @@ export const SHARED_TOOLS = {
   payment_record: "refused",
   // Figures and dates of the money lines every person behind the turn sees, such as their
   // project's; the bank, budgets and the company's own figures stay the owner's.
+  // The company's stage names: no deal, figure or client in them.
+  deal_stages: "view",
   money_summary: "view",
   money_query: "refused",
   budget_set: "refused",
+  number_record: "refused",
+  numbers_read: "refused",
   dates_query: "view",
   company_profile: "refused",
+  // How Kin is set up for the company is the owner level's to change.
+  company_sections: "refused",
+  numbers_watch: "refused",
   // A statement is the owner's bank account; reading one marks the turn as a sensitive read.
   statement_read: "refused",
   statement_rows: "refused",
+  // Bills become the owner's expenses.
+  bills_add: "refused",
+  bill_read: "refused",
   // Generated files, recipes and issued numbers read and make the owner's records and money.
   kin_document: "refused",
   kin_recipes: "refused",
   kin_issue: "refused",
   kin_recipe_undo: "refused",
   kin_receipt: "refused",
-  // Connected services are the owner's accounts; the service checks the audience again.
-  kin_connection_tools: "refused",
-  kin_connection_call: "refused",
+  // Connected services are the owner's accounts, and a person's own mailbox theirs alone, in a
+  // turn that is theirs alone; the service decides which again (`turnMailboxes`).
+  kin_connection_tools: ownMailboxTurn,
+  kin_connection_call: ownMailboxTurn,
   kin_connection_offer: "refused",
   kin_connection_note: "refused",
   // The company's and clients' social accounts are the owner's.
@@ -169,6 +249,7 @@ export const SHARED_TOOLS = {
   social_draft: "refused",
   social_week: "refused",
   social_pack: "refused",
+  ...SALES_SHARED_TOOLS,
   // A shell's worth of reach as the owner, on his GitHub login (`AgentSession`).
   ...t3ToolsRefused,
 } satisfies Record<string, SharedToolPolicy>;
@@ -200,13 +281,18 @@ export const sharedToolAllowed = Effect.fn("KinSharedTools.allowed")(
 );
 
 /**
- * The one check for a tool call: nothing in a turn aborted for its audience, everything in an
- * owner-only one, else what `SHARED_TOOLS` allows. The gate runs it before every call; services
- * whose writes outlive the call run it again inside them.
+ * The one check for a tool call: nothing in a turn aborted for its audience, only `REVIEW_TOOLS`
+ * in an outside review and `BILLS_TOOLS` in a bills turn, everything in an owner-only turn, else
+ * what `SHARED_TOOLS` allows. The gate runs it before every call; services whose writes outlive
+ * the call run it again inside them.
  */
 export const toolAdmitted = Effect.fn("KinSharedTools.admitted")(
   function* (turn: Turn, name: string, args: unknown) {
     if (yield* aborted(turn)) return false;
+    const review = yield* reviewToolAllowed(turn, name, args);
+    if (review !== undefined) return review;
+    const bills = yield* billToolAllowed(turn, name, args);
+    if (bills !== undefined) return bills;
     if ((yield* effectiveAudience(turn)) === "owner_only") return true;
     return yield* sharedToolAllowed(turn, name, args);
   },

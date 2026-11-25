@@ -13,17 +13,28 @@ import {
   KIN_DOC_KIND_LABELS,
   kinDocKindOf,
   kinDocUnfiled,
+  kinDocCanEdit,
+  kinDocCopyText,
+  kinDocDeletedLine,
+  kinDocEditInput,
+  kinDocEditOpen,
+  kinDocEditOutcome,
+  type KinDocEditOpened,
   kinDocDiffSummary,
+  kinDocSameWords,
   kinDocPdfInput,
   kinDocRestoreOutcome,
   kinDocVersionView,
 } from "@t3tools/client-runtime/kin/kinDocs";
+import type { KinNotificationDestination } from "@t3tools/client-runtime/kin/kinNotificationDestination";
+import { KIN_TASK_RECORD } from "@t3tools/client-runtime/kin/kinTaskRecord";
 import { KIN_DOC_CHANGES } from "@t3tools/client-runtime/kin/kinDocChanges";
 import { KIN_DOC_COMPANY, KIN_DOC_SHARE } from "@t3tools/client-runtime/kin/kinWork";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
-import type { KinDocDetail, KinRecordKey } from "@t3tools/contracts";
+import type { KinDocDetail, KinRecordKey, KinWidgetId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { ArrowLeftIcon, FolderInputIcon, XIcon } from "lucide-react";
+import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { DiffWorkerPoolProvider } from "../components/DiffWorkerPoolProvider";
@@ -47,6 +58,15 @@ import {
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
 import {
+  Dialog,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogPanel,
+  DialogPopup,
+  DialogTitle,
+} from "../components/ui/dialog";
+import {
   Sheet,
   SheetDescription,
   SheetHeader,
@@ -54,8 +74,9 @@ import {
   SheetTitle,
 } from "../components/ui/sheet";
 import { Skeleton } from "../components/ui/skeleton";
+import { Textarea } from "../components/ui/textarea";
 import { toastManager } from "../components/ui/toast";
-import { isElectron } from "../env";
+import { hasDesktopWindowChrome } from "./kinDesktopWindow";
 import { useRenderedAppearance } from "../hooks/useTheme";
 import {
   getRenderablePatch,
@@ -69,11 +90,16 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinDocChangesView } from "./KinDocChangesView";
 import { KinDocFileDialog } from "./KinDocFileDialog";
 import { KinDocReader } from "./KinDocReader";
+import { openDestination } from "./KinNotifications";
+import { KinLinkedGroups } from "./KinWorkItemSheet";
+import { KinWatchLine } from "./KinWatchLine";
 import { KinWorkShareRow } from "./KinWorkShareRow";
 import { KinWorkNotice, KinLoadFailed } from "./KinWorkParts";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinDoc, useKinDocAsk, useKinDocHistory } from "./useKinDocs";
+import { useKinDocDelete } from "./useKinDocDelete";
+import { toastDocDeleted, toastDocRestored } from "./kinDocDeleteToasts";
 import { kinHostConnected } from "./useKinHost";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 
@@ -81,6 +107,8 @@ import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 export interface KinDocWhere {
   readonly doc: KinRecordKey;
   readonly version?: number;
+  /** The long draft card it was opened from: its reader may read that version without Docs. */
+  readonly card?: KinWidgetId;
   readonly section?: string;
   /** The two versions compared; `from` is the one before `to` when absent. */
   readonly changes?: { readonly to: number; readonly from?: number };
@@ -100,6 +128,10 @@ export function KinDocPage(
     readonly placeTitle: string;
     /** Beside its place's list, under that place's header, rather than the whole page. */
     readonly inPane: boolean;
+    /** A task or money entry linked to the doc, on its panel over the place. */
+    readonly onOpenKey: (key: KinRecordKey) => void;
+    readonly onOpenClient: (key: KinRecordKey) => void;
+    readonly onOpenProject: (key: KinRecordKey) => void;
   },
 ) {
   const { placeTitle, inPane } = props;
@@ -109,7 +141,12 @@ export function KinDocPage(
   const key = where.doc;
   const comparing = where.changes;
   // Compared versions are read at `to`, so the page names the doc as it was then.
-  const { state, refresh } = useKinDoc(props, key, comparing?.to ?? where.version ?? null);
+  const { state, refresh } = useKinDoc(
+    props,
+    key,
+    comparing?.to ?? where.version ?? null,
+    comparing === undefined ? (where.card ?? null) : null,
+  );
   const doc = state._tag === "ready" ? state.value : null;
   const canRestore = useAtomValue(kinClient.docRestore.permissionAtom(environmentId));
   const canRender = useAtomValue(kinClient.docRender.permissionAtom(environmentId));
@@ -133,6 +170,7 @@ export function KinDocPage(
   };
   const restore = useAtomCommand(kinClient.docRestore, { reportFailure: false });
   const ownerLevel = useKinOwnerLevel(environmentId);
+  const navigate = useNavigate();
   const ask = useKinDocAsk(props, doc, names.me, ownerLevel);
   const [actions, setActions] = useState<HTMLElement | null>(null);
   const [restoring, setRestoring] = useState<Restoring>(null);
@@ -141,7 +179,12 @@ export function KinDocPage(
   /** The version that was latest before a restore, which restoring again undoes. */
   const [undo, setUndo] = useState<number | null>(null);
   const [filing, setFiling] = useState(false);
+  // Taken when the editor opens; the doc may refresh underneath without touching the draft.
+  const [editing, setEditing] = useState<KinDocEditOpened | null>(null);
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(environmentId));
+  const deleting = useKinDocDelete(props);
+  const nowMs = useNowMinuteMs();
+  const mayDelete = doc !== null && deleting.allowed && doc.deletable === true;
 
   const run = async (target: NonNullable<Restoring>, undoing: boolean) => {
     if (!kinHostConnected(environmentId)) {
@@ -166,16 +209,30 @@ export function KinDocPage(
     onGo({ doc: key });
   };
 
+  const openLinked = (to: KinNotificationDestination) => {
+    if (to._tag !== "record") return void openDestination(navigate, props, to);
+    if (to.kind === "doc") return onGo({ doc: to.key });
+    if (to.kind === "client") return props.onOpenClient(to.key);
+    if (to.kind === "project") return props.onOpenProject(to.key);
+    props.onOpenKey(to.key);
+  };
+
   const copyLink = (section: string | null) => {
     void navigator.clipboard.writeText(props.linkTo(section)).then(
       () => toastManager.add({ type: "success", title: KIN_DOCS.copied }),
       () => setProblem("Couldn't copy the link."),
     );
   };
+  const copyText = (markdown: string) => {
+    void navigator.clipboard.writeText(kinDocCopyText(markdown)).then(
+      () => toastManager.add({ type: "success", title: KIN_DOCS.textCopied }),
+      () => setProblem("Couldn't copy the text."),
+    );
+  };
 
   return (
     <>
-      <WorkspacePageHeader electron={isElectron && !inPane} titlebarInset={!inPane}>
+      <WorkspacePageHeader electron={hasDesktopWindowChrome && !inPane} titlebarInset={!inPane}>
         {inPane && comparing === undefined ? null : (
           <Button
             size="icon-sm"
@@ -255,8 +312,45 @@ export function KinDocPage(
           )}
         </div>
       )}
+      {doc === null || comparing !== undefined || !doc.archived ? null : (
+        <div className="mx-auto w-full max-w-3xl px-6 pt-3">
+          <Alert variant="warning">
+            <AlertDescription>
+              {doc.deleted === undefined
+                ? KIN_DOCS.deletedBanner
+                : `${kinDocDeletedLine(doc.deleted, names, new Date(nowMs))}. ${KIN_DOCS.deletedBanner}`}
+            </AlertDescription>
+            {mayDelete ? (
+              <AlertAction>
+                <Button
+                  size="xs"
+                  variant="outline"
+                  disabled={deleting.busy !== null}
+                  aria-busy={deleting.busy !== null}
+                  onClick={() =>
+                    void deleting.restore(doc.key).then((why) => {
+                      toastDocRestored(doc.title, why);
+                      if (why === null) refresh();
+                    })
+                  }
+                >
+                  {deleting.busy === null ? KIN_DOCS.restoreDoc : KIN_DOCS.restoringDoc}
+                </Button>
+              </AlertAction>
+            ) : null}
+          </Alert>
+        </div>
+      )}
       {doc === null || comparing !== undefined ? null : (
         <KinDocFiling doc={doc} canFile={canFile} onFile={() => setFiling(true)} />
+      )}
+      {doc === null || comparing !== undefined ? null : (
+        <KinWatchLine
+          environmentId={environmentId}
+          orgId={orgId}
+          recordKey={doc.key}
+          className="mx-auto w-full max-w-3xl px-6 pt-3"
+        />
       )}
       {doc === null ||
       comparing !== undefined ||
@@ -281,6 +375,19 @@ export function KinDocPage(
             />
           )}
         </div>
+      )}
+      {editing === null ? null : (
+        <KinDocSectionEditor
+          {...props}
+          docTitle={doc?.title ?? editing.key}
+          opened={editing}
+          onClose={() => setEditing(null)}
+          onSaved={(version) => {
+            setEditing(null);
+            toastManager.add({ type: "success", title: KIN_DOCS.saved(version) });
+            refresh();
+          }}
+        />
       )}
       {filing && doc !== null ? (
         <KinDocFileDialog {...props} doc={doc} onClose={() => setFiling(false)} />
@@ -337,12 +444,35 @@ export function KinDocPage(
           onPoint={ask}
           suggests={!ownerLevel}
           onCopyLink={copyLink}
+          onCopyText={copyText}
+          onEdit={kinDocCanEdit(doc) ? (section) => setEditing(kinDocEditOpen(doc, section)) : null}
           onSeeChanges={(to) => onGo({ doc: key, changes: { to } })}
           onOpenLatest={() => onGo({ doc: key })}
           onHistory={() => onGo({ ...where, history: true })}
           onExportPdf={canPdf ? () => void exportPdf() : null}
           onRestore={
             canRestore ? (version) => setRestoring({ version, latest: doc.latest.version }) : null
+          }
+          onDelete={
+            mayDelete && !doc.archived && deleting.busy === null
+              ? () => {
+                  setProblem(null);
+                  void deleting.remove(doc.key).then((why) => {
+                    if (why !== null) return setProblem(why);
+                    onGo(null);
+                    toastDocDeleted(doc.title, () => deleting.restore(doc.key));
+                  });
+                }
+              : null
+          }
+          linked={
+            <KinLinkedGroups
+              item={doc}
+              title={KIN_TASK_RECORD.linked}
+              // The filing row above the doc names its client and project already.
+              parentsShown
+              onOpen={openLinked}
+            />
           }
         />
       )}
@@ -501,7 +631,7 @@ function KinDocChanges(
           )}
         </header>
         {patch === null ? (
-          <KinWorkNotice {...KIN_DOCS.noChanges} />
+          <KinWorkNotice {...kinDocSameWords(diff)} />
         ) : !source ? (
           <KinDocChangesView
             environmentId={props.environmentId}
@@ -665,12 +795,91 @@ function KinDocHistory(
                 aria-busy={state.loadingMore}
                 onClick={() => void list.loadMore()}
               >
-                {state.moreFailed ? KIN_RETRY : "Show earlier versions"}
+                {state.moreFailed ? KIN_RETRY : KIN_DOCS.earlierVersions}
               </Button>
             </div>
           )}
         </div>
       </SheetPopup>
     </Sheet>
+  );
+}
+
+/** One section changed by hand; a refusal keeps what was typed, and nothing else closes it. */
+function KinDocSectionEditor(
+  props: KinWorkTarget & {
+    readonly docTitle: string;
+    /** What the editor opened on (`kinDocEditOpen`): the save names it, never the doc as it reads now. */
+    readonly opened: KinDocEditOpened;
+    readonly onClose: () => void;
+    readonly onSaved: (version: number) => void;
+  },
+) {
+  const { environmentId, orgId, opened } = props;
+  const send = useAtomCommand(kinClient.docEditSection, { reportFailure: false });
+  const [text, setText] = useState(opened.was);
+  const [requestId] = useState(randomUUID);
+  const [busy, setBusy] = useState(false);
+  const [problem, setProblem] = useState<string | null>(null);
+  const changed = text !== opened.was;
+  const save = async () => {
+    if (busy || !changed) return;
+    if (!kinHostConnected(environmentId)) return setProblem(KIN_DOCS.editOffline);
+    const input = kinDocEditInput(orgId, opened, text, requestId);
+    setBusy(true);
+    setProblem(null);
+    const outcome = kinDocEditOutcome(await send({ environmentId, input }));
+    setBusy(false);
+    if (outcome._tag === "refused") return setProblem(outcome.text);
+    props.onSaved(outcome.doc.version.version);
+  };
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        // Typed words go only by Cancel, never by a stray click outside.
+        if (!open && !busy && !changed) props.onClose();
+      }}
+    >
+      <DialogPopup className="max-w-2xl">
+        <form
+          className="contents"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void save();
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle>{KIN_DOCS.editing(opened.title)}</DialogTitle>
+            <DialogDescription>{props.docTitle}</DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <div className="flex flex-col gap-3">
+              <Textarea
+                aria-label={KIN_DOCS.editing(opened.title)}
+                rows={14}
+                value={text}
+                disabled={busy}
+                autoFocus
+                onChange={(event) => setText(event.target.value)}
+              />
+              {problem === null ? null : (
+                <Alert variant="error">
+                  <AlertDescription>{problem}</AlertDescription>
+                </Alert>
+              )}
+            </div>
+          </DialogPanel>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={busy} onClick={props.onClose}>
+              {KIN_DOCS.cancel}
+            </Button>
+            <Button type="submit" disabled={busy || !changed} aria-busy={busy}>
+              {busy ? KIN_DOCS.saving : KIN_DOCS.save}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogPopup>
+    </Dialog>
   );
 }

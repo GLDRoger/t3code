@@ -3,22 +3,18 @@ import {
   RelayEnvironmentConnectNotAuthorizedError,
   RelayEnvironmentEndpointTimedOutError,
 } from "@t3tools/contracts/relay";
+import { EnvironmentAuthInvalidError } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 
 import {
-  KIN_JOIN_LINK_SPENT,
-  mapKinInviteError,
+  isHostCredentialRefusal,
   mapManagedRelayError,
   mapRemoteDpopEnvironmentError,
 } from "./errors.ts";
 import { DPOP_UNKNOWN_HINT } from "../relay/errorPresentation.ts";
 import { ManagedRelayRequestFailedError } from "../relay/managedRelay.ts";
 import { NETWORK_BLOCKING_HINT } from "../errors/network.ts";
-import {
-  RemoteEnvironmentAuthFetchError,
-  RemoteEnvironmentAuthTimeoutError,
-  RemoteEnvironmentAuthUndeclaredStatusError,
-} from "../rpc/http.ts";
+import { RemoteEnvironmentAuthFetchError, RemoteEnvironmentAuthTimeoutError } from "../rpc/http.ts";
 
 describe("mapManagedRelayError", () => {
   it("keeps a timeout reported by the relay distinct from a local network failure", () => {
@@ -113,26 +109,18 @@ describe("mapRemoteDpopEnvironmentError", () => {
       detail: `${error.message} ${NETWORK_BLOCKING_HINT}`,
     });
   });
-});
 
-describe("mapKinInviteError", () => {
-  const requestUrl = "https://kin.example.test/kin/invites/accept";
-
-  it("says a refused invite is used or expired, and leaves outages as retryable", () => {
-    expect(
-      mapKinInviteError(
-        new RemoteEnvironmentAuthUndeclaredStatusError({ status: 400, requestUrl }),
-      ),
-    ).toMatchObject({
-      _tag: "ConnectionBlockedError",
-      reason: "authentication",
-      detail: KIN_JOIN_LINK_SPENT,
-    });
-    // Kin switched off answers 503: the link is not spent, so it must not read as used.
-    expect(
-      mapKinInviteError(
-        new RemoteEnvironmentAuthUndeclaredStatusError({ status: 503, requestUrl }),
-      ),
-    ).toMatchObject({ _tag: "ConnectionTransientError", reason: "remote-unavailable" });
+  it("keeps a direct host's clock refusal apart from a refused pairing", () => {
+    const mapped = mapRemoteDpopEnvironmentError(
+      new EnvironmentAuthInvalidError({
+        code: "auth_invalid",
+        reason: "invalid_credential",
+        dpopFailureReason: "time_window",
+        traceId: "trace-clock",
+      }),
+      "direct",
+    );
+    expect(mapped).toMatchObject({ via: "direct", failureCause: "clock_skew" });
+    expect(isHostCredentialRefusal(mapped)).toBe(false);
   });
 });

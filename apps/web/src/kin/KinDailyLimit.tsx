@@ -1,6 +1,8 @@
 import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import {
   KIN_DAILY_LIMIT,
+  type KinDailyLimitChoice,
+  kinDailyLimitAsks,
   kinDailyLimitChoices,
   kinDailyLimitUsed,
   kinDailyLimitWaiting,
@@ -9,32 +11,26 @@ import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
 
-import { SettingsRow, SettingsSection } from "../components/settings/settingsLayout";
-import { searchableSetting } from "../components/settings/settingsSearch";
-import {
-  Select,
-  SelectItem,
-  SelectPopup,
-  SelectTrigger,
-  SelectValue,
-} from "../components/ui/select";
+import { useSearchableSetting } from "../components/settings/settingsSearch";
 import { useAtomCommand } from "../state/use-atom-command";
+import { KinConfirm } from "./KinConfirm";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { kinClient } from "./kinClient";
+import { KinSettingsChoice } from "./settings/KinSettingsControls";
+import { KinSettingsRow, KinSettingsStatus } from "./settings/KinSettingsLayout";
 import { useKinHost } from "./useKinHost";
 import type { KinWorkTarget } from "./useKinWork";
 
-/** The owner's daily limit, one choice in Settings; nothing shows where there is no Kin to set. */
+/** The owner's daily limit, one row with one choice; nothing shows where there is no Kin to set. */
 export function KinDailyLimitSetting() {
+  const searchableSetting = useSearchableSetting();
   const target = kinNewLeadTarget(useKinHost());
   return target === null ? null : (
-    <SettingsSection {...searchableSetting("kin-daily-limit")} hideTitle>
-      <DailyLimit {...target} />
-    </SettingsSection>
+    <DailyLimit {...target} searchId={searchableSetting("kin-daily-limit").id} />
   );
 }
 
-function DailyLimit(props: KinWorkTarget) {
+function DailyLimit(props: KinWorkTarget & { readonly searchId: string }) {
   const query = { environmentId: props.environmentId, input: { orgId: props.orgId } };
   const budgetAtom = kinClient.budget(query);
   const result = useAtomValue(budgetAtom);
@@ -42,63 +38,77 @@ function DailyLimit(props: KinWorkTarget) {
   const canSet = useAtomValue(kinClient.budgetSet.permissionAtom(props.environmentId));
   const set = useAtomCommand(kinClient.budgetSet, { reportFailure: false });
   const [failed, setFailed] = useState(false);
+  const [asking, setAsking] = useState<KinDailyLimitChoice | null>(null);
   const budget = Option.getOrNull(AsyncResult.value(result));
   // Only the owner reads the limit; a teammate's read is refused, so there is nothing to show.
   if (!canSet || AsyncResult.isFailure(result)) return null;
   const { choices, current } = kinDailyLimitChoices(budget);
   const waiting = kinDailyLimitWaiting(budget);
   const used = kinDailyLimitUsed(budget);
+  const choose = (picked: KinDailyLimitChoice) => {
+    setFailed(false);
+    void set({ ...query, input: { orgId: props.orgId, limits: picked.limits } }).then((outcome) => {
+      setFailed(AsyncResult.isFailure(outcome));
+      refresh();
+    });
+  };
   return (
-    <SettingsRow
-      title={KIN_DAILY_LIMIT.title}
-      description={failed ? KIN_DAILY_LIMIT.failed : KIN_DAILY_LIMIT.detail}
-      control={
-        <Select
-          items={choices.map(({ value, label }) => ({ value, label }))}
-          value={current}
-          disabled={budget === null}
-          onValueChange={(value) => {
-            const picked = choices.find((choice) => choice.value === value);
-            if (picked === undefined || picked.value === current) return;
-            setFailed(false);
-            void set({ ...query, input: { orgId: props.orgId, limits: picked.limits } }).then(
-              (outcome) => {
-                setFailed(AsyncResult.isFailure(outcome));
-                refresh();
-              },
-            );
-          }}
-        >
-          <SelectTrigger size="xs" className="w-48" aria-label={KIN_DAILY_LIMIT.title}>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectPopup align="end" alignItemWithTrigger={false}>
-            {choices.map(({ value, label }) => (
-              <SelectItem key={value} value={value}>
-                {label}
-              </SelectItem>
-            ))}
-          </SelectPopup>
-        </Select>
-      }
-    >
-      {used === null ? null : (
-        <p className="pt-2 text-xs text-muted-foreground">
-          {KIN_DAILY_LIMIT.used}: {used}
-        </p>
-      )}
-      {waiting.length === 0 ? null : (
-        <div className="pt-2 text-xs text-muted-foreground">
-          <p className="font-medium text-foreground">{KIN_DAILY_LIMIT.waiting}</p>
-          <ul className="pt-1">
-            {waiting.map((agent) => (
-              <li key={agent.agentId}>
-                {agent.name}: {agent.line}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </SettingsRow>
+    <>
+      <KinSettingsRow
+        searchId={props.searchId}
+        title={KIN_DAILY_LIMIT.title}
+        wrap
+        detail={
+          failed ? (
+            <span role="alert" className="text-destructive-foreground">
+              {KIN_DAILY_LIMIT.failed}
+            </span>
+          ) : waiting.length > 0 ? (
+            `${KIN_DAILY_LIMIT.waiting}: ${waiting.map((agent) => `${agent.name}, ${agent.line}`).join("; ")}`
+          ) : used === null ? (
+            KIN_DAILY_LIMIT.detail
+          ) : (
+            `${KIN_DAILY_LIMIT.used}: ${used}`
+          )
+        }
+        status={
+          waiting.length === 0 ? null : (
+            <KinSettingsStatus tone="attention">{KIN_DAILY_LIMIT.reached}</KinSettingsStatus>
+          )
+        }
+        control={
+          budget === null ? null : (
+            <KinSettingsChoice
+              label={KIN_DAILY_LIMIT.title}
+              value={current}
+              options={choices.map(({ value, label }) => ({ value, label }))}
+              onChange={(value) => {
+                const picked = choices.find((choice) => choice.value === value);
+                if (picked === undefined) return;
+                if (kinDailyLimitAsks(picked)) setAsking(picked);
+                else choose(picked);
+              }}
+            />
+          )
+        }
+      />
+      <KinConfirm
+        ask={
+          asking === null
+            ? null
+            : {
+                title: KIN_DAILY_LIMIT.noneAsk.title,
+                detail: KIN_DAILY_LIMIT.noneAsk.detail,
+                action: KIN_DAILY_LIMIT.noneAsk.confirm,
+              }
+        }
+        onConfirm={() => {
+          const picked = asking;
+          setAsking(null);
+          if (picked !== null) choose(picked);
+        }}
+        onClose={() => setAsking(null)}
+      />
+    </>
   );
 }

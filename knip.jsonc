@@ -17,6 +17,10 @@
       "vite": { "entry": [".github/**/*.test.cjs"] },
       "vitest": { "entry": [".github/**/*.test.cjs"] },
     },
+    "evals": {
+      // The grader loads these answers by path, as the server loads a definitions file.
+      "entry": ["workflow-authoring/fixtures/*.ts"],
+    },
     "scripts": {
       // Knip loads its preprocessor through a CLI option; native verification and
       // worktree setup (from t3.json) run directly. release-desktop.yml bundles the
@@ -24,13 +28,17 @@
       // electron-builder loads the macOS signer and the Linux afterPack hook by path, and mobile-e2e.ts runs
       // agent-device's CLI by path, and mobile-behavior.ts spawns its runner by path.
       // release-desktop.yml runs the desktop launch check through xvfb-run, which knip
-      // does not trace. kin-verify, kin-bench and kin-release-check run by hand, and a dev server spawns its scripted agent by path.
+      // does not trace. kin-verify, kin-bench, kin-lookbook and kin-release-check run by hand, a dev server spawns its scripted agent by path,
+      // and a look book instance preloads its clock with --import. The Kin host's update.sh runs kin-served-brand by path.
       "entry": [
         // These fixture scripts are injected into a browser page by path.
         "fixtures/*/*.js",
         "kin-bench.ts",
+        "kin-lookbook.ts",
+        "kin-lookbook/preload.ts",
         "kin-model.ts",
         "kin-release-check.ts",
+        "kin-served-brand.ts",
         "kin-verify.ts",
         "kin-verify/script-agent.ts",
         "knip-schemas.ts",
@@ -58,12 +66,15 @@
       "entry": [
         "src/bin.ts!",
         "src/claude-history-worker.ts!",
+        "src/process-launcher.ts!",
         "scripts/cli.ts",
         "scripts/fetch-expo-schema.ts",
         "scripts/kin-fake-mail.ts",
         "scripts/kin-fake-social.ts",
         "scripts/kin-feature-map.ts",
         "scripts/kin-push-test.ts",
+        "scripts/kin-week-measure.ts",
+        "scripts/kin-wire-scaled.ts",
         "scripts/probe-claude-fork-local-rollback-replay.ts",
         "scripts/update-test-shard-weights.ts",
         "scripts/verify-background-live.ts",
@@ -93,6 +104,7 @@
       // Electron loads these bundles by filename rather than importing them.
       "entry": [
         "gnome-extension/extension.js!",
+        "src/backend/DesktopBackendRecoveryWorker.ts!",
         "src/electron/WindowsForegroundFocusWorker.ts!",
         "src/snapShot/GlobalShiftShortcutWorker.ts!",
         "src/snapShot/RegionSnapShotWorker.ts!",
@@ -105,6 +117,7 @@
         "src/preview-pick-preload.ts!",
         "src/preview-pip-preload.ts!",
         "src/mac-permission-preload.ts!",
+        "src/kin/kin-shell-preload.ts!",
         "src/preview/Annotation.css!",
       ],
       // The injected runtime resolves Playwright by string; release tooling runs

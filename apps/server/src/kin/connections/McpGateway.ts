@@ -1,8 +1,10 @@
 import { McpClient, McpClientError, McpProtocol, McpSchema } from "effect/ai";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
@@ -53,10 +55,15 @@ export class KinMcpGateway extends Context.Service<
       },
       KinGatewayError
     >;
+    /**
+     * `confirmed`: sent on a person's Confirm, so once its request is handed over it is never
+     * sent again.
+     */
     readonly callTool: (
       target: GatewayTarget,
       tool: McpSchema.Tool,
       args: Readonly<Record<string, unknown>>,
+      confirmed?: boolean,
     ) => Effect.Effect<McpSchema.CallToolResult, KinGatewayError>;
     /** Drops the open client: after a key change, removal or a failed session. */
     readonly invalidate: (connectionId: string) => Effect.Effect<void>;
@@ -74,6 +81,20 @@ const egressRefusal = (error: unknown, depth = 0): string | undefined => {
   );
 };
 
+/** When a service that said "too often" (429) asks to be called again, from its Retry-After. */
+export const tryAgain = (retryAfter: string | undefined) => {
+  const seconds = /^\d+$/.test(retryAfter?.trim() ?? "") ? Number(retryAfter) : undefined;
+  if (seconds !== undefined)
+    return seconds <= 90
+      ? `try again in ${seconds} second${seconds === 1 ? "" : "s"}`
+      : `try again in ${Math.ceil(seconds / 60)} minutes`;
+  const at =
+    retryAfter === undefined ? undefined : Option.getOrUndefined(DateTime.make(retryAfter));
+  return at === undefined
+    ? "try again in a minute or so"
+    : `try again after ${DateTime.formatIso(at)}`;
+};
+
 const gatewayError = (error: McpClientError.McpClientError, host: string) => {
   const reason = error.reason;
   const refused = egressRefusal(error);
@@ -81,6 +102,11 @@ const gatewayError = (error: McpClientError.McpClientError, host: string) => {
     return new KinGatewayError({ reason: "refused_address", message: refused });
   switch (reason._tag) {
     case "HttpError":
+      if (reason.status === 429)
+        return new KinGatewayError({
+          reason: "unreachable",
+          message: `${host} says Kin is asking too often (HTTP 429); ${tryAgain(reason.retryAfter)}.`,
+        });
       return reason.status === 401 || reason.status === 403
         ? new KinGatewayError({
             reason: "key_refused",
@@ -246,11 +272,16 @@ const make = Effect.gen(function* () {
     );
   });
 
+  // Behind an opening in flight: a session that began with the old credential is dropped too.
   const invalidate = Effect.fn("KinMcpGateway.invalidate")(function* (connectionId: string) {
-    const held = open.get(connectionId);
-    if (held === undefined) return;
-    open.delete(connectionId);
-    yield* Scope.close(held.scope, Exit.void);
+    const held = yield* opening.withPermits(1)(
+      Effect.sync(() => {
+        const entry = open.get(connectionId);
+        open.delete(connectionId);
+        return entry;
+      }),
+    );
+    if (held !== undefined) yield* Scope.close(held.scope, Exit.void);
   });
 
   /** One retry with a fresh client when the session expired: the request never ran. */
@@ -290,10 +321,21 @@ const make = Effect.gen(function* () {
       ).pipe(Effect.mapError((error) => gatewayError(error, host)));
       return { ...listed, tools: yield* asSent(listed.tools, pages, host) };
     }),
-    callTool: Effect.fn("KinMcpGateway.callTool")(function* (target, tool, args) {
-      return yield* withClient(target, (client) =>
-        client.callTool({ tool, arguments: args }, { timeout: CONNECTION_LIMITS.timeout }),
-      );
+    callTool: Effect.fn("KinMcpGateway.callTool")(function* (
+      target,
+      tool,
+      args,
+      confirmed = false,
+    ) {
+      const run = (client: McpClient.McpClient) =>
+        client.callTool({ tool, arguments: args }, { timeout: CONNECTION_LIMITS.timeout });
+      if (!confirmed) return yield* withClient(target, run);
+      // Its own fresh session, retried only while opening: any later error may follow the work.
+      return yield* Effect.acquireUseRelease(
+        connect(target).pipe(Effect.catchIf(stale, () => connect(target))),
+        ({ client }) => run(client),
+        ({ scope }) => Scope.close(scope, Exit.void),
+      ).pipe(Effect.mapError((error) => gatewayError(error, new URL(target.url).host)));
     }),
     invalidate,
   });

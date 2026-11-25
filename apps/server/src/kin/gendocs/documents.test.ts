@@ -10,6 +10,7 @@ import {
   EnvironmentId,
   KinAgentId,
   KinChatError,
+  KinNewInvoiceInput,
   KinOrgId,
   KinPersonId,
   KinRecordKey,
@@ -21,7 +22,9 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Clock from "effect/Clock";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
@@ -35,18 +38,23 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { sharedToolAllowed } from "../lead/SharedTools.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { countryFirstMessage, newCompanyProfileJson, setProfile } from "../work/companyProfile.ts";
 import * as Docs from "../work/docs.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as LeadMoney from "../work/leadMoney.ts";
 import * as LeadWork from "../work/leadWork.ts";
+import { outlook } from "../work/moneyAnswers.ts";
 import { moneySection, moneySummary } from "../work/moneyViews.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
 import * as OwnerMoney from "../work/ownerMoney.ts";
+import * as OwnerMoneyAnswers from "../work/ownerMoneyAnswers.ts";
+import { owedInvoices, UNISSUED_INVOICE } from "../work/recordRows.ts";
 import * as OwnerWork from "../work/ownerWork.ts";
 import * as Amounts from "./amounts.ts";
 import { computeData } from "./compute.ts";
 import * as AgentFiles from "./agentFiles.ts";
 import { gatherFacts, jobSensitive } from "./facts.ts";
+import { codingAgentSource } from "../lead/OutsideContent.ts";
 import * as LeadDocuments from "./leadDocuments.ts";
 import { answerReceiptCard } from "./receiptProposals.ts";
 import { assembleInputs, needsEntry, parseRecipe } from "./recipe.ts";
@@ -65,6 +73,7 @@ const ownerId = KinPersonId.make("owner");
 const lead = KinAgentId.make("lead");
 const at = "2026-11-11T00:00:00.000Z";
 const people = [{ _tag: "person" as const, orgId, personId: ownerId }];
+const decodeInvoiceForm = Schema.decodeEffect(KinNewInvoiceInput);
 const scope: McpInvocationScope = {
   environmentId: EnvironmentId.make("fixture"),
   requestNamespace: "fixture",
@@ -115,6 +124,8 @@ const shownCards: Array<string> = [];
 const gate = Layer.unwrap(
   Effect.map(SqlClient.SqlClient, (sql) =>
     Layer.mock(KinLevelGate)({
+      askTo: () =>
+        Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
       showCard: (_agent, input) =>
         Effect.sync(() => {
           shownCards.push(String(Reflect.get(input.state as object, "key")));
@@ -176,7 +187,7 @@ const renderer = Layer.effect(
         if (failing.reason !== undefined)
           return Effect.succeed({ _tag: "failed", reason: failing.reason });
         if (request.recipe.kind === "table") return real.render(request);
-        const computed = computeData(request.inputs, request.recipe.computed);
+        const computed = computeData(request.inputs, request.recipe.computed, request.tax);
         if ("error" in computed) return Effect.succeed({ _tag: "failed", reason: computed.error });
         rendered.push({ request, data: computed.data });
         const bytes = new TextEncoder().encode(
@@ -238,22 +249,22 @@ const git = (cwd: string, ...args: ReadonlyArray<string>) =>
     });
   });
 
-/** A turn the owner woke with a message in the lead's direct chat. */
-const turn = (n: number, body: string) =>
+/**
+ * The owner's message `n` in the lead's direct chat, as an event of `wakeupId` stored at
+ * `receivedAt`; with `tap`, their tap on a card instead.
+ */
+const said = (n: number, body: string, wakeupId: string, receivedAt: number, tap = false) =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
-    yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+    const tag = tap ? "widget.action" : "chat.message";
     yield* sql`UPDATE kin_chats SET last_seq = ${n} WHERE chat_id = 'lead-chat'`;
     yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
         author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
       VALUES (${`msg-${n}`}, ${orgId}, 'lead-chat', ${n}, 'human', ${ownerId}, 'lead-chat-owner',
-        'owner', 'text', ${body}, '[]', 'posted', ${at})`;
-    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
-        status, event_ids, audience)
-      VALUES (${`wake-${n}`}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running',
-        ${JSON.stringify([`event-${n}`])}, 'owner_only')`;
+        'owner', ${tap ? "widget_action" : "text"}, ${body}, '[]', 'posted', ${at})`;
     const event = {
-      _tag: "chat.message",
+      _tag: tag,
+      ...(tap ? { actionId: "choose" } : {}),
       orgId,
       agentId: lead,
       eventId: `event-${n}`,
@@ -265,13 +276,37 @@ const turn = (n: number, body: string) =>
     };
     yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
         received_at, queued_at, state, wakeup_id)
-      VALUES (${`event-${n}`}, ${orgId}, ${lead}, 'chat.message', 'P0', ${JSON.stringify(event)},
-        0, 0, 'claimed', ${`wake-${n}`})`;
+      VALUES (${`event-${n}`}, ${orgId}, ${lead}, ${tag}, 'P0', ${JSON.stringify(event)},
+        ${receivedAt}, 0, 'claimed', ${wakeupId})`;
     return `event-${n}`;
   });
 
+/** A turn the owner woke with a message in the lead's direct chat. */
+const turn = (n: number, body: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE status = 'running'`;
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
+        status, event_ids, audience)
+      VALUES (${`wake-${n}`}, ${orgId}, ${lead}, 'lead-thread', 'test', 0, 'running',
+        ${JSON.stringify([`event-${n}`])}, 'owner_only')`;
+    return yield* said(n, body, `wake-${n}`, 0);
+  });
+
+/** The owner's next word in the running turn, at this moment: a message, or with `tap` a tap. */
+const inRunningTurn = (body: string, tap = false) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const [running] = yield* sql<{ wakeupId: string; n: number }>`SELECT w.wakeup_id AS "wakeupId",
+        (SELECT last_seq + 1 FROM kin_chats WHERE chat_id = 'lead-chat') AS n
+      FROM kin_wakeups w WHERE w.status = 'running'`;
+    return yield* said(running!.n, body, running!.wakeupId, yield* Clock.currentTimeMillis, tap);
+  });
+/** The owner says more in the running turn after acting on the screen, so the agent may change it. */
+const askedAgain = (body: string) => Effect.andThen(TestClock.adjust(1_000), inRunningTurn(body));
+
 /** The owner's lead in India's zone, an invoices list, a client in another state, one invoice. */
-const seed = Effect.gen(function* () {
+const company = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   rendered.length = 0;
   shownCards.length = 0;
@@ -294,6 +329,10 @@ const seed = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
       worker_projects_json, owner_chat_id)
     VALUES (${lead}, ${orgId}, 'Lead lead', 0, 'lead-thread', '{}', '[]', 'lead-chat')`;
+});
+
+const seed = Effect.gen(function* () {
+  yield* company;
   const asked = yield* turn(1, "Track invoices");
   yield* LeadMoney.define(scope, { sourceEventId: asked, template: "invoices" });
   yield* turn(2, "Yes");
@@ -305,7 +344,11 @@ const seed = Effect.gen(function* () {
     placeOfSupply: "Karnataka",
     bank: { accountNumber: "000111222333", ifsc: "ABCD0123456" },
   });
-  const work = yield* turn(3, "Invoice Invented Acme for October");
+  // The owner types the client details the lead writes, so they go straight in.
+  const work = yield* turn(
+    3,
+    "Invoice Invented Acme for October: Maharashtra, 4 Invented Lane, Pune 411001. Invented Local is in Karnataka, Invented Abroad in the United Kingdom.",
+  );
   yield* LeadWork.create(scope, {
     sourceEventId: work,
     records: [
@@ -414,7 +457,20 @@ describe("recipe documents", () => {
         draft: true,
         documents: [{ key: "D-1", title: "Invoice INV-1", version: 1 }],
         sensitive: true,
+        next: 'Filed, with its card in the chat, which shows what is in it. Say in one line that "Invoice INV-1" is ready, never its key, and nothing the card shows.',
+        record: { key: "INV-1", state: UNISSUED_INVOICE, total: "₹1,000.01" },
       });
+      // What the agent says of it is the record, and what the company details lack, the first time.
+      yield* sql`UPDATE kin_company_profile SET profile_json = json_set(profile_json,
+          '$.gstin', NULL, '$.bank.accountNumber', NULL, '$.bank.upi', NULL)
+        WHERE org_id = ${orgId}`;
+      assert.deepStrictEqual((yield* LeadDocuments.onRecord(orgId, "INV-1"))?.missing, [
+        "tax number (GSTIN)",
+        "bank details",
+      ]);
+      yield* sql`UPDATE kin_company_profile SET profile_json = json_set(profile_json,
+          '$.gstin', '29AAAAA1111A1Z5', '$.bank.accountNumber', '000111222333')
+        WHERE org_id = ${orgId}`;
       assert.deepStrictEqual(shownCards, ["D-1"], "its doc card is in the chat");
       const { request, data } = rendered.at(-1)!;
       assert.deepStrictEqual(
@@ -495,16 +551,166 @@ describe("recipe documents", () => {
       const broken = yield* LeadDocuments.make(scope, invoice({ title: "Invoice again" })).pipe(
         Effect.flip,
       );
-      assert.match(broken.message, /^Nothing was made\. The invoice recipe didn't render: .*totl/);
+      assert.match(
+        broken.message,
+        /^Nothing was made\. The invoice recipe didn't render because .*totl/,
+      );
       failing.reason = undefined;
       const jobs = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_doc_jobs
         WHERE org_id = ${orgId}`;
       assert.strictEqual(jobs[0]!.n, 1);
+      // A client's tax number prints only for a company registered for the tax; the client keeps it.
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.gstin', '27BBBBB2222B1Z5')
+        WHERE org_id = ${orgId} AND key = 'C-1'`;
+      const profileRev = Effect.map(
+        sql<{ rev: number }>`SELECT rev FROM kin_company_profile WHERE org_id = ${orgId}`,
+        ([row]) => row!.rev,
+      );
+      const standing = (n: number) =>
+        Effect.gen(function* () {
+          yield* LeadDocuments.make(scope, invoice({ title: `Invoice INV-1 standing ${n}` }));
+          const { request, data } = rendered.at(-1)!;
+          const tax = (data as Record<string, any>).tax;
+          return [request.inputs.clientGstin, tax.notCharged, tax.taxes.length, tax.placeOfSupply];
+        });
+      assert.deepStrictEqual(yield* standing(1), [
+        "27BBBBB2222B1Z5",
+        undefined,
+        1,
+        "Maharashtra (27)",
+      ]);
+      yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: yield* profileRev,
+        taxRegistered: false,
+      });
+      assert.deepStrictEqual(yield* standing(2), [
+        null,
+        "GST not charged: the supplier is not registered under GST.",
+        0,
+        null,
+      ]);
+      // The agent is told once, and no longer asked to collect a GSTIN the company doesn't have.
+      const note =
+        "The company is not registered for GST: its invoices charge no GST and never show a client's GSTIN. Don't ask for or collect clients' GSTINs for invoices.";
+      const told = yield* LeadDocuments.onRecord(orgId, "INV-1");
+      assert.deepStrictEqual([told?.missing, told?.taxNote], [undefined, note]);
+      assert.strictEqual((yield* LeadMoney.money(scope, {})).taxNote, note);
+      assert.strictEqual((yield* LeadWork.get(scope, { key: "INV-1" })).taxNote, note);
+      // Saying nothing with no GSTIN still prints no client's GSTIN, and no line either.
+      yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: yield* profileRev,
+        taxRegistered: null,
+      });
+      assert.deepStrictEqual((yield* standing(3)).slice(0, 3), [null, undefined, 0]);
+      // A GSTIN typed again is registered again, and clears the word that it isn't.
+      yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: yield* profileRev,
+        taxRegistered: false,
+      });
+      const again = yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: yield* profileRev,
+        gstin: "29AAAAA1111A1Z5",
+      });
+      assert.deepStrictEqual([again.gstin, again.taxRegistered], ["29AAAAA1111A1Z5", undefined]);
+      assert.strictEqual((yield* standing(4))[0], "27BBBBB2222B1Z5");
       // Every document tool is refused in a turn someone besides the owner reads.
       const turnRef = { orgId, agentId: lead, wakeupId: "wake-3" };
       for (const tool of ["kin_document", "kin_recipes", "kin_issue", "kin_recipe_undo"])
         assert.isFalse(yield* sharedToolAllowed(turnRef, tool, { recipe: "report" }), tool);
+      // So is filing a file the agent made, a screenshot included: a teammate's chat gets no doc.
+      assert.isFalse(
+        yield* sharedToolAllowed(turnRef, "kin_document", { file: "/srv/scratch/run/shot.png" }),
+      );
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "are listed to the agent with only the inputs it gives, and one recipe's read adds the rest once",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const listed = yield* LeadDocuments.recipes(scope, {});
+        const invoiceRow = listed.recipes.find((one) => one.name === "invoice");
+        const listedInput = (name: string) =>
+          invoiceRow?.agentInputs.find((one) => one.name === name);
+        assert.match(
+          listedInput("gstRate")?.description ?? "",
+          /18 unless the owner said otherwise/,
+        );
+        assert.deepStrictEqual(listedInput("lines")?.columns, [
+          "description",
+          "sac",
+          "quantity",
+          "unit",
+          "rate",
+        ]);
+        for (const row of listed.recipes) {
+          assert.notProperty(row, "storedInputs", row.name);
+          assert.notProperty(row, "computed", row.name);
+        }
+        const read = yield* LeadDocuments.recipes(scope, { recipe: "invoice" });
+        assert.deepStrictEqual(
+          read.recipes.map((one) => one.name),
+          ["invoice"],
+        );
+        const [one] = read.recipes;
+        assert.deepStrictEqual(one?.agentInputs, invoiceRow?.agentInputs);
+        const stored = one?.storedInputs ?? [];
+        assert.isNotEmpty(stored);
+        assert.isTrue(stored.every((input) => input.from !== "agent"));
+        assert.isNotEmpty(one?.computed ?? []);
+        assert.isNotEmpty(one?.outputs ?? []);
+        const unknown = yield* LeadDocuments.recipes(scope, { recipe: "nothing" }).pipe(
+          Effect.flip,
+        );
+        assert.match(unknown.message, /No recipe is called nothing/);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "are never issued or voided in a turn that follows words a person's coding agent sent",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* LeadDocuments.make(scope, invoice({ inputs: { billTo: "9 Invented Road, Pune" } }));
+        const sql = yield* SqlClient.SqlClient;
+        const follows = (source: string) =>
+          sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
+            VALUES (${orgId}, 'wake-3', 0, ${source})
+            ON CONFLICT (org_id, wakeup_id) DO UPDATE SET source = excluded.source`;
+        const state = sql<{ state: string; numbered: number }>`SELECT r.state,
+            (SELECT COUNT(*) FROM kin_issued_numbers n WHERE n.record_id = r.record_id) AS numbered
+          FROM kin_records r WHERE r.org_id = ${orgId} AND r.key = 'INV-1'`;
+        const before = yield* state;
+        yield* follows(codingAgentSource("Invented laptop"));
+        for (const more of [{}, { void: true }])
+          assert.deepInclude(
+            yield* Effect.flip(
+              LeadDocuments.issue(scope, {
+                entry: KinRecordKey.make("INV-1"),
+                sourceEventId: "event-3",
+                ...more,
+              }),
+            ),
+            {
+              reason: "not_allowed",
+              message:
+                "Words from a person's coding agent can't issue or void an entry: the person issues or voids it in Kin.",
+            },
+          );
+        assert.deepStrictEqual(yield* state, before);
+        // Any other outside read keeps today's behaviour.
+        yield* follows("web:invented.example");
+        const issued = yield* LeadDocuments.issue(scope, {
+          entry: KinRecordKey.make("INV-1"),
+          sourceEventId: "event-3",
+        });
+        assert.strictEqual(issued.number, "INV/26-27/001");
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("are made again in place when the entry is issued, carrying its number", () =>
@@ -558,10 +764,11 @@ describe("recipe documents", () => {
         "Issued as INV/26-27/001. Its documents couldn't be made: see problems.",
       );
       // F24: a void isn't final for the agent either: undone, it is owed again with its number.
+      const voidIt = yield* askedAgain("Void INV-1, then put it back");
       const issueAs = (more: Partial<typeof LeadDocuments.IssueInput.Type>) =>
         LeadDocuments.issue(scope, {
           entry: KinRecordKey.make("INV-1"),
-          sourceEventId: "event-3",
+          sourceEventId: voidIt,
           ...more,
         });
       assert.strictEqual((yield* issueAs({ void: true })).state, "dropped");
@@ -583,6 +790,7 @@ describe("recipe documents", () => {
           "November pack · tds-2026-11.csv",
           "November pack · expenses-2026-11.csv",
           "November pack · unpaid-expenses-2026-11.csv",
+          "November pack · owed-to-partners-2026-11.csv",
           "November pack · bank-2026-11.csv",
         ],
       );
@@ -655,6 +863,25 @@ describe("recipe documents", () => {
         yield* csvOf(settled.documents[1]!.key),
         ",Invented Acme,27AAAAA1111A1Z5,Maharashtra,847.47,152.54,1000.01,INR,Paid,INV-1\r\n",
       );
+      // A company that isn't registered for the tax shows no client's GSTIN in the register either.
+      const { rev } = (yield* (yield* SqlClient.SqlClient)<{ rev: number }>`SELECT rev
+        FROM kin_company_profile WHERE org_id = ${orgId}`)[0]!;
+      yield* OwnerMoney.setCompanyProfile(people, { orgId, rev, taxRegistered: false });
+      const unregistered = yield* LeadDocuments.make(scope, {
+        title: "November pack, not registered",
+        recipe: "accountant-pack",
+        inputs: { month: "2026-11" },
+        sourceEventId: "event-3",
+      });
+      assert.include(
+        yield* csvOf(unregistered.documents[1]!.key),
+        ",Invented Acme,,Maharashtra,847.47,152.54,1000.01,INR,Paid,INV-1\r\n",
+      );
+      yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: rev + 1,
+        gstin: "29AAAAA1111A1Z5",
+      });
 
       // F51: expenses confirmed, undone and confirmed again: the file, the totals a chart is drawn
       // from and Money all count the live copy once.
@@ -755,7 +982,7 @@ describe("recipe documents", () => {
       );
       assert.deepStrictEqual(
         [section?.owedToUs, section?.overdue, section?.byClient[0]?.daysOverdue],
-        ["₹2,36,000.00", "₹2,36,000.00", 6],
+        ["₹2,36,000.00", "₹2,36,000.00", 7],
       );
 
       // The issued document's own figures are kept beside its job, as it was rendered.
@@ -876,6 +1103,148 @@ describe("recipe documents", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("give a draft the amount and tax its lines come to, owed by nobody until issued", () =>
+    Effect.gen(function* () {
+      const work = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const now = Date.parse("2026-11-12T06:00:00.000Z");
+      const figures = (key: string) =>
+        Effect.map(records.get(orgId, key), (row) => [
+          row!.amountMinor,
+          row!.currency,
+          JSON.parse(row!.fieldsJson).tax?.minor ?? null,
+        ]);
+      // A moment apart, as made again later: the latest of a doc's renders is what it shows.
+      const make = (entry: string, inputs: Record<string, unknown>) =>
+        Effect.andThen(
+          TestClock.adjust(1_000),
+          LeadDocuments.make(scope, invoice({ entry, title: `Invoice ${entry}`, inputs })),
+        );
+      const line = (rate: string, quantity = "1") => [{ description: "Design", quantity, rate }];
+      yield* LeadWork.create(scope, {
+        sourceEventId: work,
+        records: [
+          { list: "clients", title: "Invented Local", placeOfSupply: "Karnataka" },
+          { list: "clients", title: "Invented Abroad", placeOfSupply: "United Kingdom" },
+        ],
+      });
+      yield* LeadWork.create(scope, {
+        sourceEventId: work,
+        records: [
+          { list: "invoices", title: "Across states", client: "Invented Acme", state: "open" },
+          { list: "invoices", title: "Same state", client: "Invented Local", state: "open" },
+          { list: "invoices", title: "Export", client: "Invented Abroad", state: "open" },
+          { list: "invoices", title: "Typed", client: "Invented Acme", amount: "5,900" },
+        ],
+      });
+      // Its document's total and tax, the moment it is made: one tax line, two, or none.
+      yield* make("INV-2", { lines: line("₹25,000") });
+      yield* make("INV-3", { lines: line("₹10,000", "2") });
+      yield* make("INV-4", { lines: line("₹1,000"), exportUnderLut: true });
+      assert.deepStrictEqual(
+        [yield* figures("INV-2"), yield* figures("INV-3"), yield* figures("INV-4")],
+        [
+          [2_950_000, "INR", 450_000],
+          [2_360_000, "INR", 360_000],
+          [100_000, "INR", 0],
+        ],
+      );
+      // New lines price it again, and its history says what moved.
+      yield* make("INV-2", { lines: line("₹30,000") });
+      assert.deepStrictEqual(yield* figures("INV-2"), [3_540_000, "INR", 540_000]);
+      const history = (yield* records.detail((yield* records.get(orgId, "INV-2"))!)).changes;
+      assert.deepStrictEqual(
+        history.flatMap((change) => change.fields.filter((one) => one.field === "amount")),
+        [
+          { field: "amount", from: "₹29,500.00", to: "₹35,400.00" },
+          { field: "amount", from: null, to: "₹29,500.00" },
+        ],
+      );
+      // A typed amount stays as typed: billed as it is, or refused against lines it isn't.
+      assert.deepStrictEqual(yield* figures("INV-1"), [100_001, "INR", null]);
+      yield* make("INV-1", { billTo: "9 Invented Road, Pune" });
+      assert.deepStrictEqual(yield* figures("INV-1"), [100_001, "INR", null]);
+      assert.match(
+        (yield* make("INV-5", { lines: line("₹1,000") }).pipe(Effect.flip)).message,
+        /the lines come to ₹1,180\.00 with tax, but the entry is recorded at ₹5,900\.00/,
+      );
+      assert.deepStrictEqual(yield* figures("INV-5"), [590_000, "INR", null]);
+      // Lines that come to what was typed give it its tax, and from then on price it.
+      yield* make("INV-5", { lines: line("₹5,000") });
+      assert.deepStrictEqual(yield* figures("INV-5"), [590_000, "INR", 90_000]);
+      yield* make("INV-5", { lines: line("₹6,000") });
+      assert.deepStrictEqual(yield* figures("INV-5"), [708_000, "INR", 108_000]);
+      // A tax a person types stays theirs, as a typed amount does: their own PDF, coming to the
+      // same total, doesn't put its tax back over it.
+      const person = { actor: { _tag: "person", personId: ownerId }, via: "owner" } as const;
+      yield* records.update(orgId, person, "INV-5", {
+        fields: { tax: { minor: 100_000, currency: "INR" } },
+      });
+      const held = (yield* records.get(orgId, "INV-5"))!;
+      assert.isFalse(yield* Amounts.pricedByDocuments(orgId, held));
+      yield* Amounts.priceDraft(orgId, person, "INV-5", false);
+      assert.deepStrictEqual(yield* figures("INV-5"), [708_000, "INR", 100_000]);
+
+      // A suggestion takes its document's amount too, and counts in nothing until a person keeps it.
+      const suggested = yield* records.create(
+        orgId,
+        { actor: { _tag: "agent", agentId: lead }, via: "lead" },
+        {
+          list: "invoices",
+          title: "Suggested",
+          originKey: "suggested-invoice",
+          owner: { _tag: "agent", agentId: lead },
+          confirmed: false,
+          partyId: (yield* records.get(orgId, "INV-2"))!.partyId,
+        },
+      );
+      yield* make(suggested.row.key, { lines: line("₹2,000") });
+      const kept = (yield* records.get(orgId, suggested.row.key))!;
+      assert.deepStrictEqual([kept.amountMinor, kept.confirmed], [236_000, 0]);
+      // An agent reads the same amount and tax, still a suggestion.
+      const read = yield* LeadWork.get(scope, { key: kept.key });
+      assert.deepStrictEqual(
+        [read.amount, read.fields, read.stateLabel, read.suggested],
+        [
+          "₹2,360.00",
+          { tax: "₹360.00" },
+          "Suggested invoice, not kept: nobody has kept it yet, so it can't be issued, sent, paid or receipted. The owner or a co-owner keeps it with Keep on its page; call it a suggestion until then.",
+          true,
+        ],
+      );
+      // Drafts and a suggestion, priced, are owed by nobody: in no Money or outlook figure.
+      const summary = yield* moneySummary(orgId, now, KIN_OWNER_LEVEL);
+      assert.deepStrictEqual([summary.owed.total, summary.owed.overdue], [[], []]);
+      const ahead = yield* outlook(orgId, now);
+      assert.deepStrictEqual(ahead.incoming, []);
+
+      // A draft from before drafts took their document's figures gets them at start, once.
+      yield* sql`UPDATE kin_records SET amount_minor = NULL, currency = NULL,
+          fields_json = json_remove(fields_json, '$.tax')
+        WHERE org_id = ${orgId} AND key IN ('INV-3', 'INV-4')`;
+      assert.strictEqual(yield* Amounts.fillDraftAmounts(1), 2);
+      assert.deepStrictEqual(
+        [yield* figures("INV-3"), yield* figures("INV-4")],
+        [
+          [2_360_000, "INR", 360_000],
+          [100_000, "INR", 0],
+        ],
+      );
+      assert.strictEqual(yield* Amounts.fillDraftAmounts(), 0);
+
+      // Issued, its figures stay what they were issued with, whatever its document says later.
+      yield* LeadDocuments.issue(scope, { entry: KinRecordKey.make("INV-2"), sourceEventId: work });
+      const issued = yield* figures("INV-2");
+      assert.deepStrictEqual(issued, [3_540_000, "INR", 540_000]);
+      yield* make("INV-2", { lines: line("₹40,000") }).pipe(Effect.ignore);
+      yield* sql`UPDATE kin_records SET amount_minor = NULL WHERE org_id = ${orgId} AND key = 'INV-2'`;
+      assert.strictEqual(yield* Amounts.fillDraftAmounts(), 0);
+      yield* sql`UPDATE kin_records SET amount_minor = 3540000 WHERE org_id = ${orgId} AND key = 'INV-2'`;
+      assert.deepStrictEqual(yield* figures("INV-2"), issued);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("are issued only with the amount the document asks for, and only when it says it", () =>
     Effect.gen(function* () {
       const work = yield* seed;
@@ -962,6 +1331,18 @@ describe("recipe documents", () => {
         [quote.draft, latestData().tax.total.text, latestData().validText],
         [true, "₹2,36,000.00", "12 Dec 2026"],
       );
+      // A draft quote carries what its document comes to, and is issued with exactly that.
+      const priced = Effect.map(records.get(orgId, "QT-1"), (row) => [
+        row!.amountMinor,
+        row!.currency,
+        JSON.parse(row!.fieldsJson).tax,
+      ]);
+      const draftQuote = yield* priced;
+      assert.deepStrictEqual(draftQuote, [
+        23_600_000,
+        "INR",
+        { minor: 3_600_000, currency: "INR" },
+      ]);
       const issued = yield* LeadDocuments.issue(scope, {
         entry: KinRecordKey.make("QT-1"),
         sourceEventId: yes,
@@ -972,6 +1353,7 @@ describe("recipe documents", () => {
         // Numbered, a quote is still a draft: it reads Sent only once it went out.
         ["QT/26-27/001", "open", 23_600_000, "QT/26-27/001"],
       );
+      assert.deepStrictEqual(yield* priced, draftQuote);
       // A quote is no money owed.
       const money = yield* moneySummary(
         orgId,
@@ -1033,6 +1415,54 @@ describe("recipe documents", () => {
         [billed.number, (yield* records.get(orgId, "INV-2"))!.amountMinor],
         ["INV/26-27/001", 23_600_000],
       );
+      // The owner's Mark sent: the quote reads Sent with the number it has, or the next one;
+      // pressed again, nothing more and no second number.
+      yield* LeadWork.create(scope, {
+        sourceEventId: yes,
+        records: [{ list: "quotes", title: "Support", client: "Invented Acme", amount: "5,000" }],
+      });
+      const marked = [];
+      for (const key of ["QT-1", "QT-2", "QT-1", "QT-2"]) {
+        const done = yield* OwnerMoney.issue(people, { orgId, key: KinRecordKey.make(key) });
+        marked.push([key, done.number, done.state, (yield* records.get(orgId, key))!.state]);
+      }
+      assert.deepStrictEqual(marked, [
+        ["QT-1", "QT/26-27/001", "waiting", "waiting"],
+        ["QT-2", "QT/26-27/002", "waiting", "waiting"],
+        ["QT-1", "QT/26-27/001", "waiting", "waiting"],
+        ["QT-2", "QT/26-27/002", "waiting", "waiting"],
+      ]);
+      const [numbers] = yield* sql<{ n: number }>`SELECT count(*) AS n FROM kin_issued_numbers
+        WHERE org_id = ${orgId} AND register_id = 'quotes'`;
+      assert.strictEqual(numbers!.n, 2);
+      const fields = {
+        billToName: "Asha Rao",
+        billToAddress: "9 Invented Road",
+        billToTaxNumber: "29ABCDE1234F1Z5",
+        billToPlace: "29",
+        billToEmail: "asha@example.com",
+      };
+      const typedOwner = { _tag: "person" as const, personId: ownerId };
+      yield* records.create(
+        orgId,
+        { actor: typedOwner, via: "owner" },
+        {
+          list: "quotes",
+          originKey: "owner:typed-workshop-quote",
+          title: "Saturday workshop",
+          owner: typedOwner,
+          amount: { minor: 4_000, currency: "INR" },
+          fields,
+        },
+      );
+      const madeTyped = yield* OwnerMoneyAnswers.invoiceFromQuote(people, {
+        orgId,
+        key: KinRecordKey.make("QT-3"),
+        clientRequestId: "typed-quote",
+      });
+      const copied = (yield* records.get(orgId, madeTyped.invoice))!;
+      assert.isNull(copied.partyId);
+      assert.include(JSON.parse(copied.fieldsJson), fields);
     }).pipe(Effect.provide(layer)),
   );
 
@@ -1109,6 +1539,398 @@ describe("recipe documents", () => {
         ["invoice.pdf"],
       );
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("bill a typed name on a company's first invoice and quote", () =>
+    Effect.gen(function* () {
+      yield* company;
+      yield* OwnerMoney.setCompanyProfile(people, {
+        orgId,
+        rev: 0,
+        legalName: "Sample Studio Private Limited",
+        gstin: "29AAAAA1111A1Z5",
+        placeOfSupply: "Karnataka",
+      });
+      const before = yield* OwnerMoney.lists(people, { orgId });
+      assert.deepStrictEqual(
+        [before.billToByName, before.lists.some((one) => one.list === "invoices")],
+        [true, false],
+      );
+      const made = yield* OwnerMoneyAnswers.newInvoice(
+        people,
+        yield* decodeInvoiceForm({
+          orgId,
+          title: "Saturday workshop",
+          lines: [{ description: "Workshop", sac: null, quantity: "1", rate: "₹10,000.00" }],
+          billTo: { name: "Asha Rao", address: "9 Invented Road", place: "29" },
+          clientRequestId: "first-invoice",
+        }),
+      );
+      assert.deepStrictEqual([made.invoice, made.problems], ["INV-1", []]);
+      const records = yield* KinRecords.KinRecords;
+      assert.include(JSON.parse((yield* records.get(orgId, "INV-1"))!.fieldsJson), {
+        billToName: "Asha Rao",
+        billToAddress: "9 Invented Road",
+      });
+      const quoted = yield* LeadWork.create(scope, {
+        sourceEventId: yield* turn(1, "Quote Meera Iyer for the workshop"),
+        records: [
+          {
+            list: "quotes",
+            title: "Workshop quote",
+            amount: "₹8,000",
+            fields: { billToName: "Meera Iyer", billToEmail: "meera@example.com" },
+          },
+        ],
+      });
+      const quote = (yield* records.get(orgId, quoted.records[0]!.key))!;
+      assert.isNull(quote.partyId);
+      assert.include(JSON.parse(quote.fieldsJson), { billToName: "Meera Iyer" });
+      const after = yield* OwnerMoney.lists(people, { orgId });
+      for (const list of ["invoices", "quotes"])
+        assert.includeMembers(
+          after.lists.find((one) => one.list === list)!.fields.map((field) => field.key),
+          ["billToName", "billToAddress", "billToTaxNumber", "billToPlace", "billToEmail"],
+          list,
+        );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("are typed by hand as a draft, priced by their lines, and read so by an agent", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const records = yield* KinRecords.KinRecords;
+      const [acme] = yield* sql<{ key: string; recordId: string }>`SELECT key,
+          record_id AS "recordId" FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'clients' AND title = 'Invented Acme'`;
+      const asked = yield* decodeInvoiceForm({
+        orgId,
+        client: KinRecordKey.make(acme!.key),
+        title: "November design",
+        lines: [
+          { description: "Design", sac: null, quantity: "2", rate: "₹10,000.00" },
+          { description: "Review", sac: "998391", quantity: "1", rate: "₹5,000.00" },
+        ],
+        gstRate: "12",
+        dueOn: "2026-12-12",
+        notes: "Typed by hand",
+        amountConfirmed: false,
+        clientRequestId: "form-1",
+      });
+      // The renderer is down: the draft stands with the reason, and the same request finishes it.
+      failing.reason = "the renderer stopped";
+      const first = yield* OwnerMoneyAnswers.newInvoice(people, asked);
+      assert.deepStrictEqual(
+        [first.invoice, first.documents, first.problems.length],
+        ["INV-2", [], 1],
+      );
+      failing.reason = undefined;
+      const made = yield* OwnerMoneyAnswers.newInvoice(people, asked);
+      assert.deepStrictEqual(
+        [made.invoice, made.documents.length, made.problems],
+        ["INV-2", 1, []],
+      );
+      const row = (yield* records.get(orgId, "INV-2"))!;
+      assert.deepStrictEqual(
+        [
+          row.state,
+          row.partyId,
+          row.title,
+          row.notes,
+          row.amountMinor,
+          JSON.parse(row.fieldsJson).tax,
+        ],
+        [
+          "open",
+          acme!.recordId,
+          "November design",
+          "Typed by hand",
+          2_800_000,
+          { minor: 300_000, currency: "INR" },
+        ],
+      );
+      assert.strictEqual(row.dueAt, Date.parse("2026-12-12T18:29:59.999Z"));
+      assert.deepStrictEqual(latestData().items[1].sac, "998391");
+      // Never numbered, never owed: Issue takes over from its page.
+      const summary = yield* moneySummary(
+        orgId,
+        Date.parse("2026-11-12T06:00:00.000Z"),
+        KIN_OWNER_LEVEL,
+      );
+      assert.deepStrictEqual(summary.owed.total, []);
+      // An agent's reads list it as the draft it is.
+      const read = yield* LeadWork.get(scope, { key: "INV-2" });
+      const listed = yield* LeadWork.query(scope, { list: "invoices" });
+      assert.deepStrictEqual(
+        [
+          read.stateLabel,
+          read.amount,
+          listed.records.find((one) => one.key === "INV-2")?.stateLabel,
+        ],
+        ["Draft", "₹28,000.00", "Draft"],
+      );
+      // The same request id with other details makes nothing; someone outside the owner level, none.
+      const someone = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("someone") }];
+      for (const [who, input] of [
+        [people, { ...asked, title: "Another" }],
+        [someone, { ...asked, clientRequestId: "form-2" }],
+      ] as const)
+        assert.include(yield* OwnerMoneyAnswers.newInvoice(who, input).pipe(Effect.flip), {
+          reason: "not_allowed",
+        });
+      // A client that isn't one is unknown, and nothing is saved.
+      assert.include(
+        yield* OwnerMoneyAnswers.newInvoice(people, {
+          ...asked,
+          client: KinRecordKey.make("INV-1"),
+          clientRequestId: "form-3",
+        }).pipe(Effect.flip),
+        { reason: "not_found" },
+      );
+      assert.isUndefined(yield* records.get(orgId, "INV-3"));
+      // Lines far above every invoice are asked about once, saving nothing; confirmed, they save.
+      const far = {
+        ...asked,
+        lines: [{ description: "Design", sac: null, quantity: "1", rate: "₹5,00,00,000.00" }],
+        clientRequestId: "form-4",
+      };
+      const slip = yield* OwnerMoneyAnswers.newInvoice(people, far).pipe(Effect.flip);
+      assert.deepStrictEqual(slip.farAbove?.list, "Invoices");
+      assert.isUndefined(yield* records.get(orgId, "INV-3"));
+      const kept = yield* OwnerMoneyAnswers.newInvoice(people, { ...far, amountConfirmed: true });
+      assert.strictEqual(kept.invoice, "INV-3");
+      const { client: _client, dueOn: _dueOn, ...withoutClient } = asked;
+      const billTo = {
+        name: "Asha Rao",
+        address: "9 Invented Road",
+        taxNumber: "29ABCDE1234F1Z5",
+        place: "29",
+        email: "asha@example.com",
+      };
+      const badTaxNumber = yield* OwnerMoneyAnswers.newInvoice(people, {
+        ...withoutClient,
+        billTo: { ...billTo, taxNumber: "GSTIN 29ABCDE1234F1Z5" },
+        clientRequestId: "malformed-gstin",
+      }).pipe(Effect.flip);
+      assert.strictEqual(
+        badTaxNumber.message,
+        "billToTaxNumber is not a GSTIN: give the 15 characters alone, like 29ABCDE1234F1Z5. Nothing changed.",
+      );
+      for (const field of ["address", "email", "place", "taxNumber"]) {
+        const decoded = yield* decodeInvoiceForm({
+          ...withoutClient,
+          billTo: { ...billTo, [field]: "contains\u0000NUL" },
+        }).pipe(Effect.flip);
+        assert.match(decoded.message, /text without NUL characters/);
+      }
+      const typed = yield* OwnerMoneyAnswers.newInvoice(
+        people,
+        yield* decodeInvoiceForm({
+          ...withoutClient,
+          title: "Saturday workshop",
+          clientRequestId: "form-5",
+          billTo,
+        }),
+      );
+      assert.deepStrictEqual(
+        [typed.invoice, typed.documents.length, typed.problems],
+        ["INV-4", 1, []],
+      );
+      const typedRow = (yield* records.get(orgId, typed.invoice))!;
+      assert.isNull(typedRow.partyId);
+      assert.include(JSON.parse(typedRow.fieldsJson), {
+        billToName: "Asha Rao",
+        billToEmail: "asha@example.com",
+        billToTaxNumber: billTo.taxNumber,
+      });
+      assert.strictEqual(latestData().billedAt, billTo.address);
+      assert.strictEqual(latestData().client, "Asha Rao");
+      assert.deepStrictEqual(
+        latestData().tax.taxes.map((one: { readonly name: string }) => one.name),
+        ["CGST", "SGST"],
+      );
+      assert.strictEqual(typedRow.amountMinor, row.amountMinor);
+      const issued = yield* OwnerMoney.issue(people, { orgId, key: typed.invoice });
+      assert.strictEqual(issued.number, "INV/26-27/001");
+      const due = (yield* records.get(orgId, typed.invoice))!;
+      assert.strictEqual(due.dueAt! - due.dateAt!, 15 * 86_400_000);
+      const justDue = yield* moneySummary(orgId, due.dueAt!, KIN_OWNER_LEVEL);
+      assert.strictEqual(justDue.owed.overdueInvoices, 0);
+      const overdue = yield* moneySummary(orgId, due.dueAt! + 1, KIN_OWNER_LEVEL);
+      assert.deepInclude(overdue.owed.byClient[0], { party: null, billTo: "Asha Rao" });
+      assert.strictEqual(overdue.owed.overdueInvoices, 1);
+      const payment = yield* OwnerMoney.recordPayment(people, {
+        orgId,
+        key: typed.invoice,
+        amount: { minor: 100, currency: "INR" },
+        paidOn: "2026-11-12",
+        clientRequestId: "typed-payment",
+      });
+      assert.strictEqual(payment.balance?.minor, 2_799_900);
+      yield* OwnerMoney.voidEntry(people, { orgId, key: typed.invoice });
+      assert.strictEqual((yield* records.get(orgId, typed.invoice))!.state, "dropped");
+      const otherState = yield* OwnerMoneyAnswers.newInvoice(people, {
+        ...withoutClient,
+        title: "Touring workshop",
+        clientRequestId: "form-6",
+        billTo: { name: "Anita Rao", place: "Maharashtra" },
+      });
+      assert.deepStrictEqual(otherState.problems, []);
+      assert.deepStrictEqual(
+        latestData().tax.taxes.map((one: { readonly name: string }) => one.name),
+        ["IGST"],
+      );
+      const noPlace = yield* OwnerMoneyAnswers.newInvoice(people, {
+        ...withoutClient,
+        title: "Remote workshop",
+        clientRequestId: "form-7",
+        billTo: { name: "Dev Rao" },
+      });
+      assert.lengthOf(noPlace.documents, 0);
+      assert.match(noPlace.problems[0]!, /place of supply/i);
+      for (const bad of [withoutClient, { ...asked, billTo }])
+        assert.strictEqual(
+          (yield* OwnerMoneyAnswers.newInvoice(people, bad).pipe(Effect.flip)).message,
+          "Say who the invoice is for: a client, or a name to bill. Nothing was saved.",
+        );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "keeps the issued bill-to and legacy invoice reads when the project gains a client",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const records = yield* KinRecords.KinRecords;
+        const actor = { _tag: "person" as const, personId: ownerId };
+        const writer = { actor, via: "owner" as const };
+        const project = (yield* records.create(orgId, writer, {
+          list: "projects",
+          owner: actor,
+          title: "Workshops",
+          originKey: "workshops",
+        })).row;
+        const client = (yield* records.create(orgId, writer, {
+          list: "clients",
+          owner: actor,
+          title: "Lumen",
+          originKey: "lumen",
+          fields: { gstin: "29ABCDE1234F1Z5", placeOfSupply: "Karnataka", terms: "Net 90" },
+        })).row;
+        const input = {
+          orgId,
+          project: project.key,
+          title: "Saturday workshop",
+          lines: [{ description: "Workshop", sac: null, quantity: "1", rate: "1000" }],
+          clientRequestId: "workshop",
+        };
+        const made = yield* OwnerMoneyAnswers.newInvoice(people, {
+          ...input,
+          billTo: { name: "Asha Rao", place: "Maharashtra", email: "asha@example.com" },
+        });
+        assert.deepStrictEqual(made.problems, []);
+        const later = yield* OwnerMoneyAnswers.newInvoice(people, {
+          ...input,
+          title: "Sunday workshop",
+          clientRequestId: "later-workshop",
+          billTo: { name: "Asha Rao", place: "Maharashtra" },
+        });
+        assert.deepStrictEqual(later.problems, []);
+        const issued = yield* OwnerMoney.issue(people, { orgId, key: made.invoice });
+        assert.isNotNull(issued.number);
+        const before = latestData();
+        const typed = (yield* records.get(orgId, made.invoice))!;
+        const legacy = (yield* records.create(orgId, writer, {
+          list: "invoices",
+          title: "Earlier workshop",
+          owner: actor,
+          projectId: project.recordId,
+          originKey: "legacy-workshop",
+          state: "waiting",
+          amount: { currency: "INR", minor: 200_000 },
+          dateAt: typed.dateAt,
+        })).row;
+        assert.isNull(legacy.partyId);
+        yield* records.update(orgId, writer, project.key, { partyId: client.recordId });
+        yield* OwnerMoney.issue(people, { orgId, key: later.invoice });
+        const lateIssued = (yield* records.get(orgId, later.invoice))!;
+        assert.strictEqual(lateIssued.dueAt! - lateIssued.dateAt!, 15 * 86_400_000);
+        yield* OwnerDocs.render(people, {
+          orgId,
+          entry: typed.key,
+          recipe: "invoice",
+          clientRequestId: "remake-workshop",
+        });
+        assert.deepStrictEqual(
+          [latestData().client, latestData().tax],
+          [before.client, before.tax],
+        );
+        assert.strictEqual(before.client, "Asha Rao");
+        assert.strictEqual(typed.dueAt! - typed.dateAt!, 15 * 86_400_000);
+        const following = yield* OwnerMoneyAnswers.newInvoice(people, {
+          ...input,
+          title: "Following workshop",
+          clientRequestId: "following",
+          billTo: { name: "Asha Rao" },
+        }).pipe(Effect.flip);
+        assert.strictEqual(
+          following.message,
+          "This is for Lumen: its billing details come from that client. Nothing changed.",
+        );
+        const summary = yield* moneySummary(orgId, typed.dueAt! + 1, KIN_OWNER_LEVEL);
+        assert.deepStrictEqual(
+          summary.owed.byClient.map(({ party, billTo }) => [party, billTo]),
+          [[null, "Asha Rao"]],
+        );
+        const rejected = yield* OwnerDocs.render(people, {
+          orgId,
+          entry: legacy.key,
+          recipe: "invoice",
+          clientRequestId: "legacy-workshop",
+        }).pipe(Effect.flip);
+        assert.match(rejected.message, /invoice needs client, and Kin has no/i);
+        const own = (yield* records.get(orgId, "INV-1"))!;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.phone', '+1 555 111 2222')
+        WHERE org_id = ${orgId} AND record_id = ${own.partyId}`;
+        const custom = parseRecipe(
+          STARTER_FILES["recipes/invoice/RECIPE.md"]!.replace(
+            "  client: { type: text, from: client.name }",
+            "  client: { type: text, from: client.phone }",
+          ),
+        );
+        if ("reason" in custom) return assert.fail(custom.reason);
+        const source = { _tag: "client", key: "phone" } as const;
+        const clientInput = custom.inputs.find((input) => input.name === "client")!;
+        const linkedFacts = yield* gatherFacts(orgId, custom, own, {});
+        assert.strictEqual(linkedFacts.facts(source, clientInput, {}), "+1 555 111 2222");
+        const typedFacts = yield* gatherFacts(orgId, custom, typed, {});
+        assert.isUndefined(typedFacts.facts(source, clientInput, {}));
+        const register = parseRecipe(STARTER_FILES["recipes/accountant-pack/RECIPE.md"]!);
+        if ("reason" in register) return assert.fail(register.reason);
+        const given = { month: "2026-11" };
+        const facts = yield* gatherFacts(orgId, register, undefined, given);
+        const table = assembleInputs(register, given, facts.facts, facts.currency);
+        if ("error" in table) return assert.fail(table.error.message);
+        const sales = register.sheets.find((sheet) => sheet.name === "Sales register")!;
+        const rows: unknown = table.inputs[sales.input];
+        if (!Array.isArray(rows)) return assert.fail("No sales register rows");
+        const old = rows.find((row: Record<string, unknown>) => row.key === legacy.key);
+        assert.include(old, { client: null, clientGstin: null, placeOfSupply: null });
+        const open = yield* owedInvoices({ orgId, now: typed.dueAt! + 1 });
+        assert.strictEqual(
+          open.find(({ key }) => key === legacy.key)?.dueAt,
+          legacy.dateAt! + 90 * 86_400_000,
+        );
+        yield* OwnerMoney.voidEntry(people, { orgId, key: typed.key });
+        yield* OwnerMoney.voidEntry(people, { orgId, key: later.invoice });
+        const legacyMoney = yield* moneySummary(orgId, typed.dueAt! + 1, KIN_OWNER_LEVEL);
+        assert.deepStrictEqual(
+          moneySection(legacyMoney, legacyMoney.timeZone)?.byClient.map(({ client }) => client),
+          ["no client"],
+        );
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("derive sensitivity from where inputs come from and from what the turn has read", () =>
@@ -1273,6 +2095,8 @@ const agentReceipt = (asked: string, input: ReceiptAsk) =>
     const first = yield* LeadDocuments.receipt(scope, { sourceEventId: asked, ...input });
     if (first.status === "made") return first;
     yield* answerCard(`kin-receipt:${first.proposal}`, "yes");
+    // The tap wakes the agent, as `KinChatService.act` posts it once its writes are made.
+    yield* inRunningTurn("Confirm", true);
     const made = yield* LeadDocuments.receipt(scope, {
       sourceEventId: asked,
       proposal: first.proposal,
@@ -1298,6 +2122,7 @@ describe("the accountant's pack", () => {
       const day = (iso: string) => Date.parse(`${iso}T12:00:00.000Z`);
       for (const [key, state, category, minor, dateAt] of [
         ["taxi", "done", "travel", 100_00, day("2026-11-03")],
+        ["refund", "done", "travel", -500, day("2026-11-04")],
         ["hosting", "done", "software", 50_50, day("2026-11-04")],
         ["rent", "open", "rent", 400_00, day("2026-11-05")],
         ["void", "dropped", "travel", 999_00, day("2026-11-06")],
@@ -1314,6 +2139,29 @@ describe("the accountant's pack", () => {
           ...(dateAt === undefined ? {} : { dateAt }),
           originKey: key,
         });
+      // Bought by a partner: owed at the month's end, repaid in it, repaid before it, or given.
+      for (const [key, minor, dateAt, fields] of [
+        ["owed", 20_00, day("2026-10-25"), {}],
+        ["repaid", 30_00, day("2026-10-20"), { reimbursement: "repaid", repaidOn: "2026-11-10" }],
+        ["earlier", 40_00, day("2026-10-01"), { reimbursement: "repaid", repaidOn: "2026-10-15" }],
+        ["later", 5_00, day("2026-10-02"), { reimbursement: "repaid", repaidOn: "2026-11-12" }],
+        ["given", 60_00, day("2026-10-03"), { reimbursement: "not reimbursable" }],
+        ["undated", 7_00, day("2026-11-05"), { reimbursement: "repaid" }],
+      ] as const)
+        yield* records.create(orgId, system, {
+          list: "expenses",
+          title: `Invented partner ${key}`,
+          owner,
+          state: "done",
+          amount: { minor, currency: "INR" },
+          dateAt,
+          fields: { fundedBy: `person:${ownerId}`, ...fields },
+          originKey: `partner:${key}`,
+        });
+      // A day ahead of today, stored before Kin refused one: no report counts it yet.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.repaidOn',
+          '2026-12-01') WHERE title = 'Invented partner later'`;
       // Money in on a live invoice counts; on one since voided it doesn't.
       yield* LeadWork.create(scope, {
         sourceEventId: work,
@@ -1354,16 +2202,53 @@ describe("the accountant's pack", () => {
         Date.parse("2026-11-12T06:00:00.000Z"),
         KIN_OWNER_LEVEL,
       );
-      assert.deepStrictEqual(money.spent.thisMonth.total, [{ minor: 151_75, currency: "INR" }]);
+      // Money counts partners' expenses when the company repaid them: 30.00 bought in October, and
+      // 7.00 repaid with no day recorded, so on the day it was bought. The sheet lists by purchase.
+      assert.deepStrictEqual(money.spent.thisMonth.total, [{ minor: 183_75, currency: "INR" }]);
       assert.deepStrictEqual(totals("Expenses"), [
+        ["Total", "7.00"],
         ["Total software", "51.75"],
-        ["Total travel", "100.00"],
+        ["Total travel", "95.00"],
       ]);
+      const expenseSheet = recipe.sheets.find((one) => one.name === "Expenses")!;
+      const expenseRows = assembled.inputs[expenseSheet.input];
+      const cells = sheetCells(
+        Array.isArray(expenseRows) ? (expenseRows as never) : [],
+        expenseSheet,
+      );
+      const amountColumn = expenseSheet.columns.findIndex((one) => one.field === "amount");
+      assert.isTrue(
+        cells.some(
+          (row) =>
+            row.some((cell) => "text" in cell && cell.text === "Invented refund") &&
+            row[amountColumn] !== undefined &&
+            "number" in row[amountColumn] &&
+            row[amountColumn].number === "-5.00",
+        ),
+      );
       assert.deepStrictEqual(totals("Unpaid expenses"), [["Total", "400.00"]]);
       assert.deepStrictEqual(money.received.thisMonth, [{ minor: 300_00, currency: "INR" }]);
       assert.deepStrictEqual(totals("Receipts"), [["Total", "300.00"]]);
       // The voided invoice is listed in the sales register and left out of its total.
       assert.deepStrictEqual(totals("Sales register"), [["Total", "0.00"]]);
+      assert.deepStrictEqual(totals("Owed to partners"), [
+        ["Total owed", "25.00"],
+        ["Total repaid", "37.00"],
+      ]);
+      // A repaid day no one recorded stays blank for the accountant.
+      const partnerRows = assembled.inputs.partners as ReadonlyArray<{
+        title: string;
+        repaidOn: string | null;
+      }>;
+      assert.deepStrictEqual(
+        partnerRows
+          .filter((one) => one.title.endsWith("repaid") || one.title.endsWith("undated"))
+          .map((one) => [one.title, one.repaidOn]),
+        [
+          ["Invented partner repaid", "2026-11-10"],
+          ["Invented partner undated", null],
+        ],
+      );
     }).pipe(Effect.provide(layer)),
   );
 });
@@ -1532,11 +2417,26 @@ describe("receipts", () => {
         assert.notStrictEqual(more.proposal, advance.proposal);
         const waiting = yield* Effect.flip(call({ proposal: advance.proposal }));
         assert.match(waiting.message, /hasn't tapped Confirm/);
+        // A card that closed unanswered (its invoice was voided) is not reported as waiting.
+        const shut = yield* proposed({ ...ask, advance: { ...ask.advance, amount: "7" } });
+        yield* sql`UPDATE kin_widgets SET closed_at = 1
+          WHERE widget_id = ${`choice:card-kin-receipt:${shut.proposal}`}`;
+        assert.match(
+          (yield* Effect.flip(call({ proposal: shut.proposal }))).message,
+          /closed before the owner answered/,
+        );
         // Cancel ends a proposal.
         yield* answerCard(`kin-receipt:${more.proposal}`, "no");
         assert.match((yield* Effect.flip(call({ proposal: more.proposal }))).message, /said no/);
         // A second card for the same money, worded differently, waits beside the first.
         const twin = yield* proposed({ ...ask, towards: "the redesign's advance" });
+        // Money off leaves the same still-unanswered card for when Money is back.
+        yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+          VALUES (${orgId}, '[{"id":"money","on":false}]', 1, ${ownerId}, 0)`;
+        const off = yield* Effect.flip(answerCard(`kin-receipt:${advance.proposal}`, "yes"));
+        assert.include(off.message, "Money is turned off for this company");
+        assert.deepStrictEqual(yield* live, []);
+        yield* sql`UPDATE kin_company_shell SET shell_json = '[]', rev = 2 WHERE org_id = ${orgId}`;
         // The owner's tap records exactly what its card showed, once; the agent reads it after.
         yield* answerCard(`kin-receipt:${advance.proposal}`, "yes");
         assert.deepStrictEqual(yield* live, [{ minor: 50_000 }]);
@@ -1607,6 +2507,75 @@ describe("receipts", () => {
         );
         yield* answerCard(`kin-receipt:${towardsInvoice.proposal}`, "no");
       }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("wait for a new company's country before reading an amount they are given", () =>
+    Effect.gen(function* () {
+      const asked = yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      // As a company created now starts: its country not chosen (`chat/KinIdentity.test.ts`).
+      yield* sql`UPDATE kin_company_profile SET profile_json = ${yield* newCompanyProfileJson}
+        WHERE org_id = ${orgId}`;
+      const [client] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+        WHERE org_id = ${orgId} AND register_id = 'clients'`;
+      const advance = () =>
+        LeadDocuments.receipt(scope, {
+          sourceEventId: asked,
+          advance: {
+            client: KinRecordKey.make(client!.key),
+            amount: "500",
+            receivedOn: "2026-11-05",
+          },
+        });
+      const probe = parseRecipe(
+        "---\nname: probe\ntitle: Probe\ndescription: probe\nsensitive: true\noutputs: [a.pdf]\ninputs:\n  fee: {type: money}\n  lines: {type: table, columns: {item: text, price: money}}\n---\nGo.\n",
+      );
+      if ("reason" in probe) return assert.fail(probe.reason);
+      const given = { fee: "500", lines: [{ item: "Invented kit", price: "40" }] };
+      const gathered = (inputs: Record<string, unknown>) =>
+        gatherFacts(orgId, probe, undefined, inputs);
+      const refusal = countryFirstMessage("Owner");
+      // An advance goes on a client already kept: nothing was saved.
+      assert.strictEqual(
+        (yield* Effect.flip(advance())).message,
+        countryFirstMessage("Owner", { saved: true }),
+      );
+      assert.strictEqual((yield* Effect.flip(gathered({ fee: "500" }))).message, refusal);
+      assert.strictEqual((yield* Effect.flip(gathered({ lines: given.lines }))).message, refusal);
+      // Nothing was proposed or put to the owner; a document with no amount given is made.
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_receipt_proposals`, 0);
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_widgets WHERE widget_id LIKE '%kin-receipt%'`,
+        0,
+      );
+      yield* gathered({});
+      // Nor is a table with a money column and no amount in it: text only, a blank price, no rows.
+      yield* gathered({ lines: [{ item: "Invented kit" }, { item: "Invented box", price: null }] });
+      yield* gathered({ lines: [] });
+
+      yield* setProfile(orgId, { _tag: "person", personId: ownerId }, { country: "GB" }, undefined);
+      const proposed = yield* advance();
+      assert.strictEqual(proposed.status, "proposed");
+      const [request] = yield* sql<{ json: string }>`SELECT request_json AS json
+        FROM kin_receipt_proposals`;
+      assert.deepStrictEqual(JSON.parse(request!.json).advance.amount, {
+        minor: 50_000,
+        currency: "GBP",
+      });
+      const facts = yield* gathered(given);
+      const assembled = assembleInputs(probe, given, facts.facts, facts.currency);
+      if ("error" in assembled) return assert.fail(assembled.error.message);
+      assert.deepStrictEqual(
+        [
+          assembled.inputs.fee,
+          (assembled.inputs.lines as ReadonlyArray<{ price: unknown }>)[0]?.price,
+        ],
+        [
+          { minor: 50_000, currency: "GBP" },
+          { minor: 4_000, currency: "GBP" },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect("never number a receipt again into money once its payment is taken back", () =>
@@ -2071,8 +3040,33 @@ describe("receipts", () => {
             Effect.map((error) => error.message),
           );
         assert.match(yield* setAgainst(nobody.receipt, unbilled), /names no client/);
+        assert.match(yield* setAgainst(nobody.receipt, forBeta), /names no client/);
+        const typedInvoice = yield* invoiceFor("Saturday workshop", "1,000");
+        yield* records.update(orgId, owner, typedInvoice, { fields: { billToName: "Asha Rao" } });
+        const applied = yield* receipt({
+          entry: KinRecordKey.make(nobody.receipt),
+          against: KinRecordKey.make(typedInvoice),
+        });
+        assert.strictEqual(applied.receipt, nobody.receipt);
+        assert.strictEqual((yield* records.get(orgId, typedInvoice))?.paid, 20_000);
         assert.match(yield* setAgainst(advance.receipt, forBeta), /another client/);
         assert.match(yield* setAgainst(advance.receipt, unbilled), /another client/);
+        // Nor to an invoice nobody has kept: it owes nothing yet.
+        const guessed = yield* invoiceFor("Guessed job", "1,000", "Invented Acme");
+        yield* sql`UPDATE kin_records SET confirmed = 0 WHERE org_id = ${orgId} AND key = ${guessed}`;
+        assert.match(
+          yield* setAgainst(advance.receipt, guessed),
+          new RegExp(`${guessed} is .*suggestion`),
+        );
+        // Nor from a receipt nobody has kept: its advance is evidence, not money received.
+        yield* sql`UPDATE kin_records SET confirmed = 0
+          WHERE org_id = ${orgId} AND key = ${advance.receipt}`;
+        assert.match(
+          yield* setAgainst(advance.receipt, retainer),
+          new RegExp(`${advance.receipt} is .*suggestion`),
+        );
+        yield* sql`UPDATE kin_records SET confirmed = 1
+          WHERE org_id = ${orgId} AND key = ${advance.receipt}`;
         assert.match(
           yield* setAgainst(advance.receipt, small),
           /has ₹300\.00 left to pay, less than the ₹500\.00 advance/,
@@ -2187,6 +3181,25 @@ describe("files the agent makes", () => {
       }).pipe(Effect.flip);
       assert.match(bare.message, /give its full path in file/);
       assert.sameMembers([...new Set(shownCards)], ["D-1"]);
+      // A screenshot a delegated run left in its Scratch folder is filed as an image with its card.
+      const shots = `${config.baseDir}/scratch/review-run/shots`;
+      yield* fs.makeDirectory(shots, { recursive: true });
+      const png = `${shots}/phone-390-save-alert.png`;
+      yield* fs.writeFile(png, Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0));
+      const shot = yield* AgentFiles.fileDocument(scope, {
+        title: "Save alert on a phone",
+        file: png,
+        sourceEventId: "event-3",
+      });
+      const [shotDoc] = shot.documents;
+      assert.include(shownCards, shotDoc!.key);
+      const shotFile = Docs.toVersion(
+        (yield* Docs.versionOf(orgId, (yield* versionsOf(shotDoc!.key)).doc.recordId))!,
+      ).file;
+      assert.deepStrictEqual(
+        [shotFile?.name, shotFile?.mimeType],
+        ["phone-390-save-alert.png", "image/png"],
+      );
     }).pipe(Effect.scoped, Effect.provide(layer)),
   );
 
@@ -2209,7 +3222,7 @@ describe("files the agent makes", () => {
       const refused = yield* writeRecipe("quote").pipe(Effect.flip);
       assert.match(
         refused.message,
-        /didn't keep the quote recipe: its sample didn't render.*blcks/,
+        /didn't keep the quote recipe: its sample didn't render because .*blcks/,
       );
       assert.isUndefined((yield* workspace.recipes(orgId)).find((one) => one.name === "quote"));
       failing.reason = undefined;
@@ -2307,7 +3320,7 @@ describe("files the agent makes", () => {
       yield* fs.remove(`${folder}/old.pdf`);
       failing.reason = "letterhead.pdf: template.typ:1:1: error: unknown variable: oops";
       const broken = yield* letterhead().pipe(Effect.flip);
-      assert.match(broken.message, /its sample didn't render: .*unknown variable: oops/);
+      assert.match(broken.message, /its sample didn't render because .*unknown variable: oops/);
       // Rendered, its first page goes back once to set beside the references.
       failing.reason = undefined;
       const look = yield* letterhead();
@@ -2329,6 +3342,15 @@ describe("files the agent makes", () => {
       const made = listed.recipes.find((one) => one.name === "letterhead");
       assert.deepStrictEqual([made?.labelled, made?.files], [true, ["stamp.png"]]);
       assert.isFalse(yield* fs.exists(started.folder!));
+      // An undo that removed the new recipe says so, and so does the redo, so neither reads as failed.
+      const undo = () =>
+        LeadDocuments.undoRecipe(scope, { recipe: "letterhead", sourceEventId: asked });
+      const undone = yield* undo();
+      assert.isTrue(undone.removed);
+      assert.match(undone.next, /^Undone: .*the recipe is gone now/);
+      const redone = yield* undo();
+      assert.isFalse(redone.removed);
+      assert.match(redone.next, /^Undone: the letterhead recipe is back as it was/);
 
       // A sample holding the company's real details is refused, however often it is asked.
       const memo = (yield* writeRecipe("memo", { sourceEventId: asked })).folder!;

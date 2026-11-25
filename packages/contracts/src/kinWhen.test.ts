@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { formatKinWhen, KIN_TEXT_LOCALE, kinWhenParts } from "./kinWhen.ts";
+import { formatKinLate, formatKinWhen, KIN_TEXT_LOCALE, kinWhenParts } from "./kinWhen.ts";
 
 // The same hour read "3:00 pm" in budget lines and "15:00" in prompts and away notes.
 const AT = Date.UTC(2026, 10, 17, 9, 30);
@@ -21,6 +21,26 @@ describe("one way to write a day and a time", () => {
     expect(
       formatKinWhen(Date.UTC(2026, 10, 17, 3, 35), "time", { zone: ZONE, locale: KIN_TEXT_LOCALE }),
     ).toBe("09:05");
+  });
+
+  // V27: a task due in 1999 read "244382 hours past due".
+  it.each([
+    [0, "for under an hour"],
+    [1, "for 1 hour"],
+    [47, "for 47 hours"],
+    [48, "for 2 days"],
+    [59 * 24 + 23, "for 59 days"],
+    [60 * 24, "since 18 Sept 2026"],
+  ])("writes %i hours late as %s", (hours, text) => {
+    const from = AT - 60 * 24 * 3_600_000;
+    expect(
+      formatKinLate(from, from + hours * 3_600_000, { zone: ZONE, locale: KIN_TEXT_LOCALE }),
+    ).toBe(text);
+  });
+  it("names the day a long-late thing began", () => {
+    expect(
+      formatKinLate(Date.UTC(1999, 0, 1, 6), AT, { zone: ZONE, locale: KIN_TEXT_LOCALE }),
+    ).toBe("since 1 Jan 1999");
   });
 
   it("reads an instant's calendar fields in a zone", () => {

@@ -1,5 +1,6 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import type * as SessionStore from "../../auth/SessionStore.ts";
 import { PersistenceSqlError } from "../../persistence/Errors.ts";
 import type * as Ref from "effect/Ref";
@@ -27,6 +28,10 @@ export class SessionHooks extends Context.Reference<{
     sessionId: AuthSessionId,
     grant: { readonly method: string; readonly pairingLinkId?: string },
   ) => Effect.Effect<void, PersistenceSqlError>;
+  /** Whether revoking a keyed client for this caller ends only that session, not the device. */
+  readonly revokesSessionOnly: (
+    callerSessionId: AuthSessionId | undefined,
+  ) => Effect.Effect<boolean, PersistenceSqlError>;
 }>("kin/auth/SessionHooks", {
   defaultValue: () => ({
     recordRepair: () =>
@@ -39,5 +44,16 @@ export class SessionHooks extends Context.Reference<{
     wrap: () => (store) => store,
     checkExchange: () => Effect.succeed(true),
     recordPairedSession: () => Effect.void,
+    revokesSessionOnly: () => Effect.succeed(false),
   }),
 }) {}
+
+/**
+ * Kin's session hooks for a host CLI's auth. Here, not in authHooks.ts, because T3's auth module
+ * reads it while loading; ProofKeySessions imports T3's auth, so it loads when built.
+ */
+export const cliAuthHooks = Layer.unwrap(
+  Effect.promise(() => import("./ProofKeySessions.ts")).pipe(
+    Effect.map(({ layerCli }) => layerCli),
+  ),
+);

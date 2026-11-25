@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { KinChatError, KinOrgId } from "./kinChat.ts";
+import { KinChatError, KinOrgId, KinPersonId, KinSendTry } from "./kinChat.ts";
 
 /**
  * Connections: an owner's sign-in to an outside service, reached by Kin's server as an MCP client.
@@ -176,17 +176,68 @@ export type KinConnectionCall = typeof KinConnectionCall.Type;
 
 export const KinConnectionsInput = Schema.Struct({ orgId: KinOrgId });
 export type KinConnectionsInput = typeof KinConnectionsInput.Type;
+/**
+ * A person's own mailbox as the owner level sees it: whose, and which address. Never what is in
+ * it; the owner level may disconnect it, never read or send from it.
+ */
+export const KinPersonMailbox = Schema.Struct({
+  personId: KinPersonId,
+  connectionId: KinConnectionId,
+  account: Schema.NullOr(Schema.String),
+  state: KinConnectionState,
+});
+export type KinPersonMailbox = typeof KinPersonMailbox.Type;
+
 export const KinConnectionsView = Schema.Struct({
   orgId: KinOrgId,
   connections: Schema.Array(KinConnection),
   services: Schema.Array(KinConnectionService),
   /** Where a service sends the browser back after sign-in; pasted into Google's client setup. */
   signInAddress: Schema.String,
+  /** Each person's own mailbox; absent from servers before own mailboxes. */
+  mailboxes: Schema.optional(Schema.Array(KinPersonMailbox)),
 });
 export type KinConnectionsView = typeof KinConnectionsView.Type;
 
+/** One of a person's own mailboxes, as they see it. */
+export const KinOwnMailbox = Schema.Struct({
+  connectionId: KinConnectionId,
+  preset: Schema.NullOr(KinConnectionPreset),
+  account: Schema.NullOr(Schema.String),
+  state: KinConnectionState,
+});
+export type KinOwnMailbox = typeof KinOwnMailbox.Type;
+
+/**
+ * Settings › Connections › Your mailboxes, for anyone: their own mailboxes, and the mail services
+ * they may sign in with (only those the owner has set up).
+ */
+export const KinMyMailbox = Schema.Struct({
+  orgId: KinOrgId,
+  /** The oldest-connected own mailbox, or null: what a build from before several reads. */
+  mailbox: Schema.NullOr(KinOwnMailbox),
+  /** Every own mailbox, oldest first; absent from servers before several. */
+  mailboxes: Schema.optional(Schema.Array(KinOwnMailbox)),
+  services: Schema.Array(
+    Schema.Struct({ service: KinConnectionPreset, label: Schema.String, ready: Schema.Boolean }),
+  ),
+  /** Where a service sends the browser back after sign-in. */
+  signInAddress: Schema.String,
+});
+export type KinMyMailbox = typeof KinMyMailbox.Type;
+
 export const KinConnectionRef = Schema.Struct({ orgId: KinOrgId, connectionId: KinConnectionId });
 export type KinConnectionRef = typeof KinConnectionRef.Type;
+/**
+ * Moves a connected mailbox, keeping its sign-in: a company one to the caller's own (`mine`), or
+ * the caller's own to the company's. The owner level's alone, and only ever the caller's own.
+ */
+export const KinMailboxMoveInput = Schema.Struct({
+  orgId: KinOrgId,
+  connectionId: KinConnectionId,
+  to: Schema.Literals(["mine", "company"]),
+});
+export type KinMailboxMoveInput = typeof KinMailboxMoveInput.Type;
 export const KinConnectionDetail = Schema.Struct({
   connection: KinConnection,
   tools: Schema.Array(KinConnectionTool),
@@ -330,6 +381,23 @@ export const KinConnectionSignInStartInput = Schema.Struct({
   returnTo: KinConnectionSignInReturn,
 });
 export type KinConnectionSignInStartInput = typeof KinConnectionSignInStartInput.Type;
+/** Signs in to the caller's own mailbox: a mail service only, one per person. */
+export const KinMyMailboxSignInStartInput = Schema.Struct({
+  orgId: KinOrgId,
+  service: KinConnectionPreset,
+  returnTo: KinConnectionSignInReturn,
+  /** Sign in again to this own mailbox. */
+  connectionId: Schema.optional(KinConnectionId),
+  /** Connect another own mailbox. With neither, the oldest one's sign-in again, or a first one. */
+  another: Schema.optional(Schema.Boolean),
+});
+export type KinMyMailboxSignInStartInput = typeof KinMyMailboxSignInStartInput.Type;
+/** Disconnects this own mailbox; without an id, the oldest (`KinMyMailbox.mailbox`). */
+export const KinMyMailboxRemoveInput = Schema.Struct({
+  orgId: KinOrgId,
+  connectionId: Schema.optional(KinConnectionId),
+});
+export type KinMyMailboxRemoveInput = typeof KinMyMailboxRemoveInput.Type;
 export const KinConnectionSignInStart = Schema.Struct({
   signInId: Schema.String,
   /** The service's sign-in page, opened in the device's browser. */
@@ -406,6 +474,53 @@ export const KinConnectionSetSendFromInput = Schema.Struct({
 export type KinConnectionSetSendFromInput = typeof KinConnectionSetSendFromInput.Type;
 export const KinConnectionSetSendFrom = Schema.Struct({ revision: NonNegativeInt });
 export type KinConnectionSetSendFrom = typeof KinConnectionSetSendFrom.Type;
+
+/**
+ * A person's own words on an unanswered mail card, sent in the same step: the card is replaced by
+ * one with exactly this mail, confirmed as an ordinary Confirm is. Attachments stay as drawn.
+ */
+export const KinConnectionSendEditedInput = Schema.Struct({
+  orgId: KinOrgId,
+  widgetId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  /** The card revision the person edited; a card that changed since is refused. */
+  revision: NonNegativeInt,
+  /** One per press: a retry of the same press answers as the first did. */
+  clientActionId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  to: Schema.Array(Schema.String.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
+  cc: Schema.Array(Schema.String.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
+  subject: Schema.String.check(Schema.isMaxLength(400)),
+  body: Schema.String.check(Schema.isMaxLength(24_000)),
+  /** The try the person checked the sent mail for: the card's or the refusal's `mayHaveGone`. */
+  checkedSent: Schema.optional(KinSendTry),
+});
+export type KinConnectionSendEditedInput = typeof KinConnectionSendEditedInput.Type;
+/** The card that now carries the mail and its outcome. */
+export const KinConnectionSendEdited = Schema.Struct({
+  widgetId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+});
+export type KinConnectionSendEdited = typeof KinConnectionSendEdited.Type;
+
+/**
+ * A person's own words kept on an unanswered mail card without sending: the card shows them and
+ * its Confirm sends them. `edit: null` puts the agent's draft back.
+ */
+export const KinConnectionSaveEditedInput = Schema.Struct({
+  orgId: KinOrgId,
+  widgetId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
+  /** The card revision the person edited; a card that changed since is refused. */
+  revision: NonNegativeInt,
+  edit: Schema.NullOr(
+    Schema.Struct({
+      to: Schema.Array(Schema.String.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
+      cc: Schema.Array(Schema.String.check(Schema.isMaxLength(320))).check(Schema.isMaxLength(50)),
+      subject: Schema.String.check(Schema.isMaxLength(400)),
+      body: Schema.String.check(Schema.isMaxLength(24_000)),
+    }),
+  ),
+});
+export type KinConnectionSaveEditedInput = typeof KinConnectionSaveEditedInput.Type;
+export const KinConnectionSaveEdited = Schema.Struct({ revision: NonNegativeInt });
+export type KinConnectionSaveEdited = typeof KinConnectionSaveEdited.Type;
 
 /**
  * GitHub as the owner's own login on the host: `gh` and git act as him, and T3 uses the same
@@ -504,6 +619,24 @@ export const KinGitHubAppAccount = Schema.Struct({
 });
 export type KinGitHubAppAccount = typeof KinGitHubAppAccount.Type;
 
+/**
+ * Whether GitHub tells Kin at once, through the App's webhook: `on` (set, every event Kin needs
+ * ticked), `events` (set, some unticked), `address` (Kin has no public address), or `error`
+ * (GitHub refused or couldn't be reached). Kin's poll goes on in every state.
+ */
+export const KinGitHubInstant = Schema.Struct({
+  state: Schema.Literals(["on", "events", "address", "error"]),
+  /** Event names still to tick on GitHub, as GitHub's page words them ("Pull request", "Issue comment", ...). */
+  missing: Schema.Array(Schema.String),
+  /** The App's "Permissions & events" page on GitHub, for the owner. */
+  settingsUrl: Schema.NullOr(Schema.String),
+  /** When GitHub last delivered and whether Kin accepted it, from GET /app/hook/deliveries; null when never or unknown. */
+  last: Schema.NullOr(Schema.Struct({ at: Schema.String, ok: Schema.Boolean })),
+  /** With `error`: the App's webhook sends its events to an address that isn't Kin's, left as it is. */
+  elsewhere: Schema.optional(Schema.Boolean),
+});
+export type KinGitHubInstant = typeof KinGitHubInstant.Type;
+
 /** Who agents act as on GitHub: Kin's GitHub App where it is installed, else the owner. */
 export const KinGitHubAgents = Schema.Struct({
   as: Schema.Literals(["app", "owner"]),
@@ -543,6 +676,13 @@ export const KinGitHubAgents = Schema.Struct({
   /** The account that owns the App, and its settings page when the login can open it. */
   appOwner: Schema.optional(Schema.String),
   appSettingsUrl: Schema.optional(Schema.String),
+  /** Whether GitHub tells Kin at once; owner-level readers only, absent with no App. */
+  instant: Schema.optional(KinGitHubInstant),
+  /**
+   * Owner-level readers only, without `instant`: Kin didn't make the App, has a public address,
+   * and sets the App's webhook once an owner allows it (`kin.github.app.hook.allow`).
+   */
+  instantOffer: Schema.optional(Schema.Boolean),
 });
 export type KinGitHubAgents = typeof KinGitHubAgents.Type;
 
@@ -613,6 +753,19 @@ export const KinGitHubAppDisconnected = Schema.Struct({
   settingsUrl: Schema.NullOr(Schema.String),
 });
 export type KinGitHubAppDisconnected = typeof KinGitHubAppDisconnected.Type;
+
+/**
+ * Whether Kin asked GitHub about its App again, nothing more: false within two minutes of the last
+ * ask, or with no App or key to ask with.
+ */
+export const KinGitHubAppLooked = Schema.Struct({ looked: Schema.Boolean });
+export type KinGitHubAppLooked = typeof KinGitHubAppLooked.Type;
+
+/** What setting the App's webhook did once an owner allowed it; `elsewhere` left another's address. */
+export const KinGitHubHookAllowed = Schema.Struct({
+  outcome: Schema.Literals(["set", "address", "none", "elsewhere", "error"]),
+});
+export type KinGitHubHookAllowed = typeof KinGitHubHookAllowed.Type;
 
 /** Protects these repos' default branch from Kin's App with a ruleset, or removes Kin's own. */
 export const KinGitHubGuardSetInput = Schema.Struct({
@@ -728,6 +881,41 @@ export const KinConnectionRpcs = [
     success: KinConnectionSetSendFrom,
     error: KinError,
   }),
+  Rpc.make("kin.connections.sendEdited", {
+    payload: KinConnectionSendEditedInput,
+    success: KinConnectionSendEdited,
+    error: KinError,
+  }),
+  Rpc.make("kin.connections.saveEdited", {
+    payload: KinConnectionSaveEditedInput,
+    success: KinConnectionSaveEdited,
+    error: KinError,
+  }),
+  Rpc.make("kin.connections.mine", {
+    payload: KinConnectionsInput,
+    success: KinMyMailbox,
+    error: KinError,
+  }),
+  Rpc.make("kin.connections.mineSignInStart", {
+    payload: KinMyMailboxSignInStartInput,
+    success: KinConnectionSignInStart,
+    error: KinError,
+  }),
+  Rpc.make("kin.connections.mineSignInFinish", {
+    payload: KinConnectionSignInFinishInput,
+    success: KinMyMailbox,
+    error: KinError,
+  }),
+  Rpc.make("kin.connections.mineRemove", {
+    payload: KinMyMailboxRemoveInput,
+    success: KinMyMailbox,
+    error: KinError,
+  }),
+  Rpc.make("kin.connections.moveMailbox", {
+    payload: KinMailboxMoveInput,
+    success: KinMyMailbox,
+    error: KinError,
+  }),
   Rpc.make("kin.github.connect.status", {
     payload: KinGitHubInput,
     success: KinGitHubStatus,
@@ -768,6 +956,16 @@ export const KinConnectionRpcs = [
     success: KinGitHubAppDisconnected,
     error: KinError,
   }),
+  Rpc.make("kin.github.app.look", {
+    payload: KinGitHubInput,
+    success: KinGitHubAppLooked,
+    error: KinError,
+  }),
+  Rpc.make("kin.github.app.hook.allow", {
+    payload: KinGitHubInput,
+    success: KinGitHubHookAllowed,
+    error: KinError,
+  }),
   Rpc.make("kin.github.app.repos.set", {
     payload: KinGitHubAppReposSetInput,
     success: KinGitHubAppReposResult,
@@ -797,6 +995,13 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.connections.signInFinish": AuthKinChatScope,
   "kin.connections.setSignInClient": AuthKinChatScope,
   "kin.connections.setSendFrom": AuthKinChatScope,
+  "kin.connections.sendEdited": AuthKinChatScope,
+  "kin.connections.saveEdited": AuthKinChatScope,
+  "kin.connections.mine": AuthKinChatScope,
+  "kin.connections.mineSignInStart": AuthKinChatScope,
+  "kin.connections.mineSignInFinish": AuthKinChatScope,
+  "kin.connections.mineRemove": AuthKinChatScope,
+  "kin.connections.moveMailbox": AuthKinChatScope,
   "kin.github.connect.status": AuthKinChatScope,
   "kin.github.connect.start": AuthKinChatScope,
   "kin.github.connect.cancel": AuthKinChatScope,
@@ -807,4 +1012,6 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.github.guard.set": AuthKinChatScope,
   "kin.github.app.create": AuthKinChatScope,
   "kin.github.app.disconnect": AuthKinChatScope,
+  "kin.github.app.hook.allow": AuthKinChatScope,
+  "kin.github.app.look": AuthKinChatScope,
 } as const;

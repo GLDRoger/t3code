@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off globalDate:off - a dev and test fixture: PKCE, a JSON file, mail dates.
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
+import { WEEK_MS } from "../durations.ts";
 
 /**
  * A local mailbox that answers the Gmail, Google token, Microsoft Graph and Microsoft token calls
@@ -30,6 +31,8 @@ export type FakeMailMessage = {
   readonly messageId: string;
   readonly inReplyTo: string | null;
   readonly references: string | null;
+  /** `Authentication-Results` as the receiving server wrote them, topmost first. */
+  readonly authResults?: ReadonlyArray<string>;
   readonly body: string;
   /** File names, for scripts and older mailbox files. */
   readonly attachments: ReadonlyArray<string>;
@@ -37,6 +40,14 @@ export type FakeMailMessage = {
   readonly files?: ReadonlyArray<FakeMailFile>;
   readonly unread: boolean;
   readonly sent: boolean;
+  /** The fake's revisions at which it entered the Inbox: a change record names each once. */
+  readonly revs?: ReadonlyArray<number>;
+  /** More headers as the vendor shows them, such as `List-Unsubscribe`. */
+  readonly headers?: Readonly<Record<string, string>>;
+  /** More Gmail labels, such as `CATEGORY_PROMOTIONS`. */
+  readonly labels?: ReadonlyArray<string>;
+  /** The sender's `Date` header, when it isn't the delivery time. */
+  readonly dateHeader?: string;
 };
 
 export type FakeMailFile = {
@@ -117,6 +128,12 @@ const plain = (who: string) => lower(/<([^<>]+)>/.exec(who)?.[1] ?? who).trim();
 const nameIn = (who: string) => /^\s*"?([^"<]*?)"?\s*</.exec(who)?.[1]?.trim() || undefined;
 const rfc2822 = (ms: number) => new Date(ms).toUTCString().replace("GMT", "+0000");
 const iso = (ms: number) => new Date(ms).toISOString();
+/** One page of `items` as the vendors cut them: `size` from an offset, and the offset after. */
+const pageOf = <A>(items: ReadonlyArray<A>, size: string | null, offset: string | null) => {
+  const from = Number(offset ?? 0);
+  const to = size === null ? items.length : from + Number(size);
+  return { items: items.slice(from, to), next: to < items.length ? String(to) : undefined };
+};
 
 const headerBlock = (head: string) => {
   const headers = new Map<string, string>();
@@ -253,6 +270,11 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       : void failing.set(lower(address), status);
   const outage = (account: FakeMailAccount, request: Request) => {
     const status = failing.get(lower(account.address));
+    if (status === 429)
+      return new Response(JSON.stringify({ error: { code: status } }), {
+        status,
+        headers: { "content-type": "application/json", "retry-after": "30" },
+      });
     if (status !== undefined) return json({ error: { code: status } }, status);
     return request.method === "POST" && down.has(lower(account.address))
       ? json({ error: { code: 503, message: "The service is unavailable." } }, 503)
@@ -278,6 +300,12 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     readonly threadId?: string;
     readonly at: number;
     readonly files?: ReadonlyArray<FakeMailFile>;
+    readonly headers?: Readonly<Record<string, string>>;
+    readonly dateHeader?: string;
+    readonly labels?: ReadonlyArray<string>;
+    /** The Message-ID header, as the sender's server wrote it. */
+    readonly messageId?: string;
+    readonly authResults?: ReadonlyArray<string>;
   }) =>
     edit((state) => {
       const account = state.accounts.find((one) => owns(one, input.to));
@@ -296,18 +324,44 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         cc: input.cc ?? [],
         subject: input.subject,
         at: input.at,
-        messageId: `<${id}@${plain(input.from).split("@")[1] ?? "invented.example"}>`,
+        messageId:
+          input.messageId ?? `<${id}@${plain(input.from).split("@")[1] ?? "invented.example"}>`,
         inReplyTo: last?.messageId ?? null,
         references: last === undefined ? null : [last.references, last.messageId].join(" ").trim(),
+        ...(input.authResults === undefined ? {} : { authResults: input.authResults }),
         body: input.body,
         attachments: (input.files ?? []).map((file) => file.name),
         files: input.files ?? [],
         unread: true,
         sent: false,
+        ...(input.headers === undefined ? {} : { headers: input.headers }),
+        ...(input.dateHeader === undefined ? {} : { dateHeader: input.dateHeader }),
+        ...(input.labels === undefined ? {} : { labels: input.labels }),
       };
-      state.messages.push(message);
-      return message;
+      const stored = { ...message, revs: [++state.seq] };
+      state.messages.push(stored);
+      return stored;
     });
+
+  /** A message put back into the Inbox (or labelled Inbox again): its record comes again. */
+  const relabel = (messageId: string) =>
+    edit((state) => {
+      const at = state.messages.findIndex((one) => one.id === messageId);
+      if (at < 0) throw new Error(`No fake message ${messageId}.`);
+      const one = state.messages[at]!;
+      state.messages[at] = { ...one, revs: [...(one.revs ?? []), ++state.seq] };
+    });
+  /** The vendor forgets every change position up to now, as an expired history id or delta. */
+  const forgotten = new Map<string, number>();
+  const forgetPositions = (address: string) =>
+    edit((state) => void forgotten.set(lower(address), state.seq++));
+  /** Reads of one message answer this HTTP status, as an unreadable message does. */
+  const unreadable = new Map<string, number>();
+  const failRead = (messageId: string, status: number | null) =>
+    status === null ? void unreadable.delete(messageId) : void unreadable.set(messageId, status);
+  const revsOf = (message: FakeMailMessage) => message.revs ?? [];
+  const headersOf = (message: FakeMailMessage) =>
+    Object.entries(message.headers ?? {}).map(([name, value]) => ({ name, value }));
 
   const sent = () => store.load().messages.filter((one) => one.sent);
 
@@ -379,7 +433,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
   const matches = (message: FakeMailMessage, words: string) =>
     words
       .split(/\s+/)
-      .filter((word) => word !== "" && !word.startsWith("in:") && !word.startsWith("after:"))
+      .filter((word) => word !== "" && !/^(?:in|after|before):/.test(word))
       .every((word) => {
         const from = /^from:(.+)$/.exec(word)?.[1];
         return from !== undefined
@@ -387,10 +441,16 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
           : lower(`${message.subject} ${message.body} ${message.from}`).includes(lower(word));
       });
 
+  const authHeaders = (message: FakeMailMessage) =>
+    (message.authResults ?? []).map((value) => ({ name: "Authentication-Results", value }));
   const gmailMessage = (message: FakeMailMessage) => ({
     id: message.id,
     threadId: message.threadId,
-    labelIds: message.sent ? ["SENT"] : ["INBOX", ...(message.unread ? ["UNREAD"] : [])],
+    internalDate: String(message.at),
+    labelIds: [
+      ...(message.sent ? ["SENT"] : ["INBOX", ...(message.unread ? ["UNREAD"] : [])]),
+      ...(message.labels ?? []),
+    ],
     snippet: message.body.slice(0, 100),
     payload: {
       mimeType: (message.files ?? []).length === 0 ? "text/plain" : "multipart/mixed",
@@ -400,9 +460,11 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         ...(message.cc.length === 0 ? [] : [{ name: "Cc", value: message.cc.join(", ") }]),
         ...(message.sent ? [] : [{ name: "Delivered-To", value: message.account }]),
         { name: "Subject", value: message.subject },
-        { name: "Date", value: rfc2822(message.at) },
+        { name: "Date", value: message.dateHeader ?? rfc2822(message.at) },
         { name: "Message-ID", value: message.messageId },
         ...(message.references === null ? [] : [{ name: "References", value: message.references }]),
+        ...authHeaders(message),
+        ...headersOf(message),
       ],
       ...((message.files ?? []).length === 0
         ? { body: { data: Buffer.from(message.body).toString("base64url") } }
@@ -426,7 +488,6 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     },
   });
 
-  const WEEK = 7 * 24 * 60 * 60 * 1000;
   type Occurrence = {
     readonly event: FakeMailEvent;
     readonly id: string;
@@ -445,8 +506,8 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
             ? Array.from({ length: event.repeats }, (_, week) => ({
                 event,
                 id: `${event.id}_${week}`,
-                start: event.start + week * WEEK,
-                end: event.end + week * WEEK,
+                start: event.start + week * WEEK_MS,
+                end: event.end + week * WEEK_MS,
                 kind: "instance" as const,
               }))
             : [{ event, id: event.id, start: event.start, end: event.end, kind: "master" }],
@@ -498,7 +559,61 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       if (unavailable !== undefined) return unavailable;
       const path = url.pathname;
       const mine = inbox(state, account);
-      if (path === `${GMAIL}/profile`) return json({ emailAddress: account.address });
+      if (path === `${GMAIL}/profile`)
+        return json({ emailAddress: account.address, historyId: String(state.seq) });
+      if (path === `${GMAIL}/history`) {
+        const start = Number(url.searchParams.get("startHistoryId") ?? Number.NaN);
+        if (!Number.isSafeInteger(start) || start <= (forgotten.get(lower(account.address)) ?? -1))
+          return json({ error: { code: 404 } }, 404);
+        const records = mine
+          .filter((one) => !one.sent)
+          .flatMap((one) =>
+            revsOf(one)
+              .map((rev, index) => ({ one, rev, first: index === 0 }))
+              .filter(({ rev }) => rev > start),
+          )
+          .toSorted((a, b) => a.rev - b.rev)
+          .map(({ one, rev, first }) => {
+            const message = { id: one.id, threadId: one.threadId, labelIds: ["INBOX"] };
+            return first
+              ? { id: String(rev), messagesAdded: [{ message }] }
+              : { id: String(rev), labelsAdded: [{ message, labelIds: ["INBOX"] }] };
+          });
+        const page = pageOf(
+          records,
+          url.searchParams.get("maxResults"),
+          url.searchParams.get("pageToken"),
+        );
+        return json({
+          historyId: String(state.seq),
+          ...(page.items.length === 0 ? {} : { history: page.items }),
+          ...(page.next === undefined ? {} : { nextPageToken: page.next }),
+        });
+      }
+      const single = /^\/gmail\/v1\/users\/me\/messages\/([^/]+)$/.exec(path)?.[1];
+      if (single !== undefined && request.method === "GET") {
+        const one = mine.find((message) => message.id === decodeURIComponent(single));
+        if (one === undefined) return json({ error: { code: 404 } }, 404);
+        const failed = unreadable.get(one.id);
+        if (failed !== undefined) return json({ error: { code: failed } }, failed);
+        const full = gmailMessage(one);
+        const asked = new Set(url.searchParams.getAll("metadataHeaders").map(lower));
+        const headers = [
+          ...full.payload.headers,
+          {
+            name: "Content-Type",
+            value: (one.files ?? []).length === 0 ? "text/plain" : "multipart/mixed; boundary=x",
+          },
+        ].filter((header) => asked.size === 0 || asked.has(lower(header.name)));
+        return json({
+          id: one.id,
+          threadId: one.threadId,
+          labelIds: full.labelIds,
+          snippet: full.snippet,
+          internalDate: String(one.at),
+          payload: { mimeType: full.payload.mimeType, headers },
+        });
+      }
       if (path === `${GMAIL}/settings/sendAs`)
         return json({
           sendAs: [
@@ -517,6 +632,9 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         });
       if (path === `${GMAIL}/threads`) {
         const after = Number(/after:(\d+)/.exec(url.searchParams.get("q") ?? "")?.[1] ?? 0);
+        const before = Number(
+          /before:(\d+)/.exec(url.searchParams.get("q") ?? "")?.[1] ?? Infinity,
+        );
         const inboxOnly =
           url.searchParams.get("labelIds") === "INBOX" ||
           (url.searchParams.get("q") ?? "").includes("in:inbox");
@@ -524,10 +642,19 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
           (one) =>
             (!inboxOnly || !one.sent) &&
             one.at >= after * 1000 &&
+            one.at < before * 1000 &&
             matches(one, url.searchParams.get("q") ?? ""),
         );
         const ids = [...new Set(found.toSorted((a, b) => b.at - a.at).map((one) => one.threadId))];
-        return json({ threads: ids.map((id) => ({ id })) });
+        const page = pageOf(
+          ids,
+          url.searchParams.get("maxResults"),
+          url.searchParams.get("pageToken"),
+        );
+        return json({
+          threads: page.items.map((id) => ({ id })),
+          ...(page.next === undefined ? {} : { nextPageToken: page.next }),
+        });
       }
       const thread = /^\/gmail\/v1\/users\/me\/threads\/([^/]+)$/.exec(path)?.[1];
       if (thread !== undefined) {
@@ -557,7 +684,19 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
             start < Date.parse(params.get("timeMax") ?? "9999-01-01T00:00:00Z") &&
             lower(event.title).includes(lower(params.get("q") ?? "")),
         );
-        if (eventPath[1] === undefined) return json({ items: items.map(googleEvent) });
+        if (eventPath[1] === undefined) {
+          const page = pageOf(
+            params.get("orderBy") === "updated"
+              ? items.toSorted((a, b) => a.event.updated - b.event.updated)
+              : items,
+            params.get("maxResults"),
+            params.get("pageToken"),
+          );
+          return json({
+            items: page.items.map(googleEvent),
+            ...(page.next === undefined ? {} : { nextPageToken: page.next }),
+          });
+        }
         const one = occurrences(state, account, true).find(
           (item) => item.id === decodeURIComponent(eventPath[1]!),
         );
@@ -591,8 +730,11 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     internetMessageId: message.messageId,
     hasAttachments: (message.files ?? []).length > 0,
     body: { contentType: "text", content: message.body },
-    internetMessageHeaders:
-      message.references === null ? [] : [{ name: "References", value: message.references }],
+    internetMessageHeaders: [
+      ...headersOf(message),
+      ...authHeaders(message),
+      ...(message.references === null ? [] : [{ name: "References", value: message.references }]),
+    ],
   });
   const odata = (filter: string, field: string) =>
     new RegExp(`${field} (?:eq|ge) '?((?:[^']|'')*)'?`).exec(filter)?.[1]?.replaceAll("''", "'");
@@ -619,10 +761,19 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         });
       if (path === `${GRAPH}/mailFolders/inbox/messages`) {
         const since = odata(filter, "receivedDateTime");
+        const found = mine.filter(
+          (one) => !one.sent && (since === undefined || iso(one.at) >= since),
+        );
+        const page = pageOf(
+          url.searchParams.get("$orderby")?.endsWith(" asc") ? found.toReversed() : found,
+          url.searchParams.get("$top"),
+          url.searchParams.get("$skip"),
+        );
+        const nextLink = new URL(url);
+        nextLink.searchParams.set("$skip", page.next ?? "");
         return json({
-          value: mine
-            .filter((one) => !one.sent && (since === undefined || iso(one.at) >= since))
-            .map(graphMessage),
+          value: page.items.map(graphMessage),
+          ...(page.next === undefined ? {} : { "@odata.nextLink": nextLink.href }),
         });
       }
       if (path === `${GRAPH}/messages` && request.method === "GET") {
@@ -639,6 +790,41 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
                   : search === undefined || matches(one, search),
             )
             .map(graphMessage),
+        });
+      }
+      if (path === `${GRAPH}/mailFolders/inbox/messages/delta`) {
+        const token = url.searchParams.get("$deltatoken");
+        const rounds = token === null ? undefined : Number(token);
+        if (rounds !== undefined && rounds <= (forgotten.get(lower(account.address)) ?? -1))
+          return json({ error: { code: "syncStateNotFound" } }, 410);
+        const after = /receivedDateTime gt (\S+)/.exec(filter)?.[1];
+        const value = mine
+          .filter((one) => !one.sent)
+          .filter((one) =>
+            rounds === undefined
+              ? after === undefined || iso(one.at) > after
+              : revsOf(one).some((rev) => rev > rounds),
+          )
+          .map((one) => ({ id: one.id, conversationId: one.threadId }));
+        return json({
+          value,
+          "@odata.deltaLink": `https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=${state.seq}`,
+        });
+      }
+      const singleMessage = /^\/v1\.0\/me\/messages\/([^/]+)$/.exec(path)?.[1];
+      if (singleMessage !== undefined && request.method === "GET") {
+        const one = mine.find((message) => message.id === decodeURIComponent(singleMessage));
+        if (one === undefined) return json({ error: { code: "ErrorItemNotFound" } }, 404);
+        const failed = unreadable.get(one.id);
+        if (failed !== undefined)
+          return json({ error: { code: "ErrorInternalServerError" } }, failed);
+        const shown = graphMessage(one);
+        return json({
+          ...shown,
+          internetMessageHeaders: [
+            ...shown.internetMessageHeaders,
+            { name: "Message-ID", value: one.messageId },
+          ],
         });
       }
       const attachmentsOf = /^\/v1\.0\/me\/messages\/([^/]+)\/attachments$/.exec(path)?.[1];
@@ -770,6 +956,9 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     setDown,
     failWith,
     deliver,
+    relabel,
+    forgetPositions,
+    failRead,
     putEvent,
     sent,
     handle,

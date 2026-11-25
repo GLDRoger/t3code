@@ -1,0 +1,1282 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import { assert, describe, it } from "@effect/vitest";
+import {
+  KIN_HOST_TROUBLE_CARD,
+  KinAgentId,
+  KinEventId,
+  KinHostTroubleCard,
+  KinOrgId,
+  KinPersonId,
+  KinWakeupId,
+  type KinTroubleCause,
+} from "@t3tools/contracts";
+import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
+import * as ConfigProvider from "effect/ConfigProvider";
+import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Path from "effect/Path";
+import * as PlatformError from "effect/PlatformError";
+import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
+import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
+import * as TestClock from "effect/testing/TestClock";
+
+import * as ServerConfig from "../config.ts";
+import * as ProcessRunner from "../processRunner.ts";
+import * as Sqlite from "../persistence/Sqlite.ts";
+import * as Scheduler from "../scheduling/Scheduler.ts";
+import * as Hub from "./chat/KinChatHub.ts";
+import * as Repository from "./chat/KinChatRepository.ts";
+import * as Chat from "./chat/KinChatService.ts";
+import * as HostBackupCheck from "./host/backupCheck.ts";
+import * as KinHostCare from "./host/KinHostCare.ts";
+import * as OfflineCatchUp from "./host/offlineCatchUp.ts";
+import { recordSkips } from "./host/offlineSkips.ts";
+import { offlineCatchUpWords } from "./host/offlineWords.ts";
+import { troubleCause, troubleDetail } from "./host/troubleCauses.ts";
+import * as HostBackup from "./hostBackup.ts";
+import * as KinEventQueue from "./lead/KinEventQueue.ts";
+import * as KinPersistence from "./persistence/KinPersistence.ts";
+import { KinWakeupError } from "./lead/WakeupRunner.ts";
+import { MemoryError } from "./memory/Memory.ts";
+
+const HOUR = 60 * 60 * 1000;
+const NOW = 1794009600000;
+const orgId = KinOrgId.make("org-ambermill");
+const status = (fields: { ok: boolean; lastGoodAt: number | null; error?: string }) =>
+  JSON.stringify({ ranAt: NOW, bytes: null, error: "", ...fields });
+
+describe("backupProblem", () => {
+  it("is quiet while the last good backup is at most 36 hours old, and names the last good one otherwise", () => {
+    const cases: ReadonlyArray<
+      readonly [string | undefined, { readonly lastGoodAt: number | null } | undefined]
+    > = [
+      [status({ ok: true, lastGoodAt: NOW - 36 * HOUR }), undefined],
+      [
+        status({ ok: false, lastGoodAt: NOW - 20 * HOUR, error: "the volume is not mounted." }),
+        undefined,
+      ],
+      [status({ ok: true, lastGoodAt: NOW - 37 * HOUR }), { lastGoodAt: NOW - 37 * HOUR }],
+      [
+        status({
+          ok: false,
+          lastGoodAt: NOW - 72 * HOUR,
+          error: "backup failed its integrity check.",
+        }),
+        { lastGoodAt: NOW - 72 * HOUR },
+      ],
+      [undefined, { lastGoodAt: null }],
+      ["not json", { lastGoodAt: null }],
+      [
+        status({ ok: false, lastGoodAt: null, error: "no database at the data path." }),
+        { lastGoodAt: null },
+      ],
+    ];
+    for (const [file, told] of cases)
+      assert.deepStrictEqual(HostBackup.backupProblem(file, NOW), told);
+  });
+});
+
+/**
+ * The host's commands, answered without running anything: `du` reads invented sizes (no test walks
+ * a real folder), and the clean script isn't there. `seen` gets each command and its arguments.
+ */
+const fakeRunner = (seen: Array<ReadonlyArray<string>> = []) =>
+  Layer.succeed(
+    ProcessRunner.ProcessRunner,
+    ProcessRunner.ProcessRunner.of({
+      run: (input) =>
+        Effect.sync(() => {
+          seen.push([input.command, ...(input.args ?? [])]);
+          const du = input.command === "du";
+          return {
+            stdout: du ? `1024\t${input.args?.at(-1) ?? ""}\n` : "",
+            stderr: du ? "" : "not here",
+            code: (du ? 0 : 127) as never,
+            timedOut: false,
+            stdoutTruncated: false,
+            stderrTruncated: false,
+            stdoutInvalidUtf8: false,
+            stderrInvalidUtf8: false,
+          };
+        }),
+    }),
+  );
+
+const config = (fields: Record<string, unknown>) =>
+  ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true, ...fields }));
+const servicesWith = (
+  fields: Record<string, unknown>,
+  runner: Layer.Layer<ProcessRunner.ProcessRunner> = fakeRunner(),
+) =>
+  KinHostCare.layerWithoutRunner.pipe(
+    Layer.provide(runner),
+    Layer.provideMerge(KinEventQueue.layer),
+    Layer.provideMerge(Chat.layer),
+    Layer.provideMerge(Hub.layer),
+    Layer.provideMerge(Repository.layer),
+    Layer.provideMerge(
+      KinPersistence.layer.pipe(
+        Layer.provideMerge(Sqlite.layerMemory),
+        Layer.provideMerge(config(fields)),
+      ),
+    ),
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-host-backup-" })),
+    Layer.provideMerge(NodeServices.layer),
+  );
+const services = servicesWith({ KIN_CHECKOUT: "/srv/kin-current" });
+
+// 10:00 in Kolkata, outside the owner's quiet hours (22:00 to 07:00 there).
+const DAY_START = NOW + 4.5 * HOUR;
+
+const seed = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const at = DateTime.formatIso(DateTime.makeUnsafe(NOW));
+  yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Ambermill', ${at})`;
+  yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+    VALUES ('rhea', ${orgId}, 'rhea', 'Rhea', ${at})`;
+  yield* sql`INSERT INTO kin_trigger_settings VALUES (${orgId}, 'Asia/Kolkata', '08:00', '18:00',
+    '02:00', 0, 1, '09:00', '{"from":"22:00","to":"07:00"}')`;
+  for (const [agent, name, chat] of [
+    ["chief", "Chief of staff", "rhea-chief"],
+    ["finance", "Finance", "rhea-finance"],
+  ] as const) {
+    yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at, retired_at)
+      VALUES (${agent}, ${orgId}, ${name}, 'lead', 'rhea', ${at}, NULL)`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+      VALUES (${chat}, ${orgId}, 'direct', ${chat}, 0, ${at})`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+      VALUES (${`m-${chat}`}, ${orgId}, ${chat}, 'person', 'rhea', 'owner', ${at})`;
+    yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+      VALUES (${agent}, ${orgId}, ${name}, 0, '{}', '[]', ${chat})`;
+  }
+});
+
+const notices = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+    WHERE org_id = ${orgId} AND chat_id = 'rhea-chief' AND author_kind = 'system' ORDER BY seq`;
+  return rows.map((row) => row.body);
+});
+
+it.effect.each(["retired", "none", "paused", "stopped"] as const)(
+  "tells the owner once while every lead is %s, clears the notice on recovery, and tells a new episode again",
+  (scenario) =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(DAY_START);
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const down = Effect.gen(function* () {
+        const now = yield* Clock.currentTimeMillis;
+        const at = DateTime.formatIso(DateTime.makeUnsafe(now));
+        if (scenario === "paused")
+          yield* sql`UPDATE kin_agents SET paused_at = ${at} WHERE org_id = ${orgId}`;
+        else if (scenario === "stopped")
+          yield* sql`INSERT INTO kin_org_state (org_id, paused, paused_at, paused_by)
+            VALUES (${orgId}, 1, ${now}, 'rhea')
+            ON CONFLICT (org_id) DO UPDATE SET paused = 1, paused_at = ${now}, paused_by = 'rhea'`;
+        else yield* sql`UPDATE kin_agents SET retired_at = ${at} WHERE org_id = ${orgId}`;
+      });
+      yield* down;
+      if (scenario === "none") {
+        const retiredAt = DateTime.formatIso(DateTime.makeUnsafe(DAY_START));
+        yield* sql`UPDATE kin_people SET access = 'owner' WHERE org_id = ${orgId} AND person_id = 'rhea'`;
+        yield* sql`UPDATE kin_chats SET archived_at = ${retiredAt} WHERE org_id = ${orgId}`;
+        yield* sql`DELETE FROM kin_leads WHERE org_id = ${orgId}`;
+      }
+      const messages = sql<{ body: string; resolvedAt: string | null }>`SELECT m.body,
+        w.resolved_at AS "resolvedAt" FROM kin_messages m
+        JOIN kin_waiting w ON w.org_id = m.org_id AND w.message_id = m.message_id
+        WHERE m.org_id = ${orgId} AND m.message_id LIKE 'kin-no-lead:%'
+        ORDER BY m.created_at, m.message_id`;
+      const body =
+        "No agent is running\n\nNobody is watching for you right now: Kin is stopped or every agent is paused or retired. Resume one, or add one, in Settings, Agents.";
+      yield* HostBackupCheck.check();
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(yield* messages, [{ body, resolvedAt: null }]);
+      // The same episode a day on: still the one notice.
+      yield* TestClock.adjust("1 day");
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(yield* messages, [{ body, resolvedAt: null }]);
+      if (scenario === "none")
+        yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+          VALUES ('chief', ${orgId}, 'Chief of staff', 0, '{}', '[]', 'rhea-chief')`;
+      if (scenario === "paused")
+        yield* sql`UPDATE kin_agents SET paused_at = NULL WHERE org_id = ${orgId} AND agent_id = 'chief'`;
+      else if (scenario === "stopped")
+        yield* sql`UPDATE kin_org_state SET paused = 0, paused_at = NULL, paused_by = NULL WHERE org_id = ${orgId}`;
+      else
+        yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE org_id = ${orgId} AND agent_id = 'chief'`;
+      const rhea = { _tag: "person" as const, orgId, personId: KinPersonId.make("rhea") };
+      const list = yield* Stream.toQueue((yield* Chat.KinChatService).subscribeChats([rhea], {}), {
+        capacity: "unbounded",
+      });
+      const first = yield* Queue.take(list);
+      const unreadIn = (chats: ReadonlyArray<{ chatId: string; unread: number }>) =>
+        chats.find((chat) => chat.chatId === "rhea-chief")?.unread;
+      if (scenario === "retired")
+        assert.strictEqual(first._tag === "snapshot" ? unreadIn(first.chats) : null, 1);
+      yield* TestClock.adjust("1 day");
+      // A good backup, so the check posts nothing new and the row changes only by the notice.
+      yield* (yield* FileSystem.FileSystem).writeFileString(
+        (yield* Path.Path).join(
+          (yield* ServerConfig.ServerConfig).stateDir,
+          HostBackup.BACKUP_STATUS_FILE,
+        ),
+        status({ ok: true, lastGoodAt: DAY_START + 2 * 24 * HOUR }),
+      );
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(
+        (yield* messages).map((message) => [message.body, message.resolvedAt !== null]),
+        [[body, true]],
+      );
+      // Settled, the notice leaves the row's unread count (and the badge) while the list is open.
+      if (scenario === "retired") {
+        let unread: number | undefined;
+        while (unread !== 0) {
+          const event = yield* Queue.take(list);
+          if (event._tag === "chat" && event.chat.chatId === "rhea-chief")
+            unread = event.chat.unread;
+        }
+      }
+      // Down again the same day: a new episode, told again.
+      yield* TestClock.adjust("1 hour");
+      yield* down;
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(
+        (yield* messages).map((message) => message.resolvedAt === null),
+        [false, true],
+      );
+    }).pipe(Effect.scoped, Effect.provide(services)),
+);
+
+it.effect("one lead awake, with the others paused, is no notice", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(DAY_START);
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const at = DateTime.formatIso(DateTime.makeUnsafe(DAY_START));
+    yield* sql`UPDATE kin_agents SET paused_at = ${at} WHERE org_id = ${orgId} AND agent_id = 'chief'`;
+    yield* HostBackupCheck.check();
+    const told = yield* sql`SELECT 1 FROM kin_messages
+      WHERE org_id = ${orgId} AND message_id LIKE 'kin-no-lead:%' ORDER BY message_id`;
+    assert.lengthOf(told, 0);
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect(
+  "tells the owner once the nightly dream has failed three nights in a row, outside quiet hours, and closes it when a night succeeds",
+  () =>
+    Effect.gen(function* () {
+      // 23:00 in Kolkata: inside the owner's quiet hours.
+      yield* TestClock.setTime(DAY_START + 13 * HOUR);
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const night = (day: number, status: "failed" | "succeeded", failure: string | null) =>
+        sql`INSERT INTO kin_dream_runs (org_id, owner_date, dream_id, full, status, branch, head,
+            material_from, material_until, failure, started_at, ended_at)
+          VALUES (${orgId}, ${`2026-11-${day}`}, ${`dream_${day}`}, 0, ${status}, ${`dream/${day}`},
+            ${status === "succeeded" ? "abc" : null}, 0, ${NOW}, ${failure}, ${NOW}, ${NOW})`;
+      const told = sql<{ body: string; resolvedAt: string | null }>`SELECT m.body,
+          w.resolved_at AS "resolvedAt" FROM kin_messages m
+        JOIN kin_waiting w ON w.org_id = m.org_id AND w.message_id = m.message_id
+        WHERE m.org_id = ${orgId} AND m.message_id LIKE 'kin-dream-failed:%'
+        ORDER BY m.created_at, m.message_id`;
+      const failure =
+        "relationships/kestrel.md claims agent from kin-dream; the source was owner from rhea\nrelationships/kestrel.md quote: invented";
+      yield* night(10, "succeeded", null);
+      yield* night(11, "failed", failure);
+      yield* night(12, "failed", failure);
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(yield* told, []);
+      yield* night(13, "failed", failure);
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(yield* told, []);
+      // 10:00 the next morning.
+      yield* TestClock.adjust(11 * HOUR);
+      yield* HostBackupCheck.check();
+      yield* HostBackupCheck.check();
+      const body =
+        "Kin's nightly memory update has failed three nights in a row\n\nEach night Kin reads the day and writes down what is worth remembering. That has not finished for three nights, so nothing new was remembered from them. Nothing Kin already remembered was lost, and tonight it will read those days again.\n\nFor whoever looks after Kin, the last night stopped on: A memory note claims agent from kin-dream; the source was owner from rhea.";
+      assert.deepStrictEqual(yield* told, [{ body, resolvedAt: null }]);
+      yield* night(14, "failed", "The dream session failed");
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(yield* told, [{ body, resolvedAt: null }]);
+      yield* night(15, "succeeded", null);
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(
+        (yield* told).map((row) => row.resolvedAt !== null),
+        [true],
+      );
+    }).pipe(Effect.provide(services)),
+);
+
+const decodeCard = Schema.decodeUnknownSync(Schema.fromJsonString(KinHostTroubleCard));
+const cards = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ state: string; closed: string | null; awaiting: string }>`SELECT
+      state_json AS state, closed_at AS closed, awaiting_json AS awaiting FROM kin_widgets
+    WHERE org_id = ${orgId} AND type = ${KIN_HOST_TROUBLE_CARD} ORDER BY widget_id`;
+  return rows.map((row) => ({
+    ...decodeCard(row.state),
+    open: row.closed === null,
+    awaiting: row.awaiting,
+  }));
+});
+
+it.effect(
+  "keeps one backup notice open outside quiet hours, and closes it once a backup is good",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      yield* seed;
+      const fs = yield* FileSystem.FileSystem;
+      const file = (yield* Path.Path).join(
+        (yield* ServerConfig.ServerConfig).stateDir,
+        HostBackup.BACKUP_STATUS_FILE,
+      );
+      // 05:30 in the owner's zone: it waits for the morning.
+      yield* HostBackupCheck.check();
+      assert.lengthOf(yield* cards, 0);
+      yield* TestClock.setTime(DAY_START);
+      yield* HostBackupCheck.check();
+      yield* HostBackupCheck.check();
+      yield* TestClock.adjust(24 * HOUR);
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(
+        (yield* cards).map((card) => [
+          card.cause,
+          card.open,
+          card.backupConfigured,
+          card.lastGoodAt,
+        ]),
+        [["backup", true, false, undefined]],
+      );
+      assert.lengthOf(yield* notices, 1);
+      // An old good backup: the same notice, now naming it.
+      const lastGood = NOW - 24 * HOUR;
+      yield* fs.writeFileString(
+        file,
+        status({ ok: false, lastGoodAt: lastGood, error: "the volume is not mounted." }),
+      );
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(
+        (yield* cards).map((card) => [card.open, card.lastGoodAt]),
+        [[true, DateTime.formatIso(DateTime.makeUnsafe(lastGood))]],
+      );
+      yield* fs.writeFileString(file, status({ ok: true, lastGoodAt: DAY_START + 24 * HOUR }));
+      yield* HostBackupCheck.check();
+      assert.deepStrictEqual(
+        (yield* cards).map((card) => card.open),
+        [false],
+      );
+      assert.lengthOf(yield* notices, 1);
+    }).pipe(Effect.provide(services)),
+);
+
+it.effect(
+  "measures Kin's folders once an hour of use, not once for every hour the clock passed",
+  () => {
+    const seen: Array<ReadonlyArray<string>> = [];
+    const walks = () => seen.filter(([command]) => command === "du").length;
+    return Effect.gen(function* () {
+      const care = yield* KinHostCare.KinHostCare;
+      // Starting up measures (data, temporary files, builds, update backups), and so does the first
+      // look once the clock is a day on.
+      yield* TestClock.setTime(NOW);
+      yield* care.status(orgId);
+      yield* TestClock.adjust("1 minute");
+      const looked = walks();
+      assert.isAtMost(looked, 8);
+      // A day passes with nobody looking: nothing walks.
+      yield* TestClock.adjust(24 * HOUR);
+      assert.strictEqual(walks(), looked);
+      // Two looks an hour on measure once between them.
+      yield* care.status(orgId);
+      yield* care.status(orgId);
+      yield* TestClock.adjust("1 minute");
+      assert.strictEqual(walks(), looked + 4);
+    }).pipe(Effect.provide(servicesWith({ KIN_CHECKOUT: "/srv/kin-current" }, fakeRunner(seen))));
+  },
+);
+
+// The shape a wake-up failed with on a host whose /tmp quota was full.
+const wakeupFailure = (errno: number, code: string) =>
+  Cause.fail(
+    new KinWakeupError({
+      orgId,
+      agentId: KinAgentId.make("chief"),
+      cause: new MemoryError({
+        orgId,
+        operation: "prepareWakeup",
+        cause: PlatformError.systemError({
+          _tag: "Unknown",
+          module: "FileSystem",
+          method: "writeFile",
+          pathOrDescriptor: "/tmp/kin-x/config",
+          cause: Object.assign(new Error(code), { errno, code, syscall: "open" }),
+        }),
+      }),
+    }),
+  );
+const provider = (fields: {
+  class: "usage_limit" | "provider_error" | "transport_error" | "permission_error" | "unknown";
+  message: string;
+  code?: string;
+  resetAt?: string;
+}) => ({ code: null, retryable: null, ...fields });
+
+describe("usingText", () => {
+  const GB = 1024 ** 3;
+  const usage = (temporary: number, builds: number | null, backups: number | null) => ({
+    temporary: temporary * GB,
+    builds: builds === null ? null : builds * GB,
+    backups: backups === null ? null : backups * GB,
+    data: 3 * GB,
+    measuredAt: "2026-11-22T09:00:00.000Z",
+  });
+
+  it("splits the space as Settings does, and says plainly when Kin can't make room alone", () => {
+    assert.strictEqual(
+      KinHostCare.usingText(usage(40, 10, 20), { freeBytes: 0, totalBytes: 100 * GB }),
+      "What's using the space: temporary files 40 GB, Kin's data 33 GB, everything else on this computer 27 GB.",
+    );
+    assert.strictEqual(
+      KinHostCare.usingText(usage(1, null, 2), { freeBytes: 0, totalBytes: 200 * GB }),
+      "What's using the space: everything else on this computer 194 GB, Kin's data 5.0 GB, temporary files 1.0 GB. Kin can't free this by itself: it can clear about 3.0 GB of the 200 GB in use. Whoever set up Kin's computer can make room.",
+    );
+    assert.strictEqual(KinHostCare.usingText(null, undefined), undefined);
+  });
+});
+
+describe("troubleCause", () => {
+  it("reads each cause from the failure's own chain, and an unknown one stays unknown", () => {
+    const cases: ReadonlyArray<readonly [unknown, KinTroubleCause]> = [
+      [wakeupFailure(-122, "Unknown system error -122"), "space"],
+      [wakeupFailure(-28, "ENOSPC"), "space"],
+      [
+        provider({
+          class: "provider_error",
+          message: "Error: ENOSPC: no space left on device, write",
+        }),
+        "space",
+      ],
+      [
+        provider({ class: "provider_error", message: "Disk quota exceeded (os error 122)" }),
+        "space",
+      ],
+      [
+        provider({
+          class: "provider_error",
+          message: "Invalid API key",
+          code: "authentication_failed",
+        }),
+        "signin",
+      ],
+      [
+        provider({ class: "permission_error", message: "Forbidden", code: "api_error_403" }),
+        "access",
+      ],
+      [
+        provider({
+          class: "provider_error",
+          message: "model: claude-x not found",
+          code: "api_error_404",
+        }),
+        "model",
+      ],
+      [
+        provider({
+          class: "provider_error",
+          message: "Claude Code: program exited before the turn started",
+        }),
+        "program",
+      ],
+      [
+        provider({
+          class: "usage_limit",
+          message: "Claude API rate limit reached. Try again later.",
+          code: "api_error_429",
+          resetAt: "2026-11-07T06:00:00.000Z",
+        }),
+        "usage_limit",
+      ],
+      [provider({ class: "transport_error", message: "stream disconnected" }), "unreachable"],
+      [
+        provider({ class: "provider_error", message: "Overloaded", code: "api_error_529" }),
+        "unreachable",
+      ],
+      [wakeupFailure(-61, "ECONNREFUSED"), "unreachable"],
+      [wakeupFailure(-13, "EACCES"), "unknown"],
+      // SQLite says so when its database, or the disk under it, is full.
+      [Cause.die(new Error("database or disk is full")), "space"],
+      [Cause.die(new Error("provider exited")), "unknown"],
+      [
+        provider({ class: "provider_error", message: "Something odd", code: "api_error_400" }),
+        "unknown",
+      ],
+      [null, "unknown"],
+    ];
+    for (const [failure, cause] of cases) assert.strictEqual(troubleCause(failure), cause);
+    assert.strictEqual(
+      troubleDetail(Cause.die(new Error("provider exited\nat line 2"))),
+      "provider exited",
+    );
+  });
+});
+
+// Held as a trouble holds a turn: until a time still ahead.
+const HELD_UNTIL = DAY_START + 5 * 60_000;
+const queued = (eventId: string, agent: string) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+        queued_at, state, not_before, attempts)
+      VALUES (${eventId}, ${orgId}, ${agent}, 'chat.message', 'P1', '{}', ${NOW}, ${NOW}, 'queued',
+        ${HELD_UNTIL}, 0)`;
+    return KinEventId.make(eventId);
+  });
+
+it.effect("makes one notice per cause whose count goes up, and closes it when a turn runs", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(DAY_START);
+    yield* seed;
+    const care = yield* KinHostCare.KinHostCare;
+    const sql = yield* SqlClient.SqlClient;
+    const chief = KinAgentId.make("chief");
+    const finance = KinAgentId.make("finance");
+    const first = yield* queued("e1", "chief");
+    const second = yield* queued("e2", "finance");
+    const hub = yield* Hub.KinChatHub;
+    const chatEvents = yield* Stream.toQueue(yield* hub.subscribeAll, { capacity: "unbounded" });
+    yield* care.failed({ orgId, agentId: chief, cause: "space", eventIds: [first] });
+    const posted = yield* Queue.take(chatEvents);
+    const changed = yield* Queue.take(chatEvents);
+    if (posted.type !== "message.posted" || changed.type !== "widget.updated")
+      return assert.fail("The held-turn card did not publish its message and widget");
+    assert.strictEqual(posted.message.chatId, "rhea-chief");
+    assert.strictEqual(changed.widget.chatId, posted.message.chatId);
+    assert.strictEqual(changed.widget.widgetId, posted.message.widgetId);
+
+    // The same turn failing again holds nothing new.
+    yield* care.failed({ orgId, agentId: chief, cause: "space", eventIds: [first] });
+    yield* care.failed({ orgId, agentId: finance, cause: "space", eventIds: [second] });
+    yield* care.failed({ orgId, agentId: finance, cause: "signin", eventIds: [second] });
+    assert.deepStrictEqual(
+      (yield* cards).map((card) => [
+        card.cause,
+        card.count,
+        card.agents.map((one) => one.name),
+        card.open,
+        card.awaiting,
+      ]),
+      [
+        ["signin", 1, ["Finance"], true, "[]"],
+        ["space", 2, ["Chief of staff", "Finance"], true, "[]"],
+      ],
+    );
+    // Two notices, each one message: one push each, however many turns they count. The message
+    // says what is wrong; the card carries the count and the way out.
+    // The space message goes on to read this computer's real disk; usingText's own test pins that.
+    const [spaceNotice, signinNotice] = (yield* notices).toSorted();
+    assert.isTrue(
+      spaceNotice?.startsWith("Kin's computer ran out of space, so Chief of staff couldn't work."),
+    );
+    assert.strictEqual(
+      signinNotice,
+      "The AI account behind Finance is signed out, so it couldn't work.",
+    );
+    assert.isTrue(yield* care.troubleOpen(orgId, "space"));
+    // A scheduled task's "couldn't finish" line says why, from the open notice.
+    assert.strictEqual((yield* care.causeFor(orgId, chief))?.cause, "space");
+    // Chief of staff ran a turn: space is back for everyone, but Finance is still signed out.
+    yield* care.succeeded(orgId, chief);
+    assert.isUndefined(yield* care.causeFor(orgId, chief));
+    // Closed, its held turns woken: none has run yet, and the notice says only what has.
+    assert.deepStrictEqual(
+      (yield* cards).map((card) => [card.cause, card.open, card.closed?.ran]),
+      [
+        ["signin", true, undefined],
+        ["space", false, 0],
+      ],
+    );
+    const events = yield* sql<{ eventId: string; notBefore: number }>`SELECT event_id AS "eventId",
+      not_before AS "notBefore" FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`;
+    // Finance's turn is held by the sign-in trouble it hit last, so space coming back leaves it.
+    assert.deepStrictEqual(events, [
+      { eventId: "e1", notBefore: DAY_START },
+      { eventId: "e2", notBefore: HELD_UNTIL },
+    ]);
+    // A new failure for space after it closed opens a fresh notice.
+    yield* care.failed({ orgId, agentId: chief, cause: "space", eventIds: [first] });
+    assert.deepStrictEqual(
+      (yield* cards).map((card) => [card.cause, card.open]),
+      [
+        ["signin", true],
+        ["space", false],
+        ["space", true],
+      ],
+    );
+    // Try again runs exactly the held turns; they stay listed until a turn proves the cause gone.
+    yield* sql`UPDATE kin_events SET not_before = ${DAY_START + HOUR}`;
+    assert.deepStrictEqual(yield* care.retry(orgId), { requeued: 2 });
+    // Try again ran the held turn before a turn proved space back: it counts as run, as a turn
+    // the first notice held counts once it has finished.
+    yield* sql`UPDATE kin_events SET state = 'done' WHERE event_id = ${first}`;
+    yield* care.succeeded(orgId, chief);
+    assert.deepStrictEqual(
+      (yield* cards).filter((card) => card.cause === "space").map((card) => card.closed?.ran),
+      [0, 1],
+    );
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect("commits a trouble notice with its card, and repairs a legacy bare notice", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(DAY_START);
+    yield* seed;
+    const care = yield* KinHostCare.KinHostCare;
+    const sql = yield* SqlClient.SqlClient;
+    const failure = {
+      orgId,
+      agentId: KinAgentId.make("chief"),
+      cause: "signin" as const,
+      eventIds: [],
+    };
+    yield* sql`CREATE TEMP TRIGGER fail_trouble_card BEFORE INSERT ON kin_widgets
+      BEGIN SELECT RAISE(ABORT, 'invented temporary widget error'); END`;
+    assert.isFalse(yield* care.failed(failure));
+    const afterError = yield* notices;
+    yield* sql`DROP TRIGGER fail_trouble_card`;
+    assert.isTrue(yield* care.failed(failure));
+    assert.deepStrictEqual(afterError, []);
+    assert.lengthOf(yield* notices, 1);
+    assert.lengthOf(yield* cards, 1);
+
+    const [shown] = (yield* care.status(orgId)).agents.troubles;
+    const { widgetId } = shown!;
+    yield* sql`UPDATE kin_messages SET widget_id = NULL WHERE org_id = ${orgId}
+      AND message_id = ${widgetId}`;
+    yield* sql`DELETE FROM kin_widgets WHERE org_id = ${orgId} AND widget_id = ${widgetId}`;
+    yield* sql`UPDATE kin_troubles SET told_at = NULL WHERE org_id = ${orgId}
+      AND trouble_id = ${widgetId}`;
+    yield* care.refresh(orgId);
+    assert.lengthOf(yield* notices, 1);
+    assert.lengthOf(yield* cards, 1);
+    assert.isTrue((yield* care.causeFor(orgId, failure.agentId))?.told);
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect("a successful turn releases untouched space failures but not work stopped partway", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(DAY_START);
+    yield* seed;
+    const care = yield* KinHostCare.KinHostCare;
+    const queue = yield* KinEventQueue.KinEventQueue;
+    const sql = yield* SqlClient.SqlClient;
+    const chief = KinAgentId.make("chief");
+    const finance = KinAgentId.make("finance");
+    const wakeupId = KinWakeupId.make("w-partway");
+    const stranded = yield* queued("stranded", "chief");
+    const untouched = yield* queued("untouched", "finance");
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+      VALUES (${wakeupId}, ${orgId}, ${chief}, 'test', ${DAY_START}, 'running', '["stranded"]')`;
+    yield* sql`UPDATE kin_events SET state = 'claimed', wakeup_id = ${wakeupId}
+      WHERE org_id = ${orgId} AND event_id = ${stranded}`;
+    yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash)
+      VALUES (${orgId}, ${wakeupId}, 'record_create', 'invented')`;
+    const finished = yield* queue.finish({ orgId, wakeupId, status: "failed" });
+    assert.strictEqual(finished.stranded, 1);
+    yield* care.failed({ orgId, agentId: chief, cause: "space", eventIds: [stranded] });
+    yield* care.failed({ orgId, agentId: finance, cause: "space", eventIds: [untouched] });
+
+    yield* care.succeeded(orgId, finance);
+    const events = sql<{ state: string; notBefore: number }>`SELECT state, not_before AS "notBefore"
+      FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`;
+    assert.deepStrictEqual(yield* events, [
+      { state: "failed", notBefore: HELD_UNTIL },
+      { state: "queued", notBefore: DAY_START },
+    ]);
+    assert.deepInclude((yield* cards)[0], { open: true, stopped: 1 });
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        yield* sql`UPDATE kin_agents SET retired_at = ${DateTime.formatIso(DateTime.makeUnsafe(DAY_START))}
+          WHERE org_id = ${orgId} AND agent_id = ${finance}`;
+        yield* KinHostCare.closeRetiredTroubles(orgId, finance, DAY_START);
+      }),
+    );
+    assert.isTrue(yield* care.troubleOpen(orgId, "space"));
+    assert.deepStrictEqual(yield* care.retry(orgId), { requeued: 1 });
+    assert.deepStrictEqual(yield* events, [
+      { state: "queued", notBefore: DAY_START },
+      { state: "expired", notBefore: DAY_START },
+    ]);
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect(
+  "keeps a trouble's held turns on their own rows, however many, for Settings and Try again",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(DAY_START);
+      yield* seed;
+      const care = yield* KinHostCare.KinHostCare;
+      const sql = yield* SqlClient.SqlClient;
+      const chief = KinAgentId.make("chief");
+      const ids = yield* Effect.forEach(
+        Array.from({ length: 600 }, (_, n) => n),
+        (n) => queued(`e${String(n).padStart(3, "0")}`, "chief"),
+      );
+      yield* care.failed({ orgId, agentId: chief, cause: "signin", eventIds: ids });
+      const shown = (yield* care.status(orgId)).agents.troubles;
+      assert.deepStrictEqual(
+        shown.map(({ card }) => [card.cause, card.count]),
+        [["signin", 600]],
+      );
+      const held = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_events
+      WHERE org_id = ${orgId} AND held_by = ${shown[0]!.widgetId}`;
+      assert.deepStrictEqual(held, [{ n: 600 }]);
+      yield* sql`UPDATE kin_events SET not_before = ${DAY_START + HOUR}`;
+      assert.deepStrictEqual(yield* care.retry(orgId), { requeued: 600 });
+      // A second device's tap finds them all due already: it moved nothing, and says so.
+      assert.deepStrictEqual(yield* care.retry(orgId), { requeued: 0 });
+      // One used its last automatic try: only Try again runs it now, and the notice counts it.
+      yield* sql`UPDATE kin_events SET state = 'failed' WHERE event_id = 'e599'`;
+      yield* care.refresh(orgId);
+      assert.deepStrictEqual(
+        (yield* cards).map((card) => [card.count, card.stopped]),
+        [[599, 1]],
+      );
+      yield* sql`UPDATE kin_events SET state = 'queued' WHERE event_id = 'e599'`;
+      // A reminder among them has a time: the notice says so, and once it passes unrun the
+      // reminder leaves the held count.
+      yield* sql`INSERT INTO kin_lead_deliveries (org_id, event_id, kind, agent_id, chat_id,
+          widget_id, widget_type, state_json, fallback_body, deadline_at, status, created_at, updated_at)
+        VALUES (${orgId}, 'e000', 'reminder', 'chief', 'rhea-chief', 'w', 'reminder', '{}', 'Call Dev',
+          ${DAY_START + HOUR}, 'pending', ${DAY_START}, ${DAY_START})`;
+      yield* care.refresh(orgId);
+      assert.deepStrictEqual(
+        (yield* cards).map((card) => [card.count, card.expiring]),
+        [[600, 1]],
+      );
+      yield* sql`UPDATE kin_events SET state = 'expired' WHERE event_id = 'e000'`;
+      yield* sql`UPDATE kin_lead_deliveries SET status = 'fallback' WHERE event_id = 'e000'`;
+      yield* care.refresh(orgId);
+      assert.deepStrictEqual(
+        (yield* cards).map((card) => [card.count, card.expiring]),
+        [[599, undefined]],
+      );
+    }).pipe(Effect.provide(services)),
+);
+
+it.effect(
+  "an agent working again releases only its own held turns; the trouble closes when every agent has",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(DAY_START);
+      yield* seed;
+      const care = yield* KinHostCare.KinHostCare;
+      const sql = yield* SqlClient.SqlClient;
+      const chief = KinAgentId.make("chief");
+      const finance = KinAgentId.make("finance");
+      const mine = yield* queued("c1", "chief");
+      const theirs = yield* queued("f1", "finance");
+      yield* care.failed({ orgId, agentId: chief, cause: "signin", eventIds: [mine] });
+      yield* care.failed({ orgId, agentId: finance, cause: "signin", eventIds: [theirs] });
+      const due = sql<{ eventId: string; notBefore: number }>`SELECT event_id AS "eventId",
+      not_before AS "notBefore" FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`;
+      // Finance's account is signed in again; Chief of staff's is not.
+      yield* care.succeeded(orgId, finance);
+      assert.deepStrictEqual(
+        (yield* cards).map((card) => [card.cause, card.open, card.agents.map((one) => one.name)]),
+        [["signin", true, ["Chief of staff"]]],
+      );
+      assert.deepStrictEqual(yield* due, [
+        { eventId: "c1", notBefore: HELD_UNTIL },
+        { eventId: "f1", notBefore: DAY_START },
+      ]);
+      assert.strictEqual((yield* care.causeFor(orgId, chief))?.cause, "signin");
+      assert.isUndefined(yield* care.causeFor(orgId, finance));
+      // An agent the trouble never stopped proves nothing about it, even for the provider.
+      yield* care.failed({ orgId, agentId: chief, cause: "unreachable", eventIds: [] });
+      yield* care.succeeded(orgId, finance);
+      assert.isTrue(yield* care.troubleOpen(orgId, "unreachable"));
+      yield* sql`UPDATE kin_events SET state = 'done' WHERE event_id = 'f1'`;
+      const transactions: Array<unknown> = [];
+      yield* care.succeeded(orgId, chief).pipe(
+        Effect.provideService(Statement.CurrentTransformer, (statement) =>
+          Effect.gen(function* () {
+            const [source] = statement.compile();
+            if (
+              source.includes("AND e.held_by = a.trouble_id") ||
+              source.includes("UPDATE kin_troubles SET closed_at") ||
+              source.includes("UPDATE kin_events SET state = 'queued', wakeup_id = NULL")
+            ) {
+              transactions.push(
+                Option.getOrUndefined(yield* Effect.serviceOption(sql.transactionService)),
+              );
+            }
+            return statement;
+          }),
+        ),
+      );
+      assert.isAtLeast(transactions.length, 3);
+      assert.isTrue(transactions.every((tx) => tx !== undefined));
+      assert.deepStrictEqual(
+        (yield* cards).map((card) => [card.cause, card.open]),
+        [
+          ["signin", false],
+          ["unreachable", false],
+        ],
+      );
+      // Only the turn that finished counts as run.
+      assert.strictEqual((yield* cards)[0]!.closed?.ran, 1);
+    }).pipe(Effect.provide(services)),
+);
+
+it.effect(
+  "runs one automatic clean per trouble, recorded on it, however many turns fail for space",
+  () => {
+    let cleans = 0;
+    const runner = Layer.succeed(
+      ProcessRunner.ProcessRunner,
+      ProcessRunner.ProcessRunner.of({
+        run: (input) =>
+          Effect.sync(() => {
+            if (input.command === "bash") cleans += 1;
+            return {
+              stdout: "kin-clean removed=0 freed_kb=0 failed=0\n",
+              stderr: "",
+              code: 0 as never,
+              timedOut: false,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              stdoutInvalidUtf8: false,
+              stderrInvalidUtf8: false,
+            };
+          }),
+      }),
+    );
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(DAY_START);
+      yield* seed;
+      const care = yield* KinHostCare.KinHostCare;
+      const sql = yield* SqlClient.SqlClient;
+      const chief = KinAgentId.make("chief");
+      const finance = KinAgentId.make("finance");
+      // The first failure spends the trouble's clean; every later one, any agent's, does not.
+      assert.isTrue(yield* care.spaceFailed(orgId, chief));
+      assert.isFalse(yield* care.spaceFailed(orgId, chief));
+      assert.isFalse(yield* care.spaceFailed(orgId, finance));
+      assert.strictEqual(cleans, 1);
+      const spent = yield* sql<{ spent: number }>`SELECT auto_clean_at IS NOT NULL AS spent
+      FROM kin_troubles WHERE org_id = ${orgId} ORDER BY trouble_id`;
+      assert.deepStrictEqual(spent, [{ spent: 1 }]);
+      // A person's tap runs another.
+      yield* care.freeSpace(orgId);
+      assert.strictEqual(cleans, 2);
+      // Space came back; a new trouble later has its own clean.
+      yield* care.succeeded(orgId, chief);
+      assert.isTrue(yield* care.spaceFailed(orgId, finance));
+      assert.strictEqual(cleans, 3);
+    }).pipe(Effect.provide(servicesWith({ KIN_CHECKOUT: "/srv/kin-current" }, runner)));
+  },
+);
+
+it.effect(
+  "tells the owner in a chat only they read, and keeps the trouble when there is none",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(DAY_START);
+      yield* seed;
+      const care = yield* KinHostCare.KinHostCare;
+      const sql = yield* SqlClient.SqlClient;
+      const at = DateTime.formatIso(DateTime.makeUnsafe(NOW));
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES ('meera', ${orgId}, 'meera', 'Meera', ${at})`;
+      const share = (chat: string) =>
+        sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES (${`meera-${chat}`}, ${orgId}, ${chat}, 'person', 'meera', 'member', ${at})`;
+      const told = sql<{ chatId: string }>`SELECT chat_id AS "chatId" FROM kin_messages
+      WHERE org_id = ${orgId} AND author_kind = 'system' ORDER BY seq`;
+      // Rhea shared her chat with Chief of staff: the notice goes to her private chat with Finance.
+      yield* share("rhea-chief");
+      const chief = KinAgentId.make("chief");
+      assert.isTrue(
+        yield* care.failed({
+          orgId,
+          agentId: chief,
+          cause: "signin",
+          eventIds: [yield* queued("c1", "chief")],
+        }),
+      );
+      assert.deepStrictEqual(yield* told, [{ chatId: "rhea-finance" }]);
+      // Every chat of hers is shared: nobody is told, but the trouble stands and Settings shows it.
+      yield* share("rhea-finance");
+      assert.isFalse(
+        yield* care.failed({
+          orgId,
+          agentId: chief,
+          cause: "model",
+          eventIds: [yield* queued("c2", "chief")],
+        }),
+      );
+      assert.lengthOf(yield* told, 1);
+      assert.deepStrictEqual(
+        (yield* care.status(orgId)).agents.troubles.map(({ card }) => [card.cause, card.count]),
+        [
+          ["model", 1],
+          ["signin", 1],
+        ],
+      );
+    }).pipe(Effect.provide(services)),
+);
+
+it.effect(
+  "a storage failure before any turn claimed cleans once, and becomes a told space trouble once writes work",
+  () => {
+    let cleans = 0;
+    const runner = Layer.succeed(
+      ProcessRunner.ProcessRunner,
+      ProcessRunner.ProcessRunner.of({
+        run: (input) =>
+          Effect.sync(() => {
+            if (input.command === "bash") cleans += 1;
+            return {
+              stdout: "kin-clean removed=1 freed_kb=4096 failed=0\n",
+              stderr: "",
+              code: 0 as never,
+              timedOut: false,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              stdoutInvalidUtf8: false,
+              stderrInvalidUtf8: false,
+            };
+          }),
+      }),
+    );
+    return Effect.gen(function* () {
+      yield* TestClock.setTime(DAY_START);
+      yield* seed;
+      const care = yield* KinHostCare.KinHostCare;
+      yield* care.storageFailed(orgId);
+      yield* care.storageFailed(orgId);
+      assert.strictEqual(cleans, 1);
+      yield* care.storageRecovered(orgId);
+      // Told what happened; this test's disk has room, so it says it is over too.
+      assert.deepStrictEqual(
+        (yield* cards).map((card) => [card.cause, card.open]),
+        [["space", false]],
+      );
+      assert.lengthOf(yield* notices, 1);
+      yield* care.storageRecovered(orgId);
+      assert.lengthOf(yield* cards, 1);
+    }).pipe(Effect.provide(servicesWith({ KIN_CHECKOUT: "/srv/kin-current" }, runner)));
+  },
+);
+
+it.effect("Back up now says why it can't start, and a good backup closes the notice at once", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(DAY_START);
+    yield* seed;
+    const care = yield* KinHostCare.KinHostCare;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const { stateDir } = yield* ServerConfig.ServerConfig;
+    assert.deepStrictEqual(yield* care.backUpNow(orgId), {
+      started: false,
+      reason: "not_set_up",
+    });
+    yield* fs.writeFileString(path.join(stateDir, "kin-dev-backup.env"), "");
+    yield* care.checkBackup(orgId, { lastGoodAt: null });
+    assert.deepStrictEqual(
+      (yield* cards).map((card) => [card.cause, card.open]),
+      [["backup", true]],
+    );
+    assert.deepStrictEqual(yield* care.backUpNow(orgId), { started: true });
+    assert.deepStrictEqual(
+      (yield* cards).map((card) => [card.cause, card.open]),
+      [["backup", false]],
+    );
+  }).pipe(Effect.provide(servicesWith({ KIN_DEV_HOST_CARE: "/srv/kin-dev" }))),
+);
+
+const space =
+  (left: Record<string, number>) =>
+  (folder: string): Effect.Effect<Option.Option<HostBackup.SpaceReading>> =>
+    Effect.succeedSome({ folder, freeBytes: left[folder] ?? 100, totalBytes: 100 });
+
+it.effect(
+  "clears temporary files at once when a disk is under 20% free, and tells the owner once a day only when that wasn't enough",
+  () =>
+    Effect.gen(function* () {
+      yield* TestClock.setTime(NOW);
+      yield* seed;
+      let cleans = 0;
+      const clean = Effect.sync(() => {
+        cleans += 1;
+        return { ran: true };
+      });
+      yield* HostBackup.warnIfLowOnSpace(
+        orgId,
+        ["/kin-tmp", "/home"],
+        space({ "/kin-tmp": 20 }),
+        clean,
+      );
+      assert.strictEqual(cleans, 0);
+      // The clean gave enough back: nobody hears of it.
+      let left = 5;
+      const freed = Effect.sync(() => {
+        left = 50;
+        return { ran: true };
+      });
+      yield* HostBackup.warnIfLowOnSpace(
+        orgId,
+        ["/home"],
+        (folder) => space({ "/home": left })(folder),
+        freed,
+      );
+      assert.lengthOf(yield* notices, 0);
+      yield* HostBackup.warnIfLowOnSpace(
+        orgId,
+        ["/kin-tmp", "/home"],
+        space({ "/home": 19 }),
+        clean,
+      );
+      yield* HostBackup.warnIfLowOnSpace(
+        orgId,
+        ["/kin-tmp", "/home"],
+        space({ "/home": 5 }),
+        clean,
+      );
+      assert.strictEqual(cleans, 2);
+      assert.deepStrictEqual(yield* notices, [HostBackup.LOW_ON_SPACE]);
+      yield* TestClock.adjust(24 * HOUR);
+      const missing = (yield* Path.Path).join((yield* ServerConfig.ServerConfig).stateDir, "gone");
+      yield* HostBackup.warnIfLowOnSpace(orgId, [missing]);
+      assert.lengthOf(yield* notices, 1);
+    }).pipe(Effect.provide(services)),
+);
+
+it.effect("posts once after more than three hours, then once for a separate downtime", () =>
+  Effect.gen(function* () {
+    const minute = 60_000;
+    yield* TestClock.setTime(DAY_START);
+    yield* seed;
+    yield* OfflineCatchUp.markStarted();
+    yield* TestClock.adjust(3 * HOUR - minute);
+    yield* OfflineCatchUp.markStarted();
+    yield* OfflineCatchUp.deliverPending();
+    assert.deepStrictEqual(yield* notices, []);
+
+    const sql = yield* SqlClient.SqlClient;
+    const from = DAY_START + 3 * HOUR - minute;
+    yield* recordSkips(orgId, "message", [
+      { ref: "a-month-ago", reason: "older_than_a_day", at: from - 31 * 24 * HOUR },
+      { ref: "at-the-last-heartbeat", reason: "older_than_a_day", at: from },
+    ]);
+    yield* TestClock.adjust(3 * HOUR + minute);
+    yield* OfflineCatchUp.markStarted();
+    const start = DAY_START + 6 * HOUR;
+    // Skipped while it was off: counted. At the last heartbeat or after the restart: recorded only.
+    const older = [1, 2, 3].map((n) => ({
+      ref: `old-${n}`,
+      reason: "older_than_a_day" as const,
+      at: from + n * minute,
+    }));
+    yield* recordSkips(orgId, "message", [...older, ...older]);
+    yield* recordSkips(orgId, "scheduled", [
+      { ref: "routine:1", reason: "time_passed", at: from + HOUR },
+      { ref: "routine:2", reason: "time_passed", at: start },
+      { ref: "routine:3", reason: "time_passed", at: start + 1 },
+    ]);
+    yield* recordSkips(orgId, "check_in", [
+      { ref: "ns:evening:1", reason: "outside_hours", at: from + 2 * HOUR },
+    ]);
+    assert.deepStrictEqual(
+      yield* sql`SELECT ref FROM kin_offline_skips WHERE ref = 'a-month-ago'`,
+      [],
+      "a skip older than the keep goes at start",
+    );
+    yield* sql`INSERT INTO kin_events (org_id, event_id, agent_id, tag, priority, json, received_at, queued_at)
+      VALUES
+        (${orgId}, 'caught-chief', 'chief', 'chat.message', 'P2', '{"messageId":"same"}', ${start - HOUR}, ${start}),
+        (${orgId}, 'caught-finance', 'finance', 'chat.message', 'P2', '{"messageId":"same"}', ${start - HOUR}, ${start}),
+        (${orgId}, 'already-handled', 'chief', 'chat.message', 'P2', '{"messageId":"before"}', ${start - HOUR}, ${start - 1}),
+        (${orgId}, 'live', 'chief', 'chat.message', 'P2', '{"messageId":"live"}', ${start + 1}, ${start + 1})`;
+    yield* sql`INSERT INTO kin_connections
+      (org_id, connection_id, label, kind, url_host, auth, reach, state, created_at, updated_at)
+      VALUES (${orgId}, 'mail', 'Inbox', 'builtin', 'mail.invalid', 'oauth', 'closed', 'active', ${start}, ${start})`;
+    yield* sql`INSERT INTO kin_arrivals
+      (org_id, arrival_id, connection_id, message_id, received_at, noticed_at, class, state, reason)
+      VALUES
+        (${orgId}, 'classified', 'mail', 'm1', ${start - HOUR}, ${start}, 'other', 'settled', 'classified'),
+        (${orgId}, 'parked', 'mail', 'm2', ${start - HOUR}, ${start}, NULL, 'parked', NULL),
+        (${orgId}, 'gap', 'mail', 'gap', ${start - HOUR}, ${start}, 'gap', 'settled', 'gap'),
+        (${orgId}, 'duplicate', 'mail', 'm4', ${start - HOUR}, ${start}, 'other', 'settled',
+          'also recorded in another connected mailbox')`;
+    yield* sql`INSERT INTO kin_discussions
+      (org_id, discussion_id, chat_id, topic, question, decider_agent_id, opened_by_agent_id,
+        origin, state, created_at, last_at, open_key)
+      VALUES (${orgId}, 'TD-1', 'rhea-finance', 'Topic', 'Question', 'chief', 'chief',
+        'owner', 'open', ${start}, ${start}, 'message:team-open')`;
+    yield* sql`INSERT INTO kin_messages
+      (org_id, chat_id, message_id, seq, author_kind, author_member_id, author_person_id,
+        author_role, kind, body, mentions_json, status, created_at, discussion_id)
+      VALUES (${orgId}, 'rhea-finance', 'team-open', 1, 'human', 'm-rhea-finance', 'rhea',
+        'owner', 'text', 'Question', '[]', 'posted',
+        ${DateTime.formatIso(DateTime.makeUnsafe(start - HOUR))}, 'TD-1')`;
+    yield* OfflineCatchUp.deliverPending();
+    const first =
+      "Kin was offline from 12:59 pm to 4:00 pm. Caught up 3 messages; 3 older messages, 2 scheduled runs and 1 check-in were skipped.";
+    assert.deepStrictEqual(yield* notices, [first]);
+
+    yield* TestClock.adjust(minute / 2);
+    yield* OfflineCatchUp.markStarted();
+    yield* OfflineCatchUp.deliverPending();
+    assert.deepStrictEqual(yield* notices, [first]);
+
+    yield* TestClock.adjust(4 * HOUR);
+    yield* OfflineCatchUp.markStarted();
+    yield* OfflineCatchUp.deliverPending();
+    assert.deepStrictEqual(yield* notices, [
+      first,
+      "Kin was offline from 4:00 pm to 8:00 pm. Nothing arrived while it was off.",
+    ]);
+    assert.deepStrictEqual(yield* cards, []);
+    assert.lengthOf(yield* sql`SELECT event_id FROM kin_events`, 4);
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect("holds the offline notice during the same quiet hours as the backup notice", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW - 4 * HOUR);
+    yield* seed;
+    yield* OfflineCatchUp.markStarted();
+    yield* TestClock.setTime(NOW);
+    yield* OfflineCatchUp.markStarted();
+    yield* OfflineCatchUp.deliverPending();
+    assert.lengthOf(yield* notices, 0);
+    // Counted once: a skip recorded after that does not change what the held notice says.
+    yield* recordSkips(orgId, "check_in", [
+      { ref: "ns:late", reason: "time_passed", at: NOW - HOUR },
+    ]);
+    // Held from before skips were recorded: its skips stay unknown.
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_org_state SET offline_notices_json = json_insert(offline_notices_json,
+      '$[#]', json_object('from', ${NOW - 8 * HOUR}, 'to', ${NOW - 7 * HOUR}, 'caughtUp', 2))
+      WHERE org_id = ${orgId}`;
+    yield* TestClock.setTime(DAY_START);
+    yield* OfflineCatchUp.deliverPending();
+    yield* OfflineCatchUp.deliverPending();
+    assert.deepStrictEqual(
+      (yield* notices).map((body) => body.replace(/^Kin was offline from .+? to .+?\./, "")),
+      [" Nothing arrived while it was off.", " Caught up 2 messages."],
+    );
+    assert.lengthOf(yield* cards, 0);
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect("writes the offline line with known counts, omitted counts and singular nouns", () =>
+  Effect.sync(() => {
+    const cases = [
+      [
+        { caughtUp: 4, older: 3, scheduled: 2, checkIns: 2 },
+        " Caught up 4 messages; 3 older messages, 2 scheduled runs and 2 check-ins were skipped.",
+      ],
+      [
+        { caughtUp: 4, older: 0, scheduled: 2, checkIns: 2 },
+        " Caught up 4 messages; 2 scheduled runs and 2 check-ins were skipped.",
+      ],
+      [
+        { caughtUp: 4, older: 3, scheduled: 0, checkIns: 2 },
+        " Caught up 4 messages; 3 older messages and 2 check-ins were skipped.",
+      ],
+      [
+        { caughtUp: 4, older: 3, scheduled: 2, checkIns: 0 },
+        " Caught up 4 messages; 3 older messages and 2 scheduled runs were skipped.",
+      ],
+      [
+        { caughtUp: 0, older: 3, scheduled: 2, checkIns: 2 },
+        " 3 older messages, 2 scheduled runs and 2 check-ins were skipped.",
+      ],
+      [
+        { caughtUp: 4, older: 0, scheduled: 2, checkIns: 0 },
+        " Caught up 4 messages; 2 scheduled runs were skipped.",
+      ],
+      [
+        { caughtUp: 1, older: 1, scheduled: 1, checkIns: 1 },
+        " Caught up 1 message; 1 older message, 1 scheduled run and 1 check-in were skipped.",
+      ],
+      [
+        { caughtUp: 1, older: 0, scheduled: 1, checkIns: 0 },
+        " Caught up 1 message; 1 scheduled run was skipped.",
+      ],
+      [
+        { caughtUp: 1, older: 0, scheduled: 0, checkIns: 0 },
+        " Caught up 1 message; nothing was skipped.",
+      ],
+      [{ caughtUp: 0, older: 0, scheduled: 0, checkIns: 0 }, " Nothing arrived while it was off."],
+      [{ caughtUp: 2 }, " Caught up 2 messages."],
+      [{ caughtUp: 0 }, ""],
+    ] as const;
+    for (const [counts, tail] of cases)
+      assert.strictEqual(
+        offlineCatchUpWords("Monday", "Tuesday", counts),
+        `Kin was offline from Monday to Tuesday.${tail}`,
+      );
+  }),
+);
+
+it.effect("publishes the bare system line after the chat and scheduled startup passes", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(DAY_START - 4 * HOUR);
+    yield* seed;
+    yield* OfflineCatchUp.markStarted();
+    yield* TestClock.setTime(DAY_START);
+    const hub = yield* Hub.KinChatHub;
+    const events = yield* Stream.toQueue(yield* hub.subscribeAll, { capacity: "unbounded" });
+    const initialPass = Context.get(
+      yield* Layer.build(OfflineCatchUp.layer),
+      OfflineCatchUp.InitialPass,
+    );
+    assert.isDefined(initialPass);
+    if (initialPass === undefined) return;
+    yield* initialPass.started;
+    // Recorded by a first pass: the line is read only after a pass begun once they all ended.
+    yield* recordSkips(orgId, "message", [
+      { ref: "older", reason: "older_than_a_day", at: DAY_START - HOUR },
+    ]);
+
+    const scheduler = yield* Layer.build(Scheduler.layer);
+    const sql = yield* SqlClient.SqlClient;
+    yield* initialPass.observe(Context.get(scheduler, Scheduler.Scheduler)).register(
+      "kin-arrivals",
+      sql`INSERT INTO kin_events (org_id, event_id, agent_id, tag, priority, json, received_at, queued_at)
+        VALUES (${orgId}, 'on-start', 'chief', 'chat.message', 'P2', '{"messageId":"on-start"}',
+          ${DAY_START - HOUR}, ${DAY_START})`.pipe(Effect.asVoid),
+    );
+    yield* initialPass.sourcesRegistered(true);
+    assert.lengthOf(yield* notices, 0);
+    yield* initialPass.chatDone;
+    // Two ticks of the five-second scheduler: the second begins after every first pass ended.
+    yield* TestClock.adjust("10 seconds");
+    const posted = yield* Queue.take(events);
+    assert.strictEqual(posted.type, "message.posted");
+    if (posted.type === "message.posted") {
+      assert.strictEqual(posted.message.author._tag, "system");
+      assert.strictEqual(posted.message.widgetId, null);
+      assert.strictEqual(
+        posted.message.body,
+        "Kin was offline from 6:00 am to 10:00 am. Caught up 1 message; 1 older message was skipped.",
+      );
+    }
+  }).pipe(Effect.scoped, Effect.provide(services)),
+);

@@ -2,19 +2,21 @@
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
-import { acceptInvite, ownerToken, originOf, runTurn } from "./actors.ts";
+import { acceptInvite, agentOf, database, ownerToken, originOf, runTurn } from "./actors.ts";
 import { benchImport, benchTurns } from "./benchSeed.ts";
+import { lookbookTurns } from "./lookbookSeed.ts";
 import {
   type Instance,
   ORG,
   OWNER_PERSON,
   type SeedState,
   serverCli,
+  sleep,
   writeSession,
 } from "./instance.ts";
 import { RpcConnection, VerifyError } from "./rpc.ts";
 
-export const SEEDS = ["lifecycle", "empty", "bench"] as const;
+export const SEEDS = ["lifecycle", "empty", "bench", "lookbook"] as const;
 export type SeedName = (typeof SEEDS)[number];
 
 /** Days from today, as the YYYY-MM-DD the import reads. Every date is relative, so runs agree. */
@@ -248,6 +250,9 @@ export async function seed(
       tradeName: "Ambermill",
       address: "4 Example Lane, Bengaluru 560001",
       placeOfSupply: "Karnataka",
+      // Without one, Money asks for the country before anything else.
+      country: "IN",
+      homeCurrency: "INR",
     });
     for (const agent of AGENTS) {
       const created = (await owner.call("kin.lead.create", {
@@ -383,9 +388,29 @@ export async function seed(
   return { name, seededAt: new Date().toISOString(), people, agents, environmentId };
 }
 
+// A check-in due at start-up answers in the owner's chat; an ask sent while it runs loses its turn to it.
+async function leadIdle(instance: Instance, agent: string) {
+  const { agentId } = agentOf(instance, agent);
+  const db = database(instance);
+  try {
+    const busy = db.prepare(
+      `SELECT (SELECT count(*) FROM kin_events WHERE agent_id = ? AND state IN ('queued', 'claimed'))
+        + (SELECT count(*) FROM kin_wakeups WHERE agent_id = ? AND status = 'running') AS n`,
+    );
+    let quietMs = 0;
+    for (let waitedMs = 0; waitedMs < 60_000 && quietMs < 2_000; waitedMs += 250) {
+      quietMs = (busy.get(agentId, agentId) as { n: number }).n === 0 ? quietMs + 250 : 0;
+      await sleep(250);
+    }
+  } finally {
+    db.close();
+  }
+}
+
 /** What needs a running lead loop: a doc written by an agent through its real tool. */
 export async function seedTurns(instance: Instance, name: SeedName) {
   if (name === "empty") return;
+  await leadIdle(instance, "chief");
   const [doc] = await runTurn(instance, {
     agent: "chief",
     person: "owner",
@@ -409,4 +434,5 @@ export async function seedTurns(instance: Instance, name: SeedName) {
   if (response?.result === undefined || response.result.isError === true)
     throw new VerifyError(`seed: doc_create failed: ${JSON.stringify(doc).slice(0, 300)}`);
   if (name === "bench") await benchTurns(instance);
+  if (name === "lookbook") await lookbookTurns(instance);
 }

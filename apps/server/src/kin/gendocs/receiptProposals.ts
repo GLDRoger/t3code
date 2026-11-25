@@ -16,6 +16,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as KinShell from "../shell/KinShell.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { dayIn, formatMoney } from "../work/money.ts";
@@ -247,6 +248,19 @@ export const answerReceiptCard = Effect.fn("KinReceipts.answerCard")(function* (
       reason: "invalid_state",
       message: "That receipt proposal can no longer be read; nothing was recorded.",
     });
+  const shell = yield* KinShell.get(input.orgId);
+  const section = !KinShell.sectionOn(shell, "money")
+    ? "money"
+    : request.against !== undefined && !KinShell.sectionOn(shell, "invoices")
+      ? "invoices"
+      : request.advance?.client !== undefined && !KinShell.sectionOn(shell, "clients")
+        ? "clients"
+        : undefined;
+  if (section !== undefined)
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: `${KinShell.sectionName(shell, section)} is turned off for this company, so nothing was recorded. Turn it on in Settings › Sections and confirm again.`,
+    });
   const shown = yield* snapshotOf(input.orgId, request);
   if (stableStringify(shown) !== row.snapshot)
     return yield* new KinChatError({
@@ -287,10 +301,14 @@ export const proposalOutcome = Effect.fn("KinReceipts.outcome")(function* (input
   readonly proposalId: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<Pick<ProposalRow, "state" | "receiptKey">>`SELECT state,
-      receipt_key AS "receiptKey" FROM kin_receipt_proposals
-    WHERE org_id = ${input.orgId} AND proposal_id = ${input.proposalId}
-      AND agent_id = ${input.agentId}`;
+  const [row] = yield* sql<
+    Pick<ProposalRow, "state" | "receiptKey"> & { readonly cardClosed: number }
+  >`SELECT p.state, p.receipt_key AS "receiptKey",
+      EXISTS (SELECT 1 FROM kin_widgets w WHERE w.org_id = p.org_id
+        AND w.widget_id = p.widget_id AND w.closed_at IS NOT NULL) AS "cardClosed"
+    FROM kin_receipt_proposals p
+    WHERE p.org_id = ${input.orgId} AND p.proposal_id = ${input.proposalId}
+      AND p.agent_id = ${input.agentId}`;
   if (row === undefined)
     return yield* new KinChatError({
       reason: "not_found",
@@ -300,6 +318,8 @@ export const proposalOutcome = Effect.fn("KinReceipts.outcome")(function* (input
   return yield* refused(
     row.state === "declined"
       ? "The owner said no on this receipt's card, so nothing was recorded or numbered. Ask again only if they ask for it."
-      : "The owner hasn't tapped Confirm on this receipt's card yet; nothing was recorded or numbered. Kin records it the moment they do; a typed yes doesn't confirm money.",
+      : row.cardClosed === 1
+        ? "This receipt's card closed before the owner answered it, because what it was about changed; nothing was recorded or numbered. Call kin_receipt again only if the owner still wants it."
+        : "The owner hasn't tapped Confirm on this receipt's card yet; nothing was recorded or numbered. Kin records it the moment they do; a typed yes doesn't confirm money.",
   );
 });

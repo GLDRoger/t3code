@@ -4,6 +4,8 @@
 # His browser then says his access ended instead of asking to pair, and Zoya's chat with him leaves
 # her list. A new link from the owner brings him back as the same person: his level, his chat with
 # its history, and his task, and Zoya's chat with him is listed again.
+# What an agent asked him closes with him, its card saying so, while his task stays his. Adding
+# "Arjun Rao" again offers to bring him back instead of making a second person, and yes is the link.
 # The owner removes him and makes the new link on the web, from Settings → Team → Arjun, so a
 # teammate page that opens out of reach (behind the Settings modal) fails here.
 source "$(dirname "$0")/lib.sh"
@@ -17,6 +19,12 @@ made="$(kv tool chief record_create "{\"records\":[{\"title\":\"$TITLE\",\"owner
 task="$(grep -o 'W-[0-9]*' <<<"$made" | head -1)"
 [[ -n "$task" ]] || fail "couldn't give Arjun a task: $made"
 kv tool chief pulse_read '{}' --as-turn-of arjun --say "$SAID" >/dev/null
+ASK="Proof q$RUN: shall I file the clinic photos under 2026?"
+asked="$(kv tool chief kin_ask "{\"question\":\"$ASK\",\"options\":[{\"label\":\"File them\"},{\"label\":\"Leave them\"}],\"default\":\"none\",\"intent\":\"file photos $RUN\"}" \
+  --as-turn-of arjun --say "Proof a$RUN: where do the photos go?")"
+expect_in "$asked" "kin_ask: ok" "Chief of staff couldn't ask Arjun: $asked"
+[[ "$(q "select state from kin_questions where question = '$ASK'")" == open ]] ||
+  fail "Chief of staff's question to Arjun isn't open"
 access="$(q "select access from kin_people where person_id = '$ARJUN'")"
 pair="$(kv as zoya rpc kin.chats.withPerson "{\"personId\":\"$ARJUN\"}" |
   node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.parse(s).chatId))')"
@@ -43,6 +51,12 @@ done
   fail "$task left Arjun when his access was removed"
 expect_in "$(q "select c.fields_json from kin_record_changes c join kin_records r on r.record_id = c.record_id where r.key = '$task' order by c.seq desc limit 1")" \
   "accessRemoved" "$task's history doesn't say his access was removed"
+[[ "$(q "select state from kin_questions where question = '$ASK'")" == withdrawn ]] ||
+  fail "the question to Arjun stayed open after he was removed"
+expect_in "$(q "select w.state_json from kin_widgets w join kin_questions k on k.widget_id = w.widget_id where k.question = '$ASK'")" \
+  "Arjun Rao was removed from the team; nothing will happen on this." "the question's card doesn't say it closed"
+[[ "$(q "select count(*) from kin_waiting where person_id = '$ARJUN' and resolved_at is null")" == 0 ]] ||
+  fail "something still waits on Arjun after he was removed"
 needs="$(kv as owner rpc kin.pulse.read '{"acceptSenses":["holder_removed"]}')"
 expect_in "$needs" "whose access was removed" "Needs you doesn't show $task held by someone removed"
 sleep 5
@@ -55,8 +69,17 @@ kv as arjun web wait "Your access to Kin has ended" >/dev/null ||
   fail "Arjun's browser doesn't say his access ended"
 
 kv as owner web wait "Make a new link" >/dev/null || fail "Arjun's page offers no new link once removed"
-kv as owner web click --name "Make a new link" >/dev/null || fail "Make a new link can't be clicked on the web"
-kv as owner web wait "Copy link" >/dev/null || fail "Make a new link showed no link"
+# Adding him by name again is the same way back, never a second Arjun.
+people="$(q "select count(*) from kin_people")"
+kv as owner web open "/kin?settings=team" >/dev/null
+kv as owner web click --name "Add teammate" >/dev/null || fail "Team has no Add teammate"
+kv as owner web type --name "Their name" "Arjun Rao" >/dev/null
+kv as owner web click --name "Make link" >/dev/null || fail "Make link can't be clicked"
+kv as owner web wait "Bring back Arjun Rao (removed" >/dev/null ||
+  fail "adding Arjun Rao again didn't offer to bring him back"
+[[ "$(q "select count(*) from kin_people")" == "$people" ]] || fail "adding Arjun Rao again made a second person"
+kv as owner web click --name "Bring back Arjun Rao" >/dev/null || fail "Bring back can't be clicked"
+kv as owner web wait "Copy link" >/dev/null || fail "Bring back showed no link"
 secret="$(kv as owner web snapshot | grep -o 'invite#[A-Za-z0-9._~-]*' | head -1 | cut -d'#' -f2)"
 [[ -n "$secret" ]] || fail "the new link isn't on the owner's screen"
 kv as arjun web open "/kin/invite#$secret" >/dev/null
@@ -75,4 +98,5 @@ kv as arjun web wait "$SAID" >/dev/null || fail "Arjun's chat came back without 
 kv as arjun web open tasks >/dev/null
 kv as arjun web wait "$TITLE" >/dev/null || fail "Arjun's task isn't his after he came back"
 expect_in "$(zoya_list)" "$ROW" "Zoya's chat with Arjun didn't come back when he did"
-pass "removing Arjun from his page in web Settings kept $task his, under Needs you, with no agent started; his browser said his access ended and Zoya's chat with him left her list; a new link brought back his level, chat history and task, and that chat"
+[[ "$(q "select count(*) from kin_people")" == "$people" ]] || fail "bringing Arjun back made a second person"
+pass "removing Arjun from his page in web Settings kept $task his, under Needs you, with no agent started, and closed Chief of staff's question to him; his browser said his access ended and Zoya's chat with him left her list; adding Arjun Rao again offered to bring him back, and that link brought back his level, chat history and task, and that chat"

@@ -1,7 +1,9 @@
+import { KinShell } from "./kinShell.ts";
 import * as Schema from "effect/Schema";
 import * as Rpc from "effect/rpc/Rpc";
 
 import {
+  AuthClientMetadataDeviceType,
   AuthKinChatScope,
   EnvironmentAuthorizationError,
   type AuthEnvironmentScope,
@@ -24,6 +26,7 @@ import {
   KinRoleTags,
   KinTrimmedText,
 } from "./kinChat.ts";
+import { KinMonthNumber } from "./kinFinance.ts";
 import { KinCurrency, KinDay } from "./kinMoney.ts";
 import { TimeOfDay, TimeZone } from "./kinTime.ts";
 import { KinRecordRef } from "./kinWork.ts";
@@ -67,6 +70,16 @@ export const KinPeopleListResult = Schema.Struct({
   joined: Schema.Array(KinPersonId),
   // Absent from a host older than places.
   places: Schema.optional(Schema.Array(KinPersonPlaces)),
+  // Whose access was removed, for the owner and co-owners; `access`, the owner's alone, is the
+  // level a new link brings them back at. Absent from an older host.
+  removed: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        personId: KinPersonId,
+        access: Schema.optional(Schema.Literals(["co_owner", "member"])),
+      }),
+    ),
+  ),
 });
 export type KinPeopleListResult = typeof KinPeopleListResult.Type;
 
@@ -77,6 +90,10 @@ export const KinPeopleCreateInviteInput = Schema.Struct({
   handle: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(40))),
   // Re-inviting someone who is already a person binds a new device to that person.
   personId: Schema.optional(KinPersonId),
+  // Someone else who shares a removed person's name: a new person instead of the bring-back offer.
+  newPerson: Schema.optional(Schema.Literal(true)),
+  // What a new person sees once they join, chosen by the owner level; absent, the usual start.
+  sees: Schema.optional(KinPersonPlaceSwitches),
   ttlHours: Schema.optional(
     PositiveInt.check(Schema.isLessThanOrEqualTo(KIN_INVITE_MAX_TTL_HOURS)),
   ),
@@ -116,6 +133,18 @@ export const KinPersonDevice = Schema.Struct({
   boundAt: IsoDateTime,
   expiresAt: Schema.NullOr(IsoDateTime),
   revokedAt: Schema.NullOr(IsoDateTime),
+  /** When it last opened a connection, which is not the same as last use. Absent from older hosts. */
+  lastConnectedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  /** The device asking. Absent from older hosts. */
+  current: Schema.optional(Schema.Boolean),
+  /** The device whose link brought this one in; removing that device removes this one too. */
+  linkedFrom: Schema.optional(Schema.NullOr(AuthSessionId)),
+  /** The invite or link this device joined with. Absent from older hosts. */
+  linkId: Schema.optional(Schema.NullOr(KinInviteId)),
+  /** Whether the device asking may remove this one. Absent from older hosts. */
+  removable: Schema.optional(Schema.Boolean),
+  /** Live coding-agent keys made on this device; removing it ends them. Absent from older hosts. */
+  keysMade: Schema.optional(NonNegativeInt),
 });
 export type KinPersonDevice = typeof KinPersonDevice.Type;
 
@@ -137,6 +166,24 @@ export const KinPeopleRevokeDeviceInput = Schema.Struct({
 export type KinPeopleRevokeDeviceInput = typeof KinPeopleRevokeDeviceInput.Type;
 export const KinPeopleRevokeDeviceResult = Schema.Struct({ revoked: Schema.Boolean });
 export type KinPeopleRevokeDeviceResult = typeof KinPeopleRevokeDeviceResult.Type;
+
+/** A person links one more of their own devices: a link, good once, briefly. */
+export const KinPeopleLinkDeviceInput = Schema.Struct({ orgId: KinOrgId });
+export type KinPeopleLinkDeviceInput = typeof KinPeopleLinkDeviceInput.Type;
+export const KinPeopleLinkDeviceResult = Schema.Struct({
+  /** Which link it is: the device that joins with it lists it as its `linkId`. */
+  linkId: KinInviteId,
+  /** The join link's secret, as `createInvite` gives it. */
+  secret: TrimmedNonEmptyString,
+  expiresAt: IsoDateTime,
+});
+export type KinPeopleLinkDeviceResult = typeof KinPeopleLinkDeviceResult.Type;
+export const KIN_DEVICE_LINK_TTL_MINUTES = 10;
+/** One wording wherever Kin says a device was linked: never the device's own, chosen name. */
+export const KIN_DEVICE_LINKED_NOTICE =
+  "A new device was just linked to your Kin. If it wasn't you, remove it in Your devices.";
+/** Devices one person may have signed in at once. */
+export const KIN_DEVICE_LIMIT = 10;
 
 /** Signs a person out everywhere and cancels their unused invite links. They stay a person. */
 export const KinPeopleRemoveAccessInput = Schema.Struct({
@@ -174,13 +221,27 @@ export const KinAccessMeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinAccessMeInput = typeof KinAccessMeInput.Type;
 /** The caller's own kind, which decides their dock and screens. */
 export const KinAccessMeResult = Schema.Struct({
+  shell: Schema.optional(KinShell),
   personId: KinPersonId,
   access: KinPersonAccess,
   // Absent from a host older than places; an owner-level person's are all on.
   places: Schema.optional(KinPersonPlaceSwitches),
   leads: Schema.optional(Schema.Array(KinRecordRef)),
+  /**
+   * The places this host refuses the caller, by the check Money and Docs refuse with. Work is never
+   * refused to a caller this answers. Absent from an older host.
+   */
+  refused: Schema.optional(Schema.Struct({ money: Schema.Boolean, docs: Schema.Boolean })),
   /** The company's home currency, which every member's forms start amounts in; absent from an older host. */
   homeCurrency: Schema.optional(KinCurrency),
+  /** The company's country, ISO 3166 alpha-2, null for none; absent from an older host. */
+  country: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isPattern(/^[A-Z]{2}$/)))),
+  /** The month the company's financial year starts in, 1 for January; absent from an older host. */
+  financialYearStartMonth: Schema.optional(KinMonthNumber),
+  /** True while a company created new has no country chosen: nothing that records money is made until it is. */
+  countryNeeded: Schema.optional(Schema.Boolean),
+  /** The origin another device reaches this host at, for links and QR codes; absent when it has none or from an older host. */
+  publicUrl: Schema.optional(Schema.String),
 });
 export type KinAccessMeResult = typeof KinAccessMeResult.Type;
 
@@ -221,6 +282,11 @@ export const KinPersonProfile = Schema.Struct({
    */
   holdOutsideHours: Schema.optional(Schema.Boolean),
   /**
+   * In their quiet hours a reply to what they asked still rings (`ANSWER_RINGS_WITHIN_MS`);
+   * absent, on. Only on their own profile.
+   */
+  answersRing: Schema.optional(Schema.Boolean),
+  /**
    * Away until this day, on their own calendar: Kin holds non-urgent lines until it starts.
    * Absent once the day has come, and from older hosts.
    */
@@ -229,6 +295,8 @@ export const KinPersonProfile = Schema.Struct({
   load: Schema.optional(Schema.Struct({ open: NonNegativeInt, late: NonNegativeInt })),
   /** The reader may change this profile (the check `kin.people.updateProfile` runs); absent from older hosts. */
   canEdit: Schema.optional(Schema.Boolean),
+  /** Their GitHub username, null when none; only on a profile the reader may change. */
+  githubLogin: Schema.optional(Schema.NullOr(KinTrimmedText)),
 });
 export type KinPersonProfile = typeof KinPersonProfile.Type;
 export const KinPeopleProfilesResult = Schema.Struct({
@@ -255,6 +323,8 @@ export const KinPeopleUpdateProfileInput = Schema.Struct({
   /** Null goes back to the company's. */
   quietHours: Schema.optional(Schema.NullOr(KinPersonQuietHours)),
   holdOutsideHours: Schema.optional(Schema.Boolean),
+  /** Only their own. */
+  answersRing: Schema.optional(Schema.Boolean),
   /** Away until this day on their calendar; null is "I'm back". The owner level sets a teammate's. */
   awayUntil: Schema.optional(Schema.NullOr(KinDay)),
   picture: Schema.optional(Schema.NullOr(KinAttachment)),
@@ -280,6 +350,8 @@ export type KinPeopleSetOwnerNameInput = typeof KinPeopleSetOwnerNameInput.Type;
 export const KinInviteAcceptRequest = Schema.Struct({
   secret: TrimmedNonEmptyString.check(Schema.isMaxLength(256)),
   label: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(80))),
+  /** What kind of device is joining; the phone app when absent. */
+  deviceType: Schema.optional(AuthClientMetadataDeviceType),
 });
 export type KinInviteAcceptRequest = typeof KinInviteAcceptRequest.Type;
 export const KinInviteAcceptResult = Schema.Struct({
@@ -310,6 +382,7 @@ export const KIN_PEOPLE_WS_METHODS = {
   peopleCreateInvite: "kin.people.createInvite",
   peopleListDevices: "kin.people.listDevices",
   peopleRevokeDevice: "kin.people.revokeDevice",
+  peopleLinkDevice: "kin.people.linkDevice",
   peopleRemoveAccess: "kin.people.removeAccess",
   peopleSetGithubLogin: "kin.people.setGithubLogin",
   peopleSetAccess: "kin.people.setAccess",
@@ -352,6 +425,11 @@ export const KinPeopleRpcs = [
   Rpc.make(KIN_PEOPLE_WS_METHODS.peopleRevokeDevice, {
     payload: KinPeopleRevokeDeviceInput,
     success: KinPeopleRevokeDeviceResult,
+    error: KinPeopleError,
+  }),
+  Rpc.make(KIN_PEOPLE_WS_METHODS.peopleLinkDevice, {
+    payload: KinPeopleLinkDeviceInput,
+    success: KinPeopleLinkDeviceResult,
     error: KinPeopleError,
   }),
   Rpc.make(KIN_PEOPLE_WS_METHODS.peopleRemoveAccess, {
@@ -409,6 +487,7 @@ export const KIN_PEOPLE_RPC_SCOPES = {
   [KIN_PEOPLE_WS_METHODS.peopleCreateInvite]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleListDevices]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleRevokeDevice]: AuthKinChatScope,
+  [KIN_PEOPLE_WS_METHODS.peopleLinkDevice]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleRemoveAccess]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleSetGithubLogin]: AuthKinChatScope,
   [KIN_PEOPLE_WS_METHODS.peopleSetAccess]: AuthKinChatScope,

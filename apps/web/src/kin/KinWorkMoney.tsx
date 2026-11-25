@@ -9,7 +9,7 @@ import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import {
   kinEstimatesByLine,
   kinMissingRates,
-  kinTotalsEstimate,
+  kinOwedAbout,
   type KinEstimate,
 } from "@t3tools/client-runtime/kin/kinCurrency";
 import {
@@ -22,15 +22,19 @@ import { useAtomValue } from "@effect/atom-react";
 import { KIN_GOALS } from "@t3tools/client-runtime/kin/kinAttention";
 import { KIN_BUDGETS, KIN_QUOTES } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
 import { KIN_RECEIPTS } from "@t3tools/client-runtime/kin/kinInvoices";
+import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
+import { KIN_BILLS } from "@t3tools/client-runtime/kin/kinBills";
 import { KIN_SUBSCRIPTIONS } from "@t3tools/client-runtime/kin/kinSubscriptions";
 import { ArrowLeftRightIcon, MessageSquareIcon, PlusIcon, BotIcon } from "lucide-react";
 import { KIN_CHIEF_OF_STAFF } from "@t3tools/client-runtime/kin/kinLeadPresentation";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import { Button } from "../components/ui/button";
 import { Menu, MenuItem, MenuPopup, MenuTrigger } from "../components/ui/menu";
 import { cn } from "../lib/utils";
+import { KinAddBillsDialog } from "./KinBills";
 import { KinChart } from "./KinChart";
+import { KinCountryFirst } from "./KinCountryFirst";
 import { KinEstimateText, KinRatesDialog, KinSetRateButton } from "./KinMoneyEstimate";
 import { kinClient } from "./kinClient";
 import {
@@ -40,7 +44,9 @@ import {
   KinOutlookSection,
   KinQuotesSection,
 } from "./KinMoneyAnswers";
+import { KinMoneySuggested } from "./KinMoneySuggested";
 import { KinSubscriptionsSection } from "./KinSubscriptions";
+import { KinNewExpenseDialog, KinNewInvoiceDialog } from "./KinMoneyForms";
 import { KinNewReceiptDialog, KinReceiptsSection } from "./KinReceipts";
 import { KinAttentionSection } from "./KinAttention";
 import { KinGoalSheet, KinGoals } from "./KinGoals";
@@ -62,6 +68,7 @@ import {
   type KinListsHandle,
 } from "./useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
+import { useKinSectionOn } from "./useKinShell";
 
 const OPENS =
   "rounded-md outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset";
@@ -163,31 +170,92 @@ function AmountRow(props: {
   );
 }
 
+type MoneyProps = KinWorkTarget & {
+  readonly live: KinWorkLive;
+  readonly stale: boolean;
+  readonly directory: KinWorkDirectory;
+  readonly lists: KinListsHandle;
+  readonly onOpenList: (open: KinListOpen) => void;
+  readonly onOpenKey: (key: KinRecordKey) => void;
+  readonly onDates: () => void;
+  readonly onSubscriptions: () => void;
+  readonly onOpenDoc: (key: KinRecordKey) => void;
+  /** Bills added in bulk: one batch's list, or every batch for null. */
+  readonly onBills: (batchId: string | null) => void;
+};
+
 /**
  * Money: who owes us and how late, what came in and went out, the year so far and what is due.
  * The host adds everything up; this only lays it out and says where each figure came from.
  */
-export function KinWorkMoney(
-  props: KinWorkTarget & {
-    readonly live: KinWorkLive;
-    readonly stale: boolean;
-    readonly directory: KinWorkDirectory;
-    readonly lists: KinListsHandle;
-    readonly onOpenList: (open: KinListOpen) => void;
-    readonly onOpenKey: (key: KinRecordKey) => void;
-    readonly onDates: () => void;
-    readonly onSubscriptions: () => void;
-    readonly onOpenDoc: (key: KinRecordKey) => void;
-  },
-) {
+export function KinWorkMoney(props: MoneyProps) {
+  return (
+    <KinCountryFirst environmentId={props.environmentId} waiting={<WaitingMoney {...props} />}>
+      <MoneyScreen {...props} />
+    </KinCountryFirst>
+  );
+}
+
+/** Money while the country waits: no figures and nothing that records money; Dates and Goals stay. */
+function WaitingMoney(props: MoneyProps) {
+  const { state } = useKinMoneySummary(props, { enabled: true, use: "screen" });
+  const goals = useKinGoals(props, { enabled: true, money: true });
+  const [adding, setAdding] = useState(false);
+  const upcoming = state._tag === "ready" ? state.value.upcomingTotal : 0;
+  const none = goals.state._tag === "ready" && goals.state.value.goals.length === 0;
+  return (
+    <>
+      <div className="mx-auto flex w-full max-w-3xl flex-col gap-1 px-4">
+        {upcoming === 0 ? null : (
+          <KinWorkSection
+            title={KIN_MONEY.upcoming}
+            fold={{ summary: KIN_MONEY.upcomingCount(upcoming), onOpen: props.onDates }}
+          >
+            {null}
+          </KinWorkSection>
+        )}
+        <KinGoals {...props} goals={goals} />
+        {/* With goals, their section has its own Add. */}
+        {none && goals.canSave ? (
+          <div>
+            <Button size="sm" variant="ghost" onClick={() => setAdding(true)}>
+              <PlusIcon />
+              {KIN_GOALS.add}
+            </Button>
+          </div>
+        ) : null}
+      </div>
+      {adding ? (
+        <KinGoalSheet
+          environmentId={props.environmentId}
+          goal={null}
+          goals={goals}
+          onClose={() => setAdding(false)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function MoneyScreen(props: MoneyProps) {
   const { names } = props.directory;
   const { state, refresh } = useKinMoneySummary(props, { enabled: true, use: "screen" });
+  const [allClients, setAllClients] = useState(false);
+  const every = useKinMoneySummary(props, { enabled: allClients, use: "allClients" });
   const agent = useKinAskAgent(props);
   const rates = useKinRates(props);
   const goals = useKinGoals(props, { enabled: true, money: true });
   const canBudget = useAtomValue(kinClient.workSetBudget.permissionAtom(props.environmentId));
   const canReceipt = useAtomValue(kinClient.makeReceipt.permissionAtom(props.environmentId));
-  const [adding, setAdding] = useState<"goal" | "budget" | "receipt" | null>(null);
+  // Invoices and quotes off: no way to make one, and what clients owe (invoices) leaves the page.
+  const invoicesOn = useKinSectionOn(props.environmentId, "invoices");
+  const canInvoice =
+    useAtomValue(kinClient.workNewInvoice.permissionAtom(props.environmentId)) && invoicesOn;
+  const canExpense = useAtomValue(kinClient.workNewExpense.permissionAtom(props.environmentId));
+  const canBills = useAtomValue(kinClient.billsAdd.permissionAtom(props.environmentId));
+  const [adding, setAdding] = useState<
+    "goal" | "budget" | "receipt" | "invoice" | "expense" | "bills" | null
+  >(null);
   const scope = useKinViewerScope(props.environmentId);
   const scopeNote = kinScopeNote("money", scope);
   const top = (
@@ -209,13 +277,32 @@ export function KinWorkMoney(
   /** The page's own ways in; `withAsk` adds Ask, which an empty page already offers above. */
   const actions = (withAsk: boolean) => (
     <div className="flex flex-wrap gap-2">
-      {!goals.canSave && !canBudget && !canReceipt && agent === null ? null : (
+      {!goals.canSave &&
+      !canBudget &&
+      !canReceipt &&
+      !canInvoice &&
+      !canExpense &&
+      !canBills &&
+      agent === null ? null : (
         <Menu>
           <MenuTrigger render={<Button size="sm" variant="ghost" />}>
             <PlusIcon />
             {KIN_MONEY.add}
           </MenuTrigger>
           <MenuPopup align="start" side="top">
+            {canInvoice ? (
+              <MenuItem onClick={() => setAdding("invoice")}>
+                {KIN_MONEY_FORMS.invoice.add}
+              </MenuItem>
+            ) : null}
+            {canExpense ? (
+              <MenuItem onClick={() => setAdding("expense")}>
+                {KIN_MONEY_FORMS.expense.add}
+              </MenuItem>
+            ) : null}
+            {canBills ? (
+              <MenuItem onClick={() => setAdding("bills")}>{KIN_BILLS.add}</MenuItem>
+            ) : null}
             {goals.canSave ? (
               <MenuItem onClick={() => setAdding("goal")}>{KIN_GOALS.add}</MenuItem>
             ) : null}
@@ -230,7 +317,7 @@ export function KinWorkMoney(
                 {KIN_SUBSCRIPTIONS.add}
               </MenuItem>
             )}
-            {agent === null ? null : (
+            {agent === null || !invoicesOn ? null : (
               <MenuItem onClick={() => agent.ask(KIN_QUOTES.askMessage)}>
                 {KIN_MONEY.newQuote}
               </MenuItem>
@@ -255,7 +342,12 @@ export function KinWorkMoney(
   const dialogs = (
     <>
       {adding === "goal" ? (
-        <KinGoalSheet goal={null} goals={goals} onClose={() => setAdding(null)} />
+        <KinGoalSheet
+          environmentId={props.environmentId}
+          goal={null}
+          goals={goals}
+          onClose={() => setAdding(null)}
+        />
       ) : adding === "budget" ? (
         <KinBudgetDialog
           {...props}
@@ -267,30 +359,60 @@ export function KinWorkMoney(
         />
       ) : adding === "receipt" ? (
         <KinNewReceiptDialog {...props} onClose={() => setAdding(null)} />
+      ) : adding === "invoice" ? (
+        <KinNewInvoiceDialog {...props} onClose={() => setAdding(null)} />
+      ) : adding === "expense" ? (
+        <KinNewExpenseDialog {...props} onClose={() => setAdding(null)} />
+      ) : adding === "bills" ? (
+        <KinAddBillsDialog
+          {...props}
+          onReview={(batchId) => {
+            setAdding(null);
+            props.onBills(batchId);
+          }}
+          onOpenKey={(key) => {
+            setAdding(null);
+            props.onOpenKey(key);
+          }}
+          onClose={() => setAdding(null)}
+        />
       ) : null}
       {ratesOpen ? <KinRatesDialog {...props} onClose={() => setRatesOpen(false)} /> : null}
     </>
   );
-  if (state._tag === "refused") return <KinWorkNotice {...KIN_MONEY.onlyOwner} />;
+  // The dialogs keep one place whatever the page shows, so a form whose first save turns Money from
+  // empty to full (or through a reload) stays the same form, its draft and busy Save kept.
+  const withDialogs = (page: ReactNode) => (
+    <>
+      {page}
+      {dialogs}
+    </>
+  );
+  if (state._tag === "refused") return withDialogs(<KinWorkNotice {...KIN_MONEY.onlyOwner} />);
   if (state._tag === "failed" || state._tag === "gone") {
-    return (
+    return withDialogs(
       <KinLoadFailed
         what={KIN_MONEY.loadFailed}
         cause={state._tag === "failed" ? state.cause : null}
         onRetry={refresh}
         className="mx-auto w-full max-w-3xl p-4"
-      />
+      />,
     );
   }
   if (state._tag === "loading" || props.lists.state._tag === "loading") {
-    return (
+    return withDialogs(
       <div className="mx-auto w-full max-w-3xl p-4" role="status" aria-label="Loading Money">
         <KinWorkRowSkeletons />
-      </div>
+      </div>,
     );
   }
   const summary = state.value;
   const view = kinMoneyView(summary, kinListsOf(props.lists));
+  const owing = allClients && every.state._tag === "ready" ? every.state.value.owed : summary.owed;
+  const clients =
+    owing === summary.owed
+      ? view.clients
+      : kinMoneyView({ ...summary, owed: owing }, kinListsOf(props.lists)).clients;
   if (view.empty) {
     const first = !scope.all ? null : agent !== null ? (
       <Button onClick={() => agent.ask(KIN_MONEY.askMessage)}>
@@ -312,7 +434,7 @@ export function KinWorkMoney(
         {KIN_MONEY.createChief}
       </Button>
     ) : null;
-    return (
+    return withDialogs(
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-8 scrollbar-gutter-both">
         <div className="mx-auto flex w-full max-w-3xl flex-col gap-7 px-4 pt-4">{top}</div>
         <KinWorkNotice
@@ -324,8 +446,7 @@ export function KinWorkMoney(
             </div>
           }
         />
-        {dialogs}
-      </div>
+      </div>,
     );
   }
   // Every exact figure stays in its own currency; beside a foreign one, "about ₹x" when a rate is set.
@@ -338,11 +459,11 @@ export function KinWorkMoney(
       ...summary.spent.thisMonth.total,
       ...summary.receivedThisFinancialYear,
       ...summary.spentThisFinancialYear,
-      ...summary.owed.byClient.flatMap((client) => client.owed),
+      ...owing.byClient.flatMap((client) => client.owed),
     ],
     rates,
   );
-  const owedAll = kinTotalsEstimate(summary.owed.total, rates);
+  const owedAbout = kinOwedAbout(summary, rates);
   const missing = kinMissingRates(
     [
       ...summary.owed.total,
@@ -351,53 +472,76 @@ export function KinWorkMoney(
     ],
     rates,
   );
-  return (
+  return withDialogs(
     <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-8 scrollbar-gutter-both">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-7 px-4 pt-4">
         {props.stale || state.stale ? (
           <KinWorkStaleLine environmentId={props.environmentId} onRetry={refresh} />
         ) : null}
         {top}
-        <section className="flex flex-col gap-3">
-          <div className="grid grid-cols-2 gap-x-6 gap-y-2">
-            <Figure figure={view.owed} onOpen={props.onOpenList} estimates={estimates} />
-            <Figure figure={view.overdue} onOpen={props.onOpenList} estimates={estimates} />
-          </div>
-          {owedAll?.all == null && missing.length === 0 ? null : (
-            <div className="flex flex-wrap items-center gap-x-3 px-2">
-              {owedAll?.all == null ? null : (
-                <KinEstimateText
-                  text={`${owedAll.all} owed (estimate)`}
-                  basis={owedAll.basis.map((line) => `At ${line}.`)}
-                />
-              )}
-              <KinSetRateButton {...props} currencies={missing} />
+        {!invoicesOn ? null : (
+          <section className="flex flex-col gap-3">
+            <div className="grid grid-cols-2 gap-x-6 gap-y-2">
+              <Figure figure={view.owed} onOpen={props.onOpenList} estimates={estimates} />
+              <Figure figure={view.overdue} onOpen={props.onOpenList} estimates={estimates} />
             </div>
-          )}
-          <KinWorkSection title={KIN_MONEY.byClient}>
-            {view.clients.length === 0 ? (
-              <p className="px-2 text-sm text-muted-foreground">{kinNothingOwed(scope)}</p>
-            ) : (
-              <ul className="flex flex-col">
-                {view.clients.map((client) => {
-                  const { open } = client;
-                  return (
-                    <li key={client.key}>
-                      <AmountRow
-                        label={client.name}
-                        note={client.overdue ?? client.invoices}
-                        late={client.overdue !== null}
-                        amounts={client.owed}
-                        estimates={estimates}
-                        onOpen={open === null ? null : () => props.onOpenList(open)}
-                      />
-                    </li>
-                  );
-                })}
-              </ul>
+            {owedAbout === null && missing.length === 0 ? null : (
+              <div className="flex flex-wrap items-center gap-x-3 px-2">
+                {owedAbout === null ? null : (
+                  <KinEstimateText text={owedAbout.text} basis={owedAbout.basis} />
+                )}
+                <KinSetRateButton {...props} currencies={missing} />
+              </div>
             )}
-          </KinWorkSection>
-        </section>
+            <KinWorkSection title={KIN_MONEY.byClient}>
+              {view.clients.length === 0 ? (
+                <p className="px-2 text-sm text-muted-foreground">{kinNothingOwed(scope)}</p>
+              ) : (
+                <ul className="flex flex-col">
+                  {clients.map((client) => {
+                    const { open } = client;
+                    return (
+                      <li key={client.key}>
+                        <AmountRow
+                          label={client.name}
+                          note={client.overdue ?? client.invoices}
+                          late={client.overdue !== null}
+                          amounts={client.owed}
+                          estimates={estimates}
+                          onOpen={open === null ? null : () => props.onOpenList(open)}
+                        />
+                      </li>
+                    );
+                  })}
+                  {view.clientsMore === null ? null : (
+                    <li>
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        disabled={allClients && every.state._tag === "loading"}
+                        onClick={() => setAllClients(!allClients)}
+                      >
+                        {allClients && owing !== summary.owed
+                          ? KIN_MONEY.clientsFewer
+                          : view.clientsMore}
+                      </Button>
+                    </li>
+                  )}
+                </ul>
+              )}
+            </KinWorkSection>
+          </section>
+        )}
+        {view.suggested.length === 0 ? null : (
+          <KinMoneySuggested
+            {...props}
+            rows={view.suggested}
+            more={view.suggestedMore}
+            onOpenKey={props.onOpenKey}
+            onOpenList={props.onOpenList}
+            onChanged={refresh}
+          />
+        )}
         <KinOutlookSection {...props} seq={seq} rates={rates} onOpenKey={props.onOpenKey} />
         <KinCashSection {...props} seq={seq} rates={rates} />
         <div className="flex flex-col gap-1">
@@ -432,14 +576,16 @@ export function KinWorkMoney(
               </ul>
             )}
           </KinWorkSection>
-          <KinQuotesSection
-            {...props}
-            lists={kinListsOf(props.lists)}
-            seq={seq}
-            rates={rates}
-            onOpenKey={props.onOpenKey}
-            onOpenList={props.onOpenList}
-          />
+          {!invoicesOn ? null : (
+            <KinQuotesSection
+              {...props}
+              lists={kinListsOf(props.lists)}
+              seq={seq}
+              rates={rates}
+              onOpenKey={props.onOpenKey}
+              onOpenList={props.onOpenList}
+            />
+          )}
           <KinBudgetsSection {...props} seq={seq} rates={rates} lists={props.lists} />
           <KinSubscriptionsSection
             {...props}
@@ -535,7 +681,6 @@ export function KinWorkMoney(
         </div>
         <div className="px-2">{actions(true)}</div>
       </div>
-      {dialogs}
-    </div>
+    </div>,
   );
 }

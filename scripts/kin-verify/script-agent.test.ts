@@ -29,6 +29,7 @@ const session = () => {
       agent.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);
     });
   return {
+    dir,
     request,
     [Symbol.dispose]: () => {
       agent.kill();
@@ -56,4 +57,35 @@ it("the scripted agent takes the pictures Kin sends every provider, and answers 
     ],
   });
   assert.deepStrictEqual(turn.result, { stopReason: "end_turn" });
+});
+
+it("uses the brief fixture once for a pulse check-in, not an ordinary pulse, and runs no chat script in either", async () => {
+  using agent = session();
+  const { result } = await agent.request("session/new", { cwd: process.cwd(), mcpServers: [] });
+  const { sessionId } = result as { sessionId: string };
+  const brief = NodePath.join(agent.dir, "checkin-reply.md");
+  NodeFS.writeFileSync(brief, "Review the Orbit Dental invoice.\n\n## Money\nIt's overdue.");
+  // The owner's scripted message, which a pulse quotes as chat history.
+  NodeFS.mkdirSync(NodePath.join(agent.dir, "turns"));
+  NodeFS.writeFileSync(NodePath.join(agent.dir, "turns", "seed1234.json"), '{"reply":"Wrote it."}');
+  const base = { event: "pulse-a", type: "pulse", factKeys: [] };
+  const turn = (event: object) =>
+    agent.request("session/prompt", {
+      sessionId,
+      prompt: [
+        {
+          type: "text",
+          text: `# Chat\n\n[kv:seed1234] doc_create\n\n# Events\n\n> BEGIN QUOTE: event data\n> ${JSON.stringify(event)}\n> END QUOTE`,
+        },
+      ],
+    });
+  await turn(base);
+  assert.isTrue(NodeFS.existsSync(brief));
+  await turn({
+    ...base,
+    checkIn: { scheduleId: "checkin-morning", title: "Morning", what: "Review.", slot: "now" },
+  });
+  assert.isFalse(NodeFS.existsSync(brief));
+  await turn(base);
+  assert.isFalse(NodeFS.existsSync(NodePath.join(agent.dir, "turns", "seed1234.prompt.txt")));
 });

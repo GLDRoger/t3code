@@ -19,6 +19,7 @@ import {
   keysIn,
   linkMatcher,
   nameKeys,
+  nameThreads,
   withLinks,
   type LinkName,
 } from "./messageLinks.ts";
@@ -144,16 +145,21 @@ it.effect("links for each reader only what they may open; a hidden client leaves
         ('finance-in-finance', ${orgId}, 'finance-chat', 'agent', NULL, 'finance', 'member', ${at})`;
     yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
       VALUES (${orgId}, 'clients', 'Clients', 'C', 1, 0), (${orgId}, 'work', 'Work', 'W', 1, 0),
-        (${orgId}, 'invoices', 'Invoices', 'INV', 1, 0)`;
+        (${orgId}, 'invoices', 'Invoices', 'INV', 1, 0), (${orgId}, 'deals', 'Deals', 'DL', 1, 0)`;
     yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
         owner_id, sensitive, created_by_kind, origin_key, created_at, updated_at)
       VALUES (${orgId}, 'c1', 'clients', 'C-1', 'Orbit Dental', 'person', ${ownerId}, 0, 'person', 'c1', 0, 0),
         (${orgId}, 'c3', 'clients', 'C-3', 'Lumen Grove', 'person', ${ownerId}, 1, 'person', 'c3', 0, 0),
         (${orgId}, 'w1', 'work', 'W-1', 'Logo files', 'person', ${mateId}, 0, 'person', 'w1', 0, 0),
-        (${orgId}, 'i1', 'invoices', 'INV-1', 'Orbit Dental retainer', 'person', ${ownerId}, 0, 'person', 'i1', 0, 0)`;
+        (${orgId}, 'w2', 'work', 'W-2', 'Set up the booking API', 'person', ${mateId}, 0, 'person', 'w2', 0, 0),
+        (${orgId}, 'w3', 'work', 'W-3', 'Print the old menus', 'person', ${mateId}, 0, 'person', 'w3', 0, 0),
+        (${orgId}, 'i1', 'invoices', 'INV-1', 'Orbit Dental retainer', 'person', ${ownerId}, 0, 'person', 'i1', 0, 0),
+        (${orgId}, 'd1', 'deals', 'DL-1', 'Pineglass window graphics', 'person', ${ownerId}, 0, 'person', 'd1', 0, 0),
+        (${orgId}, 'd2', 'deals', 'DL-2', 'Orbit Dental', 'person', ${ownerId}, 0, 'person', 'd2', 0, 0)`;
     yield* sql`UPDATE kin_records SET fields_json = '{"number":"INV/26-27/004"}' WHERE key = 'INV-1'`;
+    yield* sql`UPDATE kin_records SET state = 'done' WHERE key = 'W-3'`;
     const said = message(
-      "Talk to Finance about INV-1 for Orbit Dental. W-1 is with Zoya Sheikh. Lumen Grove and C-3 can wait. See Settings and INV/26-27/004.",
+      'Talk to Finance about INV-1 for Orbit Dental. W-1 is with Zoya Sheikh. Lumen Grove and C-3 can wait. See Settings and INV/26-27/004. Pineglass window graphics is DL-1. Next is "Set up the booking API", after Print the old menus.',
     );
     const linksOf = (personId: KinPersonId) =>
       withLinks(orgId, { _tag: "person", personId }, [said]).pipe(
@@ -173,18 +179,77 @@ it.effect("links for each reader only what they may open; a hidden client leaves
         ["C-3", "record"],
         ["Settings", "settings"],
         ["INV/26-27/004", "record"],
+        ["Pineglass window graphics", "record"],
+        ["DL-1", "record"],
+        ["Set up the booking API", "record"],
       ],
     );
+    // A deal opens as a deal by its title, and a deal named like its client leaves it the client.
+    assert.deepStrictEqual(owner.find((link) => link.text === "Pineglass window graphics")?.to, {
+      _tag: "record",
+      key: "DL-1",
+      kind: "entry",
+    });
+    assert.deepStrictEqual(owner.find((link) => link.text === "Orbit Dental")?.to, {
+      _tag: "record",
+      key: "C-1",
+      kind: "client",
+    });
     assert.strictEqual(owner.find((link) => link.text === "W-1")?.note, "Logo files · Open");
+    // A key reads as its name to whoever may open it: the printed number, else the title.
+    assert.deepStrictEqual(
+      owner.filter((link) => link.name !== undefined).map((link) => [link.text, link.name]),
+      [
+        ["INV-1", "INV/26-27/004"],
+        ["W-1", "Logo files"],
+        ["C-3", "Lumen Grove"],
+        ["DL-1", "Pineglass window graphics"],
+      ],
+    );
+    // A person's own message keeps the key they typed.
+    const [typed] = yield* withLinks(orgId, { _tag: "person", personId: ownerId }, [
+      {
+        ...message("Check W-1 today."),
+        author: { _tag: "human", personId: ownerId, memberId: KinMemberId.make("rhea-member") },
+      },
+    ]);
+    assert.deepStrictEqual(
+      typed!.links?.map((link) => [link.text, link.name]),
+      [["W-1", undefined]],
+    );
 
-    // Zoya has no Clients or Money place and no chat with Finance: only her own task links.
+    // An open task named by its exact title links as a task; a closed one stays words.
+    assert.deepStrictEqual(owner.find((link) => link.text === "Set up the booking API")?.to, {
+      _tag: "record",
+      key: "W-2",
+      kind: "task",
+    });
+    // Zoya has no Clients or Money place and no chat with Finance: only her own tasks link.
     const mate = yield* linksOf(mateId);
     assert.deepStrictEqual(mate, [
-      { text: "W-1", to: { _tag: "record", key: "W-1", kind: "task" }, note: "Logo files · Open" },
+      {
+        text: "W-1",
+        to: { _tag: "record", key: "W-1", kind: "task" },
+        note: "Logo files · Open",
+        name: "Logo files",
+      },
+      {
+        text: "Set up the booking API",
+        to: { _tag: "record", key: "W-2", kind: "task" },
+        note: "Set up the booking API · Open",
+      },
     ]);
     // The private client is not named, numbered or hinted at anywhere in what she is sent.
     const sent = JSON.stringify(mate);
-    for (const hidden of ["Lumen Grove", "C-3", "Orbit Dental", "INV", "finance-chat"])
+    for (const hidden of [
+      "Lumen Grove",
+      "C-3",
+      "Orbit Dental",
+      "INV",
+      "finance-chat",
+      "Pineglass",
+      "DL-",
+    ])
       assert.notInclude(sent, hidden);
 
     // Agents read the words as written.
@@ -226,5 +291,46 @@ it.effect("links for each reader only what they may open; a hidden client leaves
       key: "W-1",
       kind: "task",
     });
+
+    // Kin opens no T3 thread: a helper's link or pasted id reaches people as its card's title, the
+    // agent's own thread as its name; code stays as written.
+    const helper = "thread:delegated-task:command%3Amcp%3Aa1%3Adelegate-task%3Ab2";
+    yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_agent_id,
+        author_owner_person_id, author_thread_id, author_member_id, author_role, kind, body,
+        mentions_json, status, created_at)
+      VALUES ('m-card', ${orgId}, 'finance-chat', 1, 'agent', 'finance', ${ownerId}, 'kin:01FIN',
+        'finance-in-finance', 'member', 'text', '', '[]', 'posted', ${at})`;
+    yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type,
+        revision, state_json, awaiting_json, updated_at)
+      VALUES ('w-card', ${orgId}, 'finance-chat', 'm-card', 'native', 'task', 1,
+        ${JSON.stringify({ threadId: helper, title: "Check the  login copy" })}, '[]', ${at})`;
+    yield* sql`INSERT INTO kin_agent_threads (thread_id, org_id, agent_id, started_at)
+      VALUES ('kin:01FIN', ${orgId}, 'finance', ${at})`;
+    const link = `t3-thread://v2/env-1/${helper}`;
+    assert.strictEqual(
+      yield* nameThreads(
+        orgId,
+        "finance-chat",
+        [
+          `Started [the copy check](${link}).`,
+          `Also <${link}>, bare ${link}, pasted ${helper}, and [my notes](t3-thread://v2/env-1/kin%3A01FIN).`,
+          `Hosted: https://app.t3.codes/threads/env-1/${encodeURIComponent(helper)}`,
+          `Unknown: [Old work](t3-thread://v2/env-1/thread%3Agone) and <t3-thread://v1/thread%3Agone>.`,
+          `In code: \`${helper}\``,
+        ].join("\n"),
+      ),
+      [
+        "Started Check the login copy.",
+        "Also Check the login copy, bare Check the login copy, pasted Check the login copy, and Finance.",
+        "Hosted: Check the login copy",
+        "Unknown: Old work and a helper task.",
+        `In code: \`${helper}\``,
+      ].join("\n"),
+    );
+    // Another chat doesn't read the card, so its title isn't told there.
+    assert.strictEqual(
+      yield* nameThreads(orgId, "zoya-chat", `Started [a task](${link}) and ${helper}.`),
+      `Started a task and ${helper}.`,
+    );
   }).pipe(Effect.provide(layer)),
 );
