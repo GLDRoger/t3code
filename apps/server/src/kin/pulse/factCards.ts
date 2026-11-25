@@ -100,7 +100,11 @@ const waitedShown = (plan: WaitedPlan) => {
 const closedOutcome = (plan: FactCardPlan): KinChoiceOutcome => ({
   title: "No longer needed",
   text:
-    plan.kind === "stall_answer" ? `${plan.key} moved on.` : `${plan.key} no longer waits on you.`,
+    plan.kind === "stall_answer"
+      ? `${plan.key} moved on.`
+      : plan.kind === "waited_answer"
+        ? `${plan.key} no longer waits on you.`
+        : `${plan.key} no longer needs a new date.`,
 });
 
 type CardOption = { readonly label: string; readonly plan?: FactCardPlan };

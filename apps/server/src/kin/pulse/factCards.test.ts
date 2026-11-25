@@ -601,6 +601,14 @@ it.effect(
           text: `${hers.milestone} or its tasks changed since this was offered, so nothing was done.`,
         });
         assert.strictEqual((yield* ctx.records.get(ctx.orgId, hers.milestone))?.dueAt, NOV_27);
+
+        // Rhea moves the agent's milestone herself: its card closes, saying why.
+        yield* ctx.records.update(ctx.orgId, ctx.byOwner, agents.milestone, { dueAt: NOV_30 });
+        yield* tickAt(ctx, NOW + HOUR);
+        assert.deepStrictEqual(
+          (yield* cards(ctx)).find((card) => card.widgetId === shown[1]!.widgetId)?.outcome,
+          { title: "No longer needed", text: `${agents.milestone} no longer needs a new date.` },
+        );
       }),
     ),
 );
