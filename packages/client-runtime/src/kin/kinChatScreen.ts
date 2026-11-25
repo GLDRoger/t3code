@@ -221,7 +221,19 @@ type KinChatFeedInput = {
   readonly newLine?: KinNewLineHold | null;
 };
 
+const NEW_LINE_KEY = "new-line";
 const NEW_LINE_LABEL = "New";
+const LAND_VIEW_POSITION = 0.3;
+const NEW_LINE_VIEW_POSITION = 0.08;
+
+/** Where a chat opens once its rows have loaded: a requested message/discussion, or its "New" line. */
+export type KinChatOpenRow = {
+  readonly kind: "land" | "new-line";
+  /** Stable id for "opened once": the requested `landOn` id, or `"new-line"`. */
+  readonly key: string;
+  readonly index: number;
+  readonly viewPosition: number;
+};
 
 /** The highest seq a chat row shows; 0 for rows that show none. */
 function kinChatRowSeq(row: KinChatRow): number {
@@ -245,16 +257,19 @@ function kinChatRowSeq(row: KinChatRow): number {
   }
 }
 
-/** The "New" line, drawn as a divider before the row that holds `seq`. */
+/** The "New" line, drawn as a divider before the row that holds `seq`, and its row index (-1 if none). */
 function withNewLine(rows: ReadonlyArray<KinChatRow>, seq: number | null) {
-  if (seq === null) return rows;
+  if (seq === null) return { rows, newLineIndex: -1 };
   const index = rows.findIndex((row) => kinChatRowSeq(row) >= seq);
-  if (index < 0) return rows;
-  return [
-    ...rows.slice(0, index),
-    { type: "day" as const, key: "new-line", label: NEW_LINE_LABEL },
-    ...rows.slice(index),
-  ];
+  if (index < 0) return { rows, newLineIndex: -1 };
+  return {
+    rows: [
+      ...rows.slice(0, index),
+      { type: "day" as const, key: NEW_LINE_KEY, label: NEW_LINE_LABEL },
+      ...rows.slice(index),
+    ],
+    newLineIndex: index,
+  };
 }
 
 /**
@@ -296,7 +311,7 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
     ),
   );
   const newLineSeq = kinNewLineSeq(messages, input.newLine ?? null, input.viewer.personId);
-  const linedRows = withNewLine(groupedRows, newLineSeq);
+  const { rows: linedRows, newLineIndex } = withNewLine(groupedRows, newLineSeq);
   const rows: ReadonlyArray<KinChatRow> =
     pending.length === 0
       ? linedRows
@@ -321,6 +336,19 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
               : row.type === "cards" &&
                 [row.question, ...row.tasks].some((card) => card?.message.messageId === landOn),
         );
+  const openRow: KinChatOpenRow | null =
+    landOn !== null
+      ? landIndex >= 0
+        ? { kind: "land", key: landOn, index: landIndex, viewPosition: LAND_VIEW_POSITION }
+        : null
+      : newLineIndex >= 0
+        ? {
+            kind: "new-line",
+            key: NEW_LINE_KEY,
+            index: newLineIndex,
+            viewPosition: NEW_LINE_VIEW_POSITION,
+          }
+        : null;
   const earlierPage = kinEarlierPage(input.chatId, messages, input.exhausted, live.clearedSeq);
   // Older than what has loaded: page back to it rather than open at the end.
   const landPage = landOn !== null && landIndex < 0 ? earlierPage : null;
@@ -353,6 +381,8 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
     landIndex,
     /** The page to read next to reach `landOn`; null once it has loaded or nothing is left. */
     landPage,
+    /** The row to open the feed on, or null to open at its end. */
+    openRow,
     latestSeq: latestKinSeq(messages),
     earlierPage,
     showIntro,

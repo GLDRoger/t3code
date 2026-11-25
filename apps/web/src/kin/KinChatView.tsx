@@ -655,7 +655,8 @@ function KinChatFeed(props: {
     readOnly: props.readOnly !== null,
     newLine,
   });
-  const { streamed, widgets, pending, rows, display, landIndex, followsEnd, unseen } = feed;
+  const { streamed, widgets, pending, rows, display, landIndex, openRow, followsEnd, unseen } =
+    feed;
   const echoedKey = feed.echoed.join("\n");
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- frees outbox entries once the stream carries their message
   useEffect(() => {
@@ -676,6 +677,7 @@ function KinChatFeed(props: {
   };
   const { landOn } = props;
   const landed = useRef<string | null>(null);
+  const openingLine = useRef(false);
   // The message a row opened, tinted a moment once it has loaded so the eye lands on it.
   const [markDone, setMarkDone] = useState<string | null>(null);
 
@@ -784,15 +786,45 @@ function KinChatFeed(props: {
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- loadEarlier is rebuilt each render and reads the page these name.
   }, [seekBefore, pageFailed, loading, canLoadEarlier, landOn, landed]);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the list, outside React, to the message the chat was opened on, once it has loaded
+  const openKind = openRow?.kind ?? null;
+  const openKey = openRow?.key ?? null;
+  const openIndex = openRow?.index ?? -1;
+  const openViewPosition = openRow?.viewPosition ?? 0;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the list, outside React, to the requested message or the "New" line on open
   useEffect(() => {
-    if (landOn === null || landIndex < 0 || landed.current === landOn) return;
+    if (openKind === null || openKey === null || openIndex < 0) return;
+    if (openKind === "new-line" ? landed.current !== null : landed.current === openKey) return;
+    // Leave the scroll position alone when the reader already moved away before the backlog arrived.
+    if (openKind === "new-line" && !followsEnd && !openingLine.current) {
+      landed.current = openKey;
+      return;
+    }
     // Let go of the end first, so the list's pin to its end can't take the reader back down.
-    if (followsEnd) return transition({ type: "land" });
-    landed.current = landOn;
-    void listRef.current?.scrollToIndex({ index: landIndex, animated: false, viewPosition: 0.3 });
+    if (followsEnd) {
+      if (openKind === "new-line") openingLine.current = true;
+      return transition({ type: "land", seq: reading.current.latestSeq });
+    }
+    openingLine.current = false;
+    landed.current = openKey;
+    const list = listRef.current;
+    if (list === null) return;
+    let active = true;
+    void list
+      .scrollToIndex({ index: openIndex, animated: false, viewPosition: openViewPosition })
+      .then(() => {
+        if (!active || openKind !== "new-line" || followRef.current.away) return;
+        const scrollNode = list.getScrollableNode();
+        const atEnd =
+          scrollNode instanceof HTMLElement && scrollNode.clientHeight > 0
+            ? scrollNode.scrollHeight - scrollNode.scrollTop - scrollNode.clientHeight <= 2
+            : list.getState().isAtEnd;
+        if (atEnd) transition({ type: "jump-to-end" });
+      });
+    return () => {
+      active = false;
+    };
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- transition reads only refs and the stable setFollow.
-  }, [landIndex, landOn, followsEnd, listRef, landed]);
+  }, [openKind, openKey, openIndex, openViewPosition, followsEnd, listRef, landed]);
   const marked = landOn !== null && landIndex >= 0 && markDone !== landOn;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a timer: the mark on the message a row opened lasts a moment, then goes
   useEffect(() => {
