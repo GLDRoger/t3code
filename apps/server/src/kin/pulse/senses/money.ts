@@ -87,6 +87,22 @@ const billingScope = (row: EntryRow & { fieldsJson: string | null }, registerId:
   return { ...entryScope(row), ...(billTo === undefined ? {} : { billTo }) };
 };
 
+/** notice_due's consequence; `ago` is how long its day has passed, once it has. */
+export const noticeConsequence = (input: {
+  name: string;
+  title: string;
+  by: number;
+  renews: number;
+  zone: string;
+  ago?: string;
+}) => {
+  const when = (ms: number) =>
+    formatKinWhen(ms, "day", { zone: input.zone, locale: KIN_TEXT_LOCALE });
+  return input.ago === undefined
+    ? `${input.name}: notice by ${when(input.by)} if the contract changes; ${input.title} renews ${when(input.renews)}.`
+    : `${input.name}: notice was due by ${when(input.by)}, ${input.ago}; ${input.title} renews ${when(input.renews)}.`;
+};
+
 export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: SenseContext) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, at } = ctx;
@@ -333,8 +349,6 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
     // 31 December, is told from 17 December.
     const from = startOfDay(day, ctx.zone) - toMs(heads);
     if (at > renews || from > at) continue;
-    const when = (ms: number) =>
-      formatKinWhen(ms, "day", { zone: ctx.zone, locale: KIN_TEXT_LOCALE });
     const name = project.clientTitle ?? project.title;
     const looks = [
       { kind: project.clientOwnerKind, id: project.clientOwnerId },
@@ -356,10 +370,14 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
             },
       scope: entryScope({ ...project, projectKey: project.key, projectTitle: project.title }),
       since: iso(from),
-      consequence:
-        by < at
-          ? `${name}: notice was due by ${when(by)}, ${daysAgoText(ctx, by)}; ${project.title} renews ${when(renews)}.`
-          : `${name}: notice by ${when(by)} if the contract changes; ${project.title} renews ${when(renews)}.`,
+      consequence: noticeConsequence({
+        name,
+        title: project.title,
+        by,
+        renews,
+        zone: ctx.zone,
+        ...(by < at ? { ago: daysAgoText(ctx, by) } : {}),
+      }),
       actor:
         looks === undefined
           ? { _tag: "owner" }
