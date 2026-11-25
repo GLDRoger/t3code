@@ -1031,7 +1031,7 @@ const make = Effect.gen(function* () {
           (input.positions === undefined || input.lean === undefined || input.options === undefined)
         )
           return yield* refuse(
-            "To bring it to the owner, give both positions, your lean and their two options.",
+            "To bring it to the owner, give both positions, your lean and the owner's two options.",
           );
         yield* post(ctx, row, {
           text: input.text,

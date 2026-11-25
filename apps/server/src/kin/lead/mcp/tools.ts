@@ -245,7 +245,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("memory_label", {
     ...shared,
     description:
-      'Change who may know memory items (itemIds). sensitive true keeps them between you and the owner at once ("keep that between us"). sensitive false asks the owner to let the team know them, only when their own message this turn says so ("the team can know those"), never on your judgement; they stay the owner\'s until the owner says yes in Memory: pass on the note it returns.',
+      'Change who may know memory items (itemIds). sensitive true keeps them between you and the owner at once ("keep that between us"). sensitive false asks the owner to let the team know them, only when the owner\'s own message this turn says so ("the team can know those"), never on your judgement; they stay the owner\'s until the owner says yes in Memory: pass on the note it returns.',
     parameters: Lead.LabelInput,
     success: Lead.LabelResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -295,7 +295,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_github_watch", {
     ...prCare,
     description:
-      'The GitHub repos Kin watches for the owner (theirs and their organisations\'). Omit repo to list them. watch false is their "leave repo X alone", true undoes it; mentions true lets an @-mention of them there call you.',
+      'The GitHub repos Kin watches for the owner (theirs and their organisations\'). Omit repo to list them. watch false is their "leave repo X alone", true undoes it; mentions true lets an @-mention of the owner there call you.',
     parameters: GitHubWatchInput,
     success: KinGitHubRepos,
   }).annotate(McpSchema.EnabledWhen, enabled),
