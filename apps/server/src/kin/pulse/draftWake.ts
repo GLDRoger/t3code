@@ -859,7 +859,7 @@ export const DRAFT_CALL_NOTES = (name: string, mailbox: boolean) =>
   `Kin woke you for ${name}: this follow-up of theirs is due and no mail for it waits on a card. ${mailbox ? "There is no contact address for it that they may see" : "No mailbox of theirs is connected"}, so draft no mail: give them call notes here in this chat (what to say, what was promised, the last contact).`;
 /** The wake's own line for a task with no client: its first piece is a doc linked to it. */
 export const DRAFT_DOCUMENT = (name: string) =>
-  `Kin woke you for ${name}: this task of theirs is due and nothing is prepared for it yet. Make its first piece now, whichever its own words call for: a first draft, an outline, a filled form or working notes, as a new doc with doc_create, linked to the task. Never change a doc someone else wrote. Then tell them in at most three short sentences: what you made, with its card, and what was left open in it. Never retell what the doc says. If nothing can be prepared, say in one line what is missing and make nothing.`;
+  `Kin woke you for ${name}: this task of theirs is due and nothing is prepared for it yet. Make its first piece now, whichever its own words call for: a first draft, an outline, a filled form or working notes, as a new doc with doc_create, linked to the task. Never change a doc someone else wrote. Then tell them in one short line that the doc for this task is ready. Its card sits right under your reply, so say nothing about what is in it; only when it has a gap they must fill, add one more short line naming it. If nothing can be prepared, say in one line what is missing and make nothing.`;
 
 /**
  * What a draft wake's turn reads, checked again as it starts: still theirs and due (`stillDue`),
