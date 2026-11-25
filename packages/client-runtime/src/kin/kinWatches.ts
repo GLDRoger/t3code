@@ -3,6 +3,7 @@ import {
   kinWhenParts,
   KIN_WATCH_AGAIN_DAYS,
   type EnvironmentId,
+  type KinFollowUp,
   type KinWatchActor,
   type KinWatchDid,
   type KinWatchesFollowUpsInput,
@@ -18,6 +19,7 @@ import { Atom } from "effect/reactivity";
 import type * as EnvironmentRegistry from "../connection/registry.ts";
 import { createKinQueryAtomFamily, createKinRpcCommand } from "./kinAccess.ts";
 import type { kinGuardedRead } from "./kinClient.ts";
+import { kinAskedByLine } from "./kinDeferralPresentation.ts";
 import { createKinRefreshTriggers } from "./kinRefresh.ts";
 
 /** Where a watch's times are read: the reader's zone and locale; the device's own when left out. */
@@ -211,11 +213,61 @@ export function kinWatchLimitLine(at: number, words: KinWatchWords = {}): string
   return `From ${time} Kin only did the checks that need no model: today's daily limit was reached.`;
 }
 
-/** The log with no watches at all: the owner level is told how to start one. */
+/** The log with no watches at all. */
 export function kinWatchNoneText(ownerLevel: boolean): string {
   return ownerLevel
-    ? 'Kin isn\'t watching anything yet. Ask any agent to keep an eye on something, such as "keep an eye on whether Lumen pays".'
-    : "Kin isn't watching anything of yours.";
+    ? "Kin isn't checking anything yet. Follow-ups an agent promises show here too."
+    : "Kin isn't checking anything of yours yet. Follow-ups an agent promises show here too.";
+}
+
+export const KIN_FOLLOW_UP_COPY = {
+  title: "Follow-ups",
+  stop: "Stop",
+  stopFor: (title: string) => `Stop: ${title}`,
+  failed: "Couldn't stop this follow-up.",
+  unreadable: "Couldn't load the follow-ups.",
+  hidden: "A follow-up you can't see the details of",
+} as const;
+
+const KIN_FOLLOW_UP_ON_DUE: Readonly<Record<KinFollowUp["onDue"], string>> = {
+  remind: "will send a reminder",
+  // A due start posts a card asking to start, move or cancel it; nothing starts on its own.
+  start: "will ask whether to start it",
+  ask: "will ask about it",
+  chase: "will chase it",
+};
+
+export interface KinFollowUpView {
+  readonly itemId: string;
+  readonly title: string;
+  readonly lines: ReadonlyArray<string>;
+  /** Whether this reader may stop it: whoever asked for it, the owner or a co-owner. */
+  readonly stop: boolean;
+}
+
+/** A follow-up an agent promised, as its row on What Kin checked reads, in the company's zone. */
+export function kinFollowUpView(
+  followUp: KinFollowUp,
+  reader: { readonly ownerLevel: boolean; readonly personId: string | null },
+  words: KinWatchWords = {},
+): KinFollowUpView {
+  const mine = reader.personId !== null && followUp.askedBy?.personId === reader.personId;
+  const at = { zone: zoneOf(words), locale: words.locale };
+  const due = ms(followUp.dueAt);
+  const when =
+    followUp.held === undefined
+      ? `Due ${formatKinWhen(due, "day", at)}, ${formatKinWhen(due, "time", at)}.`
+      : `Waiting for ${followUp.held.sectionName} to be switched back on.`;
+  const asked = mine ? "Asked by you." : kinAskedByLine(followUp.askedBy);
+  return {
+    itemId: followUp.itemId,
+    title: followUp.title.trim() === "" ? KIN_FOLLOW_UP_COPY.hidden : followUp.title,
+    lines: [
+      `${when} ${followUp.agent?.name ?? "Kin"} ${KIN_FOLLOW_UP_ON_DUE[followUp.onDue]}.`,
+      ...(asked === null ? [] : [asked]),
+    ],
+    stop: reader.ownerLevel || mine,
+  };
 }
 
 /** Today's page of the log before any look. */
@@ -256,6 +308,7 @@ export function makeKinWatches<R, ER>(
         readonly input: KinWatchesListInput;
       }) => refreshOn("watches")(target),
     }),
+    /** The one-time follow-ups agents promised that the reader may see, soonest first. */
     followUps: createKinQueryAtomFamily(runtime, {
       label: "kin:watches:follow-ups",
       execute: readFollowUps,

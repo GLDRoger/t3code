@@ -1,8 +1,15 @@
 import { describe, expect, it } from "vite-plus/test";
 
-import { KIN_TEXT_LOCALE, type KinWatchLine, type KinWatchLogLook } from "@t3tools/contracts";
+import {
+  KIN_TEXT_LOCALE,
+  KinPersonId,
+  type KinFollowUp,
+  type KinWatchLine,
+  type KinWatchLogLook,
+} from "@t3tools/contracts";
 
 import {
+  kinFollowUpView,
   KIN_WATCH_LOG_INTRO,
   KIN_WATCH_LOG_TITLE,
   kinWatchAbout,
@@ -245,11 +252,77 @@ describe("the log", () => {
     ).toBe(Date.parse(at("18:20")));
     expect(kinWatchLimitFrom([{ _tag: "look", look: look("18:50") }])).toBeNull();
     expect(kinWatchNoneText(true)).toBe(
-      'Kin isn\'t watching anything yet. Ask any agent to keep an eye on something, such as "keep an eye on whether Lumen pays".',
+      "Kin isn't checking anything yet. Follow-ups an agent promises show here too.",
     );
-    expect(kinWatchNoneText(false)).toBe("Kin isn't watching anything of yours.");
+    expect(kinWatchNoneText(false)).toBe(
+      "Kin isn't checking anything of yours yet. Follow-ups an agent promises show here too.",
+    );
     expect(kinWatchNothingToday(at("14:55"), words)).toBe(
       "No checks yet today. The next round is about 14:55.",
+    );
+  });
+});
+
+describe("a follow-up", () => {
+  const followUp = (patch: Partial<KinFollowUp> = {}) =>
+    ({
+      itemId: "def-1",
+      title: "Check the Tidewater Freight draft",
+      dueAt: at("16:30"),
+      onDue: "start",
+      agent: { agentId: "lead-a", name: "Chief of staff" },
+      askedBy: { personId: "zoya", name: "Zoya" },
+      ...patch,
+    }) as KinFollowUp;
+  const rhea = { ownerLevel: true, personId: "rhea" };
+  const zoya = { ownerLevel: false, personId: "zoya" };
+  const arjun = { ownerLevel: false, personId: "arjun" };
+
+  it("reads what, when, who does it and who asked; a held one waits; only its asker or the owner level stops it", () => {
+    expect(kinFollowUpView(followUp(), rhea, words)).toEqual({
+      itemId: "def-1",
+      title: "Check the Tidewater Freight draft",
+      lines: [
+        "Due Wed 25 Nov, 16:30. Chief of staff will ask whether to start it.",
+        "Asked by Zoya.",
+      ],
+      stop: true,
+    });
+    expect(kinFollowUpView(followUp(), zoya, words)).toMatchObject({
+      lines: [
+        "Due Wed 25 Nov, 16:30. Chief of staff will ask whether to start it.",
+        "Asked by you.",
+      ],
+      stop: true,
+    });
+    expect(kinFollowUpView(followUp(), arjun, words).stop).toBe(false);
+    expect(
+      kinFollowUpView(
+        followUp({
+          title: "",
+          onDue: "chase",
+          agent: null,
+          askedBy: { personId: KinPersonId.make("dev"), name: "Dev", left: true },
+          held: { section: "money", sectionName: "Money" },
+        }),
+        rhea,
+        words,
+      ),
+    ).toMatchObject({
+      title: "A follow-up you can't see the details of",
+      lines: [
+        "Waiting for Money to be switched back on. Kin will chase it.",
+        "Asked by someone who has left.",
+      ],
+    });
+    expect(
+      kinFollowUpView(followUp({ onDue: "remind", askedBy: undefined }), arjun, words),
+    ).toMatchObject({
+      lines: ["Due Wed 25 Nov, 16:30. Chief of staff will send a reminder."],
+      stop: false,
+    });
+    expect(kinFollowUpView(followUp({ onDue: "ask" }), rhea, words).lines[0]).toBe(
+      "Due Wed 25 Nov, 16:30. Chief of staff will ask about it.",
     );
   });
 });
