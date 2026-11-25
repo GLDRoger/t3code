@@ -41,7 +41,11 @@ import {
   suggestedStateLabel,
   UNISSUED_INVOICE,
 } from "../../apps/server/src/kin/work/recordRows.ts";
-import { ALSO_ON_UNASKED, helperRefusal } from "../../apps/server/src/kin/work/KinRecords.ts";
+import {
+  ALSO_ON_UNASKED,
+  FUNDING_IS_THE_OWNERS,
+  helperRefusal,
+} from "../../apps/server/src/kin/work/KinRecords.ts";
 import { NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
 import { tooLongForCard } from "../../apps/server/src/kin/questions/askPerson.ts";
 import {
@@ -69,12 +73,13 @@ import {
   countryFirstMessage,
   notRegisteredFact,
 } from "../../apps/server/src/kin/work/companyProfile.ts";
-import { bankAnswer } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
+import { bankAnswer, shortDay } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
 import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyAnswers.ts";
 import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
 import { waitingLine } from "../../apps/server/src/kin/work/unconfirmedFacts.ts";
 import { budgetsAnswer } from "../../apps/server/src/kin/work/budgets.ts";
 import {
+  formatKinMoney,
   formatKinPicturesDay,
   KIN_TEXT_LOCALE,
   KinDocCardDraft,
@@ -650,7 +655,23 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
         period: string;
       };
       return feedTurnText(feed.numbers, feed.source, feed.period);
-    });
+    })
+    // repaid_seen's line for a partner debit that doesn't add up to their oldest owed expenses
+    // (`pulse/senses/bank.ts` repaidSeenSenses, which builds it inline; mirrored word for word).
+    .replace(
+      /\{\{REPAID_SHORT:([^|}]+)\|(\d+)\|([A-Z]{3})\|([\d-]+)\|([^|}]+)\|(\d+)\|(\d+)\}\}/g,
+      (
+        _,
+        key: string,
+        minor: string,
+        currency: string,
+        day: string,
+        partner: string,
+        owed: string,
+        count: string,
+      ) =>
+        `${key}, ${formatKinMoney(Number(minor), currency)} paid ${shortDay(day)}, names ${partner} but doesn't add up to their oldest owed expenses (${formatKinMoney(Number(owed), currency)} over ${count} expense${count === "1" ? "" : "s"}), so Kin marks nothing. Mark what it repaid on the expenses in Money.`,
+    );
 
 const decodeMoneySummary = Schema.decodeUnknownSync(KinMoneySummary);
 const decodeDraftTo = Schema.decodeUnknownSync(
@@ -710,6 +731,18 @@ const docReadAnswer = (input: {
 };
 
 const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
+  // record_update of who funded an expense or whether it was paid back, refused to an agent.
+  fundingRefusal: () => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: FUNDING_IS_THE_OWNERS },
+  }),
+  // kin_ask's mark_repaid on a debit that doesn't add up (`repaidCard.ts` drawRepaid, inline there).
+  repaidNoCard: (input: { key: string; partner: string }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "invalid_state",
+      message: `${input.key} names ${input.partner} but doesn't add up exactly to their oldest owed expenses, so Kin marks nothing and offers no card for it. Nothing was asked; tell the owner what you see instead.`,
+    },
+  }),
   // bills_add's and bill_read's answers, as Kin words them (`leadBills.ts`, `bills.ts`).
   billsAdd: (input: { added: number; alreadyAdded: number; notBills: number }) => addAnswer(input),
   billRead: (input: { bill: string; outcome: "read" | "duplicate" | "unreadable" }) =>
