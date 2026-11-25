@@ -31,13 +31,17 @@ import { ownerZone, startOfDay } from "../work/recordRows.ts";
 import { placesOf, seenBy, viewerOfPeople } from "../work/teamView.ts";
 import { HEAD_STARTS_PER_DAY } from "./prepareSenses.ts";
 import { iso, type SenseContext } from "./senses/shared.ts";
+import { DAY_MS, HOUR_MS } from "./thresholds.ts";
+import { lateBandDays } from "./told.ts";
 
 /** Draft wakes one person gets in a day, at most: one per follow-up, never more than this. */
 /** The told ledger's party for a person's draft wakes, apart from what they were told. */
 const draftParty = (personId: string) => `draft:${personId}`;
 /** A follow-up's slot in that ledger: by its task's own id, whichever sense it is now. */
 const taskSlot = (recordId: string) => `task:${recordId}`;
-const FOLLOW_UPS = new Set<KinPulseFact["sense"]>(["task_late", "task_due_soon"]);
+const FOLLOW_UPS = new Set<KinPulseFact["sense"]>(["task_late", "task_due_soon", "theirs_late"]);
+/** A mail sent for an entry this recently is its follow-up still: no other is drafted. */
+const SENT_WITHIN_MS = 3 * DAY_MS;
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 const shortHash = (text: string) =>
   NodeCrypto.createHash("sha256").update(text).digest("hex").slice(0, 24);
@@ -79,7 +83,9 @@ const draftersFor = Effect.fnUntraced(function* (
 /**
  * Their zone and how to draft `recordId`, an open task of ours `personId` holds and sees, due today
  * or late; with a client, Clients on for both and no mail card open on it (Deals on for a deal's
- * step); without one, no doc linked to it since its due day began. Undefined when not.
+ * step); without one, no doc linked to it since its due day began. Undefined when not. One a
+ * client owes us (`theirs`) needs its client, and is chased only once in each late band its holder
+ * is told in (`lateBandDays`) and not within `SENT_WITHIN_MS` of a mail sent for it.
  */
 const stillDue = Effect.fnUntraced(function* (
   orgId: KinOrgId,
@@ -93,13 +99,17 @@ const stillDue = Effect.fnUntraced(function* (
     : viewerOfPeople([personId]);
   const [row] = yield* sql<{
     dueAt: number | null;
+    theirs: number;
+    sentAt: number | null;
     zone: string | null;
     deal: number;
     client: number;
     seesClients: number;
     carded: number;
     linkedAt: number | null;
-  }>`SELECT r.due_at AS "dueAt", p.time_zone AS zone,
+  }>`SELECT r.due_at AS "dueAt", (r.side = 'theirs') AS theirs, p.time_zone AS zone,
+      (SELECT MAX(k.done_at) FROM kin_connection_asks k WHERE k.org_id = r.org_id
+        AND k.entry_record_id = r.record_id AND k.state = 'sent') AS "sentAt",
       EXISTS (SELECT 1 FROM kin_record_links l JOIN kin_records d ON d.org_id = l.org_id
         AND d.record_id = l.target AND d.register_id = 'deals'
         WHERE l.org_id = r.org_id AND l.record_id = r.record_id AND l.kind = 'record') AS deal,
@@ -123,12 +133,18 @@ const stillDue = Effect.fnUntraced(function* (
       AND p.removed_at IS NULL
     LEFT JOIN kin_records pr ON pr.org_id = r.org_id AND pr.record_id = r.project_id
     WHERE r.org_id = ${orgId} AND r.record_id = ${recordId} AND r.register_id = 'work'
-      AND r.state NOT IN ('done', 'dropped') AND COALESCE(r.side, 'ours') = 'ours'
+      AND r.state NOT IN ('done', 'dropped')
       AND r.owner_kind = 'person' AND r.owner_id = ${personId}
       AND ${seenBy(sql, viewer)}`;
   if (row === undefined || row.dueAt === null) return undefined;
   const zone = validZone(row.zone) ?? (yield* ownerZone(orgId));
   if (row.dueAt > at && dayIn(row.dueAt, zone) !== dayIn(at, zone)) return undefined;
+  if (row.theirs === 1) {
+    if (row.client === 0 || row.dueAt > at) return undefined;
+    if (row.sentAt !== null && row.sentAt > at - SENT_WITHIN_MS) return undefined;
+    const band = row.dueAt + lateBandDays((at - row.dueAt) / HOUR_MS) * DAY_MS;
+    if (yield* chasedSince(orgId, personId, recordId, band, dayIn(at, zone))) return undefined;
+  }
   // A doc they can open, linked to it since its day began, is its first piece: a later wake
   // writes nothing. Without Docs they could open none, so none is made.
   if (row.client === 0) {
@@ -142,7 +158,7 @@ const stillDue = Effect.fnUntraced(function* (
   const on = (section: "clients" | "deals") =>
     KinShell.sectionOnFor(orgId, section).pipe(Effect.orElseSucceed(() => false));
   if (!(yield* on("clients")) || (row.deal === 1 && !(yield* on("deals")))) return undefined;
-  return { zone, path: "mail" as const };
+  return { zone, path: "mail" as const, theirs: row.theirs === 1 };
 });
 
 /**
@@ -252,6 +268,21 @@ export const draftWakes = Effect.fn("KinPulse.draftWakes")(function* (input: {
     }
   }
   return woken;
+});
+
+/** Whether a wake for `recordId` took its slot on a day before `day`, at `since` or later. */
+const chasedSince = Effect.fnUntraced(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+  recordId: string,
+  since: number,
+  day: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM kin_pulse_told WHERE org_id = ${orgId}
+      AND person_id = ${draftParty(personId)} AND fact_key = ${taskSlot(recordId)}
+      AND sig <> ${day} AND told_at >= ${since} LIMIT 1`;
+  return rows.length > 0;
 });
 
 const daySlots = Effect.fnUntraced(function* (orgId: KinOrgId, personId: KinPersonId, day: string) {
@@ -445,13 +476,16 @@ export const isDraftWake = (event: Extract<KinEvent, { readonly _tag: "pulse" }>
 /** A wake Kin checked again as it started, and found nothing to draft for now. */
 export const DRAFT_NOTHING_NOW =
   "Kin checked this follow-up again as this turn started: there is nothing to draft for it now.";
+const ownMailbox = (addresses: ReadonlyArray<string>) =>
+  addresses.length === 1
+    ? `their own mailbox (${addresses[0]})`
+    : `one of their own mailboxes (${addresses.join(", ")}): the one earlier mail with this contact went through, else the first`;
 /** The wake's own line when the person has their own mailbox and a contact to write to. */
 export const DRAFT_FROM_MAILBOX = (name: string, addresses: ReadonlyArray<string>) =>
-  `Kin woke you for ${name}: this follow-up of theirs is due and no mail for it waits on a card. Draft the mail to the contact below from ${
-    addresses.length === 1
-      ? `their own mailbox (${addresses[0]})`
-      : `one of their own mailboxes (${addresses.join(", ")}): the one earlier mail with this contact went through, else the first`
-  } with kin_connection_call mail_send, naming the task's key in the mail, so it waits on a Confirm card for them. Nothing goes until they tap Confirm: never say it was sent. Then tell them in one short line that it is ready.`;
+  `Kin woke you for ${name}: this follow-up of theirs is due and no mail for it waits on a card. Draft the mail to the contact below from ${ownMailbox(addresses)} with kin_connection_call mail_send, naming the task's key in the mail, so it waits on a Confirm card for them. Nothing goes until they tap Confirm: never say it was sent. Then tell them in one short line that it is ready.`;
+/** The same, for something a client owes us that is late: a chase. */
+export const DRAFT_CHASE = (name: string, addresses: ReadonlyArray<string>) =>
+  `Kin woke you for ${name}: the client below owed this to us by the day below and it hasn't come, and no mail for it waits on a card. Draft a short, friendly chase to the contact below from ${ownMailbox(addresses)} with kin_connection_call mail_send, naming the entry's key, asking for it or for a day it will come. Nothing goes until they tap Confirm: never say it was sent, and promise nothing for us. Then tell them in one short line that it is ready.`;
 /** The wake's own line when there is no mailbox of theirs, or no contact they may see. */
 export const DRAFT_CALL_NOTES = (name: string, mailbox: boolean) =>
   `Kin woke you for ${name}: this follow-up of theirs is due and no mail for it waits on a card. ${mailbox ? "There is no contact address for it that they may see" : "No mailbox of theirs is connected"}, so draft no mail: give them call notes here in this chat (what to say, what was promised, the last contact).`;
@@ -497,10 +531,11 @@ export const draftWakeText = Effect.fn("KinPulse.draftWakeText")(function* (
   const [task] = yield* sql<{
     key: string;
     title: string;
+    dueAt: number | null;
     late: number;
     client: string | null;
     partyId: string | null;
-  }>`SELECT r.key, r.title, (r.due_at < ${startOfDay(day, zone)}) AS late,
+  }>`SELECT r.key, r.title, r.due_at AS "dueAt", (r.due_at < ${startOfDay(day, zone)}) AS late,
       c.title AS client, c.record_id AS "partyId"
     FROM kin_records r
     LEFT JOIN kin_records pr ON pr.org_id = r.org_id AND pr.record_id = r.project_id
@@ -515,7 +550,14 @@ export const draftWakeText = Effect.fn("KinPulse.draftWakeText")(function* (
   const [said] = yield* sql<{ text: string }>`SELECT m.body AS text FROM kin_record_comments m
     WHERE m.org_id = ${orgId} AND m.record_id = ${fact.recordId} AND m.removed_at IS NULL
     ORDER BY m.seq DESC LIMIT 1`;
-  const when = task.late === 1 ? { late: true } : { dueToday: true };
+  const theirs = still.path === "mail" && still.theirs;
+  const when = theirs
+    ? task.dueAt === null
+      ? {}
+      : { wasDue: dayIn(task.dueAt, zone) }
+    : task.late === 1
+      ? { late: true }
+      : { dueToday: true };
   const lastComment =
     said === undefined ? {} : { lastComment: Array.from(said.text.trim()).slice(0, 200).join("") };
   if (still.path === "doc")
@@ -538,13 +580,13 @@ export const draftWakeText = Effect.fn("KinPulse.draftWakeText")(function* (
   return {
     text:
       addresses.length > 0 && contact !== undefined
-        ? DRAFT_FROM_MAILBOX(person.name, addresses)
+        ? (theirs ? DRAFT_CHASE : DRAFT_FROM_MAILBOX)(person.name, addresses)
         : DRAFT_CALL_NOTES(person.name, addresses.length > 0),
     data: {
       task: task.key,
       title: task.title,
       ...when,
-      ...(task.client === null ? {} : { client: task.client }),
+      ...(task.client === null ? {} : theirs ? { owedBy: task.client } : { client: task.client }),
       ...(contact === undefined ? {} : { writeTo: contact }),
       ...lastComment,
       ...(addresses.length === 0
