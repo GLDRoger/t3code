@@ -78,6 +78,7 @@ import * as DevFakeImages from "./pictures/DevFakeImages.ts";
 
 import * as KinNumbers from "./numbers/KinNumbers.ts";
 import * as KinShell from "./shell/KinShell.ts";
+import * as FollowUps from "./watches/followUps.ts";
 
 const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
   Layer.effect(
@@ -236,6 +237,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
         ),
       ).pipe(
         Layer.merge(KinShell.layer),
+        Layer.merge(FollowUps.itemsLayer),
         Layer.merge(KinNumbers.layer),
         Layer.merge(OwnerNotices.layer),
         Layer.provideMerge(KinChat.layerWithWork),
