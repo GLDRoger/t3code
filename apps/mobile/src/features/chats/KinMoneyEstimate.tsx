@@ -117,6 +117,8 @@ function Frame(props: { readonly onClose: () => void; readonly children: React.R
           contentInsetAdjustmentBehavior="automatic"
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
+          keyboardDismissMode="interactive"
+          automaticallyAdjustKeyboardInsets
         >
           {props.children}
         </ScreenScrollView>
