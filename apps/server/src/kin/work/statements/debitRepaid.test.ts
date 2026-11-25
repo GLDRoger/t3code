@@ -229,6 +229,8 @@ const company = Effect.fn("test.company")(function* (org: KinOrgId) {
       row(key, "expenses", `Phone bill ${key}`, rupees, on, { fundedBy: zoya, ...fields }, "done"),
     debit: (key: string, rupees: number, on: string, title = "ZOYA RAO zoya.rao@invented") =>
       row(key, bank.id, title, rupees, on, { direction: "debit" }, "open"),
+    credit: (key: string, rupees: number, on: string) =>
+      row(key, bank.id, "Tidewater Freight", rupees, on, { direction: "credit" }, "open"),
     /** What Finance is told now, and what a draw of the card for `key` answers. */
     told: () =>
       Effect.map(
@@ -260,6 +262,29 @@ const company = Effect.fn("test.company")(function* (org: KinOrgId) {
 });
 
 it.layer(layer)((it) => {
+  it.effect("newer unexplained credits do not hide a repayment debit", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("ambermill-bank-window");
+      const kin = yield* company(org);
+      yield* kin.expense("EXP-8", 5_000, "2026-11-01", { reimbursement: "owed" });
+      yield* kin.debit("BNK-9", 5_000, "2026-11-20");
+      assert.lengthOf(yield* repaidMatches(org, NOW), 1);
+
+      for (let index = 0; index < 201; index++) {
+        yield* kin.credit(`BNK-${100 + index}`, 900, "2026-11-21");
+      }
+
+      const matches = yield* repaidMatches(org, NOW);
+      assert.deepStrictEqual(
+        matches.map((match) => ({
+          debit: match.debit.key,
+          repays: match.repays?.map((expense) => expense.key),
+        })),
+        [{ debit: "BNK-9", repays: ["EXP-8"] }],
+      );
+    }),
+  );
+
   // The same phone bill each month: Zoya is paid 5,000 on the 20th and the owner marks the
   // older one repaid by hand two days later. That 5,000 must not also repay the newer one.
   it.effect("a hand mark of the same money within ten days of the debit stops the card", () =>
