@@ -811,7 +811,9 @@ const isHandOffByProduct = (field: FieldChange, newHolder: string | null | undef
   if (field.field !== "alsoOn" || field.from === null) return false;
   const before = field.from.split(", ");
   const after = before.filter((principal) => principal !== newHolder);
-  return after.length < before.length && field.to === (after.length === 0 ? null : after.join(", "));
+  return (
+    after.length < before.length && field.to === (after.length === 0 ? null : after.join(", "))
+  );
 };
 
 /** G13: the hand-back that blocks giving this task again until it changes or the owner asks. */

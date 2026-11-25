@@ -6865,25 +6865,23 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
-it.effect(
-  "G13: a new promise made after a hand-back is a change, so the task may go back",
-  () =>
-    Effect.gen(function* () {
-      const { key, scope, sourceEventId, give, handBack, nextLeadTurn } = yield* handBackForG13();
-      const records = yield* KinRecords.KinRecords;
-      const { writer } = yield* OwnerWork.actingAs([owner], orgId);
-      yield* records.update(orgId, writer, key, { fields: { promisedTo: `person:${mateId}` } });
-      yield* nextLeadTurn;
-      yield* give(other);
-      yield* handBack;
-      yield* LeadWork.update(scope, {
-        key,
-        sourceEventId,
-        owner: "Mate",
-        notes: "Invented: staging is at staging.example.com",
-      });
-      yield* give(other);
-    }).pipe(Effect.provide(layer)),
+it.effect("G13: a new promise made after a hand-back is a change, so the task may go back", () =>
+  Effect.gen(function* () {
+    const { key, scope, sourceEventId, give, handBack, nextLeadTurn } = yield* handBackForG13();
+    const records = yield* KinRecords.KinRecords;
+    const { writer } = yield* OwnerWork.actingAs([owner], orgId);
+    yield* records.update(orgId, writer, key, { fields: { promisedTo: `person:${mateId}` } });
+    yield* nextLeadTurn;
+    yield* give(other);
+    yield* handBack;
+    yield* LeadWork.update(scope, {
+      key,
+      sourceEventId,
+      owner: "Mate",
+      notes: "Invented: staging is at staging.example.com",
+    });
+    yield* give(other);
+  }).pipe(Effect.provide(layer)),
 );
 
 /** The reply bridge's post for `wakeupId`, as it stores one. */
