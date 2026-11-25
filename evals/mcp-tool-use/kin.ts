@@ -79,6 +79,10 @@ import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyA
 import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
 import { waitingLine } from "../../apps/server/src/kin/work/unconfirmedFacts.ts";
 import { budgetsAnswer } from "../../apps/server/src/kin/work/budgets.ts";
+import { cardLines, type Snapshot } from "../../apps/server/src/kin/gendocs/receiptProposals.ts";
+import { RECEIPT_PROPOSED_NEXT } from "../../apps/server/src/kin/gendocs/leadDocuments.ts";
+import { PAYMENT_PROPOSED_NEXT } from "../../apps/server/src/kin/work/leadMoney.ts";
+import { parseAmount } from "../../apps/server/src/kin/work/money.ts";
 import {
   formatKinMoney,
   formatKinPicturesDay,
@@ -791,7 +795,98 @@ const docReadAnswer = (input: {
   };
 };
 
+type CardInvoice = {
+  readonly key: string;
+  readonly number: string;
+  readonly title: string;
+  readonly total: Contracts.KinMoney;
+  readonly paid: number;
+};
+const cardAgainst = (invoice: CardInvoice, named: boolean): Snapshot["against"] => ({
+  key: invoice.key,
+  title: invoice.title,
+  rev: 1,
+  paid: invoice.paid,
+  total: invoice.total,
+  ...(named ? { name: invoice.number } : {}),
+});
+
 const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
+  // payment_record's answer to an agent: the owner's Confirm card lines (`receiptProposals.ts`).
+  paymentCard: (input: {
+    proposal: string;
+    client: string;
+    invoice: CardInvoice;
+    amount: string | null;
+    withheld: string | null;
+    paidOn: string | null;
+  }) => {
+    const money = (text: string | null) => {
+      if (text === null) return undefined;
+      const one = parseAmount(text, input.invoice.total.currency);
+      return "error" in one ? undefined : one.money;
+    };
+    const amount = money(input.amount);
+    const withheld = money(input.withheld);
+    const paidOn = input.paidOn;
+    if (paidOn === null || !/^\d{4}-\d{2}-\d{2}$/.test(paidOn) || (amount ?? withheld) === undefined)
+      return {
+        $error: {
+          _tag: "KinChatError",
+          reason: "invalid_state",
+          message:
+            "A payment needs amount (cash received), withheld (tax the client withheld) or both, and paidOn; or void to take one back.",
+        },
+      };
+    const received = {
+      key: input.invoice.key,
+      paidOn,
+      ...(amount === undefined ? {} : { amount }),
+      ...(withheld === undefined ? {} : { withheld }),
+    };
+    const snapshot: Snapshot = {
+      entry: null,
+      client: { key: "C-1", title: input.client, rev: 1 },
+      amount: amount ?? null,
+      receivedOn: paidOn,
+      against: cardAgainst(input.invoice, true),
+      recorded: [],
+      ...(withheld === undefined ? {} : { withheld }),
+    };
+    return {
+      status: "proposed",
+      key: input.invoice.key,
+      proposal: input.proposal,
+      shown: cardLines(snapshot, { received }),
+      next: PAYMENT_PROPOSED_NEXT,
+      sensitive: true,
+    };
+  },
+  // kin_receipt's answer to an agent setting an advance against an invoice: its Confirm card.
+  receiptAgainstCard: (input: {
+    proposal: string;
+    entry: string;
+    client: string;
+    amount: Contracts.KinMoney;
+    receivedOn: string;
+    invoice: CardInvoice;
+  }) => ({
+    status: "proposed",
+    proposal: input.proposal,
+    shown: cardLines(
+      {
+        entry: { key: input.entry, rev: 1, state: "open" },
+        client: { key: "C-1", title: input.client, rev: 1 },
+        amount: input.amount,
+        receivedOn: input.receivedOn,
+        against: cardAgainst(input.invoice, false),
+        recorded: [],
+      },
+      { key: input.entry, against: input.invoice.key },
+    ),
+    next: RECEIPT_PROPOSED_NEXT,
+    sensitive: true,
+  }),
   // record_update of who funded an expense or whether it was paid back, refused to an agent.
   fundingRefusal: () => ({
     $error: { _tag: "KinChatError", reason: "not_allowed", message: FUNDING_IS_THE_OWNERS },

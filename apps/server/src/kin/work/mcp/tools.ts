@@ -168,7 +168,7 @@ export const KinWorkToolkit = Toolkit.make(
   Tool.make("payment_record", {
     ...shared,
     description:
-      "Record money received against an invoice (INV-4): amount as said in its currency, and paidOn. Tax a client withheld goes in withheld, never amount. A part payment leaves the rest owed. void with a paymentId from record_get takes a wrong one back. Returns the amount, received total and balance, exact. Reply in one line.",
+      "Put money received against an invoice (INV-4) to the owner: amount as said in its currency, and paidOn. Tax a client withheld goes in withheld, never amount. A part payment leaves the rest owed. This call records nothing: Kin posts the owner a card with the payment, and only their tap on Confirm records it; the same call again in this turn is the same card. An advance already received is set against an invoice with kin_receipt (entry and against), never here. void with a paymentId from record_get takes a wrong one back at once. Reply in one line that the card is there to confirm.",
     parameters: Money.PaymentInput,
     success: Money.PaymentResult,
   }).annotate(McpSchema.EnabledWhen, enabled),

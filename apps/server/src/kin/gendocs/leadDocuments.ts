@@ -553,6 +553,11 @@ const ReceiptProposed = Schema.Struct({
 });
 export const ReceiptResult = Schema.Union([ReceiptMade, ReceiptProposed]);
 
+export const RECEIPT_PROPOSED_NEXT =
+  "Nothing is recorded or numbered yet. Kin showed the owner this money on a card; ask in one short line to check it and tap Confirm. Their tap records it and makes its receipt; in a later turn, call kin_receipt with this proposal to read what was made.";
+const RECEIPT_NO_CARD_NEXT =
+  "Nothing was recorded. Kin couldn't show the owner a card to confirm this money, so ask them to record it themselves in Money.";
+
 /** `kin_receipt`: a numbered receipt and its PDF, shown as a card; asking again returns it. */
 export const receipt = leadTool("KinDocuments.receipt", (lead, input: typeof ReceiptInput.Type) =>
   Effect.gen(function* () {
@@ -611,10 +616,7 @@ export const receipt = leadTool("KinDocuments.receipt", (lead, input: typeof Rec
           status: "proposed" as const,
           proposal: asked.proposal,
           shown: asked.shown,
-          next:
-            asked.card === undefined
-              ? "Nothing was recorded. Kin couldn't show the owner a card to confirm this money, so ask them to record it themselves in Money."
-              : "Nothing is recorded or numbered yet. Kin showed the owner this money on a card; ask in one short line to check it and tap Confirm. Their tap records it and makes its receipt; in a later turn, call kin_receipt with this proposal to read what was made.",
+          next: asked.card === undefined ? RECEIPT_NO_CARD_NEXT : RECEIPT_PROPOSED_NEXT,
           sensitive: true as const,
         };
       }
