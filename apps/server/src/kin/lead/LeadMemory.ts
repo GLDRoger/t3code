@@ -281,7 +281,7 @@ const TEAM_OWN_ITEMS =
   "From a chat other people read you can change only what was saved from this same chat.";
 const TEAM_SOURCE = "sourceEventId must be the message, in this chat, of the person who said it.";
 const OTHERS_REMINDER =
-  "Another agent's reminder: use kin_cancel, which works on the owner's word in his own chat with you.";
+  "Another agent's reminder: use kin_cancel, which works on the owner's word in their own chat with you.";
 const TEAM_CAP_REFUSAL =
   "That is as much as can be saved from one person's messages today, so it was not saved.";
 const TEAM_FILTERS = "From a chat other people read, search memory only by kind or linksTo.";

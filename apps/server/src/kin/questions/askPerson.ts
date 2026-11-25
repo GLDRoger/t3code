@@ -105,7 +105,7 @@ export const AskPersonInput = Schema.Struct({
       ),
     }).annotate({
       description:
-        "Only from a teammate's own chat, to the owner: detail is a draft of what only the owner may finish for them. Leave out options: Kin adds Approve and Changes first, and his Approve has you make that one thing at the owner's level.",
+        "Only from a teammate's own chat, to the owner: detail is a draft of what only the owner may finish for them. Leave out options: Kin adds Approve and Changes first, and the owner's Approve has you make that one thing at the owner's level.",
     }),
   ),
 });
