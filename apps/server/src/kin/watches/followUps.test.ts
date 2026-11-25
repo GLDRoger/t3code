@@ -1,5 +1,11 @@
 import { assert, it } from "@effect/vitest";
-import { KinChatId, KinPersonId, KinWidgetId, type MemoryItemHead } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  KinChatId,
+  KinPersonId,
+  KinWidgetId,
+  type MemoryItemHead,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -95,7 +101,7 @@ it.effect(
         title: own.title,
         dueAt,
         onDue: "start",
-        agent: { agentId: "lead-a", name: "Chief of staff" },
+        agent: { agentId: KinAgentId.make("lead-a"), name: "Chief of staff" },
         askedBy: { personId: zoya.personId, name: "Zoya" },
       });
       assert.deepInclude(all[1], { held: { section: "clients", sectionName: "Clients" } });

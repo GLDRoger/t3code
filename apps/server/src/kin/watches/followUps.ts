@@ -228,7 +228,7 @@ export const stop = Effect.fn("KinFollowUps.stop")(function* (
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const [person] = yield* sql<{
-        access: string;
+        access: KinPersonAccess;
       }>`SELECT ${sql.literal(accessSql("p"))} AS access
         FROM kin_people p WHERE p.org_id = ${orgId} AND p.person_id = ${reader.personId}
           AND p.removed_at IS NULL ORDER BY p.person_id`;
