@@ -48,11 +48,15 @@ type BudgetError = KinChatError | PersistenceSqlError;
 const validCount = (value: number | undefined) =>
   value !== undefined && Number.isFinite(value) && value >= 0;
 const count = (value: number | undefined) => (validCount(value) ? value! : 0);
-const completeLedger = (ledger: TurnTokenUsage | undefined) =>
-  ledger?.usageStatus === "complete" &&
+const validLedger = (ledger: TurnTokenUsage) =>
   validCount(ledger.inputTokens) &&
   validCount(ledger.outputTokens) &&
   (ledger.cachedInputTokens === undefined || validCount(ledger.cachedInputTokens));
+const completeLedger = (ledger: TurnTokenUsage | undefined) =>
+  ledger?.usageStatus === "complete" && validLedger(ledger);
+// A partial ledger counts what a running or stopped turn has used so far, which is still a floor.
+const countedLedger = (ledger: TurnTokenUsage | undefined) =>
+  (ledger?.usageStatus === "complete" || ledger?.usageStatus === "partial") && validLedger(ledger);
 const rawUnits = (usage: ReadonlyArray<Usage>) => {
   let units = 0;
   const ids = new Set<string>();
@@ -60,7 +64,7 @@ const rawUnits = (usage: ReadonlyArray<Usage>) => {
     if (ids.has(turn.providerTurnId)) continue;
     ids.add(turn.providerTurnId);
     const ledger = turn.turnTokenUsage;
-    if (!completeLedger(ledger) && validCount(turn.usedTokens)) {
+    if (!countedLedger(ledger) && validCount(turn.usedTokens)) {
       units += count(turn.usedTokens);
       continue;
     }
@@ -77,13 +81,21 @@ const rawUnits = (usage: ReadonlyArray<Usage>) => {
   return units;
 };
 /**
- * The units a turn's provider turns cost, as the daily limit charges them. A turn still running
- * has no ledger yet: its last request's size stands in, so the figure is a floor until it ends.
+ * The units a turn's provider turns cost, as the daily limit charges them. A provider turn without
+ * a complete ledger counts its partial ledger or its last request's size: a floor until it ends.
  */
 export const unitsOf = (usage: ReadonlyArray<Usage>) => {
   const units = rawUnits(usage);
   return Number.isFinite(units) ? units : 0;
 };
+/** Whether `unitsOf` read a total: some provider turn's complete ledger, and no floor beside it. */
+export const fromCompleteLedgers = (usage: ReadonlyArray<Usage>) =>
+  usage.some((turn) => completeLedger(turn.turnTokenUsage)) &&
+  usage.every(
+    (turn) =>
+      completeLedger(turn.turnTokenUsage) ||
+      (!countedLedger(turn.turnTokenUsage) && !validCount(turn.usedTokens)),
+  );
 /** Whose work a limit held back: the owner's own, or a teammate's. */
 export type HeldBy = "org" | "teammates";
 type Admission = {
@@ -504,7 +516,7 @@ const make = Effect.gen(function* () {
       if (ids.has(turn.providerTurnId)) continue;
       ids.add(turn.providerTurnId);
       const ledger = turn.turnTokenUsage;
-      if (!completeLedger(ledger)) {
+      if (!countedLedger(ledger)) {
         yield* Effect.logWarning("Kin budget using fallback usage", {
           ...context,
           usageStatus: ledger?.usageStatus ?? "missing",
@@ -512,7 +524,7 @@ const make = Effect.gen(function* () {
         });
       }
       if (
-        (completeLedger(ledger) || !validCount(turn.usedTokens)) &&
+        (countedLedger(ledger) || !validCount(turn.usedTokens)) &&
         Math.min(count(ledger?.inputTokens), count(ledger?.cachedInputTokens)) !==
           count(ledger?.cachedInputTokens)
       )
