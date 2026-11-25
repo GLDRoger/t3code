@@ -174,9 +174,10 @@ FloorCloses == floor = "open" /\ floor' = "closed"
 Owed == {m \in Claimed : ~covered[m]}
 
 (* Every join, in its transaction (chat/KinGroups.ts shareWith → lead/ChatSharing.ts
-   onPersonJoined): each ask waiting in the chat, or claimed by a turn aborted for its audience,
-   expires, and stoppedLines gives the chat one line per agent ("didn't reply" / "didn't finish its
-   reply"), which tellStopped posts after commit. The model counts that line on each expired ask. *)
+   onPersonJoined): each ask waiting in the chat, or claimed unanswered by a turn aborted for its
+   audience, expires, and stoppedLines gives the chat one line per agent ("didn't reply" / "didn't
+   finish its reply"), which tellStopped posts after commit. The model counts that line on each
+   expired ask. *)
 Expire(exp) ==
   /\ ev' = [m \in Msgs |-> IF m \in exp THEN "expired" ELSE ev[m]]
   /\ fails' = [m \in Msgs |-> IF m \in exp /\ Broken # "join-expires-silently" THEN fails[m] + 1
@@ -198,11 +199,16 @@ SomeoneJoins ==
 (* Someone joins who is not the lead's owner: abortChatTurns marks the running turn aborted
    (kin_wakeups.aborted_at), so LevelGate's destination is "aborted" for its every post and
    WakeupRunner stops it; with no turn running, nothing is aborted. Every ask waiting, and every
-   ask the aborted turn claimed, expires with the line (`Expire`), whatever it was answered. *)
+   ask the aborted turn claimed with no replied_at, expires with the line (`Expire`); one it
+   already replied to is done, so `finish` requeues nothing for a later turn to answer again. *)
 JoinStops ==
   /\ joins < 2 /\ (wake = "idle" \/ ~joined)
   /\ joins' = joins + 1
-  /\ Expire({m \in Msgs : ev[m] \in {"queued", "claimed"}})
+  /\ LET exp == {m \in Msgs : ev[m] = "queued" \/ (ev[m] = "claimed" /\ ~answered[m])}
+     IN /\ ev' = [m \in Msgs |-> IF m \in exp THEN "expired"
+                                ELSE IF ev[m] = "claimed" THEN "done" ELSE ev[m]]
+        /\ fails' = [m \in Msgs |-> IF m \in exp /\ Broken # "join-expires-silently"
+                                   THEN fails[m] + 1 ELSE fails[m]]
   /\ IF wake = "running" THEN joined' = TRUE /\ aborted' = TRUE ELSE UNCHANGED <<joined, aborted>>
   /\ UNCHANGED <<tries, wake, covered, replies, answered, promise, notes, thought, nudged,
                  lost, worked, floor, presence, restarts, shown, asked, twice, diagnostic,
