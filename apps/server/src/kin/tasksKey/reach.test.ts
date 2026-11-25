@@ -634,6 +634,9 @@ const reach: Readonly<Record<string, ReadonlyArray<string> | string>> = {
   "kin.work.matchPartner": "not reached yet: matching an import's partner to a person; not exposed",
   "kin.work.recordPayment": "stays in the app: 2 (money or mail leaving, money paid/received)",
   "kin.work.voidPayment": "stays in the app: 2 (money or mail leaving, money paid/received)",
+  "kin.work.undoCreditPayment": "stays in the app: 2 (money or mail leaving, money paid/received)",
+  "kin.work.unapplyCredit": "stays in the app: 2 (money or mail leaving, money paid/received)",
+  "kin.work.draftCreditNote": "not reached yet: drafting a credit note on an invoice; not exposed",
   "kin.work.files": "not a person action (screens only: file picker for a form)",
   "kin.work.companyProfile": "not a person action (screens only: Settings → Company)",
   "kin.work.exportLink":
