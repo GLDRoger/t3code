@@ -1,4 +1,5 @@
 import {
+  isOrchestrationV2WorkActive,
   KinAgentId,
   KinChatError,
   KinChatId,
@@ -765,7 +766,9 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
           if (
             subagents.some(
               (task) =>
-                task.origin === "app_owned" && (task.runId === null || !ownedRuns.has(task.runId)),
+                task.origin === "app_owned" &&
+                (task.status === "idle" || isOrchestrationV2WorkActive(task.status)) &&
+                (task.runId === null || !ownedRuns.has(task.runId)),
             )
           )
             return;

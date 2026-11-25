@@ -50,6 +50,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinStop } from "../lead/KinStop.ts";
 import { wakeEvent } from "../lead/ChatWake.ts";
 import { agentChanges, ownerLevelUndoAgentChange } from "../lead/agentChanges.ts";
+import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import { LeadMemory } from "../lead/LeadMemory.ts";
 import { handlers as leadHandlers } from "../lead/mcp/handlers.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
@@ -433,6 +434,36 @@ it.effect("quiet run cards keep going or let only an asker or owner stop that wa
       assert.strictEqual(Option.getOrThrow(stopped).message.body, "Dev Malhotra stopped Finance.");
       assert.strictEqual(card(yield* kin.widget(decision)).outcome?.title, "Stopped");
       assert.deepStrictEqual(yield* readStatus(wakeup), [{ status: "interrupted" }]);
+
+      const memory = Context.get(kin.services, KinMemoryChanges);
+      const decisions: Array<string> = [];
+      yield* memory.attachWriter({
+        undo: () => Effect.die("unused"),
+        relabel: () => Effect.die("unused"),
+        retire: () => Effect.die("unused"),
+        restore: () => Effect.die("unused"),
+        items: () => Effect.succeed([]),
+        recordDecision: (_org, item) =>
+          Effect.sync(() => {
+            decisions.push(item.link);
+            return { recorded: true };
+          }),
+      });
+      const ownerWakeup = yield* kin.turn("finance", chatId, "Another invented request", dev);
+      const ownerKeep = yield* post(ownerWakeup, 1);
+      yield* kin.tap(owner, ownerKeep, "option-1", "owner-keep");
+      assert.strictEqual(card(yield* kin.widget(ownerKeep)).outcome?.title, "Kept going");
+      assert.deepStrictEqual(yield* readStatus(ownerWakeup), [{ status: "running" }]);
+      const ownerStop = yield* post(ownerWakeup, 2);
+      yield* kin.tap(owner, ownerStop, "option-2", "owner-stop");
+      yield* events.pipe(
+        Stream.filter((event) => event.type === "message.posted"),
+        Stream.filter((event) => event.message.messageId === `kin-stopped:${ownerWakeup}`),
+        Stream.runHead,
+      );
+      assert.strictEqual(card(yield* kin.widget(ownerStop)).outcome?.title, "Stopped");
+      assert.deepStrictEqual(yield* readStatus(ownerWakeup), [{ status: "interrupted" }]);
+      assert.deepStrictEqual(decisions, []);
 
       const finished = yield* kin.turn("finance", chatId, "A second invented request", dev);
       const stale = yield* post(finished, 1);

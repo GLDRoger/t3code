@@ -185,10 +185,28 @@ describe("Kin watches", () => {
           ${T0 - HOUR + MINUTE}, 'failed', '["ev-1"]', 'owner_only')`;
       const quietKind = ALL_KINDS.find((kind) => kind.kind === "turn_quiet");
       assert.isDefined(quietKind);
-      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at,
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
           status, event_ids, quiet_since)
-        VALUES ('quiet-wake', ${orgId}, 'chief', 'fixture', ${T0 - 30 * MINUTE}, 'running',
+        VALUES ('quiet-wake', ${orgId}, 'chief', 'thread-cos', 'fixture', ${T0 - 30 * MINUTE}, 'running',
+          '["quiet-event"]', ${T0 - 20 * MINUTE}),
+          ('card-wake', ${orgId}, 'finance', 'thread-finance', 'fixture', ${T0 - 30 * MINUTE}, 'running',
           '[]', ${T0 - 20 * MINUTE})`;
+      yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+          received_at, queued_at, state, wakeup_id)
+        VALUES ('quiet-event', ${orgId}, 'chief', 'chat.message', 'P0', '{}', 0, 0, 'claimed', 'quiet-wake')`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          agent_id, role, joined_at)
+        VALUES ('member-finance', ${orgId}, 'chat-finance', 'agent', 'finance', 'member', 0)`;
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_agent_id, author_owner_person_id, author_thread_id, author_member_id, author_role,
+          kind, body, mentions_json, status, created_at, client_message_id, widget_id)
+        VALUES ('quiet-card', ${orgId}, 'chat-finance', 1, 'agent', 'finance', ${rhea}, 'thread-finance',
+          'member-finance', 'member', 'text', '', '[]', 'posted', '2026-11-25T00:00:00.000Z',
+          'send:kin-quiet-run:card-wake:2', 'choice:quiet-card')`;
+      assert.deepStrictEqual(
+        (yield* quietKind!.find(yield* context(orgId, T0))).map((one) => one.sourceKey),
+        ["quiet-wake"],
+      );
       let github: GithubItemState["state"] = "open";
       const reader = {
         readRepo: (_org: KinOrgId, _repo: string, numbers: ReadonlyArray<number>) =>

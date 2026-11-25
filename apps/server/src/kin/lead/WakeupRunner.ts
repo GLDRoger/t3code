@@ -827,6 +827,30 @@ const make = Effect.gen(function* () {
       Effect.catchCause((cause) => Effect.logWarning("Kin wake-up context log failed", { cause })),
     );
   });
+  const clearQuietMark = (orgId: KinOrgId, wakeupId: KinWakeupId, before?: number) =>
+    sql`UPDATE kin_wakeups SET quiet_since = NULL
+      WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}
+        AND ${before === undefined ? sql`quiet_since IS NOT NULL` : sql`quiet_since < ${before}`}`.pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Kin couldn't clear its quiet run", { orgId, wakeupId, cause }),
+      ),
+    );
+  const endQuietWait = Effect.fn("WakeupRunner.endQuietWait")(
+    function* (row: typeof RunningRow.Type) {
+      const { orgId, wakeupId } = row;
+      yield* clearQuietMark(orgId, wakeupId);
+      if (Option.isNone(chat)) return;
+      const [wake] = yield* sql<{ status: string }>`SELECT status FROM kin_wakeups
+      WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}`;
+      yield* closeQuietRunCards(row, wake?.status).pipe(
+        Effect.provideService(KinChatService, chat.value),
+        provideSql,
+      );
+    },
+    Effect.catchCause((cause) =>
+      Effect.logWarning("Kin couldn't close its quiet run cards", { cause }),
+    ),
+  );
   const wait = Effect.fn("WakeupRunner.wait")(
     function* (row: typeof RunningRow.Type, projectId: ProjectId) {
       if (row.threadId === null || row.runId === null) return;
@@ -995,13 +1019,19 @@ const make = Effect.gen(function* () {
       }).pipe(Effect.forkChild);
       let current = runId;
       let asked = 0;
-      let quietSince: number | null = null;
-      const eachQuietWindow = Effect.gen(function* () {
-        if (quietSince !== null && quietSince < lastActivity()) {
-          yield* sql`UPDATE kin_wakeups SET quiet_since = NULL
-            WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND quiet_since < ${lastActivity()}`;
-          quietSince = null;
-        }
+      const markQuiet = (since: number) =>
+        sql`UPDATE kin_wakeups SET quiet_since = ${since}
+          WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND status = 'running'
+            AND quiet_since IS NOT ${since}`.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin couldn't mark its quiet run", { orgId, wakeupId, cause }),
+          ),
+        );
+      const eachQuietWindow = Effect.fn("WakeupRunner.eachQuietWindow")(function* (
+        quietSince: number | null,
+      ) {
+        if (quietSince === null) yield* clearQuietMark(orgId, wakeupId, lastActivity());
+        else yield* markQuiet(quietSince);
         yield* keepFloor(true);
       });
       const onQuiet = Effect.fn("WakeupRunner.onQuiet")(function* (
@@ -1010,10 +1040,7 @@ const make = Effect.gen(function* () {
         currentRunId: RunId,
       ) {
         asked = ask;
-        quietSince = since;
-        yield* sql`UPDATE kin_wakeups SET quiet_since = ${since}
-          WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND status = 'running'
-            AND quiet_since IS NOT ${since}`;
+        yield* markQuiet(since);
         if (Option.isNone(bridge) || Option.isNone(chat)) return;
         const lane = yield* bridge.value.lane(row);
         if (
@@ -1033,21 +1060,6 @@ const make = Effect.gen(function* () {
             ),
           );
       });
-      const endQuietWait = Effect.gen(function* () {
-        if (asked === 0) return;
-        if (quietSince !== null)
-          yield* sql`UPDATE kin_wakeups SET quiet_since = NULL
-            WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND quiet_since IS NOT NULL`;
-        if (Option.isSome(chat))
-          yield* closeQuietRunCards(row).pipe(
-            Effect.provideService(KinChatService, chat.value),
-            provideSql,
-          );
-      }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logWarning("Kin couldn't clear its quiet run", { cause }),
-        ),
-      );
       const result = yield* Effect.gen(function* () {
         while (true) {
           const result = yield* waitAsking(
@@ -1086,7 +1098,7 @@ const make = Effect.gen(function* () {
           if (next === undefined) return result;
           current = next.id;
         }
-      }).pipe(Effect.ensuring(endQuietWait));
+      });
       yield* Fiber.interrupt(steerer);
       // Its steers still queued would start with no wake-up to own them, or hold the lead's
       // queue for good; they go, and their messages return with the rest of its events.
@@ -1259,6 +1271,7 @@ const make = Effect.gen(function* () {
             ? writer.value.discard(row.orgId, row.wakeupId).pipe(Effect.ignore)
             : Effect.void,
         ),
+        Effect.ensuring(endQuietWait(row)),
         Effect.ensuring(endReply(row)),
         Effect.ensuring(
           Effect.sync(() => {

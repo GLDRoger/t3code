@@ -28,9 +28,12 @@ export const turnQuiet: WatchKind = {
       LEFT JOIN kin_agents a ON a.org_id = w.org_id AND a.agent_id = w.agent_id
       WHERE w.org_id = ${ctx.orgId} AND w.status = 'running'
         AND w.quiet_since <= ${ctx.at - QUIET_ASKS_MS[0]} AND NOT EXISTS (
-          SELECT 1 FROM kin_events e
-          WHERE e.org_id = w.org_id AND e.agent_id = w.agent_id AND e.wakeup_id = w.wakeup_id
-            AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
+          SELECT 1 FROM kin_messages m
+          WHERE m.org_id = w.org_id AND m.author_agent_id = w.agent_id
+            AND m.author_thread_id = w.thread_id
+            AND m.widget_id IS NOT NULL AND m.status = 'posted'
+            AND m.client_message_id IN ('send:kin-quiet-run:' || w.wakeup_id || ':1',
+              'send:kin-quiet-run:' || w.wakeup_id || ':2')
         )
       ORDER BY w.quiet_since, w.wakeup_id LIMIT 50`;
     return rows.map((row) => ({

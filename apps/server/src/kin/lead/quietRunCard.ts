@@ -16,7 +16,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
-import { classifySegment } from "../reply/classify.ts";
+import { classifySegment, isToolItem } from "../reply/classify.ts";
 import { isClaudeThinkingItem } from "../reply/claudeThinkingItem.ts";
 import type { Lane } from "../reply/replyLane.ts";
 import type { ActionTap } from "../widgets/cardActions.ts";
@@ -71,13 +71,21 @@ const openCards = Effect.fn("KinQuietRun.openCards")(function* (
     ORDER BY m.client_message_id`;
 });
 
-export const closeQuietRunCards = Effect.fn("KinQuietRun.closeCards")(function* (wake: Wakeup) {
+export const closeQuietRunCards = Effect.fn("KinQuietRun.closeCards")(function* (
+  wake: Wakeup,
+  status: string | undefined,
+) {
   const chat = yield* KinChatService;
   for (const { widgetId, leadName } of yield* openCards(wake, [1, 2]))
     yield* chat.closeReplaced({
       orgId: wake.orgId,
       widgetId,
-      outcome: { title: "Finished", text: `${leadName} finished.` },
+      outcome:
+        status === "interrupted"
+          ? stopped
+          : status === "done" || status === "completed"
+            ? { title: "Finished", text: `${leadName} finished.` }
+            : { title: "Ended", text: `${leadName} stopped working on it.` },
     });
 });
 
@@ -89,12 +97,15 @@ export const postQuietRunCard = Effect.fn("KinQuietRun.postCard")(function* (
   const sql = yield* SqlClient.SqlClient;
   const chat = yield* KinChatService;
   const { orgId, agentId, wakeupId, lane, ask } = wake;
-  const records = yield* turnRecords(threads, run.threadId, run.runId, {
-    turnItemTypes: ["assistant_message"],
-  });
-  const note = records.turnItems
+  const records = yield* turnRecords(threads, run.threadId, run.runId);
+  const items = records.turnItems.filter((item) => item.runId === run.runId);
+  const lastTool = items.reduce(
+    (latest, item) => (isToolItem(item) ? Math.max(latest, item.ordinal) : latest),
+    -1,
+  );
+  const note = items
     .filter((item) => item.type === "assistant_message")
-    .filter((item) => !isClaudeThinkingItem(item))
+    .filter((item) => item.ordinal < lastTool && !isClaudeThinkingItem(item))
     .map((item) =>
       item.textOmitted
         ? (records.messages.find((one) => one.id === item.messageId)?.text ?? "")

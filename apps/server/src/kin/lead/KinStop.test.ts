@@ -1,6 +1,7 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
+  EventId,
   KinAgentId,
   KinChatId,
   KinMemberId,
@@ -8,8 +9,11 @@ import {
   KinPersonId,
   KinWakeupId,
   MessageId,
+  NodeId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -23,6 +27,7 @@ import * as DateTime from "effect/DateTime";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -253,11 +258,48 @@ describe("KinStop", () => {
         yield* queue.enqueue(event("more-work"));
         const run = yield* runner.runOnce(orgId, agentId).pipe(Effect.forkChild);
         yield* TestClock.adjust("20 seconds");
-        yield* Queue.take(entered);
+        const threadId = yield* Queue.take(entered);
         const [running] = yield* sql<{ wakeupId: KinWakeupId }>`SELECT wakeup_id AS "wakeupId"
           FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running' ORDER BY wakeup_id`;
         const input = { orgId, wakeupId: running!.wakeupId };
         if (asked) {
+          const taskId = NodeId.make("earlier-task");
+          const earlierRun = RunId.make("earlier-run");
+          const now = yield* DateTime.now;
+          const run = (yield* threads.getThreadProjection(threadId)).runs[0]!;
+          yield* (yield* EventSink.EventSinkV2).write({
+            events: [
+              {
+                id: EventId.make("earlier-task-completed"),
+                type: "subagent.updated",
+                threadId,
+                runId: earlierRun,
+                nodeId: taskId,
+                occurredAt: now,
+                payload: {
+                  id: taskId,
+                  threadId,
+                  runId: earlierRun,
+                  parentNodeId: NodeId.make("earlier-node"),
+                  origin: "app_owned",
+                  createdBy: "agent",
+                  driver: ProviderDriverKind.make("claudeAgent"),
+                  providerInstanceId: run.providerInstanceId,
+                  providerThreadId: null,
+                  childThreadId: null,
+                  nativeTaskRef: null,
+                  prompt: "Earlier work",
+                  title: null,
+                  model: null,
+                  status: "completed",
+                  result: "Done.",
+                  startedAt: null,
+                  completedAt: now,
+                  updatedAt: now,
+                },
+              },
+            ],
+          });
           yield* stop.stopAsked(orgId, input.wakeupId, owner[0]!.personId);
           yield* stop.stopAsked(orgId, input.wakeupId, owner[0]!.personId);
           yield* TestClock.adjust("29 seconds");
