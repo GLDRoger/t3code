@@ -279,18 +279,17 @@ describe("KinBudget", () => {
         for (const row of cases) {
           const wakeupId = KinWakeupId.make(row.id);
           yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids) VALUES (${orgId}, ${wakeupId}, ${agentId}, 'cheap', 0, 'running', '[]')`;
-          const charge = yield* budget.charge({
-            orgId,
-            wakeupId,
-            usage: [
-              {
-                providerTurnId: row.id,
-                usedTokens: row.usedTokens,
-                ...(row.turnTokenUsage === undefined ? {} : { turnTokenUsage: row.turnTokenUsage }),
-              },
-            ],
-          });
+          const turn = [
+            {
+              providerTurnId: row.id,
+              usedTokens: row.usedTokens,
+              ...(row.turnTokenUsage === undefined ? {} : { turnTokenUsage: row.turnTokenUsage }),
+            },
+          ];
+          const charge = yield* budget.charge({ orgId, wakeupId, usage: turn });
           assert.strictEqual(charge.units, row.units, row.id);
+          // The running-spend notice reads a turn with the formula its charge uses.
+          assert.strictEqual(Budget.unitsOf(turn), row.units, row.id);
           yield* (yield* Queue.KinEventQueue).finish({ orgId, wakeupId, status: "completed" });
           assert.deepStrictEqual(
             yield* sql`SELECT status FROM kin_wakeups WHERE wakeup_id = ${wakeupId}`,

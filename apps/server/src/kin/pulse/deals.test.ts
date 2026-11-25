@@ -1075,8 +1075,8 @@ describe("the morning page's Money lines", () => {
       });
       assert.deepStrictEqual(yield* lines(), [
         // People read the numbers on the papers, never Kin's own keys.
-        "Corran Tiles owes NZ$1,200 on CT/101, 14 days overdue.",
-        "Corran Tiles hasn't answered quote CQ/7 for NZ$3,540 in 6 days.",
+        "Corran Tiles owes NZ$1,200 on CT/101, 14 days overdue; no reminder sent through Kin yet.",
+        "Corran Tiles hasn't answered quote CQ/7 for NZ$3,540 in 6 days; no follow-up sent through Kin yet.",
       ]);
       const set = (rev: number, id: "money" | "invoices", on: boolean) =>
         KinShell.KinShell.use((shell) => shell.set(orgId, rhea, rev, [{ id, on }])).pipe(
@@ -1095,14 +1095,16 @@ describe("the morning page's Money lines", () => {
       assert.deepStrictEqual(
         yield* lines(KIN_OWNER_LEVEL, "Still chasing the Work for QT-1 quote."),
         [
-          "Corran Tiles owes NZ$1,200 on CT/101, 14 days overdue.",
-          "Corran Tiles hasn't answered quote CQ/7 for NZ$3,540 in 6 days.",
+          "Corran Tiles owes NZ$1,200 on CT/101, 14 days overdue; no reminder sent through Kin yet.",
+          "Corran Tiles hasn't answered quote CQ/7 for NZ$3,540 in 6 days; no follow-up sent through Kin yet.",
         ],
       );
       yield* sql`UPDATE kin_records SET fields_json = '{}' WHERE record_id = 'r-QT-1'`;
       assert.deepStrictEqual(
         yield* lines(KIN_OWNER_LEVEL, "Still chasing the Work for QT-1 quote."),
-        ["Corran Tiles owes NZ$1,200 on CT/101, 14 days overdue."],
+        [
+          "Corran Tiles owes NZ$1,200 on CT/101, 14 days overdue; no reminder sent through Kin yet.",
+        ],
       );
       yield* sql`UPDATE kin_records SET fields_json = '{"number":"CQ/7"}' WHERE record_id = 'r-QT-1'`;
       assert.deepStrictEqual(yield* lines(viewerOfPeople([zoya])), []);
@@ -1115,6 +1117,105 @@ describe("the morning page's Money lines", () => {
           'person')`;
       yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-QT-1'`;
       assert.deepStrictEqual(yield* lines(), []);
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
+  it.effect("each line says where its reminder stands: waiting on a Confirm, sent, or none", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* lists;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Pacific/Auckland'`;
+      yield* sql`UPDATE kin_agents SET display_name = 'Finance' WHERE agent_id = ${chief}`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at)
+        VALUES (${orgId}, 'contacts', 'contacts', 'P', 1, 0)`;
+      yield* insert({ id: "P-1", list: "contacts", title: "Sam", partyId: "C-1" });
+      yield* sql`UPDATE kin_records SET fields_json = '{"email":"sam@corran.example"}'
+        WHERE record_id = 'r-P-1'`;
+      const due = B + 6 * DAY + 12 * HOUR;
+      yield* money({
+        id: "INV-1",
+        list: "invoices",
+        minor: 120000,
+        currency: "NZD",
+        dueAt: due,
+        sentAt: B,
+        number: "CT/101",
+      });
+      const quoted = NOW - 6 * DAY - HOUR;
+      yield* money({
+        id: "QT-1",
+        list: "quotes",
+        minor: 354000,
+        currency: "NZD",
+        sentAt: quoted,
+        number: "CQ/7",
+      });
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, label, kind, url_host, auth,
+          reach, state, created_at, updated_at, person_id)
+        VALUES (${orgId}, 'company', 'Outlook', 'remote', 'graph.example', 'none', 'open', 'active',
+            1, 1, NULL),
+          (${orgId}, 'own', 'Gmail', 'remote', 'gmail.example', 'none', 'open', 'active', 1, 1,
+            ${rhea})`;
+      let n = 0;
+      const ask = (input: {
+        readonly entry: string;
+        readonly connection: "company" | "own";
+        readonly state: "open" | "sent";
+        readonly at: number;
+      }) =>
+        sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name, pin_digest,
+            payload_json, agent_id, wakeup_id, chat_id, entry_record_id, state, proposed_at,
+            done_at)
+          VALUES (${orgId}, ${`ask-${++n}`}, ${input.connection}, 'mail_send', 'pin',
+            ${JSON.stringify({
+              _tag: "email",
+              to: ["sam@corran.example"],
+              cc: [],
+              subject: "A reminder",
+              body: "Attached.",
+              threadId: null,
+              inReplyTo: null,
+              references: null,
+              attachments: [],
+            })}, ${chief}, 'w', ${`chat-${chief}`}, ${input.entry}, ${input.state}, ${input.at},
+            ${input.state === "sent" ? input.at : null})`;
+      const invoice = "Corran Tiles owes NZ$1,200 on CT/101, 14 days overdue";
+      const quote = "Corran Tiles hasn't answered quote CQ/7 for NZ$3,540 in 6 days";
+      // Kin knows only mail sent through it; the invoice's own mail before its due day is no reminder.
+      yield* ask({ entry: "r-INV-1", connection: "company", state: "sent", at: B });
+      yield* ask({ entry: "r-QT-1", connection: "company", state: "sent", at: quoted - HOUR });
+      assert.deepStrictEqual(yield* lines(), [
+        `${invoice}; no reminder sent through Kin yet.`,
+        `${quote}; no follow-up sent through Kin yet.`,
+      ]);
+      // Sunday evening in UTC is Monday morning in Auckland: the day is the company's.
+      yield* ask({
+        entry: "r-INV-1",
+        connection: "company",
+        state: "sent",
+        at: Date.UTC(2026, 10, 15, 20),
+      });
+      yield* ask({ entry: "r-QT-1", connection: "company", state: "sent", at: NOW - DAY });
+      const sent = [
+        `${invoice}; reminder sent Mon 16 Nov.`,
+        `${quote}; follow-up sent Sat 21 Nov.`,
+      ];
+      assert.deepStrictEqual(yield* lines(), sent);
+      // A card from someone's own mailbox stays theirs.
+      yield* ask({ entry: "r-INV-1", connection: "own", state: "open", at: NOW - HOUR });
+      assert.deepStrictEqual(yield* lines(), sent);
+      yield* ask({ entry: "r-INV-1", connection: "company", state: "open", at: NOW - 2 * HOUR });
+      yield* ask({ entry: "r-QT-1", connection: "company", state: "open", at: NOW - 2 * HOUR });
+      assert.deepStrictEqual(yield* lines(), [
+        `${invoice}; a reminder to Sam waits on your Confirm in Finance's chat.`,
+        `${quote}; a follow-up to Sam waits on your Confirm in Finance's chat.`,
+      ]);
+      // A teammate who sees Money can't open the owner's chat: they hear only what was sent.
+      yield* sql`UPDATE kin_records SET team_shared = 1 WHERE register_id IN ('invoices', 'quotes')`;
+      yield* sql`UPDATE kin_people SET sees_money = 1 WHERE person_id = ${zoya}`;
+      assert.deepStrictEqual(yield* lines(viewerOfPeople([zoya])), sent);
     }).pipe(Effect.provide(chatLayer)),
   );
 
@@ -1151,7 +1252,12 @@ describe("the morning page's Money lines", () => {
           const quotes = told.filter((line) => line.includes("answered quote"));
           assert.lengthOf(invoices, count > 10 ? 9 : count);
           assert.lengthOf(quotes, count > 10 ? 9 : count);
-          assert.match(invoices[0] ?? "", new RegExp(`on CT/${count}, ${count} days overdue\\.$`));
+          assert.match(
+            invoices[0] ?? "",
+            new RegExp(
+              `on CT/${count}, ${count} days overdue; no reminder sent through Kin yet\\.$`,
+            ),
+          );
           if (count > 10) {
             // What is cut is the least overdue and the most recently sent, and the cut says what it holds.
             assert.match(invoices[8] ?? "", /^and 3 more overdue invoices, COP\s600,000 in all\.$/);
@@ -1209,7 +1315,8 @@ describe("the morning page's Money lines", () => {
         note: null,
         holding: { _tag: "may", forPersonId: null, onWordOf: null },
       });
-      const harbor = "Harbor Foundry LLP owes €1,200 on HF/9, 14 days overdue.";
+      const harbor =
+        "Harbor Foundry LLP owes €1,200 on HF/9, 14 days overdue; no reminder sent through Kin yet.";
       assert.deepStrictEqual(yield* lines(), [harbor]);
       // The agent's own Money section names a debt, by its client or its number: Kin adds none.
       assert.deepStrictEqual(
@@ -1222,8 +1329,8 @@ describe("the morning page's Money lines", () => {
       ]);
       // Each comes back by itself when its day passes.
       assert.deepStrictEqual(yield* lines(KIN_OWNER_LEVEL, undefined, NOW + 3 * DAY), [
-        "Corran Tiles owes €1,200 on CT/102, 17 days overdue.",
-        "Harbor Foundry LLP owes €1,200 on HF/9, 17 days overdue.",
+        "Corran Tiles owes €1,200 on CT/102, 17 days overdue; no reminder sent through Kin yet.",
+        "Harbor Foundry LLP owes €1,200 on HF/9, 17 days overdue; no reminder sent through Kin yet.",
       ]);
       assert.lengthOf(yield* lines(KIN_OWNER_LEVEL, undefined, NOW + 10 * DAY), 3);
     }).pipe(Effect.provide(chatLayer)),
