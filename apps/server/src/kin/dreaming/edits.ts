@@ -127,9 +127,10 @@ export const draftEdits = Effect.fn("DreamMaterial.draftEdits")(function* (
     level: number;
     private: number;
     originKey: string;
+    restoredFrom: number | null;
   }>`SELECT v.record_id AS "recordId", r.key, r.title, v.version, v.actor_kind AS "actorKind",
       v.actor_id AS "actorId", v.body_kind AS "bodyKind", v.created_at AS "createdAt", p.handle,
-      v.origin_key AS "originKey",
+      v.origin_key AS "originKey", v.restored_from AS "restoredFrom",
       ${sql.literal(ownerLevelSql("v.org_id", "v.actor_id"))} AS level,
       ${sensitiveNow(sql)} AS private
     FROM kin_doc_versions v
@@ -156,9 +157,10 @@ export const draftEdits = Effect.fn("DreamMaterial.draftEdits")(function* (
   for (const [index, row] of versions.entries()) {
     if (index > 0 && versions[index - 1]!.recordId !== row.recordId) close();
     const person = row.actorKind === "person" && row.bodyKind === "markdown";
-    // Words a coding agent wrote through the person's key are not theirs, nor is anything
-    // compared against them: the run ends with no edit, and only an agent's next draft starts one.
-    if (person && row.level === 1 && isKeyRequest(row.originKey)) {
+    // Words a coding agent wrote through the person's key, or a Restore brought back, are not
+    // theirs, nor is anything compared against them: the run ends with no edit, and only an
+    // agent's next draft starts one.
+    if (person && row.level === 1 && (row.restoredFrom !== null || isKeyRequest(row.originKey))) {
       draft = last = undefined;
       continue;
     }

@@ -351,6 +351,7 @@ const doc = (
     readonly body: string;
     readonly wakeup?: string;
     readonly origin?: string;
+    readonly restoredFrom?: number;
   }>,
   sensitive = false,
 ) =>
@@ -362,9 +363,11 @@ const doc = (
     for (const [index, version] of versions.entries()) {
       const agent = version.by === "finance";
       yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind, summary,
-          operations_json, actor_kind, actor_id, via, wakeup_id, origin_key, created_at)
+          operations_json, restored_from, actor_kind, actor_id, via, wakeup_id, origin_key,
+          created_at)
         VALUES (${orgId}, ${`r-${key}`}, ${index + 1}, ${version.body}, ${key},
-          ${index === 0 ? "created" : "rewritten"}, 's', '[]', ${agent ? "agent" : "person"},
+          ${version.restoredFrom !== undefined ? "restored" : index === 0 ? "created" : "rewritten"},
+          's', '[]', ${version.restoredFrom ?? null}, ${agent ? "agent" : "person"},
           ${version.by}, 'kin', ${version.wakeup ?? null}, ${version.origin ?? `${key}-${index + 1}`},
           ${version.at})`;
     }
@@ -438,6 +441,18 @@ it.effect(
         { by: "finance", at: minute(19), body: "Our rate is 45 an hour." },
         { by: "rhea", at: minute(20), body: "Our rate is 45 an hour. Net 60.", origin: viaKey("b2") },
         { by: "rhea", at: minute(21), body: "Our rate is 50 an hour. Net 60." },
+      ]);
+      // A Restore brings back words nobody typed now, whoever wrote them.
+      const TERMS = "Our rate is 45 an hour. Payment is due within 60 days of invoice.";
+      yield* doc(sql, "D-10", [
+        { by: "finance", at: minute(22), body: TERMS },
+        { by: "finance", at: minute(23), body: "Our rate is 70 an hour. Payment is due on receipt." },
+        { by: "rhea", at: minute(24), body: TERMS, restoredFrom: 1 },
+      ]);
+      yield* doc(sql, "D-11", [
+        { by: "finance", at: minute(25), body: TERMS },
+        { by: "rhea", at: minute(26), body: "Our rate is 50 an hour." },
+        { by: "rhea", at: minute(27), body: TERMS, restoredFrom: 1 },
       ]);
       const material = yield* nightOf(sql);
       assert.deepStrictEqual(
