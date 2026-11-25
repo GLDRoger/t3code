@@ -431,7 +431,14 @@ it.effect(
         yield* freshDay(ctx);
         yield* tickAt(ctx, NOW + 3 * DAY + 2 * HOUR);
         const stuck = (yield* cards(ctx)).find((one) => !one.closed)!;
-        assert.isTrue(wakesAgent(yield* tap(ctx, zoyaId, stuck, "Stuck")));
+        const stuckTap = yield* tap(ctx, zoyaId, stuck, "Stuck");
+        assert.isTrue(wakesAgent(stuckTap));
+        assert.strictEqual(
+          yield* cardTapText(ctx.orgId, stuckTap),
+          `Kin's own card asked Zoya where ${site} is, and Zoya chose Stuck. Ask Zoya what is in the way in one short question in your reply, and nothing else: no card, no list of guesses, nothing retold, and no tool that changes ${site}.`,
+        );
+        // Any other tap reads as itself.
+        assert.isUndefined(yield* cardTapText(ctx.orgId, { ...stuckTap, kind: "text" }));
         assert.strictEqual((yield* ctx.records.get(ctx.orgId, site))?.state, "doing");
 
         // A change on the task before anyone answers closes its card.

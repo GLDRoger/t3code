@@ -892,6 +892,9 @@ export const NOTICE_GIVEN = (input: {
       : ` Tell ${input.owner} in one line with kin_relay that ${name} chose to give notice on ${client}'s contract ${key} and ${drafts ? `the mail waits on ${name}'s Confirm` : "no notice mail is drafted yet"}; ask ${input.owner} nothing.`;
   return `Kin's own card asked ${name} about ${client}'s contract ${key} (renews ${input.renewsOn}, notice due by ${input.noticeBy}), and ${name} chose Give notice. That is ${name}'s answer to Kin's question: ask nobody first. ${what} Record nothing on the project and file no task.${relay} Then tell ${name} in one short line ${drafts ? "that the notice mail waits on the Confirm" : "what is missing"}.`;
 };
+/** What a person's Stuck on Kin's stalled-task card tells the agent it wakes. */
+export const STALL_STUCK = (input: { readonly name: string; readonly key: string }) =>
+  `Kin's own card asked ${input.name} where ${input.key} is, and ${input.name} chose Stuck. Ask ${input.name} what is in the way in one short question in your reply, and nothing else: no card, no list of guesses, nothing retold, and no tool that changes ${input.key}.`;
 
 const decodeChoiceTap = Schema.decodeUnknownOption(
   Schema.fromJsonString(
@@ -918,6 +921,7 @@ export const cardTapText = Effect.fn("KinPulse.cardTapText")(function* (
   if (plans.has(tap.value)) return undefined;
   const plan = [...plans.values()].find(isFactCard);
   if (plan === undefined || plan.personId !== personId) return undefined;
+  if (plan.kind === "stall_answer") return STALL_STUCK({ name: plan.personName, key: plan.key });
   if (plan.kind !== "notice_renew") return undefined;
   const sql = yield* SqlClient.SqlClient;
   const own = yield* ownerLevel(orgId, personId);
