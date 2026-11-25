@@ -117,6 +117,7 @@ import {
   ASSIGNED_NOT_IN_PERSON,
   HANDED_BACK_WORK,
   UNREAD_RULE,
+  REMINDER_DUE,
   REPLY_SHAPE,
   SHARED_TURN_LINE,
   joinedWork,
@@ -590,6 +591,7 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{CONNECTION_ASKED}}", ASKED)
     .replaceAll("{{SEVERAL_ACCOUNTS}}", SEVERAL_ACCOUNTS)
     .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
+    .replaceAll("{{REMINDER_DUE}}", REMINDER_DUE)
     // The wake's line once a new company's country is chosen (`{{COUNTRY_CHOSEN:GB|GBP}}`).
     .replace(
       /\{\{COUNTRY_CHOSEN:([A-Z]{2})\|([A-Z]{3})\}\}/g,
