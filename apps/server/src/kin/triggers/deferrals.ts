@@ -89,6 +89,8 @@ export const DeferralSnapshot = Schema.Struct({
   supersededBy: Schema.NullOr(KinMemoryItemId),
   links: Schema.Array(Schema.String),
   github: Schema.optional(Schema.NullOr(Schema.Array(GithubLinkState))),
+  /** Kin did not fire it: a person had this record set aside. */
+  skipped: Schema.optional(Schema.Struct({ record: Schema.String, at: Schema.Number })),
   /** The re-armed due fire's instant while the run is in `grace`. */
   graceEndsAt: Schema.optional(Schema.Number),
   /** The re-armed due fire's instant while a reminder is `snoozed`. */

@@ -35,6 +35,7 @@ import * as Budget from "../lead/KinBudget.ts";
 import * as Queue from "../lead/KinEventQueue.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
 import { leadWakeup } from "../lead/LeadDelivery.testkit.ts";
+import * as KinPulse from "../pulse/KinPulse.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { fakeRepository } from "../memory/__fixtures__/repository.ts";
@@ -1165,6 +1166,138 @@ it.effect("held invoice reminders stay queued without blocking later reminders",
     );
     assert.lengthOf(yield* pendingFires(), 0);
   }).pipe(Effect.provide(layerFor(items)));
+});
+
+const seedInvoice = Effect.fn("test.deferralInvoice")(function* (
+  invoiceDueAt = dueAt - 20 * 24 * 60 * 60_000,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_people SET display_name = 'Rhea'
+    WHERE org_id = ${orgId} AND person_id = 'owner-a'`;
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+    VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 1, 0)`;
+  yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
+    owner_id, side, due_at, amount_minor, currency, confirmed, created_by_kind, created_by_id,
+    origin_key, created_at, updated_at, fields_json)
+    VALUES (${orgId}, 'invoice', 'invoices', 'INV-12', 'Tidewater Freight', 'waiting', 'agent',
+      'lead-a', 'ours', ${invoiceDueAt}, 120_000, 'INR', 1, 'person',
+      'owner-a', 'invoice', 0, 0, '{"number":"TF/26/012"}')`;
+});
+
+it.effect(
+  "an agent's own follow-up about a record a person set aside is skipped and says why; a person's still fires",
+  () => {
+    const agent = makeDeferral("def-agent", {
+      on_due: "remind",
+      trust: "agent",
+      links: ["INV-12"],
+    });
+    const asked = makeDeferral("def-rhea", { on_due: "remind", trust: "owner", links: ["INV-12"] });
+    const lifted = makeDeferral("def-lifted", {
+      on_due: "remind",
+      trust: "agent",
+      links: ["INV-12"],
+      due: "2026-11-13T09:01+05:30",
+    });
+    return Effect.gen(function* () {
+      yield* setup();
+      yield* seedInvoice();
+      const sql = yield* SqlClient.SqlClient;
+      const service = yield* TriggerService.KinTriggerService;
+      const at = yield* Clock.currentTimeMillis;
+      const viewer = { _tag: "owner" } as const;
+      const by = { _tag: "person", personId: KinPersonId.make("owner-a") } as const;
+      const fact = (yield* KinPulse.read({ orgId, at, viewer })).facts.find(
+        (fact) => fact.sense === "invoice_overdue" && fact.subject.key === "INV-12",
+      );
+      assert.isDefined(fact);
+      yield* KinPulse.handle({
+        orgId,
+        at,
+        viewer,
+        by,
+        factKey: fact!.key,
+        action: "got_it",
+        until: dueAt + 24 * 60 * 60_000,
+      });
+      yield* service.syncItem(agent);
+      yield* service.syncItem(asked);
+      yield* tick(dueAt);
+
+      assert.equal((yield* runOf(agent.id))?.state, "undone");
+      const [skipped] = yield* sql<{ record: string; at: number }>`SELECT
+        json_extract(snapshot_json, '$.skipped.record') AS record,
+        json_extract(snapshot_json, '$.skipped.at') AS at
+        FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = ${agent.id}`;
+      assert.deepStrictEqual(skipped, { record: "INV-12", at: dueAt });
+      const [fire] = yield* sql<{ consumedAt: number }>`SELECT consumed_at AS "consumedAt"
+        FROM kin_trigger_inbox WHERE org_id = ${orgId}
+          AND fire_id = ${`deferral:${agent.id}:due:${dueAt}`}`;
+      assert.equal(fire?.consumedAt, dueAt);
+      assert.isEmpty(
+        yield* sql`SELECT message_id FROM kin_messages WHERE org_id = ${orgId} ORDER BY message_id`,
+      );
+      assert.isEmpty(
+        yield* sql`SELECT widget_id FROM kin_widgets WHERE org_id = ${orgId} ORDER BY widget_id`,
+      );
+      assert.isEmpty(
+        yield* sql`SELECT event_id FROM kin_events
+        WHERE org_id = ${orgId} AND json_extract(json, '$.subject.itemId') = ${agent.id}
+        ORDER BY event_id`,
+      );
+      assert.equal((yield* runOf(asked.id))?.state, "reminded");
+      assert.deepStrictEqual(yield* handedReminders(), [{ itemId: asked.id, lateByMs: 0 }]);
+
+      yield* KinPulse.handle({ orgId, at: dueAt, viewer, by, factKey: fact!.key, action: "undo" });
+      yield* service.syncItem(lifted);
+      yield* tick(dueAt + 60_000);
+      assert.equal((yield* runOf(lifted.id))?.state, "reminded");
+      assert.deepStrictEqual(yield* handedReminders(), [
+        { itemId: asked.id, lateByMs: 0 },
+        { itemId: lifted.id, lateByMs: 0 },
+      ]);
+    }).pipe(Effect.provide(layerFor([agent, asked, lifted])));
+  },
+);
+
+it.effect("a record a person set aside skips an agent's own start at heads-up", () => {
+  const start = makeDeferral("def-held", { trust: "agent", links: ["TF/26/012"] });
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* seedInvoice(dueAt);
+    yield* (yield* TriggerService.KinTriggerService).syncItem(start);
+    const repo = yield* Repository.KinChatRepository;
+    yield* KinPulse.aside({
+      orgId,
+      at: yield* Clock.currentTimeMillis,
+      viewer: { _tag: "owner" },
+      by: { _tag: "person", personId: KinPersonId.make("owner-a") },
+      recordKey: "INV-12",
+      action: "set",
+      until: null,
+      note: null,
+      holding: { _tag: "may", forPersonId: null, onWordOf: null },
+    });
+    yield* tick(headsUpAt);
+    assert.equal((yield* runOf(start.id))?.state, "undone");
+    const widget = Option.getOrThrow(
+      yield* repo.getWidget({ orgId, widgetId: widgetFor(start.id) }),
+    );
+    assert.equal(widget.closedAt, DateTime.formatIso(DateTime.makeUnsafe(headsUpAt)));
+    const card = decodeCard(encodeJson(widget.state));
+    assert.isEmpty(card.actions ?? []);
+    assert.equal(card.text, "Skipped: a person set INV-12 aside, so this follow-up didn't run.");
+    assert.deepStrictEqual(
+      (yield* triggersOf()).filter(({ id }) => id.includes(start.id)),
+      [
+        { id: Deferrals.deferralTriggerId(start.id, "due"), enabled: 0, nextRunAt: null },
+        { id: Deferrals.deferralTriggerId(start.id, "heads_up"), enabled: 0, nextRunAt: null },
+      ],
+    );
+    assert.isEmpty(yield* pendingFires());
+    yield* tick(dueAt);
+    assert.isEmpty(yield* starts());
+  }).pipe(openGates(new Map()), Effect.provide(layerFor([start])));
 });
 
 it.effect("remind, ask and chase act at due, noting lateness", () => {
