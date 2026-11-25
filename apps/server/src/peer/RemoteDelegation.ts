@@ -262,7 +262,7 @@ const make = Effect.gen(function* () {
       if (named !== undefined && !named.canRunChildTask) {
         return yield* new OrchestratorMcpFailure({
           code: "provider_unavailable",
-          message: `Provider instance ${namedId} there can't run a child task: ${named.constraints.join(" ")}`,
+          message: `Provider instance ${namedId} there can't run a child task: ${named.constraints.join(" ") || "it gave no reason."}`,
         });
       }
       return namedId;
