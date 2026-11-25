@@ -47,6 +47,7 @@ import {
 } from "../../apps/server/src/kin/connections/ConnectionsService.ts";
 import { readCallArguments } from "../../apps/server/src/kin/connections/callArguments.ts";
 import { microsoftMail } from "../../apps/server/src/kin/connections/Microsoft.ts";
+import { readLine } from "../../apps/server/src/kin/connections/ConnectionRows.ts";
 import { resultText } from "../../apps/server/src/kin/connections/ResultText.ts";
 import { outlineOf, sectionsOf, WHOLE_DOC } from "../../apps/server/src/kin/work/docBody.ts";
 import { parseRecipe } from "../../apps/server/src/kin/gendocs/recipe.ts";
@@ -1002,6 +1003,25 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       tool: { name: input.tool, inputSchema: { type: "object" } },
       result: { content: [{ type: "text", text: input.text }] },
     } as never).quoted,
+  // A read across mail accounts: what it read and did not (`readLine`), then each account's answer.
+  acrossAccounts: (input: {
+    read: ReadonlyArray<{ account: string; service: string }>;
+    left: ReadonlyArray<{ account: string; service: string }>;
+    results: ReadonlyArray<{ label: string; tool: string; text: string }>;
+  }) =>
+    [
+      readLine(input.read, input.left),
+      ...input.results.map(
+        (one) =>
+          resultText({
+            label: one.label,
+            tool: { name: one.tool, inputSchema: { type: "object" } },
+            result: { content: [{ type: "text", text: one.text }] },
+          } as never).quoted,
+      ),
+    ]
+      .filter((part) => part !== "")
+      .join("\n\n"),
   cash: (input: {
     today: string;
     timeZone: string;

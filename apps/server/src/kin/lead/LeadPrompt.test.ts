@@ -2488,6 +2488,8 @@ it.effect.each([
     const after = yield* prompt.build(input);
     expect(after.split(TURN_DIVIDER)[0]).toBe(before.split(TURN_DIVIDER)[0]);
     expect(after.split(TURN_DIVIDER)[1]).toContain(expected);
+    // A schedule is said in the owner's own time; the server puts it on the host's clock.
+    expect(after).not.toContain("host clock");
   }).pipe(Effect.provide(layer)),
 );
 

@@ -106,6 +106,7 @@ import {
   personConnections,
   canonicalAddress,
   ownUntil,
+  readLine,
   resolveAmong,
   resolveConnection,
   sendAsOf,
@@ -267,6 +268,12 @@ const secretOf = (secret: Redacted.Redacted<string> | undefined) => {
   const value = secret === undefined ? "" : Redacted.value(secret).trim();
   return value === "" ? undefined : value;
 };
+const accountName = (row: ConnectionRow) => row.accountLabel ?? row.label;
+const readAccount = (row: ConnectionRow) => ({
+  account: accountName(row),
+  service: mailProviderOf(row)?.name ?? row.label,
+});
+
 const fail = (reason: KinChatError["reason"], message: string) =>
   new KinChatError({ reason, message });
 const notFound = fail("not_found", "Kin couldn't find that connection.");
@@ -2875,45 +2882,6 @@ const make = Effect.gen(function* () {
     if (own !== null) yield* markPrivate(turn, own);
   }, provideSql);
 
-  /**
-   * Takes one call and up to one result's characters from the turn's allowance in one statement,
-   * so calls made at once can't pass the bounds together; `release` gives back what went unread.
-   */
-  const reserve = Effect.fn("KinConnections.reserve")(function* (turn: Turn) {
-    const { turnCalls, turnChars, resultChars } = CONNECTION_LIMITS;
-    const now = yield* Clock.currentTimeMillis;
-    const [taken] = yield* sql<{ reserved: number }>`INSERT INTO kin_connection_turn_spend
-        (org_id, wakeup_id, calls, chars, last_reserved, updated_at)
-      VALUES (${turn.orgId}, ${turn.wakeupId}, 1, ${Math.min(resultChars, turnChars)},
-        ${Math.min(resultChars, turnChars)}, ${now})
-      ON CONFLICT (org_id, wakeup_id) DO UPDATE SET calls = calls + 1,
-        chars = chars + MIN(${resultChars}, ${turnChars} - chars),
-        last_reserved = MIN(${resultChars}, ${turnChars} - chars), updated_at = ${now}
-      WHERE calls < ${turnCalls} AND chars < ${turnChars}
-      RETURNING last_reserved AS reserved`;
-    if (taken !== undefined) return { _tag: "reserved" as const, chars: taken.reserved };
-    const [spent] = yield* sql<{ calls: number }>`SELECT calls FROM kin_connection_turn_spend
-      WHERE org_id = ${turn.orgId} AND wakeup_id = ${turn.wakeupId}`;
-    return {
-      _tag: "refused" as const,
-      error:
-        (spent?.calls ?? 0) >= turnCalls
-          ? fail(
-              "limit",
-              `This turn has already made ${turnCalls} calls to connected services, the most one turn makes. Answer with what you have; a later turn can call again.`,
-            )
-          : fail(
-              "limit",
-              `This turn has already read ${turnChars.toLocaleString("en-US")} characters from connected services, the most one turn reads. Answer with what you have, or ask for less in a later turn.`,
-            ),
-    };
-  });
-  const release = (turn: Turn, chars: number) =>
-    chars <= 0
-      ? Effect.void
-      : sql`UPDATE kin_connection_turn_spend SET chars = MAX(0, chars - ${chars})
-          WHERE org_id = ${turn.orgId} AND wakeup_id = ${turn.wakeupId}`.pipe(Effect.asVoid);
-
   /** One connection's tool, called or put on a card, with its row in the call log. */
   const callOn = Effect.fn("KinConnections.callOn")(function* (
     turn: Turn,
@@ -2970,30 +2938,22 @@ const make = Effect.gen(function* () {
     const definition = yield* decodeTool(tool.acceptedJson ?? tool.definitionJson).pipe(
       Effect.mapError(() => fail("unavailable", `Kin couldn't read ${tool.name}'s definition.`)),
     );
-    const allowance = yield* reserve(turn);
-    if (allowance._tag === "refused") return yield* refuse(turn, entry, allowance.error);
     const started = yield* Clock.currentTimeMillis;
     const result = yield* callFor(turn.orgId, row, definition, args).pipe(Effect.result);
     const durationMs = (yield* Clock.currentTimeMillis) - started;
     if (result._tag === "Failure") {
-      yield* sql.withTransaction(
-        Effect.all([
-          record(turn, {
-            ...entry,
-            status: "error",
-            refusedReason: result.failure.message,
-            durationMs,
-          }),
-          release(turn, allowance.chars),
-        ]),
-      );
+      yield* record(turn, {
+        ...entry,
+        status: "error",
+        refusedReason: result.failure.message,
+        durationMs,
+      });
       return yield* fail("unavailable", result.failure.message);
     }
     const text = resultText({
       label: row.label,
       tool: definition,
       result: result.success,
-      limit: allowance.chars,
     });
     // The row and the outside mark commit together: no result reaches the agent unmarked.
     yield* sql.withTransaction(
@@ -3010,7 +2970,6 @@ const make = Effect.gen(function* () {
           row.connectionId,
           resultSource({ label: row.label, tool: definition.name, result: result.success }),
         );
-        yield* release(turn, allowance.chars - text.chars);
         yield* sql`UPDATE kin_connections SET last_ok_at = ${started}
           WHERE org_id = ${turn.orgId} AND connection_id = ${row.connectionId}`;
       }),
@@ -3096,13 +3055,33 @@ const make = Effect.gen(function* () {
       ) {
         const parts = yield* Effect.forEach(several, (row) =>
           callOn(turn, row, input, base).pipe(
-            Effect.map((result) => ("quoted" in result ? result.quoted : result.note)),
+            Effect.map((result) => ({
+              row,
+              text: "quoted" in result ? result.quoted : result.note,
+            })),
             Effect.catch((error) =>
-              Effect.succeed(`${row.accountLabel ?? row.label}: ${error.message}`),
+              Effect.succeed({ row: undefined, text: `${accountName(row)}: ${error.message}` }),
             ),
           ),
         );
-        return { quoted: parts.join("\n\n") };
+        const left = found.live.filter(
+          (row) =>
+            mailProviderOf(row) !== undefined &&
+            row.pausedAt === null &&
+            row.state !== "needs_sign_in" &&
+            !several.includes(row),
+        );
+        return {
+          quoted: [
+            readLine(
+              parts.flatMap((part) => (part.row === undefined ? [] : [readAccount(part.row)])),
+              left.map(readAccount),
+            ),
+            ...parts.map((part) => part.text),
+          ]
+            .filter((part) => part !== "")
+            .join("\n\n"),
+        };
       }
       return yield* refuse(
         turn,
