@@ -500,7 +500,7 @@ it.effect.each(["America/Los_Angeles", "Pacific/Auckland"])(
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
       yield* sql`UPDATE kin_trigger_settings SET time_zone = ${zone} WHERE org_id = ${orgId}`;
-      yield* LeadWork.create(scope, {
+      const made = yield* LeadWork.create(scope, {
         sourceEventId: "ask-event",
         records: [
           { list: "projects", title: "Invented booking app" },
@@ -513,6 +513,13 @@ it.effect.each(["America/Los_Angeles", "Pacific/Auckland"])(
           { title: "Invented booking screens", milestone: "M-1", due: "2026-12-01" },
         ],
       });
+      // The answer counts what it made by list, so a plan's tasks are not its milestones too.
+      assert.deepStrictEqual(made.made, { projects: 1, milestones: 1, work: 1 });
+      const one = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ title: "Invented team lunch" }],
+      });
+      assert.notProperty(one, "made");
       const plan = (yield* LeadWork.get(scope, { key: "P-1" })).plan!;
       assert.deepStrictEqual(
         plan.milestones.map((one) => [one.key, one.due]),
