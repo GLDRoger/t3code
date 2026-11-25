@@ -3,6 +3,7 @@ import { memoryGit } from "./git.ts";
 import * as NodeZlib from "node:zlib";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, expect, it } from "@effect/vitest";
+import { vi } from "vite-plus/test";
 import {
   KinAgentId,
   KinChatId,
@@ -1965,7 +1966,11 @@ const landingFixture = <E>(
   }) => Effect.Effect<
     void,
     E,
-    Memory.Memory | Writer.MemoryWriter | SqlClient.SqlClient | FileSystem.FileSystem
+    | Memory.Memory
+    | Writer.MemoryWriter
+    | SqlClient.SqlClient
+    | FileSystem.FileSystem
+    | Vcs.VcsProcess
   >,
 ) =>
   Effect.gen(function* () {
@@ -2068,17 +2073,9 @@ const landingFixture = <E>(
 // Commits made inside are dated before the cut-over, as an L0 lead's were.
 const beforeCutOver = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.acquireUseRelease(
-    Effect.sync(() => {
-      const previous = process.env.GIT_COMMITTER_DATE;
-      process.env.GIT_COMMITTER_DATE = "2026-11-01T00:00:00Z";
-      return previous;
-    }),
+    Effect.sync(() => vi.stubEnv("GIT_COMMITTER_DATE", "2026-11-01T00:00:00Z")),
     () => effect,
-    (previous) =>
-      Effect.sync(() => {
-        if (previous === undefined) delete process.env.GIT_COMMITTER_DATE;
-        else process.env.GIT_COMMITTER_DATE = previous;
-      }),
+    () => Effect.sync(() => vi.unstubAllEnvs()),
   );
 const personNote = (id: string, title: string) => ({
   path: `people/${id}.md`,
