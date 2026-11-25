@@ -21,7 +21,10 @@ import { agentWrote, creditMatch, type CreditPair } from "./invoiceCredits.ts";
 const refuse = (message: string) => new KinChatError({ reason: "invalid_state", message });
 const NOTHING_ASKED = "Nothing was asked; tell the owner what you see instead.";
 
-const keyRow = Effect.fn("KinCreditPayment.keyRow")(function* (orgId: KinOrgId, key: string) {
+export const keyRow = Effect.fn("KinCreditPayment.keyRow")(function* (
+  orgId: KinOrgId,
+  key: string,
+) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql<{ recordId: string; registerId: string; key: string }>`
     SELECT record_id AS "recordId", register_id AS "registerId", key FROM kin_records

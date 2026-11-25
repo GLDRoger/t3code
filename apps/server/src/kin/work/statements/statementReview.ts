@@ -309,6 +309,34 @@ export const recordedPayments = Effect.fn("KinStatements.recordedPayments")(func
   }));
 });
 
+/** Each partner owed back, once per currency they are owed in, as the matcher reads them. */
+export const partnerCandidates = Effect.fn("KinStatements.partnerCandidates")(function* (
+  orgId: KinOrgId,
+  home: string,
+  zone: string,
+) {
+  // A debit must name its partner; the expenses of one Kin can't name can't be told apart.
+  return (yield* partnersOwed(orgId, home))
+    .filter((partner) => partner.personId !== null || partner.address !== null)
+    .flatMap((partner) =>
+      [...new Set(partner.entries.map((one) => one.money.currency))].map((currency) => ({
+        name: partner.name,
+        id: partner.personId ?? `address:${partner.address}`,
+        ids: partner.address === null ? [] : [partner.address],
+        currency,
+        owed: partner.entries
+          .filter((one) => one.money.currency === currency)
+          .map((one) => ({
+            recordId: one.recordId,
+            key: one.key,
+            amountMinor: one.money.minor,
+            day: dayIn(one.at, zone),
+            rev: one.rev,
+          })),
+      })),
+    );
+});
+
 /** Open invoices and expenses the rows may be, with the owner's own accounts and vendors. */
 const candidates = Effect.fn("KinStatements.candidates")(function* (
   orgId: KinOrgId,
@@ -356,26 +384,7 @@ const candidates = Effect.fn("KinStatements.candidates")(function* (
     WHERE org_id = ${orgId} AND register_id = 'expenses' AND state = 'done'
       AND json_extract(fields_json, '$.vendor') IS NOT NULL
     ORDER BY updated_at DESC LIMIT 500`;
-  // A debit must name its partner; the expenses of one Kin can't name can't be told apart.
-  const partners = (yield* partnersOwed(orgId, home))
-    .filter((partner) => partner.personId !== null || partner.address !== null)
-    .flatMap((partner) =>
-      [...new Set(partner.entries.map((one) => one.money.currency))].map((currency) => ({
-        name: partner.name,
-        id: partner.personId ?? `address:${partner.address}`,
-        ids: partner.address === null ? [] : [partner.address],
-        currency,
-        owed: partner.entries
-          .filter((one) => one.money.currency === currency)
-          .map((one) => ({
-            recordId: one.recordId,
-            key: one.key,
-            amountMinor: one.money.minor,
-            day: dayIn(one.at, zone),
-            rev: one.rev,
-          })),
-      })),
-    );
+  const partners = yield* partnerCandidates(orgId, home, zone);
   const payees = yield* partnerPayees(orgId);
   const accounts = yield* sql<{ account: string }>`SELECT DISTINCT account FROM kin_bank_statements
     WHERE org_id = ${orgId} AND account IS NOT NULL ORDER BY account`;
