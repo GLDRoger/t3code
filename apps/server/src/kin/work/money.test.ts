@@ -567,7 +567,7 @@ describe("amounts", () => {
       assert.isUndefined(
         yield* aboutInHome(orgId, [...totals, { minor: 10, currency: "JPY" }], "USD", at, read),
       );
-    }),
+    }).pipe(Effect.provide(layer)),
   );
 
   it("formats totals past a float's exact range digit for digit, signed", () => {

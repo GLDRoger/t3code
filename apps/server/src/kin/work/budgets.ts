@@ -162,6 +162,9 @@ export const budgetsView = Effect.fn("KinBudgets.view")(function* (
     ORDER BY b.category IS NULL, lower(b.category), p.key, b.currency`;
   if (budgets.length === 0) return { month: shown, budgets: [] };
   const home = yield* homeCurrency(orgId);
+  const rateOf: typeof recordedRate = keyed
+    ? (org, from, to, asOf) => read(org, from, to, asOf, true)
+    : read;
   const spent = yield* sql<{
     minor: number;
     currency: string;
@@ -194,7 +197,7 @@ export const budgetsView = Effect.fn("KinBudgets.view")(function* (
       onTarget.filter((one) => !budgeted.has(one.currency)),
       budget.currency,
     );
-    const about = yield* aboutInHome(orgId, onTarget, home, now, read);
+    const about = yield* aboutInHome(orgId, onTarget, home, now, rateOf);
     rows.push({
       ...budget,
       spent: total,

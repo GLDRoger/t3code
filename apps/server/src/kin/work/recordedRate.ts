@@ -1,7 +1,9 @@
 import type { KinMoney, KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
 
-import { aboutTotal } from "./money.ts";
+import { aboutTotal, dayIn } from "./money.ts";
+import { countedPayment, keyWithheld, ownerZone } from "./recordRows.ts";
 
 export type RecordedRate = {
   readonly receivedCurrency: string;
@@ -10,14 +12,41 @@ export type RecordedRate = {
   readonly day: string;
 };
 
-// Lane A's kin_record_payments.rate / received_currency: newest counted payment within 90 days.
+const RATE_DAYS = 90;
+
+/**
+ * The rate of the newest payment on an invoice in `from` that the company was paid in `to`,
+ * within 90 days up to `asOf`'s day in the owner's zone. Only a stated settled rate counts, never
+ * a rate the owner typed or one worked out from two sums. `keyed` leaves out what a key can't see.
+ */
 export const recordedRate = Effect.fn("KinRecordedRate.read")(function* (
-  _orgId: KinOrgId,
-  _from: string,
-  _to: string,
-  _asOf: number,
+  orgId: KinOrgId,
+  from: string,
+  to: string,
+  asOf: number,
+  keyed = false,
 ) {
-  return yield* Effect.succeed<RecordedRate | undefined>(undefined);
+  const sql = yield* SqlClient.SqlClient;
+  const zone = yield* ownerZone(orgId);
+  const [row] = yield* sql<{ rate: string; day: string }>`SELECT p.rate, p.paid_on AS day
+    FROM kin_record_payments p
+    JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
+    WHERE p.org_id = ${orgId} AND ${countedPayment(sql)} AND p.withheld = 0
+      AND r.register_id = 'invoices' AND p.currency = ${from}
+      AND p.received_currency = ${to} AND p.rate IS NOT NULL
+      AND p.paid_on >= ${dayIn(asOf - RATE_DAYS * 86_400_000, zone)}
+      AND p.paid_on <= ${dayIn(asOf, zone)}
+      ${keyed ? sql`AND NOT ${keyWithheld(sql)}` : sql``}
+    ORDER BY p.paid_on DESC, p.created_at DESC, p.payment_id DESC
+    LIMIT 1`;
+  return row === undefined
+    ? undefined
+    : ({
+        receivedCurrency: to,
+        invoiceCurrency: from,
+        rate: row.rate,
+        day: row.day,
+      } satisfies RecordedRate);
 });
 
 export const aboutInHome = Effect.fn("KinRecordedRate.about")(function* (
