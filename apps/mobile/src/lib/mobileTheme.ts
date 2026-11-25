@@ -24,6 +24,9 @@ export type MobileThemeAppearance = ThemeAppearance;
 export type MobileThemeMode = MobileThemeAppearance | "system";
 export type MobileThemeIds = Readonly<Record<MobileThemeAppearance, MobileThemeId>>;
 
+// T3 Chat's palette is another product's brand; Kin people never chose it.
+const KIN_HIDDEN_THEME_ID = "t3-chat";
+
 export const MOBILE_THEME_OPTIONS: ReadonlyArray<{
   readonly id: MobileThemeId;
   readonly label: string;
@@ -32,14 +35,18 @@ export const MOBILE_THEME_OPTIONS: ReadonlyArray<{
   // oxlint-disable-next-line t3code/no-untranslated-copy -- Kin's copy stays English until Kin is translated
   { id: DEFAULT_MOBILE_THEME_ID, label: KIN_ONLY ? "Kin" : "T3 Code" },
   { id: "material-you", label: "Material You" },
-  ...BUILT_IN_THEMES.map((theme) => ({ id: theme.id as MobileThemeId, label: theme.label })),
+  ...BUILT_IN_THEMES.filter((theme) => !(KIN_ONLY && theme.id === KIN_HIDDEN_THEME_ID)).map(
+    (theme) => ({ id: theme.id as MobileThemeId, label: theme.label }),
+  ),
 ];
 
 export type MobileThemeVariable = keyof ReturnType<typeof createMobileThemeVariables>;
 export type MobileThemeVariables = Readonly<Record<MobileThemeVariable, string>>;
 
 function normalizeMobileThemeId(value: unknown): MobileThemeId {
-  return typeof value === "string" && (MOBILE_THEME_IDS as readonly string[]).includes(value)
+  return typeof value === "string" &&
+    (MOBILE_THEME_IDS as readonly string[]).includes(value) &&
+    !(KIN_ONLY && value === KIN_HIDDEN_THEME_ID)
     ? (value as MobileThemeId)
     : DEFAULT_MOBILE_THEME_ID;
 }
