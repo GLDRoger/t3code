@@ -448,6 +448,7 @@ const KIN_RPC_ACCESS = {
   "kin.docs.startWhatWeSell": "owner_level",
   // The owner level, or the lead of the doc's project: the service decides from stored rows.
   "kin.docs.editSection": "person",
+  "kin.docs.readers": "person",
   // A teammate's own draft card, in their own chat with the agent: the service decides from stored rows.
   "kin.docs.sendUp": "person",
   // Whoever may change the doc by hand: the service decides from stored rows.
@@ -748,6 +749,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.docs.setDefaultRecipe": "kin-docs",
   "kin.docs.startWhatWeSell": "kin-docs",
   "kin.docs.editSection": "kin-docs",
+  "kin.docs.readers": "kin-docs",
   "kin.docs.sendUp": "kin-docs",
   "kin.docs.delete": "kin-docs",
   "kin.work.summary": "kin-work",

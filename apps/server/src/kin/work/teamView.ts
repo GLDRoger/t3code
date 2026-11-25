@@ -281,6 +281,8 @@ const legacyPersonSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Stat
     OR (r.register_id = 'docs' AND (r.team_shared = 1
       OR json_extract(r.fields_json, '$.home') = 'company')
       AND ${placeOn(sql, personId, "sees_docs")})))
+  OR (r.register_id = 'docs' AND r.sensitive = 1 AND r.marked_by_person_id = ${personId}
+    AND json_extract(r.fields_json, '$.draftFor') = ${personId} AND NOT ${inheritedSensitive(sql)})
   OR ${ownMoneyDraft(sql, personId)}
   OR (r.register_id = 'deals' AND NOT ${keySensitive(sql)}
     AND ${placeOn(sql, personId, "sees_clients")})

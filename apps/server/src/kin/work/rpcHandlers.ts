@@ -294,6 +294,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.docs.editSection": Effect.fn("KinDocs.rpc.editSection")(function* (input) {
         return yield* call((people) => Docs.editSection(people, input));
       }),
+      "kin.docs.readers": Effect.fn("KinDocs.rpc.readers")(function* (input) {
+        return yield* call((people) => Docs.setReaders(people, input));
+      }),
       "kin.docs.delete": Effect.fn("KinDocs.rpc.delete")(function* (input) {
         return yield* call((people) => Docs.remove(people, input));
       }),

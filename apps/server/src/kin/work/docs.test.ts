@@ -582,9 +582,13 @@ it.effect("a turn others read reaches only docs they all see, and restores none"
     assert.strictEqual((yield* Docs.versionOf(orgId, created.row.recordId))!.version, 1);
     // A member reaches the doc reads, where the service shows them only their docs.
     const reads = ["kin.docs.list", "kin.docs.get", "kin.docs.history", "kin.docs.diff"];
-    // The service decides a hand edit (`Docs.editSectionByHand`), a delete
-    // (`Docs.deleteByHand`), and Send to on a draft card.
-    const decided = ["kin.docs.editSection", "kin.docs.delete", "kin.docs.sendUp"];
+    // The service decides hand edits, deletes, reader changes and Send to on a draft card.
+    const decided = [
+      "kin.docs.editSection",
+      "kin.docs.delete",
+      "kin.docs.readers",
+      "kin.docs.sendUp",
+    ];
     for (const rpc of KinDocsRpcs)
       assert.strictEqual(
         kinRpcAccess(rpc._tag) === "person",
@@ -2770,6 +2774,94 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
         );
       }
     }
+
+    const zoya = mate;
+    const rhea = owner;
+    const arjun = others[0];
+    const meera = { _tag: "person" as const, orgId, personId: coOwner };
+    const projectMembers = (members: ReadonlyArray<string>) =>
+      sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.members',
+          json(${JSON.stringify(members)}))
+        WHERE org_id = ${orgId} AND record_id = ${project.row.recordId}`;
+    yield* projectMembers([`person:${arjun.personId}`]);
+    const { row: planRow } = yield* newDoc(plan, {
+      title: "Invented project draft",
+      projectId: project.row.recordId,
+    });
+    const { key } = planRow;
+    yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.draftFor', ${zoya.personId}),
+        sensitive = 1, marked_by_person_id = ${zoya.personId}
+      WHERE org_id = ${orgId} AND key = ${key}`;
+    assert.isTrue(yield* reads(zoya, key), "Zoya reads the project draft Zoya marked");
+    assert.isTrue(yield* reads(rhea, key));
+    assert.isTrue(yield* reads(meera, key));
+    assert.isFalse(yield* reads(arjun, key));
+    const set = (who: typeof mate, to: "draft" | "owners" | "team", rev?: number) =>
+      OwnerDocs.setReaders([who], { orgId, key, to, rev });
+    assert.deepInclude(yield* Effect.flip(set(arjun, "owners")), {
+      reason: "not_found",
+      message: `No doc ${key}.`,
+    });
+    assert.deepInclude(yield* Effect.flip(set(rhea, "draft")), {
+      reason: "not_allowed",
+      message: "Only the person writing this doc can make it a draft again.",
+    });
+    assert.deepInclude(yield* OwnerDocs.get([rhea], { orgId, key }), {
+      readers: "draft",
+      readersCan: ["owners", "team"],
+      draftOf: { name: "Mate" },
+    });
+    assert.deepInclude(yield* set(zoya, "owners"), {
+      readers: "owners",
+      readersCan: ["draft", "owners", "team"],
+    });
+    const arjunRead = yield* OwnerDocs.get([arjun], { orgId, key });
+    assert.notProperty(arjunRead, "readers");
+    assert.notProperty(arjunRead, "readersCan");
+    assert.deepInclude(yield* Effect.flip(set(arjun, "team")), {
+      reason: "not_allowed",
+      message: "Only the person writing this doc, or an owner, can change who reads it.",
+    });
+    yield* projectMembers([]);
+    assert.isFalse(yield* reads(arjun, key));
+    const team = yield* set(zoya, "team", arjunRead.rev);
+    assert.strictEqual(team.readers, "team");
+    assert.isTrue(yield* reads(arjun, key));
+    assert.deepStrictEqual(yield* set(zoya, "team", arjunRead.rev), team);
+    assert.strictEqual(
+      reasonOf(yield* Effect.flip(set(zoya, "owners", arjunRead.rev))),
+      "conflict",
+    );
+    assert.isTrue(yield* reads(arjun, key));
+    assert.strictEqual((yield* set(zoya, "draft", team.rev)).readers, "draft");
+    const [mark] = yield* sql<{ by: string; shared: number }>`SELECT
+        marked_by_person_id AS "by", team_shared AS shared FROM kin_records
+      WHERE org_id = ${orgId} AND key = ${key}`;
+    assert.deepStrictEqual(mark, { by: zoya.personId, shared: 0 });
+    assert.isTrue(yield* reads(zoya, key));
+    assert.isFalse(yield* reads(arjun, key));
+
+    yield* wake("readers-draft-wake", lead, "mate-chat", zoya.personId, "shared");
+    assert.strictEqual((yield* LeadDocs.read(scopeOf(lead), { key })).key, key);
+    yield* sql`UPDATE kin_records SET sensitive = 1
+      WHERE org_id = ${orgId} AND record_id = ${project.row.recordId}`;
+    assert.isFalse(yield* reads(zoya, key));
+    yield* sql`UPDATE kin_records SET sensitive = 0
+      WHERE org_id = ${orgId} AND record_id = ${project.row.recordId}`;
+
+    assert.strictEqual((yield* set(rhea, "team")).readers, "team");
+    assert.strictEqual(reasonOf(yield* Effect.flip(set(zoya, "draft", team.rev))), "conflict");
+    assert.isTrue(yield* reads(arjun, key));
+    assert.strictEqual((yield* set(meera, "owners")).readers, "owners");
+    assert.isFalse(yield* reads(arjun, key));
+    const keptToOwners = yield* OwnerDocs.label([rhea], { orgId, key, sensitive: true });
+    assert.notProperty(keptToOwners, "readers");
+    assert.notProperty(keptToOwners, "readersCan");
+    assert.deepInclude(yield* Effect.flip(set(zoya, "team")), {
+      reason: "not_found",
+      message: `No doc ${key}.`,
+    });
+    assert.isFalse(yield* reads(zoya, key));
   }).pipe(Effect.provide(layer)),
 );
 
