@@ -32,8 +32,10 @@ import { takeLogo } from "../gendocs/brand.ts";
 import {
   attachReceiptCard,
   cardLines,
+  dayText,
   proposeReceipt,
   type ReceiptRequest,
+  samePayment,
   snapshotOf,
 } from "../gendocs/receiptProposals.ts";
 import { KinDocRenderer } from "../gendocs/render.ts";
@@ -544,6 +546,10 @@ export const PaymentInput = Schema.Struct({
   void: Schema.optional(KinToolText(60)).annotate({
     description: "A paymentId from record_get to take back instead.",
   }),
+  another: Schema.optional(Schema.Literal(true)).annotate({
+    description:
+      "Only after the owner said this is a second payment of the same amount on the same day.",
+  }),
 });
 const PaymentRecorded = Schema.Struct({
   key: Schema.String,
@@ -566,7 +572,18 @@ const PaymentProposed = Schema.Struct({
   next: Schema.String,
   sensitive: Schema.Literal(true),
 });
-export const PaymentResult = Schema.Union([PaymentRecorded, PaymentProposed]);
+/** The same payment is on the invoice already: no card until the owner says it is another. */
+const PaymentAlreadyRecorded = Schema.Struct({
+  status: Schema.Literal("already_recorded"),
+  key: Schema.String,
+  next: Schema.String,
+  sensitive: Schema.Literal(true),
+});
+export const PaymentResult = Schema.Union([
+  PaymentRecorded,
+  PaymentProposed,
+  PaymentAlreadyRecorded,
+]);
 
 export const PAYMENT_PROPOSED_NEXT =
   "Nothing is recorded yet. Kin put this payment to the owner on a card. Say in one short line that it is there to check and confirm, and that nothing is recorded until they tap Confirm; a typed yes doesn't record it. Never say it is recorded, marked paid or done.";
@@ -611,13 +628,28 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
         return yield* invalid(
           `${before.key} is in ${before.currency}; record the payment in ${before.currency}.`,
         );
+    const name = issuedNumber(parseFields(before.fieldsJson).number).number ?? before.key;
+    if (
+      input.another !== true &&
+      (yield* samePayment(lead.orgId, before.key, { amount: cash, withheld: tds, paidOn }))
+    ) {
+      const parts = [
+        ...(cash === undefined ? [] : [formatMoney(cash)]),
+        ...(tds === undefined ? [] : [`${formatMoney(tds)} of tax withheld`]),
+      ].join(" and ");
+      return {
+        status: "already_recorded" as const,
+        key: before.key,
+        next: `Nothing was recorded and no card was drawn: ${parts} on ${dayText(paidOn)} is already recorded on ${name}. Ask the owner in one line whether this is another payment; only if they say so, call payment_record again with another.`,
+        sensitive: true as const,
+      };
+    }
     const owed = before.amountMinor === null ? undefined : before.amountMinor - before.paid;
     if (owed !== undefined && (cash?.minor ?? 0) + (tds?.minor ?? 0) > owed)
       return yield* new SensitiveRefusal({
         reason: "invalid_state",
         message: `That is more than the ${formatMoney({ minor: owed, currency: fallback })} still owed on ${before.key}.`,
       });
-    const name = issuedNumber(parseFields(before.fieldsJson).number).number ?? before.key;
     const asked = yield* proposeMoney(
       lead,
       {
@@ -627,6 +659,7 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
           ...(tds === undefined ? {} : { withheld: tds }),
           paidOn,
           ...(input.note === undefined ? {} : { note: input.note }),
+          ...(input.another === true ? { another: true as const } : {}),
         },
       },
       `Record this payment on ${name}?`,

@@ -49,6 +49,8 @@ export const ReceiptRequest = Schema.Struct({
       withheld: Schema.optionalKey(KinMoney),
       paidOn: KinDay,
       note: Schema.optionalKey(Schema.String),
+      /** The owner said it is a second payment of the same amount on the same day. */
+      another: Schema.optionalKey(Schema.Literal(true)),
     }),
   ),
   towards: Schema.optionalKey(Schema.String),
@@ -59,6 +61,36 @@ export type ReceiptRequest = typeof ReceiptRequest.Type;
 const decodeRequest = Schema.decodeUnknownOption(Schema.fromJsonString(ReceiptRequest));
 
 const refused = (message: string) => new KinChatError({ reason: "not_allowed", message });
+
+/**
+ * Whether this exact payment is on the invoice already: on the same day, a live row of the same
+ * amount for each part it has, cash and withheld, and none for a part it hasn't.
+ */
+export const samePayment = Effect.fn("KinReceipts.samePayment")(function* (
+  orgId: KinOrgId,
+  invoiceKey: string,
+  received: {
+    readonly amount?: KinMoney | undefined;
+    readonly withheld?: KinMoney | undefined;
+    readonly paidOn: string;
+  },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  if (received.amount === undefined && received.withheld === undefined) return false;
+  const rows = yield* sql<{ minor: number; currency: string; withheld: number }>`SELECT
+      p.amount_minor AS minor, p.currency, p.withheld
+    FROM kin_record_payments p
+    JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
+    WHERE p.org_id = ${orgId} AND r.key = ${invoiceKey} AND p.voided_at IS NULL
+      AND p.paid_on = ${received.paidOn}`;
+  const matches = (money: KinMoney | undefined, withheld: number) => {
+    const part = rows.filter((row) => row.withheld === withheld);
+    return money === undefined
+      ? part.length === 0
+      : part.some((row) => row.minor === money.minor && row.currency === money.currency);
+  };
+  return matches(received.amount, 0) && matches(received.withheld, 1);
+});
 
 /** What the card shows, from the records it names: compared again when the owner confirms. */
 export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
@@ -133,12 +165,16 @@ export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
           },
     recorded: sameAdvances,
     ...(received?.withheld === undefined ? {} : { withheld: received.withheld }),
+    // Asked as another payment, the card says the same one is already there.
+    ...(received?.another === true && (yield* samePayment(orgId, received.key, received))
+      ? { twin: true }
+      : {}),
   };
 });
 export type Snapshot = Effect.Success<ReturnType<typeof snapshotOf>>;
 
 // A calendar day has no zone: read at noon UTC it names the same day everywhere.
-const dayText = (day: string) =>
+export const dayText = (day: string) =>
   formatKinWhen(Date.parse(`${day}T12:00:00Z`), "dayYear", {
     zone: "UTC",
     locale: KIN_TEXT_LOCALE,
@@ -206,6 +242,11 @@ const paymentLines = (snapshot: Snapshot, received: Received) => {
             ? "It settles the invoice in full"
             : `Still owed after: ${formatMoney(left)}`,
         ]),
+    ...("twin" in snapshot
+      ? [
+          "A payment of the same amount on the same day is already recorded on it; Confirm adds a second one.",
+        ]
+      : []),
     ...(received.note === undefined ? [] : [`Agent's note: ${received.note}`]),
   ];
 };

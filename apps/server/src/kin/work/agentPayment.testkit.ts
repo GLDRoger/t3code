@@ -19,7 +19,8 @@ export const agentPaid = (
 ) =>
   Effect.gen(function* () {
     const asked = yield* LeadMoney.payment(scope, input);
-    if (!("status" in asked)) return yield* Effect.die(new Error("expected a card"));
+    if (!("status" in asked) || asked.status !== "proposed")
+      return yield* Effect.die(new Error("expected a card"));
     const sql = yield* SqlClient.SqlClient;
     const [card] = yield* sql<{ widgetId: string | null }>`SELECT widget_id AS "widgetId"
       FROM kin_receipt_proposals WHERE org_id = ${orgId} AND proposal_id = ${asked.proposal}`;
