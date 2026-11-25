@@ -475,8 +475,10 @@ type TaxResult = ReturnType<typeof gst>;
 const groupedTax = (
   groups: ReadonlyMap<string, Money>,
   args: TaxAmounts,
+  usualRate: string,
+  pricesInclude: boolean,
   compute: (taxable: Money, rate: string) => TaxResult,
-): TaxResult => {
+) => {
   const parts = [...groups].map(([rate, amount]) => ({ rate, result: compute(amount, rate) }));
   const first = parts[0]!.result;
   const { currency } = first.total;
@@ -493,11 +495,17 @@ const groupedTax = (
     fail(
       `the lines come to ${formatMoney(total)} with tax, but the entry is recorded at ${formatMoney(args.total)}: correct the lines or the entry's amount`,
     );
+  const tax = sum("tax");
+  if (pricesInclude && args.recordedTax !== null && args.recordedTax.minor !== tax.minor)
+    fail(
+      `the lines come to ${formatMoney(tax)} in tax, but the entry records ${formatMoney(args.recordedTax)} in tax: correct the lines or the entry's tax`,
+    );
   return {
     ...first,
     taxable: sum("taxable"),
-    tax: sum("tax"),
+    tax,
     total,
+    usualRate,
     taxes: parts.flatMap(({ rate, result }) => (rate === "0" ? [] : result.taxes)),
   };
 };
@@ -802,12 +810,18 @@ const evaluate = (scope: Scope, name: string, spec: Spec): unknown => {
         return tax._tag === "flat" ? flatTax(tax, args) : gst(indian);
       if (tax._tag === "gst" && (typeof supplierGstin !== "string" || supplierGstin === ""))
         refuseLineTax(grouped.explicitTax, "GST");
-      return groupedTax(grouped.groups, args, (taxable, groupRate) => {
-        const group = { taxable, total: null, recordedTax: null };
-        return tax._tag === "flat"
-          ? flatTax({ ...tax, rate: groupRate }, group)
-          : gst({ ...indian, ...group, rate: groupRate });
-      });
+      return groupedTax(
+        grouped.groups,
+        args,
+        usual ?? "0",
+        tax._tag === "flat" && tax.pricesInclude,
+        (taxable, groupRate) => {
+          const group = { taxable, total: null, recordedTax: null };
+          return tax._tag === "flat"
+            ? flatTax({ ...tax, rate: groupRate }, group)
+            : gst({ ...indian, ...group, rate: groupRate });
+        },
+      );
     }
     case "markdown": {
       const text = resolve(scope, arg);

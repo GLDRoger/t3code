@@ -205,7 +205,7 @@ endorsements and the footer) is at the top of template.typ.
 #let body-font = if d.brandFont != none { (d.brandFont, "Libertinus Serif") } else { "Libertinus Serif" }
 #let t = d.tax
 #let customer-accounts = t.at("customerAccounts", default: none)
-#let line-tax = d.items != none and d.items.any(l => l.at("taxRate", default: none) != none)
+#let line-tax = customer-accounts == none and t.taxes.len() > 0 and d.items != none and d.items.any(l => l.at("taxRate", default: none) != none)
 #let draft = d.draft != false or d.number == none
 #let heading-text = if t.registered { "Tax Invoice" } else { "Invoice" }
 #let endorsement = if not t.exported or not t.registered or customer-accounts != none { none } else if t.exportUnderLut { lut-endorsement } else { paid-export-endorsement }
@@ -217,7 +217,7 @@ endorsements and the footer) is at the top of template.typ.
     if l.unit != none { l.quantity + " " + l.unit } else { l.quantity },
     l.rate.text,
     l.amount.text,
-    ..if line-tax { (if l.at("taxRate", default: none) == none { "" } else { str(l.taxRate) + "%" },) } else { () },
+    ..if line-tax { (str(if l.at("taxRate", default: none) == none { t.usualRate } else { l.taxRate }) + "%",) } else { () },
   ))
 } else {
   ((
@@ -493,7 +493,7 @@ The wording the owner may change is at the top of template.typ.
 #let body-font = if d.brandFont != none { (d.brandFont, "Libertinus Serif") } else { "Libertinus Serif" }
 #let t = d.tax
 #let customer-accounts = t.at("customerAccounts", default: none)
-#let line-tax = d.items != none and d.items.any(l => l.at("taxRate", default: none) != none)
+#let line-tax = customer-accounts == none and t.taxes.len() > 0 and d.items != none and d.items.any(l => l.at("taxRate", default: none) != none)
 #let draft = d.draft != false or d.number == none
 #let lines = if d.items != none and d.items.len() > 0 {
   d.items.map(l => (
@@ -503,7 +503,7 @@ The wording the owner may change is at the top of template.typ.
     if l.unit != none { l.quantity + " " + l.unit } else { l.quantity },
     l.rate.text,
     l.amount.text,
-    ..if line-tax { (if l.at("taxRate", default: none) == none { "" } else { str(l.taxRate) + "%" },) } else { () },
+    ..if line-tax { (str(if l.at("taxRate", default: none) == none { t.usualRate } else { l.taxRate }) + "%",) } else { () },
   ))
 } else {
   ((

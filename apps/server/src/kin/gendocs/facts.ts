@@ -454,7 +454,9 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
           case "address":
             return addressOverride ?? billed.address;
           case "gstin":
-            return clientTaxNumber ? billed.taxNumber : null;
+            return clientTaxNumber && (profile.country === "IN" || customerAccounts !== undefined)
+              ? billed.taxNumber
+              : null;
           case "placeOfSupply":
             return billed.place;
           default:

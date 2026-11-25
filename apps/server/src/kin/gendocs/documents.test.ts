@@ -618,6 +618,32 @@ describe("recipe documents", () => {
       });
       assert.deepStrictEqual([again.gstin, again.taxRegistered], ["29AAAAA1111A1Z5", undefined]);
       assert.strictEqual((yield* standing(4))[0], "27BBBBB2222B1Z5");
+      yield* setProfile(
+        orgId,
+        { _tag: "person", personId: ownerId },
+        { country: "GB", tax: { name: "VAT", rate: "20", pricesInclude: null } },
+        undefined,
+      );
+      const updated = yield* OwnerClients.updateParty(people, {
+        orgId,
+        key: "C-1",
+        rev: (yield* (yield* KinRecords.KinRecords).get(orgId, "C-1"))!.rev,
+        taxNumber: "GB123456789",
+      });
+      assert.strictEqual((yield* standing(5))[0], null);
+      assert.isUndefined(latestData().tax.customerAccounts);
+      yield* OwnerClients.updateParty(people, {
+        orgId,
+        key: "C-1",
+        rev: updated.rev,
+        accountsForTax: true,
+      });
+      yield* standing(6);
+      assert.deepStrictEqual(latestData().tax.customerAccounts, {
+        line: "Reverse charge.",
+        taxIdLabel: "VAT number",
+        taxNumber: "GB123456789",
+      });
       // Every document tool is refused in a turn someone besides the owner reads.
       const turnRef = { orgId, agentId: lead, wakeupId: "wake-3" };
       for (const tool of ["kin_document", "kin_recipes", "kin_issue", "kin_recipe_undo"])
@@ -1711,6 +1737,10 @@ describe("recipe documents", () => {
       );
       assert.strictEqual(row.dueAt, Date.parse("2026-12-12T18:29:59.999Z"));
       assert.deepStrictEqual(latestData().items[1].sac, "998391");
+      assert.deepStrictEqual(
+        yield* OwnerMoneyAnswers.entryLines(people, { orgId, key: made.invoice }),
+        { lines: asked.lines, gstRate: "12" },
+      );
       // Never numbered, never owed: Issue takes over from its page.
       const summary = yield* moneySummary(
         orgId,

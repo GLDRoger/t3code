@@ -217,6 +217,14 @@ describe("an invoice typed by hand", () => {
       note: null,
     });
     expect(kinLineTax(vat)).toEqual({ show: true, defaultRate: "20" });
+    for (const [rate, placeholder, hint] of [
+      ["12", "12", "Tax %: leave empty for 12%, 0 for no tax."],
+      [null, "", "Tax %: leave empty for the invoice's usual rate, 0 for no tax."],
+    ] as const) {
+      const lineTax = kinLineTax(kinInvoiceTax(before), { gstRate: rate });
+      expect(lineTax).toEqual({ show: true, defaultRate: placeholder });
+      expect(lineTax.show && KIN_LINES.taxDetail(lineTax.defaultRate)).toBe(hint);
+    }
     expect(kinLineTax(vat, { clientAccountsForTax: true })).toEqual({
       show: false,
       note: KIN_LINES.clientAccounts,

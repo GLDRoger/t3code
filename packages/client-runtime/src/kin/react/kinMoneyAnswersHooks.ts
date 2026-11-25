@@ -1,7 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import type {
   KinCash,
-  KinDocumentLine,
+  KinEntryLines,
   KinMoneyBudgetSetInput,
   KinMoneyBudgets,
   KinNewExpenseInput,
@@ -100,13 +100,13 @@ export function makeKinMoneyAnswersHooks<R, ER>(
   /** The lines an entry's latest document was made with, for its Make invoice form. */
   function useKinEntryLines(target: KinScreenTarget) {
     const read = useAtomCommand(kinClient.workEntryLines, { reportFailure: false });
-    return async (key: KinRecordKey): Promise<ReadonlyArray<KinDocumentLine> | null> => {
+    return async (key: KinRecordKey): Promise<KinEntryLines | null> => {
       const outcome = await kinListSend({
         online: () => kinHostConnected(target.environmentId),
         send: () =>
           read({ environmentId: target.environmentId, input: { orgId: target.orgId, key } }),
       });
-      return outcome.ok ? outcome.value.lines : null;
+      return outcome.ok ? outcome.value : null;
     };
   }
 

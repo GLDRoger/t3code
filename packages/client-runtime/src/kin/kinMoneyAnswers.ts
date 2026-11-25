@@ -209,9 +209,11 @@ export const KIN_LINES = {
   rate: "Rate",
   tax: "Tax %",
   taxDetail: (rate?: string | null) =>
-    rate != null && rate.trim() !== ""
-      ? `Tax %: leave empty for ${rate.trim()}%, 0 for no tax.`
-      : "Tax %: leave empty for none, or give a line its own rate.",
+    rate === ""
+      ? "Tax %: leave empty for the invoice's usual rate, 0 for no tax."
+      : rate != null && rate.trim() !== ""
+        ? `Tax %: leave empty for ${rate.trim()}%, 0 for no tax.`
+        : "Tax %: leave empty for none, or give a line its own rate.",
   add: "Add line",
   remove: "Remove line",
   badSac: (row: number) => `Line ${row}: a SAC or HSN code is 4 to 8 digits.`,
@@ -800,7 +802,7 @@ export const KIN_TAX_RATE = /^(?:100|\d{1,2}(?:\.\d{1,3})?)$/;
 export function kinLinesInput(
   drafts: ReadonlyArray<KinLineDraft>,
   currency: string,
-  options?: { readonly tax?: boolean },
+  options?: { readonly tax?: boolean; readonly keepStoredTax?: boolean },
 ):
   | { readonly ok: true; readonly lines: ReadonlyArray<KinDocumentLine> | null }
   | { readonly ok: false; readonly problem: string } {
@@ -825,7 +827,7 @@ export function kinLinesInput(
     const rate: KinMoney | null = kinParseMoney(draft.rate, currency);
     if (rate === null) return { ok: false, problem: KIN_LINES.badRate(row) };
     if (rate.currency !== currency) return { ok: false, problem: KIN_LINES.mixed };
-    const taxRate = tax ? draft.taxRate.trim() : "";
+    const taxRate = tax ? draft.taxRate.trim() : options?.keepStoredTax ? draft.taxRate : "";
     if (taxRate !== "" && !KIN_TAX_RATE.test(taxRate))
       return { ok: false, problem: KIN_LINES.badTax(row) };
     const unit = draft.unit.trim().slice(0, 20);

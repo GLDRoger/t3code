@@ -109,6 +109,18 @@ describe("kinLinesInput", () => {
         problem: "Line 1: a SAC or HSN code is 4 to 8 digits.",
       });
     expect(kinLinesInput([], "INR")).toEqual({ ok: true, lines: null });
+    const stored = [
+      { ...line, taxRate: "0" },
+      { ...line, taxRate: "5.00" },
+    ];
+    expect(kinLinesInput(stored, "INR", { tax: false, keepStoredTax: true })).toMatchObject({
+      lines: [{ taxRate: "0" }, { taxRate: "5.00" }],
+    });
+    const unregistered = kinLinesInput(stored, "INR", { tax: false });
+    expect(unregistered.ok && unregistered.lines?.map((one) => one.taxRate)).toEqual([
+      undefined,
+      undefined,
+    ]);
   });
 
   it("refuses a zero quantity and a rate in another currency", () => {

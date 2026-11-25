@@ -258,8 +258,13 @@ export const KinDocumentLine = Schema.Struct({
 export type KinDocumentLine = typeof KinDocumentLine.Type;
 export const KinEntryLinesInput = Schema.Struct({ orgId: KinOrgId, key: KinRecordKey });
 export type KinEntryLinesInput = typeof KinEntryLinesInput.Type;
-/** The lines the entry's latest document was made with; null when it had none Kin can read. */
-export const KinEntryLines = Schema.Struct({ lines: Schema.NullOr(Schema.Array(KinDocumentLine)) });
+const InvoiceGstRate = Schema.String.check(Schema.isPattern(/^(?:100|\d{1,2}(?:\.\d{1,3})?)$/));
+
+/** The lines and GST rate the entry's latest document was made with. */
+export const KinEntryLines = Schema.Struct({
+  lines: Schema.NullOr(Schema.Array(KinDocumentLine)),
+  gstRate: Schema.optional(InvoiceGstRate),
+});
 export type KinEntryLines = typeof KinEntryLines.Type;
 
 export const KinInvoiceFromQuoteInput = Schema.Struct({
@@ -297,9 +302,7 @@ export const KinNewInvoiceInput = Schema.Struct({
   title: KinTrimmedText.check(Schema.isMaxLength(280)),
   lines: Schema.Array(KinDocumentLine).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
   /** GST percent, in India only; elsewhere the company's own tax applies. */
-  gstRate: Schema.optional(
-    Schema.String.check(Schema.isPattern(/^(?:100|\d{1,2}(?:\.\d{1,3})?)$/)),
-  ),
+  gstRate: Schema.optional(InvoiceGstRate),
   dueOn: Schema.optional(KinDay),
   notes: Schema.optional(Schema.String.check(Schema.isMaxLength(4_000))),
   project: Schema.optional(KinRecordKey),

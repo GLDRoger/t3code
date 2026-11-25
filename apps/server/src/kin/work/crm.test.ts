@@ -1445,7 +1445,7 @@ it.effect(
         ),
         {
           message:
-            "Invoices to this client leave the tax to the client and print this number. Turn that off first. Nothing changed.",
+            "Invoices to this client leave the tax to the client and print this number. Turn off Accounts for the tax themselves first. Nothing changed.",
         },
       );
       assert.include(

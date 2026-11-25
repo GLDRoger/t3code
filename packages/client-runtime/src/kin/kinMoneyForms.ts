@@ -210,6 +210,9 @@ export function kinInvoiceTax(
     : { _tag: "flat", name: tax.name, rate: tax.rate, included: tax.pricesInclude === true };
 }
 
+export const kinKeepsLineTax = (tax: KinInvoiceTax | null): boolean =>
+  tax?._tag === "gst" ? tax.registered : tax?._tag !== "none" || tax.notRegistered !== true;
+
 /** Whether the line editor shows a Tax % input and its usual-rate placeholder, or why not. */
 export type KinLineTax =
   | { readonly show: true; readonly defaultRate: string | null }
@@ -218,21 +221,20 @@ export type KinLineTax =
 export function kinLineTax(
   tax: KinInvoiceTax | null,
   options: {
-    /** The document's GST rate (India); unused outside India. */
+    /** The document's GST rate (India); null if not available from the entry. */
     readonly gstRate?: string | null;
     readonly clientAccountsForTax?: boolean;
   } = {},
 ): KinLineTax {
-  if (tax === null) return { show: false, note: null };
-  if (tax._tag === "gst" && !tax.registered) return { show: false, note: null };
-  if (tax._tag === "none" && tax.notRegistered === true) return { show: false, note: null };
-  if (options.clientAccountsForTax === true)
-    return { show: false, note: KIN_LINES.clientAccounts };
+  if (tax === null || !kinKeepsLineTax(tax)) return { show: false, note: null };
+  if (options.clientAccountsForTax === true) return { show: false, note: KIN_LINES.clientAccounts };
   const defaultRate =
     tax._tag === "flat"
       ? tax.rate
       : tax._tag === "gst"
-        ? options.gstRate?.trim() || GST_DEFAULT
+        ? options.gstRate === null
+          ? ""
+          : options.gstRate?.trim() || GST_DEFAULT
         : null;
   return { show: true, defaultRate };
 }

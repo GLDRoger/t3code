@@ -522,7 +522,7 @@ const checkPartyTax = Effect.fn("KinWork.crm.checkPartyTax")(function* (
   )
     return yield* invalidTax(
       number === null && accountsForTax(before)
-        ? "Invoices to this client leave the tax to the client and print this number. Turn that off first. Nothing changed."
+        ? "Invoices to this client leave the tax to the client and print this number. Turn off Accounts for the tax themselves first. Nothing changed."
         : "Add the client's tax number first: invoices that leave the tax to the client print it. Nothing changed.",
     );
 });
