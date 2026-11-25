@@ -187,13 +187,15 @@ export const proposeMoney = Effect.fn("KinOwnerCards.proposeMoney")(function* (
       reason: "not_allowed",
       message: "This turn has no chat to ask the owner in.",
     });
-  const snapshot = yield* snapshotOf(lead.orgId, request);
+  // Every new card names the payer and the invoice as the owner knows them.
+  const asked: ReceiptRequest = { ...request, version: 2 };
+  const snapshot = yield* snapshotOf(lead.orgId, asked);
   const proposal = yield* proposeReceipt({
     orgId: lead.orgId,
     agentId: lead.agentId,
     wakeupId: lead.wakeupId,
     chatId: chat.chatId,
-    request,
+    request: asked,
     snapshot,
     now: yield* Clock.currentTimeMillis,
   });
@@ -208,7 +210,7 @@ export const proposeMoney = Effect.fn("KinOwnerCards.proposeMoney")(function* (
           "The owner already answered the card for this same payment in this turn, so nothing more was recorded. Don't ask again unless they do.",
       });
   }
-  const shown = cardLines(snapshot, request);
+  const shown = cardLines(snapshot, asked);
   const card = yield* askOwner(
     lead,
     {

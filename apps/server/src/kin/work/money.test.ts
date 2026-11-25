@@ -3189,6 +3189,39 @@ describe("the owner's taps", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("name who paid from the invoice's bill-to when it has no client record", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "invoices" });
+      const asked = yield* turn(3, "Invoice Tidewater Freight");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          {
+            list: "invoices",
+            title: "Invented freight audit",
+            amount: "1 lakh",
+            date: "2026-10-01",
+            fields: { billToName: "Tidewater Freight" },
+          },
+        ],
+      });
+      yield* LeadDocuments.issue(scope, {
+        sourceEventId: asked,
+        entry: KinRecordKey.make("INV-1"),
+      });
+      const proposed = yield* LeadMoney.payment(scope, {
+        sourceEventId: yield* turn(4, "Tidewater paid 40k"),
+        key: "INV-1",
+        amount: "40k",
+        paidOn: "2026-11-05",
+      });
+      if (!("status" in proposed) || proposed.status !== "proposed")
+        return assert.fail("expected a card");
+      assert.strictEqual(proposed.shown[0], "Client: Tidewater Freight");
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("settle an invoice from its balance when the amount is edited", () =>
     Effect.gen(function* () {
       yield* seed;

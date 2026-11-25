@@ -20,6 +20,7 @@ import * as KinShell from "../shell/KinShell.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { dayIn, formatMoney } from "../work/money.ts";
+import { billedParty } from "../work/billTo.ts";
 import { parseFields } from "../work/lists.ts";
 import { endOfDay, issuedNumber, ownerZone } from "../work/recordRows.ts";
 import { recordReceipt } from "./receipts.ts";
@@ -56,6 +57,8 @@ export const ReceiptRequest = Schema.Struct({
   towards: Schema.optionalKey(Schema.String),
   mode: Schema.optionalKey(Schema.String),
   reference: Schema.optionalKey(Schema.String),
+  /** Asked since cards name the payer by bill-to and the invoice by number; older cards don't. */
+  version: Schema.optionalKey(Schema.Literal(2)),
 });
 export type ReceiptRequest = typeof ReceiptRequest.Type;
 const decodeRequest = Schema.decodeUnknownOption(Schema.fromJsonString(ReceiptRequest));
@@ -111,6 +114,12 @@ export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
       : party?.partyId == null
         ? undefined
         : yield* records.getById(orgId, party.partyId);
+  const named = request.version === 2;
+  // An invoice to a typed bill-to name with no client record is from that name.
+  const billedTo =
+    named && client === undefined && against !== undefined
+      ? billedParty(against, undefined)?.name
+      : undefined;
   const sql = yield* SqlClient.SqlClient;
   const advance = request.advance;
   // Kin can't tell two advances apart: the same sum from the same client on the same day already
@@ -156,14 +165,15 @@ export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
               against.amountMinor === null || against.currency === null
                 ? null
                 : { minor: against.amountMinor, currency: against.currency },
-            // Only a payment's card names the invoice by number: older snapshots stay as stored.
-            ...(received === undefined
-              ? {}
-              : {
+            // Only a newer card names the invoice by number: older snapshots stay as stored.
+            ...(named || received !== undefined
+              ? {
                   name: issuedNumber(parseFields(against.fieldsJson).number).number ?? against.key,
-                }),
+                }
+              : {}),
           },
     recorded: sameAdvances,
+    ...(billedTo === undefined ? {} : { billedTo }),
     ...(received?.withheld === undefined ? {} : { withheld: received.withheld }),
     // Asked as another payment, the card says the same one is already there.
     ...(received?.another === true && (yield* samePayment(orgId, received.key, received))
@@ -180,6 +190,10 @@ export const dayText = (day: string) =>
     locale: KIN_TEXT_LOCALE,
   });
 
+/** Who the money is from, as the card and its outcome name them. */
+const payerOf = (snapshot: Snapshot) =>
+  snapshot.client?.title ?? ("billedTo" in snapshot ? snapshot.billedTo : undefined);
+
 /** The card's lines: figures from the records, the agent's own words labelled as its note. */
 export const cardLines = (snapshot: Snapshot, request: ReceiptRequest) => {
   const note = [
@@ -190,7 +204,7 @@ export const cardLines = (snapshot: Snapshot, request: ReceiptRequest) => {
   const against = snapshot.against;
   if (request.received !== undefined) return paymentLines(snapshot, request.received);
   return [
-    `Client: ${snapshot.client === null ? "none named" : snapshot.client.title}`,
+    `Client: ${payerOf(snapshot) ?? "none named"}`,
     `Amount: ${snapshot.amount === null ? "none given" : formatMoney(snapshot.amount)}`,
     `Received on: ${snapshot.receivedOn === null ? "no day given" : dayText(snapshot.receivedOn)}`,
     ...(snapshot.recorded.length === 0 || snapshot.amount === null
@@ -198,7 +212,7 @@ export const cardLines = (snapshot: Snapshot, request: ReceiptRequest) => {
       : [
           `Already recorded: ${formatMoney(snapshot.amount)}${snapshot.client === null ? "" : ` from ${snapshot.client.title}`}${snapshot.receivedOn === null ? "" : ` on ${dayText(snapshot.receivedOn)}`} (${snapshot.recorded.map((one) => one.number ?? "receipt not numbered yet").join(", ")}). Confirm only if this is another payment.`,
         ]),
-    `Set against: ${against === null ? "no invoice; it stays an advance" : against.title}`,
+    `Set against: ${against === null ? "no invoice; it stays an advance" : "name" in against ? `${against.name}, ${against.title}` : against.title}`,
     ...(against?.total == null
       ? []
       : [
@@ -223,7 +237,7 @@ const paymentLines = (snapshot: Snapshot, received: Received) => {
   const against = snapshot.against;
   const left = owedAfter(snapshot, received);
   return [
-    `Client: ${snapshot.client === null ? "none named" : snapshot.client.title}`,
+    `Client: ${payerOf(snapshot) ?? "none named"}`,
     `Received: ${received.amount === undefined ? "nothing in cash" : formatMoney(received.amount)}`,
     ...(received.withheld === undefined
       ? []
@@ -254,7 +268,8 @@ const paymentLines = (snapshot: Snapshot, received: Received) => {
 /** What the owner's Confirm did, in their words, for the answered card. */
 const madeOutcome = (made: { readonly number: string | null }, shown: Snapshot) => {
   const money = shown.amount === null ? "The money" : formatMoney(shown.amount);
-  const from = shown.client === null ? "" : ` from ${shown.client.title}`;
+  const payer = payerOf(shown);
+  const from = payer === undefined ? "" : ` from ${payer}`;
   const on = shown.receivedOn === null ? "" : `, received ${dayText(shown.receivedOn)}`;
   const where =
     shown.against === null ? "kept as an advance" : `set against ${shown.against.title}`;
@@ -272,7 +287,8 @@ const paidOutcome = (shown: Snapshot, received: Received) => {
       ? []
       : [`${formatMoney(received.withheld)} of tax the client withheld`]),
   ].join(" and ");
-  const from = shown.client === null ? "" : ` from ${shown.client.title}`;
+  const payer = payerOf(shown);
+  const from = payer === undefined ? "" : ` from ${payer}`;
   const left = owedAfter(shown, received);
   return {
     title: "Payment recorded",

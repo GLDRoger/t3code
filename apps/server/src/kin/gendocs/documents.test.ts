@@ -2540,9 +2540,10 @@ describe("receipts", () => {
             AND r.record_id = p.record_id
           WHERE r.key = 'INV-1' AND p.voided_at IS NULL ORDER BY p.amount_minor`;
         assert.deepStrictEqual(yield* invoicePaid, [{ minor: 400_00 }]);
+        const target = (yield* records.get(orgId, "INV-1"))!;
         assert.include(
           onInvoice.shown,
-          "Set against: " + (yield* records.get(orgId, "INV-1"))!.title,
+          `Set against: ${String(JSON.parse(target.fieldsJson).number)}, ${target.title}`,
         );
         yield* answerCard(`kin-receipt:${onInvoice.proposal}`, "yes");
         assert.deepStrictEqual(yield* invoicePaid, [{ minor: 400_00 }, { minor: 500_00 }]);
