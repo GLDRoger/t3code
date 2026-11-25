@@ -386,6 +386,14 @@ const regionDisplayNames = (): Intl.DisplayNames | null => {
   return cachedDisplayNames;
 };
 
+const canonicalRegion = (code: string): string => {
+  try {
+    return new Intl.Locale(`und-${code}`).region ?? code;
+  } catch {
+    return code;
+  }
+};
+
 const countryEntries = (): ReadonlyArray<CountryEntry> => {
   if (cachedCountries !== null) return cachedCountries;
   const names = regionDisplayNames();
@@ -408,6 +416,8 @@ const countryEntries = (): ReadonlyArray<CountryEntry> => {
     for (let second = 65; second <= 90; second++) {
       const code = String.fromCharCode(first, second);
       if (!isCountryCode(code)) continue;
+      // Drop deprecated and alias codes (such as UK -> GB, DD -> DE, FX -> FR) so each country appears once.
+      if (canonicalRegion(code) !== code) continue;
       const name = names.of(code);
       if (name === undefined || name === code) continue;
       const short = shortNames?.of(code);

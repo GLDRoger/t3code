@@ -479,6 +479,7 @@ describe("company details", () => {
     expect(["IN", "GB", "US", "JP", "RE"].every((code) => codes.has(code))).toBe(true);
     expect(["ZZ", "EU", "EZ", "UN", "XA", "XB", "QO"].some((code) => codes.has(code))).toBe(false);
     expect(kinCountryChoices("gb")[0]?.code).toBe("GB");
+    expect(kinCountryChoices("United Kingdom").map((one) => one.code)).toEqual(["GB"]);
     expect(kinCountryChoices("reunion")[0]?.code).toBe("RE");
     expect(kinCountryCodeOf("UK")).toBe("GB");
     // A new company still waiting on its country only takes the device's with a tap: saving just
