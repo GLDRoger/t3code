@@ -12,6 +12,7 @@ import {
   KinMessageId,
   KIN_TROUBLE_WHY,
   MessageId,
+  formatKinWhen,
   type KinAgentId,
   type KinTroubleCause,
   type KinOrgId,
@@ -94,8 +95,9 @@ import { KinPresence, syncQueued } from "./KinPresence.ts";
 import { missingCard, NUDGE_PREFIX, relayPrefix, unkeptPromise } from "./promises.ts";
 import { morningMoneyFor } from "../pulse/morningMoney.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
-import { settleCheckInTold, toldBy } from "../pulse/told.ts";
+import { reservedByFailures, settleCheckInTold, toldBy } from "../pulse/told.ts";
 import { weeklyFigures } from "../pulse/weekly.ts";
+import { textLocale } from "../work/companyProfile.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { flagTextQuestion } from "../questions/openQuestions.ts";
@@ -1537,6 +1539,22 @@ const make = Effect.gen(function* () {
       if (input.outcome === "held")
         return yield* setupFailed({ ...input, cause: input.cause ?? "unknown" });
       if (input.outcome === "replied") return yield* failedAfterReply(input);
+      if (input.outcome === "gave_up" && !input.lane.owed) {
+        const missed = yield* missedCheckIn(input.orgId, input.wakeupId);
+        if (missed !== undefined) {
+          // The owner's standing notice for the cause already said it; a second line would repeat it.
+          if (input.cause !== undefined && (yield* troubleOpen(input.orgId, input.cause))) return;
+          return yield* chat.notice({
+            messageId: KinMessageId.make(`kin-failed:${input.wakeupId}`),
+            orgId: input.orgId,
+            chatId: input.lane.chatId,
+            audience: "chat",
+            body: missed.body,
+            silent: true,
+            when: missed.when,
+          });
+        }
+      }
       const notice = failedNotices[input.outcome];
       if (input.outcome === "retrying" || input.outcome === "retrying_later") {
         const agentId = yield* agentOf(input.orgId, input.wakeupId);
@@ -1560,6 +1578,55 @@ const make = Effect.gen(function* () {
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin failure notice failed", { cause })),
   );
+
+  /**
+   * The check-in this wake-up gave up on, as one line: which, when it first tried to run on the
+   * company's clock (each reader's client says it on theirs), and what the next one won't bring up:
+   * the connections' new items it carried (their cursors moved on when it was queued), and facts
+   * three failed check-ins now reserve. Untold facts and left lines go to the next check-in.
+   */
+  const missedCheckIn = Effect.fn("KinReplyBridge.missedCheckIn")(function* (
+    orgId: KinOrgId,
+    wakeupId: KinWakeupId,
+  ) {
+    const [row] = yield* sql<{
+      eventId: string;
+      title: string;
+      outside: number;
+      startedAt: number;
+    }>`SELECT e.event_id AS "eventId", json_extract(e.json, '$.checkIn.title') AS title,
+        COALESCE(json_array_length(e.json, '$.outside'), 0)
+          + COALESCE(json_extract(e.json, '$.outsideNotListed'), 0) AS outside,
+        (SELECT MIN(f.started_at) FROM kin_wakeups f, json_each(f.event_ids) k
+          WHERE f.org_id = w.org_id AND f.agent_id = w.agent_id AND k.value = e.event_id) AS "startedAt"
+      FROM kin_wakeups w, json_each(w.event_ids) j
+      JOIN kin_events e ON e.org_id = w.org_id AND e.event_id = j.value
+      WHERE w.org_id = ${orgId} AND w.wakeup_id = ${wakeupId} AND e.tag = 'pulse'
+        AND e.state = 'failed' AND json_extract(e.json, '$.checkIn.title') IS NOT NULL
+      ORDER BY e.event_id LIMIT 1`;
+    if (row === undefined) return undefined;
+    const provide = Effect.provideService(SqlClient.SqlClient, sql);
+    const zone = yield* ownerZone(orgId).pipe(provide);
+    const locale = yield* textLocale(orgId).pipe(provide);
+    const part = (style: "time" | "day") =>
+      formatKinWhen(row.startedAt, style, { zone, locale }).replace(/,/g, "");
+    const at = `${part("time")} (${part("day")})`;
+    const reserved = yield* reservedByFailures(orgId, row.eventId).pipe(provide);
+    const left = [
+      ...(row.outside > 0 ? ["the new items from connections it would have listed"] : []),
+      ...(reserved > 0
+        ? [`${reserved} open ${reserved === 1 ? "item" : "items"} it has now missed three times`]
+        : []),
+    ];
+    return {
+      body: `${row.title} didn't run at ${at}. ${
+        left.length === 0
+          ? "Nothing was lost: the next check-in covers it."
+          : `Nothing was lost, but the next check-in won't bring up ${left.join(" or ")}.`
+      }`,
+      when: { at: DateTime.formatIso(DateTime.makeUnsafe(row.startedAt)), zone, text: at },
+    };
+  });
 
   // A reply already answered: a second line comes only when what it promised did not happen.
   const failedAfterReply = Effect.fn("KinReplyBridge.failedAfterReply")(function* (input: {

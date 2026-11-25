@@ -77,6 +77,7 @@ import { KinPresence } from "./KinPresence.ts";
 import * as ReplyBridge from "./KinReplyBridge.ts";
 import { laneFor } from "./replyLane.ts";
 import { WEEK_FIGURES_TITLE } from "../pulse/weekly.ts";
+import { KinHostCare } from "../host/KinHostCare.ts";
 
 const threadId = ThreadId.make("lead-thread");
 const agentId = KinAgentId.make("lead");
@@ -2707,6 +2708,117 @@ it.effect("a bills turn that fails posts nothing: the batch's card tells what wa
     for (const outcome of ["partway", "gave_up", "retrying", "signin"] as const)
       yield* bridge.failed({ orgId: owner.orgId, wakeupId, lane, outcome, cause: "unreachable" });
     assert.deepStrictEqual(yield* posted, []);
+  }).pipe(Effect.provide(layer)),
+);
+
+// A check-in nobody waits on that failed for good before writing anything: one quiet line in
+// its chat says which one didn't run, when on the reader's clock, and what the next one covers.
+it.effect.each([
+  {
+    name: "nothing it held is lost",
+    said: "Afternoon check-in didn't run at 3:12 pm (Wed 25 Nov). Nothing was lost: the next check-in covers it.",
+  },
+  {
+    name: "new mail it carried",
+    mail: true,
+    said: "Afternoon check-in didn't run at 3:12 pm (Wed 25 Nov). Nothing was lost, but the next check-in won't bring up the new items from connections it would have listed.",
+  },
+  {
+    name: "a fact three check-ins missed",
+    missedThrice: true,
+    said: "Afternoon check-in didn't run at 3:12 pm (Wed 25 Nov). Nothing was lost, but the next check-in won't bring up 1 open item it has now missed three times.",
+  },
+  // The owner's standing notice for the cause already says it: no second line.
+  { name: "a standing notice", trouble: true, said: undefined },
+])("a check-in that fails for good says once which one didn't run ($name)", (row) =>
+  Effect.gen(function* () {
+    const { bridge, owner, wakeupId, sql, services, direct } = yield* setup({
+      event: () =>
+        Effect.succeed((base: WakeupEventBase): KinEvent => ({
+          ...base,
+          _tag: "pulse",
+          provenance: { _tag: "system" },
+          factKeys: [],
+          checkIn: {
+            scheduleId: KinMemoryItemId.make("checkin-afternoon"),
+            title: "Afternoon check-in",
+            what: "Invented: what is open.",
+            slot: "2026-11-25",
+          },
+          ...(row.mail === true
+            ? {
+                outside: [
+                  {
+                    source: "mail",
+                    connection: "Invented mailbox",
+                    id: "thread-1",
+                    at: "Wed 25 Nov 14:50",
+                    who: "Tidewater Freight",
+                    subject: "Invented: freight quote",
+                    where: null,
+                  },
+                ],
+              }
+            : {}),
+        })),
+    });
+    yield* sql`INSERT INTO kin_trigger_settings VALUES (${owner.orgId}, 'Asia/Kolkata', '08:30',
+      '18:30', '03:00', 0, 1, '09:00', '[]')`;
+    yield* sql`UPDATE kin_people SET time_zone = 'Asia/Kolkata' WHERE person_id = ${owner.personId}`;
+    // It first tried at 15:12 in Kolkata, the company's and the owner's zone.
+    yield* sql`UPDATE kin_wakeups SET started_at = ${Date.UTC(2026, 10, 25, 9, 42)}
+      WHERE wakeup_id = ${wakeupId}`;
+    const [event] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId" FROM kin_events
+      WHERE org_id = ${owner.orgId} AND tag = 'pulse'`;
+    const lane = Option.getOrThrow(yield* laneFor({ orgId: owner.orgId, agentId, wakeupId }));
+    assert.isFalse(lane.owed);
+    if (row.missedThrice === true)
+      for (const [n, id] of ["earlier-1", "earlier-2", event!.eventId].entries()) {
+        if (id !== event!.eventId)
+          yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+              received_at, queued_at, state, attempts)
+            VALUES (${id}, ${owner.orgId}, ${agentId}, 'pulse', 'P2', '{}', ${n}, ${n}, 'failed', 4)`;
+        yield* sql`INSERT INTO kin_pulse_told (org_id, person_id, fact_key, event_id, sig, told_at)
+          VALUES (${owner.orgId}, ${owner.personId}, 'task_late:W-1:due=0', ${id}, '|open|', ${n})`;
+      }
+    if (row.trouble === true)
+      yield* Context.get(services, KinHostCare).failed({
+        orgId: owner.orgId,
+        agentId,
+        cause: "unreachable",
+        eventIds: [KinEventId.make(event!.eventId)],
+      });
+    const before = (yield* sql`SELECT 1 FROM kin_messages WHERE chat_id = ${direct.chatId}`).length;
+    // As the queue leaves it after its last try; Kin's later passes may say it failed again.
+    yield* sql`UPDATE kin_events SET state = 'failed', attempts = 4, wakeup_id = NULL
+      WHERE org_id = ${owner.orgId} AND event_id = ${event!.eventId}`;
+    for (let pass = 0; pass < 2; pass += 1)
+      yield* bridge.failed({
+        orgId: owner.orgId,
+        wakeupId,
+        lane,
+        outcome: "gave_up",
+        cause: "unreachable",
+      });
+    const said = yield* sql<{ body: string; silent: number; when: string | null }>`SELECT body,
+        silent, when_json AS "when" FROM kin_messages
+      WHERE chat_id = ${direct.chatId} AND author_kind = 'system' ORDER BY seq`;
+    assert.deepStrictEqual(
+      said.slice(before),
+      row.said === undefined
+        ? []
+        : [
+            {
+              body: row.said,
+              silent: 1,
+              when: JSON.stringify({
+                at: "2026-11-25T09:42:00.000Z",
+                zone: "Asia/Kolkata",
+                text: "3:12 pm (Wed 25 Nov)",
+              }),
+            },
+          ],
+    );
   }).pipe(Effect.provide(layer)),
 );
 

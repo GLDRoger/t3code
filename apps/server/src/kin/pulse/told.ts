@@ -100,6 +100,26 @@ export const factSig = (fact: KinPulseFact, at: number, zone: string) => {
   return `${band}|open|${dueToday(fact, at, zone) ? `due:${dayIn(at, zone)}` : ""}`;
 };
 
+/**
+ * How many of the facts check-in `eventId` was given its failures now reserve (`untold`), so no
+ * later check-in tells them: three failed check-ins in a row on the same signature.
+ */
+export const reservedByFailures = Effect.fn("KinPulse.reservedByFailures")(function* (
+  orgId: KinOrgId,
+  eventId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ key: string }>`SELECT t.fact_key AS key FROM kin_pulse_told t
+    WHERE t.org_id = ${orgId} AND t.event_id = ${eventId}
+      AND (SELECT COUNT(*) FROM kin_pulse_told u
+        JOIN kin_events e ON e.org_id = u.org_id AND e.event_id = u.event_id
+        WHERE u.org_id = t.org_id AND u.person_id = t.person_id AND u.fact_key = t.fact_key
+          AND u.sig = t.sig AND e.state = 'failed') >= ${MAX_FAILED_ATTEMPTS}
+    ORDER BY t.fact_key`;
+  // A line left for the check-in is no fact: a later check-in takes it again (`leftOpen`).
+  return rows.filter((row) => !isLeftKey(row.key)).length;
+});
+
 /** Pending and delivered events reserve their signature. Three terminal failures reserve it too. */
 export const untold = Effect.fn("KinPulse.untold")(function* (input: {
   readonly orgId: KinOrgId;
