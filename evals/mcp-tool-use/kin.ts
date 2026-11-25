@@ -138,9 +138,11 @@ import {
 } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { HEAD_START_WAKE } from "../../apps/server/src/kin/pulse/prepareWake.ts";
 import {
+  DRAFT_CALL_NOTES,
   DRAFT_CHASE,
   DRAFT_DEAL,
   DRAFT_DOCUMENT,
+  DRAFT_FROM_MAILBOX,
   DRAFT_MEETING_OUTCOME,
   DRAFT_MEETING_PREP,
   PROPOSE_PLAN,
@@ -586,6 +588,14 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     // A draft wake's own line, for a person and their mailboxes (`draftWake.ts`).
     .replace(/\{\{DRAFT_CHASE:([^:}]+):([^}]+)\}\}/g, (_, name: string, from: string) =>
       DRAFT_CHASE(name, from.split(",")),
+    )
+    .replace(/\{\{DRAFT_FROM_MAILBOX:([^:}]+):([^}]+)\}\}/g, (_, name: string, from: string) =>
+      DRAFT_FROM_MAILBOX(name, from.split(",")),
+    )
+    // `{{DRAFT_CALL_NOTES:<name>|mailbox}}` (a mailbox but no contact) or `|no-mailbox`.
+    .replace(
+      /\{\{DRAFT_CALL_NOTES:([^|}]+)\|(mailbox|no-mailbox)\}\}/g,
+      (_, name: string, of: string) => DRAFT_CALL_NOTES(name, of === "mailbox"),
     )
     .replace(
       /\{\{DRAFT_DEAL:([^|}]+)\|([^|}]+)\|([^}]+)\}\}/g,
