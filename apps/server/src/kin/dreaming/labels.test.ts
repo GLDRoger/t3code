@@ -99,6 +99,20 @@ it.effect.each([
     ],
     sensitive: { "claims/quoted.md": true },
   },
+  {
+    name: "what it makes from private material stays the owner's, by its source or what it cites",
+    tree: [
+      [
+        "claims/edited.md",
+        claim("edited", { sensitive: false, source: "kin:doc:d1:version:1..2" }),
+      ],
+      ["claims/cites.md", claim("cites", { sensitive: false, source: "kin:send:open" })],
+      ["claims/open.md", claim("open", { sensitive: false, source: "kin:send:open" })],
+    ],
+    cited: [{ path: "claims/cites.md", sources: ["kin:send:open", "kin:doc:d1:version:1..2"] }],
+    sensitive: { "claims/edited.md": true, "claims/cites.md": true, "claims/open.md": false },
+    suggested: ["open"],
+  },
 ] as const)("keepLabels: $name", (row) =>
   Effect.gen(function* () {
     const tree = new Map([...base, ...row.tree]);
@@ -110,6 +124,8 @@ it.effect.each([
       changes: touched,
       merges: "merges" in row ? row.merges : [],
       labels: { held: new Set(["held"]), classified: new Map([["sorted", false]]) },
+      cited: "cited" in row ? row.cited : [],
+      privateRefs: new Set(["kin:doc:d1:version:1..2"]),
     });
     // An item's label is its file's when the dream touched it, else what is recorded for it.
     const label = (path: string) =>

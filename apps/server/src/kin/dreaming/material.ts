@@ -12,15 +12,24 @@ import { parseFrontMatter } from "../memory/frontMatter.ts";
 import { SHARED_THREAD_PREFIX } from "../lead/Audience.ts";
 import { askedWhereOthersRead } from "../triggers/deferralOrigin.ts";
 import { touchesBetween } from "../work/touches.ts";
+import { draftEdits, editSide } from "./edits.ts";
 
 /** One original the dream may cite. `saidBy` and `trust` come from server records, never the model. */
 export interface MaterialEntry {
   readonly ref: string;
-  readonly kind: "journal" | "chat" | "github" | "item" | "touch";
+  readonly kind: "journal" | "chat" | "github" | "item" | "touch" | "edit";
   readonly saidBy: string;
   readonly trust: MemoryTrust;
   readonly at: string;
+  /** For an edit, the person's version of the agent's draft in `before`. */
   readonly text: string;
+  /** An edit: what was edited, and the agent's draft as it was. */
+  readonly about?: string;
+  readonly before?: string;
+  /** An edit's side cut at `EDIT_SIDE_MAX`: that side's whole length. */
+  readonly cut?: { readonly before?: number; readonly text?: number };
+  /** From something marked private: what is made of it stays the owner's (`keepLabels`). */
+  readonly sensitive?: true;
   /** A reminder or scheduled task: what it says was never a statement, whoever asked for it. */
   readonly reminder?: true;
   /** An item nobody has said who may know: the dream labels it (`DreamRunner`). */
@@ -192,6 +201,31 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
         }${touch.note === "" ? "" : `: ${touch.note}`}`,
       });
     }
+    // What an owner-level person changed in an agent's draft is their own word on how it reads.
+    const edits = yield* draftEdits(orgId, from, until);
+    for (const edit of edits.edits) {
+      const before = editSide(edit.before);
+      const after = editSide(edit.after);
+      entries.push({
+        ref: edit.ref,
+        kind: "edit",
+        saidBy: edit.saidBy,
+        trust: "owner",
+        at: edit.at,
+        about: edit.about,
+        before: before.text,
+        text: after.text,
+        ...(before.length === undefined && after.length === undefined
+          ? {}
+          : {
+              cut: {
+                ...(before.length === undefined ? {} : { before: before.length }),
+                ...(after.length === undefined ? {} : { text: after.length }),
+              },
+            }),
+        ...(edit.sensitive ? { sensitive: true as const } : {}),
+      });
+    }
     for (const [path, text] of [...input.files].toSorted(([a], [b]) => (a < b ? -1 : 1))) {
       if (!itemFolders.some((folder) => path.startsWith(`${folder}/`))) continue;
       const parsed = yield* parseFrontMatter(orgId, path, text).pipe(Effect.option);
@@ -214,7 +248,12 @@ export const collectMaterial = Effect.fn("DreamMaterial.collect")(
         ...(unlabelled ? { unlabelled: true as const } : {}),
       });
     }
-    return { from: from === 0 ? null : iso(from), until: iso(until), entries };
+    return {
+      from: from === 0 ? null : iso(from),
+      until: iso(until),
+      entries,
+      ...(edits.leftOut === 0 ? {} : { editsLeftOut: edits.leftOut }),
+    };
   },
   Effect.mapError((cause) =>
     isSqlError(cause) ? toPersistenceSqlError("DreamMaterial.collect")(cause) : cause,
