@@ -620,11 +620,13 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
             <KinWorkToggleRow
               icon="lock"
               label={KIN_CLIENTS.privateLabel}
-              description={kinClientPrivateNote({
-                private: draft.private,
-                wasPrivate: editing?.sensitive ?? false,
-                hides: props.privateHides,
-              })}
+              description={named(
+                kinClientPrivateNote({
+                  private: draft.private,
+                  wasPrivate: editing?.sensitive ?? false,
+                  hides: props.privateHides,
+                }),
+              )}
               value={draft.private}
               disabled={state.saving}
               onValueChange={(on) => form.edit({ private: on })}

@@ -2,6 +2,7 @@ import { kinNow } from "@t3tools/client-runtime/kin/kinNow";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_CURRENCY,
+  kinCurrencyName,
   kinInvoiceCurrency,
   kinRateInput,
   kinRateLine,
@@ -214,7 +215,7 @@ function KinRatesForm(
           )}
           <section className="flex flex-col gap-1">
             <h3 className="text-xs font-medium text-muted-foreground">
-              {KIN_CURRENCY.homeCurrency}: {profile.homeCurrency}
+              {KIN_CURRENCY.homeCurrency}: {kinCurrencyName(profile.homeCurrency)}
             </h3>
             {profile.rates.length === 0 ? (
               <p className="text-sm text-muted-foreground">{KIN_CURRENCY.noRates}</p>
@@ -231,7 +232,9 @@ function KinRatesForm(
                       onClick={() => setDraft({ ...rate })}
                       className="flex min-w-0 flex-1 flex-col items-start rounded-md px-2 py-1 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
                     >
-                      <span className="text-sm text-foreground">{rate.currency}</span>
+                      <span className="text-sm text-foreground">
+                        {kinCurrencyName(rate.currency)}
+                      </span>
                       <span className="truncate text-xs text-muted-foreground">
                         {kinRateLine(rate, profile.homeCurrency)}
                       </span>

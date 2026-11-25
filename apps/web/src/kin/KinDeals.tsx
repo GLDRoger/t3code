@@ -89,6 +89,7 @@ import { useNowMinuteMs } from "./useKinClock";
 import { useKinDeals, useKinDealSend, useKinDealStages } from "./useKinDeals";
 import { useKinHomeCurrency, useKinRates } from "./useKinMoney";
 import { useKinDealsStart, useKinOwnerLevel } from "./useKinOwnerLevel";
+import { useKinSectionNamed } from "./useKinShell";
 import type { KinWorkChoices, KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 
 const TONE: Record<KinDealNextView["tone"], string> = {
@@ -363,6 +364,7 @@ export function KinDealsTab(
   },
 ) {
   const ownerLevel = useKinOwnerLevel(props.environmentId);
+  const named = useKinSectionNamed(props.environmentId);
   const start = useKinDealsStart(props.environmentId);
   const [chosen, setFilter] = useState<KinDealsFilter | null>(null);
   const query = kinDealsQuery(props.orgId, chosen, start, props.directory.names.me);
@@ -470,6 +472,7 @@ export function KinDealsTab(
       {empty ? (
         <KinWorkNotice
           {...nothing}
+          detail={named(nothing.detail)}
           action={
             props.onNew === null || filter.state !== "open" ? undefined : (
               <Button size="sm" onClick={props.onNew}>
@@ -1137,6 +1140,7 @@ export function KinDealNewDialog(
   },
 ) {
   const ownerLevel = useKinOwnerLevel(props.environmentId);
+  const named = useKinSectionNamed(props.environmentId);
   const home = useKinHomeCurrency(props) ?? "USD";
   const send = useKinDealSend(props);
   const [requestId] = useState(randomUUID);
@@ -1230,7 +1234,7 @@ export function KinDealNewDialog(
         <KinPlaceCombobox
           target={props}
           noun="client"
-          label={KIN_DEALS.clientField}
+          label={named(KIN_DEALS.clientField)}
           value={party}
           choices={props.choices.clients}
           onChange={setParty}

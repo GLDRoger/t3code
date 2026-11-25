@@ -10,6 +10,7 @@ import {
   type KinDocSection,
   type KinDocVersion,
   type KinSearchResult,
+  type KinShell,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
@@ -179,6 +180,15 @@ describe("kinSearchHit", () => {
     ).toBeNull();
     // A deal comes back among entries, under its own name, so an older app opens it as one.
     expect(kinSearchHit({ ...hitInput, key: "DL-4", kind: "work" }).kindLabel).toBe("Deal");
+    // A client reads in the company's own word for Clients.
+    const patients: KinShell = {
+      rev: 1,
+      sections: [{ id: "clients", on: true, name: "Patients", noun: "patient" }],
+    };
+    const client = { ...hitInput, key: "C-2", kind: "clients" as const };
+    expect(kinSearchHit(client, patients).kindLabel).toBe("Patient");
+    expect(kinSearchHit(client, patients).accessibilityLabel).toMatch(/^Patient: /);
+    expect(kinSearchHit(client).kindLabel).toBe("Client");
     // A contact carries its client, whose page opens for it; an older host sends none.
     expect(hit.clientKey).toBeNull();
     expect(

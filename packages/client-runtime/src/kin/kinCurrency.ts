@@ -320,7 +320,7 @@ export function kinSettledPayment(
 }
 
 /** "US Dollar (USD)", or the code alone where this device can't name it. */
-function kinCurrencyName(currency: string): string {
+export function kinCurrencyName(currency: string): string {
   try {
     const name = new Intl.DisplayNames(undefined, { type: "currency" }).of(currency);
     return name === undefined || name === currency ? currency : `${name} (${currency})`;

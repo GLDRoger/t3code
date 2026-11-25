@@ -36,7 +36,13 @@ import { KIN_WORK_HOME, kinPlaceLists } from "@t3tools/client-runtime/kin/kinWor
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import { kinWorkOffline } from "@t3tools/client-runtime/kin/kinWork";
 import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
-import type { KinDocListRow, KinListDefinition, KinListId, KinRecordKey } from "@t3tools/contracts";
+import type {
+  KinDocListRow,
+  KinListDefinition,
+  KinListId,
+  KinRecordKey,
+  KinShell,
+} from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
 import {
   ArrowRightIcon,
@@ -222,6 +228,7 @@ export function KinSearchHits(props: {
   /** Hits are all docs, so none needs to say what it is. */
   readonly docsOnly?: boolean;
   readonly scope?: KinViewerScope;
+  readonly shell?: KinShell | null | undefined;
 }) {
   const { state } = props;
   if (state.hits === null) {
@@ -238,7 +245,7 @@ export function KinSearchHits(props: {
       </div>
     );
   }
-  const hits = state.hits.map(kinSearchHit);
+  const hits = state.hits.map((hit) => kinSearchHit(hit, props.shell));
   if (hits.length === 0)
     return <KinWorkNotice {...kinSearchNothing(state.answered, props.scope)} />;
   return (

@@ -25,13 +25,15 @@ import {
   EnvironmentId,
   KIN_DEFAULT_HOME_CURRENCY,
   KinOrgId,
+  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   type KinAttachment,
 } from "@t3tools/contracts";
+import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/attachments";
 import { Image as ExpoImage } from "expo-image";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { memo, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Pressable, View } from "react-native";
 
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
@@ -50,6 +52,7 @@ import { assetImageSource } from "../../lib/assetImageSource";
 import { useNowMinuteMs } from "../../lib/clock";
 import {
   convertPastedImagesToAttachments,
+  createComposerFileAttachment,
   pickComposerFiles,
   pickComposerMedia,
   type DraftComposerAttachment,
@@ -58,6 +61,8 @@ import { beginForegroundHandoff } from "../../lib/foreground-handoff";
 import { useAssetUrl } from "../../state/assets";
 import { uploadComposerAttachmentShared } from "../../state/composer-attachment-uploads";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
+import { forgetKinSharedFile } from "./kinSharedFileInbox";
+import type { KinSharedFile } from "./state/kinSharedFile";
 import { kinBillChoices, kinExpenseParamsOfBill } from "./state/kinBillsPick";
 import { useKinHomeCurrency, useKinLists, kinListsOf } from "./state/useKinMoney";
 import {
@@ -68,7 +73,14 @@ import {
 } from "./state/useKinBills";
 import type { KinWorkTarget } from "./state/useKinWork";
 
-export type KinBillsAddParams = { readonly environmentId: string; readonly orgId: string };
+export type KinBillsAddParams = {
+  readonly environmentId: string;
+  readonly orgId: string;
+  /** A file shared into Kin from another app (`kinSharedFileInbox`), picked as if picked here. */
+  readonly file?: string;
+  readonly fileName?: string;
+  readonly fileType?: string;
+};
 export type KinBillsParams = {
   readonly environmentId: string;
   readonly orgId: string;
@@ -128,16 +140,57 @@ export function KinBillsAddScreen({ route }: StaticScreenProps<KinBillsAddParams
         <EmptyState variant="plain" {...KIN_BILLS.gone} />
       </KinWorkFrame>
     );
-  return <AddBills {...target} />;
+  const { file, fileName, fileType } = route.params;
+  const shared =
+    file === undefined
+      ? null
+      : { uri: file, name: fileName ?? "file", mimeType: fileType ?? "application/octet-stream" };
+  return <AddBills {...target} shared={shared} />;
 }
 
-function AddBills(props: KinWorkTarget) {
+/** A shared file as the picker hands one over; the system's copy goes once Kin holds its own. */
+async function sharedBill(shared: KinSharedFile) {
+  try {
+    if (shared.mimeType.startsWith("image/")) {
+      const converted = await convertPastedImagesToAttachments({ uris: [shared.uri] });
+      const [photo] = converted.attachments;
+      return {
+        bill: photo === undefined ? null : { ...photo, name: shared.name },
+        error: converted.error,
+      };
+    }
+    const bill = await createComposerFileAttachment({
+      uri: shared.uri,
+      name: shared.name,
+      mimeType: shared.mimeType,
+      sizeBytes: null,
+      maxBytes: clampFileAttachmentUploadBytes(PROVIDER_SEND_TURN_MAX_FILE_BYTES),
+    });
+    return { bill, error: null };
+  } catch (cause) {
+    return { bill: null, error: cause instanceof Error ? cause.message : null };
+  } finally {
+    await forgetKinSharedFile(shared.uri);
+  }
+}
+
+function AddBills(props: KinWorkTarget & { readonly shared: KinSharedFile | null }) {
   const navigation = useNavigation();
   const { environmentId } = props;
   const adding = useKinBillsAdd<DraftComposerAttachment>(props, (draft, name) =>
     uploadBill(environmentId, draft, name),
   );
   const [picking, setPicking] = useState<string | null>(null);
+  const took = useRef(false);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the file another app shared into Kin from disk, once, as a pick would
+  useEffect(() => {
+    if (props.shared === null || took.current) return;
+    took.current = true;
+    void sharedBill(props.shared).then(({ bill, error }) => {
+      if (bill !== null) adding.choose(kinBillChoices([bill]));
+      setPicking(error);
+    });
+  }, [props.shared, adding]);
   const { state } = adding;
   const busy = state.phase !== "choosing";
   const button = kinBillsButton(state);

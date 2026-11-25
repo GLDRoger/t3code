@@ -3,6 +3,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_CURRENCY,
+  kinCurrencyName,
   kinInvoiceCurrency,
   kinRateInput,
   kinRateLine,
@@ -118,6 +119,8 @@ function Frame(props: { readonly onClose: () => void; readonly children: React.R
           contentInsetAdjustmentBehavior="automatic"
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
+          keyboardDismissMode="interactive"
+          automaticallyAdjustKeyboardInsets
         >
           {props.children}
         </ScreenScrollView>
@@ -224,7 +227,7 @@ function KinRatesForm(
           {saved}
         </Text>
       )}
-      <ListSection title={`${KIN_CURRENCY.homeCurrency}: ${profile.homeCurrency}`}>
+      <ListSection title={`${KIN_CURRENCY.homeCurrency}: ${kinCurrencyName(profile.homeCurrency)}`}>
         {profile.rates.length === 0 ? (
           <Text textRole="body" className="px-4 py-3 text-foreground-muted">
             {KIN_CURRENCY.noRates}
@@ -242,7 +245,7 @@ function KinRatesForm(
                 className="min-w-0 flex-1 gap-0.5 active:opacity-60"
               >
                 <Text textRole="body" className="text-foreground">
-                  {rate.currency}
+                  {kinCurrencyName(rate.currency)}
                 </Text>
                 <Text textRole="footnote" className="text-foreground-muted">
                   {kinRateLine(rate, profile.homeCurrency)}
@@ -266,6 +269,7 @@ function KinRatesForm(
           <KinWorkTextField
             label="Currency"
             value={draft.currency}
+            hint={draft.currency.length === 3 ? kinCurrencyName(draft.currency) : undefined}
             maxLength={3}
             keyboard="plain"
             disabled={saving}

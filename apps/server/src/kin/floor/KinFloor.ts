@@ -267,12 +267,15 @@ const make = Effect.gen(function* () {
         expected: number;
         passedOn: number;
         owed: number;
+        askedReviews: number;
       }>`
       SELECT COUNT(e.event_id) AS total, json_array_length(w.event_ids) AS expected,
         COALESCE(SUM(CASE WHEN e.tag IN ${sql.in(NOTICE_TAGS)} THEN 1 ELSE 0 END), 0) AS notices,
         COALESCE(SUM(CASE WHEN e.tag = 'chat.message' AND ${passedOn(sql)} THEN 1 ELSE 0 END), 0)
           AS "passedOn",
         COALESCE(SUM(CASE WHEN ${sql.literal(owedNotice("e"))} THEN 1 ELSE 0 END), 0) AS owed,
+        COALESCE(SUM(CASE WHEN e.tag = 'github' AND json_extract(e.json, '$.askedBy') IS NOT NULL
+          THEN 1 ELSE 0 END), 0) AS "askedReviews",
         COALESCE(SUM(CASE WHEN e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
           AND NOT (e.tag = 'chat.message' AND ${passedOn(sql)}) THEN 1 ELSE 0 END), 0) AS replies
       FROM kin_wakeups w JOIN kin_events e ON e.org_id = w.org_id AND e.agent_id = w.agent_id
@@ -292,7 +295,8 @@ const make = Effect.gen(function* () {
         return false;
       return {
         kind: wakeup.passedOn > 0 ? ("passed_on" as const) : ("notice" as const),
-        owed: wakeup.passedOn > 0 || wakeup.owed > 0,
+        // A review someone asked for is owed them, so the hourly limit never holds its line back.
+        owed: wakeup.passedOn > 0 || wakeup.owed > 0 || wakeup.askedReviews > 0,
       };
     },
     Effect.mapError(toPersistenceSqlError("KinFloor.noticeOnly")),

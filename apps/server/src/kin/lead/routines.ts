@@ -87,7 +87,7 @@ const clip = (value: string, max: number) => {
  * Memory, chat and GitHub text in the Markdown body: escaped so it renders as plain data. The
  * phone's parser autolinks bare URLs, `www.` hosts and emails, so `:`, `.` and `@` are escaped too.
  */
-const escapeMarkdown = (value: string) => value.replace(/[\\[\]()!*_`#<>|~$:@.&]/g, "\\$&");
+export const escapeMarkdown = (value: string) => value.replace(/[\\[\]()!*_`#<>|~$:@.&]/g, "\\$&");
 const entry = (row: RoutineRow) =>
   row.note === undefined
     ? escapeMarkdown(row.title)

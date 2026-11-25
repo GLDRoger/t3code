@@ -142,7 +142,7 @@ export const KinLeadToolkit = Toolkit.make(
     ...handoff,
     dependencies: [...handoff.dependencies, KinLevelGate],
     description:
-      "Send one person in the company a message from this chat, in their chat with you: what the person you're answering needs from them, or their answer back. A teammate's request to merge, change code or re-run CI goes to the owner this way: their request and what you couldn't check, never a question. Kin shows who it is from and through whom, so write the message itself, never opening with their name or \"X is asking\". Words only, short; it can't hold amounts or anything they can't see. Whenever you say you'll tell or pass something to someone, call this first; if you don't, Kin tells the asker it didn't reach them. For the owner later, not now (\"don't message them now\", \"tell them at the check-in\"), set checkIn: Kin gives it to their next check-in with you; only then say they'll hear it there. A question only they can answer is kin_ask_person. A restricted pair is refused and says so. For a late task in their hours, pulse_nudge.",
+      "Send one person in the company a message from this chat, in their chat with you: what the person you're answering needs from them, or their answer back. A teammate's request to merge, change code or re-run CI goes to the owner this way: their request and what you couldn't check, never a question. Kin shows who it is from and through whom, so write the message itself, never opening with their name or \"X is asking\": its first sentence, all a phone notification shows, is what you need the reader to do, as \"<do this>, so <what it unblocks>\", or the news itself when nothing is needed. Words only, short; it can't hold amounts or anything they can't see. Whenever you say you'll tell or pass something to someone, call this first; if you don't, Kin tells the asker it didn't reach them. For the owner later, not now (\"don't message them now\", \"tell them at the check-in\"), set checkIn: Kin gives it to their next check-in with you; only then say they'll hear it there. A question only they can answer is kin_ask_person. A restricted pair is refused and says so. For a late task in their hours, pulse_nudge.",
     parameters: Handoff.RelayInput,
     success: Handoff.RelayResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -283,6 +283,13 @@ export const KinLeadToolkit = Toolkit.make(
       "Post a review on a pull request as the owner: body (findings, plainly), event COMMENT (default) or REQUEST_CHANGES, and optional line comments (path and line on the PR's new side). Never approves.",
     parameters: GitHubLink.ReviewInput,
     success: GitHubLink.ReviewResult,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_github_diff", {
+    ...prCare,
+    description:
+      "Read on in the diff of the pull request this review turn is for, where the diff in your events stops; from is where to start. Reads that head only.",
+    parameters: ReviewAsk.DiffInput,
+    success: ReviewAsk.DiffResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_github_review_ask", {
     ...prCare,

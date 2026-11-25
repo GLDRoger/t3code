@@ -4,13 +4,17 @@ import { assert, it } from "@effect/vitest";
 import {
   AuthSessionId,
   AuthStandardClientScopes,
+  CommandId,
   EnvironmentId,
   KinAgentId,
+  type KinOrgId,
   KinChatId,
   KinEvent,
   KinEventId,
   KinPersonId,
+  type KinWakeupId,
   ProviderInstanceId,
+  type RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -28,6 +32,9 @@ import { McpSchema, McpServer } from "effect/ai";
 import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
+import { turnAudience } from "../lead/Audience.ts";
+import { laneFor } from "../reply/replyLane.ts";
+import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -37,7 +44,7 @@ import {
   endAgentWakeups,
   startAgentWakeup,
 } from "../chat/WakeupAuthority.testkit.ts";
-import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
+import { cappedOutput, KinGitHubLogin } from "../connections/GitHubLogin.ts";
 import * as Kin from "../layer.ts";
 import * as KinToolGate from "../mcp/KinToolGate.ts";
 import * as Handoff from "../lead/Handoff.ts";
@@ -50,12 +57,19 @@ import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import * as Reach from "../lead/Reach.ts";
 import * as Team from "../team/KinTeam.ts";
 import { signed } from "./agentMark.ts";
-import { outsideLine, postedLine, unfinishedLine } from "./askedFor.ts";
+import {
+  blocksLine,
+  outsideBlocksLine,
+  outsideLine,
+  postedLine,
+  unfinishedLine,
+} from "./askedFor.ts";
 import { emptyWorld, FakeGitHub, ghApiOutput, ghApiStderr, runGh } from "./fakeGitHub.ts";
 import * as GitHubWatch from "./GitHubWatch.ts";
 import { setRepo } from "./githubWatchStore.ts";
 import { headKey, POSTING } from "./boundReview.ts";
-import { ASK_REFUSAL, POST_REFUSAL, PULL_REFUSAL } from "./reviewAsk.ts";
+import { ASK_REFUSAL, DIFF_NEXT, DIFF_REFUSAL, POST_REFUSAL, PULL_REFUSAL } from "./reviewAsk.ts";
+const { DIFF_CAP } = GitHubWatch;
 import { KIN_OWN_REFUSAL } from "../people/KinAccess.ts";
 
 /**
@@ -110,7 +124,7 @@ const fakeLogin = (github: FakeGitHub) =>
     gh: (args, stdin) =>
       Effect.sync(() => {
         const run = runGh(github, args, stdin ?? "");
-        return { code: run.code, out: run.out + (run.err ?? "") };
+        return { code: run.code, ...cappedOutput(run.out + (run.err ?? "")) };
       }),
   });
 
@@ -490,7 +504,7 @@ it.effect(
           args: { repo: SITE, number: devSite },
           before: () => {
             github.push({ repo: SITE, number: devSite });
-            fail(`repos/${SITE}/compare/main...${head(SITE, devSite)}`)();
+            fail(`repos/${SITE}/compare/base${devSite}...${head(SITE, devSite)}`)();
           },
           expect: [[`${SITE}#${devSite}`, PULL_REFUSAL.diff]],
         },
@@ -633,10 +647,11 @@ it.effect(
   },
 );
 
-it.effect("six open PRs: five queue, and the sixth is named as left for the next ask", () => {
+// Every PR an ask names is queued, each told in the asker's chat and grouped by the ask's turn.
+it.effect("seven open PRs: every one queues, each told in the asker's chat", () => {
   const { github, layer } = harness();
   return Effect.gen(function* () {
-    const numbers = Array.from({ length: 6 }, (_, index) =>
+    const numbers = Array.from({ length: 7 }, (_, index) =>
       github.openItem({
         repo: BATCH,
         pull: true,
@@ -645,24 +660,86 @@ it.effect("six open PRs: five queue, and the sixth is named as left for the next
         title: `Change ${index + 1}`,
       }),
     );
-    const { review, ask, directOf } = yield* ambermill(github);
+    const { review, ask, directOf, githubEvents, sql } = yield* ambermill(github);
     const zoyaChat = yield* directOf("zoya");
     yield* ask("zoya", zoyaChat, "Review everything open on batch");
     const first = yield* review({ repo: BATCH });
     assert.isTrue(first.ok, JSON.stringify(first.value));
     assert.deepStrictEqual(
       outcomes(first.value),
-      numbers.slice(0, 5).map((number) => [`${BATCH}#${number}`, "queued"] as const),
+      numbers.map((number) => [`${BATCH}#${number}`, "queued"] as const),
     );
-    assert.strictEqual(
-      first.value.left,
-      `5 are queued per ask, so these wait: ${BATCH}#${numbers[5]}. Ask again for them.`,
+    assert.notInclude(JSON.stringify(first.value), "Ask again");
+    const [turn] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId"
+      FROM kin_events WHERE tag = 'chat.message' ORDER BY received_at DESC, event_id DESC LIMIT 1`;
+    assert.deepStrictEqual(
+      (yield* githubEvents).map((event) => [event.chatId, event.askedIn?.join()]),
+      numbers.map(() => [zoyaChat, turn!.wakeupId]),
     );
-    const again = yield* review({ repo: BATCH });
-    assert.deepStrictEqual(outcomes(again.value).at(-1), [`${BATCH}#${numbers[5]!}`, "queued"]);
-    assert.isUndefined(again.value.left);
   }).pipe(Effect.provide(layer));
 });
+
+// A diff past the prompt's cut is read on in pieces by the review turn, never by another turn.
+it.effect.each([
+  { name: "whole", lines: 2_000, end: DIFF_NEXT.end },
+  // Past what Kin keeps of one gh answer: the read stops there and says the review is partial.
+  { name: "cut by gh", lines: 20_000, end: DIFF_NEXT.partial },
+])(
+  "a long diff is read on with kin_github_diff, the head's and the review turn's only: $name",
+  ({ lines, end }) => {
+    const { github, layer } = harness();
+    return Effect.gen(function* () {
+      const line = "+an invented line of the long change\n";
+      const plain = `diff --git a/a.ts b/a.ts\n${line.repeat(lines)}`;
+      // A character of two UTF-16 units where the first piece would end.
+      const diff = `${plain.slice(0, DIFF_CAP - 1)}😀${plain.slice(DIFF_CAP - 1)}`;
+      const number = github.openItem({
+        repo: APP,
+        pull: true,
+        author: "dev-gh",
+        association: "MEMBER",
+        title: "Move the map",
+        diff,
+      });
+      const { review, ask, runReview, directOf, githubEvents, owner } = yield* ambermill(github);
+      const read = (from?: number) =>
+        callAs("tech", "kin_github_diff", from === undefined ? {} : { from });
+      yield* ask(owner.personId, yield* directOf(owner.personId), "What changed on the map?");
+      assert.strictEqual((yield* read()).value.message, DIFF_REFUSAL.unbound);
+      yield* ask("dev", yield* directOf("dev"), "Review my PR");
+      assert.deepStrictEqual(outcomes((yield* review({ repo: APP, number })).value), [
+        [`${APP}#${number}`, "queued"],
+      ]);
+      const [event] = yield* githubEvents;
+      const kept = DIFF_CAP - 1;
+      const shown = event!.trigger.pull!.diff!;
+      assert.strictEqual(shown.slice(0, kept), diff.slice(0, kept));
+      assert.match(
+        shown.slice(kept),
+        /^\n…\[the diff goes on for \d+ more characters: read them with kin_github_diff, from 29999\]$/,
+      );
+      yield* runReview(event!.eventId);
+      // The base branch moves on mid-review: every piece still reads the same comparison.
+      github.moveBase({ repo: APP, number, diff: "diff --git a/b.ts b/b.ts\n+merged since\n" });
+      const pieces = [diff.slice(0, kept)];
+      let last: Record<string, unknown> = {};
+      for (let from = kept; ; from = Number(last.to)) {
+        const piece = yield* read(from);
+        assert.isTrue(piece.ok, JSON.stringify(piece.value));
+        last = piece.value;
+        const text = String(last.diff);
+        assert.notMatch(text, /[\uD800-\uDBFF]$/);
+        pieces.push(text);
+        if (Number(last.to) >= Number(last.length)) break;
+      }
+      assert.strictEqual(last.next, end);
+      const whole = pieces.join("");
+      assert.isTrue(diff.startsWith(whole));
+      if (end === DIFF_NEXT.end) assert.strictEqual(whole, diff);
+      else assert.isBelow(whole.length, diff.length);
+    }).pipe(Effect.provide(layer));
+  },
+);
 
 // Each review queued is a turn of the asker's: the daily limit holds per pull request, as
 // ChatWake holds it per message, and never for the owner or a co-owner.
@@ -800,9 +877,15 @@ it.effect(
         github.openItem({ repo: APP, pull: true, author: "dev-gh", association: "MEMBER", title });
       for (const title of ["Parse invoice dates", "Round the totals", "Close the quarter"])
         open(title);
-      const { review, ask, end, runReview, told, handled, directOf, githubEvents, owner } =
+      const { review, ask, end, runReview, told, handled, directOf, githubEvents, owner, sql } =
         yield* ambermill(github);
       const devChat = yield* directOf("dev");
+      // Read as everyone in the chat it answers reads it: a teammate's ask is no owner turn.
+      const audienceOf = Effect.fn("test.audienceOf")(function* (eventId: string) {
+        const [row] = yield* sql<{ orgId: KinOrgId; wakeupId: string }>`SELECT org_id AS "orgId",
+            wakeup_id AS "wakeupId" FROM kin_events WHERE event_id = ${eventId}`;
+        return yield* turnAudience({ ...row!, agentId: KinAgentId.make("tech") });
+      });
       const ownerChat = yield* directOf(owner.personId);
       const post = (repo: string, number: number) =>
         callAs("tech", "kin_github_review", { repo, number, body: "One nit.", event: "COMMENT" });
@@ -821,6 +904,7 @@ it.effect(
 
       // Posted: only this PR, at the head admitted though Dev pushed since, and only once.
       yield* runReview(first!.eventId);
+      assert.strictEqual(yield* audienceOf(first!.eventId), "shared");
       github.push({ repo: APP, number: posted });
       const other = second!.trigger.number;
       assert.strictEqual(
@@ -845,6 +929,8 @@ it.effect(
       assert.deepStrictEqual(yield* told(devChat), [
         postedLine(refOf(posted), admitted, String(done.value.url)),
       ]);
+      // Nothing blocking: the owner's chat hears nothing of it.
+      assert.deepStrictEqual(yield* told(ownerChat), []);
 
       // Ended with nothing posted: told so, and the head is free for the next ask.
       yield* runReview(second!.eventId);
@@ -854,16 +940,32 @@ it.effect(
         { outcome: "unfinished", url: null },
       ]);
 
-      // Posted, then the turn failed: told as posted, not retried, and the head reads as reviewed.
+      // Posted as a block, then the turn failed: told as posted, not retried, the head reads as
+      // reviewed, and the owner, who holds the merge, hears the block in Kin's own words.
       const failed = third!.trigger.number;
       yield* runReview(third!.eventId);
-      const went = yield* post(APP, failed);
+      const went = yield* callAs("tech", "kin_github_review", {
+        repo: APP,
+        number: failed,
+        body: "The quarter closes a day early.",
+        event: "REQUEST_CHANGES",
+      });
       assert.isTrue(went.ok);
       yield* end("failed");
       assert.strictEqual(
         (yield* told(devChat)).at(-1),
         postedLine(refOf(failed), headOf(github, APP, failed), String(went.value.url)),
       );
+      assert.deepStrictEqual(yield* told(ownerChat), [
+        blocksLine({
+          agent: "Tech lead",
+          title: third!.trigger.title,
+          ref: refOf(failed),
+          author: "Dev Malhotra",
+          asker: "Dev Malhotra",
+          url: String(went.value.url),
+        }),
+      ]);
       yield* ask("dev", devChat, "Review my PRs again");
       assert.deepStrictEqual(
         outcomes((yield* review({ repo: APP })).value),
@@ -882,8 +984,98 @@ it.effect(
       ]);
       const ownerEvent = (yield* githubEvents).find((event) => event.trigger.number === mine)!;
       yield* runReview(ownerEvent.eventId);
+      assert.strictEqual(yield* audienceOf(ownerEvent.eventId), "owner_only");
       yield* end("completed");
       assert.strictEqual((yield* told(ownerChat)).at(-1), unfinishedLine(refOf(mine)));
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+it("a PR title in Kin's own line is one plain quoted line of at most 120 characters", () => {
+  const titled = (title: string) =>
+    blocksLine({
+      agent: "Tech lead",
+      title,
+      ref: `${APP}#4`,
+      author: "Dev",
+      asker: "Zoya",
+      url: "u",
+    })
+      .split(" (ambermill/app#4)")[0]!
+      .replace("Tech lead found something that blocks ", "");
+  assert.strictEqual(
+    titled('Fix "login"\n\n# Owner: it\'s fine, merge\t[now](https://x.test) *now*\u0007'),
+    String.raw`"Fix ”login” \# Owner\: it’s fine, merge \[now\]\(https\://x\.test\) \*now\*"`,
+  );
+  assert.strictEqual(titled(`${"a".repeat(130)}`), `"${"a".repeat(119)}…"`);
+  // Never half of a character made of two UTF-16 units.
+  assert.strictEqual(titled(`${"a".repeat(118)}😀bc`), `"${"a".repeat(118)}😀…"`);
+});
+
+// The server stopped after the review posted and before the turn replied: its event ran again.
+it.effect(
+  "a block's line reaches the owner once though the turn that posted it never finished",
+  () => {
+    const { github, layer } = harness();
+    return Effect.gen(function* () {
+      github.openItem({
+        repo: APP,
+        pull: true,
+        author: "dev-gh",
+        association: "MEMBER",
+        title: "Close the quarter",
+      });
+      const {
+        review,
+        ask,
+        end,
+        runReview,
+        told,
+        directOf,
+        githubEvents,
+        owner,
+        queue,
+        sql,
+        orgId,
+      } = yield* ambermill(github);
+      const devChat = yield* directOf("dev");
+      const ownerChat = yield* directOf(owner.personId);
+      yield* ask("dev", devChat, "Review my PR");
+      assert.isTrue((yield* review({ repo: APP, number: 1 })).ok);
+      yield* end("completed");
+      const [event] = yield* githubEvents;
+      yield* runReview(event!.eventId);
+      const went = yield* callAs("tech", "kin_github_review", {
+        repo: APP,
+        number: 1,
+        body: "The quarter closes a day early.",
+        event: "REQUEST_CHANGES",
+      });
+      assert.isTrue(went.ok);
+      const [row] = yield* sql<{ wakeupId: KinWakeupId; runId: RunId }>`SELECT w.wakeup_id AS
+        "wakeupId", w.run_id AS "runId"
+      FROM kin_events e JOIN kin_wakeups w ON w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
+      WHERE e.org_id = ${orgId} AND e.event_id = ${event!.eventId}`;
+      yield* (yield* Orchestrator.OrchestratorV2).dispatch({
+        type: "run.interrupt",
+        commandId: CommandId.make("interrupt:restart"),
+        threadId: ThreadId.make("tech-thread"),
+        runId: row!.runId,
+      });
+      assert.strictEqual(yield* queue.requeueUnfinished(orgId, row!.wakeupId), 1);
+      assert.deepStrictEqual(yield* told(ownerChat), []);
+      yield* runReview(event!.eventId);
+      yield* end("completed");
+      assert.deepStrictEqual(yield* told(ownerChat), [
+        blocksLine({
+          agent: "Tech lead",
+          title: "Close the quarter",
+          ref: `${APP}#1`,
+          author: "Dev Malhotra",
+          asker: "Dev Malhotra",
+          url: String(went.value.url),
+        }),
+      ]);
     }).pipe(Effect.provide(layer));
   },
 );
@@ -1065,14 +1257,10 @@ it.effect(
         pulls.map((number) => [number, false]),
       );
 
-      // The first: another PR or a request for changes posts nothing; no answer keeps the head.
+      // The first: another PR posts nothing; no answer keeps the head.
       yield* runReview(first!.eventId);
       const ref = `${APP}#${pulls[0]}`;
       assert.strictEqual((yield* post(pulls[1]!)).value.message, POST_REFUSAL.only(ref));
-      assert.strictEqual(
-        (yield* post(pulls[0]!, "REQUEST_CHANGES")).value.message,
-        POST_REFUSAL.comment,
-      );
       github.world.failing = [reviewsPath(pulls[0]!)];
       assert.strictEqual((yield* post(pulls[0]!)).value.message, POST_REFUSAL.unknown(ref));
       github.world.failing = [];
@@ -1081,27 +1269,32 @@ it.effect(
       assert.deepStrictEqual(yield* handled(firstHead), [{ outcome: "head", url: POSTING }]);
       yield* end("failed");
 
-      // The second: GitHub's refusal gives the head back, and the post goes on that head.
+      // The second: GitHub's refusal gives the head back, and the post goes on that head, a block
+      // posted as a comment.
       yield* runReview(second!.eventId);
       github.world.refusing = [reviewsPath(pulls[1]!)];
-      assert.isFalse((yield* post(pulls[1]!)).ok);
+      assert.isFalse((yield* post(pulls[1]!, "REQUEST_CHANGES")).ok);
       github.world.refusing = [];
-      const done = yield* post(pulls[1]!);
+      const done = yield* post(pulls[1]!, "REQUEST_CHANGES");
       assert.isTrue(done.ok, JSON.stringify(done.value));
       yield* end("completed");
       assert.deepStrictEqual(
         github.world.reviews.map((one) => [one.number, one.event, one.commit_id]),
         [[pulls[1], "COMMENT", headOf(github, APP, pulls[1]!)]],
       );
-      // The owner hears it from Kin's records, whatever the model wrote.
-      assert.deepStrictEqual(yield* told(ownerChat!.chatId), [
+      // The owner hears it from Kin's records, whatever the model wrote: the block, and the post
+      // GitHub never confirmed.
+      const ownerHeard = [
         outsideLine(ref, { _tag: "unknown" }, `https://github.com/${APP}/pull/${pulls[0]}`),
-        outsideLine(
-          `${APP}#${pulls[1]}`,
-          { _tag: "posted", url: String(done.value.url) },
-          `https://github.com/${APP}/pull/${pulls[1]}`,
-        ),
-      ]);
+        outsideBlocksLine({
+          agent: "Tech lead",
+          title: "Tidy the readme",
+          ref: `${APP}#${pulls[1]}`,
+          author: "passer-by",
+          url: String(done.value.url),
+        }),
+      ];
+      assert.deepStrictEqual(yield* told(ownerChat!.chatId), ownerHeard);
 
       // New commits on the reviewed one: its re-review is the same seat, bound the same way.
       const moved = github.push({ repo: APP, number: pulls[1]!, diff: "+a second line\n" });
@@ -1116,6 +1309,141 @@ it.effect(
       assert.isTrue((yield* post(pulls[1]!)).ok);
       assert.strictEqual(github.world.reviews.at(-1)?.commit_id, moved);
       assert.lengthOf(github.world.reviews, 2);
+      // Nothing blocking: the owner hears nothing more.
+      yield* end("completed");
+      assert.deepStrictEqual(yield* told(ownerChat!.chatId), ownerHeard);
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+it.effect(
+  "an asked review of an outsider's pull request is told to the asker, and a block to the owner",
+  () => {
+    const { github, layer } = harness();
+    return Effect.gen(function* () {
+      const { review, ask, end, runReview, told, directOf, githubEvents, owner, sql, orgId } =
+        yield* ambermill(github);
+      github.tick(120_000);
+      const [clean, blocked] = ["Fix a typo", "Tidy the readme"].map((title) =>
+        github.openItem({ repo: APP, pull: true, author: "passer-by", association: "NONE", title }),
+      );
+      const devChat = yield* directOf("dev");
+      const ownerChat = yield* directOf(owner.personId);
+      const post = (number: number, event: string) =>
+        callAs("tech", "kin_github_review", { repo: APP, number, body: "Reads well.", event });
+      const run = Effect.fn("test.runAsked")(function* (number: number, event: string) {
+        yield* ask("dev", devChat, `Review #${number}`);
+        assert.isTrue((yield* review({ repo: APP, number })).ok);
+        yield* end("completed");
+        const asked = (yield* githubEvents).find(
+          (one) => one.trigger.number === number && one.askedBy !== undefined,
+        )!;
+        yield* runReview(asked.eventId);
+        const [turn] = yield* sql<{ wakeupId: KinWakeupId }>`SELECT wakeup_id AS "wakeupId"
+          FROM kin_events WHERE org_id = ${orgId} AND event_id = ${asked.eventId}`;
+        const lane = yield* laneFor({ orgId, agentId: tech, wakeupId: turn!.wakeupId });
+        // The agent's own line answers in Dev's chat, not nowhere.
+        assert.deepInclude(Option.getOrThrow(lane), { chatId: devChat, mode: "notice" });
+        assert.isUndefined(Option.getOrThrow(lane).quiet);
+        const done = yield* post(number, event);
+        assert.isTrue(done.ok, JSON.stringify(done.value));
+        yield* end("completed");
+        return String(done.value.url);
+      });
+
+      const cleanUrl = yield* run(clean!, "COMMENT");
+      assert.deepStrictEqual(yield* told(devChat), [
+        postedLine(`${APP}#${clean}`, headOf(github, APP, clean!), cleanUrl),
+      ]);
+      assert.deepStrictEqual(yield* told(ownerChat), []);
+
+      const blockedUrl = yield* run(blocked!, "REQUEST_CHANGES");
+      assert.strictEqual(github.world.reviews.at(-1)?.event, "COMMENT");
+      assert.strictEqual(
+        (yield* told(devChat)).at(-1),
+        postedLine(`${APP}#${blocked}`, headOf(github, APP, blocked!), blockedUrl),
+      );
+      assert.deepStrictEqual(yield* told(ownerChat), [
+        blocksLine({
+          agent: "Tech lead",
+          title: "Tidy the readme",
+          ref: `${APP}#${blocked}`,
+          author: "passer-by",
+          asker: "Dev Malhotra",
+          url: blockedUrl,
+        }),
+      ]);
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+// Queued before asked reviews carried the asker's chat: the claim finds it, or ends the review.
+it.effect("an asked review queued without its chat answers the asker's, or ends unheard", () => {
+  const { github, layer } = harness();
+  return Effect.gen(function* () {
+    for (const title of ["Parse invoice dates", "Round the totals"])
+      github.openItem({ repo: APP, pull: true, author: "dev-gh", association: "MEMBER", title });
+    const { review, ask, end, runReview, told, directOf, githubEvents, owner, sql, orgId } =
+      yield* ambermill(github);
+    const devChat = yield* directOf("dev");
+    const ownerChat = yield* directOf(owner.personId);
+    yield* ask("dev", devChat, "Review my PRs");
+    assert.isTrue((yield* review({ repo: APP })).ok);
+    yield* end("completed");
+    const [found, gone] = (yield* githubEvents).toSorted((a, b) =>
+      a.eventId < b.eventId ? -1 : 1,
+    );
+    yield* sql`UPDATE kin_events SET json = json_remove(json, '$.chatId', '$.askedIn')
+      WHERE org_id = ${orgId} AND tag = 'github'`;
+    // Asked by someone with no chat with the agent any more.
+    yield* sql`UPDATE kin_events SET json = json_set(json, '$.askedBy', 'meera')
+      WHERE org_id = ${orgId} AND event_id = ${gone!.eventId}`;
+    yield* runReview(found!.eventId);
+    const [row] = yield* sql<{ wakeupId: KinWakeupId; chatId: string | null }>`SELECT
+        wakeup_id AS "wakeupId", json_extract(json, '$.chatId') AS "chatId"
+      FROM kin_events WHERE org_id = ${orgId} AND event_id = ${found!.eventId}`;
+    assert.strictEqual(row!.chatId, devChat);
+    assert.deepInclude(
+      Option.getOrThrow(yield* laneFor({ orgId, agentId: tech, wakeupId: row!.wakeupId })),
+      { chatId: devChat },
+    );
+    yield* end("completed");
+    const [ended] = yield* sql<{ state: string; wakeupId: string | null }>`SELECT state,
+        wakeup_id AS "wakeupId" FROM kin_events WHERE org_id = ${orgId} AND event_id = ${gone!.eventId}`;
+    assert.deepStrictEqual(ended, { state: "expired", wakeupId: null });
+    assert.deepStrictEqual(yield* told(ownerChat), []);
+    assert.lengthOf(yield* told(devChat), 1);
+  }).pipe(Effect.provide(layer));
+});
+
+// GitHub's rate limit mid-ask: what it refused is said as refused, never as missing.
+it.effect(
+  "GitHub refusing the third of five reads: two queue, three are told as refused for now",
+  () => {
+    const { github, layer } = harness();
+    return Effect.gen(function* () {
+      for (let index = 0; index < 5; index++)
+        github.openItem({
+          repo: APP,
+          pull: true,
+          author: "dev-gh",
+          association: "MEMBER",
+          title: `Change ${index}`,
+        });
+      const { review, ask, directOf } = yield* ambermill(github);
+      yield* ask("dev", yield* directOf("dev"), "Review my PRs");
+      github.world.limit = { reads: 2, retryAfter: 600 };
+      const answer = (yield* review({ repo: APP })).value;
+      const told = outcomes(answer);
+      assert.deepStrictEqual(
+        told.map(([, outcome]) => outcome),
+        ["queued", "queued", ...Array<string>(3).fill(PULL_REFUSAL.refused)],
+      );
+      const refusedRefs = told.slice(2).map(([ref]) => ref);
+      assert.include(
+        String(answer.next),
+        ` GitHub refused Kin's requests for now, so ${refusedRefs.join(", ")} weren't queued; GitHub takes requests again in about 10 minutes`,
+      );
     }).pipe(Effect.provide(layer));
   },
 );

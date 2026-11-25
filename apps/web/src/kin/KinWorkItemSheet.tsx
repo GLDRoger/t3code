@@ -171,6 +171,7 @@ import {
 import { useKinSectionNamed, useKinShell } from "./useKinShell";
 import {
   kinPickerNamed,
+  kinPlaceFind,
   kinSectionNoun,
   kinSectionOf,
   kinSectionOffLine,
@@ -1512,6 +1513,7 @@ export function KinTaskPlaceMenu(given: {
   const props = kinPickerNamed(clientShell, given);
   const { value, onPick, side } = props;
   const clientNoun = kinSectionNoun(clientShell, "clients");
+  const find = kinPlaceFind(props.noun, clientShell);
   const search = useKinPickerSearch(
     props.target,
     props.noun === "client" ? "clients" : "projects",
@@ -1576,8 +1578,8 @@ export function KinTaskPlaceMenu(given: {
             search.type("");
             onPick(first);
           }}
-          placeholder={`Find a ${props.noun}`}
-          aria-label={`Find a ${props.noun}`}
+          placeholder={find}
+          aria-label={find}
         />
         {value === null || props.onOpen === null ? null : (
           <>
