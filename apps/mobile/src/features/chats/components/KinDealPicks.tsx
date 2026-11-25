@@ -73,7 +73,7 @@ export function KinDealQuoteRow(props: {
 }) {
   const { choices, empty } = props.quotes;
   const current = choices.find((one) => one.current)?.label ?? KIN_DEALS.none;
-  if (empty !== null) return <ListRowLayout label={KIN_DEALS.quote} detail={empty} />;
+  if (empty !== null) return <ListRowLayout label={KIN_DEALS.quote} description={empty} />;
   return (
     <Menu
       title={KIN_DEALS.quote}
