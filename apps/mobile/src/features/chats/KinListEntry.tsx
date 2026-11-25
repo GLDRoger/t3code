@@ -1382,7 +1382,7 @@ function KinListSettingsForm(props: KinWorkTarget & { readonly def: KinListDefin
           {def.categories.map((category) => (
             <KinWorkTextField
               key={category}
-              label={category}
+              label={kinCategoryLabel(category, null)}
               value={draft.categoryLabels[category] ?? ""}
               placeholder={kinCategoryLabel(category, null)}
               maxLength={KIN_LIST_LABEL_MAX}

@@ -37,6 +37,7 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import * as ChatService from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as HostCare from "../host/KinHostCare.ts";
+import * as Memory from "../memory/Memory.ts";
 import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import * as ArrivalStore from "../arrivals/ArrivalStore.ts";
 import * as KinWatches from "../watches/KinWatches.ts";
@@ -1144,6 +1145,55 @@ describe("KinLeadProvision", () => {
       );
       yield* Provision.retireOnHost(growth.agentId);
       assert.strictEqual(yield* refusal(edit({ name: "X" }, growth.agentId)), "retired");
+    }).pipe(Effect.provide(paired)),
+  );
+  it.effect("tells the owner when the nightly memory update changes models", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      yield* settings.updateSettings({ kinNonClaudeAgents: true });
+      const finance = (yield* Provision.create({ ...input(owner, []), name: "Finance" })).lead;
+      const chief = (yield* Provision.create({
+        ...input(owner, []),
+        name: "Chief of staff",
+        domain: "chief-of-staff",
+      })).lead;
+      const sonnet = { instanceId: ProviderInstanceId.make("work"), model: "claude-sonnet-4-6" };
+      const codex = { instanceId: ProviderInstanceId.make("mine"), model: "invented-codex" };
+      const notices: Array<string | undefined> = [];
+      const change = (model: typeof chief.model, agentId = chief.agentId) =>
+        Provision.update({
+          editor: owner,
+          orgId: chief.orgId,
+          agentId,
+          fields: { model },
+        }).pipe(
+          Effect.provideService(Memory.MemoryRecoveryHooks, {
+            notify: (notice) =>
+              Effect.gen(function* () {
+                assert.strictEqual(notice.orgId, chief.orgId);
+                assert.isTrue(Option.isNone(yield* Effect.serviceOption(sql.transactionService)));
+                notices.push(notice.owner);
+              }),
+          }),
+        );
+
+      yield* change(sonnet, finance.agentId);
+      assert.deepStrictEqual(notices, []);
+      yield* change(sonnet);
+      yield* change(sonnet);
+      yield* change({ ...sonnet, options: [{ id: "effort", value: "high" }] });
+      assert.deepStrictEqual(notices, [
+        "Kin's nightly memory update now runs on claude-sonnet-4-6, the model Chief of staff uses.",
+      ]);
+
+      yield* change(codex);
+      yield* change({ ...codex, model: "invented-codex-two" });
+      yield* change(sonnet);
+      assert.deepStrictEqual(notices.slice(1), [
+        "Kin's nightly memory update stops while Chief of staff runs on invented-codex: it needs a Claude model. Switch Chief of staff back to a Claude model and it starts again that night.",
+        "Kin's nightly memory update starts again tonight on claude-sonnet-4-6, the model Chief of staff uses.",
+      ]);
     }).pipe(Effect.provide(paired)),
   );
   it.effect(

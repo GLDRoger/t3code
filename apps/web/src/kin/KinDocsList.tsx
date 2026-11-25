@@ -68,6 +68,7 @@ import { KinDocFileDialog } from "./KinDocFileDialog";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinHostAt } from "./useKinHost";
+import { useKinShell } from "./useKinShell";
 import { useKinDocDelete } from "./useKinDocDelete";
 import { toastDocRestored } from "./kinDocDeleteToasts";
 import {
@@ -351,6 +352,7 @@ export function KinDocsList(
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(props.environmentId));
   const deleting = useKinDocDelete(props);
   const scope = useKinViewerScope(props.environmentId);
+  const shell = useKinShell(props.environmentId);
   const { filter } = state;
   const shown = kinListShown(state, kinHostLink(useKinHostAt(props.environmentId)));
   const text = filter.text.trim().toLowerCase();
@@ -388,7 +390,7 @@ export function KinDocsList(
   const pinShown = kinWhatWeSellShown(filter);
   const pinned = useKinWhatWeSell(props, pinShown);
   const starter = useKinWhatWeSellStart(props);
-  const library = kinDocLibrary(state.records, pinShown ? (pinned ?? null) : null);
+  const library = kinDocLibrary(state.records, pinShown ? (pinned ?? null) : null, shell);
   const whatWeSell: ReadonlyArray<Item> =
     shown === "rows" && pinShown && pinned === null && starter !== null
       ? [{ type: "whatWeSell", id: "what-we-sell" }]

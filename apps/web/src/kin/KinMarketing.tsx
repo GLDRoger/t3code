@@ -19,6 +19,7 @@ import type {
   KinContactListInput,
   KinMarketing,
   KinRecordKey,
+  KinShell,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { DownloadIcon, XIcon } from "lucide-react";
@@ -331,13 +332,17 @@ export function KinCampaignResultsSection(props: {
   readonly audience: string | null;
   /** Whether the company runs deals (`kinSectionOn`): its deal counts go with them. */
   readonly deals: boolean;
+  /** The company's sections, whose name for Clients the counts say. */
+  readonly shell?: KinShell | null | undefined;
   readonly onOpen: (id: KinCampaignResultId) => void;
 }) {
-  const rows = kinCampaignResultRows(props.results, props.audience, props.deals);
+  const rows = kinCampaignResultRows(props.results, props.audience, props.deals, props.shell);
   return (
     <KinWorkSection
       title={KIN_MARKETING.results}
-      fold={{ summary: kinCampaignResultsSummary(props.results, props.audience, props.deals) }}
+      fold={{
+        summary: kinCampaignResultsSummary(props.results, props.audience, props.deals, props.shell),
+      }}
     >
       <ul className="-mx-2 flex flex-col">
         {rows.map((row) => (

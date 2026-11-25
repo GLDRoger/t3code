@@ -48,11 +48,14 @@ import { found, ownerWriter, placeRefusals, theOwner } from "./ownerWork.ts";
 import { chatLinksFor, iso, workFailure } from "./recordRows.ts";
 import {
   allLists,
+  checkWatch,
   encodeDefinition,
   type FieldDef,
   isUnissuedDraft,
   listDef,
   openCounts,
+  remindTarget,
+  sectionOptionsRefusal,
   storedCategoryLabels,
   teamListChange,
   teamListRefusal,
@@ -185,6 +188,44 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
             `Some ${def.name} entries have payments. Take those back first, then turn this off.`,
           );
       }
+      const sectionRefused = yield* sectionOptionsRefusal(input.orgId, def.id, {
+        remindOn: input.remindOn,
+        check: input.check,
+      });
+      if (sectionRefused !== undefined) return yield* sectionRefused;
+      const {
+        id: _id,
+        builtIn: _builtIn,
+        name: _name,
+        prefix: _prefix,
+        archivedAt: _archivedAt,
+        rev: _rev,
+        categoryLabels: _labels,
+        payments: _payments,
+        remindOn: previousReminder,
+        check: previousCheck,
+        ...definition
+      } = def;
+      const reminder =
+        input.remindOn === undefined
+          ? previousReminder
+          : input.remindOn === null
+            ? undefined
+            : remindTarget(fields, def, input.remindOn);
+      const check = input.check === undefined ? previousCheck : (input.check ?? undefined);
+      const next = {
+        ...definition,
+        ...team,
+        fields,
+        stateLabels,
+        ...(reminder === undefined || reminder === "due" ? {} : { remindOn: reminder }),
+        ...(check === undefined ? {} : { check }),
+        ...(numbering === undefined ? {} : { numbering }),
+        ...(Object.keys(categoryLabels).length === 0 ? {} : { categoryLabels }),
+        ...(payments ? { payments: true as const } : {}),
+      };
+      const watchRefused = checkWatch(next);
+      if (watchRefused !== undefined) return yield* watchRefused;
       const sameLabels = (a: Readonly<Record<string, string>>, b: typeof a) =>
         Object.keys(a).length === Object.keys(b).length &&
         Object.entries(a).every(([key, label]) => b[key] === label);
@@ -197,6 +238,10 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
         archivedAt !== def.archivedAt ||
         fields.length !== def.fields.length ||
         fields.some((one, index) => one.retired !== def.fields[index]?.retired) ||
+        def.remindOn !== next.remindOn ||
+        def.check?.field !== next.check?.field ||
+        def.check?.below !== next.check?.below ||
+        def.check?.above !== next.check?.above ||
         numbering?.prefix !== def.numbering?.prefix ||
         numbering?.series !== def.numbering?.series ||
         numbering?.width !== def.numbering?.width;
@@ -206,37 +251,19 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
             reason: "conflict",
             message: `${def.name} changed since you read it; it is at revision ${def.rev} now.`,
           });
-        const {
-          id: _id,
-          builtIn: _builtIn,
-          name: _name,
-          prefix: _prefix,
-          archivedAt: _archivedAt,
-          rev: _rev,
-          categoryLabels: _labels,
-          payments: _payments,
-          ...definition
-        } = def;
-        const next = {
-          ...definition,
-          ...team,
-          fields,
-          stateLabels,
-          ...(Object.keys(categoryLabels).length === 0 ? {} : { categoryLabels }),
-          ...(payments ? { payments: true as const } : {}),
-        };
         yield* sql`UPDATE kin_registers SET name = ${name}, archived_at = ${archivedAt},
-            definition_json = ${yield* encodeDefinition({
-              ...next,
-              ...(numbering === undefined ? {} : { numbering }),
-            })},
+            definition_json = ${yield* encodeDefinition(next)},
             rev = rev + 1
           WHERE org_id = ${input.orgId} AND register_id = ${def.id}`;
         yield* (yield* KinRefreshObserver).touch(input.orgId, "workLists");
       }
-      const next = yield* listDef(input.orgId, def.id);
-      if (next === undefined) return yield* unknownList(def.id);
-      return toDefinition(next, (yield* openCounts(input.orgId, KIN_OWNER_LEVEL)).get(def.id) ?? 0);
+      const stored = yield* listDef(input.orgId, def.id);
+      if (stored === undefined) return yield* unknownList(def.id);
+      return toDefinition(
+        stored,
+        (yield* openCounts(input.orgId, KIN_OWNER_LEVEL)).get(def.id) ?? 0,
+        input.accept,
+      );
     }),
   );
 }, workFailure);

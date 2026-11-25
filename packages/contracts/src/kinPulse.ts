@@ -61,6 +61,7 @@ const KIN_PULSE_SENSES = [
   ...KIN_PROMISE_SENSES,
   "payment_seen",
   "repaid_seen",
+  "mail_gap",
 ] as const;
 /**
  * Senses newer than the first phones: a screen read sends them only to a client that lists them
@@ -81,6 +82,7 @@ export const KIN_PULSE_LATER_SENSES = [
   ...KIN_PROMISE_SENSES,
   "payment_seen",
   "repaid_seen",
+  "mail_gap",
 ] as const;
 export const KinPulseSense = Schema.Literals(KIN_PULSE_SENSES);
 export type KinPulseSense = typeof KinPulseSense.Type;
@@ -168,6 +170,7 @@ export const KinPulseFact = Schema.Struct({
       "pull_request",
       "bank",
       "overflow",
+      "mailbox",
     ]),
     /** A record's key (INV-4), a task's thread, an agent id, a budget id, or owner/name#12 (PR). */
     key: TrimmedNonEmptyString,

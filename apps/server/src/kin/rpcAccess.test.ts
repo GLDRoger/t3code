@@ -107,10 +107,12 @@ const MEMBER = [
   "kin.triggers.getTimeZone",
   // What Kin keeps watch on: the service shows and acts on only the watches this person may see.
   "kin.watches.again",
+  "kin.watches.followUps",
   "kin.watches.list",
   "kin.watches.log",
   "kin.watches.look",
   "kin.watches.stop",
+  "kin.watches.stopFollowUp",
   "kin.widgets.act",
   "kin.work.assign",
   "kin.work.comment",

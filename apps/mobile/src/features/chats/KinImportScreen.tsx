@@ -63,6 +63,7 @@ import { KinLoadFailed } from "./components/KinLoadFailed";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
 import { NO_LINK, targetOf } from "./KinWorkFormScreens";
 import { useKinImportRuns, useKinImportSend } from "./state/useKinImport";
+import { useKinSectionNamed, useKinShell } from "./state/useKinShell";
 import { useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 
 export type KinImportParams = {
@@ -144,6 +145,8 @@ function Importing(props: KinWorkTarget) {
   const navigation = useNavigation();
   const host = useKinImportSend(props);
   const { state: runs, refresh } = useKinImportRuns(props);
+  const shell = useKinShell(props.environmentId);
+  const named = useKinSectionNamed(props.environmentId);
   const directory = useKinWorkDirectory(props, true);
   const nameOf = (personId: string) => directory.names.people.get(personId) ?? "Someone";
   const [picked, setPicked] = useState<KinImportFile | null>(null);
@@ -271,7 +274,7 @@ function Importing(props: KinWorkTarget) {
       )}
       {undone === null ? null : (
         <ListSection title={KIN_IMPORT.undone}>
-          {kinImportUndoneLines(undone).map((line) => (
+          {kinImportUndoneLines(undone, shell).map((line) => (
             <ListRowLayout key={line} label={line} />
           ))}
         </ListSection>
@@ -293,7 +296,7 @@ function Importing(props: KinWorkTarget) {
         refresh={{ accessibilityLabel: "Refresh", onPress: refresh }}
       >
         <Text textRole="headline" className="px-2">
-          {KIN_IMPORT.title}
+          {named(KIN_IMPORT.title)}
         </Text>
         <Text textRole="footnote" className="px-2 text-foreground-muted">
           {KIN_IMPORT.intro}
@@ -327,7 +330,7 @@ function Importing(props: KinWorkTarget) {
                 <ListRowLayout
                   key={run.batch}
                   icon="doc.text"
-                  label={kinImportRunLine(run, nameOf(run.by))}
+                  label={kinImportRunLine(run, nameOf(run.by), shell)}
                   {...(description === "" ? {} : { description })}
                 />,
                 ...(why === null
@@ -379,7 +382,7 @@ function Importing(props: KinWorkTarget) {
                 value={mapping.columns[column.at] ?? "skip"}
                 options={KIN_IMPORT_TARGETS.map((id) => ({
                   id,
-                  label: KIN_IMPORT_TARGET_LABELS[id],
+                  label: named(KIN_IMPORT_TARGET_LABELS[id]),
                 }))}
                 disabled={working}
                 onPick={(id) =>
@@ -454,7 +457,7 @@ function Importing(props: KinWorkTarget) {
           </ListSection>
         ) : null}
         <ListSection title={KIN_IMPORT.whatWillHappen}>
-          {kinImportTiles(checked).map((tile) => (
+          {kinImportTiles(checked, shell).map((tile) => (
             <ListRowLayout
               key={tile.id}
               label={tile.label}
@@ -567,11 +570,11 @@ function Importing(props: KinWorkTarget) {
       {applied === null ? null : (
         <>
           <Text textRole="body" className="px-2">
-            {kinImportDoneLine(applied)}
+            {kinImportDoneLine(applied, shell)}
           </Text>
-          {kinImportNoticed(applied).length === 0 ? null : (
+          {kinImportNoticed(applied, shell).length === 0 ? null : (
             <ListSection title={KIN_IMPORT.noticed}>
-              {kinImportNoticed(applied).map((line) => (
+              {kinImportNoticed(applied, shell).map((line) => (
                 <ListRowLayout key={line} icon="exclamationmark.triangle" label={line} />
               ))}
             </ListSection>
@@ -588,7 +591,7 @@ function Importing(props: KinWorkTarget) {
           )}
           {notices}
           {undone === null ? (
-            <ListSection footer={KIN_IMPORT.undoAfter}>
+            <ListSection footer={named(KIN_IMPORT.undoAfter)}>
               <ListActionRow
                 icon="arrow.uturn.backward"
                 label={KIN_IMPORT.undo}

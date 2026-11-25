@@ -27,6 +27,7 @@ const READS = [
   "kin.refreshes.subscribe",
   // What Kin keeps watch on, and its log.
   "kin.watches.list",
+  "kin.watches.followUps",
   "kin.watches.log",
 ] as const satisfies ReadonlyArray<(typeof KinRpcs)[number]["_tag"]>;
 export type KinReadRpc = (typeof READS)[number];

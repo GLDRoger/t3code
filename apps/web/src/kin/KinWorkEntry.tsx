@@ -122,7 +122,7 @@ import {
   useKinRates,
 } from "./useKinMoney";
 import { kinWorkChoicesAtom, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
-import { useKinSectionNamed, useKinSectionOn } from "./useKinShell";
+import { useKinSectionNamed, useKinSectionOn, useKinShell } from "./useKinShell";
 import { kinListCanBeSection } from "@t3tools/client-runtime/kin/kinShell";
 import {
   KIN_BILL_TO,
@@ -561,6 +561,7 @@ export function KinListEntry(
   const { item, view, environmentId } = props;
   const clientsOn = useKinSectionOn(environmentId, "clients");
   const named = useKinSectionNamed(environmentId);
+  const shell = useKinShell(environmentId);
   // Clients off: an entry's client and project are names alone, with no link or picker.
   const billing = clientsOn;
   const opensClients = useKinOpensClients(environmentId) && billing;
@@ -696,7 +697,7 @@ export function KinListEntry(
                     if (!checked.ok) return checked.problem;
                     const save = () =>
                       changes.edit(item.rev, { amount: checked.value }, text.trim());
-                    const question = kinIssuedAmountQuestion(item, checked.value);
+                    const question = kinIssuedAmountQuestion(item, checked.value, shell);
                     if (question === null) return save();
                     return new Promise<string | null>((done) =>
                       setAskingAmount({ question, save, done }),

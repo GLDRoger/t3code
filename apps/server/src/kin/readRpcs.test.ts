@@ -176,6 +176,7 @@ const cases = (
   "kin.work.lists": { payload: { orgId }, member: false },
   "kin.refreshes.subscribe": { payload: { orgId }, member: true },
   "kin.watches.list": { payload: { orgId }, member: true },
+  "kin.watches.followUps": { payload: { orgId }, member: true },
   "kin.watches.log": { payload: { orgId }, member: true },
 });
 

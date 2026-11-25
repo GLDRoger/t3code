@@ -24,6 +24,7 @@ import { withArticle } from "../article.ts";
 import { bootstrapKinProject } from "../lead/leadProject.ts";
 import { activityAt, waitWhileActive } from "../lead/runSilence.ts";
 import { permissionFlag, threadPrefix } from "./DreamIsolation.ts";
+import { isDreamDriver } from "./dreamModel.ts";
 
 export { threadPrefix } from "./DreamIsolation.ts";
 
@@ -84,7 +85,7 @@ export const layer = Layer.effect(
     const refusal = Effect.fn("DreamSession.refusal")(function* (turn: DreamTurn) {
       const { instanceId } = turn.model;
       const entry = deriveProviderInstanceConfigMap(yield* settings.getSettings)[instanceId];
-      if (entry?.driver !== "claudeAgent")
+      if (entry === undefined || !isDreamDriver(entry.driver))
         return `Dreams run only on Claude, and ${instanceId} is ${entry === undefined ? "not a configured provider" : `${withArticle(entry.driver)} instance`}.`;
       const config: { readonly launchArgs?: unknown } = entry.config ?? {};
       const flags = Object.keys(

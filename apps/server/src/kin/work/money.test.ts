@@ -761,7 +761,10 @@ describe("lists through the tools", () => {
       const proposed = yield* LeadMoney.define(scope, {
         sourceEventId: asked,
         name: "Bookings",
-        fields: [{ label: "Room", type: "text" }],
+        fields: [
+          { label: "Room", type: "text" },
+          { label: "Seats", type: "number" },
+        ],
         dateLabel: "Booking date",
         section: true,
         remindOn: "Booking date",
@@ -777,8 +780,13 @@ describe("lists through the tools", () => {
       yield* LeadWork.create(scope, {
         sourceEventId: add,
         records: [
-          { list: "bookings", title: "Ananya Rao", date: "2026-11-11", fields: { room: "4" } },
-          { list: "bookings", title: "Kabir Sen", date: "2026-11-12", fields: { room: "2" } },
+          {
+            list: "bookings",
+            title: "Tidewater Freight",
+            date: "2026-11-11",
+            fields: { room: "4" },
+          },
+          { list: "bookings", title: "Ambermill", date: "2026-11-12", fields: { room: "2" } },
         ],
       });
       const told = yield* KinPulse.tick(orgId, NOW);
@@ -815,6 +823,107 @@ describe("lists through the tools", () => {
       assert.deepStrictEqual(yield* detail(due.proposal!), [
         "Kin will remind whoever holds an entry on its due day.",
       ]);
+
+      // A new entry has no prior delivery in the pulse ledger.
+      const addAgain = yield* turn(7, "One more booking");
+      yield* LeadWork.create(scope, {
+        sourceEventId: addAgain,
+        records: [{ list: "bookings", title: "Freight pickup", date: "2026-11-11" }],
+      });
+      const update = {
+        orgId,
+        list: "bookings",
+        rev: (yield* listDef(orgId, "bookings"))!.rev,
+        remindOn: "date",
+        accept: ["remindOn", "check"],
+      };
+      const set = yield* OwnerMoney.updateList(people, update);
+      assert.strictEqual(set.remindOn, "date");
+      assert.strictEqual(set.rev, update.rev + 1);
+      const retold = yield* KinPulse.tick(orgId, NOW + 1_000);
+      assert.deepStrictEqual(
+        retold.told
+          .filter((one) => one.key.startsWith("entry_late:"))
+          .map((one) => [one.to, one.key.split("=")[0]]),
+        [[`agent:${lead}`, "entry_late:BOO-3:due"]],
+      );
+
+      const cleared = yield* OwnerMoney.updateList(people, {
+        ...update,
+        rev: set.rev,
+        remindOn: null,
+      });
+      assert.isUndefined(cleared.remindOn);
+      assert.strictEqual(cleared.rev, set.rev + 1);
+
+      const zoya = KinPersonId.make("zoya");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES (${zoya}, ${orgId}, 'zoya', 'Zoya', ${at})`;
+      assert.include(
+        yield* Effect.flip(
+          OwnerMoney.updateList([{ _tag: "person", orgId, personId: zoya }], {
+            ...update,
+            rev: cleared.rev,
+          }),
+        ),
+        {
+          reason: "not_allowed",
+          message: "Only the owner or a co-owner can do that in Work.",
+        },
+      );
+      assert.include(
+        yield* Effect.flip(
+          OwnerMoney.updateList(people, {
+            ...update,
+            rev: cleared.rev,
+            check: { field: "room", below: 2 },
+          }),
+        ),
+        {
+          reason: "invalid_state",
+          message: "A check compares one of the list's number fields; room isn't one.",
+        },
+      );
+
+      const askRooms = yield* turn(8, "Track Rooms");
+      const rooms = yield* LeadMoney.define(scope, { sourceEventId: askRooms, name: "Rooms" });
+      const approveRooms = yield* turn(9, "Yes");
+      yield* LeadMoney.define(scope, { sourceEventId: approveRooms, proposal: rooms.proposal! });
+      assert.include(
+        yield* Effect.flip(
+          OwnerMoney.updateList(people, {
+            ...update,
+            list: "rooms",
+            rev: (yield* listDef(orgId, "rooms"))!.rev,
+          }),
+        ),
+        {
+          reason: "invalid_state",
+          message:
+            "Kin reminds and warns only for a list shown as a section: pass section true as well.",
+        },
+      );
+
+      const watched = yield* OwnerMoney.updateList(people, {
+        ...update,
+        rev: cleared.rev,
+        check: { field: "seats", below: 2 },
+      });
+      assert.deepStrictEqual(watched.check, { field: "seats", below: 2 });
+      const unchanged = yield* OwnerMoney.updateList(people, {
+        ...update,
+        rev: watched.rev,
+        check: { field: "seats", below: 2 },
+      });
+      assert.strictEqual(unchanged.rev, watched.rev);
+      const unwatched = yield* OwnerMoney.updateList(people, {
+        ...update,
+        rev: unchanged.rev,
+        remindOn: "due",
+        check: null,
+      });
+      assert.isUndefined(unwatched.remindOn);
+      assert.isUndefined(unwatched.check);
     }).pipe(Effect.provide(layer)),
   );
 
