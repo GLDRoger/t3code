@@ -51,7 +51,7 @@ const QUESTION_MAX = 240;
 const clamp = (text: string, max: number) =>
   text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 /** "Thu 26 Nov" in `zone`. */
-export const dayWord = (ms: number, zone: string) =>
+const dayWord = (ms: number, zone: string) =>
   formatKinWhen(ms, "day", { zone, locale: KIN_TEXT_LOCALE }).replace(/,/g, "");
 
 /** The card's button and the line under it, for each sealed answer. */
@@ -176,7 +176,7 @@ const claimNudge = Effect.fn("KinFactCards.claimNudge")(function* (input: {
  * nothing while they are in quiet hours, away or outside their hours (the next pass posts it),
  * nor once a card for this fact and round was posted to them. Returns the card, or undefined.
  */
-export const postFactCard = Effect.fn("KinFactCards.post")(function* (input: {
+const postFactCard = Effect.fn("KinFactCards.post")(function* (input: {
   readonly ctx: SenseContext;
   readonly personId: KinPersonId;
   readonly agentId: KinAgentId;
@@ -510,7 +510,7 @@ const stallCards = Effect.fn("KinFactCards.stalled")(function* (input: {
 
 const MILESTONE_SENSES: ReadonlySet<string> = new Set(["milestone_late", "milestone_at_risk"]);
 /** One card per milestone and due day, whether it is at risk or late by the time it is asked. */
-export const milestoneCardKey = (recordId: string, dueAt: number) =>
+const milestoneCardKey = (recordId: string, dueAt: number) =>
   `milestone_due:${recordId}:due=${dueAt}`;
 /** What a card stands on: a fact's key, and a milestone's day for its card. */
 const standKeys = (fact: {
