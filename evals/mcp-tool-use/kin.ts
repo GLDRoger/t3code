@@ -126,6 +126,8 @@ import {
 import {
   CHECK_IN_PULSE_RULE,
   LEFT_RULE,
+  OUTSIDE_NOT_LISTED_LINE,
+  OUTSIDE_THREAD_LINE,
   PULSE_RULE,
 } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { HEAD_START_WAKE } from "../../apps/server/src/kin/pulse/prepareWake.ts";
@@ -536,6 +538,8 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{PULSE_RULE}}", PULSE_RULE)
     .replaceAll("{{CHECK_IN_PULSE_RULE}}", CHECK_IN_PULSE_RULE)
     .replaceAll("{{LEFT_RULE}}", LEFT_RULE)
+    .replaceAll("{{OUTSIDE_THREAD_LINE}}", OUTSIDE_THREAD_LINE)
+    .replaceAll("{{OUTSIDE_NOT_LISTED_LINE}}", OUTSIDE_NOT_LISTED_LINE)
     .replaceAll("{{HEAD_START_WAKE}}", HEAD_START_WAKE)
     // A quiet bills turn's section for files named as the bill ids Kin gives them (`billTurn.ts`).
     .replace(/\{\{BILLS_TURN:([^}]+)\}\}/g, (_, names: string) =>
