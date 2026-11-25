@@ -1,4 +1,5 @@
 import type { KinOrgId } from "@t3tools/contracts";
+import { readOnly } from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -60,7 +61,7 @@ export const openEntries = Effect.fn("KinStatements.openEntries")(function* (
   const currency = only !== undefined && "currency" in only ? only.currency : null;
   const maxMinor = only !== undefined && "maxMinor" in only ? only.maxMinor : null;
   const recordId = only !== undefined && "recordId" in only ? only.recordId : null;
-  const rows = yield* sql<{
+  const readPage = (cursor?: { dateAt: number; recordId: string }) => sql<{
     recordId: string;
     key: string;
     title: string;
@@ -79,24 +80,35 @@ export const openEntries = Effect.fn("KinStatements.openEntries")(function* (
       AND (${maxMinor} IS NULL OR r.amount_minor <= ${maxMinor})
       AND (${recordId} IS NULL OR r.record_id = ${recordId})
       AND ${countedEntry(sql)} AND ${noAgentHand(sql)}
+      ${cursor === undefined ? sql`` : sql`AND (r.date_at, r.record_id) < (${cursor.dateAt}, ${cursor.recordId})`}
     ORDER BY r.date_at DESC, r.record_id DESC
     LIMIT ${LOOKED_AT}`;
-  return rows.flatMap(({ fieldsJson, ...row }) => {
-    const fields = parseFields(fieldsJson);
-    if (directionOf(fields) !== direction) return [];
-    const date = dayIn(row.dateAt, zone);
-    const read: StatementRow = {
-      index: 0,
-      date,
-      description: row.title,
-      reference: typeof fields.reference === "string" ? fields.reference : null,
-      amountMinor: row.amountMinor,
-      direction,
-      balanceMinor: null,
-      foreign: null,
-    };
-    return [{ ...row, date, row: read }];
-  });
+  const inDirection = (rows: Effect.Success<ReturnType<typeof readPage>>) =>
+    rows.flatMap(({ fieldsJson, ...row }) => {
+      const fields = parseFields(fieldsJson);
+      if (directionOf(fields) !== direction) return [];
+      const date = dayIn(row.dateAt, zone);
+      const read: StatementRow = {
+        index: 0,
+        date,
+        description: row.title,
+        reference: typeof fields.reference === "string" ? fields.reference : null,
+        amountMinor: row.amountMinor,
+        direction,
+        balanceMinor: null,
+        foreign: null,
+      };
+      return [{ ...row, date, row: read }];
+    });
+  return yield* Effect.gen(function* () {
+    let rows = yield* readPage();
+    const entries = inDirection(rows);
+    while (rows.length === LOOKED_AT && entries.length < LOOKED_AT) {
+      rows = yield* readPage(rows.at(-1));
+      entries.push(...inDirection(rows));
+    }
+    return entries.slice(0, LOOKED_AT);
+  }).pipe(sql.withTransaction, readOnly);
 });
 type OpenCredit = Effect.Success<ReturnType<typeof openEntries>>[number];
 
