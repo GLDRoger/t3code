@@ -384,6 +384,24 @@ it.layer(layer)((it) => {
     }),
   );
 
+  it.effect("a mark tied to a dropped bank entry stops a debit as a hand mark does", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("ambermill-dropped-debit");
+      const { kin, records, owner } = yield* cardMarkedCompany(org);
+      yield* records.update(org, owner, "BNK-9", { state: "dropped" });
+
+      const at = day("2026-11-25");
+      yield* TestClock.setTime(at);
+      yield* kin.debit("BNK-12", 5_000, "2026-11-25");
+
+      assert.deepStrictEqual(yield* kin.told(at), []);
+      assert.strictEqual(
+        yield* kin.draw("BNK-12"),
+        "BNK-12 may be the repayment already marked by hand for Zoya Rao on 2026-11-20, so Kin offers no card for it. Nothing was asked; tell the owner what you see instead.",
+      );
+    }),
+  );
+
   // The same, with Repaid on left blank: the day the mark was written stands in, in the
   // company's zone (21 Nov 20:00 UTC is 22 Nov in Kolkata).
   it.effect("a hand mark with no repaid day counts from the day it was written", () =>

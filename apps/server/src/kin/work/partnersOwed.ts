@@ -136,6 +136,7 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
     LEFT JOIN kin_records bank_entry ON bank_entry.org_id = r.org_id
       AND bank_entry.record_id = (SELECT l.target FROM kin_record_links l
         JOIN kin_records b ON b.org_id = l.org_id AND b.record_id = l.target
+          AND b.state <> 'dropped'
         WHERE l.org_id = r.org_id AND l.record_id = r.record_id
           AND l.kind = 'record' AND l.relation = 'evidence' AND b.register_id = ${bank?.id ?? null}
         ORDER BY l.created_at DESC, l.target DESC LIMIT 1)
