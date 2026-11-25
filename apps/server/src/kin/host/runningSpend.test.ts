@@ -27,9 +27,7 @@ const services = Chat.layer.pipe(
   Layer.provideMerge(
     KinPersistence.layer.pipe(
       Layer.provideMerge(Sqlite.layerMemory),
-      Layer.provideMerge(
-        ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true })),
-      ),
+      Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
     ),
   ),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-running-spend-" })),
@@ -119,10 +117,9 @@ it.effect(
         yield* sql`SELECT status, ended_at FROM kin_wakeups WHERE wakeup_id = 'w-1'`,
         [{ status: "running", ended_at: null }],
       );
-      assert.deepStrictEqual(
-        yield* sql`SELECT state FROM kin_events WHERE event_id = 'e-1'`,
-        [{ state: "claimed" }],
-      );
+      assert.deepStrictEqual(yield* sql`SELECT state FROM kin_events WHERE event_id = 'e-1'`, [
+        { state: "claimed" },
+      ]);
       used.set("kin:lead-1", 1_400_000);
       yield* RunningSpend.check(read);
       assert.lengthOf(yield* notices, 2);

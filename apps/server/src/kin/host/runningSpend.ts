@@ -51,7 +51,7 @@ const lasted = (ms: number) => {
 };
 
 /** The owner's notice for one running turn past `step`; nothing in it stops the turn. */
-export const runningSpendNotice = (input: {
+const runningSpendNotice = (input: {
   readonly agent: string;
   readonly forPerson: string | null;
   readonly task: boolean;
@@ -74,7 +74,7 @@ export const runningSpendNotice = (input: {
  * private chat once it has spent a quarter of the day's limit, and one at the whole; each closes
  * when the turn ends. A notice only: nothing here holds, slows or stops any work.
  */
-export const checkOrg = Effect.fn("KinRunningSpend.checkOrg")(function* (
+const checkOrg = Effect.fn("KinRunningSpend.checkOrg")(function* (
   orgId: KinOrgId,
   read: ReadUsage,
 ) {
