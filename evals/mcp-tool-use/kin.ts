@@ -139,6 +139,7 @@ import {
   DRAFT_CHASE,
   DRAFT_DEAL,
   DRAFT_DOCUMENT,
+  DRAFT_MEETING_OUTCOME,
   DRAFT_MEETING_PREP,
   PROPOSE_PLAN,
   PROPOSE_STEP,
@@ -570,6 +571,16 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
       PROPOSE_STEP(name, of === "deal"),
     )
     .replace(/\{\{PROPOSE_PLAN:([^}]+)\}\}/g, (_, name: string) => PROPOSE_PLAN(name))
+    // `{{DRAFT_MEETING_OUTCOME:<name>|<key>|<title>|<contact>|<mailboxes>}}`, or no mail without the last two.
+    .replace(
+      /\{\{DRAFT_MEETING_OUTCOME:([^|}]+)\|([^|}]+)\|([^|}]+)(?:\|([^|}]+)\|([^}]+))?\}\}/g,
+      (_, name: string, key: string, title: string, to?: string, from?: string) =>
+        DRAFT_MEETING_OUTCOME(
+          name,
+          { key, title },
+          to === undefined || from === undefined ? undefined : { to, from: from.split(",") },
+        ),
+    )
     // A draft wake's own line, for a person and their mailboxes (`draftWake.ts`).
     .replace(/\{\{DRAFT_CHASE:([^:}]+):([^}]+)\}\}/g, (_, name: string, from: string) =>
       DRAFT_CHASE(name, from.split(",")),
