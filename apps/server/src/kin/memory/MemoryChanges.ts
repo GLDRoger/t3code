@@ -41,6 +41,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
+import { DREAM_LEFT_OUT_PREFIX } from "../dreaming/checkDream.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { endedBy } from "./frontMatter.ts";
 import { CHAT_SOURCE, readableSources } from "./quoteAccess.ts";
@@ -467,9 +468,20 @@ const make = Effect.gen(function* () {
         provideSql,
       );
       const provenance = yield* provenanceOf(input.orgId, person.personId, items);
+      const [run] = yield* sql<{ ownerDate: string; failure: string | null }>`
+        SELECT owner_date AS "ownerDate", failure FROM kin_dream_runs
+        WHERE org_id = ${input.orgId} AND status = 'succeeded'
+        ORDER BY owner_date DESC
+        LIMIT 1`;
+      const count =
+        run?.failure?.split("\n").filter((line) => line.startsWith(DREAM_LEFT_OUT_PREFIX)).length ??
+        0;
       return {
         items: items.map((item) => listed(item, labels, provenance)),
         teamMemory: labels.teamMemory,
+        ...(run !== undefined && count > 0
+          ? { nightlyLeftOut: { ownerDate: run.ownerDate, count } }
+          : {}),
       };
     }, failed),
     setVisibility: Effect.fn("KinMemoryChanges.setVisibility")(function* (people, input) {

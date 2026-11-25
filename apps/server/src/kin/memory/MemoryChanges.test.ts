@@ -28,6 +28,7 @@ import * as Chat from "../chat/layer.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { DREAM_LEFT_OUT_PREFIX } from "../dreaming/checkDream.ts";
 import * as Kin from "../layer.ts";
 import { dormantLeadDependencies } from "../lead/layer.testkit.ts";
 import { KinMemoryChanges, type KinMemoryUndo } from "./MemoryChanges.ts";
@@ -668,5 +669,61 @@ it.effect("a yes takes only the items and words the owner was shown", () =>
       Object.fromEntries(after.items.map((each) => [each.itemId, each.visibility])),
       { y: "team", x: "suggested" },
     );
+  }).pipe(Effect.scoped, Effect.provide(root)),
+);
+
+it.effect("the Memory page's read says how many items the last landed night left out", () =>
+  Effect.gen(function* () {
+    const kin = yield* Kin.KinServer;
+    const services = Option.getOrThrow(kin.services);
+    const sql = yield* SqlClient.SqlClient;
+    yield* pairSession(session.sessionId);
+    const [owner] = yield* Context.get(services, KinIdentity).resolve(session);
+    assert.isDefined(owner);
+    const { orgId } = owner;
+    const memory = Context.get(services, KinMemoryChanges);
+    yield* memory.attachWriter({
+      undo: () => Effect.die("Unused"),
+      retire: () => Effect.die("Unused"),
+      restore: () => Effect.die("Unused"),
+      recordDecision: () => Effect.die("Unused"),
+      relabel: () => Effect.die("Unused"),
+      items: () => Effect.succeed([]),
+    });
+    const insertRun = (ownerDate: string, status: "succeeded" | "failed", failure: string | null) =>
+      sql`INSERT INTO kin_dream_runs (org_id, owner_date, dream_id, full, status, branch, head,
+          material_from, material_until, failure, started_at, ended_at)
+        VALUES (${orgId}, ${ownerDate}, ${`dream_${ownerDate}`}, 0, ${status}, ${`dream/${ownerDate}`},
+          ${status === "succeeded" ? "abc" : null}, 0, 1, ${failure}, 1, 2)`;
+    const list = () => memory.list([owner], { orgId });
+
+    assert.notProperty(yield* list(), "nightlyLeftOut");
+    yield* insertRun(
+      "2026-11-23",
+      "succeeded",
+      ["claims/rate.md", "claims/delivery.md"]
+        .map(
+          (path) =>
+            `${DREAM_LEFT_OUT_PREFIX}${path}: an item from an edit quotes only what the person typed in it`,
+        )
+        .join("\n"),
+    );
+    const nightlyLeftOut = { ownerDate: "2026-11-23", count: 2 };
+    assert.deepInclude(yield* list(), { nightlyLeftOut });
+    assert.deepInclude(yield* memory.list([owner], { orgId, forgotten: true }), { nightlyLeftOut });
+
+    yield* insertRun("2026-11-24", "failed", "Memory update failed.");
+    assert.deepInclude(yield* list(), { nightlyLeftOut });
+
+    yield* insertRun("2026-11-25", "succeeded", null);
+    assert.notProperty(yield* list(), "nightlyLeftOut");
+
+    const personId = KinPersonId.make("zoya");
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES (${personId}, ${orgId}, 'zoya', 'Zoya', '2026-11-23T00:00:00.000Z')`;
+    const member = { _tag: "person" as const, orgId, personId };
+    assert.include(yield* memory.list([member], { orgId }).pipe(Effect.flip), {
+      reason: "not_allowed",
+    });
   }).pipe(Effect.scoped, Effect.provide(root)),
 );
