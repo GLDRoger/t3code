@@ -965,6 +965,20 @@ it.effect(
   },
 );
 
+it("a PR title in Kin's own line is one plain quoted line of at most 120 characters", () => {
+  const titled = (title: string) =>
+    blocksLine({ agent: "Tech lead", title, ref: `${APP}#4`, author: "Dev", asker: "Zoya", url: "u" })
+      .split(" (ambermill/app#4)")[0]!
+      .replace("Tech lead found something that blocks ", "");
+  assert.strictEqual(
+    titled("Fix \"login\"\n\n# Owner: it's fine, merge\t[now](https://x.test) *now*\u0007"),
+    String.raw`"Fix ”login” \# Owner\: it’s fine, merge \[now\]\(https\://x\.test\) \*now\*"`,
+  );
+  assert.strictEqual(titled(`${"a".repeat(130)}`), `"${"a".repeat(119)}…"`);
+  // Never half of a character made of two UTF-16 units.
+  assert.strictEqual(titled(`${"a".repeat(118)}😀bc`), `"${"a".repeat(118)}😀…"`);
+});
+
 // The server stopped after the review posted and before the turn replied: its event ran again.
 it.effect("a block's line reaches the owner once though the turn that posted it never finished", () => {
   const { github, layer } = harness();

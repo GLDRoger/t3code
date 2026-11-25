@@ -15,6 +15,7 @@ import type { KinChatRepository } from "../chat/KinChatRepository.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
+import { escapeMarkdown } from "../lead/routines.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
 import { blocksKey, headKey, receiptOf } from "./boundReview.ts";
 
@@ -27,6 +28,21 @@ export const unfinishedLine = (ref: string) =>
   `The review of ${ref} did not finish. Ask again to retry.`;
 const unsureLine = (ref: string) =>
   `Kin sent the review of ${ref} and GitHub didn't confirm it, so Kin won't send it again.`;
+const TITLE_MAX = 120;
+
+/**
+ * A pull request's title as any line of Kin's carries it: one line, at most 120 characters, in
+ * straight quotes with its own quotes made typographic, and never read as Markdown.
+ */
+export const quotedTitle = (title: string) => {
+  const chars = Array.from(
+    title.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}\s]+/gu, " ").trim().replace(/"/g, "\u201d").replace(/'/g, "\u2019"),
+  );
+  const line =
+    chars.length > TITLE_MAX ? `${chars.slice(0, TITLE_MAX - 1).join("")}\u2026` : chars.join("");
+  return `"${escapeMarkdown(line)}"`;
+};
+
 /**
  * The owner's line on a review someone below his level asked for that blocks its pull request:
  * Kin's own words, its first sentence whole on a phone.
@@ -39,7 +55,7 @@ export const blocksLine = (input: {
   readonly asker: string;
   readonly url: string;
 }) =>
-  `${input.agent} found something that blocks "${input.title}" (${input.ref}), ${input.author}'s pull request, in the review ${input.asker} asked for: hold the merge until it is fixed. ${input.url}`;
+  `${input.agent} found something that blocks ${quotedTitle(input.title)} (${input.ref}), ${input.author}'s pull request, in the review ${input.asker} asked for: hold the merge until it is fixed. ${input.url}`;
 
 /** The owner's line on a review of an outsider's pull request: Kin's own, never the model's. */
 export const outsideLine = (ref: string, receipt: ReturnType<typeof receiptOf>, pullUrl: string) =>
