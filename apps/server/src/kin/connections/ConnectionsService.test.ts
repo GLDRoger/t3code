@@ -29,17 +29,20 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
+import * as Queue from "effect/Queue";
 import * as Redacted from "effect/Redacted";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
-import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import * as RefreshHub from "../chat/KinRefreshHub.ts";
+import { subscribeRefreshes } from "../chat/refreshes.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import {
   inheritOutside,
@@ -364,9 +367,9 @@ const gateFor = (cards: Array<Card>, hooks: Hooks) =>
     closeReplaced: () => Effect.void,
   });
 
-const layerFor = (
+const layerWithRefreshes = <R>(
   fake: Pick<Fake, "fetch">,
-  touches: Array<KinRefreshTopic>,
+  refreshes: Layer.Layer<R, never, SqlClient.SqlClient>,
   cards: Array<Card> = [],
   hooks: Hooks = {},
 ) =>
@@ -381,17 +384,28 @@ const layerFor = (
       ),
     ),
     Layer.provide(identity),
-    Layer.provide(
-      Layer.succeed(KinRefreshObserver, {
-        touch: (_org, topic) => Effect.sync(() => void touches.push(topic)),
-      }),
-    ),
+    Layer.provideMerge(refreshes),
     Layer.provide(KinEventQueue.layer),
     Layer.provideMerge(KinPersistence.layer),
     Layer.provideMerge(Sqlite.layerMemory),
     Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-connections-" })),
     Layer.provideMerge(Layer.mergeAll(NodeServices.layer, PlatformCrypto.layer)),
+  );
+
+const layerFor = (
+  fake: Pick<Fake, "fetch">,
+  touches: Array<KinRefreshTopic>,
+  cards?: Array<Card>,
+  hooks?: Hooks,
+) =>
+  layerWithRefreshes(
+    fake,
+    Layer.succeed(RefreshHub.KinRefreshObserver, {
+      touch: (_org, topic) => Effect.sync(() => void touches.push(topic)),
+    }),
+    cards,
+    hooks,
   );
 
 /** The owner, a teammate, one lead in a direct chat with the owner, and its running turn. */
@@ -1702,6 +1716,55 @@ describe("KinConnections", () => {
         assert.strictEqual(refused.reason, "not_allowed");
       }),
     ),
+  );
+
+  it.effect(
+    "a teammate's own mailbox change moves that teammate's connections number and nobody else's",
+    () =>
+      Effect.gen(function* () {
+        const fake = yield* makeFake(BASE);
+        return yield* Effect.gen(function* () {
+          yield* seed;
+          const sql = yield* SqlClient.SqlClient;
+          const zoya = KinPersonId.make("zoya");
+          const arjun = KinPersonId.make("arjun");
+          yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+            VALUES (${zoya}, ${orgId}, 'zoya', 'Zoya', ${at}),
+              (${arjun}, ${orgId}, 'arjun', 'Arjun', ${at})`;
+          const connectionId = KinConnectionId.make("zoya-mail");
+          yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url,
+              url_host, auth, reach, state, account_label, created_at, updated_at, person_id)
+            VALUES (${orgId}, ${connectionId}, 'google', 'Google', 'builtin',
+              'https://ambermill.example', 'ambermill.example', 'oauth', 'closed', 'active',
+              'zoya@ambermill.example', 0, 0, ${zoya})`;
+          const zoyaIdentity = { ...owner[0]!, personId: zoya };
+          const arjunIdentity = { ...owner[0]!, personId: arjun };
+          const zoyaQueue = yield* Stream.toQueue(subscribeRefreshes([zoyaIdentity], { orgId }), {
+            capacity: "unbounded",
+          });
+          const arjunQueue = yield* Stream.toQueue(subscribeRefreshes([arjunIdentity], { orgId }), {
+            capacity: "unbounded",
+          });
+          const zoyaFirst = yield* Queue.take(zoyaQueue);
+          const arjunFirst = yield* Queue.take(arjunQueue);
+          assert.strictEqual(zoyaFirst.connections, 0);
+          assert.strictEqual(arjunFirst.connections, 0);
+          const connections = yield* KinConnections;
+          const removed = yield* connections.mineRemove([zoyaIdentity], { orgId, connectionId });
+          assert.isNull(removed.mailbox);
+          yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+          assert.strictEqual(
+            (yield* Queue.take(zoyaQueue)).connections,
+            (zoyaFirst.connections ?? 0) + 1,
+          );
+          assert.strictEqual(yield* Queue.size(zoyaQueue), 0);
+          assert.strictEqual(yield* Queue.size(arjunQueue), 0);
+        }).pipe(
+          Effect.provide(
+            layerWithRefreshes(fake, RefreshHub.layer).pipe(Layer.provideMerge(identity)),
+          ),
+        );
+      }).pipe(Effect.scoped),
   );
 
   it.effect("lists connections and tools for the lead, and offers a card for the rest", () =>
