@@ -15,10 +15,8 @@ import type { KinChatRepository } from "../chat/KinChatRepository.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
+import { mayActAsOwner } from "../people/KinAccess.ts";
 import { headKey, receiptOf } from "./boundReview.ts";
-
-/** The owner's line on a review someone asked for in Kin ends with this (`reviewAsk.ts`). */
-const askedForLine = (name: string) => `${name} asked for it.`;
 
 /** A trigger's key as handled for an ask whose turn didn't finish: asking again retries it. */
 export const UNFINISHED = "unfinished";
@@ -29,6 +27,20 @@ export const unfinishedLine = (ref: string) =>
   `The review of ${ref} did not finish. Ask again to retry.`;
 const unsureLine = (ref: string) =>
   `Kin sent the review of ${ref} and GitHub didn't confirm it, so Kin won't send it again.`;
+/**
+ * The owner's line on a review someone below his level asked for that blocks its pull request:
+ * Kin's own words, its first sentence whole on a phone.
+ */
+export const blocksLine = (input: {
+  readonly agent: string;
+  readonly title: string;
+  readonly ref: string;
+  readonly author: string;
+  readonly asker: string;
+  readonly url: string;
+}) =>
+  `${input.agent} found something that blocks "${input.title}" (${input.ref}), ${input.author}'s pull request, in the review ${input.asker} asked for: hold the merge until it is fixed. ${input.url}`;
+
 /** The owner's line on a review of an outsider's pull request: Kin's own, never the model's. */
 export const outsideLine = (ref: string, receipt: ReturnType<typeof receiptOf>, pullUrl: string) =>
   receipt._tag === "posted"
@@ -36,22 +48,6 @@ export const outsideLine = (ref: string, receipt: ReturnType<typeof receiptOf>, 
     : receipt._tag === "unknown"
       ? `Kin sent a review of ${ref}, opened by someone outside the company, and GitHub didn't confirm it: ${pullUrl}`
       : `The review of ${ref}, opened by someone outside the company, did not post: ${pullUrl}`;
-
-/** The name a turn's asked review ends its owner line with, when one of its events carries it. */
-export const askedForSuffix = Effect.fn("KinGitHubReviewAsk.askedFor")(function* (
-  orgId: KinOrgId,
-  wakeupId: string,
-) {
-  const sql = yield* SqlClient.SqlClient;
-  // Not when the agent's owner asked: the line is in his own chat.
-  const [person] = yield* sql<{ name: string }>`SELECT p.display_name AS name FROM kin_events e
-    JOIN kin_people p ON p.org_id = e.org_id AND p.person_id = json_extract(e.json, '$.askedBy')
-    JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
-    WHERE e.org_id = ${orgId} AND e.wakeup_id = ${wakeupId} AND e.tag = 'github'
-      AND a.owner_person_id <> p.person_id
-    ORDER BY e.event_id LIMIT 1`;
-  return person === undefined ? undefined : askedForLine(person.name);
-});
 
 const notice = Effect.fn("KinGitHubReviewAsk.notice")(function* (
   deps: {
@@ -98,8 +94,8 @@ const notice = Effect.fn("KinGitHubReviewAsk.notice")(function* (
 /**
  * Run by the queue in the transaction that ends these events, from the receipt each review's post
  * left on its head: a review someone asked for is told in their own chat with the agent, or as not
- * finished, which frees its head for the next ask; one of an outsider's pull request is told in the
- * owner's chat, as the model's own words never are (`replyLane.ts`).
+ * finished, which frees its head for the next ask, and a block of it in the owner's chat; one of an
+ * outsider's pull request is told in the owner's chat, as the model's own words never are.
  */
 export const settleReviews = Effect.fn("KinGitHubReviewAsk.settle")(function* (
   deps: {
@@ -122,6 +118,12 @@ export const settleReviews = Effect.fn("KinGitHubReviewAsk.settle")(function* (
     pullUrl: string;
     outside: number;
     ownerChatId: string | null;
+    ownerPersonId: string | null;
+    agentName: string | null;
+    title: string | null;
+    author: string | null;
+    askerName: string | null;
+    event: string | null;
   }>`SELECT e.event_id AS "eventId", e.agent_id AS "agentId",
       json_extract(e.json, '$.askedBy') AS "personId",
       json_extract(e.json, '$.trigger.key') AS key, json_extract(e.json, '$.repo') AS repo,
@@ -130,9 +132,18 @@ export const settleReviews = Effect.fn("KinGitHubReviewAsk.settle")(function* (
       json_extract(e.json, '$.trigger.url') AS "pullUrl",
       (json_extract(e.json, '$.trigger.inside') = 0
         AND json_extract(e.json, '$.trigger.kind') IN ('review', 'review_request')) AS outside,
-      l.owner_chat_id AS "ownerChatId"
+      l.owner_chat_id AS "ownerChatId", a.owner_person_id AS "ownerPersonId",
+      l.name AS "agentName", json_extract(e.json, '$.trigger.title') AS title,
+      COALESCE(ap.display_name, json_extract(e.json, '$.trigger.author')) AS author,
+      p.display_name AS "askerName", c.request_hash AS event
     FROM kin_events e
     LEFT JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
+    LEFT JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = e.agent_id
+    LEFT JOIN kin_people p ON p.org_id = e.org_id AND p.person_id = json_extract(e.json, '$.askedBy')
+    LEFT JOIN kin_people ap ON ap.org_id = e.org_id AND ap.removed_at IS NULL
+      AND lower(ap.github_login) = lower(json_extract(e.json, '$.trigger.author'))
+    LEFT JOIN kin_lead_tool_calls c ON c.org_id = e.org_id AND c.wakeup_id = e.wakeup_id
+      AND c.call_key = 'github-review:' || e.event_id
     WHERE e.org_id = ${orgId} AND e.event_id IN ${sql.in(eventIds)} AND e.tag = 'github'
       AND (json_extract(e.json, '$.askedBy') IS NOT NULL
         OR (json_extract(e.json, '$.trigger.inside') = 0
@@ -164,6 +175,31 @@ export const settleReviews = Effect.fn("KinGitHubReviewAsk.settle")(function* (
       );
     if (event.personId === null) continue;
     const personId = KinPersonId.make(event.personId);
+    // A block is the owner's to hear when nobody at his level asked: he holds the merge.
+    if (
+      receipt._tag === "posted" &&
+      event.event === "REQUEST_CHANGES" &&
+      event.outside !== 1 &&
+      event.ownerChatId !== null &&
+      !(yield* mayActAsOwner(orgId, personId, { personId: event.ownerPersonId ?? "" }))
+    )
+      yield* notice(
+        { repo: deps.repo.value, hub: deps.hub },
+        {
+          orgId,
+          chatId: KinChatId.make(event.ownerChatId),
+          id: `kin-review-blocks:${event.eventId}`,
+          body: blocksLine({
+            agent: event.agentName ?? "The agent",
+            title: event.title ?? ref,
+            ref,
+            author: event.author ?? "someone",
+            asker: event.askerName ?? "someone",
+            url: receipt.url,
+          }),
+          now,
+        },
+      );
     // Their direct chat, both still in it and the agent not muted there.
     const [chat] = yield* sql<{ chatId: string; ownerChat: number }>`SELECT c.chat_id AS "chatId",
         c.chat_id = l.owner_chat_id AS "ownerChat"

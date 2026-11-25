@@ -17,7 +17,7 @@ export type TurnAudience = "owner_only" | "shared";
  * Events that answer in the chat they name: a finished task names the chat its work was asked in,
  * a teammate's task their direct chat with the lead, an answer the chat that asked for it, and a
  * pulse made for one person (`draftWake.ts`) their direct chat with the lead, and bills to read
- * the chat of their batch's card.
+ * the chat of their batch's card, and a review someone asked for their direct chat with the lead.
  */
 export const CHAT_ANSWER_TAGS = [
   "chat.message",
@@ -28,6 +28,7 @@ export const CHAT_ANSWER_TAGS = [
   "deferral.due",
   "pulse",
   "bills.read",
+  "github",
 ];
 
 /**
@@ -118,7 +119,8 @@ export const turnAudience = Effect.fn("KinAudience.turnAudience")(
       } else if (
         (event.tag === "record.changed" ||
           event.tag === "task.finished" ||
-          event.tag === "deferral.due") &&
+          event.tag === "deferral.due" ||
+          event.tag === "github") &&
         event.chatId !== null
       ) {
         if (event.subjectType === "reminder" || event.subjectType === "scheduled_task")

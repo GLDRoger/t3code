@@ -1,4 +1,11 @@
-import { KinAgentId, KinChatError, type KinOrgId, KinPersonId } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  KinChatError,
+  KinChatId,
+  type KinOrgId,
+  KinPersonId,
+  KinWakeupId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -26,7 +33,9 @@ import {
   PER_THREAD_HOURLY,
   postedResult,
   sendReview,
+  DIFF_CAP,
   readDiff,
+  wholeDiff,
   readThread,
   reclaimable,
   writesTo,
@@ -55,11 +64,9 @@ export const AskResult = Schema.Struct({
       outcome: Schema.String,
     }),
   ),
-  left: Schema.optional(Schema.String),
   next: Schema.String,
 });
 
-const ASKS_PER_CALL = 5;
 const LIST_PAGE = 100;
 const QUEUED = "queued";
 const NOTHING = "Nothing was started.";
@@ -137,7 +144,9 @@ const askerOf = Effect.fn("KinGitHubReviewAsk.asker")(function* (turn: {
   const [person] = yield* sql<{ name: string; login: string | null }>`SELECT
       display_name AS name, github_login AS login FROM kin_people
     WHERE org_id = ${turn.orgId} AND person_id = ${personId} AND removed_at IS NULL`;
-  return person === undefined ? undefined : { personId, ...person };
+  return person === undefined
+    ? undefined
+    : { personId, chatId: KinChatId.make(chat.chatId), ...person };
 });
 
 /**
@@ -268,7 +277,6 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
       : PULL_REFUSAL.already(head);
   });
   const pulls: Array<(typeof AskResult.Type)["pulls"][number]> = [];
-  const left: Array<string> = [];
   let queued = 0;
   for (const candidate of candidates) {
     const line = (outcome: string, head = candidate.head) =>
@@ -280,10 +288,6 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
         : yield* told(candidate.repo, candidate.number, candidate.head);
     if (known !== undefined) {
       line(known);
-      continue;
-    }
-    if (queued >= ASKS_PER_CALL) {
-      left.push(`${candidate.repo}#${candidate.number}`);
       continue;
     }
     if (yield* overLimit) {
@@ -354,6 +358,7 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
       happenedAt: now,
       diff,
       askedBy: asker.personId,
+      asked: { chatId: asker.chatId, wakeupId: KinWakeupId.make(lead.wakeupId) },
     });
     if (outcome === "woke") queued += 1;
     facts(
@@ -371,17 +376,88 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
       : ` ${cut.join(", ")} has more than ${LIST_PAGE} open pull requests and Kin read only the newest ${LIST_PAGE}: for another, ask by number.`;
   return {
     pulls,
-    ...(left.length === 0
-      ? {}
-      : {
-          left: `${ASKS_PER_CALL} are queued per ask, so these wait: ${left.join(", ")}. Ask again for them.`,
-        }),
     next:
       (pulls.length === 0
         ? `${asker.name} has no open pull requests there. ${NOTHING}`
         : queued > 0
           ? "Tell them each line as it reads. You haven't read a queued one yet: Kin tells them in this chat when its review is posted, or that it didn't finish."
           : "Tell them each line as it reads.") + cutNote,
+  };
+});
+
+export const DiffInput = Schema.Struct({
+  from: Schema.optional(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).annotate({
+      description: "The character to read on from, as the diff or the last answer names it.",
+    }),
+  ),
+});
+export const DiffResult = Schema.Struct({
+  diff: Schema.String,
+  from: Schema.Int,
+  to: Schema.Int,
+  length: Schema.Int,
+  next: Schema.String,
+});
+export const DIFF_REFUSAL = {
+  unbound:
+    "kin_github_diff reads only the pull request a review turn is for; read any other with gh. Nothing was read.",
+  unread: "Kin couldn't read that pull request's changes just now. Nothing was read.",
+} as const;
+const decodeRange = Schema.decodeUnknownOption(
+  Schema.Struct({
+    baseRef: Schema.String,
+    from: Schema.NullOr(Schema.String),
+    whole: Schema.NullOr(Schema.Number),
+  }),
+);
+
+/**
+ * `kin_github_diff`: the diff a review turn's prompt shows, read on in pieces from where it was
+ * cut, of the same range at the same head, so a review with no shell can read all of it.
+ */
+export const readReviewDiff = Effect.fn("KinGitHubReviewAsk.diff")(function* (
+  lead: { readonly orgId: KinOrgId; readonly wakeupId: string },
+  input: typeof DiffInput.Type,
+) {
+  const bound = yield* boundReview(lead);
+  if (bound === undefined || bound.head === undefined) return yield* refuse(DIFF_REFUSAL.unbound);
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{
+    baseRef: string;
+    from: string | null;
+    whole: number | null;
+  }>`SELECT json_extract(json, '$.trigger.pull.baseRef') AS "baseRef",
+      json_extract(json, '$.trigger.pull.reReview.from') AS "from",
+      json_extract(json, '$.trigger.pull.reReview.whole') AS whole
+    FROM kin_events WHERE org_id = ${lead.orgId} AND event_id = ${bound.eventId}`;
+  const range = decodeRange(row);
+  if (Option.isNone(range)) return yield* refuse(DIFF_REFUSAL.unread);
+  const api = yield* KinGitHubApi;
+  const text = yield* wholeDiff(
+    (path, headers) => api.call({ path, ...(headers === undefined ? {} : { headers }) }),
+    bound.repo,
+    bound.number,
+    {
+      baseRef:
+        range.value.from !== null && range.value.whole !== 1
+          ? range.value.from
+          : range.value.baseRef,
+      headSha: bound.head,
+    },
+  );
+  if (text === undefined) return yield* refuse(DIFF_REFUSAL.unread);
+  const from = Math.min(input.from ?? 0, text.length);
+  const to = Math.min(text.length, from + DIFF_CAP);
+  return {
+    diff: text.slice(from, to),
+    from,
+    to,
+    length: text.length,
+    next:
+      to < text.length
+        ? `More follows: call again with from ${to}.`
+        : "That is the end of the diff.",
   };
 });
 
@@ -420,9 +496,10 @@ export const postReview = Effect.fn("KinGitHubReviewAsk.post")(function* (
     WHERE org_id = ${lead.orgId} AND trigger_key = ${bound.key} AND review_url IS NULL
     RETURNING trigger_key`;
   if (claimed.length === 0) return yield* refuse(POST_REFUSAL.again(ref));
-  // The queue sees the turn acted, so a failure after this isn't run again.
+  // The queue sees the turn acted, so a failure after this isn't run again; a block is told (`askedFor.ts`).
   yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash)
-    VALUES (${lead.orgId}, ${lead.wakeupId}, ${`github-review:${bound.eventId}`}, 'posting')
+    VALUES (${lead.orgId}, ${lead.wakeupId}, ${`github-review:${bound.eventId}`},
+      ${input.event ?? "COMMENT"})
     ON CONFLICT DO NOTHING`;
   const giveBack = sql`UPDATE kin_github_handled SET review_url = NULL
     WHERE org_id = ${lead.orgId} AND trigger_key = ${bound.key} AND review_url = ${POSTING}`.pipe(

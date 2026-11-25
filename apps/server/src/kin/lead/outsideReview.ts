@@ -27,7 +27,7 @@ export const outsideReview = Effect.fn("KinOutsideReview.of")(function* (turn: T
   return bound?.outside === true ? bound : undefined;
 });
 
-export const REVIEW_TOOLS: ReadonlySet<string> = new Set(["kin_github_review"]);
+export const REVIEW_TOOLS: ReadonlySet<string> = new Set(["kin_github_review", "kin_github_diff"]);
 
 /**
  * Whether `name` may run in an outside review turn; undefined when the turn isn't one. Where and

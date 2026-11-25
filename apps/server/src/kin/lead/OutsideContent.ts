@@ -85,6 +85,8 @@ export const OUTSIDE_TOOLS = {
   memory_label: "allowed",
   // Posts on its own only to the company's repos; anywhere else on the owner's Confirm.
   kin_github_review: "allowed",
+  // Reads only the diff of the pull request its review turn is for.
+  kin_github_diff: "allowed",
   kin_github_link: "allowed",
   // Outside text could start reviews in a person's name.
   kin_github_review_ask: "refused",

@@ -444,13 +444,17 @@ it.effect("posts the lead run's plain text to the chat it answers, as one agent 
   }).pipe(Effect.provide(layer)),
 );
 
-// A teammate asked for a review in their own chat (`reviewAsk.ts`): the owner reads the agent's
-// line with who asked. The asker hears from Kin's records, never this line (`askedFor.ts`).
-it.effect("a review someone asked for: the owner's line names who asked", () =>
+// A teammate asked for reviews in their own chat (`reviewAsk.ts`): the agent's line is theirs,
+// the owner's chat gets nothing, and one ask's reviews read as one message.
+it.effect.each([
+  { name: "alone", earlier: undefined },
+  { name: "after another of the same ask", earlier: "Reviewed acme/app#6: nothing blocking." },
+])("a review someone asked for answers in their chat: $name", ({ earlier }) =>
   Effect.gen(function* () {
     const line =
       "Reviewed acme/app#7: one blocking bug in the date parser. https://github.com/acme/app/pull/7#pullrequestreview-9";
-    const { fake, runId, complete, posted } = yield* setup({
+    let mateChat = KinChatId.make("unset");
+    const { fake, runId, complete, posted, sql } = yield* setup({
       event: ({ owner }) =>
         Effect.gen(function* () {
           const sql = yield* SqlClient.SqlClient;
@@ -461,12 +465,32 @@ it.effect("a review someone asked for: the owner's line names who asked", () =>
           yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('mate', ${owner.orgId}, 'mate', 'Mate', '1970-01-01T00:00:00.000Z')`.pipe(
             Effect.orDie,
           );
-          yield* chats
+          mateChat = (yield* chats
             .createDirect(
               { _tag: "person", orgId: owner.orgId, personId: KinPersonId.make("mate") },
               { orgId: owner.orgId, agentId },
             )
-            .pipe(Effect.orDie);
+            .pipe(Effect.orDie)).chatId;
+          if (earlier !== undefined) {
+            yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+                started_at, status, event_ids, audience)
+              VALUES ('earlier', ${owner.orgId}, ${agentId}, ${threadId}, 'test', 0, 'completed',
+                '["review-6"]', 'shared')`.pipe(Effect.orDie);
+            yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+                received_at, queued_at, state, wakeup_id)
+              VALUES ('review-6', ${owner.orgId}, ${agentId}, 'github', 'P2',
+                ${JSON.stringify({ askedIn: ["ask-turn"], chatId: mateChat })}, 0, 0, 'done',
+                'earlier')`.pipe(Effect.orDie);
+            yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+                author_agent_id, author_owner_person_id, author_member_id, author_thread_id,
+                author_role, kind, body, mentions_json, status, created_at, source_wakeup_id)
+              SELECT 'earlier-line', ${owner.orgId}, ${mateChat}, 1000, 'agent', ${agentId},
+                ${owner.personId}, member_id, ${threadId}, 'member', 'text', ${earlier}, '[]',
+                'posted', '1970-01-01T00:00:00.000Z', 'earlier'
+              FROM kin_chat_members WHERE chat_id = ${mateChat} AND agent_id = ${agentId}`.pipe(
+              Effect.orDie,
+            );
+          }
           return (base: WakeupEventBase): KinEvent => ({
             ...base,
             _tag: "github",
@@ -489,14 +513,19 @@ it.effect("a review someone asked for: the owner's line names who asked", () =>
               text: "",
             },
             askedBy: KinPersonId.make("mate"),
+            chatId: mateChat,
+            askedIn: [KinWakeupId.make("ask-turn")],
           });
         }),
     });
     fake.items = [text("a", 1, line, runId)];
     yield* complete;
+    assert.deepStrictEqual(yield* posted, []);
+    const inMate = yield* sql<{ body: string }>`SELECT body FROM kin_messages
+      WHERE chat_id = ${mateChat} AND author_kind = 'agent' ORDER BY seq`;
     assert.deepStrictEqual(
-      (yield* posted).map((row) => row.body),
-      [`${line} Mate asked for it.`],
+      inMate.map((row) => row.body),
+      [earlier === undefined ? line : `${earlier}\n\n${line}`],
     );
   }).pipe(Effect.provide(layer)),
 );

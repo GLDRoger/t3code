@@ -224,7 +224,8 @@ features:
     note: >-
       Through the agent, which reads repos, PRs and runs with gh and posts as Kin's GitHub App
       where it is installed, else as the owner's login (Settings, Connections).
-    tools: [kin_github_review, kin_github_review_ask, kin_github_link, kin_github_watch]
+    tools:
+      [kin_github_review, kin_github_diff, kin_github_review_ask, kin_github_link, kin_github_watch]
     proof:
       - apps/server/src/kin/github/GitHubWatch.test.ts
       - apps/server/src/kin/github/reviewAsk.test.ts

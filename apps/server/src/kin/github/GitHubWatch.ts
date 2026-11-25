@@ -1,10 +1,12 @@
 import {
   KinChatError,
+  type KinChatId,
   KinEvent,
   KinEventId,
   KinOrgId,
   type KinGithubTrigger,
   type KinPersonId,
+  type KinWakeupId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -81,7 +83,7 @@ export const OUTSIDE_WAKES_PER_HOUR = 10;
 const THREADS_PER_LOOK = 30;
 /** Replies an agent makes in one issue or PR in an hour before it stops and says so. */
 export const PER_THREAD_HOURLY = 5;
-const DIFF_CAP = 30_000;
+export const DIFF_CAP = 30_000;
 /** A moved head is re-reviewed once nothing has changed on the PR for this long. */
 const STILL_MS = 5 * MINUTE_MS;
 /** How long after Kin's last review of a repo's PR the watch still lists that repo's PRs. */
@@ -474,8 +476,8 @@ const triggerFacts = (
   ...(trigger.kind === "checks" ? { failing: trigger.text.split(", ") } : {}),
 });
 
-/** A PR's diff as the server reads it for a turn with no shell, clipped; at `at`, that head's. */
-export const readDiff = (
+/** A PR's whole diff as GitHub gives it; at `at`, from that base to that head. */
+export const wholeDiff = (
   get: (path: string, headers?: Record<string, string>) => Effect.Effect<ApiAnswer>,
   repo: string,
   number: number,
@@ -486,13 +488,24 @@ export const readDiff = (
       ? `repos/${repo}/pulls/${number}`
       : `repos/${repo}/compare/${encodeURIComponent(at.baseRef)}...${at.headSha}`,
     { Accept: "application/vnd.github.diff" },
-  ).pipe(
-    Effect.map((answer) =>
-      answer.status === 200
-        ? answer.text.length <= DIFF_CAP
-          ? answer.text
-          : `${answer.text.slice(0, DIFF_CAP)}\n…[diff cut at ${DIFF_CAP} characters]`
-        : undefined,
+  ).pipe(Effect.map((answer) => (answer.status === 200 ? answer.text : undefined)));
+
+/** Where a diff a turn reads goes on past its prompt: `kin_github_diff` reads on from there. */
+export const diffGoesOn = (rest: number, from: number) =>
+  `…[the diff goes on for ${rest} more characters: read them with kin_github_diff, from ${from}]`;
+
+/** A PR's diff as the server reads it for a turn with no shell, its first `DIFF_CAP` characters. */
+export const readDiff = (
+  get: (path: string, headers?: Record<string, string>) => Effect.Effect<ApiAnswer>,
+  repo: string,
+  number: number,
+  at?: { readonly baseRef: string; readonly headSha: string },
+) =>
+  wholeDiff(get, repo, number, at).pipe(
+    Effect.map((text) =>
+      text === undefined || text.length <= DIFF_CAP
+        ? text
+        : `${text.slice(0, DIFF_CAP)}\n${diffGoesOn(text.length - DIFF_CAP, DIFF_CAP)}`,
     ),
   );
 
@@ -576,6 +589,8 @@ export const claimTrigger = Effect.fn("KinGitHubWatch.handle")(function* (input:
   readonly happenedAt: number;
   readonly diff: string | undefined;
   readonly askedBy?: KinPersonId | undefined;
+  /** With `askedBy`: the ask's chat and turn, where its result is told. */
+  readonly asked?: { readonly chatId: KinChatId; readonly wakeupId: KinWakeupId } | undefined;
   readonly reReview?: ReReview | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
@@ -667,6 +682,9 @@ export const claimTrigger = Effect.fn("KinGitHubWatch.handle")(function* (input:
           provenance: { _tag: "system" },
           trigger: facts,
           ...(askedBy === undefined ? {} : { askedBy }),
+          ...(askedBy === undefined || input.asked === undefined
+            ? {}
+            : { chatId: input.asked.chatId, askedIn: [input.asked.wakeupId] }),
         }),
       );
       return outcome;

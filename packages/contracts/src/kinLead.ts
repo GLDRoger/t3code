@@ -835,6 +835,9 @@ export const KinEvent = Schema.Union([
     trigger: Schema.optional(KinGithubTrigger),
     /** The person who asked for this review in Kin (`kin_github_review_ask`); told its outcome. */
     askedBy: Schema.optional(KinPersonId),
+    /** With `askedBy`: their direct chat with the agent, where the review's result is told. */
+    chatId: Schema.optional(KinChatId),
+    askedIn: KinEventAskedIn,
   }),
   Schema.TaggedStruct("deferral.due", {
     ...EventBase,
