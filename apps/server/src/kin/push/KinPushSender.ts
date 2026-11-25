@@ -323,6 +323,20 @@ const kinCardChannel = (kind: string): KinPushChannel =>
 
 const decodeChoiceCard = Schema.decodeUnknownOption(KinChoiceCardState);
 
+const kinOpenQuestionWords = (state: unknown, asked: boolean) => {
+  if (!asked) return undefined;
+  const card = Option.getOrUndefined(decodeChoiceCard(state));
+  if (
+    card === undefined ||
+    card.answer !== null ||
+    card.replaced === true ||
+    card.send !== undefined ||
+    card.question.trim() === ""
+  )
+    return undefined;
+  return kinPushBody(card.question);
+};
+
 /**
  * The two answers a notice shows as buttons, or none. Only an agent's open question (`asked`,
  * in `kin_questions`, carrying no sent-up draft) with exactly two plain options: Kin's own Confirm
@@ -920,7 +934,9 @@ const make = Effect.gen(function* () {
     const greeting = kinIsBrief(row.body, row.form)
       ? kinGreeting(yield* ownerHour(orgId))
       : undefined;
-    const words = kinCardWords(row.body, state);
+    const words =
+      kinOpenQuestionWords(state, row.type === "choice" && row.asked === 1) ??
+      kinCardWords(row.body, state);
     const choices = row.type === "choice" ? kinNoticeChoices(state, row.asked === 1) : undefined;
     const kind =
       choices !== undefined
@@ -1236,6 +1252,7 @@ const make = Effect.gen(function* () {
       KinPersonId,
       {
         delivery: KinPushDelivery;
+        replaceBanner: boolean;
         badge: number;
         subject: KinPushSubject | undefined;
         unread: number;
@@ -1251,6 +1268,7 @@ const make = Effect.gen(function* () {
         : undefined;
     for (const recipient of push.recipients) {
       let delivery = recipient.delivery;
+      let replaceBanner = false;
       // A rationed ring is spent only on a phone that will show it, so a push decided before
       // they had one, or while they watch the chat, leaves it for the next.
       if (recipient.capped !== undefined && delivery === "ring") {
@@ -1262,11 +1280,20 @@ const make = Effect.gen(function* () {
               !(yield* presence.isWatching(device.sessionId, push.chatId)))
           )
             shows = true;
-        if (shows && !(yield* mayRing(orgId, recipient.personId, recipient.capped.since)))
+        if (shows && !(yield* mayRing(orgId, recipient.personId, recipient.capped.since))) {
           delivery = recipient.capped.spent;
+          if (delivery === "badge" && counted !== undefined) {
+            const [banner] = yield* topics.live(orgId, {
+              topics: [push.topic],
+              personId: recipient.personId,
+            });
+            replaceBanner = banner !== undefined && (yield* topics.stands(orgId, banner));
+          }
+        }
       }
       recipients.set(recipient.personId, {
         delivery,
+        replaceBanner,
         badge: yield* badgeFor(orgId, recipient.personId),
         subject: recipient.subject,
         unread:
@@ -1303,7 +1330,10 @@ const make = Effect.gen(function* () {
         const recipient = recipients.get(device.personId);
         return recipient === undefined
           ? Effect.succeed("failed" as const)
-          : sendTo(orgId, push, device, recipient);
+          : sendTo(orgId, push, device, {
+              ...recipient,
+              delivery: recipient.replaceBanner && device.withdraws ? "quiet" : recipient.delivery,
+            });
       },
       { concurrency: SEND_CONCURRENCY },
     );
