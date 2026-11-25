@@ -1943,7 +1943,7 @@ describe("Kin migrations", () => {
           (yield* runKinMigrations()).map(([id]) => id),
           [
             196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
-            213, 214, 215, 216, 217, 218, 219,
+            213, 214, 215, 216, 217, 218, 219, 222,
           ],
         );
         assert.deepStrictEqual(yield* receipts, [
@@ -1995,7 +1995,7 @@ describe("Kin migrations", () => {
         (yield* runKinMigrations()).map(([id]) => id),
         [
           197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214,
-          215, 216, 217, 218, 219,
+          215, 216, 217, 218, 219, 222,
         ],
       );
       const all = [
@@ -2658,6 +2658,28 @@ describe("Kin migrations", () => {
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 218`;
       assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(218));
       assert.deepStrictEqual(yield* marks, [{ last_read_seq: 9, answered_seq: 7 }]);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K222 adds tax_by_customer, keeps every issued row NULL, and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      const columns = yield* sql<{ name: string }>`PRAGMA table_info(kin_issued_numbers)`;
+      if (columns.some(({ name }) => name === "tax_by_customer"))
+        yield* sql`ALTER TABLE kin_issued_numbers DROP COLUMN tax_by_customer`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 222`;
+      yield* sql`PRAGMA foreign_keys = OFF`;
+      yield* sql`INSERT INTO kin_issued_numbers (org_id, register_id, series, seq, number, record_id,
+          issued_at, issued_by_kind, issued_by_id)
+        VALUES ('org', 'invoices', 'INV', 1, 'INV-1', 'rec-1', 1, 'person', 'rhea')`;
+      yield* runKinMigrations();
+      const issued = sql`SELECT number, tax_by_customer FROM kin_issued_numbers
+        WHERE org_id = 'org' ORDER BY seq`;
+      assert.deepStrictEqual(yield* issued, [{ number: "INV-1", tax_by_customer: null }]);
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 222`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(222));
+      assert.deepStrictEqual(yield* issued, [{ number: "INV-1", tax_by_customer: null }]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 

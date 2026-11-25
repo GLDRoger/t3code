@@ -30,6 +30,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { stageLine, stagesOf } from "./dealStages.ts";
 import {
+  accountsForTax,
   fieldList,
   fieldText,
   isMoney,
@@ -709,6 +710,7 @@ export const partyDetail = Effect.fn("KinCrm.partyDetail")(function* (
     terms: fieldText(fields, "terms"),
     address: fieldText(fields, "address"),
     gstin: fieldText(fields, "gstin"),
+    ...(viewer._tag === "ownerLevel" ? { accountsForTax: accountsForTax(fields) } : {}),
     placeOfSupply: fieldText(fields, "placeOfSupply"),
     sensitiveFields: [...sensitiveFields("clients")],
     createdAt: iso(row.createdAt),

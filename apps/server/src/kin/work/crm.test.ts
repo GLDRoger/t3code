@@ -1405,6 +1405,59 @@ it.effect(
         ),
         { reason: "not_found" },
       );
+      assert.include(
+        yield* Effect.flip(
+          Clients.updateParty([owner], {
+            orgId,
+            key: "C-1",
+            rev: reopened.rev,
+            accountsForTax: true,
+          }),
+        ),
+        {
+          message:
+            "Add the client's tax number first: invoices that leave the tax to the client print it. Nothing changed.",
+        },
+      );
+      assert.include(
+        yield* Effect.flip(
+          Clients.updateParty([owner], {
+            orgId,
+            key: "C-1",
+            rev: reopened.rev,
+            gstin: "27BBBBB2222B1Z5",
+            taxNumber: "27BBBBB2222B1Z5",
+          }),
+        ),
+        { message: "Give gstin or taxNumber, not both. Nothing changed." },
+      );
+      const marked = yield* Clients.updateParty([owner], {
+        orgId,
+        key: "C-1",
+        rev: reopened.rev,
+        accountsForTax: true,
+        taxNumber: "27BBBBB2222B1Z5",
+      });
+      assert.include(marked, { accountsForTax: true, gstin: "27BBBBB2222B1Z5" });
+      assert.include(
+        yield* Effect.flip(
+          Clients.updateParty([owner], { orgId, key: "C-1", rev: marked.rev, taxNumber: null }),
+        ),
+        {
+          message:
+            "Invoices to this client leave the tax to the client and print this number. Turn that off first. Nothing changed.",
+        },
+      );
+      assert.include(
+        yield* Clients.updateParty([owner], {
+          orgId,
+          key: "C-1",
+          rev: marked.rev,
+          accountsForTax: false,
+          taxNumber: null,
+        }),
+        { accountsForTax: false, gstin: null },
+      );
       // QA: a project's or entry's chip couldn't say its client is a vendor.
       const supplier = yield* Clients.createParty([owner], {
         orgId,
@@ -1982,6 +2035,8 @@ it.effect(
         { prospect: true, terms: "Invented net 30" },
         { prospect: true, gstin: "27ABCDE1234F1Z5" },
         { prospect: true, placeOfSupply: "Invented Province" },
+        { prospect: true, taxNumber: "GB123" },
+        { prospect: true, accountsForTax: true },
         { prospect: true, address: "Invented street" },
         { prospect: true, sensitive: true },
         { prospect: true, owner: { _tag: "person" as const, personId: ownerId } },
@@ -2008,6 +2063,8 @@ it.effect(
       for (const change of [
         { terms: "Invented net 30" },
         { gstin: "27ABCDE1234F1Z5" },
+        { taxNumber: "GB123" },
+        { accountsForTax: true },
         { placeOfSupply: "Invented Province" },
         { address: "Invented street" },
         { sensitive: true },
