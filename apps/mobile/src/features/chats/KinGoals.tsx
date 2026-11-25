@@ -83,7 +83,9 @@ export function KinGoals(props: KinWorkTarget & { readonly seq: number | null })
           <RowPressable
             key={goal.key}
             accessibilityRole="button"
-            accessibilityLabel={`${view.title}, ${view.figure}${status === null ? "" : `, ${status}`}`}
+            accessibilityLabel={[view.title, view.figure, status, view.notCounted, view.about]
+              .filter((part) => part !== null)
+              .join(", ")}
             disabled={!goals.canSave}
             onPress={() => navigation.navigate("KinGoalForm", { ...base, goal: goal.key })}
             className="bg-grouped-card"
@@ -110,6 +112,16 @@ export function KinGoals(props: KinWorkTarget & { readonly seq: number | null })
               >
                 {[status, view.detail || null].filter((part) => part !== null).join(" · ")}
               </Text>
+              {view.notCounted === null ? null : (
+                <Text textRole="footnote" className="text-foreground-muted">
+                  {view.notCounted}
+                </Text>
+              )}
+              {view.about === null ? null : (
+                <Text textRole="footnote" className="text-foreground-muted">
+                  {view.about}
+                </Text>
+              )}
             </View>
           </RowPressable>
         );

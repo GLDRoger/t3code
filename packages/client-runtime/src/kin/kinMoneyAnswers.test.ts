@@ -26,6 +26,7 @@ import {
   kinOutlookView,
   kinRunwayText,
 } from "./kinMoneyAnswers.ts";
+import { kinRateDay } from "./kinCurrency.ts";
 
 const orgId = KinOrgId.make("org");
 const now = new Date("2026-11-15T06:00:00.000Z");
@@ -153,13 +154,20 @@ describe("kinBudgets", () => {
           {
             ...budget("c", 30_000, 50_000, "ok", "USD"),
             notCounted: [{ currency: "EUR", spent: { minor: 76_800, currency: "EUR" } }],
+            about: { total: { minor: 1_30_000_00, currency: "INR" }, rateDays: ["2026-11-12"] },
           },
         ],
       },
       null,
       null,
     );
-    expect(euros.map((one) => one.notCounted)).toEqual(["+ €768 not counted in this USD budget"]);
+    expect(euros.map((one) => [one.notCounted, one.about])).toEqual([
+      [
+        "+ €768 not counted in this USD budget",
+        `About ₹1,30,000 in all · approximate, at the rate of a payment on ${kinRateDay("2026-11-12")}`,
+      ],
+    ]);
+    expect(view.map((one) => one.about)).toEqual([null, null]);
     // A project the host gives no name for is gone: never shown by its key.
     const nameless = { ...budget("d", -500, 100, "ok"), project: { key: "P-7", title: null } };
     expect(kinBudgetsView({ month: "2026-11", budgets: [nameless] }, null, null)[0]?.label).toBe(
