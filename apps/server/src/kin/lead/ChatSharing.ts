@@ -84,16 +84,19 @@ export const onPersonJoined = Effect.fn("KinChatSharing.onPersonJoined")(functio
     ORDER BY 1`;
   if (chat === undefined || chat.floor === null)
     return { turns, threads, expired: [], moved, stopped: [] };
-  // Waiting, or held by a turn this join aborted: no fresh turn answers them where others read.
-  const pending = sql`(e.state = 'queued' OR (e.state = 'claimed' AND EXISTS (SELECT 1
-    FROM kin_wakeups w WHERE w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id
-      AND w.aborted_at IS NOT NULL)))`;
+  const heldByAborted = sql`e.state = 'claimed' AND EXISTS (SELECT 1 FROM kin_wakeups w
+    WHERE w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id AND w.aborted_at IS NOT NULL)`;
+  const asked = sql`e.org_id = ${input.orgId} AND e.tag IN ${sql.in(CHAT_EVENT_TAGS)}
+    AND json_extract(e.json, '$.chatId') = ${input.chatId}
+    AND EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = e.org_id
+      AND m.message_id = json_extract(e.json, '$.messageId') AND m.seq < ${chat.floor})`;
+  // Already replied to by a turn this join aborted: answered, so done, never requeued or told.
+  yield* sql`UPDATE kin_events AS e SET state = 'done'
+    WHERE ${asked} AND ${heldByAborted} AND e.replied_at IS NOT NULL`;
+  // Waiting, or held unanswered by such a turn: no fresh turn answers them where others read.
   const expired = yield* sql<{ agentId: KinAgentId; eventId: string }>`
     UPDATE kin_events AS e SET state = 'expired'
-    WHERE e.org_id = ${input.orgId} AND e.tag IN ${sql.in(CHAT_EVENT_TAGS)}
-      AND json_extract(e.json, '$.chatId') = ${input.chatId} AND ${pending}
-      AND EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = e.org_id
-        AND m.message_id = json_extract(e.json, '$.messageId') AND m.seq < ${chat.floor})
+    WHERE ${asked} AND (e.state = 'queued' OR (${heldByAborted}))
     RETURNING agent_id AS "agentId", event_id AS "eventId"`;
   return { turns, threads, expired, moved, stopped: yield* stoppedLines(sql, input, expired) };
 });
