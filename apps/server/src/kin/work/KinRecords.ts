@@ -221,6 +221,8 @@ export type Writer = {
   readonly teammate?: boolean;
   /** `deals.ts`, which decided the write's rules: no other path writes a deal. */
   readonly deal?: true;
+  readonly creditNote?: true;
+  readonly undoingBankCredit?: true;
   /** A member's write in Clients: a name clashes only with what this person sees there (`crmSees`). */
   readonly namesSeenBy?: KinPersonId;
   /** The person's own coding agent, with this key: the change's history names the key. */
@@ -565,11 +567,21 @@ export type PaymentInput = {
   /** A retry with the same key records nothing more; one whose payment was voided is refused. */
   readonly originKey: string;
 };
+export const CREDIT_NOTE_TAP =
+  "Kin issues and voids a credit note only on the owner's own tap on its page; offer the owner that there.";
+export const CREDIT_NOTE_VOID = "A void credit note stays void; make a new one.";
+
 const CLOSED = ["done", "dropped"] as const;
 /** Quotes and invoices: real only on an owner-level person's word (`startsKept`). */
-const ISSUED_LISTS: ReadonlySet<string> = new Set(["quotes", "invoices"]);
+const ISSUED_LISTS: ReadonlySet<string> = new Set(["quotes", "invoices", "credit_notes"]);
 /** Lists whose entries are issued, sent or paid: a suggestion there is none of those. */
-const MONEY_LISTS: ReadonlySet<string> = new Set(["quotes", "invoices", "expenses", "receipts"]);
+const MONEY_LISTS: ReadonlySet<string> = new Set([
+  "quotes",
+  "invoices",
+  "expenses",
+  "receipts",
+  "credit_notes",
+]);
 /** A client and a prospect share names: one company is either, never both at once. */
 export const clientFamily = (sql: SqlClient.SqlClient, category: Statement.Fragment) =>
   sql`(CASE COALESCE(${category}, 'client') WHEN 'prospect' THEN 'client'
@@ -854,7 +866,13 @@ export class KinRecords extends Context.Service<
       writer: Writer,
       key: string,
       paymentId: string,
+      mode?: "unapply_credit",
     ) => Effect.Effect<RecordRow, KinChatError>;
+    readonly undoCreditPayment: (
+      orgId: KinOrgId,
+      writer: Writer,
+      key: string,
+    ) => Effect.Effect<{ readonly key: string }, KinChatError>;
     /** Exact sums of the amounts `query`'s filter matches, per currency, and per group if asked. */
     readonly totals: (
       orgId: KinOrgId,
@@ -1751,7 +1769,8 @@ const make = Effect.gen(function* () {
         WHERE org_id = ${orgId} AND record_id = ${input.from}`;
       if (source !== undefined && isSuggestion(source)) return false;
     }
-    if (!ISSUED_LISTS.has(list) || writer.actor._tag === "system") return true;
+    if (list === "credit_notes" || !ISSUED_LISTS.has(list) || writer.actor._tag === "system")
+      return true;
     return yield* mayKeep(orgId, writer);
   });
 
@@ -2044,6 +2063,8 @@ const make = Effect.gen(function* () {
     input: CreateInput,
     options: InsertOptions,
   ) {
+    if (input.list === "credit_notes" && writer.creditNote !== true)
+      return yield* invalid("Draft credit notes from their invoice.");
     const recordId = recordIdFor(orgId, input.originKey);
     const existing = yield* byId(orgId, recordId).pipe(provideSql);
     if (writer.teammate === true && writer.actor._tag === "person")
@@ -2404,6 +2425,18 @@ const make = Effect.gen(function* () {
         )
           yield* askSlip(orgId, def, patch.amount, row.recordId).pipe(provideSql);
         if (list === "receipts") {
+          if (
+            row.originKey.startsWith(BANK_CREDIT_ORIGIN) &&
+            row.originKey.endsWith(":left") &&
+            writer.undoingBankCredit !== true &&
+            ((patch.state === "dropped" && row.state !== "dropped") ||
+              (patch.dateAt !== undefined && patch.dateAt !== row.dateAt) ||
+              (patch.partyId !== undefined && patch.partyId !== row.partyId) ||
+              patch.confirmed === false)
+          )
+            return yield* invalid(
+              "Undo the bank credit to change or take back the money it left as an advance.",
+            );
           if (RECEIPT_TIES.some((field) => field in (patch.fields ?? {})))
             return yield* invalid(RECEIPT_TIES_ARE_KINS);
           // Its payment may have a new receipt since: two live ones would count it twice.
@@ -2711,6 +2744,26 @@ const make = Effect.gen(function* () {
                 : row.state
             : undefined;
         const wanted = patch.state ?? settled ?? row.state;
+        if (list === "credit_notes" && writer.creditNote !== true) {
+          if (wanted !== row.state)
+            return yield* new KinChatError({ reason: "not_allowed", message: CREDIT_NOTE_TAP });
+          if (
+            row.state !== "open" &&
+            (patch.amount !== undefined ||
+              patch.dateAt !== undefined ||
+              patch.fields?.reason !== undefined ||
+              patch.confirmed === false)
+          )
+            return yield* invalid(
+              "An issued credit note keeps its invoice, amount and reason. Void it and draft a new one.",
+            );
+          if (
+            patch.fields?.invoice !== undefined ||
+            patch.fields?.number !== undefined ||
+            (patch.partyId !== undefined && patch.partyId !== row.partyId)
+          )
+            return yield* invalid("A credit note keeps the invoice it was drafted from.");
+        }
         // A turn no person started settles nothing paid over time, and voids or reopens no
         // numbered entry, by its state: the other ways to a payment or a void (`refuseKinOwn`).
         const settles = wanted === "done" && row.takesPayments === 1;
@@ -3598,6 +3651,7 @@ const make = Effect.gen(function* () {
     writer: Writer,
     key: string,
     paymentId: string,
+    mode?: "undo_split" | "unapply_credit",
   ) {
     return yield* transaction(
       Effect.gen(function* () {
@@ -3620,7 +3674,39 @@ const make = Effect.gen(function* () {
             reason: "not_found",
             message: `No payment ${paymentId.slice(0, 40)} on ${row.key}.`,
           });
+        const bankId = found.originKey.startsWith(BANK_CREDIT_ORIGIN)
+          ? found.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]
+          : undefined;
+        const splitBankId =
+          bankId !== undefined && found.originKey.includes(":split:")
+            ? bankId
+            : row.registerId === "receipts" &&
+                row.originKey.startsWith(BANK_CREDIT_ORIGIN) &&
+                row.originKey.endsWith(":left")
+              ? row.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]
+              : undefined;
+        if (mode !== "undo_split" && splitBankId !== undefined) {
+          const bank = yield* byId(orgId, splitBankId).pipe(provideSql);
+          if (bank === undefined) return yield* unavailable;
+          return yield* invalid(
+            `That payment is one of several from ${bank.key}; undo them together from ${bank.key}.`,
+          );
+        }
+        if (found.originKey.startsWith("credit_note:") && writer.creditNote !== true)
+          return yield* invalid("Void the credit note to take back its reduction.");
         if (found.voidedAt !== null) return row;
+        if (mode !== "unapply_credit" && row.registerId === "invoices") {
+          const receiptId = /^receipt:([^:]+)(?::after:.+)?$/.exec(found.originKey)?.[1];
+          if (receiptId !== undefined) {
+            const [receipt] = yield* sql`SELECT 1 FROM kin_records
+              WHERE org_id = ${orgId} AND record_id = ${receiptId} AND register_id = 'receipts'
+                AND json_extract(fields_json, '$.payment') = ${paymentId}`;
+            if (receipt !== undefined)
+              return yield* invalid(
+                "This payment came from the client's credit. Un-apply it instead. Nothing changed.",
+              );
+          }
+        }
         const now = yield* Clock.currentTimeMillis;
         yield* sql`UPDATE kin_record_payments SET voided_at = ${now}
           WHERE org_id = ${orgId} AND payment_id = ${paymentId}`;
@@ -3646,12 +3732,7 @@ const make = Effect.gen(function* () {
           ],
           now,
         );
-        if (found.originKey.startsWith(BANK_CREDIT_ORIGIN))
-          yield* reopenCredit(
-            orgId,
-            found.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]!,
-            now,
-          );
+        if (mode !== "undo_split" && bankId !== undefined) yield* reopenCredit(orgId, bankId, now);
         const updated = yield* byId(orgId, row.recordId).pipe(provideSql);
         if (updated === undefined) return yield* unavailable;
         return updated;
@@ -3688,6 +3769,64 @@ const make = Effect.gen(function* () {
         ...(bank.category === null ? [] : [{ field: "category", from: bank.category, to: null }]),
       ],
       now,
+    );
+  });
+
+  const undoCreditPayment = Effect.fn("KinRecords.undoCreditPayment")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    key: string,
+  ) {
+    return yield* transaction(
+      Effect.gen(function* () {
+        if (
+          writer.actor._tag !== "person" ||
+          !(yield* ownerLevel(orgId, writer.actor.personId).pipe(provideSql))
+        )
+          return yield* new KinChatError({
+            reason: "not_allowed",
+            message: "Only the owner or a co-owner undoes a bank credit.",
+          });
+        yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.payment).pipe(provideSql);
+        const bank = yield* byKey(orgId, key).pipe(provideSql);
+        const def = yield* findBankList(orgId).pipe(provideSql);
+        if (bank === undefined || bank.registerId !== def?.id) return yield* notFound(key);
+        const prefix = `${BANK_CREDIT_ORIGIN}${bank.recordId}:`;
+        const split = yield* sql<{ key: string; paymentId: string; origin: string }>`SELECT r.key,
+          p.payment_id AS "paymentId", p.origin_key AS origin
+        FROM kin_record_payments p JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
+        WHERE p.org_id = ${orgId} AND p.voided_at IS NULL
+          AND p.origin_key GLOB ${`${prefix}*:split:*`}
+        ORDER BY p.payment_id`;
+        for (const leftOrigin of new Set(
+          split.map((part) => `${part.origin.split(":split:")[0]}:left`),
+        )) {
+          const [left] = yield* sql<{
+            key: string;
+            invoice: string | null;
+            payment: string | null;
+            state: string;
+          }>`
+          SELECT r.key, r.state, json_extract(r.fields_json, '$.invoice') AS invoice, p.payment_id AS payment
+          FROM kin_records r LEFT JOIN kin_record_payments p ON p.org_id = r.org_id
+            AND p.payment_id = json_extract(r.fields_json, '$.payment') AND p.voided_at IS NULL
+          WHERE r.org_id = ${orgId} AND r.register_id = 'receipts' AND r.origin_key = ${leftOrigin}`;
+          if (left === undefined) continue;
+          if (left.invoice !== null && left.payment !== null)
+            return yield* invalid(`Un-apply the credit from ${left.invoice} first.`);
+          if (left.payment !== null)
+            yield* voidPayment(orgId, writer, left.key, left.payment, "undo_split");
+          if (left.state !== "dropped")
+            yield* update(orgId, { ...writer, undoingBankCredit: true }, left.key, {
+              state: "dropped",
+            });
+        }
+        for (const part of split)
+          yield* voidPayment(orgId, writer, part.key, part.paymentId, "undo_split");
+        if (split.length > 0)
+          yield* reopenCredit(orgId, bank.recordId, yield* Clock.currentTimeMillis);
+        return { key: bank.key };
+      }),
     );
   });
 
@@ -4035,6 +4174,7 @@ const make = Effect.gen(function* () {
     unlink,
     pay,
     voidPayment,
+    undoCreditPayment,
     totals,
     query,
     moveRows,

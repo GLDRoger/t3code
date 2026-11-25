@@ -451,6 +451,10 @@ export type KinRecordAfterReading = typeof KinRecordAfterReading.Type;
 
 /** An entry with everything the entry sheet shows. */
 export const KinRecordDetail = Schema.Struct({
+  creditOffer: Schema.optionalKey(
+    Schema.Struct({ receipt: KinRecordKey, amount: KinMoney, receivedOn: KinDay }),
+  ),
+  credited: Schema.optionalKey(KinMoney),
   ...KinRecord.fields,
   notes: KinText,
   /** A task's milestone; absent with none, and from older hosts. */
@@ -1364,6 +1368,9 @@ export type KinPartyCan = typeof KinPartyCan.Type;
 
 /** The client page. `weOwe` is soonest due first; `theyOwe` is overdue first, then soonest. */
 export const KinPartyPage = Schema.Struct({
+  credit: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ key: KinRecordKey, amount: KinMoney, receivedOn: KinDay })),
+  ),
   party: KinPartyDetail,
   /** Active first, then by name. */
   contacts: Schema.Array(KinContact),

@@ -328,6 +328,15 @@ const moneyKind = (sql: SqlClient.SqlClient) =>
 const clientMoneySeen = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
   sql`(NOT ${moneyKind(sql)} OR ${placeOn(sql, personId, "sees_money")})`;
 
+export const clientCreditSeenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
+  viewer.keyed === true
+    ? sql`0 = 1`
+    : viewer._tag === "ownerLevel"
+      ? sql`1 = 1`
+      : viewer.people.length === 0
+        ? sql`0 = 1`
+        : sql.and(viewer.people.map((person) => clientMoneySeen(sql, person)));
+
 /**
  * What a client's Docs list shows this person of `r`'s money: `clientMoneySeen`, and their own
  * priced draft of either kind wherever they read it (`ownMoneyDraft`), as an owner's list shows it.

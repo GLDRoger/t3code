@@ -1,7 +1,12 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import { KIN_MARKETING, type KinCampaignResultId } from "./kinMarketing.ts";
 import { KIN_CHECK_CONNECTION } from "./kinAnswers.ts";
-import { KIN_CAMPAIGN_SOURCE, kinOwnerLevel, formatKinWhen } from "@t3tools/contracts";
+import {
+  KIN_CAMPAIGN_SOURCE,
+  KIN_TEXT_LOCALE,
+  kinOwnerLevel,
+  formatKinWhen,
+} from "@t3tools/contracts";
 import type {
   KinAccessMeResult,
   KinClientTouch,
@@ -231,6 +236,8 @@ export const KIN_CLIENTS = {
   tags: "Tags",
   makeClient: "Make it a client",
   makeProspect: "Make it a prospect again",
+  credit: "Credit",
+  creditFrom: (amount: string, day: string) => `${amount} from ${day}`,
 };
 
 const andList = (names: ReadonlyArray<string>) =>
@@ -908,6 +915,12 @@ export type KinClientCan = NonNullable<KinPartyPage["can"]>;
 const CAN_ALL: KinClientCan = { edit: true, log: true, owner: true };
 const CAN_NONE: KinClientCan = { edit: false, log: false, owner: false };
 
+export interface KinClientCreditView {
+  readonly key: KinRecordKey;
+  /** "$1,200.00 from 4 Nov" */
+  readonly line: string;
+}
+
 export interface KinClientPageView {
   readonly key: KinRecordKey;
   /** Whether it offers making anything new under it: not while Clients is off. */
@@ -943,6 +956,8 @@ export interface KinClientPageView {
   /** Newest first; null from a host before contact logs. */
   readonly touches: ReadonlyArray<KinTouchView> | null;
   readonly lastContact: string | null;
+  /** Unapplied advance credits this reader may see, oldest first; empty when none or hidden. */
+  readonly credit: ReadonlyArray<KinClientCreditView>;
 }
 
 export function kinClientPageView(
@@ -1023,6 +1038,16 @@ export function kinClientPageView(
     lastContact:
       (party.kind === "client" ? kinClientContactLine(party, touches?.[0], now) : null) ??
       (touches?.length === 0 ? KIN_CLIENTS.noneLogged : null),
+    credit: (page.credit ?? []).map((one) => ({
+      key: one.key,
+      line: KIN_CLIENTS.creditFrom(
+        kinMoneyText(one.amount, true),
+        formatKinWhen(Date.parse(`${one.receivedOn}T12:00:00Z`), "date", {
+          zone: "UTC",
+          locale: KIN_TEXT_LOCALE,
+        }),
+      ),
+    })),
   };
 }
 
@@ -1054,6 +1079,7 @@ export const kinClientPageKeys = (page: KinPartyPage): ReadonlySet<string> =>
     ...page.projects.map((project) => project.key),
     ...page.weOwe.records.map((record) => record.key),
     ...page.theyOwe.records.map((record) => record.key),
+    ...(page.credit ?? []).map((one) => one.key),
   ]);
 
 // Projects

@@ -71,6 +71,9 @@ import {
   propose,
   proposalFor,
 } from "../work/registers.ts";
+import { moneySummary } from "../work/moneyViews.ts";
+import { unsetAgainst } from "../gendocs/receipts.ts";
+import { undo } from "../work/statements/creditPayment.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import { DAY_MS } from "../pulse/thresholds.ts";
@@ -3019,7 +3022,7 @@ it.effect("a tap records a bank credit as the invoice's payment the matcher rank
           /was written or changed by an agent, so Kin can't take it/,
         );
       assert.match(
-        yield* refusal(`${bank.key} ${invoice.key} more`),
+        yield* refusal(`${bank.key} ${invoice.key} extra extra extra extra extra`),
         /^record_payment's target is/,
       );
       // Ranked below the invoice the credit cites: refused, naming the one ranked first.
@@ -3319,6 +3322,141 @@ it.effect("a tap records a bank credit as the invoice's payment the matcher rank
           })
           .pipe(Effect.flip),
         { reason: "invalid_state" },
+      );
+      const firstSplit = yield* invoiceOf("First split", "AM/26-27/005");
+      const lastSplit = yield* invoiceOf("Last split", "AM/26-27/006");
+      const over = yield* credit("HARBOURLINE LOGISTICS AM/26-27/005", 200_000, "SPLIT-1");
+      yield* kin.turn("finance", chatId, "How should that overpayment be split?");
+      const splitCard = yield* ask(
+        `${over.key} ${firstSplit.key} ${lastSplit.key}`,
+        "Split the credit?",
+      );
+      assert.isTrue(splitCard.ok, JSON.stringify(splitCard.value));
+      assert.strictEqual(
+        card(yield* kin.widget(splitCard.value.widgetId)).options[0]?.action?.line,
+        `Record ₹2,00,000.00 received 15 Nov (${over.key}) from Harbourline Logistics: ₹95,000.00 settles AM/26-27/005, ₹95,000.00 settles AM/26-27/006, and ₹10,000.00 stays as Harbourline Logistics's credit`,
+      );
+      const summary = () => moneySummary(orgId, MON, KIN_OWNER_LEVEL);
+      const before =
+        (yield* summary()).received.thisMonth.find((one) => one.currency === "INR")?.minor ?? 0;
+      const id = String(splitCard.value.widgetId);
+      const drawnSplit = yield* kin.widget(id);
+      const applied = yield* kin.tap(owner, id, "option-1", "split-tap");
+      const retried = yield* kin.chats.act(owner, {
+        widgetId: drawnSplit.widgetId,
+        revision: drawnSplit.revision,
+        actionId: "choose",
+        value: "option-1",
+        clientActionId: "split-tap",
+      });
+      assert.strictEqual(retried.messageId, applied.messageId);
+      const [left] = yield* sql<{
+        key: string;
+        paidOn: string;
+        minor: number;
+      }>`SELECT r.key, p.paid_on AS "paidOn", p.amount_minor AS minor
+        FROM kin_records r JOIN kin_record_payments p ON p.org_id = r.org_id AND p.record_id = r.record_id
+        WHERE r.org_id = ${orgId} AND r.origin_key LIKE ${`bank-credit:${over.recordId}:%:left`} AND p.voided_at IS NULL
+        ORDER BY p.payment_id`;
+      assert.include(left, { minor: 1_000_000, paidOn: "2026-11-15" });
+      for (const invoice of [firstSplit, lastSplit]) {
+        const detail = yield* records.detail((yield* records.get(orgId, invoice.key))!);
+        assert.lengthOf(detail.payments!, 1);
+        const payment = detail.payments![0]!;
+        assert.deepInclude(payment, {
+          amount: { currency: "INR", minor: 9_500_000 },
+          splitCredit: over.key,
+        });
+        assert.include(
+          yield* records
+            .voidPayment(orgId, ownerWrites, invoice.key, payment.paymentId)
+            .pipe(Effect.flip),
+          {
+            reason: "invalid_state",
+            message: `That payment is one of several from ${over.key}; undo them together from ${over.key}.`,
+          },
+        );
+      }
+      assert.strictEqual(
+        (yield* summary()).received.thisMonth.find((one) => one.currency === "INR")?.minor,
+        before + 20_000_000,
+      );
+      const next = yield* invoiceOf("Credit applied here", "AM/26-27/007");
+      const gotCredit = yield* callAs("finance", "record_get", { key: next.key });
+      assert.nestedInclude(gotCredit.value, { "creditOffer.receipt": left!.key });
+      yield* kin.turn("finance", chatId, "Apply the credit to this invoice?");
+      const apply = yield* callAs("finance", "kin_ask", {
+        question: "Apply the client's credit?",
+        options: [
+          {
+            label: "Apply",
+            kind: "yes",
+            action: { kind: "apply_credit", target: `${left!.key} ${next.key}` },
+          },
+          { label: "Not now", kind: "no" },
+        ],
+        default: "none",
+      });
+      assert.isTrue(apply.ok, JSON.stringify(apply.value));
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES ('zoya', ${orgId}, 'zoya', 'Zoya Rao', ${at}, 'member')`;
+      const applyWidget = yield* kin.widget(apply.value.widgetId);
+      const applyPlan = (yield* plansOf(orgId, applyWidget.widgetId)).get("option-1")!;
+      assert.include(
+        yield* CardActions.run(
+          {
+            orgId,
+            widget: applyWidget,
+            personId: kin.person("zoya").personId,
+            memberId: KinMemberId.make("zoya-member"),
+            now: MON,
+          },
+          applyPlan,
+          { records, chat: kin.chats },
+        ).pipe(Effect.flip),
+        { reason: "not_allowed", message: "Only the owner or a co-owner applies credit." },
+      );
+      const unappliedInvoice = (yield* records.get(orgId, next.key))!;
+      assert.strictEqual(unappliedInvoice.paid, 0);
+      assert.isUndefined((yield* records.detail(unappliedInvoice)).payments?.[0]);
+      assert.nestedInclude((yield* callAs("finance", "record_get", { key: next.key })).value, {
+        "creditOffer.receipt": left!.key,
+      });
+      yield* kin.tap(owner, apply.value.widgetId, "option-1", "apply-credit");
+      const appliedInvoice = (yield* records.get(orgId, next.key))!;
+      assert.strictEqual(appliedInvoice.paid, 1_000_000);
+      const [appliedPayment] = (yield* records.detail(appliedInvoice)).payments!;
+      const appliedBank = yield* kin.stateOf(over.key);
+      const received = (yield* summary()).received;
+      const takeBack = yield* records
+        .voidPayment(orgId, ownerWrites, next.key, appliedPayment!.paymentId)
+        .pipe(Effect.match({ onFailure: (error) => error, onSuccess: () => null }));
+      assert.include(takeBack, {
+        reason: "invalid_state",
+        message:
+          "This payment came from the client's credit. Un-apply it instead. Nothing changed.",
+      });
+      assert.strictEqual((yield* records.get(orgId, next.key))!.paid, 1_000_000);
+      assert.deepStrictEqual(yield* kin.stateOf(over.key), appliedBank);
+      assert.deepStrictEqual((yield* summary()).received, received);
+      assert.include(yield* undo(orgId, ownerWrites, over.key).pipe(Effect.flip), {
+        reason: "invalid_state",
+        message: `Un-apply the credit from ${next.key} first.`,
+      });
+      yield* unsetAgainst(orgId, ownerWrites, left!.key);
+      assert.strictEqual((yield* records.get(orgId, next.key))!.paid, 0);
+      assert.deepStrictEqual((yield* summary()).received, received);
+      assert.deepStrictEqual(yield* undo(orgId, ownerWrites, over.key), { key: over.key });
+      assert.deepStrictEqual(yield* undo(orgId, ownerWrites, over.key), { key: over.key });
+      assert.strictEqual((yield* records.get(orgId, over.key))!.state, "open");
+      assert.strictEqual((yield* records.get(orgId, left!.key))!.state, "dropped");
+      for (const invoice of [firstSplit, lastSplit]) {
+        const row = (yield* records.get(orgId, invoice.key))!;
+        assert.deepInclude(row, { paid: 0, state: "waiting" });
+      }
+      assert.strictEqual(
+        (yield* summary()).received.thisMonth.find((one) => one.currency === "INR")?.minor ?? 0,
+        before,
       );
     }).pipe(Effect.provide(layer)),
   ),

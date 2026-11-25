@@ -19,13 +19,14 @@ const CARD_ACTIONS = [
   "create_list",
   "take_default",
   "record_payment",
+  "apply_credit",
   "mark_repaid",
 ] as const;
 export const CardActionInput = Schema.Struct({
   kind: Schema.Literals(CARD_ACTIONS),
   target: KinTrimmedText.check(Schema.isMaxLength(200)).annotate({
     description:
-      "done, drop: a task key such as W-4. start: a due deferral's id. create_list: a list_define proposal id for a new list. take_default: the id of an open question of yours. record_payment: a Bank transactions credit's key (BNK-1) when Kin ranks one invoice first for it, else the credit's key, a space and the key or number of an invoice Kin ranks first for it (BNK-1 INV-1). mark_repaid: a Bank transactions debit's key (BNK-4) that Kin reads as paying a partner back.",
+      "done, drop: a task key such as W-4. start: a due deferral's id. create_list: a list_define proposal id for a new list. take_default: the id of an open question of yours. record_payment: a Bank transactions credit's key (BNK-1) when Kin ranks one invoice first for it, else the credit's key, a space and the key or number of an invoice Kin ranks first for it (BNK-1 INV-1). mark_repaid: a Bank transactions debit's key (BNK-4) that Kin reads as paying a partner back. record_payment may name more invoices of that client after the first (BNK-4 INV-12 INV-14). apply_credit: a client's credit and that client's invoice (RCT-3 INV-14).",
   }),
 }).annotate({
   description: "What Kin itself does when this option is tapped; Kin writes its button.",
@@ -84,7 +85,23 @@ const PaymentPlan = Schema.Struct({
   key: Schema.String,
   title: Schema.String,
   number: Schema.String,
-  client: Schema.NullOr(Schema.String),
+  client: Schema.Union([
+    Schema.NullOr(Schema.String),
+    Schema.Struct({ id: Schema.String, name: Schema.String }),
+  ]),
+  splits: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        recordId: Schema.String,
+        key: Schema.String,
+        number: Schema.String,
+        seen: Schema.String,
+        amountMinor: Schema.Number,
+        owedAfterMinor: Schema.Number,
+      }),
+    ),
+  ),
+  leftMinor: Schema.optionalKey(Schema.Number),
   seen: Schema.String,
   bankRecordId: Schema.String,
   bankKey: Schema.String,
@@ -130,7 +147,22 @@ const RepaidPlan = Schema.Struct({
   draw: CardDraw,
 });
 export type RepaidPlan = typeof RepaidPlan.Type;
-const RunPlan = Schema.Union([RecordPlan, StartPlan, ListPlan, PaymentPlan, RepaidPlan]);
+const ApplyPlan = Schema.Struct({
+  kind: Schema.Literal("apply_credit"),
+  key: Schema.String,
+  receipt: Schema.String,
+  client: Schema.String,
+  receiptRev: Schema.Number,
+  invoiceRev: Schema.Number,
+  paymentId: Schema.String,
+  number: Schema.String,
+  amount: KinMoney,
+  receivedOn: Schema.String,
+  owedAfterMinor: Schema.Number,
+  draw: CardDraw,
+});
+export type ApplyPlan = typeof ApplyPlan.Type;
+const RunPlan = Schema.Union([RecordPlan, StartPlan, ListPlan, PaymentPlan, RepaidPlan, ApplyPlan]);
 export type RunPlan = typeof RunPlan.Type;
 const DefaultPlan = Schema.Struct({
   kind: Schema.Literal("take_default"),
@@ -320,6 +352,7 @@ export const CardPlan = Schema.Union([
   StartPlan,
   ListPlan,
   PaymentPlan,
+  ApplyPlan,
   RepaidPlan,
   DefaultPlan,
   RoutePlan,

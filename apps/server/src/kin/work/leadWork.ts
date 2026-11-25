@@ -1,5 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous retry-key hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
+import { stableStringify } from "@t3tools/shared/relaySigning";
+import * as CreditNotes from "../gendocs/creditNotes.ts";
 import {
   KinAgentId,
   KinChatError,
@@ -134,6 +136,7 @@ import {
   isClosed,
   ownerZone,
   recordName,
+  creditForInvoice,
   type RecordRow,
   sensitiveNow,
   stepsOf,
@@ -489,11 +492,15 @@ export const GetResult = Schema.Struct({
         note: Schema.optional(Schema.String),
         /** TDS the client deducted: it settles the invoice, but no cash came in. */
         withheld: Schema.optional(Schema.Literal(true)),
+        creditNote: Schema.optional(Schema.Struct({ key: Schema.String, number: Schema.String })),
         voided: Schema.optional(Schema.Literal(true)),
         /** Where it came from: a confirmed bank statement, or who recorded it on whose word. */
         source: Schema.optional(Schema.String),
       }),
     ),
+  ),
+  creditOffer: Schema.optional(
+    Schema.Struct({ receipt: Schema.String, amount: Schema.String, receivedOn: Schema.String }),
   ),
   /** An invoice's or client's: how far Kin sees the bank, for whether money arrived. */
   bank: Schema.optional(BankAnswer),
@@ -2593,6 +2600,8 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   }
   const shell = yield* KinShell.get(lead.orgId);
   const moneyOn = KinShell.sectionOn(shell, "money");
+  const creditOffer =
+    moneyOn && team === undefined ? yield* creditForInvoice(lead.orgId, row) : undefined;
   const invoicesOn = KinShell.sectionOn(shell, "invoices");
   const list = row.registerId;
   const sensitive = new Set(marksOf(view.lists, row).sensitiveFields ?? []);
@@ -2678,7 +2687,11 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
             ...(payment.rate === undefined ? {} : { rate: payment.rate }),
             paidOn: payment.paidOn,
             ...(payment.note === "" ? {} : { note: payment.note }),
-            ...(payment.withheld === true ? { withheld: true as const } : {}),
+            ...(payment.creditNote !== undefined
+              ? { creditNote: payment.creditNote }
+              : payment.withheld === true
+                ? { withheld: true as const }
+                : {}),
             ...(payment.voidedAt === null ? {} : { voided: true as const }),
             ...(payment.source === undefined
               ? {}
@@ -2697,6 +2710,15 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
           ),
         }
       : {}),
+    ...(creditOffer === undefined
+      ? {}
+      : {
+          creditOffer: {
+            receipt: creditOffer.key,
+            amount: formatMoney(creditOffer.amount),
+            receivedOn: creditOffer.receivedOn,
+          },
+        }),
     ...(taxNote === undefined ? {} : { taxNote }),
     notes: detail.notes,
     ...(assignedBy === undefined ? {} : { assignedBy }),
@@ -2805,6 +2827,39 @@ const createRow = Effect.fnUntraced(function* (
   const records = yield* KinRecords;
   // Before the list is read, so an expense for a list not made yet says what comes first.
   if (asked.amount !== undefined) yield* countryFirst(lead.orgId);
+  if (asked.list === "credit_notes") {
+    const invoice = asked.fields?.invoice;
+    const reason = asked.fields?.reason;
+    if (
+      typeof invoice !== "string" ||
+      typeof reason !== "string" ||
+      typeof asked.amount !== "string"
+    )
+      return yield* invalid("A credit note needs fields.invoice, amount and fields.reason.");
+    if (team !== undefined) return yield* TEAM_REFUSED;
+    const target =
+      (yield* records.get(lead.orgId, invoice)) ?? (yield* byNumber(lead.orgId, invoice));
+    if (target?.registerId !== "invoices") return yield* notFound(invoice);
+    const parsed = parseAmount(
+      asked.amount,
+      asked.currency ?? target.currency ?? (yield* homeCurrency(lead.orgId)),
+    );
+    if ("error" in parsed) return yield* parsed.error;
+    const notes = yield* CreditNotes.CreditNotes;
+    const { row, created } = yield* notes.draft(lead.orgId, writer, {
+      invoice: target.key,
+      amount: parsed.money,
+      reason,
+      originKey: `lead:${sourceEventId}:${retryKey(stableStringify([target.key, asked.title, reason, parsed.money]))}`,
+    });
+    return {
+      key: row.key,
+      title: row.title,
+      created,
+      state: row.state,
+      stateLabel: "Draft",
+    };
+  }
   const def = yield* listFor(lead, asked.list ?? "work");
   const list = def.id;
   if (
@@ -3413,7 +3468,11 @@ export const countryWorded = <A, E, R>(lead: Lead, saved: boolean, call: Effect.
     ),
   );
 export const create = leadTool("KinWorkTools.create", (lead, input: typeof CreateInput.Type) =>
-  countryWorded(lead, input.records.length > 1, runCreate(lead, input)),
+  countryWorded(
+    lead,
+    input.records.length > 1,
+    runCreate(lead, input).pipe(Effect.provide(CreditNotes.layer)),
+  ),
 );
 
 /** A client's kind or an entry's category; a client with neither is a client. */

@@ -1033,6 +1033,23 @@ function ClientPage(
             <p className="text-xs text-muted-foreground">{view.contactsWho}</p>
           )}
         </KinWorkSection>
+        {view.credit.length === 0 ? null : (
+          <KinWorkSection title={KIN_CLIENTS_WORDS.credit}>
+            <ul className="-mx-2 flex flex-col">
+              {view.credit.map((one) => (
+                <li key={one.key}>
+                  <button
+                    type="button"
+                    onClick={() => props.onOpenTask(one.key)}
+                    className="flex w-full items-center justify-between gap-3 rounded-md px-2 py-1.5 text-start text-sm text-foreground tabular-nums outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+                  >
+                    <span>{one.line}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </KinWorkSection>
+        )}
         <KinWorkPlaceLists
           environmentId={environmentId}
           orgId={orgId}

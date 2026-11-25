@@ -199,6 +199,7 @@ endorsements and the footer) is at the top of template.typ.
 #let paid-labels = (
   advance: "Less advance received",
   tds: if withheld-tax-label == none { "Less tax withheld" } else { withheld-tax-label },
+  credit_note: "Less credit note",
   received: "Less received",
 )
 
@@ -640,6 +641,65 @@ The wording the owner may change is at the top of template.typ.
   "exportUnderLut": null,
   "terms": "50% on acceptance, the rest on delivery.",
   "notes": null
+}
+`,
+  "recipes/credit_note/RECIPE.md": String.raw`---
+name: credit_note
+title: Credit note
+description: A credit note that reduces the amount owed on one invoice.
+kind: typst
+list: credit_notes
+numbered: true
+sensitive: true
+default: true
+inputs:
+  number: { type: text, from: system.number, required: false }
+  draft: { type: boolean, from: system.draft }
+  date: { type: date, from: entry.date, required: false }
+  today: { type: date, from: system.today }
+  client: { type: text, from: client.name, required: false }
+  invoice: { type: text, from: entry.fields.invoice }
+  amount: { type: money, from: entry.amount }
+  reason: { type: text, from: entry.fields.reason }
+  company: { type: text, from: company.legalName }
+  address: { type: text, from: company.address, required: false }
+computed:
+  day: { first: [date, today] }
+  dayText: { date: [day, "D MMM YYYY"] }
+amount: { total: amount }
+outputs: [credit-note.pdf]
+---
+
+A draft carries a DRAFT mark until the owner issues it in Kin.
+`,
+  "recipes/credit_note/template.typ": String.raw`
+#let d = json("/inputs.json")
+#set page(margin: 22mm)
+#set text(size: 11pt)
+#let row(label, value) = (text(weight: "bold", label), value)
+#align(right)[#d.company #if d.address != none [\ #d.address]]
+#heading(if d.draft { "Credit note · DRAFT" } else { "Credit note " + d.number })
+#table(
+  columns: (auto, 1fr),
+  inset: 9pt,
+  ..row("Dated", d.dayText),
+  ..if d.client == none { () } else { row("Client", d.client) },
+  ..row("Invoice", d.invoice),
+  ..row("Credit", d.amount.text),
+  ..row("Reason", d.reason),
+)
+`,
+  "recipes/credit_note/sample.json": String.raw`{
+  "number": "CN/26-27/001",
+  "draft": false,
+  "date": "2026-11-04",
+  "today": "2026-11-04",
+  "client": "Tidewater Freight",
+  "invoice": "INV/26-27/012",
+  "amount": { "minor": 120000, "currency": "USD" },
+  "reason": "Scope reduced",
+  "company": "Ambermill",
+  "address": null
 }
 `,
   "recipes/receipt/RECIPE.md": String.raw`---

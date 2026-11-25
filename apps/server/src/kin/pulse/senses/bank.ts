@@ -3,7 +3,8 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { dayIn, formatMoneyPlain, monthOf, shiftMonth } from "../../work/money.ts";
+import { invoiceCandidates } from "../../work/statements/statementReview.ts";
+import { dayIn, formatMoney, formatMoneyPlain, monthOf, shiftMonth } from "../../work/money.ts";
 import { endOfDay, owedInvoices, recordName, startOfDay } from "../../work/recordRows.ts";
 import { bankKnown, shortDay } from "../../work/statements/bankKnown.ts";
 import { repaidMatches } from "../../work/statements/debitRepaid.ts";
@@ -148,6 +149,28 @@ const fitted = (build: (shown: number) => string, count: number) => {
 const listed = (items: ReadonlyArray<string>, shown: number) =>
   `${items.slice(0, shown).join("; ")}${items.length > shown ? `${shown > 0 ? "; " : ""}and ${items.length - shown} more` : ""}`;
 
+export const overpaymentConsequence = (input: {
+  readonly key: string;
+  readonly day: string;
+  readonly currency: string;
+  readonly received: number;
+  readonly owed: number;
+  readonly client: string;
+  readonly reason: string;
+  readonly others: ReadonlyArray<{ readonly key: string; readonly owed: number }>;
+}) => {
+  const { key, day, currency, received, owed, client, reason } = input;
+  const amount = (minor: number) => formatMoney({ minor, currency });
+  const others = input.others.map((one) => `${one.key} (${amount(one.owed)})`);
+  return fitted(
+    (shown) =>
+      `${key}, ${amount(received)} received ${shortDay(day)}, is more than the ${amount(owed)} this invoice owes: ${reason}. Recorded, it settles it and keeps ${amount(received - owed)} as ${client}'s credit.${
+        others.length === 0 ? "" : ` ${client}'s other open invoices: ${listed(others, shown)}.`
+      } It isn't recorded until the owner confirms.`,
+    Math.min(4, others.length),
+  );
+};
+
 /**
  * payment_seen: one fact per unexplained credit the matcher offers as an open invoice's payment,
  * so a mark holds whatever invoices come and go. About the invoice ranked first alone, else the
@@ -171,6 +194,9 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
           WHERE r.org_id = ${ctx.orgId} AND r.record_id IN ${sql.in(ids)}
           ORDER BY r.key`).map((row) => [row.recordId, row]),
   );
+  const invoices = matches.some((one) => one.first.some((pair) => pair.candidate.fit === "over"))
+    ? yield* invoiceCandidates(ctx.orgId, undefined)
+    : [];
   return matches.flatMap(({ credit, ranked, first }): Array<SensedFact> => {
     const shared = {
       sense: "payment_seen" as const,
@@ -204,6 +230,40 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
     const best = first[0]!;
     const row = rows.get(best.invoice.recordId);
     if (row === undefined) return [];
+    if (
+      best.candidate.fit === "over" &&
+      best.invoice.client !== null &&
+      best.invoice.clientId != null
+    ) {
+      const { invoice } = best;
+      const others = invoices
+        .filter(
+          (one) =>
+            one.clientId === invoice.clientId &&
+            one.recordId !== invoice.recordId &&
+            one.currency === credit.currency &&
+            one.amountMinor > one.paidMinor &&
+            one.issued !== null,
+        )
+        .map((one) => ({ key: one.key, owed: one.amountMinor - one.paidMinor }));
+      return [
+        {
+          ...shared,
+          subject: entrySubject(row),
+          scope: entryScope(row),
+          consequence: overpaymentConsequence({
+            key: credit.key,
+            day: credit.date,
+            currency: credit.currency,
+            received: credit.amountMinor,
+            owed: invoice.amountMinor - invoice.paidMinor,
+            client: best.invoice.client,
+            reason: pairReason(best),
+            others,
+          }),
+        },
+      ];
+    }
     const others = ranked.slice(1).map(invoiceText);
     const alongside = matches
       .filter(

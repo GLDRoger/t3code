@@ -16,6 +16,7 @@ import {
   invoiceOffer,
   levelWithBest,
   paymentOffer,
+  overOffer,
   rateOffer,
 } from "./statementMatch.ts";
 import { invoiceCandidates, recordedPayments } from "./statementReview.ts";
@@ -133,17 +134,18 @@ export const invoiceCredits = Effect.fn("KinStatements.invoiceCredits")(function
     currency: invoice.currency,
     maxMinor: owed,
   });
-  const foreign = (yield* openEntries(orgId, def, "credit", undefined)).filter(
-    (credit) => credit.currency !== invoice.currency,
+  const other = (yield* openEntries(orgId, def, "credit", undefined)).filter(
+    (credit) => credit.currency !== invoice.currency || credit.amountMinor > owed,
   );
-  const takenBack = foreign.length === 0 ? undefined : yield* takenBackPairs(orgId, recordId);
-  return [...credits, ...foreign]
+  const takenBack = other.length === 0 ? undefined : yield* takenBackPairs(orgId, recordId);
+  return [...credits, ...other]
     .toSorted((a, b) => b.dateAt - a.dateAt || b.recordId.localeCompare(a.recordId))
     .flatMap((credit) => {
       if (takenBack?.has(`${credit.recordId}|${recordId}`) && credit.currency !== invoice.currency)
         return [];
       const pair = pairOf(credit, invoice, withholds);
-      return pair === undefined
+      return pair === undefined ||
+        (pair.candidate.fit === "over" && takenBack?.has(`${credit.recordId}|${recordId}`))
         ? []
         : [
             {
@@ -167,7 +169,15 @@ export const rateMoney = (money: KinMoney) =>
 const pairOf = (credit: OpenCredit, invoice: InvoiceCandidate, withholds: boolean) => {
   if (invoice.currency === credit.currency) {
     const offer = invoiceOffer(credit.row, invoice, invoice.currency, withholds);
-    return offer === undefined ? undefined : { credit, invoice, ...offer };
+    if (offer !== undefined) return { credit, invoice, ...offer };
+    const over = overOffer(credit.row, invoice, invoice.currency);
+    if (over === undefined || invoice.clientId == null || invoice.client === null) return undefined;
+    return {
+      credit,
+      invoice,
+      ...over,
+      reason: over.cited === undefined ? `it names ${invoice.client}` : `it cites ${over.cited}`,
+    };
   }
   const offer = rateOffer(credit.row, invoice, credit.currency);
   if (offer === undefined) return undefined;

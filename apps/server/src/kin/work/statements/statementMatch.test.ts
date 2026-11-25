@@ -4,6 +4,7 @@ import {
   type ExpenseCandidate,
   type InvoiceCandidate,
   matchRows,
+  overOffer,
   rateOffer,
   type PartnerCandidate,
   suggest,
@@ -67,6 +68,19 @@ const match = (
   });
 
 describe("statement matching", () => {
+  it.each([
+    ["INV-12", 45],
+    ["Tidewater Freight", 40],
+    ["Other transfer", undefined],
+  ] as const)("ranks an overpayment citing %s", (description, score) => {
+    const credit = row({ description, amountMinor: 220_000 });
+    const owed = invoice({ amountMinor: 100_000, number: "INV-12", client: "Tidewater Freight" });
+    const offer = overOffer(credit, owed, "INR");
+    assert.strictEqual(offer?.candidate.score, score);
+    assert.strictEqual(offer?.candidate.fit, score === undefined ? undefined : "over");
+    assert.isEmpty(match([credit], [owed])[0]!.candidates);
+  });
+
   it.each([
     ["INV-12", "2026-10-05", "INR", 35],
     ["Tidewater Freight", "2026-10-05", "INR", 30],

@@ -3,6 +3,7 @@ import {
   AuthKinChatScope,
   AuthKinTasksScope,
   AuthSessionId,
+  CLIENT_GUARDED_RPC_SCOPES,
   KinChatError,
   KinOrgId,
   KinPersonId,
@@ -210,6 +211,14 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
           ],
         );
         assert.deepStrictEqual(table.member, MEMBER);
+        for (const method of [
+          "kin.work.undoCreditPayment",
+          "kin.work.unapplyCredit",
+          "kin.work.draftCreditNote",
+        ] as const) {
+          assert.strictEqual(kinRpcAccess(method), "owner_level");
+          assert.strictEqual(CLIENT_GUARDED_RPC_SCOPES[method], AuthKinChatScope);
+        }
         // Bills become the company's expenses: the owner level's, never a member's.
         const bills = methods.filter((method) => method.startsWith("kin.bills."));
         assert.lengthOf(bills, 6);

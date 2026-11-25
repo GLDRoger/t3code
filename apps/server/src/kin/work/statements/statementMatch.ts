@@ -26,6 +26,7 @@ export type InvoiceCandidate = {
   readonly taxMinor: number | null;
   readonly issued: string | null;
   readonly client: string | null;
+  readonly clientId?: string | null;
   readonly number: string | null;
 };
 export type ExpenseCandidate = {
@@ -104,7 +105,7 @@ export type Candidate = {
   readonly title: string;
   /** `recorded`: the row is a payment already on the invoice, `paymentId`; nothing new is paid. */
   /** `open`: an open invoice offered for money nothing matched, only for the owner to pick. */
-  readonly fit: "exact" | "tds" | "part" | "foreign" | "recorded" | "open" | "rate";
+  readonly fit: "exact" | "tds" | "part" | "foreign" | "recorded" | "open" | "rate" | "over";
   /** The TDS a client deducted, when `fit` is tds. */
   readonly tdsMinor?: number;
   readonly paymentId?: string;
@@ -344,6 +345,34 @@ export const invoiceOffer = (
   const offered = invoiceCandidate(row, invoice, currency, withholdsAtSource);
   if (offered === undefined || offered.score < PROPOSED) return undefined;
   return { candidate: offered, reason: offerReason(row, invoice, currency, offered) };
+};
+
+export const overOffer = (row: StatementRow, invoice: InvoiceCandidate, currency: string) => {
+  const balance = invoice.amountMinor - invoice.paidMinor;
+  if (
+    row.direction !== "credit" ||
+    currency !== invoice.currency ||
+    balance <= 0 ||
+    row.amountMinor <= balance ||
+    invoice.issued === null ||
+    row.date < invoice.issued
+  )
+    return undefined;
+  const { cited, score, why } = invoiceClues(row, invoice);
+  if (score === 0) return undefined;
+  return {
+    candidate: {
+      kind: "invoice",
+      recordId: invoice.recordId,
+      key: invoice.key,
+      title: invoice.title,
+      fit: "over",
+      seen: invoice.seen,
+      score: score + 10,
+      why,
+    } satisfies Candidate,
+    cited,
+  };
 };
 
 /** A cross-currency bank credit is an offer, not proof of an amount in the invoice's currency. */

@@ -69,6 +69,7 @@ import {
   recordSeq,
   selectRecords,
   toRecord,
+  usableCredits,
 } from "./recordRows.ts";
 import { contactAll, contactSensitive } from "./contactDetails.ts";
 import { dayIn } from "./money.ts";
@@ -933,8 +934,12 @@ export const partyPage = Effect.fn("KinCrm.partyPage")(function* (
     }),
   });
   const contract = yield* contractOf(orgId, row.recordId, viewer, now);
+  const credit = yield* usableCredits(orgId, row.recordId, viewer);
   return {
     party: yield* partyDetail(row, now, viewer),
+    ...(credit.length === 0
+      ? {}
+      : { credit: credit.map(({ key, amount, receivedOn }) => ({ key, amount, receivedOn })) }),
     contacts: contacts.map(toContact),
     projects: projectRows.map((project) => project.row),
     weOwe: withFrom(weOwe),

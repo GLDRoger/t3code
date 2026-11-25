@@ -661,7 +661,20 @@ export const KinCompanyProfileSetInput = Schema.Struct({
 });
 export type KinCompanyProfileSetInput = typeof KinCompanyProfileSetInput.Type;
 
+export const KinDraftCreditNoteInput = Schema.Struct({
+  orgId: KinOrgId,
+  invoice: KinRecordKey,
+  amount: KinMoney,
+  reason: TrimmedNonEmptyString,
+  originKey: TrimmedNonEmptyString,
+});
+export type KinDraftCreditNoteInput = typeof KinDraftCreditNoteInput.Type;
+const CreditKey = Schema.Struct({ key: KinRecordKey });
+
 const KIN_FINANCE_WS_METHODS = {
+  undoCreditPayment: "kin.work.undoCreditPayment",
+  unapplyCredit: "kin.work.unapplyCredit",
+  draftCreditNote: "kin.work.draftCreditNote",
   lists: "kin.work.lists",
   updateList: "kin.work.updateList",
   dates: "kin.work.dates",
@@ -683,6 +696,21 @@ const KIN_FINANCE_WS_METHODS = {
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 // Owner only, on the server; a chat-only session is refused before any handler runs.
 export const KinFinanceRpcs = [
+  Rpc.make(KIN_FINANCE_WS_METHODS.undoCreditPayment, {
+    payload: KinIssueInput,
+    success: CreditKey,
+    error,
+  }),
+  Rpc.make(KIN_FINANCE_WS_METHODS.unapplyCredit, {
+    payload: KinIssueInput,
+    success: CreditKey,
+    error,
+  }),
+  Rpc.make(KIN_FINANCE_WS_METHODS.draftCreditNote, {
+    payload: KinDraftCreditNoteInput,
+    success: CreditKey,
+    error,
+  }),
   Rpc.make(KIN_FINANCE_WS_METHODS.exportLink, {
     payload: KinExportLinkInput,
     success: KinExportLink,
@@ -762,6 +790,9 @@ export const KinFinanceRpcs = [
 ] as const;
 
 export const KIN_FINANCE_RPC_SCOPES = {
+  [KIN_FINANCE_WS_METHODS.undoCreditPayment]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.unapplyCredit]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.draftCreditNote]: AuthKinChatScope,
   [KIN_FINANCE_WS_METHODS.lists]: AuthKinChatScope,
   // What a list is, like what a lead is for, is an owner setting.
   [KIN_FINANCE_WS_METHODS.updateList]: AuthKinChatScope,
