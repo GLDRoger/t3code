@@ -56,9 +56,8 @@ export const KIN_TASKS = {
   comingUp: "Coming up",
   yourProjects: "Your projects",
   done: "Done in the last 14 days",
-  clearTitle: "Nothing needs you right now",
-  clearDetail:
-    "No drafts to approve, no questions waiting, nothing late. New ones will show here first.",
+  clearTitle: "No tasks need you right now",
+  clearDetail: "Nothing late or due. Cards waiting on you are in Chats.",
   teammateFoot: "You see tasks you hold, tasks you asked for, and tasks on your projects.",
   teammateFootWithoutClients: "You see tasks you hold and tasks you asked for.",
   groupBy: "Group by",

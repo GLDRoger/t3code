@@ -183,8 +183,8 @@ export function kinDocLabelAction(doc: {
   if (doc.sensitive && reader !== undefined && reader.you !== true)
     return {
       sensitive: true,
-      label: "Mark as private",
-      title: "Mark this doc as private?",
+      label: "Keep to owners only",
+      title: "Keep this doc to owners only?",
       detail: `${reader.name} won't be able to read it any more. Only owners will, and agents only in your own chats.`,
     };
   return doc.sensitive

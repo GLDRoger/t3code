@@ -403,7 +403,7 @@ describe("Tasks on the web, by whose move", () => {
     await expect.element(page.getByText("Corran rollout", { exact: true })).toBeVisible();
     await expect.element(page.getByText(bakeryForm.title)).toBeVisible();
     expect(page.getByText("Harbourline pilot", { exact: true }).elements()).toHaveLength(0);
-    expect(page.getByText("Nothing needs you right now").elements()).toHaveLength(0);
+    expect(page.getByText("No tasks need you right now").elements()).toHaveLength(0);
     await expect.element(page.getByRole("button", { name: "Not now" })).toBeVisible();
     await userEvent.click(page.getByRole("button", { name: "What's next?" }));
     expect(onOpen).toHaveBeenCalledWith("DL-1");
