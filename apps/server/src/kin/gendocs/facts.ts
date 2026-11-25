@@ -30,7 +30,7 @@ import {
 import { type ListDef, listDef, sensitiveKeys, stateLabel } from "../work/registers.ts";
 import { fundingOf, partnerFunded } from "../work/reimbursement.ts";
 import { findBankList } from "../work/statements/bankList.ts";
-import { issuedDetails } from "./numbering.ts";
+import { issuedDetails, issuedNumber } from "./numbering.ts";
 import {
   type Facts,
   givesMoney,
