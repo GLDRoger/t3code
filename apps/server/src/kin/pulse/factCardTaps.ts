@@ -34,9 +34,10 @@ const nothingDone = (why: string): KinChoiceOutcome => ({
 });
 
 /**
- * Has the fact in hand for the tapper until `until`: an owner-level tapper's own, a teammate's on
- * their word through the card's agent, so the owner's check-ins hold it too. False when the fact
- * no longer stands.
+ * Has the fact in hand on the tapper's word, for the view the caller names. `theirs` is the
+ * tapper's own handling: it hides the fact from them alone. `company` also quiets the owner's
+ * check-ins, through the card's agent, and is for an answer that has a day it ends. An
+ * owner-level tapper's own handling is the company's already. False when the fact no longer stands.
  */
 const holdFact = Effect.fn("KinFactCards.holdFact")(function* (
   tap: FactTap,
@@ -46,16 +47,18 @@ const holdFact = Effect.fn("KinFactCards.holdFact")(function* (
     readonly action: "got_it" | "not_a_problem";
     readonly until?: number;
     readonly note: string;
+    readonly view: "theirs" | "company";
   },
 ) {
   const own = yield* ownerLevel(tap.orgId, tap.personId);
+  const forCompany = !own && input.view === "company";
   return yield* KinPulse.handle({
     orgId: tap.orgId,
     at: tap.now,
-    viewer: { _tag: "owner" },
-    by: own
-      ? { _tag: "person", personId: tap.personId }
-      : { _tag: "agent", agentId: KinAgentId.make(plan.agentId) },
+    viewer: own || forCompany ? { _tag: "owner" } : { _tag: "people", people: [tap.personId] },
+    by: forCompany
+      ? { _tag: "agent", agentId: KinAgentId.make(plan.agentId) }
+      : { _tag: "person", personId: tap.personId },
     factKey: input.factKey,
     action: input.action,
     ...(input.until === undefined ? {} : { until: input.until }),
@@ -137,6 +140,7 @@ const runWaited = Effect.fn("KinFactCards.runWaited")(function* (
         action: "got_it",
         until: plan.until,
         note: `${plan.personName}: by ${plan.day}`,
+        view: "company",
       });
       if (!held) return notWaiting;
       yield* tellHolder(
@@ -155,6 +159,7 @@ const runWaited = Effect.fn("KinFactCards.runWaited")(function* (
         action: "got_it",
         until: tap.now + NOT_MINE_MS,
         note: `${plan.personName}: not mine`,
+        view: "company",
       });
       if (!held) return notWaiting;
       yield* tellHolder(
@@ -191,6 +196,7 @@ const runStall = Effect.fn("KinFactCards.runStall")(function* (
       action: "got_it",
       until: plan.until,
       note: `${plan.personName}: still on it`,
+      view: "company",
     });
     if (!held) return nothingDone(`${plan.key} moved on`);
     return { title: "Noted", text: `Kin asks again on ${plan.day} if ${plan.key} hasn't moved.` };
@@ -235,6 +241,7 @@ const runDue = Effect.fn("KinFactCards.runDue")(function* (
           factKey,
           action: "not_a_problem",
           note: `${plan.personName}: leave it`,
+          view: "theirs",
         })
       )
         return { title: "Left as it is", text: `${plan.key} stays due ${plan.fromDay}.` };

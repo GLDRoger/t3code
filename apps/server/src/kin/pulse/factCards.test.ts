@@ -612,3 +612,43 @@ it.effect(
       }),
     ),
 );
+
+/** Whether `personId`'s own Needs attention holds an open fact about `key` of this sense. */
+const personSees = (ctx: Ctx, personId: KinPersonId, sense: string, key: string, at: number) =>
+  KinPulse.read({
+    orgId: ctx.orgId,
+    at,
+    viewer: { _tag: "people", people: [personId] },
+    limit: 200,
+  }).pipe(
+    Effect.map((read) =>
+      read.facts.some((fact) => fact.sense === sense && fact.subject.key === key),
+    ),
+  );
+
+it.effect(
+  "a teammate's Leave it is their own handling: it leaves the owner's check-in telling the slip",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW);
+        for (const key of ["W-1", "W-2"])
+          yield* ctx.records.update(ctx.orgId, ctx.byOwner, key, { state: "done" });
+        const hers = yield* plan(ctx, "Pilot live", { _tag: "person", personId: zoyaId }, NOV_27, [
+          { title: "Load test", dueAt: NOV_30 },
+        ]);
+        yield* tickAt(ctx, NOW);
+        const [card] = yield* cards(ctx);
+        assert.strictEqual(card!.who, zoyaId);
+        yield* tap(ctx, zoyaId, card!, "Leave it");
+        assert.isFalse(
+          yield* personSees(ctx, zoyaId, "milestone_at_risk", hers.milestone, NOW + HOUR),
+        );
+        assert.isTrue(yield* ownerSees(ctx, "milestone_at_risk", hers.milestone, NOW + HOUR));
+        const [held] = yield* ctx.sql<{ kind: string; id: string }>`SELECT
+            handled_by_kind AS kind, handled_by_id AS id FROM kin_pulse_facts
+          WHERE org_id = ${ctx.orgId} AND fact_key LIKE ${`milestone_at_risk:${hers.milestone}:%`}`;
+        assert.deepStrictEqual(held, { kind: "person", id: zoyaId });
+      }),
+    ),
+);
