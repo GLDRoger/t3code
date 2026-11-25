@@ -154,7 +154,7 @@ export const onRecord = Effect.fn("KinDocuments.onRecord")(function* (
   return {
     key: row.key,
     state: isSuggestion(row)
-      ? suggestedStateLabel(row.registerId, row.state, label)
+      ? suggestedStateLabel(row.registerId, row.state)
       : isInvoiceDraft(row.registerId, row.state)
         ? UNISSUED_INVOICE
         : label,

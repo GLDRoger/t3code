@@ -939,6 +939,60 @@ describe("KinPulse", () => {
     }).pipe(Effect.provide(chatLayer)),
   );
 
+  it.effect("a teammate's late promise reaches the person it was promised to, at its bands", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* letMate;
+      const sql = yield* SqlClient.SqlClient;
+      const zoya = KinPersonId.make("zoya");
+      const dev = KinPersonId.make("dev");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, access, created_at)
+        VALUES (${zoya}, ${orgId}, 'zoya', 'Zoya', 'member', ${stamp}),
+          (${dev}, ${orgId}, 'dev', 'Dev', 'member', ${stamp})`;
+      yield* sql`INSERT INTO kin_lead_access (org_id, agent_id, person_id, granted_by, granted_at)
+        VALUES (${orgId}, ${chief}, ${zoya}, ${owner}, 0), (${orgId}, ${chief}, ${dev}, ${owner}, 0)`;
+      yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id = 'r-W-8'`;
+      const promised = (id: string, to: KinPersonId, title = `Invented ${id}`) =>
+        insert({
+          id,
+          title,
+          dueAt: B + 2 * DAY,
+          ownerKind: "person",
+          ownerId: zoya,
+          // Recorded in the team room, so the team sees it.
+          teamShared: 1,
+          fields: JSON.stringify({ promisedTo: `person:${to}` }),
+        });
+      yield* promised("W-42", mate, "Homepage mockups");
+      // Kept Only me by Zoya: Meera may not see it, so she hears nothing of it.
+      yield* promised("W-50", mate);
+      yield* sql`UPDATE kin_records SET sensitive = 1, marked_by_person_id = ${zoya}
+        WHERE record_id = 'r-W-50'`;
+      // The owner hears a teammate's late work in his check-in; Dev has left.
+      yield* promised("W-51", owner);
+      yield* promised("W-52", dev);
+      yield* sql`UPDATE kin_people SET removed_at = 0 WHERE person_id = ${dev}`;
+      const line =
+        "W-42 Homepage mockups, which Zoya promised you by Tue 3 Nov, is late. Kin has told Zoya.";
+      const late = (days: number) => B + (2 + days) * DAY + 12 * HOUR;
+      for (const at of [late(1), late(2), late(3), late(6), late(7)]) {
+        yield* TestClock.setTime(at);
+        yield* KinPulse.tick(orgId, at);
+      }
+      assert.deepStrictEqual(yield* mateNotices, [line, line, line]);
+      assert.deepStrictEqual(yield* noticesTo(owner), []);
+      assert.deepStrictEqual(yield* noticesTo(dev), []);
+      const told = yield* sql<{ key: string; at: number }>`SELECT fact_key AS key, told_at AS at
+        FROM kin_pulse_told WHERE org_id = ${orgId} AND person_id = ${mate} ORDER BY told_at`;
+      assert.deepStrictEqual(
+        told.map((row) => [row.key, row.at]),
+        [late(1), late(3), late(7)].map((at) => [`task_late:W-42:due=${B + 2 * DAY}`, at]),
+      );
+      // Zoya's own notices are as they were: she alone holds it.
+      assert.include((yield* noticesTo(zoya))[0], "• W-42 Homepage mockups, was due yesterday");
+    }).pipe(Effect.provide(chatLayer)),
+  );
+
   // The sales seat, Meera with Clients on in Los Angeles and allowed to message it, and her
   // late follow-up W-30 to Lumen: 4 Nov 20:00 UTC is noon on 4 Nov in Los Angeles.
   const salesDay = Effect.gen(function* () {
