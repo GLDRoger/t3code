@@ -135,7 +135,14 @@ export const KinBillsAddResult = Schema.Struct({
     }),
   ),
   /** Files that are neither an image nor a PDF, each with why. */
-  refused: Schema.Array(Schema.Struct({ name: Label, reason: Text })),
+  refused: Schema.Array(
+    Schema.Struct({
+      name: Label,
+      reason: Text,
+      /** The id this add sent the file under, so a client can tell which chosen file it is. */
+      attachmentId: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(128))),
+    }),
+  ),
 });
 export type KinBillsAddResult = typeof KinBillsAddResult.Type;
 

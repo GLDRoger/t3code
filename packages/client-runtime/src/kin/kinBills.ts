@@ -58,6 +58,8 @@ export const KIN_BILLS = {
     added: "Added",
     already: "Already added before",
   },
+  notAdded: (reason: string) =>
+    reason.trim() === "" ? "Not added." : `Not added: ${reason.trim()}`,
   review: "Review",
   /** On Expenses: where bills added in bulk are, once there are any. */
   added: "Bills added",
@@ -472,8 +474,8 @@ export type KinBillUpload =
   | { readonly _tag: "added" }
   /** Sent, but the host had it as a bill already: in `batchId`, when the host says. */
   | { readonly _tag: "already"; readonly batchId: string | null }
-  /** Not a photo or a PDF: never uploaded. */
-  | { readonly _tag: "refused"; readonly reason: string };
+  /** Not a photo or a PDF, or refused by the host on add. */
+  | { readonly _tag: "refused"; readonly reason: string; readonly fromHost?: true };
 
 export interface KinBillDraft<F> {
   readonly id: string;
@@ -577,12 +579,27 @@ export function kinBillsStep<F>(state: KinBillsAdding<F>, event: KinBillsEvent<F
       return { ...state, phase: "adding" as const, attempt: { requestId, sent } };
     }
     case "added": {
-      // A host that doesn't name the file it had already leaves every sent file "added".
+      // Older hosts omit `attachmentId`: a file isn't matched by name (the host may shorten it).
       const already = new Map(
         event.result.already.flatMap((one) =>
           one.attachmentId === undefined ? [] : [[one.attachmentId, one.batchId ?? null] as const],
         ),
       );
+      const refused = new Map(
+        event.result.refused.flatMap((one) =>
+          one.attachmentId === undefined ? [] : [[one.attachmentId, one.reason] as const],
+        ),
+      );
+      const allRefused =
+        refused.size === 0 &&
+        event.result.refused.length > 0 &&
+        event.result.added.length === 0 &&
+        event.result.already.length === 0;
+      const sharedReason =
+        allRefused &&
+        event.result.refused.every((one) => one.reason === event.result.refused[0]!.reason)
+          ? event.result.refused[0]!.reason
+          : "";
       return {
         ...state,
         phase: "choosing" as const,
@@ -592,10 +609,16 @@ export function kinBillsStep<F>(state: KinBillsAdding<F>, event: KinBillsEvent<F
         files: state.files.map((file): KinBillDraft<F> => {
           if (file.upload._tag !== "uploaded") return file;
           const batchId = already.get(file.upload.attachment.id);
-          return {
-            ...file,
-            upload: batchId === undefined ? { _tag: "added" } : { _tag: "already", batchId },
-          };
+          if (batchId !== undefined) return { ...file, upload: { _tag: "already", batchId } };
+          const why = refused.get(file.upload.attachment.id);
+          if (why !== undefined)
+            return { ...file, upload: { _tag: "refused", reason: why, fromHost: true } };
+          if (allRefused)
+            return {
+              ...file,
+              upload: { _tag: "refused", reason: sharedReason, fromHost: true },
+            };
+          return { ...file, upload: { _tag: "added" } };
         }),
       };
     }
@@ -631,7 +654,7 @@ export function kinBillUploadText(upload: KinBillUpload) {
     case "failed":
       return upload.problem;
     case "refused":
-      return upload.reason;
+      return upload.fromHost === true ? KIN_BILLS.notAdded(upload.reason) : upload.reason;
     default:
       return KIN_BILLS.upload[upload._tag];
   }

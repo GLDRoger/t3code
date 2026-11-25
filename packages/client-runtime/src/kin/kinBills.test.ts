@@ -400,6 +400,57 @@ describe("adding bills", () => {
     expect(kinBillsButton(held.state())).toMatchObject({ count: 0, disabled: true });
   });
 
+  it("marks a file the server refused as not added with its reason, and keeps it out of added ones", async () => {
+    const held = harness(["a.jpg", "b.heic", "c.jpg"]);
+    await kinBillsSend({
+      ...held,
+      upload: async (source) => attachment(source),
+      add: async () => ({
+        ok: true,
+        value: {
+          ...answered(["a.jpg", "c.jpg"]),
+          refused: [
+            {
+              name: "b.heic",
+              reason: "Only photos and PDFs are read as bills.",
+              attachmentId: "b.heic",
+            },
+          ],
+        },
+      }),
+    });
+    expect(
+      held.state().files.map((file) => [file.upload._tag, kinBillUploadText(file.upload)]),
+    ).toEqual([
+      ["added", "Added"],
+      ["refused", "Not added: Only photos and PDFs are read as bills."],
+      ["added", "Added"],
+    ]);
+    expect(held.state().files.filter((file) => file.upload._tag === "added")).toHaveLength(2);
+    expect(kinBillsButton(held.state())).toMatchObject({ count: 0, disabled: true });
+    expect(kinBillsOutcome(held.state())).toMatchObject({
+      review: "b-1",
+      close: false,
+      lines: ["b.heic: Only photos and PDFs are read as bills."],
+    });
+    // Older hosts omit `attachmentId`: if every sent file was refused, none reads "Added".
+    const legacy = harness(["x.heic"]);
+    await kinBillsSend({
+      ...legacy,
+      upload: async (source) => attachment(source),
+      add: async () => ({
+        ok: true,
+        value: {
+          ...answered([]),
+          refused: [{ name: "x.heic", reason: "File too large." }],
+        },
+      }),
+    });
+    expect(
+      legacy.state().files.map((file) => [file.upload._tag, kinBillUploadText(file.upload)]),
+    ).toEqual([["refused", "Not added: File too large."]]);
+  });
+
   it("takes the host's answer as it is when it cuts a long name, matching nothing by name", async () => {
     const long = `${"Tidewater Freight invoice ".repeat(10)}.jpg`;
     const held = harness([long, "b"]);
