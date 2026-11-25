@@ -247,6 +247,60 @@ const LeaverPlan = Schema.Struct({
   to: Schema.NullOr(Schema.Struct({ personId: Schema.String, name: Schema.String })),
 });
 export type LeaverPlan = typeof LeaverPlan.Type;
+/**
+ * What every card Kin posts about one pulse fact names (`pulse/factCards.ts`): the fact it stands
+ * on, the card's round on it, the one person who may answer, and the agent whose chat it is in.
+ */
+const FactCardFields = {
+  factKey: Schema.String,
+  round: Schema.Number,
+  personId: Schema.String,
+  personName: Schema.String,
+  agentId: Schema.String,
+  recordId: Schema.String,
+  key: Schema.String,
+  title: Schema.String,
+  rev: Schema.Number,
+};
+/**
+ * The person a task has waited on too long answers: what it waited on is done, it will be by a
+ * day (`until`, the end of `day`), or it doesn't wait on them. Never drawn by an agent.
+ */
+const WaitedPlan = Schema.Struct({
+  kind: Schema.Literal("waited_answer"),
+  answer: Schema.Literals(["done", "by", "not_mine"]),
+  ...FactCardFields,
+  /** The person who holds the task: told of each answer. */
+  holder: Schema.Struct({ personId: Schema.String, name: Schema.String }),
+  until: Schema.NullOr(Schema.Number),
+  day: Schema.NullOr(Schema.String),
+});
+export type WaitedPlan = typeof WaitedPlan.Type;
+/**
+ * A task's holder answers that it has been in progress with no change: still on it, which holds
+ * the fact until `until` (on `day`, in their words), or done. Never drawn by an agent.
+ */
+const StallPlan = Schema.Struct({
+  kind: Schema.Literal("stall_answer"),
+  answer: Schema.Literals(["still", "done"]),
+  ...FactCardFields,
+  until: Schema.Number,
+  day: Schema.String,
+});
+export type StallPlan = typeof StallPlan.Type;
+/**
+ * A milestone slipping behind its open tasks: move its due day from `from` to `to`, its last open
+ * task's, or leave it. `factKey` names the milestone and its day, whether late or at risk.
+ */
+const DuePlan = Schema.Struct({
+  kind: Schema.Literals(["move_due", "keep_due"]),
+  ...FactCardFields,
+  from: Schema.Number,
+  to: Schema.Number,
+  fromDay: Schema.String,
+  toDay: Schema.String,
+});
+export type DuePlan = typeof DuePlan.Type;
 export const CardPlan = Schema.Union([
   RecordPlan,
   StartPlan,
@@ -259,8 +313,21 @@ export const CardPlan = Schema.Union([
   RecommendPlan,
   AnsweredPlan,
   LeaverPlan,
+  WaitedPlan,
+  StallPlan,
+  DuePlan,
 ]);
 export type CardPlan = typeof CardPlan.Type;
+export type FactCardPlan = WaitedPlan | StallPlan | DuePlan;
+const FACT_CARD_KINDS: ReadonlySet<string> = new Set<FactCardPlan["kind"]>([
+  "waited_answer",
+  "stall_answer",
+  "move_due",
+  "keep_due",
+]);
+/** Kin's own card about a pulse fact: it answers nothing else and no agent draws or redraws it. */
+export const isFactCard = (plan: CardPlan): plan is FactCardPlan => FACT_CARD_KINDS.has(plan.kind);
+export const FACT_CARD_KIND_LIST = [...FACT_CARD_KINDS];
 const PlanJson = Schema.fromJsonString(CardPlan);
 const encodePlan = Schema.encodeEffect(PlanJson);
 const decodePlan = Schema.decodeUnknownOption(PlanJson);

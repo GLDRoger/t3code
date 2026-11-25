@@ -66,6 +66,7 @@ import {
 } from "./told.ts";
 import { visibleOverflow } from "./senses/capped.ts";
 import { draftWakes } from "./draftWake.ts";
+import { factCards } from "./factCards.ts";
 import { reviewWakes } from "./reviewWake.ts";
 import {
   HEAD_STARTS_PER_DAY,
@@ -1006,26 +1007,34 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
         shell,
       });
       const told = yield* tellHolders(ctx, facts, stored, holds, shell);
+      const open = facts.flatMap((sensed): Array<KinPulseFact> => {
+        const {
+          yours: _yours,
+          quietForMs: _quietForMs,
+          section: _section,
+          overflow: _overflow,
+          extraSection: _extraSection,
+          ...fact
+        } = sensed;
+        const handled = handledOf(stored.get(fact.key), at, sensed);
+        const aside =
+          asideOf(fact, holds, { _tag: "owner" }) !== undefined ||
+          (fact.actor._tag === "person" &&
+            asideOf(fact, holds, { _tag: "people", people: [fact.actor.personId] }) !== undefined);
+        return handled === null && !aside ? [{ ...fact, handled }] : [];
+      });
+      // What only a person can answer: one tap on Kin's own card (`factCards.ts`).
+      yield* factCards({
+        ctx,
+        sensed: facts,
+        open: open.filter((fact) => !quiet(fact, shell, onDeals)),
+        sees: (personId, some) =>
+          visibleTo(orgId, { _tag: "people", people: [personId] }, some, shell),
+      });
       // A person's own task, due now: an agent makes its first piece for them (`draftWake.ts`).
       const drafted = yield* draftWakes({
         ctx,
-        open: facts.flatMap((sensed): Array<KinPulseFact> => {
-          const {
-            yours: _yours,
-            quietForMs: _quietForMs,
-            section: _section,
-            overflow: _overflow,
-            extraSection: _extraSection,
-            ...fact
-          } = sensed;
-          const handled = handledOf(stored.get(fact.key), at, sensed);
-          const aside =
-            asideOf(fact, holds, { _tag: "owner" }) !== undefined ||
-            (fact.actor._tag === "person" &&
-              asideOf(fact, holds, { _tag: "people", people: [fact.actor.personId] }) !==
-                undefined);
-          return handled === null && !aside ? [{ ...fact, handled }] : [];
-        }),
+        open,
         sees: (personId, some) => visibleTo(orgId, { _tag: "people", people: [personId] }, some),
       });
       // An agent's unread messages whose subject moved on: one wake to keep them true.
