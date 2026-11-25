@@ -634,6 +634,20 @@ export const PaymentResult = Schema.Union([
 
 export const PAYMENT_PROPOSED_NEXT =
   "Nothing is recorded yet. Kin put this payment to the owner on a card. Say in one short line that it is there to check and confirm, and that nothing is recorded until they tap Confirm; a typed yes doesn't record it. Never say it is recorded, marked paid or done.";
+/** What an agent reads when the payment it was told of is already on the invoice. */
+export const alreadyRecordedNext = (
+  cash: KinMoney | undefined,
+  tds: KinMoney | undefined,
+  paidOn: string,
+  name: string,
+) => {
+  const parts = [
+    ...(cash === undefined ? [] : [formatMoney(cash)]),
+    ...(tds === undefined ? [] : [`${formatMoney(tds)} of tax withheld`]),
+  ].join(" and ");
+  return `Nothing was recorded and no card was drawn: ${parts} on ${dayText(paidOn)} is already recorded on ${name}. Ask the owner in one line whether this is another payment; only if they say so, call payment_record again with another.`;
+};
+
 export const TAKE_BACK_PROPOSED_NEXT =
   "Nothing is taken back yet. Kin put this to the owner on a card. Say in one short line that it is there to check and confirm, and that the payment stays recorded until they tap Confirm. Never say it is taken back or done.";
 const TAKE_BACK_NO_CARD_NEXT =
@@ -700,14 +714,10 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
       input.another !== true &&
       (yield* samePayment(lead.orgId, before.key, { amount: cash, withheld: tds, paidOn }))
     ) {
-      const parts = [
-        ...(cash === undefined ? [] : [formatMoney(cash)]),
-        ...(tds === undefined ? [] : [`${formatMoney(tds)} of tax withheld`]),
-      ].join(" and ");
       return {
         status: "already_recorded" as const,
         key: before.key,
-        next: `Nothing was recorded and no card was drawn: ${parts} on ${dayText(paidOn)} is already recorded on ${name}. Ask the owner in one line whether this is another payment; only if they say so, call payment_record again with another.`,
+        next: alreadyRecordedNext(cash, tds, paidOn, name),
         sensitive: true as const,
       };
     }

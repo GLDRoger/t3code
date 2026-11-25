@@ -643,6 +643,9 @@ const repaidAhead = (fields: Readonly<Record<string, unknown>>, today: string) =
 const FUNDING = [FUNDED_BY, REIMBURSEMENT, REPAID_ON] as const;
 export const FUNDING_IS_THE_OWNERS =
   "Only the owner or a co-owner says who funded an expense or that it was paid back, in their own message or tap before anything outside is read. Nothing changed. Put it to them as a card or a question.";
+/** An agent's Paid on an invoice that still has money owed, refused. */
+export const paidWhileOwed = (key: string, owed: string, paid: string) =>
+  `Nothing was changed: ${key} still has ${owed} owed. Put money received to the owner with payment_record; their tap on its card marks it ${paid}.`;
 export const REPAID_IS_THE_OWNERS =
   "Nothing was changed: an agent doesn't mark an expense repaid. The owner marks it on the mark-repaid card when Kin has matched the bank debit, or on the expense in Money.";
 /** Whether these fields newly say a partner was paid back. */
@@ -2767,7 +2770,11 @@ const make = Effect.gen(function* () {
           )
             return yield* new SensitiveRefusal({
               reason: "invalid_state",
-              message: `Nothing was changed: ${row.key} still has ${formatMoney({ minor: owedNow, currency: total!.currency })} owed. Put money received to the owner with payment_record; their tap on its card marks it ${stateLabel(def, "done")}.`,
+              message: paidWhileOwed(
+                row.key,
+                formatMoney({ minor: owedNow, currency: total!.currency }),
+                stateLabel(def, "done"),
+              ),
             });
           if (
             (wanted === "dropped" || row.state === "dropped") &&

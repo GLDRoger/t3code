@@ -45,6 +45,7 @@ import {
   ALSO_ON_UNASKED,
   FUNDING_IS_THE_OWNERS,
   helperRefusal,
+  paidWhileOwed,
 } from "../../apps/server/src/kin/work/KinRecords.ts";
 import { choiceResumeText, NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
 import { noticeQuestion, stallQuestion } from "../../apps/server/src/kin/pulse/factCards.ts";
@@ -81,7 +82,11 @@ import { waitingLine } from "../../apps/server/src/kin/work/unconfirmedFacts.ts"
 import { budgetsAnswer } from "../../apps/server/src/kin/work/budgets.ts";
 import { cardLines, type Snapshot } from "../../apps/server/src/kin/gendocs/receiptProposals.ts";
 import { RECEIPT_PROPOSED_NEXT } from "../../apps/server/src/kin/gendocs/leadDocuments.ts";
-import { PAYMENT_PROPOSED_NEXT } from "../../apps/server/src/kin/work/leadMoney.ts";
+import {
+  alreadyRecordedNext,
+  PAYMENT_PROPOSED_NEXT,
+  TAKE_BACK_PROPOSED_NEXT,
+} from "../../apps/server/src/kin/work/leadMoney.ts";
 import { parseAmount } from "../../apps/server/src/kin/work/money.ts";
 import {
   formatKinMoney,
@@ -861,7 +866,7 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       status: "proposed",
       key: input.invoice.key,
       proposal: input.proposal,
-      shown: cardLines(snapshot, { received }),
+      shown: cardLines(snapshot, { received, version: 2 }),
       next: PAYMENT_PROPOSED_NEXT,
       sensitive: true,
     };
@@ -879,17 +884,77 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     proposal: input.proposal,
     shown: cardLines(
       {
-        entry: { key: input.entry, rev: 1, state: "open" },
+        entry: { key: input.entry, rev: 1, state: "open", moved: true },
         client: { key: "C-1", title: input.client, rev: 1 },
         amount: input.amount,
         receivedOn: input.receivedOn,
-        against: cardAgainst(input.invoice, false),
+        against: cardAgainst(input.invoice, true),
         recorded: [],
       },
-      { key: input.entry, against: input.invoice.key },
+      { key: input.entry, against: input.invoice.key, version: 2 },
     ),
     next: RECEIPT_PROPOSED_NEXT,
     sensitive: true,
+  }),
+  // payment_record of a payment already on the invoice: no card, ask whether it is another.
+  paymentAlreadyRecorded: (input: {
+    invoice: CardInvoice;
+    amount: Contracts.KinMoney | null;
+    withheld: Contracts.KinMoney | null;
+    paidOn: string;
+  }) => ({
+    status: "already_recorded",
+    key: input.invoice.key,
+    next: alreadyRecordedNext(
+      input.amount ?? undefined,
+      input.withheld ?? undefined,
+      input.paidOn,
+      input.invoice.number,
+    ),
+    sensitive: true,
+  }),
+  // payment_record void: the owner's card to take the payment back (`receiptProposals.ts`).
+  takeBackCard: (input: {
+    proposal: string;
+    client: string;
+    invoice: CardInvoice;
+    paymentId: string;
+    payment: { amount: Contracts.KinMoney; paidOn: string; withheld?: boolean };
+  }) => {
+    const snapshot: Snapshot = {
+      entry: null,
+      client: { key: "C-1", title: input.client, rev: 1 },
+      amount: null,
+      receivedOn: null,
+      against: cardAgainst(input.invoice, true),
+      recorded: [],
+      taking: {
+        ...input.payment.amount,
+        paidOn: input.payment.paidOn,
+        withheld: input.payment.withheld === true ? 1 : 0,
+        voided: 0,
+      },
+    };
+    const request = {
+      takeBack: { key: input.invoice.key, paymentId: input.paymentId },
+      version: 2 as const,
+    };
+    return {
+      status: "proposed",
+      key: input.invoice.key,
+      proposal: input.proposal,
+      shown: cardLines(snapshot, request),
+      next: TAKE_BACK_PROPOSED_NEXT,
+      sensitive: true,
+    };
+  },
+  // record_update of an issued invoice to Paid with money still owed, refused to an agent.
+  paidWhileOwed: (input: { key: string; owed: string }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "invalid_state",
+      message: paidWhileOwed(input.key, input.owed, "Paid"),
+    },
   }),
   // record_update of who funded an expense or whether it was paid back, refused to an agent.
   fundingRefusal: () => ({
