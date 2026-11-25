@@ -316,6 +316,12 @@ export class MemoryWriter extends Context.Service<
 >()("t3/kin/memory/MemoryWriter") {}
 // No table of its own: a `kin_memory_heads` row no branch uses, holding the shadow head landed.
 const shadowLanded = (agentId: string) => `kin/shadow-landed/${agentId}`;
+// Why a shadow note stayed off the default branch, in the owner's words.
+const heldWhy = {
+  newer: "Memory already had a newer version, so that one stays.",
+  unreadable: "it couldn't be read.",
+  secret: "it looked like it held a password or key.",
+};
 const isRepoSlug = Schema.is(RepoSlug);
 const dreamBranch = /^dream\/\d{4}-\d{2}-\d{2}$/;
 const folders = [
@@ -1897,8 +1903,8 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const main = config.defaultBranch ?? "main";
           const toSql = Effect.mapError(toPersistenceSqlError("MemoryWriter.landShadows"));
-          const pending = yield* sql<{ agentId: string; branch: string }>`SELECT
-              l.agent_id AS "agentId", h.branch FROM kin_memory_heads h
+          const pending = yield* sql<{ agentId: string; name: string; branch: string }>`SELECT
+              l.agent_id AS "agentId", l.name, h.branch FROM kin_memory_heads h
             JOIN kin_leads l ON l.org_id = h.org_id AND h.branch = 'kin/shadow/' || l.agent_id
             JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
               AND a.retired_at IS NULL
@@ -1907,10 +1913,14 @@ const make = Effect.gen(function* () {
             ORDER BY l.agent_id`.pipe(toSql);
           // Tried again at the next sync once the default branch takes writes.
           if (pending.length === 0 || mainWrites === "refused") return;
+          if (
+            mainWrites === "pull_request" &&
+            (yield* refuseOffGitHub(orgId).pipe(Effect.result))._tag === "Failure"
+          )
+            return;
           const { writer } = yield* validate(orgId);
           yield* refuseDuringPurge(orgId);
           const repo = yield* repoFor(orgId);
-          if (mainWrites === "pull_request") yield* refuseOffGitHub(orgId);
           // Leads stopped working on their shadow branch when K035 ran; a shadow write since then
           // came from a chat the owner didn't place the lead in, so it stays off the default branch.
           const [cutOver] = yield* sql<{ at: string }>`SELECT created_at AS "at"
@@ -1919,69 +1929,94 @@ const make = Effect.gen(function* () {
           if (!Number.isFinite(cutOverSeconds)) return;
           const same = (a: Buffer | undefined, b: Buffer | undefined) =>
             a === undefined ? b === undefined : b !== undefined && a.equals(b);
-          for (const { agentId, branch } of pending) {
-            const tip = yield* branchHead(orgId, writer, branch);
-            const shadowHead = yield* git(orgId, writer, [
-              "rev-list",
-              "-1",
-              `--before=@${cutOverSeconds}`,
-              tip,
-            ]);
-            const mark = sql`INSERT INTO kin_memory_heads (org_id, branch, head)
-              VALUES (${orgId}, ${shadowLanded(agentId)}, ${shadowHead || tip})
-              ON CONFLICT DO NOTHING`.pipe(toSql, Effect.asVoid);
-            if (shadowHead === "") {
-              yield* mark;
-              continue;
-            }
-            const shadowFiles = yield* filesAt(orgId, writer, shadowHead);
-            const head = yield* branchHead(orgId, writer, main);
-            const headFiles = yield* filesAt(orgId, writer, head);
-            const base = yield* git(orgId, writer, ["merge-base", head, shadowHead]).pipe(
-              Effect.orElseSucceed(() => ""),
-            );
-            const baseFiles: ReadonlyMap<string, Buffer> =
-              base === "" ? new Map() : yield* filesAt(orgId, writer, base);
-            const files = new Map<string, string>();
-            const kept: Array<string> = [];
-            const ending: Array<string> = [];
-            for (const [path, bytes] of shadowFiles) {
-              if (!folders.some((folder) => path.startsWith(`${folder}/`))) continue;
-              const now = headFiles.get(path);
-              if (same(baseFiles.get(path), bytes) || same(now, bytes)) continue;
-              // Changed on the default branch too, deletion included: its version stays.
-              if (!same(now, baseFiles.get(path))) {
-                kept.push(path);
-                continue;
+          // A lead that fails is logged and left unmarked, so the next sync retries it alone.
+          for (const { agentId, name, branch } of pending)
+            yield* Effect.gen(function* () {
+              const tip = yield* branchHead(orgId, writer, branch);
+              const shadowHead = yield* git(orgId, writer, [
+                "rev-list",
+                "-1",
+                `--before=@${cutOverSeconds}`,
+                tip,
+              ]);
+              const mark = sql`INSERT INTO kin_memory_heads (org_id, branch, head)
+                VALUES (${orgId}, ${shadowLanded(agentId)}, ${shadowHead || tip})
+                ON CONFLICT DO NOTHING`.pipe(toSql, Effect.asVoid);
+              if (shadowHead === "") return yield* mark;
+              const shadowFiles = yield* filesAt(orgId, writer, shadowHead);
+              const head = yield* branchHead(orgId, writer, main);
+              const headFiles = yield* filesAt(orgId, writer, head);
+              const base = yield* git(orgId, writer, ["merge-base", head, shadowHead]).pipe(
+                Effect.orElseSucceed(() => ""),
+              );
+              const baseFiles: ReadonlyMap<string, Buffer> =
+                base === "" ? new Map() : yield* filesAt(orgId, writer, base);
+              const files = new Map<string, string>();
+              const held: Array<{ path: string | undefined; why: keyof typeof heldWhy }> = [];
+              for (const [path, bytes] of shadowFiles) {
+                if (!folders.some((folder) => path.startsWith(`${folder}/`))) continue;
+                const now = headFiles.get(path);
+                if (same(baseFiles.get(path), bytes) || same(now, bytes)) continue;
+                // Changed on the default branch too, deletion included: its version stays.
+                if (!same(now, baseFiles.get(path))) held.push({ path, why: "newer" });
+                else files.set(path, bytes.toString("utf8"));
               }
-              const text = bytes.toString("utf8");
-              const parsed = yield* parseFrontMatter(orgId, path, text).pipe(Effect.option);
-              if (Option.isNone(parsed)) continue;
-              if (retired(parsed.value.frontMatter)) ending.push(parsed.value.frontMatter.id);
-              files.set(path, text);
-            }
-            if (kept.length > 0)
+              const unquoted = yield* deletedQuotes(orgId, files).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                toSql,
+              );
+              for (const [path, text] of unquoted) files.set(path, text);
+              const ending: Array<string> = [];
+              for (const [path, text] of files) {
+                const parsed = yield* parseFrontMatter(orgId, path, text).pipe(Effect.option);
+                const findings = yield* scanner.scan({
+                  orgId,
+                  files: [{ path, content: Buffer.from(text) }],
+                });
+                if (Option.isNone(parsed) || findings.length > 0) {
+                  files.delete(path);
+                  // A secret in the file's name keeps the name out of the owner's chat too.
+                  const named = !findings.some((finding) => finding.path !== path);
+                  held.push({
+                    path: named ? path : undefined,
+                    why: Option.isNone(parsed) ? "unreadable" : "secret",
+                  });
+                } else if (retired(parsed.value.frontMatter))
+                  ending.push(parsed.value.frontMatter.id);
+              }
+              if (files.size === 0) yield* mark;
+              else {
+                yield* endSharing(orgId, ending);
+                yield* ownerCommit(orgId, {
+                  writer,
+                  repoUrl: repo.repoUrl,
+                  branch: main,
+                  head,
+                  headFiles,
+                  files,
+                  message: `kin(${agentId}): land notes kept at L0\n\nKin-Shadow-Landed: ${shadowHead}\n`,
+                  landed: () => mark,
+                });
+              }
+              if (held.length === 0) return;
+              const lines = held.map(({ path, why }) => `- ${path ?? "One note"}: ${heldWhy[why]}`);
               yield* recovery.notify({
                 orgId,
                 branch,
-                reason: `Kept the default branch's ${kept.join(", ")} over this shadow branch's, which still holds its own`,
+                reason: `Left on the shadow branch: ${held.map(({ path, why }) => `${path ?? "[redacted]"} (${why})`).join(", ")}`,
+                owner: `Some of ${name}'s earlier notes weren't added to Memory:\n${lines.join("\n")}`,
               });
-            if (files.size === 0) {
-              yield* mark;
-              continue;
-            }
-            yield* endSharing(orgId, ending);
-            yield* ownerCommit(orgId, {
-              writer,
-              repoUrl: repo.repoUrl,
-              branch: main,
-              head,
-              headFiles,
-              files,
-              message: `kin(${agentId}): land notes kept at L0\n\nKin-Shadow-Landed: ${shadowHead}\n`,
-              landed: () => mark,
-            });
-          }
+            }).pipe(
+              Effect.catchCauseIf(
+                (cause) => !Cause.hasInterruptsOnly(cause),
+                (cause) =>
+                  Effect.logWarning("Kin could not land a lead's shadow notes", {
+                    orgId,
+                    branch,
+                    cause,
+                  }),
+              ),
+            );
         }),
       ),
     ),
