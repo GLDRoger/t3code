@@ -15,6 +15,7 @@ import {
   type KinWidget,
   KinWidgetId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -102,9 +103,9 @@ const LABEL_MAX = 80;
 const labelOf = (plan: CardPlan): string => {
   switch (plan.kind) {
     case "done":
-      return `Mark ${plan.key} done`;
+      return plan.heldMeeting === true ? "Nothing to follow up" : `Mark ${plan.key} done`;
     case "drop":
-      return `Drop ${plan.key}`;
+      return plan.heldMeeting === true ? "It didn't happen" : `Drop ${plan.key}`;
     case "start":
       return "Start it now";
     case "create_list":
@@ -231,7 +232,10 @@ const recordRow = Effect.fn("KinCardActions.recordRow")(function* (
     title: string;
     state: string;
     rev: number;
-  }>`SELECT record_id AS "recordId", register_id AS "registerId", key, title, state, rev
+    category: string | null;
+    dateAt: number | null;
+  }>`SELECT record_id AS "recordId", register_id AS "registerId", key, title, state, rev,
+      category, date_at AS "dateAt"
     FROM kin_records WHERE org_id = ${orgId} AND ${
       "key" in where ? sql`key = ${where.key.toUpperCase()}` : sql`record_id = ${where.recordId}`
     }`;
@@ -316,6 +320,11 @@ const drawRun = Effect.fn("KinCardActions.drawRun")(function* (
           key: row.key,
           title: row.title,
           rev: row.rev,
+          ...(row.category === "meeting" &&
+          row.dateAt !== null &&
+          row.dateAt <= (yield* Clock.currentTimeMillis)
+            ? { heldMeeting: true as const }
+            : {}),
           draw: drawn,
         } as const;
       }
@@ -459,9 +468,10 @@ const actionOf = (plan: RunPlan): RunInput => ({
           ? `${plan.bankKey} ${plan.key}`
           : plan.key,
 });
-/** The same action on the same thing at the same revision, whoever drew it. */
+/** The same action on the same thing at the same revision, whoever drew it and whatever it's labelled. */
 const sameAction = (a: CardPlan, b: CardPlan) =>
-  JSON.stringify({ ...a, draw: null }) === JSON.stringify({ ...b, draw: null });
+  JSON.stringify({ ...a, draw: null, heldMeeting: undefined }) ===
+  JSON.stringify({ ...b, draw: null, heldMeeting: undefined });
 
 /**
  * A question's card while it still offers its person the default option, by its sealed id, and

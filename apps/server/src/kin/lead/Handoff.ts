@@ -145,7 +145,7 @@ export const RelayInput = Schema.Struct({
   ),
   checkIn: Schema.optional(Schema.Boolean).annotate({
     description:
-      "true: not now but at the owner's next check-in with you, which Kin gives it to tell him once. Only to the owner.",
+      "true: not now but at the owner's next check-in with you, which Kin gives it to tell them once. Only to the owner.",
   }),
 });
 export const RelayResult = Schema.Struct({
