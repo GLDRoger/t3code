@@ -107,6 +107,7 @@ Read ${scratch}/material.json. It lists every original since the last good dream
 
 1. Extract durable facts, meaning only what will still matter weeks from now and could not be cheaply found again: lasting facts about the company, clients, people and projects, how the owner wants things done, decisions with their reasons, and promises with their dates. Never make an item of a to-do, a follow-up minutes or hours away, where work stands or what someone is waiting for, anything readable again from a repo, PR or check, or small talk; one item holds one thing. Put them into item files under objectives/, commitments/, deferrals/, decisions/, people/, claims/ or relationships/, and fold journal/ entries. Merge duplicate items with trust agent or external and mark the replaced ones with invalid_at and superseded_by.
 1b. Keep one relationship item per client with trust agent (kind relationship, links ["client:C-3"] with its key), from that client's touches, chats and work: who they are and who decides, how they like to work, what was promised and what annoyed them (with dates), the dynamic with us and why, and what they might want next. Never put to-dos, status, meeting dates, amounts owed or last contact in it. Revise yours as they change; what a person said about them stays in its own item, as rule 4 says. Commercial terms and what they are charged go in a second relationship item with sensitive true.
+1c. Entries of kind edit show what a person changed in an agent's draft, before and after. When more than one shows the same kind of change to a draft's wording, not its facts, write it once, in one person item under people/, as that person's preference for drafts, with one of those entries as its source and its said_by and trust, and all of them in dream.json. It is kept as theirs, so it says only what the edits show and in how many, without names or details from them. Cite an edit entry for nothing else: what a draft says is not a fact yet.
 2. Edit only item files and journal/. Never delete a file. Never edit rules.md or INDEX.md. Do not run git.
 3. A new item, or one whose source changes, takes source = the material ref, and said_by and trust = that entry's saidBy and trust. When that entry is a chat message a person wrote, the item also takes quote = their exact words from it that say it, at most 400 characters. Never change an item's quote.
 4. An item with trust owner or member holds what a person said: leave it exactly as it is, and never supersede, close or move it. You may write your own item that cites it, as your own conclusion: source = its material ref, trust agent (external if that item's is), and no quote. The same goes for any item you make from another item, a reminder included.
@@ -252,8 +253,8 @@ const make = Effect.gen(function* () {
       WHERE org_id = ${orgId} AND status IN ('failed', 'succeeded')
       ORDER BY owner_date DESC LIMIT ${FAILED_NIGHTS_NOTICE + 1}`;
     const streak = recent.findIndex((row) => row.status !== "failed");
-    // Exactly the third failed night in a row: a longer streak was already told. Nothing is
-    // lost, so it is for whoever runs Kin, never a line in the owner's chat.
+    // Exactly the third failed night in a row: a longer streak was already told. This is the
+    // operator's log line; the owner's notice is the hourly `checkDreamNotice`.
     if ((streak === -1 ? recent.length : streak) === FAILED_NIGHTS_NOTICE)
       yield* notices.notify({ orgId, branch, reason: "Dream failed three nights in a row" });
   });
@@ -516,6 +517,10 @@ const make = Effect.gen(function* () {
         changes: checked.changes,
         merges: checked.dream?.merges ?? [],
         labels,
+        cited: checked.dream?.changes ?? [],
+        privateRefs: new Set(
+          material.entries.flatMap((entry) => (entry.sensitive === true ? [entry.ref] : [])),
+        ),
       });
       const findings = yield* scanner.scan({
         orgId,

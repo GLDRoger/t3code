@@ -51,7 +51,7 @@ export const withLabel = (text: string, sensitive: boolean) => {
 
 /**
  * Labels settled by code, not the model: kept, the most sensitive through a merge, sensitive for
- * money, access or no label. `classified` labels what had none, for `classify`; `suggested` is the
+ * money, access, private material cited or no label. `classified` labels what had none, for `classify`; `suggested` is the
  * new words of each item the dream made or reworded for the team, which only the owner confirms.
  */
 export const keepLabels = Effect.fn("DreamLabels.keep")(function* (input: {
@@ -61,6 +61,9 @@ export const keepLabels = Effect.fn("DreamLabels.keep")(function* (input: {
   readonly changes: ReadonlyMap<string, string>;
   readonly merges: ReadonlyArray<{ readonly into: string; readonly from: ReadonlyArray<string> }>;
   readonly labels: Pick<StoredLabels, "held" | "classified">;
+  /** What the dream reported citing, and the material refs marked private (`MaterialEntry`). */
+  readonly cited: ReadonlyArray<{ readonly path: string; readonly sources: ReadonlyArray<string> }>;
+  readonly privateRefs: ReadonlySet<string>;
 }) {
   const parse = (path: string, text: string) =>
     parseFrontMatter(input.orgId, path, text).pipe(Effect.option);
@@ -102,6 +105,10 @@ export const keepLabels = Effect.fn("DreamLabels.keep")(function* (input: {
     )
       into(frontMatter.superseded_by, frontMatter.id);
 
+  const cites = new Map(input.cited.map((change) => [change.path, change.sources]));
+  const fromPrivate = (path: string, source: string) =>
+    input.privateRefs.has(source) ||
+    (cites.get(path) ?? []).some((ref) => input.privateRefs.has(ref));
   const changes = new Map(input.changes);
   const classified = new Map<string, { sensitive: boolean; content: string }>();
   const suggested = new Map<string, string>();
@@ -115,6 +122,7 @@ export const keepLabels = Effect.fn("DreamLabels.keep")(function* (input: {
       // The quote is stored beside those words, and money or access in it is as private.
       mustBeSensitive(`${content}\n${frontMatter.quote ?? ""}`) ||
       [...(sources.get(id) ?? [])].some(wasSensitive) ||
+      fromPrivate(path, frontMatter.source) ||
       // A label the dream dropped comes back; one nobody ever set reads as the owner's alone.
       (frontMatter.sensitive ?? labelBefore(id) ?? true);
     const words = fingerprint({ head: frontMatter, body });
