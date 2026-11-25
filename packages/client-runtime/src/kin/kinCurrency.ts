@@ -316,7 +316,7 @@ export function kinSettledPayment(
       payment.voidedAt === null && payment.received !== undefined && payment.rate !== undefined,
   );
   if (paid?.received === undefined || paid.rate === undefined) return null;
-  return kinSettled(item.amount, paid.received, paid.paidOn, rates, paid.rate);
+  return kinSettled(paid.amount, paid.received, paid.paidOn, rates, paid.rate);
 }
 
 /** "US Dollar (USD)", or the code alone where this device can't name it. */
