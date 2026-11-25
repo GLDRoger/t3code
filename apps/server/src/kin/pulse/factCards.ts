@@ -97,15 +97,20 @@ const waitedShown = (plan: WaitedPlan) => {
 };
 
 /** What an unanswered card says once its fact stopped being true. */
-const closedOutcome = (plan: FactCardPlan): KinChoiceOutcome => ({
-  title: "No longer needed",
-  text:
-    plan.kind === "stall_answer"
-      ? `${plan.key} moved on.`
-      : plan.kind === "waited_answer"
-        ? `${plan.key} no longer waits on you.`
-        : `${plan.key} no longer needs a new date.`,
-});
+const closedOutcome = (plan: FactCardPlan): KinChoiceOutcome => {
+  const text = (() => {
+    switch (plan.kind) {
+      case "waited_answer":
+        return `${plan.key} no longer waits on you.`;
+      case "stall_answer":
+        return `${plan.key} moved on.`;
+      case "move_due":
+      case "keep_due":
+        return `${plan.key} no longer needs a new date.`;
+    }
+  })();
+  return { title: "No longer needed", text };
+};
 
 type CardOption = { readonly label: string; readonly plan?: FactCardPlan };
 
