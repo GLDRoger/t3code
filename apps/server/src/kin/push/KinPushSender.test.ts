@@ -3273,6 +3273,81 @@ describe("KinPushSender withdrawals", () => {
     },
   );
 
+  it.effect(
+    "a held-back message quietly replaces the chat's banner with its count and words",
+    () => {
+      const apns = makeApns();
+      return Effect.gen(function* () {
+        const { notify, sql, sender } = yield* seedTopical;
+        const chatId = KinChatId.make("chat_dm");
+        const collapseId = kinTopicCollapseId(EnvironmentId.make("env_kin"), orgId, "c:chat_dm");
+        const say = (body: string) =>
+          Effect.gen(function* () {
+            apns.sent.length = 0;
+            const messageId = yield* postMessage(sql, { agentMemberId: "m_fin_dm" }, "posted", {
+              chatId,
+              body,
+            });
+            yield* notify({ _tag: "message", orgId, messageId });
+            return messageId;
+          });
+        const pushTo = (token: KinPushToken) => {
+          const push = apns.sent.find((one) => one.token === token);
+          assert.isDefined(push);
+          return push;
+        };
+        const badgeOnly = (token: KinPushToken, badge: number) => {
+          const push = pushTo(token);
+          assert.deepStrictEqual(payloadOf(push).aps, { badge });
+          assert.isUndefined(push.collapseId);
+        };
+
+        yield* say("The invoices are ready.");
+        const first = pushTo(ownerPhone);
+        assert.strictEqual(first.collapseId, collapseId);
+        assert.strictEqual(payloadOf(first).aps.sound, "default");
+
+        yield* TestClock.adjust("20 seconds");
+        const second = yield* say("The renewal is due Friday.");
+        const replacement = pushTo(ownerPhone);
+        assert.deepStrictEqual(payloadOf(replacement).aps.alert, {
+          title: "Finance · 2 new",
+          body: "The renewal is due Friday.",
+        });
+        assert.strictEqual(replacement.collapseId, collapseId);
+        assert.strictEqual(payloadOf(replacement).aps["interruption-level"], "passive");
+        assert.isUndefined(payloadOf(replacement).aps.sound);
+        badgeOnly(ownerTablet, 2);
+
+        yield* sql`INSERT INTO kin_read_state (org_id, chat_id, member_id, last_read_seq, updated_at)
+        SELECT ${orgId}, ${chatId}, 'm_owner_dm', seq, ${T} FROM kin_messages
+        WHERE message_id = ${second}`;
+        yield* notify({ _tag: "read", orgId, chatId, memberId: KinMemberId.make("m_owner_dm") });
+        yield* say("The receipt is filed.");
+        badgeOnly(ownerPhone, 1);
+        apns.sent.length = 0;
+        yield* afterBatch(sender);
+        assert.deepStrictEqual(payloadOf(pushTo(ownerPhone)).body.withdraw, [
+          { topic: "c:chat_dm", version: 2 },
+        ]);
+
+        yield* say("The statement is filed.");
+        badgeOnly(ownerPhone, 2);
+
+        yield* TestClock.adjust("31 minutes");
+        yield* say("The ledger is ready.");
+        assert.strictEqual(payloadOf(pushTo(ownerPhone)).aps.sound, "default");
+        yield* sql`UPDATE kin_chat_members SET muted_until = '2026-12-01T00:00:00.000Z'
+        WHERE member_id = 'm_owner_dm'`;
+        yield* say("The balance is reconciled.");
+        badgeOnly(ownerPhone, 4);
+        yield* TestClock.adjust("31 minutes");
+        yield* say("The report is ready.");
+        badgeOnly(ownerPhone, 5);
+      }).pipe(Effect.provide(build(apns)));
+    },
+  );
+
   it.effect("an agent's withdrawn or replaced message changes its chat's banner quietly", () => {
     const apns = makeApns();
     return Effect.gen(function* () {

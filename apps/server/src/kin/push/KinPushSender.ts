@@ -1252,6 +1252,7 @@ const make = Effect.gen(function* () {
       KinPersonId,
       {
         delivery: KinPushDelivery;
+        replaceBanner: boolean;
         badge: number;
         subject: KinPushSubject | undefined;
         unread: number;
@@ -1267,6 +1268,7 @@ const make = Effect.gen(function* () {
         : undefined;
     for (const recipient of push.recipients) {
       let delivery = recipient.delivery;
+      let replaceBanner = false;
       // A rationed ring is spent only on a phone that will show it, so a push decided before
       // they had one, or while they watch the chat, leaves it for the next.
       if (recipient.capped !== undefined && delivery === "ring") {
@@ -1278,11 +1280,20 @@ const make = Effect.gen(function* () {
               !(yield* presence.isWatching(device.sessionId, push.chatId)))
           )
             shows = true;
-        if (shows && !(yield* mayRing(orgId, recipient.personId, recipient.capped.since)))
+        if (shows && !(yield* mayRing(orgId, recipient.personId, recipient.capped.since))) {
           delivery = recipient.capped.spent;
+          if (delivery === "badge" && counted !== undefined) {
+            const [banner] = yield* topics.live(orgId, {
+              topics: [push.topic],
+              personId: recipient.personId,
+            });
+            replaceBanner = banner !== undefined && (yield* topics.stands(orgId, banner));
+          }
+        }
       }
       recipients.set(recipient.personId, {
         delivery,
+        replaceBanner,
         badge: yield* badgeFor(orgId, recipient.personId),
         subject: recipient.subject,
         unread:
@@ -1319,7 +1330,10 @@ const make = Effect.gen(function* () {
         const recipient = recipients.get(device.personId);
         return recipient === undefined
           ? Effect.succeed("failed" as const)
-          : sendTo(orgId, push, device, recipient);
+          : sendTo(orgId, push, device, {
+              ...recipient,
+              delivery: recipient.replaceBanner && device.withdraws ? "quiet" : recipient.delivery,
+            });
       },
       { concurrency: SEND_CONCURRENCY },
     );
