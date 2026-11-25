@@ -8,7 +8,7 @@ EXTENDS Naturals
 CONSTANTS Broken, Msgs
 
 VARIABLES
-  ev,        \* kin_events.state per message: none, queued, claimed, done, failed
+  ev,        \* kin_events.state per message: none, queued, claimed, done, failed, expired
   tries,     \* kin_events.attempts
   wake,      \* "idle" or "running": one running wake-up per lead (K034_PerLeadWakeups)
   covered,   \* this wake-up's reply already covers the message (the bridge's slot)
@@ -173,22 +173,48 @@ FloorCloses == floor = "open" /\ floor' = "closed"
 
 Owed == {m \in Claimed : ~covered[m]}
 
+(* Every join, in its transaction (chat/KinGroups.ts shareWith → lead/ChatSharing.ts
+   onPersonJoined): each ask waiting in the chat, or claimed by a turn aborted for its audience,
+   expires, and stoppedLines gives the chat one line per agent ("didn't reply" / "didn't finish its
+   reply"), which tellStopped posts after commit. The model counts that line on each expired ask. *)
+Expire(exp) ==
+  /\ ev' = [m \in Msgs |-> IF m \in exp THEN "expired" ELSE ev[m]]
+  /\ fails' = [m \in Msgs |-> IF m \in exp /\ Broken # "join-expires-silently" THEN fails[m] + 1
+                             ELSE fails[m]]
+
 (* Someone joins the chat while the turn works, and it was not aborted for that
    (Audience.ts abortChatTurns spares the lead's owner and a settled reply): its prompt was built
    for the owner alone, so LevelGate's destination is now "moved" for its every post here. A
-   second join needs a fresh turn's owner-only prompt, so a leave in between. *)
+   second join needs a fresh turn's owner-only prompt, so a leave in between. What waits in the
+   queue expires (`Expire`); the spared turn keeps what it claimed. *)
 SomeoneJoins ==
   /\ wake = "running" /\ ~joined /\ joins < 2
   /\ joined' = TRUE /\ joins' = joins + 1
-  /\ UNCHANGED <<ev, tries, wake, covered, replies, answered, promise, notes, fails, thought, nudged,
+  /\ Expire({m \in Msgs : ev[m] = "queued"})
+  /\ UNCHANGED <<tries, wake, covered, replies, answered, promise, notes, thought, nudged,
                  lost, worked, floor, presence, restarts, shown, asked, twice, diagnostic,
                  noticed, aborted, moves, heldBack, toOld>>
+
+(* Someone joins who is not the lead's owner: abortChatTurns marks the running turn aborted
+   (kin_wakeups.aborted_at), so LevelGate's destination is "aborted" for its every post and
+   WakeupRunner stops it; with no turn running, nothing is aborted. Every ask waiting, and every
+   ask the aborted turn claimed, expires with the line (`Expire`), whatever it was answered. *)
+JoinStops ==
+  /\ joins < 2 /\ (wake = "idle" \/ ~joined)
+  /\ joins' = joins + 1
+  /\ Expire({m \in Msgs : ev[m] \in {"queued", "claimed"}})
+  /\ IF wake = "running" THEN joined' = TRUE /\ aborted' = TRUE ELSE UNCHANGED <<joined, aborted>>
+  /\ UNCHANGED <<tries, wake, covered, replies, answered, promise, notes, thought, nudged,
+                 lost, worked, floor, presence, restarts, shown, asked, twice, diagnostic,
+                 noticed, moves, heldBack, toOld>>
 
 (* reply/KinReplyBridge.ts post: the lead's reply is withheld for the join (`moved`), first time
    this wake-up. lead/KinEventQueue.ts requeueForAudience, in one transaction: a turn that did
    nothing visible (DID_VISIBLE_WORK, the model's `worked`) and whose claimed events carry no
    `_audienceMoved` is marked aborted and its events flagged; `finish` then hands them to a fresh
-   wake-up. Otherwise the chat hears one line ("didn't reply" / "didn't finish its reply").
+   wake-up. Otherwise the chat hears one line ("didn't reply" / "didn't finish its reply"), and in
+   the same transaction KinEventQueue.endLostToJoin marks done the turn's claimed asks in the chat
+   with no replied_at, so no failed run, retry or restart answers or tells them again.
    Either way `complete` says nothing more (movedNoticed). *)
 ReplyHeldBack ==
   /\ wake = "running" /\ joined /\ ~noticed /\ Owed # {}
@@ -197,11 +223,13 @@ ReplyHeldBack ==
         /\ (\A m \in Claimed : moves[m] = 0 \/ Broken = "requeue-again")
        THEN /\ aborted' = TRUE
             /\ moves' = [m \in Msgs |-> IF m \in Claimed THEN moves[m] + 1 ELSE moves[m]]
-            /\ UNCHANGED <<fails, heldBack>>
+            /\ UNCHANGED <<ev, fails, heldBack>>
        ELSE /\ fails' = [m \in Msgs |-> IF m \in Owed THEN fails[m] + 1 ELSE fails[m]]
             /\ heldBack' = [m \in Msgs |-> heldBack[m] \/ m \in Owed]
+            /\ ev' = [m \in Msgs |-> IF m \in Claimed /\ ~answered[m] /\ Broken # "line-not-ended"
+                                     THEN "done" ELSE ev[m]]
             /\ UNCHANGED <<aborted, moves>>
-  /\ UNCHANGED <<ev, tries, wake, covered, replies, answered, promise, notes, thought, nudged, lost,
+  /\ UNCHANGED <<tries, wake, covered, replies, answered, promise, notes, thought, nudged, lost,
                  worked, floor, presence, restarts, shown, asked, twice, diagnostic, joined, joins,
                  toOld>>
 
@@ -209,10 +237,6 @@ ReplyHeldBack ==
    back to the queue, no attempt spent and nothing posted (WakeupRunner.finishWakeup gets no
    outcome). The flag stays in each event's stored data. *)
 Requeued == [m \in Msgs |-> IF m \in Claimed THEN "queued" ELSE ev[m]]
-
-(* Left out, and reported: after the chat was told the reply was held back, a failed run retries
-   or strands the message and a restart requeues it, so a second line or answer follows. *)
-NoticeStands == noticed /\ ~aborted /\ \E m \in Claimed : heldBack[m]
 
 Ended == [m \in Msgs |-> IF m \in Claimed THEN "done" ELSE ev[m]]
 
@@ -246,7 +270,7 @@ RunCompletes ==
    "trying again" (not final), and the fourth try fails with "won't try again on its own."
    An aborted wake-up goes back to the queue first, as in RunCompletes. *)
 RunFails ==
-  /\ wake = "running" /\ ~NoticeStands
+  /\ wake = "running"
   /\ IF aborted
        THEN /\ ev' = Requeued
             /\ UNCHANGED <<tries, fails, notes>>
@@ -275,7 +299,7 @@ RunFails ==
    marks done the claimed events whose reply posted (replied_at) and puts the rest back; the line
    lives in memory and is gone. *)
 Restart ==
-  /\ restarts < 1 /\ wake = "running" /\ ~NoticeStands
+  /\ restarts < 1 /\ wake = "running"
   /\ ev' = [m \in Msgs |-> IF m \in Claimed
                             THEN IF answered[m] /\ Broken # "requeue-replied" THEN "done" ELSE "queued"
                             ELSE ev[m]]
@@ -287,7 +311,7 @@ Next ==
   \/ \E m \in Msgs : PersonSends(m) \/ Steer(m)
   \/ Claim \/ LeadReplies \/ LeadRepeats \/ LeadShows \/ LeadKeepsPromise \/ LeadThinks
   \/ LeadNudgesAsker \/ LeadWorks \/ TerminalDiagnostic
-  \/ FloorCloses \/ SomeoneJoins \/ ReplyHeldBack
+  \/ FloorCloses \/ SomeoneJoins \/ JoinStops \/ ReplyHeldBack
   \/ RunCompletes \/ RunFails \/ Restart
 
 Fair == WF_vars(Claim) /\ WF_vars(RunCompletes \/ RunFails)
