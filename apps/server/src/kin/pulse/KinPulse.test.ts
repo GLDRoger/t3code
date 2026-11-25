@@ -2927,6 +2927,98 @@ describe("KinPulse", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect(
+    "a debit that pays a partner back exactly wakes Finance once; a short one is a line",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const at = B + 25 * DAY;
+        yield* ensureBankList(orgId, B);
+        // Meera paid three bills from her own card; the company owes her for them.
+        const owedTo = JSON.stringify({ fundedBy: `person:${mate}`, reimbursement: "owed" });
+        for (const [id, rupees, day] of [
+          ["EXP-4", 5_000, 1],
+          ["EXP-7", 4_200, 8],
+          ["EXP-9", 3_200, 15],
+        ] as const)
+          yield* insert({
+            id,
+            list: "expenses",
+            state: "done",
+            amount: rupees * 100,
+            dateAt: B + day * DAY,
+            fields: owedTo,
+          });
+        const debit = (id: string, rupees: number, day: number) =>
+          insert({
+            id,
+            list: "bank_transactions",
+            title: "UPI/Meera/reimb",
+            amount: rupees * 100,
+            dateAt: B + day * DAY,
+            ownerKind: "person",
+            ownerId: owner,
+            fields: '{"direction":"debit"}',
+          });
+        const seen = (viewer?: KinPulse.Viewer) =>
+          read(at, viewer).pipe(
+            Effect.map((pulse) => pulse.facts.filter((fact) => fact.sense === "repaid_seen")),
+          );
+        yield* debit("BNK-9", 12_400, 23);
+        yield* debit("BNK-11", 9_000, 24);
+        const facts = yield* seen();
+        const exact = facts.find((fact) => fact.key === "repaid_seen:BNK-9");
+        assert.deepInclude(exact!, {
+          family: "money",
+          subject: {
+            kind: "record",
+            key: "BNK-9",
+            title: "Bank debit",
+            recordId: KinRecordId.make("r-BNK-9"),
+          },
+          scope: {},
+          consequence:
+            "BNK-9, ₹12,400 paid 24 Nov, names Meera and adds up exactly to their 3 oldest owed expenses: EXP-4, EXP-7 and EXP-9. They aren't marked repaid until the owner confirms.",
+          actor: { _tag: "agent", agentId: finance },
+          sensitive: true,
+          wake: "now",
+          handled: null,
+        });
+        // One that doesn't add up is told once, as a line: Kin marks nothing and offers no card.
+        assert.deepInclude(
+          facts.find((fact) => fact.key === "repaid_seen:BNK-11:short")!,
+          {
+            consequence:
+              "BNK-11, ₹9,000 paid 25 Nov, names Meera but doesn't add up to their oldest owed expenses (₹12,400 over 3 expenses), so Kin marks nothing. Mark what it repaid on the expenses in Money.",
+            actor: { _tag: "agent", agentId: finance },
+            wake: "brief",
+          },
+        );
+        assert.lengthOf(facts, 2);
+        // Only owner-level people hear of it, and only a build that knows the sense shows it.
+        assert.isEmpty(yield* seen({ _tag: "people", people: [mate] }));
+        assert.isEmpty(screenFacts([exact!], undefined));
+        assert.lengthOf(screenFacts([exact!], ["repaid_seen"]), 1);
+
+        // Finance wakes once for the exact one, and never for the short one.
+        const first = yield* KinPulse.tick(orgId, at);
+        assert.include(first.woken, exact!.key);
+        assert.notInclude(first.woken, "repaid_seen:BNK-11:short");
+        const [woke, ...more] = yield* sql<{ agent: string; json: string }>`SELECT
+          agent_id AS agent, json FROM kin_events WHERE org_id = ${orgId} AND tag = 'pulse'
+          AND dedupe_key LIKE 'repaid_seen:%' ORDER BY event_id`;
+        assert.isEmpty(more);
+        assert.strictEqual(woke!.agent, finance);
+        assert.deepInclude(JSON.parse(woke!.json), { factKeys: [exact!.key] });
+        assert.notInclude((yield* KinPulse.tick(orgId, at + MINUTE)).woken, exact!.key);
+
+        // Explained, it is no longer told.
+        yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id IN ('r-BNK-9', 'r-BNK-11')`;
+        assert.isEmpty(yield* seen());
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("the morning Money section includes an offered unreadable bank alert once", () =>
     Effect.gen(function* () {
       yield* seed;
