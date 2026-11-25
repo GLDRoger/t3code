@@ -42,6 +42,7 @@ import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvo
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KIN_REFRESH_SETTLE } from "../chat/KinRefreshHub.ts";
 import { KinChatService, waitingFor } from "../chat/KinChatService.ts";
@@ -1033,6 +1034,88 @@ it.effect("a question in words nobody answered lapses quietly but reads lapsed",
         (yield* callAs("chief", "kin_ask_close", { question: text!, outcome: "withdrawn" })).value,
         { question: text!, state: "lapsed" },
       );
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+it.effect("a text question nobody answered marks the message that asked it", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const { sql, chats, owner, orgId, services, chatOf, wake } = yield* ambermill;
+      const chatId = chatOf("finance");
+      const hub = Context.get(services, KinChatHub);
+      const repo = Context.get(services, KinChatRepository);
+      const identity = Context.get(services, KinIdentity);
+      yield* sql`UPDATE kin_people SET time_zone = 'Asia/Kolkata',
+          work_hours_json = '{"days":[1,2,3,4,5],"start":"09:00","end":"18:00"}'
+        WHERE org_id = ${orgId} AND person_id = ${owner.personId}`;
+      const ask = Effect.fn("test.askInWords")(function* (question: string) {
+        yield* TestClock.adjust("1 minute");
+        const startedAt = yield* Clock.currentTimeMillis;
+        const wakeupId = yield* wake("finance");
+        const agent = yield* identity.resolveAgent(scopeOf("finance"));
+        const message = yield* chats.send(agent, {
+          chatId,
+          body: question,
+          intent: "evidence",
+          clientMessageId: question,
+        });
+        const questionId = yield* Questions.flagTextQuestion({
+          orgId,
+          chatId,
+          agentId: agent.agentId,
+          threadId: agent.threadId,
+          wakeupId,
+          startedAt,
+        });
+        assert.isDefined(questionId);
+        return { message, questionId: questionId! };
+      });
+
+      const answered = yield* ask("Is the Tidewater Freight invoice approved?");
+      yield* TestClock.adjust("1 second");
+      yield* chats.send(owner, { chatId, body: "Yes.", clientMessageId: "approved" });
+      const withdrawn = yield* ask("Shall I draft the Tidewater Freight reminder today?");
+      const question = "Shall I send the Tidewater Freight reminder today?";
+      const unanswered = yield* ask(question);
+      const live = yield* hub.subscribeForViewer(owner, chatId);
+      assert.strictEqual(yield* settle(orgId, TUE_1930), 1);
+      assert.strictEqual((yield* questionRow(sql, unanswered.questionId)).state, "lapsed");
+      const history = yield* repo.history({
+        orgId,
+        chatId,
+        beforeSeq: unanswered.message.seq + 1,
+        limit: 20,
+      });
+      const marked = history.messages.find((one) => one.messageId === unanswered.message.messageId);
+      assert.deepStrictEqual(marked?.lapsedQuestion, { question, at: TUE_1930_ISO });
+      const stored = yield* Questions.readQuestion(orgId, unanswered.questionId);
+      assert.strictEqual(stored?.messageId, unanswered.message.messageId);
+      assert.strictEqual(marked?.changeSeq, (unanswered.message.changeSeq ?? 0) + 1);
+      assert.strictEqual((yield* questionRow(sql, answered.questionId)).state, "answered");
+      assert.strictEqual((yield* questionRow(sql, withdrawn.questionId)).state, "withdrawn");
+      for (const message of history.messages)
+        if (message.messageId !== unanswered.message.messageId)
+          assert.notProperty(message, "lapsedQuestion");
+
+      assert.strictEqual(yield* settle(orgId, TUE_1930 + 86_400_000), 0);
+      const later = yield* chats.send(owner, { chatId, body: "Thanks.", clientMessageId: "later" });
+      const updates = yield* live.pipe(
+        Stream.filter(
+          (event) => event.type === "message.changed" || event.type === "message.posted",
+        ),
+        Stream.take(2),
+        Stream.runCollect,
+      );
+      assert.deepStrictEqual(
+        updates.map((event) => [event.type, event.message.messageId]),
+        [
+          ["message.changed", unanswered.message.messageId],
+          ["message.posted", later.messageId],
+        ],
+      );
+      assert.deepStrictEqual(updates[0]?.message.lapsedQuestion, marked?.lapsedQuestion);
     }).pipe(Effect.provide(layer)),
   ),
 );

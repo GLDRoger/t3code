@@ -370,6 +370,8 @@ export const KinMessage = Schema.Struct({
   turnChanges: Schema.optional(KinTurnChanges),
   // Absent on every message its agent didn't take back.
   withdrawn: Schema.optional(KinMessageWithdrawn),
+  /** A question this message asked that nobody answered by its day: Kin went on without it. Absent from older hosts. */
+  lapsedQuestion: Schema.optional(Schema.Struct({ question: Schema.String, at: IsoDateTime })),
 });
 export type KinMessage = typeof KinMessage.Type;
 

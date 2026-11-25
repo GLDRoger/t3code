@@ -308,6 +308,9 @@ export class KinChatService extends Context.Service<
       input: KinChatsCreateDirectInput,
     ) => Effect.Effect<KinChat, ServiceError>;
     readonly send: (identity: Caller, input: SendInput) => Effect.Effect<KinMessage, ServiceError>;
+    readonly markLapsedQuestion: (
+      input: Parameters<Repository.KinChatRepository["Service"]["markLapsedQuestion"]>[0],
+    ) => Effect.Effect<void, ServiceError>;
     /** A wake-up's one reply in a chat grows by a later segment of the same turn, in place. */
     readonly extendReply: (
       agent: AgentIdentity,
@@ -3410,6 +3413,13 @@ const make = Effect.gen(function* () {
         return yield* docFileReadable(caller, attachmentId);
       },
     ),
+    markLapsedQuestion: Effect.fn("KinChatService.markLapsedQuestion")(function* (input) {
+      const message = yield* repo.markLapsedQuestion(input);
+      if (Option.isSome(message))
+        yield* sql.afterCommit(
+          hub.publish({ type: "message.changed", orgId: input.orgId, message: message.value }),
+        );
+    }),
     extendReply: Effect.fn("KinChatService.extendReply")(
       function* (agent, input) {
         if (agent.wakeupId === undefined) return yield* notAllowed;

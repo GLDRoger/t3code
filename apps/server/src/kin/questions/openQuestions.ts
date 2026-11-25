@@ -107,6 +107,7 @@ export type QuestionRow = {
   readonly personId: KinPersonId;
   readonly chatId: KinChatId;
   readonly kind: "card" | "text";
+  readonly messageId: KinMessageId | null;
   readonly widgetId: string | null;
   readonly raiseWidgetId: string | null;
   readonly question: string;
@@ -147,7 +148,7 @@ const refuse = (message: string) => new KinChatError({ reason: "invalid_state", 
 
 const COLUMNS = `q.question_id AS "questionId", q.agent_id AS "agentId",
   COALESCE(l.name, a.display_name, q.agent_id) AS "agentName", q.person_id AS "personId",
-  q.chat_id AS "chatId", q.kind, q.widget_id AS "widgetId", q.raise_widget_id AS "raiseWidgetId",
+  q.chat_id AS "chatId", q.kind, q.message_id AS "messageId", q.widget_id AS "widgetId", q.raise_widget_id AS "raiseWidgetId",
   q.question, q.options_json AS "options", q.default_label AS "defaultLabel", q.safe, q.about,
   q.intent, q.asked_at AS "askedAt", q.due_at AS "dueAt", q.act_at AS "actAt", q.state,
   q.raised_at AS "raisedAt", q.answer, q.for_chat_id AS "forChatId",
@@ -418,6 +419,7 @@ export const recordTextQuestion = Effect.fn("KinQuestions.recordText")(function*
   readonly agentId: KinAgentId;
   readonly chatId: KinChatId;
   readonly wakeupId: string;
+  readonly messageId?: KinMessageId;
   readonly question: string;
   readonly now: number;
 }) {
@@ -431,9 +433,10 @@ export const recordTextQuestion = Effect.fn("KinQuestions.recordText")(function*
     WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId} AND chat_id = ${input.chatId}
       AND kind = 'text' AND state = 'open' AND question_id <> ${questionId}`;
   yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id, chat_id, kind,
-      question, default_label, safe, asked_at, due_at, act_at, state)
+      question, default_label, safe, asked_at, due_at, act_at, state, message_id)
     VALUES (${questionId}, ${input.orgId}, ${input.agentId}, ${personId}, ${input.chatId}, 'text',
-      ${oneLine(input.question, 240)}, NULL, 0, ${input.now}, ${dueAt}, ${dueAt}, 'open')
+      ${oneLine(input.question, 240)}, NULL, 0, ${input.now}, ${dueAt}, ${dueAt}, 'open',
+      ${input.messageId ?? null})
     ON CONFLICT (question_id) DO NOTHING`;
   return questionId;
 });
@@ -1514,7 +1517,10 @@ const takeEventId = (orgId: string, questionId: string) =>
   KinEventId.make(`question_${hash(`${orgId}\0${questionId}`).slice(0, 32)}`);
 
 type SettleDeps = {
-  readonly chat: Pick<KinChatService["Service"], "closeReplaced" | "ask" | "notice">;
+  readonly chat: Pick<
+    KinChatService["Service"],
+    "closeReplaced" | "ask" | "notice" | "markLapsedQuestion"
+  >;
   readonly queue: Pick<KinEventQueue.KinEventQueue["Service"], "enqueue">;
   /** Runs a default's own action; without it such a default waits for its person. */
   readonly records?: KinRecords["Service"] | undefined;
@@ -1545,7 +1551,7 @@ export const settleDue = Effect.fn("KinQuestions.settleDue")(function* (
     const done = yield* sql
       .withTransaction(
         row.kind === "text"
-          ? lapse(orgId, row, now)
+          ? lapse(orgId, row, now, deps.chat)
           : row.safe
             ? takeDefault(orgId, row, now, deps)
             : raise(orgId, row, now, deps),
@@ -1750,12 +1756,23 @@ const lapse = Effect.fn("KinQuestions.lapse")(function* (
   orgId: KinOrgId,
   row: QuestionRow,
   now: number,
+  chat: Pick<KinChatService["Service"], "markLapsedQuestion">,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const moved = yield* sql`UPDATE kin_questions SET state = 'lapsed', closed_at = ${now}
     WHERE org_id = ${orgId} AND question_id = ${row.questionId} AND state = 'open'
     RETURNING question_id`;
-  return moved.length > 0;
+  if (moved.length === 0) return false;
+  if (row.messageId !== null)
+    yield* chat.markLapsedQuestion({
+      orgId,
+      chatId: row.chatId,
+      messageId: row.messageId,
+      personId: row.personId,
+      agentId: row.agentId,
+      lapse: { question: row.question, at: iso(now) },
+    });
+  return true;
 });
 
 /** The pauses the runner keeps to: the company's (`isOrgPaused`) and the agent's own. */
@@ -2425,21 +2442,28 @@ export const flagTextQuestion = Effect.fn("KinQuestions.flagText")(function* (wa
   readonly chatId: KinChatId;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  const said = yield* sql<{ body: string; card: number }>`SELECT body,
-      widget_id IS NOT NULL AS card FROM kin_messages
-    WHERE org_id = ${wake.orgId} AND chat_id = ${wake.chatId} AND author_kind = 'agent'
-      AND author_agent_id = ${wake.agentId} AND author_thread_id = ${wake.threadId}
-      AND created_at >= ${iso(wake.startedAt)} AND status = 'posted'
-    ORDER BY seq`;
-  if (said.length === 0 || said.some((row) => row.card === 1)) return undefined;
-  const question = endingQuestion(said.at(-1)!.body);
-  if (question === undefined) return undefined;
-  return yield* recordTextQuestion({
-    orgId: wake.orgId,
-    agentId: wake.agentId,
-    chatId: wake.chatId,
-    wakeupId: wake.wakeupId,
-    question,
-    now: yield* Clock.currentTimeMillis,
-  });
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const said = yield* sql<{ messageId: KinMessageId; body: string; card: number }>`SELECT
+        message_id AS "messageId", body,
+        widget_id IS NOT NULL AS card FROM kin_messages
+      WHERE org_id = ${wake.orgId} AND chat_id = ${wake.chatId} AND author_kind = 'agent'
+        AND author_agent_id = ${wake.agentId} AND author_thread_id = ${wake.threadId}
+        AND created_at >= ${iso(wake.startedAt)} AND status = 'posted'
+      ORDER BY seq`;
+      const last = said.at(-1);
+      if (last === undefined || said.some((row) => row.card === 1)) return undefined;
+      const question = endingQuestion(last.body);
+      if (question === undefined) return undefined;
+      return yield* recordTextQuestion({
+        orgId: wake.orgId,
+        agentId: wake.agentId,
+        chatId: wake.chatId,
+        wakeupId: wake.wakeupId,
+        messageId: last.messageId,
+        question,
+        now: yield* Clock.currentTimeMillis,
+      });
+    }),
+  );
 });
