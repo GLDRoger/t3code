@@ -3247,7 +3247,7 @@ it.effect(
         );
 
         const label = "Mark Zoya Rao's 3 expenses repaid";
-        const line = `Mark ${first.key}, ${second.key} and ${third.key} (₹12,400.00 in all) repaid on 15 Nov by ${bank.key}; nothing more is owed to Zoya Rao`;
+        const line = `Mark ${first.key}, ${second.key} and ${third.key} (₹12,400.00 in all) repaid on 15 Nov by ${bank.key} "UPI/Zoya Rao/reimb"; nothing more is owed to Zoya Rao`;
         const drawn: Array<string> = [];
         for (const question of [
           "Is this Zoya's repayment?",

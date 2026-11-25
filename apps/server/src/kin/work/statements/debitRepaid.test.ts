@@ -25,7 +25,7 @@ import * as KinRecords from "../KinRecords.ts";
 import { takeAlerts } from "./bankAlerts.ts";
 import { ensureBankList, findBankList } from "./bankList.ts";
 import { repaidMatches } from "./debitRepaid.ts";
-import { drawRepaid } from "./repaidCard.ts";
+import { drawRepaid, repaidLine } from "./repaidCard.ts";
 import { repaidSeenSenses } from "../../pulse/senses/bank.ts";
 
 // Invented: Ambermill's owner Rhea gets HDFC alerts; Zoya and Arjun paid bills from their own cards.
@@ -314,5 +314,45 @@ it.layer(layer)((it) => {
         "BNK-3 names Zoya Rao but doesn't add up exactly to their oldest owed expenses, so Kin marks nothing and offers no card for it. Nothing was asked; tell the owner what you see instead.",
       );
     }),
+  );
+});
+
+// The line shows what the debit itself says, quoted and cut at a whole word, so a payment to a
+// shop that only shares a word with a partner's name reads as one.
+it("the card's line quotes the debit's own words, cut to fit", () => {
+  const plan = (narration: string) => ({
+    kind: "mark_repaid" as const,
+    recordId: "r-bnk-9",
+    key: "BNK-9",
+    rev: 1,
+    amountMinor: 2_400_00,
+    currency: "INR",
+    day: "2026-11-20",
+    narration,
+    partner: { id: "kiran", name: "Kiran" },
+    repays: [
+      { recordId: "r-exp-3", key: "EXP-3", rev: 1, amountMinor: 2_400_00, day: "2026-11-02" },
+    ],
+    owedAfterMinor: 0,
+    draw: {
+      agentId: "finance",
+      wakeupId: "w-1",
+      ceiling: "owner" as const,
+      people: [],
+      askers: [],
+    },
+  });
+  assert.strictEqual(
+    repaidLine(plan("SRI KIRANA STORES")),
+    'Mark EXP-3 (₹2,400.00) repaid on 20 Nov by BNK-9 "SRI KIRANA STORES"; nothing more is owed to Kiran',
+  );
+  assert.strictEqual(
+    repaidLine(plan('UPI-SRI KIRANA  STORES-kirana@okaxis-PAYMENT FROM "PHONE" 632211110009 REF')),
+    "Mark EXP-3 (₹2,400.00) repaid on 20 Nov by BNK-9 \"UPI-SRI KIRANA STORES-kirana@okaxis-PAYMENT FROM 'PHONE'…\"; nothing more is owed to Kiran",
+  );
+  assert.isAtMost(
+    repaidLine({ ...plan("SRI KIRANA STORES"), partner: { id: "k", name: "K".repeat(150) } })
+      .length,
+    200,
   );
 });

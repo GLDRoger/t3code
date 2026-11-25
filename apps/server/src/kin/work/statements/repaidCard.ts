@@ -69,6 +69,7 @@ const planOf = (match: RepaidMatch, repays: NonNullable<RepaidMatch["repays"]>, 
     amountMinor: match.debit.amountMinor,
     currency: match.debit.currency,
     day: match.debit.date,
+    narration: match.debit.title,
     partner: match.partner,
     repays: repays.map((one) => ({ ...one })),
     owedAfterMinor: Number(match.owedMinor - BigInt(match.debit.amountMinor)),
@@ -86,6 +87,7 @@ const asDrawn = (match: RepaidMatch | undefined, plan: RepaidPlan) => {
     now.amountMinor === plan.amountMinor &&
     now.currency === plan.currency &&
     now.day === plan.day &&
+    now.narration === plan.narration &&
     now.partner.id === plan.partner.id &&
     now.partner.name === plan.partner.name &&
     now.owedAfterMinor === plan.owedAfterMinor &&
@@ -134,13 +136,29 @@ export const repaidLabel = (plan: RepaidPlan) => {
   const label = `Mark ${plan.partner.name}'s ${expenses} repaid`;
   return label.length <= LABEL_MAX ? label : `Mark ${expenses} repaid`;
 };
-export const repaidLine = (plan: RepaidPlan) =>
-  fitted(
-    plan,
-    (keys) =>
-      `Mark ${keys} (${total(plan)}) repaid on ${shortDay(plan.day)} by ${plan.key}; ${owedAfter(plan)}`,
-    200,
-  );
+const NARRATION_MAX = 60;
+/** The bank's words, flattened, cut at a whole word: a quotation, never an instruction. */
+const narrationOf = (plan: RepaidPlan) => {
+  const flat = plan.narration.replace(/\s+/g, " ").replaceAll('"', "'").trim();
+  if (flat.length <= NARRATION_MAX) return flat;
+  const cut = flat.slice(0, NARRATION_MAX - 1);
+  const space = cut.lastIndexOf(" ");
+  return `${space > 0 ? cut.slice(0, space) : cut}…`;
+};
+const LINE_MAX = 200;
+export const repaidLine = (plan: RepaidPlan) => {
+  const line = (quoted: boolean) =>
+    fitted(
+      plan,
+      (keys) =>
+        `Mark ${keys} (${total(plan)}) repaid on ${shortDay(plan.day)} by ${plan.key}${
+          quoted && narrationOf(plan) !== "" ? ` "${narrationOf(plan)}"` : ""
+        }; ${owedAfter(plan)}`,
+      LINE_MAX,
+    );
+  const text = [line(true), line(false)].find((one) => one.length <= LINE_MAX) ?? line(false);
+  return text.length <= LINE_MAX ? text : `${text.slice(0, LINE_MAX - 1)}…`;
+};
 
 /**
  * The tap's writes, as `writer`: each expense marked repaid on the debit's day, the debit

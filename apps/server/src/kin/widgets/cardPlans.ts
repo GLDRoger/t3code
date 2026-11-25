@@ -109,6 +109,8 @@ const RepaidPlan = Schema.Struct({
   amountMinor: Schema.Number,
   currency: Schema.String,
   day: Schema.String,
+  /** What the debit says, as the bank wrote it: shown on the card as a quotation only. */
+  narration: Schema.String,
   partner: Schema.Struct({ id: Schema.String, name: Schema.String }),
   repays: Schema.Array(
     Schema.Struct({
