@@ -32,6 +32,7 @@ import type { Services } from "../KinServer.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { factCards } from "./factCards.ts";
 import * as KinPulse from "./KinPulse.ts";
+import { untold } from "./told.ts";
 
 // Invented: Rhea's Ambermill. Zoya's W-1 waits on Arjun, W-2 on Rhea; Meera is a co-owner.
 const stamp = "1970-01-01T00:00:00.000Z";
@@ -1346,4 +1347,54 @@ it.effect("at most three notice cards to one person a pass: the rest come on the
       assert.isTrue(all.every((card) => card.who === ctx.owner.personId));
     }),
   ),
+);
+
+it.effect(
+  "the owner's check-in still tells a notice day once beside the owner's card; a teammate's page doesn't repeat one the teammate's card told",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        const mine = yield* contract(ctx, { _tag: "agent", agentId: sales });
+        const zoyas = yield* contract(
+          ctx,
+          { _tag: "person", personId: zoyaId },
+          "2027-01-26",
+          undefined,
+          { client: "Harbour Mills", contact: "Priya", project: "Freight portal" },
+        );
+        yield* TestClock.setTime(NOW);
+        yield* tickAt(ctx, NOW);
+        assert.sameMembers(
+          (yield* noticeCards(ctx)).map((card) => card.who),
+          [ctx.owner.personId, zoyaId],
+        );
+        const read = yield* KinPulse.read({
+          orgId: ctx.orgId,
+          at: NOW + HOUR,
+          viewer: { _tag: "owner" },
+          limit: 200,
+        });
+        const notice = (project: string) =>
+          read.facts.filter((fact) => fact.key.startsWith(`notice_due:${project}:`));
+        // As the check-in reads what is untold (`checkIn.ts`): the card's row doesn't count there.
+        const forCheckIn = yield* untold({
+          orgId: ctx.orgId,
+          personId: ctx.owner.personId,
+          facts: notice(mine.project),
+          at: NOW + HOUR,
+          zone: "UTC",
+        });
+        assert.lengthOf(forCheckIn, 1);
+        // As a teammate's page reads it (`personMorning.ts`): the card told it.
+        const forPage = yield* untold({
+          orgId: ctx.orgId,
+          personId: zoyaId,
+          facts: notice(zoyas.project),
+          at: NOW + HOUR,
+          zone: "UTC",
+          anyState: true,
+        });
+        assert.lengthOf(forPage, 0);
+      }),
+    ),
 );
