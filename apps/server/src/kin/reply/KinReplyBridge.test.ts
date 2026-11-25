@@ -13,6 +13,7 @@ import {
   KinChatId,
   KinEventId,
   KinMessageId,
+  KinOrgId,
   KinPersonId,
   KinWakeupId,
   MessageId,
@@ -66,6 +67,7 @@ import * as Kin from "../layer.ts";
 import * as LeadDocs from "../work/leadDocs.ts";
 import * as ChatWake from "../lead/ChatWake.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
+import { KinLevelGate } from "../lead/LevelGate.ts";
 import {
   CAPTION_PROMPT,
   draftReplyText,
@@ -271,6 +273,8 @@ const setup = Effect.fn("test.setup")(function* (input: {
   readonly lane?: "direct" | "group" | "own-group" | "shared-group" | "teammate";
   readonly reaction?: "👍";
   readonly changedFrom?: "👎";
+  /** Runs as the agent's reply is written onto a message it already posted, before the write. */
+  readonly beforeExtend?: Effect.Effect<void, never, SqlClient.SqlClient>;
   /** Wakes on this event instead, given the org and the lead's direct chat. */
   readonly event?: (context: {
     readonly owner: PersonIdentity;
@@ -370,9 +374,22 @@ const setup = Effect.fn("test.setup")(function* (input: {
     prompts: [],
     interrupts: [],
   };
+  const gate = Context.get(services, KinLevelGate);
+  const before = input.beforeExtend;
+  const gated =
+    before === undefined
+      ? services
+      : Context.add(services, KinLevelGate, {
+          ...gate,
+          extend: (agent, extendInput, bind) =>
+            before.pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.andThen(gate.extend(agent, extendInput, bind)),
+            ),
+        });
   const context = yield* Layer.build(
     ReplyBridge.layer.pipe(
-      Layer.provide(Layer.mergeAll(Layer.succeedContext(services), fakeThreads(fake, wakeupId))),
+      Layer.provide(Layer.mergeAll(Layer.succeedContext(gated), fakeThreads(fake, wakeupId))),
     ),
   );
   const bridge = Context.get(context, ReplyBridge.KinReplyBridge);
@@ -456,14 +473,35 @@ it.effect.each([
   },
   // Owed to the person who asked: never held back by the hourly room for unprompted notices.
   { name: "past the hourly notice limit", earlier: undefined, notices: 10 },
-])("a review someone asked for answers in their chat: $name", ({ earlier, notices }) =>
+  // Mate writes as the line is joined: it no longer reads as one message, so it is a new one.
+  {
+    name: "after another of the same ask, Mate writing as it joins",
+    earlier: "Reviewed acme/app#6: nothing blocking.",
+    notices: 0,
+    cutIn: true,
+  },
+])("a review someone asked for answers in their chat: $name", ({ earlier, notices, cutIn }) =>
   Effect.gen(function* () {
     const line =
       "Reviewed acme/app#7: one blocking bug in the date parser. https://github.com/acme/app/pull/7#pullrequestreview-9";
     let mateChat = KinChatId.make("unset");
-    const { fake, runId, complete, posted, sql } = yield* setup({
+    let cutInOnce = cutIn === true;
+    let orgId = KinOrgId.make("unset");
+    const { fake, runId, complete, posted, sql, services } = yield* setup({
+      beforeExtend: Effect.gen(function* () {
+        if (!cutInOnce) return;
+        cutInOnce = false;
+        const chats = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinChatService);
+        yield* chats
+          .send(
+            { _tag: "person", orgId, personId: KinPersonId.make("mate") },
+            { chatId: mateChat, body: "Also #8?", clientMessageId: "mate-cut-in" },
+          )
+          .pipe(Effect.orDie);
+      }).pipe(Effect.orDie),
       event: ({ owner }) =>
         Effect.gen(function* () {
+          orgId = owner.orgId;
           const sql = yield* SqlClient.SqlClient;
           const chats = Context.get(
             Option.getOrThrow((yield* Kin.KinServer).services),
@@ -514,6 +552,11 @@ it.effect.each([
               Effect.orDie,
             );
           }
+          // Rows written by hand: the chat's next message comes after them.
+          yield* sql`UPDATE kin_chats SET last_seq = MAX(last_seq, COALESCE((SELECT MAX(seq)
+              FROM kin_messages WHERE chat_id = ${mateChat}), 0)) WHERE chat_id = ${mateChat}`.pipe(
+            Effect.orDie,
+          );
           return (base: WakeupEventBase): KinEvent => ({
             ...base,
             _tag: "github",
@@ -541,6 +584,10 @@ it.effect.each([
           });
         }),
     });
+    const published: Array<KinChatHubEvent> = [];
+    yield* Stream.runForEach(yield* Context.get(services, KinChatHub).subscribeAll, (event) =>
+      Effect.sync(() => published.push(event)),
+    ).pipe(Effect.forkScoped);
     fake.items = [text("a", 1, line, runId)];
     yield* complete;
     assert.deepStrictEqual(yield* posted, []);
@@ -549,8 +596,19 @@ it.effect.each([
       ORDER BY seq`;
     assert.deepStrictEqual(
       inMate.map((row) => row.body),
-      [earlier === undefined ? line : `${earlier}\n\n${line}`],
+      earlier === undefined ? [line] : cutIn === true ? [earlier, line] : [`${earlier}\n\n${line}`],
     );
+    // Joined onto a message the phone already rang for: it changes in place and rings no more.
+    if (earlier !== undefined && cutIn !== true)
+      assert.deepStrictEqual(
+        published.flatMap((event) =>
+          (event.type === "message.posted" || event.type === "message.changed") &&
+          event.message.messageId === "earlier-line"
+            ? [event.type]
+            : [],
+        ),
+        ["message.changed"],
+      );
   }).pipe(Effect.provide(layer)),
 );
 

@@ -219,7 +219,12 @@ const withheldWhy = (error: { readonly reason: string }): string | null =>
           ? null
           : WITHHELD_ANY;
 /** The one message a turn's reply to one request lives in; later segments grow it. */
-type Slot = { readonly messageId: KinMessageId; body: string };
+type Slot = {
+  readonly messageId: KinMessageId;
+  body: string;
+  /** An earlier turn's message of the same ask (`askMessage`): joined only while still last. */
+  readonly earlier?: true;
+};
 type Segment = {
   readonly id: TurnItemId;
   ordinal: number;
@@ -597,7 +602,12 @@ const make = Effect.gen(function* () {
     return yield* gate
       .extend(
         author,
-        { chatId: wake.lane.chatId, messageId: slot.messageId, ...input },
+        {
+          chatId: wake.lane.chatId,
+          messageId: slot.messageId,
+          ...input,
+          ...(slot.earlier === true ? { onlyIfLast: true as const } : {}),
+        },
         repliedBy(wake, ordinal),
       )
       .pipe(
@@ -825,7 +835,7 @@ const make = Effect.gen(function* () {
         joined !== undefined &&
         joined.body.length + 2 + text.length <= KIN_MESSAGE_BODY_MAX_LENGTH
       )
-        wake.slots.set(key, joined);
+        wake.slots.set(key, { ...joined, earlier: true });
     }
     const slot = wake.slots.get(key);
     // Nothing left once the card's question is dropped: the card speaks, this answers nothing.
@@ -883,8 +893,22 @@ const make = Effect.gen(function* () {
       slot === undefined
         ? yield* underMorningHeading(wake, text).pipe(Effect.orElseSucceed(() => text))
         : text;
-    const result = yield* slot !== undefined
-      ? extend(wake, slot, text, segment.ordinal)
+    // An earlier turn's message that something now follows, or that changed, gets a new one.
+    const joinedEarlier =
+      slot?.earlier === true ? yield* extend(wake, slot, text, segment.ordinal) : undefined;
+    const kept =
+      joinedEarlier === undefined ||
+      !(
+        joinedEarlier._tag === "full" ||
+        (joinedEarlier._tag === "withheld" && joinedEarlier.reason === "not_found")
+      )
+        ? slot
+        : undefined;
+    if (kept === undefined && slot !== undefined) wake.slots.delete(key);
+    const result = yield* kept !== undefined
+      ? joinedEarlier !== undefined
+        ? Effect.succeed(joinedEarlier)
+        : extend(wake, kept, text, segment.ordinal)
       : cardId === null
         ? deliver(wake, `reply:${segment.id}`, opening, segment.ordinal)
         : Effect.gen(function* () {
@@ -902,10 +926,10 @@ const make = Effect.gen(function* () {
       case "full":
         segment.outcome = "dropped";
         yield* journal(wake, [`Past the reply's length: ${cutLabel(text)}`]);
-        return yield* end(slot?.messageId ?? null);
+        return yield* end(kept?.messageId ?? null);
       case "posted":
         segment.outcome = "posted";
-        if (slot === undefined) {
+        if (kept === undefined) {
           wake.posted++;
           // As stored: Kin may have named an entry key, and the next part extends this text.
           wake.slots.set(key, { messageId: result.messageId, body: result.body });
