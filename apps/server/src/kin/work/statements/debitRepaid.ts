@@ -18,11 +18,9 @@ type OpenDebit = Effect.Success<ReturnType<typeof openEntries>>[number];
 export const MARKED_REPAID = "Marked repaid";
 
 /**
- * One unexplained debit that names exactly one partner Kin owes in its currency, by their whole
- * name or an import address they are known by. `repays` is the run of their oldest owed expenses
- * that adds up to it exactly, as a statement's review would offer it; undefined when none does.
- * `marked`: the day the same money was already marked repaid by hand for them, within ten days
- * of the debit (`markedByHand`, as a statement's review reads it).
+ * One unexplained debit naming exactly one partner Kin owes in its currency (whole name or import
+ * address). `repays`: the run of their oldest owed expenses adding up to it exactly, else undefined.
+ * `marked`: the day the same money was marked repaid by hand within ten days (`markedByHand`).
  */
 export type RepaidMatch = {
   readonly debit: OpenDebit;
