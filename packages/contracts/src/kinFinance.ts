@@ -85,6 +85,14 @@ export const KinNumberingRule = Schema.Struct({
 });
 export type KinNumberingRule = typeof KinNumberingRule.Type;
 
+/** A list's one number check: a number field below or above another number field or a fixed number. */
+export const KinListCheck = Schema.Struct({
+  field: KinListFieldKey,
+  below: Schema.optional(Schema.Union([KinListFieldKey, Schema.Finite])),
+  above: Schema.optional(Schema.Union([KinListFieldKey, Schema.Finite])),
+});
+export type KinListCheck = typeof KinListCheck.Type;
+
 export const KinListDefinition = Schema.Struct({
   list: KinListId,
   name: Label,
@@ -105,13 +113,7 @@ export const KinListDefinition = Schema.Struct({
    * One check on every entry: a number field below or above another number field or a fixed
    * number. Sent only to a caller that accepts `check`, which reads one of `below` and `above`.
    */
-  check: Schema.optional(
-    Schema.Struct({
-      field: KinListFieldKey,
-      below: Schema.optional(Schema.Union([KinListFieldKey, Schema.Finite])),
-      above: Schema.optional(Schema.Union([KinListFieldKey, Schema.Finite])),
-    }),
-  ),
+  check: Schema.optional(KinListCheck),
   /** New entries are labelled sensitive. */
   sensitive: Schema.Boolean,
   team: Schema.optional(Schema.Boolean),
@@ -187,7 +189,7 @@ export const KinListUpdateInput = Schema.Struct({
   /** The date Kin reminds on: a date field's key, or "date" for each entry's own date. Null stops it; the due day needs none. */
   remindOn: Schema.optional(Schema.NullOr(KinListFieldKey)),
   /** The one number check on every entry; null stops it. */
-  check: Schema.optional(Schema.NullOr(KinListDefinition.fields.check)),
+  check: Schema.optional(Schema.NullOr(KinListCheck)),
   /** As on `kin.work.lists`: the result carries remindOn and check only when this names them. */
   accept: KinListsInput.fields.accept,
 });
