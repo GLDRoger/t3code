@@ -42,6 +42,7 @@ export const DreamJson = Schema.Struct({
 });
 export type DreamJson = typeof DreamJson.Type;
 const decodeDream = Schema.decodeUnknownEffect(Schema.fromJsonString(DreamJson));
+const EDIT_QUOTE = "an item from an edit quotes only what the person typed in it";
 const rank = (trust: MemoryTrust) => ["external", "agent", "member", "owner"].indexOf(trust);
 /**
  * The code checks a dream must pass before anything is committed. `base` is the checkout as the
@@ -166,6 +167,21 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
         failures.push(
           `${path} quote: an item made from a memory item is the agent's own and carries no quote`,
         );
+      continue;
+    }
+    // An edit's draft is the agent's words: only what the person typed in it can be theirs to
+    // quote, and only a preference for drafts (rule 1c) may cite one without a quote.
+    if (author.kind === "edit") {
+      if (author.trust !== fm.trust || author.saidBy !== fm.said_by)
+        failures.push(
+          `${path} claims ${fm.trust} from ${fm.said_by}; the source was ${author.trust} from ${author.saidBy}`,
+        );
+      const quote = fm.quote;
+      const typed =
+        quote === undefined
+          ? fm.kind === "person"
+          : (author.changed ?? []).some((part) => quoteRefusal(quote, part.now) === undefined);
+      if (!typed) failures.push(`${path} quote: ${EDIT_QUOTE}`);
       continue;
     }
     // A relationship item is the agent's own note on a client (rule 1b): it may claim less than

@@ -435,6 +435,108 @@ it.effect.each([
   }),
 );
 
+const editRef = "kin:send:ask-rate";
+/** Rhea's change to Finance's quote mail: the rate, and a start date she added. */
+const rateEdit: MaterialEntry = {
+  ref: editRef,
+  kind: "edit",
+  saidBy: "rhea",
+  trust: "owner",
+  at: "2026-11-07T13:00:00.000Z",
+  about: "Mail to sam@tidewater.invalid",
+  before: "Subject: Rates\n\nHi Sam, our rate is 45 an hour. Invoices are due within 30 days.",
+  text: "Subject: Rates\n\nHi Sam, our rate is 50 an hour, from 1 January. Invoices are due within 30 days.",
+  changed: [
+    { was: "45", now: "50" },
+    { was: "", now: ", from 1 January" },
+  ],
+};
+const fromEdit = (overrides: Record<string, unknown> = {}) =>
+  fixtureItem({
+    id: "clm-rate",
+    kind: "claim",
+    source: editRef,
+    said_by: "rhea",
+    trust: "owner",
+    sensitive: true,
+    ...overrides,
+  });
+const typedOnly = (path: string) =>
+  `${path} quote: an item from an edit quotes only what the person typed in it`;
+it.effect.each([
+  {
+    name: "keeps a fact quoting words the person typed",
+    path: "claims/rate.md",
+    item: fromEdit({ quote: "from 1 January" }),
+    failures: [],
+  },
+  {
+    name: "keeps a fact quoting a word the person changed",
+    path: "claims/rate.md",
+    item: fromEdit({ quote: "50" }),
+    failures: [],
+  },
+  {
+    name: "refuses a fact quoting the agent's words the person left as they were",
+    path: "claims/terms.md",
+    item: fromEdit({ quote: "Invoices are due within 30 days" }),
+    failures: [typedOnly("claims/terms.md")],
+  },
+  {
+    name: "refuses a quote that runs from typed words into the agent's",
+    path: "claims/rate.md",
+    item: fromEdit({ quote: "50 an hour, from 1 January" }),
+    failures: [typedOnly("claims/rate.md")],
+  },
+  {
+    name: "refuses a fact with no quote",
+    path: "claims/rate.md",
+    item: fromEdit(),
+    failures: [typedOnly("claims/rate.md")],
+  },
+  {
+    name: "keeps the person's preference for drafts, as rule 1c writes it",
+    path: "people/drafts.md",
+    item: fromEdit({ id: "per-drafts", kind: "person" }),
+    failures: [],
+  },
+  {
+    name: "refuses a preference quoting the agent's words",
+    path: "people/drafts.md",
+    item: fromEdit({ id: "per-drafts", kind: "person", quote: "our rate is" }),
+    failures: [typedOnly("people/drafts.md")],
+  },
+  {
+    name: "refuses a relationship note made from an edit",
+    path: "relationships/tidewater.md",
+    item: fromEdit({ id: "rel-tide", kind: "relationship", said_by: "kin-dream", trust: "agent" }),
+    failures: [
+      `relationships/tidewater.md claims agent from kin-dream; the source was owner from rhea`,
+      typedOnly("relationships/tidewater.md"),
+    ],
+  },
+  {
+    name: "refuses another person's name on typed words",
+    path: "claims/rate.md",
+    item: fromEdit({ said_by: "meera", quote: "from 1 January" }),
+    failures: ["claims/rate.md claims owner from meera; the source was owner from rhea"],
+  },
+] as const)("checkDream from an edit: $name", (row) =>
+  Effect.gen(function* () {
+    const result = yield* checkDream({
+      orgId,
+      base,
+      stored: base,
+      tree: new Map([...base, [row.path, row.item]]),
+      special: [],
+      dreamJson: json({ ...goodDream, changes: [{ path: row.path, sources: [editRef] }] }),
+      material: [...material, rateEdit],
+      requireResolutions: true,
+    });
+    assert.deepStrictEqual(result.failures, [...row.failures]);
+  }),
+);
+
 const statedFails = (field: string, path = "claims/stated.md") =>
   `${path} holds what a person stated, so a dream may not change its ${field}`;
 const fromItem = (path: string, trust: string, source = statedRef) =>

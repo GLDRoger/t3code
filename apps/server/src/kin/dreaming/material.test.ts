@@ -8,6 +8,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { changedParts } from "./edits.ts";
 import { collectMaterial } from "./material.ts";
 
 const at = "2026-11-10T00:00:00.000Z";
@@ -377,6 +378,8 @@ const nightOf = (sql: SqlClient.SqlClient) =>
   }).pipe(Effect.provideService(SqlClient.SqlClient, sql));
 const DRAFT = "Dear Sir/Madam,\n\nYour invoice is due.\n\nWe look forward to hearing from you.";
 const RHEAS = "Hi Sam,\n\nYour invoice is due.";
+/** The only words she typed: what she cut is no statement. */
+const GREETING = [{ was: "Dear Sir/Madam", now: "Hi Sam" }];
 
 it.effect(
   "an owner-level person's change to an agent's draft is an edit entry, whole on both sides",
@@ -441,6 +444,7 @@ it.effect(
             before: "Short draft",
             cut: { text: long.length },
             chars: 5_998,
+            changed: [{ was: "Short draft", now: "a".repeat(400) }],
           },
           {
             ref: "kin:doc:r-D-5:version:1..2",
@@ -451,6 +455,7 @@ it.effect(
             about: "D-5 Follow-up to Tidewater Freight D-5",
             before: "Retainer draft",
             text: "Retainer, as Meera writes it",
+            changed: [{ was: "draft", now: ", as Meera writes it" }],
             sensitive: true,
           },
           {
@@ -462,6 +467,7 @@ it.effect(
             about: "D-2 Follow-up to Tidewater Freight D-2",
             before: DRAFT,
             text: RHEAS,
+            changed: GREETING,
           },
           {
             ref: "kin:doc:r-D-1:version:1..2",
@@ -472,6 +478,7 @@ it.effect(
             about: "D-1 Follow-up to Tidewater Freight D-1",
             before: DRAFT,
             text: RHEAS,
+            changed: GREETING,
           },
         ],
       );
@@ -526,6 +533,7 @@ it.effect("a mail whose words the owner changed on its send card is an edit too"
         about: "Mail to sam@tidewater.invalid",
         before: `Subject: Invoice\n\n${DRAFT}`,
         text: `Subject: Invoice\n\n${RHEAS}`,
+        changed: GREETING,
       },
     ]);
   }).pipe(Effect.provide(layer)),
@@ -547,3 +555,53 @@ it.effect("a night reads the newest 20 edits and says how many it left out", () 
     assert.strictEqual(material.editsLeftOut, 3);
   }).pipe(Effect.provide(layer)),
 );
+
+it.each([
+  {
+    name: "a changed word and an added clause",
+    before: "Our rate is 45 an hour.",
+    after: "Our rate is 50 an hour, from 1 January.",
+    changed: [
+      { was: "45", now: "50" },
+      { was: "", now: ", from 1 January" },
+    ],
+  },
+  {
+    name: "a figure is one word",
+    before: "Tidewater Freight owes 1,200 on INV/2026/015.",
+    after: "Tidewater Freight owes 1,450 on INV/2026/015.",
+    changed: [{ was: "1,200", now: "1,450" }],
+  },
+  {
+    name: "a cut sentence states nothing",
+    before: "Hi Sam. Thanks for the call. Your invoice is due.",
+    after: "Hi Sam. Your invoice is due.",
+    changed: [],
+  },
+  {
+    name: "the same words wrapped differently are not typed",
+    before: "Hi Sam,  your invoice\nis due.",
+    after: "Hi Sam, your invoice is due.",
+    changed: [],
+  },
+  {
+    name: "a script written without spaces is compared word by word",
+    before: "运费每公斤四十五元。",
+    after: "运费每公斤五十元。",
+    changed: [{ was: "四十五", now: "五十" }],
+  },
+  {
+    name: "a rewritten run keeps what it replaced, cut where no character splits",
+    before: "Old.",
+    after: `${"a".repeat(399)}👋🏽 more`,
+    changed: [{ was: "Old.", now: "a".repeat(399) }],
+  },
+  {
+    name: "at most 12 runs from one edit",
+    before: Array.from({ length: 14 }, (_, n) => `w${n} keep${n}`).join(" "),
+    after: Array.from({ length: 14 }, (_, n) => `v${n} keep${n}`).join(" "),
+    changed: Array.from({ length: 12 }, (_, n) => ({ was: `w${n}`, now: `v${n}` })),
+  },
+])("changedParts: $name", ({ before, after, changed }) => {
+  assert.deepStrictEqual(changedParts(before, after), changed);
+});
