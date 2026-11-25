@@ -4,6 +4,7 @@ import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_LISTS,
   KIN_LIST_LABEL_MAX,
+  KIN_LIST_WATCH,
   KIN_LIST_WATCHES_CHANGE,
   kinCategoryLabel,
   kinListCanOpenToTeam,
@@ -19,7 +20,14 @@ import {
   kinListNothing,
   kinListRow,
   kinListStateLabel,
+  kinListCheckDraftOf,
+  kinListCheckFields,
+  kinListCheckInput,
+  kinListCheckWords,
+  kinListRemindChoices,
   kinListWatches,
+  kinListWatchesEditable,
+  type KinListCheckDraft,
   type KinListFilter,
   type KinListRowView,
 } from "@t3tools/client-runtime/kin/kinLists";
@@ -30,6 +38,7 @@ import type {
   KinListDefinition,
   KinListGroupBy,
   KinListId,
+  KinListUpdateInput,
   KinRecordKey,
 } from "@t3tools/contracts";
 import { PlusIcon, Settings2Icon, TableIcon, XIcon } from "lucide-react";
@@ -87,7 +96,7 @@ import {
 import { useKinWorkChoices, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
 import { useKinAttention } from "./useKinAttention";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
-import { useKinSectionNamed, useKinSectionOn } from "./useKinShell";
+import { useKinSectionNamed, useKinSectionOn, useKinShell } from "./useKinShell";
 
 const ANY = "any";
 const NONE = "none";
@@ -201,6 +210,7 @@ function KinListEntries(
   const searchId = useId();
   const watches = kinListWatches(def);
   const ownerLevel = useKinOwnerLevel(props.environmentId);
+  const shell = useKinShell(props.environmentId);
   // Late, due today or off its check, in the host's own words: the pulse read Tasks shares.
   const facts = kinEntryFacts(useKinAttention(props));
   return (
@@ -221,7 +231,9 @@ function KinListEntries(
                 {KIN_LISTS.archived}. {KIN_LISTS.edit.archiveDetail}
               </p>
             )}
-            {watches.length === 0 ? null : (
+            {kinListWatchesEditable(def, shell, canEdit) ? (
+              <KinListWatchControls {...props} def={def} />
+            ) : watches.length === 0 ? null : (
               <div className="flex flex-col text-xs text-muted-foreground">
                 {watches.map((line) => (
                   <p key={line}>{line}</p>
@@ -637,6 +649,185 @@ export function KinListRow(props: {
 }
 
 /** A list's own settings: what it and its statuses are called, which details it keeps, and putting it away. */
+// A fixed number in a check, not a field: field keys start with a letter.
+const A_NUMBER = "#number";
+
+/** What Kin watches on a section list, set by the owner level here: its reminder day and its check. */
+function KinListWatchControls(props: KinWorkTarget & { readonly def: KinListDefinition }) {
+  const { def, orgId } = props;
+  const changes = useKinListChanges(props);
+  const [draft, setDraft] = useState<KinListCheckDraft | null>(null);
+  const remind = kinListRemindChoices(def);
+  const numbers = kinListCheckFields(def);
+  const rule = kinListCheckWords(def);
+  const send = (patch: Pick<KinListUpdateInput, "remindOn" | "check">) =>
+    changes.send({ orgId, list: def.list, rev: def.rev, accept: ["remindOn", "check"], ...patch });
+  const save = async (held: KinListCheckDraft) => {
+    const checked = kinListCheckInput(held);
+    if (!checked.ok) return changes.setProblem(checked.problem);
+    if (await send({ check: checked.check })) setDraft(null);
+  };
+  const others = draft === null ? [] : numbers.filter((field) => field.key !== draft.field);
+  return (
+    <div className="flex flex-col gap-1.5 pt-1 text-xs text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-2">
+        <span>{KIN_LIST_WATCH.remindOn}</span>
+        <Select
+          value={remind.current}
+          disabled={changes.busy}
+          onValueChange={(id) => {
+            const choice = remind.choices.find((one) => one.id === id);
+            if (choice !== undefined && id !== remind.current)
+              void send({ remindOn: choice.remindOn });
+          }}
+        >
+          <SelectTrigger size="xs" className="w-auto min-w-0" aria-label={KIN_LIST_WATCH.remindOn}>
+            <SelectValue>
+              {remind.choices.find((one) => one.id === remind.current)?.label}
+            </SelectValue>
+          </SelectTrigger>
+          <SelectPopup alignItemWithTrigger={false}>
+            {remind.choices.map((choice) => (
+              <SelectItem key={choice.id} value={choice.id}>
+                {choice.label}
+              </SelectItem>
+            ))}
+          </SelectPopup>
+        </Select>
+      </div>
+      {numbers.length === 0 && rule === null ? null : draft === null ? (
+        <div className="flex flex-wrap items-center gap-2">
+          <span>{KIN_LIST_WATCH.warnWhen}</span>
+          <span className="text-foreground">{rule ?? KIN_LIST_WATCH.notSet}</span>
+          {numbers.length === 0 ? null : (
+            <Button
+              size="xs"
+              variant="outline"
+              disabled={changes.busy}
+              onClick={() => {
+                changes.dismiss();
+                setDraft(kinListCheckDraftOf(def));
+              }}
+            >
+              {KIN_LIST_WATCH.change}
+            </Button>
+          )}
+          {rule === null ? null : (
+            <Button
+              size="xs"
+              variant="ghost"
+              disabled={changes.busy}
+              onClick={() => void send({ check: null })}
+            >
+              {KIN_LIST_WATCH.stop}
+            </Button>
+          )}
+        </div>
+      ) : (
+        <form
+          className="flex flex-wrap items-center gap-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void save(draft);
+          }}
+        >
+          <span>{KIN_LIST_WATCH.warnWhen}</span>
+          <Select
+            value={draft.field}
+            disabled={changes.busy}
+            onValueChange={(field) =>
+              field !== null &&
+              setDraft({ ...draft, field, other: draft.other === field ? "" : draft.other })
+            }
+          >
+            <SelectTrigger size="xs" className="w-auto min-w-0" aria-label={KIN_LIST_WATCH.field}>
+              <SelectValue>
+                {numbers.find((field) => field.key === draft.field)?.label ?? draft.field}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup alignItemWithTrigger={false}>
+              {numbers.map((field) => (
+                <SelectItem key={field.key} value={field.key}>
+                  {field.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+          <Select
+            value={draft.side}
+            disabled={changes.busy}
+            onValueChange={(side) =>
+              (side === "below" || side === "above") && setDraft({ ...draft, side })
+            }
+          >
+            <SelectTrigger size="xs" className="w-auto min-w-0" aria-label={KIN_LIST_WATCH.side}>
+              <SelectValue>{KIN_LIST_WATCH[draft.side]}</SelectValue>
+            </SelectTrigger>
+            <SelectPopup alignItemWithTrigger={false}>
+              <SelectItem value="below">{KIN_LIST_WATCH.below}</SelectItem>
+              <SelectItem value="above">{KIN_LIST_WATCH.above}</SelectItem>
+            </SelectPopup>
+          </Select>
+          <Select
+            value={draft.other === "" ? A_NUMBER : draft.other}
+            disabled={changes.busy}
+            onValueChange={(other) =>
+              other !== null && setDraft({ ...draft, other: other === A_NUMBER ? "" : other })
+            }
+          >
+            <SelectTrigger size="xs" className="w-auto min-w-0" aria-label={KIN_LIST_WATCH.compare}>
+              <SelectValue>
+                {others.find((field) => field.key === draft.other)?.label ?? KIN_LIST_WATCH.aNumber}
+              </SelectValue>
+            </SelectTrigger>
+            <SelectPopup alignItemWithTrigger={false}>
+              <SelectItem value={A_NUMBER}>{KIN_LIST_WATCH.aNumber}</SelectItem>
+              {others.map((field) => (
+                <SelectItem key={field.key} value={field.key}>
+                  {field.label}
+                </SelectItem>
+              ))}
+            </SelectPopup>
+          </Select>
+          {draft.other === "" ? (
+            <div className="w-24">
+              <Input
+                size="sm"
+                inputMode="decimal"
+                aria-label={KIN_LIST_WATCH.number}
+                value={draft.number}
+                disabled={changes.busy}
+                autoComplete="off"
+                onChange={(event) => setDraft({ ...draft, number: event.target.value })}
+              />
+            </div>
+          ) : null}
+          <Button type="submit" size="xs" disabled={changes.busy}>
+            {KIN_LIST_WATCH.save}
+          </Button>
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            disabled={changes.busy}
+            onClick={() => {
+              changes.dismiss();
+              setDraft(null);
+            }}
+          >
+            {KIN_LIST_WATCH.cancel}
+          </Button>
+        </form>
+      )}
+      {changes.problem === null ? null : (
+        <Alert variant="error">
+          <AlertDescription>{changes.problem}</AlertDescription>
+        </Alert>
+      )}
+    </div>
+  );
+}
+
 function KinListSettings(
   props: KinWorkTarget & { readonly def: KinListDefinition; readonly onClose: () => void },
 ) {

@@ -18,6 +18,10 @@ import {
   kinFieldText,
   kinListColumns,
   kinListWatches,
+  kinListRemindChoices,
+  kinListCheckWords,
+  kinListCheckDraftOf,
+  kinListCheckInput,
   kinListEditDraftOf,
   kinListCanOpenToTeam,
   kinListEditInput,
@@ -434,6 +438,50 @@ describe("a list by its definition", () => {
     ).toEqual(["Kin warns when On hand is above 500", "Kin reminds on Booking date"]);
     // An older host sends neither: nothing is watched as far as this screen can say.
     expect(kinListWatches({ fields })).toEqual([]);
+
+    // The owner level's Remind on: not set, the due day, its own date, then each live date field.
+    const retired = {
+      ...fields[2]!,
+      key: "oldDay",
+      label: "Old day" as never,
+      retired: true as const,
+    };
+    const remind = kinListRemindChoices({
+      fields: [...fields, retired],
+      remindOn: "bookedFor",
+      dueLabel: "Check-out" as never,
+      dateLabel: "Booking date" as never,
+    });
+    expect(remind.choices.map((one) => [one.label, one.remindOn])).toEqual([
+      ["Not set", null],
+      ["Check-out", null],
+      ["Booking date", "date"],
+      ["Booked for", "bookedFor"],
+    ]);
+    expect(remind.choices.find((one) => one.id === remind.current)?.label).toBe("Booked for");
+    const unset = kinListRemindChoices({ fields });
+    expect(unset.choices.map((one) => one.label)).toEqual([
+      "Not set",
+      "Due date",
+      "Its date",
+      "Booked for",
+    ]);
+    expect(unset.choices.find((one) => one.id === unset.current)?.label).toBe("Not set");
+    expect(kinListRemindChoices({ fields, remindOn: "date" }).current).toBe(unset.choices[2]!.id);
+
+    // Warn when: the rule in words, a draft of it, and what a draft sends.
+    expect(kinListCheckWords({ fields, check: { field: "onHand", below: "reorder" } })).toBe(
+      "On hand is below Reorder point",
+    );
+    expect(kinListCheckWords({ fields })).toBeNull();
+    const draft = kinListCheckDraftOf({ fields, check: { field: "onHand", above: 500 } });
+    expect(kinListCheckInput(draft)).toEqual({ ok: true, check: { field: "onHand", above: 500 } });
+    expect(kinListCheckInput({ ...draft, side: "below", other: "reorder" })).toEqual({
+      ok: true,
+      check: { field: "onHand", below: "reorder" },
+    });
+    expect(kinListCheckInput({ ...draft, number: "lots" }).ok).toBe(false);
+    expect(kinListCheckDraftOf({ fields }).field).toBe("onHand");
   });
 
   it("finishes a part-paid entry by receiving exactly what is left", () => {
