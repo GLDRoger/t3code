@@ -12,9 +12,8 @@ import {
   kinWatchLimitLine,
   kinWatchLogDay,
   kinWatchLogRows,
-  kinWatchNoneText,
+  kinWatchEmptyLine,
   kinFollowUpView,
-  kinWatchNothingToday,
 } from "@t3tools/client-runtime/kin/kinWatches";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
@@ -186,6 +185,10 @@ function KinWatchLogDay(
   const value = Option.getOrNull(AsyncResult.value(result));
   const now = useNowMinuteMs();
   const ownerLevel = useKinIsOwnerLevel(environmentId);
+  const followUps =
+    Option.getOrNull(
+      AsyncResult.value(useAtomValue(kinClient.followUps({ environmentId, input: { orgId } }))),
+    )?.followUps.length ?? 0;
   const open = (look: KinWatchLogLook) => {
     const key = look.recordKey;
     if (key === null || !isRecordKey(key)) return undefined;
@@ -219,13 +222,12 @@ function KinWatchLogDay(
 
   const lines = kinWatchLogRows(value.rows);
   const limitFrom = kinWatchLimitFrom(value.rows);
-  const none = value.rows.length === 0 && value.watching === 0 && value.earlier === null;
   return (
     <ListSection title={title}>
       {value.rows.length === 0 ? (
         <View className="bg-grouped-card">
           <ListRowLayout
-            label={none ? kinWatchNoneText(ownerLevel) : kinWatchNothingToday(value.nextLookAt)}
+            label={kinWatchEmptyLine(value, { ownerLevel, followUps })}
           />
         </View>
       ) : null}
