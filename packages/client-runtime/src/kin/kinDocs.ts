@@ -475,6 +475,7 @@ const RECENT_MAX = 4;
 export function kinDocLibrary(
   rows: ReadonlyArray<KinDocListRow>,
   pinned: KinDocListRow | null = null,
+  shell?: KinShell | null,
 ): {
   readonly recent: ReadonlyArray<KinDocListRow>;
   readonly homes: ReadonlyArray<KinDocHome>;
@@ -495,7 +496,7 @@ export function kinDocLibrary(
     else if (row.company === true) company.push(row);
     else if (row.party !== undefined || row.project !== undefined) {
       const id = row.party?.key ?? NO_PARTY;
-      const title = row.party?.title ?? KIN_DOC_HOMES.noClient;
+      const title = row.party?.title ?? kinSectionNamed(shell, KIN_DOC_HOMES.noClient);
       const held = clients.get(id);
       if (held === undefined) clients.set(id, { title, rows: [row] });
       else held.rows.push(row);
@@ -854,9 +855,13 @@ export const kinDocHasContents = (outline: ReadonlyArray<KinDocSection>) =>
 export const kinDocPrivacy = (
   doc: Pick<KinDocListRow, "sensitive" | "sensitiveInherited"> &
     Partial<Pick<KinDocDetail, "kindLabel">>,
+  shell?: KinShell | null,
 ): string | null => {
   const reader = doc.kindLabel?.reader;
-  if (!doc.sensitive) return doc.sensitiveInherited === true ? KIN_DOCS.privateInherited : null;
+  if (!doc.sensitive)
+    return doc.sensitiveInherited === true
+      ? kinSectionNamed(shell, KIN_DOCS.privateInherited)
+      : null;
   if (reader === undefined) return KIN_DOCS.private;
   return reader.you === true ? KIN_DOCS.privateYours : KIN_DOCS.privateDraft(reader.name);
 };

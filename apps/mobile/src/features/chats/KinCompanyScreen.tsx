@@ -3,6 +3,7 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import {
   KIN_COMPANY,
   kinCompanyCountrySuggestion,
+  kinCompanyDraftEdit,
   kinCompanyDraftOf,
   kinCompanyEmpty,
   kinCompanyGlance,
@@ -33,6 +34,7 @@ import {
   KinWorkLoading,
   KinWorkPrivateMark,
 } from "./components/KinWorkPieces";
+import { KinCountryPicker } from "./components/KinCountryPicker";
 import { KinLoadFailed, KinLoadFailedRow } from "./components/KinLoadFailed";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected, useKinGate } from "./state/useKinHost";
@@ -104,9 +106,37 @@ function Profile(
   const { environmentId, orgId, profile } = props;
   const canEdit = useAtomValue(kinClient.companyProfileSet.permissionAtom(environmentId));
   const waiting = useKinCountryNeeded(props);
+  const set = useAtomCommand(kinClient.companyProfileSet, { reportFailure: false });
+  const [savingCountry, setSavingCountry] = useState(false);
+  const [countryProblem, setCountryProblem] = useState<string | null>(null);
+  const saveCountry = async (code: string) => {
+    const checked = kinCompanyInput(
+      orgId,
+      profile,
+      kinCompanyDraftEdit(kinCompanyDraftOf(profile), "country", code),
+    );
+    if (!checked.ok || checked.input === null) return;
+    const { input } = checked;
+    setSavingCountry(true);
+    setCountryProblem(null);
+    const outcome = await kinListSend({
+      online: () => kinHostConnected(environmentId),
+      send: () => set({ environmentId, input }),
+    });
+    setSavingCountry(false);
+    props.onRefresh();
+    if (!outcome.ok && !outcome.changed) setCountryProblem(outcome.problem);
+  };
+  const empty = kinCompanyEmpty(profile);
+  const region = kinDeviceRegion();
+  const offer =
+    canEdit && waiting
+      ? kinCompanyCountrySuggestion(kinCompanyDraftOf(profile, region, true), region, true)
+      : null;
   return (
     <KinWorkFrame
       title={KIN_COMPANY.title}
+      form={canEdit}
       onBack={() => navigation.goBack()}
       refresh={{ accessibilityLabel: "Refresh", onPress: props.onRefresh }}
     >
@@ -118,24 +148,70 @@ function Profile(
           {KIN_COMPANY.private}
         </Text>
       </View>
-      {canEdit && waiting ? <CountryChoice {...props} /> : null}
-      {kinCompanyEmpty(profile) ? (
-        <EmptyState variant="plain" title={KIN_COMPANY.title} detail={KIN_COMPANY.empty} />
+      {canEdit && waiting ? (
+        <ListSection title={KIN_MONEY.countryFirst.title}>
+          {offer === null || region === null ? null : (
+            <ListActionRow
+              icon="globe"
+              label={offer.label}
+              disabled={savingCountry}
+              loading={savingCountry}
+              onPress={() => void saveCountry(region)}
+            />
+          )}
+          <KinCountryPicker
+            label={KIN_COMPANY.country}
+            value={profile.country ?? null}
+            disabled={savingCountry}
+            onPick={(code) => void saveCountry(code)}
+          />
+          {countryProblem === null ? null : <Notice message={countryProblem} tone="danger" />}
+        </ListSection>
+      ) : null}
+      {empty ? (
+        <>
+          {canEdit && !waiting ? (
+            <ListSection title={KIN_COMPANY.country}>
+              <KinCountryPicker
+                label={KIN_COMPANY.country}
+                value={profile.country ?? null}
+                disabled={savingCountry}
+                onPick={(code) => void saveCountry(code)}
+              />
+              {countryProblem === null ? null : <Notice message={countryProblem} tone="danger" />}
+            </ListSection>
+          ) : null}
+          <EmptyState variant="plain" title={KIN_COMPANY.title} detail={KIN_COMPANY.empty} />
+        </>
       ) : (
         kinCompanyGlance(profile).map((section) => (
           <ListSection key={section.title} title={section.title}>
-            {section.rows.map((row) => (
-              <View key={row.id} className="min-h-14 justify-center gap-1 px-4 py-3">
-                <Text className="text-sm text-foreground-muted">{row.label}</Text>
-                <Text
-                  textRole="body"
-                  selectable={!row.missing}
-                  className={row.missing ? "text-foreground-muted" : "text-foreground"}
-                >
-                  {row.value}
-                </Text>
-              </View>
-            ))}
+            {section.rows.map((row) =>
+              row.id === "country" && canEdit && !waiting ? (
+                <View key={row.id}>
+                  <KinCountryPicker
+                    label={row.label}
+                    value={profile.country ?? null}
+                    disabled={savingCountry}
+                    onPick={(code) => void saveCountry(code)}
+                  />
+                  {countryProblem === null ? null : (
+                    <Notice message={countryProblem} tone="danger" />
+                  )}
+                </View>
+              ) : (
+                <View key={row.id} className="min-h-14 justify-center gap-1 px-4 py-3">
+                  <Text className="text-sm text-foreground-muted">{row.label}</Text>
+                  <Text
+                    textRole="body"
+                    selectable={!row.missing}
+                    className={row.missing ? "text-foreground-muted" : "text-foreground"}
+                  >
+                    {row.value}
+                  </Text>
+                </View>
+              ),
+            )}
           </ListSection>
         ))
       )}
@@ -146,45 +222,6 @@ function Profile(
         </Text>
       ) : null}
     </KinWorkFrame>
-  );
-}
-
-/** Money and the chat send a new company here to choose its country: one tap takes the phone's. */
-function CountryChoice(
-  props: KinWorkTarget & { readonly profile: KinCompanyProfile; readonly onRefresh: () => void },
-) {
-  const { environmentId, orgId, profile } = props;
-  const set = useAtomCommand(kinClient.companyProfileSet, { reportFailure: false });
-  const [saving, setSaving] = useState(false);
-  const [problem, setProblem] = useState<string | null>(null);
-  const region = kinDeviceRegion();
-  const offer = kinCompanyCountrySuggestion(kinCompanyDraftOf(profile, region, true), region, true);
-  if (offer === null) return null;
-  const take = async () => {
-    const checked = kinCompanyInput(orgId, profile, offer.accept());
-    if (!checked.ok || checked.input === null) return;
-    const { input } = checked;
-    setSaving(true);
-    setProblem(null);
-    const outcome = await kinListSend({
-      online: () => kinHostConnected(environmentId),
-      send: () => set({ environmentId, input }),
-    });
-    setSaving(false);
-    props.onRefresh();
-    if (!outcome.ok && !outcome.changed) setProblem(outcome.problem);
-  };
-  return (
-    <ListSection title={KIN_MONEY.countryFirst.title}>
-      <ListActionRow
-        icon="globe"
-        label={offer.label}
-        disabled={saving}
-        loading={saving}
-        onPress={() => void take()}
-      />
-      {problem === null ? null : <Notice message={problem} tone="danger" />}
-    </ListSection>
   );
 }
 
