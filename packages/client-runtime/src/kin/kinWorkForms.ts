@@ -17,6 +17,7 @@ import {
   type KinProjectDetail,
   type KinProjectBilling,
   type KinProjectUpdateInput,
+  type KinShell,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -24,7 +25,9 @@ import { AsyncResult } from "effect/reactivity";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
 import { kinFailureText } from "./kinAnswers.ts";
+import { KIN_BILL_TO } from "./kinBillTo.ts";
 import type { KinLink } from "./kinHost.ts";
+import { kinSectionNamed } from "./kinShell.ts";
 import { isKinChatError, kinWorkFailuresOf, kinWorkRefused, type KinWorkRef } from "./kinWork.ts";
 import { kinMoneyDraft, kinParseMoney } from "./kinLists.ts";
 import { kinNoticeDays } from "./kinPromises.ts";
@@ -37,6 +40,7 @@ const SHORT_MAX = 200;
 const NOTES_MAX = 4_000;
 const ADDRESS_MAX = 500;
 const PLACE_MAX = 60;
+const TAX_NUMBER_MAX = 100;
 export const KIN_WORK_FORM_LIMITS = { name: NAME_MAX, short: SHORT_MAX, notes: NOTES_MAX };
 
 export const KIN_WORK_FORM_COPY = {
@@ -66,6 +70,12 @@ export const KIN_WORK_FORM_COPY = {
     addressHint: "Printed on their invoices.",
     gstin: "GSTIN",
     gstinHint: "Leave empty if they aren't registered for GST.",
+    taxNumber: KIN_BILL_TO.taxNumber,
+    taxNumberHint: "Printed on invoices when the client accounts for the tax.",
+    accountsForTax: "Accounts for the tax themselves",
+    accountsForTaxHint: "Invoices to this client carry no tax and print the client's tax number.",
+    accountsForTaxNeedsNumber:
+      "Add the client's tax number: invoices that leave the tax to the client print it.",
     place: "State",
     placeNone: "Not set",
     placeAbroad: "Outside India",
@@ -131,6 +141,7 @@ export interface KinClientDraft {
   readonly terms: string;
   readonly address: string;
   readonly gstin: string;
+  readonly accountsForTax: boolean;
   /** A state's name from `KIN_GST_STATES`, a country when `abroad`, or empty. */
   readonly placeOfSupply: string;
   readonly abroad: boolean;
@@ -189,6 +200,7 @@ export const kinClientDraftOf = (
     | "terms"
     | "address"
     | "gstin"
+    | "accountsForTax"
     | "placeOfSupply"
     | "notes"
     | "sensitive"
@@ -217,6 +229,7 @@ export const kinClientDraftOf = (
     terms: party?.terms ?? "",
     address: party?.address ?? "",
     gstin: party?.gstin ?? "",
+    accountsForTax: party?.accountsForTax === true,
     placeOfSupply: state ?? place,
     abroad: place !== "" && state === null,
     notes: party?.notes ?? "",
@@ -294,29 +307,42 @@ const firstContactCheck = (draft: KinClientDraft): string | null => {
     : kinContactDraftCheck(contact);
 };
 
-export const kinClientDraftCheck = (draft: KinClientDraft): string | null =>
-  draft.name.trim() === ""
+export const kinClientDraftCheck = (
+  draft: KinClientDraft,
+  options?: { readonly india?: boolean; readonly shell?: KinShell | null | undefined },
+): string | null => {
+  const india = options?.india !== false;
+  return draft.name.trim() === ""
     ? "Give them a name."
     : (tooLong(draft.name, NAME_MAX, "the name") ??
       tooLong(draft.source, SOURCE_MAX, "where they came from") ??
       tagsCheck(draft.tags) ??
       tooLong(draft.terms, NOTES_MAX, "the terms") ??
       tooLong(draft.address, ADDRESS_MAX, "the address") ??
-      (draft.gstin.trim() !== "" && kinGstinTyped(draft.gstin) === null ? KIN_GSTIN_WRONG : null) ??
+      (india
+        ? draft.gstin.trim() !== "" && kinGstinTyped(draft.gstin) === null
+          ? KIN_GSTIN_WRONG
+          : null
+        : tooLong(draft.gstin, TAX_NUMBER_MAX, "the tax number")) ??
+      (draft.accountsForTax && draft.gstin.trim() === ""
+        ? kinSectionNamed(options?.shell, KIN_WORK_FORM_COPY.party.accountsForTaxNeedsNumber)
+        : null) ??
       tooLong(draft.placeOfSupply, PLACE_MAX, "the country") ??
       tooLong(draft.notes, NOTES_MAX, "the notes") ??
       firstContactCheck(draft));
+};
 
 export const kinClientCreateInput = (
   draft: KinClientDraft,
+  options?: { readonly india?: boolean },
 ): Omit<KinPartyCreateInput, "orgId" | "clientRequestId"> => {
   const contact = firstContactOf(draft);
   return {
-    ...kinPartyInput(draft),
+    ...kinPartyInput(draft, options?.india !== false),
     ...(contact === null ? {} : { contact: kinContactCreateInput(contact) }),
   };
 };
-const kinPartyInput = (draft: KinClientDraft) => ({
+const kinPartyInput = (draft: KinClientDraft, india: boolean) => ({
   name: draft.name.trim(),
   ...(draft.kind === "vendor" ? { kind: "vendor" as const } : {}),
   ...(draft.kind === "prospect" ? { prospect: true } : {}),
@@ -324,7 +350,12 @@ const kinPartyInput = (draft: KinClientDraft) => ({
   ...(kinClientTags(draft.tags).length === 0 ? {} : { tags: kinClientTags(draft.tags) }),
   ...(draft.terms.trim() === "" ? {} : { terms: draft.terms.trim() }),
   ...(draft.address.trim() === "" ? {} : { address: draft.address.trim() }),
-  ...(draft.gstin.trim() === "" ? {} : { gstin: gstinOf(draft.gstin) }),
+  ...(draft.gstin.trim() === ""
+    ? {}
+    : india
+      ? { gstin: gstinOf(draft.gstin) }
+      : { taxNumber: draft.gstin.trim() }),
+  ...(draft.accountsForTax ? { accountsForTax: true } : {}),
   ...(draft.placeOfSupply.trim() === "" ? {} : { placeOfSupply: draft.placeOfSupply.trim() }),
   ...(draft.notes.trim() === "" ? {} : { notes: draft.notes.trim() }),
   ...(draft.private ? { sensitive: true } : {}),
@@ -340,20 +371,29 @@ const KIND_INPUT: Record<KinClientDraftKind, Pick<KinPartyUpdateInput, "kind" | 
 
 export const kinClientUpdateInput = (
   changed: Changed<KinClientDraft>,
-): Omit<KinPartyUpdateInput, "orgId" | "key" | "rev"> => ({
-  ...(changed.name === undefined ? {} : { name: changed.name.trim() }),
-  ...(changed.kind === undefined ? {} : KIND_INPUT[changed.kind]),
-  ...(changed.source === undefined ? {} : { source: changed.source.trim() || null }),
-  ...(changed.tags === undefined ? {} : { tags: kinClientTags(changed.tags) }),
-  ...(changed.terms === undefined ? {} : { terms: changed.terms.trim() || null }),
-  ...(changed.address === undefined ? {} : { address: changed.address.trim() || null }),
-  ...(changed.gstin === undefined ? {} : { gstin: gstinOf(changed.gstin) || null }),
-  ...(changed.placeOfSupply === undefined
-    ? {}
-    : { placeOfSupply: changed.placeOfSupply.trim() || null }),
-  ...(changed.notes === undefined ? {} : { notes: changed.notes.trim() }),
-  ...(changed.private === undefined ? {} : { sensitive: changed.private }),
-});
+  options?: { readonly india?: boolean },
+): Omit<KinPartyUpdateInput, "orgId" | "key" | "rev"> => {
+  const india = options?.india !== false;
+  return {
+    ...(changed.name === undefined ? {} : { name: changed.name.trim() }),
+    ...(changed.kind === undefined ? {} : KIND_INPUT[changed.kind]),
+    ...(changed.source === undefined ? {} : { source: changed.source.trim() || null }),
+    ...(changed.tags === undefined ? {} : { tags: kinClientTags(changed.tags) }),
+    ...(changed.terms === undefined ? {} : { terms: changed.terms.trim() || null }),
+    ...(changed.address === undefined ? {} : { address: changed.address.trim() || null }),
+    ...(changed.gstin === undefined
+      ? {}
+      : india
+        ? { gstin: gstinOf(changed.gstin) || null }
+        : { taxNumber: changed.gstin.trim() || null }),
+    ...(changed.accountsForTax === undefined ? {} : { accountsForTax: changed.accountsForTax }),
+    ...(changed.placeOfSupply === undefined
+      ? {}
+      : { placeOfSupply: changed.placeOfSupply.trim() || null }),
+    ...(changed.notes === undefined ? {} : { notes: changed.notes.trim() }),
+    ...(changed.private === undefined ? {} : { sensitive: changed.private }),
+  };
+};
 
 export interface KinContactDraft {
   readonly name: string;
@@ -853,6 +893,8 @@ export function createKinWorkForm<D extends Draft, A>(options: {
     problem: null,
   };
   let rev = options.editing?.rev ?? 0;
+  let check = options.check;
+  let send = options.send;
   const set = (patch: Partial<KinWorkFormState<D>>) => {
     state = { ...state, ...patch };
     options.onChange(state);
@@ -860,6 +902,10 @@ export function createKinWorkForm<D extends Draft, A>(options: {
   return {
     getState: () => state,
     edit: (patch: Partial<D>) => set({ draft: { ...state.draft, ...patch }, problem: null }),
+    configure: (next: Pick<typeof options, "check" | "send">) => {
+      check = next.check;
+      send = next.send;
+    },
     /**
      * Takes in a newer read of what is being edited. Nothing typed changes; the next save goes
      * against this revision, and the form can show what moved.
@@ -874,7 +920,7 @@ export function createKinWorkForm<D extends Draft, A>(options: {
       { readonly saved: true; readonly value: A | null } | { readonly saved: false }
     > => {
       if (state.saving) return { saved: false };
-      const invalid = options.check(state.draft, state.from);
+      const invalid = check(state.draft, state.from);
       if (invalid !== null) {
         set({ problem: { kind: "invalid", text: invalid } });
         return { saved: false };
@@ -888,7 +934,7 @@ export function createKinWorkForm<D extends Draft, A>(options: {
       const outcome = await kinWorkSend({
         online: options.online,
         send: () =>
-          options.send(
+          send(
             editing === null
               ? { type: "create", draft }
               : { type: "update", key: editing.key, changed, rev, draft },

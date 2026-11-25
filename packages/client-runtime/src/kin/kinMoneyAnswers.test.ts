@@ -90,6 +90,7 @@ describe("kinLinesInput", () => {
     quantity: "5",
     unit: "days",
     rate: "20,000",
+    taxRate: "",
   };
   it("takes SAC or HSN codes of 4 to 8 digits, and drops empty rows", () => {
     expect(kinLinesInput([line, { ...line, description: "", sac: "", rate: "" }], "INR")).toEqual({

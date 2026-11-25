@@ -47,6 +47,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
   KIN_WORK_FORM_COPY,
+  kinIndiaFields,
   kinWorkSend,
   type KinClientDraftKind,
   type KinWorkFormProblem,
@@ -117,6 +118,7 @@ import { kinSectionNamedWords, kinSectionOn } from "@t3tools/client-runtime/kin/
 import { useKinSectionNamed, useKinSectionWords, useKinShell } from "./useKinShell";
 import { KinConfirm } from "./KinConfirm";
 import { useNowMinuteMs } from "./useKinClock";
+import { useKinCompanyCountry } from "./useKinMoney";
 import { kinHostConnected, useKinHostAt } from "./useKinHost";
 import {
   useKinClientPage,
@@ -716,6 +718,8 @@ function ClientPage(
   const { names } = props.directory;
   const { state: changed, changes } = props.changes;
   const ownerLevel = useKinOwnerLevel(environmentId);
+  const country = useKinCompanyCountry(props);
+  const india = kinIndiaFields(country);
   const update = useAtomCommand(kinClient.workClientUpdate, { reportFailure: false });
   const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
   const shell = useKinShell(environmentId);
@@ -742,6 +746,7 @@ function ClientPage(
     now,
     ownerLevel,
     shell,
+    country,
   );
   const { can } = view;
   // Clients on, or the owner level: what's owed, the contact log, notes and history show.
@@ -1087,16 +1092,22 @@ function ClientPage(
                   <p className="whitespace-pre-wrap text-sm text-foreground">{view.address}</p>
                 </KinWorkSection>
               )}
-              {!can.owner || (view.vendor && view.tax === null) ? null : (
+              {!can.owner ||
+              ((view.vendor || !india) && view.tax === null && view.accountsForTax === null) ? null : (
                 <KinWorkSection title={KIN_CLIENTS.tax}>
-                  <p
-                    className={cn(
-                      "text-sm",
-                      view.tax === null ? "text-muted-foreground" : "text-foreground",
-                    )}
-                  >
-                    {view.tax ?? KIN_CLIENTS.noTax}
-                  </p>
+                  {view.tax === null && !india ? null : (
+                    <p
+                      className={cn(
+                        "text-sm",
+                        view.tax === null ? "text-muted-foreground" : "text-foreground",
+                      )}
+                    >
+                      {view.tax ?? KIN_CLIENTS.noTax}
+                    </p>
+                  )}
+                  {view.accountsForTax === null ? null : (
+                    <p className="text-sm text-foreground">{view.accountsForTax}</p>
+                  )}
                 </KinWorkSection>
               )}
               {can.owner ? (

@@ -24,6 +24,7 @@ import {
   kinLinesInput,
   type KinLineDraft,
 } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
+import { kinInvoiceTax, kinLineTax } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import { kinDefaultTemplate, KIN_TEMPLATES } from "@t3tools/client-runtime/kin/kinTemplates";
 import { kinWorkDayOf, kinWorkDueLabel } from "@t3tools/client-runtime/kin/kinWork";
 import {
@@ -75,13 +76,19 @@ import type { KinMakeStep } from "./kinMakeStep";
 import { kinClient } from "./state/kinClient";
 import {
   useKinCompanyCountry,
+  useKinCompanyProfile,
   useKinHomeCurrency,
   useKinMoneyActions,
   useKinReceipts,
   useKinRecipes,
 } from "./state/useKinMoney";
 import { useKinEntryLines } from "./state/useKinMoneyAnswers";
-import { kinWorkChoicesAtom, type KinWorkTarget } from "./state/useKinWork";
+import {
+  kinWorkChoicesAtom,
+  useKinClientAccountsForTax,
+  type KinWorkTarget,
+} from "./state/useKinWork";
+import { useKinSectionNamed } from "./state/useKinShell";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinGate } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
@@ -483,6 +490,15 @@ export function KinMakeDocumentStep(
 ) {
   const navigation = useNavigation();
   const actions = useKinMoneyActions(props);
+  const named = useKinSectionNamed(props.environmentId);
+  const profile = useKinCompanyProfile(props, true);
+  const tax = profile.state._tag === "ready" ? kinInvoiceTax(profile.state.value) : null;
+  const partyKey = Option.getOrNull(decodeKey(props.party?.key));
+  const clientAccountsForTax = useKinClientAccountsForTax(props, partyKey);
+  const rawLineTax = kinLineTax(tax, { clientAccountsForTax });
+  const lineTax = rawLineTax.show
+    ? rawLineTax
+    : { show: false as const, note: rawLineTax.note === null ? null : named(rawLineTax.note) };
   const readLines = useKinEntryLines(props);
   const [lines, setLines] = useState<ReadonlyArray<KinLineDraft> | null>(null);
   const [linesProblem, setLinesProblem] = useState<string | null>(null);
@@ -498,7 +514,7 @@ export function KinMakeDocumentStep(
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- once per entry; the reader is remade every render
   }, [props.itemKey]);
   const inputsOf = () => {
-    const checked = kinLinesInput(lines ?? [], props.currency);
+    const checked = kinLinesInput(lines ?? [], props.currency, { tax: lineTax.show });
     if (!checked.ok) {
       setLinesProblem(checked.problem);
       return null;
@@ -554,6 +570,8 @@ export function KinMakeDocumentStep(
   return (
     <KinWorkFrame
       title={title}
+      form
+      showTop={linesProblem}
       onBack={close}
       guardBack
       confirm={
@@ -621,6 +639,8 @@ export function KinMakeDocumentStep(
             <KinLinesFields
               lines={lines}
               disabled={actions.busy}
+              {...(tax === null ? {} : { codes: tax._tag === "gst" })}
+              tax={lineTax}
               onChange={(next) => {
                 setLines(next);
                 setLinesProblem(null);

@@ -469,6 +469,23 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     }, [watch, shellRev, page]);
   }
 
+  const noClientAtom: Atom.Atom<AsyncResult.AsyncResult<KinPartyPage, unknown>> = Atom.make(
+    AsyncResult.initial(),
+  );
+
+  /** Whether the chosen client accounts for the tax themselves; false until read or when none. */
+  function useKinClientAccountsForTax(target: KinScreenTarget, key: KinRecordKey | null): boolean {
+    const atom =
+      key === null
+        ? noClientAtom
+        : kinClient.workClient({
+            environmentId: target.environmentId,
+            input: { orgId: target.orgId, key },
+          });
+    const value = Option.getOrNull(AsyncResult.value(useAtomValue(atom)));
+    return value?.party.accountsForTax === true;
+  }
+
   /** A client's page, kept current without reading it for changes that are someone else's. */
   function useKinClientPage(target: KinScreenTarget, key: KinRecordKey) {
     const atom = kinClient.workClient({
@@ -592,6 +609,10 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
         onChange: setState,
       }),
     );
+    // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps save reading the latest company country and section names if they arrive while the form is open
+    useEffect(() => {
+      form.configure({ check: options.check, send: options.send });
+    });
     // The form ignores a revision it has seen, so this sets state only when a newer read lands.
     if (options.editing != null && options.latest != null)
       form.latest(options.latest, options.editing.rev);
@@ -610,6 +631,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     useKinClientsList,
     useKinProjectsList,
     useKinWorkHistory,
+    useKinClientAccountsForTax,
     useKinClientPage,
     useKinProjectPage,
     kinWorkChoicesAtom,

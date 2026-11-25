@@ -26,6 +26,7 @@ import {
   type KinLineDraft,
   type KinOutlookRowView,
 } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
+import type { KinLineTax } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
   type KinListDefinition,
@@ -975,8 +976,13 @@ export function KinLinesEditor(props: {
   /** Each line's SAC or HSN code, which only India's invoices carry; shown unless false. */
   readonly codes?: boolean;
   readonly detail?: string;
+  /** Per-line Tax % input and placeholder, or the client-accounts line when hidden for that reason. */
+  readonly tax?: KinLineTax;
 }) {
   const codes = props.codes !== false;
+  const showTax = props.tax?.show === true;
+  const defaultRate = props.tax?.show ? props.tax.defaultRate : null;
+  const taxNote = props.tax?.show ? KIN_LINES.taxDetail(defaultRate) : (props.tax?.note ?? null);
   const set = (index: number, patch: Partial<KinLineDraft>) =>
     props.onChange(props.lines.map((one, at) => (at === index ? { ...one, ...patch } : one)));
   const field = (
@@ -985,6 +991,7 @@ export function KinLinesEditor(props: {
     label: string,
     extra: {
       readonly className: string;
+      readonly placeholder?: string;
       readonly inputMode?: "numeric" | "decimal";
       readonly maxLength?: number;
     },
@@ -992,7 +999,7 @@ export function KinLinesEditor(props: {
     <Input
       aria-label={`${label}, line ${index + 1}`}
       className={extra.className}
-      placeholder={label}
+      placeholder={extra.placeholder ?? label}
       autoComplete="off"
       {...(extra.inputMode === undefined ? {} : { inputMode: extra.inputMode })}
       {...(extra.maxLength === undefined ? {} : { maxLength: extra.maxLength })}
@@ -1001,11 +1008,27 @@ export function KinLinesEditor(props: {
       onChange={(event) => set(index, { [key]: event.target.value })}
     />
   );
+  const removeButton = (index: number) => (
+    <Button
+      type="button"
+      size="icon-sm"
+      variant="ghost"
+      className="sm:order-last"
+      aria-label={`${KIN_LINES.remove} ${index + 1}`}
+      disabled={props.disabled}
+      onClick={() => props.onChange(props.lines.filter((__, at) => at !== index))}
+    >
+      <Trash2Icon />
+    </Button>
+  );
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-col">
         <span className="text-sm font-medium text-foreground">{KIN_LINES.title}</span>
         <span className="text-xs text-muted-foreground">{props.detail ?? KIN_LINES.detail}</span>
+        {taxNote === null ? null : (
+          <span className="text-xs text-muted-foreground">{taxNote}</span>
+        )}
       </div>
       {props.lines.map((_, index) => (
         <div
@@ -1013,9 +1036,13 @@ export function KinLinesEditor(props: {
           key={index}
           className={cn(
             "grid grid-cols-[1fr_1fr_auto] gap-2",
-            codes
-              ? "sm:grid-cols-[3fr_1.4fr_0.8fr_1fr_1.6fr_auto]"
-              : "sm:grid-cols-[3fr_0.8fr_1fr_1.6fr_auto]",
+            codes && showTax
+              ? "sm:grid-cols-[2.6fr_1.2fr_0.75fr_0.9fr_1.4fr_0.85fr_auto]"
+              : codes
+                ? "sm:grid-cols-[3fr_1.4fr_0.8fr_1fr_1.6fr_auto]"
+                : showTax
+                  ? "sm:grid-cols-[2.8fr_0.8fr_1fr_1.5fr_0.9fr_auto]"
+                  : "sm:grid-cols-[3fr_0.8fr_1fr_1.6fr_auto]",
           )}
         >
           {field(index, "description", KIN_LINES.description, {
@@ -1030,25 +1057,24 @@ export function KinLinesEditor(props: {
               })
             : null}
           {field(index, "quantity", KIN_LINES.quantity, {
-            className: codes ? "" : "col-span-2 sm:col-span-1",
+            className: !codes && !showTax ? "col-span-2 sm:col-span-1" : "",
             inputMode: "decimal",
           })}
-          <Button
-            type="button"
-            size="icon-sm"
-            variant="ghost"
-            className="sm:order-last"
-            aria-label={`${KIN_LINES.remove} ${index + 1}`}
-            disabled={props.disabled}
-            onClick={() => props.onChange(props.lines.filter((__, at) => at !== index))}
-          >
-            <Trash2Icon />
-          </Button>
+          {codes || !showTax ? removeButton(index) : null}
           {field(index, "unit", KIN_LINES.unit, { className: "", maxLength: 20 })}
+          {!codes && showTax ? removeButton(index) : null}
           {field(index, "rate", KIN_LINES.rate, {
-            className: "col-span-2 sm:col-span-1",
+            className: !codes && showTax ? "" : "col-span-2 sm:col-span-1",
             inputMode: "decimal",
           })}
+          {showTax
+            ? field(index, "taxRate", KIN_LINES.tax, {
+                className: codes ? "" : "col-span-2 sm:col-span-1",
+                placeholder: defaultRate ?? KIN_LINES.tax,
+                inputMode: "decimal",
+                maxLength: 7,
+              })
+            : null}
         </div>
       ))}
       <div>

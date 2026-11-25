@@ -17,18 +17,21 @@ import {
   kinInvoiceTax,
   kinInvoiceTaxText,
   kinInvoiceTyped,
+  kinLineTax,
 } from "./kinMoneyForms.ts";
+import { KIN_LINES } from "./kinMoneyAnswers.ts";
 import { KIN_BILL_TO } from "./kinBillTo.ts";
 import { KIN_GSTIN_WRONG } from "./kinWorkForms.ts";
 
 const orgId = KinOrgId.make("org");
 const acme = KinRecordKey.make("CL-1");
-const line = (description: string, quantity: string, rate: string) => ({
+const line = (description: string, quantity: string, rate: string, taxRate = "") => ({
   description,
   sac: "",
   quantity,
   unit: "",
   rate,
+  taxRate,
 });
 const options = { currency: "INR", gst: true, clientRequestId: "form-1" };
 
@@ -81,6 +84,33 @@ describe("an invoice typed by hand", () => {
     );
     expect(abroad.ok && abroad.input).toMatchObject({ lines: [{ rate: "£400.00" }] });
     expect(abroad.ok && "gstRate" in abroad.input).toBe(false);
+    // A line's own tax rate is sent only when given (0 for no tax); a bad one fails with badTax.
+    const perLine = kinInvoiceInput(
+      orgId,
+      {
+        ...filled,
+        lines: [line("Consulting", "10", "£120"), line("Manual", "1", "£40", "0")],
+      },
+      { ...options, currency: "GBP", gst: false },
+    );
+    expect(perLine).toMatchObject({
+      ok: true,
+      input: {
+        lines: [
+          { description: "Consulting", rate: "£120.00" },
+          { description: "Manual", rate: "£40.00", taxRate: "0" },
+        ],
+      },
+    });
+    expect(perLine.ok && "taxRate" in perLine.input.lines[0]!).toBe(false);
+    expect(
+      kinInvoiceInput(
+        orgId,
+        { ...filled, lines: [line("Consulting", "1", "£120", "120")] },
+        { ...options, currency: "GBP", gst: false },
+      ),
+    ).toEqual({ ok: false, problem: "Line 1: enter a tax rate like 20 or 0." });
+    expect(kinInvoiceTyped({ ...forAcme, lines: [line("", "1", "", "0")] }, forAcme)).toBe(true);
   });
 
   it("bills a client, or a typed name with only the details given, as the form shows it", () => {
@@ -181,6 +211,20 @@ describe("an invoice typed by hand", () => {
       { _tag: "none" },
     );
     expect(kinInvoiceTax({ ...uk, country: null, tax: null })).toEqual({ _tag: "none" });
+    expect(kinLineTax(kinInvoiceTax(profile))).toEqual({ show: false, note: null });
+    expect(kinLineTax(kinInvoiceTax({ ...uk, tax: null, taxRegistered: false }))).toEqual({
+      show: false,
+      note: null,
+    });
+    expect(kinLineTax(vat)).toEqual({ show: true, defaultRate: "20" });
+    expect(kinLineTax(vat, { clientAccountsForTax: true })).toEqual({
+      show: false,
+      note: KIN_LINES.clientAccounts,
+    });
+    expect(kinLineTax(kinInvoiceTax({ ...uk, tax: null }))).toEqual({
+      show: true,
+      defaultRate: null,
+    });
   });
 
   it("adds the lines up before tax as the template does, each rounded half up", () => {

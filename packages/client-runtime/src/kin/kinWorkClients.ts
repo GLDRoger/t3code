@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import { KIN_MARKETING, type KinCampaignResultId } from "./kinMarketing.ts";
 import { KIN_CHECK_CONNECTION } from "./kinAnswers.ts";
+import { KIN_BILL_TO } from "./kinBillTo.ts";
 import { KIN_CAMPAIGN_SOURCE, kinOwnerLevel, formatKinWhen } from "@t3tools/contracts";
 import type {
   KinAccessMeResult,
@@ -155,6 +156,7 @@ export const KIN_CLIENTS = {
   title: "Clients",
   tax: "Tax details",
   noTax: "No GSTIN or state yet. Invoices need one to work out GST.",
+  accountsForTax: "Accounts for the tax themselves: invoices carry no tax.",
   all: "All clients",
   search: "Search clients",
   /** A client the search found through one of its contacts. */
@@ -937,8 +939,10 @@ export interface KinClientPageView {
   readonly contactsWho: string | null;
   readonly terms: string | null;
   readonly address: string | null;
-  /** "GSTIN 27ABCDE1234F1Z5 · Maharashtra"; null when neither is set. */
+  /** "GSTIN 27ABCDE1234F1Z5 · Maharashtra", or outside India "Tax number …"; null when unset. */
   readonly tax: string | null;
+  /** "Accounts for the tax themselves: invoices carry no tax." when on; null otherwise. */
+  readonly accountsForTax: string | null;
   readonly notes: string | null;
   /** Newest first; null from a host before contact logs. */
   readonly touches: ReadonlyArray<KinTouchView> | null;
@@ -953,7 +957,10 @@ export function kinClientPageView(
   ownerLevel: boolean,
   /** The company's sections: a renamed Clients names the kind line too. */
   shell?: KinShell | null,
+  /** The company's country; undefined or "IN" shows India's GSTIN/state format. */
+  country?: string | null,
 ): KinClientPageView {
+  const india = country === undefined || country === "IN";
   const { party } = page;
   const ref = { key: party.key, title: party.name };
   const weOwe = page.weOwe.records.map((record) =>
@@ -1014,10 +1021,15 @@ export function kinClientPageView(
     contactsWho: (can.contacts ?? can.edit) ? null : KIN_CLIENTS.contactsWho(lookedAfter, vendor),
     terms: terms === "" ? null : terms,
     address: party.address?.trim() || null,
-    tax:
-      [party.gstin === null ? null : `GSTIN ${party.gstin}`, party.placeOfSupply?.trim() || null]
-        .filter((part) => part !== null)
-        .join(" · ") || null,
+    tax: india
+      ? [party.gstin === null ? null : `GSTIN ${party.gstin}`, party.placeOfSupply?.trim() || null]
+          .filter((part) => part !== null)
+          .join(" · ") || null
+      : party.gstin === null
+        ? null
+        : `${KIN_BILL_TO.taxNumber} ${party.gstin}`,
+    accountsForTax:
+      party.accountsForTax === true ? kinSectionNamed(shell, KIN_CLIENTS.accountsForTax) : null,
     notes: notes === "" ? null : notes,
     touches,
     lastContact:

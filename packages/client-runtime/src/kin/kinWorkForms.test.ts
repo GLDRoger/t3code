@@ -56,7 +56,7 @@ function clientForm(answers: Array<AtomCommandResult<string, unknown>>, online =
     start: { ...kinClientDraftOf(), name: "Invented Foods", notes: "Invented notes" },
     editing: { key: "C-1", rev: 4 },
     nameOf: (draft) => draft.name,
-    check: kinClientDraftCheck,
+    check: (draft) => kinClientDraftCheck(draft),
     send: (change) => {
       sent.push(
         change.type === "update"
@@ -197,6 +197,27 @@ describe("createKinWorkForm", () => {
       gstin: null,
       placeOfSupply: null,
     });
+    // Outside India: any country's tax number goes as taxNumber (never gstin), and accountsForTax needs a number.
+    const uk = { ...blank, gstin: " GB123456789 ", accountsForTax: true };
+    expect(kinClientDraftCheck(uk, { india: false })).toBeNull();
+    expect(kinClientCreateInput(uk, { india: false })).toEqual({
+      name: "Invented Foods",
+      taxNumber: "GB123456789",
+      accountsForTax: true,
+    });
+    expect(kinClientUpdateInput({ gstin: " GB123456789 ", accountsForTax: true }, { india: false }))
+      .toEqual({ taxNumber: "GB123456789", accountsForTax: true });
+    expect(kinClientUpdateInput({ gstin: " ", accountsForTax: false }, { india: false })).toEqual({
+      taxNumber: null,
+      accountsForTax: false,
+    });
+    expect(kinClientDraftCheck({ ...blank, accountsForTax: true }, { india: false })).toBe(
+      "Add the client's tax number: invoices that leave the tax to the client print it.",
+    );
+    const patients = { rev: 1, sections: [{ id: "clients" as const, on: true, name: "Patients", noun: "patient" }] };
+    expect(
+      kinClientDraftCheck({ ...blank, accountsForTax: true }, { india: false, shell: patients }),
+    ).toBe("Add the patient's tax number: invoices that leave the tax to the patient print it.");
   });
 
   it("offers the one already there when the name is taken, and keeps the form", async () => {

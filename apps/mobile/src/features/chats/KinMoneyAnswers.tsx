@@ -32,6 +32,7 @@ import {
   type KinOutlookRowView,
   type KinQuoteRowView,
 } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
+import type { KinLineTax } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import {
   EnvironmentId,
   KinMoneyBudget,
@@ -971,7 +972,12 @@ export function KinLinesFields(props: {
   /** Each line's SAC or HSN code, which only India's invoices carry; shown unless false. */
   readonly codes?: boolean;
   readonly detail?: string;
+  /** Per-line Tax % input and placeholder, or the client-accounts line when hidden for that reason. */
+  readonly tax?: KinLineTax;
 }) {
+  const showTax = props.tax?.show === true;
+  const defaultRate = props.tax?.show ? props.tax.defaultRate : null;
+  const taxNote = props.tax?.show ? KIN_LINES.taxDetail(defaultRate) : (props.tax?.note ?? null);
   const set = (index: number, patch: Partial<KinLineDraft>) =>
     props.onChange(props.lines.map((one, at) => (at === index ? { ...one, ...patch } : one)));
   return (
@@ -983,6 +989,11 @@ export function KinLinesFields(props: {
         <Text textRole="footnote" className="text-foreground-muted">
           {props.detail ?? KIN_LINES.detail}
         </Text>
+        {taxNote === null ? null : (
+          <Text textRole="footnote" className="text-foreground-muted">
+            {taxNote}
+          </Text>
+        )}
       </View>
       {props.lines.map((line, index) => (
         // oxlint-disable-next-line react/no-array-index-key -- lines have no id; a row is its place
@@ -1025,6 +1036,17 @@ export function KinLinesFields(props: {
             disabled={props.disabled}
             onChangeText={(rate) => set(index, { rate })}
           />
+          {showTax ? (
+            <KinWorkTextField
+              label={KIN_LINES.tax}
+              value={line.taxRate}
+              {...(defaultRate === null ? {} : { placeholder: defaultRate })}
+              maxLength={7}
+              keyboard="decimal"
+              disabled={props.disabled}
+              onChangeText={(taxRate) => set(index, { taxRate })}
+            />
+          ) : null}
           <ListActionRow
             label={KIN_LINES.remove}
             onPress={() => props.onChange(props.lines.filter((_, at) => at !== index))}

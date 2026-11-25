@@ -16,7 +16,13 @@ import { KIN_RETRY } from "./kinAnswers.ts";
 import { KIN_BILL_TO } from "./kinBillTo.ts";
 import { KIN_GSTIN_WRONG, kinGstinTyped } from "./kinWorkForms.ts";
 import { kinCategoryLabel, kinMoneyText, kinParseMoney } from "./kinLists.ts";
-import { KIN_EMPTY_LINE, kinLinesInput, type KinLineDraft } from "./kinMoneyAnswers.ts";
+import {
+  KIN_EMPTY_LINE,
+  KIN_LINES,
+  KIN_TAX_RATE,
+  kinLinesInput,
+  type KinLineDraft,
+} from "./kinMoneyAnswers.ts";
 import { kinWorkDueLabel } from "./kinWork.ts";
 
 /**
@@ -109,7 +115,6 @@ export const KIN_MONEY_FORMS = {
 };
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
-const RATE = /^(?:100|\d{1,2}(?:\.\d{1,3})?)$/;
 const QUANTITY = /^(\d{1,9})(?:\.(\d{1,3}))?$/;
 const GST_DEFAULT = "18";
 const oneLine = (text: string) => text.trim().replace(/\s+/g, " ");
@@ -170,6 +175,7 @@ export const kinInvoiceTyped = (draft: KinInvoiceDraft, opened: KinInvoiceDraft)
       line.rate.trim() !== "" ||
       line.sac.trim() !== "" ||
       line.unit.trim() !== "" ||
+      line.taxRate.trim() !== "" ||
       line.quantity.trim() !== KIN_EMPTY_LINE.quantity,
   );
 
@@ -182,11 +188,11 @@ export type KinInvoiceTax =
       readonly rate: string;
       readonly included: boolean;
     }
-  | { readonly _tag: "none" };
+  | { readonly _tag: "none"; readonly notRegistered?: true };
 
 /** As the host decides it: India charges GST when the company has a GSTIN; elsewhere its one tax. */
 export function kinInvoiceTax(
-  profile: Pick<KinCompanyProfile, "country" | "homeCurrency" | "gstin" | "tax">,
+  profile: Pick<KinCompanyProfile, "country" | "homeCurrency" | "gstin" | "tax" | "taxRegistered">,
 ): KinInvoiceTax {
   // A company stored before countries existed reads as India while it keeps rupees.
   const country =
@@ -195,11 +201,40 @@ export function kinInvoiceTax(
       : profile.homeCurrency === KIN_DEFAULT_HOME_CURRENCY
         ? "IN"
         : null;
-  if (country === "IN") return { _tag: "gst", registered: profile.gstin !== null };
+  if (country === "IN")
+    return { _tag: "gst", registered: profile.taxRegistered !== false && profile.gstin !== null };
+  if (profile.taxRegistered === false) return { _tag: "none", notRegistered: true };
   const tax = profile.tax ?? null;
   return tax === null || tax.rate === null
     ? { _tag: "none" }
     : { _tag: "flat", name: tax.name, rate: tax.rate, included: tax.pricesInclude === true };
+}
+
+/** Whether the line editor shows a Tax % input and its usual-rate placeholder, or why not. */
+export type KinLineTax =
+  | { readonly show: true; readonly defaultRate: string | null }
+  | { readonly show: false; readonly note: string | null };
+
+export function kinLineTax(
+  tax: KinInvoiceTax | null,
+  options: {
+    /** The document's GST rate (India); unused outside India. */
+    readonly gstRate?: string | null;
+    readonly clientAccountsForTax?: boolean;
+  } = {},
+): KinLineTax {
+  if (tax === null) return { show: false, note: null };
+  if (tax._tag === "gst" && !tax.registered) return { show: false, note: null };
+  if (tax._tag === "none" && tax.notRegistered === true) return { show: false, note: null };
+  if (options.clientAccountsForTax === true)
+    return { show: false, note: KIN_LINES.clientAccounts };
+  const defaultRate =
+    tax._tag === "flat"
+      ? tax.rate
+      : tax._tag === "gst"
+        ? options.gstRate?.trim() || GST_DEFAULT
+        : null;
+  return { show: true, defaultRate };
 }
 
 /** The tax line the form shows; null where a rate is typed instead. */
@@ -302,6 +337,8 @@ export function kinInvoiceInput(
     readonly byName?: boolean;
     /** The company is in India, where the tax number is a GSTIN. */
     readonly india?: boolean;
+    /** Whether per-line tax rates are shown and read; false when unregistered or client-accounted. */
+    readonly tax?: boolean;
     /** The chosen project's client, which it bills when no client was picked. */
     readonly projectClient?: KinRecordKey | null;
   },
@@ -316,11 +353,15 @@ export function kinInvoiceInput(
     return { ok: false, problem: KIN_MONEY_FORMS.problem.client };
   const title = oneLine(draft.title).slice(0, 280);
   if (title === "") return { ok: false, problem: KIN_MONEY_FORMS.problem.what };
-  const lines = kinLinesInput(draft.lines, options.currency);
+  const lines = kinLinesInput(
+    draft.lines,
+    options.currency,
+    options.tax === undefined ? undefined : { tax: options.tax },
+  );
   if (!lines.ok) return { ok: false, problem: lines.problem };
   if (lines.lines === null) return { ok: false, problem: KIN_MONEY_FORMS.problem.noLines };
   const gstRate = draft.gstRate.trim();
-  if (options.gst && !RATE.test(gstRate))
+  if (options.gst && !KIN_TAX_RATE.test(gstRate))
     return { ok: false, problem: KIN_MONEY_FORMS.problem.gstRate };
   const notes = draft.notes.trim().slice(0, 4_000);
   return {
