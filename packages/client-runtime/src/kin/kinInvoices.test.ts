@@ -160,8 +160,37 @@ describe("kinInvoiceView", () => {
       { _tag: "ready", number: "R/26-27/002", document: "D-9" },
       null,
     ]);
+    expect(view.payments.map((one) => one.received)).toEqual([null, null, null, null]);
     expect(view.payments[2]?.note).toBeNull();
     expect(view.documents.map((doc) => doc.key)).toEqual(["D-7", "D-4"]);
+
+    const cross = kinInvoiceView(
+      invoice({
+        amount: { minor: 100_000, currency: "USD" },
+        balance: { minor: 0, currency: "USD" },
+        received: { minor: 100_000, currency: "USD" },
+        payments: [
+          {
+            ...payment("p-fx", null),
+            amount: { minor: 100_000, currency: "USD" },
+            received: { minor: 8_350_000, currency: "INR" },
+            rate: "83.500000",
+          },
+          {
+            ...payment("p-fx-void", null, "2026-11-06T00:00:00.000Z"),
+            amount: { minor: 100_000, currency: "USD" },
+            received: { minor: 8_350_000, currency: "INR" },
+            rate: "83.500000",
+          },
+        ] as never,
+      }),
+      invoices,
+      now,
+    );
+    expect(cross.payments.map((one) => [one.amount, one.received, one.voided])).toEqual([
+      ["$1,000.00", "₹83,500.00 received, a rate of 83.50", false],
+      ["$1,000.00", "₹83,500.00 received, a rate of 83.50", true],
+    ]);
   });
 
   it("settles on TDS without counting it received, and offers no receipt for it", () => {

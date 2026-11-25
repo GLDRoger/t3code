@@ -1,16 +1,17 @@
-import type {
-  KinDocFile,
-  KinIssueResult,
-  KinListDefinition,
-  KinMakeReceiptInput,
-  KinMoney,
-  KinMakeReceiptResult,
-  KinOrgId,
-  KinPayment,
-  KinReceipt,
-  KinRecipe,
-  KinRecordDetail,
-  KinRecordKey,
+import {
+  kinRateShown,
+  type KinDocFile,
+  type KinIssueResult,
+  type KinListDefinition,
+  type KinMakeReceiptInput,
+  type KinMoney,
+  type KinMakeReceiptResult,
+  type KinOrgId,
+  type KinPayment,
+  type KinReceipt,
+  type KinRecipe,
+  type KinRecordDetail,
+  type KinRecordKey,
 } from "@t3tools/contracts";
 
 import { kinBilledName } from "./kinBillTo.ts";
@@ -92,6 +93,7 @@ export const KIN_INVOICES = {
   unvoid: "Undo void",
   payments: "Payments",
   noPayments: "No payments yet.",
+  receivedAs: (received: string, rate: string) => `${received} received, a rate of ${rate}`,
   takenBack: "Taken back",
   makeReceipt: "Make receipt",
   makePdf: "Make its PDF",
@@ -226,6 +228,8 @@ export type KinPaymentReceiptView =
 export interface KinInvoicePaymentView {
   readonly paymentId: string;
   readonly amount: string;
+  /** What reached the bank and at what rate for a cross-currency payment; null otherwise. */
+  readonly received: string | null;
   readonly when: string;
   readonly note: string | null;
   readonly voided: boolean;
@@ -324,6 +328,13 @@ export function kinInvoiceView(
       return {
         paymentId: payment.paymentId,
         amount: kinMoneyText(payment.amount, true),
+        received:
+          payment.received !== undefined && payment.rate !== undefined
+            ? KIN_INVOICES.receivedAs(
+                kinMoneyText(payment.received, true),
+                kinRateShown(payment.rate),
+              )
+            : null,
         when: kinWorkDueLabel(payment.paidOn, now),
         note: note === "" || shown ? null : note,
         voided: payment.voidedAt !== null,
