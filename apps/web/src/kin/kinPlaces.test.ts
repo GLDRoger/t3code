@@ -223,13 +223,16 @@ describe("place addresses", () => {
       expect(search).toEqual({});
       expect(kinRecordOf(search)).toBeNull();
     }
-    // Malformed non-empty values are cleared and flagged once by validateSearch.
-    expect(merged({ doc: "not-a-key" })).toEqual({ invalidLink: "doc" });
-    expect(kinRecordOf(merged({ doc: "not-a-key" }))).toBeNull();
+    // Malformed non-empty values are cleared and flagged once by validateSearch, surviving
+    // TanStack Router's second validation pass during buildLocation.
+    const badDoc = merged({ doc: "not-a-key" });
+    expect(badDoc).toEqual({ invalidLink: "doc" });
+    expect(merged(badDoc)).toEqual({ invalidLink: "doc" });
+    expect(kinRecordOf(badDoc)).toBeNull();
     expect(merged({ task: 123 })).toEqual({ invalidLink: "task" });
     expect(merged({ client: "bad" })).toEqual({ invalidLink: "client" });
     expect(kinRecordOf(merged({ client: "bad" }))).toBeNull();
-    expect(merged({ invalidLink: "doc" })).toEqual({});
+    expect(merged({ invalidLink: "bogus" })).toEqual({});
     expect(Object.assign({}, { agent: "" }, validateKinAgentSearch({ agent: "" }))).toEqual({});
   });
 

@@ -204,12 +204,15 @@ const PLACE_SEARCH_KEYS: ReadonlyArray<keyof KinPlaceSearch> = [
   "invalidLink",
 ];
 
+const isInvalidLink = (raw: unknown): raw is KinInvalidLink =>
+  raw === "doc" || raw === "task" || raw === "client" || raw === "project";
+
 function invalidLinkOf(raw: Record<string, unknown>): KinInvalidLink | undefined {
   if (!isEmptyParam(raw.doc) && !isKey(raw.doc)) return "doc";
   if (!isEmptyParam(raw[CLIENT]) && !isKey(raw[CLIENT])) return "client";
   if (!isEmptyParam(raw.project) && !isKey(raw.project)) return "project";
   if (!isEmptyParam(raw.task) && !isKey(raw.task)) return "task";
-  return undefined;
+  return isInvalidLink(raw.invalidLink) ? raw.invalidLink : undefined;
 }
 
 export function validateKinPlaceSearch(raw: Record<string, unknown>): KinPlaceSearch {

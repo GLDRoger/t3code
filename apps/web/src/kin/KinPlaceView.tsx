@@ -125,6 +125,7 @@ declare module "@tanstack/react-router" {
     kinTasks?: number;
     kinDialogPushed?: boolean;
     kinHistoryPushed?: boolean;
+    kinInvalidLink?: KinInvalidLink;
   }
 }
 
@@ -287,7 +288,7 @@ export function KinPlacesRoute() {
       }
       dialog={search.open ?? null}
       person={search.person ?? null}
-      invalidLink={search.invalidLink ?? null}
+      invalidLink={search.invalidLink ?? location.state.kinInvalidLink ?? null}
       onDialog={(next) => {
         const pushed = location.state.kinDialogPushed === true;
         // Closing a dialog this page opened is the browser's Back, so Back never reopens it.
@@ -314,15 +315,16 @@ export function KinPlacesRoute() {
         });
       }}
       tab={tab}
-      onTab={(next) =>
+      onTab={(next) => {
+        const { kinInvalidLink: _cleared, ...keptState } = location.state;
         void navigate({
           to: KIN_PLACE_PATH.clients,
           params,
           search: { ...kinSearchOf(record), ...(next === "clients" ? {} : { tab: next }) },
           replace: true,
-          state: location.state,
-        })
-      }
+          state: keptState,
+        });
+      }}
       openKey={search.task ?? null}
       onOpenKey={(key, stack) => {
         const overDialog = search.open !== undefined;
