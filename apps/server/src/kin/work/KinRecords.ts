@@ -2726,6 +2726,37 @@ const make = Effect.gen(function* () {
             reason: "not_allowed",
             message: settles ? KIN_OWN_REFUSAL.payment : KIN_OWN_REFUSAL.number,
           });
+        // In an agent's turn money is marked received only by the owner's tap on a payment card:
+        // no Paid with money still owed, and no void or restore that makes payments count or not.
+        if (
+          writer.actor._tag === "agent" &&
+          row.takesPayments === 1 &&
+          !isSuggestion(row) &&
+          wanted !== row.state &&
+          (wanted === "dropped" || row.state === "dropped" || wanted === "done")
+        ) {
+          const total = patch.amount ?? amount;
+          const owedNow = total === null ? 0 : total.minor - row.paid;
+          if (
+            wanted === "done" &&
+            row.state !== "dropped" &&
+            owedNow > 0 &&
+            (yield* sql`SELECT 1 FROM kin_issued_numbers
+              WHERE org_id = ${orgId} AND record_id = ${row.recordId} LIMIT 1`).length > 0
+          )
+            return yield* new SensitiveRefusal({
+              reason: "invalid_state",
+              message: `Nothing was changed: ${row.key} still has ${formatMoney({ minor: owedNow, currency: total!.currency })} owed. Put money received to the owner with payment_record; their tap on its card marks it ${stateLabel(def, "done")}.`,
+            });
+          if (
+            (wanted === "dropped" || row.state === "dropped") &&
+            (yield* sql`SELECT 1 FROM kin_record_payments WHERE org_id = ${orgId}
+              AND record_id = ${row.recordId} AND voided_at IS NULL LIMIT 1`).length > 0
+          )
+            return yield* notAllowed(
+              `Nothing was changed: ${row.key} has payments recorded on it, so the owner voids or restores it on the invoice in Money.`,
+            );
+        }
         // An agent never issues or settles an invoice by its state: Issue gives it its number.
         const unissued =
           writer.actor._tag === "agent" &&

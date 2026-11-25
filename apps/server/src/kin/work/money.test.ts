@@ -3192,6 +3192,69 @@ describe("the owner's taps", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect(
+    "refuse an agent's Paid with money still owed, and its void or restore of a paid-on invoice",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* defined(1, { template: "invoices" });
+        const asked = yield* turn(3, "Invoice");
+        yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            { list: "invoices", title: "Invented retainer", amount: "1 lakh", date: "2026-11-01" },
+          ],
+        });
+        yield* issueAll("INV-1");
+        yield* OwnerMoney.recordPayment(people, {
+          orgId,
+          key: "INV-1",
+          amount: { minor: 4_000_000, currency: "INR" },
+          paidOn: "2026-11-05",
+          clientRequestId: "p1",
+        });
+        const records = yield* KinRecords.KinRecords;
+        const state = () => records.get(orgId, "INV-1").pipe(Effect.map((row) => row!.state));
+        const sql = yield* SqlClient.SqlClient;
+        // Said after the owner's own writes, so those don't hold the agent back.
+        const afterOwner = (event: string) =>
+          Effect.gen(function* () {
+            yield* sql`UPDATE kin_events SET received_at = ${(yield* Clock.currentTimeMillis) + 1}
+              WHERE event_id = ${event}`;
+            return event;
+          });
+        const said = yield* afterOwner(
+          yield* turn(4, "Mark INV-1 paid, and void it if that's easier"),
+        );
+        const paid = yield* Effect.flip(
+          LeadWork.update(scope, { sourceEventId: said, key: "INV-1", state: "done" }),
+        );
+        assert.strictEqual(
+          paid.message,
+          "Nothing was changed: INV-1 still has ₹60,000.00 owed. Put money received to the owner with payment_record; their tap on its card marks it Paid.",
+        );
+        const voidedBy = [
+          LeadWork.update(scope, { sourceEventId: said, key: "INV-1", state: "dropped" }),
+          LeadDocuments.issue(scope, { sourceEventId: said, entry: "INV-1", void: true }),
+        ];
+        for (const attempt of voidedBy)
+          assert.strictEqual(
+            (yield* Effect.flip(attempt)).message,
+            "Nothing was changed: INV-1 has payments recorded on it, so the owner voids or restores it on the invoice in Money.",
+          );
+        assert.strictEqual(yield* state(), "waiting");
+        // The owner's own void stands; the agent can't bring it back either.
+        const row = yield* records.get(orgId, "INV-1");
+        yield* OwnerWork.update(people, { orgId, key: "INV-1", rev: row!.rev, state: "dropped" });
+        const back = yield* afterOwner(yield* turn(5, "Unvoid INV-1"));
+        const restored = yield* Effect.flip(
+          LeadDocuments.issue(scope, { sourceEventId: back, entry: "INV-1", unvoid: true }),
+        );
+        assert.match(restored.message, /^Nothing was changed: INV-1 has payments recorded on it/);
+        assert.strictEqual(yield* state(), "dropped");
+      }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("sends only list definition features the caller accepts", () =>
     Effect.gen(function* () {
       yield* seed;
