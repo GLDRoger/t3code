@@ -608,7 +608,7 @@ export const draftNote = (
 ) =>
   [
     placed
-      ? `This draft is its own card in the chat, with Copy text${draft.sendTo === undefined ? "" : ` and Send to ${draft.sendTo.name}`}: don't repeat it or name ${key}; say in one line what it is${draft.sendTo === undefined ? "" : `; ${draft.sendTo.name} hasn't seen it, and it reaches ${draft.sendTo.name} only when the person in this chat presses Send to ${draft.sendTo.name}: that tap is the whole way up, so don't also put it to ${draft.sendTo.name} with kin_ask_person or kin_ask, and don't mention the card's length`}.`
+      ? `This draft is its own card in the chat, with Copy text${draft.sendTo === undefined ? "" : ` and Send to ${draft.sendTo.name}`}: don't repeat it or name ${key}; say in one line what it is${draft.sendTo === undefined ? "; nothing on the card sends it to anyone, so don't say anyone will send or approve it" : `; ${draft.sendTo.name} hasn't seen it, and it reaches ${draft.sendTo.name} only when the person in this chat presses Send to ${draft.sendTo.name}: that tap is the whole way up, so don't also put it to ${draft.sendTo.name} with kin_ask_person or kin_ask, and don't mention the card's length`}.`
       : `Filed as ${key}, but its card couldn't be shown here: give the draft in your reply.`,
     ...(draft.noAccount === undefined
       ? []
