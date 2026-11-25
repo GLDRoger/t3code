@@ -286,12 +286,12 @@ export const isSuggestion = (row: { readonly confirmed: number }) => row.confirm
 export const keptEntry = (sql: SqlClient.SqlClient) => sql`r.confirmed = 1`;
 /**
  * A suggestion's state as an agent reads it: issued, sent or owed nowhere, so never its list's
- * word for that; a quote or invoice draft says it is one.
+ * word for that, nor "draft", which agents read as ready to issue.
  */
-export const suggestedStateLabel = (list: string, state: string, label: string) =>
+export const suggestedStateLabel = (list: string, state: string) =>
   state === "open" && (list === "quotes" || list === "invoices")
-    ? `${label}, suggested: waits for the owner or a co-owner to keep it`
-    : "Suggested: waits for the owner or a co-owner to keep it";
+    ? `Suggested ${list === "quotes" ? "quote" : "invoice"}, not kept: nobody has kept it yet, so it can't be issued, sent${list === "quotes" ? "" : ", paid or receipted"}. The owner or a co-owner keeps it with Keep on its page; call it a suggestion until then.`
+    : "Suggested, not kept: nobody has kept it yet; any money on it counts nowhere. The owner or a co-owner keeps it with Keep on its page; call it a suggestion until then.";
 /** A kept invoice nobody has issued, as an agent's tool result names it. */
 export const UNISSUED_INVOICE = "Draft: waits for the owner or a co-owner to issue it";
 /** The one refusal for anything done to a suggestion before it is kept, whoever asks. */

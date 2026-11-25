@@ -36,7 +36,11 @@ import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
 import { alreadyOnIt, leftNote } from "../../apps/server/src/kin/lead/Handoff.ts";
 import { dueShows, repeatedPromise } from "../../apps/server/src/kin/work/leadWork.ts";
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
-import { endOfDay, UNISSUED_INVOICE } from "../../apps/server/src/kin/work/recordRows.ts";
+import {
+  endOfDay,
+  suggestedStateLabel,
+  UNISSUED_INVOICE,
+} from "../../apps/server/src/kin/work/recordRows.ts";
 import { ALSO_ON_UNASKED, helperRefusal } from "../../apps/server/src/kin/work/KinRecords.ts";
 import { NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
 import { tooLongForCard } from "../../apps/server/src/kin/questions/askPerson.ts";
@@ -745,6 +749,9 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
           },
         };
   },
+  // A suggestion's stateLabel, as record_get, records_query and record_create show it.
+  suggestedState: (input: { list: string; state: string }) =>
+    suggestedStateLabel(input.list, input.state),
   // record_create's refusal of a task or promise already open (`leadWork.ts` repeatsOf).
   repeatRefusal: (input: {
     key: string;
