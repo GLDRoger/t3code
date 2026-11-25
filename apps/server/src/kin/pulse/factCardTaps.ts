@@ -42,12 +42,9 @@ const nothingDone = (why: string): KinChoiceOutcome => ({
 });
 
 /**
- * Has the fact in hand on the tapper's word, for the view the caller names. `theirs` is the
- * tapper's own handling: it hides the fact from them alone. `company` also quiets the owner's
- * check-ins, through the card's agent, and is for an answer that has a day it ends. An
- * owner-level tapper's own handling is the company's already. `gone` when the fact no longer
- * stands; `in_hand` when a teammate's own answer would replace one the owner's read counts, so
- * nothing is written.
+ * Has the fact in hand on the tapper's word: `theirs` hides it from them alone, `company` also
+ * quiets the owner (through the card's agent). `gone`: the fact no longer stands; `in_hand`: a
+ * teammate's own answer would replace one the owner's read counts, so nothing is written.
  */
 const holdFact = Effect.fn("KinFactCards.holdFact")(function* (
   tap: FactTap,
