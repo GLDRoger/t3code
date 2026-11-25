@@ -773,6 +773,20 @@ const openInvoices = (
     .slice(0, 5);
 };
 
+/**
+ * A repayment marked by hand with no bank row that this line is likely to be: the same money in
+ * the same currency, marked within ten days either side of the line's day.
+ */
+export const markedByHand = (
+  row: StatementRow,
+  currency: string,
+  marked: { readonly currency: string; readonly day: string; readonly amountMinor: number },
+) =>
+  marked.currency === currency &&
+  BigInt(marked.amountMinor) ===
+    BigInt(row.direction === "debit" ? row.amountMinor : -row.amountMinor) &&
+  Math.abs(daysBetween(marked.day, row.date)) <= 10;
+
 /** Each row's candidates, best first, and whether one is clear enough to propose on its own. */
 export const matchRows = (
   rows: ReadonlyArray<StatementRow>,
@@ -818,14 +832,8 @@ export const matchRows = (
     identifies(one, row.description) || personIn(one.name, row.description) >= 0.5;
   /** A repayment to someone this line names, marked by hand with no bank row: likely this one. */
   const markedFor = (row: StatementRow) => {
-    const signed = BigInt(row.direction === "debit" ? row.amountMinor : -row.amountMinor);
     for (const payee of (input.payees ?? []).filter(named(row))) {
-      const marked = payee.repaid.find(
-        (one) =>
-          one.currency === input.currency &&
-          BigInt(one.amountMinor) === signed &&
-          Math.abs(daysBetween(one.day, row.date)) <= 10,
-      );
+      const marked = payee.repaid.find((one) => markedByHand(row, input.currency, one));
       if (marked !== undefined) return { name: payee.name, day: marked.day };
     }
     return undefined;

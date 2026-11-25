@@ -7,7 +7,7 @@ import { partnerPayees } from "../partnersOwed.ts";
 import { ownerZone } from "../recordRows.ts";
 import { findBankList } from "./bankList.ts";
 import { openEntries } from "./invoiceCredits.ts";
-import { identifies, repayment, suggest } from "./statementMatch.ts";
+import { identifies, markedByHand, repayment, suggest } from "./statementMatch.ts";
 import { partnerCandidates } from "./statementReview.ts";
 
 type OpenDebit = Effect.Success<ReturnType<typeof openEntries>>[number];
@@ -16,7 +16,8 @@ type OpenDebit = Effect.Success<ReturnType<typeof openEntries>>[number];
  * One unexplained debit that names exactly one partner Kin owes in its currency, by their whole
  * name or an import address they are known by. `repays` is the run of their oldest owed expenses
  * that adds up to it exactly, as a statement's review would offer it; undefined when none does.
- * `marked`: the same total was already marked repaid by hand for them that day.
+ * `marked`: the day the same money was already marked repaid by hand for them, within ten days
+ * of the debit (`markedByHand`, as a statement's review reads it).
  */
 export type RepaidMatch = {
   readonly debit: OpenDebit;
@@ -24,7 +25,7 @@ export type RepaidMatch = {
   readonly owedMinor: bigint;
   readonly owedCount: number;
   readonly repays: ReadonlyArray<RepaidItem> | undefined;
-  readonly marked: boolean;
+  readonly marked: string | undefined;
 };
 export type RepaidItem = {
   readonly recordId: string;
@@ -61,15 +62,9 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
     const [id, name] = only;
     const partner = partners.find((one) => one.id === id && one.currency === debit.currency);
     if (partner === undefined || partner.owed.length === 0) return [];
-    const marked =
-      payees
-        .find((one) => one.id === id)
-        ?.repaid.some(
-          (one) =>
-            one.currency === debit.currency &&
-            one.day === debit.date &&
-            BigInt(one.amountMinor) === BigInt(debit.amountMinor),
-        ) === true;
+    const marked = payees
+      .find((one) => one.id === id)
+      ?.repaid.find((one) => markedByHand(debit.row, debit.currency, one))?.day;
     const found = repayment(debit.row, partner, 0, true)?.candidate.repays;
     const repays = found?.flatMap((one) =>
       one.day === undefined || one.rev === undefined

@@ -49,9 +49,9 @@ export const drawRepaid = Effect.fn("KinRepaidCard.draw")(function* (
     return yield* refuse(
       `${bank.key} isn't an unexplained debit that names one partner the company owes, so Kin offers no card for it. ${NOTHING_ASKED}`,
     );
-  if (match.marked)
+  if (match.marked !== undefined)
     return yield* refuse(
-      `${bank.key} may be the repayment already marked by hand for ${match.partner.name} on ${match.debit.date}, so Kin offers no card for it. ${NOTHING_ASKED}`,
+      `${bank.key} may be the repayment already marked by hand for ${match.partner.name} on ${match.marked}, so Kin offers no card for it. ${NOTHING_ASKED}`,
     );
   if (match.repays === undefined)
     return yield* refuse(
@@ -77,7 +77,7 @@ const planOf = (match: RepaidMatch, repays: NonNullable<RepaidMatch["repays"]>, 
 
 /** The same debit, partner, expenses and what stays owed as drawn: anything else marks nothing. */
 const asDrawn = (match: RepaidMatch | undefined, plan: RepaidPlan) => {
-  if (match === undefined || match.marked || match.repays === undefined) return false;
+  if (match === undefined || match.marked !== undefined || match.repays === undefined) return false;
   const now = planOf(match, match.repays, plan.draw);
   return (
     now.recordId === plan.recordId &&

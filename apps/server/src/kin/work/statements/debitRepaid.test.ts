@@ -2,7 +2,7 @@
 import "../../chat/KinChatService.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
-import { KinChatError, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import { KinAgentId, KinChatError, KinOrgId, KinPersonId } from "@t3tools/contracts";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -23,8 +23,10 @@ import { KinLevelGate } from "../../lead/LevelGate.ts";
 import * as KinPersistence from "../../persistence/KinPersistence.ts";
 import * as KinRecords from "../KinRecords.ts";
 import { takeAlerts } from "./bankAlerts.ts";
-import { findBankList } from "./bankList.ts";
+import { ensureBankList, findBankList } from "./bankList.ts";
 import { repaidMatches } from "./debitRepaid.ts";
+import { drawRepaid } from "./repaidCard.ts";
+import { repaidSeenSenses } from "../../pulse/senses/bank.ts";
 
 // Invented: Ambermill's owner Rhea gets HDFC alerts; Zoya and Arjun paid bills from their own cards.
 const orgId = KinOrgId.make("ambermill-repaid");
@@ -155,7 +157,7 @@ it.layer(layer)((it) => {
             partner: "Zoya Rao",
             repays: ["EXP-4", "EXP-7", "EXP-9"],
             owed: 13_400_00n,
-            marked: false,
+            marked: undefined,
           },
           // A rupee short, or counting an expense from after it: nothing adds up, nothing is split.
           {
@@ -164,7 +166,7 @@ it.layer(layer)((it) => {
             partner: "Zoya Rao",
             repays: undefined,
             owed: 13_400_00n,
-            marked: false,
+            marked: undefined,
           },
           {
             title: "ZOYA RAO zoya.rao@invented",
@@ -172,18 +174,106 @@ it.layer(layer)((it) => {
             partner: "Zoya Rao",
             repays: undefined,
             owed: 13_400_00n,
-            marked: false,
+            marked: undefined,
           },
-          // Arjun's 2,000 adds up to EXP-5, but the same total was marked repaid by hand that day.
+          // Arjun's 2,000 adds up to EXP-5, but the same money was marked repaid by hand that day.
           {
             title: "ARJUN MEHTA arjun.m@invented",
             minor: 2_000_00,
             partner: "Arjun Mehta",
             repays: ["EXP-5"],
             owed: 2_000_00n,
-            marked: true,
+            marked: "2026-11-24",
           },
         ]);
       }),
+  );
+});
+
+/** An invented company of its own: Rhea owns it, Zoya Rao funds expenses, all in Asia/Kolkata. */
+const company = Effect.fn("test.company")(function* (org: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_orgs VALUES (${org}, 'Ambermill Studio', '2026-09-01')`;
+  yield* sql`INSERT INTO kin_trigger_settings VALUES (${org}, 'Asia/Kolkata', '08:00', '18:00',
+      '02:00', 0, 1, '09:00', '{}')`;
+  for (const [id, name, access] of [
+    [`${org}-rhea`, "Rhea Kapoor", "owner"],
+    [`${org}-zoya`, "Zoya Rao", "member"],
+  ] as const)
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES (${id}, ${org}, ${id}, ${name}, '2026-09-01', ${access})`;
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+    VALUES (${org}, 'expenses', 'expenses', 'EXP', 1, 0)`;
+  const bank = yield* ensureBankList(org, NOW);
+  const row = (
+    key: string,
+    list: string,
+    title: string,
+    rupees: number,
+    on: string,
+    fields: object,
+    state: string,
+  ) =>
+    sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
+        owner_id, date_at, amount_minor, currency, confirmed, created_by_kind, created_by_id,
+        origin_key, created_at, updated_at, fields_json)
+      VALUES (${org}, ${`${org}-${key}`}, ${list}, ${key}, ${title}, ${state}, 'person',
+        ${`${org}-rhea`}, ${day(on)}, ${rupees * 100}, 'INR', 1, 'person', ${`${org}-rhea`},
+        ${key}, 0, 0, ${JSON.stringify(fields)})`;
+  const zoya = `person:${org}-zoya`;
+  return {
+    sql,
+    expense: (key: string, rupees: number, on: string, fields: object = {}) =>
+      row(key, "expenses", `Phone bill ${key}`, rupees, on, { fundedBy: zoya, ...fields }, "done"),
+    debit: (key: string, rupees: number, on: string, title = "ZOYA RAO zoya.rao@invented") =>
+      row(key, bank.id, title, rupees, on, { direction: "debit" }, "open"),
+    /** What Finance is told now, and what a draw of the card for `key` answers. */
+    told: () =>
+      Effect.map(
+        repaidSeenSenses({
+          orgId: org,
+          at: NOW,
+          zone: "Asia/Kolkata",
+          chief: undefined,
+          finance: KinAgentId.make("finance"),
+          tech: undefined,
+          liveAgents: new Set(),
+        }),
+        (facts) => facts.map((fact) => fact.key),
+      ),
+    draw: (key: string) =>
+      drawRepaid(org, key, {
+        agentId: "finance",
+        wakeupId: "w-1",
+        ceiling: "owner",
+        people: [`${org}-rhea`],
+        askers: [`${org}-rhea`],
+      }).pipe(
+        Effect.match({
+          onFailure: (error) => error.message,
+          onSuccess: (plan) => plan.repays.map((one) => one.key).join(" "),
+        }),
+      ),
+  };
+});
+
+it.layer(layer)((it) => {
+  // The same phone bill each month: Zoya is paid 5,000 on the 20th and the owner marks the
+  // older one repaid by hand two days later. That 5,000 must not also repay the newer one.
+  it.effect("a hand mark of the same money within ten days of the debit stops the card", () =>
+    Effect.gen(function* () {
+      const kin = yield* company(KinOrgId.make("ambermill-recurring"));
+      yield* kin.expense("EXP-4", 5_000, "2026-10-01", {
+        reimbursement: "repaid",
+        repaidOn: "2026-11-22",
+      });
+      yield* kin.expense("EXP-8", 5_000, "2026-11-01", { reimbursement: "owed" });
+      yield* kin.debit("BNK-9", 5_000, "2026-11-20");
+      assert.deepStrictEqual(yield* kin.told(), []);
+      assert.strictEqual(
+        yield* kin.draw("BNK-9"),
+        "BNK-9 may be the repayment already marked by hand for Zoya Rao on 2026-11-22, so Kin offers no card for it. Nothing was asked; tell the owner what you see instead.",
+      );
+    }),
   );
 });
