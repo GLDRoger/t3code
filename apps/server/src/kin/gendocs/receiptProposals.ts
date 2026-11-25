@@ -20,7 +20,8 @@ import * as KinShell from "../shell/KinShell.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { dayIn, formatMoney } from "../work/money.ts";
-import { endOfDay, ownerZone } from "../work/recordRows.ts";
+import { parseFields } from "../work/lists.ts";
+import { endOfDay, issuedNumber, ownerZone } from "../work/recordRows.ts";
 import { recordReceipt } from "./receipts.ts";
 
 /**
@@ -40,6 +41,16 @@ export const ReceiptRequest = Schema.Struct({
     }),
   ),
   against: Schema.optionalKey(Schema.String),
+  /** An agent's payment_record: this payment on the invoice `key`, recorded by the tap alone. */
+  received: Schema.optionalKey(
+    Schema.Struct({
+      key: Schema.String,
+      amount: Schema.optionalKey(KinMoney),
+      withheld: Schema.optionalKey(KinMoney),
+      paidOn: KinDay,
+      note: Schema.optionalKey(Schema.String),
+    }),
+  ),
   towards: Schema.optionalKey(Schema.String),
   mode: Schema.optionalKey(Schema.String),
   reference: Schema.optionalKey(Schema.String),
@@ -57,14 +68,17 @@ export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
   const records = yield* KinRecords;
   const zone = yield* ownerZone(orgId);
   const entry = request.key === undefined ? undefined : yield* records.get(orgId, request.key);
+  const received = request.received;
+  const invoiceKey = request.against ?? received?.key;
+  const against = invoiceKey === undefined ? undefined : yield* records.get(orgId, invoiceKey);
+  // A payment is from the invoice's client; an entry's from its own.
+  const party = received === undefined ? entry : against;
   const client =
     request.advance?.client !== undefined
       ? yield* records.get(orgId, request.advance.client)
-      : entry?.partyId == null
+      : party?.partyId == null
         ? undefined
-        : yield* records.getById(orgId, entry.partyId);
-  const against =
-    request.against === undefined ? undefined : yield* records.get(orgId, request.against);
+        : yield* records.getById(orgId, party.partyId);
   const sql = yield* SqlClient.SqlClient;
   const advance = request.advance;
   // Kin can't tell two advances apart: the same sum from the same client on the same day already
@@ -86,6 +100,7 @@ export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
           ORDER BY r.key`;
   const amount =
     request.advance?.amount ??
+    received?.amount ??
     (entry?.amountMinor == null || entry.currency === null
       ? null
       : { minor: entry.amountMinor, currency: entry.currency });
@@ -94,7 +109,9 @@ export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
     client: client === undefined ? null : { key: client.key, title: client.title, rev: client.rev },
     amount,
     receivedOn:
-      request.advance?.receivedOn ?? (entry?.dateAt == null ? null : dayIn(entry.dateAt, zone)),
+      request.advance?.receivedOn ??
+      received?.paidOn ??
+      (entry?.dateAt == null ? null : dayIn(entry.dateAt, zone)),
     against:
       against === undefined
         ? null
@@ -107,8 +124,16 @@ export const snapshotOf = Effect.fn("KinReceipts.snapshot")(function* (
               against.amountMinor === null || against.currency === null
                 ? null
                 : { minor: against.amountMinor, currency: against.currency },
+            // Only a payment's card names the invoice by number: older snapshots stay as stored.
+            ...(received === undefined
+              ? {}
+              : {
+                  name:
+                    issuedNumber(parseFields(against.fieldsJson).number).number ?? against.key,
+                }),
           },
     recorded: sameAdvances,
+    ...(received?.withheld === undefined ? {} : { withheld: received.withheld }),
   };
 });
 export type Snapshot = Effect.Success<ReturnType<typeof snapshotOf>>;
@@ -128,6 +153,7 @@ export const cardLines = (snapshot: Snapshot, request: ReceiptRequest) => {
     request.reference === undefined ? undefined : `ref ${request.reference}`,
   ].filter((one) => one !== undefined);
   const against = snapshot.against;
+  if (request.received !== undefined) return paymentLines(snapshot, request.received);
   return [
     `Client: ${snapshot.client === null ? "none named" : snapshot.client.title}`,
     `Amount: ${snapshot.amount === null ? "none given" : formatMoney(snapshot.amount)}`,
@@ -147,6 +173,40 @@ export const cardLines = (snapshot: Snapshot, request: ReceiptRequest) => {
   ];
 };
 
+type Received = NonNullable<ReceiptRequest["received"]>;
+
+/** What stays owed on the invoice once this payment is recorded; undefined with no amount. */
+const owedAfter = (snapshot: Snapshot, received: Received) => {
+  const total = snapshot.against?.total;
+  if (total == null) return undefined;
+  const settles = (received.amount?.minor ?? 0) + (received.withheld?.minor ?? 0);
+  return { minor: total.minor - snapshot.against!.paid - settles, currency: total.currency };
+};
+
+/** A payment's card: who paid, how much in which currency, the day and the invoice, from Kin. */
+const paymentLines = (snapshot: Snapshot, received: Received) => {
+  const against = snapshot.against;
+  const left = owedAfter(snapshot, received);
+  return [
+    `Client: ${snapshot.client === null ? "none named" : snapshot.client.title}`,
+    `Received: ${received.amount === undefined ? "nothing in cash" : formatMoney(received.amount)}`,
+    ...(received.withheld === undefined
+      ? []
+      : [`Tax the client withheld: ${formatMoney(received.withheld)}`]),
+    `Received on: ${dayText(received.paidOn)}`,
+    `Invoice: ${against === null ? received.key : `${against.name ?? against.key}, ${against.title}`}`,
+    ...(against?.total == null
+      ? []
+      : [
+          `Already received on it: ${formatMoney({ minor: against.paid, currency: against.total.currency })} of ${formatMoney(against.total)}`,
+        ]),
+    ...(left === undefined
+      ? []
+      : [left.minor <= 0 ? "It settles the invoice in full" : `Still owed after: ${formatMoney(left)}`]),
+    ...(received.note === undefined ? [] : [`Agent's note: ${received.note}`]),
+  ];
+};
+
 /** What the owner's Confirm did, in their words, for the answered card. */
 const madeOutcome = (made: { readonly number: string | null }, shown: Snapshot) => {
   const money = shown.amount === null ? "The money" : formatMoney(shown.amount);
@@ -160,7 +220,30 @@ const madeOutcome = (made: { readonly number: string | null }, shown: Snapshot) 
   };
 };
 
-/** Stores the request and its card's figures. The same ask on the same figures is one proposal. */
+/** What the owner's Confirm on a payment's card recorded. */
+const paidOutcome = (shown: Snapshot, received: Received) => {
+  const parts = [
+    ...(received.amount === undefined ? [] : [formatMoney(received.amount)]),
+    ...(received.withheld === undefined
+      ? []
+      : [`${formatMoney(received.withheld)} of tax the client withheld`]),
+  ].join(" and ");
+  const from = shown.client === null ? "" : ` from ${shown.client.title}`;
+  const left = owedAfter(shown, received);
+  return {
+    title: "Payment recorded",
+    text: `Recorded ${parts}${from}, received ${dayText(received.paidOn)}, on ${shown.against?.name ?? received.key}; ${
+      left === undefined || left.minor <= 0
+        ? "the invoice is paid in full"
+        : `${formatMoney(left)} is still owed on it`
+    }.`,
+  };
+};
+
+/**
+ * Stores the request and its card's figures. The same ask on the same figures is one proposal;
+ * a payment's same ask in the same turn is one whatever the figures.
+ */
 export const proposeReceipt = Effect.fn("KinReceipts.propose")(function* (input: {
   readonly orgId: KinOrgId;
   readonly agentId: string;
@@ -173,9 +256,11 @@ export const proposeReceipt = Effect.fn("KinReceipts.propose")(function* (input:
   const sql = yield* SqlClient.SqlClient;
   const json = stableStringify(input.request);
   const snapshot = stableStringify(input.snapshot);
+  // A payment's ask in one turn is one card whatever its figures do; its first snapshot stands.
+  const figures = input.request.received === undefined ? snapshot : "";
   const proposalId = `rp_${NodeCrypto.createHash("sha256")
     .update(
-      `${input.orgId.length}:${input.orgId}${input.agentId}:${input.wakeupId}:${json}:${snapshot}`,
+      `${input.orgId.length}:${input.orgId}${input.agentId}:${input.wakeupId}:${json}:${figures}`,
     )
     .digest("hex")
     .slice(0, 16)}`;
@@ -251,7 +336,7 @@ export const answerReceiptCard = Effect.fn("KinReceipts.answerCard")(function* (
   const shell = yield* KinShell.get(input.orgId);
   const section = !KinShell.sectionOn(shell, "money")
     ? "money"
-    : request.against !== undefined && !KinShell.sectionOn(shell, "invoices")
+    : (request.against ?? request.received) !== undefined && !KinShell.sectionOn(shell, "invoices")
       ? "invoices"
       : request.advance?.client !== undefined && !KinShell.sectionOn(shell, "clients")
         ? "clients"
@@ -270,6 +355,31 @@ export const answerReceiptCard = Effect.fn("KinReceipts.answerCard")(function* (
     });
   const personId = KinPersonId.make(input.personId);
   const writer: Writer = { actor: { _tag: "person", personId }, via: "owner", askedBy: personId };
+  const received = request.received;
+  if (received !== undefined) {
+    const records = yield* KinRecords;
+    const pay = (money: KinMoney | undefined, part: "cash" | "tds") =>
+      money === undefined
+        ? Effect.undefined
+        : records
+            .pay(input.orgId, writer, received.key, {
+              amount: money,
+              paidOn: received.paidOn,
+              ...(received.note === undefined ? {} : { note: received.note }),
+              ...(part === "tds" ? { withheld: true } : {}),
+              originKey: `receipt-proposal:${row.proposalId}:${part}`,
+            })
+            .pipe(Effect.map((paid) => paid.paymentId));
+    const cash = yield* pay(received.amount, "cash");
+    const tds = yield* pay(received.withheld, "tds");
+    yield* decide("made", null);
+    return {
+      _tag: "paid" as const,
+      paymentId: cash ?? tds,
+      tdsPaymentId: tds,
+      outcome: paidOutcome(shown, received),
+    };
+  }
   const made = yield* recordReceipt({
     orgId: input.orgId,
     writer,
@@ -315,6 +425,10 @@ export const proposalOutcome = Effect.fn("KinReceipts.outcome")(function* (input
       message: `No receipt proposal ${input.proposalId.slice(0, 40)} of yours. Call kin_receipt with what the owner asked for first.`,
     });
   if (row.state === "made" && row.receiptKey !== null) return row.receiptKey;
+  if (row.state === "made")
+    return yield* refused(
+      "The owner confirmed this payment on its card, so Kin recorded it; it has no receipt. For one, call kin_receipt with its paymentId from record_get.",
+    );
   return yield* refused(
     row.state === "declined"
       ? "The owner said no on this receipt's card, so nothing was recorded or numbered. Ask again only if they ask for it."

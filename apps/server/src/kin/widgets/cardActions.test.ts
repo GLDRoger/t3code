@@ -2827,8 +2827,8 @@ it.effect("a default undone before its person is told reaches them once, as put 
   ),
 );
 
-// The owner's Confirm records the money as them; the agent the tap wakes sets that advance
-// against an invoice with no further word. A co-owner's change in the tap's moment still stands.
+// The owner's Confirm records the money as them; the agent the tap wakes asks to set that advance
+// against an invoice on a card of its own, which records only on the owner's tap.
 it.effect("a receipt Confirm's own writes are the tap's, not newer than it", () =>
   Effect.andThen(
     TestClock.setTime(MON),
@@ -2895,17 +2895,20 @@ it.effect("a receipt Confirm's own writes are the tap's, not newer than it", () 
           against: invoice.row.key,
         });
       });
+      const paid = () => records.get(orgId, invoice.row.key).pipe(Effect.map((row) => row!.paid));
       const set = yield* confirmed(1);
-      assert.isTrue(set.ok, JSON.stringify(set.value));
-      assert.strictEqual((yield* records.get(orgId, invoice.row.key))!.paid, 500_00);
+      assert.strictEqual(set.value.status, "proposed", JSON.stringify(set.value));
+      assert.strictEqual(yield* paid(), 0);
+      const [card] = yield* sql<{ widgetId: string }>`SELECT widget_id AS "widgetId"
+        FROM kin_receipt_proposals WHERE org_id = ${orgId}
+          AND proposal_id = ${String(set.value.proposal)}`;
+      yield* kin.tap(owner, card!.widgetId, "option-1", "confirm-against");
+      assert.strictEqual(yield* paid(), 500_00);
 
-      const refused = yield* confirmed(2, true);
-      assert.isFalse(refused.ok);
-      assert.match(
-        String(refused.value.message ?? JSON.stringify(refused.value)),
-        /^Nothing changed on [A-Z]+-\d+: Meera Shah changed its payment/,
-      );
-      assert.strictEqual((yield* records.get(orgId, invoice.row.key))!.paid, 500_00);
+      // Another advance, a co-owner's change in its tap's moment: asked again, still nothing yet.
+      const again = yield* confirmed(2, true);
+      assert.strictEqual(again.value.status, "proposed", JSON.stringify(again.value));
+      assert.strictEqual(yield* paid(), 500_00);
     }).pipe(Effect.provide(layer)),
   ),
 );

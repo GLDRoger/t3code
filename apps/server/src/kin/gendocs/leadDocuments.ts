@@ -15,7 +15,8 @@ import { turnChat } from "../lead/Audience.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { shown } from "../work/leadDocs.ts";
-import { askOwner } from "../work/leadMoney.ts";
+import { proposeMoney } from "../work/leadMoney.ts";
+import { KIN_OWN_REFUSAL, refuseKinOwn } from "../people/KinAccess.ts";
 import { notRegisteredFact, readProfile, recordingCurrency } from "../work/companyProfile.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { isMoney, parseFields } from "../work/lists.ts";
@@ -28,14 +29,7 @@ import { issueEntry } from "./amounts.ts";
 import { canonical, makeDocument, remakeForEntry, type Requester } from "./make.ts";
 import * as Numbers from "./numbering.ts";
 import { invoiceFromQuote, quotedInputs } from "./quotes.ts";
-import {
-  attachReceiptCard,
-  cardLines,
-  proposalOutcome,
-  proposeReceipt,
-  type ReceiptRequest,
-  snapshotOf,
-} from "./receiptProposals.ts";
+import { proposalOutcome, type ReceiptRequest } from "./receiptProposals.ts";
 import { createsMoney, makeReceipt } from "./receipts.ts";
 import { defaultRecipes } from "./recipeDefaults.ts";
 import { recipeLabelled, undoRecipe as undoLabelled } from "./recipeLabels.ts";
@@ -605,44 +599,20 @@ export const receipt = leadTool("KinDocuments.receipt", (lead, input: typeof Rec
       };
       // Money received no live payment holds yet is the owner's to confirm, never the agent's.
       if (yield* createsMoney(lead.orgId, request)) {
-        const chat = yield* turnChat(lead);
-        if (chat === undefined) return yield* denied("This turn has no chat to ask the owner in.");
-        const snapshot = yield* snapshotOf(lead.orgId, request);
-        const proposal = yield* proposeReceipt({
-          orgId: lead.orgId,
-          agentId: lead.agentId,
-          wakeupId: lead.wakeupId,
-          chatId: chat.chatId,
-          request,
-          snapshot,
-          now: yield* Clock.currentTimeMillis,
-        });
-        const shown = cardLines(snapshot, request);
-        const card = yield* askOwner(
+        // Setting an advance against an invoice was refused in a turn no person started; still is.
+        if (request.key !== undefined && request.against !== undefined)
+          yield* refuseKinOwn(lead.orgId, requester.writer, KIN_OWN_REFUSAL.payment);
+        const asked = yield* proposeMoney(
           lead,
-          {
-            chatId: chat.chatId,
-            clientMessageId: `kin-receipt:${proposal}`,
-            question: "Record this money as received and make its receipt?",
-            detail: shown.join("\n"),
-            yes: "Confirm",
-            no: "Cancel",
-          },
-          (widgetId) => attachReceiptCard({ orgId: lead.orgId, proposalId: proposal, widgetId }),
-        ).pipe(
-          Effect.catchTags({
-            KinChatError: (error) =>
-              Effect.logWarning("Kin couldn't show a receipt card", { reason: error.reason }).pipe(
-                Effect.as(undefined),
-              ),
-          }),
+          request,
+          "Record this money as received and make its receipt?",
         );
         return {
           status: "proposed" as const,
-          proposal,
-          shown,
+          proposal: asked.proposal,
+          shown: asked.shown,
           next:
-            card === undefined
+            asked.card === undefined
               ? "Nothing was recorded. Kin couldn't show the owner a card to confirm this money, so ask them to record it themselves in Money."
               : "Nothing is recorded or numbered yet. Kin showed the owner this money on a card; ask in one short line to check it and tap Confirm. Their tap records it and makes its receipt; in a later turn, call kin_receipt with this proposal to read what was made.",
           sensitive: true as const,

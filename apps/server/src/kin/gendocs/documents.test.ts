@@ -2520,6 +2520,23 @@ describe("receipts", () => {
           "Already received on it: ₹400.00 of ₹1,000.01",
         );
         yield* answerCard(`kin-receipt:${towardsInvoice.proposal}`, "no");
+        // The advance on the books, set against that invoice, becomes its payment: on Confirm only,
+        // one card however often it is asked.
+        if (made.status !== "made") return assert.fail("expected the advance's receipt");
+        const setting = { entry: KinRecordKey.make(made.receipt), against: KinRecordKey.make("INV-1") };
+        const onInvoice = yield* proposed(setting);
+        assert.strictEqual((yield* proposed(setting)).proposal, onInvoice.proposal);
+        const invoicePaid = sql<{ minor: number }>`SELECT p.amount_minor AS minor
+          FROM kin_record_payments p JOIN kin_records r ON r.org_id = p.org_id
+            AND r.record_id = p.record_id
+          WHERE r.key = 'INV-1' AND p.voided_at IS NULL ORDER BY p.amount_minor`;
+        assert.deepStrictEqual(yield* invoicePaid, [{ minor: 400_00 }]);
+        assert.include(
+          onInvoice.shown,
+          "Set against: " + (yield* records.get(orgId, "INV-1"))!.title,
+        );
+        yield* answerCard(`kin-receipt:${onInvoice.proposal}`, "yes");
+        assert.deepStrictEqual(yield* invoicePaid, [{ minor: 400_00 }, { minor: 500_00 }]);
       }).pipe(Effect.provide(layer)),
   );
 

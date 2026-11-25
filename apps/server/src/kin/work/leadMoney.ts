@@ -11,6 +11,7 @@ import {
   KinWritableListFieldType,
   KinListId,
   type KinMoney,
+  type KinOrgId,
   KinRecordKey,
   KinChatId,
   KinRecordState,
@@ -29,6 +30,13 @@ import * as SqlClient from "effect/sql/SqlClient";
 import type * as SqlError from "effect/sql/SqlError";
 
 import { takeLogo } from "../gendocs/brand.ts";
+import {
+  attachReceiptCard,
+  cardLines,
+  proposeReceipt,
+  type ReceiptRequest,
+  snapshotOf,
+} from "../gendocs/receiptProposals.ts";
 import { KinDocRenderer } from "../gendocs/render.ts";
 import { turnChat } from "../lead/Audience.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
@@ -78,11 +86,15 @@ import {
   endOfDay,
   iso,
   isSuggestion,
+  issuedNumber,
   notFound,
   ownerZone,
   recordName,
+  stillSuggestion,
   suggestedStateLabel,
 } from "./recordRows.ts";
+import { SensitiveRefusal } from "./sensitiveReads.ts";
+import { KIN_OWN_REFUSAL, refuseKinOwn } from "../people/KinAccess.ts";
 import {
   attachCard,
   carryOut,
@@ -158,6 +170,65 @@ export const askOwner = Effect.fn("KinOwnerCards.ask")(function* (
     (card) => bind(card.widgetId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
   );
   return widget.widgetId;
+});
+
+/**
+ * Money an agent was told of, put to the owner on the receipt card, whose Confirm alone records
+ * it (`receiptProposals.ts`). The same ask in the same turn is the same proposal and card.
+ */
+export const proposeMoney = Effect.fn("KinOwnerCards.proposeMoney")(function* (
+  lead: Lead,
+  request: ReceiptRequest,
+  question: string,
+) {
+  const chat = yield* turnChat(lead);
+  if (chat === undefined)
+    return yield* new KinChatError({
+      reason: "not_allowed",
+      message: "This turn has no chat to ask the owner in.",
+    });
+  const snapshot = yield* snapshotOf(lead.orgId, request);
+  const proposal = yield* proposeReceipt({
+    orgId: lead.orgId,
+    agentId: lead.agentId,
+    wakeupId: lead.wakeupId,
+    chatId: chat.chatId,
+    request,
+    snapshot,
+    now: yield* Clock.currentTimeMillis,
+  });
+  if (request.received !== undefined) {
+    const sql = yield* SqlClient.SqlClient;
+    const [row] = yield* sql<{ state: string }>`SELECT state FROM kin_receipt_proposals
+      WHERE org_id = ${lead.orgId} AND proposal_id = ${proposal}`;
+    if (row !== undefined && row.state !== "open")
+      return yield* new KinChatError({
+        reason: "conflict",
+        message:
+          "The owner already answered the card for this same payment in this turn, so nothing more was recorded. Don't ask again unless they do.",
+      });
+  }
+  const shown = cardLines(snapshot, request);
+  const card = yield* askOwner(
+    lead,
+    {
+      chatId: chat.chatId,
+      clientMessageId: `kin-receipt:${proposal}`,
+      question,
+      detail: shown.join("\n"),
+      yes: "Confirm",
+      no: "Cancel",
+    },
+    (widgetId) => attachReceiptCard({ orgId: lead.orgId, proposalId: proposal, widgetId }),
+  ).pipe(
+    Effect.catchTags({
+      KinChatError: (error) =>
+        Effect.logWarning("Kin couldn't show a receipt card", { reason: error.reason }).pipe(
+          Effect.as(undefined),
+        ),
+    }),
+  );
+  return { proposal, shown, card };
 });
 
 const Label = KinToolText(60);
@@ -476,7 +547,7 @@ export const PaymentInput = Schema.Struct({
     description: "A paymentId from record_get to take back instead.",
   }),
 });
-export const PaymentResult = Schema.Struct({
+const PaymentRecorded = Schema.Struct({
   key: Schema.String,
   state: Schema.String,
   amount: Schema.String,
@@ -488,6 +559,21 @@ export const PaymentResult = Schema.Struct({
   tdsPaymentId: Schema.optional(Schema.String),
   sensitive: Schema.Literal(true),
 });
+const PaymentProposed = Schema.Struct({
+  status: Schema.Literal("proposed"),
+  key: Schema.String,
+  proposal: Schema.String,
+  /** What the owner's card shows, line by line. */
+  shown: Schema.Array(Schema.String),
+  next: Schema.String,
+  sensitive: Schema.Literal(true),
+});
+export const PaymentResult = Schema.Union([PaymentRecorded, PaymentProposed]);
+
+export const PAYMENT_PROPOSED_NEXT =
+  "Nothing is recorded yet. Kin put this payment to the owner on a card. Say in one short line that it is there to check and confirm, and that nothing is recorded until they tap Confirm; a typed yes doesn't record it. Never say it is recorded, marked paid or done.";
+export const PAYMENT_NO_CARD_NEXT =
+  "Nothing was recorded. Kin couldn't show the owner a card for this payment, so ask them to record it themselves in Money.";
 
 const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof PaymentInput.Type) {
   yield* admitted(lead, "payment_record", input);
@@ -505,16 +591,14 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
     return yield* invalid(
       `${before.key} is a draft, so nothing is owed on it yet. Issue it first with kin_issue, which takes its date as the issue day (else today; set date with record_update first if the owner gave another), then record the payment.`,
     );
-  let paymentId: string | undefined;
-  let tdsPaymentId: string | undefined;
-  if (input.void !== undefined) {
-    yield* records.voidPayment(lead.orgId, writer, input.key, input.void);
-  } else {
+  if (input.void === undefined) {
+    yield* refuseKinOwn(lead.orgId, writer, KIN_OWN_REFUSAL.payment);
     const paidOn = input.paidOn;
     if ((input.amount === undefined && input.withheld === undefined) || paidOn === undefined)
       return yield* invalid(
         "A payment needs amount (cash received), withheld (tax the client withheld) or both, and paidOn; or void to take one back.",
       );
+    if (isSuggestion(before)) return yield* invalid(stillSuggestion(before.key));
     const fallback = before.currency ?? (yield* homeCurrency(lead.orgId));
     const parsed = (text: string | undefined) => {
       if (text === undefined) return Effect.undefined;
@@ -523,49 +607,54 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
     };
     const cash = yield* parsed(input.amount);
     const tds = yield* parsed(input.withheld);
-    // One settlement per owner message, entry and day, whatever its parts: a retry finds it.
-    const settlement = `lead:${lead.agentId}:${input.sourceEventId}:${retryKey(`${input.key}|settlement|${paidOn}`)}`;
-    const sql = yield* SqlClient.SqlClient;
-    // The cash and the tax withheld are recorded together or not at all.
-    const settled = yield* sql.withTransaction(
-      Effect.gen(function* () {
-        const earlier = yield* sql<{ part: string; minor: number; note: string }>`SELECT
-            substr(origin_key, ${settlement.length + 2}) AS part, amount_minor AS minor, note
-          FROM kin_record_payments
-          WHERE org_id = ${lead.orgId} AND origin_key IN (${`${settlement}:cash`},
-            ${`${settlement}:tds`})
-          ORDER BY origin_key`;
-        const was = (part: string) => earlier.find((one) => one.part === part);
-        const same = (part: string, money: KinMoney | undefined) =>
-          money === undefined
-            ? was(part) === undefined
-            : was(part)?.minor === money.minor && was(part)?.note === (input.note ?? "");
-        if (earlier.length > 0 && !(same("cash", cash) && same("tds", tds)))
-          return yield* new KinChatError({
-            reason: "not_allowed",
-            message: `This message already recorded a different payment on ${recordName(before.key, parseFields(before.fieldsJson).number)} for ${paidOn}. Nothing was recorded. To correct it, void the earlier payment and record the right one from the owner's next message.`,
-          });
-        const one = (money: KinMoney | undefined, withheld: boolean) =>
-          money === undefined
-            ? Effect.undefined
-            : records
-                .pay(lead.orgId, writer, input.key, {
-                  amount: money,
-                  paidOn,
-                  ...(input.note === undefined ? {} : { note: input.note }),
-                  ...(withheld ? { withheld: true } : {}),
-                  originKey: `${settlement}:${withheld ? "tds" : "cash"}`,
-                })
-                .pipe(Effect.map((paid) => paid.paymentId));
-        return { cash: yield* one(cash, false), tds: yield* one(tds, true) };
-      }),
+    // Refused now, as the tap would refuse it, rather than on a card nobody can confirm.
+    for (const money of [cash, tds])
+      if (money !== undefined && before.currency !== null && money.currency !== before.currency)
+        return yield* invalid(
+          `${before.key} is in ${before.currency}; record the payment in ${before.currency}.`,
+        );
+    const owed = before.amountMinor === null ? undefined : before.amountMinor - before.paid;
+    if (owed !== undefined && (cash?.minor ?? 0) + (tds?.minor ?? 0) > owed)
+      return yield* new SensitiveRefusal({
+        reason: "invalid_state",
+        message: `That is more than the ${formatMoney({ minor: owed, currency: fallback })} still owed on ${before.key}.`,
+      });
+    const name = issuedNumber(parseFields(before.fieldsJson).number).number ?? before.key;
+    const asked = yield* proposeMoney(
+      lead,
+      {
+        received: {
+          key: before.key,
+          ...(cash === undefined ? {} : { amount: cash }),
+          ...(tds === undefined ? {} : { withheld: tds }),
+          paidOn,
+          ...(input.note === undefined ? {} : { note: input.note }),
+        },
+      },
+      `Record this payment on ${name}?`,
     );
-    paymentId = settled.cash ?? settled.tds;
-    tdsPaymentId = settled.tds;
+    return {
+      status: "proposed" as const,
+      key: before.key,
+      proposal: asked.proposal,
+      shown: asked.shown,
+      next: asked.card === undefined ? PAYMENT_NO_CARD_NEXT : PAYMENT_PROPOSED_NEXT,
+      sensitive: true as const,
+    };
   }
-  const after = yield* records.get(lead.orgId, input.key);
-  if (after === undefined) return yield* notFound(input.key);
-  const currency = after.currency ?? (yield* homeCurrency(lead.orgId));
+  yield* records.voidPayment(lead.orgId, writer, input.key, input.void);
+  return yield* paymentSummary(lead.orgId, input.key);
+});
+export const payment = leadTool("KinWorkTools.payment", runPayment);
+
+/** An invoice's amount, what came in and what is left, exact, as payment_record answers. */
+export const paymentSummary = Effect.fn("KinWorkTools.paymentSummary")(function* (
+  orgId: KinOrgId,
+  key: string,
+) {
+  const after = yield* (yield* KinRecords).get(orgId, key);
+  if (after === undefined) return yield* notFound(key);
+  const currency = after.currency ?? (yield* homeCurrency(orgId));
   const amount = after.amountMinor ?? 0;
   return {
     key: after.key,
@@ -576,12 +665,9 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
       ? {}
       : { tdsWithheld: formatMoney({ minor: after.withheld, currency }) }),
     balance: formatMoney({ minor: Math.max(amount - after.paid, 0), currency }),
-    ...(paymentId === undefined ? {} : { paymentId }),
-    ...(tdsPaymentId === undefined ? {} : { tdsPaymentId }),
     sensitive: true as const,
   };
 });
-export const payment = leadTool("KinWorkTools.payment", runPayment);
 
 export const MoneyResult = Schema.Struct({
   asOf: Schema.String,

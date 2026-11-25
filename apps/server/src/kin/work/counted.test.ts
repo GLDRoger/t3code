@@ -36,8 +36,6 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "pulse/senses/projects.ts": 1,
   // Download everything: each entry's own amount and payments, copied out as they are, never summed.
   "work/exportBundle.ts": 2,
-  // One settlement's parts, read to check a retry.
-  "work/leadMoney.ts": 1,
   // Duplicate and paired-entry candidates, including the two sign filters for undated refunds.
   "work/leadWork.ts": 4,
   // The expenses one bill may already be, by its own amount; the expenses a batch's bills became,

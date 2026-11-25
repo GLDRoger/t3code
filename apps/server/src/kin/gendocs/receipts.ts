@@ -299,13 +299,15 @@ const standing = Effect.fn("KinReceipts.standing")(function* (orgId: KinOrgId, r
 
 /**
  * Whether making this receipt records money received that no live payment holds yet: a new
- * advance, or an entry standing on nothing. An agent's such receipt waits for the owner's Confirm.
+ * advance, an entry standing on nothing, or an advance set against an invoice, which becomes a
+ * payment on it. An agent's such receipt waits for the owner's Confirm.
  */
 export const createsMoney = Effect.fn("KinReceipts.createsMoney")(function* (
   orgId: KinOrgId,
   asked: {
     readonly key?: string | undefined;
     readonly advance?: unknown;
+    readonly against?: string | undefined;
   },
 ) {
   if (asked.advance !== undefined) return true;
@@ -314,7 +316,15 @@ export const createsMoney = Effect.fn("KinReceipts.createsMoney")(function* (
   if (receipt === undefined || receipt.registerId !== RECEIPTS || receipt.state === "dropped")
     return false;
   // One taken back is refused as it is made, set against an invoice or not.
-  return (yield* standing(orgId, receipt)) === "none";
+  const stands = yield* standing(orgId, receipt);
+  if (stands === "none") return true;
+  if (asked.against === undefined || stands !== "live") return false;
+  // Its own payment moves onto the invoice; one an invoice holds already was set before.
+  const sql = yield* SqlClient.SqlClient;
+  const [own] = yield* sql`SELECT 1 FROM kin_record_payments WHERE org_id = ${orgId}
+    AND payment_id = ${String(parseFields(receipt.fieldsJson).payment)}
+    AND record_id = ${receipt.recordId}`;
+  return own !== undefined;
 });
 
 /**
