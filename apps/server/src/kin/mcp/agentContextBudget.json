@@ -2,10 +2,10 @@
   "mcpToolListJsonBytes": 64767,
   "kinToolListJsonBytes": 3044,
   "kinInstructionsBytes": {
-    "owner": 41639,
-    "confined": 41587
+    "owner": 41693,
+    "confined": 41641
   },
-  "kinSharedInstructionsHash": "4c898c6ad57854c5a20017c529647b6f00b8d498482c9bcada3757e5d371c098",
+  "kinSharedInstructionsHash": "0999291c891b377039b500335f8dd91c91908e5e930f892eb7970157f777cafc",
   "kinLeadToolListJsonBytes": {
     "engineering": 168774,
     "engineeringBesideFinanceAndSales": 153712,
