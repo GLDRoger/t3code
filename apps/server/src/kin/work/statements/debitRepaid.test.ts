@@ -298,4 +298,21 @@ it.layer(layer)((it) => {
       );
     }),
   );
+
+  // A debit from before anything was owed, or a salary, can't have repaid these expenses: no
+  // "doesn't add up" line for them. An ordinary debit that doesn't add up keeps its line.
+  it.effect("a debit that can't have repaid anything gets no line", () =>
+    Effect.gen(function* () {
+      const kin = yield* company(KinOrgId.make("ambermill-old-debits"));
+      yield* kin.expense("EXP-8", 5_000, "2026-11-01", { reimbursement: "owed" });
+      yield* kin.debit("BNK-3", 7_000, "2026-10-25");
+      yield* kin.debit("BNK-4", 30_000, "2026-11-21", "NEFT-ZOYA RAO-SALARY NOV");
+      yield* kin.debit("BNK-5", 9_000, "2026-11-21");
+      assert.deepStrictEqual(yield* kin.told(), ["repaid_seen:BNK-5:short"]);
+      assert.strictEqual(
+        yield* kin.draw("BNK-3"),
+        "BNK-3 names Zoya Rao but doesn't add up exactly to their oldest owed expenses, so Kin marks nothing and offers no card for it. Nothing was asked; tell the owner what you see instead.",
+      );
+    }),
+  );
 });

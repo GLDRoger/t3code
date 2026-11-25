@@ -7,7 +7,7 @@ import { partnerPayees } from "../partnersOwed.ts";
 import { ownerZone } from "../recordRows.ts";
 import { findBankList } from "./bankList.ts";
 import { openEntries } from "./invoiceCredits.ts";
-import { identifies, markedByHand, repayment, suggest } from "./statementMatch.ts";
+import { identifies, markedByHand, repayment, SALARIES, suggest } from "./statementMatch.ts";
 import { partnerCandidates } from "./statementReview.ts";
 
 type OpenDebit = Effect.Success<ReturnType<typeof openEntries>>[number];
@@ -26,6 +26,8 @@ export type RepaidMatch = {
   readonly owedCount: number;
   readonly repays: ReadonlyArray<RepaidItem> | undefined;
   readonly marked: string | undefined;
+  /** It adds up to nothing and can't have repaid anything: older than what they are owed, or a salary. */
+  readonly noLine: boolean;
 };
 export type RepaidItem = {
   readonly recordId: string;
@@ -52,8 +54,9 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
     FROM kin_bank_statements WHERE org_id = ${orgId} AND account IS NOT NULL
     ORDER BY account`).map((one) => one.account);
   return debits.flatMap((debit): Array<RepaidMatch> => {
+    const plain = suggest(debit.row, { ownAccounts, known: [], bank: null });
     // A move between the company's own accounts that names a partner repays nobody.
-    if (suggest(debit.row, { ownAccounts, known: [], bank: null }).action === "transfer") return [];
+    if (plain.action === "transfer") return [];
     const named = new Map<string, string>();
     for (const one of [...partners, ...payees])
       if (identifies(one, debit.row.description)) named.set(one.id ?? one.name, one.name);
@@ -79,14 +82,19 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
             },
           ],
     );
+    const exact = repays !== undefined && repays.length === found?.length ? repays : undefined;
+    const oldest = partner.owed[0]!.day;
     return [
       {
         debit,
         partner: { id, name },
         owedMinor: partner.owed.reduce((sum, one) => sum + BigInt(one.amountMinor), 0n),
         owedCount: partner.owed.length,
-        repays: repays !== undefined && repays.length === found?.length ? repays : undefined,
+        repays: exact,
         marked,
+        noLine:
+          exact === undefined &&
+          ((oldest !== undefined && debit.date < oldest) || plain.category === SALARIES),
       },
     ];
   });
