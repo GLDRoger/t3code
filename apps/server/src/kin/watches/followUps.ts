@@ -72,8 +72,6 @@ export const rememberSnapshots = Layer.effect(
 const activeStates = ["armed", "heads_up", "asked", "grace", "snoozed"];
 const decodeCard = Schema.decodeUnknownOption(Schema.fromJsonString(KinDeferralCard));
 const iso = (at: number) => DateTime.formatIso(DateTime.makeUnsafe(at));
-const unavailable = () =>
-  new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
 
 const recordReferences = (head: MemoryItemHead) => {
   // Deferrals.sectionOff returns a boolean; the list also needs the matching section.
