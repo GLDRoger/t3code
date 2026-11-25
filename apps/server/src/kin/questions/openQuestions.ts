@@ -1729,6 +1729,8 @@ const tellDue = Effect.fn("KinQuestions.tellDue")(function* (
             label: row.defaultLabel!,
             question: row.question,
             about: row.about,
+            dueAt: row.dueAt,
+            zone: (yield* personClock(orgId, row.personId)).zone,
             now,
           },
           chat,

@@ -5835,12 +5835,14 @@ it.effect(
         "W-2",
         "W-3",
       ]);
-      // One message for the whole plan, in their chat with the agent, with why and when.
+      // One message for the whole plan, in their chat with the agent, with when; the reason for
+      // choosing them is the agent's, written about them, so it stays on the task's history.
       const told = yield* sql<{ body: string }>`SELECT body FROM kin_messages
         WHERE chat_id = 'mate-chat' ORDER BY seq`;
       assert.lengthOf(told, 1);
       assert.include(told[0]!.body, "gave you 3 tasks");
-      assert.include(told[0]!.body, "W-2 Invented: fix the login screen, due Fri 20 Nov. Why: iOS");
+      assert.include(told[0]!.body, "W-2 Invented: fix the login screen, due Fri 20 Nov");
+      assert.notInclude(told[0]!.body, "Why");
       yield* sql`UPDATE kin_people SET time_zone = NULL
         WHERE org_id = ${orgId} AND person_id = ${mateId}`;
       // The agent reads the day the owner named, west of UTC too.
@@ -6007,7 +6009,7 @@ it.effect(
       assert.deepStrictEqual(
         (yield* notices).slice(givenOn).map((row) => row.body),
         [
-          "Lead lead gave you W-1 Invented: draft the onboarding copy. Why: Invented: on leave.",
+          "Lead lead gave you W-1 Invented: draft the onboarding copy.",
           "Lead lead took over W-1 Invented: draft the onboarding copy: Invented: quicker.",
         ],
       );
@@ -6040,9 +6042,7 @@ it.effect(
       assert.isUndefined((yield* telling()).told);
       assert.deepStrictEqual(
         (yield* notices).slice(quiet).map((row) => row.body),
-        [
-          "Lead lead gave you W-1 Invented: draft the onboarding copy. Why: Invented: after the launch.",
-        ],
+        ["Lead lead gave you W-1 Invented: draft the onboarding copy."],
       );
       // Held, then moved on: the one never told hears nothing of it, and the mark goes. A new
       // turn, so the owner's hand moves above came before it.

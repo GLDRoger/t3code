@@ -304,6 +304,7 @@ it.effect("a question is asked once, and its default is taken once at its day", 
     Effect.gen(function* () {
       const { sql, chats, owner, orgId, services, chatOf, wake } = yield* ambermill;
       const repo = Context.get(services, KinChatRepository);
+      yield* sql`UPDATE kin_people SET time_zone = 'Asia/Kolkata' WHERE person_id = ${owner.personId}`;
       yield* wake(
         "finance",
         yield* chats.send(owner, {
@@ -363,8 +364,12 @@ it.effect("a question is asked once, and its default is taken once at its day", 
       // Never before its day; once at it; never twice. Her quiet hours hold the news of it.
       yield* sql`UPDATE kin_people SET quiet_hours_json = '{"from":"19:00","to":"21:00"}'
         WHERE person_id = ${owner.personId}`;
-      const told = sql<{ author: string; body: string; widget: string | null }>`SELECT
-          m.author_agent_id AS author, m.body, m.widget_id AS widget
+      const told = sql<{
+        author: string;
+        body: string;
+        widget: string | null;
+        when: string | null;
+      }>`SELECT m.author_agent_id AS author, m.body, m.widget_id AS widget, m.when_json AS "when"
         FROM kin_pulse_told t JOIN kin_messages m ON m.org_id = t.org_id AND m.message_id = t.event_id
         WHERE t.org_id = ${orgId} AND t.fact_key = ${`default_taken:${questionId}`}`;
       assert.strictEqual(yield* settle(orgId, TUE_1930 - 60_000), 0);
@@ -415,14 +420,20 @@ it.effect("a question is asked once, and its default is taken once at its day", 
       ]);
       assert.lengthOf(yield* told, 0);
       // At 21:00 her time she is told once, from Finance, as a line: Finance's turn does the
-      // default, so there is nothing for Kin to put back.
+      // default, so there is nothing for Kin to put back. It was her question alone, so it says
+      // she didn't answer, by when on her clock; each of her devices says that time on its own.
       yield* settle(orgId, TUE_1930 + 90 * 60_000);
       yield* settle(orgId, TUE_1930 + 91 * 60_000);
       assert.deepStrictEqual(yield* told, [
         {
           author: "finance",
-          body: "Nobody answered, so I went with “Draft it” on “Shall I draft VIOM's payment reminder for INV-8?”.",
+          body: "You didn't answer by 7:30 pm (Tue 17 Nov), so I went with “Draft it” on “Shall I draft VIOM's payment reminder for INV-8?”.",
           widget: null,
+          when: JSON.stringify({
+            at: TUE_1930_ISO,
+            zone: "Asia/Kolkata",
+            text: "7:30 pm (Tue 17 Nov)",
+          }),
         },
       ]);
       const card = Option.getOrThrow(
@@ -432,7 +443,7 @@ it.effect("a question is asked once, and its default is taken once at its day", 
         }),
       );
       assert.isNotNull(card.closedAt);
-      // The notice above says nobody answered; the card only reads as closed.
+      // The notice above says she didn't answer; the card only reads as closed.
       assert.deepStrictEqual((card.state as { outcome: unknown }).outcome, {
         title: "Went with “Draft it”",
         text: 'Went with “Draft it”. Say "undo it" in the chat to reverse.',
