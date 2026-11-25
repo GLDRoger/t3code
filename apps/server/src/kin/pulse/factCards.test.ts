@@ -1082,10 +1082,11 @@ it.effect("a tap on a fact card whose section is switched off does nothing and s
         {
           dueAt: (yield* ctx.records.get(ctx.orgId, milestone))?.dueAt,
           move: answered.find((card) => card.widgetId === move.widgetId)?.outcome,
-          renew: answered.find((card) => card.widgetId === renew.widgetId)?.outcome,
+          // A notice day has no section: the pass still draws its card, so its tap still answers.
+          renew: answered.find((card) => card.widgetId === renew.widgetId)?.outcome?.title,
           noticeOpen: yield* noticeOpen(ctx, { _tag: "owner" }, NOW + HOUR),
         },
-        { dueAt: NOV_27, move: outcome, renew: outcome, noticeOpen: true },
+        { dueAt: NOV_27, move: outcome, renew: "Left to renew", noticeOpen: false },
       );
     }),
   ),

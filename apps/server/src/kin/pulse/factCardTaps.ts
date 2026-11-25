@@ -391,14 +391,9 @@ export const runFactCard = Effect.fn("KinFactCards.run")(function* (
       break;
   }
   const shell = yield* KinShell.get(tap.orgId);
-  const subjectSection = sectionOfKey(plan.key);
-  if (
-    KinPulse.quiet(
-      { sense, subject: { key: plan.key }, section: subjectSection ?? undefined },
-      shell,
-    )
-  ) {
-    const section = [sectionOfSense(sense), subjectSection].find(
+  // The pass's own rule: a card it would still draw, such as a notice day's, is still answered.
+  if (KinPulse.quiet({ sense, subject: { key: plan.key } }, shell)) {
+    const section = [sectionOfSense(sense), sectionOfKey(plan.key)].find(
       (id) => id !== null && !KinShell.sectionOn(shell, id),
     );
     if (section != null)
