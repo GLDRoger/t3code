@@ -594,7 +594,12 @@ const make = Effect.gen(function* () {
       void runPromise(saveBounds(window));
       if (environment.platform === "darwin" && !Ref.getUnsafe(desktopState.quitting)) {
         event.preventDefault();
-        window.hide();
+        if (window.isFullScreen()) {
+          window.once("leave-full-screen", () => window.hide());
+          window.setFullScreen(false);
+        } else {
+          window.hide();
+        }
       }
     });
     window.on("closed", () => void runPromise(electronWindow.clearMain(Option.some(window))));

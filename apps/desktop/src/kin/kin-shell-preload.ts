@@ -13,9 +13,10 @@ if (isAppPageUrl(location.href)) {
     back: () => ipcRenderer.invoke(Channels.KIN_SHELL_BACK_CHANNEL),
   });
 } else {
-  contextBridge.exposeInMainWorld("kinDesktopWindow", {
-    kinWindowReveal: () => ipcRenderer.invoke(Channels.KIN_SHELL_REVEAL_CHANNEL),
-  });
+  contextBridge.exposeInMainWorld("kinDesktopWindow", true);
+  contextBridge.exposeInMainWorld("kinDesktopReveal", () =>
+    ipcRenderer.invoke(Channels.KIN_SHELL_REVEAL_CHANNEL),
+  );
   // Pushed by the main process, so the page can drop the buttons' space as T3 Code's window does.
   let fullscreen = false;
   ipcRenderer.on(Channels.KIN_SHELL_FULLSCREEN_CHANNEL, (_event, value: unknown) => {

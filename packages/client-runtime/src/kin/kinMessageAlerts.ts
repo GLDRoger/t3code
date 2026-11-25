@@ -10,9 +10,12 @@ export function kinDesktopNoticeShows(
     looking,
     mode,
   }: { readonly looking: boolean; readonly mode: ClientSettings["notificationMode"] },
-): { readonly silent: boolean } | null {
+): { readonly banner: boolean; readonly sound: boolean } | null {
   if (looking || mode === "off") return null;
-  return { silent: !(notice.ring && (mode === "sound" || mode === "notifications-and-sound")) };
+  return {
+    banner: mode === "notifications" || mode === "notifications-and-sound",
+    sound: notice.ring && (mode === "sound" || mode === "notifications-and-sound"),
+  };
 }
 
 export const kinDesktopNoticeDestination = ({ data }: KinDesktopNotice) =>

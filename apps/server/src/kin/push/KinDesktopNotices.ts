@@ -32,7 +32,7 @@ export class KinDesktopNotices extends Context.Service<
     readonly listening: (orgId: KinOrgId, personId: KinPersonId) => Effect.Effect<boolean>;
     readonly offer: (
       orgId: KinOrgId,
-      push: Omit<KinDesktopNotice, "ring">,
+      push: Omit<KinDesktopNotice, "ring"> & { readonly exceptSession?: string },
       recipients: ReadonlyArray<Recipient>,
     ) => Effect.Effect<void>;
   }
@@ -87,8 +87,10 @@ export const layer = Layer.sync(KinDesktopNotices, () => {
             ring: delivery === "ring",
             data: subject === undefined ? push.data : { ...push.data, subject },
           };
-          for (const streams of sessions.values())
+          for (const [sessionId, streams] of sessions) {
+            if (sessionId === push.exceptSession) continue;
             for (const queue of streams) Queue.offerUnsafe(queue, notice);
+          }
         }
       }),
     ),

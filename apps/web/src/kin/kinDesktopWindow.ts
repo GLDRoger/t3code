@@ -2,17 +2,18 @@ import type { DesktopBridge } from "@t3tools/contracts";
 
 import { isElectron } from "../env";
 
-type KinDesktopWindow = { readonly kinWindowReveal: () => Promise<void> };
-
 const kinWindow =
   typeof window === "undefined"
     ? undefined
-    : (window as { readonly kinDesktopWindow?: true | KinDesktopWindow }).kinDesktopWindow;
+    : (window as {
+        readonly kinDesktopWindow?: true;
+        readonly kinDesktopReveal?: () => Promise<void>;
+      });
 
-export const inKinDesktopWindow = kinWindow !== undefined;
+export const inKinDesktopWindow = kinWindow?.kinDesktopWindow === true;
 
 export const revealKinDesktopWindow = () => {
-  if (typeof kinWindow === "object") return kinWindow.kinWindowReveal();
+  if (kinWindow?.kinDesktopReveal !== undefined) return kinWindow.kinDesktopReveal();
   if (window.desktopBridge !== undefined) return window.desktopBridge.revealWindow();
   window.focus();
 };
