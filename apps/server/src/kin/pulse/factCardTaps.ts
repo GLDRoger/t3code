@@ -196,7 +196,8 @@ const runStall = Effect.fn("KinFactCards.runStall")(function* (
       action: "got_it",
       until: plan.until,
       note: `${plan.personName}: still on it`,
-      view: "company",
+      // Only the first quiets the owner, until Kin asks again; after it the stall is told.
+      view: plan.round === 0 ? "company" : "theirs",
     });
     if (!held) return nothingDone(`${plan.key} moved on`);
     return { title: "Noted", text: `Kin asks again on ${plan.day} if ${plan.key} hasn't moved.` };

@@ -679,3 +679,28 @@ it.effect(
       }),
     ),
 );
+
+it.effect(
+  "the first Still on it quiets the owner until Kin asks again; from the second the owner's check-in tells the stall",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW);
+        for (const key of ["W-1", "W-2"])
+          yield* ctx.records.update(ctx.orgId, ctx.byOwner, key, { state: "done" });
+        const guide = yield* inProgress(ctx, "Draft onboarding guide", zoyaId, NOW - 4 * DAY);
+        yield* tickAt(ctx, NOW);
+        const [first] = yield* cards(ctx);
+        yield* tap(ctx, zoyaId, first!, "Still on it");
+        assert.isFalse(yield* ownerSees(ctx, "task_stalled", guide, NOW + HOUR));
+        yield* freshDay(ctx);
+        yield* tickAt(ctx, NOW + 3 * DAY + HOUR);
+        const second = (yield* cards(ctx)).find((one) => !one.closed)!;
+        yield* tap(ctx, zoyaId, second, "Still on it");
+        assert.isFalse(
+          yield* personSees(ctx, zoyaId, "task_stalled", guide, NOW + 3 * DAY + 2 * HOUR),
+        );
+        assert.isTrue(yield* ownerSees(ctx, "task_stalled", guide, NOW + 3 * DAY + 2 * HOUR));
+      }),
+    ),
+);
