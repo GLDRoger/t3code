@@ -265,15 +265,14 @@ export function makeKinDocsHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinDocsUse
     );
     const named = live?.changed[key] ?? 0;
     const unnamed = live?.unnamed ?? 0;
-    const heldSeq = state._tag === "ready" ? state.value.seq : null;
+    // A teammate's Docs number is her own count, not the doc's `seq`, so only its moving says the
+    // copy held is old; a doc that is private now or gone reads again when it changes, too.
+    const held = state._tag !== "loading";
     // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the open doc from the host again when the host announces a change to it
     useEffect(() => {
       if (live === null) return;
-      watch.changed(
-        { changed: { [key]: named }, unnamed },
-        heldSeq === null ? null : { seq: heldSeq },
-      );
-    }, [watch, key, live, named, unnamed, heldSeq]);
+      watch.changed({ changed: { [key]: named }, unnamed }, held ? {} : null);
+    }, [watch, key, live, named, unnamed, held]);
     return { state, refresh: () => registry.refresh(atom) };
   }
 
