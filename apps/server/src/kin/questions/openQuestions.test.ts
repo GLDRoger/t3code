@@ -1120,6 +1120,47 @@ it.effect("a text question nobody answered marks the message that asked it", () 
   ),
 );
 
+it.effect(
+  "a reaction that answers a text question closes it, so it never shows as unanswered",
+  () =>
+    Effect.andThen(
+      TestClock.setTime(IST_MON_1130),
+      Effect.gen(function* () {
+        const { sql, chats, owner, orgId, services, chatOf, wake } = yield* ambermill;
+        const chatId = chatOf("finance");
+        const identity = Context.get(services, KinIdentity);
+        const repo = Context.get(services, KinChatRepository);
+        const wakeupId = yield* wake("finance");
+        const agent = yield* identity.resolveAgent(scopeOf("finance"));
+        const question = "Shall I send the Tidewater Freight reminder today?";
+        const message = yield* chats.send(agent, {
+          chatId,
+          body: question,
+          intent: "evidence",
+          clientMessageId: "reminder-question",
+        });
+        const questionId = yield* Questions.flagTextQuestion({
+          orgId,
+          chatId,
+          agentId: agent.agentId,
+          threadId: agent.threadId,
+          wakeupId,
+          startedAt: IST_MON_1130,
+        });
+        assert.isDefined(questionId);
+        yield* chats.react(owner, { messageId: message.messageId, emoji: "❤️", on: true });
+        assert.strictEqual((yield* questionRow(sql, questionId!)).state, "open");
+        yield* chats.react(owner, { messageId: message.messageId, emoji: "👍", on: true });
+
+        const settled = yield* settle(orgId, TUE_1930);
+        const stored = Option.getOrThrow(yield* repo.getMessage(message));
+        assert.notProperty(stored, "lapsedQuestion");
+        assert.strictEqual((yield* questionRow(sql, questionId!)).state, "answered");
+        assert.strictEqual(settled, 0);
+      }).pipe(Effect.provide(layer)),
+    ),
+);
+
 // Rhea is away six weeks and Finance's default is taken in the first: she is told once she is
 // back, counted in her chat itself. Later, Meera, still away, has more held notices than one pass
 // tells: Rhea, who is back, is told of her next one in that same pass.

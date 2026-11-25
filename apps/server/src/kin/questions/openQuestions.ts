@@ -976,6 +976,19 @@ export const answerByReply = Effect.fn("KinQuestions.answerByReply")(function* (
       AND kind = 'text' AND state = 'open' AND asked_at < ${input.now}`;
 });
 
+export const answerByReaction = Effect.fn("KinQuestions.answerByReaction")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly chatId: KinChatId;
+  readonly personId: KinPersonId;
+  readonly messageId: KinMessageId;
+  readonly now: number;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_questions SET state = 'answered', closed_at = ${input.now}
+    WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND person_id = ${input.personId}
+      AND kind = 'text' AND state = 'open' AND message_id = ${input.messageId}`;
+});
+
 const cardIds = (row: QuestionRow) =>
   [row.raiseWidgetId ?? row.widgetId].filter((id): id is string => id !== null);
 

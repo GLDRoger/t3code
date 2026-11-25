@@ -107,7 +107,12 @@ import * as ChartCard from "../widgets/chartCard.ts";
 import * as VisualCard from "../widgets/visualCard.ts";
 import * as CardPlans from "../widgets/cardPlans.ts";
 import * as ChoiceCard from "../widgets/choiceCard.ts";
-import { answerByReply, askedForCard, questionForCard } from "../questions/openQuestions.ts";
+import {
+  answerByReaction,
+  answerByReply,
+  askedForCard,
+  questionForCard,
+} from "../questions/openQuestions.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
@@ -4171,6 +4176,21 @@ const make = Effect.gen(function* () {
         yield* withSql(
           Reactions.recordWake({ ...key, answer: request.on ? answer : null, now: nowMs }),
         );
+      if (
+        woke &&
+        request.on &&
+        identity._tag === "person" &&
+        (answer !== null || request.emoji === Reactions.KIN_CLARIFY_REACTION)
+      )
+        yield* withSql(
+          answerByReaction({
+            orgId: identity.orgId,
+            chatId: message.chatId,
+            personId: identity.personId,
+            messageId: message.messageId,
+            now: nowMs,
+          }),
+        ).pipe(Effect.mapError(toPersistenceSqlError("KinChatService.answerByReaction")));
       const changedFrom = woke && past !== undefined && request.on ? past.emoji : undefined;
       if (woke && identity._tag === "person")
         // The lead answers this turn under its own floor run, as it would a message.
