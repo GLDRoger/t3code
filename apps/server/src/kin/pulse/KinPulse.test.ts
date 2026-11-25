@@ -1679,8 +1679,10 @@ describe("KinPulse", () => {
           total: formatMoneyPlain({ minor: 21_200_00, currency: "INR" }),
         },
       });
+      const ownersOpen =
+        owners === undefined ? [] : (owners.data as { open: ReadonlyArray<{ key: string }> }).open;
       assert.includeMembers(
-        (owners?.data as { open: ReadonlyArray<{ key: string }> }).open.map((one) => one.key),
+        ownersOpen.map((one) => one.key),
         ["W-42", "W-41", "W-43"],
       );
       // Its turn's one doc is filed for her and linked to the meeting.

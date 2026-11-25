@@ -101,11 +101,9 @@ const draftersFor = Effect.fnUntraced(function* (
 });
 
 /**
- * Their zone and how to draft `recordId`, an open task of ours `personId` holds and sees, due today
- * or late; with a client, Clients on for both and no mail card open on it (Deals on for a deal's
- * step) and no mail sent for it within `SENT_WITHIN_MS`; without one, no doc linked to it since
- * its due day began. Undefined when not. One a client owes us (`theirs`) needs its client, and is
- * chased only once in each late band its holder is told in (`lateBandDays`).
+ * How to draft `recordId`, a due or late task `personId` holds and sees: with a client, Clients on,
+ * no mail card open and none sent within `SENT_WITHIN_MS`; else no doc linked since its due day.
+ * One a client owes us (`theirs`) needs its client and is chased once a late band (`lateBandDays`).
  */
 const stillDue = Effect.fnUntraced(function* (
   orgId: KinOrgId,
