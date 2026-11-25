@@ -18,12 +18,15 @@ export const rules: Record<string, string> = {
     "A teammate can never read the Team room, even after being a co-owner or being added to it.",
   ToldOnce: "You are told a discussion's outcome once, never twice.",
   ReportOnce: "A hand-off's answer comes back to the agent who asked once.",
+  UnaskedStaysThere:
+    "An answer the agent who handed something off didn't ask for is not copied back to it.",
   AskAnsweredOnce:
     "Your Team-room message naming two agents gets one answer: their discussion, or while another is open an ordinary reply; never both, never twice, and never a second discussion beside the one Kin opened.",
   AlwaysEnds: "Every discussion ends: decided, parked, or brought to you.",
   OwnerTold:
     "You are always told how a discussion ended: at once if you asked for it, else with your next check-in.",
-  AskerGetsReply: "The agent who handed something off always gets the answer back.",
+  AskerGetsReply:
+    "The agent who handed something off and asked for the answer always gets it back.",
 };
 
 export const variants = [
@@ -96,6 +99,11 @@ export const variants = [
     name: "open-beside",
     breaks: "AskAnsweredOnce",
     what: "the agent whose turn it is in the discussion your message opened opens a second one for the same ask (the code before this change)",
+  },
+  {
+    name: "copy-unasked",
+    breaks: "UnaskedStaysThere",
+    what: "an answer the asker didn't ask for is copied back to it anyway (the code before this change)",
   },
   {
     name: "report-unclaimed",
@@ -179,7 +187,9 @@ export const step = (action: string, from: Vars, to: Vars) => {
     case "Reads":
       return "Someone opens the Team room";
     case "HandOff":
-      return "An agent hands something to another";
+      return to["wants"] === false
+        ? "An agent hands something to another, wanting no answer back"
+        : "An agent hands something to another";
     case "ReceiverWakes":
       return "The other agent takes it up";
     case "ReceiverAnswers":
@@ -187,7 +197,9 @@ export const step = (action: string, from: Vars, to: Vars) => {
     case "ReceiverFails":
       return "Its turn fails and is tried again";
     case "ReceiverEnds":
-      return "Its turn ends: the answer goes back to the asker";
+      return to["reports"] === from["reports"]
+        ? "Its turn ends: the answer stays where it was given"
+        : "Its turn ends: the answer goes back to the asker";
     case "AskHandled":
       return "Kin reads your message naming two agents";
     case "OpensBeside":

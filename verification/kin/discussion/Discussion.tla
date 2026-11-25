@@ -19,12 +19,13 @@ VARIABLES
   openNow, started,            \* agent-started discussions open now, and started today
   access, room, leak, changes, \* the viewer rule: who is owner-level, who the room lists, a teammate read it
   hs, reports,                 \* a hand-off: none, passed, claimed, replied, done; replies carried back
+  wants,                       \* kin_handoffs.wants_answer: the asker asked for the answer back
   asks, opened, plain,         \* the owner's naming message handled; discussions it opened; plain replies
   phase, final, turn, pending, msgs, widened, objUsed, afterObj, last, offers, chaired,
   turnMsgs, pitches, objections, origin, told, checkIns,
   beside                       \* discussions opened for the same ask beside the one Kin opened
 
-side == <<openNow, started, access, room, leak, changes, hs, reports, asks, opened, plain>>
+side == <<openNow, started, access, room, leak, changes, hs, wants, reports, asks, opened, plain>>
 talk == <<phase, final, turn, pending, msgs, widened, objUsed, afterObj, last, offers,
           chaired, turnMsgs, pitches, objections, origin, told, checkIns, beside>>
 vars == <<stage, side, talk>>
@@ -42,7 +43,7 @@ SideInit ==
   /\ openNow = 0 /\ started = 0
   /\ access = [p \in {"co", "mem"} |-> IF p = "co" THEN "co_owner" ELSE "member"]
   /\ room = {"co"} /\ leak = FALSE /\ changes = 0
-  /\ hs = "none" /\ reports = 0 /\ asks = 0 /\ opened = 0 /\ plain = 0
+  /\ hs = "none" /\ wants = TRUE /\ reports = 0 /\ asks = 0 /\ opened = 0 /\ plain = 0
 
 Init == stage = "setup" /\ SideInit /\ TalkInit
 
@@ -53,18 +54,18 @@ AgentOpens ==
   /\ stage = "setup" /\ started < PerDay + 2
   /\ Broken = "no-open-cap" \/ (started < PerDay /\ openNow < AtOnce)
   /\ openNow' = openNow + 1 /\ started' = started + 1
-  /\ UNCHANGED <<stage, access, room, leak, changes, hs, reports, asks, opened, plain, talk>>
+  /\ UNCHANGED <<stage, access, room, leak, changes, hs, wants, reports, asks, opened, plain, talk>>
 
 AgentDiscussionEnds ==
   /\ stage = "setup" /\ openNow > 0
   /\ openNow' = openNow - 1
-  /\ UNCHANGED <<stage, started, access, room, leak, changes, hs, reports, asks, opened, plain, talk>>
+  /\ UNCHANGED <<stage, started, access, room, leak, changes, hs, wants, reports, asks, opened, plain, talk>>
 
 (* The owner's day starts over (startOfDay in the owner's zone). *)
 NewDay ==
   /\ stage = "setup" /\ started > 0
   /\ started' = 0
-  /\ UNCHANGED <<stage, openNow, access, room, leak, changes, hs, reports, asks, opened, plain, talk>>
+  /\ UNCHANGED <<stage, openNow, access, room, leak, changes, hs, wants, reports, asks, opened, plain, talk>>
 
 (* people/KinPeople.ts: the owner makes someone a co-owner or takes it away. The membership row
    stays: KinChatService.memberFor's viewer rule (roomReadable) is what keeps a teammate out. *)
@@ -72,21 +73,21 @@ SetAccess(p) ==
   /\ stage = "setup" /\ changes < 3
   /\ access' = [access EXCEPT ![p] = IF @ = "co_owner" THEN "member" ELSE "co_owner"]
   /\ changes' = changes + 1
-  /\ UNCHANGED <<stage, openNow, started, room, leak, hs, reports, asks, opened, plain, talk>>
+  /\ UNCHANGED <<stage, openNow, started, room, leak, hs, wants, reports, asks, opened, plain, talk>>
 
 (* KinTeam.ensureRoom from the sweep: co-owners join, muted. *)
 RoomSweep ==
   /\ stage = "setup"
   /\ room' = room \cup {p \in {"co", "mem"} : access[p] = "co_owner"}
   /\ room' # room
-  /\ UNCHANGED <<stage, openNow, started, access, leak, changes, hs, reports, asks, opened, plain, talk>>
+  /\ UNCHANGED <<stage, openNow, started, access, leak, changes, hs, wants, reports, asks, opened, plain, talk>>
 
 (* KinGroups.addMember refuses the Team room: Kin keeps its members. Were it to let a teammate
    in, the viewer rule below still keeps them out, so the model lets the owner try freely. *)
 OwnerAdds(p) ==
   /\ stage = "setup" /\ p \notin room
   /\ room' = room \cup {p}
-  /\ UNCHANGED <<stage, openNow, started, access, leak, changes, hs, reports, asks, opened, plain, talk>>
+  /\ UNCHANGED <<stage, openNow, started, access, leak, changes, hs, wants, reports, asks, opened, plain, talk>>
 
 (* KinChatService history, read, the Chats list and its live rows all go through memberFor:
    a member of the room who is owner-level now. *)
@@ -94,44 +95,46 @@ Reads(p) ==
   /\ stage = "setup" /\ p \in room
   /\ access[p] = "co_owner" \/ Broken = "membership-only"
   /\ leak' = (leak \/ access[p] # "co_owner")
-  /\ UNCHANGED <<stage, openNow, started, access, room, changes, hs, reports, asks, opened, plain, talk>>
+  /\ UNCHANGED <<stage, openNow, started, access, room, changes, hs, wants, reports, asks, opened, plain, talk>>
 
 (* lead/Handoff.ts handOff: the request goes to the other agent's chat, sent by the asker. *)
 HandOff ==
   /\ stage = "setup" /\ hs = "none"
-  /\ hs' = "passed"
+  /\ hs' = "passed" /\ wants' \in BOOLEAN
   /\ UNCHANGED <<stage, openNow, started, access, room, leak, changes, reports, asks, opened, plain, talk>>
 
 (* KinEventQueue claim: the receiver's wake-up takes the passed event. *)
 ReceiverWakes ==
   /\ stage = "setup" /\ hs = "passed"
   /\ hs' = "claimed"
-  /\ UNCHANGED <<stage, openNow, started, access, room, leak, changes, reports, asks, opened, plain, talk>>
+  /\ UNCHANGED <<stage, openNow, started, access, room, leak, changes, wants, reports, asks, opened, plain, talk>>
 
 (* Its answer in its own chat; an owed lane's silence gets the rescue, so it answers here. *)
 ReceiverAnswers ==
   /\ stage = "setup" /\ hs = "claimed"
   /\ hs' = "replied"
-  /\ UNCHANGED <<stage, openNow, started, access, room, leak, changes, reports, asks, opened, plain, talk>>
+  /\ UNCHANGED <<stage, openNow, started, access, room, leak, changes, wants, reports, asks, opened, plain, talk>>
 
 (* A wake-up that fails puts its events back (KinEventQueue requeue): another takes it. *)
 ReceiverFails ==
   /\ stage = "setup" /\ hs = "claimed"
   /\ hs' = "passed"
-  /\ UNCHANGED <<stage, openNow, started, access, room, leak, changes, reports, asks, opened, plain, talk>>
+  /\ UNCHANGED <<stage, openNow, started, access, room, leak, changes, wants, reports, asks, opened, plain, talk>>
 
 (* WakeupRunner.finishWakeup calls Handoff.reportBack: the last answer goes back to the asker's
    chat, shown as from the receiver, and wakes the asker, claimed by reply_message_id. It may
-   run again for the same wake-up (a retry); the claim keeps it to once. *)
+   run again for the same wake-up (a retry); the claim keeps it to once. An answer the asker
+   didn't ask for is claimed and goes nowhere ("copy-unasked": it is copied back anyway). *)
 ReceiverEnds ==
   /\ stage = "setup" /\ hs \in {"replied", "done"}
   /\ Broken # "no-report-back"
   /\ reports < 2
   /\ \/ /\ hs = "replied"
+        /\ hs' = "done"
+        /\ reports' = IF wants \/ Broken = "copy-unasked" THEN reports + 1 ELSE reports
+     \/ /\ hs = "done" /\ wants /\ Broken = "report-unclaimed"
         /\ hs' = "done" /\ reports' = reports + 1
-     \/ /\ hs = "done" /\ Broken = "report-unclaimed"
-        /\ hs' = "done" /\ reports' = reports + 1
-  /\ UNCHANGED <<stage, openNow, started, access, room, leak, changes, asks, opened, plain, talk>>
+  /\ UNCHANGED <<stage, openNow, started, access, room, leak, changes, wants, asks, opened, plain, talk>>
 
 (* lead/ChatWake.ts wake, live or again from its catch-up after a restart, hands the owner's
    Team-room message naming two agents to KinTeam.personAsked. Keyed by the message id, it opens
@@ -147,7 +150,7 @@ AskHandled ==
        [] openNow > 0 \/ opened > 0 -> plain' = 1 /\ UNCHANGED opened
        [] OTHER -> /\ opened' = opened + 1
                    /\ plain' = (IF Broken = "answerer-woken" THEN 1 ELSE plain)
-  /\ UNCHANGED <<stage, openNow, started, access, room, leak, changes, hs, reports, talk>>
+  /\ UNCHANGED <<stage, openNow, started, access, room, leak, changes, hs, wants, reports, talk>>
 
 (* The discussion this model follows opens: by an agent for the owner or on its own (origin), or
    by the owner's message naming its agents once it opened one. *)
@@ -157,7 +160,7 @@ StartTalk ==
   /\ stage' = "talk"
   \* What came before no longer matters to the discussion: the checks on it ran there.
   /\ openNow' = 0 /\ started' = 0 /\ access' = [p \in {"co", "mem"} |-> IF p = "co" THEN "co_owner" ELSE "member"]
-  /\ room' = {"co"} /\ leak' = FALSE /\ changes' = 0 /\ hs' = "none" /\ reports' = 0
+  /\ room' = {"co"} /\ leak' = FALSE /\ changes' = 0 /\ hs' = "none" /\ wants' = TRUE /\ reports' = 0
   /\ asks' = 0 /\ opened' = 0 /\ plain' = 0
   /\ UNCHANGED talk
 
@@ -353,9 +356,11 @@ OneObjection == objections <= 1
 TeammateNeverReads == ~leak
 ToldOnce == told <= 1
 ReportOnce == reports <= 1
+\* An answer the asker didn't ask for is not copied back to it.
+UnaskedStaysThere == ~wants => reports = 0
 \* Once Kin's own discussion for the ask is the one followed, none opens beside it.
 AskAnsweredOnce == opened + plain <= 1 /\ beside = 0
 AlwaysEnds == stage = "talk" ~> (final /\ phase \in {"decided", "parked", "escalated"})
 OwnerTold == final ~> told = 1
-AskerGetsReply == hs = "replied" ~> reports = 1
+AskerGetsReply == (hs = "replied" /\ wants) ~> reports = 1
 =============================================================================
