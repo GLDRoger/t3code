@@ -2836,8 +2836,11 @@ const make = Effect.gen(function* () {
             parent.thread.projectId,
             provider.instanceId,
           );
+        // An instance still on its first probe reads as not installed; don't refuse it for that.
+        const checking = provider.enabled && !provider.installed && provider.status === "warning";
+        const probed = checking ? { ...provider, installed: true } : provider;
         const reason = providerConstraints(
-          enabledForCaller ? provider : { ...provider, enabled: false },
+          enabledForCaller ? probed : { ...provider, enabled: false },
           orchestrationCapableInstanceIds.has(provider.instanceId),
         ).join(" ");
         if (reason === "") usable.push(provider);

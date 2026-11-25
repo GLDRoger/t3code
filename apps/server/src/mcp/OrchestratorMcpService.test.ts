@@ -2412,6 +2412,72 @@ describe("OrchestratorMcpService provider resolution", () => {
     }),
   );
 
+  it.effect("keeps a provider still on its first probe usable, unlike one found missing", () =>
+    Effect.gen(function* () {
+      const checkingId = ProviderInstanceId.make("claudeAgent");
+      const missingId = codexInstanceId;
+      const unprobed = (
+        instanceId: ProviderInstanceId,
+        probe: Pick<ServerProvider, "status" | "message">,
+      ): ServerProvider => ({
+        ...providerSnapshot({ instanceId, driver: ProviderDriverKind.make(instanceId) }),
+        installed: false,
+        version: null,
+        auth: { status: "unknown" },
+        ...probe,
+      });
+      const providers = [
+        unprobed(checkingId, {
+          status: "warning",
+          message: "Claude provider status has not been checked in this session yet.",
+        }),
+        unprobed(missingId, {
+          status: "error",
+          message: "Codex CLI (`codex`) is not installed or not on PATH.",
+        }),
+      ];
+      const capabilities = yield* Effect.gen(function* () {
+        const service = yield* OrchestratorMcpService.OrchestratorMcpService;
+        return yield* service.capabilities(scope);
+      }).pipe(
+        Effect.provide(
+          layerOrchestratorService.pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                NodeServices.layer,
+                NodeCrypto.layer,
+                Layer.mock(ThreadManagementService.ThreadManagementService)({
+                  getThreadRecords: () => Effect.succeed(parentProjection([])),
+                }),
+                ServerSettings.layerTest(),
+                providerRegistryLayer(providers),
+                adapterRegistryLayer([checkingId, missingId]),
+                Layer.mock(ProjectService.ProjectService)({ getById: () => Effect.succeedNone }),
+                Layer.mock(SecretRequests.SecretRequests)({}),
+                Layer.mock(RemoteDelegation.RemoteDelegation)({}),
+                Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      const checking = capabilities.providers.find(
+        (provider) => provider.providerInstanceId === checkingId,
+      );
+      assert.isDefined(checking);
+      assert.isTrue(checking!.canRunChildTask);
+      assert.deepEqual(checking!.constraints, []);
+      assert.deepEqual(capabilities.unavailableProviders, [
+        {
+          reason:
+            "Provider executable is not installed. Codex CLI (`codex`) is not installed or not on PATH.",
+          providerInstanceIds: [missingId],
+        },
+      ]);
+    }),
+  );
+
   describe("listed models", () => {
     const opencodeInstanceId = ProviderInstanceId.make("opencode");
     const model = (slug: string, extra: Partial<ServerProvider["models"][number]> = {}) => ({
