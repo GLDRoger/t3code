@@ -2681,6 +2681,86 @@ describe("KinChatService", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("a Chats row keeps its time for everyone; only a hidden hand-off row is skipped", () =>
+    Effect.gen(function* () {
+      const { repo, service, person: rhea, chat } = yield* seed(true);
+      const { orgId } = rhea;
+      const arjun = { ...rhea, personId: KinPersonId.make("arjun") };
+      yield* repo.insertPerson({
+        orgId,
+        personId: arjun.personId,
+        displayName: "Arjun",
+        handle: "arjun",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      const group = yield* repo.createChat({
+        orgId,
+        chatId: KinChatId.make("tidewater"),
+        kind: "project_group",
+        title: "Tidewater Freight",
+        teamId: null,
+        directKey: null,
+        createdAt: timestamp,
+        lastMessageAt: null,
+        archivedAt: null,
+      });
+      yield* repo.addMember({
+        orgId,
+        chatId: group.chatId,
+        memberId: KinMemberId.make("tidewater-rhea"),
+        principal: { _tag: "person", personId: rhea.personId },
+        role: "owner",
+        joinedAt: timestamp,
+        leftAt: null,
+        mutedUntil: null,
+      });
+      yield* TestClock.adjust("1 hour");
+      const before = yield* service.send(rhea, {
+        chatId: group.chatId,
+        body: "The Tidewater Freight order is ready.",
+        clientMessageId: "order-ready",
+      });
+      const direct = yield* service.send(rhea, {
+        chatId: chat.chatId,
+        body: "Check the Tidewater Freight order.",
+        clientMessageId: "check-order",
+      });
+      yield* TestClock.adjust("1 hour");
+      yield* repo.addMember({
+        orgId,
+        chatId: group.chatId,
+        memberId: KinMemberId.make("tidewater-arjun"),
+        principal: { _tag: "person", personId: arjun.personId },
+        role: "member",
+        joinedAt: "1970-01-01T02:00:00.000Z",
+        leftAt: null,
+        mutedUntil: null,
+      });
+      yield* service.notice({
+        orgId,
+        chatId: chat.chatId,
+        audience: "owner",
+        messageId: KinMessageId.make("kin-handoff:00000000000000000000000000000003"),
+        body: "Check the order.",
+        silent: true,
+        relay: { kind: "sent_by", agentId },
+      });
+      const snapshots = yield* Effect.forEach([arjun, rhea], (viewer) =>
+        Stream.runHead(service.subscribeChats([viewer], {})).pipe(Effect.map(Option.getOrThrow)),
+      );
+      const [arjunList, rheaList] = snapshots;
+      if (arjunList?._tag !== "snapshot" || rheaList?._tag !== "snapshot")
+        return assert.fail("Expected Chats snapshots");
+      const arjunRow = arjunList.chats.find((row) => row.chatId === group.chatId);
+      assert.strictEqual(arjunRow?.lastMessageAt, before.createdAt);
+      assert.isNull(arjunRow?.lastMessage);
+      const rheaRow = rheaList.chats.find((row) => row.chatId === chat.chatId);
+      assert.strictEqual(rheaRow?.lastMessageAt, direct.createdAt);
+      assert.strictEqual(rheaRow?.lastMessage?.messageId, direct.messageId);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("an owner's answer landing as a co-owner's list reads it still leaves her list", () =>
     Effect.gen(function* () {
       const { service, person, chat } = yield* seed();

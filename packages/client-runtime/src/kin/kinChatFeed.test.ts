@@ -413,6 +413,43 @@ describe("rows", () => {
     });
   });
 
+  it("a hand-off row already in the cache is not drawn", () => {
+    const handoff = (seq: number, messageId: string, overrides: Partial<KinMessage> = {}) =>
+      agentMessage(seq, {
+        messageId: messageId as KinMessage["messageId"],
+        kind: "system",
+        author: { _tag: "system" },
+        relay: { kind: "sent_by", agentId: KIN_FIXTURE_AGENT },
+        ...overrides,
+      });
+    const rows = messageRows(
+      [
+        agentMessage(1),
+        handoff(2, "kin-handoff:a1"),
+        handoff(3, "kin-handoff-back:a1", {
+          relay: { kind: "reply_from", agentId: KIN_FIXTURE_AGENT },
+        }),
+        handoff(4, "kin-handoff:b2", { relay: undefined }),
+        handoff(5, "kin-handoff:c3", {
+          relay: {
+            kind: "sent_by",
+            agentId: KIN_FIXTURE_AGENT,
+            personId: "zoya" as KinPersonId,
+            personName: "Zoya",
+          },
+        }),
+        handoff(6, "kin-handoff:d4", { discussionId: "d-1" as KinMessage["discussionId"] }),
+      ],
+      viewer,
+      new Set(),
+    );
+    expect(rows.flatMap((row) => ("message" in row ? [row.message.messageId] : []))).toEqual([
+      "m1",
+      "kin-handoff:c3",
+      "kin-handoff:d4",
+    ]);
+  });
+
   it("draws Kin's morning page as a page under the greeting, never as a notice line", () => {
     const page = agentMessage(3, {
       kind: "system",

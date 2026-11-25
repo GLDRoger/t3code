@@ -967,6 +967,15 @@ it.effect("an urgent message replaces what the agent held for them from the same
       assert.include(tooLong.message, "text is 2001 characters; at most 2000");
       const first = yield* call("kin_relay", { to: "Zoya", text: pointers, sourceEventId: ask });
       assert.isTrue(first.ok, JSON.stringify(first.value));
+      const arrivals = () =>
+        chats
+          .history(owner, { chatId: ownerChat, beforeSeq: 100, limit: 50 })
+          .pipe(
+            Effect.map(({ messages }) =>
+              messages.filter((message) => message.messageId.startsWith("kin-arrives:")),
+            ),
+          );
+      assert.lengthOf(yield* arrivals(), 1);
       // Meera's own request to her, held from another chat, is not this one.
       const meeras = yield* says(person("meera"), meerasChat, "Tell Zoya the call moved.");
       const other = yield* call("kin_relay", {
@@ -996,6 +1005,7 @@ it.effect("an urgent message replaces what the agent held for them from the same
         "Sent in Zoya Sheikh's chat with you; their answer arrives there. This replaced your held message to Zoya Sheikh.",
       );
       assert.deepStrictEqual(yield* waiting, [{ body: "The Lumen Grove call moved to Thursday." }]);
+      assert.lengthOf(yield* arrivals(), 0);
       assert.strictEqual(yield* inHerChat(pointers), 1);
 
       // Her morning: what an older build held is dropped, as its urgent twin went; Meera's goes.
