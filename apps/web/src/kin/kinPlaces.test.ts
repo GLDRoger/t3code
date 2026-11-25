@@ -214,6 +214,25 @@ describe("place addresses", () => {
     expect(placeOf({ bills: "x".repeat(81) })).toBeNull();
   });
 
+  it("clears empty and malformed doc, task and client params under the router's merge", () => {
+    const merged = (raw: Record<string, unknown>) =>
+      Object.assign({}, raw, validateKinPlaceSearch(raw));
+    // Empty values behave as no param.
+    for (const raw of [{ doc: "" }, { task: "" }, { client: "" }, { project: "" }]) {
+      const search = merged(raw);
+      expect(search).toEqual({});
+      expect(kinRecordOf(search)).toBeNull();
+    }
+    // Malformed non-empty values are cleared and flagged once by validateSearch.
+    expect(merged({ doc: "not-a-key" })).toEqual({ invalidLink: "doc" });
+    expect(kinRecordOf(merged({ doc: "not-a-key" }))).toBeNull();
+    expect(merged({ task: 123 })).toEqual({ invalidLink: "task" });
+    expect(merged({ client: "bad" })).toEqual({ invalidLink: "client" });
+    expect(kinRecordOf(merged({ client: "bad" }))).toBeNull();
+    expect(merged({ invalidLink: "doc" })).toEqual({});
+    expect(Object.assign({}, { agent: "" }, validateKinAgentSearch({ agent: "" }))).toEqual({});
+  });
+
   it("opens an agent's page over the place and closes Settings", () => {
     const agent = KinAgentId.make("lead-finance");
     expect(validateKinAgentSearch({ agent: "lead-finance" })).toEqual({ agent });

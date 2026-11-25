@@ -118,6 +118,13 @@ export const KIN_WORK_GONE = {
   title: "This task isn't here any more",
   detail: "Open Tasks to see what there is now.",
 };
+/** One plain line for a missing, malformed, or unshared link; never says which of those it is. */
+export const KIN_UNAVAILABLE_LINK = {
+  doc: "This doc doesn't exist or isn't shared with you.",
+  task: "This task doesn't exist or isn't shared with you.",
+  client: "This client doesn't exist or isn't shared with you.",
+  project: "This project doesn't exist or isn't shared with you.",
+} as const;
 export const KIN_WORK_ITEM_FAILED = {
   title: "Couldn't load this task",
   detail: KIN_CHECK_CONNECTION,
@@ -1887,7 +1894,7 @@ export function kinWorkItemState(
   if (
     AsyncResult.isFailure(result) &&
     kinWorkFailuresOf(result.cause).some(
-      (error) => isKinChatError(error) && error.reason === "not_found",
+      (error) => (isKinChatError(error) && error.reason === "not_found") || kinWorkRefused(error),
     )
   )
     return { _tag: "gone" };

@@ -3,13 +3,14 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import * as Schema from "effect/Schema";
 
 import { KinNumbersView } from "../kin/KinNumbersView";
+import { validatedSearch } from "../kin/kinPlaces";
 
 const isKey = Schema.is(KinRecordKey);
 
 export const Route = createFileRoute("/_chat/kin/$environmentId/$orgId/numbers")({
   // The open number rides in the address, so it can be linked to and Back closes it.
   validateSearch: (search: Record<string, unknown>): { readonly key?: KinRecordKey } =>
-    isKey(search.key) ? { key: search.key } : {},
+    validatedSearch(search, ["key"], isKey(search.key) ? { key: search.key } : {}),
   component: KinNumbersRoute,
 });
 

@@ -104,6 +104,9 @@ export type KinRecordWhere =
   | { readonly bills: KinBillBatchId | null }
   | KinDocWhere;
 
+/** A link param whose value wasn't a valid key, flagged once by `validateSearch`. */
+export type KinInvalidLink = "doc" | "task" | "client" | "project";
+
 export interface KinPlaceSearch {
   /** The open task, shown over whatever else is open. */
   task?: KinRecordKey;
@@ -129,6 +132,8 @@ export interface KinPlaceSearch {
   tab?: "deals" | "projects";
   /** Tasks opens narrowed to what this person holds, as their page's "See all in Tasks" asks. */
   person?: KinPersonId;
+  /** Set only when a link param held a malformed non-empty value; never kept on navigation. */
+  invalidLink?: KinInvalidLink;
 }
 
 /** `import` is Clients' Import a file, which opens in the place itself. */
@@ -139,9 +144,23 @@ export interface KinAgentSearch {
   agent?: KinAgentId;
 }
 
+/**
+ * TanStack Router spreads validated search over raw URL params; writing `undefined` for any owned
+ * key that failed clears the raw value so it cannot leak to the page.
+ */
+export function validatedSearch<T extends object>(
+  raw: Record<string, unknown>,
+  keys: ReadonlyArray<keyof T & string>,
+  keep: T,
+): T {
+  const out: Record<string, unknown> = Object.fromEntries(Object.entries(keep));
+  for (const key of keys) if (key in raw && !(key in out)) out[key] = undefined;
+  return out as T;
+}
+
 const isAgent = Schema.is(KinAgentId);
 export const validateKinAgentSearch = (raw: Record<string, unknown>): KinAgentSearch =>
-  isAgent(raw.agent) ? { agent: raw.agent } : {};
+  validatedSearch(raw, ["agent"], isAgent(raw.agent) ? { agent: raw.agent } : {});
 
 /** The address with an agent's page open over it; Settings closes as it opens. */
 export const withKinAgentPage = <T extends object>(search: T, agent: KinAgentId) => {
@@ -155,6 +174,8 @@ const isList = Schema.is(KinListId);
 const isSection = Schema.is(KinDocSectionId);
 const isCard = Schema.is(KinWidgetId);
 const isBatch = Schema.is(KinBillBatchId);
+const isEmptyParam = (raw: unknown) =>
+  raw === undefined || raw === "" || (typeof raw === "string" && raw.trim() === "");
 const versionOf = (raw: unknown) => {
   const version = Number(raw);
   return Number.isSafeInteger(version) && version > 0 ? version : undefined;
@@ -162,11 +183,41 @@ const versionOf = (raw: unknown) => {
 // The address says "client"; reading it by name keeps it apart from an RPC client in lint's eyes.
 const CLIENT = "client";
 
+const PLACE_SEARCH_KEYS: ReadonlyArray<keyof KinPlaceSearch> = [
+  "task",
+  "list",
+  CLIENT,
+  "project",
+  "dates",
+  "subscriptions",
+  "bills",
+  "doc",
+  "v",
+  "card",
+  "section",
+  "changes",
+  "from",
+  "history",
+  "open",
+  "tab",
+  "person",
+  "invalidLink",
+];
+
+function invalidLinkOf(raw: Record<string, unknown>): KinInvalidLink | undefined {
+  if (!isEmptyParam(raw.doc) && !isKey(raw.doc)) return "doc";
+  if (!isEmptyParam(raw[CLIENT]) && !isKey(raw[CLIENT])) return "client";
+  if (!isEmptyParam(raw.project) && !isKey(raw.project)) return "project";
+  if (!isEmptyParam(raw.task) && !isKey(raw.task)) return "task";
+  return undefined;
+}
+
 export function validateKinPlaceSearch(raw: Record<string, unknown>): KinPlaceSearch {
   const v = versionOf(raw.v);
   const changes = versionOf(raw.changes);
   const from = versionOf(raw.from);
-  return {
+  const invalidLink = invalidLinkOf(raw);
+  return validatedSearch<KinPlaceSearch>(raw, PLACE_SEARCH_KEYS, {
     ...(isKey(raw.task) ? { task: raw.task } : {}),
     ...(isList(raw.list) ? { list: raw.list } : {}),
     ...(isKey(raw[CLIENT]) ? { client: raw[CLIENT] } : {}),
@@ -191,7 +242,8 @@ export function validateKinPlaceSearch(raw: Record<string, unknown>): KinPlaceSe
       : {}),
     ...(raw.tab === "projects" || raw.tab === "deals" ? { tab: raw.tab } : {}),
     ...(isPerson(raw.person) ? { person: raw.person } : {}),
-  };
+    ...(invalidLink === undefined ? {} : { invalidLink }),
+  });
 }
 
 export function kinRecordOf(search: KinPlaceSearch): KinRecordWhere | null {

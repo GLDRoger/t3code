@@ -2,6 +2,7 @@ import type { EnvironmentId } from "@t3tools/contracts";
 import { createFileRoute } from "@tanstack/react-router";
 
 import { KinChatView } from "../kin/KinChatView";
+import { validatedSearch } from "../kin/kinPlaces";
 
 function KinChatRoute() {
   const { environmentId, orgId, chatId } = Route.useParams();
@@ -21,6 +22,10 @@ function KinChatRoute() {
 export const Route = createFileRoute("/_chat/kin/$environmentId/$orgId/$chatId")({
   // The message a notification opened the chat on.
   validateSearch: (raw: Record<string, unknown>): { readonly message?: string } =>
-    typeof raw.message === "string" && raw.message !== "" ? { message: raw.message } : {},
+    validatedSearch(
+      raw,
+      ["message"],
+      typeof raw.message === "string" && raw.message !== "" ? { message: raw.message } : {},
+    ),
   component: KinChatRoute,
 });

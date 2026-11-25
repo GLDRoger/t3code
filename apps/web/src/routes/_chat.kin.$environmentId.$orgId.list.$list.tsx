@@ -3,7 +3,7 @@ import { createFileRoute, useLocation, useNavigate, useRouter } from "@tanstack/
 import * as Schema from "effect/Schema";
 
 import { KinListSectionPage } from "../kin/KinListSection";
-import { KIN_PLACE_PATH } from "../kin/kinPlaces";
+import { KIN_PLACE_PATH, validatedSearch } from "../kin/kinPlaces";
 import { KinWorkNotice } from "../kin/KinWorkParts";
 
 const isKey = Schema.is(KinRecordKey);
@@ -12,7 +12,7 @@ const isList = Schema.is(KinListId);
 export const Route = createFileRoute("/_chat/kin/$environmentId/$orgId/list/$list")({
   // The open entry rides in the address, so it can be linked to and Back closes it.
   validateSearch: (search: Record<string, unknown>): { readonly task?: KinRecordKey } =>
-    isKey(search.task) ? { task: search.task } : {},
+    validatedSearch(search, ["task"], isKey(search.task) ? { task: search.task } : {}),
   component: KinListSectionRoute,
 });
 
