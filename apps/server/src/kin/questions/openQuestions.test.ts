@@ -2924,7 +2924,7 @@ it.effect("a teammate's drafts are cards of their own, and Send to raises one Ap
         // Two people behind the turn: refused as a shared turn, before any ask is read.
         [
           "someone else's task too",
-          "No client called C-7 that everyone in this chat may see. Leave it off here, or ask the owner in his own chat; don't add it again.",
+          "No client called C-7 that everyone in this chat may see. Leave it off here, or ask the owner in their own chat; don't add it again.",
         ],
         ["a change with no ask of hers too", notHers],
       ]);

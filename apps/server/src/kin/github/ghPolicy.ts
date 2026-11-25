@@ -235,7 +235,7 @@ const GRAPHQL_WRITES = [
 
 /** The program's logic: plain JavaScript, no template interpolation, so regexes read as written. */
 const POLICY_BODY = String.raw`
-const NO_MERGE = "Kin agents don't merge pull requests: tell the owner it is ready and he merges it.";
+const NO_MERGE = "Kin agents don't merge pull requests: tell the owner it is ready and the owner merges it.";
 const NO_APPROVE = "Kin agents don't approve pull requests: review with --comment or --request-changes instead.";
 const NO_DISMISS = "Kin agents don't dismiss reviews: ask the owner.";
 const NO_SETTINGS = "Kin agents don't change a repository's settings, access, secrets, keys, hooks or Apps: ask the owner to.";

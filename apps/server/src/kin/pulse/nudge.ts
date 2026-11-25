@@ -122,7 +122,7 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
     ORDER BY p.person_id`;
   if (person === undefined) return yield* refuse("That person just left the company.");
   if (person.isOwner === 1)
-    return yield* refuse("That's the owner: tell him in your own chat instead of nudging.");
+    return yield* refuse("That's the owner: tell them in your own chat instead of nudging.");
   const personId = KinPersonId.make(person.personId);
   const theirs = yield* KinPulse.read({
     orgId,
