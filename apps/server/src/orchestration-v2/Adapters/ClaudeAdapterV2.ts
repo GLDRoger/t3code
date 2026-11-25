@@ -6792,7 +6792,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               startedAt: context.startedAt,
               completedAt: null,
               tokenUsage,
-              ...(typeof usage === "number"
+              ...(context.requests.size === 0
                 ? {}
                 : { turnTokenUsage: runningClaudeTurnTokenUsage(context.requests) }),
               ...(context.executedModel === undefined ? {} : { model: context.executedModel }),

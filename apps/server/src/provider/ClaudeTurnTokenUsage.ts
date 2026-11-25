@@ -149,7 +149,7 @@ export function recordClaudeRequestUsage(
   requests.set(messageId, { usage: { ...usage, output_tokens: output }, subagent });
 }
 
-/** The turn so far, counted as its result and process ledger will count it. */
+/** The turn so far, counted as its result will count it; subagent output arrives only then. */
 export function runningClaudeTurnTokenUsage(requests: ClaudeTurnRequests): TurnTokenUsage {
   const main = { input: 0, read: 0, write: 0, output: 0 };
   const other = { input: 0, output: 0 };

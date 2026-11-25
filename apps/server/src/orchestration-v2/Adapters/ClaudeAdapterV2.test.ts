@@ -11055,6 +11055,30 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const terminal = yield* Queue.take(harness.terminalReceipts);
       assert.equal(terminal.status, "completed");
       assert.deepEqual(reportedContextTokens(harness.events), [1_211, 1_230, 1_075, 400]);
+      // Compaction reports a context size, not a request; the turn so far stays on the update,
+      // since the stored turn keeps only the latest one and a cancel copies it.
+      assert.deepEqual(
+        harness.events.flatMap((event) =>
+          event.type === "provider_turn.updated" &&
+          event.providerTurn.status === "running" &&
+          event.providerTurn.tokenUsage
+            ? [
+                [
+                  event.providerTurn.tokenUsage.usedTokens,
+                  event.providerTurn.turnTokenUsage?.inputTokens,
+                  event.providerTurn.turnTokenUsage?.cachedInputTokens,
+                  event.providerTurn.turnTokenUsage?.outputTokens,
+                ],
+              ]
+            : [],
+        ),
+        [
+          [1_211, 1_210, 1_000, 1],
+          [1_230, 1_210, 1_000, 20],
+          [1_075, 1_025, 1_000, 50],
+          [400, 1_025, 1_000, 50],
+        ],
+      );
       assert.deepEqual(
         harness.events.flatMap((event) =>
           event.type === "provider_turn.updated" && event.providerTurn.tokenUsage
