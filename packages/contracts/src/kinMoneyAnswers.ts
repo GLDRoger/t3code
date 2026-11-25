@@ -247,7 +247,12 @@ export const KinDocumentLine = Schema.Struct({
   /** As said, such as "₹1,200": templates read amounts the way an agent gives them. */
   rate: Schema.String.check(Schema.isMaxLength(40)),
   taxRate: Schema.optional(
-    Schema.NullOr(Schema.String.check(Schema.isPattern(/^(?:100|\d{1,2}(?:\.\d{1,3})?)$/))),
+    Schema.NullOr(
+      Schema.String.check(Schema.isPattern(/^(?:100|\d{1,2}(?:\.\d{1,3})?)$/)),
+    ).annotate({
+      description:
+        "The line's tax percent, such as 5, only when the person gave this line its own rate; 0 for no tax. Left out, the invoice's usual rate applies.",
+    }),
   ),
 });
 export type KinDocumentLine = typeof KinDocumentLine.Type;
