@@ -517,6 +517,12 @@ GitHub, and others. Each mail account reads, and sends only on your Confirm. Tel
 account is for ("accounts@ is for invoices") and it sends from the right one. A reply always goes
 from the account and thread the email is in.
 
+Kin reads a company account's new mail only while it is active and its mail tools are set to Read; its
+page says when mail was last read. If reads fail or nothing has been read for a day, it shows
+**Not syncing**; if its sign-in ran out, **Needs sign-in**. Until a read works again it is also a
+line under **Needs attention** on Kin's start page on a computer (with no chat open), which opens the
+account. **Sign in again** usually fixes it. A paused account is your choice and shows no warning.
+
 Anyone can also connect their own mail under **Settings → Connections → Your mailboxes**, one
 account or several (**Connect another mailbox**). Agents read them only when working for that person
 alone: in their own direct chats, and for the owner also when Kin prepares something for him. Never

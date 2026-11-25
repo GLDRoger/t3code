@@ -11,6 +11,7 @@ import {
   kinConnectionChange,
   kinConnectionStatus,
   kinIsMailConnection,
+  kinMailReadText,
   kinSuggestedModes,
   kinToolRows,
   kinToolMark,
@@ -201,6 +202,11 @@ function ConnectionRecord(props: {
                 detail={connection.urlHost}
               />
             </View>
+            {connection.mailSync === undefined ? null : (
+              <View accessible className="bg-grouped-card">
+                <ListRowLayout label={kinMailReadText(connection.mailSync.readAt)} />
+              </View>
+            )}
           </ListSection>
           {problem === null ? null : <ErrorBanner message={problem} />}
 

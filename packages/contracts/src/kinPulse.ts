@@ -61,6 +61,7 @@ const KIN_PULSE_SENSES = [
   ...KIN_PROMISE_SENSES,
   "payment_seen",
   "repaid_seen",
+  "mail_not_syncing",
 ] as const;
 /**
  * Senses newer than the first phones: a screen read sends them only to a client that lists them
@@ -81,6 +82,7 @@ export const KIN_PULSE_LATER_SENSES = [
   ...KIN_PROMISE_SENSES,
   "payment_seen",
   "repaid_seen",
+  "mail_not_syncing",
 ] as const;
 export const KinPulseSense = Schema.Literals(KIN_PULSE_SENSES);
 export type KinPulseSense = typeof KinPulseSense.Type;
@@ -158,7 +160,7 @@ export const KinPulseFact = Schema.Struct({
   /** Sense, subject and episode: a moved due date is a new key, so a new fact. */
   key: TrimmedNonEmptyString.check(Schema.isMaxLength(300)),
   subject: Schema.Struct({
-    // Bank and overflow subjects come only with later senses.
+    // Bank, connection and overflow subjects come only with later senses.
     kind: Schema.Literals([
       "record",
       "worker",
@@ -168,8 +170,12 @@ export const KinPulseFact = Schema.Struct({
       "pull_request",
       "bank",
       "overflow",
+      "connection",
     ]),
-    /** A record's key (INV-4), a task's thread, an agent id, a budget id, or owner/name#12 (PR). */
+    /**
+     * A record's key (INV-4), a task's thread, an agent id, a budget id, owner/name#12 (PR), or a
+     * connection id.
+     */
     key: TrimmedNonEmptyString,
     title: Schema.String.check(Schema.isMaxLength(280)),
     recordId: Schema.optional(KinRecordId),

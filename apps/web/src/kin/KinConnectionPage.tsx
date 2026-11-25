@@ -11,6 +11,8 @@ import {
   kinMailAccountValue,
   kinMailModeLabel,
   kinMailModes,
+  kinMailReadText,
+  kinOffersSignIn,
   kinSuggestedModes,
   kinToolCopy,
   kinToolMark,
@@ -166,9 +168,9 @@ export function KinConnectionPage(props: {
       setModes({ environmentId, input: { ...ref, modes } }),
     );
   };
-  const signInNeeded =
-    connection.auth === "oauth" &&
-    (connection.state === "needs_sign_in" || connection.needsSignInToSend === true);
+  const signInNeeded = kinOffersSignIn(connection);
+  const signInLapsed =
+    connection.state === "needs_sign_in" || connection.needsSignInToSend === true;
   const notFine = status.tone === "error" || status.tone === "attention";
 
   const toolRows = rows.map((row) => {
@@ -223,7 +225,7 @@ export function KinConnectionPage(props: {
           {notFine ? (
             <KinSettingsRow
               wrap
-              title={signInNeeded ? MAIL.signInLapsed : status.detail}
+              title={signInLapsed ? MAIL.signInLapsed : status.detail}
               control={
                 signInNeeded && waiting === null ? (
                   <Button
@@ -323,6 +325,9 @@ export function KinConnectionPage(props: {
             onOpen={() => setEditing("note")}
           />
         ) : null}
+        {connection.mailSync === undefined ? null : (
+          <KinSettingsRow title={kinMailReadText(connection.mailSync.readAt)} />
+        )}
         {(connection.sendAs ?? []).length === 0 ? null : (
           <KinSettingsRow
             title={MAIL.sendsFromTitle}

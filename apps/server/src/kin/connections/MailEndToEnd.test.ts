@@ -52,8 +52,10 @@ import { outsideStamp, renderSource, stampKey, stampReads } from "../lead/Outsid
 import * as Memory from "../memory/Memory.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import { buildPulseSection } from "../pulse/prompt.ts";
-import { fromConnections } from "../pulse/outside.ts";
+import { fromConnections, poll } from "../pulse/outside.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { runKinMigrations } from "../persistence/KinMigrations.ts";
+import { factSig } from "../pulse/told.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import { round } from "../watches/KinWatchRounds.ts";
 import { alertsOnMail } from "../work/statements/alertMail.ts";
@@ -741,6 +743,22 @@ const pulseEvents = Effect.gen(function* () {
       agent_id AS "agentId", json_extract(json, '$.arrivalId') AS "arrivalId" FROM kin_events
     WHERE org_id = ${orgId} AND tag = 'pulse' ORDER BY queued_at, event_id`;
 });
+
+const mailStopped = Effect.gen(function* () {
+  const pulse = yield* KinPulse.read({
+    orgId,
+    at: yield* Clock.currentTimeMillis,
+    viewer: { _tag: "owner" },
+    includeHandled: true,
+    limit: 200,
+  });
+  return pulse.facts.filter((fact) => fact.sense === "mail_not_syncing");
+});
+const mailSyncOf = (connectionId: string) =>
+  Effect.gen(function* () {
+    const view = yield* (yield* KinConnections).list(people(owner), { orgId });
+    return view.connections.find((one) => one.connectionId === connectionId)?.mailSync;
+  });
 
 describe("Kin mail end to end, on a fake mailbox", () => {
   it.effect("wakes on client mail once, replies in its own account and thread, once", () =>
@@ -3769,6 +3787,193 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           assert.lengthOf(fake.sent(), 1);
         }),
       ),
+  );
+
+  it.effect(
+    "a mail account that stops syncing is one line for the owner, gone once reads work",
+    () =>
+      setUp((fake) =>
+        Effect.gen(function* () {
+          const connections = yield* KinConnections;
+          const hello = yield* connect(fake, "microsoft", HELLO);
+          const source = fromConnections(connections, yield* SqlClient.SqlClient);
+          const read = Effect.gen(function* () {
+            const at = yield* Clock.currentTimeMillis;
+            yield* poll(orgId, at, source);
+          });
+          const stopped = Effect.gen(function* () {
+            const at = yield* Clock.currentTimeMillis;
+            const pulse = yield* KinPulse.read({
+              orgId,
+              at,
+              viewer: { _tag: "owner" },
+              includeHandled: true,
+              limit: 200,
+            });
+            return pulse.facts.filter((fact) => fact.sense === "mail_not_syncing");
+          });
+          const sync = connections
+            .list(people(owner), { orgId })
+            .pipe(
+              Effect.map(
+                (view) => view.connections.find((one) => one.connectionId === hello)?.mailSync,
+              ),
+            );
+
+          yield* read;
+          assert.lengthOf(yield* stopped, 0);
+          assert.deepStrictEqual(yield* sync, { readAt: NOW, error: null, stopped: false });
+
+          // Reads fail: one line, the same however many reads fail, so it is told once.
+          fake.failWith(HELLO, 503);
+          yield* TestClock.adjust("3 minutes");
+          yield* read;
+          const [first, ...more] = yield* stopped;
+          assert.lengthOf(more, 0);
+          assert.deepInclude(first!, {
+            key: `mail_not_syncing:${hello}`,
+            family: "system",
+            actor: { _tag: "owner" },
+            sensitive: true,
+            wake: "sweep",
+          });
+          assert.deepInclude(first!.subject, { kind: "connection", key: hello, title: HELLO });
+          // One short line, the fix first; Connections says why.
+          assert.strictEqual(first!.consequence, "Mail isn't syncing: try signing in again.");
+          yield* TestClock.adjust("3 minutes");
+          yield* read;
+          const [again] = yield* stopped;
+          assert.strictEqual(again!.key, first!.key);
+          assert.strictEqual(
+            DateTime.toEpochMillis(again!.since),
+            DateTime.toEpochMillis(first!.since),
+          );
+          assert.strictEqual(factSig(again!, NOW + 6 * 60_000, "UTC"), factSig(first!, NOW, "UTC"));
+          const failing = yield* sync;
+          assert.isTrue(failing?.stopped);
+          assert.strictEqual(failing?.readAt, NOW);
+          assert.isNotNull(failing?.error ?? null);
+
+          // A read that works again clears it, on Connections too.
+          fake.failWith(HELLO, null);
+          yield* TestClock.adjust("3 minutes");
+          yield* read;
+          assert.lengthOf(yield* stopped, 0);
+          assert.deepStrictEqual(yield* sync, {
+            readAt: NOW + 9 * 60_000,
+            error: null,
+            stopped: false,
+          });
+
+          // A day with no read that worked, on an account still active, says so by itself.
+          yield* TestClock.adjust("25 hours");
+          const [quiet] = yield* stopped;
+          assert.strictEqual(quiet?.key, `mail_not_syncing:${hello}`);
+          assert.match(quiet!.consequence, /^No mail read since .+: try signing in again\.$/);
+          assert.isTrue((yield* sync)?.stopped);
+          yield* read;
+          assert.lengthOf(yield* stopped, 0);
+
+          // A sign-in that ran out stops the reader for good; it says to sign in again.
+          fake.setExpired(HELLO, true);
+          yield* TestClock.adjust("3 minutes");
+          yield* read;
+          const [expired] = yield* stopped;
+          assert.strictEqual(expired!.consequence, "Mail isn't syncing: sign in again.");
+          fake.setExpired(HELLO, false);
+          const started = yield* connections.signInStart(people(owner), {
+            orgId,
+            connectionId: hello,
+            returnTo: "web",
+          });
+          yield* connections.signInFinish(people(owner), {
+            orgId,
+            response: fake.approve(started.authorizationUrl, HELLO),
+          });
+          yield* read;
+          assert.lengthOf(yield* stopped, 0);
+
+          // Paused is the owner's own choice: nothing to warn of, however long it stays paused.
+          yield* connections.update(people(owner), { orgId, connectionId: hello, paused: true });
+          yield* TestClock.adjust("3 days");
+          assert.lengthOf(yield* stopped, 0);
+          assert.isFalse((yield* sync)?.stopped);
+        }),
+      ),
+  );
+
+  it.effect(
+    "an account Kin read before the upgrade has no read time until one works, and a day's grace",
+    () =>
+      setUp((fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const connections = yield* KinConnections;
+          const hello = yield* connect(fake, "microsoft", HELLO);
+          const stopped = mailStopped;
+          const sync = mailSyncOf(hello);
+          // Read for weeks by a build that kept no record of reads, then upgraded.
+          yield* TestClock.adjust("30 days");
+          for (const { name } of yield* sql<{ name: string }>`SELECT name
+              FROM pragma_table_info('kin_connections')
+              WHERE name IN ('read_ok_at', 'read_failed_at', 'read_error', 'watched_at')
+              ORDER BY name`)
+            yield* sql.unsafe(`ALTER TABLE kin_connections DROP COLUMN ${name}`);
+          yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 220`;
+          yield* runKinMigrations();
+          // The upgrade isn't a read: Connections doesn't say mail was read, and nothing warns.
+          assert.lengthOf(yield* stopped, 0);
+          assert.deepStrictEqual(yield* sync, { readAt: null, error: null, stopped: false });
+          yield* TestClock.adjust("23 hours");
+          assert.lengthOf(yield* stopped, 0);
+          assert.deepStrictEqual(yield* sync, { readAt: null, error: null, stopped: false });
+          // A whole day from the upgrade with no read that worked is real quiet.
+          yield* TestClock.adjust("2 hours");
+          const [quiet, ...more] = yield* stopped;
+          assert.lengthOf(more, 0);
+          assert.strictEqual(quiet!.consequence, "No mail read yet: try signing in again.");
+          assert.deepStrictEqual(yield* sync, { readAt: null, error: null, stopped: true });
+          // The first read that works is the read time shown.
+          const readAt = yield* Clock.currentTimeMillis;
+          yield* poll(orgId, readAt, fromConnections(connections, sql));
+          assert.lengthOf(yield* stopped, 0);
+          assert.deepStrictEqual(yield* sync, { readAt, error: null, stopped: false });
+        }),
+      ),
+  );
+
+  it.effect("a mailbox given back to the company is watched from the move, unread until read", () =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const connections = yield* KinConnections;
+        const hello = yield* connect(fake, "microsoft", HELLO);
+        const read = Effect.gen(function* () {
+          yield* poll(orgId, yield* Clock.currentTimeMillis, fromConnections(connections, sql));
+        });
+        yield* read;
+        const own = (yield* connections.moveMailbox(people(owner), {
+          orgId,
+          connectionId: hello,
+          to: "mine",
+        })).mailboxes!.find((one) => one.account === HELLO)!.connectionId;
+        // Kin never watches someone's own mailbox, so a week of it says nothing.
+        yield* TestClock.adjust("7 days");
+        assert.lengthOf(yield* mailStopped, 0);
+        yield* connections.moveMailbox(people(owner), { orgId, connectionId: own, to: "company" });
+        const company = (yield* connections.list(people(owner), { orgId })).connections[0]!;
+        assert.lengthOf(yield* mailStopped, 0);
+        assert.deepStrictEqual(yield* mailSyncOf(company.connectionId), {
+          readAt: null,
+          error: null,
+          stopped: false,
+        });
+        yield* TestClock.adjust("25 hours");
+        assert.lengthOf(yield* mailStopped, 1);
+        yield* read;
+        assert.lengthOf(yield* mailStopped, 0);
+      }),
+    ),
   );
 
   it.effect("a deleted Outlook meeting is in the next read of what changed", () =>

@@ -13,6 +13,7 @@ import {
 import { kinDatesMonth, kinShiftMonth } from "@t3tools/client-runtime/kin/kinDates";
 import type { KinWorkNames } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinPulseRead, KinRecordKey } from "@t3tools/contracts";
+import { useNavigation } from "@react-navigation/native";
 import { useState } from "react";
 import { Platform, Pressable, View } from "react-native";
 import { useResolveClassNames } from "uniwind";
@@ -82,6 +83,7 @@ export function KinAttentionItem(
   },
 ) {
   const { row, handler } = props;
+  const navigation = useNavigation();
   const [asiding, setAsiding] = useState(false);
   const record = row.record;
   const now = new Date(useNowMinuteMs());
@@ -108,7 +110,16 @@ export function KinAttentionItem(
             <RowPressable
               accessibilityRole="button"
               accessibilityLabel={`${row.title}, ${description}`}
-              onPress={() => props.onOpen(row.open)}
+              onPress={() =>
+                // A connection opens on its own screen, whichever screen the row is on.
+                row.open.type === "connection"
+                  ? navigation.navigate("KinConnection", {
+                      environmentId: props.environmentId,
+                      orgId: props.orgId,
+                      connectionId: row.open.connectionId,
+                    })
+                  : props.onOpen(row.open)
+              }
               android_ripple={{ color: ripple.backgroundColor }}
               unstable_pressDelay={Platform.OS === "android" ? 50 : undefined}
             >

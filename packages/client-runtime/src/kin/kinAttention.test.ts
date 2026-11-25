@@ -296,6 +296,20 @@ describe("kinAttention", () => {
       { scope: { type: "all" }, names, now },
     );
     expect(own.open.map((row) => row.about).toSorted()).toEqual(["C-1", "P-1 · Lumen"]);
+    // A mail account that stopped syncing opens its own page on Connections.
+    const [mail] = kinAttention(
+      read([
+        fact("mail_not_syncing", "conn-1", {
+          family: "system",
+          subject: { kind: "connection", key: "conn-1", title: "accounts@invented.example" },
+          scope: {},
+          actor: { _tag: "owner" },
+        }),
+      ]),
+      { scope: { type: "all" }, names, now },
+    ).open;
+    expect(mail?.open).toEqual({ type: "connection", connectionId: "conn-1" });
+    expect([mail?.record, mail?.money, mail?.about]).toEqual([null, false, null]);
   });
 
   it("leaves out of Needs you what an attention row already covers", () => {
