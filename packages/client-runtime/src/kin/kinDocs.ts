@@ -44,10 +44,12 @@ import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runti
 import {
   isKinChatError,
   kinMidSentence,
+  kinWorkFailuresOf,
   kinWorkName,
   kinWorkRefused,
   type KinWorkNames,
 } from "./kinWork.ts";
+import { kinWorkReadState, type KinWorkReadState } from "./kinWorkForms.ts";
 import { kinCount } from "./kinCount.ts";
 import { kinIsMine, type KinMineCount, type KinMineHeld } from "./kinWorkClients.ts";
 import { kinSectionNamed, kinSectionOn } from "./kinShell.ts";
@@ -148,6 +150,11 @@ export const KIN_DOCS = {
     title: "This doc isn't here any more",
     detail: "Open Docs to see what there is now.",
   },
+  // A draft filed for this reader that an owner has since kept to owners only.
+  privateNow: (by: string) => ({
+    title: "This doc is private now",
+    detail: `${by} kept it to owners only.`,
+  }),
   failed: {
     title: "Couldn't load this doc",
     detail: KIN_CHECK_CONNECTION,
@@ -860,6 +867,20 @@ export type KinDocReadState =
   | { readonly _tag: "refused" }
   | { readonly _tag: "failed" }
   | { readonly _tag: "ready"; readonly doc: KinDocDetail; readonly stale: boolean };
+
+/** A doc's read: the reader's own draft an owner kept to owners only is private now, not gone. */
+export type KinDocState =
+  | KinWorkReadState<KinDocDetail>
+  | { readonly _tag: "private"; readonly by: string };
+
+export function kinDocState(result: AsyncResult.AsyncResult<KinDocDetail, unknown>): KinDocState {
+  const kept = (AsyncResult.isFailure(result) ? kinWorkFailuresOf(result.cause) : []).find(
+    (error) => isKinChatError(error) && error.privateNow !== undefined,
+  );
+  if (isKinChatError(kept) && kept.privateNow !== undefined)
+    return { _tag: "private", by: kept.privateNow.by };
+  return kinWorkReadState(result);
+}
 
 export function kinDocExport(doc: Pick<KinDocDetail, "title" | "body" | "key">): {
   readonly filename: string;

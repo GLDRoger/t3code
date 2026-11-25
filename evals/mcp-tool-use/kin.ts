@@ -54,6 +54,7 @@ import { microsoftMail } from "../../apps/server/src/kin/connections/Microsoft.t
 import { readLine } from "../../apps/server/src/kin/connections/ConnectionRows.ts";
 import { resultText } from "../../apps/server/src/kin/connections/ResultText.ts";
 import { outlineOf, sectionsOf, WHOLE_DOC } from "../../apps/server/src/kin/work/docBody.ts";
+import { privateNowLine } from "../../apps/server/src/kin/work/docs.ts";
 import { parseRecipe } from "../../apps/server/src/kin/gendocs/recipe.ts";
 import { STARTER_FILES } from "../../apps/server/src/kin/gendocs/starter.ts";
 import { quote } from "../../apps/server/src/kin/lead/quote.ts";
@@ -140,7 +141,10 @@ import {
   DRAFT_CHASE,
   DRAFT_DEAL,
   DRAFT_DOCUMENT,
+  DRAFT_MEETING_OUTCOME,
   DRAFT_MEETING_PREP,
+  PROPOSE_PLAN,
+  PROPOSE_STEP,
 } from "../../apps/server/src/kin/pulse/draftWake.ts";
 import { KIN_OWN_REFUSAL } from "../../apps/server/src/kin/people/KinAccess.ts";
 import { HEAD_START_ONE_DOC } from "../../apps/server/src/kin/work/teamView.ts";
@@ -564,6 +568,21 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     )
     .replace(/\{\{DRAFT_DOCUMENT:([^}]+)\}\}/g, (_, name: string) => DRAFT_DOCUMENT(name))
     .replace(/\{\{DRAFT_MEETING_PREP:([^}]+)\}\}/g, (_, name: string) => DRAFT_MEETING_PREP(name))
+    // A proposal wake's own line: `{{PROPOSE_STEP:<name>|deal}}` (or `|prospect`), `{{PROPOSE_PLAN:<name>}}`.
+    .replace(/\{\{PROPOSE_STEP:([^|}]+)\|(deal|prospect)\}\}/g, (_, name: string, of: string) =>
+      PROPOSE_STEP(name, of === "deal"),
+    )
+    .replace(/\{\{PROPOSE_PLAN:([^}]+)\}\}/g, (_, name: string) => PROPOSE_PLAN(name))
+    // `{{DRAFT_MEETING_OUTCOME:<name>|<key>|<title>|<contact>|<mailboxes>}}`, or no mail without the last two.
+    .replace(
+      /\{\{DRAFT_MEETING_OUTCOME:([^|}]+)\|([^|}]+)\|([^|}]+)(?:\|([^|}]+)\|([^}]+))?\}\}/g,
+      (_, name: string, key: string, title: string, to?: string, from?: string) =>
+        DRAFT_MEETING_OUTCOME(
+          name,
+          { key, title },
+          to === undefined || from === undefined ? undefined : { to, from: from.split(",") },
+        ),
+    )
     // A draft wake's own line, for a person and their mailboxes (`draftWake.ts`).
     .replace(/\{\{DRAFT_CHASE:([^:}]+):([^}]+)\}\}/g, (_, name: string, from: string) =>
       DRAFT_CHASE(name, from.split(",")),
@@ -741,6 +760,15 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       message: helperRefusal(input.holder, input.key),
     },
   }),
+  // doc_read of a draft filed for the reader that an owner since kept to owners only (`docRow`).
+  docPrivateNow: (input: { key: string; owner: string }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "not_found",
+      message: privateNowLine(input.key, input.owner),
+      privateNow: { by: input.owner },
+    },
+  }),
   // An approved draft's one make that changed the approved words, refused at Kin's gate.
   approvedWords: (input: { tool: string }) => ({
     $error: { _tag: "KinChatError", reason: "not_allowed", message: approvedWords(input.tool) },
@@ -793,6 +821,25 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     to: input.to,
     sent: true,
     note: leftNote(input.to, input, input.asker),
+  }),
+  // record_create's answer for new suggestions, keys from `first` (`leadWork.ts` createRow).
+  suggestedRows: (input: { records: unknown; first: number; zone: string }) => ({
+    records: (Array.isArray(input.records) ? input.records : []).map((row: unknown, index) => {
+      const one = isRecord(row) ? row : {};
+      const list = one.list === "milestones" ? "milestones" : "work";
+      const due = typeof one.due === "string" ? one.due : undefined;
+      const day = due !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(due);
+      const at = due === undefined ? NaN : day ? endOfDay(due, input.zone) : Date.parse(due);
+      return {
+        key: `${list === "milestones" ? "M" : "W"}-${input.first + index}`,
+        title: typeof one.title === "string" ? one.title : "",
+        created: true,
+        state: "open",
+        stateLabel: suggestedStateLabel(list, "open"),
+        suggested: true,
+        ...(list === "work" && Number.isFinite(at) ? { shows: dueShows(at, day, input.zone) } : {}),
+      };
+    }),
   }),
   // record_update's answer for a task given a due or a time (`leadWork.ts` dueOf, shownDue).
   taskUpdate: (input: { key: string; rev: number; state: string; due: unknown; zone: string }) => {

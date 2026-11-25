@@ -1162,6 +1162,8 @@ export class KinChatError extends Schema.TaggedError<KinChatError>()("KinChatErr
       largest: Schema.NullOr(Schema.Struct({ minor: Schema.Number, currency: Schema.String })),
     }),
   ),
+  /** On a doc filed as the reader's own draft that an owner has since kept to owners only: who. */
+  privateNow: Schema.optionalKey(Schema.Struct({ by: Schema.String })),
 }) {}
 
 export const KIN_CHAT_WS_METHODS = {
