@@ -842,3 +842,29 @@ it.effect("a waited-on card closes once its task waits on someone else", () =>
     }),
   ),
 );
+
+it.effect(
+  "milestone cards keep the limits: a teammate's is their nudge of the day, and anyone gets at most three a pass",
+  () =>
+    run((ctx) =>
+      Effect.gen(function* () {
+        yield* TestClock.setTime(NOW);
+        for (const key of ["W-1", "W-2"])
+          yield* ctx.records.update(ctx.orgId, ctx.byOwner, key, { state: "done" });
+        const zoya: KinWorkPrincipal = { _tag: "person", personId: zoyaId };
+        const rhea: KinWorkPrincipal = { _tag: "person", personId: ctx.owner.personId };
+        for (const title of ["Pilot live", "Pilot data"])
+          yield* plan(ctx, title, zoya, NOV_27, [{ title: `${title} check`, dueAt: NOV_30 }]);
+        for (const title of ["Review one", "Review two", "Review three", "Review four"])
+          yield* plan(ctx, title, rhea, NOV_27, [{ title: `${title} check`, dueAt: NOV_30 }]);
+        yield* tickAt(ctx, NOW);
+        const first = yield* cards(ctx);
+        assert.strictEqual(first.filter((card) => card.who === zoyaId).length, 1);
+        assert.strictEqual(first.filter((card) => card.who === ctx.owner.personId).length, 3);
+        yield* tickAt(ctx, NOW + HOUR);
+        const second = yield* cards(ctx);
+        assert.strictEqual(second.filter((card) => card.who === zoyaId).length, 1);
+        assert.strictEqual(second.filter((card) => card.who === ctx.owner.personId).length, 4);
+      }),
+    ),
+);

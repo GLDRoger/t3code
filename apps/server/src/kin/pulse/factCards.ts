@@ -19,7 +19,7 @@ import type { SqlError } from "effect/sql/SqlError";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
-import { ownerLevelPeople } from "../people/KinAccess.ts";
+import { ownerLevel, ownerLevelPeople } from "../people/KinAccess.ts";
 import { holdFor } from "../triggers/quietHold.ts";
 import { storedWorkHours } from "../triggers/quietHours.ts";
 import {
@@ -201,8 +201,6 @@ const postFactCard = Effect.fn("KinFactCards.post")(function* (input: {
   readonly question: string;
   readonly detail?: string;
   readonly options: ReadonlyArray<CardOption>;
-  /** A teammate's card spends their one nudge of the day (`claimNudge`). */
-  readonly nudge: boolean;
   readonly posted: ReadonlyArray<CardRow>;
 }) {
   const { ctx, personId } = input;
@@ -236,6 +234,8 @@ const postFactCard = Effect.fn("KinFactCards.post")(function* (input: {
     WHERE org_id = ${orgId} AND person_id = ${personId} AND removed_at IS NULL`;
   if (person === undefined) return undefined;
   const chat = chats.value;
+  // A teammate's card spends their one nudge of the day (`claimNudge`), whatever it is about.
+  const teammate = !(yield* ownerLevel(orgId, personId));
   return yield* sql
     .withTransaction(
       Effect.gen(function* () {
@@ -253,7 +253,7 @@ const postFactCard = Effect.fn("KinFactCards.post")(function* (input: {
                 { orgId, agentId: via },
               )).chatId;
         if (
-          input.nudge &&
+          teammate &&
           !(yield* claimNudge({
             orgId,
             personId,
@@ -444,7 +444,6 @@ const waitedCards = Effect.fn("KinFactCards.waited")(function* (input: {
       round: 0,
       question: `${row.holder}'s ${row.key} ${row.title} has waited on you for ${daysText(days)}. Where is it?`,
       options,
-      nudge: true,
       posted: input.posted,
     });
   }
@@ -527,12 +526,13 @@ const stallCards = Effect.fn("KinFactCards.stalled")(function* (input: {
         ...plans.map((plan) => ({ label: factCardShown(plan).label, plan })),
         { label: "Stuck" },
       ],
-      nudge: true,
       posted: input.posted,
     });
   }
 });
 
+/** The rest wait for later passes, so one pass never floods a chat or an agent's turn. */
+const MILESTONE_CARDS_PER_PASS = 3;
 const MILESTONE_SENSES: ReadonlySet<string> = new Set(["milestone_late", "milestone_at_risk"]);
 /** One card per milestone and due day, whether it is at risk or late by the time it is asked. */
 const milestoneCardKey = (recordId: string, dueAt: number) =>
@@ -598,6 +598,7 @@ const milestoneCards = Effect.fn("KinFactCards.milestones")(function* (input: {
   const [owner] = yield* sql<{ personId: string }>`SELECT owner_person_id AS "personId"
     FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${chief}`;
   if (owner === undefined) return;
+  const sent = new Map<string, number>();
   for (const fact of input.open) {
     if (!MILESTONE_SENSES.has(fact.sense) || fact.subject.recordId === undefined) continue;
     const [, cardKey] = standKeys(fact);
@@ -629,6 +630,7 @@ const milestoneCards = Effect.fn("KinFactCards.milestones")(function* (input: {
         ((yield* input.sees(lead, [fact])).length > 0 &&
           (yield* mayChange(orgId, lead, { recordId: fact.subject.recordId, key: row.key }))));
     const personId = mayMove ? lead : KinPersonId.make(owner.personId);
+    if ((sent.get(personId) ?? 0) >= MILESTONE_CARDS_PER_PASS) continue;
     const agentId =
       row.holderKind === "agent" && row.holderId !== null && ctx.liveAgents.has(row.holderId)
         ? KinAgentId.make(row.holderId)
@@ -676,18 +678,18 @@ const milestoneCards = Effect.fn("KinFactCards.milestones")(function* (input: {
       round: 0,
       question,
       options: plans.map((plan) => ({ label: factCardShown(plan).label, plan })),
-      nudge: false,
       posted: input.posted,
     });
-    if (card !== undefined)
-      yield* markTold({
-        orgId,
-        personId,
-        eventId: card.messageId,
-        facts: [fact],
-        at,
-        zone: ctx.zone,
-      });
+    if (card === undefined) continue;
+    sent.set(personId, (sent.get(personId) ?? 0) + 1);
+    yield* markTold({
+      orgId,
+      personId,
+      eventId: card.messageId,
+      facts: [fact],
+      at,
+      zone: ctx.zone,
+    });
   }
 });
 
