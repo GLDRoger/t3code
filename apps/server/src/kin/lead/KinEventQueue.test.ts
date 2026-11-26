@@ -941,7 +941,7 @@ describe("KinEventQueue", () => {
       yield* seed();
       const queue = yield* KinEventQueue.KinEventQueue;
       const sql = yield* SqlClient.SqlClient;
-      for (const mode of ["release", "failed", "timed_out"] as const) {
+      for (const mode of ["release", "failed", "timed_out", "run-release"] as const) {
         const id = `failure-${mode}`;
         yield* queue.enqueue(yield* event(id));
         yield* TestClock.adjust("20 seconds");
@@ -952,8 +952,12 @@ describe("KinEventQueue", () => {
           yield* Effect.scoped(queue.claim(claimInput));
           yield* queue.finish({ ...claimInput, orgId: KinOrgId.make("b"), status: "completed" });
           const failed =
-            mode === "release"
-              ? queue.release({ ...claimInput, countAttempt: true })
+            mode === "release" || mode === "run-release"
+              ? queue.release({
+                  ...claimInput,
+                  countAttempt: true,
+                  ...(mode === "run-release" ? { attemptLimit: "run" as const } : {}),
+                })
               : queue.finish({ ...claimInput, status: mode });
           const terminal = yield* failed;
           assert.deepStrictEqual(
@@ -965,7 +969,7 @@ describe("KinEventQueue", () => {
           const now = yield* Clock.currentTimeMillis;
           // A run that showed nothing retries soon; a counted release keeps its five minutes.
           const delay =
-            mode === "release"
+            mode === "release" || mode === "run-release"
               ? 300_000
               : attempt === 1
                 ? 15_000
