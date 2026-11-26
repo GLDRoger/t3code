@@ -1839,7 +1839,7 @@ it.effect(
         const passed = {
           to: "Tech lead",
           passed: true,
-          note: "Kin has posted a line in this chat telling Meera it went to Tech lead, who answers them in their chat with it, so don't say that again. If you have nothing to add, write exactly NO_REPLY.",
+          note: "Kin has posted a line in this chat telling Meera it went to Tech lead, who answers them in their chat with it, so don't say that again. If you have nothing to add, end with kin_skip.",
         };
         assert.deepStrictEqual(yield* mate.pass("Tech lead"), passed);
         // A retry, by domain too, is the same hand-off; another agent for it is refused.
@@ -2237,7 +2237,7 @@ it.effect(
         assert.deepStrictEqual(yield* mate.pass("Tech lead"), {
           to: "Tech lead",
           passed: true,
-          note: `${me} let Meera message Tech lead on Thu 1 Jan 12:00 am, and this request was put in Meera's chat with Tech lead for Tech lead to answer. Kin has posted a line in this chat telling Meera it went to Tech lead, who answers them in their chat with it, so don't say that again. If you have nothing to add, write exactly NO_REPLY.`,
+          note: `${me} let Meera message Tech lead on Thu 1 Jan 12:00 am, and this request was put in Meera's chat with Tech lead for Tech lead to answer. Kin has posted a line in this chat telling Meera it went to Tech lead, who answers them in their chat with it, so don't say that again. If you have nothing to add, end with kin_skip.`,
         });
 
         // Not this time, on another such card: she is told, and a retry says so.

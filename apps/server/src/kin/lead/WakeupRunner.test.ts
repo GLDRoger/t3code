@@ -933,7 +933,7 @@ describe("WakeupRunner", () => {
     ["a started deferral whose item is gone since its card was drawn", "start-gone", 0],
     ["a started deferral whose item was edited since its card was drawn", "start-edited", 0],
   ] as const)(
-    "answers %s without the model when only NO_REPLY could answer it",
+    "answers %s without the model when only kin_skip could answer it",
     ([, kind, turns]) =>
       Effect.gen(function* () {
         const prompts: Array<KinLeadPromptInput> = [];

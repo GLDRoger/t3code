@@ -57,8 +57,6 @@ export function setupFailureIn(
 const NOTE_MAX_CHARS = 160;
 /** Presence labels are cut to this length. */
 const LABEL_MAX_CHARS = 60;
-// Remove this constant with the remaining model-facing sentences.
-export const SILENT_REPLY = "NO_REPLY";
 
 /** Kin asks this once when a turn owed words and ended with none (`KinReplyBridge.complete`). */
 export const RESCUE_PROMPT =

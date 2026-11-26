@@ -67,6 +67,17 @@ it("each Kin tool's description and input schema weigh what the budget pins", ()
     ]),
   );
   assert.deepStrictEqual(
+    kinTools
+      .filter((tool) =>
+        `${Tool.getDescription(tool)}${JSON.stringify(advertisedJsonSchema(tool))}`.includes(
+          "NO_REPLY",
+        ),
+      )
+      .map((tool) => tool.name),
+    [],
+    "No tool tells an agent to write a marker word: kin_skip ends a turn quietly.",
+  );
+  assert.deepStrictEqual(
     measured,
     contextBudget.kinLeadToolBytes,
     "Set agentContextBudget.json to the measured values. Before you cut text to fit, run the evals that cover it (evals/README.md).",

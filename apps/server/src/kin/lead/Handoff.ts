@@ -565,7 +565,7 @@ const make = Effect.gen(function* () {
     const directly = `${person} may message ${agent} now, so they can ask it directly.`;
     const cannot = `${person} and ${agent} can't message each other here now.`;
     const confirm = `Anything that would leave the company, such as a mail or a payment, still needs ${owner}'s own Confirm.`;
-    const alreadyShown = `Kin has posted a line in this chat telling ${person} it went to ${agent}, who answers them in their chat with it, so don't say that again. If you have nothing to add, write exactly NO_REPLY.${mayNow ? "" : ` ${person} may not message ${agent} now.`}`;
+    const alreadyShown = `Kin has posted a line in this chat telling ${person} it went to ${agent}, who answers them in their chat with it, so don't say that again. If you have nothing to add, end with kin_skip.${mayNow ? "" : ` ${person} may not message ${agent} now.`}`;
     const asksOnCard = `The card asks ${owner} to let this request reach ${agent} and to let ${person} message ${agent} from then on. ${confirm} When a yes or a not this time takes effect, Kin posts it in this chat.`;
     const waits = {
       passed: false as const,
