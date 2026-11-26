@@ -157,6 +157,10 @@
       "desc": 172,
       "schema": 143
     },
+    "kin_github_read": {
+      "desc": 663,
+      "schema": 596
+    },
     "kin_github_review": {
       "desc": 196,
       "schema": 499
@@ -389,7 +393,7 @@
     "pulse": 3012,
     "scheduled": 3248,
     "reminder": 3019,
-    "groupReply": 3040,
+    "groupReply": 3113,
     "teamRoom": 2751
   }
 }
