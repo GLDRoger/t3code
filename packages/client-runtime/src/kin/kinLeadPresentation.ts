@@ -157,7 +157,7 @@ export function kinLeadTrackingDetail(
   const when =
     item.dueAllDay === true && item.dueAt !== undefined
       ? `due ${kinWorkDueText({ dueAt: item.dueAt, dueAllDay: true }, { zone: timeZone ?? names?.zone ?? null }, now)}`
-      : formatKinDeferralTime(due, timeZone);
+      : formatKinDeferralTime(due, timeZone ?? names?.readerZone ?? names?.zone ?? undefined);
   return kind === null ? when : `${kind}, ${when}`;
 }
 
@@ -259,7 +259,7 @@ export function kinLeadSaveProblem(error: unknown, creating: boolean): string {
         ? "This device isn't allowed to add agents on this server."
         : "Only the person who set up this agent can change it.";
     case "conflict":
-      return "You already have an agent with this name and area.";
+      return "Another agent already has this name.";
     case "limit":
       return "This server has as many agents as it allows.";
     case "not_found":

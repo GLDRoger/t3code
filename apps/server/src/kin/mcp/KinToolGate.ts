@@ -17,7 +17,7 @@ import { KinServer, type Services } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { OWN_MESSAGE_REFUSALS } from "../chat/ownMessages.ts";
 import { effectiveAudience, SHARED_REFUSAL, turnPeople } from "../lead/Audience.ts";
-import { OUTSIDE_REFUSAL, outsideToolAllowed } from "../lead/OutsideContent.ts";
+import { OUTSIDE_REFUSAL, outsideToolAllowed, repoReadRefusal } from "../lead/OutsideContent.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { readCallArguments } from "../connections/callArguments.ts";
 import { PRIVATE_WRITE, privateRefusal } from "../connections/privateTurn.ts";
@@ -524,6 +524,16 @@ export const layer = ReadTools.layer.pipe(
         Effect.succeed(inRunningTurn("KinToolGate.approved", approvedRefusal, APPROVED_REFUSAL)),
       ),
       McpToolPolicy.toolCallGate(gate("KinToolGate.admitted", admitted), SHARED_REFUSAL),
+      // Before the outside gate, whose refusal would offer the owner what was read.
+      McpToolPolicy.toolCallRefusal(
+        Effect.succeed(
+          inRunningTurn(
+            "KinToolGate.repoRead",
+            (turn, tool) => repoReadRefusal(turn, tool),
+            undefined,
+          ),
+        ),
+      ),
       McpToolPolicy.toolCallGate(gate("KinToolGate.outside", outside), (_args, tool) =>
         tool === "message_withdraw" || tool === "message_replace"
           ? OWN_MESSAGE_REFUSALS.outside

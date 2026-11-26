@@ -7,15 +7,15 @@
   },
   "kinSharedInstructionsHash": "a0249114282032d6cd628d3e6f40ff1c4cae30a9f7d88c287c45ea39ae1972d1",
   "kinLeadToolListJsonBytes": {
-    "engineering": 170119,
-    "engineeringBesideFinanceAndSales": 155057,
-    "finance": 149297,
-    "shared": 98563,
-    "social": 152378,
-    "socialBesideFinanceAndSales": 137316,
-    "support": 149297
+    "engineering": 171476,
+    "engineeringBesideFinanceAndSales": 155193,
+    "finance": 150654,
+    "shared": 98699,
+    "social": 153735,
+    "socialBesideFinanceAndSales": 137452,
+    "support": 150654
   },
-  "kinLeadAlwaysLoadedToolBytes": 76354,
+  "kinLeadAlwaysLoadedToolBytes": 76490,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -157,6 +157,10 @@
       "desc": 172,
       "schema": 143
     },
+    "kin_github_read": {
+      "desc": 663,
+      "schema": 596
+    },
     "kin_github_review": {
       "desc": 196,
       "schema": 499
@@ -194,8 +198,8 @@
       "schema": 221
     },
     "kin_receipt": {
-      "desc": 1599,
-      "schema": 999
+      "desc": 1826,
+      "schema": 974
     },
     "kin_recipe_undo": {
       "desc": 215,
@@ -274,8 +278,8 @@
       "schema": 1231
     },
     "payment_record": {
-      "desc": 320,
-      "schema": 746
+      "desc": 923,
+      "schema": 1162
     },
     "people_read": {
       "desc": 270,
@@ -318,7 +322,7 @@
       "schema": 8725
     },
     "record_get": {
-      "desc": 1239,
+      "desc": 1375,
       "schema": 212
     },
     "record_hand_back": {
@@ -389,7 +393,7 @@
     "pulse": 3012,
     "scheduled": 3248,
     "reminder": 3302,
-    "groupReply": 3040,
+    "groupReply": 3113,
     "teamRoom": 2751
   }
 }

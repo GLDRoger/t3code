@@ -1945,7 +1945,7 @@ describe("Kin migrations", () => {
           (yield* runKinMigrations()).map(([id]) => id),
           [
             196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
-            213, 214, 215, 216, 217, 218, 219, 220, 221, 222,
+            213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223,
           ],
         );
         assert.deepStrictEqual(yield* receipts, [
@@ -1997,7 +1997,7 @@ describe("Kin migrations", () => {
         (yield* runKinMigrations()).map(([id]) => id),
         [
           197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214,
-          215, 216, 217, 218, 219, 220, 221, 222,
+          215, 216, 217, 218, 219, 220, 221, 222, 223,
         ],
       );
       const all = [
@@ -2750,6 +2750,35 @@ describe("Kin migrations", () => {
           },
         ],
       );
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K223 indexes a draft again without whom it is for, and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 223`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+        VALUES ('org', 'docs', 'Docs', 'D', 1)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, fields_json,
+          owner_kind, owner_id, created_by_kind, origin_key, created_at, updated_at)
+        VALUES ('org', 'doc', 'docs', 'D-1', 'Cargo draft', '{"draftFor":"person-id-9"}', 'person',
+          'p', 'person', 'owner:1', 1, 1)`;
+      yield* sql`INSERT INTO kin_search_rows (org_id, record_id, part) VALUES ('org', 'doc', 'public')`;
+      yield* sql`INSERT INTO kin_search (rowid, title, body, kind)
+        SELECT id, 'Cargo draft', ' person-id-9 ', '' FROM kin_search_rows`;
+      const found = (word: string) =>
+        sql`SELECT rowid FROM kin_search WHERE kin_search MATCH ${word}`;
+      assert.lengthOf(yield* found('"person-id-9"'), 1);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(223));
+      assert.deepStrictEqual(
+        [(yield* found('"person-id-9"')).length, (yield* found("cargo")).length],
+        [0, 1],
+      );
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 223`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(223));
+      assert.lengthOf(yield* found("cargo"), 1);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 

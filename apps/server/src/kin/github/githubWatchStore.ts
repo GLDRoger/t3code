@@ -74,7 +74,7 @@ export const watchRow = Effect.fn("KinGitHubWatchStore.row")(function* (orgId: K
  * The repos Kin keeps memory in, lowercased. Kin opens its own memory PRs there, as its App or the
  * owner, so watching one would wake an agent for every memory write it makes.
  */
-const memoryRepos = Effect.gen(function* () {
+export const memoryRepos = Effect.gen(function* () {
   const memory = yield* configuredRepositories;
   return new Set(memory.flatMap((entry) => githubRepoOf(entry.repoUrl)?.toLowerCase() ?? []));
 }).pipe(Effect.orElseSucceed(() => new Set<string>()));

@@ -21,6 +21,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
+import * as DateTime from "effect/DateTime";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -92,6 +93,8 @@ import * as LeadDocuments from "../gendocs/leadDocuments.ts";
 import * as Quotes from "../gendocs/quotes.ts";
 import { endOfDay } from "./recordRows.ts";
 import { moneyOf } from "./projectSpine.ts";
+import { agentPaid, agentTook } from "./agentPayment.testkit.ts";
+import { SHARED_REFUSAL } from "../lead/Audience.ts";
 
 // Invented org, people, amounts and files only; nothing here reads a real database.
 const orgId = KinOrgId.make("org");
@@ -195,10 +198,12 @@ const gate = Layer.unwrap(
               ${ownerId}, 'lead-thread', 'lead-chat-lead', 'member', 'text', '', '[]', 'posted',
               ${at}, ${`send:${input.clientMessageId}`})
             ON CONFLICT DO NOTHING`;
+          // Posted now, as the chat stamps it, so it takes taps for its day from now.
+          const postedAt = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
           yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class,
               type, revision, state_json, awaiting_json, updated_at)
             VALUES (${widgetId}, ${agent.orgId}, ${input.chatId}, ${messageId}, 'native', 'choice', 1,
-              ${JSON.stringify(state)}, ${JSON.stringify([ownerId])}, ${at})
+              ${JSON.stringify(state)}, ${JSON.stringify([ownerId])}, ${postedAt})
             ON CONFLICT DO NOTHING`;
           if (bind !== undefined) yield* bind({ widgetId } as never);
           return { widgetId } as never;
@@ -2063,7 +2068,7 @@ describe("invoices", () => {
         assert.strictEqual((yield* LeadWork.get(scope, { key: number })).key, "INV-2");
         const lines = (yield* LeadWork.get(scope, { key: "C-1" })).owed?.money?.invoices ?? [];
         assert.isTrue(lines.some((line) => line.startsWith(`${number} (INV-2): `)));
-        yield* LeadMoney.payment(scope, {
+        yield* agentPaid(scope, orgId, ownerId, {
           sourceEventId: asked,
           key: "INV-2",
           amount: "47,200",
@@ -2109,30 +2114,40 @@ describe("invoices", () => {
         [[false], [true]],
       );
       const paid = yield* turn(4, "Acme paid 40k");
-      const first = yield* LeadMoney.payment(scope, {
-        sourceEventId: paid,
-        key: "INV-1",
-        amount: "40k",
-        paidOn: "2026-11-05",
-      });
-      // The same call again is a retry and records nothing more.
-      const again = yield* LeadMoney.payment(scope, {
-        sourceEventId: paid,
-        key: "INV-1",
-        amount: "40k",
-        paidOn: "2026-11-05",
-      });
-      assert.strictEqual(again.paymentId, first.paymentId);
+      const said = { sourceEventId: paid, key: "INV-1", amount: "40k", paidOn: "2026-11-05" };
+      // The agent's call records nothing: it puts the payment to the owner on one card, which
+      // the same call again finds. Only the owner's Confirm records it.
+      const proposed = yield* LeadMoney.payment(scope, said);
+      const again = yield* LeadMoney.payment(scope, said);
+      if (!("status" in proposed) || proposed.status !== "proposed")
+        return assert.fail("expected a card");
+      assert.deepInclude(again, { status: "proposed", proposal: proposed.proposal });
+      const sqlPaid = yield* SqlClient.SqlClient;
+      assert.deepStrictEqual(
+        yield* sqlPaid`SELECT COUNT(*) AS n FROM kin_record_payments WHERE org_id = ${orgId}`,
+        [{ n: 0 }],
+      );
+      assert.lengthOf(
+        yield* sqlPaid`SELECT 1 FROM kin_widgets WHERE org_id = ${orgId}
+          AND widget_id LIKE 'choice:card-kin-receipt:%'`,
+        1,
+      );
+      assert.deepStrictEqual(proposed.shown, [
+        "Client: Invented Acme",
+        "Received: ₹40,000.00",
+        "Received on: Thu, 5 Nov 2026",
+        `Invoice: ${String((yield* LeadWork.get(scope, { key: "INV-1" })).fields?.number)}, Invented October retainer`,
+        "Already received on it: ₹0.00 of ₹1,00,000.00",
+        "Still owed after: ₹60,000.00",
+      ]);
+      const first = yield* agentPaid(scope, orgId, ownerId, said);
       assert.deepStrictEqual(
         [first.received, first.balance, first.state],
         ["₹40,000.00", "₹60,000.00", "waiting"],
       );
-      // The agent recorded it on the owner's message, and the read says so beside the bank.
+      // The owner's Confirm recorded it, and the read says so beside the bank.
       const read = yield* LeadWork.get(scope, { key: "INV-1" });
-      assert.match(
-        read.payments?.[0]?.source ?? "",
-        /^recorded by .+ \(you\) on .+ \(owner\)'s word$/,
-      );
+      assert.strictEqual(read.payments?.[0]?.source, "recorded by Owner (owner)");
       assert.deepStrictEqual(read.bank, {
         knownThrough: null,
         note: "No bank statement is confirmed, so Kin can't see what reached the bank.",
@@ -2214,11 +2229,7 @@ describe("invoices", () => {
       const stored = yield* (yield* KinRecords.KinRecords).detail(
         (yield* (yield* KinRecords.KinRecords).get(orgId, "INV-1"))!,
       );
-      assert.deepStrictEqual(stored.payments?.[0]?.source, {
-        _tag: "person",
-        personId: ownerId,
-        agentId: lead,
-      });
+      assert.deepStrictEqual(stored.payments?.[0]?.source, { _tag: "person", personId: ownerId });
       const over = yield* LeadMoney.payment(scope, {
         sourceEventId: paid,
         key: "INV-1",
@@ -2292,7 +2303,7 @@ describe("invoices", () => {
       assert.deepStrictEqual(yield* receivedIn("2026-11-01", "2026-11-30"), ["INV-1"]);
       assert.deepStrictEqual(yield* receivedIn("2026-10-01", "2026-10-31"), []);
 
-      const rest = yield* LeadMoney.payment(scope, {
+      const rest = yield* agentPaid(scope, orgId, ownerId, {
         sourceEventId: paid,
         key: "INV-1",
         amount: "60,000",
@@ -2300,14 +2311,38 @@ describe("invoices", () => {
       });
       assert.deepStrictEqual([rest.balance, rest.state], ["₹0.00", "done"]);
       assert.isUndefined(yield* credits());
-      yield* LeadMoney.payment(scope, {
-        sourceEventId: paid,
-        key: "INV-1",
-        void: first.paymentId!,
-      });
+      // Taking one back is the owner's tap too: the agent's call draws its card, once.
       const records = yield* KinRecords.KinRecords;
+      const takeBack = { sourceEventId: paid, key: "INV-1", void: first.paymentId! };
+      const toTake = yield* LeadMoney.payment(scope, takeBack);
+      if (!("status" in toTake) || toTake.status !== "proposed")
+        return assert.fail("expected a card");
+      assert.deepInclude(yield* LeadMoney.payment(scope, takeBack), {
+        proposal: toTake.proposal,
+      });
+      assert.strictEqual((yield* records.get(orgId, "INV-1"))!.paid, 10_000_000);
+      const [takeCard] = yield* sqlPaid<{ state: string }>`SELECT w.state_json AS state
+        FROM kin_widgets w JOIN kin_receipt_proposals p ON p.widget_id = w.widget_id
+        WHERE p.proposal_id = ${toTake.proposal}`;
+      assert.strictEqual(
+        JSON.parse(takeCard!.state).question,
+        `Take back the payment of ₹40,000.00 on Thu, 5 Nov 2026 from ${number}?`,
+      );
+      assert.deepStrictEqual(toTake.shown, [
+        "Client: Invented Acme",
+        "Payment: ₹40,000.00 received on Thu, 5 Nov 2026",
+        `Invoice: ${number}, Invented October retainer`,
+        "Received on it now: ₹1,00,000.00 of ₹1,00,000.00",
+        "Owed after: ₹40,000.00",
+      ]);
+      yield* agentTook(orgId, ownerId, toTake.proposal);
       const after = yield* records.get(orgId, "INV-1");
       assert.deepStrictEqual([after!.state, after!.paid], ["waiting", 6_000_000]);
+      // Taken back, asking again draws nothing and says so.
+      assert.strictEqual(
+        (yield* Effect.flip(LeadMoney.payment(scope, takeBack))).message,
+        "That payment was already taken back, so nothing changed.",
+      );
       // The voided payment's own call again is no retry of a live payment: it is refused.
       const voidedRetry = yield* LeadMoney.payment(scope, {
         sourceEventId: paid,
@@ -2335,12 +2370,23 @@ describe("invoices", () => {
       yield* sqlTeam`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
           person_id, role, joined_at, joined_seq)
         VALUES ('lead-chat-banker', ${orgId}, 'lead-chat', 'person', 'banker-mate', 'member', ${at}, 4)`;
-      yield* turn(5, "Did Acme pay?");
+      const teamTurn = yield* turn(5, "Did Acme pay?");
       const teamRead = yield* LeadWork.get(scope, { key: "INV-1" });
       assert.deepStrictEqual(teamRead.bank, {
         knownThrough: null,
         note: "No bank statement is confirmed, so Kin can't see what reached the bank.",
       });
+      // Nor can it put a payment to anyone: refused as a shared turn's money always was, no card.
+      const proposals = sqlTeam`SELECT COUNT(*) AS n FROM kin_receipt_proposals`;
+      const proposedBefore = yield* proposals;
+      const teamPays = yield* LeadMoney.payment(scope, {
+        sourceEventId: teamTurn,
+        key: "INV-1",
+        amount: "1,000",
+        paidOn: "2026-11-06",
+      }).pipe(Effect.flip);
+      assert.deepInclude(teamPays, { reason: "not_allowed", message: SHARED_REFUSAL });
+      assert.deepStrictEqual(yield* proposals, proposedBefore);
       yield* sqlTeam`DELETE FROM kin_chat_members WHERE member_id = 'lead-chat-banker'`;
       yield* sqlTeam`UPDATE kin_records SET team_shared = 0 WHERE org_id = ${orgId} AND key = 'INV-1'`;
 
@@ -2359,6 +2405,9 @@ describe("invoices", () => {
       assert.include(below.message, "Void a payment");
       assert.lengthOf(yield* marked("wake-6"), 1);
       const overpaid = yield* turn(7, "They paid the rest");
+      // Said after the owner's taps that recorded INV-1's payments, so they don't hold it back.
+      yield* sql`UPDATE kin_events SET received_at = ${(yield* Clock.currentTimeMillis) + 1}
+        WHERE event_id = ${overpaid}`;
       yield* LeadMoney.payment(scope, {
         sourceEventId: overpaid,
         key: "INV-1",
@@ -2436,16 +2485,14 @@ describe("invoices", () => {
         withheld: "18,000",
         paidOn: "2026-11-09",
       };
-      const settled = yield* LeadMoney.payment(scope, tds);
+      const settled = yield* agentPaid(scope, orgId, ownerId, tds);
       assert.deepStrictEqual(
         [settled.received, settled.tdsWithheld, settled.balance, settled.state],
         ["₹1,00,000.00", "₹18,000.00", "₹0.00", "done"],
       );
-      const retried = yield* LeadMoney.payment(scope, tds);
-      assert.deepStrictEqual(
-        [retried.paymentId, retried.tdsPaymentId],
-        [settled.paymentId, settled.tdsPaymentId],
-      );
+      // Asked again, it is the payment already recorded: nothing more is recorded or asked.
+      assert.include(yield* LeadMoney.payment(scope, tds), { status: "already_recorded" });
+      assert.strictEqual((yield* records.get(orgId, "INV-2"))!.paid, 11_800_000);
 
       const settledMoney = yield* OwnerMoney.money(people, { orgId });
       const minor = (money: ReadonlyArray<{ readonly minor: number }>) => money[0]?.minor ?? 0;
@@ -2480,7 +2527,7 @@ describe("invoices", () => {
         withheld: "101",
       }).pipe(Effect.flip);
       assert.strictEqual((yield* records.get(orgId, "INV-3"))!.paid, 0);
-      // Review 45: ₹900 and ₹100 TDS, retried as ₹900 and ₹101, is refused: TDS stays ₹100.
+      // Review 45: ₹900 and ₹100 TDS, asked again as more than is left, is refused: TDS stays ₹100.
       yield* LeadWork.create(scope, {
         sourceEventId: overpaid,
         records: [
@@ -2498,11 +2545,15 @@ describe("invoices", () => {
         entry: KinRecordKey.make("INV-4"),
       });
       const part = { ...tds, key: "INV-4", amount: "900", withheld: "100" };
-      yield* LeadMoney.payment(scope, part);
-      for (const changed of [{ withheld: "101" }, { amount: "901" }, { withheld: undefined }])
+      yield* agentPaid(scope, orgId, ownerId, part);
+      for (const changed of [{ withheld: "101" }, { amount: "901" }])
         assert.include(yield* LeadMoney.payment(scope, { ...part, ...changed }).pipe(Effect.flip), {
-          reason: "not_allowed",
+          reason: "invalid_state",
         });
+      // Asked otherwise, it is another card for the owner, and records nothing until tapped.
+      assert.include(yield* LeadMoney.payment(scope, { ...part, withheld: undefined }), {
+        status: "proposed",
+      });
       const parted = (yield* records.get(orgId, "INV-4"))!;
       assert.deepStrictEqual([parted.paid, parted.withheld], [100_000, 10_000]);
 
@@ -2693,8 +2744,17 @@ describe("invoices", () => {
         );
         const first = both.find((one) => one.key === "INV-1")!;
         // Issued, the same payment is recorded, once.
-        assert.strictEqual((yield* agentPays).received, "₹1,000.00");
-        yield* agentPays;
+        assert.strictEqual(
+          (yield* agentPaid(scope, orgId, ownerId, {
+            sourceEventId: asked,
+            key: "INV-1",
+            amount: "1,000",
+            paidOn: "2026-11-05",
+          })).received,
+          "₹1,000.00",
+        );
+        // Asked again, it is the payment already recorded: no card, nothing more.
+        assert.include(yield* agentPays, { status: "already_recorded" });
         assert.deepStrictEqual(yield* paymentsOn, [{ n: 1 }]);
         // A failed build is retried with the number it was given; asking again issues nothing.
         const again = yield* OwnerMoney.issue(people, { orgId, key: "INV-1" });
@@ -2917,7 +2977,7 @@ describe("invoices", () => {
           sourceEventId: asked,
           entry: KinRecordKey.make("INV-1"),
         });
-        const first = yield* LeadMoney.payment(scope, {
+        const first = yield* agentPaid(scope, orgId, ownerId, {
           sourceEventId: asked,
           key: "INV-1",
           amount: "10k",
@@ -2989,7 +3049,7 @@ describe("invoices", () => {
           entry: KinRecordKey.make("INV-2"),
         });
         assert.isTrue(issued.issued);
-        const rest = yield* LeadMoney.payment(scope, {
+        const rest = yield* agentPaid(scope, orgId, ownerId, {
           sourceEventId: owner,
           key: "INV-1",
           amount: "90k",
@@ -3170,6 +3230,314 @@ describe("the owner's taps", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("put the same payment to the owner again only once they say it is another", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "invoices" });
+      const asked = yield* turn(3, "Invoice Invented Acme");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [{ list: "clients", title: "Invented Acme" }],
+      });
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          {
+            list: "invoices",
+            title: "Invented retainer",
+            client: "Invented Acme",
+            amount: "1 lakh",
+            date: "2026-10-01",
+          },
+        ],
+      });
+      yield* LeadDocuments.issue(scope, {
+        sourceEventId: asked,
+        entry: KinRecordKey.make("INV-1"),
+      });
+      const number = String((yield* LeadWork.get(scope, { key: "INV-1" })).fields?.number);
+      const sql = yield* SqlClient.SqlClient;
+      const counts = () =>
+        Effect.all([
+          sql`SELECT 1 FROM kin_record_payments WHERE org_id = ${orgId} AND voided_at IS NULL`,
+          sql`SELECT 1 FROM kin_receipt_proposals WHERE org_id = ${orgId}`,
+        ]).pipe(Effect.map((rows) => rows.map((one) => one.length)));
+      const payment = { key: "INV-1", amount: "40k", withheld: "4k", paidOn: "2026-11-05" };
+      yield* agentPaid(scope, orgId, ownerId, {
+        sourceEventId: yield* turn(4, "Paid"),
+        ...payment,
+      });
+      assert.deepStrictEqual(yield* counts(), [2, 1]);
+      // Relayed again in a later turn: no card, and the agent asks whether it is another.
+      const relayed = yield* turn(5, "Acme paid 40k with 4k TDS on the 5th");
+      const repeat = yield* LeadMoney.payment(scope, { sourceEventId: relayed, ...payment });
+      assert.deepStrictEqual(repeat, {
+        status: "already_recorded",
+        key: "INV-1",
+        next: `Nothing was recorded and no card was drawn: ₹40,000.00 and ₹4,000.00 of tax withheld on Thu, 5 Nov 2026 is already recorded on ${number}. Ask the owner in one line whether this is another payment; only if they say so, call payment_record again with another.`,
+        sensitive: true,
+      });
+      assert.deepStrictEqual(yield* counts(), [2, 1]);
+      // Once they say it is, the card says so plainly, and Confirm adds the second one.
+      const second = yield* LeadMoney.payment(scope, {
+        sourceEventId: relayed,
+        ...payment,
+        another: true,
+      });
+      if (!("status" in second) || second.status !== "proposed")
+        return assert.fail("expected a card");
+      assert.include(
+        second.shown,
+        "A payment of the same amount on the same day is already recorded on it; Confirm adds a second one.",
+      );
+      // Its tax counts toward what is settled, not toward the money received.
+      assert.include(second.shown, "Already settled on it: ₹44,000.00 of ₹1,00,000.00");
+      yield* agentPaid(scope, orgId, ownerId, {
+        sourceEventId: relayed,
+        ...payment,
+        another: true,
+      });
+      assert.deepStrictEqual(yield* counts(), [4, 2]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("put a payment in another currency to the owner with both amounts and the rate", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "invoices" });
+      const asked = yield* turn(3, "Invoice Harbourline Logistics");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [{ list: "clients", title: "Harbourline Logistics" }],
+      });
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          {
+            list: "invoices",
+            title: "Invented port audit",
+            client: "Harbourline Logistics",
+            amount: "USD 2,000",
+            date: "2026-10-01",
+          },
+        ],
+      });
+      yield* LeadDocuments.issue(scope, {
+        sourceEventId: asked,
+        entry: KinRecordKey.make("INV-1"),
+      });
+      const sql = yield* SqlClient.SqlClient;
+      const stored = sql<{ minor: number; currency: string; rate: string | null }>`SELECT
+          received_minor AS minor, received_currency AS currency, rate
+        FROM kin_record_payments WHERE org_id = ${orgId} AND voided_at IS NULL`;
+      const payment = {
+        key: "INV-1",
+        amount: "1,000",
+        received: "INR 83,500",
+        paidOn: "2026-11-05",
+      };
+      const drawn = yield* LeadMoney.payment(scope, {
+        sourceEventId: yield* turn(4, "Harbourline paid INR 83,500 for it"),
+        ...payment,
+      });
+      if (!("status" in drawn) || drawn.status !== "proposed")
+        return assert.fail(`expected a card: ${JSON.stringify(drawn)}`);
+      assert.include(drawn.shown, "Received: INR 83,500.00 for USD 1,000.00, a rate of 83.50");
+      assert.lengthOf(yield* stored, 0);
+      yield* agentPaid(scope, orgId, ownerId, {
+        sourceEventId: yield* turn(5, "Harbourline paid INR 83,500 for it"),
+        ...payment,
+      });
+      assert.deepStrictEqual(
+        (yield* stored).map((row) => ({ ...row })),
+        [{ minor: 8_350_000, currency: "INR", rate: "83.500000" }],
+      );
+      // Relayed again, as the bank card or this one stored it, it is the same payment.
+      const relayed = yield* turn(6, "Harbourline paid us on the 5th");
+      for (const again of [payment, { key: "INV-1", amount: "1,000", paidOn: "2026-11-05" }])
+        assert.include(yield* LeadMoney.payment(scope, { sourceEventId: relayed, ...again }), {
+          status: "already_recorded",
+        });
+      // Another sum received for it is not the payment on record.
+      assert.include(
+        yield* LeadMoney.payment(scope, {
+          sourceEventId: relayed,
+          ...payment,
+          received: "INR 84,000",
+        }),
+        { status: "proposed" },
+      );
+      // The money as it came in, alone, is refused with what to pass instead.
+      assert.include(
+        yield* LeadMoney.payment(scope, {
+          sourceEventId: relayed,
+          key: "INV-1",
+          amount: "INR 83,500",
+          paidOn: "2026-11-06",
+        }).pipe(Effect.flip),
+        {
+          message:
+            "INV-1 is in USD; record the payment in USD. For money that came in another currency, pass it as received and what it settles, in USD, as amount. Nothing was recorded.",
+        },
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("name who paid from the invoice's bill-to when it has no client record", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "invoices" });
+      const asked = yield* turn(3, "Invoice Tidewater Freight");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          {
+            list: "invoices",
+            title: "Invented freight audit",
+            amount: "1 lakh",
+            date: "2026-10-01",
+            fields: { billToName: "Tidewater Freight" },
+          },
+        ],
+      });
+      yield* LeadDocuments.issue(scope, {
+        sourceEventId: asked,
+        entry: KinRecordKey.make("INV-1"),
+      });
+      const proposed = yield* LeadMoney.payment(scope, {
+        sourceEventId: yield* turn(4, "Tidewater paid 40k"),
+        key: "INV-1",
+        amount: "40k",
+        paidOn: "2026-11-05",
+      });
+      if (!("status" in proposed) || proposed.status !== "proposed")
+        return assert.fail("expected a card");
+      assert.strictEqual(proposed.shown[0], "Client: Tidewater Freight");
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "refuse before a card what Confirm would refuse, and take tax alone as the owner's form does",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* defined(1, { template: "invoices" });
+        const asked = yield* turn(3, "Invoice Invented Acme");
+        const made = yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            { list: "clients", title: "Invented Acme" },
+            { list: "invoices", title: "Invented retainer", amount: "1 lakh", date: "2026-10-01" },
+            { list: "invoices", title: "Invented spare", amount: "500", date: "2026-10-01" },
+          ],
+        });
+        for (const key of ["INV-1", "INV-2"])
+          yield* LeadDocuments.issue(scope, {
+            sourceEventId: asked,
+            entry: KinRecordKey.make(key),
+          });
+        yield* OwnerMoney.voidEntry(people, { orgId, key: "INV-2" });
+        const sql = yield* SqlClient.SqlClient;
+        const proposals = sql`SELECT 1 FROM kin_receipt_proposals WHERE org_id = ${orgId}`;
+        const said = yield* turn(4, "Acme paid");
+        const refusal = (key: string, more: { amount?: string; withheld?: string }) =>
+          LeadMoney.payment(scope, {
+            sourceEventId: said,
+            key,
+            paidOn: "2026-11-05",
+            ...more,
+          }).pipe(
+            Effect.flip,
+            Effect.map((error) => error.message),
+          );
+        assert.deepStrictEqual(
+          [
+            yield* refusal("INV-2", { amount: "100" }),
+            yield* refusal(made.records[0]!.key, { amount: "100" }),
+            yield* refusal("INV-1", { amount: "0" }),
+          ],
+          [
+            "INV-2 is void; it takes no payments. Nothing was recorded.",
+            `${made.records[0]!.key} is not an invoice or in a list paid over time; payments are recorded on those. Nothing was recorded.`,
+            "A payment is more than nothing. Nothing was recorded.",
+          ],
+        );
+        assert.lengthOf(yield* proposals, 0);
+        // No cash and only the tax the client withheld is the owner's own form's TDS alone.
+        const tax = {
+          sourceEventId: said,
+          key: "INV-1",
+          amount: "0",
+          withheld: "4k",
+          paidOn: "2026-11-05",
+        };
+        const card = yield* LeadMoney.payment(scope, tax);
+        if (!("status" in card) || card.status !== "proposed")
+          return assert.fail("expected a card");
+        assert.include(card.shown, "Received: nothing in cash");
+        yield* agentPaid(scope, orgId, ownerId, tax);
+        assert.deepStrictEqual(
+          yield* sql`SELECT amount_minor AS minor, withheld FROM kin_record_payments
+            WHERE org_id = ${orgId} AND voided_at IS NULL`,
+          [{ minor: 400_000, withheld: 1 }],
+        );
+        // Asked what it made, the agent is told tax gets no receipt, not to make one.
+        const read = yield* Effect.flip(
+          LeadDocuments.receipt(scope, { sourceEventId: said, proposal: card.proposal }),
+        );
+        assert.strictEqual(
+          read.message,
+          "The owner confirmed this tax the client withheld on its card, so Kin recorded it. Tax withheld isn't money received, so it gets no receipt.",
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("describe a payment card asked again as it was drawn, and never a closed one", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "invoices" });
+      const asked = yield* turn(3, "Invoice Invented Acme");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          { list: "invoices", title: "Invented retainer", amount: "1 lakh", date: "2026-10-01" },
+        ],
+      });
+      yield* LeadDocuments.issue(scope, {
+        sourceEventId: asked,
+        entry: KinRecordKey.make("INV-1"),
+      });
+      const said = {
+        sourceEventId: yield* turn(4, "Acme paid 200"),
+        key: "INV-1",
+        amount: "200",
+        paidOn: "2026-11-05",
+      };
+      const first = yield* LeadMoney.payment(scope, said);
+      if (!("status" in first) || first.status !== "proposed")
+        return assert.fail("expected a card");
+      // Money the owner records meanwhile doesn't change what the one card says.
+      yield* OwnerMoney.recordPayment(people, {
+        orgId,
+        key: "INV-1",
+        amount: { minor: 10_000, currency: "INR" },
+        paidOn: "2026-11-06",
+        clientRequestId: "meanwhile",
+      });
+      const again = yield* LeadMoney.payment(scope, said);
+      assert.deepInclude(again, { status: "proposed", shown: first.shown });
+      // Closed unanswered, it is not put to the agent as there to confirm.
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_widgets SET closed_at = 1 WHERE widget_id = (SELECT widget_id
+        FROM kin_receipt_proposals WHERE proposal_id = ${first.proposal})`;
+      const closed = yield* Effect.flip(LeadMoney.payment(scope, said));
+      assert.strictEqual(
+        closed.message,
+        "The owner's card for this payment closed before they answered it, so nothing was recorded. Ask them to record it themselves in Money.",
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("settle an invoice from its balance when the amount is edited", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -3239,6 +3607,73 @@ describe("the owner's taps", () => {
       );
       assert.deepStrictEqual(settled.bankKnown, { through: null });
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "refuse an agent's Paid with money still owed, and its void or restore of a paid-on invoice",
+    () =>
+      Effect.gen(function* () {
+        yield* seed;
+        yield* defined(1, { template: "invoices" });
+        const asked = yield* turn(3, "Invoice");
+        yield* LeadWork.create(scope, {
+          sourceEventId: asked,
+          records: [
+            { list: "invoices", title: "Invented retainer", amount: "1 lakh", date: "2026-11-01" },
+          ],
+        });
+        yield* issueAll("INV-1");
+        yield* OwnerMoney.recordPayment(people, {
+          orgId,
+          key: "INV-1",
+          amount: { minor: 4_000_000, currency: "INR" },
+          paidOn: "2026-11-05",
+          clientRequestId: "p1",
+        });
+        const records = yield* KinRecords.KinRecords;
+        const state = () => records.get(orgId, "INV-1").pipe(Effect.map((row) => row!.state));
+        const sql = yield* SqlClient.SqlClient;
+        // Said after the owner's own writes, so those don't hold the agent back.
+        const afterOwner = (event: string) =>
+          Effect.gen(function* () {
+            yield* sql`UPDATE kin_events SET received_at = ${(yield* Clock.currentTimeMillis) + 1}
+              WHERE event_id = ${event}`;
+            return event;
+          });
+        const said = yield* afterOwner(
+          yield* turn(4, "Mark INV-1 paid, and void it if that's easier"),
+        );
+        const paid = yield* Effect.flip(
+          LeadWork.update(scope, { sourceEventId: said, key: "INV-1", state: "done" }),
+        );
+        assert.strictEqual(
+          paid.message,
+          "Nothing was changed: INV-1 still has ₹60,000.00 owed. Put money received to the owner with payment_record; their tap on its card marks it Paid.",
+        );
+        const voidedBy = [
+          Effect.flip(
+            LeadWork.update(scope, { sourceEventId: said, key: "INV-1", state: "dropped" }),
+          ),
+          Effect.flip(
+            LeadDocuments.issue(scope, { sourceEventId: said, entry: "INV-1", void: true }),
+          ),
+        ];
+        for (const attempt of voidedBy)
+          assert.strictEqual(
+            (yield* attempt).message,
+            "Nothing was changed: INV-1 has payments recorded on it, so the owner voids or restores it on the invoice in Money.",
+          );
+        assert.strictEqual(yield* state(), "waiting");
+        // The owner's own void stands; the agent can't bring it back either.
+        const row = yield* records.get(orgId, "INV-1");
+        yield* OwnerWork.update(people, { orgId, key: "INV-1", rev: row!.rev, state: "dropped" });
+        const back = yield* afterOwner(yield* turn(5, "Unvoid INV-1"));
+        const restored = yield* Effect.flip(
+          LeadDocuments.issue(scope, { sourceEventId: back, entry: "INV-1", unvoid: true }),
+        );
+        assert.match(restored.message, /^Nothing was changed: INV-1 has payments recorded on it/);
+        assert.strictEqual(yield* state(), "dropped");
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect("sends only list definition features the caller accepts", () =>
@@ -7022,6 +7457,20 @@ describe("money answers", () => {
         assert.strictEqual(
           yield* refusal(asked, byHand.key, { reimbursement: "repaid" }),
           KinRecords.FUNDING_A_PERSON_SET,
+        );
+        // Paid back is never an agent's mark, even asked in person: it's the owner's tap.
+        const repaid = { reimbursement: "repaid", repaidOn: "2026-11-10" };
+        assert.strictEqual(
+          yield* refusal(asked, domain.key, repaid),
+          KinRecords.REPAID_IS_THE_OWNERS,
+        );
+        assert.strictEqual(
+          (yield* Effect.flip(spend(asked, "lunch", { ...meera, ...repaid }))).message,
+          KinRecords.REPAID_IS_THE_OWNERS,
+        );
+        assert.strictEqual(
+          KinRecords.REPAID_IS_THE_OWNERS,
+          "Nothing was changed: an agent doesn't mark an expense repaid. The owner marks it on the mark-repaid card when Kin has matched the bank debit, or on the expense in Money.",
         );
 
         // After the turn reads a statement: nothing changes, and a new one waits to be kept.
