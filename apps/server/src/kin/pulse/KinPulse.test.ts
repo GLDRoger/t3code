@@ -1511,15 +1511,15 @@ describe("KinPulse", () => {
         // Once a stretch with no step: the next passes and days add nothing.
         assert.deepStrictEqual(yield* drafted(NOON_LA + HOUR), []);
         assert.deepStrictEqual(yield* drafted(NOON_LA + DAY), []);
-        // Its suggested step is a step; Not this drops it, and a new stretch starts at once.
+        // The agent's step is a step; dropping it starts a new stretch at once.
         yield* insert({
           id: "W-50",
           ownerKind: "person",
           ownerId: mate,
           partyId: "r-C-1",
-          confirmed: 0,
           createdAt: NOON_LA + DAY,
         });
+        yield* sql`UPDATE kin_records SET created_by_kind = 'agent' WHERE record_id = 'r-W-50'`;
         yield* sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation,
             created_at)
           VALUES (${orgId}, 'r-W-50', 'record', 'r-DL-1', 'relates', ${NOON_LA + DAY})`;
@@ -1601,9 +1601,10 @@ describe("KinPulse", () => {
         yield* sql`UPDATE kin_events SET wakeup_id = 'w-plan' WHERE event_id = ${made!.eventId}`;
         assert.isUndefined(yield* docHeadStart(orgId, finance, "w-plan"));
         assert.deepStrictEqual(yield* drafted(at + DAY), []);
-        // Its suggested tasks are a plan; dropping the last brings the fact back, and 14 days
+        // The agent's tasks are a plan; dropping the last brings the fact back, and 14 days
         // pass before another breakdown.
-        yield* insert({ id: "W-60", projectId: "P-2", confirmed: 0, createdAt: at + DAY });
+        yield* insert({ id: "W-60", projectId: "P-2", createdAt: at + DAY });
+        yield* sql`UPDATE kin_records SET created_by_kind = 'agent' WHERE record_id = 'r-W-60'`;
         yield* drafted(at + DAY + HOUR);
         const dropped = at + 2 * DAY;
         yield* sql`UPDATE kin_records SET state = 'dropped', closed_at = ${dropped}

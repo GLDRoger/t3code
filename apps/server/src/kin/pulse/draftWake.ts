@@ -64,7 +64,7 @@ const FOLLOW_UPS = new Set<string>([
   ...DEAL_FOLLOW_UPS,
   ...PROPOSALS,
 ]);
-/** After Not this on a suggestion for it, a deal or project gets no new proposal this long. */
+/** After an agent's task for it is dropped, a deal or project gets no new proposal this long. */
 const DECLINED_REST_MS = 14 * DAY_MS;
 /** A prep note this close to its meeting comes too late to read: none is made. */
 const PREP_BEFORE_MS = 2 * HOUR_MS;
@@ -378,7 +378,7 @@ const stillPassed = Effect.fnUntraced(function* (
 /**
  * Once a stretch: an open deal or prospect they look after (`deals.ts` `hearer`; the owner's when
  * nobody does) and see, with no quiet or late mail of its own standing; or an open project, for
- * the owner. Never within `DECLINED_REST_MS` of a suggestion for it being dropped.
+ * the owner. Never within `DECLINED_REST_MS` of an agent's task for it being dropped.
  */
 const stillUnplanned = Effect.fnUntraced(function* (
   orgId: KinOrgId,
@@ -410,7 +410,8 @@ const stillUnplanned = Effect.fnUntraced(function* (
         AND f.subject_record_id = r.record_id AND f.cleared_at IS NULL
         AND f.sense IN ${sql.in([...DEAL_FOLLOW_UPS])}) AS mailed,
       EXISTS (SELECT 1 FROM kin_records w WHERE w.org_id = r.org_id
-        AND w.register_id IN ('work', 'milestones') AND w.confirmed = 0 AND w.state = 'dropped'
+        AND w.register_id IN ('work', 'milestones') AND w.state = 'dropped'
+        AND (w.confirmed = 0 OR w.created_by_kind = 'agent')
         AND w.closed_at > ${at - DECLINED_REST_MS}
         AND (w.project_id = r.record_id OR (r.register_id = 'clients' AND w.party_id = r.record_id)
           OR w.record_id IN (SELECT l.record_id FROM kin_record_links l WHERE l.org_id = r.org_id
