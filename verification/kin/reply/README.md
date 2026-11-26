@@ -28,6 +28,8 @@ On 2026-11-26, against session carry shadow (`f26a2e9d064`), every rule holds an
 
 **Re-confirmed 2026-11-26** after review of `fix/kin-finished-task-inherits-marks` (no spec change; all rules hold, 15/15 variants caught). A delegated completion copies marks onto its wake-up, not onto its claimed events. If that marked run ends during preparation, the counted release keeps replied asks done. The next fresh wake-up gets no session mark from the requeued ask; an event's own outside provenance still applies. The release uses the four-attempt run limit and the existing `gave_up` notice on exhaustion.
 
+On 2026-11-26, against `feat/kin-session-changes` (`fc8c965117c`, on kin `4df1cc018c2`), every rule holds and 15/15 variants are caught, no spec change. `WakeupRunner` adds two shadow stamps that nothing reads yet (session carry is off): `runOnce` reads a change cursor (`sessionChanges.ts` `readCursor`, two `SELECT`s) before `prompt.build` and stores it with the shadow carry decision, and `capture` reads the chat's `last_seq` into that cursor beside the tool-list hash. Both sit inside wrappers that catch every cause and log (`Effect.catchCause`), so neither can fail, retry or reorder a turn; the prompt, its audience, the reply, the failure line, the rescue and every requeue are as they were.
+
 ## Additional model coverage from the train
 
 **Bound extension.** The model also includes one change from co-owner to member (`MadeMember`), bringing the bound to about 1,571,000 states. The train caught 16/16 broken variants.
