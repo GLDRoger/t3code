@@ -353,7 +353,7 @@ export const repaidSeenSenses = Effect.fn("KinPulse.repaidSeenSenses")(function*
           `${paid} and adds up exactly to their ${one ? "oldest owed expense" : `${repays.length} oldest owed expenses`}: ${keysOf(
             repays.map((each) => each.key),
             Math.max(shown, 1),
-          )}. ${one ? "It isn't" : "They aren't"} marked repaid until the owner confirms.`,
+          )}. ${one ? "It isn't" : "They aren't"} marked repaid until it is confirmed on a card.`,
         repays.length,
       ),
       wake: "now",
@@ -369,7 +369,7 @@ export const billPaidConsequence = (
   vendor: string,
   due: string,
 ) =>
-  `${bankKey}, ${amount} paid ${day}, matches ${billKey}, the bill to pay ${vendor} due ${due}. It isn't marked paid until the owner confirms.`;
+  `${bankKey}, ${amount} paid ${day}, matches ${billKey}, the bill to pay ${vendor} due ${due}. It isn't marked paid until it is confirmed on a card.`;
 
 export const billPaidSeenSenses = Effect.fn("KinPulse.billPaidSeenSenses")(function* (
   ctx: SenseContext,

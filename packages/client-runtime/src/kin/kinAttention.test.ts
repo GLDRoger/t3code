@@ -361,6 +361,14 @@ describe("kinAttention", () => {
         "$4,500 to Acme Hosting, due 2026-11-18, in 2 days. It is marked paid by an owner-level tap on its page in Money.",
         "$4,500 to Acme Hosting, due Nov 18, in 2 days. It is marked paid by an owner-level tap on its page in Money.",
       ],
+      [
+        "BNK-9, ₹12,400 paid 24 Nov, names Zoya and adds up exactly to their 3 oldest owed expenses: EXP-4, EXP-7 and EXP-9. They aren't marked repaid until it is confirmed on a card.",
+        "BNK-9, ₹12,400 paid 24 Nov, names Zoya and adds up exactly to their 3 oldest owed expenses: EXP-4, EXP-7 and EXP-9. They aren't marked repaid until it is confirmed on a card.",
+      ],
+      [
+        "BNK-4, $4,500 paid 18 Nov, matches EXP-3, the bill to pay Acme Hosting due 18 Nov. It isn't marked paid until it is confirmed on a card.",
+        "BNK-4, $4,500 paid 18 Nov, matches EXP-3, the bill to pay Acme Hosting due 18 Nov. It isn't marked paid until it is confirmed on a card.",
+      ],
     ] as const) {
       expect(kinPlainDates(line)).toBe(read);
       expect(read).not.toMatch(/\b(?:the owner|you)\b/i);

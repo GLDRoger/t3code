@@ -3361,7 +3361,7 @@ describe("KinPulse", () => {
           },
           scope: {},
           consequence:
-            "BNK-9, ₹12,400 paid 24 Nov, names Meera and adds up exactly to their 3 oldest owed expenses: EXP-4, EXP-7 and EXP-9. They aren't marked repaid until the owner confirms.",
+            "BNK-9, ₹12,400 paid 24 Nov, names Meera and adds up exactly to their 3 oldest owed expenses: EXP-4, EXP-7 and EXP-9. They aren't marked repaid until it is confirmed on a card.",
           actor: { _tag: "agent", agentId: finance },
           sensitive: true,
           wake: "now",
