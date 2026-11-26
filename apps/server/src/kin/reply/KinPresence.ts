@@ -2,9 +2,7 @@ import {
   KinChatId,
   type KinAgentId,
   type KinDraft,
-  type KinMessageId,
   type KinOrgId,
-  type KinPersonId,
   type KinPresence as Presence,
   type KinWakeupId,
 } from "@t3tools/contracts";
@@ -41,7 +39,7 @@ type Line = {
 
 /**
  * The live part of a chat: each agent's status line and its streaming drafts. In memory only;
- * a restart loses both, and the bridge rebuilds them for wake-ups still running.
+ * a restart loses that live state.
  */
 export class KinPresence extends Context.Service<
   KinPresence,
@@ -74,13 +72,6 @@ export class KinPresence extends Context.Service<
      * write to the chat (`destination`), as a post must.
      */
     readonly draft: (orgId: KinOrgId, chatId: KinChatId, draft: DraftInput) => Effect.Effect<void>;
-    /** Sends the tail and ends the draft; a refused one ends for the owner without its tail. */
-    readonly endDraft: (
-      orgId: KinOrgId,
-      chatId: KinChatId,
-      draftId: string,
-      messageId: KinMessageId | null,
-    ) => Effect.Effect<void>;
     /** For a current member of the chat: its lines, and the drafts their wake-ups may show. */
     readonly snapshot: (
       orgId: KinOrgId,
@@ -123,15 +114,6 @@ const make = Effect.gen(function* () {
       Effect.logWarning("Kin draft check failed; withholding it", { cause }).pipe(Effect.as(false)),
     ),
   );
-  // Only a turn the owner alone could read is ever refused, so only the owner saw its draft.
-  const ownerOf = Effect.fnUntraced(
-    function* (orgId: KinOrgId, agentId: KinAgentId) {
-      const [row] = yield* sql<{ personId: KinPersonId }>`SELECT owner_person_id AS "personId"
-      FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${agentId} ORDER BY agent_id`;
-      return row?.personId;
-    },
-    Effect.orElseSucceed(() => undefined),
-  );
   const lines = new Map<string, Line>();
   const keyOf = (orgId: KinOrgId, chatId: KinChatId) => `${orgId}\u0000${chatId}`;
   const line = (orgId: KinOrgId, chatId: KinChatId) => {
@@ -154,23 +136,9 @@ const make = Effect.gen(function* () {
     chatId: KinChatId,
     draftId: string,
     state: DraftState,
-    end?: { readonly messageId: KinMessageId | null },
   ) {
     const text = state.full.slice(state.sent);
-    if (text === "" && end === undefined) return;
-    if (!(yield* allowed(orgId, chatId, state))) {
-      // The owner's client drops what it holds; nobody gets the rest.
-      if (end === undefined || state.sent === 0) return;
-      const owner = yield* ownerOf(orgId, state.agentId);
-      if (owner === undefined) return;
-      return yield* hub.publish({
-        type: "draft.updated",
-        orgId,
-        chatId,
-        personId: owner,
-        draft: { draftId, agentId: state.agentId, offset: state.sent, text: "", end },
-      });
-    }
+    if (text === "" || !(yield* allowed(orgId, chatId, state))) return;
     const offset = state.sent;
     state.sent = state.full.length;
     state.lastSentAt = yield* Clock.currentTimeMillis;
@@ -185,7 +153,6 @@ const make = Effect.gen(function* () {
         sourceWakeupId: state.wakeupId,
         offset,
         text,
-        ...(end === undefined ? {} : { end }),
       },
     });
   });
@@ -278,14 +245,6 @@ const make = Effect.gen(function* () {
         ),
         Effect.forkIn(scope),
       );
-    }),
-    endDraft: Effect.fn("KinPresence.endDraft")(function* (orgId, chatId, draftId, messageId) {
-      const current = line(orgId, chatId);
-      const state = current.drafts.get(draftId);
-      if (state === undefined) return;
-      current.drafts.delete(draftId);
-      prune(orgId, chatId);
-      yield* send(orgId, chatId, draftId, state, { messageId });
     }),
     lines: (orgId, chatId) => [...(lines.get(keyOf(orgId, chatId))?.presence.values() ?? [])],
     snapshot: Effect.fn("KinPresence.snapshot")(function* (orgId, chatId) {

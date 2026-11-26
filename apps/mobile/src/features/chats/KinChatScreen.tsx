@@ -1524,6 +1524,7 @@ function KinChatFeed(props: {
           <KinReplyFooter
             standalone
             message={item.message}
+            buttons={item.buttons}
             environmentId={props.environmentId}
             onOpenReceipt={() => setReceiptFor(item.message.messageId)}
           />

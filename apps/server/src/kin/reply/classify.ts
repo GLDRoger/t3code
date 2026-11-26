@@ -54,15 +54,13 @@ export function setupFailureIn(
 }
 
 /** A pre-tool segment up to this long, in one paragraph, is a status note, not a message. */
-export const NOTE_MAX_CHARS = 160;
+const NOTE_MAX_CHARS = 160;
 /** Presence labels are cut to this length. */
 const LABEL_MAX_CHARS = 60;
 /** A notice wake-up's word for "nothing worth saying"; a segment containing it anywhere never posts. */
 export const SILENT_REPLY = "NO_REPLY";
 /** Models append the marker to a sentence about having nothing to say, so its presence anywhere wins. */
 const hasSilentReply = (text: string) => text.includes(SILENT_REPLY);
-/** A draft's trailing start of the marker ("…\nNO_RE") is held back until it is known. */
-const silentReplyTail = new RegExp(`(?:^|\\s|[*\`_])N(?:O(?:_(?:R(?:E(?:P(?:L)?)?)?)?)?)?\\s*$`);
 /** Parenthetical asides a lead appends when it means to say nothing; they never reach a chat. */
 export const SILENCE_MARKERS = [
   "no reply needed",
@@ -90,27 +88,6 @@ export function stripTrailingSilenceMarker(text: string): string {
   let result = text;
   while (trailingMarker.test(result)) result = result.replace(trailingMarker, "").trimEnd();
   return result;
-}
-
-const isMarkerPrefix = (fragment: string) => {
-  const normalized = normalizePhrase(fragment);
-  return SILENCE_MARKERS.some((marker) => marker === normalized || marker.startsWith(normalized));
-};
-
-/**
- * What a streaming draft may show: a trailing marker is stripped, and a trailing fragment
- * that could still become one (`(no reply nee`, or the whole text so far) is held back.
- */
-export function draftReplyText(text: string): string {
-  if (hasSilentReply(text)) return "";
-  const stripped = stripTrailingSilenceMarker(text.replace(silentReplyTail, ""));
-  if (isSilenceOnly(stripped)) return "";
-  const whole = normalizePhrase(stripped);
-  if (whole !== "" && isMarkerPrefix(whole)) return "";
-  const open = stripped.lastIndexOf("(");
-  if (open >= 0 && !stripped.slice(open).includes(")") && isMarkerPrefix(stripped.slice(open + 1)))
-    return stripped.slice(0, open).trimEnd();
-  return stripped;
 }
 
 /** Kin asks this once when a turn owed words and ended with none (`KinReplyBridge.complete`). */
@@ -147,10 +124,7 @@ const restates = (sentence: string, earlier: ReadonlySet<string>) => {
 const SENTENCE_BREAK = /((?<=[.?!])[ \t]+|\n+)/;
 const sentencesOf = (text: string) =>
   text.split(SENTENCE_BREAK).filter((part, index) => index % 2 === 0 && part.trim() !== "");
-/**
- * The segment says again, word for word, what the reply already said: nearly all of its text is
- * sentences the reply has. A model that repeats its answer at the end of a turn sends this.
- */
+// The eval grader still uses segment-level comparison for its historical status-inclusive view.
 export const repeats = (text: string, said: string) => {
   const earlier = new Set(sentencesOf(said).map(comparable));
   const parts = sentencesOf(text);
@@ -158,6 +132,33 @@ export const repeats = (text: string, said: string) => {
   const repeated = length(parts.filter((part) => earlier.has(comparable(part))));
   return parts.length > 0 && repeated >= 0.8 * length(parts);
 };
+export function uniqueParagraphs(text: string): string {
+  const seen = new Set<string>();
+  const parts = text.split(/(\r?\n(?:[ \t]*\r?\n)+)/);
+  const kept: Array<string> = [];
+  let fence: string | undefined;
+  for (let index = 0; index < parts.length; index += 2) {
+    const part = parts[index]!;
+    // Blank lines inside code fences do not separate prose paragraphs.
+    let code = fence !== undefined;
+    for (const [, marker, tail] of part.matchAll(/^ {0,3}(`{3,}|~{3,})(.*)$/gm)) {
+      if (fence === undefined) {
+        if (marker![0] === "`" && tail!.includes("`")) continue;
+        fence = marker;
+      } else if (marker![0] === fence[0] && marker!.length >= fence.length && tail!.trim() === "") {
+        fence = undefined;
+      }
+      code = true;
+    }
+    const key = normalized(part);
+    if (!code && (key === "" || seen.has(key))) continue;
+    if (!code) seen.add(key);
+    if (kept.length > 0) kept.push(parts[index - 1]!);
+    kept.push(part);
+  }
+  return kept.join("");
+}
+
 /** A reply less the sentences that repeat or restate a card's question, which the card asks. */
 export const withoutAsked = (text: string, questions: ReadonlyArray<string>) => {
   const wanted = new Set(questions.map(comparable).filter((one) => one !== ""));
@@ -182,8 +183,8 @@ export const withoutAsked = (text: string, questions: ReadonlyArray<string>) => 
   return dropped ? kept.join("").trim() : text;
 };
 
-/** What follows a segment in its run (`end`: nothing, the run ended): a short one before a tool is status. */
-export type SegmentNext = "tool" | "text" | "end";
+/** What follows a segment in its run. */
+export type SegmentNext = "ask" | "tool" | "text" | "end";
 export type SegmentClass = "post" | "note" | "silent" | "empty";
 
 const isStructured = (text: string) =>
@@ -194,16 +195,20 @@ const isStructured = (text: string) =>
 
 /**
  * Plain code decides what a segment is, so a model can't misroute it. Long or structured text
- * is content wherever it sits; short single-paragraph text right before a tool call is status.
+ * is content wherever it sits. Short text before a tool is status, except before a person's question card.
  */
-export function classifySegment(text: string, next: SegmentNext | null): SegmentClass | null {
+export function classifySegment(
+  text: string,
+  next: SegmentNext | null,
+  startedByPerson = false,
+): SegmentClass | null {
   const trimmed = text.trim();
   if (trimmed === "") return "empty";
   if (hasSilentReply(trimmed) || isSilenceOnly(trimmed)) return "silent";
   if (isStructured(trimmed)) return "post";
   // Unknown yet: a short segment waits for the next item or the run's end.
   if (next === null) return null;
-  return next === "tool" ? "note" : "post";
+  return next === "tool" || (next === "ask" && !startedByPerson) ? "note" : "post";
 }
 
 export function cutLabel(text: string): string {
@@ -223,6 +228,10 @@ const TOOL_TYPES: ReadonlySet<OrchestrationV2TurnItem["type"]> = new Set([
   "subagent",
 ]);
 export const isToolItem = (item: OrchestrationV2TurnItem) => TOOL_TYPES.has(item.type);
+
+const ASK_TOOL = /(?:^|__|\.)kin_ask$/;
+export const toolNext = (item: OrchestrationV2TurnItem): "ask" | "tool" =>
+  item.type === "dynamic_tool" && ASK_TOOL.test(item.toolName ?? "") ? "ask" : "tool";
 
 // The presence line's only words, as a colleague would say them: fixed text, never tool
 // arguments or model text, and never a tool's name or how Kin works inside.
@@ -253,7 +262,7 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)pulse_read$/, "Checking what needs attention"],
   [/(?:^|__|\.)pulse_handle$/, null],
   [/(?:^|__|\.)pulse_nudge$/, "Nudging a teammate"],
-  [/(?:^|__|\.)kin_ask$/, "Writing a question"],
+  [ASK_TOOL, "Writing a question"],
   [/(?:^|__|\.)kin_ask_close$/, "Closing a question"],
   [/(?:^|__|\.)message_withdraw$/, "Taking back a message"],
   [/(?:^|__|\.)message_replace$/, "Updating a message"],

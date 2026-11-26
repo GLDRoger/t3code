@@ -6,7 +6,14 @@ import {
 import { expect, it } from "vite-plus/test";
 
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
-import { PHASE_LABELS, setupFailure, setupFailureIn, toolLabel } from "./classify.ts";
+import {
+  classifySegment,
+  PHASE_LABELS,
+  setupFailure,
+  setupFailureIn,
+  toolLabel,
+  uniqueParagraphs,
+} from "./classify.ts";
 
 const call = (toolName: string) =>
   toolLabel({ type: "dynamic_tool", toolName: `mcp__kin__${toolName}` } as OrchestrationV2TurnItem);
@@ -21,6 +28,20 @@ it("gives every lead tool a status a person would say, never Kin's own vocabular
     expect(label).not.toMatch(/memory|tool|level|worker|wake|queue|defer|widget|kin_|_/i);
   expect(call("kin_hand_off")).toBe("Passing this on");
   expect(call("something_new")).toBe(PHASE_LABELS.tool);
+});
+
+it("keeps short text before the question card only when a person started the turn", () => {
+  const answer = "The inventory is ready. We can ship the first batch today.";
+  expect(classifySegment(answer, "ask", true)).toBe("post");
+  expect(classifySegment(answer, "ask", false)).toBe("note");
+  expect(classifySegment(answer, "tool", true)).toBe("note");
+});
+
+it("leaves blank lines and repeated text inside fenced code intact", () => {
+  const code = "```text\nPickup is at noon.\n\nPickup is at noon.\n```";
+  expect(
+    uniqueParagraphs(`Pickup is at noon.\n\n${code}\n\nPickup is  at noon.\n\nBring the labels.`),
+  ).toBe(`Pickup is at noon.\n\n${code}\n\nBring the labels.`);
 });
 
 it("treats only sign-in, account access and unknown model failures as ones no retry fixes", () => {

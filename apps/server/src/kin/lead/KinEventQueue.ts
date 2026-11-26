@@ -356,6 +356,22 @@ export const requeueForAudience = Effect.fn("KinEventQueue.requeueForAudience")(
   );
 });
 
+const personStopExists = (
+  sql: SqlClient.SqlClient,
+  wake: { readonly orgId: KinOrgId; readonly wakeupId: KinWakeupId },
+) => sql`EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = ${wake.orgId}
+  AND e.wakeup_id = ${wake.wakeupId} AND e.state = 'done'
+  AND json_extract(e.json, '$._personStopped') = 1)`;
+
+export const wasPersonStopped = Effect.fn("KinEventQueue.wasPersonStopped")(function* (wake: {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: KinWakeupId;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ stopped: number }>`SELECT ${personStopExists(sql, wake)} AS stopped`;
+  return row?.stopped === 1;
+});
+
 /**
  * In the step that tells the chat a join lost this wake-up's reply: its unreplied asks there are
  * over, so neither a failed run, its retry nor a restart answers or tells them again.
@@ -890,7 +906,7 @@ const make = Effect.gen(function* () {
             SELECT w.org_id, w.agent_id, w.wakeup_id FROM kin_wakeups w
             WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
               AND w.wakeup_id = ${input.wakeupId} AND w.status = 'running' AND w.run_id IS NOT NULL
-              AND w.aborted_at IS NULL
+              AND w.aborted_at IS NULL AND NOT ${personStopExists(sql, input)}
               AND EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = w.org_id
                 AND a.agent_id = w.agent_id AND a.retired_at IS NULL)
               AND NOT EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = w.org_id
