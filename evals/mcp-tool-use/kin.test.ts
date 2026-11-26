@@ -798,7 +798,12 @@ it.effect("refuses the default Kin skip mock while a person waits for words", ()
       response.content,
       "Not ended: someone here is waiting on your answer; write it as plain text.",
     );
-  }),
+  }).pipe(
+    Effect.provideService(
+      HttpClient.HttpClient,
+      HttpClient.make(() => Effect.die("unexpected request")),
+    ),
+  ),
 );
 
 it.effect("keeps app-server text after a trigger skip in the transcript only", () =>
@@ -809,7 +814,7 @@ it.effect("keeps app-server text after a trigger skip in the transcript only", (
       const held = "The fuel statement is filed.\n\nRhea can find it under November.";
       const appServer: AppServer = {
         knowsModel: async () => false,
-        close: () => {},
+        close: () => true,
         runTurn: async (turn) => {
           const events: Array<AppServerEvent> = [];
           const event = (value: AppServerEvent) => {
@@ -841,7 +846,7 @@ it.effect("keeps app-server text after a trigger skip in the transcript only", (
       assert.deepEqual(failed({ delivered: person }, run), []);
     }
   }).pipe(
-    Effect.provide(NodeServices.layer),
+    Effect.provide(Layer.mergeAll(NodeServices.layer, PlatformNodeCrypto.layer)),
     Effect.provideService(
       HttpClient.HttpClient,
       HttpClient.make(() => Effect.die("unexpected request")),
