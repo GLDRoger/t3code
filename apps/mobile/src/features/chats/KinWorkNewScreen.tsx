@@ -42,6 +42,7 @@ import { EnvironmentId, KIN_WORK_ALSO_ON_MAX, KinOrgId } from "@t3tools/contract
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { type ComponentRef, useRef, useState } from "react";
+import { useKeyboardState } from "react-native-keyboard-controller";
 import { TextInput, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
@@ -72,6 +73,8 @@ import {
 import {
   KinGateView,
   KinWorkAboveKeyboard,
+  kinLiftAboveKeyboard,
+  useKinWorkLiftWhileTyping,
   KinWorkFieldBox,
   KinWorkTextField,
   useKinAskBeforeDiscard,
@@ -133,9 +136,11 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
   const { orgs, people, joined, invited, names } = useKinWorkDirectory(target, allowed);
   const create = useAtomCommand(kinClient.workCreate, { reportFailure: false });
   const scroll = useRef<ComponentRef<typeof ScreenScrollView>>(null);
+  // Without React Native's keyboard inset (see the scroll view) the fields under the keyboard
+  // need this room to scroll up into view.
+  const keyboardHeight = useKeyboardState((state) => (state.isVisible ? state.height : 0));
   const [aboveKeyboard] = useState(
-    () => (node: ComponentRef<typeof View>) =>
-      scroll.current?.scrollResponderScrollNativeHandleToKeyboard(node, 8, true),
+    () => (node: ComponentRef<typeof View>) => kinLiftAboveKeyboard(scroll.current, node, 0, true),
   );
   const assign = useAtomCommand(kinClient.workAssign, { reportFailure: false });
   const [actions] = useState(() =>
@@ -422,23 +427,18 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
         );
       case "notes":
         return (
-          <ListSection key={name}>
-            <KinWorkFieldBox label={KIN_WORK_NEW_COPY.notesLabel} input={notesField}>
-              <TextInput
-                ref={notesField}
-                accessibilityLabel={KIN_WORK_NEW_COPY.notesLabel}
-                value={draft.notes}
-                editable={!saving}
-                multiline
-                maxLength={KIN_WORK_NOTES_MAX}
-                onChangeText={(notes) => setDraft((held) => ({ ...held, notes }))}
-                textAlignVertical="top"
-                placeholder={KIN_WORK_NEW_COPY.notesPlaceholder}
-                placeholderTextColorClassName="accent-placeholder"
-                className="min-h-24 font-sans text-base text-foreground"
-              />
-            </KinWorkFieldBox>
-          </ListSection>
+          <KinWorkAboveKeyboard key={name} value={aboveKeyboard}>
+            <ListSection>
+              <KinWorkFieldBox label={KIN_WORK_NEW_COPY.notesLabel} input={notesField}>
+                <KinWorkNotesInput
+                  ref={notesField}
+                  value={draft.notes}
+                  disabled={saving}
+                  onChangeText={(notes) => setDraft((held) => ({ ...held, notes }))}
+                />
+              </KinWorkFieldBox>
+            </ListSection>
+          </KinWorkAboveKeyboard>
         );
     }
   };
@@ -471,7 +471,7 @@ function KinWorkNewForm(props: KinWorkTarget & { readonly start: KinWorkDraft })
           // In this sheet React Native's own keyboard inset scrolls the focused title under the
           // bar on open; the fields further down lift themselves (`KinWorkAboveKeyboard`).
           contentInsetAdjustmentBehavior="automatic"
-          contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
+          contentContainerStyle={{ padding: 16, paddingBottom: 32 + keyboardHeight, gap: 20 }}
         >
           {gate !== null ? (
             <KinGateView gate={gate} refused={kinWorkOnlyOwner("tasks")} label={words.title} />
@@ -562,5 +562,37 @@ function KinWorkNewWith(props: {
         </Text>
       ) : null}
     </View>
+  );
+}
+
+/** The new task's notes, lifted above the keyboard as they grow (inside `KinWorkAboveKeyboard`). */
+function KinWorkNotesInput({
+  ref,
+  ...props
+}: {
+  readonly ref: React.RefObject<ComponentRef<typeof TextInput> | null>;
+  readonly value: string;
+  readonly disabled: boolean;
+  readonly onChangeText: (notes: string) => void;
+}) {
+  const lift = useKinWorkLiftWhileTyping(ref);
+  return (
+    <TextInput
+      ref={ref}
+      accessibilityLabel={KIN_WORK_NEW_COPY.notesLabel}
+      value={props.value}
+      editable={!props.disabled}
+      multiline
+      maxLength={KIN_WORK_NOTES_MAX}
+      onFocus={lift}
+      onChangeText={(notes) => {
+        props.onChangeText(notes);
+        lift();
+      }}
+      textAlignVertical="top"
+      placeholder={KIN_WORK_NEW_COPY.notesPlaceholder}
+      placeholderTextColorClassName="accent-placeholder"
+      className="min-h-24 font-sans text-base text-foreground"
+    />
   );
 }

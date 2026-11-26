@@ -30,6 +30,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { stageLine, stagesOf } from "./dealStages.ts";
 import {
+  accountsForTax,
   fieldList,
   fieldText,
   isMoney,
@@ -69,6 +70,7 @@ import {
   recordSeq,
   selectRecords,
   toRecord,
+  usableCredits,
 } from "./recordRows.ts";
 import { contactAll, contactSensitive } from "./contactDetails.ts";
 import { dayIn } from "./money.ts";
@@ -709,6 +711,7 @@ export const partyDetail = Effect.fn("KinCrm.partyDetail")(function* (
     terms: fieldText(fields, "terms"),
     address: fieldText(fields, "address"),
     gstin: fieldText(fields, "gstin"),
+    ...(viewer._tag === "ownerLevel" ? { accountsForTax: accountsForTax(fields) } : {}),
     placeOfSupply: fieldText(fields, "placeOfSupply"),
     sensitiveFields: [...sensitiveFields("clients")],
     createdAt: iso(row.createdAt),
@@ -933,8 +936,12 @@ export const partyPage = Effect.fn("KinCrm.partyPage")(function* (
     }),
   });
   const contract = yield* contractOf(orgId, row.recordId, viewer, now);
+  const credit = yield* usableCredits(orgId, row.recordId, viewer);
   return {
     party: yield* partyDetail(row, now, viewer),
+    ...(credit.length === 0
+      ? {}
+      : { credit: credit.map(({ key, amount, receivedOn }) => ({ key, amount, receivedOn })) }),
     contacts: contacts.map(toContact),
     projects: projectRows.map((project) => project.row),
     weOwe: withFrom(weOwe),

@@ -140,6 +140,10 @@ import OfflineSkips from "./migrations/K216_OfflineSkips.ts";
 import BillReads from "./migrations/K217_BillReads.ts";
 import AnsweredSeq from "./migrations/K218_AnsweredSeq.ts";
 import SeveralOwnMailboxes from "./migrations/K219_SeveralOwnMailboxes.ts";
+import PaymentReceived from "./migrations/K220_PaymentReceived.ts";
+import TaxByCustomer from "./migrations/K221_TaxByCustomer.ts";
+import QuietRuns from "./migrations/K222_QuietRuns.ts";
+import SearchDraftFor from "./migrations/K223_SearchDraftFor.ts";
 import LapsedTextQuestions from "./migrations/K230_LapsedTextQuestions.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -361,6 +365,10 @@ const migrations = {
   "217_BillReads": BillReads,
   "218_AnsweredSeq": AnsweredSeq,
   "219_SeveralOwnMailboxes": SeveralOwnMailboxes,
+  "220_PaymentReceived": PaymentReceived,
+  "221_TaxByCustomer": TaxByCustomer,
+  "222_QuietRuns": QuietRuns,
+  "223_SearchDraftFor": SearchDraftFor,
   "230_LapsedTextQuestions": LapsedTextQuestions,
 };
 const loader = Migrator.fromRecord(migrations);

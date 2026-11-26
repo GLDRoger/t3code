@@ -22,6 +22,7 @@ import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
+import { expect } from "vite-plus/test";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
@@ -44,11 +45,12 @@ import {
   offeringsPromptIndex,
 } from "./offerings.ts";
 import * as OwnerDocs from "./ownerDocs.ts";
+import * as Work from "./ownerWork.ts";
 import { playbookIndex, playbookThreshold } from "./playbooks.ts";
 import { PLAYBOOK_SEEDS, seedPlaybooks } from "./playbookSeeds.ts";
 import { characters, parseCharacter, seedCharacters, setCharacter } from "../lead/characters.ts";
 import { search } from "./search.ts";
-import { indexStoredSteps } from "./searchIndex.ts";
+import { indexRecord, indexStoredSteps } from "./searchIndex.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 
 // Invented org, people and docs only; nothing here reads a real database or memory.
@@ -582,9 +584,13 @@ it.effect("a turn others read reaches only docs they all see, and restores none"
     assert.strictEqual((yield* Docs.versionOf(orgId, created.row.recordId))!.version, 1);
     // A member reaches the doc reads, where the service shows them only their docs.
     const reads = ["kin.docs.list", "kin.docs.get", "kin.docs.history", "kin.docs.diff"];
-    // The service decides a hand edit (`Docs.editSectionByHand`), a delete
-    // (`Docs.deleteByHand`), and Send to on a draft card.
-    const decided = ["kin.docs.editSection", "kin.docs.delete", "kin.docs.sendUp"];
+    // The service decides hand edits, deletes, reader changes and Send to on a draft card.
+    const decided = [
+      "kin.docs.editSection",
+      "kin.docs.delete",
+      "kin.docs.readers",
+      "kin.docs.sendUp",
+    ];
     for (const rpc of KinDocsRpcs)
       assert.strictEqual(
         kinRpcAccess(rpc._tag) === "person",
@@ -1471,6 +1477,18 @@ it.effect("one search finds entries and docs, and the team view hides what label
         .hits,
       0,
     );
+    // Whom a draft is for is an id too.
+    const drafted = yield* newDoc("Invented cargo notes.", { title: "Invented cargo draft" });
+    yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.draftFor', 'invented-drafter-id')
+      WHERE org_id = ${orgId} AND record_id = ${drafted.row.recordId}`;
+    yield* indexRecord(orgId, drafted.row.recordId);
+    const draftHits = (text: string) =>
+      search(orgId, { text, limit: 5, viewer: "owner", scope: KIN_OWNER_LEVEL }).pipe(
+        Effect.map(({ hits }) => hits),
+      );
+    assert.lengthOf(yield* draftHits("cargo"), 1);
+    assert.notInclude(JSON.stringify(yield* draftHits("cargo")), "invented-drafter-id");
+    assert.lengthOf(yield* draftHits("drafter"), 0);
     // K064: when no entry has every word, a widened search finds those with some, and says so.
     const widened = (widen?: true) =>
       search(orgId, {
@@ -2770,6 +2788,163 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
         );
       }
     }
+
+    const zoya = mate;
+    const rhea = owner;
+    const arjun = others[0];
+    const meera = { _tag: "person" as const, orgId, personId: coOwner };
+    const outcome = { onFailure: reasonOf, onSuccess: () => "allowed" };
+    const readAsZoya = (key: KinRecordKey) => OwnerDocs.get([zoya], { orgId, key });
+    const setAsZoya = (key: KinRecordKey, to: "draft" | "owners" | "team") =>
+      OwnerDocs.setReaders([zoya], { orgId, key, to });
+
+    const pricedPage = yield* readAsZoya(quote.key);
+    expect.soft(pricedPage).not.toHaveProperty("readers");
+    expect.soft(pricedPage).not.toHaveProperty("readersCan");
+    for (const to of ["draft", "owners", "team"] as const) {
+      expect
+        .soft(yield* setAsZoya(quote.key, to).pipe(Effect.match(outcome)), to)
+        .toBe("not_allowed");
+      const [label] = yield* sql<{ sensitive: number; marked: string | null }>`SELECT
+        sensitive, marked_by_person_id AS marked FROM kin_records
+        WHERE org_id = ${orgId} AND key = ${quote.key}`;
+      expect.soft(label, to).toEqual({ sensitive: 1, marked: null });
+    }
+
+    const freshAsk = yield* wake("readers-fresh-wake", lead, "mate-chat", zoya.personId, "shared");
+    const fresh = yield* LeadDocs.create(scopeOf(lead), {
+      sourceEventId: freshAsk,
+      title: "Invented launch checklist",
+      body: "## Scope\n\nCheck the launch notes.",
+    });
+    assert.strictEqual((yield* readAsZoya(fresh.key)).readers, "owners");
+    assert.isFalse(yield* reads(arjun, fresh.key));
+    assert.strictEqual((yield* setAsZoya(fresh.key, "draft")).readers, "draft");
+    assert.isFalse(yield* reads(arjun, fresh.key));
+
+    yield* LeadDocs.edit(scopeOf(lead), {
+      key: fresh.key,
+      sourceEventId: freshAsk,
+      summary: "Revise the launch notes",
+      operations: [
+        {
+          op: "replace_phrase",
+          find: "Check the launch notes.",
+          replace: "Check the revised launch notes.",
+        },
+      ],
+    });
+    assert.include((yield* readAsZoya(fresh.key)).body, "Check the revised launch notes.");
+    for (const patch of [{ title: "Unwanted title" }, { state: "dropped" }] as const) {
+      expect
+        .soft(
+          yield* Work.update([zoya], { orgId, key: fresh.key, ...patch }).pipe(
+            Effect.match(outcome),
+          ),
+          JSON.stringify(patch),
+        )
+        .toBe("not_allowed");
+    }
+
+    assert.strictEqual((yield* setAsZoya(fresh.key, "team")).readers, "team");
+    assert.isTrue(yield* reads(arjun, fresh.key));
+    const freshOwners = yield* setAsZoya(fresh.key, "owners");
+    assert.strictEqual(freshOwners.readers, "owners");
+    assert.isFalse(yield* reads(arjun, fresh.key));
+
+    yield* OwnerDocs.file([rhea], { orgId, key: fresh.key, rev: freshOwners.rev, company: true });
+    const companyPage = yield* readAsZoya(fresh.key);
+    assert.isTrue(companyPage.company);
+    assert.isTrue(yield* reads(arjun, fresh.key));
+    expect.soft(companyPage).not.toHaveProperty("readers");
+    expect.soft(companyPage).not.toHaveProperty("readersCan");
+    expect
+      .soft(yield* setAsZoya(fresh.key, "draft").pipe(Effect.match(outcome)))
+      .toBe("not_allowed");
+
+    const projectMembers = (members: ReadonlyArray<string>) =>
+      sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.members',
+          json(${JSON.stringify(members)}))
+        WHERE org_id = ${orgId} AND record_id = ${project.row.recordId}`;
+    yield* projectMembers([`person:${arjun.personId}`]);
+    const { row: planRow } = yield* newDoc(plan, {
+      title: "Invented project draft",
+      projectId: project.row.recordId,
+    });
+    const { key } = planRow;
+    yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.draftFor', ${zoya.personId}),
+        sensitive = 1, marked_by_person_id = ${zoya.personId}
+      WHERE org_id = ${orgId} AND key = ${key}`;
+    assert.isTrue(yield* reads(zoya, key), "Zoya reads the project draft Zoya marked");
+    assert.isTrue(yield* reads(rhea, key));
+    assert.isTrue(yield* reads(meera, key));
+    assert.isFalse(yield* reads(arjun, key));
+    const set = (who: typeof mate, to: "draft" | "owners" | "team", rev?: number) =>
+      OwnerDocs.setReaders([who], { orgId, key, to, rev });
+    assert.deepInclude(yield* Effect.flip(set(arjun, "owners")), {
+      reason: "not_found",
+      message: `No doc ${key}.`,
+    });
+    assert.deepInclude(yield* Effect.flip(set(rhea, "draft")), {
+      reason: "not_allowed",
+      message: "Only the person writing this doc can make it a draft again.",
+    });
+    assert.deepInclude(yield* OwnerDocs.get([rhea], { orgId, key }), {
+      readers: "draft",
+      readersCan: ["owners", "team"],
+      draftOf: { name: "Mate" },
+    });
+    assert.deepInclude(yield* set(zoya, "owners"), {
+      readers: "owners",
+      readersCan: ["draft", "owners", "team"],
+    });
+    const arjunRead = yield* OwnerDocs.get([arjun], { orgId, key });
+    assert.notProperty(arjunRead, "readers");
+    assert.notProperty(arjunRead, "readersCan");
+    assert.deepInclude(yield* Effect.flip(set(arjun, "team")), {
+      reason: "not_allowed",
+      message: "Only the person writing this doc, or an owner, can change who reads it.",
+    });
+    yield* projectMembers([]);
+    assert.isFalse(yield* reads(arjun, key));
+    const team = yield* set(zoya, "team", arjunRead.rev);
+    assert.strictEqual(team.readers, "team");
+    assert.isTrue(yield* reads(arjun, key));
+    assert.deepStrictEqual(yield* set(zoya, "team", arjunRead.rev), team);
+    assert.strictEqual(
+      reasonOf(yield* Effect.flip(set(zoya, "owners", arjunRead.rev))),
+      "conflict",
+    );
+    assert.isTrue(yield* reads(arjun, key));
+    assert.strictEqual((yield* set(zoya, "draft", team.rev)).readers, "draft");
+    const [mark] = yield* sql<{ by: string; shared: number }>`SELECT
+        marked_by_person_id AS "by", team_shared AS shared FROM kin_records
+      WHERE org_id = ${orgId} AND key = ${key}`;
+    assert.deepStrictEqual(mark, { by: zoya.personId, shared: 0 });
+    assert.isTrue(yield* reads(zoya, key));
+    assert.isFalse(yield* reads(arjun, key));
+
+    yield* wake("readers-draft-wake", lead, "mate-chat", zoya.personId, "shared");
+    assert.strictEqual((yield* LeadDocs.read(scopeOf(lead), { key })).key, key);
+    yield* sql`UPDATE kin_records SET sensitive = 1
+      WHERE org_id = ${orgId} AND record_id = ${project.row.recordId}`;
+    assert.isFalse(yield* reads(zoya, key));
+    yield* sql`UPDATE kin_records SET sensitive = 0
+      WHERE org_id = ${orgId} AND record_id = ${project.row.recordId}`;
+
+    assert.strictEqual((yield* set(rhea, "team")).readers, "team");
+    assert.strictEqual(reasonOf(yield* Effect.flip(set(zoya, "draft", team.rev))), "conflict");
+    assert.isTrue(yield* reads(arjun, key));
+    assert.strictEqual((yield* set(meera, "owners")).readers, "owners");
+    assert.isFalse(yield* reads(arjun, key));
+    const keptToOwners = yield* OwnerDocs.label([rhea], { orgId, key, sensitive: true });
+    assert.notProperty(keptToOwners, "readers");
+    assert.notProperty(keptToOwners, "readersCan");
+    assert.deepInclude(yield* Effect.flip(set(zoya, "team")), {
+      reason: "not_found",
+      message: `No doc ${key}.`,
+    });
+    assert.isFalse(yield* reads(zoya, key));
   }).pipe(Effect.provide(layer)),
 );
 

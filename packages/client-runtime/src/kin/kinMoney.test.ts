@@ -20,6 +20,7 @@ import {
   kinCountries,
   kinCountryChoices,
   kinCountryCodeOf,
+  kinCountryAskLine,
   kinCountryName,
 } from "./kinCompanyProfile.ts";
 import { kinDatesMonth, kinMonthWindow, kinZonedDayStart } from "./kinDates.ts";
@@ -171,6 +172,77 @@ describe("the Money summary", () => {
     );
     expect(withTds.tdsDeducted).toMatchObject({ label: "Tax withheld", lines: ["₹10,000"] });
     expect(withTds.received.lines).toEqual(view.received.lines);
+    // Bills to pay stand beside what is owed, and open kept To-pay expenses.
+    expect([view.toPay, view.dueSoon]).toEqual([null, null]);
+    const withBills = kinMoneyView(
+      {
+        ...summary,
+        toPay: {
+          total: [...inr(1_500_000), { minor: 20_000, currency: "USD" }],
+          dueSoon: inr(1_500_000),
+          bills: 3,
+          dueSoonBills: 2,
+          lateBills: 1,
+        },
+      },
+      [list("invoices"), list("expenses")],
+    );
+    expect(withBills.toPay).toMatchObject({
+      label: "To pay",
+      lines: ["₹15,000", "$200"],
+      note: "3 bills",
+      late: false,
+      open: { list: "expenses", filter: expect.objectContaining({ show: "open", kept: true }) },
+    });
+    expect(withBills.dueSoon).toMatchObject({
+      label: "Due within 7 days",
+      lines: ["₹15,000"],
+      note: "1 late",
+      late: true,
+      open: { list: "expenses", filter: expect.objectContaining({ show: "open", kept: true }) },
+    });
+    expect(
+      kinListQuery(KinOrgId.make("org"), KinListId.make("expenses"), withBills.toPay!.open!.filter),
+    ).toMatchObject({ states: ["open"], kept: true });
+    const notLate = kinMoneyView(
+      {
+        ...summary,
+        toPay: {
+          total: inr(500_000),
+          dueSoon: inr(500_000),
+          bills: 1,
+          dueSoonBills: 1,
+          lateBills: 0,
+        },
+      },
+      [],
+    );
+    expect(notLate.toPay).toMatchObject({ note: "1 bill", open: null });
+    expect(notLate.dueSoon).toMatchObject({ note: "1 bill", late: false, open: null });
+    const noneSoon = kinMoneyView(
+      {
+        ...summary,
+        owed: { total: [], overdue: [], invoices: 0, overdueInvoices: 0, byClient: [] },
+        received: { thisMonth: [], lastMonth: [] },
+        receivedThisFinancialYear: [],
+        spent: {
+          thisMonth: { total: [], byCategory: [] },
+          lastMonth: { total: [], byCategory: [] },
+        },
+        spentThisFinancialYear: [],
+        series: [],
+        toPay: {
+          total: inr(500_000),
+          dueSoon: [],
+          bills: 1,
+          dueSoonBills: 0,
+          lateBills: 0,
+        },
+      },
+      [],
+    );
+    expect(noneSoon.empty).toBe(false);
+    expect(noneSoon.dueSoon).toMatchObject({ lines: ["Nothing"], note: null, late: false });
     expect(kinMoneyHeadline(summary)[0]).toBe("₹2,10,000 and $2,500 owed to us");
     // Past the newest suggestions shown, each list's rest opens on its suggestions only.
     const suggesting = kinMoneyView(
@@ -229,8 +301,8 @@ describe("the Money summary", () => {
     expect(kinMoneyAgent(leads.slice(0, 2))?.name).toBe("Chief of staff");
   });
 
-  it("puts this month right after who owes us, and an empty bank in one line", () => {
-    expect(KIN_MONEY_BLOCKS.slice(0, 3)).toEqual(["owed", "month", "suggested"]);
+  it("puts bills to pay and this month right after who owes us, and an empty bank in one line", () => {
+    expect(KIN_MONEY_BLOCKS.slice(0, 4)).toEqual(["owed", "toPay", "month", "suggested"]);
     const cash: KinCash = {
       asOf: "2026-11-12T06:00:00.000Z",
       today: "2026-11-12",
@@ -510,6 +582,17 @@ describe("company details", () => {
     expect(offer?.label).toBe("Use India?");
     // Settings reads the country by its name, and keeps a code no device can name.
     expect([kinCountryName("GB"), kinCountryName("QQ")]).toEqual(["United Kingdom", "QQ"]);
+    // A country card closes with one line per answer, the country named as Settings names it.
+    for (const [answered, line] of [
+      [{ _tag: "chose", by: "Meera", country: "US" }, "Meera chose United States."],
+      [{ _tag: "not_now", by: "Rhea", round: 1 }, "Not now. Kin asks again in 30 days."],
+      [
+        { _tag: "not_now", by: "Meera", round: 2 },
+        "Not now. Kin won't ask again; Settings, Company details has it.",
+      ],
+      [{ _tag: "set", country: "GB" }, "Set to United Kingdom in Settings."],
+    ] as const)
+      expect(kinCountryAskLine(answered)).toBe(line);
     expect(kinCompanyInput("org" as never, waiting, offer!.accept())).toEqual({
       ok: true,
       input: { orgId: "org", rev: 0, country: "IN" },

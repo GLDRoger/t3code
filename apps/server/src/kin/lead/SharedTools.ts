@@ -9,6 +9,7 @@ import { SALES_SHARED_TOOLS } from "../sales/policies.ts";
 import { aborted, askedIn, askersDirectChat, effectiveAudience, turnChat } from "./Audience.ts";
 import { billToolAllowed } from "./billsOnly.ts";
 import { reviewToolAllowed } from "./outsideReview.ts";
+import { boundReview } from "../github/boundReview.ts";
 import { mailboxPerson } from "../connections/turnMailbox.ts";
 
 type Turn = {
@@ -47,6 +48,10 @@ const messageInTurnChat: Condition = Effect.fnUntraced(function* (turn, args) {
   const rows = yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${turn.orgId}
     AND message_id = ${messageId} AND chat_id = ${chatId} LIMIT 1`;
   return rows.length > 0;
+});
+
+const askedReview: Condition = Effect.fnUntraced(function* (turn) {
+  return (yield* boundReview(turn))?.asked === true;
 });
 
 const inAskedChat: Condition = Effect.fnUntraced(function* (turn, args) {
@@ -170,7 +175,12 @@ export const SHARED_TOOLS = {
   kin_defer: chatReminder,
   kin_schedule: chatRoutine,
   kin_cancel: ownReminderCancel,
-  kin_github_review: "refused",
+  // Only the review someone asked for, on its pull request: `postReview` checks where it posts.
+  kin_github_review: askedReview,
+  kin_github_diff: askedReview,
+  // A public repo for anyone here; a private one only for the asker GitHub lets see it, in their
+  // own chat with this agent, by the review ask's check (`readRepo`, `maySee`). Reads only.
+  kin_github_read: "allowed",
   // Only from the asker's own direct chat with this agent, checked by the service (`askReview`).
   kin_github_review_ask: "allowed",
   kin_github_link: "refused",

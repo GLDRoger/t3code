@@ -672,6 +672,8 @@ export class KinChatRepository extends Context.Service<
         readonly lead?: true;
         /** The body is the page as stored with these lines in its Money section (`kinPageWithLines`). */
         readonly money?: ReadonlyArray<string>;
+        /** Refused once anything but Kin's own lines follows it in its chat. */
+        readonly onlyIfLast?: true;
       },
     ) => Effect.Effect<KinMessage, RepositoryError>;
     readonly history: (
@@ -2077,7 +2079,11 @@ const make = Effect.gen(function* () {
                 message.body !== "" &&
                 (yield* sql`SELECT 1 FROM kin_messages
                 WHERE org_id = ${input.orgId} AND message_id = ${input.messageId} AND source_wakeup_id = ${input.wakeupId}`)
-                  .length === 0)
+                  .length === 0) ||
+              (input.onlyIfLast === true &&
+                (yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${input.orgId}
+                  AND chat_id = ${input.chatId} AND seq > ${message.seq} AND author_kind <> 'system'
+                  LIMIT 1`).length > 0)
             )
               return yield* new KinChatError({
                 reason: "not_found",

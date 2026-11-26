@@ -228,6 +228,8 @@ describe("Download everything", () => {
       const imports = yield* KinImport.KinImport;
       const seeded = yield* imports.apply(from, owner, books);
       assert.deepStrictEqual(seeded.problems, []);
+      yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.accountsForTax', 'true')
+        WHERE org_id = ${from} AND register_id = 'clients' AND title = 'Invented Acme'`;
       const extended = yield* imports.apply(from, owner, chequeBooks);
       assert.deepStrictEqual(extended.problems, []);
       // A file without the suggestion field imports as it always did: kept.

@@ -104,7 +104,13 @@ const NO_SINGULAR: Readonly<Record<string, string>> = {
     "Prospect, Lead → prospect; anything else → Clients",
   "Client name": "Name in Clients",
   "Prospect or client": "Prospect, or in Clients",
+  "Find a client": "Find in Clients",
 };
+
+/** A client or project picker's search field, in this company's word for clients. */
+export function kinPlaceFind(noun: "client" | "project", shell: KinShell | null | undefined) {
+  return noun === "client" ? kinSectionNamed(shell, "Find a client") : "Find a project";
+}
 
 /**
  * Kin's own words about the Clients section, said with this company's name for it: "Search

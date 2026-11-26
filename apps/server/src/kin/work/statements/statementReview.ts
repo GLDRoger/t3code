@@ -232,9 +232,10 @@ export const invoiceCandidates = Effect.fn("KinStatements.invoiceCandidates")(fu
     dateAt: number | null;
     fieldsJson: string;
     client: string | null;
+    clientId: string | null;
     paid: number;
   }>`SELECT r.record_id AS "recordId", r.key, r.title, r.currency, r.amount_minor AS "amountMinor",
-      r.date_at AS "dateAt", r.fields_json AS "fieldsJson", c.title AS client,
+      r.date_at AS "dateAt", r.fields_json AS "fieldsJson", c.title AS client, c.record_id AS "clientId",
       (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid
     FROM kin_records r LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
@@ -267,6 +268,7 @@ export const invoiceCandidates = Effect.fn("KinStatements.invoiceCandidates")(fu
           : null,
       issued: day(row.dateAt),
       client: clientName(row),
+      clientId: row.clientId,
       number: fieldText(fields, "number"),
     };
   });

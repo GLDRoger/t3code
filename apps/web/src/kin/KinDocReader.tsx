@@ -251,7 +251,7 @@ export function KinDocReader(
   const old = doc.version.version !== doc.latest.version;
   const previous = kinDocPrevious(doc.version);
   const shell = useKinShell(props.environmentId);
-  const privacy = kinDocPrivacy(doc, shell);
+  const privacy = doc.readers === undefined ? kinDocPrivacy(doc, shell) : null;
   const label = useKinDocLabel(props, doc);
   // The body opens with the doc's own name as its heading: say it once.
   const first = doc.outline.find((section) => section.id !== "top");

@@ -138,6 +138,7 @@ import { Label } from "../components/ui/label";
 import { Textarea } from "../components/ui/textarea";
 import { PullRequestGlyph } from "../components/pullRequest/pullRequestIcons";
 import { KinChart } from "./KinChart";
+import { KinCountryCard } from "./KinCountryCard";
 import { KinSocialPackCard, KinSocialWeekCard } from "./KinSocialCards";
 import { KinHostTroubleCard } from "./KinHostTroubleCard";
 import { KinStatementPasswordCard, KinStatementReviewCard } from "./KinStatementCards";
@@ -241,6 +242,8 @@ export const KinCard = memo(function KinCard(props: {
           viewerPersonId={props.viewerPersonId}
         />
       );
+    case "country":
+      return <KinCountryCard country={view.country} environmentId={props.environmentId} />;
     case "chart":
       return (
         <CardFrame>

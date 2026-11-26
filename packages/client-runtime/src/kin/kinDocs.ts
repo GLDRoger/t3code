@@ -118,8 +118,6 @@ export const KIN_DOCS = {
   restoring: "Restoring…",
   compare: "Compare with the latest",
   private: "Private. Only owners see this.",
-  privateYours: "Private. Only you and the owners see this.",
-  privateDraft: (name: string) => `Private. Only owners and ${name}, whose draft it is, see this.`,
   privateInherited: "Private, because its client or project is. Only owners see this.",
   top: "Introduction",
   empty: {
@@ -851,19 +849,106 @@ export function kinDocOutline(
 export const kinDocHasContents = (outline: ReadonlyArray<KinDocSection>) =>
   outline.filter((section) => section.id !== "top").length > 1;
 
+export type KinDocReaders = NonNullable<KinDocDetail["readers"]>;
+
+export const KIN_DOC_READERS = {
+  title: "Who can read this",
+  change: "Change",
+  failed: "Couldn't change who reads this.",
+  labels: {
+    draft: "Me and owners (draft)",
+    owners: "Owners",
+    team: "The team",
+  },
+  answer: {
+    writerDraft: "Draft. The owners read it too; nobody else does.",
+    writerOwners: "The owners read it.",
+    writerOwnersProject: (project: string) => `The owners and the people on ${project} read it.`,
+    team: "Everyone on the team with Docs reads it.",
+    ownerDraft: (name: string) => `${name}'s draft. Only ${name} and the owners read it.`,
+    ownerOwners: (name: string) => `${name} and the owners read it.`,
+    ownerOwnersProject: (name: string, project: string) =>
+      `${name}, the owners and the people on ${project} read it.`,
+  },
+} as const;
+
+export interface KinDocReadersChoice {
+  readonly id: KinDocReaders;
+  readonly label: string;
+}
+
+export interface KinDocReadersView {
+  readonly current: KinDocReaders;
+  readonly answer: string;
+  readonly choices: ReadonlyArray<KinDocReadersChoice>;
+}
+
+const DOC_READERS_ORDER: ReadonlyArray<KinDocReaders> = ["draft", "owners", "team"];
+
+/** Who reads a teammate's doc and what this viewer may change it to; null outside those docs. */
+export function kinDocReaders(
+  doc: Partial<
+    Pick<KinDocDetail, "readers" | "readersCan" | "draftOf" | "project" | "owner" | "kindLabel">
+  >,
+  names?: Pick<KinWorkNames, "me" | "people">,
+): KinDocReadersView | null {
+  const current = doc.readers;
+  if (current === undefined) return null;
+  const can = doc.readersCan ?? [];
+  const ownerView =
+    doc.draftOf !== undefined || (doc.readersCan !== undefined && !can.includes("draft"));
+  const writerName =
+    doc.draftOf?.name ??
+    (doc.kindLabel?.reader !== undefined && doc.kindLabel.reader.you !== true
+      ? doc.kindLabel.reader.name
+      : undefined) ??
+    (doc.owner?._tag === "person" && doc.owner.personId !== names?.me
+      ? names?.people.get(doc.owner.personId)
+      : undefined) ??
+    "A teammate";
+  const project = doc.project?.title;
+  const answer =
+    current === "team"
+      ? KIN_DOC_READERS.answer.team
+      : current === "draft"
+        ? ownerView
+          ? KIN_DOC_READERS.answer.ownerDraft(writerName)
+          : KIN_DOC_READERS.answer.writerDraft
+        : ownerView
+          ? project === undefined
+            ? KIN_DOC_READERS.answer.ownerOwners(writerName)
+            : KIN_DOC_READERS.answer.ownerOwnersProject(writerName, project)
+          : project === undefined
+            ? KIN_DOC_READERS.answer.writerOwners
+            : KIN_DOC_READERS.answer.writerOwnersProject(project);
+  const choices = DOC_READERS_ORDER.filter((id) => can.includes(id)).map((id) => ({
+    id,
+    label: KIN_DOC_READERS.labels[id],
+  }));
+  return { current, answer, choices };
+}
+
 /** Why a doc is marked private, and who reads it, in words; null when the whole team may read it. */
 export const kinDocPrivacy = (
   doc: Pick<KinDocListRow, "sensitive" | "sensitiveInherited"> &
-    Partial<Pick<KinDocDetail, "kindLabel">>,
+    Partial<Pick<KinDocDetail, "kindLabel" | "readers" | "readersCan" | "draftOf">>,
   shell?: KinShell | null,
 ): string | null => {
-  const reader = doc.kindLabel?.reader;
   if (!doc.sensitive)
     return doc.sensitiveInherited === true
       ? kinSectionNamed(shell, KIN_DOCS.privateInherited)
       : null;
+  if (doc.readers === "draft") {
+    if (doc.draftOf !== undefined) return KIN_DOC_READERS.answer.ownerDraft(doc.draftOf.name);
+    if (doc.readersCan === undefined || doc.readersCan.includes("draft"))
+      return KIN_DOC_READERS.answer.writerDraft;
+    return KIN_DOC_READERS.answer.ownerDraft("A teammate");
+  }
+  const reader = doc.kindLabel?.reader;
   if (reader === undefined) return KIN_DOCS.private;
-  return reader.you === true ? KIN_DOCS.privateYours : KIN_DOCS.privateDraft(reader.name);
+  return reader.you === true
+    ? KIN_DOC_READERS.answer.writerDraft
+    : KIN_DOC_READERS.answer.ownerDraft(reader.name);
 };
 
 export type KinDocReadState =
@@ -1345,7 +1430,8 @@ const snippetText = (snippet: string) =>
     .replace(/(?:· )+(?=·)/g, "")
     .trim();
 
-export function kinSearchHit(hit: KinSearchHit): KinSearchHitView {
+/** `shell` names a client in the company's own word for Clients. */
+export function kinSearchHit(hit: KinSearchHit, shell?: KinShell | null): KinSearchHitView {
   const text = snippetText(hit.snippet);
   const snippet = text === hit.title ? "" : text;
   const section =
@@ -1353,7 +1439,12 @@ export function kinSearchHit(hit: KinSearchHit): KinSearchHitView {
       ? null
       : { id: hit.section.id, title: hit.section.title };
   const closed = !hit.closed ? null : hit.kind === "docs" ? KIN_DOCS.archived : "Closed";
-  const kindLabel = hit.kind === "work" && kinIsDealKey(hit.key) ? "Deal" : KIND_LABEL[hit.kind];
+  const kindLabel =
+    hit.kind === "work" && kinIsDealKey(hit.key)
+      ? "Deal"
+      : hit.kind === "clients"
+        ? kinSectionNamed(shell, KIND_LABEL.clients)
+        : KIND_LABEL[hit.kind];
   return {
     id: `${hit.recordId}:${hit.section?.id ?? ""}`,
     key: hit.key,

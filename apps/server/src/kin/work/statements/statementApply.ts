@@ -2,6 +2,7 @@ import * as KinShell from "../../shell/KinShell.ts";
 import {
   KinChatError,
   KinChatId,
+  kinImpliedRate,
   type KinOrgId,
   type KinPersonId,
   type KinRecordState,
@@ -552,12 +553,17 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
               row.foreign?.currency === targetRow.currency
                 ? row.foreign
                 : undefined;
+            const bank = { minor: row.amountMinor, currency };
+            const amount =
+              foreign === undefined
+                ? bank
+                : { minor: foreign.amountMinor, currency: foreign.currency };
             const received = yield* live(
               records.pay(input.orgId, writer, targetRow.key, {
-                amount:
-                  foreign === undefined
-                    ? { minor: row.amountMinor, currency }
-                    : { minor: foreign.amountMinor, currency: foreign.currency },
+                amount,
+                ...(foreign === undefined
+                  ? {}
+                  : { received: bank, rate: kinImpliedRate(amount, bank) }),
                 paidOn: row.date,
                 note: note(row),
                 originKey: retryKey(index, "received"),

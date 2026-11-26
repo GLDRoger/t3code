@@ -9,6 +9,7 @@ import {
   KinPersonId,
   KinAttachment,
   KinRecordId,
+  KinRecordKey,
   KinRepeatRule,
   ThreadId,
   type KinFileRef,
@@ -40,7 +41,8 @@ import type * as Statement from "effect/sql/Statement";
 import { keySentSql } from "../chat/keySent.ts";
 import { ownerLevelPeople, ownerLevelSql } from "../people/KinAccess.ts";
 import { billedParty, billingClientFromProject } from "./billTo.ts";
-import { fieldList, listNameOf, parseFields } from "./lists.ts";
+import { fieldList, fieldText, listNameOf, parseFields } from "./lists.ts";
+import { clientCreditSeenBy, KIN_OWNER_LEVEL, type KinViewer } from "./teamView.ts";
 import { isBuiltIn } from "./registers.ts";
 import { bankKnown } from "./statements/bankKnown.ts";
 import { DAY_MS } from "../durations.ts";
@@ -116,7 +118,8 @@ export type RecordRow = {
   readonly urgent: number | null;
   /** Payments not voided, in its own currency. */
   readonly paid: number;
-  /** Of `paid`, tax the payer withheld at source rather than paid in. */
+  readonly credited?: number;
+  /** Of `paid`, tax withheld or a credit note, rather than cash paid in. */
   readonly withheld: number;
   /** Its list's entries are paid over time: Invoices, or a list whose definition says so. */
   readonly takesPayments: number;
@@ -454,6 +457,9 @@ export const selectRecords = (sql: SqlClient.SqlClient, extra = sql``, shell = t
     (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
       WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL
         AND p.withheld = 1) AS withheld,
+    (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
+      WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL
+        AND p.withheld = 1 AND p.origin_key LIKE 'credit_note:%') AS credited,
     ${takesPayments(sql)} AS "takesPayments",
     pa.key AS "partyKey", pa.title AS "partyTitle", pa.category AS "partyCategory",
     pj.key AS "projectKey",
@@ -635,6 +641,7 @@ const handedBackOf = (row: RecordRow) => {
 const moneyOf = (row: RecordRow) => {
   const amount = amountOf(row);
   const repeat = repeatOf(row.repeatJson);
+  const tds = row.withheld - (row.credited ?? 0);
   return {
     ...(isBuiltIn(row.registerId) ? {} : { list: row.registerId }),
     ...(row.category === null || isBuiltIn(row.registerId) ? {} : { listCategory: row.category }),
@@ -647,9 +654,7 @@ const moneyOf = (row: RecordRow) => {
       : {
           balance: { minor: Math.max(amount.minor - row.paid, 0), currency: amount.currency },
           received: { minor: row.paid - row.withheld, currency: amount.currency },
-          ...(row.withheld === 0
-            ? {}
-            : { tdsDeducted: { minor: row.withheld, currency: amount.currency } }),
+          ...(tds === 0 ? {} : { tdsDeducted: { minor: tds, currency: amount.currency } }),
         }),
   };
 };
@@ -1012,6 +1017,62 @@ export const toDetail = Effect.fn("KinRecords.toDetail")(function* (
   } satisfies KinRecordDetail;
 });
 
+export const usableCredits = Effect.fn("KinRecords.usableCredits")(function* (
+  orgId: KinOrgId,
+  partyId: string,
+  viewer: KinViewer,
+  fit?: { readonly minor: number; readonly currency: string; readonly receipt?: string },
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{
+    key: string;
+    minor: number;
+    currency: string;
+    receivedOn: string;
+    paymentId: string;
+    rev: number;
+  }>`
+    SELECT r.key, r.rev, p.payment_id AS "paymentId", p.amount_minor AS minor, p.currency, p.paid_on AS "receivedOn"
+    FROM kin_records r JOIN kin_record_payments p ON p.org_id = r.org_id
+      AND p.record_id = r.record_id AND p.payment_id = json_extract(r.fields_json, '$.payment')
+    WHERE r.org_id = ${orgId} AND r.register_id = 'receipts' AND r.party_id = ${partyId}
+      AND ${clientCreditSeenBy(sql, viewer)}
+      AND ${countedPayment(sql)} AND p.withheld = 0 AND json_extract(r.fields_json, '$.invoice') IS NULL
+      ${fit?.receipt === undefined ? sql`` : sql`AND r.key = ${fit.receipt}`}
+      ${fit === undefined ? sql`` : sql`AND p.currency = ${fit.currency} AND p.amount_minor <= ${fit.minor}`}
+    ORDER BY p.paid_on, r.created_at, r.record_id LIMIT ${fit === undefined ? 10 : 1}`;
+  return rows.map((row) => ({
+    key: KinRecordKey.make(row.key),
+    amount: { minor: row.minor, currency: row.currency },
+    receivedOn: row.receivedOn,
+    rev: row.rev,
+    paymentId: row.paymentId,
+  }));
+});
+
+export const creditForInvoice = Effect.fn("KinRecords.creditForInvoice")(function* (
+  orgId: KinOrgId,
+  row: RecordRow,
+  receipt?: string,
+) {
+  if (
+    row.registerId !== "invoices" ||
+    row.state !== "waiting" ||
+    row.dateAt === null ||
+    fieldText(parseFields(row.fieldsJson), "number") === null ||
+    row.partyId === null ||
+    row.amountMinor === null ||
+    row.currency === null ||
+    isSuggestion(row)
+  )
+    return undefined;
+  return (yield* usableCredits(orgId, row.partyId, KIN_OWNER_LEVEL, {
+    currency: row.currency,
+    minor: row.amountMinor - row.paid,
+    ...(receipt === undefined ? {} : { receipt }),
+  }))[0];
+});
+
 const decodeAttachments = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Array(KinAttachment)),
 );
@@ -1060,6 +1121,13 @@ const definedDetail = Effect.fn("KinRecords.definedDetail")(function* (row: Reco
     fields,
     ...(files.length === 0 ? {} : { files }),
     ...(payments === undefined ? {} : { payments }),
+    ...(row.registerId !== "invoices" ||
+    row.credited === undefined ||
+    row.credited === 0 ||
+    row.currency === null ||
+    isSuggestion(row)
+      ? {}
+      : { credited: { minor: row.credited, currency: row.currency } }),
     ...(bank === undefined ? {} : { bankKnown: { through: bank.through } }),
     ...(sent.length === 0 ? {} : { sent }),
   };
@@ -1112,17 +1180,37 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
       createdAt: number;
       voidedAt: number | null;
       withheld: number;
+      receivedMinor: number | null;
+      receivedCurrency: string | null;
+      rate: string | null;
+      noteKey: string | null;
+      noteNumber: string | null;
+      splitCredit: string | null;
     } & PaymentSourceRow
   >`SELECT p.payment_id AS "paymentId", p.amount_minor AS minor, p.currency,
       p.paid_on AS "paidOn", p.note, p.origin_key AS "originKey", p.created_at AS "createdAt",
-      p.voided_at AS "voidedAt", p.withheld, ${paymentSourceColumns(sql)}
-    FROM kin_record_payments p WHERE p.org_id = ${orgId} AND p.record_id = ${recordId}
+      p.voided_at AS "voidedAt", p.withheld, p.received_minor AS "receivedMinor",
+      p.received_currency AS "receivedCurrency", p.rate,
+      cn.key AS "noteKey", cn_no.number AS "noteNumber", b.key AS "splitCredit", ${paymentSourceColumns(sql)}
+    FROM kin_record_payments p
+    LEFT JOIN kin_records cn ON cn.org_id = p.org_id AND cn.register_id = 'credit_notes'
+      AND p.origin_key = 'credit_note:' || cn.record_id
+    LEFT JOIN kin_issued_numbers cn_no ON cn_no.org_id = cn.org_id AND cn_no.record_id = cn.record_id
+    LEFT JOIN kin_records b ON b.org_id = p.org_id AND p.origin_key LIKE 'bank-credit:%:split:%'
+      AND b.record_id = substr(substr(p.origin_key, 13), 1, instr(substr(p.origin_key, 13), ':') - 1)
+    WHERE p.org_id = ${orgId} AND p.record_id = ${recordId}
     ORDER BY p.paid_on DESC, p.created_at DESC, p.payment_id`;
   const receipts =
     rows.length === 0
       ? []
-      : yield* sql<{ payment: string; key: string; number: string | null; doc: string | null }>`
-        SELECT json_extract(r.fields_json, '$.payment') AS payment, r.key, n.number,
+      : yield* sql<{
+          payment: string;
+          key: string;
+          recordId: string;
+          number: string | null;
+          doc: string | null;
+        }>`
+        SELECT json_extract(r.fields_json, '$.payment') AS payment, r.key, r.record_id AS "recordId", n.number,
           (SELECT d.key FROM kin_doc_jobs j
             JOIN kin_doc_versions v ON v.org_id = j.org_id AND v.worker_id = j.worker_id
             JOIN kin_records d ON d.org_id = v.org_id AND d.record_id = v.record_id
@@ -1131,7 +1219,7 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
         FROM kin_records r
         LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
         WHERE r.org_id = ${orgId} AND r.register_id = 'receipts' AND r.state <> 'dropped'
-          AND r.origin_key LIKE 'receipt:%'
+          AND (r.origin_key LIKE 'receipt:%' OR r.origin_key LIKE 'bank-credit:%:left')
           AND json_extract(r.fields_json, '$.payment') IN ${sql.in(rows.map((row) => row.paymentId))}
         ORDER BY r.created_at DESC, r.record_id DESC`;
   const numbers = yield* notedReceiptNumbers(
@@ -1141,15 +1229,29 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
   return rows.map((payment): KinPayment => {
     const receipt = receipts.find((one) => one.payment === payment.paymentId);
     const noted = fromImport(payment) ? numbers.get(payment.note) : undefined;
+    const applied = receipt === undefined ? undefined : `receipt:${receipt.recordId}`;
     return {
       paymentId: payment.paymentId,
       amount: { minor: payment.minor, currency: payment.currency },
+      ...(payment.receivedMinor === null || payment.receivedCurrency === null
+        ? {}
+        : { received: { minor: payment.receivedMinor, currency: payment.receivedCurrency } }),
+      ...(payment.rate === null ? {} : { rate: payment.rate }),
       paidOn: payment.paidOn,
       note: payment.note,
       recordedAt: iso(payment.createdAt),
       voidedAt: payment.voidedAt === null ? null : iso(payment.voidedAt),
       ...(payment.withheld === 1 ? { withheld: true as const } : {}),
       source: paymentSourceOf(payment),
+      ...(payment.noteKey === null || payment.noteNumber === null
+        ? {}
+        : { creditNote: { key: payment.noteKey, number: payment.noteNumber } }),
+      ...(payment.splitCredit === null ? {} : { splitCredit: payment.splitCredit }),
+      ...(receipt === undefined ||
+      applied === undefined ||
+      (payment.originKey !== applied && !payment.originKey.startsWith(`${applied}:after:`))
+        ? {}
+        : { appliedCredit: receipt.key }),
       receipt:
         receipt === undefined && noted === undefined
           ? null

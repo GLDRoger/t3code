@@ -34,6 +34,8 @@ export const KIN_IMPORT = {
   drop: "Drop a file here, or",
   choose: "choose one",
   chooseFile: "Choose a file",
+  /** A file shared into Kin from another app, read only when this is pressed. */
+  checkFile: (name: string) => `Check ${name}`,
   limits: "CSV, up to 50,000 rows",
   earlier: "Earlier imports",
   noneEarlier: "Nothing imported yet.",

@@ -647,6 +647,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_record_changes_wakeup" },
           { name: "idx_kin_record_links_target" },
           { name: "idx_kin_record_payments_paid" },
+          { name: "idx_kin_record_payments_rate" },
           { name: "idx_kin_record_payments_record" },
           { name: "idx_kin_records_date" },
           { name: "idx_kin_records_due" },
@@ -813,6 +814,7 @@ describe("Kin migrations", () => {
         "first_token_at",
         "posted_at",
         "resumed",
+        "quiet_since",
       ])
         yield* sql`ALTER TABLE kin_wakeups DROP COLUMN ${sql(column)}`;
       yield* sql`DROP INDEX idx_kin_wakeups_running_lead`;
@@ -1950,7 +1952,7 @@ describe("Kin migrations", () => {
           (yield* runKinMigrations()).filter(([id]) => id <= 219).map(([id]) => id),
           [
             196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
-            213, 214, 215, 216, 217, 218, 219,
+            213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223,
           ],
         );
         assert.deepStrictEqual(yield* receipts, [
@@ -2002,7 +2004,7 @@ describe("Kin migrations", () => {
         (yield* runKinMigrations()).filter(([id]) => id <= 219).map(([id]) => id),
         [
           197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214,
-          215, 216, 217, 218, 219,
+          215, 216, 217, 218, 219, 220, 221, 222, 223,
         ],
       );
       const all = [
@@ -2668,6 +2670,28 @@ describe("Kin migrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect("K221 adds tax_by_customer, keeps every issued row NULL, and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      const columns = yield* sql<{ name: string }>`PRAGMA table_info(kin_issued_numbers)`;
+      if (columns.some(({ name }) => name === "tax_by_customer"))
+        yield* sql`ALTER TABLE kin_issued_numbers DROP COLUMN tax_by_customer`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 221`;
+      yield* sql`PRAGMA foreign_keys = OFF`;
+      yield* sql`INSERT INTO kin_issued_numbers (org_id, register_id, series, seq, number, record_id,
+          issued_at, issued_by_kind, issued_by_id)
+        VALUES ('org', 'invoices', 'INV', 1, 'INV-1', 'rec-1', 1, 'person', 'rhea')`;
+      yield* runKinMigrations();
+      const issued = sql`SELECT number, tax_by_customer FROM kin_issued_numbers
+        WHERE org_id = 'org' ORDER BY seq`;
+      assert.deepStrictEqual(yield* issued, [{ number: "INV-1", tax_by_customer: null }]);
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 221`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(221));
+      assert.deepStrictEqual(yield* issued, [{ number: "INV-1", tax_by_customer: null }]);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("K219 lets a person have several own mailboxes, keeps rows, and reruns", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -2694,6 +2718,108 @@ describe("Kin migrations", () => {
         yield* sql`SELECT connection_id AS id FROM kin_connections ORDER BY connection_id`,
         [{ id: "c-1" }, { id: "c-2" }],
       );
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K220 adds received amount and rate to payments, keeps rows, and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`DROP INDEX IF EXISTS idx_kin_record_payments_rate`;
+      const columns = yield* sql<{ name: string }>`PRAGMA table_info(kin_record_payments)`;
+      for (const column of ["received_minor", "received_currency", "rate"])
+        if (columns.some(({ name }) => name === column))
+          yield* sql`ALTER TABLE kin_record_payments DROP COLUMN ${sql.literal(column)}`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 220`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Ambermill', 1)`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+        VALUES ('org', 'invoices', 'Invoices', 'INV', 1)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+          owner_id, created_by_kind, origin_key, created_at, updated_at)
+        VALUES ('org', 'rec', 'invoices', 'INV-1', 'Retainer', 'person', 'rhea', 'person',
+          'owner:1', 1, 1)`;
+      yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor,
+          currency, paid_on, origin_key, created_at, created_by_kind)
+        VALUES ('org', 'pay-1', 'rec', 100000, 'USD', '2026-11-01', 'owner:2', 1, 'person')`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(220));
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 220`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(220));
+      assert.deepStrictEqual(
+        yield* sql`SELECT amount_minor, currency, received_minor, received_currency, rate
+          FROM kin_record_payments WHERE org_id = 'org' ORDER BY payment_id`,
+        [
+          {
+            amount_minor: 100000,
+            currency: "USD",
+            received_minor: null,
+            received_currency: null,
+            rate: null,
+          },
+        ],
+      );
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K223 indexes a draft again without whom it is for, and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 223`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+        VALUES ('org', 'docs', 'Docs', 'D', 1)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, fields_json,
+          owner_kind, owner_id, created_by_kind, origin_key, created_at, updated_at)
+        VALUES ('org', 'doc', 'docs', 'D-1', 'Cargo draft', '{"draftFor":"person-id-9"}', 'person',
+          'p', 'person', 'owner:1', 1, 1)`;
+      yield* sql`INSERT INTO kin_search_rows (org_id, record_id, part) VALUES ('org', 'doc', 'public')`;
+      yield* sql`INSERT INTO kin_search (rowid, title, body, kind)
+        SELECT id, 'Cargo draft', ' person-id-9 ', '' FROM kin_search_rows`;
+      const found = (word: string) =>
+        sql`SELECT rowid FROM kin_search WHERE kin_search MATCH ${word}`;
+      assert.lengthOf(yield* found('"person-id-9"'), 1);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(223));
+      assert.deepStrictEqual(
+        [(yield* found('"person-id-9"')).length, (yield* found("cargo")).length],
+        [0, 1],
+      );
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 223`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(223));
+      assert.lengthOf(yield* found("cargo"), 1);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K222 keeps old wake-ups with no quiet mark and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      const columns = yield* sql<{ name: string }>`PRAGMA table_info(kin_wakeups)`;
+      if (columns.some((column) => column.name === "quiet_since"))
+        yield* sql`ALTER TABLE kin_wakeups DROP COLUMN quiet_since`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 222`;
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Ambermill', 1)`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('rhea', 'org', 'rhea', 'Rhea', '2026-11-25T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES ('lead', 'org', 'Lead', 'lead', 'rhea', '2026-11-25T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+        VALUES ('chat', 'org', 'team_group', 0, '2026-11-25T00:00:00.000Z')`;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json,
+          worker_projects_json, owner_chat_id)
+        VALUES ('lead', 'org', 'Lead', 0, '{}', '[]', 'chat')`;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status, event_ids)
+        VALUES ('old-wake', 'org', 'lead', 'test', 1, 'running', '[]')`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(222));
+      const read = sql`SELECT wakeup_id, status, quiet_since FROM kin_wakeups ORDER BY wakeup_id`;
+      assert.deepStrictEqual(yield* read, [
+        { wakeup_id: "old-wake", status: "running", quiet_since: null },
+      ]);
+      yield* sql`UPDATE kin_wakeups SET quiet_since = 1 WHERE wakeup_id = 'old-wake'`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 222`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(222));
+      assert.deepStrictEqual(yield* read, [
+        { wakeup_id: "old-wake", status: "running", quiet_since: 1 },
+      ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
@@ -2869,6 +2995,7 @@ describe("Kin migrations", () => {
           aborted_at: null,
           settled_at: null,
           retired_at: null,
+          quiet_since: null,
         },
         kin_events: {
           org_id: "org",

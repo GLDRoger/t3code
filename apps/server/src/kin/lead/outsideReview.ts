@@ -17,7 +17,7 @@ export const REVIEW_THREAD_PREFIX = "kin-shared:review:";
 
 /** What every tool but the review answers in that turn. */
 export const REVIEW_REFUSAL =
-  "This turn can only post its one review, with kin_github_review on this pull request. Nothing else ran.";
+  "This turn can only read this pull request's diff with kin_github_diff and post its one review on it with kin_github_review. Nothing else ran.";
 
 type Turn = { readonly orgId: KinOrgId; readonly wakeupId: string };
 
@@ -27,7 +27,7 @@ export const outsideReview = Effect.fn("KinOutsideReview.of")(function* (turn: T
   return bound?.outside === true ? bound : undefined;
 });
 
-export const REVIEW_TOOLS: ReadonlySet<string> = new Set(["kin_github_review"]);
+export const REVIEW_TOOLS: ReadonlySet<string> = new Set(["kin_github_review", "kin_github_diff"]);
 
 /**
  * Whether `name` may run in an outside review turn; undefined when the turn isn't one. Where and

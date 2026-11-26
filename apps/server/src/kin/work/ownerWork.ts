@@ -64,6 +64,7 @@ import { type AssignNotice, movedNotices, tellOnTasks, toldWhenBack } from "./as
 import { teamAgent as theTeamAgent } from "../lead/LeadAccess.ts";
 import {
   afterReadingFor,
+  creditForInvoice,
   chatLinksFor,
   endOfDay,
   isClosed,
@@ -713,7 +714,12 @@ export const shownRecords = Effect.fn("KinWork.shownRecords")(function* (
 
 /** A client's terms and tax details: the owner level's, now and in its changes. */
 const CONTACT_DETAILS: ReadonlySet<string> = new Set(KIN_SENSITIVE_FIELDS.contacts);
-const OWNERS_CLIENT_FIELDS: ReadonlySet<string> = new Set(["terms", "gstin", "placeOfSupply"]);
+const OWNERS_CLIENT_FIELDS: ReadonlySet<string> = new Set([
+  "terms",
+  "gstin",
+  "placeOfSupply",
+  "accountsForTax",
+]);
 
 /** A task read whole, naming its client only while this person may see it (`taskClients`). */
 const withClient = <A extends { readonly party?: { readonly recordId: string } | undefined }>(
@@ -846,7 +852,7 @@ const getAs = Effect.fn("KinWork.getAs")(function* (
 const shownTo = Effect.fn("KinWork.shownTo")(function* (
   viewer: Viewer,
   read: Effect.Success<ReturnType<KinRecords["Service"]["detail"]>>,
-  row: Pick<RecordRow, "registerId" | "projectId">,
+  row: RecordRow,
   ref: { readonly key: string } | { readonly recordId: string },
   seq?: number,
   /** Their own write just made it private: they saw it until then, so the answer still reads. */
@@ -863,9 +869,10 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
     return yield* notFound("key" in ref ? ref.key : "with that id");
   const withheld =
     viewer.teammate && access?.full !== 1 && !TEAM_LIST_RESERVED.includes(row.registerId);
+  const { credited: _credited, ...uncredited } = read;
   const safe = withheld
     ? listEntryFor(
-        read,
+        uncredited,
         row.registerId,
         yield* listDef(read.orgId, row.registerId).pipe(workFailure),
         false,
@@ -894,7 +901,19 @@ const shownTo = Effect.fn("KinWork.shownTo")(function* (
       viewer.teammate ? viewerOfPeople([viewer.person.personId]) : KIN_OWNER_LEVEL,
     ).pipe(workFailure)),
   };
-  if (!viewer.teammate) return { ...detail, ...extras, can };
+  if (!viewer.teammate) {
+    const offer = yield* creditForInvoice(read.orgId, row).pipe(workFailure);
+    return {
+      ...detail,
+      ...extras,
+      can,
+      ...(offer === undefined
+        ? {}
+        : {
+            creditOffer: { receipt: offer.key, amount: offer.amount, receivedOn: offer.receivedOn },
+          }),
+    };
+  }
   const { personId } = viewer.person;
   const number = seq ?? (yield* teamSeq(detail.orgId, personId).pipe(workFailure));
   const whole = !plainTask(row, yield* ledIds(viewer));

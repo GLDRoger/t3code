@@ -25,6 +25,7 @@ import {
   type KinPersonId,
   type KinWidgetId,
 } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -458,15 +459,19 @@ const make = Effect.gen(function* () {
   return KinMemoryChanges.of({
     undo,
     list: Effect.fn("KinMemoryChanges.list")(function* (people, input) {
-      const { person, port } = yield* ownerOf(people, input.orgId);
+      // Its pure reads skip the one writer every socket's non-read RPC queues on.
+      const { person, port } = yield* ownerOf(people, input.orgId).pipe(NodeSqliteClient.readOnly);
       const all = yield* port.items(input.orgId);
       const at = yield* Clock.currentTimeMillis;
       const items = input.forgotten === true ? forgottenOnes(all, at) : current(all, at);
       const labels = yield* storedLabels(input.orgId).pipe(
+        NodeSqliteClient.readOnly,
         Effect.flatMap((stored) => bindSuggestions(input.orgId, items, stored)),
         provideSql,
       );
-      const provenance = yield* provenanceOf(input.orgId, person.personId, items);
+      const provenance = yield* provenanceOf(input.orgId, person.personId, items).pipe(
+        NodeSqliteClient.readOnly,
+      );
       return {
         items: items.map((item) => listed(item, labels, provenance)),
         teamMemory: labels.teamMemory,

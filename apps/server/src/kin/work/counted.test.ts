@@ -25,7 +25,7 @@ const OWN_READS: Readonly<Record<string, number>> = {
   // A receipt already made for this advance: one entry's own amount matched, nothing summed.
   "gendocs/receiptProposals.ts": 1,
   // The columns every read selects, with an entry's own paid and withheld; one entry's payments.
-  "work/recordRows.ts": 2,
+  "work/recordRows.ts": 3,
   // Money's suggestions: the entries its figures leave out, listed one by one, nothing summed.
   "work/moneyViews.ts": 1,
   // One entry's payments, read to check a retry and to void one; a totals query's has-amount filter.
@@ -49,6 +49,8 @@ const OWN_READS: Readonly<Record<string, number>> = {
   // one against its rows: amounts matched and named, nothing summed.
   "work/statements/bankAlerts.ts": 2,
   "work/statements/statementReview.ts": 4,
+  // Each kept open bill is matched by its own amount, never added up here.
+  "work/statements/debitBill.ts": 1,
   // One invoice's own amount and payments: whether it is paid in full, so its watch closes.
   "watches/kinds/invoicePaid.ts": 1,
   // Whether a figure in a message is the sum on some entry or payment its reader can't see.

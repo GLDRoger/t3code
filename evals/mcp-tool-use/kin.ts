@@ -33,15 +33,33 @@ import {
 } from "../../apps/server/src/kin/lead/instructions.ts";
 import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
-import { alreadyOnIt, leftNote } from "../../apps/server/src/kin/lead/Handoff.ts";
-import { dueShows, madeIn, repeatedPromise } from "../../apps/server/src/kin/work/leadWork.ts";
+import { alreadyOnIt, leftNote, passedFactBody } from "../../apps/server/src/kin/lead/Handoff.ts";
+import { ASK_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
+import {
+  billPaidConsequence,
+  overpaymentConsequence,
+} from "../../apps/server/src/kin/pulse/senses/bank.ts";
+import {
+  billDueConsequence,
+  noticeConsequence,
+} from "../../apps/server/src/kin/pulse/senses/money.ts";
+import {
+  dueShows,
+  madeIn,
+  repeatedPromise,
+  suggestedBillResult,
+} from "../../apps/server/src/kin/work/leadWork.ts";
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import {
   endOfDay,
   suggestedStateLabel,
   UNISSUED_INVOICE,
 } from "../../apps/server/src/kin/work/recordRows.ts";
-import { ALSO_ON_UNASKED, helperRefusal } from "../../apps/server/src/kin/work/KinRecords.ts";
+import {
+  ALSO_ON_UNASKED,
+  FUNDING_IS_THE_OWNERS,
+  helperRefusal,
+} from "../../apps/server/src/kin/work/KinRecords.ts";
 import { choiceResumeText, NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
 import { noticeQuestion, stallQuestion } from "../../apps/server/src/kin/pulse/factCards.ts";
 import { tooLongForCard } from "../../apps/server/src/kin/questions/askPerson.ts";
@@ -70,12 +88,14 @@ import {
   countryFirstMessage,
   notRegisteredFact,
 } from "../../apps/server/src/kin/work/companyProfile.ts";
-import { bankAnswer } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
+import { bankAnswer, shortDay } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
 import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyAnswers.ts";
 import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
 import { waitingLine } from "../../apps/server/src/kin/work/unconfirmedFacts.ts";
 import { budgetsAnswer } from "../../apps/server/src/kin/work/budgets.ts";
+import { goalLine } from "../../apps/server/src/kin/work/goals.ts";
 import {
+  formatKinMoney,
   formatKinPicturesDay,
   KIN_TEXT_LOCALE,
   KinDocCardDraft,
@@ -105,6 +125,10 @@ import {
   ONE_ENTRY,
 } from "../../apps/server/src/kin/lead/approvedDraft.ts";
 import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
+import { diffGoesOn, postedResult } from "../../apps/server/src/kin/github/GitHubWatch.ts";
+import { DIFF_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
+import { filePage, READ_NEXT, READ_REFUSAL } from "../../apps/server/src/kin/github/repoRead.ts";
+import { REPO_READ_REFUSAL } from "../../apps/server/src/kin/lead/OutsideContent.ts";
 import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
 import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
 import { KinSalesToolkit } from "../../apps/server/src/kin/sales/mcp.ts";
@@ -123,6 +147,7 @@ import {
   humanMessageLabel,
   ASSIGNED_NOT_IN_PERSON,
   HANDED_BACK_WORK,
+  PASSED_ON_SPEAKER,
   UNREAD_RULE,
   REMINDER_DUE,
   REPLY_SHAPE,
@@ -187,7 +212,6 @@ import {
   RESCUE_PROMPT,
 } from "../../apps/server/src/kin/reply/classify.ts";
 import { TURN_EVENT_TOOLS } from "../../apps/server/src/kin/lead/eventIds.ts";
-import { noticeConsequence } from "../../apps/server/src/kin/pulse/senses/money.ts";
 import { noticeDay } from "../../apps/server/src/kin/work/crm.ts";
 import type { McpToolUseCase } from "./run.ts";
 
@@ -544,12 +568,23 @@ const fillGitHubTrigger = (prompt: string, world: McpToolUseCase["setup"]["world
         readonly event: string;
         readonly repo: string;
         readonly trigger: Contracts.KinGithubTrigger;
+        /** A review someone asked for in Kin: their name, as `LeadPrompt` passes it. */
+        readonly askedBy?: string;
       }
     | undefined;
   if (given === undefined) throw new Error("{{GITHUB_TRIGGER}} needs setup.world.githubTrigger.");
+  // `{{DIFF_GOES_ON:<rest>:<from>}}` in a diff is where Kin's read of it stops (`readDiff`).
+  const diff = given.trigger.pull?.diff?.replace(
+    /\{\{DIFF_GOES_ON:(\d+):(\d+)\}\}/g,
+    (_, rest: string, from: string) => diffGoesOn(Number(rest), Number(from)),
+  );
+  const trigger =
+    given.trigger.pull === undefined || diff === undefined
+      ? given.trigger
+      : { ...given.trigger, pull: { ...given.trigger.pull, diff } };
   return prompt.replaceAll(
     "{{GITHUB_TRIGGER}}",
-    githubTriggerEvent(given.event, given.repo, given.trigger),
+    githubTriggerEvent(given.event, given.repo, trigger, given.askedBy),
   );
 };
 
@@ -597,12 +632,35 @@ const fillCardTaps = (prompt: string) =>
     return tap.wake === undefined ? event : `${event}\n\n${wake(tap.wake)}`;
   });
 
+const overpaymentCase = () =>
+  overpaymentConsequence({
+    key: "BNK-4",
+    day: "2026-11-04",
+    currency: "USD",
+    received: 220000,
+    owed: 100000,
+    client: "Tidewater Freight",
+    reason: "it cites INV-12",
+    others: [{ key: "INV-14", owed: 80000 }],
+  });
+
 export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["world"]) =>
   fillCharacters(fillCardTaps(fillGitHubTrigger(prompt, world)))
     .replaceAll("{{UNDO_RULE}}", UNDO_RULE)
     .replaceAll("{{WORK_RULE}}", WORK_RULE)
     .replaceAll("{{MONEY_RULE}}", MONEY_RULE)
     .replaceAll("{{PULSE_RULE}}", PULSE_RULE)
+    .replaceAll("{{OVERPAYMENT_CASE}}", overpaymentCase())
+    .replace(
+      /\{\{BILL_PAID_FACT:([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|([^|{}]+)\}\}/g,
+      (_, bank, amount, day, bill, vendor, due) =>
+        billPaidConsequence(bank, amount, day, bill, vendor, due),
+    )
+    .replace(
+      /\{\{BILL_DUE_FACT:([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|(\d+)\}\}/g,
+      (_, amount, vendor, day, days) =>
+        billDueConsequence(amount, vendor, day, Number(days), false),
+    )
     .replaceAll("{{CHECK_IN_PULSE_RULE}}", CHECK_IN_PULSE_RULE)
     .replaceAll("{{LEFT_RULE}}", LEFT_RULE)
     .replaceAll("{{OUTSIDE_THREAD_LINE}}", OUTSIDE_THREAD_LINE)
@@ -676,6 +734,14 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{SEVERAL_ACCOUNTS}}", SEVERAL_ACCOUNTS)
     .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
     .replaceAll("{{REMINDER_DUE}}", REMINDER_DUE)
+    .replaceAll("{{PASSED_ON_SPEAKER}}", PASSED_ON_SPEAKER)
+    // A check-in fact's hand-off as the other agent's event quotes it, JSON-escaped for its body:
+    // `{{PASSED_FACT:<request>|<check-in>|<about>|<consequence>|<fact key>}}`.
+    .replace(
+      /\{\{PASSED_FACT:([^|}]+)\|([^|}]+)\|([^|}]+)\|([^|}]+)\|([^|}]+)\}\}/g,
+      (_, request: string, from: string, about: string, consequence: string, key: string) =>
+        JSON.stringify(passedFactBody({ request, from, about, consequence, key })).slice(1, -1),
+    )
     // The wake's line once a new company's country is chosen (`{{COUNTRY_CHOSEN:GB|GBP}}`).
     .replace(
       /\{\{COUNTRY_CHOSEN:([A-Z]{2})\|([A-Z]{3})\}\}/g,
@@ -711,7 +777,23 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
         period: string;
       };
       return feedTurnText(feed.numbers, feed.source, feed.period);
-    });
+    })
+    // repaid_seen's line for a partner debit that doesn't add up to their oldest owed expenses
+    // (`pulse/senses/bank.ts` repaidSeenSenses, which builds it inline; mirrored word for word).
+    .replace(
+      /\{\{REPAID_SHORT:([^|}]+)\|(\d+)\|([A-Z]{3})\|([\d-]+)\|([^|}]+)\|(\d+)\|(\d+)\}\}/g,
+      (
+        _,
+        key: string,
+        minor: string,
+        currency: string,
+        day: string,
+        partner: string,
+        owed: string,
+        count: string,
+      ) =>
+        `${key}, ${formatKinMoney(Number(minor), currency)} paid ${shortDay(day)}, names ${partner} but doesn't add up to their oldest owed expenses (${formatKinMoney(Number(owed), currency)} over ${count} expense${count === "1" ? "" : "s"}), so Kin marks nothing. Mark what it repaid on the expenses in Money.`,
+    );
 
 const decodeMoneySummary = Schema.decodeUnknownSync(KinMoneySummary);
 const decodeDraftTo = Schema.decodeUnknownSync(
@@ -770,7 +852,146 @@ const docReadAnswer = (input: {
   };
 };
 
+/** kin_github_read as `readRepo` answers it, over a few files at one ref. */
+const repoReadAnswer = (input: {
+  repo: string;
+  /** The repo the call named, when the case's App reaches only `repo`. */
+  asked?: string;
+  files: Record<string, string>;
+  path: string | null;
+  search: string | null;
+  ref: string | null;
+  line: number | null;
+}) => {
+  if (input.asked !== undefined && input.asked.trim().toLowerCase() !== input.repo.toLowerCase())
+    return {
+      $error: {
+        _tag: "KinChatError",
+        reason: "not_allowed",
+        message: READ_REFUSAL.unreached(input.asked.trim()),
+      },
+    };
+  const ref = input.ref ?? "the default branch";
+  const words = input.search?.replace(/\s+/g, " ").trim() ?? "";
+  if (words !== "") {
+    if (input.ref !== null)
+      return {
+        $error: { _tag: "KinChatError", reason: "not_allowed", message: READ_REFUSAL.searchRef },
+      };
+    // Each word literal, all of them in one file, as `readRepo` quotes them for GitHub.
+    const needles = words.toLowerCase().split(" ");
+    const matches = Object.entries(input.files)
+      .filter(([, text]) => needles.every((word) => text.toLowerCase().includes(word)))
+      .map(([path, text]) => ({
+        path,
+        fragments: [
+          text
+            .split("\n")
+            .filter((line) => needles.some((word) => line.toLowerCase().includes(word)))
+            .slice(0, 2)
+            .join("\n"),
+        ],
+      }));
+    return {
+      repo: input.repo,
+      ref: "the default branch",
+      matches,
+      next: matches.length === 0 ? READ_NEXT.none(input.repo, words) : READ_NEXT.found,
+    };
+  }
+  const path = (input.path ?? "")
+    .split("/")
+    .filter((part) => part !== "")
+    .join("/");
+  const file = input.files[path];
+  if (file !== undefined)
+    return { repo: input.repo, ref, path, ...filePage(file, input.line ?? undefined) };
+  const prefix = path === "" ? "" : `${path}/`;
+  const entries = new Map<string, { path: string; type: string; size?: number }>();
+  for (const [name, text] of Object.entries(input.files)) {
+    if (!name.startsWith(prefix)) continue;
+    const [first, ...rest] = name.slice(prefix.length).split("/");
+    const at = `${prefix}${first}`;
+    entries.set(
+      at,
+      rest.length > 0 ? { path: at, type: "dir" } : { path: at, type: "file", size: text.length },
+    );
+  }
+  if (entries.size === 0)
+    return {
+      $error: {
+        _tag: "KinChatError",
+        reason: "not_found",
+        message: READ_REFUSAL.missing(input.repo, path, ref),
+      },
+    };
+  return {
+    repo: input.repo,
+    ref,
+    path,
+    entries: [...entries.values()].sort((a, b) => a.path.localeCompare(b.path)),
+    next: READ_NEXT.listed,
+  };
+};
+
 const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
+  // record_update of who funded an expense or whether it was paid back, refused to an agent.
+  fundingRefusal: () => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: FUNDING_IS_THE_OWNERS },
+  }),
+  // kin_ask's mark_repaid on a debit that doesn't add up (`repaidCard.ts` drawRepaid, inline there).
+  repaidNoCard: (input: { key: string; partner: string }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "invalid_state",
+      message: `${input.key} names ${input.partner} but doesn't add up exactly to their oldest owed expenses, so Kin marks nothing and offers no card for it. Nothing was asked; tell the owner what you see instead.`,
+    },
+  }),
+  suggestedBill: (input: { key: string }) => suggestedBillResult(input.key),
+  billSuggestedLabel: (input: { state: "open" | "done" }) =>
+    suggestedStateLabel("expenses", input.state),
+  billDueFact: (input: { amount: string; vendor: string; day: string; days: number }) =>
+    billDueConsequence(input.amount, input.vendor, input.day, input.days, false),
+  goalLine,
+  // kin_github_diff's refusal when GitHub doesn't give the diff (`reviewAsk.ts`).
+  diffUnread: () => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: DIFF_REFUSAL.unread },
+  }),
+  // kin_github_read over a case's invented files, paged and worded by Kin's code (`repoRead.ts`).
+  repoRead: (input: {
+    repo: string;
+    asked?: string;
+    files: Record<string, string>;
+    path: string | null;
+    search: string | null;
+    ref: string | null;
+    line: number | null;
+  }) => repoReadAnswer(input),
+  // What any tool but reading and answering here gets after a shared turn read a repo
+  // (`KinToolGate`): the agent reads the gate's line, here in the tool's own error shape.
+  repoReadGate: (input: { name: string }) => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: REPO_READ_REFUSAL(input.name) },
+  }),
+  // kin_github_read's refusal for a private repo the asker can't see, as Kin words it.
+  repoReadRefused: (input: { repo: string; name: string; login: boolean }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "not_allowed",
+      message: input.login
+        ? READ_REFUSAL.notCollaborator(input.repo, input.name)
+        : READ_REFUSAL.noLogin(input.repo, input.name),
+    },
+  }),
+  // kin_github_review's answer for a review GitHub took (`GitHubWatch.ts` postedResult).
+  reviewPosted: (input: {
+    url: string;
+    review?: "asked" | "kins" | "outside";
+    asOwner?: boolean;
+  }) =>
+    postedResult({ _tag: "posted", url: input.url, asOwner: input.asOwner ?? false }, input.review),
+  // kin_github_review_ask's refusal for a repo Kin doesn't watch, as Kin words it (`reviewAsk.ts`).
+  reviewAskUnwatched: (input: { repo: string; ownerLevel: boolean }) =>
+    ASK_REFUSAL.unwatched(input.repo, input.ownerLevel),
   // bills_add's and bill_read's answers, as Kin words them (`leadBills.ts`, `bills.ts`).
   billsAdd: (input: { added: number; alreadyAdded: number; notBills: number }) => addAnswer(input),
   billRead: (input: { bill: string; outcome: "read" | "duplicate" | "unreadable" }) =>
@@ -966,6 +1187,7 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
   // record_create or record_update's line for a client's printed detail kept unconfirmed.
   unconfirmed: (input: { client: string; what: string; name: string; carded: boolean }) =>
     waitingLine(input.client, input.what, input.name, input.carded),
+  overpaymentCase,
   bankAnswer: (input: { through: string | null }) =>
     bankAnswer({ through: input.through, accounts: [] }),
   cashUnknown: (input: { timeZone: string }) =>
