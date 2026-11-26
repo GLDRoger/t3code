@@ -259,9 +259,10 @@ export const ownMoneyDraft = (
  * What a non-owner-level person sees: a picture by `pictureReader` alone; else a task they hold, are
  * on, attend or marked private; what they made, gave or share; their projects' entries and docs;
  * their drafts; company docs with Docs on; with Clients on, the deals of clients they see.
+ * Never NULL: callers negate it to find what a person can't see, and `NOT NULL` would skip the row.
  */
 const legacyPersonSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
-  sql`(CASE WHEN ${isPicture(sql)} THEN ${pictureReader(sql, personId)}
+  sql`COALESCE((CASE WHEN ${isPicture(sql)} THEN ${pictureReader(sql, personId)}
   WHEN r.register_id = 'goals' AND ${targetless(sql)}
     THEN json_type(r.fields_json, '$.spec') IS NULL AND ${teamListRow(sql, personId)}
   ELSE ((r.register_id = 'work' AND NOT ${inheritedSensitive(sql)}
@@ -281,12 +282,12 @@ const legacyPersonSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Stat
     OR (r.register_id = 'docs' AND (r.team_shared = 1
       OR json_extract(r.fields_json, '$.home') = 'company')
       AND ${placeOn(sql, personId, "sees_docs")})))
-  OR COALESCE(r.register_id = 'docs' AND r.sensitive = 1 AND r.marked_by_person_id = ${personId}
-    AND json_extract(r.fields_json, '$.draftFor') = ${personId} AND NOT ${inheritedSensitive(sql)}, 0)
+  OR (r.register_id = 'docs' AND r.sensitive = 1 AND r.marked_by_person_id = ${personId}
+    AND json_extract(r.fields_json, '$.draftFor') = ${personId} AND NOT ${inheritedSensitive(sql)})
   OR ${ownMoneyDraft(sql, personId)}
   OR (r.register_id = 'deals' AND NOT ${keySensitive(sql)}
     AND ${placeOn(sql, personId, "sees_clients")})
-  OR (r.register_id NOT IN ${sql.in(NOT_LISTS)} AND ${teamListRow(sql, personId)})) END)`;
+  OR (r.register_id NOT IN ${sql.in(NOT_LISTS)} AND ${teamListRow(sql, personId)})) END), 0)`;
 
 /** A team list adds its unlabelled entries from its opening on; it takes nothing the older rule gives. */
 export const personSees = (sql: SqlClient.SqlClient, personId: KinPersonId | Statement.Fragment) =>
