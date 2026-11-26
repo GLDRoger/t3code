@@ -149,6 +149,7 @@ import {
   type ListDef,
   listDef,
   owedState,
+  isInvoiceDraft,
   owesIn,
   startState,
   stateLabel,
@@ -4016,7 +4017,11 @@ const make = Effect.gen(function* () {
               home,
             );
           return {
-            total: addUp(priced, home),
+            // A draft invoice is neither billed nor owed yet; Clients and Money read the same.
+            total: addUp(
+              priced.filter((row) => !isInvoiceDraft(listDef.id, row.state)),
+              home,
+            ),
             ...(directed
               ? {
                   moneyIn: side("credit"),

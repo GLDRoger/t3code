@@ -404,7 +404,7 @@ export function KinNewInvoiceDialog(
     <FormDialog
       title={KIN_MONEY_FORMS.invoice.title}
       detail={KIN_MONEY_FORMS.invoice.detail}
-      typed={made === null && kinInvoiceTyped(draft, opened)}
+      typed={kinInvoiceTyped(draft, opened)}
       busy={saving.busy}
       discardTitle={KIN_MONEY_FORMS.discard.invoice}
       saveLabel={

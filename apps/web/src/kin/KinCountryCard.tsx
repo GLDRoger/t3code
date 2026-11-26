@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   KIN_COUNTRY_ASK,
+  kinCountryCardRegion,
   kinCountryCodeOf,
   kinCountryOffer,
   kinDeviceRegion,
@@ -33,7 +34,7 @@ export function KinCountryCard(props: {
   const [pending, setPending] = useState<KinAnswerCountryCardInput["answer"]["_tag"] | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const code = kinCountryCodeOf(typed);
-  const offer = kinCountryOffer(typed, kinDeviceRegion());
+  const offer = kinCountryOffer(typed, kinCountryCardRegion(country.fits, kinDeviceRegion()));
 
   const send = async (reply: KinAnswerCountryCardInput["answer"]) => {
     if (pending !== null) return;

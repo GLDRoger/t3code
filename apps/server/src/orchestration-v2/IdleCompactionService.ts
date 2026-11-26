@@ -32,6 +32,13 @@ export const make = Effect.gen(function* () {
 
   const compactWhenDue = Effect.fn("IdleCompactionService.compactWhenDue")(
     function* (threadId: ThreadId, completedRunId: RunId) {
+      // Kin owns compaction for the threads named in WakeupRunner.ts, Audience.ts and DreamIsolation.ts.
+      if (
+        threadId.startsWith("kin:") ||
+        threadId.startsWith("kin-shared:") ||
+        threadId.startsWith("kin-dream:")
+      )
+        return;
       let runId = completedRunId;
       // Loops after the wait or a retarget: the thread may have moved on.
       while (true) {

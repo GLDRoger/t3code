@@ -530,13 +530,24 @@ it.effect(
             fixtureItem({
               id: `extra-${n}`,
               recorded_at: "2027-02-27T00:00:00.000Z",
-              title: "Multiline\nfixture",
-            }),
+              title: n === 202 ? "Multiline\nCargo tally" : "Multiline\nfixture",
+              ...(n === 203 ? { what: "Cargo tally" } : {}),
+            }).replace(
+              "Invented fixture body.",
+              n === 204 ? "Cargo tally." : "Invented fixture body.",
+            ),
           );
         }
         yield* memory.record(orgA, "main", yield* memory.anchor(orgA, "main"), repository.commit());
         yield* memory.prepareWakeup(orgA);
         yield* memory.rebuildIndex(orgA);
+        const tally = (yield* memory.query(orgA, { text: "cArGo TaLLy" })).map(({ id }) => id);
+        expect.soft(tally.toSorted()).toEqual(["extra-202", "extra-203", "extra-204"]);
+        const limited = yield* memory.query(orgA, { text: "cArGo TaLLy", limit: 2 });
+        expect.soft(limited).toHaveLength(2);
+        expect
+          .soft(limited.every(({ id }) => ["extra-202", "extra-203", "extra-204"].includes(id)))
+          .toBe(true);
         expect((yield* memory.readIndex(orgA)).trimEnd().split("\n")).toHaveLength(200);
         expect(yield* memory.readIndex(orgA)).toContain("more");
         const before = yield* memory.readIndex(orgA);
@@ -592,6 +603,12 @@ it.effect(
         expect(duplicateRead._tag).toBe("Failure");
         if (duplicateRead._tag === "Failure")
           expect(duplicateRead.failure._tag).toBe("MemoryDuplicateId");
+        const path = KinMemoryItemId.make("deferrals/duplicate.md");
+        const duplicatePath = yield* memory.readItem(orgA, path).pipe(Effect.result);
+        expect.soft(duplicatePath).toEqual(duplicateRead);
+        expect((yield* memory.readItemQuietly(orgA, path).pipe(Effect.flip))._tag).toBe(
+          "MemoryNotFound",
+        );
         yield* memory.rebuildIndex(orgA);
         expect(yield* memory.readIndex(orgA)).toContain("[duplicate id]");
         const beforeFallback = yield* memory.query(orgA, {});
