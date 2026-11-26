@@ -163,6 +163,14 @@ describe("kinClientRow", () => {
       "Nothing open · No logged contact yet",
       "No next step",
     ],
+    [
+      "a client that owes money and nothing else",
+      { ...row, lastContactAt: null, owed: [{ currency: "INR", minor: 4_720_000 }] },
+      names,
+      null,
+      "₹47,200 owed · No logged contact yet",
+      "No next step",
+    ],
     // Without counts a row can't know there is no next step; a vendor has none to take.
     ["a teammate's name-only row", row, names, null, "", null],
     [
@@ -460,7 +468,7 @@ describe("kinClientPageView", () => {
     expect(reader({ edit: true, log: true, owner: false })).toBeNull();
     expect(reader({ edit: false, log: true, owner: false, contacts: true })).toBeNull();
     expect(reader({ edit: false, log: true, owner: false, contacts: false })).toBe(
-      "Zoya looks after this one. They, or anyone with an open deal here, add and change its contacts.",
+      "Zoya, who looks after this one, and anyone with an open deal here add and change its contacts.",
     );
     expect(reader({ edit: false, log: true, owner: false }, { kind: "vendor" })).toBe(
       "Zoya looks after this one, and adds and changes its contacts.",

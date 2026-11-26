@@ -110,7 +110,7 @@ describe("kinCurrency", () => {
     const settled = kinSettled(usd(1250), inr(103_500), "2026-11-12", rates);
     expect(settled?.received).toBe("₹1,03,500");
     expect(settled?.impliedRate).toEqual({ currency: "USD", rate: "82.8", asOf: "2026-11-12" });
-    expect(settled?.implied).toMatch(/^₹82.8 per \$1, as of /);
+    expect(settled?.implied).toBe("a rate of 82.80");
     expect(settled?.difference).toBe("₹1,813 less than the estimate at your rate (₹1,05,313).");
     expect(kinSettled(usd(1250), inr(103_500), "2026-11-12", null)?.difference).toBeNull();
     expect(kinSettled(inr(1), inr(1), "2026-11-12", rates)).toBeNull();
@@ -133,7 +133,7 @@ describe("kinCurrency", () => {
         rate: "83.5",
         asOf: "2026-11-04",
       });
-      expect(fromPayment?.implied).toMatch(/^₹83.5 per \$1, as of /);
+      expect(fromPayment?.implied).toBe("a rate of 83.50");
       expect(fromPayment?.difference).toBe("₹750 less than the estimate at your rate (₹84,250).");
     }
     expect(

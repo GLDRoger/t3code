@@ -62,6 +62,7 @@ import {
   setProfile,
 } from "./companyProfile.ts";
 import { answerCountryCard } from "./countryAsk.ts";
+import { COUNTRY_CURRENCIES } from "./countryCurrency.ts";
 import * as Goals from "./goals.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { KIN_OWN_REFUSAL } from "../people/KinAccess.ts";
@@ -4313,11 +4314,11 @@ describe("the owner's taps", () => {
         [summary.owed.total, issued.totals?.owed, issued.totals?.total],
         [inr(12_000_000), inr(12_000_000), inr(16_000_000)],
       );
-      // The whole list agrees too: a draft is billed, and not owed yet.
+      // The whole list agrees too: a draft is neither billed nor owed yet.
       const every = yield* open({ list: "invoices" });
       assert.deepStrictEqual(
         [every.totals?.owed, every.totals?.total],
-        [inr(12_000_000), inr(18_000_000)],
+        [inr(12_000_000), inr(16_000_000)],
       );
       const overdue = yield* open({ list: "invoices", states: ["waiting"], late: true });
       assert.deepStrictEqual(
@@ -5523,6 +5524,9 @@ describe("the company profile", () => {
   it.effect("asks only the owners of an older company without a country, once", () =>
     runCountryCards(({ orgId, rhea, meera, cards, tick, sql, waiting }) =>
       Effect.gen(function* () {
+        const usdCountries = Object.keys(COUNTRY_CURRENCIES).filter(
+          (code) => COUNTRY_CURRENCIES[code] === "USD",
+        );
         const writer = { _tag: "person" as const, personId: rhea.personId };
         yield* sql`DELETE FROM kin_company_profile WHERE org_id = ${orgId}`;
         yield* tick;
@@ -5571,6 +5575,7 @@ describe("the company profile", () => {
             company: "Ambermill",
             round: 1,
             question: "Which country is Ambermill in? It sets tax words and date formats.",
+            fits: usdCountries,
           });
         }
         assert.deepStrictEqual(
@@ -5606,6 +5611,7 @@ describe("the company profile", () => {
             company: "Ambermill",
             round: 1,
             question: "Which country is Ambermill in? It sets tax words and date formats.",
+            fits: usdCountries,
             answered: { _tag: "chose", by: "Meera", country: "US" },
           });
         }
@@ -5625,6 +5631,42 @@ describe("the company profile", () => {
     ),
   );
 
+  it.effect("a card put off with Not now says so once Settings sets the country", () =>
+    runCountryCards(({ orgId, rhea, meera, cards, tick }) =>
+      Effect.gen(function* () {
+        const saved = yield* setProfile(
+          orgId,
+          rhea,
+          { homeCurrency: "CAD", gstin: "27AAPFT1234C1Z2" },
+          undefined,
+        );
+        yield* tick;
+        const first = yield* cards;
+        // A tax number says its country, whatever the currency.
+        for (const card of first) assert.deepStrictEqual(JSON.parse(card.state).fits, ["IN"]);
+        yield* answerCountryCard([rhea], {
+          orgId,
+          widgetId: first.find((card) => card.who === rhea.personId)!.widgetId,
+          answer: { _tag: "not_now" },
+        });
+        const closedAt = (yield* cards).map((card) => card.closedAt);
+        yield* OwnerMoney.setCompanyProfile([meera], { orgId, rev: saved.rev, country: "CA" });
+        yield* TestClock.adjust(60_000);
+        yield* tick;
+        const after = yield* cards;
+        assert.lengthOf(after, 2);
+        for (const card of after)
+          assert.deepInclude(JSON.parse(card.state), { answered: { _tag: "set", country: "CA" } });
+        assert.deepStrictEqual(
+          after.map((card) => card.closedAt),
+          closedAt,
+        );
+        yield* tick;
+        assert.deepStrictEqual(yield* cards, after);
+      }),
+    ),
+  );
+
   it.effect("asks again after thirty days, then stops after a second Not now", () =>
     runCountryCards(({ orgId, rhea, meera, cards, tick, sql }) =>
       Effect.gen(function* () {
@@ -5638,6 +5680,7 @@ describe("the company profile", () => {
         yield* tick;
         const first = yield* cards;
         assert.lengthOf(first, 2);
+        for (const card of first) assert.deepStrictEqual(JSON.parse(card.state).fits, ["CA"]);
         assert.deepStrictEqual(yield* state, [
           { ask: JSON.stringify({ round: 1, nextAt: null }), rev: saved.rev },
         ]);
@@ -6627,6 +6670,32 @@ describe("money answers", () => {
             ["USD", about],
           ],
         );
+        // Spend only in another currency still gets its line, as a goal's does.
+        yield* records.create(orgId, system, {
+          list: "expenses",
+          title: "Invented team dinner",
+          owner,
+          state: "done",
+          category: "meals",
+          amount: { minor: 100_00, currency: "EUR" },
+          dateAt: on("2026-11-06"),
+          originKey: "dinner",
+        });
+        yield* OwnerMoneyAnswers.setBudget(people, {
+          orgId,
+          category: "meals",
+          project: null,
+          currency: "INR",
+          limitMinor: 5_000_00,
+          clientRequestId: "meals-inr",
+        });
+        const meals = (yield* budgetsView(orgId, now, undefined, false, read)).budgets.find(
+          (one) => one.category === "meals",
+        );
+        assert.deepStrictEqual(meals?.about, {
+          total: { minor: 11_000, currency: "USD" },
+          rateDays: ["2026-11-10", "2026-11-12"],
+        });
       }).pipe(Effect.provide(layer)),
   );
 
