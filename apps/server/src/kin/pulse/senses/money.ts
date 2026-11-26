@@ -113,7 +113,7 @@ export const billDueConsequence = (
   days: number,
   late: boolean,
 ) =>
-  `${amount} to ${vendor}, ${late ? `was due ${day}, ${daysText(days)} ago` : days === 0 ? "due today" : `due ${day}, in ${daysText(days)}`}. Only the owner or a co-owner marks it paid, on its page in Money.`;
+  `${amount} to ${vendor}, ${late ? `was due ${day}, ${daysText(days)} ago` : days === 0 ? "due today" : `due ${day}, in ${daysText(days)}`}. It is marked paid by an owner-level tap on its page in Money.`;
 
 export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: SenseContext) {
   const sql = yield* SqlClient.SqlClient;

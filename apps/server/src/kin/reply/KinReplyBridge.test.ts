@@ -675,6 +675,8 @@ it.effect.each<{
   readonly posted?: string;
   /** A question card the turn raises for the owner before its reply. */
   readonly asks?: string;
+  /** A card an earlier turn raised for the owner, still open. */
+  readonly askedBefore?: string;
   readonly failed?: true;
   /** The evening summary's own day; the test clock's, in the company's UTC, is 1970-01-01. */
   readonly day?: string;
@@ -712,6 +714,13 @@ it.effect.each<{
     scheduleId: "checkin-morning",
     written: [],
     stored: [ReplyBridge.QUIET_PAGE],
+  },
+  {
+    name: "a quiet morning while an earlier card still waits",
+    scheduleId: "checkin-morning",
+    askedBefore: "Which country is the company in?",
+    written: [],
+    stored: ["## Needs you\n\nNothing new this morning; 1 card from before still waits on you."],
   },
   {
     name: "a page posted with a tool, then a different reply",
@@ -895,6 +904,22 @@ it.effect.each<{
       const first = yield* post;
       // A retry of it, word for word, is the same message, under the heading it was given.
       assert.strictEqual((yield* post).messageId, first.messageId);
+    }
+    if (row.askedBefore !== undefined) {
+      const earlier = yield* chats.ask(
+        Option.getOrThrow(yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId })),
+        {
+          chatId,
+          clientMessageId: "earlier-card",
+          question: row.askedBefore,
+          options: [
+            { label: "India", kind: "yes" },
+            { label: "Somewhere else", kind: "no" },
+          ],
+        },
+      );
+      yield* sql`UPDATE kin_messages SET created_at = '1969-12-31T00:00:00.000Z'
+        WHERE message_id = (SELECT message_id FROM kin_widgets WHERE widget_id = ${earlier.widgetId})`;
     }
     if (row.asks !== undefined)
       yield* chats.ask(
