@@ -3,23 +3,25 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 
 export const MEMORY_WRITE_FAILURE_WORDS = {
-  checkout: "Kin could not open the saved copy of memory. Ask whoever looks after Kin to check it.",
-  setup: "Kin could not save changes because memory is not set up for writing.",
-  purge: "Kin could not save changes while older information was being removed from memory.",
-  changed: "Kin could not save a memory update because memory changed while Kin was working.",
-  remote: "Kin could not send the memory changes to the online copy.",
-  review: "GitHub did not accept the memory changes.",
+  checkout:
+    "Kin couldn't open the copy of memory on this server. Ask whoever looks after Kin to check it.",
+  setup:
+    "Kin couldn't save memory changes because memory isn't set up to accept them here. Ask whoever looks after Kin to check it.",
+  purge: "Kin couldn't save memory changes while older information was being removed from memory.",
+  changed: "Kin couldn't save a memory update because memory changed while Kin was working on it.",
+  remote: "Kin couldn't send the memory changes to the online copy.",
+  review: "GitHub didn't accept Kin's memory changes.",
   "online-conflict":
-    "Kin could not combine the changes made on GitHub with the changes saved here.",
+    "Kin couldn't combine the memory changes made on GitHub with the ones saved here.",
   "review-needed":
-    "GitHub requires a review before accepting Kin's memory changes. Check the memory repository's review rules on GitHub. Kin tries again once the rules change or the server restarts.",
-  secret: "Kin stopped a memory update because it may contain a password or key.",
-  scanner: "Kin paused a memory update because the check for passwords and keys could not finish.",
-  note: "Kin could not save a memory update because a note could not be read.",
-  journal: "Kin could not save a journal entry because its date or time zone could not be read.",
-  storage: "Kin could not read or write the information needed for a memory update.",
-  refused:
-    "Kin could not save a memory update because the proposed changes did not meet the rules for memory.",
+    "GitHub requires a review before it accepts Kin's memory changes. Check the memory repository's review rules on GitHub; Kin tries again once the rules change or the server restarts.",
+  secret: "Kin didn't save a memory update because it may contain a password or key.",
+  scanner:
+    "Kin held a memory update back because the check for passwords and keys couldn't finish.",
+  note: "Kin couldn't save a memory update because a memory note couldn't be read.",
+  journal: "Kin couldn't save a journal entry because its date or time zone couldn't be read.",
+  storage: "Kin couldn't read or write what a memory update needed.",
+  refused: "Kin couldn't save a memory update because the changes didn't meet memory's rules.",
 } as const;
 
 export type MemoryWriteFailure = keyof typeof MEMORY_WRITE_FAILURE_WORDS;
@@ -80,13 +82,13 @@ export const savedMemoryWriteFailure = (failure: string): MemoryWriteFailure | u
 };
 
 export const MEMORY_WRITE_OPERATION_WORDS = {
-  "wake-up": "Kin could not finish saving memory from an agent's turn.",
-  "dream-cleanup": "Kin could not remove a temporary copy of the nightly memory update.",
-  "spent-notes": "Kin could not put away notes that are no longer current.",
-  "retired-sharing": "Kin could not finish updating who can read retired notes.",
-  "deleted-quotes": "Kin could not finish removing quotes from deleted messages.",
-  decision: "Kin could not save a decision in memory.",
-  "online-copy": "The latest memory changes are saved on this server. The online copy is behind.",
+  "wake-up": "Kin couldn't finish saving to memory what an agent's turn left.",
+  "dream-cleanup": "Kin couldn't remove a temporary copy left by the nightly memory update.",
+  "spent-notes": "Kin couldn't put away memory notes that are no longer current.",
+  "retired-sharing": "Kin couldn't finish changing who can read retired memory notes.",
+  "deleted-quotes": "Kin couldn't finish removing quotes of deleted messages from memory.",
+  decision: "Kin couldn't save a decision to memory.",
+  "online-copy": "Memory is saved on this server, but the online copy is behind.",
 } as const;
 
 export type MemoryWriteOperation = keyof typeof MEMORY_WRITE_OPERATION_WORDS;

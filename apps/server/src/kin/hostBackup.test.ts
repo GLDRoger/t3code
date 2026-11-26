@@ -363,7 +363,7 @@ it.effect("a memory write the writer refuses every night tells the owner once pe
       rows.map(({ resolvedAt }) => resolvedAt === null),
       [false, false, true],
     );
-    assert.include(rows[0]?.body, "saved copy");
+    assert.include(rows[0]?.body, "copy of memory on this server");
     assert.include(rows[1]?.body, "check for passwords and keys");
     for (const { body } of rows) {
       assert.notInclude(body, "fixture private");
