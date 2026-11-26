@@ -1,5 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import * as Context from "effect/Context";
+import * as Predicate from "effect/Predicate";
 import { Tool, Toolkit } from "effect/ai";
 
 import { advertisedJsonSchema } from "../../mcp/advertisedJsonSchema.ts";
@@ -76,6 +77,23 @@ it("each Kin tool's description and input schema weigh what the budget pins", ()
     contextBudget.kinLeadToolBytes,
     "Set agentContextBudget.json to the measured values. Before you cut text to fit, run the evals that cover it (evals/README.md).",
   );
+});
+
+it("advertises only the chart core, including the core of each series", () => {
+  const schema = advertisedJsonSchema(KinLeadToolkit.tools.kin_chart, { kin: true });
+  assert.sameMembers(Object.keys(schema.properties ?? {}), [
+    "chart",
+    "title",
+    "labels",
+    "labelType",
+    "series",
+    "unit",
+    "caption",
+  ]);
+  const series = schema.properties?.series;
+  assert.isTrue(Predicate.isObject(series) && Predicate.isObject(series.items));
+  if (Predicate.isObject(series) && Predicate.isObject(series.items))
+    assert.deepStrictEqual(Object.keys(series.items.properties ?? {}), ["name", "values"]);
 });
 
 it("adds five everyday tools to Claude's owner core without moving the Codex partition", () => {

@@ -2,10 +2,14 @@ import * as Context from "effect/Context";
 import * as Predicate from "effect/Predicate";
 import { Tool } from "effect/ai";
 
-export const AdvertisedCore = Context.Service<{
+interface Core {
   readonly path: ReadonlyArray<string>;
   readonly keys: ReadonlyArray<string>;
-}>("t3/mcp/AdvertisedCore");
+}
+
+export const AdvertisedCore = Context.Service<Core & { readonly nested?: ReadonlyArray<Core> }>(
+  "t3/mcp/AdvertisedCore",
+);
 
 type Json = unknown;
 type JsonObject = { [key: string]: Json };
@@ -127,19 +131,19 @@ const compact = (schema: Json, optional: boolean, kin: boolean): Json => {
 export const advertisedJsonSchema = (tool: Tool.Any, options?: { readonly kin?: boolean }) => {
   const schema = compact(Tool.getJsonSchema(tool), false, options?.kin === true);
   const core = Context.getOrUndefined(tool.annotations, AdvertisedCore);
-  if (core !== undefined) {
-    const target = core.path.reduce<Json>(
+  for (const { path, keys } of core === undefined ? [] : [core, ...(core.nested ?? [])]) {
+    const target = path.reduce<Json>(
       (node, key) => (Predicate.isObject(node) ? node[key] : undefined),
       schema,
     );
     if (!Predicate.isObject(target) || !Predicate.isObject(target.properties))
       throw new Error(`No object at the advertised core of ${tool.name}.`);
-    const keys = new Set(core.keys);
+    const advertised = new Set(keys);
     target.properties = Object.fromEntries(
-      Object.entries(target.properties).filter(([key]) => keys.has(key)),
+      Object.entries(target.properties).filter(([key]) => advertised.has(key)),
     );
     if (Array.isArray(target.required)) {
-      const required = target.required.filter((key) => keys.has(key));
+      const required = target.required.filter((key) => advertised.has(key));
       if (required.length > 0) target.required = required;
       else delete target.required;
     }
