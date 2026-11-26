@@ -554,6 +554,93 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect.each([
+  { action: "person re-gives", marked: true },
+  { action: "person adds an agent", marked: true },
+  { action: "agent re-gives in a clean turn", marked: true },
+  { action: "owner keeps a legacy suggestion", marked: true },
+  { action: "person re-gives a clean task", marked: false },
+  { action: "agent keeps a legacy suggestion", marked: false },
+] as const)("task wake provenance when $action", ({ action, marked }) =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* turn();
+    const sql = yield* SqlClient.SqlClient;
+    const records = yield* KinRecords.KinRecords;
+    const byAgent = { actor: toLead, via: "lead", wakeupId: "wake", askedBy: ownerId } as const;
+    const making = marked ? { ...byAgent, wakeupId: "reading-wake" } : byAgent;
+    if (marked)
+      yield* markOutside({ orgId, wakeupId: "reading-wake" }, "conn-1", [
+        {
+          k: "mail",
+          id: "conn-1",
+          account: "Invented mail",
+          from: "Meera",
+          subject: "Tidewater Freight",
+        },
+      ]);
+    const keeping = action.endsWith("legacy suggestion");
+    const target = action === "agent keeps a legacy suggestion" ? other : lead;
+    const input = {
+      originKey: "invented-tidewater",
+      title: "Invented: review the Tidewater Freight notes",
+      owner:
+        action === "agent re-gives in a clean turn" || keeping
+          ? { _tag: "agent" as const, agentId: target }
+          : ownerWrites.actor,
+    };
+    const row = keeping
+      ? yield* legacyWorkSuggestion(input, { ...making, actor: { _tag: "agent", agentId: target } })
+      : (yield* records.create(orgId, making, input)).row;
+    assert.deepStrictEqual(yield* wakes, []);
+
+    const to = {
+      _tag: "agent" as const,
+      agentId: action === "agent re-gives in a clean turn" ? other : target,
+    };
+    const request = { orgId, key: row.key, rev: row.rev };
+    switch (action) {
+      case "person re-gives":
+      case "person re-gives a clean task":
+        yield* OwnerWork.assign([owner], { ...request, to });
+        break;
+      case "person adds an agent":
+        yield* OwnerWork.update([owner], { ...request, alsoOn: [to] });
+        break;
+      case "agent re-gives in a clean turn":
+        yield* records.update(orgId, byAgent, row.key, { owner: to });
+        break;
+      case "owner keeps a legacy suggestion":
+        yield* OwnerWork.confirm([owner], request);
+        break;
+      case "agent keeps a legacy suggestion":
+        yield* records.update(orgId, byAgent, row.key, { confirmed: true });
+        assert.include((yield* records.get(orgId, row.key))!, { confirmed: 1 });
+        break;
+    }
+
+    assert.deepStrictEqual(yield* wakes, [
+      [to.agentId, action === "person adds an agent" ? "joined" : "assigned", row.key, ownerId],
+    ]);
+    const wakeupId =
+      action === "agent keeps a legacy suggestion" ? "kept-by-agent-wake" : "receiver";
+    yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
+        status, event_ids, audience)
+      VALUES (${wakeupId}, ${orgId}, ${to.agentId}, ${`${to.agentId}-thread`}, 'test', 0,
+        'completed', '[]', 'owner_only')`;
+    const events = yield* sql<{ eventId: string }>`UPDATE kin_events SET wakeup_id = ${wakeupId},
+        state = 'claimed' WHERE org_id = ${orgId} AND tag = 'record.changed'
+        AND json_extract(json, '$.recordId') = ${row.recordId} RETURNING event_id AS "eventId"`;
+    yield* inheritOutside({ orgId, wakeupId, eventIds: events.map((event) => event.eventId) });
+    assert.strictEqual(yield* followsOutsideRead(orgId, wakeupId), marked);
+    if (keeping)
+      assert.strictEqual(
+        yield* ownerLevelAsked(orgId, to.agentId, wakeupId),
+        action === "owner keeps a legacy suggestion",
+      );
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "a task put on the owner in someone else's chat is the asker's unless a reason says it is his",
   () =>
@@ -2778,10 +2865,11 @@ it.effect("assigning refuses closed entries and records the session's owner as t
 
 const legacyWorkSuggestion = Effect.fn("KinRecordsTest.legacyWorkSuggestion")(function* (
   input: KinRecords.CreateInput,
+  writer: KinRecords.Writer = { actor: toLead, via: "lead" },
 ) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords.KinRecords;
-  const { row } = yield* records.create(orgId, { actor: toLead, via: "lead" }, input);
+  const { row } = yield* records.create(orgId, writer, input);
   yield* sql`UPDATE kin_records SET confirmed = 0
     WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
   return (yield* records.get(orgId, row.key))!;
@@ -2857,6 +2945,27 @@ it.effect(
       );
       yield* OwnerWork.confirm([owner], { orgId, key: started.key, rev: moved.rev });
       assert.deepStrictEqual(yield* wakes, [keptWake, buildWake]);
+
+      yield* mateMayMessage;
+      const toKeep = yield* legacyWorkSuggestion({
+        originKey: "legacy-person",
+        title: "Invented: prepare the Tidewater Freight checklist",
+        owner: { _tag: "person", personId: mateId },
+      });
+      const chatNotices = sql`SELECT message_id FROM kin_messages
+        WHERE org_id = ${orgId} AND chat_id = 'mate-chat'`;
+      const news = sql`SELECT json_extract(body, '$.key') AS key,
+          json_extract(body, '$.kind') AS kind, json_extract(body, '$.by') AS by
+        FROM kin_held_posts WHERE org_id = ${orgId} AND person_id = ${mateId}`;
+      assert.deepStrictEqual(yield* chatNotices, []);
+      assert.deepStrictEqual(yield* news, []);
+      const keep = { orgId, key: toKeep.key, rev: toKeep.rev };
+      const expectedNotice = [{ key: toKeep.key, kind: "given", by: ownerId }];
+      yield* OwnerWork.confirm([owner], keep);
+      assert.deepStrictEqual(yield* news, expectedNotice);
+      yield* OwnerWork.confirm([owner], keep);
+      assert.deepStrictEqual(yield* news, expectedNotice);
+      assert.deepStrictEqual(yield* chatNotices, []);
 
       const moving = yield* suggest("moving");
       const reassigned = yield* OwnerWork.assign([owner], {

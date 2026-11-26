@@ -1611,7 +1611,18 @@ describe("KinPulse", () => {
           WHERE record_id = 'r-W-60'`;
         assert.deepStrictEqual(yield* drafted(dropped + MINUTE), []);
         assert.deepStrictEqual(yield* drafted(dropped + 13 * DAY), []);
-        assert.deepStrictEqual(yield* drafted(dropped + 14 * DAY + HOUR), [
+        // The agent task's rest expires first; only the legacy decline can extend it.
+        const declined = dropped + DAY;
+        yield* insert({
+          id: "W-61",
+          projectId: "P-2",
+          state: "dropped",
+          confirmed: 0,
+          createdAt: at,
+          closedAt: declined,
+        });
+        assert.deepStrictEqual(yield* drafted(dropped + 14 * DAY + HOUR), []);
+        assert.deepStrictEqual(yield* drafted(declined + 14 * DAY + HOUR), [
           { personId: owner, key },
         ]);
       }).pipe(Effect.provide(chatLayer)),

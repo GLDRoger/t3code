@@ -59,6 +59,7 @@ import { approvedClient, approvedFor, DRAFT_LIST, recordMade } from "../question
 import {
   changeStampKey,
   codingAgentSource,
+  firstOutsideChange,
   followsOutsideRead,
   outsideRead,
   outsideStamp,
@@ -1260,6 +1261,24 @@ const make = Effect.gen(function* () {
     return { chatId: KinChatId.make(chat.chatId), memberId: chat.memberId };
   });
 
+  const wakeOutsideStamp = Effect.fn("KinRecords.wakeOutsideStamp")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    recordId: string,
+    codingAgentKey: string | undefined,
+  ) {
+    if (codingAgentKey !== undefined) {
+      const [key] = yield* sql<{ label: string }>`SELECT label FROM kin_tasks_keys
+        WHERE org_id = ${orgId} AND session_id = ${codingAgentKey}`;
+      return codingAgentSource(key?.label ?? "Coding agent");
+    }
+    const turnStamp =
+      writer.wakeupId === undefined
+        ? undefined
+        : yield* outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(provideSql);
+    return turnStamp ?? (yield* firstOutsideChange(orgId, recordId).pipe(provideSql))?.source;
+  });
+
   /**
    * Wakes a lead about an entry someone else changed, with that human as the turn's provenance:
    * given to it (`assigned`), closed or taken back while it held it or was on it (`withdrawn`; only
@@ -1331,22 +1350,11 @@ const make = Effect.gen(function* () {
             }),
       })
       .pipe(
-        // Given out after an outside read, or by a coding agent: the receiving turn starts marked.
         Effect.tap(({ event }) =>
-          codingAgentKey !== undefined
-            ? sql<{ label: string }>`SELECT label FROM kin_tasks_keys
-                WHERE org_id = ${orgId} AND session_id = ${codingAgentKey}`.pipe(
-                Effect.flatMap(([key]) =>
-                  stampEvent(orgId, event.eventId, codingAgentSource(key?.label ?? "Coding agent")),
-                ),
-                Effect.provideService(SqlClient.SqlClient, sql),
-              )
-            : writer.wakeupId === undefined
-              ? Effect.void
-              : outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(
-                  Effect.flatMap((source) => stampEvent(orgId, event.eventId, source)),
-                  Effect.provideService(SqlClient.SqlClient, sql),
-                ),
+          wakeOutsideStamp(orgId, writer, row.recordId, codingAgentKey).pipe(
+            Effect.flatMap((source) => stampEvent(orgId, event.eventId, source)),
+            provideSql,
+          ),
         ),
         Effect.as(true),
         Effect.catchTags({
