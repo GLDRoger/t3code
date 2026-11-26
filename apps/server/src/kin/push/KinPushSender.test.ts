@@ -2065,7 +2065,10 @@ describe("KinPushSender", () => {
         });
       const deliver = deliverHeld(
         orgId,
-        { notice: () => Effect.die("a task move is no chat line") },
+        {
+          notice: () => Effect.die("a task move is no chat line"),
+          dismissArrival: () => Effect.die("No arrival note"),
+        },
         { notify: (notification) => sender.notify(notification).pipe(Effect.tap(Fiber.join)) },
       );
       const banners = () =>
@@ -2402,7 +2405,10 @@ describe("KinPushSender", () => {
         });
       const deliver = deliverHeld(
         orgId,
-        { notice: () => Effect.die("a held ring is no chat line") },
+        {
+          notice: () => Effect.die("a held ring is no chat line"),
+          dismissArrival: () => Effect.die("No arrival note"),
+        },
         { notify: (notification) => sender.notify(notification).pipe(Effect.tap(Fiber.join)) },
       );
       const rung = () =>

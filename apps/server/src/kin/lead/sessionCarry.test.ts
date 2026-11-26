@@ -1,3 +1,5 @@
+import * as Effect from "effect/Effect";
+import { it as effectIt } from "@effect/vitest";
 import { describe, expect, it } from "vite-plus/test";
 
 import { type CarryFacts, decideCarry } from "./sessionCarry.ts";
@@ -18,6 +20,9 @@ const clean: CarryFacts = {
   sameLead: true,
   sameMembers: true,
   sameLists: true,
+  sameBudgets: true,
+  sameRecipes: true,
+  sameZone: true,
   paused: false,
   sameStanding: true,
   indexLinesChanged: 40,
@@ -56,3 +61,16 @@ describe("decides carry only when every condition holds", () => {
     expect(decideCarry(clean)).toEqual({ carry: true });
   });
 });
+
+effectIt.effect("starts fresh when budgets, recipes or the owner time zone changes", () =>
+  Effect.sync(() => {
+    const unchanged = { ...clean, sameBudgets: true, sameRecipes: true, sameZone: true };
+    for (const [key, reason] of [
+      ["sameBudgets", "budgets"],
+      ["sameRecipes", "recipes"],
+      ["sameZone", "zone"],
+    ] as const) {
+      expect(decideCarry({ ...unchanged, [key]: false })).toEqual({ carry: false, reason });
+    }
+  }),
+);

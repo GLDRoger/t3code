@@ -28,15 +28,17 @@ VARIABLES
   asked,     \* the turn's end asked the lead once for the words it owed (rescue or caption)
   twice,     \* the person read the same answer twice in one reply
   diagnostic, \* a terminal provider diagnostic reached the posted reply
-  joined,    \* someone joined the chat after this wake-up's private prompt was built
+  joined,    \* someone joined the chat, or the asker lost co-owner access, after this wake-up's
+             \* private prompt was built: it may post nowhere it was built for
   joins,
   noticed,   \* the bridge's movedNoticed: this wake-up handled a reply held back for the join
   aborted,   \* kin_wakeups.aborted_at, set by requeueForAudience
   moves,     \* times a message's events were moved to a fresh wake-up (the `_audienceMoved` flag)
   heldBack,  \* the chat was told the message's reply was held back for the join
-  toOld      \* a reply posted to the audience the turn's prompt was built for, after the join
+  toOld,     \* a reply posted to the audience the turn's prompt was built for, after the join
+  demoted    \* the asker was made a member (one access change in the bound)
 
-audience == <<joined, joins, noticed, aborted, moves, heldBack, toOld>>
+audience == <<joined, joins, noticed, aborted, moves, heldBack, toOld, demoted>>
 vars == <<ev, tries, wake, covered, replies, answered, promise, notes, fails, thought, nudged, lost,
           worked, floor, presence, restarts, shown, asked, twice, diagnostic, audience>>
 
@@ -55,6 +57,7 @@ Init ==
   /\ diagnostic = FALSE
   /\ joined = FALSE /\ joins = 0 /\ noticed = FALSE /\ aborted = FALSE
   /\ moves = [m \in Msgs |-> 0] /\ heldBack = [m \in Msgs |-> FALSE] /\ toOld = FALSE
+  /\ demoted = FALSE
 
 (* chat/KinChatService.ts sendClaimed → floor.open; lead/ChatWake.ts enqueues the wake event. *)
 PersonSends(m) ==
@@ -75,7 +78,7 @@ Claim ==
   /\ asked' = [m \in Msgs |-> IF ev[m] = "queued" THEN FALSE ELSE asked[m]]
   /\ joined' = FALSE /\ noticed' = FALSE /\ aborted' = FALSE
   /\ UNCHANGED <<tries, replies, answered, notes, fails, thought, lost, floor, restarts, twice, diagnostic,
-                 joins, moves, heldBack, toOld>>
+                 joins, moves, heldBack, toOld, demoted>>
 
 (* KinEventQueue.steer: a message sent mid-turn joins the running wake-up with its own slot,
    until the run ends: the lead's reply ending its turn no longer closes it. *)
@@ -105,7 +108,8 @@ LeadReplies ==
   /\ worked' = TRUE
   /\ promise' \in IF promise = "none" THEN {"none", "open"} ELSE {promise}
   /\ UNCHANGED <<ev, tries, wake, notes, fails, thought, nudged, lost, floor, presence, restarts,
-                 shown, asked, twice, diagnostic, joined, joins, noticed, aborted, moves, heldBack>>
+                 shown, asked, twice, diagnostic, joined, joins, noticed, aborted, moves, heldBack,
+                 demoted>>
 
 (* After a tool call, the lead writes its answer again, word for word. KinReplyBridge.post drops
    a segment that `repeats` the reply so far (reply/classify.ts); the variant extends with it. *)
@@ -194,7 +198,7 @@ SomeoneJoins ==
   /\ Expire({m \in Msgs : ev[m] = "queued"})
   /\ UNCHANGED <<tries, wake, covered, replies, answered, promise, notes, thought, nudged,
                  lost, worked, floor, presence, restarts, shown, asked, twice, diagnostic,
-                 noticed, aborted, moves, heldBack, toOld>>
+                 noticed, aborted, moves, heldBack, toOld, demoted>>
 
 (* Someone joins who is not the lead's owner: abortChatTurns marks the running turn aborted
    (kin_wakeups.aborted_at), so LevelGate's destination is "aborted" for its every post and
@@ -212,6 +216,18 @@ JoinStops ==
   /\ IF wake = "running" THEN joined' = TRUE /\ aborted' = TRUE ELSE UNCHANGED <<joined, aborted>>
   /\ UNCHANGED <<tries, wake, covered, replies, answered, promise, notes, thought, nudged,
                  lost, worked, floor, presence, restarts, shown, asked, twice, diagnostic,
+                 noticed, moves, heldBack, toOld, demoted>>
+
+(* people/KinPeople.ts setAccess: the asker, a co-owner, is made a member while the turn works.
+   For each chat they are in, abortChatTurns marks the running, unsettled turn aborted (it was
+   built at the owner's level), so LevelGate's destination is "aborted" for its every post and
+   WakeupRunner stops it after commit. Unlike a join, this step ends no ask itself: what the turn
+   claimed, replied or not, stays claimed for `finish`, and what waits stays queued. *)
+MadeMember ==
+  /\ wake = "running" /\ ~aborted /\ ~demoted
+  /\ joined' = TRUE /\ aborted' = TRUE /\ demoted' = TRUE
+  /\ UNCHANGED <<ev, tries, wake, covered, replies, answered, promise, notes, fails, thought, nudged,
+                 lost, worked, floor, presence, restarts, shown, asked, twice, diagnostic, joins,
                  noticed, moves, heldBack, toOld>>
 
 (* reply/KinReplyBridge.ts post: the lead's reply is withheld for the join (`moved`), first time
@@ -221,9 +237,9 @@ JoinStops ==
    wake-up. Otherwise the chat hears one line ("didn't reply" / "didn't finish its reply"), and in
    the same transaction KinEventQueue.endLostToJoin marks done the turn's claimed asks in the chat
    with no replied_at, so no failed run, retry or restart answers or tells them again.
-   Either way `complete` says nothing more (movedNoticed). *)
+   Either way `complete` says nothing more (movedNoticed). An aborted turn says nothing here. *)
 ReplyHeldBack ==
-  /\ wake = "running" /\ joined /\ ~noticed /\ Owed # {}
+  /\ wake = "running" /\ joined /\ ~noticed /\ ~aborted /\ Owed # {}
   /\ noticed' = TRUE
   /\ IF (~worked \/ Broken = "requeue-after-work")
         /\ (\A m \in Claimed : moves[m] = 0 \/ Broken = "requeue-again")
@@ -237,12 +253,18 @@ ReplyHeldBack ==
             /\ UNCHANGED <<aborted, moves>>
   /\ UNCHANGED <<tries, wake, covered, replies, answered, promise, notes, thought, nudged, lost,
                  worked, floor, presence, restarts, shown, asked, twice, diagnostic, joined, joins,
-                 toOld>>
+                 toOld, demoted>>
 
-(* KinEventQueue.finish, first branch: an aborted wake-up is released and its claimed events go
-   back to the queue, no attempt spent and nothing posted (WakeupRunner.finishWakeup gets no
-   outcome). The flag stays in each event's stored data. *)
-Requeued == [m \in Msgs |-> IF m \in Claimed THEN "queued" ELSE ev[m]]
+(* KinEventQueue.finish, first branch: an aborted wake-up is released, its claimed events with
+   replied_at are done and the rest go back to the queue, no attempt spent and nothing posted
+   (WakeupRunner.finishWakeup gets no outcome). The flag stays in each event's stored data.
+   `aborted-requeues-replied` requeues a replied one too (the code before `cb67994eb4`); so does
+   `requeue-after-work`, whose early requeue after a posted reply this step now also undoes. *)
+Requeued == [m \in Msgs |-> IF m \in Claimed
+                            THEN IF answered[m]
+                                    /\ Broken \notin {"aborted-requeues-replied", "requeue-after-work"}
+                                 THEN "done" ELSE "queued"
+                            ELSE ev[m]]
 
 Ended == [m \in Msgs |-> IF m \in Claimed THEN "done" ELSE ev[m]]
 
@@ -252,8 +274,9 @@ Ended == [m \in Msgs |-> IF m \in Claimed THEN "done" ELSE ev[m]]
    (KinEventQueue.finish). settleLine clears the line. The variant ends without asking. *)
 RunCompletes ==
   /\ wake = "running"
-  /\ IF noticed
-       \* A held-back reply: no rescue (the refusal would refuse its text too), no other line.
+  /\ IF noticed \/ aborted
+       \* A held-back reply, or a turn aborted for its audience (WakeupRunner skips `complete`
+       \* for it, and its every post goes nowhere): no rescue, no other line.
        THEN /\ ev' = IF aborted THEN Requeued ELSE Ended
             /\ UNCHANGED <<asked, replies, answered, fails>>
        ELSE /\ asked' = [m \in Msgs |-> asked[m] \/ (m \in Owed /\ Broken # "no-rescue")]
@@ -317,7 +340,7 @@ Next ==
   \/ \E m \in Msgs : PersonSends(m) \/ Steer(m)
   \/ Claim \/ LeadReplies \/ LeadRepeats \/ LeadShows \/ LeadKeepsPromise \/ LeadThinks
   \/ LeadNudgesAsker \/ LeadWorks \/ TerminalDiagnostic
-  \/ FloorCloses \/ SomeoneJoins \/ JoinStops \/ ReplyHeldBack
+  \/ FloorCloses \/ SomeoneJoins \/ JoinStops \/ MadeMember \/ ReplyHeldBack
   \/ RunCompletes \/ RunFails \/ Restart
 
 Fair == WF_vars(Claim) /\ WF_vars(RunCompletes \/ RunFails)

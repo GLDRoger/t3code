@@ -71,7 +71,14 @@ const ownWaiting = <A extends { readonly inbox: KinInboxState }>(cached: A): A =
         },
       }
     : cached;
-const chatCache = persistQuery(Schema.Struct({ chat: KinChatState, savedAt: Schema.String }));
+const chatCache = persistQuery(
+  Schema.Struct({
+    chat: KinChatState,
+    savedAt: Schema.String,
+    /** The host's `accessStamp` the cached links were drawn under; absent from older builds. */
+    accessStamp: Schema.optional(Schema.String),
+  }),
+);
 
 const isKinChatError = Schema.is(KinChatError);
 
@@ -360,9 +367,28 @@ export function makeKinChatStream<E, R>(
         let live = false;
         let shownAt = Option.match(cached, { onNone: () => null, onSome: (c) => c.savedAt });
         let savedMessages = Option.exists(cached, (c) => c.chat.messages.length > 0);
-        const saver = yield* throttledSave((value: { chat: KinChatState; savedAt: string }) =>
-          chatCache.save(environmentId, key, value),
+        let accessStamp = Option.getOrUndefined(cached)?.accessStamp;
+        const saver = yield* throttledSave(
+          (value: { chat: KinChatState; savedAt: string; accessStamp?: string }) =>
+            chatCache.save(environmentId, key, value),
         );
+        const save = (chat: KinChatState, savedAt: string) => {
+          const trimmed = trimKinChatForCache(chat);
+          // A reset empties the feed until history refills it; keep the cached messages.
+          if (trimmed.messages.length > 0 || !savedMessages) {
+            saver.offer({
+              chat: trimmed,
+              savedAt,
+              ...(accessStamp === undefined ? {} : { accessStamp }),
+            });
+            savedMessages = trimmed.messages.length > 0;
+          }
+        };
+        const restamp = (stamp: string) =>
+          Effect.sync(() => {
+            accessStamp = stamp;
+            save(state, shownAt ?? nowIso());
+          });
         const forget = Effect.suspend(() => {
           saver.discard();
           return KinCacheEviction.use((evict) => evict(environmentId, key));
@@ -376,33 +402,28 @@ export function makeKinChatStream<E, R>(
           const savedAt = nowIso();
           shownAt = savedAt;
           // Drafts and presence are never cached, so their frames don't schedule a save.
-          if (next !== state && kinCachedPartChanged(state, next)) {
-            const trimmed = trimKinChatForCache(next);
-            // A reset empties the feed until history refills it; keep the cached messages.
-            if (trimmed.messages.length > 0 || !savedMessages) {
-              saver.offer({ chat: trimmed, savedAt });
-              savedMessages = trimmed.messages.length > 0;
-            }
-          }
+          if (next !== state && kinCachedPartChanged(state, next)) save(next, savedAt);
           state = next;
           live = true;
           return [{ value: next, live: true, savedAt }];
         };
 
-        const rereadLatest = Effect.suspend(() =>
-          readHistory({
-            chatId: input.chatId,
-            beforeSeq: state.contiguousSeq + 1,
-            limit: KIN_CACHED_MESSAGE_LIMIT,
-          }),
-        ).pipe(
-          Effect.map((page) => step(applyKinChatHistory(state, page))),
-          Effect.catchCause((cause) =>
-            Effect.logWarning("Kin latest page reload failed", cause).pipe(
-              Effect.as<ReadonlyArray<KinSynced<KinChatState>>>([]),
+        const rereadLatest = (applied: Effect.Effect<void> = Effect.void) =>
+          Effect.suspend(() =>
+            readHistory({
+              chatId: input.chatId,
+              beforeSeq: state.contiguousSeq + 1,
+              limit: KIN_CACHED_MESSAGE_LIMIT,
+            }),
+          ).pipe(
+            Effect.map((page) => step(applyKinChatHistory(state, page))),
+            Effect.tap(() => applied),
+            Effect.catchCause((cause) =>
+              Effect.logWarning("Kin latest page reload failed", cause).pipe(
+                Effect.as<ReadonlyArray<KinSynced<KinChatState>>>([]),
+              ),
             ),
-          ),
-        );
+          );
 
         const onEvent = Effect.fnUntraced(function* (event: KinChatStreamEvent) {
           // A cleared chat's cached messages go too, even though the feed is empty for now.
@@ -413,7 +434,17 @@ export function makeKinChatStream<E, R>(
             yield* PubSub.publish(leftChats(environmentId), input.chatId);
             return views;
           }
-          if (event._tag === "reset") views.push(...(yield* rereadLatest));
+          if (event._tag === "reset") views.push(...(yield* rereadLatest()));
+          else if (
+            event._tag === "backlog" &&
+            event.accessStamp !== undefined &&
+            event.accessStamp !== accessStamp
+          ) {
+            // Links are drawn per reader; a moved stamp means the cached ones may be stale. A
+            // first stamp says nothing about the cache, and a failed read keeps the old one.
+            if (accessStamp === undefined) yield* restamp(event.accessStamp);
+            else views.push(...(yield* rereadLatest(restamp(event.accessStamp))));
+          }
           return views;
         });
 
@@ -442,7 +473,7 @@ export function makeKinChatStream<E, R>(
                     Stream.changes,
                     Stream.drop(1),
                     Stream.filter(() => state.contiguousSeq > 0),
-                    Stream.mapEffect(() => rereadLatest),
+                    Stream.mapEffect(() => rereadLatest()),
                   ),
               // The chat's own subscription decides when this stream ends.
               { haltStrategy: "left" },
