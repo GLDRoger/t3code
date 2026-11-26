@@ -137,6 +137,7 @@ export const LANDED_REF = "refs/kin/landed";
 export const LANDED_SEARCH_DEPTH = 200;
 
 export interface MemoryQuery {
+  readonly text?: string;
   readonly kind?: MemoryItemKind;
   readonly status?: MemoryItemHead["status"];
   readonly dueBefore?: string;
@@ -147,6 +148,11 @@ export interface MemoryQuery {
   readonly excludeInvalid?: boolean;
   readonly limit?: number;
 }
+
+export const matchesMemoryText = ({ head, body }: MemoryCache.MemoryItem, needle: string) =>
+  head.title.toLowerCase().includes(needle) ||
+  (head.what?.toLowerCase().includes(needle) ?? false) ||
+  body.toLowerCase().includes(needle);
 
 export class MemoryRecoveryHooks extends Context.Service<
   MemoryRecoveryHooks,
@@ -1112,7 +1118,10 @@ const make = Effect.gen(function* () {
     const { items } = yield* load(orgId, false, view);
     const counts = new Map<string, number>();
     for (const { head } of items) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
-    return items
+    const needle = q.text?.toLowerCase();
+    const matched =
+      needle === undefined ? items : items.filter((item) => matchesMemoryText(item, needle));
+    return matched
       .map((item) => ({ ...item.head, duplicate: (counts.get(item.head.id) ?? 0) > 1 }))
       .filter(
         (item) =>
@@ -1137,15 +1146,25 @@ const make = Effect.gen(function* () {
     admit?: (item: MemoryCache.MemoryItem) => boolean,
   ) {
     const { items } = yield* load(orgId, false, view);
-    const matches = items.filter((item) => item.head.id === id && (admit?.(item) ?? true));
+    // Quiet lookups also serve mutations, which still take ids only.
+    const matches = items.filter(
+      (item) =>
+        (item.head.id === id || (recordRead && item.head.path === id)) && (admit?.(item) ?? true),
+    );
     const item = matches[0];
     if (!item) return yield* new MemoryNotFound({ orgId, id });
     if (matches.length > 1) return yield* new MemoryDuplicateId({ orgId, id });
+    const itemId = item.head.id;
+    if (
+      id !== itemId &&
+      items.some((other) => other !== item && other.head.id === itemId && (admit?.(other) ?? true))
+    )
+      return yield* new MemoryDuplicateId({ orgId, id: itemId });
     if (recordRead)
-      yield* cache.read(orgId, id).pipe(
+      yield* cache.read(orgId, itemId).pipe(
         Effect.catchTags({
           MemoryHistoryError: () =>
-            Effect.logWarning("Could not record memory read", { orgId, id }),
+            Effect.logWarning("Could not record memory read", { orgId, id: itemId }),
         }),
       );
     return item;
