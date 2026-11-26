@@ -89,7 +89,7 @@ const triageRows = Effect.fn("KinGitHubWatchStore.triageRows")(function* (orgId:
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ repo: string; outcome: "on" | "off"; at: number }>`
     SELECT repo, outcome, at FROM kin_github_handled
-    WHERE org_id = ${orgId} AND number = 0 AND trigger_key LIKE 'triage-from:%'
+    WHERE org_id = ${orgId} AND number = 0 AND trigger_key >= 'triage-from:' AND trigger_key < 'triage-from;'
     ORDER BY repo`;
   return new Map(rows.map(({ repo, outcome, at }) => [repo, { outcome, at }]));
 });
@@ -100,21 +100,21 @@ export const triageStates = Effect.fn("KinGitHubWatchStore.triageStates")(functi
   now: number,
 ) {
   const rows = yield* triageRows(orgId);
-  const missing = [...new Set(watched.map((repo) => repo.toLowerCase()))].filter(
+  const [first, ...rest] = [...new Set(watched.map((repo) => repo.toLowerCase()))].filter(
     (repo) => !rows.has(repo),
   );
-  if (missing.length === 0) return rows;
+  if (first === undefined) return rows;
   const sql = yield* SqlClient.SqlClient;
-  yield* sql`INSERT INTO kin_github_handled ${sql.insert(
-    missing.map((repo) => ({
-      org_id: orgId,
-      trigger_key: triageKey(repo),
-      repo,
-      number: 0,
-      outcome: "on",
-      at: now,
-    })),
-  )} ON CONFLICT (org_id, trigger_key) DO NOTHING`;
+  const row = (repo: string) => ({
+    org_id: orgId,
+    trigger_key: triageKey(repo),
+    repo,
+    number: 0,
+    outcome: "on",
+    at: now,
+  });
+  yield* sql`INSERT INTO kin_github_handled ${sql.insert([row(first), ...rest.map(row)])}
+    ON CONFLICT (org_id, trigger_key) DO NOTHING`;
   return yield* triageRows(orgId);
 });
 

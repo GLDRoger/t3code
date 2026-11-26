@@ -1755,6 +1755,104 @@ export const sendReview = Effect.fn("KinGitHubWatch.sendReview")(function* (
   });
 });
 
+const decodePostedComment = Schema.decodeUnknownOption(
+  Schema.Struct({
+    html_url: Schema.String,
+    created_at: Schema.String,
+  }),
+);
+
+// Words under eval: change them only with the triage cases.
+const COMMENT_SEND = {
+  notCompany: "That repo isn't the company's. Nothing was posted.",
+  app: (repo: string) => `Kin's GitHub App isn't installed on ${repo}. Nothing was posted.`,
+  disconnected: "GitHub isn't connected. The owner connects it in Settings, Connections.",
+  rejected: (status: number) => `GitHub didn't post the comment (HTTP ${status}).`,
+  unavailable: "Kin couldn't read its repo list. Nothing was posted.",
+};
+
+type SentIssueComment =
+  | { readonly _tag: "posted"; readonly url: string; readonly createdAt: number }
+  | {
+      readonly _tag: "refused";
+      readonly reason: "not_allowed" | "unavailable";
+      readonly message: string;
+    }
+  | { readonly _tag: "unknown" };
+
+export const sendIssueComment = Effect.fn("KinGitHubWatch.sendIssueComment")(
+  function* (
+    orgId: KinOrgId,
+    input: {
+      readonly repo: string;
+      readonly number: number;
+      readonly body: string;
+      readonly outside: boolean;
+    },
+  ) {
+    const api = yield* KinGitHubApi;
+    const ours = yield* companyRepo(orgId, input.repo);
+    if (ours === undefined)
+      return {
+        _tag: "refused",
+        reason: "not_allowed",
+        message: COMMENT_SEND.notCompany,
+      } satisfies SentIssueComment as SentIssueComment;
+    const app = yield* gitHubApp;
+    const asApp = Option.isSome(app) ? yield* app.value.on(ours.repo) : undefined;
+    if (input.outside && asApp === undefined)
+      return {
+        _tag: "refused",
+        reason: "not_allowed",
+        message: COMMENT_SEND.app(input.repo),
+      } satisfies SentIssueComment as SentIssueComment;
+    const request = {
+      path: `repos/${ours.repo}/issues/${input.number}/comments`,
+      method: "POST",
+      body: { body: input.body },
+    } as const;
+    const owner = Effect.fn("KinGitHubWatch.sendIssueCommentAsOwner")(function* () {
+      if ((yield* api.connected()) === null) return undefined;
+      return yield* api.call(request);
+    });
+    let answer = asApp === undefined ? yield* owner() : yield* asApp.call(request);
+    if (!input.outside && asApp !== undefined && (answer?.status === 403 || answer?.status === 404))
+      answer = (yield* owner()) ?? answer;
+    if (answer === undefined)
+      return {
+        _tag: "refused",
+        reason: "unavailable",
+        message: COMMENT_SEND.disconnected,
+      } satisfies SentIssueComment as SentIssueComment;
+    if (answer.status >= 400 && answer.status < 500)
+      return {
+        _tag: "refused",
+        reason: "unavailable",
+        message: COMMENT_SEND.rejected(answer.status),
+      } satisfies SentIssueComment as SentIssueComment;
+    const posted =
+      answer.status >= 200 && answer.status < 300
+        ? decodePostedComment(answer.body)
+        : Option.none();
+    const createdAt = Option.isSome(posted) ? Date.parse(posted.value.created_at) : NaN;
+    return Option.isSome(posted) && Number.isFinite(createdAt)
+      ? ({
+          _tag: "posted",
+          url: posted.value.html_url,
+          createdAt,
+        } satisfies SentIssueComment as SentIssueComment)
+      : ({ _tag: "unknown" } satisfies SentIssueComment as SentIssueComment);
+  },
+  Effect.catchTags({
+    SqlError: () =>
+      Effect.succeed<SentIssueComment>({
+        _tag: "refused",
+        reason: "unavailable",
+        message: COMMENT_SEND.unavailable,
+      }),
+  }),
+);
+
 /**
  * What `kin_github_review` answers for a review GitHub took. A review someone asked for is told to
  * them in their chat (`askedFor.ts`); Kin's own review of one pull request (`boundReview`) tells the

@@ -105,6 +105,7 @@ import { personConnections, promptLine as connectionsLine } from "../connections
 import { mailboxPerson } from "../connections/turnMailbox.ts";
 import { companyAccounts } from "../github/githubWatchStore.ts";
 import { inheritOutside, itemSource, renderSource, storedStamp } from "./OutsideContent.ts";
+import { outsideTriage } from "./outsideTriage.ts";
 import { outsideReview } from "./outsideReview.ts";
 import { askedWhereOthersRead, wordsReadable } from "../triggers/deferralOrigin.ts";
 import { withRuns } from "../triggers/deferralRuns.ts";
@@ -1414,12 +1415,19 @@ export class KinLeadPrompt extends Context.Service<
         }
         return found;
       });
+      const outsideGitHub = Effect.fn("KinLeadPrompt.outsideGitHub")(function* (
+        turn: Pick<KinLeadPromptInput, "orgId" | "wakeupId">,
+      ) {
+        if ((yield* outsideTriage(turn)) !== undefined) return "triage";
+        if ((yield* outsideReview(turn)) !== undefined) return "review";
+        return undefined;
+      });
       const steer = Effect.fn("KinLeadPrompt.steer")(function* (
         input: Pick<KinLeadPromptInput, "orgId" | "agentId" | "wakeupId" | "events"> & {
           readonly first: boolean;
         },
       ) {
-        const review = yield* outsideReview(input).pipe(
+        const confined = yield* outsideGitHub(input).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.mapError(
             (cause) =>
@@ -1430,10 +1438,13 @@ export class KinLeadPrompt extends Context.Service<
               }),
           ),
         );
-        if (review !== undefined)
+        if (confined !== undefined)
           return yield* new KinLeadPromptError({
             orgId: input.orgId,
-            reason: "An outside review wakes alone",
+            reason:
+              confined === "triage"
+                ? "Outside issue triage wakes alone"
+                : "An outside review wakes alone",
           });
         const { events, fromOwner } = yield* quoteEvents(input);
         if (!input.first) return boundedEvents(events);
@@ -1566,7 +1577,7 @@ export class KinLeadPrompt extends Context.Service<
       // Both renderers own their span; collecting the parts does not need a second one.
       const collectParts = Effect.fnUntraced(function* (given: KinLeadPromptInput) {
         // A stranger's pull request's review reads nothing of the owner's chat it answers in.
-        const review = yield* outsideReview(given).pipe(
+        const confined = yield* outsideGitHub(given).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.mapError(
             (cause) =>
@@ -1578,7 +1589,7 @@ export class KinLeadPrompt extends Context.Service<
           ),
         );
         const { lane: _ownerChat, ...laneless } = given;
-        const input: KinLeadPromptInput = review === undefined ? given : laneless;
+        const input: KinLeadPromptInput = confined === undefined ? given : laneless;
         const { orgId, agentId, memoryHead } = input;
         // A reminder or schedule set in a turn that read someone's own mailbox runs private to
         // them too (`privateTurn.ts`), marked before anything of it is read.
@@ -1620,11 +1631,14 @@ export class KinLeadPrompt extends Context.Service<
         );
         // An outsider's pull request is reviewed knowing nothing private: its own facts and diff,
         // the review rules and the agent's name. Anything woken with it fails the turn closed.
-        if (review !== undefined) {
+        if (confined !== undefined) {
           if (input.events.length !== 1 || input.events[0]!._tag !== "github")
             return yield* new KinLeadPromptError({
               orgId,
-              reason: "An outside review wakes alone",
+              reason:
+                confined === "triage"
+                  ? "Outside issue triage wakes alone"
+                  : "An outside review wakes alone",
             });
           const { events } = yield* quoteEvents({ ...input, audience: "shared" });
           const agent = yield* chat.getAgent({ orgId, agentId }).pipe(
@@ -2079,7 +2093,7 @@ export class KinLeadPrompt extends Context.Service<
           if (!shell.sections.some((section) => KinShell.listOfSection(section.id) !== undefined))
             return [];
           if (ownerOnly) return yield* listSectionsShown(orgId, KIN_OWNER_LEVEL);
-          const behind = review === undefined ? yield* turnPeople(input) : undefined;
+          const behind = yield* turnPeople(input);
           if (behind === undefined) return [];
           return yield* listSectionsShown(
             orgId,
@@ -2097,7 +2111,7 @@ export class KinLeadPrompt extends Context.Service<
         // What we sell, in every turn whose readers may see it: a shared turn's by stored rows.
         const offerings = yield* Effect.gen(function* () {
           if (ownerOnly) return yield* offeringsPromptIndex(orgId, KIN_OWNER_LEVEL);
-          const behind = review === undefined ? yield* turnPeople(input) : undefined;
+          const behind = yield* turnPeople(input);
           if (behind === undefined) return { _tag: "hidden" } as const;
           return yield* offeringsPromptIndex(
             orgId,
@@ -2384,7 +2398,7 @@ export class KinLeadPrompt extends Context.Service<
             }`,
           ),
           // An outside review's trigger says what its turn may do; this line is for a chat others read.
-          ...(ownerOnly || review !== undefined ? [] : [sharedPart("header", SHARED_TURN_LINE)]),
+          ...(ownerOnly ? [] : [sharedPart("header", SHARED_TURN_LINE)]),
           ...(Number.isFinite(budgetLeft) && budgetLeft <= BUDGET_LOW_PERCENT
             ? [ownerPart("header", `Budget: ${input.budgetContext}. Keep this turn light.`)]
             : []),

@@ -8,6 +8,7 @@ import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { SALES_SHARED_TOOLS } from "../sales/policies.ts";
 import { aborted, askedIn, askersDirectChat, effectiveAudience, turnChat } from "./Audience.ts";
 import { billToolAllowed } from "./billsOnly.ts";
+import { triageToolAllowed } from "./outsideTriage.ts";
 import { reviewToolAllowed } from "./outsideReview.ts";
 import { boundReview } from "../github/boundReview.ts";
 import { mailboxPerson } from "../connections/turnMailbox.ts";
@@ -177,6 +178,7 @@ export const SHARED_TOOLS = {
   kin_cancel: ownReminderCancel,
   // Only the review someone asked for, on its pull request: `postReview` checks where it posts.
   kin_github_review: askedReview,
+  kin_github_comment: "refused",
   kin_github_diff: askedReview,
   // A public repo for anyone here; a private one only for the asker GitHub lets see it, in their
   // own chat with this agent, by the review ask's check (`readRepo`, `maySee`). Reads only.
@@ -299,6 +301,8 @@ export const sharedToolAllowed = Effect.fn("KinSharedTools.allowed")(
 export const toolAdmitted = Effect.fn("KinSharedTools.admitted")(
   function* (turn: Turn, name: string, args: unknown) {
     if (yield* aborted(turn)) return false;
+    const triage = yield* triageToolAllowed(turn, name);
+    if (triage !== undefined) return triage;
     const review = yield* reviewToolAllowed(turn, name, args);
     if (review !== undefined) return review;
     const bills = yield* billToolAllowed(turn, name, args);

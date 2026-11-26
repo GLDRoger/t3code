@@ -49,6 +49,8 @@ import {
   knownRepos,
   repoList,
   setRepo,
+  setTriage,
+  triageStates,
   watchSummary,
   withGuards,
 } from "./githubWatchStore.ts";
@@ -1134,7 +1136,8 @@ describe("KinGitHubWatch", () => {
           const first = yield* triageRow;
           assert.deepEqual(first, { outcome: "on", at: T0 });
           yield* TestClock.adjust(MINUTE);
-          yield* repoList(orgId);
+          const states = yield* triageStates(orgId, [repo], T0 + MINUTE);
+          assert.deepEqual(states.get(repo), first);
           assert.deepEqual(yield* triageRow, first);
         }),
       ),
@@ -1143,7 +1146,7 @@ describe("KinGitHubWatch", () => {
     it.effect("retimes triage when switched off and back on", () =>
       triageTest(() =>
         Effect.gen(function* () {
-          yield* setRepo({ orgId, repo, triage: false }, T0 + MINUTE);
+          yield* setTriage(orgId, repo, false, T0 + MINUTE);
           assert.deepEqual(yield* triageRow, { outcome: "off", at: T0 + MINUTE });
           yield* setRepo({ orgId, repo, triage: true }, T0 + 2 * MINUTE);
           assert.deepEqual(yield* triageRow, { outcome: "on", at: T0 + 2 * MINUTE });

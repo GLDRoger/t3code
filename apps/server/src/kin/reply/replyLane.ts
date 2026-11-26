@@ -11,6 +11,7 @@ import * as Option from "effect/Option";
 import { owedNotice } from "../floor/KinFloor.ts";
 import { CHAT_ANSWER_TAGS } from "../lead/Audience.ts";
 import { billsOnly } from "../lead/billsOnly.ts";
+import { outsideTriage } from "../lead/outsideTriage.ts";
 import { outsideReview } from "../lead/outsideReview.ts";
 
 /**
@@ -66,7 +67,7 @@ export const laneFor = Effect.fn("KinReplyBridge.lane")(
     // Kin's own review of an outsider's: nothing the model writes reaches a chat, so no reply can
     // become a question either. One someone asked for answers them.
     const outside = yield* outsideReview(input);
-    if (outside !== undefined && !outside.asked)
+    if ((yield* outsideTriage(input)) !== undefined || (outside !== undefined && !outside.asked))
       return Option.some<Lane>({
         chatId: KinChatId.make(chatId),
         mode: "notice",

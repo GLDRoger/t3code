@@ -83,6 +83,7 @@ import {
   recordedAudience,
   turnChat,
 } from "./Audience.ts";
+import { TRIAGE_THREAD_PREFIX, outsideTriage } from "./outsideTriage.ts";
 import { REVIEW_THREAD_PREFIX, outsideReview } from "./outsideReview.ts";
 import { BILLS_THREAD_PREFIX, billsOnly } from "./billsOnly.ts";
 import { leadListsTool } from "./seatHome.ts";
@@ -860,13 +861,15 @@ const make = Effect.gen(function* () {
         agentId: row.agentId,
         wakeupId: row.wakeupId,
         threadId,
-        threadKind: threadId.startsWith(REVIEW_THREAD_PREFIX)
-          ? "review"
-          : threadId.startsWith(BILLS_THREAD_PREFIX)
-            ? "bills"
-            : threadId.startsWith(SHARED_THREAD_PREFIX)
-              ? "shared"
-              : "owner",
+        threadKind: threadId.startsWith(TRIAGE_THREAD_PREFIX)
+          ? "triage"
+          : threadId.startsWith(REVIEW_THREAD_PREFIX)
+            ? "review"
+            : threadId.startsWith(BILLS_THREAD_PREFIX)
+              ? "bills"
+              : threadId.startsWith(SHARED_THREAD_PREFIX)
+                ? "shared"
+                : "owner",
         seat:
           lead === undefined
             ? null
@@ -1855,11 +1858,22 @@ const make = Effect.gen(function* () {
             // A stranger's pull request is reviewed, and bills are read, on a thread that lists
             // only that turn's tools.
             const review = shared && (yield* outsideReview(row).pipe(provideSql)) !== undefined;
-            const confined = review
-              ? REVIEW_THREAD_PREFIX
-              : (yield* billsOnly(row).pipe(provideSql))
-                ? BILLS_THREAD_PREFIX
-                : undefined;
+            const triage = shared ? yield* outsideTriage(row).pipe(provideSql) : undefined;
+            const issueHash =
+              triage === undefined
+                ? undefined
+                : NodeCrypto.createHash("sha256")
+                    .update(`${orgId}|${triage.repo.toLowerCase()}#${triage.number}`)
+                    .digest("hex")
+                    .slice(0, 16);
+            const confined =
+              issueHash !== undefined
+                ? `${TRIAGE_THREAD_PREFIX}${issueHash}:`
+                : review
+                  ? REVIEW_THREAD_PREFIX
+                  : (yield* billsOnly(row).pipe(provideSql))
+                    ? BILLS_THREAD_PREFIX
+                    : undefined;
             const prefix = confined ?? (shared ? SHARED_THREAD_PREFIX : "kin:");
             const [live] = yield* sql<{ threadId: ThreadId }>`SELECT thread_id AS "threadId"
               FROM kin_agent_threads WHERE org_id = ${orgId} AND agent_id = ${agentId}
@@ -1867,7 +1881,8 @@ const make = Effect.gen(function* () {
                 AND substr(thread_id, 1, ${prefix.length}) = ${prefix}
                 AND (${confined === undefined ? 0 : 1} = 1
                   OR (substr(thread_id, 1, ${REVIEW_THREAD_PREFIX.length}) <> ${REVIEW_THREAD_PREFIX}
-                    AND substr(thread_id, 1, ${BILLS_THREAD_PREFIX.length}) <> ${BILLS_THREAD_PREFIX}))
+                    AND substr(thread_id, 1, ${BILLS_THREAD_PREFIX.length}) <> ${BILLS_THREAD_PREFIX}
+                    AND substr(thread_id, 1, ${TRIAGE_THREAD_PREFIX.length}) <> ${TRIAGE_THREAD_PREFIX}))
               ORDER BY started_at DESC, thread_id DESC LIMIT 1`;
             let existingThreadId = !alone && chatId === null ? null : (live?.threadId ?? null);
             if (existingThreadId !== null) {

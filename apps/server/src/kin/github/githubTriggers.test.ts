@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import { postKey, signed } from "./agentMark.ts";
 import {
   decideTriggers,
+  TRIAGE_REPLIES,
   type DecideContext,
   type ThreadComment,
   type ThreadSnapshot,
@@ -39,7 +40,7 @@ const context: DecideContext = {
   triageFrom: 20,
   appOn: true,
 };
-const prior = { kinSaid: 30, repliesLeft: 3 };
+const prior = { kinSaid: 30, repliesLeft: TRIAGE_REPLIES };
 const comment = (fields: Partial<ThreadComment> = {}): ThreadComment => ({
   id: 2,
   kind: "issue",
@@ -57,6 +58,7 @@ const outsideReply = ["triage_reply", `triage_reply:${repo}#14:c2`, false];
 const label = ["label", `label:${repo}#14`, true];
 const call = ["call", `call:${repo}#14:body`, true];
 const handled = [`triage:${repo}#14`];
+const beforeTransfer = ["triage:tidewater/intake#14"];
 const marked = signed("A digest report", "Tech lead");
 
 type Row = readonly [
@@ -95,9 +97,9 @@ const rows: ReadonlyArray<Row> = [
     { number: 15 },
     {},
     [["triage", `triage:${repo}#15`, true]],
-    handled,
+    beforeTransfer,
   ],
-  ["transfer created before triage began", { number: 15, createdAt: 19 }, {}, [], handled],
+  ["transfer created before triage began", { number: 15, createdAt: 19 }, {}, [], beforeTransfer],
   ["old issue with a new comment", { createdAt: 19, comments: [comment()] }, {}, []],
   ["issue older than the watch", {}, { since: 21 }, []],
   ["pull request starts a review", { item: "pull" }, {}, [["review", `review:${repo}#14`, true]]],
@@ -185,16 +187,14 @@ const rows: ReadonlyArray<Row> = [
 ];
 
 describe("issue triage triggers", () => {
-  for (const [name, snapshot, overrides, expected, previous = []] of rows) {
-    it.effect(name, () =>
-      Effect.sync(() => {
-        const triggers = decideTriggers({ ...issue, ...snapshot }, { ...context, ...overrides });
-        expect(
-          triggers
-            .filter(({ key }) => !previous.includes(key))
-            .map(({ kind, key, inside }) => [kind, key, inside]),
-        ).toEqual(expected);
-      }),
-    );
-  }
+  it.effect.each(rows)("%s", ([_name, snapshot, overrides, expected, previous = []]) =>
+    Effect.sync(() => {
+      const triggers = decideTriggers({ ...issue, ...snapshot }, { ...context, ...overrides });
+      expect(
+        triggers
+          .filter(({ key }) => !previous.includes(key))
+          .map(({ kind, key, inside }) => [kind, key, inside]),
+      ).toEqual(expected);
+    }),
+  );
 });
