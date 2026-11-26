@@ -42,7 +42,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
 import { MIGRATIONS, SHIPPING_BRANCH, kinBranchChecks } from "./kin-branch-checks.ts";
-import { modelsFor, modelsToReconfirm } from "./kin-model.ts";
+import { modelsFor, modelsToReconfirm, splitSkippedModels } from "./kin-model.ts";
 
 const GiB = 1024 ** 3;
 
@@ -645,17 +645,13 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
 
   // Kin's TLA+ models, each only when a file it stands for changed; skipped without Java.
   // CHECK_CHANGED_SKIP_MODELS names models a local run leaves to the end of a stack; CI never sets it.
-  const skippedModels = new Set(
-    Option.getOrElse(yield* Config.option(Config.String("CHECK_CHANGED_SKIP_MODELS")), () => "")
-      .split(",")
-      .flatMap((name) => (name.trim() === "" ? [] : [name.trim()])),
+  const { run: modelsToRun, skipped } = splitSkippedModels(
+    modelsFor(files),
+    Option.getOrElse(yield* Config.option(Config.String("CHECK_CHANGED_SKIP_MODELS")), () => ""),
   );
-  const skipped = modelsFor(files).filter((name) => skippedModels.has(name));
-  const kinModels = modelsFor(files)
-    .filter((name) => !skippedModels.has(name))
-    .map((name) =>
-      command(`kin model ${name}`, ["exec", "node", "scripts/kin-model.ts", name, "--if-java"]),
-    );
+  const kinModels = modelsToRun.map((name) =>
+    command(`kin model ${name}`, ["exec", "node", "scripts/kin-model.ts", name, "--if-java"]),
+  );
 
   const steps: Array<Step<never>> = [
     ...kinBranch,
