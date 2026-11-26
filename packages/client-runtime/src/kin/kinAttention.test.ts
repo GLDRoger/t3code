@@ -347,6 +347,32 @@ describe("kinAttention", () => {
     expect(kinPlainDates("₹22,610.00 spent of a ₹5,000.00 limit in 2026-11.")).toBe(
       "₹22,610.00 spent of a ₹5,000.00 limit in November.",
     );
+    // The agent acting on a fact reads the same line: true for both, it names no reader.
+    for (const [line, read] of [
+      [
+        "BNK-4, $2,200.00 received 4 Nov, is more than the $1,000.00 this invoice owes: it cites INV-12. Recorded, it settles it and keeps $1,200.00 as Tidewater Freight's credit. Tidewater Freight's other open invoices: INV-14 ($800.00). It isn't recorded until it is confirmed on a card.",
+        "BNK-4, $2,200.00 received 4 Nov, is more than the $1,000.00 this invoice owes: it cites INV-12. Recorded, it settles it and keeps $1,200.00 as Tidewater Freight's credit. Tidewater Freight's other open invoices: INV-14 ($800.00). It isn't recorded until it is confirmed on a card.",
+      ],
+      [
+        "BNK-2, $600.00 received 17 Nov, fits 2 open invoices equally, and Kin can't tell which: INV-2: same amount from Tidewater Freight; INV-3: same amount from Tidewater Freight. Nothing is recorded until one is chosen on a card.",
+        "BNK-2, $600.00 received 17 Nov, fits 2 open invoices equally, and Kin can't tell which: INV-2: same amount from Tidewater Freight; INV-3: same amount from Tidewater Freight. Nothing is recorded until one is chosen on a card.",
+      ],
+      [
+        "$4,500 to Acme Hosting, due 2026-11-18, in 2 days. It is marked paid by an owner-level tap on its page in Money.",
+        "$4,500 to Acme Hosting, due Nov 18, in 2 days. It is marked paid by an owner-level tap on its page in Money.",
+      ],
+      [
+        "BNK-9, ₹12,400 paid 24 Nov, names Zoya and adds up exactly to their 3 oldest owed expenses: EXP-4, EXP-7 and EXP-9. They aren't marked repaid until it is confirmed on a card.",
+        "BNK-9, ₹12,400 paid 24 Nov, names Zoya and adds up exactly to their 3 oldest owed expenses: EXP-4, EXP-7 and EXP-9. They aren't marked repaid until it is confirmed on a card.",
+      ],
+      [
+        "BNK-4, $4,500 paid 18 Nov, matches EXP-3, the bill to pay Acme Hosting due 18 Nov. It isn't marked paid until it is confirmed on a card.",
+        "BNK-4, $4,500 paid 18 Nov, matches EXP-3, the bill to pay Acme Hosting due 18 Nov. It isn't marked paid until it is confirmed on a card.",
+      ],
+    ] as const) {
+      expect(kinPlainDates(line)).toBe(read);
+      expect(read).not.toMatch(/\b(?:the owner|you)\b/i);
+    }
   });
 
   it("snoozes to tomorrow, the next Monday and a week on", () => {

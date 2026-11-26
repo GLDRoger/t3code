@@ -13,7 +13,7 @@ export const Rubric = Schema.Struct({
 export type Rubric = typeof Rubric.Type;
 
 const JUDGE_PROMPT =
-  'You grade one reply an AI colleague wrote in a company chat app. Answer each question about the reply strictly: yes only when the reply clearly meets it. Judge the words a person would read, plus the tool calls listed (a card the agent posted counts as its message). Keep each why to one sentence. Answer with JSON only, one verdict per question in order: {"verdicts": [{"answer": true, "why": "..."}]}';
+  'You grade one reply an AI colleague wrote in a company chat app. Answer each question about the reply strictly: yes only when the reply clearly meets it. Judge the words a person would read, plus the tool calls listed (a card the agent put in the chat counts as its message: a question card from kin_ask, a draft card from doc_create, a payment or approval card; the fields of a record it created or changed, such as a task\'s notes or a client\'s details, are not said to the reader and never count as the reply). Keep each why to one sentence. Answer with JSON only, one verdict per question in order: {"verdicts": [{"answer": true, "why": "..."}]}';
 
 export const rubricRequest = (
   model: string,

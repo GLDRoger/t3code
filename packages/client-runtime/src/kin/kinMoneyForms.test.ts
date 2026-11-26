@@ -109,7 +109,7 @@ describe("an invoice typed by hand", () => {
         { ...filled, lines: [line("Consulting", "1", "£120", "120")] },
         { ...options, currency: "GBP", gst: false },
       ),
-    ).toEqual({ ok: false, problem: "Line 1: enter a tax rate like 20 or 0." });
+    ).toEqual({ ok: false, problem: "Line 1: enter the tax rate as a number, or 0 for no tax." });
     expect(kinInvoiceTyped({ ...forAcme, lines: [line("", "1", "", "0")] }, forAcme)).toBe(true);
   });
 

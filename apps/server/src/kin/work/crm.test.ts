@@ -789,6 +789,15 @@ it.effect("an overdue invoice or a long silence with the client puts a project a
     assert.include(owed, { health: "at_risk" });
     assert.deepInclude(owed.healthBecause, { overdueInvoices: 1 });
     assert.isUndefined(owed.healthBecause.noContact);
+    // The clients list says what an owing client owes: issued invoices' balances, never a draft.
+    yield* LeadWork.create(scope, {
+      sourceEventId: "ask-event",
+      records: [{ ...invoice("Invented VIOM draft"), state: "open" as const }],
+    });
+    const directory = yield* Clients.parties([owner], { orgId });
+    assert.deepStrictEqual(directory.parties.find((row) => row.key === client.key)?.owed, [
+      { currency: "INR", minor: 10_000_000 },
+    ]);
     // Every surface reads the same rule: the list, the Work summary and the lead's own read.
     const listed = yield* Clients.projects([owner], { orgId });
     assert.strictEqual(listed.projects.find((row) => row.key === build.key)?.health, "at_risk");
@@ -2929,11 +2938,12 @@ it.effect(
       yield* issuedByLead(
         ...made.records.filter((one) => one.key.startsWith("INV-")).map((one) => one.key),
       );
-      yield* LeadMoney.payment(scope, {
-        sourceEventId: "ask-event",
+      yield* OwnerMoney.recordPayment([owner], {
+        orgId,
         key: overdue,
-        amount: "1457",
+        amount: { minor: 145_700, currency: "INR" },
         paidOn: "1970-01-10",
+        clientRequestId: "invented-overdue-part",
       });
       const acme = yield* Clients.party([owner], { orgId, key: "C-1" });
       yield* Docs.create(
@@ -3067,7 +3077,12 @@ it.effect(
       };
       assert.sameDeepMembers(
         [...invoices.totals!.total],
-        sum(invoices.records.filter((row) => row.state !== "dropped").map((row) => row.amount)),
+        // Billed: issued invoices, never a draft or a dropped one.
+        sum(
+          invoices.records
+            .filter((row) => !["open", "dropped"].includes(row.state))
+            .map((row) => row.amount),
+        ),
       );
       assert.sameDeepMembers([...invoices.totals!.owed!], sum(owing.map((row) => row.balance)));
       const paid = yield* OwnerWork.list([owner], {
@@ -3783,11 +3798,12 @@ it.effect(
         ],
       });
       yield* issuedByLead("INV-1");
-      yield* LeadMoney.payment(scope, {
-        sourceEventId: "ask-event",
+      yield* OwnerMoney.recordPayment([owner], {
+        orgId,
         key: "INV-1",
-        amount: "400",
+        amount: { minor: 40_000, currency: "INR" },
         paidOn: "1970-01-10",
+        clientRequestId: "invented-received",
       });
       const page = yield* Clients.party([owner], { orgId, key: "C-1" });
       assert.deepStrictEqual(page.touches?.map((touch) => touch.kind).toSorted(), [

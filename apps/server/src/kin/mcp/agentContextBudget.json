@@ -7,15 +7,15 @@
   },
   "kinSharedInstructionsHash": "4ceb34b73155164f9e13e6ffdffbdc3129c0ae2515efc5969ab5c54c00478422",
   "kinLeadToolListJsonBytes": {
-    "engineering": 169637,
-    "engineeringBesideFinanceAndSales": 154575,
-    "finance": 148815,
-    "shared": 98090,
-    "social": 151896,
-    "socialBesideFinanceAndSales": 136834,
-    "support": 148815
+    "engineering": 171127,
+    "engineeringBesideFinanceAndSales": 154844,
+    "finance": 150305,
+    "shared": 98359,
+    "social": 153386,
+    "socialBesideFinanceAndSales": 137103,
+    "support": 150305
   },
-  "kinLeadAlwaysLoadedToolBytes": 75872,
+  "kinLeadAlwaysLoadedToolBytes": 76141,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -198,8 +198,8 @@
       "schema": 221
     },
     "kin_receipt": {
-      "desc": 1599,
-      "schema": 999
+      "desc": 1826,
+      "schema": 974
     },
     "kin_recipe_undo": {
       "desc": 215,
@@ -242,8 +242,8 @@
       "schema": 73
     },
     "memory_search": {
-      "desc": 185,
-      "schema": 450
+      "desc": 225,
+      "schema": 543
     },
     "memory_write": {
       "desc": 2291,
@@ -278,8 +278,8 @@
       "schema": 1231
     },
     "payment_record": {
-      "desc": 320,
-      "schema": 746
+      "desc": 923,
+      "schema": 1162
     },
     "people_read": {
       "desc": 270,
@@ -322,7 +322,7 @@
       "schema": 8725
     },
     "record_get": {
-      "desc": 1239,
+      "desc": 1375,
       "schema": 212
     },
     "record_hand_back": {

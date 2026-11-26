@@ -11,6 +11,7 @@ import {
   kinListCanTogglePayments,
   kinListChips,
   kinListColumns,
+  kinListOffersClients,
   kinListEditDraftOf,
   kinListEditInput,
   kinListFooter,
@@ -350,7 +351,7 @@ function KinListEntries(
               </SelectPopup>
             </Select>
           )}
-          {!clientsOn ? null : (
+          {!clientsOn || !kinListOffersClients(state.records, filter) ? null : (
             <div className="w-full min-w-0 sm:w-44">
               <KinPlaceCombobox
                 target={props}

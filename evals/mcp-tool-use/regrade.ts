@@ -13,6 +13,7 @@ import * as Schema from "effect/Schema";
 
 import { caseState, type Check, sampleState, type State } from "./margin.ts";
 import { gradeSample, McpToolUseCase, pastedText, worldFilePaths } from "./run.ts";
+import { expectationsForLayout } from "./kin-session-wire.ts";
 import { shownText } from "./kin.ts";
 
 const { values, positionals } = NodeUtil.parseArgs({
@@ -42,7 +43,7 @@ for (const file of positionals) {
     const row = JSON.parse(line);
     const testCase = cases.get(row.id);
     if (testCase === undefined || row.error !== undefined) continue;
-    const expect = row.arm === "raw" ? (testCase.expectRaw ?? testCase.expect) : testCase.expect;
+    const expect = expectationsForLayout(testCase, row.arm, row.kinLayout);
     // Claude rows carry their responses, so their text is read again as the chat shows it.
     const responses = Array.isArray(row.transcript)
       ? row.transcript.flatMap((message: { role?: string; content?: unknown }) =>
