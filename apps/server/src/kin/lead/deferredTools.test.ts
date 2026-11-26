@@ -113,13 +113,12 @@ it("every deferred Kin tool has a hint, no always-loaded tool has one, no hint r
   );
   // Tool search already scores a tool's name parts; a hint word that shares one adds nothing.
   const sharesName = (word: string, part: string) =>
-    word === part || (word.length >= 4 && part.length >= 4 && (word.startsWith(part) || part.startsWith(word)));
+    word === part ||
+    (word.length >= 4 && part.length >= 4 && (word.startsWith(part) || part.startsWith(word)));
   const misses = Object.entries(KIN_SEARCH_HINTS).flatMap(([name, hint]) => {
     const words = hint.split(" ");
     const repeats = words.filter((word) => name.split("_").some((part) => sharesName(word, part)));
-    return words.length < 3 || words.length > 8 || repeats.length > 0
-      ? [`${name}: ${hint}`]
-      : [];
+    return words.length < 3 || words.length > 8 || repeats.length > 0 ? [`${name}: ${hint}`] : [];
   });
   assert.deepStrictEqual(misses, []);
 });
