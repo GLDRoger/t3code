@@ -688,7 +688,6 @@ const make = Effect.gen(function* () {
           chatId: wake.lane.chatId,
           messageId: slot.messageId,
           ...input,
-          body: capBody(input.body),
           ...(slot.earlier === true ? { onlyIfLast: true as const } : {}),
         },
         repliedBy(wake, ordinal),
