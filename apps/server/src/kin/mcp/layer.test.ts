@@ -1929,11 +1929,10 @@ it.effect.each([true, false])(
         for (const name of LEAD_T3_TOOLS)
           assert.isFalse(yield* visibleOnKinEndpoint(name, ThreadId.make("kin-shared:lead-group")));
         const agentSessions = Context.get(services, KinAgentSessions);
-        const toolListSha = "a".repeat(64);
-        agentSessions.recordToolList(threadId, "other-credential", toolListSha);
-        assert.isNull(agentSessions.lastToolList(threadId));
-        agentSessions.recordToolList(threadId, issued.config.providerSessionId, toolListSha);
-        assert.strictEqual(agentSessions.lastToolList(threadId), toolListSha);
+        const servedToolListSha = agentSessions.lastToolList(threadId);
+        assert.match(servedToolListSha ?? "", /^[a-f0-9]{64}$/);
+        agentSessions.recordToolList(threadId, "other-credential", "a".repeat(64));
+        assert.strictEqual(agentSessions.lastToolList(threadId), servedToolListSha);
         assert.isUndefined(yield* registry.resolve(issued.config.authorizationHeader.slice(7)));
         const caller = yield* agentSessions.resolveAgent(
           issued.config.authorizationHeader.slice(7),
