@@ -130,6 +130,18 @@ export const statementSenses = Effect.fn("KinPulse.statementSenses")(function* (
 
 const CONSEQUENCE_MAX = 500;
 const plain = (minor: number, currency: string) => formatMoneyPlain({ minor, currency });
+
+/** repaid_seen's line for a partner debit that may not match their oldest owed expenses. */
+export const repaidShortLine = (input: {
+  readonly key: string;
+  readonly amountMinor: number;
+  readonly currency: string;
+  readonly date: string;
+  readonly partner: string;
+  readonly owedMinor: number | bigint;
+  readonly owedCount: number;
+}) =>
+  `${input.key}, ${plain(input.amountMinor, input.currency)} paid ${shortDay(input.date)}, names ${input.partner} and may not match their oldest owed expenses (${formatKinMoney(input.owedMinor, input.currency)} over ${input.owedCount} expense${input.owedCount === 1 ? "" : "s"}): not checked, so Kin marks nothing. Mark what it repaid on the expenses in Money.`;
 const creditText = (credit: CreditMatch["credit"]) =>
   `${credit.key}, ${plain(credit.amountMinor, credit.currency)} received ${shortDay(credit.date)}`;
 const creditMatchText = (pair: CreditPair) =>
@@ -341,7 +353,15 @@ export const repaidSeenSenses = Effect.fn("KinPulse.repaidSeenSenses")(function*
       return {
         ...shared,
         key: `repaid_seen:${debit.key}:short`,
-        consequence: `${paid} but doesn't add up to their oldest owed expenses (${formatKinMoney(owedMinor, debit.currency)} over ${owedCount} expense${owedCount === 1 ? "" : "s"}), so Kin marks nothing. Mark what it repaid on the expenses in Money.`,
+        consequence: repaidShortLine({
+          key: debit.key,
+          amountMinor: debit.amountMinor,
+          currency: debit.currency,
+          date: debit.date,
+          partner: partner.name,
+          owedMinor,
+          owedCount,
+        }),
         wake: "brief",
       };
     const one = repays.length === 1;

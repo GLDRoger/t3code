@@ -1,3 +1,5 @@
+// @effect-diagnostics-next-line nodeBuiltinImport:off -- the synchronous digest uses bytes already read.
+import * as NodeCrypto from "node:crypto";
 import {
   EnvironmentId,
   KIN_MESSAGE_LINKS_CAP,
@@ -21,9 +23,10 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { turnChanges } from "../lead/turnChanges.ts";
-import { ownerLevel } from "../people/KinAccess.ts";
+import { accessSql, ownerLevel } from "../people/KinAccess.ts";
 import {
   KIN_OWNER_LEVEL,
+  linkRecordGrants,
   seenBy,
   viewerOfPeople,
   listNumberSeenBy,
@@ -160,6 +163,64 @@ const noteOf = (row: {
     ? `${row.title} · ${STATE_WORDS[row.state] ?? row.state}`
     : row.title;
 
+const directAgentChats = (sql: SqlClient.SqlClient, orgId: KinOrgId, personId: KinPersonId) =>
+  sql`FROM kin_chats c
+    JOIN kin_chat_members me ON me.org_id = c.org_id AND me.chat_id = c.chat_id
+      AND me.principal_kind = 'person' AND me.person_id = ${personId} AND me.left_at IS NULL
+    JOIN kin_chat_members am ON am.org_id = c.org_id AND am.chat_id = c.chat_id
+      AND am.principal_kind = 'agent' AND am.left_at IS NULL
+    JOIN kin_agents a ON a.org_id = c.org_id AND a.agent_id = am.agent_id AND a.retired_at IS NULL
+    WHERE c.org_id = ${orgId} AND c.kind = 'direct' AND c.archived_at IS NULL`;
+
+export const linkAccessStamp = Effect.fn("KinMessageLinks.accessStamp")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ grants: string }>`
+    WITH reader AS (
+      SELECT ${sql.literal(accessSql("p"))} AS access, sees_clients, sees_docs, sees_money
+        FROM kin_people p WHERE p.org_id = ${orgId} AND p.person_id = ${personId}
+    ), openAgentChats AS (
+      SELECT c.chat_id ${directAgentChats(sql, orgId, personId)}
+    ), closedAgentChats AS (
+      SELECT DISTINCT c.chat_id FROM kin_chat_members me
+        JOIN kin_chats c ON c.org_id = me.org_id AND c.chat_id = me.chat_id
+        WHERE me.org_id = ${orgId} AND me.person_id = ${personId} AND c.kind = 'direct'
+          AND EXISTS (SELECT 1 FROM kin_chat_members am WHERE am.org_id = c.org_id
+            AND am.chat_id = c.chat_id AND am.principal_kind = 'agent')
+          AND c.chat_id NOT IN (SELECT chat_id FROM openAgentChats)
+    )
+    SELECT json_array(
+      access, sees_clients, sees_docs, sees_money,
+      (SELECT json_group_array(id ORDER BY id) FROM (
+        SELECT DISTINCT json_extract(j.value, '$.id') AS id
+        FROM kin_company_shell sh, json_each(sh.shell_json) j
+        WHERE sh.org_id = ${orgId} AND (
+          (json_extract(j.value, '$.id') = 'money' AND json_type(j.value, '$.on') = 'false')
+          OR (json_extract(j.value, '$.id') IN ('clients', 'deals')
+            AND json_extract(j.value, '$.on') = 0)
+        )
+      )),
+      (SELECT json_group_array(chat_id ORDER BY chat_id) FROM closedAgentChats),
+      CASE WHEN access NOT IN ('owner', 'co_owner') THEN (
+        SELECT json_group_array(json_array(kind, grant_id) ORDER BY kind, grant_id)
+        FROM (
+          ${linkRecordGrants(sql, orgId, personId)}
+          UNION ALL
+          SELECT 'groupChat', json_array(me.chat_id, me.joined_seq) FROM kin_chat_members me
+            JOIN kin_chats c ON c.org_id = me.org_id AND c.chat_id = me.chat_id
+            WHERE me.org_id = ${orgId} AND me.person_id = ${personId}
+              AND me.left_at IS NULL AND c.kind IN ('team_group', 'project_group')
+        )
+      ) END
+    ) AS grants FROM reader`;
+  return NodeCrypto.createHash("sha256")
+    .update(row?.grants ?? "null")
+    .digest("hex")
+    .slice(0, 16);
+});
+
 /** What this viewer may open, read once for a batch of messages. */
 const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
   orgId: KinOrgId,
@@ -173,15 +234,7 @@ const linkSources = Effect.fn("KinMessageLinks.sources")(function* (
   const sql = yield* SqlClient.SqlClient;
   // Their own direct chats with agents: the chat a name like "Finance" opens.
   const agents = yield* sql<{ name: string; chatId: string }>`SELECT a.display_name AS name,
-      c.chat_id AS "chatId"
-    FROM kin_chats c
-    JOIN kin_chat_members me ON me.org_id = c.org_id AND me.chat_id = c.chat_id
-      AND me.principal_kind = 'person' AND me.person_id = ${personId} AND me.left_at IS NULL
-    JOIN kin_chat_members am ON am.org_id = c.org_id AND am.chat_id = c.chat_id
-      AND am.principal_kind = 'agent' AND am.left_at IS NULL
-    JOIN kin_agents a ON a.org_id = c.org_id AND a.agent_id = am.agent_id AND a.retired_at IS NULL
-    WHERE c.org_id = ${orgId} AND c.kind = 'direct' AND c.archived_at IS NULL
-    ORDER BY c.created_at`;
+      c.chat_id AS "chatId" ${directAgentChats(sql, orgId, personId)} ORDER BY c.created_at`;
   const people = yield* sql<{ name: string; personId: string }>`SELECT display_name AS name,
       person_id AS "personId" FROM kin_people
     WHERE org_id = ${orgId} AND removed_at IS NULL AND person_id <> ${personId}`;
