@@ -159,8 +159,8 @@ const fitted = (build: (shown: number) => string, count: number) => {
   }
   return build(0);
 };
-const listed = (items: ReadonlyArray<string>, shown: number) =>
-  `${items.slice(0, shown).join("; ")}${items.length > shown ? `${shown > 0 ? "; " : ""}and ${items.length - shown} more` : ""}`;
+const listed = (items: ReadonlyArray<string>, shown: number, total = items.length) =>
+  `${items.slice(0, shown).join("; ")}${total > shown ? `${shown > 0 ? "; " : ""}and ${total - shown} more` : ""}`;
 
 export const overpaymentConsequence = (input: {
   readonly key: string;
@@ -185,7 +185,7 @@ export const overpaymentConsequence = (input: {
 };
 
 /**
- * payment_seen: one fact per unexplained credit the matcher offers as an open invoice's payment,
+ * payment_seen: one fact per unexplained credit offered as a payment or needing an invoice choice,
  * so a mark holds whatever invoices come and go. About the invoice ranked first alone, else the
  * credit itself with no client; a credit that may be money already recorded is not raised.
  */
@@ -210,7 +210,18 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
   const invoices = matches.some((one) => one.first.some((pair) => pair.candidate.fit === "over"))
     ? yield* invoiceCandidates(ctx.orgId, undefined)
     : [];
-  return matches.flatMap(({ credit, ranked, first }): Array<SensedFact> => {
+  // A declined choice belongs to the bank row even if a later match is an ordinary offer.
+  const declined = new Set(
+    (yield* sql<{ recordId: string }>`SELECT json_extract(p.plan_json, '$.recordId') AS "recordId"
+      FROM kin_card_plans p JOIN kin_widgets w ON w.org_id = p.org_id AND w.widget_id = p.widget_id
+      WHERE p.org_id = ${ctx.orgId} AND p.ran_message_id IS NOT NULL
+        AND json_extract(p.plan_json, '$.kind') = 'invoice_choice'
+        AND json_type(p.plan_json, '$.payment') = 'null'
+        AND json_type(w.state_json, '$.outcome') IS NULL
+      ORDER BY p.widget_id, p.option_id`).map((row) => row.recordId),
+  );
+  return matches.flatMap(({ credit, ranked, first, choice }): Array<SensedFact> => {
+    if (declined.has(credit.recordId)) return [];
     const shared = {
       sense: "payment_seen" as const,
       family: "money" as const,
@@ -222,6 +233,34 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
       // Bank transactions lives in Money: with Money off, nothing about it is told.
       extraSection: "money" as const,
     };
+    if (choice !== undefined) {
+      const { client, options, total } = choice;
+      const items = options.map(
+        ({ invoice, owed }) =>
+          `${recordName(invoice.key, invoice.number)} (${plain(owed.minor, owed.currency)} owed)`,
+      );
+      const consequence = fitted(
+        (shown) =>
+          `${creditText(credit)}, names ${client} but none of ${client}'s open invoices in other currencies, and no recent rate the company was paid at is close to the one it would imply, so Kin can't tell which it pays: ${listed(items, shown, total)}. Nothing is recorded until an owner or co-owner picks one.`,
+        items.length,
+      );
+      if (consequence.length > CONSEQUENCE_MAX) return [];
+      return [
+        {
+          ...shared,
+          subject: {
+            kind: "record",
+            key: credit.key,
+            title: "Bank credit",
+            recordId: KinRecordId.make(credit.recordId),
+          },
+          scope: {},
+          consequence,
+          wake: "brief",
+          paymentChoice: { credit, choice },
+        },
+      ];
+    }
     if (first.length > 1)
       return [
         {

@@ -2,14 +2,24 @@ import * as NodeOS from "node:os";
 import { expect, it } from "@effect/vitest";
 import {
   KinAgentId,
+  KinBriefKind,
   KinChatId,
+  KinCoveringBrief,
   KinEvent,
+  KinLeadRoutine,
   KinMemberId,
   KinMessageId,
   KinOrgId,
   KinPersonId,
   ProviderInstanceId,
   KinWakeupId,
+  KinRoutine,
+  KinSocialPostState,
+  KinTriggerSchedule,
+  KinTriggerSubject,
+  KinWatchdog,
+  MemoryItemHead,
+  ScheduledTaskSchedule,
   KIN_COMPANY_CHAT_TEAM_ID,
   KIN_SET_UP_MESSAGE_PREFIX,
   KIN_TEAM_ROOM_TEAM_ID,
@@ -2287,6 +2297,264 @@ it.effect("quotes a choice tap as the owner's words, not its JSON", () =>
     const quoted = built.split("> BEGIN QUOTE: owner message")[1] ?? "";
     expect(quoted).toContain('Chose \\"Ship it\\" on \\"Release today?\\"');
     expect(quoted).not.toContain("option-1");
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("every kind of schedule the server stores reaches the check-in prompt", () =>
+  Effect.gen(function* () {
+    const repo = yield* leadWithOwner;
+    yield* stored(input.wakeupId, [routineEvent]);
+    const sql = yield* SqlClient.SqlClient;
+    const prompt = yield* KinLeadPrompt;
+    yield* sql`UPDATE kin_orgs SET name = 'Ambermill' WHERE org_id = ${orgId}`;
+    yield* sql`UPDATE kin_people SET display_name = 'Rhea' WHERE org_id = ${orgId} AND person_id = ${personId}`;
+    const finance = KinAgentId.make("finance");
+    const meera = KinPersonId.make("meera");
+    yield* repo.insertAgent({
+      orgId,
+      agentId: finance,
+      displayName: "Finance",
+      role: "lead",
+      ownerPersonId: personId,
+      createdAt: timestamp,
+    });
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES (${meera}, ${orgId}, 'meera', 'Meera', ${timestamp}, 'co_owner')`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at, direct_key)
+      VALUES ('meera-direct', ${orgId}, 'direct', NULL, 0, ${timestamp}, ${`${meera}:${agentId}`}),
+        ('plans-room', ${orgId}, 'team_group', 'Plans', 0, ${timestamp}, NULL)`;
+    const due = "2026-11-20T10:00:00.000Z";
+    const every = { at: "09:00", days: [1] };
+    const fixed = { type: "fixed_time" as const, timeOfDay: every.at, weekdays: every.days };
+    const until = { type: "once" as const, runAt: due };
+    const visible: string[] = [];
+    const omitted: Record<string, string> = {
+      "shared-room": "A room's own routines belong to the room's prompt.",
+      "co-owner-private": "A private routine belongs to a different person's chat.",
+      "another-agent": "A lead reads only its own schedules.",
+      "social-other-agent": "A lead reads only social posts that it scheduled.",
+      "native-webhook": "A webhook runs on an incoming event and has no scheduled time.",
+    };
+    const native = (
+      id: string,
+      schedule: ScheduledTaskSchedule,
+      options: {
+        readonly checkIn?: boolean;
+        readonly audience?: string;
+        readonly chat?: string;
+        readonly agent?: string;
+        readonly enabled?: number;
+      } = {},
+    ) =>
+      Effect.gen(function* () {
+        const taskId = KinSchedules.scheduleTaskId(orgId, id);
+        yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json,
+            project_id, workspace_strategy_json, model_selection_json, runtime_mode, interaction_mode,
+            created_by, creation_source, created_at, updated_at, last_run_status, run_count)
+          VALUES (${taskId}, ${"Tidewater Freight " + id}, 'Prepare the update.', ${options.enabled ?? 1},
+            ${JSON.stringify(schedule)}, 'project', '{}', '{}', 'approval-required', 'plan',
+            'system', 'server', ${timestamp}, ${timestamp}, 'never', 0)`;
+        yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+            source_event, said_by, audience, content_sha256, inbox_thread_id, created_at, updated_at,
+            loose_at, check_in, owner_time_json)
+          VALUES (${taskId}, ${orgId}, ${id}, ${options.agent ?? agentId}, ${options.chat ?? chatId},
+            'set-event', ${personId}, ${options.audience ?? "owner_only"}, 'hash', 'inbox', 0, 0,
+            ${options.checkIn ? every.at : null}, ${options.checkIn ? 1 : 0},
+            ${JSON.stringify({ ...every, host: every })})`;
+      });
+    for (const kind of new Set([
+      ...KinBriefKind.literals,
+      ...KinCoveringBrief.literals,
+      "custom",
+    ])) {
+      const id = `checkin-${kind}`;
+      yield* native(id, fixed, { checkIn: true, ...(kind === "custom" ? { enabled: 0 } : {}) });
+      visible.push(id);
+    }
+    const nativeSchedules = {
+      fixed_time: fixed,
+      interval: { type: "interval", everyMs: 3_600_000 },
+      once: until,
+      webhook: { type: "webhook", signature: null },
+    } satisfies {
+      [Kind in ScheduledTaskSchedule["type"]]: Extract<ScheduledTaskSchedule, { type: Kind }>;
+    };
+    for (const member of ScheduledTaskSchedule.members) {
+      const kind = member.fields.type.literal;
+      const id = `native-${kind}`;
+      yield* native(id, nativeSchedules[kind]);
+      if (!(id in omitted)) visible.push(id);
+    }
+    yield* native("feed-tidewater", fixed);
+    visible.push("feed-tidewater");
+    yield* native("another-agent", fixed, { agent: finance });
+    yield* native("co-owner-private", fixed, { chat: "meera-direct" });
+    yield* native("shared-room", fixed, { audience: "shared", chat: "plans-room" });
+
+    const card = (id: string, type: string, seq: number, state: object) =>
+      Effect.gen(function* () {
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            author_role, kind, body, mentions_json, status, created_at)
+          VALUES (${id}, ${orgId}, ${chatId}, ${seq}, 'system', 'owner', 'system', '', '[]', 'posted',
+            ${timestamp})`;
+        yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type,
+            revision, state_json, awaiting_json, updated_at)
+          VALUES (${id}, ${orgId}, ${chatId}, ${id}, 'native', ${type}, 1, ${JSON.stringify(state)}, '[]',
+            ${timestamp})`;
+      });
+    const trigger = (id: string, subject: object, schedule: object) =>
+      sql`INSERT INTO kin_triggers (trigger_id, org_id, subject_json, schedule_json, time_zone,
+          enabled, next_run_at, created_at, updated_at)
+        VALUES (${id}, ${orgId}, ${JSON.stringify(subject)}, ${JSON.stringify(schedule)}, 'UTC',
+          1, ${Date.parse(due)}, 0, 0)`;
+
+    let seq = 0;
+    for (const onDue of MemoryItemHead.fields.on_due.schema.members[0].literals) {
+      const id = `alarm-${onDue}`;
+      yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due, snapshot_json, updated_at)
+        VALUES (${orgId}, ${id}, 'armed', ${Date.parse(due)}, ${onDue}, '{}', 0)`;
+      yield* trigger(`deferral:${id}:due`, { type: "deferral", itemId: id, phase: "due" }, until);
+      yield* card(`deferral:${orgId}:${id}`, "deferral", ++seq, {
+        title: `Tidewater Freight ${onDue}`,
+      });
+      visible.push(id);
+    }
+    const phaseExclusions = {
+      heads_up: "The same deferral already has one line for its due time.",
+      due: null,
+    } satisfies Record<Extract<KinTriggerSubject, { type: "deferral" }>["phase"], string | null>;
+    for (const phase of KinTriggerSubject.members[0].fields.phase.literals) {
+      const reason = phaseExclusions[phase];
+      if (reason === null) continue;
+      const id = `deferral:alarm-start:${phase}`;
+      yield* trigger(id, { type: "deferral", itemId: "alarm-start", phase }, until);
+      omitted[id] = reason;
+    }
+
+    const legacy = "legacy-task";
+    yield* sql`INSERT INTO kin_scheduled_tasks (org_id, item_id, chat_id, state, paused, recorded_at, updated_at)
+      VALUES (${orgId}, ${legacy}, ${chatId}, 'active', 0, ${timestamp}, 0)`;
+    yield* trigger(`schedule:${legacy}`, { type: "scheduled_task", itemId: legacy }, fixed);
+    yield* card(`scheduled:${orgId}:${legacy}`, "scheduled_task", ++seq, {
+      title: "Weekly plan",
+      every,
+    });
+    visible.push(legacy);
+
+    const routineExclusions = {
+      morning_brief: "Retired in favor of the morning check-in.",
+      evening_summary: "Retired in favor of the evening check-in.",
+      owner_check: "Retired in favor of the weekly brief.",
+      dream: "Internal memory maintenance.",
+      dream_full: "Internal full memory rebuild.",
+    } satisfies Record<KinRoutine | KinLeadRoutine, string>;
+    const watchdogExclusions = {
+      github_recheck: "Internal delivery recovery.",
+      stale_review: "Internal monitoring for stale reviews.",
+      promise_overdue: "Internal monitoring for overdue promises.",
+      objective_at_risk: "Internal monitoring for objectives.",
+      index_freshness: "Internal index maintenance.",
+      trigger_reconcile: "Internal trigger maintenance.",
+    } satisfies Record<KinWatchdog, string>;
+    const triggerSchedules = {
+      fixed_time: fixed,
+      interval: nativeSchedules.interval,
+      once: until,
+    } satisfies Record<KinTriggerSchedule["type"], KinTriggerSchedule>;
+    const triggerKinds = {
+      deferral: [],
+      scheduled_task: [],
+      routine: [...new Set([...KinRoutine.literals, ...KinLeadRoutine.literals])].map(
+        (routine) => ({
+          subject: { type: "routine", routine },
+          reason: routineExclusions[routine],
+        }),
+      ),
+      watchdog: KinWatchdog.literals.map((watchdog) => ({
+        subject: { type: "watchdog", watchdog },
+        reason: watchdogExclusions[watchdog],
+      })),
+      reminder: [
+        {
+          subject: { type: "reminder", itemId: "old-reminder" },
+          reason: "No live trigger consumer. Reminders use deferrals.",
+        },
+      ],
+      followup: [
+        {
+          subject: { type: "followup", itemId: "old-followup", person: personId },
+          reason: "No live trigger consumer. Chases use deferrals and pings.",
+        },
+      ],
+    } satisfies Record<
+      KinTriggerSubject["type"],
+      ReadonlyArray<{ subject: object; reason: string }>
+    >;
+    for (const member of KinTriggerSubject.members) {
+      const kind = member.fields.type.literal;
+      for (const [index, { subject, reason }] of triggerKinds[kind].entries()) {
+        const id = `internal-${kind}-${index}`;
+        yield* trigger(
+          id,
+          subject,
+          kind === "watchdog" ? triggerSchedules.interval : triggerSchedules.fixed_time,
+        );
+        omitted[id] = reason;
+      }
+    }
+
+    const [socialTable] = yield* sql<{ sql: string }>`SELECT sql FROM sqlite_schema
+      WHERE type = 'table' AND name = 'kin_social_posts'`;
+    const socialKinds = socialTable?.sql
+      .match(/CHECK\s*\(kind IN\s*\(([^)]+)\)/i)?.[1]
+      ?.match(/'[^']+'/g)
+      ?.map((value) => value.slice(1, -1));
+    expect(socialKinds?.toSorted()).toEqual(["pack", "post"]);
+
+    const socialStates = {
+      proposed: "Waiting for Confirm.",
+      removed: "Removed from the card.",
+      scheduling: null,
+      scheduled: null,
+      undoing: "Undo has already been requested.",
+      cancelled: "Cancelled at the service.",
+      posted: "Already published.",
+      failed: "The service did not schedule it.",
+      draft: "A draft date is a plan.",
+      discarded: "Discarded before Confirm.",
+      ready: "A pack is for someone to post by hand.",
+    } satisfies Record<KinSocialPostState | "draft" | "discarded" | "ready", string | null>;
+    for (const state of [...KinSocialPostState.literals, "draft", "discarded", "ready"] as const) {
+      const id = `social-${state}`;
+      yield* sql`INSERT INTO kin_social_posts (org_id, post_id, kind, caption, at_ms, state, agent_id,
+          created_at, updated_at)
+        VALUES (${orgId}, ${id}, ${state === "ready" ? "pack" : "post"}, 'Tidewater Freight',
+          ${Date.parse(due)}, ${state}, ${agentId}, 0, 0)`;
+      const reason = socialStates[state];
+      if (reason === null) visible.push(id);
+      else omitted[id] = reason;
+    }
+
+    yield* sql`INSERT INTO kin_social_posts (org_id, post_id, kind, caption, at_ms, state, agent_id,
+        created_at, updated_at)
+      VALUES (${orgId}, 'social-other-agent', 'post', 'Tidewater Freight', ${Date.parse(due)},
+        'scheduled', ${finance}, 0, 0)`;
+
+    const section =
+      (yield* prompt.build({ ...input, lane: { chatId, mode: "notice" } }))
+        .split(PROMPT_HEADINGS.checkIns)[1]
+        ?.split(/\n\n# /)[0] ?? "";
+    const line = (id: string) =>
+      section.split("\n").find((line) => line.startsWith(id + " ") || line.startsWith(id + ":"));
+    expect(visible.filter((id) => line(id) === undefined)).toEqual([]);
+    for (const [id, reason] of Object.entries(omitted)) expect(section, reason).not.toContain(id);
+    expect(line("checkin-custom")).toBe(
+      "checkin-custom Tidewater Freight checkin-custom: around 09:00 Mon (paused)",
+    );
+    expect(line("native-fixed_time")).toContain("09:00 Mon");
+    expect(line("native-interval")).toContain("60");
+    for (const id of ["alarm-remind", "native-once", "social-scheduled"])
+      expect(line(id)).toContain("2026-11-20T10:00:00.000+00:00");
   }).pipe(Effect.provide(layer)),
 );
 

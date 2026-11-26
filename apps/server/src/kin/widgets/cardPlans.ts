@@ -81,7 +81,7 @@ const ListPlan = Schema.Struct({
  * pair when drawn: the credit at its revision, the invoice at what it owed then (`seen`), and what
  * the card said from the records: the invoice's printed number, its client and what stays owed.
  */
-const PaymentPlan = Schema.Struct({
+const PaymentTerms = Schema.Struct({
   kind: Schema.Literal("record_payment"),
   recordId: Schema.String,
   key: Schema.String,
@@ -117,8 +117,10 @@ const PaymentPlan = Schema.Struct({
   withheldMinor: Schema.NullOr(Schema.Number),
   /** What the invoice still owes once this is recorded: zero settles it. */
   owedAfterMinor: Schema.Number,
-  draw: CardDraw,
+  invoiceRev: Schema.optionalKey(Schema.Number),
 });
+export type PaymentTerms = typeof PaymentTerms.Type;
+const PaymentPlan = Schema.Struct({ ...PaymentTerms.fields, draw: CardDraw });
 export type PaymentPlan = typeof PaymentPlan.Type;
 /**
  * A Bank transactions debit that pays a partner back, as Kin's matcher read it when drawn: the
@@ -388,6 +390,20 @@ const NoticePlan = Schema.Struct({
 });
 export type NoticePlan = typeof NoticePlan.Type;
 
+const InvoiceChoicePlan = Schema.Struct({
+  kind: Schema.Literal("invoice_choice"),
+  ...FactCardFields,
+  payment: Schema.NullOr(
+    Schema.Struct({
+      ...PaymentTerms.fields,
+      invoiceRev: Schema.Number,
+      received: KinMoney,
+      rate: Schema.String,
+    }),
+  ),
+});
+export type InvoiceChoicePlan = typeof InvoiceChoicePlan.Type;
+
 const QuietPlan = Schema.Struct({
   kind: Schema.Literals(["quiet_keep", "quiet_stop"]),
   wakeupId: Schema.String,
@@ -414,18 +430,20 @@ export const CardPlan = Schema.Union([
   StallPlan,
   DuePlan,
   NoticePlan,
+  InvoiceChoicePlan,
   BillPlan,
   BillPaidPlan,
   QuietPlan,
 ]);
 export type CardPlan = typeof CardPlan.Type;
-export type FactCardPlan = WaitedPlan | StallPlan | DuePlan | NoticePlan;
+export type FactCardPlan = WaitedPlan | StallPlan | DuePlan | NoticePlan | InvoiceChoicePlan;
 const FACT_CARD_KINDS: ReadonlySet<string> = new Set<FactCardPlan["kind"]>([
   "waited_answer",
   "stall_answer",
   "move_due",
   "keep_due",
   "notice_renew",
+  "invoice_choice",
 ]);
 /** Kin's own card about a pulse fact: it answers nothing else and no agent draws or redraws it. */
 export const isFactCard = (plan: CardPlan): plan is FactCardPlan => FACT_CARD_KINDS.has(plan.kind);

@@ -13,6 +13,7 @@ import * as DateTime from "effect/DateTime";
 import { billingClientFromProject } from "../../work/billTo.ts";
 import type * as SqlClient from "effect/sql/SqlClient";
 
+import type { CreditMatch } from "../../work/statements/invoiceCredits.ts";
 import type { Overflow } from "./capped.ts";
 import type { SectionId } from "../../shell/sections.ts";
 import { dayIn } from "../../work/money.ts";
@@ -45,6 +46,9 @@ export type SensedFact = Omit<KinPulseFact, "handled"> & {
   readonly section?: SectionId | `list:${string}`;
   readonly overflow?: Overflow;
   readonly extraSection?: SectionId;
+  readonly paymentChoice?: Pick<CreditMatch, "credit"> & {
+    readonly choice: NonNullable<CreditMatch["choice"]>;
+  };
 };
 
 /** An entry with its project and client, as every record sense selects it (`r`, `p`, `c`). */

@@ -8,7 +8,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { retell } from "../../pulse/KinPulse.ts";
-import type { ApplyPlan, CardDraw, PaymentPlan } from "../../widgets/cardPlans.ts";
+import type { ApplyPlan, CardDraw, PaymentPlan, PaymentTerms } from "../../widgets/cardPlans.ts";
 import { KinRecords, type Writer } from "../KinRecords.ts";
 import { formatMoney } from "../money.ts";
 import { backed, receiptsList, setAgainst } from "../../gendocs/receipts.ts";
@@ -34,6 +34,11 @@ import { agentWrote, creditMatch, type CreditPair, rateMoney } from "./invoiceCr
  */
 
 const refuse = (message: string) => new KinChatError({ reason: "invalid_state", message });
+export const PAYMENT_TAP_REFUSAL = "Only the owner or a co-owner confirms money received.";
+export const paymentChanged = (bankKey: string, invoiceKey?: string): KinChoiceOutcome => ({
+  title: "Nothing was done",
+  text: `${invoiceKey === undefined ? bankKey : `${bankKey} or ${invoiceKey}`} changed since this was offered, so nothing was done.`,
+});
 const NOTHING_ASKED = "Nothing was asked; tell the owner what you see instead.";
 
 export const keyRow = Effect.fn("KinCreditPayment.keyRow")(function* (
@@ -86,7 +91,7 @@ export const drawPayment = Effect.fn("KinCreditPayment.draw")(function* (
       `${bank.key} was written or changed by an agent, so Kin can't take it as the bank's word that money came in. ${NOTHING_ASKED} A person can record the payment on the invoice.`,
     );
   const match = yield* creditMatch(orgId, bank.recordId);
-  if (match === undefined)
+  if (match === undefined || match.first.length === 0)
     return yield* refuse(
       `${bank.key} isn't an unexplained credit that Kin's bank matching takes for an open invoice's payment. ${NOTHING_ASKED}`,
     );
@@ -188,12 +193,13 @@ export const drawPayment = Effect.fn("KinCreditPayment.draw")(function* (
   } satisfies PaymentPlan;
 });
 
-const money = (plan: PaymentPlan, minor: number) => formatMoney({ minor, currency: plan.currency });
-const clientName = (plan: PaymentPlan) =>
+const money = (plan: PaymentTerms, minor: number) =>
+  formatMoney({ minor, currency: plan.currency });
+const clientName = (plan: PaymentTerms) =>
   typeof plan.client === "string" ? plan.client : plan.client?.name;
 const joined = (parts: ReadonlyArray<string>) =>
   parts.length < 3 ? parts.join(" and ") : `${parts.slice(0, -1).join(", ")}, and ${parts.at(-1)}`;
-const what = (plan: PaymentPlan) =>
+const what = (plan: PaymentTerms) =>
   `${money(plan, plan.amountMinor)} received ${shortDay(plan.day)} (${plan.bankKey}) as the payment of ${plan.number}${
     clientName(plan) === undefined ? "" : ` from ${clientName(plan)}`
   }${
@@ -202,7 +208,7 @@ const what = (plan: PaymentPlan) =>
       : `, with ${money(plan, plan.withheldMinor)} of tax the client withheld`
   }`;
 
-const settledWhat = (plan: PaymentPlan, showBankKey: boolean) => {
+const settledWhat = (plan: PaymentTerms, showBankKey: boolean) => {
   if (plan.received === undefined || plan.rate === undefined) return undefined;
   const client = showBankKey && clientName(plan) !== undefined ? ` from ${clientName(plan)}` : "";
   const bankKey = showBankKey ? ` (${plan.bankKey})` : "";
@@ -244,13 +250,17 @@ export const paymentLine = (plan: PaymentPlan) => {
 export const recordPayment = Effect.fn("KinCreditPayment.record")(
   function* (
     orgId: KinOrgId,
-    plan: PaymentPlan,
+    plan: PaymentTerms,
     writer: Writer,
     widgetId: string,
     records: KinRecords["Service"],
   ) {
     const match = yield* creditMatch(orgId, plan.bankRecordId);
-    const pair = match?.first.find((one) => one.invoice.recordId === plan.recordId);
+    const findInvoice = (one: { readonly invoice: { readonly recordId: string } }) =>
+      one.invoice.recordId === plan.recordId;
+    const choice =
+      plan.invoiceRev === undefined ? undefined : match?.choice?.options.find(findInvoice);
+    const pair = plan.invoiceRev === undefined ? match?.first.find(findInvoice) : choice;
     const def = yield* findBankList(orgId);
     const ratePair = pair !== undefined && "rate" in pair ? pair : undefined;
     if (
@@ -258,7 +268,9 @@ export const recordPayment = Effect.fn("KinCreditPayment.record")(
       match.recorded !== undefined ||
       pair === undefined ||
       def === undefined ||
-      pair.credit.rev !== plan.rev ||
+      match.credit.rev !== plan.rev ||
+      choice?.invoice.rev !== plan.invoiceRev ||
+      (choice !== undefined && choice.invoice.client !== plan.client) ||
       pair.invoice.seen !== plan.seen ||
       ratePair?.rate !== plan.rate ||
       ratePair?.received.minor !== plan.received?.minor ||
@@ -277,7 +289,7 @@ export const recordPayment = Effect.fn("KinCreditPayment.record")(
     if (plan.splits !== undefined) {
       const client = plan.client;
       if (typeof client !== "object" || client === null || writer.actor._tag !== "person")
-        return yield* refuse("Only the owner or a co-owner confirms money received.");
+        return yield* refuse(PAYMENT_TAP_REFUSAL);
       const invoices = yield* invoiceCandidates(orgId, undefined);
       if (
         plan.splits.some(
