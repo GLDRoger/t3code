@@ -809,6 +809,65 @@ describe("streaming replies", () => {
     ]);
   });
 
+  it("draws a reply's buttons and receipt after its last separate card", () => {
+    const sourceWakeupId = KinWakeupId.make("tidewater-footer");
+    const question = agentMessage(2, {
+      sourceWakeupId,
+      body: "",
+      widgetId: KinWidgetId.make("choice"),
+    });
+    const doc = agentMessage(3, { sourceWakeupId, body: "", widgetId: KinWidgetId.make("doc") });
+    const text = agentMessage(4, {
+      sourceWakeupId,
+      body: "I updated the Tidewater Freight draft.",
+      links: [
+        {
+          text: "Tidewater Freight draft",
+          to: { _tag: "record", key: "D-12", kind: "doc" },
+          note: null,
+        },
+      ],
+      turnChanges: {
+        count: 1,
+        more: 0,
+        items: [
+          {
+            key: "D-12",
+            title: "Tidewater Freight draft",
+            what: "updated",
+            change: { agentId: KIN_FIXTURE_AGENT, seq: 1 },
+            undoable: true,
+            undone: false,
+          },
+        ],
+      },
+    });
+    const footer = `footer:${text.messageId}`;
+    const draw = (messages: ReadonlyArray<KinMessage>) => messageRows(messages, viewer, new Set());
+    expect(draw([question, doc, text]).map((row) => row.key)).toEqual([
+      text.messageId,
+      question.messageId,
+      doc.messageId,
+      footer,
+    ]);
+    expect(draw([question, doc, text])).toMatchObject([
+      { type: "message", footerAfterCards: true, message: text },
+      { type: "message" },
+      { type: "message" },
+      { type: "footer", message: text },
+    ]);
+    expect(draw([question, text, doc]).map((row) => row.key)).toEqual([
+      text.messageId,
+      question.messageId,
+      doc.messageId,
+      footer,
+    ]);
+    expect(draw([{ ...text, widgetId: doc.widgetId }]).map((row) => row.key)).toEqual([
+      text.messageId,
+    ]);
+    expect(draw([text]).map((row) => row.key)).toEqual([text.messageId]);
+  });
+
   it("keeps a draft's key and author line when its message lands, so the bubble stays put", () => {
     const before = [ownMessage(1), reply(2, "a", "First.")];
     const streaming = messageRows(before, viewer, new Set(), streamingAt, [draft(3, "b", "Sec")]);
