@@ -25,6 +25,7 @@ import type { KinChatService } from "../chat/KinChatService.ts";
 import { SHARED_REFUSAL, aborted, peopleBehind } from "../lead/Audience.ts";
 import { routeShown, runRoute } from "../lead/routeCard.ts";
 import { recommendShown, runRecommend } from "../recommend/card.ts";
+import { quietShown, runQuiet } from "../lead/quietRunCard.ts";
 import { leaverShown, runLeaver } from "../people/leaver.ts";
 import { factCardShown } from "../pulse/factCards.ts";
 import { runFactCard } from "../pulse/factCardTaps.ts";
@@ -45,7 +46,7 @@ import {
   deferralWidgetId,
   makeDeferralStarter,
 } from "../triggers/deferrals.ts";
-import { isHelperRefusal, type KinRecords } from "../work/KinRecords.ts";
+import { isHelperRefusal, KinRecords } from "../work/KinRecords.ts";
 import { viewOf } from "../work/leadWork.ts";
 import { repeatOf } from "../work/recordRows.ts";
 import {
@@ -57,11 +58,25 @@ import {
 } from "../work/registers.ts";
 import { teamGuard, viewVisible } from "../work/teamView.ts";
 import {
+  applyCredit,
+  applyLabel,
+  applyLine,
+  drawApply,
   drawPayment,
   paymentLabel,
   paymentLine,
   recordPayment,
 } from "../work/statements/creditPayment.ts";
+import {
+  billPaidLabel,
+  billPaidLine,
+  drawBill,
+  drawBillPaid,
+  markBillPaid,
+  recordBill,
+  recordBillLabel,
+  recordBillLine,
+} from "../work/statements/billCard.ts";
 import { drawRepaid, markRepaid, repaidLabel, repaidLine } from "../work/statements/repaidCard.ts";
 import {
   type CardActionInput,
@@ -69,6 +84,7 @@ import {
   type CardPlan,
   type RunPlan,
   isAnswered,
+  isQuiet,
   isFactCard,
   isTaken,
   plansOf,
@@ -112,6 +128,8 @@ const labelOf = (plan: CardPlan): string => {
       return "Create the list";
     case "record_payment":
       return paymentLabel(plan);
+    case "apply_credit":
+      return applyLabel(plan);
     case "mark_repaid":
       return repaidLabel(plan);
     case "take_default": {
@@ -124,6 +142,9 @@ const labelOf = (plan: CardPlan): string => {
       return recommendShown(plan).label;
     case "leaver":
       return leaverShown(plan).label;
+    case "quiet_keep":
+    case "quiet_stop":
+      return quietShown(plan).label;
     case "waited_answer":
     case "stall_answer":
     case "move_due":
@@ -137,6 +158,10 @@ const labelOf = (plan: CardPlan): string => {
       return "Keep it";
     case "undo_answer":
       return "Undo";
+    case "record_bill":
+      return recordBillLabel;
+    case "mark_bill_paid":
+      return billPaidLabel(plan);
   }
 };
 
@@ -153,6 +178,8 @@ const lineOf = (plan: CardPlan): string => {
       return `Create the list ${quoted(plan.name, 60)}`;
     case "record_payment":
       return paymentLine(plan);
+    case "apply_credit":
+      return applyLine(plan);
     case "mark_repaid":
       return repaidLine(plan);
     case "take_default": {
@@ -165,6 +192,9 @@ const lineOf = (plan: CardPlan): string => {
       return recommendShown(plan).line;
     case "leaver":
       return leaverShown(plan).line;
+    case "quiet_keep":
+    case "quiet_stop":
+      return quietShown(plan).line;
     case "waited_answer":
     case "stall_answer":
     case "move_due":
@@ -179,6 +209,10 @@ const lineOf = (plan: CardPlan): string => {
       return UNDO_ANSWER_LINE;
     case "keep_answer":
       return plan.answer === null ? "Keep it" : `Keep ${quoted(plan.answer, 40)}`;
+    case "record_bill":
+      return recordBillLine(plan);
+    case "mark_bill_paid":
+      return billPaidLine(plan);
   }
 };
 
@@ -384,9 +418,21 @@ const drawRun = Effect.fn("KinCardActions.drawRun")(function* (
         yield* ownerTier("payment_record");
         return yield* drawPayment(orgId, input.target, drawn);
       }
+      case "apply_credit": {
+        yield* ownerTier("payment_record");
+        return yield* drawApply(orgId, input.target, drawn);
+      }
       case "mark_repaid": {
         yield* ownerTier("record_update");
         return yield* drawRepaid(orgId, input.target, drawn);
+      }
+      case "record_bill": {
+        yield* ownerTier("record_update");
+        return yield* drawBill(orgId, input.target, drawn);
+      }
+      case "mark_bill_paid": {
+        yield* ownerTier("record_update");
+        return yield* drawBillPaid(orgId, input.target, drawn);
       }
     }
   });
@@ -416,7 +462,7 @@ const drawDefault = Effect.fn("KinCardActions.drawDefault")(function* (
     sealed?.kind === "let_talk" ||
     sealed?.kind === "recommend" ||
     sealed?.kind === "leaver" ||
-    (sealed !== undefined && isFactCard(sealed))
+    (sealed !== undefined && (isFactCard(sealed) || isQuiet(sealed)))
   )
     return yield* refuse("That question has no default to take.");
   if (sealed?.kind === "take_default")
@@ -467,8 +513,10 @@ const actionOf = (plan: RunPlan): RunInput => ({
       : plan.kind === "create_list"
         ? plan.proposalId
         : plan.kind === "record_payment"
-          ? `${plan.bankKey} ${plan.key}`
-          : plan.key,
+          ? [plan.bankKey, ...(plan.splits?.map((part) => part.key) ?? [plan.key])].join(" ")
+          : plan.kind === "apply_credit"
+            ? `${plan.receipt} ${plan.key}`
+            : plan.key,
 });
 /** The same action on the same thing at the same revision, whoever drew it and whatever it's labelled. */
 const sameAction = (a: CardPlan, b: CardPlan) =>
@@ -538,7 +586,8 @@ export const redraw = Effect.fn("KinCardActions.redraw")(function* (
     sealed.kind === "leaver" ||
     isFactCard(sealed) ||
     isTaken(sealed) ||
-    isAnswered(sealed)
+    isAnswered(sealed) ||
+    isQuiet(sealed)
   )
     return undefined;
   const lead = {
@@ -635,6 +684,7 @@ export const run = Effect.fn("KinCardActions.run")(function* (
   if (plan.kind === "recommend") return yield* runRecommend(tap, plan);
   if (plan.kind === "leaver") return yield* runLeaver(tap, plan, deps.chat);
   if (isFactCard(plan)) return yield* runFactCard(tap, plan, deps.records);
+  if (isQuiet(plan)) return yield* runQuiet(tap, plan);
   if (isAnswered(plan)) return yield* runAnswered(tap, plan, deps.chat);
   if (isTaken(plan))
     return yield* runTaken(
@@ -926,8 +976,23 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
         },
         tap.widget.widgetId,
         records,
-      );
+      ).pipe(Effect.provideService(KinRecords, records));
       return done ?? nothingDone(`${plan.bankKey} or ${plan.key} changed since this was offered`);
+    }
+    case "apply_credit": {
+      if (!owner)
+        return yield* notAllowed("Only the owner or a co-owner can apply a client's credit.");
+      yield* refuseOff("invoices");
+      const why = yield* drawsHold(orgId, draws);
+      if (why !== undefined) return nothingDone(why);
+      const done = yield* applyCredit(orgId, plan, {
+        actor: { _tag: "person", personId },
+        via: "owner",
+        askedBy: personId,
+        chatId: tap.widget.chatId,
+        answering: [tap.widget.widgetId, ...alsoAnswering],
+      }).pipe(Effect.provideService(KinRecords, records));
+      return done ?? nothingDone(`${plan.receipt} or ${plan.key} changed since this was offered`);
     }
     case "mark_repaid": {
       if (!owner)
@@ -953,6 +1018,25 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
       return (
         done ?? nothingDone(`${plan.key} or an expense it repays changed since this was offered`)
       );
+    }
+    case "record_bill":
+    case "mark_bill_paid": {
+      if (!owner)
+        return yield* notAllowed("Only the owner or a co-owner can record a bill or mark it paid.");
+      yield* refuseOff("expenses");
+      if (plan.kind === "mark_bill_paid") yield* refuseOff("bank_transactions");
+      const why = yield* drawsHold(orgId, draws);
+      if (why !== undefined) return nothingDone(why);
+      const writer = {
+        actor: { _tag: "person" as const, personId },
+        via: "owner" as const,
+        askedBy: personId,
+        chatId: tap.widget.chatId,
+        answering: [tap.widget.widgetId, ...alsoAnswering],
+      };
+      if (plan.kind === "record_bill") return yield* recordBill(orgId, plan, writer, records);
+      const done = yield* markBillPaid(orgId, plan, writer, records);
+      return done ?? nothingDone(`${plan.key} or ${plan.bill.key} changed since this was offered`);
     }
   }
 });

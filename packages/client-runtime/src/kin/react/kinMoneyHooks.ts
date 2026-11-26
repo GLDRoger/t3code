@@ -7,6 +7,7 @@ import type {
   KinListId,
   KinListTotals,
   KinListsResult,
+  KinMoney,
   KinMoneySummary,
   KinRecord,
   KinRecordKey,
@@ -504,6 +505,9 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
     const voidIt = useAtomCommand(kinClient.workVoid, { reportFailure: false });
     const unvoid = useAtomCommand(kinClient.workUnvoid, { reportFailure: false });
     const receipt = useAtomCommand(kinClient.makeReceipt, { reportFailure: false });
+    const undoCredit = useAtomCommand(kinClient.undoCreditPayment, { reportFailure: false });
+    const unapply = useAtomCommand(kinClient.unapplyCredit, { reportFailure: false });
+    const draftNote = useAtomCommand(kinClient.draftCreditNote, { reportFailure: false });
     const render = useAtomCommand(kinClient.docRender, { reportFailure: false });
     const readNext = useAtomCommand(kinClient.workNextNumber, { reportFailure: false });
     const [busy, setBusy] = useState(false);
@@ -577,6 +581,34 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
           key,
           kinReceiptNotice,
         ),
+      undoCreditPayment: (invoiceKey: KinRecordKey, bankKey: KinRecordKey) =>
+        run(
+          () => undoCredit({ environmentId, input: { orgId, key: bankKey } }),
+          invoiceKey,
+          () => null,
+        ),
+      unapplyCredit: (invoiceKey: KinRecordKey, receiptKey: KinRecordKey) =>
+        run(
+          () => unapply({ environmentId, input: { orgId, key: receiptKey } }),
+          invoiceKey,
+          () => null,
+        ),
+      draftCreditNote: async (
+        invoiceKey: KinRecordKey,
+        input: {
+          readonly amount: KinMoney;
+          readonly reason: string;
+          readonly originKey: string;
+        },
+      ) => {
+        const made = await run(
+          () => draftNote({ environmentId, input: { orgId, invoice: invoiceKey, ...input } }),
+          invoiceKey,
+          () => null,
+        );
+        if (made !== null) kinReads.refreshLists({ environmentId, orgId });
+        return made;
+      },
       /** The document as it would be made, never filed; null when it couldn't be made. */
       preview: async (
         recipe: string,

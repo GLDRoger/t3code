@@ -5,7 +5,7 @@ import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinAgentId, KinChatError, KinOrgId, KinPersonId } from "./kinChat.ts";
 import { CanonicalUtcTimestamp, KinMemoryItemId } from "./kinLead.ts";
-import { KinCurrency, KinDay } from "./kinMoney.ts";
+import { KinCurrency, KinDay, KinMoney } from "./kinMoney.ts";
 import { KinRecordId, KinRecordKey } from "./kinWork.ts";
 
 /**
@@ -62,6 +62,8 @@ const KIN_PULSE_SENSES = [
   "payment_seen",
   "repaid_seen",
   "mail_gap",
+  "bill_due",
+  "bill_paid_seen",
 ] as const;
 /**
  * Senses newer than the first phones: a screen read sends them only to a client that lists them
@@ -83,6 +85,8 @@ export const KIN_PULSE_LATER_SENSES = [
   "payment_seen",
   "repaid_seen",
   "mail_gap",
+  "bill_due",
+  "bill_paid_seen",
 ] as const;
 export const KinPulseSense = Schema.Literals(KIN_PULSE_SENSES);
 export type KinPulseSense = typeof KinPulseSense.Type;
@@ -367,6 +371,10 @@ export const KinGoal = Schema.Struct({
   unit: Schema.optional(Schema.String),
   target: Schema.Finite,
   current: Schema.Finite,
+  notCounted: Schema.optional(
+    Schema.Array(Schema.Struct({ currency: KinCurrency, received: KinMoney })),
+  ),
+  about: Schema.optional(Schema.Struct({ total: KinMoney, rateDays: Schema.Array(KinDay) })),
   /** Where a straight line from start to target stands today. */
   expected: Schema.Finite,
   startsOn: KinDay,

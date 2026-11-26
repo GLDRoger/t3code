@@ -8,6 +8,8 @@ import {
   type KinBillsListInput,
   type KinChatHistoryInput,
   type KinChatId,
+  type KinDesktopNotice,
+  type KinDesktopNoticesInput,
   type KinChatMembersInput,
   type KinCompanyProfileInput,
   type KinReceiptsInput,
@@ -73,6 +75,8 @@ import { Atom, AtomRegistry } from "effect/reactivity";
 
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import type * as EnvironmentRegistry from "../connection/registry.ts";
+import { subscribe } from "../rpc/index.ts";
+import { followStreamInEnvironment } from "../state/environmentStreams.ts";
 import {
   createEnvironmentQueryAtomFamily,
   createEnvironmentSubscriptionAtomFamily,
@@ -1198,6 +1202,21 @@ export function makeKinClient<R, ER>(
       tag: KIN_CHAT_WS_METHODS.chatsClear,
       concurrency: { mode: "singleFlight", key: ({ input }) => `preview:${input.chatId}` },
     }),
+    subscribeDesktopNotices: (
+      environmentId: EnvironmentId,
+      input: KinDesktopNoticesInput,
+      onNotice: (notice: KinDesktopNotice) => void,
+    ) =>
+      registry.mount(
+        runtime
+          .atom(
+            followStreamInEnvironment(
+              environmentId,
+              subscribe("kin.push.desktopNotices", input),
+            ).pipe(Stream.runForEach((notice) => Effect.sync(() => onNotice(notice)))),
+          )
+          .pipe(Atom.setIdleTTL(0), Atom.withLabel("kin:push:desktop-notices")),
+      ),
     inbox: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: KIN_INBOX_LABEL,
       subscribe: (input: Parameters<typeof kinInboxStream>[0]) =>
@@ -2137,6 +2156,21 @@ export function makeKinClient<R, ER>(
       tag: "kin.work.voidPayment",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.paymentId },
     }),
+    undoCreditPayment: createKinRpcCommand(runtime, {
+      label: "kin:work:credit-payment:undo",
+      tag: "kin.work.undoCreditPayment",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
+    unapplyCredit: createKinRpcCommand(runtime, {
+      label: "kin:work:credit:unapply",
+      tag: "kin.work.unapplyCredit",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
+    draftCreditNote: createKinRpcCommand(runtime, {
+      label: "kin:work:credit-note:draft",
+      tag: "kin.work.draftCreditNote",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.originKey },
+    }),
     /** One page of the files in the owner's chats, for keeping one on an entry. */
     workFiles: workFilesRead,
     /** Its `permissionAtom` says whether this session may read company details at all. */
@@ -2185,6 +2219,11 @@ export function makeKinClient<R, ER>(
       label: "kin:company:set",
       tag: "kin.work.setCompanyProfile",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+    }),
+    answerCountryCard: createKinRpcCommand(runtime, {
+      label: "kin:company:country-card",
+      tag: "kin.work.answerCountryCard",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.widgetId },
     }),
     workIssue: createKinRpcCommand(runtime, {
       label: "kin:work:issue",
@@ -2254,6 +2293,11 @@ export function makeKinClient<R, ER>(
     docLabel: createKinRpcCommand(runtime, {
       label: "kin:docs:label",
       tag: "kin.docs.label",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
+    docReaders: createKinRpcCommand(runtime, {
+      label: "kin:docs:readers",
+      tag: "kin.docs.readers",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
     }),
     docFile: createKinRpcCommand(runtime, {

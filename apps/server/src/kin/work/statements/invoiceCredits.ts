@@ -1,4 +1,4 @@
-import type { KinOrgId } from "@t3tools/contracts";
+import { kinCurrency, type KinMoney, type KinOrgId, kinRateShown } from "@t3tools/contracts";
 import { readOnly } from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -6,7 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { DAY_MS } from "../../durations.ts";
 import { companyMoney } from "../companyProfile.ts";
 import { parseFields } from "../lists.ts";
-import { dayIn, formatMinor } from "../money.ts";
+import { dayIn, formatMinor, formatMoney } from "../money.ts";
 import { countedEntry, ownerZone } from "../recordRows.ts";
 import { regionOf } from "../region.ts";
 import type { ListDef } from "../registers.ts";
@@ -16,6 +16,8 @@ import {
   invoiceOffer,
   levelWithBest,
   paymentOffer,
+  overOffer,
+  rateOffer,
 } from "./statementMatch.ts";
 import { invoiceCandidates, recordedPayments } from "./statementReview.ts";
 import type { StatementRow } from "./statementTable.ts";
@@ -132,28 +134,65 @@ export const invoiceCredits = Effect.fn("KinStatements.invoiceCredits")(function
     currency: invoice.currency,
     maxMinor: owed,
   });
-  return credits
+  const other = (yield* openEntries(orgId, def, "credit", undefined)).filter(
+    (credit) => credit.currency !== invoice.currency || credit.amountMinor > owed,
+  );
+  const takenBack = other.length === 0 ? undefined : yield* takenBackPairs(orgId, recordId);
+  return [...credits, ...other]
+    .toSorted((a, b) => b.dateAt - a.dateAt || b.recordId.localeCompare(a.recordId))
     .flatMap((credit) => {
-      const reason = invoiceOffer(credit.row, invoice, invoice.currency, withholds)?.reason;
-      return reason === undefined
+      if (takenBack?.has(`${credit.recordId}|${recordId}`) && credit.currency !== invoice.currency)
+        return [];
+      const pair = pairOf(credit, invoice, withholds);
+      return pair === undefined ||
+        (pair.candidate.fit === "over" && takenBack?.has(`${credit.recordId}|${recordId}`))
         ? []
         : [
             {
               key: credit.key,
               date: credit.date,
-              amount: formatMinor(BigInt(credit.amountMinor), invoice.currency),
+              amount:
+                "rate" in pair
+                  ? rateMoney(pair.received)
+                  : formatMinor(BigInt(credit.amountMinor), credit.currency),
               title: credit.title,
-              reason,
+              reason: pair.reason,
             },
           ];
     })
     .slice(0, SHOWN);
 });
 
+export const rateMoney = (money: KinMoney) =>
+  `${money.currency} ${formatMoney(money).slice(kinCurrency(money.currency).symbol.length)}`;
+
 const pairOf = (credit: OpenCredit, invoice: InvoiceCandidate, withholds: boolean) => {
-  if (invoice.currency !== credit.currency) return undefined;
-  const offer = invoiceOffer(credit.row, invoice, invoice.currency, withholds);
-  return offer === undefined ? undefined : { credit, invoice, ...offer };
+  if (invoice.currency === credit.currency) {
+    const offer = invoiceOffer(credit.row, invoice, invoice.currency, withholds);
+    if (offer !== undefined) return { credit, invoice, ...offer };
+    const over = overOffer(credit.row, invoice, invoice.currency);
+    if (over === undefined || invoice.clientId == null || invoice.client === null) return undefined;
+    return {
+      credit,
+      invoice,
+      ...over,
+      reason: over.cited === undefined ? `it names ${invoice.client}` : `it cites ${over.cited}`,
+    };
+  }
+  const offer = rateOffer(credit.row, invoice, credit.currency);
+  if (offer === undefined) return undefined;
+  const clue =
+    offer.cited !== undefined
+      ? `, and it cites ${offer.cited}`
+      : offer.candidate.why.includes("client named") && invoice.client !== null
+        ? ` from ${invoice.client}`
+        : "";
+  return {
+    credit,
+    invoice,
+    ...offer,
+    reason: `${rateMoney(offer.received)} for ${rateMoney(offer.owed)} owed, a rate of ${kinRateShown(offer.rate)}${clue}`,
+  };
 };
 export type CreditPair = NonNullable<ReturnType<typeof pairOf>>;
 
@@ -168,6 +207,23 @@ export type CreditMatch = {
   readonly first: ReadonlyArray<CreditPair>;
   readonly recorded: { readonly key: string; readonly paidOn: string } | undefined;
 };
+
+const takenBackPairs = Effect.fn("KinStatements.takenBackPairs")(function* (
+  orgId: KinOrgId,
+  recordId?: string,
+) {
+  // A pair whose card payment was taken back was the owner's no: never offered again.
+  const sql = yield* SqlClient.SqlClient;
+  return new Set(
+    (yield* sql<{ recordId: string; originKey: string }>`SELECT record_id AS "recordId",
+        origin_key AS "originKey" FROM kin_record_payments
+      WHERE org_id = ${orgId} AND voided_at IS NOT NULL AND origin_key LIKE ${`${BANK_CREDIT_ORIGIN}%`}
+        ${recordId === undefined ? sql`` : sql`AND record_id = ${recordId}`}
+      ORDER BY payment_id`).map(
+      (one) => `${one.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]}|${one.recordId}`,
+    ),
+  );
+});
 
 const rankAll = Effect.fn("KinStatements.rankCredits")(function* (
   orgId: KinOrgId,
@@ -187,16 +243,7 @@ const rankAll = Effect.fn("KinStatements.rankCredits")(function* (
     orgId,
     dayIn(Date.parse(`${earliest}T00:00:00Z`) - 15 * DAY_MS, "UTC"),
   );
-  // A pair whose card payment was taken back was the owner's no: never offered again.
-  const sql = yield* SqlClient.SqlClient;
-  const takenBack = new Set(
-    (yield* sql<{ recordId: string; originKey: string }>`SELECT record_id AS "recordId",
-        origin_key AS "originKey" FROM kin_record_payments
-      WHERE org_id = ${orgId} AND voided_at IS NOT NULL AND origin_key LIKE ${`${BANK_CREDIT_ORIGIN}%`}
-      ORDER BY payment_id`).map(
-      (one) => `${one.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]}|${one.recordId}`,
-    ),
-  );
+  const takenBack = yield* takenBackPairs(orgId);
   return credits.flatMap((credit): Array<CreditMatch> => {
     const ranked = invoices
       .filter((invoice) => !takenBack.has(`${credit.recordId}|${invoice.recordId}`))

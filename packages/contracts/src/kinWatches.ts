@@ -21,6 +21,7 @@ const KIN_WATCH_KINDS = [
   "host",
   "prepare",
   "arrival",
+  "turn_quiet",
 ] as const;
 export type KinWatchKind = (typeof KIN_WATCH_KINDS)[number];
 

@@ -39,6 +39,8 @@ import {
   kinDocEditInput,
   kinDocEditOpen,
   kinDocEditOutcome,
+  kinDocPrivacy,
+  kinDocReaders,
   kinDocRestoreOutcome,
   kinDocSameWords,
   kinDocSections,
@@ -627,6 +629,92 @@ describe("kinDocChangeItem", () => {
     ["a member", false, false, "agent", KIN_DOCS.suggest],
   ] as const)("%s: one Change item", (_who, byHand, ownerLevel, by, label) => {
     expect(kinDocChangeItem({ byHand, ownerLevel })).toEqual({ by, label });
+  });
+});
+
+describe("kinDocReaders", () => {
+  const project = {
+    recordId: KinRecordId.make("p-1"),
+    key: "P-1",
+    title: "Lumen Grove app",
+  };
+  const draftOf = { name: "Zoya Sheikh" };
+  const all = ["draft", "owners", "team"] as const;
+  const ownerCan = ["owners", "team"] as const;
+  const allChoices = [
+    { id: "draft", label: "Me and owners (draft)" },
+    { id: "owners", label: "Owners" },
+    { id: "team", label: "The team" },
+  ];
+  const ownerChoices = [
+    { id: "owners", label: "Owners" },
+    { id: "team", label: "The team" },
+  ];
+
+  it.each([
+    [
+      "writer, draft",
+      { readers: "draft" as const, readersCan: all, sensitive: true },
+      "Draft. The owners read it too; nobody else does.",
+      allChoices,
+      "Draft. The owners read it too; nobody else does.",
+    ],
+    [
+      "writer, owners (no project)",
+      { readers: "owners" as const, readersCan: all, sensitive: false },
+      "The owners read it.",
+      allChoices,
+      null,
+    ],
+    [
+      "writer, owners (project)",
+      { readers: "owners" as const, readersCan: all, project, sensitive: false },
+      "The owners and the people on Lumen Grove app read it.",
+      allChoices,
+      null,
+    ],
+    [
+      "writer, team",
+      { readers: "team" as const, readersCan: all, sensitive: false },
+      "Everyone on the team with Docs reads it.",
+      allChoices,
+      null,
+    ],
+    [
+      "owner, draft",
+      { readers: "draft" as const, readersCan: ownerCan, draftOf, sensitive: true },
+      "Zoya Sheikh's draft. Only Zoya Sheikh and the owners read it.",
+      ownerChoices,
+      "Zoya Sheikh's draft. Only Zoya Sheikh and the owners read it.",
+    ],
+    [
+      "owner, owners (no project)",
+      { readers: "owners" as const, readersCan: ownerCan, draftOf, sensitive: false },
+      "Zoya Sheikh and the owners read it.",
+      ownerChoices,
+      null,
+    ],
+    [
+      "owner, owners (project)",
+      { readers: "owners" as const, readersCan: ownerCan, draftOf, project, sensitive: false },
+      "Zoya Sheikh, the owners and the people on Lumen Grove app read it.",
+      ownerChoices,
+      null,
+    ],
+    [
+      "owner, team",
+      { readers: "team" as const, readersCan: ownerCan, draftOf, sensitive: false },
+      "Everyone on the team with Docs reads it.",
+      ownerChoices,
+      null,
+    ],
+  ])("%s: answer, choices and private line", (_case, doc, answer, choices, privacy) => {
+    expect(kinDocReaders(doc, names)).toEqual({ current: doc.readers, answer, choices });
+    expect(kinDocPrivacy(doc)).toBe(privacy);
+  });
+
+  it("returns null when readers is absent", () => {
+    expect(kinDocReaders({}, names)).toBeNull();
   });
 });
 

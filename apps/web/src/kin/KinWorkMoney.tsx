@@ -455,6 +455,8 @@ function MoneyScreen(props: MoneyProps) {
     [
       ...summary.owed.total,
       ...summary.owed.overdue,
+      ...(summary.toPay?.total ?? []),
+      ...(summary.toPay?.dueSoon ?? []),
       ...summary.received.thisMonth,
       ...summary.received.lastMonth,
       ...summary.spent.thisMonth.total,
@@ -468,6 +470,7 @@ function MoneyScreen(props: MoneyProps) {
   const missing = kinMissingRates(
     [
       ...summary.owed.total,
+      ...(summary.toPay?.total ?? []),
       ...summary.spentThisFinancialYear,
       ...summary.receivedThisFinancialYear,
     ],
@@ -480,57 +483,69 @@ function MoneyScreen(props: MoneyProps) {
           <KinWorkStaleLine environmentId={props.environmentId} onRetry={refresh} />
         ) : null}
         {top}
-        {!invoicesOn ? null : (
+        {!invoicesOn && view.toPay === null ? null : (
           <section className="flex flex-col gap-3">
             <div className="grid grid-cols-2 gap-x-6 gap-y-2">
-              <Figure figure={view.owed} onOpen={props.onOpenList} estimates={estimates} />
-              <Figure figure={view.overdue} onOpen={props.onOpenList} estimates={estimates} />
+              {!invoicesOn ? null : (
+                <>
+                  <Figure figure={view.owed} onOpen={props.onOpenList} estimates={estimates} />
+                  <Figure figure={view.overdue} onOpen={props.onOpenList} estimates={estimates} />
+                </>
+              )}
+              {view.toPay === null || view.dueSoon === null ? null : (
+                <>
+                  <Figure figure={view.toPay} onOpen={props.onOpenList} estimates={estimates} />
+                  <Figure figure={view.dueSoon} onOpen={props.onOpenList} estimates={estimates} />
+                </>
+              )}
             </div>
-            {owedAbout === null && missing.length === 0 ? null : (
+            {(invoicesOn && owedAbout !== null) || missing.length > 0 ? (
               <div className="flex flex-wrap items-center gap-x-3 px-2">
-                {owedAbout === null ? null : (
+                {!invoicesOn || owedAbout === null ? null : (
                   <KinEstimateText text={owedAbout.text} basis={owedAbout.basis} />
                 )}
                 <KinSetRateButton {...props} currencies={missing} />
               </div>
-            )}
-            <KinWorkSection title={KIN_MONEY.byClient}>
-              {view.clients.length === 0 ? (
-                <p className="px-2 text-sm text-muted-foreground">{kinNothingOwed(scope)}</p>
-              ) : (
-                <ul className="flex flex-col">
-                  {clients.map((client) => {
-                    const { open } = client;
-                    return (
-                      <li key={client.key}>
-                        <AmountRow
-                          label={client.name}
-                          note={client.overdue ?? client.invoices}
-                          late={client.overdue !== null}
-                          amounts={client.owed}
-                          estimates={estimates}
-                          onOpen={open === null ? null : () => props.onOpenList(open)}
-                        />
+            ) : null}
+            {!invoicesOn ? null : (
+              <KinWorkSection title={KIN_MONEY.byClient}>
+                {view.clients.length === 0 ? (
+                  <p className="px-2 text-sm text-muted-foreground">{kinNothingOwed(scope)}</p>
+                ) : (
+                  <ul className="flex flex-col">
+                    {clients.map((client) => {
+                      const { open } = client;
+                      return (
+                        <li key={client.key}>
+                          <AmountRow
+                            label={client.name}
+                            note={client.overdue ?? client.invoices}
+                            late={client.overdue !== null}
+                            amounts={client.owed}
+                            estimates={estimates}
+                            onOpen={open === null ? null : () => props.onOpenList(open)}
+                          />
+                        </li>
+                      );
+                    })}
+                    {view.clientsMore === null ? null : (
+                      <li>
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          disabled={allClients && every.state._tag === "loading"}
+                          onClick={() => setAllClients(!allClients)}
+                        >
+                          {allClients && owing !== summary.owed
+                            ? KIN_MONEY.clientsFewer
+                            : view.clientsMore}
+                        </Button>
                       </li>
-                    );
-                  })}
-                  {view.clientsMore === null ? null : (
-                    <li>
-                      <Button
-                        size="xs"
-                        variant="ghost"
-                        disabled={allClients && every.state._tag === "loading"}
-                        onClick={() => setAllClients(!allClients)}
-                      >
-                        {allClients && owing !== summary.owed
-                          ? KIN_MONEY.clientsFewer
-                          : view.clientsMore}
-                      </Button>
-                    </li>
-                  )}
-                </ul>
-              )}
-            </KinWorkSection>
+                    )}
+                  </ul>
+                )}
+              </KinWorkSection>
+            )}
           </section>
         )}
         {view.suggested.length === 0 ? null : (
