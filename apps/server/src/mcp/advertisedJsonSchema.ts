@@ -118,6 +118,39 @@ const compact = (schema: Json, optional: boolean, kin: boolean): Json => {
   return result;
 };
 
+const bareShape = (schema: Json): Json => {
+  if (Array.isArray(schema)) return schema.map(bareShape);
+  if (!Predicate.isObject(schema)) return schema;
+  return Object.fromEntries(
+    Object.entries(schema).flatMap<[string, Json]>(([key, value]) => {
+      switch (key) {
+        case "properties":
+          return Predicate.isObject(value)
+            ? [
+                [
+                  key,
+                  Object.fromEntries(
+                    Object.entries(value).map(([name, child]) => [name, bareShape(child)]),
+                  ),
+                ],
+              ]
+            : [];
+        case "type":
+        case "enum":
+        case "const":
+        case "required":
+        case "items":
+        case "anyOf":
+        case "oneOf":
+        case "allOf":
+          return [[key, bareShape(value)]];
+        default:
+          return [];
+      }
+    }),
+  );
+};
+
 /**
  * The input schema T3 advertises for a tool. Drops JSON noise that every thread pays for:
  * `additionalProperties: true`, safe-integer bounds, nested `anyOf`, JSON-string fallbacks, and
@@ -136,14 +169,11 @@ export const advertisedJsonSchema = (tool: Tool.Any, options?: { readonly kin?: 
       throw new Error(`No object at the advertised core of ${tool.name}.`);
     const keys = new Set(core.keys);
     target.properties = Object.fromEntries(
-      Object.entries(target.properties).filter(([key]) => keys.has(key)),
+      Object.entries(target.properties).map(([key, shape]) => [
+        key,
+        keys.has(key) ? shape : bareShape(shape),
+      ]),
     );
-    if (Array.isArray(target.required)) {
-      const required = target.required.filter((key) => keys.has(key));
-      if (required.length > 0) target.required = required;
-      else delete target.required;
-    }
-    target.additionalProperties = true;
   }
   return schema as ReturnType<typeof Tool.getJsonSchema>;
 };

@@ -60,13 +60,16 @@ it("advertises only string enum values, which Gemini requires", () => {
   expect(enumValues.filter((value) => typeof value !== "string")).toEqual([]);
 });
 
-it("advertises only the annotated core inside an open Kin object and drops bounds", () => {
+it("keeps the annotated core descriptions and advertises the rest as bare shapes", () => {
   const tool = Tool.make("example", {
     parameters: Schema.Struct({
       records: Schema.Array(
         Schema.Struct({
           shown: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(300)),
-          hidden: Schema.Int,
+          bare: Schema.Struct({
+            label: Schema.String.check(Schema.isMinLength(2)).annotate({ description: "Label." }),
+            kind: Schema.Literals(["first", "second"]),
+          }).annotate({ description: "Nested." }),
           due: Schema.optional(Schema.NullOr(Schema.String).annotate({ description: "Due date." })),
           count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(2), Schema.isLessThanOrEqualTo(8)),
         }),
@@ -88,9 +91,16 @@ it("advertises only the annotated core inside an open Kin object and drops bound
             shown: { type: "string" },
             due: { type: "string", description: "Due date." },
             count: { type: "integer" },
+            bare: {
+              type: "object",
+              properties: {
+                label: { type: "string" },
+                kind: { type: "string", enum: ["first", "second"] },
+              },
+              required: ["label", "kind"],
+            },
           },
-          required: ["shown", "count"],
-          additionalProperties: true,
+          required: ["shown", "bare", "count"],
         },
       },
     },

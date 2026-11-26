@@ -618,12 +618,12 @@ it.effect("advertises the compact input schema for every registered tool", () =>
   }).pipe(Effect.provide(layerTest)),
 );
 
-it.effect("lists a Kin core but validates all accepted arguments and their bounds", () => {
+it.effect("lists every Kin argument but validates bounds not sent to the model", () => {
   const parameters = Schema.Struct({
     text: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(300)),
     rows: Schema.Array(Schema.String).check(Schema.isMinLength(1), Schema.isMaxLength(2)),
     count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(2), Schema.isLessThanOrEqualTo(8)),
-    hidden: Schema.String,
+    bare: Schema.String.annotate({ description: "Bare." }),
     due: Schema.optional(Schema.NullOr(Schema.String).annotate({ description: "Due date." })),
   });
   const tools = Toolkit.make(
@@ -639,18 +639,17 @@ it.effect("lists a Kin core but validates all accepted arguments and their bound
   ).pipe(Layer.provideMerge(McpHttpServer.layerInProcessMcpServer));
   return Effect.gen(function* () {
     const server = yield* McpServer.McpServer;
-    expect(server.tools[0]?.tool.inputSchema).toMatchObject({ additionalProperties: true });
-    expect(server.tools[0]?.tool.inputSchema.properties).not.toHaveProperty("hidden");
-    const good = { text: "one", rows: ["a"], count: 2, hidden: "kept", due: null };
+    expect(server.tools[0]?.tool.inputSchema.properties?.bare).toEqual({ type: "string" });
+    const good = { text: "one", rows: ["a"], count: 2, bare: "kept", due: null };
     const call = (params: Record<string, unknown>) => callTool("probe", { ...good, ...params });
     expect(yield* call({})).toMatchObject({ isError: false, structuredContent: good });
     const unknown = yield* Effect.flip(call({ typo: 1 }));
     expect(unknown).toBeInstanceOf(McpSchema.InvalidParams);
     expect(unknown.message).toContain(
-      'Unknown argument "typo". Accepted arguments: text, rows, count, hidden, due.',
+      'Unknown argument "typo". Accepted arguments: text, rows, count, bare, due.',
     );
     for (const bad of [
-      { hidden: 1 },
+      { bare: 1 },
       { text: "" },
       { text: "x".repeat(301) },
       { rows: [] },

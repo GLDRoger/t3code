@@ -3,6 +3,8 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import { Tool } from "effect/ai";
+import { AdvertisedCore, advertisedJsonSchema } from "../../mcp/advertisedJsonSchema.ts";
+import * as Context from "effect/Context";
 import { ImportHeader } from "./importFormat.ts";
 import { DefineInput } from "./leadMoney.ts";
 import { KinDocsToolkit } from "./mcp/docTools.ts";
@@ -81,4 +83,36 @@ it("list_define takes number and yes or no fields; imports and unknown types sta
   assert.deepStrictEqual(accepted("unknown"), [false, false]);
   for (const type of ["number", "yesno"])
     assert.deepStrictEqual(accepted(type), [true, false], type);
+});
+
+it("advertises every accepted record write key, with descriptions only on the core", () => {
+  const propertiesAt = (schema: unknown, path: ReadonlyArray<string>) => {
+    const node = path.reduce<unknown>(
+      (node, key) => (Predicate.isObject(node) ? node[key] : undefined),
+      schema,
+    );
+    if (!Predicate.isObject(node) || !Predicate.isObject(node.properties)) {
+      return assert.fail(`No properties at ${path.join(".")}`);
+    }
+    return node.properties;
+  };
+  const { record_create, record_update } = KinWorkToolkit.tools;
+  for (const tool of [record_create, record_update]) {
+    const core = Context.get(tool.annotations, AdvertisedCore);
+    const raw = Tool.getJsonSchema(tool);
+    const shown = advertisedJsonSchema(tool, { kin: true });
+    assert.sameMembers(Object.keys(shown.properties ?? {}), Object.keys(raw.properties ?? {}));
+    const accepted = propertiesAt(raw, core.path);
+    const advertised = propertiesAt(shown, core.path);
+    assert.sameMembers(Object.keys(advertised), Object.keys(accepted), tool.name);
+    const unstripped = advertisedJsonSchema(
+      tool.annotate(AdvertisedCore, { ...core, keys: Object.keys(accepted) }),
+      { kin: true },
+    );
+    for (const [key, shape] of Object.entries(advertised)) {
+      if (core.keys.includes(key))
+        assert.deepStrictEqual(shape, propertiesAt(unstripped, core.path)[key], key);
+      else if (Predicate.isObject(shape)) assert.notProperty(shape, "description", key);
+    }
+  }
 });
