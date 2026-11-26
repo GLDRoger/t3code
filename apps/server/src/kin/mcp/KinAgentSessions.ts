@@ -8,6 +8,6 @@ export class KinAgentSessions extends Context.Service<
   {
     readonly resolveAgent: McpSessionRegistry.McpSessionRegistryShape["resolve"];
     readonly recordToolList: (threadId: ThreadId, sessionId: string, sha: string) => void;
-    readonly lastToolList: (threadId: ThreadId, sessionId?: string) => string | null;
+    readonly lastToolList: (threadId: ThreadId) => string | null;
   }
 >()("t3/kin/mcp/KinAgentSessions") {}

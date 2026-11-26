@@ -196,16 +196,11 @@ export const registry = <E, R>(base: Layer.Layer<McpSessionRegistry.McpSessionRe
       const base = yield* McpSessionRegistry.McpSessionRegistry;
       const kin = yield* KinServer;
       const agentSessions = new Map<string, ThreadId>();
-      const toolLists = new Map<ThreadId, { sessionId: string; sha: string }>();
+      const toolLists = new Map<ThreadId, string>();
       const recordToolList = (threadId: ThreadId, sessionId: string, sha: string) => {
-        if (agentSessions.get(sessionId) === threadId) toolLists.set(threadId, { sessionId, sha });
+        if (agentSessions.get(sessionId) === threadId) toolLists.set(threadId, sha);
       };
-      const lastToolList = (threadId: ThreadId, sessionId?: string) => {
-        const last = toolLists.get(threadId);
-        return last !== undefined && (sessionId === undefined || sessionId === last.sessionId)
-          ? last.sha
-          : null;
-      };
+      const lastToolList = (threadId: ThreadId) => toolLists.get(threadId) ?? null;
       const tokens = yield* KinIssuedTokens.make;
       const isAgentThread = (thread: {
         readonly threadId: ThreadId;

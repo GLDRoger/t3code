@@ -790,17 +790,7 @@ const make = Effect.gen(function* () {
             : latest,
         undefined,
       );
-      const { providerThreads } =
-        last === undefined
-          ? { providerThreads: [] }
-          : yield* threads.getThreadRecords(threadId, ["providerThreads"], {
-              providerThreadIds: [last.providerThreadId],
-            });
-      const providerSessionId = providerThreads[0]?.providerSessionId;
-      const toolListSha =
-        providerSessionId == null
-          ? null
-          : (agentSessions?.lastToolList(threadId, providerSessionId) ?? null);
+      const toolListSha = agentSessions?.lastToolList(threadId) ?? null;
       const contextTokens = last?.tokenUsage?.usedTokens ?? null;
       const lastRequestAt = last?.startedAt == null ? null : DateTime.toEpochMillis(last.startedAt);
       const [shadow] = yield* sql<{ carry: number | null; reason: string | null }>`

@@ -1934,30 +1934,33 @@ describe("WakeupRunner", () => {
       });
     }).pipe(
       Effect.provide(
-        harnessWith(
-          {
-            toolOutputs: [
-              { tool: "lookup", output: "invented" },
-              { tool: "lookup", output: "result only" },
-              ...Array.from({ length: 13 }, (_, i) => ({
-                tool: `tool_${i + 1}`,
-                output: "x".repeat(i + 1),
-              })),
-            ],
-          },
-          Layer.mock(KinAgentSessions)({
-            recordToolList: () => {},
-            lastToolList: () => toolHash,
-          }),
+        Layer.merge(
+          harnessWith(
+            {
+              toolOutputs: [
+                { tool: "lookup", output: "invented" },
+                { tool: "lookup", output: "result only" },
+                ...Array.from({ length: 13 }, (_, i) => ({
+                  tool: `tool_${i + 1}`,
+                  output: "x".repeat(i + 1),
+                })),
+              ],
+            },
+            Layer.mock(KinAgentSessions)({
+              recordToolList: () => {},
+              lastToolList: (_threadId, sessionId?: string) =>
+                sessionId === undefined || sessionId === "invented-mcp-credential"
+                  ? toolHash
+                  : null,
+            }),
+          ),
+          Logger.layer([
+            Logger.make(({ message }) => {
+              if (Array.isArray(message) && message[0] === "Kin wake-up context.")
+                logs.push(message[1]);
+            }),
+          ]),
         ),
-      ),
-      Effect.provide(
-        Logger.layer([
-          Logger.make(({ message }) => {
-            if (Array.isArray(message) && message[0] === "Kin wake-up context.")
-              logs.push(message[1]);
-          }),
-        ]),
       ),
       provideDeterministicTestRuntime,
     );
