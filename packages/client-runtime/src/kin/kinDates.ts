@@ -11,6 +11,7 @@ import {
   kinWorkClosed,
   kinWorkDayOf,
   kinWorkDueLabel,
+  kinWorkDueZone,
   type KinWorkNames,
 } from "./kinWork.ts";
 
@@ -69,6 +70,10 @@ const shiftDay = (day: string, days: number) => {
 /** Today where the owner is. */
 export const kinOwnerToday = (now: Date, names: KinWorkNames) =>
   kinWorkAllDay(now.toISOString(), true, names) ?? kinWorkDayOf(now);
+
+/** Today for whoever is reading, which heads the agenda and marks the month, as Tasks counts it. */
+const kinReaderToday = (now: Date, names: KinWorkNames) =>
+  kinOwnerToday(now, { ...names, zone: names.readerZone ?? names.zone });
 
 export const kinShiftMonth = (month: string, by: number) => {
   const at = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)) - 1 + by, 1);
@@ -131,17 +136,19 @@ export interface KinDateRowView {
 function kinDateRowView(row: KinDateRow, names: KinWorkNames, now: Date): KinDateRowView {
   const { record } = row;
   const at = new Date(row.at);
-  const day = kinWorkAllDay(row.at, true, names) ?? row.at.slice(0, 10);
+  // A timed row files on the reader's day and clock, as Tasks shows it; an all-day one on the company's.
+  const zone = kinWorkDueZone(row.allDay, names);
+  const day = kinWorkAllDay(row.at, true, { zone }) ?? row.at.slice(0, 10);
   const closed = kinWorkClosed(record.state);
   const late = kinDateRowLate(row);
-  const time = row.allDay || Number.isNaN(at.getTime()) ? null : kinWorkClock(at, names.zone);
+  const time = row.allDay || Number.isNaN(at.getTime()) ? null : kinWorkClock(at, zone);
   const amount = record.amount === undefined ? null : kinMoneyText(record.amount);
   const stateLabel = kinSuggestionText(record, row.stateLabel);
   const state = stateLabel === row.label ? null : stateLabel;
   const line = [row.listName, row.label, state, record.party?.title ?? null]
     .filter((part) => part !== null)
     .join(" · ");
-  const when = kinWorkDueLabel(day, new Date(`${kinOwnerToday(now, names)}T12:00:00`));
+  const when = kinWorkDueLabel(day, new Date(`${kinOwnerToday(now, { ...names, zone })}T12:00:00`));
   return {
     id: `${record.key}:${row.field ?? row.kind}`,
     key: record.key,
@@ -167,24 +174,26 @@ export interface KinAgendaDay {
   readonly rows: ReadonlyArray<KinDateRowView>;
 }
 
-/** Rows under the day they fall on, soonest first, as the host sent them. */
+/** Rows under the day they fall on, soonest day first, each day's rows as the host sent them. */
 export function kinDatesAgenda(
   rows: ReadonlyArray<KinDateRow>,
   names: KinWorkNames,
   now: Date,
 ): ReadonlyArray<KinAgendaDay> {
-  const today = kinOwnerToday(now, names);
+  const today = kinReaderToday(now, names);
   const days = new Map<string, Array<KinDateRowView>>();
   for (const row of rows) {
     const view = kinDateRowView(row, names, now);
     days.set(view.day, [...(days.get(view.day) ?? []), view]);
   }
-  return [...days].map(([day, held]) => ({
-    day,
-    label: held[0]?.when ?? day,
-    past: day < today,
-    rows: held,
-  }));
+  return [...days]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([day, held]) => ({
+      day,
+      label: kinWorkDueLabel(day, new Date(`${today}T12:00:00`)),
+      past: day < today,
+      rows: held,
+    }));
 }
 
 export interface KinMonthCell {
@@ -204,7 +213,7 @@ export function kinDatesMonth(
   names: KinWorkNames,
   now: Date,
 ): { readonly label: string; readonly weeks: ReadonlyArray<ReadonlyArray<KinMonthCell>> } {
-  const today = kinOwnerToday(now, names);
+  const today = kinReaderToday(now, names);
   const byDay = new Map<string, Array<KinDateRowView>>();
   for (const row of rows) {
     const view = kinDateRowView(row, names, now);

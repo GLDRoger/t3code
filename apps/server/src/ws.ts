@@ -1,4 +1,4 @@
-import { makeKinHandlers } from "./kin/rpcHandlers.ts";
+import { decodeKinAfterAccess, makeKinHandlers } from "./kin/rpcHandlers.ts";
 import { authorizeAttachmentReadOnHost } from "./kin/chat/attachmentAccess.ts";
 import { GitCommandError, OrchestrationDispatchCommandError } from "@t3tools/contracts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- A synchronous digest inside the pure provider mapping.
@@ -733,7 +733,7 @@ function projectFileFailureContext(
 const PROVIDER_STATUS_DEBOUNCE_MS = 200;
 
 // Middleware added later wraps middleware added earlier, so instrumentation wraps authorization.
-const ServerWsRpcGroup = WsRpcGroup.middleware(RpcInstrumentation);
+const ServerWsRpcGroup = decodeKinAfterAccess(WsRpcGroup).middleware(RpcInstrumentation);
 
 // RpcGroup.toLayer derives each handler's requirements by scanning every RPC in
 // the group, so its type cost grows with handlers × RPCs. Near 200 methods that
