@@ -49,6 +49,13 @@ export function kinConfirmTotal(
   return to === null ? `Total ${total}.` : `Total ${total} to ${to}.`;
 }
 
+const TEMPLATE_DOCUMENT: Readonly<Record<string, string>> = {
+  invoices: "invoice",
+  credit_notes: "credit note",
+  quotes: "quote",
+  receipts: "receipt",
+};
+
 export const KIN_INVOICES = {
   loadFailed: "Couldn't load invoices",
   number: "Invoice number",
@@ -96,7 +103,13 @@ export const KIN_INVOICES = {
       : `Filed as ${documents.map((doc) => doc.key).join(", ")} in Docs. This entry lists it under Documents.`,
   openFiled: (key: string) => `Open ${key}`,
   payAfterIssue: "A draft isn't owed yet. Issue it to give it its number, then record payments.",
-  noTemplate: "No invoice template yet. Ask an agent to set one up.",
+  /** Names the document in hand: an invoice, a credit note, a quote, a receipt. */
+  noTemplate: (list: string) => {
+    const doc = TEMPLATE_DOCUMENT[list];
+    const title = doc === undefined ? "No template for this list yet" : `No ${doc} template yet`;
+    const detail = "Ask an agent to set one up.";
+    return { title, detail, line: `${title}. ${detail}` };
+  },
   issue: "Issue",
   issueTitle: "Issue this invoice?",
   issueDetail: (prefix: string | null) =>

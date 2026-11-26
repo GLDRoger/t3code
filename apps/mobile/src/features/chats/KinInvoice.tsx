@@ -747,8 +747,8 @@ export function KinMakeDocumentStep(
       ) : recipe === null ? (
         <EmptyState
           variant="plain"
-          title="No invoice template yet"
-          detail="Ask an agent to set one up."
+          title={KIN_INVOICES.noTemplate(props.list).title}
+          detail={KIN_INVOICES.noTemplate(props.list).detail}
         />
       ) : (
         <>
