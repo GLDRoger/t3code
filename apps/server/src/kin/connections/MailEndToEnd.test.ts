@@ -12,6 +12,7 @@ import {
   KinChatError,
   KinEvent,
   KinMessageId,
+  KinMemoryItemId,
   KinOrgId,
   KinPersonId,
   type KinSendTry,
@@ -50,6 +51,8 @@ import { KinLeadPrompt } from "../lead/LeadPrompt.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import { outsideStamp, renderSource, stampKey, stampReads } from "../lead/OutsideContent.ts";
 import * as Memory from "../memory/Memory.ts";
+import type { MemoryItem } from "../memory/MemoryCache.ts";
+import { fingerprint } from "../memory/sensitivity.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import { buildPulseSection } from "../pulse/prompt.ts";
 import { fromConnections } from "../pulse/outside.ts";
@@ -740,6 +743,159 @@ const pulseEvents = Effect.gen(function* () {
   return yield* (yield* SqlClient.SqlClient)<{ agentId: string; arrivalId: string | null }>`SELECT
       agent_id AS "agentId", json_extract(json, '$.arrivalId') AS "arrivalId" FROM kin_events
     WHERE org_id = ${orgId} AND tag = 'pulse' ORDER BY queued_at, event_id`;
+});
+
+const voiceItem = (
+  id: string,
+  what: string,
+  head: Partial<MemoryItem["head"]> = {},
+  body = "",
+): MemoryItem => ({
+  head: {
+    orgId,
+    id: KinMemoryItemId.make(id),
+    path: `claims/${id}.md`,
+    kind: "claim",
+    title: "Mail sign-off",
+    what,
+    status: "open",
+    due: null,
+    recorded_at: stamp,
+    valid_from: stamp,
+    invalid_at: null,
+    superseded_by: null,
+    review_by: null,
+    source: "https://example.invalid/messages/1",
+    said_by: "owner",
+    trust: "owner",
+    links: [],
+    sensitive: true,
+    ...head,
+  },
+  body,
+});
+
+describe("Mail tool results with the sender's memory", () => {
+  const signOff = 'Rhea writes short emails and signs them "Warmly, Rhea".';
+  const heading = "How Rhea writes mail, from Kin's memory:";
+  const signature = "Warmly,\nRhea\nTidewater Freight";
+  const ownAddress = "rhea@tidewater.example";
+  const toolsWithVoice = <E>(
+    body: (fixture: {
+      readonly company: string;
+      readonly own: string;
+      readonly tools: KinConnections["Service"]["tools"];
+    }) => Effect.Effect<void, E, SqlClient.SqlClient>,
+    items: ReadonlyArray<MemoryItem>,
+  ) =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_orgs SET name = 'Tidewater Freight' WHERE org_id = ${orgId}`;
+        yield* sql`UPDATE kin_people SET display_name = 'Rhea' WHERE person_id = ${owner}`;
+        yield* sql`UPDATE kin_people SET display_name = 'Meera' WHERE person_id = ${coOwner}`;
+        fake.addAccount({ provider: "google", address: ownAddress, name: "Rhea" });
+        const company = yield* connect(fake, "google", ACCOUNTS);
+        const own = yield* connectOwn(fake, owner, ownAddress);
+        yield* wake({ person: owner });
+        const memory = { items: () => Effect.succeed(items) };
+        yield* body({
+          company,
+          own,
+          tools: (scope, input) => connections.tools(scope, input, memory),
+        });
+      }),
+    );
+
+  it.effect("shows the mailbox owner's own mail words in the list and tool details", () =>
+    toolsWithVoice(
+      ({ own, tools }) =>
+        Effect.gen(function* () {
+          const block = `${heading}\n${signOff}\n${signature}`;
+          const list = yield* tools(scope, {});
+          assert.strictEqual(
+            list.connections?.find((mailbox) => mailbox.connection === own)?.note,
+            block,
+          );
+          const details = yield* tools(scope, { connection: own });
+          assert.strictEqual(details.note, block);
+          const send = yield* tools(scope, { connection: own, tool: "mail_send" });
+          assert.strictEqual(send.note, block);
+        }),
+      [
+        voiceItem("rhea-mail-sign-off", signOff, {}, signature),
+        voiceItem("arjun-mail-sign-off", "Regards, Arjun", { said_by: "mate" }),
+        voiceItem("rhea-old-sign-off", "Kind regards, Rhea", { status: "superseded" }),
+      ],
+    ),
+  );
+
+  it.effect("omits the block when memory has no matching sender item", () =>
+    toolsWithVoice(
+      ({ own, tools }) =>
+        Effect.gen(function* () {
+          assert.isUndefined((yield* tools(scope, { connection: own })).note);
+        }),
+      [voiceItem("rhea-site-visit", "The next visit is on Monday.", { title: "Site visit" })],
+    ),
+  );
+
+  it.effect("omits the block for a non-mail connection", () =>
+    toolsWithVoice(
+      ({ company, tools }) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`UPDATE kin_connections SET preset = 'posthog' WHERE connection_id = ${company}`;
+          const details = yield* tools(scope, { connection: company });
+          assert.isDefined(details.quoted);
+          assert.isUndefined(details.note);
+        }),
+      [voiceItem("rhea-mail-sign-off", signOff)],
+    ),
+  );
+
+  const sharedStyle = voiceItem("rhea-mail-style", "Rhea writes plain emails with first names.", {
+    title: "Email writing style",
+    sensitive: false,
+  });
+  it.effect("hides the primary owner's private sign-off in a co-owner's company mailbox turn", () =>
+    toolsWithVoice(
+      ({ company, tools }) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`INSERT INTO kin_team_memory (org_id, is_on, set_by, set_at)
+            VALUES (${orgId}, 1, ${owner}, ${NOW})`;
+          yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, shared_content, shared_how)
+            VALUES (${orgId}, ${sharedStyle.head.id}, ${fingerprint(sharedStyle)}, 'owner_setting')`;
+          yield* wake({ person: coOwner });
+          const block = `${heading}\n${sharedStyle.head.what}`;
+          assert.strictEqual((yield* tools(scope, { connection: company })).note, block);
+          const list = yield* tools(scope, {});
+          assert.strictEqual(
+            list.connections?.find((mailbox) => mailbox.connection === company)?.note,
+            block,
+          );
+        }),
+      [voiceItem("rhea-mail-sign-off", signOff), sharedStyle],
+    ),
+  );
+
+  const longSignOff = `Warmly,\n${"Rhea".repeat(130)}`;
+  it.effect("caps the block at 600 characters by dropping whole trailing items", () =>
+    toolsWithVoice(
+      ({ own, tools }) =>
+        Effect.gen(function* () {
+          const { note } = yield* tools(scope, { connection: own });
+          assert.isAtMost(note?.length ?? Infinity, 600);
+          assert.strictEqual(note, `${heading}\n${longSignOff}\n1 more item left out.`);
+        }),
+      [
+        voiceItem("rhea-mail-sign-off", longSignOff),
+        voiceItem("rhea-mail-style", "Rhea writes plain emails with first names."),
+      ],
+    ),
+  );
 });
 
 describe("Kin mail end to end, on a fake mailbox", () => {
