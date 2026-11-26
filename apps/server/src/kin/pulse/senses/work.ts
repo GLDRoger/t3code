@@ -303,7 +303,9 @@ const entrySenses = Effect.fn("KinPulse.entrySenses")(function* (
     const remind = field;
     // The field that passed, by its label, so the line never reads against the entry's own date.
     const named =
-      field === undefined ? undefined : (def.fields.find((one) => one.key === field)?.label ?? field);
+      field === undefined
+        ? undefined
+        : (def.fields.find((one) => one.key === field)?.label ?? field);
     const column =
       def.remindOn === OWN_DATE && field === undefined ? sql`r.date_at` : sql`r.due_at`;
     const until = dayOf(ctx, at + toMs(soon) + DAY_MS);

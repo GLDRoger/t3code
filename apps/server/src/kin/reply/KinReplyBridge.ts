@@ -749,7 +749,11 @@ const make = Effect.gen(function* () {
         wake.replied = true;
       } else if (!hasNeedsYou(slot.body)) {
         const room = KIN_MESSAGE_BODY_MAX_LENGTH - slot.body.length - 2;
-        const result = yield* lead(wake, slot, `${needsYouSection(waiting, before, room)}\n\n${slot.body}`);
+        const result = yield* lead(
+          wake,
+          slot,
+          `${needsYouSection(waiting, before, room)}\n\n${slot.body}`,
+        );
         if (result._tag === "withheld" && result.reason !== "not_found") {
           wake.withheld = result.reason;
           return;
