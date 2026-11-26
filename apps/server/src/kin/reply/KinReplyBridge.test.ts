@@ -1713,7 +1713,7 @@ it.effect("labels each phase of a wake-up once per change and clears when the re
       "Thinking",
       "Setting a reminder",
       "Thinking",
-      "Writing",
+      "Writing a reply",
     ]);
     fake.items = [note, call, answer];
     yield* complete;
