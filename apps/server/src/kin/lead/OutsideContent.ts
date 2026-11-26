@@ -45,6 +45,9 @@ const recipeOnly: Condition = (_turn, args) =>
     typeof field(args, "recipe") === "string" && field(args, "writeRecipe") === undefined,
   );
 
+const notAfterCodingAgent: Condition = (turn) =>
+  Effect.map(followsCodingAgent(turn), (follows) => !follows);
+
 export const OUTSIDE_TOOLS = {
   kin_chat_post: "allowed",
   kin_widget_upsert: "allowed",
@@ -93,8 +96,9 @@ export const OUTSIDE_TOOLS = {
   kin_github_review: "allowed",
   // Reads only the diff of the pull request its review turn is for.
   kin_github_diff: "allowed",
-  // Reads only; what it reads is outside text too (`readRepo` marks it).
-  kin_github_read: "allowed",
+  // Reads only; what it reads is outside text too (`readRepo` marks it). Not after a coding agent's
+  // words, as kin_github_review_ask isn't: the key's ask doesn't open a repo.
+  kin_github_read: notAfterCodingAgent,
   kin_github_link: "allowed",
   // Outside text could start reviews in a person's name.
   kin_github_review_ask: "refused",

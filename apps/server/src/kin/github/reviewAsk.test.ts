@@ -34,7 +34,14 @@ import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvo
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import { recordAudience, turnAudience } from "../lead/Audience.ts";
-import { outsideStamp, REPO_READ_REFUSAL, stampKey } from "../lead/OutsideContent.ts";
+import {
+  codingAgentSource,
+  markOutside,
+  OUTSIDE_REFUSAL,
+  outsideStamp,
+  REPO_READ_REFUSAL,
+  stampKey,
+} from "../lead/OutsideContent.ts";
 import { SHARED_TOOLS } from "../lead/SharedTools.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
@@ -2124,6 +2131,28 @@ it.effect(
         (yield* callAs("tech", "kin_relay", passOn)).value.message,
         REPO_READ_REFUSAL("Rhea Rao"),
       );
+      // A turn a person's coding agent started through its key reads no repo, as it asks no review.
+      yield* ask("zoya", chatOf.zoya, "Read the alerts for my coding agent");
+      yield* markOutside({ orgId, wakeupId: yield* running }, codingAgentSource("Zoya's laptop"));
+      assert.deepStrictEqual((yield* read({ repo: APP, path: "README.md" })).value, {
+        message: OUTSIDE_REFUSAL,
+      });
+      // Reach is checked as a review ask checks it: a restricted pair reads nothing.
+      yield* ask("dev", chatOf.dev, "Read the alerts");
+      const limit = (restricted: boolean) =>
+        Reach.setLimit({
+          orgId,
+          by: owner.personId,
+          a: Reach.person(KinPersonId.make("dev")),
+          b: Reach.agent(tech),
+          restricted,
+        });
+      yield* limit(true);
+      assert.deepStrictEqual(
+        (yield* read({ repo: APP, path: "README.md" })).value,
+        refusal(READ_REFUSAL.restricted("Dev Malhotra")),
+      );
+      yield* limit(false);
       // A review someone asked for reads only its pull request's repo.
       yield* ask("dev", chatOf.dev, "Review my PR");
       assert.isTrue((yield* review({ repo: APP, number: pull })).ok);
