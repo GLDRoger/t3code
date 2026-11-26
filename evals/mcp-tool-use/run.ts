@@ -100,6 +100,20 @@ import {
   unmockedLines,
   unredact,
 } from "./kin.ts";
+import {
+  KIN_LAYOUTS,
+  KIN_SESSION_BETAS,
+  KIN_SESSION_CACHE,
+  carryMockState,
+  earlierCalls,
+  expectationsForLayout,
+  kinCarrySchema,
+  kinSessionReplay,
+  kinSessionWireMessages,
+  loadKinCarry,
+  sessionLayout,
+  type KinLayout,
+} from "./kin-session-wire.ts";
 import { runAppServerSample } from "./kinAppServer.ts";
 // What kinAppServer.ts runs a sample with.
 export { EvalToolCallError, settle };
@@ -213,7 +227,7 @@ const NEUTRAL_IDENTITY = "You are an AI coding agent running in the user's termi
 
 type Block = { readonly type: string; readonly [key: string]: unknown };
 type ApiMessage = {
-  readonly role: "user" | "assistant";
+  readonly role: "user" | "assistant" | "system";
   readonly content: ReadonlyArray<Block>;
 };
 type ApiTool = { readonly name: string; readonly [key: string]: unknown };
@@ -436,6 +450,7 @@ export const McpToolUseCase = Schema.Struct({
         }),
       ),
     ),
+    carry: kinCarrySchema(PriorToolCall),
     world: Schema.optional(McpToolUseWorld),
     /**
      * Canned tool results by bare name. `"default"` uses the runner's result. A device `DeviceError`
@@ -467,6 +482,7 @@ export const McpToolUseCase = Schema.Struct({
    * Otherwise both arms are graded on `expect`.
    */
   expectRaw: Schema.optional(McpToolUseExpect),
+  sessionCallsMustNot: Schema.optional(Schema.Array(McpToolUseCallWithAlternatives)),
   /** Model calls this case may need. Overrides `--max-steps`. */
   maxSteps: Schema.optional(Schema.Number),
   source: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
@@ -1191,8 +1207,7 @@ export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
     priorResults: new Map(),
     responses: [],
     priorErrors: new Set(),
-    mockCalls: new Map(),
-    mockHistory: new Map(),
+    ...carryMockState(testCase, normalizeToolName),
   };
 };
 
@@ -1242,7 +1257,10 @@ export const withDevices = Effect.fn("evaluateMcpToolUse.withDevices")(function*
     { ...world, devices: world.devices },
     sample.base.environment,
   );
-  for (const call of (sample.testCase.setup.priorTurns ?? []).flatMap((t) => t.toolCalls ?? [])) {
+  for (const call of [
+    ...(sample.testCase.setup.priorTurns ?? []).flatMap((t) => t.toolCalls ?? []),
+    ...earlierCalls(sample.testCase),
+  ]) {
     if (call.result !== "default" || !isDeviceTool(call.tool)) continue;
     sample.priorResults.set(call, (yield* sample.devices.call(call.tool, call.input)).text);
   }
@@ -1259,7 +1277,10 @@ export const withBackgroundWait = Effect.fn("evaluateMcpToolUse.withBackgroundWa
   if (running === undefined) return;
   const backgroundWait = yield* makeBackgroundWait(running);
   sample.backgroundWait = backgroundWait;
-  for (const call of (sample.testCase.setup.priorTurns ?? []).flatMap((t) => t.toolCalls ?? [])) {
+  for (const call of [
+    ...(sample.testCase.setup.priorTurns ?? []).flatMap((t) => t.toolCalls ?? []),
+    ...earlierCalls(sample.testCase),
+  ]) {
     if (call.result !== "default" || call.tool !== "t3_background_wait") continue;
     const result = yield* backgroundWait(call.input);
     sample.priorResults.set(call, result.text);
@@ -1317,7 +1338,7 @@ const loadTools = (tools: Array<ApiTool>, id: string, found: ReadonlyArray<ApiTo
 };
 
 /** Messages for a case: reminders, context, prior turns with real tool blocks, then the prompt. */
-export const buildMessages = (sample: Sample) => {
+export const buildMessages = (sample: Sample, layout: KinLayout = "legacy") => {
   const { testCase, base, tools } = sample;
   const messages: Array<ApiMessage> = [];
   const push = (role: ApiMessage["role"], ...blocks: ReadonlyArray<Block>) => {
@@ -1351,11 +1372,16 @@ export const buildMessages = (sample: Sample) => {
     base.gitStatusAt === undefined
       ? base.reminders
       : base.reminders.toSpliced(base.gitStatusAt, 0, reminder(gitStatus(testCase)));
-  push("user", ...reminders, ...notes.flatMap((note) => (note ? [reminder(note)] : [])));
+  const session = kinSessionReplay(testCase, layout, base.codex !== undefined, reminders);
+  push(
+    "user",
+    ...(session?.reminders ?? reminders),
+    ...notes.flatMap((note) => (note ? [reminder(note)] : [])),
+  );
   const toolSearch = findTool(base, "ToolSearch")?.name ?? "ToolSearch";
   let nextId = 0;
-  for (const turn of priorTurns) {
-    const calls = (turn.toolCalls ?? []).map((call) => {
+  const replayCalls = (toolCalls: ReadonlyArray<typeof PriorToolCall.Type> = []) => {
+    const calls = toolCalls.map((call) => {
       const tool = findTool(base, call.tool);
       if (tool === undefined) throw new Error(`${testCase.id}: unknown prior tool ${call.tool}.`);
       const builder = isDeviceTool(call.tool)
@@ -1389,13 +1415,24 @@ export const buildMessages = (sample: Sample) => {
       const answer = toolResult(id, replayed);
       push("user", sample.priorErrors.has(prior) ? { ...answer, is_error: true } : answer);
     }
+  };
+  for (const turn of priorTurns) {
+    replayCalls(turn.toolCalls);
     if (turn.text) push(turn.role, text(fillKinRules(turn.text)));
   }
-  const casePrompt = fillKinRules(testCase.prompt, testCase.setup.world);
+  const pushPrompt = (prompt: string, files?: KinTurnFiles) =>
+    push("user", ...kinTurnBlocks(files, prompt, base.codex !== undefined));
+  for (const turn of session?.earlier ?? []) {
+    pushPrompt(turn.message);
+    if (turn.context) push("system", text(turn.context));
+    replayCalls(turn.toolCalls);
+    if (turn.reply) push("assistant", text(turn.reply));
+  }
+  const message = session?.last.message ?? fillKinRules(testCase.prompt, testCase.setup.world);
   const userText =
     testCase.promptContext === undefined
-      ? casePrompt
-      : projectComposerContextForProvider({ text: casePrompt, ...testCase.promptContext });
+      ? message
+      : projectComposerContextForProvider({ text: message, ...testCase.promptContext });
   const inline =
     sideChatContext === undefined ? userText : withInlineContext(sideChatContext, userText);
   // Codex has no lead session to carry the instructions, so its prompt opens with them.
@@ -1405,18 +1442,13 @@ export const buildMessages = (sample: Sample) => {
       : inline;
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
   if (testCase.prompt !== "")
-    push(
-      "user",
-      ...kinTurnBlocks(
-        sample.kinFiles,
-        role === "delegated-child" ? childPrompt() : prompt,
-        base.codex !== undefined,
-      ),
-    );
+    pushPrompt(role === "delegated-child" ? childPrompt() : prompt, sample.kinFiles);
+  if (session?.last.context) push("system", text(session.last.context));
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.
   if (native && base.subagentContext) {
     push("user", reminder(`SubagentStart hook additional context: ${base.subagentContext}`));
   }
+  if (session?.summary) messages.unshift({ role: "user", content: [text(session.summary)] });
   return messages;
 };
 
@@ -2236,6 +2268,7 @@ type Config = {
   readonly effort: string;
   /** Model calls per sample; 0 is no limit (`--no-step-limit`), and a case's own is ignored. */
   readonly maxSteps: number;
+  readonly kinLayout?: KinLayout;
   readonly shellModel: ShellModel;
   /** `--harness app-server`: GPT models run in `codex app-server` as Kin runs them (`providers/codex.ts`). */
   readonly appServer?: AppServer;
@@ -2862,21 +2895,24 @@ export const failedEarly = (expect: McpToolUseCase["expect"], run: SampleRun, pa
 const requestBody = (
   { base, tools }: Sample,
   effort: string,
-  messages: unknown,
+  messages: ReadonlyArray<ApiMessage>,
   gateway = false,
+  session = false,
 ) => ({
   model: base.model,
   max_tokens: 16_000,
   thinking: { type: "adaptive", display: "summarized" },
   output_config: { effort },
   // The Anthropic gateway marks the last message for a 1h cache itself and rejects a second mark.
-  ...(gateway ? {} : { cache_control: { type: "ephemeral" } }),
+  ...(gateway || session ? {} : { cache_control: { type: "ephemeral" } }),
   // Like Claude Code, cache the shared system prompt so every sample reuses it.
   system: base.system.map((block, i) =>
-    i === base.system.length - 1 ? { ...block, cache_control: { type: "ephemeral" } } : block,
+    i === base.system.length - 1
+      ? { ...block, cache_control: session ? KIN_SESSION_CACHE : { type: "ephemeral" } }
+      : block,
   ),
   tools,
-  messages,
+  messages: session ? kinSessionWireMessages(messages) : messages,
 });
 
 const codexRequest = (base: Base, input: ReadonlyArray<Block>) => ({
@@ -3012,6 +3048,7 @@ const postModel = Effect.fn("evaluateMcpToolUse.postModel")(function* (
   body: unknown,
   proxy?: Config["proxy"],
   responses = false,
+  betas = "advanced-tool-use-2025-11-20",
 ) {
   const client = (yield* HttpClient.HttpClient).pipe(
     // Anthropic answers 529 when it is overloaded; retryTransient already retries 429 and 5xx.
@@ -3031,7 +3068,7 @@ const postModel = Effect.fn("evaluateMcpToolUse.postModel")(function* (
       ...(apiKey ? { "x-api-key": apiKey } : {}),
       "anthropic-version": "2023-06-01",
       // Claude Code sends this beta for `defer_loading` tools and `tool_reference` results.
-      "anthropic-beta": "advanced-tool-use-2025-11-20",
+      "anthropic-beta": betas,
       ...proxy?.headers,
     }),
     HttpClientRequest.bodyJson(body),
@@ -3043,8 +3080,8 @@ const postModel = Effect.fn("evaluateMcpToolUse.postModel")(function* (
   }
   return yield* response.text;
 });
-const callModel = (apiKey: string, body: unknown, proxy?: Config["proxy"]) =>
-  postModel(apiKey, body, proxy).pipe(
+const callModel = (apiKey: string, body: unknown, proxy?: Config["proxy"], betas?: string) =>
+  postModel(apiKey, body, proxy, false, betas).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(ApiResponse))),
   );
 
@@ -3147,7 +3184,8 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   yield* withBackgroundWait(sample);
   sample.kinFiles = yield* kinTurnFiles(testCase);
   const runPromise = Effect.runPromiseWith(yield* Effect.context<HttpClient.HttpClient>());
-  const messages = buildMessages(sample);
+  const session = sessionLayout(testCase, config.kinLayout ?? "legacy", base.codex !== undefined);
+  const messages = buildMessages(sample, config.kinLayout);
   const input = base.codex ? codexMessages(messages) : undefined;
   const transcript: Array<unknown> = [];
   const start = messages.length;
@@ -3184,8 +3222,9 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
       ? yield* callCodex(config, codexRequest(base, input))
       : yield* callModel(
           config.apiKey,
-          requestBody(sample, config.effort, messages, config.anthropic !== undefined),
+          requestBody(sample, config.effort, messages, config.anthropic !== undefined, session),
           config.anthropic,
+          session ? KIN_SESSION_BETAS : undefined,
         );
     addUsage(usage, response.usage);
     if ("raw" in response) {
@@ -3498,6 +3537,7 @@ const Flags = Schema.Struct({
   ]),
   "user-instructions": Schema.Literals(["keep", "drop"]),
   arm: Schema.Literals(ARMS),
+  "kin-layout": Schema.Literals(KIN_LAYOUTS),
   "dry-run": Schema.Boolean,
   estimate: Schema.Boolean,
   "first-per-area": Schema.Boolean,
@@ -3557,6 +3597,7 @@ const main = Effect.gen(function* () {
       "user-instructions": { ...string, default: "drop" },
       // `raw` runs without T3's PR, CI and issue tools, to compare against the CLIs.
       arm: { ...string, default: "tools" },
+      "kin-layout": { ...string, default: "legacy" },
       "dry-run": { type: "boolean", default: false },
       // Prices the selected cases from the requests a dry run builds, then exits. No model call.
       estimate: { type: "boolean", default: false },
@@ -3625,9 +3666,10 @@ const main = Effect.gen(function* () {
   if (selectedCases.length === 0) return yield* Effect.die(new Error("No case matches --case."));
   // The raw arm has no PR or issue tools, so a case whose prior turns call one cannot be replayed.
   const replaysForgeTool = (testCase: McpToolUseCase) =>
-    (testCase.setup.priorTurns ?? []).some((turn) =>
-      (turn.toolCalls ?? []).some((call) => forgeToolNames.has(`${T3_PREFIX}${call.tool}`)),
-    );
+    [
+      ...(testCase.setup.priorTurns ?? []).flatMap((turn) => turn.toolCalls ?? []),
+      ...(sessionLayout(testCase, flags["kin-layout"], codex) ? earlierCalls(testCase) : []),
+    ].some((call) => forgeToolNames.has(`${T3_PREFIX}${call.tool}`));
   const unreplayable =
     flags.arm === "raw" ? selectedCases.filter(replaysForgeTool).map(({ id }) => id) : [];
   if (unreplayable.length > 0) {
@@ -3638,30 +3680,46 @@ const main = Effect.gen(function* () {
   const armCases = selectedCases.filter(({ id }) => !unreplayable.includes(id));
   if (armCases.length === 0)
     return yield* Effect.die(new Error("No selected case can run with --arm raw."));
+  const loadPriorCalls = (calls: ReadonlyArray<typeof PriorToolCall.Type> = []) =>
+    Effect.forEach(calls, (call) =>
+      call.resultFile === undefined
+        ? Effect.succeed(call)
+        : fs
+            .readFileString(path.resolve(import.meta.dirname, "../..", call.resultFile))
+            .pipe(Effect.map((result) => ({ ...call, result }))),
+    );
   const selected = yield* Effect.forEach(armCases, (testCase) =>
     Effect.gen(function* () {
-      const priorTurns = yield* Effect.forEach(testCase.setup.priorTurns ?? [], (turn) =>
-        Effect.gen(function* () {
-          const toolCalls = yield* Effect.forEach(turn.toolCalls ?? [], (call) =>
-            call.resultFile === undefined
-              ? Effect.succeed(call)
-              : fs
-                  .readFileString(path.resolve(import.meta.dirname, "../..", call.resultFile))
-                  .pipe(Effect.map((result) => ({ ...call, result }))),
-          );
-          return { ...turn, toolCalls };
-        }),
-      );
+      const carry = yield* loadKinCarry(testCase, loadPriorCalls);
+      const setup =
+        carry === undefined
+          ? {
+              ...testCase.setup,
+              priorTurns: yield* Effect.forEach(testCase.setup.priorTurns ?? [], (turn) =>
+                loadPriorCalls(turn.toolCalls).pipe(
+                  Effect.map((toolCalls) => ({ ...turn, toolCalls })),
+                ),
+              ),
+            }
+          : { ...testCase.setup, carry };
       return {
         ...testCase,
-        expect: flags.arm === "raw" ? (testCase.expectRaw ?? testCase.expect) : testCase.expect,
-        setup: {
-          ...testCase.setup,
-          priorTurns,
-        },
+        expect: expectationsForLayout(testCase, flags.arm),
+        setup,
       };
     }),
   );
+  const activeLayout = (testCase: McpToolUseCase): KinLayout =>
+    sessionLayout(testCase, flags["kin-layout"], codex) ? "session" : "legacy";
+  const forGrading = (testCase: McpToolUseCase) => ({
+    ...testCase,
+    expect: expectationsForLayout(testCase, flags.arm, activeLayout(testCase)),
+  });
+  const carryCases = selected.filter((testCase) => testCase.setup.carry !== undefined);
+  if (flags["kin-layout"] === "session") {
+    const fallbacks = carryCases.filter((testCase) => activeLayout(testCase) === "legacy");
+    process.stderr.write(`${fallbacks.length} cases have no session layout\n`);
+  }
   // Trimmed captures without user data ship beside the cases. `--template` also takes a raw
   // CLIProxyAPI capture.
   const templatePath =
@@ -3802,10 +3860,10 @@ const main = Effect.gen(function* () {
     const sample = makeSample(testCase, baseFor(testCase));
     yield* Effect.scoped(Effect.andThen(withDevices(sample), withBackgroundWait(sample)));
     sample.kinFiles = yield* kinTurnFiles(testCase);
-    const messages = buildMessages(sample);
+    const messages = buildMessages(sample, flags["kin-layout"]);
     const body = sample.base.codex
       ? codexRequest(sample.base, codexMessages(messages))
-      : requestBody(sample, effort, messages);
+      : requestBody(sample, effort, messages, false, activeLayout(testCase) === "session");
     return { sample, messages, encoded: yield* encodeJson(body) };
   });
   if (flags["dry-run"] || flags.estimate) {
@@ -3813,7 +3871,8 @@ const main = Effect.gen(function* () {
     // a regex that doesn't compile, a tool the agent lacks or a placeholder left unfilled.
     const problems: Array<string> = [];
     const sizes: Array<{ prefixChars: number; messageChars: number }> = [];
-    for (const testCase of selected) {
+    const dryCases = flags.estimate && flags["kin-layout"] === "session" ? carryCases : selected;
+    for (const testCase of dryCases) {
       const { sample, messages, encoded } = yield* firstRequest(testCase);
       const tools = new Set(
         [...sample.tools, ...sample.base.deferred].map((tool) => normalizeToolName(tool.name)),
@@ -3823,7 +3882,7 @@ const main = Effect.gen(function* () {
       );
       // Codex lists its tools differently; only Claude requests are checked for tool names.
       const found = [
-        ...(sample.base.codex ? [] : caseProblems(testCase, tools)),
+        ...(sample.base.codex ? [] : caseProblems(forGrading(testCase), tools)),
         ...unfilled,
         ...kinCaseProblems(testCase, tools),
       ];
@@ -3871,6 +3930,7 @@ const main = Effect.gen(function* () {
     model: flags.model,
     ...(replay || !isPricedModel(flags["shell-model"]) ? { proxy: proxyConfig() } : {}),
     effort,
+    kinLayout: flags["kin-layout"],
     maxSteps: flags["no-step-limit"] ? 0 : (flags["max-steps"] ?? (codex ? 10 : 6)),
     shellModel: flags["shell-model"],
     ...(appServer
@@ -3935,6 +3995,7 @@ const main = Effect.gen(function* () {
     model: flags.model,
     effort,
     harness: appServer ? "app-server" : harness,
+    ...(flags["kin-layout"] === "session" ? { kinLayout: "session" as const } : {}),
     shellModel: config.shellModel,
     maxSteps: config.maxSteps,
     userInstructions: flags["user-instructions"],
@@ -3957,7 +4018,8 @@ const main = Effect.gen(function* () {
       );
   }
   const inFlight = yield* Semaphore.make(flags.concurrency);
-  const runOne = (testCase: McpToolUseCase) => {
+  const runOne = Effect.fn("evaluateMcpToolUse.runOne")((original: McpToolUseCase) => {
+    const testCase = forGrading(original);
     const { id, kind, pattern } = testCase;
     const identity = {
       id,
@@ -3965,11 +4027,13 @@ const main = Effect.gen(function* () {
       pattern,
       role: testCase.setup.role,
       arm: flags.arm,
+      ...(activeLayout(testCase) === "session" ? { kinLayout: "session" as const } : {}),
       shellModel: config.shellModel,
     };
     const usage = { usage: emptyUsage(), shellUsage: emptyUsage() };
     const privateValues = [
       config.apiKey,
+      config.anthropic?.url.replace(/\/v1$/, "") ?? "",
       ...Object.values(config.proxy?.headers ?? {}),
       ...Object.values(config.anthropic?.headers ?? {}),
     ]
@@ -4023,7 +4087,7 @@ const main = Effect.gen(function* () {
         Effect.log(`${row.id}: ${"error" in row ? "ERROR" : STATE_LABEL[rowState(row)]}`),
       ),
     );
-  };
+  });
   // Without --samples or --top-up, a case whose 2 samples disagree gets a 3rd to settle it.
   const runCase = Effect.fn("evaluateMcpToolUse.runCase")(function* (testCase: McpToolUseCase) {
     const runMany = (count: number) =>
