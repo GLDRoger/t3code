@@ -280,7 +280,7 @@ Known input-integrity gap: clients can steer an active wake-up with `steer_activ
 8. `waitForThread({ threadId, runId, timeoutMs })` for as long as the run shows activity (`runSilence.ts`: any provider event on its thread, such as text, a tool call or result, a status or a request). A working wake-up has no time limit; only one whose run has shown nothing for 15 minutes is stuck and ended. When the run ends, the runner waits for any adopted steer run that is still queued or active. When it is ended for silence, `interruptThread`, wait up to 30 seconds for the run to settle, then capture usage and mark `timed_out`. If it has not settled, log that it may continue; captured usage is a snapshot, not a final total. Closing the runner scope interrupts and requeues unfinished wake-ups without counting an attempt.
 9. Finish: `Memory.commitWakeup` (one commit holding the staged item writes and the journal entry), reset the read checkout, record token usage from the run's provider turns into `kin_wakeups.tokens_json` and `KinBudget`, mark events `done`, and `settleThread`.
 
-Every wake-up is cold: a message arrives, a wake-up starts a fresh provider process with fresh context and the full prompt, and it ends. No provider session or process is kept between wake-ups.
+Each wake-up starts a fresh provider process with the full prompt and no conversation history from the previous session. No provider session or process is kept between wake-ups. A fresh session can still read a warm provider prompt cache.
 
 If the lead writes files by hand in the read checkout, step 9's reset throws the changes away. A non-empty `git status --porcelain` before the reset is logged in the journal as "Lead edited memory files directly; discarded."
 
@@ -292,9 +292,9 @@ A `MemorySyncConflict` fails the wake-up and leaves the events queued with the q
 
 ### The prompt and caching (gap 2)
 
-Kin cannot set cache breakpoints, but it keeps the stable text first, so the provider's automatic prefix caching hits.
+Claude Code sends the wake-up as one user text block and puts its own cache breakpoints on the system prompt and the latest cacheable context. Putting stable text first in the user block does not write a separate cache entry for that text. The SDK can forward a breakpoint on a user text block, but an explicit breakpoint on a byte-identical prefix did not improve first-request reuse on the tested Claude Code gateway. Do not infer cache hits from the layout alone.
 
-The lead instructions (`instructions.ts`, below, with its version line) are the session's whole system prompt on every provider, followed by one shared line on what the session has (`lead/turn/session.ts`): on Claude a custom prompt, not the Claude Code preset with an `append`; on Codex its base instructions. The presets plus T3's thread guidance cost about 9k tokens a turn describing tools a lead doesn't use as a coding agent would. `KinSessions` plans it and each provider's descriptor sets it; dreams and other threads are left alone. They are set with `snapshot: false`. A lead reuses one session across wake-ups, so a recorded prompt would keep an old instructions version until compaction. Rules and the index stay in the message, because they change with every memory head and a lead session spans many heads.
+The lead instructions (`instructions.ts`, below, with its version line) are the session's whole system prompt on every provider, followed by one shared line on what the session has (`lead/turn/session.ts`): on Claude a custom prompt, not the Claude Code preset with an `append`; on Codex its base instructions. The presets plus T3's thread guidance cost about 9k tokens a turn describing tools a lead doesn't use as a coding agent would. `KinSessions` plans it and each provider's descriptor sets it; dreams and other threads are left alone. On Claude the custom prompt sets `snapshot: false`. Rules and the pinned memory index stay in the user message, not the system instructions.
 
 Each wake-up's message, most stable first:
 
@@ -306,7 +306,7 @@ Each wake-up's message, most stable first:
 
 6. On an owner-only turn, a Work section quoted as data: counts of the lead's open, doing, waiting, late and due-this-week entries, and `changed`, the entries of its whose changes by anyone but itself came after its cursor for this chat (at most 15, each with its last four changes). Building the prompt sets a pending cursor at the newest change; it settles only once the lead posts a reply in that chat after it, so a silent or failed turn moves nothing and an item it already reported does not come back to be repeated. With nothing open and nothing changed the section is left out. A `record.changed` event quotes the entry's key, title, notes and due date as data; an `assigned` one owes a reply, a `withdrawn` one only a line the owner needs. A shared turn quotes no `record.changed` event at all.
 
-No wake-up timestamps or ids go above the divider (dates and item ids already in memory remain there). A test asserts that two prompts built for the same organization and memory commit share everything above it while the snapshot index is unchanged. Cache hits are measured with `cachedInputTokens` on the turn's `tokenUsage`.
+The wake-up clock and routing ids do not go above the divider. Dates and item ids in memory do: the index's generated `As of` line can change on a rebuild even when the entries are identical. A test asserts that two prompts built for the same organization and memory commit share everything above the divider while the snapshot index is unchanged. Claude cache reads and writes come from the provider turn's cumulative `turnTokenUsage`, not from the length of that prefix.
 
 ### The lead instructions file
 
@@ -704,7 +704,7 @@ LEAD-14. Withdrawn (owner, 10 Nov 2026): there is no shadow week to rehearse.
 ## Design corrections
 
 1. **A delegated task's completion wakes its parent thread.** `delegate_task` needs an active parent run, and its completion wakes the parent (`completionWake` has no "never"). On a lead's thread that wake would start a turn outside Kin's queue, so Kin turns T3's notice into a `task.finished` event and the wake-up takes over the run T3 started (`TaskWake.ts`).
-2. **Prompt caching is not something Kin can configure.** Claude Code and Codex control their own requests. Kin can only keep the start of its message stable and measure `cachedInputTokens`.
+2. **Prompt caching depends on the provider path.** Claude Code and Codex render their own requests. Kin measures cache reuse from reported token usage.
 3. **"Daily budget" can't be measured against plan headroom yet.** T3 reads limits only from cliproxy (`UsageLimitSources`). Kin counts tokens from turn usage.
 4. **A lead woken from a chat the owner didn't place it in still needs memory.** Those wake-ups write to a shadow branch, so the lead keeps working memory while the default branch stays clean.
 5. **Threads inherit their server user's credentials.** T3 has no network allowlist or credential stripping for threads (DESIGN 9.4 assumed one). So Kin runs as a dedicated `kin` user, and only owner-only turns that have read no outside text get a shell at all.
