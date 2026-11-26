@@ -2209,6 +2209,8 @@ const tidewater = Effect.fn("test.tidewater")(function* (github: FakeGitHub, app
   const { sql, orgId, queue, directOf, owner, runReview } = fixture;
   yield* sql`UPDATE kin_orgs SET name = 'Tidewater Freight' WHERE org_id = ${orgId}`;
   yield* sql`UPDATE kin_people SET github_login = 'zoya-gh' WHERE org_id = ${orgId} AND person_id = 'zoya'`;
+  yield* sql`UPDATE kin_people SET access = CASE person_id WHEN 'meera' THEN 'co_owner' ELSE 'member' END
+    WHERE org_id = ${orgId} AND person_id IN ('meera', 'arjun')`;
   const startIssue = Effect.fn("test.startIssue")(function* (inside = false) {
     const author = inside ? "zoya-gh" : "stranger-one";
     const title = "Digest arrives early";
