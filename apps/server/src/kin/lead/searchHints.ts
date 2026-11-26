@@ -17,7 +17,6 @@ export const KIN_SEARCH_HINTS: Readonly<Record<string, string>> = {
   doc_read: "open page outline sections text",
   doc_restore: "undo page change earlier version",
   doc_rewrite: "replace whole body page",
-  kin_ask: "question options choice tap buttons",
   kin_ask_close: "question answered withdrawn finish",
   kin_cancel: "drop reminder stop schedule delete",
   kin_chart: "graph trend comparison bar line pie",

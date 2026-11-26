@@ -21,6 +21,7 @@ export const KIN_CLAUDE_ALWAYS_LOADED: ReadonlySet<string> = new Set([
   "client_read",
   "doc_create",
   "record_create",
+  "kin_ask",
 ]);
 
 const SEARCH_HINT = "anthropic/searchHint";

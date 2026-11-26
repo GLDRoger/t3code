@@ -78,7 +78,7 @@ it("each Kin tool's description and input schema weigh what the budget pins", ()
   );
 });
 
-it("adds five everyday tools to Claude's owner core without moving the Codex partition", () => {
+it("adds six everyday tools to Claude's owner core without moving the Codex partition", () => {
   const actual = Object.values(withAlwaysLoaded(Toolkit.make(...kinTools)).tools)
     .filter((tool) => alwaysLoads(tool) === true)
     .map((tool) => tool.name);
@@ -89,6 +89,7 @@ it("adds five everyday tools to Claude's owner core without moving the Codex par
     "client_read",
     "doc_create",
     "record_create",
+    "kin_ask",
   ]);
 });
 
