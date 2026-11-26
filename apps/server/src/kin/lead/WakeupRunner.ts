@@ -140,6 +140,7 @@ import * as WorkFor from "./workFor.ts";
 import { noticeRecords, runsFrom, turnRecords } from "./wakeupRuns.ts";
 import { RUN_SILENCE_MS, activityAt, waitAsking } from "./runSilence.ts";
 import { KinAgentSessions } from "../mcp/KinAgentSessions.ts";
+import { readCursor } from "./sessionChanges.ts";
 import { KinBoot, carryFacts, decideCarry, ulid, type PromptFingerprint } from "./sessionCarry.ts";
 import { closeQuietRunCards, postQuietRunCard } from "./quietRunCard.ts";
 import { inheritSession, outsideRead } from "./OutsideContent.ts";
@@ -824,9 +825,14 @@ const make = Effect.gen(function* () {
       const toolListSha = agentSessions?.lastToolList(threadId) ?? null;
       const contextTokens = last?.tokenUsage?.usedTokens ?? null;
       const lastRequestAt = last?.startedAt == null ? null : DateTime.toEpochMillis(last.startedAt);
+      const chat = yield* turnChat(row).pipe(provideSql);
+      const [latest] = yield* sql<{ seq: number }>`SELECT last_seq AS seq FROM kin_chats
+        WHERE org_id = ${row.orgId} AND chat_id = ${chat?.chatId ?? null}`;
       const [shadow] = yield* sql<{ carry: number | null; reason: string | null }>`
         UPDATE kin_wakeups SET context_tokens = ${contextTokens}, last_request_at = ${lastRequestAt},
-          carry_json = json_set(carry_json, '$.toolListSha', ${toolListSha})
+          carry_json = CASE WHEN json_type(carry_json, '$.cursor') = 'object'
+            THEN json_set(carry_json, '$.toolListSha', ${toolListSha}, '$.cursor.chatSeq', ${latest?.seq ?? 0})
+            ELSE json_set(carry_json, '$.toolListSha', ${toolListSha}) END
         WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}
         RETURNING json_extract(carry_json, '$.carry') AS carry,
           json_extract(carry_json, '$.reason') AS reason`;
@@ -1816,6 +1822,18 @@ const make = Effect.gen(function* () {
                 people.map((one) => one.name),
               );
             let promptFingerprint: PromptFingerprint = { standing: null, index: null };
+            const cursor = yield* Effect.gen(function* () {
+              const chat = yield* turnChat(row);
+              return yield* readCursor(orgId, lane?.chatId ?? chat?.chatId ?? null, pinned.head);
+            }).pipe(
+              provideSql,
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Kin session carry shadow recording failed", {
+                  wakeupId,
+                  cause,
+                }).pipe(Effect.as(undefined)),
+              ),
+            );
             const built = yield* prompt.build({
               observePrompt: (fingerprint) => {
                 promptFingerprint = fingerprint;
@@ -1976,6 +1994,7 @@ const make = Effect.gen(function* () {
                 bootId,
                 toolListSha,
                 missed: false,
+                ...(cursor === undefined ? {} : { cursor }),
               });
               const fingerprint = yield* encodeShadowJson(shadow.fingerprint);
               const index =
@@ -1987,10 +2006,10 @@ const make = Effect.gen(function* () {
                 WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND status = 'running'`;
             }).pipe(
               provideSql,
-              Effect.catch((error) =>
+              Effect.catchCause((cause) =>
                 Effect.logWarning("Kin session carry shadow recording failed", {
                   wakeupId,
-                  errorTag: error._tag,
+                  cause,
                 }),
               ),
             );
