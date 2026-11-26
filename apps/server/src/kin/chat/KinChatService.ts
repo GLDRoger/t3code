@@ -159,6 +159,7 @@ type SendInput = KinMessagesSendInput & {
    * them, not the owner's, and admitted outside the chat's floor (`KinFloor.admitToPerson`).
    */
   readonly placeReplyFigures?: true;
+  readonly silent?: true;
   readonly forChat?: true;
   /** With `forChat`: another person's words the agent passes on (`kin_relay`). */
   readonly relay?: KinMessageRelay;
@@ -2272,6 +2273,7 @@ const make = Effect.gen(function* () {
       clientId: { kind: "send", id: request.clientMessageId },
       forChat: toPerson,
       placeReplyFigures: input.placeReplyFigures,
+      silent: identity._tag === "agent" ? input.silent : undefined,
       relay: toPerson ? input.relay : undefined,
       passedOn: input.passedOn,
       ...(input.replies === false ? { replies: false as const } : {}),
