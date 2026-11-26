@@ -2790,6 +2790,12 @@ describe("Kin migrations", () => {
       yield* sql`INSERT INTO kin_wakeups (org_id, agent_id, wakeup_id, model, started_at, status, event_ids)
         VALUES ('org', 'lead', 'turn', 'test', 1, 'running', '[]')`;
       assert.deepStrictEqual(yield* sql`SELECT kind FROM kin_wakeups`, [{ kind: "turn" }]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT name, type, "notnull" AS required, dflt_value
+          FROM pragma_table_info('kin_wakeups') WHERE name = 'ending'`,
+        [{ name: "ending", type: "TEXT", required: 0, dflt_value: null }],
+      );
+      assert.deepStrictEqual(yield* sql`SELECT ending FROM kin_wakeups`, [{ ending: null }]);
       const upkeep = sql`INSERT INTO kin_wakeups (org_id, agent_id, wakeup_id, model, started_at, status, event_ids, kind)
         VALUES ('org', 'lead', 'upkeep', 'test', 2, 'running', '[]', 'upkeep')`;
       assert.isTrue(Exit.isFailure(yield* Effect.exit(upkeep)));

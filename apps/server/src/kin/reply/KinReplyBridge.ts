@@ -83,6 +83,7 @@ import {
   normalized,
   repeats,
   RESCUE_PROMPT,
+  SILENT_REPLY,
   stripTrailingSilenceMarker,
   toolLabel,
   type SegmentNext,
@@ -206,6 +207,8 @@ const heldNotice = (lead: string, cause: KinTroubleCause, ownerOnly: boolean, to
     : told
       ? `${lead} is unavailable right now. Kin has told the owner, and will run this as soon as it can.`
       : `${lead} is unavailable right now. Kin will run this as soon as it can.`;
+
+type Ending = "text" | "marker" | "none" | "rescued_text" | "rescued_none" | "failed";
 
 type Outcome = "posted" | "note" | "silent" | "empty" | "withheld" | "overflow" | "dropped";
 
@@ -419,6 +422,16 @@ const make = Effect.gen(function* () {
       );
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin wake-up timing failed", { cause })),
+  );
+  const recordEnding = Effect.fn("KinReplyBridge.recordEnding")(
+    function* (
+      input: { readonly orgId: KinOrgId; readonly wakeupId: KinWakeupId },
+      ending: Ending,
+    ) {
+      yield* sql`UPDATE kin_wakeups SET ending = ${ending}
+        WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}`;
+    },
+    Effect.catchCause((cause) => Effect.logWarning("Kin wake-up ending write failed", { cause })),
   );
   // The messages the model had read before a reply are answered for good, in the reply's own
   // transaction (the gate's `bind`): no restart finds the reply stored and its message unanswered.
@@ -1360,6 +1373,8 @@ const make = Effect.gen(function* () {
     const result = yield* deliver(wake, `reply-overflow:${wake.wakeupId}`, body, Infinity);
     if (result._tag === "posted") {
       wake.answered = true;
+      for (const segment of wake.segments.values())
+        if (segment.outcome === "overflow") segment.outcome = "posted";
     } else {
       wake.withheldWhy ??= result.why;
       wake.withheld ??= result.reason;
@@ -1515,27 +1530,44 @@ const make = Effect.gen(function* () {
       );
       // A failed or stopped run is retried or was the owner's choice; only a finished one is owed.
       const answeredOnFirstRun = yield* finish;
-      if (answeredOnFirstRun || !input.rescue) return yield* settled;
+      const endingFor = (rescued: boolean): Ending => {
+        const segments = [...wake.segments.values()];
+        if (segments.some((segment) => segment.outcome === "posted"))
+          return rescued ? "rescued_text" : "text";
+        if (rescued) return "rescued_none";
+        return segments.some(
+          (segment) => segment.outcome === "silent" && segment.text.includes(SILENT_REPLY),
+        )
+          ? "marker"
+          : "none";
+      };
+      if (answeredOnFirstRun || !input.rescue) {
+        yield* settled;
+        return endingFor(false);
+      }
       const shown = yield* showed(wake).pipe(Effect.orElseSucceed(() => false));
       // A refusal would refuse the rescue's text too.
-      if (
-        followUpFor({
-          owed: wake.lane.owed,
-          answered: answeredOnFirstRun,
-          withheld: wake.withheld !== null,
-        }) === "rescue"
-      ) {
+      const followUp = followUpFor({
+        owed: wake.lane.owed,
+        answered: answeredOnFirstRun,
+        withheld: wake.withheld !== null,
+      });
+      if (followUp === "rescue") {
         yield* rescue(wake, input.projectId, shown);
-        if (yield* finish) return yield* settled;
+        if (yield* finish) {
+          yield* settled;
+          return endingFor(true);
+        }
       }
       yield* settled;
+      const ending = endingFor(followUp === "rescue");
       // What it showed stands without its line: "didn't reply" under a chart would be false.
-      if (shown && wake.withheld === null) return;
+      if (shown && wake.withheld === null) return ending;
       // A person told this agent answers them in their own chat never meets silence there.
       const why =
         wake.withheldWhy ?? (wake.withheld === "not_allowed" ? yield* refusedHere(wake) : null);
       // The chat itself said no (a mute, a group's level), or someone joining was already handled.
-      if (wake.movedNoticed || (wake.withheld !== null && why === null)) return;
+      if (wake.movedNoticed || (wake.withheld !== null && why === null)) return ending;
       // Honest, never faked: whoever asked sees that no reply came, and why Kin held one back.
       yield* chat.notice({
         messageId: KinMessageId.make(`kin-no-reply:${wake.wakeupId}`),
@@ -1547,7 +1579,13 @@ const make = Effect.gen(function* () {
             ? `${wake.lane.leadName} didn't reply.`
             : `${wake.lane.leadName}'s reply couldn't be posted: ${why ?? WITHHELD_ANY}`,
       });
+      return ending;
     },
+    (effect, input) =>
+      effect.pipe(
+        Effect.tap((ending) => (ending === undefined ? Effect.void : recordEnding(input, ending))),
+        Effect.asVoid,
+      ),
     Effect.catchCause((cause) => Effect.logWarning("Kin reply completion failed", { cause })),
   );
 
@@ -1628,6 +1666,7 @@ const make = Effect.gen(function* () {
         ...(quiet ? { silent: true as const } : {}),
       });
     },
+    (effect, input) => effect.pipe(Effect.ensuring(recordEnding(input, "failed"))),
     Effect.catchCause((cause) => Effect.logWarning("Kin failure notice failed", { cause })),
   );
 

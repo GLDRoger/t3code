@@ -434,9 +434,16 @@ const setup = Effect.fn("test.setup")(function* (input: {
   };
 });
 
+const endingOf = (sql: SqlClient.SqlClient, wakeupId: KinWakeupId) =>
+  sql<{ ending: string | null }>`SELECT ending FROM kin_wakeups WHERE wakeup_id = ${wakeupId}`.pipe(
+    Effect.map(([row]) => row?.ending),
+  );
+
 it.effect("posts the lead run's plain text to the chat it answers, as one agent turn", () =>
   Effect.gen(function* () {
-    const { fake, runId, complete, posted, message, sql } = yield* setup({ ask: "Is CI green?" });
+    const { fake, runId, complete, posted, message, sql, wakeupId } = yield* setup({
+      ask: "Is CI green?",
+    });
     fake.items = [
       text("a", 1, "Yes, CI is green on main.", runId),
       text("b", 2, "The flaky test passed twice.", runId),
@@ -456,6 +463,7 @@ it.effect("posts the lead run's plain text to the chat it answers, as one agent 
     );
     assert.strictEqual(run!.turns, 1);
     assert.strictEqual(fake.rescues, 0);
+    assert.strictEqual(yield* endingOf(sql, wakeupId), "text");
   }).pipe(Effect.provide(layer)),
 );
 
@@ -944,6 +952,8 @@ it.effect.each<{
           rootRunId: runId,
           rescue: false,
         });
+    if (row.name === "NO_REPLY" || row.name === "a quiet morning, silence")
+      assert.strictEqual(yield* endingOf(sql, wakeupId), row.written.length ? "marker" : "none");
     // A card's own message has no words.
     const rows = yield* sql<{ body: string; form: string | null }>`SELECT body, form
       FROM kin_messages WHERE chat_id = ${chatId} AND author_kind = 'agent' AND body <> ''
@@ -1511,6 +1521,7 @@ it.effect.each([
       });
       const lane = Option.getOrThrow(yield* bridge.lane({ orgId: owner.orgId, agentId, wakeupId }));
       yield* bridge.failed({ orgId: owner.orgId, wakeupId, lane, outcome: "replied" });
+      assert.strictEqual(yield* endingOf(sql, wakeupId), "failed");
       assert.deepStrictEqual(
         (yield* posted).map((row) => row.body),
         [
@@ -2212,6 +2223,11 @@ it.effect.each([
     fake.rescueItems = input.rescue.map((body, n) => text(`r${n}`, 10 + n, body, rescueRunId));
     yield* complete;
     assert.deepStrictEqual(fake.prompts, input.card === "chart" ? [CAPTION_PROMPT] : []);
+    if (input.card === "chart")
+      assert.strictEqual(
+        yield* endingOf(sql, wakeupId),
+        input.rescue.length ? "rescued_text" : "rescued_none",
+      );
     const said = yield* sql<{ line: string }>`SELECT author_kind || ':' || body AS line
       FROM kin_messages WHERE chat_id = ${chatId} AND author_kind != 'human' AND body != ''
       ORDER BY seq`;
