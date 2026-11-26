@@ -130,6 +130,9 @@ export const githubTriggerText = (
   askedBy?: string,
 ) => {
   if (isOutsideReview(trigger)) return SEAT(repo, trigger, askedBy).join("\n");
+  // Step 4 replaces this text.
+  if (trigger.kind === "triage" || trigger.kind === "triage_reply")
+    return CALL_ISSUE(repo, trigger).join("\n");
   return [
     `GitHub work for you, started by Kin on ${repo}. You post on GitHub as Kin's GitHub App (as the owner where it isn't installed); Kin signs every post with your name, so write as yourself, in your own voice.`,
     ...(trigger.pull?.reReview !== undefined && askedBy === undefined
