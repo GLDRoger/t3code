@@ -205,7 +205,7 @@ const problemOf = (answer: ApiAnswer) => {
   return `GitHub answered ${answer.status}. Kin tries again in a few minutes.`;
 };
 
-const Login = Schema.Struct({ login: Schema.String });
+const Login = Schema.Struct({ login: Schema.String, type: Schema.optional(Schema.String) });
 const Notification = Schema.Struct({
   reason: Schema.String,
   updated_at: Schema.optional(Schema.String),
@@ -385,6 +385,7 @@ export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
         kind,
         body: comment.body ?? "",
         author: comment.user?.login ?? "ghost",
+        bot: comment.user?.type === "Bot",
         association: comment.author_association,
         createdAt: parsed(comment.created_at),
         ...(comment.path === undefined ? {} : { path: comment.path }),
@@ -403,6 +404,7 @@ export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
       title: issue.value.title,
       body: issue.value.body ?? "",
       author: issue.value.user?.login ?? "ghost",
+      authorBot: issue.value.user?.type === "Bot",
       association: issue.value.author_association,
       open: issue.value.state === "open",
       draft: facts?.draft === true,
@@ -1247,6 +1249,7 @@ export const make = Effect.gen(function* () {
       botLogin: bot,
       agentPosts: posts,
       kinsPull,
+      triageFrom: undefined,
     };
     // Someone who can't write is re-reviewed only from a head whose review GitHub took.
     const last =
@@ -1303,7 +1306,7 @@ export const make = Effect.gen(function* () {
           ? (current.comments.find(
               (comment) => comment.id === (trigger.reactTo as { id: number }).id,
             )?.createdAt ?? now)
-          : trigger.kind === "review"
+          : trigger.kind === "review" || trigger.kind === "triage"
             ? current.createdAt
             : now;
       const moved =
