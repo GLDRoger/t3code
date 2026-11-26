@@ -52,6 +52,7 @@ import {
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import {
   endOfDay,
+  stillSuggestion,
   suggestedStateLabel,
   UNISSUED_INVOICE,
 } from "../../apps/server/src/kin/work/recordRows.ts";
@@ -67,6 +68,7 @@ import { tooLongForCard } from "../../apps/server/src/kin/questions/askPerson.ts
 import {
   ASKED,
   CALL_ARGUMENTS_REFUSAL,
+  OFFERED,
   SEVERAL_ACCOUNTS,
 } from "../../apps/server/src/kin/connections/ConnectionsService.ts";
 import { readCallArguments } from "../../apps/server/src/kin/connections/callArguments.ts";
@@ -137,7 +139,10 @@ import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp
 import { diffGoesOn, postedResult } from "../../apps/server/src/kin/github/GitHubWatch.ts";
 import { DIFF_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
 import { filePage, READ_NEXT, READ_REFUSAL } from "../../apps/server/src/kin/github/repoRead.ts";
-import { REPO_READ_REFUSAL } from "../../apps/server/src/kin/lead/OutsideContent.ts";
+import {
+  OUTSIDE_REFUSAL,
+  REPO_READ_REFUSAL,
+} from "../../apps/server/src/kin/lead/OutsideContent.ts";
 import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
 import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
 import { KinSalesToolkit } from "../../apps/server/src/kin/sales/mcp.ts";
@@ -959,6 +964,13 @@ const repoReadAnswer = (input: {
 };
 
 const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
+  stillSuggestion: (input: { key: string }) => ({
+    $error: { _tag: "KinChatError", reason: "invalid_state", message: stillSuggestion(input.key) },
+  }),
+  outsideRefusal: () => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: OUTSIDE_REFUSAL },
+  }),
+  connectionOffered: () => ({ note: OFFERED }),
   // payment_record's answer to an agent: the owner's Confirm card lines (`receiptProposals.ts`).
   paymentCard: (input: {
     proposal: string;
