@@ -230,12 +230,13 @@ export const invoiceCandidates = Effect.fn("KinStatements.invoiceCandidates")(fu
     currency: string | null;
     amountMinor: number | null;
     dateAt: number | null;
+    rev: number;
     fieldsJson: string;
     client: string | null;
     clientId: string | null;
     paid: number;
   }>`SELECT r.record_id AS "recordId", r.key, r.title, r.currency, r.amount_minor AS "amountMinor",
-      r.date_at AS "dateAt", r.fields_json AS "fieldsJson", c.title AS client, c.record_id AS "clientId",
+      r.date_at AS "dateAt", r.rev, r.fields_json AS "fieldsJson", c.title AS client, c.record_id AS "clientId",
       (SELECT COALESCE(SUM(p.amount_minor), 0) FROM kin_record_payments p
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL) AS paid
     FROM kin_records r LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id
@@ -257,6 +258,7 @@ export const invoiceCandidates = Effect.fn("KinStatements.invoiceCandidates")(fu
     return {
       recordId: row.recordId,
       key: row.key,
+      rev: row.rev,
       title: row.title,
       currency: row.currency ?? home,
       amountMinor: row.amountMinor ?? 0,
@@ -290,12 +292,15 @@ export const recordedPayments = Effect.fn("KinStatements.recordedPayments")(func
     title: string;
     currency: string;
     amountMinor: number;
+    receivedMinor: number | null;
+    receivedCurrency: string | null;
     paidOn: string;
     note: string;
     client: string | null;
     fieldsJson: string;
   }>`SELECT p.payment_id AS "paymentId", r.record_id AS "recordId", r.key, r.title, p.currency,
-      p.amount_minor AS "amountMinor", p.paid_on AS "paidOn", p.note, c.title AS client, r.fields_json AS "fieldsJson"
+      p.amount_minor AS "amountMinor", p.received_minor AS "receivedMinor",
+      p.received_currency AS "receivedCurrency", p.paid_on AS "paidOn", p.note, c.title AS client, r.fields_json AS "fieldsJson"
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = r.party_id

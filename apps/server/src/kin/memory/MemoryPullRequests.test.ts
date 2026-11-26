@@ -546,8 +546,13 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
     ).pipe(Layer.provide(api), Layer.provide(asApp ? app : Layer.empty));
 
     const notices: Array<{ branch: string; reason: string; owner?: string }> = [];
+    const landingEpisodes: Array<{ failure: string | undefined; link: string | undefined }> = [];
     const recovery = Layer.succeed(Memory.MemoryRecoveryHooks, {
       notify: (notice) => Effect.sync(() => void notices.push(notice)),
+      writeEpisode: (_org, operation, failure, link) =>
+        Effect.sync(() => {
+          if (operation === "online-copy") landingEpisodes.push({ failure, link });
+        }),
     });
     const config = Layer.succeed(MemoryConfig, {
       baseDirectory: root,
@@ -679,10 +684,9 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         }
         expect(opened()).toBe(1);
         expect(merges).toHaveLength(1);
-        expect(toldOwner()).toEqual([
-          expect.stringContaining("Memory is saved here, but GitHub's copy is behind"),
+        expect(landingEpisodes.filter(({ failure }) => failure !== undefined)).toEqual([
+          { failure: "review-needed", link: `https://github.com/${repo}/pull/1` },
         ]);
-        expect(toldOwner()[0]).toContain(`https://github.com/${repo}/pull/1`);
         expect((yield* memory.readItem(orgId, KinMemoryItemId.make("decision-0001"))).head.id).toBe(
           "decision-0001",
         );
@@ -697,7 +701,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         expect(yield* remoteFiles("main")).toContain("decisions/decision-0001.md");
         expect(yield* bare("show", `main:${journalPath}`)).toContain("wake-up wake3");
         expect(opened()).toBe(2);
-        expect(toldOwner()).toHaveLength(1);
+        expect(landingEpisodes.at(-1)?.failure).toBeUndefined();
         return;
       }
 
@@ -971,6 +975,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         // wake2's commit was never tried, so its signal tries it instead of waiting on wake1's.
         expect(yield* landing).toMatchObject({ _tag: "stuck" });
         expect(yield* bare("rev-parse", "refs/heads/main")).toBe(original);
+        expect(landingEpisodes.map(({ failure }) => failure)).toContain("remote");
         // The owner hears once: memory is only on this server, and the same failure stays quiet.
         expect(notMerged()).toEqual([
           expect.objectContaining({
@@ -987,6 +992,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
         for (const id of ["new", "two", "three"])
           expect(yield* remoteFiles("main")).toContain(`claims/${id}.md`);
         expect(notMerged()).toHaveLength(1);
+        expect(landingEpisodes.at(-1)?.failure).toBeUndefined();
         return;
       }
 
@@ -1032,6 +1038,7 @@ it.effect.each(scenarios)("memory writes through PRs: %s", (scenario) =>
           const told = () =>
             notices.filter((notice) => notice.reason.includes("could not combine"));
           expect(told()).toHaveLength(1);
+          expect(landingEpisodes.at(-1)?.failure).toBe("online-conflict");
           yield* lander.signal(orgId);
           expect(yield* landing).toEqual({ _tag: "waiting" });
           expect(told()).toHaveLength(1);
