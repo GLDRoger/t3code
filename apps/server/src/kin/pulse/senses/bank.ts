@@ -167,7 +167,7 @@ export const overpaymentConsequence = (input: {
     (shown) =>
       `${key}, ${amount(received)} received ${shortDay(day)}, is more than the ${amount(owed)} this invoice owes: ${reason}. Recorded, it settles it and keeps ${amount(received - owed)} as ${client}'s credit.${
         others.length === 0 ? "" : ` ${client}'s other open invoices: ${listed(others, shown)}.`
-      } It isn't recorded until the owner confirms.`,
+      } It isn't recorded until it is confirmed on a card.`,
     Math.min(4, others.length),
   );
 };
