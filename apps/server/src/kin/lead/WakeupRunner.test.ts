@@ -85,7 +85,13 @@ import { KinServer, type Services as KinServerServices } from "../KinServer.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { KinWorkspace } from "../gendocs/workspace.ts";
 import * as RunSilence from "./runSilence.ts";
-import { CARRY_LIFETIME_MS, carryFacts, decideCarry, fingerprintPrompt } from "./sessionCarry.ts";
+import {
+  CARRY_LIFETIME_MS,
+  KinBoot,
+  carryFacts,
+  decideCarry,
+  fingerprintPrompt,
+} from "./sessionCarry.ts";
 import { postQuietRunCard } from "./quietRunCard.ts";
 import * as HostCare from "../host/KinHostCare.ts";
 import { KinRefusedModels } from "./refusedModels.ts";
@@ -101,7 +107,12 @@ import {
 } from "@t3tools/provider-core/server/ProviderAdapter";
 import * as HostBackup from "../hostBackup.ts";
 import * as PlatformError from "effect/PlatformError";
-import { KinLeadPrompt, KinLeadPromptError, type KinLeadPromptInput } from "./LeadPrompt.ts";
+import {
+  KinLeadPrompt,
+  KinLeadPromptError,
+  SESSION_CHANGES_CAP,
+  type KinLeadPromptInput,
+} from "./LeadPrompt.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -460,11 +471,12 @@ const readCarryHook = (threadId: ThreadId) => {
     Effect.orDie,
   );
 };
-const carryHarness = (options: Parameters<typeof harness>[0] = {}) =>
+const carryHarness = (options: Parameters<typeof harness>[0] = {}, boot = "fixture-boot") =>
   harnessWith(
     { ...options, settings: { kinSessionCarry: true, ...options.settings } },
     Layer.mergeAll(
       KinSessionContext.layer,
+      Layer.succeed(KinBoot, boot),
       Layer.mock(KinAgentSessions)({
         recordToolList: () => {},
         lastToolList: () => "a".repeat(64),
@@ -2396,6 +2408,134 @@ describe("WakeupRunner", () => {
     );
   });
 
+  it.effect(
+    "a released carried turn with a failed cursor capture cannot match the older snapshot",
+    () => {
+      const started = Deferred.makeUnsafe<void>();
+      return Effect.gen(function* () {
+        const sql = yield* seedCarry;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+        VALUES ('direct-lead', ${orgId}, 'direct', 'agent', ${agentId}, 'member', '2026-11-26')`;
+        yield* wake("tidewater-first");
+        const [first] = yield* carryRows;
+        assert.strictEqual(first?.captured, 1);
+        yield* (yield* KinEventQueue.KinEventQueue).enqueue(
+          yield* ownerSays("tidewater-capture", "direct"),
+        );
+        const active = yield* run();
+        yield* Deferred.await(started);
+        const [, carrying] = yield* carryRows;
+        assert.strictEqual(carrying?.reason, null);
+        assert.strictEqual(carrying?.sent, "carried");
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const projection = yield* carryProjection;
+        yield* threads
+          .streamStoredEventsFrom({
+            threadId: carrying!.threadId,
+            afterSequence: 0,
+            eventType: "provider-turn.updated",
+          })
+          .pipe(
+            Stream.filter(
+              ({ event }) =>
+                event.type === "provider-turn.updated" &&
+                event.payload.ordinal === 2 &&
+                event.payload.status === "running",
+            ),
+            Stream.take(1),
+            Stream.runDrain,
+          );
+        yield* sql`WITH RECURSIVE held(seq) AS (
+        SELECT 100 UNION ALL SELECT seq + 1 FROM held WHERE seq < ${100 + SESSION_CHANGES_CAP * 4}
+      )
+      INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_agent_id,
+        author_thread_id, author_owner_person_id, author_member_id, source_wakeup_id, author_role,
+        kind, body, mentions_json, status, created_at)
+      SELECT 'held-' || seq, ${orgId}, 'direct', seq, 'agent', ${agentId}, ${carrying!.threadId},
+        'owner', 'direct-lead', ${carrying!.wakeupId}, 'member', 'text', 'Invented', '[]', 'posted',
+        '2026-11-26' FROM held`;
+        yield* sql`INSERT INTO kin_org_state (org_id, paused, paused_at, paused_by) VALUES (${orgId}, 1, 1000, 'owner')`;
+        yield* threads.interruptThread({
+          projectId: projection.thread.projectId,
+          threadId: carrying!.threadId,
+          runId: projection.runs.at(-1)!.id,
+          commandId: CommandId.make("fixture-pause"),
+        });
+        yield* Fiber.join(active);
+        const [, released] = yield* carryRows;
+        assert.strictEqual(released?.status, "released");
+        assert.strictEqual(released?.captured, 0);
+        yield* sql`UPDATE kin_org_state SET paused = 0, paused_at = NULL, paused_by = NULL WHERE org_id = ${orgId}`;
+        yield* TestClock.adjust(KinStop.PAUSE_POLL_INTERVAL_MS);
+        yield* wake("tidewater-after-release");
+        const [, , next] = yield* carryRows;
+        assert.strictEqual(next?.reason, "snapshot");
+        assert.deepStrictEqual(yield* sessions(), [1, 1, 2]);
+      }).pipe(
+        Effect.provide(
+          carryHarness({
+            untilInterrupted: (ordinal) => ordinal === 2,
+            beforeTurn: (input) =>
+              input.runOrdinal === 2
+                ? readCarryHook(input.threadId).pipe(
+                    Effect.andThen(Deferred.succeed(started, undefined)),
+                    Effect.asVoid,
+                  )
+                : Effect.void,
+          }),
+        ),
+        provideDeterministicTestRuntime,
+      );
+    },
+  );
+
+  it.effect(
+    "a carried beside delta lost across boots counts as missed when recovery completes",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* seedCarry;
+        yield* wake("tidewater-first");
+        yield* harborviewChanged();
+        yield* wake("tidewater-carried");
+        const [, sent] = yield* carryRows;
+        assert.strictEqual(sent?.sent, "carried");
+        assert.strictEqual(sent?.missed, 0);
+        assert.isTrue((yield* decodeDeltaStats(sent?.delta)).beside);
+        // The provider completion survived the crash, but the wake-up had not been captured.
+        yield* sql`UPDATE kin_wakeups SET status = 'running', settled_at = NULL,
+        carry_json = json_set(carry_json, '$.cursorCaptured', json('false'))
+        WHERE wakeup_id = ${sent!.wakeupId}`;
+        yield* Effect.gen(function* () {
+          const recovered = yield* WakeupRunner.WakeupRunner;
+          yield* recovered.recover;
+        }).pipe(
+          Effect.provide(
+            Layer.fresh(WakeupRunner.layer).pipe(
+              Layer.provide(
+                Layer.mergeAll(
+                  Layer.fresh(KinSessionContext.layer),
+                  Layer.succeed(KinBoot, "new-boot"),
+                ),
+              ),
+            ),
+          ),
+        );
+        const [, completed] = yield* carryRows;
+        assert.strictEqual(completed?.status, "completed");
+        assert.strictEqual(completed?.missed, 1);
+      }).pipe(
+        Effect.provide(
+          carryHarness(
+            {
+              beforeTurn: (input) => readCarryHook(input.threadId).pipe(Effect.asVoid),
+            },
+            "old-boot",
+          ),
+        ),
+        provideDeterministicTestRuntime,
+      ),
+  );
+
   it.effect("the runner's context is the one the Claude hook reads", () => {
     const received: string[] = [];
     const beforeTurn = (input: ProviderAdapterV2TurnInput) =>
@@ -2556,8 +2696,9 @@ describe("WakeupRunner", () => {
     }).pipe(provideDeterministicTestRuntime),
   );
 
-  it.effect("a person's Stop ends carry before the next turn", () => {
+  it.effect("a person's Stop before prompt submit records no miss and ends carry", () => {
     const started = Deferred.makeUnsafe<void>();
+    const misses: unknown[] = [];
     return Effect.gen(function* () {
       yield* seedCarry;
       yield* wake("tidewater-first");
@@ -2593,24 +2734,32 @@ describe("WakeupRunner", () => {
         { interrupted: true },
       );
       yield* Fiber.join(active);
-      yield* wake("tidewater-next");
-      const [, stopped, next] = yield* carryRows;
+      const [, stopped] = yield* carryRows;
       assert.strictEqual(stopped?.sent, "carried");
       assert.strictEqual(stopped?.status, "interrupted");
-      assert.strictEqual(next?.reason, "ended");
+      assert.strictEqual(stopped?.missed, 0);
+      assert.isEmpty(misses);
+      assert.isUndefined((yield* KinSessionContext).forThread(row!.threadId)?.delta);
+      yield* wake("tidewater-next");
+      assert.strictEqual((yield* carryRows).at(-1)?.reason, "ended");
       assert.isTrue(carriedSend(yield* carryProjection).run.freshContext);
     }).pipe(
       Effect.provide(
-        carryHarness({
-          untilInterrupted: (ordinal) => ordinal === 2,
-          beforeTurn: (input) =>
-            readCarryHook(input.threadId).pipe(
-              Effect.andThen(
-                input.runOrdinal === 2 ? Deferred.succeed(started, undefined) : Effect.void,
-              ),
-              Effect.asVoid,
-            ),
-        }),
+        Layer.merge(
+          carryHarness({
+            untilInterrupted: (ordinal) => ordinal === 2,
+            beforeTurn: (input) =>
+              input.runOrdinal === 2
+                ? Deferred.succeed(started, undefined).pipe(Effect.asVoid)
+                : Effect.void,
+          }),
+          Logger.layer([
+            Logger.make(({ message }) => {
+              if (Array.isArray(message) && message[0] === "Kin carried turn context not read")
+                misses.push(message[1]);
+            }),
+          ]),
+        ),
       ),
       provideDeterministicTestRuntime,
     );

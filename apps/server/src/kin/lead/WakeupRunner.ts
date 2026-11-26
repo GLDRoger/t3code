@@ -800,15 +800,15 @@ const make = Effect.gen(function* () {
   });
   const capture = Effect.fn("WakeupRunner.capture")(function* (
     row: typeof RunningRow.Type,
+    completed: boolean,
     snapshot?: PendingSnapshot,
   ) {
     if (row.threadId === null) return;
     const threadId = row.threadId;
-    if (sessionContext?.take(threadId) !== undefined) {
-      yield* Effect.logWarning("Kin carried turn context not read", { wakeupId: row.wakeupId });
-      yield* sql`UPDATE kin_wakeups SET carry_json = json_set(carry_json, '$.missed', json('true'))
-        WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`;
-    }
+    const unread = sessionContext?.take(threadId) !== undefined;
+    // A released turn can leave the previous row eligible but its snapshot is no longer valid.
+    if (snapshot !== undefined && sessionContext !== undefined)
+      yield* sessionContext.forget(threadId);
     if (row.runId === null) return;
     const runIds = new Set([row.runId]);
     for (const run of yield* runsFrom(threads, row.threadId, row.runId)) {
@@ -861,6 +861,8 @@ const make = Effect.gen(function* () {
         chatSeq: number | null;
         chatChangeSeq: number | null;
         sent: string | null;
+        bootId: string | null;
+        beside: number | null;
         previousContext: number | null;
       }>`
         UPDATE kin_wakeups SET context_tokens = ${contextTokens}, last_request_at = ${lastRequestAt},
@@ -869,10 +871,24 @@ const make = Effect.gen(function* () {
         RETURNING json_extract(carry_json, '$.carry') AS carry,
           json_extract(carry_json, '$.reason') AS reason,
           json_extract(carry_json, '$.sent') AS sent,
+          json_extract(carry_json, '$.bootId') AS "bootId",
+          json_extract(delta_json, '$.beside') AS beside,
           json_extract(carry_json, '$.contextTokens') AS "previousContext",
           json_extract(carry_json, '$.cursor.chatId') AS "chatId",
           json_extract(carry_json, '$.cursor.chatSeq') AS "chatSeq",
           json_extract(carry_json, '$.cursor.chatChangeSeq') AS "chatChangeSeq"`;
+      if (
+        completed &&
+        (unread ||
+          (shadow?.sent === "carried" &&
+            shadow.beside === 1 &&
+            shadow.bootId !== null &&
+            shadow.bootId !== bootId))
+      ) {
+        yield* sql`UPDATE kin_wakeups SET carry_json = json_set(carry_json, '$.missed', json('true'))
+          WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`;
+        yield* Effect.logWarning("Kin carried turn context not read", { wakeupId: row.wakeupId });
+      }
       if (shadow?.chatId != null && shadow.chatSeq !== null && shadow.chatChangeSeq !== null) {
         const cursor = yield* captureChatCursor(row, {
           chatId: shadow.chatId,
@@ -905,6 +921,7 @@ const make = Effect.gen(function* () {
       const written = tokens((usage) => usage.cacheCreationTokens);
       const previousContext = shadow?.previousContext;
       if (
+        completed &&
         shadow?.sent === "carried" &&
         previousContext != null &&
         previousContext > 0 &&
@@ -1408,7 +1425,7 @@ const make = Effect.gen(function* () {
           );
           yield* sql`UPDATE kin_wakeups SET memory_commit = ${commit} WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`;
         }
-        yield* capture(row, snapshot);
+        yield* capture(row, status === "completed" && !abandoned, snapshot);
         if (stopped)
           yield* queue.release({
             orgId: row.orgId,
@@ -1514,7 +1531,7 @@ const make = Effect.gen(function* () {
           .pipe(Effect.ignore);
     }
     yield* clearMissingThread(row).pipe(Effect.ignore);
-    yield* capture(row, snapshot).pipe(Effect.ignore);
+    yield* capture(row, false, snapshot).pipe(Effect.ignore);
     if (interrupted === "retry") {
       const lane = Option.isSome(bridge) ? yield* bridge.value.lane(row) : Option.none();
       const released = yield* queue.release({
