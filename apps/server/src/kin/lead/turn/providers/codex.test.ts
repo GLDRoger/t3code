@@ -14,6 +14,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
+import { expect } from "vitest";
 
 import { fullSessionRefusal } from "../../AgentSession.ts";
 import * as ServerConfig from "../../../../config.ts";
@@ -28,6 +29,14 @@ import * as KinPersistence from "../../../persistence/KinPersistence.ts";
 import * as Sqlite from "../../../../persistence/Sqlite.ts";
 
 type Sent = { readonly method: string; readonly params: Record<string, unknown> };
+
+const pinnedParams = (params: Sent["params"] | undefined, stateDir: string) =>
+  JSON.stringify(
+    params,
+    (_key, value: unknown) =>
+      typeof value === "string" ? value.replace(stateDir, "<stateDir>") : value,
+    2,
+  );
 
 /** Codex's catalog in these tests: it knows 6.1 Sol and no later model. */
 const catalog = {
@@ -178,6 +187,7 @@ it.effect(
         assert.deepStrictEqual(read, { method: "config/read", params: { cwd: memory } });
         for (const thread of [start, resume]) {
           const params = thread!.params;
+          expect(pinnedParams(params, stateDir)).toMatchSnapshot(`${model} ${thread!.method}`);
           // Raw, so `environments` survives the stable schema.
           assert.oneOf(thread!.method, ["thread/start", "thread/resume"]);
           assert.deepStrictEqual(params.environments, []);
@@ -249,7 +259,9 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const { stateDir } = yield* ServerConfig.ServerConfig;
-      const [, delegated] = yield* session("task-from-lead", "/work/scratch");
+      const [, delegated, resumed] = yield* session("task-from-lead", "/work/scratch");
+      expect(pinnedParams(delegated?.params, stateDir)).toMatchSnapshot("delegated thread/start");
+      expect(pinnedParams(resumed?.params, stateDir)).toMatchSnapshot("delegated thread/resume");
       assert.deepInclude(delegated?.params.config, {
         ...t3ThreadStart.config,
         "shell_environment_policy.inherit": "all",
@@ -394,6 +406,7 @@ it.effect(
         .filter(({ method }) => method === "thread/start")
         .map(({ params }) => params);
       assert.deepStrictEqual(plainStart, startOf("thread-plain", "/work/project"));
+      expect(pinnedParams(ownerStart, stateDir)).toMatchSnapshot("owner thread/start");
       assert.notProperty(ownerStart, "environments");
       assert.strictEqual(ownerStart?.approvalPolicy, "untrusted");
       assert.strictEqual(ownerStart?.approvalsReviewer, "user");

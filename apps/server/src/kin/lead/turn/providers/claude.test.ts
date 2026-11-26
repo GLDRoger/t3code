@@ -16,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as TestClock from "effect/testing/TestClock";
+import { expect } from "vitest";
 
 import * as ServerConfig from "../../../../config.ts";
 import * as ClaudeAdapterV2 from "../../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
@@ -29,6 +30,7 @@ import {
   OWNER_SEAT_NO_SUBAGENTS,
   OWNER_SEAT_OFF,
 } from "./claude.ts";
+import { captureClaudeOptions } from "./claude.testkit.ts";
 import { kinInstructions, REVIEW_SEAT_INSTRUCTIONS } from "../session.ts";
 import { KinSessionContext } from "../sessionContext.ts";
 import { ownerOnlyWakeup, wakeupRun } from "../../Audience.testkit.ts";
@@ -151,6 +153,63 @@ const withPreparedContext = <A, E>(
       ),
     ),
   );
+
+it.effect("every seat's options are unchanged by the neutral plan", () =>
+  Effect.gen(function* () {
+    const { stateDir } = yield* ServerConfig.ServerConfig;
+    const memory = `${stateDir}/kin/demo-a/memory-read`;
+    const services = Context.make(
+      KinAgentSessionPolicy,
+      KinAgentSessionPolicy.of({
+        refusal: () => Effect.undefined,
+        webSearch: () => Effect.undefined,
+        delegated: (threadId) => Effect.succeed(threadId === "task-from-lead"),
+        toolDirectories: ["/kin-home/kin-tools/gh-pinned"],
+        agentName: () => Effect.succeed("Tech lead"),
+      }),
+    ) as Context.Context<KinServices>;
+    for (const [seat, thread, cwd, toolLookup] of [
+      ["owner with lookup", "kin:tech", memory, true],
+      ["owner without lookup", "kin:tech", memory, false],
+      ["shared", "kin-shared:tech", memory, true],
+      ["review", "kin-shared:review:tech", memory, true],
+      ["bills", "kin-shared:bills:tech", memory, true],
+      ["delegated", "task-from-lead", "/work/scratch", true],
+      ["dream", "kin-dream:fixture:extract", `${stateDir}/kin/demo-a/dreams/fixture`, true],
+    ] as const) {
+      const { options } = yield* captureClaudeOptions(
+        {
+          thread,
+          cwd,
+          model: "claude-sonnet-4-6",
+          environment: { PATH: "/usr/bin", HOME: "/home/kin", CLAUDE_CONFIG_DIR: "/kin-fixture" },
+        },
+        toolLookup,
+      ).pipe(
+        Effect.provideService(KinServer, {
+          taskCardUpdater: Layer.empty,
+          services: Option.some(services),
+          subscribeForViewer: Option.none(),
+        }),
+      );
+      expect({
+        ...options,
+        cwd: options.cwd?.replace(stateDir, "<stateDir>"),
+        additionalDirectories: options.additionalDirectories?.map((dir) =>
+          dir.replace(stateDir, "<stateDir>"),
+        ),
+        env: { ...options.env, PATH: options.env?.PATH?.replace(stateDir, "<stateDir>") },
+      }).toMatchSnapshot(seat);
+    }
+  }).pipe(
+    Effect.provide(
+      ServerConfig.layerTest(process.cwd(), { prefix: "kin-claude-options-" }).pipe(
+        Layer.provideMerge(NodeServices.layer),
+        Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+      ),
+    ),
+  ),
+);
 
 it.effect("SessionStart adds the standing context only on startup and compact", () =>
   withPreparedContext((options) =>
