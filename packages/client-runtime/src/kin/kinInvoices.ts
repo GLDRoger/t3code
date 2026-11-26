@@ -855,7 +855,10 @@ export const kinIssueNotice = (result: Pick<KinIssueResult, "number" | "problems
 export const kinReceiptNotice = (result: KinMakeReceiptResult) =>
   withProblems(
     result.receipt.advance && result.receipt.invoice !== null
-      ? KIN_INVOICES.receiptSet(result.receipt.number, result.receipt.invoice)
+      ? KIN_INVOICES.receiptSet(
+          result.receipt.number,
+          result.receipt.invoiceNumber ?? result.receipt.invoice,
+        )
       : KIN_INVOICES.receiptMade(result.receipt.number),
     KIN_INVOICES.receiptProblems,
     result.problems,

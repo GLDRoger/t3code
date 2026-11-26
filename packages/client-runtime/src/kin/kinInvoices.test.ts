@@ -637,6 +637,12 @@ describe("receipts", () => {
     ).toBe(
       "Receipt R/26-27/003 is set against INV-8. The receipt and its number stand, but Kin couldn't make its PDF: no font",
     );
+    expect(
+      kinReceiptNotice({
+        receipt: receipt({ invoice: "INV-8" as never, invoiceNumber: "INV/26-27/008" }),
+        problems: [],
+      }),
+    ).toBe("Receipt R/26-27/003 is set against INV/26-27/008.");
   });
 
   it("makes an advance's receipt from what was typed, or says what is missing", () => {
