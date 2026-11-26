@@ -24,7 +24,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { McpServer, Tool, Toolkit } from "effect/ai";
-import { KinAgentSessions } from "./layer.ts";
+import { KinAgentSessions } from "./KinAgentSessions.ts";
 import * as KinIssuedTokens from "./KinIssuedTokens.ts";
 import { REMOTE_REFUSAL, TASK_LIMIT_REFUSAL, WORKER_REFUSAL } from "./KinToolGate.ts";
 import { OUTSIDE_REFUSAL, OUTSIDE_TOOLS } from "../lead/OutsideContent.ts";
@@ -1929,6 +1929,10 @@ it.effect.each([true, false])(
         for (const name of LEAD_T3_TOOLS)
           assert.isFalse(yield* visibleOnKinEndpoint(name, ThreadId.make("kin-shared:lead-group")));
         const agentSessions = Context.get(services, KinAgentSessions);
+        const servedToolListSha = agentSessions.lastToolList(threadId);
+        assert.match(servedToolListSha ?? "", /^[a-f0-9]{64}$/);
+        agentSessions.recordToolList(threadId, "other-credential", "a".repeat(64));
+        assert.strictEqual(agentSessions.lastToolList(threadId), servedToolListSha);
         assert.isUndefined(yield* registry.resolve(issued.config.authorizationHeader.slice(7)));
         const caller = yield* agentSessions.resolveAgent(
           issued.config.authorizationHeader.slice(7),
@@ -1942,6 +1946,8 @@ it.effect.each([true, false])(
         assert.isUndefined(
           yield* agentSessions.resolveAgent(issued.config.authorizationHeader.slice(7)),
         );
+        yield* registry.revokeThread(threadId);
+        assert.isNull(agentSessions.lastToolList(threadId));
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
 );

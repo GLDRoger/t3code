@@ -44,6 +44,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
@@ -60,6 +61,7 @@ import * as VcsProcess from "../../vcs/VcsProcess.ts";
 import * as ProjectService from "../../project/ProjectService.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 import * as KinIssuedTokens from "../mcp/KinIssuedTokens.ts";
+import { KinAgentSessions } from "../mcp/KinAgentSessions.ts";
 import * as KinLead from "./layer.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
@@ -73,6 +75,7 @@ import { sensitiveShown, turnSensitive } from "../work/sensitiveReads.ts";
 import { BILLS_THREAD_PREFIX } from "./billsOnly.ts";
 import { REVIEW_THREAD_PREFIX } from "./outsideReview.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import { CARRY_LIFETIME_MS, carryFacts, decideCarry, fingerprintPrompt } from "./sessionCarry.ts";
 import { postQuietRunCard } from "./quietRunCard.ts";
 import * as HostCare from "../host/KinHostCare.ts";
 import { KinRefusedModels } from "./refusedModels.ts";
@@ -114,6 +117,20 @@ import { ProviderAdapterSteerRunError } from "@t3tools/provider-core/server/Prov
 import { ProviderDriverKind, ProviderThreadId } from "@t3tools/contracts";
 
 const decodeEvent = Schema.decodeSync(KinEvent);
+const decodeCarryStamp = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      carry: Schema.Boolean,
+      reason: Schema.NullOr(Schema.String),
+      bootId: Schema.String,
+      sessionStart: KinWakeupId,
+      carriedFrom: Schema.NullOr(KinWakeupId),
+    }),
+  ),
+);
+const decodeStandingInstructions = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Struct({ instructions: Schema.String })),
+);
 const decodeHead = Schema.decodeUnknownSync(MemoryItemHead);
 const fixtureHead = (orgId: string, id: string, title: string) =>
   decodeHead({
@@ -310,6 +327,9 @@ describe("WakeupRunner", () => {
     Effect.gen(function* () {
       const commitEntered = Deferred.makeUnsafe<void>();
       const commitRelease = Deferred.makeUnsafe<void>();
+      let watchForSpin = false;
+      let unsolicitedWakes = 0;
+      let expectedScans = 1;
       let commits = 0;
       let readyCalls = 0;
       let subscriptions = 0;
@@ -353,11 +373,11 @@ describe("WakeupRunner", () => {
           yield* TestClock.adjust("20 seconds");
           yield* Deferred.await(commitEntered);
           // The lead is still finishing its first wake-up, with more work queued.
+          watchForSpin = true;
           yield* queue.enqueue(event("loop-second"));
-          yield* TestClock.adjust("5 seconds");
-          const settled = readyCalls;
-          yield* TestClock.adjust("30 seconds");
-          assert.strictEqual(readyCalls, settled);
+          yield* TestClock.adjust("35 seconds");
+          assert.strictEqual(unsolicitedWakes, 0);
+          assert.isAtMost(readyCalls, expectedScans);
           // Every pass shares the loop's one subscription to T3's events.
           assert.isAbove(readyCalls, 1);
           assert.strictEqual(subscriptions, 1);
@@ -385,15 +405,24 @@ describe("WakeupRunner", () => {
         }),
       ).pipe(
         Effect.provide(
-          harness({
-            writer,
-            onReadyLeads: () => {
-              readyCalls++;
+          harnessWith(
+            {
+              writer,
+              onReadyLeads: () => {
+                readyCalls++;
+              },
+              onDomainSubscribe: () => {
+                subscriptions++;
+              },
             },
-            onDomainSubscribe: () => {
-              subscriptions++;
-            },
-          }),
+            Layer.succeed(WakeupRunner.KinWakeupHooks, {
+              memoryCheckoutInvalid: () => Effect.void,
+              orgWake: (source) => {
+                if (source === "timer" && watchForSpin) unsolicitedWakes++;
+                else expectedScans++;
+              },
+            }),
+          ),
         ),
       );
     }).pipe(provideDeterministicTestRuntime),
@@ -1886,6 +1915,116 @@ describe("WakeupRunner", () => {
     }).pipe(provideDeterministicTestRuntime),
   );
 
+  it.effect("records a carry decision but still starts fresh while carrying is off", () => {
+    const logs: unknown[] = [];
+    const toolHash = "a".repeat(64);
+    return Effect.gen(function* () {
+      yield* seed;
+      yield* seedDirectChats;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_leads SET owner_chat_id = 'direct' WHERE agent_id = ${agentId}`;
+      yield* wake("shadow-first");
+      yield* wake("shadow-second");
+      assert.deepStrictEqual(yield* sessions(), [1, 2]);
+      const rows = yield* sql<{
+        wakeup_id: KinWakeupId;
+        thread_id: ThreadId;
+        carry_json: string;
+        standing_key: string;
+        context_tokens: number;
+        last_request_at: number;
+      }>`SELECT * FROM kin_wakeups ORDER BY started_at, wakeup_id`;
+      const [first, second] = rows;
+      assert.isString(first?.carry_json, "first fresh turn records its shadow decision");
+      const started = decodeCarryStamp(first!.carry_json);
+      assert.include(started, { carry: false, reason: "ended" });
+      assert.isString(second?.carry_json, "second fresh turn records its shadow decision");
+      assert.include(decodeCarryStamp(second!.carry_json), {
+        carry: true,
+        reason: null,
+        carriedFrom: started.sessionStart,
+        sessionStart: second!.wakeup_id,
+      });
+      assert.strictEqual(first?.context_tokens, 30);
+      assert.isNumber(first?.last_request_at);
+      const toolResults = [
+        { tool: "lookup", results: 2, chars: 19 },
+        ...Array.from({ length: 11 }, (_, i) => ({
+          tool: `tool_${13 - i}`,
+          results: 1,
+          chars: 13 - i,
+        })),
+      ];
+      assert.strictEqual(logs.length, 2);
+      assert.deepInclude(logs[1], { toolResults, carry: { carry: true, reason: null } });
+
+      const refreshAt = second!.last_request_at + 10_000;
+      yield* sql`UPDATE kin_wakeups SET carry_json = json_set(carry_json, '$.sessionStart', ${started.sessionStart})
+        WHERE wakeup_id = ${second!.wakeup_id}`;
+      yield* sql`INSERT INTO kin_wakeups
+        (wakeup_id, org_id, agent_id, thread_id, model, started_at, status, event_ids, kind, carry_json, last_request_at, context_tokens)
+        VALUES ('shadow-refresh', ${orgId}, ${agentId}, ${second!.thread_id}, ${selection.model}, ${refreshAt},
+          'completed', '[]', 'upkeep', ${first!.carry_json}, ${refreshAt}, 120)`;
+      const compare = carryFacts(
+        { orgId, agentId, wakeupId: KinWakeupId.make("candidate") },
+        {
+          threadId: second!.thread_id,
+          ownerThread: true,
+          driver: "claudeAgent",
+          model: selection,
+          instructionsSha: decodeStandingInstructions(second!.standing_key).instructions,
+          bootId: started.bootId,
+          toolListSha: toolHash,
+          prompt: fingerprintPrompt(["invented standing"], "invented index"),
+          enabled: true,
+          now: refreshAt + CARRY_LIFETIME_MS + 1,
+          stopRevision: 0,
+        },
+      );
+      const refreshed = yield* compare;
+      assert.strictEqual(refreshed.facts.gapMs, CARRY_LIFETIME_MS + 1);
+      assert.strictEqual(refreshed.contextTokens, 120);
+      assert.deepStrictEqual(decideCarry(refreshed.facts), { carry: false, reason: "expired" });
+      yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
+        VALUES (${orgId}, ${first!.wakeup_id}, 1)`;
+      assert.deepStrictEqual(decideCarry((yield* compare).facts), {
+        carry: false,
+        reason: "marked",
+      });
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          harnessWith(
+            {
+              toolOutputs: [
+                { tool: "lookup", output: "invented" },
+                { tool: "lookup", output: "result only" },
+                ...Array.from({ length: 13 }, (_, i) => ({
+                  tool: `tool_${i + 1}`,
+                  output: "x".repeat(i + 1),
+                })),
+              ],
+            },
+            Layer.mock(KinAgentSessions)({
+              recordToolList: () => {},
+              lastToolList: (_threadId, sessionId?: string) =>
+                sessionId === undefined || sessionId === "invented-mcp-credential"
+                  ? toolHash
+                  : null,
+            }),
+          ),
+          Logger.layer([
+            Logger.make(({ message }) => {
+              if (Array.isArray(message) && message[0] === "Kin wake-up context.")
+                logs.push(message[1]);
+            }),
+          ]),
+        ),
+      ),
+      provideDeterministicTestRuntime,
+    );
+  });
+
   it.effect("starts every wake-up in a fresh session with the full prompt, committing each", () =>
     Effect.gen(function* () {
       let commits = 0;
@@ -2871,8 +3010,14 @@ describe("WakeupRunner", () => {
         if (!endsDuringPreparation) yield* Deferred.succeed(release, undefined);
         yield* Fiber.join(fiber);
         assert.strictEqual(wholeThreadReads.length, readsBefore, "no whole-history read");
-        const wakeupRows = sql<{ wakeupId: string; runId: string; status: string }>`
-          SELECT wakeup_id AS "wakeupId", run_id AS "runId", status FROM kin_wakeups
+        const wakeupRows = sql<{
+          wakeupId: string;
+          runId: string;
+          status: string;
+          carryJson: string;
+        }>`
+          SELECT wakeup_id AS "wakeupId", run_id AS "runId", status, carry_json AS "carryJson"
+          FROM kin_wakeups
           ORDER BY started_at, wakeup_id`;
         const wakeups = yield* wakeupRows;
         if (endsDuringPreparation) {
@@ -2957,6 +3102,11 @@ describe("WakeupRunner", () => {
           ],
         );
         assert.strictEqual(wakeups[1]!.runId, live ? noticeRunId : runs[2]!.id);
+        if (startsDuringPreparation)
+          assert.strictEqual(
+            decodeCarryStamp(wakeups[1]!.carryJson).sessionStart,
+            decodeCarryStamp(wakeups[0]!.carryJson).sessionStart,
+          );
         if (!live) {
           assert.isTrue(runs[2]!.freshContext);
           assert.notStrictEqual(runs[2]!.providerThreadId, parent.providerThreadId);

@@ -27,6 +27,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -34,7 +35,6 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
-import * as Random from "effect/Random";
 import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -50,6 +50,7 @@ import * as ProjectService from "../../project/ProjectService.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { noticeState } from "./TaskWake.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
+import { KinRefreshHub } from "../chat/KinRefreshHub.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as HostBackup from "../hostBackup.ts";
 import { ServerConfig } from "../../config.ts";
@@ -137,6 +138,8 @@ import { KinHandoff } from "./Handoff.ts";
 import * as WorkFor from "./workFor.ts";
 import { noticeRecords, runsFrom, turnRecords } from "./wakeupRuns.ts";
 import { RUN_SILENCE_MS, activityAt, waitAsking } from "./runSilence.ts";
+import { KinAgentSessions } from "../mcp/KinAgentSessions.ts";
+import { KinBoot, carryFacts, decideCarry, ulid, type PromptFingerprint } from "./sessionCarry.ts";
 import { closeQuietRunCards, postQuietRunCard } from "./quietRunCard.ts";
 import { inheritSession, outsideRead } from "./OutsideContent.ts";
 import { turnSensitive } from "../work/sensitiveReads.ts";
@@ -164,6 +167,7 @@ export class KinWakeupHooks extends Context.Service<
   KinWakeupHooks,
   {
     readonly memoryCheckoutInvalid: (error: Memory.MemoryCheckoutInvalid) => Effect.Effect<void>;
+    readonly orgWake?: (source: "queue" | "activity" | "finished" | "timer") => void;
   }
 >()("t3/kin/lead/WakeupRunner/KinWakeupHooks") {}
 
@@ -199,24 +203,17 @@ const RunningRow = Schema.Struct({
   runId: Schema.NullOr(RunId),
   startedAt: Schema.Number,
 });
+const encodeShadowJson = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 const decodeLead = Schema.decodeUnknownEffect(LeadRow);
 const decodeRunning = Schema.decodeUnknownEffect(RunningRow);
 const decodeTaskIds = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Array(Schema.String)),
 );
-const ulid = Effect.gen(function* () {
-  const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
-  let timestamp = yield* Clock.currentTimeMillis;
-  let value = "";
-  for (let i = 0; i < 10; i++) {
-    value = alphabet.charAt(timestamp % 32) + value;
-    timestamp = Math.floor(timestamp / 32);
-  }
-  for (let i = 0; i < 16; i++) value += alphabet.charAt(yield* Random.nextIntBetween(0, 31));
-  return value;
-});
-
 const make = Effect.gen(function* () {
+  const boot = yield* Effect.serviceOption(KinBoot);
+  const bootId = Option.isSome(boot) ? boot.value : yield* ulid;
+  const agentSessions = Option.getOrUndefined(yield* Effect.serviceOption(KinAgentSessions));
+  const refreshHub = Option.getOrUndefined(yield* Effect.serviceOption(KinRefreshHub));
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
   const care = yield* Effect.serviceOption(KinHostCare);
   const refusals = yield* Effect.serviceOption(KinRefusedModels);
@@ -814,6 +811,42 @@ const make = Effect.gen(function* () {
     // endpoint's "Kin endpoint tool list." line has the tool list's hash for the same thread.
     const threadId = row.threadId;
     yield* Effect.gen(function* () {
+      const last = providerTurns.reduce<(typeof providerTurns)[number] | undefined>(
+        (latest, turn) =>
+          turn.startedAt !== null &&
+          (latest?.startedAt == null ||
+            DateTime.toEpochMillis(turn.startedAt) >= DateTime.toEpochMillis(latest.startedAt))
+            ? turn
+            : latest,
+        undefined,
+      );
+      const toolListSha = agentSessions?.lastToolList(threadId) ?? null;
+      const contextTokens = last?.tokenUsage?.usedTokens ?? null;
+      const lastRequestAt = last?.startedAt == null ? null : DateTime.toEpochMillis(last.startedAt);
+      const [shadow] = yield* sql<{ carry: number | null; reason: string | null }>`
+        UPDATE kin_wakeups SET context_tokens = ${contextTokens}, last_request_at = ${lastRequestAt},
+          carry_json = json_set(carry_json, '$.toolListSha', ${toolListSha})
+        WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}
+        RETURNING json_extract(carry_json, '$.carry') AS carry,
+          json_extract(carry_json, '$.reason') AS reason`;
+      const toolResults = yield* sql<{ tool: string; results: number; chars: number }>`
+        WITH results AS (
+          SELECT CASE type
+            WHEN 'dynamic_tool' THEN substr(COALESCE(json_extract(payload_json, '$.toolName'), type), 1, 128)
+            ELSE type END AS tool,
+            CASE
+              WHEN type = 'file_change' THEN json_extract(payload_json, '$.diffStr')
+              WHEN type = 'web_search' THEN payload_json -> '$.results'
+              WHEN json_type(payload_json, '$.output') = 'text' THEN json_extract(payload_json, '$.output')
+              ELSE payload_json -> '$.output'
+            END AS result
+          FROM orchestration_v2_projection_turn_items
+          WHERE thread_id = ${threadId} AND run_id IN ${sql.in([...runIds])}
+            AND type IN ('dynamic_tool', 'command_execution', 'file_change', 'web_search')
+        )
+        SELECT tool, COUNT(*) AS results, SUM(length(result)) AS chars
+        FROM results WHERE result IS NOT NULL
+        GROUP BY tool ORDER BY chars DESC, tool LIMIT 12`;
       const driver = driverOf(yield* settings.getSettings, thread.modelSelection);
       const [lead] = yield* sql<{ domain: string }>`SELECT domain FROM kin_leads
         WHERE org_id = ${row.orgId} AND agent_id = ${row.agentId} ORDER BY agent_id`;
@@ -849,6 +882,10 @@ const make = Effect.gen(function* () {
                 .update(leadThreadInstructions(threadId, driver))
                 .digest("hex"),
         providerTurns: providerTurns.length,
+        contextTokens,
+        lastRequestAt,
+        toolResults,
+        carry: shadow?.carry == null ? null : { carry: shadow.carry === 1, reason: shadow.reason },
         inputTokens: tokens((usage) => usage.inputTokens),
         cacheReadTokens: tokens((usage) => usage.cachedInputTokens),
         cacheWriteTokens: tokens((usage) => usage.cacheCreationTokens),
@@ -1777,7 +1814,11 @@ const make = Effect.gen(function* () {
                 eventId,
                 people.map((one) => one.name),
               );
+            let promptFingerprint: PromptFingerprint = { standing: null, index: null };
             const built = yield* prompt.build({
+              observePrompt: (fingerprint) => {
+                promptFingerprint = fingerprint;
+              },
               orgId,
               agentId,
               wakeupId,
@@ -1903,6 +1944,57 @@ const make = Effect.gen(function* () {
               }),
             );
             row = claimed;
+            yield* Effect.gen(function* () {
+              const driver = driverOf(hostSettings, modelSelection);
+              const toolListSha = agentSessions?.lastToolList(threadId) ?? null;
+              const shadow = yield* carryFacts(row, {
+                threadId,
+                ownerThread: alone && confined === undefined,
+                driver,
+                model: modelSelection,
+                instructionsSha:
+                  driver === undefined
+                    ? null
+                    : NodeCrypto.createHash("sha256")
+                        .update(leadThreadInstructions(threadId, driver))
+                        .digest("hex"),
+                bootId,
+                toolListSha,
+                prompt: promptFingerprint,
+                enabled: hostSettings.kinSessionCarry,
+                now: yield* Clock.currentTimeMillis,
+                stopRevision: refreshHub?.stopRevision(orgId) ?? 0,
+              });
+              // Report eligibility independently of the switch; this path never resumes a session.
+              const decision = decideCarry({ ...shadow.facts, enabled: true });
+              const stamp = yield* encodeShadowJson({
+                carry: decision.carry,
+                reason: decision.carry ? null : decision.reason,
+                sessionStart: shadow.sessionStart,
+                carriedFrom: shadow.carriedFrom,
+                gapMs: shadow.facts.gapMs,
+                contextTokens: shadow.contextTokens,
+                bootId,
+                toolListSha,
+                missed: false,
+              });
+              const fingerprint = yield* encodeShadowJson(shadow.fingerprint);
+              const index =
+                promptFingerprint.index === null
+                  ? null
+                  : yield* encodeShadowJson(promptFingerprint.index);
+              yield* sql`UPDATE kin_wakeups SET carry_json = ${stamp},
+                standing_key = ${fingerprint}, prompt_index = ${index}
+                WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND status = 'running'`;
+            }).pipe(
+              provideSql,
+              Effect.catch((error) =>
+                Effect.logWarning("Kin session carry shadow recording failed", {
+                  wakeupId,
+                  errorTag: error._tag,
+                }),
+              ),
+            );
             // A finished task's run may already be this wake-up's (above).
             if (registry.lookup(threadId)?.wakeupId !== wakeupId)
               yield* registry.register(threadId, {
@@ -2278,16 +2370,18 @@ const make = Effect.gen(function* () {
               Effect.forkScoped,
             );
           }
-          recoverNext = yield* Effect.raceAllFirst([
-            changed.pipe(Effect.as(false)),
-            finished.pipe(Effect.as(true)),
-            stir.pipe(Effect.as(false)),
+          const wakeSource = yield* Effect.raceAllFirst([
+            changed.pipe(Effect.as("queue" as const)),
+            finished.pipe(Effect.as("finished" as const)),
+            stir.pipe(Effect.as("activity" as const)),
           ]).pipe(
             Effect.timeoutOrElse({
               duration: orgLoopWaitMs(ready, active, now),
-              orElse: () => Effect.succeed(true),
+              orElse: () => Effect.succeed("timer" as const),
             }),
           );
+          recoverNext = wakeSource === "finished" || wakeSource === "timer";
+          if (Option.isSome(hooks)) hooks.value.orgWake?.(wakeSource);
         });
         yield* Effect.gen(function* () {
           yield* Stream.fromPubSub(runActivity).pipe(

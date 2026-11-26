@@ -89,6 +89,16 @@ it.effect(
               options: { ...options, cwd: dreamDir, env },
             })
             .pipe(Effect.exit);
+        const refresh = yield* runner
+          .open({
+            threadId: ThreadId.make("kin-dream:dream_20261108_fixture:extract"),
+            providerSessionId: ProviderSessionId.make("session"),
+            refresh: true,
+            options: { ...options, cwd: dreamDir, env },
+          })
+          .pipe(Effect.result);
+        assert.deepStrictEqual(opened, []);
+        assert.strictEqual(refresh._tag, "Failure");
         yield* open("kin-dream:dream_20261108_fixture:extract");
         yield* open("thread-1");
         // Anyone can name a thread with the prefix, so the wrapper must never widen its mode.
