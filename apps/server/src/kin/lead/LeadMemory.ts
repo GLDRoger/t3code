@@ -113,6 +113,9 @@ const deferDue = date.check(
 );
 const itemId = KinMemoryItemId.check(Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,199}$/));
 export const SearchInput = Schema.Struct({
+  text: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))).annotate({
+    description: "Words to find in an item's title or body, any case.",
+  }),
   kind: Schema.optional(MemoryItemFrontMatter.fields.kind),
   status: Schema.optional(MemoryItemFrontMatter.fields.status),
   dueBefore: Schema.optional(date),
@@ -1393,10 +1396,12 @@ const make = Effect.gen(function* () {
         )
           return yield* invalid(TEAM_FILTERS);
         // Filtered before the limit and the duplicate flag, so neither counts what is left out.
+        const needle = input.text?.toLowerCase();
         const visible = (yield* visibleItems(ctx, audience)).filter(
-          ({ head }) =>
-            (input.kind === undefined || head.kind === input.kind) &&
-            (input.linksTo === undefined || head.links.includes(input.linksTo)),
+          (item) =>
+            (input.kind === undefined || item.head.kind === input.kind) &&
+            (input.linksTo === undefined || item.head.links.includes(input.linksTo)) &&
+            (needle === undefined || Memory.matchesMemoryText(item, needle)),
         );
         const counts = new Map<string, number>();
         for (const { head } of visible) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
@@ -1414,6 +1419,7 @@ const make = Effect.gen(function* () {
           ...(input.dueAfter === undefined ? {} : { dueAfter: input.dueAfter }),
           ...(input.reviewOverdue === undefined ? {} : { reviewOverdue: input.reviewOverdue }),
           ...(input.saidBy === undefined ? {} : { saidBy: input.saidBy }),
+          ...(input.text === undefined ? {} : { text: input.text }),
           ...(input.linksTo === undefined ? {} : { linksTo: input.linksTo }),
         },
         { lead: ctx.agentId },

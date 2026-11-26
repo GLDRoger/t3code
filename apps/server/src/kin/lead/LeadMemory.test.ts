@@ -2,7 +2,7 @@ import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { kinSecretsTest } from "./layer.testkit.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it, vi } from "@effect/vitest";
+import { assert, expect, it, vi } from "@effect/vitest";
 import {
   AuthSessionId,
   CommandId,
@@ -10,6 +10,7 @@ import {
   EnvironmentId,
   KinAgentId,
   KinMemoryItemId,
+  KinPersonId,
   KinChatId,
   KinWakeupId,
   KinOrgId,
@@ -32,6 +33,7 @@ import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
+import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
@@ -46,9 +48,12 @@ import * as Scan from "../memory/secretScan.ts";
 import { authorise, fingerprint, storedLabels, visibility } from "../memory/sensitivity.ts";
 import * as TriggerService from "../triggers/KinTriggerService.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
+import { fakeRepository } from "../memory/__fixtures__/repository.ts";
+import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KinHandoff } from "./Handoff.ts";
 import { KinTeam } from "../team/KinTeam.ts";
 import { SHARED_REFUSAL } from "./Audience.ts";
+import { ownerOnlyWakeup } from "./Audience.testkit.ts";
 import { markOutside, stampReads, storedStamp } from "./OutsideContent.ts";
 import * as Lead from "./LeadMemory.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
@@ -103,6 +108,123 @@ const whole = (read: typeof Lead.ReadResult.Type) => {
   return read;
 };
 const decodeDefer = Schema.decodeUnknownEffect(Lead.DeferInput);
+const decodeSearch = Schema.decodeEffect(Lead.SearchInput);
+const decodeRead = Schema.decodeEffect(Lead.ReadInput);
+
+it.effect("searches memory by words and opens index paths within the turn's audience", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+    const orgId = KinOrgId.make("tidewater");
+    const ownerPersonId = KinPersonId.make(`${orgId}:owner`);
+    const wakeupId = "memory-words";
+    const repository = fakeRepository(fs);
+    yield* fs.makeDirectory(`${root}/memory/memory/.git/objects`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/memory/memory/.git/refs`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/memory/memory-read`);
+    for (const [id, body, sensitive] of [
+      ["private", "The East Dock is reserved.", true],
+      ["spare", "Dispatch closes at six.", false],
+      ["team", "The East Dock opens at six.", false],
+    ] as const) {
+      repository.files.set(
+        `claims/${id}-note.md`,
+        fixtureItem({ id, kind: "claim", due: null, sensitive }).replace(
+          "Invented fixture body.",
+          body,
+        ),
+      );
+    }
+    const memoryLayer = Memory.layer.pipe(
+      Layer.provide(repository.layer),
+      Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
+      Layer.provide(
+        Layer.succeed(MemoryConfig, {
+          baseDirectory: root,
+          repositories: [{ orgId, path: "memory", repoUrl: "unused" }],
+        }),
+      ),
+    );
+    const leadLayer = Lead.layer.pipe(
+      Layer.provideMerge(memoryLayer),
+      Layer.provide(
+        Layer.mock(KinIdentity)({
+          owner: { _tag: "person", orgId, personId: ownerPersonId },
+          isAgentThread: (id) => id === threadId,
+          isLeadThread: (id) => id === threadId,
+          resolveAgent: () =>
+            Effect.succeed({
+              _tag: "agent",
+              orgId,
+              agentId,
+              ownerPersonId,
+              threadId,
+            }),
+        }),
+      ),
+      Layer.provide(Layer.mock(Writer.MemoryWriter)({})),
+      Layer.provide(Layer.mock(Writer.MemoryWriterAuthority)({})),
+      Layer.provide(Layer.mock(KinSchedules.KinSchedules)({})),
+      Layer.provide(Layer.mock(KinChatRepository.KinChatRepository)({})),
+      Layer.provide(NodeCrypto.layer),
+    );
+    yield* ownerOnlyWakeup({ orgId, agentId, wakeupId });
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE org_id = ${orgId}`;
+    yield* sql`UPDATE kin_wakeups SET thread_id = ${threadId}, status = 'running', audience = 'owner_only'
+      WHERE wakeup_id = ${wakeupId}`;
+    yield* sql`INSERT INTO kin_team_memory (org_id, is_on, set_by, set_at)
+      VALUES (${orgId}, 1, ${ownerPersonId}, 0)`;
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      const lead = yield* Lead.LeadMemory;
+      yield* memory.anchor(orgId, "main", repository.head());
+      for (const id of ["spare", "team"]) {
+        const item = yield* memory.readItemQuietly(orgId, KinMemoryItemId.make(id));
+        yield* authorise(orgId, id, fingerprint(item), "owner_setting");
+      }
+      const searchByWords = yield* decodeSearch({
+        text: "eAst DoCK",
+      });
+      const ownerMatches = yield* lead.search(scope, searchByWords);
+      expect.soft(ownerMatches.map(({ id }) => id).toSorted()).toEqual(["private", "team"]);
+      const byPath = yield* lead
+        .read(scope, yield* decodeRead({ id: "claims/team-note.md" }))
+        .pipe(Effect.result);
+      expect
+        .soft(yield* sql`SELECT item_id FROM kin_memory_reads WHERE org_id = ${orgId}`)
+        .toEqual([{ item_id: "team" }]);
+      const byId = yield* lead.read(scope, yield* decodeRead({ id: "team" })).pipe(Effect.result);
+      expect.soft(byPath).toEqual(byId);
+
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = ${wakeupId}`;
+      const sharedMatches = yield* lead.search(scope, { ...searchByWords, limit: 1 });
+      expect.soft(sharedMatches).toEqual([expect.objectContaining({ id: "team" })]);
+      expect.soft(sharedMatches[0]).not.toHaveProperty("body");
+      const alsoShared = yield* lead.search(scope, searchByWords);
+      expect.soft(alsoShared.map(({ id }) => id)).toEqual(["team"]);
+      const hidden = yield* lead
+        .read(scope, yield* decodeRead({ id: "claims/private-note.md" }))
+        .pipe(Effect.flip);
+      const absent = yield* lead
+        .read(scope, yield* decodeRead({ id: "claims/missing.md" }))
+        .pipe(Effect.flip);
+      expect.soft(hidden.reason).toBe("not_found");
+      expect.soft(hidden.message).toBe(absent.message);
+      expect
+        .soft(yield* sql`SELECT item_id FROM kin_memory_reads WHERE org_id = ${orgId}`)
+        .toEqual([{ item_id: "team" }]);
+    }).pipe(Effect.provide(leadLayer));
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        NodeServices.layer,
+        KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+      ),
+    ),
+    Effect.scoped,
+  ),
+);
 
 it.live(
   "lead tools isolate organizations, record reads, enforce retries and journal through the git writer",

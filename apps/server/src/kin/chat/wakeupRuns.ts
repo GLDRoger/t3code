@@ -8,7 +8,12 @@ import type { Fragment } from "effect/sql/Statement";
  * over, each followed back through server-authored continuation links. Never a thread's latest
  * wake-up. `start` selects `run_id, thread_id, ordinal, payload_json`; `where` filters `w`.
  */
-export const wakeupOfRuns = (sql: SqlClient.SqlClient, start: Fragment, where: Fragment) =>
+export const wakeupOfRuns = (
+  sql: SqlClient.SqlClient,
+  start: Fragment,
+  where: Fragment,
+  selection: "first" | "all" = "first",
+) =>
   sql<{ orgId: KinOrgId; agentId: KinAgentId; wakeupId: string }>`
     WITH RECURSIVE ancestors(run_id, thread_id, ordinal, payload_json) AS (
       ${start}
@@ -25,7 +30,8 @@ export const wakeupOfRuns = (sql: SqlClient.SqlClient, start: Fragment, where: F
         AND json_extract(cm.payload_json, '$.createdBy') = 'agent'
         AND json_extract(cm.payload_json, '$.creationSource') = 'server'
     )
-    SELECT w.org_id AS "orgId", w.agent_id AS "agentId", w.wakeup_id AS "wakeupId"
+    SELECT ${selection === "all" ? sql`DISTINCT` : sql``}
+      w.org_id AS "orgId", w.agent_id AS "agentId", w.wakeup_id AS "wakeupId"
     FROM kin_wakeups w JOIN ancestors root ON root.thread_id = w.thread_id
     JOIN orchestration_v2_projection_messages m
       ON m.message_id = json_extract(root.payload_json, '$.userMessageId')
@@ -49,4 +55,4 @@ export const wakeupOfRuns = (sql: SqlClient.SqlClient, start: Fragment, where: F
         -- T3's notice that a delegated task finished, in the run this wake-up took over: only
         -- Kin sets run_id, and only to such a run (TaskWake).
         OR (json_extract(m.payload_json, '$.createdBy') = 'agent' AND root.run_id = w.run_id))
-    ORDER BY w.wakeup_id LIMIT 1`;
+    ORDER BY w.wakeup_id ${selection === "first" ? sql`LIMIT 1` : sql``}`;

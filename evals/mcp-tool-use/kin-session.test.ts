@@ -53,9 +53,8 @@ it("places every legacy wake-up block exactly once, splitting the server's tagge
   assert.deepEqual(failures, []);
 });
 
-// Captured from mine/kin at 41f8a4f4705 before adding the layout flag.
-const legacyRequestPin = "eff768e70b678829942815e3afeab5e18e86c480363766ff1c87a8cac9926fb8";
-const sessionRequestPin = "0b085f55eaee35ba949f4270b9fe5d8acc689b335226f4fe9d9f950ef87c9915";
+const legacyRequestPin = "4a52c4ad70a9808cbb1c2acfd2e360325cb9092d7a0914b155f90390e2330042";
+const sessionRequestPin = "86aabe157e6da6ac59bc8092fb7578a8d2970ca480bda50df4db9172736f4bb5";
 const pinnedIds = [
   "kin-lead-rereads-github-hint",
   "kin-lead-uses-display-name",
@@ -97,7 +96,10 @@ it("pins ten uncarried requests and keeps both layouts byte-identical", () => {
 });
 
 it("pins the session requests of both carry seeds", () => {
-  const requests = dryRequests("session", "kin-carry.ndjson");
+  const requests = dryRequests("session", "kin-carry.ndjson", [
+    "kin-carry-follow-up-question",
+    "kin-carry-nothing-changed-no-reread",
+  ]);
   assert.lengthOf(requests.toString().trimEnd().split("\n"), 2);
   assert.equal(digest(requests), sessionRequestPin);
 });

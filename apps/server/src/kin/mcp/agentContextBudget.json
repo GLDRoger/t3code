@@ -7,15 +7,15 @@
   },
   "kinSharedInstructionsHash": "a0249114282032d6cd628d3e6f40ff1c4cae30a9f7d88c287c45ea39ae1972d1",
   "kinLeadToolListJsonBytes": {
-    "engineering": 171476,
-    "engineeringBesideFinanceAndSales": 155193,
-    "finance": 150654,
-    "shared": 98699,
-    "social": 153735,
-    "socialBesideFinanceAndSales": 137452,
-    "support": 150654
+    "engineering": 171609,
+    "engineeringBesideFinanceAndSales": 155326,
+    "finance": 150787,
+    "shared": 98832,
+    "social": 153868,
+    "socialBesideFinanceAndSales": 137585,
+    "support": 150787
   },
-  "kinLeadAlwaysLoadedToolBytes": 76490,
+  "kinLeadAlwaysLoadedToolBytes": 76623,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -242,8 +242,8 @@
       "schema": 73
     },
     "memory_search": {
-      "desc": 185,
-      "schema": 450
+      "desc": 225,
+      "schema": 543
     },
     "memory_write": {
       "desc": 2291,
