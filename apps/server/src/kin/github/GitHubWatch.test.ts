@@ -117,7 +117,7 @@ const fakeApi = (github: FakeGitHub, signedIn: () => boolean) =>
         !signedIn()
           ? null
           : github.world.down === null
-            ? { login: github.world.user, orgs: ["invented-co"] }
+            ? { login: github.world.user, orgs: ["invented-co", "tidewater"] }
             : { login: github.world.user, orgs: [] },
       ),
     call: fakeCall(github),
@@ -1099,6 +1099,93 @@ describe("KinGitHubWatch", () => {
         assert.isTrue(about(number).every((one) => one.conditional));
       assert.isTrue(about(pulls[2]!).some((one) => !one.conditional));
     }).pipe(Effect.provide(layer));
+  });
+
+  describe("issue triage settings", () => {
+    const repo = "tidewater/dispatch";
+    const triageTest = <E>(
+      test: (
+        github: FakeGitHub,
+      ) => Effect.Effect<void, E, SqlClient.SqlClient | GitHubWatch.KinGitHubWatch>,
+    ) => {
+      const { github, layer } = setup();
+      github.addRepo({ full_name: repo });
+      return Effect.gen(function* () {
+        yield* start(github);
+        yield* test(github);
+      }).pipe(Effect.provide(layer));
+    };
+    const triageRow = Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const [row] = yield* sql<{ outcome: string; at: number }>`
+        SELECT outcome, at FROM kin_github_handled
+        WHERE org_id = ${orgId} AND trigger_key = ${`triage-from:${repo}`}`;
+      return row;
+    });
+
+    it.effect("defaults triage on and records its start only once", () =>
+      triageTest(() =>
+        Effect.gen(function* () {
+          assert.propertyVal(
+            (yield* repoList(orgId)).find((entry) => entry.repo === repo),
+            "triage",
+            true,
+          );
+          const first = yield* triageRow;
+          assert.deepEqual(first, { outcome: "on", at: T0 });
+          yield* TestClock.adjust(MINUTE);
+          yield* repoList(orgId);
+          assert.deepEqual(yield* triageRow, first);
+        }),
+      ),
+    );
+
+    it.effect("retimes triage when switched off and back on", () =>
+      triageTest(() =>
+        Effect.gen(function* () {
+          yield* setRepo({ orgId, repo, triage: false }, T0 + MINUTE);
+          assert.deepEqual(yield* triageRow, { outcome: "off", at: T0 + MINUTE });
+          yield* setRepo({ orgId, repo, triage: true }, T0 + 2 * MINUTE);
+          assert.deepEqual(yield* triageRow, { outcome: "on", at: T0 + 2 * MINUTE });
+        }),
+      ),
+    );
+
+    it.effect("retimes triage when a repo is watched again", () =>
+      triageTest(() =>
+        Effect.gen(function* () {
+          yield* setRepo({ orgId, repo, watched: false }, T0 + MINUTE);
+          yield* setRepo({ orgId, repo, watched: true }, T0 + 2 * MINUTE);
+          assert.deepEqual(yield* triageRow, { outcome: "on", at: T0 + 2 * MINUTE });
+        }),
+      ),
+    );
+
+    it.effect("keeps the triage row when old handled rows are pruned", () =>
+      triageTest((github) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, outcome, at)
+          VALUES (${orgId}, 'seen:tidewater/dispatch#1:c1', ${repo}, 1, 'seen', ${T0})`;
+          yield* look(github, 31 * 24 * 60);
+          assert.deepEqual(yield* triageRow, { outcome: "on", at: T0 });
+          assert.deepEqual(
+            yield* sql`SELECT 1 FROM kin_github_handled WHERE trigger_key LIKE 'seen:%'`,
+            [],
+          );
+        }),
+      ),
+    );
+
+    it.effect("keeps triage settings out of the watch summary handled count", () =>
+      triageTest(() =>
+        Effect.gen(function* () {
+          yield* setRepo({ orgId, repo, triage: false }, T0);
+          assert.deepEqual(yield* triageRow, { outcome: "off", at: T0 });
+          assert.strictEqual((yield* watchSummary(orgId, T0))?.handledToday, 0);
+        }),
+      ),
+    );
   });
 
   it.effect("a signed-out login says how to fix it; the repo list counts what is watched", () => {
