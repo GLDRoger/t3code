@@ -197,7 +197,18 @@ export const budgetsView = Effect.fn("KinBudgets.view")(function* (
       onTarget.filter((one) => !budgeted.has(one.currency)),
       budget.currency,
     );
-    const about = yield* aboutInHome(orgId, onTarget, home, now, rateOf);
+    // As a goal does: its own currency's spend beside any other, so spend only abroad still counts.
+    const foreign = onTarget.filter((one) => one.currency !== budget.currency);
+    const about =
+      foreign.length === 0
+        ? undefined
+        : yield* aboutInHome(
+            orgId,
+            [{ currency: budget.currency, minor: Number(total) }, ...foreign],
+            home,
+            now,
+            rateOf,
+          );
     rows.push({
       ...budget,
       spent: total,
