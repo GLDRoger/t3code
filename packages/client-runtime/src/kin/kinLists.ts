@@ -237,7 +237,7 @@ export const KIN_LISTS = {
     filesFailed: "Couldn't load your files.",
     amountPlaceholder: "Amount, and its currency if it isn't yours",
     retiredField: "No longer used",
-    private: "Private. Only owners see this.",
+    private: "Private.",
     gone: {
       title: "This entry isn't here any more",
       detail: "Open its list to see what there is now.",
@@ -1223,6 +1223,13 @@ export interface KinListRowView {
 }
 
 /** The table's columns: what the definition has, in the order a person reads an entry. */
+/** A list's Client filter, as its Client column: where an entry has a client, or one is picked. */
+export const kinListOffersClients = (
+  records: ReadonlyArray<Pick<KinRecord, "party">>,
+  filter: Pick<KinListFilter, "party" | "noParty">,
+) =>
+  filter.party !== null || filter.noParty || records.some((record) => record.party !== undefined);
+
 export function kinListColumns(
   def: KinListDefinition,
   records: ReadonlyArray<KinRecord>,
@@ -1515,8 +1522,12 @@ export function kinListEntryView(
   const billToName = billsByName
     ? allFields.find((field) => field.key === KIN_BILL_TO_NAME)
     : undefined;
+  // A bill to pay has no paid day yet: its day is when it is due, as Money's To pay counts it.
+  const toPay = item.list === "expenses" && item.state === "open";
+  const dueAt = toPay ? (item.dueAt ?? item.dateAt ?? null) : item.dueAt;
+  const dueAllDay = toPay && item.dueAt === null ? (item.dateAllDay ?? true) : item.dueAllDay;
   const date = whenText(item.dateAt, item.dateAllDay ?? true, names, now);
-  const due = whenText(item.dueAt, item.dueAllDay, names, now);
+  const due = whenText(dueAt, dueAllDay, names, now);
   const categories = [
     ...(def?.categories ?? []),
     ...(item.listCategory === undefined || def?.categories.includes(item.listCategory) === true
@@ -1650,8 +1661,10 @@ export function kinListEntryView(
         ? item.dateAt === undefined
           ? null
           : KIN_DAY
-        : (kinDayLabel(def, kinNotIssued(item)) ?? null),
-    dueDay: kinWorkAllDay(item.dueAt, item.dueAllDay, names),
+        : toPay
+          ? null
+          : (kinDayLabel(def, kinNotIssued(item)) ?? null),
+    dueDay: kinWorkAllDay(dueAt, dueAllDay, names),
     dateDay: kinWorkAllDay(item.dateAt ?? null, item.dateAllDay ?? true, names),
     due,
     date,
@@ -1682,9 +1695,8 @@ export function kinEntryPrivateLine(
   if (names.me === null || (owner._tag === "person" && owner.personId === names.me))
     return KIN_LISTS.entry.private;
   const name = owner._tag === "person" ? names.people.get(owner.personId) : undefined;
-  return name === undefined
-    ? "Private. Only owners see this."
-    : `Private to ${name}. Only owners see this.`;
+  // Who reads it is Share with team's line beside it: a project's lead does too.
+  return name === undefined ? KIN_LISTS.entry.private : `Private to ${name}.`;
 }
 
 type Checked<A> =

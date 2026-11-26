@@ -118,6 +118,8 @@ export const KIN_DOCS = {
   restoring: "Restoring…",
   compare: "Compare with the latest",
   private: "Private. Only owners see this.",
+  /** A teammate's draft in an owner's list, marked "Me and owners". */
+  draftOf: (name: string) => `${name}'s draft`,
   privateInherited: "Private, because its client or project is. Only owners see this.",
   top: "Introduction",
   empty: {
@@ -428,10 +430,11 @@ export function kinDocRow(row: KinDocListRow, names: KinWorkNames, now: Date): K
   const isPrivate = row.sensitive || row.sensitiveInherited === true;
   const kind = kinDocKindOf(row);
   const kindLabel = kind === "other" ? null : KIN_DOC_KIND_LABELS[kind].one;
+  const draft = row.draftOf === undefined ? null : KIN_DOCS.draftOf(row.draftOf.name);
   return {
     key: row.key,
     title: row.title,
-    line: kindLabel === null ? text : `${kindLabel} · ${text}`,
+    line: [draft, kindLabel, text].filter((part) => part !== null).join(" · "),
     pinned,
     kind: kindLabel,
     under: under === "" ? null : under,
@@ -446,6 +449,7 @@ export function kinDocRow(row: KinDocListRow, names: KinWorkNames, now: Date): K
       kindLabel,
       under === "" ? KIN_DOC_HOMES.unfiled : under,
       text,
+      draft,
       isPrivate ? "Private" : null,
       row.archived ? KIN_DOCS.archived : null,
     ]

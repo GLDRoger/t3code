@@ -18,6 +18,7 @@ import {
   KIN_OUTLOOK,
   KIN_QUOTES,
   KIN_QUOTES_LIST,
+  kinBudgetCategoryShown,
   kinBudgetDraftOf,
   kinBudgetInput,
   kinBudgetRemoval,
@@ -779,7 +780,7 @@ function BudgetForm(props: KinWorkTarget & { readonly budget: KinMoneyBudget | n
         <Menu
           title={KIN_BUDGETS.category}
           accessibilityRole="button"
-          accessibilityLabel={`${KIN_BUDGETS.category}: ${draft.category === null ? KIN_BUDGETS.anyCategory : label(draft.category)}. Change`}
+          accessibilityLabel={`${KIN_BUDGETS.category}: ${kinBudgetCategoryShown(draft, label)}. Change`}
           actions={[ANY, ...categories].map((one) => ({
             id: one,
             title: one === ANY ? KIN_BUDGETS.anyCategory : label(one),
@@ -791,7 +792,7 @@ function BudgetForm(props: KinWorkTarget & { readonly budget: KinMoneyBudget | n
         >
           <View pointerEvents="none">
             <ListRowLayout
-              label={draft.category === null ? KIN_BUDGETS.anyCategory : label(draft.category)}
+              label={kinBudgetCategoryShown(draft, label)}
               detail={KIN_BUDGETS.category}
             />
           </View>

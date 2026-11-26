@@ -176,6 +176,8 @@ export const countryAskProfile = Effect.fn("KinCompanyProfile.countryAskProfile"
     ask: stored.countryAsk,
     country: moneyOf(stored.data).country,
     company: stored.data.tradeName || stored.data.legalName,
+    taxNumber: stored.data.gstin !== null || stored.data.pan !== null,
+    homeCurrency: stored.data.homeCurrency,
   };
 });
 
