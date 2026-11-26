@@ -164,6 +164,7 @@ it.effect.each([
           // G07: auto-memory's folder, under the host's home, named the account to a teammate.
           autoMemoryEnabled: false,
           autoDreamEnabled: false,
+          idleCompaction: false,
           env: { ANTHROPIC_BASE_URL: "https://gateway.test", ENABLE_TOOL_SEARCH: "true" },
         },
         env: {
@@ -173,6 +174,7 @@ it.effect.each([
           CLAUDE_CONFIG_DIR: configDir,
           ENABLE_TOOL_SEARCH: "true",
           CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+          CLAUDE_CODE_PROMPT_CACHE_TTL: "1h",
           MCP_CONNECTION_NONBLOCKING: "0",
         },
       });
@@ -335,6 +337,41 @@ it.effect(
           ),
         );
       const full = yield* open("kin:tech");
+      assert.isDefined(full);
+      if (full === undefined) return;
+      assert.notProperty(full, "maxTurns");
+      const { hooks: fullHooks, env: fullEnv, settings: fullSettings, ...fullRequest } = full;
+      const { env: _env, settings: leadSettings, ...leadRequest } = lead;
+      assert.deepStrictEqual(fullRequest, {
+        ...leadRequest,
+        systemPrompt: {
+          type: "custom",
+          prompt: kinInstructions("owner", "claudeAgent"),
+          snapshot: false,
+        },
+        settingSources: [],
+        disallowedTools: [...OWNER_SEAT_OFF],
+        strictMcpConfig: true,
+      });
+      assert.deepStrictEqual(fullEnv, {
+        PATH: `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:/usr/bin`,
+        HOME: "/home/kin",
+        KIN_AGENT_NAME: "Tech lead",
+        ENABLE_TOOL_SEARCH: "true",
+        CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+        MCP_CONNECTION_NONBLOCKING: "0",
+        CLAUDE_CODE_PROMPT_CACHE_TTL: "1h",
+      });
+      assert.deepStrictEqual(fullSettings, {
+        ...(typeof leadSettings === "object" ? leadSettings : {}),
+        attribution: { commit: "", pr: "", sessionUrl: false },
+        includeCoAuthoredBy: false,
+        autoMemoryEnabled: false,
+        autoDreamEnabled: false,
+        env: { ENABLE_TOOL_SEARCH: "true" },
+        idleCompaction: false,
+      });
+      assert.deepStrictEqual(Object.keys(fullHooks ?? {}), ["PreToolUse"]);
       // Claude Code's own tools but those that wait on someone at the screen, the pinned gh first.
       assert.strictEqual(full?.tools, lead.tools);
       assert.deepStrictEqual(full?.disallowedTools, [
