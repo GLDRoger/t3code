@@ -2,10 +2,12 @@ import { kinChatListRows } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
 import {
   KIN_MESSAGE_ALERTS,
+  kinAlertSettingsNotice,
   kinArrivalNotices,
   kinArrivalText,
   kinNewArrivals,
   kinUnreadSeen,
+  type KinAlertPermission,
   type KinUnreadSeen,
 } from "@t3tools/client-runtime/kin/kinMessageAlerts";
 import {
@@ -25,6 +27,7 @@ import {
   useScopedSettings,
   useUpdateScopedSettings,
 } from "../components/settings/useScopedSettings";
+import { Button } from "../components/ui/button";
 import { toastManager } from "../components/ui/toast";
 import { useClientSettings } from "../hooks/useSettings";
 import {
@@ -37,11 +40,87 @@ import {
 import { hasDesktopWindowChrome } from "./kinDesktopWindow";
 import { KIN_PLACE_PATH, kinRecordPlace } from "./kinPlaces";
 import { KinSettingsChoice } from "./settings/KinSettingsControls";
-import { KinSettingsPage, KinSettingsRow, KinSettingsSection } from "./settings/KinSettingsLayout";
+import {
+  KinSettingsPage,
+  KinSettingsRow,
+  KinSettingsSection,
+  KinSettingsStatus,
+} from "./settings/KinSettingsLayout";
 import { KinQuietHoursSetting } from "./settings/KinQuietHoursSetting";
 import type { KinSettingsTarget } from "./settings/kinSettingsTarget";
 import { closeSettledKinAlerts, keepKinAlert, kinAlertTag } from "./kinSystemAlerts";
 import { useKinInbox } from "./useKinHost";
+
+const NOTIFICATION_PERMISSION_ASKED_KEY = "t3code:kin:notification-permission-asked:v1";
+const permissionListeners = new Set<() => void>();
+let askedNotificationPermissionInSession = false;
+
+function readNotificationPermission(): KinAlertPermission {
+  if (
+    typeof window === "undefined" ||
+    typeof Notification === "undefined" ||
+    !window.isSecureContext
+  )
+    return "insecure";
+  return Notification.permission;
+}
+
+function notifyPermissionChange() {
+  for (const listener of permissionListeners) listener();
+}
+
+function hasAskedNotificationPermission(): boolean {
+  if (askedNotificationPermissionInSession) return true;
+  try {
+    return window.localStorage.getItem(NOTIFICATION_PERMISSION_ASKED_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function markNotificationPermissionAsked(): void {
+  askedNotificationPermissionInSession = true;
+  try {
+    window.localStorage.setItem(NOTIFICATION_PERMISSION_ASKED_KEY, "1");
+  } catch {
+    // Storage can be blocked; the session flag still prevents repeated prompts.
+  }
+}
+
+async function requestKinNotificationPermission() {
+  markNotificationPermissionAsked();
+  const result = await settlePromise(() => Notification.requestPermission());
+  notifyPermissionChange();
+  return result;
+}
+
+function useNotificationPermission(): KinAlertPermission {
+  const [permission, setPermission] = useState<KinAlertPermission>(readNotificationPermission);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- subscribes to browser permission changes and focus so Settings stays truthful
+  useEffect(() => {
+    const refresh = () => setPermission(readNotificationPermission());
+    permissionListeners.add(refresh);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    let status: PermissionStatus | null = null;
+    if (typeof navigator !== "undefined" && navigator.permissions !== undefined) {
+      void settlePromise(() => navigator.permissions.query({ name: "notifications" })).then(
+        (result) => {
+          if (result._tag !== "Success") return;
+          status = result.value;
+          status.addEventListener("change", refresh);
+        },
+      );
+    }
+    return () => {
+      permissionListeners.delete(refresh);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+      status?.removeEventListener("change", refresh);
+    };
+  }, []);
+  return permission;
+}
 
 /** Settings → You → Notifications: this computer's alerts for Kin messages, and your quiet hours. */
 export function KinSettingsNotifications(props: KinSettingsTarget) {
@@ -64,28 +143,57 @@ function MessageAlerts() {
   const m = useMessages();
   const mode = useScopedSettings((settings) => settings.notificationMode);
   const updateSettings = useUpdateScopedSettings();
+  const permission = useNotificationPermission();
   const [problem, setProblem] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
+  const notice = kinAlertSettingsNotice({ mode, permission, desktop: hasDesktopWindowChrome });
+  const blockedCopy = hasDesktopWindowChrome
+    ? KIN_MESSAGE_ALERTS.blockedDesktop
+    : KIN_MESSAGE_ALERTS.blocked;
+  const askPermission = async () => {
+    if (typeof Notification === "undefined" || !window.isSecureContext) {
+      setProblem(KIN_MESSAGE_ALERTS.needsSecure);
+      return false;
+    }
+    setAsking(true);
+    const result = await requestKinNotificationPermission();
+    setAsking(false);
+    if (result._tag === "Failure") {
+      setProblem(KIN_MESSAGE_ALERTS.unavailable);
+      return false;
+    }
+    if (result.value !== "granted") {
+      setProblem(blockedCopy);
+      return false;
+    }
+    return true;
+  };
   const choose = async (next: (typeof NOTIFICATION_MODES)[number]) => {
     setProblem(null);
     if (hasNotificationSound(next)) unlockNotificationAudio();
-    if (hasDesktopNotifications(next)) {
-      if (typeof Notification === "undefined" || !window.isSecureContext)
-        return setProblem(KIN_MESSAGE_ALERTS.needsSecure);
-      setAsking(true);
-      const permission = await settlePromise(() => Notification.requestPermission());
-      setAsking(false);
-      if (permission._tag === "Failure") return setProblem(KIN_MESSAGE_ALERTS.unavailable);
-      if (permission.value !== "granted") return setProblem(KIN_MESSAGE_ALERTS.blocked);
-    }
+    if (hasDesktopNotifications(next) && !(await askPermission())) return;
     updateSettings({ notificationMode: next });
   };
+  const allowAlerts = async () => {
+    setProblem(null);
+    if (hasNotificationSound(mode)) unlockNotificationAudio();
+    await askPermission();
+  };
   return (
-    <KinSettingsSection searchId={searchableSetting("thread-notifications").id} problem={problem}>
+    <KinSettingsSection
+      searchId={searchableSetting("thread-notifications").id}
+      problem={problem ?? notice.problem}
+    >
       <KinSettingsRow
         title={KIN_MESSAGE_ALERTS.label}
         detail={KIN_MESSAGE_ALERTS.detail}
         wrap
+        stack
+        status={
+          notice.status === null ? null : (
+            <KinSettingsStatus tone="attention">{notice.status}</KinSettingsStatus>
+          )
+        }
         control={
           <KinSettingsChoice
             label={KIN_MESSAGE_ALERTS.label}
@@ -99,6 +207,23 @@ function MessageAlerts() {
           />
         }
       />
+      {notice.canAsk ? (
+        <KinSettingsRow
+          title={KIN_MESSAGE_ALERTS.needsPermissionTitle}
+          detail={KIN_MESSAGE_ALERTS.needsPermissionDetail}
+          wrap
+          control={
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={asking}
+              onClick={() => void allowAlerts()}
+            >
+              {KIN_MESSAGE_ALERTS.allow}
+            </Button>
+          }
+        />
+      ) : null}
     </KinSettingsSection>
   );
 }
@@ -137,6 +262,41 @@ export function KinMessageAlerts() {
     state._tag === "ready"
       ? kinChatListRows(selectKinInboxView(state.inbox.value), kinDirectory(host))
       : null;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- unlocks Web Audio while sound alerts are on (Electron needs no gesture; browsers unlock on first interaction)
+  useEffect(() => {
+    if (!hasNotificationSound(mode)) return;
+    if (hasDesktopWindowChrome) unlockNotificationAudio();
+    document.addEventListener("pointerdown", unlockNotificationAudio);
+    document.addEventListener("keydown", unlockNotificationAudio);
+    return () => {
+      document.removeEventListener("pointerdown", unlockNotificationAudio);
+      document.removeEventListener("keydown", unlockNotificationAudio);
+    };
+  }, [mode]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- asks the browser for notification permission once on the first interaction after signing into Kin
+  useEffect(() => {
+    if (environmentId === null || !hasDesktopNotifications(mode)) return;
+    if (
+      typeof Notification === "undefined" ||
+      !window.isSecureContext ||
+      Notification.permission !== "default" ||
+      hasAskedNotificationPermission()
+    ) {
+      return;
+    }
+    const askOnce = () => {
+      document.removeEventListener("pointerdown", askOnce);
+      document.removeEventListener("keydown", askOnce);
+      if (Notification.permission !== "default" || hasAskedNotificationPermission()) return;
+      void requestKinNotificationPermission();
+    };
+    document.addEventListener("pointerdown", askOnce);
+    document.addEventListener("keydown", askOnce);
+    return () => {
+      document.removeEventListener("pointerdown", askOnce);
+      document.removeEventListener("keydown", askOnce);
+    };
+  }, [environmentId, mode]);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- raises the system's notification and sound, outside React, for a message that just arrived
   useEffect(() => {
     if (rows === null || environmentId === null) return;
@@ -178,6 +338,7 @@ export function KinMessageAlerts() {
       const { title, body } = kinArrivalText(row);
       const alert = new Notification(title, {
         body,
+        silent: true,
         tag: kinAlertTag(environmentId, row.chat.chatId),
       });
       keepKinAlert(environmentId, row.chat.chatId, alert);

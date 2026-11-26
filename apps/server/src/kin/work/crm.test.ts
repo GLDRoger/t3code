@@ -2938,11 +2938,12 @@ it.effect(
       yield* issuedByLead(
         ...made.records.filter((one) => one.key.startsWith("INV-")).map((one) => one.key),
       );
-      yield* LeadMoney.payment(scope, {
-        sourceEventId: "ask-event",
+      yield* OwnerMoney.recordPayment([owner], {
+        orgId,
         key: overdue,
-        amount: "1457",
+        amount: { minor: 145_700, currency: "INR" },
         paidOn: "1970-01-10",
+        clientRequestId: "invented-overdue-part",
       });
       const acme = yield* Clients.party([owner], { orgId, key: "C-1" });
       yield* Docs.create(
@@ -3797,11 +3798,12 @@ it.effect(
         ],
       });
       yield* issuedByLead("INV-1");
-      yield* LeadMoney.payment(scope, {
-        sourceEventId: "ask-event",
+      yield* OwnerMoney.recordPayment([owner], {
+        orgId,
         key: "INV-1",
-        amount: "400",
+        amount: { minor: 40_000, currency: "INR" },
         paidOn: "1970-01-10",
+        clientRequestId: "invented-received",
       });
       const page = yield* Clients.party([owner], { orgId, key: "C-1" });
       assert.deepStrictEqual(page.touches?.map((touch) => touch.kind).toSorted(), [
