@@ -14,7 +14,7 @@ import * as Schema from "effect/Schema";
 import { caseState, type Check, sampleState, type State } from "./margin.ts";
 import { gradeSample, McpToolUseCase, pastedText, worldFilePaths } from "./run.ts";
 import { expectationsForLayout } from "./kin-session-wire.ts";
-import { shownText } from "./kin.ts";
+import { kinDelivery, shownText } from "./kin.ts";
 
 const { values, positionals } = NodeUtil.parseArgs({
   allowPositionals: true,
@@ -50,7 +50,17 @@ for (const file of positionals) {
           message.role === "assistant" && Array.isArray(message.content) ? [message.content] : [],
         )
       : [];
-    const graded = responses.length === 0 ? row : { ...row, text: shownText(responses) };
+    const graded =
+      responses.length === 0
+        ? row
+        : {
+            ...row,
+            text: shownText(responses),
+            // Captures before deliveredText all used the legacy text voice.
+            ...(row.deliveredText === undefined
+              ? kinDelivery({ testCase, responses, calls: row.calls }, false)
+              : {}),
+          };
     const rubric: Array<Check> = Array.isArray(row.checks)
       ? row.checks.filter((check: Check) => check.check.startsWith("rubric "))
       : [];

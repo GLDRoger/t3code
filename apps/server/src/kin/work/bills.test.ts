@@ -395,7 +395,7 @@ describe("bills in bulk", () => {
           ["B1.png", "B2.png", "B3.png"],
         );
         assert.include(turn.text, "B1 is image 1, B2 is image 2, B3 is image 3.");
-        assert.include(turn.text, "write exactly NO_REPLY.");
+        assert.include(turn.text, "Record nothing else, then end with kin_skip.");
 
         assert.deepStrictEqual(
           yield* read({

@@ -161,7 +161,10 @@ export const DeferInput = Schema.Struct({
   itemId: Schema.optional(itemId),
   what: TrimmedNonEmptyString.check(Schema.isMaxLength(8000)),
   due: deferDue,
-  onDue: Schema.Literals(["remind", "start", "ask", "chase"]),
+  onDue: Schema.Literals(["remind", "start", "ask", "chase"]).annotate({
+    description:
+      "What happens when it comes due. remind: you are woken to remind them of it; nothing starts. start: Kin asks on a card whether to start it, move it or cancel it; nothing starts on its own. Work meant to begin then is start, never remind.",
+  }),
   ask: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))).annotate({
     description:
       "With onDue ask or chase: the person you will ask or chase when it comes due, by name; omit it when that is whoever asked you.",

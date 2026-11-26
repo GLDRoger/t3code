@@ -1,7 +1,6 @@
 import type { KinAgentId, KinEvent, KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 
-import { SILENT_REPLY } from "../reply/classify.ts";
 import { agentQuietUntil, personQuietUntil } from "../triggers/quietHold.ts";
 import { isDraftWake } from "./draftWake.ts";
 import { standingNow } from "./KinPulse.ts";
@@ -20,9 +19,10 @@ export const isPrepareWake = (
   event.factKeys.every((key) => PREPARES.has(key.split(":")[0] ?? ""));
 
 /** What the agent reads when Kin wakes it for one of those facts. */
-export const HEAD_START_WAKE = `Kin woke you to make a head start on the facts given with this wake (each also marked wokeYou in the pulse). Do the first piece of each that can be done now; nothing is issued, paid or posted in this turn. A message that would leave the company is a draft whose card waits on a Confirm: nothing is sent, so never say it was. A document, form or notes go through doc_create or kin_document, linked to what they are for. Then tell the person it is for in at most three short sentences: what you prepared and where it is (the card or the link), and what was left open in it. Never retell what the draft says. Never ask a question where a draft would do. If nothing can be prepared, ask whoever has what is missing, as the pulse rule says; when no one does, say in one line what is missing. If a first piece of each already exists, write exactly ${SILENT_REPLY}.`;
+export const HEAD_START_WAKE = `Kin woke you to make a head start on the facts given with this wake (each also marked wokeYou in the pulse). Do the first piece of each that can be done now; nothing is issued, paid or posted in this turn. A message that would leave the company is a draft whose card waits on a Confirm: nothing is sent, so never say it was. A document, form or notes go through doc_create or kin_document, linked to what they are for. Then tell the person it is for in at most three short sentences: what you prepared and where it is (the card or the link), and what was left open in it. Never retell what the draft says. Never ask a question where a draft would do. If nothing can be prepared, ask whoever has what is missing, as the pulse rule says; when no one does, say in one line what is missing. If a first piece of each already exists, end with kin_skip.`;
 /** A wake whose fact was handled or stopped being true before its turn. */
-export const HEAD_START_GONE = `Kin checked this again as this turn started: it is handled or no longer true, so there is nothing to start. Write exactly ${SILENT_REPLY}.`;
+export const HEAD_START_GONE =
+  "Kin checked this again as this turn started: it is handled or no longer true, so there is nothing to start. End with kin_skip.";
 
 /** The facts a head start is for, as true now (`standingNow`); undefined once none stands. */
 export const prepareWakeText = Effect.fn("KinPulse.prepareWakeText")(function* (

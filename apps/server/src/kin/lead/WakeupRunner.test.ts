@@ -1056,7 +1056,7 @@ describe("WakeupRunner", () => {
     ["a started deferral whose item is gone since its card was drawn", "start-gone", 0],
     ["a started deferral whose item was edited since its card was drawn", "start-edited", 0],
   ] as const)(
-    "answers %s without the model when only NO_REPLY could answer it",
+    "answers %s without the model when only kin_skip could answer it",
     ([, kind, turns]) =>
       Effect.gen(function* () {
         const prompts: Array<KinLeadPromptInput> = [];
@@ -2189,6 +2189,44 @@ describe("WakeupRunner", () => {
     },
   );
 
+  it.effect(
+    "a carried turn after a sensitive read continues the session and is marked before it runs",
+    () =>
+      Effect.gen(function* () {
+        const entered = yield* Deferred.make<void>();
+        const hold = yield* Deferred.make<void>();
+        let calls = 0;
+        const beforeTurn = () =>
+          Effect.suspend(() =>
+            ++calls === 2
+              ? Deferred.succeed(entered, undefined).pipe(Effect.andThen(Deferred.await(hold)))
+              : Effect.void,
+          );
+        yield* Effect.gen(function* () {
+          const sql = yield* seedCarry;
+          yield* wake("tidewater-first");
+          const [first] = yield* carryRows;
+          yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
+          VALUES (${orgId}, ${first!.wakeupId}, 1)`;
+
+          yield* (yield* KinEventQueue.KinEventQueue).enqueue(
+            yield* ownerSays("tidewater-second", "direct"),
+          );
+          const fiber = yield* run();
+          yield* Deferred.await(entered);
+          const next = (yield* carryRows).at(-1)!;
+          const markedBeforeTurn = yield* turnSensitive(orgId, next.wakeupId);
+          yield* Deferred.succeed(hold, undefined);
+          yield* Fiber.join(fiber);
+
+          assert.deepStrictEqual(yield* sessions(), [1, 1], `carry refusal: ${next.reason}`);
+          assert.strictEqual(next.sent, "carried");
+          assert.isNull(next.reason);
+          assert.isTrue(markedBeforeTurn);
+        }).pipe(Effect.provide(carryHarness({ beforeTurn })), provideDeterministicTestRuntime);
+      }),
+  );
+
   it.effect("a change list over 9,000 characters goes inside the message", () =>
     Effect.gen(function* () {
       yield* seedCarry;
@@ -2221,8 +2259,8 @@ describe("WakeupRunner", () => {
               WHERE org_id = ${orgId}`;
             break;
           case "marked":
-            yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
-              SELECT org_id, wakeup_id, 1 FROM kin_wakeups WHERE org_id = ${orgId}`;
+            yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
+              SELECT org_id, wakeup_id, 1, 'mail' FROM kin_wakeups WHERE org_id = ${orgId}`;
             break;
           case "expired":
             yield* TestClock.adjust(CARRY_LIFETIME_MS + 1);
@@ -2253,8 +2291,11 @@ describe("WakeupRunner", () => {
 
   it.effect("with the switch off, every turn is fresh with the full prompt", () =>
     Effect.gen(function* () {
-      yield* seedCarry;
+      const sql = yield* seedCarry;
       yield* wake("tidewater-first");
+      const [first] = yield* carryRows;
+      yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
+        VALUES (${orgId}, ${first!.wakeupId}, 1)`;
       yield* harborviewChanged();
       yield* wake("tidewater-second");
       const projection = yield* carryProjection;
@@ -2263,7 +2304,9 @@ describe("WakeupRunner", () => {
         projection.messages.filter(({ role }) => role === "user").map(({ text }) => text),
         ["Wake up", "Wake up"],
       );
-      const delta = (yield* carryRows).at(-1)?.delta;
+      const next = (yield* carryRows).at(-1)!;
+      assert.isFalse(yield* turnSensitive(orgId, next.wakeupId));
+      const delta = next.delta;
       assert.isString(delta);
       const stats = yield* decodeDeltaStats(delta);
       assert.isAbove(stats.chars, 0);
@@ -2556,14 +2599,18 @@ describe("WakeupRunner", () => {
     "after a compaction the next turn re-sends the full prompt with the change list in the same session",
     () =>
       Effect.gen(function* () {
-        yield* seedCarry;
+        const sql = yield* seedCarry;
         yield* wake("tidewater-compacted");
+        const [first] = yield* carryRows;
+        yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
+          VALUES (${orgId}, ${first!.wakeupId}, 1)`;
         yield* harborviewChanged();
         yield* wake("tidewater-refill");
-        assert.deepStrictEqual(yield* sessions(), [1, 1]);
         const [previous, next] = yield* carryRows;
         assert.strictEqual(previous?.compacted, 1);
         assert.strictEqual(next?.sent, "refill");
+        assert.deepStrictEqual(yield* sessions(), [1, 1]);
+        assert.isTrue(yield* turnSensitive(orgId, next!.wakeupId));
         const { run, text } = carriedSend(yield* carryProjection);
         assert.notStrictEqual(run.freshContext, true);
         assert.match(text!, /^Wake up\n\n/);
@@ -2768,6 +2815,12 @@ describe("WakeupRunner", () => {
       assert.deepStrictEqual(decideCarry(refreshed.facts), { carry: false, reason: "expired" });
       yield* sql`INSERT INTO kin_wakeup_sensitive_reads (org_id, wakeup_id, read_at)
         VALUES (${orgId}, ${first!.wakeup_id}, 1)`;
+      assert.deepStrictEqual(decideCarry((yield* compare).facts), {
+        carry: false,
+        reason: "expired",
+      });
+      yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
+        VALUES (${orgId}, ${first!.wakeup_id}, 1, 'mail')`;
       assert.deepStrictEqual(decideCarry((yield* compare).facts), {
         carry: false,
         reason: "marked",

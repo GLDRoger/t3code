@@ -7,7 +7,7 @@ const first = (vars: Vars, name: string) => list(vars[name])[0];
 export const title = "Your message to an agent, and what comes back";
 
 export const guide =
-  "Each box is where your message to an agent stands, as you would see it in your chat. Each arrow is something that happens: you send, the agent starts on it, writes (held until its turn ends), writes the same answer again, sends its message itself, posts a chart, thinks, sends you a message for someone else (a nudge or relay), you press Stop, its run ends and what it held posts, its turn ends or fails, someone joins the chat while it works, you are made a member while it works, or Kin restarts. Red boxes are where a rule below breaks. The model covers two messages from you, four tries at starting, one restart (the turn lost or picked up again), a floor that can close, a Stop, and up to two people joining mid-turn; it follows your first message. “Working…” shows while the agent works on it and clears when the turn ends.";
+  "Each box is where your message to an agent stands, as you would see it in your chat. Each arrow is something that happens: you send, the agent starts on it, writes (held until its turn ends), writes the same answer again, sends its message itself, ends its turn quietly with kin_skip, posts a chart, thinks, sends you a message for someone else (a nudge or relay), you press Stop, its run ends and what it held posts, its turn ends or fails, someone joins the chat while it works, you are made a member while it works, or Kin restarts. Red boxes are where a rule below breaks. The model covers two messages from you, four tries at starting, one restart (the turn lost or picked up again), a floor that can close, a Stop, and up to two people joining mid-turn; it follows your first message, a question or request; your second is a reaction or another agent's answer, which may need no reply. “Working…” shows while the agent works on it and clears when the turn ends.";
 
 export const rules: Record<string, string> = {
   NeverTwo:
@@ -20,7 +20,7 @@ export const rules: Record<string, string> = {
     "The agent's reply says its answer once, even when it writes the answer again after using a tool.",
   RelayLands: "A nudge or relay the agent sends you always lands in your chat, whatever the floor.",
   AskedBeforeSilence:
-    "When an agent's turn ends without the words your message waited for (it only thought them, or only posted a chart or file), it is asked for them once, unless Kin held its reply back because someone joined and said so in the chat, or you pressed Stop.",
+    "When an agent's turn ends without the words your message waited for (it only thought them, or only posted a chart or file), it is asked for them once, unless Kin held its reply back because someone joined and said so in the chat, you pressed Stop, or your message was a reaction or another agent's answer the agent ended quietly with kin_skip.",
   MovedOnce:
     "When someone joins while the agent works and its reply is held back, your message goes to a fresh turn at most once.",
   NeverToOldAudience:
@@ -34,7 +34,7 @@ export const rules: Record<string, string> = {
   OneRing:
     "A reply in several bubbles notifies you once, with its first bubble; the others show quietly.",
   EveryMessageAnswered:
-    "Every message you send ends in a reply, a plain failure line, a chart or file whose agent was asked for its line, or your own Stop, never silence, even when the agent sent you a nudge or relay meanwhile.",
+    "Every message you send ends in a reply, a plain failure line, a chart or file whose agent was asked for its line, or your own Stop, never silence, even when the agent sent you a nudge or relay meanwhile. Only a reaction or another agent's answer that needs no reply may end with the agent's kin_skip.",
   LineClears: '"Working…" (the agent\'s line) always clears.',
 };
 
@@ -150,6 +150,11 @@ export const variants = [
     what: "after a successful send, the text the agent also wrote posts as a second message",
   },
   {
+    name: "skip-silences",
+    breaks: "EveryMessageAnswered",
+    what: "kin_skip is accepted, and counted as the answer, while you wait on words (no `quietAllowed` refusal)",
+  },
+  {
     name: "line-stays",
     breaks: "LineClears",
     what: "the end of a turn no longer clears the agent's line",
@@ -162,6 +167,8 @@ export const state = (vars: Vars) => {
   if (told > 1) return "Answered twice";
   if (ev === "none") return "Nothing sent yet";
   if (first(vars, "stopped") === true && told === 0) return "You stopped it";
+  if (first(vars, "letGo") === true && told === 0 && ev === "done")
+    return "Ended quietly, no reply";
   if (told === 1 && ev === "queued") return "Answered, yet back in the queue";
   if (told === 1 && ev === "claimed" && first(vars, "covered") === false)
     return "Answered, and the agent starts on it again";
@@ -187,6 +194,8 @@ export const step = (action: string, from: Vars, to: Vars) => {
       return "The agent writes its reply (held until the turn ends)";
     case "LeadSends":
       return "The agent sends you its message itself";
+    case "Skip":
+      return "The agent ends its turn quietly with kin_skip";
     case "PersonStops":
       return "You press Stop";
     case "RunEnds":

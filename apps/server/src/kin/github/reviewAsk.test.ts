@@ -2184,8 +2184,9 @@ const TRIAGE_REPO = "tidewater/portal";
 const TRIAGE_OTHER = "tidewater/billing";
 const TRIAGE_DENIED =
   "This turn can only read this repo's code with kin_github_read and post its one comment on this issue with kin_github_comment. Nothing else ran.";
-const TRIAGE_NEXT =
-  "Posted on the issue. Nothing you write now goes anywhere: write exactly NO_REPLY.";
+const TRIAGE_NEXT = "Posted on the issue. Nothing you write now goes anywhere.";
+const TRIAGE_INSIDE_NEXT =
+  "Posted on the issue. Kin tells the owner itself when you set owner: end with kin_skip.";
 
 const tidewater = Effect.fn("test.tidewater")(function* (github: FakeGitHub, appOn: boolean) {
   github.addRepo({
@@ -2354,7 +2355,7 @@ it.effect.each([
     yield* startIssue(inside);
     const result = yield* postTriage(body);
     assert.isTrue(result.ok, JSON.stringify(result.value));
-    assert.strictEqual(result.value.next, TRIAGE_NEXT);
+    assert.strictEqual(result.value.next, inside ? TRIAGE_INSIDE_NEXT : TRIAGE_NEXT);
     assert.deepStrictEqual(
       github.world.comments.map((comment) => comment.body),
       [`${posted}\n\n_Tech lead, via Kin_\n<!-- kin-agent: tech-lead -->`],

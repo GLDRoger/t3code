@@ -332,8 +332,8 @@ const removeContinuations = Effect.fnUntraced(function* (
 ) {
   if (ids.length === 0) return;
   const sql = yield* SqlClient.SqlClient;
-  yield* sql`UPDATE kin_messages SET status = 'deleted' WHERE org_id = ${orgId}
-    AND message_id IN ${sql.in(ids)} AND status = 'posted'`;
+  yield* sql`UPDATE kin_messages SET status = 'deleted', lapsed_question_json = NULL
+    WHERE org_id = ${orgId} AND message_id IN ${sql.in(ids)} AND status = 'posted'`;
   for (const id of ids) yield* told(orgId, id, []);
 });
 
