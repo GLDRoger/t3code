@@ -460,7 +460,7 @@ describe("kinClientPageView", () => {
     expect(reader({ edit: true, log: true, owner: false })).toBeNull();
     expect(reader({ edit: false, log: true, owner: false, contacts: true })).toBeNull();
     expect(reader({ edit: false, log: true, owner: false, contacts: false })).toBe(
-      "Zoya looks after this one. They, or anyone with an open deal here, add and change its contacts.",
+      "Zoya, who looks after this one, and anyone with an open deal here add and change its contacts.",
     );
     expect(reader({ edit: false, log: true, owner: false }, { kind: "vendor" })).toBe(
       "Zoya looks after this one, and adds and changes its contacts.",

@@ -182,7 +182,7 @@ export const KIN_CLIENTS = {
   contactsWho: (lookedAfter: string, vendor: boolean) =>
     vendor
       ? `${lookedAfter} looks after this one, and adds and changes its contacts.`
-      : `${lookedAfter} looks after this one. They, or anyone with an open deal here, add and change its contacts.`,
+      : `${lookedAfter}, who looks after this one, and anyone with an open deal here add and change its contacts.`,
   projects: "Projects",
   noProjects: "No projects for them yet.",
   terms: "Terms",
