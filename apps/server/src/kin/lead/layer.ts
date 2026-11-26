@@ -1,5 +1,6 @@
 import * as SocialMcp from "../social/mcp.ts";
 import * as SalesMcp from "../sales/mcp.ts";
+import * as ConnectionsMcp from "../connections/mcp.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as DeferralFlow from "../triggers/deferralFlow.ts";
@@ -316,14 +317,17 @@ const runner = Layer.effectDiscard(
   Layer.provide(Layer.mergeAll(OwnerCheck.layer, RoutineContent.layer)),
 );
 
+const ownerNotices = OwnerNotices.layer.pipe(Layer.provide(KinChatRepository.layer));
+const memoryLayer = Memory.layer.pipe(Layer.provide(ownerNotices));
+
 const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
   entry.pipe(
     Layer.provide(
       Layer.mergeAll(KinLeadRegistry.layer, KinLeadPrompt.layer, KinTurnContent.layer).pipe(
-        Layer.provideMerge(Layer.mergeAll(Memory.layer, KinChatRepository.layer)),
+        Layer.provideMerge(KinChatRepository.layer),
       ),
     ),
-    Layer.provide(OwnerNotices.layer.pipe(Layer.provide(KinChatRepository.layer))),
+    Layer.provide(ownerNotices),
     Layer.provide(
       FollowUps.rememberSnapshots.pipe(
         Layer.provide(TriggerService.syncHooksLayer),
@@ -377,7 +381,9 @@ const toolkit = LeadMemory.layer.pipe(
   ),
 );
 
-export const layer = withServices(Layer.merge(runner, ChatWake.layer));
+export const layer = withServices(Layer.merge(runner, ChatWake.layer)).pipe(
+  Layer.provide(memoryLayer),
+);
 // Documents render on this server; agents' own files and recipe drafts come through it too.
 const documents = Layer.merge(Render.layer, PictureRenderer.layer).pipe(
   Layer.provideMerge(Layer.mergeAll(Workspace.layer, Toolchain.layer)),
@@ -499,22 +505,31 @@ const production = withServices(
   ),
 );
 
-const configured = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
-  Layer.merge(
-    containStartup(
-      Layer.unwrap(
-        Effect.gen(function* () {
-          const repositories = yield* MemoryConfig.configuredRepositories;
-          if (repositories.length > 0)
-            return entry.pipe(Layer.provide(MemoryConfig.layer(repositories)));
-          const dev = yield* devMemoryRepository();
-          if (dev === undefined) return Layer.empty;
-          return entry.pipe(Layer.provide(MemoryConfig.layer(dev, { directMainPush: true })));
-        }),
+const configured = <R, R2>(
+  entry: Layer.Layer<never, never, R>,
+  withoutMemory: Layer.Layer<never, never, R2>,
+) => {
+  const withMemory = (config: ReturnType<typeof MemoryConfig.layer>) =>
+    entry.pipe(Layer.provide(memoryLayer), Layer.provide(config));
+  type WithMemory = ReturnType<typeof withMemory>;
+  type Runtime = Layer.Layer<never, Layer.Error<WithMemory>, Layer.Services<WithMemory> | R2>;
+  const selected = Effect.gen(function* () {
+    const repositories = yield* MemoryConfig.configuredRepositories;
+    if (repositories.length > 0) return withMemory(MemoryConfig.layer(repositories));
+    const dev = yield* devMemoryRepository();
+    return dev === undefined
+      ? withoutMemory
+      : withMemory(MemoryConfig.layer(dev, { directMainPush: true }));
+  }).pipe(Effect.map((layer): Runtime => layer));
+  return Layer.merge(
+    Layer.unwrap(selected).pipe(
+      Layer.catchCause((cause) =>
+        Layer.merge(containStartup(Layer.effectDiscard(Effect.failCause(cause))), withoutMemory),
       ),
     ),
     unconfigured,
   );
+};
 
 // An installed host with no memory repository runs no agent; each chat with one hears why.
 const unconfigured = containStartup(
@@ -531,4 +546,9 @@ const unconfigured = containStartup(
 );
 
 /** Kin's agent runtime as the server builds it, inside the Kin MCP endpoint (`kin/mcp/layer.ts`). */
-export const layerRuntime = configured(production);
+export const layerRuntime = configured(containStartup(production), Layer.empty);
+
+export const layerRuntimeWithConnections = configured(
+  Layer.merge(containStartup(production), ConnectionsMcp.registrationWithMemory),
+  ConnectionsMcp.registration,
+);
