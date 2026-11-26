@@ -61,7 +61,12 @@ import * as ThreadManagement from "../../orchestration-v2/ThreadManagementServic
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import { KinGroups } from "../chat/KinGroups.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
-import { KinIdentity, steerMessageId, type PersonIdentity } from "../chat/KinIdentity.ts";
+import {
+  KinIdentity,
+  steerMessageId,
+  wakeupMessageId,
+  type PersonIdentity,
+} from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import {
   authorityLayer,
@@ -81,6 +86,7 @@ import { KinLevelGate } from "../lead/LevelGate.ts";
 import { CAPTION_PROMPT, cutLabel, RESCUE_PROMPT } from "./classify.ts";
 import { claudeThinkingItemId } from "./claudeThinkingItem.ts";
 import { KinPresence } from "./KinPresence.ts";
+import * as ToolStarts from "./ToolBlockStarts.ts";
 import * as ReplyBridge from "./KinReplyBridge.ts";
 import { laneFor } from "./replyLane.ts";
 import { WEEK_FIGURES_TITLE } from "../pulse/weekly.ts";
@@ -429,6 +435,7 @@ const setup = Effect.fn("test.setup")(function* (input: {
           getSettings: Effect.succeed({ ...DEFAULT_SERVER_SETTINGS, kinTriggerSendOnly: true }),
         })
       : Layer.empty;
+  const starts = yield* Effect.serviceOption(ToolStarts.ToolBlockStarts);
   const context = yield* Layer.build(
     ReplyBridge.layer.pipe(
       Layer.provide(
@@ -437,6 +444,9 @@ const setup = Effect.fn("test.setup")(function* (input: {
           fakeThreads(fake, wakeupId),
           journal,
           settings,
+          Option.isNone(starts)
+            ? Layer.empty
+            : Layer.succeed(ToolStarts.ToolBlockStarts, starts.value),
         ),
       ),
     ),
@@ -1605,6 +1615,7 @@ it.effect.each(["reply", "standalone", "second bubble", "second part"] as const)
 
 it.effect.each([
   { reply: "Noted.", ownOutcome: false, separate: false },
+  { reply: "I wrote the checklist.", ownOutcome: false, separate: true, makesDoc: true },
   {
     reply: "Takeaway: launch moved.\n\n## Schedule\nThe revised draft starts Wednesday.",
     ownOutcome: false,
@@ -1619,60 +1630,86 @@ it.effect.each([
   },
 ])(
   "settles a tapped choice inline only for a short follow-up (%#)",
-  ({ reply, ownOutcome, separate, bubbles }) =>
+  ({ reply, ownOutcome, separate, bubbles, makesDoc }) =>
     Effect.gen(function* () {
-      const { chats, owner, chatId, fake, runId, complete, posted } = yield* setup({
-        event: ({ owner, direct, ownerMember }) =>
-          Effect.gen(function* () {
-            const services = Option.getOrThrow((yield* Kin.KinServer).services);
-            const chats = Context.get(services, KinChatService);
-            const identity = Context.get(services, KinIdentity);
-            const prompt = yield* chats.send(owner, {
-              chatId: direct,
-              body: "Plan the launch.",
-              clientMessageId: "question-origin",
-            });
-            const id = yield* startAgentWakeup({
-              orgId: owner.orgId,
-              agentId,
-              threadId,
-              message: prompt,
-            });
-            const lead = Option.getOrThrow(
-              yield* identity.agentForWakeup({
-                orgId: owner.orgId,
-                wakeupId: KinWakeupId.make(id),
-              }),
-            );
-            const card = yield* chats.ask(lead, {
-              chatId: direct,
-              clientMessageId: "launch-choice",
-              question: "Which day?",
-              options: [{ label: "Monday" }, { label: "Wednesday" }],
-            });
-            const action = yield* chats.act(owner, {
-              widgetId: card.widgetId,
-              revision: card.revision,
-              actionId: KIN_CHOICE_CARD_ACTION,
-              value: "option-2",
-              clientActionId: "picked",
-            });
-            if (ownOutcome) {
-              const sql = yield* SqlClient.SqlClient;
-              yield* sql`UPDATE kin_widgets SET state_json = json_set(state_json, '$.outcome', json(${JSON.stringify({ title: "Updated", text: "Kin recorded it." })}))
-            WHERE widget_id = ${card.widgetId}`;
-            }
-            return (base: WakeupEventBase) =>
-              ({
-                ...base,
-                _tag: "widget.action",
+      const { chats, owner, chatId, fake, runId, complete, posted, services, sql, wakeupId } =
+        yield* setup({
+          event: ({ owner, direct, ownerMember }) =>
+            Effect.gen(function* () {
+              const services = Option.getOrThrow((yield* Kin.KinServer).services);
+              const chats = Context.get(services, KinChatService);
+              const identity = Context.get(services, KinIdentity);
+              const prompt = yield* chats.send(owner, {
                 chatId: direct,
-                messageId: action.messageId,
+                body: "Plan the launch.",
+                clientMessageId: "question-origin",
+              });
+              const id = yield* startAgentWakeup({
+                orgId: owner.orgId,
+                agentId,
+                threadId,
+                message: prompt,
+              });
+              const lead = Option.getOrThrow(
+                yield* identity.agentForWakeup({
+                  orgId: owner.orgId,
+                  wakeupId: KinWakeupId.make(id),
+                }),
+              );
+              const card = yield* chats.ask(lead, {
+                chatId: direct,
+                clientMessageId: "launch-choice",
+                question: "Which day?",
+                options: [{ label: "Monday" }, { label: "Wednesday" }],
+              });
+              const action = yield* chats.act(owner, {
+                widgetId: card.widgetId,
+                revision: card.revision,
                 actionId: KIN_CHOICE_CARD_ACTION,
-                provenance: human(owner, ownerMember),
-              }) as const;
-          }).pipe(Effect.orDie),
-      });
+                value: "option-2",
+                clientActionId: "picked",
+              });
+              if (ownOutcome) {
+                const sql = yield* SqlClient.SqlClient;
+                yield* sql`UPDATE kin_widgets SET state_json = json_set(state_json, '$.outcome', json(${JSON.stringify({ title: "Updated", text: "Kin recorded it." })}))
+            WHERE widget_id = ${card.widgetId}`;
+              }
+              return (base: WakeupEventBase) =>
+                ({
+                  ...base,
+                  _tag: "widget.action",
+                  chatId: direct,
+                  messageId: action.messageId,
+                  actionId: KIN_CHOICE_CARD_ACTION,
+                  provenance: human(owner, ownerMember),
+                }) as const;
+            }).pipe(Effect.orDie),
+        });
+      let docKey: string | undefined;
+      if (makesDoc) {
+        yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE org_id = ${owner.orgId} AND agent_id = ${agentId}`;
+        const made = yield* LeadDocs.create(
+          {
+            environmentId: EnvironmentId.make("fixture"),
+            requestNamespace: "fixture",
+            issuedAt: 0,
+            capabilities: new Set(),
+            client: undefined,
+            thread: {
+              threadId,
+              providerSessionId: "fixture",
+              providerInstanceId: ProviderInstanceId.make("codex"),
+            },
+          },
+          {
+            sourceEventId: `event:${wakeupId}`,
+            title: "Launch checklist",
+            body: "1. Review the launch plan.",
+            card: false,
+          },
+        ).pipe(Effect.provide(services));
+        docKey = made.key;
+      }
       fake.items = [text("a", 1, reply, runId)];
       yield* complete;
       const rows = yield* posted;
@@ -1681,6 +1718,19 @@ it.effect.each([
         separate ? (bubbles ?? [reply]) : [],
       );
       const history = yield* chats.history(owner, { chatId, beforeSeq: 99, limit: 20 });
+      if (docKey !== undefined) {
+        assert.deepStrictEqual(
+          history.messages.flatMap(
+            (message) =>
+              message.turnChanges?.items.map((item) => [
+                message.sourceWakeupId,
+                message.body,
+                item.key,
+              ]) ?? [],
+          ),
+          [[wakeupId, reply, docKey]],
+        );
+      }
       const card = history.widgets.find((widget) => widget.type === "choice");
       assert.isNotNull(card?.closedAt);
       const expected = ownOutcome
@@ -1690,6 +1740,60 @@ it.effect.each([
           : { title: "You chose “Wednesday”", text: reply };
       assert.deepStrictEqual((card?.state as { outcome?: unknown } | undefined)?.outcome, expected);
     }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "shows a tool while Claude writes its input, until the tool ends or the person stops",
+  () =>
+    Effect.gen(function* () {
+      const { fake, runId, bridge, owner, wakeupId, services, direct } = yield* setup({
+        ask: "Write the kickoff doc",
+      });
+      const starts = yield* ToolStarts.ToolBlockStarts;
+      const presence = Context.get(services, KinPresence);
+      const shown = () => presence.lines(owner.orgId, direct.chatId).map((line) => line.label);
+      const providerTurnId = ProviderTurnId.make("turn");
+      const start = {
+        threadId,
+        messageId: MessageId.make(wakeupMessageId(wakeupId)),
+        providerTurnId,
+      };
+      yield* starts.publish({ ...start, toolUseId: "doc", toolName: "mcp__kin__doc_create" });
+      assert.deepStrictEqual(shown(), ["Making a doc"]);
+      // Simulate seconds of input without a turn item. An older buffered text item cannot relabel it.
+      const prior = text("prior", 1, "I'll write the brief.", runId);
+      yield* Queue.offer(
+        fake.live,
+        itemEvent({ ...prior, streaming: true } as OrchestrationV2TurnItem),
+      );
+      yield* TestClock.adjust("5 seconds");
+      assert.deepStrictEqual(shown(), ["Making a doc"]);
+      const call = {
+        ...tool("doc", 2, "mcp__kin__doc_create", runId),
+        nativeItemRef: { driver: CLAUDE_PROVIDER, nativeId: "doc", strength: "strong" as const },
+        providerTurnId,
+      };
+      const all = yield* Context.get(services, KinChatHub).subscribeAll;
+      const ended = yield* all.pipe(
+        Stream.filter(
+          (event) => event.type === "presence.updated" && event.presence?.label === "Thinking",
+        ),
+        Stream.take(1),
+        Stream.runDrain,
+        Effect.forkScoped,
+      );
+      yield* Queue.offer(fake.live, itemEvent({ ...call, status: "running" }));
+      yield* Queue.offer(fake.live, itemEvent(call));
+      yield* Fiber.join(ended);
+      assert.deepStrictEqual(shown(), ["Thinking"]);
+      yield* starts.publish({ ...start, toolUseId: "hidden", toolName: "mcp__kin__kin_journal" });
+      assert.deepStrictEqual(shown(), ["Thinking"]);
+      yield* starts.publish({ ...start, toolUseId: "unknown", toolName: "other_tool" });
+      assert.deepStrictEqual(shown(), ["Working"]);
+      yield* bridge.abort(owner.orgId, wakeupId);
+      yield* starts.publish({ ...start, toolUseId: "late", toolName: "mcp__kin__doc_create" });
+      assert.deepStrictEqual(shown(), []);
+    }).pipe(Effect.provide(Layer.merge(layer, ToolStarts.layer))),
 );
 
 it.effect("labels each phase of a wake-up once per change and clears when the reply settles", () =>

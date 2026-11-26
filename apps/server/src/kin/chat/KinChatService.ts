@@ -130,7 +130,13 @@ import { KinStop } from "../lead/KinStop.ts";
 import { isOrgOwner } from "../lead/orgState.ts";
 import { docPageSources } from "../work/docFiles.ts";
 import { turnSensitive } from "../work/sensitiveReads.ts";
-import { PICTURE_DOC_ORIGIN, pictureFileReader } from "../work/teamView.ts";
+import {
+  KIN_OWNER_LEVEL,
+  PICTURE_DOC_ORIGIN,
+  pictureFileReader,
+  viewerOfPeople,
+} from "../work/teamView.ts";
+import { hasTurnChanges } from "../lead/turnChanges.ts";
 import * as Repository from "./KinChatRepository.ts";
 import type { WriteAudience } from "./KinChatRepository.ts";
 import { KinAttachmentStore } from "./KinAttachmentStore.ts";
@@ -2085,12 +2091,14 @@ const make = Effect.gen(function* () {
     if (agent.wakeupId === undefined) return false;
     const member = yield* memberFor(agent, input.chatId);
     yield* canWrite(agent, member);
-    const rows = yield* sql<{ widgetId: string }>`SELECT DISTINCT m.widget_id AS "widgetId"
+    const rows = yield* sql<{ widgetId: string; personId: KinPersonId }>`SELECT DISTINCT
+        m.widget_id AS "widgetId", m.author_person_id AS "personId"
         FROM kin_events e JOIN kin_messages m ON m.org_id = e.org_id
           AND m.message_id = json_extract(e.json, '$.messageId') AND m.kind = 'widget_action'
         JOIN kin_widgets w ON w.org_id = m.org_id AND w.widget_id = m.widget_id AND w.type = 'choice'
         WHERE e.org_id = ${agent.orgId} AND e.agent_id = ${agent.agentId} AND e.wakeup_id = ${agent.wakeupId}
           AND e.tag = 'widget.action' AND m.chat_id = ${input.chatId}
+          AND m.author_kind = 'human' AND m.author_person_id IS NOT NULL
           AND NOT EXISTS (SELECT 1 FROM kin_events h WHERE h.org_id = e.org_id
             AND h.agent_id = e.agent_id AND h.wakeup_id = e.wakeup_id AND h.tag = 'chat.message')
         LIMIT 2`.pipe(Effect.mapError(toPersistenceSqlError("KinChatService.setChoiceOutcome")));
@@ -2104,6 +2112,22 @@ const make = Effect.gen(function* () {
     const widget = found.value;
     const state = yield* decodeChoice(widget.state).pipe(Effect.mapError(cardTapError));
     if (state.answer === null || state.outcome !== undefined || state.send !== undefined)
+      return false;
+    // A widget outcome has no reply message for the turn's receipt to attach to.
+    const owner = yield* ownerLevel(agent.orgId, row.personId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    );
+    if (
+      yield* hasTurnChanges(
+        owner ? KIN_OWNER_LEVEL : viewerOfPeople([row.personId]),
+        agent.orgId,
+        agent.wakeupId,
+        agent.agentId,
+      ).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.mapError(toPersistenceSqlError("KinChatService.setChoiceOutcome")),
+      )
+    )
       return false;
     const label = state.options.find((option) => option.optionId === state.answer?.optionId)?.label;
     if (label === undefined) return false;

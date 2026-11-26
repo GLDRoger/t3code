@@ -2452,6 +2452,49 @@ export class KinLeadPrompt extends Context.Service<
               Effect.logWarning("Kin set-up turn unknown", cause).pipe(Effect.as(false)),
             ),
           ));
+        const legacyRecent = continued
+          ? recent.filter(
+              ({ message }) =>
+                message.author._tag !== "system" ||
+                !message.messageId.startsWith("bills:") ||
+                isOutcomeLine(message.messageId),
+            )
+          : recent;
+        const recentParts: PromptPart[] = [];
+        if (recent.length > 0) {
+          const recentOptions = {
+            now,
+            timeZone,
+            notice: input.lane?.mode !== "reply",
+            names,
+            coOwners: ownerOnly
+              ? yield* ownerLevelPeople(orgId).pipe(
+                  Effect.provideService(SqlClient.SqlClient, sql),
+                  Effect.orElseSucceed(() => new Set<string>()),
+                )
+              : undefined,
+          };
+          recentParts.push(
+            {
+              ...sharedPart("recentChat", PROMPT_HEADINGS.recentChat),
+              ...(legacyRecent.length === 0 ? { legacyText: null } : {}),
+            },
+            {
+              place: "delta",
+              section: "recentChat",
+              shared: true,
+              ...boundedRecent(recent, agentId, recentOptions),
+              ...(legacyRecent.length === recent.length
+                ? {}
+                : {
+                    legacyText:
+                      legacyRecent.length === 0
+                        ? null
+                        : boundedRecent(legacyRecent, agentId, recentOptions).text,
+                  }),
+            },
+          );
+        }
         const parts: ReadonlyArray<PromptPart> = [
           // Before the rules and memory, so it shapes how the agent sounds and nothing else.
           ...(seat?.character === undefined
@@ -2583,30 +2626,7 @@ export class KinLeadPrompt extends Context.Service<
                     .join("\n"),
                 ),
               ]),
-          // The chat it was asked in, and only when asked there (`lane`).
-          ...(recent.length === 0
-            ? []
-            : [
-                sharedPart(promptSectionPlaces.recentChat, PROMPT_HEADINGS.recentChat),
-                {
-                  place: "delta" as const,
-                  section: "recentChat" as const,
-                  shared: true,
-                  ...boundedRecent(recent, agentId, {
-                    now,
-                    timeZone,
-                    notice: input.lane?.mode !== "reply",
-                    names,
-                    // As with events: a co-owner speaks with authority only at the owner's level.
-                    coOwners: ownerOnly
-                      ? yield* ownerLevelPeople(orgId).pipe(
-                          Effect.provideService(SqlClient.SqlClient, sql),
-                          Effect.orElseSucceed(() => new Set<string>()),
-                        )
-                      : undefined,
-                  }),
-                },
-              ]),
+          ...recentParts,
           ...(feedback.length === 0
             ? []
             : [
@@ -2739,15 +2759,7 @@ export class KinLeadPrompt extends Context.Service<
       });
       const build = Effect.fn("KinLeadPrompt.build")(function* (input: KinLeadPromptInput) {
         const { parts, ownerOnly } = yield* collectParts(input);
-        return visible(parts, ownerOnly)
-          .map((part) =>
-            part.place === "legacyHeader"
-              ? visible(part.lines, ownerOnly)
-                  .map((line) => line.text)
-                  .join("\n")
-              : part.text,
-          )
-          .join("\n\n");
+        return renderFull(visible(parts, ownerOnly), ownerOnly);
       });
       const buildSession = Effect.fn("KinLeadPrompt.buildSession")(function* (
         input: SessionPromptInput,
@@ -3076,7 +3088,12 @@ type DeltaSection =
   | "checkIns"
   | "work";
 
-type Part = { readonly text: string; readonly shared: boolean; readonly index?: string } & (
+type Part = {
+  readonly text: string;
+  readonly shared: boolean;
+  readonly index?: string;
+  readonly legacyText?: string | null;
+} & (
   | { readonly place: "standing" | "message" }
   | {
       readonly place: "delta";
@@ -3102,6 +3119,18 @@ const memoryIndexPart = (body: string) => {
 };
 const visible = <T extends PromptPart>(parts: ReadonlyArray<T>, ownerOnly: boolean) =>
   parts.filter((part) => ownerOnly || part.shared);
+
+const renderFull = (parts: ReadonlyArray<PromptPart>, ownerOnly: boolean) =>
+  parts
+    .flatMap((part) => {
+      if (part.place === "legacyHeader")
+        return visible(part.lines, ownerOnly)
+          .map((line) => line.text)
+          .join("\n");
+      if (part.place === "divider") return part.text;
+      return part.legacyText === null ? [] : (part.legacyText ?? part.text);
+    })
+    .join("\n\n");
 
 const decodeIndex = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.String));
 const memoryLines = (index: string) => {
@@ -3325,6 +3354,7 @@ const renderSession = (
   );
 
   return {
+    full: renderFull(parts, ownerOnly),
     standing: standing.join("\n\n"),
     standingKey: NodeCrypto.createHash("sha256")
       .update(standingWithoutIndex.join("\n\n"))
@@ -3334,6 +3364,7 @@ const renderSession = (
     delta,
     indexChanged,
     workChanges: workInDelta ? workChanges : undefined,
+    fullWorkChanges: sections.work === undefined ? undefined : workChanges,
     message: message.join("\n\n"),
     compactInstructions: COMPACT_INSTRUCTIONS,
   };
@@ -3345,7 +3376,7 @@ export const TURN_DIVIDER = "--- THIS TURN ---";
 const dividerPart = { place: "divider", shared: true, text: TURN_DIVIDER } as const;
 // Words under eval: change them only with the carry cases.
 export const CARRIED_TURN_NOTE =
-  "This turn continues your session in this chat: the replies in it were sent and the person has them. Kin lists here every change since your previous turn, by anyone, to what you read in this session, payments and edits included; what you read and is not listed is as you read it. Anything someone says has changed, and anything you have not read in this session, is as Kin's tools show it now.";
+  "This turn continues your session in this chat: the replies in it were sent and the person has them. Kin lists here every change since your previous turn, by anyone, to what you read in this session, payments and edits included; what you read and is not listed is as you read it, so answer from it without reading it again. The exception is someone telling you it changed, a payment above all: then read it again before you answer, even though nothing here lists it. Anything you have not read in this session is as Kin's tools show it now.";
 export const SESSION_CHANGES_CAP = 30;
 const INDEX_OVERFLOW =
   "More than 40 memory index lines changed since your previous turn; search memory for what you need.";

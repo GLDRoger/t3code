@@ -2,8 +2,10 @@ import type { HookCallback, HookCallbackMatcher } from "@anthropic-ai/claude-age
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 
 import * as ClaudeAdapterV2 from "../../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import { ServerSettingsService } from "../../../../serverSettings.ts";
 import {
   type AuthSettings,
   makeConfiner,
@@ -74,6 +76,7 @@ const kinTools = (options: Options, plan: KinSessionPlan) =>
 const ownerContextHooks = (
   hooks: NonNullable<Options["hooks"]>,
   prepared: () => ReturnType<SessionContext.KinSessionContext["Service"]["forThread"]>,
+  take: () => string | undefined,
   logCompaction: (summaryLength: number) => Promise<void>,
 ): NonNullable<Options["hooks"]> => {
   const append = (
@@ -95,7 +98,7 @@ const ownerContextHooks = (
     }),
     UserPromptSubmit: append("UserPromptSubmit", async (input) => {
       if (input.hook_event_name !== "UserPromptSubmit") return {};
-      const delta = prepared()?.delta;
+      const delta = take();
       return delta
         ? { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: delta } }
         : {};
@@ -121,7 +124,7 @@ const apply = (
     readonly hook: HookCallbackMatcher | undefined;
     readonly auth: AuthSettings;
     readonly environment: NodeJS.ProcessEnv;
-    readonly context: SessionContext.KinSessionContext["Service"];
+    readonly context: SessionContext.KinSessionContext["Service"] | undefined;
     readonly logCompaction: (summaryLength: number) => Promise<void>;
   },
 ): Options => {
@@ -165,7 +168,8 @@ const apply = (
             plan.seat === "owner"
               ? ownerContextHooks(
                   hooks,
-                  () => session.context.forThread(plan.thread),
+                  () => session.context?.forThread(plan.thread),
+                  () => session.context?.take(plan.thread),
                   session.logCompaction,
                 )
               : hooks,
@@ -198,8 +202,7 @@ const apply = (
       ...(plan.seat === "owner" && environment.CLAUDE_CODE_PROMPT_CACHE_TTL === undefined
         ? { CLAUDE_CODE_PROMPT_CACHE_TTL: "1h" }
         : {}),
-      // Every wake-up is a fresh session: its first request otherwise may go out before Kin's
-      // tools are listed, and a different tool block misses the prompt cache.
+      // Wait for Kin's tools before the first request; a different tool block misses the cache.
       ...(plan.seat === "delegated" ? {} : { MCP_CONNECTION_NONBLOCKING: "0" }),
     },
   };
@@ -261,7 +264,11 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
       const sessions = yield* KinSessions;
       if (!sessions.enabled) return runner;
       const confiner = yield* makeConfiner();
-      const context = yield* SessionContext.KinSessionContext;
+      const context = Option.getOrUndefined(
+        yield* Effect.serviceOption(SessionContext.KinSessionContext),
+      );
+      const settings = yield* Effect.serviceOption(ServerSettingsService);
+      let reportedMissingContext = false;
       const runHook = Effect.runPromiseWith(yield* Effect.context<never>());
       return ClaudeAdapterV2.ClaudeAgentSdkQueryRunner.of({
         ...runner,
@@ -277,6 +284,22 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
             toolLookup: true,
           });
           if (plan === undefined) return yield* runner.open(input);
+          if (
+            plan.seat === "owner" &&
+            !input.refresh &&
+            context === undefined &&
+            !reportedMissingContext &&
+            Option.isSome(settings)
+          ) {
+            const carryEnabled = yield* settings.value.getSettings.pipe(
+              Effect.map(({ kinSessionCarry }) => kinSessionCarry),
+              Effect.orElseSucceed(() => false),
+            );
+            if (carryEnabled && !reportedMissingContext) {
+              reportedMissingContext = true;
+              yield* Effect.logError("Kin Claude owner seat is missing KinSessionContext");
+            }
+          }
           return yield* runner.open({
             ...input,
             options: apply(input.options, plan, {
@@ -297,12 +320,10 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
         }),
       });
     }),
-  ).pipe(
-    Layer.provide(Layer.merge(base, KinSessions.layer)),
-    Layer.provideMerge(SessionContext.KinSessionContext.layer),
-  );
+  ).pipe(Layer.provide(Layer.merge(base, KinSessions.layer)));
 
 export const claude = {
+  turnContextBeside: true,
   driver: DRIVER,
   capabilities,
   install,

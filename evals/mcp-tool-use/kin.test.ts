@@ -33,6 +33,7 @@ import {
 import {
   answerToolCall,
   buildBase,
+  type Base,
   buildMessages,
   gradeSample,
   judged,
@@ -40,6 +41,7 @@ import {
   McpToolUseCase,
   normalizeToolInput,
   normalizeToolName,
+  requestBody,
   runSample,
   type SampleRun,
   shellRequest,
@@ -274,7 +276,7 @@ it("fills a Kin tool's left-out or message-id event as Kin's tool gate does", ()
 });
 
 it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with the owner's session, its default", () => {
-  const base = (kinSession: boolean) =>
+  const base = (kinSession: boolean): Base =>
     buildBase(template, {
       model: "claude-sonnet-5-5",
       keepUserInstructions: false,
@@ -303,8 +305,8 @@ it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with
   assert.notInclude(after, "mcp__t3-code__schedule_task");
   // Claude Code's own deferred tools wait behind ToolSearch, named in the list, as a real turn sends them.
   assert.isFalse(base(true).nativeTools.some((tool) => tool.name === "Monitor"));
-  assert.include(after, "Monitor");
-  assert.include(String(base(true).reminders[0]?.text), "\nMonitor\n");
+  assert.notInclude(after, "Monitor");
+  assert.notInclude(String(base(true).deferredAnnouncement), "\nMonitor\n");
   // A lead case has the owner's seat, as production gives a thread nobody else reads, unless it says not.
   const lead = (prompt: string, kinSession?: boolean) =>
     kinSessionOf({
@@ -868,7 +870,7 @@ it.effect("hands a Kin case's files to the turn as Kin and the provider adapters
       Effect.gen(function* () {
         const sample = makeSample(testCase, kinBase());
         sample.kinFiles = yield* kinTurnFiles(testCase);
-        return buildMessages(sample).at(-1)?.content ?? [];
+        return buildMessages(sample).findLast(({ role }) => role === "user")?.content ?? [];
       });
     const photo = NodeFS.readFileSync(new URL("./cases/files/receipt-taxi.jpg", import.meta.url));
     const [image, prompt] = (yield* turn(kinCase(attached))).slice(-2);
@@ -1161,4 +1163,128 @@ it("answers the helper-model cases as T3's tools and Kin's gate really do", () =
           }),
         );
   }
+});
+
+it.effect("ranks deferred tools like Claude ToolSearch and keeps select order", () =>
+  Effect.gen(function* () {
+    const base = kinBase();
+    const tool = (name: string, description = "", hint?: string) => ({
+      name: `mcp__t3-code__${name}`,
+      description,
+      ...(hint === undefined ? {} : { _meta: { "anthropic/searchHint": hint } }),
+    });
+    const deferred = [
+      tool("kin_defer", "Send a message later."),
+      tool("kin_picture", "Send the result as a picture."),
+      tool("kin_relay", "Send it to a teammate."),
+      tool("kin_connection_call", "Use a connected account."),
+      tool("mailbox_open"),
+      tool("message_send"),
+      tool("note", "", "dispatch"),
+      tool("draft", "dispatch"),
+      tool("not_a_match", "dispatching"),
+    ];
+    const sample = makeSample(kinCase(), { ...base, deferred });
+    const config = {
+      apiKey: "key",
+      model: "claude-sonnet-5-5",
+      effort: "high",
+      maxSteps: 0,
+      shellModel: "claude-haiku-5-5",
+    } as const;
+    const searchName = base.nativeTools.find((tool) => tool.name.endsWith("ToolSearch"))!.name;
+    const cases = [
+      ["send", ["message_send", "kin_defer", "kin_picture", "kin_relay"]],
+      ["mailbox", ["mailbox_open"]],
+      ["dispatch", ["note", "draft"]],
+      ["mcp__t3-code__kin_picture", ["kin_picture"]],
+      ["select:kin_relay,kin_defer", ["kin_defer", "kin_relay"]],
+    ] as const;
+    for (const [query, names] of cases) {
+      const result = yield* answerToolCall(sample, config, {
+        type: "tool_use",
+        id: "search",
+        name: searchName,
+        input: { query },
+      });
+      assert.deepEqual(
+        result.content,
+        names.map((name) => ({
+          type: "tool_reference",
+          tool_name: `mcp__t3-code__${name}`,
+        })),
+        query,
+      );
+    }
+    const mail = makeSample(kinCase(), { ...base, deferred: deferred.slice(0, 4) });
+    const result = yield* answerToolCall(mail, config, {
+      type: "tool_use",
+      id: "search",
+      name: searchName,
+      input: { query: "mail send" },
+    });
+    assert.deepEqual(
+      result.content,
+      ["kin_defer", "kin_picture", "kin_relay"].map((name) => ({
+        type: "tool_reference",
+        tool_name: `mcp__t3-code__${name}`,
+      })),
+    );
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, noNetwork))),
+);
+
+it.effect("reports a deferred name differently from a name that does not exist", () =>
+  Effect.gen(function* () {
+    const base = kinBase();
+    const deferred = "mcp__t3-code__kin_github_comment";
+    const sample = makeSample(kinCase(), { ...base, deferred: [{ name: deferred }] });
+    const config = {
+      apiKey: "key",
+      model: "claude-sonnet-5-5",
+      effort: "high",
+      maxSteps: 0,
+      shellModel: "claude-haiku-5-5",
+    } as const;
+    for (const [name, error] of [
+      [
+        deferred,
+        `This tool's schema was not sent to the API. To use it, call ToolSearch with query "select:${deferred}", then retry.`,
+      ],
+      ["Absent", "No such tool available: Absent"],
+    ] as const) {
+      const result = yield* answerToolCall(sample, config, {
+        type: "tool_use",
+        id: "unloaded",
+        name,
+        input: {},
+      });
+      assert.equal(result.is_error, true);
+      assert.equal(result.content, `<tool_use_error>${error}</tool_use_error>`);
+    }
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, noNetwork))),
+);
+
+it("cuts only model-facing MCP descriptions longer than 4,096 characters in Claude requests", () => {
+  const base = kinBase();
+  const sample = makeSample(kinCase(), base);
+  const long = "x".repeat(4096) + "y".repeat(904);
+  const limit = "z".repeat(4096);
+  const tools = [
+    { name: "mcp__t3-code__record_create", description: long },
+    { name: "mcp__kin__note", description: limit, defer_loading: true },
+    { name: "mcp__kin__other", description: long, defer_loading: true },
+    { name: "Bash", description: long },
+    { name: "mcp__select_sight__term_Bash", description: long },
+  ];
+  assert.deepEqual(
+    requestBody({ ...sample, tools }, "medium", []).tools.map((tool) => tool.description),
+    [
+      long.slice(0, 4096) + "… [truncated]",
+      limit,
+      long.slice(0, 4096) + "… [truncated]",
+      long,
+      long,
+    ],
+  );
+  assert.equal(tools[0]?.description, long);
 });

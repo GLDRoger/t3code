@@ -314,6 +314,14 @@ export function toolLabel(item: OrchestrationV2TurnItem): string | null {
   const name = item.type === "dynamic_tool" ? (item.toolName ?? "") : (item.title ?? "");
   if (item.type === "dynamic_tool" && CONNECTION_CALL.test(name))
     return connectionLabel(item.input);
+  return listedToolLabel(name);
+}
+
+export function toolNameLabel(name: string): string | null {
+  return CONNECTION_CALL.test(name) ? connectionLabel(undefined) : listedToolLabel(name);
+}
+
+function listedToolLabel(name: string): string | null {
   const found = TOOL_LABELS.find(([pattern]) => pattern.test(name));
   return found === undefined ? PHASE_LABELS.tool : found[1];
 }

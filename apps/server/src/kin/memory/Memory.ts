@@ -2205,17 +2205,18 @@ const make = Effect.gen(function* () {
             return yield* new MemoryChangeHeadInvalid({ orgId });
           if (from === to) return { items: [], overflow: 0 };
           const { writer } = yield* pathsFor(orgId);
+          const commitLimit = Math.min(128, Math.max(1, options.limit * 4));
+          // Count all commits: a path filter can walk arbitrarily far to find matching commits.
           const log = yield* git(orgId, writer, [
             "log",
             "-z",
-            "--full-history",
+            `--max-count=${commitLimit}`,
             "--diff-merges=first-parent",
             "--no-renames",
             "--name-only",
             "--format=%x00%ct%x00%s%x00%B",
             `${from}..${to}`,
             "--",
-            ...folders,
           ]);
           const seen = new Set<string>();
           const items = new Map<string, ChangedItem>();
@@ -2228,11 +2229,13 @@ const make = Effect.gen(function* () {
           let subject = "";
           let coding = false;
           let excluded = true;
+          let commits = 0;
           const tokens = log.split("\0");
           for (let index = 0; index < tokens.length; index++) {
             const token = tokens[index]!;
             if (token === "") {
               if (index === tokens.length - 1) break;
+              commits++;
               at = Number(tokens[++index]) * 1_000;
               subject = tokens[++index] ?? "";
               const message = tokens[++index] ?? "";
@@ -2272,7 +2275,10 @@ const make = Effect.gen(function* () {
               });
             }
           }
-          return { items: [...items.values()], overflow: seen.size - items.size };
+          return {
+            items: [...items.values()],
+            overflow: Math.max(seen.size - items.size, commits === commitLimit ? 1 : 0),
+          };
         }),
       ),
     ),

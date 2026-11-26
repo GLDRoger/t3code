@@ -32,7 +32,7 @@ import {
   teamRules as kinTeamRules,
 } from "../../apps/server/src/kin/lead/instructions.ts";
 import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
-import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
+import { CODING_T3_TOOLS, LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
 import { alreadyOnIt, leftNote, passedFactBody } from "../../apps/server/src/kin/lead/Handoff.ts";
 import { ASK_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
 import {
@@ -289,6 +289,8 @@ export type KinSeatOptions = {
   readonly kinAgent?: boolean;
   readonly kinLead?: boolean;
   readonly kinSession?: boolean;
+  readonly kinEngineering?: boolean;
+  readonly kinGitHub?: boolean;
   readonly kinShared?: boolean;
   /** The lead's remit is social media, so Social's tools join (AgentSession). */
   readonly kinSocial?: boolean;
@@ -299,6 +301,7 @@ export type KinSeatOptions = {
 const names = (...toolkits: ReadonlyArray<{ readonly tools: object }>) =>
   new Set(toolkits.flatMap((toolkit) => Object.keys(toolkit.tools)));
 const LEAD_T3: ReadonlySet<string> = new Set(LEAD_T3_TOOLS);
+const CODING_T3: ReadonlySet<string> = new Set(CODING_T3_TOOLS);
 const CHAT = names(KinChatToolkit);
 const LEAD = names(
   KinLeadToolkit,
@@ -327,11 +330,15 @@ const ANY_KIN = names(
 );
 
 /** Whether a T3 tool, by bare name, is listed to this turn as far as Kin decides (AgentSession). */
-export const kinToolVisible = (name: string, options: KinSeatOptions) => {
+export const kinToolVisible = (name: string, options: KinSeatOptions, claude = false) => {
   if (options.kinBills === true) return BILLS_TOOLS.has(name);
   // A turn others read runs on a shared thread, which lists only what it may run.
   if (options.kinShared === true && !listedOnSharedThread(name)) return false;
   if (options.kinAgent !== true && options.kinLead !== true) return !ANY_KIN.has(name);
+  if (claude && options.kinLead === true) {
+    if (CODING_T3.has(name) && options.kinEngineering !== true) return false;
+    if (name.startsWith("kin_github_") && options.kinGitHub !== true) return false;
+  }
   // An owner-only turn's session: T3's lead tools join.
   return (
     (options.kinSession === true && LEAD_T3.has(name)) ||
@@ -358,6 +365,19 @@ export const kinSessionOf = ({ setup, prompt }: McpToolUseCase) => {
         !KIN_BILLS_PROMPT.test(prompt);
 };
 
+/** Existing GitHub fixtures model a connected login by supplying a trigger or a GitHub tool result. */
+export const kinGitHubOf = ({ setup }: McpToolUseCase) =>
+  setup.world?.githubTrigger != null ||
+  Object.keys(setup.mocks ?? {}).some((name) => name.startsWith("kin_github_")) ||
+  (setup.priorTurns ?? []).some((turn) =>
+    turn.toolCalls?.some(({ tool }) => tool.startsWith("kin_github_")),
+  );
+
+const ownerNative = new Set(["Bash", "Edit", "Read", "Write", "WebFetch", "WebSearch"]);
+
+const TOOL_SEARCH_DESCRIPTION =
+  'Fetches full schema definitions for deferred tools so they can be called.\n\nDeferred tools appear by name in a message from the system. Until fetched, only the name is known — there is no parameter schema, so the tool cannot be invoked. This tool takes a query, matches it against the deferred tool list, and returns the matched tools\' complete JSONSchema definitions inside a <functions> block. Once a tool\'s schema appears in that result, it is callable exactly like any tool defined at the top of the prompt.\n\nResult format: each matched tool appears as one <function>{"description": "...", "name": "...", "parameters": {...}}</function> line inside the <functions> block — the same encoding as the tool list at the top of this prompt.\n\nQuery forms:\n- "select:Read,Edit,Grep" — fetch these exact tools by name\n- "notebook jupyter" — keyword search, up to max_results best matches\n- "+slack send" — require "slack" in the name, rank by remaining terms';
+
 /**
  * A lead's request as Kin plans its session (`lead/turn/session.ts`): its instructions are the
  * whole system prompt and only Kin's core loads up front; every other tool waits behind ToolSearch. A turn
@@ -374,7 +394,6 @@ export const kinLeadBase = <M, E>(input: {
   readonly deferredHeader: string | undefined;
   readonly nativeDeferred: ReadonlyArray<string>;
   readonly nativeSchema: (name: string) => object;
-  readonly isT3Name: (name: string) => boolean;
 }) => {
   const { options, t3 } = input;
   const ownerSeat =
@@ -382,12 +401,18 @@ export const kinLeadBase = <M, E>(input: {
   const deferredKin = t3.filter(
     (tool) => !KIN_ALWAYS_LOADED.has(tool.name.slice(T3_PREFIX.length)),
   );
-  const toolSearch = input.templateTools.filter((tool) => tool.name.endsWith("ToolSearch"));
+  const toolSearch = input.templateTools
+    .filter((tool) => tool.name === "ToolSearch")
+    .map((tool) => ({ ...tool, description: TOOL_SEARCH_DESCRIPTION }));
   // As a real owner-seat Kin turn sends them: Claude Code's own deferred tools are only named.
   const deferredNative = ownerSeat
-    ? input.nativeDeferred.map((name): ApiTool => ({ name, ...input.nativeSchema(name) }))
+    ? input.nativeDeferred
+        .filter((name) => ownerNative.has(name))
+        .map((name): ApiTool => ({ name, ...input.nativeSchema(name) }))
     : [];
-  const deferred = [...deferredNative, ...deferredKin];
+  const deferred = [...deferredNative, ...deferredKin].toSorted((a, b) =>
+    a.name === b.name ? 0 : a.name < b.name ? -1 : 1,
+  );
   return {
     model: input.model,
     system: [
@@ -397,17 +422,17 @@ export const kinLeadBase = <M, E>(input: {
           : kinInstructions(ownerSeat ? "owner" : "confined", "claudeAgent"),
       ),
     ],
-    reminders:
+    kinClaude: true as const,
+    deferredAnnouncement:
       deferred.length > 0 && input.deferredHeader !== undefined
-        ? [text(`${input.deferredHeader}${deferred.map((tool) => tool.name).join("\n")}\n`)]
-        : [],
+        ? `${input.deferredHeader}${deferred.map((tool) => tool.name).join("\n")}`
+        : undefined,
+    reminders: [] as Block[],
     gitStatusAt: undefined,
     environment: input.environment,
     nativeTools: [
       ...(ownerSeat
-        ? input.templateTools.filter(
-            (tool) => !input.isT3Name(tool.name) && !tool.name.endsWith("ToolSearch"),
-          )
+        ? input.templateTools.filter((tool) => ownerNative.has(tool.name))
         : // A confined Claude session keeps the provider's own web search (`claude.ts`), but
           // for bills.
           options.kinBills === true
@@ -550,11 +575,14 @@ export const kinDated = <
     ...base,
     environment: { ...base.environment, date: day },
     // A lead's request carries no captured reminders; Claude Code sends the date after its list.
-    reminders: hasLine
-      ? base.reminders.map(dated)
-      : base.codex === undefined
-        ? [...base.reminders, text(`${line}.`)]
-        : base.reminders,
+    reminders:
+      "kinClaude" in base
+        ? base.reminders
+        : hasLine
+          ? base.reminders.map(dated)
+          : base.codex === undefined
+            ? [...base.reminders, text(`${line}.`)]
+            : base.reminders,
   };
 };
 

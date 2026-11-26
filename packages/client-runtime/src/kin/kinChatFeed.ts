@@ -576,25 +576,40 @@ function deferredFooter(row: MessageRow) {
   return held;
 }
 
+// Mirrors `replyGroupKey` in apps/server/src/kin/chat/KinChatRepository.ts (used by
+// apps/server/src/kin/chat/ownMessages.ts). `messageForViewer` in
+// apps/server/src/kin/chat/messageView.ts strips `clientMessageId` for human viewers, so
+// consecutive same-turn text bubbles without keys also group by `sourceWakeupId`.
 const CONTINUATION_SUFFIX = /~b(?:[2-9]|[1-9][0-9]+)$/;
-const REPLY_KEY_PREFIX = /^(?:reply:|kin-send:)/;
+const REPLY_KEY_PREFIX = /^(?:send:)?(?:reply:|kin-send:)/;
 
 function continuesReply(previous: KinMessage, next: KinMessage) {
+  if (
+    next.seq !== previous.seq + 1 ||
+    previous.author._tag !== "agent" ||
+    previous.status !== "posted" ||
+    previous.kind !== "text" ||
+    previous.widgetId !== null ||
+    next.widgetId !== null ||
+    previous.form === "brief" ||
+    next.form === "brief" ||
+    previous.turnChanges !== undefined ||
+    previous.body.trim() === "" ||
+    next.body.trim() === "" ||
+    previous.floorRunId !== next.floorRunId ||
+    previous.discussionId !== next.discussionId ||
+    !sameCardTurn(previous, next)
+  )
+    return false;
   const key = previous.clientMessageId;
   const continuation = next.clientMessageId;
+  if (key === undefined && continuation === undefined) return true;
   return (
     key !== undefined &&
     REPLY_KEY_PREFIX.test(key) &&
     continuation !== undefined &&
     CONTINUATION_SUFFIX.test(continuation) &&
-    continuation.replace(CONTINUATION_SUFFIX, "") === key.replace(CONTINUATION_SUFFIX, "") &&
-    next.seq === previous.seq + 1 &&
-    previous.author._tag === "agent" &&
-    previous.status === "posted" &&
-    previous.kind === "text" &&
-    previous.body.trim() !== "" &&
-    next.body.trim() !== "" &&
-    sameCardTurn(previous, next)
+    continuation.replace(CONTINUATION_SUFFIX, "") === key.replace(CONTINUATION_SUFFIX, "")
   );
 }
 
@@ -655,17 +670,15 @@ function placeReplyFooters(rows: ReadonlyArray<KinFeedRow>) {
       }
       const anchor = anchors.get(index);
       if (group !== undefined) {
-        const buttons = new Map<string, KinReplyButton>();
-        for (const row of group) {
-          out.push(deferredFooter(row).body);
-          for (const button of kinReplyButtons(row.message)) {
-            if (!buttons.has(button.id)) buttons.set(button.id, button);
-          }
-        }
-        if (buttons.size > 0 || (last.message.turnChanges?.count ?? 0) > 0) {
+        for (const row of group) out.push(deferredFooter(row).body);
+        const buttons = kinReplyButtons({
+          ...last.message,
+          links: group.flatMap((row) => row.message.links ?? []),
+        });
+        if (buttons.length > 0 || (last.message.turnChanges?.count ?? 0) > 0) {
           const footer: ReplyFooterRow = {
             ...deferredFooter(last).footer,
-            buttons: [...buttons.values()],
+            buttons,
           };
           if (anchor === undefined) out.push(footer);
           else addFooter(anchor, footer);

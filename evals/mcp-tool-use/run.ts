@@ -5,6 +5,7 @@
  * harness capture supplies the prompt and native tools; a cheap model plays the shell. See
  * README.md for how to run it and add cases.
  */
+import { compileClaudeModelSelection } from "../../apps/server/src/claudeModelOptions.ts";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeUtil from "node:util";
@@ -83,6 +84,7 @@ import {
   kinDelivery,
   kinJudgedCall,
   kinLeadBase,
+  kinGitHubOf,
   kinLeadInstructions,
   kinLoadedBefore,
   type KinSeatOptions,
@@ -695,10 +697,11 @@ const visibleT3Tools = (
     readonly agentFeedback?: Contracts.AgentFeedbackMode;
     readonly arm?: Arm;
   } & KinSeatOptions,
+  claude = false,
 ) =>
   t3Tools.filter(
     (tool) =>
-      kinToolVisible(tool.name.slice(T3_PREFIX.length), options) &&
+      kinToolVisible(tool.name.slice(T3_PREFIX.length), options, claude) &&
       !(options.arm === "raw" && forgeToolNames.has(tool.name)) &&
       (options.links === true || !hiddenWhileLinksOff.has(tool.name)) &&
       ((options.agentFeedback ?? "off") !== "off" || !hiddenWhileFeedbackOff.has(tool.name)) &&
@@ -836,7 +839,7 @@ export const buildBase = (
     readonly arm?: Arm;
   } & KinSeatOptions,
 ) => {
-  const t3 = visibleT3Tools(options);
+  const t3 = visibleT3Tools(options, true);
   const firstAssistant = template.messages.findIndex((message) => message.role === "assistant");
   const head = template.messages.slice(0, firstAssistant === -1 ? undefined : firstAssistant);
   const systemTexts = [
@@ -901,12 +904,13 @@ export const buildBase = (
       model,
       options,
       environment,
-      templateTools: template.tools,
+      templateTools: template.tools
+        .filter((tool) => !isT3Name(tool.name))
+        .map((tool) => ({ ...tool, name: normalizeToolName(tool.name) })),
       t3,
       deferredHeader: DEFERRED_LIST.exec(joined)?.[1],
       nativeDeferred,
       nativeSchema,
-      isT3Name,
     });
   return {
     model,
@@ -929,6 +933,8 @@ type Base = ReturnType<typeof buildBase> & {
   readonly codex?: typeof ResponsesRequest.Type;
   /** What T3's SubagentStart hooks give a native subagent. */
   readonly subagentContext?: string;
+  readonly kinClaude?: true;
+  readonly deferredAnnouncement?: string;
 };
 
 /** Keep the captured harness prompt and tools; replace app-owned context and the real user. */
@@ -1426,11 +1432,25 @@ export const buildMessages = (sample: Sample, layout: KinLayout = "legacy") => {
     replayCalls(turn.toolCalls);
     if (turn.text) push(turn.role, text(fillKinRules(turn.text)));
   }
-  const pushPrompt = (prompt: string, files?: KinTurnFiles) =>
+  let firstWake = true;
+  const pushPrompt = (prompt: string, files?: KinTurnFiles, context?: string) => {
     push("user", ...kinTurnBlocks(files, prompt, base.codex !== undefined));
+    if (firstWake && base.kinClaude) {
+      const { cwd, platform, date } = base.environment;
+      const environment = [
+        `# Environment\nYou have been invoked in the following environment: \n - Primary working directory: ${cwd}\n - Platform: ${platform}`,
+        base.deferredAnnouncement,
+        "<total_tokens>15000000 tokens left</total_tokens>",
+        context ?? (date === undefined ? undefined : `Today's date is ${date}.`),
+      ]
+        .filter(Boolean)
+        .join("\n\n");
+      push("system", text(environment));
+    } else if (context) push("system", text(context));
+    firstWake = false;
+  };
   for (const turn of session?.earlier ?? []) {
-    pushPrompt(turn.message);
-    if (turn.context) push("system", text(turn.context));
+    pushPrompt(turn.message, undefined, turn.context);
     replayCalls(turn.toolCalls);
     if (turn.reply) push("assistant", text(turn.reply));
   }
@@ -1448,8 +1468,12 @@ export const buildMessages = (sample: Sample, layout: KinLayout = "legacy") => {
       : inline;
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
   if (testCase.prompt !== "")
-    pushPrompt(role === "delegated-child" ? childPrompt() : prompt, sample.kinFiles);
-  if (session?.last.context) push("system", text(session.last.context));
+    pushPrompt(
+      role === "delegated-child" ? childPrompt() : prompt,
+      sample.kinFiles,
+      session?.last.context,
+    );
+  else if (session?.last.context) push("system", text(session.last.context));
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.
   if (native && base.subagentContext) {
     push("user", reminder(`SubagentStart hook additional context: ${base.subagentContext}`));
@@ -2076,13 +2100,46 @@ const capabilities = ({ base }: Sample, value: unknown) =>
       }
     : value;
 
-/** ToolSearch: `select:a,b` loads those tools. Other queries load tools whose name has a word. */
+const keywordScore = (tool: ApiTool, words: ReadonlyArray<string>) => {
+  const fullName = tool.name.toLowerCase();
+  const bare = normalizeToolName(tool.name).toLowerCase();
+  const parts = bare.split("_");
+  const description = typeof tool.description === "string" ? tool.description.toLowerCase() : "";
+  const hint = isRecord(tool._meta) ? tool._meta["anthropic/searchHint"] : undefined;
+  let score = 0;
+  for (const word of words) {
+    if (parts.includes(word)) score += isT3Name(tool.name) ? 12 : 10;
+    else if (parts.some((part) => part.includes(word))) score += isT3Name(tool.name) ? 6 : 5;
+    if (score === 0 && fullName.includes(word)) score += 3;
+    if (typeof hint === "string" && hint.toLowerCase().includes(word)) score += 4;
+    const pattern = new RegExp(`\\b${word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
+    if (pattern.test(description)) score += 2;
+  }
+  return score;
+};
+
+/** ToolSearch: `select:a,b` loads exact names; Kin's SDK also ranks keyword matches. */
 const searchTools = (base: Base, query: string, max: number) => {
   if (query.startsWith("select:")) {
     const wanted = query.slice("select:".length).split(",");
     return base.deferred.filter((tool) =>
       wanted.some((name) => [tool.name, normalizeToolName(tool.name)].includes(name.trim())),
     );
+  }
+  if (base.kinClaude) {
+    const normalized = query.trim().toLowerCase();
+    const exact = base.deferred.find((tool) => tool.name.toLowerCase() === normalized);
+    if (exact) return [exact];
+    const terms = normalized.split(/\s+/).filter(Boolean);
+    const required = terms.filter((word) => word.startsWith("+")).map((word) => word.slice(1));
+    const words = terms.filter((word) => !word.startsWith("+"));
+    return base.deferred
+      .filter((tool) => required.every((word) => tool.name.toLowerCase().includes(word)))
+      .map((tool) => ({ tool, score: keywordScore(tool, words) }))
+      .filter(({ score }) => score > 0 || required.length > 0)
+      .toSorted((a, b) => b.score - a.score)
+      .slice(0, max)
+      .map(({ tool }) => tool);
   }
   const words = query
     .toLowerCase()
@@ -2439,7 +2496,11 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
   }
   const failed = (error: string): Block => ({ ...toolResult(call.id, error), is_error: true });
   if (!base.codex && !hasTool(tools, call.name)) {
-    const error = `InputValidationError: ${call.name} is deferred. Load it with ToolSearch first.`;
+    const error = base.kinClaude
+      ? hasTool(base.deferred, call.name)
+        ? `This tool's schema was not sent to the API. To use it, call ToolSearch with query "select:${call.name}", then retry.`
+        : `No such tool available: ${call.name}`
+      : `InputValidationError: ${call.name} is deferred. Load it with ToolSearch first.`;
     return failed(`<tool_use_error>${error}</tool_use_error>`);
   }
   const kin = kinCallRead(name, input);
@@ -2926,7 +2987,29 @@ export const failedEarly = (expect: McpToolUseCase["expect"], run: SampleRun, pa
     pasted,
   ).some((check) => !check.pass && SETTLED.test(check.check));
 
-const requestBody = (
+export const requestEffort = (base: Base, explicit?: string) =>
+  explicit ??
+  base.codex?.reasoning.effort ??
+  (base.kinClaude
+    ? compileClaudeModelSelection({
+        instanceId: ProviderInstanceId.make(CLAUDE_PROVIDER),
+        model: base.model,
+      }).effort
+    : undefined) ??
+  "high";
+
+// Claude Code clips MCP descriptions for the API, not for its local search index.
+const claudeToolDefinitions = (tools: ReadonlyArray<ApiTool>) =>
+  tools.map((tool) => {
+    const { name, description } = tool;
+    return (isT3Name(name) || name.startsWith(KIN_KEY_PREFIX)) &&
+      typeof description === "string" &&
+      description.length > 4096
+      ? { ...tool, description: `${description.slice(0, 4096)}… [truncated]` }
+      : tool;
+  });
+
+export const requestBody = (
   { base, tools }: Sample,
   effort: string,
   messages: ReadonlyArray<ApiMessage>,
@@ -2945,7 +3028,7 @@ const requestBody = (
       ? { ...block, cache_control: session ? KIN_SESSION_CACHE : { type: "ephemeral" } }
       : block,
   ),
-  tools,
+  tools: claudeToolDefinitions(tools),
   messages: session ? kinSessionWireMessages(messages) : messages,
 });
 
@@ -3238,7 +3321,7 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
           config.apiKey,
           requestBody(sample, config.effort, messages, config.anthropic !== undefined, session),
           config.anthropic,
-          session ? KIN_SESSION_BETAS : undefined,
+          session || base.kinClaude ? KIN_SESSION_BETAS : undefined,
         );
     addUsage(usage, response.usage);
     if ("raw" in response) {
@@ -3773,6 +3856,8 @@ const main = Effect.gen(function* () {
     kinShared = false,
     kinSocial = false,
     kinBills = false,
+    kinGitHub = false,
+    kinEngineering = false,
   ): Effect.Effect<Base, Schema.SchemaError> =>
     replay
       ? decodeCodexCapture(template).pipe(
@@ -3790,6 +3875,8 @@ const main = Effect.gen(function* () {
               kinShared,
               kinSocial,
               kinBills,
+              kinGitHub,
+              kinEngineering,
               deviceAccess,
               browserAccess,
               agentFeedback,
@@ -3812,6 +3899,8 @@ const main = Effect.gen(function* () {
               kinShared,
               kinSocial,
               kinBills,
+              kinGitHub,
+              kinEngineering,
               deviceAccess,
               browserAccess,
               agentFeedback,
@@ -3828,11 +3917,11 @@ const main = Effect.gen(function* () {
   // A Kin turn others read carries Kin's shared-turn line, as the server's prompt does.
   const baseKey = (testCase: McpToolUseCase) => {
     const { setup, prompt } = testCase;
-    return `${replay && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.world?.browserAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.forge !== false}:${setup.world?.agentFeedback ?? "off"}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${kinSessionOf(testCase)}:${prompt.includes("{{SHARED_TURN}}")}:${setup.world?.kinSocial === true}:${kinBillsOf(testCase)}`;
+    return `${replay && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.world?.browserAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.forge !== false}:${setup.world?.agentFeedback ?? "off"}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${kinSessionOf(testCase)}:${prompt.includes("{{SHARED_TURN}}")}:${setup.world?.kinSocial === true}:${kinBillsOf(testCase)}:${kinGitHubOf(testCase)}:${setup.world?.kinEngineering === true}`;
   };
   const base = yield* buildFor("top", true, true, false, true);
   const bases = new Map<string, Base>([
-    ["top:true:true:false:true:off:false:false:false:false:false:false", base],
+    ["top:true:true:false:true:off:false:false:false:false:false:false:false:false", base],
   ]);
   for (const testCase of selected) {
     const key = baseKey(testCase);
@@ -3850,8 +3939,12 @@ const main = Effect.gen(function* () {
       kinShared,
       kinSocial,
       kinBills,
+      kinGitHub,
+      kinEngineering,
     ] = key.split(":") as [
       McpToolUseCase["setup"]["role"],
+      string,
+      string,
       string,
       string,
       string,
@@ -3879,12 +3972,16 @@ const main = Effect.gen(function* () {
         kinShared === "true",
         kinSocial === "true",
         kinBills === "true",
+        kinGitHub === "true",
+        kinEngineering === "true",
       ),
     );
   }
   const baseFor = (testCase: McpToolUseCase) =>
     kinDated(testCase, bases.get(baseKey(testCase)) ?? base);
-  const effort = flags.effort ?? base.codex?.reasoning.effort ?? "high";
+  const effortFor = (testCase: McpToolUseCase) => requestEffort(baseFor(testCase), flags.effort);
+  const efforts = new Set(selected.map(effortFor));
+  const effort = efforts.size === 1 ? [...efforts][0]! : "mixed";
   // The first request of a sample, as the dry run prints it.
   const firstRequest = Effect.fnUntraced(function* (testCase: McpToolUseCase) {
     const sample = makeSample(testCase, baseFor(testCase));
@@ -3893,8 +3990,15 @@ const main = Effect.gen(function* () {
     const messages = buildMessages(sample, flags["kin-layout"]);
     const body = sample.base.codex
       ? codexRequest(sample.base, codexMessages(messages))
-      : requestBody(sample, effort, messages, false, activeLayout(testCase) === "session");
-    return { sample, messages, encoded: yield* encodeJson(body) };
+      : requestBody(
+          sample,
+          effortFor(testCase),
+          messages,
+          false,
+          activeLayout(testCase) === "session",
+        );
+    const prefixTools = "tools" in body ? body.tools : sample.tools;
+    return { sample, messages, prefixTools, encoded: yield* encodeJson(body) };
   });
   if (flags["dry-run"] || flags.estimate) {
     // One JSON line per case. Without --case this also checks that every case builds, and fails on
@@ -3903,7 +4007,7 @@ const main = Effect.gen(function* () {
     const sizes: Array<{ prefixChars: number; messageChars: number }> = [];
     const dryCases = flags.estimate && flags["kin-layout"] === "session" ? carryCases : selected;
     for (const testCase of dryCases) {
-      const { sample, messages, encoded } = yield* firstRequest(testCase);
+      const { sample, messages, prefixTools, encoded } = yield* firstRequest(testCase);
       const tools = new Set(
         [...sample.tools, ...sample.base.deferred].map((tool) => normalizeToolName(tool.name)),
       );
@@ -3920,7 +4024,7 @@ const main = Effect.gen(function* () {
       ];
       problems.push(...found.map((problem) => `${testCase.id}: ${problem}`));
       sizes.push({
-        prefixChars: (yield* encodeJson([sample.base.system, sample.tools])).length,
+        prefixChars: (yield* encodeJson([sample.base.system, prefixTools])).length,
         messageChars: (yield* encodeJson(messages)).length,
       });
       if (!flags.estimate) process.stdout.write(`${encoded}\n`);
@@ -4071,7 +4175,12 @@ const main = Effect.gen(function* () {
     ]
       .flatMap((value) => [value, value.replace(/^Bearer /i, "")])
       .filter(Boolean);
-    return runSample(testCase, config, baseFor(testCase), usage).pipe(
+    return runSample(
+      testCase,
+      { ...config, effort: effortFor(testCase) },
+      baseFor(testCase),
+      usage,
+    ).pipe(
       Effect.timed,
       // Every harness times its turn, model and tool answers together, for latency side by side.
       Effect.map(([elapsed, sample]) => ({
