@@ -789,6 +789,15 @@ it.effect("an overdue invoice or a long silence with the client puts a project a
     assert.include(owed, { health: "at_risk" });
     assert.deepInclude(owed.healthBecause, { overdueInvoices: 1 });
     assert.isUndefined(owed.healthBecause.noContact);
+    // The clients list says what an owing client owes: issued invoices' balances, never a draft.
+    yield* LeadWork.create(scope, {
+      sourceEventId: "ask-event",
+      records: [{ ...invoice("Invented VIOM draft"), state: "open" as const }],
+    });
+    const directory = yield* Clients.parties([owner], { orgId });
+    assert.deepStrictEqual(directory.parties.find((row) => row.key === client.key)?.owed, [
+      { currency: "INR", minor: 10_000_000 },
+    ]);
     // Every surface reads the same rule: the list, the Work summary and the lead's own read.
     const listed = yield* Clients.projects([owner], { orgId });
     assert.strictEqual(listed.projects.find((row) => row.key === build.key)?.health, "at_risk");
@@ -3067,7 +3076,12 @@ it.effect(
       };
       assert.sameDeepMembers(
         [...invoices.totals!.total],
-        sum(invoices.records.filter((row) => row.state !== "dropped").map((row) => row.amount)),
+        // Billed: issued invoices, never a draft or a dropped one.
+        sum(
+          invoices.records
+            .filter((row) => !["open", "dropped"].includes(row.state))
+            .map((row) => row.amount),
+        ),
       );
       assert.sameDeepMembers([...invoices.totals!.owed!], sum(owing.map((row) => row.balance)));
       const paid = yield* OwnerWork.list([owner], {

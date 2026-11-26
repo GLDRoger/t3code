@@ -163,6 +163,14 @@ describe("kinClientRow", () => {
       "Nothing open · No logged contact yet",
       "No next step",
     ],
+    [
+      "a client that owes money and nothing else",
+      { ...row, lastContactAt: null, owed: [{ currency: "INR", minor: 4_720_000 }] },
+      names,
+      null,
+      "₹47,200 owed · No logged contact yet",
+      "No next step",
+    ],
     // Without counts a row can't know there is no next step; a vendor has none to take.
     ["a teammate's name-only row", row, names, null, "", null],
     [

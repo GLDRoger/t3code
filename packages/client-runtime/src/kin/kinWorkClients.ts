@@ -34,7 +34,7 @@ import type {
 } from "@t3tools/contracts";
 
 import { kinLinkToOpen } from "./kinChatFeed.ts";
-import { kinMoneyText, kinRecordName } from "./kinLists.ts";
+import { kinMoneyText, kinRecordName, kinTotalsText } from "./kinLists.ts";
 import { kinContractLine, kinPromiseOf, type KinPromiseView } from "./kinPromises.ts";
 import { formatKinTime, type KinAvatarView } from "./kinScreenState.ts";
 import { KIN_SCOPE_ALL, kinNothingShown, type KinViewerScope } from "./kinViewerScope.ts";
@@ -691,11 +691,12 @@ export function kinClientsLookedAfterChoices(
   }));
 }
 
-type Owed = Pick<KinPartyRow, "weOwe" | "theyOwe" | "late" | "overdue">;
+type Owed = Pick<KinPartyRow, "weOwe" | "theyOwe" | "late" | "overdue" | "owed">;
 
-/** "2 to do (1 late) · Waiting on 1 (1 overdue)", or "Nothing open". */
+/** "₹47,200 owed · 2 to do (1 late) · Waiting on 1 (1 overdue)", or "Nothing open". */
 function kinOwedLine(owed: Owed): string {
   const parts = [
+    owed.owed === undefined || owed.owed.length === 0 ? null : `${kinTotalsText(owed.owed)} owed`,
     owed.weOwe > 0 ? `${owed.weOwe} to do${owed.late > 0 ? ` (${owed.late} late)` : ""}` : null,
     owed.theyOwe > 0
       ? `Waiting on ${owed.theyOwe}${owed.overdue > 0 ? ` (${owed.overdue} overdue)` : ""}`
