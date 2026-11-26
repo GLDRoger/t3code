@@ -725,6 +725,7 @@ describe("pulse check-ins", () => {
       yield* companyClock("UTC", '{"from":"22:00","to":"08:00"}');
       const posted: Array<{ messageId: string; body: string }> = [];
       const chat = {
+        dismissArrival: () => Effect.die("No arrival note"),
         notice: (input: { readonly messageId: string; readonly body: string }) =>
           Effect.sync(() => {
             if (!posted.some((one) => one.messageId === input.messageId)) posted.push(input);

@@ -43,6 +43,7 @@ export const DreamJson = Schema.Struct({
 export type DreamJson = typeof DreamJson.Type;
 const decodeDream = Schema.decodeUnknownEffect(Schema.fromJsonString(DreamJson));
 const EDIT_QUOTE = "an item from an edit quotes only what the person typed in it";
+export const DREAM_LEFT_OUT_PREFIX = "Left out ";
 const rank = (trust: MemoryTrust) => ["external", "agent", "member", "owner"].indexOf(trust);
 /**
  * The code checks a dream must pass before anything is committed. `base` is the checkout as the
@@ -283,6 +284,6 @@ export const checkDream = Effect.fn("DreamRunner.check")(function* (input: {
     report === undefined
       ? undefined
       : { ...report, changes: report.changes.filter((change) => !dropped.has(change.path)) };
-  const leftOut = [...dropped].map((path) => `Left out ${path}: ${EDIT_QUOTE}`);
+  const leftOut = [...dropped].map((path) => `${DREAM_LEFT_OUT_PREFIX}${path}: ${EDIT_QUOTE}`);
   return { failures, changes, committed, dream: reported, leftOut };
 });
