@@ -16,7 +16,6 @@ import {
 import {
   type ClientSettingsPatch,
   type ClientSettings,
-  DEFAULT_CLIENT_SETTINGS,
   type EnvironmentIdentificationMode,
   type UnifiedSettings,
 } from "@t3tools/contracts/settings";

@@ -56,7 +56,11 @@ const permissionListeners = new Set<() => void>();
 let askedNotificationPermissionInSession = false;
 
 function readNotificationPermission(): KinAlertPermission {
-  if (typeof window === "undefined" || typeof Notification === "undefined" || !window.isSecureContext)
+  if (
+    typeof window === "undefined" ||
+    typeof Notification === "undefined" ||
+    !window.isSecureContext
+  )
     return "insecure";
   return Notification.permission;
 }

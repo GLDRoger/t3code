@@ -107,9 +107,11 @@ describe("kinDefaultNotificationMode", () => {
 
 describe("kinAlertSettingsNotice", () => {
   it("reports blocked and ungranted alert permission only when banner alerts are on", () => {
-    expect(
-      kinAlertSettingsNotice({ mode: "off", permission: "denied", desktop: false }),
-    ).toEqual({ status: null, problem: null, canAsk: false });
+    expect(kinAlertSettingsNotice({ mode: "off", permission: "denied", desktop: false })).toEqual({
+      status: null,
+      problem: null,
+      canAsk: false,
+    });
     expect(
       kinAlertSettingsNotice({ mode: "sound", permission: "default", desktop: false }),
     ).toEqual({ status: null, problem: null, canAsk: false });
