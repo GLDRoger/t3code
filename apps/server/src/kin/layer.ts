@@ -50,6 +50,7 @@ import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as KinMcp from "./mcp/layer.ts";
+import * as SessionCarry from "./lead/sessionCarry.ts";
 import * as KinTasksKeyMcp from "./tasksKey/mcp.ts";
 import * as Render from "./gendocs/render.ts";
 import * as Toolchain from "./gendocs/toolchain.ts";
@@ -314,7 +315,7 @@ const middleware = HttpRouter.middleware<{ provides: KinServer }>()(
 
 /** Tests pass `KeySeal.layerTest()` so they can seal the key rows they write. */
 export const layerWithSeal = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
-  middleware.pipe(Layer.provideMerge(runtime(seal)));
+  middleware.pipe(Layer.provideMerge(runtime(seal)), Layer.provideMerge(SessionCarry.layer));
 
 export const layer = layerWithSeal(KeySeal.layer);
 

@@ -32,6 +32,10 @@ if (values.run === undefined || values.cases === undefined) {
 const manifest = Schema.decodeSync(Schema.fromJsonString(RunManifest))(
   NodeFS.readFileSync(NodePath.join(values.run, "run.json"), "utf8"),
 );
+if (manifest.kinLayout === "session") {
+  console.error("Changed-case selection supports only the legacy Kin layout.");
+  process.exit(2);
+}
 const cases = readCases(values.cases).filter((one) => manifest.cases[one.id] !== undefined);
 const surface = await Effect.runPromise(
   surfaceOf({
