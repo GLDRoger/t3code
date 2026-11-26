@@ -632,7 +632,7 @@ export const pageSeen = (turn: Pick<Turn, "orgId" | "wakeupId">, address: string
  * and answering in the chat the turn answers. Nothing here carries text to another person or
  * chat, writes what someone else sees, starts work, or posts to GitHub but the asked review.
  */
-export const REPO_READ_TOOLS: ReadonlySet<string> = new Set([
+const REPO_READ_TOOLS: ReadonlySet<string> = new Set([
   // Only to the chat the turn answers (`SharedTools` inTurnChat).
   "kin_chat_post",
   // An emoji on a message there; no text.
