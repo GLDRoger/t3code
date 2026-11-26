@@ -28,6 +28,7 @@ import { SecretProviderId, SecretProviderSlug } from "./secretReference.ts";
 import { containsSecretReference, SettingsSecretValue } from "./settingsSecretValue.ts";
 import { EnvironmentMachineKind, ThreadEnvMode, WorktreeSubmodules } from "./environment.ts";
 import { KeybindingShortcut } from "./keybindings.ts";
+import { KinSessionCompactAtTokens } from "./kinSessionSettings.ts";
 import {
   CustomModelSetting,
   DEFAULT_TEXT_GENERATION_MODEL,
@@ -1406,6 +1407,11 @@ export const ServerSettings = Schema.Struct({
   fastWorktreeCheckout: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Kin, experimental: agents may also run on Codex models, confined to their tools in every chat. */
   kinNonClaudeAgents: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  kinSessionCarry: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  kinSessionUpkeep: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  kinSessionCompactAtTokens: KinSessionCompactAtTokens.pipe(
+    Schema.withDecodingDefault(Effect.succeed(500_000)),
+  ),
   /** Server-maintained history keeps old worktrees eligible for cleanup and review diffs. */
   previousWorktreesDirectories: Schema.Array(TrimmedString).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
@@ -1895,6 +1901,9 @@ export const ServerSettingsPatch = Schema.Struct({
   worktreesDirectory: Schema.optionalKey(TrimmedString),
   fastWorktreeCheckout: Schema.optionalKey(Schema.Boolean),
   kinNonClaudeAgents: Schema.optionalKey(Schema.Boolean),
+  kinSessionCarry: Schema.optionalKey(Schema.Boolean),
+  kinSessionUpkeep: Schema.optionalKey(Schema.Boolean),
+  kinSessionCompactAtTokens: Schema.optionalKey(KinSessionCompactAtTokens),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
   agentFeedback: Schema.optionalKey(Schema.Struct({ mode: AgentFeedbackMode })),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),

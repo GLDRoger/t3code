@@ -1,4 +1,4 @@
-import type { HookCallbackMatcher } from "@anthropic-ai/claude-agent-sdk";
+import type { HookCallback, HookCallbackMatcher } from "@anthropic-ai/claude-agent-sdk";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -11,6 +11,7 @@ import {
   withConfinementHook,
 } from "../../../claudeConfinement.ts";
 import { type KinSessionPlan, KinSessions } from "../session.ts";
+import * as SessionContext from "../sessionContext.ts";
 import type { KinProvider } from "./provider.ts";
 
 const DRIVER = "claudeAgent";
@@ -70,6 +71,44 @@ const kinTools = (options: Options, plan: KinSessionPlan) =>
     ? { search: "false" as const, mcpServers: undefined }
     : { search: "true" as const, mcpServers: options.mcpServers };
 
+const ownerContextHooks = (
+  hooks: NonNullable<Options["hooks"]>,
+  prepared: () => ReturnType<SessionContext.KinSessionContext["Service"]["forThread"]>,
+  logCompaction: (summaryLength: number) => Promise<void>,
+): NonNullable<Options["hooks"]> => {
+  const append = (
+    event: "SessionStart" | "UserPromptSubmit" | "PreCompact" | "PostCompact",
+    hook: HookCallback,
+  ): HookCallbackMatcher[] => [...(hooks[event] ?? []), { onFailure: "continue", hooks: [hook] }];
+  return {
+    ...hooks,
+    SessionStart: append("SessionStart", async (input) => {
+      if (
+        input.hook_event_name !== "SessionStart" ||
+        (input.source !== "startup" && input.source !== "compact")
+      )
+        return {};
+      const standing = prepared()?.standing;
+      return standing
+        ? { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: standing } }
+        : {};
+    }),
+    UserPromptSubmit: append("UserPromptSubmit", async (input) => {
+      if (input.hook_event_name !== "UserPromptSubmit") return {};
+      const delta = prepared()?.delta;
+      return delta
+        ? { hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: delta } }
+        : {};
+    }),
+    PreCompact: append("PreCompact", async () => ({})),
+    PostCompact: append("PostCompact", async (input) => {
+      if (input.hook_event_name === "PostCompact")
+        await logCompaction(input.compact_summary.length);
+      return {};
+    }),
+  };
+};
+
 /**
  * One Kin session on Claude: no settings file (memory might carry a `CLAUDE.md`, `.mcp.json` or
  * hooks; the user's settings carry plugins and env), only the owner's model credentials, Kin's
@@ -79,9 +118,11 @@ const apply = (
   options: Options,
   plan: KinSessionPlan,
   session: {
-    readonly hook: HookCallbackMatcher;
+    readonly hook: HookCallbackMatcher | undefined;
     readonly auth: AuthSettings;
     readonly environment: NodeJS.ProcessEnv;
+    readonly context: SessionContext.KinSessionContext["Service"];
+    readonly logCompaction: (summaryLength: number) => Promise<void>;
   },
 ): Options => {
   // Narrow, never widen: a dream's `[]` stays `[]` whichever wrapper runs first.
@@ -90,6 +131,8 @@ const apply = (
   const environment = sessionEnvironment(env ?? session.environment);
   const loading = kinTools(options, plan);
   const confined = plan.seat === "confined";
+  const hooks =
+    session.hook === undefined ? undefined : withConfinementHook(options.hooks, session.hook);
   return {
     ...options,
     settingSources: [],
@@ -115,7 +158,18 @@ const apply = (
     ...(loading.mcpServers === undefined ? {} : { mcpServers: loading.mcpServers }),
     // The user's own MCP servers and plugins could hand a lead a shell again.
     strictMcpConfig: true,
-    hooks: withConfinementHook(options.hooks, session.hook),
+    ...(hooks === undefined
+      ? {}
+      : {
+          hooks:
+            plan.seat === "owner"
+              ? ownerContextHooks(
+                  hooks,
+                  () => session.context.forThread(plan.thread),
+                  session.logCompaction,
+                )
+              : hooks,
+        }),
     // A settings file path can't take keys.
     ...(typeof settings === "string"
       ? {}
@@ -127,6 +181,7 @@ const apply = (
             // Its folder is named after the host's account: a lead never sees it (G07).
             autoMemoryEnabled: false,
             autoDreamEnabled: false,
+            ...(plan.seat === "owner" ? { idleCompaction: false } : {}),
             env: { ...session.auth.env, ...settings?.env, ENABLE_TOOL_SEARCH: loading.search },
           },
         }),
@@ -140,6 +195,9 @@ const apply = (
           }),
       ENABLE_TOOL_SEARCH: loading.search,
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+      ...(plan.seat === "owner" && environment.CLAUDE_CODE_PROMPT_CACHE_TTL === undefined
+        ? { CLAUDE_CODE_PROMPT_CACHE_TTL: "1h" }
+        : {}),
       // Every wake-up is a fresh session: its first request otherwise may go out before Kin's
       // tools are listed, and a different tool block misses the prompt cache.
       ...(plan.seat === "delegated" ? {} : { MCP_CONNECTION_NONBLOCKING: "0" }),
@@ -203,6 +261,8 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
       const sessions = yield* KinSessions;
       if (!sessions.enabled) return runner;
       const confiner = yield* makeConfiner();
+      const context = yield* SessionContext.KinSessionContext;
+      const runHook = Effect.runPromiseWith(yield* Effect.context<never>());
       return ClaudeAdapterV2.ClaudeAgentSdkQueryRunner.of({
         ...runner,
         open: Effect.fn("KinClaude.open")(function* (input) {
@@ -220,15 +280,27 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
           return yield* runner.open({
             ...input,
             options: apply(input.options, plan, {
-              hook: decisionHook(plan),
+              // The refresh already denies all tools; the normal policy hook could mark a wake-up.
+              hook: input.refresh ? undefined : decisionHook(plan),
               auth: yield* confiner.ownerAuth(input.options.env),
               environment,
+              context,
+              logCompaction: (summaryLength) =>
+                runHook(
+                  Effect.logDebug("kin.claude.compact_summary", {
+                    threadId: plan.thread,
+                    summaryLength,
+                  }),
+                ),
             }),
           });
         }),
       });
     }),
-  ).pipe(Layer.provide(Layer.merge(base, KinSessions.layer)));
+  ).pipe(
+    Layer.provide(Layer.merge(base, KinSessions.layer)),
+    Layer.provideMerge(SessionContext.KinSessionContext.layer),
+  );
 
 export const claude = {
   driver: DRIVER,
