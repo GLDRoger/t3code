@@ -5,6 +5,7 @@ import {
   KinEventId,
   KinMessageId,
   KinOrgId,
+  KinWakeupId,
   KinCardAsker,
   KinReminderCard,
   KinScheduledTaskCard,
@@ -28,6 +29,7 @@ import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinHostCare } from "../host/KinHostCare.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
+import { sendClientMessageId } from "../reply/turnVoice.ts";
 import { directChatWith } from "../triggers/deferralOrigin.ts";
 
 export type DeliveryKind = "reminder" | "routine" | "scheduled_task";
@@ -510,7 +512,9 @@ const make = Effect.gen(function* () {
                 : sql`AND kind = 'text' AND widget_id IS NULL
                   AND created_at >= ${from} AND created_at <= ${until}`
             }
-          ORDER BY seq DESC LIMIT 1`;
+          ORDER BY CASE WHEN source_wakeup_id = ${event.wakeupId}
+            AND client_message_id = ${event.wakeupId === null ? null : Repository.storedClientId("send", sendClientMessageId(KinWakeupId.make(event.wakeupId)))}
+            THEN 0 ELSE 1 END, seq DESC LIMIT 1`;
         if (message === undefined) {
           // A reminder is owed; a routine or scheduled run that found nothing to say posts nothing.
           if (row.kind === "reminder") return yield* fallback;

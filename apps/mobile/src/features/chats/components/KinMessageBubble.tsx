@@ -3,6 +3,7 @@ import {
   KIN_REACTION_EMOJI,
   type EnvironmentId,
   type KinAttachment,
+  type KinMessage,
   type KinPersonId,
   type KinReactionEmoji,
   type KinWidget,
@@ -278,9 +279,6 @@ function KinMessageBubbleRow(props: {
   const hasBubble =
     (!hasCard && attachments.length === 0) || hasBody || suggested || message.editedAt !== null;
   const mine = new Set(props.reactions.flatMap((chip) => (chip.mine ? [chip.emoji] : [])));
-  const receipt = deleted ? null : kinTurnReceiptLine(message.turnChanges);
-  const grows = useKinTextGrows();
-  const buttons = kinReplyButtons(message);
   // The sheet's actions, reachable without the long press.
   const sheetActions = [
     ...(onReact === null || deleted
@@ -503,25 +501,12 @@ function KinMessageBubbleRow(props: {
         </Pressable>
       )}
       {hasCard && page === null ? <View className="w-[85%]">{card}</View> : null}
-      {buttons.length === 0 ? null : (
-        <KinReplyButtons buttons={buttons} onOpenTarget={onOpenTarget} />
-      )}
-      {receipt === null ? null : (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel={kinTurnReceiptOpen(receipt)}
-          hitSlop={8}
-          onPress={props.onOpenReceipt}
-          className="max-w-full px-1 active:opacity-60"
-        >
-          <Text
-            textRole="caption"
-            numberOfLines={kinLines(1, grows)}
-            className="text-foreground-muted"
-          >
-            {receipt}
-          </Text>
-        </Pressable>
+      {row.footerAfterCards === true ? null : (
+        <KinReplyFooter
+          message={message}
+          environmentId={props.environmentId}
+          onOpenReceipt={props.onOpenReceipt}
+        />
       )}
       {props.reactions.length > 0 ? (
         <View className={cn("flex-row flex-wrap gap-1.5 px-1", row.own && "justify-end")}>
@@ -543,6 +528,49 @@ function KinMessageBubbleRow(props: {
         </View>
       ) : null}
     </View>
+  );
+}
+
+export function KinReplyFooter(props: {
+  readonly message: KinMessage;
+  readonly environmentId: EnvironmentId;
+  readonly onOpenReceipt: () => void;
+  readonly standalone?: boolean;
+}) {
+  const { message } = props;
+  const onOpenTarget = useKinOpenTarget(props.environmentId, message.orgId);
+  const grows = useKinTextGrows();
+  const receipt = message.status === "deleted" ? null : kinTurnReceiptLine(message.turnChanges);
+  const buttons = kinReplyButtons(message);
+  if (buttons.length === 0 && receipt === null) return null;
+  const content = (
+    <>
+      {buttons.length === 0 ? null : (
+        <KinReplyButtons buttons={buttons} onOpenTarget={onOpenTarget} />
+      )}
+      {receipt === null ? null : (
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={kinTurnReceiptOpen(receipt)}
+          hitSlop={8}
+          onPress={props.onOpenReceipt}
+          className="max-w-full px-1 active:opacity-60"
+        >
+          <Text
+            textRole="caption"
+            numberOfLines={kinLines(1, grows)}
+            className="text-foreground-muted"
+          >
+            {receipt}
+          </Text>
+        </Pressable>
+      )}
+    </>
+  );
+  return props.standalone ? (
+    <View className={cn("items-start gap-1 px-4", rowSpacing(true))}>{content}</View>
+  ) : (
+    content
   );
 }
 
