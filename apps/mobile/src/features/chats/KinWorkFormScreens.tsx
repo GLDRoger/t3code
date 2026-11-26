@@ -566,6 +566,9 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
                       onChangeText={(placeOfSupply) => form.edit({ placeOfSupply })}
                     />
                   ) : null}
+                </ListSection>
+                {gstinNote === null ? null : <Notice message={gstinNote} />}
+                <ListSection>
                   <KinWorkToggleRow
                     label={COPY.party.accountsForTax}
                     description={COPY.party.accountsForTaxHint}
@@ -574,7 +577,6 @@ function ClientForm(props: ClientFormProps & { readonly member: boolean }) {
                     onValueChange={(accountsForTax) => form.edit({ accountsForTax })}
                   />
                 </ListSection>
-                {gstinNote === null ? null : <Notice message={gstinNote} />}
               </>
             ) : (
               <ListSection>

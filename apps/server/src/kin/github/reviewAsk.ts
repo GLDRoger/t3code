@@ -24,6 +24,7 @@ import { toolAdmitted } from "../lead/SharedTools.ts";
 import { isOwnerHimself, KIN_OWN_REFUSAL, kinOwnTurn, mayActAsOwner } from "../people/KinAccess.ts";
 import { blocksKey, boundReview, headKey, POSTING, receiptOf } from "./boundReview.ts";
 import {
+  type ApiAnswer,
   agentPostsOf,
   botLoginOf,
   claimTrigger,
@@ -120,8 +121,32 @@ const decodeVisibility = Schema.decodeUnknownOption(Schema.Struct({ private: Sch
 const refuse = (message: string) =>
   Effect.fail(new KinChatError({ reason: "not_allowed", message }));
 
+/**
+ * Whether a person may see `repo` on GitHub: it is public, or the GitHub username on their Kin
+ * profile is a collaborator there; the owner's own ask reads as the connected login. GitHub's
+ * answer when it gave none. The one check for both a review ask and `kin_github_read`.
+ */
+export const maySee = Effect.fn("KinGitHubReviewAsk.mayAsk")(function* (
+  get: (path: string) => Effect.Effect<ApiAnswer>,
+  repo: string,
+  who: { readonly himself: boolean; readonly login: string | null },
+) {
+  if (who.himself) return "yes" as const;
+  const answer = yield* get(`repos/${repo}`);
+  const visibility = answer.status === 200 ? decodeVisibility(answer.body) : Option.none();
+  if (Option.isNone(visibility)) return answer;
+  if (!visibility.value.private) return "yes" as const;
+  if (who.login === null) return "no" as const;
+  const member = yield* get(`repos/${repo}/collaborators/${encodeURIComponent(who.login)}`);
+  return member.status === 204
+    ? ("yes" as const)
+    : member.status === 404
+      ? ("no" as const)
+      : member;
+});
+
 /** The one person whose own direct chat with this agent the turn answers, or undefined. */
-const askerOf = Effect.fn("KinGitHubReviewAsk.asker")(function* (turn: {
+export const askerOf = Effect.fn("KinGitHubReviewAsk.asker")(function* (turn: {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
   readonly wakeupId: string;
@@ -197,17 +222,10 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
   // The connected login is the owner's: his own ask reads as him, anyone else's as themselves.
   const himself = isOwnerHimself(owner, asker.personId);
   const login = asker.login ?? (himself ? account.login : null);
-  /** Whether they may ask about this watched repo: it is public, or GitHub says they can read it. */
-  const mayAsk = Effect.fn("KinGitHubReviewAsk.mayAsk")(function* (repo: string) {
-    if (himself) return "yes" as const;
-    const answer = yield* get(`repos/${repo}`);
-    const visibility = answer.status === 200 ? decodeVisibility(answer.body) : Option.none();
-    if (Option.isNone(visibility)) return "error" as const;
-    if (!visibility.value.private) return "yes" as const;
-    if (login === null) return "no" as const;
-    const member = yield* get(`repos/${repo}/collaborators/${encodeURIComponent(login)}`);
-    return member.status === 204 ? "yes" : member.status === 404 ? "no" : "error";
-  });
+  const mayAsk = (repo: string) =>
+    maySee(get, repo, { himself, login }).pipe(
+      Effect.map((may) => (typeof may === "string" ? may : ("error" as const))),
+    );
   // One answer for a repo they may not ask about and one Kin doesn't watch.
   const notAllowed = (repo: string) =>
     login === null ? ASK_REFUSAL.noLogin(asker.name) : ASK_REFUSAL.unwatched(repo, exempt);

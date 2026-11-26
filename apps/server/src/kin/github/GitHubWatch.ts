@@ -337,7 +337,7 @@ interface Thread {
  * GitHub refusing Kin's requests for now (403 or 429, its rate limits), and when it said it takes
  * them again, from its `retry-after` or `x-ratelimit-reset`; undefined for any other answer.
  */
-const refusedFor = (answer: ApiAnswer, now: number) => {
+export const refusedFor = (answer: ApiAnswer, now: number) => {
   if (answer.status !== 403 && answer.status !== 429) return undefined;
   const after = Number(answer.headers["retry-after"]);
   const reset = Number(answer.headers["x-ratelimit-reset"]);

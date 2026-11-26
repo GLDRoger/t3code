@@ -16,6 +16,7 @@ import { ghApiLayer } from "../../github/GitHubWatch.ts";
 import { agentsView, gitHubApp } from "../../github/KinGitHubApp.ts";
 import { isMemoryRepo, repoList, setRepo } from "../../github/githubWatchStore.ts";
 import { linkGithubItem } from "../../github/githubLink.ts";
+import { readRepo } from "../../github/repoRead.ts";
 import { askReview, postReview, readReviewDiff } from "../../github/reviewAsk.ts";
 import { SHARED_REFUSAL } from "../Audience.ts";
 import { toolAdmitted } from "../SharedTools.ts";
@@ -521,6 +522,12 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       const lead = yield* resolveLead(yield* McpInvocationContext);
       yield* admitted(lead, "kin_github_diff", input);
       return yield* readReviewDiff(lead, input).pipe(Effect.provide(ghApiLayer));
+    }, Effect.mapError(failure)),
+  ),
+  kin_github_read: McpToolAccess.readsAsCaller(
+    Effect.fn("KinLeadToolkit.githubRead")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      return yield* readRepo(lead, input);
     }, Effect.mapError(failure)),
   ),
   kin_github_review_ask: McpToolAccess.actsAsCaller(

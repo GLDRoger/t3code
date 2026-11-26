@@ -37,6 +37,7 @@ export function KinEntryPick(props: {
           <Button
             size="xs"
             variant="outline"
+            className="max-w-full"
             disabled={props.disabled}
             aria-label={`${props.label}: ${shown}. Change`}
           />

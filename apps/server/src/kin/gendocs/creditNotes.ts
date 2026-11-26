@@ -131,7 +131,7 @@ const draft = Effect.fn("KinCreditNotes.draft")(function* (
           list: LIST,
           originKey,
           requestHash,
-          title: `Credit note for ${invoice.key}`,
+          title: `Credit note for ${fieldText(parseFields(invoice.fieldsJson), "number") ?? invoice.key}`,
           owner: writer.actor,
           amount: input.amount,
           state: "open",

@@ -81,27 +81,33 @@ describe("statement matching", () => {
     assert.isEmpty(match([credit], [owed])[0]!.candidates);
   });
 
+  // A credit only naming the client is offered only at about a rate the company was paid at.
   it.each([
-    ["INV-12", "2026-10-05", "INR", 35],
-    ["Tidewater Freight", "2026-10-05", "INR", 30],
-    ["Tidewater Freight INV-12", "2026-10-05", "INR", 65],
-    ["Other transfer", "2026-10-05", "INR", undefined],
-    ["Tidewater Freight INV-12", "2026-09-29", "INR", undefined],
-    ["Tidewater Freight INV-12", "2026-10-05", "USD", undefined],
-  ] as const)("ranks a rate-only credit %s on %s in %s", (description, date, currency, score) => {
-    const credit = row({ description, date, amountMinor: 8_350_000 });
-    const owed = invoice({
-      currency: "USD",
-      amountMinor: 100_000,
-      number: "INV-12",
-      client: "Tidewater Freight",
-    });
-    const offer = rateOffer(credit, owed, currency);
-    assert.strictEqual(offer?.candidate.score, score);
-    assert.strictEqual(offer?.candidate.fit, score === undefined ? undefined : "rate");
-    assert.strictEqual(offer?.rate, score === undefined ? undefined : "83.500000");
-    assert.isEmpty(match([credit], [owed])[0]!.candidates);
-  });
+    ["INV-12", "2026-10-05", "INR", undefined, 35],
+    ["Tidewater Freight", "2026-10-05", "INR", undefined, undefined],
+    ["Tidewater Freight", "2026-10-05", "INR", "84.000000", 30],
+    ["Tidewater Freight", "2026-10-05", "INR", "42.000000", undefined],
+    ["Tidewater Freight INV-12", "2026-10-05", "INR", "42.000000", 65],
+    ["Other transfer", "2026-10-05", "INR", "83.500000", undefined],
+    ["Tidewater Freight INV-12", "2026-09-29", "INR", undefined, undefined],
+    ["Tidewater Freight INV-12", "2026-10-05", "USD", undefined, undefined],
+  ] as const)(
+    "ranks a rate-only credit %s on %s in %s, %s recorded",
+    (description, date, currency, recorded, score) => {
+      const credit = row({ description, date, amountMinor: 8_350_000 });
+      const owed = invoice({
+        currency: "USD",
+        amountMinor: 100_000,
+        number: "INV-12",
+        client: "Tidewater Freight",
+      });
+      const offer = rateOffer(credit, owed, currency, recorded);
+      assert.strictEqual(offer?.candidate.score, score);
+      assert.strictEqual(offer?.candidate.fit, score === undefined ? undefined : "rate");
+      assert.strictEqual(offer?.rate, score === undefined ? undefined : "83.500000");
+      assert.isEmpty(match([credit], [owed])[0]!.candidates);
+    },
+  );
 
   it.each([
     {

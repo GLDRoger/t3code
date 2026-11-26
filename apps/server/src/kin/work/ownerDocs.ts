@@ -930,13 +930,18 @@ export const render = Effect.fn("KinDocs.render")(function* (
   input: KinDocRenderInput,
 ) {
   const person = yield* theOwner(people, input.orgId);
+  const title =
+    input.title ??
+    (yield* (yield* KinWorkspace).recipes(input.orgId)).find((one) => one.name === input.recipe)
+      ?.title ??
+    input.recipe;
   const made = yield* makeDocument({
     orgId: input.orgId,
     recipe: input.recipe,
     entry: input.entry,
     given: input.inputs ?? {},
     doc: input.doc,
-    title: input.title ?? input.recipe,
+    title,
     requester: { _tag: "owner", personId: person.personId, writer: ownerWriter(person) },
     jobKey: `owner:${person.personId}:${input.clientRequestId}`,
     admit: Effect.void,
