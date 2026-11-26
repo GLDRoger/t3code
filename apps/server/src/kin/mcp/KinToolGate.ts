@@ -21,6 +21,13 @@ import { OUTSIDE_REFUSAL, outsideToolAllowed, repoReadRefusal } from "../lead/Ou
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { readCallArguments } from "../connections/callArguments.ts";
 import { PRIVATE_WRITE, privateRefusal } from "../connections/privateTurn.ts";
+import { COMMENT_REFUSAL, boundIssue } from "../github/boundIssue.ts";
+import {
+  TRIAGE_REFUSAL,
+  TRIAGE_THREAD_PREFIX,
+  TRIAGE_TOOLS,
+  triageToolAllowed,
+} from "../lead/outsideTriage.ts";
 import { REVIEW_REFUSAL, reviewToolAllowed } from "../lead/outsideReview.ts";
 import { BILLS_REFUSAL, billToolAllowed } from "../lead/billsOnly.ts";
 import { APPROVED_REFUSAL, approvedRefusal, approvedToolAllowed } from "../lead/approvedDraft.ts";
@@ -236,6 +243,33 @@ const turnEvents = McpToolPolicy.toolCallPrepare(
 /** An outside review's turn refuses what it may not call with the review's own refusal. */
 const reviewOnly: Check = (turn, tool, args) =>
   reviewToolAllowed(turn, tool, args).pipe(Effect.map((allowed) => allowed ?? true));
+// Words under eval: change them only with the triage cases.
+const TRIAGE_DELEGATE_REFUSAL =
+  "This turn only comments on the issue; the work starts when someone labels it kin or writes /kin.";
+
+const triageRefusal = Effect.fn("KinToolGate.triageRefusal")(
+  function* (turn: Parameters<Check>[0], tool: string) {
+    const issue = yield* boundIssue(turn);
+    if (issue?.outside === true) {
+      return TRIAGE_TOOLS.has(tool) ? undefined : TRIAGE_REFUSAL;
+    }
+    const scope = yield* Effect.serviceOption(McpInvocationContext);
+    if (
+      Option.isSome(scope) &&
+      scope.value.thread?.threadId.startsWith(TRIAGE_THREAD_PREFIX) === true
+    )
+      return TRIAGE_REFUSAL;
+    if (tool === "kin_github_comment" && issue === undefined) return COMMENT_REFUSAL.unbound;
+    if (tool === "delegate_task" && issue !== undefined) return TRIAGE_DELEGATE_REFUSAL;
+    return undefined;
+  },
+  Effect.catchCause((cause) =>
+    Effect.logWarning("Kin triage tool check failed; refusing", { cause }).pipe(
+      Effect.as(TRIAGE_REFUSAL),
+    ),
+  ),
+);
+
 /** A bills turn refuses all but `bill_read` with its own refusal. */
 const billsOnlyCheck: Check = (turn, tool, args) =>
   billToolAllowed(turn, tool, args).pipe(Effect.map((allowed) => allowed ?? true));
@@ -243,22 +277,16 @@ const billsOnlyCheck: Check = (turn, tool, args) =>
 const approvedOnly: Check = (turn, tool, args) =>
   approvedToolAllowed(turn, tool, args).pipe(Effect.map((allowed) => allowed ?? true));
 /** A confined turn (an outside review, bills, an approved draft) is decided by its own gate alone. */
-const confinedDecides = (turn: Parameters<Check>[0], tool: string, args: unknown) =>
-  reviewToolAllowed(turn, tool, args).pipe(
-    Effect.flatMap((review) =>
-      review !== undefined
-        ? Effect.succeed(true)
-        : billToolAllowed(turn, tool, args).pipe(
-            Effect.flatMap((bills) =>
-              bills !== undefined
-                ? Effect.succeed(true)
-                : approvedToolAllowed(turn, tool, args).pipe(
-                    Effect.map((approved) => approved !== undefined),
-                  ),
-            ),
-          ),
-    ),
-  );
+const confinedDecides = Effect.fn("KinToolGate.confinedDecides")(function* (
+  turn: Parameters<Check>[0],
+  tool: string,
+  args: unknown,
+) {
+  if ((yield* triageToolAllowed(turn, tool)) !== undefined) return true;
+  if ((yield* reviewToolAllowed(turn, tool, args)) !== undefined) return true;
+  if ((yield* billToolAllowed(turn, tool, args)) !== undefined) return true;
+  return (yield* approvedToolAllowed(turn, tool, args)) !== undefined;
+});
 const besideReview =
   (check: Check): Check =>
   (turn, tool, args) =>
@@ -466,6 +494,8 @@ export const workerPolicy = (services: Context.Context<Services>, host: HelperMo
         if (!workerMayReach(tool)) return WORKER_REFUSAL;
         if (yield* namesOtherMachine(args)) return REMOTE_REFUSAL;
         if (turn === undefined) return SHARED_REFUSAL;
+        const triage = yield* triageRefusal(turn, tool).pipe(Effect.provideContext(services));
+        if (triage !== undefined) return triage;
         for (const [check, refusal] of kinChecks)
           if (!(yield* check(turn, tool, args).pipe(Effect.provideContext(services))))
             return refusal;
@@ -543,6 +573,9 @@ export const layer = ReadTools.layer.pipe(
       McpToolPolicy.toolCallGate(gate("KinToolGate.taskLimit", taskAdmitted), TASK_LIMIT_REFUSAL),
       helperModels,
       sectionAdmitted,
+      McpToolPolicy.toolCallRefusal(
+        Effect.succeed(inRunningTurn("KinToolGate.triage", triageRefusal, TRIAGE_REFUSAL)),
+      ),
     ),
   ),
 );

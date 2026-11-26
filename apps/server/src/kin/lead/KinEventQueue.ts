@@ -31,7 +31,7 @@ import {
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
-import { fillAskedChats, settleReviews } from "../github/askedFor.ts";
+import { fillAskedChats, settleReviews, settleTriage } from "../github/askedFor.ts";
 import { PREPARE_EVENT_SQL, PREPARES_PER_TURN } from "../pulse/prepareSenses.ts";
 import * as Reach from "./Reach.ts";
 
@@ -442,6 +442,7 @@ const make = Effect.gen(function* () {
   const hub = yield* Effect.serviceOption(KinChatHub);
   const settled = (orgId: KinOrgId, eventIds: ReadonlyArray<string>) =>
     settleReviews({ repo, hub }, orgId, eventIds).pipe(
+      Effect.andThen(settleTriage({ repo, hub }, orgId, eventIds)),
       Effect.provideService(SqlClient.SqlClient, sql),
     );
   const laneOf = sql.literal(LANE_OF);

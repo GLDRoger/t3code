@@ -38,6 +38,7 @@ import { markOutside, outsideRead } from "./OutsideContent.ts";
 import { KinAgentSessionPolicy } from "./sessionPolicy.ts";
 import { listedOnSharedThread } from "./SharedTools.ts";
 import { BILLS_THREAD_PREFIX, BILLS_TOOLS } from "./billsOnly.ts";
+import { TRIAGE_THREAD_PREFIX, TRIAGE_TOOLS } from "./outsideTriage.ts";
 import { REVIEW_THREAD_PREFIX, REVIEW_TOOLS } from "./outsideReview.ts";
 import { CODING_T3_TOOLS, isEngineeringDomain, LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { wakeupOfRuns } from "../chat/wakeupRuns.ts";
@@ -249,6 +250,7 @@ export const leadNameOf = Effect.fn("KinAgentSession.leadNameOf")(
 const isKinGitHubTool = (name: string) => name.startsWith("kin_github_");
 const LOGIN_GITHUB_TOOLS = new Set([
   "kin_github_review",
+  "kin_github_comment",
   "kin_github_diff",
   "kin_github_read",
   "kin_github_review_ask",
@@ -273,6 +275,7 @@ export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(functio
 ) {
   // A bills turn's reader may be any lead: it lists `bill_read` whatever its seat.
   if (threadId.startsWith(BILLS_THREAD_PREFIX)) return BILLS_TOOLS.has(name);
+  if (threadId.startsWith(TRIAGE_THREAD_PREFIX)) return TRIAGE_TOOLS.has(name);
   const shared = threadId.startsWith(SHARED_THREAD_PREFIX);
   if (
     threadId.startsWith(REVIEW_THREAD_PREFIX)
@@ -295,6 +298,9 @@ export const endpointVisibility = McpToolPolicy.toolVisibility((name, method) =>
   Effect.gen(function* () {
     const scope = yield* Effect.serviceOption(McpInvocationContext);
     if (Option.isNone(scope) || scope.value.thread === undefined) return false;
+    // Calls on a triage thread get the running turn's refusal from KinToolGate.
+    if (method === "tools/call" && scope.value.thread.threadId.startsWith(TRIAGE_THREAD_PREFIX))
+      return true;
     const section = sectionOfTool(name);
     // Only the list hides a section; the call gate returns the refusal on tools/call.
     if (method === "tools/list" && section !== null) {

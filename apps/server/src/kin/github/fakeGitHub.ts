@@ -1393,6 +1393,7 @@ export class FakeGitHub {
         return ok({
           id,
           html_url: `https://github.com/${repo}/issues/${found[1]}#issuecomment-${id}`,
+          created_at: iso(this.world.now),
         });
       }
       if (method === "POST" && (found = /^pulls\/(\d+)\/reviews$/.exec(rest))) {

@@ -94,6 +94,7 @@ export const OUTSIDE_TOOLS = {
   memory_label: "allowed",
   // Posts on its own only to the company's repos; anywhere else on the owner's Confirm.
   kin_github_review: "allowed",
+  kin_github_comment: "allowed",
   // Reads only the diff of the pull request its review turn is for.
   kin_github_diff: "allowed",
   // Reads only; what it reads is outside text too (`readRepo` marks it). Not after a coding agent's
@@ -676,6 +677,7 @@ const REPO_READ_TOOLS: ReadonlySet<string> = new Set([
   // Only the review someone asked for, on its pull request, whose repo is all the reader reads then.
   "kin_github_diff",
   "kin_github_review",
+  "kin_github_comment",
 ]);
 
 /** The refusal for `name` once the turn read a repo for someone, or undefined. */

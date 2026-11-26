@@ -22,6 +22,7 @@ import { KinIdentity } from "../../chat/KinIdentity.ts";
 import { KinServer } from "../../KinServer.ts";
 import * as GitHubLink from "../../github/githubLink.ts";
 import * as ReviewAsk from "../../github/reviewAsk.ts";
+import { CommentInput, CommentResult } from "../../github/boundIssue.ts";
 import * as RepoRead from "../../github/repoRead.ts";
 import { KinRecords } from "../../work/KinRecords.ts";
 import { MEMORY_RULE } from "../../memory/keeping.ts";
@@ -277,6 +278,14 @@ export const KinLeadToolkit = Toolkit.make(
       "Note what you saw, did or skipped that is in neither the chat nor memory. Not for ordinary replies. Observations, never approvals.",
     parameters: Lead.JournalInput,
     success: Schema.Void,
+  }).annotate(McpSchema.EnabledWhen, enabled),
+  // Words under eval: change them only with the triage cases.
+  Tool.make("kin_github_comment", {
+    ...prCare,
+    description:
+      "Post the one comment a new GitHub issue's turn, or a reply to your comment there, is for: body in plain words, at most 2,000 characters, and owner (security, data_loss, decision or rule) only when the issue needs the owner. Kin posts it once, on that issue, signed with your name, and refuses a second. Anywhere else, comment with gh issue comment.",
+    parameters: CommentInput,
+    success: CommentResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_github_review", {
     ...prCare,

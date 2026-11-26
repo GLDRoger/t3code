@@ -5,6 +5,7 @@ import type {
   KinGitHubWatch,
   KinOrgId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -82,15 +83,66 @@ export const memoryRepos = Effect.gen(function* () {
 export const isMemoryRepo = (repo: string) =>
   memoryRepos.pipe(Effect.map((memory) => memory.has(repo.trim().toLowerCase())));
 
+const triageKey = (repo: string) => `triage-from:${repo}`;
+
+const triageRows = Effect.fn("KinGitHubWatchStore.triageRows")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ repo: string; outcome: "on" | "off"; at: number }>`
+    SELECT repo, outcome, at FROM kin_github_handled
+    WHERE org_id = ${orgId} AND number = 0 AND trigger_key >= 'triage-from:' AND trigger_key < 'triage-from;'
+    ORDER BY repo`;
+  return new Map(rows.map(({ repo, outcome, at }) => [repo, { outcome, at }]));
+});
+
+export const triageStates = Effect.fn("KinGitHubWatchStore.triageStates")(function* (
+  orgId: KinOrgId,
+  watched: ReadonlyArray<string>,
+  now: number,
+) {
+  const rows = yield* triageRows(orgId);
+  const [first, ...rest] = [...new Set(watched.map((repo) => repo.toLowerCase()))].filter(
+    (repo) => !rows.has(repo),
+  );
+  if (first === undefined) return rows;
+  const sql = yield* SqlClient.SqlClient;
+  const row = (repo: string) => ({
+    org_id: orgId,
+    trigger_key: triageKey(repo),
+    repo,
+    number: 0,
+    outcome: "on",
+    at: now,
+  });
+  yield* sql`INSERT INTO kin_github_handled ${sql.insert([row(first), ...rest.map(row)])}
+    ON CONFLICT (org_id, trigger_key) DO NOTHING`;
+  return yield* triageRows(orgId);
+});
+
+export const setTriage = Effect.fn("KinGitHubWatchStore.setTriage")(function* (
+  orgId: KinOrgId,
+  repo: string,
+  on: boolean,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const normalized = repo.trim().toLowerCase();
+  yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, outcome, at)
+    VALUES (${orgId}, ${triageKey(normalized)}, ${normalized}, 0, ${on ? "on" : "off"}, ${now})
+    ON CONFLICT (org_id, trigger_key) DO UPDATE SET outcome = excluded.outcome, at = excluded.at`;
+});
+
 /** Every repo the poll found, with the owner's switches applied; sorted by name. Never memory. */
-export const repoList = Effect.fn("KinGitHubWatchStore.repos")(function* (orgId: KinOrgId) {
+export const repoList = Effect.fn("KinGitHubWatchStore.repos")(function* (
+  orgId: KinOrgId,
+  now?: number,
+) {
   const sql = yield* SqlClient.SqlClient;
   const known = yield* knownRepos(orgId);
   const prefs = yield* sql<{ repo: string; watched: number | null; mentions: number }>`
     SELECT repo, watched, mentions FROM kin_github_repo_prefs WHERE org_id = ${orgId}
     ORDER BY repo`;
   const byRepo = new Map(prefs.map((pref) => [pref.repo, pref]));
-  return known
+  const repos = known
     .map((entry): KinGitHubRepo => {
       const pref = byRepo.get(entry.repo.toLowerCase());
       return {
@@ -101,6 +153,15 @@ export const repoList = Effect.fn("KinGitHubWatchStore.repos")(function* (orgId:
       };
     })
     .toSorted((a, b) => a.repo.localeCompare(b.repo));
+  const states = yield* triageStates(
+    orgId,
+    repos.filter((repo) => repo.watched).map((repo) => repo.repo),
+    now ?? (yield* Clock.currentTimeMillis),
+  );
+  return repos.map((repo) => ({
+    ...repo,
+    triage: states.get(repo.repo.toLowerCase())?.outcome !== "off",
+  }));
 });
 
 /** As saved; `review` goes out as `open` with `needsReview`, which a phone older than it ignores. */
@@ -175,21 +236,36 @@ export const setRepo = Effect.fn("KinGitHubWatchStore.setRepo")(function* (
   now: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  if (input.repo === null) {
-    yield* sql`UPDATE kin_github_repo_prefs SET watched = NULL, updated_at = ${now}
-      WHERE org_id = ${input.orgId}`;
-    return yield* repoList(input.orgId);
-  }
-  const repo = input.repo.trim().toLowerCase();
-  const watched = input.watched === undefined ? null : input.watched ? 1 : 0;
-  const mentions = input.mentions === undefined ? null : input.mentions ? 1 : 0;
-  yield* sql`INSERT INTO kin_github_repo_prefs (org_id, repo, watched, mentions, updated_at)
-    VALUES (${input.orgId}, ${repo}, ${watched}, ${mentions ?? 0}, ${now})
-    ON CONFLICT (org_id, repo) DO UPDATE SET
-      watched = CASE WHEN ${input.watched === undefined ? 1 : 0} = 1 THEN watched ELSE excluded.watched END,
-      mentions = CASE WHEN ${input.mentions === undefined ? 1 : 0} = 1 THEN mentions ELSE excluded.mentions END,
-      updated_at = excluded.updated_at`;
-  return yield* repoList(input.orgId);
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      if (input.repo === null) {
+        yield* sql`UPDATE kin_github_handled SET at = ${now}
+        WHERE org_id = ${input.orgId} AND trigger_key LIKE 'triage-from:%'
+        AND repo IN (SELECT repo FROM kin_github_repo_prefs WHERE org_id = ${input.orgId} AND watched = 0)`;
+        yield* sql`UPDATE kin_github_repo_prefs SET watched = NULL, updated_at = ${now}
+        WHERE org_id = ${input.orgId}`;
+        return;
+      }
+      const repo = input.repo.trim().toLowerCase();
+      if (input.triage !== undefined) {
+        yield* setTriage(input.orgId, repo, input.triage, now);
+      } else if (input.watched === true) {
+        yield* sql`UPDATE kin_github_handled SET at = ${now}
+        WHERE org_id = ${input.orgId} AND trigger_key = ${triageKey(repo)}
+        AND EXISTS (SELECT 1 FROM kin_github_repo_prefs
+          WHERE org_id = ${input.orgId} AND repo = ${repo} AND watched = 0)`;
+      }
+      const watched = input.watched === undefined ? null : input.watched ? 1 : 0;
+      const mentions = input.mentions === undefined ? null : input.mentions ? 1 : 0;
+      yield* sql`INSERT INTO kin_github_repo_prefs (org_id, repo, watched, mentions, updated_at)
+      VALUES (${input.orgId}, ${repo}, ${watched}, ${mentions ?? 0}, ${now})
+      ON CONFLICT (org_id, repo) DO UPDATE SET
+        watched = CASE WHEN ${input.watched === undefined ? 1 : 0} = 1 THEN watched ELSE excluded.watched END,
+        mentions = CASE WHEN ${input.mentions === undefined ? 1 : 0} = 1 THEN mentions ELSE excluded.mentions END,
+        updated_at = excluded.updated_at`;
+    }),
+  );
+  return yield* repoList(input.orgId, now);
 });
 
 /** "Watching: N repos · last checked … · 3 things handled today"; undefined before the first look. */
