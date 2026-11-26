@@ -3,7 +3,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import * as ClaudeSdk from "@anthropic-ai/claude-agent-sdk";
-import { beforeEach, vi } from "vite-plus/test";
+import { beforeEach, expectTypeOf, vi } from "vite-plus/test";
 
 import type {
   ElicitationRequest,
@@ -3336,6 +3336,18 @@ describe("ClaudeAdapterV2 native fork", () => {
       ),
     ),
   );
+});
+
+it("types native refresh on the runtime and confines maxTurns to refresh opens", () => {
+  type Open = ClaudeAdapterV2.ClaudeAgentSdkQueryOpenInput;
+  type CappedOpen = Pick<Open, "threadId" | "providerSessionId"> & {
+    readonly options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions & { readonly maxTurns: 1 };
+  };
+  expectTypeOf<CappedOpen>().not.toExtend<Open>();
+  expectTypeOf<CappedOpen & { readonly refresh: true }>().toExtend<Open>();
+  expectTypeOf<
+    NonNullable<ProviderAdapter.ProviderAdapterV2SessionRuntime["refreshNativeThread"]>
+  >().toBeFunction();
 });
 
 describe("ClaudeAdapterV2 MCP credential channel", () => {
@@ -10760,153 +10772,187 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0,
   };
-  it.effect.each(["reopened", "no anchor", "steered", "fresh", "backwards"] as const)(
-    "a resumed process's first result charges only its own growth (%s)",
-    (scenario) =>
-      Effect.gen(function* () {
-        const harness = yield* makeWakeHarnessWithOptions({ freshQueueOnReopen: true });
-        const now = yield* DateTime.now;
-        const turn = (name: string) =>
-          makeClaudeTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now,
-            attemptId: RunAttemptId.make(name),
-            text: "Continue.",
-            attachments: [],
-          });
-        const modelUsage = (inputTokens: number, outputTokens: number) => ({
-          inputTokens,
-          outputTokens,
-          cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
-          webSearchRequests: 0,
-          costUSD: 0,
-          contextWindow: 200_000,
-          maxOutputTokens: 32_000,
+  it.effect.each([
+    "reopened",
+    "new runtime",
+    "no anchor",
+    "steered",
+    "fresh",
+    "backwards",
+  ] as const)("a resumed process's first result charges only its own growth (%s)", (scenario) =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarnessWithOptions({ freshQueueOnReopen: true });
+      const now = yield* DateTime.now;
+      const turn = (name: string) =>
+        makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now,
+          attemptId: RunAttemptId.make(name),
+          text: "Continue.",
+          attachments: [],
         });
-        const main = CLAUDE_TEST_MODEL_SELECTION.model;
-        const helper = "claude-haiku-4-5";
-        const reopen = scenario === "reopened" || scenario === "backwards";
-        if (reopen) {
-          yield* harness.runtime.startTurn(turn("earlier-ledger"));
-          yield* Queue.offer(
-            harness.sdkMessages,
-            makeResultFrame({
-              uuid: "result-earlier-ledger",
-              result: "OK",
-              usage: { ...zeroUsage, input_tokens: 1700, output_tokens: 50 },
-              modelUsage: { [main]: modelUsage(1700, 50) },
-            }),
-          );
-          assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
-        }
-        const input = turn("current-ledger");
-        yield* harness.runtime.startTurn({
-          ...input,
-          ...(reopen ? { resume: true } : {}),
-          nativeThreadHasTurns: scenario !== "fresh",
-        });
-        assert.equal(
-          harness.getOpenedOptions()?.resume,
-          scenario === "fresh" ? undefined : WAKE_NATIVE_SESSION,
-        );
-        const messages = harness.processQueues[reopen ? 1 : 0]!;
-        const usage = { ...zeroUsage, input_tokens: 110, output_tokens: 2 };
-        if (scenario === "no anchor" || scenario === "steered") {
-          yield* harness.offerAndWait(
-            claudeSdkFrame({
-              type: "assistant",
-              message: {
-                model: helper,
-                id: "msg_aux_ledgers",
-                type: "message",
-                role: "assistant",
-                content: [{ type: "text", text: "Auxiliary answer." }],
-                usage: {
-                  ...zeroUsage,
-                  input_tokens: 800,
-                  cache_read_input_tokens: 150,
-                  cache_creation_input_tokens: 50,
-                  output_tokens: 20,
-                },
-              },
-              parent_tool_use_id: "toolu_aux_ledger",
-              uuid: "result-auxiliary-frame",
-              session_id: WAKE_NATIVE_SESSION,
-            }),
-          );
-        }
-        if (scenario === "steered") {
-          const idAllocator = yield* IdAllocator.IdAllocatorV2;
-          yield* harness.runtime.steerTurn({
-            threadId: harness.threadId,
-            runId: input.runId,
-            providerThread: harness.providerThread,
-            providerTurnId: idAllocator.derive.providerTurn({
-              driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
-              nativeTurnId: `turn:${input.attemptId}`,
-            }),
-            message: {
-              ...input.message,
-              messageId: MessageId.make("steer-ledger"),
-              text: "Continue the survey.",
-            },
-          });
-          yield* harness.offerAndWait(
-            makeResultFrame({
-              uuid: "result-ledger-abort",
-              terminalReason: "aborted_tools",
-              result: "",
-              usage,
-              modelUsage: { [main]: modelUsage(1810, 52), [helper]: modelUsage(1000, 20) },
-            }),
-          );
-        }
-        const historical = scenario === "fresh" || scenario === "backwards" ? 0 : 1700;
+      const modelUsage = (inputTokens: number, outputTokens: number) => ({
+        inputTokens,
+        outputTokens,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        webSearchRequests: 0,
+        costUSD: 0,
+        contextWindow: 200_000,
+        maxOutputTokens: 32_000,
+      });
+      const main = CLAUDE_TEST_MODEL_SELECTION.model;
+      const helper = "claude-haiku-4-5";
+      const reopen =
+        scenario === "reopened" || scenario === "new runtime" || scenario === "backwards";
+      if (reopen) {
+        yield* harness.runtime.startTurn(turn("earlier-ledger"));
         yield* Queue.offer(
-          messages,
+          harness.sdkMessages,
           makeResultFrame({
-            uuid: "result-current-ledger",
+            uuid: "result-earlier-ledger",
             result: "OK",
-            usage,
-            modelUsage: {
-              [main]: modelUsage(
-                historical + (scenario === "steered" ? 220 : 110),
-                (historical ? 50 : 0) + (scenario === "steered" ? 4 : 2),
-              ),
-              [helper]: scenario === "steered" ? modelUsage(2000, 60) : modelUsage(90_000, 3000),
-            },
+            usage: { ...zeroUsage, input_tokens: 1700, output_tokens: 50 },
+            modelUsage: { [main]: modelUsage(1700, 50) },
           }),
         );
         assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
-        const completed = harness.events.findLast(
-          (event) => event.type === "provider_turn.updated",
-        );
-        assert.include(completed?.providerTurn.turnTokenUsage ?? {}, {
-          inputTokens: scenario === "steered" ? 220 : 110,
-          outputTokens: scenario === "steered" ? 4 : 2,
-        });
-        assert.deepEqual(
-          completed?.providerTurn.turnTokenUsage?.otherUsage,
-          {
-            reopened: { inputTokens: 90_000, outputTokens: 3000 },
-            "no anchor": { inputTokens: 1000, outputTokens: 20 },
-            steered: { inputTokens: 2000, outputTokens: 60 },
-            fresh: { inputTokens: 90_000, outputTokens: 3000 },
-            backwards: undefined,
-          }[scenario],
-        );
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-            NodeServices.layer,
-            NodeCrypto.layer,
+      }
+      const input = turn("current-ledger");
+      const runtime =
+        scenario === "new runtime"
+          ? yield* harness.adapter.openSession({
+              threadId: harness.threadId,
+              providerSessionId: ProviderSessionId.make("new-runtime-ledger"),
+              modelSelection: input.modelSelection,
+              runtimePolicy: input.runtimePolicy,
+            })
+          : harness.runtime;
+      const completedInNewRuntime =
+        yield* Queue.unbounded<
+          Extract<
+            ProviderAdapter.ProviderAdapterV2Event,
+            { readonly type: "provider_turn.updated" }
+          >
+        >();
+      if (runtime !== harness.runtime) {
+        yield* runtime.events.pipe(
+          Stream.runForEach((event) =>
+            event.type === "provider_turn.updated" && event.providerTurn.status === "completed"
+              ? Queue.offer(completedInNewRuntime, event)
+              : Effect.void,
           ),
+          Effect.forkScoped,
+        );
+      }
+      yield* runtime.startTurn({
+        ...input,
+        ...(reopen ? { resume: true } : {}),
+        nativeThreadHasTurns: scenario !== "fresh",
+      });
+      assert.equal(
+        harness.getOpenedOptions()?.resume,
+        scenario === "fresh" ? undefined : WAKE_NATIVE_SESSION,
+      );
+      const messages = harness.processQueues[reopen ? 1 : 0]!;
+      const usage = { ...zeroUsage, input_tokens: 110, output_tokens: 2 };
+      if (scenario === "no anchor" || scenario === "steered") {
+        yield* harness.offerAndWait(
+          claudeSdkFrame({
+            type: "assistant",
+            message: {
+              model: helper,
+              id: "msg_aux_ledgers",
+              type: "message",
+              role: "assistant",
+              content: [{ type: "text", text: "Auxiliary answer." }],
+              usage: {
+                ...zeroUsage,
+                input_tokens: 800,
+                cache_read_input_tokens: 150,
+                cache_creation_input_tokens: 50,
+                output_tokens: 20,
+              },
+            },
+            parent_tool_use_id: "toolu_aux_ledger",
+            uuid: "result-auxiliary-frame",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+      }
+      if (scenario === "steered") {
+        const idAllocator = yield* IdAllocator.IdAllocatorV2;
+        yield* harness.runtime.steerTurn({
+          threadId: harness.threadId,
+          runId: input.runId,
+          providerThread: harness.providerThread,
+          providerTurnId: idAllocator.derive.providerTurn({
+            driver: ClaudeAdapterV2.CLAUDE_PROVIDER,
+            nativeTurnId: `turn:${input.attemptId}`,
+          }),
+          message: {
+            ...input.message,
+            messageId: MessageId.make("steer-ledger"),
+            text: "Continue the survey.",
+          },
+        });
+        yield* harness.offerAndWait(
+          makeResultFrame({
+            uuid: "result-ledger-abort",
+            terminalReason: "aborted_tools",
+            result: "",
+            usage,
+            modelUsage: { [main]: modelUsage(1810, 52), [helper]: modelUsage(1000, 20) },
+          }),
+        );
+      }
+      const historical = scenario === "fresh" || scenario === "backwards" ? 0 : 1700;
+      yield* Queue.offer(
+        messages,
+        makeResultFrame({
+          uuid: "result-current-ledger",
+          result: "OK",
+          usage,
+          modelUsage: {
+            [main]: modelUsage(
+              historical + (scenario === "steered" ? 220 : 110),
+              (historical ? 50 : 0) + (scenario === "steered" ? 4 : 2),
+            ),
+            [helper]: scenario === "steered" ? modelUsage(2000, 60) : modelUsage(90_000, 3000),
+          },
+        }),
+      );
+      const completed = yield* Effect.gen(function* () {
+        if (runtime !== harness.runtime) return yield* Queue.take(completedInNewRuntime);
+        assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+        return harness.events.findLast((event) => event.type === "provider_turn.updated");
+      });
+      assert.include(completed?.providerTurn.turnTokenUsage ?? {}, {
+        inputTokens: scenario === "steered" ? 220 : 110,
+        outputTokens: scenario === "steered" ? 4 : 2,
+      });
+      assert.deepEqual(
+        completed?.providerTurn.turnTokenUsage?.otherUsage,
+        {
+          reopened: { inputTokens: 90_000, outputTokens: 3000 },
+          "new runtime": { inputTokens: 90_000, outputTokens: 3000 },
+          "no anchor": { inputTokens: 1000, outputTokens: 20 },
+          steered: { inputTokens: 2000, outputTokens: 60 },
+          fresh: { inputTokens: 90_000, outputTokens: 3000 },
+          backwards: undefined,
+        }[scenario],
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
         ),
       ),
+    ),
   );
 
   const reportedContextTokens = (events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) =>
@@ -12104,7 +12150,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
 
       const refresh = harness.runtime.refreshNativeThread;
-      assert.isFunction(refresh);
+      if (refresh === undefined) return yield* Effect.die("Claude runtime did not expose refresh");
       const fiber = yield* refresh(input).pipe(Effect.forkScoped);
       yield* harness.until(() => harness.offeredMessages.length === 2);
       const options = harness.getOpenedOptions();
@@ -12194,7 +12240,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
         assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
         const refresh = harness.runtime.refreshNativeThread;
-        assert.isFunction(refresh);
+        if (refresh === undefined)
+          return yield* Effect.die("Claude runtime did not expose refresh");
         const refreshing = yield* refresh(input).pipe(Effect.exit, Effect.forkScoped);
         yield* harness.until(() => harness.offeredMessages.length === 2);
         const query = harness.processQueues[1]!;
@@ -12250,7 +12297,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       );
       assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
       const refresh = harness.runtime.refreshNativeThread;
-      assert.isFunction(refresh);
+      if (refresh === undefined) return yield* Effect.die("Claude runtime did not expose refresh");
       // Do not wait for a result if the fixture opens a query when it should refuse.
       const idle = yield* refresh(input).pipe(Effect.exit, Effect.forkScoped);
       yield* Effect.raceFirst(
@@ -12287,7 +12334,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       });
       yield* harness.runtime.startTurn(input);
       const refresh = harness.runtime.refreshNativeThread;
-      assert.isFunction(refresh);
+      if (refresh === undefined) return yield* Effect.die("Claude runtime did not expose refresh");
       const error = yield* refresh(input).pipe(Effect.flip);
       assert.include(error, {
         _tag: "ProviderAdapterProtocolError",
@@ -15014,7 +15061,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const harness = yield* makeWakeHarnessWithOptions({ freshQueueOnReopen: true });
       yield* startScheduleWakeupTurn(harness);
       const refresh = harness.runtime.refreshNativeThread;
-      assert.isFunction(refresh);
+      if (refresh === undefined) return yield* Effect.die("Claude runtime did not expose refresh");
       const pending = yield* refresh({
         threadId: harness.threadId,
         providerThread: harness.providerThread,

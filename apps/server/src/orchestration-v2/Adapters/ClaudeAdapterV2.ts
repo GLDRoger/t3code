@@ -774,13 +774,21 @@ export type ClaudeAgentSdkQueryOptions = Omit<
   readonly permissionMode: NonNullable<ClaudeQueryOptions["permissionMode"]>;
 } & ClaudeAgentSdkThreadIdentity;
 
-export interface ClaudeAgentSdkQueryOpenInput {
-  readonly refresh?: true;
-  readonly resume?: true;
-  readonly options: ClaudeAgentSdkQueryOptions & { readonly maxTurns?: 1 };
+export type ClaudeAgentSdkQueryOpenInput = {
   readonly threadId: ThreadId;
   readonly providerSessionId: OrchestrationV2ProviderSession["id"];
-}
+} & (
+  | {
+      readonly refresh?: never;
+      readonly resume?: true;
+      readonly options: ClaudeAgentSdkQueryOptions & { readonly maxTurns?: never };
+    }
+  | {
+      readonly refresh: true;
+      readonly resume?: never;
+      readonly options: ClaudeAgentSdkQueryOptions & { readonly maxTurns?: 1 };
+    }
+);
 
 export interface ClaudeAgentSdkQuerySession {
   readonly allowsRefresh?: boolean;
@@ -2311,8 +2319,9 @@ export const layerQueryRunner: Layer.Layer<
                   phase: error.method,
                 });
               }
-              const { resume, ...options } = input.options;
-              if (resume !== undefined) return yield* openQuery(input);
+              if (input.refresh || input.options.resume !== undefined)
+                return yield* openQuery(input);
+              const { resume: _resume, ...options } = input.options;
               const sessionId = yield* random.uuidV4();
               return yield* openQuery({ ...input, options: { ...options, sessionId } });
             }),
@@ -6047,6 +6056,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   let modelCatalog = yield* loadModelCatalog;
   // Results report the window Claude Code compacts against; outside the catalog it is the only source.
   const reportedContextWindows = new Map<string, number>();
+  // Idle release discards the session runtime, not the adapter or Claude's transcript.
+  const modelLedgers = new Map<string, ClaudeModelLedger>();
   const claudeContextWindow = (modelSelection: ModelSelection): number | null =>
     resolveClaudeCatalogContextWindowTokens(modelCatalog, modelSelection) ??
     reportedContextWindows.get(
@@ -6270,7 +6281,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
       Effect.provideService(Path.Path, path),
     );
 
-  return {
+  return ProviderAdapter.ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
     driver: CLAUDE_PROVIDER,
     getCapabilities: Effect.fn("ClaudeAdapterV2.getCapabilities")(function () {
@@ -6388,7 +6399,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         // Sessions Claude Code reported gone on resume; resumeThread fails them into a fresh session.
         const missingNativeThreads = new Set<string>();
         const pdfBudgets = new Map<string, ReturnType<typeof makeClaudeAttachmentBudget>>();
-        const modelLedgers = new Map<string, ClaudeModelLedger>();
         // MCP app notes already in each native session's history, by key. Cleared when it compacts.
         const deliveredAppContext = new Map<string, ReadonlyMap<string, string>>();
         const latestPlanByKind = yield* Ref.make(new Map<string, OrchestrationV2PlanArtifact>());
@@ -14592,7 +14602,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               });
               const result = yield* launchPermit.withPermitsIfAvailable(1)(refresh);
               return yield* Effect.fromOption(result).pipe(Effect.mapError(refreshBusy));
-            }),
+            }).pipe(
+              Effect.catchTags({
+                ClaudeAgentSdkQueryRunnerError: (cause) =>
+                  Effect.fail(
+                    new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver: CLAUDE_PROVIDER,
+                      detail: "Claude refresh query failed.",
+                      cause,
+                    }),
+                  ),
+              }),
+            ),
         );
 
         const interruptTurn = Effect.fn("ClaudeAdapterV2.interruptTurn")(
@@ -15183,6 +15204,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               ...turnInput,
               message: { ...turnInput.message, text: "/compact" },
             }),
+          refreshNativeThread,
           steerTurn,
           mcpApps: {
             listTools: Effect.fn("ClaudeAdapterV2.listMcpTools")(function* ({
@@ -15698,7 +15720,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           ),
         };
 
-        return { ...runtime, refreshNativeThread };
+        return runtime;
       },
       (effect, input) =>
         effect.pipe(
@@ -15712,7 +15734,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           ),
         ),
     ),
-  } satisfies ProviderAdapter.ProviderAdapterV2["Service"];
+  });
 });
 
 export type ClaudeAdapterV2DriverEnv =

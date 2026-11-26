@@ -308,7 +308,7 @@ it.effect.each([
           CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
           MCP_CONNECTION_NONBLOCKING: "0",
         },
-      };
+      } satisfies typeof leadRest;
       assert.deepStrictEqual(leadRest, confinedBaseline);
       const { hooks: sharedHooks, ...sharedRest } = sharedOpened ?? lead;
       assert.deepStrictEqual(sharedRest, confinedBaseline);
