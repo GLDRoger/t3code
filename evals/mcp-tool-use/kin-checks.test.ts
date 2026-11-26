@@ -3,9 +3,13 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 import * as NodeZlib from "node:zlib";
 import { assert, it } from "@effect/vitest";
+import * as Schema from "effect/Schema";
+
+import { outlineOf, WHOLE_DOC } from "../../apps/server/src/kin/work/docBody.ts";
+import { ReadResult } from "../../apps/server/src/kin/work/leadDocs.ts";
 
 import { kinCaseText, kinMockProblems, kinPromptProblems } from "./kin-checks.ts";
-import { buildBase, normalizeToolName } from "./run.ts";
+import { buildBase, McpToolUseCase, nextMock, normalizeToolName } from "./run.ts";
 
 const known = new Set(["delegate_task"]);
 const lead = { name: "Finance", domain: "finance", charter: "Keeps the books.", you: true };
@@ -69,6 +73,36 @@ it.each([
   ],
 ] as const)("%s", (_, mocks, expected) => {
   assert.deepStrictEqual(kinMockProblems(mocks, known), [...expected]);
+});
+
+it("returns the whole sales offering for an unsectioned read within the real length limit", () => {
+  const decodeCase = Schema.decodeUnknownSync(Schema.fromJsonString(McpToolUseCase));
+  const decodeRead = Schema.decodeUnknownSync(ReadResult);
+  const cases = NodeFS.readFileSync(new URL("./cases/kin-sales.ndjson", import.meta.url), "utf8")
+    .trim()
+    .split("\n")
+    .map(decodeCase);
+  const checked: Array<string> = [];
+  for (const { id, setup } of cases) {
+    const input = { key: "D-12" };
+    const { mock } = nextMock(
+      { mockCalls: new Map(), mockHistory: new Map() },
+      "doc_read",
+      setup.mocks?.doc_read,
+      input,
+    );
+    if (typeof mock !== "object" || mock === null || !("key" in mock) || mock.key !== input.key)
+      continue;
+    const doc = decodeRead(mock);
+    if (doc.chars > WHOLE_DOC) continue;
+    checked.push(id);
+    assert.isString(doc.body, id);
+    assert.strictEqual(doc.chars, doc.body!.length, id);
+    assert.deepEqual(doc.outline, outlineOf(doc.body!), id);
+    assert.isUndefined(doc.sections, id);
+    assert.isUndefined(doc.note, id);
+  }
+  assert.isNotEmpty(checked);
 });
 
 const quoted = (label: string) => `> BEGIN QUOTE: ${label}\n> {}\n> END QUOTE`;
