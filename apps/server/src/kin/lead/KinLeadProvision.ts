@@ -161,8 +161,11 @@ const transaction = <A, E, R>(
       ),
     );
 
-/** People tell agents apart by name, so no two live ones in a company share it, in any case. */
-const nameKey = (name: string) => name.trim().toLowerCase();
+/**
+ * People tell agents apart by name, so no two live ones in a company share it, in any case.
+ * NFC matches a combining accent to the precomposed one; upper-then-lower folds `ς` with `σ`.
+ */
+const nameKey = (name: string) => name.trim().normalize("NFC").toUpperCase().toLowerCase();
 const namedLike = (leads: ReadonlyArray<LeadSummary>, name: string, except?: KinAgentId) =>
   leads.find(
     (lead) =>
@@ -378,9 +381,8 @@ const change = Effect.fn("KinLeadProvision.change")(function* (
     intro: fields.intro?.trim() ?? lead.intro,
     roleTags: fields.roleTags === undefined ? lead.roleTags : [...new Set(fields.roleTags)],
   };
-  // Only a new name is checked, so agents that shared one before this rule keep their other edits.
-  const twin =
-    nameKey(next.name) === nameKey(lead.name) ? undefined : namedLike(live, next.name, agentId);
+  // Only a changed spelling is checked, so agents that shared a name before this rule keep their other edits.
+  const twin = next.name === lead.name ? undefined : namedLike(live, next.name, agentId);
   if (twin !== undefined) return yield* nameTaken(twin.name);
   const roleTags = yield* encodeRoleTags(next.roleTags).pipe(Effect.orDie);
   const changed = yield* sql`UPDATE kin_leads SET name = ${next.name}, domain = ${next.domain},

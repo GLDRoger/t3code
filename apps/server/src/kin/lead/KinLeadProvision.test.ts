@@ -19,7 +19,9 @@ import {
 import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Layer from "effect/Layer";
@@ -1108,7 +1110,7 @@ describe("KinLeadProvision", () => {
           WHERE a.org_id = ${tech.orgId} AND a.agent_id = ${tech.agentId} ORDER BY a.agent_id`,
         [{ name: "Tech lead", lead: "Tech lead", level: "L0", chat: tech.ownerChatId }],
       );
-      // An omitted field stays; two live leads can't share a name and domain.
+      // An omitted field stays; two live leads can't share a name.
       assert.deepInclude(yield* edit({ domain: "platform" }), {
         name: "Tech lead",
         charter: "Ship the app.",
@@ -1178,6 +1180,88 @@ describe("KinLeadProvision", () => {
       yield* Provision.retireOnHost(growth.agentId);
       assert.deepInclude(yield* rename("growth"), { name: "growth" });
       assert.strictEqual(yield* refused(Provision.restoreOnHost(growth.agentId)), taken("growth"));
+    }).pipe(Effect.provide(paired)),
+  );
+  it.effect(
+    "compares names caselessly after canonical normalization, and keeps accents apart",
+    () =>
+      Effect.gen(function* () {
+        const make = (name: string, domain: string) =>
+          Provision.create({ ...input(owner, []), name, domain });
+        const named = (name: string, domain: string) =>
+          make(name, domain).pipe(Effect.map((result) => result.lead.name));
+        assert.strictEqual(yield* named("Σ", "greek"), "Σ");
+        assert.strictEqual(yield* refusal(make("ς", "other")), "conflict");
+        assert.strictEqual(yield* refusal(make("σ", "other")), "conflict");
+        assert.strictEqual(yield* named("\u00c9lodie", "french"), "\u00c9lodie");
+        assert.strictEqual(yield* refusal(make("E\u0301lodie", "other")), "conflict");
+        assert.strictEqual(yield* refusal(make("\u00e9LODIE", "other")), "conflict");
+        assert.strictEqual(yield* named("Elodie", "plain"), "Elodie");
+      }).pipe(Effect.provide(paired)),
+  );
+  it.effect(
+    "refuses a rename onto an older duplicate, but still lets that pair edit the rest",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const ada = (yield* Provision.create(input(owner, []))).lead;
+        const twin = (yield* Provision.create({
+          ...input(owner, []),
+          name: "Bea",
+          domain: "sales",
+        })).lead;
+        // Two agents could share a name before the rule existed.
+        yield* sql`UPDATE kin_leads SET name = 'ADA' WHERE org_id = ${twin.orgId} AND agent_id = ${twin.agentId}`;
+        yield* sql`UPDATE kin_agents SET display_name = 'ADA' WHERE org_id = ${twin.orgId} AND agent_id = ${twin.agentId}`;
+        const edit = (fields: Parameters<typeof Provision.update>[0]["fields"]) =>
+          Provision.update({ editor: owner, orgId: ada.orgId, agentId: ada.agentId, fields });
+        assert.strictEqual(yield* refusal(edit({ name: "ADA" })), "conflict");
+        assert.deepInclude(yield* edit({ charter: "Ship it.", domain: "platform" }), {
+          name: "Ada",
+          charter: "Ship it.",
+        });
+        assert.deepInclude(yield* edit({ name: "Ada", charter: "Ship it now." }), { name: "Ada" });
+      }).pipe(Effect.provide(paired)),
+  );
+  it.effect("lets only one of two concurrent renames take a free name", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const first = (yield* Provision.create(input(owner, []))).lead;
+      const second = (yield* Provision.create({
+        ...input(owner, []),
+        name: "Bea",
+        domain: "sales",
+      })).lead;
+      // Both writers are parked at the gate before it opens, so neither has read the names first.
+      const go = yield* Deferred.make<void>();
+      const writer = (agentId: KinAgentId) =>
+        Effect.gen(function* () {
+          const ready = yield* Deferred.make<void>();
+          const fiber = yield* Deferred.succeed(ready, undefined).pipe(
+            Effect.andThen(Deferred.await(go)),
+            Effect.andThen(
+              Provision.update({
+                editor: owner,
+                orgId: first.orgId,
+                agentId,
+                fields: { name: "Free" },
+              }),
+            ),
+            Effect.as("renamed"),
+            Effect.catch((error) => Effect.succeed(isRefusal(error) ? error.reason : "other")),
+            Effect.forkChild,
+          );
+          yield* Deferred.await(ready);
+          return fiber;
+        });
+      const fibers = [yield* writer(first.agentId), yield* writer(second.agentId)];
+      yield* Deferred.succeed(go, undefined);
+      const outcomes = yield* Effect.forEach(fibers, Fiber.join);
+      assert.sameMembers(outcomes, ["renamed", "conflict"]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT name FROM kin_leads WHERE org_id = ${first.orgId} AND name = 'Free'`,
+        [{ name: "Free" }],
+      );
     }).pipe(Effect.provide(paired)),
   );
   it.effect("tells the owner when the nightly memory update changes models", () =>
