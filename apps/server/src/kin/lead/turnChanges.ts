@@ -7,6 +7,7 @@ import {
   type KinOrgId,
   type KinTurnChange,
   type KinTurnChanges,
+  type KinWakeupId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -115,6 +116,25 @@ const whatOf = (
   return unique.length === 0 ? "changed" : unique.join(", ");
 };
 
+const visibleChange = (sql: SqlClient.SqlClient, viewer: KinViewer) => sql`
+  EXISTS (SELECT 1 FROM kin_records r WHERE r.org_id = c.org_id
+    AND r.record_id = c.record_id AND ${seenBy(sql, viewer)})
+  AND ${changeSql(sql, viewer).listed}`;
+
+export const hasTurnChanges = Effect.fn("KinAgentChanges.hasTurnChanges")(function* (
+  viewer: KinViewer,
+  orgId: KinOrgId,
+  wakeupId: KinWakeupId,
+  agentId: AgentId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [change] = yield* sql`SELECT 1 FROM kin_record_changes c
+    WHERE c.org_id = ${orgId} AND c.wakeup_id = ${wakeupId}
+      AND c.actor_kind = 'agent' AND c.actor_id = ${agentId} AND ${visibleChange(sql, viewer)}
+    LIMIT 1`;
+  return change !== undefined;
+});
+
 /**
  * What each agent reply's wake-up changed, as this viewer sees it, oldest first: one read for the
  * whole page. A split reply carries its receipt only on its last bubble, even across pages.
@@ -148,9 +168,7 @@ export const turnChanges = Effect.fn("KinAgentChanges.turn")(function* (
           ROW_NUMBER() OVER (PARTITION BY m.message_id ORDER BY c.seq) AS n
         FROM m LEFT JOIN kin_record_changes c ON c.org_id = ${orgId}
           AND c.wakeup_id = m.wakeup_id AND c.actor_kind = 'agent' AND c.actor_id = m.agent_id
-          AND EXISTS (SELECT 1 FROM kin_records r WHERE r.org_id = c.org_id
-            AND r.record_id = c.record_id AND ${seenBy(sql, viewer)})
-          AND ${change.listed})
+          AND ${visibleChange(sql, viewer)})
       SELECT p.message_id AS "messageId", p.total, c.actor_id AS "agentId", ${change.columns},
         (SELECT json_group_object(json_extract(f.value, '$.to'),
             COALESCE(pp.display_name, aa.display_name))

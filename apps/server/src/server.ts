@@ -5,6 +5,7 @@ import * as KinGitHubAppSetupHttp from "./kin/github/appSetupHttp.ts";
 import * as KinGitHubHookHttp from "./kin/github/hookHttp.ts";
 import * as ProofKeySessions from "./kin/auth/ProofKeySessions.ts";
 import * as Kin from "./kin/layer.ts";
+import * as ToolBlockStarts from "./kin/reply/ToolBlockStarts.ts";
 import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEventLoggers";
 import type { RelayManagedEndpointRuntimeConfig } from "@t3tools/contracts/relay";
 import * as Random from "effect/Random";
@@ -832,6 +833,7 @@ const layerRuntimeCoreDependencies = layerRuntimeCoreDependenciesBase.pipe(
       ResetCreditCoordinator.layer,
       ProviderLatestVersions.layer,
       McpProviderSessions.layer,
+      ToolBlockStarts.layer,
     ),
   ),
   Layer.provideMerge(
