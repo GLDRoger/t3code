@@ -57,8 +57,9 @@ import { isOrgOwner } from "../lead/orgState.ts";
 import { sectionsOf } from "../work/docBody.ts";
 import { sensitiveNow } from "../work/recordRows.ts";
 import { viewVersionVisible } from "../work/teamView.ts";
-import { encodeNames, nameKeys, nameThreads, withLinks } from "./messageLinks.ts";
+import { encodeNames, linkAccessStamp, nameKeys, nameThreads, withLinks } from "./messageLinks.ts";
 import { messageForViewer } from "./messageView.ts";
+import { dismissedArrivalSql } from "./arrivalNotes.ts";
 import { chatShared, readableBy, readableFrom, recordJoin } from "./sharing.ts";
 import { accessSql } from "../people/KinAccess.ts";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -582,10 +583,12 @@ export class KinChatRepository extends Context.Service<
         readonly memberId: KinMemberId;
         readonly afterSeq: number;
         readonly afterChangeSeq?: number | undefined;
+        readonly includeAccessStamp?: boolean;
       },
     ) => Effect.Effect<
       {
         readonly reset: boolean;
+        readonly accessStamp?: string;
         /** The reset is a clear made after the caller's cursor: nothing it holds survives. */
         readonly cleared?: boolean;
         /** The chat's `last_seq` at its last clear; 0 when it never was. */
@@ -598,6 +601,9 @@ export class KinChatRepository extends Context.Service<
       RepositoryError
     >;
     readonly listOpenWaiting: (
+      input: Scope & { readonly personId: KinPersonId },
+    ) => Effect.Effect<ReadonlyArray<KinWaitingItem>, RepositoryError>;
+    readonly listOpenWaitingRelayedBy: (
       input: Scope & { readonly personId: KinPersonId },
     ) => Effect.Effect<ReadonlyArray<KinWaitingItem>, RepositoryError>;
     /** What waits on the owner that this viewer, a co-owner, may see (`ownersWaiting`). */
@@ -1699,7 +1705,9 @@ const make = Effect.gen(function* () {
           };
         // Without a change cursor, replay only new messages; change_seq runs ahead of seq.
         const afterChangeSeq = input.afterChangeSeq ?? lastChangeSeq;
-        const visible = sql`(${member.role === "owner" ? 1 : 0} = 1 OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${member.memberId}) AND ${readableBy(sql, input.orgId, member.memberId)}`;
+        const visible = sql`(${member.role === "owner" ? 1 : 0} = 1 OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${member.memberId})`;
+        const arrival = member.principal._tag === "person" ? dismissedArrivalSql(sql) : sql`0`;
+        const readable = readableBy(sql, input.orgId, member.memberId);
         const messages = yield* SqlSchema.findAll({
           Request: Schema.Unknown,
           Result: MessageRow,
@@ -1707,11 +1715,11 @@ const make = Effect.gen(function* () {
             sql`SELECT ${sql.literal(messageColumns)} FROM kin_messages
               WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id IN (
                 SELECT message_id FROM (SELECT message_id FROM kin_messages
-                  WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND seq > ${input.afterSeq} AND ${visible}
+                  WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND seq > ${input.afterSeq} AND ${visible} AND ${readable} AND NOT ${arrival}
                   ORDER BY seq LIMIT 201)
                 UNION
                 SELECT message_id FROM (SELECT message_id FROM kin_messages
-                  WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND change_seq > ${afterChangeSeq} AND ${visible}
+                  WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND change_seq > ${afterChangeSeq} AND (${visible} OR ${arrival}) AND ${readable}
                   ORDER BY change_seq, seq LIMIT 201)
               ) ORDER BY seq LIMIT 201`,
         })(input);
@@ -1733,8 +1741,15 @@ const make = Effect.gen(function* () {
                 execute: () =>
                   sql`SELECT ${sql.literal(widgetColumns)} FROM kin_widgets WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND (message_id IN ${sql.in(messages.map((m) => m.messageId))} OR widget_id IN ${sql.in(messages.flatMap((m) => (m.widgetId === null ? [] : [m.widgetId])))}) ORDER BY message_id, widget_id`,
               })(input);
+        const accessStamp =
+          input.includeAccessStamp === true && member.principal._tag === "person"
+            ? yield* linkAccessStamp(input.orgId, member.principal.personId).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              )
+            : undefined;
         return {
           reset: false,
+          ...(accessStamp === undefined ? {} : { accessStamp }),
           messages: yield* linked(
             input.orgId,
             member.principal,
@@ -1762,6 +1777,24 @@ const make = Effect.gen(function* () {
         );
       },
       Effect.mapError(toRepositoryError("KinChatRepository.listOpenWaiting")),
+    ),
+    listOpenWaitingRelayedBy: Effect.fn("KinChatRepository.listOpenWaitingRelayedBy")(
+      function* (input) {
+        return yield* SqlSchema.findAll({
+          Request: Schema.Unknown,
+          Result: WaitingRow,
+          execute: () =>
+            sql`SELECT ${sql.literal(waitingBaseColumns)} FROM kin_waiting
+              WHERE org_id = ${input.orgId} AND person_id <> ${input.personId}
+                AND reason = 'question' AND widget_id IS NULL AND resolved_at IS NULL
+                AND EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = kin_waiting.org_id
+                  AND m.message_id = kin_waiting.message_id AND m.chat_id = kin_waiting.chat_id
+                  AND json_extract(m.relay_json, '$.kind') = 'sent_by'
+                  AND json_extract(m.relay_json, '$.personId') = ${input.personId})
+              ORDER BY created_at, waiting_id`,
+        })(input).pipe(NodeSqliteClient.readOnly);
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.listOpenWaitingRelayedBy")),
     ),
     listOwnersOpenWaiting: Effect.fn("KinChatRepository.listOwnersOpenWaiting")(
       function* (input) {
@@ -2416,6 +2449,7 @@ const make = Effect.gen(function* () {
  AND chat_id = ${input.chatId} AND seq < ${request.beforeSeq}
  AND (${viewer === null || viewer.role === "owner" ? 1 : 0} = 1 OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${viewer?.memberId ?? null})
  AND ${readableBy(sql, input.orgId, viewer?.memberId)}
+ AND NOT ${viewer?.principal._tag === "person" ? dismissedArrivalSql(sql) : sql`0`}
  ORDER BY seq DESC LIMIT ${request.limit + 1}`,
               })(input);
               const shaped = rows

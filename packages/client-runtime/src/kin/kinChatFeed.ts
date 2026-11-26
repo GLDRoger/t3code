@@ -457,6 +457,14 @@ const authorKey = (message: KinMessage) =>
       ? `agent:${message.author.agentId}`
       : message.author.memberId;
 
+// The server's `isAgentHandoff` (apps/server/src/kin/chat/sharing.ts); the two must say the same.
+// What one agent passed another is that agent's input: a device may still hold rows sent before.
+const handoffPrefixes = ["kin-handoff:", "kin-handoff-back:"] as const;
+const isAgentHandoff = (message: KinMessage) =>
+  message.discussionId === undefined &&
+  message.relay?.personId === undefined &&
+  handoffPrefixes.some((prefix) => message.messageId.startsWith(prefix));
+
 type FeedEntry = KinMessage | KinHeldDraft;
 
 const FLOOR_RUN_ID = /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i;
@@ -632,6 +640,7 @@ export function buildKinFeedRows(
     .filter(
       (message) =>
         message.status !== "dismissed" &&
+        !isAgentHandoff(message) &&
         !(message.kind === "widget_action" && kinTapAnswersChoice(message.body)),
     )
     .map((message) => kinMessageOnMyClock(message));

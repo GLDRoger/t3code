@@ -876,6 +876,8 @@ export const KinChatStreamEvent = Schema.Union([
      * their member move. Never another member's. Absent from servers without it.
      */
     readSeq: Schema.optional(NonNegativeInt),
+    /** On a stream's first backlog: changes when what this reader may open as a link may have changed, so a client drops its cached links for the chat. Absent from older hosts. */
+    accessStamp: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
   }),
   Schema.TaggedStruct("reset", {
     lastSeq: NonNegativeInt,
