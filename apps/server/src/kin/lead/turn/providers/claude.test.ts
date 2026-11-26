@@ -271,7 +271,7 @@ it.effect.each([
       }
       const config = yield* ServerConfig.ServerConfig;
       const { hooks: leadHooks, ...leadRest } = leadOpened ?? lead;
-      assert.deepStrictEqual(leadRest, {
+      const confinedBaseline = {
         ...lead,
         // The instructions alone: no coding-agent preset, no T3 thread guidance.
         systemPrompt: {
@@ -297,7 +297,6 @@ it.effect.each([
           // G07: auto-memory's folder, under the host's home, named the account to a teammate.
           autoMemoryEnabled: false,
           autoDreamEnabled: false,
-          idleCompaction: false,
           env: { ANTHROPIC_BASE_URL: "https://gateway.test", ENABLE_TOOL_SEARCH: "true" },
         },
         env: {
@@ -307,10 +306,31 @@ it.effect.each([
           CLAUDE_CONFIG_DIR: configDir,
           ENABLE_TOOL_SEARCH: "true",
           CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-          CLAUDE_CODE_PROMPT_CACHE_TTL: "1h",
           MCP_CONNECTION_NONBLOCKING: "0",
         },
-      });
+      };
+      assert.deepStrictEqual(leadRest, confinedBaseline);
+      const { hooks: sharedHooks, ...sharedRest } = sharedOpened ?? lead;
+      assert.deepStrictEqual(sharedRest, confinedBaseline);
+      for (const [seat, expectedPrompt] of [
+        [reviewOpened, REVIEW_SEAT_INSTRUCTIONS],
+        [billsOpened, kinInstructions("confined", "claudeAgent", false)],
+      ] as const) {
+        const { hooks, ...rest } = seat ?? lead;
+        assert.deepStrictEqual(rest, {
+          ...confinedBaseline,
+          systemPrompt: { type: "custom", prompt: expectedPrompt, snapshot: false },
+          tools: ["ToolSearch"],
+          disallowedTools: [...(lead.disallowedTools ?? []), ...builtinTools],
+        });
+        assert.deepStrictEqual(Object.keys(hooks ?? {}), ["PreToolUse"]);
+      }
+      assert.deepStrictEqual(Object.keys(sharedHooks ?? {}), ["PreToolUse"]);
+      assert.notProperty(dreamOpened?.env ?? {}, "CLAUDE_CODE_PROMPT_CACHE_TTL");
+      assert.notProperty(
+        typeof dreamOpened?.settings === "object" ? dreamOpened.settings : {},
+        "idleCompaction",
+      );
       assert.deepStrictEqual(leadHooks?.PreToolUse?.length, 1);
       for (const name of kinSecretVariables) {
         assert.notProperty(leadOpened?.env ?? {}, name);
@@ -508,6 +528,14 @@ it.effect(
         autoDreamEnabled: false,
         env: { ENABLE_TOOL_SEARCH: "true" },
         idleCompaction: false,
+      });
+      const preconfigured = yield* open("kin:tech", {
+        ...lead,
+        env: { ...lead.env, CLAUDE_CODE_PROMPT_CACHE_TTL: "5m" },
+      });
+      assert.deepStrictEqual(preconfigured?.env, {
+        ...fullEnv,
+        CLAUDE_CODE_PROMPT_CACHE_TTL: "5m",
       });
       assert.sameMembers(Object.keys(fullHooks ?? {}), [
         "PreToolUse",
@@ -977,6 +1005,29 @@ it.effect(
         child?.env?.PATH,
         `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:/usr/bin`,
       );
+      const { hooks: childHooks, ...childOptions } = child ?? task;
+      const { env: _taskEnv, settings: taskSettings, ...taskOptions } = task;
+      assert.deepStrictEqual(childOptions, {
+        ...taskOptions,
+        settingSources: [],
+        strictMcpConfig: true,
+        settings: {
+          ...(typeof taskSettings === "object" ? taskSettings : {}),
+          attribution: { commit: "", pr: "", sessionUrl: false },
+          includeCoAuthoredBy: false,
+          autoMemoryEnabled: false,
+          autoDreamEnabled: false,
+          env: { ENABLE_TOOL_SEARCH: "true" },
+        },
+        env: {
+          PATH: `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:/usr/bin`,
+          HOME: "/home/kin",
+          KIN_AGENT_NAME: "Lead",
+          ENABLE_TOOL_SEARCH: "true",
+          CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+        },
+      });
+      assert.deepStrictEqual(Object.keys(childHooks ?? {}), ["PreToolUse"]);
       const own = yield* open("kin:tech", optionsAt(`${stateDir}/kin/memory-read`, task.env));
       assert.strictEqual(own?.env?.KIN_AGENT_NAME, "Lead");
       for (const worker of [child, grandchild, yield* open(parent)]) {

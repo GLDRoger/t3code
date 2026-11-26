@@ -181,7 +181,7 @@ const apply = (
             // Its folder is named after the host's account: a lead never sees it (G07).
             autoMemoryEnabled: false,
             autoDreamEnabled: false,
-            idleCompaction: false,
+            ...(plan.seat === "owner" ? { idleCompaction: false } : {}),
             env: { ...session.auth.env, ...settings?.env, ENABLE_TOOL_SEARCH: loading.search },
           },
         }),
@@ -195,7 +195,9 @@ const apply = (
           }),
       ENABLE_TOOL_SEARCH: loading.search,
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
-      CLAUDE_CODE_PROMPT_CACHE_TTL: "1h",
+      ...(plan.seat === "owner" && environment.CLAUDE_CODE_PROMPT_CACHE_TTL === undefined
+        ? { CLAUDE_CODE_PROMPT_CACHE_TTL: "1h" }
+        : {}),
       // Every wake-up is a fresh session: its first request otherwise may go out before Kin's
       // tools are listed, and a different tool block misses the prompt cache.
       ...(plan.seat === "delegated" ? {} : { MCP_CONNECTION_NONBLOCKING: "0" }),
