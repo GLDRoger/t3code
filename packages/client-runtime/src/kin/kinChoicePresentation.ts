@@ -731,7 +731,9 @@ export function kinChoiceDecidedLine(
       return `${who} ${mail && view.send.outcome?.tone === "ok" ? "sent it" : "confirmed it"}.`;
     return `${who} chose not to ${mail ? "send it" : "go ahead"}.`;
   }
-  return `${who} chose “${answer.label}”.`;
+  const chosenLine = `${who} chose “${answer.label}”`;
+  if (view.outcome !== null && view.outcome.title.replace(/\.+$/u, "") === chosenLine) return null;
+  return `${chosenLine}.`;
 }
 
 /** "Undone by you at 9:52 AM.", or by name on another day: under a taken default's note. */
