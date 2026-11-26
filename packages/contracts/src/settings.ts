@@ -17,6 +17,7 @@ import {
   ForwardCompatibleNullable,
   ForwardCompatibleOptional,
   OmittedWhenNull,
+  NonNegativeInt,
   ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -1390,6 +1391,16 @@ export const CloudSpeechCredentials = Schema.Struct({
   openrouter: CloudSpeechCredential,
 });
 
+const KinSessionCompactAtTokens = NonNegativeInt.pipe(
+  Schema.decodeTo(
+    NonNegativeInt,
+    SchemaTransformation.transform({
+      decode: (tokens) => Math.min(150_000, Math.max(70_000, tokens)),
+      encode: (tokens) => tokens,
+    }),
+  ),
+);
+
 export const ServerSettings = Schema.Struct({
   // Null means unmigrated; empty is authoritative and must not resurrect cleared preferences.
   favorites: Schema.NullOr(ModelFavorites).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -1406,6 +1417,11 @@ export const ServerSettings = Schema.Struct({
   fastWorktreeCheckout: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Kin, experimental: agents may also run on Codex models, confined to their tools in every chat. */
   kinNonClaudeAgents: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  kinSessionCarry: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  kinSessionUpkeep: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  kinSessionCompactAtTokens: KinSessionCompactAtTokens.pipe(
+    Schema.withDecodingDefault(Effect.succeed(100_000)),
+  ),
   /** Server-maintained history keeps old worktrees eligible for cleanup and review diffs. */
   previousWorktreesDirectories: Schema.Array(TrimmedString).pipe(
     Schema.withDecodingDefault(Effect.succeed([])),
@@ -1895,6 +1911,9 @@ export const ServerSettingsPatch = Schema.Struct({
   worktreesDirectory: Schema.optionalKey(TrimmedString),
   fastWorktreeCheckout: Schema.optionalKey(Schema.Boolean),
   kinNonClaudeAgents: Schema.optionalKey(Schema.Boolean),
+  kinSessionCarry: Schema.optionalKey(Schema.Boolean),
+  kinSessionUpkeep: Schema.optionalKey(Schema.Boolean),
+  kinSessionCompactAtTokens: Schema.optionalKey(KinSessionCompactAtTokens),
   responseStreamingMode: Schema.optionalKey(ResponseStreamingMode),
   agentFeedback: Schema.optionalKey(Schema.Struct({ mode: AgentFeedbackMode })),
   enableProviderUpdateChecks: Schema.optionalKey(Schema.Boolean),
