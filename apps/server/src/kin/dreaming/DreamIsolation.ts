@@ -129,6 +129,12 @@ export const claudeQueryRunner = <E, R>(
         ...runner,
         open: Effect.fn("KinDreamIsolation.open")(function* (input) {
           if (!input.threadId.startsWith(threadPrefix)) return yield* runner.open(input);
+          if (input.refresh) {
+            return yield* new ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerError({
+              method: "refresh",
+              cause: new Error("A Kin dream cannot refresh a Claude session."),
+            });
+          }
           const auth = yield* confiner.ownerAuth(input.options.env);
           const root = yield* confiner.root(input.options.cwd);
           const confinement = confiner.hook({ root, tools: dreamTools });
