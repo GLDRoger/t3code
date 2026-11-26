@@ -341,7 +341,7 @@ export const repaidSeenSenses = Effect.fn("KinPulse.repaidSeenSenses")(function*
       return {
         ...shared,
         key: `repaid_seen:${debit.key}:short`,
-        consequence: `${paid} but doesn't add up to their oldest owed expenses (${formatKinMoney(owedMinor, debit.currency)} over ${owedCount} expense${owedCount === 1 ? "" : "s"}), so Kin marks nothing. Mark what it repaid on the expenses in Money.`,
+        consequence: `${paid} and may not match their oldest owed expenses (${formatKinMoney(owedMinor, debit.currency)} over ${owedCount} expense${owedCount === 1 ? "" : "s"}): not checked, so Kin marks nothing. Mark what it repaid on the expenses in Money.`,
         wake: "brief",
       };
     const one = repays.length === 1;
