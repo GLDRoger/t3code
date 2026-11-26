@@ -1223,6 +1223,12 @@ export interface KinListRowView {
 }
 
 /** The table's columns: what the definition has, in the order a person reads an entry. */
+/** A list's Client filter, as its Client column: where an entry has a client, or one is picked. */
+export const kinListOffersClients = (
+  records: ReadonlyArray<Pick<KinRecord, "party">>,
+  filter: Pick<KinListFilter, "party" | "noParty">,
+) => filter.party !== null || filter.noParty || records.some((record) => record.party !== undefined);
+
 export function kinListColumns(
   def: KinListDefinition,
   records: ReadonlyArray<KinRecord>,

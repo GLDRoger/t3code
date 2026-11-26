@@ -17,6 +17,7 @@ import {
   KIN_LIST_DEFAULT_FILTER,
   kinFieldText,
   kinListColumns,
+  kinListOffersClients,
   kinListWatches,
   kinListRemindChoices,
   kinListCheckWords,
@@ -342,6 +343,15 @@ describe("a list by its definition", () => {
       shelf: "rec-acme",
     };
     const row = kinListRow(record({ fields }), def, context);
+    // Like its Client column, its Client filter shows only where an entry has a client.
+    const party = { recordId: "rec-acme", key: "C-1", title: "Acme" } as never;
+    expect(
+      [
+        kinListOffersClients([record({})], KIN_LIST_DEFAULT_FILTER),
+        kinListOffersClients([record({}), record({ party })], KIN_LIST_DEFAULT_FILTER),
+        kinListOffersClients([], { ...KIN_LIST_DEFAULT_FILTER, noParty: true }),
+      ],
+    ).toEqual([false, true, true]);
     expect(kinListColumns(def, [record({})]).map((column) => column.label)).toEqual([
       "Entry",
       "Status",
