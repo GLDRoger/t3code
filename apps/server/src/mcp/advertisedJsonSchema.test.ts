@@ -131,8 +131,8 @@ it("retains selected descriptions and advertises the remaining nested field shap
       },
     },
   });
-  expect(Tool.getJsonSchema(tool).properties?.rows).toHaveProperty(
-    "description",
+  expect(Tool.getJsonSchema(tool).properties).toHaveProperty(
+    "rows.description",
     "An array of rows.",
   );
 });

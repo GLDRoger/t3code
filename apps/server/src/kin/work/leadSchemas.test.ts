@@ -1,9 +1,10 @@
-import { assert, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import { Tool } from "effect/ai";
 import { advertisedJsonSchema } from "../../mcp/advertisedJsonSchema.ts";
+import { inputPropertyPaths } from "../mcp/inputPropertyPaths.testHelper.ts";
 import { ImportHeader } from "./importFormat.ts";
 import { DefineInput } from "./leadMoney.ts";
 import { KinDocsToolkit } from "./mcp/docTools.ts";
@@ -84,45 +85,14 @@ it("list_define takes number and yes or no fields; imports and unknown types sta
     assert.deepStrictEqual(accepted(type), [true, false], type);
 });
 
-it("advertises the list definition core and one field shape with a type enum", () => {
-  const { properties: root } = advertisedJsonSchema(KinWorkToolkit.tools.list_define, {
-    kin: true,
-  });
-  assert.isTrue(Predicate.isObject(root));
-  if (!Predicate.isObject(root)) return;
-  assert.deepStrictEqual(Object.keys(root), [
-    "sourceEventId",
-    "proposal",
-    "template",
-    "list",
-    "name",
-    "noun",
-    "fields",
-    "categories",
-    "states",
-    "amount",
-    "currency",
-    "sensitive",
-    "team",
-    "section",
-    "dock",
-    "remindOn",
-    "check",
-  ]);
-  const fields = root.fields;
-  assert.isTrue(Predicate.isObject(fields) && Predicate.isObject(fields.items));
-  if (!Predicate.isObject(fields) || !Predicate.isObject(fields.items)) return;
-  const { properties } = fields.items;
-  assert.isTrue(Predicate.isObject(properties));
-  if (!Predicate.isObject(properties)) return;
-  assert.deepStrictEqual(Object.keys(properties), [
-    "label",
-    "type",
-    "choices",
-    "link",
-    "sensitive",
-  ]);
-  assert.deepStrictEqual(properties.type, {
+it("advertises every accepted list definition key and a single field type enum", () => {
+  const tool = KinWorkToolkit.tools.list_define;
+  const advertised = advertisedJsonSchema(tool, { kin: true });
+  assert.deepStrictEqual(
+    inputPropertyPaths(advertised),
+    inputPropertyPaths(Tool.getJsonSchema(tool)),
+  );
+  expect(advertised.properties).toHaveProperty("fields.items.properties.type", {
     type: "string",
     enum: ["text", "choice", "date", "person", "link", "money", "file", "number", "yesno"],
   });

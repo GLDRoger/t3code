@@ -7,7 +7,7 @@ import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
 
-import { AdvertisedCore } from "../../../mcp/advertisedJsonSchema.ts";
+import { AdvertisedCore, AdvertisedDescriptions } from "../../../mcp/advertisedJsonSchema.ts";
 import { ServerConfig } from "../../../config.ts";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -217,28 +217,30 @@ suggested true only on an expense, quote or invoice you inferred or couldn't rea
     success: Money.DefineResult,
   })
     .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(AdvertisedCore, {
-      path: [],
-      keys: [
-        "sourceEventId",
-        "proposal",
-        "template",
-        "list",
-        "name",
-        "noun",
-        "fields",
-        "categories",
-        "states",
-        "amount",
-        "currency",
-        "sensitive",
-        "team",
-        "section",
-        "dock",
-        "remindOn",
-        "check",
-      ],
-    }),
+    .annotate(AdvertisedDescriptions, [
+      {
+        path: [],
+        keys: [
+          "sourceEventId",
+          "proposal",
+          "template",
+          "list",
+          "name",
+          "noun",
+          "fields",
+          "categories",
+          "states",
+          "amount",
+          "currency",
+          "sensitive",
+          "team",
+          "section",
+          "dock",
+          "remindOn",
+          "check",
+        ],
+      },
+    ]),
   Tool.make("payment_record", {
     ...shared,
     description:
