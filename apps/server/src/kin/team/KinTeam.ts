@@ -650,6 +650,7 @@ const make = Effect.gen(function* () {
       readonly text: string;
       readonly intent: typeof Intent.Type;
       readonly mentions: ReadonlyArray<KinMemberId>;
+      readonly recordWakeup?: true;
     },
   ) {
     const [me] = yield* sql<{ memberId: KinMemberId }>`SELECT member_id AS "memberId"
@@ -684,6 +685,7 @@ const make = Effect.gen(function* () {
       editedAt: null,
       discussionId: row.discussionId,
       wakeupId: KinWakeupId.make(ctx.wakeupId),
+      recordWakeup: input.recordWakeup,
     });
     yield* sql.afterCommit(hub.publish({ type: "message.posted", orgId: ctx.orgId, message }));
     return message;
@@ -1037,6 +1039,7 @@ const make = Effect.gen(function* () {
           text: input.text,
           intent: end === "decide" ? "decision" : input.intent,
           mentions: yield* memberIds(ctx.orgId, row.chatId, said.to),
+          recordWakeup: true,
         });
         const now = yield* Clock.currentTimeMillis;
         const next = Turns.afterSay(row.d, said);
