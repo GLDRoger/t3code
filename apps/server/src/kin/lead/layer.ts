@@ -348,14 +348,20 @@ const memoryPullRequests = Layer.unwrap(
 const registration = Layer.mergeAll(
   SocialMcp.registration,
   SalesMcp.registration,
-  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinLeadToolkit), handlers),
-  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinWorkToolkit), workHandlers),
-  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocsToolkit), docHandlers),
-  McpHttpServer.toolkitRegistration(KinStatementToolkit, statementHandlers),
-  McpHttpServer.toolkitRegistration(KinBillToolkit, billHandlers),
-  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocumentToolkit), documentHandlers),
-  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinPictureToolkit), pictureHandlers),
-  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinPulseToolkit), pulseHandlers),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinLeadToolkit), handlers, { kin: true }),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinWorkToolkit), workHandlers, { kin: true }),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocsToolkit), docHandlers, { kin: true }),
+  McpHttpServer.toolkitRegistration(KinStatementToolkit, statementHandlers, { kin: true }),
+  McpHttpServer.toolkitRegistration(KinBillToolkit, billHandlers, { kin: true }),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocumentToolkit), documentHandlers, {
+    kin: true,
+  }),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinPictureToolkit), pictureHandlers, {
+    kin: true,
+  }),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinPulseToolkit), pulseHandlers, {
+    kin: true,
+  }),
 );
 const toolkit = LeadMemory.layer.pipe(
   Layer.provide(KinSchedules.layer),

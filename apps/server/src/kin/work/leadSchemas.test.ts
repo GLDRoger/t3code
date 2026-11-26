@@ -2,7 +2,7 @@ import { assert, it } from "@effect/vitest";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
-import { advertisedJsonSchema } from "../../mcp/advertisedJsonSchema.ts";
+import { Tool } from "effect/ai";
 import { ImportHeader } from "./importFormat.ts";
 import { DefineInput } from "./leadMoney.ts";
 import { KinDocsToolkit } from "./mcp/docTools.ts";
@@ -27,7 +27,7 @@ const FORMATTED = new Set([
   "links",
 ]);
 
-/** Each string property's name whose advertised schema states no bound and no allowed values. */
+/** Each string property's name whose validated schema states no bound and no allowed values. */
 const unbounded = (schema: unknown, name = ""): ReadonlyArray<string> => {
   if (Array.isArray(schema)) return schema.flatMap((item) => unbounded(item, name));
   if (!Predicate.isObject(schema)) return [];
@@ -46,7 +46,7 @@ const unbounded = (schema: unknown, name = ""): ReadonlyArray<string> => {
   ];
 };
 
-it("the batch-write tools advertise every free-text field's bound", () => {
+it("the batch-write tools validate every free-text field's bound", () => {
   const tools = {
     record_create: KinWorkToolkit.tools.record_create,
     record_update: KinWorkToolkit.tools.record_update,
@@ -56,7 +56,7 @@ it("the batch-write tools advertise every free-text field's bound", () => {
   };
   for (const [name, tool] of Object.entries(tools))
     assert.deepStrictEqual(
-      unbounded(advertisedJsonSchema(tool)).filter((field) => !FORMATTED.has(field)),
+      unbounded(Tool.getJsonSchema(tool)).filter((field) => !FORMATTED.has(field)),
       [],
       name,
     );

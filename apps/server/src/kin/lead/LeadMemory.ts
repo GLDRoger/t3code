@@ -143,6 +143,13 @@ export const WriteInput = Schema.Struct({
   op: Schema.Literals(["create", "update", "supersede", "invalidate"]),
   item: Schema.Struct({
     ...writableFields,
+    recorded_at: Schema.optional(writableFields.recorded_at),
+    valid_from: Schema.optional(writableFields.valid_from),
+    invalid_at: Schema.optional(writableFields.invalid_at),
+    superseded_by: Schema.optional(writableFields.superseded_by),
+    source: Schema.optional(writableFields.source),
+    said_by: Schema.optional(writableFields.said_by),
+    links: Schema.optional(writableFields.links),
     id: Schema.optional(itemId),
     chat: Schema.optional(KinChatId),
     review_by: Schema.optional(MemoryItemFrontMatter.fields.review_by),
@@ -1212,8 +1219,8 @@ const make = Effect.gen(function* () {
         message: "Use kin_defer to write deferrals.",
       });
     yield* checkSource(ctx, input.sourceEventId);
-    const { body, sensitive: asked, ...fields } = input.item;
-    const content = contentOf({ head: fields, body });
+    const { body, sensitive: asked, ...given } = input.item;
+    const content = contentOf({ head: { ...given, links: given.links ?? [] }, body });
     // The quote is judged with the item's words: it is stored beside them.
     const judged = input.quote === undefined ? content : `${content}\n${input.quote}`;
     if (looksLikeSecret(judged)) return yield* invalid(SECRET_REFUSAL);
@@ -1221,7 +1228,7 @@ const make = Effect.gen(function* () {
     const notMemory = writeRefusal(input, yield* Clock.currentTimeMillis);
     if (notMemory !== undefined) return yield* invalid(notMemory);
     const shared = audience !== "owner_only";
-    if (shared && (fields.kind !== "claim" || input.op === "supersede"))
+    if (shared && (given.kind !== "claim" || input.op === "supersede"))
       return yield* invalid(TEAM_CLAIMS_ONLY);
     // A chat other people read never stores, or says anything about, what is the owner's alone.
     if (shared && (asked || mustBeSensitive(judged))) return yield* invalid(TEAM_REFUSAL);
@@ -1230,12 +1237,12 @@ const make = Effect.gen(function* () {
     // Only the owner's own stored message, cited as this write's source, is the owner's say-so.
     const owner = (yield* ownerSaid(ctx, input.sourceEventId))?.person;
     const capped = shared && owner === undefined ? from?.person : undefined;
-    if (input.op === "supersede" && (!input.supersedes || input.supersedes === fields.id))
+    if (input.op === "supersede" && (!input.supersedes || input.supersedes === given.id))
       return yield* invalid("supersede needs `supersedes` naming another item's id.");
     if (input.op !== "supersede" && input.supersedes !== undefined)
       return yield* invalid("Only the supersede op takes `supersedes`.");
     const current = yield* memory
-      .readItemQuietly(ctx.orgId, fields.id, { lead: ctx.agentId })
+      .readItemQuietly(ctx.orgId, given.id, { lead: ctx.agentId })
       .pipe(Effect.asSome, Effect.catchTags({ MemoryNotFound: () => Effect.succeedNone }));
     const known = yield* storedLabels(ctx.orgId).pipe(provideSql);
     // Only what this turn can see may be named, so `besides` never tells what is there.
@@ -1261,6 +1268,30 @@ const make = Effect.gen(function* () {
         : Option.none();
     const stored =
       input.op === "create" || current._tag === "None" ? undefined : current.value.head;
+    const source =
+      given.source !== undefined && given.said_by !== undefined
+        ? undefined
+        : (yield* writerAuthority.resolve(ctx.orgId, ctx.wakeupId)).sources.get(
+            input.sourceEventId,
+          );
+    if ((given.source === undefined || given.said_by === undefined) && source === undefined)
+      return yield* missing();
+    const recorded = DateTime.formatIso(DateTime.makeUnsafe(ctx.startedAt));
+    const useStored = input.op === "update" || input.op === "invalidate" ? stored : undefined;
+    const fields = {
+      ...given,
+      recorded_at: given.recorded_at ?? useStored?.recorded_at ?? recorded,
+      valid_from: given.valid_from ?? useStored?.valid_from ?? recorded,
+      invalid_at:
+        given.invalid_at === undefined ? (useStored?.invalid_at ?? null) : given.invalid_at,
+      superseded_by:
+        given.superseded_by === undefined
+          ? (useStored?.superseded_by ?? null)
+          : given.superseded_by,
+      source: given.source ?? source?.source,
+      said_by: given.said_by ?? source?.saidBy,
+      links: given.links ?? useStored?.links ?? [],
+    };
     const sensitiveBefore = (head: MemoryItemHead) => isSensitive(head, known);
     // Only ever more sensitive here: an item the owner alone had stays theirs through an update
     // or a replacement, and `label` is the one way to let the team know it.
@@ -1316,7 +1347,7 @@ const make = Effect.gen(function* () {
         );
     } else if (fields.chat !== undefined)
       return yield* invalid("Only deferrals carry `chat`. Leave it out.");
-    if (input.op === "invalidate" && fields.invalid_at === null)
+    if (input.op === "invalidate" && given.invalid_at == null)
       return yield* invalid("invalidate needs `invalid_at`.");
     const folder = fields.kind === "person" ? "people" : `${fields.kind}s`;
     const path = current._tag === "Some" ? current.value.head.path : `${folder}/${fields.id}.md`;

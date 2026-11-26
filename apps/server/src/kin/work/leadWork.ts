@@ -650,7 +650,9 @@ const CreateRow = Schema.Struct({
 });
 export const CreateInput = Schema.Struct({
   sourceEventId: TurnEvent,
-  records: Schema.Array(CreateRow).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+  records: Schema.Array(
+    Schema.StructWithRest(CreateRow, [Schema.Record(Schema.String, Schema.Unknown)]),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
 });
 const Named = Schema.Struct({
   key: Schema.String,
@@ -758,6 +760,93 @@ export const UpdateInput = Schema.Struct({
   ...SpineInputs,
   ...GoalInputs,
 });
+const createKeys = Object.keys(CreateRow.fields);
+const updateKeys = Object.keys(UpdateInput.fields);
+const dealKeys = new Set([
+  "title",
+  "client",
+  "owner",
+  "due",
+  "notes",
+  "amount",
+  "currency",
+  "sensitive",
+  "fields",
+  "next",
+]);
+const dealCreateKeys = new Set([...dealKeys, "list", "besides"]);
+const dealUpdateKeys = new Set([
+  ...dealKeys,
+  "project",
+  "key",
+  "keys",
+  "sourceEventId",
+  "expectedRev",
+  "state",
+]);
+const creditNoteKeys = new Set(["list", "title", "amount", "currency", "fields"]);
+
+const routedFields = new Map<string, ReadonlyArray<string>>([
+  ["kind", ["clients"]],
+  ["cameFrom", ["clients"]],
+  ["heardFrom", ["clients"]],
+  ["deal", ["work"]],
+  ["from", ["work"]],
+  ["tell", ["work"]],
+  ["leftover", ["work"]],
+  ["next", ["deals"]],
+]);
+const storedFieldLists = new Map<string, Array<string>>();
+for (const [list, def] of Object.entries(LISTS)) {
+  if (list === "deals" || list === "docs") continue;
+  for (const key of def.fields) {
+    if (!storedFieldLists.has(key)) storedFieldLists.set(key, []);
+    storedFieldLists.get(key)!.push(list);
+  }
+}
+
+const recordArgumentError = (
+  list: string,
+  name: string,
+  input: object,
+  op: "create" | "update",
+  def?: ListDef,
+) => {
+  const keys = op === "create" ? createKeys : updateKeys;
+  const takes = (key: string) => {
+    if (list === "deals") return (op === "create" ? dealCreateKeys : dealUpdateKeys).has(key);
+    if (list === "credit_notes" && op === "create") return creditNoteKeys.has(key);
+    if (key === "fields") return def?.builtIn === null;
+    const routed = routedFields.get(key);
+    if (routed !== undefined) return routed.includes(list);
+    const stored = storedFieldLists.get(key);
+    return (
+      stored === undefined ||
+      stored.includes(list) ||
+      def?.fields.some((field) => field.key === key)
+    );
+  };
+  const unexpected = Object.entries(input).find(
+    ([key, value]) =>
+      value !== undefined &&
+      (!keys.includes(key) ||
+        // The existing refusal for fields/next names the correct shape.
+        (((key !== "fields" && key !== "next") || list === "credit_notes") && !takes(key))),
+  );
+  if (unexpected === undefined) return undefined;
+  const [key] = unexpected;
+  const quoted = JSON.stringify(key.slice(0, 64));
+  const belongs = keys.includes(key)
+    ? (routedFields.get(key) ?? storedFieldLists.get(key))?.filter((other) => other !== list)
+    : undefined;
+  const valid = keys.filter(takes).join(", ");
+  return invalid(
+    belongs !== undefined && belongs.length > 0
+      ? `${quoted} belongs on ${belongs.join(" or ")}, not on ${name}; use one of: ${valid}.`
+      : `${name} does not take ${quoted}; use one of: ${valid}.`,
+  );
+};
+
 const Updated = Schema.Struct({
   key: Schema.String,
   rev: Schema.Number,
@@ -2831,6 +2920,8 @@ const createRow = Effect.fnUntraced(function* (
   // Before the list is read, so an expense for a list not made yet says what comes first.
   if (asked.amount !== undefined) yield* countryFirst(lead.orgId);
   if (asked.list === "credit_notes") {
+    const refusal = recordArgumentError("credit_notes", "Credit notes", asked, "create");
+    if (refusal !== undefined) return yield* refusal;
     const invoice = asked.fields?.invoice;
     const reason = asked.fields?.reason;
     if (
@@ -2873,6 +2964,8 @@ const createRow = Effect.fnUntraced(function* (
     !(yield* allSeeMoney(lead.orgId, team.people))
   )
     return yield* TEAM_REFUSED;
+  const refusal = recordArgumentError(list, def.name, asked, "create", def);
+  if (refusal !== undefined) return yield* refusal;
   // A deal's rules are `deals.ts`'s, whoever writes it.
   if (list === "deals")
     return yield* dealRow(lead, sourceEventId, writer, def, lists, asked, notices);
@@ -4001,6 +4094,8 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, asked: 
     );
   if (listOf(before.registerId) === "docs") return yield* isDoc(key);
   if (before.registerId === "deals") {
+    const refusal = recordArgumentError("deals", LISTS.deals.name, asked, "update");
+    if (refusal !== undefined) return yield* refusal;
     const { out, notices } = yield* dealUpdate(lead, writer, before, input);
     return { result: out, notices, held: [] };
   }
@@ -4020,6 +4115,8 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, asked: 
     });
   yield* explainedHonestly(lead, before, input.state, input.kind ?? input.category ?? undefined);
   const def = yield* listFor(lead, before.registerId);
+  const refusal = recordArgumentError(def.id, def.name, asked, "update", def);
+  if (refusal !== undefined) return yield* refusal;
   if (
     team !== undefined &&
     def.team === true &&

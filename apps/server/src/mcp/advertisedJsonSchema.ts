@@ -1,5 +1,11 @@
+import * as Context from "effect/Context";
 import * as Predicate from "effect/Predicate";
 import { Tool } from "effect/ai";
+
+export const AdvertisedCore = Context.Service<{
+  readonly path: ReadonlyArray<string>;
+  readonly keys: ReadonlyArray<string>;
+}>("t3/mcp/AdvertisedCore");
 
 type Json = unknown;
 type JsonObject = { [key: string]: Json };
@@ -71,8 +77,8 @@ const mergeTaggedObjects = (branches: ReadonlyArray<Json>): JsonObject | undefin
   return { type: "object", properties, required: [tag, ...requiredByAll] };
 };
 
-const compact = (schema: Json, optional: boolean): Json => {
-  if (Array.isArray(schema)) return schema.map((item) => compact(item, false));
+const compact = (schema: Json, optional: boolean, kin: boolean): Json => {
+  if (Array.isArray(schema)) return schema.map((item) => compact(item, false, kin));
   if (!Predicate.isObject(schema)) return schema;
   const required = new Set(Array.isArray(schema.required) ? schema.required : []);
   let result: JsonObject = {};
@@ -80,15 +86,26 @@ const compact = (schema: Json, optional: boolean): Json => {
     if (key === "additionalProperties" && value === true) continue;
     if (SAFE_INTEGER_BOUNDS[key] === value) continue;
     if (isNonStringEnum(key, value)) continue;
+    if (
+      kin &&
+      ((key === "minLength" && value === 1) ||
+        key === "maxLength" ||
+        key === "maxItems" ||
+        key === "minItems" ||
+        (schema.type === "integer" && (key === "minimum" || key === "maximum")))
+    )
+      continue;
     result[key] =
       key === "properties" && Predicate.isObject(value)
         ? Object.fromEntries(
             Object.entries(value).map(([name, property]) => [
               name,
-              compact(property, !required.has(name)),
+              compact(property, !required.has(name), kin),
             ]),
           )
-        : compact(value, false);
+        : kin && key === "anyOf" && Array.isArray(value)
+          ? value.map((branch) => compact(branch, optional, kin))
+          : compact(value, false, kin);
   }
   if (Array.isArray(result.anyOf)) {
     const branches = result.anyOf
@@ -107,5 +124,26 @@ const compact = (schema: Json, optional: boolean): Json => {
  * the `null` branch of optional properties. A tagged union of objects becomes one object.
  * Decoding still uses the full schema, so each tag's own required fields still apply.
  */
-export const advertisedJsonSchema = (tool: Tool.Any) =>
-  compact(Tool.getJsonSchema(tool), false) as ReturnType<typeof Tool.getJsonSchema>;
+export const advertisedJsonSchema = (tool: Tool.Any, options?: { readonly kin?: boolean }) => {
+  const schema = compact(Tool.getJsonSchema(tool), false, options?.kin === true);
+  const core = Context.getOrUndefined(tool.annotations, AdvertisedCore);
+  if (core !== undefined) {
+    const target = core.path.reduce<Json>(
+      (node, key) => (Predicate.isObject(node) ? node[key] : undefined),
+      schema,
+    );
+    if (!Predicate.isObject(target) || !Predicate.isObject(target.properties))
+      throw new Error(`No object at the advertised core of ${tool.name}.`);
+    const keys = new Set(core.keys);
+    target.properties = Object.fromEntries(
+      Object.entries(target.properties).filter(([key]) => keys.has(key)),
+    );
+    if (Array.isArray(target.required)) {
+      const required = target.required.filter((key) => keys.has(key));
+      if (required.length > 0) target.required = required;
+      else delete target.required;
+    }
+    target.additionalProperties = true;
+  }
+  return schema as ReturnType<typeof Tool.getJsonSchema>;
+};

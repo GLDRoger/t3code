@@ -67,7 +67,7 @@ it("each Kin tool's description and input schema weigh what the budget pins", ()
       tool.name,
       {
         desc: utf8(Tool.getDescription(tool) ?? ""),
-        schema: utf8(JSON.stringify(advertisedJsonSchema(tool))),
+        schema: utf8(JSON.stringify(advertisedJsonSchema(tool, { kin: true }))),
       },
     ]),
   );

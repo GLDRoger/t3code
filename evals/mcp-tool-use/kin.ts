@@ -585,7 +585,7 @@ const KIN_KEY_TOOLS: ReadonlyArray<ApiTool> = Object.values(TasksKeyToolkit.tool
   (tool: Tool.Any) => ({
     name: `${KIN_KEY_PREFIX}${tool.name}`,
     description: Tool.getDescription(tool) ?? "",
-    input_schema: advertisedJsonSchema(tool),
+    input_schema: advertisedJsonSchema(tool, { kin: true }),
   }),
 );
 const KIN_KEY_INSTRUCTIONS = `# MCP Server Instructions
