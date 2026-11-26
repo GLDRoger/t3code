@@ -16,6 +16,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import type { KinChatService } from "../chat/KinChatService.ts";
 import type { WriteAudience } from "../chat/KinChatRepository.ts";
 import { turnChat } from "../lead/Audience.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
@@ -332,19 +333,41 @@ export const sameAsk = Effect.fn("KinQuiet.sameAsk")(function* (
   return one !== undefined && one.chatId === two?.chatId;
 });
 
+export const cancelHeld = Effect.fn("KinQuiet.cancelHeld")(function* (
+  orgId: KinOrgId,
+  ids: ReadonlyArray<string>,
+  chat: Pick<KinChatService["Service"], "dismissArrival">,
+) {
+  if (ids.length === 0) return 0;
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const dropped = yield* sql<{ kind: string }>`DELETE FROM kin_held_posts
+      WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)} AND delivered_at IS NULL
+      RETURNING kind`;
+      for (const { kind } of dropped)
+        if (relayWakeup(kind) !== undefined) yield* chat.dismissArrival({ orgId, key: kind });
+      return dropped.length;
+    }),
+  );
+});
+
 /**
  * The escape from someone's quiet hours: the agent's stated reason, logged, and it rings them.
  * It replaces the relays `agentId` holds for them in `chatId` raised from the chat this turn
  * answers: those are withdrawn, and their count returned.
  */
-export const urgentNow = Effect.fn("KinQuiet.urgent")(function* (input: {
-  readonly orgId: KinOrgId;
-  readonly agentId: KinAgentId;
-  readonly personId: KinPersonId;
-  readonly chatId: KinChatId;
-  readonly wakeupId: string | undefined;
-  readonly reason: string;
-}) {
+export const urgentNow = Effect.fn("KinQuiet.urgent")(function* (
+  input: {
+    readonly orgId: KinOrgId;
+    readonly agentId: KinAgentId;
+    readonly personId: KinPersonId;
+    readonly chatId: KinChatId;
+    readonly wakeupId: string | undefined;
+    readonly reason: string;
+  },
+  chat: Pick<KinChatService["Service"], "dismissArrival">,
+) {
   const sql = yield* SqlClient.SqlClient;
   yield* Effect.logInfo("Kin urgent message", input);
   yield* sql`DELETE FROM kin_push_rings WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`;
@@ -363,10 +386,7 @@ export const urgentNow = Effect.fn("KinQuiet.urgent")(function* (input: {
     )
       replaced.push(row.holdId);
   }
-  if (replaced.length > 0)
-    yield* sql`DELETE FROM kin_held_posts
-      WHERE org_id = ${input.orgId} AND hold_id IN ${sql.in(replaced)}`;
-  return replaced.length;
+  return yield* cancelHeld(input.orgId, replaced, chat);
 });
 
 /**

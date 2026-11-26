@@ -117,6 +117,7 @@ import {
   KinDayLine,
   KinDraftBubble,
   KinMessageBubble,
+  KinReplyFooter,
   KinPendingBubble,
   KinSystemLine,
   KinRelayBubble,
@@ -1518,6 +1519,15 @@ function KinChatFeed(props: {
     switch (item.type) {
       case "message":
         return renderMessage(item);
+      case "footer":
+        return (
+          <KinReplyFooter
+            standalone
+            message={item.message}
+            environmentId={props.environmentId}
+            onOpenReceipt={() => setReceiptFor(item.message.messageId)}
+          />
+        );
       case "cards":
         return renderMessage(item.first, item);
       case "system": {

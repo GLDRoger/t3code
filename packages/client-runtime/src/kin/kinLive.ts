@@ -1,5 +1,6 @@
 import {
   KinAgentId,
+  KinDraft,
   type KinChatStreamEvent,
   type KinPresence,
   type KinMessage,
@@ -17,6 +18,7 @@ type BacklogEvent = Extract<KinChatStreamEvent, { readonly _tag: "backlog" }>;
 export const KinHeldDraft = Schema.Struct({
   /** The turn item; its message carries `clientMessageId: "reply:<draftId>"`. */
   draftId: Schema.String,
+  sourceWakeupId: KinDraft.fields.sourceWakeupId,
   agentId: KinAgentId,
   text: Schema.String,
   /** When this client first saw it, for the author line and day. */
@@ -71,6 +73,7 @@ export function applyKinDraft(
     const draft: KinHeldDraft = {
       draftId: event.draftId,
       agentId: event.agentId,
+      ...(event.sourceWakeupId === undefined ? {} : { sourceWakeupId: event.sourceWakeupId }),
       text: event.text,
       startedAt: now,
     };
@@ -104,9 +107,7 @@ export function applyKinLiveBacklog(
   const startedAt = new Map(state.drafts.map((draft) => [draft.draftId, draft.startedAt]));
   const drafts = settleKinDrafts(
     (backlog.drafts ?? []).map((draft) => ({
-      draftId: draft.draftId,
-      agentId: draft.agentId,
-      text: draft.text,
+      ...draft,
       startedAt: startedAt.get(draft.draftId) ?? now,
     })),
     messages,
