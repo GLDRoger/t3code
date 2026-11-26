@@ -1817,16 +1817,6 @@ export class KinLeadPrompt extends Context.Service<
           room === undefined
             ? undefined
             : new Map(room.map(({ member, name }) => [member.memberId as string, name]));
-        // What is set for this chat, so a turn here knows what it may be asked to change.
-        const setHere =
-          laneChat === undefined || laneChat.kind === "direct"
-            ? []
-            : yield* setInChat(orgId, laneChat.chatId).pipe(
-                Effect.provideService(SqlClient.SqlClient, sql),
-                Effect.catch((cause) =>
-                  Effect.logWarning("Kin chat's reminders unavailable", cause).pipe(Effect.as([])),
-                ),
-              );
         // A brief is sent on a quiet day too (`pulse/checkIn.ts`), so it is never told to stay silent.
         const briefDue = input.events.some(
           (event) =>
@@ -2148,7 +2138,11 @@ export class KinLeadPrompt extends Context.Service<
           ? yield* checkInIndex(orgId, agentId).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
               Effect.catch((cause) =>
-                Effect.logWarning("Kin check-in index unavailable", cause).pipe(Effect.as([])),
+                Effect.logWarning("Kin check-in index unavailable", cause).pipe(
+                  Effect.as([
+                    "Kin couldn't read your check-ins this turn, so this is not a sign you have none.",
+                  ]),
+                ),
               ),
             )
           : [];
@@ -2343,6 +2337,23 @@ export class KinLeadPrompt extends Context.Service<
             : [];
         const zone = yield* cache.readOwnerTimeZone(orgId);
         const timeZone = zone._tag === "zone" ? zone.zone : undefined;
+        // What is set for this chat, so a turn here knows what it may be asked to change.
+        const setHere =
+          laneChat === undefined || laneChat.kind === "direct"
+            ? undefined
+            : yield* setInChat(orgId, laneChat.chatId).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.map((items) =>
+                  items.length === 0 ? undefined : setInChatLine(items, timeZone),
+                ),
+                Effect.catch((cause) =>
+                  Effect.logWarning("Kin chat's reminders unavailable", cause).pipe(
+                    Effect.as(
+                      "Set in this chat: Kin couldn't read this chat's reminders and routines this turn, so this is not a sign none are set.",
+                    ),
+                  ),
+                ),
+              );
         const lines = snapshot === undefined ? 0 : indexLines(snapshot.index);
         const budgetLeft = Number.parseInt(input.budgetContext ?? "", 10);
 
@@ -2394,9 +2405,7 @@ export class KinLeadPrompt extends Context.Service<
                         groupLine(room, agentId, laneChat.leadAgentId ?? null, inTeamRoom),
                       ),
                     ]),
-                ...(setHere.length === 0
-                  ? []
-                  : [sharedPart("header", setInChatLine(setHere, timeZone))]),
+                ...(setHere === undefined ? [] : [sharedPart("header", setHere)]),
                 ...(input.lane.mode === "reply" || replyDue || briefDue || inTeamRoom
                   ? []
                   : [sharedPart("header", "Nobody is waiting on this turn.")]),
