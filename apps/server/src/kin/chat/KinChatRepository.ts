@@ -57,7 +57,7 @@ import { isOrgOwner } from "../lead/orgState.ts";
 import { sectionsOf } from "../work/docBody.ts";
 import { sensitiveNow } from "../work/recordRows.ts";
 import { viewVersionVisible } from "../work/teamView.ts";
-import { encodeNames, nameKeys, nameThreads, withLinks } from "./messageLinks.ts";
+import { encodeNames, linkAccessStamp, nameKeys, nameThreads, withLinks } from "./messageLinks.ts";
 import { messageForViewer } from "./messageView.ts";
 import { dismissedArrivalSql } from "./arrivalNotes.ts";
 import { chatShared, readableBy, readableFrom, recordJoin } from "./sharing.ts";
@@ -560,10 +560,12 @@ export class KinChatRepository extends Context.Service<
         readonly memberId: KinMemberId;
         readonly afterSeq: number;
         readonly afterChangeSeq?: number | undefined;
+        readonly includeAccessStamp?: boolean;
       },
     ) => Effect.Effect<
       {
         readonly reset: boolean;
+        readonly accessStamp?: string;
         /** The reset is a clear made after the caller's cursor: nothing it holds survives. */
         readonly cleared?: boolean;
         /** The chat's `last_seq` at its last clear; 0 when it never was. */
@@ -1701,8 +1703,15 @@ const make = Effect.gen(function* () {
                 execute: () =>
                   sql`SELECT ${sql.literal(widgetColumns)} FROM kin_widgets WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND (message_id IN ${sql.in(messages.map((m) => m.messageId))} OR widget_id IN ${sql.in(messages.flatMap((m) => (m.widgetId === null ? [] : [m.widgetId])))}) ORDER BY message_id, widget_id`,
               })(input);
+        const accessStamp =
+          input.includeAccessStamp === true && member.principal._tag === "person"
+            ? yield* linkAccessStamp(input.orgId, member.principal.personId).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              )
+            : undefined;
         return {
           reset: false,
+          ...(accessStamp === undefined ? {} : { accessStamp }),
           messages: yield* linked(
             input.orgId,
             member.principal,
