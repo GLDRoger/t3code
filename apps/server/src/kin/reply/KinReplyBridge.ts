@@ -2035,7 +2035,10 @@ const make = Effect.gen(function* () {
               : RESCUE_PROMPT,
         );
         const after = yield* finish;
-        if (stopped || (wake.lane.voice === "send" ? wake.sendReceipt !== undefined : after.answered)) {
+        if (
+          stopped ||
+          (wake.lane.voice === "send" ? wake.sendReceipt !== undefined : after.answered)
+        ) {
           yield* settled(stopped);
           return endingFor(stopped ? null : followUp);
         }
