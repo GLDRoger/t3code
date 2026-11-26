@@ -1,4 +1,4 @@
-import { KinChatError, type KinGithubTrigger, type KinOrgId } from "@t3tools/contracts";
+import { KinChatError, type KinOrgId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -7,9 +7,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { POSTING, receiptOf } from "./boundReview.ts";
 import { sendIssueComment } from "./GitHubWatch.ts";
 import { issueCommentText } from "./issueCommentText.ts";
-
-export const isTriage = (kind: KinGithubTrigger["kind"]) =>
-  kind === "triage" || kind === "triage_reply";
 
 type Turn = { readonly orgId: KinOrgId; readonly wakeupId: string };
 const decodeConversation = Schema.decodeUnknownOption(
