@@ -24,6 +24,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
@@ -32,7 +33,16 @@ import { McpSchema, McpServer } from "effect/ai";
 import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
-import { turnAudience } from "../lead/Audience.ts";
+import { recordAudience, turnAudience } from "../lead/Audience.ts";
+import {
+  codingAgentSource,
+  markOutside,
+  OUTSIDE_REFUSAL,
+  outsideStamp,
+  REPO_READ_REFUSAL,
+  stampKey,
+} from "../lead/OutsideContent.ts";
+import { SHARED_TOOLS } from "../lead/SharedTools.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -66,8 +76,11 @@ import {
 } from "./askedFor.ts";
 import { emptyWorld, FakeGitHub, ghApiOutput, ghApiStderr, runGh } from "./fakeGitHub.ts";
 import * as GitHubWatch from "./GitHubWatch.ts";
+import { KinGitHubApp, make as makeApp } from "./KinGitHubApp.ts";
+import { appHost, fakeHttp, installApp } from "./KinGitHubApp.testkit.ts";
 import { setRepo } from "./githubWatchStore.ts";
 import { headKey, POSTING } from "./boundReview.ts";
+import { READ_NEXT, READ_REFUSAL } from "./repoRead.ts";
 import { ASK_REFUSAL, DIFF_NEXT, DIFF_REFUSAL, POST_REFUSAL, PULL_REFUSAL } from "./reviewAsk.ts";
 const { DIFF_CAP } = GitHubWatch;
 import { KIN_OWN_REFUSAL } from "../people/KinAccess.ts";
@@ -86,6 +99,8 @@ const MEMORY = "ambermill/kin-memory";
 const LEDGER = "ambermill/ledger";
 const BUSY = "ambermill/busy";
 const OWNER_LOGIN = "rhea-gh";
+const NOTES = "ambermill/notes";
+const MOVED = "ambermill/old-app";
 const providerInstanceId = ProviderInstanceId.make("codex");
 const tech = KinAgentId.make("tech");
 const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(KinEvent));
@@ -149,7 +164,7 @@ const watchApi = (github: FakeGitHub) =>
       }),
   });
 
-const harness = (config: Record<string, unknown> = {}) => {
+const harness = (config: Record<string, unknown> = {}, options: { readonly app?: true } = {}) => {
   const github = new FakeGitHub(emptyWorld(OWNER_LOGIN, 0));
   for (const repo of [APP, SITE, BATCH, MEMORY, BUSY])
     github.addRepo({ full_name: repo, private: false });
@@ -163,11 +178,16 @@ const harness = (config: Record<string, unknown> = {}) => {
       );
     }),
   );
+  // Kin's GitHub App over the same fake, set up but installed only where a test says.
+  const app = Layer.effect(KinGitHubApp, makeApp).pipe(
+    Layer.provide(Layer.mergeAll(fakeHttp(github), appHost({ appId: "9001" }))),
+  );
   const layer = Layer.mergeAll(
     McpHttpServer.toolkitRegistration(KinLeadToolkit, leadHandlers),
     KinToolGate.layer,
   ).pipe(
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+    Layer.provideMerge(options.app === true ? app : Layer.empty),
     Layer.provideMerge(fakeLogin(github)),
     // Kin's memory repo, which the watch and an ask both leave alone; past Kin's own config.
     Layer.provideMerge(
@@ -208,15 +228,25 @@ const callAs = Effect.fn("test.callAs")(function* (
 ) {
   const server = yield* McpServer.McpServer;
   const identity = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinIdentity);
-  const result = yield* server
-    .callTool({ name, arguments: args })
-    .pipe(
-      Effect.provideService(McpInvocationContext, scopeOf(agent)),
-      Effect.provideService(KinIdentity, identity),
-      Effect.provideService(McpSchema.McpServerClient, client),
-    );
-  const text = result.content.find((item) => item.type === "text")?.text ?? "{}";
-  return { ok: result.isError !== true, value: JSON.parse(text) as Record<string, unknown> };
+  const result = yield* server.callTool({ name, arguments: args }).pipe(
+    Effect.provideService(McpInvocationContext, scopeOf(agent)),
+    Effect.provideService(KinIdentity, identity),
+    Effect.provideService(McpSchema.McpServerClient, client),
+    Effect.map((answer) => ({
+      isError: answer.isError === true,
+      text: answer.content.find((item) => item.type === "text")?.text ?? "{}",
+    })),
+    // A gate's refusal (`ToolCallRefused`) reaches the agent as its answer.
+    Effect.catch((error) =>
+      Effect.succeed({
+        isError: true,
+        text: JSON.stringify({
+          message: Predicate.hasProperty(error, "message") ? String(error.message) : String(error),
+        }),
+      }),
+    ),
+  );
+  return { ok: !result.isError, value: JSON.parse(result.text) as Record<string, unknown> };
 });
 
 const ambermill = Effect.fn("test.ambermill")(function* (github: FakeGitHub) {
@@ -1443,6 +1473,701 @@ it.effect(
       assert.include(
         String(answer.next),
         ` GitHub refused Kin's requests for now, so ${refusedRefs.join(", ")} weren't queued; GitHub takes requests again in about 10 minutes`,
+      );
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+// A teammate asked the Tech lead how a product works; the turn could not open the code and sent
+// them to the owner. A repo is read through Kin's GitHub connection, by the review ask's own check.
+it.effect(
+  "a repo is read for whoever GitHub lets see it: a folder, a file whole or by lines, a search, at a ref; everything else is its one line",
+  () => {
+    const { github, layer } = harness({}, { app: true });
+    return Effect.gen(function* () {
+      const late = "export const lateAfter = (eta: number) => eta + 15 * 60_000;\n";
+      const long = Array.from({ length: 3000 }, (_, index) => `const line${index} = ${index};`);
+      const huge = `${"x".repeat(99)}\n`.repeat(12_000);
+      const retry =
+        "export const retry = { attempts: 3 }; // retry:3\nexport const wait = (): Promise<void> => Promise.resolve();\n";
+      const repoOf = (name: string) => github.world.repos.find((one) => one.full_name === name)!;
+      const pull = github.openItem({
+        repo: APP,
+        pull: true,
+        author: "dev-gh",
+        association: "MEMBER",
+        title: "Alert sooner",
+      });
+      repoOf(APP).files = {
+        main: {
+          "README.md": "# App\n",
+          "src/alerts/late.ts": late,
+          "src/retry.ts": retry,
+          "src/oneline.js": `${"x".repeat(DIFF_CAP + 5_000)}\n`,
+          "src/long.ts": `${long.join("\n")}\n`,
+          "src/huge.txt": huge,
+          "logo.png": "\u0089PNG\r\n\u001a\n\u0000\u0000",
+        },
+        "release/1": { "src/alerts/late.ts": "export const lateAfter = () => 0;\n" },
+        [headOf(github, APP, pull)]: {
+          "src/alerts/late.ts": "export const lateAfter = () => 1;\n",
+        },
+      };
+      repoOf(LEDGER).files = { main: { "totals.ts": "export const round = Math.round;\n" } };
+      const page = "<h1>Late alerts</h1>\n";
+      repoOf(SITE).files = {
+        main: {
+          "index.html": page,
+          // A folder whose listing is larger than one answer Kin reads.
+          ...Object.fromEntries(
+            Array.from({ length: 25_000 }, (_, index) => [`gen/f${index}.ts`, ""]),
+          ),
+        },
+      };
+      repoOf(SITE).links = {
+        "latest.html": { type: "symlink", target: "index.html" },
+        lib: { type: "submodule" },
+      };
+      repoOf(SITE).unindexed = true;
+      // Kin's memory repo, as GitHub also answers it under another name, by the same id.
+      repoOf(MEMORY).id = 77;
+      github.addRepo({ full_name: NOTES, private: true, id: 77 });
+      github.addRepo({ full_name: MOVED, private: false, movedTo: APP });
+      const { ask, directOf, sql, orgId, owner, review, runReview, githubEvents } =
+        yield* ambermill(github);
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+        VALUES ('room', ${orgId}, 'team_group', 0, ${at})`;
+      for (const [member, kind, person, agent] of [
+        ["room-dev", "person", "dev", null],
+        ["room-meera", "person", "meera", null],
+        ["room-tech", "agent", null, "tech"],
+      ] as const)
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, agent_id, role, joined_at)
+          VALUES (${member}, ${orgId}, 'room', ${kind}, ${person}, ${agent}, 'member', ${at})`;
+      const chatOf = {
+        dev: yield* directOf("dev"),
+        zoya: yield* directOf("zoya"),
+        meera: yield* directOf("meera"),
+        owner: yield* directOf(owner.personId),
+        room: KinChatId.make("room"),
+      };
+      const read = (args: Record<string, unknown>) => callAs("tech", "kin_github_read", args);
+      const running = sql<{ wakeupId: KinWakeupId }>`SELECT wakeup_id AS "wakeupId"
+        FROM kin_wakeups WHERE org_id = ${orgId} AND agent_id = 'tech' AND status = 'running'
+        ORDER BY rowid DESC LIMIT 1`.pipe(Effect.map(([row]) => row!.wakeupId));
+      const refusal = (message: string, reason = "not_allowed") => ({
+        _tag: "KinChatError",
+        reason,
+        message,
+      });
+      const longPage = (from: number) => {
+        let to = from - 1;
+        let size = 0;
+        while (to < long.length && size + long[to]!.length + 1 <= DIFF_CAP)
+          size += long[to++]!.length + 1;
+        return { to, text: long.slice(from - 1, to).join("\n") };
+      };
+      const first = longPage(1);
+      const second = longPage(first.to + 1);
+      const byLogin = (from: number) =>
+        github.requests.slice(from).filter((request) => request.by === "login");
+
+      // Without Kin's GitHub App nothing is read, and nothing asks GitHub as the owner's login.
+      yield* ask("zoya", chatOf.zoya, "Read without the App");
+      const unasked = github.requests.length;
+      assert.deepStrictEqual(
+        (yield* read({ repo: APP, path: "README.md" })).value,
+        refusal(READ_REFUSAL.noApp),
+      );
+      assert.deepStrictEqual(github.requests.slice(unasked), []);
+      const installation = {
+        id: 7,
+        account: "ambermill",
+        repos: [APP, SITE, LEDGER, MEMORY, NOTES, MOVED],
+        permissions: { contents: "read", metadata: "read", pull_requests: "read" },
+      };
+      installApp(github, [installation]);
+      yield* (yield* KinGitHubApp).refresh();
+
+      const table: ReadonlyArray<{
+        readonly name: string;
+        readonly who: keyof typeof chatOf;
+        readonly args: Record<string, unknown>;
+        readonly ownerOnly?: true;
+        readonly before?: (now: number) => void;
+        readonly after?: () => void;
+        /** As each call reaches GitHub during the read. */
+        readonly during?: (call: string) => void;
+        readonly answer?: Record<string, unknown>;
+        readonly refused?: Record<string, unknown>;
+        /** No call reached GitHub's collaborator reads. */
+        readonly unchecked?: true;
+      }> = [
+        {
+          name: "a teammate lists the top of a public repo",
+          who: "zoya",
+          args: { repo: APP },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            path: "",
+            entries: [
+              { path: "logo.png", type: "file", size: 11 },
+              { path: "README.md", type: "file", size: 6 },
+              { path: "src", type: "dir" },
+            ],
+            next: READ_NEXT.listed,
+          },
+        },
+        {
+          name: "a folder",
+          who: "zoya",
+          args: { repo: APP.toUpperCase(), path: "/src/alerts/" },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            path: "src/alerts",
+            entries: [{ path: "src/alerts/late.ts", type: "file", size: late.length }],
+            next: READ_NEXT.listed,
+          },
+        },
+        {
+          name: "a small file, whole",
+          who: "zoya",
+          args: { repo: APP, path: "src/alerts/late.ts" },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            path: "src/alerts/late.ts",
+            text: late,
+            lines: { from: 1, to: 1, of: 1 },
+            next: READ_NEXT.end,
+          },
+        },
+        {
+          name: "a long file's first part, saying how many lines and where to go on",
+          who: "zoya",
+          args: { repo: APP, path: "src/long.ts" },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            path: "src/long.ts",
+            text: first.text,
+            lines: { from: 1, to: first.to, of: 3000 },
+            next: READ_NEXT.more(first.to + 1, 3000),
+          },
+        },
+        {
+          name: "and on from that line",
+          who: "zoya",
+          args: { repo: APP, path: "src/long.ts", line: first.to + 1 },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            path: "src/long.ts",
+            text: second.text,
+            lines: { from: first.to + 1, to: second.to, of: 3000 },
+            next: second.to < 3000 ? READ_NEXT.more(second.to + 1, 3000) : READ_NEXT.end,
+          },
+        },
+        {
+          name: "a line past the end",
+          who: "zoya",
+          args: { repo: APP, path: "src/long.ts", line: 4000 },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            path: "src/long.ts",
+            text: "",
+            lines: { from: 4000, to: 3000, of: 3000 },
+            next: READ_NEXT.past(3000),
+          },
+        },
+        {
+          name: "a binary file is said plainly, none of its bytes",
+          who: "zoya",
+          args: { repo: APP, path: "logo.png" },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            path: "logo.png",
+            next: READ_REFUSAL.binary("logo.png", 11),
+          },
+        },
+        {
+          name: "at a branch",
+          who: "zoya",
+          args: { repo: APP, path: "src/alerts/late.ts", ref: "release/1" },
+          answer: {
+            repo: APP,
+            ref: "release/1",
+            path: "src/alerts/late.ts",
+            text: "export const lateAfter = () => 0;\n",
+            lines: { from: 1, to: 1, of: 1 },
+            next: READ_NEXT.end,
+          },
+        },
+        {
+          name: "at a pull request's head",
+          who: "zoya",
+          args: { repo: APP, path: "src/alerts/late.ts", ref: `pull/${pull}` },
+          answer: {
+            repo: APP,
+            ref: `pull/${pull}`,
+            path: "src/alerts/late.ts",
+            text: "export const lateAfter = () => 1;\n",
+            lines: { from: 1, to: 1, of: 1 },
+            next: READ_NEXT.end,
+          },
+        },
+        {
+          name: "a pull request that isn't there",
+          who: "zoya",
+          args: { repo: APP, path: "README.md", ref: "pull/999" },
+          refused: refusal(READ_REFUSAL.noPull(APP, 999), "not_found"),
+        },
+        {
+          name: "a path that isn't there",
+          who: "zoya",
+          args: { repo: APP, path: "src/nowhere.ts" },
+          refused: refusal(
+            READ_REFUSAL.missing(APP, "src/nowhere.ts", "the default branch"),
+            "not_found",
+          ),
+        },
+        {
+          name: "a path that climbs out",
+          who: "zoya",
+          args: { repo: APP, path: "src/../../other" },
+          refused: refusal(READ_REFUSAL.path),
+        },
+        {
+          name: "a search, scoped to the repo",
+          who: "zoya",
+          args: { repo: APP, search: "lateAfter  eta" },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            matches: [{ path: "src/alerts/late.ts", fragments: [late.trimEnd()] }],
+            next: READ_NEXT.found,
+          },
+        },
+        {
+          name: "a folder with a symlink and a submodule, each named as what it is",
+          who: "zoya",
+          args: { repo: SITE },
+          answer: {
+            repo: SITE,
+            ref: "the default branch",
+            path: "",
+            entries: [
+              { path: "gen", type: "dir" },
+              { path: "index.html", type: "file", size: page.length },
+              { path: "latest.html", type: "symlink" },
+              { path: "lib", type: "submodule" },
+            ],
+            next: READ_NEXT.listed,
+          },
+        },
+        {
+          name: "a symlink GitHub follows to a file is named, not followed",
+          who: "zoya",
+          args: { repo: SITE, path: "latest.html" },
+          answer: {
+            repo: SITE,
+            ref: "the default branch",
+            path: "latest.html",
+            next: READ_REFUSAL.link("latest.html", "index.html"),
+          },
+        },
+        {
+          name: "a submodule",
+          who: "zoya",
+          args: { repo: SITE, path: "lib" },
+          answer: {
+            repo: SITE,
+            ref: "the default branch",
+            path: "lib",
+            next: READ_REFUSAL.other("lib", "submodule"),
+          },
+        },
+        {
+          name: "a folder larger than one answer is said to be, not GitHub out of reach",
+          who: "zoya",
+          args: { repo: SITE, path: "gen" },
+          refused: refusal(READ_REFUSAL.tooLarge("gen"), "unavailable"),
+        },
+        {
+          name: "one line longer than an answer holds says its tail can't be read",
+          who: "zoya",
+          args: { repo: APP, path: "src/oneline.js" },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            path: "src/oneline.js",
+            text: `${"x".repeat(DIFF_CAP)}…[this line goes on past what one answer holds]`,
+            lines: { from: 1, to: 1, of: 1 },
+            next: `${READ_NEXT.tail(1)} ${READ_NEXT.end}`,
+          },
+        },
+        {
+          name: "code that reads like a qualifier is searched as words",
+          who: "zoya",
+          args: { repo: APP, search: "retry:3" },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            matches: [{ path: "src/retry.ts", fragments: [retry.split("\n")[0]] }],
+            next: READ_NEXT.found,
+          },
+        },
+        {
+          name: "a type is searched as written",
+          who: "zoya",
+          args: { repo: APP, search: "Promise<void>" },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            matches: [{ path: "src/retry.ts", fragments: [retry.split("\n")[1]] }],
+            next: READ_NEXT.found,
+          },
+        },
+        {
+          name: "words naming another repo search only this one",
+          who: "zoya",
+          args: { repo: APP, search: `repo:${LEDGER} round` },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            matches: [],
+            next: READ_NEXT.none(APP, `repo:${LEDGER} round`),
+          },
+        },
+        {
+          name: "a hit from another repo in GitHub's answer is dropped, and the search not trusted",
+          who: "zoya",
+          args: { repo: APP, search: "round" },
+          before: () => {
+            github.world.searchLeak = LEDGER;
+          },
+          after: () => {
+            delete github.world.searchLeak;
+          },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            matches: [],
+            next: READ_NEXT.untrusted(APP),
+          },
+        },
+        {
+          name: "a search GitHub hasn't indexed the repo for",
+          who: "zoya",
+          args: { repo: SITE, search: "late" },
+          answer: {
+            repo: SITE,
+            ref: "the default branch",
+            matches: [],
+            next: READ_NEXT.none(SITE, "late"),
+          },
+        },
+        {
+          name: "a search at a ref",
+          who: "zoya",
+          args: { repo: APP, search: "late", ref: "release/1" },
+          refused: refusal(READ_REFUSAL.searchRef),
+          unchecked: true,
+        },
+        {
+          name: "words GitHub can't take as a search, told apart from a repo not indexed",
+          who: "zoya",
+          args: { repo: APP, search: "late" },
+          before: () => {
+            github.world.refusing = ["search/code"];
+          },
+          after: () => {
+            delete github.world.refusing;
+          },
+          refused: refusal(READ_REFUSAL.badSearch),
+        },
+        {
+          name: "a path with a lone surrogate",
+          who: "zoya",
+          args: { repo: APP, path: "src/\uD800.ts" },
+          refused: refusal(READ_REFUSAL.malformed),
+          unchecked: true,
+        },
+        {
+          name: "a path longer than Kin sends",
+          who: "zoya",
+          args: { repo: APP, path: "a/".repeat(600) },
+          refused: refusal(READ_REFUSAL.tooLong),
+          unchecked: true,
+        },
+        {
+          name: "a repo the connection doesn't reach",
+          who: "zoya",
+          args: { repo: "elsewhere/tool" },
+          refused: refusal(READ_REFUSAL.unreached("elsewhere/tool")),
+          unchecked: true,
+        },
+        {
+          name: "Kin's memory repo",
+          who: "dev",
+          args: { repo: MEMORY },
+          refused: refusal(READ_REFUSAL.memory(MEMORY)),
+          unchecked: true,
+        },
+        {
+          name: "Kin's memory repo under another name, by its id",
+          who: "owner",
+          ownerOnly: true,
+          args: { repo: NOTES },
+          refused: refusal(READ_REFUSAL.memory(NOTES)),
+          unchecked: true,
+        },
+        {
+          name: "a repo taken off the App a moment ago, which the owner's own login still reads",
+          who: "zoya",
+          args: { repo: SITE, path: "index.html" },
+          before: () => {
+            installation.repos = installation.repos.filter((name) => name !== SITE);
+          },
+          after: () => {
+            installation.repos.push(SITE);
+          },
+          refused: refusal(READ_REFUSAL.unreached(SITE)),
+          unchecked: true,
+        },
+        {
+          name: "a repo GitHub says has moved, whose redirect Kin doesn't follow",
+          who: "zoya",
+          args: { repo: MOVED, path: "README.md" },
+          refused: refusal(READ_REFUSAL.moved(MOVED)),
+          unchecked: true,
+        },
+        {
+          name: "a private repo for a collaborator",
+          who: "dev",
+          args: { repo: LEDGER, path: "totals.ts" },
+          answer: {
+            repo: LEDGER,
+            ref: "the default branch",
+            path: "totals.ts",
+            text: "export const round = Math.round;\n",
+            lines: { from: 1, to: 1, of: 1 },
+            next: READ_NEXT.end,
+          },
+        },
+        {
+          name: "a collaborator taken off the private repo while the file was read",
+          who: "dev",
+          args: { repo: LEDGER, path: "totals.ts" },
+          during: (call) => {
+            if (call === `GET repos/${LEDGER}/contents/totals.ts`)
+              repoOf(LEDGER).collaborators = [];
+          },
+          after: () => {
+            repoOf(LEDGER).collaborators = ["dev-gh"];
+          },
+          refused: refusal(READ_REFUSAL.notCollaborator(LEDGER, "Dev Malhotra")),
+        },
+        {
+          name: "a repo taken off the App while the file was read",
+          who: "zoya",
+          args: { repo: APP, path: "README.md" },
+          during: (call) => {
+            if (call === `GET repos/${APP}/contents/README.md`)
+              installation.repos = installation.repos.filter((name) => name !== APP);
+          },
+          after: () => {
+            installation.repos.push(APP);
+          },
+          refused: refusal(READ_REFUSAL.unreached(APP)),
+        },
+        {
+          name: "a private repo GitHub doesn't let her see",
+          who: "meera",
+          args: { repo: LEDGER, path: "totals.ts" },
+          refused: refusal(READ_REFUSAL.notCollaborator(LEDGER, "Meera Iyer")),
+        },
+        {
+          name: "a private repo, no GitHub username on file",
+          who: "zoya",
+          args: { repo: LEDGER, search: "round" },
+          refused: refusal(READ_REFUSAL.noLogin(LEDGER, "Zoya Sheikh")),
+        },
+        {
+          name: "a private repo in a chat with other people, a collaborator asking",
+          who: "room",
+          args: { repo: LEDGER, path: "totals.ts" },
+          refused: refusal(READ_REFUSAL.notHere(LEDGER)),
+        },
+        {
+          name: "a public repo in that chat",
+          who: "room",
+          args: { repo: APP, path: "README.md" },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            path: "README.md",
+            text: "# App\n",
+            lines: { from: 1, to: 1, of: 1 },
+            next: READ_NEXT.end,
+          },
+        },
+        {
+          name: "the owner alone reads any repo the App is on, with no collaborator check",
+          who: "owner",
+          ownerOnly: true,
+          args: { repo: LEDGER, path: "totals.ts" },
+          unchecked: true,
+          answer: {
+            repo: LEDGER,
+            ref: "the default branch",
+            path: "totals.ts",
+            text: "export const round = Math.round;\n",
+            lines: { from: 1, to: 1, of: 1 },
+            next: READ_NEXT.end,
+          },
+        },
+        {
+          name: "GitHub's 429",
+          who: "zoya",
+          args: { repo: APP, path: "README.md" },
+          before: () => {
+            github.world.limit = { reads: 0, retryAfter: 600, hit: true };
+          },
+          refused: refusal(READ_REFUSAL.refused(10), "unavailable"),
+        },
+        {
+          name: "GitHub's 403, by its reset time",
+          who: "owner",
+          ownerOnly: true,
+          args: { repo: APP, search: "late" },
+          before: (now) => {
+            github.world.limit = {
+              reads: 0,
+              retryAfter: 0,
+              hit: true,
+              status: 403,
+              reset: Math.floor((now + 30 * 60_000) / 1000),
+            };
+          },
+          refused: refusal(READ_REFUSAL.refused(30), "unavailable"),
+        },
+      ];
+      const before = github.world.calls.length;
+      for (const row of table) {
+        delete github.world.limit;
+        row.before?.(yield* Clock.currentTimeMillis);
+        const limit = github.world.limit;
+        delete github.world.limit;
+        const asker = row.who === "room" ? "dev" : row.who === "owner" ? owner.personId : row.who;
+        yield* ask(asker, chatOf[row.who], `Read (${row.name})`);
+        const turn = { orgId, wakeupId: yield* running };
+        if (row.ownerOnly === true) yield* recordAudience(turn, "owner_only");
+        if (limit !== undefined) github.world.limit = limit;
+        const calls = github.world.calls.length;
+        const requests = github.requests.length;
+        github.onRequest = row.during;
+        const called = yield* read(row.args);
+        github.onRequest = undefined;
+        row.after?.();
+        const checked = github.world.calls
+          .slice(calls)
+          .filter((call) => /^GET repos\/[^/]+\/[^/]+\/collaborators\//.test(call));
+        if (row.unchecked === true) assert.deepStrictEqual(checked, [], row.name);
+        assert.deepStrictEqual(byLogin(requests), [], row.name);
+        const stamp = yield* outsideStamp(turn);
+        if (row.refused !== undefined) {
+          assert.deepStrictEqual(called.value, row.refused, row.name);
+          assert.strictEqual(stamp, undefined, row.name);
+          continue;
+        }
+        assert.deepStrictEqual(called.value, row.answer, row.name);
+        // What the repo said is outside text for the rest of the turn, as a diff is.
+        const shown =
+          row.answer?.text !== undefined ||
+          row.answer?.entries !== undefined ||
+          row.answer?.matches !== undefined;
+        assert.strictEqual(
+          stamp === undefined ? undefined : stampKey(stamp),
+          shown ? "github" : undefined,
+          row.name,
+        );
+      }
+      delete github.world.limit;
+      // A file over GitHub's 1 MB comes raw, and gh's output stops at Kin's limit: said, not hidden.
+      yield* ask("zoya", chatOf.zoya, "Read the huge file");
+      const hugeRead = (yield* read({ repo: APP, path: "src/huge.txt" })).value;
+      const hugeLines = hugeRead.lines as { from: number; to: number; of: number };
+      assert.isBelow(hugeLines.of, 12_000);
+      assert.strictEqual(
+        hugeRead.next,
+        `${READ_NEXT.more(hugeLines.to + 1, hugeLines.of)} ${READ_NEXT.partial(hugeLines.of)}`,
+      );
+      assert.strictEqual(
+        (yield* read({ repo: APP, path: "src/huge.txt", line: hugeLines.of })).value.next,
+        READ_NEXT.partial(hugeLines.of),
+      );
+      // What was read for one person stays in their chat: the turn only reads and answers there.
+      yield* ask("zoya", chatOf.zoya, "How do late alerts work?");
+      assert.isTrue((yield* read({ repo: APP, path: "src/alerts/late.ts" })).ok);
+      const passOn = { to: "Meera Iyer", text: "The late alert code, as asked" };
+      const relayed = yield* callAs("tech", "kin_relay", passOn);
+      assert.deepStrictEqual(
+        [relayed.ok, relayed.value.message],
+        [false, REPO_READ_REFUSAL("Zoya Sheikh")],
+      );
+      assert.isTrue((yield* callAs("tech", "people_read", {})).ok);
+      assert.isTrue((yield* read({ repo: APP, path: "README.md" })).ok);
+      // The owner's own turn has no such limit.
+      yield* ask(owner.personId, chatOf.owner, "How do late alerts work?");
+      yield* recordAudience({ orgId, wakeupId: yield* running }, "owner_only");
+      assert.isTrue((yield* read({ repo: APP, path: "src/alerts/late.ts" })).ok);
+      assert.notStrictEqual(
+        (yield* callAs("tech", "kin_relay", passOn)).value.message,
+        REPO_READ_REFUSAL("Rhea Rao"),
+      );
+      // A turn a person's coding agent started through its key reads no repo, as it asks no review.
+      yield* ask("zoya", chatOf.zoya, "Read the alerts for my coding agent");
+      yield* markOutside({ orgId, wakeupId: yield* running }, codingAgentSource("Zoya's laptop"));
+      assert.deepStrictEqual((yield* read({ repo: APP, path: "README.md" })).value, {
+        message: OUTSIDE_REFUSAL,
+      });
+      // Reach is checked as a review ask checks it: a restricted pair reads nothing.
+      yield* ask("dev", chatOf.dev, "Read the alerts");
+      const limit = (restricted: boolean) =>
+        Reach.setLimit({
+          orgId,
+          by: owner.personId,
+          a: Reach.person(KinPersonId.make("dev")),
+          b: Reach.agent(tech),
+          restricted,
+        });
+      yield* limit(true);
+      assert.deepStrictEqual(
+        (yield* read({ repo: APP, path: "README.md" })).value,
+        refusal(READ_REFUSAL.restricted("Dev Malhotra")),
+      );
+      yield* limit(false);
+      // A review someone asked for reads only its pull request's repo.
+      yield* ask("dev", chatOf.dev, "Review my PR");
+      assert.isTrue((yield* review({ repo: APP, number: pull })).ok);
+      yield* runReview((yield* githubEvents).at(-1)!.eventId);
+      assert.deepStrictEqual(
+        (yield* read({ repo: SITE, path: "index.html" })).value,
+        refusal(READ_REFUSAL.reviewOnly(APP)),
+      );
+      assert.isTrue((yield* read({ repo: APP, path: "README.md" })).ok);
+
+      // Its own row in a shared turn's table, tied to no review; and nothing it did wrote to GitHub.
+      assert.strictEqual(SHARED_TOOLS.kin_github_read, "allowed");
+      assert.deepStrictEqual(
+        github.world.calls.slice(before).filter((call) => !call.startsWith("GET ")),
+        [],
       );
     }).pipe(Effect.provide(layer));
   },
