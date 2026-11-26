@@ -579,7 +579,7 @@ function dayInZone(date: Date, zone: string | null): Date {
 
 type DueZones = Pick<KinWorkNames, "zone" | "readerZone">;
 // A due day is the company's calendar day for anyone; a due time reads on the reader's own clock.
-const dueZone = (allDay: boolean, names: DueZones) =>
+export const kinWorkDueZone = (allDay: boolean, names: DueZones) =>
   allDay ? names.zone : (names.readerZone ?? names.zone);
 
 export const kinWorkDueText = (
@@ -590,7 +590,7 @@ export const kinWorkDueText = (
   if (record.dueAt === null) return null;
   const due = new Date(record.dueAt);
   if (Number.isNaN(due.getTime())) return null;
-  const zone = dueZone(record.dueAllDay, names);
+  const zone = kinWorkDueZone(record.dueAllDay, names);
   const day = kinWorkDay(dayInZone(due, zone), dayInZone(now, zone));
   return record.dueAllDay ? day : `${day}, ${kinWorkClock(due, zone)}`;
 };
@@ -604,7 +604,7 @@ export const kinWorkDueDays = (
   if (record.dueAt === null) return null;
   const due = new Date(record.dueAt);
   if (Number.isNaN(due.getTime())) return null;
-  const zone = dueZone(record.dueAllDay, names);
+  const zone = kinWorkDueZone(record.dueAllDay, names);
   return daysBetween(dayInZone(now, zone), dayInZone(due, zone));
 };
 
@@ -1316,6 +1316,20 @@ const dayFromText = (text: string | null, now: Date, zone: string | null) => {
     : kinWorkDay(dayInZone(date, zone), dayInZone(now, zone));
 };
 
+// History keeps the all-day flag only when it changed; an all-day due is the company day's last millisecond.
+const dueSetAllDay = (
+  to: string | null,
+  flag: { readonly to: string | null } | undefined,
+  zone: string | null,
+) => {
+  if (flag !== undefined) return flag.to === "true";
+  const at = to === null ? Number.NaN : Date.parse(to);
+  return (
+    !Number.isNaN(at) &&
+    civilDayOf(dayInZone(new Date(at), zone)) !== civilDayOf(dayInZone(new Date(at + 1), zone))
+  );
+};
+
 const ADDED = {
   work: "added this",
   clients: "added this client",
@@ -1431,7 +1445,11 @@ export function kinWorkChangeText(
     );
   const due = field("due");
   if (due !== undefined) {
-    const day = dayFromText(due.to, now, names.zone);
+    const day = dayFromText(
+      due.to,
+      now,
+      kinWorkDueZone(dueSetAllDay(due.to, field("dueAllDay"), names.zone), names),
+    );
     clauses.push(
       day === null
         ? "took the date off"

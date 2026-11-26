@@ -7,6 +7,7 @@ import {
   KinPersonId,
   KinRecordId,
   type KinRecord,
+  type KinRecordChange,
   type KinRecordDetail,
   EnvironmentId,
   ThreadId,
@@ -28,6 +29,7 @@ import {
   kinWorkNames,
   kinWorkDueLabel,
   kinWorkDueText,
+  kinWorkChangeText,
   kinWorkTitleCount,
   createKinWorkActions,
   kinWorkDraftCheck,
@@ -1122,30 +1124,48 @@ describe("kinWorkRow", () => {
     const allDay = record({ dueAt: "2026-12-29T07:59:59.999Z", dueAllDay: true });
     const westCompany = { ...reader, zone: "America/Los_Angeles", readerZone: "Asia/Kolkata" };
     expect(kinWorkDueText(allDay, westCompany, now)).toBe("tomorrow");
+    // History says the due day as the row above it does, whether or not the all-day flag changed.
+    const setDue = (fields: KinRecordChange["fields"], where: KinWorkNames) =>
+      kinWorkChangeText(
+        { seq: 1, at: now.toISOString(), by: me, via: "owner", kind: "updated", fields },
+        where,
+        now,
+      );
+    const due = (to: string) => ({ field: "due", from: null, to });
+    expect(setDue([due(timed.dueAt!)], reader)).toMatch(/set it due today$/);
+    expect(setDue([due(timed.dueAt!)], company)).toMatch(/set it due tomorrow$/);
+    expect(setDue([due(allDay.dueAt!)], westCompany)).toMatch(/set it due tomorrow$/);
+    expect(
+      setDue([due(allDay.dueAt!), { field: "dueAllDay", from: "false", to: "true" }], westCompany),
+    ).toMatch(/set it due tomorrow$/);
   });
 
   // The play-test's M-1: 4 Dec 10:16 UTC is 5 Dec 00:16 for a UTC+14 company, wherever it is read.
-  it("shows a timed due on the owner's day and clock, in the detail and the agenda alike", () => {
-    const where = { ...names, zone: "Etc/GMT-14" };
+  // Read from UTC+14 for a Los Angeles company: the timed due is the reader's, the all-day one the company's.
+  it("shows a timed due on the reader's day and clock, in the detail and the agenda alike", () => {
+    const where = { ...names, zone: "America/Los_Angeles", readerZone: "Etc/GMT-14" };
     const due = record({ dueAt: "2026-12-04T10:16:00.000Z", dueAllDay: false });
+    // 4 Dec's last millisecond in Los Angeles, after the timed due but on the day before it.
+    const allDay = record({ dueAt: "2026-12-05T07:59:59.999Z", dueAllDay: true });
     const today = new Date("2026-11-20T00:00:00.000Z");
     expect(kinWorkDueText(due, where, today)).toBe("Sat, Dec 5, 12:16 AM");
-    const [day] = kinDatesAgenda(
-      [
-        {
-          record: due,
-          listName: "Milestones",
-          stateLabel: "Open",
-          kind: "due",
-          label: "Due",
-          at: due.dueAt!,
-          allDay: false,
-        },
-      ],
+    const agenda = kinDatesAgenda(
+      [due, allDay].map((one) => ({
+        record: one,
+        listName: "Milestones",
+        stateLabel: "Open",
+        kind: "due" as const,
+        label: "Due",
+        at: one.dueAt!,
+        allDay: one.dueAllDay,
+      })),
       where,
       today,
     );
-    expect([day!.day, day!.rows[0]!.time]).toEqual(["2026-12-05", "12:16 AM"]);
+    expect(agenda.map((day) => [day.day, day.rows[0]!.time])).toEqual([
+      ["2026-12-04", null],
+      ["2026-12-05", "12:16 AM"],
+    ]);
     // A suggestion's dates stay, tagged as the lists tag it; stored issued, it reads Suggested.
     const suggested = {
       ...record({ dueAt: "2026-12-16T00:00:00.000Z" }),
