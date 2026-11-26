@@ -92,7 +92,7 @@ import {
   countryFirstMessage,
   notRegisteredFact,
 } from "../../apps/server/src/kin/work/companyProfile.ts";
-import { bankAnswer, shortDay } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
+import { bankAnswer } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
 import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyAnswers.ts";
 import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
 import { waitingLine } from "../../apps/server/src/kin/work/unconfirmedFacts.ts";
@@ -107,7 +107,6 @@ import {
 import { parseAmount } from "../../apps/server/src/kin/work/money.ts";
 import { goalLine } from "../../apps/server/src/kin/work/goals.ts";
 import {
-  formatKinMoney,
   formatKinPicturesDay,
   KIN_TEXT_LOCALE,
   KinDocCardDraft,
