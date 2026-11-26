@@ -646,10 +646,10 @@ const isKinChatError = Schema.is(KinChatError);
 // Live inserts also advance change_seq, so refresh the client's frozen change cursor well under
 // resume's 200-message reset cap.
 const checkpointEvery = 100;
-/** The flood bound on one wake-up's posts in one chat, natural replies and kin_chat_post alike. */
 const PREVIEW_LOOKBACK = 20;
 const BOOKKEEPING_TEXT = /^(?:(?:Remembered|Forgot|Updated|Replaced|Memory): |Deferred to )/;
 const deferralCardOption = Schema.decodeUnknownOption(KinDeferralCard);
+/** The wake-up's flood bound for tool posts in one chat. Finished replies bypass it. */
 const KIN_WAKEUP_MESSAGE_LIMIT = 8;
 /** Pictures one reply carries; a message's images are drawn as one gallery. */
 const KIN_REPLY_PICTURES_MAX = 4;

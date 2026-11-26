@@ -491,6 +491,125 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect.each(["messages", "characters"] as const)(
+  "posts every reply bubble after kin_chat_post used its %s budget",
+  (budget) =>
+    Effect.gen(function* () {
+      const { fake, runId, complete, posted, services, identity, owner, wakeupId, chatId } =
+        yield* setup({ ask: "Is the shipment ready?" });
+      const lead = Option.getOrThrow(
+        yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId }),
+      );
+      const { post } = Context.get(services, KinLevelGate);
+      const earlier =
+        budget === "messages"
+          ? Array.from({ length: 8 }, (_, i) => `Shipping update ${i + 1}.`)
+          : ["a".repeat(16_000), "b".repeat(16_000)];
+      const send = (body: string, i: number) =>
+        post(lead, { chatId, body, clientMessageId: `shipping-update-${i}`, intent: "answer" });
+      for (const [i, body] of earlier.entries()) yield* send(body, i);
+      const refused = yield* send("One more tool post.", earlier.length).pipe(Effect.flip);
+      assert.strictEqual(refused.reason, "limit");
+      const reply = ["The shipment is ready.", "The cartons are sealed.", "Pickup is at noon."];
+      fake.items = [text("a", 1, reply.join("\n\n"), runId)];
+      yield* complete;
+      assert.deepStrictEqual(
+        (yield* posted).map((row) => row.body),
+        [...earlier, ...reply],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("drops only exact repeated paragraphs across held segments", () =>
+  Effect.gen(function* () {
+    const { fake, runId, complete, posted } = yield* setup({ ask: "How is shipping?" });
+    const first = "The shipment is ready.";
+    const second = "Pickup is at noon.";
+    const newParagraph = "The shipment is ready!";
+    fake.items = [
+      text("a", 1, `${first}\n\n${second}`, runId),
+      tool("t", 2, "mcp__kin__record_get", runId),
+      text("b", 3, `The shipment   is ready.\n\n${newParagraph}`, runId),
+    ];
+    yield* complete;
+    assert.deepStrictEqual(
+      (yield* posted).map((row) => row.body),
+      [first, second, newParagraph],
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["person asks", "person asks live", "person reads", "trigger asks"] as const)(
+  "keeps the short pre-card answer only when a person started the turn (%s)",
+  (scenario) =>
+    Effect.gen(function* () {
+      const { fake, runId, complete, posted, chats, identity, owner, wakeupId, chatId, services } =
+        yield* setup(
+          scenario === "trigger asks"
+            ? { event: WAKE_KINDS.resume.event! }
+            : { ask: "Are we ready to ship?" },
+        );
+      const lead = Option.getOrThrow(
+        yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId }),
+      );
+      const card =
+        scenario === "person reads"
+          ? undefined
+          : yield* chats.ask(lead, {
+              chatId,
+              clientMessageId: "route-question",
+              question: "Which route should we choose?",
+              options: [{ label: "North" }, { label: "South" }],
+            });
+      const answer = "The inventory is ready. We can ship the first batch today.";
+      const last = "Pick one below.";
+      fake.items = [
+        text("a", 1, answer, runId),
+        tool(
+          "t",
+          2,
+          scenario === "person reads" ? "mcp__kin__record_get" : "mcp__kin__kin_ask",
+          runId,
+        ),
+        text("b", 3, last, runId),
+      ];
+      if (scenario === "person asks live") {
+        const all = yield* Context.get(services, KinChatHub).subscribeAll;
+        const working = yield* all.pipe(
+          Stream.filter(
+            (event) =>
+              event.type === "presence.updated" && event.presence?.label === "Writing a question",
+          ),
+          Stream.take(1),
+          Stream.runDrain,
+          Effect.forkScoped,
+        );
+        yield* Queue.offer(fake.live, itemEvent(fake.items[0]!));
+        yield* Queue.offer(fake.live, itemEvent({ ...fake.items[1]!, status: "running" }));
+        yield* Fiber.join(working);
+      }
+      yield* complete;
+      const keptAnswer = scenario === "person asks" || scenario === "person asks live";
+      assert.deepStrictEqual(
+        (yield* posted).map((row) => row.body).filter(Boolean),
+        keptAnswer ? [answer, last] : [last],
+      );
+      if (keptAnswer) {
+        const { messages } = yield* chats.history(owner, { chatId, beforeSeq: 99, limit: 20 });
+        assert.deepStrictEqual(
+          messages
+            .filter((message) => message.sourceWakeupId === wakeupId)
+            .map((message) => [message.body, message.widgetId]),
+          [
+            ["", card!.widgetId],
+            [answer, null],
+            [last, null],
+          ],
+        );
+      }
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect.each(["complete", "failed", "stopped"] as const)(
   "holds finished text while the turn works, then handles %s",
   (ending) =>

@@ -89,11 +89,12 @@ import {
   PHASE_LABELS,
   isProviderErrorText,
   normalized,
-  repeats,
   RESCUE_PROMPT,
   SILENT_REPLY,
   stripTrailingSilenceMarker,
   toolLabel,
+  toolNext,
+  uniqueParagraphs,
   type SegmentNext,
   type SetupFailure,
   withoutAsked,
@@ -320,6 +321,7 @@ type Wake = {
   readonly startedAt: number;
   // A message steered into a notice wake-up makes it owe a reply in the same chat.
   lane: Lane;
+  readonly startedByPerson: boolean;
   readonly lock: Semaphore.Semaphore;
   sendReceipt?: {
     readonly text: string;
@@ -328,8 +330,7 @@ type Wake = {
     readonly lastSteer: number;
   };
   readonly segments: Map<TurnItemId, Segment>;
-  // Ordinals of tool items seen live, to decide a short segment once the next item lands.
-  readonly tools: Array<number>;
+  readonly tools: Map<number, ReturnType<typeof toolNext>>;
   readonly notes: Array<Segment>;
   // A reply of this wake-up reached the chat.
   replied: boolean;
@@ -1050,15 +1051,7 @@ const make = Effect.gen(function* () {
     for (const [index, [slot, segments]] of slots.entries()) {
       const text = yield* replyText(
         wake,
-        segments.reduce(
-          (joined, segment) =>
-            repeats(segment.text, joined)
-              ? joined
-              : joined === ""
-                ? segment.text
-                : `${joined}\n\n${segment.text}`,
-          "",
-        ),
+        uniqueParagraphs(segments.map((segment) => segment.text).join("\n\n")),
       );
       const last = segments.at(-1)!;
       const setOutcome = (outcome: Outcome) => {
@@ -1268,7 +1261,7 @@ const make = Effect.gen(function* () {
     next: SegmentNext | null,
   ) {
     if (segment.outcome !== null || !segment.complete) return;
-    const decision = classifySegment(segment.text, next);
+    const decision = classifySegment(segment.text, next, wake.startedByPerson);
     if (decision === null) return;
     if (decision === "post" || decision === "note")
       segment.text = stripTrailingSilenceMarker(segment.text);
@@ -1297,8 +1290,21 @@ const make = Effect.gen(function* () {
     }
   };
   // Unknown until the next item or the run's end: a short segment then is the reply.
-  const nextAfter = (wake: Wake, ordinal: number): SegmentNext | null =>
-    wake.tools.some((tool) => tool > ordinal) ? "tool" : null;
+  const nextAfter = (wake: Wake, ordinal: number): SegmentNext | null => {
+    let nearest = Infinity;
+    let next: SegmentNext | null = null;
+    for (const [position, kind] of wake.tools) {
+      if (position <= ordinal || position >= nearest) continue;
+      nearest = position;
+      next = kind;
+    }
+    for (const segment of wake.segments.values()) {
+      if (segment.ordinal <= ordinal || segment.ordinal >= nearest) continue;
+      nearest = segment.ordinal;
+      next = "text";
+    }
+    return next;
+  };
 
   const segmentFor = (wake: Wake, id: TurnItemId, ordinal: number) => {
     let segment = wake.segments.get(id);
@@ -1329,7 +1335,8 @@ const make = Effect.gen(function* () {
     reopen(wake, item);
     if (item.type === "assistant_message" && isAnswer(item)) {
       const segment = segmentFor(wake, item.id, item.ordinal);
-      for (const earlier of pendingBefore(wake, item.ordinal)) yield* decide(wake, earlier, "text");
+      for (const earlier of pendingBefore(wake, item.ordinal))
+        yield* decide(wake, earlier, nextAfter(wake, earlier.ordinal));
       if (segment.outcome !== null) return;
       segment.text = textOf(item);
       segment.ordinal = item.ordinal;
@@ -1349,8 +1356,9 @@ const make = Effect.gen(function* () {
     if (item.type === "reasoning" || item.type === "assistant_message")
       return yield* show(wake, "thinking", PHASE_LABELS.thinking);
     if (!isToolItem(item)) return;
-    if (!wake.tools.includes(item.ordinal)) wake.tools.push(item.ordinal);
-    for (const earlier of pendingBefore(wake, item.ordinal)) yield* decide(wake, earlier, "tool");
+    wake.tools.set(item.ordinal, toolNext(item));
+    for (const earlier of pendingBefore(wake, item.ordinal))
+      yield* decide(wake, earlier, nextAfter(wake, earlier.ordinal));
     if (item.ordinal < wake.latest) return;
     if (item.status === "pending" || item.status === "running" || item.status === "waiting") {
       const label = toolLabel(item);
@@ -1467,7 +1475,11 @@ const make = Effect.gen(function* () {
       yield* decide(
         wake,
         segment,
-        following === undefined ? "end" : following.type === "assistant_message" ? "text" : "tool",
+        following === undefined
+          ? "end"
+          : following.type === "assistant_message"
+            ? "text"
+            : toolNext(following),
       );
     }
   });
@@ -1995,9 +2007,10 @@ const make = Effect.gen(function* () {
       const wake: Wake = {
         ...input,
         lane: found.value,
+        startedByPerson: found.value.mode === "reply",
         lock: yield* Semaphore.make(1),
         segments: new Map(),
-        tools: [],
+        tools: new Map(),
         notes: [],
         replied: false,
         answered: false,
