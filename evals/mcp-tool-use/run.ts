@@ -86,6 +86,8 @@ import {
   type KinSeatOptions,
   kinBillsOf,
   kinSessionOf,
+  kinSessionSplit,
+  hasKinSessionLayout,
   kinCallRead,
   KIN_KEY_PREFIX,
   kinToolVisible,
@@ -100,6 +102,12 @@ import {
   unmockedLines,
   unredact,
 } from "./kin.ts";
+import {
+  KIN_SESSION_BETAS,
+  KIN_SESSION_CACHE,
+  kinPromptSubmitText,
+  kinSessionStartText,
+} from "./kin-session-wire.ts";
 import { runAppServerSample } from "./kinAppServer.ts";
 // What kinAppServer.ts runs a sample with.
 export { EvalToolCallError, settle };
@@ -213,7 +221,7 @@ const NEUTRAL_IDENTITY = "You are an AI coding agent running in the user's termi
 
 type Block = { readonly type: string; readonly [key: string]: unknown };
 type ApiMessage = {
-  readonly role: "user" | "assistant";
+  readonly role: "user" | "assistant" | "system";
   readonly content: ReadonlyArray<Block>;
 };
 type ApiTool = { readonly name: string; readonly [key: string]: unknown };
@@ -1316,9 +1324,19 @@ const loadTools = (tools: Array<ApiTool>, id: string, found: ReadonlyArray<ApiTo
   return { type: "tool_result", tool_use_id: id, content };
 };
 
+const KIN_LAYOUTS = ["legacy", "session"] as const;
+type KinLayout = (typeof KIN_LAYOUTS)[number];
+
+const sessionLayout = (testCase: McpToolUseCase, layout: KinLayout, codex: boolean) =>
+  layout === "session" && !codex && hasKinSessionLayout(testCase);
+
 /** Messages for a case: reminders, context, prior turns with real tool blocks, then the prompt. */
-export const buildMessages = (sample: Sample) => {
+export const buildMessages = (sample: Sample, layout: KinLayout = "legacy") => {
   const { testCase, base, tools } = sample;
+  const casePrompt = fillKinRules(testCase.prompt, testCase.setup.world);
+  const split = sessionLayout(testCase, layout, base.codex !== undefined)
+    ? kinSessionSplit(casePrompt)
+    : undefined;
   const messages: Array<ApiMessage> = [];
   const push = (role: ApiMessage["role"], ...blocks: ReadonlyArray<Block>) => {
     const last = messages.at(-1);
@@ -1351,7 +1369,19 @@ export const buildMessages = (sample: Sample) => {
     base.gitStatusAt === undefined
       ? base.reminders
       : base.reminders.toSpliced(base.gitStatusAt, 0, reminder(gitStatus(testCase)));
-  push("user", ...reminders, ...notes.flatMap((note) => (note ? [reminder(note)] : [])));
+  const noteBlocks = notes.flatMap((note) => (note ? [reminder(note)] : []));
+  const date = split
+    ? reminders.find(
+        (block) => typeof block.text === "string" && /^Today's date is /.test(block.text),
+      )
+    : undefined;
+  push(
+    "user",
+    ...reminders.filter((block) => block !== date),
+    ...noteBlocks,
+    // The startup hook did not fire in the SDK probe; use the documented start reminder.
+    ...(split?.standing ? [reminder(kinSessionStartText(split.standing))] : []),
+  );
   const toolSearch = findTool(base, "ToolSearch")?.name ?? "ToolSearch";
   let nextId = 0;
   for (const turn of priorTurns) {
@@ -1391,11 +1421,11 @@ export const buildMessages = (sample: Sample) => {
     }
     if (turn.text) push(turn.role, text(fillKinRules(turn.text)));
   }
-  const casePrompt = fillKinRules(testCase.prompt, testCase.setup.world);
+  const message = split?.message ?? casePrompt;
   const userText =
     testCase.promptContext === undefined
-      ? casePrompt
-      : projectComposerContextForProvider({ text: casePrompt, ...testCase.promptContext });
+      ? message
+      : projectComposerContextForProvider({ text: message, ...testCase.promptContext });
   const inline =
     sideChatContext === undefined ? userText : withInlineContext(sideChatContext, userText);
   // Codex has no lead session to carry the instructions, so its prompt opens with them.
@@ -1413,6 +1443,12 @@ export const buildMessages = (sample: Sample) => {
         base.codex !== undefined,
       ),
     );
+  if (split) {
+    const context = [split.delta ? kinPromptSubmitText(split.delta) : undefined, date?.text]
+      .filter((part): part is string => typeof part === "string")
+      .join("\n\n");
+    if (context) push("system", text(context));
+  }
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.
   if (native && base.subagentContext) {
     push("user", reminder(`SubagentStart hook additional context: ${base.subagentContext}`));
@@ -2236,6 +2272,7 @@ type Config = {
   readonly effort: string;
   /** Model calls per sample; 0 is no limit (`--no-step-limit`), and a case's own is ignored. */
   readonly maxSteps: number;
+  readonly kinLayout?: KinLayout;
   readonly shellModel: ShellModel;
   /** `--harness app-server`: GPT models run in `codex app-server` as Kin runs them (`providers/codex.ts`). */
   readonly appServer?: AppServer;
@@ -2862,21 +2899,40 @@ export const failedEarly = (expect: McpToolUseCase["expect"], run: SampleRun, pa
 const requestBody = (
   { base, tools }: Sample,
   effort: string,
-  messages: unknown,
+  messages: ReadonlyArray<ApiMessage>,
   gateway = false,
+  session = false,
 ) => ({
   model: base.model,
   max_tokens: 16_000,
   thinking: { type: "adaptive", display: "summarized" },
   output_config: { effort },
   // The Anthropic gateway marks the last message for a 1h cache itself and rejects a second mark.
-  ...(gateway ? {} : { cache_control: { type: "ephemeral" } }),
+  ...(gateway || session ? {} : { cache_control: { type: "ephemeral" } }),
   // Like Claude Code, cache the shared system prompt so every sample reuses it.
   system: base.system.map((block, i) =>
-    i === base.system.length - 1 ? { ...block, cache_control: { type: "ephemeral" } } : block,
+    i === base.system.length - 1
+      ? { ...block, cache_control: session ? KIN_SESSION_CACHE : { type: "ephemeral" } }
+      : block,
   ),
   tools,
-  messages,
+  messages: session
+    ? messages.map((message, i) => {
+        if (i === messages.length - 1)
+          return {
+            ...message,
+            content: message.content.map((block, j) =>
+              j === message.content.length - 1
+                ? { ...block, cache_control: KIN_SESSION_CACHE }
+                : block,
+            ),
+          };
+        const only = message.content.length === 1 ? message.content[0] : undefined;
+        return only?.type === "text" && typeof only.text === "string"
+          ? { ...message, content: only.text }
+          : message;
+      })
+    : messages,
 });
 
 const codexRequest = (base: Base, input: ReadonlyArray<Block>) => ({
@@ -3012,6 +3068,7 @@ const postModel = Effect.fn("evaluateMcpToolUse.postModel")(function* (
   body: unknown,
   proxy?: Config["proxy"],
   responses = false,
+  betas = "advanced-tool-use-2025-11-20",
 ) {
   const client = (yield* HttpClient.HttpClient).pipe(
     // Anthropic answers 529 when it is overloaded; retryTransient already retries 429 and 5xx.
@@ -3031,7 +3088,7 @@ const postModel = Effect.fn("evaluateMcpToolUse.postModel")(function* (
       ...(apiKey ? { "x-api-key": apiKey } : {}),
       "anthropic-version": "2023-06-01",
       // Claude Code sends this beta for `defer_loading` tools and `tool_reference` results.
-      "anthropic-beta": "advanced-tool-use-2025-11-20",
+      "anthropic-beta": betas,
       ...proxy?.headers,
     }),
     HttpClientRequest.bodyJson(body),
@@ -3043,8 +3100,8 @@ const postModel = Effect.fn("evaluateMcpToolUse.postModel")(function* (
   }
   return yield* response.text;
 });
-const callModel = (apiKey: string, body: unknown, proxy?: Config["proxy"]) =>
-  postModel(apiKey, body, proxy).pipe(
+const callModel = (apiKey: string, body: unknown, proxy?: Config["proxy"], betas?: string) =>
+  postModel(apiKey, body, proxy, false, betas).pipe(
     Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(ApiResponse))),
   );
 
@@ -3147,7 +3204,8 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   yield* withBackgroundWait(sample);
   sample.kinFiles = yield* kinTurnFiles(testCase);
   const runPromise = Effect.runPromiseWith(yield* Effect.context<HttpClient.HttpClient>());
-  const messages = buildMessages(sample);
+  const session = sessionLayout(testCase, config.kinLayout ?? "legacy", base.codex !== undefined);
+  const messages = buildMessages(sample, config.kinLayout);
   const input = base.codex ? codexMessages(messages) : undefined;
   const transcript: Array<unknown> = [];
   const start = messages.length;
@@ -3184,8 +3242,9 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
       ? yield* callCodex(config, codexRequest(base, input))
       : yield* callModel(
           config.apiKey,
-          requestBody(sample, config.effort, messages, config.anthropic !== undefined),
+          requestBody(sample, config.effort, messages, config.anthropic !== undefined, session),
           config.anthropic,
+          session ? KIN_SESSION_BETAS : undefined,
         );
     addUsage(usage, response.usage);
     if ("raw" in response) {
@@ -3498,6 +3557,7 @@ const Flags = Schema.Struct({
   ]),
   "user-instructions": Schema.Literals(["keep", "drop"]),
   arm: Schema.Literals(ARMS),
+  "kin-layout": Schema.Literals(KIN_LAYOUTS),
   "dry-run": Schema.Boolean,
   estimate: Schema.Boolean,
   "first-per-area": Schema.Boolean,
@@ -3557,6 +3617,7 @@ const main = Effect.gen(function* () {
       "user-instructions": { ...string, default: "drop" },
       // `raw` runs without T3's PR, CI and issue tools, to compare against the CLIs.
       arm: { ...string, default: "tools" },
+      "kin-layout": { ...string, default: "legacy" },
       "dry-run": { type: "boolean", default: false },
       // Prices the selected cases from the requests a dry run builds, then exits. No model call.
       estimate: { type: "boolean", default: false },
@@ -3662,6 +3723,10 @@ const main = Effect.gen(function* () {
       };
     }),
   );
+  if (flags["kin-layout"] === "session") {
+    const fallbacks = selected.filter((testCase) => !sessionLayout(testCase, "session", codex));
+    process.stderr.write(`${fallbacks.length} cases have no session layout\n`);
+  }
   // Trimmed captures without user data ship beside the cases. `--template` also takes a raw
   // CLIProxyAPI capture.
   const templatePath =
@@ -3802,10 +3867,16 @@ const main = Effect.gen(function* () {
     const sample = makeSample(testCase, baseFor(testCase));
     yield* Effect.scoped(Effect.andThen(withDevices(sample), withBackgroundWait(sample)));
     sample.kinFiles = yield* kinTurnFiles(testCase);
-    const messages = buildMessages(sample);
+    const messages = buildMessages(sample, flags["kin-layout"]);
     const body = sample.base.codex
       ? codexRequest(sample.base, codexMessages(messages))
-      : requestBody(sample, effort, messages);
+      : requestBody(
+          sample,
+          effort,
+          messages,
+          false,
+          sessionLayout(testCase, flags["kin-layout"], codex),
+        );
     return { sample, messages, encoded: yield* encodeJson(body) };
   });
   if (flags["dry-run"] || flags.estimate) {
@@ -3871,6 +3942,7 @@ const main = Effect.gen(function* () {
     model: flags.model,
     ...(replay || !isPricedModel(flags["shell-model"]) ? { proxy: proxyConfig() } : {}),
     effort,
+    kinLayout: flags["kin-layout"],
     maxSteps: flags["no-step-limit"] ? 0 : (flags["max-steps"] ?? (codex ? 10 : 6)),
     shellModel: flags["shell-model"],
     ...(appServer

@@ -420,6 +420,14 @@ export const kinLegacyHeaderPlace = (line: string) =>
       ? "header"
       : undefined);
 
+export const hasKinSessionLayout = (testCase: McpToolUseCase) =>
+  testCase.setup.world?.kinLead === true &&
+  kinSessionOf(testCase) &&
+  !kinBillsOf(testCase) &&
+  !KIN_SHARED_PROMPT.test(testCase.prompt) &&
+  !testCase.prompt.includes("{{TEAM_RULES}}") &&
+  testCase.prompt.split("\n\n").includes(TURN_DIVIDER);
+
 export const kinSessionSplit = (prompt: string) => {
   const standing: string[] = [];
   const message: string[] = [];
