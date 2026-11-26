@@ -234,6 +234,26 @@ const kindLabelOf = Effect.fn("KinDocs.kindLabel")(function* (
   };
 });
 
+/** Each listed doc that is a teammate's draft ("Me and owners"), with whose: for owner-level lists. */
+const draftsOf = Effect.fn("KinDocs.drafts")(function* (
+  orgId: KinOrgId,
+  rows: ReadonlyArray<{ readonly recordId: string }>,
+) {
+  if (rows.length === 0) return new Map<string, string>();
+  const sql = yield* SqlClient.SqlClient;
+  const found = yield* sql<{ recordId: string; name: string }>`SELECT r.record_id AS "recordId",
+      p.display_name AS name FROM kin_records r
+    JOIN kin_people p ON p.org_id = r.org_id AND p.removed_at IS NULL
+      AND p.person_id = json_extract(r.fields_json, '$.draftFor')
+    WHERE r.org_id = ${orgId} AND r.register_id = 'docs'
+      AND r.record_id IN ${sql.in(rows.map((row) => row.recordId))}
+      AND r.sensitive = 1 AND r.marked_by_person_id = p.person_id
+      AND json_extract(r.fields_json, '$.home') IS NOT 'company'
+      AND NOT ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))}
+    ORDER BY r.record_id`;
+  return new Map(found.map((one) => [one.recordId, one.name]));
+});
+
 /** The teammate a doc was drafted for, shown to owner-level readers. */
 const draftOfFor = Effect.fn("KinDocs.draftOf")(function* (orgId: KinOrgId, row: RecordRow) {
   const sql = yield* SqlClient.SqlClient;
@@ -428,12 +448,16 @@ export const list = Effect.fn("KinDocs.list")(
     const hidden = yield* unseenClients(input.orgId, viewer, rows);
     // Only Deleted's rows say who deleted them and offer Restore; the doc's page offers Delete.
     const marks = input.archived === true ? yield* marksOf(input.orgId, viewer, rows) : undefined;
+    const drafts =
+      viewer._tag === "ownerLevel" ? yield* draftsOf(input.orgId, rows) : new Map<string, string>();
     return {
       docs: rows.flatMap((row) => {
         const version = latest.get(row.recordId);
         if (version === undefined) return [];
         const doc = docRowOf(row, version, now, hidden, marks);
-        return [input.acceptSlimLatest === true ? kinSlimDocRow(doc) : doc];
+        const draftOf = drafts.get(row.recordId);
+        const shown = input.acceptSlimLatest === true ? kinSlimDocRow(doc) : doc;
+        return [draftOf === undefined ? shown : { ...shown, draftOf: { name: draftOf } }];
       }),
       total: count?.total ?? 0,
       nextCursor: next < (count?.total ?? 0) ? `o:${next}` : null,

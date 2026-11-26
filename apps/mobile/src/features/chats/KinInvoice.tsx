@@ -390,7 +390,7 @@ export function KinInvoicePayments(
             payment.note,
             payment.source,
             number === null ? null : `Receipt ${number}`,
-            payment.voided ? KIN_INVOICES.takenBack : null,
+            payment.voidedLine,
           ]
             .filter((part) => part !== null)
             .join(" · ");
@@ -747,8 +747,8 @@ export function KinMakeDocumentStep(
       ) : recipe === null ? (
         <EmptyState
           variant="plain"
-          title="No invoice template yet"
-          detail="Ask an agent to set one up."
+          title={KIN_INVOICES.noTemplate(props.list).title}
+          detail={KIN_INVOICES.noTemplate(props.list).detail}
         />
       ) : (
         <>
