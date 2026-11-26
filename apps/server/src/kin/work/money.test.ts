@@ -4107,7 +4107,7 @@ describe("the owner's taps", () => {
         assert.deepStrictEqual(
           [
             [...new Set(agenda.rows.map((one) => one.record.key))].toSorted(),
-            tasks.records.filter((one) => one.late && !one.confirmed).map((one) => one.key),
+            tasks.records.filter((one) => one.late && one.confirmed).map((one) => one.key),
           ],
           [["DT-1", "INV-1", "W-1", "W-2"], ["W-1"]],
         );
@@ -4604,11 +4604,11 @@ describe("who keeps a suggestion", () => {
         "owner and co-owner asked": [1, 1, 1, 1],
         "owner and teammate asked": ["refused", "refused", "refused", "refused"],
         "teammate asked": ["refused", "refused", "refused", "refused"],
-        "nobody asked": [0, 0, 0, 0],
-        "owner reacted": [0, 0, 0, 0],
-        // His Approve of an invoice makes only an invoice real; unapproved, nothing is.
-        "owner approved a draft": [0, 1, 0, 0],
-        "a draft not approved": [0, 0, 0, 0],
+        // A task is kept whoever asked; money waits for a person's ask or Approve.
+        "nobody asked": [0, 0, 0, 1],
+        "owner reacted": [0, 0, 0, 1],
+        "owner approved a draft": [0, 1, 0, 1],
+        "a draft not approved": [0, 0, 0, 1],
         [ownerId]: [1, 1, 1, 1],
         "co-owner": [1, 1, 1, 1],
         mate: [0, 0, 1, 1],
@@ -4852,7 +4852,7 @@ describe("who keeps a suggestion", () => {
         ],
         [0, 1, 0],
       );
-      // A repeating entry's next one: a suggestion's is one; a kept one's follows who closed it.
+      // A repeating task's next one is kept, as every new task is.
       const repeating = (title: string, by: ReadonlyArray<string>) =>
         Effect.gen(function* () {
           const [one] = yield* asAgent(by, [{ title }]);
@@ -4875,7 +4875,7 @@ describe("who keeps a suggestion", () => {
           yield* next(yield* repeating("Invented guessed check-in", ["routine"]), person(ownerId)),
           yield* next(yield* repeating("Invented kept check-in", [ownerId]), person(ownerId)),
         ],
-        [0, 1],
+        [1, 1],
       );
     }).pipe(Effect.provide(layer)),
   );

@@ -3761,7 +3761,7 @@ describe("watched numbers", () => {
           [first, second].map((key) => ({ agent: finance, factKeys: [key], origin: undefined })),
         );
         assert.deepStrictEqual(yield* offTurnTexts(orgId, [second], noon(34)), [
-          '"Daily users" (G-11) is 980 "users" as of 2026-11-02, below its limit of 1,000 "users". Look at what moved (numbers_read gives the days before), then do the first useful thing yourself: a suggested task, a mail drafted on a Confirm card, or a list entry. Post one line to the owner saying what moved and what you drafted. Don\'t ask a question and don\'t assign anyone.',
+          '"Daily users" (G-11) is 980 "users" as of 2026-11-02, below its limit of 1,000 "users". Look at what moved (numbers_read gives the days before), then do the first useful thing yourself: a task, a mail drafted on a Confirm card, or a list entry. Post one line to the owner saying what moved and what you drafted. Don\'t ask a question and don\'t assign anyone.',
         ]);
       }).pipe(Effect.provide(layer)),
   );

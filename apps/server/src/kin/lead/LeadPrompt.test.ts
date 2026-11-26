@@ -1295,7 +1295,7 @@ it.effect(
           events: [offWake],
         }),
       ).toContain(
-        `\n\n"DAU" (G-1) is 940 as of 2026-11-20, below its limit of 1,000. Look at what moved (numbers_read gives the days before), then do the first useful thing yourself: a suggested task, a mail drafted on a Confirm card, or a list entry. Post one line to the owner saying what moved and what you drafted. Don't ask a question and don't assign anyone.`,
+        `\n\n"DAU" (G-1) is 940 as of 2026-11-20, below its limit of 1,000. Look at what moved (numbers_read gives the days before), then do the first useful thing yourself: a task, a mail drafted on a Confirm card, or a list entry. Post one line to the owner saying what moved and what you drafted. Don't ask a question and don't assign anyone.`,
       );
       yield* fields("G-1", { source: "PostHog" });
       // A stopped feed is no longer said.

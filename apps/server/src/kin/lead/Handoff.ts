@@ -1466,7 +1466,7 @@ const make = Effect.gen(function* () {
       ...(named === undefined
         ? {}
         : {
-            note: `Passed to ${target.name} as a request, with its source: what ${target.name} makes from it waits to be kept.`,
+            note: `Passed to ${target.name} as a request, with its source: a task ${target.name} makes from it is saved, money waits to be kept.`,
             source: named.turn,
           }),
     };
@@ -1611,7 +1611,7 @@ const make = Effect.gen(function* () {
           ...(named === undefined
             ? {}
             : {
-                note: `Passed to ${target.name} as a request, with its source: what ${target.name} makes from it waits to be kept.`,
+                note: `Passed to ${target.name} as a request, with its source: a task ${target.name} makes from it is saved, money waits to be kept.`,
                 source: named.turn,
               }),
         };
