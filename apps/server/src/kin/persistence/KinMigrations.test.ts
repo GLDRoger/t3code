@@ -2869,12 +2869,12 @@ describe("Kin migrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("K225 adds nullable links and marks, keeps existing rows, and reruns", () =>
+  it.effect("K226 adds nullable links and marks, keeps existing rows, and reruns", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
       yield* undoLapsedTextQuestions;
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 225`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 226`;
       yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Ambermill', 1)`;
       yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
         VALUES ('chat', 'org', 'direct', 'rhea:finance', 1, '2026-11-17T14:00:00.000Z')`;
@@ -2886,7 +2886,7 @@ describe("Kin migrations", () => {
           question, safe, asked_at, due_at, act_at, state)
         VALUES ('earlier', 'org', 'finance', 'rhea', 'chat', 'text', 'Is the invoice approved?',
           0, 1, 2, 2, 'lapsed')`;
-      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(225));
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(226));
       const question = sql`SELECT question_id, state, message_id FROM kin_questions WHERE org_id = 'org'`;
       const message = sql`SELECT message_id, lapsed_question_json FROM kin_messages WHERE org_id = 'org'`;
       assert.deepStrictEqual(yield* question, [
@@ -2900,8 +2900,8 @@ describe("Kin migrations", () => {
       const mark = '{"question":"Is the invoice approved?","at":"2026-11-17T14:00:00.000Z"}';
       yield* sql`UPDATE kin_messages SET lapsed_question_json = ${mark}
         WHERE org_id = 'org' AND message_id = 'posted'`;
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 225`;
-      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(225));
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 226`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(226));
       assert.deepStrictEqual(yield* question, [
         { question_id: "earlier", state: "lapsed", message_id: "posted" },
       ]);
