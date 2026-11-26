@@ -14,7 +14,7 @@ import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
-import { AdvertisedCore, AdvertisedDescriptions } from "../../../mcp/advertisedJsonSchema.ts";
+import { AdvertisedDescriptions } from "../../../mcp/advertisedJsonSchema.ts";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import { KIN_VISUAL_PAGE_GUIDE, KIN_VISUAL_TOOL_NAME } from "@t3tools/shared/kinVisual";
@@ -251,22 +251,24 @@ export const KinLeadToolkit = Toolkit.make(
     success: Lead.ItemResult,
   })
     .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(AdvertisedCore, {
-      path: ["properties", "item"],
-      keys: [
-        "id",
-        "kind",
-        "title",
-        "status",
-        "due",
-        "invalid_at",
-        "review_by",
-        "trust",
-        "links",
-        "body",
-        "sensitive",
-      ],
-    }),
+    .annotate(AdvertisedDescriptions, [
+      {
+        path: ["properties", "item"],
+        keys: [
+          "id",
+          "kind",
+          "title",
+          "status",
+          "due",
+          "invalid_at",
+          "review_by",
+          "trust",
+          "links",
+          "body",
+          "sensitive",
+        ],
+      },
+    ]),
   Tool.make("memory_label", {
     ...shared,
     description:

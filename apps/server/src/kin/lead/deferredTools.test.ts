@@ -1,6 +1,5 @@
-import { assert, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
-import * as Predicate from "effect/Predicate";
 import { Tool, Toolkit } from "effect/ai";
 
 import { advertisedJsonSchema } from "../../mcp/advertisedJsonSchema.ts";
@@ -89,38 +88,17 @@ it("advertises every accepted chart key at every level", () => {
   );
 });
 
-it("advertises one memory item shape with a single operation enum", () => {
-  const { properties } = advertisedJsonSchema(KinLeadToolkit.tools.memory_write, { kin: true });
-  assert.isTrue(Predicate.isObject(properties));
-  if (!Predicate.isObject(properties)) return;
-  assert.deepStrictEqual(Object.keys(properties), [
-    "op",
-    "item",
-    "sourceEventId",
-    "quote",
-    "supersedes",
-    "besides",
-  ]);
-  assert.deepStrictEqual(properties.op, {
+it("advertises every accepted memory write key and a single operation enum", () => {
+  const tool = KinLeadToolkit.tools.memory_write;
+  const advertised = advertisedJsonSchema(tool, { kin: true });
+  assert.deepStrictEqual(
+    inputPropertyPaths(advertised),
+    inputPropertyPaths(Tool.getJsonSchema(tool)),
+  );
+  expect(advertised.properties).toHaveProperty("op", {
     type: "string",
     enum: ["create", "update", "supersede", "invalidate"],
   });
-  const item = properties.item;
-  assert.isTrue(Predicate.isObject(item));
-  if (Predicate.isObject(item))
-    assert.deepStrictEqual(Object.keys(item.properties ?? {}), [
-      "id",
-      "kind",
-      "title",
-      "status",
-      "due",
-      "invalid_at",
-      "review_by",
-      "trust",
-      "links",
-      "body",
-      "sensitive",
-    ]);
 });
 
 it("adds five everyday tools to Claude's owner core without moving the Codex partition", () => {

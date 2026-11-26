@@ -7,13 +7,13 @@
   },
   "kinSharedInstructionsHash": "60ab3ffd9064e1045baa2276bd8dd7b1d350bb1c94d5c92e581e14c8684faab4",
   "kinLeadToolListJsonBytes": {
-    "engineering": 132809,
-    "engineeringBesideFinanceAndSales": 119000,
-    "finance": 111987,
-    "shared": 67468,
-    "social": 114716,
-    "socialBesideFinanceAndSales": 100907,
-    "support": 111987
+    "engineering": 133516,
+    "engineeringBesideFinanceAndSales": 119707,
+    "finance": 112694,
+    "shared": 68175,
+    "social": 115423,
+    "socialBesideFinanceAndSales": 101614,
+    "support": 112694
   },
   "kinLeadOwnerNativeTools": ["Bash", "Read", "Edit", "Write", "WebSearch"],
   "kinLeadAlwaysLoadedToolBytes": 22348,
@@ -252,7 +252,7 @@
     },
     "memory_write": {
       "desc": 1769,
-      "schema": 996
+      "schema": 1703
     },
     "message_replace": {
       "desc": 593,
