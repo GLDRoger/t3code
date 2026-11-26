@@ -106,8 +106,8 @@ const withPreparedContext = <A, E>(
           }),
         })
         .pipe(Effect.exit);
-      yield* context.set(ThreadId.make("kin:other"), { standing: "other", delta: "other" });
       yield* context.set(threadId, { standing: "prepared standing", delta: "prepared delta" });
+      yield* context.set(ThreadId.make("kin:other"), { standing: "other", delta: "other" });
       const [options] = opened;
       if (options === undefined) return yield* Effect.die("Claude did not open");
       return yield* check(options);
@@ -442,7 +442,11 @@ it.effect(
         }),
       );
       const lead = optionsAt(memory, { PATH: "/usr/bin", HOME: "/home/kin" });
-      const open = (threadId: string, options = lead) =>
+      const open = (
+        threadId: string,
+        options: ClaudeAdapterV2.ClaudeAgentSdkQueryOpenInput["options"] = lead,
+        refresh?: true,
+      ) =>
         Effect.gen(function* () {
           const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
           yield* runner
@@ -450,6 +454,7 @@ it.effect(
               threadId: ThreadId.make(threadId),
               providerSessionId: ProviderSessionId.make("session"),
               options,
+              ...(refresh === undefined ? {} : { refresh }),
             })
             .pipe(Effect.exit);
           return opened.at(-1);
@@ -588,6 +593,38 @@ it.effect(
         yield* sql`DELETE FROM kin_wakeup_outside_reads WHERE wakeup_id = 'wake-full'`;
         return row === undefined ? undefined : stampReads(row.source);
       });
+      const refresh = yield* open(
+        "kin:tech",
+        {
+          ...lead,
+          hooks: {
+            PreToolUse: [
+              {
+                onFailure: "block",
+                hooks: [
+                  async () => ({
+                    hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny" },
+                  }),
+                ],
+              },
+            ],
+          },
+        },
+        true,
+      );
+      assert.isDefined(refresh);
+      if (refresh === undefined) return;
+      const decisions = yield* hookOutputs(refresh, {
+        ...hookBase,
+        hook_event_name: "PreToolUse",
+        tool_name: "WebSearch",
+        tool_input: { query: "invented vendor" },
+        tool_use_id: "refresh-tool",
+      });
+      assert.isUndefined(yield* read, "a refused refresh tool must not mark a wake-up");
+      assert.deepStrictEqual(decisions, [
+        { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny" } },
+      ]);
       assert.isTrue(yield* allows("WebFetch", { url: "https://example.com/pricing?x=1" }));
       assert.isFalse(yield* allows("Bash", shell));
       assert.deepStrictEqual(yield* read, [{ k: "web", host: "example.com" }]);

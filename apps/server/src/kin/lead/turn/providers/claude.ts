@@ -118,7 +118,7 @@ const apply = (
   options: Options,
   plan: KinSessionPlan,
   session: {
-    readonly hook: HookCallbackMatcher;
+    readonly hook: HookCallbackMatcher | undefined;
     readonly auth: AuthSettings;
     readonly environment: NodeJS.ProcessEnv;
     readonly context: SessionContext.KinSessionContext["Service"];
@@ -131,7 +131,8 @@ const apply = (
   const environment = sessionEnvironment(env ?? session.environment);
   const loading = kinTools(options, plan);
   const confined = plan.seat === "confined";
-  const hooks = withConfinementHook(options.hooks, session.hook);
+  const hooks =
+    session.hook === undefined ? undefined : withConfinementHook(options.hooks, session.hook);
   return {
     ...options,
     settingSources: [],
@@ -157,14 +158,18 @@ const apply = (
     ...(loading.mcpServers === undefined ? {} : { mcpServers: loading.mcpServers }),
     // The user's own MCP servers and plugins could hand a lead a shell again.
     strictMcpConfig: true,
-    hooks:
-      plan.seat === "owner"
-        ? ownerContextHooks(
-            hooks,
-            () => session.context.forThread(plan.thread),
-            session.logCompaction,
-          )
-        : hooks,
+    ...(hooks === undefined
+      ? {}
+      : {
+          hooks:
+            plan.seat === "owner"
+              ? ownerContextHooks(
+                  hooks,
+                  () => session.context.forThread(plan.thread),
+                  session.logCompaction,
+                )
+              : hooks,
+        }),
     // A settings file path can't take keys.
     ...(typeof settings === "string"
       ? {}
@@ -273,7 +278,8 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
           return yield* runner.open({
             ...input,
             options: apply(input.options, plan, {
-              hook: decisionHook(plan),
+              // The refresh already denies all tools; the normal policy hook could mark a wake-up.
+              hook: input.refresh ? undefined : decisionHook(plan),
               auth: yield* confiner.ownerAuth(input.options.env),
               environment,
               context,

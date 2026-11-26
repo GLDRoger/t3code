@@ -775,8 +775,9 @@ export type ClaudeAgentSdkQueryOptions = Omit<
 } & ClaudeAgentSdkThreadIdentity;
 
 export interface ClaudeAgentSdkQueryOpenInput {
+  readonly refresh?: true;
   readonly resume?: true;
-  readonly options: ClaudeAgentSdkQueryOptions;
+  readonly options: ClaudeAgentSdkQueryOptions & { readonly maxTurns?: 1 };
   readonly threadId: ThreadId;
   readonly providerSessionId: OrchestrationV2ProviderSession["id"];
 }
@@ -6225,7 +6226,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
       Effect.provideService(Path.Path, path),
     );
 
-  return ProviderAdapter.ProviderAdapterV2.of({
+  return {
     instanceId: adapterOptions.instanceId,
     driver: CLAUDE_PROVIDER,
     getCapabilities: Effect.fn("ClaudeAdapterV2.getCapabilities")(function () {
@@ -6252,6 +6253,14 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         );
         const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const activeTurn = yield* Ref.make<ActiveClaudeTurnContext | null>(null);
+        const launchPermit = yield* Semaphore.make(1);
+        let lastLaunch:
+          | {
+              readonly threadId: ThreadId;
+              readonly nativeThreadId: string;
+              readonly options: ClaudeAgentSdkQueryOptions;
+            }
+          | undefined;
         const taskOutputTails = new Map<
           string,
           { readonly fiber: Fiber.Fiber<void>; readonly stop: Deferred.Deferred<void> }
@@ -13748,6 +13757,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 : Effect.void,
             ),
           );
+          lastLaunch = { threadId: turnInput.threadId, nativeThreadId, options: queryOptions };
           // Mark only successful opens; retries must not resume sessions that failed to create.
           yield* Ref.update(openedNativeThreads, (current) => {
             if (current.has(nativeThreadId)) {
@@ -14375,6 +14385,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           },
           (effect, turnInput) =>
             effect.pipe(
+              launchPermit.withPermits(1),
               Effect.scoped,
               Effect.mapError(
                 (cause) =>
@@ -14385,6 +14396,106 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                     runId: turnInput.runId,
                     cause,
                   }),
+              ),
+            ),
+        );
+
+        const refreshBusy = () =>
+          new ProviderAdapter.ProviderAdapterProtocolError({
+            driver: CLAUDE_PROVIDER,
+            detail: "Cannot refresh Claude while its runtime is busy.",
+            reason: "previous_turn_active",
+          });
+        const refreshNativeThread = Effect.fn("ClaudeAdapterV2.refreshNativeThread")(
+          function* ({
+            threadId,
+            providerThread,
+          }: {
+            readonly threadId: ThreadId;
+            readonly providerThread: OrchestrationV2ProviderThread;
+          }) {
+            if ((yield* Ref.get(activeTurn)) !== null) return yield* refreshBusy();
+            const nativeThreadId = yield* getNativeThreadId(providerThread);
+            const live = yield* Ref.get(queryContext);
+            if (
+              live?.nativeThreadId === nativeThreadId &&
+              (yield* liveProcessRunsBackgroundWork(live))
+            ) {
+              return yield* refreshBusy();
+            }
+            if (lastLaunch?.threadId !== threadId || lastLaunch.nativeThreadId !== nativeThreadId) {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CLAUDE_PROVIDER,
+                detail: "Claude refresh requires the same runtime that opened the last turn.",
+              });
+            }
+            const {
+              sessionId: _sessionId,
+              resumeSessionAt: _resumeAt,
+              ...previous
+            } = lastLaunch.options;
+            const resumeSessionAt = yield* getNativeConversationHeadId(providerThread);
+            const open = queryRunner.open({
+              threadId,
+              providerSessionId: input.providerSessionId,
+              refresh: true,
+              options: {
+                ...previous,
+                resume: nativeThreadId,
+                ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
+                persistSession: false,
+                maxTurns: 1,
+                hooks: {
+                  PreToolUse: [
+                    {
+                      onFailure: "block",
+                      hooks: [
+                        async () => ({
+                          hookSpecificOutput: {
+                            hookEventName: "PreToolUse",
+                            permissionDecision: "deny",
+                          },
+                        }),
+                      ],
+                    },
+                  ],
+                },
+                canUseTool: async () => ({ behavior: "deny", message: "" }),
+                onElicitation: async () => ({ action: "cancel" }),
+                onUserDialog: async () => ({ behavior: "cancelled" }),
+              },
+            });
+            return yield* Effect.acquireUseRelease(
+              adapterOptions.installationGate === undefined
+                ? open
+                : adapterOptions.installationGate.execute(adapterOptions.instanceId, open),
+              (query) =>
+                Effect.gen(function* () {
+                  yield* query.offer(makeClaudeUserMessage({ text: "warmup" }));
+                  const result = yield* query.messages.pipe(
+                    Stream.filter((message) => message.type === "result"),
+                    Stream.runHead,
+                  );
+                  if (Option.isNone(result)) {
+                    return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                      driver: CLAUDE_PROVIDER,
+                      detail: "Claude refresh ended without an SDK result.",
+                    });
+                  }
+                  return normalizeClaudeTurnTokenUsage(
+                    result.value,
+                    false,
+                    result.value.is_error ? "failed" : "completed",
+                  );
+                }),
+              (query) => query.close.pipe(Effect.ignore),
+            );
+          },
+          (effect) =>
+            effect.pipe(
+              launchPermit.withPermitsIfAvailable(1),
+              Effect.flatMap((result) =>
+                Effect.fromOption(result).pipe(Effect.mapError(refreshBusy)),
               ),
             ),
         );
@@ -15492,7 +15603,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           ),
         };
 
-        return runtime;
+        return { ...runtime, refreshNativeThread };
       },
       (effect, input) =>
         effect.pipe(
@@ -15506,7 +15617,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           ),
         ),
     ),
-  });
+  } satisfies ProviderAdapter.ProviderAdapterV2["Service"];
 });
 
 export type ClaudeAdapterV2DriverEnv =
