@@ -121,6 +121,7 @@ type InsertMessage = Omit<KinMessage, "seq" | "authorRole" | "clientMessageId" |
   // The reply bridge posts for a wake-up it resolved itself; its running row is the authority.
   readonly wakeupId?: KinWakeupId | undefined;
   readonly placeReplyFigures?: true | "named" | undefined;
+  readonly recordWakeup?: true | undefined;
   /** Pictures Kin drew for this agent: each doc version is read here, in the write's transaction. */
   readonly pictureRefs?: ReadonlyArray<PictureDoc> | undefined;
   // Only Kin itself (worker task cards, a failed send's mail again) posts outside a wake-up.
@@ -2376,7 +2377,7 @@ const make = Effect.gen(function* () {
  ${input.relay === undefined ? null : yield* encodeRelay(input.relay)},
  ${input.origin === undefined ? null : yield* encodeOrigin(input.origin)},
  ${input.when === undefined ? null : yield* encodeWhen(input.when)},
- ${placed.embeds.length === 0 ? null : yield* encodeEmbeds(placed.embeds)}, ${(input.body === "" || input.placeReplyFigures !== undefined) && author._tag === "agent" ? (input.wakeupId ?? null) : null})
+ ${placed.embeds.length === 0 ? null : yield* encodeEmbeds(placed.embeds)}, ${(input.body === "" || input.placeReplyFigures !== undefined || input.recordWakeup === true) && author._tag === "agent" ? (input.wakeupId ?? null) : null})
  ON CONFLICT DO NOTHING RETURNING message_id`;
             if (inserted.length === 0)
               return yield* new KinChatError({

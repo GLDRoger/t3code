@@ -26,6 +26,7 @@ export function kinFeedDisplay(input: {
   let shownTime: string | null = "";
   let previousNotice: Extract<KinFeedRow, { readonly type: "system" }> | null = null;
   for (const row of input.rows) {
+    if (row.type === "footer") continue;
     if (row.type === "day") {
       shownTime = null;
       previousBubble = false;
