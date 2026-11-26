@@ -239,7 +239,7 @@ export function kinMayStopAgent(input: {
   return () => input.ownerLevel;
 }
 
-export function kinPresenceStop(
+function kinPresenceStop(
   presence: KinPresence | undefined,
   mayStop: (agentId: string) => boolean,
 ): KinPresenceStop {
@@ -273,16 +273,14 @@ export function kinWorkingLines(
   now: number,
   mayStop: (agentId: string) => boolean,
 ): ReadonlyArray<KinWorkingLine> {
-  return presence
-    .flatMap((entry): ReadonlyArray<KinWorkingLine> => {
-      const line = kinPresenceLine(entry, now);
-      return line === null
-        ? []
-        : [{ presence: entry, line, stop: kinPresenceStop(entry, mayStop) }];
-    })
-    .toSorted(
-      (a, b) =>
-        a.presence.startedAt.localeCompare(b.presence.startedAt) ||
-        a.presence.agentId.localeCompare(b.presence.agentId),
-    );
+  const rows = presence.flatMap((entry): Array<KinWorkingLine> => {
+    const line = kinPresenceLine(entry, now);
+    return line === null ? [] : [{ presence: entry, line, stop: kinPresenceStop(entry, mayStop) }];
+  });
+  // Hermes has no Array#toSorted; `rows` is this call's own array.
+  return rows.sort(
+    (a, b) =>
+      a.presence.startedAt.localeCompare(b.presence.startedAt) ||
+      a.presence.agentId.localeCompare(b.presence.agentId),
+  );
 }
