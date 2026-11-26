@@ -14,7 +14,7 @@ import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
-import { AdvertisedCore } from "../../../mcp/advertisedJsonSchema.ts";
+import { AdvertisedCore, AdvertisedDescriptions } from "../../../mcp/advertisedJsonSchema.ts";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import { KIN_VISUAL_PAGE_GUIDE, KIN_VISUAL_TOOL_NAME } from "@t3tools/shared/kinVisual";
@@ -194,11 +194,10 @@ export const KinLeadToolkit = Toolkit.make(
     success: ChartCard.ChartResult,
   })
     .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(AdvertisedCore, {
-      path: [],
-      keys: ["chart", "title", "labels", "labelType", "series", "unit", "caption"],
-      nested: [{ path: ["properties", "series", "items"], keys: ["name", "values"] }],
-    }),
+    .annotate(AdvertisedDescriptions, [
+      { path: [], keys: ["chart", "title", "labels", "labelType", "series", "unit", "caption"] },
+      { path: ["properties", "series", "items"], keys: ["name", "values"] },
+    ]),
   Tool.make(KIN_VISUAL_TOOL_NAME, {
     ...chat,
     description: `Add a page of figures to your reply: one page of HTML, CSS and JavaScript in a sealed frame under its title. kin_chart comes first for the kinds it draws; this is for the rest: a dashboard, a sankey, treemap, heatmap, funnel, gauge, network, gantt or timeline, a flow or sequence diagram, a styled or sortable table. Put the figure line it returns where it belongs, and the takeaway as your first line. html is the whole page; height your estimate of it at phone width. One visual per call. Draw no Confirm, Approve, Send or Pay control: Kin does. Only data you read or were given. A refusal says what to change.\n${KIN_VISUAL_PAGE_GUIDE}`,

@@ -6,6 +6,7 @@ import { Tool, Toolkit } from "effect/ai";
 import { advertisedJsonSchema } from "../../mcp/advertisedJsonSchema.ts";
 import { KinConnectionsToolkit } from "../connections/mcp.ts";
 import { KinDocumentToolkit } from "../gendocs/mcp.ts";
+import { inputPropertyPaths } from "../mcp/inputPropertyPaths.testHelper.ts";
 import { KinChatToolkit } from "../mcp/KinChatToolkit.ts";
 import { KinPictureToolkit } from "../pictures/mcp.ts";
 import contextBudget from "../mcp/agentContextBudget.json" with { type: "json" };
@@ -79,23 +80,13 @@ it("each Kin tool's description and input schema weigh what the budget pins", ()
   );
 });
 
-it("advertises only the chart core, including the core of each series", () => {
-  const { properties } = advertisedJsonSchema(KinLeadToolkit.tools.kin_chart, { kin: true });
-  assert.isTrue(Predicate.isObject(properties));
-  if (!Predicate.isObject(properties)) return;
-  assert.sameMembers(Object.keys(properties), [
-    "chart",
-    "title",
-    "labels",
-    "labelType",
-    "series",
-    "unit",
-    "caption",
-  ]);
-  const series = properties.series;
-  assert.isTrue(Predicate.isObject(series) && Predicate.isObject(series.items));
-  if (Predicate.isObject(series) && Predicate.isObject(series.items))
-    assert.deepStrictEqual(Object.keys(series.items.properties ?? {}), ["name", "values"]);
+it("advertises every accepted chart key at every level", () => {
+  const tool = KinLeadToolkit.tools.kin_chart;
+  const advertised = advertisedJsonSchema(tool, { kin: true });
+  assert.deepStrictEqual(
+    inputPropertyPaths(advertised),
+    inputPropertyPaths(Tool.getJsonSchema(tool)),
+  );
 });
 
 it("advertises one memory item shape with a single operation enum", () => {

@@ -2,13 +2,15 @@ import * as Context from "effect/Context";
 import * as Predicate from "effect/Predicate";
 import { Tool } from "effect/ai";
 
-interface Core {
+interface FieldSelection {
   readonly path: ReadonlyArray<string>;
   readonly keys: ReadonlyArray<string>;
 }
 
-export const AdvertisedCore = Context.Service<Core & { readonly nested?: ReadonlyArray<Core> }>(
-  "t3/mcp/AdvertisedCore",
+export const AdvertisedCore = Context.Service<FieldSelection>("t3/mcp/AdvertisedCore");
+
+export const AdvertisedDescriptions = Context.Service<ReadonlyArray<FieldSelection>>(
+  "t3/mcp/AdvertisedDescriptions",
 );
 
 type Json = unknown;
@@ -81,17 +83,36 @@ const mergeTaggedObjects = (branches: ReadonlyArray<Json>): JsonObject | undefin
   return { type: "object", properties, required: [tag, ...requiredByAll] };
 };
 
-const compact = (schema: Json, optional: boolean, kin: boolean): Json => {
-  if (Array.isArray(schema)) return schema.map((item) => compact(item, false, kin));
+const isOpenRest = (value: Json) => {
+  if (!Array.isArray(value) || value.length !== 1) return false;
+  const [rest] = value;
+  return (
+    Predicate.isObject(rest) &&
+    rest.type === "object" &&
+    Object.keys(rest).length === 2 &&
+    Predicate.isObject(rest.additionalProperties) &&
+    Object.keys(rest.additionalProperties).length === 0
+  );
+};
+
+const compact = (
+  schema: Json,
+  optional: boolean,
+  options: { readonly kin: boolean; readonly stripOpenRest: boolean },
+): Json => {
+  if (Array.isArray(schema)) return schema.map((item) => compact(item, false, options));
   if (!Predicate.isObject(schema)) return schema;
   const required = new Set(Array.isArray(schema.required) ? schema.required : []);
   let result: JsonObject = {};
   for (const [key, value] of Object.entries(schema)) {
     if (key === "additionalProperties" && value === true) continue;
+    // An open rest schema lets a refinement see extra keys. Its allOf adds no JSON validation.
+    if (options.stripOpenRest && key === "allOf" && schema.type === "object" && isOpenRest(value))
+      continue;
     if (SAFE_INTEGER_BOUNDS[key] === value) continue;
     if (isNonStringEnum(key, value)) continue;
     if (
-      kin &&
+      options.kin &&
       ((key === "minLength" && value === 1) ||
         key === "maxLength" ||
         key === "maxItems" ||
@@ -104,12 +125,12 @@ const compact = (schema: Json, optional: boolean, kin: boolean): Json => {
         ? Object.fromEntries(
             Object.entries(value).map(([name, property]) => [
               name,
-              compact(property, !required.has(name), kin),
+              compact(property, !required.has(name), options),
             ]),
           )
-        : kin && key === "anyOf" && Array.isArray(value)
-          ? value.map((branch) => compact(branch, optional, kin))
-          : compact(value, false, kin);
+        : options.kin && key === "anyOf" && Array.isArray(value)
+          ? value.map((branch) => compact(branch, optional, options))
+          : compact(value, false, options);
   }
   if (Array.isArray(result.anyOf)) {
     const branches = result.anyOf
@@ -122,6 +143,38 @@ const compact = (schema: Json, optional: boolean, kin: boolean): Json => {
   return result;
 };
 
+const shapeKeywords = new Set([
+  "type",
+  "enum",
+  "const",
+  "required",
+  "properties",
+  "items",
+  "anyOf",
+  "allOf",
+  "oneOf",
+  "additionalProperties",
+]);
+
+const bareShape = (schema: Json): Json => {
+  if (Array.isArray(schema)) return schema.map(bareShape);
+  if (!Predicate.isObject(schema)) return schema;
+  return Object.fromEntries(
+    Object.entries(schema)
+      .filter(([key]) => shapeKeywords.has(key))
+      .map(([key, value]) => [
+        key,
+        key === "properties" && Predicate.isObject(value)
+          ? Object.fromEntries(
+              Object.entries(value).map(([name, property]) => [name, bareShape(property)]),
+            )
+          : key === "enum" || key === "const"
+            ? value
+            : bareShape(value),
+      ]),
+  );
+};
+
 /**
  * The input schema T3 advertises for a tool. Drops JSON noise that every thread pays for:
  * `additionalProperties: true`, safe-integer bounds, nested `anyOf`, JSON-string fallbacks, and
@@ -129,21 +182,40 @@ const compact = (schema: Json, optional: boolean, kin: boolean): Json => {
  * Decoding still uses the full schema, so each tag's own required fields still apply.
  */
 export const advertisedJsonSchema = (tool: Tool.Any, options?: { readonly kin?: boolean }) => {
-  const schema = compact(Tool.getJsonSchema(tool), false, options?.kin === true);
-  const core = Context.getOrUndefined(tool.annotations, AdvertisedCore);
-  for (const { path, keys } of core === undefined ? [] : [core, ...(core.nested ?? [])]) {
+  const describedFields = Context.getOrUndefined(tool.annotations, AdvertisedDescriptions);
+  const schema = compact(Tool.getJsonSchema(tool), false, {
+    kin: options?.kin === true,
+    stripOpenRest: describedFields !== undefined,
+  });
+  for (const { path, keys } of describedFields ?? []) {
     const target = path.reduce<Json>(
       (node, key) => (Predicate.isObject(node) ? node[key] : undefined),
       schema,
     );
     if (!Predicate.isObject(target) || !Predicate.isObject(target.properties))
-      throw new Error(`No object at the advertised core of ${tool.name}.`);
-    const advertised = new Set(keys);
+      throw new Error(`No object for ${tool.name} at ${path.join(".")}.`);
+    const described = new Set(keys);
     target.properties = Object.fromEntries(
-      Object.entries(target.properties).filter(([key]) => advertised.has(key)),
+      Object.entries(target.properties).map(([key, property]) => [
+        key,
+        described.has(key) ? property : bareShape(property),
+      ]),
+    );
+  }
+  const core = Context.getOrUndefined(tool.annotations, AdvertisedCore);
+  if (core !== undefined) {
+    const target = core.path.reduce<Json>(
+      (node, key) => (Predicate.isObject(node) ? node[key] : undefined),
+      schema,
+    );
+    if (!Predicate.isObject(target) || !Predicate.isObject(target.properties))
+      throw new Error(`No object at the advertised core of ${tool.name}.`);
+    const keys = new Set(core.keys);
+    target.properties = Object.fromEntries(
+      Object.entries(target.properties).filter(([key]) => keys.has(key)),
     );
     if (Array.isArray(target.required)) {
-      const required = target.required.filter((key) => advertised.has(key));
+      const required = target.required.filter((key) => keys.has(key));
       if (required.length > 0) target.required = required;
       else delete target.required;
     }
