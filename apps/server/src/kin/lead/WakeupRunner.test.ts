@@ -2331,6 +2331,71 @@ describe("WakeupRunner", () => {
     ),
   );
 
+  it.effect("the switch-off shadow skips an expired turn", () =>
+    Effect.gen(function* () {
+      yield* seedCarry;
+      yield* wake("tidewater-first");
+      yield* TestClock.adjust(CARRY_LIFETIME_MS + 1);
+      yield* harborviewChanged();
+      yield* wake("tidewater-expired");
+      const [, expired] = yield* carryRows;
+      assert.strictEqual(expired?.reason, "expired");
+      assert.strictEqual(expired?.sent, "fresh");
+      assert.isNull(expired?.delta);
+    }).pipe(
+      Effect.provide(carryHarness({ settings: { kinSessionCarry: false } })),
+      provideDeterministicTestRuntime,
+    ),
+  );
+
+  it.effect("a timed-out turn that skips capture cannot leave a delta for a fresh turn", () => {
+    let timeout = false;
+    const reads: string[] = [];
+    const writer = Layer.mock(Writer.MemoryWriter)({
+      discard: () => Effect.void,
+      commitWakeup: () =>
+        timeout
+          ? Effect.fail(new Memory.MemoryError({ orgId, operation: "fixture commit" }))
+          : Effect.succeed({ commit: "fixture" }),
+    });
+    return Effect.gen(function* () {
+      using _deadline = vi
+        .spyOn(RunSilence, "waitAsking")
+        .mockImplementation((threads, input) =>
+          timeout
+            ? Effect.succeed({ timedOut: true, run: null, threadId: input.threadId })
+            : threads.waitForThread({ ...input, timeoutMs: RunSilence.RUN_SILENCE_MS }),
+        );
+      yield* seedCarry;
+      yield* wake("tidewater-first");
+      timeout = true;
+      assert.isTrue(Option.isNone(yield* wake("tidewater-timeout").pipe(Effect.option)));
+      timeout = false;
+      const [, timedOut] = yield* carryRows;
+      assert.strictEqual(timedOut?.sent, "carried");
+      assert.strictEqual(timedOut?.status, "timed_out");
+      assert.isString((yield* KinSessionContext).forThread(timedOut!.threadId)?.delta);
+      yield* wake("tidewater-next");
+      assert.isTrue(carriedSend(yield* carryProjection).run.freshContext);
+      assert.deepStrictEqual(reads, [""]);
+    }).pipe(
+      Effect.provide(
+        carryHarness({
+          writer,
+          untilInterrupted: (ordinal) => ordinal === 2,
+          beforeTurn: (input) =>
+            input.runOrdinal !== 3
+              ? Effect.void
+              : readCarryHook(input.threadId).pipe(
+                  Effect.tap((text) => Effect.sync(() => reads.push(text))),
+                  Effect.asVoid,
+                ),
+        }),
+      ),
+      provideDeterministicTestRuntime,
+    );
+  });
+
   it.effect("the runner's context is the one the Claude hook reads", () => {
     const received: string[] = [];
     const beforeTurn = (input: ProviderAdapterV2TurnInput) =>

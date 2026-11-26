@@ -2268,7 +2268,7 @@ const make = Effect.gen(function* () {
               yield* sql`UPDATE kin_wakeups SET carry_json = ${stamp}, delta_json = ${stats},
                 standing_key = ${fingerprint}, prompt_index = ${index}
                 WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND status = 'running'`;
-              if (!hostSettings.kinSessionCarry && ownerClaude && hasCursor)
+              if (!hostSettings.kinSessionCarry && shadowDecision.carry && hasCursor)
                 yield* changesFor(claimed, facts, cursor, cursorChat).pipe(
                   Effect.flatMap((changes) =>
                     changes === undefined
@@ -2326,8 +2326,11 @@ const make = Effect.gen(function* () {
               });
             const commandId = CommandId.make(`kin-wakeup:${wakeupId}`);
             const messageId = MessageId.make(KinIdentity.wakeupMessageId(wakeupId));
-            if (send.beside !== undefined && sessionContext !== undefined)
-              yield* sessionContext.set(threadId, { delta: send.beside });
+            if (sessionContext !== undefined)
+              yield* sessionContext.set(
+                threadId,
+                send.beside === undefined ? undefined : { delta: send.beside },
+              );
             const sent =
               taken !== undefined
                 ? undefined
