@@ -283,9 +283,9 @@ it.effect("record_create makes many entries in one call and a retry makes none",
       ],
     });
     const wrongList = yield* Effect.flip(LeadWork.create(scopeOf(lead), wrongRows));
-    assert.include(wrongList.message, '"kind" belongs on clients, not on Work');
-    assert.include(wrongList.message, 'Work does not take "emial"; use one of:');
-    assert.include(wrongList.message, '"cameFrom" belongs on clients, not on Work');
+    assert.include(wrongList.message, 'Work takes no "kind", which goes on clients');
+    assert.include(wrongList.message, 'Work takes no "emial"; pass one of:');
+    assert.include(wrongList.message, 'Work takes no "cameFrom", which goes on clients');
     assert.include(wrongList.message, "Nothing in this call was saved");
     const wrongChange = yield* Effect.flip(
       LeadWork.update(scopeOf(lead), {
@@ -295,7 +295,7 @@ it.effect("record_create makes many entries in one call and a retry makes none",
         title: "Invented: not renamed",
       }),
     );
-    assert.include(wrongChange.message, '"kind" belongs on clients, not on Work');
+    assert.include(wrongChange.message, 'Work takes no "kind", which goes on clients');
     assert.strictEqual((yield* LeadWork.get(scopeOf(lead), { key: "W-1" })).title, steps[0]?.title);
     const sql = yield* SqlClient.SqlClient;
     assert.lengthOf(yield* sql`SELECT 1 FROM kin_records`, 3);

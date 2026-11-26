@@ -7,16 +7,16 @@
   },
   "kinSharedInstructionsHash": "60ab3ffd9064e1045baa2276bd8dd7b1d350bb1c94d5c92e581e14c8684faab4",
   "kinLeadToolListJsonBytes": {
-    "engineering": 155725,
-    "engineeringBesideFinanceAndSales": 140012,
-    "finance": 134903,
-    "shared": 86890,
-    "social": 137632,
-    "socialBesideFinanceAndSales": 121919,
-    "support": 134903
+    "engineering": 133665,
+    "engineeringBesideFinanceAndSales": 119856,
+    "finance": 112843,
+    "shared": 68196,
+    "social": 115572,
+    "socialBesideFinanceAndSales": 101763,
+    "support": 112843
   },
   "kinLeadOwnerNativeTools": ["Bash", "Read", "Edit", "Write", "WebSearch"],
-  "kinLeadAlwaysLoadedToolBytes": 31056,
+  "kinLeadAlwaysLoadedToolBytes": 22348,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -39,7 +39,7 @@
       "schema": 432
     },
     "client_read": {
-      "desc": 728,
+      "desc": 544,
       "schema": 75
     },
     "company_profile": {
@@ -51,7 +51,7 @@
       "schema": 591
     },
     "dates_query": {
-      "desc": 382,
+      "desc": 311,
       "schema": 278
     },
     "deal_stages": {
@@ -59,11 +59,11 @@
       "schema": 46
     },
     "doc_create": {
-      "desc": 1494,
-      "schema": 1989
+      "desc": 1089,
+      "schema": 1536
     },
     "doc_edit": {
-      "desc": 1017,
+      "desc": 762,
       "schema": 1039
     },
     "doc_history": {
@@ -71,31 +71,31 @@
       "schema": 220
     },
     "doc_link": {
-      "desc": 267,
+      "desc": 201,
       "schema": 266
     },
     "doc_move": {
-      "desc": 416,
-      "schema": 1099
+      "desc": 350,
+      "schema": 854
     },
     "doc_read": {
-      "desc": 428,
+      "desc": 347,
       "schema": 348
     },
     "doc_restore": {
-      "desc": 311,
+      "desc": 245,
       "schema": 429
     },
     "doc_rewrite": {
-      "desc": 374,
+      "desc": 308,
       "schema": 501
     },
     "docs_search": {
-      "desc": 426,
+      "desc": 300,
       "schema": 422
     },
     "kin_ask": {
-      "desc": 2440,
+      "desc": 1600,
       "schema": 769
     },
     "kin_ask_close": {
@@ -103,7 +103,7 @@
       "schema": 182
     },
     "kin_ask_person": {
-      "desc": 1006,
+      "desc": 819,
       "schema": 825
     },
     "kin_cancel": {
@@ -111,7 +111,7 @@
       "schema": 115
     },
     "kin_chart": {
-      "desc": 2996,
+      "desc": 1659,
       "schema": 2080
     },
     "kin_chat_post": {
@@ -143,12 +143,12 @@
       "schema": 88
     },
     "kin_defer": {
-      "desc": 686,
+      "desc": 544,
       "schema": 624
     },
     "kin_document": {
-      "desc": 1667,
-      "schema": 1736
+      "desc": 1132,
+      "schema": 1228
     },
     "kin_github_comment": {
       "desc": 348,
@@ -179,7 +179,7 @@
       "schema": 114
     },
     "kin_hand_off": {
-      "desc": 2037,
+      "desc": 1451,
       "schema": 328
     },
     "kin_issue": {
@@ -195,7 +195,7 @@
       "schema": 46
     },
     "kin_picture": {
-      "desc": 6732,
+      "desc": 3495,
       "schema": 344
     },
     "kin_react": {
@@ -203,8 +203,8 @@
       "schema": 221
     },
     "kin_receipt": {
-      "desc": 1826,
-      "schema": 974
+      "desc": 1075,
+      "schema": 851
     },
     "kin_recipe_undo": {
       "desc": 215,
@@ -215,7 +215,7 @@
       "schema": 199
     },
     "kin_relay": {
-      "desc": 1107,
+      "desc": 882,
       "schema": 325
     },
     "kin_schedule": {
@@ -227,7 +227,7 @@
       "schema": 92
     },
     "kin_visual": {
-      "desc": 4676,
+      "desc": 2421,
       "schema": 138
     },
     "kin_widget_upsert": {
@@ -235,8 +235,8 @@
       "schema": 1281
     },
     "list_define": {
-      "desc": 810,
-      "schema": 2280
+      "desc": 642,
+      "schema": 2208
     },
     "memory_label": {
       "desc": 380,
@@ -251,7 +251,7 @@
       "schema": 510
     },
     "memory_write": {
-      "desc": 2291,
+      "desc": 1769,
       "schema": 1724
     },
     "message_replace": {
@@ -267,7 +267,7 @@
       "schema": 571
     },
     "money_summary": {
-      "desc": 501,
+      "desc": 430,
       "schema": 46
     },
     "number_record": {
@@ -283,8 +283,8 @@
       "schema": 1059
     },
     "payment_record": {
-      "desc": 1008,
-      "schema": 1030
+      "desc": 940,
+      "schema": 892
     },
     "people_read": {
       "desc": 270,
@@ -303,8 +303,8 @@
       "schema": 135
     },
     "pulse_handle": {
-      "desc": 996,
-      "schema": 1233
+      "desc": 847,
+      "schema": 1014
     },
     "pulse_nudge": {
       "desc": 283,
@@ -315,19 +315,19 @@
       "schema": 529
     },
     "record_assign": {
-      "desc": 933,
-      "schema": 1245
+      "desc": 542,
+      "schema": 977
     },
     "record_comment": {
       "desc": 343,
       "schema": 208
     },
     "record_create": {
-      "desc": 6262,
-      "schema": 2770
+      "desc": 2735,
+      "schema": 2402
     },
     "record_get": {
-      "desc": 1375,
+      "desc": 992,
       "schema": 183
     },
     "record_hand_back": {
@@ -339,12 +339,12 @@
       "schema": 158
     },
     "record_update": {
-      "desc": 2272,
-      "schema": 2417
+      "desc": 1347,
+      "schema": 2108
     },
     "records_query": {
-      "desc": 1324,
-      "schema": 1905
+      "desc": 932,
+      "schema": 1501
     },
     "social_draft": {
       "desc": 430,
@@ -367,8 +367,8 @@
       "schema": 105
     },
     "statement_read": {
-      "desc": 1325,
-      "schema": 2427
+      "desc": 1009,
+      "schema": 1990
     },
     "statement_rows": {
       "desc": 659,

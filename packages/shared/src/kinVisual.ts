@@ -552,31 +552,18 @@ export function kinVisualPageDocument(
   return `${themed.slice(0, at)}<script>${KIN_VISUAL_PRELUDE}</script><script>document.write(${markup},${JSON.stringify(allowed.join(" "))})</script>`;
 }
 
-const example = (library: KinVisualLibrary, body: string) =>
-  `${library.name} ${library.version} (${library.draws}): ${kinVisualLibraryTag(library)} then ${body}`;
+/** What a page or a picture may hold: sealed, Kin's libraries, the theme and the brand. */
+export const KIN_VISUAL_PAGE_BASE = [
+  "It runs sealed, with no network: put the data in the page. No fetch, CDN script, or remote image, font or stylesheet (the owner is told which host it wanted); CSS goes in a <style> element, and <link>, <iframe>, <object> and <embed> are taken out. The only outside scripts are these tags, exactly as written:",
+  `${kinVisualLibraryTag(KIN_VISUAL_LIBRARIES[0])} (any chart), then kin.echarts("#c", option) on an element with a fixed pixel height: it applies the theme and resizes, so leave text, axis and background colours unset.`,
+  `${kinVisualLibraryTag(KIN_VISUAL_LIBRARIES[1])} (diagrams from text), then <pre class="mermaid">flowchart LR; Visit-->Paid</pre><script>kin.mermaid()</script>.`,
+  `${kinVisualLibraryTag(KIN_VISUAL_LIBRARIES[2])} (custom SVG, map shapes from GeoJSON in the page).`,
+  "Use theme variables, not fixed colours: --background, --foreground, --muted, --card, --border, --primary, --accent, --destructive, --success, --chart-1 to --chart-6, --radius, --font-sans, --space-1 to --space-6; in script kin.colors() is the chart colours and kin.dark() the theme.",
+  `The brand is --brand-primary, --brand-secondary, --brand-font and <img src="${KIN_BRAND_LOGO}">, each falling back to the theme. A file sent in this chat shows by its id: <img src="${KIN_VISUAL_FILE_SCHEME}ATTACHMENT_ID">; an image of your own is a data: URL.`,
+].join("\n");
 
-/** The agent-facing account of the page: what it may hold, the libraries and the theme. */
+/** The agent-facing account of a page in the chat: the base, then the chat frame. */
 export const KIN_VISUAL_PAGE_GUIDE = [
-  "The page is yours to design: any HTML, CSS and JavaScript, any chart kind or layout.",
-  "It runs sealed. It cannot reach the network, so put the data in the page itself: no fetch, no CDN script, no remote image, font or stylesheet. Those are blocked, and the owner is told which host the page wanted. Put CSS in a <style> element: <link>, <iframe>, <object> and <embed> elements are taken out of the page.",
-  "Three libraries are served by Kin and are the only outside script. Use exactly these tags, and only the ones you need:",
-  example(
-    KIN_VISUAL_LIBRARIES[0],
-    `<div id="c" style="height:320px"></div><script>kin.echarts("#c",{series:[{type:"sankey",data:[{name:"Visits"},{name:"Signups"},{name:"Paid"}],links:[{source:"Visits",target:"Signups",value:420},{source:"Signups",target:"Paid",value:96}]}]})</script>. kin.echarts(element, option) applies the app's colours, font and light or dark theme to every chart kind, and resizes; give the element a fixed pixel height and leave colours of text, axes and backgrounds unset.`,
-  ),
-  example(
-    KIN_VISUAL_LIBRARIES[1],
-    `<pre class="mermaid">flowchart LR; Visit-->Trial-->Paid</pre><script>kin.mermaid()</script>. kin.mermaid() themes and draws every .mermaid block.`,
-  ),
-  example(
-    KIN_VISUAL_LIBRARIES[2],
-    `<svg id="s" viewBox="0 0 320 120"></svg><script>d3.select("#s").selectAll("circle").data([12,30,18]).join("circle").attr("cx",(d,i)=>60+i*100).attr("cy",60).attr("r",d=>d).attr("fill",(d,i)=>kin.colors()[i])</script>.`,
-  ),
-  "Plain HTML and CSS need no library: a styled or sortable table, a grid of figures, a timeline.",
-  'Look native with the theme variables instead of fixed colours: --background, --foreground, --muted, --muted-foreground, --card, --border, --primary, --accent, --destructive, --warning, --success, --info (most have a -foreground), --chart-1 to --chart-6, --radius, --font-sans, --font-mono, --space-1 to --space-6 and --text-xs to --text-xl. In script, kin.token("--border") reads one, kin.colors() is the six chart colours, kin.dark() says which theme is on and kin.onTheme(fn) runs fn when it changes. The base sheet already sets the text colour, font and size.',
-  `The company's colours are --brand-primary and --brand-secondary, its font is --brand-font and <img src="${KIN_BRAND_LOGO}"> is its logo; each falls back to the theme when the company has none, and a missing logo takes no space.`,
-  `An image, audio or video file already sent in this chat can be shown by its id: <img src="${KIN_VISUAL_FILE_SCHEME}ATTACHMENT_ID">. An image of your own goes in as a data: URL.`,
-  "Write for a phone first: the frame is about 300px wide there and up to 680px on a desktop, inside a card that already shows the title. Leave html and body without a background, outer border, heading that repeats the title or side padding, use fluid widths, and let a wide table scroll sideways inside its own overflow-x:auto box.",
-  "Let content set the height; do not use vh units or height:100% on html or body. Keep it still: no looping animation.",
-  "A link opens only when the reader taps it and confirms the address. To let the reader save something the page made (a CSV, a PNG of a chart), call kin.save(fileName, data, mimeType) from their tap, with data a string or Blob; an <a download> link to a blob: or data: URL also works. It saves CSV, plain text, JSON, PDF, PNG and SVG, named by the type; on a phone it opens the share sheet.",
+  KIN_VISUAL_PAGE_BASE,
+  "Phone first: about 300px wide (680px on a desktop), in a card that already shows the title. Give html and body no background, border, title heading or side padding; use fluid widths, put a wide table in its own overflow-x:auto box, and let content set the height (no vh or height:100%). Keep it still: no looping animation. A link opens only on the reader's tap and confirm; kin.save(fileName, data, mimeType) from their tap saves CSV, text, JSON, PDF, PNG or SVG.",
 ].join("\n");

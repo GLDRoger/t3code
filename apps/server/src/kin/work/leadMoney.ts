@@ -319,8 +319,7 @@ export const DefineInput = Schema.Struct({
   currency: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))),
   sensitive: Schema.optional(Schema.Boolean),
   team: Schema.optional(Schema.Boolean).annotate({
-    description:
-      "True when the whole team works on this list: every teammate sees and adds its entries.",
+    description: "The whole team sees and adds its entries.",
   }),
   dueLabel: Schema.optional(Label),
   dateLabel: Schema.optional(Label),
@@ -332,7 +331,7 @@ export const DefineInput = Schema.Struct({
   }),
   remindOn: Schema.optional(Schema.NullOr(Label)).annotate({
     description:
-      "The date Kin reminds an entry's holder on, as on a task's due day: a date field or the list's own date; null stops.",
+      "A date field, or the list's own date, that Kin reminds an entry's holder on; null stops.",
   }),
   check: Schema.optional(
     Schema.NullOr(
@@ -580,27 +579,26 @@ export const PaymentInput = Schema.Struct({
   sourceEventId: TurnEvent,
   key: KinRecordKey.annotate({ description: "The invoice, such as INV-4." }),
   amount: Schema.optional(KinToolText(60)).annotate({
-    description:
-      'The cash that came in, as said: "1,20,000" or "1.2 lakh". In the invoice\'s currency.',
+    description: "The cash that came in, as said, in the invoice's currency.",
   }),
   withheld: Schema.optional(KinToolText(60)).annotate({
     description:
-      'TDS the client deducted, as said, such as "18,000": it settles the invoice but is not cash received.',
+      "Tax the client withheld, as said: it settles the invoice but is no cash received.",
   }),
   received: Schema.optional(KinToolText(60)).annotate({
     description:
-      "Only for money that came in another currency than the invoice's: the sum as it came in, with its currency, such as \"INR 83,500\"; amount is then what it settles, in the invoice's currency.",
+      "Only for money in another currency than the invoice's: the sum as it came, with its code; amount is then what it settles.",
   }),
   paidOn: Schema.optional(KinDay).annotate({
-    description: "The day it was received, in the owner's time zone.",
+    description: "The day it came, in the owner's time zone.",
   }),
   note: Schema.optional(Schema.String.check(Schema.isMaxLength(500))),
   void: Schema.optional(KinToolText(60)).annotate({
-    description: "A paymentId from record_get: put taking it back to the owner instead.",
+    description: "A paymentId from record_get: put taking it back to the owner.",
   }),
   another: Schema.optional(Schema.Literal(true)).annotate({
     description:
-      "Only after the owner said this is a second payment of the same amount on the same day.",
+      "Only once the owner said it is a second payment of the same amount on the same day.",
   }),
 });
 const PaymentRecorded = Schema.Struct({

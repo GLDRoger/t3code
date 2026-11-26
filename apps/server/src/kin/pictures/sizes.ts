@@ -32,9 +32,6 @@ const sizeList = Object.entries(KIN_PICTURE_SIZES)
   .join(", ");
 /** What a picture's page adds to a chat page's rules (`KIN_VISUAL_PAGE_GUIDE`). */
 export const KIN_PICTURE_PAGE_GUIDE = [
-  "A picture is drawn once, with nobody looking: no hover, taps, scrolling, links or saving.",
-  `Unlike a page in the chat, it fills exactly the size you named, in CSS pixels: ${sizeList}. Give html and body that size, your own background and padding, and keep every word inside it.`,
-  `Kin draws it at ${KIN_PICTURE_SCALE} times that, so text stays sharp, in the light theme. Draw everything as the page loads; anything still running after 15 seconds is stopped.`,
-  "Make it the company's own: --brand-primary and --brand-secondary are its main colours and --brand-font its type, and the logo belongs on anything posted or sent. Add other colours only around them.",
-  "You don't see it before it is filed, so lay it out in flow with flex or grid. Place something absolutely only in space nothing else uses: headlines run wide at picture sizes.",
+  `A picture is drawn once, with nobody looking: no hover, taps, scrolling, links or saving. It fills exactly the size named, in CSS pixels: ${sizeList}; give html and body that size, your own background and padding, and keep every word inside it.`,
+  `Kin draws it at ${KIN_PICTURE_SCALE} times that in the light theme; anything still running after 15 seconds is stopped. Make it the company's own: the brand colours and font, other colours only around them, and the logo on anything posted or sent. You don't see it before it is filed: lay it out in flow with flex or grid, and place something absolutely only in space nothing else uses.`,
 ].join("\n");
