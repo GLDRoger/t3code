@@ -231,7 +231,7 @@ export const KIN_LINES = {
   badSac: (row: number) => `Line ${row}: a SAC or HSN code is 4 to 8 digits.`,
   badQuantity: (row: number) => `Line ${row}: enter a quantity like 3 or 2.5.`,
   badRate: (row: number) => `Line ${row}: enter a rate like 25,000.`,
-  badTax: (row: number) => `Line ${row}: enter a tax rate like 20 or 0.`,
+  badTax: (row: number) => `Line ${row}: enter the tax rate as a number, or 0 for no tax.`,
   noDescription: (row: number) => `Line ${row}: say what it is.`,
   mixed: "Every line is in the same currency as the invoice.",
   clientAccounts: "The client accounts for the tax themselves: these lines carry none.",
