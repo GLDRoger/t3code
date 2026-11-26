@@ -2628,11 +2628,13 @@ export class KinLeadPrompt extends Context.Service<
             : []),
         ];
         if (ownerOnly && input.observePrompt !== undefined) {
-          const standing = parts
-            .flatMap((part) => (part.place === "legacyHeader" ? part.lines : [part]))
-            .flatMap((part) =>
-              part.place === "standing" && part.index === undefined ? [part.text] : [],
-            );
+          const standing = parts.flatMap((part) =>
+            part.place === "legacyHeader"
+              ? part.lines.flatMap((line) => (line.place === "standing" ? [line.text] : []))
+              : part.place === "standing" && part.index === undefined
+                ? [part.text]
+                : [],
+          );
           input.observePrompt(fingerprintPrompt(standing, snapshot?.index));
         }
         return { parts, ownerOnly };
