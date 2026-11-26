@@ -5,9 +5,15 @@ import * as NodeFS from "node:fs";
 import { assert, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
-import { TURN_DIVIDER } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
+import { CARRIED_TURN_NOTE, TURN_DIVIDER } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
 import { fillKinRules, kinLegacyHeaderPlace, kinSessionSplit } from "./kin.ts";
-import { McpToolUseCase } from "./run.ts";
+import {
+  buildBase,
+  buildMessages,
+  expectationsForLayout,
+  makeSample,
+  McpToolUseCase,
+} from "./run.ts";
 
 const readCases = (name: string) =>
   NodeFS.readFileSync(new URL(`./cases/${name}`, import.meta.url), "utf8")
@@ -80,8 +86,141 @@ it.each([
       "--case",
       pinnedIds.join(","),
     ],
-    { cwd: new URL("..", import.meta.url) },
+    { cwd: new URL("..", import.meta.url), maxBuffer: 8 * 1024 * 1024 },
   );
   assert.lengthOf(requests.toString().trimEnd().split("\n"), 10);
   assert.equal(createHash("sha256").update(requests).digest("hex"), pin);
+});
+
+const header = 'Your reply goes to chat "direct-1", your direct chat with the owner.';
+const standing = "# Standing rules\n\nInvented rule: the dispatch log stays inside Tidewater.";
+const wake = (event: string) =>
+  `${standing}\n\n${TURN_DIVIDER}\n\nAgent name: "Finance"\n${header}\n\n# Events\n\n${event}`;
+const earlier = [
+  {
+    prompt: wake("Which invoices are open?"),
+    toolCalls: [{ tool: "records_query", input: { list: "invoices" }, result: { total: 2 } }],
+    reply: "Two are open.",
+  },
+  { prompt: wake("Does that include INV-7?"), reply: "Yes, it includes INV-7." },
+];
+const carryCase: McpToolUseCase = {
+  id: "carry-render",
+  area: "kin",
+  kind: "control",
+  pattern: "render a carried turn",
+  experience: "Reply to a follow-up with the prior facts.",
+  setup: { role: "top", world: { kinLead: true }, carry: { earlier } },
+  prompt: wake("And INV-9?"),
+  expect: {},
+  sessionCallsMustNot: [{ tool: "records_query" }],
+};
+const caseBase = () => ({
+  ...buildBase(
+    {
+      system: [
+        {
+          type: "text",
+          text: "<runtime_info>Fixture</runtime_info>\nThe following deferred tools are now available via ToolSearch. Load them first:\nMonitor\n",
+        },
+      ],
+      messages: [],
+      tools: [],
+    },
+    {
+      model: "claude-sonnet-5-5",
+      kinAgent: true,
+      kinLead: true,
+      kinSession: true,
+      keepUserInstructions: false,
+    },
+  ),
+  reminders: [],
+});
+const txt = (text: string) => ({ type: "text", text });
+const context = (value: string) => txt(`UserPromptSubmit hook additional context: ${value}`);
+const rendered = (layout: "legacy" | "session", testCase = carryCase) =>
+  buildMessages(makeSample(testCase, caseBase()), layout);
+
+it("replays only the last wake in legacy and the real earlier tool blocks in session", () => {
+  assert.deepEqual(rendered("legacy"), [{ role: "user", content: [txt(carryCase.prompt)] }]);
+  const unchanged = context(`${CARRIED_TURN_NOTE}\n\n${header}`);
+  assert.deepEqual(rendered("session"), [
+    {
+      role: "user",
+      content: [
+        txt(
+          `<system-reminder>\nSessionStart hook additional context: ${standing}\n\nAgent name: "Finance"\n</system-reminder>`,
+        ),
+        txt("# Events\n\nWhich invoices are open?"),
+      ],
+    },
+    { role: "system", content: [context(header)] },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_prior_0",
+          name: "mcp__t3-code__records_query",
+          input: { list: "invoices" },
+        },
+      ],
+    },
+    {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "toolu_prior_0", content: '{"total":2}' }],
+    },
+    { role: "assistant", content: [txt("Two are open.")] },
+    { role: "user", content: [txt("# Events\n\nDoes that include INV-7?")] },
+    { role: "system", content: [unchanged] },
+    { role: "assistant", content: [txt("Yes, it includes INV-7.")] },
+    { role: "user", content: [txt("# Events\n\nAnd INV-9?")] },
+    { role: "system", content: [unchanged] },
+  ]);
+  assert.deepEqual(expectationsForLayout(carryCase, "tools", "legacy"), {});
+  assert.deepEqual(expectationsForLayout(carryCase, "tools", "session"), {
+    callsMustNot: [{ tool: "records_query" }],
+  });
+});
+
+it("replaces the compacted prefix with the provider summary and compact-time standing", () => {
+  const compacted = {
+    ...carryCase,
+    setup: {
+      ...carryCase.setup,
+      carry: {
+        earlier,
+        compactedBefore: 2,
+        summary: "Rhea asked about invoices before compaction.",
+      },
+    },
+  };
+  assert.deepEqual(rendered("session", compacted), [
+    {
+      role: "user",
+      content: [
+        txt(
+          "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nRhea asked about invoices before compaction.",
+        ),
+      ],
+    },
+    { role: "user", content: [txt("# Events\n\nAnd INV-9?")] },
+    {
+      role: "system",
+      content: [
+        txt(
+          `SessionStart hook additional context: ${standing}\n\nAgent name: "Finance"\n\nUserPromptSubmit hook additional context: ${CARRIED_TURN_NOTE}\n\n${header}`,
+        ),
+      ],
+    },
+  ]);
+  assert.throws(
+    () =>
+      rendered("session", {
+        ...carryCase,
+        setup: { ...carryCase.setup, priorTurns: [] },
+      }),
+    "setup.carry and setup.priorTurns are mutually exclusive",
+  );
 });

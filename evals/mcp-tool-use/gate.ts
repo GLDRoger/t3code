@@ -8,6 +8,7 @@ export const ALPHA = 0.005;
 
 /** What a run ran on, written as `run.json` beside `results.jsonl`. */
 export const RunManifest = Schema.Struct({
+  kinLayout: Schema.optional(Schema.Literals(["legacy", "session"])),
   commit: Schema.String,
   model: Schema.String,
   effort: Schema.String,

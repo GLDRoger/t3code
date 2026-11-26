@@ -11,6 +11,7 @@ import * as NodeUtil from "node:util";
 import * as Schema from "effect/Schema";
 
 import {
+  expectationsForLayout,
   gradeSample,
   McpToolUseCase,
   modelRequests,
@@ -45,6 +46,7 @@ type Call = { step: number; tool: string; input: unknown; failed?: boolean; outp
 type Row = {
   id: string;
   arm?: string;
+  kinLayout?: string;
   pass: boolean;
   error?: string;
   stopReason?: string;
@@ -88,7 +90,7 @@ const graded = positionals.flatMap((file) =>
     .map((row) => {
       const testCase = cases.get(row.id);
       if (testCase === undefined) return undefined;
-      const expect = row.arm === "raw" ? (testCase.expectRaw ?? testCase.expect) : testCase.expect;
+      const expect = expectationsForLayout(testCase, row.arm, row.kinLayout);
       const checks = gradeSample(
         expect,
         row as unknown as Parameters<typeof gradeSample>[1],
