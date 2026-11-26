@@ -72,6 +72,8 @@ const payloadDecoder = (rpc: Rpc.AnyWithProps) => {
     Schema.toCodecJson(rpc.payloadSchema as Schema.Codec<unknown, unknown>),
     Context.get(rpc.annotations, Rpc.ParseOptions),
   );
+  // Relies on effect's RpcServer passing the socket group's `rpc` in handler options; if it stopped,
+  // raw payloads would reach handlers undecoded. The real-wire test in chat/rpcHandlers.test.ts guards it.
   return (payload: unknown, options: unknown) =>
     (options as { readonly rpc?: Rpc.AnyWithProps } | undefined)?.rpc?.payloadSchema ===
     Schema.Unknown
