@@ -8,6 +8,7 @@ import { companyMoney } from "../companyProfile.ts";
 import { parseFields } from "../lists.ts";
 import { dayIn, formatMinor, formatMoney } from "../money.ts";
 import { countedEntry, ownerZone } from "../recordRows.ts";
+import { recordedRate } from "../recordedRate.ts";
 import { regionOf } from "../region.ts";
 import type { ListDef } from "../registers.ts";
 import { BANK_CREDIT_ORIGIN, bankStates, directionOf, findBankList } from "./bankList.ts";
@@ -114,6 +115,28 @@ export const openEntries = Effect.fn("KinStatements.openEntries")(function* (
 });
 type OpenCredit = Effect.Success<ReturnType<typeof openEntries>>[number];
 
+/** Each credit's recorded rate for an invoice in another currency, read once per pair and day. */
+const recordedRates = Effect.fn("KinStatements.recordedRates")(function* (
+  orgId: KinOrgId,
+  credits: ReadonlyArray<OpenCredit>,
+  invoiceCurrencies: ReadonlyArray<string>,
+) {
+  const rates = new Map<string, string | undefined>();
+  const keyOf = (credit: OpenCredit, currency: string) =>
+    `${currency}>${credit.currency}@${credit.date}`;
+  for (const credit of credits)
+    for (const currency of new Set(invoiceCurrencies)) {
+      if (currency === credit.currency || rates.has(keyOf(credit, currency))) continue;
+      const asOf = Date.parse(`${credit.date}T12:00:00Z`);
+      rates.set(
+        keyOf(credit, currency),
+        (yield* recordedRate(orgId, currency, credit.currency, asOf))?.rate,
+      );
+    }
+  return (credit: OpenCredit, invoice: InvoiceCandidate) =>
+    rates.get(keyOf(credit, invoice.currency));
+});
+
 const withholding = (orgId: KinOrgId) =>
   Effect.map(companyMoney(orgId), (money) => regionOf(money.country)?.withholdsAtSource === true);
 
@@ -138,12 +161,13 @@ export const invoiceCredits = Effect.fn("KinStatements.invoiceCredits")(function
     (credit) => credit.currency !== invoice.currency || credit.amountMinor > owed,
   );
   const takenBack = other.length === 0 ? undefined : yield* takenBackPairs(orgId, recordId);
+  const recorded = yield* recordedRates(orgId, other, [invoice.currency]);
   return [...credits, ...other]
     .toSorted((a, b) => b.dateAt - a.dateAt || b.recordId.localeCompare(a.recordId))
     .flatMap((credit) => {
       if (takenBack?.has(`${credit.recordId}|${recordId}`) && credit.currency !== invoice.currency)
         return [];
-      const pair = pairOf(credit, invoice, withholds);
+      const pair = pairOf(credit, invoice, withholds, recorded(credit, invoice));
       return pair === undefined ||
         (pair.candidate.fit === "over" && takenBack?.has(`${credit.recordId}|${recordId}`))
         ? []
@@ -166,7 +190,12 @@ export const invoiceCredits = Effect.fn("KinStatements.invoiceCredits")(function
 export const rateMoney = (money: KinMoney) =>
   `${money.currency} ${formatMoney(money).slice(kinCurrency(money.currency).symbol.length)}`;
 
-const pairOf = (credit: OpenCredit, invoice: InvoiceCandidate, withholds: boolean) => {
+const pairOf = (
+  credit: OpenCredit,
+  invoice: InvoiceCandidate,
+  withholds: boolean,
+  recorded: string | undefined,
+) => {
   if (invoice.currency === credit.currency) {
     const offer = invoiceOffer(credit.row, invoice, invoice.currency, withholds);
     if (offer !== undefined) return { credit, invoice, ...offer };
@@ -179,7 +208,7 @@ const pairOf = (credit: OpenCredit, invoice: InvoiceCandidate, withholds: boolea
       reason: over.cited === undefined ? `it names ${invoice.client}` : `it cites ${over.cited}`,
     };
   }
-  const offer = rateOffer(credit.row, invoice, credit.currency);
+  const offer = rateOffer(credit.row, invoice, credit.currency, recorded);
   if (offer === undefined) return undefined;
   const clue =
     offer.cited !== undefined
@@ -244,10 +273,15 @@ const rankAll = Effect.fn("KinStatements.rankCredits")(function* (
     dayIn(Date.parse(`${earliest}T00:00:00Z`) - 15 * DAY_MS, "UTC"),
   );
   const takenBack = yield* takenBackPairs(orgId);
+  const recorded = yield* recordedRates(
+    orgId,
+    credits,
+    invoices.map((one) => one.currency),
+  );
   return credits.flatMap((credit): Array<CreditMatch> => {
     const ranked = invoices
       .filter((invoice) => !takenBack.has(`${credit.recordId}|${invoice.recordId}`))
-      .flatMap((invoice) => pairOf(credit, invoice, withholds) ?? [])
+      .flatMap((invoice) => pairOf(credit, invoice, withholds, recorded(credit, invoice)) ?? [])
       .toSorted(
         (a, b) =>
           b.candidate.score - a.candidate.score || a.invoice.key.localeCompare(b.invoice.key),
