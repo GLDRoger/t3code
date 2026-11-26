@@ -386,9 +386,10 @@ it.effect(
             originKey: "proposed-follow-up",
             owner: { _tag: "person", personId: zoyaId },
             partyId: followUp.partyId!,
-            confirmed: false,
           },
         );
+        yield* ctx.sql`UPDATE kin_records SET confirmed = 0 WHERE org_id = ${ctx.orgId}
+          AND record_id = ${proposal.recordId}`;
         const allMoved = HELD.replace("1 follow-up", "2 follow-ups");
         const refresh = (yield* KinRefreshHub).changes(ctx.orgId).pipe(Stream.runHead);
         const before = Option.getOrThrow(yield* refresh);
