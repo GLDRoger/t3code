@@ -56,6 +56,7 @@ import {
 } from "../chat/KinIdentity.ts";
 import { isClaudeThinkingItem } from "./claudeThinkingItem.ts";
 import { laneFor, type Lane } from "./replyLane.ts";
+import { followUpFor, PERSON_TAGS } from "./turnVoice.ts";
 import { AUDIENCE_MOVED, aborted, ownerOnlyChat } from "../lead/Audience.ts";
 import { stoppedByJoinNotice } from "../lead/ChatSharing.ts";
 import {
@@ -1274,7 +1275,7 @@ const make = Effect.gen(function* () {
       LEFT JOIN kin_messages q ON q.org_id = e.org_id
         AND q.message_id = json_extract(e.json, '$.messageId') AND q.chat_id = ${wake.lane.chatId}
       WHERE e.org_id = ${wake.orgId} AND e.wakeup_id = ${wake.wakeupId}
-        AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction')`;
+        AND e.tag IN ${sql.in(PERSON_TAGS)}`;
     // A relay or nudge this turn sent the asker is someone else's message, not their answer.
     const relay = `send:${relayPrefix(wake.wakeupId)}`;
     const nudge = `send:${NUDGE_PREFIX}`;
@@ -1298,10 +1299,10 @@ const make = Effect.gen(function* () {
               OR instr(o.body, '?') > 0)
       UNION ALL SELECT 1 FROM kin_events e
         WHERE e.org_id = ${wake.orgId} AND e.wakeup_id = ${wake.wakeupId}
-          AND e.tag IN ('chat.message', 'widget.action', 'chat.reaction')
+          AND e.tag IN ${sql.in(PERSON_TAGS)}
           AND NOT EXISTS (SELECT 1 FROM kin_events o
             WHERE o.org_id = e.org_id AND o.wakeup_id = e.wakeup_id
-              AND o.tag IN ('chat.message', 'widget.action', 'chat.reaction')
+              AND o.tag IN ${sql.in(PERSON_TAGS)}
               AND NOT (o.tag = 'chat.message' AND EXISTS (SELECT 1 FROM kin_handoffs h
                 WHERE h.org_id = o.org_id AND h.message_id = json_extract(o.json, '$.messageId')
                   AND h.from_agent_id = ${wake.agentId} AND (h.route_state = 'passed'
@@ -1513,10 +1514,17 @@ const make = Effect.gen(function* () {
         ),
       );
       // A failed or stopped run is retried or was the owner's choice; only a finished one is owed.
-      if ((yield* finish) || !input.rescue) return yield* settled;
+      const answeredOnFirstRun = yield* finish;
+      if (answeredOnFirstRun || !input.rescue) return yield* settled;
       const shown = yield* showed(wake).pipe(Effect.orElseSucceed(() => false));
       // A refusal would refuse the rescue's text too.
-      if (wake.withheld === null) {
+      if (
+        followUpFor({
+          owed: wake.lane.owed,
+          answered: answeredOnFirstRun,
+          withheld: wake.withheld !== null,
+        }) === "rescue"
+      ) {
         yield* rescue(wake, input.projectId, shown);
         if (yield* finish) return yield* settled;
       }

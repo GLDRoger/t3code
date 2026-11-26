@@ -12,6 +12,7 @@ import { owedNotice } from "../floor/KinFloor.ts";
 import { CHAT_ANSWER_TAGS } from "../lead/Audience.ts";
 import { billsOnly } from "../lead/billsOnly.ts";
 import { outsideReview } from "../lead/outsideReview.ts";
+import { PERSON_TAGS } from "./turnVoice.ts";
 
 /**
  * Where a wake-up's text goes. One wake-up answers one chat: the chat of its highest-priority
@@ -40,7 +41,7 @@ const turnAsked = (sql: SqlClient.SqlClient, row: "e" | "w") =>
     WHERE h.org_id = ${sql.literal(`${row}.org_id`)}
       AND h.agent_id = ${sql.literal(`${row}.agent_id`)}
       AND h.wakeup_id = ${sql.literal(`${row}.wakeup_id`)}
-      AND h.tag IN ('chat.message', 'widget.action', 'chat.reaction'))`;
+      AND h.tag IN ${sql.in(PERSON_TAGS)})`;
 
 /** The lane of a running wake-up, from its stored events; `kin_ask` posts its card there too. */
 export const laneFor = Effect.fn("KinReplyBridge.lane")(
