@@ -65,7 +65,7 @@ import * as KinRecords from "../work/KinRecords.ts";
 import * as KinStop from "./KinStop.ts";
 import { SESSION_REFUSAL, SHARED_THREAD_PREFIX, abortChatTurns } from "./Audience.ts";
 import { fullSessionRefusal } from "./AgentSession.ts";
-import { markOutside, outsideRead, outsideStamp } from "./OutsideContent.ts";
+import { inheritOutside, markOutside, outsideRead, outsideStamp } from "./OutsideContent.ts";
 import * as TaskWake from "./TaskWake.ts";
 import { sensitiveShown, turnSensitive } from "../work/sensitiveReads.ts";
 import { BILLS_THREAD_PREFIX } from "./billsOnly.ts";
@@ -2776,6 +2776,17 @@ describe("WakeupRunner", () => {
             yield* sql`SELECT state, wakeup_id FROM kin_events WHERE tag = 'task.finished'`,
             [{ state: "queued", wakeup_id: null }],
           );
+          const [requeued] = yield* sql<{ eventId: string }>`
+            SELECT event_id AS "eventId" FROM kin_events WHERE tag = 'task.finished'`;
+          const eventStamps = yield* sql`
+            SELECT outside_from FROM kin_event_outside WHERE org_id = ${orgId}
+              AND event_id = ${requeued!.eventId}`;
+          const stamp = yield* inheritOutside({
+            orgId,
+            wakeupId: "fresh-probe",
+            eventIds: [requeued!.eventId],
+          });
+          assert.deepStrictEqual({ eventStamps, stamp }, { eventStamps: [], stamp: undefined });
           return;
         }
         assert.deepStrictEqual(
