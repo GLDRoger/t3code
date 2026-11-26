@@ -1,3 +1,17 @@
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as ClaudeAdapter from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import * as CodexAdapter from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import { provideDeterministicTestRuntime } from "../../orchestration-v2/testkit/DeterministicRuntime.ts";
+import { KinWorkspace } from "../gendocs/workspace.ts";
+import {
+  harnessWith,
+  harborviewChanged,
+  seedCarry,
+  selection,
+  wake,
+} from "../lead/WakeupRunner.testkit.ts";
+import { kinAdapters } from "../lead/turn/providers/infrastructure.ts";
+import { KinSessionContext } from "../lead/turn/sessionContext.ts";
 import { presetDefinition } from "../work/registers.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { EnvironmentThemeService } from "../../environmentTheme.ts";
@@ -21,6 +35,7 @@ import {
   KinAgentId,
   KinOrgId,
   ProviderInstanceId,
+  ProviderSessionId,
   ThreadId,
 } from "@t3tools/contracts";
 import { McpServer, Tool, Toolkit } from "effect/ai";
@@ -250,17 +265,32 @@ it.effect.each([true, false])(
         for (const dir of ["state", "home", "config"]) yield* fs.makeDirectory(`${github}/${dir}`);
         yield* fs.copyFile(`${import.meta.dirname}/../connections/fakeGh.sh`, `${github}/gh`);
         yield* fs.chmod(`${github}/gh`, 0o755);
-        const ready =
-          yield* Deferred.make<
-            Context.Context<
-              | Kin.KinServer
-              | KinAgentSessions
-              | KinIssuedTokens.KinIssuedTokens
-              | McpSessions.McpSessionRegistry
-              | SqlClient.SqlClient
-              | OrchestratorV2
-            >
-          >();
+        type Composed =
+          | Kin.KinServer
+          | KinAgentSessions
+          | KinIssuedTokens.KinIssuedTokens
+          | McpSessions.McpSessionRegistry
+          | SqlClient.SqlClient
+          | OrchestratorV2
+          | ClaudeAdapter.ClaudeAgentSdkQueryRunner
+          | KinSessionContext
+          | ServerConfig;
+        const ready = yield* Deferred.make<Context.Context<Composed>>();
+        const offered: ClaudeAdapter.ClaudeAgentSdkQueryOptions[] = [];
+        const adapters = kinAdapters(
+          Layer.mock(ClaudeAdapter.ClaudeAgentSdkQueryRunner)({
+            open: ({ options }) =>
+              Effect.sync(() => offered.push(options)).pipe(
+                Effect.andThen(
+                  new ClaudeAdapter.ClaudeAgentSdkQueryRunnerError({
+                    method: "open",
+                    cause: "The composition fixture never opens an SDK process",
+                  }),
+                ),
+              ),
+          }),
+          Layer.mock(CodexAdapter.CodexAppServerClientFactory)({}),
+        );
         let tokenLookups = 0;
         let tokenClock = 0;
         const baseRegistry = Layer.effect(
@@ -278,16 +308,12 @@ it.effect.each([true, false])(
         const routes = Layer.merge(
           Kin.mcpLayer(t3Composition),
           Layer.effectDiscard(
-            Effect.context<
-              | Kin.KinServer
-              | KinAgentSessions
-              | KinIssuedTokens.KinIssuedTokens
-              | McpSessions.McpSessionRegistry
-              | SqlClient.SqlClient
-              | OrchestratorV2
-            >().pipe(Effect.flatMap((context) => Deferred.succeed(ready, context))),
+            Effect.context<Composed>().pipe(
+              Effect.flatMap((context) => Deferred.succeed(ready, context)),
+            ),
           ),
         ).pipe(
+          Layer.provideMerge(adapters),
           Layer.provideMerge(Kin.mcpRegistryLayer(baseRegistry)),
           Layer.provideMerge(
             authorityLayerWithDatabase(
@@ -445,6 +471,83 @@ it.effect.each([true, false])(
           return;
         }
         assert.isTrue(enabled);
+        const runnerContext = Context.getOption(kin.services.value, KinSessionContext).pipe(
+          Option.getOrThrow,
+        );
+        assert.strictEqual(runnerContext, Context.get(services, KinSessionContext));
+        const claude = Context.get(services, ClaudeAdapter.ClaudeAgentSdkQueryRunner);
+        const { stateDir } = Context.get(services, ServerConfig);
+        const reads: Array<string | undefined> = [];
+        yield* Effect.gen(function* () {
+          yield* seedCarry;
+          yield* wake("tidewater-first");
+          yield* harborviewChanged();
+          yield* wake("tidewater-second");
+        }).pipe(
+          Effect.provide(
+            harnessWith(
+              {
+                settings: { kinSessionCarry: true },
+                beforeTurn: ({ threadId, runOrdinal }) =>
+                  Effect.gen(function* () {
+                    if (runOrdinal !== 2) return;
+                    yield* claude
+                      .open({
+                        threadId,
+                        providerSessionId: ProviderSessionId.make("carry-fixture"),
+                        options: ClaudeAdapter.makeClaudeQueryOptions({
+                          modelSelection: selection,
+                          nativeThreadId: "tidewater",
+                          resume: true,
+                          cwd: `${stateDir}/kin/memory-read`,
+                          attachmentsDir: stateDir,
+                          environment: {
+                            PATH: "/usr/bin",
+                            HOME: stateDir,
+                            CLAUDE_CONFIG_DIR: stateDir,
+                          },
+                        }),
+                      })
+                      .pipe(Effect.ignore);
+                    const [hook] = offered[0]?.hooks?.UserPromptSubmit?.at(-1)?.hooks ?? [];
+                    assert.isDefined(hook);
+                    const result = yield* Effect.promise(() =>
+                      hook!(
+                        {
+                          hook_event_name: "UserPromptSubmit",
+                          session_id: "tidewater",
+                          transcript_path: "/fixture",
+                          cwd: stateDir,
+                          prompt: "Tidewater message",
+                        },
+                        undefined,
+                        { signal: new AbortController().signal },
+                      ),
+                    );
+                    reads.push(
+                      "hookSpecificOutput" in result &&
+                        result.hookSpecificOutput?.hookEventName === "UserPromptSubmit"
+                        ? result.hookSpecificOutput.additionalContext
+                        : undefined,
+                    );
+                  }).pipe(Effect.provideService(HostProcess.Environment, { PATH: "/usr/bin" })),
+              },
+              Layer.merge(
+                Layer.mock(KinAgentSessions)({
+                  recordToolList: () => {},
+                  lastToolList: () => "a".repeat(64),
+                }),
+                Layer.mock(KinWorkspace)({ recipes: () => Effect.succeed([]) }),
+              ),
+            ),
+            { local: true },
+          ),
+          Effect.provideService(KinSessionContext, runnerContext),
+          provideDeterministicTestRuntime,
+        );
+        assert.lengthOf(reads, 1);
+        assert.isString(reads[0]);
+        assert.include(reads[0], "Harborview Cold Storage");
         const identity = Context.get(kin.services.value, KinIdentity);
         // The company the running server creates starts with its country not chosen.
         assert.deepInclude(

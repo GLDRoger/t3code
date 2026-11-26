@@ -3,6 +3,7 @@ import { McpSchema, Tool, Toolkit } from "effect/ai";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
@@ -11,6 +12,7 @@ import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
 import { ThreadManagementService } from "../../orchestration-v2/ThreadManagementService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { withAlwaysLoaded } from "../lead/deferredTools.ts";
+import { Memory } from "../memory/Memory.ts";
 import {
   KinConnectionCallInput,
   KinConnectionCallResult,
@@ -78,31 +80,34 @@ export const KinConnectionsToolkit = Toolkit.make(
 );
 
 // The caller comes only from the MCP scope; no input names an org, agent or turn.
-const handlers = McpToolAccess.toLayer(KinConnectionsToolkit, {
-  kin_connection_tools: McpToolAccess.reads(
-    Effect.fn("KinConnectionsToolkit.tools")(function* (input) {
-      return yield* (yield* KinConnections).tools(yield* McpInvocationContext, input);
-    }),
-  ),
-  kin_connection_call: McpToolAccess.actsAsCaller(
-    Effect.fn("KinConnectionsToolkit.call")(function* (input) {
-      return yield* (yield* KinConnections).call(yield* McpInvocationContext, input);
-    }),
-  ),
-  kin_connection_offer: McpToolAccess.actsAsCaller(
-    Effect.fn("KinConnectionsToolkit.offer")(function* (input) {
-      return yield* (yield* KinConnections).offer(yield* McpInvocationContext, input);
-    }),
-  ),
-  kin_connection_note: McpToolAccess.actsAsCaller(
-    Effect.fn("KinConnectionsToolkit.note")(function* (input) {
-      return yield* (yield* KinConnections).note(yield* McpInvocationContext, input);
-    }),
-  ),
-});
+const handlers = (memory?: Pick<Memory["Service"], "items">) =>
+  McpToolAccess.toLayer(KinConnectionsToolkit, {
+    kin_connection_tools: McpToolAccess.reads(
+      Effect.fn("KinConnectionsToolkit.tools")(function* (input) {
+        return yield* (yield* KinConnections).tools(yield* McpInvocationContext, input, memory);
+      }),
+    ),
+    kin_connection_call: McpToolAccess.actsAsCaller(
+      Effect.fn("KinConnectionsToolkit.call")(function* (input) {
+        return yield* (yield* KinConnections).call(yield* McpInvocationContext, input);
+      }),
+    ),
+    kin_connection_offer: McpToolAccess.actsAsCaller(
+      Effect.fn("KinConnectionsToolkit.offer")(function* (input) {
+        return yield* (yield* KinConnections).offer(yield* McpInvocationContext, input);
+      }),
+    ),
+    kin_connection_note: McpToolAccess.actsAsCaller(
+      Effect.fn("KinConnectionsToolkit.note")(function* (input) {
+        return yield* (yield* KinConnections).note(yield* McpInvocationContext, input);
+      }),
+    ),
+  });
 
-export const registration = McpHttpServer.toolkitRegistration(
-  withAlwaysLoaded(KinConnectionsToolkit),
-  handlers,
-  { kin: true },
-);
+const register = (memory?: Pick<Memory["Service"], "items">) =>
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinConnectionsToolkit), handlers(memory), {
+    kin: true,
+  });
+
+export const registration = register();
+export const registrationWithMemory = Layer.unwrap(Effect.map(Memory, register));

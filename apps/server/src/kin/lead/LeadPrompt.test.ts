@@ -33,6 +33,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as TestClock from "effect/testing/TestClock";
 import * as Chat from "../chat/KinChatRepository.ts";
 import { startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
@@ -866,7 +867,8 @@ it.effect(
       };
       for (const given of [shared, owner]) {
         const legacy = yield* prompt.build(given);
-        const { standing, delta, message } = yield* prompt.buildSession(given);
+        const { full, standing, delta, message } = yield* prompt.buildSession(given);
+        expect(full).toBe(legacy);
         expect(standing).toContain(PROMPT_HEADINGS.character);
         expect(delta).toContain("Owner time:");
         expect(message).toContain(PROMPT_HEADINGS.events);
@@ -1046,6 +1048,8 @@ it.effect("capture keeps the reply out and leaves a later bills card for the nex
     expect(recent).toBeDefined();
     expect(recent).not.toContain("Paid on the 26th");
     expect(recent).toContain("Bill due $1,200");
+    expect(second.full).toBe(yield* prompt.build(given));
+    expect(second.full).not.toContain("Bill due $1,200");
     const secondCursor = yield* readCursor(orgId, direct, null, agentId);
     yield* sql`UPDATE kin_messages SET body = 'Bill paid' WHERE org_id = ${orgId}
       AND message_id = 'bills:harborview'`;
@@ -2300,6 +2304,13 @@ it.effect("quotes a choice tap as the owner's words, not its JSON", () =>
   }).pipe(Effect.provide(layer)),
 );
 
+const failTrackedRead: Statement.Transformer = (statement, sql) =>
+  Effect.succeed(
+    statement.compile()[0].trimStart().startsWith("SELECT 'work' AS kind")
+      ? sql.unsafe("SELECT * FROM missing_schedule_read_fixture")
+      : statement,
+  );
+
 it.effect("every kind of schedule the server stores reaches the check-in prompt", () =>
   Effect.gen(function* () {
     const repo = yield* leadWithOwner;
@@ -2555,6 +2566,14 @@ it.effect("every kind of schedule the server stores reaches the check-in prompt"
     expect(line("native-interval")).toContain("60");
     for (const id of ["alarm-remind", "native-once", "social-scheduled"])
       expect(line(id)).toContain("2026-11-20T10:00:00.000+00:00");
+
+    const unavailable = yield* prompt
+      .build({ ...input, lane: { chatId, mode: "notice" } })
+      .pipe(Effect.provideService(Statement.CurrentTransformer, failTrackedRead));
+    expect(unavailable).toContain(
+      `${PROMPT_HEADINGS.checkIns}\n\nKin couldn't read your check-ins this turn, so this is not a sign you have none.`,
+    );
+    expect(unavailable).not.toContain("checkin-custom Tidewater Freight");
   }).pipe(Effect.provide(layer)),
 );
 
@@ -4241,6 +4260,12 @@ it.effect(
       const set = line(yield* prompt.build(turn));
       expect(set).toMatch(
         /^Set in this chat: reminder "def-plans" \("Friday report"\) due [A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2}, \d{2}:\d{2}, asked by "Arjun Rao"; routine "sch-plans" \("Open tasks"\) every [A-Z][a-z]+ \d{2}:\d{2}, set by "Rhea Kapoor"\. Only the person who asked, the owner or a co-owner can change one; kin_cancel takes its id\.$/,
+      );
+      const unavailable = yield* prompt
+        .build(turn)
+        .pipe(Effect.provideService(Statement.CurrentTransformer, failTrackedRead));
+      expect(line(unavailable)).toBe(
+        "Set in this chat: Kin couldn't read this chat's reminders and routines this turn, so this is not a sign none are set.",
       );
       // A latecomer couldn't read where it was set: the join leaves its card, and this line,
       // without its title (`ChatSharing.settleCards`, `wordsReadable`).

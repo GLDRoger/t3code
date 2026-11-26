@@ -28,7 +28,6 @@ import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
-import * as KinConnectionsMcp from "../connections/mcp.ts";
 import * as KinIssuedTokens from "./KinIssuedTokens.ts";
 import * as KinToolGate from "./KinToolGate.ts";
 
@@ -168,10 +167,7 @@ export const transport = (base: typeof McpHttpServer.layer) =>
           Layer.mergeAll(
             McpHttpServer.layerTools,
             registration,
-            KinConnectionsMcp.registration.pipe(
-              Layer.provide(Layer.succeedContext(kin.services.value)),
-            ),
-            KinLead.layerRuntime.pipe(
+            KinLead.layerRuntimeWithConnections.pipe(
               Layer.provide(Layer.succeed(KinBoot, boot)),
               // Agents' turns run on Kin's clock; T3's orchestration keeps the one its worker reads.
               Layer.provide(
