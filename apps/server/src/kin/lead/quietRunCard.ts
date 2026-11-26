@@ -39,10 +39,17 @@ const stopped = {
   text: "Nothing it hadn't finished was sent. Ask again to start fresh.",
 };
 
+// The first ask is at 15 quiet minutes, the second at an hour, and there is no third.
 export const quietShown = (plan: QuietPlan) =>
   plan.kind === "quiet_keep"
-    ? { label: "Keep going", line: "Keep going" }
-    : { label: "Stop", line: stopped.text };
+    ? {
+        label: "Keep going",
+        line:
+          plan.ask === 1
+            ? "It keeps working; Kin asks again if it stays quiet for an hour"
+            : "It keeps working; Kin doesn't ask again",
+      }
+    : { label: "Stop", line: "It stops; what it had done so far stays" };
 
 const clientId = (wakeupId: KinWakeupId, ask: 1 | 2) => `kin-quiet-run:${wakeupId}:${ask}`;
 const truncate = (text: string, max: number) => {
