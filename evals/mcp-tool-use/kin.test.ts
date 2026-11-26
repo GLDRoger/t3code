@@ -39,6 +39,7 @@ import {
   McpToolUseCase,
   normalizeToolInput,
   normalizeToolName,
+  requestBody,
   runSample,
   type SampleRun,
   shellRequest,
@@ -1023,3 +1024,28 @@ it.effect("reports a deferred name differently from a name that does not exist",
     }
   }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, noNetwork))),
 );
+
+it("cuts only model-facing MCP descriptions longer than 4,096 characters in Claude requests", () => {
+  const base = kinBase();
+  const sample = makeSample(kinCase(), base);
+  const long = "x".repeat(4096) + "y".repeat(904);
+  const limit = "z".repeat(4096);
+  const tools = [
+    { name: "mcp__t3-code__record_create", description: long },
+    { name: "mcp__kin__note", description: limit, defer_loading: true },
+    { name: "mcp__kin__other", description: long, defer_loading: true },
+    { name: "Bash", description: long },
+    { name: "mcp__select_sight__term_Bash", description: long },
+  ];
+  assert.deepEqual(
+    requestBody({ ...sample, tools }, "medium", []).tools.map((tool) => tool.description),
+    [
+      long.slice(0, 4096) + "… [truncated]",
+      limit,
+      long.slice(0, 4096) + "… [truncated]",
+      long,
+      long,
+    ],
+  );
+  assert.equal(tools[0]?.description, long);
+});

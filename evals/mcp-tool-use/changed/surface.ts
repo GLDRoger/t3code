@@ -71,7 +71,7 @@ export const runnerHash = () =>
   );
 
 /** The runner this file's part list was checked against. */
-export const REVIEWED_RUNNER = "1e2ca4cb03b11dd6";
+export const REVIEWED_RUNNER = "fd9f23b9cbe5cc0c";
 
 export const CaseSurface = Schema.Struct({
   /** The case as run.json hashes it, and its first request as run.json hashes it. */
@@ -284,7 +284,7 @@ const readTemplate = (bytes: Uint8Array) =>
 export const surfaceOf = Effect.fn("changedCases.surfaceOf")(function* (input: {
   readonly cases: ReadonlyArray<McpToolUseCase>;
   readonly model: Model;
-  readonly effort: string;
+  readonly effort?: string | undefined;
   readonly shellModel: string;
 }) {
   const { model, effort } = input;
@@ -337,17 +337,16 @@ export const surfaceOf = Effect.fn("changedCases.surfaceOf")(function* (input: {
     return kinDated(testCase, base);
   });
   const cases: Record<string, CaseSurface> = {};
+  const efforts = new Set<string>();
   for (const testCase of input.cases) {
     const sample = makeSample(testCase, yield* baseFor(testCase));
     yield* Effect.scoped(Effect.andThen(withDevices(sample), withBackgroundWait(sample)));
     sample.kinFiles = yield* kinTurnFiles(testCase);
     const messages = buildMessages(sample);
     const { base, tools } = sample;
-    const body = requestBody(
-      sample,
-      requestEffort(base, effort === "mixed" ? undefined : effort),
-      messages,
-    );
+    const wireEffort = requestEffort(base, effort === "mixed" ? undefined : effort);
+    efforts.add(wireEffort);
+    const body = requestBody(sample, wireEffort, messages);
     const schemas: Record<string, string> = {};
     for (const tool of [...tools, ...base.deferred]) schemas[tool.name] = hashJson(tool);
     const names = new Set(Object.keys(schemas).map(normalizeToolName));
@@ -375,7 +374,7 @@ export const surfaceOf = Effect.fn("changedCases.surfaceOf")(function* (input: {
   return {
     runner: runnerHash(),
     model,
-    effort,
+    effort: effort ?? (efforts.size === 1 ? [...efforts][0]! : "mixed"),
     shellModel: input.shellModel,
     cases,
   } satisfies Surface;

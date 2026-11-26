@@ -2970,6 +2970,17 @@ export const requestEffort = (base: Base, explicit?: string) =>
     : undefined) ??
   "high";
 
+// Claude Code clips MCP descriptions for the API, not for its local search index.
+const claudeToolDefinitions = (tools: ReadonlyArray<ApiTool>) =>
+  tools.map((tool) => {
+    const { name, description } = tool;
+    return (isT3Name(name) || name.startsWith(KIN_KEY_PREFIX)) &&
+      typeof description === "string" &&
+      description.length > 4096
+      ? { ...tool, description: `${description.slice(0, 4096)}… [truncated]` }
+      : tool;
+  });
+
 export const requestBody = (
   { base, tools }: Sample,
   effort: string,
@@ -2989,7 +3000,7 @@ export const requestBody = (
       ? { ...block, cache_control: session ? KIN_SESSION_CACHE : { type: "ephemeral" } }
       : block,
   ),
-  tools,
+  tools: claudeToolDefinitions(tools),
   messages: session ? kinSessionWireMessages(messages) : messages,
 });
 
@@ -3962,7 +3973,8 @@ const main = Effect.gen(function* () {
           false,
           activeLayout(testCase) === "session",
         );
-    return { sample, messages, encoded: yield* encodeJson(body) };
+    const prefixTools = "tools" in body ? body.tools : sample.tools;
+    return { sample, messages, prefixTools, encoded: yield* encodeJson(body) };
   });
   if (flags["dry-run"] || flags.estimate) {
     // One JSON line per case. Without --case this also checks that every case builds, and fails on
@@ -3971,7 +3983,7 @@ const main = Effect.gen(function* () {
     const sizes: Array<{ prefixChars: number; messageChars: number }> = [];
     const dryCases = flags.estimate && flags["kin-layout"] === "session" ? carryCases : selected;
     for (const testCase of dryCases) {
-      const { sample, messages, encoded } = yield* firstRequest(testCase);
+      const { sample, messages, prefixTools, encoded } = yield* firstRequest(testCase);
       const tools = new Set(
         [...sample.tools, ...sample.base.deferred].map((tool) => normalizeToolName(tool.name)),
       );
@@ -3986,7 +3998,7 @@ const main = Effect.gen(function* () {
       ];
       problems.push(...found.map((problem) => `${testCase.id}: ${problem}`));
       sizes.push({
-        prefixChars: (yield* encodeJson([sample.base.system, sample.tools])).length,
+        prefixChars: (yield* encodeJson([sample.base.system, prefixTools])).length,
         messageChars: (yield* encodeJson(messages)).length,
       });
       if (!flags.estimate) process.stdout.write(`${encoded}\n`);

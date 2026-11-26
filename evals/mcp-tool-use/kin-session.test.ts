@@ -56,8 +56,8 @@ it("places every legacy wake-up block exactly once, splitting the server's tagge
   assert.deepEqual(failures, []);
 });
 
-const legacyRequestPin = "7292df13c11b88920485113e89a1389e5f9859dfecc1ef2c34cc7036a89ff4a9";
-const sessionRequestPin = "2d540a158ff337b8fa201c9e154c955a50119662603f8b947ea837713803d8f9";
+const legacyRequestPin = "434d1f00cdaeb0deb31f25f1334b24c9595b1f2a8f2b81f361a649ffd9b88967";
+const sessionRequestPin = "900bccc9a604d8d6728e46ee099cafb6c45e1e25a1f19d005baba11b987c0a7a";
 const pinnedIds = [
   "kin-lead-rereads-github-hint",
   "kin-lead-uses-display-name",
@@ -90,13 +90,14 @@ const dryRequests = (layout: "legacy" | "session", file: string, ids?: ReadonlyA
 const digest = (requests: Uint8Array) =>
   NodeCrypto.createHash("sha256").update(requests).digest("hex");
 
-it("pins ten uncarried requests and keeps both layouts byte-identical", () => {
-  const legacy = dryRequests("legacy", "kin.ndjson", pinnedIds);
-  const session = dryRequests("session", "kin.ndjson", pinnedIds);
-  assert.lengthOf(legacy.toString().trimEnd().split("\n"), 10);
-  assert.equal(digest(legacy), legacyRequestPin);
-  assert.isTrue(session.equals(legacy), "Session layout changed an uncarried request.");
-});
+it.each(["legacy", "session"] as const)(
+  "pins the same ten uncarried requests in %s layout",
+  (layout) => {
+    const requests = dryRequests(layout, "kin.ndjson", pinnedIds);
+    assert.lengthOf(requests.toString().trimEnd().split("\n"), 10);
+    assert.equal(digest(requests), legacyRequestPin);
+  },
+);
 
 it("pins the session requests of both carry seeds", () => {
   const requests = dryRequests("session", "kin-carry.ndjson", [
@@ -467,13 +468,16 @@ it("sorts the actual owner inventory and omits tools of unconnected or engineeri
   );
 });
 
-it("uses the product's effort for Kin, unless the run overrides it", () => {
+it("uses the product's default effort for Kin", () => {
   const { output_config, model } = ownerFirstRequest();
   assert.equal(
     output_config.effort,
     compileClaudeModelSelection({ model, instanceId: ProviderInstanceId.make("claudeAgent") })
       .effort,
   );
+});
+
+it("lets the run override Kin's default effort", () => {
   assert.equal(ownerFirstRequest("low").output_config.effort, "low");
 });
 
