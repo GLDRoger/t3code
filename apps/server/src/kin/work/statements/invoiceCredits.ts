@@ -162,7 +162,7 @@ export const invoiceCredits = Effect.fn("KinStatements.invoiceCredits")(function
   const other = (yield* openEntries(orgId, def, "credit", undefined)).filter(
     (credit) => credit.currency !== invoice.currency || credit.amountMinor > owed,
   );
-  const takenBack = other.length === 0 ? undefined : yield* takenBackPairs(orgId, recordId);
+  const takenBack = other.length === 0 ? undefined : (yield* takenBackPairs(orgId, recordId)).pairs;
   const recorded = yield* recordedRates(orgId, other, [invoice.currency]);
   return [...credits, ...other]
     .toSorted((a, b) => b.dateAt - a.dateAt || b.recordId.localeCompare(a.recordId))
@@ -240,7 +240,11 @@ export type CreditMatch = {
   readonly credit: OpenCredit;
   readonly ranked: ReadonlyArray<CreditPair>;
   readonly first: ReadonlyArray<CreditPair>;
-  readonly choice?: { readonly client: string; readonly options: ReadonlyArray<RateChoice> };
+  readonly choice?: {
+    readonly client: string;
+    readonly options: ReadonlyArray<RateChoice>;
+    readonly round: number;
+  };
   readonly recorded: { readonly key: string; readonly paidOn: string } | undefined;
 };
 
@@ -250,15 +254,19 @@ const takenBackPairs = Effect.fn("KinStatements.takenBackPairs")(function* (
 ) {
   // A pair whose card payment was taken back was the owner's no: never offered again.
   const sql = yield* SqlClient.SqlClient;
-  return new Set(
-    (yield* sql<{ recordId: string; originKey: string }>`SELECT record_id AS "recordId",
-        origin_key AS "originKey" FROM kin_record_payments
-      WHERE org_id = ${orgId} AND voided_at IS NOT NULL AND origin_key LIKE ${`${BANK_CREDIT_ORIGIN}%`}
-        ${recordId === undefined ? sql`` : sql`AND record_id = ${recordId}`}
-      ORDER BY payment_id`).map(
-      (one) => `${one.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]}|${one.recordId}`,
-    ),
-  );
+  const rows = yield* sql<{ recordId: string; originKey: string }>`SELECT record_id AS "recordId",
+      origin_key AS "originKey" FROM kin_record_payments
+    WHERE org_id = ${orgId} AND voided_at IS NOT NULL AND origin_key LIKE ${`${BANK_CREDIT_ORIGIN}%`}
+      ${recordId === undefined ? sql`` : sql`AND record_id = ${recordId}`}
+    ORDER BY payment_id`;
+  const pairs = new Set<string>();
+  const rounds = new Map<string, number>();
+  for (const row of rows) {
+    const [bankRecordId = ""] = row.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":");
+    pairs.add(`${bankRecordId}|${row.recordId}`);
+    rounds.set(bankRecordId, (rounds.get(bankRecordId) ?? 0) + 1);
+  }
+  return { pairs, rounds };
 });
 
 const rankAll = Effect.fn("KinStatements.rankCredits")(function* (
@@ -279,7 +287,7 @@ const rankAll = Effect.fn("KinStatements.rankCredits")(function* (
     orgId,
     dayIn(Date.parse(`${earliest}T00:00:00Z`) - 15 * DAY_MS, "UTC"),
   );
-  const takenBack = yield* takenBackPairs(orgId);
+  const { pairs: takenBack, rounds } = yield* takenBackPairs(orgId);
   const recorded = yield* recordedRates(
     orgId,
     credits,
@@ -325,7 +333,11 @@ const rankAll = Effect.fn("KinStatements.rankCredits")(function* (
         THEN json_extract(fields_json, '$.number') END AS number
       FROM kin_records WHERE org_id = ${orgId} AND register_id = 'invoices' ORDER BY key`;
       if (numbers.some((one) => citedNumber(credit.row, one) !== undefined)) continue;
-      choice = { client: invoice.client, options: options.slice(0, 4) };
+      choice = {
+        client: invoice.client,
+        options: options.slice(0, 4),
+        round: rounds.get(credit.recordId) ?? 0,
+      };
     }
     const [rival] = payments
       .flatMap((payment) => {

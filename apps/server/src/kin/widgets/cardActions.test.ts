@@ -3517,6 +3517,41 @@ it.effect("a foreign credit question records nothing until an owner-level tap", 
   ),
 );
 
+it.effect("an undone pick asks again with the invoices left", () =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit();
+      const second = yield* kin.invoiceOf("TW/002", 4);
+      const first = yield* kin.ask();
+      yield* kin.tap(kin.owner, first.widgetId, "option-1", "record");
+      const outcome = card(yield* kin.widget(first.widgetId)).outcome;
+      assert.strictEqual(outcome?.title, "Payment recorded");
+      const [payment] = yield* kin.sql<{ paymentId: string }>`SELECT payment_id AS "paymentId"
+        FROM kin_record_payments WHERE org_id = ${kin.orgId} AND record_id = ${kin.invoice.recordId}`;
+      yield* kin.records.voidPayment(
+        kin.orgId,
+        kin.ownerWrites,
+        kin.invoice.key,
+        payment!.paymentId,
+      );
+      assert.strictEqual((yield* kin.records.get(kin.orgId, kin.bank.key))?.state, "open");
+      yield* TestClock.adjust(60_000);
+      yield* kin.tick();
+      const cards = yield* kin.cards();
+      assert.lengthOf(cards, 2);
+      const next = yield* kin.widget(
+        cards.find(({ widgetId }) => widgetId !== first.widgetId)!.widgetId,
+      );
+      assert.isNull(next.closedAt);
+      assert.deepStrictEqual(
+        card(next).options.map(({ label }) => label),
+        [`TW/002 (${second.key})`, "None of these"],
+      );
+      assert.deepStrictEqual(card(yield* kin.widget(first.widgetId)).outcome, outcome);
+    }),
+  ),
+);
+
 it.effect("a foreign credit question refuses a teammate's tap", () =>
   foreignCreditTest(
     Effect.gen(function* () {

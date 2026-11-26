@@ -973,7 +973,9 @@ const invoiceChoiceCards = Effect.fn("KinFactCards.invoiceChoices")(function* (i
   const sensed = new Map(input.sensed.map((fact) => [fact.key, fact.paymentChoice]));
   const pending = input.open.flatMap((fact) => {
     const match = sensed.get(fact.key);
-    return match === undefined || asked(posted, fact.key) ? [] : [{ fact, ...match }];
+    return match === undefined || asked(posted, fact.key, undefined, match.choice.round)
+      ? []
+      : [{ fact, ...match }];
   });
   if (pending.length === 0) return;
   const sql = yield* SqlClient.SqlClient;
@@ -992,7 +994,7 @@ const invoiceChoiceCards = Effect.fn("KinFactCards.invoiceChoices")(function* (i
     const base = {
       kind: "invoice_choice" as const,
       factKey: fact.key,
-      round: 0,
+      round: choice.round,
       personId,
       personName: recipient.name,
       agentId,
@@ -1033,7 +1035,7 @@ const invoiceChoiceCards = Effect.fn("KinFactCards.invoiceChoices")(function* (i
       personId,
       agentId,
       factKey: fact.key,
-      round: 0,
+      round: choice.round,
       question: `Which invoice does ${credit.key} pay?`,
       detail: `${credit.key}: ${received} received ${shortDay(credit.date)} from ${choice.client}. It names no invoice, and its rate isn't close to a recent one, so Kin won't guess.`,
       options: plans.map((plan) => ({ label: factCardShown(plan).label, plan })),
