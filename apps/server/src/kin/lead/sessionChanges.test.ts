@@ -22,7 +22,7 @@ const agentId = KinAgentId.make("finance");
 const chatId = KinChatId.make("owner-chat");
 const wakeupId = KinWakeupId.make("owner-turn");
 const now = Date.UTC(2026, 10, 26, 14, 5);
-const from = { changeSeq: 0, at: now - 3_600_000, memoryHead: null, chatSeq: 0 };
+const from = { changeSeq: 0, at: now - 3_600_000, memoryHead: null, chatSeq: 0, chatId, chatChangeSeq: 0, chatVersions: [] };
 const setup = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* TestClock.setTime(now);
@@ -98,7 +98,7 @@ const unchangedMemory = Layer.mergeAll(
   Layer.succeed(VcsProcess, { run: () => Effect.die("Unchanged memory must not use git") }),
 );
 const changes = Effect.fn("Test.changes")(function* () {
-  const to = yield* readCursor(orgId, chatId, null);
+  const to = yield* readCursor(orgId, chatId, null, agentId);
   return yield* sessionChanges({ ...input, to }).pipe(Effect.provide(unchangedMemory));
 });
 
@@ -107,8 +107,8 @@ it.effect("lists a co-owner's payment on an invoice", () =>
     yield* setup;
     yield* record("INV-12", "invoices", "October warehouse transfers");
     const seq = yield* change("INV-12", [{ field: "payment", to: "$1,000.00 on 2026-11-26" }]);
-    const to = yield* readCursor(orgId, chatId, null);
-    expect(to).toEqual({ changeSeq: seq, at: now, memoryHead: null, chatSeq: 9 });
+    const to = yield* readCursor(orgId, chatId, null, agentId);
+    expect(to).toMatchObject({ changeSeq: seq, at: now, memoryHead: null, chatSeq: 9 });
     expect((yield* changes()).lines).toEqual([
       'INV-12 "October warehouse transfers" (Invoices): payment $1,000.00 on 2026-11-26 by Meera (co-owner), 14:05',
     ]);
@@ -187,7 +187,7 @@ it.effect(
         });
       }
       yield* change("W-2", [{ field: "state", to: "work-already-shown" }]);
-      const to = yield* readCursor(orgId, chatId, null);
+      const to = yield* readCursor(orgId, chatId, null, agentId);
       yield* change("W-1", [{ field: "state", to: "after-cursor" }]);
       const { lines } = yield* sessionChanges({
         ...input,
@@ -317,7 +317,7 @@ it.effect("lists a memory item another commit edited and skips the session's own
     const result = yield* sessionChanges({
       ...input,
       from: { ...from, memoryHead: before },
-      to: { ...(yield* readCursor(orgId, chatId, null)), memoryHead: after },
+      to: { ...(yield* readCursor(orgId, chatId, null, agentId)), memoryHead: after },
     }).pipe(
       Effect.provideService(Memory, {
         ...stub,
