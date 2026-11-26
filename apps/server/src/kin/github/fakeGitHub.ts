@@ -236,6 +236,8 @@ export class FakeGitHub {
     readonly conditional: boolean;
     by?: "app" | "installation" | "login";
   }> = [];
+  /** Runs as each call arrives, before it is answered: GitHub changing mid-read. */
+  onRequest: ((call: string) => void) | undefined;
   constructor(world: FakeWorld) {
     this.world = world;
   }
@@ -851,6 +853,7 @@ export class FakeGitHub {
         headers["if-none-match"] !== undefined || headers["if-modified-since"] !== undefined,
     };
     this.requests.push(request);
+    this.onRequest?.(request.call);
     const ok = (value: unknown, extra: Record<string, string> = {}): FakeAnswer => ({
       status: method === "POST" ? 201 : 200,
       headers: extra,

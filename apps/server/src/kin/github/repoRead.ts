@@ -12,6 +12,7 @@ import { isOwnerHimself } from "../people/KinAccess.ts";
 import { type ApiAnswer, DIFF_CAP, pieceEnd, refusedFor } from "./GitHubWatch.ts";
 import { isMemoryRepo, memoryRepos } from "./githubWatchStore.ts";
 import { gitHubApp, type KinGitHubAppRead } from "./KinGitHubApp.ts";
+import * as Reach from "../lead/Reach.ts";
 import { boundReview } from "./boundReview.ts";
 import { askerOf, maySee } from "./reviewAsk.ts";
 
@@ -88,6 +89,11 @@ export const READ_REFUSAL = {
   unreachable: `Kin couldn't reach GitHub just now. ${NOTHING}`,
   missing: (repo: string, path: string, ref: string) =>
     `${repo} has nothing at ${path === "" ? "its top" : path} on ${ref}: list the folder above it, or check the ref. ${NOTHING}`,
+  ended: `This turn ended before the read finished. ${NOTHING}`,
+  gone: (name: string) =>
+    `${name} is no longer someone Kin reads for in this chat, so nothing was read. That changes only when an owner adds ${name} back in Settings, Team.`,
+  restricted: (name: string) =>
+    `${name} and this agent can't message each other, so Kin reads nothing for ${name}. The owner can lift that in Settings, Team. ${NOTHING}`,
   reviewOnly: (repo: string) =>
     `This turn reviews a pull request in ${repo}, so it reads only ${repo}. ${NOTHING}`,
   noPull: (repo: string, number: number) => `${repo} has no pull request #${number}. ${NOTHING}`,
@@ -285,13 +291,36 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
 
   // A turn someone besides the owner reads opens a private repo only for its one asker.
   const shared = (yield* effectiveAudience(lead)) !== "owner_only";
-  let readFor: string | undefined;
-  if (shared) {
+  const sql = yield* SqlClient.SqlClient;
+  const [agent] = yield* sql<{ owner: string }>`SELECT owner_person_id AS owner FROM kin_agents
+    WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`;
+  const first = shared ? yield* askerOf(lead) : undefined;
+  const readFor = first?.name;
+  /**
+   * Whether this turn may still be given the repo: run once before reading and again just before
+   * the text is released, so access lost mid-read releases nothing.
+   */
+  const entitled = Effect.fn("KinGitHubRepoRead.entitled")(function* () {
+    const [running] = yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${lead.orgId}
+      AND wakeup_id = ${lead.wakeupId} AND status = 'running'`;
+    if (running === undefined) return yield* refuse(READ_REFUSAL.ended);
     const asker = yield* askerOf(lead);
-    readFor = asker?.name;
-    const sql = yield* SqlClient.SqlClient;
-    const [agent] = yield* sql<{ owner: string }>`SELECT owner_person_id AS owner FROM kin_agents
-      WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`;
+    if (first !== undefined) {
+      if (asker?.personId !== first.personId) return yield* refuse(READ_REFUSAL.gone(first.name));
+      if (
+        (yield* Reach.mayReach(
+          lead.orgId,
+          Reach.person(asker.personId),
+          Reach.agent(lead.agentId),
+        )) !== "allowed"
+      )
+        return yield* refuse(READ_REFUSAL.restricted(asker.name));
+    }
+    const now = yield* get(`repos/${repo}`);
+    if (now.status === 404) return yield* refuse(READ_REFUSAL.unreached(repo));
+    const still = now.status === 200 ? decodeRepo(now.body) : Option.none();
+    if (Option.isNone(still)) return yield* failed(now);
+    if (still.value.id !== repoId) return yield* refuse(READ_REFUSAL.moved(repo));
     const himself =
       asker !== undefined && isOwnerHimself({ personId: agent?.owner ?? "" }, asker.personId);
     const may = yield* maySee(get, repo, { himself, login: asker?.login ?? null });
@@ -304,17 +333,23 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
             ? READ_REFUSAL.noLogin(repo, asker.name)
             : READ_REFUSAL.notCollaborator(repo, asker.name),
       );
-  }
+  });
+  if (shared) yield* entitled();
   // GitHub text is outside content for the rest of the turn, as a pull request's diff is; in a
   // shared turn, the turn then only reads and answers there (`REPO_READ_TOOLS`).
   const shown = <A>(result: A) =>
-    markOutside(
-      lead,
-      "github",
-      shared
-        ? [{ k: "repo", name: repo, ...(readFor === undefined ? {} : { for: readFor }) }]
-        : undefined,
-    ).pipe(Effect.as(result));
+    (shared ? entitled() : Effect.void).pipe(
+      Effect.andThen(
+        markOutside(
+          lead,
+          "github",
+          shared
+            ? [{ k: "repo", name: repo, ...(readFor === undefined ? {} : { for: readFor }) }]
+            : undefined,
+        ),
+      ),
+      Effect.as(result),
+    );
 
   if (input.search !== undefined && input.search.trim() !== "") {
     const words = input.search.replace(/\s+/g, " ").trim();
@@ -364,8 +399,11 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
   }
   const contents = `repos/${repo}/contents${path === "" ? "" : `/${segments.map(encodeURIComponent).join("/")}`}${ref === undefined ? "" : `?ref=${encodeURIComponent(ref)}`}`;
   const answer = yield* get(contents, undefined, CONTENTS_LIMIT);
+  // A 404 is a missing path only while the App still reaches the repo.
   if (answer.status === 404)
-    return yield* refuse(READ_REFUSAL.missing(repo, path, at), "not_found");
+    return yield* (yield* get(`repos/${repo}`)).status === 404
+      ? refuse(READ_REFUSAL.unreached(repo))
+      : refuse(READ_REFUSAL.missing(repo, path, at), "not_found");
   if (answer.status !== 200) return yield* failed(answer);
   const listed = decodeEntries(answer.body);
   if (Option.isSome(listed))

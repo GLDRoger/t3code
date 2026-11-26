@@ -1576,6 +1576,8 @@ it.effect(
         readonly ownerOnly?: true;
         readonly before?: (now: number) => void;
         readonly after?: () => void;
+        /** As each call reaches GitHub during the read. */
+        readonly during?: (call: string) => void;
         readonly answer?: Record<string, unknown>;
         readonly refused?: Record<string, unknown>;
         /** No call reached GitHub's collaborator reads. */
@@ -1847,6 +1849,32 @@ it.effect(
           },
         },
         {
+          name: "a collaborator taken off the private repo while the file was read",
+          who: "dev",
+          args: { repo: LEDGER, path: "totals.ts" },
+          during: (call) => {
+            if (call === `GET repos/${LEDGER}/contents/totals.ts`)
+              repoOf(LEDGER).collaborators = [];
+          },
+          after: () => {
+            repoOf(LEDGER).collaborators = ["dev-gh"];
+          },
+          refused: refusal(READ_REFUSAL.notCollaborator(LEDGER, "Dev Malhotra")),
+        },
+        {
+          name: "a repo taken off the App while the file was read",
+          who: "zoya",
+          args: { repo: APP, path: "README.md" },
+          during: (call) => {
+            if (call === `GET repos/${APP}/contents/README.md`)
+              installation.repos = installation.repos.filter((name) => name !== APP);
+          },
+          after: () => {
+            installation.repos.push(APP);
+          },
+          refused: refusal(READ_REFUSAL.unreached(APP)),
+        },
+        {
           name: "a private repo GitHub doesn't let her see",
           who: "meera",
           args: { repo: LEDGER, path: "totals.ts" },
@@ -1931,7 +1959,9 @@ it.effect(
         if (limit !== undefined) github.world.limit = limit;
         const calls = github.world.calls.length;
         const requests = github.requests.length;
+        github.onRequest = row.during;
         const called = yield* read(row.args);
+        github.onRequest = undefined;
         row.after?.();
         const checked = github.world.calls
           .slice(calls)
