@@ -403,7 +403,7 @@ const SENSES: ReadonlyArray<readonly [string, string, number, string?, string?]>
     "EXP-90",
     B + 26 * DAY,
     "bill_due:EXP-90:soon=2026-11-30",
-    "₹450 to Acme Hosting, due today. Only the owner or a co-owner marks it paid, on its page in Money.",
+    "₹450 to Acme Hosting, due today. It is marked paid by an owner-level tap on its page in Money.",
   ],
   ["bill_due", "EXP-90", B + 30 * DAY, "bill_due:EXP-90:due=2026-11-30"],
   ["bill_paid_seen", "BNK-90", B + 26 * DAY],
@@ -3233,7 +3233,7 @@ describe("KinPulse", () => {
           },
           scope: {},
           consequence:
-            "BNK-2, ₹95,000 received 9 Nov, fits 2 open invoices equally, and Kin can't tell which: INV/26-27/020 (INV-20): same amount from Harbourline Logistics; INV/26-27/021 (INV-21): same amount from Harbourline Logistics. Nothing is recorded until the owner says which.",
+            "BNK-2, ₹95,000 received 9 Nov, fits 2 open invoices equally, and Kin can't tell which: INV/26-27/020 (INV-20): same amount from Harbourline Logistics; INV/26-27/021 (INV-21): same amount from Harbourline Logistics. Nothing is recorded until one is chosen on a card.",
         });
         assert.notInclude((yield* KinPulse.tick(orgId, at + 2 * MINUTE)).woken, both!.key);
         assert.lengthOf(yield* wakes, 1);
@@ -3361,7 +3361,7 @@ describe("KinPulse", () => {
           },
           scope: {},
           consequence:
-            "BNK-9, ₹12,400 paid 24 Nov, names Meera and adds up exactly to their 3 oldest owed expenses: EXP-4, EXP-7 and EXP-9. They aren't marked repaid until the owner confirms.",
+            "BNK-9, ₹12,400 paid 24 Nov, names Meera and adds up exactly to their 3 oldest owed expenses: EXP-4, EXP-7 and EXP-9. They aren't marked repaid until it is confirmed on a card.",
           actor: { _tag: "agent", agentId: finance },
           sensitive: true,
           wake: "now",
@@ -3956,12 +3956,12 @@ describe("list sections", () => {
           {
             key: late,
             actor: { _tag: "person", personId: mate },
-            consequence: "Was due 2026-11-02, 2 days ago.",
+            consequence: "Booked for: 2026-11-02, passed 2 days ago.",
           },
           {
             key: soon,
             actor: { _tag: "agent", agentId: chief },
-            consequence: "Due 2026-11-04, in 11 hours.",
+            consequence: "Booked for: 2026-11-04, in 11 hours.",
           },
         ]);
         // The holder sees it on their own screen too.
@@ -3981,7 +3981,7 @@ describe("list sections", () => {
         assert.deepStrictEqual(yield* mateNotices, [
           [
             "2 things need you:",
-            "• BK-1 Invented BK-1, was due 2026-11-02, 2 days ago",
+            "• BK-1 Invented BK-1, booked for: 2026-11-02, passed 2 days ago",
             "• W-8 Invented W-8, was due yesterday",
           ].join("\n"),
         ]);
@@ -4017,7 +4017,7 @@ describe("list sections", () => {
           (yield* mateNotices).at(-1),
           [
             "2 things need you:",
-            "• BK-1 Invented BK-1, was due 2026-11-02, 4 days ago. Still open since 2026-11-02.",
+            "• BK-1 Invented BK-1, booked for: 2026-11-02, passed 4 days ago. Still open since 2026-11-02.",
             "• W-8 Invented W-8, was due 3 days ago. Still open since 2026-11-03.",
           ].join("\n"),
         );

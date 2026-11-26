@@ -52,6 +52,7 @@ import {
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import {
   endOfDay,
+  stillSuggestion,
   suggestedStateLabel,
   UNISSUED_INVOICE,
 } from "../../apps/server/src/kin/work/recordRows.ts";
@@ -59,6 +60,7 @@ import {
   ALSO_ON_UNASKED,
   FUNDING_IS_THE_OWNERS,
   helperRefusal,
+  paidWhileOwed,
 } from "../../apps/server/src/kin/work/KinRecords.ts";
 import { choiceResumeText, NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
 import { noticeQuestion, stallQuestion } from "../../apps/server/src/kin/pulse/factCards.ts";
@@ -66,6 +68,7 @@ import { tooLongForCard } from "../../apps/server/src/kin/questions/askPerson.ts
 import {
   ASKED,
   CALL_ARGUMENTS_REFUSAL,
+  OFFERED,
   SEVERAL_ACCOUNTS,
 } from "../../apps/server/src/kin/connections/ConnectionsService.ts";
 import { readCallArguments } from "../../apps/server/src/kin/connections/callArguments.ts";
@@ -93,6 +96,14 @@ import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyA
 import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
 import { waitingLine } from "../../apps/server/src/kin/work/unconfirmedFacts.ts";
 import { budgetsAnswer } from "../../apps/server/src/kin/work/budgets.ts";
+import { cardLines, type Snapshot } from "../../apps/server/src/kin/gendocs/receiptProposals.ts";
+import { RECEIPT_PROPOSED_NEXT } from "../../apps/server/src/kin/gendocs/leadDocuments.ts";
+import {
+  alreadyRecordedNext,
+  PAYMENT_PROPOSED_NEXT,
+  TAKE_BACK_PROPOSED_NEXT,
+} from "../../apps/server/src/kin/work/leadMoney.ts";
+import { parseAmount } from "../../apps/server/src/kin/work/money.ts";
 import { goalLine } from "../../apps/server/src/kin/work/goals.ts";
 import {
   formatKinMoney,
@@ -128,7 +139,10 @@ import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp
 import { diffGoesOn, postedResult } from "../../apps/server/src/kin/github/GitHubWatch.ts";
 import { DIFF_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
 import { filePage, READ_NEXT, READ_REFUSAL } from "../../apps/server/src/kin/github/repoRead.ts";
-import { REPO_READ_REFUSAL } from "../../apps/server/src/kin/lead/OutsideContent.ts";
+import {
+  OUTSIDE_REFUSAL,
+  REPO_READ_REFUSAL,
+} from "../../apps/server/src/kin/lead/OutsideContent.ts";
 import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
 import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
 import { KinSalesToolkit } from "../../apps/server/src/kin/sales/mcp.ts";
@@ -852,6 +866,21 @@ const docReadAnswer = (input: {
   };
 };
 
+type CardInvoice = {
+  readonly key: string;
+  readonly number: string;
+  readonly title: string;
+  readonly total: Contracts.KinMoney;
+  readonly paid: number;
+};
+const cardAgainst = (invoice: CardInvoice, named: boolean): Snapshot["against"] => ({
+  key: invoice.key,
+  title: invoice.title,
+  rev: 1,
+  paid: invoice.paid,
+  total: invoice.total,
+  ...(named ? { name: invoice.number } : {}),
+});
 /** kin_github_read as `readRepo` answers it, over a few files at one ref. */
 const repoReadAnswer = (input: {
   repo: string;
@@ -935,6 +964,152 @@ const repoReadAnswer = (input: {
 };
 
 const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
+  stillSuggestion: (input: { key: string }) => ({
+    $error: { _tag: "KinChatError", reason: "invalid_state", message: stillSuggestion(input.key) },
+  }),
+  outsideRefusal: () => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: OUTSIDE_REFUSAL },
+  }),
+  connectionOffered: () => ({ note: OFFERED }),
+  // payment_record's answer to an agent: the owner's Confirm card lines (`receiptProposals.ts`).
+  paymentCard: (input: {
+    proposal: string;
+    client: string;
+    invoice: CardInvoice;
+    amount: string | null;
+    withheld: string | null;
+    paidOn: string | null;
+  }) => {
+    const money = (text: string | null) => {
+      if (text === null) return undefined;
+      const one = parseAmount(text, input.invoice.total.currency);
+      return "error" in one ? undefined : one.money;
+    };
+    const amount = money(input.amount);
+    const withheld = money(input.withheld);
+    const paidOn = input.paidOn;
+    if (
+      paidOn === null ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(paidOn) ||
+      (amount ?? withheld) === undefined
+    )
+      return {
+        $error: {
+          _tag: "KinChatError",
+          reason: "invalid_state",
+          message:
+            "A payment needs amount (cash received), withheld (tax the client withheld) or both, and paidOn; or void to take one back.",
+        },
+      };
+    const received = {
+      key: input.invoice.key,
+      paidOn,
+      ...(amount === undefined ? {} : { amount }),
+      ...(withheld === undefined ? {} : { withheld }),
+    };
+    const snapshot: Snapshot = {
+      entry: null,
+      client: { key: "C-1", title: input.client, rev: 1 },
+      amount: amount ?? null,
+      receivedOn: paidOn,
+      against: cardAgainst(input.invoice, true),
+      recorded: [],
+      ...(withheld === undefined ? {} : { withheld }),
+    };
+    return {
+      status: "proposed",
+      key: input.invoice.key,
+      proposal: input.proposal,
+      shown: cardLines(snapshot, { received, version: 2 }),
+      next: PAYMENT_PROPOSED_NEXT,
+      sensitive: true,
+    };
+  },
+  // kin_receipt's answer to an agent setting an advance against an invoice: its Confirm card.
+  receiptAgainstCard: (input: {
+    proposal: string;
+    entry: string;
+    client: string;
+    amount: Contracts.KinMoney;
+    receivedOn: string;
+    invoice: CardInvoice;
+  }) => ({
+    status: "proposed",
+    proposal: input.proposal,
+    shown: cardLines(
+      {
+        entry: { key: input.entry, rev: 1, state: "open", moved: true },
+        client: { key: "C-1", title: input.client, rev: 1 },
+        amount: input.amount,
+        receivedOn: input.receivedOn,
+        against: cardAgainst(input.invoice, true),
+        recorded: [],
+      },
+      { key: input.entry, against: input.invoice.key, version: 2 },
+    ),
+    next: RECEIPT_PROPOSED_NEXT,
+    sensitive: true,
+  }),
+  // payment_record of a payment already on the invoice: no card, ask whether it is another.
+  paymentAlreadyRecorded: (input: {
+    invoice: CardInvoice;
+    amount: Contracts.KinMoney | null;
+    withheld: Contracts.KinMoney | null;
+    paidOn: string;
+  }) => ({
+    status: "already_recorded",
+    key: input.invoice.key,
+    next: alreadyRecordedNext(
+      input.amount ?? undefined,
+      input.withheld ?? undefined,
+      input.paidOn,
+      input.invoice.number,
+    ),
+    sensitive: true,
+  }),
+  // payment_record void: the owner's card to take the payment back (`receiptProposals.ts`).
+  takeBackCard: (input: {
+    proposal: string;
+    client: string;
+    invoice: CardInvoice;
+    paymentId: string;
+    payment: { amount: Contracts.KinMoney; paidOn: string; withheld?: boolean };
+  }) => {
+    const snapshot: Snapshot = {
+      entry: null,
+      client: { key: "C-1", title: input.client, rev: 1 },
+      amount: null,
+      receivedOn: null,
+      against: cardAgainst(input.invoice, true),
+      recorded: [],
+      taking: {
+        ...input.payment.amount,
+        paidOn: input.payment.paidOn,
+        withheld: input.payment.withheld === true ? 1 : 0,
+        voided: 0,
+      },
+    };
+    const request = {
+      takeBack: { key: input.invoice.key, paymentId: input.paymentId },
+      version: 2 as const,
+    };
+    return {
+      status: "proposed",
+      key: input.invoice.key,
+      proposal: input.proposal,
+      shown: cardLines(snapshot, request),
+      next: TAKE_BACK_PROPOSED_NEXT,
+      sensitive: true,
+    };
+  },
+  // record_update of an issued invoice to Paid with money still owed, refused to an agent.
+  paidWhileOwed: (input: { key: string; owed: string }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "invalid_state",
+      message: paidWhileOwed(input.key, input.owed, "Paid"),
+    },
+  }),
   // record_update of who funded an expense or whether it was paid back, refused to an agent.
   fundingRefusal: () => ({
     $error: { _tag: "KinChatError", reason: "not_allowed", message: FUNDING_IS_THE_OWNERS },

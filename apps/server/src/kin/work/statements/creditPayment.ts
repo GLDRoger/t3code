@@ -345,7 +345,7 @@ export const recordPayment = Effect.fn("KinCreditPayment.record")(
             },
           ],
         });
-        yield* backed(orgId, writer, row.key);
+        yield* backed(orgId, writer, row.key, false);
         creditKey = row.key;
       }
     } else
@@ -489,7 +489,7 @@ export const applyCredit = Effect.fn("KinCreditPayment.applyCredit")(function* (
       if (row === undefined || row.rev !== plan.invoiceRev) return undefined;
       const credit = yield* creditForInvoice(orgId, row, plan.receipt);
       if (credit?.rev !== plan.receiptRev || credit.paymentId !== plan.paymentId) return undefined;
-      yield* setAgainst(orgId, writer, plan.receipt, plan.key);
+      yield* setAgainst(orgId, writer, plan.receipt, plan.key, false);
       return {
         title: "Credit applied",
         text: `Applied ${formatMoney(plan.amount)} credit to ${plan.number}; ${applyBalance(plan)} is still owed on it.`,

@@ -10,7 +10,11 @@ const kinWindow =
         readonly kinDesktopReveal?: () => Promise<void>;
       });
 
-export const inKinDesktopWindow = kinWindow?.kinDesktopWindow === true;
+export const isInKinDesktopWindow = () =>
+  typeof window !== "undefined" &&
+  (window as { readonly kinDesktopWindow?: true }).kinDesktopWindow === true;
+
+export const inKinDesktopWindow = isInKinDesktopWindow();
 
 export const revealKinDesktopWindow = () => {
   if (kinWindow?.kinDesktopReveal !== undefined) return kinWindow.kinDesktopReveal();
