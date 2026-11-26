@@ -1957,7 +1957,7 @@ describe("Kin migrations", () => {
           VALUES ('org', 'review:ambermill/shop#7', 'ambermill/shop', 7, 'woke', 1)`;
         // Later branches' migrations run after these too; only these three are this test's.
         assert.deepStrictEqual(
-          (yield* runKinMigrations()).filter(([id]) => id <= 224).map(([id]) => id),
+          (yield* runKinMigrations()).map(([id]) => id),
           [
             196,
             197,
@@ -2039,7 +2039,7 @@ describe("Kin migrations", () => {
       yield* undoSentUpDrafts;
       assert.deepStrictEqual(yield* added, []);
       assert.deepStrictEqual(
-        (yield* runKinMigrations()).filter(([id]) => id <= 224).map(([id]) => id),
+        (yield* runKinMigrations()).map(([id]) => id),
         [
           197,
           198,
