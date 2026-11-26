@@ -721,6 +721,7 @@ function parts(options: HarnessOptions) {
               options.prompts?.push(input);
               return "Wake up";
             }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie),
+          buildSession: () => Effect.die("The wake-up runner has no session prompt path"),
           steer: (input) =>
             (options.steering === undefined
               ? Effect.void
