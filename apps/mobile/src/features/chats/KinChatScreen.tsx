@@ -1897,6 +1897,7 @@ function KinChatFeed(props: {
             <KinPresenceLines
               presence={props.presence}
               visible={focused && followsEnd}
+              showName={!props.direct}
               mayStop={props.mayStop}
               agentNames={props.viewer.agentNames}
               stops={stops}
