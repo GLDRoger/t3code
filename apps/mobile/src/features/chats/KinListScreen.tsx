@@ -26,6 +26,7 @@ import {
   kinCategoryLabel,
   kinListChips,
   kinListColumns,
+  kinListOffersClients,
   kinListFilterParam,
   kinListFooter,
   kinListGroupings,
@@ -581,7 +582,7 @@ function KinListEntries(
                 </View>
               ) : null}
               {def.list === "expenses" ? <KinBillsAddedRow {...props} /> : null}
-              {!clientsOn ? null : (
+              {!clientsOn || !kinListOffersClients(state.records, filter) ? null : (
                 <View className="px-4">
                   <ListSection>
                     <KinWorkPlacePicker

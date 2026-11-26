@@ -548,7 +548,9 @@ export function KinMakeDocumentStep(
             </Button>
           </div>
         ) : recipe === null ? (
-          <p className="text-sm text-muted-foreground">{KIN_INVOICES.noTemplate}</p>
+          <p className="text-sm text-muted-foreground">
+            {KIN_INVOICES.noTemplate(props.list).line}
+          </p>
         ) : templates.length > 1 ? (
           <div className="flex flex-col gap-1.5">
             <Label htmlFor={selectId}>{KIN_INVOICES.template}</Label>
@@ -820,7 +822,7 @@ export function KinInvoicePayments(
                       payment.when,
                       payment.note,
                       payment.source,
-                      payment.voided ? KIN_INVOICES.takenBack : null,
+                      payment.voidedLine,
                     ]
                       .filter((part) => part !== null)
                       .join(" · ")}

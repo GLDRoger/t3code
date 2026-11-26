@@ -17,6 +17,7 @@ import {
   KIN_LIST_DEFAULT_FILTER,
   kinFieldText,
   kinListColumns,
+  kinListOffersClients,
   kinListWatches,
   kinListRemindChoices,
   kinListCheckWords,
@@ -208,24 +209,18 @@ describe("a private entry", () => {
     const meera = KinPersonId.make("p-meera");
     const names = new Map([[rhea, "Rhea Kapoor"]]);
     const rheas = { _tag: "person", personId: rhea } as const;
-    expect(kinEntryPrivateLine(rheas, { people: names, me: rhea })).toBe(
-      "Private. Only owners see this.",
-    );
+    expect(kinEntryPrivateLine(rheas, { people: names, me: rhea })).toBe("Private.");
     expect(kinEntryPrivateLine(rheas, { people: names, me: meera })).toBe(
-      "Private to Rhea Kapoor. Only owners see this.",
+      "Private to Rhea Kapoor.",
     );
     // Nobody's own, or a name not known here: no name, never "you".
     const agent = { _tag: "agent", agentId: KinAgentId.make("lead-finance") } as const;
-    expect(kinEntryPrivateLine(agent, { people: names, me: meera })).toBe(
-      "Private. Only owners see this.",
-    );
+    expect(kinEntryPrivateLine(agent, { people: names, me: meera })).toBe("Private.");
     expect(
       kinEntryPrivateLine({ _tag: "person", personId: meera }, { people: names, me: rhea }),
-    ).toBe("Private. Only owners see this.");
+    ).toBe("Private.");
     // Before the host says who is reading: no name, and still never "you".
-    expect(kinEntryPrivateLine(rheas, { people: names, me: null })).toBe(
-      "Private. Only owners see this.",
-    );
+    expect(kinEntryPrivateLine(rheas, { people: names, me: null })).toBe("Private.");
   });
 });
 
@@ -342,6 +337,13 @@ describe("a list by its definition", () => {
       shelf: "rec-acme",
     };
     const row = kinListRow(record({ fields }), def, context);
+    // Like its Client column, its Client filter shows only where an entry has a client.
+    const party = { recordId: "rec-acme", key: "C-1", title: "Acme" } as never;
+    expect([
+      kinListOffersClients([record({})], KIN_LIST_DEFAULT_FILTER),
+      kinListOffersClients([record({}), record({ party })], KIN_LIST_DEFAULT_FILTER),
+      kinListOffersClients([], { ...KIN_LIST_DEFAULT_FILTER, noParty: true }),
+    ]).toEqual([false, true, true]);
     expect(kinListColumns(def, [record({})]).map((column) => column.label)).toEqual([
       "Entry",
       "Status",
@@ -608,6 +610,27 @@ describe("a list by its definition", () => {
     expect(
       kinListColumns(issued, [{ ...kept, state: "open" }]).find((one) => one.id === "date")?.label,
     ).toBe("Date");
+    // A bill to pay is due on its day, as Money's To pay counts it: it has no paid day yet.
+    const expenses = list({
+      list: KinListId.make("expenses"),
+      amount: true,
+      states: ["open", "done", "dropped"],
+      stateLabels: { open: "To pay" as never, done: "Paid" as never, dropped: "Void" as never },
+      dueLabel: "Due" as never,
+      dateLabel: "Paid on" as never,
+    });
+    const bill = { ...kept, list: "expenses", state: "open" as const, dueAt: null };
+    expect(kinListEntryView(bill, expenses, context)).toMatchObject({
+      dateLabel: null,
+      dueLabel: "Due",
+      due: kinListEntryView({ ...bill, state: "done" }, expenses, context).date,
+    });
+    expect(
+      kinListEntryView({ ...bill, dueAt: "2026-12-09T00:00:00.000Z" }, expenses, context).due,
+    ).not.toBe(kinListEntryView(bill, expenses, context).due);
+    expect(kinListEntryView({ ...bill, state: "done" }, expenses, context)).toMatchObject({
+      dateLabel: "Paid on",
+    });
     // Its page notes Money only where Money would count it, a draft that it is owed only once
     // issued, and offers Not needed only where it can drop it.
     expect(kinSuggestionKeep(suggested, issued)).toEqual({
