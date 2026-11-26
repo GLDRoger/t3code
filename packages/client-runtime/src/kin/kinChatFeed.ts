@@ -35,6 +35,7 @@ import {
 import { kinTapAnswersChoice, kinTapText } from "./kinTap.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinReplyKey, type KinHeldDraft } from "./kinLive.ts";
+import { kinReplyButtons } from "./kinReplyButtons.ts";
 import { kinPlainTables, kinSentences } from "./kinScreenState.ts";
 import type { KinSynced } from "./kinStreams.ts";
 
@@ -224,6 +225,7 @@ export type KinFeedRow =
       readonly type: "message";
       readonly key: string;
       readonly message: KinMessage;
+      readonly footerAfterCards?: true;
       readonly own: boolean;
       /** Who wrote it, for others' messages; the author line shows only when `showAuthor`. */
       readonly authorLabel: string;
@@ -232,6 +234,7 @@ export type KinFeedRow =
       /** The row above is a bubble by the same author, so this one sits tight under it. */
       readonly continues: boolean;
     }
+  | { readonly type: "footer"; readonly key: string; readonly message: KinMessage }
   /** A reply still streaming. Its key is its durable message's, so the bubble stays in place. */
   | {
       readonly type: "draft";
@@ -464,6 +467,19 @@ const isAgentHandoff = (message: KinMessage) =>
 
 type FeedEntry = KinMessage | KinHeldDraft;
 
+const FLOOR_RUN_ID = /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i;
+
+// A Team-room ask spends a floor grant; team_say writes into the discussion's synthetic run.
+function teamCardScope(card: KinMessage, reply: KinMessage) {
+  return (
+    card.discussionId === undefined &&
+    card.floorRunId !== null &&
+    FLOOR_RUN_ID.test(card.floorRunId) &&
+    reply.discussionId !== undefined &&
+    reply.floorRunId === `team:${reply.discussionId}`
+  );
+}
+
 function sameCardTurn(card: KinMessage, entry: FeedEntry) {
   if (entry.sourceWakeupId === undefined || entry.sourceWakeupId !== card.sourceWakeupId)
     return false;
@@ -481,9 +497,23 @@ function sameCardTurn(card: KinMessage, entry: FeedEntry) {
     card.author._tag === "agent" &&
     entry.author.agentId === card.author.agentId &&
     entry.author.threadId === card.author.threadId &&
-    entry.floorRunId === card.floorRunId &&
-    entry.discussionId === card.discussionId &&
+    entry.orgId === card.orgId &&
+    entry.chatId === card.chatId &&
+    ((entry.floorRunId === card.floorRunId && entry.discussionId === card.discussionId) ||
+      teamCardScope(card, entry)) &&
     entry.relay === undefined
+  );
+}
+
+function isStandaloneCard(message: KinMessage) {
+  return (
+    message.sourceWakeupId !== undefined &&
+    message.author._tag === "agent" &&
+    message.kind === "text" &&
+    message.status === "posted" &&
+    message.relay === undefined &&
+    message.widgetId !== null &&
+    message.body.trim() === ""
   );
 }
 
@@ -495,18 +525,11 @@ function replyBeforeCards(
   const entries: ReadonlyArray<FeedEntry> =
     drafts.length === 0 ? messages : [...messages, ...drafts];
   const ordered: FeedEntry[] = [];
+  const teamCardRuns = new Map<KinMessage, string>();
   let cards: KinMessage[] = [];
   for (const entry of entries) {
     const draft = "draftId" in entry;
-    const card =
-      !draft &&
-      entry.sourceWakeupId !== undefined &&
-      entry.author._tag === "agent" &&
-      entry.kind === "text" &&
-      entry.status === "posted" &&
-      entry.relay === undefined &&
-      entry.widgetId !== null &&
-      entry.body.trim() === "";
+    const card = !draft && isStandaloneCard(entry);
     if (
       cards.length > 0 &&
       (!sameCardTurn(cards[0]!, entry) ||
@@ -516,10 +539,85 @@ function replyBeforeCards(
       cards = [];
     }
     if (card) cards.push(entry);
-    else ordered.push(entry);
+    else {
+      ordered.push(entry);
+      if (!draft && cards.length > 0 && teamCardScope(cards[0]!, entry)) {
+        for (const held of cards) teamCardRuns.set(held, entry.floorRunId!);
+        ordered.push(...cards);
+        cards = [];
+      }
+    }
   }
   ordered.push(...cards);
-  return ordered;
+  return { ordered, teamCardRuns };
+}
+
+const deferredFooters = new WeakMap<
+  MessageRow,
+  { readonly body: MessageRow; readonly footer: Extract<KinFeedRow, { type: "footer" }> }
+>();
+
+function deferredFooter(row: MessageRow) {
+  let held = deferredFooters.get(row);
+  if (held === undefined) {
+    held = {
+      body: { ...row, footerAfterCards: true },
+      footer: { type: "footer", key: `footer:${row.key}`, message: row.message },
+    };
+    deferredFooters.set(row, held);
+  }
+  return held;
+}
+
+// Do this after folding: neither a collapsed discussion nor an intervening row lends out footers.
+function placeReplyFooters(rows: KinFeedRow[]) {
+  const out: KinFeedRow[] = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const card = rows[index]!;
+    const reply = out.at(-1);
+    if (
+      card.type !== "message" ||
+      !isStandaloneCard(card.message) ||
+      reply?.type !== "message" ||
+      reply.message.body.trim() === "" ||
+      !sameCardTurn(card.message, reply.message)
+    ) {
+      out.push(card);
+      continue;
+    }
+    const footers: KinFeedRow[] = [];
+    for (let i = out.length - 1; i >= 0; i -= 1) {
+      const words = out[i]!;
+      if (
+        words.type !== "message" ||
+        words.message.body.trim() === "" ||
+        !sameCardTurn(card.message, words.message)
+      )
+        break;
+      if (
+        (words.message.turnChanges?.count ?? 0) === 0 &&
+        kinReplyButtons(words.message).length === 0
+      )
+        continue;
+      const held = deferredFooter(words);
+      out[i] = held.body;
+      footers.push(held.footer);
+    }
+    out.push(card);
+    while (index + 1 < rows.length) {
+      const next = rows[index + 1]!;
+      if (
+        next.type !== "message" ||
+        !isStandaloneCard(next.message) ||
+        !sameCardTurn(next.message, reply.message)
+      )
+        break;
+      out.push(next);
+      index += 1;
+    }
+    out.push(...footers.reverse());
+  }
+  return out;
 }
 
 /**
@@ -546,7 +644,8 @@ export function buildKinFeedRows(
         !(message.kind === "widget_action" && kinTapAnswersChoice(message.body)),
     )
     .map((message) => kinMessageOnMyClock(message));
-  const ordered = replyBeforeCards(visible, drafts);
+  const { ordered, teamCardRuns } = replyBeforeCards(visible, drafts);
+  const runOf = (message: KinMessage) => teamCardRuns.get(message) ?? foldRunId(message);
   const rows: KinFeedRow[] = [];
   const foldKeys = new Set<string>();
   let previousAuthor: string | null = null;
@@ -700,7 +799,7 @@ export function buildKinFeedRows(
       index += 1;
       continue;
     }
-    const runId = foldRunId(first);
+    const runId = runOf(first);
     if (runId === null) {
       pushMessage(first);
       index += 1;
@@ -710,7 +809,7 @@ export function buildKinFeedRows(
     let end = index + 1;
     while (end < ordered.length) {
       const entry = ordered[end]!;
-      if ("draftId" in entry || foldRunId(entry) !== runId) break;
+      if ("draftId" in entry || runOf(entry) !== runId) break;
       run.push(entry);
       end += 1;
     }
@@ -749,7 +848,9 @@ export function buildKinFeedRows(
     else previousAt = last.createdAt;
     index = end;
   }
-  return superseded.size === 0 ? rows : rows.filter((_, index) => !superseded.has(index));
+  return placeReplyFooters(
+    superseded.size === 0 ? rows : rows.filter((_, index) => !superseded.has(index)),
+  );
 }
 
 /** The local calendar day of an ISO time, as `2026-11-08`. */
@@ -923,6 +1024,7 @@ export function kinRowSeq(row: KinFeedRow): number {
       return row.lastSeq;
     case "day":
     case "draft":
+    case "footer":
       return 0;
   }
 }

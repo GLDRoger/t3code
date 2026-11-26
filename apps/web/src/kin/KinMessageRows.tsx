@@ -48,6 +48,7 @@ import {
   KIN_REACTION_EMOJI,
   KinOrgId,
   type EnvironmentId,
+  type KinMessage,
   type KinMessageRef,
   KinPersonId,
   type KinReactionEmoji,
@@ -231,8 +232,6 @@ export function KinMessageRow(props: {
   const canReact = onReact !== null && !deleted;
   const layout = row.own || !hasBody ? "bubble" : kinMessageLayout(message);
   const label = kinMessageLabel(row, formatTime(message.createdAt));
-  const receipt = deleted ? null : kinTurnReceiptLine(message.turnChanges);
-  const buttons = kinReplyButtons(message);
   // A page's card is its foot, across the page's width.
   const onPage = hasBubble && layout !== "bubble";
   const card =
@@ -346,18 +345,9 @@ export function KinMessageRow(props: {
           {canReact && !hasBubble ? <KinReactMenu mine={mine} onReact={onReact} /> : null}
         </div>
       ) : null}
-      {buttons.length === 0 ? null : (
-        <KinReplyButtons
-          buttons={buttons}
-          environmentId={props.environmentId}
-          orgId={props.orgId}
-        />
-      )}
-      {receipt === null ? null : (
-        <KinTurnReceipt
-          line={receipt}
-          turnChanges={message.turnChanges}
-          links={message.links}
+      {row.footerAfterCards === true ? null : (
+        <KinReplyFooter
+          message={message}
           environmentId={props.environmentId}
           orgId={props.orgId}
           connected={props.connected}
@@ -389,6 +379,45 @@ export function KinMessageRow(props: {
 }
 
 /** Up to three buttons under an agent's reply, each opening what it named. */
+export function KinReplyFooter(props: {
+  readonly message: KinMessage;
+  readonly environmentId: EnvironmentId;
+  readonly orgId: string;
+  readonly connected: boolean;
+  readonly standalone?: boolean;
+}) {
+  const { message } = props;
+  const receipt = message.status === "deleted" ? null : kinTurnReceiptLine(message.turnChanges);
+  const buttons = kinReplyButtons(message);
+  if (buttons.length === 0 && receipt === null) return null;
+  const content = (
+    <>
+      {buttons.length === 0 ? null : (
+        <KinReplyButtons
+          buttons={buttons}
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+        />
+      )}
+      {receipt === null ? null : (
+        <KinTurnReceipt
+          line={receipt}
+          turnChanges={message.turnChanges}
+          links={message.links}
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          connected={props.connected}
+        />
+      )}
+    </>
+  );
+  return props.standalone ? (
+    <div className={cn(ROW, "items-start", rowSpacing(true))}>{content}</div>
+  ) : (
+    content
+  );
+}
+
 function KinReplyButtons(props: {
   readonly buttons: ReadonlyArray<KinReplyButton>;
   readonly environmentId: EnvironmentId;
