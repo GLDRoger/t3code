@@ -11,7 +11,6 @@ import * as NodeUtil from "node:util";
 import * as Schema from "effect/Schema";
 
 import {
-  expectationsForLayout,
   gradeSample,
   McpToolUseCase,
   modelRequests,
@@ -19,6 +18,7 @@ import {
   PRICES,
   worldFilePaths,
 } from "./run.ts";
+import { expectationsForLayout } from "./kin-session-wire.ts";
 
 const { values, positionals } = NodeUtil.parseArgs({
   allowPositionals: true,

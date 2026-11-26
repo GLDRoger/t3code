@@ -79,7 +79,6 @@ import {
   KinCaseAttachment,
   KIN_TOOLKITS,
   kinDated,
-  kinOwnerDay,
   kinJudgedCall,
   kinLeadBase,
   kinLeadInstructions,
@@ -87,8 +86,6 @@ import {
   type KinSeatOptions,
   kinBillsOf,
   kinSessionOf,
-  kinSessionSplit,
-  hasKinSessionLayout,
   kinCallRead,
   KIN_KEY_PREFIX,
   kinToolVisible,
@@ -104,14 +101,20 @@ import {
   unredact,
 } from "./kin.ts";
 import {
+  KIN_LAYOUTS,
   KIN_SESSION_BETAS,
   KIN_SESSION_CACHE,
-  kinCompactionSummary,
-  kinPromptSubmitText,
-  kinSessionStartText,
+  carryMockState,
+  earlierCalls,
+  expectationsForLayout,
+  kinCarrySchema,
+  kinSessionReplay,
+  kinSessionWireMessages,
+  loadKinCarry,
+  sessionLayout,
+  type KinLayout,
 } from "./kin-session-wire.ts";
 import { runAppServerSample } from "./kinAppServer.ts";
-import { renderSessionDelta } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
 // What kinAppServer.ts runs a sample with.
 export { EvalToolCallError, settle };
 export type { ApiMessage, Base, Call, Config as RunConfig, Sample, Usage };
@@ -447,21 +450,7 @@ export const McpToolUseCase = Schema.Struct({
         }),
       ),
     ),
-    carry: Schema.optional(
-      Schema.Struct({
-        earlier: Schema.Array(
-          Schema.Struct({
-            prompt: Schema.String,
-            toolCalls: Schema.optional(Schema.Array(PriorToolCall)),
-            reply: Schema.optional(Schema.String),
-          }),
-        ),
-        compactedBefore: Schema.optional(
-          Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
-        ),
-        summary: Schema.optional(Schema.String),
-      }),
-    ),
+    carry: kinCarrySchema(PriorToolCall),
     world: Schema.optional(McpToolUseWorld),
     /**
      * Canned tool results by bare name. `"default"` uses the runner's result. A device `DeviceError`
@@ -1162,30 +1151,11 @@ type Sample = {
   kinFiles?: KinTurnFiles | undefined;
 };
 
-const earlierCalls = (testCase: McpToolUseCase) =>
-  (testCase.setup.carry?.earlier ?? []).flatMap((turn) => turn.toolCalls ?? []);
-
-const checkCarry = ({ id, setup }: McpToolUseCase) => {
-  const carry = setup.carry;
-  if (carry === undefined) return;
-  if (setup.priorTurns !== undefined)
-    throw new Error(`${id}: setup.carry and setup.priorTurns are mutually exclusive.`);
-  const n = carry.compactedBefore;
-  if (n !== undefined && (n > carry.earlier.length || !carry.summary?.trim()))
-    throw new Error(`${id}: compactedBefore must name a turn and have a nonempty summary.`);
-};
 const SHELL_TOOLS = new Set(["Bash", "Read", "Edit", "Write", "WebFetch"]);
 
 export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
   const prior = testCase.setup.priorTurns ?? [];
   const priorCalls = prior.flatMap((turn) => turn.toolCalls ?? []);
-  const mockCalls = new Map<string, number>();
-  const mockHistory = new Map<string, ReadonlyArray<{ input: unknown; output: unknown }>>();
-  for (const { tool, input, result } of earlierCalls(testCase)) {
-    const name = normalizeToolName(tool);
-    mockCalls.set(name, (mockCalls.get(name) ?? 0) + 1);
-    mockHistory.set(name, [...(mockHistory.get(name) ?? []), { input, output: result }]);
-  }
   const repo = testCase.setup.world?.repo ?? "acme/app";
   const urls = [
     ...(testCase.setup.world?.linkedPullRequests ?? []).map(
@@ -1237,8 +1207,7 @@ export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
     priorResults: new Map(),
     responses: [],
     priorErrors: new Set(),
-    mockCalls,
-    mockHistory,
+    ...carryMockState(testCase, normalizeToolName),
   };
 };
 
@@ -1368,35 +1337,9 @@ const loadTools = (tools: Array<ApiTool>, id: string, found: ReadonlyArray<ApiTo
   return { type: "tool_result", tool_use_id: id, content };
 };
 
-const KIN_LAYOUTS = ["legacy", "session"] as const;
-type KinLayout = (typeof KIN_LAYOUTS)[number];
-
-const sessionLayout = (testCase: McpToolUseCase, layout: KinLayout, codex: boolean) =>
-  layout === "session" && !codex && hasKinSessionLayout(testCase);
-
-export const expectationsForLayout = (testCase: McpToolUseCase, arm?: string, layout?: string) => {
-  const expect = arm === "raw" ? (testCase.expectRaw ?? testCase.expect) : testCase.expect;
-  return layout === "session" && testCase.sessionCallsMustNot !== undefined
-    ? { ...expect, callsMustNot: [...(expect.callsMustNot ?? []), ...testCase.sessionCallsMustNot] }
-    : expect;
-};
-
 /** Messages for a case: reminders, context, prior turns with real tool blocks, then the prompt. */
 export const buildMessages = (sample: Sample, layout: KinLayout = "legacy") => {
   const { testCase, base, tools } = sample;
-  checkCarry(testCase);
-  const casePrompt = fillKinRules(testCase.prompt, testCase.setup.world);
-  const split = sessionLayout(testCase, layout, base.codex !== undefined)
-    ? kinSessionSplit(casePrompt)
-    : undefined;
-  const carry = split === undefined ? undefined : testCase.setup.carry;
-  const earlier = (carry?.earlier ?? []).map((turn) => ({
-    ...turn,
-    split: kinSessionSplit(fillKinRules(turn.prompt, testCase.setup.world)),
-  }));
-  const first = carry?.compactedBefore ?? 0;
-  const startsCompact = carry?.compactedBefore !== undefined;
-  const opening = earlier[first]?.split ?? split;
   const messages: Array<ApiMessage> = [];
   const push = (role: ApiMessage["role"], ...blocks: ReadonlyArray<Block>) => {
     const last = messages.at(-1);
@@ -1429,20 +1372,12 @@ export const buildMessages = (sample: Sample, layout: KinLayout = "legacy") => {
     base.gitStatusAt === undefined
       ? base.reminders
       : base.reminders.toSpliced(base.gitStatusAt, 0, reminder(gitStatus(testCase)));
-  const noteBlocks = notes.flatMap((note) => (note ? [reminder(note)] : []));
-  const date = split
-    ? reminders.find(
-        (block) => typeof block.text === "string" && /^Today's date is /.test(block.text),
-      )
-    : undefined;
+  const session = kinSessionReplay(testCase, layout, base.codex !== undefined, reminders);
   push(
     "user",
-    ...reminders.filter((block) => block !== date),
-    ...noteBlocks,
-    // The startup hook did not fire in the SDK probe; use the documented start reminder.
-    ...(!startsCompact && opening?.standing
-      ? [reminder(kinSessionStartText(opening.standing))]
-      : []),
+    ...(session?.reminders ?? reminders),
+    ...notes.flatMap((note) => (note ? [reminder(note)] : [])),
+    ...(session?.startup ? [reminder(session.startup)] : []),
   );
   const toolSearch = findTool(base, "ToolSearch")?.name ?? "ToolSearch";
   let nextId = 0;
@@ -1486,32 +1421,13 @@ export const buildMessages = (sample: Sample, layout: KinLayout = "legacy") => {
     replayCalls(turn.toolCalls);
     if (turn.text) push(turn.role, text(fillKinRules(turn.text)));
   }
-  const submit = (current: NonNullable<typeof split>, index: number) => {
-    const previous = earlier[index - 1]?.split;
-    const { delta } = previous === undefined ? current : renderSessionDelta(current, previous);
-    const openingDay =
-      index === first
-        ? kinOwnerDay({ ...testCase, prompt: earlier[index]?.prompt ?? testCase.prompt })
-        : undefined;
-    const context = [
-      startsCompact && index === first && current.standing
-        ? kinSessionStartText(current.standing)
-        : undefined,
-      delta ? kinPromptSubmitText(delta) : undefined,
-      index !== first ? undefined : openingDay ? `Today's date is ${openingDay}.` : date?.text,
-    ]
-      .filter((part): part is string => typeof part === "string")
-      .join("\n\n");
-    if (context) push("system", text(context));
-  };
-  for (const [index, turn] of earlier.entries()) {
-    if (index < first) continue;
-    push("user", text(turn.split.message));
-    submit(turn.split, index);
+  for (const turn of session?.earlier ?? []) {
+    push("user", text(turn.message));
+    if (turn.context) push("system", text(turn.context));
     replayCalls(turn.toolCalls);
     if (turn.reply) push("assistant", text(turn.reply));
   }
-  const message = split?.message ?? casePrompt;
+  const message = session?.last.message ?? fillKinRules(testCase.prompt, testCase.setup.world);
   const userText =
     testCase.promptContext === undefined
       ? message
@@ -1533,13 +1449,12 @@ export const buildMessages = (sample: Sample, layout: KinLayout = "legacy") => {
         base.codex !== undefined,
       ),
     );
-  if (split) submit(split, earlier.length);
+  if (session?.last.context) push("system", text(session.last.context));
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.
   if (native && base.subagentContext) {
     push("user", reminder(`SubagentStart hook additional context: ${base.subagentContext}`));
   }
-  if (startsCompact && carry?.summary !== undefined)
-    messages.unshift({ role: "user", content: [text(kinCompactionSummary(carry.summary))] });
+  if (session?.summary) messages.unshift({ role: "user", content: [text(session.summary)] });
   return messages;
 };
 
@@ -3003,23 +2918,7 @@ const requestBody = (
       : block,
   ),
   tools,
-  messages: session
-    ? messages.map((message, i) => {
-        if (i === messages.length - 1)
-          return {
-            ...message,
-            content: message.content.map((block, j) =>
-              j === message.content.length - 1
-                ? { ...block, cache_control: KIN_SESSION_CACHE }
-                : block,
-            ),
-          };
-        const only = message.content.length === 1 ? message.content[0] : undefined;
-        return only?.type === "text" && typeof only.text === "string"
-          ? { ...message, content: only.text }
-          : message;
-      })
-    : messages,
+  messages: session ? kinSessionWireMessages(messages) : messages,
 });
 
 const codexRequest = (base: Base, input: ReadonlyArray<Block>) => ({
@@ -3797,8 +3696,7 @@ const main = Effect.gen(function* () {
     );
   const selected = yield* Effect.forEach(armCases, (testCase) =>
     Effect.gen(function* () {
-      checkCarry(testCase);
-      const { carry } = testCase.setup;
+      const carry = yield* loadKinCarry(testCase, loadPriorCalls);
       const setup =
         carry === undefined
           ? {
@@ -3809,17 +3707,7 @@ const main = Effect.gen(function* () {
                 ),
               ),
             }
-          : {
-              ...testCase.setup,
-              carry: {
-                ...carry,
-                earlier: yield* Effect.forEach(carry.earlier, (turn) =>
-                  loadPriorCalls(turn.toolCalls).pipe(
-                    Effect.map((toolCalls) => ({ ...turn, toolCalls })),
-                  ),
-                ),
-              },
-            };
+          : { ...testCase.setup, carry };
       return {
         ...testCase,
         expect: expectationsForLayout(testCase, flags.arm),

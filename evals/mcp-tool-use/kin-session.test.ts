@@ -7,13 +7,8 @@ import * as Schema from "effect/Schema";
 
 import { CARRIED_TURN_NOTE, TURN_DIVIDER } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
 import { fillKinRules, kinLegacyHeaderPlace, kinSessionSplit } from "./kin.ts";
-import {
-  buildBase,
-  buildMessages,
-  expectationsForLayout,
-  makeSample,
-  McpToolUseCase,
-} from "./run.ts";
+import { buildBase, buildMessages, makeSample, McpToolUseCase } from "./run.ts";
+import { expectationsForLayout } from "./kin-session-wire.ts";
 
 const decodeCase = Schema.decodeUnknownSync(Schema.fromJsonString(McpToolUseCase));
 const readCases = (name: string) =>

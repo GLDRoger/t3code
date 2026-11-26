@@ -70,7 +70,7 @@ export const runnerHash = () =>
 /** Runner revisions this file's legacy part list was checked against. */
 const REVIEWED_RUNNERS = {
   beforeSessionLayout: "5c7b6d1c99ee64fd",
-  withSessionLayout: "dcdb646cabe69c50",
+  withSessionLayout: "e543ee03b1c392bf",
 } as const;
 export const REVIEWED_RUNNER = REVIEWED_RUNNERS.withSessionLayout;
 

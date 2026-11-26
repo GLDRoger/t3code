@@ -12,13 +12,8 @@ import * as NodeUtil from "node:util";
 import * as Schema from "effect/Schema";
 
 import { caseState, type Check, sampleState, type State } from "./margin.ts";
-import {
-  expectationsForLayout,
-  gradeSample,
-  McpToolUseCase,
-  pastedText,
-  worldFilePaths,
-} from "./run.ts";
+import { gradeSample, McpToolUseCase, pastedText, worldFilePaths } from "./run.ts";
+import { expectationsForLayout } from "./kin-session-wire.ts";
 import { shownText } from "./kin.ts";
 
 const { values, positionals } = NodeUtil.parseArgs({
