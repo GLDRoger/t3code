@@ -904,7 +904,13 @@ export function KinPlaceView({
     <>
       {docAlone ? null : header}
       {unavailable === null ? null : (
-        <KinUnavailableLinkNote line={named(KIN_UNAVAILABLE_LINK[unavailable.kind])} />
+        <KinUnavailableLinkNote
+          line={named(
+            KIN_UNAVAILABLE_LINK[
+              unavailable.kind === "task" && place !== "tasks" ? "entry" : unavailable.kind
+            ],
+          )}
+        />
       )}
       {state._tag === "refused" ? (
         <KinWorkNotice {...kinSectionNamedWords(shell, kinWorkOnlyOwner(place))} />

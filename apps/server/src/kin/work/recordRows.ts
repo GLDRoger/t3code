@@ -1247,6 +1247,7 @@ const paymentsOf = Effect.fn("KinRecords.paymentsOf")(function* (
         ? {}
         : { creditNote: { key: payment.noteKey, number: payment.noteNumber } }),
       ...(payment.splitCredit === null ? {} : { splitCredit: payment.splitCredit }),
+      ...(payment.originKey.startsWith("receipt:") ? { fromCredit: true as const } : {}),
       ...(receipt === undefined ||
       applied === undefined ||
       (payment.originKey !== applied && !payment.originKey.startsWith(`${applied}:after:`))

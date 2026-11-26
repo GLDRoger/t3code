@@ -1,5 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format a rate's day for React render, outside an Effect runtime.
-import { kinCurrency, kinImpliedRate, kinWhenFormat } from "@t3tools/contracts";
+import { kinCurrency, kinImpliedRate, kinRateShown, kinWhenFormat } from "@t3tools/contracts";
 import type {
   KinRecordDetail,
   KinRecordKey,
@@ -280,9 +280,8 @@ export function kinSettled(
   storedRate?: string,
 ): KinSettledView | null {
   if (invoice.currency === bank.currency || invoice.minor === 0) return null;
-  const rate = (storedRate ?? kinImpliedRate(invoice, bank))
-    .replace(/(\.\d*?)0+$/, "$1")
-    .replace(/\.$/, "");
+  const exact = storedRate ?? kinImpliedRate(invoice, bank);
+  const rate = exact.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
   const impliedRate = { currency: invoice.currency, rate, asOf: bankDay };
   const estimate = rates === null ? null : kinEstimate(invoice, rates);
   const gap =
@@ -291,7 +290,8 @@ export function kinSettled(
       : bank.minor - estimate.money.minor;
   return {
     received: kinMoneyText(bank),
-    implied: kinRateLine(impliedRate, bank.currency),
+    // Said as the invoice's payment row and the card say it: "a rate of 83.50".
+    implied: `a rate of ${kinRateShown(exact)}`,
     difference:
       gap === null || estimate === null
         ? null
