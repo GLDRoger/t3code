@@ -209,24 +209,18 @@ describe("a private entry", () => {
     const meera = KinPersonId.make("p-meera");
     const names = new Map([[rhea, "Rhea Kapoor"]]);
     const rheas = { _tag: "person", personId: rhea } as const;
-    expect(kinEntryPrivateLine(rheas, { people: names, me: rhea })).toBe(
-      "Private.",
-    );
+    expect(kinEntryPrivateLine(rheas, { people: names, me: rhea })).toBe("Private.");
     expect(kinEntryPrivateLine(rheas, { people: names, me: meera })).toBe(
       "Private to Rhea Kapoor.",
     );
     // Nobody's own, or a name not known here: no name, never "you".
     const agent = { _tag: "agent", agentId: KinAgentId.make("lead-finance") } as const;
-    expect(kinEntryPrivateLine(agent, { people: names, me: meera })).toBe(
-      "Private.",
-    );
+    expect(kinEntryPrivateLine(agent, { people: names, me: meera })).toBe("Private.");
     expect(
       kinEntryPrivateLine({ _tag: "person", personId: meera }, { people: names, me: rhea }),
     ).toBe("Private.");
     // Before the host says who is reading: no name, and still never "you".
-    expect(kinEntryPrivateLine(rheas, { people: names, me: null })).toBe(
-      "Private.",
-    );
+    expect(kinEntryPrivateLine(rheas, { people: names, me: null })).toBe("Private.");
   });
 });
 
@@ -345,13 +339,11 @@ describe("a list by its definition", () => {
     const row = kinListRow(record({ fields }), def, context);
     // Like its Client column, its Client filter shows only where an entry has a client.
     const party = { recordId: "rec-acme", key: "C-1", title: "Acme" } as never;
-    expect(
-      [
-        kinListOffersClients([record({})], KIN_LIST_DEFAULT_FILTER),
-        kinListOffersClients([record({}), record({ party })], KIN_LIST_DEFAULT_FILTER),
-        kinListOffersClients([], { ...KIN_LIST_DEFAULT_FILTER, noParty: true }),
-      ],
-    ).toEqual([false, true, true]);
+    expect([
+      kinListOffersClients([record({})], KIN_LIST_DEFAULT_FILTER),
+      kinListOffersClients([record({}), record({ party })], KIN_LIST_DEFAULT_FILTER),
+      kinListOffersClients([], { ...KIN_LIST_DEFAULT_FILTER, noParty: true }),
+    ]).toEqual([false, true, true]);
     expect(kinListColumns(def, [record({})]).map((column) => column.label)).toEqual([
       "Entry",
       "Status",

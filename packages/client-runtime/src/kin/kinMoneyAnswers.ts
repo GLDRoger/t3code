@@ -630,7 +630,10 @@ export interface KinBudgetDraft {
 }
 
 /** The category row's value: "Every category" only beside a project, which makes it a budget. */
-export const kinBudgetCategoryShown = (draft: KinBudgetDraft, label: (category: string) => string) =>
+export const kinBudgetCategoryShown = (
+  draft: KinBudgetDraft,
+  label: (category: string) => string,
+) =>
   draft.category !== null
     ? label(draft.category)
     : draft.project === null

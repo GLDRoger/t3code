@@ -1227,7 +1227,8 @@ export interface KinListRowView {
 export const kinListOffersClients = (
   records: ReadonlyArray<Pick<KinRecord, "party">>,
   filter: Pick<KinListFilter, "party" | "noParty">,
-) => filter.party !== null || filter.noParty || records.some((record) => record.party !== undefined);
+) =>
+  filter.party !== null || filter.noParty || records.some((record) => record.party !== undefined);
 
 export function kinListColumns(
   def: KinListDefinition,

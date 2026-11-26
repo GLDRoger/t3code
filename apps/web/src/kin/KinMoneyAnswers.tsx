@@ -910,9 +910,7 @@ export function KinBudgetDialog(
                   }
                 >
                   <SelectTrigger id={ids.category} className="w-full">
-                    <SelectValue>
-                      {kinBudgetCategoryShown(draft, label)}
-                    </SelectValue>
+                    <SelectValue>{kinBudgetCategoryShown(draft, label)}</SelectValue>
                   </SelectTrigger>
                   <SelectPopup>
                     <SelectItem value={ANY}>{KIN_BUDGETS.anyCategory}</SelectItem>
