@@ -14,6 +14,7 @@ import {
   AuthSettingsWriteScope,
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
+  EnvironmentAuthorizationError,
   KinChatError,
   kinAccessAllows,
   kinRpcAccess,
@@ -231,6 +232,9 @@ it.effect("refuses bad input plainly over the wire, and only after the access ch
   }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 
+type Refused =
+  | Effect.Effect<unknown, EnvironmentAuthorizationError>
+  | Stream.Stream<unknown, EnvironmentAuthorizationError>;
 it.effect("reads no part of a denied request's payload, unary or streamed", () =>
   Effect.gen(function* () {
     const { person } = yield* seed;
@@ -240,21 +244,20 @@ it.effect("reads no part of a denied request's payload, unary or streamed", () =
     const kin = yield* Kin.KinServer;
     const services = Option.getOrThrow(kin.services);
     const identity = Context.get(services, KinIdentity);
-    const handlers: Record<string, (payload: unknown, options: unknown) => unknown> =
-      yield* makeKinHandlers(session).pipe(
-        Effect.provideService(Kin.KinServer, {
-          ...kin,
-          services: Option.some(
-            Context.add(services, KinIdentity, {
-              ...identity,
-              resolve: () =>
-                Effect.succeed([
-                  { _tag: "person", orgId: person.orgId, personId: KinPersonId.make("meera") },
-                ]),
-            }),
-          ),
-        }),
-      );
+    const handlers = (yield* makeKinHandlers(session).pipe(
+      Effect.provideService(Kin.KinServer, {
+        ...kin,
+        services: Option.some(
+          Context.add(services, KinIdentity, {
+            ...identity,
+            resolve: () =>
+              Effect.succeed([
+                { _tag: "person", orgId: person.orgId, personId: KinPersonId.make("meera") },
+              ]),
+          }),
+        ),
+      }),
+    )) as unknown as Record<string, (payload: unknown, options: unknown) => Refused>;
     let reads = 0;
     const spy = new Proxy(
       {},
@@ -276,7 +279,7 @@ it.effect("reads no part of a denied request's payload, unary or streamed", () =
       const result = handlers[tag]!(spy, options);
       const exit = Stream.isStream(result)
         ? (streams++, yield* Effect.exit(Stream.runHead(result)))
-        : yield* Effect.exit(result as Effect.Effect<unknown, unknown>);
+        : yield* Effect.exit(result);
       assert.isTrue(Exit.isFailure(exit), tag);
       assert.strictEqual(reads, 0, `${tag} read its payload before refusing`);
     }
