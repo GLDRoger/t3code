@@ -6341,6 +6341,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         // Sessions Claude Code reported gone on resume; resumeThread fails them into a fresh session.
         const missingNativeThreads = new Set<string>();
         const pdfBudgets = new Map<string, ReturnType<typeof makeClaudeAttachmentBudget>>();
+        const modelLedgers = new Map<string, ClaudeModelLedger>();
         // MCP app notes already in each native session's history, by key. Cleared when it compacts.
         const deliveredAppContext = new Map<string, ReadonlyMap<string, string>>();
         const latestPlanByKind = yield* Ref.make(new Map<string, OrchestrationV2PlanArtifact>());
@@ -13776,6 +13777,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             status: "active",
           });
           const closed = yield* Deferred.make<void, never>();
+          const initialLedger = shouldResume ? modelLedgers.get(nativeThreadId) : new Map();
+          let awaitingResumeLedger = shouldResume && initialLedger === undefined;
           const context: ClaudeLiveQueryContext = {
             queryPolicy,
             nativeThreadId,
@@ -13803,8 +13806,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 (subagent) => subagent.task.status === "running",
               ),
             ),
-            // A resumed SDK result can include earlier turns in its cumulative ledger.
-            modelLedger: shouldResume ? undefined : new Map(),
+            modelLedger: initialLedger,
             taskOutputRoot: claudeTaskOutputRoot(
               adapterOptions.environment,
               path,
@@ -13828,7 +13830,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           yield* querySession.messages.pipe(
             Stream.runForEach((message) =>
               sdkMessageLock.withPermits(1)(
-                Effect.suspend(() => {
+                Effect.gen(function* () {
                   let firstInit = false;
                   if (
                     (message.type === "assistant" || message.type === "user") &&
@@ -13876,12 +13878,37 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   if (message.type === "result") {
                     const ledger = claudeModelLedger(message.modelUsage);
                     const growth = claudeLedgerDelta(context.modelLedger, ledger);
-                    if (growth !== undefined) resultLedgerUsage.set(message, growth);
+                    if (growth !== undefined) {
+                      resultLedgerUsage.set(message, growth);
+                    } else if (awaitingResumeLedger) {
+                      const active = yield* Ref.get(activeTurn);
+                      if (active?.nativeThreadId === context.nativeThreadId) {
+                        const main = normalizeClaudeTurnTokenUsage(
+                          message,
+                          false,
+                          message.is_error ? "failed" : "completed",
+                        );
+                        const other = runningClaudeTurnTokenUsage(active.requests).otherUsage;
+                        if (main.inputTokens !== undefined && main.outputTokens !== undefined) {
+                          resultLedgerUsage.set(message, {
+                            inputTokens: main.inputTokens + (other?.inputTokens ?? 0),
+                            outputTokens: main.outputTokens + (other?.outputTokens ?? 0),
+                          });
+                        }
+                      }
+                      // Keep the estimated segment separate from the anchor for later steers.
+                      awaitingResumeLedger = false;
+                    }
                     // A ledger that went backwards cannot anchor the next turn's growth.
                     context.modelLedger =
                       growth === undefined && context.modelLedger !== undefined
                         ? undefined
                         : ledger;
+                    if (!context.stopping) {
+                      if (context.modelLedger === undefined)
+                        modelLedgers.delete(context.nativeThreadId);
+                      else modelLedgers.set(context.nativeThreadId, context.modelLedger);
+                    }
                     for (const [model, window] of claudeReportedContextWindows(
                       message.modelUsage,
                     )) {
@@ -13893,9 +13920,11 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   const handled = handleSdkMessage({ query: querySession, message });
                   const reportedCwd = turnInput.runtimePolicy.cwd;
                   if (!firstInit || reportedCwd === null || !adapterOptions.onSessionInit) {
-                    return handled;
+                    return yield* handled;
                   }
-                  return adapterOptions.onSessionInit(reportedCwd).pipe(Effect.andThen(handled));
+                  return yield* adapterOptions
+                    .onSessionInit(reportedCwd)
+                    .pipe(Effect.andThen(handled));
                 }),
               ),
             ),
