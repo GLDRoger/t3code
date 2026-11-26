@@ -229,6 +229,58 @@ describe("rows", () => {
     });
   });
 
+  it("keeps the Team-room card with its own reply inside the discussion fold", () => {
+    const discussionId = "TD-1" as NonNullable<KinMessage["discussionId"]>;
+    const discussion = { floorRunId: `team:${discussionId}`, discussionId };
+    const sourceWakeupId = KinWakeupId.make("standup-ask");
+    const person = { ...ownMessage(1), body: "Work out Monday's standup with the team." };
+    const card = agentMessage(2, {
+      floorRunId: "6379903d-38e8-455d-8100-f0b1e845a6f9",
+      sourceWakeupId,
+      body: "",
+      widgetId: KinWidgetId.make("choice"),
+    });
+    const reply = agentMessage(3, {
+      ...discussion,
+      sourceWakeupId,
+      body: "Monday's agenda is written. Pick a time for standup.",
+    });
+    const peer = agentMessage(4, {
+      ...discussion,
+      sourceWakeupId: KinWakeupId.make("finance-answer"),
+      author: { ...reply.author, agentId: KIN_FIXTURE_QA } as KinMessage["author"],
+      body: "The Orbit Dental Care invoice is ready for review.",
+    });
+    const closing = agentMessage(5, {
+      ...discussion,
+      sourceWakeupId: KinWakeupId.make("standup-close"),
+      intent: "decision",
+      body: "Calling it for Monday.",
+    });
+    const order = (messages: ReadonlyArray<KinMessage>, closed = false) =>
+      messageRows(
+        messages,
+        viewer,
+        closed ? new Set([discussion.floorRunId]) : new Set(),
+        new Date(person.createdAt),
+        [],
+        true,
+      ).map((row) => row.key);
+    const rows = [person, card, reply, peer, closing];
+    const fold = `fold:${discussion.floorRunId}`;
+    expect([
+      order(rows, true),
+      order(rows),
+      order([person, card, { ...peer, sourceWakeupId }, reply, closing]),
+      order([person, card, { ...reply, floorRunId: "unrelated" }, peer, closing]),
+    ]).toEqual([
+      [person.messageId, fold],
+      [person.messageId, fold, reply.messageId, card.messageId, peer.messageId, closing.messageId],
+      [person.messageId, card.messageId, fold, peer.messageId, reply.messageId, closing.messageId],
+      [person.messageId, card.messageId, reply.messageId, fold, peer.messageId, closing.messageId],
+    ]);
+  });
+
   it("keeps a deleted agent message inside its run's fold", () => {
     const messages = all
       .slice(19, 26)

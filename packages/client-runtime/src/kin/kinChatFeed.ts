@@ -456,6 +456,19 @@ const authorKey = (message: KinMessage) =>
 
 type FeedEntry = KinMessage | KinHeldDraft;
 
+const FLOOR_RUN_ID = /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i;
+
+// A Team-room ask spends a floor grant; team_say writes into the discussion's synthetic run.
+function teamCardScope(card: KinMessage, reply: KinMessage) {
+  return (
+    card.discussionId === undefined &&
+    card.floorRunId !== null &&
+    FLOOR_RUN_ID.test(card.floorRunId) &&
+    reply.discussionId !== undefined &&
+    reply.floorRunId === `team:${reply.discussionId}`
+  );
+}
+
 function sameCardTurn(card: KinMessage, entry: FeedEntry) {
   if (entry.sourceWakeupId === undefined || entry.sourceWakeupId !== card.sourceWakeupId)
     return false;
@@ -473,8 +486,10 @@ function sameCardTurn(card: KinMessage, entry: FeedEntry) {
     card.author._tag === "agent" &&
     entry.author.agentId === card.author.agentId &&
     entry.author.threadId === card.author.threadId &&
-    entry.floorRunId === card.floorRunId &&
-    entry.discussionId === card.discussionId &&
+    entry.orgId === card.orgId &&
+    entry.chatId === card.chatId &&
+    ((entry.floorRunId === card.floorRunId && entry.discussionId === card.discussionId) ||
+      teamCardScope(card, entry)) &&
     entry.relay === undefined
   );
 }
@@ -487,6 +502,7 @@ function replyBeforeCards(
   const entries: ReadonlyArray<FeedEntry> =
     drafts.length === 0 ? messages : [...messages, ...drafts];
   const ordered: FeedEntry[] = [];
+  const teamCardRuns = new Map<KinMessage, string>();
   let cards: KinMessage[] = [];
   for (const entry of entries) {
     const draft = "draftId" in entry;
@@ -508,10 +524,17 @@ function replyBeforeCards(
       cards = [];
     }
     if (card) cards.push(entry);
-    else ordered.push(entry);
+    else {
+      ordered.push(entry);
+      if (!draft && cards.length > 0 && teamCardScope(cards[0]!, entry)) {
+        for (const held of cards) teamCardRuns.set(held, entry.floorRunId!);
+        ordered.push(...cards);
+        cards = [];
+      }
+    }
   }
   ordered.push(...cards);
-  return ordered;
+  return { ordered, teamCardRuns };
 }
 
 /**
@@ -537,7 +560,8 @@ export function buildKinFeedRows(
         !(message.kind === "widget_action" && kinTapAnswersChoice(message.body)),
     )
     .map((message) => kinMessageOnMyClock(message));
-  const ordered = replyBeforeCards(visible, drafts);
+  const { ordered, teamCardRuns } = replyBeforeCards(visible, drafts);
+  const runOf = (message: KinMessage) => teamCardRuns.get(message) ?? foldRunId(message);
   const rows: KinFeedRow[] = [];
   const foldKeys = new Set<string>();
   let previousAuthor: string | null = null;
@@ -691,7 +715,7 @@ export function buildKinFeedRows(
       index += 1;
       continue;
     }
-    const runId = foldRunId(first);
+    const runId = runOf(first);
     if (runId === null) {
       pushMessage(first);
       index += 1;
@@ -701,7 +725,7 @@ export function buildKinFeedRows(
     let end = index + 1;
     while (end < ordered.length) {
       const entry = ordered[end]!;
-      if ("draftId" in entry || foldRunId(entry) !== runId) break;
+      if ("draftId" in entry || runOf(entry) !== runId) break;
       run.push(entry);
       end += 1;
     }
