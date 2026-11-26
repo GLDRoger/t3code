@@ -178,6 +178,9 @@ export const SHARED_TOOLS = {
   // Only the review someone asked for, on its pull request: `postReview` checks where it posts.
   kin_github_review: askedReview,
   kin_github_diff: askedReview,
+  // A public repo for anyone here; a private one only for the asker GitHub lets see it, in their
+  // own chat with this agent, by the review ask's check (`readRepo`, `maySee`). Reads only.
+  kin_github_read: "allowed",
   // Only from the asker's own direct chat with this agent, checked by the service (`askReview`).
   kin_github_review_ask: "allowed",
   kin_github_link: "refused",

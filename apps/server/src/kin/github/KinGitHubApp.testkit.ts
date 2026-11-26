@@ -1,12 +1,13 @@
 // @effect-diagnostics nodeBuiltinImport:off - an invented RSA key for the App's JWT.
 import * as NodeCrypto from "node:crypto";
 
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
-import { HttpClient, HttpClientResponse, UrlParams } from "effect/http";
+import { FetchHttpClient, HttpClient, HttpClientResponse, UrlParams } from "effect/http";
 
 import type { FakeApp, FakeGitHub } from "./fakeGitHub.ts";
 import { KinGitHubAppKey } from "./appKey.ts";
@@ -38,14 +39,17 @@ export const installApp = (github: FakeGitHub, installations: FakeApp["installat
   };
 };
 
-/** GitHub's REST API over the fake, as the App's HTTP client reaches it. */
+/**
+ * GitHub's REST API over the fake, as the App's HTTP client reaches it: a redirect is followed, as
+ * `fetch` does, unless the request's `RequestInit` says `manual`.
+ */
 export const fakeHttp = (github: FakeGitHub) =>
   Layer.succeed(
     HttpClient.HttpClient,
-    HttpClient.make((request) =>
+    HttpClient.make((request, _url, _signal, fiber) =>
       Effect.sync(() => {
         const query = UrlParams.toString(request.urlParams);
-        const url = new URL(`${request.url}${query === "" ? "" : `?${query}`}`);
+        let url = new URL(`${request.url}${query === "" ? "" : `?${query}`}`);
         const headers = Object.fromEntries(
           Object.entries(request.headers).map(([name, value]) => [name.toLowerCase(), value]),
         );
@@ -53,13 +57,29 @@ export const fakeHttp = (github: FakeGitHub) =>
           request.body._tag === "Uint8Array"
             ? (parse(new TextDecoder().decode(request.body.body)) as Record<string, unknown>)
             : {};
-        const answer = github.handle(request.method, `${url.pathname}${url.search}`, headers, body);
+        const manual =
+          Context.getOrUndefined(fiber.context, FetchHttpClient.RequestInit)?.redirect === "manual";
+        let answer = github.handle(request.method, `${url.pathname}${url.search}`, headers, body);
+        for (
+          let hops = 0;
+          !manual && hops < 5 && answer.status >= 300 && answer.status < 400;
+          hops++
+        ) {
+          const location = answer.headers.location;
+          if (location === undefined) break;
+          url = new URL(location, url);
+          answer = github.handle(request.method, `${url.pathname}${url.search}`, headers, body);
+        }
         return HttpClientResponse.fromWeb(
           request,
-          new Response(answer.body === null ? null : json(answer.body), {
-            status: answer.status,
-            headers: answer.headers,
-          }),
+          new Response(
+            answer.body === null
+              ? null
+              : typeof answer.body === "string"
+                ? answer.body
+                : json(answer.body),
+            { status: answer.status, headers: answer.headers },
+          ),
         );
       }),
     ),

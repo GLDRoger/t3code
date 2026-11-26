@@ -266,6 +266,7 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)kin_cancel$/, "Cancelling it"],
   [/(?:^|__|\.)kin_github_review$/, "Reviewing a pull request"],
   [/(?:^|__|\.)kin_github_diff$/, "Reading a pull request"],
+  [/(?:^|__|\.)kin_github_read$/, "Reading a repository"],
   [/(?:^|__|\.)kin_github_review_ask$/, "Starting a pull request review"],
   [/(?:^|__|\.)kin_github_link$/, "Linking GitHub to Work"],
   [/(?:^|__|\.)kin_github_watch$/, "Checking which repos Kin watches"],
