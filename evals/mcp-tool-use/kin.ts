@@ -139,7 +139,10 @@ import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp
 import { diffGoesOn, postedResult } from "../../apps/server/src/kin/github/GitHubWatch.ts";
 import { DIFF_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
 import { filePage, READ_NEXT, READ_REFUSAL } from "../../apps/server/src/kin/github/repoRead.ts";
-import { OUTSIDE_REFUSAL, REPO_READ_REFUSAL } from "../../apps/server/src/kin/lead/OutsideContent.ts";
+import {
+  OUTSIDE_REFUSAL,
+  REPO_READ_REFUSAL,
+} from "../../apps/server/src/kin/lead/OutsideContent.ts";
 import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
 import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
 import { KinSalesToolkit } from "../../apps/server/src/kin/sales/mcp.ts";
