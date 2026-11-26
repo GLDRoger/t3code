@@ -22,8 +22,9 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "gendocs/facts.ts": 2,
   // A receipt's payment; the receipts list a screen shows, void ones marked.
   "gendocs/receipts.ts": 2,
-  // A receipt already made for this advance: one entry's own amount matched, nothing summed.
-  "gendocs/receiptProposals.ts": 1,
+  // A receipt already made for this advance, and the same payment already on one invoice: one
+  // entry's own amounts matched, nothing summed.
+  "gendocs/receiptProposals.ts": 2,
   // The columns every read selects, with an entry's own paid and withheld; one entry's payments.
   "work/recordRows.ts": 3,
   // Money's suggestions: the entries its figures leave out, listed one by one, nothing summed.
@@ -36,8 +37,6 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "pulse/senses/projects.ts": 1,
   // Download everything: each entry's own amount and payments, copied out as they are, never summed.
   "work/exportBundle.ts": 2,
-  // One settlement's parts, read to check a retry.
-  "work/leadMoney.ts": 1,
   // Duplicate and paired-entry candidates, including the two sign filters for undated refunds.
   "work/leadWork.ts": 4,
   // The expenses one bill may already be, by its own amount; the expenses a batch's bills became,
