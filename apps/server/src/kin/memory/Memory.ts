@@ -52,6 +52,7 @@ import {
   parseFrontMatter,
 } from "./frontMatter.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import type { WriteEpisode } from "./writeFailure.ts";
 
 export class MemoryError extends Schema.TaggedError<MemoryError>()("MemoryError", {
   orgId: Schema.String,
@@ -180,6 +181,7 @@ export class MemoryRecoveryHooks extends Context.Service<
       /** The agent whose turn a restart cut, so the owner's line names it. */
       restartOf?: KinAgentId;
     }) => Effect.Effect<void>;
+    readonly writeEpisode?: WriteEpisode;
   }
 >()("t3/kin/memory/Memory/MemoryRecoveryHooks") {}
 
