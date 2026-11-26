@@ -101,7 +101,7 @@ export const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSamp
     shellUsage: spent.shellUsage,
   };
   sample.kinFiles = yield* kinTurnFiles(testCase);
-  const messages = buildMessages(sample).map((message) => ({
+  const messages = buildMessages(sample, "legacy", true).map((message) => ({
     ...message,
     // Claude Code's reminders (its ToolSearch list) are its harness, not the case.
     content: message.content.filter((block) => !base.reminders.includes(block)),

@@ -838,12 +838,10 @@ it.effect("keeps app-server text after a trigger skip in the transcript only", (
           };
         },
       };
-      // The app-server harness runs only Codex, whose base has none of Claude's request shape.
-      const { kinClaude: _claude, ...codexShaped } = skipBase();
       const run = yield* runSample(
         replyCase(person ? personQuote : pulseQuote),
         { ...skipConfig, appServer },
-        codexShaped,
+        skipBase(),
         { usage: { ...usage }, shellUsage: { ...usage } },
       );
       assert.include(run.text, raw);

@@ -1350,7 +1350,8 @@ const loadTools = (tools: Array<ApiTool>, id: string, found: ReadonlyArray<ApiTo
 };
 
 /** Messages for a case: reminders, context, prior turns with real tool blocks, then the prompt. */
-export const buildMessages = (sample: Sample, layout: KinLayout = "legacy") => {
+/** `appServer`: Codex sends its own environment, so the request leaves out Claude Code's. */
+export const buildMessages = (sample: Sample, layout: KinLayout = "legacy", appServer = false) => {
   const { testCase, base, tools } = sample;
   const messages: Array<ApiMessage> = [];
   const push = (role: ApiMessage["role"], ...blocks: ReadonlyArray<Block>) => {
@@ -1435,7 +1436,7 @@ export const buildMessages = (sample: Sample, layout: KinLayout = "legacy") => {
   let firstWake = true;
   const pushPrompt = (prompt: string, files?: KinTurnFiles, context?: string) => {
     push("user", ...kinTurnBlocks(files, prompt, base.codex !== undefined));
-    if (firstWake && base.kinClaude) {
+    if (firstWake && base.kinClaude && !appServer) {
       const { cwd, platform, date } = base.environment;
       const environment = [
         `# Environment\nYou have been invoked in the following environment: \n - Primary working directory: ${cwd}\n - Platform: ${platform}`,
