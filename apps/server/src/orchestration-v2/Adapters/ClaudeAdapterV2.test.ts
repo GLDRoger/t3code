@@ -3943,6 +3943,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly modelCatalog?: Effect.Effect<ClaudeModelCatalog>;
     readonly freshQueueOnReopen?: boolean;
     readonly allowRefresh?: boolean;
+    readonly refreshWithoutResult?: boolean;
     readonly forkSession?: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape["forkSession"];
     readonly allocateSessionId?: Effect.Effect<string>;
     readonly offer?: (message: SDKUserMessage) => Effect.Effect<void>;
@@ -4057,7 +4058,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 yield* changes.notify;
                 return {
                   allowsRefresh: options?.allowRefresh ?? true,
-                  messages,
+                  messages: input.refresh && options.refreshWithoutResult ? Stream.empty : messages,
                   offer: (message: SDKUserMessage) =>
                     Effect.sync(() => {
                       offeredMessages.push(message);
@@ -12153,6 +12154,8 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         outputTokens: 1,
       });
       assert.lengthOf(harness.terminalEvents(), 1);
+      yield* harness.runtime.startTurn(input);
+      assert.lengthOf(harness.offeredMessages, 3);
     }).pipe(
       Effect.provide(
         Layer.mergeAll(
@@ -12163,6 +12166,70 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         ),
       ),
     ),
+  );
+
+  it.effect.each(["preempted", "no-result"] as const)(
+    "refreshNativeThread releases its launch permit when %s",
+    (scenario) =>
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({
+          freshQueueOnReopen: true,
+          refreshWithoutResult: scenario === "no-result",
+        });
+        const now = yield* DateTime.now;
+        const turn = (name: string) =>
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make(name),
+            text: "Continue.",
+            attachments: [],
+          });
+        const input = turn("before-refresh-cancellation");
+        yield* harness.runtime.startTurn(input);
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({ uuid: "done-before-refresh-cancellation", result: "Done." }),
+        );
+        assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+        const refresh = harness.runtime.refreshNativeThread;
+        assert.isFunction(refresh);
+        const refreshing = yield* refresh(input).pipe(Effect.exit, Effect.forkScoped);
+        yield* harness.until(() => harness.offeredMessages.length === 2);
+        const query = harness.processQueues[1]!;
+        const next = harness.runtime.startTurn(turn("after-refresh-cancellation"));
+        if (scenario === "preempted") {
+          const starting = yield* next.pipe(Effect.forkScoped({ startImmediately: true }));
+          yield* TestClock.adjust(0);
+          assert.equal(
+            query.state._tag,
+            "Done",
+            "a real turn must close the pending refresh without a result",
+          );
+          yield* Fiber.join(starting);
+        }
+        const result = yield* Fiber.join(refreshing);
+        assert.isTrue(Exit.isFailure(result));
+        if (Exit.isFailure(result)) {
+          const failure = Cause.squash(result.cause);
+          assert.include(failure, {
+            _tag: "ProviderAdapterProtocolError",
+            ...(scenario === "preempted" ? { reason: "previous_turn_active" } : {}),
+          });
+        }
+        if (scenario === "no-result") yield* next;
+        assert.lengthOf(harness.offeredMessages, 3);
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            NodeCrypto.layer,
+            IdAllocator.layer,
+            McpProviderSessions.layer,
+          ),
+        ),
+      ),
   );
 
   it.effect("refreshNativeThread rejects a previous launch that allowed settings-file hooks", () =>
@@ -14941,6 +15008,37 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     yield* Queue.offer(harness.sdkMessages, result);
     yield* harness.awaitTerminal(1);
   });
+
+  it.effect("refreshNativeThread refuses while a scheduled wakeup is pending", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarnessWithOptions({ freshQueueOnReopen: true });
+      yield* startScheduleWakeupTurn(harness);
+      const refresh = harness.runtime.refreshNativeThread;
+      assert.isFunction(refresh);
+      const pending = yield* refresh({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+      }).pipe(Effect.exit, Effect.forkScoped);
+      yield* Effect.raceFirst(
+        Fiber.await(pending),
+        harness.until(() => harness.processQueues.length > 1),
+      );
+      assert.lengthOf(harness.processQueues, 1, "a scheduled wakeup keeps the live process busy");
+      const result = yield* Fiber.join(pending);
+      assert.isTrue(Exit.isFailure(result));
+      if (Exit.isFailure(result))
+        assert.include(Cause.squash(result.cause), { reason: "previous_turn_active" });
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+        ),
+      ),
+    ),
+  );
 
   const publishedRoster = (harness: Effect.Success<typeof makeWakeHarness>) =>
     providerThreadRosterEvents(harness.events).at(-1)?.providerThread.pendingBackgroundTasks ?? [];

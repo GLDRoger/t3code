@@ -6298,6 +6298,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
         const events = yield* Queue.unbounded<ProviderAdapter.ProviderAdapterV2Event>();
         const activeTurn = yield* Ref.make<ActiveClaudeTurnContext | null>(null);
         const launchPermit = yield* Semaphore.make(1);
+        let launchingTurns = 0;
+        let cancelRefresh: Deferred.Deferred<void> | undefined;
         let lastLaunch:
           | {
               readonly threadId: ThreadId;
@@ -13415,6 +13417,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           return false;
         });
 
+        const liveProcessKeepsWork = Effect.fnUntraced(function* (live: ClaudeLiveQueryContext) {
+          const { nativeThreadId } = live;
+          return (
+            (yield* liveProcessRunsBackgroundWork(live)) ||
+            scheduledWakeupsByNativeThread.has(nativeThreadId) ||
+            (yield* holdsBufferedWake(
+              nativeThreadId,
+              (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages ?? [],
+            ))
+          );
+        });
+
         const claudeProjectsDir = Effect.gen(function* () {
           const configuredDir = adapterOptions.environment.CLAUDE_CONFIG_DIR?.trim() ?? "";
           return path.join(
@@ -13559,13 +13573,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             resumeSessionAt === undefined
           ) {
             // Decided before the transcript read: with no pending wakeup then, none can fire during it.
-            const keepsWork =
-              (yield* liveProcessRunsBackgroundWork(existing)) ||
-              scheduledWakeupsByNativeThread.has(nativeThreadId) ||
-              (yield* holdsBufferedWake(
-                nativeThreadId,
-                (yield* Ref.get(wakeBuffers)).get(nativeThreadId)?.messages ?? [],
-              ));
+            const keepsWork = yield* liveProcessKeepsWork(existing);
             if (yield* liveProcessMissedTranscriptMessages(existing)) {
               if (keepsWork) {
                 yield* Effect.logWarning(
@@ -14463,8 +14471,18 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             }
           },
           (effect, turnInput) =>
-            effect.pipe(
-              launchPermit.withPermits(1),
+            Effect.uninterruptibleMask((restore) =>
+              Effect.gen(function* () {
+                launchingTurns++;
+                try {
+                  if (cancelRefresh !== undefined)
+                    yield* Deferred.succeed(cancelRefresh, undefined);
+                  return yield* restore(launchPermit.withPermit(effect));
+                } finally {
+                  launchingTurns--;
+                }
+              }),
+            ).pipe(
               Effect.scoped,
               Effect.mapError(
                 (cause) =>
@@ -14496,10 +14514,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             if ((yield* Ref.get(activeTurn)) !== null) return yield* refreshBusy();
             const nativeThreadId = yield* getNativeThreadId(providerThread);
             const live = yield* Ref.get(queryContext);
-            if (
-              live?.nativeThreadId === nativeThreadId &&
-              (yield* liveProcessRunsBackgroundWork(live))
-            ) {
+            if (live?.nativeThreadId === nativeThreadId && (yield* liveProcessKeepsWork(live))) {
               return yield* refreshBusy();
             }
             if (lastLaunch?.threadId !== threadId || lastLaunch.nativeThreadId !== nativeThreadId) {
@@ -14530,10 +14545,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
               },
             });
-            return yield* Effect.acquireUseRelease(
+            const acquire =
               adapterOptions.installationGate === undefined
                 ? open
-                : adapterOptions.installationGate.execute(adapterOptions.instanceId, open),
+                : adapterOptions.installationGate.execute(adapterOptions.instanceId, open);
+            return yield* Effect.acquireUseRelease(
+              Effect.interruptible(acquire),
               (query) =>
                 Effect.gen(function* () {
                   yield* query.offer(makeClaudeUserMessage({ text: "warmup" }));
@@ -14557,12 +14574,25 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
             );
           },
           (effect) =>
-            effect.pipe(
-              launchPermit.withPermitsIfAvailable(1),
-              Effect.flatMap((result) =>
-                Effect.fromOption(result).pipe(Effect.mapError(refreshBusy)),
-              ),
-            ),
+            Effect.gen(function* () {
+              const cancel = yield* Deferred.make<void>();
+              const refresh = Effect.suspend(() => {
+                if (launchingTurns > 0) return Effect.fail(refreshBusy());
+                cancelRefresh = cancel;
+                return Effect.raceFirst(
+                  effect,
+                  Deferred.await(cancel).pipe(Effect.andThen(Effect.fail(refreshBusy()))),
+                ).pipe(
+                  Effect.ensuring(
+                    Effect.sync(() => {
+                      cancelRefresh = undefined;
+                    }),
+                  ),
+                );
+              });
+              const result = yield* launchPermit.withPermitsIfAvailable(1)(refresh);
+              return yield* Effect.fromOption(result).pipe(Effect.mapError(refreshBusy));
+            }),
         );
 
         const interruptTurn = Effect.fn("ClaudeAdapterV2.interruptTurn")(
