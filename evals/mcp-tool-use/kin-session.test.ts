@@ -55,7 +55,7 @@ it("places every legacy wake-up block exactly once, splitting the server's tagge
 });
 
 const legacyRequestPin = "b516e1b16e7ff6661ed343745a1c28a0b7a5d7701fd0fe7aa8ec0e2f7cf8c317";
-const sessionRequestPin = "754932d95172cbd4bba7c8fbcb625f2462ad12799602f79c01af3c6f21423cf7";
+const sessionRequestPin = "900bccc9a604d8d6728e46ee099cafb6c45e1e25a1f19d005baba11b987c0a7a";
 const pinnedIds = [
   "kin-lead-rereads-github-hint",
   "kin-lead-uses-display-name",
