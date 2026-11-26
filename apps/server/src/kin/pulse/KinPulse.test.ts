@@ -3956,12 +3956,12 @@ describe("list sections", () => {
           {
             key: late,
             actor: { _tag: "person", personId: mate },
-            consequence: "Was due 2026-11-02, 2 days ago.",
+            consequence: "Booked for: 2026-11-02, passed 2 days ago.",
           },
           {
             key: soon,
             actor: { _tag: "agent", agentId: chief },
-            consequence: "Due 2026-11-04, in 11 hours.",
+            consequence: "Booked for: 2026-11-04, in 11 hours.",
           },
         ]);
         // The holder sees it on their own screen too.
@@ -3981,7 +3981,7 @@ describe("list sections", () => {
         assert.deepStrictEqual(yield* mateNotices, [
           [
             "2 things need you:",
-            "• BK-1 Invented BK-1, was due 2026-11-02, 2 days ago",
+            "• BK-1 Invented BK-1, booked for: 2026-11-02, passed 2 days ago",
             "• W-8 Invented W-8, was due yesterday",
           ].join("\n"),
         ]);
@@ -4017,7 +4017,7 @@ describe("list sections", () => {
           (yield* mateNotices).at(-1),
           [
             "2 things need you:",
-            "• BK-1 Invented BK-1, was due 2026-11-02, 4 days ago. Still open since 2026-11-02.",
+            "• BK-1 Invented BK-1, booked for: 2026-11-02, passed 4 days ago. Still open since 2026-11-02.",
             "• W-8 Invented W-8, was due 3 days ago. Still open since 2026-11-03.",
           ].join("\n"),
         );
