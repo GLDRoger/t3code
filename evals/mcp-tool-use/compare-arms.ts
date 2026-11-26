@@ -146,8 +146,10 @@ const add = (stats: Stats, row: Row) => {
 
 const byCase = new Map<string, Map<string, Stats>>();
 const totals = new Map<string, Stats>();
+const combinedLayouts = rows.some((row) => row.kinLayout === "session");
 for (const row of rows) {
-  const arm = row.arm ?? "tools";
+  const toolArm = row.arm ?? "tools";
+  const arm = combinedLayouts ? `${toolArm}/${row.kinLayout ?? "legacy"}` : toolArm;
   const perArm = byCase.get(row.id) ?? new Map<string, Stats>();
   byCase.set(row.id, perArm);
   const stats = perArm.get(arm) ?? empty();

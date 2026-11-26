@@ -15,11 +15,12 @@ import {
   McpToolUseCase,
 } from "./run.ts";
 
+const decodeCase = Schema.decodeUnknownSync(Schema.fromJsonString(McpToolUseCase));
 const readCases = (name: string) =>
   NodeFS.readFileSync(new URL(`./cases/${name}`, import.meta.url), "utf8")
     .trim()
     .split("\n")
-    .map(Schema.decodeUnknownSync(Schema.fromJsonString(McpToolUseCase)));
+    .map((line) => decodeCase(line));
 
 const headerLines = (block: string) => {
   const lines = block.split("\n");

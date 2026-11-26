@@ -3822,17 +3822,19 @@ const main = Effect.gen(function* () {
             };
       return {
         ...testCase,
-        expect: expectationsForLayout(
-          testCase,
-          flags.arm,
-          sessionLayout(testCase, flags["kin-layout"], codex) ? "session" : "legacy",
-        ),
+        expect: expectationsForLayout(testCase, flags.arm),
         setup,
       };
     }),
   );
+  const activeLayout = (testCase: McpToolUseCase): KinLayout =>
+    sessionLayout(testCase, flags["kin-layout"], codex) ? "session" : "legacy";
+  const forGrading = (testCase: McpToolUseCase) => ({
+    ...testCase,
+    expect: expectationsForLayout(testCase, flags.arm, activeLayout(testCase)),
+  });
   if (flags["kin-layout"] === "session") {
-    const fallbacks = selected.filter((testCase) => !sessionLayout(testCase, "session", codex));
+    const fallbacks = selected.filter((testCase) => activeLayout(testCase) === "legacy");
     process.stderr.write(`${fallbacks.length} cases have no session layout\n`);
   }
   // Trimmed captures without user data ship beside the cases. `--template` also takes a raw
@@ -3978,13 +3980,7 @@ const main = Effect.gen(function* () {
     const messages = buildMessages(sample, flags["kin-layout"]);
     const body = sample.base.codex
       ? codexRequest(sample.base, codexMessages(messages))
-      : requestBody(
-          sample,
-          effort,
-          messages,
-          false,
-          sessionLayout(testCase, flags["kin-layout"], codex),
-        );
+      : requestBody(sample, effort, messages, false, activeLayout(testCase) === "session");
     return { sample, messages, encoded: yield* encodeJson(body) };
   });
   if (flags["dry-run"] || flags.estimate) {
@@ -4002,7 +3998,7 @@ const main = Effect.gen(function* () {
       );
       // Codex lists its tools differently; only Claude requests are checked for tool names.
       const found = [
-        ...(sample.base.codex ? [] : caseProblems(testCase, tools)),
+        ...(sample.base.codex ? [] : caseProblems(forGrading(testCase), tools)),
         ...unfilled,
         ...kinCaseProblems(testCase, tools),
       ];
@@ -4138,7 +4134,8 @@ const main = Effect.gen(function* () {
       );
   }
   const inFlight = yield* Semaphore.make(flags.concurrency);
-  const runOne = (testCase: McpToolUseCase) => {
+  const runOne = Effect.fn("evaluateMcpToolUse.runOne")((original: McpToolUseCase) => {
+    const testCase = forGrading(original);
     const { id, kind, pattern } = testCase;
     const identity = {
       id,
@@ -4146,9 +4143,7 @@ const main = Effect.gen(function* () {
       pattern,
       role: testCase.setup.role,
       arm: flags.arm,
-      ...(sessionLayout(testCase, flags["kin-layout"], codex)
-        ? { kinLayout: "session" as const }
-        : {}),
+      ...(activeLayout(testCase) === "session" ? { kinLayout: "session" as const } : {}),
       shellModel: config.shellModel,
     };
     const usage = { usage: emptyUsage(), shellUsage: emptyUsage() };
@@ -4208,7 +4203,7 @@ const main = Effect.gen(function* () {
         Effect.log(`${row.id}: ${"error" in row ? "ERROR" : STATE_LABEL[rowState(row)]}`),
       ),
     );
-  };
+  });
   // Without --samples or --top-up, a case whose 2 samples disagree gets a 3rd to settle it.
   const runCase = Effect.fn("evaluateMcpToolUse.runCase")(function* (testCase: McpToolUseCase) {
     const runMany = (count: number) =>
