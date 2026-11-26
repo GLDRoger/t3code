@@ -3911,10 +3911,8 @@ const main = Effect.gen(function* () {
         (placeholder) => `placeholder left unfilled: ${placeholder}`,
       );
       // Codex lists its tools differently; only Claude requests are checked for tool names.
-      // These eval mocks land before the server tools. Accept their names in checks only.
-      const gradingTools = testCase.setup.world?.kinLead
-        ? new Set([...tools, "kin_send", "kin_skip"])
-        : tools;
+      // The explicit send mock precedes its server tool.
+      const gradingTools = testCase.setup.world?.kinLead ? new Set([...tools, "kin_send"]) : tools;
       const found = [
         ...(sample.base.codex ? [] : caseProblems(forGrading(testCase), gradingTools)),
         ...unfilled,

@@ -68,7 +68,7 @@ export const runnerHash = () =>
   );
 
 /** The runner this file's part list was checked against. */
-export const REVIEWED_RUNNER = "d94bfc3cb43f3858";
+export const REVIEWED_RUNNER = "1558768aee834b53";
 
 export const CaseSurface = Schema.Struct({
   /** The case as run.json hashes it, and its first request as run.json hashes it. */
@@ -149,6 +149,7 @@ const previewUnavailable = new Contracts.PreviewAutomationUnavailableError({
 }).message;
 const decodePreviewError = Schema.decodeUnknownOption(Contracts.PreviewAutomationError);
 const CLASSIFY_SOURCE = sources(["apps/server/src/kin/reply/classify.ts"]);
+const BUBBLES_SOURCE = sources(["packages/contracts/src/kinPage.ts"]);
 const TURN_VOICE_SOURCE = sources(["apps/server/src/kin/reply/turnVoice.ts"]);
 const CALL_ARGUMENTS_SOURCE = sources(["apps/server/src/kin/connections/callArguments.ts"]);
 const QUOTED_MESSAGE = /BEGIN QUOTE: (?:owner|co-owner|member human|guest human) message/;
@@ -183,6 +184,7 @@ export const laterParts = (testCase: McpToolUseCase, tools: ReadonlySet<string>)
   const kinMocks = filledKinMocks(setup);
   if (kinMocks.length > 0) later.kinMocks = hashJson(kinMocks);
   if (setup.world?.kinLead === true) {
+    later["contracts/kinPage.ts"] = BUBBLES_SOURCE;
     later["kin/reply/turnVoice.ts"] = TURN_VOICE_SOURCE;
     later.kinTriggerSendOnly = hashJson(Contracts.DEFAULT_SERVER_SETTINGS.kinTriggerSendOnly);
     if (QUOTED_MESSAGE.test(testCase.prompt)) {

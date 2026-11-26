@@ -24,6 +24,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import { McpSchema, McpServer } from "effect/ai";
@@ -39,6 +40,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
+import * as ReplyBridge from "../reply/KinReplyBridge.ts";
 import { agentServices } from "../mcp/KinChatToolkit.ts";
 import { handlers as pulseHandlers, KinPulseToolkit } from "../pulse/mcp.ts";
 import { handlers as workHandlers } from "../work/mcp/handlers.ts";
@@ -99,6 +101,7 @@ const kinServices = Layer.unwrap(
     const services = Option.getOrThrow((yield* Kin.KinServer).services);
     return Layer.mergeAll(
       Handoff.layer,
+      ReplyBridge.layer,
       Team.layer,
       Layer.mock(LeadMemory)({
         defer: (_scope, input) =>
@@ -124,9 +127,10 @@ const layer = Layer.mergeAll(
   KinToolGate.layer,
 ).pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
-  Layer.provide(kinServices),
+  Layer.provideMerge(kinServices),
   Layer.provideMerge(
     Layer.mock(ThreadManagement.ThreadManagementService)({
+      streamDomainEvents: Stream.empty,
       getThreadShell: (id) => Effect.succeed({ ...liveThreadShell(id), providerInstanceId }),
     }),
   ),
@@ -161,6 +165,61 @@ const call = Effect.fn("test.call")(function* (name: string, args: Record<string
   const text = result.content.find((item) => item.type === "text")?.text ?? "{}";
   return { ok: result.isError !== true, value: JSON.parse(text) as Record<string, unknown> };
 });
+
+it.effect("kin_skip bounds its note and only successful results close the turn", () =>
+  Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    const identity = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinIdentity);
+    const callSkip = (note: string) =>
+      server
+        .callTool({ name: "kin_skip", arguments: { note } })
+        .pipe(
+          Effect.provideService(McpInvocationContext, scope),
+          Effect.provideService(KinIdentity, identity),
+          Effect.provideService(McpSchema.McpServerClient, client),
+        );
+    const sessionId = AuthSessionId.make("owner");
+    yield* pairSession(sessionId);
+    const [owner] = yield* identity.resolve({
+      sessionId,
+      subject: "browser",
+      method: "browser-session-cookie",
+      scopes: AuthStandardClientScopes,
+    });
+    const sql = yield* SqlClient.SqlClient;
+    const orgId = owner!.orgId;
+    yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+      VALUES (${chief}, ${owner!.orgId}, 'Ada', 'lead', ${owner!.personId}, ${at})`;
+    yield* identity.registerAgentThread({
+      orgId: owner!.orgId,
+      agentId: chief,
+      threadId,
+    });
+    const chats = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinChatService);
+    const chat = yield* chats.createDirect(owner!, { orgId, agentId: chief });
+    yield* sql`INSERT INTO kin_leads (
+      agent_id, org_id, name, level_since, thread_id, models_json, worker_projects_json, owner_chat_id
+    ) VALUES (${chief}, ${orgId}, 'Ada', 0, ${threadId}, '{}', '[]', ${chat.chatId})`;
+    const wakeupId = KinWakeupId.make(yield* startAgentWakeup({ orgId, agentId: chief, threadId }));
+    const invalid = yield* Effect.flip(callSkip("a".repeat(281)));
+    assert.match(JSON.stringify(invalid), /note/);
+    const refused = yield* callSkip("a".repeat(280));
+    assert.isTrue(refused.isError);
+    assert.notProperty(refused._meta ?? {}, "claude/endTurn");
+    assert.include(
+      JSON.stringify(refused.content),
+      "Nothing was ended: this turn is no longer running.",
+    );
+    const bridge = yield* ReplyBridge.KinReplyBridge;
+    yield* bridge.begin({ orgId, agentId: chief, wakeupId, threadId, startedAt: 0 });
+    const skipped = yield* callSkip("a".repeat(280));
+    assert.isFalse(skipped.isError);
+    assert.deepStrictEqual(skipped._meta, { "claude/endTurn": true });
+    assert.deepStrictEqual(skipped.content, [
+      { type: "text", text: "Nothing sent; this turn is over." },
+    ]);
+  }).pipe(Effect.provide(layer)),
+);
 
 const rowsIn = (sql: SqlClient.SqlClient, orgId: KinOrgId, chatId: KinChatId) =>
   sql<{ author: string; body: string }>`SELECT author_kind AS author, body FROM kin_messages

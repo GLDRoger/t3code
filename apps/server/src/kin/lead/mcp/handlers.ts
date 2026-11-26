@@ -21,6 +21,7 @@ import { readRepo } from "../../github/repoRead.ts";
 import { askReview, postReview, readReviewDiff } from "../../github/reviewAsk.ts";
 import { SHARED_REFUSAL } from "../Audience.ts";
 import { toolAdmitted } from "../SharedTools.ts";
+import { KinReplyBridge, KinReplySkipError } from "../../reply/KinReplyBridge.ts";
 import { laneFor } from "../../reply/replyLane.ts";
 import { KinChatService } from "../../chat/KinChatService.ts";
 import { KinServer } from "../../KinServer.ts";
@@ -392,6 +393,22 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
             next: shownLine("page", false),
           };
     }, Effect.mapError(failure)),
+  ),
+  kin_skip: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.skip")(
+      function* (input) {
+        const notRunning = new KinReplySkipError({ reason: "not running" });
+        const bridge = yield* Effect.serviceOption(KinReplyBridge);
+        if (Option.isNone(bridge)) return yield* notRunning;
+        const { orgId, wakeupId } = yield* resolveLead(yield* McpInvocationContext).pipe(
+          Effect.mapError(() => notRunning),
+        );
+        return yield* bridge.value.skip({ ...input, orgId, wakeupId: KinWakeupId.make(wakeupId) });
+      },
+      Effect.mapError(
+        (error) => new KinChatError({ reason: "invalid_state", message: error.message }),
+      ),
+    ),
   ),
   kin_react: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.react")(function* (input) {

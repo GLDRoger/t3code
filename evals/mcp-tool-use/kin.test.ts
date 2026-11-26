@@ -290,6 +290,7 @@ it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with
   // Only Kin's core loads up front; T3's tools wait to be searched for.
   const upFront = base(true).nativeTools.map((tool) => tool.name);
   assert.include(upFront, "mcp__t3-code__record_create");
+  assert.include(upFront, "mcp__t3-code__kin_skip");
   assert.notInclude(upFront, "mcp__t3-code__delegate_task");
   assert.isFalse(before.some((name) => name.endsWith("Bash")));
   for (const name of ["mcp__t3-code__delegate_task", "mcp__t3-code__task_status"])

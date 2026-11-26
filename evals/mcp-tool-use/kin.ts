@@ -108,6 +108,7 @@ import { parseAmount } from "../../apps/server/src/kin/work/money.ts";
 import { goalLine } from "../../apps/server/src/kin/work/goals.ts";
 import {
   DEFAULT_SERVER_SETTINGS,
+  kinReplyBubbles,
   formatKinPicturesDay,
   KIN_TEXT_LOCALE,
   KinDocCardDraft,
@@ -227,13 +228,15 @@ import { offeringsWithAnswer } from "../../apps/server/src/kin/work/offerings.ts
 import { characterForTurn, colleagueLine } from "../../apps/server/src/kin/lead/characters.ts";
 import {
   CAPTION_PROMPT,
-  NOTE_MAX_CHARS,
+  classifySegment,
+  replyNextForTool,
   repeats,
   RESCUE_PROMPT,
 } from "../../apps/server/src/kin/reply/classify.ts";
-import * as replyClassification from "../../apps/server/src/kin/reply/classify.ts";
 import {
   followUpFor,
+  replyNudgePrompt,
+  sendRescuePrompt,
   isPersonTag,
   startedBy,
   TRIGGER_TAGS,
@@ -613,7 +616,11 @@ export const unredact = (value: unknown): unknown =>
         ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, unredact(item)]))
         : value;
 
-const replyText = (responses: ReadonlyArray<ReadonlyArray<unknown>>, includeNotes = false) => {
+const replyText = (
+  responses: ReadonlyArray<ReadonlyArray<unknown>>,
+  includeNotes = false,
+  person = false,
+) => {
   const blocks = responses.flat().filter((block) => isText(block) || isToolUse(block));
   const said: Array<string> = [];
   let reply = "";
@@ -621,11 +628,13 @@ const replyText = (responses: ReadonlyArray<ReadonlyArray<unknown>>, includeNote
     if (!isText(block) || (reply !== "" && repeats(block.text, reply))) return;
     const text = block.text.trim();
     if (text === "") return;
-    // The base branch's classifier still reads the marker. Match the future structural rule here.
+    const next = blocks[index + 1];
     const post =
-      !isToolUse(blocks[index + 1]) ||
-      text.length > NOTE_MAX_CHARS ||
-      /\n[ \t]*\n|^[ \t]*(?:[-*+]|\d+[.)])[ \t]|```/m.test(text);
+      classifySegment(
+        text,
+        isToolUse(next) ? replyNextForTool(next.name) : next === undefined ? "end" : "text",
+        person,
+      ) === "post";
     if (post || includeNotes) said.push(includeNotes ? block.text : text);
     if (post) reply = reply === "" ? text : `${reply}\n\n${text}`;
   });
@@ -704,11 +713,8 @@ export const deliveredText = (
     return ending.input.text.trim();
   if (replyVoice(sample, sendOnly) === "send") return "";
   if (ending?.tool === "kin_skip" && startedBy(caseTags(sample.testCase)) === "trigger") return "";
-  return replyText(sample.responses);
+  return replyText(sample.responses, false, startedBy(caseTags(sample.testCase)) === "person");
 };
-
-// Replace with the contracts splitter when B1 lands.
-const unsplitReplyBubbles = (text: string) => [text];
 
 export const kinDelivery = (sample: ReplySample, sendOnly?: boolean) => {
   if (sample.testCase.setup.world?.kinLead !== true) return {};
@@ -722,7 +728,7 @@ export const kinDelivery = (sample: ReplySample, sendOnly?: boolean) => {
     ) || /^This turn is in the Team room, chat /m.test(sample.testCase.prompt);
   return {
     deliveredText: text,
-    deliveredBubbles: text === "" ? [] : page ? [text] : unsplitReplyBubbles(text),
+    deliveredBubbles: text === "" ? [] : page ? [text] : kinReplyBubbles(text),
   };
 };
 
@@ -932,7 +938,7 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{SEVERAL_ACCOUNTS}}", SEVERAL_ACCOUNTS)
     .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
     .replaceAll("{{REMINDER_DUE}}", REMINDER_DUE)
-    .replaceAll("{{REPLY_NUDGE}}", () => nudgePrompt(promptTags(prompt, world)))
+    .replaceAll("{{REPLY_NUDGE}}", () => replyNudgePrompt(promptTags(prompt, world)))
     .replaceAll("{{PASSED_ON_SPEAKER}}", PASSED_ON_SPEAKER)
     // A check-in fact's hand-off as the other agent's event quotes it, JSON-escaped for its body:
     // `{{PASSED_FACT:<request>|<check-in>|<about>|<consequence>|<fact key>}}`.
@@ -2009,7 +2015,7 @@ export const defaultReplyMock = (
   if (name === "kin_skip") {
     if (
       ending?.tool !== "kin_send" &&
-      replyText(sample.responses) === "" &&
+      replyText(sample.responses, false, true) === "" &&
       !quietAllowed(sample.testCase, sample.calls)
     )
       return {
@@ -2034,20 +2040,6 @@ export const defaultReplyMock = (
     return { held: true, when: "At the next check-in." };
   }
   return { sent: true, messageId: "kin-send:eval-turn" };
-};
-
-const sourcePrompt = (name: string) => (replyClassification as Record<string, unknown>)[name];
-
-const nudgePrompt = (tags: ReadonlyArray<Contracts.KinEvent["_tag"]>) => {
-  const prompt = sourcePrompt("NUDGE_PROMPT");
-  const words = tags.includes("pulse")
-    ? "a check-in"
-    : tags.includes("github")
-      ? "a GitHub event"
-      : "a trigger";
-  return typeof prompt === "string"
-    ? prompt.replace("{words}", words)
-    : `This turn was started by ${words}, not by a person, so what you just wrote reached no one. If someone needs it, send it with kin_send. If not, end with kin_skip and it stays as your note.`;
 };
 
 /** What Kin asks once after a turn that owes an answer or has an unsent final message. */
@@ -2079,7 +2071,7 @@ export const replyFollowUp = (
     sent ||
     skipped ||
     (voice === "text" &&
-      (replyText(sample.responses) !== "" ||
+      (replyText(sample.responses, false, startedBy(tags) === "person") !== "" ||
         passedOnEach(testCase, used) ||
         used.some(
           (call) => ANSWERS_IN_CHAT.has(call.tool) && !DOC_TOOLS.has(call.tool) && !shows(call),
@@ -2091,28 +2083,19 @@ export const replyFollowUp = (
     withheld: false,
     sent,
     skipped,
-    finalText: finalText.trim(),
+    finalText: finalText.trim() !== "",
   };
-  // The base branch's followUpFor handles rescues. B4 also handles the structural nudge.
-  const source = followUpFor(state);
-  const followUp =
-    source ??
-    (!owed && voice === "send" && !sent && !skipped && state.finalText !== "" ? "nudge" : null);
+  const followUp = followUpFor(state);
   switch (followUp) {
     case "nudge":
-      return { kind: "nudge", prompt: nudgePrompt(tags) };
+      return { kind: "nudge", prompt: replyNudgePrompt(tags) };
     case "rescue": {
       if (voice === "text")
         return { kind: "rescue", prompt: used.some(shows) ? CAPTION_PROMPT : RESCUE_PROMPT };
-      const source = sourcePrompt("SEND_RESCUE_PROMPT");
       const asker =
         /^>.*"(?:askedBy|assignee)":\s*"([^"]+)"/m.exec(testCase.prompt)?.[1] ??
         "The person who asked";
-      const prompt =
-        typeof source === "string"
-          ? source.replace("{Asker}", asker)
-          : `${asker} is waiting on this, and nothing you wrote reached anyone. Send what came of it now with kin_send.`;
-      return { kind: "rescue", prompt };
+      return { kind: "rescue", prompt: sendRescuePrompt(asker) };
     }
     default:
       return undefined;

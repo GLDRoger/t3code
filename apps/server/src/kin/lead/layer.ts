@@ -312,7 +312,7 @@ const runner = Layer.effectDiscard(
     }).pipe(forkParked);
   }),
 ).pipe(
-  Layer.provide(WakeupRunner.layer.pipe(Layer.provide(ReplyBridge.layer))),
+  Layer.provide(WakeupRunner.layer),
   Layer.provide(Layer.mergeAll(OwnerCheck.layer, RoutineContent.layer)),
 );
 
@@ -377,7 +377,9 @@ const toolkit = LeadMemory.layer.pipe(
   ),
 );
 
-export const layer = withServices(Layer.merge(runner, ChatWake.layer));
+export const layer = withServices(
+  Layer.merge(runner, ChatWake.layer).pipe(Layer.provide(ReplyBridge.layer)),
+);
 // Documents render on this server; agents' own files and recipe drafts come through it too.
 const documents = Layer.merge(Render.layer, PictureRenderer.layer).pipe(
   Layer.provideMerge(Layer.mergeAll(Workspace.layer, Toolchain.layer)),
@@ -491,6 +493,7 @@ const production = withServices(
     draftAmounts,
     earlierProjects,
   ).pipe(
+    Layer.provide(ReplyBridge.layer),
     Layer.provideMerge(documents),
     Layer.provideMerge(Team.layer),
     Layer.provideMerge(Handoff.layer),

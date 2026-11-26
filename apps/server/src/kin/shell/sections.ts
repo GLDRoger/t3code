@@ -21,6 +21,7 @@ export const SECTIONS = {
     kin_ask: null,
     kin_ask_close: null,
     kin_ask_person: null,
+    kin_skip: null,
     kin_react: null,
     message_withdraw: null,
     message_replace: null,

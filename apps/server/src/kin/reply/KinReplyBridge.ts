@@ -8,6 +8,8 @@ import {
   KIN_TEAM_ROOM_TEAM_ID,
   KinText,
   KinChatError,
+  RunId,
+  type KinEvent,
   kinIsPage,
   KIN_MONEY_SECTION,
   kinPageWithLines,
@@ -30,7 +32,6 @@ import {
   type OrchestrationV2ThreadProjection,
   type OrchestrationV2TurnItem,
   type ProjectId,
-  type RunId,
   type ThreadId,
   type TurnItemId,
 } from "@t3tools/contracts";
@@ -60,12 +61,19 @@ import {
 import {
   KinIdentity,
   isSteerMessage,
+  steerMessageId,
   rescueMessageId,
   type AgentIdentity,
 } from "../chat/KinIdentity.ts";
 import { isClaudeThinkingItem } from "./claudeThinkingItem.ts";
 import { laneFor, type Lane } from "./replyLane.ts";
-import { followUpFor, PERSON_TAGS, sendClientMessageId } from "./turnVoice.ts";
+import {
+  followUpFor,
+  PERSON_TAGS,
+  replyNudgePrompt,
+  sendClientMessageId,
+  sendRescuePrompt,
+} from "./turnVoice.ts";
 import { AUDIENCE_MOVED, aborted, ownerOnlyChat } from "../lead/Audience.ts";
 import { stoppedByJoinNotice } from "../lead/ChatSharing.ts";
 import {
@@ -74,6 +82,7 @@ import {
   LAST_RETRY_MS,
   requeueForAudience,
 } from "../lead/KinEventQueue.ts";
+import { privateTo } from "../connections/privateTurn.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import { leftNote } from "../lead/Handoff.ts";
 import { directKey } from "../lead/LeadAccess.ts";
@@ -93,8 +102,6 @@ import {
   isProviderErrorText,
   normalized,
   RESCUE_PROMPT,
-  SILENT_REPLY,
-  stripTrailingSilenceMarker,
   toolLabel,
   toolNext,
   uniqueParagraphs,
@@ -178,7 +185,7 @@ const fitParts = (text: string, max: number) => {
 
 // Which wake-ups owe words: a message, card tap or reaction asked in its chat (`reply`); an entry
 // someone gave the lead and finished work wait on it too (`owedNotice`). Reminders, briefs and
-// scheduled runs owe theirs through `LeadDelivery`; the rest may end on NO_REPLY.
+// Scheduled runs owe theirs through `LeadDelivery`.
 
 // `replied`: the turn failed after its reply answered every message it held.
 // `held`: Kin keeps its events until the cause clears (`KinHostCare`).
@@ -255,7 +262,7 @@ type SendResult =
 const SEND_REFUSALS = {
   team: "Nothing was sent: use team_say to speak in the Team room.",
   quiet: "Nothing was sent: this turn does not post to a chat.",
-  marker: "Nothing was sent: NO_REPLY means send nothing; end the turn with it",
+  "already skipped": "Nothing was sent: this turn already ended with kin_skip.",
   "already sent": "This turn's message is already sent; end the turn",
   "non-owner check-in": "Nothing was sent: check_in is only for the owner's own chat.",
   "no check-in": "Nothing was sent: no check-in is on. Use now or quiet to send it to the chat.",
@@ -267,7 +274,7 @@ class KinReplySendError extends Schema.TaggedError<KinReplySendError>()("KinRepl
   reason: Schema.Literals([
     "team",
     "quiet",
-    "marker",
+    "already skipped",
     "already sent",
     "non-owner check-in",
     "no check-in",
@@ -285,9 +292,40 @@ const decodeSendText = Schema.decodeUnknownEffect(
   KinText.check(Schema.makeFilter((body) => body.trim() !== "")),
 );
 
-type Ending = "text" | "marker" | "none" | "rescued_text" | "rescued_none" | "failed";
+type SkipInput = {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: KinWakeupId;
+  readonly note?: string;
+};
 
-type Outcome = "held" | "posted" | "note" | "silent" | "empty" | "withheld" | "dropped";
+export class KinReplySkipError extends Schema.TaggedError<KinReplySkipError>()(
+  "KinReplySkipError",
+  {
+    reason: Schema.Literals(["not running", "person waiting"]),
+  },
+) {
+  override get message() {
+    return this.reason === "person waiting"
+      ? "Not ended: someone here is waiting on your answer; write it as plain text."
+      : "Nothing was ended: this turn is no longer running.";
+  }
+}
+
+type Ending =
+  | "text"
+  | "sent"
+  | "skipped"
+  | "none"
+  | "rescued_text"
+  | "rescued_none"
+  | "rescued_sent"
+  | "notice"
+  | "nudged_sent"
+  | "nudged_skipped"
+  | "nudged_neither"
+  | "failed";
+
+type Outcome = "held" | "posted" | "note" | "empty" | "withheld" | "dropped";
 
 const WITHHELD_ANY = "Kin couldn't save it. Send your message again.";
 /**
@@ -333,6 +371,11 @@ type Wake = {
     readonly level: SendInput["level"];
     readonly result: SendResult;
     readonly lastSteer: number;
+  };
+  skipped?: {
+    readonly note?: string;
+    readonly lastSteer: number;
+    readonly dropText: boolean;
   };
   readonly segments: Map<TurnItemId, Segment>;
   readonly tools: Map<number, ReturnType<typeof toolNext>>;
@@ -412,6 +455,7 @@ export class KinReplyBridge extends Context.Service<
       readonly stopped?: boolean;
     }) => Effect.Effect<void>;
     readonly send: (input: SendInput) => Effect.Effect<SendResult, KinReplySendError>;
+    readonly skip: (input: SkipInput) => Effect.Effect<string, KinReplySkipError>;
     /**
      * A message was steered into the wake-up: re-reads its lane, which may now owe a reply.
      * `steer` names its number and events, so a reply after it marks them answered.
@@ -526,12 +570,15 @@ const make = Effect.gen(function* () {
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin couldn't mark a reply", { cause })),
   );
-  const journal = (wake: Wake, lines: ReadonlyArray<string>) =>
-    Option.isSome(writer)
-      ? writer.value
-          .appendJournal(wake.orgId, wake.wakeupId, lines)
-          .pipe(Effect.catchCause(() => Effect.logWarning("Kin reply journal failed")))
-      : Effect.void;
+  const journal = Effect.fn("KinReplyBridge.journal")(
+    function* (wake: Wake, lines: ReadonlyArray<string>) {
+      if (Option.isNone(writer)) return;
+      if ((yield* privateTo(wake).pipe(Effect.provideService(SqlClient.SqlClient, sql))) !== null)
+        return;
+      yield* writer.value.appendJournal(wake.orgId, wake.wakeupId, lines);
+    },
+    Effect.catchCause(() => Effect.logWarning("Kin reply journal failed")),
+  );
 
   const show = Effect.fnUntraced(function* (
     wake: Wake,
@@ -734,6 +781,11 @@ const make = Effect.gen(function* () {
         ),
       );
   });
+  const lastSteerOf = (wake: Wake) =>
+    Math.max(-1, ...wake.steerEvents.keys(), ...wake.steers.values());
+  const skippedCurrentRequest = (wake: Wake) =>
+    wake.skipped !== undefined && lastSteerOf(wake) <= wake.skipped.lastSteer;
+
   // A steered message is a new request: its answer gets a message of its own.
   const slotKey = (wake: Wake, ordinal: number) =>
     Math.max(-1, ...[...wake.steers.keys()].filter((steer) => steer < ordinal));
@@ -944,7 +996,7 @@ const make = Effect.gen(function* () {
   });
   const replyText = Effect.fn("KinReplyBridge.replyText")(function* (wake: Wake, text: string) {
     return withoutAsked(
-      stripTrailingSilenceMarker(text.replace(/^(?:[ \t]*\r?\n)+/, "").trimEnd()),
+      text.replace(/^(?:[ \t]*\r?\n)+/, "").trimEnd(),
       yield* asked(wake).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => [])),
     );
   });
@@ -1063,6 +1115,8 @@ const make = Effect.gen(function* () {
       held.length === 0 &&
       note?.outcome === "note" &&
       wake.sendReceipt === undefined &&
+      !skippedCurrentRequest(wake) &&
+      wake.lane.voice === "text" &&
       !(yield* answered(wake))
     )
       held.push(note);
@@ -1072,7 +1126,11 @@ const make = Effect.gen(function* () {
       const setOutcome = (outcome: Outcome) => {
         for (const segment of segments) segment.outcome = outcome;
       };
-      if (stopped) {
+      if (
+        stopped ||
+        wake.lane.voice === "send" ||
+        (wake.skipped?.dropText === true && (wake.steers.get(slot) ?? -1) <= wake.skipped.lastSteer)
+      ) {
         setOutcome("dropped");
         yield* journal(wake, [`Not sent: ${cutLabel(heldText)}`]);
         continue;
@@ -1226,10 +1284,10 @@ const make = Effect.gen(function* () {
       return yield* new KinReplySendError({ reason: "not running" });
     return yield* wake.lock.withPermits(1)(
       Effect.gen(function* () {
+        if (wake.skipped !== undefined)
+          return yield* new KinReplySendError({ reason: "already skipped" });
         if (wake.lane.team === true) return yield* new KinReplySendError({ reason: "team" });
         if (wake.lane.quiet === true) return yield* new KinReplySendError({ reason: "quiet" });
-        if (input.text.includes(SILENT_REPLY))
-          return yield* new KinReplySendError({ reason: "marker" });
         if (wake.sendReceipt !== undefined) {
           if (wake.sendReceipt.text !== input.text || wake.sendReceipt.level !== input.level)
             return yield* new KinReplySendError({ reason: "already sent" });
@@ -1249,7 +1307,7 @@ const make = Effect.gen(function* () {
           LIMIT 1`;
         const [held] = yield* sql`SELECT 1 FROM kin_held_posts WHERE org_id = ${wake.orgId}
           AND chat_id = ${wake.lane.chatId} AND agent_id = ${wake.agentId} AND kind = ${clientMessageId} LIMIT 1`;
-        const lastSteer = Math.max(-1, ...wake.steerEvents.keys(), ...wake.steers.values());
+        const lastSteer = lastSteerOf(wake);
         let result: SendResult;
         if (posted !== undefined) result = { sent: true, messageId: posted.messageId };
         else {
@@ -1293,8 +1351,6 @@ const make = Effect.gen(function* () {
     if (segment.outcome !== null || !segment.complete) return;
     const decision = classifySegment(segment.text, next, wake.startedByPerson);
     if (decision === null) return;
-    if (decision === "post" || decision === "note")
-      segment.text = stripTrailingSilenceMarker(segment.text);
     switch (decision) {
       case "post":
         segment.outcome = "held";
@@ -1304,7 +1360,6 @@ const make = Effect.gen(function* () {
         wake.notes.push(segment);
         yield* journal(wake, [`Note: ${cutLabel(segment.text)}`]);
         return;
-      case "silent":
       case "empty":
         segment.outcome = decision;
     }
@@ -1461,16 +1516,21 @@ const make = Effect.gen(function* () {
     const removed = yield* chat.discardFigures({ ...wake, chatId: wake.lane.chatId });
     if (removed > 0) yield* journal(wake, [`Omitted ${removed} unplaced answer figures.`]);
   });
+  const orderedItems = (projection: {
+    readonly turnItems: ReadonlyArray<OrchestrationV2TurnItem>;
+  }) => projection.turnItems.toSorted((a, b) => a.ordinal - b.ordinal);
+  const answerNext = (
+    items: ReadonlyArray<OrchestrationV2TurnItem>,
+    index: number,
+  ): SegmentNext => {
+    const item = items.slice(index + 1).find((next) => isAnswer(next) || isToolItem(next));
+    if (item === undefined) return "end";
+    return item.type === "assistant_message" ? "text" : toolNext(item);
+  };
   const settle = Effect.fn("KinReplyBridge.settle")(function* (wake: Wake, rootRunId: RunId) {
     const projection = yield* turnRecords(threads, wake.threadId, rootRunId);
-    const root = projection.runs.find((run) => run.id === rootRunId);
-    if (root === undefined) return;
-    const runs = new Set(
-      projection.runs.filter((run) => run.ordinal >= root.ordinal).map((run) => run.id),
-    );
-    const items = projection.turnItems
-      .filter((item) => item.runId !== null && runs.has(item.runId))
-      .toSorted((a, b) => a.ordinal - b.ordinal);
+    if (projection.runs.length === 0) return false;
+    const items = orderedItems(projection);
     const failures = new Map<RunId, OrchestrationV2ProviderFailure>();
     const lastAnswers = new Map<RunId, TurnItemId>();
     for (const item of items) {
@@ -1501,38 +1561,102 @@ const make = Effect.gen(function* () {
         continue;
       }
       segment.outcome = null;
-      const following = items.slice(index + 1).find((next) => isAnswer(next) || isToolItem(next));
-      yield* decide(
-        wake,
-        segment,
-        following === undefined
-          ? "end"
-          : following.type === "assistant_message"
-            ? "text"
-            : toolNext(following),
-      );
+      yield* decide(wake, segment, answerNext(items, index));
     }
+    const last = items.findLast((item) => isAnswer(item) || isToolItem(item));
+    return last !== undefined && wake.segments.get(last.id)?.outcome === "held";
   });
 
-  // Replies given another way. A lead's reaction counts only when all the wake-up owed was the
-  // owner's text without a "?" and it reacted to one of those: a question or a tap needs words.
-  // Kin's line answers a teammate's request passed on when every message the wake-up held went;
-  // one cancelled since counts by Kin's line saying so, which a tap that sent nothing lacks.
+  // A passed hand-off already answered its message. A new reaction or hand-back can also
+  // close quietly, but only when the agent chose to skip.
+  const quietAllowed = Effect.fn("KinReplyBridge.quietAllowed")(function* (
+    wake: Wake,
+    allowAcknowledgements: boolean,
+  ) {
+    const [row] = yield* sql<{ owed: number }>`SELECT COUNT(*) FILTER (WHERE NOT (
+        (${allowAcknowledgements ? 1 : 0} = 1 AND (
+          (e.tag = 'chat.reaction' AND json_extract(e.json, '$.changedFrom') IS NULL
+            AND COALESCE(json_extract(e.json, '$.withdrawn'), 0) <> 1)
+          OR (e.tag = 'chat.message' AND e.event_id GLOB 'handoff-back-*')
+        ))
+        OR (e.tag = 'chat.message' AND EXISTS (SELECT 1 FROM kin_handoffs h
+          WHERE h.org_id = e.org_id AND h.message_id = json_extract(e.json, '$.messageId')
+            AND h.from_agent_id = ${wake.agentId} AND (h.route_state = 'passed'
+              OR (h.route_state = 'stale' AND EXISTS (SELECT 1 FROM kin_messages n
+                WHERE n.org_id = h.org_id
+                  AND n.message_id = 'kin-forward-stale:' || h.event_id)))))
+      )) AS owed
+      FROM kin_events e WHERE e.org_id = ${wake.orgId} AND e.wakeup_id = ${wake.wakeupId}
+        AND e.tag IN ${sql.in(PERSON_TAGS)}
+      HAVING COUNT(*) > 0`;
+    return row?.owed === 0;
+  });
+
+  const hasReplyText = Effect.fn("KinReplyBridge.hasReplyText")(function* (wake: Wake) {
+    const [row] = yield* sql<{ runId: string | null }>`SELECT run_id AS "runId" FROM kin_wakeups
+      WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId} AND status = 'running'`;
+    if (row?.runId == null) return false;
+    const projection = yield* turnRecords(threads, wake.threadId, RunId.make(row.runId));
+    const items = orderedItems(projection);
+    const number = lastSteerOf(wake);
+    const lastSteer =
+      number < 0
+        ? -1
+        : items.findIndex(
+            (item) =>
+              item.type === "user_message" &&
+              item.messageId === steerMessageId(wake.wakeupId, number),
+          );
+    if (number >= 0 && lastSteer === -1) return false;
+    const held = items.flatMap((item, index) => {
+      if (
+        index <= lastSteer ||
+        item.type !== "assistant_message" ||
+        !isAnswer(item) ||
+        item.streaming
+      )
+        return [];
+      const text = textOf(item, projection);
+      return classifySegment(text, answerNext(items, index), true) === "post" ? [text] : [];
+    });
+    return held.length > 0 && (yield* replyText(wake, held.join("\n\n"))) !== "";
+  });
+
+  const skip = Effect.fn("KinReplyBridge.skip")(function* (input: SkipInput) {
+    const notRunning = new KinReplySkipError({ reason: "not running" });
+    const wake = byWakeup.get(input.wakeupId);
+    if (wake === undefined || wake.orgId !== input.orgId) return yield* notRunning;
+    const result = "Nothing sent; this turn is over.";
+    return yield* wake.lock.withPermits(1)(
+      Effect.gen(function* () {
+        if (wake.done || byWakeup.get(input.wakeupId) !== wake) return yield* notRunning;
+        if (wake.sendReceipt !== undefined || wake.skipped !== undefined) return result;
+        if (
+          wake.lane.mode === "reply" &&
+          !(yield* quietAllowed(wake, true)) &&
+          !(yield* hasReplyText(wake))
+        )
+          return yield* new KinReplySkipError({ reason: "person waiting" });
+        wake.skipped = {
+          ...(input.note === undefined ? {} : { note: input.note }),
+          lastSteer: lastSteerOf(wake),
+          dropText: wake.lane.mode === "notice",
+        };
+        if (input.note !== undefined) yield* journal(wake, [`Skipped: ${input.note}`]);
+        return result;
+      }).pipe(
+        Effect.mapError((error) => (error._tag === "KinReplySkipError" ? error : notRunning)),
+        Effect.uninterruptible,
+      ),
+    );
+  });
+
+  // A lead's reaction can answer an acknowledgement, never a question or tap.
   const answered = Effect.fn("KinReplyBridge.answered")(function* (wake: Wake) {
     if (wake.answered || !wake.lane.owed) return true;
-    if (
-      wake.lane.mode === "reply" &&
-      [...wake.segments.values()].some((segment) => segment.outcome === "silent")
-    ) {
-      const spoken = yield* sql`SELECT 1 FROM kin_events
-        WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId}
-          AND (tag = 'widget.action' OR (tag = 'chat.message' AND event_id NOT GLOB 'handoff-back-*')
-            OR (tag = 'chat.reaction'
-            AND (json_extract(json, '$.changedFrom') IS NOT NULL
-              OR json_extract(json, '$.withdrawn') = 1)))
-        LIMIT 1`;
-      if (spoken.length === 0) return true;
-    }
+    const skipped = skippedCurrentRequest(wake);
+    if (wake.lane.mode === "notice" && skipped) return true;
+    if (yield* quietAllowed(wake, skipped)) return true;
     const owed = sql`SELECT e.event_id, e.tag, e.priority, q.body FROM kin_events e
       LEFT JOIN kin_messages q ON q.org_id = e.org_id
         AND q.message_id = json_extract(e.json, '$.messageId') AND q.chat_id = ${wake.lane.chatId}
@@ -1559,18 +1683,6 @@ const make = Effect.gen(function* () {
           AND NOT EXISTS (SELECT 1 FROM (${owed}) o
             WHERE o.tag != 'chat.message' OR o.priority != 'P0' OR o.body IS NULL
               OR instr(o.body, '?') > 0)
-      UNION ALL SELECT 1 FROM kin_events e
-        WHERE e.org_id = ${wake.orgId} AND e.wakeup_id = ${wake.wakeupId}
-          AND e.tag IN ${sql.in(PERSON_TAGS)}
-          AND NOT EXISTS (SELECT 1 FROM kin_events o
-            WHERE o.org_id = e.org_id AND o.wakeup_id = e.wakeup_id
-              AND o.tag IN ${sql.in(PERSON_TAGS)}
-              AND NOT (o.tag = 'chat.message' AND EXISTS (SELECT 1 FROM kin_handoffs h
-                WHERE h.org_id = o.org_id AND h.message_id = json_extract(o.json, '$.messageId')
-                  AND h.from_agent_id = ${wake.agentId} AND (h.route_state = 'passed'
-                    OR (h.route_state = 'stale' AND EXISTS (SELECT 1 FROM kin_messages n
-                      WHERE n.org_id = h.org_id
-                        AND n.message_id = 'kin-forward-stale:' || h.event_id))))))
       ORDER BY 1 LIMIT 1`;
     return rows.length > 0;
   });
@@ -1613,7 +1725,7 @@ const make = Effect.gen(function* () {
   const rescue = Effect.fn("KinReplyBridge.rescue")(function* (
     wake: Wake,
     projectId: ProjectId,
-    shown: boolean,
+    prompt: string,
   ) {
     const messageId = MessageId.make(rescueMessageId(wake.wakeupId));
     const sent = yield* threads.sendToThread({
@@ -1621,7 +1733,7 @@ const make = Effect.gen(function* () {
       projectId,
       threadId: wake.threadId,
       messageId,
-      text: shown ? CAPTION_PROMPT : RESCUE_PROMPT,
+      text: prompt,
       attachments: [],
       mode: "queue",
       createdBy: "system",
@@ -1701,10 +1813,10 @@ const make = Effect.gen(function* () {
       if (wake === undefined || wake.orgId !== input.orgId || wake.done) return;
       const finish = wake.lock.withPermits(1)(
         Effect.gen(function* () {
-          if (wake.done) return true;
-          yield* settle(wake, input.rootRunId);
+          if (wake.done) return { answered: true, finalText: false };
+          const finalText = yield* settle(wake, input.rootRunId);
           yield* flushReplies(wake, input.stopped === true);
-          if (input.stopped === true) return false;
+          if (input.stopped === true) return { answered: false, finalText };
           yield* settlePage(wake, input.rescue);
           yield* settleFigures(wake);
           yield* keptPromises(wake);
@@ -1718,7 +1830,7 @@ const make = Effect.gen(function* () {
             Effect.provideService(SqlClient.SqlClient, sql),
             Effect.catchCause((cause) => Effect.logWarning("Kin draft notice failed", { cause })),
           );
-          return yield* answered(wake);
+          return { answered: yield* answered(wake), finalText };
         }),
       );
       // What follows, such as the memory commit, isn't work on the owner's message.
@@ -1750,38 +1862,72 @@ const make = Effect.gen(function* () {
         ),
       );
       // A failed or stopped run is retried or was the owner's choice; only a finished one is owed.
-      const answeredOnFirstRun = yield* finish;
-      const endingFor = (rescued: boolean): Ending => {
-        const segments = [...wake.segments.values()];
-        if (segments.some((segment) => segment.outcome === "posted"))
-          return rescued ? "rescued_text" : "text";
-        if (rescued) return "rescued_none";
-        return segments.some(
-          (segment) => segment.outcome === "silent" && segment.text.includes(SILENT_REPLY),
-        )
-          ? "marker"
-          : "none";
+      const first = yield* finish;
+      const endingFor = (followUp: "rescue" | "nudge" | null): Ending => {
+        if (followUp === "nudge")
+          return wake.sendReceipt !== undefined
+            ? "nudged_sent"
+            : wake.skipped !== undefined
+              ? "nudged_skipped"
+              : "nudged_neither";
+        if (wake.sendReceipt !== undefined) return followUp === "rescue" ? "rescued_sent" : "sent";
+        if (wake.lane.voice === "send" && followUp === "rescue") return "notice";
+        if ([...wake.segments.values()].some((segment) => segment.outcome === "posted"))
+          return followUp === "rescue" ? "rescued_text" : "text";
+        if (followUp === "rescue") return "rescued_none";
+        return skippedCurrentRequest(wake) ? "skipped" : "none";
       };
-      if (answeredOnFirstRun || !input.rescue || input.stopped === true) {
+      if (!input.rescue || input.stopped === true) {
         yield* settled;
-        return endingFor(false);
+        return endingFor(null);
+      }
+      const followUp = followUpFor({
+        ...first,
+        finalText: first.finalText && wake.lane.team !== true && wake.lane.quiet !== true,
+        owed: wake.lane.owed,
+        voice: wake.lane.voice,
+        withheld: wake.withheld !== null,
+        sent: wake.sendReceipt !== undefined,
+        skipped: skippedCurrentRequest(wake),
+      });
+      if (followUp === "nudge") {
+        const tags = yield* sql<{ tag: KinEvent["_tag"] }>`SELECT tag FROM kin_events
+          WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId}`;
+        yield* rescue(wake, input.projectId, replyNudgePrompt(tags.map(({ tag }) => tag)));
+        yield* finish;
+        yield* settled;
+        return endingFor(followUp);
+      }
+      if (first.answered) {
+        yield* settled;
+        return endingFor(null);
       }
       const shown = yield* showed(wake).pipe(Effect.orElseSucceed(() => false));
-      // A refusal would refuse the rescue's text too.
-      const followUp = followUpFor({
-        owed: wake.lane.owed,
-        answered: answeredOnFirstRun,
-        withheld: wake.withheld !== null,
-      });
       if (followUp === "rescue") {
-        yield* rescue(wake, input.projectId, shown);
-        if (yield* finish) {
+        const [asker] =
+          wake.lane.voice !== "send"
+            ? []
+            : yield* sql<{ name: string }>`SELECT p.display_name AS name
+          FROM kin_chats c JOIN kin_people p ON p.org_id = c.org_id
+            AND c.direct_key = p.person_id || ':' || ${wake.agentId}
+          WHERE c.org_id = ${wake.orgId} AND c.chat_id = ${wake.lane.chatId} LIMIT 1`;
+        yield* rescue(
+          wake,
+          input.projectId,
+          wake.lane.voice === "send"
+            ? sendRescuePrompt(asker?.name ?? "The person who asked")
+            : shown
+              ? CAPTION_PROMPT
+              : RESCUE_PROMPT,
+        );
+        const after = yield* finish;
+        if (wake.lane.voice === "send" ? wake.sendReceipt !== undefined : after.answered) {
           yield* settled;
-          return endingFor(true);
+          return endingFor(followUp);
         }
       }
       yield* settled;
-      const ending = endingFor(followUp === "rescue");
+      const ending = endingFor(followUp);
       // What it showed stands without its line: "didn't reply" under a chart would be false.
       if (shown && wake.withheld === null) return ending;
       // A person told this agent answers them in their own chat never meets silence there.
@@ -1797,7 +1943,9 @@ const make = Effect.gen(function* () {
         audience: "chat",
         body:
           wake.withheld === null
-            ? `${wake.lane.leadName} didn't reply.`
+            ? ending === "notice"
+              ? `${wake.lane.leadName} finished this and sent no word on it.`
+              : `${wake.lane.leadName} didn't reply.`
             : `${wake.lane.leadName}'s reply couldn't be posted: ${why ?? WITHHELD_ANY}`,
       });
       return ending;
@@ -2153,6 +2301,7 @@ const make = Effect.gen(function* () {
     begin,
     complete,
     send,
+    skip,
     steered,
     failed,
     abort,
