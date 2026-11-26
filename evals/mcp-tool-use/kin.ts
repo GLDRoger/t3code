@@ -819,12 +819,22 @@ const docReadAnswer = (input: {
 /** kin_github_read as `readRepo` answers it, over a few files at one ref. */
 const repoReadAnswer = (input: {
   repo: string;
+  /** The repo the call named, when the case's App reaches only `repo`. */
+  asked?: string;
   files: Record<string, string>;
   path: string | null;
   search: string | null;
   ref: string | null;
   line: number | null;
 }) => {
+  if (input.asked !== undefined && input.asked.trim().toLowerCase() !== input.repo.toLowerCase())
+    return {
+      $error: {
+        _tag: "KinChatError",
+        reason: "not_allowed",
+        message: READ_REFUSAL.unreached(input.asked.trim()),
+      },
+    };
   const ref = input.ref ?? "the default branch";
   const words = input.search?.replace(/\s+/g, " ").trim() ?? "";
   if (words !== "") {
@@ -908,6 +918,7 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
   // kin_github_read over a case's invented files, paged and worded by Kin's code (`repoRead.ts`).
   repoRead: (input: {
     repo: string;
+    asked?: string;
     files: Record<string, string>;
     path: string | null;
     search: string | null;
