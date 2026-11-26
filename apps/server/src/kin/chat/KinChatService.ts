@@ -107,7 +107,12 @@ import * as ChartCard from "../widgets/chartCard.ts";
 import * as VisualCard from "../widgets/visualCard.ts";
 import * as CardPlans from "../widgets/cardPlans.ts";
 import * as ChoiceCard from "../widgets/choiceCard.ts";
-import { answerByReply, askedForCard, questionForCard } from "../questions/openQuestions.ts";
+import {
+  answerByReaction,
+  answerByReply,
+  askedForCard,
+  questionForCard,
+} from "../questions/openQuestions.ts";
 import { undoDeferral } from "../triggers/KinTriggerService.ts";
 import * as ScheduledTasks from "../widgets/scheduledTaskCard.ts";
 import * as ReminderCard from "../widgets/reminderCard.ts";
@@ -317,6 +322,9 @@ export class KinChatService extends Context.Service<
       input: KinChatsCreateDirectInput,
     ) => Effect.Effect<KinChat, ServiceError>;
     readonly send: (identity: Caller, input: SendInput) => Effect.Effect<KinMessage, ServiceError>;
+    readonly markLapsedQuestion: (
+      input: Parameters<Repository.KinChatRepository["Service"]["markLapsedQuestion"]>[0],
+    ) => Effect.Effect<void, ServiceError>;
     /** A wake-up's one reply in a chat grows by a later segment of the same turn, in place. */
     readonly extendReply: (
       agent: AgentIdentity,
@@ -3538,6 +3546,13 @@ const make = Effect.gen(function* () {
         return yield* docFileReadable(caller, attachmentId);
       },
     ),
+    markLapsedQuestion: Effect.fn("KinChatService.markLapsedQuestion")(function* (input) {
+      const message = yield* repo.markLapsedQuestion(input);
+      if (Option.isSome(message))
+        yield* sql.afterCommit(
+          hub.publish({ type: "message.changed", orgId: input.orgId, message: message.value }),
+        );
+    }),
     extendReply: Effect.fn("KinChatService.extendReply")(
       function* (agent, input) {
         if (agent.wakeupId === undefined) return yield* notAllowed;
@@ -4291,9 +4306,13 @@ const make = Effect.gen(function* () {
                   (yield* sql`SELECT 1 FROM kin_waiting
                     WHERE org_id = ${key.orgId} AND chat_id = ${key.chatId}
                       AND message_id = ${key.messageId} AND person_id = ${personId}
-                      AND resolved_at IS NULL LIMIT 1`.pipe(
-                    Effect.mapError(toPersistenceSqlError("KinChatService.react")),
-                  )).length > 0))) &&
+                      AND resolved_at IS NULL
+                    UNION ALL SELECT 1 FROM kin_questions
+                    WHERE org_id = ${key.orgId} AND chat_id = ${key.chatId}
+                      AND message_id = ${key.messageId} AND person_id = ${personId}
+                      AND kind = 'text' AND state = 'open'
+                    LIMIT 1`.pipe(Effect.mapError(toPersistenceSqlError("KinChatService.react"))))
+                    .length > 0))) &&
             !(yield* withSql(Reactions.recentlyWoke({ ...key, now: nowMs })))
           : past.latest &&
             past.wakes < Reactions.KIN_REACTION_WAKES_PER_MESSAGE &&
@@ -4304,6 +4323,21 @@ const make = Effect.gen(function* () {
         yield* withSql(
           Reactions.recordWake({ ...key, answer: request.on ? answer : null, now: nowMs }),
         );
+      if (
+        woke &&
+        request.on &&
+        identity._tag === "person" &&
+        (answer !== null || request.emoji === Reactions.KIN_CLARIFY_REACTION)
+      )
+        yield* withSql(
+          answerByReaction({
+            orgId: identity.orgId,
+            chatId: message.chatId,
+            personId: identity.personId,
+            messageId: message.messageId,
+            now: nowMs,
+          }),
+        ).pipe(Effect.mapError(toPersistenceSqlError("KinChatService.answerByReaction")));
       const changedFrom = woke && past !== undefined && request.on ? past.emoji : undefined;
       if (woke && identity._tag === "person")
         // The lead answers this turn under its own floor run, as it would a message.

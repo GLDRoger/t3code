@@ -61,6 +61,12 @@ import { deletedQuotes } from "./quoteAccess.ts";
 import { retireLabels } from "./sensitivity.ts";
 import * as MemoryLander from "./MemoryLander.ts";
 import { MemoryPullRequests } from "./MemoryPullRequests.ts";
+import {
+  memoryWriteFailure,
+  observeMemoryWrite,
+  type MemoryWriteFailure,
+  type MemoryWriteOperation,
+} from "./writeFailure.ts";
 
 export const RESTART_JOURNAL_LINE =
   "Kin restarted during this turn; what was noted before the restart may not have been saved.";
@@ -399,6 +405,11 @@ const make = Effect.gen(function* () {
       Effect.provideService(VcsProcess, vcs),
     );
   const locked = memory.withWriterLock;
+  const observedWrite = <A>(
+    orgId: KinOrgId,
+    operation: MemoryWriteOperation,
+    effect: Effect.Effect<A, Failure>,
+  ) => locked(orgId, observeMemoryWrite(recovery.writeEpisode, orgId, operation, effect));
   // Staged changes are per wake-up, so concurrent leads never share a session; the
   // git commit and push themselves stay serialized per repository under `locked`.
   // `changes` keeps each staged change so the commit replays them all against its own head
@@ -1158,8 +1169,9 @@ const make = Effect.gen(function* () {
       ),
     ),
     commitWakeup: Effect.fn("MemoryWriter.commitWakeup")((orgId, wakeupId, outcome) =>
-      locked(
+      observedWrite(
         orgId,
+        "wake-up",
         report(
           orgId,
           wakeupId,
@@ -1433,30 +1445,32 @@ const make = Effect.gen(function* () {
         ),
       ),
     ),
-    deleteDreamBranch: Effect.fn("MemoryWriter.deleteDreamBranch")((orgId, branch) =>
-      memory.withLandingLock(
-        orgId,
-        Effect.gen(function* () {
-          if (!dreamBranch.test(branch))
-            return yield* new MemoryWriteRejected({ reason: "Invalid dream branch" });
-          const { writer, repo } = yield* locked(
-            orgId,
-            Effect.gen(function* () {
-              const { writer } = yield* validate(orgId);
-              yield* refuseDuringPurge(orgId);
-              return { writer, repo: yield* repoFor(orgId) };
-            }),
-          );
-          const advertised = yield* git(orgId, writer, [
-            "ls-remote",
-            "--",
-            repo.repoUrl,
-            `refs/heads/${branch}`,
-          ]);
-          if (advertised)
-            yield* git(orgId, writer, ["push", "--", repo.repoUrl, `:refs/heads/${branch}`]);
-        }),
-      ),
+    deleteDreamBranch: Effect.fn("MemoryWriter.deleteDreamBranch")(
+      (orgId, branch) =>
+        memory.withLandingLock(
+          orgId,
+          Effect.gen(function* () {
+            if (!dreamBranch.test(branch))
+              return yield* new MemoryWriteRejected({ reason: "Invalid dream branch" });
+            const { writer, repo } = yield* locked(
+              orgId,
+              Effect.gen(function* () {
+                const { writer } = yield* validate(orgId);
+                yield* refuseDuringPurge(orgId);
+                return { writer, repo: yield* repoFor(orgId) };
+              }),
+            );
+            const advertised = yield* git(orgId, writer, [
+              "ls-remote",
+              "--",
+              repo.repoUrl,
+              `refs/heads/${branch}`,
+            ]);
+            if (advertised)
+              yield* git(orgId, writer, ["push", "--", repo.repoUrl, `:refs/heads/${branch}`]);
+          }),
+        ),
+      (effect, orgId) => observeMemoryWrite(recovery.writeEpisode, orgId, "dream-cleanup", effect),
     ),
     landDream: Effect.fn("MemoryWriter.landDream")((orgId, input) =>
       locked(
@@ -1741,8 +1755,9 @@ const make = Effect.gen(function* () {
       ),
     ),
     recordDecision: Effect.fn("MemoryWriter.recordDecision")((orgId, input) =>
-      locked(
+      observedWrite(
         orgId,
+        "decision",
         Effect.gen(function* () {
           const main = config.defaultBranch ?? "main";
           const { writer } = yield* validate(orgId);
@@ -1798,8 +1813,9 @@ const make = Effect.gen(function* () {
       ),
     ),
     reconcileSharing: Effect.fn("MemoryWriter.reconcileSharing")((orgId) =>
-      locked(
+      observedWrite(
         orgId,
+        "retired-sharing",
         Effect.gen(function* () {
           const main = config.defaultBranch ?? "main";
           const { writer } = yield* validate(orgId);
@@ -1834,17 +1850,17 @@ const make = Effect.gen(function* () {
           ]))
             .split("\n")
             .filter((branch) => branch !== "");
-          // The nightly sync tells the owner nothing when the default branch refuses writes.
           const mainWritable =
             mainWrites === "direct" ||
             (mainWrites === "pull_request" &&
               (yield* refuseOffGitHub(orgId).pipe(Effect.result))._tag === "Success");
+          let failure: MemoryWriteFailure | undefined;
           const [clears] = yield* sql<{ mark: number }>`SELECT
               COALESCE(SUM(cleared_change_seq), 0) AS mark FROM kin_chats WHERE org_id = ${orgId}`.pipe(
             Effect.mapError(toPersistenceSqlError("MemoryWriter.stripQuotes")),
           );
           // A branch that fails is logged and left unmarked, so the next sweep retries it.
-          for (const branch of [...(mainWritable ? [main] : []), ...shadows.toSorted()])
+          for (const branch of [main, ...shadows.toSorted()])
             yield* Effect.gen(function* () {
               const head = yield* branchHead(orgId, writer, branch);
               const swept = `${head}\u0000${clears?.mark ?? 0}`;
@@ -1861,6 +1877,10 @@ const make = Effect.gen(function* () {
                 unquotedHeads.set(`${orgId}\u0000${branch}`, swept);
                 return;
               }
+              if (branch === main && !mainWritable) {
+                failure ??= "setup";
+                return;
+              }
               yield* ownerCommit(orgId, {
                 writer,
                 repoUrl: repo.repoUrl,
@@ -1873,15 +1893,34 @@ const make = Effect.gen(function* () {
             }).pipe(
               Effect.catchCauseIf(
                 (cause) => !Cause.hasInterruptsOnly(cause),
-                (cause) =>
-                  Effect.logWarning("Kin could not drop deleted messages' quotes on a branch", {
-                    orgId,
-                    branch,
-                    cause,
-                  }),
+                (cause) => {
+                  failure ??= memoryWriteFailure(Cause.squash(cause)) ?? "storage";
+                  return Effect.logWarning(
+                    "Kin could not drop deleted messages' quotes on a branch",
+                    {
+                      orgId,
+                      branch,
+                      cause,
+                    },
+                  );
+                },
               ),
             );
-        }),
+          return failure;
+        }).pipe(
+          Effect.tap(
+            (failure) => recovery.writeEpisode?.(orgId, "deleted-quotes", failure) ?? Effect.void,
+          ),
+          Effect.tapError(
+            (error) =>
+              recovery.writeEpisode?.(
+                orgId,
+                "deleted-quotes",
+                memoryWriteFailure(error) ?? "storage",
+              ) ?? Effect.void,
+          ),
+          Effect.asVoid,
+        ),
       ),
     ),
   });

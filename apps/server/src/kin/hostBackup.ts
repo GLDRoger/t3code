@@ -12,6 +12,7 @@ import * as NodeOS from "node:os";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as Config from "effect/Config";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -25,6 +26,7 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./lead/orgLeads.ts";
 import { DAY_MS, HOUR_MS } from "./durations.ts";
 import { accessSql } from "./people/KinAccess.ts";
 import { personHoldNow } from "./triggers/quietHold.ts";
+import { MEMORY_WRITE_FAILURE_WORDS, savedMemoryWriteFailure } from "./memory/writeFailure.ts";
 
 /** Written by ops/kin/host/backup.sh into the server's state directory after every run. */
 export const BACKUP_STATUS_FILE = "kin-backup-status.json";
@@ -127,7 +129,13 @@ export const episodeNotice = Effect.fn("KinHostBackup.episodeNotice")(function* 
   orgId: KinOrgId,
   prefix: string,
   episode:
-    | { readonly id: string; readonly body: string; readonly outsideQuietHours?: true }
+    | {
+        readonly id: string;
+        readonly body: string;
+        readonly outsideQuietHours?: true;
+        readonly replaceOnChange?: true;
+        readonly silentDuringQuietHours?: true;
+      }
     | undefined,
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -136,33 +144,39 @@ export const episodeNotice = Effect.fn("KinHostBackup.episodeNotice")(function* 
   yield* sql.withTransaction(
     Effect.gen(function* () {
       const now = yield* Clock.currentTimeMillis;
-      const open = yield* sql<{ waitingId: string }>`SELECT waiting_id AS "waitingId"
+      const open = yield* sql<{ waitingId: string; messageId: string }>`SELECT
+          waiting_id AS "waitingId", message_id AS "messageId"
         FROM kin_waiting WHERE org_id = ${orgId} AND resolved_at IS NULL
           AND substr(message_id, 1, ${prefix.length}) = ${prefix}
         ORDER BY waiting_id`;
-      if (episode === undefined) {
-        for (const { waitingId } of open)
-          yield* chat.resolveNotice({
-            orgId,
-            waitingId: KinWaitingId.make(waitingId),
-            resolution: "closed",
-          });
+      const activeId = episode === undefined ? undefined : `${prefix}${episode.id}`;
+      if (
+        activeId !== undefined &&
+        open.some(({ messageId }) =>
+          episode?.replaceOnChange === true ? messageId.startsWith(`${activeId}:`) : true,
+        )
+      )
         return;
-      }
-      if (open.length > 0) return;
-      const messageId = KinMessageId.make(`${prefix}${episode.id}`);
+      for (const { waitingId } of open)
+        yield* chat.resolveNotice({
+          orgId,
+          waitingId: KinWaitingId.make(waitingId),
+          resolution: "closed",
+        });
+      if (episode === undefined || activeId === undefined) return;
+      const messageId = KinMessageId.make(
+        episode.replaceOnChange === true ? `${activeId}:${SecureRandom.uuidV4Unsafe()}` : activeId,
+      );
       if (Option.isSome(yield* repo.getMessage({ orgId, messageId }))) return;
       const [owner] = yield* sql<{ personId: KinPersonId }>`SELECT p.person_id AS "personId"
         FROM kin_people p WHERE p.org_id = ${orgId} AND p.removed_at IS NULL
           AND ${sql.literal(accessSql("p"))} = 'owner'
         ORDER BY p.created_at, p.person_id LIMIT 1`;
       if (owner === undefined) return;
-      // Held in the owner's quiet hours: the next hourly check tries again.
-      if (
-        episode.outsideQuietHours === true &&
-        (yield* personHoldNow(orgId, owner.personId)) !== undefined
-      )
-        return;
+      const quiet =
+        (episode.outsideQuietHours === true || episode.silentDuringQuietHours === true) &&
+        (yield* personHoldNow(orgId, owner.personId)) !== undefined;
+      if (episode.outsideQuietHours === true && quiet) return;
       let chatId = yield* ownerPrivateChat(sql, orgId, owner.personId);
       if (chatId === undefined) {
         // A company that has never added an agent may have no chat for a private notice.
@@ -195,6 +209,7 @@ export const episodeNotice = Effect.fn("KinHostBackup.episodeNotice")(function* 
         chatId,
         messageId,
         body: episode.body,
+        ...(episode.silentDuringQuietHours === true && quiet ? { silent: true } : {}),
         audience: "owner",
         waitingFor: owner.personId,
       });
@@ -223,8 +238,7 @@ const dreamReason = (failure: string) =>
     .trim();
 
 /**
- * One notice once the nightly memory update has failed three nights in a row, closed by the next
- * night that succeeds. Nothing remembered is lost: a failed night's material is read again.
+ * A writer refusal is told on the next check outside quiet hours. Other nightly failures are told after three nights.
  */
 export const checkDreamNotice = Effect.fn("KinHostBackup.checkDreamNotice")(function* (
   orgId: KinOrgId,
@@ -234,21 +248,33 @@ export const checkDreamNotice = Effect.fn("KinHostBackup.checkDreamNotice")(func
     SELECT owner_date AS "ownerDate", status, failure FROM kin_dream_runs
     WHERE org_id = ${orgId} AND status IN ('failed', 'succeeded')
     ORDER BY owner_date DESC LIMIT ${DREAM_NIGHTS_NOTICE}`;
+  const latest = runs[0];
+  const writeFailure =
+    latest?.status === "failed" ? savedMemoryWriteFailure(latest.failure ?? "") : undefined;
   const failing =
-    runs.length === DREAM_NIGHTS_NOTICE && runs.every((run) => run.status === "failed");
-  if (!failing && runs[0]?.status !== "succeeded") return;
+    runs.length === DREAM_NIGHTS_NOTICE &&
+    runs.every(
+      (run) => run.status === "failed" && savedMemoryWriteFailure(run.failure ?? "") === undefined,
+    );
   const first = runs.at(-1);
-  const reason = dreamReason(runs[0]?.failure ?? "");
+  const reason = dreamReason(latest?.failure ?? "");
   yield* episodeNotice(
     orgId,
     `kin-dream-failed:${orgId}:`,
-    failing && first !== undefined
+    writeFailure !== undefined
       ? {
-          id: first.ownerDate,
+          id: writeFailure,
+          body: MEMORY_WRITE_FAILURE_WORDS[writeFailure],
           outsideQuietHours: true,
-          body: `Kin's nightly memory update has failed three nights in a row\n\nEach night Kin reads the day and writes down what is worth remembering. That has not finished for three nights, so nothing new was remembered from them. Nothing Kin already remembered was lost, and tonight it will read those days again.${reason === "" ? "" : `\n\nFor whoever looks after Kin, the last night stopped on: ${reason}${/[.!?]$/.test(reason) ? "" : "."}`}`,
+          replaceOnChange: true,
         }
-      : undefined,
+      : failing && first !== undefined
+        ? {
+            id: first.ownerDate,
+            outsideQuietHours: true,
+            body: `Kin's nightly memory update has failed three nights in a row\n\nEach night Kin reads the day and writes down what is worth remembering. That has not finished for three nights, so nothing new was remembered from them. Nothing Kin already remembered was lost, and tonight it will read those days again.${reason === "" ? "" : `\n\nFor whoever looks after Kin, the last night stopped on: ${reason}${/[.!?]$/.test(reason) ? "" : "."}`}`,
+          }
+        : undefined,
   );
 });
 
