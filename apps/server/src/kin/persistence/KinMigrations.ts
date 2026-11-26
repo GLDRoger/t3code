@@ -145,6 +145,7 @@ import TaxByCustomer from "./migrations/K221_TaxByCustomer.ts";
 import QuietRuns from "./migrations/K222_QuietRuns.ts";
 import SearchDraftFor from "./migrations/K223_SearchDraftFor.ts";
 import SessionCarry from "./migrations/K224_SessionCarry.ts";
+import WakeupEnding from "./migrations/K225_WakeupEnding.ts";
 import DeclinedNudges from "./migrations/K227_DeclinedNudges.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -371,6 +372,7 @@ const migrations = {
   "222_QuietRuns": QuietRuns,
   "223_SearchDraftFor": SearchDraftFor,
   "224_SessionCarry": SessionCarry,
+  "225_WakeupEnding": WakeupEnding,
   "227_DeclinedNudges": DeclinedNudges,
 };
 const loader = Migrator.fromRecord(migrations);
