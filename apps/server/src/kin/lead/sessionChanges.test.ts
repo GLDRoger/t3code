@@ -1,17 +1,18 @@
 import { expect, it } from "@effect/vitest";
-import { NodeFileSystem } from "@effect/platform-node";
 import { KinAgentId, KinChatId, KinOrgId, KinWakeupId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "../../persistence/Sqlite.ts";
-import { VcsProcess } from "../../vcs/VcsProcess.ts";
 import { KIN_READ_TOOLS } from "../mcp/readTools.ts";
-import { Memory } from "../memory/Memory.ts";
+import { NodeFileSystem } from "@effect/platform-node";
+import * as FileSystem from "effect/FileSystem";
+import { VcsProcess } from "../../vcs/VcsProcess.ts";
 import { fakeRepository } from "../memory/__fixtures__/repository.ts";
+import { Memory } from "../memory/Memory.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { decodeHead, memory } from "./LeadPrompt.testkit.ts";
+import { commentIdFor } from "../work/recordComments.ts";
 import { renderSessionChanges } from "./LeadPrompt.ts";
 import { readCursor, sessionChanges } from "./sessionChanges.ts";
 import * as TestClock from "effect/testing/TestClock";
@@ -22,7 +23,15 @@ const agentId = KinAgentId.make("finance");
 const chatId = KinChatId.make("owner-chat");
 const wakeupId = KinWakeupId.make("owner-turn");
 const now = Date.UTC(2026, 10, 26, 14, 5);
-const from = { changeSeq: 0, at: now - 3_600_000, memoryHead: null, chatSeq: 0, chatId, chatChangeSeq: 0, chatVersions: [] };
+const from = {
+  changeSeq: 0,
+  at: now - 3_600_000,
+  memoryHead: null,
+  chatSeq: 0,
+  chatId,
+  chatChangeSeq: 0,
+  chatVersions: [],
+};
 const setup = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* TestClock.setTime(now);
@@ -38,6 +47,9 @@ const setup = Effect.gen(function* () {
   yield* sql`INSERT INTO kin_chats (org_id, chat_id, kind, title, last_seq, created_at)
     VALUES (${orgId}, ${chatId}, 'team_group', 'Owner room', 9, '2026-11-26'),
       (${orgId}, 'team', 'team_group', 'Team room', 0, '2026-11-26')`;
+  yield* sql`INSERT INTO kin_leads
+    (org_id, agent_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+    VALUES (${orgId}, ${agentId}, 'Finance', ${now}, '{}', '[]', ${chatId})`;
   yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
     VALUES (${orgId}, 'invoices', 'Invoices', 'INV', ${now}),
       (${orgId}, 'clients', 'Clients', 'CL', ${now}),
@@ -186,13 +198,13 @@ it.effect(
           chat,
         });
       }
-      yield* change("W-2", [{ field: "state", to: "work-already-shown" }]);
+      const shown = yield* change("W-2", [{ field: "state", to: "work-already-shown" }]);
       const to = yield* readCursor(orgId, chatId, null, agentId);
       yield* change("W-1", [{ field: "state", to: "after-cursor" }]);
       const { lines } = yield* sessionChanges({
         ...input,
         to,
-        workChangedKeys: new Set(["W-2"]),
+        workChanges: new Map([["W-2", new Set([shown])]]),
       }).pipe(Effect.provide(unchangedMemory));
       expect(lines).toEqual([
         'W-1 "Check loading bay" (Work): state → "other-value" by you, in Team room, 14:05',
@@ -272,9 +284,33 @@ it.effect("past 30 things, groups the rest by list and who", () =>
     expect(result.lines.map((line) => line.split(" ", 1)[0])).toEqual(
       Array.from({ length: 30 }, (_, i) => `W-${i + 1}`),
     );
+    expect(renderSessionChanges(result.lines, result.overflow.slice(0, 1))).toContain(
+      "Not listed here: 1 more change since your previous turn:",
+    );
     expect(renderSessionChanges(result.lines, result.overflow)).toContain(
       "Not listed here: 2 more changes since your previous turn: 1 in Expenses by Arjun (import, 14:02), 1 in Invoices by Meera (co-owner). Read again what you need from those lists before you rely on it.",
     );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("counts changes past the SQL limit and the four per-entry lines", () =>
+  Effect.gen(function* () {
+    const sql = yield* setup;
+    yield* record("W-14", "work", "Check loading bay");
+    yield* sql`WITH RECURSIVE edits(rev) AS (
+        VALUES (2) UNION ALL SELECT rev + 1 FROM edits WHERE rev < 201
+      )
+      INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind,
+        actor_id, via, kind, fields_json)
+      SELECT ${orgId}, 'W-14', rev, ${now}, 'person', 'arjun', 'owner', 'updated',
+        json_array(json_object('field', 'due', 'to', '2026-11-30'))
+      FROM edits`;
+    const result = yield* changes();
+    expect(result).toMatchObject({
+      shown: 4,
+      total: 200,
+      overflow: [{ list: "Work", who: "Arjun", count: 196 }],
+    });
   }).pipe(Effect.provide(layer)),
 );
 
@@ -354,6 +390,130 @@ it.effect("lists a memory item another commit edited and skips the session's own
       "outside-note (Memory): changed from outside content (a coding agent), 14:05; its words aren't shown here",
     ]);
   }).pipe(Effect.scoped, Effect.provide(Layer.merge(layer, NodeFileSystem.layer))),
+);
+
+it.effect("lists Zoya's comment stamped just before the cursor and committed after it", () =>
+  Effect.gen(function* () {
+    const sql = yield* setup;
+    yield* record("DOC-5", "docs", "Pier 4 handling notes");
+    const cursor = yield* readCursor(orgId, chatId, null, agentId);
+    yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq, author_kind,
+        author_id, body, request_hash, created_at)
+      VALUES (${orgId}, 'late', 'DOC-5', 1, 'person', 'zoya', 'comment-secret', 'late', ${now - 100})`;
+    const { lines } = yield* sessionChanges({ ...input, from: cursor, to: cursor }).pipe(
+      Effect.provide(unchangedMemory),
+    );
+    expect(lines).toEqual(['DOC-5 "Pier 4 handling notes" (Docs): comment added by Zoya, 14:04']);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("lists Rhea undoing an import after its expenses and change log disappeared", () =>
+  Effect.gen(function* () {
+    const sql = yield* setup;
+    yield* sql`INSERT INTO kin_import_runs (org_id, batch, action, person_id, started_at,
+        finished_at, lists_json, summary_json)
+      VALUES (${orgId}, 'expenses-200', 'apply', 'rhea', ${from.at}, ${from.at}, '["expenses"]', '{}'),
+        (${orgId}, 'expenses-200', 'undo', 'rhea', ${now - 180000}, ${now - 180000}, '[]',
+          '{"expenses":200,"note":"import-secret"}')`;
+    expect((yield* changes()).lines).toEqual(["Expenses: import undone by Rhea (owner), 14:02"]);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("refuses the Team room before reading any change source", () =>
+  Effect.gen(function* () {
+    const sql = yield* setup;
+    const to = yield* readCursor(orgId, chatId, null, agentId);
+    yield* sql`DROP TABLE kin_record_changes`;
+    const error = yield* sessionChanges({ ...input, chatId: "team", to }).pipe(
+      Effect.provide(unchangedMemory),
+      Effect.flip,
+    );
+    expect(error).toMatchObject({ _tag: "SessionChangesNotOwnerChat" });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("reports which source failed when the comments table is missing", () =>
+  Effect.gen(function* () {
+    const sql = yield* setup;
+    const to = yield* readCursor(orgId, chatId, null, agentId);
+    yield* sql`DROP TABLE kin_record_comments`;
+    const error = yield* sessionChanges({ ...input, to }).pipe(
+      Effect.provide(unchangedMemory),
+      Effect.flip,
+    );
+    expect(error).toMatchObject({ _tag: "SessionChangesSourceFailed", source: "comments" });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("keeps Arjun's new due date when Work renders only an older change to W-14", () =>
+  Effect.gen(function* () {
+    yield* setup;
+    yield* record("W-14", "work", "Check loading bay");
+    const shown = yield* change("W-14", [{ field: "state", to: "doing" }]);
+    yield* change("W-14", [{ field: "due", to: "2026-11-30" }], { actorId: "arjun" });
+    const to = yield* readCursor(orgId, chatId, null, agentId);
+    const options = {
+      ...input,
+      to,
+      workChanges: new Map([["W-14", new Set([shown])]]),
+    };
+    expect((yield* sessionChanges(options).pipe(Effect.provide(unchangedMemory))).lines).toEqual([
+      'W-14 "Check loading bay" (Work): due → "2026-11-30" by Arjun, 14:05',
+    ]);
+    expect((yield* changes()).lines).toHaveLength(2);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("lists Harborview contact activity and withholds sensitive and outside titles", () =>
+  Effect.gen(function* () {
+    const sql = yield* setup;
+    yield* record("CL-7", "clients", "Harborview Cold Storage");
+    yield* record("CL-8", "clients", "sensitive-client-secret", true);
+    yield* record("CL-9", "clients", "outside-client-secret");
+    yield* change("CL-9", [{ field: "title", to: "outside-client-secret" }], { via: "github" });
+    yield* sql`INSERT INTO kin_client_touches (org_id, touch_id, party_id, at, kind, note,
+        logged_by_kind, logged_by_id, origin_key, created_at, removed_at)
+      VALUES (${orgId}, 'harborview', 'CL-7', ${now - 200}, 'call', 'touch-secret',
+          'person', 'zoya', 'harborview', ${now - 100}, ${now}),
+        (${orgId}, 'sensitive', 'CL-8', ${now}, 'call', 'touch-secret',
+          'person', 'zoya', 'sensitive', ${now}, NULL),
+        (${orgId}, 'outside', 'CL-9', ${now}, 'call', 'touch-secret',
+          'person', 'zoya', 'outside', ${now}, NULL)`;
+    const { lines } = yield* changes();
+    expect(lines).toEqual(
+      expect.arrayContaining([
+        'CL-7 "Harborview Cold Storage" (Clients): contact logged by Zoya, 14:04',
+        'CL-7 "Harborview Cold Storage" (Clients): contact removed by Kin, 14:05',
+        "CL-8 (Clients): changed by Zoya, 14:05; a sensitive entry, not shown here",
+        "CL-9 (Clients): changed from outside content, 14:05; its words aren't shown here",
+      ]),
+    );
+    expect(lines.join("\n")).not.toContain("-secret");
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("lists the Finance agent's own comment from the Team room", () =>
+  Effect.gen(function* () {
+    const sql = yield* setup;
+    yield* record("DOC-5", "docs", "Pier 4 handling notes");
+    yield* sql`INSERT INTO kin_wakeups (org_id, agent_id, wakeup_id, model, started_at, ended_at, status, event_ids)
+      VALUES (${orgId}, ${agentId}, 'team-turn', 'test', ${now - 1}, ${now}, 'completed', '["team-ask"]')`;
+    yield* sql`INSERT INTO kin_events (org_id, agent_id, event_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+      VALUES (${orgId}, ${agentId}, 'team-ask', 'chat.message', 'P0',
+        '{"chatId":"team"}', ${now - 1}, ${now - 1}, 'done', 'team-turn')`;
+    const id = commentIdFor(
+      orgId,
+      "DOC-5",
+      { _tag: "agent", agentId, askedBy: null },
+      "team-turn:note",
+    );
+    yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq, author_kind,
+        author_id, body, request_hash, created_at)
+      VALUES (${orgId}, ${id}, 'DOC-5', 1, 'agent', ${agentId}, 'comment-secret', 'note', ${now})`;
+    expect((yield* changes()).lines).toEqual([
+      'DOC-5 "Pier 4 handling notes" (Docs): comment added by you, in Team room, 14:05',
+    ]);
+  }).pipe(Effect.provide(layer)),
 );
 
 it("every Kin read tool has a change source", () => {
