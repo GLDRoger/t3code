@@ -345,6 +345,9 @@ const make = Effect.fn("KinExport.make")(function* (orgId: KinOrgId, owner: KinP
         ...(row.category === "vendor" || row.category === "client" ? { kind: row.category } : {}),
         ...(row.state === "dropped" ? { state: "dropped" as const } : {}),
         ...some("gstin", text("gstin")),
+        ...(fields.accountsForTax === "true" || fields.accountsForTax === "false"
+          ? { accountsForTax: fields.accountsForTax === "true" }
+          : {}),
         ...some("address", text("address")),
         ...some("terms", text("terms")),
         ...some("placeOfSupply", text("placeOfSupply")),

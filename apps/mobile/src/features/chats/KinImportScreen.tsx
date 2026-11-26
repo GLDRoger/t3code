@@ -1,4 +1,5 @@
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { kinCurrencyName } from "@t3tools/client-runtime/kin/kinCurrency";
 import {
   KIN_IMPORT,
   KIN_IMPORT_DATE_FORMATS,
@@ -47,7 +48,7 @@ import type {
   KinImportTarget,
   KinImportUndone,
 } from "@t3tools/contracts";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
@@ -61,13 +62,18 @@ import { Notice } from "../../components/ui/Notice";
 import { beginForegroundHandoff } from "../../lib/foreground-handoff";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
+import { forgetKinSharedFile } from "./kinSharedFileInbox";
 import { NO_LINK, targetOf } from "./KinWorkFormScreens";
 import { useKinImportRuns, useKinImportSend } from "./state/useKinImport";
+import { useKinSectionNamed, useKinShell } from "./state/useKinShell";
 import { useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 
 export type KinImportParams = {
   readonly environmentId: string;
   readonly orgId: string;
+  /** A file shared into Kin from another app (`kinSharedFileInbox`): picked, not yet read. */
+  readonly file?: string;
+  readonly fileName?: string;
 };
 
 const OTHER = "other";
@@ -83,7 +89,13 @@ export function KinImportScreen({ route }: StaticScreenProps<KinImportParams>) {
         {NO_LINK}
       </KinWorkFrame>
     );
-  return <Importing {...target} />;
+  const { file, fileName } = route.params;
+  return (
+    <Importing
+      {...target}
+      shared={file === undefined ? null : { uri: file, name: fileName ?? "file.csv" }}
+    />
+  );
 }
 
 type ImportAsset = { readonly uri: string; readonly name: string; readonly size?: number };
@@ -140,10 +152,21 @@ function PickRow(props: {
   );
 }
 
-function Importing(props: KinWorkTarget) {
+function Importing(props: KinWorkTarget & { readonly shared: ImportAsset | null }) {
   const navigation = useNavigation();
+  const [pending, setPending] = useState(props.shared);
+  const sharedUri = props.shared?.uri;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- the system's copy of a shared file is removed once this import is done or left
+  useEffect(
+    () => () => {
+      if (sharedUri !== undefined) void forgetKinSharedFile(sharedUri);
+    },
+    [sharedUri],
+  );
   const host = useKinImportSend(props);
   const { state: runs, refresh } = useKinImportRuns(props);
+  const shell = useKinShell(props.environmentId);
+  const named = useKinSectionNamed(props.environmentId);
   const directory = useKinWorkDirectory(props, true);
   const nameOf = (personId: string) => directory.names.people.get(personId) ?? "Someone";
   const [picked, setPicked] = useState<KinImportFile | null>(null);
@@ -177,10 +200,11 @@ function Importing(props: KinWorkTarget) {
     setMapping(outcome.value.mapping);
   };
 
-  const choose = async () => {
+  const choose = async (given?: ImportAsset) => {
     setProblem(null);
-    const asset = await pickImportAsset();
+    const asset = given ?? (await pickImportAsset());
     if (asset === undefined) return;
+    setPending(null);
     const tooBig = kinImportTooBig(asset.size ?? 0);
     if (tooBig !== null) return setProblem(tooBig);
     setBusy({ doing: "reading", rows: 0 });
@@ -271,7 +295,7 @@ function Importing(props: KinWorkTarget) {
       )}
       {undone === null ? null : (
         <ListSection title={KIN_IMPORT.undone}>
-          {kinImportUndoneLines(undone).map((line) => (
+          {kinImportUndoneLines(undone, shell).map((line) => (
             <ListRowLayout key={line} label={line} />
           ))}
         </ListSection>
@@ -293,13 +317,21 @@ function Importing(props: KinWorkTarget) {
         refresh={{ accessibilityLabel: "Refresh", onPress: refresh }}
       >
         <Text textRole="headline" className="px-2">
-          {KIN_IMPORT.title}
+          {named(KIN_IMPORT.title)}
         </Text>
         <Text textRole="footnote" className="px-2 text-foreground-muted">
           {KIN_IMPORT.intro}
         </Text>
+        {pending === null ? null : (
+          <Button
+            tone="primary"
+            label={KIN_IMPORT.checkFile(pending.name)}
+            disabled={working}
+            onPress={() => void choose(pending)}
+          />
+        )}
         <Button
-          tone="primary"
+          tone={pending === null ? "primary" : "secondary"}
           label={KIN_IMPORT.chooseFile}
           disabled={working}
           onPress={() => void choose()}
@@ -327,7 +359,7 @@ function Importing(props: KinWorkTarget) {
                 <ListRowLayout
                   key={run.batch}
                   icon="doc.text"
-                  label={kinImportRunLine(run, nameOf(run.by))}
+                  label={kinImportRunLine(run, nameOf(run.by), shell)}
                   {...(description === "" ? {} : { description })}
                 />,
                 ...(why === null
@@ -379,7 +411,7 @@ function Importing(props: KinWorkTarget) {
                 value={mapping.columns[column.at] ?? "skip"}
                 options={KIN_IMPORT_TARGETS.map((id) => ({
                   id,
-                  label: KIN_IMPORT_TARGET_LABELS[id],
+                  label: named(KIN_IMPORT_TARGET_LABELS[id]),
                 }))}
                 disabled={working}
                 onPick={(id) =>
@@ -422,7 +454,7 @@ function Importing(props: KinWorkTarget) {
                     ...(mapping.currency === undefined ? [] : [mapping.currency]),
                   ]),
                 ]
-                  .map((id) => ({ id, label: id }))
+                  .map((id) => ({ id, label: kinCurrencyName(id) }))
                   .concat([{ id: OTHER, label: KIN_IMPORT.otherCurrency }])}
                 disabled={working}
                 onPick={(id) =>
@@ -454,7 +486,7 @@ function Importing(props: KinWorkTarget) {
           </ListSection>
         ) : null}
         <ListSection title={KIN_IMPORT.whatWillHappen}>
-          {kinImportTiles(checked).map((tile) => (
+          {kinImportTiles(checked, shell).map((tile) => (
             <ListRowLayout
               key={tile.id}
               label={tile.label}
@@ -567,11 +599,11 @@ function Importing(props: KinWorkTarget) {
       {applied === null ? null : (
         <>
           <Text textRole="body" className="px-2">
-            {kinImportDoneLine(applied)}
+            {kinImportDoneLine(applied, shell)}
           </Text>
-          {kinImportNoticed(applied).length === 0 ? null : (
+          {kinImportNoticed(applied, shell).length === 0 ? null : (
             <ListSection title={KIN_IMPORT.noticed}>
-              {kinImportNoticed(applied).map((line) => (
+              {kinImportNoticed(applied, shell).map((line) => (
                 <ListRowLayout key={line} icon="exclamationmark.triangle" label={line} />
               ))}
             </ListSection>
@@ -588,7 +620,7 @@ function Importing(props: KinWorkTarget) {
           )}
           {notices}
           {undone === null ? (
-            <ListSection footer={KIN_IMPORT.undoAfter}>
+            <ListSection footer={named(KIN_IMPORT.undoAfter)}>
               <ListActionRow
                 icon="arrow.uturn.backward"
                 label={KIN_IMPORT.undo}

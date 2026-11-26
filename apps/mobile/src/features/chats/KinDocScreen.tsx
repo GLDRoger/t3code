@@ -89,9 +89,11 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { usePreparedConnection } from "../../state/session";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { useKinShell } from "./state/useKinShell";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { ThreadMarkdownImage } from "../threads/ThreadMarkdownImage";
+import { KinDocReadersRow } from "./components/KinDocReadersRow";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
 import { KinDocFileRows } from "./KinInvoice";
 import { KinLinkedSection, useKinOpenLinked } from "./KinWorkItemScreen";
@@ -387,7 +389,8 @@ function KinDocBody(
   );
   const old = doc.version.version !== doc.latest.version;
   const previous = kinDocPrevious(doc.version);
-  const privacy = kinDocPrivacy(doc);
+  const shell = useKinShell(environmentId);
+  const privacy = doc.readers === undefined ? kinDocPrivacy(doc, shell) : null;
   const label = useKinDocLabel(target, doc);
   const deleting = useKinDocDelete(target);
   const mayDelete = deleting.allowed && doc.deletable === true;
@@ -736,9 +739,18 @@ function KinDocBody(
                 )}
               </View>
             }
-            {doc.archived ||
-            doc.sensitive ||
-            doc.sensitiveInherited === true ? null : doc.company === true ? (
+            {doc.archived || doc.sensitiveInherited === true ? null : doc.readers !== undefined ? (
+              <ListSection>
+                <KinDocReadersRow
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  doc={doc}
+                  names={names}
+                  disabled={false}
+                  onSettled={props.onRefresh}
+                />
+              </ListSection>
+            ) : doc.sensitive ? null : doc.company === true ? (
               <ListSection title={KIN_DOC_COMPANY.label}>
                 <View className="px-4 py-3">
                   <Text textRole="body" className="text-foreground-muted">

@@ -18,6 +18,7 @@ import type {
   KinContactExport,
   KinContactListInput,
   KinMarketing,
+  KinShell,
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
@@ -237,13 +238,15 @@ export function KinCampaignResultsSection(props: {
   readonly audience: string | null;
   /** Whether the company runs deals (`kinSectionOn`): its deal counts go with them. */
   readonly deals: boolean;
+  /** The company's sections, whose name for Clients the counts say. */
+  readonly shell?: KinShell | null | undefined;
   readonly onOpen: (id: KinCampaignResultId) => void;
 }) {
-  const rows = kinCampaignResultRows(props.results, props.audience, props.deals);
+  const rows = kinCampaignResultRows(props.results, props.audience, props.deals, props.shell);
   return (
     <KinFoldSection
       title={KIN_MARKETING.results}
-      summary={kinCampaignResultsSummary(props.results, props.audience, props.deals)}
+      summary={kinCampaignResultsSummary(props.results, props.audience, props.deals, props.shell)}
     >
       {rows.map((row) => (
         <ListActionRow

@@ -67,6 +67,7 @@ export function KinSearchDialog(
               <KinSearchHits
                 state={state}
                 scope={scope}
+                shell={shell}
                 onRetry={search.retry}
                 onOpen={props.onOpen}
               />

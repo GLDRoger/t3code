@@ -40,6 +40,8 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import * as ChatService from "../chat/KinChatService.ts";
 import { KinIdentity, KinIdentityConfig, type PersonIdentity } from "../chat/KinIdentity.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { modelChangeNotice } from "../dreaming/dreamModel.ts";
+import * as Memory from "../memory/Memory.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import {
   isOwnerHimself,
@@ -65,7 +67,9 @@ import {
   driverOf,
   findProviderModel,
   leadProviderProblem,
+  modelLabel,
 } from "./leadModels.ts";
+import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./orgLeads.ts";
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import { ServerConfig } from "../../config.ts";
 import {
@@ -393,9 +397,8 @@ const change = Effect.fn("KinLeadProvision.change")(function* (
     WHERE org_id = ${orgId} AND agent_id = ${agentId} AND role = 'lead' RETURNING agent_id`;
   yield* leadsChanged(orgId);
   return {
-    ...lead,
-    ...next,
-    ...(fields.model === undefined ? {} : { model: fields.model }),
+    lead: { ...lead, ...next, model: fields.model ?? lead.model },
+    previousModel: lead.model,
   };
 });
 
@@ -441,6 +444,7 @@ const checkModel = Effect.fn("KinLeadProvision.checkModel")(function* (model: Mo
       "not_claude",
       `Model "${model.model}" is not listed for provider instance "${model.instanceId}". Open Kin Settings and use the agent model picker to see its models.`,
     );
+  return { settings, provider };
 });
 
 /** Replaces a live lead's domain or charter, from the host's CLI. */
@@ -450,7 +454,7 @@ export const setCharter = Effect.fn("KinLeadProvision.setCharter")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId } = (yield* KinIdentity).owner;
-  const lead = yield* transaction(
+  const { lead } = yield* transaction(
     sql,
     "KinLeadProvision.setCharter",
     change(orgId, agentId, fields),
@@ -602,16 +606,52 @@ export const update = Effect.fn("KinLeadProvision.update")(function* (input: {
   yield* mayCreate(person);
   if (person.orgId !== input.orgId)
     return yield* refuse("not_found", `Org ${input.orgId} has no agent ${input.agentId}.`);
-  if (input.fields.model !== undefined) yield* checkModel(input.fields.model);
+  const checked =
+    input.fields.model === undefined ? undefined : yield* checkModel(input.fields.model);
+  const recovery = yield* Effect.serviceOption(Memory.MemoryRecoveryHooks);
   return yield* transaction(
     sql,
     "KinLeadProvision.update",
     Effect.gen(function* () {
       const { owner } = yield* KinIdentity;
-      return yield* profileIn(
-        yield* change(person.orgId, input.agentId, input.fields, owner.personId),
-        person.personId,
+      const { lead, previousModel } = yield* change(
+        person.orgId,
+        input.agentId,
+        input.fields,
+        owner.personId,
       );
+      if (checked !== undefined && Option.isSome(recovery)) {
+        const line = modelChangeNotice(
+          checked.settings,
+          previousModel,
+          lead.model,
+          lead.name,
+          modelLabel(checked.provider === undefined ? null : [checked.provider], lead.model),
+        );
+        if (line !== undefined) {
+          const dreamLead = yield* liveLead(sql, lead.orgId, {
+            prefer: CHIEF_OF_STAFF_DOMAIN,
+          }).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Kin could not select the nightly memory update's agent", {
+                cause,
+              }).pipe(Effect.as(undefined)),
+            ),
+          );
+          if (dreamLead?.agentId === lead.agentId)
+            yield* sql.afterCommit(
+              Effect.suspend(() =>
+                recovery.value.notify({
+                  orgId: lead.orgId,
+                  branch: "none",
+                  reason: "Nightly memory update model changed",
+                  owner: line,
+                }),
+              ),
+            );
+        }
+      }
+      return yield* profileIn(lead, person.personId);
     }),
   );
 });

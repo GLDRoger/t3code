@@ -122,7 +122,7 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./state/useKinWork";
-import { useKinSectionNamed, useKinSectionOn } from "./state/useKinShell";
+import { useKinSectionNamed, useKinSectionOn, useKinShell } from "./state/useKinShell";
 import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 /** Task lists kept while their screen is away, so coming back reads nothing the stream brought. */
@@ -229,6 +229,7 @@ export function KinTasksList(
     kinTasksOnCount(listState.records, names.me),
   );
   const clientsOn = useKinSectionOn(environmentId, "clients");
+  const shell = useKinShell(environmentId);
   const previousClientsOn = useRef(clientsOn);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- section saves do not change task sequence numbers
   useEffect(() => {
@@ -351,6 +352,7 @@ export function KinTasksList(
     groups: within === undefined,
     choices: within === undefined ? props.choices : null,
     records,
+    named,
     onChange: (next) => list.setFilter(next),
   });
   return (
@@ -532,6 +534,7 @@ export function KinTasksList(
                     quietWhenNone
                     state={found}
                     scope={scope}
+                    shell={shell}
                     onRetry={search.retry}
                     onOpen={openHit}
                   />
@@ -835,6 +838,7 @@ function kinWorkFilterMenu(props: {
   readonly choices: KinWorkChoices | null;
   /** The rows in view, whose projects the Filter offers too. */
   readonly records: ReadonlyArray<KinRecord>;
+  readonly named: (text: string) => string;
   readonly onChange: (filter: KinWorkFilter) => void;
 }) {
   const { overview, filter, choices, onChange } = props;
@@ -909,8 +913,8 @@ function kinWorkFilterMenu(props: {
             : [
                 ...pickMenu(
                   "client",
-                  KIN_WORK_HOME.byClient,
-                  KIN_WORK_HOME.allClients,
+                  props.named(KIN_WORK_HOME.byClient),
+                  props.named(KIN_WORK_HOME.allClients),
                   filter.party,
                   choices.clients,
                   (party) => ({ ...filter, party }),

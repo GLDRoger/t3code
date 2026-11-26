@@ -347,6 +347,7 @@ function KinProjectBody(
                     results={props.page.results}
                     audience={view.audience}
                     deals={dealsOn}
+                    shell={shell}
                     onOpen={(id) => {
                       const opened = kinCampaignResultOpens(orgId, view.key, view.name, id);
                       navigation.navigate("KinMarketingList", {

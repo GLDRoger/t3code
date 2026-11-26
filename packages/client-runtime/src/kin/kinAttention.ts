@@ -21,6 +21,7 @@ import { kinAskName } from "./kinAskRecord.ts";
 import { KIN_NEEDS_YOU_SHOWN, type KinNeedsYouRow } from "./kinWorkHome.ts";
 import { kinFailure } from "./kinAnswers.ts";
 import { kinIsDealKey } from "./kinDeals.ts";
+import { kinMoneyAboutText } from "./kinMoneyAnswers.ts";
 import { kinMidSentence, kinWorkName } from "./kinWork.ts";
 
 /**
@@ -610,6 +611,9 @@ export const KIN_GOALS = {
   behind: "Behind",
   onTrack: "On track",
   reachedLabel: "Reached",
+  /** "+ €768 not counted in this USD goal". */
+  notCounted: (amounts: ReadonlyArray<string>, currency: string) =>
+    `+ ${amounts.join(" and ")} not counted in this ${currency} goal`,
   measures: {
     revenue_received: "Money received",
     clients_won: "Clients won",
@@ -630,6 +634,10 @@ export interface KinGoalView {
   /** Where the straight line stands, 0 to 1, marked on the bar. */
   readonly pace: number;
   readonly status: "behind" | "on_track" | "reached";
+  /** Money received in other currencies, which `figure` leaves out. */
+  readonly notCounted: string | null;
+  /** All of it in the home currency, at rates the company was paid at. */
+  readonly about: string | null;
 }
 
 /** A goal's figure rounded to whole units of its currency, as its decimals say. */
@@ -666,6 +674,14 @@ export function kinGoalView(goal: KinGoal, now: Date): KinGoalView {
     progress: clamp(goal.current / goal.target),
     pace: clamp(goal.expected / goal.target),
     status: reached ? "reached" : goal.behind ? "behind" : "on_track",
+    notCounted:
+      goal.notCounted === undefined || goal.notCounted.length === 0 || goal.currency === undefined
+        ? null
+        : KIN_GOALS.notCounted(
+            goal.notCounted.map((one) => kinMoneyText(one.received)),
+            goal.currency,
+          ),
+    about: kinMoneyAboutText(goal.about),
   };
 }
 

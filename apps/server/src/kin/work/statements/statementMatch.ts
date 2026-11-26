@@ -1,3 +1,5 @@
+import { kinImpliedRate } from "@t3tools/contracts";
+
 import { currencyDigits, formatMinor } from "../money.ts";
 import { RAILS } from "./statementRegion.ts";
 import type { StatementRow } from "./statementTable.ts";
@@ -24,6 +26,7 @@ export type InvoiceCandidate = {
   readonly taxMinor: number | null;
   readonly issued: string | null;
   readonly client: string | null;
+  readonly clientId?: string | null;
   readonly number: string | null;
 };
 export type ExpenseCandidate = {
@@ -102,7 +105,7 @@ export type Candidate = {
   readonly title: string;
   /** `recorded`: the row is a payment already on the invoice, `paymentId`; nothing new is paid. */
   /** `open`: an open invoice offered for money nothing matched, only for the owner to pick. */
-  readonly fit: "exact" | "tds" | "part" | "foreign" | "recorded" | "open";
+  readonly fit: "exact" | "tds" | "part" | "foreign" | "recorded" | "open" | "rate" | "over";
   /** The TDS a client deducted, when `fit` is tds. */
   readonly tdsMinor?: number;
   readonly paymentId?: string;
@@ -222,7 +225,30 @@ const hasNumber = (text: string, number: string) => {
 
 const dayNumber = (day: string) =>
   Date.UTC(Number(day.slice(0, 4)), Number(day.slice(5, 7)) - 1, Number(day.slice(8, 10))) / DAY_MS;
-const daysBetween = (from: string, to: string) => dayNumber(to) - dayNumber(from);
+export const daysBetween = (from: string, to: string) => dayNumber(to) - dayNumber(from);
+
+const citedNumber = (row: StatementRow, invoice: InvoiceCandidate, referenceOnly?: string) =>
+  [invoice.number, invoice.key].find(
+    (one) =>
+      one !== null &&
+      (hasNumber(row.description, one) ||
+        (row.reference !== null &&
+          (referenceOnly === undefined || referenceOnly === one) &&
+          hasNumber(row.reference, one))),
+  ) ?? undefined;
+
+const invoiceClues = (row: StatementRow, invoice: InvoiceCandidate) => {
+  const cited = citedNumber(row, invoice, invoice.number ?? invoice.key);
+  const named = invoice.client === null ? 0 : nameIn(invoice.client, row.description);
+  const numbered = cited !== undefined;
+  const numberScore = numbered ? 35 : 0;
+  const nameScore = named >= 0.5 ? Math.round(30 * named) : 0;
+  const why = [
+    ...(numberScore === 0 ? [] : ["invoice number in the narration"]),
+    ...(nameScore === 0 ? [] : ["client named"]),
+  ];
+  return { cited, numbered, named, score: numberScore + nameScore, why };
+};
 
 const invoiceCandidate = (
   row: StatementRow,
@@ -269,19 +295,10 @@ const invoiceCandidate = (
         }
       }
   }
-  const number = invoice.number ?? invoice.key;
-  const numbered =
-    [invoice.number, invoice.key].some((one) => one !== null && hasNumber(row.description, one)) ||
-    (row.reference !== null && hasNumber(row.reference, number));
-  if (numbered) {
-    score += 35;
-    why.push("invoice number in the narration");
-  }
-  const named = invoice.client === null ? 0 : nameIn(invoice.client, row.description);
-  if (named >= 0.5) {
-    score += Math.round(30 * named);
-    why.push("client named");
-  }
+  const clues = invoiceClues(row, invoice);
+  const { numbered, named } = clues;
+  score += clues.score;
+  why.push(...clues.why);
   if (fit === undefined && !foreign && row.amountMinor < balance && (numbered || named >= 0.5)) {
     fit = "part";
     score += 10;
@@ -330,19 +347,76 @@ export const invoiceOffer = (
   return { candidate: offered, reason: offerReason(row, invoice, currency, offered) };
 };
 
+export const overOffer = (row: StatementRow, invoice: InvoiceCandidate, currency: string) => {
+  const balance = invoice.amountMinor - invoice.paidMinor;
+  if (
+    row.direction !== "credit" ||
+    currency !== invoice.currency ||
+    balance <= 0 ||
+    row.amountMinor <= balance ||
+    invoice.issued === null ||
+    row.date < invoice.issued
+  )
+    return undefined;
+  const { cited, score, why } = invoiceClues(row, invoice);
+  if (score === 0) return undefined;
+  return {
+    candidate: {
+      kind: "invoice",
+      recordId: invoice.recordId,
+      key: invoice.key,
+      title: invoice.title,
+      fit: "over",
+      seen: invoice.seen,
+      score: score + 10,
+      why,
+    } satisfies Candidate,
+    cited,
+  };
+};
+
+/** A cross-currency bank credit is an offer, not proof of an amount in the invoice's currency. */
+export const rateOffer = (row: StatementRow, invoice: InvoiceCandidate, currency: string) => {
+  const balance = invoice.amountMinor - invoice.paidMinor;
+  if (
+    row.direction !== "credit" ||
+    currency === invoice.currency ||
+    balance <= 0 ||
+    row.amountMinor <= 0 ||
+    invoice.issued === null ||
+    daysBetween(invoice.issued, row.date) < 0
+  )
+    return undefined;
+  const { cited, score, why } = invoiceClues(row, invoice);
+  if (score < PROPOSED) return undefined;
+  const owed = { minor: balance, currency: invoice.currency };
+  const received = { minor: row.amountMinor, currency };
+  return {
+    candidate: {
+      kind: "invoice",
+      recordId: invoice.recordId,
+      key: invoice.key,
+      title: invoice.title,
+      fit: "rate",
+      seen: invoice.seen,
+      score,
+      why,
+    } satisfies Candidate,
+    owed,
+    received,
+    rate: kinImpliedRate(owed, received),
+    cited,
+  };
+};
+
 const offerReason = (
   row: StatementRow,
   invoice: InvoiceCandidate,
   currency: string,
   offered: Candidate,
 ) => {
-  const cited = [invoice.number, invoice.key].find(
-    (one) =>
-      one !== null &&
-      (hasNumber(row.description, one) ||
-        (row.reference !== null && hasNumber(row.reference, one))),
-  );
-  if (cited !== undefined && cited !== null) return `cites ${cited}`;
+  const cited = citedNumber(row, invoice);
+  if (cited !== undefined) return `cites ${cited}`;
   const amount =
     offered.fit === "exact"
       ? "same amount"
@@ -393,7 +467,7 @@ const paymentCandidate = (
   };
 };
 
-const expenseCandidate = (
+export const expenseCandidate = (
   row: StatementRow,
   expense: ExpenseCandidate,
   currency: string,

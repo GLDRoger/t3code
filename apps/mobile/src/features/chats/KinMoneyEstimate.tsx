@@ -3,10 +3,12 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_CURRENCY,
+  kinCurrencyName,
   kinInvoiceCurrency,
   kinRateInput,
   kinRateLine,
   kinSettled,
+  kinSettledPayment,
   type KinRateDraft,
   type KinRates,
 } from "@t3tools/client-runtime/kin/kinCurrency";
@@ -117,6 +119,8 @@ function Frame(props: { readonly onClose: () => void; readonly children: React.R
           contentInsetAdjustmentBehavior="automatic"
           keyboardShouldPersistTaps="handled"
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
+          keyboardDismissMode="interactive"
+          automaticallyAdjustKeyboardInsets
         >
           {props.children}
         </ScreenScrollView>
@@ -223,7 +227,7 @@ function KinRatesForm(
           {saved}
         </Text>
       )}
-      <ListSection title={`${KIN_CURRENCY.homeCurrency}: ${profile.homeCurrency}`}>
+      <ListSection title={`${KIN_CURRENCY.homeCurrency}: ${kinCurrencyName(profile.homeCurrency)}`}>
         {profile.rates.length === 0 ? (
           <Text textRole="body" className="px-4 py-3 text-foreground-muted">
             {KIN_CURRENCY.noRates}
@@ -241,7 +245,7 @@ function KinRatesForm(
                 className="min-w-0 flex-1 gap-0.5 active:opacity-60"
               >
                 <Text textRole="body" className="text-foreground">
-                  {rate.currency}
+                  {kinCurrencyName(rate.currency)}
                 </Text>
                 <Text textRole="footnote" className="text-foreground-muted">
                   {kinRateLine(rate, profile.homeCurrency)}
@@ -265,6 +269,7 @@ function KinRatesForm(
           <KinWorkTextField
             label="Currency"
             value={draft.currency}
+            hint={draft.currency.length === 3 ? kinCurrencyName(draft.currency) : undefined}
             maxLength={3}
             keyboard="plain"
             disabled={saving}
@@ -309,7 +314,7 @@ const noBankAtom: ReturnType<typeof kinClient.workItem> = Atom.make(AsyncResult.
  */
 export function KinInvoiceCurrency(
   props: KinWorkTarget & {
-    readonly item: Pick<KinRecordDetail, "amount" | "links" | "balance">;
+    readonly item: Pick<KinRecordDetail, "amount" | "links" | "balance" | "payments">;
     readonly rates: KinRates | null;
     readonly settled: boolean;
   },
@@ -317,8 +322,9 @@ export function KinInvoiceCurrency(
   const navigation = useNavigation();
   const { environmentId, orgId, rates } = props;
   const view = kinInvoiceCurrency(props.item, rates);
+  const stored = kinSettledPayment(props.item, rates);
   const bankAtom =
-    view?.bank == null
+    stored !== null || !props.settled || view?.bank == null
       ? noBankAtom
       : kinClient.workItem({ environmentId, input: { orgId, key: view.bank } });
   const bank = Option.getOrNull(AsyncResult.value(useAtomValue(bankAtom)));
@@ -326,9 +332,10 @@ export function KinInvoiceCurrency(
   if (view === null || props.item.amount === undefined) return null;
   const bankDay = bank?.dateAt?.slice(0, 10) ?? null;
   const settled =
-    bank?.amount === undefined || bankDay === null
+    stored ??
+    (!props.settled || bank?.amount === undefined || bankDay === null
       ? null
-      : kinSettled(props.item.amount, bank.amount, bankDay, rates);
+      : kinSettled(props.item.amount, bank.amount, bankDay, rates));
   return (
     <View className="gap-1 rounded-2xl bg-grouped-card px-4 py-3">
       <Text textRole="body" className="font-t3-medium text-foreground">

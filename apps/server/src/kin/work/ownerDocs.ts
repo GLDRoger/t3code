@@ -11,6 +11,7 @@ import {
   type KinDocGetInput,
   type KinDocHistoryInput,
   type KinDocLabelInput,
+  type KinDocReadersInput,
   type KinDocRestoreInput,
   type KinDocStartWhatWeSellInput,
   type KinDocRenderInput,
@@ -53,7 +54,7 @@ import { changedSections, outlineOf, patchOf } from "./docBody.ts";
 import { docEmbeds } from "./docFiles.ts";
 import * as Docs from "./docs.ts";
 import { KinRecords, type Tick } from "./KinRecords.ts";
-import { LISTS } from "./lists.ts";
+import { fieldText, LISTS, parseFields } from "./lists.ts";
 import {
   OFFERINGS_ORIGIN,
   offeringsWithAnswer,
@@ -233,18 +234,39 @@ const kindLabelOf = Effect.fn("KinDocs.kindLabel")(function* (
   };
 });
 
-/** For an owner's menu: the teammate a doc was drafted for, while the label on it is not theirs. */
+/** The teammate a doc was drafted for, shown to owner-level readers. */
 const draftOfFor = Effect.fn("KinDocs.draftOf")(function* (orgId: KinOrgId, row: RecordRow) {
   const sql = yield* SqlClient.SqlClient;
   const [teammate] = yield* sql<{ name: string }>`SELECT p.display_name AS name FROM kin_records r
     JOIN kin_people p ON p.org_id = r.org_id AND p.removed_at IS NULL
       AND p.person_id = json_extract(r.fields_json, '$.draftFor')
     WHERE r.org_id = ${orgId} AND r.record_id = ${row.recordId} AND r.register_id = 'docs'
-      AND r.marked_by_person_id IS NOT p.person_id
       AND NOT ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))}
     ORDER BY p.person_id LIMIT 1`;
   return teammate === undefined ? {} : { draftOf: { name: teammate.name } };
 });
+
+const readersWriterOf = (row: RecordRow) => {
+  const fields = parseFields(row.fieldsJson);
+  const draftFor = fieldText(fields, "draftFor");
+  return fields.home === "company" || (row.sensitive === 1 && row.markedBy !== draftFor)
+    ? null
+    : draftFor;
+};
+
+const readersOf = (
+  row: RecordRow,
+  readerId: KinPersonId,
+  ownerLevel: boolean,
+): Pick<KinDocDetail, "readers" | "readersCan"> => {
+  const draftFor = readersWriterOf(row);
+  if (draftFor === null || (!ownerLevel && draftFor !== readerId)) return {};
+
+  return {
+    readers: row.sensitive === 1 ? "draft" : row.teamShared === 1 ? "team" : "owners",
+    readersCan: ownerLevel ? ["owners", "team"] : ["draft", "owners", "team"],
+  };
+};
 
 const detailOf = Effect.fn("KinDocs.detail")(function* (
   orgId: KinOrgId,
@@ -303,6 +325,7 @@ const detailOf = Effect.fn("KinDocs.detail")(function* (
       ? { editable: true as const }
       : {}),
     ...(yield* kindLabelOf(orgId, row, readerId)),
+    ...readersOf(row, readerId, viewer._tag === "ownerLevel"),
     ...(viewer._tag === "ownerLevel" ? yield* draftOfFor(orgId, row) : {}),
   } satisfies KinDocDetail;
 });
@@ -647,8 +670,10 @@ export const search = Effect.fn("KinDocs.search")(
                     limit: Math.min(MEMORY_HITS, limit),
                   }),
             ),
+            Effect.orElseSucceed(() => null),
           )
         : [];
+    const memoryHits = memory ?? [];
     const deals = input.deals === true || recordKinds.length === 0 || recordKinds.includes("work");
     const found =
       asked.length > 0 && recordKinds.length === 0
@@ -658,14 +683,14 @@ export const search = Effect.fn("KinDocs.search")(
             kinds:
               recordKinds.length > 0 ? recordKinds : everything ? EVERY_RECORD_KIND : undefined,
             closed: input.closed,
-            limit: limit - memory.length,
+            limit: limit - memoryHits.length,
             viewer: team === undefined ? "owner" : "team",
             scope: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
             deals,
           });
     return {
       hits: [
-        ...memory.map((hit) => ({
+        ...memoryHits.map((hit) => ({
           recordId: KinRecordId.make(`memory:${hit.itemId}`),
           key: hit.itemId,
           kind: "memory" as const,
@@ -692,6 +717,7 @@ export const search = Effect.fn("KinDocs.search")(
       ],
       indexed: found.indexed,
       asOf: iso(now),
+      ...(memory === null ? { memoryUnavailable: true } : {}),
     };
   },
   Effect.catchTags({ SqlError: () => unavailable }),
@@ -964,6 +990,63 @@ export const undoRecipe = Effect.fn("KinDocs.undoRecipe")(function* (
     removed: undone.removed,
   } satisfies KinRecipeUndoResult;
 }, workFailure);
+
+const notDraftWriter = new KinChatError({
+  reason: "not_allowed",
+  message: "Only the person writing this doc, or an owner, can change who reads it.",
+});
+const onlyWriterMakesDraft = new KinChatError({
+  reason: "not_allowed",
+  message: "Only the person writing this doc can make it a draft again.",
+});
+
+export const setReaders = Effect.fn("KinDocs.setReaders")(
+  function* (people: ReadonlyArray<PersonIdentity>, input: KinDocReadersInput) {
+    const { orgId, key, to, rev } = input;
+    if (!people.some((one) => one.orgId === orgId)) return yield* Docs.docNotFound(key);
+    const sql = yield* SqlClient.SqlClient;
+    return yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const { viewer, refused } = yield* placeRefusals(people, orgId);
+        if (refused.docs) return yield* Docs.docNotFound(key);
+        const { person, teammate } = viewer;
+        const view = teammate ? viewerOfPeople([person.personId]) : KIN_OWNER_LEVEL;
+        const ref = { key };
+        const row = yield* Docs.docRow(orgId, ref, view).pipe(
+          Effect.catchTags({
+            KinChatError: (error) => (error.reason === "not_found" ? Docs.docNotFound(key) : error),
+          }),
+        );
+        const draftFor = readersWriterOf(row);
+        if (draftFor === null || (teammate && draftFor !== person.personId))
+          return yield* notDraftWriter;
+        if (to === "draft" && !teammate) return yield* onlyWriterMakesDraft;
+
+        const team = to === "team";
+        const sensitive = to === "draft";
+        const sameLabel = sensitive
+          ? row.sensitive === 1 && row.markedBy === draftFor
+          : row.sensitive === 0;
+        if (!sameLabel || team !== (row.teamShared === 1)) {
+          // Only this transaction may bypass the generic teammate label/share restriction.
+          const writer = ownerWriter(person);
+          const moved = yield* Docs.move(orgId, writer, ref, { sensitive }, rev);
+          const records = yield* KinRecords;
+          // A move that changed the label already checked the caller's revision.
+          yield* records.update(
+            orgId,
+            writer,
+            key,
+            { team },
+            moved.row.rev === row.rev ? rev : undefined,
+          );
+        }
+        return yield* detailOf(orgId, ref, view, person.personId);
+      }),
+    );
+  },
+  Effect.catchTags({ SqlError: () => unavailable }),
+);
 
 /** The owner's label on a doc: raising or lowering it, which only a person may do. */
 export const label = Effect.fn("KinDocs.label")(

@@ -835,6 +835,39 @@ it.effect("a snapshot read takes no lock and makes no git call, trigger sync or 
   }).pipe(Effect.provide(Layer.merge(NodeServices.layer, databaseLayer)), Effect.scoped),
 );
 
+it.effect("a read of an unchanged head checks no checkout path under the memory lock", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+    const repository = fakeRepository(fs);
+    repository.files.set("deferrals/def-001.md", fixtureItem({}));
+    yield* fs.makeDirectory(`${root}/a/memory-read/deferrals`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/a/memory/.git/objects`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/a/memory/.git/refs`, { recursive: true });
+    let pathChecks = 0;
+    const countingFs = Layer.succeed(FileSystem.FileSystem, {
+      ...fs,
+      exists: (path) => Effect.suspend(() => (pathChecks++, fs.exists(path))),
+      lstat: (path) => Effect.suspend(() => (pathChecks++, fs.lstat(path))),
+    });
+    const layer = memoryTestLayer.pipe(
+      Layer.provide(configLayer(root, "unused")),
+      Layer.provide(repository.layer),
+      Layer.provide(Layer.merge(NodeServices.layer, countingFs)),
+    );
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      yield* memory.anchor(orgA, "main", repository.head());
+      const loaded = yield* memory.items(orgA);
+      expect(pathChecks).toBeGreaterThan(0);
+      pathChecks = 0;
+      // Every await under the lock is an event-loop turn a busy server makes the next read wait.
+      expect(yield* memory.items(orgA)).toEqual(loaded);
+      expect(pathChecks).toBe(0);
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(Layer.merge(NodeServices.layer, databaseLayer)), Effect.scoped),
+);
+
 it.live("a dev server with no memory repository set makes a seeded local one, once", () =>
   Effect.gen(function* () {
     const vcs = yield* VcsProcess.VcsProcess;

@@ -26,6 +26,7 @@ export const {
   useKinClientsList,
   useKinProjectsList,
   useKinWorkHistory,
+  useKinClientAccountsForTax,
   useKinClientPage,
   useKinProjectPage,
   kinWorkChoicesAtom,

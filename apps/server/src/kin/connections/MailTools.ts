@@ -88,7 +88,7 @@ const attachments = {
   items: { type: "string" },
   maxItems: 5,
   description:
-    "Kin's own files to attach, by key: an invoice, quote or receipt entry (its latest PDF) or a doc key.",
+    "Kin's own files to attach, by key: an invoice, quote, receipt or credit note entry (its latest PDF) or a doc key.",
 };
 const listed = (
   annotations: typeof read,
