@@ -986,7 +986,7 @@ describe("kinPresenceLine", () => {
   it("names each state in one static line; a note or tool label wins", () => {
     expect(kinPresenceLine(undefined, start)).toBeNull();
     expect(text(presence(), 0)).toBe("Thinking…");
-    expect(text(presence({ state: "writing" }), 0)).toBe("Writing…");
+    expect(text(presence({ state: "writing" }), 0)).toBe("Writing a reply…");
     expect(text(presence({ state: "working" }), 0)).toBe("Working…");
     expect(text(presence({ state: "working", label: "Checking memory" }), 0)).toBe(
       "Checking memory",

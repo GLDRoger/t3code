@@ -5,7 +5,17 @@ import {
 } from "@t3tools/contracts";
 import { expect, it } from "vite-plus/test";
 
+import { KinConnectionsToolkit } from "../connections/mcp.ts";
+import { KinDocumentToolkit } from "../gendocs/mcp.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
+import { KinPictureToolkit } from "../pictures/mcp.ts";
+import { KinPulseToolkit } from "../pulse/mcp.ts";
+import { KinSalesToolkit } from "../sales/mcp.ts";
+import { KinSocialToolkit } from "../social/mcp.ts";
+import { KinBillToolkit } from "../work/mcp/billTools.ts";
+import { KinDocsToolkit } from "../work/mcp/docTools.ts";
+import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
+import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import {
   classifySegment,
   PHASE_LABELS,
@@ -20,13 +30,49 @@ const call = (toolName: string) =>
 
 it("gives every lead tool a status a person would say, never Kin's own vocabulary", () => {
   const silent = ["kin_skip", "kin_react", "kin_journal"];
-  const labels = Object.keys(KinLeadToolkit.tools).map((name) => [name, call(name)] as const);
+  const labels: Array<readonly [string, string | null]> = Object.keys(KinLeadToolkit.tools).map(
+    (name) => [name, call(name)] as const,
+  );
   expect(labels.filter(([, label]) => label === null).map(([name]) => name)).toEqual(silent);
   // A tool the table forgot reads as the generic line: add its own words instead.
   expect(labels.filter(([, label]) => label === PHASE_LABELS.tool)).toEqual([]);
+  const work = [
+    KinWorkToolkit,
+    KinDocsToolkit,
+    KinBillToolkit,
+    KinStatementToolkit,
+    KinDocumentToolkit,
+    KinSalesToolkit,
+    KinSocialToolkit,
+    KinConnectionsToolkit,
+    KinPulseToolkit,
+    KinPictureToolkit,
+  ].flatMap((toolkit) => Object.keys(toolkit.tools).map((name) => [name, call(name)] as const));
+  expect(work.filter(([, label]) => label === PHASE_LABELS.tool)).toEqual([]);
+  labels.push(...work);
   for (const label of [...labels.map(([, label]) => label ?? ""), ...Object.values(PHASE_LABELS)])
     expect(label).not.toMatch(/memory|tool|level|worker|wake|queue|defer|widget|kin_|_/i);
   expect(call("kin_hand_off")).toBe("Passing this on");
+  const app = (tool: string) =>
+    toolLabel({
+      type: "dynamic_tool",
+      toolName: "mcp__kin__kin_connection_call",
+      input: { connection: "google", tool },
+    } as OrchestrationV2TurnItem);
+  expect([
+    app("mail_read_thread"),
+    app("mail_send"),
+    app("calendar_list_events"),
+    app("x"),
+  ]).toEqual([
+    "Reading mail",
+    "Writing an email",
+    "Checking the calendar",
+    "Using a connected app",
+  ]);
+  expect(toolLabel({ type: "command_execution", title: "ls" } as OrchestrationV2TurnItem)).toBe(
+    "Working in a terminal",
+  );
   expect(call("something_new")).toBe(PHASE_LABELS.tool);
 });
 

@@ -212,7 +212,7 @@ export const PHASE_LABELS = {
   held: "Waiting until tomorrow",
   preparing: "Catching up",
   thinking: "Thinking",
-  writing: "Writing",
+  writing: "Writing a reply",
   tool: "Working",
   attachments: "Looking at what you sent",
 } as const;
@@ -255,10 +255,67 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)kin_chat_read$/, "Reading the chat"],
   [/(?:^|__|\.)kin_chat_post$/, "Writing"],
   [/(?:^|__|\.)(?:kin_react|kin_journal|kin_skip)$/, null],
+  [
+    /(?:^|__|\.)(?:records_query|record_get|client_read|pipeline_read|deal_stages|dates_query)$/,
+    "Reading records",
+  ],
+  [/(?:^|__|\.)record_create$/, "Adding a record"],
+  [/(?:^|__|\.)record_comment$/, "Commenting on a record"],
+  [/(?:^|__|\.)record_\w+$/, "Updating a record"],
+  [/(?:^|__|\.)touch_log$/, "Logging a contact"],
+  [/(?:^|__|\.)project_note$/, "Noting it on the project"],
+  [/(?:^|__|\.)list_define$/, "Setting up a list"],
+  [/(?:^|__|\.)payment_record$/, "Recording a payment"],
+  [/(?:^|__|\.)number_record$/, "Recording a number"],
+  [/(?:^|__|\.)numbers_(?:read|watch)$/, "Checking the numbers"],
+  [/(?:^|__|\.)money_\w+$/, "Checking the money"],
+  [/(?:^|__|\.)budget_set$/, "Setting a budget"],
+  [/(?:^|__|\.)company_\w+$/, "Reading the company profile"],
+  [/(?:^|__|\.)(?:doc_create|kin_document)$/, "Making a doc"],
+  [/(?:^|__|\.)(?:doc_read|doc_history)$/, "Reading a doc"],
+  [/(?:^|__|\.)docs_search$/, "Searching docs"],
+  [/(?:^|__|\.)doc_\w+$/, "Editing a doc"],
+  [/(?:^|__|\.)bills_add$/, "Adding a bill"],
+  [/(?:^|__|\.)bill_read$/, "Reading bills"],
+  [/(?:^|__|\.)statement_\w+$/, "Reading a statement"],
+  [/(?:^|__|\.)kin_recipes$/, "Checking how files are made"],
+  [/(?:^|__|\.)kin_recipe_undo$/, "Undoing a change"],
+  [/(?:^|__|\.)kin_issue$/, "Issuing an invoice"],
+  [/(?:^|__|\.)kin_receipt$/, "Making a receipt"],
+  [/(?:^|__|\.)web_page$/, "Reading a web page"],
+  [/(?:^|__|\.)social_draft$/, "Drafting a post"],
+  [/(?:^|__|\.)(?:social_week|social_pack)$/, "Putting posts together"],
+  [/(?:^|__|\.)social_\w+$/, "Checking social posts"],
+  [/(?:^|__|\.)kin_connection_tools$/, "Checking connected apps"],
+  [/(?:^|__|\.)kin_connection_offer$/, "Asking you to connect an app"],
+  [/(?:^|__|\.)kin_connection_note$/, "Noting what an account is for"],
 ];
+// A connected app's call reads by what it touches: its tool name picks the words, never shows.
+const CONNECTION_LABELS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^(?:mail_send|mail_reply)$/, "Writing an email"],
+  [/^mail_/, "Reading mail"],
+  [/^calendar_/, "Checking the calendar"],
+];
+const TYPE_LABELS: Partial<Record<OrchestrationV2TurnItem["type"], string>> = {
+  file_search: "Checking my notes",
+  command_execution: "Working in a terminal",
+  file_change: "Editing files",
+  web_search: "Searching the web",
+};
+const CONNECTION_CALL = /(?:^|__|\.)kin_connection_call$/;
+const connectionLabel = (input: unknown) => {
+  const tool =
+    typeof input === "object" && input !== null && "tool" in input && typeof input.tool === "string"
+      ? input.tool
+      : "";
+  return CONNECTION_LABELS.find(([pattern]) => pattern.test(tool))?.[1] ?? "Using a connected app";
+};
 export function toolLabel(item: OrchestrationV2TurnItem): string | null {
-  if (item.type === "file_search") return "Checking my notes";
+  const byType = TYPE_LABELS[item.type];
+  if (byType !== undefined) return byType;
   const name = item.type === "dynamic_tool" ? (item.toolName ?? "") : (item.title ?? "");
+  if (item.type === "dynamic_tool" && CONNECTION_CALL.test(name))
+    return connectionLabel(item.input);
   const found = TOOL_LABELS.find(([pattern]) => pattern.test(name));
   return found === undefined ? PHASE_LABELS.tool : found[1];
 }
