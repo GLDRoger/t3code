@@ -51,6 +51,7 @@ import * as Budget from "./KinBudget.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import { fingerprintPrompt } from "./sessionCarry.ts";
 import * as KinStop from "./KinStop.ts";
 import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
@@ -161,6 +162,7 @@ type HarnessOptions = {
   readonly failed?: boolean;
   readonly beforeTurn?: ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"];
   readonly replyText?: string;
+  readonly toolOutputs?: ReadonlyArray<{ readonly tool: string; readonly output: string }>;
   /** The failed turn's failure code, as an adapter names it. */
   readonly failureCode?: string;
   /** The failed turn's failure text; a full disk names itself here. */
@@ -422,6 +424,31 @@ function parts(options: HarnessOptions) {
                 },
               });
             const finish = Effect.gen(function* () {
+              for (const [offset, result] of (options.toolOutputs ?? []).entries())
+                yield* Queue.offer(events, {
+                  type: "turn_item.updated",
+                  driver,
+                  turnItem: {
+                    id: TurnItemId.make(`output:${id}:${offset}`),
+                    threadId: input.threadId,
+                    runId: input.runId,
+                    nodeId: input.rootNodeId,
+                    providerThreadId: input.providerThread.id,
+                    providerTurnId: id,
+                    nativeItemRef: null,
+                    parentItemId: null,
+                    ordinal: input.runOrdinal * 100 + offset,
+                    status: "completed",
+                    title: null,
+                    startedAt: time,
+                    completedAt: time,
+                    updatedAt: time,
+                    type: "dynamic_tool",
+                    toolName: result.tool,
+                    input: {},
+                    output: result.output,
+                  },
+                });
               if (options.replyText !== undefined)
                 yield* Queue.offer(events, {
                   type: "turn_item.updated",
@@ -718,6 +745,7 @@ function parts(options: HarnessOptions) {
           build: (input) =>
             Effect.gen(function* () {
               yield* recordAudience(input, yield* turnAudience(input));
+              input.observePrompt?.(fingerprintPrompt(["invented standing"], "invented index"));
               options.prompts?.push(input);
               return "Wake up";
             }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie),

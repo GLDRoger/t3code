@@ -808,6 +808,13 @@ describe("Kin migrations", () => {
         "posted_at",
         "resumed",
         "quiet_since",
+        "kind",
+        "carry_json",
+        "standing_key",
+        "delta_json",
+        "prompt_index",
+        "context_tokens",
+        "last_request_at",
       ])
         yield* sql`ALTER TABLE kin_wakeups DROP COLUMN ${sql(column)}`;
       yield* sql`DROP INDEX idx_kin_wakeups_running_lead`;
@@ -1945,7 +1952,7 @@ describe("Kin migrations", () => {
           (yield* runKinMigrations()).map(([id]) => id),
           [
             196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
-            213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223,
+            213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224,
           ],
         );
         assert.deepStrictEqual(yield* receipts, [
@@ -1997,7 +2004,7 @@ describe("Kin migrations", () => {
         (yield* runKinMigrations()).map(([id]) => id),
         [
           197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214,
-          215, 216, 217, 218, 219, 220, 221, 222, 223,
+          215, 216, 217, 218, 219, 220, 221, 222, 223, 224,
         ],
       );
       const all = [
@@ -2753,6 +2760,45 @@ describe("Kin migrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
+  it.effect("K224 adds shadow fields and keeps one running wake-up across kinds", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      assert.deepStrictEqual(
+        yield* sql`SELECT name, type, dflt_value FROM pragma_table_info('kin_wakeups')
+        WHERE name IN ('kind', 'carry_json', 'standing_key', 'delta_json', 'prompt_index',
+          'context_tokens', 'last_request_at') ORDER BY cid`,
+        [
+          { name: "kind", type: "TEXT", dflt_value: "'turn'" },
+          { name: "carry_json", type: "TEXT", dflt_value: null },
+          { name: "standing_key", type: "TEXT", dflt_value: null },
+          { name: "delta_json", type: "TEXT", dflt_value: null },
+          { name: "prompt_index", type: "TEXT", dflt_value: null },
+          { name: "context_tokens", type: "INTEGER", dflt_value: null },
+          { name: "last_request_at", type: "INTEGER", dflt_value: null },
+        ],
+      );
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org', 'Kin', 1)`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES ('owner', 'org', 'owner', 'Owner', ${timestamp})`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+        VALUES ('lead', 'org', 'Lead', 'lead', 'owner', ${timestamp})`;
+      yield* sql`INSERT INTO kin_chats (org_id, chat_id, kind, direct_key, last_seq, created_at)
+        VALUES ('org', 'chat', 'direct', 'owner:lead', 0, '2026-11-26T00:00:00Z')`;
+      yield* sql`INSERT INTO kin_leads (org_id, agent_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+        VALUES ('org', 'lead', 'Lead', 1, '{}', '[]', 'chat')`;
+      yield* sql`INSERT INTO kin_wakeups (org_id, agent_id, wakeup_id, model, started_at, status, event_ids)
+        VALUES ('org', 'lead', 'turn', 'test', 1, 'running', '[]')`;
+      assert.deepStrictEqual(yield* sql`SELECT kind FROM kin_wakeups`, [{ kind: "turn" }]);
+      const upkeep = sql`INSERT INTO kin_wakeups (org_id, agent_id, wakeup_id, model, started_at, status, event_ids, kind)
+        VALUES ('org', 'lead', 'upkeep', 'test', 2, 'running', '[]', 'upkeep')`;
+      assert.isTrue(Exit.isFailure(yield* Effect.exit(upkeep)));
+      yield* sql`UPDATE kin_wakeups SET status = 'completed' WHERE wakeup_id = 'turn'`;
+      yield* upkeep;
+      assert.deepStrictEqual(yield* runKinMigrations(), []);
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
   it.effect("K223 indexes a draft again without whom it is for, and reruns", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -2947,6 +2993,13 @@ describe("Kin migrations", () => {
           settled_at: null,
           retired_at: null,
           quiet_since: null,
+          kind: "turn",
+          carry_json: null,
+          standing_key: null,
+          delta_json: null,
+          prompt_index: null,
+          context_tokens: null,
+          last_request_at: null,
         },
         kin_events: {
           org_id: "org",
