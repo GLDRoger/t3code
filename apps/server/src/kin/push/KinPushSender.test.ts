@@ -1379,6 +1379,12 @@ describe("KinPushSender", () => {
         messageId: yield* postMessage(sql, "system", "posted", silent),
       });
       assert.deepStrictEqual(apns.sent, []);
+      yield* notify({
+        _tag: "message",
+        orgId,
+        messageId: yield* postMessage(sql, dm, "posted", silent),
+      });
+      assert.deepStrictEqual(apns.sent, []);
       const messageId = yield* postMessage(sql, dm, "posted", { chatId: "chat_dm" });
       yield* notify({ _tag: "message", orgId, messageId });
       // One unread in the group and one in the DM; Waiting on you isn't unread, so it isn't counted.

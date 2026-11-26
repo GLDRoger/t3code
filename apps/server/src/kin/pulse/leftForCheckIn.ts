@@ -69,7 +69,8 @@ export const leftOpen = Effect.fn("KinLeftForCheckIn.open")(function* (
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ holdId: string }>`SELECT hold_id AS "holdId" FROM kin_held_posts
     WHERE org_id = ${orgId} AND agent_id = ${agentId} AND person_id = ${personId}
-      AND delivered_at IS NULL AND kind GLOB ${LEFT_KIND} AND NOT ${reservedByCheckIn(sql)}
+      AND delivered_at IS NULL AND (kind GLOB ${LEFT_KIND} OR kind GLOB 'kin-send:*')
+      AND NOT ${reservedByCheckIn(sql)}
     ORDER BY held_at, rowid`;
   return rows.map((row) => row.holdId);
 });

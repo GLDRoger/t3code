@@ -49,6 +49,7 @@ import { unreadableBy } from "../work/teamView.ts";
 type PostInput = KinMessagesSendInput & {
   readonly intent: KinAgentIntent;
   readonly placeReplyFigures?: true;
+  readonly silent?: true;
 };
 type PostToInput = PostInput & {
   /** Why it can't wait for their quiet hours: logged, and it posts now. */
