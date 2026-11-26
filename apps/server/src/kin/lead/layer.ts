@@ -317,6 +317,9 @@ const runner = Layer.effectDiscard(
   Layer.provide(Layer.mergeAll(OwnerCheck.layer, RoutineContent.layer)),
 );
 
+const ownerNotices = OwnerNotices.layer.pipe(Layer.provide(KinChatRepository.layer));
+const memoryLayer = Memory.layer.pipe(Layer.provide(ownerNotices));
+
 const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
   entry.pipe(
     Layer.provide(
@@ -324,7 +327,7 @@ const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
         Layer.provideMerge(KinChatRepository.layer),
       ),
     ),
-    Layer.provide(OwnerNotices.layer.pipe(Layer.provide(KinChatRepository.layer))),
+    Layer.provide(ownerNotices),
     Layer.provide(
       FollowUps.rememberSnapshots.pipe(
         Layer.provide(TriggerService.syncHooksLayer),
@@ -379,7 +382,7 @@ const toolkit = LeadMemory.layer.pipe(
 );
 
 export const layer = withServices(Layer.merge(runner, ChatWake.layer)).pipe(
-  Layer.provide(Memory.layer),
+  Layer.provide(memoryLayer),
 );
 // Documents render on this server; agents' own files and recipe drafts come through it too.
 const documents = Layer.merge(Render.layer, PictureRenderer.layer).pipe(
@@ -519,7 +522,7 @@ const configured = <R, R2>(
           dev === undefined
             ? MemoryConfig.layer(repositories)
             : MemoryConfig.layer(dev, { directMainPush: true });
-        yield* Layer.build(entry.pipe(Layer.provide(Memory.layer), Layer.provide(config)));
+        yield* Layer.build(entry.pipe(Layer.provide(memoryLayer), Layer.provide(config)));
       }).pipe(
         Effect.catchCause((cause) =>
           Effect.logError(
