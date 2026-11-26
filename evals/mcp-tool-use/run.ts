@@ -250,6 +250,7 @@ export type SampleRun = {
   readonly calls: ReadonlyArray<Call>;
   text: string;
   readonly deliveredText?: string;
+  readonly deliveredLevel?: "now" | "quiet" | "check_in";
   readonly deliveredBubbles?: ReadonlyArray<string>;
   readonly nudged?: boolean;
   stopReason: string;

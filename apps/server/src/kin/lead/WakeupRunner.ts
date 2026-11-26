@@ -159,8 +159,7 @@ import { inheritSession, outsideRead } from "./OutsideContent.ts";
 import { turnSensitive } from "../work/sensitiveReads.ts";
 
 const isSteerRun = (wakeupId: KinWakeupId, run: { readonly userMessageId: string }) =>
-  KinIdentity.isAdoptedRunMessage(wakeupId, run.userMessageId) &&
-  run.userMessageId !== KinIdentity.rescueMessageId(wakeupId);
+  KinIdentity.isSteerMessage(wakeupId, run.userMessageId);
 /** A running lead never shortens the org loop's wait; its finish wakes the loop instead. */
 const orgLoopWaitMs = (
   ready: ReadonlyArray<{ readonly agentId: KinAgentId; readonly readyAt: number }>,

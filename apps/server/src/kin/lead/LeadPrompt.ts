@@ -233,7 +233,7 @@ export const promptHeaderPlace = (line: string) =>
     ? "standing"
     : line === SHARED_TURN_LINE ||
         line === PASSED_ON_SPEAKER ||
-        /^(Your reply goes to chat |This turn is in the Team room, chat |Their own mailbox(?:es)? |In this group: |You are this group's default agent: |You answer here only when |Set in this chat: |Nobody is waiting on this turn[.:]|You are talking with |Owner time: |Budget: |The company's (connected services|GitHub accounts))/.test(
+        /^(Your reply goes to chat |This turn is in the Team room, chat |Their own mailbox(?:es)? |In this group: |You are this group's default agent: |You answer here only when |Set in this chat: |Nobody is waiting on this turn[.:]|This turn was started by |You are talking with |Owner time: |Budget: |The company's (connected services|GitHub accounts))/.test(
           line,
         )
       ? "header"

@@ -142,6 +142,13 @@ const withoutMarker = <A, E, R>(base: Layer.Layer<A | KinLeadPrompt, E, R>) =>
 const layer = withoutMarker(baseLayer);
 const promptLive = withoutMarker(KinLeadPrompt.layer);
 
+it.each([
+  "Nobody is waiting on this turn.",
+  "This turn was started by a check-in, not by a person.",
+])("keeps the triggered-turn line in the session header: %s", (line) => {
+  expect(sessionPrompt.promptHeaderPlace(line)).toBe("header");
+});
+
 it.effect(
   "keeps the cache prefix stable across events and clocks; only memory changes with its head",
   () =>

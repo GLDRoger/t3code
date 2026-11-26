@@ -1260,7 +1260,9 @@ it.effect("counts only posted Kin segments toward reply limits", () =>
           ...(kin ? { world: { kinLead: true } } : {}),
           shellMocks: [{ match: "^echo", output: "hi" }],
         },
-        prompt: "Check the invoice and report back.",
+        prompt: kin
+          ? "> BEGIN QUOTE: owner message\n> Check the invoice and report back.\n> END QUOTE"
+          : "Check the invoice and report back.",
         expect: { limits: { chars: final.length } },
       } satisfies McpToolUseCase;
       const replies = [

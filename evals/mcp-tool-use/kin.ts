@@ -244,7 +244,7 @@ import {
 } from "../../apps/server/src/kin/reply/turnVoice.ts";
 import { TURN_EVENT_TOOLS } from "../../apps/server/src/kin/lead/eventIds.ts";
 import { noticeDay } from "../../apps/server/src/kin/work/crm.ts";
-import type { Call, McpToolUseCase } from "./run.ts";
+import type { Call, McpToolUseCase, SampleRun } from "./run.ts";
 
 export { kinInstructions, kinLeadInstructions };
 
@@ -744,10 +744,23 @@ export const deliveredText = (
   return replyText(sample.responses, false, startedBy(caseTags(sample.testCase)) === "person");
 };
 
-export const kinDelivery = (sample: ReplySample, sendOnly?: boolean) => {
+const sendLevel = (input: unknown) => {
+  if (!isRecord(input)) return undefined;
+  const { level } = input;
+  return level === "now" || level === "quiet" || level === "check_in" ? level : undefined;
+};
+
+const isDueReminder = (prompt: string) => quoteLabels(prompt).includes(QUOTE_LABELS.reminder);
+
+export const kinDelivery = (
+  sample: ReplySample,
+  sendOnly?: boolean,
+): Pick<SampleRun, "deliveredText" | "deliveredLevel" | "deliveredBubbles"> => {
   if (sample.testCase.setup.world?.kinLead !== true) return {};
   const text = deliveredText(sample, sendOnly);
   const labels = quoteLabels(sample.testCase.prompt);
+  const ending = replyEnding(sample.calls);
+  const level = ending?.tool === "kin_send" ? sendLevel(ending.input) : undefined;
   const page =
     labels.some((label) =>
       /^(?:morning|weekly|evening|left for this check-in|routine facts|Team room turn)\b/.test(
@@ -756,6 +769,9 @@ export const kinDelivery = (sample: ReplySample, sendOnly?: boolean) => {
     ) || /^This turn is in the Team room, chat /m.test(sample.testCase.prompt);
   return {
     deliveredText: text,
+    ...(level === undefined
+      ? {}
+      : { deliveredLevel: isDueReminder(sample.testCase.prompt) ? "now" : level }),
     deliveredBubbles: text === "" ? [] : page ? [text] : kinReplyBubbles(text),
   };
 };
@@ -2053,21 +2069,28 @@ export const defaultReplyMock = (
   }
   if (ending?.tool === "kin_skip")
     return { $error: "Nothing was sent: this turn already ended with kin_skip." };
-  if (ending?.tool === "kin_send")
+  if (ending?.tool === "kin_send") {
+    if (
+      isRecord(ending.input) &&
+      ending.input.text === input.text &&
+      ending.input.level === input.level
+    )
+      return safeJson(ending.output ?? "");
     return { $error: "This turn's message is already sent; end the turn" };
+  }
   if (typeof input.text !== "string" || input.text.trim() === "")
     return { $error: "Nothing was sent: pass the text to send." };
   const { prompt } = sample.testCase;
   if (/^This turn is in the Team room, chat /m.test(prompt))
     return { $error: "Nothing was sent: use team_say to speak in the Team room." };
-  if (!["now", "quiet", "check_in"].some((level) => input.level === level))
-    return { $error: "Nothing was sent: pass a valid level." };
-  if (input.level === "check_in" && !caseTags(sample.testCase).includes("deferral.due")) {
+  const level = sendLevel(input);
+  if (level === undefined) return { $error: "Nothing was sent: pass a valid level." };
+  if (level === "check_in" && !isDueReminder(prompt)) {
     if (/your direct chat with (?:a teammate|a co-owner)|, (?:a group|the group)/.test(prompt))
       return { $error: "Nothing was sent: check_in is only for the owner's own chat." };
     return { held: true, when: "At the next check-in." };
   }
-  return { sent: true, messageId: "kin-send:eval-turn" };
+  return { sent: true, messageId: "82136085-9468-4997-82b9-a1c46a81a809" };
 };
 
 /** What Kin asks once after a turn that owes an answer or has an unsent final message. */
