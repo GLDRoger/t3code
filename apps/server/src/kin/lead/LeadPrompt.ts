@@ -3377,7 +3377,7 @@ export const TURN_DIVIDER = "--- THIS TURN ---";
 const dividerPart = { place: "divider", shared: true, text: TURN_DIVIDER } as const;
 // Words under eval: change them only with the carry cases.
 export const CARRIED_TURN_NOTE =
-  "This turn continues your session in this chat: the replies in it were sent and the person has them. Kin lists here every change since your previous turn, by anyone, to what you read in this session, payments and edits included; what you read and is not listed is as you read it. Anything someone says has changed, and anything you have not read in this session, is as Kin's tools show it now.";
+  "This turn continues your session in this chat: the replies in it were sent and the person has them. Kin lists here every change since your previous turn, by anyone, to what you read in this session, payments and edits included; what you read and is not listed is as you read it, so answer from it without reading it again. The exception is someone telling you it changed, a payment above all: then read it again before you answer, even though nothing here lists it. Anything you have not read in this session is as Kin's tools show it now.";
 export const SESSION_CHANGES_CAP = 30;
 const INDEX_OVERFLOW =
   "More than 40 memory index lines changed since your previous turn; search memory for what you need.";

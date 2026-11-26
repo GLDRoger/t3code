@@ -694,6 +694,43 @@ describe("choice cards", () => {
     expect(kinChoiceDecidedLine(decided, "rhea" as never)).toBeNull();
     expect(kinChoiceDecidedLine(tapped, "meera" as never)).toBeNull();
     expect(kinChoiceDecidedLine({ ...decided, answer: null }, "meera" as never)).toBeNull();
+    // An agent question card answered with an outcome whose title already reads "You chose …"
+    // does not repeat "You chose …." as a second footer line for the person who chose.
+    const answeredWithHeading = choice({
+      revision: 3,
+      state: {
+        ...choiceState({
+          optionId: "option-2",
+          personId: "rhea",
+          via: "tap",
+          emoji: null,
+          answeredAt: "2026-11-08T09:05:00.000Z",
+        }),
+        outcome: { title: "You chose “Wait”", text: "I'll hold off until Friday." },
+        decidedBy: { personId: "rhea", name: "Rhea Rao" },
+      },
+    });
+    expect(kinChoiceDecidedLine(answeredWithHeading, "rhea" as never)).toBeNull();
+    expect(kinChoiceDecidedLine(answeredWithHeading, "meera" as never)).toBe(
+      "Rhea Rao chose “Wait”.",
+    );
+    const answeredDifferentHeading = choice({
+      revision: 3,
+      state: {
+        ...choiceState({
+          optionId: "option-1",
+          personId: "rhea",
+          via: "tap",
+          emoji: null,
+          answeredAt: "2026-11-08T09:05:00.000Z",
+        }),
+        outcome: { title: "Money recorded", text: "Recorded." },
+        decidedBy: { personId: "rhea", name: "Rhea Rao" },
+      },
+    });
+    expect(kinChoiceDecidedLine(answeredDifferentHeading, "rhea" as never)).toBe(
+      "You chose “Ship it”.",
+    );
   });
 
   it("says what an answered card of Kin's own did, in a past-tense title, not the button", () => {

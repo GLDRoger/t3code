@@ -907,49 +907,89 @@ describe("streaming replies", () => {
 
   it("collects a reply group's buttons once after the last bubble or card", () => {
     const sourceWakeupId = KinWakeupId.make("invented-reply");
-    const doc = (seq: number, key: string, text: string, clientMessageId: string) =>
+    const realBase = "send:reply:turn-item:provider:claudeAgent:native-item:item-1";
+    const sendBase = "send:kin-send:wake-1";
+    const linked = (
+      seq: number,
+      links: NonNullable<KinMessage["links"]>,
+      body: string,
+      clientMessageId?: string,
+    ) =>
       agentMessage(seq, {
         sourceWakeupId,
-        clientMessageId,
-        body: text,
-        links: [{ text, to: { _tag: "record", key, kind: "doc" }, note: null }],
+        ...(clientMessageId === undefined ? {} : { clientMessageId }),
+        body,
+        links,
       });
-    const first = doc(2, "D-1", "First draft", "reply:checklist");
-    const second = doc(3, "D-2", "Second draft", "reply:checklist~b2");
-    const third = doc(4, "D-3", "Third draft", "reply:checklist~b3");
-    const last = { ...third, links: [...first.links!, ...third.links!] };
-    const card = agentMessage(1, { sourceWakeupId, body: "", widgetId: KinWidgetId.make("doc") });
-    const later = {
-      ...doc(5, "D-4", "Fourth draft", "reply:checklist~b4"),
-      sourceWakeupId: KinWakeupId.make("other-turn"),
-    };
+    const recordLink = (key: string, text: string, kind: "doc" | "task" | "client" = "doc") => ({
+      text,
+      to: { _tag: "record" as const, key, kind },
+      note: null,
+    });
+    const w2 = recordLink("W-2", "Patient onboarding copy and walkthrough", "task");
+    const clinic = recordLink("C-1", "Lumen Grove Clinics", "client");
+    const d11 = recordLink("D-11", "Checklist: chasing INV/26-27/004", "doc");
+    const inv = recordLink("INV-4", "INV/26-27/004", "doc");
     const draw = (messages: ReadonlyArray<KinMessage>) => messageRows(messages, viewer, new Set());
-    const footer = {
-      type: "footer",
-      key: "footer:reply:checklist~b3",
-      message: last,
-      buttons: [
-        { id: "record:D-1", label: "Open First draft" },
-        { id: "record:D-2", label: "Open Second draft" },
-        { id: "record:D-3", label: "Open Third draft" },
-      ],
-    };
-    const group = [first, second, last].map((message) => ({
-      type: "message",
-      footerInFeed: true,
-      message,
-    }));
-    expect(draw([first, second, last, later])).toMatchObject([
-      ...group,
-      footer,
-      { type: "message", message: later },
+
+    // Three bubbles naming the same record twice (bubbles 1 & 3) and one client once (bubble 2),
+    // tested with real `send:reply:…` ids and with viewer-stripped ids (`clientMessageId: undefined`).
+    for (const ids of [
+      [realBase, `${realBase}~b2`, `${realBase}~b3`, `${realBase}~b4`],
+      [sendBase, `${sendBase}~b2`, `${sendBase}~b3`, `${sendBase}~b4`],
+      [undefined, undefined, undefined, undefined],
+    ] as const) {
+      const first = linked(2, [w2], "First paragraph about W-2.", ids[0]);
+      const second = linked(3, [clinic], "Second paragraph about Lumen Grove Clinics.", ids[1]);
+      const third = linked(4, [w2], "Third paragraph mentioning W-2 again.", ids[2]);
+      const later = {
+        ...linked(5, [d11], "Separate later turn.", ids[3]),
+        sourceWakeupId: KinWakeupId.make("other-turn"),
+      };
+      const footer = {
+        type: "footer",
+        key: `footer:${third.messageId}`,
+        message: third,
+        buttons: [
+          { id: "record:W-2", label: "Open Patient onboarding copy and walkthrough" },
+          { id: "record:C-1", label: "Open Lumen Grove Clinics" },
+        ],
+      };
+      const group = [first, second, third].map((message) => ({
+        type: "message",
+        footerInFeed: true,
+        message,
+      }));
+      expect(draw([first, second, third, later])).toMatchObject([
+        ...group,
+        footer,
+        { type: "message", message: later },
+      ]);
+      expect(draw([first]).map((row) => row.type)).toEqual(["message"]);
+    }
+
+    // Two bubbles plus a doc card: one combined footer row after the doc card.
+    const docCard = agentMessage(1, {
+      sourceWakeupId,
+      body: "",
+      widgetId: KinWidgetId.make("doc"),
+    });
+    const b1 = linked(2, [clinic], "Orbit Dental checklist overview.", realBase);
+    const b2 = linked(3, [inv], "INV/26-27/004 is 12 days overdue.", `${realBase}~b2`);
+    expect(draw([docCard, b1, b2])).toMatchObject([
+      { type: "message", footerInFeed: true, message: b1 },
+      { type: "message", footerInFeed: true, message: b2 },
+      { type: "message", message: docCard },
+      {
+        type: "footer",
+        key: `footer:${b2.messageId}`,
+        message: b2,
+        buttons: [
+          { id: "record:C-1", label: "Open Lumen Grove Clinics" },
+          { id: "record:INV-4", label: "Open INV/26-27/004" },
+        ],
+      },
     ]);
-    expect(draw([card, first, second, last])).toMatchObject([
-      ...group,
-      { type: "message", message: card },
-      footer,
-    ]);
-    expect(draw([first]).map((row) => row.type)).toEqual(["message"]);
   });
 
   it("keeps a draft's key and author line when its message lands, so the bubble stays put", () => {
