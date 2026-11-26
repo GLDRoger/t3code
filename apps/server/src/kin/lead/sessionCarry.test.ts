@@ -4,7 +4,7 @@ import { type CarryFacts, decideCarry } from "./sessionCarry.ts";
 
 const clean: CarryFacts = {
   enabled: true,
-  provider: "claude",
+  provider: "claudeAgent",
   ownerThread: true,
   sameChat: true,
   previousCompleted: true,

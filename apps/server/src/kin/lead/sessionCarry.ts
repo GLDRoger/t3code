@@ -5,6 +5,7 @@ import {
   type KinAgentId,
   type KinOrgId,
   type ModelSelection,
+  type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -46,7 +47,7 @@ export const CARRY_INDEX_LINES = 40;
 export function decideCarry(facts: CarryFacts) {
   const reason = !facts.enabled
     ? "off"
-    : facts.provider !== "claude"
+    : facts.provider !== "claudeAgent"
       ? "provider"
       : !facts.ownerThread
         ? "thread"
@@ -97,10 +98,13 @@ const bootId = Effect.gen(function* () {
 });
 export { bootId as ulid };
 
-export class KinBoot extends Context.Service<KinBoot, string>()("t3/kin/lead/KinBoot") {}
+export class KinBoot extends Context.Service<KinBoot, string>()(
+  "t3/kin/lead/sessionCarry/KinBoot",
+) {}
 export const layer = Layer.effect(KinBoot, bootId);
 
 const digest = (text: string) => createHash("sha256").update(text).digest("hex");
+const fingerprintJson = (value: unknown) => digest(JSON.stringify(value));
 
 const Fingerprint = Schema.Struct({
   chat: Schema.NullOr(Schema.String),
@@ -130,7 +134,7 @@ export const fingerprintPrompt = (
   standing: ReadonlyArray<unknown>,
   index: string | undefined,
 ): PromptFingerprint => ({
-  standing: digest(JSON.stringify(standing)),
+  standing: fingerprintJson(standing),
   index:
     index === undefined
       ? null
@@ -151,6 +155,7 @@ interface Wakeup {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
   readonly wakeupId: KinWakeupId;
+  readonly runId?: RunId | null;
 }
 
 export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
@@ -166,6 +171,7 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
     readonly prompt: PromptFingerprint;
     readonly enabled: boolean;
     readonly now: number;
+    readonly stopRevision: number;
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -193,19 +199,16 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
     SELECT member_id, principal_kind, person_id, agent_id, role, joined_at
     FROM kin_chat_members WHERE org_id = ${orgId} AND chat_id = ${chat} AND left_at IS NULL
     ORDER BY member_id`;
-  const [stop] = yield* sql<{ paused: number; latest: number | null }>`
-    SELECT COALESCE((SELECT paused FROM kin_org_state WHERE org_id = ${orgId}), 0) AS paused,
-      MAX(CAST(substr(message_id, 11, instr(substr(message_id, 11), ':') - 1) AS INTEGER)) AS latest
-    FROM kin_messages WHERE org_id = ${orgId} AND chat_id = ${lead?.ownerChat ?? null}
-      AND author_kind = 'system' AND message_id GLOB 'kin-pause:*:*'`;
+  const [stop] = yield* sql<{ paused: number }>`
+    SELECT paused FROM kin_org_state WHERE org_id = ${orgId}`;
   const fingerprint = {
     chat,
-    model: digest(JSON.stringify(input.model)),
+    model: fingerprintJson(input.model),
     instructions: input.instructionsSha,
-    lead: digest(JSON.stringify(lead ?? null)),
-    members: digest(JSON.stringify(members)),
+    lead: fingerprintJson(lead ?? null),
+    members: fingerprintJson(members),
     standing: input.prompt.standing,
-    stop: stop?.latest ?? 0,
+    stop: input.stopRevision,
   };
   const [previous] = yield* sql<{
     wakeupId: KinWakeupId;
@@ -233,6 +236,13 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
   const priorFingerprint = Option.getOrUndefined(decodeFingerprint(previous?.fingerprint));
   const priorIndex = Option.getOrUndefined(decodeIndex(previous?.promptIndex));
   const sessionStart = prior?.sessionStart;
+  const [adoptedInSession] =
+    wakeup.runId == null || previous?.providerThreadId == null
+      ? []
+      : yield* sql`
+      SELECT 1 FROM orchestration_v2_projection_runs
+      WHERE thread_id = ${threadId} AND run_id = ${wakeup.runId}
+        AND provider_thread_id = ${previous.providerThreadId}`;
   const history =
     previous === undefined || prior === undefined
       ? []
@@ -313,6 +323,7 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
   return {
     facts,
     fingerprint,
+    sessionStart: adoptedInSession === undefined ? wakeupId : (sessionStart ?? wakeupId),
     carriedFrom: sessionStart ?? null,
     contextTokens: last?.contextTokens ?? null,
   };

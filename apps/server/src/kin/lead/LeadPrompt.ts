@@ -27,6 +27,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import { fingerprintPrompt, type PromptFingerprint } from "./sessionCarry.ts";
 
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
@@ -236,6 +237,7 @@ export interface KinLeadPromptInput {
   readonly events: ReadonlyArray<KinEvent>;
   readonly memoryHead: string;
   readonly budgetContext?: string;
+  readonly observePrompt?: (fingerprint: PromptFingerprint) => void;
   /** The chat the lead's plain text goes to; see the reply bridge. */
   readonly lane?: {
     readonly chatId: KinChatId;
@@ -2337,6 +2339,31 @@ export class KinLeadPrompt extends Context.Service<
               Effect.logWarning("Kin set-up turn unknown", cause).pipe(Effect.as(false)),
             ),
           ));
+        if (ownerOnly && input.observePrompt !== undefined)
+          input.observePrompt(
+            fingerprintPrompt(
+              [
+                leadName,
+                intro?.text,
+                charter,
+                snapshot?.rules,
+                seat?.character,
+                teamIndex,
+                stored?.domain,
+                seat?.seat,
+                seat?.colleagues,
+                seat?.team,
+                connected,
+                github,
+                addresses,
+                playbooks,
+                thisCompany,
+                offerings,
+                setUp,
+              ],
+              snapshot?.index,
+            ),
+          );
         const parts: ReadonlyArray<Part> = [
           // Before the rules and memory, so it shapes how the agent sounds and nothing else.
           ...(seat?.character === undefined

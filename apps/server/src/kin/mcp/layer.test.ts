@@ -24,7 +24,7 @@ import {
   ThreadId,
 } from "@t3tools/contracts";
 import { McpServer, Tool, Toolkit } from "effect/ai";
-import { KinAgentSessions } from "./layer.ts";
+import { KinAgentSessions } from "./KinAgentSessions.ts";
 import * as KinIssuedTokens from "./KinIssuedTokens.ts";
 import { REMOTE_REFUSAL, TASK_LIMIT_REFUSAL, WORKER_REFUSAL } from "./KinToolGate.ts";
 import { OUTSIDE_REFUSAL, OUTSIDE_TOOLS } from "../lead/OutsideContent.ts";
