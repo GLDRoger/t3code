@@ -4306,9 +4306,13 @@ const make = Effect.gen(function* () {
                   (yield* sql`SELECT 1 FROM kin_waiting
                     WHERE org_id = ${key.orgId} AND chat_id = ${key.chatId}
                       AND message_id = ${key.messageId} AND person_id = ${personId}
-                      AND resolved_at IS NULL LIMIT 1`.pipe(
-                    Effect.mapError(toPersistenceSqlError("KinChatService.react")),
-                  )).length > 0))) &&
+                      AND resolved_at IS NULL
+                    UNION ALL SELECT 1 FROM kin_questions
+                    WHERE org_id = ${key.orgId} AND chat_id = ${key.chatId}
+                      AND message_id = ${key.messageId} AND person_id = ${personId}
+                      AND kind = 'text' AND state = 'open'
+                    LIMIT 1`.pipe(Effect.mapError(toPersistenceSqlError("KinChatService.react"))))
+                    .length > 0))) &&
             !(yield* withSql(Reactions.recentlyWoke({ ...key, now: nowMs })))
           : past.latest &&
             past.wakes < Reactions.KIN_REACTION_WAKES_PER_MESSAGE &&
