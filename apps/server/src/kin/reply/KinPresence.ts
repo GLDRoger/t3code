@@ -182,6 +182,7 @@ const make = Effect.gen(function* () {
       draft: {
         draftId,
         agentId: state.agentId,
+        sourceWakeupId: state.wakeupId,
         offset,
         text,
         ...(end === undefined ? {} : { end }),
@@ -294,7 +295,12 @@ const make = Effect.gen(function* () {
       for (const [draftId, state] of current.drafts) {
         if (state.sent === 0 || !(yield* allowed(orgId, chatId, state))) continue;
         // What was already sent, so the next delta's offset lines up.
-        drafts.push({ draftId, agentId: state.agentId, text: state.full.slice(0, state.sent) });
+        drafts.push({
+          draftId,
+          agentId: state.agentId,
+          sourceWakeupId: state.wakeupId,
+          text: state.full.slice(0, state.sent),
+        });
       }
       return { presence: [...current.presence.values()], drafts };
     }),

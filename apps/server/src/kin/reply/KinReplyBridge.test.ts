@@ -1601,6 +1601,10 @@ it.effect("a teammate joining mid-draft sees none of it, and the draft ends unse
     const plan = `Invented private plan: ${"step after step, ".repeat(10)}`;
     yield* Queue.offer(fake.live, streaming(plan));
     yield* Fiber.join(firstDraft);
+    assert.strictEqual(
+      (yield* presence.snapshot(owner.orgId, chatId)).drafts[0]?.sourceWakeupId,
+      wakeupId,
+    );
     const groups = Context.get(services, KinGroups);
     yield* groups.addMember([owner], {
       chatId,
@@ -1625,6 +1629,7 @@ it.effect("a teammate joining mid-draft sees none of it, and the draft ends unse
       (event): event is Extract<KinChatHubEvent, { type: "draft.updated" }> =>
         event.type === "draft.updated",
     );
+    assert.strictEqual(drafts[0]?.draft.sourceWakeupId, wakeupId);
     // The owner's view ends the draft it saw; nothing past the join is sent to anyone.
     assert.deepStrictEqual(
       drafts.map((event) => [event.draft.text, event.draft.end !== undefined, event.personId]),
