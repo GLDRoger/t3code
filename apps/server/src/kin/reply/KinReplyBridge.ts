@@ -57,6 +57,7 @@ import {
   isPrivateWriteRefused,
   storedClientId,
 } from "../chat/KinChatRepository.ts";
+import { refusedReplyRun } from "../floor/KinFloor.ts";
 import {
   KinIdentity,
   isSteerMessage,
@@ -291,20 +292,33 @@ type Ending = "text" | "marker" | "none" | "rescued_text" | "rescued_none" | "fa
 type Outcome = "held" | "posted" | "note" | "silent" | "empty" | "withheld" | "dropped";
 
 const WITHHELD_ANY = "Kin couldn't save it. Send your message again.";
-/**
- * Why Kin held a reply back, for everyone in the chat, never what it said; none for the chat's own
- * no, which a person's direct chat still hears (`refusedHere`).
- */
-const withheldWhy = (error: { readonly reason: string }): string | null =>
-  isPrivateWriteRefused(error)
-    ? "it included things only the owner and co-owners see, and someone else is in this chat. Ask again and the answer will be one everyone here may read."
-    : error.reason === "limit"
-      ? "this chat reached its message limit for now. Try again later."
-      : error.reason === "floor_not_granted" || error.reason === "floor_closed"
-        ? "it came after the time to answer ran out. Send your message again."
-        : error.reason === "not_allowed"
-          ? null
-          : WITHHELD_ANY;
+type Withheld = {
+  readonly _tag: "withheld";
+  readonly reason: KinChatError["reason"] | "wake-up ended" | "past_its_day";
+  readonly message: string;
+  readonly moved?: boolean;
+  readonly private?: boolean;
+  readonly floorRunId?: string | undefined;
+  readonly ownMessageId?: KinMessageId | undefined;
+  readonly auxiliary?: true;
+};
+
+const refusedWrite = (error: KinChatError, ownMessageId?: KinMessageId): Withheld => ({
+  _tag: "withheld",
+  reason: error.reason,
+  message: error.message,
+  moved: error.message === AUDIENCE_MOVED,
+  private: isPrivateWriteRefused(error),
+  floorRunId: refusedReplyRun(error),
+  ownMessageId: error.reason === "not_found" ? ownMessageId : undefined,
+});
+
+const missingAuthor: Withheld = {
+  _tag: "withheld",
+  reason: "wake-up ended",
+  message: "No active agent identity for this wake-up.",
+};
+
 /** A stored message Kin can still add to, such as the brief or an earlier review. */
 type Slot = {
   readonly messageId: KinMessageId;
@@ -343,9 +357,7 @@ type Wake = {
   // A segment reached the chat, so the lane is answered.
   answered: boolean;
   // Kin refused a segment: nothing reached the chat for it, and a rescue would be refused too.
-  withheld: string | null;
-  // Why, in words for the people in the chat (`withheldWhy`).
-  withheldWhy: string | null;
+  withheld: Withheld | null;
   lastReply?: Slot;
   // Steer number by transcript ordinal, with -1 as the original request's slot.
   readonly steers: Map<number, number>;
@@ -455,13 +467,13 @@ type AnswerItem = Extract<OrchestrationV2TurnItem, { type: "assistant_message" }
 /** The model's own words. Its reasoning never reaches a chat, even shown as an update. */
 const isAnswer = (item: OrchestrationV2TurnItem) =>
   item.type === "assistant_message" && !isClaudeThinkingItem(item);
-const textOf = (
-  item: AnswerItem,
-  projection?: Pick<OrchestrationV2ThreadProjection, "messages">,
-) =>
-  item.textOmitted === true
-    ? (projection?.messages.find((message) => message.id === item.messageId)?.text ?? item.text)
-    : item.text;
+const withoutNul = (text: string) => text.replaceAll("\u0000", "");
+const textOf = (item: AnswerItem, projection?: Pick<OrchestrationV2ThreadProjection, "messages">) =>
+  withoutNul(
+    item.textOmitted === true
+      ? (projection?.messages.find((message) => message.id === item.messageId)?.text ?? item.text)
+      : item.text,
+  );
 /** Cards that show a chart, visual or file but say nothing: the turn still owes a line. */
 const SHOWS_ONLY = ["chart", KIN_VISUAL_CARD_TYPE, KIN_DOC_CARD];
 const make = Effect.gen(function* () {
@@ -628,15 +640,13 @@ const make = Effect.gen(function* () {
     namedOnly = false,
   ) {
     const lead = yield* agent(wake);
-    if (lead === undefined)
+    if (lead === undefined) return missingAuthor;
+    if (yield* pastItsDay(wake))
       return {
         _tag: "withheld" as const,
-        reason: "wake-up ended",
-        why: WITHHELD_ANY,
-        moved: false,
+        reason: "past_its_day" as const,
+        message: "The check-in's day has passed.",
       };
-    if (yield* pastItsDay(wake))
-      return { _tag: "withheld" as const, reason: "past_its_day", why: null, moved: false };
     return yield* gate
       .postReply(
         lead,
@@ -669,14 +679,7 @@ const make = Effect.gen(function* () {
             last: { messageId: last.messageId, body: last.body },
           };
         }),
-        Effect.catch((error) =>
-          Effect.succeed({
-            _tag: "withheld" as const,
-            reason: error.reason,
-            why: withheldWhy(error),
-            moved: error.message === AUDIENCE_MOVED,
-          }),
-        ),
+        Effect.catch((error) => Effect.succeed(refusedWrite(error))),
       );
   });
 
@@ -702,13 +705,7 @@ const make = Effect.gen(function* () {
     ordinal: number,
   ) {
     const author = yield* agent(wake);
-    if (author === undefined)
-      return {
-        _tag: "withheld" as const,
-        reason: "wake-up ended",
-        why: WITHHELD_ANY,
-        moved: false,
-      };
+    if (author === undefined) return missingAuthor;
     return yield* gate
       .extend(
         author,
@@ -726,12 +723,7 @@ const make = Effect.gen(function* () {
           return { _tag: "posted" as const, messageId: slot.messageId, body: message.body };
         }),
         Effect.catch((error) =>
-          Effect.succeed({
-            _tag: "withheld" as const,
-            reason: error.reason,
-            why: withheldWhy(error),
-            moved: error.message === AUDIENCE_MOVED,
-          }),
+          Effect.succeed(refusedWrite(error, slot.earlier === true ? undefined : slot.messageId)),
         ),
       );
   });
@@ -840,8 +832,7 @@ const make = Effect.gen(function* () {
         );
         const result = yield* deliver(wake, `kin-page:${wake.wakeupId}`, [page], -1);
         if (result._tag !== "posted") {
-          wake.withheldWhy ??= result.why;
-          wake.withheld ??= result.reason;
+          wake.withheld ??= result;
           return;
         }
         slot = result.last;
@@ -859,7 +850,7 @@ const make = Effect.gen(function* () {
           `${needsYouSection(waiting, before, room)}\n\n${slot.body}`,
         );
         if (result._tag === "withheld" && result.reason !== "not_found") {
-          wake.withheld = result.reason;
+          wake.withheld = { ...result, auxiliary: true };
           return;
         }
       }
@@ -883,13 +874,13 @@ const make = Effect.gen(function* () {
           const result = yield* store(wake, slot, { body: page, money }, -1);
           if (result._tag === "posted") return;
           if (result.reason !== "not_found") {
-            wake.withheld = result.reason;
+            wake.withheld = { ...result, auxiliary: true };
             return;
           }
         }
         const section = kinPageWithLines("", KIN_MONEY_SECTION, money);
         const result = yield* deliver(wake, `kin-money:${wake.wakeupId}`, [section], -1);
-        if (result._tag === "withheld") wake.withheld = result.reason;
+        if (result._tag === "withheld") wake.withheld = { ...result, auxiliary: true };
         return;
       }
       // The figures and the chat's owner-level readership must still agree at the write.
@@ -907,7 +898,7 @@ const make = Effect.gen(function* () {
             const result = yield* appendTo(wake, slot, figures, -1);
             if (result._tag === "posted") return;
             if (result._tag === "withheld" && result.reason !== "not_found") {
-              wake.withheld = result.reason;
+              wake.withheld = { ...result, auxiliary: true };
               return;
             }
           }
@@ -917,7 +908,7 @@ const make = Effect.gen(function* () {
           ).entries()) {
             const result = yield* deliver(wake, `kin-week:${wake.wakeupId}:${index}`, [part], -1);
             if (result._tag === "withheld") {
-              wake.withheld = result.reason;
+              wake.withheld = { ...result, auxiliary: true };
               return;
             }
           }
@@ -945,7 +936,11 @@ const make = Effect.gen(function* () {
   });
   const replyText = Effect.fn("KinReplyBridge.replyText")(function* (wake: Wake, text: string) {
     return withoutAsked(
-      stripTrailingSilenceMarker(text.replace(/^(?:[ \t]*\r?\n)+/, "").trimEnd()),
+      stripTrailingSilenceMarker(
+        withoutNul(text)
+          .replace(/^(?:[ \t]*\r?\n)+/, "")
+          .trimEnd(),
+      ),
       yield* asked(wake).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => [])),
     );
   });
@@ -1001,10 +996,9 @@ const make = Effect.gen(function* () {
   const refusedReply = Effect.fn("KinReplyBridge.refusedReply")(function* (
     wake: Wake,
     text: string,
-    result: { readonly reason: string; readonly why: string | null; readonly moved: boolean },
+    result: Withheld,
   ) {
-    wake.withheldWhy ??= result.why;
-    wake.withheld ??= result.reason;
+    wake.withheld ??= result;
     yield* journal(wake, [`Withheld (${result.reason}): ${cutLabel(text)}`]);
     // Lost, not refused. An aborted turn says nothing: a fresh wake-up answers instead, and
     // one that did nothing visible is aborted for that, once; otherwise the chat hears it once.
@@ -1459,7 +1453,7 @@ const make = Effect.gen(function* () {
     const slot = wake.lastReply;
     if (wake.withheld === null && slot !== undefined) {
       const result = yield* appendTo(wake, slot, "", -1);
-      if (result._tag === "withheld") wake.withheld = result.reason;
+      if (result._tag === "withheld") wake.withheld = { ...result, auxiliary: true };
     }
     if (!(yield* hasFigures(wake))) return;
     if (wake.withheld === null && slot === undefined) {
@@ -1691,6 +1685,102 @@ const make = Effect.gen(function* () {
     Effect.orElseSucceed(() => null),
   );
 
+  const failureNotice = Effect.fn("KinReplyBridge.failureNotice")(function* (
+    wake: Wake,
+    wasAnswered: boolean,
+  ) {
+    const { orgId, agentId, wakeupId, threadId, lane } = wake;
+    const { chatId, leadName, mode } = lane;
+    const refusal = wake.withheld;
+    if ((yield* wasStopped(wake)) || refusal?.reason === "past_its_day") return;
+    const retryId = KinMessageId.make(`kin-no-reply:${wakeupId}`);
+    const plainId = KinMessageId.make(`kin-not-posted:${wakeupId}`);
+    const [state] = yield* sql<{
+      alreadyNoticed: number;
+      retired: number;
+      stopped: number;
+      leftChat: number;
+      deletedReply: number;
+      answeredByAnother: number;
+    }>`SELECT
+      EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = c.org_id AND m.chat_id = c.chat_id
+        AND m.message_id IN (${retryId}, ${plainId})) AS "alreadyNoticed",
+      EXISTS (SELECT 1 FROM kin_agents a WHERE a.org_id = c.org_id AND a.agent_id = ${agentId}
+        AND a.retired_at IS NOT NULL) AS retired,
+      (EXISTS (SELECT 1 FROM kin_wakeups w WHERE w.org_id = c.org_id AND w.wakeup_id = ${wakeupId}
+        AND w.agent_id = ${agentId} AND w.status <> 'running')
+      OR EXISTS (SELECT 1 FROM kin_agent_threads t WHERE t.org_id = c.org_id
+        AND t.agent_id = ${agentId} AND t.thread_id = ${threadId} AND t.ended_at IS NOT NULL)) AS stopped,
+      EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = c.org_id AND m.chat_id = c.chat_id
+        AND m.principal_kind = 'agent' AND m.agent_id = ${agentId} AND m.left_at IS NOT NULL) AS "leftChat",
+      EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = c.org_id AND m.chat_id = c.chat_id
+        AND m.message_id = ${refusal?.ownMessageId ?? null} AND m.author_agent_id = ${agentId}
+        AND m.source_wakeup_id = ${wakeupId} AND m.status <> 'posted') AS "deletedReply",
+      EXISTS (SELECT 1 FROM kin_floor_runs r JOIN kin_events e ON e.org_id = r.org_id
+          AND json_extract(e.json, '$.messageId') = r.opened_by AND e.wakeup_id = ${wakeupId}
+          AND e.agent_id = ${agentId}
+        WHERE r.org_id = c.org_id AND r.chat_id = c.chat_id AND r.run_id = ${refusal?.floorRunId ?? null}
+          AND r.agent_turns > 0 AND r.last_speaker <> ${agentId}) AS "answeredByAnother"
+      FROM kin_chats c WHERE c.org_id = ${orgId} AND c.chat_id = ${chatId}`;
+    if (state === undefined)
+      return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
+    if (state.alreadyNoticed === 1) return;
+    if (refusal?.auxiliary === true && refusal.reason !== "not_allowed" && state.deletedReply !== 1)
+      return;
+
+    const notice = (body: string, messageId = retryId) =>
+      chat.notice({ orgId, chatId, messageId, audience: "chat", body }).pipe(Effect.asVoid);
+    const explain = (why: string, messageId = retryId) =>
+      notice(`${leadName}'s reply couldn't be posted: ${why}`, messageId);
+    if (refusal === null) return yield* notice(`${leadName} didn't reply.`);
+    // A deleted part needs a line even when the original post marked the request answered.
+    if (wasAnswered && state.deletedReply !== 1) return;
+    if (state.retired === 1)
+      return yield* explain(
+        `${leadName} has been retired, so nothing more will come from it here.`,
+        plainId,
+      );
+    if (state.stopped === 1)
+      return yield* explain(`${leadName} was stopped before it finished. Send your message again.`);
+    if (state.leftChat === 1)
+      return yield* explain(
+        `${leadName} is no longer in this chat. Add ${leadName} back to ask here.`,
+        plainId,
+      );
+    if (state.deletedReply === 1)
+      return yield* explain(`someone deleted it while ${leadName} was still writing.`, plainId);
+    if (refusal.reason === "unavailable")
+      return yield* explain("Kin couldn't save it just now. Send your message again.");
+    if (state.answeredByAnother === 1)
+      return yield* explain("another agent had already answered here.", plainId);
+    if (refusal.private === true && refusal.auxiliary !== true)
+      return yield* explain(
+        "it included things only the owner and co-owners see, and someone else is in this chat. Ask again and the answer will be one everyone here may read.",
+      );
+    if (refusal.reason === "not_allowed") {
+      const why = yield* refusedHere(wake);
+      if (why !== null) yield* explain(why);
+      return;
+    }
+    if (refusal.reason === "limit")
+      return yield* explain("this chat reached its message limit for now. Try again later.");
+    if (refusal.reason === "floor_not_granted" || refusal.reason === "floor_closed")
+      return yield* explain("it came after the time to answer ran out. Send your message again.");
+
+    yield* explain(WITHHELD_ANY);
+    yield* sql.afterCommit(
+      Effect.logWarning("Kin reply withheld for an unknown reason", {
+        orgId,
+        agentId,
+        wakeupId,
+        chatId,
+        mode,
+        reason: refusal.reason,
+        message: refusal.message,
+      }),
+    );
+  });
+
   // Ends the wake-up's line for good; queue lines belong to the queue.
   const settleLine = (wake: Wake) =>
     wake.lock.withPermits(1)(
@@ -1777,7 +1867,11 @@ const make = Effect.gen(function* () {
           ? "marker"
           : "none";
       };
-      if (answeredOnFirstRun || !input.rescue || stopped) {
+      if (
+        stopped ||
+        !input.rescue ||
+        (answeredOnFirstRun && wake.withheld?.ownMessageId === undefined)
+      ) {
         yield* settled(stopped);
         return endingFor(false);
       }
@@ -1797,24 +1891,8 @@ const make = Effect.gen(function* () {
       }
       yield* settled(stopped);
       const ending = endingFor(followUp === "rescue");
-      // What it showed stands without its line: "didn't reply" under a chart would be false.
-      if (shown && wake.withheld === null) return ending;
-      // A person told this agent answers them in their own chat never meets silence there.
-      const why =
-        wake.withheldWhy ?? (wake.withheld === "not_allowed" ? yield* refusedHere(wake) : null);
-      // The chat itself said no (a mute, a group's level), or someone joining was already handled.
-      if (wake.movedNoticed || (wake.withheld !== null && why === null)) return ending;
-      // Honest, never faked: whoever asked sees that no reply came, and why Kin held one back.
-      yield* chat.notice({
-        messageId: KinMessageId.make(`kin-no-reply:${wake.wakeupId}`),
-        orgId: wake.orgId,
-        chatId: wake.lane.chatId,
-        audience: "chat",
-        body:
-          wake.withheld === null
-            ? `${wake.lane.leadName} didn't reply.`
-            : `${wake.lane.leadName}'s reply couldn't be posted: ${why ?? WITHHELD_ANY}`,
-      });
+      if (wake.movedNoticed || (shown && wake.withheld === null)) return ending;
+      yield* sql.withTransaction(failureNotice(wake, answeredOnFirstRun));
       return ending;
     },
     (effect, input) =>
@@ -2127,7 +2205,6 @@ const make = Effect.gen(function* () {
         replied: false,
         answered: false,
         withheld: null,
-        withheldWhy: null,
         steers: new Map(),
         heard: [{ ordinal: -1, eventIds: own.map((row) => row.eventId) }],
         steerEvents: new Map(),

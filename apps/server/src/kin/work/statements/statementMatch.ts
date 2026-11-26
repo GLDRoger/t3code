@@ -227,7 +227,11 @@ const dayNumber = (day: string) =>
   Date.UTC(Number(day.slice(0, 4)), Number(day.slice(5, 7)) - 1, Number(day.slice(8, 10))) / DAY_MS;
 export const daysBetween = (from: string, to: string) => dayNumber(to) - dayNumber(from);
 
-const citedNumber = (row: StatementRow, invoice: InvoiceCandidate, referenceOnly?: string) =>
+export const citedNumber = (
+  row: StatementRow,
+  invoice: Pick<InvoiceCandidate, "key" | "number">,
+  referenceOnly?: string,
+) =>
   [invoice.number, invoice.key].find(
     (one) =>
       one !== null &&
@@ -378,17 +382,7 @@ export const overOffer = (row: StatementRow, invoice: InvoiceCandidate, currency
 /** How far a named credit's rate may sit from a rate the company was paid at and still be offered. */
 const RATE_BAND = 0.1;
 
-/**
- * A cross-currency bank credit is an offer, not proof of an amount in the invoice's currency.
- * One that only names the client proves no rate: it is offered only near `recorded`, the rate of
- * a recent payment the company took in this pair (`recordedRate`), and never without one.
- */
-export const rateOffer = (
-  row: StatementRow,
-  invoice: InvoiceCandidate,
-  currency: string,
-  recorded?: string,
-) => {
+export const rateCandidate = (row: StatementRow, invoice: InvoiceCandidate, currency: string) => {
   const balance = invoice.amountMinor - invoice.paidMinor;
   if (
     row.direction !== "credit" ||
@@ -404,11 +398,6 @@ export const rateOffer = (
   const owed = { minor: balance, currency: invoice.currency };
   const received = { minor: row.amountMinor, currency };
   const rate = kinImpliedRate(owed, received);
-  if (
-    cited === undefined &&
-    (recorded === undefined || Math.abs(Number(rate) / Number(recorded) - 1) > RATE_BAND)
-  )
-    return undefined;
   return {
     candidate: {
       kind: "invoice",
@@ -425,6 +414,27 @@ export const rateOffer = (
     rate,
     cited,
   };
+};
+
+/**
+ * A cross-currency bank credit is an offer, not proof of an amount in the invoice's currency.
+ * One that only names the client proves no rate: it is offered only near `recorded`, the rate of
+ * a recent payment the company took in this pair (`recordedRate`), and never without one.
+ */
+export const rateOffer = (
+  row: StatementRow,
+  invoice: InvoiceCandidate,
+  currency: string,
+  recorded?: string,
+) => {
+  const offer = rateCandidate(row, invoice, currency);
+  if (
+    offer === undefined ||
+    (offer.cited === undefined &&
+      (recorded === undefined || Math.abs(Number(offer.rate) / Number(recorded) - 1) > RATE_BAND))
+  )
+    return undefined;
+  return offer;
 };
 
 const offerReason = (

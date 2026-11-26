@@ -63,6 +63,8 @@ import {
   applyLine,
   drawApply,
   drawPayment,
+  PAYMENT_TAP_REFUSAL,
+  paymentChanged,
   paymentLabel,
   paymentLine,
   recordPayment,
@@ -150,6 +152,7 @@ const labelOf = (plan: CardPlan): string => {
     case "move_due":
     case "keep_due":
     case "notice_renew":
+    case "invoice_choice":
       return factCardShown(plan).label;
     case "undo_default":
       return "Undo";
@@ -200,6 +203,7 @@ const lineOf = (plan: CardPlan): string => {
     case "move_due":
     case "keep_due":
     case "notice_renew":
+    case "invoice_choice":
       return factCardShown(plan).line;
     case "undo_default":
       return undoLine(plan);
@@ -959,7 +963,7 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
       return { title: "List created", text: `Created. It's in ${words}.`, open };
     }
     case "record_payment": {
-      if (!owner) return yield* notAllowed("Only the owner or a co-owner confirms money received.");
+      if (!owner) return yield* notAllowed(PAYMENT_TAP_REFUSAL);
       yield* refuseOff("invoices");
       yield* refuseOff("bank_transactions");
       const why = yield* drawsHold(orgId, draws);
@@ -977,7 +981,7 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
         tap.widget.widgetId,
         records,
       ).pipe(Effect.provideService(KinRecords, records));
-      return done ?? nothingDone(`${plan.bankKey} or ${plan.key} changed since this was offered`);
+      return done ?? paymentChanged(plan.bankKey, plan.key);
     }
     case "apply_credit": {
       if (!owner)

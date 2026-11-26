@@ -17,12 +17,19 @@ import { sectionOfKey, sectionOfSense } from "../shell/sections.ts";
 import type {
   DuePlan,
   FactCardPlan,
+  InvoiceChoicePlan,
   NoticePlan,
   StallPlan,
   WaitedPlan,
 } from "../widgets/cardPlans.ts";
 import type { KinRecords } from "../work/KinRecords.ts";
 import { insertComment, requestHashOf } from "../work/recordComments.ts";
+import { creditMatch } from "../work/statements/invoiceCredits.ts";
+import {
+  PAYMENT_TAP_REFUSAL,
+  paymentChanged,
+  recordPayment,
+} from "../work/statements/creditPayment.ts";
 import { viewSees } from "../work/teamView.ts";
 import { DID_NOTHING, milestoneProposal } from "./factCards.ts";
 import { noticeHolder } from "./holderNotice.ts";
@@ -353,6 +360,50 @@ const runNotice = Effect.fn("KinFactCards.runNotice")(function* (tap: FactTap, p
   };
 });
 
+const runInvoiceChoice = Effect.fn("KinFactCards.runInvoiceChoice")(function* (
+  tap: FactTap,
+  plan: InvoiceChoicePlan,
+  records: KinRecords["Service"],
+) {
+  const { orgId, personId, widget } = tap;
+  if (!(yield* ownerLevel(orgId, personId)))
+    return yield* new KinChatError({ reason: "not_allowed", message: PAYMENT_TAP_REFUSAL });
+  const shell = yield* KinShell.get(orgId);
+  const off = (["money", "invoices"] as const).find(
+    (section) => !KinShell.sectionOn(shell, section),
+  );
+  if (off !== undefined)
+    return nothingDone(`${KinShell.sectionName(shell, off)} is turned off for this company`);
+  if (plan.payment === null) {
+    const match = yield* creditMatch(orgId, plan.recordId);
+    if (match?.choice === undefined || match.credit.rev !== plan.rev)
+      return paymentChanged(plan.key);
+    yield* KinPulse.handle({
+      orgId,
+      at: tap.now,
+      viewer: { _tag: "owner" },
+      by: { _tag: "person", personId },
+      factKey: plan.factKey,
+      action: "not_a_problem",
+    });
+    return undefined;
+  }
+  const done = yield* recordPayment(
+    orgId,
+    plan.payment,
+    {
+      actor: { _tag: "person", personId },
+      via: "owner",
+      askedBy: personId,
+      chatId: widget.chatId,
+      answering: [widget.widgetId],
+    },
+    widget.widgetId,
+    records,
+  );
+  return done ?? paymentChanged(plan.key, plan.payment.key);
+});
+
 /**
  * A tap on Kin's card about a fact, in the tap's transaction: only the person it asks may answer,
  * and only while what it asked about is as it was; else nothing is done and the card says why.
@@ -367,6 +418,7 @@ export const runFactCard = Effect.fn("KinFactCards.run")(function* (
       reason: "not_allowed",
       message: "Only the person this card asks can answer it.",
     });
+  if (plan.kind === "invoice_choice") return yield* runInvoiceChoice(tap, plan, records);
   // A teammate answers only what they still see, read again here, before anything is written.
   if (!(yield* ownerLevel(tap.orgId, tap.personId))) {
     const sql = yield* SqlClient.SqlClient;

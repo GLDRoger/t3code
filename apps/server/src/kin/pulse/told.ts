@@ -10,6 +10,7 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { dayIn } from "../work/money.ts";
+import { isDeclineKey } from "./declines.ts";
 import { isLeftKey, settleLeft } from "./leftForCheckIn.ts";
 import { UNREADABLE_BANK_ALERTS_KEY } from "./senses/bank.ts";
 import { HOUR_MS, DAY_MS } from "./thresholds.ts";
@@ -307,10 +308,13 @@ export const settleCheckInTold = Effect.fn("KinPulse.settleCheckInTold")(functio
       ORDER BY text`;
   const said = texts.filter((post) => !post.automated);
   const keys = new Set(offered.map((row) => row.key));
-  const factKeys = new Set([...keys].filter((key) => !isLeftKey(key)));
+  const factKeys = new Set([...keys].filter((key) => !isLeftKey(key) && !isDeclineKey(key)));
   // Left for this check-in by someone (`leftForCheckIn.ts`): told when it posted at all.
   const left = texts.length > 0 ? [...keys].filter(isLeftKey) : [];
-  const named = new Set<string>(left);
+  const named = new Set<string>([
+    ...left,
+    ...(texts.length === 0 ? [] : [...keys].filter(isDeclineKey)),
+  ]);
   if (texts.length > 0 && factKeys.size > 0) {
     const spoken = said.map(({ text }) => text.toLowerCase()).join("\n");
     for (const fact of yield* input.readFacts(factKeys)) {
