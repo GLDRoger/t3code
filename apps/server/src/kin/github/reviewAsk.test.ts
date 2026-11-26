@@ -1496,6 +1496,7 @@ it.effect(
           "README.md": "# App\n",
           "src/alerts/late.ts": late,
           "src/retry.ts": retry,
+          "src/oneline.js": `${"x".repeat(DIFF_CAP + 5_000)}\n`,
           "src/long.ts": `${long.join("\n")}\n`,
           "src/huge.txt": huge,
           "logo.png": "\u0089PNG\r\n\u001a\n\u0000\u0000",
@@ -1506,7 +1507,20 @@ it.effect(
         },
       };
       repoOf(LEDGER).files = { main: { "totals.ts": "export const round = Math.round;\n" } };
-      repoOf(SITE).files = { main: { "index.html": "<h1>Late alerts</h1>\n" } };
+      const page = "<h1>Late alerts</h1>\n";
+      repoOf(SITE).files = {
+        main: {
+          "index.html": page,
+          // A folder whose listing is larger than one answer Kin reads.
+          ...Object.fromEntries(
+            Array.from({ length: 25_000 }, (_, index) => [`gen/f${index}.ts`, ""]),
+          ),
+        },
+      };
+      repoOf(SITE).links = {
+        "latest.html": { type: "symlink", target: "index.html" },
+        lib: { type: "submodule" },
+      };
       repoOf(SITE).unindexed = true;
       // Kin's memory repo, as GitHub also answers it under another name, by the same id.
       repoOf(MEMORY).id = 77;
@@ -1730,6 +1744,64 @@ it.effect(
             ref: "the default branch",
             matches: [{ path: "src/alerts/late.ts", fragments: [late.trimEnd()] }],
             next: READ_NEXT.found,
+          },
+        },
+        {
+          name: "a folder with a symlink and a submodule, each named as what it is",
+          who: "zoya",
+          args: { repo: SITE },
+          answer: {
+            repo: SITE,
+            ref: "the default branch",
+            path: "",
+            entries: [
+              { path: "gen", type: "dir" },
+              { path: "index.html", type: "file", size: page.length },
+              { path: "latest.html", type: "symlink" },
+              { path: "lib", type: "submodule" },
+            ],
+            next: READ_NEXT.listed,
+          },
+        },
+        {
+          name: "a symlink GitHub follows to a file is named, not followed",
+          who: "zoya",
+          args: { repo: SITE, path: "latest.html" },
+          answer: {
+            repo: SITE,
+            ref: "the default branch",
+            path: "latest.html",
+            next: READ_REFUSAL.link("latest.html", "index.html"),
+          },
+        },
+        {
+          name: "a submodule",
+          who: "zoya",
+          args: { repo: SITE, path: "lib" },
+          answer: {
+            repo: SITE,
+            ref: "the default branch",
+            path: "lib",
+            next: READ_REFUSAL.other("lib", "submodule"),
+          },
+        },
+        {
+          name: "a folder larger than one answer is said to be, not GitHub out of reach",
+          who: "zoya",
+          args: { repo: SITE, path: "gen" },
+          refused: refusal(READ_REFUSAL.tooLarge("gen"), "unavailable"),
+        },
+        {
+          name: "one line longer than an answer holds says its tail can't be read",
+          who: "zoya",
+          args: { repo: APP, path: "src/oneline.js" },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            path: "src/oneline.js",
+            text: `${"x".repeat(DIFF_CAP)}…[this line goes on past what one answer holds]`,
+            lines: { from: 1, to: 1, of: 1 },
+            next: `${READ_NEXT.tail(1)} ${READ_NEXT.end}`,
           },
         },
         {

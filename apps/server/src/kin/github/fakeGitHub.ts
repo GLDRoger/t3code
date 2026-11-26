@@ -31,6 +31,8 @@ export interface FakeRepo {
   files?: Record<string, Record<string, string>>;
   /** GitHub's code search hasn't indexed it: a search finds nothing. */
   unindexed?: boolean;
+  /** Links on the default branch by path: a symlink GitHub follows to a file, or a submodule. */
+  links?: Record<string, { type: "symlink"; target: string } | { type: "submodule" }>;
   /** GitHub's id for it; by default from its place in the world. */
   id?: number;
   /** Renamed: GitHub answers this name with a 301 to the new one. */
@@ -738,7 +740,23 @@ export class FakeGitHub {
     );
     const files = repo === undefined ? undefined : this.filesAt(repo, ref);
     if (files === undefined) return missing;
-    const path = decodeURIComponent(rawPath).replace(/\/$/, "");
+    const asked = decodeURIComponent(rawPath).replace(/\/$/, "");
+    const links = ref === null ? (repo?.links ?? {}) : {};
+    const link = links[asked];
+    if (link?.type === "submodule")
+      return {
+        status: 200,
+        headers: {},
+        body: { type: "submodule", name: asked.split("/").at(-1), path: asked, size: 0 },
+      };
+    if (link?.type === "symlink" && files[link.target] === undefined)
+      return {
+        status: 200,
+        headers: {},
+        body: { type: "symlink", name: asked.split("/").at(-1), path: asked, target: link.target },
+      };
+    // GitHub answers a symlink to a file with the file it names.
+    const path = link?.type === "symlink" ? link.target : asked;
     const file = files[path];
     if (file !== undefined) {
       const bytes = Buffer.from(file, "utf8");
@@ -759,7 +777,10 @@ export class FakeGitHub {
       };
     }
     const prefix = path === "" ? "" : `${path}/`;
-    const entries = new Map<string, { type: string; name: string; path: string; size: number }>();
+    const entries = new Map<
+      string,
+      { type: string; name: string; path: string; size: number; download_url: string | null }
+    >();
     for (const [name, text] of Object.entries(files)) {
       if (!name.startsWith(prefix)) continue;
       const [first, ...more] = name.slice(prefix.length).split("/");
@@ -769,6 +790,21 @@ export class FakeGitHub {
         name: first!,
         path: entryPath,
         size: more.length > 0 ? 0 : Buffer.byteLength(text, "utf8"),
+        download_url:
+          more.length > 0
+            ? null
+            : `https://raw.githubusercontent.com/${fullName}/main/${entryPath}`,
+      });
+    }
+    // As GitHub lists them: a symlink as itself, a submodule as a file with nothing to download.
+    for (const [name, one] of Object.entries(links)) {
+      if (!name.startsWith(prefix) || name.slice(prefix.length).includes("/")) continue;
+      entries.set(name, {
+        type: one.type === "symlink" ? "symlink" : "file",
+        name: name.slice(prefix.length),
+        path: name,
+        size: 0,
+        download_url: null,
       });
     }
     if (entries.size === 0) return missing;

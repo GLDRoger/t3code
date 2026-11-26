@@ -99,6 +99,10 @@ export const READ_REFUSAL = {
   noPull: (repo: string, number: number) => `${repo} has no pull request #${number}. ${NOTHING}`,
   binary: (path: string, size: number) =>
     `${path} is a binary file (${size} bytes), not text, so Kin shows none of it.`,
+  link: (path: string, target: string) =>
+    `${path} is a link to ${target}, which Kin doesn't follow: read ${target} by its own path.`,
+  tooLarge: (path: string) =>
+    `GitHub's answer for ${path === "" ? "the repo's top" : path} is larger than Kin reads at once, so nothing was read: list a folder inside it, or read one file by its path.`,
   other: (path: string, type: string) =>
     `${path} is a ${type}, not a file or folder of this repo, so Kin shows none of it.`,
 } as const;
@@ -107,8 +111,10 @@ export const READ_NEXT = {
   end: "That is the end of the file.",
   more: (line: number, of: number) => `More follows: call again with line ${line} (of ${of}).`,
   past: (of: number) => `The file has ${of} lines; ask from a line inside it.`,
+  tail: (line: number) =>
+    `Line ${line} is longer than one answer holds, so the rest of that line can't be read here.`,
   partial: (read: number) =>
-    `Kin could read only its first ${read} lines: GitHub's answer stopped there, so the rest of the file stays unread.`,
+    `Kin reads at most a file's first 1 MB, so only its first ${read} lines are here; the rest of the file can't be read with this tool.`,
   found: "Read a file a match is in for the whole of it.",
   defaultOnly: " Code search reads only the default branch.",
   untrusted: (repo: string) =>
@@ -135,18 +141,25 @@ export const filePage = (text: string, from = 1) => {
     to += 1;
   }
   const page = all.slice(from - 1, to).join("\n");
-  return {
-    text: page.length > DIFF_CAP ? `${page.slice(0, pieceEnd(page, DIFF_CAP))}${LINE_CUT}` : page,
-    lines: { from, to, of },
-    next: to < of ? READ_NEXT.more(to + 1, of) : READ_NEXT.end,
-  };
+  const next = to < of ? READ_NEXT.more(to + 1, of) : READ_NEXT.end;
+  return page.length > DIFF_CAP
+    ? {
+        text: `${page.slice(0, pieceEnd(page, DIFF_CAP))}${LINE_CUT}`,
+        lines: { from, to, of },
+        next: `${READ_NEXT.tail(to)} ${next}`,
+      }
+    : { text: page, lines: { from, to, of }, next };
 };
 
 const Entry = Schema.Struct({
   type: Schema.String,
   path: Schema.String,
   size: Schema.optional(Schema.Number),
+  download_url: Schema.optional(Schema.NullOr(Schema.String)),
 });
+/** GitHub lists a submodule as a file with nothing to download. */
+const entryType = (entry: typeof Entry.Type) =>
+  entry.type === "file" && entry.download_url === null ? "submodule" : entry.type;
 const decodeRepo = Schema.decodeUnknownOption(
   Schema.Struct({ id: Schema.Int, full_name: Schema.String, private: Schema.Boolean }),
 );
@@ -208,6 +221,7 @@ const asApi = (answer: KinGitHubAppRead): ApiAnswer => ({
   headers: answer.headers,
   body: parsed(answer),
   text: "",
+  ...(answer.cut ? { truncated: true as const } : {}),
 });
 const moved = (status: number) => status >= 300 && status < 400;
 
@@ -405,6 +419,7 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
       ? refuse(READ_REFUSAL.unreached(repo))
       : refuse(READ_REFUSAL.missing(repo, path, at), "not_found");
   if (answer.status !== 200) return yield* failed(answer);
+  if (answer.truncated === true) return yield* refuse(READ_REFUSAL.tooLarge(path), "unavailable");
   const listed = decodeEntries(answer.body);
   if (Option.isSome(listed))
     return yield* shown({
@@ -413,8 +428,10 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
       path,
       entries: listed.value.map((one) => ({
         path: one.path,
-        type: one.type,
-        ...(one.type === "file" && one.size !== undefined ? { size: Math.round(one.size) } : {}),
+        type: entryType(one),
+        ...(entryType(one) === "file" && one.size !== undefined
+          ? { size: Math.round(one.size) }
+          : {}),
       })),
       next: READ_NEXT.listed,
     });
@@ -422,6 +439,9 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
   if (Option.isNone(file)) return yield* failed(answer);
   if (file.value.type !== "file")
     return { repo, ref: at, path, next: READ_REFUSAL.other(path, file.value.type) };
+  // GitHub answers a symlink to a file with that file: named, and not followed.
+  if (file.value.path !== path)
+    return { repo, ref: at, path, next: READ_REFUSAL.link(path, file.value.path) };
   const size = Math.round(file.value.size);
   let text: string | undefined;
   let partial = false;
