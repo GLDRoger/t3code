@@ -237,7 +237,7 @@ export const KIN_LISTS = {
     filesFailed: "Couldn't load your files.",
     amountPlaceholder: "Amount, and its currency if it isn't yours",
     retiredField: "No longer used",
-    private: "Private. Only owners see this.",
+    private: "Private.",
     gone: {
       title: "This entry isn't here any more",
       detail: "Open its list to see what there is now.",
@@ -1688,9 +1688,8 @@ export function kinEntryPrivateLine(
   if (names.me === null || (owner._tag === "person" && owner.personId === names.me))
     return KIN_LISTS.entry.private;
   const name = owner._tag === "person" ? names.people.get(owner.personId) : undefined;
-  return name === undefined
-    ? "Private. Only owners see this."
-    : `Private to ${name}. Only owners see this.`;
+  // Who reads it is Share with team's line beside it: a project's lead does too.
+  return name === undefined ? KIN_LISTS.entry.private : `Private to ${name}.`;
 }
 
 type Checked<A> =
