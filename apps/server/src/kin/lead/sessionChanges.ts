@@ -12,6 +12,7 @@ import { accessSql } from "../people/KinAccess.ts";
 import { commentIdFor } from "../work/recordComments.ts";
 import { turnChat } from "./Audience.ts";
 import { parseChanges, sensitiveNow } from "../work/recordRows.ts";
+import { PRESETS } from "../work/registers.ts";
 import { chatClock, SESSION_CHANGES_CAP } from "./LeadPrompt.ts";
 import { cappedText, encoded } from "./quote.ts";
 
@@ -38,13 +39,15 @@ const decodeListIds = Schema.decodeUnknownEffect(
   Schema.fromJsonString(Schema.Array(Schema.String)),
 );
 
+const isSessionChangesSourceFailed = Schema.is(SessionChangesSourceFailed);
+
 const source = <A, E, R>(name: string, read: Effect.Effect<A, E, R>) =>
   read.pipe(
     Effect.catchCause((cause) => {
       if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt;
       const known = Cause.findErrorOption(cause);
       return Effect.fail(
-        Option.isSome(known) && known.value instanceof SessionChangesSourceFailed
+        Option.isSome(known) && isSessionChangesSourceFailed(known.value)
           ? known.value
           : new SessionChangesSourceFailed({ source: name, cause }),
       );
@@ -521,7 +524,7 @@ const importUndos = Effect.fn("KinSessionChanges.imports")(function* (input: Inp
       return { ...row, ids: [...new Set([...undone, ...applied])] };
     }),
   );
-  const names = new Map<string, string>();
+  const names = new Map(Object.entries(PRESETS).map(([id, preset]) => [id, preset.name]));
   const keys = [...new Set(decoded.flatMap((row) => row.ids))];
   if (keys.length > 0) {
     const encodedKeys = yield* encodeJson(keys);
