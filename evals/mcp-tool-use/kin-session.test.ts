@@ -54,7 +54,7 @@ it("places every legacy wake-up block exactly once, splitting the server's tagge
 });
 
 const legacyRequestPin = "219cedfaeb6b5c77fc6a56d55d9d20b68e1f34779f50232527ab92eb318fa157";
-const sessionRequestPin = "6d18666d3fe30c29bcb346cc3aa5c146d588614516a8c5c0245cb1388cbb2247";
+const sessionRequestPin = "8f03d9d1ef540c4204b9e411594388243c0d76600072baffd77ad9a8d4b5fd9e";
 const pinnedIds = [
   "kin-lead-rereads-github-hint",
   "kin-lead-uses-display-name",
@@ -96,7 +96,10 @@ it("pins ten uncarried requests and keeps both layouts byte-identical", () => {
 });
 
 it("pins the session requests of both carry seeds", () => {
-  const requests = dryRequests("session", "kin-carry.ndjson");
+  const requests = dryRequests("session", "kin-carry.ndjson", [
+    "kin-carry-follow-up-question",
+    "kin-carry-nothing-changed-no-reread",
+  ]);
   assert.lengthOf(requests.toString().trimEnd().split("\n"), 2);
   assert.equal(digest(requests), sessionRequestPin);
 });
