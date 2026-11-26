@@ -802,7 +802,7 @@ describe("Mail tool results with the sender's memory", () => {
         yield* wake({ person: owner });
         const memory = {
           items: () =>
-            items instanceof Memory.MemoryConfigError ? Effect.fail(items) : Effect.succeed(items),
+            Schema.is(Memory.MemoryConfigError)(items) ? Effect.fail(items) : Effect.succeed(items),
         };
         yield* body({
           company,
