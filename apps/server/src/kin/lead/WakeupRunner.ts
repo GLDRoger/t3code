@@ -1373,15 +1373,23 @@ const make = Effect.gen(function* () {
     }
     yield* clearMissingThread(row).pipe(Effect.ignore);
     yield* capture(row).pipe(Effect.ignore);
-    if (interrupted === "retry")
-      yield* queue.release({
+    if (interrupted === "retry") {
+      const lane = Option.isSome(bridge) ? yield* bridge.value.lane(row) : Option.none();
+      const released = yield* queue.release({
         orgId: row.orgId,
         wakeupId: row.wakeupId,
         countAttempt: true,
         attemptLimit: "run",
         notBefore: yield* Clock.currentTimeMillis,
       });
-    else if (interrupted) yield* queue.requeueUnfinished(row.orgId, row.wakeupId);
+      if (released.failedEventIds.length > 0 && Option.isSome(bridge) && Option.isSome(lane))
+        yield* bridge.value.failed({
+          orgId: row.orgId,
+          wakeupId: row.wakeupId,
+          lane: lane.value,
+          outcome: "gave_up",
+        });
+    } else if (interrupted) yield* queue.requeueUnfinished(row.orgId, row.wakeupId);
     else yield* finishWakeup(row, "failed", null, failure);
   });
 

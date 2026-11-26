@@ -2709,6 +2709,24 @@ describe("WakeupRunner", () => {
       let prepares = 0;
       const calls: Array<string> = [];
       const refusals: Array<string | undefined> = [];
+      const outcomes: Array<string> = [];
+      const failureBridge =
+        timing === "exhausted"
+          ? Layer.mock(KinReplyBridge)({
+              lane: () =>
+                Effect.succeedSome({
+                  chatId: KinChatId.make("owner-chat"),
+                  mode: "notice",
+                  owed: true,
+                  leadName: "Lead",
+                }),
+              preparing: () => Effect.void,
+              begin: () => Effect.void,
+              complete: () => Effect.void,
+              end: () => Effect.void,
+              failed: (input) => Effect.sync(() => void outcomes.push(input.outcome)),
+            })
+          : Layer.empty;
       let mark: Effect.Effect<void> = Effect.void;
       let inspectEarly: Effect.Effect<void> = Effect.void;
       let inspectAtGate: Effect.Effect<void> = Effect.void;
@@ -2879,6 +2897,7 @@ describe("WakeupRunner", () => {
           );
           assert.deepStrictEqual(early, source);
           assert.strictEqual(wakeups[1]!.status, "failed");
+          if (exhausted) assert.deepStrictEqual(outcomes, ["gave_up"]);
           assert.strictEqual(wakeups[1]!.runId, noticeRunId);
           if (timing === "local-marks")
             assert.isTrue(yield* turnSensitive(orgId, wakeups[1]!.wakeupId));
@@ -2965,20 +2984,23 @@ describe("WakeupRunner", () => {
               wholeThreadReads,
               ...(timing === "ends" ? { replyText: "Completed the request." } : {}),
             },
-            Layer.effect(
-              KinLeadRegistry.KinLeadRegistry,
-              Effect.map(KinLeadRegistry.KinLeadRegistry, (registry) => ({
-                ...registry,
-                register: (threadId, turn) =>
-                  registry
-                    .register(threadId, turn)
-                    .pipe(
-                      Effect.tap(() =>
-                        turns === 2 ? Deferred.succeed(registered, undefined) : Effect.void,
+            Layer.merge(
+              failureBridge,
+              Layer.effect(
+                KinLeadRegistry.KinLeadRegistry,
+                Effect.map(KinLeadRegistry.KinLeadRegistry, (registry) => ({
+                  ...registry,
+                  register: (threadId, turn) =>
+                    registry
+                      .register(threadId, turn)
+                      .pipe(
+                        Effect.tap(() =>
+                          turns === 2 ? Deferred.succeed(registered, undefined) : Effect.void,
+                        ),
                       ),
-                    ),
-              })),
-            ).pipe(Layer.provide(KinLeadRegistry.layer)),
+                })),
+              ).pipe(Layer.provide(KinLeadRegistry.layer)),
+            ),
           ),
         ),
       );
@@ -3064,7 +3086,7 @@ describe("WakeupRunner", () => {
               yield* take(fresh, "after-fresh", false);
             } else {
               // A late steer is attributed to its old wake-up even after another root started.
-              onTurn = mark.pipe(Effect.orDie);
+              onTurn = mark.pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie);
               const steer = yield* threads.sendToThread({
                 commandId: CommandId.make("late-steer"),
                 projectId,
