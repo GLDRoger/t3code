@@ -57,6 +57,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { kinChatReadOnlyLine } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import {
+  createKinLabelHold,
   kinMayStopAgent,
   kinPresenceNeedsClock,
   kinPresenceTimerStart,
@@ -107,6 +108,7 @@ import {
   useId,
   useRef,
   useState,
+  useSyncExternalStore,
   type ClipboardEvent,
   type DragEvent,
   type KeyboardEvent,
@@ -1197,6 +1199,7 @@ function KinChatFeed(props: {
           <KinPresenceLines
             environmentId={props.environmentId}
             presence={props.presence}
+            showName={!props.direct}
             mayStop={props.mayStop}
             stops={stops}
             agentNames={props.viewer.agentNames}
@@ -1272,20 +1275,35 @@ function KinChatFeed(props: {
 function KinPresenceLines(props: {
   readonly environmentId: EnvironmentId;
   readonly presence: ReadonlyArray<KinPresence>;
+  readonly showName: boolean;
   readonly mayStop: (agentId: string) => boolean;
   readonly stops: ReadonlyMap<string, StopState>;
   readonly agentNames: ReadonlyMap<string, string>;
   readonly onStop: ((wakeupId: string) => void) | null;
 }) {
   const now = useKinPresenceNow(props.presence.some(kinPresenceNeedsClock));
-  const rows = kinWorkingLines(props.presence, now, props.onStop === null ? noStop : props.mayStop);
+  const [hold] = useState(createKinLabelHold);
+  const held = useSyncExternalStore(hold.subscribe, hold.snapshot, hold.snapshot);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- arms or cancels a single expiry timer per working line so brief tool labels stay readable
+  useEffect(() => {
+    hold.sync(props.presence);
+  }, [hold, props.presence]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- cancels any pending label-hold timers on unmount
+  useEffect(() => () => hold.dispose(), [hold]);
+  const rows = kinWorkingLines(
+    props.presence,
+    now,
+    props.onStop === null ? noStop : props.mayStop,
+    held,
+  );
   if (rows.length === 0) return <div className="h-9" />;
   return rows.map((row) => (
     <KinPresenceLine
       key={row.presence.agentId}
       environmentId={props.environmentId}
       row={row}
-      name={props.agentNames.get(row.presence.agentId) ?? "the agent"}
+      name={props.agentNames.get(row.presence.agentId) ?? null}
+      showName={props.showName}
       stop={
         row.presence.wakeupId === null ? "idle" : (props.stops.get(row.presence.wakeupId) ?? "idle")
       }
@@ -1299,7 +1317,8 @@ const noStop = () => false;
 function KinPresenceLine(props: {
   readonly environmentId: EnvironmentId;
   readonly row: KinWorkingLine;
-  readonly name: string;
+  readonly name: string | null;
+  readonly showName: boolean;
   readonly stop: StopState;
   readonly onStop: ((wakeupId: string) => void) | null;
 }) {
@@ -1311,44 +1330,58 @@ function KinPresenceLine(props: {
   const press = () => {
     if (wakeupId !== null) onStop?.(wakeupId);
   };
+  const stopName = props.name ?? "the agent";
+  const showName = props.showName && props.name !== null;
   return (
     <div className="mx-auto flex h-9 w-full max-w-3xl items-center gap-2 px-5 text-muted-foreground text-xs">
-      <KinAvatar avatar={kinAgentAvatar(presence.agentId)} size="xs" />
-      <p role="status" aria-live="polite" className="truncate">
-        {line.text}
+      <div className="shrink-0">
+        <KinAvatar avatar={kinAgentAvatar(presence.agentId)} size="xs" />
+      </div>
+      <p role="status" aria-live="polite" className="flex min-w-0 items-center gap-1.5">
+        {showName ? (
+          <>
+            <span className="max-w-44 truncate font-medium text-foreground">{props.name}</span>
+            <span aria-hidden="true" className="shrink-0">
+              ·
+            </span>
+          </>
+        ) : null}
+        <span className="min-w-0 truncate">{line.text}</span>
       </p>
       {timerStart === null ? null : (
         // The timer ticks on its own; screen readers hear the presence text, not every second.
-        <span aria-hidden="true">
+        <span aria-hidden="true" className="shrink-0">
           <KinWorkingTimer createdAt={timerStart} environmentId={props.environmentId} />
         </span>
       )}
       {stoppable ? (
         <>
           {stop === "idle" ? null : (
-            <span role={stop === "failed" ? "alert" : undefined}>
+            <span role={stop === "failed" ? "alert" : undefined} className="shrink-0">
               {stop === "failed" ? "Couldn't stop" : "Stopping…"}
             </span>
           )}
-          {props.row.stop === "urgent" ? (
-            <KinStopButton
-              label={stop === "failed" ? KIN_CHAT_COPY.stopAgain : `Stop ${props.name}`}
-              tooltip={stop === "failed" ? KIN_RETRY : "Stop"}
-              disabled={stop === "stopping"}
-              onClick={press}
-            />
-          ) : (
-            <Button
-              size="xs"
-              variant="outline"
-              aria-label={stop === "failed" ? KIN_CHAT_COPY.stopAgain : `Stop ${props.name}`}
-              disabled={stop === "stopping"}
-              onClick={press}
-            >
-              <CircleStopIcon />
-              {stop === "failed" ? KIN_CHAT_COPY.stopAgain : "Stop"}
-            </Button>
-          )}
+          <div className="shrink-0">
+            {props.row.stop === "urgent" ? (
+              <KinStopButton
+                label={stop === "failed" ? KIN_CHAT_COPY.stopAgain : `Stop ${stopName}`}
+                tooltip={stop === "failed" ? KIN_RETRY : "Stop"}
+                disabled={stop === "stopping"}
+                onClick={press}
+              />
+            ) : (
+              <Button
+                size="xs"
+                variant="outline"
+                aria-label={stop === "failed" ? KIN_CHAT_COPY.stopAgain : `Stop ${stopName}`}
+                disabled={stop === "stopping"}
+                onClick={press}
+              >
+                <CircleStopIcon />
+                {stop === "failed" ? KIN_CHAT_COPY.stopAgain : "Stop"}
+              </Button>
+            )}
+          </div>
         </>
       ) : null}
     </div>
