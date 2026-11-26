@@ -324,7 +324,7 @@ function InvoiceForm(
   const today = kinWorkDayOf(now);
   const locked = saving.busy || made !== null;
   const guard = useFormGuard(
-    made === null && kinInvoiceTyped(draft, opened),
+    kinInvoiceTyped(draft, opened),
     saving.busy,
     KIN_MONEY_FORMS.discard.invoice,
   );

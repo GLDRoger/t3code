@@ -86,9 +86,9 @@ export const KIN_MONEY_FORMS = {
     notSaid: "Not said",
     fundedBy: "Funded by",
     company: "The company",
-    fundedByHint: "A partner who paid from their own money is owed it back until it's repaid.",
+    fundedByHint: "A partner who paid with personal money is owed it back until it's repaid.",
     fundedByNoRoom:
-      "Expenses has no room for Funded by: a list holds at most 20 fields, so who paid from their own money can't be recorded.",
+      "Expenses has no room for Funded by: a list holds at most 20 fields, so who paid with personal money can't be recorded.",
     receipt: "Receipt",
     noReceipt: "No receipt",
     receiptHint:

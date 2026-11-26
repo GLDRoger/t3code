@@ -2867,12 +2867,15 @@ export function makeFakeClaudeCli(answerSetServers = true, exitOnFirstInitialize
   const spawns: Array<SpawnOptions> = [];
   const controlRequests: Array<object> = [];
   const stdins: Array<NodeStream.PassThrough> = [];
+  const stdouts: Array<NodeStream.PassThrough> = [];
+  const responses = new Map<string, (response: unknown) => void>();
   const spawn = (options: SpawnOptions): SpawnedProcess => {
     spawns.push(options);
     const first = spawns.length === 1;
     const stdin = new NodeStream.PassThrough();
     const stdout = new NodeStream.PassThrough();
     stdins.push(stdin);
+    stdouts.push(stdout);
     const child = Object.assign(new NodeEvents.EventEmitter(), {
       stdin,
       stdout,
@@ -2890,6 +2893,12 @@ export function makeFakeClaudeCli(answerSetServers = true, exitOnFirstInitialize
       for (let end = pending.indexOf("\n"); end >= 0; end = pending.indexOf("\n")) {
         const frame = JSON.parse(pending.slice(0, end));
         pending = pending.slice(end + 1);
+        if (frame.type === "control_response") {
+          const id = frame.response.request_id;
+          const resolve = responses.get(id);
+          responses.delete(id);
+          resolve?.(frame.response.response);
+        }
         if (frame.type !== "control_request") continue;
         controlRequests.push(frame.request);
         if (first && exitOnFirstInitialize && frame.request.subtype === "initialize") {
@@ -2903,7 +2912,9 @@ export function makeFakeClaudeCli(answerSetServers = true, exitOnFirstInitialize
         const response = {
           subtype: "success",
           request_id: frame.request_id,
-          response: setServers ? { added: [], removed: [], errors: {} } : {},
+          response: setServers
+            ? { added: [], removed: [], errors: {} }
+            : { hook_on_failure_supported: true, hooks_applied: true },
         };
         stdout.write(`${JSON.stringify({ type: "control_response", response })}\n`);
       }
@@ -2915,5 +2926,12 @@ export function makeFakeClaudeCli(answerSetServers = true, exitOnFirstInitialize
     return child;
   };
   const closed = () => stdins.length > 0 && stdins.every((stdin) => stdin.writableEnded);
-  return { spawn, spawns, controlRequests, closed };
+  const request = (id: string, request: object) =>
+    new Promise<unknown>((resolve, reject) => {
+      const stdout = stdouts.at(-1);
+      if (stdout === undefined) return reject(new Error("Claude CLI has not opened"));
+      responses.set(id, resolve);
+      stdout.write(`${JSON.stringify({ type: "control_request", request_id: id, request })}\n`);
+    });
+  return { spawn, spawns, controlRequests, closed, request };
 }

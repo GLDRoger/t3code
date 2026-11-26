@@ -36,6 +36,7 @@ import {
   RunId,
   ThreadId,
   TurnItemId,
+  type TurnTokenUsage,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Schema from "effect/Schema";
@@ -817,6 +818,11 @@ export interface ProviderAdapterV2SessionRuntime {
   readonly compactThread?: (
     input: ProviderAdapterV2TurnInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;
+  /** Refreshes an idle native conversation without persisting a turn. */
+  readonly refreshNativeThread?: (input: {
+    readonly threadId: ThreadId;
+    readonly providerThread: OrchestrationV2ProviderThread;
+  }) => Effect.Effect<TurnTokenUsage, ProviderAdapterV2Error>;
   readonly steerTurn: (
     input: ProviderAdapterV2SteerInput,
   ) => Effect.Effect<void, ProviderAdapterV2Error>;

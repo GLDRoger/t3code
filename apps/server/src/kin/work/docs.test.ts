@@ -2894,10 +2894,18 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
       readersCan: ["owners", "team"],
       draftOf: { name: "Mate" },
     });
+    // Docs' list marks a teammate's draft as theirs to the owners, as its page does.
+    const listed = (who: typeof mate) =>
+      OwnerDocs.list([who], { orgId }).pipe(
+        Effect.map((read) => read.docs.find((doc) => doc.key === key)),
+      );
+    assert.deepInclude(yield* listed(rhea), { draftOf: { name: "Mate" } });
+    assert.notProperty(yield* listed(zoya), "draftOf");
     assert.deepInclude(yield* set(zoya, "owners"), {
       readers: "owners",
       readersCan: ["draft", "owners", "team"],
     });
+    assert.notProperty(yield* listed(rhea), "draftOf");
     const arjunRead = yield* OwnerDocs.get([arjun], { orgId, key });
     assert.notProperty(arjunRead, "readers");
     assert.notProperty(arjunRead, "readersCan");

@@ -27,6 +27,7 @@ import {
   type KinAuthor,
   type KinRole,
 } from "@t3tools/contracts";
+import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -50,7 +51,10 @@ import { HEAD_START_GONE, HEAD_START_WAKE } from "../pulse/prepareWake.ts";
 import { WEEKLY_RULE } from "../pulse/weekly.ts";
 import { MONEY_RULE, WITHDRAWN_WORK } from "../work/workPrompt.ts";
 import {
+  CARRIED_TURN_NOTE,
+  COMPACT_INSTRUCTIONS,
   KinLeadPrompt,
+  NOTHING_NOW,
   PROMPT_HEADINGS,
   SHARED_TURN_LINE,
   TURN_DIVIDER,
@@ -104,6 +108,7 @@ import {
   routineEvent,
   leadWithOwner,
   stored,
+  promptChunks,
 } from "./LeadPrompt.testkit.ts";
 
 it.effect(
@@ -350,133 +355,132 @@ it.effect.each([
 
 // Review of 0a2a431b26: a shared prompt still carried the lead's domain and charter. Only parts
 // declared shared-safe reach it; anything new is the owner's by default.
-it.effect("a prompt a teammate can read carries only the parts declared safe for it", () =>
-  Effect.gen(function* () {
-    const repo = yield* leadWithOwner;
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`UPDATE kin_leads SET domain = 'invented-domain-zq', charter = 'Invented-charter-zq',
+const richPromptFixture = Effect.gen(function* () {
+  const repo = yield* leadWithOwner;
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_leads SET domain = 'invented-domain-zq', charter = 'Invented-charter-zq',
       public_intro = 'Invented-intro-zq'`;
-    yield* repo.insertPerson({
-      orgId,
-      personId: teammateId,
-      displayName: "Teammate",
-      handle: "teammate",
-      githubLogin: null,
-      createdAt: timestamp,
-    });
-    // Said in the group while only the owner read it; the teammate joins after.
-    yield* repo.insertMessage({
-      audience: "chat",
-      orgId,
-      chatId,
-      messageId: KinMessageId.make("before-join"),
-      author: { _tag: "human", personId, memberId },
-      kind: "text",
-      body: "Invented-before-join-zq",
-      intent: null,
-      mentions: [],
-      replyTo: null,
-      widgetId: null,
-      floorRunId: null,
-      status: "posted",
-      sentBy: null,
-      createdAt: timestamp,
-      editedAt: null,
-      clientMessageId: null,
-    });
-    yield* repo.addMember({
-      orgId,
-      chatId,
-      memberId: teammateMember,
-      principal: { _tag: "person", personId: teammateId },
-      role: "member",
-      joinedAt: timestamp,
-      leftAt: null,
-      mutedUntil: null,
-    });
-    yield* repo.insertMessage({
-      audience: "chat",
-      orgId,
-      chatId,
-      messageId: KinMessageId.make("teammate-asks"),
-      author: { _tag: "human", personId: teammateId, memberId: teammateMember },
-      kind: "text",
-      body: "Invented teammate question",
-      intent: null,
-      mentions: [],
-      replyTo: null,
-      widgetId: null,
-      floorRunId: null,
-      status: "posted",
-      sentBy: null,
-      createdAt: timestamp,
-      editedAt: null,
-      clientMessageId: null,
-    });
-    // The owner's reaction elsewhere, in the lead's direct chat, and work the lead tracks.
-    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at, direct_key)
+  yield* repo.insertPerson({
+    orgId,
+    personId: teammateId,
+    displayName: "Teammate",
+    handle: "teammate",
+    githubLogin: null,
+    createdAt: timestamp,
+  });
+  // Said in the group while only the owner read it; the teammate joins after.
+  yield* repo.insertMessage({
+    audience: "chat",
+    orgId,
+    chatId,
+    messageId: KinMessageId.make("before-join"),
+    author: { _tag: "human", personId, memberId },
+    kind: "text",
+    body: "Invented-before-join-zq",
+    intent: null,
+    mentions: [],
+    replyTo: null,
+    widgetId: null,
+    floorRunId: null,
+    status: "posted",
+    sentBy: null,
+    createdAt: timestamp,
+    editedAt: null,
+    clientMessageId: null,
+  });
+  yield* repo.addMember({
+    orgId,
+    chatId,
+    memberId: teammateMember,
+    principal: { _tag: "person", personId: teammateId },
+    role: "member",
+    joinedAt: timestamp,
+    leftAt: null,
+    mutedUntil: null,
+  });
+  yield* repo.insertMessage({
+    audience: "chat",
+    orgId,
+    chatId,
+    messageId: KinMessageId.make("teammate-asks"),
+    author: { _tag: "human", personId: teammateId, memberId: teammateMember },
+    kind: "text",
+    body: "Invented teammate question",
+    intent: null,
+    mentions: [],
+    replyTo: null,
+    widgetId: null,
+    floorRunId: null,
+    status: "posted",
+    sentBy: null,
+    createdAt: timestamp,
+    editedAt: null,
+    clientMessageId: null,
+  });
+  // The owner's reaction elsewhere, in the lead's direct chat, and work the lead tracks.
+  yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at, direct_key)
       VALUES ('fixture-direct', ${orgId}, 'direct', 1, ${timestamp}, ${`${personId}:${agentId}`})`;
-    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+  yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
       VALUES ('direct-owner', ${orgId}, 'fixture-direct', 'person', ${personId}, 'owner', ${timestamp})`;
-    yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_agent_id,
+  yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_agent_id,
         author_owner_person_id, author_thread_id, author_member_id, author_role, kind, body, mentions_json,
         status, created_at)
       VALUES ('private', ${orgId}, 'fixture-direct', 1, 'agent', ${agentId}, ${personId}, 'fixture-thread',
         'lead-member', 'member', 'text', 'Invented-reacted-plan-zq', '[]', 'posted', ${timestamp})`;
-    yield* sql`INSERT INTO kin_reactions (org_id, chat_id, message_id, member_id, emoji, created_at, removed_at, woke_at)
+  yield* sql`INSERT INTO kin_reactions (org_id, chat_id, message_id, member_id, emoji, created_at, removed_at, woke_at)
       VALUES (${orgId}, 'fixture-direct', 'private', 'direct-owner', '❤️', 0, NULL, NULL)`;
-    yield* stored("earlier", [routineEvent]);
-    yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_agent_id,
+  yield* stored("earlier", [routineEvent]);
+  yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_agent_id,
         author_owner_person_id, author_thread_id, author_member_id, author_role, kind, body, mentions_json,
         status, created_at)
       VALUES ('tracked-card', ${orgId}, 'fixture-direct', 2, 'agent', ${agentId}, ${personId}, 'fixture-thread',
         'lead-member', 'member', 'text', '', '[]', 'posted', ${timestamp})`;
-    yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type,
+  yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type,
         revision, state_json, awaiting_json, updated_at)
       VALUES ('task:tracked', ${orgId}, 'fixture-direct', 'tracked-card', 'native', 'task', 1,
         '{"taskId":"task-tracked","title":"Invented-tracked-work-zq","status":"working"}', '[]', ${timestamp})`;
-    const asked = decodeEvent({
-      _tag: "chat.message",
-      orgId,
-      agentId,
-      chatId,
-      messageId: "teammate-asks",
-      eventId: "event-teammate-asks",
-      receivedAt: timestamp,
-      dedupeKey: null,
-      provenance: { _tag: "human", personId: teammateId, memberId: teammateMember },
-    });
-    // An entry the owner just took back from the lead, in the same turn.
-    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+  const asked = decodeEvent({
+    _tag: "chat.message",
+    orgId,
+    agentId,
+    chatId,
+    messageId: "teammate-asks",
+    eventId: "event-teammate-asks",
+    receivedAt: timestamp,
+    dedupeKey: null,
+    provenance: { _tag: "human", personId: teammateId, memberId: teammateMember },
+  });
+  // An entry the owner just took back from the lead, in the same turn.
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
       VALUES (${orgId}, 'work', 'Work', 'W', 1, 0)`;
-    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
+  yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
         owner_id, notes, created_by_kind, created_by_id, origin_key, created_at, updated_at)
       VALUES (${orgId}, 'rec-taken', 'work', 'W-1', 'Invented-taken-work-zq', 'open', 'person',
         ${personId}, 'Invented-taken-notes-zq', 'person', ${personId}, 'owner:taken', 0, 0)`;
-    // An invoice still owed: the morning brief's money section shows it to the owner alone.
-    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+  // An invoice still owed: the morning brief's money section shows it to the owner alone.
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
         created_at, definition_json)
       VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 0, 0, ${JSON.stringify(PRESETS.invoices)})`;
-    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
+  yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
         owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at,
         amount_minor, currency)
       VALUES (${orgId}, 'rec-invoice', 'invoices', 'INV-1', 'Invented invoice', 'waiting',
         'person', ${personId}, 'person', ${personId}, 'owner:invoice', 0, 0, 123456789, 'INR')`;
-    const taken = decodeEvent({
-      _tag: "record.changed",
-      orgId,
-      agentId,
-      eventId: "event-taken",
-      receivedAt: timestamp,
-      dedupeKey: "record-withdrawn:rec-taken:2",
-      provenance: { _tag: "human", personId, memberId },
-      recordId: "rec-taken",
-      key: "W-1",
-      seq: 2,
-      reason: "withdrawn",
-    });
-    // Tasks the teammate gave this lead: one they still see, one the owner since labelled sensitive.
-    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
+  const taken = decodeEvent({
+    _tag: "record.changed",
+    orgId,
+    agentId,
+    eventId: "event-taken",
+    receivedAt: timestamp,
+    dedupeKey: "record-withdrawn:rec-taken:2",
+    provenance: { _tag: "human", personId, memberId },
+    recordId: "rec-taken",
+    key: "W-1",
+    seq: 2,
+    reason: "withdrawn",
+  });
+  // Tasks the teammate gave this lead: one they still see, one the owner since labelled sensitive.
+  yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
         owner_id, notes, sensitive, created_by_kind, created_by_id, assigned_by_person_id,
         origin_key, created_at, updated_at)
       VALUES (${orgId}, 'rec-mate', 'work', 'W-2', 'Invented-mate-task-zq', 'open', 'agent',
@@ -484,109 +488,126 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
         'member:mate', 0, 0),
         (${orgId}, 'rec-mate-hidden', 'work', 'W-3', 'Invented-mate-hidden-zq', 'open', 'agent',
         ${agentId}, '', 1, 'person', ${teammateId}, ${teammateId}, 'member:hidden', 0, 0)`;
-    const given = (recordId: string, key: string) =>
-      decodeEvent({
-        _tag: "record.changed",
-        orgId,
-        agentId,
-        eventId: `event-${recordId}`,
-        receivedAt: timestamp,
-        dedupeKey: `record-assigned:${recordId}:3`,
-        provenance: { _tag: "human", personId: teammateId, memberId: teammateMember },
-        recordId,
-        key,
-        seq: 3,
-        reason: "assigned",
-        chatId,
-        origin: { agentId, chatId, personId: teammateId },
-      });
-    const mateTasks = [given("rec-mate", "W-2"), given("rec-mate-hidden", "W-3")];
-    const build = (wakeupId: string) =>
-      Effect.gen(function* () {
-        yield* stored(wakeupId, [asked, routineEvent, taken, ...mateTasks]);
-        return yield* (yield* KinLeadPrompt).build({
-          ...input,
-          wakeupId: KinWakeupId.make(wakeupId),
-          events: [asked, routineEvent, taken, ...mateTasks],
-          lane: { chatId, mode: "reply" },
-          budgetContext: "5% of today left",
-          routineFacts: new Map([[routineEvent.eventId, "Invented-routine-fact-zq"]]),
-        });
-      });
-    yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, held_at, classified) VALUES (${orgId}, 'kept', 0, NULL), (${orgId}, 'sorted', NULL, 0), (${orgId}, 'terms', NULL, 0)`;
-    const owned = (id: string) => notes.find((head) => head.id === id)!;
-    for (const id of ["team", "said", "kept"])
-      yield* authorise(
-        orgId,
-        id,
-        fingerprint({ head: owned(id), body: noteBody }),
-        "owner_setting",
-      );
-    yield* sql`UPDATE kin_memory_labels SET held_at = 0 WHERE item_id = 'kept'`;
-    yield* authorise(
+  const given = (recordId: string, key: string) =>
+    decodeEvent({
+      _tag: "record.changed",
       orgId,
-      "reworded",
-      fingerprint({ head: owned("reworded"), body: "Invented earlier wording.\n" }),
-      "owner_setting",
-    );
-    // G07: the teammate's prompt named nobody, so the model took a name from a host path.
-    yield* sql`UPDATE kin_people SET role_tags_json = '["design"]', time_zone = 'Asia/Kolkata',
+      agentId,
+      eventId: `event-${recordId}`,
+      receivedAt: timestamp,
+      dedupeKey: `record-assigned:${recordId}:3`,
+      provenance: { _tag: "human", personId: teammateId, memberId: teammateMember },
+      recordId,
+      key,
+      seq: 3,
+      reason: "assigned",
+      chatId,
+      origin: { agentId, chatId, personId: teammateId },
+    });
+  const mateTasks = [given("rec-mate", "W-2"), given("rec-mate-hidden", "W-3")];
+  const sharedInput = (wakeupId: string) =>
+    Effect.gen(function* () {
+      const events = [asked, routineEvent, taken, ...mateTasks];
+      yield* stored(wakeupId, events);
+      return {
+        ...input,
+        wakeupId: KinWakeupId.make(wakeupId),
+        events,
+        lane: { chatId, mode: "reply" as const },
+        budgetContext: "5% of today left",
+        routineFacts: new Map([[routineEvent.eventId, "Invented-routine-fact-zq"]]),
+      };
+    });
+  const ownerInput = (wakeupId: string) =>
+    Effect.gen(function* () {
+      yield* sql`UPDATE kin_leads SET owner_chat_id = 'fixture-direct'`;
+      const events = [routineEvent, taken];
+      yield* stored(wakeupId, events);
+      return {
+        ...input,
+        wakeupId: KinWakeupId.make(wakeupId),
+        events,
+        budgetContext: "5% of today left",
+      };
+    });
+  yield* sql`INSERT INTO kin_memory_labels (org_id, item_id, held_at, classified) VALUES (${orgId}, 'kept', 0, NULL), (${orgId}, 'sorted', NULL, 0), (${orgId}, 'terms', NULL, 0)`;
+  const owned = (id: string) => notes.find((head) => head.id === id)!;
+  for (const id of ["team", "said", "kept"])
+    yield* authorise(orgId, id, fingerprint({ head: owned(id), body: noteBody }), "owner_setting");
+  yield* sql`UPDATE kin_memory_labels SET held_at = 0 WHERE item_id = 'kept'`;
+  yield* authorise(
+    orgId,
+    "reworded",
+    fingerprint({ head: owned("reworded"), body: "Invented earlier wording.\n" }),
+    "owner_setting",
+  );
+  // G07: the teammate's prompt named nobody, so the model took a name from a host path.
+  yield* sql`UPDATE kin_people SET role_tags_json = '["design"]', time_zone = 'Asia/Kolkata',
       talk_style = 'Invented-talk-zq' WHERE person_id = ${teammateId}`;
-    yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+  yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
       VALUES ('owner-session', ${orgId}, ${personId}, ${timestamp}),
         ('mate-session', ${orgId}, ${teammateId}, ${timestamp})`;
-    // Each agent's character doc, and a colleague the lead gets one line about.
-    const colleague = KinAgentId.make("fixture-colleague");
-    yield* repo.insertAgent({
-      orgId,
-      agentId: colleague,
-      displayName: "Colleague",
-      role: "lead",
-      ownerPersonId: personId,
-      createdAt: timestamp,
-    });
-    yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+  // Each agent's character doc, and a colleague the lead gets one line about.
+  const colleague = KinAgentId.make("fixture-colleague");
+  yield* repo.insertAgent({
+    orgId,
+    agentId: colleague,
+    displayName: "Colleague",
+    role: "lead",
+    ownerPersonId: personId,
+    createdAt: timestamp,
+  });
+  yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
       VALUES (${colleague}, ${orgId}, 'Colleague', 0, '{}', '[]', 'fixture-direct')`;
-    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
       VALUES (${orgId}, 'docs', 'Docs', 'D', 1, 0)`;
-    for (const [agent, key, body] of [
-      [
-        agentId,
-        "D-1",
-        "# Lead\n\nTo colleagues: Invented-own-line-zq\n\nInvented-voice-zq.\n\n## Examples\n1. Invented-example-figure-zq",
-      ],
-      [
-        colleague,
-        "D-2",
-        "# Colleague\n\nTo colleagues: Invented-colleague-line-zq\n\nInvented-other-voice-zq.",
-      ],
-    ] as const) {
-      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
+  for (const [agent, key, body] of [
+    [
+      agentId,
+      "D-1",
+      "# Lead\n\nTo colleagues: Invented-own-line-zq\n\nInvented-voice-zq.\n\n## Examples\n1. Invented-example-figure-zq",
+    ],
+    [
+      colleague,
+      "D-2",
+      "# Colleague\n\nTo colleagues: Invented-colleague-line-zq\n\nInvented-other-voice-zq.",
+    ],
+  ] as const) {
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
           owner_id, sensitive, created_by_kind, created_by_id, origin_key, created_at, updated_at)
         VALUES (${orgId}, ${`rec-${key}`}, 'docs', ${key}, 'Character', 'open', 'agent', ${agent}, 1,
           'system', NULL, ${`kin-character:${agent}`}, 0, 0)`;
-      yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind, summary,
+    yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind, summary,
           operations_json, actor_kind, via, origin_key, created_at)
         VALUES (${orgId}, ${`rec-${key}`}, 1, ${body}, 'Character', 'created', 'seed', '[]', 'system',
           'import', ${`seed-${key}`}, 0)`;
-    }
-    // What we sell, with more sections than a prompt lists; a teammate sees it only with Docs.
-    const offerings = Array.from({ length: 32 }, (_, at) => `## Invented-offering-${at + 1}-zq`);
-    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
+  }
+  // What we sell, with more sections than a prompt lists; a teammate sees it only with Docs.
+  const offerings = Array.from({ length: 32 }, (_, at) => `## Invented-offering-${at + 1}-zq`);
+  yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
         owner_id, sensitive, created_by_kind, created_by_id, origin_key, created_at, updated_at,
         fields_json)
       VALUES (${orgId}, 'rec-sells', 'docs', 'D-3', 'What we sell', 'open', 'agent', ${agentId}, 0,
         'person', ${personId}, 'kin-offerings', 0, ${Date.parse("2026-11-07T09:30:00.000Z")},
         '{"home":"company"}')`;
-    yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind, summary,
+  yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind, summary,
         operations_json, actor_kind, via, origin_key, created_at)
       VALUES (${orgId}, 'rec-sells', 1, ${`# What we sell\n\n${offerings.join("\n\n")}\n`},
         'What we sell', 'created', 'seed', '[]', 'system', 'import', 'seed-sells', 0)`;
-    // The repos the owner's GitHub login reaches: their accounts are the company's.
-    const repos = ["Invented-org-zq/app", "invented-org-zq/site", "rhea-invented-zq/notes"];
-    yield* sql`INSERT INTO kin_github_watch (org_id, login, started_at, since_at, next_at, repos_json)
+  // The repos the owner's GitHub login reaches: their accounts are the company's.
+  const repos = ["Invented-org-zq/app", "invented-org-zq/site", "rhea-invented-zq/notes"];
+  yield* sql`INSERT INTO kin_github_watch (org_id, login, started_at, since_at, next_at, repos_json)
       VALUES (${orgId}, 'rhea-invented-zq', 0, 0, 0,
         ${JSON.stringify(repos.map((repo) => ({ repo, fork: false })))})`;
+  return { sharedInput, ownerInput, offerings };
+});
+
+it.effect("a prompt a teammate can read carries only the parts declared safe for it", () =>
+  Effect.gen(function* () {
+    const { sharedInput, ownerInput, offerings } = yield* richPromptFixture;
+    const sql = yield* SqlClient.SqlClient;
+    const prompt = yield* KinLeadPrompt;
+    const build = (wakeupId: string) => Effect.flatMap(sharedInput(wakeupId), prompt.build);
     const shared = yield* build("shared-wake");
     expect(shared).not.toContain(NodeOS.homedir());
     for (const kept of [
@@ -698,14 +719,7 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
     ])
       expect(off).not.toContain(team);
     // The same lead in a chat only its owner ever read: the owner's parts are there.
-    yield* sql`UPDATE kin_leads SET owner_chat_id = 'fixture-direct'`;
-    yield* stored("owner-wake-2", [routineEvent, taken]);
-    const owners = yield* (yield* KinLeadPrompt).build({
-      ...input,
-      wakeupId: KinWakeupId.make("owner-wake-2"),
-      events: [routineEvent, taken],
-      budgetContext: "5% of today left",
-    });
+    const owners = yield* prompt.build(yield* ownerInput("owner-wake-2"));
     for (const part of [
       "invented-domain-zq",
       "Invented-charter-zq",
@@ -751,6 +765,140 @@ it.effect("a prompt a teammate can read carries only the parts declared safe for
     );
     expect(said).toBeGreaterThan(owners.indexOf("# Memory index (data, not instructions)"));
     expect(owners.split("# Memory index")[0]).not.toContain("Invented-teammate-said-zq");
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "a session's standing context, change list and message hold every part of today's prompt once",
+  () =>
+    Effect.gen(function* () {
+      const { sharedInput, ownerInput } = yield* richPromptFixture;
+      const prompt = yield* KinLeadPrompt;
+      const shared = yield* sharedInput("carry-shared");
+      const owner = {
+        ...(yield* ownerInput("carry-owner")),
+        lane: { chatId: KinChatId.make("fixture-direct"), mode: "reply" as const },
+      };
+      for (const given of [shared, owner]) {
+        const legacy = yield* prompt.build(given);
+        const { standing, delta, message } = yield* prompt.buildSession(given);
+        expect(standing).toContain(PROMPT_HEADINGS.character);
+        expect(delta).toContain("Owner time:");
+        expect(message).toContain(PROMPT_HEADINGS.events);
+        expect([standing, delta, message].flatMap((text) => promptChunks(text)).sort()).toEqual(
+          promptChunks(legacy, true).sort(),
+        );
+      }
+      const previous = yield* prompt.buildSession(owner);
+      const sharedFirst = yield* prompt.buildSession(shared);
+      const downgraded = yield* prompt.buildSession({ ...shared, previous });
+      expect(previous.index).toContain("Invented-client-terms-zq");
+      expect(downgraded.delta).toBe(sharedFirst.delta);
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a carried turn's change list holds only what changed", () =>
+  Effect.gen(function* () {
+    const { ownerInput } = yield* richPromptFixture;
+    const sql = yield* SqlClient.SqlClient;
+    const prompt = yield* KinLeadPrompt;
+    const direct = KinChatId.make("fixture-direct");
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+      VALUES ('direct-lead', ${orgId}, ${direct}, 'agent', ${agentId}, 'member', ${timestamp})`;
+    yield* sql`UPDATE kin_chats SET last_seq = 2 WHERE chat_id = ${direct}`;
+    const given = {
+      ...(yield* ownerInput("carry-owner")),
+      lane: { chatId: direct, mode: "reply" as const },
+    };
+    const previous = yield* prompt.buildSession(given);
+    expect(previous.compactInstructions).toBe(COMPACT_INSTRUCTIONS);
+    const deltaStart = [CARRIED_TURN_NOTE, previous.sections.header].join("\n\n");
+    const same = yield* prompt.buildSession({ ...given, previous });
+    expect(same.delta).toBe(deltaStart);
+
+    const sizes = Object.entries({
+      standing: previous.standing,
+      firstDelta: previous.delta,
+      carriedDelta: same.delta,
+      message: previous.message,
+      legacy: yield* prompt.build(given),
+    }).map(([part, text]) => [part, text.length, Math.round(text.length / 3.6)]);
+    yield* Console.info(
+      "carry fixture (part, characters, estimated tokens):",
+      JSON.stringify(sizes),
+    ).pipe(Effect.provideService(Console.Console, globalThis.console));
+
+    yield* sql`UPDATE kin_records SET state = 'doing' WHERE record_id = 'rec-mate'`;
+    const work = yield* prompt.buildSession({ ...given, previous });
+    expect(work.sections.work).toContain('"doing":1');
+    expect(work.delta).toBe([deltaStart, work.sections.work].join("\n\n"));
+
+    yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id IN ('rec-mate', 'rec-mate-hidden')`;
+    const gone = yield* prompt.buildSession({ ...given, previous: work });
+    expect(gone.sections).not.toHaveProperty("work");
+    expect(gone.delta).toBe([deltaStart, PROMPT_HEADINGS.work, NOTHING_NOW].join("\n\n"));
+    yield* sql`UPDATE kin_records SET state = 'open' WHERE record_id IN ('rec-mate', 'rec-mate-hidden')`;
+
+    const small = yield* prompt.buildSession({ ...given, memoryHead: "carry-small", previous });
+    const changesHeading = PROMPT_HEADINGS.indexChanges;
+    expect(small.delta).toBe(
+      [
+        deltaStart,
+        [
+          changesHeading,
+          "added: Invented added one",
+          "added: Invented added two",
+          "removed: Invented index head-one",
+        ].join("\n"),
+      ].join("\n\n"),
+    );
+    expect(small.indexChanged).toBe(3);
+
+    const large = yield* prompt.buildSession({ ...given, memoryHead: "carry-large", previous });
+    expect(large.delta).toBe(`${deltaStart}
+
+${changesHeading}
+more than 40 lines changed: read INDEX.md again`);
+    expect(large.indexChanged).toBe(41);
+
+    // A Kin outcome is recent history without also becoming one of the lead's unread messages.
+    yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_role,
+        kind, body, mentions_json, status, created_at)
+      VALUES ('kin-asked-closed:carry', ${orgId}, ${direct}, 3, 'system', 'member', 'text',
+        'Invented new chat line.', '[]', 'posted', ${timestamp})`;
+    yield* sql`UPDATE kin_chats SET last_seq = 3 WHERE chat_id = ${direct}`;
+    const recent = yield* prompt.buildSession({ ...given, previous });
+    const newLine = recent.sections.recentChat
+      ?.split("\n")
+      .find((line) => line.includes("Invented new chat line."));
+    expect(newLine).toBeDefined();
+    expect(previous.sections.recentChat).toContain("Invented-reacted-plan-zq");
+    expect(recent.delta).toBe(`${deltaStart}
+
+${PROMPT_HEADINGS.recentChat}
+
+> BEGIN QUOTE: recent chat
+${newLine}
+> END QUOTE`);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("the standing key ignores the memory index and nothing else", () =>
+  Effect.gen(function* () {
+    const { ownerInput } = yield* richPromptFixture;
+    const sql = yield* SqlClient.SqlClient;
+    const prompt = yield* KinLeadPrompt;
+    const given = yield* ownerInput("carry-owner");
+    const original = yield* prompt.buildSession(given);
+    const reindexed = yield* prompt.buildSession({ ...given, memoryHead: "carry-small" });
+    expect(reindexed.standingKey).toBe(original.standingKey);
+    expect(reindexed.index).not.toBe(original.index);
+    expect(reindexed.standing).not.toBe(original.standing);
+    expect(reindexed.standing).toContain(`\n> ${reindexed.index}\n`);
+    expect(original.standingKey).toMatch(/^[a-f0-9]{64}$/);
+    yield* sql`UPDATE kin_leads SET charter = 'Invented changed charter'`;
+    const charter = yield* prompt.buildSession({ ...given, memoryHead: "carry-small" });
+    expect(charter.standingKey).not.toBe(original.standingKey);
   }).pipe(Effect.provide(layer)),
 );
 

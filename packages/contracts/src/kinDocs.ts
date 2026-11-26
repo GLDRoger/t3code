@@ -196,6 +196,8 @@ export type KinDocLatestSlim = typeof KinDocLatestSlim.Type;
 export const KinDocListRow = Schema.Struct({
   ...KinDocRow.fields,
   latest: Schema.Union([KinDocVersion, KinDocLatestSlim]),
+  /** To owner-level readers: the teammate whose draft it is, while it reads "Me and owners". */
+  draftOf: Schema.optional(Schema.Struct({ name: Schema.String })),
 });
 export type KinDocListRow = typeof KinDocListRow.Type;
 
