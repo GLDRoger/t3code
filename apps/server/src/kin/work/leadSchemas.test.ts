@@ -1,10 +1,10 @@
-import { assert, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import { Tool } from "effect/ai";
-import { AdvertisedCore, advertisedJsonSchema } from "../../mcp/advertisedJsonSchema.ts";
-import * as Context from "effect/Context";
+import { advertisedJsonSchema } from "../../mcp/advertisedJsonSchema.ts";
+import { inputPropertyPaths } from "../mcp/inputPropertyPaths.testHelper.ts";
 import { ImportHeader } from "./importFormat.ts";
 import { DefineInput } from "./leadMoney.ts";
 import { KinDocsToolkit } from "./mcp/docTools.ts";
@@ -85,34 +85,27 @@ it("list_define takes number and yes or no fields; imports and unknown types sta
     assert.deepStrictEqual(accepted(type), [true, false], type);
 });
 
-it("advertises every accepted record write key, with descriptions only on the core", () => {
-  const propertiesAt = (schema: unknown, path: ReadonlyArray<string>) => {
-    const node = path.reduce<unknown>(
-      (node, key) => (Predicate.isObject(node) ? node[key] : undefined),
-      schema,
-    );
-    if (!Predicate.isObject(node) || !Predicate.isObject(node.properties)) {
-      return assert.fail(`No properties at ${path.join(".")}`);
-    }
-    return node.properties;
-  };
+it("advertises every accepted list definition key and a single field type enum", () => {
+  const tool = KinWorkToolkit.tools.list_define;
+  const advertised = advertisedJsonSchema(tool, { kin: true });
+  assert.deepStrictEqual(
+    inputPropertyPaths(advertised),
+    inputPropertyPaths(Tool.getJsonSchema(tool)),
+  );
+  expect(advertised.properties).toHaveProperty("fields.items.properties.type", {
+    type: "string",
+    enum: ["text", "choice", "date", "person", "link", "money", "file", "number", "yesno"],
+  });
+});
+
+it("advertises every accepted record write key at every level", () => {
   const { record_create, record_update } = KinWorkToolkit.tools;
   for (const tool of [record_create, record_update]) {
-    const core = Context.get(tool.annotations, AdvertisedCore);
     const raw = Tool.getJsonSchema(tool);
-    const shown = advertisedJsonSchema(tool, { kin: true });
-    assert.sameMembers(Object.keys(shown.properties ?? {}), Object.keys(raw.properties ?? {}));
-    const accepted = propertiesAt(raw, core.path);
-    const advertised = propertiesAt(shown, core.path);
-    assert.sameMembers(Object.keys(advertised), Object.keys(accepted), tool.name);
-    const unstripped = advertisedJsonSchema(
-      tool.annotate(AdvertisedCore, { ...core, keys: Object.keys(accepted) }),
-      { kin: true },
-    );
-    for (const [key, shape] of Object.entries(advertised)) {
-      if (core.keys.includes(key))
-        assert.deepStrictEqual(shape, propertiesAt(unstripped, core.path)[key], key);
-      else if (Predicate.isObject(shape)) assert.notProperty(shape, "description", key);
-    }
+    const advertised = advertisedJsonSchema(tool, { kin: true });
+    assert.deepStrictEqual(inputPropertyPaths(advertised), inputPropertyPaths(raw), tool.name);
+    const prefix = tool.name === "record_create" ? "records.items.properties." : "";
+    expect(advertised.properties).toHaveProperty(`${prefix}confirmed`, { type: "boolean" });
+    expect(advertised.properties).toHaveProperty(`${prefix}due.description`, expect.any(String));
   }
 });

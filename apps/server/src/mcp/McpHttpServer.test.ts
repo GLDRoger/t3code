@@ -53,7 +53,7 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerHttp from "../http.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { AdvertisedCore, advertisedJsonSchema } from "./advertisedJsonSchema.ts";
+import { AdvertisedDescriptions, advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
@@ -630,7 +630,7 @@ it.effect("lists every Kin argument but validates bounds not sent to the model",
     Tool.make("probe", {
       parameters,
       success: parameters,
-    }).annotate(AdvertisedCore, { path: [], keys: ["text", "rows", "count", "due"] }),
+    }).annotate(AdvertisedDescriptions, [{ path: [], keys: ["text", "rows", "count", "due"] }]),
   );
   const registration = McpHttpServer.toolkitRegistration(
     tools,

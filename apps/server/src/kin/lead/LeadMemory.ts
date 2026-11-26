@@ -100,6 +100,7 @@ import { ownerZone } from "../work/recordRows.ts";
 import { pauseTriggers } from "../triggers/KinTriggerStore.ts";
 import { DAY_MS } from "../durations.ts";
 import { keySentSql } from "../chat/keySent.ts";
+import { knownArguments } from "../mcp/knownArguments.ts";
 import { ownTypedSql } from "./awaySet.ts";
 
 const text = Schema.String.check(Schema.isMaxLength(100_000));
@@ -139,23 +140,36 @@ const {
   for_chat: _forChat,
   ...writableFields
 } = MemoryItemFrontMatter.fields;
+const WriteItem = Schema.Struct({
+  ...writableFields,
+  recorded_at: Schema.optional(writableFields.recorded_at),
+  valid_from: Schema.optional(writableFields.valid_from),
+  invalid_at: Schema.optional(writableFields.invalid_at),
+  superseded_by: Schema.optional(writableFields.superseded_by),
+  source: Schema.optional(writableFields.source),
+  said_by: Schema.optional(writableFields.said_by),
+  links: Schema.optional(writableFields.links),
+  id: Schema.optional(itemId),
+  chat: Schema.optional(KinChatId),
+  review_by: Schema.optional(MemoryItemFrontMatter.fields.review_by),
+  body: text,
+  sensitive: Schema.Boolean,
+});
+// A read head can be sent back on a write. Its server-owned values still come from Kin.
+const legacyServerFields = [
+  "source_event",
+  "quote",
+  "shared_by",
+  "shared_from",
+  "for_chat",
+  "orgId",
+  "path",
+];
 export const WriteInput = Schema.Struct({
   op: Schema.Literals(["create", "update", "supersede", "invalidate"]),
-  item: Schema.Struct({
-    ...writableFields,
-    recorded_at: Schema.optional(writableFields.recorded_at),
-    valid_from: Schema.optional(writableFields.valid_from),
-    invalid_at: Schema.optional(writableFields.invalid_at),
-    superseded_by: Schema.optional(writableFields.superseded_by),
-    source: Schema.optional(writableFields.source),
-    said_by: Schema.optional(writableFields.said_by),
-    links: Schema.optional(writableFields.links),
-    id: Schema.optional(itemId),
-    chat: Schema.optional(KinChatId),
-    review_by: Schema.optional(MemoryItemFrontMatter.fields.review_by),
-    body: text,
-    sensitive: Schema.Boolean,
-  }),
+  item: knownArguments("Memory item", WriteItem, legacyServerFields).pipe(
+    Schema.decodeTo(Schema.toType(WriteItem)),
+  ),
   sourceEventId: TurnEvent,
   // Checked against that event's message, never trusted as sent (`MemoryWriter`).
   quote: Schema.optional(Schema.String.check(Schema.isMaxLength(QUOTE_MAX))),

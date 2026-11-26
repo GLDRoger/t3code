@@ -3469,7 +3469,9 @@ it.effect(
         emails: ["ingrid.home@tallmoor.invalid"],
         phones: ["+00 1234 5678", "+00 1234 5679", "+00 1234 5670"],
       };
-      const changed = yield* LeadWork.update(scope, yield* decodeUpdate(updateInput));
+      const { key, ...change } = yield* decodeUpdate(updateInput);
+      if (key === undefined) return assert.fail("The decoded update has no record key");
+      const changed = yield* LeadWork.update(scope, { ...change, key });
       assert.includeMembers([...changed.changed], ["email", "emails", "phones"]);
       assert.deepInclude(
         (yield* Clients.party([mate], { orgId, key: prospect!.key })).contacts[0],

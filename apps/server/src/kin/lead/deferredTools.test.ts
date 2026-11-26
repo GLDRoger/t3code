@@ -1,10 +1,11 @@
-import { assert, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import { Tool, Toolkit } from "effect/ai";
 
 import { advertisedJsonSchema } from "../../mcp/advertisedJsonSchema.ts";
 import { KinConnectionsToolkit } from "../connections/mcp.ts";
 import { KinDocumentToolkit } from "../gendocs/mcp.ts";
+import { inputPropertyPaths } from "../mcp/inputPropertyPaths.testHelper.ts";
 import { KinChatToolkit } from "../mcp/KinChatToolkit.ts";
 import { KinPictureToolkit } from "../pictures/mcp.ts";
 import contextBudget from "../mcp/agentContextBudget.json" with { type: "json" };
@@ -76,6 +77,28 @@ it("each Kin tool's description and input schema weigh what the budget pins", ()
     contextBudget.kinLeadToolBytes,
     "Set agentContextBudget.json to the measured values. Before you cut text to fit, run the evals that cover it (evals/README.md).",
   );
+});
+
+it("advertises every accepted chart key at every level", () => {
+  const tool = KinLeadToolkit.tools.kin_chart;
+  const advertised = advertisedJsonSchema(tool, { kin: true });
+  assert.deepStrictEqual(
+    inputPropertyPaths(advertised),
+    inputPropertyPaths(Tool.getJsonSchema(tool)),
+  );
+});
+
+it("advertises every accepted memory write key and a single operation enum", () => {
+  const tool = KinLeadToolkit.tools.memory_write;
+  const advertised = advertisedJsonSchema(tool, { kin: true });
+  assert.deepStrictEqual(
+    inputPropertyPaths(advertised),
+    inputPropertyPaths(Tool.getJsonSchema(tool)),
+  );
+  expect(advertised.properties).toHaveProperty("op", {
+    type: "string",
+    enum: ["create", "update", "supersede", "invalidate"],
+  });
 });
 
 it("adds six everyday tools to Claude's owner core without moving the Codex partition", () => {

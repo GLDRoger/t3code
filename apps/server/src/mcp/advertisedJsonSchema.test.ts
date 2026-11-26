@@ -2,7 +2,7 @@ import { expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
-import { AdvertisedCore, advertisedJsonSchema } from "./advertisedJsonSchema.ts";
+import { AdvertisedDescriptions, advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 import { ThemeToolkit } from "./toolkits/theme/tools.ts";
 
 it("drops JSON noise, merges tagged unions, and keeps null where it is required", () => {
@@ -75,10 +75,9 @@ it("keeps the annotated core descriptions and advertises the rest as bare shapes
         }),
       ).check(Schema.isMinLength(1), Schema.isMaxLength(3)),
     }),
-  }).annotate(AdvertisedCore, {
-    path: ["properties", "records", "items"],
-    keys: ["shown", "due", "count"],
-  });
+  }).annotate(AdvertisedDescriptions, [
+    { path: ["properties", "records", "items"], keys: ["shown", "due", "count"] },
+  ]);
 
   expect(advertisedJsonSchema(tool, { kin: true })).toEqual({
     type: "object",
@@ -106,4 +105,39 @@ it("keeps the annotated core descriptions and advertises the rest as bare shapes
     },
     required: ["records"],
   });
+});
+
+it("retains selected descriptions and advertises the remaining nested field shapes", () => {
+  const tool = Tool.make("example", {
+    parameters: Schema.Struct({
+      title: Schema.String.annotate({ description: "Keep this text verbatim." }),
+      rows: Schema.Array(
+        Schema.Struct({
+          description: Schema.String.annotate({ description: "A row's own text." }),
+          score: Schema.Int.check(Schema.isGreaterThan(0)),
+          color: Schema.optional(Schema.Literals(["green", "red"])),
+        }),
+      ).annotate({ description: "An array of rows." }),
+    }),
+  }).annotate(AdvertisedDescriptions, [{ path: [], keys: ["title"] }]);
+
+  expect(advertisedJsonSchema(tool, { kin: true }).properties).toEqual({
+    title: { type: "string", description: "Keep this text verbatim." },
+    rows: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          description: { type: "string" },
+          score: { type: "integer" },
+          color: { type: "string", enum: ["green", "red"] },
+        },
+        required: ["description", "score"],
+      },
+    },
+  });
+  expect(Tool.getJsonSchema(tool).properties).toHaveProperty(
+    "rows.description",
+    "An array of rows.",
+  );
 });

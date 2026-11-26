@@ -7,7 +7,7 @@ import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
 
-import { AdvertisedCore } from "../../../mcp/advertisedJsonSchema.ts";
+import { AdvertisedDescriptions } from "../../../mcp/advertisedJsonSchema.ts";
 import { ServerConfig } from "../../../config.ts";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -126,27 +126,29 @@ suggested true only on an expense, quote or invoice you inferred or couldn't rea
     success: CreateResult,
   })
     .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(AdvertisedCore, {
-      path: ["properties", "records", "items"],
-      keys: [
-        "list",
-        "title",
-        "owner",
-        "due",
-        "state",
-        "notes",
-        "category",
-        "side",
-        "client",
-        "project",
-        "amount",
-        "date",
-        "fields",
-        "suggested",
-        "reason",
-        "from",
-      ],
-    }),
+    .annotate(AdvertisedDescriptions, [
+      {
+        path: ["properties", "records", "items"],
+        keys: [
+          "list",
+          "title",
+          "owner",
+          "due",
+          "state",
+          "notes",
+          "category",
+          "side",
+          "client",
+          "project",
+          "amount",
+          "date",
+          "fields",
+          "suggested",
+          "reason",
+          "from",
+        ],
+      },
+    ]),
   Tool.make("record_update", {
     ...shared,
     description: `Change named fields of one entry (key), or of several the same way (keys, up to 100, all or none); what you leave out stays, and its history keeps every change. Move state as you work it: doing, waiting with waitingOn, done (leftover for what is still to do), dropped. A kept promise is done, with how in notes; a task waiting on the answer to your question waits, not done. steps, alsoOn and tags are whole lists: keep the ones it has ([] clears); done ticks a step; urgent false clears it. owner gives it to someone, and to another agent asks it to do it; tell false holds their notice. Any field record_create takes changes the same way, a list's own in fields; "that was 4,200, not 2,400" changes only amount; null clears due, client, project, amount, date, repeat and contact details. Closing a repeating entry makes its next one; state dropped closes a client, contact or project. category campaign with audience makes a project a campaign, category null an ordinary one. A deal moves by fields.stage (from deal_stages); done marks it won (a prospect becomes a client), dropped with fields.lostReason lost, open reopens it; fields.concerns is its whole list; next adds its next step, while a promise is a record_create obligation. expectedRev refuses the change if it moved since you read it. A task given a due returns shows: say that date.`,
@@ -154,27 +156,29 @@ suggested true only on an expense, quote or invoice you inferred or couldn't rea
     success: Work.UpdateResult,
   })
     .annotate(McpSchema.EnabledWhen, enabled)
-    .annotate(AdvertisedCore, {
-      path: [],
-      keys: [
-        "key",
-        "keys",
-        "sourceEventId",
-        "expectedRev",
-        "state",
-        "waitingOn",
-        "notes",
-        "due",
-        "owner",
-        "title",
-        "next",
-        "fields",
-        "tell",
-        "reason",
-        "alsoOn",
-        "leftover",
-      ],
-    }),
+    .annotate(AdvertisedDescriptions, [
+      {
+        path: [],
+        keys: [
+          "key",
+          "keys",
+          "sourceEventId",
+          "expectedRev",
+          "state",
+          "waitingOn",
+          "notes",
+          "due",
+          "owner",
+          "title",
+          "next",
+          "fields",
+          "tell",
+          "reason",
+          "alsoOn",
+          "leftover",
+        ],
+      },
+    ]),
   Tool.make("record_assign", {
     ...shared,
     description:
@@ -215,7 +219,32 @@ suggested true only on an expense, quote or invoice you inferred or couldn't rea
     description: `Start tracking something new as a list with typed fields ("start tracking expenses", "track leave"): a template, or a name and fields, plus categories, the states it uses and their names, and whether entries carry an amount. To add fields, choices or categories to a list you defined, pass list. The first call only proposes: it creates nothing and shows the owner its fields on a card to tap. Ask in one short line; once they tap yes, or say yes in a later turn, call again with just proposal to create exactly that. A no on the card ends it. Never create a list the owner hasn't agreed to. Only the owner retires a field or archives a list.`,
     parameters: Money.DefineInput,
     success: Money.DefineResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  })
+    .annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(AdvertisedDescriptions, [
+      {
+        path: [],
+        keys: [
+          "sourceEventId",
+          "proposal",
+          "template",
+          "list",
+          "name",
+          "noun",
+          "fields",
+          "categories",
+          "states",
+          "amount",
+          "currency",
+          "sensitive",
+          "team",
+          "section",
+          "dock",
+          "remindOn",
+          "check",
+        ],
+      },
+    ]),
   Tool.make("payment_record", {
     ...shared,
     description:

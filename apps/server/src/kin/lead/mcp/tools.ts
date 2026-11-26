@@ -14,6 +14,7 @@ import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, Tool, Toolkit } from "effect/ai";
+import { AdvertisedDescriptions } from "../../../mcp/advertisedJsonSchema.ts";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
 import { KIN_VISUAL_PAGE_GUIDE, KIN_VISUAL_TOOL_NAME } from "@t3tools/shared/kinVisual";
@@ -191,7 +192,12 @@ export const KinLeadToolkit = Toolkit.make(
       'Add a chart to your reply for a trend, a comparison or a breakdown of three or more numbers; never for one or two numbers, the amounts a "how much" question asks for, or a list of things: say those. The chart carries the numbers; your reply gives the answer. It shows under your reply; put the figure line it returns where it belongs. Aimed at another chat, it posts there. chart by the question: over time, line, area or stacked_area; this period against the last, one series with the earlier in comparison; categories, bar, or horizontal_bar for long or many names, stacked_bar or stacked_horizontal_bar for the parts of each total; shares of one whole, pie or donut; options scored on the same measures, radar; two measures together, scatter. Anything else (sankey, treemap, heatmap, funnel, map, diagram) is the rich visual tool if you have one. unit: {kind:"count"}, {kind:"percent"} (12.5 is 12.5%) or {kind:"money", currency} with every value in whole minor units (1,299.50 is 129950); never convert or round money. labels: the real points, not thinned, oldest first; labelType day is YYYY-MM-DD, month YYYY-MM. series: {name, values}, values lined up with labels and null where none; comparison takes the same labels. A pie or donut is one series. A scatter takes no labels or series: scatter {xName, yName, xUnit, series:[{name, points:[{x, y, label}]}]}. color or colors (accent, green, amber, red, purple, grey) only when a colour means something; target {name, value} draws a goal line; valueLabels writes values where they fit; caption is a line under the title. Only numbers you read or were given. A refusal names each limit and what to change.',
     parameters: ChartCard.ChartInput,
     success: ChartCard.ChartResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  })
+    .annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(AdvertisedDescriptions, [
+      { path: [], keys: ["chart", "title", "labels", "labelType", "series", "unit", "caption"] },
+      { path: ["properties", "series", "items"], keys: ["name", "values"] },
+    ]),
   Tool.make(KIN_VISUAL_TOOL_NAME, {
     ...chat,
     description: `Add a page of figures to your reply: one page of HTML, CSS and JavaScript in a sealed frame under its title. kin_chart comes first for the kinds it draws; this is for the rest: a dashboard, a sankey, treemap, heatmap, funnel, gauge, network, gantt or timeline, a flow or sequence diagram, a styled or sortable table. Put the figure line it returns where it belongs, and the takeaway as your first line. html is the whole page; height your estimate of it at phone width. One visual per call. Draw no Confirm, Approve, Send or Pay control: Kin does. Only data you read or were given. A refusal says what to change.\n${KIN_VISUAL_PAGE_GUIDE}`,
@@ -243,7 +249,26 @@ export const KinLeadToolkit = Toolkit.make(
     description: `Stage a memory create, update, supersession or invalidation, saved when the turn ends; a create needs no id. ${MEMORY_RULE} Quote what someone said in their exact words from that message (at most 400 characters); what you inferred takes trust agent and no quote. Asked to remember something, save what was said, as theirs, adding no rule, advice or consequence of your own: suggest that in your reply, and save it only if they agree. Set sensitive on every item: true for access (credentials, where kept, who holds them), money and commercial terms, arrangements the team isn't meant to know, and what the owner keeps between you; false for ordinary company knowledge; when unsure, true. Never save a password, key or token: save where it is kept. In a chat others read, save only what someone there said, as a claim with sensitive false. Never delete or write rules. besides names items a refusal listed that are a different matter; retry only with exactly the same payload.`,
     parameters: Lead.WriteInput,
     success: Lead.ItemResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  })
+    .annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(AdvertisedDescriptions, [
+      {
+        path: ["properties", "item"],
+        keys: [
+          "id",
+          "kind",
+          "title",
+          "status",
+          "due",
+          "invalid_at",
+          "review_by",
+          "trust",
+          "links",
+          "body",
+          "sensitive",
+        ],
+      },
+    ]),
   Tool.make("memory_label", {
     ...shared,
     description:
