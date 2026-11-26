@@ -114,6 +114,7 @@ import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp
 import { diffGoesOn, postedResult } from "../../apps/server/src/kin/github/GitHubWatch.ts";
 import { DIFF_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
 import { filePage, READ_NEXT, READ_REFUSAL } from "../../apps/server/src/kin/github/repoRead.ts";
+import { REPO_READ_REFUSAL } from "../../apps/server/src/kin/lead/OutsideContent.ts";
 import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
 import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
 import { KinSalesToolkit } from "../../apps/server/src/kin/sales/mcp.ts";
@@ -913,6 +914,11 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     ref: string | null;
     line: number | null;
   }) => repoReadAnswer(input),
+  // What any tool but reading and answering here gets after a shared turn read a repo
+  // (`KinToolGate`): the agent reads the gate's line, here in the tool's own error shape.
+  repoReadGate: (input: { name: string }) => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: REPO_READ_REFUSAL(input.name) },
+  }),
   // kin_github_read's refusal for a private repo the asker can't see, as Kin words it.
   repoReadRefused: (input: { repo: string; name: string; login: boolean }) => ({
     $error: {
