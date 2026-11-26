@@ -41,7 +41,9 @@ import { HEAD_START_GONE, HEAD_START_WAKE } from "../pulse/prepareWake.ts";
 import { WEEKLY_RULE } from "../pulse/weekly.ts";
 import { MONEY_RULE, WITHDRAWN_WORK } from "../work/workPrompt.ts";
 import {
+  CARRIED_TURN_NOTE,
   KinLeadPrompt,
+  NOTHING_NOW,
   PROMPT_HEADINGS,
   SHARED_TURN_LINE,
   TURN_DIVIDER,
@@ -784,9 +786,6 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
-const carriedNote =
-  "This continues the session's earlier turns in this chat; the replies in it were sent. The changes Kin knows of since then are listed here; anything not listed is as it was when you read it.";
-
 it.effect("a carried turn's change list holds only what changed", () =>
   Effect.gen(function* () {
     const { ownerInput } = yield* richPromptFixture;
@@ -801,7 +800,7 @@ it.effect("a carried turn's change list holds only what changed", () =>
       lane: { chatId: direct, mode: "reply" as const },
     };
     const previous = yield* prompt.buildSession(given);
-    const deltaStart = [carriedNote, previous.sections.header].join("\n\n");
+    const deltaStart = [CARRIED_TURN_NOTE, previous.sections.header].join("\n\n");
     const same = yield* prompt.buildSession({ ...given, previous });
     expect(same.delta).toBe(deltaStart);
 
@@ -815,7 +814,7 @@ it.effect("a carried turn's change list holds only what changed", () =>
     yield* Console.info(
       "carry fixture (part, characters, estimated tokens):",
       JSON.stringify(sizes),
-    );
+    ).pipe(Effect.provideService(Console.Console, globalThis.console));
 
     yield* sql`UPDATE kin_records SET state = 'doing' WHERE record_id = 'rec-mate'`;
     const work = yield* prompt.buildSession({ ...given, previous });
@@ -825,11 +824,11 @@ it.effect("a carried turn's change list holds only what changed", () =>
     yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id IN ('rec-mate', 'rec-mate-hidden')`;
     const gone = yield* prompt.buildSession({ ...given, previous: work });
     expect(gone.sections).not.toHaveProperty("work");
-    expect(gone.delta).toBe([deltaStart, PROMPT_HEADINGS.work, "(nothing now)"].join("\n\n"));
+    expect(gone.delta).toBe([deltaStart, PROMPT_HEADINGS.work, NOTHING_NOW].join("\n\n"));
     yield* sql`UPDATE kin_records SET state = 'open' WHERE record_id IN ('rec-mate', 'rec-mate-hidden')`;
 
     const small = yield* prompt.buildSession({ ...given, memoryHead: "carry-small", previous });
-    const changesHeading = "# Memory index changes since your previous turn (data)";
+    const changesHeading = PROMPT_HEADINGS.indexChanges;
     expect(small.delta).toBe(
       [
         deltaStart,
