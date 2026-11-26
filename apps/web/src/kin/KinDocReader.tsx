@@ -56,6 +56,7 @@ import { KinEmbedView } from "./KinEmbedView";
 import { useKinDocLabel } from "./KinConfirm";
 import { KinDocFileCard } from "./KinInvoice";
 import { useNowMinuteMs } from "./useKinClock";
+import { useKinShell } from "./useKinShell";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 
 const HEADINGS = "h1,h2,h3,h4,h5,h6";
@@ -249,7 +250,8 @@ export function KinDocReader(
   );
   const old = doc.version.version !== doc.latest.version;
   const previous = kinDocPrevious(doc.version);
-  const privacy = kinDocPrivacy(doc);
+  const shell = useKinShell(props.environmentId);
+  const privacy = doc.readers === undefined ? kinDocPrivacy(doc, shell) : null;
   const label = useKinDocLabel(props, doc);
   // The body opens with the doc's own name as its heading: say it once.
   const first = doc.outline.find((section) => section.id !== "top");

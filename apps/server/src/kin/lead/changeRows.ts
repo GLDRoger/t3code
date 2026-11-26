@@ -10,6 +10,7 @@ import {
   type KinWorkPrincipal,
   KIN_DISMISSED_FIELD,
   KIN_TAKEN_DEFAULT_FIELD,
+  KIN_WAITED_DONE_FIELD,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -52,7 +53,8 @@ export const millisOf = (shown: string | null) => {
 /**
  * Words that ride along with a move and go when it is put back; nothing to restore of their own.
  * `KIN_TAKEN_DEFAULT_FIELD` names the question whose default made the change (`defaultTaken.ts`),
- * `KIN_DISMISSED_FIELD` the one whose dismissal did (`dismissed.ts`).
+ * `KIN_DISMISSED_FIELD` the one whose dismissal did (`dismissed.ts`), `KIN_WAITED_DONE_FIELD` the
+ * card on which the person it waited on said it was done (`factCards.ts`).
  */
 export const ALONG = new Set([
   "reason",
@@ -60,6 +62,7 @@ export const ALONG = new Set([
   "untold",
   KIN_TAKEN_DEFAULT_FIELD,
   KIN_DISMISSED_FIELD,
+  KIN_WAITED_DONE_FIELD,
 ]);
 
 /**

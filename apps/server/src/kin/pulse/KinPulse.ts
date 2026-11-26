@@ -25,6 +25,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as NodeCrypto from "node:crypto";
 
 import * as Scheduler from "../../scheduling/Scheduler.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
@@ -35,6 +37,7 @@ import { CHIEF_OF_STAFF_DOMAIN, ENGINEERING_DOMAIN, liveLead } from "../lead/org
 import * as KinShell from "../shell/KinShell.ts";
 import { sectionOfKey, sectionOfSense, type SectionId } from "../shell/sections.ts";
 import { ownerLevelPeople } from "../people/KinAccess.ts";
+import { postCountryAsk } from "../work/countryAsk.ts";
 import { dayIn } from "../work/money.ts";
 import { ownerZone, promiseOnDeal, startOfDay, storedPrincipal } from "../work/recordRows.ts";
 import { matchName } from "../work/nameMatch.ts";
@@ -66,6 +69,7 @@ import {
 } from "./told.ts";
 import { visibleOverflow } from "./senses/capped.ts";
 import { draftWakes } from "./draftWake.ts";
+import { factCards } from "./factCards.ts";
 import { reviewWakes } from "./reviewWake.ts";
 import {
   HEAD_STARTS_PER_DAY,
@@ -112,13 +116,16 @@ const encodeSensed = Schema.encodeEffect(
 );
 
 /**
- * Who a read is for: the owner sees every fact; people see only facts about tasks and milestones,
- * not sensitive, that every one of them may see (`viewSees`). Clients, money, goals and the
- * company's own facts are owner-level.
+ * The owner level sees all facts. People see shared work they may read and, when reading alone,
+ * the client and personal mailbox facts addressed to them.
  */
 export type Viewer =
   | { readonly _tag: "owner" }
-  | { readonly _tag: "people"; readonly people: ReadonlyArray<KinPersonId> };
+  | {
+      readonly _tag: "people";
+      readonly people: ReadonlyArray<KinPersonId>;
+      readonly excludeOwnMail?: boolean;
+    };
 
 export const context = Effect.fn("KinPulse.context")(function* (orgId: KinOrgId, at: number) {
   const sql = yield* SqlClient.SqlClient;
@@ -321,6 +328,15 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
           return { ...fact, scope };
         });
   const deals = yield* dealsHeardBy(orgId, viewer, facts);
+  const ownMail =
+    viewer.excludeOwnMail || viewer.people.length !== 1
+      ? []
+      : facts.filter(
+          (fact) =>
+            fact.sense === "mail_gap" &&
+            fact.actor._tag === "person" &&
+            fact.actor.personId === viewer.people[0],
+        );
   // Who holds a task after their access went is the owner's to settle, not a teammate's.
   const candidates = facts.filter(
     (fact) =>
@@ -336,7 +352,8 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
         (fact) => visibleOverflow(orgId, viewer.people, fact),
       )).flat()
     : [];
-  if (candidates.length === 0 || viewer.people.length === 0) return [...counts, ...deals];
+  if (candidates.length === 0 || viewer.people.length === 0)
+    return [...counts, ...deals, ...ownMail];
   const sql = yield* SqlClient.SqlClient;
   const ids = [...new Set(candidates.map((fact) => fact.subject.recordId!))];
   // A list section's entry facts reach whoever sees the entry; others only on tasks and milestones.
@@ -403,7 +420,7 @@ const visibleTo = Effect.fn("KinPulse.visibleTo")(function* (
       },
     };
   });
-  return [...counts, ...work, ...deals];
+  return [...counts, ...work, ...deals, ...ownMail];
 });
 
 /**
@@ -1006,26 +1023,35 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
         shell,
       });
       const told = yield* tellHolders(ctx, facts, stored, holds, shell);
+      const open = facts.flatMap((sensed): Array<KinPulseFact> => {
+        const {
+          yours: _yours,
+          quietForMs: _quietForMs,
+          section: _section,
+          overflow: _overflow,
+          extraSection: _extraSection,
+          ...fact
+        } = sensed;
+        const handled = handledOf(stored.get(fact.key), at, sensed);
+        const aside =
+          asideOf(fact, holds, { _tag: "owner" }) !== undefined ||
+          (fact.actor._tag === "person" &&
+            asideOf(fact, holds, { _tag: "people", people: [fact.actor.personId] }) !== undefined);
+        return handled === null && !aside ? [{ ...fact, handled }] : [];
+      });
+      // What only a person can answer: one tap on Kin's own card (`factCards.ts`).
+      yield* factCards({
+        ctx,
+        sensed: facts,
+        open: open.filter((fact) => !quiet(fact, shell, onDeals)),
+        sees: (personId, some) =>
+          visibleTo(orgId, { _tag: "people", people: [personId] }, some, shell),
+      });
+      yield* postCountryAsk(ctx);
       // A person's own task, due now: an agent makes its first piece for them (`draftWake.ts`).
       const drafted = yield* draftWakes({
         ctx,
-        open: facts.flatMap((sensed): Array<KinPulseFact> => {
-          const {
-            yours: _yours,
-            quietForMs: _quietForMs,
-            section: _section,
-            overflow: _overflow,
-            extraSection: _extraSection,
-            ...fact
-          } = sensed;
-          const handled = handledOf(stored.get(fact.key), at, sensed);
-          const aside =
-            asideOf(fact, holds, { _tag: "owner" }) !== undefined ||
-            (fact.actor._tag === "person" &&
-              asideOf(fact, holds, { _tag: "people", people: [fact.actor.personId] }) !==
-                undefined);
-          return handled === null && !aside ? [{ ...fact, handled }] : [];
-        }),
+        open,
         sees: (personId, some) => visibleTo(orgId, { _tag: "people", people: [personId] }, some),
       });
       // An agent's unread messages whose subject moved on: one wake to keep them true.
@@ -1336,6 +1362,8 @@ export const layer = Layer.effectDiscard(
     const queue = yield* KinEventQueue.KinEventQueue;
     const refreshes = yield* KinRefreshObserver;
     const chats = yield* Effect.serviceOption(KinChatService);
+    const repo = yield* Effect.serviceOption(KinChatRepository);
+    const hub = yield* Effect.serviceOption(KinChatHub);
     // Facts that clear withdraw Kin's notices about them (`settleNotices`).
     const push = yield* Effect.serviceOption(KinPushSender);
     const last: Passes = new Map();
@@ -1371,6 +1399,8 @@ export const layer = Layer.effectDiscard(
         Effect.provideService(KinRefreshObserver, refreshes),
         Option.isSome(chats) ? Effect.provideService(KinChatService, chats.value) : (e) => e,
         Option.isSome(push) ? Effect.provideService(KinPushSender, push.value) : (e) => e,
+        Option.isSome(repo) ? Effect.provideService(KinChatRepository, repo.value) : (e) => e,
+        Option.isSome(hub) ? Effect.provideService(KinChatHub, hub.value) : (e) => e,
       ),
     );
   }),

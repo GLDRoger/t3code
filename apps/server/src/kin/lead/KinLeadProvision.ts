@@ -40,6 +40,8 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import * as ChatService from "../chat/KinChatService.ts";
 import { KinIdentity, KinIdentityConfig, type PersonIdentity } from "../chat/KinIdentity.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { modelChangeNotice } from "../dreaming/dreamModel.ts";
+import * as Memory from "../memory/Memory.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import {
   isOwnerHimself,
@@ -65,7 +67,9 @@ import {
   driverOf,
   findProviderModel,
   leadProviderProblem,
+  modelLabel,
 } from "./leadModels.ts";
+import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "./orgLeads.ts";
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import { ServerConfig } from "../../config.ts";
 import {
@@ -156,6 +160,18 @@ const transaction = <A, E, R>(
         Effect.fail(toPersistenceSqlError(operation)(cause)),
       ),
     );
+
+/**
+ * People tell agents apart by name, so no two live ones in a company share it, in any case.
+ * NFC matches a combining accent to the precomposed one; upper-then-lower folds `ς` with `σ`.
+ */
+const nameKey = (name: string) => name.trim().normalize("NFC").toUpperCase().toLowerCase();
+const namedLike = (leads: ReadonlyArray<LeadSummary>, name: string, except?: KinAgentId) =>
+  leads.find(
+    (lead) =>
+      lead.agentId !== except && lead.retiredAt === null && nameKey(lead.name) === nameKey(name),
+  );
+const nameTaken = (name: string) => refuse("conflict", `Another agent is already called ${name}.`);
 
 const leadsChanged = Effect.fn("KinLeadProvision.leadsChanged")(function* (orgId: KinOrgId) {
   yield* (yield* KinRefreshObserver).touch(orgId, "leads");
@@ -269,13 +285,16 @@ export const create = Effect.fn("KinLeadProvision.create")(function* (input: Cre
     Effect.gen(function* () {
       // A re-run reports the creator's live lead of that name and domain. Writable transactions
       // open with BEGIN IMMEDIATE, so this read-then-insert can't race another create.
-      const same = (yield* leadsIn(orgId, { liveOnly: true })).find(
+      const live = yield* leadsIn(orgId, { liveOnly: true });
+      const same = live.find(
         (lead) =>
           lead.ownerPersonId === owner.personId &&
           lead.name === input.name &&
           lead.domain === input.domain,
       );
       if (same !== undefined) return { _tag: "existing" as const, lead: same };
+      const taken = namedLike(live, input.name);
+      if (taken !== undefined) return yield* nameTaken(taken.name);
       const projects = yield* knownProjects(input.workerProjects);
       const agentId = KinAgentId.make(`lead-${SecureRandom.uuidV4Unsafe()}`);
       const now = yield* DateTime.now;
@@ -362,20 +381,9 @@ const change = Effect.fn("KinLeadProvision.change")(function* (
     intro: fields.intro?.trim() ?? lead.intro,
     roleTags: fields.roleTags === undefined ? lead.roleTags : [...new Set(fields.roleTags)],
   };
-  // `create` treats a live lead with the same owner, name and domain as the same lead.
-  const twin = live.find(
-    (entry) =>
-      entry.agentId !== agentId &&
-      entry.retiredAt === null &&
-      entry.ownerPersonId === lead.ownerPersonId &&
-      entry.name === next.name &&
-      entry.domain === next.domain,
-  );
-  if (twin !== undefined)
-    return yield* refuse(
-      "conflict",
-      `Another agent is already called ${next.name} in ${next.domain}.`,
-    );
+  // Only a changed spelling is checked, so agents that shared a name before this rule keep their other edits.
+  const twin = next.name === lead.name ? undefined : namedLike(live, next.name, agentId);
+  if (twin !== undefined) return yield* nameTaken(twin.name);
   const roleTags = yield* encodeRoleTags(next.roleTags).pipe(Effect.orDie);
   const changed = yield* sql`UPDATE kin_leads SET name = ${next.name}, domain = ${next.domain},
       charter = ${next.charter}, public_intro = ${next.intro}, role_tags_json = ${roleTags}
@@ -391,9 +399,8 @@ const change = Effect.fn("KinLeadProvision.change")(function* (
     WHERE org_id = ${orgId} AND agent_id = ${agentId} AND role = 'lead' RETURNING agent_id`;
   yield* leadsChanged(orgId);
   return {
-    ...lead,
-    ...next,
-    ...(fields.model === undefined ? {} : { model: fields.model }),
+    lead: { ...lead, ...next, model: fields.model ?? lead.model },
+    previousModel: lead.model,
   };
 });
 
@@ -439,6 +446,7 @@ const checkModel = Effect.fn("KinLeadProvision.checkModel")(function* (model: Mo
       "not_claude",
       `Model "${model.model}" is not listed for provider instance "${model.instanceId}". Open Kin Settings and use the agent model picker to see its models.`,
     );
+  return { settings, provider };
 });
 
 /** Replaces a live lead's domain or charter, from the host's CLI. */
@@ -448,7 +456,7 @@ export const setCharter = Effect.fn("KinLeadProvision.setCharter")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId } = (yield* KinIdentity).owner;
-  const lead = yield* transaction(
+  const { lead } = yield* transaction(
     sql,
     "KinLeadProvision.setCharter",
     change(orgId, agentId, fields),
@@ -600,16 +608,52 @@ export const update = Effect.fn("KinLeadProvision.update")(function* (input: {
   yield* mayCreate(person);
   if (person.orgId !== input.orgId)
     return yield* refuse("not_found", `Org ${input.orgId} has no agent ${input.agentId}.`);
-  if (input.fields.model !== undefined) yield* checkModel(input.fields.model);
+  const checked =
+    input.fields.model === undefined ? undefined : yield* checkModel(input.fields.model);
+  const recovery = yield* Effect.serviceOption(Memory.MemoryRecoveryHooks);
   return yield* transaction(
     sql,
     "KinLeadProvision.update",
     Effect.gen(function* () {
       const { owner } = yield* KinIdentity;
-      return yield* profileIn(
-        yield* change(person.orgId, input.agentId, input.fields, owner.personId),
-        person.personId,
+      const { lead, previousModel } = yield* change(
+        person.orgId,
+        input.agentId,
+        input.fields,
+        owner.personId,
       );
+      if (checked !== undefined && Option.isSome(recovery)) {
+        const line = modelChangeNotice(
+          checked.settings,
+          previousModel,
+          lead.model,
+          lead.name,
+          modelLabel(checked.provider === undefined ? null : [checked.provider], lead.model),
+        );
+        if (line !== undefined) {
+          const dreamLead = yield* liveLead(sql, lead.orgId, {
+            prefer: CHIEF_OF_STAFF_DOMAIN,
+          }).pipe(
+            Effect.catch((cause) =>
+              Effect.logWarning("Kin could not select the nightly memory update's agent", {
+                cause,
+              }).pipe(Effect.as(undefined)),
+            ),
+          );
+          if (dreamLead?.agentId === lead.agentId)
+            yield* sql.afterCommit(
+              Effect.suspend(() =>
+                recovery.value.notify({
+                  orgId: lead.orgId,
+                  branch: "none",
+                  reason: "Nightly memory update model changed",
+                  owner: line,
+                }),
+              ),
+            );
+        }
+      }
+      return yield* profileIn(lead, person.personId);
     }),
   );
 });
@@ -764,7 +808,7 @@ export const retire = Effect.fn("KinLeadProvision.retire")(function* (input: {
 /**
  * Brings a retired lead back as it was: its chats, level, access and Work, and the timers and
  * schedules retiring paused. Its next turn starts a fresh thread. Events that expired stay
- * expired. Refused while another live lead has its name and domain.
+ * expired. Refused while another live lead has its name.
  */
 export const restore = Effect.fn("KinLeadProvision.restore")(function* (input: {
   readonly by: LeadActor;
@@ -783,17 +827,8 @@ export const restore = Effect.fn("KinLeadProvision.restore")(function* (input: {
           lead,
           profile: yield* profileIn(lead, by ?? lead.ownerPersonId),
         };
-      const twin = (yield* leadsIn(lead.orgId, { liveOnly: true })).find(
-        (entry) =>
-          entry.ownerPersonId === lead.ownerPersonId &&
-          entry.name === lead.name &&
-          entry.domain === lead.domain,
-      );
-      if (twin !== undefined)
-        return yield* refuse(
-          "conflict",
-          `Another agent is already called ${lead.name} in ${lead.domain}.`,
-        );
+      const twin = namedLike(yield* leadsIn(lead.orgId, { liveOnly: true }), lead.name);
+      if (twin !== undefined) return yield* nameTaken(twin.name);
       const changed = yield* sql`UPDATE kin_agents
           SET retired_at = NULL, retired_by_person_id = NULL
           WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId} AND role = 'lead'

@@ -1,6 +1,7 @@
 import {
   kinBadgeCount,
   kinChatSettled,
+  kinInboxSettledSince,
   type KinInboxState,
 } from "@t3tools/client-runtime/kin/kinInboxModel";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
@@ -120,7 +121,7 @@ export function installKinNotificationSync(): () => void {
   let inbox: KinInboxState | null = null;
   let badge: number | null = null;
   // Once per coming to the front, when the host first answers; again whenever a push arrives,
-  // with that push in the ask. Pushes during a check make one more check after it.
+  // with that push in the ask, or the inbox settles something. Calls during a check make one more.
   let reconciled = false;
   const arrivals: Array<unknown> = [];
   const reconcileOnce = kinCoalesced(async () => {
@@ -162,9 +163,10 @@ export function installKinNotificationSync(): () => void {
       (result) => {
         // Only a live inbox: a saved one would put an old count back on the icon.
         if (result._tag !== "Success" || !result.value.live) return;
+        const before = inbox;
         inbox = result.value.value;
         reconcile();
-        if (!reconciled) {
+        if (!reconciled || (before !== null && kinInboxSettledSince(before, inbox))) {
           reconciled = true;
           reconcileOnce();
         }

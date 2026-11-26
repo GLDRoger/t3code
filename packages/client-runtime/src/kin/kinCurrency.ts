@@ -1,5 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format a rate's day for React render, outside an Effect runtime.
-import { kinCurrency, kinWhenFormat } from "@t3tools/contracts";
+import { kinCurrency, kinImpliedRate, kinRateShown, kinWhenFormat } from "@t3tools/contracts";
 import type {
   KinRecordDetail,
   KinRecordKey,
@@ -277,25 +277,21 @@ export function kinSettled(
   bank: KinMoney,
   bankDay: string,
   rates: KinRates | null,
+  storedRate?: string,
 ): KinSettledView | null {
   if (invoice.currency === bank.currency || invoice.minor === 0) return null;
-  // Home units per foreign unit, to six places: bank minor over invoice minor, rescaled.
-  const scale = kinMinorDigits(invoice.currency) - kinMinorDigits(bank.currency);
-  let numerator = BigInt(bank.minor) * MICROS;
-  let denominator = BigInt(invoice.minor);
-  if (scale >= 0) numerator *= 10n ** BigInt(scale);
-  else denominator *= 10n ** BigInt(-scale);
-  const micros = (numerator * 2n + denominator) / (denominator * 2n);
-  const rate = `${micros / MICROS}.${String(micros % MICROS).padStart(6, "0")}`.replace(
-    /\.?0+$/,
-    "",
-  );
+  const exact = storedRate ?? kinImpliedRate(invoice, bank);
+  const rate = exact.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
   const impliedRate = { currency: invoice.currency, rate, asOf: bankDay };
   const estimate = rates === null ? null : kinEstimate(invoice, rates);
-  const gap = estimate === null ? null : bank.minor - estimate.money.minor;
+  const gap =
+    estimate === null || estimate.money.currency !== bank.currency
+      ? null
+      : bank.minor - estimate.money.minor;
   return {
     received: kinMoneyText(bank),
-    implied: kinRateLine(impliedRate, bank.currency),
+    // Said as the invoice's payment row and the card say it: "a rate of 83.50".
+    implied: `a rate of ${kinRateShown(exact)}`,
     difference:
       gap === null || estimate === null
         ? null
@@ -306,8 +302,25 @@ export function kinSettled(
   };
 }
 
+/**
+ * What a foreign invoice actually brought in from a live cross-currency payment carrying its
+ * stored received amount and rate; null when none does so the caller can fall back to the bank row.
+ */
+export function kinSettledPayment(
+  item: Pick<KinRecordDetail, "amount" | "payments">,
+  rates: KinRates | null,
+): KinSettledView | null {
+  if (item.amount === undefined) return null;
+  const paid = (item.payments ?? []).find(
+    (payment) =>
+      payment.voidedAt === null && payment.received !== undefined && payment.rate !== undefined,
+  );
+  if (paid?.received === undefined || paid.rate === undefined) return null;
+  return kinSettled(paid.amount, paid.received, paid.paidOn, rates, paid.rate);
+}
+
 /** "US Dollar (USD)", or the code alone where this device can't name it. */
-function kinCurrencyName(currency: string): string {
+export function kinCurrencyName(currency: string): string {
   try {
     const name = new Intl.DisplayNames(undefined, { type: "currency" }).of(currency);
     return name === undefined || name === currency ? currency : `${name} (${currency})`;

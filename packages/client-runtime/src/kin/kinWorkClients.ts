@@ -1,7 +1,13 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import { KIN_MARKETING, type KinCampaignResultId } from "./kinMarketing.ts";
 import { KIN_CHECK_CONNECTION } from "./kinAnswers.ts";
-import { KIN_CAMPAIGN_SOURCE, kinOwnerLevel, formatKinWhen } from "@t3tools/contracts";
+import { KIN_BILL_TO } from "./kinBillTo.ts";
+import {
+  KIN_CAMPAIGN_SOURCE,
+  KIN_TEXT_LOCALE,
+  kinOwnerLevel,
+  formatKinWhen,
+} from "@t3tools/contracts";
 import type {
   KinAccessMeResult,
   KinClientTouch,
@@ -28,7 +34,7 @@ import type {
 } from "@t3tools/contracts";
 
 import { kinLinkToOpen } from "./kinChatFeed.ts";
-import { kinMoneyText, kinRecordName } from "./kinLists.ts";
+import { kinMoneyText, kinRecordName, kinTotalsText } from "./kinLists.ts";
 import { kinContractLine, kinPromiseOf, type KinPromiseView } from "./kinPromises.ts";
 import { formatKinTime, type KinAvatarView } from "./kinScreenState.ts";
 import { KIN_SCOPE_ALL, kinNothingShown, type KinViewerScope } from "./kinViewerScope.ts";
@@ -155,6 +161,7 @@ export const KIN_CLIENTS = {
   title: "Clients",
   tax: "Tax details",
   noTax: "No GSTIN or state yet. Invoices need one to work out GST.",
+  accountsForTax: "Accounts for the tax themselves: invoices carry no tax.",
   all: "All clients",
   search: "Search clients",
   /** A client the search found through one of its contacts. */
@@ -175,7 +182,7 @@ export const KIN_CLIENTS = {
   contactsWho: (lookedAfter: string, vendor: boolean) =>
     vendor
       ? `${lookedAfter} looks after this one, and adds and changes its contacts.`
-      : `${lookedAfter} looks after this one. They, or anyone with an open deal here, add and change its contacts.`,
+      : `${lookedAfter}, who looks after this one, and anyone with an open deal here add and change its contacts.`,
   projects: "Projects",
   noProjects: "No projects for them yet.",
   terms: "Terms",
@@ -231,6 +238,8 @@ export const KIN_CLIENTS = {
   tags: "Tags",
   makeClient: "Make it a client",
   makeProspect: "Make it a prospect again",
+  credit: "Credit",
+  creditFrom: (amount: string, day: string) => `${amount} from ${day}`,
 };
 
 const andList = (names: ReadonlyArray<string>) =>
@@ -682,11 +691,12 @@ export function kinClientsLookedAfterChoices(
   }));
 }
 
-type Owed = Pick<KinPartyRow, "weOwe" | "theyOwe" | "late" | "overdue">;
+type Owed = Pick<KinPartyRow, "weOwe" | "theyOwe" | "late" | "overdue" | "owed">;
 
-/** "2 to do (1 late) · Waiting on 1 (1 overdue)", or "Nothing open". */
+/** "₹47,200 owed · 2 to do (1 late) · Waiting on 1 (1 overdue)", or "Nothing open". */
 function kinOwedLine(owed: Owed): string {
   const parts = [
+    owed.owed === undefined || owed.owed.length === 0 ? null : `${kinTotalsText(owed.owed)} owed`,
     owed.weOwe > 0 ? `${owed.weOwe} to do${owed.late > 0 ? ` (${owed.late} late)` : ""}` : null,
     owed.theyOwe > 0
       ? `Waiting on ${owed.theyOwe}${owed.overdue > 0 ? ` (${owed.overdue} overdue)` : ""}`
@@ -908,6 +918,12 @@ export type KinClientCan = NonNullable<KinPartyPage["can"]>;
 const CAN_ALL: KinClientCan = { edit: true, log: true, owner: true };
 const CAN_NONE: KinClientCan = { edit: false, log: false, owner: false };
 
+export interface KinClientCreditView {
+  readonly key: KinRecordKey;
+  /** "$1,200.00 from 4 Nov" */
+  readonly line: string;
+}
+
 export interface KinClientPageView {
   readonly key: KinRecordKey;
   /** Whether it offers making anything new under it: not while Clients is off. */
@@ -937,12 +953,16 @@ export interface KinClientPageView {
   readonly contactsWho: string | null;
   readonly terms: string | null;
   readonly address: string | null;
-  /** "GSTIN 27ABCDE1234F1Z5 · Maharashtra"; null when neither is set. */
+  /** "GSTIN 27ABCDE1234F1Z5 · Maharashtra", or outside India "Tax number …"; null when unset. */
   readonly tax: string | null;
+  /** "Accounts for the tax themselves: invoices carry no tax." when on; null otherwise. */
+  readonly accountsForTax: string | null;
   readonly notes: string | null;
   /** Newest first; null from a host before contact logs. */
   readonly touches: ReadonlyArray<KinTouchView> | null;
   readonly lastContact: string | null;
+  /** Unapplied advance credits this reader may see, oldest first; empty when none or hidden. */
+  readonly credit: ReadonlyArray<KinClientCreditView>;
 }
 
 export function kinClientPageView(
@@ -953,7 +973,10 @@ export function kinClientPageView(
   ownerLevel: boolean,
   /** The company's sections: a renamed Clients names the kind line too. */
   shell?: KinShell | null,
+  /** The company's country; undefined or "IN" shows India's GSTIN/state format. */
+  country?: string | null,
 ): KinClientPageView {
+  const india = country === undefined || country === "IN";
   const { party } = page;
   const ref = { key: party.key, title: party.name };
   const weOwe = page.weOwe.records.map((record) =>
@@ -1014,15 +1037,30 @@ export function kinClientPageView(
     contactsWho: (can.contacts ?? can.edit) ? null : KIN_CLIENTS.contactsWho(lookedAfter, vendor),
     terms: terms === "" ? null : terms,
     address: party.address?.trim() || null,
-    tax:
-      [party.gstin === null ? null : `GSTIN ${party.gstin}`, party.placeOfSupply?.trim() || null]
-        .filter((part) => part !== null)
-        .join(" · ") || null,
+    tax: india
+      ? [party.gstin === null ? null : `GSTIN ${party.gstin}`, party.placeOfSupply?.trim() || null]
+          .filter((part) => part !== null)
+          .join(" · ") || null
+      : party.gstin === null
+        ? null
+        : `${KIN_BILL_TO.taxNumber} ${party.gstin}`,
+    accountsForTax:
+      party.accountsForTax === true ? kinSectionNamed(shell, KIN_CLIENTS.accountsForTax) : null,
     notes: notes === "" ? null : notes,
     touches,
     lastContact:
       (party.kind === "client" ? kinClientContactLine(party, touches?.[0], now) : null) ??
       (touches?.length === 0 ? KIN_CLIENTS.noneLogged : null),
+    credit: (page.credit ?? []).map((one) => ({
+      key: one.key,
+      line: KIN_CLIENTS.creditFrom(
+        kinMoneyText(one.amount, true),
+        formatKinWhen(Date.parse(`${one.receivedOn}T12:00:00Z`), "date", {
+          zone: "UTC",
+          locale: KIN_TEXT_LOCALE,
+        }),
+      ),
+    })),
   };
 }
 
@@ -1054,6 +1092,7 @@ export const kinClientPageKeys = (page: KinPartyPage): ReadonlySet<string> =>
     ...page.projects.map((project) => project.key),
     ...page.weOwe.records.map((record) => record.key),
     ...page.theyOwe.records.map((record) => record.key),
+    ...(page.credit ?? []).map((one) => one.key),
   ]);
 
 // Projects

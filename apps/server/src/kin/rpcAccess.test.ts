@@ -3,6 +3,7 @@ import {
   AuthKinChatScope,
   AuthKinTasksScope,
   AuthSessionId,
+  CLIENT_GUARDED_RPC_SCOPES,
   KinChatError,
   KinOrgId,
   KinPersonId,
@@ -13,6 +14,7 @@ import {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import type { AuthenticatedSession } from "../auth/EnvironmentAuth.ts";
@@ -20,7 +22,7 @@ import { authorizeRpc } from "../auth/RpcAuthorization.ts";
 import { layerKinAuthTest } from "./auth/ProofKeySessions.testkit.ts";
 import { KinIdentity } from "./chat/KinIdentity.ts";
 import type { Services } from "./KinServer.ts";
-import { admits, forPerson } from "./rpcHandlers.ts";
+import { admits, decodeKinAfterAccess, forPerson } from "./rpcHandlers.ts";
 import { countryFirstMessage } from "./work/companyProfile.ts";
 
 const orgId = KinOrgId.make("kin-default");
@@ -66,6 +68,8 @@ const MEMBER = [
   "kin.docs.get",
   "kin.docs.history",
   "kin.docs.list",
+  // `setReaders` checks the draft's writer and the owner level against stored rows.
+  "kin.docs.readers",
   // A teammate's own draft card: `sendUp` checks the card, the chat and the doc from stored rows.
   "kin.docs.sendUp",
   "kin.docs.subscribe",
@@ -94,6 +98,7 @@ const MEMBER = [
   "kin.pulse.read",
   "kin.pulse.subscribe",
   // Only their own topics: `KinPushTopics.settledOf` reads the caller's rows and no one else's.
+  "kin.push.desktopNotices",
   "kin.push.reconcile",
   "kin.push.registerDevice",
   "kin.push.unregisterDevice",
@@ -106,10 +111,12 @@ const MEMBER = [
   "kin.triggers.getTimeZone",
   // What Kin keeps watch on: the service shows and acts on only the watches this person may see.
   "kin.watches.again",
+  "kin.watches.followUps",
   "kin.watches.list",
   "kin.watches.log",
   "kin.watches.look",
   "kin.watches.stop",
+  "kin.watches.stopFollowUp",
   "kin.widgets.act",
   "kin.work.assign",
   "kin.work.comment",
@@ -208,6 +215,14 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
           ],
         );
         assert.deepStrictEqual(table.member, MEMBER);
+        for (const method of [
+          "kin.work.undoCreditPayment",
+          "kin.work.unapplyCredit",
+          "kin.work.draftCreditNote",
+        ] as const) {
+          assert.strictEqual(kinRpcAccess(method), "owner_level");
+          assert.strictEqual(CLIENT_GUARDED_RPC_SCOPES[method], AuthKinChatScope);
+        }
         // Bills become the company's expenses: the owner level's, never a member's.
         const bills = methods.filter((method) => method.startsWith("kin.bills."));
         assert.lengthOf(bills, 6);
@@ -215,6 +230,8 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
           bills.filter((method) => !table.coOwner.includes(method) || MEMBER.includes(method)),
           [],
         );
+        assert.include(table.coOwner, "kin.work.answerCountryCard");
+        assert.notInclude(table.member, "kin.work.answerCountryCard");
         // Every method is in the table, so a new one can't slip past the gate unlisted.
         assert.deepStrictEqual(
           methods.filter((method) => kinRpcAccess(method) === undefined),
@@ -321,3 +338,19 @@ it.effect("a coding agent key reaches no RPC: every method T3 and Kin serve refu
     assert.deepStrictEqual(admitted, []);
   }),
 );
+
+it("the socket leaves every Kin payload for the gate to decode, and every other as it was", () => {
+  const wire = decodeKinAfterAccess(WsRpcGroup);
+  const raw: ReadonlyArray<string> = [...wire.requests.values()]
+    .filter((rpc) => (rpc.payloadSchema as Schema.Top) === Schema.Unknown)
+    .map((rpc) => rpc._tag);
+  assert.deepStrictEqual(raw.toSorted(), KinRpcs.map((rpc) => rpc._tag).toSorted());
+  for (const [tag, rpc] of wire.requests) {
+    const was = WsRpcGroup.requests.get(rpc._tag);
+    assert.isDefined(was);
+    // The scope check still runs first, on every method.
+    assert.deepStrictEqual(rpc.middlewares, was.middlewares);
+    if (!raw.includes(tag)) assert.strictEqual(rpc, was);
+  }
+  assert.strictEqual(wire.requests.size, WsRpcGroup.requests.size);
+});

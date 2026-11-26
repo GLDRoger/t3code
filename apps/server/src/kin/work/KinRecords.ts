@@ -149,6 +149,7 @@ import {
   type ListDef,
   listDef,
   owedState,
+  isInvoiceDraft,
   owesIn,
   startState,
   stateLabel,
@@ -221,6 +222,8 @@ export type Writer = {
   readonly teammate?: boolean;
   /** `deals.ts`, which decided the write's rules: no other path writes a deal. */
   readonly deal?: true;
+  readonly creditNote?: true;
+  readonly undoingBankCredit?: true;
   /** A member's write in Clients: a name clashes only with what this person sees there (`crmSees`). */
   readonly namesSeenBy?: KinPersonId;
   /** The person's own coding agent, with this key: the change's history names the key. */
@@ -555,6 +558,8 @@ export type Totals = Sums & {
 };
 export type PaymentInput = {
   readonly amount: KinMoney;
+  readonly received?: KinMoney;
+  readonly rate?: string;
   /** A day in the owner's zone. */
   readonly paidOn: string;
   readonly note?: string;
@@ -563,11 +568,22 @@ export type PaymentInput = {
   /** A retry with the same key records nothing more; one whose payment was voided is refused. */
   readonly originKey: string;
 };
+export const CREDIT_NOTE_TAP =
+  "Kin issues and voids a credit note only on the owner's own tap on its page; offer the owner that there.";
+export const CREDIT_NOTE_VOID =
+  "A void credit note can't be brought back. Make a new one from the invoice.";
+
 const CLOSED = ["done", "dropped"] as const;
 /** Quotes and invoices: real only on an owner-level person's word (`startsKept`). */
-const ISSUED_LISTS: ReadonlySet<string> = new Set(["quotes", "invoices"]);
+const ISSUED_LISTS: ReadonlySet<string> = new Set(["quotes", "invoices", "credit_notes"]);
 /** Lists whose entries are issued, sent or paid: a suggestion there is none of those. */
-const MONEY_LISTS: ReadonlySet<string> = new Set(["quotes", "invoices", "expenses", "receipts"]);
+const MONEY_LISTS: ReadonlySet<string> = new Set([
+  "quotes",
+  "invoices",
+  "expenses",
+  "receipts",
+  "credit_notes",
+]);
 /** A client and a prospect share names: one company is either, never both at once. */
 export const clientFamily = (sql: SqlClient.SqlClient, category: Statement.Fragment) =>
   sql`(CASE COALESCE(${category}, 'client') WHEN 'prospect' THEN 'client'
@@ -643,6 +659,68 @@ const repaidAhead = (fields: Readonly<Record<string, unknown>>, today: string) =
 const FUNDING = [FUNDED_BY, REIMBURSEMENT, REPAID_ON] as const;
 export const FUNDING_IS_THE_OWNERS =
   "Only the owner or a co-owner says who funded an expense or that it was paid back, in their own message or tap before anything outside is read. Nothing changed. Put it to them as a card or a question.";
+/**
+ * Why a payment isn't taken back on its own: a split bank credit is undone whole, a credit
+ * note's reduction goes with the note, and a payment from the client's credit is un-applied.
+ */
+export const takeBackBlocked = Effect.fn("KinRecords.takeBackBlocked")(function* (
+  orgId: KinOrgId,
+  row: { readonly registerId: string; readonly originKey: string },
+  payment: { readonly paymentId: string; readonly originKey: string; readonly voided: boolean },
+  mode?: "undo_split" | "unapply_credit",
+  creditNote = false,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const bankId = payment.originKey.startsWith(BANK_CREDIT_ORIGIN)
+    ? payment.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]
+    : undefined;
+  const splitBankId =
+    bankId !== undefined && payment.originKey.includes(":split:")
+      ? bankId
+      : row.registerId === "receipts" &&
+          row.originKey.startsWith(BANK_CREDIT_ORIGIN) &&
+          row.originKey.endsWith(":left")
+        ? row.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]
+        : undefined;
+  if (mode !== "undo_split" && splitBankId !== undefined) {
+    const [bank] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+      WHERE org_id = ${orgId} AND record_id = ${splitBankId}`;
+    if (bank === undefined) return unavailable;
+    return invalid(
+      `That payment is one of several from ${bank.key}; undo them together from ${bank.key}.`,
+    );
+  }
+  if (payment.originKey.startsWith("credit_note:") && !creditNote)
+    return invalid("This came from a credit note. Void the credit note to take it back.");
+  if (payment.voided || mode === "unapply_credit" || row.registerId !== "invoices")
+    return undefined;
+  const receiptId = /^receipt:([^:]+)(?::after:.+)?$/.exec(payment.originKey)?.[1];
+  if (receiptId === undefined) return undefined;
+  const [receipt] = yield* sql`SELECT 1 FROM kin_records
+    WHERE org_id = ${orgId} AND record_id = ${receiptId} AND register_id = 'receipts'
+      AND json_extract(fields_json, '$.payment') = ${payment.paymentId}`;
+  return receipt === undefined
+    ? undefined
+    : invalid("This payment came from the client's credit. Un-apply it instead. Nothing changed.");
+});
+/** An agent's Paid on an invoice that still has money owed, refused. */
+export const paidWhileOwed = (key: string, owed: string, paid: string) =>
+  `Nothing was changed: ${key} still has ${owed} owed. Put money received to the owner with payment_record; their tap on its card marks it ${paid}.`;
+export const REPAID_IS_THE_OWNERS =
+  "Nothing was changed: an agent doesn't mark an expense repaid. The owner marks it on the mark-repaid card when Kin has matched the bank debit, or on the expense in Money.";
+/** Whether these fields newly say a partner was paid back. */
+const marksRepaid = (
+  before: Parameters<typeof fundingOf>[0],
+  after: Parameters<typeof fundingOf>[0],
+) => {
+  const was = fundingOf(before);
+  const now = fundingOf(after);
+  return (
+    now.by === "partner" &&
+    now.state === "repaid" &&
+    !(was.by === "partner" && was.state === "repaid")
+  );
+};
 export const FUNDING_A_PERSON_SET =
   "A person said who funded this expense or whether it was paid back, and an agent doesn't change that. Nothing changed. Put it to the owner as a card or a question.";
 
@@ -852,7 +930,13 @@ export class KinRecords extends Context.Service<
       writer: Writer,
       key: string,
       paymentId: string,
+      mode?: "unapply_credit",
     ) => Effect.Effect<RecordRow, KinChatError>;
+    readonly undoCreditPayment: (
+      orgId: KinOrgId,
+      writer: Writer,
+      key: string,
+    ) => Effect.Effect<{ readonly key: string }, KinChatError>;
     /** Exact sums of the amounts `query`'s filter matches, per currency, and per group if asked. */
     readonly totals: (
       orgId: KinOrgId,
@@ -1749,7 +1833,8 @@ const make = Effect.gen(function* () {
         WHERE org_id = ${orgId} AND record_id = ${input.from}`;
       if (source !== undefined && isSuggestion(source)) return false;
     }
-    if (!ISSUED_LISTS.has(list) || writer.actor._tag === "system") return true;
+    if (list === "credit_notes" || !ISSUED_LISTS.has(list) || writer.actor._tag === "system")
+      return true;
     return yield* mayKeep(orgId, writer);
   });
 
@@ -1836,6 +1921,9 @@ const make = Effect.gen(function* () {
     // Money counts a partner's expense as owed: the entry says so too, not "None".
     if (funds(def, fields[FUNDED_BY]) && fields[REIMBURSEMENT] === undefined)
       fields[REIMBURSEMENT] = "owed";
+    // Paid back is the owner's mark: on the mark-repaid card or the expense, never an agent's.
+    if (list === "expenses" && writer.actor._tag === "agent" && marksRepaid({}, fields))
+      return yield* notAllowed(REPAID_IS_THE_OWNERS);
     const zero = zeroOwed(def, input.amount, input.category, writer);
     if (zero !== undefined) return yield* zero;
     if (input.askSlip === true && input.amount != null)
@@ -1896,7 +1984,7 @@ const make = Effect.gen(function* () {
     const key = `${next.prefix}-${next.next}`;
     const approved =
       options.kept === undefined ? yield* approvalKeeps(orgId, writer, list, partyId) : undefined;
-    const kept =
+    const startsConfirmed =
       options.kept ??
       (!unaskedFunding &&
         (approved === undefined ? yield* startsKept(orgId, writer, list, input) : approved.keeps) &&
@@ -1905,7 +1993,7 @@ const make = Effect.gen(function* () {
     // Only Issue makes an invoice owed, with its number; an agent sets none, so it starts a draft.
     // An approval's entry is the owner's Draft whatever state it was given.
     const state =
-      (!kept && ISSUED_LISTS.has(list)) ||
+      (!startsConfirmed && ISSUED_LISTS.has(list)) ||
       (writer.actor._tag === "agent" && list === "invoices") ||
       approved?.keeps === true
         ? "open"
@@ -1919,6 +2007,9 @@ const make = Effect.gen(function* () {
                 ? yield* ownerZone(orgId).pipe(provideSql)
                 : "UTC",
           }));
+    const kept =
+      startsConfirmed &&
+      !(writer.actor._tag === "agent" && list === "expenses" && state === "open");
     if ((yield* markedKey(writer)) !== undefined) {
       const refused = keyRefusal({
         list,
@@ -2042,6 +2133,10 @@ const make = Effect.gen(function* () {
     input: CreateInput,
     options: InsertOptions,
   ) {
+    if (input.list === "credit_notes" && writer.creditNote !== true)
+      return yield* invalid(
+        "A credit note starts from its invoice: open the invoice and choose Credit note.",
+      );
     const recordId = recordIdFor(orgId, input.originKey);
     const existing = yield* byId(orgId, recordId).pipe(provideSql);
     if (writer.teammate === true && writer.actor._tag === "person")
@@ -2402,6 +2497,18 @@ const make = Effect.gen(function* () {
         )
           yield* askSlip(orgId, def, patch.amount, row.recordId).pipe(provideSql);
         if (list === "receipts") {
+          if (
+            row.originKey.startsWith(BANK_CREDIT_ORIGIN) &&
+            row.originKey.endsWith(":left") &&
+            writer.undoingBankCredit !== true &&
+            ((patch.state === "dropped" && row.state !== "dropped") ||
+              (patch.dateAt !== undefined && patch.dateAt !== row.dateAt) ||
+              (patch.partyId !== undefined && patch.partyId !== row.partyId) ||
+              patch.confirmed === false)
+          )
+            return yield* invalid(
+              "This credit is what a bank credit left after paying its invoices. Undo that bank credit to change it. Nothing changed.",
+            );
           if (RECEIPT_TIES.some((field) => field in (patch.fields ?? {})))
             return yield* invalid(RECEIPT_TIES_ARE_KINS);
           // Its payment may have a new receipt since: two live ones would count it twice.
@@ -2648,6 +2755,9 @@ const make = Effect.gen(function* () {
             if (byPerson !== undefined) return yield* notAllowed(FUNDING_A_PERSON_SET);
           }
         }
+        // Paid back is the owner's mark: on the mark-repaid card or the expense, never an agent's.
+        if (writer.actor._tag === "agent" && fundingMoved.length > 0 && marksRepaid(stored, merged))
+          return yield* notAllowed(REPAID_IS_THE_OWNERS);
         // A repayment Confirm linked to a bank row binds the expenses it settled: what they cost,
         // who is paid back and when stay as the bank saw them until that repayment is undone.
         if (list === "expenses") {
@@ -2709,6 +2819,39 @@ const make = Effect.gen(function* () {
                 : row.state
             : undefined;
         const wanted = patch.state ?? settled ?? row.state;
+        if (list === "credit_notes" && writer.creditNote !== true) {
+          if (wanted !== row.state)
+            return yield* new KinChatError({ reason: "not_allowed", message: CREDIT_NOTE_TAP });
+          if (
+            row.state !== "open" &&
+            (patch.amount !== undefined ||
+              patch.dateAt !== undefined ||
+              patch.fields?.reason !== undefined ||
+              patch.confirmed === false)
+          )
+            return yield* invalid(
+              "An issued credit note keeps its invoice, amount and reason. To change them, void it and make a new one.",
+            );
+          if (
+            patch.fields?.invoice !== undefined ||
+            patch.fields?.number !== undefined ||
+            (patch.partyId !== undefined && patch.partyId !== row.partyId)
+          )
+            return yield* invalid(
+              "A credit note stays with the invoice it was made from. To credit another invoice, make a new one from that invoice.",
+            );
+        }
+        const agentExpense = writer.actor._tag === "agent" && list === "expenses";
+        if (agentExpense && row.state !== wanted) {
+          if (wanted === "done")
+            return yield* invalid(
+              `Only the owner or a co-owner marks a bill paid, by a tap. Nothing changed. If a bank debit paid it, offer kin_ask with action mark_bill_paid on that debit's key; else say the owner or a co-owner marks it paid on ${row.key}'s page in Money.`,
+            );
+          if (wanted === "open" && !isSuggestion(row))
+            return yield* invalid(
+              `Only the owner or a co-owner puts a bill back to pay, on ${row.key}'s page in Money. Nothing changed.`,
+            );
+        }
         // A turn no person started settles nothing paid over time, and voids or reopens no
         // numbered entry, by its state: the other ways to a payment or a void (`refuseKinOwn`).
         const settles = wanted === "done" && row.takesPayments === 1;
@@ -2726,6 +2869,41 @@ const make = Effect.gen(function* () {
             reason: "not_allowed",
             message: settles ? KIN_OWN_REFUSAL.payment : KIN_OWN_REFUSAL.number,
           });
+        // In an agent's turn money is marked received only by the owner's tap on a payment card:
+        // no Paid with money still owed, and no void or restore that makes payments count or not.
+        if (
+          writer.actor._tag === "agent" &&
+          row.takesPayments === 1 &&
+          !isSuggestion(row) &&
+          wanted !== row.state &&
+          (wanted === "dropped" || row.state === "dropped" || wanted === "done")
+        ) {
+          const total = patch.amount ?? amount;
+          const owedNow = total === null ? 0 : total.minor - row.paid;
+          if (
+            wanted === "done" &&
+            row.state !== "dropped" &&
+            owedNow > 0 &&
+            (yield* sql`SELECT 1 FROM kin_issued_numbers
+              WHERE org_id = ${orgId} AND record_id = ${row.recordId} LIMIT 1`).length > 0
+          )
+            return yield* new SensitiveRefusal({
+              reason: "invalid_state",
+              message: paidWhileOwed(
+                row.key,
+                formatMoney({ minor: owedNow, currency: total!.currency }),
+                stateLabel(def, "done"),
+              ),
+            });
+          if (
+            (wanted === "dropped" || row.state === "dropped") &&
+            (yield* sql`SELECT 1 FROM kin_record_payments WHERE org_id = ${orgId}
+              AND record_id = ${row.recordId} AND voided_at IS NULL LIMIT 1`).length > 0
+          )
+            return yield* notAllowed(
+              `Nothing was changed: ${row.key} has payments recorded on it, so the owner voids or restores it on the invoice in Money.`,
+            );
+        }
         // An agent never issues or settles an invoice by its state: Issue gives it its number.
         const unissued =
           writer.actor._tag === "agent" &&
@@ -2754,7 +2932,10 @@ const make = Effect.gen(function* () {
         // Only who may keep one keeps a suggestion, and only an owner-level person takes it back;
         // anyone else's `confirmed` changes nothing, so an agent's slip ack stays only that.
         const keeping =
-          patch.confirmed === true && isSuggestion(row) && (yield* mayKeep(orgId, writer));
+          patch.confirmed === true &&
+          isSuggestion(row) &&
+          (!agentExpense || state === "dropped") &&
+          (yield* mayKeep(orgId, writer));
         const unkeeping =
           patch.confirmed === false &&
           !isSuggestion(row) &&
@@ -3501,10 +3682,14 @@ const make = Effect.gen(function* () {
           paidOn: string;
           note: string;
           withheld: number;
+          receivedMinor: number | null;
+          receivedCurrency: string | null;
+          rate: string | null;
           voidedAt: number | null;
         }>`
           SELECT record_id AS "recordId", amount_minor AS minor, currency, paid_on AS "paidOn", note,
-            withheld, voided_at AS "voidedAt"
+            withheld, voided_at AS "voidedAt", received_minor AS "receivedMinor",
+            received_currency AS "receivedCurrency", rate
           FROM kin_record_payments WHERE org_id = ${orgId} AND origin_key = ${payment.originKey}`;
         if (earlier !== undefined) {
           if (
@@ -3513,7 +3698,10 @@ const make = Effect.gen(function* () {
             earlier.currency !== payment.amount.currency ||
             earlier.paidOn !== payment.paidOn ||
             earlier.note !== (payment.note ?? "") ||
-            earlier.withheld !== (payment.withheld === true ? 1 : 0)
+            earlier.withheld !== (payment.withheld === true ? 1 : 0) ||
+            earlier.receivedMinor !== (payment.received?.minor ?? null) ||
+            earlier.receivedCurrency !== (payment.received?.currency ?? null) ||
+            earlier.rate !== (payment.rate ?? null)
           )
             return yield* new KinChatError({
               reason: "not_allowed",
@@ -3533,6 +3721,10 @@ const make = Effect.gen(function* () {
             `${row.key} is in ${amount.currency}; record the payment in ${amount.currency}.`,
           );
         if (payment.amount.minor <= 0) return yield* invalid("A payment is more than nothing.");
+        if (payment.received?.currency === payment.amount.currency)
+          return yield* invalid(
+            "Only a payment received in a different currency has a received amount and rate.",
+          );
         const balance = amount.minor - row.paid;
         if (payment.amount.minor > balance)
           return yield* new SensitiveRefusal({
@@ -3542,11 +3734,12 @@ const make = Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
         yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor,
             currency, paid_on, note, origin_key, created_at, created_by_kind, created_by_id,
-            withheld)
+            withheld, received_minor, received_currency, rate)
           VALUES (${orgId}, ${paymentId}, ${row.recordId}, ${payment.amount.minor},
             ${payment.amount.currency}, ${payment.paidOn}, ${payment.note ?? ""},
             ${payment.originKey}, ${now}, ${writer.actor._tag}, ${actorIdOf(writer)},
-            ${payment.withheld === true ? 1 : 0})`;
+            ${payment.withheld === true ? 1 : 0}, ${payment.received?.minor ?? null},
+            ${payment.received?.currency ?? null}, ${payment.rate ?? null})`;
         const paidUp =
           payment.amount.minor === balance && row.state !== "done" && def.states.includes("done");
         const rev = row.rev + 1;
@@ -3584,6 +3777,7 @@ const make = Effect.gen(function* () {
     writer: Writer,
     key: string,
     paymentId: string,
+    mode?: "undo_split" | "unapply_credit",
   ) {
     return yield* transaction(
       Effect.gen(function* () {
@@ -3606,6 +3800,17 @@ const make = Effect.gen(function* () {
             reason: "not_found",
             message: `No payment ${paymentId.slice(0, 40)} on ${row.key}.`,
           });
+        const bankId = found.originKey.startsWith(BANK_CREDIT_ORIGIN)
+          ? found.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]
+          : undefined;
+        const blocked = yield* takeBackBlocked(
+          orgId,
+          row,
+          { paymentId, originKey: found.originKey, voided: found.voidedAt !== null },
+          mode,
+          writer.creditNote === true,
+        ).pipe(provideSql);
+        if (blocked !== undefined) return yield* blocked;
         if (found.voidedAt !== null) return row;
         const now = yield* Clock.currentTimeMillis;
         yield* sql`UPDATE kin_record_payments SET voided_at = ${now}
@@ -3632,12 +3837,7 @@ const make = Effect.gen(function* () {
           ],
           now,
         );
-        if (found.originKey.startsWith(BANK_CREDIT_ORIGIN))
-          yield* reopenCredit(
-            orgId,
-            found.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]!,
-            now,
-          );
+        if (mode !== "undo_split" && bankId !== undefined) yield* reopenCredit(orgId, bankId, now);
         const updated = yield* byId(orgId, row.recordId).pipe(provideSql);
         if (updated === undefined) return yield* unavailable;
         return updated;
@@ -3674,6 +3874,65 @@ const make = Effect.gen(function* () {
         ...(bank.category === null ? [] : [{ field: "category", from: bank.category, to: null }]),
       ],
       now,
+    );
+  });
+
+  const undoCreditPayment = Effect.fn("KinRecords.undoCreditPayment")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    key: string,
+  ) {
+    return yield* transaction(
+      Effect.gen(function* () {
+        if (
+          writer.actor._tag !== "person" ||
+          !(yield* ownerLevel(orgId, writer.actor.personId).pipe(provideSql))
+        )
+          return yield* new KinChatError({
+            reason: "not_allowed",
+            message:
+              "Only the owner or a co-owner can undo what a bank credit paid. Nothing changed.",
+          });
+        yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.payment).pipe(provideSql);
+        const bank = yield* byKey(orgId, key).pipe(provideSql);
+        const def = yield* findBankList(orgId).pipe(provideSql);
+        if (bank === undefined || bank.registerId !== def?.id) return yield* notFound(key);
+        const prefix = `${BANK_CREDIT_ORIGIN}${bank.recordId}:`;
+        const split = yield* sql<{ key: string; paymentId: string; origin: string }>`SELECT r.key,
+          p.payment_id AS "paymentId", p.origin_key AS origin
+        FROM kin_record_payments p JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
+        WHERE p.org_id = ${orgId} AND p.voided_at IS NULL
+          AND p.origin_key GLOB ${`${prefix}*:split:*`}
+        ORDER BY p.payment_id`;
+        for (const leftOrigin of new Set(
+          split.map((part) => `${part.origin.split(":split:")[0]}:left`),
+        )) {
+          const [left] = yield* sql<{
+            key: string;
+            invoice: string | null;
+            payment: string | null;
+            state: string;
+          }>`
+          SELECT r.key, r.state, json_extract(r.fields_json, '$.invoice') AS invoice, p.payment_id AS payment
+          FROM kin_records r LEFT JOIN kin_record_payments p ON p.org_id = r.org_id
+            AND p.payment_id = json_extract(r.fields_json, '$.payment') AND p.voided_at IS NULL
+          WHERE r.org_id = ${orgId} AND r.register_id = 'receipts' AND r.origin_key = ${leftOrigin}`;
+          if (left === undefined) continue;
+          if (left.invoice !== null && left.payment !== null)
+            return yield* invalid(`Un-apply the credit from ${left.invoice} first.`);
+          if (left.payment !== null)
+            yield* voidPayment(orgId, writer, left.key, left.payment, "undo_split");
+          if (left.state !== "dropped")
+            yield* update(orgId, { ...writer, undoingBankCredit: true }, left.key, {
+              state: "dropped",
+            });
+        }
+        for (const part of split)
+          yield* voidPayment(orgId, writer, part.key, part.paymentId, "undo_split");
+        if (split.length > 0)
+          yield* reopenCredit(orgId, bank.recordId, yield* Clock.currentTimeMillis);
+        return { key: bank.key };
+      }),
     );
   });
 
@@ -3758,7 +4017,11 @@ const make = Effect.gen(function* () {
               home,
             );
           return {
-            total: addUp(priced, home),
+            // A draft invoice is neither billed nor owed yet; Clients and Money read the same.
+            total: addUp(
+              priced.filter((row) => !isInvoiceDraft(listDef.id, row.state)),
+              home,
+            ),
             ...(directed
               ? {
                   moneyIn: side("credit"),
@@ -4021,6 +4284,7 @@ const make = Effect.gen(function* () {
     unlink,
     pay,
     voidPayment,
+    undoCreditPayment,
     totals,
     query,
     moveRows,

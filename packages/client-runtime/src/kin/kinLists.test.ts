@@ -17,7 +17,12 @@ import {
   KIN_LIST_DEFAULT_FILTER,
   kinFieldText,
   kinListColumns,
+  kinListOffersClients,
   kinListWatches,
+  kinListRemindChoices,
+  kinListCheckWords,
+  kinListCheckDraftOf,
+  kinListCheckInput,
   kinListEditDraftOf,
   kinListCanOpenToTeam,
   kinListEditInput,
@@ -204,24 +209,18 @@ describe("a private entry", () => {
     const meera = KinPersonId.make("p-meera");
     const names = new Map([[rhea, "Rhea Kapoor"]]);
     const rheas = { _tag: "person", personId: rhea } as const;
-    expect(kinEntryPrivateLine(rheas, { people: names, me: rhea })).toBe(
-      "Private. Only owners see this.",
-    );
+    expect(kinEntryPrivateLine(rheas, { people: names, me: rhea })).toBe("Private.");
     expect(kinEntryPrivateLine(rheas, { people: names, me: meera })).toBe(
-      "Private to Rhea Kapoor. Only owners see this.",
+      "Private to Rhea Kapoor.",
     );
     // Nobody's own, or a name not known here: no name, never "you".
     const agent = { _tag: "agent", agentId: KinAgentId.make("lead-finance") } as const;
-    expect(kinEntryPrivateLine(agent, { people: names, me: meera })).toBe(
-      "Private. Only owners see this.",
-    );
+    expect(kinEntryPrivateLine(agent, { people: names, me: meera })).toBe("Private.");
     expect(
       kinEntryPrivateLine({ _tag: "person", personId: meera }, { people: names, me: rhea }),
-    ).toBe("Private. Only owners see this.");
+    ).toBe("Private.");
     // Before the host says who is reading: no name, and still never "you".
-    expect(kinEntryPrivateLine(rheas, { people: names, me: null })).toBe(
-      "Private. Only owners see this.",
-    );
+    expect(kinEntryPrivateLine(rheas, { people: names, me: null })).toBe("Private.");
   });
 });
 
@@ -338,6 +337,13 @@ describe("a list by its definition", () => {
       shelf: "rec-acme",
     };
     const row = kinListRow(record({ fields }), def, context);
+    // Like its Client column, its Client filter shows only where an entry has a client.
+    const party = { recordId: "rec-acme", key: "C-1", title: "Acme" } as never;
+    expect([
+      kinListOffersClients([record({})], KIN_LIST_DEFAULT_FILTER),
+      kinListOffersClients([record({}), record({ party })], KIN_LIST_DEFAULT_FILTER),
+      kinListOffersClients([], { ...KIN_LIST_DEFAULT_FILTER, noParty: true }),
+    ]).toEqual([false, true, true]);
     expect(kinListColumns(def, [record({})]).map((column) => column.label)).toEqual([
       "Entry",
       "Status",
@@ -434,6 +440,45 @@ describe("a list by its definition", () => {
     ).toEqual(["Kin warns when On hand is above 500", "Kin reminds on Booking date"]);
     // An older host sends neither: nothing is watched as far as this screen can say.
     expect(kinListWatches({ fields })).toEqual([]);
+
+    // The owner level's Remind on: the due day (always watched, so it is what nothing stored
+    // means), its own date, then each live date field.
+    const retired = {
+      ...fields[2]!,
+      key: "oldDay",
+      label: "Old day" as never,
+      retired: true as const,
+    };
+    const remind = kinListRemindChoices({
+      fields: [...fields, retired],
+      remindOn: "bookedFor",
+      dueLabel: "Check-out" as never,
+      dateLabel: "Booking date" as never,
+    });
+    expect(remind.choices.map((one) => [one.label, one.remindOn])).toEqual([
+      ["Check-out", null],
+      ["Booking date", "date"],
+      ["Booked for", "bookedFor"],
+    ]);
+    expect(remind.choices.find((one) => one.id === remind.current)?.label).toBe("Booked for");
+    const unset = kinListRemindChoices({ fields });
+    expect(unset.choices.map((one) => one.label)).toEqual(["Due date", "Its date", "Booked for"]);
+    expect(unset.choices.find((one) => one.id === unset.current)?.label).toBe("Due date");
+    expect(kinListRemindChoices({ fields, remindOn: "date" }).current).toBe(unset.choices[1]!.id);
+
+    // Warn when: the rule in words, a draft of it, and what a draft sends.
+    expect(kinListCheckWords({ fields, check: { field: "onHand", below: "reorder" } })).toBe(
+      "On hand is below Reorder point",
+    );
+    expect(kinListCheckWords({ fields })).toBeNull();
+    const draft = kinListCheckDraftOf({ fields, check: { field: "onHand", above: 500 } });
+    expect(kinListCheckInput(draft)).toEqual({ ok: true, check: { field: "onHand", above: 500 } });
+    expect(kinListCheckInput({ ...draft, side: "below", other: "reorder" })).toEqual({
+      ok: true,
+      check: { field: "onHand", below: "reorder" },
+    });
+    expect(kinListCheckInput({ ...draft, number: "lots" }).ok).toBe(false);
+    expect(kinListCheckDraftOf({ fields }).field).toBe("onHand");
   });
 
   it("finishes a part-paid entry by receiving exactly what is left", () => {
@@ -565,6 +610,27 @@ describe("a list by its definition", () => {
     expect(
       kinListColumns(issued, [{ ...kept, state: "open" }]).find((one) => one.id === "date")?.label,
     ).toBe("Date");
+    // A bill to pay is due on its day, as Money's To pay counts it: it has no paid day yet.
+    const expenses = list({
+      list: KinListId.make("expenses"),
+      amount: true,
+      states: ["open", "done", "dropped"],
+      stateLabels: { open: "To pay" as never, done: "Paid" as never, dropped: "Void" as never },
+      dueLabel: "Due" as never,
+      dateLabel: "Paid on" as never,
+    });
+    const bill = { ...kept, list: "expenses", state: "open" as const, dueAt: null };
+    expect(kinListEntryView(bill, expenses, context)).toMatchObject({
+      dateLabel: null,
+      dueLabel: "Due",
+      due: kinListEntryView({ ...bill, state: "done" }, expenses, context).date,
+    });
+    expect(
+      kinListEntryView({ ...bill, dueAt: "2026-12-09T00:00:00.000Z" }, expenses, context).due,
+    ).not.toBe(kinListEntryView(bill, expenses, context).due);
+    expect(kinListEntryView({ ...bill, state: "done" }, expenses, context)).toMatchObject({
+      dateLabel: "Paid on",
+    });
     // Its page notes Money only where Money would count it, a draft that it is owed only once
     // issued, and offers Not needed only where it can drop it.
     expect(kinSuggestionKeep(suggested, issued)).toEqual({
@@ -652,10 +718,10 @@ describe("a list by its definition", () => {
     });
   });
 
-  it("shows a category as it was written unless the list labels it, and saves only label changes", () => {
+  it("shows a category by its label or with an initial capital, and saves only label changes", () => {
     const def = list({
       amount: true,
-      categories: ["gst" as never, "income tax" as never],
+      categories: ["gst" as never, "income tax" as never, "office" as never],
       categoryLabels: { gst: "GST" as never },
     });
     expect(kinListRow(record({ listCategory: "gst" as never }), def, context).cells.category).toBe(
@@ -663,13 +729,20 @@ describe("a list by its definition", () => {
     );
     expect(
       kinListRow(record({ listCategory: "income tax" as never }), def, context).cells.category,
-    ).toBe("income tax");
+    ).toBe("Income tax");
+    expect(
+      kinListRow(record({ listCategory: "office" as never }), def, context).cells.category,
+    ).toBe("Office");
     const draft = kinListEditDraftOf(def);
-    expect(draft.categoryLabels).toEqual({ gst: "GST", "income tax": "income tax" });
+    expect(draft.categoryLabels).toEqual({
+      gst: "GST",
+      "income tax": "Income tax",
+      office: "Office",
+    });
     expect(
       kinListEditInput(orgId, def, {
         ...draft,
-        categoryLabels: { gst: " ", "income tax": "Income tax" },
+        categoryLabels: { gst: " ", "income tax": "Direct tax", office: "Office" },
         payments: true,
       }),
     ).toEqual({
@@ -678,8 +751,27 @@ describe("a list by its definition", () => {
         orgId,
         list: "equipment",
         rev: 3,
-        categoryLabels: { gst: null, "income tax": "Income tax" },
+        categoryLabels: { gst: null, "income tax": "Direct tax" },
         payments: true,
+      },
+    });
+    const renamed = list({
+      amount: true,
+      categories: ["income tax" as never],
+      categoryLabels: { "income tax": "Direct tax" as never },
+    });
+    expect(
+      kinListEditInput(orgId, renamed, {
+        ...kinListEditDraftOf(renamed),
+        categoryLabels: { "income tax": "Income tax" },
+      }),
+    ).toEqual({
+      ok: true,
+      input: {
+        orgId,
+        list: "equipment",
+        rev: 3,
+        categoryLabels: { "income tax": null },
       },
     });
   });
@@ -706,7 +798,7 @@ describe("a list by its definition", () => {
       { id: "total", label: "Billed", lines: ["₹1,50,000"] },
     ]);
     expect(header.groups.map((group) => [group.label, group.totals, group.billed])).toEqual([
-      ["rent", ["₹60,000"], "₹1,00,000 billed"],
+      ["Rent", ["₹60,000"], "₹1,00,000 billed"],
       ["No category", ["Nothing"], "₹50,000 billed"],
     ]);
     const none = header.groups[1]!.narrowed!;

@@ -34,6 +34,7 @@ import { answerReceiptCard } from "../gendocs/receiptProposals.ts";
 import { receiptDocument } from "../gendocs/receipts.ts";
 import { answerCurrencyCard } from "./statements/statementReview.ts";
 import * as CardActions from "../widgets/cardActions.ts";
+import { isFactCard, isQuiet } from "../widgets/cardPlans.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { answerUnconfirmed } from "./unconfirmedFacts.ts";
 
@@ -54,11 +55,12 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
           Effect.logWarning(message, { widgetId: input.widget.widgetId, cause }),
         ),
       );
-  // Kin's own route, suggestion and leaver cards answer nothing else; no decision to remember.
+  // Kin's own route, suggestion, leaver, quiet-run and fact cards: no decision to remember.
   if (
     input.plan?.kind === "let_talk" ||
     input.plan?.kind === "recommend" ||
-    input.plan?.kind === "leaver"
+    input.plan?.kind === "leaver" ||
+    (input.plan !== undefined && (isQuiet(input.plan) || isFactCard(input.plan)))
   )
     return yield* CardActions.run(input, input.plan, {
       records: yield* KinRecords,
@@ -158,9 +160,7 @@ export const answerChoice = Effect.fn("KinCardAnswers.answer")(function* (
   if (ran !== undefined) return ran;
   if (watched !== undefined) return watched;
   if (details !== undefined) return details;
-  if (made?._tag === "made") return made.outcome;
-  if (made?._tag === "declined")
-    return { title: "Not recorded", text: "You said no, so nothing was recorded or numbered." };
+  if (made !== undefined) return made.outcome;
   if (asked?._tag === "declined")
     return { title: "Not sent", text: "You cancelled it, so nothing was sent." };
   if (currency !== undefined)

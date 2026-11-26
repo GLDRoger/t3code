@@ -80,7 +80,37 @@ const NO_SINGULAR: Readonly<Record<string, string>> = {
   "No client": "None",
   "Any client": "Any",
   "Add the client in Clients first.": "Add them in Clients first.",
+  "Private, because its client or project is. Only owners see this.":
+    "Private, because where it is filed is. Only owners see this.",
+  "Client names and contacts. Never terms or what they owe.":
+    "Names and contacts in Clients. Never terms or what they owe.",
+  "Your client's copy still says": "Their copy still says",
+  "A receipt is the note you give a client for money received. None yet.":
+    "A receipt is the note you give for money received. None yet.",
+  "This client has no open invoice to set it against.": "No open invoice to set it against.",
+  "Taken off its client.": "Taken out of Clients.",
+  "Kin doesn't message your client. Forward the link yourself.":
+    "Kin doesn't message them. Forward the link yourself.",
+  "Your company's accounts and each client's, through one posting service. Social drafts the week; nothing goes out until you confirm.":
+    "Your company's accounts and those of your clients, through one posting service. Social drafts the week; nothing goes out until you confirm.",
+  "Add the client in Kin first; each client's accounts connect on their own.":
+    "Add them in Clients first; each one's accounts connect on their own.",
+  "Make a preview to send the client": "Make a preview to send them",
+  "Add the tag to contacts on their client's page to put them on it.":
+    "Add the tag to contacts on their page in Clients to put them on it.",
+  'Choose this campaign in "Came from" on a prospect or client.':
+    'Choose this campaign in "Came from" on a prospect, or on one in Clients.',
+  "Prospect, Lead → prospect; anything else → client":
+    "Prospect, Lead → prospect; anything else → Clients",
+  "Client name": "Name in Clients",
+  "Prospect or client": "Prospect, or in Clients",
+  "Find a client": "Find in Clients",
 };
+
+/** A client or project picker's search field, in this company's word for clients. */
+export function kinPlaceFind(noun: "client" | "project", shell: KinShell | null | undefined) {
+  return noun === "client" ? kinSectionNamed(shell, "Find a client") : "Find a project";
+}
 
 /**
  * Kin's own words about the Clients section, said with this company's name for it: "Search

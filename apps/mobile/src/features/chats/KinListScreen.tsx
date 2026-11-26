@@ -20,11 +20,13 @@ import {
 import { kinEntryFacts } from "@t3tools/client-runtime/kin/kinAttention";
 import {
   KIN_LIST_DEFAULT_FILTER,
+  KIN_LIST_WATCH,
   KIN_LIST_WATCHES_CHANGE,
   KIN_LISTS,
   kinCategoryLabel,
   kinListChips,
   kinListColumns,
+  kinListOffersClients,
   kinListFilterParam,
   kinListFooter,
   kinListGroupings,
@@ -33,7 +35,14 @@ import {
   kinListFilterLabel,
   kinListNothing,
   kinListRow,
+  kinListCheckDraftOf,
+  kinListCheckFields,
+  kinListCheckInput,
+  kinListCheckWords,
+  kinListRemindChoices,
   kinListWatches,
+  kinListWatchesEditable,
+  type KinListCheckDraft,
   type KinListColumn,
   type KinListFilter,
   type KinListRowView,
@@ -48,6 +57,7 @@ import {
   KinListId,
   KinOrgId,
   type KinListDefinition,
+  type KinListUpdateInput,
   type KinRecordKey,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -61,8 +71,12 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { Chip } from "../../components/ui/Chip";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRow } from "../../components/ui/ListRow";
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
+import { Menu } from "../../components/ui/Menu";
+import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
@@ -72,6 +86,7 @@ import {
   KinWorkFrame,
   KinWorkLoading,
   KinWorkStaleNotice,
+  KinWorkTextField,
   KinWorkToggleRow,
 } from "./components/KinWorkPieces";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
@@ -80,6 +95,7 @@ import { kinClient } from "./state/kinClient";
 import { useKinBillBatches } from "./state/useKinBills";
 import {
   useKinDates,
+  useKinListChanges,
   useKinListContext,
   useKinListEntries,
   useKinLists,
@@ -95,7 +111,7 @@ import {
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { kinTabBar, kinTabFoot, useKinTab } from "./components/KinTab";
 import { useKinAttention } from "./state/useKinAttention";
-import { useKinSectionOn } from "./state/useKinShell";
+import { useKinSectionOn, useKinShell } from "./state/useKinShell";
 import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 
 export type KinListParams = {
@@ -418,6 +434,7 @@ function KinListEntries(
   // Late, due today or off its check, in the host's own words: the pulse read Tasks shares.
   const facts = kinEntryFacts(useKinAttention(props));
   const canEdit = useAtomValue(kinClient.workListUpdate.permissionAtom(environmentId));
+  const shell = useKinShell(environmentId);
   const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
   const canExpense = useAtomValue(kinClient.workNewExpense.permissionAtom(environmentId));
   const { state, entries, totals } = useKinListEntries(
@@ -541,7 +558,11 @@ function KinListEntries(
           onEndReachedThreshold={0.5}
           ListHeaderComponent={
             <View className="gap-3 pb-1 pt-2">
-              {watches.length === 0 ? null : (
+              {kinListWatchesEditable(def, shell, canEdit) ? (
+                <View className="px-4">
+                  <KinListWatchControls {...props} />
+                </View>
+              ) : watches.length === 0 ? null : (
                 <View className="px-5">
                   {watches.map((line) => (
                     <Text key={line} textRole="footnote" className="text-foreground-muted">
@@ -561,7 +582,7 @@ function KinListEntries(
                 </View>
               ) : null}
               {def.list === "expenses" ? <KinBillsAddedRow {...props} /> : null}
-              {!clientsOn ? null : (
+              {!clientsOn || !kinListOffersClients(state.records, filter) ? null : (
                 <View className="px-4">
                   <ListSection>
                     <KinWorkPlacePicker
@@ -990,6 +1011,158 @@ function KinBillsAddedRow(props: KinWorkTarget) {
             })
           }
         />
+      </ListSection>
+    </View>
+  );
+}
+
+/** One choice of a few, picked from a menu right on its row. */
+function WatchPick(props: {
+  readonly label: string;
+  readonly current: string;
+  readonly choices: ReadonlyArray<{ readonly id: string; readonly label: string }>;
+  readonly disabled: boolean;
+  readonly onPick: (id: string) => void;
+}) {
+  const shown = props.choices.find((one) => one.id === props.current)?.label ?? "";
+  return (
+    <Menu
+      title={props.label}
+      accessibilityRole="button"
+      accessibilityLabel={`${props.label}: ${shown}. Change`}
+      actions={props.choices.map((choice) => ({
+        id: choice.id,
+        title: choice.label,
+        state: choice.id === props.current ? ("on" as const) : ("off" as const),
+      }))}
+      onPressAction={({ nativeEvent: { event } }) => {
+        if (!props.disabled && event !== props.current) props.onPick(event);
+      }}
+    >
+      <View pointerEvents="none">
+        <ListRowLayout label={props.label} detail={shown} disabled={props.disabled} />
+      </View>
+    </Menu>
+  );
+}
+
+// A fixed number in a check, not a field: field keys start with a letter.
+const A_NUMBER = "#number";
+
+/** What Kin watches on a section list, set by the owner level here: its reminder day and its check. */
+function KinListWatchControls(props: KinWorkTarget & { readonly def: KinListDefinition }) {
+  const { def, orgId } = props;
+  const changes = useKinListChanges(props);
+  const [draft, setDraft] = useState<KinListCheckDraft | null>(null);
+  const edit = (next: KinListCheckDraft) => {
+    changes.dismiss();
+    setDraft(next);
+  };
+  const remind = kinListRemindChoices(def);
+  const numbers = kinListCheckFields(def).map((field) => ({ id: field.key, label: field.label }));
+  const rule = kinListCheckWords(def);
+  const send = (patch: Pick<KinListUpdateInput, "remindOn" | "check">) =>
+    changes.send({ orgId, list: def.list, rev: def.rev, accept: ["remindOn", "check"], ...patch });
+  const save = async (held: KinListCheckDraft) => {
+    const checked = kinListCheckInput(held);
+    if (!checked.ok) return changes.setProblem(checked.problem);
+    if (await send({ check: checked.check })) setDraft(null);
+  };
+  return (
+    <View className="gap-3">
+      {changes.problem === null ? null : (
+        <Notice message={changes.problem} tone="danger" onDismiss={changes.dismiss} />
+      )}
+      <ListSection>
+        <WatchPick
+          label={KIN_LIST_WATCH.remindOn}
+          current={remind.current}
+          choices={remind.choices}
+          disabled={changes.busy}
+          onPick={(id) => {
+            const choice = remind.choices.find((one) => one.id === id);
+            if (choice !== undefined) void send({ remindOn: choice.remindOn });
+          }}
+        />
+        {numbers.length === 0 && rule === null ? null : draft === null ? (
+          <>
+            <ListRowLayout
+              label={KIN_LIST_WATCH.warnWhen}
+              description={rule ?? KIN_LIST_WATCH.notSet}
+            />
+            {numbers.length === 0 ? null : (
+              <ListActionRow
+                label={KIN_LIST_WATCH.change}
+                disabled={changes.busy}
+                onPress={() => {
+                  changes.dismiss();
+                  setDraft(kinListCheckDraftOf(def));
+                }}
+              />
+            )}
+            {rule === null ? null : (
+              <ListActionRow
+                label={KIN_LIST_WATCH.stop}
+                disabled={changes.busy}
+                onPress={() => void send({ check: null })}
+              />
+            )}
+          </>
+        ) : (
+          <>
+            <WatchPick
+              label={KIN_LIST_WATCH.field}
+              current={draft.field}
+              choices={numbers}
+              disabled={changes.busy}
+              onPick={(field) =>
+                edit({ ...draft, field, other: draft.other === field ? "" : draft.other })
+              }
+            />
+            <WatchPick
+              label={KIN_LIST_WATCH.side}
+              current={draft.side}
+              choices={[
+                { id: "below", label: KIN_LIST_WATCH.below },
+                { id: "above", label: KIN_LIST_WATCH.above },
+              ]}
+              disabled={changes.busy}
+              onPick={(side) => (side === "below" || side === "above") && edit({ ...draft, side })}
+            />
+            <WatchPick
+              label={KIN_LIST_WATCH.compare}
+              current={draft.other === "" ? A_NUMBER : draft.other}
+              choices={[
+                { id: A_NUMBER, label: KIN_LIST_WATCH.aNumber },
+                ...numbers.filter((field) => field.id !== draft.field),
+              ]}
+              disabled={changes.busy}
+              onPick={(other) => edit({ ...draft, other: other === A_NUMBER ? "" : other })}
+            />
+            {draft.other === "" ? (
+              <KinWorkTextField
+                label={KIN_LIST_WATCH.number}
+                value={draft.number}
+                keyboard="decimal"
+                disabled={changes.busy}
+                onChangeText={(number) => edit({ ...draft, number })}
+              />
+            ) : null}
+            <ListActionRow
+              label={KIN_LIST_WATCH.save}
+              loading={changes.busy}
+              onPress={() => void save(draft)}
+            />
+            <ListActionRow
+              label={KIN_LIST_WATCH.cancel}
+              disabled={changes.busy}
+              onPress={() => {
+                changes.dismiss();
+                setDraft(null);
+              }}
+            />
+          </>
+        )}
       </ListSection>
     </View>
   );

@@ -16,7 +16,9 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as Rpc from "effect/rpc/Rpc";
 import * as RpcGroup from "effect/rpc/RpcGroup";
+import * as RpcSchema from "effect/rpc/RpcSchema";
 import type { AuthenticatedSession } from "../auth/EnvironmentAuth.ts";
 import { makeKinApprovalHandlers } from "./approvals/rpcHandlers.ts";
 import { KinIdentity } from "./chat/KinIdentity.ts";
@@ -47,6 +49,37 @@ const refusal = (message: string) =>
 const refused = refusal("Only the owner or a co-owner can do that.");
 const ownerOnly = refusal("Only the owner can do that.");
 const unavailable = refusal("Kin is unavailable.");
+// Says nothing of the payload's shape: who may not make the call never gets this far.
+const unreadable = refusal("Kin couldn't read that request.");
+
+/**
+ * The socket's group with Kin's payloads passed through undecoded: the RPC server would turn a
+ * bad one into a defect before any check runs, so `makeKinHandlers` decodes it after access.
+ */
+export const decodeKinAfterAccess = <R extends Rpc.Any>(
+  wire: RpcGroup.RpcGroup<R>,
+): RpcGroup.RpcGroup<R> =>
+  wire.add(
+    ...Array.from(wire.requests.values() as Iterable<Rpc.Rpc<string, Schema.Top>>)
+      .filter((rpc) => group.requests.has(rpc._tag))
+      .map((rpc) => rpc.setPayload(Schema.Unknown)),
+  ) as unknown as RpcGroup.RpcGroup<R>;
+
+/** Decodes what the socket passed through raw; a caller in this process hands it decoded. */
+const payloadDecoder = (rpc: Rpc.AnyWithProps) => {
+  // Kin's payload schemas need no services to decode.
+  const decode = Schema.decodeUnknownEffect(
+    Schema.toCodecJson(rpc.payloadSchema as Schema.Codec<unknown, unknown>),
+    Context.get(rpc.annotations, Rpc.ParseOptions),
+  );
+  // Relies on effect's RpcServer passing the socket group's `rpc` in handler options; if it stopped,
+  // raw payloads would reach handlers undecoded. The real-wire test in chat/rpcHandlers.test.ts guards it.
+  return (payload: unknown, options: unknown) =>
+    (options as { readonly rpc?: Rpc.AnyWithProps } | undefined)?.rpc?.payloadSchema ===
+    Schema.Unknown
+      ? Effect.mapError(decode(payload), () => unreadable)
+      : Effect.succeed(payload);
+};
 
 const kindOf = Effect.fn("KinRpc.kindOf")(function* (
   session: AuthenticatedSession,
@@ -118,23 +151,36 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
   const personSees = forPerson(session, services);
   const guarded: Record<string, unknown> = {};
   for (const [tag, handler] of Object.entries(handlers)) {
+    const rpc = group.requests.get(tag) as Rpc.AnyWithProps | undefined;
+    if (!rpc) throw new Error(`no Kin rpc ${tag}`);
     const check = admits(session, services, kinRpcAccess(tag));
     const reads = KIN_READ_RPCS.has(tag);
-    guarded[tag] = (...args: ReadonlyArray<unknown>) => {
-      const result: unknown = Reflect.apply(handler, undefined, args);
-      if (Stream.isStream(result)) {
-        const stream = Stream.unwrap(Effect.as(check, result));
-        return reads ? readOnlyStream(stream) : stream;
-      }
-      const effect = Effect.andThen(
-        check,
-        Effect.catch(
-          result as Effect.Effect<unknown, EnvironmentAuthorizationError | KinChatError>,
-          personSees,
-        ),
-      );
-      return reads ? NodeSqliteClient.readOnly(effect) : effect;
-    };
+    const decode = payloadDecoder(rpc);
+    const handle = (payload: unknown, options: unknown): unknown =>
+      Reflect.apply(handler, undefined, [payload, options]);
+    guarded[tag] = RpcSchema.isStreamSchema(rpc.successSchema)
+      ? (payload: unknown, options: unknown) => {
+          const stream = Stream.unwrap(
+            Effect.flatMap(check, () => decode(payload, options)).pipe(
+              Effect.map((decoded) => handle(decoded, options) as Stream.Stream<unknown>),
+            ),
+          );
+          return reads ? readOnlyStream(stream) : stream;
+        }
+      : (payload: unknown, options: unknown) => {
+          const effect = Effect.flatMap(check, () => decode(payload, options)).pipe(
+            Effect.flatMap((decoded) =>
+              Effect.catch(
+                handle(decoded, options) as Effect.Effect<
+                  unknown,
+                  EnvironmentAuthorizationError | KinChatError
+                >,
+                personSees,
+              ),
+            ),
+          );
+          return reads ? NodeSqliteClient.readOnly(effect) : effect;
+        };
   }
   // Every entry keeps its handler's signature; only a refusal is added, typed as the group's error.
   return guarded as typeof handlers;

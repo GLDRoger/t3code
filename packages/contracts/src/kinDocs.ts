@@ -196,6 +196,8 @@ export type KinDocLatestSlim = typeof KinDocLatestSlim.Type;
 export const KinDocListRow = Schema.Struct({
   ...KinDocRow.fields,
   latest: Schema.Union([KinDocVersion, KinDocLatestSlim]),
+  /** To owner-level readers: the teammate whose draft it is, while it reads "Me and owners". */
+  draftOf: Schema.optional(Schema.Struct({ name: Schema.String })),
 });
 export type KinDocListRow = typeof KinDocListRow.Type;
 
@@ -206,6 +208,8 @@ export type KinDocListRow = typeof KinDocListRow.Type;
  */
 export const KinDocEmbed = KinEmbed;
 export type KinDocEmbed = KinEmbed;
+
+const DocReaders = Schema.Literals(["draft", "owners", "team"]);
 
 export const KinDocDetail = Schema.Struct({
   ...KinDocRow.fields,
@@ -237,6 +241,8 @@ export const KinDocDetail = Schema.Struct({
    * private and loses it once an owner labels it, unless the label is their own. Absent from older hosts.
    */
   draftOf: Schema.optional(Schema.Struct({ name: Schema.String })),
+  readers: Schema.optional(DocReaders),
+  readersCan: Schema.optional(Schema.Array(DocReaders)),
 });
 export type KinDocDetail = typeof KinDocDetail.Type;
 
@@ -366,6 +372,14 @@ export const KinDocEditSectionInput = Schema.Struct({
   clientRequestId: TrimmedNonEmptyString.check(Schema.isMaxLength(120)),
 });
 export type KinDocEditSectionInput = typeof KinDocEditSectionInput.Type;
+
+export const KinDocReadersInput = Schema.Struct({
+  orgId: KinOrgId,
+  key: KinRecordKey,
+  to: DocReaders,
+  rev: Schema.optional(NonNegativeInt),
+});
+export type KinDocReadersInput = typeof KinDocReadersInput.Type;
 
 /**
  * A person deletes a doc, or brings a deleted one back with `deleted: false`, exactly as it was.
@@ -615,6 +629,8 @@ export const KinSearchResult = Schema.Struct({
   hits: Schema.Array(KinSearchHit),
   indexed: Schema.Boolean,
   asOf: IsoDateTime,
+  /** True when what Kin remembers could not be read for this search, so no memory hit is among `hits`: say so; it is not "nothing found". */
+  memoryUnavailable: Schema.optional(Schema.Boolean),
 });
 export type KinSearchResult = typeof KinSearchResult.Type;
 
@@ -724,6 +740,7 @@ const KIN_DOCS_WS_METHODS = {
   setDefaultRecipe: "kin.docs.setDefaultRecipe",
   startWhatWeSell: "kin.docs.startWhatWeSell",
   editSection: "kin.docs.editSection",
+  readers: "kin.docs.readers",
   sendUp: "kin.docs.sendUp",
   delete: "kin.docs.delete",
 } as const;
@@ -801,6 +818,11 @@ export const KinDocsRpcs = [
     success: KinDocDetail,
     error,
   }),
+  Rpc.make(KIN_DOCS_WS_METHODS.readers, {
+    payload: KinDocReadersInput,
+    success: KinDocDetail,
+    error,
+  }),
   Rpc.make(KIN_DOCS_WS_METHODS.sendUp, {
     payload: KinDocSendUpInput,
     success: KinDocSendUpResult,
@@ -838,6 +860,7 @@ export const KIN_DOCS_RPC_SCOPES = {
   [KIN_DOCS_WS_METHODS.startWhatWeSell]: AuthKinChatScope,
   // Writes a version, as restore does; it starts no agent work.
   [KIN_DOCS_WS_METHODS.editSection]: AuthKinChatScope,
+  [KIN_DOCS_WS_METHODS.readers]: AuthKinChatScope,
   // Asks the agent's owner on a card, as a chat message to the agent would; it starts no turn.
   [KIN_DOCS_WS_METHODS.sendUp]: AuthKinChatScope,
   // Moves a doc in or out of Deleted, as filing it does; it starts no agent work.

@@ -500,7 +500,7 @@ it.effect.each(["America/Los_Angeles", "Pacific/Auckland"])(
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
       yield* sql`UPDATE kin_trigger_settings SET time_zone = ${zone} WHERE org_id = ${orgId}`;
-      yield* LeadWork.create(scope, {
+      const made = yield* LeadWork.create(scope, {
         sourceEventId: "ask-event",
         records: [
           { list: "projects", title: "Invented booking app" },
@@ -513,6 +513,13 @@ it.effect.each(["America/Los_Angeles", "Pacific/Auckland"])(
           { title: "Invented booking screens", milestone: "M-1", due: "2026-12-01" },
         ],
       });
+      // The answer counts what it made by list, so a plan's tasks are not its milestones too.
+      assert.deepStrictEqual(made.made, { projects: 1, milestones: 1, work: 1 });
+      const one = yield* LeadWork.create(scope, {
+        sourceEventId: "ask-event",
+        records: [{ title: "Invented team lunch" }],
+      });
+      assert.notProperty(one, "made");
       const plan = (yield* LeadWork.get(scope, { key: "P-1" })).plan!;
       assert.deepStrictEqual(
         plan.milestones.map((one) => [one.key, one.due]),
@@ -782,6 +789,15 @@ it.effect("an overdue invoice or a long silence with the client puts a project a
     assert.include(owed, { health: "at_risk" });
     assert.deepInclude(owed.healthBecause, { overdueInvoices: 1 });
     assert.isUndefined(owed.healthBecause.noContact);
+    // The clients list says what an owing client owes: issued invoices' balances, never a draft.
+    yield* LeadWork.create(scope, {
+      sourceEventId: "ask-event",
+      records: [{ ...invoice("Invented VIOM draft"), state: "open" as const }],
+    });
+    const directory = yield* Clients.parties([owner], { orgId });
+    assert.deepStrictEqual(directory.parties.find((row) => row.key === client.key)?.owed, [
+      { currency: "INR", minor: 10_000_000 },
+    ]);
     // Every surface reads the same rule: the list, the Work summary and the lead's own read.
     const listed = yield* Clients.projects([owner], { orgId });
     assert.strictEqual(listed.projects.find((row) => row.key === build.key)?.health, "at_risk");
@@ -1398,6 +1414,59 @@ it.effect(
         ),
         { reason: "not_found" },
       );
+      assert.include(
+        yield* Effect.flip(
+          Clients.updateParty([owner], {
+            orgId,
+            key: "C-1",
+            rev: reopened.rev,
+            accountsForTax: true,
+          }),
+        ),
+        {
+          message:
+            "Add the client's tax number first: invoices that leave the tax to the client print it. Nothing changed.",
+        },
+      );
+      assert.include(
+        yield* Effect.flip(
+          Clients.updateParty([owner], {
+            orgId,
+            key: "C-1",
+            rev: reopened.rev,
+            gstin: "27BBBBB2222B1Z5",
+            taxNumber: "27BBBBB2222B1Z5",
+          }),
+        ),
+        { message: "Give gstin or taxNumber, not both. Nothing changed." },
+      );
+      const marked = yield* Clients.updateParty([owner], {
+        orgId,
+        key: "C-1",
+        rev: reopened.rev,
+        accountsForTax: true,
+        taxNumber: "27BBBBB2222B1Z5",
+      });
+      assert.include(marked, { accountsForTax: true, gstin: "27BBBBB2222B1Z5" });
+      assert.include(
+        yield* Effect.flip(
+          Clients.updateParty([owner], { orgId, key: "C-1", rev: marked.rev, taxNumber: null }),
+        ),
+        {
+          message:
+            "Invoices to this client leave the tax to the client and print this number. Turn off Accounts for the tax themselves first. Nothing changed.",
+        },
+      );
+      assert.include(
+        yield* Clients.updateParty([owner], {
+          orgId,
+          key: "C-1",
+          rev: marked.rev,
+          accountsForTax: false,
+          taxNumber: null,
+        }),
+        { accountsForTax: false, gstin: null },
+      );
       // QA: a project's or entry's chip couldn't say its client is a vendor.
       const supplier = yield* Clients.createParty([owner], {
         orgId,
@@ -1421,6 +1490,18 @@ it.effect(
       assert.include(payment.party, { key: supplier.key, kind: "vendor" });
     }).pipe(Effect.provide(layer)),
 );
+
+const projectGoalForMate = Effect.fn("test.projectGoalForMate")(function* (recordId: string) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+    VALUES (${orgId}, 'projects', 'Projects', 'P', 1, 0) ON CONFLICT DO NOTHING`;
+  yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+      owner_id, created_by_kind, origin_key, created_at, updated_at)
+    VALUES (${orgId}, 'mate-project', 'projects', 'P-1', 'Invented project', 'person', ${mateId},
+      'system', 'mate-project', 0, 0)`;
+  yield* sql`UPDATE kin_records SET project_id = 'mate-project'
+    WHERE org_id = ${orgId} AND record_id = ${recordId}`;
+});
 
 it.effect(
   "record_update redirects watched numbers without writing but can set a targeted goal",
@@ -1465,6 +1546,41 @@ it.effect(
       FROM kin_records WHERE org_id = ${orgId} AND key = 'G-2'`,
         [{ current: "2" }],
       );
+      yield* LeadWork.update(scope, {
+        key: "G-2",
+        sourceEventId: "ask-event",
+        measure: "revenue_received",
+        target: "USD 4,000",
+      });
+      assert.propertyVal(yield* records.get(orgId, "G-2"), "sensitive", 1);
+      yield* projectGoalForMate("target");
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('lead-chat-mate', ${orgId}, 'lead-chat', 'person', ${mateId}, 'member', ${at})`;
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE org_id = ${orgId} AND wakeup_id = 'wake'`;
+      const hidden = yield* LeadWork.get(scope, { key: "G-2" }).pipe(Effect.result);
+      assert.strictEqual(hidden._tag, "Failure");
+      if (hidden._tag === "Failure") assert.propertyVal(hidden.failure, "reason", "not_found");
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
+  "record_get leaves money progress out of a teammate's turn for a legacy unmarked goal",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+      VALUES (${orgId}, 'goals', 'Goals', 'G', 1, 0) ON CONFLICT DO NOTHING`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+      owner_id, created_by_kind, origin_key, fields_json, created_at, updated_at)
+      VALUES (${orgId}, 'legacy-goal', 'goals', 'G-1', 'Invented revenue target', 'agent', ${lead}, 'system',
+        'legacy-goal', '{"measure":"revenue_received","target":{"minor":400000,"currency":"USD"}}', 0, 0)`;
+      yield* projectGoalForMate("legacy-goal");
+      assert.property(yield* LeadWork.get(scope, { key: "G-1" }), "progress");
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+      VALUES ('lead-chat-mate', ${orgId}, 'lead-chat', 'person', ${mateId}, 'member', ${at})`;
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE org_id = ${orgId} AND wakeup_id = 'wake'`;
+      assert.notProperty(yield* LeadWork.get(scope, { key: "G-1" }), "progress");
     }).pipe(Effect.provide(layer)),
 );
 
@@ -1975,6 +2091,8 @@ it.effect(
         { prospect: true, terms: "Invented net 30" },
         { prospect: true, gstin: "27ABCDE1234F1Z5" },
         { prospect: true, placeOfSupply: "Invented Province" },
+        { prospect: true, taxNumber: "GB123" },
+        { prospect: true, accountsForTax: true },
         { prospect: true, address: "Invented street" },
         { prospect: true, sensitive: true },
         { prospect: true, owner: { _tag: "person" as const, personId: ownerId } },
@@ -2001,6 +2119,8 @@ it.effect(
       for (const change of [
         { terms: "Invented net 30" },
         { gstin: "27ABCDE1234F1Z5" },
+        { taxNumber: "GB123" },
+        { accountsForTax: true },
         { placeOfSupply: "Invented Province" },
         { address: "Invented street" },
         { sensitive: true },
@@ -2818,11 +2938,12 @@ it.effect(
       yield* issuedByLead(
         ...made.records.filter((one) => one.key.startsWith("INV-")).map((one) => one.key),
       );
-      yield* LeadMoney.payment(scope, {
-        sourceEventId: "ask-event",
+      yield* OwnerMoney.recordPayment([owner], {
+        orgId,
         key: overdue,
-        amount: "1457",
+        amount: { minor: 145_700, currency: "INR" },
         paidOn: "1970-01-10",
+        clientRequestId: "invented-overdue-part",
       });
       const acme = yield* Clients.party([owner], { orgId, key: "C-1" });
       yield* Docs.create(
@@ -2956,7 +3077,12 @@ it.effect(
       };
       assert.sameDeepMembers(
         [...invoices.totals!.total],
-        sum(invoices.records.filter((row) => row.state !== "dropped").map((row) => row.amount)),
+        // Billed: issued invoices, never a draft or a dropped one.
+        sum(
+          invoices.records
+            .filter((row) => !["open", "dropped"].includes(row.state))
+            .map((row) => row.amount),
+        ),
       );
       assert.sameDeepMembers([...invoices.totals!.owed!], sum(owing.map((row) => row.balance)));
       const paid = yield* OwnerWork.list([owner], {
@@ -3672,11 +3798,12 @@ it.effect(
         ],
       });
       yield* issuedByLead("INV-1");
-      yield* LeadMoney.payment(scope, {
-        sourceEventId: "ask-event",
+      yield* OwnerMoney.recordPayment([owner], {
+        orgId,
         key: "INV-1",
-        amount: "400",
+        amount: { minor: 40_000, currency: "INR" },
         paidOn: "1970-01-10",
+        clientRequestId: "invented-received",
       });
       const page = yield* Clients.party([owner], { orgId, key: "C-1" });
       assert.deepStrictEqual(page.touches?.map((touch) => touch.kind).toSorted(), [

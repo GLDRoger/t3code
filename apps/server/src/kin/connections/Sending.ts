@@ -153,6 +153,7 @@ const docLabels: Readonly<Record<string, string>> = {
   invoices: "Invoice",
   quotes: "Quote",
   receipts: "Receipt",
+  credit_notes: "Credit note",
 };
 
 /**

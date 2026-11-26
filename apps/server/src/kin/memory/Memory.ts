@@ -18,6 +18,7 @@ import {
   type MemoryItemKind,
   type MemoryItemFrontMatter,
 } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -758,7 +759,6 @@ const make = Effect.gen(function* () {
     branch: string = mainBranch,
     explicitHead?: string,
   ) {
-    const paths = yield* pathsFor(orgId);
     // An explicit head reads that commit as pinned at prepare time, even after another lead's
     // commit moved the shared pin; it is returned uncached so branch snapshots stay current.
     const key =
@@ -780,6 +780,8 @@ const make = Effect.gen(function* () {
     } else head = yield* anchor(orgId, branch);
     const previous = snapshots.get(key);
     if (!force && previous?.head === head) return previous;
+    // After the cache hit: its awaited checks would hold the memory lock on every read.
+    const paths = yield* pathsFor(orgId);
     const blobCache = blobCaches.get(key) ?? {
       blobs: new Map<string, string | undefined>(),
       parsedBlobs: new Map<string, ParsedBlob | undefined>(),
@@ -949,8 +951,10 @@ const make = Effect.gen(function* () {
     return snapshot;
   });
 
+  // On a reader, not the writer: these run under the memory lock, so a writer queue holds it.
   const sqlRead = <A, E>(orgId: KinOrgId, effect: Effect.Effect<A, E>) =>
     effect.pipe(
+      NodeSqliteClient.readOnly,
       Effect.mapError(toPersistenceSqlError("Memory.view")),
       Effect.mapError((cause) => new MemoryError({ orgId, operation: "view", cause })),
     );

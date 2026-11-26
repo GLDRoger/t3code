@@ -984,6 +984,50 @@ it.effect.each([
 );
 
 it.effect(
+  "someone removed from the company after the lead replied to them, while it still works, leaves that ask answered",
+  () =>
+    Effect.gen(function* () {
+      const { sql, groups, queue, owner, orgId, tech, priya, say, events, wake } = yield* seed;
+      const { chatId } = yield* groups.create([owner], {
+        orgId,
+        title: "Tidewater Freight",
+        agentIds: [tech],
+        personIds: [priya.personId],
+      });
+      const replied = yield* say(priya, chatId, "When can the Tidewater Freight pilot start?");
+      const unanswered = yield* say(priya, chatId, "Can the pilot include dispatch?");
+      const running = yield* wake(tech);
+      yield* sql`UPDATE kin_events SET replied_at = 1
+        WHERE wakeup_id = ${running.wakeupId}
+          AND json_extract(json, '$.messageId') = ${replied.messageId}`;
+      yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash)
+        VALUES (${orgId}, ${running.wakeupId}, 'item:task-1', 'fixture-hash')`;
+      const { expired } = yield* sql.withTransaction(
+        ChatSharing.onPersonRemoved({ orgId, personId: priya.personId }),
+      );
+      const [stopped] = yield* sql<{ aborted: number | null }>`SELECT aborted_at AS aborted
+        FROM kin_wakeups WHERE wakeup_id = ${running.wakeupId}`;
+      assert.isNotNull(stopped?.aborted ?? null);
+      yield* queue.finish({ orgId, wakeupId: running.wakeupId, status: "failed" });
+      const settled = yield* events;
+      assert.deepStrictEqual(
+        settled.filter((row) => row.messageId === replied.messageId).map((row) => row.state),
+        ["done"],
+      );
+      assert.deepStrictEqual(
+        settled.filter((row) => row.messageId === unanswered.messageId).map((row) => row.state),
+        ["expired"],
+      );
+      assert.lengthOf(expired, 1);
+      assert.deepStrictEqual(
+        yield* sql`SELECT body FROM kin_messages WHERE chat_id = ${chatId}
+          AND author_kind = 'system'`,
+        [],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect(
   "someone removed and added back is a new join: the lead reads them nothing from before it",
   () =>
     Effect.gen(function* () {

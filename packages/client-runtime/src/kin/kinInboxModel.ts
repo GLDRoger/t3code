@@ -54,6 +54,19 @@ export const kinBadgeCount = (state: KinInboxState) =>
 export const kinChatSettled = (state: KinInboxState, chatId: KinChatId) =>
   (state.chats.find((chat) => chat.chatId === chatId)?.unread ?? 0) === 0;
 
+/**
+ * Something the viewer had was settled between two inbox states: a chat's unread went down or it
+ * left the list, or a waiting row was resolved. Its notifications may be settled on the host now.
+ */
+export function kinInboxSettledSince(before: KinInboxState, after: KinInboxState): boolean {
+  const unread = new Map(after.chats.map((chat) => [chat.chatId, chat.unread]));
+  const waiting = new Set(after.waiting.map((item) => item.waitingId));
+  return (
+    before.chats.some((chat) => chat.unread > (unread.get(chat.chatId) ?? 0)) ||
+    before.waiting.some((item) => !waiting.has(item.waitingId))
+  );
+}
+
 export function applyKinInboxEvent(state: KinInboxState, event: KinInboxEvent): KinInboxState {
   switch (event._tag) {
     case "snapshot":

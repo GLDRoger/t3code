@@ -1,6 +1,7 @@
 import {
   KinChatError,
   KinDocumentLine,
+  KinEntryLines,
   type KinCashInput,
   type KinEntryLinesInput,
   type KinInvoiceFromQuoteInput,
@@ -220,6 +221,7 @@ const budgetsOf = Effect.fn("KinMoneyAnswers.budgetsOf")(function* (
       spent: signed(one.spent, one.currency),
       expenses: one.expenses,
       status: one.status,
+      ...(one.about === undefined ? {} : { about: one.about }),
       ...(one.notCounted.length === 0
         ? {}
         : {
@@ -279,6 +281,7 @@ export const setBudget = Effect.fn("KinMoneyAnswers.rpc.setBudget")(function* (
 }, workFailure);
 
 const decodeLines = Schema.decodeUnknownOption(Schema.Array(KinDocumentLine));
+const isInvoiceGstRate = Schema.is(KinEntryLines.fields.gstRate);
 
 export const entryLines = Effect.fn("KinMoneyAnswers.rpc.entryLines")(function* (
   people: ReadonlyArray<PersonIdentity>,
@@ -299,7 +302,11 @@ export const entryLines = Effect.fn("KinMoneyAnswers.rpc.entryLines")(function* 
           : row,
       )
     : null;
-  return { lines: Option.getOrNull(decodeLines(said)) };
+  const gstRate = typeof given.gstRate === "number" ? String(given.gstRate) : given.gstRate;
+  return {
+    lines: Option.getOrNull(decodeLines(said)),
+    ...(gstRate !== undefined && isInvoiceGstRate(gstRate) ? { gstRate } : {}),
+  };
 }, workFailure);
 
 /** The template invoices are made with: the list's default, else the first there is. */
@@ -337,9 +344,29 @@ const draftDocument = Effect.fn("KinMoneyAnswers.draftDocument")(function* (
       problems: [] as ReadonlyArray<string>,
     })),
     Effect.catchIf(Schema.is(KinChatError), (error) =>
-      Effect.succeed({ invoice: invoice.key, documents: [], problems: [error.message] }),
+      placeMissing(invoice, error.message).pipe(
+        Effect.map((problem) => ({ invoice: invoice.key, documents: [], problems: [problem] })),
+      ),
     ),
   );
+});
+
+/**
+ * The person's own words for the one document failure they fix elsewhere: the GST rule in
+ * `gendocs/compute.ts` that a client needs a place of supply. Agents keep the recipe's message.
+ */
+const placeMissing = Effect.fn("KinMoneyAnswers.placeMissing")(function* (
+  invoice: RecordRow,
+  message: string,
+) {
+  if (invoice.partyId === null || !message.includes("client has no place of supply"))
+    return message;
+  const sql = yield* SqlClient.SqlClient;
+  const [client] = yield* sql<{ title: string }>`SELECT title FROM kin_records
+    WHERE org_id = ${invoice.orgId} AND record_id = ${invoice.partyId}`;
+  return client === undefined
+    ? message
+    : `${client.title} has no place of supply or GSTIN, which a GST invoice needs. Add one on its page in Clients, then try again.`;
 });
 
 /**

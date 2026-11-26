@@ -236,7 +236,8 @@ export function KinDealsView(
     readonly ask: AppBarAction | null;
   },
 ) {
-  const clientsTitle = useKinSectionNamed(props.environmentId)(KIN_CLIENTS.title);
+  const named = useKinSectionNamed(props.environmentId);
+  const clientsTitle = named(KIN_CLIENTS.title);
   const navigation = useNavigation();
   const tab = useKinTab();
   const { environmentId, orgId } = props;
@@ -478,7 +479,7 @@ export function KinDealsView(
                 <EmptyState
                   variant="card"
                   title={nothing.title}
-                  detail={nothing.detail}
+                  detail={named(nothing.detail)}
                   {...(add === null || filter.state !== "open"
                     ? {}
                     : {

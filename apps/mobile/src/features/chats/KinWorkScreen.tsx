@@ -85,6 +85,7 @@ function KinPlaceEntries(props: KinWorkTarget & { readonly live: KinWorkLive | n
   // A place whose section the company turned off has no row.
   const moneyOn = useKinSectionOn(props.environmentId, "money");
   const clientsOn = useKinSectionOn(props.environmentId, "clients");
+  const named = useKinSectionNamed(props.environmentId);
   const counts = useKinClientCounts(props, hostClients && clientsOn);
   const scope = useKinViewerScope(props.environmentId);
   return (
@@ -102,7 +103,7 @@ function KinPlaceEntries(props: KinWorkTarget & { readonly live: KinWorkLive | n
         <KinPlaceEntryRow
           environmentId={props.environmentId}
           place="clients"
-          summary={counts === null ? null : kinClientsLine(counts.clients, counts.projects)}
+          summary={counts === null ? null : named(kinClientsLine(counts.clients, counts.projects))}
           onPress={() => open("clients")}
         />
       )}

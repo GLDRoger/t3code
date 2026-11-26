@@ -1,4 +1,11 @@
-import { KinAgentId, KinChatError, type KinOrgId, KinPersonId } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  KinChatError,
+  KinChatId,
+  type KinOrgId,
+  KinPersonId,
+  KinWakeupId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -15,8 +22,9 @@ import { resolveLead } from "../lead/LeadMemory.ts";
 import * as Reach from "../lead/Reach.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { isOwnerHimself, KIN_OWN_REFUSAL, kinOwnTurn, mayActAsOwner } from "../people/KinAccess.ts";
-import { boundReview, headKey, POSTING, receiptOf } from "./boundReview.ts";
+import { blocksKey, boundReview, headKey, POSTING, receiptOf } from "./boundReview.ts";
 import {
+  type ApiAnswer,
   agentPostsOf,
   botLoginOf,
   claimTrigger,
@@ -26,7 +34,10 @@ import {
   PER_THREAD_HOURLY,
   postedResult,
   sendReview,
+  DIFF_CAP,
   readDiff,
+  pieceEnd,
+  wholeDiff,
   readThread,
   reclaimable,
   writesTo,
@@ -55,11 +66,9 @@ export const AskResult = Schema.Struct({
       outcome: Schema.String,
     }),
   ),
-  left: Schema.optional(Schema.String),
   next: Schema.String,
 });
 
-const ASKS_PER_CALL = 5;
 const LIST_PAGE = 100;
 const QUEUED = "queued";
 const NOTHING = "Nothing was started.";
@@ -75,7 +84,7 @@ export const ASK_REFUSAL = {
   unreachable: `Kin couldn't reach GitHub just now. ${NOTHING}`,
   memory: (repo: string) => `${repo} is Kin's memory repo, which Kin never reviews. ${NOTHING}`,
   unwatched: (repo: string, ownerLevel: boolean) =>
-    `${repo} isn't a repo Kin watches, so nothing was started. ${ownerLevel ? "They add it in Settings, Connections." : "Only the owner can add it, in Settings, Connections: pass them that one step now with kin_relay, naming the repo and who asked. Nothing brings it back to you: tell the asker it is with them and to ask again once it is added."}`,
+    `${repo} isn't a repo Kin watches, so nothing was started. ${ownerLevel ? "They add it in Settings, Connections." : "Only the owner can add it, in Settings, Connections: pass them that one step now with kin_relay, the step and the repo first, then who asked. Nothing brings it back to you: tell the asker it is with them and to ask again once it is added."}`,
   noLogin: (name: string) =>
     `Kin has no GitHub username on file for ${name}, so it reviews only public repos for them, named by repo; they can add theirs under You → GitHub username, or an owner on their page. ${NOTHING}`,
 } as const;
@@ -87,13 +96,13 @@ export const PULL_REFUSAL = {
   capped: `Kin has worked on it ${PER_THREAD_HOURLY} times this past hour. Ask again later. ${NOTHING}`,
   diff: `Kin couldn't read that pull request's changes just now. ${NOTHING}`,
   underWay: "a review of this head is already under way",
+  refused: "GitHub refused for now",
   already: (sha: string) => `already reviewed at ${short(sha)}; nothing new since`,
 } as const;
 export const POST_REFUSAL = {
   other: (ref: string) =>
     `This turn reviews only ${ref}, the pull request someone asked for. Nothing was posted.`,
   only: (ref: string) => `This turn reviews only ${ref}. Nothing was posted.`,
-  comment: "This review posts as a comment only: event COMMENT. Nothing was posted.",
   again: (ref: string) => `The review of ${ref} is already posted. Nothing more was posted.`,
   unsure: (ref: string) =>
     `A review of ${ref} was sent and GitHub never said whether it took it, so Kin sends no other. Nothing was posted.`,
@@ -112,8 +121,32 @@ const decodeVisibility = Schema.decodeUnknownOption(Schema.Struct({ private: Sch
 const refuse = (message: string) =>
   Effect.fail(new KinChatError({ reason: "not_allowed", message }));
 
+/**
+ * Whether a person may see `repo` on GitHub: it is public, or the GitHub username on their Kin
+ * profile is a collaborator there; the owner's own ask reads as the connected login. GitHub's
+ * answer when it gave none. The one check for both a review ask and `kin_github_read`.
+ */
+export const maySee = Effect.fn("KinGitHubReviewAsk.mayAsk")(function* (
+  get: (path: string) => Effect.Effect<ApiAnswer>,
+  repo: string,
+  who: { readonly himself: boolean; readonly login: string | null },
+) {
+  if (who.himself) return "yes" as const;
+  const answer = yield* get(`repos/${repo}`);
+  const visibility = answer.status === 200 ? decodeVisibility(answer.body) : Option.none();
+  if (Option.isNone(visibility)) return answer;
+  if (!visibility.value.private) return "yes" as const;
+  if (who.login === null) return "no" as const;
+  const member = yield* get(`repos/${repo}/collaborators/${encodeURIComponent(who.login)}`);
+  return member.status === 204
+    ? ("yes" as const)
+    : member.status === 404
+      ? ("no" as const)
+      : member;
+});
+
 /** The one person whose own direct chat with this agent the turn answers, or undefined. */
-const askerOf = Effect.fn("KinGitHubReviewAsk.asker")(function* (turn: {
+export const askerOf = Effect.fn("KinGitHubReviewAsk.asker")(function* (turn: {
   readonly orgId: KinOrgId;
   readonly agentId: KinAgentId;
   readonly wakeupId: string;
@@ -137,7 +170,9 @@ const askerOf = Effect.fn("KinGitHubReviewAsk.asker")(function* (turn: {
   const [person] = yield* sql<{ name: string; login: string | null }>`SELECT
       display_name AS name, github_login AS login FROM kin_people
     WHERE org_id = ${turn.orgId} AND person_id = ${personId} AND removed_at IS NULL`;
-  return person === undefined ? undefined : { personId, ...person };
+  return person === undefined
+    ? undefined
+    : { personId, chatId: KinChatId.make(chat.chatId), ...person };
 });
 
 /**
@@ -187,17 +222,10 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
   // The connected login is the owner's: his own ask reads as him, anyone else's as themselves.
   const himself = isOwnerHimself(owner, asker.personId);
   const login = asker.login ?? (himself ? account.login : null);
-  /** Whether they may ask about this watched repo: it is public, or GitHub says they can read it. */
-  const mayAsk = Effect.fn("KinGitHubReviewAsk.mayAsk")(function* (repo: string) {
-    if (himself) return "yes" as const;
-    const answer = yield* get(`repos/${repo}`);
-    const visibility = answer.status === 200 ? decodeVisibility(answer.body) : Option.none();
-    if (Option.isNone(visibility)) return "error" as const;
-    if (!visibility.value.private) return "yes" as const;
-    if (login === null) return "no" as const;
-    const member = yield* get(`repos/${repo}/collaborators/${encodeURIComponent(login)}`);
-    return member.status === 204 ? "yes" : member.status === 404 ? "no" : "error";
-  });
+  const mayAsk = (repo: string) =>
+    maySee(get, repo, { himself, login }).pipe(
+      Effect.map((may) => (typeof may === "string" ? may : ("error" as const))),
+    );
   // One answer for a repo they may not ask about and one Kin doesn't watch.
   const notAllowed = (repo: string) =>
     login === null ? ASK_REFUSAL.noLogin(asker.name) : ASK_REFUSAL.unwatched(repo, exempt);
@@ -268,11 +296,16 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
       : PULL_REFUSAL.already(head);
   });
   const pulls: Array<(typeof AskResult.Type)["pulls"][number]> = [];
-  const left: Array<string> = [];
   let queued = 0;
+  // Once GitHub refuses Kin for now, the rest aren't asked of it: each reads as refused.
+  let refused: { readonly until: number | undefined } | undefined;
   for (const candidate of candidates) {
     const line = (outcome: string, head = candidate.head) =>
       pulls.push({ repo: candidate.repo, number: candidate.number, head: short(head), outcome });
+    if (refused !== undefined) {
+      line(PULL_REFUSAL.refused);
+      continue;
+    }
     // A head already handled reads as that with no call to GitHub.
     const known =
       candidate.head === ""
@@ -280,10 +313,6 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
         : yield* told(candidate.repo, candidate.number, candidate.head);
     if (known !== undefined) {
       line(known);
-      continue;
-    }
-    if (queued >= ASKS_PER_CALL) {
-      left.push(`${candidate.repo}#${candidate.number}`);
       continue;
     }
     if (yield* overLimit) {
@@ -295,6 +324,11 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
       { repo: candidate.repo, number: candidate.number, reviewRequested: true },
       now,
     );
+    if (read !== undefined && "refused" in read) {
+      refused = read.refused;
+      line(PULL_REFUSAL.refused);
+      continue;
+    }
     const thread = read?.thread;
     if (thread === undefined || thread.item !== "pull" || thread.pull === undefined) {
       line(PULL_REFUSAL.missing);
@@ -335,8 +369,8 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
       continue;
     }
     // This turn has no shell: the server reads the diff of the head it admits.
-    const diff = yield* readDiff(get, thread.repo, thread.number, {
-      baseRef: pull.baseRef,
+    const diff = yield* readDiff(get, thread.repo, {
+      base: pull.baseSha ?? pull.baseRef,
       headSha: pull.headSha,
     });
     if (diff === undefined) {
@@ -354,6 +388,7 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
       happenedAt: now,
       diff,
       askedBy: asker.personId,
+      asked: { chatId: asker.chatId, wakeupId: KinWakeupId.make(lead.wakeupId) },
     });
     if (outcome === "woke") queued += 1;
     facts(
@@ -365,23 +400,118 @@ export const askReview = Effect.fn("KinGitHubReviewAsk.ask")(function* (
           : PULL_REFUSAL.capped,
     );
   }
+  const refusedNote =
+    refused === undefined
+      ? ""
+      : ` GitHub refused Kin's requests for now, so ${pulls
+          .filter((pull) => pull.outcome === PULL_REFUSAL.refused)
+          .map((pull) => `${pull.repo}#${pull.number}`)
+          .join(", ")} weren't queued${
+          refused.until === undefined
+            ? ""
+            : `; GitHub takes requests again in about ${Math.max(1, Math.ceil((refused.until - now) / 60_000))} minutes`
+        }: tell them so, and to ask again then.`;
   const cutNote =
     cut.length === 0
       ? ""
       : ` ${cut.join(", ")} has more than ${LIST_PAGE} open pull requests and Kin read only the newest ${LIST_PAGE}: for another, ask by number.`;
   return {
     pulls,
-    ...(left.length === 0
-      ? {}
-      : {
-          left: `${ASKS_PER_CALL} are queued per ask, so these wait: ${left.join(", ")}. Ask again for them.`,
-        }),
     next:
       (pulls.length === 0
         ? `${asker.name} has no open pull requests there. ${NOTHING}`
         : queued > 0
           ? "Tell them each line as it reads. You haven't read a queued one yet: Kin tells them in this chat when its review is posted, or that it didn't finish."
-          : "Tell them each line as it reads.") + cutNote,
+          : "Tell them each line as it reads.") +
+      refusedNote +
+      cutNote,
+  };
+});
+
+export const DiffInput = Schema.Struct({
+  from: Schema.optional(
+    Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).annotate({
+      description: "The character to read on from, as the diff or the last answer names it.",
+    }),
+  ),
+});
+export const DiffResult = Schema.Struct({
+  diff: Schema.String,
+  from: Schema.Int,
+  to: Schema.Int,
+  length: Schema.Int,
+  next: Schema.String,
+});
+export const DIFF_REFUSAL = {
+  unbound:
+    "kin_github_diff reads only the pull request a review turn is for; read any other with gh. Nothing was read.",
+  unread: "Kin couldn't read that pull request's changes just now. Nothing was read.",
+} as const;
+/** How `kin_github_diff` ends: the diff's end, or as far as GitHub's answer went. */
+export const DIFF_NEXT = {
+  end: "That is the end of the diff.",
+  partial:
+    "That is as far as Kin could read: GitHub's answer stopped there, so the rest of the diff stays unread and your review is partial.",
+} as const;
+const decodeRange = Schema.decodeUnknownOption(
+  Schema.Struct({
+    baseRef: Schema.String,
+    baseSha: Schema.NullOr(Schema.String),
+    from: Schema.NullOr(Schema.String),
+    whole: Schema.NullOr(Schema.Number),
+  }),
+);
+
+/**
+ * `kin_github_diff`: the diff a review turn's prompt shows, read on in pieces from where it was
+ * cut, of the same range at the same head, so a review with no shell can read all of it.
+ */
+export const readReviewDiff = Effect.fn("KinGitHubReviewAsk.diff")(function* (
+  lead: { readonly orgId: KinOrgId; readonly wakeupId: string },
+  input: typeof DiffInput.Type,
+) {
+  const bound = yield* boundReview(lead);
+  if (bound === undefined || bound.head === undefined) return yield* refuse(DIFF_REFUSAL.unbound);
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{
+    baseRef: string;
+    baseSha: string | null;
+    from: string | null;
+    whole: number | null;
+  }>`SELECT json_extract(json, '$.trigger.pull.baseRef') AS "baseRef",
+      json_extract(json, '$.trigger.pull.baseSha') AS "baseSha",
+      json_extract(json, '$.trigger.pull.reReview.from') AS "from",
+      json_extract(json, '$.trigger.pull.reReview.whole') AS whole
+    FROM kin_events WHERE org_id = ${lead.orgId} AND event_id = ${bound.eventId}`;
+  const range = decodeRange(row);
+  if (Option.isNone(range)) return yield* refuse(DIFF_REFUSAL.unread);
+  const api = yield* KinGitHubApi;
+  const read = yield* wholeDiff(
+    (path, headers) => api.call({ path, ...(headers === undefined ? {} : { headers }) }),
+    bound.repo,
+    {
+      base:
+        range.value.from !== null && range.value.whole !== 1
+          ? range.value.from
+          : (range.value.baseSha ?? range.value.baseRef),
+      headSha: bound.head,
+    },
+  );
+  if (read === undefined) return yield* refuse(DIFF_REFUSAL.unread);
+  const { text, partial } = read;
+  const from = Math.min(input.from ?? 0, text.length);
+  const to = pieceEnd(text, Math.min(text.length, from + DIFF_CAP));
+  return {
+    diff: text.slice(from, to),
+    from,
+    to,
+    length: text.length,
+    next:
+      to < text.length
+        ? `More follows: call again with from ${to}.`
+        : partial
+          ? DIFF_NEXT.partial
+          : DIFF_NEXT.end,
   };
 });
 
@@ -409,8 +539,6 @@ export const postReview = Effect.fn("KinGitHubReviewAsk.post")(function* (
       : bound.outside
         ? yield* refuse(POST_REFUSAL.only(ref))
         : yield* ownerGitHubReview(lead, input);
-  if (bound.outside && (input.event ?? "COMMENT") !== "COMMENT")
-    return yield* refuse(POST_REFUSAL.comment);
   const receipt = receiptOf(bound.url);
   if (receipt._tag !== "none")
     return yield* refuse(
@@ -422,17 +550,33 @@ export const postReview = Effect.fn("KinGitHubReviewAsk.post")(function* (
   if (claimed.length === 0) return yield* refuse(POST_REFUSAL.again(ref));
   // The queue sees the turn acted, so a failure after this isn't run again.
   yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash)
-    VALUES (${lead.orgId}, ${lead.wakeupId}, ${`github-review:${bound.eventId}`}, 'posting')
+    VALUES (${lead.orgId}, ${lead.wakeupId}, ${`github-review:${bound.eventId}`},
+      ${input.event ?? "COMMENT"})
     ON CONFLICT DO NOTHING`;
+  // What the agent meant, by the head, which a requeued event keeps: a block is told (`askedFor.ts`).
+  if (input.event === "REQUEST_CHANGES")
+    yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id, outcome, at)
+      VALUES (${lead.orgId}, ${blocksKey(bound.key)}, ${bound.repo.toLowerCase()}, ${bound.number},
+        ${lead.agentId}, 'blocks', ${yield* Clock.currentTimeMillis})
+      ON CONFLICT DO NOTHING`;
   const giveBack = sql`UPDATE kin_github_handled SET review_url = NULL
     WHERE org_id = ${lead.orgId} AND trigger_key = ${bound.key} AND review_url = ${POSTING}`.pipe(
     Effect.andThen(
       sql`DELETE FROM kin_lead_tool_calls WHERE org_id = ${lead.orgId}
         AND wakeup_id = ${lead.wakeupId} AND call_key = ${`github-review:${bound.eventId}`}`,
     ),
+    Effect.andThen(
+      sql`DELETE FROM kin_github_handled WHERE org_id = ${lead.orgId}
+        AND trigger_key = ${blocksKey(bound.key)}`,
+    ),
   );
-  // Nothing left this server before a failure here: the head is given back.
-  const sent = yield* sendReview(lead, input, bound.head).pipe(Effect.tapError(() => giveBack));
+  // Nothing left this server before a failure here: the head is given back. An outsider's pull
+  // request gets a comment only; whether it blocks is kept above, for the owner.
+  const sent = yield* sendReview(
+    lead,
+    bound.outside ? { ...input, event: "COMMENT" } : input,
+    bound.head,
+  ).pipe(Effect.tapError(() => giveBack));
   if (sent === undefined) {
     yield* giveBack;
     return undefined;
@@ -441,7 +585,7 @@ export const postReview = Effect.fn("KinGitHubReviewAsk.post")(function* (
     case "posted":
       yield* sql`UPDATE kin_github_handled SET review_url = ${sent.url}
         WHERE org_id = ${lead.orgId} AND trigger_key = ${bound.key}`;
-      return postedResult(sent);
+      return postedResult(sent, bound.asked ? "asked" : bound.outside ? "outside" : "kins");
     case "refused":
       yield* giveBack;
       return yield* new KinChatError({ reason: sent.reason, message: sent.message });

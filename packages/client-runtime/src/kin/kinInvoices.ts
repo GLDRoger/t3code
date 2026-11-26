@@ -1,19 +1,24 @@
-import type {
-  KinDocFile,
-  KinIssueResult,
-  KinListDefinition,
-  KinMakeReceiptInput,
-  KinMoney,
-  KinMakeReceiptResult,
-  KinOrgId,
-  KinPayment,
-  KinReceipt,
-  KinRecipe,
-  KinRecordDetail,
-  KinRecordKey,
+import {
+  formatKinWhen,
+  KIN_TEXT_LOCALE,
+  kinRateShown,
+  type KinDocFile,
+  type KinIssueResult,
+  type KinListDefinition,
+  type KinMakeReceiptInput,
+  type KinMoney,
+  type KinMakeReceiptResult,
+  type KinOrgId,
+  type KinPayment,
+  type KinReceipt,
+  type KinRecipe,
+  type KinRecordDetail,
+  type KinRecordKey,
+  type KinShell,
 } from "@t3tools/contracts";
 
 import { kinBilledName } from "./kinBillTo.ts";
+import { kinSectionNamed } from "./kinShell.ts";
 import { kinWorkDayOfTime, kinWorkDueLabel, type KinWorkNames } from "./kinWork.ts";
 import {
   kinDraftShowsNoBalance,
@@ -21,6 +26,7 @@ import {
   kinMoneyText,
   kinParseMoney,
   kinPaymentSourceText,
+  kinRecordName,
   kinSuggestion,
 } from "./kinLists.ts";
 
@@ -43,6 +49,13 @@ export function kinConfirmTotal(
   return to === null ? `Total ${total}.` : `Total ${total} to ${to}.`;
 }
 
+const TEMPLATE_DOCUMENT: Readonly<Record<string, string>> = {
+  invoices: "invoice",
+  credit_notes: "credit note",
+  quotes: "quote",
+  receipts: "receipt",
+};
+
 export const KIN_INVOICES = {
   loadFailed: "Couldn't load invoices",
   number: "Invoice number",
@@ -53,9 +66,28 @@ export const KIN_INVOICES = {
   voidNote: "Kept with its number so the series stays complete. It counts for nothing.",
   total: "Total",
   received: "Received",
-  tdsDeducted: "TDS deducted",
+  credited: "Credited",
+  tdsDeducted: "Tax withheld",
   balance: "Balance due",
   paidInFull: "Paid in full",
+  creditOfferLine: (amount: string, day: string) => `Apply ${amount} credit from ${day}?`,
+  applyCredit: "Apply",
+  applyCreditTitle: (amount: string, day: string, invoice: string) =>
+    `Set the ${amount} credit from ${day} against ${invoice}?`,
+  applyCreditDetail: (owedAfter: string) => `${owedAfter} stays owed.`,
+  unapply: "Un-apply",
+  unapplyTitle: (amount: string) => `Un-apply the ${amount} credit?`,
+  unapplyDetail: (client: string | null) =>
+    client === null
+      ? "It goes back to the client's credit."
+      : `It goes back to ${client}'s credit.`,
+  splitFrom: (bankKey: string) => `From ${bankKey} with other invoices`,
+  undo: "Undo",
+  undoSplitTitle: (bankKey: string) => `Undo everything ${bankKey} paid?`,
+  undoSplitDetail: (bankKey: string) =>
+    `Each invoice owes again, its credit goes, and ${bankKey} is Unexplained again.`,
+  creditNoteRow: (number: string) => `Credit note ${number}`,
+  creditNoteButton: "Credit note",
   documents: "Documents",
   noDocuments: "No PDF made yet.",
   makeInvoice: "Make invoice",
@@ -71,7 +103,13 @@ export const KIN_INVOICES = {
       : `Filed as ${documents.map((doc) => doc.key).join(", ")} in Docs. This entry lists it under Documents.`,
   openFiled: (key: string) => `Open ${key}`,
   payAfterIssue: "A draft isn't owed yet. Issue it to give it its number, then record payments.",
-  noTemplate: "No invoice template yet. Ask an agent to set one up.",
+  /** Names the document in hand: an invoice, a credit note, a quote, a receipt. */
+  noTemplate: (list: string) => {
+    const doc = TEMPLATE_DOCUMENT[list];
+    const title = doc === undefined ? "No template for this list yet" : `No ${doc} template yet`;
+    const detail = "Ask an agent to set one up.";
+    return { title, detail, line: `${title}. ${detail}` };
+  },
   issue: "Issue",
   issueTitle: "Issue this invoice?",
   issueDetail: (prefix: string | null) =>
@@ -92,7 +130,10 @@ export const KIN_INVOICES = {
   unvoid: "Undo void",
   payments: "Payments",
   noPayments: "No payments yet.",
+  receivedAs: (received: string, rate: string) => `${received} received, a rate of ${rate}`,
   takenBack: "Taken back",
+  /** A payment from the client's credit, un-applied: the money is the client's credit again. */
+  unappliedBack: "Un-applied, back in credit",
   makeReceipt: "Make receipt",
   makePdf: "Make its PDF",
   openPdf: "Open PDF",
@@ -102,9 +143,15 @@ export const KIN_INVOICES = {
     `${number === null ? "The receipt" : `Receipt ${number}`} is set against ${invoice}.`,
   receiptProblems: "The receipt and its number stand, but Kin couldn't make its PDF:",
   amountTitle: "Change an issued invoice?",
-  amountDetail: (number: string, was: string, next: string, sent: boolean) =>
+  amountDetail: (
+    number: string,
+    was: string,
+    next: string,
+    sent: boolean,
+    shell?: KinShell | null,
+  ) =>
     sent
-      ? `${number} was issued and sent for ${was}. Change its total to ${next}? Your client's copy still says ${was}. The change is kept in its history with your name.`
+      ? `${number} was issued and sent for ${was}. Change its total to ${next}? ${kinSectionNamed(shell, "Your client's copy still says")} ${was}. The change is kept in its history with your name.`
       : `${number} was issued for ${was}. Change its total to ${next}? Its number stays, and the change is kept in its history with your name.`,
   noAmount: "no amount",
   amountConfirm: "Change total",
@@ -180,6 +227,175 @@ export function kinInvoiceTitle(
     : { number: found[1]!, description: found[2]! };
 }
 
+export const KIN_CREDIT_NOTES_LIST = "credit_notes" as const;
+
+export const KIN_CREDIT_NOTES = {
+  title: "Credit note",
+  amount: "Amount",
+  reason: "Reason",
+  saveDraft: "Save draft",
+  amountProblem: "Enter an amount above zero.",
+  currencyProblem: (currency: string) => `Enter the amount in ${currency}.`,
+  amountOver: (owed: string) => `That's more than the ${owed} still owed.`,
+  reasonProblem: "Add the reason for this credit note.",
+  states: {
+    draft: "Draft",
+    issued: "Issued",
+    void: "Void",
+  },
+  takesOff: (amount: string, invoice: string) => `Takes ${amount} off ${invoice}`,
+  issue: "Issue",
+  issueTitle: (number: string) => `Issue ${number}?`,
+  issueDetail: (amount: string, client: string | null, invoice: string) =>
+    client === null
+      ? `It takes ${amount} off what is owed on ${invoice}.`
+      : `It takes ${amount} off what ${client} owes on ${invoice}.`,
+  voidAction: "Void",
+  voidTitle: (number: string) => `Void ${number}?`,
+  voidDetail: (invoice: string, amount: string) =>
+    `${invoice} owes the ${amount} again. Its number is kept.`,
+  voidDraftDetail: "It stays in the list as void and takes nothing off the invoice.",
+};
+
+/** "4 Nov" for a `YYYY-MM-DD` day, invariant to device time zone and locale. */
+const creditDay = (day: string) =>
+  formatKinWhen(Date.parse(`${day}T12:00:00Z`), "date", { zone: "UTC", locale: KIN_TEXT_LOCALE });
+
+export const kinIsCreditNote = (item: Pick<KinRecordDetail, "list">) =>
+  item.list === KIN_CREDIT_NOTES_LIST;
+
+export type KinCreditNoteState = "draft" | "issued" | "void";
+
+export interface KinCreditNoteAsk {
+  readonly title: string;
+  readonly detail: string;
+  readonly action: string;
+  readonly destructive?: boolean;
+}
+
+export interface KinCreditNoteView {
+  readonly state: KinCreditNoteState;
+  readonly stateLabel: string;
+  /** The issued number (`CN/26-27/001`), else null on a draft. */
+  readonly number: string | null;
+  readonly heading: string;
+  /** "Takes $1,200.00 off INV/26-27/012"; null if amount or invoice is missing. */
+  readonly takesOff: string | null;
+  readonly invoiceKey: KinRecordKey | null;
+  readonly invoiceName: string | null;
+  readonly amount: string | null;
+  readonly client: string | null;
+  /** Newest first. */
+  readonly documents: ReadonlyArray<{ readonly key: KinRecordKey; readonly title: string }>;
+  readonly issueAsk: (nextNumber: string | null) => KinCreditNoteAsk;
+  readonly voidAsk: KinCreditNoteAsk;
+}
+
+const DOC_KEY = /^D-\d+$/;
+
+const linkedDocuments = (item: Pick<KinRecordDetail, "links">) => {
+  const seen = new Set<string>();
+  const documents = item.links.flatMap((link) => {
+    const ref = link.record;
+    if (link.kind !== "record" || ref === undefined || !DOC_KEY.test(ref.key) || seen.has(ref.key))
+      return [];
+    seen.add(ref.key);
+    return [{ key: ref.key as KinRecordKey, title: ref.title }];
+  });
+  return documents.reverse();
+};
+
+/** A credit note as its page shows it: state, what it reduces, and Issue/Void confirms. */
+export function kinCreditNoteView(item: KinRecordDetail): KinCreditNoteView {
+  const number = numberFieldOf(item)?.trim() || null;
+  const state: KinCreditNoteState =
+    item.state === "dropped"
+      ? "void"
+      : item.state === "waiting" || number !== null
+        ? "issued"
+        : "draft";
+  const invoiceField = item.fields?.invoice;
+  const invoiceKey =
+    typeof invoiceField === "string" && invoiceField.trim() !== ""
+      ? (invoiceField.trim() as KinRecordKey)
+      : null;
+  const invoiceLink =
+    invoiceKey === null
+      ? null
+      : (item.links.find((link) => link.kind === "record" && link.record?.key === invoiceKey) ??
+        null);
+  const invoiceName = invoiceKey === null ? null : kinRecordName(invoiceKey, invoiceLink?.number);
+  const amount =
+    item.amount === undefined || item.amount.minor <= 0 ? null : kinMoneyText(item.amount, true);
+  const client = kinBilledName(item);
+  const takesOff =
+    state !== "void" && amount !== null && invoiceName !== null
+      ? KIN_CREDIT_NOTES.takesOff(amount, invoiceName)
+      : null;
+  const label = number ?? item.key;
+  return {
+    state,
+    stateLabel: KIN_CREDIT_NOTES.states[state],
+    number,
+    heading: number ?? item.title,
+    takesOff,
+    invoiceKey,
+    invoiceName,
+    amount,
+    client,
+    documents: linkedDocuments(item),
+    issueAsk: (nextNumber) => ({
+      title: KIN_CREDIT_NOTES.issueTitle(nextNumber ?? item.key),
+      detail:
+        amount !== null && invoiceName !== null
+          ? KIN_CREDIT_NOTES.issueDetail(amount, client, invoiceName)
+          : KIN_INVOICES.issueDetail(null),
+      action: KIN_CREDIT_NOTES.issue,
+    }),
+    voidAsk: {
+      title: KIN_CREDIT_NOTES.voidTitle(label),
+      detail:
+        state === "issued" && amount !== null && invoiceName !== null
+          ? KIN_CREDIT_NOTES.voidDetail(invoiceName, amount)
+          : KIN_CREDIT_NOTES.voidDraftDetail,
+      action: KIN_CREDIT_NOTES.voidAction,
+      destructive: true,
+    },
+  };
+}
+
+/** What the owner may do on a credit note now, by its state and device permission. */
+export function kinCreditNoteActions(
+  view: Pick<KinCreditNoteView, "state">,
+  allowed: { readonly issue: boolean; readonly render: boolean },
+) {
+  return {
+    issue: allowed.issue && view.state === "draft",
+    void: allowed.issue && view.state !== "void",
+    makePdf: allowed.render && view.state !== "void",
+  };
+}
+
+/** Validates the invoice page's small credit-note form before drafting. */
+export function kinCreditNoteDraftCheck(
+  amountText: string,
+  reasonText: string,
+  owed: KinMoney,
+):
+  | { readonly ok: true; readonly amount: KinMoney; readonly reason: string }
+  | { readonly ok: false; readonly problem: string } {
+  const amount = kinParseMoney(amountText, owed.currency);
+  if (amount === null || amount.minor <= 0)
+    return { ok: false, problem: KIN_CREDIT_NOTES.amountProblem };
+  if (amount.currency !== owed.currency)
+    return { ok: false, problem: KIN_CREDIT_NOTES.currencyProblem(owed.currency) };
+  if (amount.minor > owed.minor)
+    return { ok: false, problem: KIN_CREDIT_NOTES.amountOver(kinMoneyText(owed, true)) };
+  const reason = reasonText.trim();
+  if (reason === "") return { ok: false, problem: KIN_CREDIT_NOTES.reasonProblem };
+  return { ok: true, amount, reason };
+}
+
 export const kinIsInvoice = (item: Pick<KinRecordDetail, "list">) => item.list === "invoices";
 
 /** The field an issued number is written to; the invoice heading shows it instead. */
@@ -197,6 +413,7 @@ const numberFieldOf = (item: Pick<KinRecordDetail, "fields">) => {
 export function kinIssuedAmountQuestion(
   item: Pick<KinRecordDetail, "list" | "state" | "fields" | "amount" | "sent">,
   next: KinMoney | null,
+  shell?: KinShell | null,
 ) {
   const number = numberFieldOf(item)?.trim() ?? "";
   if (!kinIsInvoice(item) || item.state === "dropped" || number === "") return null;
@@ -210,6 +427,7 @@ export function kinIssuedAmountQuestion(
       kinMoneyText(was, true),
       next === null ? KIN_INVOICES.noAmount : kinMoneyText(next, true),
       (item.sent?.length ?? 0) > 0,
+      shell,
     ),
     confirm: KIN_INVOICES.amountConfirm,
   };
@@ -223,18 +441,52 @@ export type KinPaymentReceiptView =
   | { readonly _tag: "noPdf"; readonly key: KinRecordKey; readonly number: string | null }
   | { readonly _tag: "ready"; readonly number: string | null; readonly document: KinRecordKey };
 
+export interface KinInvoiceCreditOfferView {
+  readonly receipt: KinRecordKey;
+  /** "Apply $1,200.00 credit from 4 Nov?" */
+  readonly line: string;
+  readonly title: string;
+  readonly detail: string;
+  readonly action: string;
+}
+
 export interface KinInvoicePaymentView {
   readonly paymentId: string;
   readonly amount: string;
+  /** What reached the bank and at what rate for a cross-currency payment; null otherwise. */
+  readonly received: string | null;
   readonly when: string;
   readonly note: string | null;
   readonly voided: boolean;
+  /** How a voided payment went: "Taken back", or back into the client's credit; null otherwise. */
+  readonly voidedLine: string | null;
   /** TDS the client deducted: it settles the invoice but is no money received. */
   readonly tds: boolean;
-  /** Null on a voided payment or a TDS line, which get no receipt. */
+  /** Null on a voided payment or a TDS/credit-note line, which get no receipt. */
   readonly receipt: KinPaymentReceiptView | null;
   /** "from the bank statement", "recorded by Rhea"; null from an older host. */
   readonly source: string | null;
+  /** A payment applied from a client's credit: offers Un-apply in place of Take back. */
+  readonly appliedCredit: {
+    readonly key: KinRecordKey;
+    readonly title: string;
+    readonly detail: string;
+    readonly action: string;
+  } | null;
+  /** One part of a split bank credit: offers Undo in place of Take back. */
+  readonly splitCredit: {
+    readonly key: KinRecordKey;
+    readonly line: string;
+    readonly title: string;
+    readonly detail: string;
+    readonly action: string;
+  } | null;
+  /** A credit note's reduction: opens the credit note, never TDS or Take back. */
+  readonly creditNote: {
+    readonly key: KinRecordKey;
+    readonly number: string;
+    readonly label: string;
+  } | null;
 }
 
 export interface KinInvoiceView {
@@ -248,11 +500,17 @@ export interface KinInvoiceView {
   readonly void: boolean;
   readonly total: string | null;
   readonly received: string | null;
+  /** Credit notes issued against this invoice, when there are any. */
+  readonly credited: string | null;
   /** TDS the client deducted, when there is any: not part of what was received. */
   readonly tdsDeducted: string | null;
   /** Null on a void invoice, and on a draft nothing came in on: nothing is due on it. */
   readonly balance: string | null;
   readonly settled: boolean;
+  /** Remaining balance on an issued open invoice, for the credit-note form; null otherwise. */
+  readonly creditNoteMax: KinMoney | null;
+  /** An unapplied credit of this client that fits this invoice, owner level only. */
+  readonly creditOffer: KinInvoiceCreditOfferView | null;
   /** "Not recorded as paid. Bank known to 31 Oct." while some of it is owed; else null. */
   readonly bank: string | null;
   readonly payments: ReadonlyArray<KinInvoicePaymentView>;
@@ -276,8 +534,6 @@ const receiptOf = (payment: KinPayment): KinPaymentReceiptView => {
   return { _tag: "ready", number: receipt.number, document: receipt.document as KinRecordKey };
 };
 
-const DOC_KEY = /^D-\d+$/;
-
 /** An invoice as its page shows it. */
 export function kinInvoiceView(
   item: KinRecordDetail,
@@ -296,45 +552,118 @@ export function kinInvoiceView(
       : { minor: item.amount.minor - item.balance.minor, currency: item.amount.currency });
   const tds =
     item.tdsDeducted !== undefined && item.tdsDeducted.minor > 0 ? item.tdsDeducted : null;
-  const seen = new Set<string>();
-  const documents = item.links.flatMap((link) => {
-    const ref = link.record;
-    if (link.kind !== "record" || ref === undefined || !DOC_KEY.test(ref.key) || seen.has(ref.key))
-      return [];
-    seen.add(ref.key);
-    return [{ key: ref.key as KinRecordKey, title: ref.title }];
-  });
+  const credited = item.credited !== undefined && item.credited.minor > 0 ? item.credited : null;
+  const suggested = kinSuggestion(item);
+  const clientName = kinBilledName(item);
+  const invoiceName = kinRecordName(item.key, number);
+  const creditOffer: KinInvoiceCreditOfferView | null =
+    isVoid || item.creditOffer === undefined || item.balance === undefined
+      ? null
+      : (() => {
+          const amount = kinMoneyText(item.creditOffer.amount, true);
+          const day = creditDay(item.creditOffer.receivedOn);
+          const staysOwed = kinMoneyText(
+            {
+              minor: Math.max(0, item.balance.minor - item.creditOffer.amount.minor),
+              currency: item.creditOffer.amount.currency,
+            },
+            true,
+          );
+          return {
+            receipt: item.creditOffer.receipt,
+            line: KIN_INVOICES.creditOfferLine(amount, day),
+            title: KIN_INVOICES.applyCreditTitle(amount, day, invoiceName),
+            detail: KIN_INVOICES.applyCreditDetail(staysOwed),
+            action: KIN_INVOICES.applyCredit,
+          };
+        })();
+  const creditNoteMax =
+    !isVoid &&
+    !suggested &&
+    number !== null &&
+    item.state === "waiting" &&
+    item.balance !== undefined &&
+    item.balance.minor > 0
+      ? item.balance
+      : null;
   return {
-    suggested: kinSuggestion(item),
+    suggested,
     heading: number ?? item.title,
     description: number === null ? null : description,
     number,
     void: isVoid,
     total: item.amount === undefined ? null : kinMoneyText(item.amount, true),
     received: received === null || owesNothing ? null : kinMoneyText(received, true),
+    credited: credited === null || owesNothing ? null : kinMoneyText(credited, true),
     tdsDeducted: tds === null ? null : kinMoneyText(tds, true),
     balance: owesNothing || item.balance === undefined ? null : kinMoneyText(item.balance, true),
     settled: item.balance?.minor === 0,
+    creditNoteMax,
+    creditOffer,
     bank: isVoid ? null : kinInvoiceBankText(item, now),
     payments: (item.payments ?? []).map((payment) => {
       const withheld = payment.withheld === true;
+      const creditNote =
+        payment.creditNote === undefined
+          ? null
+          : {
+              key: payment.creditNote.key as KinRecordKey,
+              number: payment.creditNote.number,
+              label: KIN_INVOICES.creditNoteRow(payment.creditNote.number),
+            };
       const receipt = payment.voidedAt !== null || withheld ? null : receiptOf(payment);
+      const amount = kinMoneyText(payment.amount, true);
       const note = payment.note.trim();
-      const shown = receipt !== null && "number" in receipt && receipt.number === note;
+      const shown =
+        (receipt !== null && "number" in receipt && receipt.number === note) ||
+        (creditNote !== null && creditNote.number === note);
       return {
         paymentId: payment.paymentId,
-        amount: kinMoneyText(payment.amount, true),
+        amount,
+        received:
+          payment.received !== undefined && payment.rate !== undefined
+            ? KIN_INVOICES.receivedAs(
+                kinMoneyText(payment.received, true),
+                kinRateShown(payment.rate),
+              )
+            : null,
         when: kinWorkDueLabel(payment.paidOn, now),
         note: note === "" || shown ? null : note,
         voided: payment.voidedAt !== null,
-        tds: withheld,
+        voidedLine:
+          payment.voidedAt === null
+            ? null
+            : payment.fromCredit === true
+              ? KIN_INVOICES.unappliedBack
+              : KIN_INVOICES.takenBack,
+        tds: withheld && creditNote === null,
         receipt,
         source: kinPaymentSourceText(payment.source, names),
+        appliedCredit:
+          payment.appliedCredit === undefined
+            ? null
+            : {
+                key: payment.appliedCredit as KinRecordKey,
+                title: KIN_INVOICES.unapplyTitle(amount),
+                detail: KIN_INVOICES.unapplyDetail(clientName),
+                action: KIN_INVOICES.unapply,
+              },
+        splitCredit:
+          payment.splitCredit === undefined
+            ? null
+            : {
+                key: payment.splitCredit as KinRecordKey,
+                line: KIN_INVOICES.splitFrom(payment.splitCredit),
+                title: KIN_INVOICES.undoSplitTitle(payment.splitCredit),
+                detail: KIN_INVOICES.undoSplitDetail(payment.splitCredit),
+                action: KIN_INVOICES.undo,
+              },
+        creditNote,
       };
     }),
-    documents: documents.reverse(),
+    documents: linkedDocuments(item),
     prefix: def?.numbering?.prefix ?? null,
-    issueTotal: kinConfirmTotal(item.amount, kinBilledName(item)),
+    issueTotal: kinConfirmTotal(item.amount, clientName),
     sent: (item.sent ?? []).map((mail) =>
       KIN_INVOICES.sentTo(
         mail.to.join(", "),
@@ -346,12 +675,17 @@ export function kinInvoiceView(
 
 /** What the owner may do on an invoice now, by its state and what this device is allowed. */
 export function kinInvoiceActions(
-  view: Pick<KinInvoiceView, "void" | "number"> & { readonly suggested?: boolean },
+  view: Pick<KinInvoiceView, "void" | "number"> & {
+    readonly suggested?: boolean;
+    readonly settled?: boolean;
+    readonly creditNoteMax?: KinMoney | null;
+  },
   def: Pick<KinListDefinition, "numbering" | "states"> | null,
   allowed: {
     readonly render: boolean;
     readonly issue: boolean;
     readonly receipt: boolean;
+    readonly creditNote?: boolean;
   },
 ) {
   const numbered = def?.numbering !== undefined;
@@ -361,6 +695,11 @@ export function kinInvoiceActions(
     void: allowed.issue && numbered && !view.void && def?.states.includes("dropped") === true,
     unvoid: allowed.issue && view.void,
     receipt: allowed.receipt && !view.void && view.suggested !== true,
+    creditNote:
+      allowed.creditNote === true &&
+      (view.creditNoteMax !== undefined
+        ? view.creditNoteMax !== null
+        : !view.void && view.number !== null && view.suggested !== true && view.settled !== true),
   };
 }
 
@@ -539,7 +878,10 @@ export const kinIssueNotice = (result: Pick<KinIssueResult, "number" | "problems
 export const kinReceiptNotice = (result: KinMakeReceiptResult) =>
   withProblems(
     result.receipt.advance && result.receipt.invoice !== null
-      ? KIN_INVOICES.receiptSet(result.receipt.number, result.receipt.invoice)
+      ? KIN_INVOICES.receiptSet(
+          result.receipt.number,
+          result.receipt.invoiceNumber ?? result.receipt.invoice,
+        )
       : KIN_INVOICES.receiptMade(result.receipt.number),
     KIN_INVOICES.receiptProblems,
     result.problems,

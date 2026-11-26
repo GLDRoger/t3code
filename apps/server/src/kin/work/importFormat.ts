@@ -123,6 +123,7 @@ export const ImportClient = Schema.Struct({
   tags: Schema.optional(Schema.Array(Label).check(Schema.isMaxLength(20))),
   state: Schema.optional(Schema.Literals(["open", "dropped"])),
   gstin: Schema.optional(Line),
+  accountsForTax: Schema.optional(Schema.Boolean),
   address: Schema.optional(Line),
   terms: Schema.optional(Line),
   placeOfSupply: Schema.optional(Line),

@@ -2,20 +2,20 @@
   "mcpToolListJsonBytes": 64767,
   "kinToolListJsonBytes": 3044,
   "kinInstructionsBytes": {
-    "owner": 39635,
-    "confined": 39583
+    "owner": 41456,
+    "confined": 41404
   },
-  "kinSharedInstructionsHash": "0fd630e6a6d6fd09636923d4e48c48a879bf20955f9e462cba3d70ad1e05cbf0",
+  "kinSharedInstructionsHash": "4ceb34b73155164f9e13e6ffdffbdc3129c0ae2515efc5969ab5c54c00478422",
   "kinLeadToolListJsonBytes": {
-    "engineering": 167385,
-    "engineeringBesideFinanceAndSales": 152323,
-    "finance": 146563,
-    "shared": 95884,
-    "social": 149636,
-    "socialBesideFinanceAndSales": 134574,
-    "support": 146563
+    "engineering": 170994,
+    "engineeringBesideFinanceAndSales": 154711,
+    "finance": 150172,
+    "shared": 98226,
+    "social": 153253,
+    "socialBesideFinanceAndSales": 136970,
+    "support": 150172
   },
-  "kinLeadAlwaysLoadedToolBytes": 73670,
+  "kinLeadAlwaysLoadedToolBytes": 76008,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -94,19 +94,19 @@
       "schema": 490
     },
     "kin_ask": {
-      "desc": 1424,
-      "schema": 766
+      "desc": 2200,
+      "schema": 812
     },
     "kin_ask_close": {
       "desc": 244,
       "schema": 182
     },
     "kin_ask_person": {
-      "desc": 789,
-      "schema": 875
+      "desc": 1006,
+      "schema": 883
     },
     "kin_cancel": {
-      "desc": 229,
+      "desc": 231,
       "schema": 115
     },
     "kin_chart": {
@@ -130,11 +130,11 @@
       "schema": 226
     },
     "kin_connection_note": {
-      "desc": 288,
+      "desc": 291,
       "schema": 153
     },
     "kin_connection_offer": {
-      "desc": 321,
+      "desc": 326,
       "schema": 98
     },
     "kin_connection_tools": {
@@ -149,9 +149,17 @@
       "desc": 1667,
       "schema": 1749
     },
+    "kin_github_diff": {
+      "desc": 147,
+      "schema": 158
+    },
     "kin_github_link": {
       "desc": 172,
       "schema": 143
+    },
+    "kin_github_read": {
+      "desc": 663,
+      "schema": 596
     },
     "kin_github_review": {
       "desc": 196,
@@ -162,7 +170,7 @@
       "schema": 134
     },
     "kin_github_watch": {
-      "desc": 208,
+      "desc": 221,
       "schema": 114
     },
     "kin_hand_off": {
@@ -190,8 +198,8 @@
       "schema": 221
     },
     "kin_receipt": {
-      "desc": 1599,
-      "schema": 999
+      "desc": 1826,
+      "schema": 974
     },
     "kin_recipe_undo": {
       "desc": 215,
@@ -202,11 +210,11 @@
       "schema": 199
     },
     "kin_relay": {
-      "desc": 932,
-      "schema": 324
+      "desc": 1107,
+      "schema": 325
     },
     "kin_schedule": {
-      "desc": 516,
+      "desc": 520,
       "schema": 991
     },
     "kin_take_private": {
@@ -226,7 +234,7 @@
       "schema": 2828
     },
     "memory_label": {
-      "desc": 357,
+      "desc": 380,
       "schema": 212
     },
     "memory_read": {
@@ -270,8 +278,8 @@
       "schema": 1231
     },
     "payment_record": {
-      "desc": 320,
-      "schema": 746
+      "desc": 923,
+      "schema": 1162
     },
     "people_read": {
       "desc": 270,
@@ -302,19 +310,19 @@
       "schema": 529
     },
     "record_assign": {
-      "desc": 784,
-      "schema": 1281
+      "desc": 951,
+      "schema": 1404
     },
     "record_comment": {
       "desc": 343,
       "schema": 239
     },
     "record_create": {
-      "desc": 5611,
+      "desc": 6290,
       "schema": 8725
     },
     "record_get": {
-      "desc": 1239,
+      "desc": 1375,
       "schema": 212
     },
     "record_hand_back": {
@@ -350,7 +358,7 @@
       "schema": 156
     },
     "social_week": {
-      "desc": 249,
+      "desc": 257,
       "schema": 151
     },
     "statement_read": {
@@ -362,12 +370,12 @@
       "schema": 494
     },
     "team_open": {
-      "desc": 433,
+      "desc": 439,
       "schema": 332
     },
     "team_say": {
-      "desc": 515,
-      "schema": 1113
+      "desc": 523,
+      "schema": 1114
     },
     "touch_log": {
       "desc": 362,
@@ -385,7 +393,7 @@
     "pulse": 3012,
     "scheduled": 3248,
     "reminder": 3019,
-    "groupReply": 3039,
+    "groupReply": 3113,
     "teamRoom": 2751
   }
 }

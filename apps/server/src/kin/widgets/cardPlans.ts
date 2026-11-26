@@ -1,6 +1,7 @@
 import {
   type KinChatId,
   KinMessageId,
+  KinMoney,
   type KinOrgId,
   KinTrimmedText,
   type KinWidgetId,
@@ -18,13 +19,16 @@ const CARD_ACTIONS = [
   "create_list",
   "take_default",
   "record_payment",
+  "apply_credit",
   "mark_repaid",
+  "record_bill",
+  "mark_bill_paid",
 ] as const;
 export const CardActionInput = Schema.Struct({
   kind: Schema.Literals(CARD_ACTIONS),
   target: KinTrimmedText.check(Schema.isMaxLength(200)).annotate({
     description:
-      "done, drop: a task key such as W-4. start: a due deferral's id. create_list: a list_define proposal id for a new list. take_default: the id of an open question of yours. record_payment: a Bank transactions credit's key (BNK-1) when Kin ranks one invoice first for it, else the credit's key, a space and the key or number of an invoice Kin ranks first for it (BNK-1 INV-1). mark_repaid: a Bank transactions debit's key (BNK-4) that Kin reads as paying a partner back.",
+      "done, drop: a task key such as W-4. start: a due deferral's id. create_list: a list_define proposal id for a new list. take_default: the id of an open question of yours. record_payment: a Bank transactions credit's key (BNK-1) when Kin ranks one invoice first for it, else the credit's key, a space and the key or number of an invoice Kin ranks first for it (BNK-1 INV-1). mark_repaid: a Bank transactions debit's key (BNK-4) that Kin reads as paying a partner back. record_payment may name more invoices of that client after the first (BNK-4 INV-12 INV-14). apply_credit: a client's credit and that client's invoice (RCT-3 INV-14). record_bill: the key of an Expenses entry you suggested as a bill to pay (EXP-7). mark_bill_paid: a Bank transactions debit's key (BNK-4) that Kin matches to one bill to pay.",
   }),
 }).annotate({
   description: "What Kin itself does when this option is tapped; Kin writes its button.",
@@ -50,6 +54,8 @@ const RecordPlan = Schema.Struct({
   key: Schema.String,
   title: Schema.String,
   rev: Schema.Number,
+  /** A meeting whose time has passed: its buttons say what happened, not the verb. */
+  heldMeeting: Schema.optional(Schema.Literal(true)),
   draw: CardDraw,
 });
 const StartPlan = Schema.Struct({
@@ -81,13 +87,31 @@ const PaymentPlan = Schema.Struct({
   key: Schema.String,
   title: Schema.String,
   number: Schema.String,
-  client: Schema.NullOr(Schema.String),
+  client: Schema.Union([
+    Schema.NullOr(Schema.String),
+    Schema.Struct({ id: Schema.String, name: Schema.String }),
+  ]),
+  splits: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        recordId: Schema.String,
+        key: Schema.String,
+        number: Schema.String,
+        seen: Schema.String,
+        amountMinor: Schema.Number,
+        owedAfterMinor: Schema.Number,
+      }),
+    ),
+  ),
+  leftMinor: Schema.optionalKey(Schema.Number),
   seen: Schema.String,
   bankRecordId: Schema.String,
   bankKey: Schema.String,
   rev: Schema.Number,
   amountMinor: Schema.Number,
   currency: Schema.String,
+  received: Schema.optionalKey(KinMoney),
+  rate: Schema.optionalKey(Schema.String),
   day: Schema.String,
   /** Tax the client withheld, when the matcher read the credit as the amount less it. */
   withheldMinor: Schema.NullOr(Schema.Number),
@@ -125,7 +149,60 @@ const RepaidPlan = Schema.Struct({
   draw: CardDraw,
 });
 export type RepaidPlan = typeof RepaidPlan.Type;
-const RunPlan = Schema.Union([RecordPlan, StartPlan, ListPlan, PaymentPlan, RepaidPlan]);
+const ApplyPlan = Schema.Struct({
+  kind: Schema.Literal("apply_credit"),
+  key: Schema.String,
+  receipt: Schema.String,
+  client: Schema.String,
+  receiptRev: Schema.Number,
+  invoiceRev: Schema.Number,
+  paymentId: Schema.String,
+  number: Schema.String,
+  amount: KinMoney,
+  receivedOn: Schema.String,
+  owedAfterMinor: Schema.Number,
+  draw: CardDraw,
+});
+export type ApplyPlan = typeof ApplyPlan.Type;
+const BillPlan = Schema.Struct({
+  kind: Schema.Literal("record_bill"),
+  recordId: Schema.String,
+  key: Schema.String,
+  rev: Schema.Number,
+  vendor: Schema.String,
+  amountMinor: Schema.Number,
+  currency: Schema.String,
+  dueDay: Schema.NullOr(Schema.String),
+  draw: CardDraw,
+});
+export type BillPlan = typeof BillPlan.Type;
+const BillPaidPlan = Schema.Struct({
+  kind: Schema.Literal("mark_bill_paid"),
+  recordId: Schema.String,
+  key: Schema.String,
+  rev: Schema.Number,
+  amountMinor: Schema.Number,
+  currency: Schema.String,
+  day: Schema.String,
+  bill: Schema.Struct({
+    recordId: Schema.String,
+    key: Schema.String,
+    rev: Schema.Number,
+    vendor: Schema.String,
+  }),
+  draw: CardDraw,
+});
+export type BillPaidPlan = typeof BillPaidPlan.Type;
+const RunPlan = Schema.Union([
+  RecordPlan,
+  StartPlan,
+  ListPlan,
+  PaymentPlan,
+  RepaidPlan,
+  ApplyPlan,
+  BillPlan,
+  BillPaidPlan,
+]);
 export type RunPlan = typeof RunPlan.Type;
 const DefaultPlan = Schema.Struct({
   kind: Schema.Literal("take_default"),
@@ -245,11 +322,87 @@ const LeaverPlan = Schema.Struct({
   to: Schema.NullOr(Schema.Struct({ personId: Schema.String, name: Schema.String })),
 });
 export type LeaverPlan = typeof LeaverPlan.Type;
+/**
+ * What every card Kin posts about one pulse fact names (`pulse/factCards.ts`): the fact it stands
+ * on, the card's round on it, the one person who may answer, and the agent whose chat it is in.
+ */
+const FactCardFields = {
+  factKey: Schema.String,
+  round: Schema.Number,
+  personId: Schema.String,
+  personName: Schema.String,
+  agentId: Schema.String,
+  recordId: Schema.String,
+  key: Schema.String,
+  title: Schema.String,
+  rev: Schema.Number,
+};
+/**
+ * The person a task has waited on too long answers: what it waited on is done, it will be by a
+ * day (`until`, the end of `day`), or it doesn't wait on them. Never drawn by an agent.
+ */
+const WaitedPlan = Schema.Struct({
+  kind: Schema.Literal("waited_answer"),
+  answer: Schema.Literals(["done", "by", "not_mine"]),
+  ...FactCardFields,
+  /** The person who holds the task: told of each answer. */
+  holder: Schema.Struct({ personId: Schema.String, name: Schema.String }),
+  until: Schema.NullOr(Schema.Number),
+  day: Schema.NullOr(Schema.String),
+});
+export type WaitedPlan = typeof WaitedPlan.Type;
+/**
+ * A task's holder answers that it has been in progress with no change: still on it, which holds
+ * the fact until `until` (on `day`, in their words), or done. Never drawn by an agent.
+ */
+const StallPlan = Schema.Struct({
+  kind: Schema.Literal("stall_answer"),
+  answer: Schema.Literals(["still", "done"]),
+  ...FactCardFields,
+  until: Schema.Number,
+  day: Schema.String,
+});
+export type StallPlan = typeof StallPlan.Type;
+/**
+ * A milestone slipping behind its open tasks: move its due day from `from` to `to`, its last open
+ * task's, or leave it. `factKey` names the milestone and its day, whether late or at risk.
+ */
+const DuePlan = Schema.Struct({
+  kind: Schema.Literals(["move_due", "keep_due"]),
+  ...FactCardFields,
+  from: Schema.Number,
+  to: Schema.Number,
+  fromDay: Schema.String,
+  toDay: Schema.String,
+});
+export type DuePlan = typeof DuePlan.Type;
+/**
+ * A contract's notice day (`recordId` its project): let it renew, as agreed. Giving notice is the
+ * card's plain answer, which wakes its agent to draft the mail. Never drawn by an agent.
+ */
+const NoticePlan = Schema.Struct({
+  kind: Schema.Literal("notice_renew"),
+  ...FactCardFields,
+  noticeBy: Schema.String,
+  renewsOn: Schema.String,
+});
+export type NoticePlan = typeof NoticePlan.Type;
+
+const QuietPlan = Schema.Struct({
+  kind: Schema.Literals(["quiet_keep", "quiet_stop"]),
+  wakeupId: Schema.String,
+  agentId: Schema.String,
+  askers: Schema.Array(Schema.String),
+  ask: Schema.Literals([1, 2]),
+});
+export type QuietPlan = typeof QuietPlan.Type;
+export const isQuiet = Schema.is(QuietPlan);
 export const CardPlan = Schema.Union([
   RecordPlan,
   StartPlan,
   ListPlan,
   PaymentPlan,
+  ApplyPlan,
   RepaidPlan,
   DefaultPlan,
   RoutePlan,
@@ -257,8 +410,26 @@ export const CardPlan = Schema.Union([
   RecommendPlan,
   AnsweredPlan,
   LeaverPlan,
+  WaitedPlan,
+  StallPlan,
+  DuePlan,
+  NoticePlan,
+  BillPlan,
+  BillPaidPlan,
+  QuietPlan,
 ]);
 export type CardPlan = typeof CardPlan.Type;
+export type FactCardPlan = WaitedPlan | StallPlan | DuePlan | NoticePlan;
+const FACT_CARD_KINDS: ReadonlySet<string> = new Set<FactCardPlan["kind"]>([
+  "waited_answer",
+  "stall_answer",
+  "move_due",
+  "keep_due",
+  "notice_renew",
+]);
+/** Kin's own card about a pulse fact: it answers nothing else and no agent draws or redraws it. */
+export const isFactCard = (plan: CardPlan): plan is FactCardPlan => FACT_CARD_KINDS.has(plan.kind);
+export const FACT_CARD_KIND_LIST = [...FACT_CARD_KINDS];
 const PlanJson = Schema.fromJsonString(CardPlan);
 const encodePlan = Schema.encodeEffect(PlanJson);
 const decodePlan = Schema.decodeUnknownOption(PlanJson);

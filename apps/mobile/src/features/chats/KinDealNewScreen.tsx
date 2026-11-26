@@ -36,6 +36,7 @@ import { kinClient } from "./state/kinClient";
 import { useKinDealSend, useKinDealStages } from "./state/useKinDeals";
 import { useKinGate } from "./state/useKinHost";
 import { useKinHomeCurrency } from "./state/useKinMoney";
+import { useKinSectionNamed } from "./state/useKinShell";
 import { useKinWorkChoices, useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 
 export type KinDealNewParams = {
@@ -81,6 +82,7 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
   const { names } = useKinWorkDirectory(target, true);
   const choices = useKinWorkChoices(target, props.party === null);
   const ownerLevel = useKinIsOwnerLevel(environmentId);
+  const named = useKinSectionNamed(environmentId);
   const home = useKinHomeCurrency(target) ?? "USD";
   const stagesRead = useKinDealStages(target).state;
   const stages = stagesRead._tag === "ready" ? stagesRead.value.stages : [];
@@ -245,13 +247,13 @@ function KinDealNewForm(props: KinWorkTarget & { readonly party: KinWorkRef | nu
     >
       <ListSection>
         {props.party !== null ? (
-          <ListRowLayout label={KIN_DEALS.clientField} detail={props.party.title} />
+          <ListRowLayout label={named(KIN_DEALS.clientField)} detail={props.party.title} />
         ) : (
           <KinWorkPlacePicker
             target={target}
             noun="client"
             icon="person.2"
-            label={KIN_DEALS.clientField}
+            label={named(KIN_DEALS.clientField)}
             held={party}
             choices={choices.clients}
             clearable={false}

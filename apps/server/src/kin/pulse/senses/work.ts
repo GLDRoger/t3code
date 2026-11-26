@@ -301,6 +301,11 @@ const entrySenses = Effect.fn("KinPulse.entrySenses")(function* (
     // A field the list really has wins; else `date` is each entry's own date (`OWN_DATE`).
     const field = def.fields.some((one) => one.key === def.remindOn) ? def.remindOn : undefined;
     const remind = field;
+    // The field that passed, by its label, so the line never reads against the entry's own date.
+    const named =
+      field === undefined
+        ? undefined
+        : (def.fields.find((one) => one.key === field)?.label ?? field);
     const column =
       def.remindOn === OWN_DATE && field === undefined ? sql`r.date_at` : sql`r.due_at`;
     const until = dayOf(ctx, at + toMs(soon) + DAY_MS);
@@ -346,7 +351,10 @@ const entrySenses = Effect.fn("KinPulse.entrySenses")(function* (
             key: `entry_late:${row.key}:due=${due}`,
             since: iso(due + toMs(grace)),
             measure: measure(elapsed(due, at, "hours"), grace),
-            consequence: `Was due ${dayOf(ctx, due)}, ${daysAgoText(ctx, due)}.`,
+            consequence:
+              named === undefined
+                ? `Was due ${dayOf(ctx, due)}, ${daysAgoText(ctx, due)}.`
+                : `${named}: ${dayOf(ctx, due)}, passed ${daysAgoText(ctx, due)}.`,
           }),
         );
       else if (row.state === "open" && due > at && due <= at + toMs(soon)) {
@@ -357,7 +365,7 @@ const entrySenses = Effect.fn("KinPulse.entrySenses")(function* (
             key: `entry_late:${row.key}:soon=${due}`,
             since: iso(due - toMs(soon)),
             measure: measure(left, soon),
-            consequence: `Due ${dayOf(ctx, due)}, in ${left < 1 ? "under an hour" : hoursText(left)}.`,
+            consequence: `${named === undefined ? "Due" : `${named}:`} ${dayOf(ctx, due)}, in ${left < 1 ? "under an hour" : hoursText(left)}.`,
           }),
         );
       }

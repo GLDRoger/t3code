@@ -67,6 +67,8 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/lead/Handoff.ts",
     "apps/server/src/kin/work/assignNotices.ts",
     "apps/server/src/kin/pulse/nudge.ts",
+    "apps/server/src/kin/pulse/factCards.ts",
+    "apps/server/src/kin/pulse/factCardTaps.ts",
   ],
   money: [
     "apps/server/src/kin/gendocs/receiptProposals.ts",
@@ -97,6 +99,7 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
   tasks: [
     "apps/server/src/kin/work/KinRecords.ts",
     "apps/server/src/kin/work/leadWork.ts",
+    "apps/server/src/kin/work/recordRows.ts",
     "apps/server/src/kin/work/ownerWork.ts",
     "apps/server/src/kin/work/assignNotices.ts",
     "apps/server/src/kin/work/teamView.ts",

@@ -63,6 +63,7 @@ export class KinRefreshHub extends Context.Service<
      * run so a viewer's reconnect reads the same number when nothing they see moved. Null moves it.
      */
     readonly counted: (key: string, view: string | null) => number;
+    readonly lastCount: (key: string) => number | undefined;
   }
 >()("t3/kin/chat/KinRefreshHub") {}
 
@@ -110,6 +111,7 @@ const make = Effect.gen(function* () {
   });
   const hub = KinRefreshHub.of({
     boot,
+    lastCount: (key) => views.get(key)?.count,
     counted: (key, view) => {
       const held = views.get(key);
       if (held === undefined) {

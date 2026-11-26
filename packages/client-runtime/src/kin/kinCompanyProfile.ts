@@ -4,12 +4,16 @@ import {
   KinCompanyBank,
   KinCompanyProfileData,
   KinCompanyTax,
+  KinCountryCardState,
   KinCountryCode,
   type KinCompanyProfile,
   type KinCompanyProfileSetInput,
   type KinOrgId,
+  type KinWidget,
+  type KinWidgetId,
 } from "@t3tools/contracts";
 import { kinRateDay } from "./kinCurrency.ts";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 /** The company's legal and bank details, as the owner reads and edits them in Settings. */
@@ -39,6 +43,10 @@ export const KIN_COMPANY = {
   onComputer: "Change these, the brand and the templates in Kin on your computer.",
   /** A new company's suggested country, the device's, which it takes only with a tap. */
   useCountry: (name: string) => `Use ${name}?`,
+  country: "Country",
+  countryPick: "Pick a country",
+  countrySearch: "Find a country",
+  countryNoMatch: "No country matches that.",
   changed:
     "These changed while you were editing. What you typed is still here. Check what's new, then save again.",
   onlyOwner: {
@@ -73,7 +81,7 @@ export const KIN_COMPANY_SETTINGS = {
   notSet: "Not set",
   editTitle: "Edit company details",
   save: "Save details",
-  countryHelp: "Its two-letter code, like IN, GB or US.",
+  countryHelp: "Type a country's name or code, such as India or GB.",
   exportRow: "Download everything",
   exportDetail: "A copy of your company's work in Kin, in one zip",
   exportSubmit: "Download",
@@ -153,10 +161,9 @@ const KIN_COMPANY_SECTIONS: ReadonlyArray<{
       {
         id: "country",
         label: "Country",
-        placeholder: "Two-letter code",
-        code: true,
+        placeholder: "Pick a country",
         invoice: true,
-        problem: "A country is its two-letter code, like GB, US or IN.",
+        problem: "Pick a country from the list, or type its name or code.",
       },
       {
         id: "financialYearStartMonth",
@@ -343,6 +350,144 @@ export function kinDeviceRegion(): string | null {
   }
 }
 
+export interface KinCountryChoice {
+  readonly code: string;
+  readonly name: string;
+}
+
+// Supranational groups, unknown, and ISO user-assigned ranges (AA, QM-QZ, X?) are not countries.
+const NON_COUNTRY_CODES: ReadonlySet<string> = new Set(["AA", "EU", "EZ", "UN", "ZZ"]);
+const isCountryCode = (code: string) =>
+  /^[A-Z]{2}$/.test(code) &&
+  !code.startsWith("X") &&
+  !(code >= "QM" && code <= "QZ") &&
+  !NON_COUNTRY_CODES.has(code);
+
+const foldCountry = (text: string) =>
+  text
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/[’‘]/g, "'")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+
+interface CountryEntry extends KinCountryChoice {
+  readonly folded: string;
+  readonly shortFolded: string | null;
+}
+
+let cachedDisplayNames: Intl.DisplayNames | null | undefined;
+let cachedCountries: ReadonlyArray<CountryEntry> | null = null;
+
+const regionDisplayNames = (): Intl.DisplayNames | null => {
+  if (cachedDisplayNames !== undefined) return cachedDisplayNames;
+  try {
+    cachedDisplayNames = new Intl.DisplayNames(undefined, { type: "region", fallback: "none" });
+  } catch {
+    cachedDisplayNames = null;
+  }
+  return cachedDisplayNames;
+};
+
+const canonicalRegion = (code: string): string => {
+  try {
+    return new Intl.Locale(`und-${code}`).region ?? code;
+  } catch {
+    return code;
+  }
+};
+
+const countryEntries = (): ReadonlyArray<CountryEntry> => {
+  if (cachedCountries !== null) return cachedCountries;
+  const names = regionDisplayNames();
+  if (names === null) {
+    cachedCountries = [];
+    return cachedCountries;
+  }
+  let shortNames: Intl.DisplayNames | null = null;
+  try {
+    shortNames = new Intl.DisplayNames(undefined, {
+      type: "region",
+      style: "short",
+      fallback: "none",
+    });
+  } catch {
+    shortNames = null;
+  }
+  const list: Array<CountryEntry> = [];
+  for (let first = 65; first <= 90; first++) {
+    for (let second = 65; second <= 90; second++) {
+      const code = String.fromCharCode(first, second);
+      if (!isCountryCode(code)) continue;
+      // Drop deprecated and alias codes (such as UK -> GB, DD -> DE, FX -> FR) so each country appears once.
+      if (canonicalRegion(code) !== code) continue;
+      const name = names.of(code);
+      if (name === undefined || name === code) continue;
+      const short = shortNames?.of(code);
+      const folded = foldCountry(name);
+      const shortFolded =
+        short !== undefined && short !== code && foldCountry(short) !== folded
+          ? foldCountry(short)
+          : null;
+      list.push({ code, name, folded, shortFolded });
+    }
+  }
+  list.sort((a, b) => a.name.localeCompare(b.name));
+  cachedCountries = list;
+  return cachedCountries;
+};
+
+/** Every real country `Intl.DisplayNames` knows, sorted by name, computed once. */
+export const kinCountries = (): ReadonlyArray<KinCountryChoice> => countryEntries();
+
+/**
+ * Countries matching `query`, ignoring case and accents: exact code or name match first, then
+ * name prefix, then any match in name or code.
+ */
+export function kinCountryChoices(query: string): ReadonlyArray<KinCountryChoice> {
+  const entries = countryEntries();
+  const q = foldCountry(query);
+  if (q === "") return entries;
+  const exact: Array<CountryEntry> = [];
+  const prefix: Array<CountryEntry> = [];
+  const rest: Array<CountryEntry> = [];
+  for (const entry of entries) {
+    const code = entry.code.toLowerCase();
+    if (code === q || entry.folded === q || entry.shortFolded === q) exact.push(entry);
+    else if (
+      entry.folded.startsWith(q) ||
+      (entry.shortFolded !== null && entry.shortFolded.startsWith(q))
+    )
+      prefix.push(entry);
+    else if (
+      entry.folded.includes(q) ||
+      (entry.shortFolded !== null && entry.shortFolded.includes(q)) ||
+      code.startsWith(q)
+    )
+      rest.push(entry);
+  }
+  return [...exact, ...prefix, ...rest];
+}
+
+/**
+ * The ISO two-letter code for a country typed by its name, short name or code (ignoring case and
+ * accents); null when nothing matches.
+ */
+export function kinCountryCodeOf(text: string): string | null {
+  const q = foldCountry(text);
+  if (q === "") return null;
+  const entries = countryEntries();
+  if (entries.length === 0) {
+    const upper = text.trim().toUpperCase();
+    return isCountryCode(upper) ? upper : null;
+  }
+  const found = entries.find(
+    (entry) => entry.code.toLowerCase() === q || entry.folded === q || entry.shortFolded === q,
+  );
+  return found?.code ?? null;
+}
+
 /**
  * The form as the profile reads. A company that never saved its details is offered `region`, the
  * device's, as its country: saving it brings that country's currency, year and tax. A new company
@@ -355,20 +500,51 @@ export const kinCompanyDraftOf = (
 ): KinCompanyDraft => {
   const draft = Object.fromEntries(
     KIN_COMPANY_SECTIONS.flatMap((section) =>
-      section.fields.map((field) => [field.id, stored(profile, field.id) ?? ""]),
+      section.fields.map((field) => [
+        field.id,
+        field.id === "country"
+          ? profile.country == null
+            ? ""
+            : kinCountryName(profile.country)
+          : (stored(profile, field.id) ?? ""),
+      ]),
     ),
   ) as KinCompanyDraft;
-  return !waiting && profile.rev === 0 && region !== null ? { ...draft, country: region } : draft;
+  return !waiting && profile.rev === 0 && region !== null
+    ? { ...draft, country: kinCountryName(region) }
+    : draft;
 };
 
 /** "India" for IN, or the code where this device can't name it. */
 export const kinCountryName = (code: string): string => {
   try {
-    return new Intl.DisplayNames(undefined, { type: "region", fallback: "none" }).of(code) ?? code;
+    return regionDisplayNames()?.of(code) ?? code;
   } catch {
     return code;
   }
 };
+
+/** The device's country offered while none is typed, taken only with a tap. */
+export const kinCountryOffer = (
+  typed: string,
+  region: string | null,
+): { readonly label: string; readonly country: string } | null =>
+  region === null || typed.trim() !== "" || !valid.country(region)
+    ? null
+    : { label: KIN_COMPANY.useCountry(kinCountryName(region)), country: kinCountryName(region) };
+
+/** The country a card offers: what the company's records name, else the device's where they allow it. */
+export const kinCountryCardRegion = (
+  fits: ReadonlyArray<string> | null,
+  device: string | null,
+): string | null =>
+  fits === null
+    ? device
+    : fits.length === 1
+      ? (fits[0] ?? null)
+      : device !== null && fits.includes(device)
+        ? device
+        : null;
 
 /**
  * The device's country offered to a company still waiting on its own, while none is typed: it is
@@ -378,13 +554,12 @@ export const kinCompanyCountrySuggestion = (
   draft: KinCompanyDraft,
   region: string | null,
   waiting: boolean,
-): { readonly label: string; readonly accept: () => KinCompanyDraft } | null =>
-  !waiting || region === null || draft.country.trim() !== "" || !valid.country(region)
+): { readonly label: string; readonly accept: () => KinCompanyDraft } | null => {
+  const offer = waiting ? kinCountryOffer(draft.country, region) : null;
+  return offer === null
     ? null
-    : {
-        label: KIN_COMPANY.useCountry(kinCountryName(region)),
-        accept: () => ({ ...draft, country: region }),
-      };
+    : { label: offer.label, accept: () => ({ ...draft, country: offer.country }) };
+};
 
 /**
  * The form's sections for a company in `country`: India's tax ids only for India, and for a host
@@ -415,17 +590,12 @@ export const kinCompanyDraftEdit = (
   return id === "gstin" && String(value).trim() !== "" ? { ...next, notRegistered: "" } : next;
 };
 
-/** The sections while editing: they follow the country typed, once it is a whole code. */
+/** The sections while editing: they follow the country typed or picked, once it matches one. */
 export const kinCompanyEditSections = (profile: KinCompanyProfile, draft: KinCompanyDraft) => {
-  const typed = draft.country.trim().toUpperCase();
+  const typed = draft.country.trim();
+  const resolved = typed === "" ? null : kinCountryCodeOf(typed);
   const sections = kinCompanySections(
-    profile.country === undefined
-      ? undefined
-      : typed === ""
-        ? null
-        : /^[A-Z]{2}$/.test(typed)
-          ? typed
-          : profile.country,
+    profile.country === undefined ? undefined : typed === "" ? null : (resolved ?? profile.country),
   );
   if (draft.notRegistered === "") return sections;
   return sections.map((section) => ({
@@ -465,7 +635,25 @@ export function kinCompanyInput(
   const bank: Record<string, string | null> = {};
   const money: Partial<Record<(typeof MONEY_FIELDS)[number], string | null>> = {};
   for (const field of KIN_COMPANY_SECTIONS.flatMap((section) => section.fields)) {
-    const value = cleaned(field, draft[field.id]);
+    let value: string | null;
+    if (field.id === "country") {
+      const raw = draft.country.trim();
+      if (raw === "") {
+        value = null;
+      } else {
+        const matched = kinCountryCodeOf(raw);
+        if (matched !== null) {
+          value = matched;
+        } else if (profile.country != null && raw === kinCountryName(profile.country)) {
+          value = profile.country;
+        } else {
+          problems.country = field.problem ?? `${field.label} is not valid.`;
+          continue;
+        }
+      }
+    } else {
+      value = cleaned(field, draft[field.id]);
+    }
     if (value === stored(profile, field.id)) continue;
     if (!valid[field.id](value)) {
       problems[field.id] = field.problem ?? `${field.label} is too long.`;
@@ -555,4 +743,68 @@ export function kinCompanyGlance(profile: KinCompanyProfile): ReturnType<typeof 
       }),
     }))
     .filter((section) => section.rows.length > 0);
+}
+
+/** The card that asks an older company's owners for its country, once a round. */
+export const KIN_COUNTRY_ASK = {
+  question: (company: string) =>
+    `Which country is ${company} in? It sets tax words and date formats.`,
+  country: "Country",
+  choose: "Choose a country",
+  save: "Save",
+  notNow: "Not now",
+  chose: (name: string, country: string) => `${name} chose ${country}.`,
+  notNowAgain: (by: string) => `${by} said not now. Kin asks again in 30 days.`,
+  notNowDone: (by: string) =>
+    `${by} said not now. Kin won't ask again; Settings, Company details has it.`,
+  setElsewhere: (country: string) => `Set to ${country} in Settings.`,
+  failed: "Couldn't save the country.",
+};
+
+/** How a country card closed, in one line. */
+export const kinCountryAskLine = (
+  answered: NonNullable<KinCountryCardState["answered"]>,
+): string => {
+  switch (answered._tag) {
+    case "chose":
+      return KIN_COUNTRY_ASK.chose(answered.by, kinCountryName(answered.country));
+    case "not_now":
+      return answered.round === 1
+        ? KIN_COUNTRY_ASK.notNowAgain(answered.by)
+        : KIN_COUNTRY_ASK.notNowDone(answered.by);
+    case "set":
+      return KIN_COUNTRY_ASK.setElsewhere(kinCountryName(answered.country));
+  }
+};
+
+export interface KinCountryCardView {
+  readonly orgId: KinOrgId;
+  readonly widgetId: KinWidgetId;
+  readonly question: string;
+  /** Still waiting on an answer: the picker and its buttons show. */
+  readonly open: boolean;
+  /** How it was answered; null while open, or when it closed unanswered. */
+  readonly closed: string | null;
+  /** The countries the company's records allow; null when the host doesn't say. */
+  readonly fits: ReadonlyArray<string> | null;
+  readonly accessibilityLabel: string;
+}
+
+const decodeCountryCard = Schema.decodeUnknownOption(KinCountryCardState);
+
+export function kinCountryCardView(widget: KinWidget): KinCountryCardView | null {
+  const decoded = decodeCountryCard(widget.state);
+  if (Option.isNone(decoded)) return null;
+  const { company, answered } = decoded.value;
+  const question = KIN_COUNTRY_ASK.question(company);
+  const closed = answered === undefined ? null : kinCountryAskLine(answered);
+  return {
+    orgId: widget.orgId,
+    widgetId: widget.widgetId,
+    question,
+    open: answered === undefined && widget.closedAt === null,
+    closed,
+    fits: decoded.value.fits ?? null,
+    accessibilityLabel: closed === null ? question : `${question} ${closed}`,
+  };
 }

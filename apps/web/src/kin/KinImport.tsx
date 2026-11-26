@@ -38,6 +38,7 @@ import {
   kinImportWriting,
   type KinImportChoices,
 } from "@t3tools/client-runtime/kin/kinImport";
+import { kinCurrencyName } from "@t3tools/client-runtime/kin/kinCurrency";
 import type { KinWorkNames } from "@t3tools/client-runtime/kin/kinWork";
 import type {
   KinImportApplied,
@@ -61,6 +62,7 @@ import {
 } from "../components/ui/select";
 import { KinLoadFailed, KinWorkRowSkeletons } from "./KinWorkParts";
 import { useKinImportRuns, useKinImportSend } from "./useKinImport";
+import { useKinSectionNamed, useKinShell } from "./useKinShell";
 import type { KinWorkTarget } from "./useKinWork";
 
 type Busy = { readonly doing: "reading" | "checking" | "importing"; readonly rows: number };
@@ -122,6 +124,8 @@ export function KinImportView(
 ) {
   const host = useKinImportSend(props);
   const { state: runs, refresh: rereadRuns } = useKinImportRuns(props);
+  const shell = useKinShell(props.environmentId);
+  const named = useKinSectionNamed(props.environmentId);
   const [picked, setPicked] = useState<Picked | null>(null);
   const [checked, setChecked] = useState<KinImportCheck | null>(null);
   const [mapping, setMapping] = useState<KinImportMapping | null>(null);
@@ -258,7 +262,7 @@ export function KinImportView(
   const undoneBlock =
     undone === null ? null : (
       <section aria-label={KIN_IMPORT.undone} className="flex flex-col gap-1 text-sm">
-        {kinImportUndoneLines(undone).map((line) => (
+        {kinImportUndoneLines(undone, shell).map((line) => (
           <p key={line}>{line}</p>
         ))}
       </section>
@@ -286,7 +290,7 @@ export function KinImportView(
               >
                 <FileTextIcon className="size-4 text-muted-foreground" aria-hidden />
                 <span className="min-w-0 flex-1">
-                  {kinImportRunLine(run, nameOf(run.by))}
+                  {kinImportRunLine(run, nameOf(run.by), shell)}
                   {kinImportStoppedLines(run).map((line) => (
                     <span key={line} className="block text-xs text-muted-foreground">
                       {line}
@@ -316,7 +320,7 @@ export function KinImportView(
   const fileStep = (
     <div className="flex flex-col gap-4">
       <div>
-        <h2 className="text-lg font-semibold">{KIN_IMPORT.title}</h2>
+        <h2 className="text-lg font-semibold">{named(KIN_IMPORT.title)}</h2>
         <p className="text-sm text-muted-foreground">{KIN_IMPORT.intro}</p>
       </div>
       <div
@@ -397,7 +401,7 @@ export function KinImportView(
                     value={target}
                     options={KIN_IMPORT_TARGETS.map((id) => ({
                       id,
-                      label: KIN_IMPORT_TARGET_LABELS[id],
+                      label: named(KIN_IMPORT_TARGET_LABELS[id]),
                     }))}
                     onChange={(value) =>
                       setMapping({
@@ -409,7 +413,7 @@ export function KinImportView(
                     }
                   />
                   <span className="text-xs text-muted-foreground">
-                    {column.note ?? (target === "client.kind" ? KIN_IMPORT.kindHint : "")}
+                    {column.note ?? (target === "client.kind" ? named(KIN_IMPORT.kindHint) : "")}
                   </span>
                 </li>
               );
@@ -451,7 +455,7 @@ export function KinImportView(
                   placeholder={KIN_IMPORT.currencyPick}
                   options={kinImportCurrencies(checked.homeCurrency).map((id) => ({
                     id,
-                    label: id,
+                    label: kinCurrencyName(id),
                   }))}
                   onChange={(value) => recheck({ ...mapping, currency: value })}
                 />
@@ -475,7 +479,7 @@ export function KinImportView(
           </div>
         ) : null}
         <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
-          {kinImportTiles(checked).map((tile) => (
+          {kinImportTiles(checked, shell).map((tile) => (
             <li key={tile.id} className="rounded-lg border border-border px-3 py-2">
               <p
                 className={
@@ -639,15 +643,15 @@ export function KinImportView(
       <div className="flex flex-col gap-4">
         <div>
           <h2 className="text-lg font-semibold">{KIN_IMPORT.imported}</h2>
-          <p className="text-sm text-muted-foreground">{kinImportDoneLine(applied)}</p>
+          <p className="text-sm text-muted-foreground">{kinImportDoneLine(applied, shell)}</p>
         </div>
-        {kinImportNoticed(applied).length === 0 ? null : (
+        {kinImportNoticed(applied, shell).length === 0 ? null : (
           <section
             aria-label={KIN_IMPORT.noticed}
             className="flex flex-col gap-2 rounded-lg border border-border px-3 py-2 text-sm"
           >
             <h3 className="font-semibold">{KIN_IMPORT.noticed}</h3>
-            {kinImportNoticed(applied).map((line) => (
+            {kinImportNoticed(applied, shell).map((line) => (
               <p key={line} className="flex items-start gap-2">
                 <TriangleAlertIcon className="mt-0.5 size-4 shrink-0" aria-hidden />
                 {line}
@@ -687,7 +691,7 @@ export function KinImportView(
             </Button>
           )}
         </div>
-        <p className="text-xs text-muted-foreground">{KIN_IMPORT.undoAfter}</p>
+        <p className="text-xs text-muted-foreground">{named(KIN_IMPORT.undoAfter)}</p>
       </div>
     );
 

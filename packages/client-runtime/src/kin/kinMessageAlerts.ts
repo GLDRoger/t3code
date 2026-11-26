@@ -1,4 +1,59 @@
+import type { KinDesktopNotice } from "@t3tools/contracts";
+import type { ClientSettings } from "@t3tools/contracts/settings";
+
 import type { KinChatListRow } from "./kinChatListRows.ts";
+import { kinNotificationDestination } from "./kinNotificationDestination.ts";
+
+export function kinDefaultNotificationMode(input: {
+  readonly kinWebOnly: boolean;
+  readonly inKinDesktopWindow: boolean;
+}): ClientSettings["notificationMode"] {
+  return input.kinWebOnly || input.inKinDesktopWindow ? "notifications-and-sound" : "off";
+}
+
+export type KinAlertPermission = "granted" | "denied" | "default" | "insecure";
+
+export function kinAlertSettingsNotice(input: {
+  readonly mode: ClientSettings["notificationMode"];
+  readonly permission: KinAlertPermission;
+  readonly desktop: boolean;
+}): {
+  readonly status: string | null;
+  readonly problem: string | null;
+  readonly canAsk: boolean;
+} {
+  if (input.mode === "off" || input.mode === "sound" || input.permission === "granted") {
+    return { status: null, problem: null, canAsk: false };
+  }
+  if (input.permission === "insecure") {
+    return { status: null, problem: KIN_MESSAGE_ALERTS.needsSecure, canAsk: false };
+  }
+  if (input.permission === "denied") {
+    return {
+      status: KIN_MESSAGE_ALERTS.blockedStatus,
+      problem: input.desktop ? KIN_MESSAGE_ALERTS.blockedDesktop : KIN_MESSAGE_ALERTS.blocked,
+      canAsk: false,
+    };
+  }
+  return { status: null, problem: null, canAsk: true };
+}
+
+export function kinDesktopNoticeShows(
+  notice: Pick<KinDesktopNotice, "ring">,
+  {
+    looking,
+    mode,
+  }: { readonly looking: boolean; readonly mode: ClientSettings["notificationMode"] },
+): { readonly banner: boolean; readonly sound: boolean } | null {
+  if (looking || mode === "off") return null;
+  return {
+    banner: mode === "notifications" || mode === "notifications-and-sound",
+    sound: notice.ring && (mode === "sound" || mode === "notifications-and-sound"),
+  };
+}
+
+export const kinDesktopNoticeDestination = ({ data }: KinDesktopNotice) =>
+  kinNotificationDestination({ chatId: data.chatId, subject: data.subject });
 
 /**
  * What a device that is open but not looked at alerts for: a chat whose unread count rose since
@@ -8,12 +63,18 @@ export const KIN_MESSAGE_ALERTS = {
   title: "Notifications",
   purpose: "Your phone's notifications are set on the phone.",
   label: "Message alerts",
-  detail: "On this computer, while Kin is open in another window",
+  detail: "On this computer, when Kin isn't in front",
   needsSecure:
     "Alerts need the desktop app, or Kin open at a secure (https) address. Sound only still works.",
   unavailable: "This browser can't show alerts. Sound only still works.",
   blocked:
-    "Your browser is blocking alerts from Kin. Allow them in its settings, then pick this again. Sound only still works.",
+    "Alerts from Kin are blocked in this browser. Allow alerts in browser settings. Sound only still works.",
+  blockedDesktop:
+    "Alerts from Kin are blocked on this computer. Allow alerts in system settings. Sound only still works.",
+  blockedStatus: "Blocked",
+  needsPermissionTitle: "Alerts need permission",
+  needsPermissionDetail: "No alert banners show until allowed here.",
+  allow: "Allow alerts",
   /** The in-app notice's button, which opens what the message is about. */
   open: "Open",
 };

@@ -13,6 +13,7 @@ import {
   kinInvoiceTax,
   kinInvoiceTaxText,
   kinInvoiceTyped,
+  kinLineTax,
   type KinBillToDraft,
   type KinExpenseDraft,
   type KinInvoiceDraft,
@@ -60,6 +61,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/ui/select";
+import { Spinner } from "../components/ui/spinner";
 import { Textarea } from "../components/ui/textarea";
 import { randomUUID } from "../lib/utils";
 import { KinLinesEditor } from "./KinMoneyAnswers";
@@ -74,7 +76,12 @@ import {
   useKinWorkFiles,
 } from "./useKinMoney";
 import { useKinNewExpense, useKinNewInvoice } from "./useKinMoneyAnswers";
-import { useKinWorkChoices, useKinWorkDirectory, type KinWorkTarget } from "./useKinWork";
+import {
+  useKinClientAccountsForTax,
+  useKinWorkChoices,
+  useKinWorkDirectory,
+  type KinWorkTarget,
+} from "./useKinWork";
 import { useKinSectionNamed, useKinSectionOn } from "./useKinShell";
 
 const NONE = "none";
@@ -110,7 +117,7 @@ function FormDialog(props: {
             className="contents"
             onSubmit={(event) => {
               event.preventDefault();
-              props.onSave();
+              if (!props.busy) props.onSave();
             }}
           >
             <DialogHeader>
@@ -127,7 +134,14 @@ function FormDialog(props: {
                 {KIN_WORK_COPY.cancel}
               </Button>
               <Button type="submit" disabled={props.busy} aria-busy={props.busy}>
-                {props.saveLabel}
+                {props.busy ? (
+                  <>
+                    <Spinner aria-hidden />
+                    {KIN_WORK_COPY.saving}
+                  </>
+                ) : (
+                  props.saveLabel
+                )}
               </Button>
             </DialogFooter>
           </form>
@@ -332,6 +346,12 @@ export function KinNewInvoiceDialog(
   const tax = profile.state._tag === "ready" ? kinInvoiceTax(profile.state.value) : null;
   const gst = tax?._tag === "gst";
   const taxText = tax === null ? null : kinInvoiceTaxText(tax);
+  const billedClient = byName ? null : (draft.party ?? (projectClient as KinRecordKey | null));
+  const clientAccountsForTax = useKinClientAccountsForTax(props, billedClient);
+  const rawLineTax = kinLineTax(tax, { gstRate: draft.gstRate, clientAccountsForTax });
+  const lineTax = rawLineTax.show
+    ? rawLineTax
+    : { show: false as const, note: rawLineTax.note === null ? null : named(rawLineTax.note) };
   const ids = { what: useId(), rate: useId(), due: useId(), notes: useId() };
   const today = kinWorkDayOf(new Date(useNowMinuteMs()));
   const clientRef =
@@ -344,10 +364,11 @@ export function KinNewInvoiceDialog(
   const save = async () => {
     const checked = kinInvoiceInput(props.orgId, draft, {
       currency,
-      gst: gst && tax.registered,
+      gst: gst && tax.registered && !clientAccountsForTax,
       clientRequestId: requestId,
       byName,
       india,
+      tax: lineTax.show,
       projectClient,
     });
     if (!checked.ok) return setProblem(checked.problem);
@@ -383,7 +404,7 @@ export function KinNewInvoiceDialog(
     <FormDialog
       title={KIN_MONEY_FORMS.invoice.title}
       detail={KIN_MONEY_FORMS.invoice.detail}
-      typed={made === null && kinInvoiceTyped(draft, opened)}
+      typed={kinInvoiceTyped(draft, opened)}
       busy={saving.busy}
       discardTitle={KIN_MONEY_FORMS.discard.invoice}
       saveLabel={
@@ -438,6 +459,7 @@ export function KinNewInvoiceDialog(
         disabled={locked}
         codes={gst}
         detail={KIN_MONEY_FORMS.invoice.linesDetail}
+        tax={lineTax}
         onChange={(lines) => set({ lines })}
       />
       {kinInvoiceBeforeTax(draft.lines, currency) === null ? null : (
@@ -446,7 +468,7 @@ export function KinNewInvoiceDialog(
         </p>
       )}
       <Slip line={slip} />
-      {gst && tax.registered ? (
+      {!lineTax.show && lineTax.note !== null ? null : gst && tax.registered ? (
         <div className="flex flex-col gap-1.5">
           <Label htmlFor={ids.rate}>{KIN_MONEY_FORMS.invoice.gstRate}</Label>
           <Input

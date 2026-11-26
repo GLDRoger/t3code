@@ -33,20 +33,42 @@ import {
 } from "../../apps/server/src/kin/lead/instructions.ts";
 import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
-import { alreadyOnIt, leftNote } from "../../apps/server/src/kin/lead/Handoff.ts";
-import { dueShows, repeatedPromise } from "../../apps/server/src/kin/work/leadWork.ts";
+import { alreadyOnIt, leftNote, passedFactBody } from "../../apps/server/src/kin/lead/Handoff.ts";
+import { ASK_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
+import {
+  billPaidConsequence,
+  overpaymentConsequence,
+} from "../../apps/server/src/kin/pulse/senses/bank.ts";
+import {
+  billDueConsequence,
+  noticeConsequence,
+} from "../../apps/server/src/kin/pulse/senses/money.ts";
+import {
+  dueShows,
+  madeIn,
+  repeatedPromise,
+  suggestedBillResult,
+} from "../../apps/server/src/kin/work/leadWork.ts";
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import {
   endOfDay,
+  stillSuggestion,
   suggestedStateLabel,
   UNISSUED_INVOICE,
 } from "../../apps/server/src/kin/work/recordRows.ts";
-import { ALSO_ON_UNASKED, helperRefusal } from "../../apps/server/src/kin/work/KinRecords.ts";
-import { NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
+import {
+  ALSO_ON_UNASKED,
+  FUNDING_IS_THE_OWNERS,
+  helperRefusal,
+  paidWhileOwed,
+} from "../../apps/server/src/kin/work/KinRecords.ts";
+import { choiceResumeText, NOTHING_TIMED } from "../../apps/server/src/kin/widgets/choiceCard.ts";
+import { noticeQuestion, stallQuestion } from "../../apps/server/src/kin/pulse/factCards.ts";
 import { tooLongForCard } from "../../apps/server/src/kin/questions/askPerson.ts";
 import {
   ASKED,
   CALL_ARGUMENTS_REFUSAL,
+  OFFERED,
   SEVERAL_ACCOUNTS,
 } from "../../apps/server/src/kin/connections/ConnectionsService.ts";
 import { readCallArguments } from "../../apps/server/src/kin/connections/callArguments.ts";
@@ -69,12 +91,22 @@ import {
   countryFirstMessage,
   notRegisteredFact,
 } from "../../apps/server/src/kin/work/companyProfile.ts";
-import { bankAnswer } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
+import { bankAnswer, shortDay } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
 import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyAnswers.ts";
 import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
 import { waitingLine } from "../../apps/server/src/kin/work/unconfirmedFacts.ts";
 import { budgetsAnswer } from "../../apps/server/src/kin/work/budgets.ts";
+import { cardLines, type Snapshot } from "../../apps/server/src/kin/gendocs/receiptProposals.ts";
+import { RECEIPT_PROPOSED_NEXT } from "../../apps/server/src/kin/gendocs/leadDocuments.ts";
 import {
+  alreadyRecordedNext,
+  PAYMENT_PROPOSED_NEXT,
+  TAKE_BACK_PROPOSED_NEXT,
+} from "../../apps/server/src/kin/work/leadMoney.ts";
+import { parseAmount } from "../../apps/server/src/kin/work/money.ts";
+import { goalLine } from "../../apps/server/src/kin/work/goals.ts";
+import {
+  formatKinMoney,
   formatKinPicturesDay,
   KIN_TEXT_LOCALE,
   KinDocCardDraft,
@@ -104,6 +136,13 @@ import {
   ONE_ENTRY,
 } from "../../apps/server/src/kin/lead/approvedDraft.ts";
 import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
+import { diffGoesOn, postedResult } from "../../apps/server/src/kin/github/GitHubWatch.ts";
+import { DIFF_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
+import { filePage, READ_NEXT, READ_REFUSAL } from "../../apps/server/src/kin/github/repoRead.ts";
+import {
+  OUTSIDE_REFUSAL,
+  REPO_READ_REFUSAL,
+} from "../../apps/server/src/kin/lead/OutsideContent.ts";
 import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
 import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
 import { KinSalesToolkit } from "../../apps/server/src/kin/sales/mcp.ts";
@@ -119,14 +158,17 @@ import {
 } from "../../apps/server/src/kin/work/workPrompt.ts";
 import {
   githubTriggerEvent,
+  humanMessageLabel,
   ASSIGNED_NOT_IN_PERSON,
   HANDED_BACK_WORK,
+  PASSED_ON_SPEAKER,
   UNREAD_RULE,
   REMINDER_DUE,
   REPLY_SHAPE,
   SHARED_TURN_LINE,
   joinedWork,
   ownMailboxLine,
+  QUOTE_LABELS,
   workForText,
 } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
 import {
@@ -138,10 +180,17 @@ import {
 } from "../../apps/server/src/kin/pulse/prompt.ts";
 import { HEAD_START_WAKE } from "../../apps/server/src/kin/pulse/prepareWake.ts";
 import {
+  DRAFT_CALL_NOTES,
   DRAFT_CHASE,
   DRAFT_DEAL,
   DRAFT_DOCUMENT,
+  DRAFT_FROM_MAILBOX,
+  DRAFT_MEETING_OUTCOME,
   DRAFT_MEETING_PREP,
+  NOTICE_GIVEN,
+  PROPOSE_PLAN,
+  PROPOSE_STEP,
+  STALL_STUCK,
 } from "../../apps/server/src/kin/pulse/draftWake.ts";
 import { KIN_OWN_REFUSAL } from "../../apps/server/src/kin/people/KinAccess.ts";
 import { HEAD_START_ONE_DOC } from "../../apps/server/src/kin/work/teamView.ts";
@@ -177,6 +226,7 @@ import {
   RESCUE_PROMPT,
 } from "../../apps/server/src/kin/reply/classify.ts";
 import { TURN_EVENT_TOOLS } from "../../apps/server/src/kin/lead/eventIds.ts";
+import { noticeDay } from "../../apps/server/src/kin/work/crm.ts";
 import type { McpToolUseCase } from "./run.ts";
 
 export { kinInstructions, kinLeadInstructions };
@@ -532,21 +582,99 @@ const fillGitHubTrigger = (prompt: string, world: McpToolUseCase["setup"]["world
         readonly event: string;
         readonly repo: string;
         readonly trigger: Contracts.KinGithubTrigger;
+        /** A review someone asked for in Kin: their name, as `LeadPrompt` passes it. */
+        readonly askedBy?: string;
       }
     | undefined;
   if (given === undefined) throw new Error("{{GITHUB_TRIGGER}} needs setup.world.githubTrigger.");
+  // `{{DIFF_GOES_ON:<rest>:<from>}}` in a diff is where Kin's read of it stops (`readDiff`).
+  const diff = given.trigger.pull?.diff?.replace(
+    /\{\{DIFF_GOES_ON:(\d+):(\d+)\}\}/g,
+    (_, rest: string, from: string) => diffGoesOn(Number(rest), Number(from)),
+  );
+  const trigger =
+    given.trigger.pull === undefined || diff === undefined
+      ? given.trigger
+      : { ...given.trigger, pull: { ...given.trigger.pull, diff } };
   return prompt.replaceAll(
     "{{GITHUB_TRIGGER}}",
-    githubTriggerEvent(given.event, given.repo, given.trigger),
+    githubTriggerEvent(given.event, given.repo, trigger, given.askedBy),
   );
 };
 
+/** The questions on Kin's own cards about a fact, worded by the pulse (`pulse/factCards.ts`). */
+const CARD_QUESTIONS: Record<string, (input: never) => string> = {
+  notice: noticeQuestion,
+  stall: stallQuestion,
+};
+/** The line Kin adds after a tap on a card's plain answer (`draftWake.ts` `cardTapText`). */
+const CARD_WAKES: Record<string, (input: never) => string> = {
+  notice: NOTICE_GIVEN,
+  stall: STALL_STUCK,
+};
+/**
+ * `{{CARD_TAP:<json>}}`, on its own line, is a person's tap on Kin's card about a fact as the
+ * turn's event quotes it in their direct chat: `Chose "<label>" on "<question>"`, the question
+ * from `CARD_QUESTIONS[card](ask)`, then Kin's line from `CARD_WAKES[card](wake)` when `wake` is
+ * set. `role` "owner" quotes it as the owner's own message, which names no sender.
+ */
+const fillCardTaps = (prompt: string) =>
+  prompt.replace(/^\{\{CARD_TAP:(.+)\}\}$/gm, (_, json: string) => {
+    const tap = JSON.parse(json) as {
+      card: string;
+      ask: never;
+      label: string;
+      from: string;
+      role?: string;
+      wake?: never;
+    };
+    const question = CARD_QUESTIONS[tap.card];
+    const wake = CARD_WAKES[tap.card];
+    if (question === undefined || wake === undefined)
+      throw new Error(`No card question ${tap.card} for {{CARD_TAP}}.`);
+    const owner = tap.role === "owner";
+    const event = quote(
+      owner ? QUOTE_LABELS.ownerMessage : humanMessageLabel(tap.role ?? "member"),
+      {
+        event: "event-1",
+        message: "msg-event-1",
+        ...(owner ? {} : { from: tap.from }),
+        body: choiceResumeText(tap.label, question(tap.ask)),
+      },
+      true,
+    );
+    return tap.wake === undefined ? event : `${event}\n\n${wake(tap.wake)}`;
+  });
+
+const overpaymentCase = () =>
+  overpaymentConsequence({
+    key: "BNK-4",
+    day: "2026-11-04",
+    currency: "USD",
+    received: 220000,
+    owed: 100000,
+    client: "Tidewater Freight",
+    reason: "it cites INV-12",
+    others: [{ key: "INV-14", owed: 80000 }],
+  });
+
 export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["world"]) =>
-  fillCharacters(fillGitHubTrigger(prompt, world))
+  fillCharacters(fillCardTaps(fillGitHubTrigger(prompt, world)))
     .replaceAll("{{UNDO_RULE}}", UNDO_RULE)
     .replaceAll("{{WORK_RULE}}", WORK_RULE)
     .replaceAll("{{MONEY_RULE}}", MONEY_RULE)
     .replaceAll("{{PULSE_RULE}}", PULSE_RULE)
+    .replaceAll("{{OVERPAYMENT_CASE}}", overpaymentCase())
+    .replace(
+      /\{\{BILL_PAID_FACT:([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|([^|{}]+)\}\}/g,
+      (_, bank, amount, day, bill, vendor, due) =>
+        billPaidConsequence(bank, amount, day, bill, vendor, due),
+    )
+    .replace(
+      /\{\{BILL_DUE_FACT:([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|(\d+)\}\}/g,
+      (_, amount, vendor, day, days) =>
+        billDueConsequence(amount, vendor, day, Number(days), false),
+    )
     .replaceAll("{{CHECK_IN_PULSE_RULE}}", CHECK_IN_PULSE_RULE)
     .replaceAll("{{LEFT_RULE}}", LEFT_RULE)
     .replaceAll("{{OUTSIDE_THREAD_LINE}}", OUTSIDE_THREAD_LINE)
@@ -565,9 +693,32 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     )
     .replace(/\{\{DRAFT_DOCUMENT:([^}]+)\}\}/g, (_, name: string) => DRAFT_DOCUMENT(name))
     .replace(/\{\{DRAFT_MEETING_PREP:([^}]+)\}\}/g, (_, name: string) => DRAFT_MEETING_PREP(name))
+    // A proposal wake's own line: `{{PROPOSE_STEP:<name>|deal}}` (or `|prospect`), `{{PROPOSE_PLAN:<name>}}`.
+    .replace(/\{\{PROPOSE_STEP:([^|}]+)\|(deal|prospect)\}\}/g, (_, name: string, of: string) =>
+      PROPOSE_STEP(name, of === "deal"),
+    )
+    .replace(/\{\{PROPOSE_PLAN:([^}]+)\}\}/g, (_, name: string) => PROPOSE_PLAN(name))
+    // `{{DRAFT_MEETING_OUTCOME:<name>|<key>|<title>|<contact>|<mailboxes>}}`, or no mail without the last two.
+    .replace(
+      /\{\{DRAFT_MEETING_OUTCOME:([^|}]+)\|([^|}]+)\|([^|}]+)(?:\|([^|}]+)\|([^}]+))?\}\}/g,
+      (_, name: string, key: string, title: string, to?: string, from?: string) =>
+        DRAFT_MEETING_OUTCOME(
+          name,
+          { key, title },
+          to === undefined || from === undefined ? undefined : { to, from: from.split(",") },
+        ),
+    )
     // A draft wake's own line, for a person and their mailboxes (`draftWake.ts`).
     .replace(/\{\{DRAFT_CHASE:([^:}]+):([^}]+)\}\}/g, (_, name: string, from: string) =>
       DRAFT_CHASE(name, from.split(",")),
+    )
+    .replace(/\{\{DRAFT_FROM_MAILBOX:([^:}]+):([^}]+)\}\}/g, (_, name: string, from: string) =>
+      DRAFT_FROM_MAILBOX(name, from.split(",")),
+    )
+    // `{{DRAFT_CALL_NOTES:<name>|mailbox}}` (a mailbox but no contact) or `|no-mailbox`.
+    .replace(
+      /\{\{DRAFT_CALL_NOTES:([^|}]+)\|(mailbox|no-mailbox)\}\}/g,
+      (_, name: string, of: string) => DRAFT_CALL_NOTES(name, of === "mailbox"),
     )
     .replace(
       /\{\{DRAFT_DEAL:([^|}]+)\|([^|}]+)\|([^}]+)\}\}/g,
@@ -597,6 +748,14 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{SEVERAL_ACCOUNTS}}", SEVERAL_ACCOUNTS)
     .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
     .replaceAll("{{REMINDER_DUE}}", REMINDER_DUE)
+    .replaceAll("{{PASSED_ON_SPEAKER}}", PASSED_ON_SPEAKER)
+    // A check-in fact's hand-off as the other agent's event quotes it, JSON-escaped for its body:
+    // `{{PASSED_FACT:<request>|<check-in>|<about>|<consequence>|<fact key>}}`.
+    .replace(
+      /\{\{PASSED_FACT:([^|}]+)\|([^|}]+)\|([^|}]+)\|([^|}]+)\|([^|}]+)\}\}/g,
+      (_, request: string, from: string, about: string, consequence: string, key: string) =>
+        JSON.stringify(passedFactBody({ request, from, about, consequence, key })).slice(1, -1),
+    )
     // The wake's line once a new company's country is chosen (`{{COUNTRY_CHOSEN:GB|GBP}}`).
     .replace(
       /\{\{COUNTRY_CHOSEN:([A-Z]{2})\|([A-Z]{3})\}\}/g,
@@ -632,7 +791,23 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
         period: string;
       };
       return feedTurnText(feed.numbers, feed.source, feed.period);
-    });
+    })
+    // repaid_seen's line for a partner debit that doesn't add up to their oldest owed expenses
+    // (`pulse/senses/bank.ts` repaidSeenSenses, which builds it inline; mirrored word for word).
+    .replace(
+      /\{\{REPAID_SHORT:([^|}]+)\|(\d+)\|([A-Z]{3})\|([\d-]+)\|([^|}]+)\|(\d+)\|(\d+)\}\}/g,
+      (
+        _,
+        key: string,
+        minor: string,
+        currency: string,
+        day: string,
+        partner: string,
+        owed: string,
+        count: string,
+      ) =>
+        `${key}, ${formatKinMoney(Number(minor), currency)} paid ${shortDay(day)}, names ${partner} but doesn't add up to their oldest owed expenses (${formatKinMoney(Number(owed), currency)} over ${count} expense${count === "1" ? "" : "s"}), so Kin marks nothing. Mark what it repaid on the expenses in Money.`,
+    );
 
 const decodeMoneySummary = Schema.decodeUnknownSync(KinMoneySummary);
 const decodeDraftTo = Schema.decodeUnknownSync(
@@ -691,7 +866,307 @@ const docReadAnswer = (input: {
   };
 };
 
+type CardInvoice = {
+  readonly key: string;
+  readonly number: string;
+  readonly title: string;
+  readonly total: Contracts.KinMoney;
+  readonly paid: number;
+};
+const cardAgainst = (invoice: CardInvoice, named: boolean): Snapshot["against"] => ({
+  key: invoice.key,
+  title: invoice.title,
+  rev: 1,
+  paid: invoice.paid,
+  total: invoice.total,
+  ...(named ? { name: invoice.number } : {}),
+});
+/** kin_github_read as `readRepo` answers it, over a few files at one ref. */
+const repoReadAnswer = (input: {
+  repo: string;
+  /** The repo the call named, when the case's App reaches only `repo`. */
+  asked?: string;
+  files: Record<string, string>;
+  path: string | null;
+  search: string | null;
+  ref: string | null;
+  line: number | null;
+}) => {
+  if (input.asked !== undefined && input.asked.trim().toLowerCase() !== input.repo.toLowerCase())
+    return {
+      $error: {
+        _tag: "KinChatError",
+        reason: "not_allowed",
+        message: READ_REFUSAL.unreached(input.asked.trim()),
+      },
+    };
+  const ref = input.ref ?? "the default branch";
+  const words = input.search?.replace(/\s+/g, " ").trim() ?? "";
+  if (words !== "") {
+    if (input.ref !== null)
+      return {
+        $error: { _tag: "KinChatError", reason: "not_allowed", message: READ_REFUSAL.searchRef },
+      };
+    // Each word literal, all of them in one file, as `readRepo` quotes them for GitHub.
+    const needles = words.toLowerCase().split(" ");
+    const matches = Object.entries(input.files)
+      .filter(([, text]) => needles.every((word) => text.toLowerCase().includes(word)))
+      .map(([path, text]) => ({
+        path,
+        fragments: [
+          text
+            .split("\n")
+            .filter((line) => needles.some((word) => line.toLowerCase().includes(word)))
+            .slice(0, 2)
+            .join("\n"),
+        ],
+      }));
+    return {
+      repo: input.repo,
+      ref: "the default branch",
+      matches,
+      next: matches.length === 0 ? READ_NEXT.none(input.repo, words) : READ_NEXT.found,
+    };
+  }
+  const path = (input.path ?? "")
+    .split("/")
+    .filter((part) => part !== "")
+    .join("/");
+  const file = input.files[path];
+  if (file !== undefined)
+    return { repo: input.repo, ref, path, ...filePage(file, input.line ?? undefined) };
+  const prefix = path === "" ? "" : `${path}/`;
+  const entries = new Map<string, { path: string; type: string; size?: number }>();
+  for (const [name, text] of Object.entries(input.files)) {
+    if (!name.startsWith(prefix)) continue;
+    const [first, ...rest] = name.slice(prefix.length).split("/");
+    const at = `${prefix}${first}`;
+    entries.set(
+      at,
+      rest.length > 0 ? { path: at, type: "dir" } : { path: at, type: "file", size: text.length },
+    );
+  }
+  if (entries.size === 0)
+    return {
+      $error: {
+        _tag: "KinChatError",
+        reason: "not_found",
+        message: READ_REFUSAL.missing(input.repo, path, ref),
+      },
+    };
+  return {
+    repo: input.repo,
+    ref,
+    path,
+    entries: [...entries.values()].sort((a, b) => a.path.localeCompare(b.path)),
+    next: READ_NEXT.listed,
+  };
+};
+
 const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
+  stillSuggestion: (input: { key: string }) => ({
+    $error: { _tag: "KinChatError", reason: "invalid_state", message: stillSuggestion(input.key) },
+  }),
+  outsideRefusal: () => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: OUTSIDE_REFUSAL },
+  }),
+  connectionOffered: () => ({ note: OFFERED }),
+  // payment_record's answer to an agent: the owner's Confirm card lines (`receiptProposals.ts`).
+  paymentCard: (input: {
+    proposal: string;
+    client: string;
+    invoice: CardInvoice;
+    amount: string | null;
+    withheld: string | null;
+    paidOn: string | null;
+  }) => {
+    const money = (text: string | null) => {
+      if (text === null) return undefined;
+      const one = parseAmount(text, input.invoice.total.currency);
+      return "error" in one ? undefined : one.money;
+    };
+    const amount = money(input.amount);
+    const withheld = money(input.withheld);
+    const paidOn = input.paidOn;
+    if (
+      paidOn === null ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(paidOn) ||
+      (amount ?? withheld) === undefined
+    )
+      return {
+        $error: {
+          _tag: "KinChatError",
+          reason: "invalid_state",
+          message:
+            "A payment needs amount (cash received), withheld (tax the client withheld) or both, and paidOn; or void to take one back.",
+        },
+      };
+    const received = {
+      key: input.invoice.key,
+      paidOn,
+      ...(amount === undefined ? {} : { amount }),
+      ...(withheld === undefined ? {} : { withheld }),
+    };
+    const snapshot: Snapshot = {
+      entry: null,
+      client: { key: "C-1", title: input.client, rev: 1 },
+      amount: amount ?? null,
+      receivedOn: paidOn,
+      against: cardAgainst(input.invoice, true),
+      recorded: [],
+      ...(withheld === undefined ? {} : { withheld }),
+    };
+    return {
+      status: "proposed",
+      key: input.invoice.key,
+      proposal: input.proposal,
+      shown: cardLines(snapshot, { received, version: 2 }),
+      next: PAYMENT_PROPOSED_NEXT,
+      sensitive: true,
+    };
+  },
+  // kin_receipt's answer to an agent setting an advance against an invoice: its Confirm card.
+  receiptAgainstCard: (input: {
+    proposal: string;
+    entry: string;
+    client: string;
+    amount: Contracts.KinMoney;
+    receivedOn: string;
+    invoice: CardInvoice;
+  }) => ({
+    status: "proposed",
+    proposal: input.proposal,
+    shown: cardLines(
+      {
+        entry: { key: input.entry, rev: 1, state: "open", moved: true },
+        client: { key: "C-1", title: input.client, rev: 1 },
+        amount: input.amount,
+        receivedOn: input.receivedOn,
+        against: cardAgainst(input.invoice, true),
+        recorded: [],
+      },
+      { key: input.entry, against: input.invoice.key, version: 2 },
+    ),
+    next: RECEIPT_PROPOSED_NEXT,
+    sensitive: true,
+  }),
+  // payment_record of a payment already on the invoice: no card, ask whether it is another.
+  paymentAlreadyRecorded: (input: {
+    invoice: CardInvoice;
+    amount: Contracts.KinMoney | null;
+    withheld: Contracts.KinMoney | null;
+    paidOn: string;
+  }) => ({
+    status: "already_recorded",
+    key: input.invoice.key,
+    next: alreadyRecordedNext(
+      input.amount ?? undefined,
+      input.withheld ?? undefined,
+      input.paidOn,
+      input.invoice.number,
+    ),
+    sensitive: true,
+  }),
+  // payment_record void: the owner's card to take the payment back (`receiptProposals.ts`).
+  takeBackCard: (input: {
+    proposal: string;
+    client: string;
+    invoice: CardInvoice;
+    paymentId: string;
+    payment: { amount: Contracts.KinMoney; paidOn: string; withheld?: boolean };
+  }) => {
+    const snapshot: Snapshot = {
+      entry: null,
+      client: { key: "C-1", title: input.client, rev: 1 },
+      amount: null,
+      receivedOn: null,
+      against: cardAgainst(input.invoice, true),
+      recorded: [],
+      taking: {
+        ...input.payment.amount,
+        paidOn: input.payment.paidOn,
+        withheld: input.payment.withheld === true ? 1 : 0,
+        voided: 0,
+      },
+    };
+    const request = {
+      takeBack: { key: input.invoice.key, paymentId: input.paymentId },
+      version: 2 as const,
+    };
+    return {
+      status: "proposed",
+      key: input.invoice.key,
+      proposal: input.proposal,
+      shown: cardLines(snapshot, request),
+      next: TAKE_BACK_PROPOSED_NEXT,
+      sensitive: true,
+    };
+  },
+  // record_update of an issued invoice to Paid with money still owed, refused to an agent.
+  paidWhileOwed: (input: { key: string; owed: string }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "invalid_state",
+      message: paidWhileOwed(input.key, input.owed, "Paid"),
+    },
+  }),
+  // record_update of who funded an expense or whether it was paid back, refused to an agent.
+  fundingRefusal: () => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: FUNDING_IS_THE_OWNERS },
+  }),
+  // kin_ask's mark_repaid on a debit that doesn't add up (`repaidCard.ts` drawRepaid, inline there).
+  repaidNoCard: (input: { key: string; partner: string }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "invalid_state",
+      message: `${input.key} names ${input.partner} but doesn't add up exactly to their oldest owed expenses, so Kin marks nothing and offers no card for it. Nothing was asked; tell the owner what you see instead.`,
+    },
+  }),
+  suggestedBill: (input: { key: string }) => suggestedBillResult(input.key),
+  billSuggestedLabel: (input: { state: "open" | "done" }) =>
+    suggestedStateLabel("expenses", input.state),
+  billDueFact: (input: { amount: string; vendor: string; day: string; days: number }) =>
+    billDueConsequence(input.amount, input.vendor, input.day, input.days, false),
+  goalLine,
+  // kin_github_diff's refusal when GitHub doesn't give the diff (`reviewAsk.ts`).
+  diffUnread: () => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: DIFF_REFUSAL.unread },
+  }),
+  // kin_github_read over a case's invented files, paged and worded by Kin's code (`repoRead.ts`).
+  repoRead: (input: {
+    repo: string;
+    asked?: string;
+    files: Record<string, string>;
+    path: string | null;
+    search: string | null;
+    ref: string | null;
+    line: number | null;
+  }) => repoReadAnswer(input),
+  // What any tool but reading and answering here gets after a shared turn read a repo
+  // (`KinToolGate`): the agent reads the gate's line, here in the tool's own error shape.
+  repoReadGate: (input: { name: string }) => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: REPO_READ_REFUSAL(input.name) },
+  }),
+  // kin_github_read's refusal for a private repo the asker can't see, as Kin words it.
+  repoReadRefused: (input: { repo: string; name: string; login: boolean }) => ({
+    $error: {
+      _tag: "KinChatError",
+      reason: "not_allowed",
+      message: input.login
+        ? READ_REFUSAL.notCollaborator(input.repo, input.name)
+        : READ_REFUSAL.noLogin(input.repo, input.name),
+    },
+  }),
+  // kin_github_review's answer for a review GitHub took (`GitHubWatch.ts` postedResult).
+  reviewPosted: (input: {
+    url: string;
+    review?: "asked" | "kins" | "outside";
+    asOwner?: boolean;
+  }) =>
+    postedResult({ _tag: "posted", url: input.url, asOwner: input.asOwner ?? false }, input.review),
+  // kin_github_review_ask's refusal for a repo Kin doesn't watch, as Kin words it (`reviewAsk.ts`).
+  reviewAskUnwatched: (input: { repo: string; ownerLevel: boolean }) =>
+    ASK_REFUSAL.unwatched(input.repo, input.ownerLevel),
   // bills_add's and bill_read's answers, as Kin words them (`leadBills.ts`, `bills.ts`).
   billsAdd: (input: { added: number; alreadyAdded: number; notBills: number }) => addAnswer(input),
   billRead: (input: { bill: string; outcome: "read" | "duplicate" | "unreadable" }) =>
@@ -804,6 +1279,34 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     sent: true,
     note: leftNote(input.to, input, input.asker),
   }),
+  // record_create's answer for new suggestions, keys from `first` (`leadWork.ts` createRow).
+  suggestedRows: (input: { records: unknown; first: number; zone: string }) => {
+    const asked = (Array.isArray(input.records) ? input.records : []).map((row: unknown) => {
+      const one: Readonly<Record<string, unknown>> = isRecord(row) ? row : {};
+      return {
+        due: one.due,
+        title: one.title,
+        list: one.list === "milestones" ? "milestones" : "work",
+      };
+    });
+    const records = asked.map((one, index) => {
+      const due = typeof one.due === "string" ? one.due : undefined;
+      const day = due !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(due);
+      const at = due === undefined ? NaN : day ? endOfDay(due, input.zone) : Date.parse(due);
+      return {
+        key: `${one.list === "milestones" ? "M" : "W"}-${input.first + index}`,
+        title: typeof one.title === "string" ? one.title : "",
+        created: true,
+        state: "open",
+        stateLabel: suggestedStateLabel(one.list, "open"),
+        suggested: true,
+        ...(one.list === "work" && Number.isFinite(at)
+          ? { shows: dueShows(at, day, input.zone) }
+          : {}),
+      };
+    });
+    return { ...madeIn(asked, records), records };
+  },
   // record_update's answer for a task given a due or a time (`leadWork.ts` dueOf, shownDue).
   taskUpdate: (input: { key: string; rev: number; state: string; due: unknown; zone: string }) => {
     const due = typeof input.due === "string" ? input.due : "";
@@ -859,6 +1362,7 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
   // record_create or record_update's line for a client's printed detail kept unconfirmed.
   unconfirmed: (input: { client: string; what: string; name: string; carded: boolean }) =>
     waitingLine(input.client, input.what, input.name, input.carded),
+  overpaymentCase,
   bankAnswer: (input: { through: string | null }) =>
     bankAnswer({ through: input.through, accounts: [] }),
   cashUnknown: (input: { timeZone: string }) =>
@@ -1163,6 +1667,21 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
         spent: BigInt(one.spent as number),
       })),
     } as never),
+  // A notice_due fact's consequence before its day, as the money sense words it.
+  noticeDue: (input: {
+    client: string;
+    project: string;
+    renewsOn: string;
+    noticeDays: string;
+    zone: string;
+  }) =>
+    noticeConsequence({
+      name: input.client,
+      title: input.project,
+      by: endOfDay(noticeDay(input.renewsOn, input.noticeDays)!, input.zone),
+      renews: endOfDay(input.renewsOn, input.zone),
+      zone: input.zone,
+    }),
 };
 /** A field of the call's input by its path, such as `records.0.title`. */
 const argAt = (args: unknown, path: string): unknown =>

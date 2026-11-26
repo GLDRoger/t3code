@@ -7,6 +7,7 @@ import type {
   KinPartyRow,
   KinPeopleListInvitesResult,
   KinPeopleListResult,
+  KinPeopleProfilesResult,
   KinProjectPage,
   KinProjectRow,
   KinRecordDetail,
@@ -19,7 +20,7 @@ import { useEffect, useState } from "react";
 
 import { runKinCommand } from "../kinRunCommand.ts";
 import { kinAccessMeAtom } from "../kinAccess.ts";
-import { kinSectionOn } from "../kinShell.ts";
+import { kinSectionNamed, kinSectionOn } from "../kinShell.ts";
 import { kinHostLink, type KinRouteHost } from "../kinHost.ts";
 import type { KinScreenTarget } from "../kinScreenReads.ts";
 import { kinInvitedPeople } from "../kinTeam.ts";
@@ -92,6 +93,8 @@ const noPeopleAtom: Atom.Atom<AsyncResult.AsyncResult<KinPeopleListResult, unkno
 const noZoneAtom: Atom.Atom<AsyncResult.AsyncResult<KinOwnerTimeZone, unknown>> = Atom.make(
   AsyncResult.initial(),
 );
+const noProfilesAtom: Atom.Atom<AsyncResult.AsyncResult<KinPeopleProfilesResult, unknown>> =
+  Atom.make(AsyncResult.initial());
 const noInvitesAtom: Atom.Atom<AsyncResult.AsyncResult<KinPeopleListInvitesResult, unknown>> =
   Atom.make(AsyncResult.initial());
 
@@ -192,6 +195,8 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
         reread: (key) =>
           registry.refresh(kinClient.workItem({ environmentId, input: { orgId, key } })),
         online: () => kinHostConnected(environmentId),
+        named: (text) =>
+          kinSectionNamed(registry.get(kinAccessMeAtom(app.runtime, environmentId))?.shell, text),
         ...(uses.keepAnswers === true
           ? { answers: kinWorkAnswersOf({ environmentId, orgId }) }
           : {}),
@@ -244,12 +249,20 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     const people = listed?.people ?? null;
     const invited = useKinReinvited({ environmentId, orgId }, enabled);
     const { zone } = useKinWorkZone({ environmentId, orgId }, enabled);
+    const profiles = useAtomValue(
+      enabled ? kinClient.profiles({ environmentId, input: { orgId } }) : noProfilesAtom,
+    );
+    const me = orgs?.me.find((held) => held.orgId === orgId)?.personId;
+    const readerZone =
+      Option.getOrNull(AsyncResult.value(profiles))?.profiles.find(
+        (profile) => profile.personId === me,
+      )?.timeZone ?? null;
     return {
       orgs,
       people,
       joined: listed?.joined ?? null,
       invited,
-      names: kinWorkNames({ orgs, orgId, people, zone }),
+      names: kinWorkNames({ orgs, orgId, people, zone, readerZone }),
     };
   }
 
@@ -474,6 +487,23 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     }, [watch, shellRev, page]);
   }
 
+  const noClientAtom: Atom.Atom<AsyncResult.AsyncResult<KinPartyPage, unknown>> = Atom.make(
+    AsyncResult.initial(),
+  );
+
+  /** Whether the chosen client accounts for the tax themselves; false until read or when none. */
+  function useKinClientAccountsForTax(target: KinScreenTarget, key: KinRecordKey | null): boolean {
+    const atom =
+      key === null
+        ? noClientAtom
+        : kinClient.workClient({
+            environmentId: target.environmentId,
+            input: { orgId: target.orgId, key },
+          });
+    const value = Option.getOrNull(AsyncResult.value(useAtomValue(atom)));
+    return value?.party.accountsForTax === true;
+  }
+
   /** A client's page, kept current without reading it for changes that are someone else's. */
   function useKinClientPage(target: KinScreenTarget, key: KinRecordKey) {
     const atom = kinClient.workClient({
@@ -597,6 +627,10 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
         onChange: setState,
       }),
     );
+    // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- keeps save reading the latest company country and section names if they arrive while the form is open
+    useEffect(() => {
+      form.configure({ check: options.check, send: options.send });
+    });
     // The form ignores a revision it has seen, so this sets state only when a newer read lands.
     if (options.editing != null && options.latest != null)
       form.latest(options.latest, options.editing.rev);
@@ -615,6 +649,7 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     useKinClientsList,
     useKinProjectsList,
     useKinWorkHistory,
+    useKinClientAccountsForTax,
     useKinClientPage,
     useKinProjectPage,
     kinWorkChoicesAtom,

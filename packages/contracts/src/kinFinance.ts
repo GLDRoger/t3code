@@ -4,7 +4,7 @@ import * as Schema from "effect/Schema";
 
 import { EnvironmentAuthorizationError, AuthKinChatScope } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { KinChatError, KinLabelText, KinOrgId, KinTrimmedText } from "./kinChat.ts";
+import { KinChatError, KinLabelText, KinOrgId, KinTrimmedText, KinWidgetId } from "./kinChat.ts";
 import { KIN_DEFAULT_HOME_CURRENCY } from "./kinCurrency.ts";
 import {
   KinCurrency,
@@ -85,6 +85,14 @@ export const KinNumberingRule = Schema.Struct({
 });
 export type KinNumberingRule = typeof KinNumberingRule.Type;
 
+/** A list's one number check: a number field below or above another number field or a fixed number. */
+export const KinListCheck = Schema.Struct({
+  field: KinListFieldKey,
+  below: Schema.optional(Schema.Union([KinListFieldKey, Schema.Finite])),
+  above: Schema.optional(Schema.Union([KinListFieldKey, Schema.Finite])),
+});
+export type KinListCheck = typeof KinListCheck.Type;
+
 export const KinListDefinition = Schema.Struct({
   list: KinListId,
   name: Label,
@@ -105,13 +113,7 @@ export const KinListDefinition = Schema.Struct({
    * One check on every entry: a number field below or above another number field or a fixed
    * number. Sent only to a caller that accepts `check`, which reads one of `below` and `above`.
    */
-  check: Schema.optional(
-    Schema.Struct({
-      field: KinListFieldKey,
-      below: Schema.optional(Schema.Union([KinListFieldKey, Schema.Finite])),
-      above: Schema.optional(Schema.Union([KinListFieldKey, Schema.Finite])),
-    }),
-  ),
+  check: Schema.optional(KinListCheck),
   /** New entries are labelled sensitive. */
   sensitive: Schema.Boolean,
   team: Schema.optional(Schema.Boolean),
@@ -184,6 +186,12 @@ export const KinListUpdateInput = Schema.Struct({
   restoreFields: Schema.optional(Schema.Array(KinListFieldKey).check(Schema.isMaxLength(30))),
   /** Sets how it numbers what it issues from now on; numbers already issued stay. */
   numbering: Schema.optional(KinNumberingRule),
+  /** The date Kin reminds on: a date field's key, or "date" for each entry's own date. Null stops it; the due day needs none. */
+  remindOn: Schema.optional(Schema.NullOr(KinListFieldKey)),
+  /** The one number check on every entry; null stops it. */
+  check: Schema.optional(Schema.NullOr(KinListCheck)),
+  /** As on `kin.work.lists`: the result carries remindOn and check only when this names them. */
+  accept: KinListsInput.fields.accept,
 });
 export type KinListUpdateInput = typeof KinListUpdateInput.Type;
 
@@ -272,6 +280,15 @@ export const KinMoneySummary = Schema.Struct({
     /** Owing clients past the first 20 a screen is sent, when there are more; absent otherwise. */
     byClientMore: Schema.optional(NonNegativeInt),
   }),
+  toPay: Schema.optional(
+    Schema.Struct({
+      total: KinMoneyTotals,
+      dueSoon: KinMoneyTotals,
+      bills: NonNegativeInt,
+      dueSoonBills: NonNegativeInt,
+      lateBills: NonNegativeInt,
+    }),
+  ),
   /** Money paid in: tax a client deducted at source settles an invoice but isn't counted here. */
   received: Schema.Struct({ thisMonth: KinMoneyTotals, lastMonth: KinMoneyTotals }),
   receivedThisFinancialYear: KinMoneyTotals,
@@ -653,7 +670,50 @@ export const KinCompanyProfileSetInput = Schema.Struct({
 });
 export type KinCompanyProfileSetInput = typeof KinCompanyProfileSetInput.Type;
 
+export const KinDraftCreditNoteInput = Schema.Struct({
+  orgId: KinOrgId,
+  invoice: KinRecordKey,
+  amount: KinMoney,
+  reason: TrimmedNonEmptyString,
+  originKey: TrimmedNonEmptyString,
+});
+export type KinDraftCreditNoteInput = typeof KinDraftCreditNoteInput.Type;
+const CreditKey = Schema.Struct({ key: KinRecordKey });
+
+export const KinCountryCardState = Schema.Struct({
+  company: Schema.String,
+  round: Schema.Literals([1, 2]),
+  /** Needs you reads a card's question from its state. */
+  question: Schema.optional(Schema.String),
+  /** The countries the company's own records allow (its tax number's, its currency's), when they say. */
+  fits: Schema.optional(Schema.Array(Schema.String)),
+  answered: Schema.optional(
+    Schema.Union([
+      Schema.TaggedStruct("chose", { by: Schema.String, country: Schema.String }),
+      Schema.TaggedStruct("not_now", {
+        by: Schema.String,
+        round: Schema.Literals([1, 2]),
+      }),
+      Schema.TaggedStruct("set", { country: Schema.String }),
+    ]),
+  ),
+});
+export type KinCountryCardState = typeof KinCountryCardState.Type;
+
+export const KinAnswerCountryCardInput = Schema.Struct({
+  orgId: KinOrgId,
+  widgetId: KinWidgetId,
+  answer: Schema.Union([
+    Schema.TaggedStruct("country", { country: KinCountryCode }),
+    Schema.TaggedStruct("not_now", {}),
+  ]),
+});
+export type KinAnswerCountryCardInput = typeof KinAnswerCountryCardInput.Type;
+
 const KIN_FINANCE_WS_METHODS = {
+  undoCreditPayment: "kin.work.undoCreditPayment",
+  unapplyCredit: "kin.work.unapplyCredit",
+  draftCreditNote: "kin.work.draftCreditNote",
   lists: "kin.work.lists",
   updateList: "kin.work.updateList",
   dates: "kin.work.dates",
@@ -663,6 +723,7 @@ const KIN_FINANCE_WS_METHODS = {
   files: "kin.work.files",
   companyProfile: "kin.work.companyProfile",
   setCompanyProfile: "kin.work.setCompanyProfile",
+  answerCountryCard: "kin.work.answerCountryCard",
   issue: "kin.work.issue",
   nextNumber: "kin.work.nextNumber",
   void: "kin.work.void",
@@ -675,6 +736,21 @@ const KIN_FINANCE_WS_METHODS = {
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 // Owner only, on the server; a chat-only session is refused before any handler runs.
 export const KinFinanceRpcs = [
+  Rpc.make(KIN_FINANCE_WS_METHODS.undoCreditPayment, {
+    payload: KinIssueInput,
+    success: CreditKey,
+    error,
+  }),
+  Rpc.make(KIN_FINANCE_WS_METHODS.unapplyCredit, {
+    payload: KinIssueInput,
+    success: CreditKey,
+    error,
+  }),
+  Rpc.make(KIN_FINANCE_WS_METHODS.draftCreditNote, {
+    payload: KinDraftCreditNoteInput,
+    success: CreditKey,
+    error,
+  }),
   Rpc.make(KIN_FINANCE_WS_METHODS.exportLink, {
     payload: KinExportLinkInput,
     success: KinExportLink,
@@ -725,6 +801,11 @@ export const KinFinanceRpcs = [
     success: KinCompanyProfile,
     error,
   }),
+  Rpc.make(KIN_FINANCE_WS_METHODS.answerCountryCard, {
+    payload: KinAnswerCountryCardInput,
+    success: KinCompanyProfile,
+    error,
+  }),
   Rpc.make(KIN_FINANCE_WS_METHODS.issue, {
     payload: KinIssueInput,
     success: KinIssueResult,
@@ -754,6 +835,9 @@ export const KinFinanceRpcs = [
 ] as const;
 
 export const KIN_FINANCE_RPC_SCOPES = {
+  [KIN_FINANCE_WS_METHODS.undoCreditPayment]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.unapplyCredit]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.draftCreditNote]: AuthKinChatScope,
   [KIN_FINANCE_WS_METHODS.lists]: AuthKinChatScope,
   // What a list is, like what a lead is for, is an owner setting.
   [KIN_FINANCE_WS_METHODS.updateList]: AuthKinChatScope,
@@ -765,6 +849,7 @@ export const KIN_FINANCE_RPC_SCOPES = {
   // Bank details: read and written only where owner settings are.
   [KIN_FINANCE_WS_METHODS.companyProfile]: AuthKinChatScope,
   [KIN_FINANCE_WS_METHODS.setCompanyProfile]: AuthKinChatScope,
+  [KIN_FINANCE_WS_METHODS.answerCountryCard]: AuthKinChatScope,
   // A number is an entry change, like a payment; nothing leaves the host.
   [KIN_FINANCE_WS_METHODS.issue]: AuthKinChatScope,
   [KIN_FINANCE_WS_METHODS.nextNumber]: AuthKinChatScope,

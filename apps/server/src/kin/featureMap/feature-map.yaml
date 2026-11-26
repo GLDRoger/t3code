@@ -29,6 +29,17 @@ features:
       - packages/client-runtime/src/kin/kinChatListRows.test.ts
       - apps/server/src/kin/chat/KinChatService.test.ts
 
+  - id: chat-desktop-notifications
+    name: Desktop notices for messages and cards while Kin is not in front
+    tab: chats
+    web: [home]
+    roles: { owner: web, co_owner: web, lead: web, member: web }
+    note: Electron only. The page follows kin.push.desktopNotices on the current host; a plain browser keeps its own alerts.
+    proof:
+      - packages/client-runtime/src/kin/kinMessageAlerts.test.ts
+      - apps/server/src/kin/push/KinPushSender.test.ts
+      - apps/desktop/src/kin/kinDesktopLink.test.ts
+
   - id: chat-agent
     name: Talk to an agent
     tab: chats
@@ -224,7 +235,15 @@ features:
     note: >-
       Through the agent, which reads repos, PRs and runs with gh and posts as Kin's GitHub App
       where it is installed, else as the owner's login (Settings, Connections).
-    tools: [kin_github_review, kin_github_review_ask, kin_github_link, kin_github_watch]
+    tools:
+      [
+        kin_github_review,
+        kin_github_diff,
+        kin_github_read,
+        kin_github_review_ask,
+        kin_github_link,
+        kin_github_watch,
+      ]
     proof:
       - apps/server/src/kin/github/GitHubWatch.test.ts
       - apps/server/src/kin/github/reviewAsk.test.ts
@@ -1116,7 +1135,8 @@ features:
     note: >-
       The owner level, and a project's lead for that project's docs, change a section by hand
       (kin.docs.editSection); history keeps both versions. Anyone else's Suggest a change opens
-      their chat with the team agent, the doc attached.
+      their chat with the team agent, the doc attached. A teammate writing a doc chooses who reads
+      it (kin.docs.readers) and owners may widen it.
     tools: [doc_create, doc_read, doc_edit, doc_rewrite, doc_link]
     proof:
       - .agents/skills/verify-kin/scripts/member-suggests-playbook.sh
@@ -1817,6 +1837,7 @@ unlisted:
   "web:?person": Starts Tasks narrowed to what one person holds, from their page's See all in Tasks; not a screen.
   "web:?section": Scrolls the open doc to a section; not a screen.
   "web:?from": The base version of the compare view (`?changes`); not a screen.
+  "web:?invalidLink": Keeps the one-line "doesn't exist or isn't shared with you" notice over the place after a link held a malformed key; not a screen.
   "rpc:kin.lead.access.list": Served; no client shows an agent's access grants yet.
   "rpc:kin.lead.access.grant": Served; no client grants an agent access yet.
   "rpc:kin.lead.access.revoke": Served; no client revokes an agent's access yet.

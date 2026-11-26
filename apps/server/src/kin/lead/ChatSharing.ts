@@ -179,9 +179,9 @@ export const tellStopped = Effect.fn("KinChatSharing.tellStopped")(function* (in
 });
 
 /**
- * In the transaction that removes `personId` from the org: every event that is theirs (their
- * message, tap or reaction, work done for them, anything in their direct chats) expires, turns
- * holding one abort, and those chats' lead threads end. Returns what the caller runs after commit.
+ * In the org removal transaction: aborts turns holding events for the removed person and ends
+ * lead threads for the person's direct chats. Marks replied events in aborted turns done before
+ * expiring the remaining queued, failed, or aborted claims. Returns what runs after commit.
  */
 export const onPersonRemoved = Effect.fn("KinChatSharing.onPersonRemoved")(function* (input: {
   readonly orgId: KinOrgId;
@@ -209,12 +209,14 @@ export const onPersonRemoved = Effect.fn("KinChatSharing.onPersonRemoved")(funct
       AND EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = w.org_id
         AND e.agent_id = w.agent_id AND e.wakeup_id = w.wakeup_id AND ${theirs})
     RETURNING agent_id AS "agentId", wakeup_id AS "wakeupId"`;
-  // Claimed by a turn just aborted, too: its finish requeues what it held, and these never run.
+  const heldByAborted = sql`e.state = 'claimed' AND EXISTS (SELECT 1 FROM kin_wakeups w
+    WHERE w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id AND w.aborted_at IS NOT NULL)`;
+  yield* sql`UPDATE kin_events AS e SET state = 'done'
+    WHERE e.org_id = ${input.orgId} AND ${theirs} AND ${heldByAborted} AND e.replied_at IS NOT NULL`;
   const expired = yield* sql<{ agentId: KinAgentId; heldBy: string | null }>`
     UPDATE kin_events AS e SET state = 'expired'
     WHERE e.org_id = ${input.orgId} AND ${theirs} AND (e.state IN ('queued', 'failed')
-      OR (e.state = 'claimed' AND EXISTS (SELECT 1 FROM kin_wakeups w
-        WHERE w.org_id = e.org_id AND w.wakeup_id = e.wakeup_id AND w.aborted_at IS NOT NULL)))
+      OR (${heldByAborted}))
     RETURNING agent_id AS "agentId", held_by AS "heldBy"`;
   const threads = yield* endChatThreads(
     sql,

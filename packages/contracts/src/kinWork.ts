@@ -362,6 +362,11 @@ export const KIN_TAKEN_DEFAULT_FIELD = "kin:default";
  * which stopped the task waiting on them: the question's id in `to`.
  */
 export const KIN_DISMISSED_FIELD = "kin:dismissed";
+/**
+ * The field a change carries when the person a task waited on said on Kin's card that what it
+ * waited on is done, which put it back to open: the card's id in `to`.
+ */
+export const KIN_WAITED_DONE_FIELD = "kin:waited";
 /** The field a hand-over carries for someone who left the team: `person:<id>` in `from`. */
 export const KIN_LEFT_FIELD = "kin:left";
 /** The field a deal's hand-over carries for each next step that went with it: the step's key in `to`. */
@@ -446,6 +451,10 @@ export type KinRecordAfterReading = typeof KinRecordAfterReading.Type;
 
 /** An entry with everything the entry sheet shows. */
 export const KinRecordDetail = Schema.Struct({
+  creditOffer: Schema.optionalKey(
+    Schema.Struct({ receipt: KinRecordKey, amount: KinMoney, receivedOn: KinDay }),
+  ),
+  credited: Schema.optionalKey(KinMoney),
   ...KinRecord.fields,
   notes: KinText,
   /** A task's milestone; absent with none, and from older hosts. */
@@ -1178,6 +1187,8 @@ export const KinPartyRow = Schema.Struct({
   tags: Schema.optional(Tags),
   /** The contact whose name the list's search found, when the client's own name didn't have it. */
   contact: Schema.optional(KinTrimmedText),
+  /** Issued invoices' balances the reader sees, by currency; absent when they owe nothing. */
+  owed: Schema.optional(KinMoneyTotals),
   /** The soonest open entry we owe them. */
   next: Schema.NullOr(
     Schema.Struct({
@@ -1200,6 +1211,7 @@ export const KinPartyDetail = Schema.Struct({
   address: Schema.NullOr(KinText),
   /** Its GSTIN, when it has one; its invoices are taxed by its state. */
   gstin: Schema.NullOr(KinText),
+  accountsForTax: Schema.optional(Schema.Boolean),
   /** Where it is supplied: an Indian state, or a country outside India for an export. */
   placeOfSupply: Schema.NullOr(KinText),
   /** Which fields here are sensitive whatever `sensitive` says. */
@@ -1359,6 +1371,9 @@ export type KinPartyCan = typeof KinPartyCan.Type;
 
 /** The client page. `weOwe` is soonest due first; `theyOwe` is overdue first, then soonest. */
 export const KinPartyPage = Schema.Struct({
+  credit: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ key: KinRecordKey, amount: KinMoney, receivedOn: KinDay })),
+  ),
   party: KinPartyDetail,
   /** Active first, then by name. */
   contacts: Schema.Array(KinContact),
@@ -1593,6 +1608,8 @@ export const KinPartyCreateInput = Schema.Struct({
   terms: Schema.optional(Notes),
   address: Schema.optional(Address),
   gstin: Schema.optional(KinGstin),
+  accountsForTax: Schema.optional(Schema.Boolean),
+  taxNumber: Schema.optional(Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(100)))),
   /** A state from `KIN_GST_STATES`, or a country for an export. */
   placeOfSupply: Schema.optional(PlaceOfSupply),
   /** Labels everything pointing at it sensitive too. */
@@ -1625,6 +1642,8 @@ export const KinPartyUpdateInput = Schema.Struct({
   address: Schema.optional(Schema.NullOr(Address)),
   /** `null` clears these two. */
   gstin: Schema.optional(Schema.NullOr(KinGstin)),
+  accountsForTax: Schema.optional(Schema.Boolean),
+  taxNumber: Schema.optional(Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(100)))),
   placeOfSupply: Schema.optional(Schema.NullOr(PlaceOfSupply)),
   sensitive: Schema.optional(Schema.Boolean),
   active: Schema.optional(Schema.Boolean),

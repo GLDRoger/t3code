@@ -16,7 +16,8 @@ import { ghApiLayer } from "../../github/GitHubWatch.ts";
 import { agentsView, gitHubApp } from "../../github/KinGitHubApp.ts";
 import { isMemoryRepo, repoList, setRepo } from "../../github/githubWatchStore.ts";
 import { linkGithubItem } from "../../github/githubLink.ts";
-import { askReview, postReview } from "../../github/reviewAsk.ts";
+import { readRepo } from "../../github/repoRead.ts";
+import { askReview, postReview, readReviewDiff } from "../../github/reviewAsk.ts";
 import { SHARED_REFUSAL } from "../Audience.ts";
 import { toolAdmitted } from "../SharedTools.ts";
 import { laneFor } from "../../reply/replyLane.ts";
@@ -516,6 +517,19 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       });
     }, Effect.mapError(failure)),
   ),
+  kin_github_diff: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.githubDiff")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      yield* admitted(lead, "kin_github_diff", input);
+      return yield* readReviewDiff(lead, input).pipe(Effect.provide(ghApiLayer));
+    }, Effect.mapError(failure)),
+  ),
+  kin_github_read: McpToolAccess.readsAsCaller(
+    Effect.fn("KinLeadToolkit.githubRead")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      return yield* readRepo(lead, input);
+    }, Effect.mapError(failure)),
+  ),
   kin_github_review_ask: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.githubReviewAsk")(function* (input) {
       const services = Option.getOrThrow((yield* KinServer).services);
@@ -551,7 +565,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           return yield* new KinChatError({
             reason: "not_found",
             message:
-              "Kin doesn't watch that repo: it isn't the owner's or his organisations', or GitHub isn't connected.",
+              "Kin doesn't watch that repo: it isn't the owner's or their organisations', or GitHub isn't connected.",
           });
         const changed =
           input.watch === undefined && input.mentions === undefined

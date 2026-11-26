@@ -21,7 +21,7 @@ import {
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
-import { kinEstimate, type KinRates } from "./kinCurrency.ts";
+import { kinEstimate, kinRateDay, type KinRates } from "./kinCurrency.ts";
 import {
   afterLabel,
   kinBankKnownText,
@@ -125,7 +125,7 @@ export const KIN_OUTLOOK = {
   sayWho: "Say who paid",
   sayTitle: (address: string) => `Who is ${address}?`,
   sayDetail: (count: number, amount: string) =>
-    `An import says this address paid ${amount} across ${count} expense${count === 1 ? "" : "s"} from their own money. Until you say, Money counts them as the company's own spending.`,
+    `An import says this address paid ${amount} across ${count} expense${count === 1 ? "" : "s"} with personal money. Until you say, Money counts them as the company's own spending.`,
   paidBy: "Teammate",
   pickPerson: "Pick a teammate",
   settledQuestion: "Has the company paid them back?",
@@ -150,6 +150,8 @@ export const KIN_BUDGETS = {
   save: "Save budget",
   category: "Category",
   anyCategory: "Every category",
+  /** No category and no project yet: a budget needs one, so "every category" isn't a choice made. */
+  pickCategory: "Pick a category",
   project: "Project",
   anyProject: "Every project",
   limit: "Monthly limit",
@@ -166,6 +168,18 @@ export const KIN_BUDGETS = {
     `+ ${amounts.join(" and ")} not counted in this ${currency} budget`,
   removedProject: "a removed project",
 };
+
+/** A total across currencies at rates the company was paid at; never an exact figure. */
+const KIN_MONEY_ABOUT = {
+  /** "About ₹1,30,000 in all · approximate, at the rate of a payment on Nov 12, 2026". */
+  inAll: (total: string, days: ReadonlyArray<string>) =>
+    `About ${total} in all · approximate, at ${days.length === 1 ? "the rate of a payment" : "the rates of payments"} on ${days.map(kinRateDay).join(" and ")}`,
+};
+
+export const kinMoneyAboutText = (
+  about: { readonly total: KinSignedMoney; readonly rateDays: ReadonlyArray<string> } | undefined,
+) =>
+  about === undefined ? null : KIN_MONEY_ABOUT.inAll(kinMoneyText(about.total), about.rateDays);
 
 export const KIN_QUOTES = {
   title: "Quotes",
@@ -207,13 +221,22 @@ export const KIN_LINES = {
   quantity: "Qty",
   unit: "Unit",
   rate: "Rate",
+  tax: "Tax %",
+  taxDetail: (rate?: string | null) =>
+    rate === ""
+      ? "Tax %: leave empty for the invoice's usual rate, 0 for no tax."
+      : rate != null && rate.trim() !== ""
+        ? `Tax %: leave empty for ${rate.trim()}%, 0 for no tax.`
+        : "Tax %: leave empty for none, or give a line its own rate.",
   add: "Add line",
   remove: "Remove line",
   badSac: (row: number) => `Line ${row}: a SAC or HSN code is 4 to 8 digits.`,
   badQuantity: (row: number) => `Line ${row}: enter a quantity like 3 or 2.5.`,
   badRate: (row: number) => `Line ${row}: enter a rate like 25,000.`,
+  badTax: (row: number) => `Line ${row}: enter the tax rate as a number, or 0 for no tax.`,
   noDescription: (row: number) => `Line ${row}: say what it is.`,
   mixed: "Every line is in the same currency as the invoice.",
+  clientAccounts: "The client accounts for the tax themselves: these lines carry none.",
 };
 
 const isSac = Schema.is(KinSacCode);
@@ -535,6 +558,8 @@ export interface KinBudgetView {
   readonly estimate: string | null;
   /** Spending on it in other currencies, which `spent` leaves out. */
   readonly notCounted: string | null;
+  /** All of it in the home currency, at rates the company was paid at. */
+  readonly about: string | null;
   readonly budget: KinMoneyBudget;
 }
 
@@ -579,6 +604,7 @@ export function kinBudgetsView(
                 budget.notCounted.map((one) => kinMoneyText(one.spent)),
                 budget.limit.currency,
               ),
+        about: kinMoneyAboutText(budget.about),
         budget,
       };
     })
@@ -602,6 +628,17 @@ export interface KinBudgetDraft {
   readonly project: KinWorkRef | null;
   readonly limit: string;
 }
+
+/** The category row's value: "Every category" only beside a project, which makes it a budget. */
+export const kinBudgetCategoryShown = (
+  draft: KinBudgetDraft,
+  label: (category: string) => string,
+) =>
+  draft.category !== null
+    ? label(draft.category)
+    : draft.project === null
+      ? KIN_BUDGETS.pickCategory
+      : KIN_BUDGETS.anyCategory;
 
 export const kinBudgetDraftOf = (budget: KinMoneyBudget | null): KinBudgetDraft => ({
   category: budget?.category ?? null,
@@ -761,6 +798,7 @@ export interface KinLineDraft {
   readonly quantity: string;
   readonly unit: string;
   readonly rate: string;
+  readonly taxRate: string;
 }
 
 export const KIN_EMPTY_LINE: KinLineDraft = {
@@ -769,6 +807,7 @@ export const KIN_EMPTY_LINE: KinLineDraft = {
   quantity: "1",
   unit: "",
   rate: "",
+  taxRate: "",
 };
 
 export const kinLineDrafts = (lines: ReadonlyArray<KinDocumentLine> | null): KinLineDraft[] =>
@@ -778,9 +817,11 @@ export const kinLineDrafts = (lines: ReadonlyArray<KinDocumentLine> | null): Kin
     quantity: line.quantity,
     unit: line.unit ?? "",
     rate: line.rate,
+    taxRate: line.taxRate ?? "",
   }));
 
 const QUANTITY = /^\d{1,9}(\.\d{1,3})?$/;
+export const KIN_TAX_RATE = /^(?:100|\d{1,2}(?:\.\d{1,3})?)$/;
 
 /**
  * Lines as the template takes them, or the first problem. Rows left wholly empty are dropped; none
@@ -789,11 +830,17 @@ const QUANTITY = /^\d{1,9}(\.\d{1,3})?$/;
 export function kinLinesInput(
   drafts: ReadonlyArray<KinLineDraft>,
   currency: string,
+  options?: { readonly tax?: boolean; readonly keepStoredTax?: boolean },
 ):
   | { readonly ok: true; readonly lines: ReadonlyArray<KinDocumentLine> | null }
   | { readonly ok: false; readonly problem: string } {
+  const tax = options?.tax !== false;
   const filled = drafts.filter(
-    (one) => one.description.trim() !== "" || one.sac.trim() !== "" || one.rate.trim() !== "",
+    (one) =>
+      one.description.trim() !== "" ||
+      one.sac.trim() !== "" ||
+      one.rate.trim() !== "" ||
+      (tax && one.taxRate.trim() !== ""),
   );
   const lines: KinDocumentLine[] = [];
   for (const [index, draft] of filled.entries()) {
@@ -808,6 +855,9 @@ export function kinLinesInput(
     const rate: KinMoney | null = kinParseMoney(draft.rate, currency);
     if (rate === null) return { ok: false, problem: KIN_LINES.badRate(row) };
     if (rate.currency !== currency) return { ok: false, problem: KIN_LINES.mixed };
+    const taxRate = tax ? draft.taxRate.trim() : options?.keepStoredTax ? draft.taxRate : "";
+    if (taxRate !== "" && !KIN_TAX_RATE.test(taxRate))
+      return { ok: false, problem: KIN_LINES.badTax(row) };
     const unit = draft.unit.trim().slice(0, 20);
     lines.push({
       description: description.slice(0, 300),
@@ -815,6 +865,7 @@ export function kinLinesInput(
       quantity,
       ...(unit === "" ? {} : { unit }),
       rate: kinMoneyText(rate, true),
+      ...(taxRate === "" ? {} : { taxRate }),
     });
   }
   return { ok: true, lines: lines.length === 0 ? null : lines };

@@ -139,6 +139,7 @@ const COMPANY_KEYS = [
   "sac",
   "lutNumber",
   "lutDate",
+  "withheldTaxLabel",
 ];
 const BANK_KEYS = ["accountName", "accountNumber", "ifsc", "bankName", "branch", "upi"];
 const BRAND_KEYS = ["primaryColor", "secondaryColor", "font", "footer"];

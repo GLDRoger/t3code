@@ -5,6 +5,7 @@ import {
   KinPersonId,
   KinRecordId,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -14,6 +15,7 @@ import { cappedRows } from "./capped.ts";
 import { billedParty } from "../../work/billTo.ts";
 import { budgetsAnswer, budgetsView } from "../../work/budgets.ts";
 import { noticeDay } from "../../work/crm.ts";
+import { companyCashOut } from "../../work/reimbursement.ts";
 import { formatMoneyPlain } from "../../work/money.ts";
 import {
   countedEntry,
@@ -24,6 +26,7 @@ import {
 } from "../../work/recordRows.ts";
 import { DAY_MS, thresholds, toMs } from "../thresholds.ts";
 import {
+  billPaidSeenSenses,
   paymentSeenSenses,
   repaidSeenSenses,
   statementSenses,
@@ -86,6 +89,31 @@ const billingScope = (row: EntryRow & { fieldsJson: string | null }, registerId:
       : billedParty({ registerId, fieldsJson: row.fieldsJson }, undefined)?.name;
   return { ...entryScope(row), ...(billTo === undefined ? {} : { billTo }) };
 };
+
+/** notice_due's consequence; `ago` is how long its day has passed, once it has. */
+export const noticeConsequence = (input: {
+  name: string;
+  title: string;
+  by: number;
+  renews: number;
+  zone: string;
+  ago?: string;
+}) => {
+  const when = (ms: number) =>
+    formatKinWhen(ms, "day", { zone: input.zone, locale: KIN_TEXT_LOCALE });
+  return input.ago === undefined
+    ? `${input.name}: notice by ${when(input.by)} if the contract changes; ${input.title} renews ${when(input.renews)}.`
+    : `${input.name}: notice was due by ${when(input.by)}, ${input.ago}; ${input.title} renews ${when(input.renews)}.`;
+};
+
+export const billDueConsequence = (
+  amount: string,
+  vendor: string,
+  day: string,
+  days: number,
+  late: boolean,
+) =>
+  `${amount} to ${vendor}, ${late ? `was due ${day}, ${daysText(days)} ago` : days === 0 ? "due today" : `due ${day}, in ${daysText(days)}`}. It is marked paid by an owner-level tap on its page in Money.`;
 
 export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: SenseContext) {
   const sql = yield* SqlClient.SqlClient;
@@ -333,8 +361,6 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
     // 31 December, is told from 17 December.
     const from = startOfDay(day, ctx.zone) - toMs(heads);
     if (at > renews || from > at) continue;
-    const when = (ms: number) =>
-      formatKinWhen(ms, "day", { zone: ctx.zone, locale: KIN_TEXT_LOCALE });
     const name = project.clientTitle ?? project.title;
     const looks = [
       { kind: project.clientOwnerKind, id: project.clientOwnerId },
@@ -356,10 +382,14 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
             },
       scope: entryScope({ ...project, projectKey: project.key, projectTitle: project.title }),
       since: iso(from),
-      consequence:
-        by < at
-          ? `${name}: notice was due by ${when(by)}, ${daysAgoText(ctx, by)}; ${project.title} renews ${when(renews)}.`
-          : `${name}: notice by ${when(by)} if the contract changes; ${project.title} renews ${when(renews)}.`,
+      consequence: noticeConsequence({
+        name,
+        title: project.title,
+        by,
+        renews,
+        zone: ctx.zone,
+        ...(by < at ? { ago: daysAgoText(ctx, by) } : {}),
+      }),
       actor:
         looks === undefined
           ? { _tag: "owner" }
@@ -399,9 +429,49 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
       wake: sense === "budget_over" ? "now" : "brief",
     });
   });
+  const today = dayOf(ctx, at);
+  const shiftDay = (day: string, days: number) =>
+    DateTime.formatIsoDate(DateTime.add(DateTime.makeUnsafe(day), { days }));
+  const through = endOfDay(shiftDay(today, 3), ctx.zone);
+  const bills = yield* cappedRows<EntryRow & { billDueAt: number; vendor: string | null }>(
+    ctx,
+    facts,
+    { sense: "bill_due", plural: "bills to pay", access: "money" },
+    sql`SELECT ${entryColumns(sql)}, COALESCE(r.due_at, r.date_at) AS "billDueAt",
+      json_extract(r.fields_json, '$.vendor') AS vendor
+    FROM ${entryJoins(sql)}
+    WHERE r.org_id = ${orgId} AND r.register_id = 'expenses' AND r.state = 'open'
+      AND r.amount_minor IS NOT NULL AND ${countedEntry(sql)} AND ${companyCashOut(sql)}
+      AND COALESCE(r.due_at, r.date_at) <= ${through}
+    ORDER BY "billDueAt", r.key`,
+  );
+  for (const row of bills) {
+    const amount = amountText(row);
+    if (amount === undefined) continue;
+    const day = dayOf(ctx, row.billDueAt);
+    const days = Math.round((Date.parse(day) - Date.parse(today)) / DAY_MS);
+    const late = days < 0;
+    facts.push(
+      moneyFact(ctx, row, {
+        sense: "bill_due",
+        key: `bill_due:${row.key}:${late ? "due" : "soon"}=${day}`,
+        since: iso(startOfDay(shiftDay(day, late ? 1 : -3), ctx.zone)),
+        measure: measure(Math.abs(days), { value: 3, unit: "days", from: { _tag: "default" } }),
+        consequence: billDueConsequence(
+          amount,
+          (row.vendor ?? row.title).slice(0, 200),
+          day,
+          Math.abs(days),
+          late,
+        ),
+        wake: "sweep",
+      }),
+    );
+  }
   facts.push(...(yield* statementSenses(ctx)));
   facts.push(...(yield* paymentSeenSenses(ctx)));
   facts.push(...(yield* repaidSeenSenses(ctx)));
+  facts.push(...(yield* billPaidSeenSenses(ctx)));
   const unreadable = yield* unreadableBankAlerts(ctx, ctx.finance);
   if (unreadable !== undefined) facts.push(unreadable);
   return facts;

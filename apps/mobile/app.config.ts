@@ -373,6 +373,8 @@ const config: ExpoConfig = {
       },
     ],
     "expo-secure-store",
+    // Kin opens shared PDFs, photos and spreadsheets on its import screens.
+    ...(isKinOnly ? ["./plugins/withKinOpensFiles.cjs"] : []),
     "expo-sqlite",
     ...(shipsCodingExtensions
       ? ["./plugins/withShareExtensionDisplayName.cjs", sharingPlugin]

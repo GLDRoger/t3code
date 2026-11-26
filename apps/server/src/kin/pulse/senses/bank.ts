@@ -3,15 +3,18 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { dayIn, formatMoneyPlain, monthOf, shiftMonth } from "../../work/money.ts";
+import { invoiceCandidates } from "../../work/statements/statementReview.ts";
+import { dayIn, formatMoney, formatMoneyPlain, monthOf, shiftMonth } from "../../work/money.ts";
 import { endOfDay, owedInvoices, recordName, startOfDay } from "../../work/recordRows.ts";
 import { bankKnown, shortDay } from "../../work/statements/bankKnown.ts";
+import { billMatches, billPaidFactKey } from "../../work/statements/debitBill.ts";
 import { repaidMatches } from "../../work/statements/debitRepaid.ts";
 import {
   type CreditMatch,
   type CreditPair,
   creditMatches,
   pairReason,
+  rateMoney,
 } from "../../work/statements/invoiceCredits.ts";
 import { DAY_MS, threshold } from "../thresholds.ts";
 import {
@@ -129,6 +132,10 @@ const CONSEQUENCE_MAX = 500;
 const plain = (minor: number, currency: string) => formatMoneyPlain({ minor, currency });
 const creditText = (credit: CreditMatch["credit"]) =>
   `${credit.key}, ${plain(credit.amountMinor, credit.currency)} received ${shortDay(credit.date)}`;
+const creditMatchText = (pair: CreditPair) =>
+  "rate" in pair
+    ? `${pair.credit.key}, ${rateMoney(pair.received)} received ${shortDay(pair.credit.date)}`
+    : creditText(pair.credit);
 const invoiceText = (pair: CreditPair) =>
   `${recordName(pair.invoice.key, pair.invoice.number)}: ${pairReason(pair)}`;
 
@@ -142,6 +149,28 @@ const fitted = (build: (shown: number) => string, count: number) => {
 };
 const listed = (items: ReadonlyArray<string>, shown: number) =>
   `${items.slice(0, shown).join("; ")}${items.length > shown ? `${shown > 0 ? "; " : ""}and ${items.length - shown} more` : ""}`;
+
+export const overpaymentConsequence = (input: {
+  readonly key: string;
+  readonly day: string;
+  readonly currency: string;
+  readonly received: number;
+  readonly owed: number;
+  readonly client: string;
+  readonly reason: string;
+  readonly others: ReadonlyArray<{ readonly key: string; readonly owed: number }>;
+}) => {
+  const { key, day, currency, received, owed, client, reason } = input;
+  const amount = (minor: number) => formatMoney({ minor, currency });
+  const others = input.others.map((one) => `${one.key} (${amount(one.owed)})`);
+  return fitted(
+    (shown) =>
+      `${key}, ${amount(received)} received ${shortDay(day)}, is more than the ${amount(owed)} this invoice owes: ${reason}. Recorded, it settles it and keeps ${amount(received - owed)} as ${client}'s credit.${
+        others.length === 0 ? "" : ` ${client}'s other open invoices: ${listed(others, shown)}.`
+      } It isn't recorded until it is confirmed on a card.`,
+    Math.min(4, others.length),
+  );
+};
 
 /**
  * payment_seen: one fact per unexplained credit the matcher offers as an open invoice's payment,
@@ -166,6 +195,9 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
           WHERE r.org_id = ${ctx.orgId} AND r.record_id IN ${sql.in(ids)}
           ORDER BY r.key`).map((row) => [row.recordId, row]),
   );
+  const invoices = matches.some((one) => one.first.some((pair) => pair.candidate.fit === "over"))
+    ? yield* invoiceCandidates(ctx.orgId, undefined)
+    : [];
   return matches.flatMap(({ credit, ranked, first }): Array<SensedFact> => {
     const shared = {
       sense: "payment_seen" as const,
@@ -191,7 +223,7 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
           scope: {},
           consequence: fitted(
             (shown) =>
-              `${creditText(credit)}, fits ${first.length} open invoices equally, and Kin can't tell which: ${listed(first.map(invoiceText), shown)}. Nothing is recorded until the owner says which.`,
+              `${creditText(credit)}, fits ${first.length} open invoices equally, and Kin can't tell which: ${listed(first.map(invoiceText), shown)}. Nothing is recorded until one is chosen on a card.`,
             first.length,
           ),
         },
@@ -199,6 +231,40 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
     const best = first[0]!;
     const row = rows.get(best.invoice.recordId);
     if (row === undefined) return [];
+    if (
+      best.candidate.fit === "over" &&
+      best.invoice.client !== null &&
+      best.invoice.clientId != null
+    ) {
+      const { invoice } = best;
+      const others = invoices
+        .filter(
+          (one) =>
+            one.clientId === invoice.clientId &&
+            one.recordId !== invoice.recordId &&
+            one.currency === credit.currency &&
+            one.amountMinor > one.paidMinor &&
+            one.issued !== null,
+        )
+        .map((one) => ({ key: one.key, owed: one.amountMinor - one.paidMinor }));
+      return [
+        {
+          ...shared,
+          subject: entrySubject(row),
+          scope: entryScope(row),
+          consequence: overpaymentConsequence({
+            key: credit.key,
+            day: credit.date,
+            currency: credit.currency,
+            received: credit.amountMinor,
+            owed: invoice.amountMinor - invoice.paidMinor,
+            client: best.invoice.client,
+            reason: pairReason(best),
+            others,
+          }),
+        },
+      ];
+    }
     const others = ranked.slice(1).map(invoiceText);
     const alongside = matches
       .filter(
@@ -217,7 +283,7 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
         scope: entryScope(row),
         consequence: fitted(
           (shown) =>
-            `${creditText(credit)}, looks like this invoice's payment: ${pairReason(best)}.${
+            `${creditMatchText(best)}, looks like this invoice's payment: ${pairReason(best)}.${
               others.length === 0
                 ? ""
                 : ` It also fits, less closely: ${listed(others, Math.min(shown, others.length))}.`
@@ -287,10 +353,51 @@ export const repaidSeenSenses = Effect.fn("KinPulse.repaidSeenSenses")(function*
           `${paid} and adds up exactly to their ${one ? "oldest owed expense" : `${repays.length} oldest owed expenses`}: ${keysOf(
             repays.map((each) => each.key),
             Math.max(shown, 1),
-          )}. ${one ? "It isn't" : "They aren't"} marked repaid until the owner confirms.`,
+          )}. ${one ? "It isn't" : "They aren't"} marked repaid until it is confirmed on a card.`,
         repays.length,
       ),
       wake: "now",
     };
   });
+});
+
+export const billPaidConsequence = (
+  bankKey: string,
+  amount: string,
+  day: string,
+  billKey: string,
+  vendor: string,
+  due: string,
+) =>
+  `${bankKey}, ${amount} paid ${day}, matches ${billKey}, the bill to pay ${vendor} due ${due}. It isn't marked paid until it is confirmed on a card.`;
+
+export const billPaidSeenSenses = Effect.fn("KinPulse.billPaidSeenSenses")(function* (
+  ctx: SenseContext,
+) {
+  const matches = yield* billMatches(ctx.orgId, ctx.at);
+  return matches.map(({ debit, bill }): SensedFact => ({
+    sense: "bill_paid_seen",
+    family: "money",
+    key: billPaidFactKey(debit.key),
+    subject: {
+      kind: "record",
+      key: debit.key,
+      title: "Bank debit",
+      recordId: KinRecordId.make(debit.recordId),
+    },
+    scope: {},
+    since: iso(Math.min(debit.dateAt, ctx.at)),
+    consequence: billPaidConsequence(
+      debit.key,
+      plain(debit.amountMinor, debit.currency),
+      shortDay(debit.date),
+      bill.key,
+      (bill.vendor ?? bill.title).slice(0, 200),
+      bill.due === null ? "No date" : shortDay(bill.due),
+    ),
+    actor: agentOrOwner(ctx.finance),
+    sensitive: true,
+    wake: "now",
+    extraSection: "money",
+  }));
 });

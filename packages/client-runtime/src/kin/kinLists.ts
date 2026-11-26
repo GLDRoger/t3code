@@ -2,6 +2,7 @@
 import type {
   KinFieldValue,
   KinFileRef,
+  KinListCheck,
   KinListDefinition,
   KinListField,
   KinListGroupBy,
@@ -18,6 +19,7 @@ import type {
   KinRecordDetail,
   KinRecordKey,
   KinRecordState,
+  KinShell,
   KinWorkListInput,
   KinWritableListFieldType,
   KinWorkPrincipal,
@@ -28,6 +30,7 @@ import {
   kinBillToName,
   kinIsBillToField,
 } from "./kinBillTo.ts";
+import { kinListSections } from "./kinShell.ts";
 import {
   formatKinMoney,
   KIN_DEFAULT_HOME_CURRENCY,
@@ -209,7 +212,7 @@ export const KIN_LISTS = {
     payDay: "Received on",
     payNote: "Note",
     payNotePlaceholder: "How it was paid, or its reference",
-    payTds: "TDS deducted",
+    payTds: "Tax withheld",
     paySave: "Record payment",
     takeBack: "Take back",
     takenBack: "Taken back",
@@ -234,7 +237,7 @@ export const KIN_LISTS = {
     filesFailed: "Couldn't load your files.",
     amountPlaceholder: "Amount, and its currency if it isn't yours",
     retiredField: "No longer used",
-    private: "Private. Only owners see this.",
+    private: "Private.",
     gone: {
       title: "This entry isn't here any more",
       detail: "Open its list to see what there is now.",
@@ -290,11 +293,16 @@ export const kinTotalsLines = (totals: KinMoneyTotals, paise = false): ReadonlyA
 
 export const KIN_MONEY_NOTHING = "Nothing";
 
-/** A category as its list labels it, else exactly as it was written and stored. */
+const readableCategory = (category: string) => {
+  const [first] = category;
+  return first === undefined ? "" : first.toUpperCase() + category.slice(first.length);
+};
+
+/** A category as its list labels it, else its key with an initial capital. */
 export const kinCategoryLabel = (
   category: string,
   def?: Pick<KinListDefinition, "categoryLabels"> | null,
-) => def?.categoryLabels?.[category] ?? category;
+) => def?.categoryLabels?.[category] ?? readableCategory(category);
 
 /** "Today" reads as "today" after a label; a date keeps its capitals. */
 export const afterLabel = (when: string) =>
@@ -496,16 +504,8 @@ export function kinListWatches(
   def: Pick<KinListDefinition, "fields" | "check" | "remindOn" | "dateLabel">,
 ): ReadonlyArray<string> {
   const label = (key: string) => def.fields.find((field) => field.key === key)?.label ?? key;
-  const check = def.check;
-  const other = check === undefined ? undefined : (check.below ?? check.above);
-  const warns =
-    check === undefined || other === undefined
-      ? []
-      : [
-          `Kin warns when ${label(check.field)} is ${check.below === undefined ? "above" : "below"} ${
-            typeof other === "number" ? String(other) : label(other)
-          }`,
-        ];
+  const rule = kinListCheckWords(def);
+  const warns = rule === null ? [] : [`Kin warns when ${rule}`];
   const remind = def.remindOn;
   const day =
     remind === undefined
@@ -519,6 +519,126 @@ export function kinListWatches(
 }
 
 export const KIN_LIST_WATCHES_CHANGE = "Ask Kin to change this.";
+
+/** What the owner level reads beside a section list's own reminder day and check. */
+export const KIN_LIST_WATCH = {
+  remindOn: "Remind on",
+  notSet: "Not set",
+  due: "Due date",
+  ownDate: "Its date",
+  warnWhen: "Warn when",
+  change: "Change",
+  stop: "Stop warning",
+  field: "Number",
+  side: "Is",
+  below: "below",
+  above: "above",
+  compare: "Compared with",
+  aNumber: "A number",
+  number: "The number",
+  needsNumber: "Type the number to compare with, such as 10.",
+  save: "Save",
+  cancel: "Cancel",
+};
+
+/** "On hand is below Reorder point": a list's check in words, or null when it has none. */
+export function kinListCheckWords(def: Pick<KinListDefinition, "fields" | "check">): string | null {
+  const check = def.check;
+  const other = check === undefined ? undefined : (check.below ?? check.above);
+  if (check === undefined || other === undefined) return null;
+  const label = (key: string) => def.fields.find((field) => field.key === key)?.label ?? key;
+  return `${label(check.field)} is ${check.below === undefined ? KIN_LIST_WATCH.above : KIN_LIST_WATCH.below} ${
+    typeof other === "number" ? String(other) : label(other)
+  }`;
+}
+
+const liveFields = (def: Pick<KinListDefinition, "fields">, type: KinListField["type"]) =>
+  def.fields.filter((field) => field.type === type && field.retired !== true);
+
+/**
+ * The days a section list can remind on, as the owner level picks them, and which one it is now.
+ * The due day sends null: the host always watches it, so it is what nothing stored means.
+ */
+export function kinListRemindChoices(
+  def: Pick<KinListDefinition, "fields" | "remindOn" | "dueLabel" | "dateLabel">,
+) {
+  const choices: ReadonlyArray<{
+    readonly id: string;
+    readonly label: string;
+    readonly remindOn: string | null;
+  }> = [
+    { id: "due", label: def.dueLabel ?? KIN_LIST_WATCH.due, remindOn: null },
+    { id: "own", label: def.dateLabel ?? KIN_LIST_WATCH.ownDate, remindOn: "date" },
+    ...liveFields(def, "date").map((field) => ({
+      id: `field:${field.key}`,
+      label: field.label,
+      remindOn: field.key,
+    })),
+  ];
+  const current =
+    def.remindOn === undefined
+      ? "due"
+      : (choices.find((one) => one.id !== "own" && one.remindOn === def.remindOn)?.id ??
+        (def.remindOn === "date" ? "own" : "due"));
+  return { choices, current };
+}
+
+/** A check being changed: which number, below or above, and another number field ("") or a number. */
+export interface KinListCheckDraft {
+  readonly field: string;
+  readonly side: "below" | "above";
+  readonly other: string;
+  readonly number: string;
+}
+
+/** The number fields a check can compare. */
+export const kinListCheckFields = (def: Pick<KinListDefinition, "fields">) =>
+  liveFields(def, "number").map((field) => ({ key: field.key, label: field.label }));
+
+/** The check as it is, to change, or the first number field below a number when there is none. */
+export function kinListCheckDraftOf(
+  def: Pick<KinListDefinition, "fields" | "check">,
+): KinListCheckDraft {
+  const check = def.check;
+  const other = check === undefined ? undefined : (check.below ?? check.above);
+  if (check === undefined || other === undefined)
+    return { field: kinListCheckFields(def)[0]?.key ?? "", side: "below", other: "", number: "" };
+  return {
+    field: check.field,
+    side: check.below === undefined ? "above" : "below",
+    other: typeof other === "number" ? "" : other,
+    number: typeof other === "number" ? String(other) : "",
+  };
+}
+
+/** What a draft sends as the list's check; the host refuses a field that isn't a number. */
+export function kinListCheckInput(
+  draft: KinListCheckDraft,
+):
+  | { readonly ok: true; readonly check: KinListCheck }
+  | { readonly ok: false; readonly problem: string } {
+  const text = draft.number.trim();
+  const value = text === "" ? Number.NaN : Number(text.replaceAll(",", ""));
+  const other = draft.other !== "" ? draft.other : Number.isFinite(value) ? value : null;
+  if (other === null) return { ok: false, problem: KIN_LIST_WATCH.needsNumber };
+  return {
+    ok: true,
+    check:
+      draft.side === "below"
+        ? { field: draft.field, below: other }
+        : { field: draft.field, above: other },
+  };
+}
+
+/**
+ * Whether the owner level sets this list's reminder day and check on its page: a list of the
+ * company's own that is a section, as the host requires. Elsewhere they read the lines only.
+ */
+export const kinListWatchesEditable = (
+  def: Pick<KinListDefinition, "list" | "builtIn">,
+  shell: KinShell | null | undefined,
+  canEdit: boolean,
+) => canEdit && !def.builtIn && kinListSections(shell).some((one) => one.list === def.list);
 
 export interface KinListIndexRow {
   readonly list: KinListId;
@@ -1103,6 +1223,13 @@ export interface KinListRowView {
 }
 
 /** The table's columns: what the definition has, in the order a person reads an entry. */
+/** A list's Client filter, as its Client column: where an entry has a client, or one is picked. */
+export const kinListOffersClients = (
+  records: ReadonlyArray<Pick<KinRecord, "party">>,
+  filter: Pick<KinListFilter, "party" | "noParty">,
+) =>
+  filter.party !== null || filter.noParty || records.some((record) => record.party !== undefined);
+
 export function kinListColumns(
   def: KinListDefinition,
   records: ReadonlyArray<KinRecord>,
@@ -1395,8 +1522,12 @@ export function kinListEntryView(
   const billToName = billsByName
     ? allFields.find((field) => field.key === KIN_BILL_TO_NAME)
     : undefined;
+  // A bill to pay has no paid day yet: its day is when it is due, as Money's To pay counts it.
+  const toPay = item.list === "expenses" && item.state === "open";
+  const dueAt = toPay ? (item.dueAt ?? item.dateAt ?? null) : item.dueAt;
+  const dueAllDay = toPay && item.dueAt === null ? (item.dateAllDay ?? true) : item.dueAllDay;
   const date = whenText(item.dateAt, item.dateAllDay ?? true, names, now);
-  const due = whenText(item.dueAt, item.dueAllDay, names, now);
+  const due = whenText(dueAt, dueAllDay, names, now);
   const categories = [
     ...(def?.categories ?? []),
     ...(item.listCategory === undefined || def?.categories.includes(item.listCategory) === true
@@ -1530,8 +1661,10 @@ export function kinListEntryView(
         ? item.dateAt === undefined
           ? null
           : KIN_DAY
-        : (kinDayLabel(def, kinNotIssued(item)) ?? null),
-    dueDay: kinWorkAllDay(item.dueAt, item.dueAllDay, names),
+        : toPay
+          ? null
+          : (kinDayLabel(def, kinNotIssued(item)) ?? null),
+    dueDay: kinWorkAllDay(dueAt, dueAllDay, names),
     dateDay: kinWorkAllDay(item.dateAt ?? null, item.dateAllDay ?? true, names),
     due,
     date,
@@ -1562,9 +1695,8 @@ export function kinEntryPrivateLine(
   if (names.me === null || (owner._tag === "person" && owner.personId === names.me))
     return KIN_LISTS.entry.private;
   const name = owner._tag === "person" ? names.people.get(owner.personId) : undefined;
-  return name === undefined
-    ? "Private. Only owners see this."
-    : `Private to ${name}. Only owners see this.`;
+  // Who reads it is Share with team's line beside it: a project's lead does too.
+  return name === undefined ? KIN_LISTS.entry.private : `Private to ${name}.`;
 }
 
 type Checked<A> =
@@ -1668,7 +1800,7 @@ export function kinPaymentCheck(
   const tdsText = draft.tds?.trim() ?? "";
   const tds = tdsText === "" ? null : kinParseAmount(tdsText, left.currency);
   if (tdsText !== "" && (tds === null || tds.minor === 0))
-    return { ok: false, problem: "Enter the TDS deducted, like 4,000, or leave it blank." };
+    return { ok: false, problem: "Enter the tax withheld, like 4,000, or leave it blank." };
   // With TDS, the cash received may be left blank: the client kept it all as tax.
   const amount =
     tds !== null && draft.amount.trim() === ""
@@ -1810,8 +1942,11 @@ export function kinListEditInput(
   for (const category of def.categories) {
     const label = (draft.categoryLabels[category] ?? "").trim();
     if (label === kinCategoryLabel(category, def)) continue;
-    // Cleared, or typed back as stored: it shows as stored again.
-    categories[category] = label === "" || label === category ? null : label;
+    // Cleared, or typed back as its default name: clear any stored custom label.
+    categories[category] =
+      label === "" || label === category || label === kinCategoryLabel(category, null)
+        ? null
+        : label;
   }
   const renamed = name !== def.name;
   const payments = draft.payments !== (def.payments === true);

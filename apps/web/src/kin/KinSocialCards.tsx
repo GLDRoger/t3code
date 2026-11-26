@@ -7,6 +7,7 @@ import {
   kinSocialCardTaps,
   kinSocialNoticeShown,
   kinSocialPostActions,
+  kinSocialWeekEyebrow,
   type KinSocialNotice,
   type KinSocialPackView,
   type KinSocialTap,
@@ -27,6 +28,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { CardFrame } from "./KinCards";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
+import { useKinSectionNamed, useKinShell } from "./useKinShell";
 
 const CANT_ACT_TEXT = KIN_DEVICE_COPY.cantAct("browser", "answer");
 
@@ -214,8 +216,10 @@ export function KinSocialWeekCard(props: {
   const nowMs = useNowMinuteMs();
   const { canAct, pending, notice, press } = useSocialTaps(environmentId, week);
   const forClient = week.clientReview;
+  const shell = useKinShell(environmentId);
+  const named = useKinSectionNamed(environmentId);
   return (
-    <CardFrame eyebrow={week.eyebrow} label={week.accessibilityLabel}>
+    <CardFrame eyebrow={kinSocialWeekEyebrow(week.group, shell)} label={week.accessibilityLabel}>
       <p className="font-medium text-foreground">{week.title}</p>
       <ul className="flex flex-col divide-y divide-border">
         {week.posts.map((post) => (
@@ -254,11 +258,11 @@ export function KinSocialWeekCard(props: {
                 aria-busy={pending === "preview"}
                 onClick={() => void press("preview", { actionId: "preview", value: null })}
               >
-                {forClient.previewLabel}
+                {named(forClient.previewLabel)}
               </Button>
             ) : forClient.making ? (
               <span className="text-xs text-muted-foreground" aria-live="polite">
-                {forClient.previewLabel}
+                {named(forClient.previewLabel)}
               </span>
             ) : null}
           </div>
