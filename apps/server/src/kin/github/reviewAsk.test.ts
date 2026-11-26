@@ -1470,6 +1470,8 @@ it.effect(
       const late = "export const lateAfter = (eta: number) => eta + 15 * 60_000;\n";
       const long = Array.from({ length: 3000 }, (_, index) => `const line${index} = ${index};`);
       const huge = `${"x".repeat(99)}\n`.repeat(12_000);
+      const retry =
+        "export const retry = { attempts: 3 }; // retry:3\nexport const wait = (): Promise<void> => Promise.resolve();\n";
       const repoOf = (name: string) => github.world.repos.find((one) => one.full_name === name)!;
       const pull = github.openItem({
         repo: APP,
@@ -1482,6 +1484,7 @@ it.effect(
         main: {
           "README.md": "# App\n",
           "src/alerts/late.ts": late,
+          "src/retry.ts": retry,
           "src/long.ts": `${long.join("\n")}\n`,
           "src/huge.txt": huge,
           "logo.png": "\u0089PNG\r\n\u001a\n\u0000\u0000",
@@ -1713,6 +1716,56 @@ it.effect(
             ref: "the default branch",
             matches: [{ path: "src/alerts/late.ts", fragments: [late.trimEnd()] }],
             next: READ_NEXT.found,
+          },
+        },
+        {
+          name: "code that reads like a qualifier is searched as words",
+          who: "zoya",
+          args: { repo: APP, search: "retry:3" },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            matches: [{ path: "src/retry.ts", fragments: [retry.split("\n")[0]] }],
+            next: READ_NEXT.found,
+          },
+        },
+        {
+          name: "a type is searched as written",
+          who: "zoya",
+          args: { repo: APP, search: "Promise<void>" },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            matches: [{ path: "src/retry.ts", fragments: [retry.split("\n")[1]] }],
+            next: READ_NEXT.found,
+          },
+        },
+        {
+          name: "words naming another repo search only this one",
+          who: "zoya",
+          args: { repo: APP, search: `repo:${LEDGER} round` },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            matches: [],
+            next: READ_NEXT.none(APP, `repo:${LEDGER} round`),
+          },
+        },
+        {
+          name: "a hit from another repo in GitHub's answer is dropped, and the search not trusted",
+          who: "zoya",
+          args: { repo: APP, search: "round" },
+          before: () => {
+            github.world.searchLeak = LEDGER;
+          },
+          after: () => {
+            delete github.world.searchLeak;
+          },
+          answer: {
+            repo: APP,
+            ref: "the default branch",
+            matches: [],
+            next: READ_NEXT.untrusted(APP),
           },
         },
         {

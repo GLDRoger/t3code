@@ -102,6 +102,8 @@ export const READ_NEXT = {
     `Kin could read only its first ${read} lines: GitHub's answer stopped there, so the rest of the file stays unread.`,
   found: "Read a file a match is in for the whole of it.",
   defaultOnly: " Code search reads only the default branch.",
+  untrusted: (repo: string) =>
+    `GitHub's search answered with code from outside ${repo} too, which Kin left out, so this search can't be trusted: list folders and read files instead.`,
   none: (repo: string, words: string) =>
     `GitHub's code search found nothing for "${words}" in ${repo}. It searches only the default branch, and only once GitHub has indexed the repo, which it may not have yet: list folders and read files instead.`,
 } as const;
@@ -157,6 +159,7 @@ const decodeSearch = Schema.decodeUnknownOption(
     items: Schema.Array(
       Schema.Struct({
         path: Schema.String,
+        repository: Schema.optional(Schema.Struct({ id: Schema.optional(Schema.Number) })),
         text_matches: Schema.optional(
           Schema.Array(Schema.Struct({ fragment: Schema.optional(Schema.String) })),
         ),
@@ -198,6 +201,18 @@ const asApi = (answer: KinGitHubAppRead): ApiAnswer => ({
   text: "",
 });
 const moved = (status: number) => status >= 300 && status < 400;
+
+/**
+ * The provider query: each word quoted, so nothing in it is read as a qualifier (`repo:`, `OR`,
+ * a leading `-`) while `foo:bar` and `Promise<void>` stay words; the repo's scope is Kin's alone.
+ */
+const searchQuery = (words: string, repo: string) =>
+  `${words
+    .split(" ")
+    .map((word) => word.replace(/["\\]/g, ""))
+    .filter((word) => word !== "")
+    .map((word) => `"${word}"`)
+    .join(" ")} repo:${repo}`;
 
 const refuse = (
   message: string,
@@ -286,7 +301,7 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
   if (input.search !== undefined && input.search.trim() !== "") {
     const words = input.search.replace(/\s+/g, " ").trim();
     const answer = yield* get(
-      `search/code?q=${encodeURIComponent(`${words} repo:${repo}`)}&per_page=${SEARCH_PAGE}`,
+      `search/code?q=${encodeURIComponent(searchQuery(words, repo))}&per_page=${SEARCH_PAGE}`,
       { Accept: "application/vnd.github.text-match+json" },
     );
     if (answer.status === 422)
@@ -298,7 +313,9 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
       });
     const found = answer.status === 200 ? decodeSearch(answer.body) : Option.none();
     if (Option.isNone(found)) return yield* failed(answer);
-    const matches = found.value.items.map((item) => ({
+    // Only the admitted repo's own hits, by its id: whatever else GitHub sent stays unread.
+    const own = found.value.items.filter((item) => item.repository?.id === repoId);
+    const matches = own.map((item) => ({
       path: item.path,
       fragments: (item.text_matches ?? []).flatMap((match) =>
         match.fragment === undefined ? [] : [match.fragment],
@@ -309,7 +326,10 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
       repo,
       ref: DEFAULT_REF,
       matches,
-      next: (matches.length === 0 ? READ_NEXT.none(repo, words) : READ_NEXT.found) + ref,
+      next:
+        own.length < found.value.items.length
+          ? READ_NEXT.untrusted(repo)
+          : (matches.length === 0 ? READ_NEXT.none(repo, words) : READ_NEXT.found) + ref,
     });
   }
 
