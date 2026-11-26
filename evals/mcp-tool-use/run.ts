@@ -593,6 +593,9 @@ export const normalizeToolInput = (name: string, input: unknown) => {
 
 // McpHttpServer advertises each tool's JSON schema, and Claude Code passes the MCP name,
 // description, and schema through unchanged.
+const kinSourceTools = new Set<Tool.Any>(
+  KIN_TOOLKITS.flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools)),
+);
 const t3SourceTools: ReadonlyArray<Tool.Any> = [
   OrchestratorToolkit,
   ThreadToolkit,
@@ -623,7 +626,7 @@ const t3InputDecoders = new Map(
 const t3Tools: ReadonlyArray<ApiTool> = t3SourceTools.map((tool) => ({
   name: `${T3_PREFIX}${tool.name}`,
   description: Tool.getDescription(tool) ?? "",
-  input_schema: advertisedJsonSchema(tool),
+  input_schema: advertisedJsonSchema(tool, { kin: kinSourceTools.has(tool) }),
 }));
 // T3 gates these on the `preview` capability, which agent browser access decides.
 const PREVIEW_TOOLS = new Set(

@@ -41,6 +41,7 @@ import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.
 import { environment } from "../chat/TaskCard.testkit.ts";
 import * as Kin from "../layer.ts";
 import * as Memory from "../memory/Memory.ts";
+import { parseFrontMatter } from "../memory/frontMatter.ts";
 import * as Cache from "../memory/MemoryCache.ts";
 import { MemoryConfig } from "../memory/MemoryConfig.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
@@ -757,8 +758,18 @@ it.live(
           { itemId: "new-claim" },
         );
         // K055: a create needs no id; it is the title's slug, numbered past what is taken.
-        const { id: _id, ...unnamed } = quoted.item;
-        const fresh = { ...quoted, item: unnamed };
+        const {
+          id: _id,
+          recorded_at: _recorded,
+          valid_from: _valid,
+          invalid_at: _invalid,
+          superseded_by: _superseded,
+          source: _source,
+          said_by: _speaker,
+          links: _links,
+          ...unnamed
+        } = quoted.item;
+        const fresh = yield* decodeWrite({ ...quoted, item: unnamed });
         assert.deepStrictEqual(yield* service.write(scope, fresh), { itemId: "invented-claim" });
         assert.deepStrictEqual(yield* service.write(scope, fresh), { itemId: "invented-claim" });
         for (const [changed, itemId] of [
@@ -1252,6 +1263,26 @@ it.live(
         assert.deepStrictEqual(nativeCancels, [scheduled.itemId, recurring.itemId]);
         assert.include(files, `deferrals/${fromSchedule.itemId}.md`);
         const saved = (id: string) => git(remote, ["show", `${committed.commit}:claims/${id}.md`]);
+        const metadata = (id: string) =>
+          saved(id).pipe(
+            Effect.flatMap((content) => parseFrontMatter(orgId, `claims/${id}.md`, content)),
+            Effect.map(({ frontMatter }) => frontMatter),
+          );
+        const explicit = yield* metadata("new-claim");
+        assert.match(explicit.source, /^kin:chat:/);
+        assert.notStrictEqual(explicit.said_by, "forged");
+        for (const head of [yield* metadata("invented-claim"), explicit]) {
+          assert.include(head, {
+            recorded_at: "2026-11-08T00:00:00.000Z",
+            valid_from: "2026-11-08T00:00:00.000Z",
+            invalid_at: null,
+            superseded_by: null,
+            source: explicit.source,
+            said_by: explicit.said_by,
+          });
+          assert.strictEqual(head.source_event, "fixture-event");
+          assert.deepStrictEqual(head.links, []);
+        }
         assert.include(yield* saved("amount-claim"), "sensitive: true");
         assert.include(yield* saved("vault-claim"), "sensitive: true");
         assert.include(yield* saved("status-claim"), "sensitive: false");

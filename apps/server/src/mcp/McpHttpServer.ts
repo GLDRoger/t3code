@@ -614,11 +614,10 @@ const MAX_NAMED_ARGUMENTS = 5;
 const MAX_ARGUMENT_NAME_CHARS = 64;
 
 /**
- * Rejects top-level arguments the advertised schema does not list, naming them. Nested objects stay lenient:
- * the advertised schema merges tagged unions, so strict decoding would reject keys agents were shown.
+ * Rejects top-level arguments absent from the full schema, including when only a core is advertised.
  */
-const advertisedArgumentsOnly = (tool: Tool.Any) => {
-  const { properties } = advertisedJsonSchema(tool);
+const validatedArgumentsOnly = (tool: Tool.Any) => {
+  const { properties } = Tool.getJsonSchema(tool);
   const accepted = new Set(Predicate.isObject(properties) ? Object.keys(properties) : []);
   const acceptedText = [...accepted].join(", ") || "none";
   return Schema.Record(Schema.String, Schema.Unknown).check(
@@ -643,7 +642,7 @@ const decodeAsAdvertised = <Tools extends Record<string, Tool.Any>>(
     ...Object.values(toolkit.tools).map((tool) => {
       const codec = Schema.toCodecJson(tool.parametersSchema);
       return tool.setParameters(
-        advertisedArgumentsOnly(tool).pipe(
+        validatedArgumentsOnly(tool).pipe(
           Schema.decodeTo(Schema.Record(Schema.String, Schema.Unknown), {
             decode: plainly(codec),
             encode: SchemaGetter.passthrough(),
@@ -1327,7 +1326,11 @@ const withAdvertisedSchemas = Effect.fn("McpHttpServer.withAdvertisedSchemas")(f
   A,
   E,
   R,
->(toolkit: Toolkit.Toolkit<Tools>, registration: Effect.Effect<A, E, R>) {
+>(
+  toolkit: Toolkit.Toolkit<Tools>,
+  registration: Effect.Effect<A, E, R>,
+  schemaOptions: Parameters<typeof advertisedJsonSchema>[1],
+) {
   const server = yield* McpServer.McpServer;
   const tools: Record<string, Tool.Any> = toolkit.tools;
   const advertisingServer = McpServer.McpServer.of({
@@ -1341,7 +1344,7 @@ const withAdvertisedSchemas = Effect.fn("McpHttpServer.withAdvertisedSchemas")(f
               ...options,
               tool: new McpSchema.Tool({
                 ...options.tool,
-                inputSchema: advertisedJsonSchema(tool),
+                inputSchema: advertisedJsonSchema(tool, schemaOptions),
               }),
             },
       );
@@ -1370,12 +1373,17 @@ const provideRegistrationServices = <Services>() =>
 export const toolkitRegistration = <Tools extends Record<string, Tool.Any>, EX, RX>(
   toolkit: Toolkit.Toolkit<Tools>,
   handlers: McpToolAccess.HandlersLayer<Tools, EX, RX>,
+  schemaOptions?: Parameters<typeof advertisedJsonSchema>[1],
 ) =>
   Layer.effectDiscard(
     withToolAnalytics(
       withToolResultCapture(
         withToolSpans(
-          withAdvertisedSchemas(toolkit, McpServer.registerToolkit(decodeAsAdvertised(toolkit))),
+          withAdvertisedSchemas(
+            toolkit,
+            McpServer.registerToolkit(decodeAsAdvertised(toolkit)),
+            schemaOptions,
+          ),
         ),
       ),
     ),

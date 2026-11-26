@@ -104,4 +104,5 @@ const handlers = McpToolAccess.toLayer(KinConnectionsToolkit, {
 export const registration = McpHttpServer.toolkitRegistration(
   withAlwaysLoaded(KinConnectionsToolkit),
   handlers,
+  { kin: true },
 );

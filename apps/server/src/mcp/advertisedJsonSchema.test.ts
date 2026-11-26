@@ -2,7 +2,7 @@ import { expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
-import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
+import { AdvertisedCore, advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 import { ThemeToolkit } from "./toolkits/theme/tools.ts";
 
 it("drops JSON noise, merges tagged unions, and keeps null where it is required", () => {
@@ -58,4 +58,42 @@ it("advertises only string enum values, which Gemini requires", () => {
   collect(advertisedJsonSchema(ThemeToolkit.tools.t3_theme_set));
 
   expect(enumValues.filter((value) => typeof value !== "string")).toEqual([]);
+});
+
+it("advertises only the annotated core inside an open Kin object and drops bounds", () => {
+  const tool = Tool.make("example", {
+    parameters: Schema.Struct({
+      records: Schema.Array(
+        Schema.Struct({
+          shown: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(300)),
+          hidden: Schema.Int,
+          due: Schema.optional(Schema.NullOr(Schema.String).annotate({ description: "Due date." })),
+          count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(2), Schema.isLessThanOrEqualTo(8)),
+        }),
+      ).check(Schema.isMinLength(1), Schema.isMaxLength(3)),
+    }),
+  }).annotate(AdvertisedCore, {
+    path: ["properties", "records", "items"],
+    keys: ["shown", "due", "count"],
+  });
+
+  expect(advertisedJsonSchema(tool, { kin: true })).toEqual({
+    type: "object",
+    properties: {
+      records: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            shown: { type: "string" },
+            due: { type: "string", description: "Due date." },
+            count: { type: "integer" },
+          },
+          required: ["shown", "count"],
+          additionalProperties: true,
+        },
+      },
+    },
+    required: ["records"],
+  });
 });

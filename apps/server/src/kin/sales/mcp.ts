@@ -76,4 +76,5 @@ const handlers = McpToolAccess.toLayer(KinSalesToolkit, {
 export const registration = McpHttpServer.toolkitRegistration(
   withAlwaysLoaded(KinSalesToolkit),
   handlers,
+  { kin: true },
 ).pipe(Layer.provide(WebPages.layer));

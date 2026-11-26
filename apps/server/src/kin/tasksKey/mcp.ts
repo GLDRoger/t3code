@@ -1659,7 +1659,10 @@ const keyAsClient = Layer.mergeAll(
 
 /** `/kin/you/mcp`: these tools and nothing else, for a person's own coding agent. */
 const endpoint = McpHttpServer.layerMcpTransport(
-  Layer.mergeAll(McpHttpServer.toolkitRegistration(TasksKeyToolkit, handlers), listed),
+  Layer.mergeAll(
+    McpHttpServer.toolkitRegistration(TasksKeyToolkit, handlers, { kin: true }),
+    listed,
+  ),
   { instructions: TASKS_KEY_INSTRUCTIONS },
 ).pipe(
   Layer.provide(keyAsClient),
