@@ -114,6 +114,8 @@ const base = buildBase(capture, {
   kinLead: true,
   kinSession: true,
   kinSocial: true,
+  kinGitHub: true,
+  kinEngineering: true,
 });
 const catalog = new Set(
   [...base.nativeTools, ...base.deferred].map((tool) => normalizeToolName(tool.name)),
