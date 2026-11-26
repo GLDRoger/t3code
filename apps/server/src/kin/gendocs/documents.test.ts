@@ -1591,6 +1591,7 @@ describe("recipe documents", () => {
         [made.documents.map((one) => [one.key, one.version]), made.preview, made.sensitive],
         [[["D-1", 1]], null, true],
       );
+      assert.match(made.documents[0]!.title, /^Invoice\b/, "named by the recipe's title");
       assert.deepStrictEqual(shownCards, [], "no agent turn, so no chat card");
       // The same request again is the same document; the same id for another request is refused.
       assert.deepStrictEqual((yield* OwnerDocs.render(people, asked)).documents, made.documents);
