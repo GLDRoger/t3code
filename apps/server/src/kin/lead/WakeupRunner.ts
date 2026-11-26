@@ -110,6 +110,7 @@ import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import { textLocale } from "../work/companyProfile.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
+import { wakeupOfRuns } from "../chat/wakeupRuns.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import {
   DeferralSnapshot,
@@ -498,19 +499,21 @@ const make = Effect.gen(function* () {
     run: OrchestrationV2Run,
   ) {
     if (run.freshContext === true) return false;
-    if (run.providerThreadId === null)
-      return yield* new KinWakeupError({
-        orgId: row.orgId,
-        agentId: row.agentId,
-        cause: "missing_provider_thread",
-      });
-    const earlier = yield* sql<{ wakeupId: string }>`
-      SELECT w.wakeup_id AS "wakeupId" FROM orchestration_v2_projection_runs r
-      JOIN kin_wakeups w ON w.run_id = r.run_id AND w.thread_id = r.thread_id
-      WHERE w.org_id = ${row.orgId} AND w.agent_id = ${row.agentId}
-        AND r.thread_id = ${row.threadId} AND r.provider_thread_id = ${run.providerThreadId}
-        AND r.ordinal < ${run.ordinal} AND w.wakeup_id <> ${row.wakeupId}
-      ORDER BY r.ordinal, w.wakeup_id`;
+    const earlier = yield* wakeupOfRuns(
+      sql,
+      sql`SELECT run_id, thread_id, ordinal, payload_json
+        FROM orchestration_v2_projection_runs
+        WHERE thread_id = ${row.threadId} AND ordinal < ${run.ordinal}
+          AND ordinal >= COALESCE((
+            SELECT MAX(ordinal) FROM orchestration_v2_projection_runs
+            WHERE thread_id = ${row.threadId} AND ordinal <= ${run.ordinal}
+              AND json_extract(payload_json, '$.freshContext') = 1
+              AND json_extract(payload_json, '$.startedAt') IS NOT NULL
+          ), 0)`,
+      sql`w.org_id = ${row.orgId} AND w.agent_id = ${row.agentId}
+        AND w.wakeup_id <> ${row.wakeupId}`,
+      "all",
+    );
     return yield* inheritSession({
       orgId: row.orgId,
       wakeupId: row.wakeupId,

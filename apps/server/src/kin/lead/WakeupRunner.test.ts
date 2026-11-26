@@ -25,6 +25,7 @@ import {
   TurnItemId,
   type ChatAttachment,
   type OrchestrationV2DomainEvent,
+  type OrchestrationV2Run,
 } from "@t3tools/contracts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as ChatService from "../chat/KinChatService.ts";
@@ -200,6 +201,58 @@ const ownerSays = Effect.fn("test.ownerSays")(function* (id: string, chatId = "o
 const wake = Effect.fn("test.wake")(function* (id: string, chatId = "direct") {
   yield* (yield* KinEventQueue.KinEventQueue).enqueue(yield* ownerSays(id, chatId));
   yield* Fiber.join(yield* run());
+});
+const taskNotice = Effect.fn("test.taskNotice")(function* (
+  threadId: ThreadId,
+  parent: OrchestrationV2Run,
+  key: string,
+) {
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  const sink = yield* EventSink.EventSinkV2;
+  const notice = MessageId.make(`delegated-completion:${key}`);
+  const completion = { generation: 1, taskIds: [NodeId.make(`task-${key}`)] };
+  yield* sink.write({
+    events: [
+      {
+        id: EventId.make(`task-delivery-ready:${key}`),
+        type: "run.updated",
+        threadId,
+        runId: parent.id,
+        occurredAt: yield* DateTime.now,
+        payload: {
+          ...parent,
+          delegatedCompletion: {
+            disposition: "open",
+            nextGeneration: 2,
+            delivery: { messageId: notice, ...completion },
+          },
+        },
+      },
+    ],
+  });
+  return {
+    notice,
+    taskIds: completion.taskIds,
+    dispatch: Effect.gen(function* () {
+      yield* threads.dispatch({
+        type: "message.dispatch",
+        commandId: CommandId.make(`task-completion:${key}`),
+        threadId,
+        messageId: notice,
+        text: "A delegated task finished.",
+        attachments: [],
+        dispatchMode: { type: "queue_after_active" },
+        createdBy: "agent",
+        creationSource: "server",
+        delegatedCompletion: { parentRunId: parent.id, ...completion },
+      });
+      const sent = yield* threads.getThreadProjection(threadId);
+      return {
+        run: sent.runs.find((run) => run.userMessageId === notice)!,
+        message: sent.messages.find((message) => message.id === notice)!,
+      };
+    }),
+  };
 });
 /** Each run's provider conversation, numbered in order of first use. */
 const sessions = Effect.fn("test.sessions")(function* () {
@@ -2714,44 +2767,10 @@ describe("WakeupRunner", () => {
           const source = yield* marks(first!.wakeupId);
           assert.strictEqual(source.outsideRead, outside);
           assert.strictEqual(source.sensitive, sensitive);
-          // Seed the terminal task's delivery receipt, then dispatch it as ProviderContinuationService does.
-          const notice = MessageId.make("delegated-completion:1");
-          const completion = { generation: 1, taskIds: [NodeId.make("task-1")] };
-          yield* (yield* EventSink.EventSinkV2).write({
-            events: [
-              {
-                id: EventId.make("task-delivery-ready"),
-                type: "run.updated",
-                threadId,
-                runId: parent.id,
-                occurredAt: yield* DateTime.now,
-                payload: {
-                  ...parent,
-                  delegatedCompletion: {
-                    disposition: "open",
-                    nextGeneration: 2,
-                    delivery: { messageId: notice, ...completion },
-                  },
-                },
-              },
-            ],
-          });
+          const task = yield* taskNotice(threadId, parent, "1");
           let noticeRunId: RunId | undefined;
           const dispatch = Effect.gen(function* () {
-            yield* threads.dispatch({
-              type: "message.dispatch",
-              commandId: CommandId.make("delegated-completion"),
-              threadId,
-              messageId: notice,
-              text: "Delegated task task-1 reached a terminal state.",
-              attachments: [],
-              dispatchMode: { type: "queue_after_active" },
-              createdBy: "agent",
-              creationSource: "server",
-              delegatedCompletion: { parentRunId: parent.id, ...completion },
-            });
-            const sent = yield* threads.getThreadProjection(threadId);
-            const noticeRun = sent.runs.find((run) => run.userMessageId === notice)!;
+            const { run: noticeRun, message } = yield* task.dispatch;
             assert.isNotNull(parent.providerThreadId);
             assert.strictEqual(noticeRun.providerThreadId, parent.providerThreadId);
             noticeRunId = noticeRun.id;
@@ -2763,7 +2782,7 @@ describe("WakeupRunner", () => {
                 runId: noticeRun.id,
                 timeoutMs: 60_000,
               });
-            return sent.messages.find((message) => message.id === notice)!;
+            return message;
           });
           let early: typeof source | undefined;
           const readClaim = Effect.gen(function* () {
@@ -2779,11 +2798,11 @@ describe("WakeupRunner", () => {
               agentId,
               eventId: event("late-task").eventId,
               receivedAt: yield* DateTime.now,
-              dedupeKey: notice,
+              dedupeKey: task.notice,
               provenance: { _tag: "system" },
               threadId,
-              messageId: notice,
-              taskIds: completion.taskIds,
+              messageId: task.notice,
+              taskIds: task.taskIds,
               chatId: KinChatId.make("owner-chat"),
             });
             inspectEarly = Effect.gen(function* () {
@@ -2859,7 +2878,7 @@ describe("WakeupRunner", () => {
             runs.map((entry) => entry.userMessageId),
             [
               KinIdentity.wakeupMessageId(KinWakeupId.make(wakeups[0]!.wakeupId)),
-              notice,
+              task.notice,
               ...(live
                 ? []
                 : [KinIdentity.wakeupMessageId(KinWakeupId.make(wakeups[1]!.wakeupId))]),
@@ -2904,6 +2923,148 @@ describe("WakeupRunner", () => {
               ).pipe(Layer.provide(KinLeadRegistry.layer)),
             ),
           ),
+        );
+      }).pipe(provideDeterministicTestRuntime),
+  );
+
+  it.effect.each(["chain", "fresh", "steer", "other agent"] as const)(
+    "finished task history: %s",
+    (scenario) =>
+      Effect.gen(function* () {
+        let onTurn: Effect.Effect<void> = Effect.void;
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const sql = yield* SqlClient.SqlClient;
+          const threads = yield* ThreadManagement.ThreadManagementService;
+          const sink = yield* EventSink.EventSinkV2;
+          const taskWake = yield* TaskWake.make;
+          yield* wake("first", "owner-chat");
+          const [first] = yield* sql<{ wakeupId: KinWakeupId; threadId: ThreadId }>`
+            SELECT wakeup_id AS "wakeupId", thread_id AS "threadId" FROM kin_wakeups`;
+          const { wakeupId, threadId } = first!;
+          const thread = yield* threads.getThreadProjection(threadId);
+          const firstRun = thread.runs[0]!;
+          const projectId = thread.thread.projectId;
+          const mark = markOutside({ orgId, wakeupId }, "web:example.invalid");
+          const changeBinding = Effect.fn("test.changeBinding")(function* (
+            run: OrchestrationV2Run,
+            providerThreadId: OrchestrationV2Run["providerThreadId"],
+          ) {
+            yield* sink.write({
+              events: [
+                {
+                  id: EventId.make(`binding:${run.id}`),
+                  type: "run.updated",
+                  threadId,
+                  runId: run.id,
+                  occurredAt: yield* DateTime.now,
+                  payload: { ...run, providerThreadId },
+                },
+              ],
+            });
+          });
+          const take = Effect.fn("test.take")(function* (
+            parent: OrchestrationV2Run,
+            key: string,
+            expected: boolean,
+          ) {
+            const started = yield* Deferred.make<void>();
+            const release = yield* Deferred.make<void>();
+            onTurn = Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+            );
+            const task = yield* taskNotice(threadId, parent, key);
+            const { run: noticeRun, message } = yield* task.dispatch;
+            yield* Deferred.await(started);
+            yield* taskWake.enqueue(message);
+            const fiber = yield* run();
+            yield* Deferred.succeed(release, undefined);
+            yield* Fiber.join(fiber);
+            onTurn = Effect.void;
+            const [claim] = yield* sql<{ wakeupId: string }>`
+              SELECT wakeup_id AS "wakeupId" FROM kin_wakeups WHERE run_id = ${noticeRun.id}`;
+            assert.isDefined(claim, "the finished-task run was claimed");
+            assert.strictEqual(yield* outsideRead({ orgId, wakeupId: claim!.wakeupId }), expected);
+            return (yield* threads.getThreadProjection(threadId)).runs.find(
+              (run) => run.id === noticeRun.id,
+            )!;
+          });
+          if (scenario === "chain") {
+            yield* mark;
+            const second = yield* take(firstRun, "one", true);
+            // Historical provider bindings can be absent; the resumed history still owns both runs.
+            yield* changeBinding(firstRun, null);
+            yield* changeBinding(second, null);
+            yield* take({ ...second, providerThreadId: null }, "two", true);
+          } else if (scenario === "fresh" || scenario === "steer") {
+            if (scenario === "fresh") yield* mark;
+            yield* wake("fresh", "owner-chat");
+            const fresh = (yield* threads.getThreadProjection(threadId)).runs.at(-1)!;
+            assert.isTrue(fresh.freshContext);
+            if (scenario === "fresh") {
+              yield* changeBinding(firstRun, fresh.providerThreadId);
+              yield* take(fresh, "after-fresh", false);
+            } else {
+              // A late steer is attributed to its old wake-up even after another root started.
+              onTurn = mark.pipe(Effect.orDie);
+              const steer = yield* threads.sendToThread({
+                commandId: CommandId.make("late-steer"),
+                projectId,
+                threadId,
+                mode: "queue",
+                messageId: MessageId.make(KinIdentity.steerMessageId(wakeupId, 1)),
+                text: "Late steer",
+                attachments: [],
+                createdBy: "system",
+                creationSource: "server",
+              });
+              yield* threads.waitForThread({
+                projectId,
+                threadId,
+                runId: steer.run.id,
+                timeoutMs: 60_000,
+              });
+              assert.isTrue(yield* outsideRead({ orgId, wakeupId }));
+              yield* take(steer.run, "after-steer", true);
+            }
+          } else {
+            const otherAgent = KinAgentId.make("other-lead");
+            const otherWake = KinWakeupId.make("other-wake");
+            const other = yield* (yield* ThreadLaunch.ThreadLaunchService).launch({
+              commandId: CommandId.make("other-launch"),
+              projectId,
+              title: "Other lead",
+              modelSelection: thread.thread.modelSelection,
+              runtimeMode: "full-access",
+              interactionMode: "default",
+              workspaceStrategy: { type: "root" },
+              initialMessage: {
+                messageId: MessageId.make(KinIdentity.wakeupMessageId(otherWake)),
+                text: "Other wake",
+                attachments: [],
+              },
+              createdBy: "system",
+              creationSource: "server",
+            });
+            yield* sql`INSERT INTO kin_agents
+              (agent_id, org_id, display_name, role, owner_person_id, created_at)
+              SELECT ${otherAgent}, org_id, 'Other Lead', role, owner_person_id, created_at
+              FROM kin_agents WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+            yield* sql`INSERT INTO kin_leads
+              (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
+              SELECT ${otherAgent}, org_id, 'Other Lead', level_since, models_json,
+                worker_projects_json, owner_chat_id
+              FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
+            yield* sql`INSERT INTO kin_wakeups
+              (wakeup_id, org_id, agent_id, thread_id, run_id, model, started_at, status, event_ids)
+              VALUES (${otherWake}, ${orgId}, ${otherAgent}, ${other.threadId},
+                ${other.projection.runs[0]!.id}, 'test', 0, 'completed', '[]')`;
+            yield* markOutside({ orgId, wakeupId: otherWake }, "web:example.invalid");
+            yield* take(firstRun, "foreign", false);
+          }
+        }).pipe(
+          Effect.scoped,
+          Effect.provide(harness({ onTurn: () => Effect.suspend(() => onTurn) })),
         );
       }).pipe(provideDeterministicTestRuntime),
   );
