@@ -169,6 +169,11 @@ import {
   joinedWork,
   ownMailboxLine,
   QUOTE_LABELS,
+  PROMPT_HEADINGS,
+  TURN_DIVIDER,
+  promptHeaderPlace,
+  promptSectionPlace,
+  renderSessionDelta,
   workForText,
 } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
 import {
@@ -402,6 +407,85 @@ export const kinLeadBase = <M, E>(input: {
     t3,
     deferred,
   };
+};
+
+// Older handwritten wakes use these earlier spellings of the same header lines.
+export const kinLegacyHeaderPlace = (line: string) =>
+  promptHeaderPlace(line) ??
+  (line.startsWith("Lead name: ")
+    ? "standing"
+    : /^(Another agent passed this to you; the owner reads your reply\.|Someone besides the owner can read this reply\.)/.test(
+          line,
+        )
+      ? "header"
+      : undefined);
+
+export const kinSessionSplit = (prompt: string) => {
+  const standing: string[] = [];
+  const message: string[] = [];
+  const changes = new Map<string, string[]>();
+  const addChange = (section: string, block: string) => {
+    const blocks = changes.get(section);
+    if (blocks === undefined) changes.set(section, [block]);
+    else blocks.push(block);
+  };
+  let passedDivider = false;
+  let place: ReturnType<typeof promptSectionPlace> = "standing";
+  let privateIndex = false;
+  let index = "";
+  for (const block of prompt.split("\n\n")) {
+    if (block === TURN_DIVIDER) {
+      passedDivider = true;
+      privateIndex = false;
+      place = undefined;
+      continue;
+    }
+    const lines = block.split("\n");
+    const first = lines[0] ?? "";
+    const next = promptSectionPlace(first);
+    if (next !== undefined) {
+      place = next;
+      privateIndex = first === PROMPT_HEADINGS.memoryIndex;
+    }
+    if (place === undefined && passedDivider) {
+      const tags = lines.map(kinLegacyHeaderPlace);
+      if (tags.every((tag) => tag !== undefined)) {
+        const fixed = lines.filter((_, i) => tags[i] === "standing").join("\n");
+        const changing = lines.filter((_, i) => tags[i] === "header").join("\n");
+        if (fixed !== "") standing.push(fixed);
+        if (changing !== "") addChange("header", changing);
+        continue;
+      }
+      throw new Error(`No session placement for block: ${block}`);
+    }
+    if (privateIndex && first === `> BEGIN QUOTE: ${QUOTE_LABELS.memoryIndex}`) {
+      const payload = lines[1]?.slice(2);
+      if (payload !== undefined && lines.length === 3 && typeof safeJson(payload) === "string")
+        index = payload;
+    }
+    if (place === "standing") standing.push(block);
+    else if (place === "message") message.push(block);
+    else if (place !== undefined) addChange(place, block);
+  }
+  if (!passedDivider) throw new Error(`Missing ${TURN_DIVIDER}`);
+  const sections = Object.fromEntries(
+    Array.from(changes, ([section, blocks]) => [section, blocks.join("\n\n")]),
+  );
+  return {
+    standing: standing.join("\n\n"),
+    delta: renderSessionDelta({ sections, index }).delta,
+    message: message.join("\n\n"),
+    sections,
+    index,
+  };
+};
+
+const safeJson = (value: string): unknown => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return undefined;
+  }
 };
 
 const OWNER_DAY = /Owner time: (\d{4}-\d{2}-\d{2})/;
