@@ -63,6 +63,7 @@ import {
   renderSessionDelta,
 } from "./LeadPrompt.ts";
 import * as sessionPrompt from "./LeadPrompt.ts";
+import type { PromptFingerprint } from "./sessionCarry.ts";
 import { captureChatCursor, readCursor } from "./sessionChanges.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { CHIEF_OF_STAFF_SET_UP } from "./characterDefaults.ts";
@@ -867,12 +868,21 @@ it.effect(
       };
       for (const given of [shared, owner]) {
         const legacy = yield* prompt.build(given);
-        const { full, standing, delta, message } = yield* prompt.buildSession(given);
+        const { full, standing, delta, message, sections } = yield* prompt.buildSession(given);
         expect(full).toBe(legacy);
         expect(standing).toContain(PROMPT_HEADINGS.character);
         expect(delta).toContain("Owner time:");
         expect(message).toContain(PROMPT_HEADINGS.events);
-        expect([standing, delta, message].flatMap((text) => promptChunks(text)).sort()).toEqual(
+        if (given === owner) {
+          expect(delta).toContain(PROMPT_HEADINGS.seatNow);
+          expect(legacy).not.toContain(PROMPT_HEADINGS.seatNow);
+          expect(full).not.toContain(PROMPT_HEADINGS.seatNow);
+        } else {
+          expect(delta).not.toContain(PROMPT_HEADINGS.seatNow);
+        }
+        const current =
+          sections.seatNow === undefined ? delta : delta.replace(`\n\n${sections.seatNow}`, "");
+        expect([standing, current, message].flatMap((text) => promptChunks(text)).sort()).toEqual(
           promptChunks(legacy, true).sort(),
         );
       }
@@ -940,7 +950,15 @@ it.effect("a carried turn's change list holds only what changed", () =>
       },
     });
     expect(gone.sections).not.toHaveProperty("work");
-    expect(gone.delta).toBe([deltaStart, PROMPT_HEADINGS.work, NOTHING_NOW].join("\n\n"));
+    expect(gone.delta).toBe(
+      [
+        deltaStart,
+        PROMPT_HEADINGS.seatNow,
+        '- You: 0 open\n- Colleague: 0 open\n- "Fixture": 1 open\n- "Teammate": 0 open',
+        PROMPT_HEADINGS.work,
+        NOTHING_NOW,
+      ].join("\n\n"),
+    );
     yield* sql`UPDATE kin_records SET state = 'open' WHERE record_id IN ('rec-mate', 'rec-mate-hidden')`;
 
     const small = yield* prompt.buildSession({ ...given, memoryHead: "carry-small", previous });
@@ -1063,23 +1081,89 @@ it.effect("capture keeps the reply out and leaves a later bills card for the nex
   }).pipe(Effect.provide(layer)),
 );
 
-it.effect("the standing key ignores the memory index and nothing else", () =>
-  Effect.gen(function* () {
-    const { ownerInput } = yield* richPromptFixture;
-    const sql = yield* SqlClient.SqlClient;
-    const prompt = yield* KinLeadPrompt;
-    const given = yield* ownerInput("carry-owner");
-    const original = yield* prompt.buildSession(given);
-    const reindexed = yield* prompt.buildSession({ ...given, memoryHead: "carry-small" });
-    expect(reindexed.standingKey).toBe(original.standingKey);
-    expect(reindexed.index).not.toBe(original.index);
-    expect(reindexed.standing).not.toBe(original.standing);
-    expect(reindexed.standing).toContain(`\n> ${reindexed.index}\n`);
-    expect(original.standingKey).toMatch(/^[a-f0-9]{64}$/);
-    yield* sql`UPDATE kin_leads SET charter = 'Invented changed charter'`;
-    const charter = yield* prompt.buildSession({ ...given, memoryHead: "carry-small" });
-    expect(charter.standingKey).not.toBe(original.standingKey);
-  }).pipe(Effect.provide(layer)),
+it.effect(
+  "the standing key ignores the memory index and live work and status, and nothing else",
+  () => {
+    const indexMemory = Layer.effect(
+      Memory.Memory,
+      Effect.map(Memory.Memory, (memory) =>
+        Memory.Memory.of({
+          ...memory,
+          readPromptSnapshot: (org, head, options) => {
+            const size = head === "carry-170" ? 170 : head === "carry-171" ? 171 : undefined;
+            return size === undefined
+              ? memory.readPromptSnapshot(org, head, options)
+              : memory.readPromptSnapshot(org, "head-one", options).pipe(
+                  Effect.map((snapshot) => ({
+                    ...snapshot,
+                    index: Array.from(
+                      { length: size },
+                      (_, i) => `Invented index line ${i + 1}`,
+                    ).join("\n"),
+                  })),
+                );
+          },
+        }),
+      ),
+    );
+    return Effect.gen(function* () {
+      const { ownerInput } = yield* richPromptFixture;
+      const sql = yield* SqlClient.SqlClient;
+      const prompt = yield* KinLeadPrompt;
+      const fingerprints: PromptFingerprint[] = [];
+      const given = {
+        ...(yield* ownerInput("carry-owner")),
+        observePrompt: (fingerprint: PromptFingerprint) => fingerprints.push(fingerprint),
+      };
+      const original = yield* prompt.buildSession(given);
+      const reindexed = yield* prompt.buildSession({ ...given, memoryHead: "carry-small" });
+      expect(reindexed.standingKey).toBe(original.standingKey);
+      expect(reindexed.index).not.toBe(original.index);
+      expect(reindexed.standing).not.toBe(original.standing);
+      expect(reindexed.standing).toContain(`\n> ${reindexed.index}\n`);
+      expect(original.standingKey).toMatch(/^[a-f0-9]{64}$/);
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
+        owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at)
+      VALUES (${orgId}, 'rec-arjun-manifest', 'work', 'W-7', 'Audit the Tidewater Freight port manifest',
+        'open', 'agent', ${agentId}, 'person', ${personId}, 'owner:manifest', 0, 0)`;
+      const changed = yield* prompt.buildSession({ ...given, memoryHead: "carry-small" });
+      expect(changed.standingKey).toBe(reindexed.standingKey);
+      expect(fingerprints).toHaveLength(3);
+      expect(fingerprints[2]!.standing).toBe(fingerprints[1]!.standing);
+      expect(changed.standing).not.toBe(reindexed.standing);
+      expect(changed.full).not.toBe(reindexed.full);
+      const cursor = yield* readCursor(orgId, KinChatId.make("fixture-direct"), null, agentId);
+      const carried = yield* prompt.buildSession({
+        ...given,
+        memoryHead: "carry-small",
+        previous: { ...reindexed, ...cursor, heldChatChanges: [] },
+      });
+      expect(carried.delta).toContain(PROMPT_HEADINGS.seatNow);
+      expect(carried.delta).toContain("- You: 3 open");
+
+      const nearlyFull = yield* prompt.buildSession({ ...given, memoryHead: "carry-170" });
+      const closer = yield* prompt.buildSession({
+        ...given,
+        memoryHead: "carry-171",
+        previous: { ...nearlyFull, ...cursor, heldChatChanges: [] },
+      });
+      expect(nearlyFull.full).toContain("Memory index size: 170/200 lines");
+      expect(closer.standingKey).toBe(nearlyFull.standingKey);
+      expect(closer.delta).toContain("Memory index size: 171/200 lines");
+
+      yield* sql`UPDATE kin_leads SET charter = 'Invented changed charter'`;
+      const charter = yield* prompt.buildSession({ ...given, memoryHead: "carry-small" });
+      expect(charter.standingKey).not.toBe(original.standingKey);
+    }).pipe(
+      Effect.provide(
+        KinLeadPrompt.layer.pipe(
+          Layer.provideMerge(Layer.merge(repository, indexMemory.pipe(Layer.provide(memory)))),
+          Layer.provideMerge(database),
+          Layer.merge(teamMemory({ KIN_TEAM_MEMORY: "on" })),
+        ),
+      ),
+    );
+  },
 );
 
 it.effect(

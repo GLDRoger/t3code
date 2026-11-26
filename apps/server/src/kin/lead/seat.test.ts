@@ -47,4 +47,57 @@ describe("buildSeat", () => {
       assert.notInclude((yield* seat(true)).team.join("\n"), "more: people_read");
     }).pipe(Effect.provide(Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
   );
+  it.effect("keeps live work and status out of the standing key and lists them now", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const orgId = KinOrgId.make("org-tidewater");
+      const at = "2026-11-27T06:30:00.000Z";
+      yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Tidewater Freight', ${at})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access,
+          role_tags_json, time_zone, work_hours_json)
+        VALUES ('person-rhea', ${orgId}, 'rhea', 'Rhea Kapoor', ${at}, 'owner', '[]', NULL, NULL),
+          ('person-arjun', ${orgId}, 'arjun', 'Arjun Rao', ${at}, 'member', '["engineering"]',
+            'Asia/Kolkata', '{"days":[1,2,3,4,5],"start":"09:00","end":"18:00"}')`;
+      yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+        VALUES ('session-rhea', ${orgId}, 'person-rhea', ${at}),
+          ('session-arjun', ${orgId}, 'person-arjun', ${at})`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'work', 'Work', 'W', 1, 0), (${orgId}, 'projects', 'Projects', 'P', 1, 0)`;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
+          owner_id, sensitive, due_at, created_by_kind, created_by_id, origin_key, created_at, updated_at)
+        VALUES (${orgId}, 'rec-arjun-manifest', 'work', 'W-7', 'Audit the Tidewater Freight port manifest',
+          'doing', 'person', 'person-arjun', 0, ${Date.parse(at) - 1}, 'person', 'person-rhea',
+          'owner:manifest', 0, 0),
+          (${orgId}, 'rec-port-sync', 'projects', 'P-1', 'Tidewater Freight port sync', 'open', 'person',
+            'person-arjun', 0, NULL, 'person', 'person-rhea', 'owner:port-sync', 0, 0)`;
+      const seat = (now: number) =>
+        buildSeat({ orgId, agentId: KinAgentId.make("chief"), ownerOnly: true, now, memory: [] });
+      const first = yield* seat(Date.parse(at));
+      const arjun = first.team.find((line) => line.startsWith('- "Arjun Rao":'));
+      expect(arjun).toBe(
+        '- "Arjun Rao": member, engineering, leads Tidewater Freight port sync; ' +
+          'Mon–Fri 09:00–18:00 Asia/Kolkata, working now; 1 open, 1 late; on "Audit the Tidewater Freight port manifest"',
+      );
+      expect(first.keys.team).toContain(
+        '- "Arjun Rao": member, engineering; Mon–Fri 09:00–18:00 Asia/Kolkata',
+      );
+      expect(first.now).toContain(
+        '- "Arjun Rao": leads Tidewater Freight port sync; working now; 1 open, 1 late; on "Audit the Tidewater Freight port manifest"',
+      );
+      expect(first.seat[0]).toBe("- You hold 0 open.");
+      expect(first.keys.seat).not.toContain(first.seat[0]);
+      expect(first.now[0]).toBe("- You: 0 open");
+
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
+          owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at)
+        VALUES (${orgId}, 'rec-arjun-dispatch', 'work', 'W-8', 'Check the dispatch book', 'open',
+          'person', 'person-arjun', 'person', 'person-rhea', 'owner:dispatch', 0, 0)`;
+      const later = yield* seat(Date.parse("2026-11-27T14:00:00.000Z"));
+      expect(later.keys).toEqual(first.keys);
+      expect(later.team).not.toEqual(first.team);
+      expect(later.now).toContain(
+        '- "Arjun Rao": leads Tidewater Freight port sync; off now; 2 open, 1 late; on "Audit the Tidewater Freight port manifest"',
+      );
+    }).pipe(Effect.provide(Persistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+  );
 });
