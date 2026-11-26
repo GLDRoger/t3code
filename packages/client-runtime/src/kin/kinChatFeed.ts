@@ -35,7 +35,7 @@ import {
 import { kinTapAnswersChoice, kinTapText } from "./kinTap.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinReplyKey, type KinHeldDraft } from "./kinLive.ts";
-import { kinReplyButtons } from "./kinReplyButtons.ts";
+import { kinReplyButtons, type KinReplyButton } from "./kinReplyButtons.ts";
 import { kinPlainTables, kinSentences } from "./kinScreenState.ts";
 import type { KinSynced } from "./kinStreams.ts";
 
@@ -225,7 +225,7 @@ export type KinFeedRow =
       readonly type: "message";
       readonly key: string;
       readonly message: KinMessage;
-      readonly footerAfterCards?: true;
+      readonly footerInFeed?: true;
       readonly own: boolean;
       /** Who wrote it, for others' messages; the author line shows only when `showAuthor`. */
       readonly authorLabel: string;
@@ -234,7 +234,12 @@ export type KinFeedRow =
       /** The row above is a bubble by the same author, so this one sits tight under it. */
       readonly continues: boolean;
     }
-  | { readonly type: "footer"; readonly key: string; readonly message: KinMessage }
+  | {
+      readonly type: "footer";
+      readonly key: string;
+      readonly message: KinMessage;
+      readonly buttons?: ReadonlyArray<KinReplyButton>;
+    }
   /** A reply still streaming. Its key is its durable message's, so the bubble stays in place. */
   | {
       readonly type: "draft";
@@ -552,16 +557,18 @@ function replyBeforeCards(
   return { ordered, teamCardRuns };
 }
 
+type ReplyFooterRow = Extract<KinFeedRow, { type: "footer" }>;
+
 const deferredFooters = new WeakMap<
   MessageRow,
-  { readonly body: MessageRow; readonly footer: Extract<KinFeedRow, { type: "footer" }> }
+  { readonly body: MessageRow; readonly footer: ReplyFooterRow }
 >();
 
 function deferredFooter(row: MessageRow) {
   let held = deferredFooters.get(row);
   if (held === undefined) {
     held = {
-      body: { ...row, footerAfterCards: true },
+      body: { ...row, footerInFeed: true },
       footer: { type: "footer", key: `footer:${row.key}`, message: row.message },
     };
     deferredFooters.set(row, held);
@@ -569,41 +576,42 @@ function deferredFooter(row: MessageRow) {
   return held;
 }
 
-// Do this after folding: neither a collapsed discussion nor an intervening row lends out footers.
-function placeReplyFooters(rows: KinFeedRow[]) {
-  const out: KinFeedRow[] = [];
-  for (let index = 0; index < rows.length; index += 1) {
+const CONTINUATION_SUFFIX = /~b(?:[2-9]|[1-9][0-9]+)$/;
+const REPLY_KEY_PREFIX = /^(?:reply:|kin-send:)/;
+
+function continuesReply(previous: KinMessage, next: KinMessage) {
+  const key = previous.clientMessageId;
+  const continuation = next.clientMessageId;
+  return (
+    key !== undefined &&
+    REPLY_KEY_PREFIX.test(key) &&
+    continuation !== undefined &&
+    CONTINUATION_SUFFIX.test(continuation) &&
+    continuation.replace(CONTINUATION_SUFFIX, "") === key.replace(CONTINUATION_SUFFIX, "") &&
+    next.seq === previous.seq + 1 &&
+    previous.author._tag === "agent" &&
+    previous.status === "posted" &&
+    previous.kind === "text" &&
+    previous.body.trim() !== "" &&
+    next.body.trim() !== "" &&
+    sameCardTurn(previous, next)
+  );
+}
+
+function cardFooterAnchors(rows: ReadonlyArray<KinFeedRow>) {
+  const anchors = new Map<number, number>();
+  for (let index = 1; index < rows.length; index += 1) {
     const card = rows[index]!;
-    const reply = out.at(-1);
+    const reply = rows[index - 1]!;
     if (
       card.type !== "message" ||
       !isStandaloneCard(card.message) ||
-      reply?.type !== "message" ||
+      reply.type !== "message" ||
       reply.message.body.trim() === "" ||
       !sameCardTurn(card.message, reply.message)
-    ) {
-      out.push(card);
+    )
       continue;
-    }
-    const footers: KinFeedRow[] = [];
-    for (let i = out.length - 1; i >= 0; i -= 1) {
-      const words = out[i]!;
-      if (
-        words.type !== "message" ||
-        words.message.body.trim() === "" ||
-        !sameCardTurn(card.message, words.message)
-      )
-        break;
-      if (
-        (words.message.turnChanges?.count ?? 0) === 0 &&
-        kinReplyButtons(words.message).length === 0
-      )
-        continue;
-      const held = deferredFooter(words);
-      out[i] = held.body;
-      footers.push(held.footer);
-    }
-    out.push(card);
+    const firstCard = index;
     while (index + 1 < rows.length) {
       const next = rows[index + 1]!;
       if (
@@ -612,12 +620,75 @@ function placeReplyFooters(rows: KinFeedRow[]) {
         !sameCardTurn(next.message, reply.message)
       )
         break;
-      out.push(next);
       index += 1;
     }
-    out.push(...footers.reverse());
+    for (let i = firstCard - 1; i >= 0; i -= 1) {
+      const words = rows[i]!;
+      if (
+        words.type !== "message" ||
+        words.message.body.trim() === "" ||
+        !sameCardTurn(card.message, words.message)
+      )
+        break;
+      anchors.set(i, index);
+    }
+  }
+  return anchors;
+}
+
+// Do this after folding: neither a collapsed discussion nor an intervening row lends out footers.
+function placeReplyFooters(rows: ReadonlyArray<KinFeedRow>) {
+  const anchors = cardFooterAnchors(rows);
+  const footers = new Map<number, ReplyFooterRow[]>();
+  const out: KinFeedRow[] = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const first = rows[index]!;
+    if (first.type === "message") {
+      let last = first;
+      let group: MessageRow[] | undefined;
+      while (index + 1 < rows.length) {
+        const next = rows[index + 1]!;
+        if (next.type !== "message" || !continuesReply(last.message, next.message)) break;
+        (group ??= [first]).push(next);
+        last = next;
+        index += 1;
+      }
+      const anchor = anchors.get(index);
+      if (group !== undefined) {
+        const buttons = new Map<string, KinReplyButton>();
+        for (const row of group) {
+          out.push(deferredFooter(row).body);
+          for (const button of kinReplyButtons(row.message)) {
+            if (!buttons.has(button.id)) buttons.set(button.id, button);
+          }
+        }
+        if (buttons.size > 0 || (last.message.turnChanges?.count ?? 0) > 0) {
+          const footer: ReplyFooterRow = {
+            ...deferredFooter(last).footer,
+            buttons: [...buttons.values()],
+          };
+          if (anchor === undefined) out.push(footer);
+          else addFooter(anchor, footer);
+        }
+      } else if (
+        anchor !== undefined &&
+        ((first.message.turnChanges?.count ?? 0) > 0 || kinReplyButtons(first.message).length > 0)
+      ) {
+        const held = deferredFooter(first);
+        out.push(held.body);
+        addFooter(anchor, held.footer);
+      } else out.push(first);
+    } else out.push(first);
+    const after = footers.get(index);
+    if (after !== undefined) out.push(...after);
   }
   return out;
+
+  function addFooter(anchor: number, footer: ReplyFooterRow) {
+    const existing = footers.get(anchor);
+    if (existing === undefined) footers.set(anchor, [footer]);
+    else existing.push(footer);
+  }
 }
 
 /**

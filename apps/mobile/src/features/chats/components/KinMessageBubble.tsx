@@ -501,7 +501,7 @@ function KinMessageBubbleRow(props: {
         </Pressable>
       )}
       {hasCard && page === null ? <View className="w-[85%]">{card}</View> : null}
-      {row.footerAfterCards === true ? null : (
+      {row.footerInFeed === true ? null : (
         <KinReplyFooter
           message={message}
           environmentId={props.environmentId}
@@ -533,6 +533,7 @@ function KinMessageBubbleRow(props: {
 
 export function KinReplyFooter(props: {
   readonly message: KinMessage;
+  readonly buttons?: ReadonlyArray<KinReplyButton> | undefined;
   readonly environmentId: EnvironmentId;
   readonly onOpenReceipt: () => void;
   readonly standalone?: boolean;
@@ -541,7 +542,7 @@ export function KinReplyFooter(props: {
   const onOpenTarget = useKinOpenTarget(props.environmentId, message.orgId);
   const grows = useKinTextGrows();
   const receipt = message.status === "deleted" ? null : kinTurnReceiptLine(message.turnChanges);
-  const buttons = kinReplyButtons(message);
+  const buttons = props.buttons ?? kinReplyButtons(message);
   if (buttons.length === 0 && receipt === null) return null;
   const content = (
     <>

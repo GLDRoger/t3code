@@ -7148,7 +7148,7 @@ it.effect("G13: a new promise made after a hand-back is a change, so the task ma
 );
 
 /** The reply bridge's post for `wakeupId`, as it stores one. */
-const reply = (id: string, wakeupId: string) =>
+const reply = (id: string, wakeupId: string, clientId = `reply:${id}`, silent?: true) =>
   ChatRepository.KinChatRepository.pipe(
     Effect.flatMap((repo) =>
       repo.insertMessage({
@@ -7174,7 +7174,8 @@ const reply = (id: string, wakeupId: string) =>
         sentBy: null,
         createdAt: at,
         editedAt: null,
-        clientMessageId: { kind: "send", id: `reply:${id}` },
+        clientMessageId: { kind: "send", id: clientId },
+        ...(silent === undefined ? {} : { silent }),
         wakeupId: KinWakeupId.make(wakeupId),
         placeReplyFigures: true,
       }),
@@ -7197,6 +7198,39 @@ const receiptRows = (turn: KinTurnChanges | undefined) =>
 const receiptLayer = Layer.provideMerge(
   ChatHub.layer,
   Layer.provideMerge(ChatRepository.layer, layer),
+);
+
+it.effect("keeps one receipt per reply group and per standalone tool post", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* turn();
+    const repo = yield* ChatRepository.KinChatRepository;
+    yield* repo.registerAgentThread({
+      orgId,
+      agentId: lead,
+      threadId: ThreadId.make("lead-thread"),
+      startedAt: at,
+      endedAt: null,
+    });
+    yield* LeadWork.create(scopeOf(lead), {
+      sourceEventId: "ask-event",
+      records: [{ title: "Invented: prepare a checklist" }],
+    });
+    yield* reply("first", "wake", "reply:checklist");
+    yield* reply("second", "wake", "reply:checklist~b2", true);
+    yield* reply("third", "wake", "reply:checklist~b3", true);
+    yield* reply("single", "wake");
+    yield* reply("tool", "wake", "invented-tool-post");
+    const read = yield* ownerReads;
+    assert.deepStrictEqual(
+      ["first", "second", "third", "single", "tool"].map(
+        (id) => read.get(KinMessageId.make(id))!.turnChanges?.count,
+      ),
+      [undefined, undefined, 1, 1, 1],
+    );
+    const earlier = yield* turnChanges(viewerOfPeople([ownerId]), orgId, ["first", "second"]);
+    assert.strictEqual(earlier.size, 0);
+  }).pipe(Effect.provide(receiptLayer)),
 );
 
 // Turn receipts (Nov 2026): what a turn changed was shown only on the agent's own page.

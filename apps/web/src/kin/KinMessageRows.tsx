@@ -345,7 +345,7 @@ export function KinMessageRow(props: {
           {canReact && !hasBubble ? <KinReactMenu mine={mine} onReact={onReact} /> : null}
         </div>
       ) : null}
-      {row.footerAfterCards === true ? null : (
+      {row.footerInFeed === true ? null : (
         <KinReplyFooter
           message={message}
           environmentId={props.environmentId}
@@ -381,6 +381,7 @@ export function KinMessageRow(props: {
 /** Up to three buttons under an agent's reply, each opening what it named. */
 export function KinReplyFooter(props: {
   readonly message: KinMessage;
+  readonly buttons?: ReadonlyArray<KinReplyButton> | undefined;
   readonly environmentId: EnvironmentId;
   readonly orgId: string;
   readonly connected: boolean;
@@ -388,7 +389,7 @@ export function KinReplyFooter(props: {
 }) {
   const { message } = props;
   const receipt = message.status === "deleted" ? null : kinTurnReceiptLine(message.turnChanges);
-  const buttons = kinReplyButtons(message);
+  const buttons = props.buttons ?? kinReplyButtons(message);
   if (buttons.length === 0 && receipt === null) return null;
   const content = (
     <>

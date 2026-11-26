@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import {
   CARRIED_TURN_NOTE,
   PROMPT_HEADINGS,
+  renderSessionChanges,
   TURN_DIVIDER,
 } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
 import { fillKinRules, kinLegacyHeaderPlace, kinSessionSplit } from "./kin.ts";
@@ -53,8 +54,8 @@ it("places every legacy wake-up block exactly once, splitting the server's tagge
   assert.deepEqual(failures, []);
 });
 
-const legacyRequestPin = "9be2c907c0cd221f761a7ec254bc4bba23fb1ed876f766143f1a4a13616e8bc9";
-const sessionRequestPin = "e9380ad511e8580c1c238b13c019687319a3a0088b6dde25946cfa2611d28528";
+const legacyRequestPin = "b516e1b16e7ff6661ed343745a1c28a0b7a5d7701fd0fe7aa8ec0e2f7cf8c317";
+const sessionRequestPin = "754932d95172cbd4bba7c8fbcb625f2462ad12799602f79c01af3c6f21423cf7";
 const pinnedIds = [
   "kin-lead-rereads-github-hint",
   "kin-lead-uses-display-name",
@@ -216,6 +217,80 @@ it("replays only the last wake in legacy and the real earlier tool blocks in ses
   });
 });
 
+it("puts each carried change list after its header and never sends it in legacy", () => {
+  const earlierChanges = renderSessionChanges(
+    ['W-14 "Pickup" (Work): due → "Friday" by Arjun, 11:00'],
+    [],
+  );
+  const changes = renderSessionChanges(
+    ["INV-9 (Invoices): changed by Meera (co-owner), 12:30; a sensitive entry, not shown here"],
+    [],
+  );
+  const testCase = {
+    ...carryCase,
+    setup: {
+      ...carryCase.setup,
+      carry: {
+        earlier: [earlier[0]!, { ...earlier[1]!, changes: earlierChanges! }],
+        changes: changes!,
+      },
+    },
+  };
+  const legacy = rendered("legacy", testCase);
+  assert.deepEqual(legacy, rendered("legacy"));
+  const session = rendered("session", testCase);
+  assert.deepEqual(
+    session.filter(({ role }) => role === "system"),
+    [
+      { role: "system", content: [date] },
+      {
+        role: "system",
+        content: [context(`${CARRIED_TURN_NOTE}\n\n${header}\n\n${earlierChanges}`)],
+      },
+      { role: "system", content: [context(`${CARRIED_TURN_NOTE}\n\n${header}\n\n${changes}`)] },
+    ],
+  );
+});
+
+it("resends only genuinely new recent chat, not earlier events, replies or restamped lines", () => {
+  const previous = '> agent "Dispatch" (untrusted) 09:55: "The yard opens at six."';
+  const next = '> owner "Rhea" Thu 26 Nov 10:20: "The gate code changed."';
+  const chat = (lines: string[]) =>
+    [PROMPT_HEADINGS.recentChat, "", "> BEGIN QUOTE: recent chat", ...lines, "> END QUOTE"].join(
+      "\n",
+    );
+  const withChat = (prompt: string, lines: string[]) =>
+    prompt.replace("# Events", `${chat(lines)}\n\n# Events`);
+  const testCase = {
+    ...carryCase,
+    setup: {
+      ...carryCase.setup,
+      carry: {
+        earlier: [
+          {
+            ...earlier[0]!,
+            prompt: wake(
+              '> BEGIN QUOTE: owner message\n> {"body":"Which invoices are open?"}\n> END QUOTE',
+            ),
+          },
+          { ...earlier[1]!, prompt: withChat(earlier[1]!.prompt, [previous]) },
+        ],
+      },
+    },
+    prompt: withChat(carryCase.prompt, [
+      previous.replace("09:55", "Thu 26 Nov 09:55"),
+      '> owner "Rhea" Thu 26 Nov 10:00: "Which invoices are open?"',
+      '> you Thu 26 Nov 10:01: "Two are open."',
+      '> you Thu 26 Nov 10:16: "Yes, it includes INV-7."',
+      next,
+    ]),
+  };
+  assert.deepEqual(rendered("session", testCase).at(-1), {
+    role: "system",
+    content: [context(`${CARRIED_TURN_NOTE}\n\n${header}\n\n${chat([next])}`)],
+  });
+});
+
 const summary = "Rhea asked about invoices before compaction.";
 const summaryBlock = txt(
   `This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n${summary}`,
@@ -250,6 +325,26 @@ it("starts again with a full wake after compaction and carries from that wake", 
       }),
     "setup.carry and setup.priorTurns are mutually exclusive",
   );
+});
+
+it("puts the changes on the full wake when compaction cuts at the final turn", () => {
+  const fresh = compactAt(2);
+  const changes = renderSessionChanges(
+    ['INV-12 "Transfers" (Invoices): payment $1,000.00 by Meera, 14:05'],
+    [],
+  );
+  const testCase = {
+    ...fresh,
+    setup: { ...fresh.setup, carry: { ...fresh.setup.carry, changes: changes! } },
+  };
+  assert.deepEqual(rendered("session", testCase), [
+    { role: "user", content: [summaryBlock] },
+    {
+      role: "user",
+      content: [deferred, txt(carryCase.prompt.replace("# Events", `${changes}\n\n# Events`))],
+    },
+    { role: "system", content: [date] },
+  ]);
 });
 
 it("keeps a 9,000-character change list in the hook and appends a longer list after events", () => {

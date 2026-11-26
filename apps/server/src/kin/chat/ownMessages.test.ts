@@ -405,6 +405,38 @@ it.effect("an agent takes back or puts right only its own message that no one ha
   ),
 );
 
+it.effect.each(["withdraw", "replace"] as const)(
+  "can %s a whole reply from its second bubble",
+  (action) =>
+    Effect.gen(function* () {
+      const { sql, say, wake, orgId } = yield* ambermill;
+      const wakeupId = yield* wake("finance");
+      yield* say("finance", "first", "The lead bubble.");
+      yield* say("finance", "second", "The next bubble.");
+      yield* sql`UPDATE kin_messages SET source_wakeup_id = ${wakeupId},
+      client_message_id = CASE message_id WHEN 'first' THEN 'send:reply:reply' ELSE 'send:reply:reply~b2' END,
+      silent = (message_id = 'second') WHERE org_id = ${orgId} AND message_id IN ('first', 'second')`;
+      const amended =
+        action === "withdraw"
+          ? yield* callAs("finance", "message_withdraw", {
+              messageId: "second",
+              why: "Now settled",
+            })
+          : yield* callAs("finance", "message_replace", { messageId: "second", body: "Settled." });
+      assert.isTrue(amended.ok, amended.text);
+      assert.deepStrictEqual(
+        yield* sql`SELECT body, status, json_extract(withdrawn_json, '$.why') AS why
+        FROM kin_messages WHERE org_id = ${orgId} AND message_id IN ('first', 'second') ORDER BY seq`,
+        [
+          action === "withdraw"
+            ? { body: "The lead bubble.", status: "deleted", why: "Now settled" }
+            : { body: "Settled.", status: "posted", why: null },
+          { body: "The next bubble.", status: "deleted", why: null },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
+);
+
 it.effect("a question card goes with its message, and Waiting on you lets it go", () =>
   Effect.andThen(
     TestClock.setTime(IST_MON_0930),
@@ -470,6 +502,35 @@ it.effect("a turn shows the newest unread and counts the rest", () =>
       assert.include(listed, `- m-${OWN_UNREAD_SHOWN + 3},`);
       assert.notInclude(listed, "- m-3,");
       assert.include(listed, "And 3 older ones.");
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+it.effect("a review sweep checks keys named only in a continuation bubble", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_0930),
+    Effect.gen(function* () {
+      const { sql, owner, orgId, chatOf, say } = yield* ambermill;
+      yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+        owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
+        VALUES (${orgId}, 'rec-inv12', 'invoices', 'INV-12', 'Tidewater retainer', 'person',
+          ${owner.personId}, 'person', 'inv12', 0, 0, '{}')`;
+      yield* say("finance", "reply-first", "Loading slot is 11:00.");
+      yield* say("finance", "reply-rest", "INV-12 is still unpaid.");
+      yield* sql`UPDATE kin_messages SET source_wakeup_id = 'tidewater-turn',
+        client_message_id = CASE message_id WHEN 'reply-first' THEN 'send:reply:tidewater'
+          ELSE 'send:reply:tidewater~b2' END,
+        silent = CASE message_id WHEN 'reply-first' THEN 0 ELSE 1 END
+        WHERE org_id = ${orgId} AND message_id IN ('reply-first', 'reply-rest')`;
+      yield* sql`INSERT INTO kin_record_changes (org_id, record_id, rev, at, actor_kind,
+        actor_id, via, kind, fields_json)
+        VALUES (${orgId}, 'rec-inv12', 2, ${IST_MON_0930 + HOUR}, 'person',
+          ${owner.personId}, 'owner', 'updated', '[{"field":"state","from":"waiting","to":"done"}]')`;
+      const due = IST_MON_0930 + REVIEW_UNREAD_MS;
+      yield* TestClock.setTime(due);
+      assert.deepStrictEqual(yield* reviewWakes({ orgId: KinOrgId.make(orgId), at: due }), [
+        { agentId: "finance", chatId: chatOf("finance") },
+      ]);
     }).pipe(Effect.provide(layer)),
   ),
 );

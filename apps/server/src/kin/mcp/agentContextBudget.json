@@ -7,16 +7,16 @@
   },
   "kinSharedInstructionsHash": "a0249114282032d6cd628d3e6f40ff1c4cae30a9f7d88c287c45ea39ae1972d1",
   "kinLeadToolListJsonBytes": {
-    "engineering": 171788,
-    "engineeringBesideFinanceAndSales": 155505,
-    "finance": 150966,
-    "shared": 101137,
-    "social": 154047,
-    "socialBesideFinanceAndSales": 137764,
-    "support": 150966
+    "engineering": 171770,
+    "engineeringBesideFinanceAndSales": 155402,
+    "finance": 150948,
+    "shared": 101034,
+    "social": 154029,
+    "socialBesideFinanceAndSales": 137661,
+    "support": 150948
   },
   "kinLeadOwnerNativeTools": ["Bash", "Read", "Edit", "Write", "WebSearch"],
-  "kinLeadAlwaysLoadedToolBytes": 21536,
+  "kinLeadAlwaysLoadedToolBytes": 76699,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -95,7 +95,7 @@
       "schema": 490
     },
     "kin_ask": {
-      "desc": 2477,
+      "desc": 2440,
       "schema": 812
     },
     "kin_ask_close": {
@@ -283,7 +283,7 @@
       "schema": 1231
     },
     "payment_record": {
-      "desc": 923,
+      "desc": 1008,
       "schema": 1162
     },
     "people_read": {
@@ -315,7 +315,7 @@
       "schema": 529
     },
     "record_assign": {
-      "desc": 951,
+      "desc": 933,
       "schema": 1404
     },
     "record_comment": {
@@ -323,7 +323,7 @@
       "schema": 239
     },
     "record_create": {
-      "desc": 6310,
+      "desc": 6262,
       "schema": 8725
     },
     "record_get": {
