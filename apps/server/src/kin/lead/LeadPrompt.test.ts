@@ -2571,7 +2571,7 @@ it.effect("every kind of schedule the server stores reaches the check-in prompt"
       .build({ ...input, lane: { chatId, mode: "notice" } })
       .pipe(Effect.provideService(Statement.CurrentTransformer, failTrackedRead));
     expect(unavailable).toContain(
-      `${PROMPT_HEADINGS.checkIns}\n\nKin could not read your check-ins this turn.`,
+      `${PROMPT_HEADINGS.checkIns}\n\nKin couldn't read your check-ins this turn, so this is not a sign you have none.`,
     );
     expect(unavailable).not.toContain("checkin-custom Tidewater Freight");
   }).pipe(Effect.provide(layer)),
@@ -4265,7 +4265,7 @@ it.effect(
         .build(turn)
         .pipe(Effect.provideService(Statement.CurrentTransformer, failTrackedRead));
       expect(line(unavailable)).toBe(
-        "Set in this chat: Kin could not read this chat's reminders and routines this turn.",
+        "Set in this chat: Kin couldn't read this chat's reminders and routines this turn, so this is not a sign none are set.",
       );
       // A latecomer couldn't read where it was set: the join leaves its card, and this line,
       // without its title (`ChatSharing.settleCards`, `wordsReadable`).

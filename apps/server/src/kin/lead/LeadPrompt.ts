@@ -2139,7 +2139,9 @@ export class KinLeadPrompt extends Context.Service<
               Effect.provideService(SqlClient.SqlClient, sql),
               Effect.catch((cause) =>
                 Effect.logWarning("Kin check-in index unavailable", cause).pipe(
-                  Effect.as(["Kin could not read your check-ins this turn."]),
+                  Effect.as([
+                    "Kin couldn't read your check-ins this turn, so this is not a sign you have none.",
+                  ]),
                 ),
               ),
             )
@@ -2347,7 +2349,7 @@ export class KinLeadPrompt extends Context.Service<
                 Effect.catch((cause) =>
                   Effect.logWarning("Kin chat's reminders unavailable", cause).pipe(
                     Effect.as(
-                      "Set in this chat: Kin could not read this chat's reminders and routines this turn.",
+                      "Set in this chat: Kin couldn't read this chat's reminders and routines this turn, so this is not a sign none are set.",
                     ),
                   ),
                 ),
