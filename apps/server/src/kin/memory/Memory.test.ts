@@ -20,7 +20,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import { ownerOnlyWakeup } from "../lead/Audience.testkit.ts";
 import * as Memory from "./Memory.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
-import { KinLeadPrompt } from "../lead/LeadPrompt.ts";
+import { KinLeadPrompt, SESSION_CHANGES_CAP } from "../lead/LeadPrompt.ts";
 import * as MemoryCache from "./MemoryCache.ts";
 import * as MemoryConfig from "./MemoryConfig.ts";
 import { devMemoryRepository } from "./devMemory.ts";
@@ -139,6 +139,29 @@ it.effect("reads every touched memory path with one log, including edits that we
       }).pipe(Effect.flip);
       expect(bad).toMatchObject({ _tag: "MemoryChangeHeadInvalid" });
       expect(calls).toHaveLength(2);
+
+      // A path-filtered log can walk past commits that never touched Memory.
+      yield* real.run({
+        operation: "Test.memoryHistory",
+        command: "git",
+        cwd: writer,
+        args: ["fast-import", "--quiet"],
+        stdin: Array.from(
+          { length: 2_000 },
+          (_, n) =>
+            `commit refs/heads/main\ncommitter Meera <meera@example.invalid> ${n + 2_000_000_000} +0000\n` +
+            `data 6\nUpdate\n${n === 0 ? `from ${after}\n` : ""}M 100644 inline notes.txt\ndata 1\n${n % 2}\n\n`,
+        ).join(""),
+      });
+      const distantHead = (yield* run(["rev-parse", "HEAD"])).stdout.trim();
+      const distant = yield* memory.changedItems!(orgA, before, distantHead, {
+        limit: SESSION_CHANGES_CAP + 1,
+        excludeSubjects: new Set(),
+      });
+      expect(calls).toHaveLength(3);
+      expect(calls[2]).toContain(`--max-count=${(SESSION_CHANGES_CAP + 1) * 4}`);
+      expect(distant.items).toEqual([]);
+      expect(distant.overflow).toBeGreaterThan(0);
     }).pipe(Effect.provide(service));
   }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer))),
 );
