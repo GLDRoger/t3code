@@ -280,11 +280,18 @@ it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with
   assert.notInclude(before, "mcp__t3-code__delegate_task");
   const upFront = base(true).nativeTools.map((tool) => tool.name);
   const waiting = base(true).deferred.map((tool) => tool.name);
-  assert.deepStrictEqual(
+  assert.sameMembers(
     upFront.filter((name) => name.startsWith("mcp__t3-code__")),
-    [],
+    [
+      "mcp__t3-code__record_update",
+      "mcp__t3-code__record_assign",
+      "mcp__t3-code__kin_ask_person",
+      "mcp__t3-code__kin_relay",
+      "mcp__t3-code__kin_defer",
+      "mcp__t3-code__records_query",
+    ],
   );
-  assert.includeMembers(waiting, ["mcp__t3-code__records_query", "mcp__t3-code__record_create"]);
+  assert.includeMembers(waiting, ["mcp__t3-code__record_create", "mcp__t3-code__web_page"]);
   assert.isFalse(before.some((name) => name.endsWith("Bash")));
   for (const name of ["mcp__t3-code__delegate_task", "mcp__t3-code__task_status"])
     assert.include(after, name);
@@ -292,24 +299,22 @@ it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with
     toolNames.filter((name) => !name.startsWith("mcp__t3-code__")).map(normalizeToolName);
   const ownerTools = new Set<string>(OWNER_SEAT_NATIVE_TOOLS);
   const loadedNative = ["Bash", "Read", "Edit", "Write"].filter((name) => ownerTools.has(name));
-  const deferredNative = ["WebFetch", "WebSearch"].filter((name) => ownerTools.has(name));
+  const deferredNative = ["WebSearch"];
   assert.deepStrictEqual(native(upFront), [...loadedNative, "ToolSearch"]);
   assert.deepStrictEqual(native(base(true).deferred.map((tool) => tool.name)), deferredNative);
   assert.notInclude(after, "mcp__t3-code__schedule_task");
   const reminders = base(true)
     .reminders.map((block) => block.text)
     .join("\n");
-  for (const name of [
-    ...deferredNative,
-    "mcp__t3-code__records_query",
-    "mcp__t3-code__record_create",
-  ])
+  for (const name of [...deferredNative, "mcp__t3-code__record_create", "mcp__t3-code__web_page"])
     assert.include(reminders, `\n${name}\n`);
   for (const prefix of [
     "Available agent types for the Agent tool:",
     "When you launch multiple agents",
     "The following skills are available for use with the Skill tool:",
     "\nMonitor\n",
+    "\nWebFetch\n",
+    "\nmcp__t3-code__records_query\n",
   ])
     assert.notInclude(reminders, prefix);
   // A lead case has the owner's seat, as production gives a thread nobody else reads, unless it says not.

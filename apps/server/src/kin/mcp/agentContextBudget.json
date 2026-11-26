@@ -15,8 +15,8 @@
     "socialBesideFinanceAndSales": 137764,
     "support": 150966
   },
-  "kinLeadOwnerNativeTools": ["Bash", "Read", "Edit", "Write", "WebSearch", "WebFetch"],
-  "kinLeadAlwaysLoadedToolBytes": 2,
+  "kinLeadOwnerNativeTools": ["Bash", "Read", "Edit", "Write", "WebSearch"],
+  "kinLeadAlwaysLoadedToolBytes": 21536,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,

@@ -53,8 +53,8 @@ it("places every legacy wake-up block exactly once, splitting the server's tagge
   assert.deepEqual(failures, []);
 });
 
-const legacyRequestPin = "de62e78150dae7db242841e84ffd03068722cd1ea093b01a962e1812cb415979";
-const sessionRequestPin = "7493ccf2ce1c6552b49adf7a4bd5d95292e8bb425014a0197d8bbe28471c6b34";
+const legacyRequestPin = "9be2c907c0cd221f761a7ec254bc4bba23fb1ed876f766143f1a4a13616e8bc9";
+const sessionRequestPin = "e9380ad511e8580c1c238b13c019687319a3a0088b6dde25946cfa2611d28528";
 const pinnedIds = [
   "kin-lead-rereads-github-hint",
   "kin-lead-uses-display-name",
@@ -110,11 +110,11 @@ const wake = (event: string) =>
   `${standing}\n\n${TURN_DIVIDER}\n\nAgent name: "Finance"\n${header}\n\n# Events\n\n${event}`;
 const earlier = [
   {
-    prompt: wake("Which invoices are open?"),
-    toolCalls: [{ tool: "records_query", input: { list: "invoices" }, result: { total: 2 } }],
-    reply: "Two are open.",
+    prompt: wake("Is INV-7 open?"),
+    toolCalls: [{ tool: "record_get", input: { key: "INV-7" }, result: { state: "waiting" } }],
+    reply: "INV-7 is open.",
   },
-  { prompt: wake("Does that include INV-7?"), reply: "Yes, it includes INV-7." },
+  { prompt: wake("Was that INV-7?"), reply: "Yes, INV-7." },
 ];
 const carryCase: McpToolUseCase = {
   id: "carry-render",
@@ -125,7 +125,7 @@ const carryCase: McpToolUseCase = {
   setup: { role: "top", world: { kinLead: true }, carry: { earlier } },
   prompt: wake("And INV-9?"),
   expect: {},
-  sessionCallsMustNot: [{ tool: "records_query" }],
+  sessionCallsMustNot: [{ tool: "record_get" }],
 };
 const txt = (text: string) => ({ type: "text", text });
 const deferred = txt("The deferred tools list.");
@@ -171,7 +171,7 @@ it("replays only the last wake in legacy and the real earlier tool blocks in ses
           type: "tool_use",
           id: "toolu_prior_1",
           name: "ToolSearch",
-          input: { query: "select:mcp__t3-code__records_query", max_results: 1 },
+          input: { query: "select:mcp__t3-code__record_get", max_results: 1 },
         },
       ],
     },
@@ -181,7 +181,7 @@ it("replays only the last wake in legacy and the real earlier tool blocks in ses
         {
           type: "tool_result",
           tool_use_id: "toolu_prior_1",
-          content: [{ type: "tool_reference", tool_name: "mcp__t3-code__records_query" }],
+          content: [{ type: "tool_reference", tool_name: "mcp__t3-code__record_get" }],
         },
         txt("Tool loaded."),
       ],
@@ -192,25 +192,27 @@ it("replays only the last wake in legacy and the real earlier tool blocks in ses
         {
           type: "tool_use",
           id: "toolu_prior_0",
-          name: "mcp__t3-code__records_query",
-          input: { list: "invoices" },
+          name: "mcp__t3-code__record_get",
+          input: { key: "INV-7" },
         },
       ],
     },
     {
       role: "user",
-      content: [{ type: "tool_result", tool_use_id: "toolu_prior_0", content: '{"total":2}' }],
+      content: [
+        { type: "tool_result", tool_use_id: "toolu_prior_0", content: '{"state":"waiting"}' },
+      ],
     },
-    { role: "assistant", content: [txt("Two are open.")] },
-    { role: "user", content: [txt("# Events\n\nDoes that include INV-7?")] },
+    { role: "assistant", content: [txt("INV-7 is open.")] },
+    { role: "user", content: [txt("# Events\n\nWas that INV-7?")] },
     { role: "system", content: [unchanged] },
-    { role: "assistant", content: [txt("Yes, it includes INV-7.")] },
+    { role: "assistant", content: [txt("Yes, INV-7.")] },
     { role: "user", content: [txt("# Events\n\nAnd INV-9?")] },
     { role: "system", content: [unchanged] },
   ]);
   assert.deepEqual(expectationsForLayout(carryCase, "tools", "legacy"), {});
   assert.deepEqual(expectationsForLayout(carryCase, "tools", "session"), {
-    callsMustNot: [{ tool: "records_query" }],
+    callsMustNot: [{ tool: "record_get" }],
   });
 });
 
@@ -231,7 +233,7 @@ it("starts again with a full wake after compaction and carries from that wake", 
     { role: "user", content: [summaryBlock] },
     { role: "user", content: [deferred, txt(earlier[1]!.prompt)] },
     { role: "system", content: [date] },
-    { role: "assistant", content: [txt("Yes, it includes INV-7.")] },
+    { role: "assistant", content: [txt("Yes, INV-7.")] },
     { role: "user", content: [txt("# Events\n\nAnd INV-9?")] },
     { role: "system", content: [context(`${CARRIED_TURN_NOTE}\n\n${header}`)] },
   ]);
@@ -264,7 +266,7 @@ it("keeps a 9,000-character change list in the hook and appends a longer list af
       changes: prefix + work,
       tail: messages.slice(
         messages.findIndex((message) =>
-          message.content.some((block) => block.text === "Yes, it includes INV-7."),
+          message.content.some((block) => block.text === "Yes, INV-7."),
         ) + 1,
       ),
     };

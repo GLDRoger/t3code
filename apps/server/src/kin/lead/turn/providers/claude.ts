@@ -54,14 +54,7 @@ export const OWNER_SEAT_OFF = [
   "RemoteTrigger",
 ];
 
-export const OWNER_SEAT_NATIVE_TOOLS = [
-  "Bash",
-  "Read",
-  "Edit",
-  "Write",
-  "WebSearch",
-  "WebFetch",
-] as const;
+export const OWNER_SEAT_NATIVE_TOOLS = ["Bash", "Read", "Edit", "Write", "WebSearch"] as const;
 
 export const OWNER_SEAT_NO_SUBAGENTS = [
   "Agent",
