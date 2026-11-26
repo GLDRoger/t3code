@@ -369,15 +369,17 @@ describe("ChatWake", () => {
       }).pipe(Effect.provide(services)),
   );
 
+  // On a plain reply that asks nothing, 👍 and ✅ only stay as the reaction the agent reads next
+  // time; 👎 still wakes it.
   it.effect.each([
-    { swap: "✅", followup: undefined, answer: "yes", states: ["done"] },
-    { swap: "👎", followup: undefined, answer: "no", states: ["done", "expired"] },
-    { swap: "✅", followup: "👎", answer: "no", states: ["done", "expired"] },
-    { swap: "✅", followup: "remove", answer: null, states: ["expired"] },
-    { swap: "remove", followup: undefined, answer: null, states: ["expired"] },
+    { swap: "✅", followup: undefined, answer: null, states: [], kept: ["✅"] },
+    { swap: "👎", followup: undefined, answer: "no", states: ["done"], kept: ["👎"] },
+    { swap: "✅", followup: "👎", answer: "no", states: ["done"], kept: ["👎"] },
+    { swap: "✅", followup: "remove", answer: null, states: [], kept: [] },
+    { swap: "remove", followup: undefined, answer: null, states: [], kept: [] },
   ] as const)(
-    "keeps only the current answer when 👍 becomes $swap before pickup (follow-up: $followup)",
-    ({ swap, followup, answer, states }) =>
+    "on a plain reply, 👍 then $swap (follow-up: $followup) wakes the lead only for a 👎, and keeps the current reaction",
+    ({ swap, followup, answer, states, kept }) =>
       Effect.gen(function* () {
         yield* seed("a");
         const target = message("a", "lead-latest", { agent: true });
@@ -426,6 +428,13 @@ describe("ChatWake", () => {
         assert.deepStrictEqual(
           rows.map((row) => row.state),
           [...states],
+        );
+        const current = yield* sql<{ emoji: string }>`SELECT emoji FROM kin_reactions
+          WHERE org_id = ${target.orgId} AND message_id = ${target.messageId} AND removed_at IS NULL
+          ORDER BY emoji`;
+        assert.deepStrictEqual(
+          current.map((row) => row.emoji),
+          [...kept],
         );
       }).pipe(Effect.provide(ChatService.layer.pipe(Layer.provideMerge(services)))),
   );
