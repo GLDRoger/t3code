@@ -59,7 +59,7 @@ import {
   type KinWorkNames,
 } from "./kinWork.ts";
 import { KIN_CHANGED } from "./kinAnswers.ts";
-import { kinDatesAgenda } from "./kinDates.ts";
+import { kinDatesAgenda, kinDatesMonth } from "./kinDates.ts";
 import { kinLeadTrackingDetail } from "./kinLeadPresentation.ts";
 
 const orgId = KinOrgId.make("invented-org");
@@ -1216,6 +1216,31 @@ describe("kinWorkRow", () => {
       "Invoices · Due · Suggested · Draft",
       "Invoices · Issued",
     ]);
+  });
+
+  it("heads the agenda and marks the month with the reader's today, as Tasks counts it", () => {
+    // At 20:00Z Kolkata is already on 28 Dec; the reader in Los Angeles is still on the 27th.
+    const where = { ...names, zone: "Asia/Kolkata", readerZone: "America/Los_Angeles" };
+    const due = record({ dueAt: "2026-12-28T04:30:00.000Z", dueAllDay: false });
+    const now = new Date("2026-12-27T20:00:00.000Z");
+    expect(kinWorkDueText(due, where, now)).toBe("today, 8:30 PM");
+    const row = {
+      record: due,
+      listName: "Milestones",
+      stateLabel: "Open",
+      kind: "due" as const,
+      label: "Due",
+      at: due.dueAt!,
+      allDay: false,
+    };
+    expect(kinDatesAgenda([row], where, now).map((day) => [day.day, day.label, day.past])).toEqual([
+      ["2026-12-27", "Today", false],
+    ]);
+    const marked = kinDatesMonth("2026-12", [row], where, now)
+      .weeks.flat()
+      .filter((cell) => cell.today)
+      .map((cell) => [cell.day, cell.rows.length]);
+    expect(marked).toEqual([["2026-12-27", 1]]);
   });
 
   it("says who it waits on only while it is waiting, and never doubles a title's full stop", () => {

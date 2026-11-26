@@ -71,6 +71,10 @@ const shiftDay = (day: string, days: number) => {
 export const kinOwnerToday = (now: Date, names: KinWorkNames) =>
   kinWorkAllDay(now.toISOString(), true, names) ?? kinWorkDayOf(now);
 
+/** Today for whoever is reading, which heads the agenda and marks the month, as Tasks counts it. */
+const kinReaderToday = (now: Date, names: KinWorkNames) =>
+  kinOwnerToday(now, { ...names, zone: names.readerZone ?? names.zone });
+
 export const kinShiftMonth = (month: string, by: number) => {
   const at = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)) - 1 + by, 1);
   return kinWorkDayOf(at).slice(0, 7);
@@ -144,7 +148,7 @@ function kinDateRowView(row: KinDateRow, names: KinWorkNames, now: Date): KinDat
   const line = [row.listName, row.label, state, record.party?.title ?? null]
     .filter((part) => part !== null)
     .join(" · ");
-  const when = kinWorkDueLabel(day, new Date(`${kinOwnerToday(now, names)}T12:00:00`));
+  const when = kinWorkDueLabel(day, new Date(`${kinOwnerToday(now, { ...names, zone })}T12:00:00`));
   return {
     id: `${record.key}:${row.field ?? row.kind}`,
     key: record.key,
@@ -176,7 +180,7 @@ export function kinDatesAgenda(
   names: KinWorkNames,
   now: Date,
 ): ReadonlyArray<KinAgendaDay> {
-  const today = kinOwnerToday(now, names);
+  const today = kinReaderToday(now, names);
   const days = new Map<string, Array<KinDateRowView>>();
   for (const row of rows) {
     const view = kinDateRowView(row, names, now);
@@ -186,7 +190,7 @@ export function kinDatesAgenda(
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([day, held]) => ({
       day,
-      label: held[0]?.when ?? day,
+      label: kinWorkDueLabel(day, new Date(`${today}T12:00:00`)),
       past: day < today,
       rows: held,
     }));
@@ -209,7 +213,7 @@ export function kinDatesMonth(
   names: KinWorkNames,
   now: Date,
 ): { readonly label: string; readonly weeks: ReadonlyArray<ReadonlyArray<KinMonthCell>> } {
-  const today = kinOwnerToday(now, names);
+  const today = kinReaderToday(now, names);
   const byDay = new Map<string, Array<KinDateRowView>>();
   for (const row of rows) {
     const view = kinDateRowView(row, names, now);
