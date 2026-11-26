@@ -820,6 +820,7 @@ const chatBudget = Effect.fn("KinWireBudget.chat")(function* () {
       );
       const first = yield* Queue.take(events);
       if (first._tag !== "backlog") return yield* Effect.die(new Error(`${name}: no backlog`));
+      measured[`chat.${name}.backlog.bytes`] = wireBytes(KinChatStreamEvent, first);
       return { name, events };
     }),
   );
@@ -862,13 +863,15 @@ const chatBudget = Effect.fn("KinWireBudget.chat")(function* () {
 });
 
 withLayer(chatLayer)("Kin chat wire budget", (it) => {
-  it.effect("the team room's list, history, card and reaction match kinWireBudget.json", () =>
-    Effect.gen(function* () {
-      const measured = yield* Effect.scoped(chatBudget());
-      expect(
-        measured,
-        "Set kinWireBudget.json's chat keys to the measured values; say why in the PR.",
-      ).toEqual(pinned(true));
-    }),
+  it.effect(
+    "the team room's list, history, backlog, card and reaction match kinWireBudget.json",
+    () =>
+      Effect.gen(function* () {
+        const measured = yield* Effect.scoped(chatBudget());
+        expect(
+          measured,
+          "Set kinWireBudget.json's chat keys to the measured values; say why in the PR.",
+        ).toEqual(pinned(true));
+      }),
   );
 });

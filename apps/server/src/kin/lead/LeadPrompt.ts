@@ -240,7 +240,7 @@ export const promptHeaderPlace = (line: string) =>
 export const UNREAD_RULE =
   "Before you say anything new, keep these true: leave each one that still stands, even if your reply repeats it, and any you cannot check; take back one that no longer matters with message_withdraw; put the current version in place of one that is now wrong with message_replace.";
 export const REMINDER_DUE =
-  "This reminder is due now. A check in it is yours to do, from Kin's records and your tools, before asking anyone.";
+  "This reminder is due now. A check in it is yours to do, from Kin's records and your tools, before asking anyone. If what it needs is still missing, such as an address, the reply is one line: what it was for and what you need, such as \"Time to send Corran Supplies the signed order: what's their address?\". Where you looked and what you found tell them nothing they can act on, so leave them out.";
 /** Each fixed label a lead's prompt puts on a quote; Kin's evals check a case's labels against these. */
 export const QUOTE_LABELS = {
   docReference: "doc reference (data)",
@@ -328,6 +328,8 @@ type SessionPromptInput = KinLeadPromptInput & {
     readonly sections: Readonly<Record<string, string>>;
     readonly index: string;
     readonly chatSeq: number;
+    readonly chatChangeSeq: number;
+    readonly heldChatChanges: ReadonlyArray<number>;
   };
 };
 
@@ -1571,7 +1573,10 @@ export class KinLeadPrompt extends Context.Service<
         } Name people only as Kin names them here, never from a file path, account or machine name.`;
       });
       // Both renderers own their span; collecting the parts does not need a second one.
-      const collectParts = Effect.fnUntraced(function* (given: KinLeadPromptInput) {
+      const collectParts = Effect.fnUntraced(function* (
+        given: KinLeadPromptInput,
+        continued = false,
+      ) {
         // A stranger's pull request's review reads nothing of the owner's chat it answers in.
         const review = yield* outsideReview(given).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
@@ -1644,7 +1649,7 @@ export class KinLeadPrompt extends Context.Service<
               .join("") || fallbackLeadName;
           return {
             ownerOnly: false,
-            chatSeq: 0,
+            workChanges: undefined,
             parts: [
               sharedPart("standing", `Agent name: ${encoded(name, true)}`),
               sharedPart("message", PROMPT_HEADINGS.events),
@@ -1710,7 +1715,9 @@ export class KinLeadPrompt extends Context.Service<
             (message) =>
               message.seq >= from &&
               message.status === "posted" &&
-              (message.author._tag !== "system" || isOutcomeLine(message.messageId)) &&
+              (message.author._tag !== "system" ||
+                isOutcomeLine(message.messageId) ||
+                (continued && ownerOnly && message.messageId.startsWith("bills:"))) &&
               (message.body.trim() !== "" || (message.attachments?.length ?? 0) > 0) &&
               !quoted.has(message.messageId),
           );
@@ -1942,15 +1949,13 @@ export class KinLeadPrompt extends Context.Service<
               );
         const now = yield* Clock.currentTimeMillis;
         // Owner-only this slice: the teammate view of Work comes with slice 2.
-        const work =
-          ownerOnly && input.lane !== undefined
-            ? yield* buildWorkSection({
-                orgId,
-                agentId,
-                chatId: input.lane.chatId,
-                now,
-                wakeupId: input.wakeupId,
-              }).pipe(
+        const workInput =
+          input.lane === undefined
+            ? undefined
+            : { orgId, agentId, chatId: input.lane.chatId, now, wakeupId: input.wakeupId };
+        const workContext =
+          ownerOnly && workInput !== undefined
+            ? yield* readWorkContext(workInput, continued).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
                 Effect.catch((cause) =>
                   Effect.logWarning("Kin Work section unavailable", cause).pipe(
@@ -1959,6 +1964,7 @@ export class KinLeadPrompt extends Context.Service<
                 ),
               )
             : undefined;
+        const work = workContext?.work;
         // What this lead started, as Kin's rows have it now; owner-only like Work.
         const started = ownerOnly
           ? yield* buildStartedSection({ orgId, agentId, now }).pipe(
@@ -2716,7 +2722,7 @@ export class KinLeadPrompt extends Context.Service<
           );
           input.observePrompt(fingerprintPrompt(standing, snapshot?.index));
         }
-        return { parts, ownerOnly, chatSeq: laneChat?.lastSeq ?? 0 };
+        return { parts, ownerOnly, workChanges: workContext?.rendered };
       });
       const build = Effect.fn("KinLeadPrompt.build")(function* (input: KinLeadPromptInput) {
         const { parts, ownerOnly } = yield* collectParts(input);
@@ -2733,8 +2739,11 @@ export class KinLeadPrompt extends Context.Service<
       const buildSession = Effect.fn("KinLeadPrompt.buildSession")(function* (
         input: SessionPromptInput,
       ) {
-        const { parts, ownerOnly, chatSeq } = yield* collectParts(input);
-        return renderSession(visible(parts, ownerOnly), ownerOnly, chatSeq, input.previous);
+        const { parts, ownerOnly, workChanges } = yield* collectParts(
+          input,
+          input.previous !== undefined,
+        );
+        return renderSession(visible(parts, ownerOnly), ownerOnly, input.previous, workChanges);
       });
       return KinLeadPrompt.of({ build, buildSession, steer, attachments });
     }),
@@ -3060,6 +3069,7 @@ type Part = { readonly text: string; readonly shared: boolean; readonly index?: 
       readonly place: "delta";
       readonly section: DeltaSection;
       readonly seqs?: ReadonlyArray<number>;
+      readonly changeSeqs?: ReadonlyArray<number>;
     }
 );
 type PromptPart =
@@ -3105,13 +3115,21 @@ const newRecentChatLines = (
   section: string,
   previous: string | undefined,
   seqs: ReadonlyArray<number> | undefined,
-  chatSeq: number | undefined,
+  changeSeqs: ReadonlyArray<number> | undefined,
+  cursor: Pick<SessionDeltaSnapshot, "chatSeq" | "chatChangeSeq" | "heldChatChanges">,
 ) => {
+  const { chatSeq, chatChangeSeq, heldChatChanges } = cursor;
   const lines = section.split("\n");
   const quoted = lines.slice(3, -1);
   let added: string[];
   if (seqs !== undefined && chatSeq !== undefined) {
-    added = quoted.filter((_line, index) => (seqs[index] ?? 0) > chatSeq);
+    const held = new Set(heldChatChanges);
+    added = quoted.filter((_line, index) => {
+      const changed = changeSeqs?.[index] ?? 0;
+      return chatChangeSeq !== undefined && changed > 0
+        ? changed > chatChangeSeq && !held.has(changed)
+        : (seqs[index] ?? 0) > chatSeq;
+    });
   } else {
     // Eval cases authored as prompt text have no message IDs.
     if (previous === undefined) return section;
@@ -3121,27 +3139,88 @@ const newRecentChatLines = (
   return added.length === 0 ? undefined : [...lines.slice(0, 3), ...added, lines.at(-1)].join("\n");
 };
 
+const readWorkContext = Effect.fn("KinLeadPrompt.readWorkContext")(function* (
+  input: Parameters<typeof buildWorkSection>[0],
+  continued: boolean,
+) {
+  if (!continued) return { work: yield* buildWorkSection(input), rendered: undefined };
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const work = yield* buildWorkSection(input);
+      const rendered = yield* renderedWorkChanges(
+        input,
+        work.changed.map(({ key }) => key),
+      ).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("Kin Work change sequences unavailable", cause).pipe(
+            Effect.as(undefined),
+          ),
+        ),
+      );
+      return { work, rendered };
+    }),
+  );
+});
+
+const renderedWorkChanges = Effect.fn("KinLeadPrompt.renderedWorkChanges")(function* (
+  input: Pick<KinLeadPromptInput, "orgId" | "agentId"> & { readonly chatId: KinChatId },
+  keys: ReadonlyArray<string>,
+) {
+  const result = new Map<string, Set<number>>();
+  if (keys.length === 0) return result;
+  const sql = yield* SqlClient.SqlClient;
+  // Same transaction as Work's render, after it settles and advances its cursor.
+  const rows = yield* sql<{ key: string; seq: number }>`WITH ranked AS (
+    SELECT r.key, c.seq, ROW_NUMBER() OVER (PARTITION BY r.key ORDER BY c.seq DESC) AS rank
+    FROM kin_record_cursors w JOIN kin_records r ON r.org_id = w.org_id
+    JOIN kin_record_changes c ON c.org_id = r.org_id AND c.record_id = r.record_id
+    WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId} AND w.chat_id = ${input.chatId}
+      AND r.key IN ${sql.in(keys)} AND r.register_id = 'work'
+      AND r.owner_kind = 'agent' AND r.owner_id = w.agent_id
+      AND c.seq > w.seq AND c.seq <= w.pending_seq
+      AND NOT (c.actor_kind = 'agent' AND c.actor_id IS w.agent_id)
+  ) SELECT key, seq FROM ranked WHERE rank <= 4 LIMIT ${keys.length * 4}`;
+  for (const { key, seq } of rows) {
+    const seqs = result.get(key) ?? new Set<number>();
+    seqs.add(seq);
+    result.set(key, seqs);
+  }
+  return result;
+});
+
 const workWithoutClock = (text: string) => text.replace(/^> \{"asOf":"[^"]*",/m, "> {");
 
-type SessionDeltaSnapshot = Omit<NonNullable<SessionPromptInput["previous"]>, "chatSeq"> & {
-  readonly chatSeq?: number;
-  readonly recentChatSeqs?: ReadonlyArray<number>;
-};
+type SessionDeltaSnapshot = Pick<
+  NonNullable<SessionPromptInput["previous"]>,
+  "sections" | "index"
+> &
+  Partial<
+    Pick<
+      NonNullable<SessionPromptInput["previous"]>,
+      "chatSeq" | "chatChangeSeq" | "heldChatChanges"
+    >
+  > & {
+    readonly recentChatSeqs?: ReadonlyArray<number>;
+    readonly recentChatChangeSeqs?: ReadonlyArray<number>;
+  };
 
 export const renderSessionDelta = (
-  { sections, index, recentChatSeqs }: SessionDeltaSnapshot,
+  { sections, index, recentChatSeqs, recentChatChangeSeqs }: SessionDeltaSnapshot,
   prior?: SessionDeltaSnapshot,
 ) => {
   const delta: string[] = [];
   let indexChanged = 0;
+  let workInDelta = false;
   if (prior === undefined) {
     delta.push(...Object.values(sections));
+    workInDelta = sections.work !== undefined;
   } else {
     delta.push(CARRIED_TURN_NOTE);
     for (const [section, text] of Object.entries(sections)) {
       const before = prior.sections[section];
       if (section === "recentChat") {
-        const added = newRecentChatLines(text, before, recentChatSeqs, prior.chatSeq);
+        const added = newRecentChatLines(text, before, recentChatSeqs, recentChatChangeSeqs, prior);
         if (added !== undefined) delta.push(added);
       } else if (
         section === "header" ||
@@ -3149,6 +3228,7 @@ export const renderSessionDelta = (
         (section === "work" ? workWithoutClock(text) !== workWithoutClock(before) : text !== before)
       ) {
         delta.push(text);
+        workInDelta ||= section === "work";
       }
     }
     for (const [section, text] of Object.entries(prior.sections)) {
@@ -3162,14 +3242,14 @@ export const renderSessionDelta = (
     }
   }
 
-  return { delta: delta.join("\n\n"), indexChanged };
+  return { delta: delta.join("\n\n"), indexChanged, workInDelta };
 };
 
 const renderSession = (
   parts: ReadonlyArray<PromptPart>,
   ownerOnly: boolean,
-  chatSeq: number,
   previous: SessionPromptInput["previous"],
+  workChanges: ReadonlyMap<string, ReadonlySet<number>> | undefined,
 ) => {
   const standing: string[] = [];
   const standingWithoutIndex: string[] = [];
@@ -3177,6 +3257,7 @@ const renderSession = (
   const deltaParts = new Map<DeltaSection, string[]>();
   let index = "";
   let recentChatSeqs: ReadonlyArray<number> | undefined;
+  let recentChatChangeSeqs: ReadonlyArray<number> | undefined;
   const addPart = (part: Part) => {
     if (part.place === "standing") {
       standing.push(part.text);
@@ -3190,7 +3271,10 @@ const renderSession = (
     } else if (part.place === "message") {
       message.push(part.text);
     } else if (part.place === "delta") {
-      if (part.section === "recentChat" && part.seqs !== undefined) recentChatSeqs = part.seqs;
+      if (part.section === "recentChat") {
+        recentChatSeqs = part.seqs;
+        recentChatChangeSeqs = part.changeSeqs;
+      }
       const lines = deltaParts.get(part.section);
       if (lines === undefined) deltaParts.set(part.section, [part.text]);
       else lines.push(part.text);
@@ -3217,11 +3301,12 @@ const renderSession = (
     previous !== undefined && ownerOnly === (previous.index !== "") && sections.header !== undefined
       ? previous
       : undefined;
-  const { delta, indexChanged } = renderSessionDelta(
+  const { delta, indexChanged, workInDelta } = renderSessionDelta(
     {
       sections,
       index,
       ...(recentChatSeqs === undefined ? {} : { recentChatSeqs }),
+      ...(recentChatChangeSeqs === undefined ? {} : { recentChatChangeSeqs }),
     },
     prior,
   );
@@ -3233,9 +3318,9 @@ const renderSession = (
       .digest("hex"),
     index,
     sections,
-    chatSeq,
     delta,
     indexChanged,
+    workChanges: workInDelta ? workChanges : undefined,
     message: message.join("\n\n"),
     compactInstructions: COMPACT_INSTRUCTIONS,
   };
@@ -3272,7 +3357,7 @@ export function renderSessionChanges(
         ? []
         : [
             encoded(
-              `Not listed here: ${more} more changes since your previous turn: ${groups.join(", ")}. Read again what you need from those lists before you rely on it.`,
+              `Not listed here: ${more} more change${more === 1 ? "" : "s"} since your previous turn: ${groups.join(", ")}. Read again what you need from those lists before you rely on it.`,
             ),
           ]),
     ]),
@@ -3506,6 +3591,7 @@ function boundedRecent(
   const window = options.notice ? RECENT_WINDOW.notice : RECENT_WINDOW.reply;
   const lines: string[] = [];
   const seqs: number[] = [];
+  const changeSeqs: number[] = [];
   let chars = 0;
   let newer: number | undefined;
   let ownSeen = false;
@@ -3540,11 +3626,16 @@ function boundedRecent(
     if (lines.length > 0 && chars + line.length > window.chars) break;
     lines.push(line);
     seqs.push(message.seq);
+    changeSeqs.push(message.changeSeq ?? 0);
     chars += line.length;
     newer = at;
     ownSeen ||= own;
   }
-  return { text: quoteLines(QUOTE_LABELS.recentChat, lines.toReversed()), seqs: seqs.toReversed() };
+  return {
+    text: quoteLines(QUOTE_LABELS.recentChat, lines.toReversed()),
+    seqs: seqs.toReversed(),
+    changeSeqs: changeSeqs.toReversed(),
+  };
 }
 /** Past this many, a group's line names the first and counts the rest. */
 const GROUP_NAMES_SHOWN = 20;

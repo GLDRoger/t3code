@@ -89,6 +89,8 @@ export const DeferralSnapshot = Schema.Struct({
   supersededBy: Schema.NullOr(KinMemoryItemId),
   links: Schema.Array(Schema.String),
   github: Schema.optional(Schema.NullOr(Schema.Array(GithubLinkState))),
+  /** Kin did not fire it: a person had this record set aside. */
+  skipped: Schema.optional(Schema.Struct({ record: Schema.String, at: Schema.Number })),
   /** The re-armed due fire's instant while the run is in `grace`. */
   graceEndsAt: Schema.optional(Schema.Number),
   /** The re-armed due fire's instant while a reminder is `snoozed`. */
@@ -375,19 +377,23 @@ export const hex = (value: string) =>
     "",
   );
 
+export function deferralRecordReferences(title: string, links: ReadonlyArray<string> = []) {
+  const mentioned =
+    title.match(
+      /(?<![\w/-])(?:[A-Z][A-Z0-9]{0,7}-[1-9]\d{0,8}|[A-Z0-9-]+(?:\/[A-Z0-9-]+)+)(?![\w/-])/gi,
+    ) ?? [];
+  return new Set([
+    ...links.map((value) => value.trim()).filter((value) => looksLikeRecordReference(value, true)),
+    ...mentioned.filter((value) => looksLikeRecordReference(value)),
+  ]);
+}
+
 export const deferredSectionOff = Effect.fn("Deferrals.sectionOff")(function* (
   orgId: KinOrgId,
   title: string,
   links: ReadonlyArray<string> = [],
 ) {
-  const mentioned =
-    title.match(
-      /(?<![\w/-])(?:[A-Z][A-Z0-9]{0,7}-[1-9]\d{0,8}|[A-Z0-9-]+(?:\/[A-Z0-9-]+)+)(?![\w/-])/gi,
-    ) ?? [];
-  const references = new Set([
-    ...links.map((value) => value.trim()).filter((value) => looksLikeRecordReference(value, true)),
-    ...mentioned.filter((value) => looksLikeRecordReference(value)),
-  ]);
+  const references = deferralRecordReferences(title, links);
   if (references.size === 0) return false;
   const shell = yield* KinShell.get(orgId);
   if (KinShell.builtInsOn(shell)) return false;

@@ -306,8 +306,9 @@ const line = (notice: AssignNotice, clock: NoticeClock, gaveTo: string | null = 
   if (notice.kind === "lead") return `made you the lead of ${task}`;
   if (notice.kind === "commented") return `commented on ${task}${why}`;
   if (notice.kind === "nudged") return `asked where ${task} stands`;
+  // Why they were chosen is the giver's reason, written about them: it stays on the task's history.
   return notice.kind === "given"
-    ? `${task}${dueText(notice.row, clock)}${notice.why === null ? "" : `. Why: ${notice.why}`}${
+    ? `${task}${dueText(notice.row, clock)}${
         notice.afterReading === undefined ? "" : `. ${notice.afterReading}`
       }`
     : notice.kind === "taken"
@@ -625,10 +626,12 @@ export const tellHolding = Effect.fn("KinAssignNotices.tell")(function* (
     const now = yield* Clock.currentTimeMillis;
     const gaveTo = (notice: AssignNotice) => names.get(notice) ?? null;
     const body = bodyFor(giver, theirs, clock, now, gaveTo);
-    // The same lines from the same turn are one message, so a retried call posts nothing more.
+    // The same lines about the same revisions from the same turn are one message, so a retried
+    // call posts nothing more, and a task given to them again in that turn still posts.
+    const revisions = theirs.map((notice) => `${notice.row.recordId}@${notice.row.rev}`).join(",");
     const messageId = KinMessageId.make(
       `kin-assign-${NodeCrypto.createHash("sha256")
-        .update(`${turn.wakeupId}:${person}:${body}`)
+        .update(`${turn.wakeupId}:${person}:${revisions}:${body}`)
         .digest("hex")
         .slice(0, 32)}`,
     );

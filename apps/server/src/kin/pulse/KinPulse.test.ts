@@ -3368,15 +3368,16 @@ describe("KinPulse", () => {
           handled: null,
         });
         // One that doesn't add up is told once, as a line: Kin marks nothing and offers no card.
-        assert.deepInclude(
-          facts.find((fact) => fact.key === "repaid_seen:BNK-11:short")!,
-          {
-            consequence:
-              "BNK-11, ₹9,000 paid 25 Nov, names Meera but doesn't add up to their oldest owed expenses (₹12,400 over 3 expenses), so Kin marks nothing. Mark what it repaid on the expenses in Money.",
-            actor: { _tag: "agent", agentId: finance },
-            wake: "brief",
-          },
-        );
+        const short = facts.find((fact) => fact.key === "repaid_seen:BNK-11:short")!;
+        // Kin hasn't looked at what it repaid, so the line says so instead of reading as a finding.
+        assert.include(short.consequence, "not checked");
+        assert.notInclude(short.consequence, "doesn't add up");
+        assert.deepInclude(short, {
+          consequence:
+            "BNK-11, ₹9,000 paid 25 Nov, names Meera and may not match their oldest owed expenses (₹12,400 over 3 expenses): not checked, so Kin marks nothing. Mark what it repaid on the expenses in Money.",
+          actor: { _tag: "agent", agentId: finance },
+          wake: "brief",
+        });
         assert.lengthOf(facts, 2);
         // Only owner-level people hear of it, and only a build that knows the sense shows it.
         assert.isEmpty(yield* seen({ _tag: "people", people: [mate] }));

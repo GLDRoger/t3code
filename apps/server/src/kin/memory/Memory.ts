@@ -86,6 +86,19 @@ export class MemoryQueryDecodeError extends Schema.TaggedError<MemoryQueryDecode
   failureFields,
 ) {}
 
+class MemoryChangeHeadInvalid extends Schema.TaggedError<MemoryChangeHeadInvalid>()(
+  "MemoryChangeHeadInvalid",
+  { orgId: Schema.String },
+) {}
+
+interface ChangedItem {
+  readonly path: string;
+  readonly at: number;
+  readonly subject: string;
+  readonly coding: boolean;
+  readonly head?: MemoryItemHead;
+}
+
 type MemoryFailure =
   | MemoryError
   | MemoryCheckoutInvalid
@@ -271,6 +284,15 @@ export class Memory extends Context.Service<
      * until it passes.
      */
     readonly syncCheckout: (orgId: KinOrgId) => Effect.Effect<void, MemoryFailure>;
+    readonly changedItems?: (
+      orgId: KinOrgId,
+      from: string,
+      to: string,
+      options: { readonly limit: number; readonly excludeSubjects: ReadonlySet<string> },
+    ) => Effect.Effect<
+      { readonly items: ReadonlyArray<ChangedItem>; readonly overflow: number },
+      MemoryFailure | MemoryChangeHeadInvalid
+    >;
     readonly readPromptSnapshot: (
       orgId: KinOrgId,
       expectedHead: string,
@@ -2174,6 +2196,86 @@ const make = Effect.gen(function* () {
         ),
       );
     }),
+    changedItems: Effect.fn("Memory.changedItems")((orgId, from, to, options) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const sha = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
+          if (!sha.test(from) || !sha.test(to))
+            return yield* new MemoryChangeHeadInvalid({ orgId });
+          if (from === to) return { items: [], overflow: 0 };
+          const { writer } = yield* pathsFor(orgId);
+          const log = yield* git(orgId, writer, [
+            "log",
+            "-z",
+            "--full-history",
+            "--diff-merges=first-parent",
+            "--no-renames",
+            "--name-only",
+            "--format=%x00%ct%x00%s%x00%B",
+            `${from}..${to}`,
+            "--",
+            ...folders,
+          ]);
+          const seen = new Set<string>();
+          const items = new Map<string, ChangedItem>();
+          const prefix = `${orgId}\0`;
+          const pinned = [...snapshots.entries()].find(
+            ([key, snapshot]) => key.startsWith(prefix) && snapshot.head === to,
+          )?.[1];
+          const heads = new Map(pinned?.items.map(({ head }) => [head.path, head]));
+          let at = 0;
+          let subject = "";
+          let coding = false;
+          let excluded = true;
+          const tokens = log.split("\0");
+          for (let index = 0; index < tokens.length; index++) {
+            const token = tokens[index]!;
+            if (token === "") {
+              if (index === tokens.length - 1) break;
+              at = Number(tokens[++index]) * 1_000;
+              subject = tokens[++index] ?? "";
+              const message = tokens[++index] ?? "";
+              if (!Number.isFinite(at))
+                return yield* new MemoryError({
+                  orgId,
+                  operation: "changedItems",
+                  reason: "Malformed log",
+                });
+              coding =
+                /^Kin-Coding-Agent-For:/m.test(message) || subject.includes("(coding agent)");
+              excluded = options.excludeSubjects.has(subject);
+              continue;
+            }
+            const path = token.replace(/^\n/, "");
+            if (
+              excluded ||
+              !path.endsWith(".md") ||
+              !folders.some((folder) => path.startsWith(`${folder}/`))
+            )
+              continue;
+            if (seen.has(path)) {
+              const newer = items.get(path);
+              if (coding && newer !== undefined && !newer.coding)
+                items.set(path, { ...newer, coding: true });
+              continue;
+            }
+            seen.add(path);
+            if (items.size < options.limit) {
+              const head = heads.get(path);
+              items.set(path, {
+                path,
+                at,
+                subject,
+                coding,
+                ...(head === undefined ? {} : { head }),
+              });
+            }
+          }
+          return { items: [...items.values()], overflow: seen.size - items.size };
+        }),
+      ),
+    ),
     readPromptSnapshot: Effect.fn("Memory.readPromptSnapshot")((orgId, expectedHead, view) =>
       locked(
         orgId,

@@ -639,7 +639,14 @@ it.effect(
       const chatId = direct!.chatId;
       yield* say(owner, chatId, "Merge the release PR");
       const first = yield* wake(tech);
-      const offer = yield* say(first, chatId, "Merged. I can tag the release too if you want.");
+      const offer = yield* chats
+        .send(first, {
+          chatId,
+          clientMessageId: "tag-release",
+          body: "Tag the release too?",
+          intent: "question",
+        })
+        .pipe(Effect.flatMap(said));
       yield* queue.finish({ orgId, wakeupId: first.wakeupId, status: "completed" });
       const react = (emoji: "👍" | "👎") =>
         chats
