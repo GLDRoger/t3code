@@ -114,6 +114,7 @@ import {
 } from "@t3tools/contracts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KIN_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.ts";
+import { OWNER_SEAT_NATIVE_TOOLS } from "../../apps/server/src/kin/lead/turn/providers/claude.ts";
 import { listedOnSharedThread } from "../../apps/server/src/kin/lead/SharedTools.ts";
 import { BILLS_TOOLS } from "../../apps/server/src/kin/lead/billsOnly.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
@@ -357,7 +358,7 @@ export const kinLeadBase = <M, E>(input: {
   readonly deferredHeader: string | undefined;
   readonly nativeDeferred: ReadonlyArray<string>;
   readonly nativeSchema: (name: string) => object;
-  readonly isT3Name: (name: string) => boolean;
+  readonly normalizeToolName: (name: string) => string;
 }) => {
   const { options, t3 } = input;
   const ownerSeat =
@@ -365,10 +366,13 @@ export const kinLeadBase = <M, E>(input: {
   const deferredKin = t3.filter(
     (tool) => !KIN_ALWAYS_LOADED.has(tool.name.slice(T3_PREFIX.length)),
   );
+  const ownerTools: ReadonlySet<string> = new Set(OWNER_SEAT_NATIVE_TOOLS);
   const toolSearch = input.templateTools.filter((tool) => tool.name.endsWith("ToolSearch"));
   // As a real owner-seat Kin turn sends them: Claude Code's own deferred tools are only named.
   const deferredNative = ownerSeat
-    ? input.nativeDeferred.map((name): ApiTool => ({ name, ...input.nativeSchema(name) }))
+    ? input.nativeDeferred
+        .filter((name) => ownerTools.has(input.normalizeToolName(name)))
+        .map((name): ApiTool => ({ name, ...input.nativeSchema(input.normalizeToolName(name)) }))
     : [];
   const deferred = [...deferredNative, ...deferredKin];
   return {
@@ -388,9 +392,7 @@ export const kinLeadBase = <M, E>(input: {
     environment: input.environment,
     nativeTools: [
       ...(ownerSeat
-        ? input.templateTools.filter(
-            (tool) => !input.isT3Name(tool.name) && !tool.name.endsWith("ToolSearch"),
-          )
+        ? input.templateTools.filter((tool) => ownerTools.has(input.normalizeToolName(tool.name)))
         : // A confined Claude session keeps the provider's own web search (`claude.ts`), but
           // for bills.
           options.kinBills === true

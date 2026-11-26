@@ -64,6 +64,14 @@ const template = {
           type: "text",
           text: "<system-reminder>\nCodebase and user instructions are shown below.\n</system-reminder>",
         },
+        {
+          type: "text",
+          text: "<system-reminder>\nAvailable agent types for the Agent tool:\nUse a specialist.\n\nWhen you launch multiple agents for independent work, send them in a single message.\n</system-reminder>",
+        },
+        {
+          type: "text",
+          text: "<system-reminder>\nThe following skills are available for use with the Skill tool:\n- Example\n</system-reminder>",
+        },
         { type: "text", text: "The captured prompt." },
       ],
     },
@@ -75,12 +83,17 @@ const template = {
     {
       role: "system",
       content:
-        "You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.\n\nThe following deferred tools are now available via ToolSearch. Load them first:\nMonitor\nmcp__t3-code__retired_tool\n\nAfter the list.",
+        "You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.\n\nThe following deferred tools are now available via ToolSearch. Load them first:\nMonitor\nWebFetch\nWebSearch\nmcp__t3-code__retired_tool\n\nAfter the list.",
     },
     { role: "assistant", content: [{ type: "text", text: "A later turn." }] },
   ],
   tools: [
     { name: "mcp__host__term_Bash", input_schema: { type: "object" } },
+    { name: "mcp__host__priority_Read", input_schema: { type: "object" } },
+    { name: "mcp__host__gossip_Edit", input_schema: { type: "object" } },
+    { name: "mcp__host__slab_Write", input_schema: { type: "object" } },
+    { name: "mcp__host__layer_Agent", input_schema: { type: "object" } },
+    { name: "mcp__host__extra_Skill", input_schema: { type: "object" } },
     { name: "mcp__host__clown_ToolSearch", input_schema: { type: "object" } },
     { name: "mcp__t3-code__retired_tool", input_schema: { type: "object" }, defer_loading: true },
   ],
@@ -271,16 +284,25 @@ it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with
   assert.isFalse(before.some((name) => name.endsWith("Bash")));
   for (const name of ["mcp__t3-code__delegate_task", "mcp__t3-code__task_status"])
     assert.include(after, name);
-  for (const name of ["Bash"])
-    assert.isTrue(
-      after.some((tool) => tool.endsWith(name)),
-      name,
-    );
+  const native = (toolNames: ReadonlyArray<string>) =>
+    toolNames.filter((name) => !name.startsWith("mcp__t3-code__")).map(normalizeToolName);
+  assert.deepStrictEqual(native(upFront), ["Bash", "Read", "Edit", "Write", "ToolSearch"]);
+  assert.deepStrictEqual(native(base(true).deferred.map((tool) => tool.name)), [
+    "WebFetch",
+    "WebSearch",
+  ]);
   assert.notInclude(after, "mcp__t3-code__schedule_task");
-  // Claude Code's own deferred tools wait behind ToolSearch, named in the list, as a real turn sends them.
-  assert.isFalse(base(true).nativeTools.some((tool) => tool.name === "Monitor"));
-  assert.include(after, "Monitor");
-  assert.include(String(base(true).reminders[0]?.text), "\nMonitor\n");
+  const reminders = base(true)
+    .reminders.map((block) => block.text)
+    .join("\n");
+  assert.include(reminders, "\nWebFetch\nWebSearch\n");
+  for (const prefix of [
+    "Available agent types for the Agent tool:",
+    "When you launch multiple agents",
+    "The following skills are available for use with the Skill tool:",
+    "\nMonitor\n",
+  ])
+    assert.notInclude(reminders, prefix);
   // A lead case has the owner's seat, as production gives a thread nobody else reads, unless it says not.
   const lead = (prompt: string, kinSession?: boolean) =>
     kinSessionOf({

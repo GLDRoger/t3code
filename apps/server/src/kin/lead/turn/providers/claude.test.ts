@@ -20,6 +20,7 @@ import * as ServerConfig from "../../../../config.ts";
 import * as ClaudeAdapterV2 from "../../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { hookAllows, kinSecretVariables } from "../../../claudeConfinement.testkit.ts";
 import * as DreamIsolation from "../../../dreaming/DreamIsolation.ts";
+import contextBudget from "../../../mcp/agentContextBudget.json" with { type: "json" };
 import { builtinTools, claude, OWNER_SEAT_OFF } from "./claude.ts";
 import { kinInstructions, REVIEW_SEAT_INSTRUCTIONS } from "../session.ts";
 import { ownerOnlyWakeup, wakeupRun } from "../../Audience.testkit.ts";
@@ -36,6 +37,17 @@ import { stampReads } from "../../OutsideContent.ts";
 import { KinServer, type Services as KinServices } from "../../../KinServer.ts";
 import * as KinPersistence from "../../../persistence/KinPersistence.ts";
 import * as Sqlite from "../../../../persistence/Sqlite.ts";
+
+const dietSettings = {
+  disableBundledSkills: true,
+  disableWorkflows: true,
+  disableAgentView: true,
+} as const;
+
+const assertNoDietSettings = (options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions | undefined) => {
+  for (const key of Object.keys(dietSettings))
+    assert.notProperty(typeof options?.settings === "object" ? options.settings : {}, key);
+};
 
 const optionsAt = (cwd: string, environment: NodeJS.ProcessEnv = { PATH: "/usr/bin" }) =>
   ClaudeAdapterV2.makeClaudeQueryOptions({
@@ -214,6 +226,7 @@ it.effect.each([
       );
       // A dream keeps the edit tools its checkout needs.
       assert.deepStrictEqual(dreamOpened?.tools, DreamIsolation.dreamTools);
+      assertNoDietSettings(dreamOpened);
       assert.isFalse((dreamOpened?.disallowedTools ?? []).includes("Edit"));
       assert.isDefined(leadOpened?.mcpServers?.kin);
       // A turn someone besides the owner reads can't open the memory checkout it runs in.
@@ -335,13 +348,28 @@ it.effect(
           ),
         );
       const full = yield* open("kin:tech");
-      // Claude Code's own tools but those that wait on someone at the screen, the pinned gh first.
-      assert.strictEqual(full?.tools, lead.tools);
+      assert.deepStrictEqual(full?.tools, [...contextBudget.kinLeadOwnerNativeTools, "ToolSearch"]);
+      const { mcpServers: _mcpServers, ...withoutMcp } = lead;
+      const withoutSearch = yield* open("kin:tech", withoutMcp);
+      assert.deepStrictEqual(withoutSearch?.tools, contextBudget.kinLeadOwnerNativeTools);
+      assert.strictEqual(withoutSearch?.env?.ENABLE_TOOL_SEARCH, "false");
       assert.deepStrictEqual(full?.disallowedTools, [
-        ...new Set([...(lead.disallowedTools ?? []), ...OWNER_SEAT_OFF]),
+        ...new Set([
+          ...(lead.disallowedTools ?? []),
+          ...OWNER_SEAT_OFF,
+          "Agent",
+          "Task",
+          "Workflow",
+          "ListAgents",
+          "ReportFindings",
+          "SendMessage",
+          "TaskStop",
+          "DesignSync",
+          "Skill",
+        ]),
       ]);
-      for (const kept of ["Bash", "Read", "Edit", "Write", "WebFetch", "Agent", "TaskStop"])
-        assert.notInclude(full?.disallowedTools ?? [], kept);
+      assert.include(typeof full?.settings === "object" ? full.settings : {}, dietSettings);
+      assert.notProperty(full ?? {}, "skills");
       // The signing gh first, then the pinned one; Claude Code's own PR footer and trailer off.
       const signing = `${stateDir}/kin/gh-sign`;
       assert.strictEqual(full?.env?.PATH, `${signing}:/kin-home/kin-tools/gh-pinned:/usr/bin`);
@@ -383,7 +411,6 @@ it.effect(
         audience = 'owner_only' WHERE wakeup_id = 'wake-full'`;
       assert.isTrue(yield* allows("Bash", shell));
       assert.isTrue(yield* allows("Edit", { file_path: "/work/x/README.md" }));
-      assert.isTrue(yield* allows("Agent", { prompt: "look" }));
       // Its own page fetch or web search is outside text: the turn is marked before it runs, by
       // the page's host, and reads on as any outside-read turn does.
       const read = Effect.gen(function* () {
@@ -737,6 +764,9 @@ it.effect(
       // T3's own prompt and tools, Kin's hook, and the pinned gh first, as the lead's turn has.
       assert.strictEqual(child?.systemPrompt, task.systemPrompt);
       assert.strictEqual(child?.tools, task.tools);
+      assert.strictEqual(child?.disallowedTools, task.disallowedTools);
+      assert.strictEqual(child?.skills, task.skills);
+      assertNoDietSettings(child);
       // The signing gh first, as its lead's: what it posts ends with the lead's name, no footer.
       const { stateDir } = yield* ServerConfig.ServerConfig;
       assert.strictEqual(

@@ -53,6 +53,27 @@ export const OWNER_SEAT_OFF = [
   "RemoteTrigger",
 ];
 
+export const OWNER_SEAT_NATIVE_TOOLS = [
+  "Bash",
+  "Read",
+  "Edit",
+  "Write",
+  "WebSearch",
+  "WebFetch",
+] as const;
+
+export const OWNER_SEAT_NO_SUBAGENTS = [
+  "Agent",
+  "Task",
+  "Workflow",
+  "ListAgents",
+  "ReportFindings",
+  "SendMessage",
+  "TaskStop",
+  "DesignSync",
+  "Skill",
+] as const;
+
 /** What it posts ends with its own signature (`ghSign.ts`), not Claude Code's footer. */
 const NO_PROVIDER_FOOTER = {
   attribution: { commit: "", pr: "", sessionUrl: false },
@@ -90,6 +111,7 @@ const apply = (
   const environment = sessionEnvironment(env ?? session.environment);
   const loading = kinTools(options, plan);
   const confined = plan.seat === "confined";
+  const owner = plan.seat === "owner";
   return {
     ...options,
     settingSources: [],
@@ -109,8 +131,20 @@ const apply = (
             ]),
           ],
         }
-      : plan.seat === "owner"
-        ? { disallowedTools: [...new Set([...(options.disallowedTools ?? []), ...OWNER_SEAT_OFF])] }
+      : owner
+        ? {
+            tools: [
+              ...OWNER_SEAT_NATIVE_TOOLS,
+              ...(loading.search === "true" ? ["ToolSearch"] : []),
+            ],
+            disallowedTools: [
+              ...new Set([
+                ...(options.disallowedTools ?? []),
+                ...OWNER_SEAT_OFF,
+                ...OWNER_SEAT_NO_SUBAGENTS,
+              ]),
+            ],
+          }
         : {}),
     ...(loading.mcpServers === undefined ? {} : { mcpServers: loading.mcpServers }),
     // The user's own MCP servers and plugins could hand a lead a shell again.
@@ -124,6 +158,9 @@ const apply = (
             ...session.auth,
             ...settings,
             ...(confined ? {} : NO_PROVIDER_FOOTER),
+            ...(owner
+              ? { disableBundledSkills: true, disableWorkflows: true, disableAgentView: true }
+              : {}),
             // Its folder is named after the host's account: a lead never sees it (G07).
             autoMemoryEnabled: false,
             autoDreamEnabled: false,

@@ -886,7 +886,7 @@ export const buildBase = (
       deferredHeader: DEFERRED_LIST.exec(joined)?.[1],
       nativeDeferred,
       nativeSchema,
-      isT3Name,
+      normalizeToolName,
     });
   return {
     model,
