@@ -184,6 +184,7 @@ function MessageAlerts() {
         title={KIN_MESSAGE_ALERTS.label}
         detail={KIN_MESSAGE_ALERTS.detail}
         wrap
+        stack
         status={
           notice.status === null ? null : (
             <KinSettingsStatus tone="attention">{notice.status}</KinSettingsStatus>
