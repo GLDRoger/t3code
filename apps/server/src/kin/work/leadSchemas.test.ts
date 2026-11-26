@@ -3,6 +3,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import { Tool } from "effect/ai";
+import { advertisedJsonSchema } from "../../mcp/advertisedJsonSchema.ts";
 import { ImportHeader } from "./importFormat.ts";
 import { DefineInput } from "./leadMoney.ts";
 import { KinDocsToolkit } from "./mcp/docTools.ts";
@@ -81,4 +82,44 @@ it("list_define takes number and yes or no fields; imports and unknown types sta
   assert.deepStrictEqual(accepted("unknown"), [false, false]);
   for (const type of ["number", "yesno"])
     assert.deepStrictEqual(accepted(type), [true, false], type);
+});
+
+it("advertises the list definition core and one field shape with a type enum", () => {
+  const schema = advertisedJsonSchema(KinWorkToolkit.tools.list_define, { kin: true });
+  assert.deepStrictEqual(Object.keys(schema.properties ?? {}), [
+    "sourceEventId",
+    "proposal",
+    "template",
+    "list",
+    "name",
+    "noun",
+    "fields",
+    "categories",
+    "states",
+    "amount",
+    "currency",
+    "sensitive",
+    "team",
+    "section",
+    "dock",
+    "remindOn",
+    "check",
+  ]);
+  const fields = schema.properties?.fields;
+  assert.isTrue(Predicate.isObject(fields) && Predicate.isObject(fields.items));
+  if (!Predicate.isObject(fields) || !Predicate.isObject(fields.items)) return;
+  const { properties } = fields.items;
+  assert.isTrue(Predicate.isObject(properties));
+  if (!Predicate.isObject(properties)) return;
+  assert.deepStrictEqual(Object.keys(properties), [
+    "label",
+    "type",
+    "choices",
+    "link",
+    "sensitive",
+  ]);
+  assert.deepStrictEqual(properties.type, {
+    type: "string",
+    enum: ["text", "choice", "date", "person", "link", "money", "file", "number", "yesno"],
+  });
 });

@@ -215,7 +215,30 @@ suggested true only on an expense, quote or invoice you inferred or couldn't rea
     description: `Start tracking something new as a list with typed fields ("start tracking expenses", "track leave"): a template, or a name and fields, plus categories, the states it uses and their names, and whether entries carry an amount. To add fields, choices or categories to a list you defined, pass list. The first call only proposes: it creates nothing and shows the owner its fields on a card to tap. Ask in one short line; once they tap yes, or say yes in a later turn, call again with just proposal to create exactly that. A no on the card ends it. Never create a list the owner hasn't agreed to. Only the owner retires a field or archives a list.`,
     parameters: Money.DefineInput,
     success: Money.DefineResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  })
+    .annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(AdvertisedCore, {
+      path: [],
+      keys: [
+        "sourceEventId",
+        "proposal",
+        "template",
+        "list",
+        "name",
+        "noun",
+        "fields",
+        "categories",
+        "states",
+        "amount",
+        "currency",
+        "sensitive",
+        "team",
+        "section",
+        "dock",
+        "remindOn",
+        "check",
+      ],
+    }),
   Tool.make("payment_record", {
     ...shared,
     description:

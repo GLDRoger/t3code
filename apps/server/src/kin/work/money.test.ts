@@ -716,11 +716,56 @@ describe("lists through the tools", () => {
         ],
       ] as const)
         assert.include(yield* Effect.flip(LeadMoney.define(scope, input)), { message });
-      const dockedBookings = { ...bookings, section: true, dock: true };
+      const decodeDefine = Schema.decodeUnknownEffect(LeadMoney.DefineInput);
+      const previousShape = {
+        ...bookings,
+        noun: "booking",
+        prefix: "BK",
+        fields: [
+          ...bookings.fields,
+          { label: "Site contact", type: "person" },
+          { label: "Client link", type: "link", link: "clients", sensitive: true },
+          { label: "Fee", type: "money" },
+          { label: "Checklist file", type: "file" },
+          { label: "Capacity", type: "number" },
+        ],
+        categories: ["Training"],
+        states: ["open", "done"],
+        stateNames: { open: "Booked", done: "Held" },
+        amount: true,
+        currency: "USD",
+        sensitive: false,
+        team: false,
+        dueLabel: "Confirmation deadline",
+        dateLabel: "Event day",
+        section: true,
+        dock: true,
+        check: { field: "Capacity", below: 10 },
+      };
+      const dockedBookings = yield* decodeDefine(previousShape);
       const dockRefusal = { message: "The dock holds five places. Turn one off first." };
       assert.include(yield* Effect.flip(LeadMoney.define(scope, dockedBookings)), dockRefusal);
       assert.lengthOf(yield* sql`SELECT 1 FROM kin_list_proposals`, 0);
       yield* KinShell.set(orgId, ownerId, 0, [{ id: "clients", on: false }]);
+      const before = yield* sql`SELECT * FROM kin_widgets ORDER BY widget_id`;
+      const misspelt = yield* decodeDefine({
+        ...previousShape,
+        fields: [
+          { label: "Booked for", type: "date", senstive: true },
+          ...previousShape.fields.slice(1),
+        ],
+      }).pipe(
+        Effect.flatMap((input) => LeadMoney.define(scope, input)),
+        Effect.result,
+      );
+      assert.strictEqual(misspelt._tag, "Failure");
+      if (misspelt._tag === "Failure")
+        assert.include(
+          misspelt.failure.message,
+          'List field takes no "senstive"; pass one of: label, type, choices, link, sensitive.',
+        );
+      assert.lengthOf(yield* sql`SELECT 1 FROM kin_list_proposals`, 0);
+      assert.deepStrictEqual(yield* sql`SELECT * FROM kin_widgets ORDER BY widget_id`, before);
       const proposed = yield* LeadMoney.define(scope, dockedBookings);
       assert.strictEqual(proposed.status, "proposed");
       assert.includeMembers(yield* detail(proposed.proposal!), [
@@ -739,7 +784,19 @@ describe("lists through the tools", () => {
       yield* KinShell.set(orgId, ownerId, 2, [{ id: "clients", on: false }]);
       yield* LeadMoney.define(scope, confirm);
       assert.deepStrictEqual(yield* listSections, [{ id: "list:bookings", on: true, dock: true }]);
-      assert.strictEqual((yield* listDef(orgId, "bookings"))?.remindOn, "bookedFor");
+      const definedBookings = yield* listDef(orgId, "bookings");
+      assert.strictEqual(definedBookings?.remindOn, "bookedFor");
+      assert.includeMembers(definedBookings?.fields.map((field) => field.type) ?? [], [
+        "date",
+        "text",
+        "yesno",
+        "choice",
+        "person",
+        "link",
+        "money",
+        "file",
+        "number",
+      ]);
       const [setBy] = yield* sql<{ by: string }>`SELECT set_by AS by FROM kin_company_shell`;
       assert.strictEqual(setBy?.by, ownerId);
 

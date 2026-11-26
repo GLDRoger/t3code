@@ -1,3 +1,4 @@
+import { knownArguments } from "../mcp/knownArguments.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import {
   KinChatError,
@@ -280,20 +281,26 @@ export const proposeMoney = Effect.fn("KinOwnerCards.proposeMoney")(function* (
 });
 
 const Label = KinToolText(60);
-const FieldInput = Schema.Struct({
-  label: Label,
-  type: Schema.Literals([...KinWritableListFieldType.literals, "number", "yesno"]),
-  choices: Schema.optional(Schema.Array(Label).check(Schema.isMaxLength(30))),
-  link: Schema.optional(Schema.Literals(["clients", "projects"])),
-  sensitive: Schema.optional(Schema.Boolean),
-});
-const StateNames = Schema.Struct({
-  open: Schema.optional(Label),
-  doing: Schema.optional(Label),
-  waiting: Schema.optional(Label),
-  done: Schema.optional(Label),
-  dropped: Schema.optional(Label),
-});
+const FieldInput = knownArguments(
+  "List field",
+  Schema.Struct({
+    label: Label,
+    type: Schema.Literals([...KinWritableListFieldType.literals, "number", "yesno"]),
+    choices: Schema.optional(Schema.Array(Label).check(Schema.isMaxLength(30))),
+    link: Schema.optional(Schema.Literals(["clients", "projects"])),
+    sensitive: Schema.optional(Schema.Boolean),
+  }),
+);
+const StateNames = knownArguments(
+  "List state names",
+  Schema.Struct({
+    open: Schema.optional(Label),
+    doing: Schema.optional(Label),
+    waiting: Schema.optional(Label),
+    done: Schema.optional(Label),
+    dropped: Schema.optional(Label),
+  }),
+);
 
 export const DefineInput = Schema.Struct({
   sourceEventId: TurnEvent,
@@ -335,11 +342,14 @@ export const DefineInput = Schema.Struct({
   }),
   check: Schema.optional(
     Schema.NullOr(
-      Schema.Struct({
-        field: Label,
-        below: Schema.optional(Schema.Union([Label, Schema.Finite])),
-        above: Schema.optional(Schema.Union([Label, Schema.Finite])),
-      }),
+      knownArguments(
+        "List check",
+        Schema.Struct({
+          field: Label,
+          below: Schema.optional(Schema.Union([Label, Schema.Finite])),
+          above: Schema.optional(Schema.Union([Label, Schema.Finite])),
+        }),
+      ),
     ),
   ).annotate({
     description:
