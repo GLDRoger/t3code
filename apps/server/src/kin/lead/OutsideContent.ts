@@ -477,15 +477,9 @@ export const stampEvent = Effect.fn("KinOutsideContent.stampEvent")(function* (
 /** Where an entry's change stores its turn's stamp (`KinRecords.logChange`). */
 export const changeStampKey = (recordId: string, seq: number) => `record-change:${recordId}:${seq}`;
 
-/**
- * The first change an agent made to an entry after its turn read outside text, and what it had
- * read, as a person reads it.
- */
-export const entryAfterReading = Effect.fn("KinOutsideContent.entryAfterReading")(function* (
+export const firstOutsideChange = Effect.fn("KinOutsideContent.firstOutsideChange")(function* (
   orgId: KinOrgId,
   recordId: string,
-  /** For an owner-level reader (`renderSource`). */
-  detailed = false,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const [first] = yield* sql<{
@@ -496,6 +490,16 @@ export const entryAfterReading = Effect.fn("KinOutsideContent.entryAfterReading"
       AND o.event_id = 'record-change:' || c.record_id || ':' || c.seq
     WHERE c.org_id = ${orgId} AND c.record_id = ${recordId} AND c.actor_kind = 'agent'
     ORDER BY c.seq LIMIT 1`;
+  return first;
+});
+
+/** The first change an agent made after an outside read, as a person reads it. */
+export const entryAfterReading = Effect.fn("KinOutsideContent.entryAfterReading")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+  detailed = false,
+) {
+  const first = yield* firstOutsideChange(orgId, recordId);
   return first === undefined
     ? undefined
     : { made: first.kind === "created", source: renderSource(first.source, detailed) };

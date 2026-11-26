@@ -126,7 +126,7 @@
       "schema": 46
     },
     "kin_connection_call": {
-      "desc": 822,
+      "desc": 812,
       "schema": 226
     },
     "kin_connection_note": {
@@ -178,7 +178,7 @@
       "schema": 114
     },
     "kin_hand_off": {
-      "desc": 2047,
+      "desc": 2037,
       "schema": 328
     },
     "kin_issue": {
@@ -322,7 +322,7 @@
       "schema": 239
     },
     "record_create": {
-      "desc": 6290,
+      "desc": 6310,
       "schema": 8725
     },
     "record_get": {
