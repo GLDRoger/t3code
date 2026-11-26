@@ -81,7 +81,7 @@ it("returns the whole sales offering for an unsectioned read within the real len
   const cases = NodeFS.readFileSync(new URL("./cases/kin-sales.ndjson", import.meta.url), "utf8")
     .trim()
     .split("\n")
-    .map(decodeCase);
+    .map((line) => decodeCase(line));
   const checked: Array<string> = [];
   for (const { id, setup } of cases) {
     const input = { key: "D-12" };
