@@ -223,7 +223,7 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
           scope: {},
           consequence: fitted(
             (shown) =>
-              `${creditText(credit)}, fits ${first.length} open invoices equally, and Kin can't tell which: ${listed(first.map(invoiceText), shown)}. Nothing is recorded until the owner says which.`,
+              `${creditText(credit)}, fits ${first.length} open invoices equally, and Kin can't tell which: ${listed(first.map(invoiceText), shown)}. Nothing is recorded until one is chosen on a card.`,
             first.length,
           ),
         },

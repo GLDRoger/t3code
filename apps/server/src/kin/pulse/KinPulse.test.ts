@@ -3233,7 +3233,7 @@ describe("KinPulse", () => {
           },
           scope: {},
           consequence:
-            "BNK-2, ₹95,000 received 9 Nov, fits 2 open invoices equally, and Kin can't tell which: INV/26-27/020 (INV-20): same amount from Harbourline Logistics; INV/26-27/021 (INV-21): same amount from Harbourline Logistics. Nothing is recorded until the owner says which.",
+            "BNK-2, ₹95,000 received 9 Nov, fits 2 open invoices equally, and Kin can't tell which: INV/26-27/020 (INV-20): same amount from Harbourline Logistics; INV/26-27/021 (INV-21): same amount from Harbourline Logistics. Nothing is recorded until one is chosen on a card.",
         });
         assert.notInclude((yield* KinPulse.tick(orgId, at + 2 * MINUTE)).woken, both!.key);
         assert.lengthOf(yield* wakes, 1);
