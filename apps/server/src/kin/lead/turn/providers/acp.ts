@@ -145,6 +145,7 @@ const install = <E, R>(base: Layer.Layer<never, E, R>) =>
 
 /** ACP agents bring their own tools; Kin reaches only what they ask for and what T3 serves them. */
 export const acp = {
+  turnContextBeside: false,
   driver: DRIVER,
   capabilities: {},
   install,
