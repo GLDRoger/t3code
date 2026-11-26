@@ -37,6 +37,7 @@ import { SHARED_REFUSAL, effectiveAudience, turnAsker, turnPeople } from "../lea
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { accessOf, accessSql } from "../people/KinAccess.ts";
 import { type Lead, leadTool } from "../work/leadWork.ts";
+import { declineLine, liftDecline, recordDecline } from "./declines.ts";
 import { ownerZone, startOfDay } from "../work/recordRows.ts";
 import { dayIn } from "../work/money.ts";
 import { leadNamer } from "../work/toolNames.ts";
@@ -67,10 +68,12 @@ export const PulseHandleInput = Schema.Struct({
     description:
       "Instead of factKey: a record's key (C-7, P-2, INV-9) to set aside or lift, also when nothing about it is open yet.",
   }),
-  action: Schema.optional(KinPulseHandleAction).annotate({
-    description:
-      "got_it (default): you or someone has it in hand; it comes back after until, or 3 days. not_a_problem: drop it until what it is about changes; an overdue invoice comes back at its next chase. set_aside: a person said to leave it; its record is set aside until the day in until, or until someone lifts it. undo: take any of these back.",
-  }),
+  action: Schema.optional(Schema.Literals([...KinPulseHandleAction.literals, "declined"])).annotate(
+    {
+      description:
+        "got_it (default): you or someone has it in hand; it comes back after until, or 3 days. not_a_problem: drop it until what it is about changes; an overdue invoice comes back at its next chase. set_aside: a person said to leave it; its record is set aside until the day in until, or until someone lifts it. undo: take any of these back. declined: the person whose message this turn answers turned down a nudge about it; no more nudges to that person about it until it changes or that person brings it up.",
+    },
+  ),
   until: Schema.optional(
     Schema.Union([
       KinDay,
@@ -127,7 +130,9 @@ export const PulseNudgeResult = Schema.Struct({
 });
 
 /** The owner in their own turn; in a turn others read, the people behind it, or a refusal. */
-const viewerOf = Effect.fn("KinPulseTools.viewer")(function* (lead: Lead) {
+const viewerOf = Effect.fn("KinPulseTools.viewer")(function* (
+  lead: Pick<Lead, "orgId" | "agentId" | "wakeupId">,
+) {
   if ((yield* effectiveAudience(lead)) === "owner_only") return { _tag: "owner" } as const;
   const behind = yield* turnPeople(lead);
   if (behind === undefined || behind.people.length === 0)
@@ -211,7 +216,9 @@ const NOT_ON_WORD =
   "Only a person can set something aside or lift it: in their own message to you, or from Needs attention. This turn was not woken by a person's own message, so nothing changed.";
 
 /** The company's hold on an owner-level person's word; a teammate's own on theirs. */
-const holdingOf = Effect.fn("KinPulseTools.holding")(function* (lead: Lead) {
+const holdingOf = Effect.fn("KinPulseTools.holding")(function* (
+  lead: Pick<Lead, "orgId" | "agentId" | "wakeupId">,
+) {
   const word = yield* wordOf({
     orgId: lead.orgId,
     agentId: lead.agentId,
@@ -234,8 +241,51 @@ const saidOf = (aside: KinPulseAside | null, recordKey: string, zone: string) =>
   return `Set aside: ${subjectText(aside)}, ${day === null ? "until someone lifts it" : `until ${day}`}${aside.mine ? ", for that person only" : ""}. Before then Kin tells nothing about it and no question card can be raised about it; ${day === null ? "once lifted" : `on ${day}`} it comes back once at the check-in.`;
 };
 
-const runHandle = Effect.fnUntraced(function* (lead: Lead, input: typeof PulseHandleInput.Type) {
+export const runHandle = Effect.fnUntraced(function* (
+  lead: Pick<Lead, "orgId" | "agentId" | "wakeupId">,
+  input: typeof PulseHandleInput.Type,
+) {
   const at = yield* Clock.currentTimeMillis;
+  const viewer = yield* viewerOf(lead);
+  const action = input.action ?? "got_it";
+  if (action === "declined" || action === "undo") {
+    const { orgId } = lead;
+    const current =
+      action === "undo" && input.factKey === undefined
+        ? []
+        : (yield* KinPulse.read({
+            orgId,
+            at,
+            viewer,
+            includeHandled: true,
+            limit: 200,
+            ...(input.factKey === undefined ? {} : { factKeys: new Set([input.factKey]) }),
+          })).facts;
+    const target = {
+      ...lead,
+      at,
+      people: viewer._tag === "people" ? viewer.people : undefined,
+      recordKey: input.record,
+      factKey: input.factKey,
+      current,
+    };
+    if (action === "declined") {
+      const decline = yield* recordDecline(target);
+      return {
+        setAside: null,
+        said: decline === null ? "That nudge decline has already ended." : declineLine(decline),
+      };
+    }
+    const lifted = yield* liftDecline(target);
+    if (lifted !== null)
+      return {
+        setAside: null,
+        said: `${lifted.name} can be nudged about ${lifted.recordKey} again.`,
+      };
+    if (viewer._tag !== "owner")
+      return yield* new KinChatError({ reason: "not_allowed", message: SHARED_REFUSAL });
+  }
+  const by = { _tag: "agent" as const, agentId: lead.agentId };
   const until =
     input.until === undefined
       ? undefined
@@ -245,9 +295,6 @@ const runHandle = Effect.fnUntraced(function* (lead: Lead, input: typeof PulseHa
             onNone: () => undefined,
             onSome: DateTime.toEpochMillis,
           });
-  const viewer = yield* viewerOf(lead);
-  const by = { _tag: "agent" as const, agentId: lead.agentId };
-  const action = input.action ?? "got_it";
   const holding = yield* holdingOf(lead);
   const zone = yield* ownerZone(lead.orgId);
   if (input.factKey === undefined) {

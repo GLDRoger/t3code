@@ -11,12 +11,18 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { coveredToday, looseOffsetMs, queueCheckIn } from "./checkIn.ts";
+import { toolAdmitted } from "../lead/SharedTools.ts";
+import { PulseHandleInput, runHandle } from "./mcp.ts";
+import { buildPulseSection } from "./prompt.ts";
+import { toldBy } from "./told.ts";
 import { missedSlot } from "./checkInCatchUp.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { followOwnerZone, onHostClock } from "./checkInSeeds.ts";
@@ -144,6 +150,225 @@ const checkIn = (dueAt: number, outside: OutsideRead = nothingOutside, at = dueA
     at,
     outside,
   });
+
+const zoya = KinPersonId.make("zoya");
+const arjun = KinPersonId.make("arjun");
+const declineAt = MONDAY + 11 * HOUR;
+const tomorrow = MONDAY + DAY + 12 * HOUR;
+const declineTurn = { orgId, agentId: chief, wakeupId: "decline-turn" };
+const declineOptions = { action: "declined", record: "W-8" };
+const handleInput = Schema.decodeUnknownOption(PulseHandleInput);
+const decline = Effect.fn("test.decline")(function* (options: unknown = declineOptions) {
+  const decoded = handleInput(options);
+  assert.isTrue(Option.isSome(decoded), "pulse_handle accepts declined");
+  assert.isTrue(yield* toolAdmitted(declineTurn, "pulse_handle", options));
+  return yield* runHandle(declineTurn, Option.getOrThrow(decoded));
+});
+
+const chatLine = Effect.fn("test.chatLine")(function* (input: {
+  id: string;
+  person?: KinPersonId;
+  to?: KinPersonId;
+  seq: number;
+  at: number;
+  replyTo?: string;
+  clientId?: string;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  const { id, person, seq, at, replyTo, clientId } = input;
+  const recipient = input.to ?? person ?? zoya;
+  yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+      author_person_id, author_agent_id, author_owner_person_id, author_thread_id,
+      author_member_id, author_role, kind, body, mentions_json, status, created_at, reply_to, client_message_id)
+    VALUES (${id}, ${orgId}, ${`chat-${recipient}`}, ${seq}, ${person ? "human" : "agent"},
+      ${person ?? null}, ${person ? null : chief}, ${person ? null : owner}, ${person ? null : "thread"},
+      ${person ? `member-${person}` : `lead-${recipient}`},
+      'member', 'text', 'Invented message', '[]', 'posted',
+      ${DateTime.formatIso(DateTime.makeUnsafe(at))}, ${replyTo ?? null}, ${clientId ?? null})`;
+});
+
+const seedDecline = Effect.fn("test.seedDecline")(function* (recipient = zoya) {
+  yield* seed;
+  yield* TestClock.setTime(declineAt);
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_people SET display_name = 'Rhea' WHERE org_id = ${orgId} AND person_id = ${owner}`;
+  yield* record({
+    key: "W-8",
+    list: "work",
+    title: "Freight mock-up",
+    ownerKind: "person",
+    ownerId: zoya,
+    dueAt: MONDAY - 4 * DAY,
+    fields: JSON.stringify({ alsoOn: [`person:${arjun}`] }),
+  });
+  for (const [person, name] of [
+    [zoya, "Zoya"],
+    [arjun, "Arjun"],
+  ] as const) {
+    const chat = `chat-${person}`;
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, time_zone)
+      VALUES (${person}, ${orgId}, ${person}, ${name}, ${stamp}, 'UTC')`;
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+      VALUES (${chat}, ${orgId}, 'direct', ${`${person}:${chief}`}, 0, ${stamp})`;
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id,
+        agent_id, role, joined_at)
+      VALUES (${`member-${person}`}, ${orgId}, ${chat}, 'person', ${person}, NULL, 'member', ${stamp}),
+        (${`lead-${person}`}, ${orgId}, ${chat}, 'agent', NULL, ${chief}, 'member', ${stamp})`;
+  }
+  const factKey = yield* freightFact(declineAt);
+  const day = "2026-11-16";
+  yield* sql`INSERT INTO kin_pulse_nudges (org_id, person_id, day, agent_id, chat_id, fact_key, sent_at)
+    VALUES (${orgId}, ${recipient}, ${day}, ${chief}, ${`chat-${recipient}`}, ${factKey}, ${declineAt - HOUR})`;
+  yield* chatLine({
+    id: "nudge",
+    to: recipient,
+    seq: 1,
+    at: declineAt - HOUR,
+    clientId: `send:pulse-nudge:${recipient}:${day}`,
+  });
+  yield* chatLine({
+    id: "answer",
+    person: zoya,
+    seq: 2,
+    at: declineAt,
+    ...(recipient === zoya ? { replyTo: "nudge" } : {}),
+  });
+  yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at, status,
+      event_ids, audience)
+    VALUES (${declineTurn.wakeupId}, ${orgId}, ${chief}, 'test', ${declineAt}, 'running', '[]', 'shared')`;
+  yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at,
+      queued_at, state, wakeup_id)
+    VALUES ('decline-event', ${orgId}, ${chief}, 'chat.message', 'P0',
+    '{"_tag":"chat.message","chatId":"chat-zoya","messageId":"answer"}',
+    ${declineAt}, ${declineAt}, 'claimed', ${declineTurn.wakeupId})`;
+  return { sql, factKey };
+});
+
+const freightFact = Effect.fn("test.freightFact")(function* (at: number) {
+  const { facts } = yield* KinPulse.read({ orgId, at, viewer: { _tag: "people", people: [zoya] } });
+  const fact = facts.find((item) => item.subject.key === "W-8" && item.sense === "task_late");
+  assert.isDefined(fact);
+  return fact!.key;
+});
+
+const nudgeFreight = Effect.fn("test.nudgeFreight")(function* (at: number, person = "Zoya") {
+  const factKey = yield* freightFact(at);
+  return yield* nudge({
+    orgId,
+    agentId: chief,
+    at,
+    person,
+    factKey,
+    text: "W-8 was due. The freight review depends on it.",
+    chatFor: (id) => Effect.succeed(KinChatId.make(`chat-${id}`)),
+    post: () => Effect.undefined,
+  }).pipe(
+    Effect.as("sent"),
+    Effect.catchTags({ KinChatError: (error) => Effect.succeed(error.message) }),
+  );
+});
+
+it.effect("a nudge the person declined is not repeated until the thing changes", () =>
+  Effect.gen(function* () {
+    const { sql, factKey } = yield* seedDecline();
+    yield* decline({ action: "declined", factKey });
+    assert.include(yield* nudgeFreight(tomorrow), "Zoya turned down a nudge about this.");
+    assert.lengthOf(
+      yield* sql`SELECT 1 FROM kin_pulse_nudges WHERE org_id = ${orgId}
+      AND person_id = ${zoya} AND day = '2026-11-17'`,
+      0,
+    );
+    yield* sql`UPDATE kin_records SET due_at = due_at + ${HOUR} WHERE org_id = ${orgId} AND key = 'W-8'`;
+    assert.include(yield* nudgeFreight(tomorrow), "Zoya turned down a nudge about this.");
+    yield* sql`UPDATE kin_records SET due_at = due_at + ${DAY} WHERE org_id = ${orgId} AND key = 'W-8'`;
+    assert.strictEqual(yield* nudgeFreight(tomorrow), "sent");
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("another person can still be nudged about a declined thing", () =>
+  Effect.gen(function* () {
+    yield* seedDecline();
+    yield* decline();
+    assert.strictEqual(yield* nudgeFreight(tomorrow, "Arjun"), "sent");
+    assert.include(yield* nudgeFreight(tomorrow), "Zoya turned down a nudge about this.");
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each(["comment", "reply", "undo"] as const)(
+  "the person raising it ends the decline (%s)",
+  (raises) =>
+    Effect.gen(function* () {
+      const { sql } = yield* seedDecline();
+      if (raises === "reply")
+        yield* sql`UPDATE kin_messages SET reply_to = NULL WHERE org_id = ${orgId} AND message_id = 'answer'`;
+      yield* decline();
+      assert.include(yield* nudgeFreight(tomorrow), "Zoya turned down a nudge about this.");
+      if (raises === "comment")
+        yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq, author_kind,
+          author_id, body, request_hash, created_at)
+          VALUES (${orgId}, 'comment', 'r-W-8', 1, 'person', ${zoya}, 'Invented note', 'test', ${declineAt + HOUR})`;
+      else if (raises === "reply") {
+        yield* chatLine({ id: "linked", seq: 3, at: declineAt + HOUR });
+        yield* sql`INSERT INTO kin_message_names (org_id, message_id, names_json)
+          VALUES (${orgId}, 'linked', '[{"key":"W-8","text":"Freight mock-up"}]')`;
+        yield* chatLine({
+          id: "raised",
+          person: zoya,
+          seq: 4,
+          at: declineAt + 2 * HOUR,
+          replyTo: "linked",
+        });
+      } else yield* runHandle(declineTurn, { record: "W-8", action: "undo" });
+      assert.strictEqual(yield* nudgeFreight(tomorrow), "sent");
+    }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a check-in lists a standing decline once, with whose word it was", () =>
+  Effect.gen(function* () {
+    const { sql } = yield* seedDecline();
+    yield* decline();
+    const section = Effect.fn("test.declineSection")(function* (at: number) {
+      const [event] = yield* sql<{
+        id: string;
+      }>`SELECT event_id AS id FROM kin_events WHERE org_id = ${orgId}
+        AND received_at = ${at} AND tag = 'pulse' ORDER BY event_id`;
+      const checkInEvents = event === undefined ? [] : [event.id];
+      return yield* buildPulseSection({
+        orgId,
+        agentId: chief,
+        now: at,
+        wokeFor: [],
+        checkIn: yield* toldBy(orgId, checkInEvents),
+        checkInEvents,
+      });
+    });
+    assert.include(yield* checkIn(SLOT), { _tag: "queued" });
+    const first = yield* section(SLOT);
+    assert.deepStrictEqual(first?.setAside, [
+      "W-8 Freight mock-up: Zoya turned down a nudge about it, so no more nudges to Zoya about it until it changes or Zoya brings it up.",
+    ]);
+    assert.isTrue(
+      first?.byProject.some(({ facts }) =>
+        facts.some(({ about }) => about.includes("Freight mock-up")),
+      ),
+    );
+    yield* checkIn(SLOT + DAY);
+    assert.isUndefined((yield* section(SLOT + DAY))?.setAside);
+    yield* sql`UPDATE kin_records SET state = 'done' WHERE org_id = ${orgId} AND key = 'W-8'`;
+    assert.isUndefined((yield* section(SLOT))?.setAside);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("only the person who answered can decline", () =>
+  Effect.gen(function* () {
+    yield* seedDecline(arjun);
+    assert.isFalse(
+      yield* toolAdmitted(declineTurn, "pulse_handle", { record: "W-8", action: "set_aside" }),
+    );
+    const error = yield* Effect.flip(decline());
+    assert.include(error.message, "Only the person who answered the nudge can decline it.");
+  }).pipe(Effect.provide(layer)),
+);
 
 const pulseEvents = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

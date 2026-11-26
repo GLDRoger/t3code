@@ -63,7 +63,7 @@ const holdRows = (sql: SqlClient.SqlClient, orgId: KinOrgId, where: Statement.Fr
       h.set_by_id AS "byId", h.on_word_of AS "onWordOf", h.note, h.set_at AS "setAt",
       h.lifted_at AS "liftedAt", h.lifted_by_kind AS "liftedByKind", h.lifted_by_id AS "liftedById"
     FROM kin_holds h JOIN kin_records r ON r.org_id = h.org_id AND r.record_id = h.record_id
-    WHERE h.org_id = ${orgId} AND ${where}
+    WHERE h.org_id = ${orgId} AND h.decline_json IS NULL AND ${where}
     ORDER BY h.set_at, h.hold_id`;
 
 const ended = (row: { liftedAt: number | null; until: number | null }, at: number) =>
@@ -175,23 +175,26 @@ export const holdRecord = Effect.fn("KinHolds.record")(function* (orgId: KinOrgI
   return row;
 });
 
+export type WordTurn = {
+  readonly orgId: KinOrgId;
+  readonly agentId: string;
+  readonly wakeupId: string;
+};
+
 /**
  * The one person whose own message or card tap in that chat woke this turn, beside nothing passed
  * on (an origin, a hand-off, outside words), no other person's event and no outside text read;
  * else null. Kin's own events beside it keep the word. Looser than `KinAccess.ownerLevelAsked`.
  */
-export const wordOf = Effect.fn("KinHolds.wordOf")(function* (input: {
-  readonly orgId: KinOrgId;
-  readonly agentId: string;
-  readonly wakeupId: string;
-}) {
+export const wordMessages = Effect.fn("KinHolds.wordMessages")(function* (input: WordTurn) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
     person: string | null;
+    messageId: string | null;
     by: string | null;
     passedOn: number;
     ownerLevel: number;
-  }>`WITH woke AS (SELECT e.event_id AS id, e.tag,
+  }>`WITH woke AS (SELECT e.event_id AS id, e.tag, m.message_id AS "messageId",
         -- What a coding agent's key sent or wrote is passed on, never anyone's own word.
         (json_extract(e.json, '$.origin') IS NOT NULL
           OR ${sql.literal(keyEventSql("e"))}) AS origin,
@@ -209,7 +212,7 @@ export const wordOf = Effect.fn("KinHolds.wordOf")(function* (input: {
         AND (m.kind = 'widget_action') = (e.tag = 'widget.action')
       WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
         AND e.wakeup_id = ${input.wakeupId})
-    SELECT person, by, "ownerLevel", (origin OR tag = 'github'
+    SELECT person, "messageId", by, "ownerLevel", (origin OR tag = 'github'
         OR (tag IN ('chat.message', 'widget.action') AND person IS NULL)) AS "passedOn"
     FROM woke ORDER BY id`;
   const said = rows.find((row) => row.person !== null);
@@ -221,10 +224,21 @@ export const wordOf = Effect.fn("KinHolds.wordOf")(function* (input: {
       : row.person === person,
   );
   if (!beside || (yield* outsideRead(input))) return null;
-  return { personId: KinPersonId.make(person), ownerLevel: said.ownerLevel === 1 };
+  return {
+    personId: KinPersonId.make(person),
+    ownerLevel: said.ownerLevel === 1,
+    messageIds: rows.flatMap((row) =>
+      row.person === person && row.messageId !== null ? [row.messageId] : [],
+    ),
+  };
 });
 
-const holdId = (parts: ReadonlyArray<string | number | null>) =>
+export const wordOf = Effect.fn("KinHolds.wordOf")(function* (input: WordTurn) {
+  const word = yield* wordMessages(input);
+  return word === null ? null : { personId: word.personId, ownerLevel: word.ownerLevel };
+});
+
+export const holdId = (parts: ReadonlyArray<string | number | null>) =>
   `hold-${NodeCrypto.createHash("sha256")
     .update(parts.map((part) => String(part ?? "")).join("\0"))
     .digest("hex")
@@ -270,7 +284,7 @@ export const setHold = Effect.fn("KinHolds.set")(function* (input: {
       }>`SELECT hold_id AS "holdId", until_at AS until, set_by_kind AS "byKind",
           set_by_id AS "byId", on_word_of AS "onWordOf", note FROM kin_holds
         WHERE org_id = ${orgId} AND record_id = ${record.recordId} AND lifted_at IS NULL
-          AND COALESCE(for_person_id, '') = ${input.forPersonId ?? ""}
+          AND decline_json IS NULL AND COALESCE(for_person_id, '') = ${input.forPersonId ?? ""}
         ORDER BY hold_id`;
       const same =
         live !== undefined &&

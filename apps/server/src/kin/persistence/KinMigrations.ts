@@ -147,6 +147,7 @@ import SearchDraftFor from "./migrations/K223_SearchDraftFor.ts";
 import SessionCarry from "./migrations/K224_SessionCarry.ts";
 import WakeupEnding from "./migrations/K225_WakeupEnding.ts";
 import LapsedTextQuestions from "./migrations/K226_LapsedTextQuestions.ts";
+import DeclinedNudges from "./migrations/K227_DeclinedNudges.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -374,6 +375,7 @@ const migrations = {
   "224_SessionCarry": SessionCarry,
   "225_WakeupEnding": WakeupEnding,
   "226_LapsedTextQuestions": LapsedTextQuestions,
+  "227_DeclinedNudges": DeclinedNudges,
 };
 const loader = Migrator.fromRecord(migrations);
 

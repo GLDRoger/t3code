@@ -14,6 +14,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { sentMail, type SentMail } from "../connections/Sending.ts";
 import { dayIn, timeIn } from "../work/money.ts";
 import { ownerZone, recordName } from "../work/recordRows.ts";
+import { declineLine, givenDeclines } from "./declines.ts";
 import { leadNamer } from "../work/toolNames.ts";
 import { clientHistory } from "./clientHistory.ts";
 import { headStarts } from "./headStart.ts";
@@ -96,7 +97,10 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   const woke = new Set(wokeFor);
   const open = new Set(all.facts.map((fact) => fact.key));
   const gone = wokeFor.filter((key) => !open.has(key));
-  if ((checkIn ? all.facts.length : all.total) === 0 && gone.length === 0) return undefined;
+  const setAside =
+    tell === undefined ? [] : (yield* givenDeclines(input.orgId, input.now, tell)).map(declineLine);
+  if ((checkIn ? all.facts.length : all.total) === 0 && gone.length === 0 && setAside.length === 0)
+    return undefined;
   const shown = all.facts
     .toSorted((a, b) => Number(woke.has(b.key)) - Number(woke.has(a.key)))
     .slice(0, checkIn ? CHECK_IN_CAP : SECTION_CAP);
@@ -195,6 +199,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
     ...(!checkIn && all.total > shown.length
       ? { shown: shown.length, more: "pulse_read has the rest" }
       : {}),
+    ...(setAside.length === 0 ? {} : { setAside }),
     byProject: [...groups].map(([project, facts]) => ({ project, facts })),
     ...(gone.length === 0 ? {} : { wokeForButHandledOrNoLongerTrue: gone }),
   };
