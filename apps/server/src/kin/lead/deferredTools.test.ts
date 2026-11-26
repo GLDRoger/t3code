@@ -96,6 +96,38 @@ it("advertises only the chart core, including the core of each series", () => {
     assert.deepStrictEqual(Object.keys(series.items.properties ?? {}), ["name", "values"]);
 });
 
+it("advertises one memory item shape with a single operation enum", () => {
+  const schema = advertisedJsonSchema(KinLeadToolkit.tools.memory_write, { kin: true });
+  assert.deepStrictEqual(Object.keys(schema.properties ?? {}), [
+    "op",
+    "item",
+    "sourceEventId",
+    "quote",
+    "supersedes",
+    "besides",
+  ]);
+  assert.deepStrictEqual(schema.properties?.op, {
+    type: "string",
+    enum: ["create", "update", "supersede", "invalidate"],
+  });
+  const item = schema.properties?.item;
+  assert.isTrue(Predicate.isObject(item));
+  if (Predicate.isObject(item))
+    assert.deepStrictEqual(Object.keys(item.properties ?? {}), [
+      "id",
+      "kind",
+      "title",
+      "status",
+      "due",
+      "invalid_at",
+      "review_by",
+      "trust",
+      "links",
+      "body",
+      "sensitive",
+    ]);
+});
+
 it("adds five everyday tools to Claude's owner core without moving the Codex partition", () => {
   const actual = Object.values(withAlwaysLoaded(Toolkit.make(...kinTools)).tools)
     .filter((tool) => alwaysLoads(tool) === true)

@@ -250,7 +250,24 @@ export const KinLeadToolkit = Toolkit.make(
     description: `Stage a memory create, update, supersession or invalidation, saved when the turn ends; a create needs no id. ${MEMORY_RULE} Quote what someone said in their exact words from that message (at most 400 characters); what you inferred takes trust agent and no quote. Asked to remember something, save what was said, as theirs, adding no rule, advice or consequence of your own: suggest that in your reply, and save it only if they agree. Set sensitive on every item: true for access (credentials, where kept, who holds them), money and commercial terms, arrangements the team isn't meant to know, and what the owner keeps between you; false for ordinary company knowledge; when unsure, true. Never save a password, key or token: save where it is kept. In a chat others read, save only what someone there said, as a claim with sensitive false. Never delete or write rules. besides names items a refusal listed that are a different matter; retry only with exactly the same payload.`,
     parameters: Lead.WriteInput,
     success: Lead.ItemResult,
-  }).annotate(McpSchema.EnabledWhen, enabled),
+  })
+    .annotate(McpSchema.EnabledWhen, enabled)
+    .annotate(AdvertisedCore, {
+      path: ["properties", "item"],
+      keys: [
+        "id",
+        "kind",
+        "title",
+        "status",
+        "due",
+        "invalid_at",
+        "review_by",
+        "trust",
+        "links",
+        "body",
+        "sensitive",
+      ],
+    }),
   Tool.make("memory_label", {
     ...shared,
     description:

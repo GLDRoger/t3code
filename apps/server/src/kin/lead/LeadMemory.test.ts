@@ -719,6 +719,24 @@ it.live(
         ] as const)
           assert.include(yield* refusedQuote({ ...input, quote, sourceEventId }), refusal);
         const quoted = { ...input, quote: "The demo client wants every report as a PDF" };
+        const before = yield* sql`SELECT * FROM kin_lead_tool_calls ORDER BY call_key`;
+        const misspelt = yield* decodeWrite({
+          ...quoted,
+          item: { ...quoted.item, titel: "Invented claim" },
+        }).pipe(
+          Effect.flatMap((write) => service.write(scope, write)),
+          Effect.result,
+        );
+        assert.strictEqual(misspelt._tag, "Failure");
+        if (misspelt._tag === "Failure")
+          assert.include(
+            misspelt.failure.message,
+            'Memory item takes no "titel"; pass one of: id, kind, title, status, due, what, on_due, on, every, owner, tz, quiet_hours, recorded_at, valid_from, invalid_at, superseded_by, review_by, source, said_by, trust, links, chat, body, sensitive.',
+          );
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM kin_lead_tool_calls ORDER BY call_key`,
+          before,
+        );
         assert.deepStrictEqual(yield* service.write(scope, quoted), { itemId: "new-claim" });
         assert.deepStrictEqual(yield* service.write(scope, quoted), { itemId: "new-claim" });
         assert.strictEqual(
