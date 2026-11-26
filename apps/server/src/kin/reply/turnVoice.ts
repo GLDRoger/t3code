@@ -34,9 +34,29 @@ export const voiceFor = (input: {
 }): "text" | "send" => (input.sendOnly && startedBy(input.tags) === "trigger" ? "send" : "text");
 
 export const followUpFor = (input: {
+  readonly voice: "text" | "send";
   readonly owed: boolean;
   readonly answered: boolean;
   readonly withheld: boolean;
-}): "rescue" | null => (input.owed && !input.answered && !input.withheld ? "rescue" : null);
+  readonly sent: boolean;
+  readonly skipped: boolean;
+  readonly finalText: boolean;
+}): "rescue" | "nudge" | null => {
+  if (input.withheld || input.sent || input.skipped) return null;
+  if (input.owed) return input.answered ? null : "rescue";
+  return input.voice === "send" && input.finalText ? "nudge" : null;
+};
+
+export const replyNudgePrompt = (tags: ReadonlyArray<EventTag>) => {
+  const words = tags.includes("pulse")
+    ? "a check-in"
+    : tags.includes("github")
+      ? "a GitHub event"
+      : "a trigger";
+  return `This turn was started by ${words}, not by a person, so what you just wrote reached no one. If someone needs it, send it with kin_send. If not, end with kin_skip and it stays as your note.`;
+};
+
+export const sendRescuePrompt = (asker: string) =>
+  `${asker} is waiting on this, and nothing you wrote reached anyone. Send what came of it now with kin_send.`;
 
 export const sendClientMessageId = (wakeupId: KinWakeupId) => `kin-send:${wakeupId}`;

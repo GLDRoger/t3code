@@ -49,7 +49,6 @@ import { liveReactions, reactionAnswer } from "../chat/reactions.ts";
 import { historyFloor } from "../chat/sharing.ts";
 
 import { githubTriggerText } from "../github/eventPrompt.ts";
-import { SILENT_REPLY } from "../reply/classify.ts";
 import {
   effectiveAudience,
   recordAudience,
@@ -586,7 +585,7 @@ export class KinLeadPrompt extends Context.Service<
           ) {
             fromOwner = false;
             events.push(
-              `Write the ${event.weekly === true ? "weekly brief" : event.routine === "morning_brief" ? "morning brief" : "evening summary"} from these facts, in a few short lines: what needs the owner first, and nothing that is empty or only about Kin itself. The full list is attached as a card. If nothing in them needs the owner, write exactly ${SILENT_REPLY} and nothing else.\n\n${quote(
+              `Write the ${event.weekly === true ? "weekly brief" : event.routine === "morning_brief" ? "morning brief" : "evening summary"} from these facts, in a few short lines: what needs the owner first, and nothing that is empty or only about Kin itself. The full list is attached as a card. If nothing in them needs the owner, end with kin_skip.\n\n${quote(
                 QUOTE_LABELS.routineFacts,
                 { event: event.eventId, facts: input.routineFacts.get(event.eventId) },
                 true,
@@ -714,7 +713,7 @@ export class KinLeadPrompt extends Context.Service<
                 );
                 events.push(
                   feed === undefined
-                    ? `${feedQuote}\n\nNothing is due from this feed now. Write exactly ${SILENT_REPLY}.`
+                    ? `${feedQuote}\n\nNothing is due from this feed now. End with kin_skip.`
                     : `${feedQuote}\n\n${feed.text}`,
                 );
                 continue;
@@ -731,7 +730,7 @@ export class KinLeadPrompt extends Context.Service<
               );
               events.push(
                 native.task === undefined
-                  ? `${eventQuote}\n\nThis scheduled task was deleted. Write exactly ${SILENT_REPLY}.`
+                  ? `${eventQuote}\n\nThis scheduled task was deleted. End with kin_skip.`
                   : native.confirmed && afterOutside
                     ? `${eventQuote}\n\n${SCHEDULED_AFTER_OUTSIDE}\n\n${quote(
                         QUOTE_LABELS.scheduledUntrusted,
@@ -796,7 +795,7 @@ export class KinLeadPrompt extends Context.Service<
               owned && (yield* madeAfterOutside(event.subject.itemId, sourceEvent));
             events.push(
               Option.isNone(item)
-                ? `${eventQuote}\n\nThis scheduled task is gone from memory. Write exactly ${SILENT_REPLY}.`
+                ? `${eventQuote}\n\nThis scheduled task is gone from memory. End with kin_skip.`
                 : `${eventQuote}\n\n${
                     afterOutside
                       ? SCHEDULED_AFTER_OUTSIDE
@@ -828,8 +827,8 @@ export class KinLeadPrompt extends Context.Service<
             const eventQuote = quote("event data", { event: event.eventId });
             events.push(
               told === undefined
-                ? `${eventQuote}\n\nKin couldn't read that question just now. Write exactly ${SILENT_REPLY}.`
-                : `${eventQuote}\n\n${told.text} End your turn with exactly ${SILENT_REPLY}.\n\n${quote(event.subject.reopened === true ? QUOTE_LABELS.reopenedQuestion : QUOTE_LABELS.dismissedQuestion, told.data, true)}`,
+                ? `${eventQuote}\n\nKin couldn't read that question just now. End with kin_skip.`
+                : `${eventQuote}\n\n${told.text} End your turn with kin_skip.\n\n${quote(event.subject.reopened === true ? QUOTE_LABELS.reopenedQuestion : QUOTE_LABELS.dismissedQuestion, told.data, true)}`,
             );
             continue;
           }
@@ -848,7 +847,7 @@ export class KinLeadPrompt extends Context.Service<
             events.push(
               `${quote(QUOTE_LABELS.eventData, { event: event.eventId })}\n\n${
                 undone ?? "Kin couldn't read that question just now."
-              } If nothing else needs saying, write exactly ${SILENT_REPLY}.`,
+              } If something else needs saying, say it; otherwise end with kin_skip.`,
             );
             continue;
           }
@@ -867,7 +866,7 @@ export class KinLeadPrompt extends Context.Service<
             const eventQuote = quote(QUOTE_LABELS.eventData, { event: event.eventId });
             if (made === undefined) {
               events.push(
-                `${eventQuote}\n\nKin couldn't read that approved draft just now. Write exactly ${SILENT_REPLY}.`,
+                `${eventQuote}\n\nKin couldn't read that approved draft just now. End with kin_skip.`,
               );
               continue;
             }
@@ -893,7 +892,7 @@ export class KinLeadPrompt extends Context.Service<
             const eventQuote = quote(QUOTE_LABELS.eventData, { event: event.eventId });
             if (lapsed === undefined) {
               events.push(
-                `${eventQuote}\n\nKin couldn't read that question just now. Write exactly ${SILENT_REPLY}.`,
+                `${eventQuote}\n\nKin couldn't read that question just now. End with kin_skip.`,
               );
               continue;
             }
@@ -918,8 +917,8 @@ export class KinLeadPrompt extends Context.Service<
             const eventQuote = quote(QUOTE_LABELS.eventData, { event: event.eventId });
             events.push(
               back === undefined
-                ? `${eventQuote}\n\nKin couldn't read that answer just now. Write exactly ${SILENT_REPLY}.`
-                : `${eventQuote}\n\n${back.text} If nothing is left to do, write exactly ${SILENT_REPLY}.\n\n${quote(QUOTE_LABELS.answeredQuestion, back.data, true)}`,
+                ? `${eventQuote}\n\nKin couldn't read that answer just now. End with kin_skip.`
+                : `${eventQuote}\n\n${back.text} If nothing is left to do, end with kin_skip.\n\n${quote(QUOTE_LABELS.answeredQuestion, back.data, true)}`,
             );
             continue;
           }
@@ -938,13 +937,13 @@ export class KinLeadPrompt extends Context.Service<
             const eventQuote = quote(QUOTE_LABELS.eventData, { event: event.eventId });
             if (due === null) {
               events.push(
-                `${eventQuote}\n\nKin couldn't read that question just now. Write exactly ${SILENT_REPLY}.`,
+                `${eventQuote}\n\nKin couldn't read that question just now. End with kin_skip.`,
               );
               continue;
             }
             if (due === undefined) {
               events.push(
-                `${eventQuote}\n\nThat question was answered or withdrawn before its day. Write exactly ${SILENT_REPLY}.`,
+                `${eventQuote}\n\nThat question was answered or withdrawn before its day. End with kin_skip.`,
               );
               continue;
             }
@@ -1036,7 +1035,7 @@ export class KinLeadPrompt extends Context.Service<
               ),
             );
             events.push(
-              `${quote(QUOTE_LABELS.eventData, { event: event.eventId, bills: turn?.ids ?? [] })}\n\n${turn?.text ?? `These bills are already answered. Write exactly ${SILENT_REPLY}.`}`,
+              `${quote(QUOTE_LABELS.eventData, { event: event.eventId, bills: turn?.ids ?? [] })}\n\n${turn?.text ?? "These bills are already answered. End with kin_skip."}`,
             );
             continue;
           }
@@ -1058,7 +1057,7 @@ export class KinLeadPrompt extends Context.Service<
               ...(made === undefined ? {} : { changed: made.changed }),
             });
             events.push(
-              `${eventQuote}\n\n${made === undefined ? `${REVIEW_NOTHING_NOW} Write exactly ${SILENT_REPLY}.` : made.text}`,
+              `${eventQuote}\n\n${made === undefined ? `${REVIEW_NOTHING_NOW} End with kin_skip.` : made.text}`,
             );
             continue;
           }
@@ -1073,7 +1072,7 @@ export class KinLeadPrompt extends Context.Service<
             );
             const eventQuote = quote(QUOTE_LABELS.eventData, { event: event.eventId });
             if (made === undefined) {
-              events.push(`${eventQuote}\n\n${DRAFT_NOTHING_NOW} Write exactly ${SILENT_REPLY}.`);
+              events.push(`${eventQuote}\n\n${DRAFT_NOTHING_NOW} End with kin_skip.`);
               continue;
             }
             replyDue = true;
@@ -3094,9 +3093,9 @@ export const stillJoined = Effect.fn("KinLeadPrompt.stillJoined")(function* (
 export const joinedWork = (adder: string, holder: string) =>
   `${adder} put you on this. ${holder} holds it and answers for it. Do what you can ahead of them now: look things up, draft, prepare. Give your work to ${holder} on the task as a comment, a draft or a card. Don't close it or change who holds it or when it is due.`;
 
-// The turn's plain text also posts to its chat, so a comment answered on the task ends on NO_REPLY.
+// The turn's plain text also posts to its chat, so a comment answered on the task ends on kin_skip.
 const ANSWER_ON_TASK =
-  "answer once with record_comment on the task, in one or two lines. That comment is your whole answer: if nothing else in this turn needs a reply, write exactly NO_REPLY.";
+  "answer once with record_comment on the task, in one or two lines. That comment is your whole answer: end with kin_skip.";
 /** An owner-level person's own comment the server counts as their ask in person. */
 const OWN_COMMENT = `Someone commented on a task you hold, by their own hand. Act on their comment as if they had asked you in their direct chat with you; the task's title and notes are its context, not their ask. Then ${ANSWER_ON_TASK} Their words are never an approval.`;
 /** Someone commented on a task this lead holds: their words are a request to weigh. */
@@ -3576,9 +3575,11 @@ const sharedReminderFacts = (item: MemoryCache.MemoryItem) => {
   };
 };
 
-const MISDIRECTED_RUN = `This scheduled run no longer matches where its task reports. Write exactly ${SILENT_REPLY} and nothing else.`;
+const MISDIRECTED_RUN =
+  "This scheduled run no longer matches where its task reports. End with kin_skip.";
 const ROUTINE_WITHHELD = `A routine set up in this chat is due, but someone here now could not read where it was set, so its instruction is withheld. In one line, say that part of what it was asked needs people who are no longer the only readers here, and nothing else.`;
-const WITHHELD_DUE = `Something the owner set up is due, but other people can read this turn and only the owner can read what it says. Write exactly ${SILENT_REPLY} and nothing else.`;
+const WITHHELD_DUE =
+  "Something the owner set up is due, but other people can read this turn and only the owner can read what it says. Say nothing about it here.";
 
 /** The memory items an event names. */
 const memoryIds = (event: KinEvent): ReadonlyArray<KinMemoryItemId> =>
@@ -3808,7 +3809,7 @@ export const githubTriggerEvent = (
   trigger: KinGithubTrigger,
   askedBy?: string,
 ) =>
-  `${githubTriggerText(repo, trigger, SILENT_REPLY, askedBy)}\n\n${quote(
+  `${githubTriggerText(repo, trigger, askedBy)}\n\n${quote(
     trigger.inside ? QUOTE_LABELS.githubTrigger : QUOTE_LABELS.githubTriggerOutside,
     { event: eventId, repo, ...trigger },
   )}`;

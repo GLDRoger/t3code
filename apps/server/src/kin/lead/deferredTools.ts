@@ -11,6 +11,7 @@ export const KIN_ALWAYS_LOADED: ReadonlySet<string> = new Set([
   "kin_ask",
   "kin_defer",
   "kin_cancel",
+  "kin_skip",
   "kin_react",
   "kin_hand_off",
   "kin_relay",

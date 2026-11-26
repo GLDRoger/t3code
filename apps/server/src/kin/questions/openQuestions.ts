@@ -2293,11 +2293,11 @@ export const dismissedTurnText = Effect.fn("KinQuestions.dismissedTurnText")(fun
   };
   if (subject.reopened === true)
     return {
-      text: `${who} undid dismissing your question “${row.question}”: it is open again on its card, waiting for their answer. Don't ask it again and don't take a default; wait for their answer. Do not reply in chat.`,
+      text: `${who} undid dismissing your question “${row.question}”: it is open again on its card, waiting for their answer. Don't ask it again and don't take a default; wait for their answer. Send nothing in chat.`,
       data,
     };
   return {
-    text: `${who} dismissed your question “${row.question}” without choosing. That is not a choice and not approval of your pick: do not ask it again and do not take a default. If the work can go on without that answer, do that work now, in this turn. If it cannot, leave the task open with you: change neither its state nor its notes, and add one comment of one line on it saying what it needs. Do not reply in chat, but not replying is not stopping: do the work first.`,
+    text: `${who} dismissed your question “${row.question}” without choosing. That is not a choice and not approval of your pick: do not ask it again and do not take a default. If the work can go on without that answer, do that work now, in this turn. If it cannot, leave the task open with you: change neither its state nor its notes, and add one comment of one line on it saying what it needs. Send nothing in chat, but sending nothing is not stopping: do the work first.`,
     data,
   };
 });

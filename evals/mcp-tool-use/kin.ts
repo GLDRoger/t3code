@@ -107,6 +107,8 @@ import {
 import { parseAmount } from "../../apps/server/src/kin/work/money.ts";
 import { goalLine } from "../../apps/server/src/kin/work/goals.ts";
 import {
+  DEFAULT_SERVER_SETTINGS,
+  kinReplyBubbles,
   formatKinPicturesDay,
   KIN_TEXT_LOCALE,
   KinDocCardDraft,
@@ -227,12 +229,22 @@ import { characterForTurn, colleagueLine } from "../../apps/server/src/kin/lead/
 import {
   CAPTION_PROMPT,
   classifySegment,
+  replyNextForTool,
   repeats,
   RESCUE_PROMPT,
 } from "../../apps/server/src/kin/reply/classify.ts";
+import {
+  followUpFor,
+  replyNudgePrompt,
+  sendRescuePrompt,
+  isPersonTag,
+  startedBy,
+  TRIGGER_TAGS,
+  voiceFor,
+} from "../../apps/server/src/kin/reply/turnVoice.ts";
 import { TURN_EVENT_TOOLS } from "../../apps/server/src/kin/lead/eventIds.ts";
 import { noticeDay } from "../../apps/server/src/kin/work/crm.ts";
-import type { McpToolUseCase } from "./run.ts";
+import type { Call, McpToolUseCase } from "./run.ts";
 
 export { kinInstructions, kinLeadInstructions };
 
@@ -632,34 +644,120 @@ export const unredact = (value: unknown): unknown =>
         ? Object.fromEntries(Object.entries(value).map(([key, item]) => [key, unredact(item)]))
         : value;
 
-/** What follows a text block, as Kin's bridge reads it (`classifySegment`). */
-const nextAfter = (blocks: ReadonlyArray<unknown>, index: number) => {
-  const following = blocks.slice(index + 1).find((next) => isText(next) || isToolUse(next));
-  return following === undefined ? "end" : isText(following) ? "text" : "tool";
-};
-/**
- * The text a chat shows from a turn's responses: every text block, status lines included, less
- * one that only repeats the reply so far, which Kin's bridge drops (`repeats`).
- */
-export const shownText = (responses: ReadonlyArray<ReadonlyArray<unknown>>) => {
-  const blocks = responses.flat();
+const replyText = (
+  responses: ReadonlyArray<ReadonlyArray<unknown>>,
+  includeNotes = false,
+  person = false,
+) => {
+  const blocks = responses.flat().filter((block) => isText(block) || isToolUse(block));
   const said: Array<string> = [];
   let reply = "";
   blocks.forEach((block, index) => {
     if (!isText(block) || (reply !== "" && repeats(block.text, reply))) return;
-    said.push(block.text);
-    if (classifySegment(block.text, nextAfter(blocks, index)) === "post")
-      reply = reply === "" ? block.text : `${reply}\n\n${block.text}`;
+    const text = block.text.trim();
+    if (text === "") return;
+    const next = blocks[index + 1];
+    const post =
+      classifySegment(
+        text,
+        isToolUse(next) ? replyNextForTool(next.name) : next === undefined ? "end" : "text",
+        person,
+      ) === "post";
+    if (post || includeNotes) said.push(includeNotes ? block.text : text);
+    if (post) reply = reply === "" ? text : `${reply}\n\n${text}`;
   });
   return said.join("\n\n");
 };
-/** Whether any text block posts as a message: short text before a tool is a status line. */
-const postsText = (responses: ReadonlyArray<ReadonlyArray<unknown>>) => {
-  const blocks = responses.flat();
-  return blocks.some(
-    (block, index) =>
-      isText(block) && classifySegment(block.text, nextAfter(blocks, index)) === "post",
-  );
+
+export const shownText = (responses: ReadonlyArray<ReadonlyArray<unknown>>) =>
+  replyText(responses, true);
+
+type ReplySample = {
+  readonly testCase: McpToolUseCase;
+  readonly responses: ReadonlyArray<ReadonlyArray<unknown>>;
+  readonly calls: ReadonlyArray<Call>;
+};
+
+const PERSON_MESSAGE = /^(?:owner|co-owner|member human|guest human|agent|system) message\b/;
+const HANDOFF_BACK = /^agent message\b/;
+const REACTION_LINE = /^Owner (?:reacted|changed their reaction) .+\(a reaction, not text\)/m;
+const quoteLabels = (prompt: string) =>
+  [...prompt.matchAll(/^>?[ \t]*BEGIN QUOTE: (.+)$/gm)].map((match) => match[1]!);
+
+const eventTag = (value: string): value is Contracts.KinEvent["_tag"] =>
+  isPersonTag(value) || Object.hasOwn(TRIGGER_TAGS, value);
+
+const eventDataTags = (prompt: string) =>
+  [...prompt.matchAll(/^>.*"(?:type|tag|_tag)":\s*"([^"]+)"/gm)]
+    .map((match) => match[1]!)
+    .filter(eventTag);
+
+const promptTags = (
+  prompt: string,
+  world?: McpToolUseCase["setup"]["world"],
+): ReadonlyArray<Contracts.KinEvent["_tag"]> => {
+  const labels = quoteLabels(prompt);
+  const tags = new Set(eventDataTags(prompt));
+  if (labels.some((label) => PERSON_MESSAGE.test(label))) tags.add("chat.message");
+  if (
+    labels.some((label) => /^(?:reaction|chat\.reaction)\b/.test(label)) ||
+    REACTION_LINE.test(prompt)
+  )
+    tags.add("chat.reaction");
+  if (
+    labels.some((label) => /^(?:tap|widget\.action)\b/.test(label)) ||
+    /"kind":\s*"widget_action"/.test(prompt)
+  )
+    tags.add("widget.action");
+  if (labels.includes("pulse")) tags.add("pulse");
+  if (labels.includes("reminder (data)")) tags.add("deferral.due");
+  if (
+    world?.githubTrigger !== undefined ||
+    labels.some((label) => label.startsWith("GitHub event"))
+  )
+    tags.add("github");
+  return [...tags];
+};
+
+const caseTags = ({ prompt, setup }: McpToolUseCase) => promptTags(prompt, setup.world);
+
+export const isReplyEnding = (name: string) => name === "kin_send" || name === "kin_skip";
+const replyEnding = (calls: ReadonlyArray<Call>) =>
+  calls.find((call) => isReplyEnding(call.tool) && call.failed === false);
+
+const replyVoice = (sample: ReplySample, sendOnly: boolean) =>
+  voiceFor({ tags: caseTags(sample.testCase), sendOnly });
+
+export const deliveredText = (
+  sample: ReplySample,
+  sendOnly = DEFAULT_SERVER_SETTINGS.kinTriggerSendOnly,
+) => {
+  const ending = replyEnding(sample.calls);
+  if (
+    ending?.tool === "kin_send" &&
+    isRecord(ending.input) &&
+    typeof ending.input.text === "string"
+  )
+    return ending.input.text.trim();
+  if (replyVoice(sample, sendOnly) === "send") return "";
+  if (ending?.tool === "kin_skip" && startedBy(caseTags(sample.testCase)) === "trigger") return "";
+  return replyText(sample.responses, false, startedBy(caseTags(sample.testCase)) === "person");
+};
+
+export const kinDelivery = (sample: ReplySample, sendOnly?: boolean) => {
+  if (sample.testCase.setup.world?.kinLead !== true) return {};
+  const text = deliveredText(sample, sendOnly);
+  const labels = quoteLabels(sample.testCase.prompt);
+  const page =
+    labels.some((label) =>
+      /^(?:morning|weekly|evening|left for this check-in|routine facts|Team room turn)\b/.test(
+        label,
+      ),
+    ) || /^This turn is in the Team room, chat /m.test(sample.testCase.prompt);
+  return {
+    deliveredText: text,
+    deliveredBubbles: text === "" ? [] : page ? [text] : kinReplyBubbles(text),
+  };
 };
 
 /**
@@ -868,6 +966,7 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{SEVERAL_ACCOUNTS}}", SEVERAL_ACCOUNTS)
     .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
     .replaceAll("{{REMINDER_DUE}}", REMINDER_DUE)
+    .replaceAll("{{REPLY_NUDGE}}", () => replyNudgePrompt(promptTags(prompt, world)))
     .replaceAll("{{PASSED_ON_SPEAKER}}", PASSED_ON_SPEAKER)
     // A check-in fact's hand-off as the other agent's event quotes it, JSON-escaped for its body:
     // `{{PASSED_FACT:<request>|<check-in>|<about>|<consequence>|<fact key>}}`.
@@ -1903,54 +2002,132 @@ const ANSWERS_IN_CHAT = new Set([
 // tool shows its doc as a card only when asked to (`card`); otherwise it posts nothing.
 const SHOWS_ONLY = new Set(["kin_chart", "kin_visual", "kin_document", "kin_issue", "kin_receipt"]);
 const DOC_TOOLS = new Set(["doc_create", "doc_edit", "doc_rewrite"]);
-/**
- * Every teammate message of the turn passed on by kin_hand_off (its mocked results, in call
- * order): Kin's own line in the chat answers each, so the turn owes no words (`answered`).
- */
-const passedOnEach = (testCase: McpToolUseCase, used: ReadonlyArray<{ readonly tool: string }>) => {
+const personMessages = (testCase: McpToolUseCase) =>
+  quoteLabels(testCase.prompt).filter((label) => PERSON_MESSAGE.test(label));
+
+/** Kin's own line answers each teammate message the tool passed on. */
+const passedOnEach = (testCase: McpToolUseCase, used: ReadonlyArray<Call>) => {
   if (!testCase.prompt.includes("your direct chat with a teammate")) return false;
-  const asked = testCase.prompt.match(/BEGIN QUOTE: member human message/g)?.length ?? 0;
-  const mock = testCase.setup.mocks?.kin_hand_off;
-  const results = isRecord(mock) && Array.isArray(mock.$sequence) ? mock.$sequence : [mock];
-  const passed = used
-    .filter((one) => one.tool === "kin_hand_off")
-    .filter((_, n) => {
-      const result: unknown = results[Math.min(n, results.length - 1)];
-      return isRecord(result) && result.passed === true;
-    });
-  return asked > 0 && passed.length >= asked;
+  const messages = personMessages(testCase);
+  if (messages.length === 0 || !messages.every((label) => label.startsWith("member human message")))
+    return false;
+  const passed = used.filter((call) => {
+    if (call.tool !== "kin_hand_off" || call.failed !== false || call.output === undefined)
+      return false;
+    const result = safeJson(call.output);
+    return isRecord(result) && result.passed === true;
+  });
+  return passed.length >= messages.length;
 };
-/**
- * What Kin asks a lead whose finished turn left a person's message without words
- * (KinReplyBridge `complete`): the rescue prompt, the caption prompt when its only answer was a
- * chart, visual or file, or undefined when the turn answered. `normalize` is the grading name.
- */
-export const rescuePrompt = (
-  sample: {
-    readonly testCase: McpToolUseCase;
-    readonly responses: ReadonlyArray<ReadonlyArray<unknown>>;
-  },
-  normalize: (name: string) => string,
+
+const quietAllowed = (testCase: McpToolUseCase, used: ReadonlyArray<Call>) => {
+  const tags = caseTags(testCase);
+  if (startedBy(tags) === "trigger") return true;
+  const messages = personMessages(testCase);
+  if (tags.includes("widget.action")) return false;
+  if (messages.length === 0) return tags.includes("chat.reaction");
+  return (
+    (messages.every((label) => HANDOFF_BACK.test(label)) &&
+      /"(?:answerFrom)"|handoff-back-/.test(testCase.prompt)) ||
+    passedOnEach(testCase, used)
+  );
+};
+
+export const defaultReplyMock = (
+  sample: ReplySample,
+  name: string,
+  input: Record<string, unknown>,
 ) => {
-  if (sample.testCase.setup.world?.kinLead !== true) return undefined;
-  if (
-    !/BEGIN QUOTE: (?:owner|co-owner|member human|guest human) message/.test(sample.testCase.prompt)
-  )
+  if (sample.testCase.setup.world?.kinLead !== true || !isReplyEnding(name)) return undefined;
+  const ending = replyEnding(sample.calls);
+  if (name === "kin_skip") {
+    if (
+      ending?.tool !== "kin_send" &&
+      replyText(sample.responses, false, true) === "" &&
+      !quietAllowed(sample.testCase, sample.calls)
+    )
+      return {
+        $error: "Not ended: someone here is waiting on your answer; write it as plain text.",
+      };
+    return "Nothing sent; this turn is over.";
+  }
+  if (ending?.tool === "kin_skip")
+    return { $error: "Nothing was sent: this turn already ended with kin_skip." };
+  if (ending?.tool === "kin_send")
+    return { $error: "This turn's message is already sent; end the turn" };
+  if (typeof input.text !== "string" || input.text.trim() === "")
+    return { $error: "Nothing was sent: pass the text to send." };
+  const { prompt } = sample.testCase;
+  if (/^This turn is in the Team room, chat /m.test(prompt))
+    return { $error: "Nothing was sent: use team_say to speak in the Team room." };
+  if (!["now", "quiet", "check_in"].some((level) => input.level === level))
+    return { $error: "Nothing was sent: pass a valid level." };
+  if (input.level === "check_in" && !caseTags(sample.testCase).includes("deferral.due")) {
+    if (/your direct chat with (?:a teammate|a co-owner)|, (?:a group|the group)/.test(prompt))
+      return { $error: "Nothing was sent: check_in is only for the owner's own chat." };
+    return { held: true, when: "At the next check-in." };
+  }
+  return { sent: true, messageId: "kin-send:eval-turn" };
+};
+
+/** What Kin asks once after a turn that owes an answer or has an unsent final message. */
+export const replyFollowUp = (
+  sample: ReplySample,
+  finalText: string,
+  sendOnly = DEFAULT_SERVER_SETTINGS.kinTriggerSendOnly,
+): { kind: "rescue" | "nudge"; prompt: string } | undefined => {
+  const { testCase, calls } = sample;
+  if (testCase.setup.world?.kinLead !== true || testCase.prompt.includes("{{REPLY_NUDGE}}"))
     return undefined;
-  if (postsText(sample.responses)) return undefined;
-  const used = sample.responses
-    .flat()
-    .filter(isToolUse)
-    .map((block) => ({
-      tool: normalize(block.name),
-      card: isRecord(block.input) && block.input.card === true,
-    }));
-  if (passedOnEach(sample.testCase, used)) return undefined;
-  const shows = ({ tool, card }: (typeof used)[number]) =>
-    SHOWS_ONLY.has(tool) || (DOC_TOOLS.has(tool) && card);
-  if (used.some((one) => ANSWERS_IN_CHAT.has(one.tool) && !DOC_TOOLS.has(one.tool) && !shows(one)))
-    return undefined;
-  return used.some(shows) ? CAPTION_PROMPT : RESCUE_PROMPT;
+  const used = calls.filter((call) => call.failed === false);
+  const tags = caseTags(testCase);
+  const voice = replyVoice(sample, sendOnly);
+  const owed =
+    personMessages(testCase).some((label) =>
+      /^(?:owner|co-owner|member human|guest human) message\b/.test(label),
+    ) ||
+    tags.includes("widget.action") ||
+    tags.includes("task.finished") ||
+    quoteLabels(testCase.prompt).includes("work given to you (data)");
+  const shows = (call: Call) =>
+    SHOWS_ONLY.has(call.tool) ||
+    (DOC_TOOLS.has(call.tool) && isRecord(call.input) && call.input.card === true);
+  const ending = replyEnding(calls);
+  const sent = ending?.tool === "kin_send";
+  const skipped = ending?.tool === "kin_skip";
+  const answered =
+    sent ||
+    skipped ||
+    (voice === "text" &&
+      (replyText(sample.responses, false, startedBy(tags) === "person") !== "" ||
+        passedOnEach(testCase, used) ||
+        used.some(
+          (call) => ANSWERS_IN_CHAT.has(call.tool) && !DOC_TOOLS.has(call.tool) && !shows(call),
+        )));
+  const state = {
+    voice,
+    owed,
+    answered,
+    withheld: false,
+    sent,
+    skipped,
+    finalText: finalText.trim() !== "",
+  };
+  const followUp = followUpFor(state);
+  switch (followUp) {
+    case "nudge":
+      return { kind: "nudge", prompt: replyNudgePrompt(tags) };
+    case "rescue": {
+      if (voice === "text")
+        return { kind: "rescue", prompt: used.some(shows) ? CAPTION_PROMPT : RESCUE_PROMPT };
+      const asker =
+        /^>.*"(?:askedBy|assignee)":\s*"([^"]+)"/m.exec(testCase.prompt)?.[1] ??
+        "The person who asked";
+      return { kind: "rescue", prompt: sendRescuePrompt(asker) };
+    }
+    default:
+      return undefined;
+  }
 };
 
 /**
@@ -2154,7 +2331,7 @@ export const kinAnswer = (
 ) => (isKinTool(name) ? fillKinMock(mock, input, world) : mock);
 const unmocked = (testCase: McpToolUseCase, tool: string) => {
   const mock = testCase.setup.mocks?.[tool];
-  return KIN_TOOLS.has(tool) && (mock === undefined || mock === "default");
+  return KIN_TOOLS.has(tool) && !isReplyEnding(tool) && (mock === undefined || mock === "default");
 };
 /** The Kin tools a sample called that its case has no mock for, each once. */
 export const kinUnmocked = (

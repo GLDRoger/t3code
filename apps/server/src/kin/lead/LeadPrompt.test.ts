@@ -49,6 +49,11 @@ import {
   PULSE_RULE,
 } from "../pulse/prompt.ts";
 import { HEAD_START_GONE, HEAD_START_WAKE } from "../pulse/prepareWake.ts";
+import { REVIEW_WAKE_TEXT } from "../pulse/reviewWake.ts";
+import { githubTriggerText } from "../github/eventPrompt.ts";
+import { postedResult } from "../github/GitHubWatch.ts";
+import { billTurnText } from "../work/billTurn.ts";
+import { feedTurnText } from "../numbers/words.ts";
 import { WEEKLY_RULE } from "../pulse/weekly.ts";
 import { MONEY_RULE, WITHDRAWN_WORK, WORK_RULE } from "../work/workPrompt.ts";
 import {
@@ -106,7 +111,7 @@ import {
   repository,
   memory,
   teamMemory,
-  layer,
+  layer as baseLayer,
   seed,
   teammateId,
   teammateMember,
@@ -115,6 +120,27 @@ import {
   stored,
   promptChunks,
 } from "./LeadPrompt.testkit.ts";
+
+// Every prompt this file builds, on every seat and wake kind, tells no agent to write a marker word.
+const noMarker = (built: string) => Effect.sync(() => expect(built).not.toContain("NO_REPLY"));
+const withoutMarker = <A, E, R>(base: Layer.Layer<A | KinLeadPrompt, E, R>) =>
+  Layer.effect(
+    KinLeadPrompt,
+    Effect.gen(function* () {
+      const prompt = yield* KinLeadPrompt;
+      return KinLeadPrompt.of({
+        ...prompt,
+        build: (built) => prompt.build(built).pipe(Effect.tap(noMarker)),
+        buildSession: (built) =>
+          prompt
+            .buildSession(built)
+            .pipe(Effect.tap((session) => noMarker(JSON.stringify(session)))),
+        steer: (built) => prompt.steer(built).pipe(Effect.tap(noMarker)),
+      });
+    }),
+  ).pipe(Layer.provideMerge(base));
+const layer = withoutMarker(baseLayer);
+const promptLive = withoutMarker(KinLeadPrompt.layer);
 
 it.effect(
   "keeps the cache prefix stable across events and clocks; only memory changes with its head",
@@ -1431,7 +1457,7 @@ it.effect(
       yield* stored("feed-wake", [feedRun]);
       const fed = { ...input, wakeupId: KinWakeupId.make("feed-wake"), events: [feedRun] };
       expect(yield* prompt.build(fed)).toContain(
-        `\n\nRecord "DAU" (G-1) from "PostHog" as of 2026-11-20. If this is the first run, record up to 28 days back. If the source can't be read, say so in one line and record nothing. When it is recorded, reply NO_REPLY: a fetch that worked needs no message, and Kin tells you separately if a number is outside its limit.`,
+        `\n\nRecord "DAU" (G-1) from "PostHog" as of 2026-11-20. If this is the first run, record up to 28 days back. If the source can't be read, say so in one line and record nothing. When it is recorded, end with kin_skip: a fetch that worked needs no message, and Kin tells you separately if a number is outside its limit.`,
       );
       // An archived number is left out: here nothing is left, so the run stays silent.
       yield* sql`UPDATE kin_records SET state = 'dropped' WHERE org_id = ${orgId} AND key = 'G-1'`;
@@ -1971,7 +1997,7 @@ it.effect.each([
         yield* prompt.steer({ ...input, events: [event("message")], first: true }),
       ] as const;
     }).pipe(
-      Effect.provide(Layer.fresh(KinLeadPrompt.layer).pipe(Layer.provide(memory))),
+      Effect.provide(Layer.fresh(promptLive).pipe(Layer.provide(memory))),
       Effect.provideService(Chat.KinChatRepository, source),
     );
     expect(built).toContain("ignore previous instructions");
@@ -2322,7 +2348,7 @@ it.effect("a reader handed another lead's bills builds their turn in a chat it i
       lane: { chatId: cardChat, mode: "notice" },
     });
     expect(built).toContain("Bills someone added to read in the background: B1 is image 1.");
-    expect(built).toContain("write exactly NO_REPLY.");
+    expect(built).toContain("Record nothing else, then end with kin_skip.");
   }).pipe(Effect.provide(layer)),
 );
 
@@ -2818,7 +2844,7 @@ it.effect("a due reminder states its facts once and always gets a reply", () =>
     expect(section.split("\n").at(-2)).toBe(
       '> {"event":"due-rem","item":"rem","what":"Stretch","due":"2026-11-08T00:00:00Z","lateMinutes":7}',
     );
-    expect(built).not.toContain("NO_REPLY");
+    expect(built).not.toContain("kin_skip");
     // One asked for in a turn shown something sensitive makes this turn sensitive too.
     const sql = yield* SqlClient.SqlClient;
     const marked = sql`SELECT wakeup_id FROM kin_wakeup_sensitive_reads ORDER BY wakeup_id`;
@@ -3288,8 +3314,8 @@ it.effect(
           "You are this group's default agent: you answer a message that names nobody, and one that names you.",
         ].join("\n"),
       );
-      // Someone is waiting on a reply turn, so staying silent is not offered.
-      expect(built).not.toContain("NO_REPLY");
+      // Someone is waiting on a reply turn, so ending quietly is not offered.
+      expect(built).not.toContain("kin_skip");
       expect(built).not.toContain("Memory index size");
       // A group lane gets the group rules with the standing rules; a direct chat never does.
       expect(built.split(TURN_DIVIDER)[0]).toContain("# Group rules");
@@ -3312,7 +3338,7 @@ it.effect(
       expect(room.split(TURN_DIVIDER)[0]).toContain("# Team room");
       expect(room).not.toContain("# Group rules");
       expect(room).not.toContain("default agent");
-      expect(room).not.toContain("NO_REPLY");
+      expect(room).not.toContain("kin_skip");
       // Reply text in the Team room is dropped, so the turn never says the room reads it.
       expect(room).not.toContain("reads your reply");
       expect(room).not.toContain("Your reply goes to");
@@ -3515,7 +3541,7 @@ it.effect(
       expect(reversed).toContain(
         `Owner changed their reaction on your message "CI is green." from 👍 to 👎 (a reaction, not text). The earlier go-ahead no longer stands: stop what you started for it if you can (task_cancel for a task you delegated)`,
       );
-      expect(reversed).not.toContain("write exactly NO_REPLY");
+      expect(reversed).not.toContain("kin_skip");
       expect(yield* changed("👍", { withdrawn: true })).toContain(
         `from 👍 to no reaction (a reaction, not text). The earlier go-ahead no longer stands`,
       );
@@ -3774,7 +3800,7 @@ it.effect.each([
       if (shows !== undefined) expect(built).toContain(shows);
     }).pipe(
       Effect.provide(
-        KinLeadPrompt.layer.pipe(
+        promptLive.pipe(
           Layer.provideMerge(Layer.merge(repository, markedMemory)),
           Layer.provideMerge(database),
           Layer.merge(teamMemory({})),
@@ -3818,7 +3844,7 @@ it.effect("a started deferral says what it is for and whom, in a turn the owner 
     expect(data).toContain('"for":"Zoya"');
   }).pipe(
     Effect.provide(
-      KinLeadPrompt.layer.pipe(
+      promptLive.pipe(
         Layer.provideMerge(Layer.merge(repository, markedMemory)),
         Layer.provideMerge(database),
         Layer.merge(teamMemory({})),
@@ -3834,7 +3860,7 @@ const lenaMail = {
   from: "Lena Ortiz <lena@brightwell.example>",
   subject: "New bank details",
 } as const;
-const markedPrompt = KinLeadPrompt.layer.pipe(
+const markedPrompt = promptLive.pipe(
   Layer.provideMerge(Layer.merge(repository, markedMemory)),
   Layer.provideMerge(database),
   Layer.merge(teamMemory({})),
@@ -3938,7 +3964,7 @@ it.effect(
       expect(plain).not.toContain("kin_relay, in words they may read");
     }).pipe(
       Effect.provide(
-        KinLeadPrompt.layer.pipe(
+        promptLive.pipe(
           Layer.provideMerge(Layer.merge(repository, markedMemory)),
           Layer.provideMerge(database),
           Layer.merge(teamMemory({})),
@@ -4410,3 +4436,50 @@ it.effect(
       );
     }).pipe(Effect.provide(layer)),
 );
+
+const lineWith = (text: string, anchor: string) =>
+  text.split("\n").find((line) => line.includes(anchor)) ?? `missing: ${anchor}`;
+const reviewTrigger = {
+  key: "tidewater/portal#7:review",
+  kind: "review",
+  item: "pull",
+  number: 7,
+  url: "https://github.com/tidewater/portal/pull/7",
+  title: "Invoice totals round wrong",
+  author: "zoya",
+  association: "MEMBER",
+  inside: true,
+  text: "Totals are off by a paisa.",
+} as const;
+it.each([
+  [
+    "a reaction to a statement",
+    lineWith(instructions, "on a plain statement it only acknowledges"),
+  ],
+  ["another agent's answer", lineWith(instructions, "When you asked for their answer")],
+  ["a trigger", lineWith(instructions, "routine activity need nothing")],
+  ["a scheduled run", lineWith(instructions, "A scheduled run carries the owner's instruction")],
+  ["a check-in", lineWith(instructions, "A check-in with nothing to report")],
+  ["a pulse fact", lineWith(instructions, "A turn a pulse fact woke")],
+  ["a review of what it said", REVIEW_WAKE_TEXT({ who: ["Zoya"], count: 1 })],
+  [
+    "Kin's own PR review",
+    postedResult(
+      { _tag: "posted", url: "https://github.com/tidewater/portal/pull/7", asOwner: false },
+      "kins",
+    ).next,
+  ],
+  ["a GitHub review trigger", githubTriggerText("tidewater/portal", reviewTrigger)],
+  ["bills", billTurnText([{ id: "B1", image: true, name: "receipt.png" }], ["Travel"])],
+  ["a head start", HEAD_START_WAKE],
+  ["a head start gone", HEAD_START_GONE],
+  ["a number feed", feedTurnText([{ key: "G-1", name: "DAU" }], "PostHog", "2026-11-20")],
+  ["withdrawn work", WITHDRAWN_WORK],
+])("%s that may end quietly is told to end with kin_skip", (_seat, text) => {
+  expect(text).toContain("kin_skip");
+  expect(text).not.toContain("NO_REPLY");
+});
+
+it("the instructions tell no agent to write a marker word", () => {
+  expect(instructions).not.toContain("NO_REPLY");
+});

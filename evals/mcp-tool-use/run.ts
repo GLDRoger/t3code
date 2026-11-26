@@ -40,7 +40,6 @@ import { Tool } from "effect/ai";
 import * as McpSchema from "effect/ai/McpSchema";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
-import { classifySegment } from "../../apps/server/src/kin/reply/classify.ts";
 import { taskPrompt } from "../../apps/server/src/mcp/delegatedTaskModes.ts";
 import * as McpInvocationContext from "../../apps/server/src/mcp/McpInvocationContext.ts";
 import { advertisedJsonSchema } from "../../apps/server/src/mcp/advertisedJsonSchema.ts";
@@ -73,13 +72,16 @@ import { kinCaseProblems } from "./kin-checks.ts";
 import { Rubric, rubricChecks, rubricRequest } from "./rubric.ts";
 import { type AppServer, openAppServer } from "./appServer.ts";
 import {
+  defaultReplyMock,
   fillKinRules,
   filledEvent,
   isKinCase,
+  isReplyEnding,
   kinAnswer,
   KinCaseAttachment,
   KIN_TOOLKITS,
   kinDated,
+  kinDelivery,
   kinJudgedCall,
   kinLeadBase,
   kinGitHubOf,
@@ -97,7 +99,7 @@ import {
   kinUnmocked,
   longTurnNote,
   modelCallLines,
-  rescuePrompt,
+  replyFollowUp,
   shownText,
   unmockedLines,
   unredact,
@@ -247,8 +249,9 @@ type Call = {
 export type SampleRun = {
   readonly calls: ReadonlyArray<Call>;
   text: string;
-  /** Kin's posted segments, without the journal notes used in other text checks. */
-  readonly postedText?: string;
+  readonly deliveredText?: string;
+  readonly deliveredBubbles?: ReadonlyArray<string>;
+  readonly nudged?: boolean;
   stopReason: string;
   /** The agent's final answer: its last response's text, if it ended its turn. */
   readonly finalText?: string;
@@ -339,6 +342,7 @@ const McpToolUseExpect = Schema.Struct({
   textMustNot: Schema.optional(Schema.Array(Schema.String)),
   /** Counts on the agent's visible text, graded pass, within margin or fail. See margin.ts. */
   limits: Schema.optional(Limits),
+  delivered: Schema.optional(Schema.Boolean),
   /** Case-sensitive regexes on the final answer: the last response's text, once the turn ended. */
   finalTextMust: Schema.optional(Schema.Array(Schema.String)),
   /** Each entry matches a PR URL linked at the end, as `args` values match. */
@@ -1146,6 +1150,7 @@ type Sample = {
   readonly priorResults: Map<unknown, string>;
   /** The model's responses so far, as `shownText` reads them. */
   readonly responses: Array<ReadonlyArray<unknown>>;
+  readonly calls: Array<Call>;
   /** Prior calls whose T3 result is an error, so the agent sees it as one. */
   readonly priorErrors: Set<unknown>;
   /** T3's t3_background_wait, once `withBackgroundWait` builds it for `world.backgroundTasks`. */
@@ -1212,6 +1217,7 @@ export const makeSample = (testCase: McpToolUseCase, base: Base): Sample => {
     secretRequests: 0,
     priorResults: new Map(),
     responses: [],
+    calls: [],
     priorErrors: new Set(),
     ...carryMockState(testCase, normalizeToolName),
   };
@@ -1344,7 +1350,8 @@ const loadTools = (tools: Array<ApiTool>, id: string, found: ReadonlyArray<ApiTo
 };
 
 /** Messages for a case: reminders, context, prior turns with real tool blocks, then the prompt. */
-export const buildMessages = (sample: Sample, layout: KinLayout = "legacy") => {
+/** `appServer`: Codex sends its own environment, so the request leaves out Claude Code's. */
+export const buildMessages = (sample: Sample, layout: KinLayout = "legacy", appServer = false) => {
   const { testCase, base, tools } = sample;
   const messages: Array<ApiMessage> = [];
   const push = (role: ApiMessage["role"], ...blocks: ReadonlyArray<Block>) => {
@@ -1429,7 +1436,7 @@ export const buildMessages = (sample: Sample, layout: KinLayout = "legacy") => {
   let firstWake = true;
   const pushPrompt = (prompt: string, files?: KinTurnFiles, context?: string) => {
     push("user", ...kinTurnBlocks(files, prompt, base.codex !== undefined));
-    if (firstWake && base.kinClaude) {
+    if (firstWake && base.kinClaude && !appServer) {
       const { cwd, platform, date } = base.environment;
       const environment = [
         `# Environment\nYou have been invoked in the following environment: \n - Primary working directory: ${cwd}\n - Platform: ${platform}`,
@@ -2528,7 +2535,9 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
   const selected = nextMock(sample, name, testCase.setup.mocks?.[name], input);
   const mock = kinAnswer(
     name,
-    selected.mock,
+    selected.mock === undefined || selected.mock === "default"
+      ? (defaultReplyMock(sample, name, input) ?? selected.mock)
+      : selected.mock,
     selected.prior === undefined ? input : { ...input, prior: selected.prior },
     testCase.setup.world,
   );
@@ -2796,6 +2805,9 @@ const withPage = (tool: string, input: unknown, files: ReadonlyMap<string, strin
   return { ...input, page };
 };
 
+const DELIVERED_SILENCE =
+  /\bNO_REPLY\b|\(\s*(?:no\s+reply\s+needed|no\s+response\s+needed|nothing\s+to\s+add|staying\s+quiet|silent)\s*\)/i;
+
 /** `pasted` is the thread's user text (`pastedText`), for request_secret's `value`. */
 export const gradeSample = (
   expect: McpToolUseCase["expect"],
@@ -2884,7 +2896,11 @@ export const gradeSample = (
   if (expect.endsTurnAfter !== undefined) {
     const lastStep = Math.max(-1, ...calls.map((call) => call.step));
     const last = calls.filter((call) => call.step === lastStep).map((call) => call.tool);
-    const ended = run.stopReason === "end_turn" && last.includes(expect.endsTurnAfter);
+    const ended =
+      run.stopReason === "end_turn" &&
+      (isReplyEnding(expect.endsTurnAfter)
+        ? last.at(-1) === expect.endsTurnAfter
+        : last.includes(expect.endsTurnAfter));
     add(`endsTurnAfter ${expect.endsTurnAfter}`, ended);
   }
   // Bash and Monitor both take a shell `command`. Shell checks also read, one by one, the scripts
@@ -2905,19 +2921,38 @@ export const gradeSample = (
       shell.some((c) => test(p, c) || test(p, argvForm(c))),
     );
   // A Kin card's question is posted to the chat and stands for the turn's message, so it counts.
+  const delivered = run.deliveredText;
+  const visible = delivered ?? run.text;
   const shown = [
-    run.text,
+    visible,
     ...calls.flatMap((call) =>
-      call.tool === "kin_ask" && isRecord(call.input) && typeof call.input.question === "string"
+      call.tool === "kin_ask" &&
+      call.failed !== true &&
+      isRecord(call.input) &&
+      typeof call.input.question === "string"
         ? [call.input.question]
         : [],
     ),
   ].join("\n\n");
   for (const p of expect.textMust ?? []) add(`textMust /${p}/`, test(p, shown));
-  for (const p of expect.textMustNot ?? []) add(`textMustNot /${p}/`, !test(p, run.text));
-  checks.push(...limitChecks(expect.limits, run.postedText ?? run.text));
+  for (const p of expect.textMustNot ?? []) add(`textMustNot /${p}/`, !test(p, visible));
+  checks.push(...limitChecks(expect.limits, visible, run.deliveredBubbles?.length));
+  if (delivered !== undefined && DELIVERED_SILENCE.test(delivered))
+    add("marker text delivered", false);
+  if (expect.delivered !== undefined) {
+    const reached = delivered !== undefined && delivered.trim() !== "";
+    add(
+      `delivered ${expect.delivered}`,
+      expect.delivered
+        ? reached
+        : delivered !== undefined && !reached && !run.nudged && run.stopReason === "end_turn",
+    );
+  }
   for (const p of expect.finalTextMust ?? [])
-    add(`finalTextMust /${p}/`, run.stopReason === "end_turn" && test(p, run.finalText ?? ""));
+    add(
+      `finalTextMust /${p}/`,
+      run.stopReason === "end_turn" && test(p, delivered ?? run.finalText ?? ""),
+    );
   const isLinked = (url: string) => (run.linked ?? []).some((at) => matches(url, at));
   for (const url of expect.linked ?? []) add(`linked ${url}`, isLinked(url));
   if (expect.linkedNumbers !== undefined) {
@@ -3186,7 +3221,7 @@ export const judged = Effect.fn("evaluateMcpToolUse.rubric")(function* (
   if (!isPricedModel(config.shellModel))
     return yield* Effect.die(new Error("A rubric needs a Claude shell model."));
   const turn = {
-    text: sample.text,
+    text: sample.deliveredText ?? sample.text,
     calls: sample.calls.map((call) =>
       isKinCase(testCase)
         ? kinJudgedCall(call)
@@ -3238,18 +3273,6 @@ export const ranCalls = (
     .filter((use) => base.codex !== undefined || hasTool(tools, use.name))
     .map((use) => recordedCall(step, filledEvent(testCase, use, normalizeToolName)));
 
-export const kinPostedText = (responses: ReadonlyArray<ReadonlyArray<unknown>>, done = true) => {
-  const blocks = responses.flat().filter((block) => isText(block) || isToolUse(block));
-  return blocks
-    .flatMap((block, index) => {
-      if (!isText(block)) return [];
-      const next = blocks[index + 1];
-      const follows = next === undefined ? (done ? "end" : null) : isText(next) ? "text" : "tool";
-      return classifySegment(block.text, follows) === "post" ? [block.text] : [];
-    })
-    .join("\n\n");
-};
-
 /**
  * Runs one sample until the model ends its turn, uses up its steps, or fails a check that no
  * later step can undo. Tokens add up in `spent`, so a sample that errors still reports them.
@@ -3272,32 +3295,24 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   const input = base.codex ? codexMessages(messages) : undefined;
   const transcript: Array<unknown> = [];
   const start = messages.length;
-  const calls: Array<Call> = [];
-  const responses = sample.responses;
-  let shown = "";
+  const { calls, responses } = sample;
   const { usage } = spent;
   let stopReason = "max_steps";
   let finalText = "";
-  const kin = isKinCase(testCase);
+  const kinLead = testCase.setup.world?.kinLead === true;
+  const { textMustNot: _textMustNot, limits: _limits, ...callChecks } = testCase.expect;
   const stopsEarly = () =>
     failedEarly(
-      testCase.expect,
-      {
-        calls,
-        text: shown,
-        stopReason,
-        ...(kin && testCase.expect.limits !== undefined
-          ? { postedText: kinPostedText(responses, false) }
-          : {}),
-      },
+      // A later send can replace any text so far.
+      kinLead ? callChecks : testCase.expect,
+      { calls, text: kinLead ? "" : shownText(responses), stopReason },
       pastedText(testCase),
     );
   // Codex's code-mode cells take more model calls, so a case's own budget grows for it too.
   const extra = isCodex(config.model) ? 4 : 0;
   let maxSteps = testCase.maxSteps === undefined ? config.maxSteps : testCase.maxSteps + extra;
   if (config.maxSteps === 0) maxSteps = Infinity;
-  // Kin's rescue: a finished lead turn that owed words and said none is asked once, as a new turn.
-  let rescue: string | undefined;
+  let followUp: ReturnType<typeof replyFollowUp>;
   let modelCalls = 0;
   for (let step = 0; step < maxSteps; step++) {
     modelCalls++;
@@ -3318,18 +3333,23 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     responses.push(response.content);
     const long = config.maxSteps === 0 ? longTurnNote(testCase.id, responses.length) : undefined;
     if (long !== undefined) yield* Effect.log(long);
-    shown = shownText(responses);
     const texts = response.content.filter(isText).map((block) => block.text);
     const uses = response.content.filter(isToolUse);
     calls.push(...ranCalls(sample, step, uses));
     if (response.stop_reason !== "tool_use") {
       stopReason = response.stop_reason ?? "unknown";
       finalText = texts.join("\n\n");
-      const asked =
-        input || rescue !== undefined ? undefined : rescuePrompt(sample, normalizeToolName);
-      if (asked === undefined) break;
-      rescue = asked;
-      messages.push({ role: "user", content: [text(asked)] });
+      if (stopReason !== "end_turn" || followUp !== undefined) break;
+      followUp = replyFollowUp(sample, finalText);
+      if (followUp === undefined) break;
+      const prompt = { role: "user" as const, content: [text(followUp.prompt)] };
+      messages.push(prompt);
+      if (input) {
+        const items = codexMessages([prompt]);
+        input.push(...items);
+        transcript.push(...items);
+      }
+      stopReason = "max_steps";
       maxSteps = Math.max(maxSteps, step + 3);
       continue;
     }
@@ -3402,6 +3422,16 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     // Claude Code adds this text after a ToolSearch that loaded tools.
     const loaded = results.some((result) => Array.isArray(result.content));
     messages.push({ role: "user", content: [...results, ...(loaded ? [text(TOOL_LOADED)] : [])] });
+    if (
+      !input &&
+      uses.some((use) => {
+        const call = calls.find((call) => call.id === use.id);
+        return call !== undefined && isReplyEnding(call.tool) && call.failed === false;
+      })
+    ) {
+      stopReason = "end_turn";
+      break;
+    }
     if (stopsEarly()) {
       stopReason = "failed_early";
       break;
@@ -3410,13 +3440,14 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   // The transcript (model turns and tool results) shows what the agent saw when a case fails.
   return {
     calls,
-    text: shown,
-    ...(kin ? { postedText: kinPostedText(responses) } : {}),
+    text: shownText(responses),
+    ...kinDelivery(sample),
     stopReason,
     finalText,
     modelCalls,
-    ...(rescue === undefined ? {} : { rescue }),
-    silent: rescuePrompt(sample, normalizeToolName) !== undefined,
+    ...(followUp?.kind === "rescue" ? { rescue: followUp.prompt } : {}),
+    ...(followUp?.kind === "nudge" ? { nudge: followUp.prompt, nudged: true } : {}),
+    silent: replyFollowUp(sample, finalText)?.kind === "rescue",
     cwd: base.environment.cwd,
     linked: [...sample.linked],
     ...(sample.devices ? { launchers: [...sample.devices.launchers] } : {}),
@@ -3985,8 +4016,10 @@ const main = Effect.gen(function* () {
         (placeholder) => `placeholder left unfilled: ${placeholder}`,
       );
       // Codex lists its tools differently; only Claude requests are checked for tool names.
+      // The explicit send mock precedes its server tool.
+      const gradingTools = testCase.setup.world?.kinLead ? new Set([...tools, "kin_send"]) : tools;
       const found = [
-        ...(sample.base.codex ? [] : caseProblems(forGrading(testCase), tools)),
+        ...(sample.base.codex ? [] : caseProblems(forGrading(testCase), gradingTools)),
         ...unfilled,
         ...kinCaseProblems(testCase, tools),
       ];

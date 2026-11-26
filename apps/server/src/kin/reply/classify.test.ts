@@ -29,7 +29,7 @@ const call = (toolName: string) =>
   toolLabel({ type: "dynamic_tool", toolName: `mcp__kin__${toolName}` } as OrchestrationV2TurnItem);
 
 it("gives every lead tool a status a person would say, never Kin's own vocabulary", () => {
-  const silent = ["kin_react", "kin_journal"];
+  const silent = ["kin_skip", "kin_react", "kin_journal"];
   const labels: Array<readonly [string, string | null]> = Object.keys(KinLeadToolkit.tools).map(
     (name) => [name, call(name)] as const,
   );
@@ -81,6 +81,10 @@ it("keeps short text before the question card only when a person started the tur
   expect(classifySegment(answer, "ask", true)).toBe("post");
   expect(classifySegment(answer, "ask", false)).toBe("note");
   expect(classifySegment(answer, "tool", true)).toBe("note");
+});
+
+it.each(["silent", "(no reply needed)"])("classifies %s as reply text", (body) => {
+  expect(classifySegment(body, "end")).toBe("post");
 });
 
 it("leaves blank lines and repeated text inside fenced code intact", () => {

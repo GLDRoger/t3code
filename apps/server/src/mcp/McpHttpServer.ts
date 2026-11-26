@@ -1321,6 +1321,10 @@ const withToolSpans = Effect.fn("McpHttpServer.withToolSpans")(function* <A, E, 
   return yield* registration.pipe(Effect.provideService(McpServer.McpServer, tracingServer));
 });
 
+export const EndsClaudeTurn = Context.Reference<boolean>("McpHttpServer.EndsClaudeTurn", {
+  defaultValue: () => false,
+});
+
 /** `McpServer.registerToolkit` advertises the full codec schema; agents get the compact one. */
 const withAdvertisedSchemas = Effect.fn("McpHttpServer.withAdvertisedSchemas")(function* <
   Tools extends Record<string, Tool.Any>,
@@ -1343,6 +1347,17 @@ const withAdvertisedSchemas = Effect.fn("McpHttpServer.withAdvertisedSchemas")(f
                 ...options.tool,
                 inputSchema: advertisedJsonSchema(tool),
               }),
+              handle: Context.get(tool.annotations, EndsClaudeTurn)
+                ? (payload) =>
+                    Effect.map(options.handle(payload), (result) =>
+                      !(result instanceof McpSchema.InputRequired) && result.isError !== true
+                        ? new McpSchema.CallToolResult({
+                            ...result,
+                            _meta: { ...result._meta, "claude/endTurn": true },
+                          })
+                        : result,
+                    )
+                : options.handle,
             },
       );
     }),

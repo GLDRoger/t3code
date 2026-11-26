@@ -57,38 +57,6 @@ export function setupFailureIn(
 const NOTE_MAX_CHARS = 160;
 /** Presence labels are cut to this length. */
 const LABEL_MAX_CHARS = 60;
-/** A notice wake-up's word for "nothing worth saying"; a segment containing it anywhere never posts. */
-export const SILENT_REPLY = "NO_REPLY";
-/** Models append the marker to a sentence about having nothing to say, so its presence anywhere wins. */
-const hasSilentReply = (text: string) => text.includes(SILENT_REPLY);
-/** Parenthetical asides a lead appends when it means to say nothing; they never reach a chat. */
-export const SILENCE_MARKERS = [
-  "no reply needed",
-  "no response needed",
-  "nothing to add",
-  "staying quiet",
-  "silent",
-] as const;
-
-const markerPattern = SILENCE_MARKERS.map((marker) => marker.replace(/ /g, "\\s+")).join("|");
-const trailingMarker = new RegExp(`[ \\t]*\\(\\s*(?:${markerPattern})\\s*\\)\\s*$`, "i");
-const markersOnly = new RegExp(`^(?:\\s*\\(\\s*(?:${markerPattern})\\s*\\))+\\s*$`, "i");
-const normalizePhrase = (text: string) => text.trim().toLowerCase().replace(/\s+/g, " ");
-
-/** The whole text is only silence markers; bare (unparenthesized) counts only as the whole text. */
-function isSilenceOnly(text: string): boolean {
-  const trimmed = text.trim();
-  if (trimmed === "") return false;
-  if ((SILENCE_MARKERS as ReadonlyArray<string>).includes(normalizePhrase(trimmed))) return true;
-  return markersOnly.test(trimmed);
-}
-
-/** Removes silence markers that end a reply, as the last parenthetical or on their own final line. */
-export function stripTrailingSilenceMarker(text: string): string {
-  let result = text;
-  while (trailingMarker.test(result)) result = result.replace(trailingMarker, "").trimEnd();
-  return result;
-}
 
 /** Kin asks this once when a turn owed words and ended with none (`KinReplyBridge.complete`). */
 export const RESCUE_PROMPT =
@@ -185,7 +153,7 @@ export const withoutAsked = (text: string, questions: ReadonlyArray<string>) => 
 
 /** What follows a segment in its run. */
 export type SegmentNext = "ask" | "tool" | "text" | "end";
-export type SegmentClass = "post" | "note" | "silent" | "empty";
+export type SegmentClass = "post" | "note" | "empty";
 
 const isStructured = (text: string) =>
   text.length > NOTE_MAX_CHARS ||
@@ -204,7 +172,6 @@ export function classifySegment(
 ): SegmentClass | null {
   const trimmed = text.trim();
   if (trimmed === "") return "empty";
-  if (hasSilentReply(trimmed) || isSilenceOnly(trimmed)) return "silent";
   if (isStructured(trimmed)) return "post";
   // Unknown yet: a short segment waits for the next item or the run's end.
   if (next === null) return null;
@@ -230,8 +197,11 @@ const TOOL_TYPES: ReadonlySet<OrchestrationV2TurnItem["type"]> = new Set([
 export const isToolItem = (item: OrchestrationV2TurnItem) => TOOL_TYPES.has(item.type);
 
 const ASK_TOOL = /(?:^|__|\.)kin_ask$/;
-export const toolNext = (item: OrchestrationV2TurnItem): "ask" | "tool" =>
-  item.type === "dynamic_tool" && ASK_TOOL.test(item.toolName ?? "") ? "ask" : "tool";
+const SKIP_TOOL = /(?:^|__|\.)kin_skip$/;
+export const replyNextForTool = (name: string): "ask" | "tool" | "end" =>
+  SKIP_TOOL.test(name) ? "end" : ASK_TOOL.test(name) ? "ask" : "tool";
+export const toolNext = (item: OrchestrationV2TurnItem) =>
+  replyNextForTool(item.type === "dynamic_tool" ? (item.toolName ?? "") : "");
 
 // The presence line's only words, as a colleague would say them: fixed text, never tool
 // arguments or model text, and never a tool's name or how Kin works inside.
@@ -282,7 +252,7 @@ const TOOL_LABELS: ReadonlyArray<readonly [RegExp, string | null]> = [
   [/(?:^|__|\.)kin_github_\w+$/, "Checking GitHub"],
   [/(?:^|__|\.)kin_chat_read$/, "Reading the chat"],
   [/(?:^|__|\.)kin_chat_post$/, "Writing"],
-  [/(?:^|__|\.)(?:kin_react|kin_journal)$/, null],
+  [/(?:^|__|\.)(?:kin_react|kin_journal|kin_skip)$/, null],
   [
     /(?:^|__|\.)(?:records_query|record_get|client_read|pipeline_read|deal_stages|dates_query)$/,
     "Reading records",
