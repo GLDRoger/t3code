@@ -221,3 +221,10 @@ export function kinShellAllowsPermission(input: {
     new URL(input.requestingUrl).origin === input.hostOrigin
   );
 }
+
+export function kinShellAllowsReveal(input: {
+  readonly frameOrigin: string;
+  readonly hostOrigin: string | null;
+}): boolean {
+  return input.hostOrigin !== null && input.frameOrigin === input.hostOrigin;
+}

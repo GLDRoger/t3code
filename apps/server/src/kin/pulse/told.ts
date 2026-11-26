@@ -20,6 +20,7 @@ const DUE_SENSES = new Set<KinPulseFact["sense"]>([
   "meeting_soon",
   "retainer_due",
   "renewal_due",
+  "bill_due",
 ]);
 
 const MAX_FAILED_ATTEMPTS = 3;
@@ -32,7 +33,9 @@ const unitMs = (unit: string) => (unit === "hours" ? HOUR_MS : unit === "days" ?
 /** A list entry coming due (`entry_late:<key>:soon=<due>`), told as a task due soon is. */
 export const entryDueSoon = (fact: Pick<KinPulseFact, "sense" | "key">) =>
   fact.sense === "entry_late" && fact.key.includes(":soon=");
-const comingDue = (fact: KinPulseFact) => DUE_SENSES.has(fact.sense) || entryDueSoon(fact);
+const comingDue = (fact: KinPulseFact) =>
+  (DUE_SENSES.has(fact.sense) && (fact.sense !== "bill_due" || fact.key.includes(":soon="))) ||
+  entryDueSoon(fact);
 
 /** The band `hours` late falls in, in days, told again at each: 0, then 3 days, 7, then weekly. */
 export const lateBandDays = (hours: number) => {

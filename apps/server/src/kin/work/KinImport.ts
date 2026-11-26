@@ -734,6 +734,9 @@ const make = Effect.gen(function* () {
             return value === undefined ? [] : [[key, value] as const];
           }),
         ),
+        ...(spec.accountsForTax === undefined
+          ? {}
+          : { accountsForTax: String(spec.accountsForTax) }),
         ...extra,
       };
       const lookedAfter = yield* lookerAfter(spec.owner);

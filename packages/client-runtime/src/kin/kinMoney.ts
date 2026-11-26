@@ -39,6 +39,9 @@ export const KIN_MONEY = {
   loadFailed: "Couldn't load Money",
   owed: "Owed to us",
   overdue: "Overdue",
+  toPay: "To pay",
+  dueSoon: "Due within 7 days",
+  late: (count: number) => `${count} late`,
   byClient: "Who owes us",
   noClient: "No client",
   nothingOwed: "Nobody owes you anything right now.",
@@ -97,11 +100,12 @@ export const KIN_MONEY = {
 };
 
 /**
- * Money's blocks, top to bottom: who owes us, then this month against last, ahead of what is
- * suggested, the next 30 days and cash; the folded rows last.
+ * Money's blocks, top to bottom: who owes us and what we owe, then this month against last, ahead
+ * of what is suggested, the next 30 days and cash; the folded rows last.
  */
 export const KIN_MONEY_BLOCKS = [
   "owed",
+  "toPay",
   "month",
   "suggested",
   "outlook",
@@ -186,6 +190,9 @@ export interface KinMoneyView {
   readonly suggestedMore: ReadonlyArray<{ readonly label: string; readonly open: KinListOpen }>;
   readonly owed: KinMoneyFigure;
   readonly overdue: KinMoneyFigure;
+  /** Kept To-pay expenses; null when there are none or from an older host. */
+  readonly toPay: KinMoneyFigure | null;
+  readonly dueSoon: KinMoneyFigure | null;
   readonly clients: ReadonlyArray<KinMoneyClientView>;
   /** The owing clients past those sent, as one row; null with none, and from an older host. */
   readonly clientsMore: string | null;
@@ -260,11 +267,14 @@ export function kinMoneyView(
     totals.find((money) => money.currency === currency)?.minor ?? 0;
   const nothing =
     summary.owed.invoices === 0 &&
+    summary.toPay === undefined &&
     summary.upcomingTotal === 0 &&
     currencies.length === 0 &&
     summary.receivedThisFinancialYear.length === 0 &&
     summary.spentThisFinancialYear.length === 0 &&
     (summary.suggested ?? []).length === 0;
+  const bills = summary.toPay;
+  const openBills = open(expenses, { show: "open" });
   return {
     empty: nothing && !lists.some((def) => !def.builtIn),
     suggested: (summary.suggested ?? []).map(({ record, listName }) => ({
@@ -306,6 +316,33 @@ export function kinMoneyView(
       late: summary.owed.overdueInvoices > 0,
       open: open(invoices, { ...owing, late: true }),
     },
+    toPay:
+      bills === undefined
+        ? null
+        : {
+            id: "to-pay",
+            label: KIN_MONEY.toPay,
+            lines: lines(bills.total),
+            note: bills.bills === 0 ? null : kinCount(bills.bills, "bill"),
+            late: false,
+            open: openBills,
+          },
+    dueSoon:
+      bills === undefined
+        ? null
+        : {
+            id: "due-soon",
+            label: KIN_MONEY.dueSoon,
+            lines: lines(bills.dueSoon),
+            note:
+              bills.lateBills > 0
+                ? KIN_MONEY.late(bills.lateBills)
+                : bills.dueSoonBills === 0
+                  ? null
+                  : kinCount(bills.dueSoonBills, "bill"),
+            late: bills.lateBills > 0,
+            open: openBills,
+          },
     clients: summary.owed.byClient.map((client) => ({
       key: client.party?.key ?? "none",
       // The no-client group names the typed names it holds, when the host sends them.

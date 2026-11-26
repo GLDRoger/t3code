@@ -29,6 +29,17 @@ features:
       - packages/client-runtime/src/kin/kinChatListRows.test.ts
       - apps/server/src/kin/chat/KinChatService.test.ts
 
+  - id: chat-desktop-notifications
+    name: Desktop notices for messages and cards while Kin is not in front
+    tab: chats
+    web: [home]
+    roles: { owner: web, co_owner: web, lead: web, member: web }
+    note: Electron only. The page follows kin.push.desktopNotices on the current host; a plain browser keeps its own alerts.
+    proof:
+      - packages/client-runtime/src/kin/kinMessageAlerts.test.ts
+      - apps/server/src/kin/push/KinPushSender.test.ts
+      - apps/desktop/src/kin/kinDesktopLink.test.ts
+
   - id: chat-agent
     name: Talk to an agent
     tab: chats
@@ -1106,7 +1117,8 @@ features:
     note: >-
       The owner level, and a project's lead for that project's docs, change a section by hand
       (kin.docs.editSection); history keeps both versions. Anyone else's Suggest a change opens
-      their chat with the team agent, the doc attached.
+      their chat with the team agent, the doc attached. A teammate writing a doc chooses who reads
+      it (kin.docs.readers) and owners may widen it.
     tools: [doc_create, doc_read, doc_edit, doc_rewrite, doc_link]
     proof:
       - .agents/skills/verify-kin/scripts/member-suggests-playbook.sh

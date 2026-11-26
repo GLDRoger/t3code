@@ -626,6 +626,8 @@ export function KinMoneyArea(props: Shared) {
     [
       ...summary.owed.total,
       ...summary.owed.overdue,
+      ...(summary.toPay?.total ?? []),
+      ...(summary.toPay?.dueSoon ?? []),
       ...summary.received.thisMonth,
       ...summary.received.lastMonth,
       ...summary.spent.thisMonth.total,
@@ -639,6 +641,7 @@ export function KinMoneyArea(props: Shared) {
   const missing = kinMissingRates(
     [
       ...summary.owed.total,
+      ...(summary.toPay?.total ?? []),
       ...summary.spentThisFinancialYear,
       ...summary.receivedThisFinancialYear,
     ],
@@ -696,6 +699,20 @@ export function KinMoneyArea(props: Shared) {
         </ListSection>
       </View>
     ),
+    toPay:
+      view.toPay === null || view.dueSoon === null ? null : (
+        <View className="gap-4">
+          <View className="flex-row gap-4 px-2">
+            <Figure figure={view.toPay} onOpen={openList} estimates={estimates} />
+            <Figure figure={view.dueSoon} onOpen={openList} estimates={estimates} />
+          </View>
+          {!invoicesOn && missing.length > 0 ? (
+            <View className="px-2">
+              <KinSetRateLink {...target} currencies={missing} />
+            </View>
+          ) : null}
+        </View>
+      ),
     month: (
       <KinFoldSection
         title={view.monthLabel}

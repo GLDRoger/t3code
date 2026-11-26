@@ -26,6 +26,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
@@ -48,6 +49,7 @@ import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KinApnsTransport, type KinApnsPush, type KinApnsResult } from "./Apns.ts";
 import { KinFcmTransport, type KinFcmPush, type KinFcmResult } from "./Fcm.ts";
+import * as DesktopNotices from "./KinDesktopNotices.ts";
 import { KinPushDevices, type KinPushCaller } from "./KinPushDevices.ts";
 import { KinPushPresence } from "./KinPushPresence.ts";
 import * as Devices from "./KinPushDevices.ts";
@@ -126,7 +128,9 @@ const buildOn = <A, E, R>(
   fcm: ReturnType<typeof makeFcm> = makeFcm(),
 ) =>
   Sender.layer.pipe(
-    Layer.provideMerge(Layer.mergeAll(Devices.layer, layerTrusting, apns.layer, fcm.layer)),
+    Layer.provideMerge(
+      Layer.mergeAll(Devices.layer, layerTrusting, apns.layer, fcm.layer, DesktopNotices.layer),
+    ),
     Layer.provideMerge(ApproverKeys.layer),
     Layer.provide(MemoryCache.layer),
     Layer.provideMerge(Repository.layer),
@@ -1477,6 +1481,9 @@ describe("KinPushSender", () => {
         platform: "ios",
         apsEnvironment: "development",
       });
+      const desktop = yield* DesktopNotices.KinDesktopNotices;
+      const laptop = yield* desktop.listen(orgId, member, AuthSessionId.make("sess-laptop"));
+      const other = yield* desktop.listen(orgId, member, AuthSessionId.make("sess-member"));
       const linked = { _tag: "device", orgId, sessionId: "sess-laptop" } as const;
       assert.deepStrictEqual(yield* notify(linked), {
         status: "ready",
@@ -1493,6 +1500,11 @@ describe("KinPushSender", () => {
       assert.equal(
         (push!.payload as { body: { deepLink: string } }).body.deepLink,
         "/kin/env_kin/org_01/people/h_member/devices",
+      );
+      assert.deepStrictEqual(yield* Queue.clear(laptop), []);
+      assert.deepStrictEqual(
+        (yield* Queue.clear(other)).map(({ title, ring }) => [title, ring]),
+        [["New device linked", true]],
       );
       // A device already removed again announces nothing.
       apns.sent.length = 0;
@@ -2438,20 +2450,73 @@ describe("KinPushSender", () => {
     }).pipe(Effect.provide(build(apns)));
   });
 
-  it.effect("sends nothing without an APNs key", () => {
-    const apns = makeApns("unconfigured");
-    return Effect.gen(function* () {
-      const { notify, sql } = yield* seed;
-      const messageId = yield* postMessage(sql, { personId: owner, memberId: "m_owner" });
-      assert.deepStrictEqual(yield* notify({ _tag: "message", orgId, messageId }), {
-        status: "unconfigured",
-        sent: 0,
-        suppressed: 0,
-        failed: 0,
-      });
-      assert.strictEqual(apns.sent.length, 0);
-    }).pipe(Effect.provide(build(apns)));
-  });
+  it.effect(
+    "sends desktop notices without phone gateways, with quiet hours, mutes and rationing",
+    () => {
+      const apns = makeApns("unconfigured");
+      const fcm = makeFcm("unconfigured");
+      return Effect.gen(function* () {
+        const { notify, sql } = yield* seed;
+        const messageId = yield* postMessage(sql, { personId: owner, memberId: "m_owner" });
+        assert.deepStrictEqual(yield* notify({ _tag: "message", orgId, messageId }), {
+          status: "unconfigured",
+          sent: 0,
+          suppressed: 0,
+          failed: 0,
+        });
+        const desktop = yield* DesktopNotices.KinDesktopNotices;
+        const queue = yield* desktop.listen(orgId, owner, AuthSessionId.make("sess-rhea-desktop"));
+        const teammate = yield* desktop.listen(orgId, member, AuthSessionId.make("sess-zoya"));
+        const say = Effect.fn("test.say")(function* () {
+          const messageId = yield* postMessage(sql, { agentMemberId: "m_fin_dm" }, "posted", {
+            chatId: "chat_dm",
+            body: "The Tidewater Freight draft is ready.",
+          });
+          yield* notify({ _tag: "message", orgId, messageId });
+          return yield* Queue.clear(queue);
+        });
+        assert.deepStrictEqual(yield* say(), [
+          {
+            title: "Finance · Update",
+            body: "The Tidewater Freight draft is ready.",
+            ring: true,
+            data: {
+              kin: 1,
+              orgId,
+              chatId: KinChatId.make("chat_dm"),
+              deepLink: "/kin/env_kin/org_01/chats/chat_dm",
+            },
+          },
+        ]);
+        assert.deepStrictEqual(yield* Queue.clear(teammate), []);
+        assert.deepStrictEqual(yield* say(), []);
+
+        yield* TestClock.setTime(Date.parse("2026-11-08T03:00:00Z"));
+        assert.deepStrictEqual(
+          (yield* say()).map(({ ring }) => ring),
+          [false],
+        );
+        yield* sql`UPDATE kin_chat_members SET muted_until = '2026-12-01T00:00:00.000Z'
+        WHERE member_id = 'm_owner_dm'`;
+        assert.deepStrictEqual(yield* say(), []);
+        yield* TestClock.adjust("20 hours");
+        yield* sql`UPDATE kin_chat_members SET muted_until = NULL WHERE member_id = 'm_owner_dm'`;
+        // Ring rationing happens after recipient selection and before desktop delivery.
+        yield* sql`CREATE TEMP TRIGGER leave_chat_at_ring AFTER UPDATE ON kin_push_rings
+          WHEN NEW.org_id = 'org_01' AND NEW.person_id = 'h_owner'
+          BEGIN
+            UPDATE kin_chat_members SET left_at = '2026-11-08T23:00:00.000Z'
+            WHERE member_id = 'm_owner_dm';
+          END`;
+        assert.deepStrictEqual(yield* say(), []);
+        const [left] = yield* sql<{ left_at: string | null }>`SELECT left_at
+          FROM kin_chat_members WHERE member_id = 'm_owner_dm'`;
+        assert.equal(left?.left_at, "2026-11-08T23:00:00.000Z");
+        assert.strictEqual(apns.sent.length, 0);
+        assert.strictEqual(fcm.sent.length, 0);
+      }).pipe(Effect.provide(build(apns, fcm)));
+    },
+  );
 });
 
 describe("kinTasksSubject", () => {
@@ -3361,6 +3426,8 @@ describe("KinPushSender withdrawals", () => {
       yield* pairChat(sql);
       const from = { personId: member, memberId: "m_priya_pair" };
       const chatId = KinChatId.make("chat_pair");
+      const desktop = yield* DesktopNotices.KinDesktopNotices;
+      const queue = yield* desktop.listen(orgId, owner, AuthSessionId.make("sess-rhea-desktop"));
       const shown = () =>
         apns.sent
           .filter((push) => push.token === ownerPhone && !push.background)
@@ -3380,10 +3447,16 @@ describe("KinPushSender withdrawals", () => {
       yield* notify({ _tag: "message", orgId, messageId: b });
       apns.sent.length = 0;
 
+      assert.deepStrictEqual(
+        (yield* Queue.clear(queue)).map(({ body }) => body),
+        ["The deck is ready", "Printer says Tuesday"],
+      );
+
       // Put right: the banner shows the new words, with no sound.
       yield* sql`UPDATE kin_messages SET body = 'Printer says Wednesday' WHERE message_id = ${b}`;
       yield* notify({ _tag: "restate", orgId, chatId, messageId: b });
       assert.deepStrictEqual(shown(), [["Printer says Wednesday", null, 3]]);
+      assert.deepStrictEqual(yield* Queue.clear(queue), []);
       // A message the banner no longer shows changes nothing on the phone.
       apns.sent.length = 0;
       yield* notify({ _tag: "restate", orgId, chatId, messageId: a });
@@ -3394,6 +3467,7 @@ describe("KinPushSender withdrawals", () => {
       yield* sql`UPDATE kin_messages SET status = 'deleted' WHERE message_id = ${b}`;
       yield* notify({ _tag: "restate", orgId, chatId, messageId: b });
       assert.deepStrictEqual(shown(), [["The deck is ready", null, 4]]);
+      assert.deepStrictEqual(yield* Queue.clear(queue), []);
       // With nothing older unread, it goes.
       apns.sent.length = 0;
       yield* sql`UPDATE kin_messages SET status = 'deleted' WHERE message_id = ${a}`;

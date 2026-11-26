@@ -4,6 +4,8 @@ import {
   type ExpenseCandidate,
   type InvoiceCandidate,
   matchRows,
+  overOffer,
+  rateOffer,
   type PartnerCandidate,
   suggest,
   vendorOf,
@@ -66,6 +68,41 @@ const match = (
   });
 
 describe("statement matching", () => {
+  it.each([
+    ["INV-12", 45],
+    ["Tidewater Freight", 40],
+    ["Other transfer", undefined],
+  ] as const)("ranks an overpayment citing %s", (description, score) => {
+    const credit = row({ description, amountMinor: 220_000 });
+    const owed = invoice({ amountMinor: 100_000, number: "INV-12", client: "Tidewater Freight" });
+    const offer = overOffer(credit, owed, "INR");
+    assert.strictEqual(offer?.candidate.score, score);
+    assert.strictEqual(offer?.candidate.fit, score === undefined ? undefined : "over");
+    assert.isEmpty(match([credit], [owed])[0]!.candidates);
+  });
+
+  it.each([
+    ["INV-12", "2026-10-05", "INR", 35],
+    ["Tidewater Freight", "2026-10-05", "INR", 30],
+    ["Tidewater Freight INV-12", "2026-10-05", "INR", 65],
+    ["Other transfer", "2026-10-05", "INR", undefined],
+    ["Tidewater Freight INV-12", "2026-09-29", "INR", undefined],
+    ["Tidewater Freight INV-12", "2026-10-05", "USD", undefined],
+  ] as const)("ranks a rate-only credit %s on %s in %s", (description, date, currency, score) => {
+    const credit = row({ description, date, amountMinor: 8_350_000 });
+    const owed = invoice({
+      currency: "USD",
+      amountMinor: 100_000,
+      number: "INV-12",
+      client: "Tidewater Freight",
+    });
+    const offer = rateOffer(credit, owed, currency);
+    assert.strictEqual(offer?.candidate.score, score);
+    assert.strictEqual(offer?.candidate.fit, score === undefined ? undefined : "rate");
+    assert.strictEqual(offer?.rate, score === undefined ? undefined : "83.500000");
+    assert.isEmpty(match([credit], [owed])[0]!.candidates);
+  });
+
   it.each([
     {
       name: "a credit matching a signed refund, not the same positive expense",

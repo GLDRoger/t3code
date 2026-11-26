@@ -24,6 +24,7 @@ import {
   kinTasksBlock,
   kinSnoozeDays,
 } from "./kinAttention.ts";
+import { kinRateDay } from "./kinCurrency.ts";
 import type { KinNeedsYouRow } from "./kinWorkHome.ts";
 
 // Invented projects, clients and figures only.
@@ -385,6 +386,35 @@ describe("kinAttention", () => {
     expect(
       kinGoalView({ ...goal, currency: "KWD", target: 2_000_000, current: 1_234_567 }, now).figure,
     ).toBe("KWD\u00a01,235 of KWD\u00a02,000");
+    expect(view).toMatchObject({ notCounted: null, about: null });
+    const usd = { ...goal, currency: "USD", target: 40_000, current: 10_000 };
+    const mixed = kinGoalView(
+      {
+        ...usd,
+        notCounted: [{ currency: "EUR", received: { minor: 76_800, currency: "EUR" } }],
+        about: { total: { minor: 1_30_000_00, currency: "INR" }, rateDays: ["2026-11-12"] },
+      },
+      now,
+    );
+    expect(mixed).toMatchObject({
+      figure: kinGoalView(usd, now).figure,
+      notCounted: "+ \u20ac768 not counted in this USD goal",
+      about: `About \u20b91,30,000 in all \u00b7 approximate, at the rate of a payment on ${kinRateDay("2026-11-12")}`,
+    });
+    expect(
+      kinGoalView(
+        {
+          ...usd,
+          about: {
+            total: { minor: 1_30_000_00, currency: "INR" },
+            rateDays: ["2026-11-03", "2026-11-12"],
+          },
+        },
+        now,
+      ).about,
+    ).toBe(
+      `About \u20b91,30,000 in all \u00b7 approximate, at the rates of payments on ${kinRateDay("2026-11-03")} and ${kinRateDay("2026-11-12")}`,
+    );
   });
 
   it("starts a new goal on today in the company's zone, wherever the device is", () => {

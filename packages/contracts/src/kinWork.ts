@@ -451,6 +451,10 @@ export type KinRecordAfterReading = typeof KinRecordAfterReading.Type;
 
 /** An entry with everything the entry sheet shows. */
 export const KinRecordDetail = Schema.Struct({
+  creditOffer: Schema.optionalKey(
+    Schema.Struct({ receipt: KinRecordKey, amount: KinMoney, receivedOn: KinDay }),
+  ),
+  credited: Schema.optionalKey(KinMoney),
   ...KinRecord.fields,
   notes: KinText,
   /** A task's milestone; absent with none, and from older hosts. */
@@ -1205,6 +1209,7 @@ export const KinPartyDetail = Schema.Struct({
   address: Schema.NullOr(KinText),
   /** Its GSTIN, when it has one; its invoices are taxed by its state. */
   gstin: Schema.NullOr(KinText),
+  accountsForTax: Schema.optional(Schema.Boolean),
   /** Where it is supplied: an Indian state, or a country outside India for an export. */
   placeOfSupply: Schema.NullOr(KinText),
   /** Which fields here are sensitive whatever `sensitive` says. */
@@ -1364,6 +1369,9 @@ export type KinPartyCan = typeof KinPartyCan.Type;
 
 /** The client page. `weOwe` is soonest due first; `theyOwe` is overdue first, then soonest. */
 export const KinPartyPage = Schema.Struct({
+  credit: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ key: KinRecordKey, amount: KinMoney, receivedOn: KinDay })),
+  ),
   party: KinPartyDetail,
   /** Active first, then by name. */
   contacts: Schema.Array(KinContact),
@@ -1598,6 +1606,8 @@ export const KinPartyCreateInput = Schema.Struct({
   terms: Schema.optional(Notes),
   address: Schema.optional(Address),
   gstin: Schema.optional(KinGstin),
+  accountsForTax: Schema.optional(Schema.Boolean),
+  taxNumber: Schema.optional(Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(100)))),
   /** A state from `KIN_GST_STATES`, or a country for an export. */
   placeOfSupply: Schema.optional(PlaceOfSupply),
   /** Labels everything pointing at it sensitive too. */
@@ -1630,6 +1640,8 @@ export const KinPartyUpdateInput = Schema.Struct({
   address: Schema.optional(Schema.NullOr(Address)),
   /** `null` clears these two. */
   gstin: Schema.optional(Schema.NullOr(KinGstin)),
+  accountsForTax: Schema.optional(Schema.Boolean),
+  taxNumber: Schema.optional(Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(100)))),
   placeOfSupply: Schema.optional(Schema.NullOr(PlaceOfSupply)),
   sensitive: Schema.optional(Schema.Boolean),
   active: Schema.optional(Schema.Boolean),

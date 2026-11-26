@@ -23,6 +23,7 @@ import { KinApprovalCard } from "./KinApprovalCard";
 import { KinBillBatchCard } from "./KinBillBatchCard";
 import { KinChart } from "./KinChart";
 import { KinChoiceCard } from "./KinChoiceCard";
+import { KinCountryCard } from "./KinCountryCard";
 import { KinDeferralCard } from "./KinDeferralCard";
 import { KinDigestCard } from "./KinDigestCard";
 import { KinDocCard } from "./KinDocCard";
@@ -89,6 +90,8 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
           viewerPersonId={props.viewerPersonId}
         />
       );
+    case "country":
+      return <KinCountryCard country={view.country} environmentId={props.environmentId} />;
     case "chart":
       return <KinChartCard view={view.chart} />;
     case "visual":
