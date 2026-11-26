@@ -4261,10 +4261,10 @@ const make = Effect.gen(function* () {
       const chat = yield* requireRecord(repo.getChat(member));
       const withSql = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         effect.pipe(Effect.provideService(SqlClient.SqlClient, sql));
-      // In the owner's direct chat, a yes/no on the lead's latest message and a 👎 anywhere wake
-      // the lead once. A changed answer on the message that last woke it (a yes withdrawn, or yes
-      // to no and back) wakes it again, past the cooldown, a few times at most. Every other
-      // reaction is feedback it reads on its next wake-up.
+      // In the owner's direct chat, a yes/no on the lead's latest message (a yes only while
+      // waiting) and a 👎 anywhere wake the lead once. A changed answer (a yes withdrawn, or yes
+      // to no and back) on the message that last woke the lead wakes it again, past the cooldown,
+      // a few times at most. Every other reaction is feedback it reads on its next wake-up.
       const eligible =
         !answered &&
         identity._tag === "person" &&
@@ -4272,6 +4272,7 @@ const make = Effect.gen(function* () {
         (yield* ownerSide(identity, member)) &&
         message.author._tag === "agent" &&
         nowMs - Date.parse(message.createdAt) < SOFT_REPLY_WINDOW_MS;
+      const personId = identity._tag === "person" ? identity.personId : null;
       const answer = Reactions.reactionAnswer(request.emoji);
       const past = eligible ? yield* withSql(Reactions.reactionWake(message)) : undefined;
       const woke =
@@ -4279,7 +4280,16 @@ const make = Effect.gen(function* () {
         (past === undefined
           ? request.on &&
             (request.emoji === Reactions.KIN_CLARIFY_REACTION ||
-              (answer !== null && (yield* isLatestLeadMessage(message)))) &&
+              (answer !== null &&
+                (yield* isLatestLeadMessage(message)) &&
+                (answer === "no" ||
+                  (widget?.type === "choice" && widget.closedAt === null) ||
+                  (yield* sql`SELECT 1 FROM kin_waiting
+                    WHERE org_id = ${key.orgId} AND chat_id = ${key.chatId}
+                      AND message_id = ${key.messageId} AND person_id = ${personId}
+                      AND resolved_at IS NULL LIMIT 1`.pipe(
+                    Effect.mapError(toPersistenceSqlError("KinChatService.react")),
+                  )).length > 0))) &&
             !(yield* withSql(Reactions.recentlyWoke({ ...key, now: nowMs })))
           : past.latest &&
             past.wakes < Reactions.KIN_REACTION_WAKES_PER_MESSAGE &&

@@ -75,6 +75,8 @@ import * as Identity from "./KinIdentity.ts";
 import * as Service from "./KinChatService.ts";
 import * as VisualHosts from "./KinVisualHosts.ts";
 import * as Presence from "../reply/KinPresence.ts";
+import * as ChatWake from "../lead/ChatWake.ts";
+import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as LevelGate from "../lead/LevelGate.ts";
 import * as Reach from "../lead/Reach.ts";
 import {
@@ -224,15 +226,17 @@ const kinRowCounts = Effect.gen(function* () {
     counts[name] = (yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM ${sql(name)}`)[0]!.n;
   return counts;
 });
-const identityLayer = Identity.KinIdentity.layer.pipe(
-  Layer.provide(
-    Layer.succeed(Identity.KinIdentityConfig, {
-      orgName: "Kin",
-      ownerHandle: "owner",
-      ownerDisplayName: "Owner",
-    }),
-  ),
-);
+const namedIdentityLayer = (ownerDisplayName: string) =>
+  Identity.KinIdentity.layer.pipe(
+    Layer.provide(
+      Layer.succeed(Identity.KinIdentityConfig, {
+        orgName: "Kin",
+        ownerHandle: "owner",
+        ownerDisplayName,
+      }),
+    ),
+  );
+const identityLayer = namedIdentityLayer("Owner");
 const session: AuthenticatedSession = {
   sessionId: Schema.decodeSync(AuthSessionId)("session"),
   subject: "browser",
@@ -266,10 +270,15 @@ const state = Schema.decodeSync(KinTaskCardState)({
   lastError: null,
   updatedAt: timestamp,
 });
-const seed = Effect.fn("test.seed")(function* (notice = false) {
+const seed = Effect.fn("test.seed")(function* (
+  notice = false,
+  names?: { readonly owner: string; readonly agent: string },
+) {
   const repo = yield* Repository.KinChatRepository;
   const service = yield* Service.KinChatService;
-  const identity = yield* Identity.KinIdentity.pipe(Effect.provide(identityLayer));
+  const identity = yield* Identity.KinIdentity.pipe(
+    Effect.provide(names === undefined ? identityLayer : namedIdentityLayer(names.owner)),
+  );
   yield* pairSession(session.sessionId);
   const [person] = yield* identity.resolve(session);
   assert.isDefined(person);
@@ -277,7 +286,7 @@ const seed = Effect.fn("test.seed")(function* (notice = false) {
     orgId: person.orgId,
     agentId,
     ownerPersonId: person.personId,
-    displayName: "Lead",
+    displayName: names?.agent ?? "Lead",
     role: "lead",
     createdAt: timestamp,
   });
@@ -285,7 +294,7 @@ const seed = Effect.fn("test.seed")(function* (notice = false) {
   const chat = yield* service.createDirect(person, { orgId: person.orgId, agentId });
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json, worker_projects_json, owner_chat_id)
-    VALUES (${agentId}, ${person.orgId}, 'Lead', 0, '{}', '[]', ${chat.chatId})`;
+    VALUES (${agentId}, ${person.orgId}, ${names?.agent ?? "Lead"}, 0, '{}', '[]', ${chat.chatId})`;
   const prompt = notice
     ? undefined
     : yield* service.send(person, {
@@ -1499,7 +1508,7 @@ describe("KinChatService", () => {
   );
 
   it.effect(
-    "takes reactions as replies: 👍 answers a yes/no card once, wakes on a yes/no to the lead's latest message or a 👎, one per person per message, refuses privileged cards",
+    "takes reactions as replies: 👍 answers a yes/no card once, wakes on an answer to the lead's latest question or a 👎, one per person per message, refuses privileged cards",
     () =>
       Effect.gen(function* () {
         const { repo, service, person, agent, chat } = yield* seed();
@@ -1553,8 +1562,8 @@ describe("KinChatService", () => {
         const latest = yield* service.send(agent, {
           chatId: chat.chatId,
           clientMessageId: "lead-latest",
-          body: "Merged. I can tag the release too if you want.",
-          intent: "answer",
+          body: "Tag the release too?",
+          intent: "question",
         });
         const mine = (messageId: KinMessageId, kind: "person" | "agent" = "person") =>
           sql<{ emoji: string }>`SELECT r.emoji FROM kin_reactions r
@@ -1567,7 +1576,7 @@ describe("KinChatService", () => {
         yield* react(latest.messageId, "🎉");
         yield* react(latest.messageId, "❤️");
         assert.deepStrictEqual(yield* woke(), []);
-        // A yes on the latest message answers it, question mark or not, replacing the ❤️.
+        // A yes on the latest question replaces the ❤️.
         yield* react(latest.messageId, "👍");
         assert.deepStrictEqual(yield* mine(latest.messageId), [{ emoji: "👍" }]);
         assert.deepStrictEqual(yield* woke(), [{ messageId: latest.messageId, emoji: "👍" }]);
@@ -1704,6 +1713,119 @@ describe("KinChatService", () => {
       }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("a thumbs-up wakes the agent only on a message it waits on", () =>
+    Effect.gen(function* () {
+      const { repo, service, person, agent, chat } = yield* seed(false, {
+        owner: "Rhea",
+        agent: "Finance",
+      });
+      const sql = yield* SqlClient.SqlClient;
+      const hub = yield* Hub.KinChatHub;
+      const drained = yield* Deferred.make<void>();
+      const marker = KinMessageId.make("reaction-queue-drained");
+      yield* Layer.build(
+        ChatWake.layer.pipe(
+          Layer.provide(
+            Layer.succeed(Hub.KinChatHub, {
+              ...hub,
+              subscribeAll: hub.subscribeAll.pipe(
+                Effect.map(
+                  Stream.tap((event) =>
+                    event.type === "message.posted" && event.message.messageId === marker
+                      ? Deferred.succeed(drained, undefined)
+                      : Effect.void,
+                  ),
+                ),
+              ),
+            }),
+          ),
+          Layer.provide(KinEventQueue.layer),
+        ),
+      );
+      const events = yield* Stream.toQueue(
+        (yield* hub.subscribeForViewer(person, chat.chatId)).pipe(
+          Stream.filter((event) => event.type === "reaction.updated"),
+        ),
+        { capacity: "unbounded" },
+      );
+      const react = (messageId: KinMessageId, emoji: KinReactionEmoji) =>
+        service.react(person, { messageId, emoji, on: true });
+      const plain = yield* service.send(agent, {
+        chatId: chat.chatId,
+        clientMessageId: "invoice-sent",
+        body: "Done: INV-12 is sent to Tidewater Freight.",
+        intent: "answer",
+      });
+      const reaction = yield* react(plain.messageId, "👍");
+      assert.deepInclude(yield* Queue.take(events), { reaction, woke: false });
+      const history = yield* service.history(person, {
+        chatId: chat.chatId,
+        beforeSeq: plain.seq + 1,
+        limit: 10,
+      });
+      assert.deepStrictEqual(history.reactions, [reaction]);
+
+      const question = yield* service.send(agent, {
+        chatId: chat.chatId,
+        clientMessageId: "send-receipt",
+        body: "Send the receipt to Tidewater Freight?",
+        intent: "question",
+      });
+      assert.isTrue(
+        (yield* repo.listOpenWaiting(person)).some((item) => item.messageId === question.messageId),
+      );
+      yield* react(question.messageId, "👍");
+
+      yield* TestClock.adjust("30 seconds");
+      const card = yield* service.ask(agent, {
+        chatId: chat.chatId,
+        clientMessageId: "receipt-delivery",
+        question: "How should Tidewater Freight receive the receipt?",
+        options: [{ label: "Email" }, { label: "Post" }, { label: "Hold" }],
+      });
+      const cardWaiting = (yield* repo.listOpenWaiting(person)).find(
+        (item) => item.messageId === card.messageId,
+      );
+      assert.isDefined(cardWaiting);
+      yield* service.resolveWaiting(agent, {
+        waitingId: cardWaiting.waitingId,
+        resolution: "done",
+      });
+      yield* react(card.messageId, "👍");
+
+      yield* TestClock.adjust("30 seconds");
+      yield* react(plain.messageId, "👎");
+      yield* TestClock.adjust("30 seconds");
+      const latest = yield* service.send(agent, {
+        chatId: chat.chatId,
+        clientMessageId: "receipt-recorded",
+        body: "The receipt is recorded.",
+        intent: "answer",
+      });
+      yield* react(latest.messageId, "❌");
+
+      yield* hub.publish({
+        type: "message.posted",
+        orgId: person.orgId,
+        message: { ...latest, messageId: marker, author: { _tag: "system" }, kind: "system" },
+      });
+      yield* Deferred.await(drained);
+      assert.deepStrictEqual(
+        yield* sql`SELECT json_extract(json, '$.messageId') AS "messageId",
+              json_extract(json, '$.emoji') AS emoji
+            FROM kin_events WHERE org_id = ${person.orgId} AND agent_id = ${agent.agentId}
+              AND tag = 'chat.reaction'
+            ORDER BY received_at, event_id`,
+        [
+          { messageId: question.messageId, emoji: "👍" },
+          { messageId: card.messageId, emoji: "👍" },
+          { messageId: plain.messageId, emoji: "👎" },
+          { messageId: latest.messageId, emoji: "❌" },
+        ],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect(
     "takes a withdrawn yes as a changed answer, once, and only on the message a reaction last woke the lead for",
     () =>
@@ -1719,8 +1841,8 @@ describe("KinChatService", () => {
         const offer = yield* service.send(agent, {
           chatId: chat.chatId,
           clientMessageId: "lead-offer",
-          body: "I can tag the release too if you want.",
-          intent: "answer",
+          body: "Tag the release too?",
+          intent: "question",
         });
         yield* react(offer.messageId, "👍");
         yield* react(offer.messageId, "👍", false);
