@@ -53,9 +53,8 @@ it("places every legacy wake-up block exactly once, splitting the server's tagge
   assert.deepEqual(failures, []);
 });
 
-// Captured from mine/kin at 41f8a4f4705 before adding the layout flag.
-const legacyRequestPin = "2fc2cb5b182755fd7a3896a5a2dbfb4460815d16381e7aeee81d9d0be4d7a93a";
-const sessionRequestPin = "d627b8f88c11533fac671f4fcce04c4f43367dca5623a9621b3a6348d3a01c76";
+const legacyRequestPin = "219cedfaeb6b5c77fc6a56d55d9d20b68e1f34779f50232527ab92eb318fa157";
+const sessionRequestPin = "6d18666d3fe30c29bcb346cc3aa5c146d588614516a8c5c0245cb1388cbb2247";
 const pinnedIds = [
   "kin-lead-rereads-github-hint",
   "kin-lead-uses-display-name",
