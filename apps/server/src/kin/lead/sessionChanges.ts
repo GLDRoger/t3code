@@ -177,7 +177,9 @@ const recordChanges = Effect.fn("KinSessionChanges.records")(function* (input: I
     (c.actor_kind = 'agent' AND c.actor_id IS ${agentId} AND c.wakeup_id IS NOT NULL
       AND c.wakeup_id IN ${sql.in(sessionWakeupIds)})`;
   const rows = yield* sql<RecordChange>`WITH changes AS (
-      SELECT c.*, ROW_NUMBER() OVER (PARTITION BY c.record_id ORDER BY c.seq DESC) AS rank
+      SELECT c.org_id, c.record_id, c.seq, c.at, c.kind, c.fields_json, c.via, c.chat_id,
+        c.actor_kind, c.actor_id, c.coding_agent_key,
+        ROW_NUMBER() OVER (PARTITION BY c.record_id ORDER BY c.seq DESC) AS rank
       FROM kin_record_changes c
       WHERE c.org_id = ${orgId} AND c.seq > ${from.changeSeq} AND c.seq <= ${to.changeSeq}
         AND NOT ${own}

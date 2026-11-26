@@ -1,7 +1,6 @@
 import { expect, it } from "@effect/vitest";
 import { NodeFileSystem } from "@effect/platform-node";
 import { KinAgentId, KinChatId, KinOrgId, KinWakeupId } from "@t3tools/contracts";
-import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -428,6 +427,6 @@ it("every Kin read tool has a change source", () => {
   );
   for (const [tool, source] of Object.entries(coverage)) {
     if (typeof source !== "string")
-      Effect.runSync(Console.info(`Not covered: ${tool}: ${source.uncovered}`));
+      process.stdout.write(`Not covered: ${tool}: ${source.uncovered}\n`);
   }
 });
