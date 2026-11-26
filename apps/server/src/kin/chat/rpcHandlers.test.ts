@@ -15,6 +15,8 @@ import {
   AuthOrchestrationOperateScope,
   AuthOrchestrationReadScope,
   KinChatError,
+  kinAccessAllows,
+  kinRpcAccess,
   KinMemberId,
   KinPersonId,
   KinTaskCardState,
@@ -115,7 +117,10 @@ const rawGroup = RpcGroup.make(
   ...Array.from(group.requests.values(), (rpc) => rpc.setPayload(Schema.Unknown)),
 );
 /** A real socket server built as `ws.ts` builds it, and a raw client on it. */
-const serveRaw = (handlers: Effect.Success<ReturnType<typeof makeKinHandlers>>) =>
+const serveRaw = (
+  handlers: Effect.Success<ReturnType<typeof makeKinHandlers>>,
+  scopes: ReadonlyArray<AuthEnvironmentScope> = AuthStandardClientScopes,
+) =>
   Effect.gen(function* () {
     const wire = decodeKinAfterAccess(group);
     const route = Layer.effectDiscard(
@@ -126,7 +131,7 @@ const serveRaw = (handlers: Effect.Success<ReturnType<typeof makeKinHandlers>>) 
     ).pipe(
       Layer.provide(wire.toLayer({ ...handlers, "server.probe": () => Effect.succeed({}) })),
       Layer.provide(RpcSerialization.layerJson),
-      Layer.provide(RpcAuthorization.layer(AuthStandardClientScopes)),
+      Layer.provide(RpcAuthorization.layer(scopes)),
     );
     const server = yield* Layer.build(
       HttpRouter.serve(route, { disableListenLog: true }).pipe(
@@ -191,12 +196,20 @@ it.effect("refuses bad input plainly over the wire, and only after the access ch
       const stream = client["kin.chat.subscribe"]({ chatId: direct.chatId, afterSeq: "x" });
       assert.include(refusal(yield* Effect.exit(Stream.runHead(stream))), unreadable);
     }
-    // A call the member may not make is refused for that, whatever its payload says.
-    for (const payload of [{}, { orgId: person.orgId }]) {
-      assert.include(refusal(yield* Effect.exit(member["kin.budget.get"](payload))), {
-        _tag: "EnvironmentAuthorizationError",
-        message: "Only the owner or a co-owner can do that.",
-      });
+    // A call its caller may not make, by role or by scope, gets the same refusal whatever its payload.
+    const unscoped = yield* serveRaw(yield* makeKinHandlers(session), [AuthOrchestrationReadScope]);
+    for (const [client, message] of [
+      [member, "Only the owner or a co-owner can do that."],
+      [unscoped, undefined],
+    ] as const) {
+      const malformed = refusal(yield* Effect.exit(client["kin.budget.get"]({})));
+      const wellFormed = refusal(
+        yield* Effect.exit(client["kin.budget.get"]({ orgId: person.orgId })),
+      );
+      assert.deepStrictEqual(malformed, wellFormed);
+      assert.include(wellFormed, { _tag: "EnvironmentAuthorizationError" });
+      if (message === undefined) assert.notInclude(wellFormed, unreadable);
+      else assert.include(wellFormed, { message });
     }
     // Valid calls answer as they always have.
     assert.isArray((yield* owner["kin.leads.list"]({ orgId: person.orgId })).leads);
@@ -215,6 +228,60 @@ it.effect("refuses bad input plainly over the wire, and only after the access ch
       history.messages.map((message) => message.body),
       ["Hello"],
     );
+  }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+);
+
+it.effect("reads no part of a denied request's payload, unary or streamed", () =>
+  Effect.gen(function* () {
+    const { person } = yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+      VALUES ('meera', ${person.orgId}, 'meera', 'Meera', '1970-01-01T00:00:00.000Z', 'member')`;
+    const kin = yield* Kin.KinServer;
+    const services = Option.getOrThrow(kin.services);
+    const identity = Context.get(services, KinIdentity);
+    const handlers: Record<string, (payload: unknown, options: unknown) => unknown> =
+      yield* makeKinHandlers(session).pipe(
+        Effect.provideService(Kin.KinServer, {
+          ...kin,
+          services: Option.some(
+            Context.add(services, KinIdentity, {
+              ...identity,
+              resolve: () =>
+                Effect.succeed([
+                  { _tag: "person", orgId: person.orgId, personId: KinPersonId.make("meera") },
+                ]),
+            }),
+          ),
+        }),
+      );
+    let reads = 0;
+    const spy = new Proxy(
+      {},
+      {
+        get: () => void reads++,
+        has: () => (reads++, false),
+        ownKeys: () => (reads++, []),
+        getOwnPropertyDescriptor: () => void reads++,
+        getPrototypeOf: () => (reads++, Object.prototype),
+      },
+    );
+    // As the socket hands them over: the payload undecoded.
+    const options = { rpc: { payloadSchema: Schema.Unknown } };
+    const denied = Object.keys(handlers).filter(
+      (tag) => !kinAccessAllows("member", kinRpcAccess(tag) ?? "org_owner"),
+    );
+    let streams = 0;
+    for (const tag of denied) {
+      const result = handlers[tag]!(spy, options);
+      const exit = Stream.isStream(result)
+        ? (streams++, yield* Effect.exit(Stream.runHead(result)))
+        : yield* Effect.exit(result as Effect.Effect<unknown, unknown>);
+      assert.isTrue(Exit.isFailure(exit), tag);
+      assert.strictEqual(reads, 0, `${tag} read its payload before refusing`);
+    }
+    assert.isAbove(streams, 0);
+    assert.isAbove(denied.length, streams);
   }).pipe(Effect.provide(root.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );
 

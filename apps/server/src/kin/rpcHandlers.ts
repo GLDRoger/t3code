@@ -149,7 +149,8 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
   const personSees = forPerson(session, services);
   const guarded: Record<string, unknown> = {};
   for (const [tag, handler] of Object.entries(handlers)) {
-    const rpc = group.requests.get(tag) as Rpc.AnyWithProps;
+    const rpc = group.requests.get(tag) as Rpc.AnyWithProps | undefined;
+    if (!rpc) throw new Error(`no Kin rpc ${tag}`);
     const check = admits(session, services, kinRpcAccess(tag));
     const reads = KIN_READ_RPCS.has(tag);
     const decode = payloadDecoder(rpc);
@@ -158,14 +159,14 @@ export const makeKinHandlers = Effect.fn("makeKinHandlers")(function* (
     guarded[tag] = RpcSchema.isStreamSchema(rpc.successSchema)
       ? (payload: unknown, options: unknown) => {
           const stream = Stream.unwrap(
-            Effect.andThen(check, decode(payload, options)).pipe(
+            Effect.flatMap(check, () => decode(payload, options)).pipe(
               Effect.map((decoded) => handle(decoded, options) as Stream.Stream<unknown>),
             ),
           );
           return reads ? readOnlyStream(stream) : stream;
         }
       : (payload: unknown, options: unknown) => {
-          const effect = Effect.andThen(check, decode(payload, options)).pipe(
+          const effect = Effect.flatMap(check, () => decode(payload, options)).pipe(
             Effect.flatMap((decoded) =>
               Effect.catch(
                 handle(decoded, options) as Effect.Effect<
