@@ -1379,8 +1379,8 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     sent: true,
     note: leftNote(input.to, input, input.asker),
   }),
-  // record_create's answer for new suggestions, keys from `first` (`leadWork.ts` createRow).
-  suggestedRows: (input: { records: unknown; first: number; zone: string }) => {
+  // record_create's answer for new tasks and milestones, kept at once, keys from `first` (`leadWork.ts` createRow).
+  savedRows: (input: { records: unknown; first: number; zone: string }) => {
     const asked = (Array.isArray(input.records) ? input.records : []).map((row: unknown) => {
       const one: Readonly<Record<string, unknown>> = isRecord(row) ? row : {};
       return {
@@ -1397,9 +1397,6 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
         key: `${one.list === "milestones" ? "M" : "W"}-${input.first + index}`,
         title: typeof one.title === "string" ? one.title : "",
         created: true,
-        state: "open",
-        stateLabel: suggestedStateLabel(one.list, "open"),
-        suggested: true,
         ...(one.list === "work" && Number.isFinite(at)
           ? { shows: dueShows(at, day, input.zone) }
           : {}),
