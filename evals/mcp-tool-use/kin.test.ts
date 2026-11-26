@@ -278,12 +278,13 @@ it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with
     [...base(kinSession).nativeTools, ...base(kinSession).deferred].map((tool) => tool.name);
   const [before, after] = [names(false), names(true)];
   assert.notInclude(before, "mcp__t3-code__delegate_task");
-  // Only Kin's core loads up front; T3's tools wait to be searched for.
   const upFront = base(true).nativeTools.map((tool) => tool.name);
-  assert.include(upFront, "mcp__t3-code__records_query");
-  assert.notInclude(upFront, "mcp__t3-code__record_create");
-  assert.include(after, "mcp__t3-code__record_create");
-  assert.notInclude(upFront, "mcp__t3-code__delegate_task");
+  const waiting = base(true).deferred.map((tool) => tool.name);
+  assert.deepStrictEqual(
+    upFront.filter((name) => name.startsWith("mcp__t3-code__")),
+    [],
+  );
+  assert.includeMembers(waiting, ["mcp__t3-code__records_query", "mcp__t3-code__record_create"]);
   assert.isFalse(before.some((name) => name.endsWith("Bash")));
   for (const name of ["mcp__t3-code__delegate_task", "mcp__t3-code__task_status"])
     assert.include(after, name);
@@ -298,7 +299,12 @@ it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with
   const reminders = base(true)
     .reminders.map((block) => block.text)
     .join("\n");
-  for (const name of deferredNative) assert.include(reminders, `\n${name}\n`);
+  for (const name of [
+    ...deferredNative,
+    "mcp__t3-code__records_query",
+    "mcp__t3-code__record_create",
+  ])
+    assert.include(reminders, `\n${name}\n`);
   for (const prefix of [
     "Available agent types for the Agent tool:",
     "When you launch multiple agents",

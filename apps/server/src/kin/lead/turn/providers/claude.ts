@@ -83,8 +83,8 @@ const NO_PROVIDER_FOOTER = {
 type Options = ClaudeAdapterV2.ClaudeAgentSdkQueryOptions;
 
 /**
- * Kin's core carries `anthropic/alwaysLoad` from registration (`deferredTools.ts`) and loads up
- * front; with ToolSearch on, Claude Code holds every other MCP tool back until it is searched for.
+ * With ToolSearch on, Claude Code defers MCP tools without `anthropic/alwaysLoad`;
+ * Kin's registration controls those markers independently of mounting the server.
  */
 const kinTools = (options: Options, plan: KinSessionPlan) =>
   options.mcpServers === undefined || !plan.toolSearch

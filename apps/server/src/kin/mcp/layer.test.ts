@@ -1117,8 +1117,7 @@ it.effect.each([true, false])(
             homed.filter((name) => seat.names.includes(name)),
             [],
           );
-        // One core loads up front in every seat; a seat that leaves money and the pipeline to
-        // another loads the core without them.
+        // One marker set across seats; hiding a tool from a seat hides its schema too.
         assert.sameMembers(engineering.upFront, [...KIN_ALWAYS_LOADED]);
         for (const seat of Object.values(seats))
           assert.deepStrictEqual(
