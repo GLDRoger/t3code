@@ -31,7 +31,7 @@ import {
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
-import { settleReviews } from "../github/askedFor.ts";
+import { fillAskedChats, settleReviews } from "../github/askedFor.ts";
 import { PREPARE_EVENT_SQL, PREPARES_PER_TURN } from "../pulse/prepareSenses.ts";
 import * as Reach from "./Reach.ts";
 
@@ -746,6 +746,11 @@ const make = Effect.gen(function* () {
                 yield* sql.withTransaction(
                   expireStaleHolds(input.orgId, input.agentId).pipe(
                     Effect.andThen(expireStaleRoutes(input.orgId, input.agentId)),
+                    Effect.andThen(
+                      fillAskedChats(input.orgId, input.agentId).pipe(
+                        Effect.provideService(SqlClient.SqlClient, sql),
+                      ),
+                    ),
                   ),
                 );
                 const now = yield* Clock.currentTimeMillis;

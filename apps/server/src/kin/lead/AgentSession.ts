@@ -249,6 +249,7 @@ export const leadNameOf = Effect.fn("KinAgentSession.leadNameOf")(
 const isKinGitHubTool = (name: string) => name.startsWith("kin_github_");
 const LOGIN_GITHUB_TOOLS = new Set([
   "kin_github_review",
+  "kin_github_diff",
   "kin_github_review_ask",
   "kin_github_watch",
   "kin_github_link",

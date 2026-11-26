@@ -5,6 +5,7 @@ import {
   KinAgentId,
   KinChatId,
   KinMemberId,
+  KinOrgId,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -121,7 +122,7 @@ it.effect("marks the chat open for the watching session through the real handler
   }).pipe(Effect.provide(root)),
 );
 
-it.effect("refuses to watch a chat the caller is not in, has left, or that is archived", () =>
+it.effect("refuses push streams for a chat or org the caller cannot access", () =>
   Effect.gen(function* () {
     const { services, repo, direct, person } = yield* seedDirect;
     const presence = Context.get(services, Presence.KinPushPresence);
@@ -185,5 +186,10 @@ it.effect("refuses to watch a chat the caller is not in, has left, or that is ar
       });
       assert.isFalse(yield* presence.isWatching(sessionId, chatId));
     }
+
+    const denied = yield* handlers["kin.push.desktopNotices"]({
+      orgId: KinOrgId.make("org-other"),
+    }).pipe(Stream.runHead, Effect.flip);
+    assert.include(denied, { _tag: "KinPushError", reason: "not_member" });
   }).pipe(Effect.provide(root)),
 );

@@ -30,6 +30,7 @@ import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { KinInviteLink } from "./components/KinInviteLink";
 import { useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
+import { useKinSectionNamed } from "./state/useKinShell";
 import {
   KinGateView,
   KinWorkFieldBox,
@@ -74,6 +75,7 @@ function KinInviteForm(target: KinTeamTarget) {
   const nameField = useRef<ComponentRef<typeof TextInput>>(null);
   const navigation = useNavigation();
   const { allowed, gate, actions, list } = useKinTeam(target);
+  const named = useKinSectionNamed(target.environmentId);
   const [name, setName] = useState("");
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
@@ -184,8 +186,8 @@ function KinInviteForm(target: KinTeamTarget) {
                     className={index === 0 ? undefined : "border-t border-border-subtle"}
                   >
                     <KinWorkToggleRow
-                      label={entry.label}
-                      description={entry.detail}
+                      label={named(entry.label)}
+                      description={named(entry.detail)}
                       value={sees[entry.place]}
                       disabled={saving}
                       onValueChange={(on) => setSees((held) => ({ ...held, [entry.place]: on }))}

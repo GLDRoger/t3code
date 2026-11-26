@@ -33,6 +33,7 @@ import * as Pulse from "../pulse/people.ts";
 import * as Open from "../open/people.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { withWatch } from "../watches/readRpcs.ts";
+import * as CountryAsk from "./countryAsk.ts";
 import * as Goals from "./goals.ts";
 import * as Clients from "./ownerClients.ts";
 import * as Deals from "./deals.ts";
@@ -294,6 +295,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.docs.editSection": Effect.fn("KinDocs.rpc.editSection")(function* (input) {
         return yield* call((people) => Docs.editSection(people, input));
       }),
+      "kin.docs.readers": Effect.fn("KinDocs.rpc.readers")(function* (input) {
+        return yield* call((people) => Docs.setReaders(people, input));
+      }),
       "kin.docs.delete": Effect.fn("KinDocs.rpc.delete")(function* (input) {
         return yield* call((people) => Docs.remove(people, input));
       }),
@@ -366,6 +370,8 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.setCompanyProfile": Effect.fn("KinWork.rpc.setCompanyProfile")(function* (input) {
         return yield* call((people) => Money.setCompanyProfile(people, input));
       }),
+      "kin.work.answerCountryCard": (input) =>
+        call((people) => CountryAsk.answerCountryCard(people, input)),
       "kin.work.issue": Effect.fn("KinWork.rpc.issue")(function* (input) {
         return yield* call((people) => Money.issue(people, input));
       }),
@@ -380,6 +386,15 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       }),
       "kin.work.receipts": Effect.fn("KinWork.rpc.receipts")(function* (input) {
         return yield* call((people) => Money.receipts(people, input));
+      }),
+      "kin.work.undoCreditPayment": Effect.fn("KinWork.rpc.undoCreditPayment")(function* (input) {
+        return yield* call((people) => Money.undoCreditPayment(people, input));
+      }),
+      "kin.work.draftCreditNote": Effect.fn("KinWork.rpc.draftCreditNote")(function* (input) {
+        return yield* call((people) => Money.draftCreditNote(people, input));
+      }),
+      "kin.work.unapplyCredit": Effect.fn("KinWork.rpc.unapplyCredit")(function* (input) {
+        return yield* call((people) => Money.unapplyCredit(people, input));
       }),
       "kin.work.makeReceipt": Effect.fn("KinWork.rpc.makeReceipt")(function* (input) {
         return yield* call((people) => Money.makeReceipt(people, input));

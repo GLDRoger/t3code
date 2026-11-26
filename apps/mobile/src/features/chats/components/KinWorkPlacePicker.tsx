@@ -14,7 +14,7 @@ import { SearchField } from "../../../components/ui/SearchField";
 import { useKinPickerSearch, type KinWorkTarget } from "../state/useKinWork";
 import { KinWorkAboveKeyboard } from "./KinWorkPieces";
 import { useKinShell } from "../state/useKinShell";
-import { kinPickerNamed, kinSectionNoun } from "@t3tools/client-runtime/kin/kinShell";
+import { kinPickerNamed, kinPlaceFind, kinSectionNoun } from "@t3tools/client-runtime/kin/kinShell";
 
 type PickerRow =
   | { readonly type: "label"; readonly id: string; readonly label: string }
@@ -71,6 +71,7 @@ export function KinWorkPlacePicker(given: {
     if (open && keyboardUp && found.current !== null) aboveKeyboard?.(found.current);
   }, [open, keyboardUp, aboveKeyboard]);
   const clientNoun = kinSectionNoun(clientShell, "clients");
+  const find = kinPlaceFind(props.noun, clientShell);
   const search = useKinPickerSearch(
     props.target,
     props.noun === "client" ? "clients" : "projects",
@@ -147,9 +148,9 @@ export function KinWorkPlacePicker(given: {
               <SearchField
                 autoFocus
                 inputRef={inputRef}
-                accessibilityLabel={`Find a ${props.noun}`}
+                accessibilityLabel={find}
                 clearAccessibilityLabel="Clear search"
-                placeholder={`Find a ${props.noun}`}
+                placeholder={find}
                 value={query}
                 onChangeText={search.type}
               />

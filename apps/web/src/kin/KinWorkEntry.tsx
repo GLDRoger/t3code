@@ -31,9 +31,12 @@ import {
 import { KIN_QUOTES_LIST, kinQuoteRow } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
+  KIN_CREDIT_NOTES_LIST,
   KIN_INVOICE_NUMBER_FIELD,
   KIN_INVOICES,
+  kinCreditNoteView,
   kinInvoiceView,
+  kinIsCreditNote,
   kinIsInvoice,
   kinInvoiceFileDoc,
   kinInvoiceDraftNote,
@@ -89,6 +92,7 @@ import { SheetDescription, SheetHeader, SheetTitle } from "../components/ui/shee
 import { cn, randomUUID } from "../lib/utils";
 import {
   KinInvoiceActions,
+  KinInvoiceCreditOffer,
   KinMakeDocumentStep,
   KinQuoteActions,
   KinInvoiceDocuments,
@@ -97,6 +101,7 @@ import {
   KinInvoicePayments,
   KinMoneyActionNotice,
 } from "./KinInvoice";
+import { KinCreditNoteActions, KinCreditNoteDraftForm } from "./KinCreditNote";
 import { KinSuggestionKeep } from "./KinMoneySuggested";
 import { KinInvoiceCurrency } from "./KinMoneyEstimate";
 import { KinNotesVersions } from "./KinConfirm";
@@ -117,7 +122,7 @@ import {
   useKinRates,
 } from "./useKinMoney";
 import { kinWorkChoicesAtom, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
-import { useKinSectionNamed, useKinSectionOn } from "./useKinShell";
+import { useKinSectionNamed, useKinSectionOn, useKinShell } from "./useKinShell";
 import { kinListCanBeSection } from "@t3tools/client-runtime/kin/kinShell";
 import {
   KIN_BILL_TO,
@@ -556,6 +561,7 @@ export function KinListEntry(
   const { item, view, environmentId } = props;
   const clientsOn = useKinSectionOn(environmentId, "clients");
   const named = useKinSectionNamed(environmentId);
+  const shell = useKinShell(environmentId);
   // Clients off: an entry's client and project are names alone, with no link or picker.
   const billing = clientsOn;
   const opensClients = useKinOpensClients(environmentId) && billing;
@@ -569,6 +575,8 @@ export function KinListEntry(
     ? kinInvoiceView(item, def, props.now, props.directory.names)
     : null;
   const quote = item.list === KIN_QUOTES_LIST ? kinQuoteRow(item, null, props.now) : null;
+  const creditNote = kinIsCreditNote(item) ? kinCreditNoteView(item) : null;
+  const creditNoteLocked = creditNote !== null && creditNote.state !== "draft";
   const money = useKinMoneyActions(props);
   const rates = useKinRates(props, invoice !== null || quote !== null);
   const changes = useKinEntryChanges(props, item.key);
@@ -577,14 +585,15 @@ export function KinListEntry(
   const ownerLevel = useKinOwnerLevel(environmentId);
   // A project's lead drafts its entries' words and figures (`can.edit`); state, files and the
   // rest are owner-level, which the host says by letting this reader set its client.
-  const canChange = mayUpdate && view.can.party;
-  const canDraft = mayUpdate && view.can.edit;
+  const canChange = mayUpdate && view.can.party && !creditNoteLocked;
+  const canDraft = mayUpdate && view.can.edit && !creditNoteLocked;
   // A company's own list: its status and who has it, as far as the host lets this reader.
   const ownList = def !== null && kinListCanBeSection({ ...def, archivedAt: null });
   const moves = canChange || (ownList && mayUpdate && view.can.states.length > 0);
   const give = ownList ? (props.give ?? null) : null;
   const canPay = useAtomValue(kinClient.workPaymentRecord.permissionAtom(environmentId));
   const [paying, setPaying] = useState(false);
+  const [draftingCreditNote, setDraftingCreditNote] = useState(false);
   const [takingBack, setTakingBack] = useState<string | null>(null);
   // The amount box waits on this question's answer: the reason it wasn't saved, or null.
   const [askingAmount, setAskingAmount] = useState<{
@@ -634,12 +643,15 @@ export function KinListEntry(
       <KinMakeDocumentStep
         {...props}
         itemKey={item.key}
-        list={def?.list ?? (making === "pdf" ? "quotes" : "invoices")}
+        list={
+          def?.list ??
+          (creditNote !== null ? KIN_CREDIT_NOTES_LIST : making === "pdf" ? "quotes" : "invoices")
+        }
         {...(making === "pdf" ? { title: KIN_INVOICES.makePdf } : {})}
         currency={item.amount?.currency ?? def?.currency ?? KIN_DEFAULT_HOME_CURRENCY}
         actions={money}
         party={item.party ?? null}
-        backLabel={invoice?.heading ?? item.title}
+        backLabel={invoice?.heading ?? creditNote?.heading ?? item.title}
         onClose={() => setMaking(null)}
       />
     );
@@ -648,7 +660,7 @@ export function KinListEntry(
       <SheetHeader>
         <div className="flex flex-col gap-1 pe-8">
           <SheetDescription>{entry.heading}</SheetDescription>
-          <SheetTitle>{invoice?.heading ?? item.title}</SheetTitle>
+          <SheetTitle>{invoice?.heading ?? creditNote?.heading ?? item.title}</SheetTitle>
           {invoice?.description == null ? null : (
             <p className="text-sm text-muted-foreground">{invoice.description}</p>
           )}
@@ -685,7 +697,7 @@ export function KinListEntry(
                     if (!checked.ok) return checked.problem;
                     const save = () =>
                       changes.edit(item.rev, { amount: checked.value }, text.trim());
-                    const question = kinIssuedAmountQuestion(item, checked.value);
+                    const question = kinIssuedAmountQuestion(item, checked.value, shell);
                     if (question === null) return save();
                     return new Promise<string | null>((done) =>
                       setAskingAmount({ question, save, done }),
@@ -701,14 +713,14 @@ export function KinListEntry(
           )}
           <div className="flex flex-wrap items-center gap-2 text-sm text-foreground">
             <KinWorkStateIcon state={entry.state} />
-            <span>{quote?.stateLabel ?? entry.stateLabel}</span>
+            <span>{quote?.stateLabel ?? creditNote?.stateLabel ?? entry.stateLabel}</span>
             {invoice?.void === true ? (
               entry.stateLabel === KIN_INVOICES.void ? null : (
                 <Badge size="sm" variant="secondary">
                   {KIN_INVOICES.void}
                 </Badge>
               )
-            ) : entry.late && quote === null ? (
+            ) : entry.late && quote === null && creditNote === null ? (
               <Badge size="sm" variant="error">
                 {KIN_LISTS.late}
               </Badge>
@@ -727,6 +739,13 @@ export function KinListEntry(
               <KinInvoiceCurrency {...props} item={item} rates={rates} settled={invoice.settled} />
               <KinInvoiceFigures invoice={invoice} />
               <KinInvoiceSent invoice={invoice} />
+              <KinInvoiceCreditOffer
+                {...props}
+                itemKey={item.key}
+                invoice={invoice}
+                actions={money}
+                busy={busy}
+              />
             </>
           ) : entry.balance === null ? null : (
             <dl className="grid grid-cols-2 gap-x-6 text-sm">
@@ -752,6 +771,15 @@ export function KinListEntry(
               busy={busy}
               canChange={canChange}
               onState={(state) => void changes.update(item.rev, { state })}
+              onMakePdf={() => setMaking("pdf")}
+            />
+          ) : creditNote !== null ? (
+            <KinCreditNoteActions
+              {...props}
+              item={item}
+              note={creditNote}
+              actions={money}
+              busy={busy}
               onMakePdf={() => setMaking("pdf")}
             />
           ) : !moves && give === null ? null : (
@@ -823,6 +851,7 @@ export function KinListEntry(
               busy={busy}
               party={item.party ?? null}
               onMake={() => setMaking("invoice")}
+              onCreditNote={() => setDraftingCreditNote(true)}
             />
           )}
           <KinMoneyActionNotice actions={money} onOpenDoc={props.onOpenDoc} />
@@ -833,6 +862,20 @@ export function KinListEntry(
               busy={busy}
               onSave={pay}
               onCancel={() => setPaying(false)}
+            />
+          ) : null}
+          {draftingCreditNote && invoice?.creditNoteMax != null ? (
+            <KinCreditNoteDraftForm
+              owed={invoice.creditNoteMax}
+              busy={busy || money.busy}
+              onSave={async (input) => {
+                const made = await money.draftCreditNote(item.key, input);
+                if (made === null) return false;
+                setDraftingCreditNote(false);
+                props.onOpenKey(made.key);
+                return true;
+              }}
+              onCancel={() => setDraftingCreditNote(false)}
             />
           ) : null}
           {changes.problem === null ? null : (
@@ -927,7 +970,10 @@ export function KinListEntry(
                   );
                 const opens = open(fact);
                 const picks =
-                  canChange && fact.id !== "owner" && (fact.id === "category" || billing);
+                  canChange &&
+                  fact.id !== "owner" &&
+                  !(creditNote !== null && fact.id === "party") &&
+                  (fact.id === "category" || billing);
                 const offersName =
                   fact.id === "party" &&
                   billTo !== null &&
@@ -1003,7 +1049,11 @@ export function KinListEntry(
               </>
             )}
             {entry.fields
-              .filter((field) => invoice === null || field.key !== KIN_INVOICE_NUMBER_FIELD)
+              .filter(
+                (field) =>
+                  (invoice === null && creditNote === null) ||
+                  field.key !== KIN_INVOICE_NUMBER_FIELD,
+              )
               .map((field) => (
                 <div key={field.key} className="contents">
                   <dt className="flex items-center gap-1.5 self-start pt-0.5 text-muted-foreground">
@@ -1012,10 +1062,13 @@ export function KinListEntry(
                   </dt>
                   <dd className="flex min-w-0 flex-col items-start gap-1.5 text-foreground">
                     <InvoiceFileDoc
-                      doc={kinInvoiceFileDoc(field, invoice)}
+                      doc={kinInvoiceFileDoc(field, invoice ?? creditNote)}
                       onOpenDoc={props.onOpenDoc}
                     />
-                    {canDraft && !field.retired && (canChange || field.type !== "file") ? (
+                    {canDraft &&
+                    !field.retired &&
+                    (canChange || field.type !== "file") &&
+                    !(creditNote !== null && field.key === "invoice") ? (
                       <FieldEdit
                         {...props}
                         field={field}
@@ -1035,6 +1088,18 @@ export function KinListEntry(
                           changes.edit(item.rev, { fields: { [field.key]: value } })
                         }
                       />
+                    ) : creditNote !== null &&
+                      field.key === "invoice" &&
+                      creditNote.invoiceKey !== null ? (
+                      <div>
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          onClick={() => props.onOpenKey(creditNote.invoiceKey!)}
+                        >
+                          {creditNote.invoiceName ?? field.text}
+                        </Button>
+                      </div>
                     ) : field.files.length > 0 ? (
                       <EntryFiles {...props} files={field.files} previewKey={previewKey} />
                     ) : field.opens !== null &&
@@ -1105,6 +1170,7 @@ export function KinListEntry(
               canPay={canPay}
               busy={busy}
               onTakeBack={setTakingBack}
+              onOpenKey={props.onOpenKey}
             />
             <KinInvoiceDocuments invoice={invoice} onOpenDoc={props.onOpenDoc} />
           </>

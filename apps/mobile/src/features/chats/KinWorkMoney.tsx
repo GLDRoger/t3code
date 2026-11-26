@@ -86,7 +86,7 @@ import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from ".
 import { KinChart } from "./widgets/KinChart";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
-import { useKinSectionOn } from "./state/useKinShell";
+import { useKinSectionOn, useKinShell } from "./state/useKinShell";
 
 type Shared = KinWorkTarget & {
   readonly live: KinWorkLive;
@@ -453,6 +453,7 @@ export function KinMoneyArea(props: Shared) {
   const navigation = useNavigation();
   const target = { environmentId: props.environmentId, orgId: props.orgId };
   const invoicesOn = useKinSectionOn(props.environmentId, "invoices");
+  const shell = useKinShell(props.environmentId);
   const seq = props.stale ? null : props.live.seq;
   const datesAllowed = useAtomValue(kinClient.workDates.permissionAtom(target.environmentId));
   // Only a viewer who can't open Dates is drawn the coming-up rows themselves.
@@ -551,12 +552,12 @@ export function KinMoneyArea(props: Shared) {
     );
   }
   const summary = state.value;
-  const view = kinMoneyView(summary, kinListsOf(lists));
+  const view = kinMoneyView(summary, kinListsOf(lists), shell);
   const owing = allClients && every.state._tag === "ready" ? every.state.value.owed : summary.owed;
   const clients =
     owing === summary.owed
       ? view.clients
-      : kinMoneyView({ ...summary, owed: owing }, kinListsOf(lists)).clients;
+      : kinMoneyView({ ...summary, owed: owing }, kinListsOf(lists), shell).clients;
   const openRecord = (to: KinAttentionOpen) => {
     if (to.type === "record") navigation.navigate("KinWorkItem", { ...target, task: to.key });
   };
@@ -625,6 +626,8 @@ export function KinMoneyArea(props: Shared) {
     [
       ...summary.owed.total,
       ...summary.owed.overdue,
+      ...(summary.toPay?.total ?? []),
+      ...(summary.toPay?.dueSoon ?? []),
       ...summary.received.thisMonth,
       ...summary.received.lastMonth,
       ...summary.spent.thisMonth.total,
@@ -638,6 +641,7 @@ export function KinMoneyArea(props: Shared) {
   const missing = kinMissingRates(
     [
       ...summary.owed.total,
+      ...(summary.toPay?.total ?? []),
       ...summary.spentThisFinancialYear,
       ...summary.receivedThisFinancialYear,
     ],
@@ -695,6 +699,20 @@ export function KinMoneyArea(props: Shared) {
         </ListSection>
       </View>
     ),
+    toPay:
+      view.toPay === null || view.dueSoon === null ? null : (
+        <View className="gap-4">
+          <View className="flex-row gap-4 px-2">
+            <Figure figure={view.toPay} onOpen={openList} estimates={estimates} />
+            <Figure figure={view.dueSoon} onOpen={openList} estimates={estimates} />
+          </View>
+          {!invoicesOn && missing.length > 0 ? (
+            <View className="px-2">
+              <KinSetRateLink {...target} currencies={missing} />
+            </View>
+          ) : null}
+        </View>
+      ),
     month: (
       <KinFoldSection
         title={view.monthLabel}

@@ -972,6 +972,14 @@ it.effect(
         projectId: visible.recordId,
         amount: { minor: 2_000, currency: "INR" },
       });
+      yield* make("Invented Berlin desks paid", {
+        list: "expenses",
+        state: "done",
+        dateAt: now,
+        category: "office",
+        projectId: visible.recordId,
+        amount: { minor: 1_000, currency: "EUR" },
+      });
       const before = yield* MoneyAnswers.budgets(meera.app, { orgId });
       const expected = {
         ...before,
@@ -995,10 +1003,23 @@ it.effect(
         projectId: hidden.recordId,
         amount: { minor: 7_123_456, currency: "USD" },
       });
-      // Both kinds of private source change the app figures.
+      // A private EUR invoice settled in INR gives the screens an "about" at its rate.
+      yield* presetList(orgId, "invoices", now);
+      const privateInvoice = yield* make("Invented confidential invoice", {
+        list: "invoices",
+        sensitive: true,
+        amount: { minor: 50_000, currency: "EUR" },
+      });
+      yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor,
+          currency, paid_on, origin_key, created_at, created_by_kind, received_minor,
+          received_currency, rate)
+        VALUES (${orgId}, 'private-settled', ${privateInvoice.recordId}, 50_000, 'EUR',
+          '2026-11-10', 'private-settled', 0, 'person', 4_500_000, 'INR', '90.000000')`;
+      // Every kind of private source changes the app figures.
       const screen = yield* MoneyAnswers.budgets(meera.app, { orgId });
       assert.notDeepEqual(screen.budgets, before.budgets);
       assert.include(JSON.stringify(screen), "9125456");
+      assert.include(JSON.stringify(screen), "2026-11-10");
       const denied = yield* MoneyAnswers.budgets(zoya.app, { orgId }).pipe(Effect.flip);
       refusedLike(yield* zoya.use("budgets"), denied.message);
       const beforeRead = yield* sql`SELECT total_changes() AS changes`;

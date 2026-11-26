@@ -47,6 +47,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
   KIN_WORK_FORM_COPY,
+  kinIndiaFields,
   kinWorkSend,
   type KinClientDraftKind,
   type KinWorkFormProblem,
@@ -117,6 +118,7 @@ import { kinSectionNamedWords, kinSectionOn } from "@t3tools/client-runtime/kin/
 import { useKinSectionNamed, useKinSectionWords, useKinShell } from "./useKinShell";
 import { KinConfirm } from "./KinConfirm";
 import { useNowMinuteMs } from "./useKinClock";
+import { useKinCompanyCountry } from "./useKinMoney";
 import { kinHostConnected, useKinHostAt } from "./useKinHost";
 import {
   useKinClientPage,
@@ -716,6 +718,8 @@ function ClientPage(
   const { names } = props.directory;
   const { state: changed, changes } = props.changes;
   const ownerLevel = useKinOwnerLevel(environmentId);
+  const country = useKinCompanyCountry(props);
+  const india = kinIndiaFields(country);
   const update = useAtomCommand(kinClient.workClientUpdate, { reportFailure: false });
   const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
   const shell = useKinShell(environmentId);
@@ -742,6 +746,7 @@ function ClientPage(
     now,
     ownerLevel,
     shell,
+    country,
   );
   const { can } = view;
   // Clients on, or the owner level: what's owed, the contact log, notes and history show.
@@ -1033,6 +1038,23 @@ function ClientPage(
             <p className="text-xs text-muted-foreground">{view.contactsWho}</p>
           )}
         </KinWorkSection>
+        {view.credit.length === 0 ? null : (
+          <KinWorkSection title={KIN_CLIENTS_WORDS.credit}>
+            <ul className="-mx-2 flex flex-col">
+              {view.credit.map((one) => (
+                <li key={one.key}>
+                  <button
+                    type="button"
+                    onClick={() => props.onOpenTask(one.key)}
+                    className="flex w-full items-center justify-between gap-3 rounded-md px-2 py-1.5 text-start text-sm text-foreground tabular-nums outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+                  >
+                    <span>{one.line}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </KinWorkSection>
+        )}
         <KinWorkPlaceLists
           environmentId={environmentId}
           orgId={orgId}
@@ -1087,16 +1109,24 @@ function ClientPage(
                   <p className="whitespace-pre-wrap text-sm text-foreground">{view.address}</p>
                 </KinWorkSection>
               )}
-              {!can.owner || (view.vendor && view.tax === null) ? null : (
+              {!can.owner ||
+              ((view.vendor || !india) &&
+                view.tax === null &&
+                view.accountsForTax === null) ? null : (
                 <KinWorkSection title={KIN_CLIENTS.tax}>
-                  <p
-                    className={cn(
-                      "text-sm",
-                      view.tax === null ? "text-muted-foreground" : "text-foreground",
-                    )}
-                  >
-                    {view.tax ?? KIN_CLIENTS.noTax}
-                  </p>
+                  {view.tax === null && !india ? null : (
+                    <p
+                      className={cn(
+                        "text-sm",
+                        view.tax === null ? "text-muted-foreground" : "text-foreground",
+                      )}
+                    >
+                      {view.tax ?? KIN_CLIENTS.noTax}
+                    </p>
+                  )}
+                  {view.accountsForTax === null ? null : (
+                    <p className="text-sm text-foreground">{view.accountsForTax}</p>
+                  )}
                 </KinWorkSection>
               )}
               {can.owner ? (

@@ -39,6 +39,7 @@ import {
   type KinSocialWeekView,
 } from "./kinSocial.ts";
 import { kinChoiceCardView, type KinChoiceCardView } from "./kinChoicePresentation.ts";
+import { kinCountryCardView, type KinCountryCardView } from "./kinCompanyProfile.ts";
 import {
   formatKinDeferralTime,
   KIN_DEFERRAL_ACTIONS,
@@ -86,6 +87,7 @@ export type KinCardView =
   | { readonly kind: "task"; readonly task: KinTaskCardView }
   | { readonly kind: "deferral"; readonly deferral: KinDeferralCardView }
   | { readonly kind: "choice"; readonly choice: KinChoiceCardView }
+  | { readonly kind: "country"; readonly country: KinCountryCardView }
   | { readonly kind: "chart"; readonly chart: KinChartView }
   | { readonly kind: "visual"; readonly orgId: KinOrgId; readonly visual: KinVisualCardState }
   | { readonly kind: "digest"; readonly digest: KinDigestCardView }
@@ -593,6 +595,10 @@ function kinLiveCardView(
     case "choice": {
       const choice = kinChoiceCardView(widget);
       return choice === null ? unknown(widget) : { kind: "choice", choice };
+    }
+    case "country": {
+      const country = kinCountryCardView(widget);
+      return country === null ? unknown(widget) : { kind: "country", country };
     }
     case "chart": {
       const chart = kinChartCardView(widget);

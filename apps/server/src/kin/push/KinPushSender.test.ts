@@ -26,6 +26,7 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
@@ -48,6 +49,7 @@ import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KinApnsTransport, type KinApnsPush, type KinApnsResult } from "./Apns.ts";
 import { KinFcmTransport, type KinFcmPush, type KinFcmResult } from "./Fcm.ts";
+import * as DesktopNotices from "./KinDesktopNotices.ts";
 import { KinPushDevices, type KinPushCaller } from "./KinPushDevices.ts";
 import { KinPushPresence } from "./KinPushPresence.ts";
 import * as Devices from "./KinPushDevices.ts";
@@ -126,7 +128,9 @@ const buildOn = <A, E, R>(
   fcm: ReturnType<typeof makeFcm> = makeFcm(),
 ) =>
   Sender.layer.pipe(
-    Layer.provideMerge(Layer.mergeAll(Devices.layer, layerTrusting, apns.layer, fcm.layer)),
+    Layer.provideMerge(
+      Layer.mergeAll(Devices.layer, layerTrusting, apns.layer, fcm.layer, DesktopNotices.layer),
+    ),
     Layer.provideMerge(ApproverKeys.layer),
     Layer.provide(MemoryCache.layer),
     Layer.provideMerge(Repository.layer),
@@ -528,10 +532,11 @@ describe("KinPushSender", () => {
       assert.isUndefined(apns.sent[0]?.collapseId, choice);
       // Three answers, Kin's own Confirm (no open question), an answer that acts or sends, a
       // sent-up draft (approved where it is read, R12): a plain notice whose tap opens the card.
-      for (const [state, open, draft] of [
-        [question(["Signed", "Not yet", "Lost it"]), true],
-        [question(["Confirm", "Cancel"]), false],
+      for (const [expectedBody, state, open, draft] of [
+        ["Is the Harbourline NDA signed?", question(["Signed", "Not yet", "Lost it"]), true],
+        ["Quick one on W-8.", question(["Confirm", "Cancel"]), false],
         [
+          "Is the Harbourline NDA signed?",
           question(["Start W-8", "Not yet"], {
             options: [
               { optionId: "option-1", label: "Start W-8", action: { line: "Starts W-8." } },
@@ -541,6 +546,7 @@ describe("KinPushSender", () => {
           true,
         ],
         [
+          "Quick one on W-8.",
           question(["Confirm", "Cancel"], {
             send: {
               service: "Gmail",
@@ -557,6 +563,7 @@ describe("KinPushSender", () => {
           true,
         ],
         [
+          "Quick one on W-8.",
           question(["Approve", "Changes first"], {
             draft: "## Harbourline retainer\n\nMonthly fee: ₹2,50,000",
           }),
@@ -567,9 +574,7 @@ describe("KinPushSender", () => {
         assert.isTrue(isChoiceCard(state));
         yield* ask(state, open, draft);
         assert.deepStrictEqual(categories(apns.sent), ["kin.message"], JSON.stringify(state));
-        assert.deepStrictEqual(alerts(apns.sent), [
-          { title: "Payments team", body: "Quick one on W-8." },
-        ]);
+        assert.deepStrictEqual(alerts(apns.sent), [{ title: "Payments team", body: expectedBody }]);
       }
 
       // Kin's own unprompted card (a recommendation) waits on them without ringing: a badge only.
@@ -773,6 +778,90 @@ describe("KinPushSender", () => {
       assert.strictEqual((yield* notify({ _tag: "message", orgId, messageId: anchor })).sent, 0);
     }).pipe(Effect.provide(build(apns)));
   });
+
+  it.effect(
+    "an open question's notification is the question, not the message it hangs under",
+    () => {
+      const apns = makeApns();
+      return Effect.gen(function* () {
+        const { notify, sql } = yield* seed;
+        yield* TestClock.setTime(Date.parse("2026-11-08T14:00:00Z"));
+        const chatId = KinChatId.make("chat_dm");
+        const question =
+          "Arjun got 10,000 on 4 Jul and 5,000 on 10 Jul. What were these two transfers?";
+        const reply =
+          "Your 36,000 to yourself on 21 Oct is already accounted for: Kin applied it across your older expenses.";
+        const options = [
+          { optionId: "reimbursement", label: "Reimbursements" },
+          { optionId: "advance", label: "Advances" },
+          { optionId: "other", label: "Something else" },
+        ];
+        const card = (
+          body: string,
+          choices: typeof options,
+          { brief = false, asked = true, prompt = question } = {},
+        ) =>
+          Effect.gen(function* () {
+            const messageId = yield* postMessage(sql, { agentMemberId: "m_fin_dm" }, "posted", {
+              chatId,
+              body,
+            });
+            const widgetId = KinWidgetId.make(`w_${messageId}`);
+            const state = { question: prompt, detail: null, options: choices, answer: null };
+            yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class,
+              type, revision, state_json, awaiting_json, updated_at)
+            VALUES (${widgetId}, ${orgId}, ${chatId}, ${messageId}, 'native', 'choice', 1,
+              ${JSON.stringify(state)}, ${JSON.stringify([owner])}, ${T})`;
+            if (brief)
+              yield* sql`UPDATE kin_messages SET form = 'brief' WHERE message_id = ${messageId}`;
+            if (asked)
+              yield* sql`INSERT INTO kin_questions (question_id, org_id, agent_id, person_id,
+                chat_id, kind, widget_id, question, safe, asked_at, due_at, act_at, state)
+              VALUES (${`q_${widgetId}`}, ${orgId}, 'lead_fin', ${owner}, ${chatId}, 'card',
+                ${widgetId}, ${prompt}, 0, ${NOW}, ${NOW}, ${NOW}, 'open')`;
+            apns.sent.length = 0;
+            yield* notify({ _tag: "widget", orgId, widgetId });
+            const [push] = apns.sent;
+            assert.isDefined(push);
+            return {
+              alert: alerts([push])[0],
+              category: (push.payload as { aps: { category?: string } }).aps.category,
+            };
+          });
+
+        assert.deepStrictEqual(yield* card(reply, options), {
+          alert: { title: "Finance · Question", body: question },
+          category: "kin.message",
+        });
+        assert.deepStrictEqual(
+          yield* card("## Needs you\n- The Orbit Dental renewal is due.", options, { brief: true }),
+          {
+            alert: { title: "Finance · Morning brief", body: `Good morning · ${question}` },
+            category: "kin.message",
+          },
+        );
+        assert.deepStrictEqual(yield* card(reply, options.slice(0, 2)), {
+          alert: {
+            title: "Finance · Question",
+            body: `${question}\n1 · Reimbursements\n2 · Advances`,
+          },
+          category: "kin.choice",
+        });
+        const confirm = "Confirm the expense record for Orbit Dental.";
+        assert.deepStrictEqual(
+          yield* card(
+            confirm,
+            [
+              { optionId: "confirm", label: "Confirm" },
+              { optionId: "cancel", label: "Cancel" },
+            ],
+            { asked: false, prompt: "Record the Orbit Dental expense?" },
+          ),
+          { alert: { title: "Finance · Question", body: confirm }, category: "kin.message" },
+        );
+      }).pipe(Effect.provide(build(apns)));
+    },
+  );
 
   it.effect("a check-in's banner names that check-in after its turn has ended", () => {
     const apns = makeApns();
@@ -1392,6 +1481,9 @@ describe("KinPushSender", () => {
         platform: "ios",
         apsEnvironment: "development",
       });
+      const desktop = yield* DesktopNotices.KinDesktopNotices;
+      const laptop = yield* desktop.listen(orgId, member, AuthSessionId.make("sess-laptop"));
+      const other = yield* desktop.listen(orgId, member, AuthSessionId.make("sess-member"));
       const linked = { _tag: "device", orgId, sessionId: "sess-laptop" } as const;
       assert.deepStrictEqual(yield* notify(linked), {
         status: "ready",
@@ -1408,6 +1500,11 @@ describe("KinPushSender", () => {
       assert.equal(
         (push!.payload as { body: { deepLink: string } }).body.deepLink,
         "/kin/env_kin/org_01/people/h_member/devices",
+      );
+      assert.deepStrictEqual(yield* Queue.clear(laptop), []);
+      assert.deepStrictEqual(
+        (yield* Queue.clear(other)).map(({ title, ring }) => [title, ring]),
+        [["New device linked", true]],
       );
       // A device already removed again announces nothing.
       apns.sent.length = 0;
@@ -2347,20 +2444,73 @@ describe("KinPushSender", () => {
     }).pipe(Effect.provide(build(apns)));
   });
 
-  it.effect("sends nothing without an APNs key", () => {
-    const apns = makeApns("unconfigured");
-    return Effect.gen(function* () {
-      const { notify, sql } = yield* seed;
-      const messageId = yield* postMessage(sql, { personId: owner, memberId: "m_owner" });
-      assert.deepStrictEqual(yield* notify({ _tag: "message", orgId, messageId }), {
-        status: "unconfigured",
-        sent: 0,
-        suppressed: 0,
-        failed: 0,
-      });
-      assert.strictEqual(apns.sent.length, 0);
-    }).pipe(Effect.provide(build(apns)));
-  });
+  it.effect(
+    "sends desktop notices without phone gateways, with quiet hours, mutes and rationing",
+    () => {
+      const apns = makeApns("unconfigured");
+      const fcm = makeFcm("unconfigured");
+      return Effect.gen(function* () {
+        const { notify, sql } = yield* seed;
+        const messageId = yield* postMessage(sql, { personId: owner, memberId: "m_owner" });
+        assert.deepStrictEqual(yield* notify({ _tag: "message", orgId, messageId }), {
+          status: "unconfigured",
+          sent: 0,
+          suppressed: 0,
+          failed: 0,
+        });
+        const desktop = yield* DesktopNotices.KinDesktopNotices;
+        const queue = yield* desktop.listen(orgId, owner, AuthSessionId.make("sess-rhea-desktop"));
+        const teammate = yield* desktop.listen(orgId, member, AuthSessionId.make("sess-zoya"));
+        const say = Effect.fn("test.say")(function* () {
+          const messageId = yield* postMessage(sql, { agentMemberId: "m_fin_dm" }, "posted", {
+            chatId: "chat_dm",
+            body: "The Tidewater Freight draft is ready.",
+          });
+          yield* notify({ _tag: "message", orgId, messageId });
+          return yield* Queue.clear(queue);
+        });
+        assert.deepStrictEqual(yield* say(), [
+          {
+            title: "Finance · Update",
+            body: "The Tidewater Freight draft is ready.",
+            ring: true,
+            data: {
+              kin: 1,
+              orgId,
+              chatId: KinChatId.make("chat_dm"),
+              deepLink: "/kin/env_kin/org_01/chats/chat_dm",
+            },
+          },
+        ]);
+        assert.deepStrictEqual(yield* Queue.clear(teammate), []);
+        assert.deepStrictEqual(yield* say(), []);
+
+        yield* TestClock.setTime(Date.parse("2026-11-08T03:00:00Z"));
+        assert.deepStrictEqual(
+          (yield* say()).map(({ ring }) => ring),
+          [false],
+        );
+        yield* sql`UPDATE kin_chat_members SET muted_until = '2026-12-01T00:00:00.000Z'
+        WHERE member_id = 'm_owner_dm'`;
+        assert.deepStrictEqual(yield* say(), []);
+        yield* TestClock.adjust("20 hours");
+        yield* sql`UPDATE kin_chat_members SET muted_until = NULL WHERE member_id = 'm_owner_dm'`;
+        // Ring rationing happens after recipient selection and before desktop delivery.
+        yield* sql`CREATE TEMP TRIGGER leave_chat_at_ring AFTER UPDATE ON kin_push_rings
+          WHEN NEW.org_id = 'org_01' AND NEW.person_id = 'h_owner'
+          BEGIN
+            UPDATE kin_chat_members SET left_at = '2026-11-08T23:00:00.000Z'
+            WHERE member_id = 'm_owner_dm';
+          END`;
+        assert.deepStrictEqual(yield* say(), []);
+        const [left] = yield* sql<{ left_at: string | null }>`SELECT left_at
+          FROM kin_chat_members WHERE member_id = 'm_owner_dm'`;
+        assert.equal(left?.left_at, "2026-11-08T23:00:00.000Z");
+        assert.strictEqual(apns.sent.length, 0);
+        assert.strictEqual(fcm.sent.length, 0);
+      }).pipe(Effect.provide(build(apns, fcm)));
+    },
+  );
 });
 
 describe("kinTasksSubject", () => {
@@ -3188,6 +3338,81 @@ describe("KinPushSender withdrawals", () => {
     },
   );
 
+  it.effect(
+    "a held-back message quietly replaces the chat's banner with its count and words",
+    () => {
+      const apns = makeApns();
+      return Effect.gen(function* () {
+        const { notify, sql, sender } = yield* seedTopical;
+        const chatId = KinChatId.make("chat_dm");
+        const collapseId = kinTopicCollapseId(EnvironmentId.make("env_kin"), orgId, "c:chat_dm");
+        const say = (body: string) =>
+          Effect.gen(function* () {
+            apns.sent.length = 0;
+            const messageId = yield* postMessage(sql, { agentMemberId: "m_fin_dm" }, "posted", {
+              chatId,
+              body,
+            });
+            yield* notify({ _tag: "message", orgId, messageId });
+            return messageId;
+          });
+        const pushTo = (token: KinPushToken) => {
+          const push = apns.sent.find((one) => one.token === token);
+          assert.isDefined(push);
+          return push;
+        };
+        const badgeOnly = (token: KinPushToken, badge: number) => {
+          const push = pushTo(token);
+          assert.deepStrictEqual(payloadOf(push).aps, { badge });
+          assert.isUndefined(push.collapseId);
+        };
+
+        yield* say("The invoices are ready.");
+        const first = pushTo(ownerPhone);
+        assert.strictEqual(first.collapseId, collapseId);
+        assert.strictEqual(payloadOf(first).aps.sound, "default");
+
+        yield* TestClock.adjust("20 seconds");
+        const second = yield* say("The renewal is due Friday.");
+        const replacement = pushTo(ownerPhone);
+        assert.deepStrictEqual(payloadOf(replacement).aps.alert, {
+          title: "Finance · 2 new",
+          body: "The renewal is due Friday.",
+        });
+        assert.strictEqual(replacement.collapseId, collapseId);
+        assert.strictEqual(payloadOf(replacement).aps["interruption-level"], "passive");
+        assert.isUndefined(payloadOf(replacement).aps.sound);
+        badgeOnly(ownerTablet, 2);
+
+        yield* sql`INSERT INTO kin_read_state (org_id, chat_id, member_id, last_read_seq, updated_at)
+        SELECT ${orgId}, ${chatId}, 'm_owner_dm', seq, ${T} FROM kin_messages
+        WHERE message_id = ${second}`;
+        yield* notify({ _tag: "read", orgId, chatId, memberId: KinMemberId.make("m_owner_dm") });
+        yield* say("The receipt is filed.");
+        badgeOnly(ownerPhone, 1);
+        apns.sent.length = 0;
+        yield* afterBatch(sender);
+        assert.deepStrictEqual(payloadOf(pushTo(ownerPhone)).body.withdraw, [
+          { topic: "c:chat_dm", version: 2 },
+        ]);
+
+        yield* say("The statement is filed.");
+        badgeOnly(ownerPhone, 2);
+
+        yield* TestClock.adjust("31 minutes");
+        yield* say("The ledger is ready.");
+        assert.strictEqual(payloadOf(pushTo(ownerPhone)).aps.sound, "default");
+        yield* sql`UPDATE kin_chat_members SET muted_until = '2026-12-01T00:00:00.000Z'
+        WHERE member_id = 'm_owner_dm'`;
+        yield* say("The balance is reconciled.");
+        badgeOnly(ownerPhone, 4);
+        yield* TestClock.adjust("31 minutes");
+        yield* say("The report is ready.");
+        badgeOnly(ownerPhone, 5);
+      }).pipe(Effect.provide(build(apns)));
+    },
+  );
+
   it.effect("an agent's withdrawn or replaced message changes its chat's banner quietly", () => {
     const apns = makeApns();
     return Effect.gen(function* () {
@@ -3195,6 +3420,8 @@ describe("KinPushSender withdrawals", () => {
       yield* pairChat(sql);
       const from = { personId: member, memberId: "m_priya_pair" };
       const chatId = KinChatId.make("chat_pair");
+      const desktop = yield* DesktopNotices.KinDesktopNotices;
+      const queue = yield* desktop.listen(orgId, owner, AuthSessionId.make("sess-rhea-desktop"));
       const shown = () =>
         apns.sent
           .filter((push) => push.token === ownerPhone && !push.background)
@@ -3214,10 +3441,16 @@ describe("KinPushSender withdrawals", () => {
       yield* notify({ _tag: "message", orgId, messageId: b });
       apns.sent.length = 0;
 
+      assert.deepStrictEqual(
+        (yield* Queue.clear(queue)).map(({ body }) => body),
+        ["The deck is ready", "Printer says Tuesday"],
+      );
+
       // Put right: the banner shows the new words, with no sound.
       yield* sql`UPDATE kin_messages SET body = 'Printer says Wednesday' WHERE message_id = ${b}`;
       yield* notify({ _tag: "restate", orgId, chatId, messageId: b });
       assert.deepStrictEqual(shown(), [["Printer says Wednesday", null, 3]]);
+      assert.deepStrictEqual(yield* Queue.clear(queue), []);
       // A message the banner no longer shows changes nothing on the phone.
       apns.sent.length = 0;
       yield* notify({ _tag: "restate", orgId, chatId, messageId: a });
@@ -3228,6 +3461,7 @@ describe("KinPushSender withdrawals", () => {
       yield* sql`UPDATE kin_messages SET status = 'deleted' WHERE message_id = ${b}`;
       yield* notify({ _tag: "restate", orgId, chatId, messageId: b });
       assert.deepStrictEqual(shown(), [["The deck is ready", null, 4]]);
+      assert.deepStrictEqual(yield* Queue.clear(queue), []);
       // With nothing older unread, it goes.
       apns.sent.length = 0;
       yield* sql`UPDATE kin_messages SET status = 'deleted' WHERE message_id = ${a}`;

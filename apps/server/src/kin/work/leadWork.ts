@@ -1,5 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous retry-key hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
+import { stableStringify } from "@t3tools/shared/relaySigning";
+import * as CreditNotes from "../gendocs/creditNotes.ts";
 import {
   KinAgentId,
   KinChatError,
@@ -134,6 +136,7 @@ import {
   isClosed,
   ownerZone,
   recordName,
+  creditForInvoice,
   type RecordRow,
   sensitiveNow,
   stepsOf,
@@ -483,15 +486,21 @@ export const GetResult = Schema.Struct({
       Schema.Struct({
         paymentId: Schema.String,
         amount: Schema.String,
+        received: Schema.optional(Schema.String),
+        rate: Schema.optional(Schema.String),
         paidOn: Schema.String,
         note: Schema.optional(Schema.String),
         /** TDS the client deducted: it settles the invoice, but no cash came in. */
         withheld: Schema.optional(Schema.Literal(true)),
+        creditNote: Schema.optional(Schema.Struct({ key: Schema.String, number: Schema.String })),
         voided: Schema.optional(Schema.Literal(true)),
         /** Where it came from: a confirmed bank statement, or who recorded it on whose word. */
         source: Schema.optional(Schema.String),
       }),
     ),
+  ),
+  creditOffer: Schema.optional(
+    Schema.Struct({ receipt: Schema.String, amount: Schema.String, receivedOn: Schema.String }),
   ),
   /** An invoice's or client's: how far Kin sees the bank, for whether money arrived. */
   bank: Schema.optional(BankAnswer),
@@ -672,6 +681,7 @@ export const CreateResult = Schema.Struct({
       state: Schema.optional(KinRecordState),
       stateLabel: Schema.optional(Schema.String),
       suggested: Schema.optional(Schema.Literal(true)),
+      bill: Schema.optional(Schema.String),
       ...Marks.fields,
       /** Open entries close to this one that it was made beside. */
       alsoOpen: Schema.optional(Schema.Array(Near)),
@@ -809,7 +819,7 @@ export const UpdateResult = Schema.Struct({
 
 const Why = KinToolText(
   200,
-  'One line on why them, from what people_read shows, such as "iOS, 2 open, free Thursday". Kin shows it on the task and tells them.',
+  'One line on why them, from what people_read shows, such as "iOS, 2 open, free Thursday". Kin shows it on the task and tells them, so it reads right to them and anyone opening the task: never their name and a colon, never about them in the third person.',
 );
 export const AssignInput = Schema.Struct({
   sourceEventId: TurnEvent,
@@ -2591,6 +2601,8 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   }
   const shell = yield* KinShell.get(lead.orgId);
   const moneyOn = KinShell.sectionOn(shell, "money");
+  const creditOffer =
+    moneyOn && team === undefined ? yield* creditForInvoice(lead.orgId, row) : undefined;
   const invoicesOn = KinShell.sectionOn(shell, "invoices");
   const list = row.registerId;
   const sensitive = new Set(marksOf(view.lists, row).sensitiveFields ?? []);
@@ -2609,7 +2621,9 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   const specChanged = list === "work" && (yield* taskSpecChanged(row, viewer));
   const goal =
     list === "goals"
-      ? (yield* goalsNow(lead.orgId, now, { money: true })).goals.find((one) => one.key === row.key)
+      ? (yield* goalsNow(lead.orgId, now, { money: team === undefined })).goals.find(
+          (one) => one.key === row.key,
+        )
       : undefined;
   const mailed = yield* mailedFor(lead.orgId, row, [
     ...(invoicesOn ? [] : ["invoices", "quotes"]),
@@ -2672,9 +2686,15 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
           payments: detail.payments.map((payment) => ({
             paymentId: payment.paymentId,
             amount: formatMoney(payment.amount),
+            ...(payment.received === undefined ? {} : { received: formatMoney(payment.received) }),
+            ...(payment.rate === undefined ? {} : { rate: payment.rate }),
             paidOn: payment.paidOn,
             ...(payment.note === "" ? {} : { note: payment.note }),
-            ...(payment.withheld === true ? { withheld: true as const } : {}),
+            ...(payment.creditNote !== undefined
+              ? { creditNote: payment.creditNote }
+              : payment.withheld === true
+                ? { withheld: true as const }
+                : {}),
             ...(payment.voidedAt === null ? {} : { voided: true as const }),
             ...(payment.source === undefined
               ? {}
@@ -2693,6 +2713,15 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
           ),
         }
       : {}),
+    ...(creditOffer === undefined
+      ? {}
+      : {
+          creditOffer: {
+            receipt: creditOffer.key,
+            amount: formatMoney(creditOffer.amount),
+            receivedOn: creditOffer.receivedOn,
+          },
+        }),
     ...(taxNote === undefined ? {} : { taxNote }),
     notes: detail.notes,
     ...(assignedBy === undefined ? {} : { assignedBy }),
@@ -2801,6 +2830,39 @@ const createRow = Effect.fnUntraced(function* (
   const records = yield* KinRecords;
   // Before the list is read, so an expense for a list not made yet says what comes first.
   if (asked.amount !== undefined) yield* countryFirst(lead.orgId);
+  if (asked.list === "credit_notes") {
+    const invoice = asked.fields?.invoice;
+    const reason = asked.fields?.reason;
+    if (
+      typeof invoice !== "string" ||
+      typeof reason !== "string" ||
+      typeof asked.amount !== "string"
+    )
+      return yield* invalid("A credit note needs fields.invoice, amount and fields.reason.");
+    if (team !== undefined) return yield* TEAM_REFUSED;
+    const target =
+      (yield* records.get(lead.orgId, invoice)) ?? (yield* byNumber(lead.orgId, invoice));
+    if (target?.registerId !== "invoices") return yield* notFound(invoice);
+    const parsed = parseAmount(
+      asked.amount,
+      asked.currency ?? target.currency ?? (yield* homeCurrency(lead.orgId)),
+    );
+    if ("error" in parsed) return yield* parsed.error;
+    const notes = yield* CreditNotes.CreditNotes;
+    const { row, created } = yield* notes.draft(lead.orgId, writer, {
+      invoice: target.key,
+      amount: parsed.money,
+      reason,
+      originKey: `lead:${sourceEventId}:${retryKey(stableStringify([target.key, asked.title, reason, parsed.money]))}`,
+    });
+    return {
+      key: row.key,
+      title: row.title,
+      created,
+      state: row.state,
+      stateLabel: "Draft",
+    };
+  }
   const def = yield* listFor(lead, asked.list ?? "work");
   const list = def.id;
   if (
@@ -3126,9 +3188,23 @@ const createRow = Effect.fnUntraced(function* (
     ...(alsoNamed === undefined ? {} : { alsoNamed }),
     ...(sameEmail === undefined ? {} : { sameEmail }),
     ...(created ? closedNotWoken(lead, [], stored) : {}),
+    ...(writer.actor._tag !== "agent" || stored.registerId !== "expenses" || stored.state !== "open"
+      ? {}
+      : pair?.receipt === true
+        ? {
+            bill: `${stored.key} keeps the receipt and stays To pay: only the owner or a co-owner marks it paid. Say so, or offer mark_bill_paid if a bank debit paid it.`,
+          }
+        : isSuggestion(stored) && stored.amountMinor !== null
+          ? {
+              bill: suggestedBillResult(stored.key),
+            }
+          : {}),
     ...(yield* unconfirmedOn(stored)),
   };
 });
+export const suggestedBillResult = (key: string) =>
+  `${key} waits as a suggested bill to pay; it counts in To pay once the owner records it. Ask once with kin_ask, an option with action record_bill on ${key}.`;
+
 const DEAL_FIELDS = ["stage", "source", "lostReason", "concerns"];
 const dealFields = (fields: FieldInputs | undefined) => {
   const given = fields ?? {};
@@ -3409,7 +3485,11 @@ export const countryWorded = <A, E, R>(lead: Lead, saved: boolean, call: Effect.
     ),
   );
 export const create = leadTool("KinWorkTools.create", (lead, input: typeof CreateInput.Type) =>
-  countryWorded(lead, input.records.length > 1, runCreate(lead, input)),
+  countryWorded(
+    lead,
+    input.records.length > 1,
+    runCreate(lead, input).pipe(Effect.provide(CreditNotes.layer)),
+  ),
 );
 
 /** A client's kind or an entry's category; a client with neither is a client. */
@@ -3659,12 +3739,13 @@ const keepPairedFiles = Effect.fn("KinWorkTools.keepPairedFiles")(function* (
         ),
       )
     : {};
+  const settles = paid.receipt && !(writer.actor._tag === "agent" && entry.state === "open");
   const patch = {
     ...(Object.keys(added).length + Object.keys(how).length === 0
       ? {}
       : { fields: { ...added, ...how } }),
-    ...(paid.receipt && entry.state !== "done" ? { state: "done" as const } : {}),
-    ...(paid.receipt && paid.dateAt !== undefined && paid.dateAt !== entry.dateAt
+    ...(settles && entry.state !== "done" ? { state: "done" as const } : {}),
+    ...(settles && paid.dateAt !== undefined && paid.dateAt !== entry.dateAt
       ? { dateAt: paid.dateAt, dateAllDay: paid.dateAllDay ?? true }
       : {}),
   };
@@ -4027,6 +4108,11 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, asked: 
   const inProject = projectId !== undefined ? projectId : spine.projectId;
   const written: Patch = {
     ...patch,
+    ...(before.registerId === "goals" &&
+    input.measure !== undefined &&
+    isMoneyMeasure(input.measure)
+      ? { sensitive: true }
+      : {}),
     ...(partyId === undefined ? {} : { partyId }),
     ...(inProject === undefined ? {} : { projectId: inProject }),
     ...(Object.keys(fields).length === 0 ? {} : { fields }),

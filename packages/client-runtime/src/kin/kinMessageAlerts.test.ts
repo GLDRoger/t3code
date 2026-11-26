@@ -1,8 +1,10 @@
+import type { ClientSettings } from "@t3tools/contracts/settings";
 import { describe, expect, it } from "vite-plus/test";
 
 import type { KinChatListRow } from "./kinChatListRows.ts";
 import {
   kinArrivalNotices,
+  kinDesktopNoticeShows,
   kinNewArrivals,
   kinSettledAlertChats,
   kinUnreadSeen,
@@ -39,6 +41,30 @@ describe("kinArrivalNotices", () => {
     expect([ids(here.system), ids(here.inApp)]).toEqual([[], ["b"]]);
     const elsewhere = kinArrivalNotices(arrivals, { looking: true, onScreenChatId: null });
     expect(ids(elsewhere.inApp)).toEqual(["a", "b"]);
+    const desktopCases = {
+      off: [null, null],
+      notifications: [
+        { banner: true, sound: false },
+        { banner: true, sound: false },
+      ],
+      sound: [
+        { banner: false, sound: false },
+        { banner: false, sound: true },
+      ],
+      "notifications-and-sound": [
+        { banner: true, sound: false },
+        { banner: true, sound: true },
+      ],
+    } as const satisfies Record<ClientSettings["notificationMode"], readonly [unknown, unknown]>;
+    for (const mode in desktopCases) {
+      const setting = mode as keyof typeof desktopCases;
+      for (const ring of [false, true]) {
+        expect(kinDesktopNoticeShows({ ring }, { looking: true, mode: setting })).toBeNull();
+        expect(kinDesktopNoticeShows({ ring }, { looking: false, mode: setting })).toEqual(
+          desktopCases[setting][ring ? 1 : 0],
+        );
+      }
+    }
   });
 });
 

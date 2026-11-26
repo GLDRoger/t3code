@@ -1,7 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { kinFeedViewer } from "@t3tools/client-runtime/kin/kinChatFeed";
 import { kinIsDealKey } from "@t3tools/client-runtime/kin/kinDeals";
 import {
+  KIN_FOLLOW_UP_COPY,
   KIN_WATCH_COPY,
   KIN_WATCH_LOG_INTRO,
   KIN_WATCH_LOG_TITLE,
@@ -9,9 +12,10 @@ import {
   kinWatchLimitLine,
   kinWatchLogDay,
   kinWatchLogRows,
-  kinWatchNoneText,
-  kinWatchNothingToday,
+  kinWatchEmptyLine,
+  kinFollowUpView,
 } from "@t3tools/client-runtime/kin/kinWatches";
+import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import {
   EnvironmentId,
   KinOrgId,
@@ -26,16 +30,19 @@ import { useState } from "react";
 import { View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
+import { Button } from "../../components/ui/Button";
 import { ListActionRow } from "../../components/ui/ListActionRow";
 import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
 import { useNowMinuteMs } from "../../lib/clock";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { useAtomCommand } from "../../state/use-atom-command";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 import { kinClient } from "./state/kinClient";
-import type { KinWorkTarget } from "./state/useKinWork";
+import { useKinHostAt } from "./state/useKinHost";
+import { useKinWorkZone, type KinWorkTarget } from "./state/useKinWork";
 
 export type KinWatchLogParams = { readonly environmentId: string; readonly orgId: string };
 
@@ -60,6 +67,9 @@ export function KinWatchLogScreen({ route }: StaticScreenProps<KinWatchLogParams
       <Text textRole="footnote" className="px-4 text-foreground-muted">
         {KIN_WATCH_LOG_INTRO}
       </Text>
+      {environmentId === null || orgId === null ? null : (
+        <KinFollowUps environmentId={environmentId} orgId={orgId} />
+      )}
       {environmentId === null || orgId === null
         ? null
         : days.map((day, index) => (
@@ -73,6 +83,86 @@ export function KinWatchLogScreen({ route }: StaticScreenProps<KinWatchLogParams
             />
           ))}
     </KinWorkFrame>
+  );
+}
+
+/** The one-time follow-ups agents promised, each with Stop for whoever may stop it. None: no part. */
+function KinFollowUps(props: KinWorkTarget) {
+  const { environmentId, orgId } = props;
+  const atom = kinClient.followUps({ environmentId, input: { orgId } });
+  const result = useAtomValue(atom);
+  const ownerLevel = useKinIsOwnerLevel(environmentId);
+  const host = useKinHostAt(environmentId);
+  const { personId } = kinFeedViewer(
+    host._tag === "host" && host.probe._tag === "ready" ? host.probe.orgs : null,
+    orgId,
+  );
+  const { zone } = useKinWorkZone(props);
+  const mayStop = useAtomValue(kinClient.stopFollowUp.permissionAtom(environmentId));
+  const stop = useAtomCommand(kinClient.stopFollowUp, { reportFailure: false });
+  const [busy, setBusy] = useState<string | null>(null);
+  const [problem, setProblem] = useState<string | null>(null);
+  const followUps = Option.getOrNull(AsyncResult.value(result))?.followUps ?? null;
+
+  if (followUps === null)
+    return AsyncResult.isFailure(result) ? (
+      <ListSection title={KIN_FOLLOW_UP_COPY.title}>
+        <KinLoadFailed
+          variant="card"
+          title={KIN_FOLLOW_UP_COPY.unreadable}
+          cause={result}
+          onRetry={() => appAtomRegistry.refresh(atom)}
+        />
+      </ListSection>
+    ) : null;
+  if (followUps.length === 0) return null;
+
+  const onStop = async (itemId: (typeof followUps)[number]["itemId"]) => {
+    if (busy !== null) return;
+    setBusy(itemId);
+    setProblem(null);
+    const done = await stop({ environmentId, input: { orgId, itemId } });
+    setBusy(null);
+    if (!AsyncResult.isSuccess(done))
+      setProblem(kinFailureText(squashAtomCommandFailure(done), KIN_FOLLOW_UP_COPY.failed));
+    appAtomRegistry.refresh(atom);
+  };
+  return (
+    <ListSection title={KIN_FOLLOW_UP_COPY.title}>
+      {followUps.map((followUp) => {
+        const view = kinFollowUpView(
+          followUp,
+          { ownerLevel, personId },
+          zone === null ? {} : { zone },
+        );
+        return (
+          <View key={view.itemId} className="bg-grouped-card">
+            <ListRowLayout
+              label={view.title}
+              description={view.lines.join(" ")}
+              accessory={
+                view.stop && mayStop ? (
+                  <Button
+                    tone="outline"
+                    size="compact"
+                    label={KIN_FOLLOW_UP_COPY.stop}
+                    accessibilityLabel={KIN_FOLLOW_UP_COPY.stopFor(view.title)}
+                    loading={busy === view.itemId}
+                    disabled={busy !== null && busy !== view.itemId}
+                    onPress={() => void onStop(followUp.itemId)}
+                  />
+                ) : undefined
+              }
+            />
+          </View>
+        );
+      })}
+      {problem === null ? null : (
+        <Text accessibilityRole="alert" className="px-4 py-2 text-sm text-danger-foreground">
+          {problem}
+        </Text>
+      )}
+    </ListSection>
   );
 }
 
@@ -95,6 +185,10 @@ function KinWatchLogDay(
   const value = Option.getOrNull(AsyncResult.value(result));
   const now = useNowMinuteMs();
   const ownerLevel = useKinIsOwnerLevel(environmentId);
+  const followUps =
+    Option.getOrNull(
+      AsyncResult.value(useAtomValue(kinClient.followUps({ environmentId, input: { orgId } }))),
+    )?.followUps.length ?? 0;
   const open = (look: KinWatchLogLook) => {
     const key = look.recordKey;
     if (key === null || !isRecordKey(key)) return undefined;
@@ -128,14 +222,11 @@ function KinWatchLogDay(
 
   const lines = kinWatchLogRows(value.rows);
   const limitFrom = kinWatchLimitFrom(value.rows);
-  const none = value.rows.length === 0 && value.watching === 0 && value.earlier === null;
   return (
     <ListSection title={title}>
       {value.rows.length === 0 ? (
         <View className="bg-grouped-card">
-          <ListRowLayout
-            label={none ? kinWatchNoneText(ownerLevel) : kinWatchNothingToday(value.nextLookAt)}
-          />
+          <ListRowLayout label={kinWatchEmptyLine(value, { ownerLevel, followUps })} />
         </View>
       ) : null}
       {limitFrom === null ? null : (

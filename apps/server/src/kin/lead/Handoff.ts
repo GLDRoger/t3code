@@ -165,6 +165,20 @@ export const leftNote = (
 /** What `relay` posts with: the gate's message to one person (`KinLevelGate.postTo`). */
 type PostTo = KinLevelGate["Service"]["postTo"];
 
+/** The message a check-in's fact hand-off posts in the other agent's chat with the owner. */
+export const passedFactBody = (input: {
+  readonly request: string;
+  readonly from: string | undefined;
+  readonly about: string;
+  readonly consequence: string;
+  readonly key: string;
+}) =>
+  [
+    input.request.replace(/\s+/g, " "),
+    `From ${input.from ?? "Kin's facts"}: ${input.about}: ${input.consequence} (${input.key})`,
+  ]
+    .join("\n")
+    .slice(0, messageBodyLimit);
 const NOTHING = "Nothing was passed on.";
 /** What a hand-off or relay sent after an outside read tells the sending agent. */
 const AS_REQUEST = " It went as a request, with its source.";
@@ -1394,12 +1408,13 @@ const make = Effect.gen(function* () {
       fact.subject.key === fact.subject.title
         ? fact.subject.title
         : `${recordName(fact.subject.key, fact.subject.number)} ${fact.subject.title}`;
-    const body = [
-      input.request.replace(/\s+/g, " "),
-      `From ${event.checkIn?.title ?? "Kin's facts"}: ${about}: ${fact.consequence} (${fact.key})`,
-    ]
-      .join("\n")
-      .slice(0, messageBodyLimit);
+    const body = passedFactBody({
+      request: input.request,
+      from: event.checkIn?.title,
+      about,
+      consequence: fact.consequence,
+      key: fact.key,
+    });
     const read = yield* outsideStamp(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     const named = yield* readNames(ctx, read, target.ownerPersonId);
     // Shown the T3 way, on the owner's side as sent by the passing agent; he didn't write it.

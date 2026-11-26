@@ -83,7 +83,7 @@ import { KinWorkRow } from "./KinWorkTasks";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinDealPage, useKinDealSend } from "./useKinDeals";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
-import { useKinShell } from "./useKinShell";
+import { useKinSectionNamed, useKinShell } from "./useKinShell";
 import { useKinInvoiceFromQuote } from "./useKinMoneyAnswers";
 import { useKinHomeCurrency } from "./useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
@@ -166,6 +166,7 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
   const { page, directory } = props;
   const { deal, stages } = page;
   const names = directory.names;
+  const named = useKinSectionNamed(props.environmentId);
   const now = new Date(useNowMinuteMs());
   const send = useKinDealSend(props);
   const invoice = useKinInvoiceFromQuote(props);
@@ -466,7 +467,7 @@ function DealBody(props: DealPageProps & { readonly page: KinDealPageValue }) {
 
       <KinWorkSection title={KIN_DEALS.details}>
         <dl className="grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-sm">
-          <dt className="text-muted-foreground">{KIN_DEALS.clientField}</dt>
+          <dt className="text-muted-foreground">{named(KIN_DEALS.clientField)}</dt>
           <dd>
             <button
               type="button"
@@ -716,6 +717,7 @@ function DealEdit(
   const send = useKinDealSend(props);
   const home = useKinHomeCurrency(props);
   const ownerLevel = useKinOwnerLevel(props.environmentId);
+  const named = useKinSectionNamed(props.environmentId);
   const [opened] = useState(() => kinDealEditDraft({ ...deal, notes: props.page.notes }, names));
   const [draft, setDraft] = useState(opened);
   const [busy, setBusy] = useState(false);
@@ -759,7 +761,11 @@ function DealEdit(
       onClose={props.onClose}
       typed={kinFormTyped(opened, draft)}
     >
-      <Field id={ids.party} label={KIN_DEALS.clientField} hint={KIN_DEALS.clientStays}>
+      <Field
+        id={ids.party}
+        label={named(KIN_DEALS.clientField)}
+        hint={named(KIN_DEALS.clientStays)}
+      >
         <Input id={ids.party} value={deal.party.title} readOnly />
       </Field>
       <Field id={ids.title} label={KIN_DEALS.what}>
@@ -814,7 +820,7 @@ function DealEdit(
       {!ownerLevel ? null : (
         <PrivateSwitch
           label={KIN_DEALS.privateLabel}
-          note={draft.private ? KIN_DEALS.privateOn : KIN_DEALS.privateOff}
+          note={named(draft.private ? KIN_DEALS.privateOn : KIN_DEALS.privateOff)}
           checked={draft.private}
           disabled={busy}
           onChange={(on) => set({ private: on })}
