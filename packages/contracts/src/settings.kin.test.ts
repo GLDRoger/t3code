@@ -10,7 +10,7 @@ it("defaults session carry and upkeep off and accepts bounded compaction patches
   expect(decodeServerSettings({})).toMatchObject({
     kinSessionCarry: false,
     kinSessionUpkeep: false,
-    kinSessionCompactAtTokens: 100_000,
+    kinSessionCompactAtTokens: 500_000,
   });
   expect(
     decodeServerSettingsPatch({
@@ -21,9 +21,9 @@ it("defaults session carry and upkeep off and accepts bounded compaction patches
   ).toEqual({
     kinSessionCarry: true,
     kinSessionUpkeep: true,
-    kinSessionCompactAtTokens: 70_000,
+    kinSessionCompactAtTokens: 100_000,
   });
   expect(
-    decodeServerSettings({ kinSessionCompactAtTokens: 200_000 }).kinSessionCompactAtTokens,
-  ).toBe(150_000);
+    decodeServerSettings({ kinSessionCompactAtTokens: 900_000 }).kinSessionCompactAtTokens,
+  ).toBe(800_000);
 });

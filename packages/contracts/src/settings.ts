@@ -1410,7 +1410,7 @@ export const ServerSettings = Schema.Struct({
   kinSessionCarry: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   kinSessionUpkeep: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   kinSessionCompactAtTokens: KinSessionCompactAtTokens.pipe(
-    Schema.withDecodingDefault(Effect.succeed(100_000)),
+    Schema.withDecodingDefault(Effect.succeed(500_000)),
   ),
   /** Server-maintained history keeps old worktrees eligible for cleanup and review diffs. */
   previousWorktreesDirectories: Schema.Array(TrimmedString).pipe(
