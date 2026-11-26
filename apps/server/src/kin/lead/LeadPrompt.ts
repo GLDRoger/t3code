@@ -3201,7 +3201,7 @@ export const TURN_DIVIDER = "--- THIS TURN ---";
 const dividerPart = { place: "divider", shared: true, text: TURN_DIVIDER } as const;
 // Words under eval: change them only with the carry cases.
 export const CARRIED_TURN_NOTE =
-  "This turn continues your session in this chat: the replies in it were sent and the person has them. What changed since your previous turn is listed here; what you read in this session and is not listed is as you read it. Anything someone says has changed, and anything you have not read in this session, is as Kin's tools show it now.";
+  "This turn continues your session in this chat: the replies in it were sent and the person has them. Kin lists here every change since your previous turn, by anyone, to what you read in this session, payments and edits included; what you read and is not listed is as you read it. Anything someone says has changed, and anything you have not read in this session, is as Kin's tools show it now.";
 export const NOTHING_NOW = "(nothing now)";
 export const COMPACT_INSTRUCTIONS =
   "Keep what the owner asked and decided in this chat, questions you asked that are still open, what you said you would do and when, and the record keys, ids and names involved. Leave out tool results and the contents of memory, Work entries and documents: they can be read again.";
