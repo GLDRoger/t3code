@@ -95,6 +95,7 @@ export const KIN_REPLY_BUBBLES_MAX = 4;
 export function kinReplyBubbles(body: string): ReadonlyArray<string> {
   const text = body.trim();
   if (text === "") return [];
+  if (/^(?:\t| {4})[ \t]*\S/m.test(body)) return [body.replace(/^(?:[ \t]*\r?\n)+/, "").trimEnd()];
   if (scanKinDocFences(text).found.length > 0 || text.includes(KIN_FIGURE_SCHEME)) return [text];
   for (const line of text.split("\n")) {
     if (
@@ -102,6 +103,7 @@ export function kinReplyBubbles(body: string): ReadonlyArray<string> {
       TABLE_RULE.test(line) ||
       LIST_ITEM.test(line) ||
       QUOTE_LINE.test(line) ||
+      line.startsWith("Subject:") ||
       headingOf(line) !== null
     )
       return [text];
@@ -110,6 +112,7 @@ export function kinReplyBubbles(body: string): ReadonlyArray<string> {
     .split(/\r?\n(?:[ \t]*\r?\n)+/)
     .map((part) => part.trim())
     .filter((part) => part !== "");
+  if (parts.some((part) => part.endsWith(":") || /^[^\n]{1,39},$/.test(part))) return [text];
   return parts.length >= 2 && parts.length <= KIN_REPLY_BUBBLES_MAX ? parts : [text];
 }
 

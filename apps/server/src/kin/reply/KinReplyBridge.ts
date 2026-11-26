@@ -2,6 +2,8 @@ import {
   CommandId,
   KIN_DOC_CARD,
   KIN_MESSAGE_BODY_MAX_LENGTH,
+  KIN_REPLY_BUBBLES_MAX,
+  KinAgentMessageBody,
   KinChatId,
   KIN_TEAM_ROOM_TEAM_ID,
   KinText,
@@ -278,6 +280,7 @@ class KinReplySendError extends Schema.TaggedError<KinReplySendError>()("KinRepl
   }
 }
 
+const decodeCheckInText = Schema.decodeUnknownEffect(KinAgentMessageBody);
 const decodeSendText = Schema.decodeUnknownEffect(
   KinText.check(Schema.makeFilter((body) => body.trim() !== "")),
 );
@@ -406,6 +409,7 @@ export class KinReplyBridge extends Context.Service<
       readonly projectId: ProjectId;
       readonly rootRunId: RunId;
       readonly rescue: boolean;
+      readonly stopped?: boolean;
     }) => Effect.Effect<void>;
     readonly send: (input: SendInput) => Effect.Effect<SendResult, KinReplySendError>;
     /**
@@ -647,6 +651,15 @@ const make = Effect.gen(function* () {
         repliedBy(wake, ordinal)(),
       )
       .pipe(
+        Effect.tap((messages) =>
+          messages.length > KIN_REPLY_BUBBLES_MAX
+            ? Effect.logWarning("Kin reply posted in many parts", {
+                wakeupId: wake.wakeupId,
+                parts: messages.length,
+                chars: messages.reduce((total, message) => total + message.body.length, 0),
+              })
+            : Effect.void,
+        ),
         Effect.map((messages) => {
           const last = messages.at(-1)!;
           return {
@@ -931,7 +944,7 @@ const make = Effect.gen(function* () {
   });
   const replyText = Effect.fn("KinReplyBridge.replyText")(function* (wake: Wake, text: string) {
     return withoutAsked(
-      stripTrailingSilenceMarker(text.trim()),
+      stripTrailingSilenceMarker(text.replace(/^(?:[ \t]*\r?\n)+/, "").trimEnd()),
       yield* asked(wake).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => [])),
     );
   });
@@ -1037,12 +1050,16 @@ const make = Effect.gen(function* () {
       );
   });
 
-  const flushReplies = Effect.fn("KinReplyBridge.flushReplies")(function* (wake: Wake) {
+  const flushReplies = Effect.fn("KinReplyBridge.flushReplies")(function* (
+    wake: Wake,
+    stopped: boolean,
+  ) {
     const held = [...wake.segments.values()]
       .filter((segment) => segment.outcome === "held")
       .toSorted((a, b) => a.ordinal - b.ordinal);
     const note = wake.notes.at(-1);
     if (
+      !stopped &&
       held.length === 0 &&
       note?.outcome === "note" &&
       wake.sendReceipt === undefined &&
@@ -1051,14 +1068,17 @@ const make = Effect.gen(function* () {
       held.push(note);
     const slots = [...Map.groupBy(held, (segment) => slotKey(wake, segment.ordinal))];
     for (const [index, [slot, segments]] of slots.entries()) {
-      const text = yield* replyText(
-        wake,
-        uniqueParagraphs(segments.map((segment) => segment.text).join("\n\n")),
-      );
-      const last = segments.at(-1)!;
+      const heldText = uniqueParagraphs(segments.map((segment) => segment.text).join("\n\n"));
       const setOutcome = (outcome: Outcome) => {
         for (const segment of segments) segment.outcome = outcome;
       };
+      if (stopped) {
+        setOutcome("dropped");
+        yield* journal(wake, [`Not sent: ${cutLabel(heldText)}`]);
+        continue;
+      }
+      const text = yield* replyText(wake, heldText);
+      const last = segments.at(-1)!;
       if (wake.lane.team === true || wake.lane.quiet === true) {
         setOutcome("dropped");
         continue;
@@ -1109,23 +1129,25 @@ const make = Effect.gen(function* () {
         yield* stamp(wake, "posted_at");
         continue;
       }
-      const earlier =
-        author === undefined
-          ? undefined
-          : yield* askMessage(wake).pipe(Effect.orElseSucceed(() => undefined));
+      const earlier = wake.replied
+        ? undefined
+        : yield* askMessage(wake).pipe(Effect.orElseSucceed(() => undefined));
+      const sameAsk =
+        earlier !== undefined &&
+        earlier.body.length + text.length + 2 <= KIN_MESSAGE_BODY_MAX_LENGTH;
       const cardId =
-        author === undefined
+        author === undefined || sameAsk
           ? null
           : yield* chat.replyCard(author, wake.lane.chatId).pipe(Effect.orElseSucceed(() => null));
-      const join =
-        earlier !== undefined &&
-        earlier.body.length + body.length + 2 <= KIN_MESSAGE_BODY_MAX_LENGTH
-          ? { ...earlier, earlier: true as const }
-          : cardId !== null
-            ? { messageId: cardId, body: "" }
-            : undefined;
+      const join: Slot | undefined = sameAsk
+        ? { ...earlier, earlier: true }
+        : cardId !== null
+          ? { messageId: cardId, body: "" }
+          : undefined;
       const joined =
-        join === undefined ? undefined : yield* appendTo(wake, join, body, last.ordinal);
+        join === undefined
+          ? undefined
+          : yield* appendTo(wake, join, join.earlier === true ? text : body, last.ordinal);
       const result =
         joined === undefined || (joined._tag === "withheld" && joined.reason === "not_found")
           ? yield* deliver(
@@ -1145,7 +1167,12 @@ const make = Effect.gen(function* () {
       setOutcome("posted");
       wake.answered = true;
       wake.replied = true;
-      wake.lastReply = "last" in result ? result.last : result;
+      wake.lastReply =
+        "last" in result
+          ? result.last
+          : join?.earlier === true
+            ? { ...join, body: result.body }
+            : result;
       yield* stamp(wake, "posted_at");
     }
   });
@@ -1209,7 +1236,8 @@ const make = Effect.gen(function* () {
           return wake.sendReceipt.result;
         }
         if (wake.done) return yield* new KinReplySendError({ reason: "not running" });
-        const body = yield* decodeSendText(input.text).pipe(
+        const decode = input.level === "check_in" ? decodeCheckInText : decodeSendText;
+        const body = yield* decode(input.text).pipe(
           Effect.mapError(() => new KinReplySendError({ reason: "not posted" })),
         );
         const clientMessageId = sendClientMessageId(wake.wakeupId);
@@ -1667,6 +1695,7 @@ const make = Effect.gen(function* () {
       readonly projectId: ProjectId;
       readonly rootRunId: RunId;
       readonly rescue: boolean;
+      readonly stopped?: boolean;
     }) {
       const wake = byWakeup.get(input.wakeupId);
       if (wake === undefined || wake.orgId !== input.orgId || wake.done) return;
@@ -1674,7 +1703,8 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           if (wake.done) return true;
           yield* settle(wake, input.rootRunId);
-          yield* flushReplies(wake);
+          yield* flushReplies(wake, input.stopped === true);
+          if (input.stopped === true) return false;
           yield* settlePage(wake, input.rescue);
           yield* settleFigures(wake);
           yield* keptPromises(wake);
@@ -1698,7 +1728,7 @@ const make = Effect.gen(function* () {
             orgId: wake.orgId,
             wakeupId: wake.wakeupId,
             chatId: wake.lane.chatId,
-            completed: input.rescue,
+            completed: input.rescue && input.stopped !== true,
             readFacts: (factKeys) =>
               Effect.flatMap(Clock.currentTimeMillis, (at) =>
                 KinPulse.read({
@@ -1732,7 +1762,7 @@ const make = Effect.gen(function* () {
           ? "marker"
           : "none";
       };
-      if (answeredOnFirstRun || !input.rescue) {
+      if (answeredOnFirstRun || !input.rescue || input.stopped === true) {
         yield* settled;
         return endingFor(false);
       }

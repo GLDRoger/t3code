@@ -71,9 +71,10 @@ import * as ChatWake from "../lead/ChatWake.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
+import { MemoryWriter } from "../memory/MemoryWriter.ts";
 import { leftOpen } from "../pulse/leftForCheckIn.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
-import { CAPTION_PROMPT, RESCUE_PROMPT, SILENCE_MARKERS } from "./classify.ts";
+import { CAPTION_PROMPT, cutLabel, RESCUE_PROMPT, SILENCE_MARKERS } from "./classify.ts";
 import { claudeThinkingItemId } from "./claudeThinkingItem.ts";
 import { KinPresence } from "./KinPresence.ts";
 import * as ReplyBridge from "./KinReplyBridge.ts";
@@ -276,6 +277,8 @@ const setup = Effect.fn("test.setup")(function* (input: {
   readonly changedFrom?: "👎";
   /** Runs as the agent's reply is written onto a message it already posted, before the write. */
   readonly beforeExtend?: Effect.Effect<void>;
+  readonly afterExtend?: Effect.Effect<void>;
+  readonly journalLines?: Array<string>;
   /** Wakes on this event instead, given the org and the lead's direct chat. */
   readonly event?: (context: {
     readonly owner: PersonIdentity;
@@ -380,18 +383,32 @@ const setup = Effect.fn("test.setup")(function* (input: {
     interrupts: [],
   };
   const gate = Context.get(services, KinLevelGate);
-  const before = input.beforeExtend;
+  const { beforeExtend, afterExtend, journalLines } = input;
   const gated =
-    before === undefined
+    beforeExtend === undefined && afterExtend === undefined
       ? services
       : Context.add(services, KinLevelGate, {
           ...gate,
           extend: (agent, extendInput, bind) =>
-            before.pipe(Effect.andThen(gate.extend(agent, extendInput, bind))),
+            (beforeExtend ?? Effect.void).pipe(
+              Effect.andThen(gate.extend(agent, extendInput, bind)),
+              Effect.tap(() => afterExtend ?? Effect.void),
+            ),
+        });
+  const journal =
+    journalLines === undefined
+      ? Layer.empty
+      : Layer.mock(MemoryWriter)({
+          appendJournal: (_orgId, _wakeupId, lines) =>
+            Effect.sync(() => {
+              journalLines.push(...lines);
+            }),
         });
   const context = yield* Layer.build(
     ReplyBridge.layer.pipe(
-      Layer.provide(Layer.mergeAll(Layer.succeedContext(gated), fakeThreads(fake, wakeupId))),
+      Layer.provide(
+        Layer.mergeAll(Layer.succeedContext(gated), fakeThreads(fake, wakeupId), journal),
+      ),
     ),
   );
   const bridge = Context.get(context, ReplyBridge.KinReplyBridge);
@@ -611,12 +628,13 @@ it.effect.each(["person asks", "person asks live", "person reads", "trigger asks
     }).pipe(Effect.provide(layer)),
 );
 
-it.effect.each(["complete", "failed", "stopped"] as const)(
+it.effect.each(["complete", "failed", "paused", "stopped"] as const)(
   "holds finished text while the turn works, then handles %s",
   (ending) =>
     Effect.gen(function* () {
-      const { fake, runId, complete, posted, bridge, owner, wakeupId, projectId, services } =
-        yield* setup({ ask: "Tell me everything" });
+      const journalLines: Array<string> = [];
+      const { fake, runId, complete, posted, bridge, owner, wakeupId, projectId, services, sql } =
+        yield* setup({ ask: "Tell me everything", journalLines });
       const body = "Here is the answer. " + "Every detail is ready. ".repeat(9).trim();
       const all = yield* Context.get(services, KinChatHub).subscribeAll;
       const working = yield* all.pipe(
@@ -633,24 +651,30 @@ it.effect.each(["complete", "failed", "stopped"] as const)(
       for (const item of fake.items) yield* Queue.offer(fake.live, itemEvent(item));
       yield* Fiber.join(working);
       const before = yield* posted;
-      if (ending === "stopped") yield* bridge.end({ orgId: owner.orgId, agentId, wakeupId });
-      else if (ending === "failed")
+      if (ending === "paused") yield* bridge.end({ orgId: owner.orgId, agentId, wakeupId });
+      else if (ending === "failed" || ending === "stopped")
         yield* bridge.complete({
           orgId: owner.orgId,
           wakeupId,
           projectId,
           rootRunId: runId,
           rescue: false,
+          stopped: ending === "stopped",
         });
       else yield* complete;
       assert.deepStrictEqual(
         { before: before.map((row) => row.body), after: (yield* posted).map((row) => row.body) },
-        { before: [], after: ending === "stopped" ? [] : [body] },
+        { before: [], after: ending === "stopped" || ending === "paused" ? [] : [body] },
       );
+      if (ending === "stopped") {
+        assert.deepStrictEqual(journalLines, [`Not sent: ${cutLabel(body)}`]);
+        assert.strictEqual(yield* endingOf(sql, wakeupId), "none");
+        assert.strictEqual(fake.rescues, 0);
+      }
     }).pipe(Effect.provide(layer)),
 );
 
-it.effect.each(["heading", "long page", "long line", "Team room"] as const)(
+it.effect.each(["heading", "long page", "long line", "indented code", "Team room"] as const)(
   "keeps the whole reply in the right shape for a %s",
   (scenario) =>
     Effect.gen(function* () {
@@ -668,11 +692,17 @@ it.effect.each(["heading", "long page", "long line", "Team room"] as const)(
           ? ["## Work\n" + "a".repeat(10_000), "## People\n" + "b".repeat(10_000)]
           : scenario === "long line"
             ? ["a".repeat(16_000), "b".repeat(16_000), "c".repeat(1_000)]
-            : [scenario === "heading" ? `## Work\n\n${first}\n\n${final}` : `${first}\n\n${final}`];
+            : scenario === "indented code"
+              ? ["    vp test run\n\nThen push."]
+              : [
+                  scenario === "heading"
+                    ? `## Work\n\n${first}\n\n${final}`
+                    : `${first}\n\n${final}`,
+                ];
       fake.items = [text("a", 1, page.join(scenario === "long line" ? "" : "\n\n"), runId)];
       yield* complete;
       assert.deepStrictEqual(
-        (yield* posted).map((row) => row.body.trim()),
+        (yield* posted).map((row) => (scenario === "indented code" ? row.body : row.body.trim())),
         page,
       );
     }).pipe(Effect.provide(layer)),
@@ -746,6 +776,18 @@ it.effect.each([
     earlier: "Reviewed acme/app#6: nothing blocking.",
     notices: 0,
   },
+  {
+    name: "two paragraphs after another of the same ask",
+    earlier: "Reviewed acme/app#6: nothing blocking.",
+    notices: 0,
+    variant: "paragraphs",
+  },
+  {
+    name: "a later figure after someone writes following the join",
+    earlier: "Reviewed acme/app#6: nothing blocking.",
+    notices: 0,
+    variant: "figure",
+  },
   // Owed to the person who asked: never held back by the hourly room for unprompted notices.
   { name: "past the hourly notice limit", earlier: undefined, notices: 10 },
   // Mate writes as the line is joined: it no longer reads as one message, so it is a new one.
@@ -755,115 +797,147 @@ it.effect.each([
     notices: 0,
     cutIn: true,
   },
-])("a review someone asked for answers in their chat: $name", ({ earlier, notices, cutIn }) =>
+])("a review someone asked for answers in their chat: $name", (scenario) =>
   Effect.gen(function* () {
+    const { earlier, notices, cutIn, variant } = scenario;
     const line =
-      "Reviewed acme/app#7: one blocking bug in the date parser. https://github.com/acme/app/pull/7#pullrequestreview-9";
+      variant === "paragraphs"
+        ? "Reviewed acme/app#7: one blocking bug.\n\nThe date parser rejects leap days."
+        : "Reviewed acme/app#7: one blocking bug in the date parser. https://github.com/acme/app/pull/7#pullrequestreview-9";
     let mateChat = KinChatId.make("unset");
     let cutInOnce = cutIn === true;
     let orgId = KinOrgId.make("unset");
     let mateChats: KinChatService["Service"] | undefined;
-    const { fake, runId, complete, posted, sql, services } = yield* setup({
-      beforeExtend: Effect.gen(function* () {
-        if (!cutInOnce) return;
-        cutInOnce = false;
-        yield* mateChats!
-          .send(
-            { _tag: "person", orgId, personId: KinPersonId.make("mate") },
-            { chatId: mateChat, body: "Also #8?", clientMessageId: "mate-cut-in" },
-          )
-          .pipe(Effect.orDie);
-      }).pipe(Effect.orDie),
-      event: ({ owner }) =>
-        Effect.gen(function* () {
-          orgId = owner.orgId;
-          const sql = yield* SqlClient.SqlClient;
-          const chats = Context.get(
-            Option.getOrThrow((yield* Kin.KinServer).services),
-            KinChatService,
-          );
-          mateChats = chats;
-          yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('mate', ${owner.orgId}, 'mate', 'Mate', '1970-01-01T00:00:00.000Z')`.pipe(
-            Effect.orDie,
-          );
-          mateChat = (yield* chats
-            .createDirect(
-              { _tag: "person", orgId: owner.orgId, personId: KinPersonId.make("mate") },
-              { orgId: owner.orgId, agentId },
+    let stageLater: Effect.Effect<void> = Effect.void;
+    const { fake, runId, complete, posted, sql, services, identity, owner, wakeupId } =
+      yield* setup({
+        afterExtend: Effect.suspend(() => {
+          const stage = stageLater;
+          stageLater = Effect.void;
+          return stage;
+        }),
+        beforeExtend: Effect.gen(function* () {
+          if (!cutInOnce) return;
+          cutInOnce = false;
+          yield* mateChats!
+            .send(
+              { _tag: "person", orgId, personId: KinPersonId.make("mate") },
+              { chatId: mateChat, body: "Also #8?", clientMessageId: "mate-cut-in" },
             )
-            .pipe(Effect.orDie)).chatId;
-          const now = yield* Clock.currentTimeMillis;
-          for (let index = 0; index < notices; index++) {
-            yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            .pipe(Effect.orDie);
+        }).pipe(Effect.orDie),
+        event: ({ owner }) =>
+          Effect.gen(function* () {
+            orgId = owner.orgId;
+            const sql = yield* SqlClient.SqlClient;
+            const chats = Context.get(
+              Option.getOrThrow((yield* Kin.KinServer).services),
+              KinChatService,
+            );
+            mateChats = chats;
+            yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES ('mate', ${owner.orgId}, 'mate', 'Mate', '1970-01-01T00:00:00.000Z')`.pipe(
+              Effect.orDie,
+            );
+            mateChat = (yield* chats
+              .createDirect(
+                { _tag: "person", orgId: owner.orgId, personId: KinPersonId.make("mate") },
+                { orgId: owner.orgId, agentId },
+              )
+              .pipe(Effect.orDie)).chatId;
+            const now = yield* Clock.currentTimeMillis;
+            for (let index = 0; index < notices; index++) {
+              yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
                 author_agent_id, author_owner_person_id, author_member_id, author_thread_id,
                 author_role, kind, body, mentions_json, status, created_at)
               SELECT ${`notice-${index}`}, ${owner.orgId}, ${mateChat}, ${500 + index}, 'agent',
                 ${agentId}, ${owner.personId}, member_id, ${threadId}, 'member', 'text',
                 'A notice.', '[]', 'posted', '1970-01-01T00:00:00.000Z'
               FROM kin_chat_members WHERE chat_id = ${mateChat} AND agent_id = ${agentId}`.pipe(
-              Effect.orDie,
-            );
-            yield* sql`INSERT INTO kin_floor_notices (org_id, message_id, chat_id, agent_id, posted_at)
+                Effect.orDie,
+              );
+              yield* sql`INSERT INTO kin_floor_notices (org_id, message_id, chat_id, agent_id, posted_at)
               VALUES (${owner.orgId}, ${`notice-${index}`}, ${mateChat}, ${agentId}, ${now})`.pipe(
-              Effect.orDie,
-            );
-          }
-          if (earlier !== undefined) {
-            yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
+                Effect.orDie,
+              );
+            }
+            if (earlier !== undefined) {
+              yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model,
                 started_at, status, event_ids, audience)
               VALUES ('earlier', ${owner.orgId}, ${agentId}, ${threadId}, 'test', 0, 'completed',
                 '["review-6"]', 'shared')`.pipe(Effect.orDie);
-            yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+              yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
                 received_at, queued_at, state, wakeup_id)
               VALUES ('review-6', ${owner.orgId}, ${agentId}, 'github', 'P2',
                 ${JSON.stringify({ askedIn: ["ask-turn"], chatId: mateChat })}, 0, 0, 'done',
                 'earlier')`.pipe(Effect.orDie);
-            yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+              yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
                 author_agent_id, author_owner_person_id, author_member_id, author_thread_id,
                 author_role, kind, body, mentions_json, status, created_at, source_wakeup_id)
               SELECT 'earlier-line', ${owner.orgId}, ${mateChat}, 1000, 'agent', ${agentId},
                 ${owner.personId}, member_id, ${threadId}, 'member', 'text', ${earlier}, '[]',
                 'posted', '1970-01-01T00:00:00.000Z', 'earlier'
               FROM kin_chat_members WHERE chat_id = ${mateChat} AND agent_id = ${agentId}`.pipe(
+                Effect.orDie,
+              );
+            }
+            // Rows written by hand: the chat's next message comes after them.
+            yield* sql`UPDATE kin_chats SET last_seq = MAX(last_seq, COALESCE((SELECT MAX(seq)
+              FROM kin_messages WHERE chat_id = ${mateChat}), 0)) WHERE chat_id = ${mateChat}`.pipe(
               Effect.orDie,
             );
-          }
-          // Rows written by hand: the chat's next message comes after them.
-          yield* sql`UPDATE kin_chats SET last_seq = MAX(last_seq, COALESCE((SELECT MAX(seq)
-              FROM kin_messages WHERE chat_id = ${mateChat}), 0)) WHERE chat_id = ${mateChat}`.pipe(
-            Effect.orDie,
-          );
-          return (base: WakeupEventBase): KinEvent => ({
-            ...base,
-            _tag: "github",
-            provenance: { _tag: "system" },
-            deliveryId: "poll:review:acme/app#7:abc",
-            dedupeKey: "poll:review:acme/app#7:abc",
-            eventName: "review_request",
-            repo: "acme/app",
-            summary: "review_request on acme/app#7 by mate-gh",
-            trigger: {
-              key: "review:acme/app#7:abc",
-              kind: "review_request",
-              item: "pull",
-              number: 7,
-              url: "https://github.com/acme/app/pull/7",
-              title: "Parse dates",
-              author: "mate-gh",
-              association: "MEMBER",
-              inside: true,
-              text: "",
-            },
-            askedBy: KinPersonId.make("mate"),
-            chatId: mateChat,
-            askedIn: [KinWakeupId.make("ask-turn")],
-          });
-        }),
-    });
+            return (base: WakeupEventBase): KinEvent => ({
+              ...base,
+              _tag: "github",
+              provenance: { _tag: "system" },
+              deliveryId: "poll:review:acme/app#7:abc",
+              dedupeKey: "poll:review:acme/app#7:abc",
+              eventName: "review_request",
+              repo: "acme/app",
+              summary: "review_request on acme/app#7 by mate-gh",
+              trigger: {
+                key: "review:acme/app#7:abc",
+                kind: "review_request",
+                item: "pull",
+                number: 7,
+                url: "https://github.com/acme/app/pull/7",
+                title: "Parse dates",
+                author: "mate-gh",
+                association: "MEMBER",
+                inside: true,
+                text: "",
+              },
+              askedBy: KinPersonId.make("mate"),
+              chatId: mateChat,
+              askedIn: [KinWakeupId.make("ask-turn")],
+            });
+          }),
+      });
     const published: Array<KinChatHubEvent> = [];
     yield* Stream.runForEach(yield* Context.get(services, KinChatHub).subscribeAll, (event) =>
       Effect.sync(() => published.push(event)),
     ).pipe(Effect.forkScoped);
+    if (variant === "figure") {
+      const author = Option.getOrThrow(
+        yield* identity.agentForWakeup({ orgId: owner.orgId, wakeupId }),
+      );
+      stageLater = Effect.gen(function* () {
+        yield* mateChats!.send(
+          { _tag: "person", orgId, personId: KinPersonId.make("mate") },
+          { chatId: mateChat, body: "Also #8?", clientMessageId: "after-review" },
+        );
+        const staged = yield* mateChats!.chart(author, {
+          chatId: mateChat,
+          clientMessageId: "late-figure",
+          intent: "evidence",
+          chart: "bar",
+          title: "Review counts",
+          unit: { kind: "count" },
+          labels: ["Mon", "Tue"],
+          series: [{ name: "Reviews", values: [1, 2] }],
+        });
+        assert.isTrue("figure" in staged);
+      }).pipe(Effect.orDie);
+    }
     fake.items = [text("a", 1, line, runId)];
     yield* complete;
     assert.deepStrictEqual(yield* posted, []);
@@ -1855,7 +1929,7 @@ it.effect.each([
 // A turn built for the owner alone streams nothing more once a teammate can read its chat.
 it.effect("a teammate joining while the lead writes sees none of its text", () =>
   Effect.gen(function* () {
-    const { fake, runId, bridge, owner, services, chats, chatId, wakeupId, sql } = yield* setup({
+    const { fake, runId, complete, owner, services, chats, chatId, wakeupId, sql } = yield* setup({
       lane: "own-group",
       ask: "Plan the launch",
     });
@@ -1913,10 +1987,17 @@ it.effect("a teammate joining while the lead writes sees none of its text", () =
     );
     yield* Fiber.join(labelled);
     assert.deepStrictEqual((yield* presence.snapshot(owner.orgId, chatId)).drafts, []);
-    yield* bridge.abort(owner.orgId, wakeupId);
+    fake.items = [text("a", 1, plan, runId)];
+    yield* complete;
     yield* chats.send(owner, { chatId, body: "Sentinel", clientMessageId: "sentinel" });
     assert.isFalse((yield* Fiber.join(everything)).some((event) => event.type === "draft.updated"));
-    assert.isFalse((yield* Fiber.join(toMate)).some((event) => event.type === "draft.updated"));
+    const received = yield* Fiber.join(toMate);
+    assert.isFalse(received.some((event) => event.type === "draft.updated"));
+    assert.isFalse(
+      received.some(
+        (event) => event.type === "message.posted" && event.message.author._tag === "agent",
+      ),
+    );
   }).pipe(Effect.provide(layer)),
 );
 
@@ -2051,7 +2132,7 @@ it.effect(
   "someone joining a shared group while the lead writes sees none of it, and the turn is aborted",
   () =>
     Effect.gen(function* () {
-      const { fake, runId, owner, services, chatId, wakeupId, sql } = yield* setup({
+      const { fake, runId, complete, owner, services, chatId, wakeupId, sql } = yield* setup({
         lane: "shared-group",
         ask: "Plan the launch",
       });
@@ -2110,12 +2191,20 @@ it.effect(
         itemEvent({ ...tool("t", 2, "mcp__kin__kin_defer", runId), status: "running" }),
       );
       yield* Fiber.join(labelled);
+      fake.items = [text("a", 1, plan, runId)];
+      yield* complete;
       yield* Context.get(services, KinChatService).send(owner, {
         chatId,
         body: "Sentinel",
         clientMessageId: "sentinel",
       });
-      assert.isFalse((yield* Fiber.join(toPat)).some((event) => event.type === "draft.updated"));
+      const received = yield* Fiber.join(toPat);
+      assert.isFalse(received.some((event) => event.type === "draft.updated"));
+      assert.isFalse(
+        received.some(
+          (event) => event.type === "message.posted" && event.message.author._tag === "agent",
+        ),
+      );
     }).pipe(Effect.provide(layer)),
 );
 
@@ -2854,6 +2943,8 @@ it.effect.each([
 it.effect.each([
   { body: "Deploy is done.\n(no reply needed)", expected: ["Deploy is done."] },
   { body: "Deploy is done. (Nothing To Add)", expected: ["Deploy is done."] },
+  { body: "Done. (silent)", expected: ["Done."] },
+  { body: "Deploy is done.\n(staying quiet)", expected: ["Deploy is done."] },
   {
     body: "(nothing to add) was his reply, but CI is green.",
     expected: ["(nothing to add) was his reply, but CI is green."],
@@ -3351,28 +3442,41 @@ const setupSend = Effect.fn("test.setupSend")(function* (input: Parameters<typeo
   return { ...fixture, orgId: owner.orgId, text: "Tidewater Freight booked the loading slot." };
 });
 
-it.effect.each(["team", "quiet", "marker", "non-owner check-in", "no check-in"] as const)(
-  "refuses an explicit send: %s",
-  (reason) =>
-    Effect.gen(function* () {
-      const { bridge, orgId, wakeupId, posted, text } = yield* setupSend(
-        reason === "team"
-          ? { lane: "own-group", ask: "How is the loading slot?", teamRoom: true }
-          : reason === "quiet"
-            ? { event: WAKE_KINDS["bills.read"].event! }
-            : reason === "non-owner check-in"
-              ? { lane: "own-group", ask: "How is the loading slot?" }
-              : {},
-      );
-      const send = bridge.send({
-        orgId,
-        wakeupId,
-        text: reason === "marker" ? `NO_REPLY: ${text}` : text,
-        level: reason.endsWith("check-in") ? "check_in" : "now",
-      });
-      assert.strictEqual((yield* Effect.flip(send)).reason, reason);
-      assert.deepStrictEqual(yield* posted, []);
-    }).pipe(Effect.provide(layer)),
+it.effect.each([
+  "team",
+  "quiet",
+  "marker",
+  "non-owner check-in",
+  "no check-in",
+  "oversized check-in",
+] as const)("refuses an explicit send: %s", (reason) =>
+  Effect.gen(function* () {
+    const { bridge, orgId, wakeupId, posted, text } = yield* setupSend(
+      reason === "team"
+        ? { lane: "own-group", ask: "How is the loading slot?", teamRoom: true }
+        : reason === "quiet"
+          ? { event: WAKE_KINDS["bills.read"].event! }
+          : reason === "non-owner check-in"
+            ? { lane: "own-group", ask: "How is the loading slot?" }
+            : {},
+    );
+    const send = bridge.send({
+      orgId,
+      wakeupId,
+      text:
+        reason === "marker"
+          ? `NO_REPLY: ${text}`
+          : reason === "oversized check-in"
+            ? "a".repeat(16_001)
+            : text,
+      level: reason.endsWith("check-in") ? "check_in" : "now",
+    });
+    assert.strictEqual(
+      (yield* Effect.flip(send)).reason,
+      reason === "oversized check-in" ? "not posted" : reason,
+    );
+    assert.deepStrictEqual(yield* posted, []);
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect(

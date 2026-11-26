@@ -2180,6 +2180,7 @@ describe("WakeupRunner", () => {
       const entered = yield* Deferred.make<void>();
       const hold = yield* Deferred.make<void>();
       const work = yield* Queue.unbounded<void>();
+      const completions: Array<Parameters<KinReplyBridge["Service"]["complete"]>[0]> = [];
       const bridge = Layer.mock(KinReplyBridge)({
         lane: () =>
           Effect.succeedSome({
@@ -2191,7 +2192,10 @@ describe("WakeupRunner", () => {
           }),
         preparing: () => Effect.void,
         begin: () => Effect.void,
-        complete: () => Effect.void,
+        complete: (input) =>
+          Effect.sync(() => {
+            completions.push(input);
+          }),
         end: () => Effect.void,
         failed: () => Effect.void,
       });
@@ -2297,6 +2301,8 @@ describe("WakeupRunner", () => {
         } else yield* Deferred.succeed(hold, undefined);
         yield* Fiber.join(fiber);
         assert.deepStrictEqual(yield* cards, [noAnswer, { ...second, outcome: title, text }]);
+        assert.lengthOf(completions, 1);
+        assert.strictEqual(completions[0]?.stopped, status === "interrupted");
       }).pipe(
         Effect.provide(
           harnessWith(

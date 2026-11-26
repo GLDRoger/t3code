@@ -49,6 +49,8 @@ it.each([
 
 it.each([
   ["three paragraphs", "First.\n\nSecond.\n\nThird.", ["First.", "Second.", "Third."]],
+  ["CRLF", "First.\r\n\r\nSecond.", ["First.", "Second."]],
+  ["Hindi and an emoji", "समय तय है।\n\n👍", ["समय तय है।", "👍"]],
   ["one paragraph", "First.", ["First."]],
   [
     "five paragraphs",
@@ -78,7 +80,18 @@ it.each([
   ["a figure fence", figure],
   ["a figure line", "[This week](kin-figure:f_test000001)"],
   ["a quote", "> A quoted line."],
+  ["a subject line", "Subject: Tidewater Freight"],
+  ["a salutation", "Hi Meera,"],
+  ["a sign-off", "Thanks,"],
+  ["a standalone intro", "Three steps for Tidewater:"],
+  ["indented code", "    vp test run"],
+  ["tab-indented code", "\tvp test run"],
 ])("keeps a reply with %s whole", (_, block) => {
   const body = `An introduction.\n\n${block}\n\nA closing line.`;
+  expect(kinReplyBubbles(body)).toEqual([body]);
+});
+
+it("keeps indentation on the opening line of a reply", () => {
+  const body = "    vp test run\n\nThen push.";
   expect(kinReplyBubbles(body)).toEqual([body]);
 });

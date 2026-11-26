@@ -1290,6 +1290,7 @@ const make = Effect.gen(function* () {
             projectId,
             rootRunId: runId,
             rescue: status === "completed",
+            stopped: status === "interrupted",
           });
           if (status === "completed") {
             lastWork.set(threadId, yield* Clock.currentTimeMillis);
