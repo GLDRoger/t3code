@@ -1299,7 +1299,7 @@ it.effect("counts only posted Kin segments toward reply limits", () =>
         },
       ]);
     }
-  }),
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
 );
 
 it("restores the branch PR that earlier turns opened, not another branch's", () => {
