@@ -5,6 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 
 import * as ClaudeAdapterV2 from "../../../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import { ServerSettingsService } from "../../../../serverSettings.ts";
 import {
   type AuthSettings,
   makeConfiner,
@@ -263,7 +264,11 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
       const sessions = yield* KinSessions;
       if (!sessions.enabled) return runner;
       const confiner = yield* makeConfiner();
-      const context = yield* Effect.serviceOption(SessionContext.KinSessionContext);
+      const context = Option.getOrUndefined(
+        yield* Effect.serviceOption(SessionContext.KinSessionContext),
+      );
+      const settings = yield* Effect.serviceOption(ServerSettingsService);
+      let reportedMissingContext = false;
       const runHook = Effect.runPromiseWith(yield* Effect.context<never>());
       return ClaudeAdapterV2.ClaudeAgentSdkQueryRunner.of({
         ...runner,
@@ -279,6 +284,22 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
             toolLookup: true,
           });
           if (plan === undefined) return yield* runner.open(input);
+          if (
+            plan.seat === "owner" &&
+            !input.refresh &&
+            context === undefined &&
+            !reportedMissingContext &&
+            Option.isSome(settings)
+          ) {
+            const carryEnabled = yield* settings.value.getSettings.pipe(
+              Effect.map(({ kinSessionCarry }) => kinSessionCarry),
+              Effect.orElseSucceed(() => false),
+            );
+            if (carryEnabled && !reportedMissingContext) {
+              reportedMissingContext = true;
+              yield* Effect.logError("Kin Claude owner seat is missing KinSessionContext");
+            }
+          }
           return yield* runner.open({
             ...input,
             options: apply(input.options, plan, {
@@ -286,7 +307,7 @@ const install = <E, R>(base: Layer.Layer<ClaudeAdapterV2.ClaudeAgentSdkQueryRunn
               hook: input.refresh ? undefined : decisionHook(plan),
               auth: yield* confiner.ownerAuth(input.options.env),
               environment,
-              context: Option.getOrUndefined(context),
+              context,
               logCompaction: (summaryLength) =>
                 runHook(
                   Effect.logDebug("kin.claude.compact_summary", {

@@ -16,6 +16,7 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../../../../config.ts";
@@ -39,6 +40,7 @@ import { stampReads } from "../../OutsideContent.ts";
 import { KinServer, type Services as KinServices } from "../../../KinServer.ts";
 import * as KinPersistence from "../../../persistence/KinPersistence.ts";
 import * as Sqlite from "../../../../persistence/Sqlite.ts";
+import { ServerSettingsService } from "../../../../serverSettings.ts";
 
 const optionsAt = (cwd: string, environment: NodeJS.ProcessEnv = { PATH: "/usr/bin" }) =>
   ClaudeAdapterV2.makeClaudeQueryOptions({
@@ -70,6 +72,7 @@ const hookOutputs = (options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions, input:
 
 const withPreparedContext = <A, E>(
   check: (options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions) => Effect.Effect<A, E>,
+  withContext = true,
 ) =>
   Effect.gen(function* () {
     const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -96,19 +99,28 @@ const withPreparedContext = <A, E>(
     });
     return yield* Effect.gen(function* () {
       const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
-      const context = yield* KinSessionContext;
-      yield* runner
+      const context = yield* Effect.serviceOption(KinSessionContext);
+      const open = runner
         .open({
           threadId,
           providerSessionId: ProviderSessionId.make("session"),
           options: optionsAt(`${stateDir}/kin/memory-read`, {
             PATH: "/usr/bin",
-            HOME: "/home/kin",
+            HOME: stateDir,
           }),
         })
         .pipe(Effect.exit);
-      yield* context.set(threadId, { standing: "prepared standing", delta: "prepared delta" });
-      yield* context.set(ThreadId.make("kin:other"), { standing: "other", delta: "other" });
+      yield* open;
+      if (Option.isSome(context)) {
+        yield* context.value.set(threadId, {
+          standing: "prepared standing",
+          delta: "prepared delta",
+        });
+        yield* context.value.set(ThreadId.make("kin:other"), { standing: "other", delta: "other" });
+      } else {
+        yield* open;
+        assert.lengthOf(opened, 2);
+      }
       const [options] = opened;
       if (options === undefined) return yield* Effect.die("Claude did not open");
       return yield* check(options);
@@ -123,7 +135,8 @@ const withPreparedContext = <A, E>(
             }),
           ),
           Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
-          Layer.provideMerge(KinSessionContext.layer),
+          Layer.provideMerge(withContext ? KinSessionContext.layer : Layer.empty),
+          Layer.provide(ServerSettingsService.layerTest({ kinSessionCarry: true })),
           Layer.provide(Layer.succeed(HostProcess.HomeDirectory, stateDir)),
         ),
       ),
@@ -136,6 +149,34 @@ const withPreparedContext = <A, E>(
       ),
     ),
   );
+
+it.effect("an enabled owner seat without KinSessionContext logs one error and still opens", () => {
+  const errors: string[] = [];
+  return withPreparedContext(
+    (options) =>
+      Effect.gen(function* () {
+        assert.deepStrictEqual(
+          yield* hookOutputs(options, {
+            ...hookBase,
+            hook_event_name: "UserPromptSubmit",
+            prompt: "Question",
+          }),
+          [{}],
+        );
+        assert.lengthOf(errors, 1);
+        assert.include(errors[0], "KinSessionContext");
+      }),
+    false,
+  ).pipe(
+    Effect.provide(
+      Logger.layer([
+        Logger.make(({ logLevel, message }) => {
+          if (logLevel === "Error") errors.push(String(message));
+        }),
+      ]),
+    ),
+  );
+});
 
 it.effect("SessionStart adds the standing context only on startup and compact", () =>
   withPreparedContext((options) =>

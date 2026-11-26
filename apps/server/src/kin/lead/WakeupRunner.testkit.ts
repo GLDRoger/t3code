@@ -28,9 +28,11 @@ import {
   type RuntimeMode,
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as CheckpointStore from "../../checkpointing/CheckpointStore.ts";
 import * as ServerConfig from "../../config.ts";
 import * as Layer from "effect/Layer";
@@ -38,6 +40,7 @@ import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import type * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
@@ -158,6 +161,84 @@ export const toolCall = Effect.fn("test.toolCall")(function* (
       Stream.runDrain,
     );
 });
+// A human message in the lead's lane, the chat its notices and replies go to.
+export const laneMessage = (id: string, chatId = "owner-chat") =>
+  decodeEvent({
+    _tag: "chat.message",
+    orgId,
+    agentId,
+    eventId: id,
+    receivedAt: "2026-11-08T00:00:00.000Z",
+    dedupeKey: id,
+    provenance: { _tag: "human", personId: "owner", memberId: "owner-member" },
+    chatId,
+    messageId: id,
+  });
+export const run = Effect.fn("test.run")(function* () {
+  const runner = yield* WakeupRunner.WakeupRunner;
+  const fiber = yield* runner.runOnce(orgId, agentId).pipe(Effect.forkChild);
+  yield* TestClock.adjust("20 seconds");
+  return fiber;
+});
+export const seedDirectChats = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  for (const chat of ["direct", "other-direct"])
+    yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+      VALUES (${chat}, 'org', 'direct', ${`owner:${chat}`}, 0, '2026-11-08T00:00:00.000Z')`;
+});
+/** The owner's stored message behind a lane event, so only the owner reads the turn. */
+export const ownerSays = Effect.fn("test.ownerSays")(function* (id: string, chatId = "owner-chat") {
+  const sql = yield* SqlClient.SqlClient;
+  const at = "2026-11-08T00:00:00.000Z";
+  yield* sql`INSERT OR IGNORE INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+    VALUES (${`${chatId}-owner`}, 'org', ${chatId}, 'person', 'owner', 'owner', ${at})`;
+  yield* sql`INSERT OR IGNORE INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+      author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+    VALUES (${id}, 'org', ${chatId},
+      (SELECT COALESCE(MAX(seq), 0) + 1 FROM kin_messages WHERE chat_id = ${chatId}), 'human', 'owner',
+      ${`${chatId}-owner`}, 'owner', 'text', 'Invented question', '[]', 'posted', ${at})`;
+  return laneMessage(id, chatId);
+});
+export const wake = Effect.fn("test.wake")(function* (id: string, chatId = "direct") {
+  yield* (yield* KinEventQueue.KinEventQueue).enqueue(yield* ownerSays(id, chatId));
+  yield* Fiber.join(yield* run());
+});
+
+export const seedCarry = Effect.gen(function* () {
+  yield* seed;
+  yield* seedDirectChats;
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_orgs SET name = 'Tidewater Freight' WHERE org_id = ${orgId}`;
+  yield* sql`UPDATE kin_people SET display_name = 'Rhea', access = 'owner' WHERE org_id = ${orgId}`;
+  yield* sql`INSERT INTO kin_people (org_id, person_id, handle, display_name, access, created_at)
+    VALUES (${orgId}, 'meera', 'meera', 'Meera', 'co_owner', '2026-11-26'),
+      (${orgId}, 'zoya', 'zoya', 'Zoya', 'member', '2026-11-26')`;
+  yield* sql`UPDATE kin_leads SET owner_chat_id = 'direct' WHERE org_id = ${orgId}`;
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at)
+    VALUES (${orgId}, 'clients', 'Clients', 'CL', 0)`;
+  yield* sql`INSERT INTO kin_records (org_id, record_id, key, register_id, title, owner_kind,
+    owner_id, created_by_kind, origin_key, created_at, updated_at)
+    VALUES (${orgId}, 'harborview', 'CL-7', 'clients', 'Harborview Cold Storage',
+      'person', 'owner', 'person', 'harborview', 0, 0),
+      (${orgId}, 'depot', 'CL-8', 'clients', 'Pier Depot',
+        'person', 'owner', 'person', 'depot', 0, 0)`;
+  return sql;
+});
+export const harborviewChanged = Effect.fn("test.harborviewChanged")(function* (count = 1) {
+  const sql = yield* SqlClient.SqlClient;
+  for (let i = 1; i <= count; i++)
+    yield* sql`INSERT INTO kin_record_changes
+      (org_id, record_id, rev, at, actor_kind, actor_id, via, kind, fields_json)
+      VALUES (${orgId}, ${i % 2 === 1 ? "harborview" : "depot"}, ${i}, ${yield* Clock.currentTimeMillis},
+        'person', 'meera', 'owner', 'updated',
+        ${yield* encodeJson(
+          Array.from({ length: count === 1 ? 1 : 30 }, (_, field) => ({
+            field: `term ${field}`,
+            to: `Net 15 ${"warehouse ".repeat(70)}`,
+          })),
+        )})`;
+});
+
 type HarnessOptions = {
   readonly sharedWith?: ReadonlyArray<ThreadId>;
   readonly releaseEntered?: Deferred.Deferred<void>;
