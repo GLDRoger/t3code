@@ -508,32 +508,28 @@ const production = withServices(
 const configured = <R, R2>(
   entry: Layer.Layer<never, never, R>,
   withoutMemory: Layer.Layer<never, never, R2>,
-) =>
-  Layer.merge(
-    Layer.effectDiscard(
-      Effect.gen(function* () {
-        const repositories = yield* MemoryConfig.configuredRepositories;
-        const dev = repositories.length > 0 ? undefined : yield* devMemoryRepository();
-        if (repositories.length === 0 && dev === undefined) {
-          yield* Layer.build(withoutMemory);
-          return;
-        }
-        const config =
-          dev === undefined
-            ? MemoryConfig.layer(repositories)
-            : MemoryConfig.layer(dev, { directMainPush: true });
-        yield* Layer.build(entry.pipe(Layer.provide(memoryLayer), Layer.provide(config)));
-      }).pipe(
-        Effect.catchCause((cause) =>
-          Effect.logError(
-            "Kin startup failed; Kin disabled",
-            new KinLeadStartupError({ stage: "startup", cause }),
-          ).pipe(Effect.andThen(Layer.build(withoutMemory))),
-        ),
+) => {
+  const withMemory = (config: ReturnType<typeof MemoryConfig.layer>) =>
+    entry.pipe(Layer.provide(memoryLayer), Layer.provide(config));
+  type WithMemory = ReturnType<typeof withMemory>;
+  type Runtime = Layer.Layer<never, Layer.Error<WithMemory>, Layer.Services<WithMemory> | R2>;
+  const selected = Effect.gen(function* () {
+    const repositories = yield* MemoryConfig.configuredRepositories;
+    if (repositories.length > 0) return withMemory(MemoryConfig.layer(repositories));
+    const dev = yield* devMemoryRepository();
+    return dev === undefined
+      ? withoutMemory
+      : withMemory(MemoryConfig.layer(dev, { directMainPush: true }));
+  }).pipe(Effect.map((layer): Runtime => layer));
+  return Layer.merge(
+    Layer.unwrap(selected).pipe(
+      Layer.catchCause((cause) =>
+        Layer.merge(containStartup(Layer.effectDiscard(Effect.failCause(cause))), withoutMemory),
       ),
     ),
     unconfigured,
   );
+};
 
 // An installed host with no memory repository runs no agent; each chat with one hears why.
 const unconfigured = containStartup(
