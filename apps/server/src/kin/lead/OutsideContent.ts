@@ -94,6 +94,7 @@ export const OUTSIDE_TOOLS = {
   memory_label: "allowed",
   // Posts on its own only to the company's repos; anywhere else on the owner's Confirm.
   kin_github_review: "allowed",
+  kin_github_comment: "allowed",
   // Reads only the diff of the pull request its review turn is for.
   kin_github_diff: "allowed",
   // Reads only; what it reads is outside text too (`readRepo` marks it). Not after a coding agent's
@@ -476,15 +477,9 @@ export const stampEvent = Effect.fn("KinOutsideContent.stampEvent")(function* (
 /** Where an entry's change stores its turn's stamp (`KinRecords.logChange`). */
 export const changeStampKey = (recordId: string, seq: number) => `record-change:${recordId}:${seq}`;
 
-/**
- * The first change an agent made to an entry after its turn read outside text, and what it had
- * read, as a person reads it.
- */
-export const entryAfterReading = Effect.fn("KinOutsideContent.entryAfterReading")(function* (
+export const firstOutsideChange = Effect.fn("KinOutsideContent.firstOutsideChange")(function* (
   orgId: KinOrgId,
   recordId: string,
-  /** For an owner-level reader (`renderSource`). */
-  detailed = false,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const [first] = yield* sql<{
@@ -495,6 +490,16 @@ export const entryAfterReading = Effect.fn("KinOutsideContent.entryAfterReading"
       AND o.event_id = 'record-change:' || c.record_id || ':' || c.seq
     WHERE c.org_id = ${orgId} AND c.record_id = ${recordId} AND c.actor_kind = 'agent'
     ORDER BY c.seq LIMIT 1`;
+  return first;
+});
+
+/** The first change an agent made after an outside read, as a person reads it. */
+export const entryAfterReading = Effect.fn("KinOutsideContent.entryAfterReading")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+  detailed = false,
+) {
+  const first = yield* firstOutsideChange(orgId, recordId);
   return first === undefined
     ? undefined
     : { made: first.kind === "created", source: renderSource(first.source, detailed) };
@@ -676,6 +681,7 @@ const REPO_READ_TOOLS: ReadonlySet<string> = new Set([
   // Only the review someone asked for, on its pull request, whose repo is all the reader reads then.
   "kin_github_diff",
   "kin_github_review",
+  "kin_github_comment",
 ]);
 
 /** The refusal for `name` once the turn read a repo for someone, or undefined. */

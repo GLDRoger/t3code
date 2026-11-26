@@ -517,6 +517,7 @@ it.live(
           "kin_schedule",
           "kin_cancel",
           "kin_journal",
+          "kin_github_comment",
           "kin_github_diff",
           "kin_github_read",
           "kin_github_review",

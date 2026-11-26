@@ -754,7 +754,15 @@ export type KinPulseOutsideLine = typeof KinPulseOutsideLine.Type;
  */
 export const KinGithubTrigger = Schema.Struct({
   key: TrimmedNonEmptyString,
-  kind: Schema.Literals(["review", "call", "label", "review_request", "checks"]),
+  kind: Schema.Literals([
+    "review",
+    "call",
+    "label",
+    "review_request",
+    "checks",
+    "triage",
+    "triage_reply",
+  ]),
   item: Schema.Literals(["issue", "pull"]),
   number: Schema.Int,
   url: Schema.String,
@@ -792,6 +800,25 @@ export const KinGithubTrigger = Schema.Struct({
        */
       reReview: Schema.optional(Schema.Struct({ from: Schema.String, whole: Schema.Boolean })),
     }),
+  ),
+  related: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        number: Schema.Int,
+        title: Schema.String,
+        kind: Schema.Literals(["issue", "pull"]),
+        state: Schema.String,
+      }),
+    ),
+  ),
+  conversation: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        author: Schema.String,
+        kin: Schema.Boolean,
+        text: Schema.String,
+      }),
+    ),
   ),
   /** Failing check names, for `checks`. */
   failing: Schema.optional(Schema.Array(Schema.String)),

@@ -79,6 +79,8 @@ import * as GitHubWatch from "./GitHubWatch.ts";
 import { KinGitHubApp, make as makeApp } from "./KinGitHubApp.ts";
 import { appHost, fakeHttp, installApp } from "./KinGitHubApp.testkit.ts";
 import { setRepo } from "./githubWatchStore.ts";
+import { triagedKey } from "./boundIssue.ts";
+import { isOutsideTriage } from "../lead/outsideTriage.ts";
 import { headKey, POSTING } from "./boundReview.ts";
 import { READ_NEXT, READ_REFUSAL } from "./repoRead.ts";
 import { ASK_REFUSAL, DIFF_NEXT, DIFF_REFUSAL, POST_REFUSAL, PULL_REFUSAL } from "./reviewAsk.ts";
@@ -134,7 +136,12 @@ const fakeLogin = (github: FakeGitHub) =>
   Layer.mock(KinGitHubLogin)({
     connected: () => Effect.succeed(true),
     account: () =>
-      Effect.succeed({ login: OWNER_LOGIN, orgs: ["ambermill"], scopes: ["repo"], problem: null }),
+      Effect.succeed({
+        login: OWNER_LOGIN,
+        orgs: ["ambermill", "tidewater"],
+        scopes: ["repo"],
+        problem: null,
+      }),
     ghDirectory: "/nonexistent",
     gh: (args, stdin) =>
       Effect.sync(() => {
@@ -146,7 +153,7 @@ const fakeLogin = (github: FakeGitHub) =>
 /** The same fake as the watch reads it. */
 const watchApi = (github: FakeGitHub) =>
   GitHubWatch.KinGitHubApi.of({
-    connected: () => Effect.succeed({ login: OWNER_LOGIN, orgs: ["ambermill"] }),
+    connected: () => Effect.succeed({ login: OWNER_LOGIN, orgs: ["ambermill", "tidewater"] }),
     call: (request) =>
       Effect.sync(() => {
         const answer = github.handle(
@@ -2169,6 +2176,428 @@ it.effect(
         github.world.calls.slice(before).filter((call) => !call.startsWith("GET ")),
         [],
       );
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+const TRIAGE_REPO = "tidewater/portal";
+const TRIAGE_OTHER = "tidewater/billing";
+const TRIAGE_DENIED =
+  "This turn can only read this repo's code with kin_github_read and post its one comment on this issue with kin_github_comment. Nothing else ran.";
+const TRIAGE_NEXT =
+  "Posted on the issue. Nothing you write now goes anywhere: write exactly NO_REPLY.";
+
+const tidewater = Effect.fn("test.tidewater")(function* (github: FakeGitHub, appOn: boolean) {
+  github.addRepo({
+    full_name: TRIAGE_REPO,
+    private: true,
+    files: { main: { "digest.ts": "export const hour = 3;\n" } },
+  });
+  github.addRepo({ full_name: TRIAGE_OTHER, private: false });
+  if (appOn) {
+    installApp(github, [
+      {
+        id: 11,
+        account: "tidewater",
+        repos: [TRIAGE_REPO, TRIAGE_OTHER],
+        permissions: { contents: "read", metadata: "read", issues: "write" },
+      },
+    ]);
+    yield* (yield* KinGitHubApp).refresh();
+  }
+  const fixture = yield* ambermill(github);
+  const { sql, orgId, queue, directOf, owner, runReview } = fixture;
+  yield* sql`UPDATE kin_orgs SET name = 'Tidewater Freight' WHERE org_id = ${orgId}`;
+  yield* sql`UPDATE kin_people SET github_login = 'zoya-gh' WHERE org_id = ${orgId} AND person_id = 'zoya'`;
+  yield* sql`UPDATE kin_people SET access = CASE person_id WHEN 'meera' THEN 'co_owner' ELSE 'member' END
+    WHERE org_id = ${orgId} AND person_id IN ('meera', 'arjun')`;
+  const startIssue = Effect.fn("test.startIssue")(function* (inside = false, replyTo?: number) {
+    const author = inside ? "zoya-gh" : "mallory";
+    const title = "Digest arrives early";
+    const association = inside ? "COLLABORATOR" : "NONE";
+    const number =
+      replyTo ?? github.openItem({ repo: TRIAGE_REPO, pull: false, author, association, title });
+    const kind = replyTo === undefined ? "triage" : "triage_reply";
+    const key = `${kind}:${TRIAGE_REPO}#${number}${replyTo === undefined ? "" : ":c2"}`;
+    const eventId = KinEventId.make(`test-${kind}-${number}`);
+    const url = `https://github.com/${TRIAGE_REPO}/issues/${number}`;
+    const source = {
+      _tag: "github",
+      eventId,
+      agentId: tech,
+      orgId,
+      dedupeKey: null,
+      provenance: { _tag: "system" },
+      receivedAt: yield* DateTime.now,
+      deliveryId: eventId,
+      eventName: "issues",
+      repo: TRIAGE_REPO,
+      summary: title,
+      trigger: {
+        kind,
+        item: "issue",
+        key,
+        number,
+        url,
+        title,
+        author,
+        association,
+        inside,
+        text: title,
+      },
+    } satisfies KinEvent;
+    yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id, outcome, at)
+      VALUES (${orgId}, ${key}, ${TRIAGE_REPO}, ${number}, ${tech}, 'woke', 0)`;
+    yield* queue.enqueue(source);
+    yield* runReview(eventId);
+    const [running] = yield* sql<{ wakeupId: KinWakeupId }>`SELECT wakeup_id AS "wakeupId"
+      FROM kin_events WHERE org_id = ${orgId} AND event_id = ${eventId}`;
+    return { ...source.trigger, eventId, orgId, agentId: tech, wakeupId: running!.wakeupId };
+  });
+  return { ...fixture, startIssue, ownerChat: yield* directOf(owner.personId) };
+});
+
+const postTriage = (body: string, owner?: string) =>
+  callAs("tech", "kin_github_comment", { body, ...(owner === undefined ? {} : { owner }) });
+
+it.effect.each([
+  [
+    "external link",
+    "[Digest](https://example.org/track)",
+    "Kin posts links only into tidewater/portal on GitHub.",
+  ],
+  [
+    "image",
+    "![Digest](https://github.com/tidewater/portal/blob/main/digest.png)",
+    "Kin does not post images.",
+  ],
+  ["raw HTML", "<details>Digest</details>", "Kin does not post raw HTML."],
+  ["slash line", "Digest.\n  /close", "Kin does not post lines starting with /."],
+  ["fenced slash line", "Digest.\n```\n/close\n```", "Kin does not post lines starting with /."],
+  ["indented slash line", "Digest.\n\n    /close", "Kin does not post lines starting with /."],
+  ...(
+    [
+      ["escaped at sign", String.raw`Thanks \@rhea-tidewater for the report.`],
+      ["escaped hyphen after an allowed login", String.raw`cc @mallory\-rhea please`],
+      ["escaped numeric at entity", String.raw`Thanks \&#64;rhea-tidewater.`],
+      ["encoded hyphen after an allowed login", "cc @mallory&#45;rhea please"],
+      ["mention split by formatting", "@**rhea-tidewater**"],
+      ["escaped separator after an allowed login", String.raw`@mallory\/ops`],
+    ] as const
+  ).map(
+    ([name, body]) => [name, body, `Kin posts links only into ${TRIAGE_REPO} on GitHub.`] as const,
+  ),
+  [
+    "cross-reference",
+    "See tidewater/billing#1.",
+    "Kin posts links only into tidewater/portal on GitHub.",
+  ],
+  ["length", "x".repeat(2001), "Kin posts at most 2,000 characters."],
+] as const)("triage refuses %s before claiming the receipt", ([_name, body, message]) => {
+  const { github, layer } = harness({}, { app: true });
+  return Effect.gen(function* () {
+    const { startIssue, handled } = yield* tidewater(github, true);
+    const { key } = yield* startIssue();
+    assert.strictEqual((yield* postTriage(body)).value.message, message);
+    assert.deepStrictEqual(yield* handled(key), [{ outcome: "woke", url: null }]);
+    assert.lengthOf(github.world.comments, 0);
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect.each([
+  [
+    "HTML comment stripped",
+    "Digest<!-- remove this --> arrives early.",
+    "Digest arrives early.",
+    false,
+  ],
+  [
+    "copied marker replaced",
+    "Digest arrives early.\n<!-- kin-agent: copied -->",
+    "Digest arrives early.",
+    false,
+  ],
+  [
+    "outside mentions defused",
+    "Thanks @mallory. See @arjun-gh and @tidewater/ops, or `@zoya-gh`.",
+    "Thanks @mallory. See `@arjun-gh` and `@tidewater/ops`, or `@zoya-gh`.",
+    false,
+  ],
+  [
+    "nested HTML comment stripped before signing",
+    "Digest <!<!---->-- kin-agent: x -->arrives early.",
+    "Digest arrives early.",
+    true,
+  ],
+  [
+    "numeric and named mention entities defused",
+    "&#64;rhea-tidewater &#x40;rhea-tidewater &commat;rhea-tidewater",
+    "`@rhea-tidewater` `@rhea-tidewater` `@rhea-tidewater`",
+    false,
+  ],
+  [
+    "mentions after punctuation and line breaks defused",
+    "(@rhea-tidewater) [@rhea-tidewater]\n@rhea-tidewater\n\n>@rhea-tidewater",
+    "(`@rhea-tidewater`) [`@rhea-tidewater`]\n`@rhea-tidewater`\n\n>`@rhea-tidewater`",
+    false,
+  ],
+  [
+    "inside links and mentions preserved",
+    "See https://example.org and ask @arjun-gh.",
+    "See https://example.org and ask @arjun-gh.",
+    true,
+  ],
+] as const)("triage posts with %s", ([_name, body, posted, inside]) => {
+  const { github, layer } = harness({}, { app: true });
+  return Effect.gen(function* () {
+    const { startIssue } = yield* tidewater(github, true);
+    yield* startIssue(inside);
+    const result = yield* postTriage(body);
+    assert.isTrue(result.ok, JSON.stringify(result.value));
+    assert.strictEqual(result.value.next, TRIAGE_NEXT);
+    assert.deepStrictEqual(
+      github.world.comments.map((comment) => comment.body),
+      [`${posted}\n\n_Tech lead, via Kin_\n<!-- kin-agent: tech-lead -->`],
+    );
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect(
+  "triage binds the issue, records one receipt and refuses a second call or a requeued event",
+  () => {
+    const { github, layer } = harness({}, { app: true });
+    return Effect.gen(function* () {
+      const { sql, orgId, owner, ownerChat, ask, end, runReview, startIssue, handled } =
+        yield* tidewater(github, true);
+      yield* ask(owner.personId, ownerChat, "Check the digest");
+      assert.strictEqual(
+        (yield* postTriage("The digest arrives early.")).value.message,
+        "kin_github_comment posts only the one comment a new issue's turn is for. Comment anywhere else with gh issue comment.",
+      );
+      yield* end("completed");
+      const triage = yield* startIssue();
+      const first = yield* postTriage("The digest arrives early.");
+      assert.isTrue(first.ok, JSON.stringify(first.value));
+      assert.deepStrictEqual(yield* handled(triage.key), [
+        { outcome: "woke", url: String(first.value.url) },
+      ]);
+      const [lastPost] = yield* sql<{ at: number }>`SELECT at FROM kin_github_handled
+        WHERE org_id = ${orgId} AND trigger_key = ${triagedKey(TRIAGE_REPO, triage.number)}`;
+      assert.strictEqual(lastPost?.at, github.world.comments[0]?.created_at);
+      const again = `The comment on ${TRIAGE_REPO}#${triage.number} is already posted. Nothing more was posted.`;
+      assert.strictEqual((yield* postTriage("A second comment.")).value.message, again);
+      yield* end("completed");
+      yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL
+      WHERE org_id = ${orgId} AND event_id = ${triage.eventId}`;
+      yield* runReview(triage.eventId);
+      assert.strictEqual((yield* postTriage("A third comment.")).value.message, again);
+      assert.deepStrictEqual(
+        github.world.comments.map(({ repo, number, user }) => [repo, number, user]),
+        [[TRIAGE_REPO, triage.number, "invented-kin[bot]"]],
+      );
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+it.effect(
+  "triage returns a receipt on GitHub refusal, keeps it on no answer, and never falls back outside",
+  () => {
+    const { github, layer } = harness({}, { app: true });
+    return Effect.gen(function* () {
+      const { startIssue, end, handled } = yield* tidewater(github, true);
+      const rejected = yield* startIssue();
+      const path = (number: number) => `repos/${TRIAGE_REPO}/issues/${number}/comments`;
+      github.world.refusing = [path(rejected.number)];
+      assert.isFalse((yield* postTriage("Digest arrives early.")).ok);
+      assert.deepStrictEqual(yield* handled(rejected.key), [{ outcome: "woke", url: null }]);
+      assert.deepStrictEqual(yield* handled(`commentfail:${rejected.key}`), [
+        { outcome: "failed", url: null },
+      ]);
+      assert.lengthOf(github.world.comments, 0);
+      github.world.refusing = [];
+      assert.isTrue((yield* postTriage("Digest arrives early.")).ok);
+      assert.deepStrictEqual(yield* handled(`commentfail:${rejected.key}`), []);
+      yield* end("completed");
+
+      const unknown = yield* startIssue();
+      github.world.failing = [path(unknown.number)];
+      const ref = `${TRIAGE_REPO}#${unknown.number}`;
+      assert.strictEqual(
+        (yield* postTriage("Digest arrives early.")).value.message,
+        `GitHub didn't say whether it took the comment on ${ref}, so Kin won't send it again. It may be on the issue.`,
+      );
+      assert.deepStrictEqual(yield* handled(unknown.key), [{ outcome: "woke", url: POSTING }]);
+      github.world.failing = [];
+      assert.strictEqual(
+        (yield* postTriage("Digest arrives early.")).value.message,
+        `A comment on ${ref} was sent and GitHub never said whether it took it, so Kin sends no other. Nothing was posted.`,
+      );
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+it.effect("triage outside requires the app and inside can post as the owner", () => {
+  const { github, layer } = harness({}, { app: true });
+  return Effect.gen(function* () {
+    const { startIssue, end, sql, ownerChat, orgId } = yield* tidewater(github, false);
+    yield* startIssue();
+    assert.strictEqual(
+      (yield* postTriage("Digest arrives early.")).value.message,
+      "Kin's GitHub App isn't installed on tidewater/portal. Nothing was posted.",
+    );
+    assert.lengthOf(github.world.comments, 0);
+    yield* end("completed");
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+      person_id, role, joined_at)
+      VALUES ('triage-owner-chat-zoya', ${orgId}, ${ownerChat}, 'person', 'zoya', 'member', ${at})`;
+    const issue = yield* startIssue(true);
+    assert.strictEqual(yield* turnAudience(issue), "shared");
+    const posted = yield* postTriage("Digest arrives early.");
+    assert.isTrue(posted.ok, JSON.stringify(posted.value));
+    assert.deepStrictEqual(
+      github.world.comments.map(({ number, user }) => [number, user]),
+      [[issue.number, OWNER_LOGIN]],
+    );
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("triage keeps the outside seat when two issues share a wake-up", () => {
+  const { github, layer } = harness({}, { app: true });
+  return Effect.gen(function* () {
+    const { startIssue, end, sql } = yield* tidewater(github, true);
+    const inside = yield* startIssue(true);
+    yield* end("completed");
+    const outside = yield* startIssue();
+    yield* sql`UPDATE kin_events SET wakeup_id = ${outside.wakeupId}
+      WHERE org_id = ${inside.orgId} AND event_id = ${inside.eventId}`;
+    assert.strictEqual(yield* turnAudience(outside), "shared");
+    assert.strictEqual((yield* callAs("tech", "kin_relay", {})).value.message, TRIAGE_DENIED);
+    assert.isTrue((yield* postTriage("Digest arrives early.")).ok);
+    assert.deepStrictEqual(
+      github.world.comments.map(({ number }) => number),
+      [outside.number],
+    );
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect(
+  "triage outside is shared and quiet, refuses other tools and reads only the bound private repo",
+  () => {
+    const { github, layer } = harness({}, { app: true });
+    return Effect.gen(function* () {
+      const { startIssue } = yield* tidewater(github, true);
+      const turn = yield* startIssue();
+      assert.isTrue(isOutsideTriage(turn));
+      assert.strictEqual(yield* turnAudience(turn), "shared");
+      const lane = Option.getOrThrow(yield* laneFor(turn));
+      assert.include(lane, { mode: "notice", quiet: true, owed: false });
+      for (const {
+        tool: { name },
+      } of (yield* McpServer.McpServer).tools) {
+        if (name === "kin_github_read" || name === "kin_github_comment") continue;
+        assert.strictEqual((yield* callAs("tech", name, {})).value.message, TRIAGE_DENIED, name);
+      }
+      const before = github.requests.length;
+      assert.strictEqual(
+        (yield* callAs("tech", "kin_github_read", { repo: TRIAGE_OTHER })).value.message,
+        "This turn answers an issue in tidewater/portal, so it reads only tidewater/portal.",
+      );
+      assert.deepStrictEqual(github.requests.slice(before), []);
+      const read = yield* callAs("tech", "kin_github_read", {
+        repo: TRIAGE_REPO,
+        path: "digest.ts",
+      });
+      assert.isTrue(read.ok, JSON.stringify(read.value));
+      assert.strictEqual(read.value.text, "export const hour = 3;\n");
+      assert.strictEqual((yield* callAs("tech", "kin_relay", {})).value.message, TRIAGE_DENIED);
+    }).pipe(Effect.provide(layer));
+  },
+);
+
+it.effect(
+  "triage settlement sends each owner line once and stays quiet for a clean or skipped comment",
+  () => {
+    const { github, layer } = harness({}, { app: true });
+    return Effect.gen(function* () {
+      const { sql, orgId, ownerChat, startIssue, runReview, end, told } = yield* tidewater(
+        github,
+        true,
+      );
+      const lines: string[] = [];
+      for (const [reason, words] of [
+        ["security", "reads as a security report"],
+        ["data_loss", "reports lost data"],
+        ["decision", "asks for something only you can decide"],
+        ["rule", "is one your standing rules ask to hear of"],
+        ["refused", ""],
+        ["unknown", ""],
+        ["clean", ""],
+        ["skipped", ""],
+        ["flagged without a post", "reads as a security report"],
+        ["flagged on GitHub refusal", "reports lost data"],
+        ["flagged on unknown receipt", "is one your standing rules ask to hear of"],
+      ] as const) {
+        const inside = reason === "decision";
+        const issue = yield* startIssue(inside);
+        const ref = `${TRIAGE_REPO}#${issue.number}`;
+        const path = `repos/${TRIAGE_REPO}/issues/${issue.number}/comments`;
+        if (reason === "flagged without a post") {
+          for (const flag of ["security", "decision", "data_loss"]) {
+            const result = yield* postTriage("[Report](https://example.org/report)", flag);
+            assert.strictEqual(
+              result.value.message,
+              `Kin posts links only into ${TRIAGE_REPO} on GitHub.`,
+            );
+          }
+          lines.push(
+            `"Digest arrives early" (#${issue.number}) on ${TRIAGE_REPO}, mallory's new issue from outside the company, ${words}: ${issue.url}`,
+          );
+        } else if (
+          reason === "flagged on GitHub refusal" ||
+          reason === "flagged on unknown receipt"
+        ) {
+          const unknown = reason === "flagged on unknown receipt";
+          if (unknown) github.world.failing = [path];
+          else github.world.refusing = [path];
+          assert.isFalse(
+            (yield* postTriage("The digest arrives early.", unknown ? "rule" : "data_loss")).ok,
+          );
+          lines.push(
+            `"Digest arrives early" (#${issue.number}) on ${TRIAGE_REPO}, mallory's new issue from outside the company, ${words}: ${issue.url}`,
+          );
+        } else if (reason === "refused") {
+          github.world.refusing = [path];
+          assert.isFalse((yield* postTriage("The digest arrives early.")).ok);
+          lines.push(
+            `The reply to ${ref}, a new issue from outside the company, did not post: ${issue.url}`,
+          );
+        } else if (reason === "unknown") {
+          github.world.failing = [path];
+          assert.isFalse((yield* postTriage("The digest arrives early.")).ok);
+          lines.push(`Kin sent a reply to ${ref} and GitHub didn't confirm it: ${issue.url}`);
+        } else if (reason !== "skipped") {
+          const posted = yield* postTriage(
+            "The digest arrives early.",
+            reason === "clean" ? undefined : reason,
+          );
+          assert.isTrue(posted.ok, JSON.stringify(posted.value));
+          if (reason !== "clean")
+            lines.push(
+              `"Digest arrives early" (#${issue.number}) on ${TRIAGE_REPO}, ${inside ? "Zoya Sheikh's new issue" : "mallory's new issue from outside the company"}, ${words}: ${posted.value.url}`,
+            );
+        }
+        yield* end("completed");
+        yield* sql`UPDATE kin_events SET state = 'queued', wakeup_id = NULL
+        WHERE org_id = ${orgId} AND event_id = ${issue.eventId}`;
+        yield* runReview(issue.eventId);
+        yield* end("completed");
+        if (reason === "flagged without a post") {
+          yield* startIssue(false, issue.number);
+          assert.isTrue((yield* postTriage("Thanks for following up.", "rule")).ok);
+          yield* end("completed");
+        }
+      }
+      assert.deepStrictEqual(yield* told(ownerChat), lines);
     }).pipe(Effect.provide(layer));
   },
 );

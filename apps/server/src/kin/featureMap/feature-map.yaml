@@ -237,6 +237,7 @@ features:
       where it is installed, else as the owner's login (Settings, Connections).
     tools:
       [
+        kin_github_comment,
         kin_github_review,
         kin_github_diff,
         kin_github_read,

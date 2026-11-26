@@ -126,7 +126,7 @@
       "schema": 46
     },
     "kin_connection_call": {
-      "desc": 822,
+      "desc": 812,
       "schema": 226
     },
     "kin_connection_note": {
@@ -148,6 +148,10 @@
     "kin_document": {
       "desc": 1667,
       "schema": 1749
+    },
+    "kin_github_comment": {
+      "desc": 348,
+      "schema": 269
     },
     "kin_github_diff": {
       "desc": 147,
@@ -174,7 +178,7 @@
       "schema": 114
     },
     "kin_hand_off": {
-      "desc": 2047,
+      "desc": 2037,
       "schema": 328
     },
     "kin_issue": {
@@ -318,7 +322,7 @@
       "schema": 239
     },
     "record_create": {
-      "desc": 6290,
+      "desc": 6310,
       "schema": 8725
     },
     "record_get": {

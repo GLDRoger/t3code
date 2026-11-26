@@ -43,14 +43,25 @@ Sees(p) ==
   \/ (~private \/ Broken = "giver-sees-private") /\ byPerson = p
   \/ ~private /\ inProject /\ p = "ben"
 
+(* How the task comes to be. The owner makes one for himself; the lead agent makes one for anyone,
+   saved at once (KinRecords.startsKept alwaysKept), its holder told in the same turn (insert's
+   wakeLead, leadWork.ts movedNotices), the agent the giver unless someone asked (writer.askedBy);
+   or it is a suggestion from before that change, held by anyone, waiting for Keep. *)
 Init ==
-  /\ kept \in BOOLEAN
-  /\ IF kept THEN holder = "owner" ELSE holder \in Everyone
-  /\ byAgent = FALSE /\ byPerson = "none" /\ asked = "none" /\ state = "open"
+  /\ \/ /\ kept = TRUE /\ holder = "owner" /\ byAgent = FALSE /\ byPerson = "none" /\ asked = "none"
+        /\ told = 0 /\ owed = FALSE
+     \/ /\ kept = TRUE /\ holder \in Everyone /\ asked \in People \cup {"none"}
+        /\ byAgent = (holder # "agent" /\ asked = "none")
+        /\ byPerson = asked
+        /\ owed = (holder # "agent")
+        /\ told = IF holder # "agent" /\ Broken # "made-untold" THEN 1 ELSE 0
+     \/ /\ kept = FALSE /\ holder \in Everyone /\ byAgent = FALSE /\ byPerson = "none" /\ asked = "none"
+        /\ told = 0 /\ owed = FALSE
+  /\ state = "open"
   /\ private = FALSE /\ inProject = FALSE /\ alert = "none" /\ bounced = {} /\ backs = {}
   /\ handedBack = "none" /\ helper = "none"
   /\ promised \in {"none"} \cup {m \in Members : m # holder}
-  /\ pingpong = FALSE /\ told = 0 /\ owed = FALSE /\ moves = 0 /\ edits = 0
+  /\ pingpong = FALSE /\ moves = 0 /\ edits = 0
 
 \* Each hand-off tells its receiver once: a person by the agent's line (assignNotices.ts
 \* tellPeople) or, moved by a person, one banner (tellOnTasks); an agent by a wake-up.
