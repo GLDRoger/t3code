@@ -18,7 +18,6 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { KinWorkspace } from "../gendocs/workspace.ts";
 import { unsetOwnerZone } from "../work/recordRows.ts";
-import { turnSensitive } from "../work/sensitiveReads.ts";
 import { turnChat } from "./Audience.ts";
 import { outsideRead } from "./OutsideContent.ts";
 
@@ -367,11 +366,7 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
       LIMIT ${SESSION_HISTORY_LIMIT + 1}`;
   let marked = false;
   for (const member of [...history, { wakeupId, draft: 0 }]) {
-    if (
-      member.draft === 1 ||
-      (yield* outsideRead({ orgId, wakeupId: member.wakeupId })) ||
-      (yield* turnSensitive(orgId, member.wakeupId))
-    ) {
+    if (member.draft === 1 || (yield* outsideRead({ orgId, wakeupId: member.wakeupId }))) {
       marked = true;
       break;
     }
