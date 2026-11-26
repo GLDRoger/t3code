@@ -5,7 +5,7 @@ import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
-import { sensitiveShown } from "../work/sensitiveReads.ts";
+import { sensitiveShown, turnSensitive } from "../work/sensitiveReads.ts";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { SALES_OUTSIDE_TOOLS } from "../sales/policies.ts";
 
@@ -423,6 +423,31 @@ export const markOutside = Effect.fn("KinOutsideContent.mark")(function* (
       WHERE org_id = ${turn.orgId} AND wakeup_id = ${turn.wakeupId}
       ON CONFLICT (org_id, event_id) DO UPDATE SET outside_from = excluded.outside_from`;
   }).pipe(sql.withTransaction);
+});
+
+export const inheritSession = Effect.fn("KinOutsideContent.inheritSession")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: string;
+  readonly fromWakeupIds: ReadonlyArray<string>;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      let marked = false;
+      for (const wakeupId of input.fromWakeupIds) {
+        const stamp = yield* outsideStamp({ orgId: input.orgId, wakeupId });
+        if (stamp !== undefined) {
+          yield* markOutside(input, stamp);
+          marked = true;
+        }
+        if (yield* turnSensitive(input.orgId, wakeupId)) {
+          yield* sensitiveShown(input);
+          marked = true;
+        }
+      }
+      return marked;
+    }),
+  );
 });
 
 /** The stamp for text a person's coding agent wrote through its key, by the key's name. */

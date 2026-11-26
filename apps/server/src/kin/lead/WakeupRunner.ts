@@ -17,6 +17,7 @@ import {
   MessageId,
   ModelSelection,
   NodeId,
+  type OrchestrationV2Run,
   ProjectId,
   RunAttemptId,
   RunId,
@@ -136,6 +137,7 @@ import * as WorkFor from "./workFor.ts";
 import { noticeRecords, runsFrom, turnRecords } from "./wakeupRuns.ts";
 import { RUN_SILENCE_MS, activityAt, waitAsking } from "./runSilence.ts";
 import { closeQuietRunCards, postQuietRunCard } from "./quietRunCard.ts";
+import { inheritSession } from "./OutsideContent.ts";
 
 const isSteerRun = (wakeupId: KinWakeupId, run: { readonly userMessageId: string }) =>
   KinIdentity.isAdoptedRunMessage(wakeupId, run.userMessageId) &&
@@ -490,6 +492,30 @@ const make = Effect.gen(function* () {
     return yield* leadListsTool(turn.orgId, turn.agentId, "bills_add").pipe(
       Effect.provideService(SqlClient.SqlClient, sql),
     );
+  });
+  const inheritTaken = Effect.fn("WakeupRunner.inheritTaken")(function* (
+    row: typeof RunningRow.Type,
+    run: OrchestrationV2Run,
+  ) {
+    if (run.freshContext === true) return false;
+    if (run.providerThreadId === null)
+      return yield* new KinWakeupError({
+        orgId: row.orgId,
+        agentId: row.agentId,
+        cause: "missing_provider_thread",
+      });
+    const earlier = yield* sql<{ wakeupId: string }>`
+      SELECT w.wakeup_id AS "wakeupId" FROM orchestration_v2_projection_runs r
+      JOIN kin_wakeups w ON w.run_id = r.run_id AND w.thread_id = r.thread_id
+      WHERE w.org_id = ${row.orgId} AND w.agent_id = ${row.agentId}
+        AND r.thread_id = ${row.threadId} AND r.provider_thread_id = ${run.providerThreadId}
+        AND r.ordinal < ${run.ordinal} AND w.wakeup_id <> ${row.wakeupId}
+      ORDER BY r.ordinal, w.wakeup_id`;
+    return yield* inheritSession({
+      orgId: row.orgId,
+      wakeupId: row.wakeupId,
+      fromWakeupIds: earlier.map((wake) => wake.wakeupId),
+    }).pipe(provideSql);
   });
   /** Who each finished-task event's work was for (`WorkFor.workFor`), by event id. */
   const finishedFor = Effect.fn("WakeupRunner.finishedFor")(function* (
@@ -1302,8 +1328,8 @@ const make = Effect.gen(function* () {
     interrupted = false,
     failure: unknown = null,
   ) {
-    // Only a stopping server interrupts a wake-up: what it staged lands then, as the agent may
-    // already have said it saved it, and its events may be done. Otherwise it is dropped.
+    // An interrupted wake-up lands what it staged: the agent may already have said it saved it,
+    // and its events may be done. Otherwise, staged changes are dropped.
     if (Option.isSome(writer)) {
       const memory = writer.value;
       const landed =
@@ -1468,6 +1494,7 @@ const make = Effect.gen(function* () {
               return yield* new KinWakeupError({ orgId, agentId, cause: wrongProvider });
             // T3 starts the run that answers a finished task at once: own it before the slow
             // preparation below, so its first tool calls already find their turn.
+            let claimedWithMarks = false;
             for (const event of events) {
               if (event._tag !== "task.finished" || row.runId !== null) continue;
               const state = noticeState(
@@ -1475,10 +1502,17 @@ const make = Effect.gen(function* () {
                 event.messageId,
               );
               if (state._tag !== "live") continue;
-              row = { ...row, threadId: event.threadId, runId: state.run.id };
-              yield* sql`UPDATE kin_wakeups SET thread_id = ${event.threadId}, run_id = ${state.run.id}
-                WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId}
-                  AND status = 'running'`;
+              const claimed = { ...row, threadId: event.threadId, runId: state.run.id };
+              claimedWithMarks = yield* sql.withTransaction(
+                Effect.gen(function* () {
+                  const marked = yield* inheritTaken(claimed, state.run);
+                  yield* sql`UPDATE kin_wakeups SET thread_id = ${event.threadId}, run_id = ${state.run.id}
+                    WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId}
+                      AND status = 'running'`;
+                  return marked;
+                }),
+              );
+              row = claimed;
               yield* registry.register(event.threadId, {
                 orgId,
                 agentId,
@@ -1793,7 +1827,23 @@ const make = Effect.gen(function* () {
               return;
             }
             const threadId = existingThreadId ?? ThreadId.make(`${prefix}${yield* ulid}`);
-            row = { ...row, threadId };
+            // T3 may have started the notice's run during preparation.
+            const finished = events.flatMap((event) =>
+              event._tag === "task.finished" && event.threadId === threadId ? [event] : [],
+            );
+            const taken =
+              existingThreadId === null || finished.length === 0
+                ? undefined
+                : (yield* Effect.forEach(finished, (event) =>
+                    noticeRecords(threads, threadId, event.messageId).pipe(
+                      Effect.map((records) => noticeState(records, event.messageId)),
+                    ),
+                  ))
+                    .flatMap((state) => (state._tag === "live" ? [state.run] : []))
+                    .at(0);
+            // A wake-up that already owned a marked session cannot be reused for a fresh send.
+            if (claimedWithMarks && taken === undefined) return yield* cleanup(row, true);
+            const claimed = { ...row, threadId, runId: taken?.id ?? null };
             yield* sql.withTransaction(
               Effect.gen(function* () {
                 const [active] =
@@ -1820,13 +1870,15 @@ const make = Effect.gen(function* () {
                   threadId,
                   ...(chatId === null ? {} : { chatId }),
                 });
+                if (taken !== undefined) yield* inheritTaken(claimed, taken);
                 // The running turn's thread: one wake-up runs per lead at a time.
                 yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
                 yield* sql`UPDATE kin_wakeups SET thread_id = ${threadId}, model = ${modelSelection.model},
-                prepared_at = ${preparedAt}
+                prepared_at = ${preparedAt}, run_id = ${claimed.runId}
               WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId} AND status = 'running'`;
               }),
             );
+            row = claimed;
             // A finished task's run may already be this wake-up's (above).
             if (registry.lookup(threadId)?.wakeupId !== wakeupId)
               yield* registry.register(threadId, {
@@ -1844,20 +1896,6 @@ const make = Effect.gen(function* () {
                 startedAt: row.startedAt,
                 attachments: attachments.length > 0,
               });
-            // T3 already started the run that answers a finished task here: this wake-up owns it.
-            const finished = events.flatMap((event) =>
-              event._tag === "task.finished" && event.threadId === threadId ? [event] : [],
-            );
-            const taken =
-              existingThreadId === null || finished.length === 0
-                ? undefined
-                : (yield* Effect.forEach(finished, (event) =>
-                    noticeRecords(threads, threadId, event.messageId).pipe(
-                      Effect.map((records) => noticeState(records, event.messageId)),
-                    ),
-                  ))
-                    .flatMap((state) => (state._tag === "live" ? [state.run] : []))
-                    .at(0);
             const commandId = CommandId.make(`kin-wakeup:${wakeupId}`);
             const messageId = MessageId.make(KinIdentity.wakeupMessageId(wakeupId));
             const sent =

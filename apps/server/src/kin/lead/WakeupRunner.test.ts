@@ -2620,7 +2620,8 @@ describe("WakeupRunner", () => {
     ],
     ["a finished task's run inherits a sensitive entry mark", true, false, true],
     ["answers a finished task whose run already ended in a fresh turn", false, true, true],
-  ] as const)("%s", ([, live, outside, sensitive]) =>
+    ["requeues a finished task if its marked run ends during preparation", true, true, false, true],
+  ] as const)("%s", ([, live, outside, sensitive, endsDuringPreparation = false]) =>
     Effect.gen(function* () {
       const wholeThreadReads: Array<ThreadId> = [];
       const started = yield* Deferred.make<void>();
@@ -2638,7 +2639,7 @@ describe("WakeupRunner", () => {
           if ((live && turns === 2) || (!live && turns === 3))
             return Deferred.succeed(started, undefined).pipe(
               Effect.andThen(Deferred.await(release)),
-              Effect.andThen(check(threadId)),
+              Effect.andThen(endsDuringPreparation ? Effect.void : check(threadId)),
             );
           return Effect.void;
         });
@@ -2747,6 +2748,15 @@ describe("WakeupRunner", () => {
             SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
             WHERE status = 'running' AND run_id = ${noticeRun.id}`;
           early = yield* marks(claim!.wakeupId);
+          if (endsDuringPreparation) {
+            yield* Deferred.succeed(release, undefined);
+            yield* threads.waitForThread({
+              projectId,
+              threadId,
+              runId: noticeRun.id,
+              timeoutMs: 60_000,
+            });
+          }
         }).pipe(Effect.provideContext(services), Effect.orDie);
         const readsBefore = wholeThreadReads.length;
         const fiber = yield* run();
@@ -2757,6 +2767,17 @@ describe("WakeupRunner", () => {
         const wakeups = yield* sql<{ wakeupId: string; runId: string; status: string }>`
           SELECT wakeup_id AS "wakeupId", run_id AS "runId", status FROM kin_wakeups
           ORDER BY started_at, wakeup_id`;
+        if (endsDuringPreparation) {
+          assert.deepStrictEqual(early, source);
+          assert.strictEqual(wakeups[1]!.status, "interrupted");
+          assert.strictEqual(wakeups[1]!.runId, noticeRun.id);
+          assert.lengthOf((yield* threads.getThreadProjection(threadId)).runs, 2);
+          assert.deepStrictEqual(
+            yield* sql`SELECT state, wakeup_id FROM kin_events WHERE tag = 'task.finished'`,
+            [{ state: "queued", wakeup_id: null }],
+          );
+          return;
+        }
         assert.deepStrictEqual(
           wakeups.map((row) => row.status),
           ["completed", "completed"],
