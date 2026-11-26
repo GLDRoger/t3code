@@ -184,7 +184,8 @@ type HarnessOptions = {
   /** Runtime requests are opened with this capability instead of `live`. */
   readonly requestCapability?: "not_resumable";
   /** Each turn stays open until it is interrupted, then ends `interrupted`. */
-  readonly untilInterrupted?: boolean;
+  readonly untilInterrupted?: boolean | ((runOrdinal: number) => boolean);
+  readonly holdInterrupt?: Deferred.Deferred<void>;
   /** Replaces the in-memory database, for example with a file in a state directory. */
   readonly database?: Database;
   /** Runs inside each turn before it completes, as the provider's tool calls would. */
@@ -208,6 +209,7 @@ type HarnessOptions = {
   readonly prompts?: Array<KinLeadPromptInput>;
   /** Called on every `readyLeads` pass the runner makes. */
   readonly onReadyLeads?: () => void;
+  readonly afterSteerClaim?: Effect.Effect<void>;
   /** The project id bootstrap returns, read on each call. */
   readonly projectId?: () => ProjectId;
   /**
@@ -397,7 +399,11 @@ function parts(options: HarnessOptions) {
                   },
                 },
               });
-            if (options.untilInterrupted) {
+            if (
+              typeof options.untilInterrupted === "function"
+                ? options.untilInterrupted(input.runOrdinal)
+                : options.untilInterrupted
+            ) {
               open.set(id, input);
               if (options.work !== undefined)
                 yield* working(input, id, () => open.has(id)).pipe(Effect.forkDetach);
@@ -556,6 +562,7 @@ function parts(options: HarnessOptions) {
           interruptTurn: Effect.fn("test.interruptTurn")(function* ({ providerTurnId }) {
             const turn = open.get(providerTurnId);
             if (turn === undefined) return;
+            if (options.holdInterrupt !== undefined) yield* Deferred.await(options.holdInterrupt);
             open.delete(providerTurnId);
             const time = yield* DateTime.now;
             yield* Queue.offer(events, {
@@ -692,16 +699,18 @@ function parts(options: HarnessOptions) {
     Layer.provide(Layer.mergeAll(external, management, receipts, orchestration, IdAllocator.layer)),
   );
   const queueLayer =
-    options.onReadyLeads === undefined
+    options.onReadyLeads === undefined && options.afterSteerClaim === undefined
       ? KinEventQueue.layer
       : Layer.effect(
           KinEventQueue.KinEventQueue,
           Effect.map(KinEventQueue.KinEventQueue, (queue) => ({
             ...queue,
             readyLeads: (orgId: Parameters<typeof queue.readyLeads>[0]) =>
-              Effect.sync(() => options.onReadyLeads!()).pipe(
+              Effect.sync(() => options.onReadyLeads?.()).pipe(
                 Effect.andThen(queue.readyLeads(orgId)),
               ),
+            steer: (input) =>
+              queue.steer(input).pipe(Effect.tap(() => options.afterSteerClaim ?? Effect.void)),
           })),
         ).pipe(Layer.provide(KinEventQueue.layer));
   const kin = Layer.mergeAll(

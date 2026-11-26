@@ -33,6 +33,7 @@ import * as ChatHub from "../chat/KinChatHub.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import * as ReplyBridge from "../reply/KinReplyBridge.ts";
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
+import { cutLabel } from "../reply/classify.ts";
 import * as LevelGate from "./LevelGate.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as Floor from "../floor/KinFloor.ts";
@@ -2314,6 +2315,181 @@ describe("WakeupRunner", () => {
               untilInterrupted: status === "interrupted",
             },
             chatLayers.pipe(Layer.provideMerge(bridge)),
+          ),
+        ),
+      );
+    }).pipe(provideDeterministicTestRuntime),
+  );
+
+  it.effect("posts only the answer to a message sent while a stopped run is winding down", () =>
+    Effect.gen(function* () {
+      const holdInterrupt = yield* Deferred.make<void>();
+      const checked = yield* Deferred.make<void>();
+      const continueSteer = yield* Deferred.make<void>();
+      const holdRunning = yield* Deferred.make<void>();
+      const entered = yield* Queue.unbounded<ThreadId>();
+      const steered = yield* Queue.unbounded<{ runId: string; messageId: string }>();
+      const journal: Array<string> = [];
+      const oldReply = "The Tidewater Freight invoice is ready at 48,000.";
+      const newReply = "The Tidewater Freight invoice is ready at 42,000.";
+      const writer = Layer.mock(Writer.MemoryWriter)({
+        appendJournal: (_org, _wakeup, lines) =>
+          Effect.sync(() => {
+            journal.push(...lines);
+          }),
+        staged: () => Effect.succeed(false),
+        commitWakeup: () => Effect.succeed({ commit: "none" }),
+        discard: () => Effect.void,
+      });
+      let afterSteerClaim = Effect.void;
+      yield* Effect.gen(function* () {
+        yield* privateRequest("first");
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE kin_orgs SET name = 'Tidewater Freight' WHERE org_id = ${orgId}`;
+        yield* sql`UPDATE kin_people SET display_name = 'Rhea' WHERE org_id = ${orgId}`;
+        yield* sql`UPDATE kin_leads SET name = 'Ada' WHERE org_id = ${orgId}`;
+        yield* sql`UPDATE kin_agents SET display_name = 'Ada' WHERE org_id = ${orgId}`;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const stop = yield* KinStop.KinStop;
+        yield* stop.attach(yield* KinStop.makeFanOut(Option.none()));
+
+        const first = yield* run();
+        const threadId = yield* Queue.take(entered);
+        const [wake] = yield* sql<{ wakeupId: KinWakeupId }>`SELECT wakeup_id AS "wakeupId"
+          FROM kin_wakeups WHERE org_id = ${orgId}`;
+        const running = yield* threads
+          .streamStoredEventsFrom({
+            threadId,
+            afterSequence: 0,
+            eventType: "provider-turn.updated",
+          })
+          .pipe(
+            Stream.map(({ event }) => event),
+            Stream.filter(
+              (event) =>
+                event.type === "provider-turn.updated" && event.payload.status === "running",
+            ),
+            Stream.take(1),
+            Stream.runCollect,
+            Effect.map((events) => events[0]!),
+          );
+        assert(running.type === "provider-turn.updated");
+        const say = Effect.fn("test.say")(function* (id: string) {
+          const message = yield* ownerSays(id, "direct");
+          yield* sql`UPDATE kin_chats SET last_seq = (
+            SELECT MAX(seq) FROM kin_messages WHERE org_id = ${orgId} AND chat_id = 'direct')
+            WHERE org_id = ${orgId} AND chat_id = 'direct'`;
+          yield* queue.enqueue(message);
+        });
+        yield* say("before-stop");
+        yield* Queue.take(steered);
+        const projection = yield* threads.getThreadProjection(threadId);
+        const root = projection.runs[0]!;
+        const now = yield* DateTime.now;
+        const item = {
+          id: TurnItemId.make("tidewater-held"),
+          threadId,
+          runId: root.id,
+          nodeId: running.payload.nodeId,
+          providerThreadId: running.payload.providerThreadId,
+          providerTurnId: running.payload.id,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: projection.turnItems.at(-1)!.ordinal + 1,
+          status: "completed" as const,
+          title: null,
+          startedAt: now,
+          completedAt: now,
+          updatedAt: now,
+          type: "assistant_message" as const,
+          messageId: MessageId.make("tidewater-held"),
+          text: oldReply,
+          streaming: false,
+        };
+        yield* (yield* EventSink.EventSinkV2).write({
+          events: [
+            {
+              id: EventId.make(item.id),
+              threadId,
+              occurredAt: now,
+              type: "turn-item.updated",
+              payload: item,
+            },
+          ],
+        });
+
+        assert.deepStrictEqual(
+          yield* stop.interrupt([{ _tag: "person", orgId, personId: KinPersonId.make("owner") }], {
+            orgId,
+            wakeupId: wake!.wakeupId,
+          }),
+          { interrupted: true },
+        );
+        const posted = sql`SELECT author_kind, body FROM kin_messages
+          WHERE org_id = ${orgId} AND chat_id = 'direct' AND author_kind <> 'human' ORDER BY seq`;
+        const receipt = { author_kind: "system", body: "Rhea stopped Ada." };
+        assert.deepStrictEqual(yield* posted, [receipt]);
+        afterSteerClaim = Effect.gen(function* () {
+          const rows =
+            yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId} AND event_id = 'after-stop'`.pipe(
+              Effect.orDie,
+            );
+          if (rows.length === 0) return;
+          yield* Deferred.succeed(checked, undefined);
+          yield* Deferred.await(continueSteer);
+        });
+        yield* say("after-stop");
+        yield* Deferred.await(checked);
+        yield* Deferred.succeed(holdInterrupt, undefined);
+        yield* threads
+          .streamStoredEventsFrom({ threadId, afterSequence: 0, eventType: "run.updated" })
+          .pipe(
+            Stream.filter(
+              ({ event }) =>
+                event.type === "run.updated" &&
+                event.payload.id === root.id &&
+                event.payload.status === "interrupted",
+            ),
+            Stream.take(1),
+            Stream.runDrain,
+          );
+        afterSteerClaim = Effect.void;
+        yield* Deferred.succeed(continueSteer, undefined);
+        yield* Effect.raceFirst(Queue.take(entered), Fiber.join(first));
+        yield* Deferred.succeed(holdRunning, undefined);
+        yield* Fiber.join(first);
+
+        if ((yield* queue.readyLeads(orgId)).length > 0) yield* Fiber.join(yield* run());
+        assert.deepStrictEqual(yield* posted, [receipt, { author_kind: "agent", body: newReply }]);
+        assert.deepStrictEqual(journal, [`Not sent: ${cutLabel(oldReply)}`]);
+        const [fresh] = yield* sql<{ wakeupId: string }>`SELECT wakeup_id AS "wakeupId"
+          FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'completed'`;
+        assert.isDefined(fresh);
+        assert.notStrictEqual(fresh?.wakeupId, wake!.wakeupId);
+        assert.deepStrictEqual(
+          yield* sql`SELECT event_id, state, wakeup_id, replied_at IS NOT NULL AS answered
+            FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`,
+          [
+            { event_id: "after-stop", state: "done", wakeup_id: fresh?.wakeupId, answered: 1 },
+            { event_id: "before-stop", state: "done", wakeup_id: wake!.wakeupId, answered: 0 },
+            { event_id: "first", state: "done", wakeup_id: wake!.wakeupId, answered: 0 },
+          ],
+        );
+      }).pipe(
+        Effect.provide(
+          harnessWith(
+            {
+              untilInterrupted: (ordinal) => ordinal === 1,
+              holdInterrupt,
+              holdRunning,
+              replyText: newReply,
+              providerSteers: steered,
+              onTurn: ({ threadId }) => Queue.offer(entered, threadId).pipe(Effect.asVoid),
+              afterSteerClaim: Effect.suspend(() => afterSteerClaim),
+              writer,
+            },
+            ReplyBridge.layer.pipe(Layer.provideMerge(chatLayers)),
           ),
         ),
       );

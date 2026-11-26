@@ -413,13 +413,14 @@ const setup = Effect.fn("test.setup")(function* (input: {
   );
   const bridge = Context.get(context, ReplyBridge.KinReplyBridge);
   const runId = RunId.make(row!.runId);
-  yield* bridge.begin({
+  const begin = bridge.begin({
     orgId: owner.orgId,
     agentId,
     wakeupId,
     threadId,
     startedAt: row!.startedAt,
   });
+  yield* begin;
   const projectId = (yield* (yield* Orchestrator.OrchestratorV2).getThreadProjection(threadId))
     .thread.projectId;
   const complete = bridge.complete({
@@ -444,6 +445,7 @@ const setup = Effect.fn("test.setup")(function* (input: {
     identity,
     sql,
     bridge,
+    begin,
     fake,
     runId,
     wakeupId,
@@ -628,50 +630,79 @@ it.effect.each(["person asks", "person asks live", "person reads", "trigger asks
     }).pipe(Effect.provide(layer)),
 );
 
-it.effect.each(["complete", "failed", "paused", "stopped"] as const)(
-  "holds finished text while the turn works, then handles %s",
-  (ending) =>
-    Effect.gen(function* () {
-      const journalLines: Array<string> = [];
-      const { fake, runId, complete, posted, bridge, owner, wakeupId, projectId, services, sql } =
-        yield* setup({ ask: "Tell me everything", journalLines });
-      const body = "Here is the answer. " + "Every detail is ready. ".repeat(9).trim();
-      const all = yield* Context.get(services, KinChatHub).subscribeAll;
-      const working = yield* all.pipe(
-        Stream.filter(
-          (event) =>
-            event.type === "presence.updated" && event.presence?.label === "Setting a reminder",
-        ),
-        Stream.take(1),
-        Stream.runDrain,
-        Effect.forkScoped,
-      );
-      const answer = text("a", 1, body, runId);
-      fake.items = [answer, { ...tool("t", 2, "mcp__kin__kin_defer", runId), status: "running" }];
-      for (const item of fake.items) yield* Queue.offer(fake.live, itemEvent(item));
-      yield* Fiber.join(working);
-      const before = yield* posted;
-      if (ending === "paused") yield* bridge.end({ orgId: owner.orgId, agentId, wakeupId });
-      else if (ending === "failed" || ending === "stopped")
-        yield* bridge.complete({
-          orgId: owner.orgId,
-          wakeupId,
-          projectId,
-          rootRunId: runId,
-          rescue: false,
-          stopped: ending === "stopped",
-        });
-      else yield* complete;
-      assert.deepStrictEqual(
-        { before: before.map((row) => row.body), after: (yield* posted).map((row) => row.body) },
-        { before: [], after: ending === "stopped" || ending === "paused" ? [] : [body] },
-      );
-      if (ending === "stopped") {
-        assert.deepStrictEqual(journalLines, [`Not sent: ${cutLabel(body)}`]);
-        assert.strictEqual(yield* endingOf(sql, wakeupId), "none");
-        assert.strictEqual(fake.rescues, 0);
+it.effect.each([
+  "complete",
+  "failed",
+  "paused",
+  "stopped",
+  "stopped before completion",
+  "recovered after Stop",
+] as const)("holds finished text while the turn works, then handles %s", (ending) =>
+  Effect.gen(function* () {
+    const journalLines: Array<string> = [];
+    const {
+      fake,
+      runId,
+      begin,
+      complete,
+      posted,
+      bridge,
+      owner,
+      wakeupId,
+      projectId,
+      services,
+      sql,
+    } = yield* setup({ ask: "Tell me everything", journalLines });
+    const body = "Here is the answer. " + "Every detail is ready. ".repeat(9).trim();
+    const all = yield* Context.get(services, KinChatHub).subscribeAll;
+    const working = yield* all.pipe(
+      Stream.filter(
+        (event) =>
+          event.type === "presence.updated" && event.presence?.label === "Setting a reminder",
+      ),
+      Stream.take(1),
+      Stream.runDrain,
+      Effect.forkScoped,
+    );
+    const answer = text("a", 1, body, runId);
+    fake.items = [answer, { ...tool("t", 2, "mcp__kin__kin_defer", runId), status: "running" }];
+    for (const item of fake.items) yield* Queue.offer(fake.live, itemEvent(item));
+    yield* Fiber.join(working);
+    const before = yield* posted;
+    const persistedStop =
+      ending === "stopped before completion" || ending === "recovered after Stop";
+    const end = bridge.end({ orgId: owner.orgId, agentId, wakeupId });
+    if (ending === "paused") yield* end;
+    else if (ending === "failed" || ending === "stopped")
+      yield* bridge.complete({
+        orgId: owner.orgId,
+        wakeupId,
+        projectId,
+        rootRunId: runId,
+        rescue: false,
+        stopped: ending === "stopped",
+      });
+    else {
+      if (persistedStop)
+        yield* sql`UPDATE kin_events SET state = 'done', json = json_set(json, '$._personStopped', 1)
+            WHERE org_id = ${owner.orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'`;
+      if (ending === "recovered after Stop") {
+        yield* end;
+        yield* begin;
       }
-    }).pipe(Effect.provide(layer)),
+      yield* complete;
+    }
+    const stopped = ending === "stopped" || persistedStop;
+    assert.deepStrictEqual(
+      { before: before.map((row) => row.body), after: (yield* posted).map((row) => row.body) },
+      { before: [], after: stopped || ending === "paused" ? [] : [body] },
+    );
+    if (stopped) {
+      assert.deepStrictEqual(journalLines, [`Not sent: ${cutLabel(body)}`]);
+      assert.strictEqual(yield* endingOf(sql, wakeupId), "none");
+      assert.strictEqual(fake.rescues, 0);
+    }
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect.each(["heading", "long page", "long line", "indented code", "Team room"] as const)(

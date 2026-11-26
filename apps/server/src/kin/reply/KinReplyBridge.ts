@@ -73,6 +73,7 @@ import {
   endLostToJoin,
   LAST_RETRY_MS,
   requeueForAudience,
+  wasPersonStopped,
 } from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
 import { leftNote } from "../lead/Handoff.ts";
@@ -1050,10 +1051,14 @@ const make = Effect.gen(function* () {
       );
   });
 
+  const wasStopped = (wake: Wake) =>
+    wasPersonStopped(wake).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+
   const flushReplies = Effect.fn("KinReplyBridge.flushReplies")(function* (
     wake: Wake,
-    stopped: boolean,
+    interrupted: boolean,
   ) {
+    let stopped = interrupted || (yield* wasStopped(wake));
     const held = [...wake.segments.values()]
       .filter((segment) => segment.outcome === "held")
       .toSorted((a, b) => a.ordinal - b.ordinal);
@@ -1072,9 +1077,11 @@ const make = Effect.gen(function* () {
       const setOutcome = (outcome: Outcome) => {
         for (const segment of segments) segment.outcome = outcome;
       };
+      const drop = journal(wake, [`Not sent: ${cutLabel(heldText)}`]).pipe(
+        Effect.tap(() => Effect.sync(() => setOutcome("dropped"))),
+      );
       if (stopped) {
-        setOutcome("dropped");
-        yield* journal(wake, [`Not sent: ${cutLabel(heldText)}`]);
+        yield* drop;
         continue;
       }
       const text = yield* replyText(wake, heldText);
@@ -1108,57 +1115,67 @@ const make = Effect.gen(function* () {
       }
       const author = parts.length === 1 && !wake.replied ? yield* agent(wake) : undefined;
       const body = parts[0]!;
-      if (
-        author !== undefined &&
-        wake.lane.mode === "reply" &&
-        body.length <= 600 &&
-        !body.includes(KIN_FIGURE_SCHEME) &&
-        kinPageShape(body) === "bubble" &&
-        !(yield* hasFigures(wake)) &&
-        (yield* gate
-          .setChoiceOutcome(
-            author,
-            { chatId: wake.lane.chatId, text: body },
-            repliedBy(wake, last.ordinal),
+      const result = yield* sql.withTransaction(
+        Effect.gen(function* () {
+          // Serialize with Stop: nothing from this slot can commit after its fence.
+          if (yield* wasStopped(wake)) return;
+          if (
+            author !== undefined &&
+            wake.lane.mode === "reply" &&
+            body.length <= 600 &&
+            !body.includes(KIN_FIGURE_SCHEME) &&
+            kinPageShape(body) === "bubble" &&
+            !(yield* hasFigures(wake)) &&
+            (yield* gate
+              .setChoiceOutcome(
+                author,
+                { chatId: wake.lane.chatId, text: body },
+                repliedBy(wake, last.ordinal),
+              )
+              .pipe(Effect.orElseSucceed(() => false)))
           )
-          .pipe(Effect.orElseSucceed(() => false)))
-      ) {
-        setOutcome("posted");
-        wake.answered = true;
-        wake.replied = true;
-        yield* stamp(wake, "posted_at");
+            return { _tag: "choice" } as const;
+          const earlier = wake.replied
+            ? undefined
+            : yield* askMessage(wake).pipe(Effect.orElseSucceed(() => undefined));
+          const sameAsk =
+            earlier !== undefined &&
+            earlier.body.length + text.length + 2 <= KIN_MESSAGE_BODY_MAX_LENGTH;
+          const cardId =
+            author === undefined || sameAsk
+              ? null
+              : yield* chat
+                  .replyCard(author, wake.lane.chatId)
+                  .pipe(Effect.orElseSucceed(() => null));
+          const join: Slot | undefined = sameAsk
+            ? { ...earlier, earlier: true }
+            : cardId !== null
+              ? { messageId: cardId, body: "" }
+              : undefined;
+          const joined =
+            join === undefined
+              ? undefined
+              : yield* appendTo(wake, join, join.earlier === true ? text : body, last.ordinal);
+          if (
+            joined !== undefined &&
+            !(joined._tag === "withheld" && joined.reason === "not_found")
+          )
+            return { ...joined, ...(join?.earlier === true ? { earlier: true } : {}) };
+          return yield* deliver(
+            wake,
+            `reply:${segments[0]!.id}`,
+            parts,
+            last.ordinal,
+            undefined,
+            index < slots.length - 1,
+          );
+        }),
+      );
+      if (result === undefined) {
+        stopped = true;
+        yield* drop;
         continue;
       }
-      const earlier = wake.replied
-        ? undefined
-        : yield* askMessage(wake).pipe(Effect.orElseSucceed(() => undefined));
-      const sameAsk =
-        earlier !== undefined &&
-        earlier.body.length + text.length + 2 <= KIN_MESSAGE_BODY_MAX_LENGTH;
-      const cardId =
-        author === undefined || sameAsk
-          ? null
-          : yield* chat.replyCard(author, wake.lane.chatId).pipe(Effect.orElseSucceed(() => null));
-      const join: Slot | undefined = sameAsk
-        ? { ...earlier, earlier: true }
-        : cardId !== null
-          ? { messageId: cardId, body: "" }
-          : undefined;
-      const joined =
-        join === undefined
-          ? undefined
-          : yield* appendTo(wake, join, join.earlier === true ? text : body, last.ordinal);
-      const result =
-        joined === undefined || (joined._tag === "withheld" && joined.reason === "not_found")
-          ? yield* deliver(
-              wake,
-              `reply:${segments[0]!.id}`,
-              parts,
-              last.ordinal,
-              undefined,
-              index < slots.length - 1,
-            )
-          : joined;
       if (result._tag === "withheld") {
         setOutcome("withheld");
         yield* refusedReply(wake, text, result);
@@ -1167,14 +1184,10 @@ const make = Effect.gen(function* () {
       setOutcome("posted");
       wake.answered = true;
       wake.replied = true;
-      wake.lastReply =
-        "last" in result
-          ? result.last
-          : join?.earlier === true
-            ? { ...join, body: result.body }
-            : result;
+      if (result._tag !== "choice") wake.lastReply = "last" in result ? result.last : result;
       yield* stamp(wake, "posted_at");
     }
+    return stopped || (yield* wasStopped(wake));
   });
 
   const holdSend = Effect.fn("KinReplyBridge.holdSend")(
@@ -1699,12 +1712,13 @@ const make = Effect.gen(function* () {
     }) {
       const wake = byWakeup.get(input.wakeupId);
       if (wake === undefined || wake.orgId !== input.orgId || wake.done) return;
+      let stopped = input.stopped === true;
       const finish = wake.lock.withPermits(1)(
         Effect.gen(function* () {
           if (wake.done) return true;
           yield* settle(wake, input.rootRunId);
-          yield* flushReplies(wake, input.stopped === true);
-          if (input.stopped === true) return false;
+          stopped = yield* flushReplies(wake, stopped);
+          if (stopped) return false;
           yield* settlePage(wake, input.rescue);
           yield* settleFigures(wake);
           yield* keptPromises(wake);
@@ -1722,33 +1736,34 @@ const make = Effect.gen(function* () {
         }),
       );
       // What follows, such as the memory commit, isn't work on the owner's message.
-      const settled = settleLine(wake).pipe(
-        Effect.andThen(
-          settleCheckInTold({
-            orgId: wake.orgId,
-            wakeupId: wake.wakeupId,
-            chatId: wake.lane.chatId,
-            completed: input.rescue && input.stopped !== true,
-            readFacts: (factKeys) =>
-              Effect.flatMap(Clock.currentTimeMillis, (at) =>
-                KinPulse.read({
-                  orgId: wake.orgId,
-                  at,
-                  viewer: { _tag: "owner" },
-                  includeHandled: true,
-                  factKeys,
-                  limit: 200,
-                }),
-              ).pipe(Effect.map((read) => read.facts)),
-          }).pipe(
-            Effect.provideService(SqlClient.SqlClient, sql),
-            // The reply stands; a fact left reserved is only offered a check-in late.
-            Effect.catchCause((cause) =>
-              Effect.logWarning("Kin check-in ledger failed", { cause }),
+      const settled = (stopped: boolean) =>
+        settleLine(wake).pipe(
+          Effect.andThen(
+            settleCheckInTold({
+              orgId: wake.orgId,
+              wakeupId: wake.wakeupId,
+              chatId: wake.lane.chatId,
+              completed: input.rescue && !stopped,
+              readFacts: (factKeys) =>
+                Effect.flatMap(Clock.currentTimeMillis, (at) =>
+                  KinPulse.read({
+                    orgId: wake.orgId,
+                    at,
+                    viewer: { _tag: "owner" },
+                    includeHandled: true,
+                    factKeys,
+                    limit: 200,
+                  }),
+                ).pipe(Effect.map((read) => read.facts)),
+            }).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              // The reply stands; a fact left reserved is only offered a check-in late.
+              Effect.catchCause((cause) =>
+                Effect.logWarning("Kin check-in ledger failed", { cause }),
+              ),
             ),
           ),
-        ),
-      );
+        );
       // A failed or stopped run is retried or was the owner's choice; only a finished one is owed.
       const answeredOnFirstRun = yield* finish;
       const endingFor = (rescued: boolean): Ending => {
@@ -1762,8 +1777,8 @@ const make = Effect.gen(function* () {
           ? "marker"
           : "none";
       };
-      if (answeredOnFirstRun || !input.rescue || input.stopped === true) {
-        yield* settled;
+      if (answeredOnFirstRun || !input.rescue || stopped) {
+        yield* settled(stopped);
         return endingFor(false);
       }
       const shown = yield* showed(wake).pipe(Effect.orElseSucceed(() => false));
@@ -1775,12 +1790,12 @@ const make = Effect.gen(function* () {
       });
       if (followUp === "rescue") {
         yield* rescue(wake, input.projectId, shown);
-        if (yield* finish) {
-          yield* settled;
-          return endingFor(true);
+        if ((yield* finish) || stopped) {
+          yield* settled(stopped);
+          return endingFor(!stopped);
         }
       }
-      yield* settled;
+      yield* settled(stopped);
       const ending = endingFor(followUp === "rescue");
       // What it showed stands without its line: "didn't reply" under a chart would be false.
       if (shown && wake.withheld === null) return ending;

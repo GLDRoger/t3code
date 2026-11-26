@@ -822,6 +822,43 @@ describe("KinEventQueue", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("leaves a later message queued after a person's Stop, including on restart", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const sql = yield* SqlClient.SqlClient;
+      const ask = (id: string) =>
+        stored(id, "chat-lead-a").pipe(Effect.andThen(event(id, "chat.message")));
+      yield* queue.enqueue(yield* ask("stopped"));
+      yield* TestClock.adjust("2 seconds");
+      const turn = input("stopped-turn");
+      yield* Effect.scoped(queue.claim(turn));
+      yield* sql`UPDATE kin_wakeups SET run_id = 'run' WHERE wakeup_id = ${turn.wakeupId}`;
+      yield* sql`UPDATE kin_events SET state = 'done', json = json_set(json, '$._personStopped', 1)
+        WHERE org_id = ${turn.orgId} AND wakeup_id = ${turn.wakeupId}`;
+      yield* queue.enqueue(yield* ask("after-stop"));
+      yield* Effect.gen(function* () {
+        const restarted = yield* KinEventQueue.KinEventQueue;
+        assert.deepStrictEqual(
+          (yield* restarted.steer(turn)).map((e) => e.eventId),
+          [],
+        );
+        assert.strictEqual(yield* restarted.requeueUnfinished(turn.orgId, turn.wakeupId), 0);
+        yield* TestClock.adjust("2 seconds");
+        const claimed = yield* Effect.scoped(restarted.claim(input("next-turn")));
+        assert.deepStrictEqual(
+          claimed.map((e) => e.eventId),
+          ["after-stop"],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT state, wakeup_id, attempts FROM kin_events
+          WHERE event_id = 'stopped'`,
+          [{ state: "done", wakeup_id: turn.wakeupId, attempts: 0 }],
+        );
+      }).pipe(Effect.provide(KinEventQueue.layer));
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("a split retry neither steers into an ordinary turn nor accepts a steer", () =>
     Effect.gen(function* () {
       yield* seed();
