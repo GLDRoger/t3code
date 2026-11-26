@@ -15,6 +15,7 @@ import {
   type ServerProvider,
   ServerSettings,
 } from "@t3tools/contracts";
+import { OWNER_SEAT_NATIVE_TOOLS } from "../../apps/server/src/kin/lead/turn/providers/claude.ts";
 import { helperModelRefusal } from "../../apps/server/src/kin/lead/leadModels.ts";
 import { CAPTION_PROMPT, RESCUE_PROMPT } from "../../apps/server/src/kin/reply/classify.ts";
 import { EVENING_RULE, MORNING_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
@@ -279,23 +280,25 @@ it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with
   assert.notInclude(before, "mcp__t3-code__delegate_task");
   // Only Kin's core loads up front; T3's tools wait to be searched for.
   const upFront = base(true).nativeTools.map((tool) => tool.name);
-  assert.include(upFront, "mcp__t3-code__record_create");
+  assert.include(upFront, "mcp__t3-code__records_query");
+  assert.notInclude(upFront, "mcp__t3-code__record_create");
+  assert.include(after, "mcp__t3-code__record_create");
   assert.notInclude(upFront, "mcp__t3-code__delegate_task");
   assert.isFalse(before.some((name) => name.endsWith("Bash")));
   for (const name of ["mcp__t3-code__delegate_task", "mcp__t3-code__task_status"])
     assert.include(after, name);
   const native = (toolNames: ReadonlyArray<string>) =>
     toolNames.filter((name) => !name.startsWith("mcp__t3-code__")).map(normalizeToolName);
-  assert.deepStrictEqual(native(upFront), ["Bash", "Read", "Edit", "Write", "ToolSearch"]);
-  assert.deepStrictEqual(native(base(true).deferred.map((tool) => tool.name)), [
-    "WebFetch",
-    "WebSearch",
-  ]);
+  const ownerTools = new Set<string>(OWNER_SEAT_NATIVE_TOOLS);
+  const loadedNative = ["Bash", "Read", "Edit", "Write"].filter((name) => ownerTools.has(name));
+  const deferredNative = ["WebFetch", "WebSearch"].filter((name) => ownerTools.has(name));
+  assert.deepStrictEqual(native(upFront), [...loadedNative, "ToolSearch"]);
+  assert.deepStrictEqual(native(base(true).deferred.map((tool) => tool.name)), deferredNative);
   assert.notInclude(after, "mcp__t3-code__schedule_task");
   const reminders = base(true)
     .reminders.map((block) => block.text)
     .join("\n");
-  assert.include(reminders, "\nWebFetch\nWebSearch\n");
+  for (const name of deferredNative) assert.include(reminders, `\n${name}\n`);
   for (const prefix of [
     "Available agent types for the Agent tool:",
     "When you launch multiple agents",

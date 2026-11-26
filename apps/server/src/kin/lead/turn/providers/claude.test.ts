@@ -21,7 +21,7 @@ import * as ClaudeAdapterV2 from "../../../../orchestration-v2/Adapters/ClaudeAd
 import { hookAllows, kinSecretVariables } from "../../../claudeConfinement.testkit.ts";
 import * as DreamIsolation from "../../../dreaming/DreamIsolation.ts";
 import contextBudget from "../../../mcp/agentContextBudget.json" with { type: "json" };
-import { builtinTools, claude, OWNER_SEAT_OFF } from "./claude.ts";
+import { builtinTools, claude, OWNER_SEAT_NATIVE_TOOLS, OWNER_SEAT_OFF } from "./claude.ts";
 import { kinInstructions, REVIEW_SEAT_INSTRUCTIONS } from "../session.ts";
 import { ownerOnlyWakeup, wakeupRun } from "../../Audience.testkit.ts";
 import {
@@ -348,10 +348,11 @@ it.effect(
           ),
         );
       const full = yield* open("kin:tech");
-      assert.deepStrictEqual(full?.tools, [...contextBudget.kinLeadOwnerNativeTools, "ToolSearch"]);
+      assert.includeMembers(contextBudget.kinLeadOwnerNativeTools, [...OWNER_SEAT_NATIVE_TOOLS]);
+      assert.deepStrictEqual(full?.tools, [...OWNER_SEAT_NATIVE_TOOLS, "ToolSearch"]);
       const { mcpServers: _mcpServers, ...withoutMcp } = lead;
       const withoutSearch = yield* open("kin:tech", withoutMcp);
-      assert.deepStrictEqual(withoutSearch?.tools, contextBudget.kinLeadOwnerNativeTools);
+      assert.deepStrictEqual(withoutSearch?.tools, [...OWNER_SEAT_NATIVE_TOOLS]);
       assert.strictEqual(withoutSearch?.env?.ENABLE_TOOL_SEARCH, "false");
       assert.deepStrictEqual(full?.disallowedTools, [
         ...new Set([

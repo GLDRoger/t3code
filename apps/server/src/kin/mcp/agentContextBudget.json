@@ -16,7 +16,7 @@
     "support": 150172
   },
   "kinLeadOwnerNativeTools": ["Bash", "Read", "Edit", "Write", "WebSearch", "WebFetch"],
-  "kinLeadAlwaysLoadedToolBytes": 76008,
+  "kinLeadAlwaysLoadedToolBytes": 14307,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
