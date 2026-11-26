@@ -888,7 +888,7 @@ describe("streaming replies", () => {
       footer,
     ]);
     expect(draw([question, doc, text])).toMatchObject([
-      { type: "message", footerAfterCards: true, message: text },
+      { type: "message", footerInFeed: true, message: text },
       { type: "message" },
       { type: "message" },
       { type: "footer", message: text },
@@ -903,6 +903,53 @@ describe("streaming replies", () => {
       text.messageId,
     ]);
     expect(draw([text]).map((row) => row.key)).toEqual([text.messageId]);
+  });
+
+  it("collects a reply group's buttons once after the last bubble or card", () => {
+    const sourceWakeupId = KinWakeupId.make("invented-reply");
+    const doc = (seq: number, key: string, text: string, clientMessageId: string) =>
+      agentMessage(seq, {
+        sourceWakeupId,
+        clientMessageId,
+        body: text,
+        links: [{ text, to: { _tag: "record", key, kind: "doc" }, note: null }],
+      });
+    const first = doc(2, "D-1", "First draft", "reply:checklist");
+    const second = doc(3, "D-2", "Second draft", "reply:checklist~b2");
+    const third = doc(4, "D-3", "Third draft", "reply:checklist~b3");
+    const last = { ...third, links: [...first.links!, ...third.links!] };
+    const card = agentMessage(1, { sourceWakeupId, body: "", widgetId: KinWidgetId.make("doc") });
+    const later = {
+      ...doc(5, "D-4", "Fourth draft", "reply:checklist~b4"),
+      sourceWakeupId: KinWakeupId.make("other-turn"),
+    };
+    const draw = (messages: ReadonlyArray<KinMessage>) => messageRows(messages, viewer, new Set());
+    const footer = {
+      type: "footer",
+      key: "footer:reply:checklist~b3",
+      message: last,
+      buttons: [
+        { id: "record:D-1", label: "Open First draft" },
+        { id: "record:D-2", label: "Open Second draft" },
+        { id: "record:D-3", label: "Open Third draft" },
+      ],
+    };
+    const group = [first, second, last].map((message) => ({
+      type: "message",
+      footerInFeed: true,
+      message,
+    }));
+    expect(draw([first, second, last, later])).toMatchObject([
+      ...group,
+      footer,
+      { type: "message", message: later },
+    ]);
+    expect(draw([card, first, second, last])).toMatchObject([
+      ...group,
+      { type: "message", message: card },
+      footer,
+    ]);
+    expect(draw([first]).map((row) => row.type)).toEqual(["message"]);
   });
 
   it("keeps a draft's key and author line when its message lands, so the bubble stays put", () => {
@@ -939,7 +986,7 @@ describe("kinPresenceLine", () => {
   it("names each state in one static line; a note or tool label wins", () => {
     expect(kinPresenceLine(undefined, start)).toBeNull();
     expect(text(presence(), 0)).toBe("Thinking…");
-    expect(text(presence({ state: "writing" }), 0)).toBe("Writing…");
+    expect(text(presence({ state: "writing" }), 0)).toBe("Writing a reply…");
     expect(text(presence({ state: "working" }), 0)).toBe("Working…");
     expect(text(presence({ state: "working", label: "Checking memory" }), 0)).toBe(
       "Checking memory",
