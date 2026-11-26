@@ -607,6 +607,7 @@ it.effect(
         kin_github_review_ask: "write-only",
         kin_github_watch: "write-only",
         kin_github_link: "write-only",
+        kin_github_comment: "write-only",
         number_record: "write-only",
         touch_log: "write-only",
         record_create: "write-only",
