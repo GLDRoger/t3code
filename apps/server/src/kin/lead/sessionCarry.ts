@@ -16,6 +16,8 @@ import * as Option from "effect/Option";
 import * as Random from "effect/Random";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import { KinWorkspace } from "../gendocs/workspace.ts";
+import { unsetOwnerZone } from "../work/recordRows.ts";
 import { turnSensitive } from "../work/sensitiveReads.ts";
 import { turnChat } from "./Audience.ts";
 import { outsideRead } from "./OutsideContent.ts";
@@ -36,6 +38,9 @@ export interface CarryFacts {
   readonly sameLead: boolean;
   readonly sameMembers: boolean;
   readonly sameLists: boolean;
+  readonly sameBudgets: boolean;
+  readonly sameRecipes: boolean;
+  readonly sameZone: boolean;
   readonly paused: boolean;
   readonly sameStanding: boolean;
   readonly indexLinesChanged: number;
@@ -76,15 +81,21 @@ export function decideCarry(facts: CarryFacts) {
                               ? "members"
                               : !facts.sameLists
                                 ? "lists"
-                                : facts.paused
-                                  ? "paused"
-                                  : !facts.sameStanding
-                                    ? "standing"
-                                    : facts.indexLinesChanged > CARRY_INDEX_LINES
-                                      ? "index"
-                                      : facts.missed
-                                        ? "missed"
-                                        : undefined;
+                                : !facts.sameBudgets
+                                  ? "budgets"
+                                  : !facts.sameRecipes
+                                    ? "recipes"
+                                    : !facts.sameZone
+                                      ? "zone"
+                                      : facts.paused
+                                        ? "paused"
+                                        : !facts.sameStanding
+                                          ? "standing"
+                                          : facts.indexLinesChanged > CARRY_INDEX_LINES
+                                            ? "index"
+                                            : facts.missed
+                                              ? "missed"
+                                              : undefined;
   return reason === undefined ? { carry: true as const } : { carry: false as const, reason };
 }
 
@@ -115,7 +126,10 @@ const Fingerprint = Schema.Struct({
   instructions: Schema.NullOr(Schema.String),
   lead: Schema.String,
   members: Schema.String,
-  lists: Schema.optional(Schema.String),
+  lists: Schema.optional(Schema.NullOr(Schema.String)),
+  budgets: Schema.optional(Schema.NullOr(Schema.String)),
+  recipes: Schema.optional(Schema.NullOr(Schema.String)),
+  zone: Schema.optional(Schema.String),
   standing: Schema.NullOr(Schema.String),
   stop: Schema.Number,
 });
@@ -162,6 +176,31 @@ interface Wakeup {
   readonly runId?: RunId | null;
 }
 
+const FINGERPRINT_ROWS_LIMIT = 1_000;
+
+const recipeFingerprint = Effect.fn("KinSessionCarry.recipeFingerprint")(function* (
+  orgId: KinOrgId,
+  enabled: boolean,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const defaults = yield* sql`SELECT * FROM kin_recipe_defaults WHERE org_id = ${orgId}
+    ORDER BY list LIMIT ${FINGERPRINT_ROWS_LIMIT + 1}`;
+  const labels = yield* sql`SELECT * FROM kin_recipe_labels WHERE org_id = ${orgId}
+    ORDER BY recipe, commit_sha LIMIT ${FINGERPRINT_ROWS_LIMIT + 1}`;
+  const baselines =
+    yield* sql`SELECT * FROM kin_recipe_label_baselines WHERE org_id = ${orgId} LIMIT 1`;
+  if (defaults.length > FINGERPRINT_ROWS_LIMIT || labels.length > FINGERPRINT_ROWS_LIMIT)
+    return null;
+  // Opening the document workspace can seed it. While carry is off, stamp only the SQL metadata.
+  if (!enabled) return fingerprintJson([null, defaults, labels, baselines]);
+  const workspace = yield* Effect.serviceOption(KinWorkspace);
+  if (Option.isNone(workspace)) return null;
+  const catalog = yield* workspace.value.recipes(orgId).pipe(Effect.option);
+  return Option.isNone(catalog)
+    ? null
+    : fingerprintJson([catalog.value, defaults, labels, baselines]);
+});
+
 export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
   wakeup: Wakeup,
   input: {
@@ -205,7 +244,13 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
     ORDER BY member_id`;
   const lists = yield* sql`
     SELECT register_id, name, definition_json, archived_at FROM kin_registers
-    WHERE org_id = ${orgId} ORDER BY register_id`;
+    WHERE org_id = ${orgId} ORDER BY register_id LIMIT ${FINGERPRINT_ROWS_LIMIT + 1}`;
+  const budgets = yield* sql`SELECT * FROM kin_money_budgets
+    WHERE org_id = ${orgId} ORDER BY budget_id LIMIT ${FINGERPRINT_ROWS_LIMIT + 1}`;
+  const recipes = yield* recipeFingerprint(orgId, input.enabled);
+  // oxlint-disable-next-line t3code/kin-zoned-time -- fingerprint the stored owner-zone setting
+  const [zone] = yield* sql<{ zone: string }>`SELECT time_zone AS zone FROM kin_trigger_settings
+    WHERE org_id = ${orgId} LIMIT 1`;
   const [stop] = yield* sql<{ paused: number }>`
     SELECT paused FROM kin_org_state WHERE org_id = ${orgId}`;
   const fingerprint = {
@@ -214,7 +259,10 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
     instructions: input.instructionsSha,
     lead: fingerprintJson(lead ?? null),
     members: fingerprintJson(members),
-    lists: fingerprintJson(lists),
+    lists: lists.length > FINGERPRINT_ROWS_LIMIT ? null : fingerprintJson(lists),
+    budgets: budgets.length > FINGERPRINT_ROWS_LIMIT ? null : fingerprintJson(budgets),
+    recipes,
+    zone: fingerprintJson(zone?.zone ?? unsetOwnerZone()),
     standing: input.prompt.standing,
     stop: input.stopRevision,
   };
@@ -319,7 +367,10 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
     sameToolList: input.toolListSha !== null && input.toolListSha === prior?.toolListSha,
     sameLead: lead !== undefined && fingerprint.lead === priorFingerprint?.lead,
     sameMembers: fingerprint.members === priorFingerprint?.members,
-    sameLists: fingerprint.lists === priorFingerprint?.lists,
+    sameLists: fingerprint.lists !== null && fingerprint.lists === priorFingerprint?.lists,
+    sameBudgets: fingerprint.budgets !== null && fingerprint.budgets === priorFingerprint?.budgets,
+    sameRecipes: fingerprint.recipes !== null && fingerprint.recipes === priorFingerprint?.recipes,
+    sameZone: fingerprint.zone === priorFingerprint?.zone,
     paused: stop?.paused === 1 || fingerprint.stop !== priorFingerprint?.stop,
     sameStanding:
       fingerprint.standing !== null && fingerprint.standing === priorFingerprint?.standing,

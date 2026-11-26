@@ -138,6 +138,7 @@ it.effect.each([
       // Taken by the check-in, it is never also sent as a message.
       const posted: Array<string> = [];
       const chat = {
+        dismissArrival: () => Effect.die("No arrival note"),
         notice: (input: { readonly body: string }) =>
           Effect.sync(() => posted.push(input.body)).pipe(Effect.as({} as never)),
       };

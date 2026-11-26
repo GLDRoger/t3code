@@ -200,6 +200,7 @@ export const weekMeasure = Effect.fn("KinWeekMeasure.read")(function* (input: {
       WHERE r.org_id = ${orgId} AND r.due_at >= ${from} AND r.due_at < ${until}
         AND r.on_due IN ('start', 'remind', 'chase')
         AND (r.state NOT IN ('disarmed', 'undone') OR r.updated_at >= r.due_at)
+        AND json_extract(r.snapshot_json, '$.skipped') IS NULL
     )
     SELECT COUNT(*) AS due, COUNT(*) FILTER (WHERE done <= due) AS kept,
       COUNT(*) FILTER (WHERE done > due AND done < ${until}) AS late,

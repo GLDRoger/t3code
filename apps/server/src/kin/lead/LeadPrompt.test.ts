@@ -52,6 +52,7 @@ import {
   renderSessionDelta,
 } from "./LeadPrompt.ts";
 import * as sessionPrompt from "./LeadPrompt.ts";
+import { captureChatCursor, readCursor } from "./sessionChanges.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { CHIEF_OF_STAFF_SET_UP } from "./characterDefaults.ts";
 import { directKey } from "./LeadAccess.ts";
@@ -807,9 +808,23 @@ it("a carried turn doesn't repeat the previous exchange", () => {
   expect(delta).toContain("message 4");
 });
 
+it.effect("repeats an edited bills card with the same message sequence", () =>
+  Effect.sync(() => {
+    const prior = { ...carryChatSnapshot("14:05", 1, [1]), chatChangeSeq: 3 };
+    const current = {
+      ...carryChatSnapshot("14:06", 1, [1]),
+      recentChatChangeSeqs: [4],
+    };
+    expect(renderSessionDelta(current, prior).delta).toContain("Tidewater Freight message 1");
+  }),
+);
+
 it("a day change doesn't re-list earlier chat lines", () => {
-  const prior = carryChatSnapshot("14:05", 2, [1, 2]);
-  const current = carryChatSnapshot("Wed 25 Nov 14:05", 2, [1, 2]);
+  const prior = { ...carryChatSnapshot("14:05", 2, [1, 2]), chatChangeSeq: 4 };
+  const current = {
+    ...carryChatSnapshot("Wed 25 Nov 14:05", 2, [1, 2]),
+    recentChatChangeSeqs: [2, 4],
+  };
   expect(renderSessionDelta(current, prior).delta).toBe(
     [CARRIED_TURN_NOTE, current.sections.header].join("\n\n"),
   );
@@ -849,7 +864,12 @@ it.effect(
           promptChunks(legacy, true).sort(),
         );
       }
-      const previous = yield* prompt.buildSession(owner);
+      const previous = {
+        ...(yield* prompt.buildSession(owner)),
+        chatSeq: 0,
+        chatChangeSeq: 0,
+        heldChatChanges: [],
+      };
       const sharedFirst = yield* prompt.buildSession(shared);
       const downgraded = yield* prompt.buildSession({ ...shared, previous });
       expect(previous.index).toContain("Invented-client-terms-zq");
@@ -870,7 +890,11 @@ it.effect("a carried turn's change list holds only what changed", () =>
       ...(yield* ownerInput("carry-owner")),
       lane: { chatId: direct, mode: "reply" as const },
     };
-    const previous = yield* prompt.buildSession(given);
+    const previous = {
+      ...(yield* prompt.buildSession(given)),
+      ...(yield* readCursor(orgId, direct, null, agentId)),
+      heldChatChanges: [],
+    };
     expect(previous.compactInstructions).toBe(COMPACT_INSTRUCTIONS);
     const deltaStart = [CARRIED_TURN_NOTE, previous.sections.header].join("\n\n");
     const same = yield* prompt.buildSession({ ...given, previous });
@@ -894,7 +918,15 @@ it.effect("a carried turn's change list holds only what changed", () =>
     expect(work.delta).toBe([deltaStart, work.sections.work].join("\n\n"));
 
     yield* sql`UPDATE kin_records SET state = 'done' WHERE record_id IN ('rec-mate', 'rec-mate-hidden')`;
-    const gone = yield* prompt.buildSession({ ...given, previous: work });
+    const gone = yield* prompt.buildSession({
+      ...given,
+      previous: {
+        ...work,
+        chatSeq: previous.chatSeq,
+        chatChangeSeq: previous.chatChangeSeq,
+        heldChatChanges: [],
+      },
+    });
     expect(gone.sections).not.toHaveProperty("work");
     expect(gone.delta).toBe([deltaStart, PROMPT_HEADINGS.work, NOTHING_NOW].join("\n\n"));
     yield* sql`UPDATE kin_records SET state = 'open' WHERE record_id IN ('rec-mate', 'rec-mate-hidden')`;
@@ -940,6 +972,80 @@ ${PROMPT_HEADINGS.recentChat}
 > BEGIN QUOTE: recent chat
 ${newLine}
 > END QUOTE`);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("returns only the four Work change sequences shown, and only when Work is sent", () =>
+  Effect.gen(function* () {
+    const { ownerInput } = yield* richPromptFixture;
+    const sql = yield* SqlClient.SqlClient;
+    const prompt = yield* KinLeadPrompt;
+    const direct = KinChatId.make("fixture-direct");
+    const given = {
+      ...(yield* ownerInput("carry-owner")),
+      lane: { chatId: direct, mode: "reply" as const },
+    };
+    yield* sql`UPDATE kin_chats SET last_seq = 2 WHERE org_id = ${orgId} AND chat_id = ${direct}`;
+    const first = yield* prompt.buildSession(given);
+    const cursor = yield* readCursor(orgId, direct, null, agentId);
+    const seqs = [];
+    for (let index = 0; index < 5; index++) {
+      const [row] = yield* sql<{ seq: number }>`INSERT INTO kin_record_changes
+        (org_id, record_id, rev, at, actor_kind, actor_id, via, kind, fields_json)
+        VALUES (${orgId}, 'rec-mate', ${index + 1}, 0, 'person', ${personId}, 'owner', 'updated',
+          json_array(json_object('field', 'due', 'to', ${"November " + (25 + index)}))) RETURNING seq`;
+      seqs.push(row!.seq);
+    }
+    const previous = { ...first, ...cursor, heldChatChanges: [] };
+    const second = yield* prompt.buildSession({ ...given, previous });
+    expect(second.workChanges?.get("W-2")).toEqual(new Set(seqs.slice(1)));
+    const third = yield* prompt.buildSession({ ...given, previous: { ...previous, ...second } });
+    expect(third.workChanges).toBeUndefined();
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("capture keeps the reply out and leaves a later bills card for the next turn", () =>
+  Effect.gen(function* () {
+    const { ownerInput } = yield* richPromptFixture;
+    const sql = yield* SqlClient.SqlClient;
+    const prompt = yield* KinLeadPrompt;
+    const direct = KinChatId.make("fixture-direct");
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+      VALUES ('direct-lead', ${orgId}, ${direct}, 'agent', ${agentId}, 'member', ${timestamp})`;
+    const given = {
+      ...(yield* ownerInput("carry-owner")),
+      lane: { chatId: direct, mode: "reply" as const },
+    };
+    yield* sql`UPDATE kin_chats SET last_seq = 2 WHERE org_id = ${orgId} AND chat_id = ${direct}`;
+    const cursor = yield* readCursor(orgId, direct, null, agentId);
+    const first = yield* prompt.buildSession(given);
+    yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_role,
+        kind, body, mentions_json, status, created_at, source_wakeup_id, author_agent_id,
+        author_owner_person_id, author_thread_id, author_member_id)
+      VALUES ('tidewater-reply', ${orgId}, ${direct}, 3, 'agent', 'member', 'text',
+          'Paid on the 26th', '[]', 'posted', ${timestamp}, ${given.wakeupId}, ${agentId},
+          ${personId}, 'kin:tidewater-test', 'direct-lead'),
+        ('bills:harborview', ${orgId}, ${direct}, 4, 'system', 'member', 'text',
+          'Bill due $1,200', '[]', 'posted', ${timestamp}, NULL, NULL, NULL, NULL, NULL)`;
+    yield* sql`UPDATE kin_chats SET last_seq = 4 WHERE org_id = ${orgId} AND chat_id = ${direct}`;
+    const stamp = yield* captureChatCursor(given, cursor);
+    expect(first).not.toHaveProperty("chatSeq");
+    expect(stamp.chatSeq).toBe(3);
+    const second = yield* prompt.buildSession({ ...given, previous: { ...first, ...stamp } });
+    const recent = second.delta.split("> BEGIN QUOTE: recent chat")[1]?.split("> END QUOTE")[0];
+    expect(recent).toBeDefined();
+    expect(recent).not.toContain("Paid on the 26th");
+    expect(recent).toContain("Bill due $1,200");
+    const secondCursor = yield* readCursor(orgId, direct, null, agentId);
+    yield* sql`UPDATE kin_messages SET body = 'Bill paid' WHERE org_id = ${orgId}
+      AND message_id = 'bills:harborview'`;
+    const secondStamp = yield* captureChatCursor(given, secondCursor);
+    expect(secondStamp.chatSeq).toBe(3);
+    const third = yield* prompt.buildSession({
+      ...given,
+      previous: { ...second, ...secondStamp },
+    });
+    expect(third.delta).toContain("Bill paid");
   }).pipe(Effect.provide(layer)),
 );
 

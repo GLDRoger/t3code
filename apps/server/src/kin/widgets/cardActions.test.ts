@@ -2297,7 +2297,7 @@ it.effect("a default that closes a task is taken at its day, told once, and undo
       ]);
       assert.strictEqual(
         (note.state as { question: string }).question,
-        `Nobody answered, so I went with “Mark ${row.key} done” for ${row.key} Review the Apex deck.`,
+        `You didn't answer by 7:30 pm (Tue 17 Nov), so I went with “Mark ${row.key} done” for ${row.key} Review the Apex deck.`,
       );
 
       // Undo, once: the task is open again as Rhea's change, and no turn is woken by the tap.
@@ -2580,7 +2580,7 @@ it.effect("a taken default's note names a task only to someone who sees it now",
       const hiddenCard = yield* kin.widget(hiddenNote!.widgetId);
       assert.strictEqual(
         (hiddenCard.state as { question: string }).question,
-        `Nobody answered, so I went with “Mark ${retouch.key} done” on “${retouch.key} looks finished. Close it?”.`,
+        `You didn't answer by 7:30 pm (Tue 17 Nov), so I went with “Mark ${retouch.key} done” on “${retouch.key} looks finished. Close it?”.`,
       );
       assert.deepStrictEqual(card(hiddenCard).options, [
         {
@@ -2598,7 +2598,7 @@ it.effect("a taken default's note names a task only to someone who sees it now",
       const shownCard = yield* kin.widget(shownNote!.widgetId);
       assert.strictEqual(
         (shownCard.state as { question: string }).question,
-        `Nobody answered, so I went with “Mark ${shortlist.key} done” for ${shortlist.key} Shortlist clinic photos.`,
+        `You didn't answer by 7:30 pm (Tue 17 Nov), so I went with “Mark ${shortlist.key} done” for ${shortlist.key} Shortlist clinic photos.`,
       );
       assert.deepStrictEqual(card(shownCard).options[0], {
         optionId: "option-1",
@@ -3143,6 +3143,8 @@ it.effect("a default undone before its person is told reaches them once, as put 
             label: stale.defaultLabel!,
             question: stale.question,
             about: stale.about,
+            dueAt: stale.dueAt,
+            zone: (yield* Questions.personClock(orgId, stale.personId)).zone,
             now: due + 60_000,
           },
           kin.chats,
@@ -3162,11 +3164,11 @@ it.effect("a default undone before its person is told reaches them once, as put 
       yield* settleAt(kin, home + 60_000);
       assert.deepStrictEqual((yield* said).slice(before), [
         {
-          body: "Nobody answered, so I went with “Mark Print the Apex brief done” for Print the Apex brief. Rhea Rao has since put it back.",
+          body: "You didn't answer by 7:30 pm (Tue 17 Nov), so I went with “Mark Print the Apex brief done” for Print the Apex brief. Rhea Rao has since put it back.",
           widgetId: null,
         },
         {
-          body: "Nobody answered, so I went with “Mark Review the Apex brief done” for Review the Apex brief. Rhea Rao has since put it back.",
+          body: "You didn't answer by 7:30 pm (Tue 17 Nov), so I went with “Mark Review the Apex brief done” for Review the Apex brief. Rhea Rao has since put it back.",
           widgetId: null,
         },
       ]);
