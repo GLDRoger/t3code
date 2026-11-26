@@ -138,7 +138,8 @@ import * as WorkFor from "./workFor.ts";
 import { noticeRecords, runsFrom, turnRecords } from "./wakeupRuns.ts";
 import { RUN_SILENCE_MS, activityAt, waitAsking } from "./runSilence.ts";
 import { closeQuietRunCards, postQuietRunCard } from "./quietRunCard.ts";
-import { inheritSession } from "./OutsideContent.ts";
+import { inheritSession, outsideRead } from "./OutsideContent.ts";
+import { turnSensitive } from "../work/sensitiveReads.ts";
 
 const isSteerRun = (wakeupId: KinWakeupId, run: { readonly userMessageId: string }) =>
   KinIdentity.isAdoptedRunMessage(wakeupId, run.userMessageId) &&
@@ -498,7 +499,7 @@ const make = Effect.gen(function* () {
     row: typeof RunningRow.Type,
     run: OrchestrationV2Run,
   ) {
-    if (run.freshContext === true) return false;
+    if (run.freshContext === true) return;
     const earlier = yield* wakeupOfRuns(
       sql,
       sql`SELECT run_id, thread_id, ordinal, payload_json
@@ -514,7 +515,7 @@ const make = Effect.gen(function* () {
         AND w.wakeup_id <> ${row.wakeupId}`,
       "all",
     );
-    return yield* inheritSession({
+    yield* inheritSession({
       orgId: row.orgId,
       wakeupId: row.wakeupId,
       fromWakeupIds: earlier.map((wake) => wake.wakeupId),
@@ -1497,7 +1498,6 @@ const make = Effect.gen(function* () {
               return yield* new KinWakeupError({ orgId, agentId, cause: wrongProvider });
             // T3 starts the run that answers a finished task at once: own it before the slow
             // preparation below, so its first tool calls already find their turn.
-            let claimedWithMarks = false;
             for (const event of events) {
               if (event._tag !== "task.finished" || row.runId !== null) continue;
               const state = noticeState(
@@ -1506,13 +1506,12 @@ const make = Effect.gen(function* () {
               );
               if (state._tag !== "live") continue;
               const claimed = { ...row, threadId: event.threadId, runId: state.run.id };
-              claimedWithMarks = yield* sql.withTransaction(
+              yield* sql.withTransaction(
                 Effect.gen(function* () {
-                  const marked = yield* inheritTaken(claimed, state.run);
+                  yield* inheritTaken(claimed, state.run);
                   yield* sql`UPDATE kin_wakeups SET thread_id = ${event.threadId}, run_id = ${state.run.id}
                     WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId}
                       AND status = 'running'`;
-                  return marked;
                 }),
               );
               row = claimed;
@@ -1845,7 +1844,13 @@ const make = Effect.gen(function* () {
                     .flatMap((state) => (state._tag === "live" ? [state.run] : []))
                     .at(0);
             // A wake-up that already owned a marked session cannot be reused for a fresh send.
-            if (claimedWithMarks && taken === undefined) return yield* cleanup(row, true);
+            if (
+              row.runId !== null &&
+              taken === undefined &&
+              ((yield* outsideRead(row).pipe(provideSql)) ||
+                (yield* turnSensitive(orgId, wakeupId).pipe(provideSql)))
+            )
+              return yield* cleanup(row, true);
             const claimed = { ...row, threadId, runId: taken?.id ?? null };
             yield* sql.withTransaction(
               Effect.gen(function* () {

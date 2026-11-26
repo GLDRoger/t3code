@@ -433,21 +433,13 @@ export const inheritSession = Effect.fn("KinOutsideContent.inheritSession")(func
   readonly fromWakeupIds: ReadonlyArray<string>;
 }) {
   const sql = yield* SqlClient.SqlClient;
-  return yield* sql.withTransaction(
+  yield* sql.withTransaction(
     Effect.gen(function* () {
-      let marked = false;
       for (const wakeupId of input.fromWakeupIds) {
         const stamp = yield* outsideStamp({ orgId: input.orgId, wakeupId });
-        if (stamp !== undefined) {
-          yield* markOutside(input, stamp, undefined, "wakeup");
-          marked = true;
-        }
-        if (yield* turnSensitive(input.orgId, wakeupId)) {
-          yield* sensitiveShown(input);
-          marked = true;
-        }
+        if (stamp !== undefined) yield* markOutside(input, stamp, undefined, "wakeup");
+        if (yield* turnSensitive(input.orgId, wakeupId)) yield* sensitiveShown(input);
       }
-      return marked;
     }),
   );
 });

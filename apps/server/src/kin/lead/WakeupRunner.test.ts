@@ -2674,257 +2674,263 @@ describe("WakeupRunner", () => {
     ],
     ["a finished task's run inherits a sensitive entry mark", true, false, true],
     ["answers a finished task whose run already ended in a fresh turn", false, true, true],
-    ["requeues a finished task if its marked run ends during preparation", true, true, false, true],
+    [
+      "requeues a finished task if its marked run ends during preparation",
+      true,
+      true,
+      false,
+      "ends",
+    ],
     [
       "a finished task started during preparation inherits its marks at the second claim",
       true,
       true,
       false,
-      false,
-      true,
+      "late",
     ],
-  ] as const)(
-    "%s",
-    ([
-      ,
-      live,
-      outside,
-      sensitive,
-      endsDuringPreparation = false,
-      startsDuringPreparation = false,
-    ]) =>
-      Effect.gen(function* () {
-        const wholeThreadReads: Array<ThreadId> = [];
-        const started = yield* Deferred.make<void>();
-        const release = yield* Deferred.make<void>();
-        const registered = yield* Deferred.make<void>();
-        let turns = 0;
-        let prepares = 0;
-        const calls: Array<string> = [];
-        const refusals: Array<string | undefined> = [];
-        let mark: Effect.Effect<void> = Effect.void;
-        let inspectEarly: Effect.Effect<void> = Effect.void;
-        let inspectAtGate: Effect.Effect<void> = Effect.void;
-        let check: (threadId: ThreadId) => Effect.Effect<void> = () => Effect.void;
-        const onTurn = ({ threadId }: { readonly threadId: ThreadId }) =>
-          Effect.suspend(() => {
-            if (++turns === 1) return mark;
-            if ((live && turns === 2) || (!live && turns === 3))
-              return Deferred.succeed(started, undefined).pipe(
-                Effect.andThen(Deferred.await(release)),
-                Effect.andThen(endsDuringPreparation ? Effect.void : check(threadId)),
-              );
-            return Effect.void;
-          });
-        const prepare = () =>
+    [
+      "requeues a finished task marked by its own run during preparation",
+      true,
+      false,
+      false,
+      "local-marks",
+    ],
+  ] as const)("%s", ([, live, outside, sensitive, timing]) =>
+    Effect.gen(function* () {
+      const startsDuringPreparation = timing === "late";
+      const endsDuringPreparation = timing === "ends" || timing === "local-marks";
+      const wholeThreadReads: Array<ThreadId> = [];
+      const started = yield* Deferred.make<void>();
+      const release = yield* Deferred.make<void>();
+      const registered = yield* Deferred.make<void>();
+      let turns = 0;
+      let prepares = 0;
+      const calls: Array<string> = [];
+      const refusals: Array<string | undefined> = [];
+      let mark: Effect.Effect<void> = Effect.void;
+      let inspectEarly: Effect.Effect<void> = Effect.void;
+      let inspectAtGate: Effect.Effect<void> = Effect.void;
+      let check: (threadId: ThreadId) => Effect.Effect<void> = () => Effect.void;
+      const onTurn = ({ threadId }: { readonly threadId: ThreadId }) =>
+        Effect.suspend(() => {
+          if (++turns === 1) return mark;
+          if ((live && turns === 2) || (!live && turns === 3))
+            return Deferred.succeed(started, undefined).pipe(
+              Effect.andThen(Deferred.await(release)),
+              Effect.andThen(endsDuringPreparation ? Effect.void : check(threadId)),
+            );
+          return Effect.void;
+        });
+      const prepare = () =>
+        Effect.gen(function* () {
+          if (++prepares === 2 && live) yield* inspectEarly;
+          return { head: "abc", indexAsOf: DateTime.makeUnsafe(0), read: "/private/tmp" };
+        });
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const services = yield* Effect.context<
+          KinIdentity.KinIdentity | McpSessionRegistry.McpSessionRegistry | SqlClient.SqlClient
+        >();
+        check = (threadId) =>
           Effect.gen(function* () {
-            if (++prepares === 2 && live) yield* inspectEarly;
-            return { head: "abc", indexAsOf: DateTime.makeUnsafe(0), read: "/private/tmp" };
+            yield* inspectAtGate;
+            refusals.push(yield* fullSessionRefusal(threadId));
+            yield* resolveAgent(threadId).pipe(
+              Effect.match({
+                onFailure: (error) => calls.push(error.message),
+                onSuccess: () => calls.push("allowed"),
+              }),
+            );
+          }).pipe(Effect.provideContext(services));
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const sql = yield* SqlClient.SqlClient;
+        const marks = (wakeupId: string) =>
+          Effect.gen(function* () {
+            const turn = { orgId, wakeupId };
+            return {
+              outsideRead: yield* outsideRead(turn),
+              stamp: yield* outsideStamp(turn),
+              sensitive: yield* turnSensitive(orgId, wakeupId),
+            };
           });
-        yield* Effect.gen(function* () {
-          yield* seed;
-          const services = yield* Effect.context<
-            KinIdentity.KinIdentity | McpSessionRegistry.McpSessionRegistry | SqlClient.SqlClient
-          >();
-          check = (threadId) =>
-            Effect.gen(function* () {
-              yield* inspectAtGate;
-              refusals.push(yield* fullSessionRefusal(threadId));
-              yield* resolveAgent(threadId).pipe(
-                Effect.match({
-                  onFailure: (error) => calls.push(error.message),
-                  onSuccess: () => calls.push("allowed"),
-                }),
-              );
-            }).pipe(Effect.provideContext(services));
-          const queue = yield* KinEventQueue.KinEventQueue;
-          const threads = yield* ThreadManagement.ThreadManagementService;
-          const sql = yield* SqlClient.SqlClient;
-          const marks = (wakeupId: string) =>
-            Effect.gen(function* () {
-              const turn = { orgId, wakeupId };
-              return {
-                outsideRead: yield* outsideRead(turn),
-                stamp: yield* outsideStamp(turn),
-                sensitive: yield* turnSensitive(orgId, wakeupId),
-              };
-            });
-          mark = Effect.gen(function* () {
-            const [turn] = yield* sql<{ wakeupId: string }>`
+        mark = Effect.gen(function* () {
+          const [turn] = yield* sql<{ wakeupId: string }>`
             SELECT wakeup_id AS "wakeupId" FROM kin_wakeups WHERE status = 'running'`;
-            const input = { orgId, wakeupId: turn!.wakeupId };
-            if (outside) yield* markOutside(input, "web:example.invalid");
-            if (sensitive) yield* sensitiveShown(input);
-          }).pipe(Effect.provideContext(services), Effect.orDie);
-          yield* queue.enqueue(yield* ownerSays("ask"));
-          yield* Fiber.join(yield* run());
-          const [first] = yield* sql<{ threadId: string; wakeupId: string }>`
+          const input = { orgId, wakeupId: turn!.wakeupId };
+          if (outside) yield* markOutside(input, "web:example.invalid");
+          if (sensitive) yield* sensitiveShown(input);
+        }).pipe(Effect.provideContext(services), Effect.orDie);
+        yield* queue.enqueue(yield* ownerSays("ask"));
+        yield* Fiber.join(yield* run());
+        const [first] = yield* sql<{ threadId: string; wakeupId: string }>`
           SELECT thread_id AS "threadId", wakeup_id AS "wakeupId" FROM kin_wakeups`;
-          const threadId = ThreadId.make(first!.threadId);
-          const projection = yield* threads.getThreadProjection(threadId);
-          const { projectId } = projection.thread;
-          const parent = projection.runs[0]!;
-          const source = yield* marks(first!.wakeupId);
-          assert.strictEqual(source.outsideRead, outside);
-          assert.strictEqual(source.sensitive, sensitive);
-          const task = yield* taskNotice(threadId, parent, "1");
-          let noticeRunId: RunId | undefined;
-          const dispatch = Effect.gen(function* () {
-            const { run: noticeRun, message } = yield* task.dispatch;
-            assert.isNotNull(parent.providerThreadId);
-            assert.strictEqual(noticeRun.providerThreadId, parent.providerThreadId);
-            noticeRunId = noticeRun.id;
-            if (live) yield* Deferred.await(started);
-            else
-              yield* threads.waitForThread({
-                projectId,
-                threadId,
-                runId: noticeRun.id,
-                timeoutMs: 60_000,
-              });
-            return message;
-          });
-          let early: typeof source | undefined;
-          const readClaim = Effect.gen(function* () {
-            const [claim] = yield* sql<{ wakeupId: string }>`
+        const threadId = ThreadId.make(first!.threadId);
+        const projection = yield* threads.getThreadProjection(threadId);
+        const { projectId } = projection.thread;
+        const parent = projection.runs[0]!;
+        const source = yield* marks(first!.wakeupId);
+        assert.strictEqual(source.outsideRead, outside);
+        assert.strictEqual(source.sensitive, sensitive);
+        const task = yield* taskNotice(threadId, parent, "1");
+        let noticeRunId: RunId | undefined;
+        const dispatch = Effect.gen(function* () {
+          const { run: noticeRun, message } = yield* task.dispatch;
+          assert.isNotNull(parent.providerThreadId);
+          assert.strictEqual(noticeRun.providerThreadId, parent.providerThreadId);
+          noticeRunId = noticeRun.id;
+          if (live) yield* Deferred.await(started);
+          else
+            yield* threads.waitForThread({
+              projectId,
+              threadId,
+              runId: noticeRun.id,
+              timeoutMs: 60_000,
+            });
+          return message;
+        });
+        let early: typeof source | undefined;
+        const readClaim = Effect.gen(function* () {
+          const [claim] = yield* sql<{ wakeupId: string }>`
             SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
             WHERE status = 'running' AND run_id = ${noticeRunId!}`;
-            early = yield* marks(claim!.wakeupId);
-          }).pipe(Effect.provideContext(services), Effect.orDie);
-          if (startsDuringPreparation) {
-            yield* queue.enqueue({
-              _tag: "task.finished",
-              orgId,
-              agentId,
-              eventId: event("late-task").eventId,
-              receivedAt: yield* DateTime.now,
-              dedupeKey: task.notice,
-              provenance: { _tag: "system" },
-              threadId,
-              messageId: task.notice,
-              taskIds: task.taskIds,
-              chatId: KinChatId.make("owner-chat"),
-            });
-            inspectEarly = Effect.gen(function* () {
-              assert.deepStrictEqual(
-                yield* sql`SELECT run_id FROM kin_wakeups WHERE status = 'running'`,
-                [{ run_id: null }],
-              );
-              yield* dispatch;
-            }).pipe(Effect.asVoid, Effect.orDie);
-            inspectAtGate = readClaim;
-          } else {
-            const taskWake = yield* TaskWake.make;
-            yield* taskWake.enqueue(yield* dispatch);
-            inspectEarly = readClaim;
-            if (endsDuringPreparation) {
-              inspectEarly = readClaim.pipe(
-                Effect.andThen(Deferred.succeed(release, undefined)),
-                Effect.andThen(
-                  Effect.suspend(() =>
-                    threads.waitForThread({
-                      projectId,
-                      threadId,
-                      runId: noticeRunId!,
-                      timeoutMs: 60_000,
-                    }),
-                  ),
+          early = yield* marks(claim!.wakeupId);
+          if (timing === "local-marks") yield* sensitiveShown({ orgId, wakeupId: claim!.wakeupId });
+        }).pipe(Effect.provideContext(services), Effect.orDie);
+        if (startsDuringPreparation) {
+          yield* queue.enqueue({
+            _tag: "task.finished",
+            orgId,
+            agentId,
+            eventId: event("late-task").eventId,
+            receivedAt: yield* DateTime.now,
+            dedupeKey: task.notice,
+            provenance: { _tag: "system" },
+            threadId,
+            messageId: task.notice,
+            taskIds: task.taskIds,
+            chatId: KinChatId.make("owner-chat"),
+          });
+          inspectEarly = Effect.gen(function* () {
+            assert.deepStrictEqual(
+              yield* sql`SELECT run_id FROM kin_wakeups WHERE status = 'running'`,
+              [{ run_id: null }],
+            );
+            yield* dispatch;
+          }).pipe(Effect.asVoid, Effect.orDie);
+          inspectAtGate = readClaim;
+        } else {
+          const taskWake = yield* TaskWake.make;
+          yield* taskWake.enqueue(yield* dispatch);
+          inspectEarly = readClaim;
+          if (endsDuringPreparation) {
+            inspectEarly = readClaim.pipe(
+              Effect.andThen(Deferred.succeed(release, undefined)),
+              Effect.andThen(
+                Effect.suspend(() =>
+                  threads.waitForThread({
+                    projectId,
+                    threadId,
+                    runId: noticeRunId!,
+                    timeoutMs: 60_000,
+                  }),
                 ),
-                Effect.asVoid,
-                Effect.orDie,
-              );
-            }
+              ),
+              Effect.asVoid,
+              Effect.orDie,
+            );
           }
-          const readsBefore = wholeThreadReads.length;
-          const fiber = yield* run();
-          if (!live) yield* Deferred.await(started);
-          if (startsDuringPreparation) yield* Deferred.await(registered);
-          yield* Deferred.succeed(release, undefined);
-          yield* Fiber.join(fiber);
-          assert.strictEqual(wholeThreadReads.length, readsBefore, "no whole-history read");
-          const wakeups = yield* sql<{ wakeupId: string; runId: string; status: string }>`
+        }
+        const readsBefore = wholeThreadReads.length;
+        const fiber = yield* run();
+        if (!live) yield* Deferred.await(started);
+        if (startsDuringPreparation) yield* Deferred.await(registered);
+        if (!endsDuringPreparation) yield* Deferred.succeed(release, undefined);
+        yield* Fiber.join(fiber);
+        assert.strictEqual(wholeThreadReads.length, readsBefore, "no whole-history read");
+        const wakeups = yield* sql<{ wakeupId: string; runId: string; status: string }>`
           SELECT wakeup_id AS "wakeupId", run_id AS "runId", status FROM kin_wakeups
           ORDER BY started_at, wakeup_id`;
-          if (endsDuringPreparation) {
-            assert.deepStrictEqual(early, source);
-            assert.strictEqual(wakeups[1]!.status, "interrupted");
-            assert.strictEqual(wakeups[1]!.runId, noticeRunId);
-            assert.lengthOf((yield* threads.getThreadProjection(threadId)).runs, 2);
-            assert.deepStrictEqual(
-              yield* sql`SELECT state, wakeup_id FROM kin_events WHERE tag = 'task.finished'`,
-              [{ state: "queued", wakeup_id: null }],
-            );
-            const [requeued] = yield* sql<{ eventId: string }>`
+        if (endsDuringPreparation) {
+          assert.deepStrictEqual(early, source);
+          assert.strictEqual(wakeups[1]!.status, "interrupted");
+          assert.strictEqual(wakeups[1]!.runId, noticeRunId);
+          if (timing === "local-marks")
+            assert.isTrue(yield* turnSensitive(orgId, wakeups[1]!.wakeupId));
+          assert.lengthOf((yield* threads.getThreadProjection(threadId)).runs, 2);
+          assert.deepStrictEqual(
+            yield* sql`SELECT state, wakeup_id FROM kin_events WHERE tag = 'task.finished'`,
+            [{ state: "queued", wakeup_id: null }],
+          );
+          const [requeued] = yield* sql<{ eventId: string }>`
             SELECT event_id AS "eventId" FROM kin_events WHERE tag = 'task.finished'`;
-            const eventStamps = yield* sql`
+          const eventStamps = yield* sql`
             SELECT outside_from FROM kin_event_outside WHERE org_id = ${orgId}
               AND event_id = ${requeued!.eventId}`;
-            const stamp = yield* inheritOutside({
-              orgId,
-              wakeupId: "fresh-probe",
-              eventIds: [requeued!.eventId],
-            });
-            assert.deepStrictEqual({ eventStamps, stamp }, { eventStamps: [], stamp: undefined });
-            return;
-          }
-          assert.deepStrictEqual(
-            wakeups.map((row) => row.status),
-            ["completed", "completed"],
-          );
-          const runs = (yield* threads.getThreadProjection(threadId)).runs.toSorted(
-            (a, b) => a.ordinal - b.ordinal,
-          );
-          assert.deepStrictEqual(
-            runs.map((entry) => entry.userMessageId),
-            [
-              KinIdentity.wakeupMessageId(KinWakeupId.make(wakeups[0]!.wakeupId)),
-              task.notice,
-              ...(live
-                ? []
-                : [KinIdentity.wakeupMessageId(KinWakeupId.make(wakeups[1]!.wakeupId))]),
-            ],
-          );
-          assert.strictEqual(wakeups[1]!.runId, live ? noticeRunId : runs[2]!.id);
-          if (!live) {
-            assert.isTrue(runs[2]!.freshContext);
-            assert.notStrictEqual(runs[2]!.providerThreadId, parent.providerThreadId);
-          }
-          assert.deepStrictEqual(calls, ["allowed"]);
-          assert.deepStrictEqual(
-            { early, marks: yield* marks(wakeups[1]!.wakeupId), refusals },
-            {
-              early: live ? source : undefined,
-              marks: live ? source : { outsideRead: false, stamp: undefined, sensitive: false },
-              refusals: [live && outside ? SESSION_REFUSAL.outside : undefined],
-            },
-          );
-          assert.deepStrictEqual(
-            yield* sql`SELECT state FROM kin_events WHERE tag = 'task.finished'`,
-            [{ state: "done" }],
-          );
-        }).pipe(
-          Effect.scoped,
-          Effect.provide(
-            harnessWith(
-              { onTurn, prepare, wholeThreadReads },
-              Layer.effect(
-                KinLeadRegistry.KinLeadRegistry,
-                Effect.map(KinLeadRegistry.KinLeadRegistry, (registry) => ({
-                  ...registry,
-                  register: (threadId, turn) =>
-                    registry
-                      .register(threadId, turn)
-                      .pipe(
-                        Effect.tap(() =>
-                          turns === 2 ? Deferred.succeed(registered, undefined) : Effect.void,
-                        ),
-                      ),
-                })),
-              ).pipe(Layer.provide(KinLeadRegistry.layer)),
-            ),
-          ),
+          const stamp = yield* inheritOutside({
+            orgId,
+            wakeupId: "fresh-probe",
+            eventIds: [requeued!.eventId],
+          });
+          assert.deepStrictEqual({ eventStamps, stamp }, { eventStamps: [], stamp: undefined });
+          return;
+        }
+        assert.deepStrictEqual(
+          wakeups.map((row) => row.status),
+          ["completed", "completed"],
         );
-      }).pipe(provideDeterministicTestRuntime),
+        const runs = (yield* threads.getThreadProjection(threadId)).runs.toSorted(
+          (a, b) => a.ordinal - b.ordinal,
+        );
+        assert.deepStrictEqual(
+          runs.map((entry) => entry.userMessageId),
+          [
+            KinIdentity.wakeupMessageId(KinWakeupId.make(wakeups[0]!.wakeupId)),
+            task.notice,
+            ...(live ? [] : [KinIdentity.wakeupMessageId(KinWakeupId.make(wakeups[1]!.wakeupId))]),
+          ],
+        );
+        assert.strictEqual(wakeups[1]!.runId, live ? noticeRunId : runs[2]!.id);
+        if (!live) {
+          assert.isTrue(runs[2]!.freshContext);
+          assert.notStrictEqual(runs[2]!.providerThreadId, parent.providerThreadId);
+        }
+        assert.deepStrictEqual(calls, ["allowed"]);
+        assert.deepStrictEqual(
+          { early, marks: yield* marks(wakeups[1]!.wakeupId), refusals },
+          {
+            early: live ? source : undefined,
+            marks: live ? source : { outsideRead: false, stamp: undefined, sensitive: false },
+            refusals: [live && outside ? SESSION_REFUSAL.outside : undefined],
+          },
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT state FROM kin_events WHERE tag = 'task.finished'`,
+          [{ state: "done" }],
+        );
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          harnessWith(
+            { onTurn, prepare, wholeThreadReads },
+            Layer.effect(
+              KinLeadRegistry.KinLeadRegistry,
+              Effect.map(KinLeadRegistry.KinLeadRegistry, (registry) => ({
+                ...registry,
+                register: (threadId, turn) =>
+                  registry
+                    .register(threadId, turn)
+                    .pipe(
+                      Effect.tap(() =>
+                        turns === 2 ? Deferred.succeed(registered, undefined) : Effect.void,
+                      ),
+                    ),
+              })),
+            ).pipe(Layer.provide(KinLeadRegistry.layer)),
+          ),
+        ),
+      );
+    }).pipe(provideDeterministicTestRuntime),
   );
 
   it.effect.each(["chain", "fresh", "steer", "other agent"] as const)(
