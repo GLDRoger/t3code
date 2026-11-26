@@ -42,7 +42,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
 import { MIGRATIONS, SHIPPING_BRANCH, kinBranchChecks } from "./kin-branch-checks.ts";
-import { modelsFor, modelsToReconfirm } from "./kin-model.ts";
+import { modelsFor, modelsToReconfirm, splitSkippedModels } from "./kin-model.ts";
 
 const GiB = 1024 ** 3;
 
@@ -644,7 +644,12 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     : [];
 
   // Kin's TLA+ models, each only when a file it stands for changed; skipped without Java.
-  const kinModels = modelsFor(files).map((name) =>
+  // CHECK_CHANGED_SKIP_MODELS names models a local run leaves to the end of a stack; CI never sets it.
+  const { run: modelsToRun, skipped } = splitSkippedModels(
+    modelsFor(files),
+    Option.getOrElse(yield* Config.option(Config.String("CHECK_CHANGED_SKIP_MODELS")), () => ""),
+  );
+  const kinModels = modelsToRun.map((name) =>
     command(`kin model ${name}`, ["exec", "node", "scripts/kin-model.ts", name, "--if-java"]),
   );
 
@@ -744,6 +749,10 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   if (ciOnly.length > 0) summary.push(`  CI also runs: ${ciOnly.join(", ")}`);
   if (!runPatchCheck) summary.push("  unused patch check skipped: no dependency files changed");
   if (!runKnip) summary.push("  knip skipped: no code or manifest changed");
+  if (skipped.length > 0)
+    summary.push(
+      `  kin model ${skipped.join(", ")}: NOT RUN (CHECK_CHANGED_SKIP_MODELS); run it before the stack lands its last change`,
+    );
   const reconfirm = modelsToReconfirm(files);
   if (reconfirm.length > 0)
     summary.push(
@@ -754,6 +763,10 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   if (results.some((result) => result.outcome !== "pass")) return false;
   if ((yield* inputKey) !== key) {
     yield* Console.log("  pass not cached: files changed during the run");
+    return true;
+  }
+  if (skipped.length > 0) {
+    yield* Console.log("  pass not cached: a model was skipped");
     return true;
   }
   // Write then rename, so a concurrent run never reads half a file.
