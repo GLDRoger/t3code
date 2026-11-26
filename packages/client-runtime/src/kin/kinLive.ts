@@ -159,7 +159,7 @@ const DEFAULT_TEXT: Record<Exclude<ShownState, "stalled">, string> = {
   starting: "Starting…",
   thinking: "Thinking…",
   working: "Working…",
-  writing: "Writing…",
+  writing: "Writing a reply…",
   paused: "Paused",
   deferred: "Waiting for budget",
 };
@@ -214,4 +214,75 @@ export function kinPresenceTimerStart(presence: KinPresence | undefined): string
 /** Whether the line reads differently as time passes, so it needs the clock. */
 export function kinPresenceNeedsClock(presence: KinPresence | undefined): boolean {
   return presence?.state === "stalled" || presence?.state === "starting";
+}
+
+// Stop on the working line
+
+/** A run's Stop on its line: none, a plain one from the first second, or the stalled run's. */
+export type KinPresenceStop = "none" | "offer" | "urgent";
+
+/**
+ * Who may stop an agent's run in this chat: in a direct chat, the person who owns its lead
+ * (unless it is retired); in a group or the Team room, an owner or co-owner. The host decides.
+ */
+export function kinMayStopAgent(input: {
+  readonly canInterrupt: boolean;
+  readonly direct: boolean;
+  readonly ownedAgentId: string | null;
+  readonly retired: boolean;
+  readonly ownerLevel: boolean;
+}): (agentId: string) => boolean {
+  if (!input.canInterrupt) return () => false;
+  if (input.direct)
+    return (agentId) =>
+      !input.retired && input.ownedAgentId !== null && agentId === input.ownedAgentId;
+  return () => input.ownerLevel;
+}
+
+export function kinPresenceStop(
+  presence: KinPresence | undefined,
+  mayStop: (agentId: string) => boolean,
+): KinPresenceStop {
+  if (presence === undefined || presence.wakeupId === null || !mayStop(presence.agentId))
+    return "none";
+  switch (presence.state) {
+    case "starting":
+    case "thinking":
+    case "working":
+    case "writing":
+      return "offer";
+    case "stalled":
+      return "urgent";
+    default:
+      return "none";
+  }
+}
+
+export interface KinWorkingLine {
+  readonly presence: KinPresence;
+  readonly line: KinPresenceLine;
+  readonly stop: KinPresenceStop;
+}
+
+/**
+ * The chat's working lines, one per agent with something to show, in the order their runs
+ * started, so a label change never reorders them.
+ */
+export function kinWorkingLines(
+  presence: ReadonlyArray<KinPresence>,
+  now: number,
+  mayStop: (agentId: string) => boolean,
+): ReadonlyArray<KinWorkingLine> {
+  return presence
+    .flatMap((entry): ReadonlyArray<KinWorkingLine> => {
+      const line = kinPresenceLine(entry, now);
+      return line === null
+        ? []
+        : [{ presence: entry, line, stop: kinPresenceStop(entry, mayStop) }];
+    })
+    .toSorted(
+      (a, b) =>
+        a.presence.startedAt.localeCompare(b.presence.startedAt) ||
+        a.presence.agentId.localeCompare(b.presence.agentId),
+    );
 }

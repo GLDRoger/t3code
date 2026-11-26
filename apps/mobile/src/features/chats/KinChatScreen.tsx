@@ -12,7 +12,8 @@ import { KIN_DEVICE_COPY } from "@t3tools/client-runtime/kin/kinDevice";
 import { KIN_PEOPLE_CHAT } from "@t3tools/client-runtime/kin/kinPeopleChat";
 import { kinAwayLine } from "@t3tools/client-runtime/kin/kinAway";
 import { kinAccessEndedCopy } from "@t3tools/client-runtime/kin/kinJoin";
-import { useKinAppShell } from "./state/kinChatOnly";
+import { useKinAppShell, useKinOwnerLevel } from "./state/kinChatOnly";
+import { environmentSession } from "../../state/session";
 import { KIN_ONLY } from "../../lib/kinOnly";
 import { KIN_ONLY_NO_HOST, KIN_ONLY_UNAUTHORIZED, KIN_ONLY_UNPAIRED } from "./kinOnlyCopy";
 import { kinListRoute } from "./state/kinHome";
@@ -109,7 +110,7 @@ import {
 } from "./components/KinScreenState";
 import { KinIntro } from "./components/KinIntro";
 import {
-  KinPresenceLine,
+  KinPresenceLines,
   useKinPresenceNow,
   type KinStopState,
 } from "./components/KinPresenceLine";
@@ -162,7 +163,11 @@ import {
   type KinChatState,
   type KinInboxState,
 } from "@t3tools/client-runtime/kin/kinInboxModel";
-import { kinPresenceLine, kinPresenceNeedsClock } from "@t3tools/client-runtime/kin/kinLive";
+import {
+  kinMayStopAgent,
+  kinPresenceLine,
+  kinPresenceNeedsClock,
+} from "@t3tools/client-runtime/kin/kinLive";
 import {
   kinAgentAvatar,
   type KinAvatarView,
@@ -356,6 +361,12 @@ function KinLiveChat(props: {
   );
   const navigation = useNavigation();
   const canInterrupt = useAtomValue(kinClient.leadInterrupt.permissionAtom(props.environmentId));
+  const session = useAtomValue(
+    environmentId === null
+      ? noSessionAtom
+      : environmentSession.sessionStateValueAtom(environmentId),
+  );
+  const ownerLevel = useKinOwnerLevel(environmentId, session);
   const canMute = useAtomValue(kinClient.mute.permissionAtom(props.environmentId));
   const runMute = useAtomCommand(kinClient.mute, "Muting this chat");
   const restorable = screen.retired?.restorable ?? null;
@@ -404,8 +415,15 @@ function KinLiveChat(props: {
                 },
               }
         }
+        mayStop={kinMayStopAgent({
+          canInterrupt,
+          direct: summary?.kind === "direct",
+          ownedAgentId,
+          retired: screen.retired !== null,
+          ownerLevel,
+        })}
         stopLead={
-          environmentId === null || summary === undefined || ownedAgentId === null || !canInterrupt
+          environmentId === null || summary === undefined
             ? null
             : (wakeupId) =>
                 runKinCommand(appAtomRegistry, kinClient.leadInterrupt, {
@@ -553,6 +571,7 @@ function KinFixtureChat({ fixtures }: { readonly fixtures: KinFixtures }) {
         agentNames: new Map([[fixtures.KIN_FIXTURE_AGENT, "Tech lead"]]),
       }}
       onRetry={() => {}}
+      mayStop={() => true}
       stopLead={() => {
         setValue((current) =>
           applyKinChatEvent(current, {
@@ -579,9 +598,13 @@ type StopLead = (wakeupId: string) => Promise<boolean>;
 
 /** The lead's presence while the feed is live; a stale one would claim work that may be over. */
 const livePresence = (state: KinChatScreenState): KinPresence | undefined =>
+  livePresenceAll(state).at(-1);
+const livePresenceAll = (state: KinChatScreenState): ReadonlyArray<KinPresence> =>
   state._tag === "ready" && state.connected && state.chat.live
-    ? state.chat.value.presence.at(-1)
-    : undefined;
+    ? state.chat.value.presence
+    : NO_PRESENCE;
+const noStop = () => false;
+const noSessionAtom = Atom.make(null);
 
 // The glass bar's title size (GLASS_HEADER_OPTIONS) and UIKit's subtitle size, for the bars
 // that keep UIKit's own title. The bar is one fixed height, so it stops growing at 1.5x.
@@ -678,8 +701,10 @@ function KinChatPage(props: {
   readonly teamRoomId?: KinChatId | null;
   /** Null where nothing can be marked, such as the dev fixture. */
   readonly markRead: MarkRead | null;
-  /** Interrupts the lead's current wake-up; null unless the viewer owns it and may stop it. */
+  /** Interrupts a wake-up in this chat; null where nothing here can be stopped. */
   readonly stopLead?: StopLead | null;
+  /** Whether the viewer may stop this agent's run here; the host still decides. */
+  readonly mayStop?: (agentId: string) => boolean;
   /** The viewer's mute for this chat's notifications; null until it can be set. */
   readonly mute?: { readonly muted: boolean; readonly toggle: () => void } | null;
   readonly state: KinChatScreenState;
@@ -776,7 +801,8 @@ function KinChatPage(props: {
             unread={props.unread}
             teamRoomId={props.teamRoomId ?? null}
             markRead={props.markRead}
-            presence={livePresence(state)}
+            presence={livePresenceAll(state)}
+            mayStop={props.mayStop ?? noStop}
             stopLead={props.stopLead ?? null}
             members={props.members ?? []}
             direct={props.direct ?? false}
@@ -952,7 +978,8 @@ function KinChatFeed(props: {
   readonly unread: number | null;
   readonly teamRoomId: KinChatId | null;
   readonly markRead: MarkRead | null;
-  readonly presence: KinPresence | undefined;
+  readonly presence: ReadonlyArray<KinPresence>;
+  readonly mayStop: (agentId: string) => boolean;
   readonly stopLead: StopLead | null;
   readonly members: ReadonlyArray<KinChatMember>;
   readonly direct: boolean;
@@ -1100,26 +1127,21 @@ function KinChatFeed(props: {
       ? (props.viewer.agentNames.get(member.principal.agentId) ?? "Agent")
       : (props.viewer.memberNames?.get(memberId) ?? (member.role === "owner" ? "Owner" : "Member"));
   };
-  const [stop, setStop] = useState<{ readonly wakeupId: string; readonly state: KinStopState }>({
-    wakeupId: "",
-    state: "idle",
-  });
-  const { presence, stopLead } = props;
-  const presenceAvatar = presence === undefined ? null : kinAgentAvatar(presence.agentId);
-  const wakeupId = presence?.wakeupId ?? null;
-  // A new wake-up starts with a fresh Stop.
-  const stopState = wakeupId !== null && stop.wakeupId === wakeupId ? stop.state : "idle";
+  // Per wake-up, so a new run starts with a fresh Stop and one agent's Stop never shows on another.
+  const [stops, setStops] = useState<ReadonlyMap<string, KinStopState>>(new Map());
+  const { stopLead } = props;
+  const setStopState = (wakeupId: string, state: KinStopState) =>
+    setStops((current) => new Map(current).set(wakeupId, state));
   const onStop =
-    stopLead === null || wakeupId === null
+    stopLead === null
       ? null
-      : () => {
-          setStop({ wakeupId, state: "stopping" });
+      : (wakeupId: string) => {
+          if (stops.get(wakeupId) === "stopping") return;
+          setStopState(wakeupId, "stopping");
           // Stopping holds until the wake-up's presence clears.
-          void stopLead(wakeupId).then((sent) =>
-            setStop((current) =>
-              current.wakeupId === wakeupId && !sent ? { wakeupId, state: "failed" } : current,
-            ),
-          );
+          void stopLead(wakeupId).then((sent) => {
+            if (!sent) setStopState(wakeupId, "failed");
+          });
         };
   const landed = useRef<string | null>(null);
   const openingLine = useRef(false);
@@ -1871,11 +1893,12 @@ function KinChatFeed(props: {
               paddingBottom: workingStatus === null ? 0 : FLOATING_WORKING_CONTROL_COVERAGE,
             }}
           >
-            <KinPresenceLine
+            <KinPresenceLines
               presence={props.presence}
-              avatar={presenceAvatar}
               visible={focused && followsEnd}
-              stop={stopState}
+              mayStop={props.mayStop}
+              agentNames={props.viewer.agentNames}
+              stops={stops}
               onStop={onStop}
             />
           </View>
