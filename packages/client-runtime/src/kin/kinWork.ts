@@ -122,6 +122,8 @@ export const KIN_WORK_GONE = {
 export const KIN_UNAVAILABLE_LINK = {
   doc: "This doc doesn't exist or isn't shared with you.",
   task: "This task doesn't exist or isn't shared with you.",
+  /** A key opened in Money, Clients or Docs: a bill, an invoice or any list's entry. */
+  entry: "This entry doesn't exist or isn't shared with you.",
   client: "This client doesn't exist or isn't shared with you.",
   project: "This project doesn't exist or isn't shared with you.",
 } as const;
@@ -157,6 +159,8 @@ export interface KinWorkNames {
   readonly owner?: KinPersonId | null;
   /** The owner's time zone, where an all-day due date is a calendar day. Null until read. */
   readonly zone: string | null;
+  /** The reader's profile zone, where a timed due's day and clock read; absent or null, `zone`. */
+  readonly readerZone?: string | null;
 }
 
 export function kinWorkNames(input: {
@@ -164,6 +168,7 @@ export function kinWorkNames(input: {
   readonly orgId: KinOrgId;
   readonly people: ReadonlyArray<KinPerson> | null;
   readonly zone: string | null;
+  readonly readerZone?: string | null;
 }): KinWorkNames {
   const org = input.orgs?.orgs.find((held) => held.orgId === input.orgId);
   return {
@@ -182,6 +187,7 @@ export function kinWorkNames(input: {
     me: input.orgs?.me.find((me) => me.orgId === input.orgId)?.personId ?? null,
     owner: input.people?.find((person) => person.access === "owner")?.personId ?? null,
     zone: input.zone,
+    readerZone: input.readerZone ?? null,
   };
 }
 
@@ -580,29 +586,35 @@ function dayInZone(date: Date, zone: string | null): Date {
   }
 }
 
+type DueZones = Pick<KinWorkNames, "zone" | "readerZone">;
+// A due day is the company's calendar day for anyone; a due time reads on the reader's own clock.
+export const kinWorkDueZone = (allDay: boolean, names: DueZones) =>
+  allDay ? names.zone : (names.readerZone ?? names.zone);
+
 export const kinWorkDueText = (
   record: Pick<KinRecord, "dueAt" | "dueAllDay">,
-  names: Pick<KinWorkNames, "zone">,
+  names: DueZones,
   now: Date,
 ): string | null => {
   if (record.dueAt === null) return null;
   const due = new Date(record.dueAt);
   if (Number.isNaN(due.getTime())) return null;
-  // Due days and times are the owner's, and so is the today they are counted from.
-  const day = kinWorkDay(dayInZone(due, names.zone), dayInZone(now, names.zone));
-  return record.dueAllDay ? day : `${day}, ${kinWorkClock(due, names.zone)}`;
+  const zone = kinWorkDueZone(record.dueAllDay, names);
+  const day = kinWorkDay(dayInZone(due, zone), dayInZone(now, zone));
+  return record.dueAllDay ? day : `${day}, ${kinWorkClock(due, zone)}`;
 };
 
 /** Days from today to the due day (0 today, negative past), counted as `kinWorkDueText` says it. */
 export const kinWorkDueDays = (
   record: Pick<KinRecord, "dueAt" | "dueAllDay">,
-  names: Pick<KinWorkNames, "zone">,
+  names: DueZones,
   now: Date,
 ): number | null => {
   if (record.dueAt === null) return null;
   const due = new Date(record.dueAt);
   if (Number.isNaN(due.getTime())) return null;
-  return daysBetween(dayInZone(now, names.zone), dayInZone(due, names.zone));
+  const zone = kinWorkDueZone(record.dueAllDay, names);
+  return daysBetween(dayInZone(now, zone), dayInZone(due, zone));
 };
 
 /** Sentences joined for a label, never doubling the stop a title already ends with. */
@@ -1313,6 +1325,20 @@ const dayFromText = (text: string | null, now: Date, zone: string | null) => {
     : kinWorkDay(dayInZone(date, zone), dayInZone(now, zone));
 };
 
+// History keeps the all-day flag only when it changed; an all-day due is the company day's last millisecond.
+const dueSetAllDay = (
+  to: string | null,
+  flag: { readonly to: string | null } | undefined,
+  zone: string | null,
+) => {
+  if (flag !== undefined) return flag.to === "true";
+  const at = to === null ? Number.NaN : Date.parse(to);
+  return (
+    !Number.isNaN(at) &&
+    civilDayOf(dayInZone(new Date(at), zone)) !== civilDayOf(dayInZone(new Date(at + 1), zone))
+  );
+};
+
 const ADDED = {
   work: "added this",
   clients: "added this client",
@@ -1428,7 +1454,11 @@ export function kinWorkChangeText(
     );
   const due = field("due");
   if (due !== undefined) {
-    const day = dayFromText(due.to, now, names.zone);
+    const day = dayFromText(
+      due.to,
+      now,
+      kinWorkDueZone(dueSetAllDay(due.to, field("dueAllDay"), names.zone), names),
+    );
     clauses.push(
       day === null
         ? "took the date off"

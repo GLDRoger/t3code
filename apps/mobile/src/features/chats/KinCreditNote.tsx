@@ -146,14 +146,20 @@ export function KinCreditNoteDraftForm(props: {
           autoFocus
           keyboard="numbers"
           disabled={props.busy}
-          onChangeText={setAmount}
+          onChangeText={(next) => {
+            setAmount(next);
+            setProblem(null);
+          }}
         />
         <KinWorkTextField
           label={KIN_CREDIT_NOTES.reason}
           value={reason}
           maxLength={300}
           disabled={props.busy}
-          onChangeText={setReason}
+          onChangeText={(next) => {
+            setReason(next);
+            setProblem(null);
+          }}
         />
       </ListSection>
       {problem === null ? null : <Notice message={problem} tone="danger" />}

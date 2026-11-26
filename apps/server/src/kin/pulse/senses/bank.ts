@@ -179,7 +179,7 @@ export const overpaymentConsequence = (input: {
     (shown) =>
       `${key}, ${amount(received)} received ${shortDay(day)}, is more than the ${amount(owed)} this invoice owes: ${reason}. Recorded, it settles it and keeps ${amount(received - owed)} as ${client}'s credit.${
         others.length === 0 ? "" : ` ${client}'s other open invoices: ${listed(others, shown)}.`
-      } It isn't recorded until the owner confirms.`,
+      } It isn't recorded until it is confirmed on a card.`,
     Math.min(4, others.length),
   );
 };
@@ -235,7 +235,7 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
           scope: {},
           consequence: fitted(
             (shown) =>
-              `${creditText(credit)}, fits ${first.length} open invoices equally, and Kin can't tell which: ${listed(first.map(invoiceText), shown)}. Nothing is recorded until the owner says which.`,
+              `${creditText(credit)}, fits ${first.length} open invoices equally, and Kin can't tell which: ${listed(first.map(invoiceText), shown)}. Nothing is recorded until one is chosen on a card.`,
             first.length,
           ),
         },
@@ -373,7 +373,7 @@ export const repaidSeenSenses = Effect.fn("KinPulse.repaidSeenSenses")(function*
           `${paid} and adds up exactly to their ${one ? "oldest owed expense" : `${repays.length} oldest owed expenses`}: ${keysOf(
             repays.map((each) => each.key),
             Math.max(shown, 1),
-          )}. ${one ? "It isn't" : "They aren't"} marked repaid until the owner confirms.`,
+          )}. ${one ? "It isn't" : "They aren't"} marked repaid until it is confirmed on a card.`,
         repays.length,
       ),
       wake: "now",
@@ -389,7 +389,7 @@ export const billPaidConsequence = (
   vendor: string,
   due: string,
 ) =>
-  `${bankKey}, ${amount} paid ${day}, matches ${billKey}, the bill to pay ${vendor} due ${due}. It isn't marked paid until the owner confirms.`;
+  `${bankKey}, ${amount} paid ${day}, matches ${billKey}, the bill to pay ${vendor} due ${due}. It isn't marked paid until it is confirmed on a card.`;
 
 export const billPaidSeenSenses = Effect.fn("KinPulse.billPaidSeenSenses")(function* (
   ctx: SenseContext,

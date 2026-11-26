@@ -1014,8 +1014,8 @@ export function KinListEntry(
                         <span className="truncate">{fact.value}</span>
                       ) : null}
                       {opens === null ? null : (
-                        <Button size="xs" variant="ghost" onClick={opens}>
-                          {picks ? "Open" : fact.value}
+                        <Button size="xs" variant="ghost" className="max-w-full" onClick={opens}>
+                          <span className="truncate">{picks ? "Open" : fact.value}</span>
                         </Button>
                       )}
                       {offersName ? (

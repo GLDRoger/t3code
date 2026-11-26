@@ -5,7 +5,7 @@ import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
-import { sensitiveShown } from "../work/sensitiveReads.ts";
+import { sensitiveShown, turnSensitive } from "../work/sensitiveReads.ts";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { SALES_OUTSIDE_TOOLS } from "../sales/policies.ts";
 
@@ -30,6 +30,12 @@ export type OutsideToolPolicy = "allowed" | "refused" | Condition;
 export const OUTSIDE_REFUSAL =
   "This turn read text from a connected service, so it can't do this now. Offer it to the owner with kin_ask instead; their tap starts it in a fresh turn. Next time, start the work before you read it.";
 
+/** What every tool but reading and answering here gets, once a shared turn read a repo. */
+export const REPO_READ_REFUSAL = (name: string | undefined) =>
+  name === undefined
+    ? "This turn read a repo for this chat, so it can only answer here: do that. Anything else waits for the next message."
+    : `This turn read a repo for ${name}, so it can only answer ${name} here: do that. Anything else waits for ${name}'s next message.`;
+
 const field = (args: unknown, name: string) =>
   Predicate.hasProperty(args, name) ? args[name] : undefined;
 
@@ -38,6 +44,9 @@ const recipeOnly: Condition = (_turn, args) =>
   Effect.succeed(
     typeof field(args, "recipe") === "string" && field(args, "writeRecipe") === undefined,
   );
+
+const notAfterCodingAgent: Condition = (turn) =>
+  Effect.map(followsCodingAgent(turn), (follows) => !follows);
 
 export const OUTSIDE_TOOLS = {
   kin_chat_post: "allowed",
@@ -87,6 +96,9 @@ export const OUTSIDE_TOOLS = {
   kin_github_review: "allowed",
   // Reads only the diff of the pull request its review turn is for.
   kin_github_diff: "allowed",
+  // Reads only; what it reads is outside text too (`readRepo` marks it). Not after a coding agent's
+  // words, as kin_github_review_ask isn't: the key's ask doesn't open a repo.
+  kin_github_read: notAfterCodingAgent,
   kin_github_link: "allowed",
   // Outside text could start reviews in a person's name.
   kin_github_review_ask: "refused",
@@ -186,6 +198,8 @@ export type OutsideReadItem = { readonly id?: string; readonly own?: string } & 
   | { readonly k: "web"; readonly host?: string }
   | { readonly k: "social"; readonly handle?: string }
   | { readonly k: "github" }
+  /** A repo `kin_github_read` read in a shared turn (`name`), for the person asking (`for`). */
+  | { readonly k: "repo"; readonly name?: string; readonly for?: string }
   | { readonly k: "coding-agent"; readonly name?: string }
 );
 
@@ -212,6 +226,7 @@ const KINDS = new Set([
   "web",
   "social",
   "github",
+  "repo",
   "coding-agent",
 ]);
 const part = (value: unknown) =>
@@ -224,12 +239,22 @@ const cleanRead = (value: unknown): OutsideReadItem | undefined => {
   const raw = value as Record<string, unknown>;
   if (typeof raw.k !== "string" || !KINDS.has(raw.k)) return undefined;
   const fields = Object.fromEntries(
-    ["id", "own", "account", "from", "subject", "label", "tool", "host", "handle", "name"].flatMap(
-      (name) => {
-        const text = part(raw[name]);
-        return text === undefined ? [] : [[name, text]];
-      },
-    ),
+    [
+      "id",
+      "own",
+      "account",
+      "from",
+      "subject",
+      "label",
+      "tool",
+      "host",
+      "handle",
+      "name",
+      "for",
+    ].flatMap((name) => {
+      const text = part(raw[name]);
+      return text === undefined ? [] : [[name, text]];
+    }),
   );
   const more = typeof raw.more === "number" && raw.more > 0 ? { more: Math.floor(raw.more) } : {};
   return { k: raw.k, ...fields, ...more } as OutsideReadItem;
@@ -267,7 +292,9 @@ export const outsideSource = (key: string, reads: ReadonlyArray<OutsideReadItem>
     seen.add(readKey(clean));
     return [clean];
   });
-  return `${stampKey(key)}${READABLE}${JSON.stringify({ r: kept.slice(0, READS_MAX) })}`;
+  // A repo read is kept past the cap: it is what holds the turn to reading and answering.
+  const held = kept.filter((read, index) => index < READS_MAX || read.k === "repo");
+  return `${stampKey(key)}${READABLE}${JSON.stringify({ r: held })}`;
 };
 
 const more = (count: number | undefined) => (count === undefined ? "" : `, and ${count} more`);
@@ -297,6 +324,8 @@ const detailOf = (read: OutsideReadItem): string => {
       return read.handle === undefined ? "social posts" : `posts by ${read.handle}`;
     case "github":
       return "text from GitHub";
+    case "repo":
+      return read.name === undefined ? "a repo on GitHub" : `the repo ${read.name}`;
     case "coding-agent":
       return read.name === undefined ? "a coding agent" : `${read.name}, a coding agent`;
   }
@@ -317,6 +346,7 @@ const neutralOf = (read: OutsideReadItem): string => {
     case "social":
       return "social posts";
     case "github":
+    case "repo":
       return "text from GitHub";
     case "coding-agent":
       return "a coding agent";
@@ -375,6 +405,7 @@ export const markOutside = Effect.fn("KinOutsideContent.mark")(function* (
   source: string,
   /** What was read; the source's own reads when left out. */
   reads?: ReadonlyArray<OutsideReadItem>,
+  scope: "wakeup" | "wakeup-and-events" = "wakeup-and-events",
 ) {
   const sql = yield* SqlClient.SqlClient;
   const at = yield* Clock.currentTimeMillis;
@@ -388,11 +419,29 @@ export const markOutside = Effect.fn("KinOutsideContent.mark")(function* (
     yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
       VALUES (${turn.orgId}, ${turn.wakeupId}, ${at}, ${stamp})
       ON CONFLICT (org_id, wakeup_id) DO UPDATE SET source = excluded.source`;
-    yield* sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
-      SELECT org_id, event_id, ${stamp} FROM kin_events
-      WHERE org_id = ${turn.orgId} AND wakeup_id = ${turn.wakeupId}
-      ON CONFLICT (org_id, event_id) DO UPDATE SET outside_from = excluded.outside_from`;
+    if (scope === "wakeup-and-events")
+      yield* sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
+        SELECT org_id, event_id, ${stamp} FROM kin_events
+        WHERE org_id = ${turn.orgId} AND wakeup_id = ${turn.wakeupId}
+        ON CONFLICT (org_id, event_id) DO UPDATE SET outside_from = excluded.outside_from`;
   }).pipe(sql.withTransaction);
+});
+
+export const inheritSession = Effect.fn("KinOutsideContent.inheritSession")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: string;
+  readonly fromWakeupIds: ReadonlyArray<string>;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      for (const wakeupId of input.fromWakeupIds) {
+        const stamp = yield* outsideStamp({ orgId: input.orgId, wakeupId });
+        if (stamp !== undefined) yield* markOutside(input, stamp, undefined, "wakeup");
+        if (yield* turnSensitive(input.orgId, wakeupId)) yield* sensitiveShown(input);
+      }
+    }),
+  );
 });
 
 /** The stamp for text a person's coding agent wrote through its key, by the key's name. */
@@ -596,6 +645,54 @@ export const pageSeen = (turn: Pick<Turn, "orgId" | "wakeupId">, address: string
   const page = pageKey(address);
   return page !== undefined && pagesSeen.get(turnKey(turn))?.has(page) === true;
 };
+
+/**
+ * What a shared turn may still call once it read a repo (`kin_github_read` marks it): reading,
+ * and answering in the chat the turn answers. Nothing here carries text to another person or
+ * chat, writes what someone else sees, starts work, or posts to GitHub but the asked review.
+ */
+const REPO_READ_TOOLS: ReadonlySet<string> = new Set([
+  // Only to the chat the turn answers (`SharedTools` inTurnChat).
+  "kin_chat_post",
+  // An emoji on a message there; no text.
+  "kin_react",
+  // Numbers the agent writes, drawn in the turn's own chat.
+  "kin_chart",
+  // Reads only, into this turn.
+  "kin_github_read",
+  "kin_chat_read",
+  "kin_leads",
+  "kin_computer",
+  "people_read",
+  "memory_search",
+  "memory_read",
+  "records_query",
+  "record_get",
+  "pulse_read",
+  "doc_read",
+  "docs_search",
+  "doc_history",
+  "dates_query",
+  // Only the review someone asked for, on its pull request, whose repo is all the reader reads then.
+  "kin_github_diff",
+  "kin_github_review",
+]);
+
+/** The refusal for `name` once the turn read a repo for someone, or undefined. */
+export const repoReadRefusal = Effect.fn("KinOutsideContent.repoRead")(
+  function* (turn: Pick<Turn, "orgId" | "wakeupId">, name: string) {
+    const stamp = yield* outsideStamp(turn);
+    const read =
+      stamp === undefined ? undefined : stampReads(stamp).find((one) => one.k === "repo");
+    if (read?.k !== "repo" || REPO_READ_TOOLS.has(name)) return undefined;
+    return REPO_READ_REFUSAL(read.for);
+  },
+  Effect.catchCause((cause) =>
+    Effect.logWarning("Kin repo-read check failed; refusing", { cause }).pipe(
+      Effect.as<string | undefined>(REPO_READ_REFUSAL(undefined)),
+    ),
+  ),
+);
 
 /** Whether `name` may run with these arguments once the turn has read outside text. */
 export const outsideToolAllowed = Effect.fn("KinOutsideContent.allowed")(

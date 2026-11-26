@@ -65,6 +65,7 @@ const ReleaseInput = Schema.Union([
   Schema.Struct({
     ...ReleaseFields,
     countAttempt: Schema.Literal(true),
+    attemptLimit: Schema.optional(Schema.Literal("run")),
     notBefore: Schema.optional(NonNegativeInt),
   }),
 ]);
@@ -952,12 +953,14 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const now = yield* Clock.currentTimeMillis;
           const notBefore = input.notBefore ?? now + 300_000;
+          const attemptLimit =
+            input.countAttempt && input.attemptLimit === "run" ? RUN_ATTEMPTS : 3;
           const ids =
             input.eventIds === undefined ? undefined : yield* encodeEventIds(input.eventIds);
           const rows = yield* sql<{ event_id: string; state: string }>`
           UPDATE kin_events SET attempts = attempts + ${input.countAttempt ? 1 : 0},
             state = CASE WHEN replied_at IS NOT NULL THEN 'done'
-              WHEN attempts + ${input.countAttempt ? 1 : 0} >= 3 THEN 'failed' ELSE 'queued' END,
+              WHEN attempts + ${input.countAttempt ? 1 : 0} >= ${attemptLimit} THEN 'failed' ELSE 'queued' END,
             wakeup_id = CASE WHEN replied_at IS NULL THEN NULL ELSE wakeup_id END,
             not_before = ${notBefore}, budget_deferred = ${input.budgetDeferred === true ? 1 : 0}
           WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId} AND state = 'claimed'

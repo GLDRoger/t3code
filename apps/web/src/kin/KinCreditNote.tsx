@@ -144,7 +144,10 @@ export function KinCreditNoteDraftForm(props: {
           autoComplete="off"
           autoFocus
           value={amount}
-          onChange={(event) => setAmount(event.target.value)}
+          onChange={(event) => {
+            setAmount(event.target.value);
+            setProblem(null);
+          }}
         />
       </div>
       <div className="flex flex-col gap-1.5">
@@ -154,7 +157,10 @@ export function KinCreditNoteDraftForm(props: {
           maxLength={300}
           autoComplete="off"
           value={reason}
-          onChange={(event) => setReason(event.target.value)}
+          onChange={(event) => {
+            setReason(event.target.value);
+            setProblem(null);
+          }}
         />
       </div>
       {problem === null ? null : (

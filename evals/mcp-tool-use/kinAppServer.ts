@@ -11,6 +11,7 @@ import {
 } from "../../apps/server/src/kin/lead/turn/providers/codex.ts";
 import type { AppServer, AppServerEvent } from "./appServer.ts";
 import {
+  isKinCase,
   isText,
   KIN_SHARED_PROMPT,
   filledEvent,
@@ -24,6 +25,7 @@ import {
   answerToolCall,
   buildMessages,
   EvalToolCallError,
+  kinPostedText,
   makeSample,
   normalizeToolName,
   ranCalls,
@@ -178,6 +180,7 @@ export const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSamp
   return {
     calls,
     text: shownText(responses),
+    ...(isKinCase(testCase) ? { postedText: kinPostedText(responses) } : {}),
     stopReason: result.stopReason,
     finalText: finals.at(-1) ?? "",
     silent: rescuePrompt(sample, normalizeToolName) !== undefined,

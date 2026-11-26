@@ -563,7 +563,7 @@ describe("kinTasksDealFacts", () => {
     }),
     fact("task_late", "W-9", zoya),
     fact("client_quiet", "C-1", owner),
-    fact("entry_late", "BK-1", zoya, { consequence: "Was due Nov 16, 2 days ago." }),
+    fact("entry_late", "BK-1", zoya, { consequence: "Next delivery: Nov 16, passed 2 days ago." }),
     fact("entry_check", "STK-2", owner, { consequence: "On hand is 3, below Reorder point (10)." }),
   );
   const keys = (rows: ReturnType<typeof kinTasksDealFacts>) => rows.map((one) => one.factKey);
@@ -581,12 +581,12 @@ describe("kinTasksDealFacts", () => {
     expect(
       kinTasksDealFacts({ ownerLevel: false, names: asZoya, now, pulse: everything })[2],
     ).toMatchObject({
-      detail: "Was due Nov 16, 2 days ago.",
+      detail: "Next delivery: Nov 16, passed 2 days ago.",
       open: { type: "record", key: "BK-1" },
     });
     expect(kinEntryFacts(everything)).toEqual(
       new Map([
-        ["BK-1", ["Was due Nov 16, 2 days ago."]],
+        ["BK-1", ["Next delivery: Nov 16, passed 2 days ago."]],
         ["STK-2", ["On hand is 3, below Reorder point (10)."]],
       ]),
     );

@@ -118,9 +118,14 @@ const NEEDS_YOU_HEADING = "## Needs you\n";
 const LINE_MAX = 200;
 const hasNeedsYou = (body: string) =>
   kinPageSections(body).some(({ title }) => title?.trim().toLowerCase() === "needs you");
+/** The quiet line, unless cards from earlier turns still wait: then it counts them. */
+const quietPage = (before: number) =>
+  before === 0
+    ? QUIET_PAGE
+    : `${NEEDS_YOU_HEADING}\nNothing new this morning; ${before === 1 ? "1 card" : `${before} cards`} from before still ${before === 1 ? "waits" : "wait"} on you.`;
 /** The page's Needs you: one item per card the turn left waiting on them, within `room`. */
-const needsYouSection = (lines: ReadonlyArray<string>, room: number) => {
-  if (lines.length === 0) return QUIET_PAGE;
+const needsYouSection = (lines: ReadonlyArray<string>, before: number, room: number) => {
+  if (lines.length === 0) return quietPage(before);
   let section = NEEDS_YOU_HEADING;
   for (const [index, text] of lines.entries()) {
     const line = text.length <= LINE_MAX ? text : `${text.slice(0, LINE_MAX - 1).trimEnd()}…`;
@@ -702,6 +707,14 @@ const make = Effect.gen(function* () {
       return line === undefined ? [] : [normalized(line)];
     });
   });
+  // Open cards from earlier turns that wait on the lane's person, counted on the quiet line.
+  const waitingBefore = Effect.fn("KinReplyBridge.waitingBefore")(function* (wake: Wake) {
+    const [row] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_waiting w
+      WHERE w.org_id = ${wake.orgId} AND w.resolved_at IS NULL AND w.reason <> 'mention'
+        AND w.person_id IN (SELECT person_id FROM kin_chat_members WHERE org_id = ${wake.orgId}
+          AND chat_id = ${wake.lane.chatId} AND person_id IS NOT NULL AND left_at IS NULL)`;
+    return row?.count ?? 0;
+  });
   // The morning page is Kin's, whatever a finished turn wrote (`pulse/checkIn.ts`): with no page
   // of the turn's own, Kin posts one with its quiet line; on the weekly brief's day Kin's figures
   // go on it, or follow it as ordinary messages when it has no room. A failed turn posts nothing.
@@ -712,8 +725,16 @@ const make = Effect.gen(function* () {
       if (brief === undefined) return;
       let slot = yield* pageOf(wake);
       const waiting = slot !== undefined && hasNeedsYou(slot.body) ? [] : yield* waitingOn(wake);
+      const before =
+        waiting.length > 0 || (slot !== undefined && hasNeedsYou(slot.body))
+          ? 0
+          : yield* waitingBefore(wake);
       if (slot === undefined) {
-        const page = needsYouSection(waiting, KIN_MESSAGE_BODY_MAX_LENGTH - MORNING_HEADROOM);
+        const page = needsYouSection(
+          waiting,
+          before,
+          KIN_MESSAGE_BODY_MAX_LENGTH - MORNING_HEADROOM,
+        );
         const result = yield* deliver(wake, `kin-page:${wake.wakeupId}`, page, -1);
         if (result._tag !== "posted") {
           wake.withheld ??= result;
@@ -726,7 +747,11 @@ const make = Effect.gen(function* () {
         wake.replied = true;
       } else if (!hasNeedsYou(slot.body)) {
         const room = KIN_MESSAGE_BODY_MAX_LENGTH - slot.body.length - 2;
-        const result = yield* lead(wake, slot, `${needsYouSection(waiting, room)}\n\n${slot.body}`);
+        const result = yield* lead(
+          wake,
+          slot,
+          `${needsYouSection(waiting, before, room)}\n\n${slot.body}`,
+        );
         if (result._tag === "withheld" && result.reason !== "not_found") {
           wake.withheld = { ...result, auxiliary: true };
           return;

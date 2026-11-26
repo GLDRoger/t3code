@@ -66,6 +66,9 @@ it.effect("issues and voids a credit note without changing cash received or tax 
     };
     const note = yield* notes.draft(orgId, writer, input);
     assert.strictEqual((yield* notes.draft(orgId, writer, input)).row.key, note.row.key);
+    const invoiceNumber = (yield* records.detail((yield* records.get(orgId, row.key))!)).fields
+      ?.number;
+    assert.strictEqual(note.row.title, `Credit note for ${invoiceNumber}`);
     assert.include(
       yield* Effect.flip(
         notes.issue(

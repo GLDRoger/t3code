@@ -2,6 +2,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   KIN_COUNTRY_ASK,
+  kinCountryCardRegion,
   kinCountryCodeOf,
   kinCountryName,
   kinCountryOffer,
@@ -13,7 +14,7 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import type { EnvironmentId, KinAnswerCountryCardInput } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { memo, useState } from "react";
-import { View } from "react-native";
+import { ScrollView, View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
@@ -36,7 +37,7 @@ export const KinCountryCard = memo(function KinCountryCard(props: {
   const [picking, setPicking] = useState(false);
   const [pending, setPending] = useState<KinAnswerCountryCardInput["answer"]["_tag"] | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
-  const offer = kinCountryOffer(code ?? "", kinDeviceRegion());
+  const offer = kinCountryOffer(code ?? "", kinCountryCardRegion(country.fits, kinDeviceRegion()));
 
   const send = async (reply: KinAnswerCountryCardInput["answer"]) => {
     if (pending !== null) return;
@@ -120,7 +121,11 @@ export const KinCountryCard = memo(function KinCountryCard(props: {
       )}
       {picking ? (
         <Sheet title={KIN_COUNTRY_ASK.country} onClose={() => setPicking(false)}>
-          <View className="px-4 pt-2 pb-10">
+          <ScrollView
+            contentInsetAdjustmentBehavior="automatic"
+            keyboardShouldPersistTaps="handled"
+            contentContainerClassName="px-4 pt-2 pb-10"
+          >
             <ListSection>
               <KinCountryPicker
                 label={KIN_COUNTRY_ASK.country}
@@ -133,7 +138,7 @@ export const KinCountryCard = memo(function KinCountryCard(props: {
                 }}
               />
             </ListSection>
-          </View>
+          </ScrollView>
         </Sheet>
       ) : null}
     </View>

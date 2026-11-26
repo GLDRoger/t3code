@@ -685,6 +685,8 @@ export const KinCountryCardState = Schema.Struct({
   round: Schema.Literals([1, 2]),
   /** Needs you reads a card's question from its state. */
   question: Schema.optional(Schema.String),
+  /** The countries the company's own records allow (its tax number's, its currency's), when they say. */
+  fits: Schema.optional(Schema.Array(Schema.String)),
   answered: Schema.optional(
     Schema.Union([
       Schema.TaggedStruct("chose", { by: Schema.String, country: Schema.String }),

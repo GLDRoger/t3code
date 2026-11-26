@@ -2,20 +2,20 @@
   "mcpToolListJsonBytes": 64767,
   "kinToolListJsonBytes": 3044,
   "kinInstructionsBytes": {
-    "owner": 41704,
-    "confined": 41652
+    "owner": 41456,
+    "confined": 41404
   },
-  "kinSharedInstructionsHash": "a0249114282032d6cd628d3e6f40ff1c4cae30a9f7d88c287c45ea39ae1972d1",
+  "kinSharedInstructionsHash": "4ceb34b73155164f9e13e6ffdffbdc3129c0ae2515efc5969ab5c54c00478422",
   "kinLeadToolListJsonBytes": {
-    "engineering": 170119,
-    "engineeringBesideFinanceAndSales": 155057,
-    "finance": 149297,
-    "shared": 98563,
-    "social": 152378,
-    "socialBesideFinanceAndSales": 137316,
-    "support": 149297
+    "engineering": 171127,
+    "engineeringBesideFinanceAndSales": 154844,
+    "finance": 150305,
+    "shared": 98359,
+    "social": 153386,
+    "socialBesideFinanceAndSales": 137103,
+    "support": 150305
   },
-  "kinLeadAlwaysLoadedToolBytes": 76354,
+  "kinLeadAlwaysLoadedToolBytes": 76141,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -94,7 +94,7 @@
       "schema": 490
     },
     "kin_ask": {
-      "desc": 2477,
+      "desc": 2200,
       "schema": 812
     },
     "kin_ask_close": {
@@ -157,6 +157,10 @@
       "desc": 172,
       "schema": 143
     },
+    "kin_github_read": {
+      "desc": 663,
+      "schema": 596
+    },
     "kin_github_review": {
       "desc": 196,
       "schema": 499
@@ -170,7 +174,7 @@
       "schema": 114
     },
     "kin_hand_off": {
-      "desc": 2047,
+      "desc": 1851,
       "schema": 328
     },
     "kin_issue": {
@@ -194,8 +198,8 @@
       "schema": 221
     },
     "kin_receipt": {
-      "desc": 1599,
-      "schema": 999
+      "desc": 1826,
+      "schema": 974
     },
     "kin_recipe_undo": {
       "desc": 215,
@@ -238,8 +242,8 @@
       "schema": 73
     },
     "memory_search": {
-      "desc": 185,
-      "schema": 450
+      "desc": 225,
+      "schema": 543
     },
     "memory_write": {
       "desc": 2291,
@@ -274,8 +278,8 @@
       "schema": 1231
     },
     "payment_record": {
-      "desc": 320,
-      "schema": 746
+      "desc": 923,
+      "schema": 1162
     },
     "people_read": {
       "desc": 270,
@@ -294,7 +298,7 @@
       "schema": 166
     },
     "pulse_handle": {
-      "desc": 996,
+      "desc": 987,
       "schema": 1070
     },
     "pulse_nudge": {
@@ -318,7 +322,7 @@
       "schema": 8725
     },
     "record_get": {
-      "desc": 1239,
+      "desc": 1375,
       "schema": 212
     },
     "record_hand_back": {
@@ -388,8 +392,8 @@
     "checkIn": 2976,
     "pulse": 3012,
     "scheduled": 3248,
-    "reminder": 3302,
-    "groupReply": 3040,
+    "reminder": 3019,
+    "groupReply": 3113,
     "teamRoom": 2751
   }
 }

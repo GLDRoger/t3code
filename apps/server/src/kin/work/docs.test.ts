@@ -50,7 +50,7 @@ import { playbookIndex, playbookThreshold } from "./playbooks.ts";
 import { PLAYBOOK_SEEDS, seedPlaybooks } from "./playbookSeeds.ts";
 import { characters, parseCharacter, seedCharacters, setCharacter } from "../lead/characters.ts";
 import { search } from "./search.ts";
-import { indexStoredSteps } from "./searchIndex.ts";
+import { indexRecord, indexStoredSteps } from "./searchIndex.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 
 // Invented org, people and docs only; nothing here reads a real database or memory.
@@ -1477,6 +1477,18 @@ it.effect("one search finds entries and docs, and the team view hides what label
         .hits,
       0,
     );
+    // Whom a draft is for is an id too.
+    const drafted = yield* newDoc("Invented cargo notes.", { title: "Invented cargo draft" });
+    yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.draftFor', 'invented-drafter-id')
+      WHERE org_id = ${orgId} AND record_id = ${drafted.row.recordId}`;
+    yield* indexRecord(orgId, drafted.row.recordId);
+    const draftHits = (text: string) =>
+      search(orgId, { text, limit: 5, viewer: "owner", scope: KIN_OWNER_LEVEL }).pipe(
+        Effect.map(({ hits }) => hits),
+      );
+    assert.lengthOf(yield* draftHits("cargo"), 1);
+    assert.notInclude(JSON.stringify(yield* draftHits("cargo")), "invented-drafter-id");
+    assert.lengthOf(yield* draftHits("drafter"), 0);
     // K064: when no entry has every word, a widened search finds those with some, and says so.
     const widened = (widen?: true) =>
       search(orgId, {
@@ -2882,10 +2894,18 @@ it.effect("a teammate's priced draft is hers to read until a version or a label 
       readersCan: ["owners", "team"],
       draftOf: { name: "Mate" },
     });
+    // Docs' list marks a teammate's draft as theirs to the owners, as its page does.
+    const listed = (who: typeof mate) =>
+      OwnerDocs.list([who], { orgId }).pipe(
+        Effect.map((read) => read.docs.find((doc) => doc.key === key)),
+      );
+    assert.deepInclude(yield* listed(rhea), { draftOf: { name: "Mate" } });
+    assert.notProperty(yield* listed(zoya), "draftOf");
     assert.deepInclude(yield* set(zoya, "owners"), {
       readers: "owners",
       readersCan: ["draft", "owners", "team"],
     });
+    assert.notProperty(yield* listed(rhea), "draftOf");
     const arjunRead = yield* OwnerDocs.get([arjun], { orgId, key });
     assert.notProperty(arjunRead, "readers");
     assert.notProperty(arjunRead, "readersCan");

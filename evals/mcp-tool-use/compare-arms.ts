@@ -18,6 +18,7 @@ import {
   PRICES,
   worldFilePaths,
 } from "./run.ts";
+import { expectationsForLayout } from "./kin-session-wire.ts";
 
 const { values, positionals } = NodeUtil.parseArgs({
   allowPositionals: true,
@@ -45,6 +46,7 @@ type Call = { step: number; tool: string; input: unknown; failed?: boolean; outp
 type Row = {
   id: string;
   arm?: string;
+  kinLayout?: string;
   pass: boolean;
   error?: string;
   stopReason?: string;
@@ -88,7 +90,7 @@ const graded = positionals.flatMap((file) =>
     .map((row) => {
       const testCase = cases.get(row.id);
       if (testCase === undefined) return undefined;
-      const expect = row.arm === "raw" ? (testCase.expectRaw ?? testCase.expect) : testCase.expect;
+      const expect = expectationsForLayout(testCase, row.arm, row.kinLayout);
       const checks = gradeSample(
         expect,
         row as unknown as Parameters<typeof gradeSample>[1],
@@ -144,8 +146,10 @@ const add = (stats: Stats, row: Row) => {
 
 const byCase = new Map<string, Map<string, Stats>>();
 const totals = new Map<string, Stats>();
+const combinedLayouts = rows.some((row) => row.kinLayout === "session");
 for (const row of rows) {
-  const arm = row.arm ?? "tools";
+  const toolArm = row.arm ?? "tools";
+  const arm = combinedLayouts ? `${toolArm}/${row.kinLayout ?? "legacy"}` : toolArm;
   const perArm = byCase.get(row.id) ?? new Map<string, Stats>();
   byCase.set(row.id, perArm);
   const stats = perArm.get(arm) ?? empty();

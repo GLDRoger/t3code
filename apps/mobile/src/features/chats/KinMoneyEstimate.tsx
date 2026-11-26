@@ -198,6 +198,10 @@ function KinRatesForm(
   const [saved, setSaved] = useState<string | null>(null);
   const { zone } = useKinWorkZone(props);
   const [opened] = useState(() => new Date());
+  const edit = (next: KinRateDraft) => {
+    setDraft(next);
+    setProblem(null);
+  };
   const send = async (next: KinRateDraft, remove: boolean) => {
     const made = kinRateInput(orgId, profile, next, remove);
     if ("problem" in made) return setProblem(made.problem);
@@ -241,7 +245,7 @@ function KinRatesForm(
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel={`Change the ${rate.currency} rate`}
-                onPress={() => setDraft({ ...rate })}
+                onPress={() => edit({ ...rate })}
                 className="min-w-0 flex-1 gap-0.5 active:opacity-60"
               >
                 <Text textRole="body" className="text-foreground">
@@ -273,14 +277,14 @@ function KinRatesForm(
             maxLength={3}
             keyboard="plain"
             disabled={saving}
-            onChangeText={(currency) => setDraft({ ...draft, currency: currency.toUpperCase() })}
+            onChangeText={(currency) => edit({ ...draft, currency: currency.toUpperCase() })}
           />
           <KinWorkTextField
             label={`${profile.homeCurrency} for 1 ${draft.currency || "unit"}`}
             value={draft.rate}
             keyboard="numbers"
             disabled={saving}
-            onChangeText={(rate) => setDraft({ ...draft, rate })}
+            onChangeText={(rate) => edit({ ...draft, rate })}
           />
           <KinDayField
             label={KIN_CURRENCY.asOf}
@@ -289,7 +293,7 @@ function KinRatesForm(
             now={opened}
             none={null}
             disabled={saving}
-            onPick={(asOf) => setDraft({ ...draft, asOf: asOf ?? draft.asOf })}
+            onPick={(asOf) => edit({ ...draft, asOf: asOf ?? draft.asOf })}
           />
         </ListSection>
       ) : null}

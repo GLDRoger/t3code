@@ -56,6 +56,7 @@ export class KinRefreshHub extends Context.Service<
   {
     /** The org's revisions now, then after each settled burst. Server only: callers filter by viewer. */
     readonly changes: (orgId: KinOrgId) => Stream.Stream<KinRevisions>;
+    readonly stopRevision: (orgId: KinOrgId) => number;
     /** This run of the host: revisions count from zero in each. */
     readonly boot: string;
     /**
@@ -111,6 +112,7 @@ const make = Effect.gen(function* () {
   });
   const hub = KinRefreshHub.of({
     boot,
+    stopRevision: (orgId) => current(orgId).stop,
     lastCount: (key) => views.get(key)?.count,
     counted: (key, view) => {
       const held = views.get(key);

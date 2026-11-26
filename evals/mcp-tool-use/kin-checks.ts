@@ -164,6 +164,7 @@ export const kinPromptProblems = (text: string): ReadonlyArray<string> => {
 export const kinCaseText = (testCase: {
   readonly prompt: string;
   readonly setup: {
+    readonly carry?: { readonly earlier: ReadonlyArray<{ readonly prompt: string }> } | undefined;
     readonly priorTurns?:
       | ReadonlyArray<{ readonly role: string; readonly text?: string | undefined }>
       | undefined;
@@ -171,6 +172,7 @@ export const kinCaseText = (testCase: {
 }) =>
   [
     testCase.prompt,
+    ...(testCase.setup.carry?.earlier ?? []).map((turn) => turn.prompt),
     ...(testCase.setup.priorTurns ?? [])
       .filter((turn) => turn.role === "user")
       .map((turn) => turn.text ?? ""),
