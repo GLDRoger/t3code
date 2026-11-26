@@ -35,7 +35,9 @@ import {
 import {
   KIN_INVOICE_NUMBER_FIELD,
   KIN_INVOICES,
+  kinCreditNoteView,
   kinInvoiceView,
+  kinIsCreditNote,
   kinIsInvoice,
   kinInvoiceFileDoc,
   kinInvoiceDraftNote,
@@ -85,12 +87,14 @@ import { MessageAttachmentList } from "../threads/ThreadFeed";
 import { useKinSectionNamed, useKinSectionOn } from "./state/useKinShell";
 import {
   KinInvoiceActions,
+  KinInvoiceCreditOffer,
   KinInvoiceDocuments,
   KinInvoiceFigures,
   KinInvoiceSent,
   KinInvoicePayments,
   KinMoneyActionNotice,
 } from "./KinInvoice";
+import { KinCreditNoteActions, KinCreditNoteDraftForm } from "./KinCreditNote";
 import type { KinMakeStep } from "./kinMakeStep";
 import { KinAsideNote } from "./KinAttention";
 import { KinSuggestionKeep } from "./KinMoneySuggested";
@@ -283,6 +287,8 @@ export function KinListEntryBody(
     ? kinInvoiceView(item, def, props.now, props.directory.names)
     : null;
   const quote = item.list === KIN_QUOTES_LIST ? kinQuoteRow(item, null, props.now) : null;
+  const creditNote = kinIsCreditNote(item) ? kinCreditNoteView(item) : null;
+  const creditNoteLocked = creditNote !== null && creditNote.state !== "draft";
   const money = useKinMoneyActions(props);
   const rates = useKinRates(props, invoice !== null || quote !== null);
   const changes = useKinEntryChanges(props, item.key);
@@ -294,8 +300,8 @@ export function KinListEntryBody(
   const leads =
     item.project !== undefined &&
     (me?.leads ?? []).some((project) => project.key === item.project?.key);
-  const canChange = mayUpdate && ownerLevel;
-  const canDraft = mayUpdate && (ownerLevel || leads);
+  const canChange = mayUpdate && ownerLevel && !creditNoteLocked;
+  const canDraft = mayUpdate && (ownerLevel || leads) && !creditNoteLocked;
   const canPay = useAtomValue(kinClient.workPaymentRecord.permissionAtom(environmentId));
   const canGive = useAtomValue(kinClient.workAssign.permissionAtom(environmentId));
   // A company's own list: who has an entry opens the hand-over, as a task's Held by does.
@@ -306,6 +312,7 @@ export function KinListEntryBody(
   const giveTo = () =>
     navigation.navigate("KinWorkAssign", { environmentId, orgId, task: item.key });
   const [preview, setPreview] = useState<FilePreviewSource | null>(null);
+  const [draftingCreditNote, setDraftingCreditNote] = useState(false);
   const { busy } = changes;
   const draftNote = kinInvoiceDraftNote(item, invoice, def);
   // A draft takes no payment: its Mark paid and Record payment wait for Issue, and say so.
@@ -359,7 +366,7 @@ export function KinListEntryBody(
           accessibilityRole="header"
           className="font-t3-bold text-foreground"
         >
-          {invoice?.heading ?? item.title}
+          {invoice?.heading ?? creditNote?.heading ?? item.title}
         </Text>
         {invoice?.description == null ? null : (
           <Text textRole="body" selectable className="text-foreground-muted">
@@ -394,7 +401,7 @@ export function KinListEntryBody(
         <View className="flex-row flex-wrap items-center gap-2">
           <KinWorkStateSymbol state={entry.state} />
           <Text textRole="body" className="text-foreground">
-            {quote?.stateLabel ?? entry.stateLabel}
+            {quote?.stateLabel ?? creditNote?.stateLabel ?? entry.stateLabel}
           </Text>
           {invoice?.void === true ? (
             entry.stateLabel === KIN_INVOICES.void ? null : (
@@ -402,7 +409,7 @@ export function KinListEntryBody(
                 {KIN_INVOICES.void}
               </Text>
             )
-          ) : entry.late && quote === null ? (
+          ) : entry.late && quote === null && creditNote === null ? (
             <Text textRole="footnote" className="font-t3-medium text-danger-foreground">
               {KIN_LISTS.late}
             </Text>
@@ -446,6 +453,15 @@ export function KinListEntryBody(
           </View>
         )}
       </View>
+      {invoice === null ? null : (
+        <KinInvoiceCreditOffer
+          {...props}
+          itemKey={item.key}
+          invoice={invoice}
+          actions={money}
+          busy={busy}
+        />
+      )}
       {quote !== null ? (
         <KinQuoteActions
           {...props}
@@ -455,6 +471,16 @@ export function KinListEntryBody(
           busy={busy}
           canChange={canChange}
           onState={(state) => void changes.update(item.rev, { state })}
+          onMakePdf={props.onMake}
+        />
+      ) : creditNote !== null ? (
+        <KinCreditNoteActions
+          {...props}
+          item={item}
+          note={creditNote}
+          def={def}
+          actions={money}
+          busy={busy}
           onMakePdf={props.onMake}
         />
       ) : !canChange ? null : (
@@ -506,8 +532,23 @@ export function KinListEntryBody(
           party={item.party ?? null}
           currency={item.amount?.currency ?? def?.currency ?? KIN_DEFAULT_HOME_CURRENCY}
           onMake={props.onMake}
+          onCreditNote={() => setDraftingCreditNote(true)}
         />
       )}
+      {draftingCreditNote && invoice?.creditNoteMax != null ? (
+        <KinCreditNoteDraftForm
+          owed={invoice.creditNoteMax}
+          busy={busy || money.busy}
+          onSave={async (input) => {
+            const made = await money.draftCreditNote(item.key, input);
+            if (made === null) return false;
+            setDraftingCreditNote(false);
+            openRecord("KinWorkItem", { environmentId, orgId, task: made.key });
+            return true;
+          }}
+          onCancel={() => setDraftingCreditNote(false)}
+        />
+      ) : null}
       <KinMoneyActionNotice
         actions={money}
         environmentId={props.environmentId}
@@ -519,7 +560,7 @@ export function KinListEntryBody(
       <KinAsideNote environmentId={environmentId} orgId={orgId} record={item.key} names={names} />
       <KinWatchLine environmentId={environmentId} orgId={orgId} recordKey={item.key} />
       <ListSection>
-        {!canChange || quote !== null ? null : (
+        {!canChange || quote !== null || creditNote !== null ? null : (
           <Menu
             title={KIN_LISTS.entry.status}
             accessibilityRole="button"
@@ -639,7 +680,10 @@ export function KinListEntryBody(
               fact.value === null ? null : (
                 <ListRowLayout key={fact.id} label={fact.value} detail={fact.label} />
               )
-            ) : canChange && fact.id !== "owner" && (fact.id === "category" || billing) ? (
+            ) : canChange &&
+              fact.id !== "owner" &&
+              !(creditNote !== null && fact.id === "party") &&
+              (fact.id === "category" || billing) ? (
               <PickRow
                 key={fact.id}
                 label={fact.label}
@@ -716,7 +760,10 @@ export function KinListEntryBody(
             : {})}
         >
           {entry.fields
-            .filter((field) => invoice === null || field.key !== KIN_INVOICE_NUMBER_FIELD)
+            .filter(
+              (field) =>
+                (invoice === null && creditNote === null) || field.key !== KIN_INVOICE_NUMBER_FIELD,
+            )
             .map((field) => {
               const { opens } = field;
               const label = (
@@ -730,24 +777,35 @@ export function KinListEntryBody(
                   ) : null}
                 </View>
               );
-              const editable = canDraft && !field.retired && (canChange || field.type !== "file");
+              const editable =
+                canDraft &&
+                !field.retired &&
+                (canChange || field.type !== "file") &&
+                !(creditNote !== null && field.key === "invoice");
               const current = typeof field.value === "string" ? field.value : null;
               const openLink =
-                opens === null
-                  ? undefined
-                  : () =>
-                      opens.list === "projects"
-                        ? openRecord("KinProject", {
-                            environmentId,
-                            orgId,
-                            project: opens.key,
-                          })
-                        : openRecord("KinClient", {
-                            environmentId,
-                            orgId,
-                            party: opens.key,
-                          });
-              const fileDoc = kinInvoiceFileDoc(field, invoice);
+                creditNote !== null && field.key === "invoice" && creditNote.invoiceKey !== null
+                  ? () =>
+                      openRecord("KinWorkItem", {
+                        environmentId,
+                        orgId,
+                        task: creditNote.invoiceKey!,
+                      })
+                  : opens === null
+                    ? undefined
+                    : () =>
+                        opens.list === "projects"
+                          ? openRecord("KinProject", {
+                              environmentId,
+                              orgId,
+                              project: opens.key,
+                            })
+                          : openRecord("KinClient", {
+                              environmentId,
+                              orgId,
+                              party: opens.key,
+                            });
+              const fileDoc = kinInvoiceFileDoc(field, invoice ?? creditNote);
               if (
                 field.files.length > 0 ||
                 fileDoc !== null ||
@@ -861,7 +919,7 @@ export function KinListEntryBody(
                     onPress={() => edit(`field:${field.key}`)}
                   />
                 );
-              return opens === null ? (
+              return openLink === undefined ? (
                 <View key={field.key} className="min-h-14 justify-center gap-1 px-4 py-3">
                   {label}
                   <Text
@@ -875,9 +933,13 @@ export function KinListEntryBody(
               ) : (
                 <ListRow
                   key={field.key}
-                  label={field.text ?? "–"}
+                  label={
+                    creditNote !== null && field.key === "invoice"
+                      ? (creditNote.invoiceName ?? field.text ?? "–")
+                      : (field.text ?? "–")
+                  }
                   detail={field.label}
-                  onPress={() => openLink?.()}
+                  onPress={openLink}
                 />
               );
             })}
@@ -1320,7 +1382,7 @@ function KinListSettingsForm(props: KinWorkTarget & { readonly def: KinListDefin
           {def.categories.map((category) => (
             <KinWorkTextField
               key={category}
-              label={category}
+              label={kinCategoryLabel(category, null)}
               value={draft.categoryLabels[category] ?? ""}
               placeholder={kinCategoryLabel(category, null)}
               maxLength={KIN_LIST_LABEL_MAX}

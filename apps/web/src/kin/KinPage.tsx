@@ -4,6 +4,7 @@ import { Empty, EmptyDescription, EmptyHeader, EmptyTitle } from "../components/
 import { SidebarInset } from "../components/ui/sidebar";
 import { WorkspaceBreadcrumb, WorkspaceBreadcrumbItem } from "../components/WorkspaceBreadcrumb";
 import { WorkspacePageHeader } from "../components/WorkspacePageHeader";
+import { KinDesktopAlerts } from "./KinDesktopAlerts";
 import { hasDesktopWindowChrome } from "./kinDesktopWindow";
 import { KinAgentPageHost } from "./KinAgentPage";
 import { KinChatList } from "./KinChatList";
@@ -35,6 +36,7 @@ export function KinPage() {
       <KinProfileSheetHost />
       <KinPeoplePickerHost />
       <KinMessageAlerts />
+      {hasDesktopWindowChrome && <KinDesktopAlerts />}
       <KinSettingsModalHost />
     </SidebarInset>
   );

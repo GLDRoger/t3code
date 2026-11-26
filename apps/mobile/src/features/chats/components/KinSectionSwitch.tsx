@@ -20,10 +20,12 @@ import {
   type KinSwitchableSection,
 } from "@t3tools/client-runtime/kin/kinShell";
 import { kinFailureText, kinRetryText } from "@t3tools/client-runtime/kin/kinAnswers";
+import { kinHeldFollowUps, kinHeldFollowUpsLine } from "@t3tools/client-runtime/kin/kinWatches";
 import { KIN_SET_UP, kinSetUpChief } from "@t3tools/client-runtime/kin/kinSetUp";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { KIN_SET_UP_MESSAGE_PREFIX, type KinShell } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
+import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
 import { Fragment, useState } from "react";
 import { View } from "react-native";
@@ -65,6 +67,8 @@ function useHeldShell(target: KinWorkTarget) {
       const outcome = await set(from, change);
       if (outcome.ok) {
         setSaved(outcome.value);
+        // Held follow-ups are worked out at read time, so a switch changes which ones wait.
+        if ("on" in change) appAtomRegistry.refresh(followUpsAtom(target));
         return null;
       }
       if (outcome.changed) setSaved(null);
@@ -74,6 +78,9 @@ function useHeldShell(target: KinWorkTarget) {
 }
 
 type Held = ReturnType<typeof useHeldShell>;
+
+const followUpsAtom = ({ environmentId, orgId }: KinWorkTarget) =>
+  kinClient.followUps({ environmentId, input: { orgId } });
 
 /** One section's switch, with its failure said above it, in place, until the next change. */
 function KinSectionRow(props: {
@@ -210,6 +217,10 @@ function KinSectionRename(props: { readonly held: Held; readonly shell: KinShell
 export function KinSectionsSettings(props: KinWorkTarget) {
   const may = useKinSectionCanSet(props.environmentId);
   const held = useHeldShell(props);
+  // A failed read says nothing extra; the switches still work.
+  const waiting = kinHeldFollowUps(
+    Option.getOrNull(AsyncResult.value(useAtomValue(followUpsAtom(props))))?.followUps ?? [],
+  );
   // The host sets sections for the owner level only; anyone else reaching the address sees none.
   if (!may) return null;
   if (held.held === undefined)
@@ -226,19 +237,28 @@ export function KinSectionsSettings(props: KinWorkTarget) {
         {KIN_SECTIONS_PAGE.intro}
       </Text>
       <KinSetUpRow {...props} />
-      {KIN_SWITCHABLE_SECTIONS.map((id) => (
-        <Fragment key={id}>
-          <KinSectionRow id={id} held={held} shell={shell} titled="name" />
-          {/* With Clients; a fresh form per saved name, so "Use Kin's name" empties the fields. */}
-          {id === "clients" ? (
-            <KinSectionRename
-              key={`${kinSectionName(shell, "clients")}/${kinSectionNoun(shell, "clients")}`}
+      {KIN_SWITCHABLE_SECTIONS.map((id) => {
+        const line = kinSectionOn(shell, id) ? null : kinHeldFollowUpsLine(waiting[id]);
+        return (
+          <Fragment key={id}>
+            <KinSectionRow
+              id={id}
               held={held}
               shell={shell}
+              titled="name"
+              {...(line === null ? {} : { footer: line })}
             />
-          ) : null}
-        </Fragment>
-      ))}
+            {/* With Clients; a fresh form per saved name, so "Use Kin's name" empties the fields. */}
+            {id === "clients" ? (
+              <KinSectionRename
+                key={`${kinSectionName(shell, "clients")}/${kinSectionNoun(shell, "clients")}`}
+                held={held}
+                shell={shell}
+              />
+            ) : null}
+          </Fragment>
+        );
+      })}
       <KinListSectionsSettings {...props} held={held} shell={shell} />
       <Text textRole="footnote" className="px-2 text-foreground-muted">
         {KIN_SECTIONS_PAGE.olderPhones}

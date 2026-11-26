@@ -21,6 +21,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
+import * as ArrivalStore from "../arrivals/ArrivalStore.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as Chat from "../chat/layer.ts";
@@ -363,7 +364,7 @@ const keyed = (facts: ReadonlyArray<KinPulseFact>, sense: string, subject: strin
   facts.filter((fact) => fact.sense === sense && fact.subject.key === subject);
 
 // One row per sense: the subject it is about and the instant it becomes true.
-const SENSES: ReadonlyArray<readonly [string, string, number]> = [
+const SENSES: ReadonlyArray<readonly [string, string, number, string?, string?]> = [
   ["task_late", "W-1", B + 10 * DAY],
   ["task_due_soon", "W-2", B + 20 * DAY - 24 * HOUR],
   ["task_stalled", "W-3", B + 3 * DAY],
@@ -397,6 +398,15 @@ const SENSES: ReadonlyArray<readonly [string, string, number]> = [
   ["meeting_passed", "W-14", B + 5 * DAY + 2 * HOUR],
   // C-2's silence counts from P-4, the project we finished for them, not from its creation.
   ["client_cold", "C-2", B + 40 * DAY],
+  [
+    "bill_due",
+    "EXP-90",
+    B + 26 * DAY,
+    "bill_due:EXP-90:soon=2026-11-30",
+    "₹450 to Acme Hosting, due today. Only the owner or a co-owner marks it paid, on its page in Money.",
+  ],
+  ["bill_due", "EXP-90", B + 30 * DAY, "bill_due:EXP-90:due=2026-11-30"],
+  ["bill_paid_seen", "BNK-90", B + 26 * DAY],
 ];
 
 const decodeEvent = Schema.decodeUnknownSync(KinEvent);
@@ -442,16 +452,107 @@ const holderWakes = Effect.fn("test.holderWakes")(function* () {
 });
 
 describe("KinPulse", () => {
+  it.effect("tells a recent mailbox gap once, only to readers who can see the mailbox", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const zone = "Asia/Kolkata";
+      yield* sql`UPDATE kin_trigger_settings SET time_zone = ${zone} WHERE org_id = ${orgId}`;
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+          url_host, auth, reach, state, account_label, created_at, updated_at, person_id, removed_at)
+        VALUES (${orgId}, 'company', 'google', 'Company mail', 'builtin', 'google.example',
+          'oauth', 'closed', 'active', 'rhea@tidewater.example', 1, 1, NULL, NULL),
+          (${orgId}, 'own', 'google', 'Own mail', 'builtin', 'google.example',
+          'oauth', 'closed', 'active', NULL, 1, 1, ${mate}, NULL),
+          (${orgId}, 'removed', 'google', 'Removed mail', 'builtin', 'google.example',
+          'oauth', 'closed', 'active', NULL, 1, 1, ${mate}, 2)`;
+      const from = Date.UTC(2026, 10, 25, 3, 30);
+      const to = from + 5 * HOUR;
+      const at = to + MINUTE;
+      for (const connection of ["company", "own", "removed"])
+        yield* ArrivalStore.gap(orgId, connection, { from, to }, "Feed gap");
+      yield* ArrivalStore.gap(
+        orgId,
+        "company",
+        { from: from - 7 * DAY, to: to - 7 * DAY },
+        "Old gap",
+      );
+      const [stored] = yield* sql<{ id: string }>`SELECT arrival_id AS id FROM kin_arrivals
+        WHERE org_id = ${orgId} AND connection_id = 'company' AND noticed_at = ${to}
+        ORDER BY arrival_id`;
+
+      const gaps = (viewer?: KinPulse.Viewer) =>
+        read(at, viewer).pipe(
+          Effect.map(({ facts }) => facts.filter((fact) => fact.key.startsWith("mail_gap:"))),
+        );
+      const ownerGaps = yield* gaps();
+      assert.lengthOf(ownerGaps, 2);
+      const line =
+        "Kin couldn't read mail for rhea@tidewater.example between Wed 25 Nov, 09:00 and Wed 25 Nov, 14:00; anything that arrived then hasn't been looked at.";
+      const company = ownerGaps.find((fact) => fact.key === `mail_gap:${stored!.id}`)!;
+      assert.include(company, {
+        sense: "mail_gap",
+        family: "system",
+        wake: "brief",
+        consequence: line,
+      });
+      assert.deepStrictEqual(company.actor, { _tag: "owner" });
+      assert.strictEqual(DateTime.toEpochMillis(company.since), to);
+
+      const personal = yield* gaps({ _tag: "people", people: [mate] });
+      assert.lengthOf(personal, 1);
+      assert.deepStrictEqual(personal[0]!.actor, { _tag: "person", personId: mate });
+      assert.include(personal[0]!.consequence, "for Own mail between");
+      assert.includeDeepMembers(ownerGaps, personal);
+      assert.isEmpty(yield* gaps({ _tag: "people", people: [KinPersonId.make("zoya")] }));
+      assert.isEmpty(yield* gaps({ _tag: "people", people: [mate, owner] }));
+      assert.isEmpty(yield* gaps({ _tag: "people", people: [mate], excludeOwnMail: true }));
+      assert.isEmpty(screenFacts(ownerGaps, undefined));
+      assert.lengthOf(screenFacts(ownerGaps, ["mail_gap"]), 2);
+
+      const checkIn = yield* buildPulseSection({
+        orgId,
+        agentId: chief,
+        now: at,
+        wokeFor: [],
+        checkIn: new Set([company.key]),
+      });
+      assert.strictEqual(checkIn?.byProject[0]?.facts[0]?.consequence, line);
+      const told = { orgId, personId: owner, at, zone, facts: [company], anyState: true };
+      assert.lengthOf(yield* untold(told), 1);
+      yield* markTold({ ...told, eventId: "mail-gap-checkin" });
+      const next = (yield* read(at + DAY)).facts.filter((fact) => fact.key === company.key);
+      assert.lengthOf(next, 1);
+      assert.isEmpty(yield* untold({ ...told, at: at + DAY, facts: next }));
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("each sense is absent a minute before its line and present at it", () =>
     Effect.gen(function* () {
       yield* seed;
-      for (const [sense, subject, at] of SENSES) {
-        assert.lengthOf(
-          keyed((yield* read(at - MINUTE)).facts, sense, subject),
-          0,
-          `${sense} early`,
-        );
-        assert.lengthOf(keyed((yield* read(at)).facts, sense, subject), 1, `${sense} at its line`);
+      yield* ensureBankList(orgId, B);
+      yield* insert({
+        id: "EXP-90",
+        list: "expenses",
+        dueAt: B + 30 * DAY - 1,
+        amount: 450_00,
+        fields: '{"vendor":"Acme Hosting"}',
+      });
+      yield* insert({
+        id: "BNK-90",
+        list: "bank_transactions",
+        title: "Acme Hosting",
+        dateAt: B + 26 * DAY,
+        amount: 450_00,
+        fields: '{"direction":"debit"}',
+      });
+      for (const [sense, subject, at, key, onDueDay] of SENSES) {
+        const matching = (facts: ReadonlyArray<KinPulseFact>) =>
+          keyed(facts, sense, subject).filter((fact) => key === undefined || key === fact.key);
+        assert.lengthOf(matching((yield* read(at - MINUTE)).facts), 0, `${sense} early`);
+        assert.lengthOf(matching((yield* read(at)).facts), 1, `${sense} at its line`);
+        if (onDueDay !== undefined)
+          assert.strictEqual(matching((yield* read(at + 3 * DAY)).facts)[0]?.consequence, onDueDay);
       }
       const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
@@ -3320,6 +3421,13 @@ describe("KinPulse", () => {
   it.effect("goals count their progress from Kin's rows, and money goals only for money", () =>
     Effect.gen(function* () {
       yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+        VALUES (${orgId}, 'receipts', 'Receipts', 'RCT', 1, 0) ON CONFLICT DO NOTHING`;
+      yield* insert({ id: "RCT-1", list: "receipts", state: "done" });
+      yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor, currency,
+          paid_on, origin_key, created_at, created_by_kind)
+        VALUES (${orgId}, 'pay-eur', 'r-RCT-1', 76_800, 'EUR', '2026-11-12', 'pay-eur', 0, 'person')`;
       const at = B + 15 * DAY;
       const { goals } = yield* goalsNow(orgId, at, { money: true });
       const by = new Map(goals.map((one) => [one.key, one]));
@@ -3350,12 +3458,14 @@ describe("KinPulse", () => {
       assert.isTrue(nextWeek.some((line) => line.includes("W-20")));
       // The weekly brief's figures lead with goals, then overdue money from the same rows.
       const week = yield* weeklyFigures({ orgId, now: at });
-      assert.match(week, /^Goals:\n- G-1 .*₹1,00,000 of ₹10,00,000.*behind$/m);
+      assert.match(
+        week,
+        /^Goals:\n- G-1 .*₹1,00,000 of ₹10,00,000.*behind, plus €768\.00 received in other currencies that this goal doesn't count$/m,
+      );
       assert.match(week, /^- INV-1:.*unpaid, overdue for \d+ days; no mail with it on record$/m);
       assert.notMatch(week, /INV-7|INV-8/);
       assert.match(week, /^- Still to come in: ₹1,97,000\.00$/m);
       // Run 4: the brief called a reminder sent 45 s earlier a draft. Its lines read the record.
-      const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO kin_connections (org_id, connection_id, label, kind, url_host, auth,
           reach, state, created_at, updated_at)
         VALUES (${orgId}, 'mail', 'Outlook', 'remote', 'graph.example', 'none', 'open', 'active', 1, 1)`;

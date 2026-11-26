@@ -10,6 +10,7 @@ import {
   type KinDocSection,
   type KinDocVersion,
   type KinSearchResult,
+  type KinShell,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
@@ -38,6 +39,8 @@ import {
   kinDocEditInput,
   kinDocEditOpen,
   kinDocEditOutcome,
+  kinDocPrivacy,
+  kinDocReaders,
   kinDocRestoreOutcome,
   kinDocSameWords,
   kinDocSections,
@@ -177,6 +180,15 @@ describe("kinSearchHit", () => {
     ).toBeNull();
     // A deal comes back among entries, under its own name, so an older app opens it as one.
     expect(kinSearchHit({ ...hitInput, key: "DL-4", kind: "work" }).kindLabel).toBe("Deal");
+    // A client reads in the company's own word for Clients.
+    const patients: KinShell = {
+      rev: 1,
+      sections: [{ id: "clients", on: true, name: "Patients", noun: "patient" }],
+    };
+    const client = { ...hitInput, key: "C-2", kind: "clients" as const };
+    expect(kinSearchHit(client, patients).kindLabel).toBe("Patient");
+    expect(kinSearchHit(client, patients).accessibilityLabel).toMatch(/^Patient: /);
+    expect(kinSearchHit(client).kindLabel).toBe("Client");
     // A contact carries its client, whose page opens for it; an older host sends none.
     expect(hit.clientKey).toBeNull();
     expect(
@@ -617,6 +629,92 @@ describe("kinDocChangeItem", () => {
     ["a member", false, false, "agent", KIN_DOCS.suggest],
   ] as const)("%s: one Change item", (_who, byHand, ownerLevel, by, label) => {
     expect(kinDocChangeItem({ byHand, ownerLevel })).toEqual({ by, label });
+  });
+});
+
+describe("kinDocReaders", () => {
+  const project = {
+    recordId: KinRecordId.make("p-1"),
+    key: "P-1",
+    title: "Lumen Grove app",
+  };
+  const draftOf = { name: "Zoya Sheikh" };
+  const all = ["draft", "owners", "team"] as const;
+  const ownerCan = ["owners", "team"] as const;
+  const allChoices = [
+    { id: "draft", label: "Me and owners (draft)" },
+    { id: "owners", label: "Owners" },
+    { id: "team", label: "The team" },
+  ];
+  const ownerChoices = [
+    { id: "owners", label: "Owners" },
+    { id: "team", label: "The team" },
+  ];
+
+  it.each([
+    [
+      "writer, draft",
+      { readers: "draft" as const, readersCan: all, sensitive: true },
+      "Draft. The owners read it too; nobody else does.",
+      allChoices,
+      "Draft. The owners read it too; nobody else does.",
+    ],
+    [
+      "writer, owners (no project)",
+      { readers: "owners" as const, readersCan: all, sensitive: false },
+      "The owners read it.",
+      allChoices,
+      null,
+    ],
+    [
+      "writer, owners (project)",
+      { readers: "owners" as const, readersCan: all, project, sensitive: false },
+      "The owners and the people on Lumen Grove app read it.",
+      allChoices,
+      null,
+    ],
+    [
+      "writer, team",
+      { readers: "team" as const, readersCan: all, sensitive: false },
+      "Everyone on the team with Docs reads it.",
+      allChoices,
+      null,
+    ],
+    [
+      "owner, draft",
+      { readers: "draft" as const, readersCan: ownerCan, draftOf, sensitive: true },
+      "Zoya Sheikh's draft. Only Zoya Sheikh and the owners read it.",
+      ownerChoices,
+      "Zoya Sheikh's draft. Only Zoya Sheikh and the owners read it.",
+    ],
+    [
+      "owner, owners (no project)",
+      { readers: "owners" as const, readersCan: ownerCan, draftOf, sensitive: false },
+      "Zoya Sheikh and the owners read it.",
+      ownerChoices,
+      null,
+    ],
+    [
+      "owner, owners (project)",
+      { readers: "owners" as const, readersCan: ownerCan, draftOf, project, sensitive: false },
+      "Zoya Sheikh, the owners and the people on Lumen Grove app read it.",
+      ownerChoices,
+      null,
+    ],
+    [
+      "owner, team",
+      { readers: "team" as const, readersCan: ownerCan, draftOf, sensitive: false },
+      "Everyone on the team with Docs reads it.",
+      ownerChoices,
+      null,
+    ],
+  ])("%s: answer, choices and private line", (_case, doc, answer, choices, privacy) => {
+    expect(kinDocReaders(doc, names)).toEqual({ current: doc.readers, answer, choices });
+    expect(kinDocPrivacy(doc)).toBe(privacy);
+  });
+
+  it("returns null when readers is absent", () => {
+    expect(kinDocReaders({}, names)).toBeNull();
   });
 });
 

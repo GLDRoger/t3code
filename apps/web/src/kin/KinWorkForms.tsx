@@ -90,7 +90,7 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./useKinWork";
-import { useKinSectionNamed, useKinSectionWords } from "./useKinShell";
+import { useKinSectionNamed, useKinSectionWords, useKinShell } from "./useKinShell";
 
 const COPY = KIN_WORK_FORM_COPY;
 
@@ -308,6 +308,8 @@ export function KinClientDialog(
   const COPY = useKinSectionWords(props.environmentId, KIN_WORK_FORM_COPY);
   const named = useKinSectionNamed(props.environmentId);
   const { environmentId, orgId, editing } = props;
+  const shell = useKinShell(environmentId);
+  const india = kinIndiaFields(useKinCompanyCountry(props));
   const ownerLevel = useKinOwnerLevel(environmentId);
   const member = props.member ?? !ownerLevel;
   const create = useAtomCommand(kinClient.workClientCreate, { reportFailure: false });
@@ -321,12 +323,16 @@ export function KinClientDialog(
     editing: editing === null ? null : { key: editing.key, rev: editing.rev },
     latest: editing === null ? null : kinClientDraftOf(editing),
     nameOf: (draft) => draft.name,
-    check: kinClientDraftCheck,
+    check: (draft) => kinClientDraftCheck(draft, { india, shell }),
     send: (change) =>
       change.type === "create"
         ? create({
             environmentId,
-            input: { orgId, ...kinClientCreateInput(change.draft), clientRequestId: requestId },
+            input: {
+              orgId,
+              ...kinClientCreateInput(change.draft, { india }),
+              clientRequestId: requestId,
+            },
           })
         : update({
             environmentId,
@@ -334,7 +340,7 @@ export function KinClientDialog(
               orgId,
               key: change.key,
               rev: change.rev,
-              ...kinClientUpdateInput(change.changed),
+              ...kinClientUpdateInput(change.changed, { india }),
             },
           }),
     reread: () => {
@@ -372,7 +378,6 @@ export function KinClientDialog(
   const newProspect = editing === null && draft.kind === "prospect";
   // Said on the field itself: on the owner's long form the problem line sits below the fold.
   const nameMissing = state.problem?.text === COPY.party.contactNameMissing;
-  const india = kinIndiaFields(useKinCompanyCountry(props));
   const marketing = useKinMarketing(props);
   const gstinNote = kinClientGstinNote(draft);
   const place = draft.abroad ? ABROAD : draft.placeOfSupply || NO_PLACE;
@@ -381,7 +386,12 @@ export function KinClientDialog(
     if (!outcome.saved) return;
     appAtomRegistry.refresh(kinWorkChoicesAtom(props));
     const saved = outcome.value?.key ?? key;
-    if (saved !== null) props.onSaved(saved);
+    if (saved !== null) {
+      appAtomRegistry.refresh(
+        kinClient.workClient({ environmentId, input: { orgId, key: saved } }),
+      );
+      props.onSaved(saved);
+    }
   };
   return (
     <FormShell
@@ -617,7 +627,30 @@ export function KinClientDialog(
                 </Alert>
               )}
             </>
-          ) : null}
+          ) : (
+            <Field
+              id={ids.gstin}
+              label={COPY.party.taxNumber}
+              hint={COPY.party.taxNumberHint}
+              moved={moved.gstin}
+            >
+              <Input
+                id={ids.gstin}
+                value={draft.gstin}
+                maxLength={100}
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) => form.edit({ gstin: event.target.value })}
+              />
+            </Field>
+          )}
+          <PrivateSwitch
+            label={COPY.party.accountsForTax}
+            note={COPY.party.accountsForTaxHint}
+            checked={draft.accountsForTax}
+            disabled={state.saving}
+            onChange={(accountsForTax) => form.edit({ accountsForTax })}
+          />
         </>
       )}
       <Field id={ids.notes} label={COPY.party.notes} moved={moved.notes}>
@@ -635,11 +668,13 @@ export function KinClientDialog(
       ) : (
         <PrivateSwitch
           label={KIN_CLIENTS.privateLabel}
-          note={kinClientPrivateNote({
-            private: draft.private,
-            wasPrivate: editing?.sensitive ?? false,
-            hides: props.privateHides,
-          })}
+          note={named(
+            kinClientPrivateNote({
+              private: draft.private,
+              wasPrivate: editing?.sensitive ?? false,
+              hides: props.privateHides,
+            }),
+          )}
           checked={draft.private}
           disabled={state.saving}
           onChange={(checked) => form.edit({ private: checked })}
@@ -839,6 +874,7 @@ export function KinProjectDialog(
   },
 ) {
   const { environmentId, orgId, editing } = props;
+  const named = useKinSectionNamed(environmentId);
   const [members, setMembers] = useState<ReadonlyArray<KinWorkPrincipal>>([]);
   // The form keeps the `send` it was made with, so it reads who is picked at save time.
   const picked = useRef<ReadonlyArray<KinWorkPrincipal>>([]);
@@ -1058,7 +1094,7 @@ export function KinProjectDialog(
       ) : null}
       <PrivateSwitch
         label={KIN_MARKETING.campaign}
-        note={KIN_MARKETING.campaignHint}
+        note={named(KIN_MARKETING.campaignHint)}
         checked={draft.campaign}
         disabled={state.saving}
         onChange={(campaign) => form.edit({ campaign })}

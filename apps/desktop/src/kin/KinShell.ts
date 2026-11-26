@@ -31,6 +31,7 @@ import * as DesktopAppSettings from "../settings/DesktopAppSettings.ts";
 import * as DesktopWindow from "../window/DesktopWindow.ts";
 import {
   kinShellAllowsPermission,
+  kinShellAllowsReveal,
   kinShellCrashReload,
   kinShellNavigation,
   kinShellOutsideOpen,
@@ -589,7 +590,18 @@ const make = Effect.gen(function* () {
     contents.on("dom-ready", () => sendFullscreen(window.isFullScreen()));
     installContextMenu(window);
     window.once("ready-to-show", () => void runPromise(electronWindow.reveal(window)));
-    window.on("close", () => void runPromise(saveBounds(window)));
+    window.on("close", (event) => {
+      void runPromise(saveBounds(window));
+      if (environment.platform === "darwin" && !Ref.getUnsafe(desktopState.quitting)) {
+        event.preventDefault();
+        if (window.isFullScreen()) {
+          window.once("leave-full-screen", () => window.hide());
+          window.setFullScreen(false);
+        } else {
+          window.hide();
+        }
+      }
+    });
     window.on("closed", () => void runPromise(electronWindow.clearMain(Option.some(window))));
     if (settings.mainWindowMaximized) window.maximize();
 
@@ -856,6 +868,29 @@ const make = Effect.gen(function* () {
               const team = owner.remembered();
               if (team !== null) yield* goHost(hostHome(team));
             }),
+          ),
+      }),
+    );
+    const hostIpc = DesktopIpc.make(Electron.ipcMain, (event) =>
+      Effect.map(mainWindow, (main) => {
+        if (Option.isNone(main)) return false;
+        const contents = main.value.webContents;
+        const frame = contents.mainFrame;
+        return (
+          event.sender.id === contents.id &&
+          event.senderFrame === frame &&
+          kinShellAllowsReveal({ frameOrigin: frame.origin, hostOrigin: owner.hostOrigin() })
+        );
+      }),
+    );
+    yield* hostIpc.handle(
+      DesktopIpc.makeIpcMethod({
+        channel: Channels.KIN_SHELL_REVEAL_CHANNEL,
+        payload: Schema.Void,
+        result: Schema.Void,
+        handler: () =>
+          Effect.flatMap(mainWindow, (main) =>
+            Option.isSome(main) ? electronWindow.reveal(main.value) : Effect.void,
           ),
       }),
     );

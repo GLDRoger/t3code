@@ -36,7 +36,13 @@ import { KIN_WORK_HOME, kinPlaceLists } from "@t3tools/client-runtime/kin/kinWor
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import { kinWorkOffline } from "@t3tools/client-runtime/kin/kinWork";
 import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
-import type { KinDocListRow, KinListDefinition, KinListId, KinRecordKey } from "@t3tools/contracts";
+import type {
+  KinDocListRow,
+  KinListDefinition,
+  KinListId,
+  KinRecordKey,
+  KinShell,
+} from "@t3tools/contracts";
 import { LegendList } from "@legendapp/list/react";
 import {
   ArrowRightIcon,
@@ -68,6 +74,7 @@ import { KinDocFileDialog } from "./KinDocFileDialog";
 import { kinClient } from "./kinClient";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinHostAt } from "./useKinHost";
+import { useKinShell } from "./useKinShell";
 import { useKinDocDelete } from "./useKinDocDelete";
 import { toastDocRestored } from "./kinDocDeleteToasts";
 import {
@@ -221,6 +228,7 @@ export function KinSearchHits(props: {
   /** Hits are all docs, so none needs to say what it is. */
   readonly docsOnly?: boolean;
   readonly scope?: KinViewerScope;
+  readonly shell?: KinShell | null | undefined;
 }) {
   const { state } = props;
   if (state.hits === null) {
@@ -237,7 +245,7 @@ export function KinSearchHits(props: {
       </div>
     );
   }
-  const hits = state.hits.map(kinSearchHit);
+  const hits = state.hits.map((hit) => kinSearchHit(hit, props.shell));
   if (hits.length === 0)
     return <KinWorkNotice {...kinSearchNothing(state.answered, props.scope)} />;
   return (
@@ -351,6 +359,7 @@ export function KinDocsList(
   const canFile = useAtomValue(kinClient.docFile.permissionAtom(props.environmentId));
   const deleting = useKinDocDelete(props);
   const scope = useKinViewerScope(props.environmentId);
+  const shell = useKinShell(props.environmentId);
   const { filter } = state;
   const shown = kinListShown(state, kinHostLink(useKinHostAt(props.environmentId)));
   const text = filter.text.trim().toLowerCase();
@@ -388,7 +397,7 @@ export function KinDocsList(
   const pinShown = kinWhatWeSellShown(filter);
   const pinned = useKinWhatWeSell(props, pinShown);
   const starter = useKinWhatWeSellStart(props);
-  const library = kinDocLibrary(state.records, pinShown ? (pinned ?? null) : null);
+  const library = kinDocLibrary(state.records, pinShown ? (pinned ?? null) : null, shell);
   const whatWeSell: ReadonlyArray<Item> =
     shown === "rows" && pinShown && pinned === null && starter !== null
       ? [{ type: "whatWeSell", id: "what-we-sell" }]

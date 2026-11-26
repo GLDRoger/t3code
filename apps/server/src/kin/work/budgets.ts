@@ -5,7 +5,17 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
-import { addUp, dayIn, formatMinor, formatMoney, monthOf, shiftMonth } from "./money.ts";
+import { homeCurrency } from "./companyProfile.ts";
+import { aboutInHome, recordedRate } from "./recordedRate.ts";
+import {
+  addUp,
+  dayIn,
+  formatMinor,
+  formatMoney,
+  formatMoneyPlain,
+  monthOf,
+  shiftMonth,
+} from "./money.ts";
 import { countedEntry, keyWithheld, moneyDay, ownerZone, startOfDay } from "./recordRows.ts";
 
 /**
@@ -123,6 +133,7 @@ export const budgetsView = Effect.fn("KinBudgets.view")(function* (
   now: number,
   month?: string,
   keyed = false,
+  read: typeof recordedRate = recordedRate,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
@@ -150,6 +161,10 @@ export const budgetsView = Effect.fn("KinBudgets.view")(function* (
       }
     ORDER BY b.category IS NULL, lower(b.category), p.key, b.currency`;
   if (budgets.length === 0) return { month: shown, budgets: [] };
+  const home = yield* homeCurrency(orgId);
+  const rateOf: typeof recordedRate = keyed
+    ? (org, from, to, asOf) => read(org, from, to, asOf, true)
+    : read;
   const spent = yield* sql<{
     minor: number;
     currency: string;
@@ -161,38 +176,42 @@ export const budgetsView = Effect.fn("KinBudgets.view")(function* (
       AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL AND ${moneyDay(sql)} >= ${from} AND ${moneyDay(sql)} < ${to}
       ${keyed ? sql`AND NOT ${keyWithheld(sql)}` : sql``}
     ORDER BY r.key`;
-  return {
-    month: shown,
-    budgets: budgets.map((budget) => {
-      const onTarget = spent.filter(
-        (one) =>
-          (budget.category === null ||
-            one.category?.toLowerCase() === budget.category.toLowerCase()) &&
-          (budget.projectId === null || one.projectId === budget.projectId),
-      );
-      const members = onTarget.filter((one) => one.currency === budget.currency);
-      // A currency with its own budget on this target is counted there, not left out here.
-      const budgeted = new Set(
-        budgets
-          .filter((other) => targetOf(other) === targetOf(budget))
-          .map((other) => other.currency),
-      );
-      const total = members.reduce((sum, one) => sum + BigInt(one.minor), 0n);
-      const limit = BigInt(budget.limitMinor);
-      return {
-        ...budget,
-        spent: total,
-        expenses: members.length,
-        status: statusOf(total, limit),
-        notCounted: addUp(
-          onTarget.filter((one) => !budgeted.has(one.currency)),
-          budget.currency,
-        ),
-      };
-    }),
-  };
+  const rows = [];
+  for (const budget of budgets) {
+    const onTarget = spent.filter(
+      (one) =>
+        (budget.category === null ||
+          one.category?.toLowerCase() === budget.category.toLowerCase()) &&
+        (budget.projectId === null || one.projectId === budget.projectId),
+    );
+    const members = onTarget.filter((one) => one.currency === budget.currency);
+    // A currency with its own budget on this target is counted there, not left out here.
+    const budgeted = new Set(
+      budgets
+        .filter((other) => targetOf(other) === targetOf(budget))
+        .map((other) => other.currency),
+    );
+    const total = members.reduce((sum, one) => sum + BigInt(one.minor), 0n);
+    const limit = BigInt(budget.limitMinor);
+    const notCounted = addUp(
+      onTarget.filter((one) => !budgeted.has(one.currency)),
+      budget.currency,
+    );
+    const about = yield* aboutInHome(orgId, onTarget, home, now, rateOf);
+    rows.push({
+      ...budget,
+      spent: total,
+      expenses: members.length,
+      status: statusOf(total, limit),
+      notCounted,
+      ...(about === undefined ? {} : { about }),
+    });
+  }
+  return { month: shown, budgets: rows };
 });
 export type BudgetsView = Effect.Success<ReturnType<typeof budgetsView>>;
+
+const andList = new Intl.ListFormat("en");
 
 /** The budgets as an agent quotes them: every figure formatted by code. */
 export const budgetsAnswer = (view: BudgetsView) => ({
@@ -225,15 +244,22 @@ export const budgetsAnswer = (view: BudgetsView) => ({
               spent: formatMoney(money),
             })),
           }),
+      ...(one.about === undefined
+        ? {}
+        : {
+            about: `about ${formatMoneyPlain(one.about.total)} in all, approximate, at rates the company was paid at on ${andList.format(one.about.rateDays)}`,
+          }),
     };
   }),
   ...(view.budgets.length === 0 ? { none: "No budgets are set." } : {}),
-  basis: `Spent is paid expenses dated in ${view.month} in the owner's time zone. over is past the limit; near is at the limit or past ${NEAR_PERCENT}% of it. notCounted is spending on the same target in other currencies, which the budget's spent does not include.`,
+  basis: `Spent is paid expenses dated in ${view.month} in the owner's time zone. over is past the limit; near is at the limit or past ${NEAR_PERCENT}% of it. notCounted is spending on the same target in other currencies, which the budget's spent does not include. about, when present, is approximate: never quote it as an exact figure or add it to spent.`,
 });
 
 /** This month's budgets over or near their limit, for the morning brief; nothing when none are. */
 export const budgetFlags = Effect.fn("KinBudgets.flags")(function* (orgId: KinOrgId, now: number) {
   const answer = budgetsAnswer(yield* budgetsView(orgId, now));
   const flagged = answer.budgets.filter((one) => one.status !== "ok");
-  return flagged.length === 0 ? undefined : { month: answer.month, budgets: flagged };
+  return flagged.length === 0
+    ? undefined
+    : { month: answer.month, budgets: flagged, basis: answer.basis };
 });

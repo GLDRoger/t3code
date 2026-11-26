@@ -45,6 +45,7 @@ import * as LeadMoney from "../work/leadMoney.ts";
 import * as LeadWork from "../work/leadWork.ts";
 import { outlook } from "../work/moneyAnswers.ts";
 import { moneySection, moneySummary } from "../work/moneyViews.ts";
+import * as OwnerClients from "../work/ownerClients.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
 import * as OwnerMoney from "../work/ownerMoney.ts";
 import * as OwnerMoneyAnswers from "../work/ownerMoneyAnswers.ts";
@@ -61,6 +62,7 @@ import { assembleInputs, needsEntry, parseRecipe } from "./recipe.ts";
 import { labelChange } from "./recipeLabels.ts";
 import { checkReferences } from "./references.ts";
 import * as Render from "./render.ts";
+import { unsetAgainst } from "./receipts.ts";
 import { STARTER_FILES } from "./starter.ts";
 import { sheetCells } from "./tables.ts";
 import { KinToolchain } from "./toolchain.ts";
@@ -617,6 +619,43 @@ describe("recipe documents", () => {
       });
       assert.deepStrictEqual([again.gstin, again.taxRegistered], ["29AAAAA1111A1Z5", undefined]);
       assert.strictEqual((yield* standing(4))[0], "27BBBBB2222B1Z5");
+      yield* setProfile(
+        orgId,
+        { _tag: "person", personId: ownerId },
+        { country: "GB", tax: { name: "VAT", rate: "20", pricesInclude: null } },
+        undefined,
+      );
+      const updated = yield* OwnerClients.updateParty(people, {
+        orgId,
+        key: "C-1",
+        rev: (yield* (yield* KinRecords.KinRecords).get(orgId, "C-1"))!.rev,
+        taxNumber: "GB123456789",
+      });
+      assert.strictEqual((yield* standing(5))[0], null);
+      assert.isUndefined(latestData().tax.customerAccounts);
+      yield* OwnerClients.updateParty(people, {
+        orgId,
+        key: "C-1",
+        rev: updated.rev,
+        accountsForTax: true,
+      });
+      yield* standing(6);
+      assert.deepStrictEqual(latestData().tax.customerAccounts, {
+        line: "Reverse charge.",
+        taxIdLabel: "VAT number",
+        taxNumber: "GB123456789",
+      });
+      yield* setProfile(
+        orgId,
+        { _tag: "person", personId: ownerId },
+        { country: "GB", gstin: null },
+        undefined,
+      );
+      yield* LeadDocuments.make(scope, invoice({ title: "Invoice INV-1, UK company" }));
+      assert.deepStrictEqual(
+        [rendered.at(-1)!.request.inputs.withheldTaxLabel, request.inputs.withheldTaxLabel],
+        ["Less tax withheld", "Less TDS deducted"],
+      );
       // Every document tool is refused in a turn someone besides the owner reads.
       const turnRef = { orgId, agentId: lead, wakeupId: "wake-3" };
       for (const tool of ["kin_document", "kin_recipes", "kin_issue", "kin_recipe_undo"])
@@ -647,6 +686,7 @@ describe("recipe documents", () => {
           "quantity",
           "unit",
           "rate",
+          "taxRate",
         ]);
         for (const row of listed.recipes) {
           assert.notProperty(row, "storedInputs", row.name);
@@ -787,7 +827,7 @@ describe("recipe documents", () => {
           "November pack · accounts-2026-11.xlsx",
           "November pack · sales-register-2026-11.csv",
           "November pack · receipts-2026-11.csv",
-          "November pack · tds-2026-11.csv",
+          "November pack · tax-withheld-2026-11.csv",
           "November pack · expenses-2026-11.csv",
           "November pack · unpaid-expenses-2026-11.csv",
           "November pack · owed-to-partners-2026-11.csv",
@@ -926,6 +966,63 @@ describe("recipe documents", () => {
         [listed.totals, listed.groups?.[0]?.totals, money.spent.thisMonth.total],
         [["₹13,468.85"], ["₹13,468.85"], [{ minor: 1_346_885, currency: "INR" }]],
       );
+
+      const work = yield* askedAgain("Make the October and November invoices");
+      const inputs = { ...invoice().inputs };
+      yield* LeadDocuments.make(scope, invoice({ inputs, sourceEventId: work }));
+      const issuedData = latestData();
+      yield* LeadWork.create(scope, {
+        sourceEventId: work,
+        records: [
+          { list: "invoices", title: "November retainer", client: "Invented Acme", state: "open" },
+        ],
+      });
+      const next = invoice({
+        entry: "INV-2",
+        sourceEventId: work,
+        inputs: { lines: [{ description: "Design", quantity: "1", rate: "₹1,000" }] },
+      });
+      yield* LeadDocuments.make(scope, next);
+      const draftAmount = (yield* records.get(orgId, "INV-2"))!.amountMinor;
+      assert.strictEqual(draftAmount, 118_000);
+      const client = (yield* records.get(orgId, "C-1"))!;
+      const marked = yield* OwnerClients.updateParty(people, {
+        orgId,
+        key: client.key,
+        rev: client.rev,
+        accountsForTax: true,
+      });
+      assert.strictEqual((yield* records.get(orgId, "INV-2"))!.amountMinor, 100_000);
+      yield* LeadDocuments.make(
+        scope,
+        invoice({ inputs, sourceEventId: work, title: "October retainer again" }),
+      );
+      assert.deepStrictEqual(latestData(), issuedData);
+      yield* LeadDocuments.make(scope, { ...next, title: "November retainer again" });
+      assert.deepInclude(latestData().tax, {
+        taxes: [],
+        customerAccounts: {
+          line: "Tax to be accounted for by the customer.",
+          taxIdLabel: "GSTIN",
+          taxNumber: "27AAAAA1111A1Z5",
+        },
+      });
+      yield* OwnerMoney.issue(people, { orgId, key: KinRecordKey.make("INV-2") });
+      yield* OwnerClients.updateParty(people, {
+        orgId,
+        key: client.key,
+        rev: marked.rev,
+        accountsForTax: false,
+      });
+      yield* LeadDocuments.make(scope, { ...next, title: "November retainer issued" });
+      assert.deepInclude(latestData().tax, {
+        taxes: [],
+        customerAccounts: {
+          line: "Tax to be accounted for by the customer.",
+          taxIdLabel: "GSTIN",
+          taxNumber: "27AAAAA1111A1Z5",
+        },
+      });
     }).pipe(Effect.provide(layer)),
   );
 
@@ -1652,6 +1749,10 @@ describe("recipe documents", () => {
       );
       assert.strictEqual(row.dueAt, Date.parse("2026-12-12T18:29:59.999Z"));
       assert.deepStrictEqual(latestData().items[1].sac, "998391");
+      assert.deepStrictEqual(
+        yield* OwnerMoneyAnswers.entryLines(people, { orgId, key: made.invoice }),
+        { lines: asked.lines, gstRate: "12" },
+      );
       // Never numbered, never owed: Issue takes over from its page.
       const summary = yield* moneySummary(
         orgId,
@@ -2342,7 +2443,10 @@ describe("receipts", () => {
           originKey: "tds:1",
         });
         const withheld = yield* receipt({ payment: tds.paymentId }).pipe(Effect.flip);
-        assert.match(withheld.message, /TDS the client deducted, not money received/);
+        assert.strictEqual(
+          withheld.message,
+          "That line is tax the client withheld, not money received, so it gets no receipt. Make the receipt for the payment that came in. Nothing was made.",
+        );
         // Nor does a month's payments table list it as received; the advance it does, as Money does.
         yield* records.pay(orgId, agent, "INV-1", {
           amount: { minor: 20_000, currency: "INR" },
@@ -2847,7 +2951,14 @@ describe("receipts", () => {
         const held = (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
           (one) => one.key === advance.receipt,
         )!.paymentId!;
-        yield* records.voidPayment(orgId, system, "INV-2", held);
+        assert.include(yield* records.voidPayment(orgId, system, "INV-2", held).pipe(Effect.flip), {
+          reason: "invalid_state",
+        });
+        yield* OwnerMoney.unapplyCredit(people, { orgId, key: against.entry });
+        const restored = (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
+          (one) => one.key === advance.receipt,
+        )!.paymentId!;
+        yield* records.voidPayment(orgId, system, advance.receipt, restored);
         const refused = yield* Effect.flip(receipt(against));
         assert.match(refused.message, /taken back, so it is void/);
         assert.strictEqual(
@@ -3092,6 +3203,26 @@ describe("receipts", () => {
             AND t.register_id = 'invoices'`;
         assert.deepStrictEqual(linked, [{ key: retainer }]);
 
+        const summary = () => moneySummary(orgId, Date.parse(at), KIN_OWNER_LEVEL);
+        const received = (yield* summary()).received;
+        const writer = {
+          actor: { _tag: "person" as const, personId: ownerId },
+          via: "owner" as const,
+        };
+        assert.deepStrictEqual(yield* unsetAgainst(orgId, writer, advance.receipt), {
+          key: advance.receipt,
+        });
+        assert.deepStrictEqual((yield* summary()).received, received);
+        assert.isNull(
+          (yield* OwnerMoney.receipts(people, { orgId })).receipts.find(
+            (one) => one.key === advance.receipt,
+          )!.invoice,
+        );
+        yield* receipt({
+          entry: KinRecordKey.make(advance.receipt),
+          against: KinRecordKey.make(retainer),
+        });
+
         // A void receipt's number never shows against its advance; the one made after it does.
         const advances = () =>
           LeadDocuments.make(
@@ -3113,7 +3244,11 @@ describe("receipts", () => {
           sourceEventId: asked,
         });
         assert.isNull((yield* advances())!.receipt);
-        const remade = yield* receipt({ payment: setPayment.paymentId });
+        const reapplied = (yield* OwnerWork.get(people, {
+          orgId,
+          key: KinRecordKey.make(retainer),
+        })).payments!.find((one) => one.paidOn === "2026-11-05" && one.voidedAt === null)!;
+        const remade = yield* receipt({ payment: reapplied.paymentId });
         assert.notStrictEqual(remade.number, advance.number);
         assert.strictEqual((yield* advances())!.receipt, remade.number);
       }).pipe(Effect.provide(layer)),

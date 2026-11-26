@@ -1,7 +1,4 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
-import { HttpServer } from "effect/http";
-import * as NetAddress from "effect/net/NetAddress";
-import * as ServerEnvironment from "../../environment/ServerEnvironment.ts";
 import * as ServerConfig from "../../config.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
@@ -11,7 +8,6 @@ import { assert, describe, it, vi } from "@effect/vitest";
 import {
   CommandId,
   EventId,
-  EnvironmentId,
   MessageId,
   KinWakeupId,
   KinEvent,
@@ -24,6 +20,7 @@ import {
   ProviderTurnId,
   ProjectId,
   ProviderInstanceId,
+  type RunId,
   TurnItemId,
   type ChatAttachment,
   type OrchestrationV2DomainEvent,
@@ -69,6 +66,7 @@ import { SHARED_THREAD_PREFIX, abortChatTurns } from "./Audience.ts";
 import { BILLS_THREAD_PREFIX } from "./billsOnly.ts";
 import { REVIEW_THREAD_PREFIX } from "./outsideReview.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import { postQuietRunCard } from "./quietRunCard.ts";
 import * as HostCare from "../host/KinHostCare.ts";
 import { KinRefusedModels } from "./refusedModels.ts";
 import { KinHostCare } from "../host/KinHostCare.ts";
@@ -1934,123 +1932,146 @@ describe("WakeupRunner", () => {
     }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
   );
 
-  it.effect(
-    "ends a run silent from the start 15 minutes after it began, for certain when it ignores Stop, without leaving the organization busy",
-    () =>
-      Effect.gen(function* () {
-        const entered = yield* Deferred.make<void>();
-        const hold = yield* Deferred.make<void>();
-        const outcomes: Array<string> = [];
-        const bridge = Layer.mock(KinReplyBridge)({
-          lane: () =>
-            Effect.succeedSome({
-              chatId: KinChatId.make("owner-chat"),
-              mode: "reply" as const,
-              owed: true,
-              leadName: "Lead",
-            }),
-          preparing: () => Effect.void,
-          begin: () => Effect.void,
-          complete: () => Effect.void,
-          end: () => Effect.void,
-          failed: (input) => Effect.sync(() => void outcomes.push(input.outcome)),
-        });
-        yield* Effect.gen(function* () {
-          yield* seed;
-          const queue = yield* KinEventQueue.KinEventQueue;
-          const sql = yield* SqlClient.SqlClient;
-          const sessions = yield* McpSessionRegistry.__testing.make().pipe(
-            Effect.provide(
-              Layer.mergeAll(
-                NodeServices.layer,
-                NodeCrypto.layer,
-                Layer.mock(HttpServer.HttpServer)({
-                  address: NetAddress.inetAddressFromIpStringUnsafe("127.0.0.1", 43123),
-                }),
-                Layer.mock(ServerEnvironment.ServerEnvironment)({
-                  getEnvironmentId: Effect.succeed(EnvironmentId.make("test")),
-                }),
-              ),
-            ),
-          );
-          const launch = yield* ThreadLaunch.ThreadLaunchService;
-          const threads = yield* ThreadManagement.ThreadManagementService;
-          const stops: Array<string> = [];
-          const runner = yield* WakeupRunner.WakeupRunner.pipe(
-            Effect.provide(Layer.fresh(WakeupRunner.layer)),
-            Effect.provideService(ThreadManagement.ThreadManagementService, {
-              ...threads,
-              // A provider that ignores Stop: the run stays on after Kin's interrupt.
-              interruptThread: () => Effect.succeed({ type: "no_active_run" as const }),
-              stopDelegatedTasks: (input) =>
-                Effect.sync(() => void stops.push("tasks")).pipe(
-                  Effect.andThen(threads.stopDelegatedTasks(input)),
-                ),
-              forceStopThread: (input) =>
-                Effect.sync(() => void stops.push("agent")).pipe(
-                  Effect.andThen(threads.forceStopThread(input)),
-                ),
-            }),
-            Effect.provideService(ThreadLaunch.ThreadLaunchService, {
-              ...launch,
-              launch: (input) =>
-                launch.launch(input).pipe(
-                  Effect.tap((result) =>
-                    Effect.gen(function* () {
-                      assert.strictEqual(
-                        (yield* resolveAgent(result.projection.thread.id)).agentId,
-                        agentId,
-                      );
-                    }),
-                  ),
-                ),
-            }),
-          );
-          yield* queue.enqueue(event("timeout"));
-          const fiber = yield* runner.runOnce(orgId, agentId).pipe(Effect.forkChild);
-          yield* TestClock.adjust("20 seconds");
-          yield* Deferred.await(entered);
-          const [lead] = yield* sql<{
-            thread_id: string;
-          }>`SELECT thread_id FROM kin_leads WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
-          const threadId = ThreadId.make(lead!.thread_id);
-          const issued = yield* sessions.issue({
-            threadId,
-            providerInstanceId: ProviderInstanceId.make("codex"),
+  it.effect.each([
+    ["completed", "Finished", "Lead finished."],
+    ["interrupted", "Stopped", "Nothing it hadn't finished was sent. Ask again to start fresh."],
+    ["failed", "Ended", "Lead stopped working on it."],
+  ] as const)("asks twice about a quiet owed run before it is %s", ([status, title, text]) =>
+    Effect.gen(function* () {
+      const entered = yield* Deferred.make<void>();
+      const hold = yield* Deferred.make<void>();
+      const work = yield* Queue.unbounded<void>();
+      const bridge = Layer.mock(KinReplyBridge)({
+        lane: () =>
+          Effect.succeedSome({
+            chatId: KinChatId.make("direct"),
+            mode: "reply" as const,
+            owed: true,
+            leadName: "Lead",
+          }),
+        preparing: () => Effect.void,
+        begin: () => Effect.void,
+        complete: () => Effect.void,
+        end: () => Effect.void,
+        failed: () => Effect.void,
+      });
+      yield* Effect.gen(function* () {
+        yield* privateRequest("quiet-ask");
+        const sql = yield* SqlClient.SqlClient;
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const fiber = yield* run();
+        yield* Deferred.await(entered);
+        const [wake] = yield* sql<{ id: string; threadId: ThreadId }>`
+          SELECT wakeup_id AS id, thread_id AS "threadId" FROM kin_wakeups WHERE org_id = ${orgId}`;
+        yield* toolCall(work, wake!.threadId);
+        if (status === "completed") {
+          const projection = yield* threads.getThreadProjection(wake!.threadId);
+          const providerTurn = projection.providerTurns[0]!;
+          const now = yield* DateTime.now;
+          const ordinal = projection.turnItems.at(-1)!.ordinal;
+          const base = {
+            threadId: wake!.threadId,
+            runId: projection.runs[0]!.id,
+            nodeId: providerTurn.nodeId,
+            providerThreadId: providerTurn.providerThreadId,
+            providerTurnId: providerTurn.id,
+            nativeItemRef: null,
+            parentItemId: null,
+            status: "completed" as const,
+            title: null,
+            startedAt: now,
+            completedAt: now,
+            updatedAt: now,
+          };
+          const segment = (id: string, ordinal: number, text: string) => ({
+            ...base,
+            id: TurnItemId.make(id),
+            ordinal,
+            type: "assistant_message" as const,
+            messageId: MessageId.make(id),
+            text,
+            streaming: false,
           });
-          const token = issued.config.authorizationHeader.replace(/^Bearer\s+/, "");
-          assert.isDefined(yield* sessions.resolve(token));
-          assert.strictEqual(
-            (yield* (yield* KinIdentity.KinIdentity).resolveAgent(
-              (yield* sessions.resolve(token))!,
-            )).agentId,
-            agentId,
-          );
-          yield* TestClock.adjust("14 minutes");
-          assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups`, [
-            { status: "running" },
-          ]);
-          yield* TestClock.adjust("1 minute");
-          yield* TestClock.adjust("30 seconds");
-          yield* Fiber.join(fiber);
-          assert.isDefined(yield* sessions.resolve(token));
-          assert.include(yield* resolveAgent(threadId).pipe(Effect.flip), {
-            reason: "not_allowed",
+          yield* (yield* EventSink.EventSinkV2).write({
+            events: [
+              segment("progress-note", ordinal + 1, "Checking the quote."),
+              {
+                ...base,
+                id: TurnItemId.make("quote-tool"),
+                ordinal: ordinal + 2,
+                type: "dynamic_tool" as const,
+                toolName: "fixture_tool",
+                input: {},
+              },
+              segment("pending-reply", ordinal + 3, "The quote is ready."),
+            ].map((payload) => ({
+              id: EventId.make(payload.id),
+              threadId: base.threadId,
+              occurredAt: now,
+              type: "turn-item.updated" as const,
+              payload,
+            })),
           });
-          assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups`, [
-            { status: "timed_out" },
-          ]);
-          // It ignored the interrupt: its tasks and agent are stopped for certain, and what it was
-          // asked ends there, told once as stopped, never run again on its own.
-          assert.deepStrictEqual(stops, ["tasks", "agent"]);
-          assert.deepStrictEqual(yield* sql`SELECT state, attempts FROM kin_events`, [
-            { state: "failed", attempts: 1 },
-          ]);
-          assert.deepStrictEqual(outcomes, ["stopped"]);
-          yield* Deferred.succeed(hold, undefined);
+        }
+        const cards = sql`SELECT substr(m.client_message_id, 6) AS id, w.chat_id AS chat, w.type,
+          json_extract(w.state_json, '$.outcome.title') AS outcome, json_extract(w.state_json, '$.outcome.text') AS text,
+          CASE WHEN json_extract(w.state_json, '$.detail') LIKE 'Last note:%'
+            THEN substr(json_extract(w.state_json, '$.detail'), 1,
+              instr(json_extract(w.state_json, '$.detail'), char(10)) - 1) END AS detail
+          FROM kin_widgets w JOIN kin_messages m ON m.org_id = w.org_id AND m.message_id = w.message_id
+          WHERE w.org_id = ${orgId} ORDER BY m.seq`;
+        const first = {
+          id: `kin-quiet-run:${wake!.id}:1`,
+          chat: "direct",
+          type: "choice",
+          outcome: null,
+          text: null,
+          detail: status === "completed" ? "Last note: “Checking the quote.”" : null,
+        };
+        const second = { ...first, id: `kin-quiet-run:${wake!.id}:2` };
+        yield* TestClock.adjust("14 minutes");
+        assert.deepStrictEqual(yield* cards, []);
+        yield* TestClock.adjust("1 minute");
+        assert.deepStrictEqual(yield* cards, [first]);
+        yield* TestClock.adjust("45 minutes");
+        const noAnswer = { ...first, outcome: "No answer", text: "It kept going." };
+        assert.deepStrictEqual(yield* cards, [noAnswer, second]);
+        yield* TestClock.adjust("2 hours");
+        assert.deepStrictEqual(yield* cards, [noAnswer, second]);
+        assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups WHERE org_id = ${orgId}`, [
+          { status: "running" },
+        ]);
+        assert.deepStrictEqual(
+          (yield* threads.getThreadProjection(wake!.threadId)).runs.map((entry) => entry.status),
+          ["running"],
+        );
+        if (status === "interrupted") {
+          const projection = yield* threads.getThreadProjection(wake!.threadId);
+          yield* threads.interruptThread({
+            projectId: projection.thread.projectId,
+            threadId: wake!.threadId,
+            runId: projection.runs[0]!.id,
+            commandId: CommandId.make("stop-quiet-run"),
+          });
           yield* (yield* EffectWorker.OrchestrationEffectWorkerV2).drain();
-        }).pipe(Effect.provide(harness({ entered, hold }).pipe(Layer.provideMerge(bridge))));
-      }).pipe(provideDeterministicTestRuntime),
+        } else yield* Deferred.succeed(hold, undefined);
+        yield* Fiber.join(fiber);
+        assert.deepStrictEqual(yield* cards, [noAnswer, { ...second, outcome: title, text }]);
+      }).pipe(
+        Effect.provide(
+          harnessWith(
+            {
+              entered,
+              holdRunning: hold,
+              work,
+              failed: status === "failed",
+              untilInterrupted: status === "interrupted",
+            },
+            chatLayers.pipe(Layer.provideMerge(bridge)),
+          ),
+        ),
+      );
+    }).pipe(provideDeterministicTestRuntime),
   );
 
   it.effect.each([
@@ -2059,7 +2080,7 @@ describe("WakeupRunner", () => {
       19,
       false,
     ],
-    ["ends a wake-up 15 minutes after its run's last activity, though it worked for 40", 5, true],
+    ["marks a quiet notice run and clears the mark when work resumes", 5, true],
   ] as const)("%s", ([, calls, quiet]) =>
     Effect.gen(function* () {
       const holdRunning = yield* Deferred.make<void>();
@@ -2070,8 +2091,8 @@ describe("WakeupRunner", () => {
         lane: () =>
           Effect.succeedSome({
             chatId: KinChatId.make("owner-chat"),
-            mode: "reply" as const,
-            owed: true,
+            mode: quiet ? "notice" : "reply",
+            owed: !quiet,
             leadName: "Lead",
           }),
         preparing: () => Effect.void,
@@ -2103,54 +2124,106 @@ describe("WakeupRunner", () => {
           yield* toolCall(work, threadId);
           if (call < calls) yield* TestClock.adjust("10 minutes");
         }
-        if (!quiet) {
-          assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups`, [
-            { status: "running" },
-          ]);
-          yield* Deferred.succeed(holdRunning, undefined);
-        } else {
-          yield* TestClock.adjust("14 minutes");
-          assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups`, [
-            { status: "running" },
-          ]);
-          yield* TestClock.adjust("1 minute");
+        if (quiet) {
+          const lastActivity = yield* Clock.currentTimeMillis;
+          yield* TestClock.adjust("15 minutes");
+          assert.deepStrictEqual(
+            yield* sql`SELECT status, quiet_since FROM kin_wakeups WHERE org_id = ${orgId}`,
+            [{ status: "running", quiet_since: lastActivity }],
+          );
+          yield* TestClock.adjust("4 minutes");
+          yield* toolCall(work, threadId);
+          const secondActivity = yield* Clock.currentTimeMillis;
+          yield* TestClock.adjust("11 minutes");
+          assert.deepStrictEqual(
+            yield* sql`SELECT status, quiet_since FROM kin_wakeups WHERE org_id = ${orgId}`,
+            [{ status: "running", quiet_since: null }],
+          );
+          yield* TestClock.adjust("49 minutes");
+          assert.deepStrictEqual(
+            yield* sql`SELECT status, quiet_since FROM kin_wakeups WHERE org_id = ${orgId}`,
+            [{ status: "running", quiet_since: secondActivity }],
+          );
+          assert.deepStrictEqual(
+            yield* sql`SELECT type FROM kin_widgets WHERE org_id = ${orgId}`,
+            [],
+          );
+          yield* TestClock.adjust("4 minutes");
+          yield* toolCall(work, threadId);
+          const thirdActivity = yield* Clock.currentTimeMillis;
+          yield* TestClock.adjust("11 minutes");
+          assert.deepStrictEqual(
+            yield* sql`SELECT status, quiet_since FROM kin_wakeups WHERE org_id = ${orgId}`,
+            [{ status: "running", quiet_since: null }],
+          );
+          yield* TestClock.adjust("4 minutes");
+          assert.deepStrictEqual(
+            yield* sql`SELECT status, quiet_since FROM kin_wakeups WHERE org_id = ${orgId}`,
+            [{ status: "running", quiet_since: thirdActivity }],
+          );
+          assert.deepStrictEqual(
+            yield* sql`SELECT type FROM kin_widgets WHERE org_id = ${orgId}`,
+            [],
+          );
         }
+        assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups WHERE org_id = ${orgId}`, [
+          { status: "running" },
+        ]);
+        yield* Deferred.succeed(holdRunning, undefined);
         yield* Fiber.join(fiber);
         const runs = (yield* threads.getThreadProjection(threadId)).runs;
-        if (!quiet) {
-          assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups`, [
-            { status: "completed" },
-          ]);
-          assert.deepStrictEqual(
-            runs.map((entry) => entry.status),
-            ["completed"],
-          );
-          assert.deepStrictEqual(rescues, [true]);
-          assert.deepStrictEqual(outcomes, []);
-        } else {
-          assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups`, [
-            { status: "timed_out" },
-          ]);
-          assert.deepStrictEqual(
-            runs.map((entry) => entry.status),
-            ["interrupted"],
-          );
-          // Today's recovery for a timed-out wake-up: no rescue, an honest line, a retry.
-          assert.deepStrictEqual(rescues, [false]);
-          assert.deepStrictEqual(outcomes, ["retrying"]);
-          assert.deepStrictEqual(yield* sql`SELECT state, attempts FROM kin_events`, [
-            { state: "queued", attempts: 1 },
-          ]);
-        }
+        assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups WHERE org_id = ${orgId}`, [
+          { status: "completed" },
+        ]);
+        assert.deepStrictEqual(
+          runs.map((entry) => entry.status),
+          ["completed"],
+        );
+        assert.deepStrictEqual(rescues, [true]);
+        assert.deepStrictEqual(outcomes, []);
       }).pipe(
         Effect.scoped,
         Effect.provide(
-          harness(quiet ? { untilInterrupted: true, work } : { holdRunning, work }).pipe(
-            Layer.provide(bridge),
-          ),
+          harnessWith({ holdRunning, work }, chatLayers.pipe(Layer.provideMerge(bridge))),
         ),
       );
     }).pipe(provideDeterministicTestRuntime),
+  );
+
+  it.effect.each(["mark", "clear"] as const)(
+    "keeps waiting when the advisory quiet %s write fails",
+    (write) =>
+      Effect.gen(function* () {
+        const holdRunning = yield* Deferred.make<void>();
+        const work = yield* Queue.unbounded<void>();
+        yield* Effect.gen(function* () {
+          yield* seed;
+          const sql = yield* SqlClient.SqlClient;
+          yield* (yield* KinEventQueue.KinEventQueue).enqueue(event("quiet-write-failure"));
+          const fiber = yield* run();
+          const [wakeup] = yield* sql<{ threadId: string }>`
+            SELECT thread_id AS "threadId" FROM kin_wakeups WHERE org_id = ${orgId}`;
+          const threadId = ThreadId.make(wakeup!.threadId);
+          yield* toolCall(work, threadId);
+          if (write === "clear") {
+            yield* TestClock.adjust("15 minutes");
+            yield* TestClock.adjust("4 minutes");
+            yield* toolCall(work, threadId);
+          }
+          yield* sql`CREATE TEMP TRIGGER reject_quiet_write BEFORE UPDATE OF quiet_since ON kin_wakeups
+            WHEN NEW.quiet_since IS ${sql.literal(write === "mark" ? "NOT NULL" : "NULL")}
+            BEGIN SELECT RAISE(ABORT, 'fixture quiet write failed'); END`;
+          yield* TestClock.adjust(write === "clear" ? "11 minutes" : "15 minutes");
+          assert.isUndefined(fiber.pollUnsafe());
+          yield* sql`DROP TRIGGER reject_quiet_write`;
+          yield* Deferred.succeed(holdRunning, undefined);
+          yield* Fiber.join(fiber);
+          assert.deepStrictEqual(
+            yield* sql`SELECT status, quiet_since FROM kin_wakeups WHERE org_id = ${orgId}`,
+            [{ status: "completed", quiet_since: null }],
+          );
+        }).pipe(Effect.provide(harness({ holdRunning, work })));
+      }).pipe(provideDeterministicTestRuntime),
   );
 
   it.effect(
@@ -2194,7 +2267,7 @@ describe("WakeupRunner", () => {
         // Reconstruct a crash before the atomic usage capture and charge committed.
         yield* sql`DELETE FROM kin_budget_charges WHERE org_id = ${orgId}`;
         yield* sql`UPDATE kin_budget SET lead_units = 0 WHERE org_id = ${orgId}`;
-        yield* sql`UPDATE kin_wakeups SET status = 'running', ended_at = NULL, tokens_json = NULL WHERE status = 'completed'`;
+        yield* sql`UPDATE kin_wakeups SET status = 'running', ended_at = NULL, tokens_json = NULL, quiet_since = 1 WHERE status = 'completed'`;
         yield* sql`UPDATE kin_events SET state = 'claimed' WHERE state = 'done'`;
         // A restart continuation of the wake-up's run, with its own attempt and provider turn.
         const [root] = yield* sql<{ runId: string }>`
@@ -2223,15 +2296,47 @@ describe("WakeupRunner", () => {
           FROM orchestration_v2_projection_provider_turns WHERE run_attempt_id IN (
             SELECT attempt_id FROM orchestration_v2_projection_run_attempts
             WHERE run_id = ${root!.runId})`;
+        const [stale] = yield* sql<{ wakeupId: KinWakeupId; threadId: ThreadId; runId: RunId }>`
+          SELECT wakeup_id AS "wakeupId", thread_id AS "threadId", run_id AS "runId"
+          FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running'`;
+        yield* sql`INSERT INTO kin_chat_members
+          (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+          VALUES ('owner-chat-lead', ${orgId}, 'owner-chat', 'agent', ${agentId}, 'member',
+            '2026-11-08T00:00:00.000Z')`;
+        yield* postQuietRunCard(
+          {
+            ...stale!,
+            orgId,
+            agentId,
+            ask: 1,
+            lane: {
+              chatId: KinChatId.make("owner-chat"),
+              mode: "reply",
+              owed: true,
+              leadName: "Lead",
+            },
+          },
+          yield* ThreadManagement.ThreadManagementService,
+          stale!,
+        );
         const recoveredRunner = yield* WakeupRunner.WakeupRunner.pipe(
           Effect.provide(Layer.fresh(WakeupRunner.layer)),
         );
         yield* recoveredRunner.recover;
         yield* recoveredRunner.recover;
+        assert.deepStrictEqual(
+          yield* sql`SELECT json_extract(state_json, '$.outcome.title') AS title FROM kin_widgets
+            WHERE org_id = ${orgId} AND chat_id = 'owner-chat' AND type = 'choice'`,
+          [{ title: "Finished" }],
+        );
         const [usageRow] = yield* sql<{
           tokens_json: string;
         }>`SELECT tokens_json FROM kin_wakeups WHERE status = 'completed'`;
         assert.strictEqual((yield* decodeUsage(usageRow!.tokens_json)).length, 2);
+        assert.deepStrictEqual(
+          yield* sql`SELECT quiet_since FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'completed'`,
+          [{ quiet_since: null }],
+        );
         assert.strictEqual((yield* (yield* Budget.KinBudget).get(orgId)).leadUnits, 111);
         assert.deepStrictEqual(yield* sql`SELECT status FROM kin_wakeups ORDER BY status`, [
           { status: "completed" },
@@ -2247,7 +2352,7 @@ describe("WakeupRunner", () => {
         assert.deepStrictEqual(yield* sql`SELECT state, attempts FROM kin_events`, [
           { state: "done", attempts: 0 },
         ]);
-      }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+      }).pipe(Effect.provide(harnessWith({}, chatLayers)), provideDeterministicTestRuntime),
   );
 
   it.effect.each(["projection", "decode"] as const)(

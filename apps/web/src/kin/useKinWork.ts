@@ -23,6 +23,7 @@ export const {
   useKinClientsList,
   useKinProjectsList,
   useKinWorkHistory,
+  useKinClientAccountsForTax,
   useKinClientPage,
   useKinProjectPage,
   kinWorkChoicesAtom,
@@ -30,6 +31,7 @@ export const {
   useKinPickerSearch,
   useKinWorkForm,
   useKinWorkChanges,
+  useKinWorkZone,
 } = makeKinWorkHooks(kinHookApp, {
   useKinHostAt,
   catalogValueAtom: environmentCatalog.catalogValueAtom,

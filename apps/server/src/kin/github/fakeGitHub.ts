@@ -77,6 +77,10 @@ export interface FakeItem {
   labels: string[];
   head_ref: string;
   head_sha: string;
+  /** The base branch's commit; a compare from it reads the PR as it was opened. */
+  base_sha: string;
+  /** What a compare from the base branch by name gives once that branch moved on (`moveBase`). */
+  baseMoved?: string;
   fork: boolean;
   additions: number;
   deletions: number;
@@ -159,6 +163,11 @@ export interface FakeWorld {
   failing?: string[];
   /** Paths GitHub refuses while listed (422), having done nothing. */
   refusing?: string[];
+  /**
+   * GitHub's rate limit: from the issue read after `reads` more, every call is refused (429),
+   * saying to wait `retryAfter` seconds.
+   */
+  limit?: { reads: number; retryAfter: number; hit?: boolean };
   /** The seconds GitHub asks between looks; real GitHub says 60. */
   pollInterval?: number;
   repos: FakeRepo[];
@@ -298,6 +307,7 @@ export class FakeGitHub {
       labelEvents: (input.labels ?? []).map((label) => ({ label, actor: input.author })),
       head_ref: input.headRef ?? `change-${number}`,
       head_sha: `sha${this.next()}`,
+      base_sha: `base${number}`,
       fork: input.fork ?? false,
       additions: 12,
       deletions: 3,
@@ -370,6 +380,15 @@ export class FakeGitHub {
   close(input: { repo: string; number: number; actor: string }) {
     this.item(input.repo, input.number).state = "closed";
     this.happened(input.repo, input.number, input.actor, "PullRequestEvent");
+  }
+  /**
+   * The base branch moves on (a merge into it): a compare from the branch by name now gives
+   * `diff`, one from the commit the PR had as its base still gives the PR's own.
+   */
+  moveBase(input: { repo: string; number: number; diff: string }) {
+    const item = this.item(input.repo, input.number);
+    item.base_sha = `${item.base_sha}-moved`;
+    item.baseMoved = input.diff;
   }
   /** New commits on a PR's branch: GitHub sends no notification, but the PR's `updated_at` moves. */
   push(input: { repo: string; number: number; diff?: string; force?: boolean }) {
@@ -703,6 +722,19 @@ export class FakeGitHub {
       return { status: 502, headers: {}, body: { message: "Server Error" } };
     if (this.world.refusing?.includes(path) === true)
       return { status: 422, headers: {}, body: { message: "Validation Failed" } };
+    const limit = this.world.limit;
+    if (limit !== undefined) {
+      if (/^repos\/[^/]+\/[^/]+\/issues\/\d+$/.test(path)) {
+        if (limit.reads <= 0) limit.hit = true;
+        else limit.reads -= 1;
+      }
+      if (limit.hit === true)
+        return {
+          status: 429,
+          headers: { "retry-after": String(limit.retryAfter) },
+          body: { message: "API rate limit exceeded" },
+        };
+    }
     const app = this.world.app ?? null;
     const bearer = /^bearer (.+)$/i.exec(headers.authorization ?? "")?.[1];
     const asApp = app !== null && bearer !== undefined && bearer.split(".").length === 3;
@@ -1050,7 +1082,7 @@ export class FakeGitHub {
             ahead_by: Math.max(0, pushes.length - since),
             behind_by: forced ? 1 : 0,
           });
-        if (!known) return ok(item.diff);
+        if (!known) return ok(base === "main" ? (item.baseMoved ?? item.diff) : item.diff);
         if (forced) return ok(pushes.findLast((push) => push.force === true)!.diff);
         return ok(
           pushes
@@ -1081,7 +1113,7 @@ export class FakeGitHub {
       if (method === "GET" && (found = /^pulls\/(\d+)$/.exec(rest))) {
         const item = this.item(repo, Number(found[1]));
         if (!item.pull) return missing;
-        if ((headers.accept ?? "").includes("diff")) return ok(item.diff);
+        if ((headers.accept ?? "").includes("diff")) return ok(item.baseMoved ?? item.diff);
         const etag = `"p${item.updated_at ?? item.created_at}-${item.head_sha}-${item.state}"`;
         if (headers["if-none-match"] === etag)
           return { status: 304, headers: { etag }, body: null };
@@ -1095,7 +1127,7 @@ export class FakeGitHub {
               sha: item.head_sha,
               repo: { full_name: item.fork ? `someone/${repo.split("/")[1]}` : repo },
             },
-            base: { ref: "main" },
+            base: { ref: "main", sha: item.base_sha },
             additions: item.additions,
             deletions: item.deletions,
             changed_files: item.changed_files,

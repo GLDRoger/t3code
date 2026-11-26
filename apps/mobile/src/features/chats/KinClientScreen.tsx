@@ -25,6 +25,7 @@ import {
 import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import {
   KIN_WORK_FORM_COPY,
+  kinIndiaFields,
   kinWorkSend,
   type KinWorkFormProblem,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
@@ -85,6 +86,7 @@ import { KinPlaceLists } from "./KinPlaceLists";
 import { KinDocsUnder } from "./KinDocsList";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
+import { useKinCompanyCountry } from "./state/useKinMoney";
 import {
   useKinClientPage,
   useKinWork,
@@ -193,6 +195,8 @@ function KinClientBody(
   const { names } = directory;
   const { state: changed, changes } = useKinWorkChanges(target);
   const ownerLevel = useKinIsOwnerLevel(environmentId);
+  const country = useKinCompanyCountry(target);
+  const india = kinIndiaFields(country);
   const canAddTask = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
   const KIN_CLIENTS = useKinSectionWords(environmentId, KIN_CLIENTS_WORDS);
   const shell = useKinShell(environmentId);
@@ -248,6 +252,7 @@ function KinClientBody(
     now,
     ownerLevel,
     shell,
+    country,
   );
   const { can } = view;
   // Clients on, or the owner level: what's owed, the contact log, notes and history show.
@@ -632,6 +637,17 @@ function KinClientBody(
           />
         ) : null}
       </ListSection>
+      {view.credit.length === 0 ? null : (
+        <ListSection title={KIN_CLIENTS_WORDS.credit}>
+          {view.credit.map((one) => (
+            <ListRow
+              key={one.key}
+              label={one.line}
+              onPress={() => openRecord("KinWorkItem", { environmentId, orgId, task: one.key })}
+            />
+          ))}
+        </ListSection>
+      )}
       <KinPlaceLists
         environmentId={environmentId}
         orgId={orgId}
@@ -716,18 +732,29 @@ function KinClientBody(
               )}
               {!can.owner ? null : (
                 <>
-                  {view.vendor && view.tax === null ? null : (
+                  {(view.vendor || !india) &&
+                  view.tax === null &&
+                  view.accountsForTax === null ? null : (
                     <View className="gap-1">
                       <Text textRole="footnote" className="text-foreground-muted">
                         {KIN_CLIENTS.tax}
                       </Text>
-                      <Text
-                        textRole="body"
-                        selectable
-                        className={view.tax === null ? "text-foreground-muted" : "text-foreground"}
-                      >
-                        {view.tax ?? KIN_CLIENTS.noTax}
-                      </Text>
+                      {view.tax === null && !india ? null : (
+                        <Text
+                          textRole="body"
+                          selectable
+                          className={
+                            view.tax === null ? "text-foreground-muted" : "text-foreground"
+                          }
+                        >
+                          {view.tax ?? KIN_CLIENTS.noTax}
+                        </Text>
+                      )}
+                      {view.accountsForTax === null ? null : (
+                        <Text textRole="body" selectable className="text-foreground">
+                          {view.accountsForTax}
+                        </Text>
+                      )}
                     </View>
                   )}
                   <View className="gap-1">
