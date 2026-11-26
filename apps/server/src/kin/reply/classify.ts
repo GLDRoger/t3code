@@ -54,15 +54,13 @@ export function setupFailureIn(
 }
 
 /** A pre-tool segment up to this long, in one paragraph, is a status note, not a message. */
-export const NOTE_MAX_CHARS = 160;
+const NOTE_MAX_CHARS = 160;
 /** Presence labels are cut to this length. */
 const LABEL_MAX_CHARS = 60;
 /** A notice wake-up's word for "nothing worth saying"; a segment containing it anywhere never posts. */
 export const SILENT_REPLY = "NO_REPLY";
 /** Models append the marker to a sentence about having nothing to say, so its presence anywhere wins. */
 const hasSilentReply = (text: string) => text.includes(SILENT_REPLY);
-/** A draft's trailing start of the marker ("…\nNO_RE") is held back until it is known. */
-const silentReplyTail = new RegExp(`(?:^|\\s|[*\`_])N(?:O(?:_(?:R(?:E(?:P(?:L)?)?)?)?)?)?\\s*$`);
 /** Parenthetical asides a lead appends when it means to say nothing; they never reach a chat. */
 export const SILENCE_MARKERS = [
   "no reply needed",
@@ -90,27 +88,6 @@ export function stripTrailingSilenceMarker(text: string): string {
   let result = text;
   while (trailingMarker.test(result)) result = result.replace(trailingMarker, "").trimEnd();
   return result;
-}
-
-const isMarkerPrefix = (fragment: string) => {
-  const normalized = normalizePhrase(fragment);
-  return SILENCE_MARKERS.some((marker) => marker === normalized || marker.startsWith(normalized));
-};
-
-/**
- * What a streaming draft may show: a trailing marker is stripped, and a trailing fragment
- * that could still become one (`(no reply nee`, or the whole text so far) is held back.
- */
-export function draftReplyText(text: string): string {
-  if (hasSilentReply(text)) return "";
-  const stripped = stripTrailingSilenceMarker(text.replace(silentReplyTail, ""));
-  if (isSilenceOnly(stripped)) return "";
-  const whole = normalizePhrase(stripped);
-  if (whole !== "" && isMarkerPrefix(whole)) return "";
-  const open = stripped.lastIndexOf("(");
-  if (open >= 0 && !stripped.slice(open).includes(")") && isMarkerPrefix(stripped.slice(open + 1)))
-    return stripped.slice(0, open).trimEnd();
-  return stripped;
 }
 
 /** Kin asks this once when a turn owed words and ended with none (`KinReplyBridge.complete`). */

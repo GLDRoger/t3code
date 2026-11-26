@@ -123,6 +123,7 @@ export class KinFloor extends Context.Service<
       chat: KinChat,
       intent: KinAgentIntent,
       token?: string,
+      continuation?: boolean,
     ) => Effect.Effect<Authorization, PersistenceSqlError | KinChatError>;
     /**
      * Whether the running wake-up holds only server notices, and requests other leads passed on
@@ -356,6 +357,7 @@ const make = Effect.gen(function* () {
       chat: KinChat,
       intent: KinAgentIntent,
       token?: string,
+      continuation = false,
     ): Effect.fn.Return<
       Authorization,
       SqlError | PersistenceSqlError | KinChatError | Schema.SchemaError
@@ -367,7 +369,7 @@ const make = Effect.gen(function* () {
           intent,
           token,
           answers: notice.kind === "passed_on",
-          owed: notice.owed,
+          owed: notice.owed || continuation,
         });
         return { runId: null, owed: notice.owed };
       }
@@ -377,9 +379,10 @@ const make = Effect.gen(function* () {
       WHERE org_id = ${identity.orgId} AND chat_id = ${chat.chatId}
       ORDER BY opened_at DESC, rowid DESC LIMIT 1`;
       const run = runs[0] === undefined ? undefined : yield* decodeRun(runs[0]);
-      if (run?.agent_turns === FLOOR_MAX_AGENT_TURNS || run?.state === "closed")
-        return yield* new KinChatError({ reason: "floor_closed", message: "The floor is closed." });
       if (run === undefined) return yield* notGranted;
+      const closed = run.agent_turns === FLOOR_MAX_AGENT_TURNS || run.state === "closed";
+      if (closed && !continuation)
+        return yield* new KinChatError({ reason: "floor_closed", message: "The floor is closed." });
       // A grant lasts the wake-up run: its later posts in this floor run are the same agent turn.
       const wakeupId =
         identity.wakeupId ??
@@ -396,6 +399,8 @@ const make = Effect.gen(function* () {
           ORDER BY token LIMIT 1`;
         if (held.length > 0) return { runId: run.run_id };
       }
+      if (closed)
+        return yield* new KinChatError({ reason: "floor_closed", message: "The floor is closed." });
       // Each agent the message asked answers it, whoever of them speaks first.
       if (
         !replyIntentAllowed(run.agent_turns, intent) &&

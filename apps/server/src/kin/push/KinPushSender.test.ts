@@ -710,6 +710,40 @@ describe("KinPushSender", () => {
     }).pipe(Effect.provide(build(apns)));
   });
 
+  it.effect("one reply's three bubbles ring and count only once on each device", () => {
+    const apns = makeApns();
+    return Effect.gen(function* () {
+      const { notify, sql } = yield* seed;
+      const ids = [];
+      for (const [index, body] of [
+        "CI is green.",
+        "The build passed.",
+        "It's ready to ship.",
+      ].entries())
+        ids.push(
+          yield* postMessage(sql, { agentMemberId: "m_fin_dm" }, "posted", {
+            chatId: "chat_dm",
+            body,
+            silent: index > 0,
+          }),
+        );
+      for (const messageId of ids) yield* notify({ _tag: "message", orgId, messageId });
+      assert.deepStrictEqual(
+        apns.sent
+          .map((push) => [push.token, (push.payload as { aps: { badge: number } }).aps.badge])
+          .toSorted(),
+        [
+          [ownerPhone, 1],
+          [ownerTablet, 1],
+        ].toSorted(),
+      );
+      assert.deepStrictEqual(
+        alerts(apns.sent).map((alert) => alert?.body),
+        ["CI is green.", "CI is green."],
+      );
+    }).pipe(Effect.provide(build(apns)));
+  });
+
   it.effect("a card its turn's reply already rang for rings only those the reply didn't", () => {
     const apns = makeApns();
     return Effect.gen(function* () {

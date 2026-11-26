@@ -153,7 +153,8 @@ type SendInput = KinMessagesSendInput & {
    * A message for the one person in this direct chat (`KinLevelGate.postTo`): words checked for
    * them, not the owner's, and admitted outside the chat's floor (`KinFloor.admitToPerson`).
    */
-  readonly placeReplyFigures?: true;
+  readonly placeReplyFigures?: true | "named";
+  readonly reply?: true;
   readonly silent?: true;
   readonly forChat?: true;
   /** With `forChat`: another person's words the agent passes on (`kin_relay`). */
@@ -649,10 +650,10 @@ const checkpointEvery = 100;
 const PREVIEW_LOOKBACK = 20;
 const BOOKKEEPING_TEXT = /^(?:(?:Remembered|Forgot|Updated|Replaced|Memory): |Deferred to )/;
 const deferralCardOption = Schema.decodeUnknownOption(KinDeferralCard);
-export const KIN_WAKEUP_MESSAGE_LIMIT = 8;
+const KIN_WAKEUP_MESSAGE_LIMIT = 8;
 /** Pictures one reply carries; a message's images are drawn as one gallery. */
 const KIN_REPLY_PICTURES_MAX = 4;
-export const KIN_WAKEUP_CHAR_LIMIT = 32_000;
+const KIN_WAKEUP_CHAR_LIMIT = 32_000;
 /** A person's mute with no end: it lasts until they unmute. */
 const KIN_MUTED_FOREVER = "9999-12-31T23:59:59.999Z";
 /** Guests never write; a muted agent stays silent until its mute ends. */
@@ -1233,7 +1234,7 @@ const make = Effect.gen(function* () {
       readonly widgetId: KinWidgetId | null;
       readonly kind: "text" | "widget_action";
       readonly publish?: boolean;
-      readonly placeReplyFigures?: true | undefined;
+      readonly placeReplyFigures?: true | "named" | undefined;
       readonly pictureRefs?: ReadonlyArray<Repository.PictureDoc> | undefined;
       readonly floorRunId?: string | null;
       readonly clientId: { readonly kind: "send" | "act"; readonly id: string } | null;
@@ -2230,7 +2231,9 @@ const make = Effect.gen(function* () {
     )
       return yield* notFound;
     const chat = yield* requireRecord(repo.getChat(member));
-    if (identity._tag === "agent" && Option.isNone(existing)) {
+    const groupKey = input.reply === true ? Repository.replyGroupKey(input.clientMessageId) : null;
+    const continuation = groupKey !== null && groupKey !== input.clientMessageId;
+    if (identity._tag === "agent" && Option.isNone(existing) && input.reply !== true) {
       const used = yield* repo.wakeupPosts({
         orgId: identity.orgId,
         chatId: request.chatId,
@@ -2250,7 +2253,7 @@ const make = Effect.gen(function* () {
     if (toPerson && Option.isNone(existing)) yield* floor.admitToPerson(identity, chat.chatId);
     const authorization =
       identity._tag === "agent" && Option.isNone(existing) && !toPerson
-        ? yield* floor.authorize(identity, chat, intent ?? "answer", input.floorGrant)
+        ? yield* floor.authorize(identity, chat, intent ?? "answer", input.floorGrant, continuation)
         : { runId: null, owed: false };
     const message = yield* post(identity, member, {
       ...request,
@@ -2276,7 +2279,8 @@ const make = Effect.gen(function* () {
       Option.isNone(existing) &&
       identity._tag === "agent" &&
       authorization.runId === null &&
-      authorization.owed !== true
+      authorization.owed !== true &&
+      !continuation
     )
       yield* floor.recordNotice(identity, message);
     return message;

@@ -120,7 +120,7 @@ type InsertMessage = Omit<KinMessage, "seq" | "authorRole" | "clientMessageId" |
   readonly caller?: McpThreadCaller | undefined;
   // The reply bridge posts for a wake-up it resolved itself; its running row is the authority.
   readonly wakeupId?: KinWakeupId | undefined;
-  readonly placeReplyFigures?: true | undefined;
+  readonly placeReplyFigures?: true | "named" | undefined;
   /** Pictures Kin drew for this agent: each doc version is read here, in the write's transaction. */
   readonly pictureRefs?: ReadonlyArray<PictureDoc> | undefined;
   // Only Kin itself (worker task cards, a failed send's mail again) posts outside a wake-up.
@@ -147,6 +147,21 @@ const decodeWidgetText = Schema.decodeEffect(
 );
 const decodeWidgetFeed = Schema.decodeEffect(KinWidget.fields.feed);
 const decodeBody = Schema.decodeEffect(KinMessage.fields.body);
+const CONTINUATION_SUFFIX = /~b(?:[2-9]|[1-9][0-9]+)$/;
+
+export const replyGroupKey = (key: string | null) =>
+  key !== null && /^(?:send:)?(?:reply:|kin-send:)/.test(key)
+    ? key.replace(CONTINUATION_SUFFIX, "")
+    : null;
+
+export const isContinuation = (sql: SqlClient.SqlClient, alias: "m") => {
+  const key = sql(`${alias}.client_message_id`);
+  return sql`COALESCE((
+    (${key} GLOB 'send:reply:*' OR ${key} GLOB 'send:kin-send:*')
+    AND (${key} GLOB '*~b[2-9]' OR ${key} GLOB '*~b[1-9][0-9]*')
+  ), 0)`;
+};
+
 const decodeHistory = Schema.decodeEffect(KinChatHistoryInput);
 const decodeSeq = Schema.decodeEffect(NonNegativeInt);
 const decodeResume = Schema.decodeEffect(
@@ -784,13 +799,14 @@ const make = Effect.gen(function* () {
   const linked = (...args: Parameters<typeof withLinks>) =>
     withLinks(...args).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   // People read an agent's helper threads and entries by their names, never a link or a key.
-  const named_ = (orgId: KinOrgId, chatId: KinChatId, body: string) =>
+  const named_ = (orgId: KinOrgId, chatId: KinChatId, body: string, max = Infinity) =>
     nameThreads(orgId, chatId, body).pipe(
       Effect.flatMap((worded) => nameKeys(orgId, chatId, worded)),
-      Effect.map((named) => ({
-        body: named.body,
-        json: named.names.length === 0 ? null : encodeNames(named.names),
-      })),
+      Effect.map((named) =>
+        named.body.length > max
+          ? { body, json: null }
+          : { body: named.body, json: named.names.length === 0 ? null : encodeNames(named.names) },
+      ),
       Effect.provideService(SqlClient.SqlClient, sql),
     );
   const keepNames = (orgId: KinOrgId, messageId: string, json: string | null) =>
@@ -1039,6 +1055,7 @@ const make = Effect.gen(function* () {
           AND m.created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', w.started_at / 1000.0, 'unixepoch')
         WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
           AND w.thread_id = ${input.threadId} AND w.status = 'running'
+          AND NOT ${isContinuation(sql, "m")}
         GROUP BY w.wakeup_id ORDER BY w.wakeup_id LIMIT 1`;
       return { messages: rows[0]?.messages ?? 0, chars: rows[0]?.chars ?? 0 };
     },
@@ -1119,7 +1136,11 @@ const make = Effect.gen(function* () {
     Effect.mapError(toRepositoryError("KinChatRepository.replyCard")),
   );
   const placeFigures = Effect.fn("KinChatRepository.placeFigures")(function* (
-    input: ReplyScope & { readonly body: string; readonly previous?: KinMessage },
+    input: ReplyScope & {
+      readonly body: string;
+      readonly previous?: KinMessage;
+      readonly namedOnly?: boolean;
+    },
   ) {
     const { body: prior = "", embeds: existing = [] } = input.previous ?? {};
     const figures = yield* decodeFigures(
@@ -1129,13 +1150,16 @@ const make = Effect.gen(function* () {
         AND kind <> 'picture'
       ORDER BY created_at, rowid`,
     );
-    const pictures = yield* decodePictures(
-      yield* sql`SELECT figure_id AS id, embed_json AS picture, attachment_id AS "attachmentId"
+    const pictures =
+      input.namedOnly === true
+        ? []
+        : yield* decodePictures(
+            yield* sql`SELECT figure_id AS id, embed_json AS picture, attachment_id AS "attachmentId"
       FROM kin_turn_figures WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}
         AND agent_id = ${input.agentId} AND chat_id = ${input.chatId} AND message_id IS NULL
         AND kind = 'picture'
       ORDER BY created_at, rowid`,
-    );
+          );
     const tail = input.body
       .slice(prior.length)
       .replace(/^([ ]{0,3}(?:`{3,}|~{3,})[ \t]*)kin_(?:chart|visual)\b/gm, "$1text");
@@ -1166,9 +1190,10 @@ const make = Effect.gen(function* () {
         accept(body.slice(0, at) + block + body.slice(at + stripped.length), figure);
       at += (next ? block.length : stripped.length) + 1;
     }
-    for (const figure of figures)
-      if (!placed.has(figure.id))
-        accept(`${body}${body === "" ? "" : "\n\n"}${figureBlock(figure)}`, figure);
+    if (input.namedOnly !== true)
+      for (const figure of figures)
+        if (!placed.has(figure.id))
+          accept(`${body}${body === "" ? "" : "\n\n"}${figureBlock(figure)}`, figure);
     const ordered = kinDocBlocks(body).flatMap((block) => {
       const figure = placed.get(block.content);
       return figure === undefined ? [] : [figure];
@@ -2081,7 +2106,12 @@ const make = Effect.gen(function* () {
                 : yield* briefForm({ ...input, kind: message.kind, author: message.author });
             const shaped = briefed(kept, input.body, message.body);
             const placed = yield* placeFigures({ ...input, body: shaped.body, previous: message });
-            const named = yield* named_(input.orgId, input.chatId, placed.body);
+            const named = yield* named_(
+              input.orgId,
+              input.chatId,
+              placed.body,
+              KIN_MESSAGE_BODY_MAX_LENGTH,
+            );
             yield* sql`UPDATE kin_messages SET body = ${named.body}, form = ${shaped.form},
               embeds_json = ${placed.embeds.length === 0 ? null : yield* encodeEmbeds(placed.embeds)}
               WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id = ${input.messageId}`;
@@ -2297,12 +2327,13 @@ const make = Effect.gen(function* () {
               author._tag === "agent" &&
               input.kind === "text" &&
               input.wakeupId !== undefined &&
-              input.placeReplyFigures === true &&
+              input.placeReplyFigures !== undefined &&
               body !== "" &&
               input.widgetId === null
                 ? yield* placeFigures({
                     ...input,
                     body,
+                    namedOnly: input.placeReplyFigures === "named",
                     agentId: author.agentId,
                     threadId: author.threadId,
                     wakeupId: input.wakeupId,
@@ -2325,7 +2356,12 @@ const make = Effect.gen(function* () {
             // People read an entry by its name, not Kin's key for it.
             const named =
               author._tag === "agent" && input.kind === "text"
-                ? yield* named_(input.orgId, input.chatId, placed.body)
+                ? yield* named_(
+                    input.orgId,
+                    input.chatId,
+                    placed.body,
+                    input.placeReplyFigures === undefined ? undefined : KIN_MESSAGE_BODY_MAX_LENGTH,
+                  )
                 : { body: placed.body, json: null };
             const inserted =
               yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id, author_agent_id,
@@ -2340,7 +2376,7 @@ const make = Effect.gen(function* () {
  ${input.relay === undefined ? null : yield* encodeRelay(input.relay)},
  ${input.origin === undefined ? null : yield* encodeOrigin(input.origin)},
  ${input.when === undefined ? null : yield* encodeWhen(input.when)},
- ${placed.embeds.length === 0 ? null : yield* encodeEmbeds(placed.embeds)}, ${(input.body === "" || input.placeReplyFigures === true) && author._tag === "agent" ? (input.wakeupId ?? null) : null})
+ ${placed.embeds.length === 0 ? null : yield* encodeEmbeds(placed.embeds)}, ${(input.body === "" || input.placeReplyFigures !== undefined) && author._tag === "agent" ? (input.wakeupId ?? null) : null})
  ON CONFLICT DO NOTHING RETURNING message_id`;
             if (inserted.length === 0)
               return yield* new KinChatError({

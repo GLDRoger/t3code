@@ -305,6 +305,37 @@ const seed = Effect.fn("test.seed")(function* (notice = false) {
 });
 
 describe("KinChatService", () => {
+  it.effect("a reply group spends the last available notice once", () =>
+    Effect.gen(function* () {
+      const { service, person, agent, chat } = yield* seed(true);
+      const sql = yield* SqlClient.SqlClient;
+      for (let n = 0; n < 9; n++) {
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_role, kind, body, mentions_json, status, created_at)
+          VALUES (${`prior-${n}`}, ${person.orgId}, ${chat.chatId}, ${1000 + n}, 'system',
+            'member', 'text', 'Earlier notice', '[]', 'posted', ${timestamp})`;
+        yield* sql`INSERT INTO kin_floor_notices (org_id, message_id, chat_id, agent_id, posted_at)
+          VALUES (${person.orgId}, ${`prior-${n}`}, ${chat.chatId}, ${agentId}, 0)`;
+      }
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          for (const [i, body] of ["First.", "Second.", "Third."].entries())
+            yield* service.send(agent, {
+              chatId: chat.chatId,
+              clientMessageId: i === 0 ? "reply:group" : `reply:group~b${i + 1}`,
+              body,
+              intent: "evidence",
+              reply: true,
+            });
+        }),
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT COUNT(*) AS count FROM kin_floor_notices WHERE org_id = ${person.orgId}`,
+        [{ count: 10 }],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("keeps a person's uploads with the message and takes them from nobody else", () =>
     Effect.gen(function* () {
       const { repo, service, person, agent, chat } = yield* seed();
