@@ -5,7 +5,7 @@ import * as Predicate from "effect/Predicate";
 import * as SqlClient from "effect/sql/SqlClient";
 import type { SqlError } from "effect/sql/SqlError";
 
-import { sensitiveShown } from "../work/sensitiveReads.ts";
+import { sensitiveShown, turnSensitive } from "../work/sensitiveReads.ts";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { SALES_OUTSIDE_TOOLS } from "../sales/policies.ts";
 
@@ -94,6 +94,7 @@ export const OUTSIDE_TOOLS = {
   memory_label: "allowed",
   // Posts on its own only to the company's repos; anywhere else on the owner's Confirm.
   kin_github_review: "allowed",
+  kin_github_comment: "allowed",
   // Reads only the diff of the pull request its review turn is for.
   kin_github_diff: "allowed",
   // Reads only; what it reads is outside text too (`readRepo` marks it). Not after a coding agent's
@@ -405,6 +406,7 @@ export const markOutside = Effect.fn("KinOutsideContent.mark")(function* (
   source: string,
   /** What was read; the source's own reads when left out. */
   reads?: ReadonlyArray<OutsideReadItem>,
+  scope: "wakeup" | "wakeup-and-events" = "wakeup-and-events",
 ) {
   const sql = yield* SqlClient.SqlClient;
   const at = yield* Clock.currentTimeMillis;
@@ -418,11 +420,29 @@ export const markOutside = Effect.fn("KinOutsideContent.mark")(function* (
     yield* sql`INSERT INTO kin_wakeup_outside_reads (org_id, wakeup_id, read_at, source)
       VALUES (${turn.orgId}, ${turn.wakeupId}, ${at}, ${stamp})
       ON CONFLICT (org_id, wakeup_id) DO UPDATE SET source = excluded.source`;
-    yield* sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
-      SELECT org_id, event_id, ${stamp} FROM kin_events
-      WHERE org_id = ${turn.orgId} AND wakeup_id = ${turn.wakeupId}
-      ON CONFLICT (org_id, event_id) DO UPDATE SET outside_from = excluded.outside_from`;
+    if (scope === "wakeup-and-events")
+      yield* sql`INSERT INTO kin_event_outside (org_id, event_id, outside_from)
+        SELECT org_id, event_id, ${stamp} FROM kin_events
+        WHERE org_id = ${turn.orgId} AND wakeup_id = ${turn.wakeupId}
+        ON CONFLICT (org_id, event_id) DO UPDATE SET outside_from = excluded.outside_from`;
   }).pipe(sql.withTransaction);
+});
+
+export const inheritSession = Effect.fn("KinOutsideContent.inheritSession")(function* (input: {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: string;
+  readonly fromWakeupIds: ReadonlyArray<string>;
+}) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql.withTransaction(
+    Effect.gen(function* () {
+      for (const wakeupId of input.fromWakeupIds) {
+        const stamp = yield* outsideStamp({ orgId: input.orgId, wakeupId });
+        if (stamp !== undefined) yield* markOutside(input, stamp, undefined, "wakeup");
+        if (yield* turnSensitive(input.orgId, wakeupId)) yield* sensitiveShown(input);
+      }
+    }),
+  );
 });
 
 /** The stamp for text a person's coding agent wrote through its key, by the key's name. */
@@ -457,15 +477,9 @@ export const stampEvent = Effect.fn("KinOutsideContent.stampEvent")(function* (
 /** Where an entry's change stores its turn's stamp (`KinRecords.logChange`). */
 export const changeStampKey = (recordId: string, seq: number) => `record-change:${recordId}:${seq}`;
 
-/**
- * The first change an agent made to an entry after its turn read outside text, and what it had
- * read, as a person reads it.
- */
-export const entryAfterReading = Effect.fn("KinOutsideContent.entryAfterReading")(function* (
+export const firstOutsideChange = Effect.fn("KinOutsideContent.firstOutsideChange")(function* (
   orgId: KinOrgId,
   recordId: string,
-  /** For an owner-level reader (`renderSource`). */
-  detailed = false,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const [first] = yield* sql<{
@@ -476,6 +490,16 @@ export const entryAfterReading = Effect.fn("KinOutsideContent.entryAfterReading"
       AND o.event_id = 'record-change:' || c.record_id || ':' || c.seq
     WHERE c.org_id = ${orgId} AND c.record_id = ${recordId} AND c.actor_kind = 'agent'
     ORDER BY c.seq LIMIT 1`;
+  return first;
+});
+
+/** The first change an agent made after an outside read, as a person reads it. */
+export const entryAfterReading = Effect.fn("KinOutsideContent.entryAfterReading")(function* (
+  orgId: KinOrgId,
+  recordId: string,
+  detailed = false,
+) {
+  const first = yield* firstOutsideChange(orgId, recordId);
   return first === undefined
     ? undefined
     : { made: first.kind === "created", source: renderSource(first.source, detailed) };
@@ -657,6 +681,7 @@ const REPO_READ_TOOLS: ReadonlySet<string> = new Set([
   // Only the review someone asked for, on its pull request, whose repo is all the reader reads then.
   "kin_github_diff",
   "kin_github_review",
+  "kin_github_comment",
 ]);
 
 /** The refusal for `name` once the turn read a repo for someone, or undefined. */

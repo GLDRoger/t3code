@@ -67,12 +67,8 @@ export const runnerHash = () =>
       .join("\0"),
   );
 
-/** Runner revisions this file's legacy part list was checked against. */
-const REVIEWED_RUNNERS = {
-  beforeSessionLayout: "5c7b6d1c99ee64fd",
-  withSessionLayout: "baa8c0533ad61e0f",
-} as const;
-export const REVIEWED_RUNNER = REVIEWED_RUNNERS.withSessionLayout;
+/** The runner this file's part list was checked against. */
+export const REVIEWED_RUNNER = "7fde78f3f1520d64";
 
 export const CaseSurface = Schema.Struct({
   /** The case as run.json hashes it, and its first request as run.json hashes it. */

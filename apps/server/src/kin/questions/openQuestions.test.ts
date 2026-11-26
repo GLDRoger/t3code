@@ -42,6 +42,7 @@ import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvo
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
+import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KIN_REFRESH_SETTLE } from "../chat/KinRefreshHub.ts";
 import { KinChatService, waitingFor } from "../chat/KinChatService.ts";
@@ -304,6 +305,7 @@ it.effect("a question is asked once, and its default is taken once at its day", 
     Effect.gen(function* () {
       const { sql, chats, owner, orgId, services, chatOf, wake } = yield* ambermill;
       const repo = Context.get(services, KinChatRepository);
+      yield* sql`UPDATE kin_people SET time_zone = 'Asia/Kolkata' WHERE person_id = ${owner.personId}`;
       yield* wake(
         "finance",
         yield* chats.send(owner, {
@@ -363,8 +365,12 @@ it.effect("a question is asked once, and its default is taken once at its day", 
       // Never before its day; once at it; never twice. Her quiet hours hold the news of it.
       yield* sql`UPDATE kin_people SET quiet_hours_json = '{"from":"19:00","to":"21:00"}'
         WHERE person_id = ${owner.personId}`;
-      const told = sql<{ author: string; body: string; widget: string | null }>`SELECT
-          m.author_agent_id AS author, m.body, m.widget_id AS widget
+      const told = sql<{
+        author: string;
+        body: string;
+        widget: string | null;
+        when: string | null;
+      }>`SELECT m.author_agent_id AS author, m.body, m.widget_id AS widget, m.when_json AS "when"
         FROM kin_pulse_told t JOIN kin_messages m ON m.org_id = t.org_id AND m.message_id = t.event_id
         WHERE t.org_id = ${orgId} AND t.fact_key = ${`default_taken:${questionId}`}`;
       assert.strictEqual(yield* settle(orgId, TUE_1930 - 60_000), 0);
@@ -415,14 +421,20 @@ it.effect("a question is asked once, and its default is taken once at its day", 
       ]);
       assert.lengthOf(yield* told, 0);
       // At 21:00 her time she is told once, from Finance, as a line: Finance's turn does the
-      // default, so there is nothing for Kin to put back.
+      // default, so there is nothing for Kin to put back. It was her question alone, so it says
+      // she didn't answer, by when on her clock; each of her devices says that time on its own.
       yield* settle(orgId, TUE_1930 + 90 * 60_000);
       yield* settle(orgId, TUE_1930 + 91 * 60_000);
       assert.deepStrictEqual(yield* told, [
         {
           author: "finance",
-          body: "Nobody answered, so I went with “Draft it” on “Shall I draft VIOM's payment reminder for INV-8?”.",
+          body: "You didn't answer by 7:30 pm (Tue 17 Nov), so I went with “Draft it” on “Shall I draft VIOM's payment reminder for INV-8?”.",
           widget: null,
+          when: JSON.stringify({
+            at: TUE_1930_ISO,
+            zone: "Asia/Kolkata",
+            text: "7:30 pm (Tue 17 Nov)",
+          }),
         },
       ]);
       const card = Option.getOrThrow(
@@ -432,7 +444,7 @@ it.effect("a question is asked once, and its default is taken once at its day", 
         }),
       );
       assert.isNotNull(card.closedAt);
-      // The notice above says nobody answered; the card only reads as closed.
+      // The notice above says she didn't answer; the card only reads as closed.
       assert.deepStrictEqual((card.state as { outcome: unknown }).outcome, {
         title: "Went with “Draft it”",
         text: 'Went with “Draft it”. Say "undo it" in the chat to reverse.',
@@ -1033,6 +1045,166 @@ it.effect("a question in words nobody answered lapses quietly but reads lapsed",
         (yield* callAs("chief", "kin_ask_close", { question: text!, outcome: "withdrawn" })).value,
         { question: text!, state: "lapsed" },
       );
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+it.effect("a text question nobody answered marks the message that asked it", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const { sql, chats, owner, orgId, services, chatOf, wake } = yield* ambermill;
+      const chatId = chatOf("finance");
+      const hub = Context.get(services, KinChatHub);
+      const repo = Context.get(services, KinChatRepository);
+      const identity = Context.get(services, KinIdentity);
+      yield* sql`UPDATE kin_people SET time_zone = 'Asia/Kolkata',
+          work_hours_json = '{"days":[1,2,3,4,5],"start":"09:00","end":"18:00"}'
+        WHERE org_id = ${orgId} AND person_id = ${owner.personId}`;
+      const ask = Effect.fn("test.askInWords")(function* (question: string) {
+        yield* TestClock.adjust("1 minute");
+        const startedAt = yield* Clock.currentTimeMillis;
+        const wakeupId = yield* wake("finance");
+        const agent = yield* identity.resolveAgent(scopeOf("finance"));
+        const message = yield* chats.send(agent, {
+          chatId,
+          body: question,
+          intent: "evidence",
+          clientMessageId: question,
+        });
+        const questionId = yield* Questions.flagTextQuestion({
+          orgId,
+          chatId,
+          agentId: agent.agentId,
+          threadId: agent.threadId,
+          wakeupId,
+          startedAt,
+        });
+        assert.isDefined(questionId);
+        return { message, questionId: questionId! };
+      });
+
+      const answered = yield* ask("Is the Tidewater Freight invoice approved?");
+      yield* TestClock.adjust("1 second");
+      yield* chats.send(owner, { chatId, body: "Yes.", clientMessageId: "approved" });
+      const withdrawn = yield* ask("Shall I draft the Tidewater Freight reminder today?");
+      const question = "Shall I send the Tidewater Freight reminder today?";
+      const unanswered = yield* ask(question);
+      const live = yield* hub.subscribeForViewer(owner, chatId);
+      assert.strictEqual(yield* settle(orgId, TUE_1930), 1);
+      assert.strictEqual((yield* questionRow(sql, unanswered.questionId)).state, "lapsed");
+      const history = yield* repo.history({
+        orgId,
+        chatId,
+        beforeSeq: unanswered.message.seq + 1,
+        limit: 20,
+      });
+      const marked = history.messages.find((one) => one.messageId === unanswered.message.messageId);
+      assert.deepStrictEqual(marked?.lapsedQuestion, { question, at: TUE_1930_ISO });
+      const stored = yield* Questions.readQuestion(orgId, unanswered.questionId);
+      assert.strictEqual(stored?.messageId, unanswered.message.messageId);
+      assert.strictEqual(marked?.changeSeq, (unanswered.message.changeSeq ?? 0) + 1);
+      assert.strictEqual((yield* questionRow(sql, answered.questionId)).state, "answered");
+      assert.strictEqual((yield* questionRow(sql, withdrawn.questionId)).state, "withdrawn");
+      for (const message of history.messages)
+        if (message.messageId !== unanswered.message.messageId)
+          assert.notProperty(message, "lapsedQuestion");
+
+      assert.strictEqual(yield* settle(orgId, TUE_1930 + 86_400_000), 0);
+      const later = yield* chats.send(owner, { chatId, body: "Thanks.", clientMessageId: "later" });
+      const updates = yield* live.pipe(
+        Stream.filter(
+          (event) => event.type === "message.changed" || event.type === "message.posted",
+        ),
+        Stream.take(2),
+        Stream.runCollect,
+      );
+      assert.deepStrictEqual(
+        updates.map((event) => [event.type, event.message.messageId]),
+        [
+          ["message.changed", unanswered.message.messageId],
+          ["message.posted", later.messageId],
+        ],
+      );
+      assert.deepStrictEqual(updates[0]?.message.lapsedQuestion, marked?.lapsedQuestion);
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+it.effect(
+  "a reaction that answers a text question closes it, so it never shows as unanswered",
+  () =>
+    Effect.andThen(
+      TestClock.setTime(IST_MON_1130),
+      Effect.gen(function* () {
+        const { sql, chats, owner, orgId, services, chatOf, wake } = yield* ambermill;
+        const chatId = chatOf("finance");
+        const identity = Context.get(services, KinIdentity);
+        const repo = Context.get(services, KinChatRepository);
+        const wakeupId = yield* wake("finance");
+        const agent = yield* identity.resolveAgent(scopeOf("finance"));
+        const question = "Shall I send the Tidewater Freight reminder today?";
+        const message = yield* chats.send(agent, {
+          chatId,
+          body: question,
+          intent: "evidence",
+          clientMessageId: "reminder-question",
+        });
+        const questionId = yield* Questions.flagTextQuestion({
+          orgId,
+          chatId,
+          agentId: agent.agentId,
+          threadId: agent.threadId,
+          wakeupId,
+          startedAt: IST_MON_1130,
+        });
+        assert.isDefined(questionId);
+        yield* chats.react(owner, { messageId: message.messageId, emoji: "❤️", on: true });
+        assert.strictEqual((yield* questionRow(sql, questionId!)).state, "open");
+        yield* chats.react(owner, { messageId: message.messageId, emoji: "👍", on: true });
+
+        const settled = yield* settle(orgId, TUE_1930);
+        const stored = Option.getOrThrow(yield* repo.getMessage(message));
+        assert.notProperty(stored, "lapsedQuestion");
+        assert.strictEqual((yield* questionRow(sql, questionId!)).state, "answered");
+        assert.strictEqual(settled, 0);
+      }).pipe(Effect.provide(layer)),
+    ),
+);
+
+it.effect("a reply written before the asking turn ended counts as the answer", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const { chats, owner, orgId, services, chatOf, wake } = yield* ambermill;
+      const chatId = chatOf("finance");
+      const identity = Context.get(services, KinIdentity);
+      const repo = Context.get(services, KinChatRepository);
+      const wakeupId = yield* wake("finance");
+      const agent = yield* identity.resolveAgent(scopeOf("finance"));
+      const message = yield* chats.send(agent, {
+        chatId,
+        body: "Shall I send the Tidewater Freight reminder today?",
+        intent: "evidence",
+        clientMessageId: "reminder-question",
+      });
+      const reply = yield* chats.send(owner, { chatId, body: "Yes.", clientMessageId: "yes" });
+      assert.isAbove(reply.seq, message.seq);
+      yield* TestClock.adjust("1 second");
+      const questionId = yield* Questions.flagTextQuestion({
+        orgId,
+        chatId,
+        agentId: agent.agentId,
+        threadId: agent.threadId,
+        wakeupId,
+        startedAt: IST_MON_1130,
+      });
+
+      const settled = yield* settle(orgId, TUE_1930);
+      const stored = Option.getOrThrow(yield* repo.getMessage(message));
+      assert.notProperty(stored, "lapsedQuestion");
+      assert.isUndefined(questionId);
+      assert.strictEqual(settled, 0);
     }).pipe(Effect.provide(layer)),
   ),
 );
@@ -4361,6 +4533,55 @@ it.effect("an answer's turn answers in the chat that asked, or nowhere", () =>
           (yield* team.widgetOf((yield* team.cardOf(asked.questionId)).widgetId!)).state,
           { outcome: { title: "Answered", text } },
         );
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+it.effect("withdrawing a question its person never saw says so", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const { sql, orgId, owner, chatOf, chiefChat, askFor, wakeOn, cardOf } = yield* askingTeam;
+      yield* sql`UPDATE kin_people SET display_name = 'Rhea',
+          quiet_hours_json = '{"from":"11:00","to":"13:00"}'
+        WHERE org_id = ${orgId} AND person_id = ${owner.personId}`;
+      const zoyaChat = yield* chiefChat("zoya");
+      const turn = yield* wakeOn("chief", "zoya", zoyaChat, "Ask Rhea about the shoot.");
+      const held = yield* askFor("chief", turn, { to: "Rhea" });
+      assert.strictEqual(held.state, "held");
+      assert.isNull((yield* cardOf(held.questionId)).widgetId);
+      const close = (question: string, outcome: "answered" | "withdrawn") =>
+        callAs("chief", "kin_ask_close", { question, outcome });
+      const withdrawn = yield* close(held.questionId, "withdrawn");
+      assert.isTrue(withdrawn.ok, JSON.stringify(withdrawn.value));
+      assert.strictEqual(
+        withdrawn.value.note,
+        "Rhea never saw it. If you ask again, ask as the first they hear of it.",
+      );
+
+      yield* sql`UPDATE kin_people SET quiet_hours_json = NULL
+        WHERE org_id = ${orgId} AND person_id = ${owner.personId}`;
+      const posted = yield* askFor("chief", turn, {
+        to: "Rhea",
+        question: "Should the demo move to Thursday?",
+        about: [],
+        intent: "demo date",
+      });
+      assert.isNotNull((yield* cardOf(posted.questionId)).widgetId);
+      const closed = yield* close(posted.questionId, "withdrawn");
+      assert.isTrue(closed.ok, JSON.stringify(closed.value));
+      assert.notProperty(closed.value, "note");
+
+      const waiting = yield* askFor("chief", turn, {
+        to: "Rhea",
+        question: "Should the review start at noon?",
+        about: [],
+        intent: "review time",
+      });
+      yield* wakeOn("chief", "rhea", chatOf("chief"), "Noon works for the review.");
+      const answered = yield* close(waiting.questionId, "answered");
+      assert.isTrue(answered.ok, JSON.stringify(answered.value));
+      assert.notProperty(answered.value, "note");
     }).pipe(Effect.provide(layer)),
   ),
 );

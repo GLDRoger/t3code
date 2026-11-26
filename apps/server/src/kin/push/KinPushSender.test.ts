@@ -1379,6 +1379,12 @@ describe("KinPushSender", () => {
         messageId: yield* postMessage(sql, "system", "posted", silent),
       });
       assert.deepStrictEqual(apns.sent, []);
+      yield* notify({
+        _tag: "message",
+        orgId,
+        messageId: yield* postMessage(sql, dm, "posted", silent),
+      });
+      assert.deepStrictEqual(apns.sent, []);
       const messageId = yield* postMessage(sql, dm, "posted", { chatId: "chat_dm" });
       yield* notify({ _tag: "message", orgId, messageId });
       // One unread in the group and one in the DM; Waiting on you isn't unread, so it isn't counted.
@@ -2025,7 +2031,10 @@ describe("KinPushSender", () => {
         });
       const deliver = deliverHeld(
         orgId,
-        { notice: () => Effect.die("a task move is no chat line") },
+        {
+          notice: () => Effect.die("a task move is no chat line"),
+          dismissArrival: () => Effect.die("No arrival note"),
+        },
         { notify: (notification) => sender.notify(notification).pipe(Effect.tap(Fiber.join)) },
       );
       const banners = () =>
@@ -2362,7 +2371,10 @@ describe("KinPushSender", () => {
         });
       const deliver = deliverHeld(
         orgId,
-        { notice: () => Effect.die("a held ring is no chat line") },
+        {
+          notice: () => Effect.die("a held ring is no chat line"),
+          dismissArrival: () => Effect.die("No arrival note"),
+        },
         { notify: (notification) => sender.notify(notification).pipe(Effect.tap(Fiber.join)) },
       );
       const rung = () =>

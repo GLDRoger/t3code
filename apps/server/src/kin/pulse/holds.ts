@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
@@ -62,7 +63,7 @@ const holdRows = (sql: SqlClient.SqlClient, orgId: KinOrgId, where: Statement.Fr
       h.set_by_id AS "byId", h.on_word_of AS "onWordOf", h.note, h.set_at AS "setAt",
       h.lifted_at AS "liftedAt", h.lifted_by_kind AS "liftedByKind", h.lifted_by_id AS "liftedById"
     FROM kin_holds h JOIN kin_records r ON r.org_id = h.org_id AND r.record_id = h.record_id
-    WHERE h.org_id = ${orgId} AND ${where}
+    WHERE h.org_id = ${orgId} AND h.decline_json IS NULL AND ${where}
     ORDER BY h.set_at, h.hold_id`;
 
 const ended = (row: { liftedAt: number | null; until: number | null }, at: number) =>
@@ -174,23 +175,26 @@ export const holdRecord = Effect.fn("KinHolds.record")(function* (orgId: KinOrgI
   return row;
 });
 
+export type WordTurn = {
+  readonly orgId: KinOrgId;
+  readonly agentId: string;
+  readonly wakeupId: string;
+};
+
 /**
  * The one person whose own message or card tap in that chat woke this turn, beside nothing passed
  * on (an origin, a hand-off, outside words), no other person's event and no outside text read;
  * else null. Kin's own events beside it keep the word. Looser than `KinAccess.ownerLevelAsked`.
  */
-export const wordOf = Effect.fn("KinHolds.wordOf")(function* (input: {
-  readonly orgId: KinOrgId;
-  readonly agentId: string;
-  readonly wakeupId: string;
-}) {
+export const wordMessages = Effect.fn("KinHolds.wordMessages")(function* (input: WordTurn) {
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{
     person: string | null;
+    messageId: string | null;
     by: string | null;
     passedOn: number;
     ownerLevel: number;
-  }>`WITH woke AS (SELECT e.event_id AS id, e.tag,
+  }>`WITH woke AS (SELECT e.event_id AS id, e.tag, m.message_id AS "messageId",
         -- What a coding agent's key sent or wrote is passed on, never anyone's own word.
         (json_extract(e.json, '$.origin') IS NOT NULL
           OR ${sql.literal(keyEventSql("e"))}) AS origin,
@@ -208,7 +212,7 @@ export const wordOf = Effect.fn("KinHolds.wordOf")(function* (input: {
         AND (m.kind = 'widget_action') = (e.tag = 'widget.action')
       WHERE e.org_id = ${input.orgId} AND e.agent_id = ${input.agentId}
         AND e.wakeup_id = ${input.wakeupId})
-    SELECT person, by, "ownerLevel", (origin OR tag = 'github'
+    SELECT person, "messageId", by, "ownerLevel", (origin OR tag = 'github'
         OR (tag IN ('chat.message', 'widget.action') AND person IS NULL)) AS "passedOn"
     FROM woke ORDER BY id`;
   const said = rows.find((row) => row.person !== null);
@@ -220,10 +224,21 @@ export const wordOf = Effect.fn("KinHolds.wordOf")(function* (input: {
       : row.person === person,
   );
   if (!beside || (yield* outsideRead(input))) return null;
-  return { personId: KinPersonId.make(person), ownerLevel: said.ownerLevel === 1 };
+  return {
+    personId: KinPersonId.make(person),
+    ownerLevel: said.ownerLevel === 1,
+    messageIds: rows.flatMap((row) =>
+      row.person === person && row.messageId !== null ? [row.messageId] : [],
+    ),
+  };
 });
 
-const holdId = (parts: ReadonlyArray<string | number | null>) =>
+export const wordOf = Effect.fn("KinHolds.wordOf")(function* (input: WordTurn) {
+  const word = yield* wordMessages(input);
+  return word === null ? null : { personId: word.personId, ownerLevel: word.ownerLevel };
+});
+
+export const holdId = (parts: ReadonlyArray<string | number | null>) =>
   `hold-${NodeCrypto.createHash("sha256")
     .update(parts.map((part) => String(part ?? "")).join("\0"))
     .digest("hex")
@@ -269,7 +284,7 @@ export const setHold = Effect.fn("KinHolds.set")(function* (input: {
       }>`SELECT hold_id AS "holdId", until_at AS until, set_by_kind AS "byKind",
           set_by_id AS "byId", on_word_of AS "onWordOf", note FROM kin_holds
         WHERE org_id = ${orgId} AND record_id = ${record.recordId} AND lifted_at IS NULL
-          AND COALESCE(for_person_id, '') = ${input.forPersonId ?? ""}
+          AND decline_json IS NULL AND COALESCE(for_person_id, '') = ${input.forPersonId ?? ""}
         ORDER BY hold_id`;
       const same =
         live !== undefined &&
@@ -341,6 +356,31 @@ export const liftHold = Effect.fn("KinHolds.lift")(function* (input: {
 export const refusalText = (hold: Hold, name: ToolNamer, zone: string) =>
   `${asideLine(asideView(hold, { _tag: "owner" }), name, zone)}. Kin won't ask about it before then.`;
 
+const encodeKeys = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
+
+export const recordHoldScopes = Effect.fn("KinHolds.recordScopes")(function* (
+  orgId: KinOrgId,
+  keys: ReadonlyArray<string>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql<{ recordId: string; projectId: string | null; clientId: string | null }>`
+    SELECT r.record_id AS "recordId", p.record_id AS "projectId", c.record_id AS "clientId"
+    FROM kin_records r
+      LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
+      LEFT JOIN kin_records c ON c.org_id = r.org_id
+        AND c.record_id = COALESCE(r.party_id, p.party_id)
+    WHERE r.org_id = ${orgId} AND r.key IN (SELECT value FROM json_each(${yield* encodeKeys(keys)}))
+    ORDER BY r.record_id`;
+});
+
+export const holdCoversRecord = (
+  hold: Hold,
+  row: Effect.Success<ReturnType<typeof recordHoldScopes>>[number],
+) =>
+  row.recordId === hold.recordId ||
+  (COVERS_ALL.has(hold.register) &&
+    (row.projectId === hold.recordId || row.clientId === hold.recordId));
+
 /**
  * The live hold on any of these records, or on its project or client, that counts for `personId`
  * (the company's, or that person's own): what a question about them may not be raised over.
@@ -356,21 +396,6 @@ export const holdOverAbout = Effect.fn("KinHolds.overAbout")(function* (input: {
     (hold) => hold.forPersonId === null || hold.forPersonId === input.personId,
   );
   if (holds.length === 0) return undefined;
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ recordId: string; projectId: string | null; clientId: string | null }>`
-    SELECT r.record_id AS "recordId", p.record_id AS "projectId", c.record_id AS "clientId"
-    FROM kin_records r
-      LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
-      LEFT JOIN kin_records c ON c.org_id = r.org_id
-        AND c.record_id = COALESCE(r.party_id, p.party_id)
-    WHERE r.org_id = ${input.orgId} AND r.key IN ${sql.in(input.keys.slice(0, 50))}
-    ORDER BY r.record_id`;
-  return holds.find((hold) =>
-    rows.some(
-      (row) =>
-        row.recordId === hold.recordId ||
-        (COVERS_ALL.has(hold.register) &&
-          (row.projectId === hold.recordId || row.clientId === hold.recordId)),
-    ),
-  );
+  const rows = yield* recordHoldScopes(input.orgId, input.keys.slice(0, 50));
+  return holds.find((hold) => rows.some((row) => holdCoversRecord(hold, row)));
 });

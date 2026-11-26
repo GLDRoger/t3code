@@ -330,6 +330,8 @@ export const KinMessage = Schema.Struct({
   messageId: KinMessageId,
   seq: PositiveInt,
   changeSeq: Schema.optional(NonNegativeInt),
+  // Groups separate reply and card rows in the feed without moving their stored seqs.
+  sourceWakeupId: Schema.optionalKey(KinWakeupId),
   clientMessageId: Schema.optional(TrimmedNonEmptyString),
   author: KinAuthor,
   authorRole: KinRole,
@@ -370,6 +372,8 @@ export const KinMessage = Schema.Struct({
   turnChanges: Schema.optional(KinTurnChanges),
   // Absent on every message its agent didn't take back.
   withdrawn: Schema.optional(KinMessageWithdrawn),
+  /** A question this message asked that nobody answered by its day; nothing more was done about it. Absent from older hosts. */
+  lapsedQuestion: Schema.optional(Schema.Struct({ question: Schema.String, at: IsoDateTime })),
 });
 export type KinMessage = typeof KinMessage.Type;
 
@@ -695,6 +699,7 @@ export type KinPresence = typeof KinPresence.Type;
 export const KinDraft = Schema.Struct({
   draftId: TrimmedNonEmptyString,
   agentId: KinAgentId,
+  sourceWakeupId: Schema.optionalKey(KinWakeupId),
   text: KinText,
 });
 export type KinDraft = typeof KinDraft.Type;
@@ -871,6 +876,8 @@ export const KinChatStreamEvent = Schema.Union([
      * their member move. Never another member's. Absent from servers without it.
      */
     readSeq: Schema.optional(NonNegativeInt),
+    /** On a stream's first backlog: changes when what this reader may open as a link may have changed, so a client drops its cached links for the chat. Absent from older hosts. */
+    accessStamp: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
   }),
   Schema.TaggedStruct("reset", {
     lastSeq: NonNegativeInt,
@@ -886,10 +893,8 @@ export const KinChatStreamEvent = Schema.Union([
   // Appends `text` at `offset`. A client whose draft length isn't `offset` ignores the
   // deltas until `end`, the durable message, or the next backlog.
   Schema.TaggedStruct("draft", {
-    draftId: TrimmedNonEmptyString,
-    agentId: KinAgentId,
+    ...KinDraft.fields,
     offset: NonNegativeInt,
-    text: KinText,
     // On the last event: the message it became (sent before this event), or null when the
     // text was not posted. Drop the draft either way.
     end: Schema.optional(Schema.Struct({ messageId: Schema.NullOr(KinMessageId) })),

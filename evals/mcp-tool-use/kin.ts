@@ -38,6 +38,7 @@ import { ASK_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
 import {
   billPaidConsequence,
   overpaymentConsequence,
+  repaidShortLine,
 } from "../../apps/server/src/kin/pulse/senses/bank.ts";
 import {
   billDueConsequence,
@@ -91,7 +92,7 @@ import {
   countryFirstMessage,
   notRegisteredFact,
 } from "../../apps/server/src/kin/work/companyProfile.ts";
-import { bankAnswer, shortDay } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
+import { bankAnswer } from "../../apps/server/src/kin/work/statements/bankKnown.ts";
 import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyAnswers.ts";
 import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
 import { waitingLine } from "../../apps/server/src/kin/work/unconfirmedFacts.ts";
@@ -106,7 +107,6 @@ import {
 import { parseAmount } from "../../apps/server/src/kin/work/money.ts";
 import { goalLine } from "../../apps/server/src/kin/work/goals.ts";
 import {
-  formatKinMoney,
   formatKinPicturesDay,
   KIN_TEXT_LOCALE,
   KinDocCardDraft,
@@ -886,8 +886,8 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
       };
       return feedTurnText(feed.numbers, feed.source, feed.period);
     })
-    // repaid_seen's line for a partner debit that doesn't add up to their oldest owed expenses
-    // (`pulse/senses/bank.ts` repaidSeenSenses, which builds it inline; mirrored word for word).
+    // repaid_seen's line for a partner debit that may not match their oldest owed expenses,
+    // rendered by the server's own `repaidShortLine` (`pulse/senses/bank.ts`).
     .replace(
       /\{\{REPAID_SHORT:([^|}]+)\|(\d+)\|([A-Z]{3})\|([\d-]+)\|([^|}]+)\|(\d+)\|(\d+)\}\}/g,
       (
@@ -900,7 +900,15 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
         owed: string,
         count: string,
       ) =>
-        `${key}, ${formatKinMoney(Number(minor), currency)} paid ${shortDay(day)}, names ${partner} but doesn't add up to their oldest owed expenses (${formatKinMoney(Number(owed), currency)} over ${count} expense${count === "1" ? "" : "s"}), so Kin marks nothing. Mark what it repaid on the expenses in Money.`,
+        repaidShortLine({
+          key,
+          amountMinor: Number(minor),
+          currency,
+          date: day,
+          partner,
+          owedMinor: Number(owed),
+          owedCount: Number(count),
+        }),
     );
 
 const decodeMoneySummary = Schema.decodeUnknownSync(KinMoneySummary);
@@ -1373,8 +1381,8 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
     sent: true,
     note: leftNote(input.to, input, input.asker),
   }),
-  // record_create's answer for new suggestions, keys from `first` (`leadWork.ts` createRow).
-  suggestedRows: (input: { records: unknown; first: number; zone: string }) => {
+  // record_create's answer for new tasks and milestones, kept at once, keys from `first` (`leadWork.ts` createRow).
+  savedRows: (input: { records: unknown; first: number; zone: string }) => {
     const asked = (Array.isArray(input.records) ? input.records : []).map((row: unknown) => {
       const one: Readonly<Record<string, unknown>> = isRecord(row) ? row : {};
       return {
@@ -1391,9 +1399,6 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
         key: `${one.list === "milestones" ? "M" : "W"}-${input.first + index}`,
         title: typeof one.title === "string" ? one.title : "",
         created: true,
-        state: "open",
-        stateLabel: suggestedStateLabel(one.list, "open"),
-        suggested: true,
         ...(one.list === "work" && Number.isFinite(at)
           ? { shows: dueShows(at, day, input.zone) }
           : {}),

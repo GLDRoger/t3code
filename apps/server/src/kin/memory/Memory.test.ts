@@ -64,6 +64,85 @@ const memoryLayer = (base: string, repo: string) =>
     Layer.provide(NodeServices.layer),
   );
 
+it.effect("reads every touched memory path with one log, including edits that were undone", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const base = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+    const writer = `${base}/a/memory`;
+    yield* fs.makeDirectory(`${writer}/.git/objects`, { recursive: true });
+    const real = yield* VcsProcess.VcsProcess;
+    const run = (args: ReadonlyArray<string>) =>
+      real.run({
+        operation: "Test.memoryHistory",
+        command: "git",
+        cwd: writer,
+        args,
+      });
+    yield* run(["init", "--initial-branch=main"]);
+    yield* fs.makeDirectory(`${writer}/claims`);
+    const title = `${writer}/claims/harborview-terms.md`;
+    const commit = (subject: string) =>
+      run([
+        "-c",
+        "user.name=Meera",
+        "-c",
+        "user.email=meera@example.invalid",
+        "commit",
+        "-am",
+        subject,
+      ]);
+    yield* fs.writeFileString(title, "Original Harborview renewal terms");
+    yield* run(["add", "--", "claims"]);
+    yield* commit("Before");
+    const before = (yield* run(["rev-parse", "HEAD"])).stdout.trim();
+    yield* fs.writeFileString(title, "Changed Harborview renewal terms");
+    yield* commit("kin(finance): owner edits item");
+    yield* fs.writeFileString(title, "Original Harborview renewal terms");
+    yield* commit("kin(finance): owner undoes edit");
+    for (let index = 1; index < 500; index++)
+      yield* fs.writeFileString(`${writer}/claims/item-${index}.md`, "Invented");
+    yield* run(["add", "--", "claims"]);
+    yield* commit("Tidewater Freight");
+    const after = (yield* run(["rev-parse", "HEAD"])).stdout.trim();
+    const calls: string[][] = [];
+    const service = memoryTestLayer.pipe(
+      Layer.provide(configLayer(base, "unused")),
+      Layer.provide(
+        Layer.succeed(VcsProcess.VcsProcess, {
+          run: (input) => {
+            calls.push([...input.args]);
+            return real.run(input);
+          },
+        }),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      const one = yield* memory.changedItems!(orgA, before, after, {
+        limit: 31,
+        excludeSubjects: new Set(["Tidewater Freight"]),
+      });
+      expect(one.items).toMatchObject([
+        { path: "claims/harborview-terms.md", subject: "kin(finance): owner undoes edit" },
+      ]);
+      const all = yield* memory.changedItems!(orgA, before, after, {
+        limit: 31,
+        excludeSubjects: new Set(),
+      });
+      expect(all.items).toHaveLength(31);
+      expect(all.overflow).toBe(469);
+      expect(calls).toHaveLength(2);
+      expect(calls.every((args) => args.includes("log"))).toBe(true);
+      const bad = yield* memory.changedItems!(orgA, "--all", after, {
+        limit: 31,
+        excludeSubjects: new Set(),
+      }).pipe(Effect.flip);
+      expect(bad).toMatchObject({ _tag: "MemoryChangeHeadInvalid" });
+      expect(calls).toHaveLength(2);
+    }).pipe(Effect.provide(service));
+  }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer))),
+);
+
 it.live.each([
   { name: "committed lead edits", binary: false, indexDirectory: false, missingIndex: false },
   {
@@ -530,13 +609,24 @@ it.effect(
             fixtureItem({
               id: `extra-${n}`,
               recorded_at: "2027-02-27T00:00:00.000Z",
-              title: "Multiline\nfixture",
-            }),
+              title: n === 202 ? "Multiline\nCargo tally" : "Multiline\nfixture",
+              ...(n === 203 ? { what: "Cargo tally" } : {}),
+            }).replace(
+              "Invented fixture body.",
+              n === 204 ? "Cargo tally." : "Invented fixture body.",
+            ),
           );
         }
         yield* memory.record(orgA, "main", yield* memory.anchor(orgA, "main"), repository.commit());
         yield* memory.prepareWakeup(orgA);
         yield* memory.rebuildIndex(orgA);
+        const tally = (yield* memory.query(orgA, { text: "cArGo TaLLy" })).map(({ id }) => id);
+        expect.soft(tally.toSorted()).toEqual(["extra-202", "extra-203", "extra-204"]);
+        const limited = yield* memory.query(orgA, { text: "cArGo TaLLy", limit: 2 });
+        expect.soft(limited).toHaveLength(2);
+        expect
+          .soft(limited.every(({ id }) => ["extra-202", "extra-203", "extra-204"].includes(id)))
+          .toBe(true);
         expect((yield* memory.readIndex(orgA)).trimEnd().split("\n")).toHaveLength(200);
         expect(yield* memory.readIndex(orgA)).toContain("more");
         const before = yield* memory.readIndex(orgA);
@@ -592,6 +682,12 @@ it.effect(
         expect(duplicateRead._tag).toBe("Failure");
         if (duplicateRead._tag === "Failure")
           expect(duplicateRead.failure._tag).toBe("MemoryDuplicateId");
+        const path = KinMemoryItemId.make("deferrals/duplicate.md");
+        const duplicatePath = yield* memory.readItem(orgA, path).pipe(Effect.result);
+        expect.soft(duplicatePath).toEqual(duplicateRead);
+        expect((yield* memory.readItemQuietly(orgA, path).pipe(Effect.flip))._tag).toBe(
+          "MemoryNotFound",
+        );
         yield* memory.rebuildIndex(orgA);
         expect(yield* memory.readIndex(orgA)).toContain("[duplicate id]");
         const beforeFallback = yield* memory.query(orgA, {});

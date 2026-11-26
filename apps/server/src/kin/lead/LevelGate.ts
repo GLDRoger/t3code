@@ -49,6 +49,7 @@ import { unreadableBy } from "../work/teamView.ts";
 type PostInput = KinMessagesSendInput & {
   readonly intent: KinAgentIntent;
   readonly placeReplyFigures?: true;
+  readonly silent?: true;
 };
 type PostToInput = PostInput & {
   /** Why it can't wait for their quiet hours: logged, and it posts now. */
@@ -523,12 +524,15 @@ const make = Effect.gen(function* () {
           const replaced =
             input.urgent === undefined
               ? 0
-              : yield* urgentNow({
-                  ...where,
-                  agentId: agent.agentId,
-                  wakeupId: agent.wakeupId,
-                  reason: input.urgent,
-                });
+              : yield* urgentNow(
+                  {
+                    ...where,
+                    agentId: agent.agentId,
+                    wakeupId: agent.wakeupId,
+                    reason: input.urgent,
+                  },
+                  chat,
+                );
           const held =
             input.urgent === undefined
               ? yield* holdFor({ ...where, notBefore: input.notBefore })

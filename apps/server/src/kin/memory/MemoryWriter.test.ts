@@ -1849,6 +1849,7 @@ it.effect(
         directMainPush: true,
         repositories: [{ orgId, repoUrl: remote, path: "state" }],
       });
+      const episodes: Array<{ operation: string; failure: string | undefined }> = [];
       const layer = Writer.layer.pipe(
         Layer.provideMerge(
           Memory.layer.pipe(
@@ -1857,7 +1858,15 @@ it.effect(
           ),
         ),
         Layer.provideMerge(Repository.layer),
-        Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
+        Layer.provide(
+          Layer.succeed(Memory.MemoryRecoveryHooks, {
+            notify: () => Effect.void,
+            writeEpisode: (_org: KinOrgId, operation: string, failure: string | undefined) =>
+              Effect.sync(() => {
+                episodes.push({ operation, failure });
+              }),
+          }),
+        ),
         Layer.provide(config),
         Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
         Layer.provide(
@@ -1930,10 +1939,15 @@ it.effect(
         yield* fs.chmod(hook, 0o755);
         // Whether a clear's own event ran it or, after a crash, the sync at startup does.
         yield* writer.stripQuotes(orgId);
+        assert.deepStrictEqual(episodes.at(-1), { operation: "deleted-quotes", failure: "remote" });
         assert.include(yield* show("main", "claims/said.md"), "quote:");
         assert.notInclude(yield* show(shadow, "claims/said.md"), "quote:");
         yield* fs.remove(hook);
         yield* writer.stripQuotes(orgId);
+        assert.deepStrictEqual(episodes.at(-1), {
+          operation: "deleted-quotes",
+          failure: undefined,
+        });
         for (const branch of ["main", shadow]) {
           const text = yield* show(branch, "claims/said.md");
           assert.notInclude(text, "quote:", branch);

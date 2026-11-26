@@ -51,7 +51,7 @@ export const offTurnText = (number: {
   readonly side: "above" | "below";
   readonly limit: string;
 }) =>
-  `${named(number)} is ${figure(number.value, number.unit)} as of ${number.asOf}, ${number.side} its limit of ${figure(number.limit, number.unit)}. Look at what moved (numbers_read gives the days before), then do the first useful thing yourself: a suggested task, a mail drafted on a Confirm card, or a list entry. Post one line to the owner saying what moved and what you drafted. Don't ask a question and don't assign anyone.`;
+  `${named(number)} is ${figure(number.value, number.unit)} as of ${number.asOf}, ${number.side} its limit of ${figure(number.limit, number.unit)}. Look at what moved (numbers_read gives the days before), then do the first useful thing yourself: a task, a mail drafted on a Confirm card, or a list entry. Post one line to the owner saying what moved and what you drafted. Don't ask a question and don't assign anyone.`;
 
 /** What a feed's scheduled run tells its keeper. */
 export const feedTurnText = (

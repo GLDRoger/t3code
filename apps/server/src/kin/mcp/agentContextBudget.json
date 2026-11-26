@@ -2,18 +2,18 @@
   "mcpToolListJsonBytes": 64767,
   "kinToolListJsonBytes": 3044,
   "kinInstructionsBytes": {
-    "owner": 41456,
-    "confined": 41404
+    "owner": 41704,
+    "confined": 41652
   },
-  "kinSharedInstructionsHash": "4ceb34b73155164f9e13e6ffdffbdc3129c0ae2515efc5969ab5c54c00478422",
+  "kinSharedInstructionsHash": "a0249114282032d6cd628d3e6f40ff1c4cae30a9f7d88c287c45ea39ae1972d1",
   "kinLeadToolListJsonBytes": {
-    "engineering": 170994,
-    "engineeringBesideFinanceAndSales": 154711,
-    "finance": 150172,
-    "shared": 98226,
-    "social": 153253,
-    "socialBesideFinanceAndSales": 136970,
-    "support": 150172
+    "engineering": 171788,
+    "engineeringBesideFinanceAndSales": 155505,
+    "finance": 150966,
+    "shared": 101137,
+    "social": 154047,
+    "socialBesideFinanceAndSales": 137764,
+    "support": 150966
   },
   "kinLeadOwnerNativeTools": ["Bash", "Read", "Edit", "Write", "WebSearch", "WebFetch"],
   "kinLeadAlwaysLoadedToolBytes": 2,
@@ -95,7 +95,7 @@
       "schema": 490
     },
     "kin_ask": {
-      "desc": 2200,
+      "desc": 2477,
       "schema": 812
     },
     "kin_ask_close": {
@@ -127,7 +127,7 @@
       "schema": 46
     },
     "kin_connection_call": {
-      "desc": 822,
+      "desc": 812,
       "schema": 226
     },
     "kin_connection_note": {
@@ -149,6 +149,10 @@
     "kin_document": {
       "desc": 1667,
       "schema": 1749
+    },
+    "kin_github_comment": {
+      "desc": 348,
+      "schema": 269
     },
     "kin_github_diff": {
       "desc": 147,
@@ -175,7 +179,7 @@
       "schema": 114
     },
     "kin_hand_off": {
-      "desc": 1851,
+      "desc": 2037,
       "schema": 328
     },
     "kin_issue": {
@@ -243,8 +247,8 @@
       "schema": 73
     },
     "memory_search": {
-      "desc": 185,
-      "schema": 450
+      "desc": 225,
+      "schema": 543
     },
     "memory_write": {
       "desc": 2291,
@@ -299,8 +303,8 @@
       "schema": 166
     },
     "pulse_handle": {
-      "desc": 987,
-      "schema": 1070
+      "desc": 996,
+      "schema": 1249
     },
     "pulse_nudge": {
       "desc": 283,
@@ -319,7 +323,7 @@
       "schema": 239
     },
     "record_create": {
-      "desc": 6290,
+      "desc": 6310,
       "schema": 8725
     },
     "record_get": {
@@ -393,7 +397,7 @@
     "checkIn": 2976,
     "pulse": 3012,
     "scheduled": 3248,
-    "reminder": 3019,
+    "reminder": 3302,
     "groupReply": 3113,
     "teamRoom": 2751
   }

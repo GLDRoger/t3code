@@ -35,6 +35,7 @@ import {
 import { kinTapAnswersChoice, kinTapText } from "./kinTap.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinReplyKey, type KinHeldDraft } from "./kinLive.ts";
+import { kinReplyButtons } from "./kinReplyButtons.ts";
 import { kinPlainTables, kinSentences } from "./kinScreenState.ts";
 import type { KinSynced } from "./kinStreams.ts";
 
@@ -224,6 +225,7 @@ export type KinFeedRow =
       readonly type: "message";
       readonly key: string;
       readonly message: KinMessage;
+      readonly footerAfterCards?: true;
       readonly own: boolean;
       /** Who wrote it, for others' messages; the author line shows only when `showAuthor`. */
       readonly authorLabel: string;
@@ -232,6 +234,7 @@ export type KinFeedRow =
       /** The row above is a bubble by the same author, so this one sits tight under it. */
       readonly continues: boolean;
     }
+  | { readonly type: "footer"; readonly key: string; readonly message: KinMessage }
   /** A reply still streaming. Its key is its durable message's, so the bubble stays in place. */
   | {
       readonly type: "draft";
@@ -454,10 +457,172 @@ const authorKey = (message: KinMessage) =>
       ? `agent:${message.author.agentId}`
       : message.author.memberId;
 
+// The server's `isAgentHandoff` (apps/server/src/kin/chat/sharing.ts); the two must say the same.
+// What one agent passed another is that agent's input: a device may still hold rows sent before.
+const handoffPrefixes = ["kin-handoff:", "kin-handoff-back:"] as const;
+const isAgentHandoff = (message: KinMessage) =>
+  message.discussionId === undefined &&
+  message.relay?.personId === undefined &&
+  handoffPrefixes.some((prefix) => message.messageId.startsWith(prefix));
+
+type FeedEntry = KinMessage | KinHeldDraft;
+
+const FLOOR_RUN_ID = /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i;
+
+// A Team-room ask spends a floor grant; team_say writes into the discussion's synthetic run.
+function teamCardScope(card: KinMessage, reply: KinMessage) {
+  return (
+    card.discussionId === undefined &&
+    card.floorRunId !== null &&
+    FLOOR_RUN_ID.test(card.floorRunId) &&
+    reply.discussionId !== undefined &&
+    reply.floorRunId === `team:${reply.discussionId}`
+  );
+}
+
+function sameCardTurn(card: KinMessage, entry: FeedEntry) {
+  if (entry.sourceWakeupId === undefined || entry.sourceWakeupId !== card.sourceWakeupId)
+    return false;
+  if ("draftId" in entry)
+    return (
+      card.author._tag === "agent" &&
+      card.author.agentId === entry.agentId &&
+      card.floorRunId === null &&
+      card.discussionId === undefined
+    );
+  return (
+    entry.kind === "text" &&
+    entry.status === "posted" &&
+    entry.author._tag === "agent" &&
+    card.author._tag === "agent" &&
+    entry.author.agentId === card.author.agentId &&
+    entry.author.threadId === card.author.threadId &&
+    entry.orgId === card.orgId &&
+    entry.chatId === card.chatId &&
+    ((entry.floorRunId === card.floorRunId && entry.discussionId === card.discussionId) ||
+      teamCardScope(card, entry)) &&
+    entry.relay === undefined
+  );
+}
+
+function isStandaloneCard(message: KinMessage) {
+  return (
+    message.sourceWakeupId !== undefined &&
+    message.author._tag === "agent" &&
+    message.kind === "text" &&
+    message.status === "posted" &&
+    message.relay === undefined &&
+    message.widgetId !== null &&
+    message.body.trim() === ""
+  );
+}
+
+// Move only card-only rows, and never across another turn. Keep each card in its original order.
+function replyBeforeCards(
+  messages: ReadonlyArray<KinMessage>,
+  drafts: ReadonlyArray<KinHeldDraft>,
+) {
+  const entries: ReadonlyArray<FeedEntry> =
+    drafts.length === 0 ? messages : [...messages, ...drafts];
+  const ordered: FeedEntry[] = [];
+  const teamCardRuns = new Map<KinMessage, string>();
+  let cards: KinMessage[] = [];
+  for (const entry of entries) {
+    const draft = "draftId" in entry;
+    const card = !draft && isStandaloneCard(entry);
+    if (
+      cards.length > 0 &&
+      (!sameCardTurn(cards[0]!, entry) ||
+        (!draft && !card && (entry.widgetId !== null || entry.body.trim() === "")))
+    ) {
+      ordered.push(...cards);
+      cards = [];
+    }
+    if (card) cards.push(entry);
+    else {
+      ordered.push(entry);
+      if (!draft && cards.length > 0 && teamCardScope(cards[0]!, entry)) {
+        for (const held of cards) teamCardRuns.set(held, entry.floorRunId!);
+        ordered.push(...cards);
+        cards = [];
+      }
+    }
+  }
+  ordered.push(...cards);
+  return { ordered, teamCardRuns };
+}
+
+const deferredFooters = new WeakMap<
+  MessageRow,
+  { readonly body: MessageRow; readonly footer: Extract<KinFeedRow, { type: "footer" }> }
+>();
+
+function deferredFooter(row: MessageRow) {
+  let held = deferredFooters.get(row);
+  if (held === undefined) {
+    held = {
+      body: { ...row, footerAfterCards: true },
+      footer: { type: "footer", key: `footer:${row.key}`, message: row.message },
+    };
+    deferredFooters.set(row, held);
+  }
+  return held;
+}
+
+// Do this after folding: neither a collapsed discussion nor an intervening row lends out footers.
+function placeReplyFooters(rows: KinFeedRow[]) {
+  const out: KinFeedRow[] = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const card = rows[index]!;
+    const reply = out.at(-1);
+    if (
+      card.type !== "message" ||
+      !isStandaloneCard(card.message) ||
+      reply?.type !== "message" ||
+      reply.message.body.trim() === "" ||
+      !sameCardTurn(card.message, reply.message)
+    ) {
+      out.push(card);
+      continue;
+    }
+    const footers: KinFeedRow[] = [];
+    for (let i = out.length - 1; i >= 0; i -= 1) {
+      const words = out[i]!;
+      if (
+        words.type !== "message" ||
+        words.message.body.trim() === "" ||
+        !sameCardTurn(card.message, words.message)
+      )
+        break;
+      if (
+        (words.message.turnChanges?.count ?? 0) === 0 &&
+        kinReplyButtons(words.message).length === 0
+      )
+        continue;
+      const held = deferredFooter(words);
+      out[i] = held.body;
+      footers.push(held.footer);
+    }
+    out.push(card);
+    while (index + 1 < rows.length) {
+      const next = rows[index + 1]!;
+      if (
+        next.type !== "message" ||
+        !isStandaloneCard(next.message) ||
+        !sameCardTurn(next.message, reply.message)
+      )
+        break;
+      out.push(next);
+      index += 1;
+    }
+    out.push(...footers.reverse());
+  }
+  return out;
+}
+
 /**
- * Feed rows, oldest first, then streaming drafts. A floor run of two or more consecutive agent
- * messages from more than one agent folds into one line (chat spec, interface rule 3); an
- * expanded run lists its messages after that line. One agent's run shows as grouped bubbles.
+ * A floor run of two or more consecutive messages from more than one agent folds into one line;
+ * an expanded run lists its messages after that line. One agent's run shows as grouped bubbles.
  */
 export function buildKinFeedRows(
   messages: ReadonlyArray<KinMessage>,
@@ -475,9 +640,12 @@ export function buildKinFeedRows(
     .filter(
       (message) =>
         message.status !== "dismissed" &&
+        !isAgentHandoff(message) &&
         !(message.kind === "widget_action" && kinTapAnswersChoice(message.body)),
     )
     .map((message) => kinMessageOnMyClock(message));
+  const { ordered, teamCardRuns } = replyBeforeCards(visible, drafts);
+  const runOf = (message: KinMessage) => teamCardRuns.get(message) ?? foldRunId(message);
   const rows: KinFeedRow[] = [];
   const foldKeys = new Set<string>();
   let previousAuthor: string | null = null;
@@ -485,6 +653,8 @@ export function buildKinFeedRows(
   let previousAt: string | null = null;
 
   const startDay = (message: KinMessage) => {
+    // An older card under a newer reply does not start a backwards time divider.
+    if (message.widgetId !== null && previousAt !== null && message.createdAt < previousAt) return;
     const day = kinLocalDayKey(message.createdAt);
     const gap = gapBefore(previousAt, message.createdAt);
     previousAt = message.createdAt;
@@ -597,50 +767,7 @@ export function buildKinFeedRows(
     previousAuthor = author;
   };
 
-  for (let index = 0; index < visible.length;) {
-    const first = visible[index]!;
-    const runId = foldRunId(first);
-    let end = index + 1;
-    if (runId !== null) {
-      while (end < visible.length && foldRunId(visible[end]!) === runId) end += 1;
-    }
-    const run = visible.slice(index, end);
-    if (runId === null || new Set(run.map(authorKey)).size < 2) {
-      run.forEach(pushMessage);
-      index = end;
-      continue;
-    }
-    startDay(first);
-    previousAt = run[run.length - 1]!.createdAt;
-    const authors = [...new Set(run.map((message) => kinAuthorLabel(message, viewer)))];
-    const decision =
-      run.findLast((message) => message.intent === "decision" && message.status !== "deleted")
-        ?.body ?? null;
-    const last = run[run.length - 1]!;
-    const expanded = expandedRuns.has(runId) !== openRuns;
-    // Keyed by run so a page prepended into the run keeps the row; a run split by another
-    // author falls back to its first message.
-    const key = foldKeys.has(`fold:${runId}`)
-      ? `fold:${runId}:${first.messageId}`
-      : `fold:${runId}`;
-    foldKeys.add(key);
-    rows.push({
-      type: "fold",
-      key,
-      runId,
-      count: run.length,
-      authors,
-      decision,
-      discussionId: last.discussionId ?? null,
-      open: last.discussionId !== undefined && last.discussionOpen === true,
-      expanded,
-      lastSeq: last.seq,
-    });
-    previousAuthor = null;
-    if (expanded) run.forEach(pushMessage);
-    index = end;
-  }
-  for (const draft of drafts) {
+  const pushDraft = (draft: KinHeldDraft) => {
     const day = kinLocalDayKey(draft.startedAt);
     const gap = gapBefore(previousAt, draft.startedAt);
     previousAt = draft.startedAt;
@@ -663,8 +790,67 @@ export function buildKinFeedRows(
       continues: previousAuthor === author,
     });
     previousAuthor = author;
+  };
+
+  for (let index = 0; index < ordered.length;) {
+    const first = ordered[index]!;
+    if ("draftId" in first) {
+      pushDraft(first);
+      index += 1;
+      continue;
+    }
+    const runId = runOf(first);
+    if (runId === null) {
+      pushMessage(first);
+      index += 1;
+      continue;
+    }
+    const run: KinMessage[] = [first];
+    let end = index + 1;
+    while (end < ordered.length) {
+      const entry = ordered[end]!;
+      if ("draftId" in entry || runOf(entry) !== runId) break;
+      run.push(entry);
+      end += 1;
+    }
+    if (new Set(run.map(authorKey)).size < 2) {
+      run.forEach(pushMessage);
+      index = end;
+      continue;
+    }
+    startDay(first);
+    const authors = [...new Set(run.map((message) => kinAuthorLabel(message, viewer)))];
+    const decision =
+      run.findLast((message) => message.intent === "decision" && message.status !== "deleted")
+        ?.body ?? null;
+    const last = run.reduce((latest, message) => (message.seq > latest.seq ? message : latest));
+    const expanded = expandedRuns.has(runId) !== openRuns;
+    // Keyed by run so a page prepended into the run keeps the row; a run split by another
+    // author falls back to its first message.
+    const key = foldKeys.has(`fold:${runId}`)
+      ? `fold:${runId}:${first.messageId}`
+      : `fold:${runId}`;
+    foldKeys.add(key);
+    rows.push({
+      type: "fold",
+      key,
+      runId,
+      count: run.length,
+      authors,
+      decision,
+      discussionId: last.discussionId ?? null,
+      open: last.discussionId !== undefined && last.discussionOpen === true,
+      expanded,
+      lastSeq: last.seq,
+    });
+    previousAuthor = null;
+    if (expanded) run.forEach(pushMessage);
+    else previousAt = last.createdAt;
+    index = end;
   }
-  return superseded.size === 0 ? rows : rows.filter((_, index) => !superseded.has(index));
+  return placeReplyFooters(
+    superseded.size === 0 ? rows : rows.filter((_, index) => !superseded.has(index)),
+  );
 }
 
 /** The local calendar day of an ISO time, as `2026-11-08`. */
@@ -838,6 +1024,7 @@ export function kinRowSeq(row: KinFeedRow): number {
       return row.lastSeq;
     case "day":
     case "draft":
+    case "footer":
       return 0;
   }
 }

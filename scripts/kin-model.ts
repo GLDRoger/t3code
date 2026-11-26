@@ -45,6 +45,7 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/lead/ChatSharing.ts",
     "apps/server/src/kin/lead/Audience.ts",
     "apps/server/src/kin/chat/KinGroups.ts",
+    "apps/server/src/kin/people/KinPeople.ts",
   ],
   checkin: [
     "apps/server/src/scheduledTasks/Schedule.ts",
@@ -802,3 +803,14 @@ if (import.meta.main)
       process.exit(2);
     },
   );
+
+/** Splits the models a local check would run from the ones `CHECK_CHANGED_SKIP_MODELS` names. */
+export const splitSkippedModels = (models: ReadonlyArray<string>, skip: string) => {
+  const named = new Set(
+    skip.split(",").flatMap((name) => (name.trim() === "" ? [] : [name.trim()])),
+  );
+  return {
+    run: models.filter((name) => !named.has(name)),
+    skipped: models.filter((name) => named.has(name)),
+  };
+};

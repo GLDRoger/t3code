@@ -52,6 +52,8 @@ const invalidIntent = new KinChatError({
   reason: "invalid_state",
   message: "The intent or grant is invalid for this wake-up.",
 });
+const refusedReplyRuns = new WeakMap<KinChatError, string>();
+export const refusedReplyRun = (error: KinChatError) => refusedReplyRuns.get(error);
 const isKinChatError = Schema.is(KinChatError);
 const NOTICE_LIMIT = 10;
 /** Events nobody's message opened a floor for: what the woken lead posts needs no grant. */
@@ -400,8 +402,14 @@ const make = Effect.gen(function* () {
       if (
         !replyIntentAllowed(run.agent_turns, intent) &&
         !run.mention_queue.includes(identity.agentId)
-      )
-        return yield* invalidIntent;
+      ) {
+        const refusal = new KinChatError({
+          reason: invalidIntent.reason,
+          message: invalidIntent.message,
+        });
+        refusedReplyRuns.set(refusal, run.run_id);
+        return yield* refusal;
+      }
       if (run.last_speaker === identity.agentId) return yield* notGranted;
       const grants = yield* sql<{ token: string }>`SELECT token FROM kin_floor_grants
       WHERE org_id = ${identity.orgId} AND chat_id = ${chat.chatId} AND agent_id = ${identity.agentId}

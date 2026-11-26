@@ -52,6 +52,7 @@ import {
   parseFrontMatter,
 } from "./frontMatter.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import type { WriteEpisode } from "./writeFailure.ts";
 
 export class MemoryError extends Schema.TaggedError<MemoryError>()("MemoryError", {
   orgId: Schema.String,
@@ -84,6 +85,19 @@ export class MemoryQueryDecodeError extends Schema.TaggedError<MemoryQueryDecode
   "MemoryQueryDecodeError",
   failureFields,
 ) {}
+
+class MemoryChangeHeadInvalid extends Schema.TaggedError<MemoryChangeHeadInvalid>()(
+  "MemoryChangeHeadInvalid",
+  { orgId: Schema.String },
+) {}
+
+interface ChangedItem {
+  readonly path: string;
+  readonly at: number;
+  readonly subject: string;
+  readonly coding: boolean;
+  readonly head?: MemoryItemHead;
+}
 
 type MemoryFailure =
   | MemoryError
@@ -137,6 +151,7 @@ export const LANDED_REF = "refs/kin/landed";
 export const LANDED_SEARCH_DEPTH = 200;
 
 export interface MemoryQuery {
+  readonly text?: string;
   readonly kind?: MemoryItemKind;
   readonly status?: MemoryItemHead["status"];
   readonly dueBefore?: string;
@@ -147,6 +162,11 @@ export interface MemoryQuery {
   readonly excludeInvalid?: boolean;
   readonly limit?: number;
 }
+
+export const matchesMemoryText = ({ head, body }: MemoryCache.MemoryItem, needle: string) =>
+  head.title.toLowerCase().includes(needle) ||
+  (head.what?.toLowerCase().includes(needle) ?? false) ||
+  body.toLowerCase().includes(needle);
 
 export class MemoryRecoveryHooks extends Context.Service<
   MemoryRecoveryHooks,
@@ -161,6 +181,7 @@ export class MemoryRecoveryHooks extends Context.Service<
       /** The agent whose turn a restart cut, so the owner's line names it. */
       restartOf?: KinAgentId;
     }) => Effect.Effect<void>;
+    readonly writeEpisode?: WriteEpisode;
   }
 >()("t3/kin/memory/Memory/MemoryRecoveryHooks") {}
 
@@ -263,6 +284,15 @@ export class Memory extends Context.Service<
      * until it passes.
      */
     readonly syncCheckout: (orgId: KinOrgId) => Effect.Effect<void, MemoryFailure>;
+    readonly changedItems?: (
+      orgId: KinOrgId,
+      from: string,
+      to: string,
+      options: { readonly limit: number; readonly excludeSubjects: ReadonlySet<string> },
+    ) => Effect.Effect<
+      { readonly items: ReadonlyArray<ChangedItem>; readonly overflow: number },
+      MemoryFailure | MemoryChangeHeadInvalid
+    >;
     readonly readPromptSnapshot: (
       orgId: KinOrgId,
       expectedHead: string,
@@ -1112,7 +1142,10 @@ const make = Effect.gen(function* () {
     const { items } = yield* load(orgId, false, view);
     const counts = new Map<string, number>();
     for (const { head } of items) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
-    return items
+    const needle = q.text?.toLowerCase();
+    const matched =
+      needle === undefined ? items : items.filter((item) => matchesMemoryText(item, needle));
+    return matched
       .map((item) => ({ ...item.head, duplicate: (counts.get(item.head.id) ?? 0) > 1 }))
       .filter(
         (item) =>
@@ -1137,15 +1170,25 @@ const make = Effect.gen(function* () {
     admit?: (item: MemoryCache.MemoryItem) => boolean,
   ) {
     const { items } = yield* load(orgId, false, view);
-    const matches = items.filter((item) => item.head.id === id && (admit?.(item) ?? true));
+    // Quiet lookups also serve mutations, which still take ids only.
+    const matches = items.filter(
+      (item) =>
+        (item.head.id === id || (recordRead && item.head.path === id)) && (admit?.(item) ?? true),
+    );
     const item = matches[0];
     if (!item) return yield* new MemoryNotFound({ orgId, id });
     if (matches.length > 1) return yield* new MemoryDuplicateId({ orgId, id });
+    const itemId = item.head.id;
+    if (
+      id !== itemId &&
+      items.some((other) => other !== item && other.head.id === itemId && (admit?.(other) ?? true))
+    )
+      return yield* new MemoryDuplicateId({ orgId, id: itemId });
     if (recordRead)
-      yield* cache.read(orgId, id).pipe(
+      yield* cache.read(orgId, itemId).pipe(
         Effect.catchTags({
           MemoryHistoryError: () =>
-            Effect.logWarning("Could not record memory read", { orgId, id }),
+            Effect.logWarning("Could not record memory read", { orgId, id: itemId }),
         }),
       );
     return item;
@@ -2153,6 +2196,86 @@ const make = Effect.gen(function* () {
         ),
       );
     }),
+    changedItems: Effect.fn("Memory.changedItems")((orgId, from, to, options) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const sha = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
+          if (!sha.test(from) || !sha.test(to))
+            return yield* new MemoryChangeHeadInvalid({ orgId });
+          if (from === to) return { items: [], overflow: 0 };
+          const { writer } = yield* pathsFor(orgId);
+          const log = yield* git(orgId, writer, [
+            "log",
+            "-z",
+            "--full-history",
+            "--diff-merges=first-parent",
+            "--no-renames",
+            "--name-only",
+            "--format=%x00%ct%x00%s%x00%B",
+            `${from}..${to}`,
+            "--",
+            ...folders,
+          ]);
+          const seen = new Set<string>();
+          const items = new Map<string, ChangedItem>();
+          const prefix = `${orgId}\0`;
+          const pinned = [...snapshots.entries()].find(
+            ([key, snapshot]) => key.startsWith(prefix) && snapshot.head === to,
+          )?.[1];
+          const heads = new Map(pinned?.items.map(({ head }) => [head.path, head]));
+          let at = 0;
+          let subject = "";
+          let coding = false;
+          let excluded = true;
+          const tokens = log.split("\0");
+          for (let index = 0; index < tokens.length; index++) {
+            const token = tokens[index]!;
+            if (token === "") {
+              if (index === tokens.length - 1) break;
+              at = Number(tokens[++index]) * 1_000;
+              subject = tokens[++index] ?? "";
+              const message = tokens[++index] ?? "";
+              if (!Number.isFinite(at))
+                return yield* new MemoryError({
+                  orgId,
+                  operation: "changedItems",
+                  reason: "Malformed log",
+                });
+              coding =
+                /^Kin-Coding-Agent-For:/m.test(message) || subject.includes("(coding agent)");
+              excluded = options.excludeSubjects.has(subject);
+              continue;
+            }
+            const path = token.replace(/^\n/, "");
+            if (
+              excluded ||
+              !path.endsWith(".md") ||
+              !folders.some((folder) => path.startsWith(`${folder}/`))
+            )
+              continue;
+            if (seen.has(path)) {
+              const newer = items.get(path);
+              if (coding && newer !== undefined && !newer.coding)
+                items.set(path, { ...newer, coding: true });
+              continue;
+            }
+            seen.add(path);
+            if (items.size < options.limit) {
+              const head = heads.get(path);
+              items.set(path, {
+                path,
+                at,
+                subject,
+                coding,
+                ...(head === undefined ? {} : { head }),
+              });
+            }
+          }
+          return { items: [...items.values()], overflow: seen.size - items.size };
+        }),
+      ),
+    ),
     readPromptSnapshot: Effect.fn("Memory.readPromptSnapshot")((orgId, expectedHead, view) =>
       locked(
         orgId,
