@@ -1,5 +1,5 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- synchronous hashes keep raw prompt text out of shadow storage.
-import { createHash } from "node:crypto";
+import * as NodeCrypto from "node:crypto";
 import {
   KinWakeupId,
   type KinAgentId,
@@ -42,7 +42,7 @@ export interface CarryFacts {
 }
 
 export const CARRY_LIFETIME_MS = 55 * 60_000;
-export const CARRY_INDEX_LINES = 40;
+const CARRY_INDEX_LINES = 40;
 
 export function decideCarry(facts: CarryFacts) {
   const reason = !facts.enabled
@@ -103,7 +103,7 @@ export class KinBoot extends Context.Service<KinBoot, string>()(
 ) {}
 export const layer = Layer.effect(KinBoot, bootId);
 
-const digest = (text: string) => createHash("sha256").update(text).digest("hex");
+const digest = (text: string) => NodeCrypto.createHash("sha256").update(text).digest("hex");
 const fingerprintJson = (value: unknown) => digest(JSON.stringify(value));
 
 const Fingerprint = Schema.Struct({

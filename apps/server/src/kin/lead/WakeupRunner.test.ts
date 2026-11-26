@@ -110,6 +110,20 @@ import { ProviderAdapterSteerRunError } from "@t3tools/provider-core/server/Prov
 import { ProviderDriverKind, ProviderThreadId } from "@t3tools/contracts";
 
 const decodeEvent = Schema.decodeSync(KinEvent);
+const decodeCarryStamp = Schema.decodeUnknownSync(
+  Schema.fromJsonString(
+    Schema.Struct({
+      carry: Schema.Boolean,
+      reason: Schema.NullOr(Schema.String),
+      bootId: Schema.String,
+      sessionStart: KinWakeupId,
+      carriedFrom: Schema.NullOr(KinWakeupId),
+    }),
+  ),
+);
+const decodeStandingInstructions = Schema.decodeUnknownSync(
+  Schema.fromJsonString(Schema.Struct({ instructions: Schema.String })),
+);
 const decodeHead = Schema.decodeUnknownSync(MemoryItemHead);
 const fixtureHead = (orgId: string, id: string, title: string) =>
   decodeHead({
@@ -254,6 +268,9 @@ describe("WakeupRunner", () => {
     Effect.gen(function* () {
       const commitEntered = Deferred.makeUnsafe<void>();
       const commitRelease = Deferred.makeUnsafe<void>();
+      let watchForSpin = false;
+      let unsolicitedWakes = 0;
+      let expectedScans = 1;
       let commits = 0;
       let readyCalls = 0;
       let subscriptions = 0;
@@ -297,11 +314,11 @@ describe("WakeupRunner", () => {
           yield* TestClock.adjust("20 seconds");
           yield* Deferred.await(commitEntered);
           // The lead is still finishing its first wake-up, with more work queued.
+          watchForSpin = true;
           yield* queue.enqueue(event("loop-second"));
-          yield* TestClock.adjust("5 seconds");
-          const settled = readyCalls;
-          yield* TestClock.adjust("30 seconds");
-          assert.strictEqual(readyCalls, settled);
+          yield* TestClock.adjust("35 seconds");
+          assert.strictEqual(unsolicitedWakes, 0);
+          assert.isAtMost(readyCalls, expectedScans);
           // Every pass shares the loop's one subscription to T3's events.
           assert.isAbove(readyCalls, 1);
           assert.strictEqual(subscriptions, 1);
@@ -329,15 +346,24 @@ describe("WakeupRunner", () => {
         }),
       ).pipe(
         Effect.provide(
-          harness({
-            writer,
-            onReadyLeads: () => {
-              readyCalls++;
+          harnessWith(
+            {
+              writer,
+              onReadyLeads: () => {
+                readyCalls++;
+              },
+              onDomainSubscribe: () => {
+                subscriptions++;
+              },
             },
-            onDomainSubscribe: () => {
-              subscriptions++;
-            },
-          }),
+            Layer.succeed(WakeupRunner.KinWakeupHooks, {
+              memoryCheckoutInvalid: () => Effect.void,
+              orgWake: (source) => {
+                if (source === "timer" && watchForSpin) unsolicitedWakes++;
+                else expectedScans++;
+              },
+            }),
+          ),
         ),
       );
     }).pipe(provideDeterministicTestRuntime),
@@ -1851,21 +1877,10 @@ describe("WakeupRunner", () => {
       }>`SELECT * FROM kin_wakeups ORDER BY started_at, wakeup_id`;
       const [first, second] = rows;
       assert.isString(first?.carry_json, "first fresh turn records its shadow decision");
-      const decodeStamp = Schema.decodeUnknownSync(
-        Schema.fromJsonString(
-          Schema.Struct({
-            carry: Schema.Boolean,
-            reason: Schema.NullOr(Schema.String),
-            bootId: Schema.String,
-            sessionStart: KinWakeupId,
-            carriedFrom: Schema.NullOr(KinWakeupId),
-          }),
-        ),
-      );
-      const started = decodeStamp(first!.carry_json);
+      const started = decodeCarryStamp(first!.carry_json);
       assert.include(started, { carry: false, reason: "ended" });
       assert.isString(second?.carry_json, "second fresh turn records its shadow decision");
-      assert.include(decodeStamp(second!.carry_json), {
+      assert.include(decodeCarryStamp(second!.carry_json), {
         carry: true,
         reason: null,
         carriedFrom: started.sessionStart,
@@ -1898,9 +1913,7 @@ describe("WakeupRunner", () => {
           ownerThread: true,
           driver: "claudeAgent",
           model: selection,
-          instructionsSha: Schema.decodeUnknownSync(
-            Schema.fromJsonString(Schema.Struct({ instructions: Schema.String })),
-          )(second!.standing_key).instructions,
+          instructionsSha: decodeStandingInstructions(second!.standing_key).instructions,
           bootId: started.bootId,
           toolListSha: toolHash,
           prompt: fingerprintPrompt(["invented standing"], "invented index"),

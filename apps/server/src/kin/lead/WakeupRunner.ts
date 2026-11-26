@@ -163,6 +163,7 @@ export class KinWakeupHooks extends Context.Service<
   KinWakeupHooks,
   {
     readonly memoryCheckoutInvalid: (error: Memory.MemoryCheckoutInvalid) => Effect.Effect<void>;
+    readonly orgWake?: (source: "queue" | "activity" | "finished" | "timer") => void;
   }
 >()("t3/kin/lead/WakeupRunner/KinWakeupHooks") {}
 
@@ -2317,16 +2318,18 @@ const make = Effect.gen(function* () {
               Effect.forkScoped,
             );
           }
-          recoverNext = yield* Effect.raceAllFirst([
-            changed.pipe(Effect.as(false)),
-            finished.pipe(Effect.as(true)),
-            stir.pipe(Effect.as(false)),
+          const wakeSource = yield* Effect.raceAllFirst([
+            changed.pipe(Effect.as("queue" as const)),
+            finished.pipe(Effect.as("finished" as const)),
+            stir.pipe(Effect.as("activity" as const)),
           ]).pipe(
             Effect.timeoutOrElse({
               duration: orgLoopWaitMs(ready, active, now),
-              orElse: () => Effect.succeed(true),
+              orElse: () => Effect.succeed("timer" as const),
             }),
           );
+          recoverNext = wakeSource === "finished" || wakeSource === "timer";
+          if (Option.isSome(hooks)) hooks.value.orgWake?.(wakeSource);
         });
         yield* Effect.gen(function* () {
           yield* Stream.fromPubSub(runActivity).pipe(
