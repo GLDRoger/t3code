@@ -164,6 +164,7 @@ import {
   KinFoldRow,
   KinRelayRow,
   KinMessageRow,
+  KinReplyFooter,
   KinPendingRow,
   KinSystemRow,
 } from "./KinMessageRows";
@@ -970,6 +971,16 @@ function KinChatFeed(props: {
     switch (item.type) {
       case "message":
         return renderMessage(item);
+      case "footer":
+        return (
+          <KinReplyFooter
+            standalone
+            message={item.message}
+            environmentId={props.environmentId}
+            orgId={props.orgId}
+            connected={props.connected}
+          />
+        );
       case "cards":
         return renderMessage(item.first, item);
       case "system": {

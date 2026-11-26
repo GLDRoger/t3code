@@ -306,6 +306,10 @@ it.effect("a discussion the owner asked for runs its turns, ends, and is told on
         intent: "answer",
       });
       assert.isTrue(answer.ok, JSON.stringify(answer.value));
+      const [posted] = yield* sql<{ wakeup: string | null }>`SELECT source_wakeup_id AS wakeup
+        FROM kin_messages WHERE org_id = ${orgId} AND discussion_id = 'TD-1'
+          AND author_agent_id = 'finance'`;
+      assert.strictEqual(posted?.wakeup, financeWake);
       // Social answers (it spoke last); Growth, whose lane "expo" leads touch, may pitch in once.
       const keys = (yield* teamWakes(sql, orgId)).map(({ key }) => key);
       assert.match(keys.at(-1)!, /^team:TD-1:\d+:social:named$/);

@@ -35,6 +35,7 @@ import * as Budget from "../lead/KinBudget.ts";
 import * as Queue from "../lead/KinEventQueue.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
 import { leadWakeup } from "../lead/LeadDelivery.testkit.ts";
+import * as KinPulse from "../pulse/KinPulse.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { fakeRepository } from "../memory/__fixtures__/repository.ts";
@@ -1165,6 +1166,327 @@ it.effect("held invoice reminders stay queued without blocking later reminders",
     );
     assert.lengthOf(yield* pendingFires(), 0);
   }).pipe(Effect.provide(layerFor(items)));
+});
+
+const seedInvoice = Effect.fn("test.deferralInvoice")(function* (
+  invoiceDueAt = dueAt - 20 * 24 * 60 * 60_000,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE kin_people SET display_name = 'Rhea'
+    WHERE org_id = ${orgId} AND person_id = 'owner-a'`;
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+    VALUES (${orgId}, 'invoices', 'Invoices', 'INV', 1, 0)`;
+  yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state, owner_kind,
+    owner_id, side, due_at, amount_minor, currency, confirmed, created_by_kind, created_by_id,
+    origin_key, created_at, updated_at, fields_json)
+    VALUES (${orgId}, 'invoice', 'invoices', 'INV-12', 'Tidewater Freight', 'waiting', 'agent',
+      'lead-a', 'ours', ${invoiceDueAt}, 120_000, 'INR', 1, 'person',
+      'owner-a', 'invoice', 0, 0, '{"number":"TF/26/012"}')`;
+});
+
+it.effect(
+  "an agent's own follow-up about a record a person set aside is skipped and says why; a person's still fires",
+  () => {
+    const agent = makeDeferral("def-agent", {
+      on_due: "remind",
+      trust: "agent",
+      links: ["INV-12"],
+    });
+    const asked = makeDeferral("def-rhea", { on_due: "remind", trust: "owner", links: ["INV-12"] });
+    const lifted = makeDeferral("def-lifted", {
+      on_due: "remind",
+      trust: "agent",
+      links: ["INV-12"],
+      due: "2026-11-13T09:01+05:30",
+    });
+    return Effect.gen(function* () {
+      yield* setup();
+      yield* seedInvoice();
+      const sql = yield* SqlClient.SqlClient;
+      const service = yield* TriggerService.KinTriggerService;
+      const at = yield* Clock.currentTimeMillis;
+      const viewer = { _tag: "owner" } as const;
+      const by = { _tag: "person", personId: KinPersonId.make("owner-a") } as const;
+      const fact = (yield* KinPulse.read({ orgId, at, viewer })).facts.find(
+        (fact) => fact.sense === "invoice_overdue" && fact.subject.key === "INV-12",
+      );
+      assert.isDefined(fact);
+      yield* KinPulse.handle({
+        orgId,
+        at,
+        viewer,
+        by,
+        factKey: fact!.key,
+        action: "got_it",
+        until: dueAt + 24 * 60 * 60_000,
+      });
+      yield* service.syncItem(agent);
+      yield* service.syncItem(asked);
+      yield* tick(dueAt);
+
+      assert.equal((yield* runOf(agent.id))?.state, "undone");
+      const [skipped] = yield* sql<{ record: string; at: number }>`SELECT
+        json_extract(snapshot_json, '$.skipped.record') AS record,
+        json_extract(snapshot_json, '$.skipped.at') AS at
+        FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = ${agent.id}`;
+      assert.deepStrictEqual(skipped, { record: "INV-12", at: dueAt });
+      const [fire] = yield* sql<{ consumedAt: number }>`SELECT consumed_at AS "consumedAt"
+        FROM kin_trigger_inbox WHERE org_id = ${orgId}
+          AND fire_id = ${`deferral:${agent.id}:due:${dueAt}`}`;
+      assert.equal(fire?.consumedAt, dueAt);
+      assert.isEmpty(
+        yield* sql`SELECT message_id FROM kin_messages WHERE org_id = ${orgId} ORDER BY message_id`,
+      );
+      assert.isEmpty(
+        yield* sql`SELECT widget_id FROM kin_widgets WHERE org_id = ${orgId} ORDER BY widget_id`,
+      );
+      assert.isEmpty(
+        yield* sql`SELECT event_id FROM kin_events
+        WHERE org_id = ${orgId} AND json_extract(json, '$.subject.itemId') = ${agent.id}
+        ORDER BY event_id`,
+      );
+      assert.equal((yield* runOf(asked.id))?.state, "reminded");
+      assert.deepStrictEqual(yield* handedReminders(), [{ itemId: asked.id, lateByMs: 0 }]);
+
+      yield* KinPulse.handle({ orgId, at: dueAt, viewer, by, factKey: fact!.key, action: "undo" });
+      yield* service.syncItem(lifted);
+      yield* tick(dueAt + 60_000);
+      assert.equal((yield* runOf(lifted.id))?.state, "reminded");
+      assert.deepStrictEqual(yield* handedReminders(), [
+        { itemId: asked.id, lateByMs: 0 },
+        { itemId: lifted.id, lateByMs: 0 },
+      ]);
+    }).pipe(Effect.provide(layerFor([agent, asked, lifted])));
+  },
+);
+
+it.effect("a record a person set aside skips an agent's own start at heads-up", () => {
+  const start = makeDeferral("def-held", { trust: "agent", links: ["TF/26/012"] });
+  const closed = makeDeferral("def-already-closed", { trust: "agent", links: ["INV-12"] });
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* seedInvoice(dueAt);
+    const service = yield* TriggerService.KinTriggerService;
+    yield* service.syncItem(start);
+    yield* service.syncItem(closed);
+    const repo = yield* Repository.KinChatRepository;
+    const openText = (yield* cardOf(start.id)).text;
+    const readClosed = () => repo.getWidget({ orgId, widgetId: widgetFor(closed.id) });
+    const closing = Option.getOrThrow(yield* readClosed());
+    const at = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+    const alreadyClosed = yield* repo.updateWidget({
+      ...closing,
+      audience: "chat",
+      expectedRevision: closing.revision,
+      state: { ...decodeCard(encodeJson(closing.state)), actions: [] },
+      closedAt: at,
+      updatedAt: at,
+    });
+    yield* KinPulse.aside({
+      orgId,
+      at: yield* Clock.currentTimeMillis,
+      viewer: { _tag: "owner" },
+      by: { _tag: "person", personId: KinPersonId.make("owner-a") },
+      recordKey: "INV-12",
+      action: "set",
+      until: null,
+      note: null,
+      holding: { _tag: "may", forPersonId: null, onWordOf: null },
+    });
+    yield* tick(headsUpAt);
+    assert.equal((yield* runOf(start.id))?.state, "undone");
+    const widget = Option.getOrThrow(
+      yield* repo.getWidget({ orgId, widgetId: widgetFor(start.id) }),
+    );
+    assert.equal(widget.closedAt, DateTime.formatIso(DateTime.makeUnsafe(headsUpAt)));
+    const card = decodeCard(encodeJson(widget.state));
+    assert.isEmpty(card.actions ?? []);
+    assert.equal((yield* runOf(closed.id))?.state, "undone");
+    assert.deepStrictEqual(
+      { openText: card.text, closedCard: Option.getOrThrow(yield* readClosed()) },
+      { openText, closedCard: alreadyClosed },
+    );
+    assert.deepStrictEqual(
+      (yield* triggersOf()).filter(({ id }) => id.includes(start.id)),
+      [
+        { id: Deferrals.deferralTriggerId(start.id, "due"), enabled: 0, nextRunAt: null },
+        { id: Deferrals.deferralTriggerId(start.id, "heads_up"), enabled: 0, nextRunAt: null },
+      ],
+    );
+    assert.isEmpty(yield* pendingFires());
+    yield* tick(dueAt);
+    assert.isEmpty(yield* starts());
+  }).pipe(openGates(new Map()), Effect.provide(layerFor([start, closed])));
+});
+
+it.effect("an agent's own follow-up naming a held record in its title is skipped", () => {
+  const title = "Follow up on INV-12 with Tidewater Freight";
+  const held = makeDeferral("def-title-held", {
+    title,
+    what: title,
+    on_due: "remind",
+    trust: "agent",
+    links: [],
+  });
+  const lifted = makeDeferral("def-title-lifted", {
+    title,
+    what: title,
+    on_due: "remind",
+    trust: "agent",
+    links: [],
+    due: "2026-11-13T09:01+05:30",
+  });
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* seedInvoice();
+    const sql = yield* SqlClient.SqlClient;
+    const service = yield* TriggerService.KinTriggerService;
+    const at = yield* Clock.currentTimeMillis;
+    const viewer = { _tag: "owner" } as const;
+    const by = { _tag: "person", personId: KinPersonId.make("owner-a") } as const;
+    const fact = (yield* KinPulse.read({ orgId, at, viewer })).facts.find(
+      (fact) => fact.sense === "invoice_overdue" && fact.subject.key === "INV-12",
+    );
+    assert.isDefined(fact);
+    const handling = { orgId, viewer, by, factKey: fact!.key };
+    yield* KinPulse.handle({
+      ...handling,
+      at,
+      action: "got_it",
+      until: dueAt + 24 * 60 * 60_000,
+    });
+    yield* service.syncItem(held);
+    yield* tick(dueAt);
+    assert.equal((yield* runOf(held.id))?.state, "undone");
+    const [skipped] = yield* sql<{ record: string }>`SELECT
+      json_extract(snapshot_json, '$.skipped.record') AS record
+      FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = ${held.id}`;
+    assert.equal(skipped?.record, "INV-12");
+    assert.isEmpty(yield* handedReminders());
+
+    yield* KinPulse.handle({ ...handling, at: dueAt, action: "undo" });
+    yield* service.syncItem(lifted);
+    yield* tick(dueAt + 60_000);
+    assert.equal((yield* runOf(lifted.id))?.state, "reminded");
+    assert.deepStrictEqual(yield* handedReminders(), [{ itemId: lifted.id, lateByMs: 0 }]);
+  }).pipe(Effect.provide(layerFor([held, lifted])));
+});
+
+it.effect(
+  "a follow-up an agent set up from a pulse wake is skipped when its record is set aside",
+  () => {
+    const followUp = makeDeferral("def-pulse", {
+      title: "Follow up on INV-12 with Tidewater Freight",
+      on_due: "remind",
+      trust: "external",
+    });
+    return Effect.gen(function* () {
+      yield* setup();
+      yield* seedInvoice(dueAt);
+      yield* KinPulse.aside({
+        orgId,
+        at: yield* Clock.currentTimeMillis,
+        viewer: { _tag: "owner" },
+        by: { _tag: "person", personId: KinPersonId.make("owner-a") },
+        recordKey: "INV-12",
+        action: "set",
+        until: null,
+        note: null,
+        holding: { _tag: "may", forPersonId: null, onWordOf: null },
+      });
+      yield* (yield* TriggerService.KinTriggerService).syncItem(followUp);
+      yield* tick(dueAt);
+      assert.equal((yield* runOf(followUp.id))?.state, "undone");
+      assert.isEmpty(yield* handedReminders());
+    }).pipe(Effect.provide(layerFor([followUp])));
+  },
+);
+
+it.effect("a follow-up about an invoice is skipped while its client is set aside", () => {
+  const followUp = makeDeferral("def-client-hold", {
+    title: "Follow up on INV-12",
+    on_due: "remind",
+    trust: "agent",
+  });
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* seedInvoice(dueAt);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at)
+      VALUES (${orgId}, 'clients', 'Clients', 'C', 1, 0)`;
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+      owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at, fields_json)
+      VALUES (${orgId}, 'tidewater', 'clients', 'C-7', 'Tidewater Freight', 'person',
+        'owner-a', 'person', 'owner-a', 'tidewater', 0, 0, '{}')`;
+    yield* sql`UPDATE kin_records SET party_id = 'tidewater'
+      WHERE org_id = ${orgId} AND record_id = 'invoice'`;
+    const viewer = { _tag: "owner" } as const;
+    yield* KinPulse.aside({
+      orgId,
+      at: yield* Clock.currentTimeMillis,
+      viewer,
+      by: { _tag: "person", personId: KinPersonId.make("owner-a") },
+      recordKey: "C-7",
+      action: "set",
+      until: null,
+      note: null,
+      holding: { _tag: "may", forPersonId: null, onWordOf: null },
+    });
+    const { facts } = yield* KinPulse.read({ orgId, at: dueAt, viewer, includeHandled: true });
+    assert.isFalse(facts.some((fact) => fact.subject.key === "INV-12"));
+    yield* (yield* TriggerService.KinTriggerService).syncItem(followUp);
+    yield* tick(dueAt);
+    assert.equal((yield* runOf(followUp.id))?.state, "undone");
+    assert.isEmpty(yield* handedReminders());
+  }).pipe(Effect.provide(layerFor([followUp])));
+});
+
+it.effect("a follow-up about two records fires while one of them is still live", () => {
+  const title = "Follow up on INV-13 and INV-12";
+  const partial = makeDeferral("def-partly-held", { title, on_due: "remind", trust: "agent" });
+  const both = makeDeferral("def-both-held", {
+    title,
+    on_due: "remind",
+    trust: "agent",
+    due: "2026-11-13T09:01+05:30",
+  });
+  return Effect.gen(function* () {
+    yield* setup();
+    yield* seedInvoice(dueAt);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+      owner_id, created_by_kind, created_by_id, origin_key, created_at, updated_at, fields_json)
+      VALUES (${orgId}, 'invoice-13', 'invoices', 'INV-13', 'Tidewater Freight supplies', 'agent',
+        'lead-a', 'person', 'owner-a', 'invoice-13', 0, 0, '{}')`;
+    const hold = Effect.fn("test.holdInvoice")(function* (recordKey: string) {
+      yield* KinPulse.aside({
+        orgId,
+        at: yield* Clock.currentTimeMillis,
+        viewer: { _tag: "owner" },
+        by: { _tag: "person", personId: KinPersonId.make("owner-a") },
+        recordKey,
+        action: "set",
+        until: null,
+        note: null,
+        holding: { _tag: "may", forPersonId: null, onWordOf: null },
+      });
+    });
+    yield* hold("INV-12");
+    const service = yield* TriggerService.KinTriggerService;
+    yield* service.syncItem(partial);
+    yield* tick(dueAt);
+    assert.equal((yield* runOf(partial.id))?.state, "reminded");
+
+    yield* hold("INV-13");
+    yield* service.syncItem(both);
+    yield* tick(dueAt + 60_000);
+    assert.equal((yield* runOf(both.id))?.state, "undone");
+    const [skipped] = yield* sql<{ record: string }>`SELECT
+      json_extract(snapshot_json, '$.skipped.record') AS record
+      FROM kin_deferral_runs WHERE org_id = ${orgId} AND item_id = ${both.id}`;
+    assert.equal(skipped?.record, "INV-12");
+    assert.deepStrictEqual(yield* handedReminders(), [{ itemId: partial.id, lateByMs: 0 }]);
+  }).pipe(Effect.provide(layerFor([partial, both])));
 });
 
 it.effect("remind, ask and chase act at due, noting lateness", () => {

@@ -192,6 +192,7 @@ export const memory = Layer.succeed(
     historyGeneration: () => Effect.die("Unused"),
     items: () => Effect.die("Unused"),
     snapshotItems: () => Effect.die("Unused"),
+    changedItems: () => Effect.die("Unused"),
     readPromptSnapshot: (org, head) => {
       if (org !== orgId || !["head-one", "head-two", "carry-small", "carry-large"].includes(head))
         return Effect.fail(new Memory.MemoryError({ orgId: org, operation: "promptSnapshot" }));

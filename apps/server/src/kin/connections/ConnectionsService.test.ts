@@ -3115,6 +3115,7 @@ describe("KinConnections sending", () => {
                 now: 2,
               },
               {
+                dismissArrival: () => Effect.die("No arrival note"),
                 closeReplaced: (input) =>
                   Effect.sync(
                     () => void closed.push({ widgetId: input.widgetId, text: input.outcome?.text }),
@@ -3199,6 +3200,7 @@ describe("KinConnections sending", () => {
                   now: 2,
                 },
                 {
+                  dismissArrival: () => Effect.die("No arrival note"),
                   closeReplaced: (input) =>
                     Effect.sync(
                       () =>

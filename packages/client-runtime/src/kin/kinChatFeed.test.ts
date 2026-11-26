@@ -229,6 +229,58 @@ describe("rows", () => {
     });
   });
 
+  it("keeps the Team-room card with its own reply inside the discussion fold", () => {
+    const discussionId = "TD-1" as NonNullable<KinMessage["discussionId"]>;
+    const discussion = { floorRunId: `team:${discussionId}`, discussionId };
+    const sourceWakeupId = KinWakeupId.make("standup-ask");
+    const person = { ...ownMessage(1), body: "Work out Monday's standup with the team." };
+    const card = agentMessage(2, {
+      floorRunId: "6379903d-38e8-455d-8100-f0b1e845a6f9",
+      sourceWakeupId,
+      body: "",
+      widgetId: KinWidgetId.make("choice"),
+    });
+    const reply = agentMessage(3, {
+      ...discussion,
+      sourceWakeupId,
+      body: "Monday's agenda is written. Pick a time for standup.",
+    });
+    const peer = agentMessage(4, {
+      ...discussion,
+      sourceWakeupId: KinWakeupId.make("finance-answer"),
+      author: { ...reply.author, agentId: KIN_FIXTURE_QA } as KinMessage["author"],
+      body: "The Orbit Dental Care invoice is ready for review.",
+    });
+    const closing = agentMessage(5, {
+      ...discussion,
+      sourceWakeupId: KinWakeupId.make("standup-close"),
+      intent: "decision",
+      body: "Calling it for Monday.",
+    });
+    const order = (messages: ReadonlyArray<KinMessage>, closed = false) =>
+      messageRows(
+        messages,
+        viewer,
+        closed ? new Set([discussion.floorRunId]) : new Set(),
+        new Date(person.createdAt),
+        [],
+        true,
+      ).map((row) => row.key);
+    const rows = [person, card, reply, peer, closing];
+    const fold = `fold:${discussion.floorRunId}`;
+    expect([
+      order(rows, true),
+      order(rows),
+      order([person, card, { ...peer, sourceWakeupId }, reply, closing]),
+      order([person, card, { ...reply, floorRunId: "unrelated" }, peer, closing]),
+    ]).toEqual([
+      [person.messageId, fold],
+      [person.messageId, fold, reply.messageId, card.messageId, peer.messageId, closing.messageId],
+      [person.messageId, card.messageId, fold, peer.messageId, reply.messageId, closing.messageId],
+      [person.messageId, card.messageId, reply.messageId, fold, peer.messageId, closing.messageId],
+    ]);
+  });
+
   it("keeps a deleted agent message inside its run's fold", () => {
     const messages = all
       .slice(19, 26)
@@ -411,6 +463,43 @@ describe("rows", () => {
       type: "message",
       message: { body: "Screenshots from Test PR 7", attachments: [{ name: "01-home.png" }] },
     });
+  });
+
+  it("a hand-off row already in the cache is not drawn", () => {
+    const handoff = (seq: number, messageId: string, overrides: Partial<KinMessage> = {}) =>
+      agentMessage(seq, {
+        messageId: messageId as KinMessage["messageId"],
+        kind: "system",
+        author: { _tag: "system" },
+        relay: { kind: "sent_by", agentId: KIN_FIXTURE_AGENT },
+        ...overrides,
+      });
+    const rows = messageRows(
+      [
+        agentMessage(1),
+        handoff(2, "kin-handoff:a1"),
+        handoff(3, "kin-handoff-back:a1", {
+          relay: { kind: "reply_from", agentId: KIN_FIXTURE_AGENT },
+        }),
+        handoff(4, "kin-handoff:b2", { relay: undefined }),
+        handoff(5, "kin-handoff:c3", {
+          relay: {
+            kind: "sent_by",
+            agentId: KIN_FIXTURE_AGENT,
+            personId: "zoya" as KinPersonId,
+            personName: "Zoya",
+          },
+        }),
+        handoff(6, "kin-handoff:d4", { discussionId: "d-1" as KinMessage["discussionId"] }),
+      ],
+      viewer,
+      new Set(),
+    );
+    expect(rows.flatMap((row) => ("message" in row ? [row.message.messageId] : []))).toEqual([
+      "m1",
+      "kin-handoff:c3",
+      "kin-handoff:d4",
+    ]);
   });
 
   it("draws Kin's morning page as a page under the greeting, never as a notice line", () => {
@@ -755,6 +844,65 @@ describe("streaming replies", () => {
       ["fixture-1", "m2", "m6", "reply:tidewater"],
       ["fixture-1", "m2", "reply:tidewater"],
     ]);
+  });
+
+  it("draws a reply's buttons and receipt after its last separate card", () => {
+    const sourceWakeupId = KinWakeupId.make("tidewater-footer");
+    const question = agentMessage(2, {
+      sourceWakeupId,
+      body: "",
+      widgetId: KinWidgetId.make("choice"),
+    });
+    const doc = agentMessage(3, { sourceWakeupId, body: "", widgetId: KinWidgetId.make("doc") });
+    const text = agentMessage(4, {
+      sourceWakeupId,
+      body: "I updated the Tidewater Freight draft.",
+      links: [
+        {
+          text: "Tidewater Freight draft",
+          to: { _tag: "record", key: "D-12", kind: "doc" },
+          note: null,
+        },
+      ],
+      turnChanges: {
+        count: 1,
+        more: 0,
+        items: [
+          {
+            key: "D-12",
+            title: "Tidewater Freight draft",
+            what: "updated",
+            change: { agentId: KIN_FIXTURE_AGENT, seq: 1 },
+            undoable: true,
+            undone: false,
+          },
+        ],
+      },
+    });
+    const footer = `footer:${text.messageId}`;
+    const draw = (messages: ReadonlyArray<KinMessage>) => messageRows(messages, viewer, new Set());
+    expect(draw([question, doc, text]).map((row) => row.key)).toEqual([
+      text.messageId,
+      question.messageId,
+      doc.messageId,
+      footer,
+    ]);
+    expect(draw([question, doc, text])).toMatchObject([
+      { type: "message", footerAfterCards: true, message: text },
+      { type: "message" },
+      { type: "message" },
+      { type: "footer", message: text },
+    ]);
+    expect(draw([question, text, doc]).map((row) => row.key)).toEqual([
+      text.messageId,
+      question.messageId,
+      doc.messageId,
+      footer,
+    ]);
+    expect(draw([{ ...text, widgetId: doc.widgetId }]).map((row) => row.key)).toEqual([
+      text.messageId,
+    ]);
+    expect(draw([text]).map((row) => row.key)).toEqual([text.messageId]);
   });
 
   it("keeps a draft's key and author line when its message lands, so the bubble stays put", () => {

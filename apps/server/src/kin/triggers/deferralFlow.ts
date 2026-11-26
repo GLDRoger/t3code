@@ -30,6 +30,7 @@ import { isSqlError } from "effect/sql/SqlError";
 import { PersistenceDecodeError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Chat from "../chat/KinChatService.ts";
+import * as Repository from "../chat/KinChatRepository.ts";
 import { textLocale, type TextClock } from "../work/companyProfile.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import * as KinBudget from "../lead/KinBudget.ts";
@@ -39,6 +40,9 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
+import { holdCoversRecord, liveHolds, recordHoldScopes } from "../pulse/holds.ts";
+import { personHandledRecords } from "../pulse/factState.ts";
+import { pauseTriggers } from "./KinTriggerStore.ts";
 import { readGithubLinks } from "./deferralGithub.ts";
 import {
   askerOf,
@@ -54,7 +58,9 @@ import {
   HEADS_UP_MS,
   LATE_NOTE_MS,
   KinDeferralStopSwitch,
+  deferralRecordReferences,
   deferralTriggerId,
+  deferralWidgetId,
   lateNote,
   ownerDateTime,
   ownerTime,
@@ -136,6 +142,8 @@ function classifyFire(
     : { kind: "drop" };
 }
 
+const decodeCard = Schema.decodeUnknownEffect(KinDeferralCard);
+const encodeReferences = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
 const decodeOnDue = Schema.decodeUnknownEffect(KinDeferralCard.fields.onDue);
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
 const decodeSnapshot = Schema.decodeUnknownEffect(Schema.fromJsonString(DeferralSnapshot));
@@ -161,6 +169,7 @@ const make = Effect.gen(function* () {
   const memory = yield* Memory.Memory;
   const cache = yield* MemoryCache.MemoryCache;
   const chat = yield* Chat.KinChatService;
+  const repo = yield* Repository.KinChatRepository;
   const pings = yield* Pings.KinPings;
   const ticks = yield* Scheduler.Scheduler;
   const cards = yield* makeDeferralCards;
@@ -510,6 +519,47 @@ const make = Effect.gen(function* () {
     return null;
   });
 
+  const recordSetAside = Effect.fn("KinDeferralFlow.recordSetAside")(function* (
+    orgId: KinOrgId,
+    item: MemoryItemHead | undefined,
+    now: number,
+  ) {
+    if (item === undefined || item.trust === "owner" || item.trust === "member") return undefined;
+    const references = deferralRecordReferences(item.title, item.links);
+    if (references.size === 0) return undefined;
+    const rows = yield* sql<{ recordId: string; key: string; number: string | null }>`
+      WITH wanted AS (SELECT value FROM json_each(${yield* encodeReferences([...references])}))
+      SELECT record_id AS "recordId", key, json_extract(fields_json, '$.number') AS number
+      FROM kin_records WHERE org_id = ${orgId}
+        AND (key IN (SELECT upper(value) FROM wanted)
+          OR json_extract(fields_json, '$.number') IN (SELECT value FROM wanted))
+      ORDER BY key`;
+    const keys = new Map(rows.map((row) => [row.key, row]));
+    const numbers = new Map<string, (typeof rows)[number] | null>();
+    for (const row of rows)
+      if (row.number !== null) numbers.set(row.number, numbers.has(row.number) ? null : row);
+    const records = new Map<string, string>();
+    for (const reference of references) {
+      const record = keys.get(reference.toUpperCase()) ?? numbers.get(reference);
+      if (record != null) records.set(record.recordId, record.key);
+    }
+    const firstKey = [...records.values()].sort()[0];
+    if (firstKey === undefined) return undefined;
+    const pending = new Set(records.keys());
+    const holds = (yield* liveHolds(orgId, now)).filter(
+      (hold) => hold.forPersonId === null && (hold.byKind === "person" || hold.onWordOf !== null),
+    );
+    if (holds.length > 0) {
+      const scopes = yield* recordHoldScopes(orgId, [...records.values()]);
+      for (const row of scopes)
+        if (holds.some((hold) => holdCoversRecord(hold, row))) pending.delete(row.recordId);
+      if (pending.size === 0) return firstKey;
+    }
+
+    const handled = yield* personHandledRecords(orgId, pending, now);
+    return handled.size === pending.size ? firstKey : undefined;
+  });
+
   const process = Effect.fn("KinDeferralFlow.process")(function* (
     orgId: KinOrgId,
     fire: KinTriggerFired,
@@ -535,23 +585,28 @@ const make = Effect.gen(function* () {
     // Read-only or idempotent I/O; a replay repeats it.
     const committed = yield* readCommitted(orgId, itemId);
     const item = committed?.head;
+    const skippedRecord = yield* recordSetAside(orgId, item, now).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      NodeSqliteClient.readOnly,
+    );
     const onDue = run.onDue;
     const decodedOnDue = yield* decodeOnDue(onDue);
     const gates: Array<string> = [];
-    if (onDue === "start") {
+    if (skippedRecord === undefined && onDue === "start") {
       const github = yield* readGithubLinks(orgId, item?.links ?? snapshot.links);
       gates.push(...snapshotChanges(snapshot, item, github));
       if (yield* (yield* KinDeferralStopSwitch).isStopped(orgId))
         gates.push("Kin asks before every start for now");
     }
     // A reminder is the lead's to write when a wake-up can run; budget is read outside the writer.
-    const chatOwn = onDue === "remind" ? yield* sharedChatOf(sql, orgId, item) : undefined;
+    const willRemind = skippedRecord === undefined && onDue === "remind";
+    const chatOwn = willRemind ? yield* sharedChatOf(sql, orgId, item) : undefined;
     const inChat =
       chatOwn === undefined ? undefined : yield* inChatReminder(orgId, item, chatOwn, clock);
     const ownChat =
-      onDue === "remind" && chatOwn === undefined ? yield* askersChat(sql, orgId, item) : undefined;
+      willRemind && chatOwn === undefined ? yield* askersChat(sql, orgId, item) : undefined;
     const reminderLead =
-      onDue === "remind" && ownChat === undefined
+      willRemind && ownChat === undefined
         ? chatOwn === undefined
           ? yield* deferralLead(sql, orgId, item)
           : inChat?.moved === undefined &&
@@ -593,6 +648,44 @@ const make = Effect.gen(function* () {
           )
         ) {
           return "section_off" as const;
+        }
+        if (skippedRecord !== undefined) {
+          const json = yield* encodeSnapshot({
+            ...snapshot,
+            skipped: { record: skippedRecord, at: now },
+          });
+          yield* sql`UPDATE kin_deferral_runs SET state = 'undone', snapshot_json = ${json},
+              updated_at = ${now}
+            WHERE org_id = ${orgId} AND item_id = ${itemId} AND due_at = ${dueAt}
+              AND state = ${run.state}`;
+          yield* pauseTriggers(
+            orgId,
+            [deferralTriggerId(itemId, "heads_up"), deferralTriggerId(itemId, "due")],
+            now,
+          ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+          yield* inbox.markConsumed(orgId, [fire.fireId]);
+          const widgetId = KinWidgetId.make(deferralWidgetId(orgId, itemId));
+          const existing = yield* repo.getWidget({ orgId, widgetId });
+          if (Option.isSome(existing) && existing.value.closedAt === null) {
+            const widget = existing.value;
+            const card = yield* decodeCard(widget.state);
+            const at = iso(now);
+            const closed = yield* repo.updateWidget({
+              ...widget,
+              audience: "chat",
+              expectedRevision: widget.revision,
+              state: { ...card, actions: [] },
+              closedAt: at,
+              updatedAt: at,
+            });
+            yield* cards.publish({ type: "widget.updated", orgId, widget: closed });
+          }
+          yield* Effect.logInfo("Kin follow-up skipped: its record is set aside", {
+            orgId,
+            itemId,
+            record: skippedRecord,
+          });
+          return false;
         }
         // A reminder never asks, so it needs no lead here.
         const lead = onDue === "remind" ? undefined : yield* deferralLead(sql, orgId, item);

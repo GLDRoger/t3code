@@ -79,7 +79,7 @@ export const retire = Effect.fn("KinRetirement.retire")(function* (
     readonly retiredAt: string;
     readonly now: number;
   },
-  chat: Pick<KinChatService["Service"], "closeReplaced" | "notice">,
+  chat: Pick<KinChatService["Service"], "dismissArrival" | "closeReplaced" | "notice">,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, agentId, now } = input;
