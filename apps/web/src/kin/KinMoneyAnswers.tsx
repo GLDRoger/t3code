@@ -15,6 +15,7 @@ import {
   KIN_OUTLOOK,
   KIN_QUOTES,
   KIN_QUOTES_LIST,
+  kinBudgetCategoryShown,
   kinBudgetDraftOf,
   kinBudgetInput,
   kinBudgetRemoval,
@@ -910,7 +911,7 @@ export function KinBudgetDialog(
                 >
                   <SelectTrigger id={ids.category} className="w-full">
                     <SelectValue>
-                      {draft.category === null ? KIN_BUDGETS.anyCategory : label(draft.category)}
+                      {kinBudgetCategoryShown(draft, label)}
                     </SelectValue>
                   </SelectTrigger>
                   <SelectPopup>

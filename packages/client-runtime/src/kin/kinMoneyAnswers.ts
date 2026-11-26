@@ -150,6 +150,8 @@ export const KIN_BUDGETS = {
   save: "Save budget",
   category: "Category",
   anyCategory: "Every category",
+  /** No category and no project yet: a budget needs one, so "every category" isn't a choice made. */
+  pickCategory: "Pick a category",
   project: "Project",
   anyProject: "Every project",
   limit: "Monthly limit",
@@ -626,6 +628,14 @@ export interface KinBudgetDraft {
   readonly project: KinWorkRef | null;
   readonly limit: string;
 }
+
+/** The category row's value: "Every category" only beside a project, which makes it a budget. */
+export const kinBudgetCategoryShown = (draft: KinBudgetDraft, label: (category: string) => string) =>
+  draft.category !== null
+    ? label(draft.category)
+    : draft.project === null
+      ? KIN_BUDGETS.pickCategory
+      : KIN_BUDGETS.anyCategory;
 
 export const kinBudgetDraftOf = (budget: KinMoneyBudget | null): KinBudgetDraft => ({
   category: budget?.category ?? null,
