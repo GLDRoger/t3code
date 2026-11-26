@@ -3330,7 +3330,12 @@ describe("the owner's taps", () => {
       const stored = sql<{ minor: number; currency: string; rate: string | null }>`SELECT
           received_minor AS minor, received_currency AS currency, rate
         FROM kin_record_payments WHERE org_id = ${orgId} AND voided_at IS NULL`;
-      const payment = { key: "INV-1", amount: "1,000", received: "INR 83,500", paidOn: "2026-11-05" };
+      const payment = {
+        key: "INV-1",
+        amount: "1,000",
+        received: "INR 83,500",
+        paidOn: "2026-11-05",
+      };
       const drawn = yield* LeadMoney.payment(scope, {
         sourceEventId: yield* turn(4, "Harbourline paid INR 83,500 for it"),
         ...payment,

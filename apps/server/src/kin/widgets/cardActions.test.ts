@@ -3868,7 +3868,10 @@ it.effect("a tap records a bank credit as the invoice's payment the matcher rank
           `${note.key} is not an invoice, so nothing can be set against it. Nothing changed.`,
         ],
       ] as const) {
-        const refused = yield* callAs("finance", "kin_receipt", { entry: left!.key, against: target });
+        const refused = yield* callAs("finance", "kin_receipt", {
+          entry: left!.key,
+          against: target,
+        });
         assert.isFalse(refused.ok, JSON.stringify(refused.value));
         assert.include(String(refused.value.message), refusal);
         const applyThere = yield* callAs("finance", "kin_ask", {
@@ -3898,9 +3901,9 @@ it.effect("a tap records a bank credit as the invoice's payment the matcher rank
       );
       // A credit note's reduction is voided with the note, never taken back as a payment, and it
       // is no tax withheld of the same amount.
-      const reduction = (yield* records.detail((yield* records.get(orgId, noted.key))!)).payments!.find(
-        (one) => one.creditNote !== undefined,
-      )!;
+      const reduction = (yield* records.detail(
+        (yield* records.get(orgId, noted.key))!,
+      )).payments!.find((one) => one.creditNote !== undefined)!;
       yield* kin.turn("finance", chatId, "Take back that credit note's reduction");
       const noteTakeBack = yield* callAs("finance", "payment_record", {
         key: noted.key,

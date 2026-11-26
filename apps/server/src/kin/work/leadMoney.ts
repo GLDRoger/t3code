@@ -589,7 +589,7 @@ export const PaymentInput = Schema.Struct({
   }),
   received: Schema.optional(KinToolText(60)).annotate({
     description:
-      'Only for money that came in another currency than the invoice\'s: the sum as it came in, with its currency, such as "INR 83,500"; amount is then what it settles, in the invoice\'s currency.',
+      "Only for money that came in another currency than the invoice's: the sum as it came in, with its currency, such as \"INR 83,500\"; amount is then what it settles, in the invoice's currency.",
   }),
   paidOn: Schema.optional(KinDay).annotate({
     description: "The day it was received, in the owner's time zone.",
@@ -650,7 +650,11 @@ export const alreadyRecordedNext = (
   const parts = [
     ...(cash === undefined
       ? []
-      : [came === undefined ? formatMoney(cash) : `${formatMoney(cash)} (${rateMoney(came)} received)`]),
+      : [
+          came === undefined
+            ? formatMoney(cash)
+            : `${formatMoney(cash)} (${rateMoney(came)} received)`,
+        ]),
     ...(tds === undefined ? [] : [`${formatMoney(tds)} of tax withheld`]),
   ].join(" and ");
   return `Nothing was recorded and no card was drawn: ${parts} on ${dayText(paidOn)} is already recorded on ${name}. Ask the owner in one line whether this is another payment; only if they say so, call payment_record again with another.`;
