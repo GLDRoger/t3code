@@ -2695,10 +2695,12 @@ describe("WakeupRunner", () => {
       false,
       "local-marks",
     ],
+    ["fails a finished task at the run attempt limit", true, true, false, "exhausted"],
   ] as const)("%s", ([, live, outside, sensitive, timing]) =>
     Effect.gen(function* () {
       const startsDuringPreparation = timing === "late";
-      const endsDuringPreparation = timing === "ends" || timing === "local-marks";
+      const endsDuringPreparation =
+        timing === "ends" || timing === "local-marks" || timing === "exhausted";
       const wholeThreadReads: Array<ThreadId> = [];
       const started = yield* Deferred.make<void>();
       const release = yield* Deferred.make<void>();
@@ -2822,6 +2824,9 @@ describe("WakeupRunner", () => {
         } else {
           const taskWake = yield* TaskWake.make;
           yield* taskWake.enqueue(yield* dispatch);
+          if (timing === "ends") yield* queue.enqueue(yield* ownerSays("batched-request"));
+          if (timing === "exhausted")
+            yield* sql`UPDATE kin_events SET attempts = 3 WHERE tag = 'task.finished'`;
           inspectEarly = readClaim;
           if (endsDuringPreparation) {
             inspectEarly = readClaim.pipe(
@@ -2848,31 +2853,73 @@ describe("WakeupRunner", () => {
         if (!endsDuringPreparation) yield* Deferred.succeed(release, undefined);
         yield* Fiber.join(fiber);
         assert.strictEqual(wholeThreadReads.length, readsBefore, "no whole-history read");
-        const wakeups = yield* sql<{ wakeupId: string; runId: string; status: string }>`
+        const wakeupRows = sql<{ wakeupId: string; runId: string; status: string }>`
           SELECT wakeup_id AS "wakeupId", run_id AS "runId", status FROM kin_wakeups
           ORDER BY started_at, wakeup_id`;
+        const wakeups = yield* wakeupRows;
         if (endsDuringPreparation) {
+          const pending = sql<{
+            eventId: string;
+            state: string;
+            attempts: number;
+            wakeupId: string | null;
+          }>`
+            SELECT event_id AS "eventId", state, attempts, wakeup_id AS "wakeupId" FROM kin_events
+            WHERE tag = 'task.finished' OR event_id = 'batched-request' ORDER BY event_id`;
+          const released = yield* pending;
+          const exhausted = timing === "exhausted";
+          assert.lengthOf(released, timing === "ends" ? 2 : 1);
+          assert.deepStrictEqual(
+            released.map(({ state, attempts, wakeupId }) => ({ state, attempts, wakeupId })),
+            released.map(() => ({
+              state: exhausted ? "failed" : "queued",
+              attempts: exhausted ? 4 : 1,
+              wakeupId: null,
+            })),
+          );
           assert.deepStrictEqual(early, source);
-          assert.strictEqual(wakeups[1]!.status, "interrupted");
+          assert.strictEqual(wakeups[1]!.status, "failed");
           assert.strictEqual(wakeups[1]!.runId, noticeRunId);
           if (timing === "local-marks")
             assert.isTrue(yield* turnSensitive(orgId, wakeups[1]!.wakeupId));
           assert.lengthOf((yield* threads.getThreadProjection(threadId)).runs, 2);
-          assert.deepStrictEqual(
-            yield* sql`SELECT state, wakeup_id FROM kin_events WHERE tag = 'task.finished'`,
-            [{ state: "queued", wakeup_id: null }],
-          );
-          const [requeued] = yield* sql<{ eventId: string }>`
-            SELECT event_id AS "eventId" FROM kin_events WHERE tag = 'task.finished'`;
+          const eventIds = released.map(({ eventId }) => eventId);
           const eventStamps = yield* sql`
             SELECT outside_from FROM kin_event_outside WHERE org_id = ${orgId}
-              AND event_id = ${requeued!.eventId}`;
+              AND event_id IN ${sql.in(eventIds)}`;
           const stamp = yield* inheritOutside({
             orgId,
             wakeupId: "fresh-probe",
-            eventIds: [requeued!.eventId],
+            eventIds,
           });
           assert.deepStrictEqual({ eventStamps, stamp }, { eventStamps: [], stamp: undefined });
+          if (timing === "ends") {
+            yield* Fiber.join(yield* run());
+            const retry = (yield* wakeupRows).at(-1)!;
+            assert.strictEqual(retry.status, "completed");
+            const result = yield* threads.getThreadProjection(threadId);
+            const fresh = result.runs.find((run) => run.id === retry.runId)!;
+            assert.isTrue(fresh.freshContext);
+            assert.notStrictEqual(fresh.providerThreadId, parent.providerThreadId);
+            assert.isFalse(yield* outsideRead({ orgId, wakeupId: retry.wakeupId }));
+            assert.isTrue(
+              result.turnItems.some(
+                (item) =>
+                  item.runId === fresh.id &&
+                  item.type === "assistant_message" &&
+                  item.text === "Completed the request.",
+              ),
+            );
+            assert.deepStrictEqual(
+              yield* pending,
+              released.map(({ eventId }) => ({
+                eventId,
+                state: "done",
+                attempts: 1,
+                wakeupId: retry.wakeupId,
+              })),
+            );
+          }
           return;
         }
         assert.deepStrictEqual(
@@ -2912,7 +2959,12 @@ describe("WakeupRunner", () => {
         Effect.scoped,
         Effect.provide(
           harnessWith(
-            { onTurn, prepare, wholeThreadReads },
+            {
+              onTurn,
+              prepare,
+              wholeThreadReads,
+              ...(timing === "ends" ? { replyText: "Completed the request." } : {}),
+            },
             Layer.effect(
               KinLeadRegistry.KinLeadRegistry,
               Effect.map(KinLeadRegistry.KinLeadRegistry, (registry) => ({

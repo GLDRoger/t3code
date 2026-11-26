@@ -1329,7 +1329,7 @@ const make = Effect.gen(function* () {
   });
   const cleanup = Effect.fn("WakeupRunner.cleanup")(function* (
     row: typeof RunningRow.Type,
-    interrupted = false,
+    interrupted: boolean | "retry" = false,
     failure: unknown = null,
   ) {
     // An interrupted wake-up lands what it staged: the agent may already have said it saved it,
@@ -1373,7 +1373,15 @@ const make = Effect.gen(function* () {
     }
     yield* clearMissingThread(row).pipe(Effect.ignore);
     yield* capture(row).pipe(Effect.ignore);
-    if (interrupted) yield* queue.requeueUnfinished(row.orgId, row.wakeupId);
+    if (interrupted === "retry")
+      yield* queue.release({
+        orgId: row.orgId,
+        wakeupId: row.wakeupId,
+        countAttempt: true,
+        attemptLimit: "run",
+        notBefore: yield* Clock.currentTimeMillis,
+      });
+    else if (interrupted) yield* queue.requeueUnfinished(row.orgId, row.wakeupId);
     else yield* finishWakeup(row, "failed", null, failure);
   });
 
@@ -1850,7 +1858,7 @@ const make = Effect.gen(function* () {
               ((yield* outsideRead(row).pipe(provideSql)) ||
                 (yield* turnSensitive(orgId, wakeupId).pipe(provideSql)))
             )
-              return yield* cleanup(row, true);
+              return yield* cleanup(row, "retry");
             const claimed = { ...row, threadId, runId: taken?.id ?? null };
             yield* sql.withTransaction(
               Effect.gen(function* () {
