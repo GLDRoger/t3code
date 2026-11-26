@@ -13846,7 +13846,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
           });
           const closed = yield* Deferred.make<void, never>();
           const initialLedger = shouldResume ? modelLedgers.get(nativeThreadId) : new Map();
-          let awaitingResumeLedger = shouldResume && initialLedger === undefined;
+          let firstResumeResult = shouldResume;
           const context: ClaudeLiveQueryContext = {
             queryPolicy,
             nativeThreadId,
@@ -13946,26 +13946,34 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                   if (message.type === "result") {
                     const ledger = claudeModelLedger(message.modelUsage);
                     const growth = claudeLedgerDelta(context.modelLedger, ledger);
-                    if (growth !== undefined) {
-                      resultLedgerUsage.set(message, growth);
-                    } else if (awaitingResumeLedger) {
-                      const active = yield* Ref.get(activeTurn);
-                      if (active?.nativeThreadId === context.nativeThreadId) {
-                        const main = normalizeClaudeTurnTokenUsage(
+                    const main = firstResumeResult
+                      ? normalizeClaudeTurnTokenUsage(
                           message,
                           false,
                           message.is_error ? "failed" : "completed",
-                        );
-                        const other = runningClaudeTurnTokenUsage(active.requests).otherUsage;
-                        if (main.inputTokens !== undefined && main.outputTokens !== undefined) {
-                          resultLedgerUsage.set(message, {
-                            inputTokens: main.inputTokens + (other?.inputTokens ?? 0),
-                            outputTokens: main.outputTokens + (other?.outputTokens ?? 0),
-                          });
-                        }
-                      }
-                      // Keep the estimated segment separate from the anchor for later steers.
-                      awaitingResumeLedger = false;
+                        )
+                      : undefined;
+                    firstResumeResult = false;
+                    // Some transcripts did not save totals: valid growth cannot be less than the main turn.
+                    if (
+                      main?.inputTokens !== undefined &&
+                      main.outputTokens !== undefined &&
+                      (context.modelLedger === undefined ||
+                        (growth !== undefined &&
+                          (growth.inputTokens < main.inputTokens ||
+                            growth.outputTokens < main.outputTokens)))
+                    ) {
+                      const active = yield* Ref.get(activeTurn);
+                      const other =
+                        active?.nativeThreadId === context.nativeThreadId
+                          ? runningClaudeTurnTokenUsage(active.requests).otherUsage
+                          : undefined;
+                      resultLedgerUsage.set(message, {
+                        inputTokens: main.inputTokens + (other?.inputTokens ?? 0),
+                        outputTokens: main.outputTokens + (other?.outputTokens ?? 0),
+                      });
+                    } else if (growth !== undefined) {
+                      resultLedgerUsage.set(message, growth);
                     }
                     // A ledger that went backwards cannot anchor the next turn's growth.
                     context.modelLedger =
