@@ -6,7 +6,7 @@ import type {
   KinPresence,
   KinWidget,
 } from "@t3tools/contracts";
-import { KinMemberId } from "@t3tools/contracts";
+import { KinMemberId, KinWakeupId, KinWidgetId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -227,6 +227,58 @@ describe("rows", () => {
       discussionId: "TD-1",
       open,
     });
+  });
+
+  it("keeps the Team-room card with its own reply inside the discussion fold", () => {
+    const discussionId = "TD-1" as NonNullable<KinMessage["discussionId"]>;
+    const discussion = { floorRunId: `team:${discussionId}`, discussionId };
+    const sourceWakeupId = KinWakeupId.make("standup-ask");
+    const person = { ...ownMessage(1), body: "Work out Monday's standup with the team." };
+    const card = agentMessage(2, {
+      floorRunId: "6379903d-38e8-455d-8100-f0b1e845a6f9",
+      sourceWakeupId,
+      body: "",
+      widgetId: KinWidgetId.make("choice"),
+    });
+    const reply = agentMessage(3, {
+      ...discussion,
+      sourceWakeupId,
+      body: "Monday's agenda is written. Pick a time for standup.",
+    });
+    const peer = agentMessage(4, {
+      ...discussion,
+      sourceWakeupId: KinWakeupId.make("finance-answer"),
+      author: { ...reply.author, agentId: KIN_FIXTURE_QA } as KinMessage["author"],
+      body: "The Orbit Dental Care invoice is ready for review.",
+    });
+    const closing = agentMessage(5, {
+      ...discussion,
+      sourceWakeupId: KinWakeupId.make("standup-close"),
+      intent: "decision",
+      body: "Calling it for Monday.",
+    });
+    const order = (messages: ReadonlyArray<KinMessage>, closed = false) =>
+      messageRows(
+        messages,
+        viewer,
+        closed ? new Set([discussion.floorRunId]) : new Set(),
+        new Date(person.createdAt),
+        [],
+        true,
+      ).map((row) => row.key);
+    const rows = [person, card, reply, peer, closing];
+    const fold = `fold:${discussion.floorRunId}`;
+    expect([
+      order(rows, true),
+      order(rows),
+      order([person, card, { ...peer, sourceWakeupId }, reply, closing]),
+      order([person, card, { ...reply, floorRunId: "unrelated" }, peer, closing]),
+    ]).toEqual([
+      [person.messageId, fold],
+      [person.messageId, fold, reply.messageId, card.messageId, peer.messageId, closing.messageId],
+      [person.messageId, card.messageId, fold, peer.messageId, reply.messageId, closing.messageId],
+      [person.messageId, card.messageId, reply.messageId, fold, peer.messageId, closing.messageId],
+    ]);
   });
 
   it("keeps a deleted agent message inside its run's fold", () => {
@@ -698,6 +750,122 @@ describe("streaming replies", () => {
       ["reply:a", true],
       ["reply:b", false],
     ]);
+  });
+
+  it("puts Tidewater Freight's reply before its cards while streaming and after reload", () => {
+    const sourceWakeupId = KinWakeupId.make("tidewater-turn");
+    const card = (seq: number, type: string) => ({
+      ...agentMessage(seq, { body: "", widgetId: KinWidgetId.make(type) }),
+      sourceWakeupId,
+    });
+    const question = card(2, "choice");
+    const doc = card(3, "doc");
+    const text = {
+      ...agentMessage(4, {
+        clientMessageId: "reply:tidewater",
+        body: "Rhea, Zoya has two pickup options for Tidewater Freight.",
+      }),
+      sourceWakeupId,
+    };
+    const next = card(5, "choice-next");
+    const otherTurn = {
+      ...card(6, "choice-other"),
+      sourceWakeupId: KinWakeupId.make("later-turn"),
+    };
+    const prior = ownMessage(1);
+    const delta = {
+      _tag: "draft" as const,
+      draftId: "tidewater",
+      agentId: KIN_FIXTURE_AGENT,
+      offset: 0,
+      text: text.body,
+      sourceWakeupId,
+    };
+    const live = applyKinChatEvent(feed([prior, question, doc]), delta, text.createdAt);
+    const order = (rows: ReadonlyArray<KinMessage>, drafts = emptyKinChat.drafts) =>
+      shape(messageRows(rows, viewer, new Set(), streamingAt, drafts)).map((row) =>
+        typeof row === "string" ? row : row[0],
+      );
+    expect([
+      order(live.messages),
+      order(live.messages, live.drafts),
+      order([prior, question, doc, text, next, otherTurn]),
+      order([prior, question, { ...otherTurn, seq: 3 }, text]),
+      order([
+        prior,
+        {
+          ...question,
+          sourceWakeupId: otherTurn.sourceWakeupId,
+          body: "The earlier turn already answered.",
+        },
+        text,
+      ]),
+    ]).toEqual([
+      ["fixture-1", "m2", "m3"],
+      ["fixture-1", "reply:tidewater", "m2", "m3"],
+      ["fixture-1", "reply:tidewater", "m2", "m3", "m5", "m6"],
+      ["fixture-1", "m2", "m6", "reply:tidewater"],
+      ["fixture-1", "m2", "reply:tidewater"],
+    ]);
+  });
+
+  it("draws a reply's buttons and receipt after its last separate card", () => {
+    const sourceWakeupId = KinWakeupId.make("tidewater-footer");
+    const question = agentMessage(2, {
+      sourceWakeupId,
+      body: "",
+      widgetId: KinWidgetId.make("choice"),
+    });
+    const doc = agentMessage(3, { sourceWakeupId, body: "", widgetId: KinWidgetId.make("doc") });
+    const text = agentMessage(4, {
+      sourceWakeupId,
+      body: "I updated the Tidewater Freight draft.",
+      links: [
+        {
+          text: "Tidewater Freight draft",
+          to: { _tag: "record", key: "D-12", kind: "doc" },
+          note: null,
+        },
+      ],
+      turnChanges: {
+        count: 1,
+        more: 0,
+        items: [
+          {
+            key: "D-12",
+            title: "Tidewater Freight draft",
+            what: "updated",
+            change: { agentId: KIN_FIXTURE_AGENT, seq: 1 },
+            undoable: true,
+            undone: false,
+          },
+        ],
+      },
+    });
+    const footer = `footer:${text.messageId}`;
+    const draw = (messages: ReadonlyArray<KinMessage>) => messageRows(messages, viewer, new Set());
+    expect(draw([question, doc, text]).map((row) => row.key)).toEqual([
+      text.messageId,
+      question.messageId,
+      doc.messageId,
+      footer,
+    ]);
+    expect(draw([question, doc, text])).toMatchObject([
+      { type: "message", footerAfterCards: true, message: text },
+      { type: "message" },
+      { type: "message" },
+      { type: "footer", message: text },
+    ]);
+    expect(draw([question, text, doc]).map((row) => row.key)).toEqual([
+      text.messageId,
+      question.messageId,
+      doc.messageId,
+      footer,
+    ]);
+    expect(draw([{ ...text, widgetId: doc.widgetId }]).map((row) => row.key)).toEqual([
+      text.messageId,
+    ]);
+    expect(draw([text]).map((row) => row.key)).toEqual([text.messageId]);
   });
 
   it("keeps a draft's key and author line when its message lands, so the bubble stays put", () => {

@@ -123,6 +123,7 @@ import {
 const decodeDeferralSnapshot = Schema.decodeUnknownEffect(Schema.fromJsonString(DeferralSnapshot));
 const decodeOnDue = Schema.decodeUnknownEffect(KinDeferralCard.fields.onDue);
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
+import { isPersonTag, PERSON_TAGS } from "../reply/turnVoice.ts";
 import { setupFailureIn, type SetupFailure } from "../reply/classify.ts";
 import { HOLD_MS, KinHostCare } from "../host/KinHostCare.ts";
 import {
@@ -983,7 +984,7 @@ const make = Effect.gen(function* () {
         const claimed = yield* sql<{ messageId: string }>`
           SELECT json_extract(json, '$.messageId') AS "messageId" FROM kin_events
           WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'
-            AND tag IN ('chat.message', 'widget.action', 'chat.reaction') ORDER BY event_id`;
+            AND tag IN ${sql.in(PERSON_TAGS)} ORDER BY event_id`;
         yield* floor.renew({
           orgId,
           agentId,
@@ -1961,10 +1962,8 @@ const make = Effect.gen(function* () {
                   agentId,
                   until: (yield* Clock.currentTimeMillis) + RUN_SILENCE_MS,
                   messageIds: events.flatMap((event) =>
-                    event._tag === "chat.message" ||
-                    event._tag === "widget.action" ||
-                    event._tag === "chat.reaction"
-                      ? [event.messageId]
+                    isPersonTag(event._tag) && "messageId" in event
+                      ? [KinMessageId.make(event.messageId)]
                       : [],
                   ),
                 });

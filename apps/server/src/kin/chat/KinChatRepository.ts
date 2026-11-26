@@ -121,6 +121,7 @@ type InsertMessage = Omit<KinMessage, "seq" | "authorRole" | "clientMessageId" |
   // The reply bridge posts for a wake-up it resolved itself; its running row is the authority.
   readonly wakeupId?: KinWakeupId | undefined;
   readonly placeReplyFigures?: true | undefined;
+  readonly recordWakeup?: true | undefined;
   /** Pictures Kin drew for this agent: each doc version is read here, in the write's transaction. */
   readonly pictureRefs?: ReadonlyArray<PictureDoc> | undefined;
   // Only Kin itself (worker task cards, a failed send's mail again) posts outside a wake-up.
@@ -253,6 +254,7 @@ const {
   form: _form,
   turnChanges: _turnChanges,
   withdrawn: _withdrawn,
+  sourceWakeupId: _sourceWakeupId,
   ...messageRowFields
 } = KinMessage.fields;
 const encodeRelay = Schema.encodeEffect(Schema.fromJsonString(KinMessageRelay));
@@ -271,6 +273,7 @@ const MessageRow = Schema.Struct({
   storedRefs: Schema.NullOr(Schema.fromJsonString(StoredRefs)),
   storedEmbeds: Schema.NullOr(Schema.fromJsonString(StoredEmbeds)),
   storedForm: Schema.NullOr(Schema.Literal("brief")),
+  storedSourceWakeupId: Schema.NullOr(KinWakeupId),
   author: Schema.fromJsonString(KinMessage.fields.author),
   mentions: Schema.fromJsonString(KinMessage.fields.mentions),
 }).pipe(
@@ -289,9 +292,11 @@ const MessageRow = Schema.Struct({
         storedWithdrawn,
         storedForm,
         storedEmbeds,
+        storedSourceWakeupId,
         ...message
       }): KinMessage => ({
         ...message,
+        ...(storedSourceWakeupId === null ? {} : { sourceWakeupId: storedSourceWakeupId }),
         ...(storedWhen === null ? {} : { when: storedWhen }),
         ...(storedWithdrawn === null ? {} : { withdrawn: storedWithdrawn }),
         ...(storedDiscussionId === null ? {} : { discussionId: storedDiscussionId }),
@@ -319,10 +324,12 @@ const MessageRow = Schema.Struct({
         withdrawn,
         form,
         embeds,
+        sourceWakeupId,
         ...message
       }) => ({
         ...message,
         storedWhen: when ?? null,
+        storedSourceWakeupId: sourceWakeupId ?? null,
         storedWithdrawn: withdrawn === undefined ? null : { why: withdrawn.why, at: withdrawn.at },
         storedDiscussionId: discussionId ?? null,
         storedDiscussionOpen: null,
@@ -341,7 +348,7 @@ const MessageRow = Schema.Struct({
 const messageColumns = `org_id AS "orgId", chat_id AS "chatId", message_id AS "messageId", seq AS "seq", change_seq AS "changeSeq", client_message_id AS "storedClientMessageId", author_role AS "authorRole", kind AS "kind", body AS "body", attachments_json AS "storedAttachments", refs_json AS "storedRefs", form AS "storedForm", embeds_json AS "storedEmbeds", intent AS "intent", mentions_json AS "mentions", reply_to AS "replyTo", widget_id AS "widgetId", floor_run_id AS "floorRunId", status AS "status", sent_by AS "sentBy", created_at AS "createdAt", edited_at AS "editedAt", discussion_id AS "storedDiscussionId", (SELECT 1 - final FROM kin_discussions d WHERE d.org_id = kin_messages.org_id AND d.discussion_id = kin_messages.discussion_id) AS "storedDiscussionOpen", relay_json AS "storedRelay", origin_json AS "storedOrigin", when_json AS "storedWhen", withdrawn_json AS "storedWithdrawn", CASE author_kind WHEN 'human' THEN json_object('_tag', 'human', 'personId', author_person_id, 'memberId', author_member_id)
  WHEN 'agent' THEN json_object('_tag', 'agent', 'agentId', author_agent_id, 'memberId', author_member_id,
  'ownerPersonId', author_owner_person_id, 'threadId', author_thread_id)
- ELSE json_object('_tag', author_kind) END AS author`;
+ ELSE json_object('_tag', author_kind) END AS author, source_wakeup_id AS "storedSourceWakeupId"`;
 const WidgetRow = Schema.Struct({
   ...KinWidget.fields,
   state: Schema.fromJsonString(KinWidget.fields.state),
@@ -2334,7 +2341,7 @@ const make = Effect.gen(function* () {
  ${input.relay === undefined ? null : yield* encodeRelay(input.relay)},
  ${input.origin === undefined ? null : yield* encodeOrigin(input.origin)},
  ${input.when === undefined ? null : yield* encodeWhen(input.when)},
- ${placed.embeds.length === 0 ? null : yield* encodeEmbeds(placed.embeds)}, ${(input.body === "" || input.placeReplyFigures === true) && author._tag === "agent" ? (input.wakeupId ?? null) : null})
+ ${placed.embeds.length === 0 ? null : yield* encodeEmbeds(placed.embeds)}, ${(input.body === "" || input.placeReplyFigures === true || input.recordWakeup === true) && author._tag === "agent" ? (input.wakeupId ?? null) : null})
  ON CONFLICT DO NOTHING RETURNING message_id`;
             if (inserted.length === 0)
               return yield* new KinChatError({
