@@ -8,7 +8,7 @@ import type { KinWorkNames } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinDocDetail } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { useState } from "react";
-import { View } from "react-native";
+import { ScrollView, View } from "react-native";
 
 import { ListChoiceRow } from "../../../components/ui/ListChoiceRow";
 import { ListRow } from "../../../components/ui/ListRow";
@@ -96,7 +96,10 @@ export function KinDocReadersRow(
           onClose={() => setOpen(false)}
           dismissDisabled={pending}
         >
-          <View className="gap-4 px-4 pt-2 pb-10">
+          <ScrollView
+            contentInsetAdjustmentBehavior="automatic"
+            contentContainerClassName="gap-4 px-4 pt-2 pb-10"
+          >
             <ListSection>
               {readers.choices.map((choice, index) => (
                 <ListChoiceRow
@@ -112,7 +115,7 @@ export function KinDocReadersRow(
                 />
               ))}
             </ListSection>
-          </View>
+          </ScrollView>
         </Sheet>
       ) : null}
     </>
