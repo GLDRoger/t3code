@@ -5552,7 +5552,7 @@ interface ClaudeLiveQueryContext {
   readonly subagentsFromEarlierProcesses: ReadonlySet<ActiveClaudeSubagent>;
   // Subagents this process still ran when a replacement took over; only its exit can end them.
   handedOffSubagents: ReadonlySet<ActiveClaudeSubagent>;
-  // The SDK's per-process model ledger at the last result; a new process starts at zero.
+  // The SDK's cumulative model ledger at the last result; only fresh sessions start at zero.
   modelLedger: ClaudeModelLedger | undefined;
   // Per process, not per session: a relative temp dir follows the cwd this CLI
   // was launched in, and a later turn's cwd can differ.
@@ -13793,7 +13793,8 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 (subagent) => subagent.task.status === "running",
               ),
             ),
-            modelLedger: new Map(),
+            // A resumed SDK result can include earlier turns in its cumulative ledger.
+            modelLedger: shouldResume ? undefined : new Map(),
             taskOutputRoot: claudeTaskOutputRoot(
               adapterOptions.environment,
               path,

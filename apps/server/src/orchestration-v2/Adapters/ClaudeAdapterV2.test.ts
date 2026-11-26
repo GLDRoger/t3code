@@ -10662,6 +10662,70 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     cache_creation_input_tokens: 0,
     cache_read_input_tokens: 0,
   };
+  it.effect("a resumed process's first result charges only its own growth", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarness;
+      yield* harness.runtime.startTurn({
+        ...makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("resumed-ledger"),
+          text: "Continue.",
+          attachments: [],
+        }),
+        nativeThreadHasTurns: true,
+      });
+      assert.equal(harness.getOpenedOptions()?.resume, WAKE_NATIVE_SESSION);
+      const usage = {
+        input_tokens: 3,
+        cache_creation_input_tokens: 7,
+        cache_read_input_tokens: 100,
+        output_tokens: 2,
+      };
+      yield* Queue.offer(
+        harness.sdkMessages,
+        makeResultFrame({
+          uuid: "00000000-0000-4000-8000-000000000681",
+          result: "OK",
+          usage,
+          modelUsage: {
+            [CLAUDE_TEST_MODEL_SELECTION.model]: {
+              inputTokens: 503,
+              outputTokens: 52,
+              cacheReadInputTokens: 1100,
+              cacheCreationInputTokens: 207,
+              webSearchRequests: 0,
+              costUSD: 0,
+              contextWindow: 200_000,
+              maxOutputTokens: 32_000,
+            },
+          },
+        }),
+      );
+      assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+      const completed = harness.events.findLast((event) => event.type === "provider_turn.updated");
+      assert.deepEqual(completed?.providerTurn.turnTokenUsage, {
+        usageScope: "main_agent",
+        usageStatus: "complete",
+        hasSubagents: false,
+        inputTokens: 110,
+        outputTokens: 2,
+        cachedInputTokens: 100,
+        cacheCreationTokens: 7,
+      });
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
   const reportedContextTokens = (events: ReadonlyArray<ProviderAdapter.ProviderAdapterV2Event>) =>
     events.flatMap((event) =>
       event.type === "provider_turn.updated" && event.providerTurn.tokenUsage
