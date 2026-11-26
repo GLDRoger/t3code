@@ -41,6 +41,7 @@ it.layer(layer)("KinWorkspace", (it) => {
       const recipes = yield* workspace.recipes(orgId);
       assert.deepStrictEqual(recipes.map((recipe) => recipe.name).sort(), [
         "accountant-pack",
+        "credit-note",
         "invoice",
         "quotation",
         "receipt",

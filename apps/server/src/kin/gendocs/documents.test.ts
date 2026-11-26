@@ -1603,13 +1603,13 @@ describe("recipe documents", () => {
         Effect.map(OwnerDocs.recipes(people, { orgId }), (all) =>
           all.recipes.filter((one) => one.default === true).map((one) => one.name),
         );
-      assert.deepStrictEqual(yield* defaults(), ["invoice", "quotation", "receipt"]);
+      assert.deepStrictEqual(yield* defaults(), ["credit-note", "invoice", "quotation", "receipt"]);
       const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO kin_recipe_defaults (org_id, list, recipe, set_by_person_id, set_at)
         VALUES (${orgId}, 'invoices', 'gone', ${ownerId}, 0)`;
       assert.deepStrictEqual(
         yield* defaults(),
-        ["invoice", "quotation", "receipt"],
+        ["credit-note", "invoice", "quotation", "receipt"],
         "a gone recipe is no default",
       );
       assert.match(
