@@ -3054,6 +3054,12 @@ export const judged = Effect.fn("evaluateMcpToolUse.rubric")(function* (
 ) {
   const { rubric } = testCase.expect;
   if (rubric === undefined) return [];
+  if (sample.stopReason === "failed_early")
+    return rubric.checks.map((question) => ({
+      check: `rubric ${question}`,
+      pass: false,
+      why: "not judged: the turn was cut off at a forbidden call",
+    }));
   if (!isPricedModel(config.shellModel))
     return yield* Effect.die(new Error("A rubric needs a Claude shell model."));
   const turn = {
