@@ -17,7 +17,6 @@ import {
   ForwardCompatibleNullable,
   ForwardCompatibleOptional,
   OmittedWhenNull,
-  NonNegativeInt,
   ProjectId,
   ThreadId,
   TrimmedNonEmptyString,
@@ -29,6 +28,7 @@ import { SecretProviderId, SecretProviderSlug } from "./secretReference.ts";
 import { containsSecretReference, SettingsSecretValue } from "./settingsSecretValue.ts";
 import { EnvironmentMachineKind, ThreadEnvMode, WorktreeSubmodules } from "./environment.ts";
 import { KeybindingShortcut } from "./keybindings.ts";
+import { KinSessionCompactAtTokens } from "./kinSessionSettings.ts";
 import {
   CustomModelSetting,
   DEFAULT_TEXT_GENERATION_MODEL,
@@ -1390,16 +1390,6 @@ export const CloudSpeechCredentials = Schema.Struct({
   xai: CloudSpeechCredential,
   openrouter: CloudSpeechCredential,
 });
-
-const KinSessionCompactAtTokens = NonNegativeInt.pipe(
-  Schema.decodeTo(
-    NonNegativeInt,
-    SchemaTransformation.transform({
-      decode: (tokens) => Math.min(150_000, Math.max(70_000, tokens)),
-      encode: (tokens) => tokens,
-    }),
-  ),
-);
 
 export const ServerSettings = Schema.Struct({
   // Null means unmigrated; empty is authoritative and must not resurrect cleared preferences.

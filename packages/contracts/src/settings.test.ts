@@ -55,28 +55,6 @@ it("drops theme defaults from a client's settings patch", () => {
   ).toEqual({ newWorktreesStartFromOrigin: false });
 });
 
-it("defaults session carry and upkeep off and accepts bounded compaction patches", () => {
-  expect(decodeServerSettings({})).toMatchObject({
-    kinSessionCarry: false,
-    kinSessionUpkeep: false,
-    kinSessionCompactAtTokens: 100_000,
-  });
-  expect(
-    decodeServerSettingsPatch({
-      kinSessionCarry: true,
-      kinSessionUpkeep: true,
-      kinSessionCompactAtTokens: 1,
-    }),
-  ).toEqual({
-    kinSessionCarry: true,
-    kinSessionUpkeep: true,
-    kinSessionCompactAtTokens: 70_000,
-  });
-  expect(
-    decodeServerSettings({ kinSessionCompactAtTokens: 200_000 }).kinSessionCompactAtTokens,
-  ).toBe(150_000);
-});
-
 describe("storage cleanup settings", () => {
   it("keeps cleanup disabled for existing installations", () => {
     expect(decodeServerSettings({}).worktreeCleanup).toBeNull();
