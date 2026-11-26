@@ -44,9 +44,9 @@ export const boundIssue = Effect.fn("KinGitHubIssue.bound")(function* (turn: Tur
     WHERE e.org_id = ${turn.orgId} AND e.wakeup_id = ${turn.wakeupId} AND e.tag = 'github'
       AND json_extract(e.json, '$.trigger.item') = 'issue'
       AND json_extract(e.json, '$.trigger.kind') IN ('triage', 'triage_reply')
-    ORDER BY e.event_id LIMIT 2`;
+    ORDER BY outside DESC, e.event_id LIMIT 1`;
   const [event] = rows;
-  if (event === undefined || rows.length !== 1) return undefined;
+  if (event === undefined) return undefined;
   return { ...event, outside: event.outside === 1 };
 });
 
@@ -97,6 +97,16 @@ export const postIssueComment = Effect.fn("KinGitHubIssue.postComment")(function
   const repo = bound.repo.toLowerCase();
   const ref = `${repo}#${number}`;
   const callKey = `github-comment:${eventId}`;
+  const running = sql`EXISTS (SELECT 1 FROM kin_wakeups WHERE org_id = ${lead.orgId}
+    AND wakeup_id = ${lead.wakeupId} AND agent_id = ${lead.agentId}
+    AND status = 'running' AND aborted_at IS NULL)`;
+  if (input.owner !== undefined)
+    yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id, outcome, at)
+      SELECT org_id, ${ownerFlagKey(key)}, repo, number, ${lead.agentId}, ${input.owner},
+        ${yield* Clock.currentTimeMillis}
+      FROM kin_github_handled WHERE org_id = ${lead.orgId} AND trigger_key = ${key}
+        AND repo = ${repo} AND number = ${number} AND outcome = 'woke' AND ${running}
+      ON CONFLICT (org_id, trigger_key) DO NOTHING`;
   const already = (url: string | null) => {
     const receipt = receiptOf(url);
     return receipt._tag === "unknown" ? COMMENT_REFUSAL.unsure(ref) : COMMENT_REFUSAL.again(ref);
@@ -129,9 +139,7 @@ export const postIssueComment = Effect.fn("KinGitHubIssue.postComment")(function
       const claimed = yield* sql`UPDATE kin_github_handled SET review_url = ${POSTING}
       WHERE org_id = ${lead.orgId} AND trigger_key = ${key} AND review_url IS NULL
       AND repo = ${repo} AND number = ${number} AND outcome = 'woke'
-      AND EXISTS (SELECT 1 FROM kin_wakeups WHERE org_id = ${lead.orgId}
-        AND wakeup_id = ${lead.wakeupId} AND agent_id = ${lead.agentId}
-        AND status = 'running' AND aborted_at IS NULL)
+      AND ${running}
       RETURNING trigger_key`;
       if (claimed.length === 0) return false;
       yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash)
@@ -158,8 +166,6 @@ export const postIssueComment = Effect.fn("KinGitHubIssue.postComment")(function
           yield* sql`UPDATE kin_github_handled SET review_url = ${sent.url}
           WHERE org_id = ${lead.orgId} AND trigger_key = ${key}`;
           yield* save(triagedKey(repo, number), "posted", sent.createdAt);
-          if (input.owner !== undefined)
-            yield* save(ownerFlagKey(key), input.owner, sent.createdAt);
           yield* sql`DELETE FROM kin_github_handled WHERE org_id = ${lead.orgId}
           AND trigger_key = ${commentFailKey(key)}`;
         }),

@@ -297,6 +297,9 @@ export const decideTriggers = (
     thread.createdAt >= Math.max(context.since, triageFrom) &&
     !agentsOwn &&
     !isBot(thread.author, thread.authorBot) &&
+    !thread.comments.some((c) =>
+      isAgentsOwn(c.body, c.author, context.botLogin, context.agentPosts),
+    ) &&
     (itemInside || appOn === true)
   )
     triggers.push({

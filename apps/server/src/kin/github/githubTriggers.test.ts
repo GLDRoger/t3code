@@ -10,7 +10,7 @@ import {
   type ThreadSnapshot,
 } from "./githubTriggers.ts";
 
-const repo = "tidewater/dispatch";
+const repo = "tidewater/portal";
 const issue: ThreadSnapshot = {
   repo,
   number: 14,
@@ -28,7 +28,7 @@ const issue: ThreadSnapshot = {
   comments: [],
   reviewRequested: false,
 };
-const stranger = { author: "stranger-one", association: "NONE" };
+const stranger = { author: "mallory", association: "NONE" };
 const context: DecideContext = {
   ownerLogin: "rhea",
   agents: [],
@@ -78,14 +78,10 @@ const rows: ReadonlyArray<Row> = [
   ["new issue by a login ending in [bot]", { author: "renovate[bot]" }, {}, []],
   ["new issue by the Kin App", { author: "tidewater-kin" }, { botLogin: "tidewater-kin" }, []],
   ["new issue with a Kin marker", { body: marked }, {}, []],
+  ["new issue Kin already commented on", { comments: [comment({ body: marked })] }, {}, []],
   ["new issue recorded in agent posts", {}, { agentPosts: new Set([postKey(issue.body)]) }, []],
   ["kin label applied by a writer", { labels: ["kin"] }, { labeledBy: "arjun" }, [label]],
-  [
-    "kin label applied by a stranger",
-    { labels: ["kin"] },
-    { labeledBy: "stranger-one" },
-    [initial],
-  ],
+  ["kin label applied by a stranger", { labels: ["kin"] }, { labeledBy: "mallory" }, [initial]],
   ["body calls Kin as a writer", { body: "/kin" }, {}, [call]],
   ["body calls Kin as a stranger", { ...stranger, body: "/kin" }, {}, [outside]],
   ["edit adds a writer's call", { body: "/kin" }, {}, [call], handled],

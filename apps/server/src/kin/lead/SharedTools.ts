@@ -10,6 +10,7 @@ import { aborted, askedIn, askersDirectChat, effectiveAudience, turnChat } from 
 import { billToolAllowed } from "./billsOnly.ts";
 import { triageToolAllowed } from "./outsideTriage.ts";
 import { reviewToolAllowed } from "./outsideReview.ts";
+import { boundIssue } from "../github/boundIssue.ts";
 import { boundReview } from "../github/boundReview.ts";
 import { mailboxPerson } from "../connections/turnMailbox.ts";
 
@@ -178,7 +179,7 @@ export const SHARED_TOOLS = {
   kin_cancel: ownReminderCancel,
   // Only the review someone asked for, on its pull request: `postReview` checks where it posts.
   kin_github_review: askedReview,
-  kin_github_comment: "refused",
+  kin_github_comment: (turn) => Effect.map(boundIssue(turn), (issue) => issue?.outside === false),
   kin_github_diff: askedReview,
   // A public repo for anyone here; a private one only for the asker GitHub lets see it, in their
   // own chat with this agent, by the review ask's check (`readRepo`, `maySee`). Reads only.

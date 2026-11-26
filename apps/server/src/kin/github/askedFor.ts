@@ -342,7 +342,6 @@ export const settleTriage = Effect.fn("KinGitHubIssue.settle")(function* (
   if (eventIds.length === 0 || Option.isNone(deps.repo)) return;
   const sql = yield* SqlClient.SqlClient;
   const ended = yield* sql<{
-    eventId: string;
     key: string;
     repo: string;
     number: number;
@@ -352,7 +351,7 @@ export const settleTriage = Effect.fn("KinGitHubIssue.settle")(function* (
     title: string;
     author: string;
     url: string | null;
-  }>`SELECT e.event_id AS "eventId", json_extract(e.json, '$.repo') AS repo,
+  }>`SELECT json_extract(e.json, '$.repo') AS repo,
       json_extract(e.json, '$.trigger.key') AS key,
       json_extract(e.json, '$.trigger.number') AS number,
       json_extract(e.json, '$.trigger.url') AS "issueUrl",
@@ -380,14 +379,15 @@ export const settleTriage = Effect.fn("KinGitHubIssue.settle")(function* (
     const origin = event.outside === 1 ? " from outside the company" : "";
     const [flag] = yield* sql<{ outcome: keyof typeof TRIAGE_OWNER | "failed" }>`
       SELECT outcome FROM kin_github_handled WHERE org_id = ${orgId}
-      AND trigger_key = ${receipt._tag === "posted" ? ownerFlagKey(key) : commentFailKey(key)}`;
+      AND trigger_key IN (${ownerFlagKey(key)}, ${commentFailKey(key)})
+      ORDER BY trigger_key = ${ownerFlagKey(key)} DESC LIMIT 1`;
     const body =
-      receipt._tag === "unknown"
-        ? `Kin sent a reply to ${ref} and GitHub didn't confirm it: ${issueUrl}`
-        : receipt._tag === "none" && flag?.outcome === "failed"
-          ? `The reply to ${ref}, a new issue${origin}, did not post: ${issueUrl}`
-          : receipt._tag === "posted" && flag !== undefined && flag.outcome !== "failed"
-            ? `${quotedTitle(title)} (#${number}) on ${repo}, ${escapeMarkdown(author)}'s new issue${origin}, ${TRIAGE_OWNER[flag.outcome]}: ${receipt.url}`
+      flag !== undefined && flag.outcome !== "failed"
+        ? `${quotedTitle(title)} (#${number}) on ${repo}, ${escapeMarkdown(author)}'s new issue${origin}, ${TRIAGE_OWNER[flag.outcome]}: ${receipt._tag === "posted" ? receipt.url : issueUrl}`
+        : receipt._tag === "unknown"
+          ? `Kin sent a reply to ${ref} and GitHub didn't confirm it: ${issueUrl}`
+          : receipt._tag === "none" && flag?.outcome === "failed"
+            ? `The reply to ${ref}, a new issue${origin}, did not post: ${issueUrl}`
             : undefined;
     if (body !== undefined)
       yield* notice(
@@ -395,7 +395,7 @@ export const settleTriage = Effect.fn("KinGitHubIssue.settle")(function* (
         {
           orgId,
           chatId: KinChatId.make(event.ownerChatId),
-          id: `kin-triage:${event.eventId}`,
+          id: `kin-triage:${repo.toLowerCase()}#${number}`,
           body,
           now,
         },

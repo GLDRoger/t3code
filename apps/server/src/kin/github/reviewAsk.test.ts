@@ -2180,7 +2180,7 @@ it.effect(
   },
 );
 
-const TRIAGE_REPO = "tidewater/dispatch";
+const TRIAGE_REPO = "tidewater/portal";
 const TRIAGE_OTHER = "tidewater/billing";
 const TRIAGE_DENIED =
   "This turn can only read this repo's code with kin_github_read and post its one comment on this issue with kin_github_comment. Nothing else ran.";
@@ -2211,13 +2211,15 @@ const tidewater = Effect.fn("test.tidewater")(function* (github: FakeGitHub, app
   yield* sql`UPDATE kin_people SET github_login = 'zoya-gh' WHERE org_id = ${orgId} AND person_id = 'zoya'`;
   yield* sql`UPDATE kin_people SET access = CASE person_id WHEN 'meera' THEN 'co_owner' ELSE 'member' END
     WHERE org_id = ${orgId} AND person_id IN ('meera', 'arjun')`;
-  const startIssue = Effect.fn("test.startIssue")(function* (inside = false) {
-    const author = inside ? "zoya-gh" : "stranger-one";
+  const startIssue = Effect.fn("test.startIssue")(function* (inside = false, replyTo?: number) {
+    const author = inside ? "zoya-gh" : "mallory";
     const title = "Digest arrives early";
     const association = inside ? "COLLABORATOR" : "NONE";
-    const number = github.openItem({ repo: TRIAGE_REPO, pull: false, author, association, title });
-    const key = `triage:${TRIAGE_REPO}#${number}`;
-    const eventId = KinEventId.make(`test-issue-${number}`);
+    const number =
+      replyTo ?? github.openItem({ repo: TRIAGE_REPO, pull: false, author, association, title });
+    const kind = replyTo === undefined ? "triage" : "triage_reply";
+    const key = `${kind}:${TRIAGE_REPO}#${number}${replyTo === undefined ? "" : ":c2"}`;
+    const eventId = KinEventId.make(`test-${kind}-${number}`);
     const url = `https://github.com/${TRIAGE_REPO}/issues/${number}`;
     const source = {
       _tag: "github",
@@ -2232,7 +2234,7 @@ const tidewater = Effect.fn("test.tidewater")(function* (github: FakeGitHub, app
       repo: TRIAGE_REPO,
       summary: title,
       trigger: {
-        kind: "triage",
+        kind,
         item: "issue",
         key,
         number,
@@ -2262,19 +2264,33 @@ it.effect.each([
   [
     "external link",
     "[Digest](https://example.org/track)",
-    "Kin posts links only into tidewater/dispatch on GitHub.",
+    "Kin posts links only into tidewater/portal on GitHub.",
   ],
   [
     "image",
-    "![Digest](https://github.com/tidewater/dispatch/blob/main/digest.png)",
+    "![Digest](https://github.com/tidewater/portal/blob/main/digest.png)",
     "Kin does not post images.",
   ],
   ["raw HTML", "<details>Digest</details>", "Kin does not post raw HTML."],
   ["slash line", "Digest.\n  /close", "Kin does not post lines starting with /."],
+  ["fenced slash line", "Digest.\n```\n/close\n```", "Kin does not post lines starting with /."],
+  ["indented slash line", "Digest.\n\n    /close", "Kin does not post lines starting with /."],
+  ...(
+    [
+      ["escaped at sign", String.raw`Thanks \@rhea-tidewater for the report.`],
+      ["escaped hyphen after an allowed login", String.raw`cc @mallory\-rhea please`],
+      ["escaped numeric at entity", String.raw`Thanks \&#64;rhea-tidewater.`],
+      ["encoded hyphen after an allowed login", "cc @mallory&#45;rhea please"],
+      ["mention split by formatting", "@**rhea-tidewater**"],
+      ["escaped separator after an allowed login", String.raw`@mallory\/ops`],
+    ] as const
+  ).map(
+    ([name, body]) => [name, body, `Kin posts links only into ${TRIAGE_REPO} on GitHub.`] as const,
+  ),
   [
     "cross-reference",
     "See tidewater/billing#1.",
-    "Kin posts links only into tidewater/dispatch on GitHub.",
+    "Kin posts links only into tidewater/portal on GitHub.",
   ],
   ["length", "x".repeat(2001), "Kin posts at most 2,000 characters."],
 ] as const)("triage refuses %s before claiming the receipt", ([_name, body, message]) => {
@@ -2303,8 +2319,26 @@ it.effect.each([
   ],
   [
     "outside mentions defused",
-    "Thanks @stranger-one. See @arjun-gh and @tidewater/ops, or `@zoya-gh`.",
-    "Thanks @stranger-one. See `@arjun-gh` and `@tidewater/ops`, or `@zoya-gh`.",
+    "Thanks @mallory. See @arjun-gh and @tidewater/ops, or `@zoya-gh`.",
+    "Thanks @mallory. See `@arjun-gh` and `@tidewater/ops`, or `@zoya-gh`.",
+    false,
+  ],
+  [
+    "nested HTML comment stripped before signing",
+    "Digest <!<!---->-- kin-agent: x -->arrives early.",
+    "Digest arrives early.",
+    true,
+  ],
+  [
+    "numeric and named mention entities defused",
+    "&#64;rhea-tidewater &#x40;rhea-tidewater &commat;rhea-tidewater",
+    "`@rhea-tidewater` `@rhea-tidewater` `@rhea-tidewater`",
+    false,
+  ],
+  [
+    "mentions after punctuation and line breaks defused",
+    "(@rhea-tidewater) [@rhea-tidewater]\n@rhea-tidewater\n\n>@rhea-tidewater",
+    "(`@rhea-tidewater`) [`@rhea-tidewater`]\n`@rhea-tidewater`\n\n>`@rhea-tidewater`",
     false,
   ],
   [
@@ -2405,19 +2439,43 @@ it.effect(
 it.effect("triage outside requires the app and inside can post as the owner", () => {
   const { github, layer } = harness({}, { app: true });
   return Effect.gen(function* () {
-    const { startIssue, end } = yield* tidewater(github, false);
+    const { startIssue, end, sql, ownerChat, orgId } = yield* tidewater(github, false);
     yield* startIssue();
     assert.strictEqual(
       (yield* postTriage("Digest arrives early.")).value.message,
-      "Kin's GitHub App isn't installed on tidewater/dispatch. Nothing was posted.",
+      "Kin's GitHub App isn't installed on tidewater/portal. Nothing was posted.",
     );
     assert.lengthOf(github.world.comments, 0);
     yield* end("completed");
+    yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+      person_id, role, joined_at)
+      VALUES ('triage-owner-chat-zoya', ${orgId}, ${ownerChat}, 'person', 'zoya', 'member', ${at})`;
     const issue = yield* startIssue(true);
-    assert.isTrue((yield* postTriage("Digest arrives early.")).ok);
+    assert.strictEqual(yield* turnAudience(issue), "shared");
+    const posted = yield* postTriage("Digest arrives early.");
+    assert.isTrue(posted.ok, JSON.stringify(posted.value));
     assert.deepStrictEqual(
       github.world.comments.map(({ number, user }) => [number, user]),
       [[issue.number, OWNER_LOGIN]],
+    );
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("triage keeps the outside seat when two issues share a wake-up", () => {
+  const { github, layer } = harness({}, { app: true });
+  return Effect.gen(function* () {
+    const { startIssue, end, sql } = yield* tidewater(github, true);
+    const inside = yield* startIssue(true);
+    yield* end("completed");
+    const outside = yield* startIssue();
+    yield* sql`UPDATE kin_events SET wakeup_id = ${outside.wakeupId}
+      WHERE org_id = ${inside.orgId} AND event_id = ${inside.eventId}`;
+    assert.strictEqual(yield* turnAudience(outside), "shared");
+    assert.strictEqual((yield* callAs("tech", "kin_relay", {})).value.message, TRIAGE_DENIED);
+    assert.isTrue((yield* postTriage("Digest arrives early.")).ok);
+    assert.deepStrictEqual(
+      github.world.comments.map(({ number }) => number),
+      [outside.number],
     );
   }).pipe(Effect.provide(layer));
 });
@@ -2442,7 +2500,7 @@ it.effect(
       const before = github.requests.length;
       assert.strictEqual(
         (yield* callAs("tech", "kin_github_read", { repo: TRIAGE_OTHER })).value.message,
-        "This turn answers an issue in tidewater/dispatch, so it reads only tidewater/dispatch.",
+        "This turn answers an issue in tidewater/portal, so it reads only tidewater/portal.",
       );
       assert.deepStrictEqual(github.requests.slice(before), []);
       const read = yield* callAs("tech", "kin_github_read", {
@@ -2475,12 +2533,39 @@ it.effect(
         ["unknown", ""],
         ["clean", ""],
         ["skipped", ""],
+        ["flagged without a post", "reads as a security report"],
+        ["flagged on GitHub refusal", "reports lost data"],
+        ["flagged on unknown receipt", "is one your standing rules ask to hear of"],
       ] as const) {
         const inside = reason === "decision";
         const issue = yield* startIssue(inside);
         const ref = `${TRIAGE_REPO}#${issue.number}`;
         const path = `repos/${TRIAGE_REPO}/issues/${issue.number}/comments`;
-        if (reason === "refused") {
+        if (reason === "flagged without a post") {
+          for (const flag of ["security", "decision", "data_loss"]) {
+            const result = yield* postTriage("[Report](https://example.org/report)", flag);
+            assert.strictEqual(
+              result.value.message,
+              `Kin posts links only into ${TRIAGE_REPO} on GitHub.`,
+            );
+          }
+          lines.push(
+            `"Digest arrives early" (#${issue.number}) on ${TRIAGE_REPO}, mallory's new issue from outside the company, ${words}: ${issue.url}`,
+          );
+        } else if (
+          reason === "flagged on GitHub refusal" ||
+          reason === "flagged on unknown receipt"
+        ) {
+          const unknown = reason === "flagged on unknown receipt";
+          if (unknown) github.world.failing = [path];
+          else github.world.refusing = [path];
+          assert.isFalse(
+            (yield* postTriage("The digest arrives early.", unknown ? "rule" : "data_loss")).ok,
+          );
+          lines.push(
+            `"Digest arrives early" (#${issue.number}) on ${TRIAGE_REPO}, mallory's new issue from outside the company, ${words}: ${issue.url}`,
+          );
+        } else if (reason === "refused") {
           github.world.refusing = [path];
           assert.isFalse((yield* postTriage("The digest arrives early.")).ok);
           lines.push(
@@ -2498,7 +2583,7 @@ it.effect(
           assert.isTrue(posted.ok, JSON.stringify(posted.value));
           if (reason !== "clean")
             lines.push(
-              `"Digest arrives early" (#${issue.number}) on ${TRIAGE_REPO}, ${inside ? "Zoya Sheikh's new issue" : "stranger-one's new issue from outside the company"}, ${words}: ${posted.value.url}`,
+              `"Digest arrives early" (#${issue.number}) on ${TRIAGE_REPO}, ${inside ? "Zoya Sheikh's new issue" : "mallory's new issue from outside the company"}, ${words}: ${posted.value.url}`,
             );
         }
         yield* end("completed");
@@ -2506,6 +2591,11 @@ it.effect(
         WHERE org_id = ${orgId} AND event_id = ${issue.eventId}`;
         yield* runReview(issue.eventId);
         yield* end("completed");
+        if (reason === "flagged without a post") {
+          yield* startIssue(false, issue.number);
+          assert.isTrue((yield* postTriage("Thanks for following up.", "rule")).ok);
+          yield* end("completed");
+        }
       }
       assert.deepStrictEqual(yield* told(ownerChat), lines);
     }).pipe(Effect.provide(layer));

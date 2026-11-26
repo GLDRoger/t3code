@@ -35,8 +35,8 @@ const intoRepo = (value: string, repo: string) => {
 };
 
 type Markdown = ReturnType<typeof markdown.parse>;
+type Node = Markdown | Markdown["children"][number];
 const markdownNodes = (tree: Markdown) => {
-  type Node = Markdown | Markdown["children"][number];
   const pending: Node[] = [tree];
   const nodes: Node[] = [];
   while (pending.length > 0) {
@@ -49,6 +49,26 @@ const markdownNodes = (tree: Markdown) => {
   return nodes;
 };
 
+const inlineText = (node: Node): string => {
+  switch (node.type) {
+    case "text":
+      return node.value;
+    case "emphasis":
+    case "strong":
+    case "delete":
+    case "link":
+    case "linkReference":
+      return node.children.map(inlineText).join("");
+    default:
+      return " ";
+  }
+};
+
+const hasUnlistedMention = (value: string, people: ReadonlySet<string>) =>
+  Array.from(value.matchAll(/(^|[^\w])@([A-Za-z0-9-]+(?:\/[\w.-]+)?)/g)).some(
+    ([, , login]) => !people.has(login!.toLowerCase()),
+  );
+
 type CommentText =
   | { readonly body: string; readonly notes: ReadonlyArray<string> }
   | { readonly refusal: string };
@@ -59,7 +79,13 @@ export const issueCommentText = (
   repo: string,
   people: ReadonlySet<string> | undefined,
 ): CommentText => {
-  const body = input.replace(/<!--[\s\S]*?(?:-->|$)/g, "").trimEnd();
+  let body = input;
+  for (;;) {
+    const stripped = body.replace(/<!--[\s\S]*?(?:-->|$)/g, "");
+    if (stripped === body) break;
+    body = stripped;
+  }
+  body = body.trimEnd();
   if (body.trim() === "") return { refusal: COMMENT_RULE.empty };
   if (Array.from(body).length > MAX_COMMENT) return { refusal: COMMENT_RULE.length };
   let safe = body;
@@ -75,7 +101,6 @@ export const issueCommentText = (
     while (literalTicks.has(ticks)) ticks += 1;
     const delimiter = "`".repeat(ticks);
     const edits: { start: number; end: number; replacement: string }[] = [];
-    const code: { start: number; end: number }[] = [];
     for (const node of nodes) {
       if (node.type === "html") return { refusal: COMMENT_RULE.html };
       if (node.type === "image" || node.type === "imageReference")
@@ -85,7 +110,6 @@ export const issueCommentText = (
       const start = node.position?.start.offset;
       const end = node.position?.end.offset;
       if (start === undefined || end === undefined) continue;
-      if (node.type === "code" || node.type === "inlineCode") code.push({ start, end });
       if (node.type !== "text") continue;
       for (const match of node.value.matchAll(/\b([\w.-]+\/[\w.-]+)#\d+/g)) {
         if (match[1]?.toLowerCase() !== repo.toLowerCase())
@@ -108,16 +132,24 @@ export const issueCommentText = (
         defused.add(`@${login}`);
       }
     }
-    for (const match of body.matchAll(/^[^\S\r\n]*\//gm)) {
-      const slash = match.index + match[0].length - 1;
-      if (!code.some(({ start, end }) => slash >= start && slash < end))
-        return { refusal: COMMENT_RULE.slash };
-    }
+    if (/^[^\S\r\n]*\//m.test(body)) return { refusal: COMMENT_RULE.slash };
     for (const { start, end, replacement } of edits.toSorted((a, b) => b.start - a.start)) {
       safe = safe.slice(0, start) + replacement + safe.slice(end);
     }
   }
   const posted = signed(safe, agentName);
   if (Array.from(posted).length > MAX_COMMENT) return { refusal: COMMENT_RULE.length };
+  if (people !== undefined) {
+    // After parsing, a backtick inside a text node is literal, not protection from a mention.
+    for (const node of markdownNodes(markdown.parse(posted))) {
+      const value =
+        node.type === "text"
+          ? node.value
+          : node.type === "paragraph" || node.type === "heading" || node.type === "tableCell"
+            ? node.children.map(inlineText).join("")
+            : "";
+      if (hasUnlistedMention(value, people)) return { refusal: COMMENT_RULE.links(repo) };
+    }
+  }
   return { body: posted, notes: [...defused].map(COMMENT_RULE.mention) };
 };
