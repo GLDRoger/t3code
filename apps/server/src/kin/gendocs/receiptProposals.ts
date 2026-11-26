@@ -75,7 +75,7 @@ const refused = (message: string) => new KinChatError({ reason: "not_allowed", m
 /**
  * Whether this exact payment is on the invoice already: on the same day, a live row of the same
  * amount for each part it has, cash and withheld, and none for a part it hasn't. Cash said as it
- * came in another currency matches only that sum received.
+ * came in another currency matches only that sum received; a credit note's reduction is no part.
  */
 export const samePayment = Effect.fn("KinReceipts.samePayment")(function* (
   orgId: KinOrgId,
@@ -100,7 +100,7 @@ export const samePayment = Effect.fn("KinReceipts.samePayment")(function* (
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND r.key = ${invoiceKey} AND p.voided_at IS NULL
-      AND p.paid_on = ${received.paidOn}`;
+      AND p.paid_on = ${received.paidOn} AND p.origin_key NOT LIKE 'credit_note:%'`;
   const came = received.receivedAs;
   const matches = (money: KinMoney | undefined, withheld: number) => {
     const part = rows.filter((row) => row.withheld === withheld);

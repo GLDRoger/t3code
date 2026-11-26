@@ -55,7 +55,7 @@ import {
   readProfile,
   replaceOlderChanges,
 } from "./companyProfile.ts";
-import { KinRecords } from "./KinRecords.ts";
+import { KinRecords, takeBackBlocked } from "./KinRecords.ts";
 import {
   admitted,
   type Lead,
@@ -776,7 +776,8 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
   // Taking a payment back is the owner's tap too: the agent's call only draws its card.
   yield* refuseKinOwn(lead.orgId, writer, KIN_OWN_REFUSAL.payment);
   const sql = yield* SqlClient.SqlClient;
-  const [held] = yield* sql<{ voided: number }>`SELECT voided_at IS NOT NULL AS voided
+  const [held] = yield* sql<{ voided: number; originKey: string }>`SELECT
+      voided_at IS NOT NULL AS voided, origin_key AS "originKey"
     FROM kin_record_payments WHERE org_id = ${lead.orgId} AND payment_id = ${input.void}
       AND record_id = ${before.recordId}`;
   if (held === undefined)
@@ -784,6 +785,13 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
       reason: "not_found",
       message: `No payment ${input.void.slice(0, 40)} on ${before.key}.`,
     });
+  // A kind of payment with its own way back is refused as the owner's Take back refuses it.
+  const blocked = yield* takeBackBlocked(lead.orgId, before, {
+    paymentId: input.void,
+    originKey: held.originKey,
+    voided: held.voided === 1,
+  });
+  if (blocked !== undefined) return yield* blocked;
   if (held.voided === 1)
     return yield* invalid("That payment was already taken back, so nothing changed.");
   const request: ReceiptRequest = { takeBack: { key: before.key, paymentId: input.void } };

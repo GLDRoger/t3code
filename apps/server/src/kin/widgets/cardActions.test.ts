@@ -2,6 +2,7 @@ import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { kinSecretsTest } from "../lead/layer.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import {
+  KinRecordKey,
   AuthSessionId,
   AuthStandardClientScopes,
   EnvironmentId,
@@ -43,6 +44,7 @@ import * as ServerConfig from "../../config.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
+import * as CreditNotes from "../gendocs/creditNotes.ts";
 import * as Kin from "../layer.ts";
 import * as KinToolGate from "../mcp/KinToolGate.ts";
 import * as Handoff from "../lead/Handoff.ts";
@@ -3732,6 +3734,14 @@ it.effect("a tap records a bank credit as the invoice's payment the matcher rank
           message: "That retry key already recorded a different payment.",
         },
       );
+      // An agent asking to take it back draws the owner's card; the payment stays until a tap.
+      yield* kin.turn("finance", chatId, "Take back the Harbourline payment");
+      const rateTakeBack = yield* callAs("finance", "payment_record", {
+        key: usd.key,
+        void: ratePayment.paymentId,
+      });
+      assert.strictEqual(rateTakeBack.value.status, "proposed", JSON.stringify(rateTakeBack.value));
+      assert.strictEqual((yield* records.get(orgId, usd.key))!.paid, 100_000);
       yield* records.voidPayment(orgId, ownerWrites, usd.key, ratePayment.paymentId);
       assert.strictEqual((yield* records.get(orgId, inr.key))!.state, "open");
       assert.notInclude(yield* seen, `payment_seen:${inr.key}`);
@@ -3802,6 +3812,18 @@ it.effect("a tap records a bank credit as the invoice's payment the matcher rank
           },
         );
       }
+      yield* kin.turn("finance", chatId, "Take back the first split payment");
+      const splitPart = (yield* records.detail((yield* records.get(orgId, firstSplit.key))!))
+        .payments![0]!;
+      const splitTakeBack = yield* callAs("finance", "payment_record", {
+        key: firstSplit.key,
+        void: splitPart.paymentId,
+      });
+      assert.isFalse(splitTakeBack.ok);
+      assert.include(
+        String(splitTakeBack.value.message ?? JSON.stringify(splitTakeBack.value)),
+        `That payment is one of several from ${over.key}; undo them together from ${over.key}.`,
+      );
       assert.strictEqual(
         (yield* summary()).received.thisMonth.find((one) => one.currency === "INR")?.minor,
         before + 20_000_000,
@@ -3809,6 +3831,95 @@ it.effect("a tap records a bank credit as the invoice's payment the matcher rank
       const next = yield* invoiceOf("Credit applied here", "AM/26-27/007");
       const gotCredit = yield* callAs("finance", "record_get", { key: next.key });
       assert.nestedInclude(gotCredit.value, { "creditOffer.receipt": left!.key });
+      yield* kin.turn("finance", chatId, "Set Harbourline's credit against the new invoice");
+      const setCredit = yield* callAs("finance", "kin_receipt", {
+        entry: left!.key,
+        against: next.key,
+      });
+      assert.strictEqual(setCredit.value.status, "proposed", JSON.stringify(setCredit.value));
+      assert.strictEqual((yield* records.get(orgId, next.key))!.paid, 0);
+      const draft = yield* records.create(orgId, ownerWrites, {
+        list: "invoices",
+        title: "Not issued yet",
+        owner: { _tag: "person", personId: owner.personId },
+        partyId: client.row.recordId,
+        amount: { minor: 50_000_00, currency: "INR" },
+        originKey: "not-issued",
+      });
+      const noted = yield* invoiceOf("Credited here", "AM/26-27/008");
+      const note = yield* Effect.gen(function* () {
+        const notes = yield* CreditNotes.CreditNotes;
+        const drafted = yield* notes.draft(orgId, ownerWrites, {
+          invoice: KinRecordKey.make(noted.key),
+          amount: { minor: 10_000_00, currency: "INR" },
+          reason: "Invented: scope reduced",
+          originKey: "credited-here",
+        });
+        yield* notes.issue(orgId, ownerWrites, drafted.row.key);
+        return drafted.row;
+      }).pipe(Effect.provide(CreditNotes.layer));
+      for (const [target, refusal] of [
+        [
+          draft.row.key,
+          `${draft.row.key} is a draft, so nothing is owed on it yet. Issue it first, then set the advance against it. Nothing changed.`,
+        ],
+        [
+          note.key,
+          `${note.key} is not an invoice, so nothing can be set against it. Nothing changed.`,
+        ],
+      ] as const) {
+        const refused = yield* callAs("finance", "kin_receipt", { entry: left!.key, against: target });
+        assert.isFalse(refused.ok, JSON.stringify(refused.value));
+        assert.include(String(refused.value.message), refusal);
+        const applyThere = yield* callAs("finance", "kin_ask", {
+          question: "Apply the client's credit?",
+          options: [
+            {
+              label: "Apply",
+              kind: "yes",
+              action: { kind: "apply_credit", target: `${left!.key} ${target}` },
+            },
+            { label: "Not now", kind: "no" },
+          ],
+          default: "none",
+        });
+        assert.isFalse(applyThere.ok, JSON.stringify(applyThere.value));
+      }
+      // Nor does a payment go on a credit note.
+      assert.include(
+        String(
+          (yield* callAs("finance", "payment_record", {
+            key: note.key,
+            amount: "1,000",
+            paidOn: "2026-11-15",
+          })).value.message,
+        ),
+        `${note.key} is not an invoice or in a list paid over time; payments are recorded on those. Nothing was recorded.`,
+      );
+      // A credit note's reduction is voided with the note, never taken back as a payment, and it
+      // is no tax withheld of the same amount.
+      const reduction = (yield* records.detail((yield* records.get(orgId, noted.key))!)).payments!.find(
+        (one) => one.creditNote !== undefined,
+      )!;
+      yield* kin.turn("finance", chatId, "Take back that credit note's reduction");
+      const noteTakeBack = yield* callAs("finance", "payment_record", {
+        key: noted.key,
+        void: reduction.paymentId,
+      });
+      assert.isFalse(noteTakeBack.ok);
+      assert.include(
+        String(noteTakeBack.value.message),
+        "This came from a credit note. Void the credit note to take it back.",
+      );
+      yield* kin.turn("finance", chatId, "Harbourline withheld 10,000 tax on it");
+      assert.strictEqual(
+        (yield* callAs("finance", "payment_record", {
+          key: noted.key,
+          withheld: "10,000",
+          paidOn: reduction.paidOn,
+        })).value.status,
+        "proposed",
+      );
       yield* kin.turn("finance", chatId, "Apply the credit to this invoice?");
       const apply = yield* callAs("finance", "kin_ask", {
         question: "Apply the client's credit?",
@@ -3866,6 +3977,16 @@ it.effect("a tap records a bank credit as the invoice's payment the matcher rank
       });
       assert.strictEqual((yield* records.get(orgId, next.key))!.paid, 1_000_000);
       assert.deepStrictEqual(yield* kin.stateOf(over.key), appliedBank);
+      yield* kin.turn("finance", chatId, "Take back the credit applied to the new invoice");
+      const creditTakeBack = yield* callAs("finance", "payment_record", {
+        key: next.key,
+        void: appliedPayment!.paymentId,
+      });
+      assert.isFalse(creditTakeBack.ok);
+      assert.include(
+        String(creditTakeBack.value.message),
+        "This payment came from the client's credit. Un-apply it instead. Nothing changed.",
+      );
       assert.deepStrictEqual((yield* summary()).received, received);
       assert.include(yield* undo(orgId, ownerWrites, over.key).pipe(Effect.flip), {
         reason: "invalid_state",

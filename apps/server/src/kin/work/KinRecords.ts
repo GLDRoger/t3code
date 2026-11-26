@@ -658,6 +658,50 @@ const repaidAhead = (fields: Readonly<Record<string, unknown>>, today: string) =
 const FUNDING = [FUNDED_BY, REIMBURSEMENT, REPAID_ON] as const;
 export const FUNDING_IS_THE_OWNERS =
   "Only the owner or a co-owner says who funded an expense or that it was paid back, in their own message or tap before anything outside is read. Nothing changed. Put it to them as a card or a question.";
+/**
+ * Why a payment isn't taken back on its own: a split bank credit is undone whole, a credit
+ * note's reduction goes with the note, and a payment from the client's credit is un-applied.
+ */
+export const takeBackBlocked = Effect.fn("KinRecords.takeBackBlocked")(function* (
+  orgId: KinOrgId,
+  row: { readonly registerId: string; readonly originKey: string },
+  payment: { readonly paymentId: string; readonly originKey: string; readonly voided: boolean },
+  mode?: "undo_split" | "unapply_credit",
+  creditNote = false,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const bankId = payment.originKey.startsWith(BANK_CREDIT_ORIGIN)
+    ? payment.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]
+    : undefined;
+  const splitBankId =
+    bankId !== undefined && payment.originKey.includes(":split:")
+      ? bankId
+      : row.registerId === "receipts" &&
+          row.originKey.startsWith(BANK_CREDIT_ORIGIN) &&
+          row.originKey.endsWith(":left")
+        ? row.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]
+        : undefined;
+  if (mode !== "undo_split" && splitBankId !== undefined) {
+    const [bank] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+      WHERE org_id = ${orgId} AND record_id = ${splitBankId}`;
+    if (bank === undefined) return unavailable;
+    return invalid(
+      `That payment is one of several from ${bank.key}; undo them together from ${bank.key}.`,
+    );
+  }
+  if (payment.originKey.startsWith("credit_note:") && !creditNote)
+    return invalid("This came from a credit note. Void the credit note to take it back.");
+  if (payment.voided || mode === "unapply_credit" || row.registerId !== "invoices")
+    return undefined;
+  const receiptId = /^receipt:([^:]+)(?::after:.+)?$/.exec(payment.originKey)?.[1];
+  if (receiptId === undefined) return undefined;
+  const [receipt] = yield* sql`SELECT 1 FROM kin_records
+    WHERE org_id = ${orgId} AND record_id = ${receiptId} AND register_id = 'receipts'
+      AND json_extract(fields_json, '$.payment') = ${payment.paymentId}`;
+  return receipt === undefined
+    ? undefined
+    : invalid("This payment came from the client's credit. Un-apply it instead. Nothing changed.");
+});
 /** An agent's Paid on an invoice that still has money owed, refused. */
 export const paidWhileOwed = (key: string, owed: string, paid: string) =>
   `Nothing was changed: ${key} still has ${owed} owed. Put money received to the owner with payment_record; their tap on its card marks it ${paid}.`;
@@ -3758,38 +3802,15 @@ const make = Effect.gen(function* () {
         const bankId = found.originKey.startsWith(BANK_CREDIT_ORIGIN)
           ? found.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]
           : undefined;
-        const splitBankId =
-          bankId !== undefined && found.originKey.includes(":split:")
-            ? bankId
-            : row.registerId === "receipts" &&
-                row.originKey.startsWith(BANK_CREDIT_ORIGIN) &&
-                row.originKey.endsWith(":left")
-              ? row.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]
-              : undefined;
-        if (mode !== "undo_split" && splitBankId !== undefined) {
-          const bank = yield* byId(orgId, splitBankId).pipe(provideSql);
-          if (bank === undefined) return yield* unavailable;
-          return yield* invalid(
-            `That payment is one of several from ${bank.key}; undo them together from ${bank.key}.`,
-          );
-        }
-        if (found.originKey.startsWith("credit_note:") && writer.creditNote !== true)
-          return yield* invalid(
-            "This came from a credit note. Void the credit note to take it back.",
-          );
+        const blocked = yield* takeBackBlocked(
+          orgId,
+          row,
+          { paymentId, originKey: found.originKey, voided: found.voidedAt !== null },
+          mode,
+          writer.creditNote === true,
+        ).pipe(provideSql);
+        if (blocked !== undefined) return yield* blocked;
         if (found.voidedAt !== null) return row;
-        if (mode !== "unapply_credit" && row.registerId === "invoices") {
-          const receiptId = /^receipt:([^:]+)(?::after:.+)?$/.exec(found.originKey)?.[1];
-          if (receiptId !== undefined) {
-            const [receipt] = yield* sql`SELECT 1 FROM kin_records
-              WHERE org_id = ${orgId} AND record_id = ${receiptId} AND register_id = 'receipts'
-                AND json_extract(fields_json, '$.payment') = ${paymentId}`;
-            if (receipt !== undefined)
-              return yield* invalid(
-                "This payment came from the client's credit. Un-apply it instead. Nothing changed.",
-              );
-          }
-        }
         const now = yield* Clock.currentTimeMillis;
         yield* sql`UPDATE kin_record_payments SET voided_at = ${now}
           WHERE org_id = ${orgId} AND payment_id = ${paymentId}`;
