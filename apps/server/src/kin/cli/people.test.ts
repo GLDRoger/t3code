@@ -33,7 +33,9 @@ const client = {
     orgId === "nope" ? Effect.fail(notFound) : Effect.succeed({ invites: [invite] }),
   ),
   "kin.people.revokeInvite": vi.fn(() => Effect.fail(notFound)),
-  "kin.people.createInvite": vi.fn(() => Effect.die("no invite expected")),
+  "kin.people.createInvite": vi.fn(({ personId }: { readonly personId?: string }) =>
+    personId === undefined ? Effect.die("no invite expected") : Effect.fail(notFound),
+  ),
 };
 
 vi.mock("./openRemote.ts", () => ({
@@ -100,6 +102,10 @@ it.effect("a refusal is one plain stderr line the runtime does not report again"
     for (const [args, line] of [
       [["invites", "--org", "nope"], "No org nope on this host."],
       [["revoke-invite", "missing"], "No open invite missing in org kin-default."],
+      [
+        ["invite", "Asha", "--person", "typo", "--url", "https://kin.example"],
+        "No person typo in org kin-default on this host.",
+      ],
     ] as const) {
       const before = (yield* TestConsole.errorLines).length;
       const error = yield* run([...args, "--base-dir", baseDir]).pipe(Effect.flip);

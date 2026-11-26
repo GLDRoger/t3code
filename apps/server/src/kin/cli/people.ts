@@ -163,32 +163,38 @@ export const peopleCommand = Command.make("people").pipe(
         "Create an invite and print its link, to send to the person yourself. The link is shown once.",
       ),
       Command.withHandler((flags) =>
-        runOnHost(flags, `No org ${flags.org} on this host.`, ({ client, origin }) =>
-          Effect.gen(function* () {
-            const base = yield* Effect.try({
-              try: () => new URL(Option.getOrElse(flags.url, () => origin)),
-              catch: () => new KinPeopleCliError({ message: "Use an http or https server URL." }),
-            });
-            if (!["http:", "https:"].includes(base.protocol) || base.username || base.password)
-              return yield* new KinPeopleCliError({
-                message: "Use an http or https server URL without credentials.",
-              });
-            if (kinIsLocalOnlyHost(base.hostname))
-              yield* Console.error(
-                "This link works only on this machine. Use --url with a server address your teammate can reach.",
-              );
-            const invite = yield* client["kin.people.createInvite"]({
-              orgId: flags.org,
-              displayName: flags.name,
-              ...Option.match(flags.person, {
-                onNone: () => ({}),
-                onSome: (personId) => ({ personId }),
-              }),
-            });
-            const link = new URL("/kin/invite", base.origin);
-            link.hash = invite.secret;
-            yield* Console.log(link.href);
+        runOnHost(
+          flags,
+          Option.match(flags.person, {
+            onNone: () => `No org ${flags.org} on this host.`,
+            onSome: (personId) => `No person ${personId} in org ${flags.org} on this host.`,
           }),
+          ({ client, origin }) =>
+            Effect.gen(function* () {
+              const base = yield* Effect.try({
+                try: () => new URL(Option.getOrElse(flags.url, () => origin)),
+                catch: () => new KinPeopleCliError({ message: "Use an http or https server URL." }),
+              });
+              if (!["http:", "https:"].includes(base.protocol) || base.username || base.password)
+                return yield* new KinPeopleCliError({
+                  message: "Use an http or https server URL without credentials.",
+                });
+              if (kinIsLocalOnlyHost(base.hostname))
+                yield* Console.error(
+                  "This link works only on this machine. Use --url with a server address your teammate can reach.",
+                );
+              const invite = yield* client["kin.people.createInvite"]({
+                orgId: flags.org,
+                displayName: flags.name,
+                ...Option.match(flags.person, {
+                  onNone: () => ({}),
+                  onSome: (personId) => ({ personId }),
+                }),
+              });
+              const link = new URL("/kin/invite", base.origin);
+              link.hash = invite.secret;
+              yield* Console.log(link.href);
+            }),
         ),
       ),
     ),
