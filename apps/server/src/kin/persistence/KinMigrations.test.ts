@@ -2786,7 +2786,7 @@ describe("Kin migrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("K226 keeps ordinary holds beside declines and reruns", () =>
+  it.effect("K227 keeps ordinary holds beside declines and reruns", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
@@ -2798,10 +2798,10 @@ describe("Kin migrations", () => {
         yield* sql`CREATE UNIQUE INDEX kin_holds_live
           ON kin_holds (org_id, record_id, COALESCE(for_person_id, '')) WHERE lifted_at IS NULL`;
       }
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 226`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 227`;
       yield* sql`INSERT INTO kin_holds (hold_id, org_id, record_id, for_person_id, set_by_kind, set_by_id, set_at)
         VALUES ('ordinary', 'org', 'record', 'zoya', 'person', 'zoya', 1)`;
-      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(226));
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(227));
       const columns = yield* sql<{ name: string }>`PRAGMA table_info(kin_holds)`;
       assert.include(
         columns.map(({ name }) => name),
@@ -2811,8 +2811,8 @@ describe("Kin migrations", () => {
           set_by_id, set_at, decline_json)
         VALUES ('declined', 'org', 'record', 'zoya', 'agent', 'lead', 2,
           '{"day":null,"state":"open","holderKind":"person","holderId":"zoya","messageId":"answer"}')`;
-      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 226`;
-      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(226));
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 227`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(227));
       assert.deepStrictEqual(
         yield* sql`SELECT hold_id, decline_json IS NULL AS ordinary
         FROM kin_holds WHERE org_id = 'org' ORDER BY hold_id`,
