@@ -7,6 +7,7 @@ import type {
   KinPartyRow,
   KinPeopleListInvitesResult,
   KinPeopleListResult,
+  KinPeopleProfilesResult,
   KinProjectPage,
   KinProjectRow,
   KinRecordDetail,
@@ -92,6 +93,8 @@ const noPeopleAtom: Atom.Atom<AsyncResult.AsyncResult<KinPeopleListResult, unkno
 const noZoneAtom: Atom.Atom<AsyncResult.AsyncResult<KinOwnerTimeZone, unknown>> = Atom.make(
   AsyncResult.initial(),
 );
+const noProfilesAtom: Atom.Atom<AsyncResult.AsyncResult<KinPeopleProfilesResult, unknown>> =
+  Atom.make(AsyncResult.initial());
 const noInvitesAtom: Atom.Atom<AsyncResult.AsyncResult<KinPeopleListInvitesResult, unknown>> =
   Atom.make(AsyncResult.initial());
 
@@ -246,12 +249,20 @@ export function makeKinWorkHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinWorkUse
     const people = listed?.people ?? null;
     const invited = useKinReinvited({ environmentId, orgId }, enabled);
     const { zone } = useKinWorkZone({ environmentId, orgId }, enabled);
+    const profiles = useAtomValue(
+      enabled ? kinClient.profiles({ environmentId, input: { orgId } }) : noProfilesAtom,
+    );
+    const me = orgs?.me.find((held) => held.orgId === orgId)?.personId;
+    const readerZone =
+      Option.getOrNull(AsyncResult.value(profiles))?.profiles.find(
+        (profile) => profile.personId === me,
+      )?.timeZone ?? null;
     return {
       orgs,
       people,
       joined: listed?.joined ?? null,
       invited,
-      names: kinWorkNames({ orgs, orgId, people, zone }),
+      names: kinWorkNames({ orgs, orgId, people, zone, readerZone }),
     };
   }
 
