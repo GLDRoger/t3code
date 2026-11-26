@@ -375,8 +375,20 @@ export const overOffer = (row: StatementRow, invoice: InvoiceCandidate, currency
   };
 };
 
-/** A cross-currency bank credit is an offer, not proof of an amount in the invoice's currency. */
-export const rateOffer = (row: StatementRow, invoice: InvoiceCandidate, currency: string) => {
+/** How far a named credit's rate may sit from a rate the company was paid at and still be offered. */
+const RATE_BAND = 0.1;
+
+/**
+ * A cross-currency bank credit is an offer, not proof of an amount in the invoice's currency.
+ * One that only names the client proves no rate: it is offered only near `recorded`, the rate of
+ * a recent payment the company took in this pair (`recordedRate`), and never without one.
+ */
+export const rateOffer = (
+  row: StatementRow,
+  invoice: InvoiceCandidate,
+  currency: string,
+  recorded?: string,
+) => {
   const balance = invoice.amountMinor - invoice.paidMinor;
   if (
     row.direction !== "credit" ||
@@ -391,6 +403,12 @@ export const rateOffer = (row: StatementRow, invoice: InvoiceCandidate, currency
   if (score < PROPOSED) return undefined;
   const owed = { minor: balance, currency: invoice.currency };
   const received = { minor: row.amountMinor, currency };
+  const rate = kinImpliedRate(owed, received);
+  if (
+    cited === undefined &&
+    (recorded === undefined || Math.abs(Number(rate) / Number(recorded) - 1) > RATE_BAND)
+  )
+    return undefined;
   return {
     candidate: {
       kind: "invoice",
@@ -404,7 +422,7 @@ export const rateOffer = (row: StatementRow, invoice: InvoiceCandidate, currency
     } satisfies Candidate,
     owed,
     received,
-    rate: kinImpliedRate(owed, received),
+    rate,
     cited,
   };
 };

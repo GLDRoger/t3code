@@ -658,8 +658,8 @@ The wording the owner may change is at the top of template.typ.
   "notes": null
 }
 `,
-  "recipes/credit_note/RECIPE.md": String.raw`---
-name: credit_note
+  "recipes/credit-note/RECIPE.md": String.raw`---
+name: credit-note
 title: Credit note
 description: A credit note that reduces the amount owed on one invoice.
 kind: typst
@@ -687,7 +687,7 @@ outputs: [credit-note.pdf]
 
 A draft carries a DRAFT mark until the owner issues it in Kin.
 `,
-  "recipes/credit_note/template.typ": String.raw`
+  "recipes/credit-note/template.typ": String.raw`
 #let d = json("/inputs.json")
 #set page(margin: 22mm)
 #set text(size: 11pt)
@@ -704,7 +704,7 @@ A draft carries a DRAFT mark until the owner issues it in Kin.
   ..row("Reason", d.reason),
 )
 `,
-  "recipes/credit_note/sample.json": String.raw`{
+  "recipes/credit-note/sample.json": String.raw`{
   "number": "CN/26-27/001",
   "draft": false,
   "date": "2026-11-04",

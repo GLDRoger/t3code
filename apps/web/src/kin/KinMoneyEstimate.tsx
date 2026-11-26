@@ -175,6 +175,10 @@ function KinRatesForm(
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const edit = (next: KinRateDraft) => {
+    setDraft(next);
+    setProblem(null);
+  };
   const send = async (next: KinRateDraft, remove: boolean) => {
     const made = kinRateInput(orgId, profile, next, remove);
     if ("problem" in made) return setProblem(made.problem);
@@ -229,7 +233,7 @@ function KinRatesForm(
                     <button
                       type="button"
                       aria-label={`Change the ${rate.currency} rate`}
-                      onClick={() => setDraft({ ...rate })}
+                      onClick={() => edit({ ...rate })}
                       className="flex min-w-0 flex-1 flex-col items-start rounded-md px-2 py-1 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
                     >
                       <span className="text-sm text-foreground">
@@ -265,7 +269,7 @@ function KinRatesForm(
                   autoComplete="off"
                   spellCheck={false}
                   onChange={(event) =>
-                    setDraft({ ...draft, currency: event.target.value.toUpperCase() })
+                    edit({ ...draft, currency: event.target.value.toUpperCase() })
                   }
                 />
               </div>
@@ -278,7 +282,7 @@ function KinRatesForm(
                   value={draft.rate}
                   inputMode="decimal"
                   autoComplete="off"
-                  onChange={(event) => setDraft({ ...draft, rate: event.target.value })}
+                  onChange={(event) => edit({ ...draft, rate: event.target.value })}
                 />
               </div>
             </div>
@@ -288,7 +292,7 @@ function KinRatesForm(
                 id={ids.asOf}
                 type="date"
                 value={draft.asOf}
-                onChange={(event) => setDraft({ ...draft, asOf: event.target.value })}
+                onChange={(event) => edit({ ...draft, asOf: event.target.value })}
               />
             </div>
           </section>
