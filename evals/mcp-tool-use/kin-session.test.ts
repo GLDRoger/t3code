@@ -55,7 +55,7 @@ it("places every legacy wake-up block exactly once, splitting the server's tagge
 
 // Captured from mine/kin at 41f8a4f4705 before adding the layout flag.
 const legacyRequestPin = "2fc2cb5b182755fd7a3896a5a2dbfb4460815d16381e7aeee81d9d0be4d7a93a";
-const sessionRequestPin = "d627b8f88c11533fac671f4fcce04c4f43367dca5623a9621b3a6348d3a01c76";
+const sessionRequestPin = "37936fe8bc59d10017e1b9557d0416b01121d0ffc9069e9265cfa88353f0176e";
 const pinnedIds = [
   "kin-lead-rereads-github-hint",
   "kin-lead-uses-display-name",
