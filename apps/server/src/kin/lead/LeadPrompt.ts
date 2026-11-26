@@ -169,7 +169,7 @@ export const PROMPT_HEADINGS = {
 export const UNREAD_RULE =
   "Before you say anything new, keep these true: leave each one that still stands, even if your reply repeats it, and any you cannot check; take back one that no longer matters with message_withdraw; put the current version in place of one that is now wrong with message_replace.";
 export const REMINDER_DUE =
-  "This reminder is due now. A check in it is yours to do, from Kin's records and your tools, before asking anyone.";
+  "This reminder is due now. A check in it is yours to do, from Kin's records and your tools, before asking anyone. If what it needs is still missing, such as an address, the reply is one line: what it was for and what you need, such as \"Time to send Corran Supplies the signed order: what's their address?\". Where you looked and what you found tell them nothing they can act on, so leave them out.";
 /** Each fixed label a lead's prompt puts on a quote; Kin's evals check a case's labels against these. */
 export const QUOTE_LABELS = {
   docReference: "doc reference (data)",
