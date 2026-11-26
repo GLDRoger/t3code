@@ -1,5 +1,6 @@
 import type { HookInput } from "@anthropic-ai/claude-agent-sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import { assert, it } from "@effect/vitest";
 import {
   KinAgentId,
@@ -122,6 +123,8 @@ const withPreparedContext = <A, E>(
             }),
           ),
           Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+          Layer.provideMerge(KinSessionContext.layer),
+          Layer.provide(Layer.succeed(HostProcess.HomeDirectory, stateDir)),
         ),
       ),
     );
@@ -180,6 +183,21 @@ it.effect("the prompt hook returns prepared text without reading the database", 
           },
         ],
       );
+    }),
+  ),
+);
+
+it.effect("a second Claude prompt cannot read the same turn context", () =>
+  withPreparedContext((options) =>
+    Effect.gen(function* () {
+      const prompt = {
+        ...hookBase,
+        hook_event_name: "UserPromptSubmit" as const,
+        prompt: "original wake-up",
+      };
+      const [first] = yield* hookOutputs(options, prompt);
+      assert.isTrue(first !== undefined && "hookSpecificOutput" in first);
+      assert.deepStrictEqual(yield* hookOutputs(options, prompt), [{}]);
     }),
   ),
 );
@@ -481,6 +499,7 @@ it.effect(
         }).pipe(
           Effect.provide(
             claude.install(base).pipe(
+              Layer.provide(Layer.succeed(HostProcess.HomeDirectory, stateDir)),
               Layer.provide(
                 Layer.succeed(KinServer, {
                   taskCardUpdater: Layer.empty,
@@ -773,6 +792,7 @@ it.effect(
         }).pipe(
           Effect.provide(
             claude.install(base).pipe(
+              Layer.provide(Layer.succeed(HostProcess.HomeDirectory, stateDir)),
               Layer.provide(
                 Layer.succeed(KinServer, {
                   taskCardUpdater: Layer.empty,
@@ -974,6 +994,7 @@ it.effect(
         }).pipe(
           Effect.provide(
             claude.install(base).pipe(
+              Layer.provide(Layer.succeed(HostProcess.HomeDirectory, scratch)),
               Layer.provide(
                 Layer.succeed(KinServer, {
                   taskCardUpdater: Layer.empty,

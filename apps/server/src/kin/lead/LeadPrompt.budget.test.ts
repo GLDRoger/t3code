@@ -6,7 +6,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as Chat from "../chat/KinChatRepository.ts";
 import { directKey } from "./LeadAccess.ts";
 import contextBudget from "../mcp/agentContextBudget.json" with { type: "json" };
-import { KinLeadPrompt } from "./LeadPrompt.ts";
+import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
 import {
   agentId,
   chatId,
@@ -166,11 +166,14 @@ it.effect.each(Object.keys(TURN_KINDS) as Array<keyof typeof TURN_KINDS>)(
       const turn = TURN_KINDS[kind];
       const event = yield* turn.event;
       yield* stored(input.wakeupId, [event]);
-      const built = yield* (yield* KinLeadPrompt).build({
+      const prompt = yield* KinLeadPrompt;
+      const given: KinLeadPromptInput = {
         ...input,
         lane: { chatId, mode: turn.mode },
         events: [event],
-      });
+      };
+      const built = yield* prompt.build(given);
+      expect((yield* prompt.buildSession(given)).full).toBe(built);
       expect(
         Buffer.byteLength(built, "utf8"),
         "Set kinLeadPromptBytes in agentContextBudget.json to the measured value. Before you cut text to fit, run the evals that cover it (evals/README.md).",

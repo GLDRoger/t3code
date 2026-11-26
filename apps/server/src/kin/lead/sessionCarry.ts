@@ -31,6 +31,9 @@ export interface CarryFacts {
   readonly marked: boolean;
   readonly foreignRun: boolean;
   readonly gapMs: number | null;
+  readonly contextTokens?: number | null;
+  readonly compactAtTokens?: number;
+  readonly compactedSince?: boolean;
   readonly sameBoot: boolean;
   readonly sameModel: boolean;
   readonly sameInstructions: boolean;
@@ -67,36 +70,43 @@ export function decideCarry(facts: CarryFacts) {
                 ? "foreign_run"
                 : facts.gapMs === null || facts.gapMs < 0 || facts.gapMs > CARRY_LIFETIME_MS
                   ? "expired"
-                  : !facts.sameBoot
-                    ? "boot"
-                    : !facts.sameModel
-                      ? "model"
-                      : !facts.sameInstructions
-                        ? "instructions"
-                        : !facts.sameToolList
-                          ? "tool_list"
-                          : !facts.sameLead
-                            ? "lead"
-                            : !facts.sameMembers
-                              ? "members"
-                              : !facts.sameLists
-                                ? "lists"
-                                : !facts.sameBudgets
-                                  ? "budgets"
-                                  : !facts.sameRecipes
-                                    ? "recipes"
-                                    : !facts.sameZone
-                                      ? "zone"
-                                      : facts.paused
-                                        ? "paused"
-                                        : !facts.sameStanding
-                                          ? "standing"
-                                          : facts.indexLinesChanged > CARRY_INDEX_LINES
-                                            ? "index"
-                                            : facts.missed
-                                              ? "missed"
-                                              : undefined;
-  return reason === undefined ? { carry: true as const } : { carry: false as const, reason };
+                  : facts.contextTokens != null &&
+                      facts.compactAtTokens !== undefined &&
+                      facts.contextTokens > facts.compactAtTokens
+                    ? "size"
+                    : !facts.sameBoot
+                      ? "boot"
+                      : !facts.sameModel
+                        ? "model"
+                        : !facts.sameInstructions
+                          ? "instructions"
+                          : !facts.sameToolList
+                            ? "tool_list"
+                            : !facts.sameLead
+                              ? "lead"
+                              : !facts.sameMembers
+                                ? "members"
+                                : !facts.sameLists
+                                  ? "lists"
+                                  : !facts.sameBudgets
+                                    ? "budgets"
+                                    : !facts.sameRecipes
+                                      ? "recipes"
+                                      : !facts.sameZone
+                                        ? "zone"
+                                        : facts.paused
+                                          ? "paused"
+                                          : !facts.sameStanding
+                                            ? "standing"
+                                            : facts.indexLinesChanged > CARRY_INDEX_LINES
+                                              ? "index"
+                                              : facts.missed
+                                                ? "missed"
+                                                : undefined;
+  if (reason !== undefined) return { carry: false as const, reason };
+  return facts.compactedSince
+    ? { carry: true as const, refill: true as const }
+    : { carry: true as const };
 }
 
 const bootId = Effect.gen(function* () {
@@ -140,7 +150,27 @@ const CarryStamp = Schema.Struct({
   sessionStart: KinWakeupId,
   toolListSha: Schema.NullOr(Schema.String),
   missed: Schema.Boolean,
+  compacted: Schema.optional(Schema.Boolean),
+  cursor: Schema.optional(Schema.Unknown),
+  cursorCaptured: Schema.optional(Schema.Unknown),
 });
+const CapturedCursor = Schema.Struct({
+  changeSeq: Schema.Finite,
+  at: Schema.Finite,
+  memoryHead: Schema.NonEmptyString,
+  chatSeq: Schema.Finite,
+  chatId: Schema.NonEmptyString,
+  chatChangeSeq: Schema.Finite,
+  chatVersions: Schema.Array(
+    Schema.Struct({
+      id: Schema.NonEmptyString,
+      seq: Schema.Finite,
+      changeSeq: Schema.Finite,
+    }),
+  ),
+  heldChatChanges: Schema.Array(Schema.Finite),
+});
+const decodeCursor = Schema.decodeUnknownOption(CapturedCursor);
 const decodeStamp = Schema.decodeUnknownOption(Schema.fromJsonString(CarryStamp));
 
 export interface PromptFingerprint {
@@ -177,6 +207,7 @@ interface Wakeup {
 }
 
 const FINGERPRINT_ROWS_LIMIT = 1_000;
+const SESSION_HISTORY_LIMIT = 1_000;
 
 const recipeFingerprint = Effect.fn("KinSessionCarry.recipeFingerprint")(function* (
   orgId: KinOrgId,
@@ -215,6 +246,7 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
     readonly enabled: boolean;
     readonly now: number;
     readonly stopRevision: number;
+    readonly compactAtTokens?: number;
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -233,7 +265,7 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
     SELECT l.owner_chat_id AS "ownerChat", a.owner_person_id AS owner, l.name, l.domain, l.charter,
       l.public_intro AS intro, l.level, l.level_since AS "levelSince"
     FROM kin_leads l LEFT JOIN kin_agents a USING (org_id, agent_id)
-    WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId}`;
+    WHERE l.org_id = ${orgId} AND l.agent_id = ${agentId} LIMIT 1`;
   const chat = (yield* turnChat(wakeup))?.chatId ?? null;
   const members =
     chat === null
@@ -241,18 +273,21 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
       : yield* sql`
     SELECT member_id, principal_kind, person_id, agent_id, role, joined_at
     FROM kin_chat_members WHERE org_id = ${orgId} AND chat_id = ${chat} AND left_at IS NULL
-    ORDER BY member_id`;
+    ORDER BY member_id LIMIT ${FINGERPRINT_ROWS_LIMIT + 1}`;
   const lists = yield* sql`
     SELECT register_id, name, definition_json, archived_at FROM kin_registers
     WHERE org_id = ${orgId} ORDER BY register_id LIMIT ${FINGERPRINT_ROWS_LIMIT + 1}`;
   const budgets = yield* sql`SELECT * FROM kin_money_budgets
     WHERE org_id = ${orgId} ORDER BY budget_id LIMIT ${FINGERPRINT_ROWS_LIMIT + 1}`;
-  const recipes = yield* recipeFingerprint(orgId, input.enabled);
+  const recipes = yield* recipeFingerprint(
+    orgId,
+    input.enabled && input.ownerThread && input.driver === "claudeAgent",
+  );
   // oxlint-disable-next-line t3code/kin-zoned-time -- fingerprint the stored owner-zone setting
   const [zone] = yield* sql<{ zone: string }>`SELECT time_zone AS zone FROM kin_trigger_settings
     WHERE org_id = ${orgId} LIMIT 1`;
   const [stop] = yield* sql<{ paused: number }>`
-    SELECT paused FROM kin_org_state WHERE org_id = ${orgId}`;
+    SELECT paused FROM kin_org_state WHERE org_id = ${orgId} LIMIT 1`;
   const fingerprint = {
     chat,
     model: fingerprintJson(input.model),
@@ -289,6 +324,15 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
       AND w.wakeup_id <> ${wakeupId} AND w.kind = 'turn' AND w.status <> 'released'
     ORDER BY w.started_at DESC, w.wakeup_id DESC LIMIT 1`;
   const prior = Option.getOrUndefined(decodeStamp(previous?.stamp));
+  const cursor =
+    prior?.cursorCaptured === true ? Option.getOrUndefined(decodeCursor(prior.cursor)) : undefined;
+  const previousCursor =
+    cursor !== undefined &&
+    cursor.chatId === chat &&
+    cursor.chatVersions.length <= 1_000 &&
+    cursor.chatVersions.some(({ id }) => id === chat)
+      ? cursor
+      : undefined;
   const priorFingerprint = Option.getOrUndefined(decodeFingerprint(previous?.fingerprint));
   const priorIndex = Option.getOrUndefined(decodeIndex(previous?.promptIndex));
   const sessionStart = prior?.sessionStart;
@@ -298,7 +342,7 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
       : yield* sql`
       SELECT 1 FROM orchestration_v2_projection_runs
       WHERE thread_id = ${threadId} AND run_id = ${wakeup.runId}
-        AND provider_thread_id = ${previous.providerThreadId}`;
+        AND provider_thread_id = ${previous.providerThreadId} LIMIT 1`;
   const history =
     previous === undefined || prior === undefined
       ? []
@@ -307,16 +351,20 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
           lastRequest: number | null;
           contextTokens: number | null;
           draft: number;
+          compactedAfterPrevious: number;
         }>`
       SELECT w.wakeup_id AS "wakeupId", w.last_request_at AS "lastRequest",
         w.context_tokens AS "contextTokens",
+        CASE WHEN w.kind = 'upkeep' AND (w.started_at, w.wakeup_id) > (${previous.startedAt}, ${previous.wakeupId})
+          AND json_extract(w.carry_json, '$.compacted') = 1 THEN 1 ELSE 0 END AS "compactedAfterPrevious",
         EXISTS (SELECT 1 FROM kin_events e WHERE e.org_id = w.org_id AND e.agent_id = w.agent_id
           AND e.wakeup_id = w.wakeup_id AND json_type(e.json, '$.subject.approved') IS NOT NULL) AS draft
       FROM kin_wakeups w
       WHERE w.org_id = ${orgId} AND w.agent_id = ${agentId} AND w.thread_id = ${threadId}
         AND w.wakeup_id <> ${wakeupId}
         AND json_extract(w.carry_json, '$.sessionStart') = ${prior.sessionStart}
-      ORDER BY w.last_request_at DESC NULLS LAST, w.started_at DESC, w.wakeup_id DESC`;
+      ORDER BY w.last_request_at DESC NULLS LAST, w.started_at DESC, w.wakeup_id DESC
+      LIMIT ${SESSION_HISTORY_LIMIT + 1}`;
   let marked = false;
   for (const member of [...history, { wakeupId, draft: 0 }]) {
     if (
@@ -337,6 +385,7 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
       : yield* sql`
     SELECT 1 FROM orchestration_v2_projection_runs r
     WHERE r.thread_id = ${threadId} AND r.provider_thread_id = ${previous.providerThreadId}
+      AND r.run_id IS NOT ${wakeup.runId ?? null}
       AND NOT EXISTS (SELECT 1 FROM kin_wakeups w WHERE w.org_id = ${orgId} AND w.agent_id = ${agentId}
         AND w.thread_id = r.thread_id AND w.run_id = r.run_id AND w.wakeup_id <> ${wakeupId})
     LIMIT 1`;
@@ -357,8 +406,15 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
       sessionStart !== undefined &&
       history.some((member) => member.wakeupId === sessionStart),
     marked: marked || approved !== undefined,
-    foreignRun: foreign !== undefined,
+    foreignRun:
+      foreign !== undefined ||
+      history.length > SESSION_HISTORY_LIMIT ||
+      (wakeup.runId != null && adoptedInSession === undefined),
     gapMs,
+    contextTokens: last?.contextTokens ?? null,
+    ...(input.compactAtTokens === undefined ? {} : { compactAtTokens: input.compactAtTokens }),
+    compactedSince:
+      prior?.compacted === true || history.some((member) => member.compactedAfterPrevious === 1),
     sameBoot: input.bootId === prior?.bootId,
     sameModel: fingerprint.model === priorFingerprint?.model,
     sameInstructions:
@@ -366,7 +422,8 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
       fingerprint.instructions === priorFingerprint?.instructions,
     sameToolList: input.toolListSha !== null && input.toolListSha === prior?.toolListSha,
     sameLead: lead !== undefined && fingerprint.lead === priorFingerprint?.lead,
-    sameMembers: fingerprint.members === priorFingerprint?.members,
+    sameMembers:
+      members.length <= FINGERPRINT_ROWS_LIMIT && fingerprint.members === priorFingerprint?.members,
     sameLists: fingerprint.lists !== null && fingerprint.lists === priorFingerprint?.lists,
     sameBudgets: fingerprint.budgets !== null && fingerprint.budgets === priorFingerprint?.budgets,
     sameRecipes: fingerprint.recipes !== null && fingerprint.recipes === priorFingerprint?.recipes,
@@ -386,6 +443,8 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
     sessionStart: adoptedInSession === undefined ? wakeupId : (sessionStart ?? wakeupId),
     carriedFrom: sessionStart ?? null,
     sessionWakeupIds: [...history.map((member) => member.wakeupId), wakeupId],
-    contextTokens: last?.contextTokens ?? null,
+    contextTokens: facts.contextTokens,
+    previousWakeupId: previous?.wakeupId,
+    previousCursor,
   };
 });

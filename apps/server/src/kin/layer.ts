@@ -51,6 +51,7 @@ import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as KinMcp from "./mcp/layer.ts";
 import * as SessionCarry from "./lead/sessionCarry.ts";
+import { KinSessionContext } from "./lead/turn/sessionContext.ts";
 import * as KinTasksKeyMcp from "./tasksKey/mcp.ts";
 import * as Render from "./gendocs/render.ts";
 import * as Toolchain from "./gendocs/toolchain.ts";
@@ -85,7 +86,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
   Layer.effect(
     KinServer,
     Effect.gen(function* () {
-      const services = yield* Effect.context<Services>();
+      const services = yield* Effect.context<Services | KinSessionContext>();
       yield* requireRefreshObserver(services);
       const chat = yield* KinChatService;
       yield* (yield* KinRecords.KinRecords).attachClosing((subject) =>
@@ -315,7 +316,10 @@ const middleware = HttpRouter.middleware<{ provides: KinServer }>()(
 
 /** Tests pass `KeySeal.layerTest()` so they can seal the key rows they write. */
 export const layerWithSeal = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
-  middleware.pipe(Layer.provideMerge(runtime(seal)), Layer.provideMerge(SessionCarry.layer));
+  middleware.pipe(
+    Layer.provideMerge(runtime(seal)),
+    Layer.provideMerge(Layer.merge(SessionCarry.layer, KinSessionContext.layer)),
+  );
 
 export const layer = layerWithSeal(KeySeal.layer);
 

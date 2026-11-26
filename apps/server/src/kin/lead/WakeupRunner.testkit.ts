@@ -26,6 +26,7 @@ import {
   TurnItemId,
   type ProviderApprovalDecision,
   type RuntimeMode,
+  type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -57,7 +58,12 @@ import * as KinLeadRegistry from "./KinLeadRegistry.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 import * as KinIssuedTokens from "../mcp/KinIssuedTokens.ts";
 import { recordAudience, turnAudience } from "./Audience.ts";
-import { KinLeadPrompt, KinLeadPromptError, type KinLeadPromptInput } from "./LeadPrompt.ts";
+import {
+  CARRIED_TURN_NOTE,
+  KinLeadPrompt,
+  KinLeadPromptError,
+  type KinLeadPromptInput,
+} from "./LeadPrompt.ts";
 import { KinTurnContent } from "./turn/content.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as TaskFolders from "../../workspace/TaskFolders.ts";
@@ -169,6 +175,8 @@ type HarnessOptions = {
   readonly failureMessage?: string;
   readonly writer?: Layer.Layer<Writer.MemoryWriter, never, SqlClient.SqlClient>;
   readonly piUsage?: boolean;
+  readonly cacheWrites?: ReadonlyMap<number, number>;
+  readonly compactsOn?: number;
   readonly prepare?: Memory.Memory["Service"]["prepareWakeup"];
   /** Reads a memory item; by default no item exists. */
   readonly readItem?: Memory.Memory["Service"]["readItemQuietly"];
@@ -191,7 +199,9 @@ type HarnessOptions = {
   /** Runs inside each turn before it completes, as the provider's tool calls would. */
   readonly onTurn?: (input: { readonly threadId: ThreadId }) => Effect.Effect<void>;
   /** Each turn reports itself running, then completes only once this does. */
-  readonly holdRunning?: Deferred.Deferred<void>;
+  readonly holdRunning?:
+    | Deferred.Deferred<void>
+    | ((runOrdinal: number) => Deferred.Deferred<void> | undefined);
   /** Each item is one tool call a running turn makes (`holdRunning`, `untilInterrupted`). */
   readonly work?: Queue.Queue<void>;
   /** Messages the provider received as steers into a running turn. */
@@ -455,6 +465,27 @@ function parts(options: HarnessOptions) {
                     output: result.output,
                   },
                 });
+              if (options.compactsOn === input.runOrdinal) {
+                const turnItem: Extract<OrchestrationV2TurnItem, { type: "compaction" }> = {
+                  id: TurnItemId.make(`compact:${id}`),
+                  threadId: input.threadId,
+                  runId: input.runId,
+                  nodeId: input.rootNodeId,
+                  providerThreadId: input.providerThread.id,
+                  providerTurnId: id,
+                  nativeItemRef: null,
+                  parentItemId: null,
+                  ordinal: input.runOrdinal * 100 + 99,
+                  status: "completed",
+                  title: null,
+                  startedAt: time,
+                  completedAt: time,
+                  updatedAt: time,
+                  type: "compaction",
+                  driver,
+                };
+                yield* Queue.offer(events, { type: "turn_item.updated", driver, turnItem });
+              }
               if (options.replyText !== undefined)
                 yield* Queue.offer(events, {
                   type: "turn_item.updated",
@@ -500,6 +531,11 @@ function parts(options: HarnessOptions) {
                           usageScope: "main_agent",
                           usageStatus: "complete",
                           hasSubagents: false,
+                          ...(options.cacheWrites === undefined
+                            ? {}
+                            : {
+                                cacheCreationTokens: options.cacheWrites.get(input.runOrdinal) ?? 0,
+                              }),
                           inputTokens: 20,
                           cachedInputTokens: 5,
                           outputTokens: 10,
@@ -535,8 +571,12 @@ function parts(options: HarnessOptions) {
                 threadDisposition: "reusable",
               });
             });
-            if (options.holdRunning !== undefined)
-              return yield* Deferred.await(options.holdRunning).pipe(
+            const holdRunning =
+              typeof options.holdRunning === "function"
+                ? options.holdRunning(input.runOrdinal)
+                : options.holdRunning;
+            if (holdRunning !== undefined)
+              return yield* Deferred.await(holdRunning).pipe(
                 Effect.raceFirst(working(input, id, () => true)),
                 Effect.andThen(finish),
                 Effect.forkDetach,
@@ -749,16 +789,37 @@ function parts(options: HarnessOptions) {
       KinLeadPrompt,
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
+        const build = Effect.fn("test.buildLeadPrompt")(
+          function* (input: KinLeadPromptInput) {
+            yield* recordAudience(input, yield* turnAudience(input));
+            input.observePrompt?.(fingerprintPrompt(["invented standing"], "invented index"));
+            options.prompts?.push(input);
+            return "Wake up";
+          },
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.orDie,
+        );
         return KinLeadPrompt.of({
-          // Records who reads the turn as the real builder does; the runner chooses its thread by it.
-          build: (input) =>
-            Effect.gen(function* () {
-              yield* recordAudience(input, yield* turnAudience(input));
-              input.observePrompt?.(fingerprintPrompt(["invented standing"], "invented index"));
-              options.prompts?.push(input);
-              return "Wake up";
-            }).pipe(Effect.provideService(SqlClient.SqlClient, sql), Effect.orDie),
-          buildSession: () => Effect.die("The wake-up runner has no session prompt path"),
+          build,
+          buildSession: Effect.fn("test.buildLeadSession")(function* (input) {
+            const full = yield* build(input);
+            return {
+              full,
+              message: "Tidewater message",
+              standing: "Tidewater standing",
+              standingKey: "tidewater",
+              sections: { header: "Tidewater Freight" },
+              index: "invented index",
+              delta:
+                input.previous === undefined
+                  ? "Tidewater Freight"
+                  : `${CARRIED_TURN_NOTE}\n\nTidewater Freight`,
+              indexChanged: 0,
+              compactInstructions: "",
+              workChanges: undefined,
+              fullWorkChanges: undefined,
+            };
+          }),
           steer: (input) =>
             (options.steering === undefined
               ? Effect.void

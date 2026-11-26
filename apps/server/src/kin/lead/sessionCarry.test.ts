@@ -74,3 +74,25 @@ effectIt.effect("starts fresh when budgets, recipes or the owner time zone chang
     }
   }),
 );
+
+effectIt.effect("size wins over boot and accepts the inclusive limit", () =>
+  Effect.sync(() => {
+    const atLimit = { ...clean, contextTokens: 100_000, compactAtTokens: 100_000 };
+    expect(decideCarry(atLimit)).toEqual({ carry: true });
+    expect(decideCarry({ ...atLimit, contextTokens: 100_001, sameBoot: false })).toEqual({
+      carry: false,
+      reason: "size",
+    });
+  }),
+);
+
+effectIt.effect("refills the session after compaction", () =>
+  Effect.sync(() => {
+    const compacted = { ...clean, compactedSince: true };
+    expect(decideCarry(compacted)).toEqual({ carry: true, refill: true });
+    expect(decideCarry({ ...compacted, missed: true })).toEqual({
+      carry: false,
+      reason: "missed",
+    });
+  }),
+);
