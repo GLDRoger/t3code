@@ -1,6 +1,6 @@
 import { assert, it } from "@effect/vitest";
 import * as Context from "effect/Context";
-import { Tool } from "effect/ai";
+import { Tool, Toolkit } from "effect/ai";
 
 import { advertisedJsonSchema } from "../../mcp/advertisedJsonSchema.ts";
 import { KinConnectionsToolkit } from "../connections/mcp.ts";
@@ -15,7 +15,7 @@ import { KinBillToolkit } from "../work/mcp/billTools.ts";
 import { KinDocsToolkit } from "../work/mcp/docTools.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
-import { KIN_ALWAYS_LOADED, withAlwaysLoaded } from "./deferredTools.ts";
+import { KIN_ALWAYS_LOADED, KIN_CLAUDE_ALWAYS_LOADED, withAlwaysLoaded } from "./deferredTools.ts";
 import { KinLeadToolkit } from "./mcp/tools.ts";
 
 const kinTools = [
@@ -47,14 +47,14 @@ it("one set decides which Kin tools load up front: no tool marks itself, and eve
   );
   assert.includeMembers(
     kinTools.map((tool) => tool.name),
-    [...KIN_ALWAYS_LOADED],
+    [...KIN_CLAUDE_ALWAYS_LOADED],
   );
   const marked = Object.values(withAlwaysLoaded(KinLeadToolkit).tools)
     .filter((tool) => alwaysLoads(tool) === true)
     .map((tool) => tool.name);
   assert.sameMembers(
     marked,
-    Object.keys(KinLeadToolkit.tools).filter((name) => KIN_ALWAYS_LOADED.has(name)),
+    Object.keys(KinLeadToolkit.tools).filter((name) => KIN_CLAUDE_ALWAYS_LOADED.has(name)),
   );
 });
 
@@ -75,4 +75,31 @@ it("each Kin tool's description and input schema weigh what the budget pins", ()
     contextBudget.kinLeadToolBytes,
     "Set agentContextBudget.json to the measured values. Before you cut text to fit, run the evals that cover it (evals/README.md).",
   );
+});
+
+it("adds five everyday tools to Claude's owner core without moving the Codex partition", () => {
+  const actual = Object.values(withAlwaysLoaded(Toolkit.make(...kinTools)).tools)
+    .filter((tool) => alwaysLoads(tool) === true)
+    .map((tool) => tool.name);
+  assert.sameMembers(actual, [
+    ...KIN_ALWAYS_LOADED,
+    "record_get",
+    "docs_search",
+    "client_read",
+    "doc_create",
+    "record_create",
+  ]);
+});
+
+it("puts search hints in MCP metadata only for deferred tools that have one", () => {
+  const { kin_picture } = KinPictureToolkit.tools;
+  const { kin_defer, kin_schedule } = KinLeadToolkit.tools;
+  const { tools } = withAlwaysLoaded(Toolkit.make(kin_picture, kin_defer, kin_schedule), {
+    kin_picture: "picture hint",
+    kin_defer: "always loaded",
+  });
+  const metadata = (tool: Tool.Any) => Context.getOrUndefined(tool.annotations, Tool.Meta);
+  assert.deepInclude(metadata(tools.kin_picture), { "anthropic/searchHint": "picture hint" });
+  assert.notProperty(metadata(tools.kin_schedule) ?? {}, "anthropic/searchHint");
+  assert.deepEqual(metadata(tools.kin_defer), { "anthropic/alwaysLoad": true });
 });

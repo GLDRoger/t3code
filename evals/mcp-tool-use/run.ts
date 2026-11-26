@@ -5,6 +5,7 @@
  * harness capture supplies the prompt and native tools; a cheap model plays the shell. See
  * README.md for how to run it and add cases.
  */
+import { KIN_SEARCH_HINTS } from "../../apps/server/src/kin/lead/searchHints.ts";
 import { compileClaudeModelSelection } from "../../apps/server/src/claudeModelOptions.ts";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
@@ -2099,7 +2100,12 @@ const keywordScore = (tool: ApiTool, words: ReadonlyArray<string>) => {
   const bare = normalizeToolName(tool.name).toLowerCase();
   const parts = bare.split("_");
   const description = typeof tool.description === "string" ? tool.description.toLowerCase() : "";
-  const hint = isRecord(tool._meta) ? tool._meta["anthropic/searchHint"] : undefined;
+  const hint =
+    isT3Name(tool.name) && Object.hasOwn(KIN_SEARCH_HINTS, normalizeToolName(tool.name))
+      ? KIN_SEARCH_HINTS[normalizeToolName(tool.name)]
+      : isRecord(tool._meta)
+        ? tool._meta["anthropic/searchHint"]
+        : undefined;
   let score = 0;
   for (const word of words) {
     if (parts.includes(word)) score += isT3Name(tool.name) ? 12 : 10;

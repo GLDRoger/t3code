@@ -1,7 +1,9 @@
 import * as Context from "effect/Context";
 import { Tool, Toolkit } from "effect/ai";
 
-/** Claude lead tools loaded before the first tool search. */
+import { KIN_SEARCH_HINTS } from "./searchHints.ts";
+
+/** Codex's up-front partition. */
 export const KIN_ALWAYS_LOADED: ReadonlySet<string> = new Set([
   "record_update",
   "record_assign",
@@ -11,20 +13,31 @@ export const KIN_ALWAYS_LOADED: ReadonlySet<string> = new Set([
   "records_query",
 ]);
 
-/** `Tool.Meta` that has Claude Code load a tool up front while ToolSearch holds the rest back. */
-const alwaysLoadedMeta = { "anthropic/alwaysLoad": true } as const;
+/** Claude adds schemas for everyday reads and writes without moving Codex's partition. */
+export const KIN_CLAUDE_ALWAYS_LOADED: ReadonlySet<string> = new Set([
+  ...KIN_ALWAYS_LOADED,
+  "record_get",
+  "docs_search",
+  "client_read",
+  "doc_create",
+  "record_create",
+]);
 
-/** `toolkit` with its `KIN_ALWAYS_LOADED` tools marked to load up front; handlers match by name. */
+const SEARCH_HINT = "anthropic/searchHint";
+
+/** Claude Code reads these MCP annotations when it builds the tool search inventory. */
 export const withAlwaysLoaded = <Tools extends Record<string, Tool.Any>>(
   toolkit: Toolkit.Toolkit<Tools>,
+  hints = KIN_SEARCH_HINTS,
 ): Toolkit.Toolkit<Tools> =>
   Toolkit.make(
-    ...Object.values(toolkit.tools).map((tool) =>
-      KIN_ALWAYS_LOADED.has(tool.name)
-        ? tool.annotate(Tool.Meta, {
-            ...Context.getOrUndefined(tool.annotations, Tool.Meta),
-            ...alwaysLoadedMeta,
-          })
-        : tool,
-    ),
+    ...Object.values(toolkit.tools).map((tool) => {
+      const meta = Context.getOrUndefined(tool.annotations, Tool.Meta);
+      if (KIN_CLAUDE_ALWAYS_LOADED.has(tool.name)) {
+        const { [SEARCH_HINT]: _hint, ...rest } = meta ?? {};
+        return tool.annotate(Tool.Meta, { ...rest, "anthropic/alwaysLoad": true });
+      }
+      const hint = Object.hasOwn(hints, tool.name) ? hints[tool.name] : undefined;
+      return hint === undefined ? tool : tool.annotate(Tool.Meta, { ...meta, [SEARCH_HINT]: hint });
+    }),
   ) as unknown as Toolkit.Toolkit<Tools>;

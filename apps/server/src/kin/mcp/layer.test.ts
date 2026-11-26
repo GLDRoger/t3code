@@ -54,7 +54,7 @@ import {
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import { kinInstructions } from "../lead/turn/session.ts";
 import { instructions } from "../lead/instructions.ts";
-import { KIN_ALWAYS_LOADED } from "../lead/deferredTools.ts";
+import { KIN_CLAUDE_ALWAYS_LOADED } from "../lead/deferredTools.ts";
 import * as FileSystem from "effect/FileSystem";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
 import contextBudget from "./agentContextBudget.json" with { type: "json" };
@@ -1118,7 +1118,7 @@ it.effect.each([true, false])(
             [],
           );
         // One marker set across seats; hiding a tool from a seat hides its schema too.
-        assert.sameMembers(engineering.upFront, [...KIN_ALWAYS_LOADED]);
+        assert.sameMembers(engineering.upFront, [...KIN_CLAUDE_ALWAYS_LOADED]);
         for (const seat of Object.values(seats))
           assert.deepStrictEqual(
             { upFront: seat.upFront, bytes: seat.upFrontBytes },

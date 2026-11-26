@@ -113,7 +113,7 @@ import {
   KinMoneySummary,
 } from "@t3tools/contracts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
-import { KIN_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.ts";
+import { KIN_CLAUDE_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.ts";
 import { OWNER_SEAT_NATIVE_TOOLS } from "../../apps/server/src/kin/lead/turn/providers/claude.ts";
 import { listedOnSharedThread } from "../../apps/server/src/kin/lead/SharedTools.ts";
 import { BILLS_TOOLS } from "../../apps/server/src/kin/lead/billsOnly.ts";
@@ -388,7 +388,7 @@ export const kinLeadBase = <M, E>(input: {
   const ownerSeat =
     options.kinSession === true && options.kinShared !== true && options.kinBills !== true;
   const deferredKin = t3.filter(
-    (tool) => !KIN_ALWAYS_LOADED.has(tool.name.slice(T3_PREFIX.length)),
+    (tool) => !KIN_CLAUDE_ALWAYS_LOADED.has(tool.name.slice(T3_PREFIX.length)),
   );
   const toolSearch = input.templateTools
     .filter((tool) => tool.name === "ToolSearch")
@@ -620,7 +620,7 @@ export const kinLoadedBefore = <T extends ApiTool>(
 ) =>
   deferred.filter((tool) => {
     const bare = tool.name.replace(T3_PREFIX, "");
-    return !KIN_ALWAYS_LOADED.has(bare) && priorCalls.some((call) => call.tool === bare);
+    return !KIN_CLAUDE_ALWAYS_LOADED.has(bare) && priorCalls.some((call) => call.tool === bare);
   });
 
 // Decoding wraps secrets such as a statement password in Redacted; grade the value the agent sent.
