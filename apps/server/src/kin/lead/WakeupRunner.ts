@@ -1826,10 +1826,10 @@ const make = Effect.gen(function* () {
               return yield* readCursor(orgId, lane?.chatId ?? chat?.chatId ?? null, pinned.head);
             }).pipe(
               provideSql,
-              Effect.catch((error) =>
+              Effect.catchCause((cause) =>
                 Effect.logWarning("Kin session carry shadow recording failed", {
                   wakeupId,
-                  errorTag: error._tag,
+                  cause,
                 }).pipe(Effect.as(undefined)),
               ),
             );
@@ -2007,10 +2007,10 @@ const make = Effect.gen(function* () {
                 WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND status = 'running'`;
             }).pipe(
               provideSql,
-              Effect.catch((error) =>
+              Effect.catchCause((cause) =>
                 Effect.logWarning("Kin session carry shadow recording failed", {
                   wakeupId,
-                  errorTag: error._tag,
+                  cause,
                 }),
               ),
             );
