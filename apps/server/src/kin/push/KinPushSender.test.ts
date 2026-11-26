@@ -149,7 +149,12 @@ const buildOn = <A, E, R>(
         getEnvironmentId: Effect.succeed(EnvironmentId.make("env_kin")),
       }),
     ),
-    Layer.provideMerge(Layer.provideMerge(KinPersistence.layer, database)),
+    Layer.provideMerge(
+      Layer.unwrap(
+        // Start retention at the fixture date so TestClock does not replay it from 1970.
+        TestClock.setTime(NOW).pipe(Effect.as(Layer.provideMerge(KinPersistence.layer, database))),
+      ),
+    ),
   );
 const build = (apns: ReturnType<typeof makeApns>, fcm?: ReturnType<typeof makeFcm>) =>
   buildOn(apns, Sqlite.layerMemory, fcm);
@@ -158,7 +163,6 @@ const buildRelay = (apns: ReturnType<typeof makeApns>) =>
   buildOn(apns, layerKinAuthTest("kin-push-"));
 
 const seed = Effect.gen(function* () {
-  yield* TestClock.setTime(NOW);
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_orgs (org_id, name, created_at) VALUES ('org_01', 'Kin', ${T})`;
   for (const [person, handle] of [
