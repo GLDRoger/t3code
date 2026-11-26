@@ -295,7 +295,9 @@ const recordChanges = Effect.fn("KinSessionChanges.records")(function* (input: I
   ).flat();
   const shownJson = yield* encodeJson(shownByWork);
   const changes = sql`
-    SELECT c.*, r.key, ROW_NUMBER() OVER (PARTITION BY c.record_id ORDER BY c.seq DESC) AS rank
+    SELECT c.org_id, c.record_id, c.seq, c.at, c.kind, c.fields_json, c.via, c.chat_id,
+      c.actor_kind, c.actor_id, c.coding_agent_key,
+      ROW_NUMBER() OVER (PARTITION BY c.record_id ORDER BY c.seq DESC) AS rank
     FROM kin_record_changes c JOIN kin_records r USING (org_id, record_id)
     WHERE c.org_id = ${orgId} AND c.seq > ${from.changeSeq} AND c.seq <= ${to.changeSeq}
       AND NOT ${own}
