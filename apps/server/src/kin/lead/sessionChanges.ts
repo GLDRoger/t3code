@@ -7,8 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
-import { folders, Memory } from "../memory/Memory.ts";
-import { memoryGit } from "../memory/git.ts";
+import { Memory } from "../memory/Memory.ts";
 import { accessSql } from "../people/KinAccess.ts";
 import { commentIdFor } from "../work/recordComments.ts";
 import { turnChat } from "./Audience.ts";
@@ -556,92 +555,93 @@ const memoryChanges = Effect.fn("KinSessionChanges.memory")(function* (input: In
   if (from.memoryHead === to.memoryHead || from.memoryHead === null || to.memoryHead === null)
     return [];
   const memory = yield* Memory;
-  const { writer } = yield* memory.ensureCheckouts(orgId);
-  const diff = yield* memoryGit(writer, [
-    "diff",
-    "--name-status",
-    "-z",
-    "--no-renames",
-    "--diff-filter=M",
-    from.memoryHead,
-    to.memoryHead,
-    "--",
-    ...folders,
-  ]);
-  const paths = diff.split("\0").filter((part, i) => i % 2 === 1 && part.endsWith(".md"));
-  if (paths.length === 0) return [];
-  const { items } = yield* memory.readPromptSnapshot(orgId, to.memoryHead, { lead: agentId });
-  const heads = new Map(items.map((head) => [head.path, head]));
   const own = new Set(input.sessionWakeupIds.map((id) => `kin(${agentId}): wake-up ${id}`));
+  if (memory.changedItems === undefined)
+    return yield* new SessionChangesSourceFailed({ source: "memory", cause: "No history reader" });
+  const { items, overflow } = yield* memory.changedItems(orgId, from.memoryHead, to.memoryHead, {
+    limit: SESSION_CHANGES_CAP + 1,
+    excludeSubjects: own,
+  });
+  const sql = yield* SqlClient.SqlClient;
+  const chats = new Map<string, string>();
   const lines: Line[] = [];
-  for (const path of paths) {
-    const log = yield* memoryGit(writer, [
-      "log",
-      "-z",
-      "--format=%ct%x00%s%x00%B",
-      `${from.memoryHead}..${to.memoryHead}`,
-      "--",
-      path,
-    ]);
-    const parts = log.split("\0");
-    const commits = [];
-    for (let i = 0; i + 2 < parts.length; i += 3) {
-      const at = Number(parts[i]) * 1_000;
-      const subject = parts[i + 1] ?? "";
-      if (Number.isFinite(at) && !own.has(subject))
-        commits.push({
-          at,
-          subject,
-          coding:
-            /^Kin-Coding-Agent-For:/m.test(parts[i + 2] ?? "") ||
-            subject.includes("(coding agent)"),
-        });
+  let missing = 0;
+  for (const { path, at, subject, coding, head } of items) {
+    if (head === undefined) {
+      missing++;
+      continue;
     }
-    const latest = commits[0];
-    if (latest === undefined && log !== "") continue;
-    const at = latest?.at ?? to.at;
     const when = chatClock(at, input.now, input.zone);
-    const head = heads.get(path);
-    const id = head?.id ?? path.split("/").at(-1)?.replace(/\.md$/, "") ?? "memory item";
-    const coding = commits.some((commit) => commit.coding);
-    const who = latest?.subject.includes(": owner ") === true ? "the owner in Memory" : "Kin";
-    const text =
-      coding || head?.trust === "external"
-        ? outsideWords(`${id} (Memory)`, when, coding)
-        : head?.sensitive === true
-          ? sensitiveWords(`${id} (Memory)`, when, who)
-          : `memory ${encoded(head?.title ?? id, true)} (${cappedText(path, 160)}): edited by ${who}, ${when}`;
+    let who = /: owner /.test(subject) ? "the owner in Memory" : "Kin";
+    const writer = /^kin\(([^)]+)\): wake-up (\S+)$/.exec(subject);
+    if (writer?.[1] === agentId && writer[2] !== undefined) {
+      const ownTurn = writer[2];
+      if (!chats.has(ownTurn)) {
+        const origin = yield* turnChat({ orgId, agentId, wakeupId: ownTurn });
+        const [chat] = yield* sql<{ title: string | null }>`SELECT title FROM kin_chats
+          WHERE org_id = ${orgId} AND chat_id = ${origin?.chatId ?? null} LIMIT 1`;
+        chats.set(ownTurn, cappedText(chat?.title ?? "another chat", 120));
+      }
+      who = `you, in ${chats.get(ownTurn)}`;
+    } else if (writer?.[1] !== undefined) {
+      const [other] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_agents
+        WHERE org_id = ${orgId} AND agent_id = ${writer[1]} LIMIT 1`;
+      if (other !== undefined) who = `${cappedText(other.name, 120)} (agent)`;
+    }
+    const outside = coding || head.trust === "external";
+    const text = outside
+      ? outsideWords(`${head.id} (Memory)`, when, coding)
+      : head.sensitive
+        ? sensitiveWords(`${head.id} (Memory)`, when, who)
+        : `memory ${encoded(head.title, true)} (${cappedText(path, 160)}): edited by ${who}, ${when}`;
     lines.push({
       at,
       text,
-      who: coding ? "outside content" : who,
+      who: outside ? "outside content" : who,
       list: "Memory",
       source: "memory",
     });
   }
+  if (overflow + missing > 0)
+    lines.push({ at: to.at, who: "", list: "Memory", source: "memory", count: overflow + missing });
   return lines;
 });
 
-const iso = (at: number) => DateTime.formatIso(DateTime.makeUnsafe(at));
 const overflowKey = ({ source, list, who, via }: Line) => JSON.stringify([source, list, who, via]);
 
-const chatChanges = Effect.fn("KinSessionChanges.chatChanges")(function* (input: Input) {
+const chatChanges = Effect.fn("KinSessionChanges.chats")(function* (input: Input) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, agentId, chatId, from, to } = input;
+  const before = yield* encodeJson(from.chatVersions);
+  const after = yield* encodeJson(to.chatVersions);
+  const versions = sql`
+    SELECT json_extract(next.value, '$.id') AS id,
+      COALESCE(json_extract(prior.value, '$.seq'), 0) AS beforeSeq,
+      COALESCE(json_extract(prior.value, '$.changeSeq'), 0) AS beforeChange,
+      json_extract(next.value, '$.changeSeq') AS afterChange
+    FROM json_each(${after}) next
+    LEFT JOIN json_each(${before}) prior
+      ON json_extract(prior.value, '$.id') = json_extract(next.value, '$.id')
+  `;
   const messages = yield* sql<
     Speaker & { title: string | null; chatId: string; at: string; count: number }
-  >`
+  >`WITH versions AS (${versions})
     SELECT c.title, c.chat_id AS "chatId", m.author_kind AS "actorKind",
       COALESCE(m.author_person_id, m.author_agent_id) AS "actorId",
       ${speakerColumns(sql)}, MAX(m.created_at) AS at, COUNT(*) AS count
-    FROM kin_chat_members member JOIN kin_chats c USING (org_id, chat_id)
+    FROM versions v JOIN kin_chats c ON c.org_id = ${orgId} AND c.chat_id = v.id
     JOIN kin_messages m USING (org_id, chat_id)
     LEFT JOIN kin_people p ON p.org_id = m.org_id AND p.person_id = m.author_person_id
     LEFT JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.author_agent_id
-    WHERE member.org_id = ${orgId} AND member.agent_id = ${agentId} AND member.left_at IS NULL
-      AND member.chat_id <> ${chatId} AND m.author_agent_id IS NOT ${agentId} AND m.status = 'posted'
-      AND m.created_at > ${iso(from.at)} AND m.created_at <= ${iso(to.at)}
-    GROUP BY c.chat_id, m.author_kind, "actorId" ORDER BY c.chat_id, MIN(m.seq)`;
+    WHERE c.chat_id <> ${chatId} AND m.author_agent_id IS NOT ${agentId} AND m.status = 'posted'
+      AND m.change_seq > v.beforeChange AND m.change_seq <= v.afterChange AND m.seq > v.beforeSeq
+    GROUP BY c.chat_id, m.author_kind, "actorId" ORDER BY c.chat_id, MIN(m.seq)
+    LIMIT ${CHANGE_ROWS_LIMIT}`;
+  if (messages.length === CHANGE_ROWS_LIMIT)
+    return yield* new SessionChangesSourceFailed({
+      source: "chats",
+      cause: "Too many chat authors",
+    });
   const chats = new Map<string, { title: string; at: number; count: number; names: Set<string> }>();
   for (const row of messages) {
     const chat = chats.get(row.chatId) ?? {
@@ -665,6 +665,27 @@ const chatChanges = Effect.fn("KinSessionChanges.chatChanges")(function* (input:
     who: "",
     text: `${title}: ${count} new message${count === 1 ? "" : "s"} from ${names.format(authors)}`,
   }));
+  const edited = yield* sql<{ title: string | null; at: string; count: number }>`
+    WITH versions AS (${versions})
+    SELECT c.title, MAX(COALESCE(json_extract(m.withdrawn_json, '$.at'), m.edited_at, m.created_at)) AS at,
+      COUNT(*) AS count
+    FROM versions v JOIN kin_chats c ON c.org_id = ${orgId} AND c.chat_id = v.id
+    JOIN kin_messages m USING (org_id, chat_id)
+    WHERE m.change_seq > v.beforeChange AND m.change_seq <= v.afterChange
+      AND (m.edited_at IS NOT NULL OR m.withdrawn_json IS NOT NULL
+        OR (m.seq <= v.beforeSeq AND m.message_id GLOB 'bills:*'))
+    GROUP BY c.chat_id ORDER BY at DESC, c.chat_id LIMIT ${CHAT_CURSOR_LIMIT}`;
+  for (const row of edited) {
+    const title = cappedText(row.title ?? "Direct chat", 120);
+    const at = Date.parse(row.at);
+    lines.push({
+      at: Number.isFinite(at) ? at : to.at,
+      list: "Chats",
+      source: "chat",
+      who: "",
+      text: editedChatWords(title, row.count),
+    });
+  }
   return lines;
 });
 

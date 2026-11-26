@@ -5,10 +5,6 @@ import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KIN_READ_TOOLS } from "../mcp/readTools.ts";
-import { NodeFileSystem } from "@effect/platform-node";
-import * as FileSystem from "effect/FileSystem";
-import { VcsProcess } from "../../vcs/VcsProcess.ts";
-import { fakeRepository } from "../memory/__fixtures__/repository.ts";
 import { Memory } from "../memory/Memory.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { decodeHead, memory } from "./LeadPrompt.testkit.ts";
@@ -104,11 +100,7 @@ const input = {
   now,
   zone: "UTC",
 };
-const unchangedMemory = Layer.mergeAll(
-  memory,
-  NodeFileSystem.layer,
-  Layer.succeed(VcsProcess, { run: () => Effect.die("Unchanged memory must not use git") }),
-);
+const unchangedMemory = memory;
 const changes = Effect.fn("Test.changes")(function* () {
   const to = yield* readCursor(orgId, chatId, null, agentId);
   return yield* sessionChanges({ ...input, to }).pipe(Effect.provide(unchangedMemory));
@@ -317,13 +309,8 @@ it.effect("counts changes past the SQL limit and the four per-entry lines", () =
 it.effect("lists a memory item another commit edited and skips the session's own", () =>
   Effect.gen(function* () {
     yield* setup;
-    const fs = yield* FileSystem.FileSystem;
-    const directory = yield* fs.makeTempDirectoryScoped();
-    yield* fs.makeDirectory(`${directory}/.git/objects`, { recursive: true });
-    const git = fakeRepository(fs);
-    const before = git.commit();
-    const after = git.commit();
-    const fallback = yield* Effect.provide(VcsProcess, git.layer);
+    const before = "a".repeat(40);
+    const after = "b".repeat(40);
     const item = "claims/harborview-terms.md";
     const own = "claims/another-note.md";
     const outside = "claims/outside-note.md";
@@ -349,6 +336,12 @@ it.effect("lists a memory item another commit edited and skips the session's own
         review_by: null,
       });
     }
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`INSERT INTO kin_wakeups (org_id, agent_id, wakeup_id, model, started_at, ended_at, status, event_ids)
+      VALUES (${orgId}, ${agentId}, 'memory-team-turn', 'test', ${now - 1}, ${now}, 'completed', '[]')`;
+    yield* sql`INSERT INTO kin_events (org_id, agent_id, event_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
+      VALUES (${orgId}, ${agentId}, 'memory-ask', 'chat.message', 'P0', '{"chatId":"team"}',
+        ${now - 1}, ${now - 1}, 'done', 'memory-team-turn')`;
     const stub = yield* Effect.provide(Memory, memory);
     const result = yield* sessionChanges({
       ...input,
@@ -357,39 +350,37 @@ it.effect("lists a memory item another commit edited and skips the session's own
     }).pipe(
       Effect.provideService(Memory, {
         ...stub,
-        ensureCheckouts: () => Effect.succeed({ writer: directory, read: directory }),
-        readPromptSnapshot: () =>
-          Effect.succeed({
-            rules: "",
-            index: "",
-            items: [
-              head(item, "Harborview renewal terms"),
-              head(own, "own title"),
-              head(outside, "external-memory-title"),
-            ],
-            bodies: new Map(),
-          }),
-      }),
-      Effect.provideService(VcsProcess, {
-        run: (request) =>
-          Effect.map(fallback.run(request), (response) => {
-            const { args } = request;
-            const subject =
-              args.at(-1) === own
-                ? `kin(${agentId}): wake-up ${wakeupId}`
-                : `kin(${agentId}): owner edits item`;
-            const stdout = args.includes("diff")
-              ? `M\0${item}\0M\0${own}\0M\0${outside}\0`
-              : `1795701900\0${subject}\0${args.at(-1) === outside ? "Kin-Coding-Agent-For: rhea" : ""}\0`;
-            return { ...response, stdout };
+        changedItems: (_org, _from, _to, options) =>
+          Effect.sync(() => {
+            expect(options.excludeSubjects).toContain(`kin(${agentId}): wake-up ${wakeupId}`);
+            return {
+              items: [
+                {
+                  path: item,
+                  at: now,
+                  subject: `kin(${agentId}): wake-up memory-team-turn`,
+                  coding: false,
+                  head: head(item, "Harborview renewal terms"),
+                },
+                {
+                  path: outside,
+                  at: now,
+                  subject: "kin: owner edits item",
+                  coding: true,
+                  head: head(outside, "external-memory-title"),
+                },
+                { path: own, at: now, subject: "kin: owner edits item", coding: false },
+              ],
+              overflow: 0,
+            };
           }),
       }),
     );
     expect(result.lines).toEqual([
-      'memory "Harborview renewal terms" (claims/harborview-terms.md): edited by the owner in Memory, 14:05',
+      'memory "Harborview renewal terms" (claims/harborview-terms.md): edited by you, in Team room, 14:05',
       "outside-note (Memory): changed from outside content (a coding agent), 14:05; its words aren't shown here",
     ]);
-  }).pipe(Effect.scoped, Effect.provide(Layer.merge(layer, NodeFileSystem.layer))),
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("lists Zoya's comment stamped just before the cursor and committed after it", () =>
@@ -461,6 +452,29 @@ it.effect("keeps Arjun's new due date when Work renders only an older change to 
       'W-14 "Check loading bay" (Work): due → "2026-11-30" by Arjun, 14:05',
     ]);
     expect((yield* changes()).lines).toHaveLength(2);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("counts edits and withdrawals by chat without selecting any message text", () =>
+  Effect.gen(function* () {
+    const sql = yield* setup;
+    yield* sql`INSERT INTO kin_chat_members (org_id, chat_id, member_id, principal_kind, agent_id, role, joined_at)
+      VALUES (${orgId}, 'team', 'finance-team', 'agent', ${agentId}, 'member', '2026-11-26')`;
+    yield* sql`INSERT INTO kin_messages (org_id, chat_id, message_id, seq, author_kind, author_role,
+        kind, body, mentions_json, status, created_at)
+      VALUES (${orgId}, 'team', 'edit', 1, 'system', 'member', 'text', 'rate-secret', '[]', 'posted', '2026-11-25'),
+        (${orgId}, 'team', 'withdraw', 2, 'system', 'member', 'text', 'withdraw-secret', '[]', 'posted', '2026-11-25')`;
+    yield* sql`UPDATE kin_chats SET last_seq = 2 WHERE org_id = ${orgId} AND chat_id = 'team'`;
+    const before = yield* readCursor(orgId, chatId, null, agentId);
+    yield* sql`UPDATE kin_messages SET edited_at = '2026-11-26T14:05:00.000Z'
+      WHERE message_id = 'edit'`;
+    yield* sql`UPDATE kin_messages SET withdrawn_json = '{"at":"2026-11-26T14:05:00.000Z"}'
+      WHERE message_id = 'withdraw'`;
+    const to = yield* readCursor(orgId, chatId, null, agentId);
+    expect(
+      (yield* sessionChanges({ ...input, from: before, to }).pipe(Effect.provide(unchangedMemory)))
+        .lines,
+    ).toEqual(["Team room: 2 messages edited or withdrawn"]);
   }).pipe(Effect.provide(layer)),
 );
 
