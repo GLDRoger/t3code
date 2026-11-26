@@ -3348,22 +3348,28 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
     cli: ReturnType<typeof makeFakeClaudeCli>,
     native?: ProviderEventLoggers.EventNdjsonLogger,
     resume = false,
+    refresh?: Pick<
+      ClaudeAdapterV2.ClaudeAgentSdkQueryOptions,
+      "settingSources" | "hooks" | "plugins" | "promptSuggestions" | "settings"
+    >,
   ) =>
     Effect.gen(function* () {
       const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
       return yield* runner.open({
         threadId: ThreadId.make("thread-claude-mcp-channel"),
         providerSessionId: ProviderSessionId.make("provider-session-claude-mcp-channel"),
+        ...(refresh === undefined ? {} : { refresh: true as const }),
         options: {
           ...ClaudeAdapterV2.makeClaudeQueryOptions({
             modelSelection: CLAUDE_TEST_MODEL_SELECTION,
             nativeThreadId: "native-thread-claude-mcp-channel",
             title: "Existing T3 title",
-            resume,
+            resume: resume || refresh !== undefined,
             cwd: null,
             environment: { PATH: "/usr/bin" },
             mcpServers: { "t3-code": t3McpServer },
           }),
+          ...refresh,
           pathToClaudeCodeExecutable: "/opt/claude/cli.js",
           spawnClaudeCodeProcess: cli.spawn,
         },
@@ -3376,6 +3382,89 @@ describe("ClaudeAdapterV2 MCP credential channel", () => {
       }),
       Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)),
     );
+
+  it.effect("enforces refresh denial after a wrapper replaces the hooks", () =>
+    Effect.gen(function* () {
+      const cli = makeFakeClaudeCli();
+      const session = yield* openWith(cli, undefined, false, {
+        settingSources: [],
+        hooks: {
+          PreToolUse: [
+            {
+              hooks: [
+                async () => ({
+                  hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" },
+                }),
+              ],
+            },
+          ],
+        },
+      });
+      yield* Effect.addFinalizer(() => session.close.pipe(Effect.ignore));
+      const init = cli.controlRequests.find(
+        (request) => Reflect.get(request, "subtype") === "initialize",
+      );
+      const matcher = init === undefined ? undefined : Reflect.get(init, "hooks")?.PreToolUse?.[0];
+      assert.equal(matcher?.onFailure, "block");
+      assert.include(cli.spawns[0]?.args ?? [], "--no-session-persistence");
+      assert.include(cli.spawns[0]?.args ?? [], "--max-turns=1");
+      const response = yield* Effect.promise(() =>
+        cli.request("refresh-denial", {
+          subtype: "hook_callback",
+          callback_id: matcher.hookCallbackIds[0],
+          tool_use_id: "refresh-attempt",
+          input: {
+            hook_event_name: "PreToolUse",
+            session_id: "native",
+            transcript_path: "/fixture",
+            cwd: "/fixture",
+            tool_name: "Write",
+            tool_input: { file_path: "notes.md" },
+            tool_use_id: "refresh-attempt",
+          },
+        }),
+      );
+      assert.deepEqual(response, {
+        hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny" },
+      });
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("refresh launches without plugins or prompt suggestions", () =>
+    Effect.gen(function* () {
+      const cli = makeFakeClaudeCli();
+      const session = yield* openWith(cli, undefined, false, {
+        settingSources: [],
+        plugins: [{ type: "local", path: "/invented/plugin" }],
+        promptSuggestions: true,
+      });
+      yield* session.close;
+      const spawn = cli.spawns[0];
+      assert.exists(spawn);
+      assert.notInclude(JSON.stringify(spawn?.args), "/invented/plugin");
+      const init = cli.controlRequests.find(
+        (request) => Reflect.get(request, "subtype") === "initialize",
+      );
+      assert.equal(init && Reflect.get(init, "promptSuggestions"), false);
+    }),
+  );
+
+  it.effect.each([
+    { settingSources: ["user"] as const },
+    { settingSources: [] as const, settings: "/invented/settings.json" },
+    { settingSources: [] as const, settings: { hooks: { Stop: [] } } },
+  ])("refresh refuses settings-file or inline hooks before spawning (%j)", (options) =>
+    Effect.gen(function* () {
+      const cli = makeFakeClaudeCli();
+      const opened = yield* openWith(cli, undefined, false, {
+        ...options,
+        settingSources: [...options.settingSources],
+      }).pipe(Effect.exit);
+      if (Exit.isSuccess(opened)) yield* opened.value.close;
+      assert.lengthOf(cli.spawns, 0);
+      assert.isTrue(Exit.isFailure(opened));
+    }),
+  );
 
   it.effect("commits queued delivery before interruptible protocol logging", () =>
     Effect.gen(function* () {
@@ -3853,6 +3942,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     readonly settings?: ClaudeSettings;
     readonly modelCatalog?: Effect.Effect<ClaudeModelCatalog>;
     readonly freshQueueOnReopen?: boolean;
+    readonly allowRefresh?: boolean;
     readonly forkSession?: ClaudeAdapterV2.ClaudeAgentSdkQueryRunnerShape["forkSession"];
     readonly allocateSessionId?: Effect.Effect<string>;
     readonly offer?: (message: SDKUserMessage) => Effect.Effect<void>;
@@ -3911,6 +4001,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* Queue.unbounded<
           Extract<ProviderAdapter.ProviderAdapterV2Event, { type: "provider_thread.updated" }>
         >();
+      let openedAsRefresh = false;
       let openedOptions: ClaudeAdapterV2.ClaudeAgentSdkQueryOpenInput["options"] | undefined;
       const adapter = yield* ClaudeAdapterV2.makeClaudeAdapterV2({
         instanceId: ClaudeAdapterV2.CLAUDE_DEFAULT_INSTANCE_ID,
@@ -3940,6 +4031,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           open: (input) =>
             Effect.gen(function* () {
               openedOptions = input.options;
+              openedAsRefresh = input.refresh === true;
               const processMessages =
                 options?.freshQueueOnReopen === true && processQueues.length > 0
                   ? yield* Queue.unbounded<SDKMessage>()
@@ -3962,7 +4054,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
               );
               if (options?.freshQueueOnReopen === true && processQueues.length > 0) {
                 processQueues.push(processMessages);
+                yield* changes.notify;
                 return {
+                  allowsRefresh: options?.allowRefresh ?? true,
                   messages,
                   offer: (message: SDKUserMessage) =>
                     Effect.sync(() => {
@@ -3994,7 +4088,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 };
               }
               processQueues.push(sdkMessages);
+              yield* changes.notify;
               return {
+                allowsRefresh: options?.allowRefresh ?? true,
                 messages,
                 offer: (message) =>
                   Effect.sync(() => {
@@ -4125,6 +4221,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         planReceipts,
         providerThreadReceipts,
         getOpenedOptions: () => openedOptions,
+        openedAsRefresh: () => openedAsRefresh,
         terminalEvents,
         hasPendingBackgroundWork,
         until: changes.until,
@@ -11974,150 +12071,140 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
-  it.effect(
-    "refreshNativeThread resumes without persisting, allows one turn and returns usage",
-    () =>
-      Effect.gen(function* () {
-        const harness = yield* makeWakeHarnessWithOptions({ freshQueueOnReopen: true });
-        const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
-        yield* mcpSessions.set({
-          environmentId: EnvironmentId.make("environment-refresh"),
-          threadId: harness.threadId,
-          providerSessionId: "mcp-session-refresh",
-          providerInstanceId: ProviderInstanceId.make("claudeAgent"),
-          endpoint: "http://127.0.0.1:43123/kin/mcp",
-          authorizationHeader: "Bearer invented-refresh-fixture",
-          browserToolsAvailable: false,
-        });
-        const input = makeClaudeTestTurnInput({
-          threadId: harness.threadId,
-          providerThread: harness.providerThread,
-          now: yield* DateTime.now,
-          attemptId: RunAttemptId.make("before-refresh"),
-          text: "Original turn.",
-          attachments: [],
-        });
-        yield* harness.runtime.startTurn(input);
-        const turnOptions = harness.getOpenedOptions();
-        assert.isDefined(turnOptions);
-        assert.notProperty(turnOptions, "maxTurns");
-        yield* Queue.offer(
-          harness.sdkMessages,
-          makeResultFrame({ uuid: "result-before-refresh", result: "Done." }),
-        );
-        assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+  it.effect("refreshNativeThread resumes via the isolated runner path and returns usage", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarnessWithOptions({ freshQueueOnReopen: true });
+      const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
+      yield* mcpSessions.set({
+        environmentId: EnvironmentId.make("environment-refresh"),
+        threadId: harness.threadId,
+        providerSessionId: "mcp-session-refresh",
+        providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+        endpoint: "http://127.0.0.1:43123/kin/mcp",
+        authorizationHeader: "Bearer invented-refresh-fixture",
+        browserToolsAvailable: false,
+      });
+      const input = makeClaudeTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId: RunAttemptId.make("before-refresh"),
+        text: "Original turn.",
+        attachments: [],
+      });
+      yield* harness.runtime.startTurn(input);
+      const turnOptions = harness.getOpenedOptions();
+      assert.isDefined(turnOptions);
+      assert.notProperty(turnOptions, "maxTurns");
+      yield* Queue.offer(
+        harness.sdkMessages,
+        makeResultFrame({ uuid: "result-before-refresh", result: "Done." }),
+      );
+      assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
 
-        const refresh = harness.runtime.refreshNativeThread;
-        assert.isFunction(refresh);
-        const fiber = yield* refresh(input).pipe(Effect.forkScoped);
-        yield* harness.until(() => harness.offeredMessages.length === 2);
-        const options = harness.getOpenedOptions();
-        assert.isDefined(options);
-        if (options === undefined || turnOptions === undefined) return;
-        assert.include(options, {
-          resume: WAKE_NATIVE_SESSION,
-          persistSession: false,
-          maxTurns: 1,
-        });
-        assert.notProperty(options, "sessionId");
-        assert.notProperty(options, "forkSession");
-        assert.equal(harness.offeredMessages[1]?.message.content, "warmup");
-        for (const key of [
-          "systemPrompt",
-          "tools",
-          "allowedTools",
-          "mcpServers",
-          "env",
-          "settings",
-          "model",
-          "cwd",
-        ] as const)
-          assert.deepEqual(options[key], turnOptions[key], key);
+      const refresh = harness.runtime.refreshNativeThread;
+      assert.isFunction(refresh);
+      const fiber = yield* refresh(input).pipe(Effect.forkScoped);
+      yield* harness.until(() => harness.offeredMessages.length === 2);
+      const options = harness.getOpenedOptions();
+      assert.isDefined(options);
+      if (options === undefined || turnOptions === undefined) return;
+      assert.equal(options.resume, WAKE_NATIVE_SESSION);
+      assert.isTrue(harness.openedAsRefresh());
+      assert.notProperty(options, "sessionId");
+      assert.notProperty(options, "forkSession");
+      assert.equal(harness.offeredMessages[1]?.message.content, "warmup");
+      for (const key of [
+        "systemPrompt",
+        "tools",
+        "allowedTools",
+        "mcpServers",
+        "env",
+        "settings",
+        "model",
+        "cwd",
+      ] as const)
+        assert.deepEqual(options[key], turnOptions[key], key);
 
-        const [hook] = options.hooks?.PreToolUse ?? [];
-        const signal = yield* Effect.abortSignal;
-        assert.equal(hook?.onFailure, "block");
-        for (const tool of ["Bash", "WebSearch", "mcp__t3-code__kin_chat_post"]) {
-          const denied = yield* Effect.promise(() =>
-            Promise.all(
-              (hook?.hooks ?? []).map((callback) =>
-                callback(
-                  {
-                    hook_event_name: "PreToolUse",
-                    tool_name: tool,
-                    tool_input: {},
-                    tool_use_id: "tool-refresh",
-                    session_id: WAKE_NATIVE_SESSION,
-                    transcript_path: "/invented/transcript",
-                    cwd: "/invented",
-                  },
-                  "tool-refresh",
-                  { signal },
-                ),
-              ),
-            ),
-          );
-          assert.deepEqual(
-            denied,
-            [
-              {
-                hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny" },
-              },
-            ],
-            tool,
-          );
-        }
-
-        assert.isDefined(options.mcpServers?.["t3-code"]);
-        const canUseTool = options.canUseTool;
-        assert.isDefined(canUseTool);
-        if (canUseTool !== undefined) {
-          const response = yield* Effect.promise(() =>
-            canUseTool(
-              "Bash",
-              {},
-              { signal, requestId: "refresh-permission", toolUseID: "refresh-tool" },
-            ),
-          );
-          assert.equal(response?.behavior, "deny");
-        }
-
-        const refreshStream = harness.processQueues[1];
-        assert.isDefined(refreshStream);
-        if (refreshStream === undefined) return;
-        yield* Queue.offer(
-          refreshStream,
-          makeResultFrame({
-            uuid: "result-refresh",
-            result: "OK",
-            usage: {
-              input_tokens: 3,
-              cache_read_input_tokens: 40,
-              cache_creation_input_tokens: 5,
-              output_tokens: 1,
-            },
-          }),
-        );
-        assert.deepEqual(yield* Fiber.join(fiber), {
-          usageScope: "main_agent",
-          usageStatus: "complete",
-          hasSubagents: false,
-          inputTokens: 48,
-          cachedInputTokens: 40,
-          cacheCreationTokens: 5,
-          outputTokens: 1,
-        });
-        assert.lengthOf(harness.terminalEvents(), 1);
-      }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            NodeServices.layer,
-            NodeCrypto.layer,
-            IdAllocator.layer,
-            McpProviderSessions.layer,
-          ),
+      assert.isDefined(options.mcpServers?.["t3-code"]);
+      const refreshStream = harness.processQueues[1];
+      assert.isDefined(refreshStream);
+      if (refreshStream === undefined) return;
+      yield* Queue.offer(
+        refreshStream,
+        makeResultFrame({
+          uuid: "result-refresh",
+          result: "OK",
+          usage: {
+            input_tokens: 3,
+            cache_read_input_tokens: 40,
+            cache_creation_input_tokens: 5,
+            output_tokens: 1,
+          },
+        }),
+      );
+      assert.deepEqual(yield* Fiber.join(fiber), {
+        usageScope: "main_agent",
+        usageStatus: "complete",
+        hasSubagents: false,
+        inputTokens: 48,
+        cachedInputTokens: 40,
+        cacheCreationTokens: 5,
+        outputTokens: 1,
+      });
+      assert.lengthOf(harness.terminalEvents(), 1);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          IdAllocator.layer,
+          McpProviderSessions.layer,
         ),
       ),
+    ),
+  );
+
+  it.effect("refreshNativeThread rejects a previous launch that allowed settings-file hooks", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeWakeHarnessWithOptions({ allowRefresh: false });
+      const input = makeClaudeTestTurnInput({
+        threadId: harness.threadId,
+        providerThread: harness.providerThread,
+        now: yield* DateTime.now,
+        attemptId: RunAttemptId.make("refresh-user-settings"),
+        text: "Original turn.",
+        attachments: [],
+      });
+      yield* harness.runtime.startTurn(input);
+      yield* Queue.offer(
+        harness.sdkMessages,
+        makeResultFrame({ uuid: "result-user-settings", result: "Done." }),
+      );
+      assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "completed");
+      const refresh = harness.runtime.refreshNativeThread;
+      assert.isFunction(refresh);
+      // Do not wait for a result if the fixture opens a query when it should refuse.
+      const idle = yield* refresh(input).pipe(Effect.exit, Effect.forkScoped);
+      yield* Effect.raceFirst(
+        Fiber.await(idle),
+        harness.until(() => harness.processQueues.length > 1),
+      );
+      assert.lengthOf(harness.processQueues, 1);
+      const result = yield* Fiber.join(idle);
+      assert.isTrue(Exit.isFailure(result));
+      if (Exit.isFailure(result))
+        assert.include(Cause.squash(result.cause), { _tag: "ProviderAdapterProtocolError" });
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          NodeCrypto.layer,
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+        ),
+      ),
+    ),
   );
 
   it.effect("refreshNativeThread refuses while the thread has an active run", () =>

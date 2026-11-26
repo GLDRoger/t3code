@@ -783,6 +783,7 @@ export interface ClaudeAgentSdkQueryOpenInput {
 }
 
 export interface ClaudeAgentSdkQuerySession {
+  readonly allowsRefresh?: boolean;
   readonly messages: Stream.Stream<SDKMessage, ClaudeAgentSdkQueryRunnerError>;
   readonly offer: (
     message: SDKUserMessage,
@@ -1694,8 +1695,48 @@ export const layerQueryRunner: Layer.Layer<
       return { refresh: tracker.refresh, work, settle: tracker.settle, stop };
     };
 
+    const allowsRefresh = (options: ClaudeAgentSdkQueryOptions) =>
+      options.settingSources?.length === 0 &&
+      typeof options.settings !== "string" &&
+      options.settings?.hooks === undefined &&
+      options.settings?.enabledPlugins === undefined &&
+      options.managedSettings?.hooks === undefined;
+
+    const refreshOptions = (options: ClaudeAgentSdkQueryOptions) => {
+      const { plugins: _plugins, extraArgs: _extraArgs, ...isolated } = options;
+      return {
+        ...isolated,
+        persistSession: false,
+        maxTurns: 1,
+        forkSession: false,
+        promptSuggestions: false,
+        hooks: {
+          PreToolUse: [
+            {
+              onFailure: "block",
+              hooks: [
+                async () => ({
+                  hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny" },
+                }),
+              ],
+            },
+          ],
+        },
+        canUseTool: async () => ({ behavior: "deny", message: "" }),
+        onElicitation: async () => ({ action: "cancel" }),
+        onUserDialog: async () => ({ behavior: "cancelled" }),
+      } satisfies ClaudeQueryOptions;
+    };
+
     // The open span below is the tracing boundary for both attempts.
     const openQuery = Effect.fnUntraced(function* (input: ClaudeAgentSdkQueryOpenInput) {
+      const safeToRefresh = allowsRefresh(input.options);
+      if (input.refresh && (!safeToRefresh || input.options.resume === undefined)) {
+        return yield* queryRunnerError(
+          new Error("Claude refresh requires an isolated resumed session."),
+          "refresh",
+        );
+      }
       const protocolLogger = makeClaudeAgentSdkProtocolLogger({
         nativeEventLogger,
         threadId: input.threadId,
@@ -1712,7 +1753,9 @@ export const layerQueryRunner: Layer.Layer<
         Stream.toAsyncIterable,
       );
       // Send MCP credentials over stdin to keep them out of SDK argv and inherited command environments.
-      const { mcpServers, ...sdkOptions } = input.options;
+      const { mcpServers, ...sdkOptions } = input.refresh
+        ? refreshOptions(input.options)
+        : input.options;
       // Jobs the agent starts inherit the thread, so port discovery can attribute their servers.
       let resumeSessionAt = sdkOptions.resumeSessionAt;
       let endsOnFailedRequest = false;
@@ -1959,6 +2002,7 @@ export const layerQueryRunner: Layer.Layer<
       );
 
       return {
+        allowsRefresh: safeToRefresh,
         messages: Stream.fromAsyncIterable(
           claudeQueryMessages(queryRuntime),
           (cause) => cause,
@@ -6259,6 +6303,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
               readonly threadId: ThreadId;
               readonly nativeThreadId: string;
               readonly options: ClaudeAgentSdkQueryOptions;
+              readonly allowsRefresh: boolean;
             }
           | undefined;
         const taskOutputTails = new Map<
@@ -13758,7 +13803,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 : Effect.void,
             ),
           );
-          lastLaunch = { threadId: turnInput.threadId, nativeThreadId, options: queryOptions };
+          lastLaunch = {
+            threadId: turnInput.threadId,
+            nativeThreadId,
+            options: queryOptions,
+            allowsRefresh: querySession.allowsRefresh === true,
+          };
           // Mark only successful opens; retries must not resume sessions that failed to create.
           yield* Ref.update(openedNativeThreads, (current) => {
             if (current.has(nativeThreadId)) {
@@ -14458,6 +14508,12 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 detail: "Claude refresh requires the same runtime that opened the last turn.",
               });
             }
+            if (!lastLaunch.allowsRefresh) {
+              return yield* new ProviderAdapter.ProviderAdapterProtocolError({
+                driver: CLAUDE_PROVIDER,
+                detail: "Cannot refresh a Claude session that loaded user settings or hooks.",
+              });
+            }
             const {
               sessionId: _sessionId,
               resumeSessionAt: _resumeAt,
@@ -14472,26 +14528,6 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 ...previous,
                 resume: nativeThreadId,
                 ...(resumeSessionAt === undefined ? {} : { resumeSessionAt }),
-                persistSession: false,
-                maxTurns: 1,
-                hooks: {
-                  PreToolUse: [
-                    {
-                      onFailure: "block",
-                      hooks: [
-                        async () => ({
-                          hookSpecificOutput: {
-                            hookEventName: "PreToolUse",
-                            permissionDecision: "deny",
-                          },
-                        }),
-                      ],
-                    },
-                  ],
-                },
-                canUseTool: async () => ({ behavior: "deny", message: "" }),
-                onElicitation: async () => ({ action: "cancel" }),
-                onUserDialog: async () => ({ behavior: "cancelled" }),
               },
             });
             return yield* Effect.acquireUseRelease(
