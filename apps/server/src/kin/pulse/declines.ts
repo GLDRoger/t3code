@@ -19,7 +19,7 @@ export const isDeclineKey = (key: string) => key.startsWith(PREFIX);
 type Decline = { holdId: string; recordKey: string; title: string; name: string };
 
 export const declineLine = ({ recordKey, title, name }: Omit<Decline, "holdId">) =>
-  `${recordKey} ${title} is set aside for nudges to ${name}, on ${name}'s word.`.replace(
+  `${recordKey} ${title}: ${name} turned down a nudge about it, so no more nudges to ${name} about it until it changes or ${name} brings it up.`.replace(
     /[\r\n\u2028\u2029]+/gu,
     " ",
   );

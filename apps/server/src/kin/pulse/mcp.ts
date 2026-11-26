@@ -71,7 +71,7 @@ export const PulseHandleInput = Schema.Struct({
   action: Schema.optional(Schema.Literals([...KinPulseHandleAction.literals, "declined"])).annotate(
     {
       description:
-        "got_it (default): you or someone has it in hand; it comes back after until, or 3 days. not_a_problem: drop it until what it is about changes; an overdue invoice comes back at its next chase. set_aside: a person said to leave it; its record is set aside until the day in until, or until someone lifts it. undo: take any of these back. declined: when someone answers a nudge with a no in this turn, set aside further nudges to that person about the record.",
+        "got_it (default): you or someone has it in hand; it comes back after until, or 3 days. not_a_problem: drop it until what it is about changes; an overdue invoice comes back at its next chase. set_aside: a person said to leave it; its record is set aside until the day in until, or until someone lifts it. undo: take any of these back. declined: the person whose message this turn answers turned down a nudge about it; no more nudges to that person about it until it changes or that person brings it up.",
     },
   ),
   until: Schema.optional(
@@ -280,7 +280,7 @@ export const runHandle = Effect.fnUntraced(function* (
     if (lifted !== null)
       return {
         setAside: null,
-        said: `${lifted.recordKey} can be nudged about again on ${lifted.name}'s word.`,
+        said: `${lifted.name} can be nudged about ${lifted.recordKey} again.`,
       };
     if (viewer._tag !== "owner")
       return yield* new KinChatError({ reason: "not_allowed", message: SHARED_REFUSAL });

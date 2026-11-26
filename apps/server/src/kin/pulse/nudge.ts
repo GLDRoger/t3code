@@ -138,8 +138,12 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
     );
   if (fact === undefined) return yield* unavailable();
   const recordId = fact.subject.recordId;
+  const declined = () =>
+    refuse(
+      `${person.name} turned down a nudge about this. Don't nudge ${person.name} about it again until it changes or ${person.name} brings it up.`,
+    );
   if (recordId !== undefined && (yield* nudgeDeclined(orgId, recordId, personId, at)))
-    return yield* unavailable();
+    return yield* declined();
   const zone = person.timeZone ?? (yield* ownerZone(orgId));
   // Outside their hours it is held until they start, and counts for that day.
   const starts = inHoursAt(person, zone, at) ? undefined : nextInHours(person, zone, at);
@@ -169,7 +173,7 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
   const claimed = yield* sql.withTransaction(
     Effect.gen(function* () {
       if (recordId !== undefined && (yield* nudgeDeclined(orgId, recordId, personId, at)))
-        return yield* unavailable();
+        return yield* declined();
       return yield* sql`INSERT INTO kin_pulse_nudges (org_id, person_id, day, agent_id,
         chat_id, fact_key, sent_at)
       VALUES (${orgId}, ${personId}, ${day}, ${input.agentId}, ${chatId}, ${input.factKey}, ${at})

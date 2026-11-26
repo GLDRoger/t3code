@@ -272,14 +272,14 @@ it.effect("a nudge the person declined is not repeated until the thing changes",
   Effect.gen(function* () {
     const { sql, factKey } = yield* seedDecline();
     yield* decline({ action: "declined", factKey });
-    assert.include(yield* nudgeFreight(tomorrow), "no longer needs attention");
+    assert.include(yield* nudgeFreight(tomorrow), "Zoya turned down a nudge about this.");
     assert.lengthOf(
       yield* sql`SELECT 1 FROM kin_pulse_nudges WHERE org_id = ${orgId}
       AND person_id = ${zoya} AND day = '2026-11-17'`,
       0,
     );
     yield* sql`UPDATE kin_records SET due_at = due_at + ${HOUR} WHERE org_id = ${orgId} AND key = 'W-8'`;
-    assert.include(yield* nudgeFreight(tomorrow), "no longer needs attention");
+    assert.include(yield* nudgeFreight(tomorrow), "Zoya turned down a nudge about this.");
     yield* sql`UPDATE kin_records SET due_at = due_at + ${DAY} WHERE org_id = ${orgId} AND key = 'W-8'`;
     assert.strictEqual(yield* nudgeFreight(tomorrow), "sent");
   }).pipe(Effect.provide(layer)),
@@ -290,7 +290,7 @@ it.effect("another person can still be nudged about a declined thing", () =>
     yield* seedDecline();
     yield* decline();
     assert.strictEqual(yield* nudgeFreight(tomorrow, "Arjun"), "sent");
-    assert.include(yield* nudgeFreight(tomorrow), "no longer needs attention");
+    assert.include(yield* nudgeFreight(tomorrow), "Zoya turned down a nudge about this.");
   }).pipe(Effect.provide(layer)),
 );
 
@@ -302,7 +302,7 @@ it.effect.each(["comment", "reply", "undo"] as const)(
       if (raises === "reply")
         yield* sql`UPDATE kin_messages SET reply_to = NULL WHERE org_id = ${orgId} AND message_id = 'answer'`;
       yield* decline();
-      assert.include(yield* nudgeFreight(tomorrow), "no longer needs attention");
+      assert.include(yield* nudgeFreight(tomorrow), "Zoya turned down a nudge about this.");
       if (raises === "comment")
         yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq, author_kind,
           author_id, body, request_hash, created_at)
@@ -345,7 +345,7 @@ it.effect("a check-in lists a standing decline once, with whose word it was", ()
     assert.include(yield* checkIn(SLOT), { _tag: "queued" });
     const first = yield* section(SLOT);
     assert.deepStrictEqual(first?.setAside, [
-      "W-8 Freight mock-up is set aside for nudges to Zoya, on Zoya's word.",
+      "W-8 Freight mock-up: Zoya turned down a nudge about it, so no more nudges to Zoya about it until it changes or Zoya brings it up.",
     ]);
     assert.isTrue(
       first?.byProject.some(({ facts }) =>
