@@ -130,6 +130,8 @@ export const KinPayment = Schema.Struct({
   creditNote: Schema.optionalKey(Schema.Struct({ key: Schema.String, number: Schema.String })),
   splitCredit: Schema.optionalKey(Schema.String),
   appliedCredit: Schema.optionalKey(Schema.String),
+  /** Set from a client's credit; voided, it went back to that credit rather than being taken back. */
+  fromCredit: Schema.optionalKey(Schema.Literal(true)),
   paymentId: TrimmedNonEmptyString,
   amount: KinMoney,
   received: Schema.optionalKey(KinMoney),

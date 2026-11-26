@@ -325,6 +325,18 @@ describe("kinInvoiceView", () => {
             ...payment("p-apply", null),
             amount: { minor: 120_000, currency: "USD" },
             appliedCredit: "RCT-3",
+            fromCredit: true,
+          },
+          {
+            ...payment("p-unapplied", null),
+            amount: { minor: 50_000, currency: "USD" },
+            voidedAt: "2026-11-05T10:00:00.000Z",
+            fromCredit: true,
+          },
+          {
+            ...payment("p-back", null),
+            amount: { minor: 20_000, currency: "USD" },
+            voidedAt: "2026-11-05T10:00:00.000Z",
           },
           {
             ...payment("p-cn", null, null, "CN/26-27/001"),
@@ -358,7 +370,15 @@ describe("kinInvoiceView", () => {
       detail: "It goes back to Tidewater Freight's credit.",
       action: "Un-apply",
     });
-    expect(view.payments[2]).toMatchObject({
+    // Un-applied, a credit's payment went back to that credit; a taken-back one was taken back.
+    expect(view.payments.map((one) => one.voidedLine)).toEqual([
+      null,
+      null,
+      "Un-applied, back in credit",
+      "Taken back",
+      null,
+    ]);
+    expect(view.payments[4]).toMatchObject({
       tds: false,
       note: null,
       receipt: null,
@@ -637,6 +657,12 @@ describe("receipts", () => {
     ).toBe(
       "Receipt R/26-27/003 is set against INV-8. The receipt and its number stand, but Kin couldn't make its PDF: no font",
     );
+    expect(
+      kinReceiptNotice({
+        receipt: receipt({ invoice: "INV-8" as never, invoiceNumber: "INV/26-27/008" }),
+        problems: [],
+      }),
+    ).toBe("Receipt R/26-27/003 is set against INV/26-27/008.");
   });
 
   it("makes an advance's receipt from what was typed, or says what is missing", () => {
