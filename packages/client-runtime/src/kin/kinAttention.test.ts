@@ -357,6 +357,10 @@ describe("kinAttention", () => {
         "BNK-2, $600.00 received 17 Nov, fits 2 open invoices equally, and Kin can't tell which: INV-2: same amount from Tidewater Freight; INV-3: same amount from Tidewater Freight. Nothing is recorded until one is chosen on a card.",
         "BNK-2, $600.00 received 17 Nov, fits 2 open invoices equally, and Kin can't tell which: INV-2: same amount from Tidewater Freight; INV-3: same amount from Tidewater Freight. Nothing is recorded until one is chosen on a card.",
       ],
+      [
+        "$4,500 to Acme Hosting, due 2026-11-18, in 2 days. It is marked paid by an owner-level tap on its page in Money.",
+        "$4,500 to Acme Hosting, due Nov 18, in 2 days. It is marked paid by an owner-level tap on its page in Money.",
+      ],
     ] as const) {
       expect(kinPlainDates(line)).toBe(read);
       expect(read).not.toMatch(/\b(?:the owner|you)\b/i);

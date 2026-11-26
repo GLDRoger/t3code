@@ -403,7 +403,7 @@ const SENSES: ReadonlyArray<readonly [string, string, number, string?, string?]>
     "EXP-90",
     B + 26 * DAY,
     "bill_due:EXP-90:soon=2026-11-30",
-    "₹450 to Acme Hosting, due today. Only the owner or a co-owner marks it paid, on its page in Money.",
+    "₹450 to Acme Hosting, due today. It is marked paid by an owner-level tap on its page in Money.",
   ],
   ["bill_due", "EXP-90", B + 30 * DAY, "bill_due:EXP-90:due=2026-11-30"],
   ["bill_paid_seen", "BNK-90", B + 26 * DAY],
