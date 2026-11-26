@@ -2,20 +2,20 @@
   "mcpToolListJsonBytes": 64767,
   "kinToolListJsonBytes": 3044,
   "kinInstructionsBytes": {
-    "owner": 40548,
-    "confined": 40496
+    "owner": 41456,
+    "confined": 41404
   },
-  "kinSharedInstructionsHash": "9e8d8f12f804b150939561d16d3d2d4324f6497cc6708fe39102216f40731b29",
+  "kinSharedInstructionsHash": "4ceb34b73155164f9e13e6ffdffbdc3129c0ae2515efc5969ab5c54c00478422",
   "kinLeadToolListJsonBytes": {
-    "engineering": 168162,
-    "engineeringBesideFinanceAndSales": 152607,
-    "finance": 147340,
-    "shared": 96122,
-    "social": 150421,
-    "socialBesideFinanceAndSales": 134866,
-    "support": 147340
+    "engineering": 169394,
+    "engineeringBesideFinanceAndSales": 153375,
+    "finance": 148572,
+    "shared": 96890,
+    "social": 151653,
+    "socialBesideFinanceAndSales": 135634,
+    "support": 148572
   },
-  "kinLeadAlwaysLoadedToolBytes": 73904,
+  "kinLeadAlwaysLoadedToolBytes": 74672,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -149,6 +149,10 @@
       "desc": 1667,
       "schema": 1749
     },
+    "kin_github_diff": {
+      "desc": 147,
+      "schema": 158
+    },
     "kin_github_link": {
       "desc": 172,
       "schema": 143
@@ -191,7 +195,7 @@
     },
     "kin_receipt": {
       "desc": 1826,
-      "schema": 999
+      "schema": 974
     },
     "kin_recipe_undo": {
       "desc": 215,
@@ -202,7 +206,7 @@
       "schema": 199
     },
     "kin_relay": {
-      "desc": 938,
+      "desc": 1107,
       "schema": 325
     },
     "kin_schedule": {
@@ -270,8 +274,8 @@
       "schema": 1231
     },
     "payment_record": {
-      "desc": 586,
-      "schema": 746
+      "desc": 923,
+      "schema": 898
     },
     "people_read": {
       "desc": 270,
@@ -302,19 +306,19 @@
       "schema": 529
     },
     "record_assign": {
-      "desc": 784,
-      "schema": 1281
+      "desc": 951,
+      "schema": 1404
     },
     "record_comment": {
       "desc": 343,
       "schema": 239
     },
     "record_create": {
-      "desc": 5611,
+      "desc": 5778,
       "schema": 8725
     },
     "record_get": {
-      "desc": 1239,
+      "desc": 1375,
       "schema": 212
     },
     "record_hand_back": {

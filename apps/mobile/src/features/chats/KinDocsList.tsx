@@ -55,7 +55,7 @@ import {
   type KinMineHeld,
   type KinMineSide,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
-import type { KinDocListRow, KinPersonId, KinRecordKey } from "@t3tools/contracts";
+import type { KinDocListRow, KinPersonId, KinRecordKey, KinShell } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -339,6 +339,7 @@ export function KinSearchHits(props: {
   readonly scope?: KinViewerScope;
   /** Finding nothing says nothing: the list above already answers for the search. */
   readonly quietWhenNone?: boolean;
+  readonly shell?: KinShell | null | undefined;
 }) {
   const { state } = props;
   const grows = useKinTextGrows();
@@ -353,6 +354,7 @@ export function KinSearchHits(props: {
     return props.quietWhenNone ? null : (
       <EmptyState variant="plain" {...kinSearchNothing(state.answered, props.scope)} />
     );
+  const hits = state.hits.map((hit) => kinSearchHit(hit, props.shell));
   return (
     <View className={cn(state.loading && "opacity-60")}>
       {state.failed ? (
@@ -363,7 +365,7 @@ export function KinSearchHits(props: {
           />
         </View>
       ) : null}
-      {state.hits.map(kinSearchHit).map((hit) => (
+      {hits.map((hit) => (
         <View key={hit.id}>
           <Pressable
             accessibilityRole="button"

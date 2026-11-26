@@ -33,7 +33,8 @@ import {
 } from "../../apps/server/src/kin/lead/instructions.ts";
 import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts";
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
-import { alreadyOnIt, leftNote } from "../../apps/server/src/kin/lead/Handoff.ts";
+import { alreadyOnIt, leftNote, passedFactBody } from "../../apps/server/src/kin/lead/Handoff.ts";
+import { ASK_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
 import { dueShows, madeIn, repeatedPromise } from "../../apps/server/src/kin/work/leadWork.ts";
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import {
@@ -119,6 +120,8 @@ import {
   ONE_ENTRY,
 } from "../../apps/server/src/kin/lead/approvedDraft.ts";
 import { KinConnectionsToolkit } from "../../apps/server/src/kin/connections/mcp.ts";
+import { diffGoesOn, postedResult } from "../../apps/server/src/kin/github/GitHubWatch.ts";
+import { DIFF_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
 import { socialRules as kinSocialRules } from "../../apps/server/src/kin/social/instructions.ts";
 import { KinSocialToolkit } from "../../apps/server/src/kin/social/mcp.ts";
 import { KinSalesToolkit } from "../../apps/server/src/kin/sales/mcp.ts";
@@ -137,6 +140,7 @@ import {
   humanMessageLabel,
   ASSIGNED_NOT_IN_PERSON,
   HANDED_BACK_WORK,
+  PASSED_ON_SPEAKER,
   UNREAD_RULE,
   REMINDER_DUE,
   REPLY_SHAPE,
@@ -558,12 +562,23 @@ const fillGitHubTrigger = (prompt: string, world: McpToolUseCase["setup"]["world
         readonly event: string;
         readonly repo: string;
         readonly trigger: Contracts.KinGithubTrigger;
+        /** A review someone asked for in Kin: their name, as `LeadPrompt` passes it. */
+        readonly askedBy?: string;
       }
     | undefined;
   if (given === undefined) throw new Error("{{GITHUB_TRIGGER}} needs setup.world.githubTrigger.");
+  // `{{DIFF_GOES_ON:<rest>:<from>}}` in a diff is where Kin's read of it stops (`readDiff`).
+  const diff = given.trigger.pull?.diff?.replace(
+    /\{\{DIFF_GOES_ON:(\d+):(\d+)\}\}/g,
+    (_, rest: string, from: string) => diffGoesOn(Number(rest), Number(from)),
+  );
+  const trigger =
+    given.trigger.pull === undefined || diff === undefined
+      ? given.trigger
+      : { ...given.trigger, pull: { ...given.trigger.pull, diff } };
   return prompt.replaceAll(
     "{{GITHUB_TRIGGER}}",
-    githubTriggerEvent(given.event, given.repo, given.trigger),
+    githubTriggerEvent(given.event, given.repo, trigger, given.askedBy),
   );
 };
 
@@ -690,6 +705,14 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{SEVERAL_ACCOUNTS}}", SEVERAL_ACCOUNTS)
     .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
     .replaceAll("{{REMINDER_DUE}}", REMINDER_DUE)
+    .replaceAll("{{PASSED_ON_SPEAKER}}", PASSED_ON_SPEAKER)
+    // A check-in fact's hand-off as the other agent's event quotes it, JSON-escaped for its body:
+    // `{{PASSED_FACT:<request>|<check-in>|<about>|<consequence>|<fact key>}}`.
+    .replace(
+      /\{\{PASSED_FACT:([^|}]+)\|([^|}]+)\|([^|}]+)\|([^|}]+)\|([^|}]+)\}\}/g,
+      (_, request: string, from: string, about: string, consequence: string, key: string) =>
+        JSON.stringify(passedFactBody({ request, from, about, consequence, key })).slice(1, -1),
+    )
     // The wake's line once a new company's country is chosen (`{{COUNTRY_CHOSEN:GB|GBP}}`).
     .replace(
       /\{\{COUNTRY_CHOSEN:([A-Z]{2})\|([A-Z]{3})\}\}/g,
@@ -968,6 +991,20 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       message: `${input.key} names ${input.partner} but doesn't add up exactly to their oldest owed expenses, so Kin marks nothing and offers no card for it. Nothing was asked; tell the owner what you see instead.`,
     },
   }),
+  // kin_github_diff's refusal when GitHub doesn't give the diff (`reviewAsk.ts`).
+  diffUnread: () => ({
+    $error: { _tag: "KinChatError", reason: "not_allowed", message: DIFF_REFUSAL.unread },
+  }),
+  // kin_github_review's answer for a review GitHub took (`GitHubWatch.ts` postedResult).
+  reviewPosted: (input: {
+    url: string;
+    review?: "asked" | "kins" | "outside";
+    asOwner?: boolean;
+  }) =>
+    postedResult({ _tag: "posted", url: input.url, asOwner: input.asOwner ?? false }, input.review),
+  // kin_github_review_ask's refusal for a repo Kin doesn't watch, as Kin words it (`reviewAsk.ts`).
+  reviewAskUnwatched: (input: { repo: string; ownerLevel: boolean }) =>
+    ASK_REFUSAL.unwatched(input.repo, input.ownerLevel),
   // bills_add's and bill_read's answers, as Kin words them (`leadBills.ts`, `bills.ts`).
   billsAdd: (input: { added: number; alreadyAdded: number; notBills: number }) => addAnswer(input),
   billRead: (input: { bill: string; outcome: "read" | "duplicate" | "unreadable" }) =>

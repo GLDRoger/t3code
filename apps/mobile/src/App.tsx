@@ -35,6 +35,7 @@ import {
   startIncomingShareInbox,
 } from "./features/sharing/IncomingShareProvider";
 import { installKin } from "./features/chats/installKin";
+import { startKinSharedFileInbox } from "./features/chats/kinSharedFileInbox";
 import {
   installForKinHome,
   readKinIsHome,
@@ -241,8 +242,8 @@ const appServiceDisposers = [
   installPermissionUpdateNotice(),
   installThreadOutboxDelivery(),
   installComposerAttachmentUploads(),
-  // Shares and launcher shortcuts both start coding threads, which Kin as Home doesn't have.
-  installForKinHome({ kin: () => () => {}, coding: startIncomingShareInbox }),
+  // With Kin as Home a shared file opens a Kin import; otherwise shares start coding threads.
+  installForKinHome({ kin: startKinSharedFileInbox, coding: startIncomingShareInbox }),
   installKin(linkToAppPath),
   installAgentNotificationNavigation(linkToAppPath),
   installForKinHome({ kin: clearAppShortcuts, coding: () => installAppShortcuts(linkToAppPath) }),

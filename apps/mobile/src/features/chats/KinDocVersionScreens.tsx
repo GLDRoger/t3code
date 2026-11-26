@@ -391,7 +391,13 @@ function KinSearch(props: KinWorkTarget) {
         <EmptyState variant="plain" {...kinSearchHint(scope, shell)} />
       ) : (
         <View className="-mx-4">
-          <KinSearchHits state={state} scope={scope} onRetry={search.retry} onOpen={open} />
+          <KinSearchHits
+            state={state}
+            scope={scope}
+            shell={shell}
+            onRetry={search.retry}
+            onOpen={open}
+          />
         </View>
       )}
     </KinWorkFrame>
