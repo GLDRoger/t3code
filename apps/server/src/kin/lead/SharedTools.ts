@@ -196,7 +196,10 @@ export const SHARED_TOOLS = {
   record_update: "view",
   // Work facts on tasks every person behind the turn may see; money and system facts are the owner's.
   pulse_read: "view",
-  pulse_handle: "refused",
+  pulse_handle: (_turn, args) => {
+    const action = field(args, "action");
+    return Effect.succeed(action === "declined" || action === "undo");
+  },
   pulse_nudge: "refused",
   // Giving out a task everyone there sees; handing back is the asker's own task, in their view.
   record_assign: "view",

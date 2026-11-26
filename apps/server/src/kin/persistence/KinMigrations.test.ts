@@ -1940,14 +1940,7 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(yield* later, []);
         yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, outcome, at)
           VALUES ('org', 'review:ambermill/shop#7', 'ambermill/shop', 7, 'woke', 1)`;
-        // Later branches' migrations run after these too; only these three are this test's.
-        assert.deepStrictEqual(
-          (yield* runKinMigrations()).map(([id]) => id),
-          [
-            196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
-            213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223,
-          ],
-        );
+        assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(196));
         assert.deepStrictEqual(yield* receipts, [
           { trigger_key: "review:ambermill/shop#7", review_url: null },
         ]);
@@ -1993,13 +1986,7 @@ describe("Kin migrations", () => {
       yield* undoTaskSteps;
       yield* undoSentUpDrafts;
       assert.deepStrictEqual(yield* added, []);
-      assert.deepStrictEqual(
-        (yield* runKinMigrations()).map(([id]) => id),
-        [
-          197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214,
-          215, 216, 217, 218, 219, 220, 221, 222, 223,
-        ],
-      );
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(197));
       const all = [
         "approved_at",
         "draft_json",
@@ -2748,6 +2735,47 @@ describe("Kin migrations", () => {
             received_currency: null,
             rate: null,
           },
+        ],
+      );
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+  );
+
+  it.effect("K225 keeps ordinary holds beside declines and reruns", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runKinMigrations();
+      const before = yield* sql<{ name: string }>`PRAGMA table_info(kin_holds)`;
+      if (before.some(({ name }) => name === "decline_json")) {
+        yield* sql`DROP INDEX kin_holds_live`;
+        yield* sql`DROP INDEX kin_holds_declined_live`;
+        yield* sql`ALTER TABLE kin_holds DROP COLUMN decline_json`;
+        yield* sql`CREATE UNIQUE INDEX kin_holds_live
+          ON kin_holds (org_id, record_id, COALESCE(for_person_id, '')) WHERE lifted_at IS NULL`;
+      }
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 225`;
+      yield* sql`INSERT INTO kin_holds (hold_id, org_id, record_id, for_person_id, set_by_kind, set_by_id, set_at)
+        VALUES ('ordinary', 'org', 'record', 'zoya', 'person', 'zoya', 1)`;
+      assert.isTrue(
+        (yield* runKinMigrations()).some(([id]) => id === 225),
+        "K225 reruns",
+      );
+      const columns = yield* sql<{ name: string }>`PRAGMA table_info(kin_holds)`;
+      assert.include(
+        columns.map(({ name }) => name),
+        "decline_json",
+      );
+      yield* sql`INSERT INTO kin_holds (hold_id, org_id, record_id, for_person_id, set_by_kind,
+          set_by_id, set_at, decline_json)
+        VALUES ('declined', 'org', 'record', 'zoya', 'agent', 'lead', 2,
+          '{"day":null,"state":"open","holderKind":"person","holderId":"zoya","messageId":"answer"}')`;
+      yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 225`;
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(225));
+      assert.deepStrictEqual(
+        yield* sql`SELECT hold_id, decline_json IS NULL AS ordinary
+        FROM kin_holds WHERE org_id = 'org' ORDER BY hold_id`,
+        [
+          { hold_id: "declined", ordinary: 0 },
+          { hold_id: "ordinary", ordinary: 1 },
         ],
       );
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
