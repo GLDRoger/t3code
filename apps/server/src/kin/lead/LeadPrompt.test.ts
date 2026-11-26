@@ -33,6 +33,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Statement from "effect/sql/Statement";
 import * as TestClock from "effect/testing/TestClock";
 import * as Chat from "../chat/KinChatRepository.ts";
 import { startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
@@ -2329,6 +2330,13 @@ it.effect("quotes a choice tap as the owner's words, not its JSON", () =>
   }).pipe(Effect.provide(layer)),
 );
 
+const failTrackedRead: Statement.Transformer = (statement, sql) =>
+  Effect.succeed(
+    statement.compile()[0].trimStart().startsWith("SELECT 'work' AS kind")
+      ? sql.unsafe("SELECT * FROM missing_schedule_read_fixture")
+      : statement,
+  );
+
 it.effect("every kind of schedule the server stores reaches the check-in prompt", () =>
   Effect.gen(function* () {
     const repo = yield* leadWithOwner;
@@ -2584,6 +2592,14 @@ it.effect("every kind of schedule the server stores reaches the check-in prompt"
     expect(line("native-interval")).toContain("60");
     for (const id of ["alarm-remind", "native-once", "social-scheduled"])
       expect(line(id)).toContain("2026-11-20T10:00:00.000+00:00");
+
+    const unavailable = yield* prompt
+      .build({ ...input, lane: { chatId, mode: "notice" } })
+      .pipe(Effect.provideService(Statement.CurrentTransformer, failTrackedRead));
+    expect(unavailable).toContain(
+      `${PROMPT_HEADINGS.checkIns}\n\nKin couldn't read your check-ins this turn, so this is not a sign you have none.`,
+    );
+    expect(unavailable).not.toContain("checkin-custom Tidewater Freight");
   }).pipe(Effect.provide(layer)),
 );
 
@@ -4270,6 +4286,12 @@ it.effect(
       const set = line(yield* prompt.build(turn));
       expect(set).toMatch(
         /^Set in this chat: reminder "def-plans" \("Friday report"\) due [A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2}, \d{2}:\d{2}, asked by "Arjun Rao"; routine "sch-plans" \("Open tasks"\) every [A-Z][a-z]+ \d{2}:\d{2}, set by "Rhea Kapoor"\. Only the person who asked, the owner or a co-owner can change one; kin_cancel takes its id\.$/,
+      );
+      const unavailable = yield* prompt
+        .build(turn)
+        .pipe(Effect.provideService(Statement.CurrentTransformer, failTrackedRead));
+      expect(line(unavailable)).toBe(
+        "Set in this chat: Kin couldn't read this chat's reminders and routines this turn, so this is not a sign none are set.",
       );
       // A latecomer couldn't read where it was set: the join leaves its card, and this line,
       // without its title (`ChatSharing.settleCards`, `wordsReadable`).
