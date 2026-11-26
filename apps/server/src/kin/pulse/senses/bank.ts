@@ -147,8 +147,8 @@ const fitted = (build: (shown: number) => string, count: number) => {
   }
   return build(0);
 };
-const listed = (items: ReadonlyArray<string>, shown: number) =>
-  `${items.slice(0, shown).join("; ")}${items.length > shown ? `${shown > 0 ? "; " : ""}and ${items.length - shown} more` : ""}`;
+const listed = (items: ReadonlyArray<string>, shown: number, total = items.length) =>
+  `${items.slice(0, shown).join("; ")}${total > shown ? `${shown > 0 ? "; " : ""}and ${total - shown} more` : ""}`;
 
 export const overpaymentConsequence = (input: {
   readonly key: string;
@@ -222,14 +222,14 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
       extraSection: "money" as const,
     };
     if (choice !== undefined) {
-      const { client, options } = choice;
+      const { client, options, total } = choice;
       const items = options.map(
         ({ invoice, owed }) =>
           `${recordName(invoice.key, invoice.number)} (${plain(owed.minor, owed.currency)} owed)`,
       );
       const consequence = fitted(
         (shown) =>
-          `${creditText(credit)}, names ${client} but none of ${client}'s open invoices in other currencies, and no recent rate the company was paid at is close to the one it would imply, so Kin can't tell which it pays: ${listed(items, shown)}. Nothing is recorded until an owner or co-owner picks one.`,
+          `${creditText(credit)}, names ${client} but none of ${client}'s open invoices in other currencies, and no recent rate the company was paid at is close to the one it would imply, so Kin can't tell which it pays: ${listed(items, shown, total)}. Nothing is recorded until an owner or co-owner picks one.`,
         items.length,
       );
       if (consequence.length > CONSEQUENCE_MAX) return [];

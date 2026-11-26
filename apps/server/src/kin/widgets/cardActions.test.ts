@@ -3466,7 +3466,7 @@ it.effect(
         assert.deepStrictEqual(fact?.actor, { _tag: "agent", agentId: KinAgentId.make("finance") });
         assert.strictEqual(
           fact?.consequence,
-          `${kin.bank.key}, ₹83,500 received 15 Nov, names Tidewater Freight but none of Tidewater Freight's open invoices in other currencies, and no recent rate the company was paid at is close to the one it would imply, so Kin can't tell which it pays: TW/004 (${newest.key}) ($1,000 owed); TW/002 (${second.key}) ($1,000 owed); TW/003 (${third.key}) ($1,000 owed); TW/001 (${kin.invoice.key}) ($1,000 owed). Nothing is recorded until an owner or co-owner picks one.`,
+          `${kin.bank.key}, ₹83,500 received 15 Nov, names Tidewater Freight but none of Tidewater Freight's open invoices in other currencies, and no recent rate the company was paid at is close to the one it would imply, so Kin can't tell which it pays: TW/004 (${newest.key}) ($1,000 owed); TW/002 (${second.key}) ($1,000 owed); TW/003 (${third.key}) ($1,000 owed); TW/001 (${kin.invoice.key}) ($1,000 owed); and 1 more. Nothing is recorded until an owner or co-owner picks one.`,
         );
         assert.isUndefined(
           yield* kin.fact({ _tag: "people", people: [kin.person("zoya").personId] }),
@@ -3492,6 +3492,37 @@ it.effect(
         assert.lengthOf(yield* kin.cards(), 1);
       }),
     ),
+);
+
+it.effect("the fact counts every eligible invoice and names one with no number", () =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit();
+      const second = yield* kin.invoiceOf("TW/002", 2);
+      const third = yield* kin.invoiceOf("TW/003", 2);
+      const newest = yield* kin.invoiceOf("Freight without a printed number", 1);
+      yield* kin.invoiceOf("TW/005", 4);
+      yield* kin.invoiceOf("TW/006", 5);
+      yield* kin.sql`UPDATE kin_records SET fields_json = json_remove(fields_json, '$.number')
+        WHERE org_id = ${kin.orgId} AND record_id = ${newest.recordId}`;
+
+      assert.strictEqual(
+        (yield* kin.fact())?.consequence,
+        `${kin.bank.key}, ₹83,500 received 15 Nov, names Tidewater Freight but none of Tidewater Freight's open invoices in other currencies, and no recent rate the company was paid at is close to the one it would imply, so Kin can't tell which it pays: ${newest.key} ($1,000 owed); TW/002 (${second.key}) ($1,000 owed); TW/003 (${third.key}) ($1,000 owed); TW/001 (${kin.invoice.key}) ($1,000 owed); and 2 more. Nothing is recorded until an owner or co-owner picks one.`,
+      );
+      const state = card(yield* kin.ask());
+      assert.deepStrictEqual(
+        state.options.map(({ label }) => label),
+        [
+          newest.key,
+          `TW/002 (${second.key})`,
+          `TW/003 (${third.key})`,
+          `TW/001 (${kin.invoice.key})`,
+          "None of these",
+        ],
+      );
+    }),
+  ),
 );
 
 it.effect("a foreign credit question records nothing until an owner-level tap", () =>

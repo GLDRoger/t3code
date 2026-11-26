@@ -87,7 +87,10 @@ export const factCardShown = (plan: FactCardPlan) => {
       if (payment === null) return { label: "None of these", line: "" };
       const owed = rateMoney({ minor: payment.amountMinor, currency: payment.currency });
       return {
-        label: clamp(recordName(payment.key, payment.number), 80),
+        label: clamp(
+          recordName(payment.key, payment.number === payment.key ? null : payment.number),
+          80,
+        ),
         line: `${owed} owed. Records ${rateMoney(payment.received)} received for it, at ${kinRateShown(payment.rate)}.`,
       };
     }

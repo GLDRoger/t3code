@@ -244,6 +244,7 @@ export type CreditMatch = {
     readonly client: string;
     readonly options: ReadonlyArray<RateChoice>;
     readonly round: number;
+    readonly total: number;
   };
   readonly recorded: { readonly key: string; readonly paidOn: string } | undefined;
 };
@@ -311,8 +312,7 @@ const rankAll = Effect.fn("KinStatements.rankCredits")(function* (
     if (best === undefined) {
       const options = available
         .flatMap((invoice) => {
-          if (invoice.clientId == null || !invoice.client?.trim() || invoice.number === null)
-            return [];
+          if (invoice.clientId == null || !invoice.client?.trim()) return [];
           const rate = rateCandidate(credit.row, invoice, credit.currency);
           return rate === undefined || rate.cited !== undefined ? [] : [{ ...rate, invoice }];
         })
@@ -337,6 +337,7 @@ const rankAll = Effect.fn("KinStatements.rankCredits")(function* (
         client: invoice.client,
         options: options.slice(0, 4),
         round: rounds.get(credit.recordId) ?? 0,
+        total: options.length,
       };
     }
     const [rival] = payments
