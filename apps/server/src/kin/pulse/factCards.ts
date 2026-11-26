@@ -1042,7 +1042,7 @@ const invoiceChoiceCards = Effect.fn("KinFactCards.invoiceChoices")(function* (i
       factKey: fact.key,
       round: choice.round,
       question: `Which invoice does ${credit.key} pay?`,
-      detail: `${credit.key}: ${received} received ${shortDay(credit.date)} from ${choice.client}. It names no invoice, and its rate isn't close to a recent one, so Kin won't guess.`,
+      detail: `${credit.key}: ${received} received ${shortDay(credit.date)} from ${choice.client}. It names no invoice, and Kin has no recent rate close to the one it implies, so Kin won't guess.`,
       options: plans.map((plan) => ({ label: factCardShown(plan).label, plan })),
       posted,
     });

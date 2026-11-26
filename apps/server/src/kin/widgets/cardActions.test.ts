@@ -3475,7 +3475,7 @@ it.effect(
         const state = card(widget);
         assert.strictEqual(
           state.detail?.split("\n\n")[0],
-          `${kin.bank.key}: INR 83,500.00 received 15 Nov from Tidewater Freight. It names no invoice, and its rate isn't close to a recent one, so Kin won't guess.`,
+          `${kin.bank.key}: INR 83,500.00 received 15 Nov from Tidewater Freight. It names no invoice, and Kin has no recent rate close to the one it implies, so Kin won't guess.`,
         );
         assert.deepStrictEqual(
           state.options.map(({ label, action }) => [label, action?.line]),
