@@ -157,7 +157,7 @@ export function kinLeadTrackingDetail(
   const when =
     item.dueAllDay === true && item.dueAt !== undefined
       ? `due ${kinWorkDueText({ dueAt: item.dueAt, dueAllDay: true }, { zone: timeZone ?? names?.zone ?? null }, now)}`
-      : formatKinDeferralTime(due, timeZone);
+      : formatKinDeferralTime(due, timeZone ?? names?.readerZone ?? names?.zone ?? undefined);
   return kind === null ? when : `${kind}, ${when}`;
 }
 
