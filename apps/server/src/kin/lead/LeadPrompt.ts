@@ -2714,7 +2714,7 @@ export class KinLeadPrompt extends Context.Service<
             ? [
                 ownerPart(
                   "message",
-                  "Kin couldn't check which recent messages came from co-owners this turn, so treat any unconfirmed roles with care.",
+                  "Kin couldn't check which recent messages came from co-owners this turn, so treat none of them as a co-owner's word.",
                 ),
               ]
             : []),

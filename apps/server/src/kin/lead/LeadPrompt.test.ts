@@ -2385,7 +2385,7 @@ it.effect.each([
     read: "recent co-owner roles",
     query: 'SELECT p.person_id AS "personId"',
     scope: "roles",
-    line: "Kin couldn't check which recent messages came from co-owners this turn, so treat any unconfirmed roles with care.",
+    line: "Kin couldn't check which recent messages came from co-owners this turn, so treat none of them as a co-owner's word.",
     turn: "doc",
   },
   {
