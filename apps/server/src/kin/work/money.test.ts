@@ -6235,6 +6235,32 @@ describe("money answers", () => {
             ["USD", about],
           ],
         );
+        // Spend only in another currency still gets its line, as a goal's does.
+        yield* records.create(orgId, system, {
+          list: "expenses",
+          title: "Invented team dinner",
+          owner,
+          state: "done",
+          category: "meals",
+          amount: { minor: 100_00, currency: "EUR" },
+          dateAt: on("2026-11-06"),
+          originKey: "dinner",
+        });
+        yield* OwnerMoneyAnswers.setBudget(people, {
+          orgId,
+          category: "meals",
+          project: null,
+          currency: "INR",
+          limitMinor: 5_000_00,
+          clientRequestId: "meals-inr",
+        });
+        const meals = (yield* budgetsView(orgId, now, undefined, false, read)).budgets.find(
+          (one) => one.category === "meals",
+        );
+        assert.deepStrictEqual(meals?.about, {
+          total: { minor: 11_000, currency: "USD" },
+          rateDays: ["2026-11-10", "2026-11-12"],
+        });
       }).pipe(Effect.provide(layer)),
   );
 
