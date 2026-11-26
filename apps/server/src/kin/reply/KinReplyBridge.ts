@@ -3,6 +3,8 @@ import {
   KIN_DOC_CARD,
   KIN_MESSAGE_BODY_MAX_LENGTH,
   KinChatId,
+  KinAgentMessageBody,
+  KinChatError,
   kinIsPage,
   KIN_MONEY_SECTION,
   kinPageWithLines,
@@ -34,6 +36,7 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Schedule from "effect/Schedule";
 import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
@@ -42,12 +45,13 @@ import { KIN_VISUAL_CARD_TYPE } from "@t3tools/shared/kinVisual";
 
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   KinChatService,
   KIN_WAKEUP_CHAR_LIMIT,
   KIN_WAKEUP_MESSAGE_LIMIT,
 } from "../chat/KinChatService.ts";
-import { isPrivateWriteRefused } from "../chat/KinChatRepository.ts";
+import { isPrivateWriteRefused, storedClientId } from "../chat/KinChatRepository.ts";
 import {
   KinIdentity,
   isSteerMessage,
@@ -56,7 +60,7 @@ import {
 } from "../chat/KinIdentity.ts";
 import { isClaudeThinkingItem } from "./claudeThinkingItem.ts";
 import { laneFor, type Lane } from "./replyLane.ts";
-import { followUpFor, PERSON_TAGS } from "./turnVoice.ts";
+import { followUpFor, PERSON_TAGS, sendClientMessageId } from "./turnVoice.ts";
 import { AUDIENCE_MOVED, aborted, ownerOnlyChat } from "../lead/Audience.ts";
 import { stoppedByJoinNotice } from "../lead/ChatSharing.ts";
 import {
@@ -66,6 +70,10 @@ import {
   requeueForAudience,
 } from "../lead/KinEventQueue.ts";
 import * as KinLevels from "../lead/KinLevels.ts";
+import { leftNote } from "../lead/Handoff.ts";
+import { directKey } from "../lead/LeadAccess.ts";
+import { nextCheckIn } from "../pulse/leftForCheckIn.ts";
+import { holdLine } from "../triggers/quietHold.ts";
 import { activityAt, waitWhileActive } from "../lead/runSilence.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as Reach from "../lead/Reach.ts";
@@ -208,6 +216,48 @@ const heldNotice = (lead: string, cause: KinTroubleCause, ownerOnly: boolean, to
       ? `${lead} is unavailable right now. Kin has told the owner, and will run this as soon as it can.`
       : `${lead} is unavailable right now. Kin will run this as soon as it can.`;
 
+type SendInput = {
+  readonly orgId: KinOrgId;
+  readonly wakeupId: KinWakeupId;
+  readonly text: string;
+  readonly level: "now" | "quiet" | "check_in";
+};
+
+type SendResult =
+  | { readonly sent: true; readonly messageId: KinMessageId }
+  | { readonly held: true; readonly when: string };
+
+// Words under eval: change them only with the send cases.
+const SEND_REFUSALS = {
+  team: "Nothing was sent: use team_say to speak in the Team room.",
+  quiet: "Nothing was sent: this turn does not post to a chat.",
+  marker: "Nothing was sent: NO_REPLY means send nothing; end the turn with it",
+  "already sent": "This turn's message is already sent; end the turn",
+  "non-owner check-in": "Nothing was sent: check_in is only for the owner's own chat.",
+  "no check-in": "Nothing was sent: no check-in is on. Use now or quiet to send it to the chat.",
+  "not running": "Nothing was sent: this turn is no longer running.",
+  "not posted": "Nothing was sent: Kin could not post this message.",
+} as const;
+
+class KinReplySendError extends Schema.TaggedError<KinReplySendError>()("KinReplySendError", {
+  reason: Schema.Literals([
+    "team",
+    "quiet",
+    "marker",
+    "already sent",
+    "non-owner check-in",
+    "no check-in",
+    "not running",
+    "not posted",
+  ]),
+}) {
+  override get message() {
+    return SEND_REFUSALS[this.reason];
+  }
+}
+
+const decodeSendText = Schema.decodeUnknownEffect(KinAgentMessageBody);
+
 type Ending = "text" | "marker" | "none" | "rescued_text" | "rescued_none" | "failed";
 
 type Outcome = "posted" | "note" | "silent" | "empty" | "withheld" | "overflow" | "dropped";
@@ -252,6 +302,11 @@ type Wake = {
   // A message steered into a notice wake-up makes it owe a reply in the same chat.
   lane: Lane;
   readonly lock: Semaphore.Semaphore;
+  sendReceipt?: {
+    readonly text: string;
+    readonly level: SendInput["level"];
+    readonly result: SendResult;
+  };
   readonly segments: Map<TurnItemId, Segment>;
   // Ordinals of tool items seen live, to decide a short segment once the next item lands.
   readonly tools: Array<number>;
@@ -334,6 +389,7 @@ export class KinReplyBridge extends Context.Service<
       readonly rootRunId: RunId;
       readonly rescue: boolean;
     }) => Effect.Effect<void>;
+    readonly send: (input: SendInput) => Effect.Effect<SendResult, KinReplySendError>;
     /**
      * A message was steered into the wake-up: re-reads its lane, which may now owe a reply.
      * `steer` names its number and events, so a reply after it marks them answered.
@@ -400,6 +456,7 @@ const make = Effect.gen(function* () {
     Option.isSome(care) ? care.value.troubleOpen(orgId, cause) : Effect.succeed(false);
   const identity = yield* KinIdentity;
   const presence = yield* KinPresence;
+  const settings = yield* Effect.serviceOption(ServerSettingsService);
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const scope = yield* Effect.scope;
   const wakes = new Map<ThreadId, Wake>();
@@ -485,7 +542,12 @@ const make = Effect.gen(function* () {
     readonly orgId: KinOrgId;
     readonly agentId: KinAgentId;
     readonly wakeupId: KinWakeupId;
-  }) => laneFor(input).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+  }) => {
+    const lookup = laneFor(input).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+    return Option.isSome(settings)
+      ? lookup.pipe(Effect.provideService(ServerSettingsService, settings.value))
+      : lookup;
+  };
 
   // The bridge's identity comes from stored rows, never from anything the model wrote.
   const agent = (wake: Wake) =>
@@ -540,6 +602,7 @@ const make = Effect.gen(function* () {
     clientMessageId: string,
     body: string,
     ordinal: number,
+    silent?: true,
   ) {
     const lead = yield* agent(wake);
     if (lead === undefined)
@@ -559,6 +622,7 @@ const make = Effect.gen(function* () {
           clientMessageId,
           body: capBody(body),
           placeReplyFigures: true,
+          ...(silent === true ? { silent } : {}),
           intent: wake.lane.mode === "reply" ? "answer" : "evidence",
         },
         repliedBy(wake, ordinal),
@@ -853,7 +917,38 @@ const make = Effect.gen(function* () {
       ORDER BY m.seq DESC LIMIT 1`;
     return row;
   });
-  const post = Effect.fn("KinReplyBridge.post")(function* (wake: Wake, segment: Segment) {
+  const replyText = Effect.fn("KinReplyBridge.replyText")(function* (wake: Wake, text: string) {
+    return withoutAsked(
+      stripTrailingSilenceMarker(text.trim()),
+      yield* asked(wake).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => [])),
+    );
+  });
+
+  const post = Effect.fn("KinReplyBridge.post")(function* (
+    wake: Wake,
+    segment:
+      | Segment
+      | { readonly text: string; readonly clientMessageId: string; readonly silent?: true },
+  ) {
+    if ("clientMessageId" in segment) {
+      // A send needs its own row and key; plain segments may instead extend a card or earlier reply.
+      const text = yield* replyText(wake, segment.text);
+      if (text === "" || (yield* alreadySaid(wake, text).pipe(Effect.orElseSucceed(() => false))))
+        return;
+      const opening = yield* underMorningHeading(wake, text).pipe(Effect.orElseSucceed(() => text));
+      const result = yield* deliver(
+        wake,
+        segment.clientMessageId,
+        opening,
+        Infinity,
+        segment.silent,
+      );
+      if (result._tag === "posted") {
+        yield* stamp(wake, "posted_at");
+        return result.messageId;
+      }
+      return;
+    }
     const end = (messageId: KinMessageId | null) =>
       segment.drafting
         ? presence.endDraft(wake.orgId, wake.lane.chatId, segment.id, messageId)
@@ -864,10 +959,7 @@ const make = Effect.gen(function* () {
       return yield* end(null);
     }
     const key = slotKey(wake, segment.ordinal);
-    const text = withoutAsked(
-      stripTrailingSilenceMarker(segment.text.trim()),
-      yield* asked(wake).pipe(Effect.orElseSucceed((): ReadonlyArray<string> => [])),
-    );
+    const text = yield* replyText(wake, segment.text);
     if (!wake.slots.has(key) && wake.posted === 0) {
       const joined = yield* askMessage(wake).pipe(Effect.orElseSucceed(() => undefined));
       if (
@@ -1032,6 +1124,110 @@ const make = Effect.gen(function* () {
     }
   });
 
+  const holdSend = Effect.fn("KinReplyBridge.holdSend")(
+    function* (wake: Wake, clientMessageId: string, text: string) {
+      const lead = yield* agent(wake);
+      if (lead === undefined) return yield* new KinReplySendError({ reason: "not running" });
+      const [owner] = yield* sql<{ name: string }>`SELECT p.display_name AS name FROM kin_leads l
+        JOIN kin_people p ON p.org_id = l.org_id AND p.person_id = ${lead.ownerPersonId}
+        JOIN kin_chats c ON c.org_id = l.org_id AND c.chat_id = l.owner_chat_id
+        WHERE l.org_id = ${wake.orgId} AND l.agent_id = ${wake.agentId}
+          AND c.chat_id = ${wake.lane.chatId} AND c.kind = 'direct'
+          AND c.direct_key = ${directKey(lead.ownerPersonId, wake.agentId)}`;
+      if (owner === undefined)
+        return yield* new KinReplySendError({ reason: "non-owner check-in" });
+      const next = yield* nextCheckIn(wake.orgId, wake.agentId).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+      );
+      if (next === undefined) return yield* new KinReplySendError({ reason: "no check-in" });
+      yield* gate.amend(
+        lead,
+        wake.lane.chatId,
+        holdLine({
+          orgId: wake.orgId,
+          chatId: wake.lane.chatId,
+          personId: lead.ownerPersonId,
+          key: clientMessageId,
+          body: text,
+          audience: "chat",
+          at: next.fallbackAt,
+          agentId: wake.agentId,
+        }).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.mapError(
+            () => new KinChatError({ reason: "unavailable", message: SEND_REFUSALS["not posted"] }),
+          ),
+        ),
+      );
+      return { held: true as const, when: leftNote(owner.name, next, owner.name) };
+    },
+    Effect.catchTags({
+      KinChatError: () => Effect.fail(new KinReplySendError({ reason: "not posted" })),
+      SqlError: () => Effect.fail(new KinReplySendError({ reason: "not posted" })),
+    }),
+  );
+
+  const send = Effect.fn("KinReplyBridge.send")(function* (input: SendInput) {
+    const wake = byWakeup.get(input.wakeupId);
+    if (wake === undefined || wake.orgId !== input.orgId)
+      return yield* new KinReplySendError({ reason: "not running" });
+    return yield* wake.lock.withPermits(1)(
+      Effect.gen(function* () {
+        if (wake.lane.team === true) return yield* new KinReplySendError({ reason: "team" });
+        if (wake.lane.quiet === true) return yield* new KinReplySendError({ reason: "quiet" });
+        if (input.text.includes(SILENT_REPLY))
+          return yield* new KinReplySendError({ reason: "marker" });
+        if (wake.sendReceipt !== undefined) {
+          if (wake.sendReceipt.text !== input.text || wake.sendReceipt.level !== input.level)
+            return yield* new KinReplySendError({ reason: "already sent" });
+          return wake.sendReceipt.result;
+        }
+        if (wake.done) return yield* new KinReplySendError({ reason: "not running" });
+        const body = yield* decodeSendText(input.text).pipe(
+          Effect.mapError(() => new KinReplySendError({ reason: "not posted" })),
+        );
+        const clientMessageId = sendClientMessageId(wake.wakeupId);
+        const [posted] = yield* sql<{
+          messageId: KinMessageId;
+        }>`SELECT message_id AS "messageId" FROM kin_messages
+          WHERE org_id = ${wake.orgId} AND chat_id = ${wake.lane.chatId} AND author_agent_id = ${wake.agentId}
+            AND source_wakeup_id = ${wake.wakeupId} AND client_message_id = ${storedClientId("send", clientMessageId)}
+          LIMIT 1`;
+        const [held] = yield* sql`SELECT 1 FROM kin_held_posts WHERE org_id = ${wake.orgId}
+          AND chat_id = ${wake.lane.chatId} AND agent_id = ${wake.agentId} AND kind = ${clientMessageId} LIMIT 1`;
+        let result: SendResult;
+        if (posted !== undefined) result = { sent: true, messageId: posted.messageId };
+        else {
+          const [reminder] = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${wake.orgId}
+            AND agent_id = ${wake.agentId} AND wakeup_id = ${wake.wakeupId} AND tag = 'deferral.due'
+            AND json_extract(json, '$.subject.type') = 'reminder' LIMIT 1`;
+          const level = reminder === undefined ? input.level : "now";
+          if (level === "check_in") result = yield* holdSend(wake, clientMessageId, body);
+          else {
+            if (held !== undefined) return yield* new KinReplySendError({ reason: "already sent" });
+            const messageId = yield* post(wake, {
+              clientMessageId,
+              text: body,
+              ...(level === "quiet" ? { silent: true } : {}),
+            });
+            if (messageId === undefined)
+              return yield* new KinReplySendError({ reason: "not posted" });
+            result = { sent: true, messageId };
+          }
+        }
+        wake.sendReceipt = { text: input.text, level: input.level, result };
+        return result;
+      }).pipe(
+        Effect.mapError((error) =>
+          error._tag === "KinReplySendError"
+            ? error
+            : new KinReplySendError({ reason: "not posted" }),
+        ),
+        Effect.uninterruptible,
+      ),
+    );
+  });
+
   const decide = Effect.fn("KinReplyBridge.decide")(function* (
     wake: Wake,
     segment: Segment,
@@ -1044,7 +1240,7 @@ const make = Effect.gen(function* () {
       segment.text = stripTrailingSilenceMarker(segment.text);
     switch (decision) {
       case "post":
-        return yield* post(wake, segment);
+        return yield* post(wake, segment).pipe(Effect.asVoid);
       case "note":
         segment.outcome = "note";
         wake.notes.push(segment);
@@ -1870,6 +2066,7 @@ const make = Effect.gen(function* () {
     preparing,
     begin,
     complete,
+    send,
     steered,
     failed,
     abort,

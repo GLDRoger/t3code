@@ -1,4 +1,4 @@
-import type { KinEvent } from "@t3tools/contracts";
+import type { KinEvent, KinWakeupId } from "@t3tools/contracts";
 
 type EventTag = KinEvent["_tag"];
 
@@ -38,3 +38,5 @@ export const followUpFor = (input: {
   readonly answered: boolean;
   readonly withheld: boolean;
 }): "rescue" | null => (input.owed && !input.answered && !input.withheld ? "rescue" : null);
+
+export const sendClientMessageId = (wakeupId: KinWakeupId) => `kin-send:${wakeupId}`;

@@ -1923,7 +1923,9 @@ const make = Effect.gen(function* () {
                   agentId,
                   until: (yield* Clock.currentTimeMillis) + RUN_SILENCE_MS,
                   messageIds: events.flatMap((event) =>
-                    isPersonTag(event._tag) && "messageId" in event ? [event.messageId] : [],
+                    isPersonTag(event._tag) && "messageId" in event
+                      ? [KinMessageId.make(event.messageId)]
+                      : [],
                   ),
                 });
                 yield* identity.registerAgentThread({
