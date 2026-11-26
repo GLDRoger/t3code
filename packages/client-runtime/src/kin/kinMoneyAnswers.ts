@@ -125,7 +125,7 @@ export const KIN_OUTLOOK = {
   sayWho: "Say who paid",
   sayTitle: (address: string) => `Who is ${address}?`,
   sayDetail: (count: number, amount: string) =>
-    `An import says this address paid ${amount} across ${count} expense${count === 1 ? "" : "s"} from their own money. Until you say, Money counts them as the company's own spending.`,
+    `An import says this address paid ${amount} across ${count} expense${count === 1 ? "" : "s"} with personal money. Until you say, Money counts them as the company's own spending.`,
   paidBy: "Teammate",
   pickPerson: "Pick a teammate",
   settledQuestion: "Has the company paid them back?",
