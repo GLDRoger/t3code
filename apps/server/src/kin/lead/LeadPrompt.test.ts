@@ -42,6 +42,7 @@ import { WEEKLY_RULE } from "../pulse/weekly.ts";
 import { MONEY_RULE, WITHDRAWN_WORK } from "../work/workPrompt.ts";
 import {
   CARRIED_TURN_NOTE,
+  COMPACT_INSTRUCTIONS,
   KinLeadPrompt,
   NOTHING_NOW,
   PROMPT_HEADINGS,
@@ -800,6 +801,7 @@ it.effect("a carried turn's change list holds only what changed", () =>
       lane: { chatId: direct, mode: "reply" as const },
     };
     const previous = yield* prompt.buildSession(given);
+    expect(previous.compactInstructions).toBe(COMPACT_INSTRUCTIONS);
     const deltaStart = [CARRIED_TURN_NOTE, previous.sections.header].join("\n\n");
     const same = yield* prompt.buildSession({ ...given, previous });
     expect(same.delta).toBe(deltaStart);
