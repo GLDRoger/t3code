@@ -1,4 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
+import { ProviderInstanceId } from "@t3tools/contracts";
+import { compileClaudeModelSelection } from "../../apps/server/src/claudeModelOptions.ts";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
@@ -54,8 +56,8 @@ it("places every legacy wake-up block exactly once, splitting the server's tagge
   assert.deepEqual(failures, []);
 });
 
-const legacyRequestPin = "b516e1b16e7ff6661ed343745a1c28a0b7a5d7701fd0fe7aa8ec0e2f7cf8c317";
-const sessionRequestPin = "754932d95172cbd4bba7c8fbcb625f2462ad12799602f79c01af3c6f21423cf7";
+const legacyRequestPin = "673ddf808dec7532d900acc4cbbf3a5f3fc758892b2a59a7be77651005f286fd";
+const sessionRequestPin = "73fda7efbbba61beef9f1478510de63fdbf78bac40ff638735f04dde25b7ecc7";
 const pinnedIds = [
   "kin-lead-rereads-github-hint",
   "kin-lead-uses-display-name",
@@ -129,7 +131,6 @@ const carryCase: McpToolUseCase = {
   sessionCallsMustNot: [{ tool: "records_query" }],
 };
 const txt = (text: string) => ({ type: "text", text });
-const deferred = txt("The deferred tools list.");
 const date = txt("Today's date is 2026-11-26.");
 const caseBase = () => ({
   ...buildBase(
@@ -151,7 +152,22 @@ const caseBase = () => ({
       keepUserInstructions: false,
     },
   ),
-  reminders: [deferred, date],
+  deferredAnnouncement: "The deferred tools list.",
+  environment: { cwd: "/home/user/app", platform: "linux", date: "2026-11-26" },
+  reminders: [],
+});
+const harness = (withDate: boolean) => ({
+  role: "system" as const,
+  content: [
+    txt(
+      [
+        "# Environment\nYou have been invoked in the following environment: \n - Primary working directory: /home/user/app\n - Platform: linux",
+        "The deferred tools list.",
+        "<total_tokens>15000000 tokens left</total_tokens>",
+        ...(withDate ? [date.text] : []),
+      ].join("\n\n"),
+    ),
+  ],
 });
 const context = (value: string) => txt(`UserPromptSubmit hook additional context: ${value}`);
 const rendered = (layout: "legacy" | "session", testCase = carryCase) =>
@@ -159,12 +175,13 @@ const rendered = (layout: "legacy" | "session", testCase = carryCase) =>
 
 it("replays only the last wake in legacy and the real earlier tool blocks in session", () => {
   assert.deepEqual(rendered("legacy"), [
-    { role: "user", content: [deferred, date, txt(carryCase.prompt)] },
+    { role: "user", content: [txt(carryCase.prompt)] },
+    harness(true),
   ]);
   const unchanged = context(`${CARRIED_TURN_NOTE}\n\n${header}`);
   assert.deepEqual(rendered("session"), [
-    { role: "user", content: [deferred, txt(earlier[0]!.prompt)] },
-    { role: "system", content: [date] },
+    { role: "user", content: [txt(earlier[0]!.prompt)] },
+    harness(true),
     {
       role: "assistant",
       content: [
@@ -218,9 +235,9 @@ it("puts each carried change list after its header and never sends it in legacy"
   assert.deepEqual(
     session.filter(({ role }) => role === "system"),
     [
-      { role: "system", content: [date] },
+      harness(true),
       {
-        role: "system",
+        role: "system" as const,
         content: [context(`${CARRIED_TURN_NOTE}\n\n${header}\n\n${earlierChanges}`)],
       },
       { role: "system", content: [context(`${CARRIED_TURN_NOTE}\n\n${header}\n\n${changes}`)] },
@@ -262,7 +279,7 @@ it("resends only genuinely new recent chat, not earlier events, replies or resta
     ]),
   };
   assert.deepEqual(rendered("session", testCase).at(-1), {
-    role: "system",
+    role: "system" as const,
     content: [context(`${CARRIED_TURN_NOTE}\n\n${header}\n\n${chat([next])}`)],
   });
 });
@@ -282,16 +299,16 @@ const compactAt = (compactedBefore: number) => ({
 it("starts again with a full wake after compaction and carries from that wake", () => {
   assert.deepEqual(rendered("session", compactAt(1)), [
     { role: "user", content: [summaryBlock] },
-    { role: "user", content: [deferred, txt(earlier[1]!.prompt)] },
-    { role: "system", content: [date] },
+    { role: "user", content: [txt(earlier[1]!.prompt)] },
+    harness(true),
     { role: "assistant", content: [txt("Yes, it includes INV-7.")] },
     { role: "user", content: [txt("# Events\n\nAnd INV-9?")] },
     { role: "system", content: [context(`${CARRIED_TURN_NOTE}\n\n${header}`)] },
   ]);
   assert.deepEqual(rendered("session", compactAt(2)), [
     { role: "user", content: [summaryBlock] },
-    { role: "user", content: [deferred, txt(carryCase.prompt)] },
-    { role: "system", content: [date] },
+    { role: "user", content: [txt(carryCase.prompt)] },
+    harness(true),
   ]);
   assert.throws(
     () =>
@@ -317,9 +334,9 @@ it("puts the changes on the full wake when compaction cuts at the final turn", (
     { role: "user", content: [summaryBlock] },
     {
       role: "user",
-      content: [deferred, txt(carryCase.prompt.replace("# Events", `${changes}\n\n# Events`))],
+      content: [txt(carryCase.prompt.replace("# Events", `${changes}\n\n# Events`))],
     },
-    { role: "system", content: [date] },
+    harness(true),
   ]);
 });
 
@@ -357,4 +374,81 @@ it("keeps a 9,000-character change list in the hook and appends a longer list af
       content: [{ ...appended, cache_control: { type: "ephemeral", ttl: "1h" } }],
     },
   ]);
+});
+
+const ownerFirstRequest = (effort?: string) =>
+  JSON.parse(
+    NodeChildProcess.execFileSync(
+      process.execPath,
+      [
+        "mcp-tool-use/run.ts",
+        "--dry-run",
+        "--no-step-limit",
+        "--model",
+        "claude-haiku-5-5",
+        "--cases",
+        "mcp-tool-use/cases/kin.ndjson",
+        "--case",
+        "kin-lead-hi-gets-one-line",
+        ...(effort === undefined ? [] : ["--effort", effort]),
+      ],
+      { cwd: new URL("..", import.meta.url) },
+    ).toString(),
+  );
+
+it("puts the Kin deferred names in the Environment system message after the wake", () => {
+  const { messages } = ownerFirstRequest();
+  assert.equal(messages.at(-2).role, "user");
+  assert.notInclude(JSON.stringify(messages.at(-2)), "The following deferred tools");
+  assert.equal(messages.at(-1).role, "system");
+  const content = JSON.stringify(messages.at(-1).content);
+  assert.match(
+    content,
+    /# Environment.*The following deferred tools.*<total_tokens>.*Today's date/s,
+  );
+});
+
+it("advertises ToolSearch and owner native tools by their real names", () => {
+  const { tools } = ownerFirstRequest();
+  assert.includeMembers(
+    tools.map(({ name }: { name: string }) => name),
+    ["Bash", "Edit", "Read", "Write", "ToolSearch"],
+  );
+  assert.notMatch(
+    JSON.stringify(tools.map(({ name }: { name: string }) => name)),
+    /mcp__select_sight__/,
+  );
+});
+
+it("describes ToolSearch as finding names in a system message", () => {
+  const { tools } = ownerFirstRequest();
+  const tool = tools.find(({ name }: { name: string }) => name.endsWith("ToolSearch"));
+  assert.include(tool.description, "Deferred tools appear by name in a message from the system.");
+});
+
+it("sorts the actual owner inventory and omits tools of unconnected or engineering seats", () => {
+  const { messages } = ownerFirstRequest();
+  const deferred = messages
+    .flatMap(({ content }: { content: Array<{ text: string }> }) =>
+      content.flatMap(
+        ({ text }) => text.match(/(?:^|\n)(?:Web\w+|mcp__t3-code__\w+)(?=\n)/g) ?? [],
+      ),
+    )
+    .map((line: string) => line.trim());
+  assert.includeMembers(deferred, ["WebSearch", "mcp__t3-code__delegate_task"]);
+  assert.deepEqual(deferred, [...deferred].sort());
+  assert.notMatch(
+    deferred.join("\n"),
+    /mcp__t3-code__(?:kin_github_|device_|preview_|watch_pull_request|t3_worktree_|t3_project_create)/,
+  );
+});
+
+it("uses the product's effort for Kin, unless the run overrides it", () => {
+  const { output_config, model } = ownerFirstRequest();
+  assert.equal(
+    output_config.effort,
+    compileClaudeModelSelection({ model, instanceId: ProviderInstanceId.make("claudeAgent") })
+      .effort,
+  );
+  assert.equal(ownerFirstRequest("low").output_config.effort, "low");
 });
