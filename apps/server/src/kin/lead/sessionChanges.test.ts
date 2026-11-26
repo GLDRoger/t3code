@@ -4,7 +4,18 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Sqlite from "../../persistence/Sqlite.ts";
-import { KIN_READ_TOOLS } from "../mcp/readTools.ts";
+import { KinConnectionsToolkit } from "../connections/mcp.ts";
+import { KinDocumentToolkit } from "../gendocs/mcp.ts";
+import { KinChatToolkit } from "../mcp/KinChatToolkit.ts";
+import { KinPictureToolkit } from "../pictures/mcp.ts";
+import { KinPulseToolkit } from "../pulse/mcp.ts";
+import { KinSalesToolkit } from "../sales/mcp.ts";
+import { KinSocialToolkit } from "../social/mcp.ts";
+import { KinBillToolkit } from "../work/mcp/billTools.ts";
+import { KinDocsToolkit } from "../work/mcp/docTools.ts";
+import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
+import { KinWorkToolkit } from "../work/mcp/tools.ts";
+import { KinLeadToolkit } from "./mcp/tools.ts";
 import { Memory } from "../memory/Memory.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { decodeHead, memory } from "./LeadPrompt.testkit.ts";
@@ -530,77 +541,128 @@ it.effect("lists the Finance agent's own comment from the Team room", () =>
   }).pipe(Effect.provide(layer)),
 );
 
-it("every Kin read tool has a change source", () => {
-  const coverage: Readonly<Record<string, string | { readonly uncovered: string }>> = {
-    records_query: "record changes",
-    record_get: "record changes and comments",
-    client_read: {
-      uncovered:
-        "Client edits are listed, but touches of a client can change in kin_client_touches without a record change.",
-    },
-    money_summary: "record changes (including payments)",
-    money_query: "record changes (including payments)",
-    dates_query: {
-      uncovered:
-        "All-day timezone re-anchoring rewrites existing history without advancing its seq.",
-    },
-    deal_stages: "ends carry: lists",
-    pulse_read: "pulse facts",
-    pipeline_read: "record changes",
-    people_read: "ends carry: standing",
-    kin_leads: "ends carry: standing/lead",
-    kin_computer: {
-      uncovered: "Host and tool availability can change independently of the five sources.",
-    },
-    docs_search: "record changes",
-    doc_read: "record changes",
-    doc_history: "record changes",
-    memory_read: "memory git diff and index",
-    memory_search: "memory git diff and index",
-    kin_chat_read: { uncovered: "New messages are listed, but edits and deletions are not." },
-    read_numbers: "number values and record changes",
-    numbers_read: "number values and record changes",
-    list_define: "ends carry: lists",
-    budgets: { uncovered: "Budget edits do not use the record change log." },
-    kin_recipes: {
-      uncovered: "Generated-document recipe edits are not list entry or list definition changes.",
-    },
-    kin_connection_tools: {
-      uncovered: "Connection tool catalog changes have no source in this design.",
-    },
-    kin_github_read: "outside read",
-    web_page: "outside read",
-    kin_connection_call: "outside read",
-    social_read: "outside read",
-    social_lookup: "outside read",
-    bill_read: "confined bills turn, never the owner carry seat",
-    statement_read: "ends carry: sensitive read",
-    statement_rows: "ends carry: sensitive read",
-  };
-  expect(Object.keys(coverage)).toEqual(
-    expect.arrayContaining([
-      ...KIN_READ_TOOLS,
-      "memory_read",
-      "memory_search",
-      "kin_chat_read",
-      "read_numbers",
-      "numbers_read",
-      "list_define",
-      "budgets",
-      "statement_read",
-      "statement_rows",
-      "bill_read",
-      "kin_recipes",
-      "kin_connection_tools",
-      "kin_github_read",
-      "web_page",
-      "kin_connection_call",
-      "social_read",
-      "social_lookup",
-    ]),
-  );
-  for (const [tool, source] of Object.entries(coverage)) {
-    if (typeof source !== "string")
-      process.stdout.write(`Not covered: ${tool}: ${source.uncovered}\n`);
-  }
-});
+it.effect(
+  "every tool registered for the owner seat has a change source or an explicit exception",
+  () =>
+    Effect.sync(() => {
+      const coverage: Readonly<Record<string, string | { readonly uncovered: string }>> = {
+        records_query: "record changes",
+        record_get: "record changes and comments",
+        client_read: "record changes and contacts",
+        money_summary: "record changes (including payments)",
+        money_query: "record changes (including payments)",
+        dates_query: "record changes; ends carry: zone",
+        deal_stages: "ends carry: lists",
+        pulse_read: "pulse facts",
+        pipeline_read: "record changes",
+        people_read: "ends carry: standing",
+        kin_leads: "ends carry: standing/lead",
+        kin_computer: {
+          uncovered: "live state, excepted in the note's words (step 3)",
+        },
+        docs_search: "record changes",
+        doc_read: "record changes",
+        doc_history: "record changes",
+        memory_read: "memory commit history and index",
+        memory_search: "memory commit history and index",
+        kin_chat_read: "chat message change sequences",
+        read_numbers: "number values and record changes",
+        numbers_read: "number values and record changes",
+        list_define: "ends carry: lists",
+        budgets: "ends carry: budgets; expenses in record changes",
+        kin_recipes: "ends carry: recipes",
+        kin_connection_tools: {
+          uncovered: "live state, excepted in the note's words (step 3)",
+        },
+        kin_github_read: "outside read",
+        web_page: "outside read",
+        kin_connection_call: "outside read",
+        social_read: "outside read",
+        social_lookup: "outside read",
+        bill_read: "confined bills turn, never the owner carry seat",
+        statement_read: "ends carry: sensitive read",
+        statement_rows: "ends carry: sensitive read",
+        people_update: "write-only",
+        away_set: "write-only",
+        agent_update: "write-only",
+        kin_hand_off: "write-only",
+        kin_take_private: "write-only",
+        kin_relay: "write-only",
+        team_open: "write-only",
+        team_say: "write-only",
+        kin_ask: "write-only",
+        kin_ask_close: "write-only",
+        kin_ask_person: "write-only",
+        kin_chart: "write-only",
+        kin_visual: "write-only",
+        kin_react: "write-only",
+        message_withdraw: "write-only",
+        message_replace: "write-only",
+        memory_write: "write-only",
+        memory_label: "write-only",
+        kin_defer: "write-only",
+        kin_schedule: "write-only",
+        kin_cancel: "write-only",
+        kin_journal: "write-only",
+        kin_github_review_ask: "write-only",
+        kin_github_watch: "write-only",
+        kin_github_link: "write-only",
+        number_record: "write-only",
+        touch_log: "write-only",
+        record_create: "write-only",
+        record_update: "write-only",
+        record_assign: "write-only",
+        record_hand_back: "write-only",
+        record_comment: "write-only",
+        record_link: "write-only",
+        project_note: "write-only",
+        payment_record: "write-only",
+        budget_set: "write-only",
+        numbers_watch: "write-only",
+        doc_create: "write-only",
+        doc_edit: "write-only",
+        doc_rewrite: "write-only",
+        doc_move: "write-only",
+        doc_link: "write-only",
+        doc_restore: "write-only",
+        bills_add: "write-only",
+        kin_document: "write-only",
+        kin_issue: "write-only",
+        kin_receipt: "write-only",
+        kin_recipe_undo: "write-only",
+        kin_picture: "write-only",
+        pulse_handle: "write-only",
+        pulse_nudge: "write-only",
+        kin_chat_post: "write-only",
+        kin_widget_upsert: "write-only",
+        kin_connection_offer: "write-only",
+        kin_connection_note: "write-only",
+        kin_github_review: "outside read",
+        kin_github_diff: "outside read",
+        company_profile: "ends carry: standing",
+        company_sections: "ends carry: standing",
+        social_draft: "outside read",
+        social_week: "outside read",
+        social_pack: "outside read",
+      };
+      const registered = [
+        KinLeadToolkit,
+        KinWorkToolkit,
+        KinDocsToolkit,
+        KinStatementToolkit,
+        KinBillToolkit,
+        KinDocumentToolkit,
+        KinPictureToolkit,
+        KinPulseToolkit,
+        KinSalesToolkit,
+        KinSocialToolkit,
+        KinChatToolkit,
+        KinConnectionsToolkit,
+      ].flatMap((toolkit) => Object.keys(toolkit.tools));
+      expect(registered.filter((name) => !Object.hasOwn(coverage, name))).toEqual([]);
+      for (const [tool, source] of Object.entries(coverage)) {
+        if (typeof source !== "string")
+          process.stdout.write(`Not covered: ${tool}: ${source.uncovered}\n`);
+      }
+    }),
+);
