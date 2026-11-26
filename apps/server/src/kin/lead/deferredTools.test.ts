@@ -80,8 +80,10 @@ it("each Kin tool's description and input schema weigh what the budget pins", ()
 });
 
 it("advertises only the chart core, including the core of each series", () => {
-  const schema = advertisedJsonSchema(KinLeadToolkit.tools.kin_chart, { kin: true });
-  assert.sameMembers(Object.keys(schema.properties ?? {}), [
+  const { properties } = advertisedJsonSchema(KinLeadToolkit.tools.kin_chart, { kin: true });
+  assert.isTrue(Predicate.isObject(properties));
+  if (!Predicate.isObject(properties)) return;
+  assert.sameMembers(Object.keys(properties), [
     "chart",
     "title",
     "labels",
@@ -90,15 +92,17 @@ it("advertises only the chart core, including the core of each series", () => {
     "unit",
     "caption",
   ]);
-  const series = schema.properties?.series;
+  const series = properties.series;
   assert.isTrue(Predicate.isObject(series) && Predicate.isObject(series.items));
   if (Predicate.isObject(series) && Predicate.isObject(series.items))
     assert.deepStrictEqual(Object.keys(series.items.properties ?? {}), ["name", "values"]);
 });
 
 it("advertises one memory item shape with a single operation enum", () => {
-  const schema = advertisedJsonSchema(KinLeadToolkit.tools.memory_write, { kin: true });
-  assert.deepStrictEqual(Object.keys(schema.properties ?? {}), [
+  const { properties } = advertisedJsonSchema(KinLeadToolkit.tools.memory_write, { kin: true });
+  assert.isTrue(Predicate.isObject(properties));
+  if (!Predicate.isObject(properties)) return;
+  assert.deepStrictEqual(Object.keys(properties), [
     "op",
     "item",
     "sourceEventId",
@@ -106,11 +110,11 @@ it("advertises one memory item shape with a single operation enum", () => {
     "supersedes",
     "besides",
   ]);
-  assert.deepStrictEqual(schema.properties?.op, {
+  assert.deepStrictEqual(properties.op, {
     type: "string",
     enum: ["create", "update", "supersede", "invalidate"],
   });
-  const item = schema.properties?.item;
+  const item = properties.item;
   assert.isTrue(Predicate.isObject(item));
   if (Predicate.isObject(item))
     assert.deepStrictEqual(Object.keys(item.properties ?? {}), [

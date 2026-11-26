@@ -85,8 +85,12 @@ it("list_define takes number and yes or no fields; imports and unknown types sta
 });
 
 it("advertises the list definition core and one field shape with a type enum", () => {
-  const schema = advertisedJsonSchema(KinWorkToolkit.tools.list_define, { kin: true });
-  assert.deepStrictEqual(Object.keys(schema.properties ?? {}), [
+  const { properties: root } = advertisedJsonSchema(KinWorkToolkit.tools.list_define, {
+    kin: true,
+  });
+  assert.isTrue(Predicate.isObject(root));
+  if (!Predicate.isObject(root)) return;
+  assert.deepStrictEqual(Object.keys(root), [
     "sourceEventId",
     "proposal",
     "template",
@@ -105,7 +109,7 @@ it("advertises the list definition core and one field shape with a type enum", (
     "remindOn",
     "check",
   ]);
-  const fields = schema.properties?.fields;
+  const fields = root.fields;
   assert.isTrue(Predicate.isObject(fields) && Predicate.isObject(fields.items));
   if (!Predicate.isObject(fields) || !Predicate.isObject(fields.items)) return;
   const { properties } = fields.items;
