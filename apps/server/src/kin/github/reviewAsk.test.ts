@@ -24,6 +24,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
@@ -33,7 +34,7 @@ import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvo
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import { recordAudience, turnAudience } from "../lead/Audience.ts";
-import { outsideStamp, stampKey } from "../lead/OutsideContent.ts";
+import { outsideStamp, REPO_READ_REFUSAL, stampKey } from "../lead/OutsideContent.ts";
 import { SHARED_TOOLS } from "../lead/SharedTools.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
@@ -220,15 +221,25 @@ const callAs = Effect.fn("test.callAs")(function* (
 ) {
   const server = yield* McpServer.McpServer;
   const identity = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinIdentity);
-  const result = yield* server
-    .callTool({ name, arguments: args })
-    .pipe(
-      Effect.provideService(McpInvocationContext, scopeOf(agent)),
-      Effect.provideService(KinIdentity, identity),
-      Effect.provideService(McpSchema.McpServerClient, client),
-    );
-  const text = result.content.find((item) => item.type === "text")?.text ?? "{}";
-  return { ok: result.isError !== true, value: JSON.parse(text) as Record<string, unknown> };
+  const result = yield* server.callTool({ name, arguments: args }).pipe(
+    Effect.provideService(McpInvocationContext, scopeOf(agent)),
+    Effect.provideService(KinIdentity, identity),
+    Effect.provideService(McpSchema.McpServerClient, client),
+    Effect.map((answer) => ({
+      isError: answer.isError === true,
+      text: answer.content.find((item) => item.type === "text")?.text ?? "{}",
+    })),
+    // A gate's refusal (`ToolCallRefused`) reaches the agent as its answer.
+    Effect.catch((error) =>
+      Effect.succeed({
+        isError: true,
+        text: JSON.stringify({
+          message: Predicate.hasProperty(error, "message") ? String(error.message) : String(error),
+        }),
+      }),
+    ),
+  );
+  return { ok: !result.isError, value: JSON.parse(result.text) as Record<string, unknown> };
 });
 
 const ambermill = Effect.fn("test.ambermill")(function* (github: FakeGitHub) {
@@ -1501,7 +1512,8 @@ it.effect(
       repoOf(MEMORY).id = 77;
       github.addRepo({ full_name: NOTES, private: true, id: 77 });
       github.addRepo({ full_name: MOVED, private: false, movedTo: APP });
-      const { ask, directOf, sql, orgId, owner } = yield* ambermill(github);
+      const { ask, directOf, sql, orgId, owner, review, runReview, githubEvents } =
+        yield* ambermill(github);
       yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
         VALUES ('room', ${orgId}, 'team_group', 0, ${at})`;
       for (const [member, kind, person, agent] of [
@@ -1958,6 +1970,35 @@ it.effect(
         (yield* read({ repo: APP, path: "src/huge.txt", line: hugeLines.of })).value.next,
         READ_NEXT.partial(hugeLines.of),
       );
+      // What was read for one person stays in their chat: the turn only reads and answers there.
+      yield* ask("zoya", chatOf.zoya, "How do late alerts work?");
+      assert.isTrue((yield* read({ repo: APP, path: "src/alerts/late.ts" })).ok);
+      const passOn = { to: "Meera Iyer", text: "The late alert code, as asked" };
+      const relayed = yield* callAs("tech", "kin_relay", passOn);
+      assert.deepStrictEqual(
+        [relayed.ok, relayed.value.message],
+        [false, REPO_READ_REFUSAL("Zoya Sheikh")],
+      );
+      assert.isTrue((yield* callAs("tech", "people_read", {})).ok);
+      assert.isTrue((yield* read({ repo: APP, path: "README.md" })).ok);
+      // The owner's own turn has no such limit.
+      yield* ask(owner.personId, chatOf.owner, "How do late alerts work?");
+      yield* recordAudience({ orgId, wakeupId: yield* running }, "owner_only");
+      assert.isTrue((yield* read({ repo: APP, path: "src/alerts/late.ts" })).ok);
+      assert.notStrictEqual(
+        (yield* callAs("tech", "kin_relay", passOn)).value.message,
+        REPO_READ_REFUSAL("Rhea Rao"),
+      );
+      // A review someone asked for reads only its pull request's repo.
+      yield* ask("dev", chatOf.dev, "Review my PR");
+      assert.isTrue((yield* review({ repo: APP, number: pull })).ok);
+      yield* runReview((yield* githubEvents).at(-1)!.eventId);
+      assert.deepStrictEqual(
+        (yield* read({ repo: SITE, path: "index.html" })).value,
+        refusal(READ_REFUSAL.reviewOnly(APP)),
+      );
+      assert.isTrue((yield* read({ repo: APP, path: "README.md" })).ok);
+
       // Its own row in a shared turn's table, tied to no review; and nothing it did wrote to GitHub.
       assert.strictEqual(SHARED_TOOLS.kin_github_read, "allowed");
       assert.deepStrictEqual(

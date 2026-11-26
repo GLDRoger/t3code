@@ -12,6 +12,7 @@ import { isOwnerHimself } from "../people/KinAccess.ts";
 import { type ApiAnswer, DIFF_CAP, pieceEnd, refusedFor } from "./GitHubWatch.ts";
 import { isMemoryRepo, memoryRepos } from "./githubWatchStore.ts";
 import { gitHubApp, type KinGitHubAppRead } from "./KinGitHubApp.ts";
+import { boundReview } from "./boundReview.ts";
 import { askerOf, maySee } from "./reviewAsk.ts";
 
 /**
@@ -87,6 +88,8 @@ export const READ_REFUSAL = {
   unreachable: `Kin couldn't reach GitHub just now. ${NOTHING}`,
   missing: (repo: string, path: string, ref: string) =>
     `${repo} has nothing at ${path === "" ? "its top" : path} on ${ref}: list the folder above it, or check the ref. ${NOTHING}`,
+  reviewOnly: (repo: string) =>
+    `This turn reviews a pull request in ${repo}, so it reads only ${repo}. ${NOTHING}`,
   noPull: (repo: string, number: number) => `${repo} has no pull request #${number}. ${NOTHING}`,
   binary: (path: string, size: number) =>
     `${path} is a binary file (${size} bytes), not text, so Kin shows none of it.`,
@@ -229,6 +232,10 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
     return yield* refuse(READ_REFUSAL.noApp);
   const named = input.repo.trim();
   if (yield* isMemoryRepo(named)) return yield* refuse(READ_REFUSAL.memory(named));
+  // A review someone asked for reads its pull request's repo, and no other, before it posts.
+  const review = yield* boundReview(lead);
+  if (review !== undefined && review.repo.toLowerCase() !== named.toLowerCase())
+    return yield* refuse(READ_REFUSAL.reviewOnly(review.repo));
   const segments = (input.path ?? "").split("/").filter((segment) => segment !== "");
   if (segments.some((segment) => segment === "." || segment === ".."))
     return yield* refuse(READ_REFUSAL.path);
@@ -277,8 +284,11 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
   }
 
   // A turn someone besides the owner reads opens a private repo only for its one asker.
-  if ((yield* effectiveAudience(lead)) !== "owner_only") {
+  const shared = (yield* effectiveAudience(lead)) !== "owner_only";
+  let readFor: string | undefined;
+  if (shared) {
     const asker = yield* askerOf(lead);
+    readFor = asker?.name;
     const sql = yield* SqlClient.SqlClient;
     const [agent] = yield* sql<{ owner: string }>`SELECT owner_person_id AS owner FROM kin_agents
       WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`;
@@ -295,8 +305,16 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
             : READ_REFUSAL.notCollaborator(repo, asker.name),
       );
   }
-  // GitHub text is outside content for the rest of the turn, as a pull request's diff is.
-  const shown = <A>(result: A) => markOutside(lead, "github").pipe(Effect.as(result));
+  // GitHub text is outside content for the rest of the turn, as a pull request's diff is; in a
+  // shared turn, the turn then only reads and answers there (`REPO_READ_TOOLS`).
+  const shown = <A>(result: A) =>
+    markOutside(
+      lead,
+      "github",
+      shared
+        ? [{ k: "repo", name: repo, ...(readFor === undefined ? {} : { for: readFor }) }]
+        : undefined,
+    ).pipe(Effect.as(result));
 
   if (input.search !== undefined && input.search.trim() !== "") {
     const words = input.search.replace(/\s+/g, " ").trim();
