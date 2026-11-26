@@ -523,6 +523,8 @@ const install = <E, R>(base: Layer.Layer<CodexAdapterV2.CodexAppServerClientFact
 /** Codex's built-ins by what they do (codex-cli 0.169); it has no page fetch or open sessions. */
 export const codex = {
   driver: DRIVER,
+  lookup: "provider",
+  turnContextBeside: false,
   capabilities: {
     shell: ["shell", "exec_command"],
     readFiles: ["shell"],

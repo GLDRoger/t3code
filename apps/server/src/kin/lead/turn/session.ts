@@ -15,6 +15,7 @@ import { KinServer } from "../../KinServer.ts";
 import { SESSION_REFUSAL, SHARED_THREAD_PREFIX } from "../Audience.ts";
 import { BILLS_REFUSAL, BILLS_THREAD_PREFIX } from "../billsOnly.ts";
 import { REVIEW_THREAD_PREFIX } from "../outsideReview.ts";
+import { KIN_ALWAYS_LOADED } from "../deferredTools.ts";
 import { instructions } from "../instructions.ts";
 import { KinAgentSessionPolicy } from "../sessionPolicy.ts";
 
@@ -29,6 +30,9 @@ const GH_SIGN_FOLDER = "gh-sign";
  */
 export type KinSeat = "owner" | "confined" | "delegated" | "dream";
 
+/** The seat's provider-native abilities: none; web search and page fetch; a shell and files. */
+export type KinSeatAbilities = "none" | "lookup" | "shellAndFiles";
+
 export interface KinShell {
   /** Kin's signing `gh` and git first, then the pinned `gh` and Typst, then the host's PATH. */
   readonly path: string;
@@ -38,6 +42,9 @@ export interface KinShell {
 
 export interface KinSessionPlan {
   readonly seat: KinSeat;
+  readonly abilities: KinSeatAbilities;
+  /** Kin tools listed in full; the rest are found by name where the provider supports lookup. */
+  readonly kinUpFront: ReadonlySet<string>;
   readonly thread: ThreadId;
   /** The whole system prompt for `owner` and `confined`; the provider's own otherwise. */
   readonly instructions: string | undefined;
@@ -217,12 +224,14 @@ export class KinSessions extends Context.Service<
         const base = {
           thread,
           toolSearch: input.toolLookup,
+          kinUpFront: KIN_ALWAYS_LOADED,
           nativeSearch: true,
         };
         if (delegated && Option.isSome(policy))
           return {
             ...base,
             seat: "delegated",
+            abilities: "shellAndFiles",
             instructions: undefined,
             shell: yield* shellOf(policy.value, thread, input.path),
             refusal: policy.value.refusal(thread),
@@ -233,6 +242,7 @@ export class KinSessions extends Context.Service<
           return {
             ...base,
             seat: "dream",
+            abilities: "shellAndFiles",
             instructions: undefined,
             shell: undefined,
             refusal: Effect.succeed(SESSION_REFUSAL.none),
@@ -243,40 +253,43 @@ export class KinSessions extends Context.Service<
           return {
             ...base,
             seat: "owner",
+            abilities: "shellAndFiles",
             instructions: kinInstructions("owner", input.driver),
             shell: yield* shellOf(policy.value, thread, input.path),
             refusal: policy.value.refusal(thread),
             webSearch: policy.value.refusal(thread),
             webRead: (host) => policy.value.webSearch(thread, host),
           } satisfies KinSessionPlan;
+        const bills = thread.startsWith(BILLS_THREAD_PREFIX);
+        const review = thread.startsWith(REVIEW_THREAD_PREFIX);
+        const nativeSearch = !bills && !review;
+        const confined = {
+          ...base,
+          seat: "confined",
+          abilities: nativeSearch ? "lookup" : "none",
+          nativeSearch,
+          shell: undefined,
+        } as const;
         // Bills are outside text: Kin's tools only, and of those only `bill_read` (`billsOnly`).
-        if (thread.startsWith(BILLS_THREAD_PREFIX))
+        if (bills)
           return {
-            ...base,
-            seat: "confined",
+            ...confined,
             instructions: kinInstructions("confined", input.driver, false),
-            shell: undefined,
-            nativeSearch: false,
             refusal: Effect.succeed(BILLS_REFUSAL),
             webSearch: Effect.succeed(BILLS_REFUSAL),
             webRead: () => Effect.succeed(BILLS_REFUSAL),
           } satisfies KinSessionPlan;
-        if (thread.startsWith(REVIEW_THREAD_PREFIX))
+        if (review)
           return {
-            ...base,
-            seat: "confined",
+            ...confined,
             instructions: REVIEW_SEAT_INSTRUCTIONS,
-            shell: undefined,
-            nativeSearch: false,
             refusal: Effect.succeed(SESSION_REFUSAL.shared),
             webSearch: Effect.succeed(REVIEW_SEARCH_REFUSAL),
             webRead: () => Effect.succeed(REVIEW_SEARCH_REFUSAL),
           } satisfies KinSessionPlan;
         return {
-          ...base,
-          seat: "confined",
+          ...confined,
           instructions: kinInstructions("confined", input.driver),
-          shell: undefined,
           refusal: Option.isSome(policy)
             ? policy.value.refusal(thread).pipe(Effect.map((why) => why ?? SESSION_REFUSAL.shared))
             : Effect.succeed(SESSION_REFUSAL.none),

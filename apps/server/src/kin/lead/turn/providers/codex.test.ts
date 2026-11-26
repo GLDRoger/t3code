@@ -1,5 +1,5 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, expect, it } from "@effect/vitest";
 import {
   KinAgentId,
   KinOrgId,
@@ -14,7 +14,6 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
-import { expect } from "vitest";
 
 import { fullSessionRefusal } from "../../AgentSession.ts";
 import * as ServerConfig from "../../../../config.ts";
