@@ -1,3 +1,4 @@
+import * as ToolBlockStarts from "../../kin/reply/ToolBlockStarts.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import {
   compactDynamicToolOutput,
@@ -6046,6 +6047,7 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const serverSettings = yield* Effect.serviceOption(ServerSettings.ServerSettingsService);
+  const toolStarts = yield* Effect.serviceOption(ToolBlockStarts.ToolBlockStarts);
   const { attachmentsDir, fileSystem, path, random, idAllocator, queryRunner } = adapterOptions;
   const loadModelCatalog = (
     adapterOptions.modelCatalog ?? Effect.succeed(BUNDLED_CLAUDE_MODEL_CATALOG)
@@ -11385,6 +11387,19 @@ export const makeClaudeAdapterV2 = Effect.fn("makeClaudeAdapterV2")(function* (
                 stream.usage = mergeClaudeStreamUsage(stream.usage, usage);
                 yield* emitContextUsage(context, stream.usage);
               }
+            } else if (
+              event.type === "content_block_start" &&
+              event.content_block.type === "tool_use" &&
+              Option.isSome(toolStarts) &&
+              context === (yield* Ref.get(activeTurn))
+            ) {
+              yield* toolStarts.value.publish({
+                threadId: context.input.threadId,
+                messageId: context.input.message.messageId,
+                providerTurnId: context.providerTurnId,
+                toolUseId: event.content_block.id,
+                toolName: event.content_block.name,
+              });
             } else if (
               event.type === "content_block_start" &&
               event.content_block.type === "thinking" &&

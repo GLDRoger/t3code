@@ -60,10 +60,13 @@ import {
 import { refusedReplyRun } from "../floor/KinFloor.ts";
 import {
   KinIdentity,
+  isAdoptedRunMessage,
   isSteerMessage,
+  wakeupMessageId,
   rescueMessageId,
   type AgentIdentity,
 } from "../chat/KinIdentity.ts";
+import * as ToolBlockStarts from "./ToolBlockStarts.ts";
 import { isClaudeThinkingItem } from "./claudeThinkingItem.ts";
 import { laneFor, type Lane } from "./replyLane.ts";
 import { followUpFor, PERSON_TAGS, sendClientMessageId } from "./turnVoice.ts";
@@ -98,6 +101,7 @@ import {
   SILENT_REPLY,
   stripTrailingSilenceMarker,
   toolLabel,
+  toolNameLabel,
   toolNext,
   uniqueParagraphs,
   type SegmentNext,
@@ -375,6 +379,7 @@ type Wake = {
   live: { readonly state: KinPresenceState; readonly label: string | null };
   // The highest item ordinal seen live: only the latest tool's end turns the line to Thinking.
   latest: number;
+  earlyTool?: ToolBlockStarts.ToolBlockStart;
   since: number;
   stall: Fiber.Fiber<void> | undefined;
   // What the line reads once the model has the turn: its files, when the message brought some.
@@ -489,6 +494,7 @@ const make = Effect.gen(function* () {
   const settings = yield* Effect.serviceOption(ServerSettingsService);
   const writer = yield* Effect.serviceOption(Writer.MemoryWriter);
   const scope = yield* Effect.scope;
+  const toolStarts = yield* Effect.serviceOption(ToolBlockStarts.ToolBlockStarts);
   const wakes = new Map<ThreadId, Wake>();
   const byWakeup = new Map<KinWakeupId, Wake>();
   // Wake-ups between their claim and `begin`, and the chat whose line they hold.
@@ -1370,6 +1376,14 @@ const make = Effect.gen(function* () {
     wake.lastOutputAt = now;
     wake.latest = Math.max(wake.latest, item.ordinal);
     reopen(wake, item);
+    const early = wake.earlyTool;
+    if (
+      early !== undefined &&
+      isToolItem(item) &&
+      item.providerTurnId === early.providerTurnId &&
+      item.nativeItemRef?.nativeId === early.toolUseId
+    )
+      delete wake.earlyTool;
     if (item.type === "assistant_message" && isAnswer(item)) {
       const segment = segmentFor(wake, item.id, item.ordinal);
       for (const earlier of pendingBefore(wake, item.ordinal))
@@ -1379,6 +1393,7 @@ const make = Effect.gen(function* () {
       segment.ordinal = item.ordinal;
       if (segment.text.trim() !== "") yield* stamp(wake, "first_token_at");
       if (item.streaming) {
+        if (wake.earlyTool !== undefined) return;
         yield* wake.lane.voice === "send"
           ? show(wake, "thinking", PHASE_LABELS.thinking)
           : show(wake, "writing", PHASE_LABELS.writing);
@@ -1390,13 +1405,15 @@ const make = Effect.gen(function* () {
       if (next !== null) return yield* decide(wake, segment, next);
       return;
     }
-    if (item.type === "reasoning" || item.type === "assistant_message")
-      return yield* show(wake, "thinking", PHASE_LABELS.thinking);
+    if (item.type === "reasoning" || item.type === "assistant_message") {
+      if (wake.earlyTool === undefined) yield* show(wake, "thinking", PHASE_LABELS.thinking);
+      return;
+    }
     if (!isToolItem(item)) return;
     wake.tools.set(item.ordinal, toolNext(item));
     for (const earlier of pendingBefore(wake, item.ordinal))
       yield* decide(wake, earlier, nextAfter(wake, earlier.ordinal));
-    if (item.ordinal < wake.latest) return;
+    if (wake.earlyTool !== undefined || item.ordinal < wake.latest) return;
     if (item.status === "pending" || item.status === "running" || item.status === "waiting") {
       const label = toolLabel(item);
       if (label !== null) yield* show(wake, "working", label);
@@ -1404,6 +1421,34 @@ const make = Effect.gen(function* () {
     }
     // The latest call ended: the model is deciding what comes next.
     yield* show(wake, "thinking", PHASE_LABELS.thinking);
+  });
+
+  const onToolStart = Effect.fn("KinReplyBridge.toolBlockStart")(function* (
+    start: ToolBlockStarts.ToolBlockStart,
+  ) {
+    const wake = wakes.get(start.threadId);
+    if (
+      wake === undefined ||
+      (start.messageId !== wakeupMessageId(wake.wakeupId) &&
+        !isAdoptedRunMessage(wake.wakeupId, start.messageId))
+    )
+      return;
+    yield* wake.lock
+      .withPermits(1)(
+        Effect.gen(function* () {
+          if (wake.done) return;
+          wake.workedAt = wake.lastOutputAt = yield* Clock.currentTimeMillis;
+          const label = toolNameLabel(start.toolName);
+          if (label === null) return;
+          // Claude projects Agent launches as subagents, not matching tool items.
+          if (start.toolName !== "Agent") wake.earlyTool = start;
+          else delete wake.earlyTool;
+          yield* show(wake, "working", label);
+        }),
+      )
+      .pipe(
+        Effect.catchCause((cause) => Effect.logWarning("Kin tool block start failed", { cause })),
+      );
   });
 
   const onEvent = Effect.fnUntraced(function* (event: OrchestrationV2DomainEvent) {
@@ -1420,6 +1465,14 @@ const make = Effect.gen(function* () {
           if (event.type === "provider-turn.updated" || event.type === "run.updated") {
             wake.lastOutputAt = yield* Clock.currentTimeMillis;
             if (wake.state === "stalled") yield* show(wake, wake.live.state, wake.live.label);
+          }
+          if (
+            event.type === "provider-turn.updated" &&
+            event.payload.completedAt !== null &&
+            event.payload.id === wake.earlyTool?.providerTurnId
+          ) {
+            delete wake.earlyTool;
+            yield* show(wake, "thinking", PHASE_LABELS.thinking);
           }
           // The provider has the turn: the model is running.
           if (
@@ -2231,6 +2284,8 @@ const make = Effect.gen(function* () {
     },
     Effect.catchCause((cause) => Effect.logWarning("Kin reply bridge could not start", { cause })),
   );
+
+  if (Option.isSome(toolStarts)) yield* toolStarts.value.listen(onToolStart);
 
   yield* threads.streamDomainEvents.pipe(
     Stream.runForEach(onEvent),

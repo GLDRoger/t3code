@@ -1,3 +1,4 @@
+import * as ToolStarts from "../../kin/reply/ToolBlockStarts.ts";
 // @effect-diagnostics nodeBuiltinImport:off -- workflow fixtures use files and the fake Claude CLI uses Node streams
 import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
@@ -8469,6 +8470,117 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           McpProviderSessions.layer,
           NodeServices.layer,
           NodeCrypto.layer,
+        ),
+      ),
+    ),
+  );
+
+  it.effect("reports only the tool name at block start without changing the turn items", () =>
+    Effect.gen(function* () {
+      const starts = yield* ToolStarts.ToolBlockStarts;
+      const offered: Array<ToolStarts.ToolBlockStart> = [];
+      yield* starts.listen((start) =>
+        Effect.sync(() => {
+          offered.push(start);
+        }),
+      );
+      const toolName = "mcp__kin__doc_create";
+      const toolUseId = "toolu_kickoff";
+      const block = { type: "tool_use", name: toolName, id: toolUseId };
+      const stream = (event: unknown) =>
+        claudeSdkFrame({
+          type: "stream_event",
+          event,
+          parent_tool_use_id: null,
+          session_id: WAKE_NATIVE_SESSION,
+          uuid: "tool-stream",
+        });
+      const replay = Effect.fnUntraced(function* (partial: boolean) {
+        const harness = yield* makeWakeHarness;
+        const input = makeClaudeTestTurnInput({
+          threadId: harness.threadId,
+          providerThread: harness.providerThread,
+          now: yield* DateTime.now,
+          attemptId: RunAttemptId.make("tool-start-attempt"),
+          text: "Write a doc",
+          attachments: [],
+        });
+        yield* harness.runtime.startTurn(input);
+        if (partial) {
+          yield* harness.offerAndWait(
+            stream({ type: "message_start", message: { id: "doc-message" } }),
+          );
+          yield* harness.offerAndWait(
+            stream({
+              type: "content_block_start",
+              index: 0,
+              content_block: { ...block, input: {} },
+            }),
+          );
+          assert.deepInclude(offered[0], { toolUseId, toolName });
+          assert.isFalse(harness.events.some((event) => event.type === "turn_item.updated"));
+          yield* harness.offerAndWait(
+            stream({
+              type: "content_block_delta",
+              index: 0,
+              delta: { type: "input_json_delta", partial_json: '{"body":"private draft"}' },
+            }),
+          );
+          yield* harness.offerAndWait(stream({ type: "content_block_stop", index: 0 }));
+          assert.lengthOf(offered, 1);
+        }
+        yield* Queue.offerAll(harness.sdkMessages, [
+          claudeSdkFrame({
+            type: "assistant",
+            uuid: "doc-snapshot",
+            session_id: WAKE_NATIVE_SESSION,
+            parent_tool_use_id: null,
+            message: {
+              id: "doc-message",
+              model: "claude-sonnet-4-6",
+              content: [{ ...block, input: { body: "private draft" } }],
+            },
+          }),
+          claudeSdkFrame({
+            type: "user",
+            uuid: "doc-result",
+            session_id: WAKE_NATIVE_SESSION,
+            parent_tool_use_id: null,
+            message: {
+              role: "user",
+              content: [{ type: "tool_result", tool_use_id: toolUseId, content: "D-1" }],
+            },
+          }),
+          makeResultFrame({ uuid: "turn-result", result: "" }),
+        ]);
+        yield* Queue.take(harness.terminalReceipts);
+        const items = harness.events.flatMap((event) =>
+          event.type === "turn_item.updated" ? [event.turnItem] : [],
+        );
+        return { items, input };
+      }, Effect.scoped);
+      const baseline = yield* replay(false);
+      const streamed = yield* replay(true);
+      assert.isNotEmpty(baseline.items);
+      assert.strictEqual(JSON.stringify(streamed.items), JSON.stringify(baseline.items));
+      assert.deepStrictEqual(offered, [
+        {
+          threadId: streamed.input.threadId,
+          messageId: streamed.input.message.messageId,
+          providerTurnId: streamed.items.find((item) => item.nativeItemRef?.nativeId === toolUseId)
+            ?.providerTurnId,
+          toolUseId,
+          toolName,
+        },
+      ]);
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          IdAllocator.layer,
+          McpProviderSessions.layer,
+          NodeServices.layer,
+          NodeCrypto.layer,
+          ToolStarts.layer,
         ),
       ),
     ),
