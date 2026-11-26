@@ -55,6 +55,10 @@ const read = (file: string) => NodeFS.readFileSync(file, "utf8");
 const manifest = Schema.decodeSync(Schema.fromJsonString(RunManifest))(
   read(NodePath.join(baseline, "run.json")),
 );
+if (manifest.kinLayout === "session") {
+  console.error("Changed-case selection supports only the legacy Kin layout.");
+  process.exit(2);
+}
 const surfaceFile = values["baseline-surface"] ?? NodePath.join(baseline, "surface.json");
 if (!NodeFS.existsSync(surfaceFile)) {
   console.error(
