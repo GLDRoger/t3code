@@ -83,6 +83,7 @@ import {
   recordedAudience,
   turnChat,
 } from "./Audience.ts";
+import { TRIAGE_THREAD_PREFIX, outsideTriage } from "./outsideTriage.ts";
 import { REVIEW_THREAD_PREFIX, outsideReview } from "./outsideReview.ts";
 import { BILLS_THREAD_PREFIX, billsOnly } from "./billsOnly.ts";
 import { leadListsTool } from "./seatHome.ts";
@@ -140,7 +141,7 @@ import * as WorkFor from "./workFor.ts";
 import { noticeRecords, runsFrom, turnRecords } from "./wakeupRuns.ts";
 import { RUN_SILENCE_MS, activityAt, waitAsking } from "./runSilence.ts";
 import { KinAgentSessions } from "../mcp/KinAgentSessions.ts";
-import { readCursor } from "./sessionChanges.ts";
+import { captureChatCursor, readCursor } from "./sessionChanges.ts";
 import { KinBoot, carryFacts, decideCarry, ulid, type PromptFingerprint } from "./sessionCarry.ts";
 import { closeQuietRunCards, postQuietRunCard } from "./quietRunCard.ts";
 import { inheritSession, outsideRead } from "./OutsideContent.ts";
@@ -825,17 +826,38 @@ const make = Effect.gen(function* () {
       const toolListSha = agentSessions?.lastToolList(threadId) ?? null;
       const contextTokens = last?.tokenUsage?.usedTokens ?? null;
       const lastRequestAt = last?.startedAt == null ? null : DateTime.toEpochMillis(last.startedAt);
-      const chat = yield* turnChat(row).pipe(provideSql);
-      const [latest] = yield* sql<{ seq: number }>`SELECT last_seq AS seq FROM kin_chats
-        WHERE org_id = ${row.orgId} AND chat_id = ${chat?.chatId ?? null}`;
-      const [shadow] = yield* sql<{ carry: number | null; reason: string | null }>`
+      const [shadow] = yield* sql<{
+        carry: number | null;
+        reason: string | null;
+        chatId: string | null;
+        chatSeq: number | null;
+        chatChangeSeq: number | null;
+      }>`
         UPDATE kin_wakeups SET context_tokens = ${contextTokens}, last_request_at = ${lastRequestAt},
-          carry_json = CASE WHEN json_type(carry_json, '$.cursor') = 'object'
-            THEN json_set(carry_json, '$.toolListSha', ${toolListSha}, '$.cursor.chatSeq', ${latest?.seq ?? 0})
-            ELSE json_set(carry_json, '$.toolListSha', ${toolListSha}) END
+          carry_json = json_set(carry_json, '$.toolListSha', ${toolListSha})
         WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}
         RETURNING json_extract(carry_json, '$.carry') AS carry,
-          json_extract(carry_json, '$.reason') AS reason`;
+          json_extract(carry_json, '$.reason') AS reason,
+          json_extract(carry_json, '$.cursor.chatId') AS "chatId",
+          json_extract(carry_json, '$.cursor.chatSeq') AS "chatSeq",
+          json_extract(carry_json, '$.cursor.chatChangeSeq') AS "chatChangeSeq"`;
+      if (shadow?.chatId != null && shadow.chatSeq !== null && shadow.chatChangeSeq !== null) {
+        const cursor = yield* captureChatCursor(row, {
+          chatId: shadow.chatId,
+          chatSeq: shadow.chatSeq,
+          chatChangeSeq: shadow.chatChangeSeq,
+        }).pipe(provideSql, Effect.option);
+        if (Option.isSome(cursor)) {
+          const held = yield* encodeShadowJson(cursor.value.heldChatChanges);
+          yield* sql`UPDATE kin_wakeups SET carry_json = json_set(carry_json,
+            '$.cursor.chatSeq', ${cursor.value.chatSeq},
+            '$.cursor.heldChatChanges', json(${held}), '$.cursorCaptured', json('true'))
+            WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`;
+        } else {
+          yield* sql`UPDATE kin_wakeups SET carry_json = json_set(carry_json, '$.cursor', NULL)
+            WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}`;
+        }
+      }
       const toolResults = yield* sql<{ tool: string; results: number; chars: number }>`
         WITH results AS (
           SELECT CASE type
@@ -867,13 +889,15 @@ const make = Effect.gen(function* () {
         agentId: row.agentId,
         wakeupId: row.wakeupId,
         threadId,
-        threadKind: threadId.startsWith(REVIEW_THREAD_PREFIX)
-          ? "review"
-          : threadId.startsWith(BILLS_THREAD_PREFIX)
-            ? "bills"
-            : threadId.startsWith(SHARED_THREAD_PREFIX)
-              ? "shared"
-              : "owner",
+        threadKind: threadId.startsWith(TRIAGE_THREAD_PREFIX)
+          ? "triage"
+          : threadId.startsWith(REVIEW_THREAD_PREFIX)
+            ? "review"
+            : threadId.startsWith(BILLS_THREAD_PREFIX)
+              ? "bills"
+              : threadId.startsWith(SHARED_THREAD_PREFIX)
+                ? "shared"
+                : "owner",
         seat:
           lead === undefined
             ? null
@@ -1823,15 +1847,15 @@ const make = Effect.gen(function* () {
               );
             let promptFingerprint: PromptFingerprint = { standing: null, index: null };
             const cursor = yield* Effect.gen(function* () {
-              const chat = yield* turnChat(row);
-              return yield* readCursor(orgId, lane?.chatId ?? chat?.chatId ?? null, pinned.head);
+              const chatId = lane?.chatId ?? (yield* turnChat(row))?.chatId ?? null;
+              return yield* readCursor(orgId, chatId, pinned.head, agentId);
             }).pipe(
               provideSql,
               Effect.catchCause((cause) =>
                 Effect.logWarning("Kin session carry shadow recording failed", {
                   wakeupId,
                   cause,
-                }).pipe(Effect.as(undefined)),
+                }).pipe(Effect.as(null)),
               ),
             );
             const built = yield* prompt.build({
@@ -1874,11 +1898,22 @@ const make = Effect.gen(function* () {
             // A stranger's pull request is reviewed, and bills are read, on a thread that lists
             // only that turn's tools.
             const review = shared && (yield* outsideReview(row).pipe(provideSql)) !== undefined;
-            const confined = review
-              ? REVIEW_THREAD_PREFIX
-              : (yield* billsOnly(row).pipe(provideSql))
-                ? BILLS_THREAD_PREFIX
-                : undefined;
+            const triage = shared ? yield* outsideTriage(row).pipe(provideSql) : undefined;
+            const issueHash =
+              triage === undefined
+                ? undefined
+                : NodeCrypto.createHash("sha256")
+                    .update(`${orgId}|${triage.repo.toLowerCase()}#${triage.number}`)
+                    .digest("hex")
+                    .slice(0, 16);
+            const confined =
+              issueHash !== undefined
+                ? `${TRIAGE_THREAD_PREFIX}${issueHash}:`
+                : review
+                  ? REVIEW_THREAD_PREFIX
+                  : (yield* billsOnly(row).pipe(provideSql))
+                    ? BILLS_THREAD_PREFIX
+                    : undefined;
             const prefix = confined ?? (shared ? SHARED_THREAD_PREFIX : "kin:");
             const [live] = yield* sql<{ threadId: ThreadId }>`SELECT thread_id AS "threadId"
               FROM kin_agent_threads WHERE org_id = ${orgId} AND agent_id = ${agentId}
@@ -1886,7 +1921,8 @@ const make = Effect.gen(function* () {
                 AND substr(thread_id, 1, ${prefix.length}) = ${prefix}
                 AND (${confined === undefined ? 0 : 1} = 1
                   OR (substr(thread_id, 1, ${REVIEW_THREAD_PREFIX.length}) <> ${REVIEW_THREAD_PREFIX}
-                    AND substr(thread_id, 1, ${BILLS_THREAD_PREFIX.length}) <> ${BILLS_THREAD_PREFIX}))
+                    AND substr(thread_id, 1, ${BILLS_THREAD_PREFIX.length}) <> ${BILLS_THREAD_PREFIX}
+                    AND substr(thread_id, 1, ${TRIAGE_THREAD_PREFIX.length}) <> ${TRIAGE_THREAD_PREFIX}))
               ORDER BY started_at DESC, thread_id DESC LIMIT 1`;
             let existingThreadId = !alone && chatId === null ? null : (live?.threadId ?? null);
             if (existingThreadId !== null) {
@@ -1994,7 +2030,8 @@ const make = Effect.gen(function* () {
                 bootId,
                 toolListSha,
                 missed: false,
-                ...(cursor === undefined ? {} : { cursor }),
+                cursor,
+                cursorCaptured: false,
               });
               const fingerprint = yield* encodeShadowJson(shadow.fingerprint);
               const index =

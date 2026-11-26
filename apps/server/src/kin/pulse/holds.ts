@@ -10,6 +10,7 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import type * as Statement from "effect/sql/Statement";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous id hash; Digest would add a service.
@@ -341,6 +342,31 @@ export const liftHold = Effect.fn("KinHolds.lift")(function* (input: {
 export const refusalText = (hold: Hold, name: ToolNamer, zone: string) =>
   `${asideLine(asideView(hold, { _tag: "owner" }), name, zone)}. Kin won't ask about it before then.`;
 
+const encodeKeys = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
+
+export const recordHoldScopes = Effect.fn("KinHolds.recordScopes")(function* (
+  orgId: KinOrgId,
+  keys: ReadonlyArray<string>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql<{ recordId: string; projectId: string | null; clientId: string | null }>`
+    SELECT r.record_id AS "recordId", p.record_id AS "projectId", c.record_id AS "clientId"
+    FROM kin_records r
+      LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
+      LEFT JOIN kin_records c ON c.org_id = r.org_id
+        AND c.record_id = COALESCE(r.party_id, p.party_id)
+    WHERE r.org_id = ${orgId} AND r.key IN (SELECT value FROM json_each(${yield* encodeKeys(keys)}))
+    ORDER BY r.record_id`;
+});
+
+export const holdCoversRecord = (
+  hold: Hold,
+  row: Effect.Success<ReturnType<typeof recordHoldScopes>>[number],
+) =>
+  row.recordId === hold.recordId ||
+  (COVERS_ALL.has(hold.register) &&
+    (row.projectId === hold.recordId || row.clientId === hold.recordId));
+
 /**
  * The live hold on any of these records, or on its project or client, that counts for `personId`
  * (the company's, or that person's own): what a question about them may not be raised over.
@@ -356,21 +382,6 @@ export const holdOverAbout = Effect.fn("KinHolds.overAbout")(function* (input: {
     (hold) => hold.forPersonId === null || hold.forPersonId === input.personId,
   );
   if (holds.length === 0) return undefined;
-  const sql = yield* SqlClient.SqlClient;
-  const rows = yield* sql<{ recordId: string; projectId: string | null; clientId: string | null }>`
-    SELECT r.record_id AS "recordId", p.record_id AS "projectId", c.record_id AS "clientId"
-    FROM kin_records r
-      LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
-      LEFT JOIN kin_records c ON c.org_id = r.org_id
-        AND c.record_id = COALESCE(r.party_id, p.party_id)
-    WHERE r.org_id = ${input.orgId} AND r.key IN ${sql.in(input.keys.slice(0, 50))}
-    ORDER BY r.record_id`;
-  return holds.find((hold) =>
-    rows.some(
-      (row) =>
-        row.recordId === hold.recordId ||
-        (COVERS_ALL.has(hold.register) &&
-          (row.projectId === hold.recordId || row.clientId === hold.recordId)),
-    ),
-  );
+  const rows = yield* recordHoldScopes(input.orgId, input.keys.slice(0, 50));
+  return holds.find((hold) => rows.some((row) => holdCoversRecord(hold, row)));
 });

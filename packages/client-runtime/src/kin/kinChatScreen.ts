@@ -252,6 +252,7 @@ function kinChatRowSeq(row: KinChatRow): number {
       );
     case "day":
     case "draft":
+    case "footer":
     case "pending":
       return 0;
   }

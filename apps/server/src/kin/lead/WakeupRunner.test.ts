@@ -2151,6 +2151,42 @@ describe("WakeupRunner", () => {
     );
   });
 
+  it.effect("stamps a missing cursor and still captures the context tokens and tool list", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* seedDirectChats;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`DROP TABLE kin_record_changes`;
+      yield* wake("tidewater-missing-cursor");
+      const [stamp] = yield* sql<{
+        cursor: string;
+        captured: number;
+        contextTokens: number;
+        toolList: string;
+      }>`SELECT json_type(carry_json, '$.cursor') AS cursor,
+        json_extract(carry_json, '$.cursorCaptured') AS captured, context_tokens AS "contextTokens",
+        json_extract(carry_json, '$.toolListSha') AS "toolList"
+        FROM kin_wakeups WHERE org_id = ${orgId} LIMIT 1`;
+      assert.deepStrictEqual(stamp, {
+        cursor: "null",
+        captured: 0,
+        contextTokens: 30,
+        toolList: "a".repeat(64),
+      });
+    }).pipe(
+      Effect.provide(
+        harnessWith(
+          {},
+          Layer.mock(KinAgentSessions)({
+            recordToolList: () => {},
+            lastToolList: () => "a".repeat(64),
+          }),
+        ),
+      ),
+      provideDeterministicTestRuntime,
+    ),
+  );
+
   it.effect("starts every wake-up in a fresh session with the full prompt, committing each", () =>
     Effect.gen(function* () {
       let commits = 0;

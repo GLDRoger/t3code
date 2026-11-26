@@ -213,6 +213,9 @@ describe("KinChatRepository", () => {
           wakeupId,
           placeReplyFigures: true,
         });
+        assert.strictEqual(posted.sourceWakeupId, wakeupId);
+        const page = yield* repo.history({ orgId, chatId, beforeSeq: posted.seq + 1, limit: 10 });
+        assert.strictEqual(page.messages[0]?.sourceWakeupId, wakeupId);
         assert.notInclude(posted.body, "kin-figure:");
         if (lane === "current") {
           assert.deepStrictEqual(posted.embeds, [...figures].reverse());

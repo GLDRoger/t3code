@@ -17,6 +17,7 @@ import { directKey } from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
 import { escapeMarkdown } from "../lead/routines.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
+import { commentFailKey, ownerFlagKey } from "./boundIssue.ts";
 import { blocksKey, headKey, receiptOf } from "./boundReview.ts";
 
 /** A trigger's key as handled for an ask whose turn didn't finish: asking again retries it. */
@@ -323,5 +324,81 @@ export const settleReviews = Effect.fn("KinGitHubReviewAsk.settle")(function* (
         now,
       },
     );
+  }
+});
+
+const TRIAGE_OWNER = {
+  security: "reads as a security report",
+  data_loss: "reports lost data",
+  decision: "asks for something only you can decide",
+  rule: "is one your standing rules ask to hear of",
+} as const;
+
+export const settleTriage = Effect.fn("KinGitHubIssue.settle")(function* (
+  deps: Parameters<typeof settleReviews>[0],
+  orgId: KinOrgId,
+  eventIds: ReadonlyArray<string>,
+) {
+  if (eventIds.length === 0 || Option.isNone(deps.repo)) return;
+  const sql = yield* SqlClient.SqlClient;
+  const ended = yield* sql<{
+    key: string;
+    repo: string;
+    number: number;
+    issueUrl: string;
+    outside: number;
+    ownerChatId: string;
+    title: string;
+    author: string;
+    url: string | null;
+  }>`SELECT json_extract(e.json, '$.repo') AS repo,
+      json_extract(e.json, '$.trigger.key') AS key,
+      json_extract(e.json, '$.trigger.number') AS number,
+      json_extract(e.json, '$.trigger.url') AS "issueUrl",
+      json_extract(e.json, '$.trigger.inside') = 0 AS outside,
+      l.owner_chat_id AS "ownerChatId",
+      json_extract(e.json, '$.trigger.title') AS title,
+      COALESCE(ap.display_name, json_extract(e.json, '$.trigger.author')) AS author,
+      h.review_url AS url
+    FROM kin_events e
+    JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
+    LEFT JOIN kin_people ap ON ap.org_id = e.org_id AND ap.removed_at IS NULL
+      AND lower(ap.github_login) = lower(json_extract(e.json, '$.trigger.author'))
+    LEFT JOIN kin_github_handled h ON h.org_id = e.org_id
+      AND h.trigger_key = json_extract(e.json, '$.trigger.key')
+    WHERE e.org_id = ${orgId} AND e.event_id IN ${sql.in(eventIds)} AND e.tag = 'github'
+      AND json_extract(e.json, '$.trigger.item') = 'issue'
+      AND json_extract(e.json, '$.trigger.kind') IN ('triage', 'triage_reply')
+      AND l.owner_chat_id IS NOT NULL
+    ORDER BY e.event_id`;
+  const now = DateTime.formatIso(yield* DateTime.now);
+  for (const event of ended) {
+    const { key, repo, number, issueUrl, title, author } = event;
+    const receipt = receiptOf(event.url);
+    const ref = `${repo}#${number}`;
+    const origin = event.outside === 1 ? " from outside the company" : "";
+    const [flag] = yield* sql<{ outcome: keyof typeof TRIAGE_OWNER | "failed" }>`
+      SELECT outcome FROM kin_github_handled WHERE org_id = ${orgId}
+      AND trigger_key IN (${ownerFlagKey(key)}, ${commentFailKey(key)})
+      ORDER BY trigger_key = ${ownerFlagKey(key)} DESC LIMIT 1`;
+    const body =
+      flag !== undefined && flag.outcome !== "failed"
+        ? `${quotedTitle(title)} (#${number}) on ${repo}, ${escapeMarkdown(author)}'s new issue${origin}, ${TRIAGE_OWNER[flag.outcome]}: ${receipt._tag === "posted" ? receipt.url : issueUrl}`
+        : receipt._tag === "unknown"
+          ? `Kin sent a reply to ${ref} and GitHub didn't confirm it: ${issueUrl}`
+          : receipt._tag === "none" && flag?.outcome === "failed"
+            ? `The reply to ${ref}, a new issue${origin}, did not post: ${issueUrl}`
+            : undefined;
+    if (body !== undefined)
+      yield* notice(
+        { repo: deps.repo.value, hub: deps.hub },
+        {
+          orgId,
+          chatId: KinChatId.make(event.ownerChatId),
+          id: `kin-triage:${repo.toLowerCase()}#${number}`,
+          body,
+          now,
+        },
+      );
   }
 });
