@@ -3552,6 +3552,40 @@ it.effect("an undone pick asks again with the invoices left", () =>
   ),
 );
 
+it.effect("a card whose recipient is no longer owner-level moves to the owner", () =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit({ financeOwner: "meera" });
+      const first = yield* kin.ask();
+      const recipient = Effect.fn("test.invoiceChoiceRecipient")(function* (widgetId: KinWidgetId) {
+        const [row] = yield* kin.sql<{
+          personId: string;
+        }>`SELECT json_extract(plan_json, '$.personId') AS "personId"
+          FROM kin_card_plans WHERE org_id = ${kin.orgId} AND widget_id = ${widgetId} AND option_id = 'option-1'`;
+        return row?.personId;
+      });
+      assert.strictEqual(yield* recipient(first.widgetId), kin.person("meera").personId);
+      yield* kin.sql`UPDATE kin_people SET access = 'member'
+        WHERE org_id = ${kin.orgId} AND person_id = 'meera'`;
+      yield* TestClock.adjust(60_000);
+      yield* kin.tick();
+      const closed = yield* kin.widget(first.widgetId);
+      assert.isNotNull(closed.closedAt);
+      assert.strictEqual(card(closed).outcome?.title, "Nothing was done");
+
+      yield* TestClock.adjust(60_000);
+      yield* kin.tick();
+      const cards = yield* kin.cards();
+      assert.lengthOf(cards, 2);
+      const next = yield* kin.widget(
+        cards.find(({ widgetId }) => widgetId !== first.widgetId)!.widgetId,
+      );
+      assert.isNull(next.closedAt);
+      assert.strictEqual(yield* recipient(next.widgetId), kin.owner.personId);
+    }),
+  ),
+);
+
 it.effect("a foreign credit question refuses a teammate's tap", () =>
   foreignCreditTest(
     Effect.gen(function* () {

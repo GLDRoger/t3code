@@ -398,6 +398,7 @@ const settleFactCards = Effect.fn("KinFactCards.settle")(function* (
   actors: ReadonlyMap<string, string | undefined>,
   inHand: ReadonlySet<string>,
   invoiceChoices: ReadonlySet<string>,
+  level: ReadonlySet<string>,
 ) {
   const chats = yield* Effect.serviceOption(KinChatService);
   if (Option.isNone(chats)) return;
@@ -411,7 +412,8 @@ const settleFactCards = Effect.fn("KinFactCards.settle")(function* (
             row.open === 1 &&
             (!standing.has(row.factKey) ||
               (row.kind === "waited_answer" && actors.get(row.factKey) !== row.personId) ||
-              (row.kind === "invoice_choice" && !invoiceChoices.has(row.factKey)) ||
+              (row.kind === "invoice_choice" &&
+                (!invoiceChoices.has(row.factKey) || !level.has(row.personId))) ||
               handed(row)),
         )
         .map((row) => row.widgetId),
@@ -1099,6 +1101,7 @@ export const factCards = Effect.fn("KinFactCards.pass")(function* (input: {
     new Set(
       input.sensed.filter((fact) => fact.paymentChoice !== undefined).map((fact) => fact.key),
     ),
+    level,
   );
   const budget = nudgeBudget(input.ctx, level);
   yield* waitedCards({ ...input, level, posted, budget });
