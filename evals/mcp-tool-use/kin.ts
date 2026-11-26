@@ -827,9 +827,14 @@ const repoReadAnswer = (input: {
   const ref = input.ref ?? "the default branch";
   const words = input.search?.replace(/\s+/g, " ").trim() ?? "";
   if (words !== "") {
+    if (input.ref !== null)
+      return {
+        $error: { _tag: "KinChatError", reason: "not_allowed", message: READ_REFUSAL.searchRef },
+      };
+    // Each word literal, all of them in one file, as `readRepo` quotes them for GitHub.
     const needles = words.toLowerCase().split(" ");
     const matches = Object.entries(input.files)
-      .filter(([, text]) => needles.some((word) => text.toLowerCase().includes(word)))
+      .filter(([, text]) => needles.every((word) => text.toLowerCase().includes(word)))
       .map(([path, text]) => ({
         path,
         fragments: [
@@ -844,9 +849,7 @@ const repoReadAnswer = (input: {
       repo: input.repo,
       ref: "the default branch",
       matches,
-      next:
-        (matches.length === 0 ? READ_NEXT.none(input.repo, words) : READ_NEXT.found) +
-        (input.ref === null ? "" : READ_NEXT.defaultOnly),
+      next: matches.length === 0 ? READ_NEXT.none(input.repo, words) : READ_NEXT.found,
     };
   }
   const path = (input.path ?? "")

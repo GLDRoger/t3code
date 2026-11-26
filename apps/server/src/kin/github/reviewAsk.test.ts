@@ -1857,13 +1857,46 @@ it.effect(
         {
           name: "a search GitHub hasn't indexed the repo for",
           who: "zoya",
-          args: { repo: SITE, search: "late", ref: "release/1" },
+          args: { repo: SITE, search: "late" },
           answer: {
             repo: SITE,
             ref: "the default branch",
             matches: [],
-            next: READ_NEXT.none(SITE, "late") + READ_NEXT.defaultOnly,
+            next: READ_NEXT.none(SITE, "late"),
           },
+        },
+        {
+          name: "a search at a ref",
+          who: "zoya",
+          args: { repo: APP, search: "late", ref: "release/1" },
+          refused: refusal(READ_REFUSAL.searchRef),
+          unchecked: true,
+        },
+        {
+          name: "words GitHub can't take as a search, told apart from a repo not indexed",
+          who: "zoya",
+          args: { repo: APP, search: "late" },
+          before: () => {
+            github.world.refusing = ["search/code"];
+          },
+          after: () => {
+            delete github.world.refusing;
+          },
+          refused: refusal(READ_REFUSAL.badSearch),
+        },
+        {
+          name: "a path with a lone surrogate",
+          who: "zoya",
+          args: { repo: APP, path: "src/\uD800.ts" },
+          refused: refusal(READ_REFUSAL.malformed),
+          unchecked: true,
+        },
+        {
+          name: "a path longer than Kin sends",
+          who: "zoya",
+          args: { repo: APP, path: "a/".repeat(600) },
+          refused: refusal(READ_REFUSAL.tooLong),
+          unchecked: true,
         },
         {
           name: "a repo the connection doesn't reach",

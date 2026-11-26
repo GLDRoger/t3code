@@ -103,6 +103,10 @@ export const READ_REFUSAL = {
     `${path} is a link to ${target}, which Kin doesn't follow: read ${target} by its own path.`,
   tooLarge: (path: string) =>
     `GitHub's answer for ${path === "" ? "the repo's top" : path} is larger than Kin reads at once, so nothing was read: list a folder inside it, or read one file by its path.`,
+  searchRef: `Search only reads the default branch, so nothing was searched: search without a ref, or read files at that ref by their paths.`,
+  badSearch: `GitHub couldn't take those words as a code search, so nothing was searched: try plain words from the code.`,
+  malformed: `That repo, path, ref or search has characters GitHub can't take, so nothing was read: ask again in plain text.`,
+  tooLong: `That repo, path, ref or search is longer than Kin sends GitHub, so nothing was read: ask with a shorter one.`,
   other: (path: string, type: string) =>
     `${path} is a ${type}, not a file or folder of this repo, so Kin shows none of it.`,
 } as const;
@@ -116,7 +120,6 @@ export const READ_NEXT = {
   partial: (read: number) =>
     `Kin reads at most a file's first 1 MB, so only its first ${read} lines are here; the rest of the file can't be read with this tool.`,
   found: "Read a file a match is in for the whole of it.",
-  defaultOnly: " Code search reads only the default branch.",
   untrusted: (repo: string) =>
     `GitHub's search answered with code from outside ${repo} too, which Kin left out, so this search can't be trusted: list folders and read files instead.`,
   none: (repo: string, words: string) =>
@@ -237,6 +240,9 @@ const searchQuery = (words: string, repo: string) =>
     .map((word) => `"${word}"`)
     .join(" ")} repo:${repo}`;
 
+/** Half of a UTF-16 pair with no other half: no URL or JSON GitHub takes can carry it. */
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+
 const refuse = (
   message: string,
   reason: "not_allowed" | "not_found" | "unavailable" = "not_allowed",
@@ -247,6 +253,19 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
   input: typeof ReadInput.Type,
 ) {
   if (!(yield* toolAdmitted(lead, "kin_github_read", input))) return yield* refuse(SHARED_REFUSAL);
+  const given = [
+    [input.repo, 200],
+    [input.path, 1_000],
+    [input.ref, 250],
+    [input.search, 256],
+  ] as const;
+  if (given.some(([value]) => value !== undefined && LONE_SURROGATE.test(value)))
+    return yield* refuse(READ_REFUSAL.malformed);
+  if (given.some(([value, most]) => value !== undefined && value.length > most))
+    return yield* refuse(READ_REFUSAL.tooLong);
+  const searching = input.search !== undefined && input.search.trim() !== "";
+  if (searching && input.ref !== undefined && input.ref.trim() !== "")
+    return yield* refuse(READ_REFUSAL.searchRef);
   const app = Option.getOrUndefined(yield* gitHubApp);
   if (app?.reader === undefined || (yield* app.state())._tag !== "ok")
     return yield* refuse(READ_REFUSAL.noApp);
@@ -365,19 +384,14 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
       Effect.as(result),
     );
 
-  if (input.search !== undefined && input.search.trim() !== "") {
-    const words = input.search.replace(/\s+/g, " ").trim();
+  if (searching) {
+    const words = (input.search ?? "").replace(/\s+/g, " ").trim();
     const answer = yield* get(
       `search/code?q=${encodeURIComponent(searchQuery(words, repo))}&per_page=${SEARCH_PAGE}`,
       { Accept: "application/vnd.github.text-match+json" },
     );
-    if (answer.status === 422)
-      return yield* shown({
-        repo,
-        ref: DEFAULT_REF,
-        matches: [],
-        next: READ_NEXT.none(repo, words),
-      });
+    // GitHub's 422 is words it can't take as a search; a repo it hasn't indexed finds nothing.
+    if (answer.status === 422) return yield* refuse(READ_REFUSAL.badSearch);
     const found = answer.status === 200 ? decodeSearch(answer.body) : Option.none();
     if (Option.isNone(found)) return yield* failed(answer);
     // Only the admitted repo's own hits, by its id: whatever else GitHub sent stays unread.
@@ -388,7 +402,6 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
         match.fragment === undefined ? [] : [match.fragment],
       ),
     }));
-    const ref = input.ref === undefined ? "" : READ_NEXT.defaultOnly;
     return yield* shown({
       repo,
       ref: DEFAULT_REF,
@@ -396,7 +409,9 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
       next:
         own.length < found.value.items.length
           ? READ_NEXT.untrusted(repo)
-          : (matches.length === 0 ? READ_NEXT.none(repo, words) : READ_NEXT.found) + ref,
+          : matches.length === 0
+            ? READ_NEXT.none(repo, words)
+            : READ_NEXT.found,
     });
   }
 
