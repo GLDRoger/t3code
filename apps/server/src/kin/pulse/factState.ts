@@ -11,9 +11,11 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { ownerLevelPeople } from "../people/KinAccess.ts";
 import { asideOf, liveHolds } from "./holds.ts";
 import type { Viewer } from "./KinPulse.ts";
-import { iso, type SensedFact } from "./senses/shared.ts";
+import { entryJoins, iso, type SensedFact } from "./senses/shared.ts";
+import { thresholds, toMs } from "./thresholds.ts";
 
 /**
  * What the pulse stored of its facts (`kin_pulse_facts`) and who has them in hand: the reads the
@@ -82,6 +84,55 @@ export const handledOf = (
     note: row.note,
   };
 };
+
+const encodeRecordIds = Schema.encodeEffect(Schema.fromJsonString(Schema.Array(Schema.String)));
+
+export const personHandledRecords = Effect.fn("KinPulse.personHandledRecords")(function* (
+  orgId: KinOrgId,
+  recordIds: ReadonlySet<string>,
+  at: number,
+) {
+  const handled = new Set<string>();
+  if (recordIds.size === 0) return handled;
+  const sql = yield* SqlClient.SqlClient;
+  const facts = yield* sql<{
+    key: string;
+    recordId: string;
+    sense: string;
+    clientId: string | null;
+  }>`
+    SELECT f.fact_key AS key, f.subject_record_id AS "recordId", f.sense,
+      c.record_id AS "clientId"
+    FROM ${entryJoins(sql)}
+    JOIN kin_pulse_facts f ON f.org_id = r.org_id AND f.subject_record_id = r.record_id
+    WHERE r.org_id = ${orgId} AND f.cleared_at IS NULL AND f.handled_by_kind = 'person'
+      AND (f.handled_until IS NULL OR f.handled_until > ${at})
+      AND r.record_id IN (SELECT value FROM json_each(${yield* encodeRecordIds([...recordIds])}))
+    ORDER BY f.fact_key`;
+  if (facts.length === 0) return handled;
+  const stored = yield* storedRows(
+    orgId,
+    facts.map((fact) => fact.key),
+  );
+  const limits = facts.some(
+    (fact) => fact.sense === "invoice_overdue" && stored.get(fact.key)?.until === null,
+  )
+    ? yield* thresholds(orgId)
+    : undefined;
+  const reader = { viewer: { _tag: "owner" } as const, level: yield* ownerLevelPeople(orgId) };
+  for (const fact of facts) {
+    const quietForMs =
+      fact.sense === "invoice_overdue" && limits !== undefined
+        ? toMs(limits("chase_invoice_after_days", fact.clientId ?? undefined))
+        : undefined;
+    if (
+      handledOf(stored.get(fact.key), at, quietForMs === undefined ? {} : { quietForMs }, reader)
+        ?.by._tag === "person"
+    )
+      handled.add(fact.recordId);
+  }
+  return handled;
+});
 
 const decodeScope = Schema.decodeUnknownOption(Schema.fromJsonString(KinPulseFact.fields.scope));
 
