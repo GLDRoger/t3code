@@ -1515,8 +1515,12 @@ export function kinListEntryView(
   const billToName = billsByName
     ? allFields.find((field) => field.key === KIN_BILL_TO_NAME)
     : undefined;
+  // A bill to pay has no paid day yet: its day is when it is due, as Money's To pay counts it.
+  const toPay = item.list === "expenses" && item.state === "open";
+  const dueAt = toPay ? (item.dueAt ?? item.dateAt ?? null) : item.dueAt;
+  const dueAllDay = toPay && item.dueAt === null ? (item.dateAllDay ?? true) : item.dueAllDay;
   const date = whenText(item.dateAt, item.dateAllDay ?? true, names, now);
-  const due = whenText(item.dueAt, item.dueAllDay, names, now);
+  const due = whenText(dueAt, dueAllDay, names, now);
   const categories = [
     ...(def?.categories ?? []),
     ...(item.listCategory === undefined || def?.categories.includes(item.listCategory) === true
@@ -1650,8 +1654,10 @@ export function kinListEntryView(
         ? item.dateAt === undefined
           ? null
           : KIN_DAY
-        : (kinDayLabel(def, kinNotIssued(item)) ?? null),
-    dueDay: kinWorkAllDay(item.dueAt, item.dueAllDay, names),
+        : toPay
+          ? null
+          : (kinDayLabel(def, kinNotIssued(item)) ?? null),
+    dueDay: kinWorkAllDay(dueAt, dueAllDay, names),
     dateDay: kinWorkAllDay(item.dateAt ?? null, item.dateAllDay ?? true, names),
     due,
     date,

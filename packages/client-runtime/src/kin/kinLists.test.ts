@@ -608,6 +608,27 @@ describe("a list by its definition", () => {
     expect(
       kinListColumns(issued, [{ ...kept, state: "open" }]).find((one) => one.id === "date")?.label,
     ).toBe("Date");
+    // A bill to pay is due on its day, as Money's To pay counts it: it has no paid day yet.
+    const expenses = list({
+      list: KinListId.make("expenses"),
+      amount: true,
+      states: ["open", "done", "dropped"],
+      stateLabels: { open: "To pay" as never, done: "Paid" as never, dropped: "Void" as never },
+      dueLabel: "Due" as never,
+      dateLabel: "Paid on" as never,
+    });
+    const bill = { ...kept, list: "expenses", state: "open" as const, dueAt: null };
+    expect(kinListEntryView(bill, expenses, context)).toMatchObject({
+      dateLabel: null,
+      dueLabel: "Due",
+      due: kinListEntryView({ ...bill, state: "done" }, expenses, context).date,
+    });
+    expect(
+      kinListEntryView({ ...bill, dueAt: "2026-12-09T00:00:00.000Z" }, expenses, context).due,
+    ).not.toBe(kinListEntryView(bill, expenses, context).due);
+    expect(kinListEntryView({ ...bill, state: "done" }, expenses, context)).toMatchObject({
+      dateLabel: "Paid on",
+    });
     // Its page notes Money only where Money would count it, a draft that it is owed only once
     // issued, and offers Not needed only where it can drop it.
     expect(kinSuggestionKeep(suggested, issued)).toEqual({
