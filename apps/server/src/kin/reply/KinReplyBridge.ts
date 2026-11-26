@@ -1105,6 +1105,7 @@ const make = Effect.gen(function* () {
   const flushReplies = Effect.fn("KinReplyBridge.flushReplies")(function* (
     wake: Wake,
     stopped: boolean,
+    failed: boolean,
   ) {
     const held = [...wake.segments.values()]
       .filter((segment) => segment.outcome === "held")
@@ -1116,7 +1117,7 @@ const make = Effect.gen(function* () {
       note?.outcome === "note" &&
       wake.sendReceipt === undefined &&
       !skippedCurrentRequest(wake) &&
-      wake.lane.voice === "text" &&
+      (failed || wake.lane.voice === "text") &&
       !(yield* answered(wake))
     )
       held.push(note);
@@ -1128,7 +1129,7 @@ const make = Effect.gen(function* () {
       };
       if (
         stopped ||
-        wake.lane.voice === "send" ||
+        (!failed && wake.lane.voice === "send") ||
         (wake.skipped?.dropText === true && (wake.steers.get(slot) ?? -1) <= wake.skipped.lastSteer)
       ) {
         setOutcome("dropped");
@@ -1815,7 +1816,7 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           if (wake.done) return { answered: true, finalText: false };
           const finalText = yield* settle(wake, input.rootRunId);
-          yield* flushReplies(wake, input.stopped === true);
+          yield* flushReplies(wake, input.stopped === true, !input.rescue);
           if (input.stopped === true) return { answered: false, finalText };
           yield* settlePage(wake, input.rescue);
           yield* settleFigures(wake);

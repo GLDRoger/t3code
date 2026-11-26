@@ -3449,6 +3449,7 @@ const setupSend = Effect.fn("test.setupSend")(function* (input: Parameters<typeo
 it.effect.each([
   { kind: "reaction", ask: "The loading slot is booked.", reaction: "👍" as const },
   { kind: "question", ask: "Is the loading slot booked?" },
+  { kind: "tap", ask: "Pick one", event: WAKE_KINDS["widget.action"].event! },
   { kind: "answered question", ask: "Is the loading slot booked?" },
   { kind: "trigger" },
   { kind: "private trigger" },
@@ -3481,7 +3482,8 @@ it.effect.each([
     if (kind === "answered question") {
       fake.items = [text("answer", 1, reply, runId), tool("skip", 2, "mcp__kin__kin_skip", runId)];
     }
-    if (kind === "question") {
+    const refused = kind === "question" || kind === "tap";
+    if (refused) {
       assert.strictEqual(
         (yield* Effect.flip(skip)).message,
         "Not ended: someone here is waiting on your answer; write it as plain text.",
@@ -3496,7 +3498,7 @@ it.effect.each([
         );
     }
     yield* complete;
-    const spoken = kind === "question" || kind === "answered question";
+    const spoken = refused || kind === "answered question";
     assert.deepStrictEqual(
       (yield* posted).map((row) => row.body),
       spoken ? [reply] : [],
@@ -3504,7 +3506,7 @@ it.effect.each([
     assert.strictEqual(yield* endingOf(sql, wakeupId), spoken ? "text" : "skipped");
     assert.strictEqual(
       journalLines.includes("Skipped: No update."),
-      kind !== "question" && kind !== "private trigger",
+      !refused && kind !== "private trigger",
     );
     if (kind === "private trigger") assert.deepStrictEqual(journalLines, []);
     if (kind === "trigger") assert.include(journalLines, `Not sent: ${cutLabel(reply)}`);
@@ -3514,6 +3516,7 @@ it.effect.each([
 
 it.effect.each([
   { input: "empty", ending: "none" },
+  { input: "failed", ending: "failed" },
   { input: "before a tool", ending: "none" },
   { input: "final draft", ending: "nudged_neither" },
   { input: "final draft", close: "skip", ending: "nudged_skipped" },
@@ -3530,6 +3533,7 @@ it.effect.each([
       runId,
       sql,
       complete,
+      projectId,
       posted,
       fake,
       text: reply,
@@ -3537,7 +3541,7 @@ it.effect.each([
       sendOnly: true,
       ...(owed ? { event: WAKE_KINDS["task.finished"].event! } : {}),
     });
-    if (row.input === "final draft" || row.input === "before a tool")
+    if (row.input === "final draft" || row.input === "before a tool" || row.input === "failed")
       fake.items = [text("draft", 1, reply, runId)];
     if (row.input === "before a tool")
       fake.items = [...fake.items, tool("read", 2, "mcp__kin__record_get", runId)];
@@ -3548,17 +3552,21 @@ it.effect.each([
           : bridge
               .send({ orgId, wakeupId, text: reply, level: "now" })
               .pipe(Effect.orDie, Effect.asVoid);
-    yield* complete;
+    if (row.input === "failed") {
+      yield* bridge.complete({ orgId, wakeupId, projectId, rootRunId: runId, rescue: false });
+      const lane = Option.getOrThrow(yield* bridge.lane({ orgId, agentId, wakeupId }));
+      yield* bridge.failed({ orgId, wakeupId, lane, outcome: "replied" });
+    } else yield* complete;
     assert.strictEqual(yield* endingOf(sql, wakeupId), row.ending);
     assert.deepStrictEqual(
       (yield* posted).map((post) => post.body),
-      "close" in row && row.close === "send"
+      row.input === "failed" || ("close" in row && row.close === "send")
         ? [reply]
         : row.ending === "notice"
           ? ["Ada finished this and sent no word on it."]
           : [],
     );
-    assert.lengthOf(fake.prompts, row.ending === "none" ? 0 : 1);
+    assert.lengthOf(fake.prompts, row.ending === "none" || row.ending === "failed" ? 0 : 1);
     if (owed) assert.match(fake.prompts[0]!, /is waiting on this.*kin_send\.$/);
     else if (row.input === "final draft")
       assert.match(fake.prompts[0]!, /what you just wrote reached no one/);
