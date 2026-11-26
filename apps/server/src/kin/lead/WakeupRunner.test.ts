@@ -28,6 +28,7 @@ import {
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as ChatService from "../chat/KinChatService.ts";
 import * as ChatHub from "../chat/KinChatHub.ts";
+import * as Groups from "../chat/KinGroups.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import * as ReplyBridge from "../reply/KinReplyBridge.ts";
 import { KinReplyBridge } from "../reply/KinReplyBridge.ts";
@@ -66,6 +67,7 @@ import { SHARED_THREAD_PREFIX, abortChatTurns } from "./Audience.ts";
 import { BILLS_THREAD_PREFIX } from "./billsOnly.ts";
 import { REVIEW_THREAD_PREFIX } from "./outsideReview.ts";
 import * as WakeupRunner from "./WakeupRunner.ts";
+import * as RunSilence from "./runSilence.ts";
 import { postQuietRunCard } from "./quietRunCard.ts";
 import * as HostCare from "../host/KinHostCare.ts";
 import { KinRefusedModels } from "./refusedModels.ts";
@@ -665,6 +667,122 @@ describe("WakeupRunner", () => {
       );
     },
   );
+  for (const { name, joinFirst } of [
+    { name: "a turn lost to a join and then stopped for time posts one line", joinFirst: true },
+    { name: "a turn stopped for time before someone joins posts one line", joinFirst: false },
+  ]) {
+    it.effect(name, () =>
+      Effect.gen(function* () {
+        // The current quiet-card wait never returns a timeout to the runner's cleanup.
+        const waitAtDeadline: typeof RunSilence.waitAsking = (threads, input) =>
+          threads.waitForThread({ ...input, timeoutMs: RunSilence.RUN_SILENCE_MS });
+        using _deadline = vi.spyOn(RunSilence, "waitAsking").mockImplementation(waitAtDeadline);
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const chatId = KinChatId.make("owner-chat");
+        const owner = { _tag: "person" as const, orgId, personId: KinPersonId.make("owner") };
+        const zoya = KinPersonId.make("zoya");
+        yield* sql`UPDATE kin_people SET display_name = 'Rhea' WHERE org_id = ${orgId}
+          AND person_id = ${owner.personId}`;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+          VALUES (${zoya}, ${orgId}, 'zoya', 'Zoya', '2026-11-08T00:00:00.000Z', 'member')`;
+        yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief,
+          evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check,
+          quiet_hours_json)
+          VALUES (${orgId}, 'UTC', '08:30', '18:00', '02:00', 0, 1, '09:00',
+            '{"from":"22:00","to":"07:00"}')`;
+        const identity = yield* KinIdentity.KinIdentity;
+        const groups = yield* Groups.KinGroups.pipe(
+          Effect.provide(Groups.layer),
+          Effect.provideService(KinIdentity.KinIdentity, { ...identity, owner }),
+        );
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const waitClock = yield* TestClock.make();
+        const waiting = yield* Deferred.make<void>();
+        const stopping = yield* Deferred.make<void>();
+        const runnerServices = yield* Layer.build(WakeupRunner.layer).pipe(
+          Effect.provideService(ThreadManagement.ThreadManagementService, {
+            ...threads,
+            interruptThread: () => Effect.succeed({ type: "no_active_run" }),
+            forceStopThread: (input) =>
+              threads.forceStopThread(input).pipe(Effect.provideService(Clock.Clock, waitClock)),
+            waitForThread: (input) =>
+              threads.waitForThread(input).pipe(
+                Effect.provideService(Clock.Clock, {
+                  ...waitClock,
+                  sleep: (duration) =>
+                    Deferred.succeed(
+                      input.timeoutMs === 30_000 ? stopping : waiting,
+                      undefined,
+                    ).pipe(Effect.andThen(waitClock.sleep(duration))),
+                }),
+              ),
+          }),
+        );
+        const runner = Context.get(runnerServices, WakeupRunner.WakeupRunner);
+        const stop = yield* KinStop.KinStop;
+        yield* stop.attach({
+          ...(yield* KinStop.makeFanOut(Option.none())),
+          abort: runner.abort,
+        });
+        yield* (yield* KinEventQueue.KinEventQueue).enqueue(yield* ownerSays("ask"));
+        yield* sql`UPDATE kin_chats SET last_seq = 1 WHERE org_id = ${orgId} AND chat_id = ${chatId}`;
+        const fiber = yield* runner.runOnce(orgId, agentId).pipe(Effect.forkChild);
+        yield* TestClock.adjust("20 seconds");
+        yield* Deferred.await(waiting);
+        const [wake] = yield* sql<{ wakeupId: KinWakeupId; threadId: ThreadId; runId: RunId }>`
+          SELECT wakeup_id AS "wakeupId", thread_id AS "threadId", run_id AS "runId"
+          FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running' ORDER BY wakeup_id`;
+        assert.isDefined(wake);
+        const providerRun = threads.getThreadRecords(wake!.threadId, ["runs"], {
+          runIds: [wake!.runId],
+        });
+        assert.strictEqual((yield* providerRun).runs[0]?.status, "running");
+
+        const join = groups.addMember([owner], {
+          chatId,
+          principal: { _tag: "person", personId: zoya },
+        });
+        const wakeup = sql`SELECT status, aborted_at IS NOT NULL AS aborted
+          FROM kin_wakeups WHERE org_id = ${orgId} AND wakeup_id = ${wake!.wakeupId}
+          ORDER BY wakeup_id`;
+        const notices = sql<{ body: string }>`SELECT body FROM kin_messages
+          WHERE org_id = ${orgId} AND chat_id = ${chatId} AND author_kind = 'system' ORDER BY seq`;
+        const expected = joinFirst
+          ? "Lead didn't reply: someone joined before it answered. Send it again."
+          : "Lead took too long and was stopped. Nothing it hadn't finished was sent. Ask again to start fresh.";
+        if (joinFirst) {
+          yield* join;
+          assert.deepStrictEqual(yield* wakeup, [{ status: "running", aborted: 1 }]);
+          assert.deepStrictEqual(yield* notices, [{ body: expected }]);
+        }
+        yield* waitClock.adjust(RunSilence.RUN_SILENCE_MS);
+        yield* Deferred.await(stopping);
+        assert.strictEqual((yield* providerRun).runs[0]?.status, "running");
+        yield* waitClock.adjust("40 seconds");
+        yield* Fiber.join(fiber);
+        assert.strictEqual((yield* providerRun).runs[0]?.status, "interrupted");
+        assert.deepStrictEqual(yield* wakeup, [
+          joinFirst ? { status: "released", aborted: 1 } : { status: "timed_out", aborted: 0 },
+        ]);
+        if (!joinFirst) {
+          assert.deepStrictEqual(yield* notices, [{ body: expected }]);
+          yield* join;
+        }
+        assert.deepStrictEqual(yield* notices, [{ body: expected }]);
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(
+          ReplyBridge.layer.pipe(
+            Layer.provideMerge(chatLayers),
+            Layer.provideMerge(orchestrationHarness({ untilInterrupted: true })),
+          ),
+        ),
+        provideDeterministicTestRuntime,
+      ),
+    );
+  }
+
   it.effect("hands the files on the messages it answers to the provider turn", () => {
     const photo = {
       type: "image" as const,
