@@ -27,6 +27,7 @@ import {
   makeSample,
   nextMock,
   ranCalls,
+  runSample,
   McpToolUseCase,
   savesPastedSecrets,
   mockOutput,
@@ -1229,6 +1230,75 @@ it.effect("fails every rubric question without requesting a judge on a cut-off t
         why: "not judged: the turn was cut off at a forbidden call",
       })),
     );
+  }),
+);
+
+it.effect("counts only posted Kin segments toward reply limits", () =>
+  Effect.gen(function* () {
+    const status = "I'll check the saved figures against the invoice before I share them.";
+    const structured =
+      "Here are the figures already on the invoice:\n\n- Net: ₹7,000\n- Tax: ₹700\n- Total: ₹7,700";
+    const final = "The payment was already recorded on the invoice. I didn't record it again.";
+    const config = {
+      apiKey: "key",
+      model: "claude-sonnet-5-5",
+      effort: "high",
+      maxSteps: 0,
+      shellModel: "claude-haiku-5-5",
+    } as const;
+    const base = buildBase(template, { model: config.model, keepUserInstructions: false });
+    const usage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
+    for (const [kin, before, posted] of [
+      [true, status, final],
+      [true, structured, `${structured}\n\n${final}`],
+      [false, status, `${status}\n\n${final}`],
+    ] as const) {
+      const testCase = {
+        ...childCase,
+        setup: {
+          role: "top",
+          ...(kin ? { world: { kinLead: true } } : {}),
+          shellMocks: [{ match: "^echo", output: "hi" }],
+        },
+        prompt: "Check the invoice and report back.",
+        expect: { limits: { chars: final.length } },
+      } satisfies McpToolUseCase;
+      const replies = [
+        {
+          content: [
+            { type: "text", text: before },
+            {
+              type: "tool_use",
+              id: "lookup",
+              name: "mcp__host__term_Bash",
+              input: { command: "echo hi" },
+            },
+          ],
+          stop_reason: "tool_use",
+        },
+        { content: [{ type: "text", text: final }], stop_reason: "end_turn" },
+      ];
+      const client = HttpClient.make((request) =>
+        Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            Response.json({ ...replies.shift(), usage: { input_tokens: 1, output_tokens: 1 } }),
+          ),
+        ),
+      );
+      const run = yield* runSample(testCase, config, base, {
+        usage: { ...usage },
+        shellUsage: { ...usage },
+      }).pipe(Effect.provideService(HttpClient.HttpClient, client));
+      assert.equal(run.stopReason, "end_turn");
+      assert.equal(run.text, `${before}\n\n${final}`);
+      assert.deepEqual(gradeSample(testCase.expect, run), [
+        {
+          check: `limits chars <= ${final.length}: ${posted.length}`,
+          pass: posted === final,
+        },
+      ]);
+    }
   }),
 );
 

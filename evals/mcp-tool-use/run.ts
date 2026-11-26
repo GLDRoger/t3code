@@ -39,6 +39,7 @@ import { Tool } from "effect/ai";
 import * as McpSchema from "effect/ai/McpSchema";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
+import { classifySegment } from "../../apps/server/src/kin/reply/classify.ts";
 import { taskPrompt } from "../../apps/server/src/mcp/delegatedTaskModes.ts";
 import * as McpInvocationContext from "../../apps/server/src/mcp/McpInvocationContext.ts";
 import { advertisedJsonSchema } from "../../apps/server/src/mcp/advertisedJsonSchema.ts";
@@ -230,6 +231,8 @@ type Call = {
 export type SampleRun = {
   readonly calls: ReadonlyArray<Call>;
   text: string;
+  /** Kin's posted segments, without the journal notes used in other text checks. */
+  readonly postedText?: string;
   stopReason: string;
   /** The agent's final answer: its last response's text, if it ended its turn. */
   readonly finalText?: string;
@@ -2818,7 +2821,7 @@ export const gradeSample = (
   ].join("\n\n");
   for (const p of expect.textMust ?? []) add(`textMust /${p}/`, test(p, shown));
   for (const p of expect.textMustNot ?? []) add(`textMustNot /${p}/`, !test(p, run.text));
-  checks.push(...limitChecks(expect.limits, run.text));
+  checks.push(...limitChecks(expect.limits, run.postedText ?? run.text));
   for (const p of expect.finalTextMust ?? [])
     add(`finalTextMust /${p}/`, run.stopReason === "end_turn" && test(p, run.finalText ?? ""));
   const isLinked = (url: string) => (run.linked ?? []).some((at) => matches(url, at));
@@ -3115,6 +3118,18 @@ export const ranCalls = (
     .filter((use) => base.codex !== undefined || hasTool(tools, use.name))
     .map((use) => recordedCall(step, filledEvent(testCase, use, normalizeToolName)));
 
+export const kinPostedText = (responses: ReadonlyArray<ReadonlyArray<unknown>>, done = true) => {
+  const blocks = responses.flat().filter((block) => isText(block) || isToolUse(block));
+  return blocks
+    .flatMap((block, index) => {
+      if (!isText(block)) return [];
+      const next = blocks[index + 1];
+      const follows = next === undefined ? (done ? "end" : null) : isText(next) ? "text" : "tool";
+      return classifySegment(block.text, follows) === "post" ? [block.text] : [];
+    })
+    .join("\n\n");
+};
+
 /**
  * Runs one sample until the model ends its turn, uses up its steps, or fails a check that no
  * later step can undo. Tokens add up in `spent`, so a sample that errors still reports them.
@@ -3142,6 +3157,20 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   const { usage } = spent;
   let stopReason = "max_steps";
   let finalText = "";
+  const kin = isKinCase(testCase);
+  const stopsEarly = () =>
+    failedEarly(
+      testCase.expect,
+      {
+        calls,
+        text: shown,
+        stopReason,
+        ...(kin && testCase.expect.limits !== undefined
+          ? { postedText: kinPostedText(responses, false) }
+          : {}),
+      },
+      pastedText(testCase),
+    );
   // Codex's code-mode cells take more model calls, so a case's own budget grows for it too.
   const extra = isCodex(config.model) ? 4 : 0;
   let maxSteps = testCase.maxSteps === undefined ? config.maxSteps : testCase.maxSteps + extra;
@@ -3182,7 +3211,7 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
       maxSteps = Math.max(maxSteps, step + 3);
       continue;
     }
-    if (failedEarly(testCase.expect, { calls, text: shown, stopReason }, pastedText(testCase))) {
+    if (stopsEarly()) {
       stopReason = "failed_early";
       break;
     }
@@ -3251,7 +3280,7 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     // Claude Code adds this text after a ToolSearch that loaded tools.
     const loaded = results.some((result) => Array.isArray(result.content));
     messages.push({ role: "user", content: [...results, ...(loaded ? [text(TOOL_LOADED)] : [])] });
-    if (failedEarly(testCase.expect, { calls, text: shown, stopReason }, pastedText(testCase))) {
+    if (stopsEarly()) {
       stopReason = "failed_early";
       break;
     }
@@ -3260,6 +3289,7 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   return {
     calls,
     text: shown,
+    ...(kin ? { postedText: kinPostedText(responses) } : {}),
     stopReason,
     finalText,
     modelCalls,
