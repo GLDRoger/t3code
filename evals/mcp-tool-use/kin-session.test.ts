@@ -1,6 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import * as NodeChildProcess from "node:child_process";
+import * as NodeCrypto from "node:crypto";
 import * as NodeFS from "node:fs";
 import { assert, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
@@ -69,7 +69,7 @@ it.each([
   ["legacy", legacyRequestPin],
   ["session", sessionRequestPin],
 ] as const)("pins ten Kin dry-run requests in the %s layout", (layout, pin) => {
-  const requests = execFileSync(
+  const requests = NodeChildProcess.execFileSync(
     process.execPath,
     [
       "mcp-tool-use/run.ts",
@@ -85,7 +85,7 @@ it.each([
     { cwd: new URL("..", import.meta.url), maxBuffer: 8 * 1024 * 1024 },
   );
   assert.lengthOf(requests.toString().trimEnd().split("\n"), 10);
-  assert.equal(createHash("sha256").update(requests).digest("hex"), pin);
+  assert.equal(NodeCrypto.createHash("sha256").update(requests).digest("hex"), pin);
 });
 
 const header = 'Your reply goes to chat "direct-1", your direct chat with the owner.';
