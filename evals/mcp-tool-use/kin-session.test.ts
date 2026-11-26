@@ -97,7 +97,10 @@ it("pins ten uncarried requests and keeps both layouts byte-identical", () => {
 });
 
 it("pins the session requests of both carry seeds", () => {
-  const requests = dryRequests("session", "kin-carry.ndjson");
+  const requests = dryRequests("session", "kin-carry.ndjson", [
+    "kin-carry-follow-up-question",
+    "kin-carry-nothing-changed-no-reread",
+  ]);
   assert.lengthOf(requests.toString().trimEnd().split("\n"), 2);
   assert.equal(digest(requests), sessionRequestPin);
 });
