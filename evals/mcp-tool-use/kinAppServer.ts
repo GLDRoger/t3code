@@ -11,28 +11,26 @@ import {
 } from "../../apps/server/src/kin/lead/turn/providers/codex.ts";
 import type { AppServer, AppServerEvent } from "./appServer.ts";
 import {
-  isKinCase,
+  kinDelivery,
   isText,
   KIN_SHARED_PROMPT,
   filledEvent,
   kinInstructions,
   kinSessionOf,
   kinTurnFiles,
-  rescuePrompt,
+  replyFollowUp,
   shownText,
 } from "./kin.ts";
 import {
   answerToolCall,
   buildMessages,
   EvalToolCallError,
-  kinPostedText,
   makeSample,
   normalizeToolName,
   ranCalls,
   settle,
   type ApiMessage,
   type Base,
-  type Call,
   type RunConfig as Config,
   type McpToolUseCase,
   type Sample,
@@ -79,6 +77,10 @@ const responsesHistory = (messages: ReadonlyArray<ApiMessage>, namespace: string
   );
 
 const APP_SERVER_NAMESPACE = "t3_code";
+const eventBlock = (event: AppServerEvent) =>
+  event.type === "text"
+    ? { type: "text", text: event.text }
+    : { type: "tool_use", id: event.id, name: `${T3_PREFIX}${event.tool}`, input: event.args };
 
 /**
  * One sample in `codex app-server`, confined as Kin's Codex descriptor confines a Kin thread: Kin's
@@ -115,79 +117,124 @@ export const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSamp
   const lookup = yield* Effect.promise(() => server.knowsModel(config.model));
   const deferred = new Set(lookup ? base.deferred.map((tool) => tool.name) : []);
   const runPromise = Effect.runPromiseWith(yield* Effect.context<HttpClient.HttpClient>());
-  const calls: Array<Call> = [];
+  const { calls } = sample;
   let step = 0;
   const ownerSession = kinSessionOf(testCase) && !KIN_SHARED_PROMPT.test(testCase.prompt);
-  const result = yield* Effect.tryPromise({
-    try: () =>
-      server.runTurn({
-        model: config.model,
-        effort: config.effort,
-        // An owner-only session's note says it has a shell, as Kin's does; the eval runs none, so
-        // it keeps the session's web search and no sub-agents nobody here would answer.
-        baseInstructions: kinInstructions(ownerSession ? "owner" : "confined", "codex"),
-        config: ownerSession
-          ? { ...FULL_SESSION_CONFIG, "agents.enabled": false }
-          : CONFINED_CONFIG,
-        namespace: APP_SERVER_NAMESPACE,
-        tools: t3.map((tool) => ({
-          name: tool.name.replace(T3_PREFIX, ""),
-          description: valueText(tool.description),
-          inputSchema: tool.input_schema,
-          deferLoading: deferred.has(tool.name),
-        })),
-        history: responsesHistory(messages.slice(0, -1), APP_SERVER_NAMESPACE),
-        prompt,
-        images: sample.kinFiles?.images.map(
-          (image) => `data:${image.mimeType};base64,${image.data}`,
-        ),
-        maxToolCalls:
-          config.maxSteps === 0 ? Infinity : Math.max(config.maxSteps, testCase.maxSteps ?? 0) * 3,
-        onToolCall: (tool, args) => {
-          const use = {
-            type: "tool_use" as const,
-            id: `call_${step}`,
-            name: `${T3_PREFIX}${tool}`,
-            input: args,
-          };
-          const [recorded] = ranCalls(sample, step++, [use]);
-          if (recorded !== undefined) calls.push(recorded);
-          return runPromise(
-            answerToolCall(sample, config, filledEvent(testCase, use, normalizeToolName)).pipe(
-              Effect.map((answer) => {
-                settle(recorded, answer);
-                return { text: valueText(answer.content), failed: answer.is_error === true };
-              }),
-            ),
-          );
-        },
-      }),
-    catch: (cause) => new EvalToolCallError({ tool: "app-server", cause }),
-  });
-  spent.usage.input += result.usage.input - result.usage.cached;
-  spent.usage.cacheRead += result.usage.cached;
-  spent.usage.output += result.usage.output;
-  // The turn as the runner's other harnesses record it, so the graders read it the same way.
-  const responses = result.events.map((event: AppServerEvent) =>
-    event.type === "text"
-      ? [{ type: "text", text: event.text }]
-      : [{ type: "tool_use", id: event.id, name: `${T3_PREFIX}${event.tool}`, input: event.args }],
+  const runTurn = (
+    prompt: string,
+    history: ReturnType<typeof responsesHistory>,
+    images?: ReadonlyArray<string>,
+  ) =>
+    Effect.tryPromise({
+      try: () =>
+        server.runTurn({
+          model: config.model,
+          effort: config.effort,
+          // An owner-only session's note says it has a shell, as Kin's does; the eval runs none, so
+          // it keeps the session's web search and no sub-agents nobody here would answer.
+          baseInstructions: kinInstructions(ownerSession ? "owner" : "confined", "codex"),
+          config: ownerSession
+            ? { ...FULL_SESSION_CONFIG, "agents.enabled": false }
+            : CONFINED_CONFIG,
+          namespace: APP_SERVER_NAMESPACE,
+          tools: t3.map((tool) => ({
+            name: tool.name.replace(T3_PREFIX, ""),
+            description: valueText(tool.description),
+            inputSchema: tool.input_schema,
+            deferLoading: deferred.has(tool.name),
+          })),
+          history,
+          prompt,
+          images,
+          maxToolCalls:
+            config.maxSteps === 0
+              ? Infinity
+              : Math.max(config.maxSteps, testCase.maxSteps ?? 0) * 3,
+          onEvent: (event) => sample.responses.push([eventBlock(event)]),
+          onToolCall: (tool, args) => {
+            const use = {
+              type: "tool_use" as const,
+              id: `call_${step}`,
+              name: `${T3_PREFIX}${tool}`,
+              input: args,
+            };
+            const [recorded] = ranCalls(sample, step++, [use]);
+            if (recorded !== undefined) calls.push(recorded);
+            return runPromise(
+              answerToolCall(sample, config, filledEvent(testCase, use, normalizeToolName)).pipe(
+                Effect.map((answer) => {
+                  settle(recorded, answer);
+                  return { text: valueText(answer.content), failed: answer.is_error === true };
+                }),
+              ),
+            );
+          },
+        }),
+      catch: (cause) => new EvalToolCallError({ tool: "app-server", cause }),
+    });
+  const record = (result: Awaited<ReturnType<AppServer["runTurn"]>>) => {
+    spent.usage.input += result.usage.input - result.usage.cached;
+    spent.usage.cacheRead += result.usage.cached;
+    spent.usage.output += result.usage.output;
+    return result.events.findLast((event) => event.type === "text" && event.phase !== "commentary");
+  };
+  const history = responsesHistory(messages.slice(0, -1), APP_SERVER_NAMESPACE);
+  const initial = yield* runTurn(
+    prompt,
+    history,
+    sample.kinFiles?.images.map((image) => `data:${image.mimeType};base64,${image.data}`),
   );
-  sample.responses.push(...responses);
-  const finals = result.events.flatMap((event) =>
-    event.type === "text" && event.phase !== "commentary" ? [event.text] : [],
-  );
+  const firstFinal = record(initial);
+  let finalText = firstFinal?.type === "text" ? firstFinal.text : "";
+  const followUp = initial.stopReason === "end_turn" ? replyFollowUp(sample, finalText) : undefined;
+  let { stopReason } = initial;
+  let reasoningTokens = initial.usage.reasoning;
+  const transcript = [...initial.items];
+  if (followUp !== undefined) {
+    const exchange: Array<ApiMessage> = [last];
+    let callIndex = 0;
+    for (const event of initial.events) {
+      if (event.type === "text") {
+        exchange.push({ role: "assistant", content: [eventBlock(event)] });
+      } else {
+        exchange.push(
+          { role: "assistant", content: [eventBlock(event)] },
+          {
+            role: "user",
+            content: [
+              {
+                type: "tool_result",
+                tool_use_id: event.id,
+                content: calls[callIndex++]?.output ?? "",
+              },
+            ],
+          },
+        );
+      }
+    }
+    const result = yield* runTurn(followUp.prompt, [
+      ...history,
+      ...responsesHistory(exchange, APP_SERVER_NAMESPACE),
+    ]);
+    const final = record(result);
+    finalText = final?.type === "text" ? final.text : "";
+    stopReason = result.stopReason;
+    reasoningTokens += result.usage.reasoning;
+    transcript.push(...result.items);
+  }
   return {
     calls,
-    text: shownText(responses),
-    ...(isKinCase(testCase) ? { postedText: kinPostedText(responses) } : {}),
-    stopReason: result.stopReason,
-    finalText: finals.at(-1) ?? "",
-    silent: rescuePrompt(sample, normalizeToolName) !== undefined,
+    text: shownText(sample.responses),
+    ...kinDelivery(sample),
+    stopReason,
+    finalText,
+    ...(followUp?.kind === "rescue" ? { rescue: followUp.prompt } : {}),
+    ...(followUp?.kind === "nudge" ? { nudge: followUp.prompt, nudged: true } : {}),
+    silent: replyFollowUp(sample, finalText)?.kind === "rescue",
     linked: [...sample.linked],
     usage: spent.usage,
     shellUsage: sample.shellUsage,
-    reasoningTokens: result.usage.reasoning,
-    transcript: result.items,
+    reasoningTokens,
+    transcript,
   };
 });

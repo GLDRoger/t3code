@@ -149,6 +149,7 @@ const previewUnavailable = new Contracts.PreviewAutomationUnavailableError({
 }).message;
 const decodePreviewError = Schema.decodeUnknownOption(Contracts.PreviewAutomationError);
 const CLASSIFY_SOURCE = sources(["apps/server/src/kin/reply/classify.ts"]);
+const TURN_VOICE_SOURCE = sources(["apps/server/src/kin/reply/turnVoice.ts"]);
 const CALL_ARGUMENTS_SOURCE = sources(["apps/server/src/kin/connections/callArguments.ts"]);
 const QUOTED_MESSAGE = /BEGIN QUOTE: (?:owner|co-owner|member human|guest human) message/;
 
@@ -173,7 +174,7 @@ export const laterParts = (testCase: McpToolUseCase, tools: ReadonlySet<string>)
   const has = (set: ReadonlySet<string>) => [...tools].some((tool) => set.has(tool));
   const { setup, expect } = testCase;
   const later: Record<string, string> = {
-    // The rescue decision and shownText read Kin's reply classifier; the judge reads shownText.
+    // The reply checks and follow-up prompts read Kin's reply classifier.
     "kin/reply/classify.ts": CLASSIFY_SOURCE,
     TURN_EVENT_TOOLS: hashJson([...TURN_EVENT_TOOLS].toSorted()),
   };
@@ -181,9 +182,13 @@ export const laterParts = (testCase: McpToolUseCase, tools: ReadonlySet<string>)
   // A Kin mock's answer is filled in by Kin's own builders, so it moves when they do.
   const kinMocks = filledKinMocks(setup);
   if (kinMocks.length > 0) later.kinMocks = hashJson(kinMocks);
-  if (setup.world?.kinLead === true && QUOTED_MESSAGE.test(testCase.prompt)) {
-    later.RESCUE_PROMPT = hash(RESCUE_PROMPT);
-    later.CAPTION_PROMPT = hash(CAPTION_PROMPT);
+  if (setup.world?.kinLead === true) {
+    later["kin/reply/turnVoice.ts"] = TURN_VOICE_SOURCE;
+    later.kinTriggerSendOnly = hashJson(Contracts.DEFAULT_SERVER_SETTINGS.kinTriggerSendOnly);
+    if (QUOTED_MESSAGE.test(testCase.prompt)) {
+      later.RESCUE_PROMPT = hash(RESCUE_PROMPT);
+      later.CAPTION_PROMPT = hash(CAPTION_PROMPT);
+    }
   }
   // A connection call's text arguments are read as Kin reads them; text with no object is refused.
   if (tools.has("kin_connection_call"))

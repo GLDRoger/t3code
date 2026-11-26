@@ -16,6 +16,7 @@ export const Limits = Schema.Struct({
   bullets: Schema.optional(Schema.Number),
   /** Blocks separated by a blank line. */
   paragraphs: Schema.optional(Schema.Number),
+  bubbles: Schema.optional(Schema.Number),
 });
 export type Limits = typeof Limits.Type;
 
@@ -42,6 +43,7 @@ const COUNTS = {
   bullets: (text: string) => text.match(/^[ \t]*[-*] /gm)?.length ?? 0,
   paragraphs: (text: string) =>
     text.trim() === "" ? 0 : text.trim().split(/\n[ \t]*\n\s*/).length,
+  bubbles: (text: string, bubbles: number | undefined) => bubbles ?? (text.trim() === "" ? 0 : 1),
 };
 
 const banded = (name: string, limit: number, actual: number, over: number): Check => {
@@ -52,7 +54,11 @@ const banded = (name: string, limit: number, actual: number, over: number): Chec
   return { check: label, pass: false };
 };
 
-export const limitChecks = (limits: Limits | undefined, text: string): Array<Check> => {
+export const limitChecks = (
+  limits: Limits | undefined,
+  text: string,
+  bubbles?: number,
+): Array<Check> => {
   if (limits === undefined) return [];
   const { chars, ...counts } = limits;
   return [
@@ -60,7 +66,7 @@ export const limitChecks = (limits: Limits | undefined, text: string): Array<Che
     ...Object.entries(counts).flatMap(([name, limit]) =>
       limit === undefined
         ? []
-        : [banded(name, limit, COUNTS[name as keyof typeof COUNTS](text), 1)],
+        : [banded(name, limit, COUNTS[name as keyof typeof COUNTS](text, bubbles), 1)],
     ),
   ];
 };
