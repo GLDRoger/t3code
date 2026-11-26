@@ -129,13 +129,12 @@ export const captureChatCursor = Effect.fn("KinSessionChanges.captureChatCursor"
       (m.edited_at IS NOT NULL OR m.withdrawn_json IS NOT NULL) AS edited
     FROM kin_messages m
     WHERE m.org_id = ${turn.orgId} AND m.chat_id = ${cursor.chatId}
-      AND m.change_seq > ${cursor.chatChangeSeq}
       AND ((m.author_agent_id = ${turn.agentId} AND (m.source_wakeup_id = ${turn.wakeupId}
         OR (m.source_wakeup_id IS NULL AND m.author_thread_id = ${turn.threadId ?? null}
           AND m.created_at >= ${started} AND m.seq > ${cursor.chatSeq})))
         OR m.message_id IN (SELECT json_extract(e.json, '$.messageId') FROM kin_events e
           WHERE e.org_id = m.org_id AND e.agent_id = ${turn.agentId} AND e.wakeup_id = ${turn.wakeupId}
-            AND e.tag = 'chat.message' AND json_extract(e.json, '$.chatId') = m.chat_id))
+            AND e.tag IN ('chat.message', 'widget.action') AND json_extract(e.json, '$.chatId') = m.chat_id))
     ORDER BY m.change_seq LIMIT ${CHANGE_ROWS_LIMIT}`;
   if (held.length === CHANGE_ROWS_LIMIT)
     return yield* new SessionChangesSourceFailed({
@@ -143,9 +142,11 @@ export const captureChatCursor = Effect.fn("KinSessionChanges.captureChatCursor"
       cause: "Too many held messages",
     });
   return {
-    chatSeq: held.reduce((seq, message) => Math.max(seq, message.seq), cursor.chatSeq),
+    chatSeq: held.reduce((seq, message) => Math.max(seq, message.seq), 0),
     chatChangeSeq: cursor.chatChangeSeq,
-    heldChatChanges: held.filter(({ edited }) => edited === 0).map(({ changeSeq }) => changeSeq),
+    heldChatChanges: held
+      .filter(({ edited, changeSeq }) => edited === 0 && changeSeq > cursor.chatChangeSeq)
+      .map(({ changeSeq }) => changeSeq),
   };
 });
 

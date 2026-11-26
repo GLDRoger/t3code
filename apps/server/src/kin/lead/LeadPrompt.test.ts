@@ -1039,9 +1039,11 @@ it.effect("capture keeps the reply out and leaves a later bills card for the nex
     const secondCursor = yield* readCursor(orgId, direct, null, agentId);
     yield* sql`UPDATE kin_messages SET body = 'Bill paid' WHERE org_id = ${orgId}
       AND message_id = 'bills:harborview'`;
+    const secondStamp = yield* captureChatCursor(given, secondCursor);
+    expect(secondStamp.chatSeq).toBe(3);
     const third = yield* prompt.buildSession({
       ...given,
-      previous: { ...second, ...(yield* captureChatCursor(given, secondCursor)) },
+      previous: { ...second, ...secondStamp },
     });
     expect(third.delta).toContain("Bill paid");
   }).pipe(Effect.provide(layer)),

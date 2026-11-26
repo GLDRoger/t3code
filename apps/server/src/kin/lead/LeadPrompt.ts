@@ -3126,10 +3126,9 @@ const newRecentChatLines = (
     const held = new Set(heldChatChanges);
     added = quoted.filter((_line, index) => {
       const changed = changeSeqs?.[index] ?? 0;
-      return (
-        (seqs[index] ?? 0) > chatSeq ||
-        (chatChangeSeq !== undefined && changed > chatChangeSeq && !held.has(changed))
-      );
+      return chatChangeSeq !== undefined && changed > 0
+        ? changed > chatChangeSeq && !held.has(changed)
+        : (seqs[index] ?? 0) > chatSeq;
     });
   } else {
     // Eval cases authored as prompt text have no message IDs.
