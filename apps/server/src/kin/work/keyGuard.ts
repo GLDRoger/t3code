@@ -55,7 +55,12 @@ export const keyRefusal = (write: {
  * A list the company made itself: none of Kin's own (Work, Clients, Deals, Docs and the rest), no
  * money list and no preset; what a key's entry tools work on.
  */
-const NOT_OWN: ReadonlyArray<string> = [...TEAM_LIST_RESERVED, ...PRESET_IDS, ...MONEY_LISTS];
+const NOT_OWN: ReadonlyArray<string> = [
+  ...TEAM_LIST_RESERVED,
+  ...PRESET_IDS,
+  ...MONEY_LISTS,
+  "credit_notes",
+];
 export const companyList = (list: string, money: ListMoney) =>
   !NOT_OWN.includes(list) && !holdsMoney(list, money);
 /** SQL over trusted names, for `sql.literal`: entry `r` is in a list the company made itself. */

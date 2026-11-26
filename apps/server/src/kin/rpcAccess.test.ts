@@ -3,6 +3,7 @@ import {
   AuthKinChatScope,
   AuthKinTasksScope,
   AuthSessionId,
+  CLIENT_GUARDED_RPC_SCOPES,
   KinChatError,
   KinOrgId,
   KinPersonId,
@@ -66,6 +67,8 @@ const MEMBER = [
   "kin.docs.get",
   "kin.docs.history",
   "kin.docs.list",
+  // `setReaders` checks the draft's writer and the owner level against stored rows.
+  "kin.docs.readers",
   // A teammate's own draft card: `sendUp` checks the card, the chat and the doc from stored rows.
   "kin.docs.sendUp",
   "kin.docs.subscribe",
@@ -94,6 +97,7 @@ const MEMBER = [
   "kin.pulse.read",
   "kin.pulse.subscribe",
   // Only their own topics: `KinPushTopics.settledOf` reads the caller's rows and no one else's.
+  "kin.push.desktopNotices",
   "kin.push.reconcile",
   "kin.push.registerDevice",
   "kin.push.unregisterDevice",
@@ -210,6 +214,14 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
           ],
         );
         assert.deepStrictEqual(table.member, MEMBER);
+        for (const method of [
+          "kin.work.undoCreditPayment",
+          "kin.work.unapplyCredit",
+          "kin.work.draftCreditNote",
+        ] as const) {
+          assert.strictEqual(kinRpcAccess(method), "owner_level");
+          assert.strictEqual(CLIENT_GUARDED_RPC_SCOPES[method], AuthKinChatScope);
+        }
         // Bills become the company's expenses: the owner level's, never a member's.
         const bills = methods.filter((method) => method.startsWith("kin.bills."));
         assert.lengthOf(bills, 6);
@@ -217,6 +229,8 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
           bills.filter((method) => !table.coOwner.includes(method) || MEMBER.includes(method)),
           [],
         );
+        assert.include(table.coOwner, "kin.work.answerCountryCard");
+        assert.notInclude(table.member, "kin.work.answerCountryCard");
         // Every method is in the table, so a new one can't slip past the gate unlisted.
         assert.deepStrictEqual(
           methods.filter((method) => kinRpcAccess(method) === undefined),

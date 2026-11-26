@@ -51,3 +51,40 @@ export const waitWhileActive = Effect.fn("KinRunSilence.waitWhileActive")(functi
       return result;
   }
 });
+
+export const QUIET_ASKS_MS = [900_000, 3_600_000] as const;
+
+export const waitAsking = Effect.fn("KinRunSilence.waitAsking")(function* <
+  E,
+  R,
+  QuietError,
+  QuietServices,
+>(
+  threads: ThreadManagementService.ThreadManagementService["Service"],
+  input: { readonly projectId: ProjectId; readonly threadId: ThreadId; readonly runId: RunId },
+  lastActivity: () => number,
+  eachWindow: (quietSince: number | null) => Effect.Effect<void, E, R>,
+  onQuiet: (ask: 1 | 2, since: number) => Effect.Effect<void, QuietError, QuietServices>,
+  alreadyAsked = 0,
+) {
+  let asked = alreadyAsked;
+  while (true) {
+    const threshold = QUIET_ASKS_MS[asked];
+    const since = lastActivity();
+    const quietAt = since + (threshold ?? QUIET_ASKS_MS[0]);
+    const stillQuiet = threshold === undefined && (yield* Clock.currentTimeMillis) >= quietAt;
+    yield* eachWindow(stillQuiet ? since : null);
+    const result = yield* threads.waitForThread({
+      ...input,
+      timeoutMs: stillQuiet
+        ? RUN_SILENCE_MS
+        : Math.min(RUN_SILENCE_MS, Math.max(0, quietAt - (yield* Clock.currentTimeMillis))),
+    });
+    if (!result.timedOut) return result;
+    const latest = lastActivity();
+    if (threshold !== undefined && (yield* Clock.currentTimeMillis) - latest >= threshold) {
+      yield* onQuiet(asked === 0 ? 1 : 2, latest);
+      asked++;
+    }
+  }
+});

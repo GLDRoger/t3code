@@ -61,6 +61,7 @@ import { taskNewsBanner } from "../work/assignNotices.ts";
 import { KinApnsTransport } from "./Apns.ts";
 import { KinFcmTransport } from "./Fcm.ts";
 import { KinPushDevices, kinPushDeviceId, type KinPushDevice } from "./KinPushDevices.ts";
+import { KinDesktopNotices } from "./KinDesktopNotices.ts";
 import { KinPushPresence } from "./KinPushPresence.ts";
 import {
   approvalTopic,
@@ -167,6 +168,7 @@ type Push = {
   readonly recipients: ReadonlyArray<Recipient>;
   /** A device the push is about, which needs no word of itself. */
   readonly exceptSession?: string;
+  readonly desktop?: false;
 };
 
 /** APNs refuses a regular push whose JSON payload is longer than this many bytes. */
@@ -449,6 +451,7 @@ const make = Effect.gen(function* () {
     apns.status === "ready" || fcm.status === "ready" ? "ready" : "unconfigured";
   const devices = yield* KinPushDevices;
   const presence = yield* KinPushPresence;
+  const desktop = yield* KinDesktopNotices;
   const keys = yield* ApproverKeys;
   const cache = yield* MemoryCache;
   const actions = yield* KinPendingActions;
@@ -1269,8 +1272,7 @@ const make = Effect.gen(function* () {
     for (const recipient of push.recipients) {
       let delivery = recipient.delivery;
       let replaceBanner = false;
-      // A rationed ring is spent only on a phone that will show it, so a push decided before
-      // they had one, or while they watch the chat, leaves it for the next.
+      // A rationed ring is spent only when a phone can show it or a desktop is listening.
       if (recipient.capped !== undefined && delivery === "ring") {
         let shows = false;
         for (const device of targets)
@@ -1280,6 +1282,7 @@ const make = Effect.gen(function* () {
               !(yield* presence.isWatching(device.sessionId, push.chatId)))
           )
             shows = true;
+        if (!shows && (yield* desktop.listening(orgId, recipient.personId))) shows = true;
         if (shows && !(yield* mayRing(orgId, recipient.personId, recipient.capped.since))) {
           delivery = recipient.capped.spent;
           if (delivery === "badge" && counted !== undefined) {
@@ -1322,6 +1325,21 @@ const make = Effect.gen(function* () {
                 ),
             ),
       });
+    }
+    if (push.desktop !== false && (yield* desktop.listeningIn(orgId))) {
+      const notices = [];
+      for (const [personId, { delivery, subject }] of recipients) {
+        if (delivery === "badge" || !(yield* desktop.listening(orgId, personId))) continue;
+        // Check the source again before sending, just as sendTo does for phones.
+        if (
+          push.chatId !== undefined &&
+          (push.source === undefined ||
+            !(yield* stillReads(orgId, personId, push.chatId, push.source)))
+        )
+          continue;
+        notices.push({ personId, delivery, subject });
+      }
+      yield* desktop.offer(orgId, push, notices);
     }
     // Bounded, so one slow device doesn't hold up the rest and a big org doesn't flood APNs.
     const results = yield* Effect.forEach(
@@ -1813,6 +1831,7 @@ const make = Effect.gen(function* () {
       }
       const outcome = yield* deliver(orgId, {
         ...push,
+        desktop: false,
         recipients: [{ ...told, delivery: told.delivery === "badge" ? "badge" : "quiet" }],
       });
       total.sent += outcome.sent;
@@ -1824,7 +1843,8 @@ const make = Effect.gen(function* () {
 
   const run = Effect.fn("KinPushSender.run")(
     function* (notification: KinPushNotification) {
-      if (status === "unconfigured") return nothing;
+      if (status === "unconfigured" && !(yield* desktop.listeningIn(notification.orgId)))
+        return nothing;
       if (notification._tag === "restate")
         return {
           status,

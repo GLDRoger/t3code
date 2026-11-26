@@ -6,6 +6,8 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { ServerConfig } from "../../config.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import {
+  AuthSessionId,
+  AuthStandardClientScopes,
   EnvironmentId,
   KinAgentId,
   KinListDefinition,
@@ -13,6 +15,7 @@ import {
   KinOrgId,
   KinPersonId,
   KinRecordKey,
+  KinWidgetId,
   KinWritableListFieldType,
   ProviderInstanceId,
   ThreadId,
@@ -21,6 +24,7 @@ import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -29,7 +33,14 @@ import * as TestClock from "effect/testing/TestClock";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
-import { KinIdentity } from "../chat/KinIdentity.ts";
+import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
+import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
+import { environment } from "../chat/TaskCard.testkit.ts";
+import { authorityLayer } from "../chat/WakeupAuthority.testkit.ts";
+import type { Services } from "../KinServer.ts";
+import { kinSecretsTest } from "../lead/layer.testkit.ts";
+import * as Kin from "../layer.ts";
 import { KinDocRenderer } from "../gendocs/render.ts";
 import { KinWorkspace } from "../gendocs/workspace.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -50,6 +61,7 @@ import {
   rememberRefused,
   setProfile,
 } from "./companyProfile.ts";
+import { answerCountryCard } from "./countryAsk.ts";
 import * as Goals from "./goals.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { KIN_OWN_REFUSAL } from "../people/KinAccess.ts";
@@ -58,6 +70,7 @@ import { approvalDedupeKey, approvalEventId } from "../questions/approval.ts";
 import * as LeadWork from "./leadWork.ts";
 import { typedFields } from "./leadFields.ts";
 import { aboutTotal, addUp, dayIn, financialYearOf, formatMinor, parseAmount } from "./money.ts";
+import { aboutInHome, type RecordedRate } from "./recordedRate.ts";
 import { budgetFlags, budgetsAnswer, budgetsView } from "./budgets.ts";
 import { cashAnswer, cashPosition, outlook, outlookAnswer } from "./moneyAnswers.ts";
 import { markOutside } from "../lead/OutsideContent.ts";
@@ -531,6 +544,48 @@ describe("amounts", () => {
       usd(1_300),
     );
   });
+
+  it.effect("estimates only when every foreign currency has a recorded rate", () =>
+    Effect.gen(function* () {
+      const at = Date.parse("2026-11-20T12:00:00Z");
+      const totals = [
+        { minor: 1_040, currency: "USD" },
+        { minor: 40, currency: "EUR" },
+        { minor: 40, currency: "GBP" },
+        { minor: 10, currency: "CAD" },
+      ];
+      const rates: Record<string, RecordedRate> = {
+        EUR: {
+          invoiceCurrency: "EUR",
+          receivedCurrency: "USD",
+          rate: "1.000000",
+          day: "2026-11-12",
+        },
+        GBP: {
+          invoiceCurrency: "GBP",
+          receivedCurrency: "USD",
+          rate: "1.000000",
+          day: "2026-11-03",
+        },
+        CAD: {
+          invoiceCurrency: "CAD",
+          receivedCurrency: "USD",
+          rate: "0.700000",
+          day: "2026-11-12",
+        },
+      };
+      const read = (org: typeof orgId, from: string, to: string, asOf: number) =>
+        Effect.succeed(org === orgId && to === "USD" && asOf === at ? rates[from] : undefined);
+      assert.deepStrictEqual(yield* aboutInHome(orgId, totals, "USD", at, read), {
+        total: { minor: 1_100, currency: "USD" },
+        rateDays: ["2026-11-03", "2026-11-12"],
+      });
+      assert.isUndefined(yield* aboutInHome(orgId, totals.slice(0, 1), "USD", at, read));
+      assert.isUndefined(
+        yield* aboutInHome(orgId, [...totals, { minor: 10, currency: "JPY" }], "USD", at, read),
+      );
+    }).pipe(Effect.provide(layer)),
+  );
 
   it("formats totals past a float's exact range digit for digit, signed", () => {
     const past = BigInt(Number.MAX_SAFE_INTEGER) * 10n + 7n;
@@ -1487,7 +1542,7 @@ describe("lists through the tools", () => {
         ],
       });
       assert.deepInclude(apart.records[0], { key: "EXP-6", created: true });
-      // Either order ends as one Paid expense, paid on the receipt's day and way, with both files.
+      // The receipt attaches to the invoice without changing its state or day.
       const invoice = (amount: string, file: string, date?: string) => ({
         list: "expenses",
         title: "Invented Cloud invoice",
@@ -1519,8 +1574,13 @@ describe("lists through the tools", () => {
         });
         assert.strictEqual(one.records[0]!.key, one.records[1]!.key, first);
         const entry = (yield* records.get(orgId, one.records[0]!.key))!;
-        assert.strictEqual(entry.state, "done", first);
-        assert.strictEqual(entry.dateAt, endOfDay("2026-11-12", "Asia/Kolkata"));
+        assert.strictEqual(entry.state, first === "invoice" ? "open" : "done", first);
+        assert.strictEqual(entry.dateAt, endOfDay(issued ?? "2026-11-12", "Asia/Kolkata"));
+        if (first === "invoice")
+          assert.strictEqual(
+            one.records[1]!.bill,
+            `${entry.key} keeps the receipt and stays To pay: only the owner or a co-owner marks it paid. Say so, or offer mark_bill_paid if a bank debit paid it.`,
+          );
         assert.include(entry.fieldsJson, '"card"');
         assert.sameMembers((yield* files(entry.key))!, names);
       }
@@ -2093,7 +2153,7 @@ describe("invoices", () => {
         note: "No bank statement is confirmed, so Kin can't see what reached the bank.",
       });
       // Unexplained credits the statement matcher would offer for it are named beside the bank;
-      // an explained, ignored, other-currency or outgoing one isn't, and at most five, newest first.
+      // an explained, ignored or outgoing one isn't, and at most five, newest first.
       const number = String(read.fields?.number);
       const bankList = yield* ensureBankList(orgId, NOW);
       const credit = (
@@ -2117,7 +2177,9 @@ describe("invoices", () => {
       const cited = yield* credit(`NEFT CR-INVENTED ACME-${number}`, 60_000, "2026-11-10");
       yield* credit(`NEFT CR-INVENTED ACME-${number}`, 60_000, "2026-11-11", { state: "done" });
       yield* credit(`NEFT CR-INVENTED ACME-${number}`, 60_000, "2026-11-11", { state: "dropped" });
-      yield* credit(`SWIFT CR-INVENTED ACME-${number}`, 600, "2026-11-11", { currency: "USD" });
+      const foreign = yield* credit(`SWIFT CR-INVENTED ACME-${number}`, 600, "2026-11-11", {
+        currency: "USD",
+      });
       yield* credit(`NEFT DR-INVENTED ACME-${number}`, 60_000, "2026-11-11", {
         direction: "debit",
       });
@@ -2125,8 +2187,15 @@ describe("invoices", () => {
         LeadWork.get(scope, { key: "INV-1" }).pipe(Effect.map((one) => one.bank?.credits));
       assert.deepStrictEqual((yield* LeadWork.get(scope, { key: "INV-1" })).bank, {
         knownThrough: null,
-        note: `No bank statement is confirmed. Bank transactions has an unexplained credit that looks like this invoice's payment: ${cited}, ₹60,000.00 on 10 Nov. The invoice isn't recorded as paid until the owner confirms.`,
+        note: `No bank statement is confirmed. Bank transactions has unexplained credits that look like this invoice's payment: ${foreign}, USD 600.00 on 11 Nov; ${cited}, ₹60,000.00 on 10 Nov. The invoice isn't recorded as paid until the owner confirms.`,
         credits: [
+          {
+            key: foreign,
+            date: "2026-11-11",
+            amount: "USD 600.00",
+            title: `SWIFT CR-INVENTED ACME-${number}`,
+            reason: `USD 600.00 for INR 60,000.00 owed, a rate of 0.01, and it cites ${number}`,
+          },
           {
             key: cited,
             date: "2026-11-10",
@@ -2143,14 +2212,20 @@ describe("invoices", () => {
       assert.deepStrictEqual(
         five?.map((one) => [one.date, one.reason]),
         [
+          [
+            "2026-11-11",
+            `USD 600.00 for INR 60,000.00 owed, a rate of 0.01, and it cites ${number}`,
+          ],
           ["2026-11-10", `cites ${number}`],
           ["2026-11-09", "same amount from Invented Acme"],
           ["2026-11-05", "part of what is owed from Invented Acme"],
           ["2026-11-04", "part of what is owed from Invented Acme"],
-          ["2026-11-03", "part of what is owed from Invented Acme"],
         ],
       );
-      assert.deepStrictEqual([five?.[0]?.key, five?.[1]?.key], [cited, same]);
+      assert.deepStrictEqual(
+        five?.slice(0, 3).map((one) => one.key),
+        [foreign, cited, same],
+      );
       const stored = yield* (yield* KinRecords.KinRecords).detail(
         (yield* (yield* KinRecords.KinRecords).get(orgId, "INV-1"))!,
       );
@@ -2279,7 +2354,15 @@ describe("invoices", () => {
       assert.strictEqual((yield* records.get(orgId, "INV-1"))!.paid, 6_000_000);
 
       // A turn a teammate reads gets the invoice and the bank's line, never Bank transactions.
-      assert.lengthOf((yield* credits()) ?? [], 4);
+      const reopened = (yield* credits()) ?? [];
+      assert.lengthOf(reopened, 5);
+      assert.deepStrictEqual(
+        reopened.slice(1, 3).map(({ key, reason }) => [key, reason]),
+        [
+          [cited, `it cites ${number}`],
+          [same, "it names Invented Acme"],
+        ],
+      );
       const sqlTeam = yield* SqlClient.SqlClient;
       yield* sqlTeam`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, sees_money)
         VALUES ('banker-mate', ${orgId}, 'banker-mate', 'Banker Mate', ${at}, 1)`;
@@ -3689,6 +3772,7 @@ describe("the owner's taps", () => {
       });
       assert.strictEqual(flagged.payments, true);
 
+      yield* OwnerWork.confirm(people, { orgId, key: "EXP-1", rev: 1 });
       const part = yield* pay(4_000_000, "a");
       assert.deepStrictEqual(
         [part.state, part.balance, part.payments?.length],
@@ -3766,6 +3850,70 @@ describe("the owner's taps", () => {
       });
       const page = yield* OwnerWork.list(people, { orgId, list: "jobs", totalsBy: "none" });
       assert.deepStrictEqual(page.totals?.owed, inr(10_000));
+      yield* defined(9, { template: "expenses" });
+      const records = yield* KinRecords.KinRecords;
+      const bill = (
+        title: string,
+        state: "open" | "done",
+        currency: string,
+        minor: number,
+        due: string,
+        kept: boolean,
+        fields = {},
+      ) =>
+        records.create(
+          orgId,
+          { actor: { _tag: "system" }, via: "import" },
+          {
+            list: "expenses",
+            title,
+            state,
+            owner: { _tag: "person", personId: ownerId },
+            amount: { minor, currency },
+            dateAt: Date.parse(`${due}T12:00:00Z`),
+            originKey: title,
+            confirmed: kept,
+            fields,
+          },
+        );
+      assert.notProperty(yield* moneySummary(orgId, NOW, KIN_OWNER_LEVEL), "toPay");
+      const sql = yield* SqlClient.SqlClient;
+      const teammate = KinPersonId.make("zoya");
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access,
+        sees_money) VALUES (${teammate}, ${orgId}, 'zoya', 'Zoya', ${at}, 'member', 1),
+        ('meera', ${orgId}, 'meera', 'Meera', ${at}, 'owner', 1)`;
+      const { row: shared } = yield* bill(
+        "Acme Hosting",
+        "open",
+        "USD",
+        450_00,
+        "2026-11-14",
+        true,
+      );
+      yield* records.update(orgId, { actor: people[0]!, via: "owner" }, shared.key, { team: true });
+      yield* bill("Invented partner-funded bill", "open", "INR", 600_00, "2026-11-14", true, {
+        fundedBy: "person:meera",
+      });
+      yield* bill("Invented late bill", "open", "INR", 250_00, "2026-11-11", true);
+      yield* bill("Invented future bill", "open", "USD", 200_00, "2026-11-19", true);
+      yield* bill("Invented suggested bill", "open", "INR", 750_00, "2026-11-14", false);
+      yield* bill("Invented paid bill", "done", "INR", 200_00, "2026-11-11", true);
+      const summary = yield* moneySummary(orgId, NOW, KIN_OWNER_LEVEL);
+      assert.deepStrictEqual(summary.toPay, {
+        total: [...inr(250_00), { currency: "USD", minor: 650_00 }],
+        dueSoon: [...inr(250_00), { currency: "USD", minor: 450_00 }],
+        bills: 3,
+        dueSoonBills: 2,
+        lateBills: 1,
+      });
+      const scoped = yield* moneySummary(orgId, NOW, viewerOfPeople([teammate]));
+      assert.deepStrictEqual(scoped.toPay, {
+        total: [{ currency: "USD", minor: 450_00 }],
+        dueSoon: [{ currency: "USD", minor: 450_00 }],
+        bills: 1,
+        dueSoonBills: 1,
+        lateBills: 0,
+      });
     }).pipe(Effect.provide(layer)),
   );
 
@@ -4865,6 +5013,67 @@ describe("another org", () => {
   );
 });
 
+const seedCountryCards = Effect.fn("MoneyTest.seedCountryCards")(function* () {
+  const identity = yield* KinIdentity;
+  const chats = yield* KinChatService;
+  const sql = yield* SqlClient.SqlClient;
+  const session = {
+    sessionId: AuthSessionId.make("owner"),
+    subject: "browser",
+    method: "browser-session-cookie" as const,
+    scopes: AuthStandardClientScopes,
+  };
+  yield* pairSession(session.sessionId);
+  const [rhea] = yield* identity.resolve(session);
+  assert.isDefined(rhea);
+  const { orgId } = rhea!;
+  const meera: PersonIdentity = { _tag: "person", orgId, personId: KinPersonId.make("meera") };
+  const agentId = KinAgentId.make("chief");
+  const threadId = ThreadId.make("chief-thread");
+  yield* sql`UPDATE kin_people SET display_name = 'Rhea', time_zone = 'UTC'
+    WHERE org_id = ${orgId} AND person_id = ${rhea!.personId}`;
+  yield* sql`INSERT INTO kin_people (org_id, person_id, handle, display_name, created_at, access, time_zone)
+    VALUES (${orgId}, ${meera.personId}, 'meera', 'Meera', ${at}, 'co_owner', 'UTC'),
+      (${orgId}, 'zoya', 'zoya', 'Zoya', ${at}, 'member', 'UTC')`;
+  yield* sql`INSERT INTO kin_agents (org_id, agent_id, display_name, role, owner_person_id, created_at)
+    VALUES (${orgId}, ${agentId}, 'Chief of staff', 'lead', ${rhea!.personId}, ${at})`;
+  const chat = yield* chats.createDirect(rhea!, { orgId, agentId });
+  yield* sql`INSERT INTO kin_leads (org_id, agent_id, name, level_since, thread_id, models_json,
+      worker_projects_json, owner_chat_id, domain)
+    VALUES (${orgId}, ${agentId}, 'Chief of staff', 0, ${threadId}, '{}', '[]', ${chat.chatId}, 'chief-of-staff')`;
+  yield* identity.registerAgentThread({ orgId, agentId, threadId });
+  const cards = sql<{ widgetId: KinWidgetId; who: string; state: string; closedAt: string | null }>`
+    SELECT w.widget_id AS "widgetId", m.person_id AS who, w.state_json AS state, w.closed_at AS "closedAt"
+    FROM kin_widgets w JOIN kin_chat_members m ON m.org_id = w.org_id AND m.chat_id = w.chat_id
+      AND m.principal_kind = 'person'
+    WHERE w.org_id = ${orgId} AND w.type = 'country' ORDER BY w.updated_at, m.person_id`;
+  const tick = Clock.currentTimeMillis.pipe(Effect.flatMap((now) => KinPulse.tick(orgId, now)));
+  const waiting = sql<{ who: string }>`SELECT person_id AS who FROM kin_waiting
+    WHERE org_id = ${orgId} AND resolved_at IS NULL
+      AND widget_id IN (SELECT widget_id FROM kin_widgets WHERE org_id = ${orgId} AND type = 'country')
+    ORDER BY person_id`;
+  return { orgId, rhea: rhea!, meera, cards, tick, sql, waiting };
+});
+const runCountryCards = <A, E>(
+  run: (ctx: Effect.Success<ReturnType<typeof seedCountryCards>>) => Effect.Effect<A, E, Services>,
+) =>
+  Effect.andThen(
+    TestClock.setTime(Date.UTC(2026, 10, 25, 10)),
+    Effect.gen(function* () {
+      const services = Option.getOrThrow((yield* Kin.KinServer).services);
+      return yield* seedCountryCards().pipe(Effect.flatMap(run), Effect.provideContext(services));
+    }).pipe(
+      Effect.provide(
+        Kin.layer.pipe(
+          Layer.provide(kinSecretsTest),
+          Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+          Layer.provideMerge(environment),
+          Layer.provideMerge(authorityLayer),
+        ),
+      ),
+    ),
+  );
+
 describe("the company profile", () => {
   it.effect("asks in the chat the turn came from, so a co-owner's change reaches her", () =>
     Effect.gen(function* () {
@@ -5227,6 +5436,182 @@ describe("the company profile", () => {
       yield* OwnerMoney.setCompanyProfile(people, { orgId, rev: yield* rev(), country: null });
       assert.isFalse(yield* countryNeeded(orgId));
     }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("asks only the owners of an older company without a country, once", () =>
+    runCountryCards(({ orgId, rhea, meera, cards, tick, sql, waiting }) =>
+      Effect.gen(function* () {
+        const writer = { _tag: "person" as const, personId: rhea.personId };
+        yield* sql`DELETE FROM kin_company_profile WHERE org_id = ${orgId}`;
+        yield* tick;
+        assert.isEmpty(yield* cards);
+        yield* setProfile(
+          orgId,
+          writer,
+          { tradeName: "Ambermill", homeCurrency: "INR" },
+          undefined,
+        );
+        yield* tick;
+        assert.isEmpty(yield* cards);
+        yield* sql`UPDATE kin_company_profile SET profile_json = ${yield* newCompanyProfileJson}
+          WHERE org_id = ${orgId}`;
+        yield* tick;
+        assert.isEmpty(yield* cards);
+        yield* sql`DELETE FROM kin_company_profile WHERE org_id = ${orgId}`;
+        yield* setProfile(
+          orgId,
+          writer,
+          { tradeName: "Ambermill", homeCurrency: "USD" },
+          undefined,
+        );
+        yield* sql`UPDATE kin_people SET quiet_hours_json = '{"from":"09:00","to":"11:00"}'
+          WHERE org_id = ${orgId} AND person_id = ${meera.personId}`;
+        yield* tick;
+        assert.deepStrictEqual(
+          (yield* cards).map((card) => card.who),
+          [rhea.personId],
+        );
+        yield* sql`UPDATE kin_people SET quiet_hours_json = NULL
+          WHERE org_id = ${orgId} AND person_id = ${meera.personId}`;
+        yield* tick;
+        const open = yield* cards;
+        assert.deepStrictEqual(
+          open.map((card) => card.who).sort(),
+          [rhea.personId, meera.personId].sort(),
+        );
+        assert.notInclude(
+          open.map((card) => card.who),
+          "zoya",
+        );
+        for (const card of open) {
+          assert.isNull(card.closedAt);
+          assert.deepStrictEqual(JSON.parse(card.state), {
+            company: "Ambermill",
+            round: 1,
+            question: "Which country is Ambermill in? It sets tax words and date formats.",
+          });
+        }
+        assert.deepStrictEqual(
+          yield* waiting,
+          [rhea.personId, meera.personId].sort().map((who) => ({ who })),
+        );
+        const meeraCard = open.find((card) => card.who === meera.personId)!;
+        const rheaCard = open.find((card) => card.who === rhea.personId)!;
+        const choose = (country: string) => ({
+          orgId,
+          widgetId: meeraCard.widgetId,
+          answer: { _tag: "country" as const, country },
+        });
+        const invalid = yield* answerCountryCard([meera], choose("XX")).pipe(Effect.flip);
+        assert.strictEqual(
+          invalid.message,
+          "Country: XX isn't a country Kin knows. Write its two-letter code, like GB, US or IN.",
+        );
+        assert.deepStrictEqual(yield* cards, open);
+        yield* OwnerMoney.setCompanyProfile([rhea], {
+          orgId,
+          rev: (yield* readProfile(orgId)).rev,
+          homeCurrency: "CAD",
+        });
+        const saved = yield* answerCountryCard([meera], choose("US"));
+        assert.strictEqual(saved.homeCurrency, "CAD");
+        assert.strictEqual(saved.country, "US");
+        assert.strictEqual((yield* readProfile(orgId)).country, "US");
+        const closed = yield* cards;
+        for (const card of closed) {
+          assert.isNotNull(card.closedAt);
+          assert.deepStrictEqual(JSON.parse(card.state), {
+            company: "Ambermill",
+            round: 1,
+            question: "Which country is Ambermill in? It sets tax words and date formats.",
+            answered: { _tag: "chose", by: "Meera", country: "US" },
+          });
+        }
+        assert.isEmpty(yield* waiting);
+        const refusal = yield* answerCountryCard([rhea], {
+          ...choose("GB"),
+          widgetId: rheaCard.widgetId,
+        }).pipe(Effect.flip);
+        assert.strictEqual(refusal.reason, "invalid_state");
+        assert.strictEqual(
+          refusal.message,
+          "Meera already chose United States. Change it in Settings, Company details.",
+        );
+        assert.deepStrictEqual(yield* answerCountryCard([meera], choose("US")), saved);
+        assert.deepStrictEqual(yield* cards, closed);
+      }),
+    ),
+  );
+
+  it.effect("asks again after thirty days, then stops after a second Not now", () =>
+    runCountryCards(({ orgId, rhea, meera, cards, tick, sql }) =>
+      Effect.gen(function* () {
+        const roundDelay = 30 * 24 * 60 * 60 * 1000;
+        const state = sql<{
+          ask: string;
+          rev: number;
+        }>`SELECT json_extract(profile_json, '$.countryAsk')
+            AS ask, rev FROM kin_company_profile WHERE org_id = ${orgId}`;
+        const saved = yield* setProfile(orgId, rhea, { homeCurrency: "CAD" }, undefined);
+        yield* tick;
+        const first = yield* cards;
+        assert.lengthOf(first, 2);
+        assert.deepStrictEqual(yield* state, [
+          { ask: JSON.stringify({ round: 1, nextAt: null }), rev: saved.rev },
+        ]);
+        const postpone = (widgetId: KinWidgetId) =>
+          answerCountryCard([rhea], { orgId, widgetId, answer: { _tag: "not_now" } });
+        const firstId = first.find((card) => card.who === rhea.personId)!.widgetId;
+        const nextAt = (yield* Clock.currentTimeMillis) + roundDelay;
+        yield* postpone(firstId);
+        const deferred = yield* cards;
+        for (const card of deferred) {
+          assert.isNotNull(card.closedAt);
+          assert.deepInclude(JSON.parse(card.state), {
+            answered: { _tag: "not_now", by: "Rhea", round: 1 },
+          });
+        }
+        assert.deepStrictEqual(yield* state, [
+          { ask: JSON.stringify({ round: 1, nextAt }), rev: saved.rev },
+        ]);
+        const edited = yield* OwnerMoney.setCompanyProfile([meera], {
+          orgId,
+          rev: saved.rev,
+          address: "1 Mill Road",
+        });
+        assert.deepStrictEqual(yield* state, [
+          { ask: JSON.stringify({ round: 1, nextAt }), rev: edited.rev },
+        ]);
+
+        yield* TestClock.adjust(roundDelay - 1);
+        yield* tick;
+        assert.deepStrictEqual(yield* cards, deferred);
+        yield* TestClock.adjust(1);
+        yield* tick;
+        const second = (yield* cards).filter((card) => card.closedAt === null);
+        assert.lengthOf(second, 2);
+        for (const card of second) assert.strictEqual(JSON.parse(card.state).round, 2);
+        const secondId = second.find((card) => card.who === rhea.personId)!.widgetId;
+        assert.deepStrictEqual(yield* postpone(secondId), edited);
+        assert.deepStrictEqual(yield* state, [
+          { ask: JSON.stringify({ round: 2, nextAt: null, done: true }), rev: edited.rev },
+        ]);
+        const finished = yield* cards;
+        assert.lengthOf(finished, 4);
+        for (const card of finished.filter((one) =>
+          second.some((original) => one.widgetId === original.widgetId),
+        )) {
+          assert.isNotNull(card.closedAt);
+          assert.deepInclude(JSON.parse(card.state), {
+            answered: { _tag: "not_now", by: "Rhea", round: 2 },
+          });
+        }
+        yield* TestClock.adjust(roundDelay);
+        assert.deepStrictEqual(yield* postpone(secondId), edited);
+        yield* tick;
+        assert.deepStrictEqual(yield* cards, finished);
+      }),
+    ),
   );
 
   it.effect("wakes each agent refused for want of the country once, where it was refused", () =>
@@ -6026,7 +6411,9 @@ describe("money answers", () => {
           spent: "$300.00",
           notCounted: [{ currency: "EUR", spent: "€768.00" }],
         });
-        assert.deepInclude((yield* OwnerMoneyAnswers.budgets(people, { orgId })).budgets[0], {
+        const [budget] = (yield* OwnerMoneyAnswers.budgets(people, { orgId })).budgets;
+        assert.notProperty(budget, "about");
+        assert.deepInclude(budget, {
           spent: { minor: 30_000, currency: "USD" },
           notCounted: [{ currency: "EUR", spent: { minor: 76_800, currency: "EUR" } }],
         });
@@ -6118,6 +6505,44 @@ describe("money answers", () => {
           [
             ["€1,000.00", false],
             ["$500.00", false],
+          ],
+        );
+        yield* records.create(orgId, system, {
+          list: "expenses",
+          title: "Invented train fare",
+          owner,
+          state: "done",
+          category: "travel",
+          amount: { minor: 2_500_00, currency: "INR" },
+          dateAt: on("2026-11-05"),
+          originKey: "train",
+        });
+        yield* OwnerMoneyAnswers.setBudget(people, {
+          orgId,
+          category: "travel",
+          project: null,
+          currency: "INR",
+          limitMinor: 5_000_00,
+          clientRequestId: "travel-inr",
+        });
+        yield* sql`DELETE FROM kin_money_budgets
+          WHERE org_id = ${orgId} AND category = 'travel' AND currency = 'EUR'`;
+        const rates: Record<string, RecordedRate> = {
+          EUR: { invoiceCurrency: "EUR", receivedCurrency: "USD", rate: "1.10", day: "2026-11-10" },
+          INR: { invoiceCurrency: "INR", receivedCurrency: "USD", rate: "0.01", day: "2026-11-12" },
+        };
+        const read = (org: typeof orgId, from: string, to: string, asOf: number) =>
+          Effect.succeed(org === orgId && to === "USD" && asOf === now ? rates[from] : undefined);
+        const view = yield* budgetsView(orgId, now, undefined, false, read);
+        const about = {
+          total: { minor: 120_500, currency: "USD" },
+          rateDays: ["2026-11-10", "2026-11-12"],
+        };
+        assert.deepStrictEqual(
+          view.budgets.map((one) => [one.currency, one.about]),
+          [
+            ["INR", about],
+            ["USD", about],
           ],
         );
       }).pipe(Effect.provide(layer)),
@@ -7449,7 +7874,8 @@ describe("money answers", () => {
         assert.include(refused.message, "Expenses have no category Invented snacks");
 
         const now = yield* Clock.currentTimeMillis;
-        assert.deepStrictEqual(budgetsAnswer(yield* budgetsView(orgId, now)).budgets, [
+        const answer = budgetsAnswer(yield* budgetsView(orgId, now));
+        assert.deepStrictEqual(answer.budgets, [
           {
             for: "software",
             limit: "₹5,000.00",
@@ -7475,8 +7901,10 @@ describe("money answers", () => {
             status: "ok",
           },
         ]);
+        const flags = yield* budgetFlags(orgId, now);
+        assert.strictEqual(flags?.basis, answer.basis);
         assert.deepStrictEqual(
-          (yield* budgetFlags(orgId, now))?.budgets.map((one) => [one.for, one.status]),
+          flags?.budgets.map((one) => [one.for, one.status]),
           [
             ["software", "near"],
             ["travel", "over"],

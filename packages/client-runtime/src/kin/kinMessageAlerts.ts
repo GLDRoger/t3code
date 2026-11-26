@@ -1,4 +1,25 @@
+import type { KinDesktopNotice } from "@t3tools/contracts";
+import type { ClientSettings } from "@t3tools/contracts/settings";
+
 import type { KinChatListRow } from "./kinChatListRows.ts";
+import { kinNotificationDestination } from "./kinNotificationDestination.ts";
+
+export function kinDesktopNoticeShows(
+  notice: Pick<KinDesktopNotice, "ring">,
+  {
+    looking,
+    mode,
+  }: { readonly looking: boolean; readonly mode: ClientSettings["notificationMode"] },
+): { readonly banner: boolean; readonly sound: boolean } | null {
+  if (looking || mode === "off") return null;
+  return {
+    banner: mode === "notifications" || mode === "notifications-and-sound",
+    sound: notice.ring && (mode === "sound" || mode === "notifications-and-sound"),
+  };
+}
+
+export const kinDesktopNoticeDestination = ({ data }: KinDesktopNotice) =>
+  kinNotificationDestination({ chatId: data.chatId, subject: data.subject });
 
 /**
  * What a device that is open but not looked at alerts for: a chat whose unread count rose since

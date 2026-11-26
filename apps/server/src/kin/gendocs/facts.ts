@@ -9,12 +9,12 @@ import {
   readProfile,
   recordingCurrency,
 } from "../work/companyProfile.ts";
-import { regionOf, unregisteredTax } from "../work/region.ts";
+import { customerAccountsLine, regionOf, unregisteredTax } from "../work/region.ts";
 import { GST_REGIME, type TaxRegime } from "./compute.ts";
 import { logoFile, logoPath } from "./brand.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { billToAddress, billedParty, billingClientId, hasBillTo } from "../work/billTo.ts";
-import { type FieldValues, parseFields } from "../work/lists.ts";
+import { accountsForTax, type FieldValues, parseFields } from "../work/lists.ts";
 import { dayIn } from "../work/money.ts";
 import {
   countedEntry,
@@ -30,7 +30,7 @@ import {
 import { type ListDef, listDef, sensitiveKeys, stateLabel } from "../work/registers.ts";
 import { fundingOf, partnerFunded } from "../work/reimbursement.ts";
 import { findBankList } from "../work/statements/bankList.ts";
-import { issuedNumber } from "./numbering.ts";
+import { issuedDetails, issuedNumber } from "./numbering.ts";
 import {
   type Facts,
   givesMoney,
@@ -205,6 +205,14 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       ? yield* sql<Money>`SELECT amount_minor AS minor, currency FROM kin_record_payments
           WHERE org_id = ${orgId} AND payment_id = ${fields.payment}`
       : [];
+  const noteInvoice =
+    entry?.registerId === "credit_notes" && typeof fields.invoice === "string"
+      ? yield* records.get(orgId, fields.invoice)
+      : undefined;
+  const invoiceNumber =
+    noteInvoice === undefined
+      ? undefined
+      : ((yield* issuedNumber(orgId, noteInvoice.recordId)) ?? noteInvoice.key);
   const partyId = billingClientId(entry);
   const client = partyId === null ? undefined : yield* records.getById(orgId, partyId);
   const billed = billedParty(entry, client);
@@ -213,11 +221,22 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
       ? billToAddress(fields)
       : null;
   const clientFields = client === undefined ? {} : parseFields(client.fieldsJson);
+  const issued = entry === undefined ? undefined : yield* issuedDetails(orgId, entry.recordId);
   const number =
     entry === undefined
       ? null
-      : ((yield* issuedNumber(orgId, entry.recordId)) ??
-        (recipe.numbered ? null : (cellOf(fields, "number") as string | null)));
+      : (issued?.number ?? (recipe.numbered ? null : (cellOf(fields, "number") as string | null)));
+  const tax = taxRegimeOf(profile);
+  const customerAccounts =
+    entry !== undefined &&
+    hasBillTo(entry.registerId) &&
+    (issued === undefined ? accountsForTax(clientFields) : issued.taxByCustomer === 1)
+      ? {
+          line: customerAccountsLine(profile.country),
+          taxIdLabel: regionOf(profile.country)?.taxIdLabel ?? "Tax number",
+          taxNumber: billed?.taxNumber ?? null,
+        }
+      : undefined;
   // An amount the requester gives is read in the company's currency, which waits on its country.
   const home = givesMoney(recipe, given)
     ? yield* recordingCurrency(orgId, { saved: entry !== undefined })
@@ -289,7 +308,7 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         LEFT JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
         WHERE p.org_id = ${orgId} AND ${countedPayment(sql)}
           AND r.register_id IN ('invoices', 'receipts')
-          AND p.withheld = ${source.tds ? 1 : 0} AND substr(p.paid_on, 1, 7) = ${month}
+          AND p.withheld = ${source.tds ? 1 : 0} AND p.origin_key NOT LIKE 'credit_note:%' AND substr(p.paid_on, 1, 7) = ${month}
         ORDER BY p.paid_on, p.payment_id LIMIT ${MAX_ROWS}`;
       tables.set(
         input.name,
@@ -435,7 +454,11 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
         }
       }
       case "entryField":
-        return entry === undefined ? undefined : cellOf(fields, source.field);
+        return source.field === "invoice" && invoiceNumber !== undefined
+          ? invoiceNumber
+          : entry === undefined
+            ? undefined
+            : cellOf(fields, source.field);
       case "client":
         if (billed === undefined) return undefined;
         switch (source.key) {
@@ -444,7 +467,9 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
           case "address":
             return addressOverride ?? billed.address;
           case "gstin":
-            return clientTaxNumber ? billed.taxNumber : null;
+            return clientTaxNumber && (profile.country === "IN" || customerAccounts !== undefined)
+              ? billed.taxNumber
+              : null;
           case "placeOfSupply":
             return billed.place;
           default:
@@ -510,7 +535,14 @@ export const gatherFacts = Effect.fn("KinDocFacts.gather")(function* (
     input.type === "money" ||
     Object.values(input.columns).includes("money") ||
     fromSource(sourceOf(input.from), input);
-  return { facts, currency, sensitive, number, logo, tax: taxRegimeOf(profile) } satisfies Gathered;
+  return {
+    facts,
+    currency,
+    sensitive,
+    number,
+    logo,
+    tax: customerAccounts === undefined ? tax : { ...tax, customerAccounts },
+  } satisfies Gathered;
 });
 
 /**
@@ -550,7 +582,7 @@ const entryPayments = Effect.fn("KinDocFacts.entryPayments")(function* (
       (SELECT n.number FROM kin_records r
         JOIN kin_issued_numbers n ON n.org_id = r.org_id AND n.record_id = r.record_id
         WHERE r.org_id = p.org_id AND r.register_id = 'receipts' AND r.state <> 'dropped'
-          AND r.origin_key LIKE 'receipt:%'
+          AND (r.origin_key LIKE 'receipt:%' OR r.origin_key LIKE 'bank-credit:%:left')
           AND json_extract(r.fields_json, '$.payment') = p.payment_id
         ORDER BY r.created_at DESC, r.record_id DESC LIMIT 1) AS receipt
     FROM kin_record_payments p
@@ -564,8 +596,9 @@ const entryPayments = Effect.fn("KinDocFacts.entryPayments")(function* (
     receipt: row.receipt ?? (fromImport(row) ? noted.get(row.note) : undefined) ?? null,
     amount: { minor: row.minor, currency: row.currency },
     paidOn: row.paidOn,
-    kind:
-      row.withheld === 1
+    kind: row.originKey.startsWith("credit_note:")
+      ? "credit_note"
+      : row.withheld === 1
         ? "tds"
         : row.paidOn < before || row.originKey.startsWith("receipt:")
           ? "advance"

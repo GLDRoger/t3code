@@ -98,7 +98,8 @@ export type EnvironmentSubscriptionRpcTag =
   | "kin.pulse.subscribe"
   | "kin.money.subscribe"
   | "kin.open.subscribe"
-  | typeof KIN_PUSH_WS_METHODS.watch;
+  | typeof KIN_PUSH_WS_METHODS.watch
+  | typeof KIN_PUSH_WS_METHODS.desktopNotices;
 
 export type EnvironmentStreamCommandRpcTag =
   | typeof WS_METHODS.chatGptHandoffSubscribe
