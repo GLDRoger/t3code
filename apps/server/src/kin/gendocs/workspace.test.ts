@@ -39,14 +39,11 @@ it.layer(layer)("KinWorkspace", (it) => {
     Effect.gen(function* () {
       const workspace = yield* Workspace.KinWorkspace;
       const recipes = yield* workspace.recipes(orgId);
-      assert.deepStrictEqual(recipes.map((recipe) => recipe.name).sort(), [
-        "accountant-pack",
-        "credit-note",
-        "invoice",
-        "quotation",
-        "receipt",
-        "report",
-      ]);
+      const starters = Object.keys(STARTER_FILES).flatMap(
+        (file) => /^recipes\/([^/]+)\/RECIPE\.md$/.exec(file)?.[1] ?? [],
+      );
+      assert.deepStrictEqual(recipes.map((recipe) => recipe.name).sort(), starters.sort());
+      assert.include(starters, "credit-note");
       assert.deepStrictEqual(recipes[0]!.changed, { _tag: "starter" });
     }),
   );
@@ -356,15 +353,24 @@ it.layer(layer)("KinWorkspace", (it) => {
         "---\nname: report\ntitle: Report\ndescription: Old.\noutputs: [report.pdf]\n---\nOld.\n",
       );
       yield* fs.writeFileString(`${root}/recipes/report/build.mjs`, "export {};\n");
+      // And a starter that came later: this company's history has never had it.
+      yield* git(root, "checkout", "-q", "--orphan", "older");
+      yield* git(root, "rm", "-rqf", "--ignore-unmatch", "recipes/credit-note");
       yield* git(root, "add", "--all");
       yield* git(root, "commit", "-qm", "Kin's starter recipes");
-      const upgraded = yield* Effect.gen(function* () {
+      yield* git(root, "branch", "-M", "main");
+      const listed = yield* Effect.gen(function* () {
         const fresh = yield* Workspace.KinWorkspace;
-        return (yield* fresh.recipes(older)).find((one) => one.name === "report");
+        return yield* fresh.recipes(older);
       }).pipe(Effect.provide(Layer.fresh(Workspace.layer)));
+      const upgraded = listed.find((one) => one.name === "report");
       assert.deepStrictEqual(
-        [upgraded?.description, yield* fs.exists(`${root}/recipes/report/build.mjs`)],
-        [/^description: (.*)$/m.exec(STARTER_FILES["recipes/report/RECIPE.md"]!)![1], false],
+        [
+          upgraded?.description,
+          yield* fs.exists(`${root}/recipes/report/build.mjs`),
+          listed.some((one) => one.name === "credit-note"),
+        ],
+        [/^description: (.*)$/m.exec(STARTER_FILES["recipes/report/RECIPE.md"]!)![1], false, true],
       );
     }),
   );
