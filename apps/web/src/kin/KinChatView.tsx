@@ -982,6 +982,7 @@ function KinChatFeed(props: {
           <KinReplyFooter
             standalone
             message={item.message}
+            buttons={item.buttons}
             environmentId={props.environmentId}
             orgId={props.orgId}
             connected={props.connected}

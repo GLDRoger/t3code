@@ -156,12 +156,19 @@ export const replyGroupKey = (key: string | null) =>
     ? key.replace(CONTINUATION_SUFFIX, "")
     : null;
 
-export const isContinuation = (sql: SqlClient.SqlClient, alias: "m") => {
+export const isContinuation = (sql: SqlClient.SqlClient, alias: "m" | "reply") => {
   const key = sql(`${alias}.client_message_id`);
   return sql`COALESCE((
     (${key} GLOB 'send:reply:*' OR ${key} GLOB 'send:kin-send:*')
     AND (${key} GLOB '*~b[2-9]' OR ${key} GLOB '*~b[1-9][0-9]*')
   ), 0)`;
+};
+
+export const replyGroupKeySql = (sql: SqlClient.SqlClient, alias: "m" | "reply") => {
+  const key = sql(`${alias}.client_message_id`);
+  return sql`CASE WHEN ${sql(`${alias}.silent`)} = 1 AND ${isContinuation(sql, alias)}
+    THEN substr(${key}, 1, length(rtrim(${key}, '0123456789')) - 2)
+    ELSE ${key} END`;
 };
 
 const decodeHistory = Schema.decodeEffect(KinChatHistoryInput);
