@@ -527,7 +527,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
   kin_github_read: McpToolAccess.readsAsCaller(
     Effect.fn("KinLeadToolkit.githubRead")(function* (input) {
       const lead = yield* resolveLead(yield* McpInvocationContext);
-      return yield* readRepo(lead, input).pipe(Effect.provide(ghApiLayer));
+      return yield* readRepo(lead, input);
     }, Effect.mapError(failure)),
   ),
   kin_github_review_ask: McpToolAccess.actsAsCaller(

@@ -9,14 +9,15 @@ import { effectiveAudience, SHARED_REFUSAL } from "../lead/Audience.ts";
 import { markOutside } from "../lead/OutsideContent.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import { isOwnerHimself } from "../people/KinAccess.ts";
-import { type ApiAnswer, DIFF_CAP, KinGitHubApi, pieceEnd, refusedFor } from "./GitHubWatch.ts";
-import { isMemoryRepo, repoList } from "./githubWatchStore.ts";
+import { type ApiAnswer, DIFF_CAP, pieceEnd, refusedFor } from "./GitHubWatch.ts";
+import { isMemoryRepo, memoryRepos } from "./githubWatchStore.ts";
+import { gitHubApp, type KinGitHubAppRead } from "./KinGitHubApp.ts";
 import { askerOf, maySee } from "./reviewAsk.ts";
 
 /**
- * `kin_github_read`: a folder, a file or a code search in one of the company's repos, read through
- * Kin's GitHub connection with GET calls only. In a turn someone besides the owner reads, a
- * private repo opens only for the person asking, by the review ask's own check (`maySee`).
+ * `kin_github_read`: a folder, a file or a code search in a repo Kin's GitHub App is installed on,
+ * read as the App with GET calls only, never as the owner's login. In a turn someone besides the
+ * owner reads, a private repo opens only for the person asking, by the review ask's check (`maySee`).
  */
 
 export const ReadInput = Schema.Struct({
@@ -67,11 +68,13 @@ export const ReadResult = Schema.Struct({
 
 const NOTHING = "Nothing was read.";
 export const READ_REFUSAL = {
-  disconnected: `GitHub isn't connected to Kin. The owner or a co-owner connects it in Settings, Connections, GitHub. ${NOTHING}`,
+  noApp: `Reading a repo needs Kin's GitHub App: the owner connects it in Settings, Connections, GitHub. ${NOTHING}`,
   memory: (repo: string) =>
     `${repo} is Kin's memory repo, which this tool doesn't read. ${NOTHING}`,
   unreached: (repo: string) =>
-    `${repo} isn't a repo Kin's GitHub connection reaches, so nothing was read. Only the owner can add it, in Settings, Connections.`,
+    `Kin's GitHub App isn't installed on ${repo}, so nothing was read. Only the owner can add it, in Settings, Connections, GitHub.`,
+  moved: (repo: string) =>
+    `GitHub says ${repo} has moved or been renamed, and Kin reads a repo only by its current name: ask for that one. ${NOTHING}`,
   notHere: (repo: string) =>
     `${repo} is private, and Kin opens a private repo only in a person's own chat with you, for that person. ${NOTHING} Tell them that in one line.`,
   noLogin: (repo: string, name: string) =>
@@ -133,6 +136,9 @@ const Entry = Schema.Struct({
   path: Schema.String,
   size: Schema.optional(Schema.Number),
 });
+const decodeRepo = Schema.decodeUnknownOption(
+  Schema.Struct({ id: Schema.Int, full_name: Schema.String, private: Schema.Boolean }),
+);
 const decodeEntries = Schema.decodeUnknownOption(Schema.Array(Entry));
 const decodeFile = Schema.decodeUnknownOption(
   Schema.Struct({
@@ -169,6 +175,30 @@ const textOf = (bytes: Uint8Array) => {
   }
 };
 
+/** Answers here are small JSON: anything cut is not one Kin reads. */
+const META_LIMIT = 256 * 1024;
+/** A folder's listing, or a file under 1 MB, base64 in JSON. */
+const CONTENTS_LIMIT = 2 * 1024 * 1024;
+/** The most of a larger file, raw, that one read takes in. */
+const RAW_LIMIT = 1024 * 1024;
+const parsed = (answer: KinGitHubAppRead): unknown => {
+  if (answer.cut) return null;
+  try {
+    const text = new TextDecoder().decode(answer.bytes);
+    return text.trim() === "" ? null : JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
+/** As the watch's own answers read, for `maySee` and `refusedFor`. */
+const asApi = (answer: KinGitHubAppRead): ApiAnswer => ({
+  status: answer.status,
+  headers: answer.headers,
+  body: parsed(answer),
+  text: "",
+});
+const moved = (status: number) => status >= 300 && status < 400;
+
 const refuse = (
   message: string,
   reason: "not_allowed" | "not_found" | "unavailable" = "not_allowed",
@@ -179,24 +209,24 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
   input: typeof ReadInput.Type,
 ) {
   if (!(yield* toolAdmitted(lead, "kin_github_read", input))) return yield* refuse(SHARED_REFUSAL);
-  const api = yield* KinGitHubApi;
-  const account = yield* api.connected();
-  if (account === null) return yield* refuse(READ_REFUSAL.disconnected);
+  const app = Option.getOrUndefined(yield* gitHubApp);
+  if (app?.reader === undefined || (yield* app.state())._tag !== "ok")
+    return yield* refuse(READ_REFUSAL.noApp);
   const named = input.repo.trim();
   if (yield* isMemoryRepo(named)) return yield* refuse(READ_REFUSAL.memory(named));
-  const entry = (yield* repoList(lead.orgId)).find(
-    (one) => one.repo.toLowerCase() === named.toLowerCase(),
-  );
-  if (entry === undefined) return yield* refuse(READ_REFUSAL.unreached(named));
-  const repo = entry.repo;
   const segments = (input.path ?? "").split("/").filter((segment) => segment !== "");
   if (segments.some((segment) => segment === "." || segment === ".."))
     return yield* refuse(READ_REFUSAL.path);
   const path = segments.join("/");
+  const reader = yield* app.reader(named);
+  if (reader === undefined) return yield* refuse(READ_REFUSAL.unreached(named));
 
-  const get = (target: string, headers?: Record<string, string>) =>
-    api.call({ method: "GET", path: target, ...(headers === undefined ? {} : { headers }) });
+  const get = (target: string, headers?: Record<string, string>, limit = META_LIMIT) =>
+    reader
+      .get(target, { limit, ...(headers?.Accept === undefined ? {} : { accept: headers.Accept }) })
+      .pipe(Effect.map(asApi));
   const failed = Effect.fn("KinGitHubRepoRead.failed")(function* (answer: ApiAnswer) {
+    if (moved(answer.status)) return yield* refuse(READ_REFUSAL.moved(named));
     const refused = refusedFor(answer, yield* Clock.currentTimeMillis);
     if (refused === undefined) return yield* refuse(READ_REFUSAL.unreachable, "unavailable");
     const now = yield* Clock.currentTimeMillis;
@@ -210,6 +240,27 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
     );
   });
 
+  // The repo as the App sees it now: a repo taken off the App is gone at once, whatever the
+  // owner's own login sees, and it is held by its id from here on.
+  const about = yield* get(`repos/${named}`);
+  if (about.status === 404) return yield* refuse(READ_REFUSAL.unreached(named));
+  const found = about.status === 200 ? decodeRepo(about.body) : Option.none();
+  if (Option.isNone(found)) return yield* failed(about);
+  if (found.value.full_name.toLowerCase() !== named.toLowerCase())
+    return yield* refuse(READ_REFUSAL.moved(named));
+  const repo = found.value.full_name;
+  const repoId = found.value.id;
+  // Kin's memory repo by its id too, under whatever name it is asked for.
+  for (const memory of yield* memoryRepos) {
+    const own = yield* app.reader(memory);
+    const id =
+      own === undefined
+        ? Option.none()
+        : decodeRepo(parsed(yield* own.get(`repos/${memory}`, { limit: META_LIMIT })));
+    if (Option.isSome(id) && id.value.id === repoId)
+      return yield* refuse(READ_REFUSAL.memory(named));
+  }
+
   // A turn someone besides the owner reads opens a private repo only for its one asker.
   if ((yield* effectiveAudience(lead)) !== "owner_only") {
     const asker = yield* askerOf(lead);
@@ -218,10 +269,7 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
       WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`;
     const himself =
       asker !== undefined && isOwnerHimself({ personId: agent?.owner ?? "" }, asker.personId);
-    const may = yield* maySee(get, repo, {
-      himself,
-      login: asker === undefined ? null : (asker.login ?? (himself ? account.login : null)),
-    });
+    const may = yield* maySee(get, repo, { himself, login: asker?.login ?? null });
     if (typeof may !== "string") return yield* failed(may);
     if (may === "no")
       return yield* refuse(
@@ -277,7 +325,7 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
     ref = read.value.head.sha;
   }
   const contents = `repos/${repo}/contents${path === "" ? "" : `/${segments.map(encodeURIComponent).join("/")}`}${ref === undefined ? "" : `?ref=${encodeURIComponent(ref)}`}`;
-  const answer = yield* get(contents);
+  const answer = yield* get(contents, undefined, CONTENTS_LIMIT);
   if (answer.status === 404)
     return yield* refuse(READ_REFUSAL.missing(repo, path, at), "not_found");
   if (answer.status !== 200) return yield* failed(answer);
@@ -305,12 +353,14 @@ export const readRepo = Effect.fn("KinGitHubRepoRead.read")(function* (
     text = textOf(Buffer.from(file.value.content ?? "", "base64"));
   } else {
     // GitHub sends a file over 1 MB only raw.
-    const raw = yield* get(contents, { Accept: "application/vnd.github.raw" });
-    if (raw.status !== 200) return yield* failed(raw);
-    partial = raw.truncated === true;
+    const raw = yield* reader.get(contents, {
+      accept: "application/vnd.github.raw",
+      limit: RAW_LIMIT,
+    });
+    if (raw.status !== 200) return yield* failed(asApi(raw));
+    partial = raw.cut;
     // A cut answer's last line may be cut too: only whole lines are shown.
-    const whole = partial ? raw.text.slice(0, raw.text.lastIndexOf("\n") + 1) : raw.text;
-    text = whole.includes("\u0000") ? undefined : whole;
+    text = textOf(partial ? raw.bytes.subarray(0, raw.bytes.lastIndexOf(10) + 1) : raw.bytes);
   }
   if (text === undefined) return { repo, ref: at, path, next: READ_REFUSAL.binary(path, size) };
   const page = filePage(text, input.line);

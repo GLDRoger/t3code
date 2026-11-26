@@ -68,6 +68,8 @@ import {
 } from "./askedFor.ts";
 import { emptyWorld, FakeGitHub, ghApiOutput, ghApiStderr, runGh } from "./fakeGitHub.ts";
 import * as GitHubWatch from "./GitHubWatch.ts";
+import { KinGitHubApp, make as makeApp } from "./KinGitHubApp.ts";
+import { appHost, fakeHttp, installApp } from "./KinGitHubApp.testkit.ts";
 import { setRepo } from "./githubWatchStore.ts";
 import { headKey, POSTING } from "./boundReview.ts";
 import { READ_NEXT, READ_REFUSAL } from "./repoRead.ts";
@@ -89,6 +91,8 @@ const MEMORY = "ambermill/kin-memory";
 const LEDGER = "ambermill/ledger";
 const BUSY = "ambermill/busy";
 const OWNER_LOGIN = "rhea-gh";
+const NOTES = "ambermill/notes";
+const MOVED = "ambermill/old-app";
 const providerInstanceId = ProviderInstanceId.make("codex");
 const tech = KinAgentId.make("tech");
 const decodeEvent = Schema.decodeUnknownSync(Schema.fromJsonString(KinEvent));
@@ -152,7 +156,7 @@ const watchApi = (github: FakeGitHub) =>
       }),
   });
 
-const harness = (config: Record<string, unknown> = {}) => {
+const harness = (config: Record<string, unknown> = {}, options: { readonly app?: true } = {}) => {
   const github = new FakeGitHub(emptyWorld(OWNER_LOGIN, 0));
   for (const repo of [APP, SITE, BATCH, MEMORY, BUSY])
     github.addRepo({ full_name: repo, private: false });
@@ -166,11 +170,16 @@ const harness = (config: Record<string, unknown> = {}) => {
       );
     }),
   );
+  // Kin's GitHub App over the same fake, set up but installed only where a test says.
+  const app = Layer.effect(KinGitHubApp, makeApp).pipe(
+    Layer.provide(Layer.mergeAll(fakeHttp(github), appHost({ appId: "9001" }))),
+  );
   const layer = Layer.mergeAll(
     McpHttpServer.toolkitRegistration(KinLeadToolkit, leadHandlers),
     KinToolGate.layer,
   ).pipe(
     Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+    Layer.provideMerge(options.app === true ? app : Layer.empty),
     Layer.provideMerge(fakeLogin(github)),
     // Kin's memory repo, which the watch and an ask both leave alone; past Kin's own config.
     Layer.provideMerge(
@@ -1456,7 +1465,7 @@ it.effect(
 it.effect(
   "a repo is read for whoever GitHub lets see it: a folder, a file whole or by lines, a search, at a ref; everything else is its one line",
   () => {
-    const { github, layer } = harness();
+    const { github, layer } = harness({}, { app: true });
     return Effect.gen(function* () {
       const late = "export const lateAfter = (eta: number) => eta + 15 * 60_000;\n";
       const long = Array.from({ length: 3000 }, (_, index) => `const line${index} = ${index};`);
@@ -1485,6 +1494,10 @@ it.effect(
       repoOf(LEDGER).files = { main: { "totals.ts": "export const round = Math.round;\n" } };
       repoOf(SITE).files = { main: { "index.html": "<h1>Late alerts</h1>\n" } };
       repoOf(SITE).unindexed = true;
+      // Kin's memory repo, as GitHub also answers it under another name, by the same id.
+      repoOf(MEMORY).id = 77;
+      github.addRepo({ full_name: NOTES, private: true, id: 77 });
+      github.addRepo({ full_name: MOVED, private: false, movedTo: APP });
       const { ask, directOf, sql, orgId, owner } = yield* ambermill(github);
       yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
         VALUES ('room', ${orgId}, 'team_group', 0, ${at})`;
@@ -1521,6 +1534,25 @@ it.effect(
       };
       const first = longPage(1);
       const second = longPage(first.to + 1);
+      const byLogin = (from: number) =>
+        github.requests.slice(from).filter((request) => request.by === "login");
+
+      // Without Kin's GitHub App nothing is read, and nothing asks GitHub as the owner's login.
+      yield* ask("zoya", chatOf.zoya, "Read without the App");
+      const unasked = github.requests.length;
+      assert.deepStrictEqual(
+        (yield* read({ repo: APP, path: "README.md" })).value,
+        refusal(READ_REFUSAL.noApp),
+      );
+      assert.deepStrictEqual(github.requests.slice(unasked), []);
+      const installation = {
+        id: 7,
+        account: "ambermill",
+        repos: [APP, SITE, LEDGER, MEMORY, NOTES, MOVED],
+        permissions: { contents: "read", metadata: "read", pull_requests: "read" },
+      };
+      installApp(github, [installation]);
+      yield* (yield* KinGitHubApp).refresh();
 
       const table: ReadonlyArray<{
         readonly name: string;
@@ -1528,9 +1560,10 @@ it.effect(
         readonly args: Record<string, unknown>;
         readonly ownerOnly?: true;
         readonly before?: (now: number) => void;
+        readonly after?: () => void;
         readonly answer?: Record<string, unknown>;
         readonly refused?: Record<string, unknown>;
-        /** No call reached GitHub's visibility or collaborator reads. */
+        /** No call reached GitHub's collaborator reads. */
         readonly unchecked?: true;
       }> = [
         {
@@ -1708,6 +1741,34 @@ it.effect(
           unchecked: true,
         },
         {
+          name: "Kin's memory repo under another name, by its id",
+          who: "owner",
+          ownerOnly: true,
+          args: { repo: NOTES },
+          refused: refusal(READ_REFUSAL.memory(NOTES)),
+          unchecked: true,
+        },
+        {
+          name: "a repo taken off the App a moment ago, which the owner's own login still reads",
+          who: "zoya",
+          args: { repo: SITE, path: "index.html" },
+          before: () => {
+            installation.repos = installation.repos.filter((name) => name !== SITE);
+          },
+          after: () => {
+            installation.repos.push(SITE);
+          },
+          refused: refusal(READ_REFUSAL.unreached(SITE)),
+          unchecked: true,
+        },
+        {
+          name: "a repo GitHub says has moved, whose redirect Kin doesn't follow",
+          who: "zoya",
+          args: { repo: MOVED, path: "README.md" },
+          refused: refusal(READ_REFUSAL.moved(MOVED)),
+          unchecked: true,
+        },
+        {
           name: "a private repo for a collaborator",
           who: "dev",
           args: { repo: LEDGER, path: "totals.ts" },
@@ -1752,7 +1813,7 @@ it.effect(
           },
         },
         {
-          name: "the owner alone reads any connected repo, with no check on GitHub",
+          name: "the owner alone reads any repo the App is on, with no collaborator check",
           who: "owner",
           ownerOnly: true,
           args: { repo: LEDGER, path: "totals.ts" },
@@ -1804,11 +1865,14 @@ it.effect(
         if (row.ownerOnly === true) yield* recordAudience(turn, "owner_only");
         if (limit !== undefined) github.world.limit = limit;
         const calls = github.world.calls.length;
+        const requests = github.requests.length;
         const called = yield* read(row.args);
+        row.after?.();
         const checked = github.world.calls
           .slice(calls)
-          .filter((call) => /^GET repos\/[^/]+\/[^/]+(?:\/collaborators\/.*)?$/.test(call));
+          .filter((call) => /^GET repos\/[^/]+\/[^/]+\/collaborators\//.test(call));
         if (row.unchecked === true) assert.deepStrictEqual(checked, [], row.name);
+        assert.deepStrictEqual(byLogin(requests), [], row.name);
         const stamp = yield* outsideStamp(turn);
         if (row.refused !== undefined) {
           assert.deepStrictEqual(called.value, row.refused, row.name);

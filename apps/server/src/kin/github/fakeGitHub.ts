@@ -31,6 +31,10 @@ export interface FakeRepo {
   files?: Record<string, Record<string, string>>;
   /** GitHub's code search hasn't indexed it: a search finds nothing. */
   unindexed?: boolean;
+  /** GitHub's id for it; by default from its place in the world. */
+  id?: number;
+  /** Renamed: GitHub answers this name with a 301 to the new one. */
+  movedTo?: string;
 }
 export interface FakeRuleset {
   id: number;
@@ -193,6 +197,8 @@ export interface FakeWorld {
   modified: number;
   eventsVersion: number;
   calls: string[];
+  /** A repo whose matches code search adds to every search, as a mis-scoped answer would. */
+  searchLeak?: string;
 }
 
 export interface FakeAnswer {
@@ -224,8 +230,12 @@ const httpDate = (ms: number) => new Date(Math.floor(ms / 1000) * 1000).toUTCStr
 
 export class FakeGitHub {
   readonly world: FakeWorld;
-  /** Every call, and whether it asked only for what changed (an ETag or a date). */
-  readonly requests: Array<{ readonly call: string; readonly conditional: boolean }> = [];
+  /** Every call, whether it asked only for what changed (an ETag or a date), and as whom. */
+  readonly requests: Array<{
+    readonly call: string;
+    readonly conditional: boolean;
+    by?: "app" | "installation" | "login";
+  }> = [];
   constructor(world: FakeWorld) {
     this.world = world;
   }
@@ -481,7 +491,7 @@ export class FakeGitHub {
     const index = this.world.repos.findIndex(
       (repo) => repo.full_name.toLowerCase() === fullName.toLowerCase(),
     );
-    return index < 0 ? undefined : 2000 + index;
+    return index < 0 ? undefined : (this.world.repos[index]!.id ?? 2000 + index);
   }
   /** The repos an installation reaches: all of the account's under `all`, else those picked. */
   installedRepos(installation: FakeApp["installations"][number]) {
@@ -767,42 +777,57 @@ export class FakeGitHub {
     };
   }
 
-  /** GitHub's code search, `repo:` qualified, on the default branch; text matches when asked. */
-  private searchCode(params: URLSearchParams, headers: Record<string, string>): FakeAnswer {
+  /**
+   * GitHub's code search on the default branch, text matches when asked: each unquoted `repo:`
+   * adds a repo, as GitHub reads it; a quoted phrase is words only. An installation reaches only
+   * its own repos; `searchLeak` stands for an answer GitHub scoped wrongly.
+   */
+  private searchCode(
+    params: URLSearchParams,
+    headers: Record<string, string>,
+    reached?: ReadonlyArray<string>,
+  ): FakeAnswer {
     const query = params.get("q") ?? "";
-    const scoped = /(?:^|\s)repo:(\S+)/.exec(query)?.[1];
-    const words = query
-      .replace(/(?:^|\s)repo:\S+/, " ")
-      .trim()
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((word) => word !== "");
-    const repo = this.world.repos.find(
-      (entry) => entry.full_name.toLowerCase() === scoped?.toLowerCase(),
+    const scopes: string[] = [];
+    const words: string[] = [];
+    for (const [, phrase, bare] of query.matchAll(/"([^"]*)"|(\S+)/g)) {
+      if (bare !== undefined && bare.startsWith("repo:")) scopes.push(bare.slice(5).toLowerCase());
+      else words.push(...(phrase ?? bare ?? "").toLowerCase().split(/\s+/));
+    }
+    const terms = words.filter((word) => word !== "");
+    const repos = this.world.repos.filter(
+      (entry) =>
+        scopes.includes(entry.full_name.toLowerCase()) &&
+        (reached === undefined ||
+          reached.some((name) => name.toLowerCase() === entry.full_name.toLowerCase())),
     );
-    if (repo === undefined || words.length === 0)
+    if (scopes.length === 0 || terms.length === 0)
       return { status: 422, headers: {}, body: { message: "Validation Failed" } };
-    const files = repo.unindexed === true ? {} : (this.filesAt(repo, null) ?? {});
-    const items = Object.entries(files)
-      .filter(([, text]) => words.every((word) => text.toLowerCase().includes(word)))
-      .map(([path, text]) => ({
-        name: path.split("/").at(-1),
-        path,
-        repository: { full_name: repo.full_name },
-        ...(headers.accept === "application/vnd.github.text-match+json"
-          ? {
-              text_matches: [
-                {
-                  fragment: text
-                    .split("\n")
-                    .filter((line) => line.toLowerCase().includes(words[0]!))
-                    .slice(0, 2)
-                    .join("\n"),
-                },
-              ],
-            }
-          : {}),
-      }));
+    const leak = this.world.repos.find(
+      (entry) => entry.full_name.toLowerCase() === this.world.searchLeak?.toLowerCase(),
+    );
+    const items = [...repos, ...(leak === undefined ? [] : [leak])].flatMap((repo) =>
+      Object.entries(repo.unindexed === true ? {} : (this.filesAt(repo, null) ?? {}))
+        .filter(([, text]) => terms.every((word) => text.toLowerCase().includes(word)))
+        .map(([path, text]) => ({
+          name: path.split("/").at(-1),
+          path,
+          repository: { id: this.repoId(repo.full_name), full_name: repo.full_name },
+          ...(headers.accept === "application/vnd.github.text-match+json"
+            ? {
+                text_matches: [
+                  {
+                    fragment: text
+                      .split("\n")
+                      .filter((line) => line.toLowerCase().includes(terms[0]!))
+                      .slice(0, 2)
+                      .join("\n"),
+                  },
+                ],
+              }
+            : {}),
+        })),
+    );
     return {
       status: 200,
       headers: {},
@@ -820,11 +845,12 @@ export class FakeGitHub {
     const url = new URL(rawPath.replace(/^\/?/, "/"), "https://api.github.com");
     const path = url.pathname.replace(/^\//, "");
     this.world.calls.push(`${method} ${path}`);
-    this.requests.push({
+    const request: (typeof this.requests)[number] = {
       call: `${method} ${path}`,
       conditional:
         headers["if-none-match"] !== undefined || headers["if-modified-since"] !== undefined,
-    });
+    };
+    this.requests.push(request);
     const ok = (value: unknown, extra: Record<string, string> = {}): FakeAnswer => ({
       status: method === "POST" ? 201 : 200,
       headers: extra,
@@ -862,6 +888,7 @@ export class FakeGitHub {
     if (minted !== undefined && minted.expiresAt <= this.world.now)
       return { status: 401, headers: {}, body: { message: "Bad credentials" } };
     const installation = app?.installations.find((entry) => entry.id === minted?.installation);
+    request.by = asApp ? "app" : installation !== undefined ? "installation" : "login";
     const actor = installation === undefined ? this.world.user : `${app!.slug}[bot]`;
     const association = actor === this.world.user ? "OWNER" : "NONE";
     // As real GitHub: the App's JWT works only on `/app…`, which take nothing else, and
@@ -964,7 +991,10 @@ export class FakeGitHub {
           repository_selection: installation.selection ?? "selected",
           repositories: reached.map((full_name) => ({ full_name })),
         });
-      const scoped = /^repos\/([^/]+\/[^/]+)\//.exec(path)?.[1]?.toLowerCase();
+      // Code search reaches only the installation's repos; any other call names one of them.
+      if (method === "GET" && path === "search/code")
+        return this.searchCode(url.searchParams, headers, reached);
+      const scoped = /^repos\/([^/]+\/[^/]+)(?:\/|$)/.exec(path)?.[1]?.toLowerCase();
       if (scoped === undefined || !reached.some((repo) => repo.toLowerCase() === scoped))
         return { status: 404, headers: {}, body: { message: "Not Found" } };
     }
@@ -1133,6 +1163,19 @@ export class FakeGitHub {
     }
     if (method === "GET" && path === "search/code")
       return this.searchCode(url.searchParams, headers);
+    const moved = this.world.repos.find(
+      (entry) =>
+        entry.movedTo !== undefined &&
+        path.toLowerCase().startsWith(`repos/${entry.full_name.toLowerCase()}`),
+    );
+    if (moved !== undefined)
+      return {
+        status: 301,
+        headers: {
+          location: `https://api.github.com/repos/${moved.movedTo}${path.slice(`repos/${moved.full_name}`.length)}`,
+        },
+        body: { message: "Moved Permanently" },
+      };
     const whole = /^repos\/([^/]+\/[^/]+)$/.exec(path);
     if (method === "GET" && whole !== null) {
       const repo = this.world.repos.find(
@@ -1140,7 +1183,11 @@ export class FakeGitHub {
       );
       return repo === undefined
         ? missing
-        : ok({ full_name: repo.full_name, private: repo.private });
+        : ok({
+            id: this.repoId(repo.full_name),
+            full_name: repo.full_name,
+            private: repo.private,
+          });
     }
     const match = /^repos\/([^/]+\/[^/]+)\/(.*)$/.exec(path);
     if (match === null) return missing;
