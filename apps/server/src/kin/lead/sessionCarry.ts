@@ -35,6 +35,7 @@ export interface CarryFacts {
   readonly sameToolList: boolean;
   readonly sameLead: boolean;
   readonly sameMembers: boolean;
+  readonly sameLists: boolean;
   readonly paused: boolean;
   readonly sameStanding: boolean;
   readonly indexLinesChanged: number;
@@ -73,15 +74,17 @@ export function decideCarry(facts: CarryFacts) {
                             ? "lead"
                             : !facts.sameMembers
                               ? "members"
-                              : facts.paused
-                                ? "paused"
-                                : !facts.sameStanding
-                                  ? "standing"
-                                  : facts.indexLinesChanged > CARRY_INDEX_LINES
-                                    ? "index"
-                                    : facts.missed
-                                      ? "missed"
-                                      : undefined;
+                              : !facts.sameLists
+                                ? "lists"
+                                : facts.paused
+                                  ? "paused"
+                                  : !facts.sameStanding
+                                    ? "standing"
+                                    : facts.indexLinesChanged > CARRY_INDEX_LINES
+                                      ? "index"
+                                      : facts.missed
+                                        ? "missed"
+                                        : undefined;
   return reason === undefined ? { carry: true as const } : { carry: false as const, reason };
 }
 
@@ -112,6 +115,7 @@ const Fingerprint = Schema.Struct({
   instructions: Schema.NullOr(Schema.String),
   lead: Schema.String,
   members: Schema.String,
+  lists: Schema.optional(Schema.String),
   standing: Schema.NullOr(Schema.String),
   stop: Schema.Number,
 });
@@ -199,6 +203,9 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
     SELECT member_id, principal_kind, person_id, agent_id, role, joined_at
     FROM kin_chat_members WHERE org_id = ${orgId} AND chat_id = ${chat} AND left_at IS NULL
     ORDER BY member_id`;
+  const lists = yield* sql`
+    SELECT register_id, name, definition_json, archived_at FROM kin_registers
+    WHERE org_id = ${orgId} ORDER BY register_id`;
   const [stop] = yield* sql<{ paused: number }>`
     SELECT paused FROM kin_org_state WHERE org_id = ${orgId}`;
   const fingerprint = {
@@ -207,6 +214,7 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
     instructions: input.instructionsSha,
     lead: fingerprintJson(lead ?? null),
     members: fingerprintJson(members),
+    lists: fingerprintJson(lists),
     standing: input.prompt.standing,
     stop: input.stopRevision,
   };
@@ -311,6 +319,7 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
     sameToolList: input.toolListSha !== null && input.toolListSha === prior?.toolListSha,
     sameLead: lead !== undefined && fingerprint.lead === priorFingerprint?.lead,
     sameMembers: fingerprint.members === priorFingerprint?.members,
+    sameLists: fingerprint.lists === priorFingerprint?.lists,
     paused: stop?.paused === 1 || fingerprint.stop !== priorFingerprint?.stop,
     sameStanding:
       fingerprint.standing !== null && fingerprint.standing === priorFingerprint?.standing,
@@ -325,6 +334,7 @@ export const carryFacts = Effect.fn("KinSessionCarry.facts")(function* (
     fingerprint,
     sessionStart: adoptedInSession === undefined ? wakeupId : (sessionStart ?? wakeupId),
     carriedFrom: sessionStart ?? null,
+    sessionWakeupIds: [...history.map((member) => member.wakeupId), wakeupId],
     contextTokens: last?.contextTokens ?? null,
   };
 });
