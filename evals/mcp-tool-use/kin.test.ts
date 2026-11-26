@@ -955,7 +955,7 @@ it.effect("ranks deferred tools like Claude ToolSearch and keeps select order", 
     } as const;
     const searchName = base.nativeTools.find((tool) => tool.name.endsWith("ToolSearch"))!.name;
     const cases = [
-      ["send", ["message_send", "kin_defer", "kin_picture", "kin_relay"]],
+      ["send", ["message_send", "kin_connection_call", "kin_defer", "kin_picture", "kin_relay"]],
       ["mailbox", ["mailbox_open"]],
       ["dispatch", ["note", "draft"]],
       ["mcp__t3-code__kin_picture", ["kin_picture"]],
@@ -986,7 +986,7 @@ it.effect("ranks deferred tools like Claude ToolSearch and keeps select order", 
     });
     assert.deepEqual(
       result.content,
-      ["kin_defer", "kin_picture", "kin_relay"].map((name) => ({
+      ["kin_connection_call", "kin_defer", "kin_picture", "kin_relay"].map((name) => ({
         type: "tool_reference",
         tool_name: `mcp__t3-code__${name}`,
       })),

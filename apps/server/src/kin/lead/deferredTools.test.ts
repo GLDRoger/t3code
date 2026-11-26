@@ -16,6 +16,7 @@ import { KinDocsToolkit } from "../work/mcp/docTools.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { KIN_ALWAYS_LOADED, KIN_CLAUDE_ALWAYS_LOADED, withAlwaysLoaded } from "./deferredTools.ts";
+import { KIN_SEARCH_HINTS } from "./searchHints.ts";
 import { KinLeadToolkit } from "./mcp/tools.ts";
 
 const kinTools = [
@@ -102,4 +103,23 @@ it("puts search hints in MCP metadata only for deferred tools that have one", ()
   assert.deepInclude(metadata(tools.kin_picture), { "anthropic/searchHint": "picture hint" });
   assert.notProperty(metadata(tools.kin_schedule) ?? {}, "anthropic/searchHint");
   assert.deepEqual(metadata(tools.kin_defer), { "anthropic/alwaysLoad": true });
+});
+
+it("every deferred Kin tool has a hint, no always-loaded tool has one, no hint repeats a part of its tool's name", () => {
+  const names = kinTools.map((tool) => tool.name);
+  assert.sameMembers(
+    Object.keys(KIN_SEARCH_HINTS),
+    names.filter((name) => !KIN_CLAUDE_ALWAYS_LOADED.has(name)),
+  );
+  // Tool search already scores a tool's name parts; a hint word that shares one adds nothing.
+  const sharesName = (word: string, part: string) =>
+    word === part || (word.length >= 4 && part.length >= 4 && (word.startsWith(part) || part.startsWith(word)));
+  const misses = Object.entries(KIN_SEARCH_HINTS).flatMap(([name, hint]) => {
+    const words = hint.split(" ");
+    const repeats = words.filter((word) => name.split("_").some((part) => sharesName(word, part)));
+    return words.length < 3 || words.length > 8 || repeats.length > 0
+      ? [`${name}: ${hint}`]
+      : [];
+  });
+  assert.deepStrictEqual(misses, []);
 });
