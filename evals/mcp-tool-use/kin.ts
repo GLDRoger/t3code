@@ -35,7 +35,20 @@ import { kinInstructions } from "../../apps/server/src/kin/lead/turn/session.ts"
 import { LEAD_T3_TOOLS } from "../../apps/server/src/kin/lead/t3Tools.ts";
 import { alreadyOnIt, leftNote, passedFactBody } from "../../apps/server/src/kin/lead/Handoff.ts";
 import { ASK_REFUSAL } from "../../apps/server/src/kin/github/reviewAsk.ts";
-import { dueShows, madeIn, repeatedPromise } from "../../apps/server/src/kin/work/leadWork.ts";
+import {
+  billPaidConsequence,
+  overpaymentConsequence,
+} from "../../apps/server/src/kin/pulse/senses/bank.ts";
+import {
+  billDueConsequence,
+  noticeConsequence,
+} from "../../apps/server/src/kin/pulse/senses/money.ts";
+import {
+  dueShows,
+  madeIn,
+  repeatedPromise,
+  suggestedBillResult,
+} from "../../apps/server/src/kin/work/leadWork.ts";
 import { PEOPLE_LABEL } from "../../apps/server/src/kin/lead/peopleRead.ts";
 import {
   endOfDay,
@@ -80,6 +93,7 @@ import { cashAnswer, outlookAnswer } from "../../apps/server/src/kin/work/moneyA
 import { partnersAnswer } from "../../apps/server/src/kin/work/partnersOwed.ts";
 import { waitingLine } from "../../apps/server/src/kin/work/unconfirmedFacts.ts";
 import { budgetsAnswer } from "../../apps/server/src/kin/work/budgets.ts";
+import { goalLine } from "../../apps/server/src/kin/work/goals.ts";
 import {
   formatKinMoney,
   formatKinPicturesDay,
@@ -198,7 +212,6 @@ import {
   RESCUE_PROMPT,
 } from "../../apps/server/src/kin/reply/classify.ts";
 import { TURN_EVENT_TOOLS } from "../../apps/server/src/kin/lead/eventIds.ts";
-import { noticeConsequence } from "../../apps/server/src/kin/pulse/senses/money.ts";
 import { noticeDay } from "../../apps/server/src/kin/work/crm.ts";
 import type { McpToolUseCase } from "./run.ts";
 
@@ -619,12 +632,35 @@ const fillCardTaps = (prompt: string) =>
     return tap.wake === undefined ? event : `${event}\n\n${wake(tap.wake)}`;
   });
 
+const overpaymentCase = () =>
+  overpaymentConsequence({
+    key: "BNK-4",
+    day: "2026-11-04",
+    currency: "USD",
+    received: 220000,
+    owed: 100000,
+    client: "Tidewater Freight",
+    reason: "it cites INV-12",
+    others: [{ key: "INV-14", owed: 80000 }],
+  });
+
 export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["world"]) =>
   fillCharacters(fillCardTaps(fillGitHubTrigger(prompt, world)))
     .replaceAll("{{UNDO_RULE}}", UNDO_RULE)
     .replaceAll("{{WORK_RULE}}", WORK_RULE)
     .replaceAll("{{MONEY_RULE}}", MONEY_RULE)
     .replaceAll("{{PULSE_RULE}}", PULSE_RULE)
+    .replaceAll("{{OVERPAYMENT_CASE}}", overpaymentCase())
+    .replace(
+      /\{\{BILL_PAID_FACT:([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|([^|{}]+)\}\}/g,
+      (_, bank, amount, day, bill, vendor, due) =>
+        billPaidConsequence(bank, amount, day, bill, vendor, due),
+    )
+    .replace(
+      /\{\{BILL_DUE_FACT:([^|{}]+)\|([^|{}]+)\|([^|{}]+)\|(\d+)\}\}/g,
+      (_, amount, vendor, day, days) =>
+        billDueConsequence(amount, vendor, day, Number(days), false),
+    )
     .replaceAll("{{CHECK_IN_PULSE_RULE}}", CHECK_IN_PULSE_RULE)
     .replaceAll("{{LEFT_RULE}}", LEFT_RULE)
     .replaceAll("{{OUTSIDE_THREAD_LINE}}", OUTSIDE_THREAD_LINE)
@@ -911,6 +947,12 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
       message: `${input.key} names ${input.partner} but doesn't add up exactly to their oldest owed expenses, so Kin marks nothing and offers no card for it. Nothing was asked; tell the owner what you see instead.`,
     },
   }),
+  suggestedBill: (input: { key: string }) => suggestedBillResult(input.key),
+  billSuggestedLabel: (input: { state: "open" | "done" }) =>
+    suggestedStateLabel("expenses", input.state),
+  billDueFact: (input: { amount: string; vendor: string; day: string; days: number }) =>
+    billDueConsequence(input.amount, input.vendor, input.day, input.days, false),
+  goalLine,
   // kin_github_diff's refusal when GitHub doesn't give the diff (`reviewAsk.ts`).
   diffUnread: () => ({
     $error: { _tag: "KinChatError", reason: "not_allowed", message: DIFF_REFUSAL.unread },
@@ -1145,6 +1187,7 @@ const MOCK_RENDERERS: Record<string, (input: never) => unknown> = {
   // record_create or record_update's line for a client's printed detail kept unconfirmed.
   unconfirmed: (input: { client: string; what: string; name: string; carded: boolean }) =>
     waitingLine(input.client, input.what, input.name, input.carded),
+  overpaymentCase,
   bankAnswer: (input: { through: string | null }) =>
     bankAnswer({ through: input.through, accounts: [] }),
   cashUnknown: (input: { timeZone: string }) =>

@@ -1,4 +1,5 @@
-import { formatKinMoney, KIN_GST_STATES, kinCurrency } from "@t3tools/contracts";
+import { formatKinMoney, KIN_GST_STATES, kinCurrency, KinDocumentLine } from "@t3tools/contracts";
+import * as Schema from "effect/Schema";
 
 import type { Money, Value } from "./recipe.ts";
 
@@ -256,6 +257,7 @@ const gst = (args: {
   readonly total: Money | null;
   readonly recordedTax: Money | null;
   readonly rate: string;
+  readonly customerAccounts?: CustomerAccounts;
   readonly supplierGstin: unknown;
   readonly supplierPlace: unknown;
   readonly clientGstin: unknown;
@@ -271,7 +273,7 @@ const gst = (args: {
   const supplier = stateOf(args.supplierGstin, args.supplierPlace);
   const client = stateOf(args.clientGstin, args.clientPlace);
   const exported = client === undefined;
-  if (registered && client === null)
+  if (registered && client === null && args.customerAccounts === undefined)
     fail("the client has no place of supply and needs a GSTIN or a place of supply");
   if (registered && (supplier === null || supplier === undefined))
     fail("the company's state isn't known and it needs a GSTIN or place of supply");
@@ -281,18 +283,19 @@ const gst = (args: {
     readonly name: string;
     readonly num: bigint;
     readonly den: bigint;
-  }> = !registered
-    ? []
-    : exported
-      ? args.exportUnderLut
-        ? []
-        : [{ name: "IGST", ...rate }]
-      : supplier === client
-        ? [
-            { name: "CGST", ...half },
-            { name: UT_WITHOUT_LEGISLATURE.has(client!) ? "UTGST" : "SGST", ...half },
-          ]
-        : [{ name: "IGST", ...rate }];
+  }> =
+    !registered || args.customerAccounts !== undefined
+      ? []
+      : exported
+        ? args.exportUnderLut
+          ? []
+          : [{ name: "IGST", ...rate }]
+        : supplier === client
+          ? [
+              { name: "CGST", ...half },
+              { name: UT_WITHOUT_LEGISLATURE.has(client!) ? "UTGST" : "SGST", ...half },
+            ]
+          : [{ name: "IGST", ...rate }];
   // oxlint-disable-next-line t3code/kin-one-format -- GST is charged in rupees (finding 16 owns tax regimes).
   const currency = args.taxable?.currency ?? args.total?.currency ?? "INR";
   for (const one of [args.taxable, args.total, args.recordedTax])
@@ -332,7 +335,7 @@ const gst = (args: {
   return {
     registered,
     exported,
-    exportUnderLut: exported && args.exportUnderLut,
+    exportUnderLut: exported && args.exportUnderLut && args.customerAccounts === undefined,
     supplierState: supplier === null || supplier === undefined ? null : stateName(supplier),
     placeOfSupply:
       exported || client === null || args.notRegistered !== undefined ? null : stateName(client),
@@ -362,7 +365,12 @@ const refuseRecordedTax = (recorded: Money | null, name: string) => {
  * states, else the company's one tax at its rate (none without one), so a recipe that names `gst`
  * is right in any country.
  */
-export type TaxRegime =
+type CustomerAccounts = {
+  readonly line: string;
+  readonly taxIdLabel: string;
+  readonly taxNumber: string | null;
+};
+export type TaxRegime = (
   | { readonly _tag: "gst"; readonly notRegistered?: string }
   | {
       readonly _tag: "flat";
@@ -371,7 +379,8 @@ export type TaxRegime =
       readonly pricesInclude: boolean;
       /** The line its documents print instead: the company said it isn't registered for it. */
       readonly notRegistered?: string;
-    };
+    }
+) & { readonly customerAccounts?: CustomerAccounts };
 export const GST_REGIME: TaxRegime = { _tag: "gst" };
 let regime: TaxRegime = GST_REGIME;
 
@@ -429,6 +438,83 @@ const flatTax = (
     total: money(taxable + amount, currency),
     ...(tax.notRegistered === undefined ? {} : { notCharged: tax.notRegistered }),
   };
+};
+
+const isLineTaxRate = Schema.is(KinDocumentLine.fields.taxRate);
+
+const taxGroups = (lines: unknown, rate: string | null) => {
+  if (lines === null || lines === undefined) return null;
+  if (!Array.isArray(lines)) return fail("gst lines isn't a table");
+  const rows: readonly unknown[] = lines;
+  const cell = (row: unknown, column: string): unknown =>
+    typeof row === "object" && row !== null ? Reflect.get(row, column) : undefined;
+  if (!rows.some((row) => cell(row, "taxRate") != null)) return null;
+
+  const groups = new Map<string, Money>();
+  let explicitTax = false;
+  for (const row of rows) {
+    const explicit = cell(row, "taxRate");
+    const one = explicit == null ? (rate ?? "0") : String(explicit);
+    if (explicit != null && !isLineTaxRate(one)) fail("a line's tax rate must be from 0 to 100");
+    const { num, den } = fraction(one);
+    explicitTax ||= explicit != null && num > 0n;
+    const key = decimalText(num, den);
+    const amount = asMoney(cell(row, "amount"), "gst line amount");
+    if (amount === null) return fail("a gst line needs an amount");
+    const prior = groups.get(key);
+    if (prior !== undefined && prior.currency !== amount.currency)
+      fail(`every amount must be in ${prior.currency}`);
+    groups.set(key, money(BigInt(prior?.minor ?? 0) + BigInt(amount.minor), amount.currency));
+  }
+  return { groups, explicitTax };
+};
+
+type TaxAmounts = Parameters<typeof flatTax>[1];
+type TaxResult = ReturnType<typeof gst>;
+
+const groupedTax = (
+  groups: ReadonlyMap<string, Money>,
+  args: TaxAmounts,
+  usualRate: string,
+  pricesInclude: boolean,
+  compute: (taxable: Money, rate: string) => TaxResult,
+) => {
+  const parts = [...groups].map(([rate, amount]) => ({ rate, result: compute(amount, rate) }));
+  const first = parts[0]!.result;
+  const { currency } = first.total;
+  for (const amount of [args.total, args.taxable, args.recordedTax, ...groups.values()])
+    if (amount !== null && amount.currency !== currency)
+      fail(`every amount must be in ${currency}`);
+  const sum = (key: "tax" | "taxable" | "total") =>
+    money(
+      parts.reduce((total, { result }) => total + BigInt(result[key].minor), 0n),
+      currency,
+    );
+  const total = sum("total");
+  if (args.total !== null && args.total.minor !== total.minor)
+    fail(
+      `the lines come to ${formatMoney(total)} with tax, but the entry is recorded at ${formatMoney(args.total)}: correct the lines or the entry's amount`,
+    );
+  const tax = sum("tax");
+  if (pricesInclude && args.recordedTax !== null && args.recordedTax.minor !== tax.minor)
+    fail(
+      `the lines come to ${formatMoney(tax)} in tax, but the entry records ${formatMoney(args.recordedTax)} in tax: correct the lines or the entry's tax`,
+    );
+  return {
+    ...first,
+    taxable: sum("taxable"),
+    tax,
+    total,
+    usualRate,
+    taxes: parts.flatMap(({ rate, result }) => (rate === "0" ? [] : result.taxes)),
+  };
+};
+
+const refuseLineTax = (explicitTax: boolean | undefined, name: string) => {
+  if (explicitTax === true)
+    fail(
+      `a line specifies tax, but the company isn't registered for ${name}, so its invoices charge none`,
+    );
 };
 
 export type Block =
@@ -677,26 +763,65 @@ const evaluate = (scope: Scope, name: string, spec: Spec): unknown => {
       if (typeof arg !== "object" || arg === null || Array.isArray(arg))
         return fail(`${name}: gst takes named arguments`);
       const get = (key: string) => resolve(scope, Reflect.get(arg, key) ?? null);
-      if (regime._tag === "flat")
-        return flatTax(regime, {
-          taxable: asMoney(get("taxable"), "taxable"),
-          total: asMoney(get("total"), "total"),
-          recordedTax: asMoney(get("recordedTax"), "recordedTax"),
-        });
-      const rate = get("rate");
-      if (rate === null || rate === undefined) return fail(`${name}: gst needs a rate`);
-      return gst({
+      const args = {
         taxable: asMoney(get("taxable"), "taxable"),
         total: asMoney(get("total"), "total"),
         recordedTax: asMoney(get("recordedTax"), "recordedTax"),
-        rate: String(rate),
-        supplierGstin: get("supplierGstin"),
-        supplierPlace: get("supplierPlace"),
-        clientGstin: get("clientGstin"),
-        clientPlace: get("clientPlace"),
-        exportUnderLut: get("exportUnderLut") !== false,
-        notRegistered: regime.notRegistered,
-      });
+      };
+      const tax = regime;
+      const rate = tax._tag === "flat" ? tax.rate : get("rate");
+      if (tax._tag === "gst" && rate == null) return fail(`${name}: gst needs a rate`);
+      const usual = rate == null ? null : String(rate);
+      const grouped = taxGroups(get("lines"), usual);
+      const supplierGstin = tax._tag === "gst" ? get("supplierGstin") : null;
+      if (tax.notRegistered !== undefined) {
+        const label = tax._tag === "flat" ? tax.name : "GST";
+        refuseRecordedTax(args.recordedTax, label);
+        refuseLineTax(grouped?.explicitTax, label);
+      }
+      const customerAccounts = tax.notRegistered === undefined ? tax.customerAccounts : undefined;
+      if (
+        customerAccounts !== undefined &&
+        args.recordedTax !== null &&
+        args.recordedTax.minor !== 0
+      )
+        return fail(
+          "the entry records tax, but its client accounts for the tax, so its invoices charge none",
+        );
+
+      const indian = {
+        ...args,
+        rate: usual ?? "0",
+        supplierGstin,
+        supplierPlace: tax._tag === "gst" ? get("supplierPlace") : null,
+        clientGstin: tax._tag === "gst" ? get("clientGstin") : null,
+        clientPlace: tax._tag === "gst" ? get("clientPlace") : null,
+        exportUnderLut: tax._tag === "gst" && get("exportUnderLut") !== false,
+        notRegistered: tax.notRegistered,
+      };
+      if (customerAccounts !== undefined) {
+        const result =
+          tax._tag === "flat"
+            ? flatTax({ ...tax, rate: null }, args)
+            : gst({ ...indian, customerAccounts });
+        return { ...result, customerAccounts };
+      }
+      if (grouped === null || tax.notRegistered !== undefined)
+        return tax._tag === "flat" ? flatTax(tax, args) : gst(indian);
+      if (tax._tag === "gst" && (typeof supplierGstin !== "string" || supplierGstin === ""))
+        refuseLineTax(grouped.explicitTax, "GST");
+      return groupedTax(
+        grouped.groups,
+        args,
+        usual ?? "0",
+        tax._tag === "flat" && tax.pricesInclude,
+        (taxable, groupRate) => {
+          const group = { taxable, total: null, recordedTax: null };
+          return tax._tag === "flat"
+            ? flatTax({ ...tax, rate: groupRate }, group)
+            : gst({ ...indian, ...group, rate: groupRate });
+        },
+      );
     }
     case "markdown": {
       const text = resolve(scope, arg);
@@ -800,6 +925,15 @@ const withText = (value: unknown, done: WeakMap<object, unknown>): unknown => {
   return out;
 };
 
+const withoutEmptyLineRates = (rows: unknown) =>
+  Array.isArray(rows)
+    ? rows.map((row: unknown) => {
+        if (typeof row !== "object" || row === null || !Object.hasOwn(row, "taxRate")) return row;
+        const { taxRate, ...rest } = row as Record<string, unknown>;
+        return taxRate == null ? rest : row;
+      })
+    : rows;
+
 /**
  * What a template reads: the inputs and each computed field in order, money with its `text`.
  * A field that can't be worked out fails with a reason the agent and the owner can read.
@@ -819,6 +953,16 @@ export const computeData = (
     for (const [name, spec] of computed) {
       scope[name] = field(scope, name, spec);
       keep(name, scope[name]);
+    }
+    // The new optional column must not add a null cell to historical renderer inputs.
+    if (
+      computed.some(([, spec]) => {
+        const gst = typeof spec === "object" && spec !== null ? Reflect.get(spec, "gst") : null;
+        return typeof gst === "object" && gst !== null && Reflect.get(gst, "lines") === "items";
+      })
+    ) {
+      for (const key of ["lines", "items"])
+        if (Object.hasOwn(scope, key)) scope[key] = withoutEmptyLineRates(scope[key]);
     }
     return { data: withText(scope, new WeakMap()) as Computed };
   } catch (error) {

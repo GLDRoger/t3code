@@ -28,6 +28,8 @@ import {
 } from "./money.ts";
 import {
   countedEntry,
+  endOfDay,
+  startOfDay,
   fieldDateAt,
   countedPayment,
   isSuggestion,
@@ -470,8 +472,14 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
 
   // Received: payments on invoices, and advances on their own receipts, by the day they were paid,
   // already a day in the owner's zone. Other lists paid over time are money going out.
-  const paid = yield* sql<{ minor: number; currency: string; paidOn: string; withheld: number }>`
-    SELECT p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn", p.withheld
+  const paid = yield* sql<{
+    minor: number;
+    currency: string;
+    paidOn: string;
+    withheld: number;
+    creditNote: number;
+  }>`
+    SELECT p.amount_minor AS minor, p.currency, p.paid_on AS "paidOn", p.withheld, p.origin_key LIKE 'credit_note:%' AS "creditNote"
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND ${countedPayment(sql)}
@@ -479,7 +487,7 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
     ORDER BY p.paid_on, p.payment_id`;
   // TDS a client deducted settles the invoice, but no money came in: it is shown on its own.
   const payments = paid.filter((one) => one.withheld === 0);
-  const withheld = paid.filter((one) => one.withheld === 1);
+  const withheld = paid.filter((one) => one.withheld === 1 && one.creditNote === 0);
   const receivedIn = (month: string) =>
     addUp(
       payments.filter((one) => monthOf(one.paidOn) === month),
@@ -597,6 +605,17 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
   const { members: thisMonthSpent, ...spentThisMonth } = spentIn(thisMonth);
   const { members: lastMonthSpent, ...spentLastMonth } = spentIn(lastMonth);
   const spent = { thisMonth: spentThisMonth, lastMonth: spentLastMonth };
+  const bills = yield* sql<{ minor: number; currency: string; dueAt: number | null }>`SELECT
+    r.amount_minor AS minor, COALESCE(r.currency, ${home}) AS currency,
+    COALESCE(r.due_at, r.date_at) AS "dueAt"
+    FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'expenses'
+      AND r.state = 'open' AND r.amount_minor IS NOT NULL AND ${companyCashOut(sql)}
+      AND ${countedEntry(sql)} AND ${seen}
+    ORDER BY r.key`;
+  const sixth = DateTime.formatIsoDate(DateTime.add(DateTime.makeUnsafe(today), { days: 6 }));
+  const through = endOfDay(sixth, zone);
+  const todayStart = startOfDay(today, zone);
+  const soon = bills.filter((one) => one.dueAt !== null && one.dueAt <= through);
   const about = (totals: Parameters<typeof aboutTotal>[0]) => aboutTotal(totals, home, rates);
   return {
     asOf: iso(now),
@@ -616,6 +635,17 @@ export const moneySummary = Effect.fn("KinMoneyViews.summary")(function* (
           (b.owed[0]?.minor ?? 0) - (a.owed[0]?.minor ?? 0),
       ),
     },
+    ...(bills.length === 0
+      ? {}
+      : {
+          toPay: {
+            total: addUp(bills, home),
+            dueSoon: addUp(soon, home),
+            bills: bills.length,
+            dueSoonBills: soon.length,
+            lateBills: soon.filter((one) => one.dueAt! < todayStart).length,
+          },
+        }),
     received,
     receivedThisFinancialYear: addUp(
       payments.filter((one) => one.paidOn >= fyStart),

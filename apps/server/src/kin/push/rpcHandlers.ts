@@ -8,7 +8,8 @@ import * as Stream from "effect/Stream";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinServer } from "../KinServer.ts";
-import { KinPushDevices } from "./KinPushDevices.ts";
+import { KinDesktopNotices } from "./KinDesktopNotices.ts";
+import { KinPushDevices, personIn } from "./KinPushDevices.ts";
 import { KinPushPresence } from "./KinPushPresence.ts";
 import { KinPushSender } from "./KinPushSender.ts";
 
@@ -30,6 +31,7 @@ export const makeKinPushHandlers = Effect.fn("makeKinPushHandlers")(function* (
       sender: Context.get(services, KinPushSender),
       presence: Context.get(services, KinPushPresence),
       caller: { session, people },
+      services,
     };
   });
   return group.of({
@@ -49,17 +51,30 @@ export const makeKinPushHandlers = Effect.fn("makeKinPushHandlers")(function* (
     // Only the caller's own topics are answered, each from what they may still see.
     "kin.push.reconcile": (input) =>
       caller.pipe(
-        Effect.flatMap(({ sender, caller }) => {
-          const person = caller.people.find((one) => one.orgId === input.orgId);
-          return person === undefined
-            ? Effect.fail(
-                new KinPushError({
-                  reason: "not_member",
-                  message: "Only a person in this org can get its notifications.",
-                }),
-              )
-            : sender.reconcile(input.orgId, person.personId, input.topics);
-        }),
+        Effect.flatMap(({ sender, caller }) =>
+          personIn(caller, input.orgId).pipe(
+            Effect.flatMap((person) =>
+              sender.reconcile(input.orgId, person.personId, input.topics),
+            ),
+          ),
+        ),
+      ),
+    "kin.push.desktopNotices": (input) =>
+      Stream.unwrap(
+        caller.pipe(
+          Effect.flatMap(({ services, caller }) =>
+            personIn(caller, input.orgId).pipe(
+              Effect.flatMap(({ personId }) =>
+                Context.get(services, KinDesktopNotices).listen(
+                  input.orgId,
+                  personId,
+                  session.sessionId,
+                ),
+              ),
+            ),
+          ),
+          Effect.map(Stream.fromQueue),
+        ),
       ),
     "kin.push.watch": (input) =>
       Stream.unwrap(

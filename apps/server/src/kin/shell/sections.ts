@@ -249,6 +249,8 @@ export const SECTIONS = {
     sense_overflow: null,
     // A project's contract renewal, which needs no deal (`KIN_PROMISE_SENSES`).
     notice_due: null,
+    bill_due: "money",
+    bill_paid_seen: "money",
   } satisfies Record<KinPulseSense, SectionId | null>,
 };
 

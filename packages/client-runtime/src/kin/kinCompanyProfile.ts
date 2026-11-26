@@ -4,12 +4,16 @@ import {
   KinCompanyBank,
   KinCompanyProfileData,
   KinCompanyTax,
+  KinCountryCardState,
   KinCountryCode,
   type KinCompanyProfile,
   type KinCompanyProfileSetInput,
   type KinOrgId,
+  type KinWidget,
+  type KinWidgetId,
 } from "@t3tools/contracts";
 import { kinRateDay } from "./kinCurrency.ts";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 /** The company's legal and bank details, as the owner reads and edits them in Settings. */
@@ -520,6 +524,15 @@ export const kinCountryName = (code: string): string => {
   }
 };
 
+/** The device's country offered while none is typed, taken only with a tap. */
+export const kinCountryOffer = (
+  typed: string,
+  region: string | null,
+): { readonly label: string; readonly country: string } | null =>
+  region === null || typed.trim() !== "" || !valid.country(region)
+    ? null
+    : { label: KIN_COMPANY.useCountry(kinCountryName(region)), country: kinCountryName(region) };
+
 /**
  * The device's country offered to a company still waiting on its own, while none is typed: it is
  * in the draft only once accepted, so a save that didn't choose a country never sets one.
@@ -528,13 +541,12 @@ export const kinCompanyCountrySuggestion = (
   draft: KinCompanyDraft,
   region: string | null,
   waiting: boolean,
-): { readonly label: string; readonly accept: () => KinCompanyDraft } | null =>
-  !waiting || region === null || draft.country.trim() !== "" || !valid.country(region)
+): { readonly label: string; readonly accept: () => KinCompanyDraft } | null => {
+  const offer = waiting ? kinCountryOffer(draft.country, region) : null;
+  return offer === null
     ? null
-    : {
-        label: KIN_COMPANY.useCountry(kinCountryName(region)),
-        accept: () => ({ ...draft, country: kinCountryName(region) }),
-      };
+    : { label: offer.label, accept: () => ({ ...draft, country: offer.country }) };
+};
 
 /**
  * The form's sections for a company in `country`: India's tax ids only for India, and for a host
@@ -718,4 +730,62 @@ export function kinCompanyGlance(profile: KinCompanyProfile): ReturnType<typeof 
       }),
     }))
     .filter((section) => section.rows.length > 0);
+}
+
+/** The card that asks an older company's owners for its country, once a round. */
+export const KIN_COUNTRY_ASK = {
+  question: (company: string) =>
+    `Which country is ${company} in? It sets tax words and date formats.`,
+  country: "Country",
+  choose: "Choose a country",
+  save: "Save",
+  notNow: "Not now",
+  chose: (name: string, country: string) => `${name} chose ${country}.`,
+  notNowAgain: "Not now. Kin asks again in 30 days.",
+  notNowDone: "Not now. Kin won't ask again; Settings, Company details has it.",
+  setElsewhere: (country: string) => `Set to ${country} in Settings.`,
+  failed: "Couldn't save the country.",
+};
+
+/** How a country card closed, in one line. */
+export const kinCountryAskLine = (
+  answered: NonNullable<KinCountryCardState["answered"]>,
+): string => {
+  switch (answered._tag) {
+    case "chose":
+      return KIN_COUNTRY_ASK.chose(answered.by, kinCountryName(answered.country));
+    case "not_now":
+      return answered.round === 1 ? KIN_COUNTRY_ASK.notNowAgain : KIN_COUNTRY_ASK.notNowDone;
+    case "set":
+      return KIN_COUNTRY_ASK.setElsewhere(kinCountryName(answered.country));
+  }
+};
+
+export interface KinCountryCardView {
+  readonly orgId: KinOrgId;
+  readonly widgetId: KinWidgetId;
+  readonly question: string;
+  /** Still waiting on an answer: the picker and its buttons show. */
+  readonly open: boolean;
+  /** How it was answered; null while open, or when it closed unanswered. */
+  readonly closed: string | null;
+  readonly accessibilityLabel: string;
+}
+
+const decodeCountryCard = Schema.decodeUnknownOption(KinCountryCardState);
+
+export function kinCountryCardView(widget: KinWidget): KinCountryCardView | null {
+  const decoded = decodeCountryCard(widget.state);
+  if (Option.isNone(decoded)) return null;
+  const { company, answered } = decoded.value;
+  const question = KIN_COUNTRY_ASK.question(company);
+  const closed = answered === undefined ? null : kinCountryAskLine(answered);
+  return {
+    orgId: widget.orgId,
+    widgetId: widget.widgetId,
+    question,
+    open: answered === undefined && widget.closedAt === null,
+    closed,
+    accessibilityLabel: closed === null ? question : `${question} ${closed}`,
+  };
 }

@@ -78,7 +78,7 @@ export const LISTS: Record<ListName, List> = {
     categories: ["client", "vendor", "prospect"],
     // Tax ids are configuration for invoices; computing tax is not Kin's. `source` is where it
     // came from and `tags` the company's own words for it.
-    fields: ["terms", "address", "gstin", "placeOfSupply", "source", "tags"],
+    fields: ["terms", "address", "gstin", "accountsForTax", "placeOfSupply", "source", "tags"],
   },
   contacts: {
     name: "Contacts",
@@ -178,6 +178,7 @@ const decodeFields = Schema.decodeUnknownOption(FieldsJson);
 export const encodeFieldValues = Schema.encodeEffect(FieldsJson);
 export const parseFields = (json: string): FieldValues =>
   Option.getOrElse(decodeFields(json), () => ({}));
+export const accountsForTax = (fields: FieldValues) => fields.accountsForTax === "true";
 export const fieldText = (fields: FieldValues, key: string) => {
   const value = fields[key];
   return typeof value === "string" ? value : null;

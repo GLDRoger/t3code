@@ -4,6 +4,8 @@ import {
   formatKinMoney,
   KIN_CURRENCY_CODES,
   kinCurrency,
+  kinImpliedRate,
+  kinRateShown,
   mentionsKinMoney,
   parseKinMoney,
 } from "./kinCurrency.ts";
@@ -13,6 +15,28 @@ const intlDecimals = (code: string) =>
     .maximumFractionDigits;
 
 describe("one currency table", () => {
+  it.each([
+    [
+      { minor: 100_000, currency: "USD" },
+      { minor: 8_350_000, currency: "INR" },
+      "83.500000",
+      "83.50",
+    ],
+    [{ minor: 12_000, currency: "JPY" }, { minor: 14_280, currency: "USD" }, "0.011900", "0.0119"],
+    [
+      { minor: 14_280, currency: "USD" },
+      { minor: 12_000, currency: "JPY" },
+      "84.033613",
+      "84.033613",
+    ],
+  ] as const)(
+    "uses major units and rounds the exact ratio to six places: %j / %j",
+    (owed, received, stored, shown) => {
+      expect(kinImpliedRate(owed, received)).toBe(stored);
+      expect(kinRateShown(stored)).toBe(shown);
+    },
+  );
+
   it("keeps the decimals stored amounts were written with: CLDR's, as the server's Intl gave", () => {
     for (const code of KIN_CURRENCY_CODES)
       expect([code, kinCurrency(code).decimals]).toEqual([code, intlDecimals(code)]);
