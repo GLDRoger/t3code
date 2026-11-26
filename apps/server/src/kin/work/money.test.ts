@@ -5190,6 +5190,35 @@ describe("the company profile", () => {
     ),
   );
 
+  it.effect("a card put off with Not now says so once Settings sets the country", () =>
+    runCountryCards(({ orgId, rhea, meera, cards, tick }) =>
+      Effect.gen(function* () {
+        const saved = yield* setProfile(orgId, rhea, { homeCurrency: "CAD" }, undefined);
+        yield* tick;
+        const first = yield* cards;
+        yield* answerCountryCard([rhea], {
+          orgId,
+          widgetId: first.find((card) => card.who === rhea.personId)!.widgetId,
+          answer: { _tag: "not_now" },
+        });
+        const closedAt = (yield* cards).map((card) => card.closedAt);
+        yield* OwnerMoney.setCompanyProfile([meera], { orgId, rev: saved.rev, country: "CA" });
+        yield* TestClock.adjust(60_000);
+        yield* tick;
+        const after = yield* cards;
+        assert.lengthOf(after, 2);
+        for (const card of after)
+          assert.deepInclude(JSON.parse(card.state), { answered: { _tag: "set", country: "CA" } });
+        assert.deepStrictEqual(
+          after.map((card) => card.closedAt),
+          closedAt,
+        );
+        yield* tick;
+        assert.deepStrictEqual(yield* cards, after);
+      }),
+    ),
+  );
+
   it.effect("asks again after thirty days, then stops after a second Not now", () =>
     runCountryCards(({ orgId, rhea, meera, cards, tick, sql }) =>
       Effect.gen(function* () {

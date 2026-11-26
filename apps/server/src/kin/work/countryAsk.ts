@@ -55,7 +55,12 @@ const asked = Effect.fn("KinCountryAsk.asked")(function* (
   );
 });
 
-const countryCards = Effect.fn("KinCountryAsk.cards")(function* (orgId: KinOrgId, round?: 1 | 2) {
+/** One round's cards; else the open ones, or with `closed` every card of every round. */
+const countryCards = Effect.fn("KinCountryAsk.cards")(function* (
+  orgId: KinOrgId,
+  round?: 1 | 2,
+  closed = false,
+) {
   const sql = yield* SqlClient.SqlClient;
   return yield* sql<{ widgetId: KinWidgetId; clientId: string; closedAt: string | null }>`
     SELECT w.widget_id AS "widgetId", m.client_message_id AS "clientId", w.closed_at AS "closedAt"
@@ -63,7 +68,7 @@ const countryCards = Effect.fn("KinCountryAsk.cards")(function* (orgId: KinOrgId
       AND m.message_id = w.message_id
     WHERE w.org_id = ${orgId} AND w.type = 'country'
       AND m.client_message_id GLOB ${round === undefined ? "kin-country-ask:*" : `kin-country-ask:${round}:*`}
-      AND (${round === undefined ? 0 : 1} OR w.closed_at IS NULL)
+      AND (${round === undefined && !closed ? 0 : 1} OR w.closed_at IS NULL)
     ORDER BY w.widget_id`;
 });
 
@@ -76,19 +81,21 @@ const closeCards = Effect.fn("KinCountryAsk.closeCards")(function* (
 ) {
   const at = iso(yield* Clock.currentTimeMillis);
   const resolution = answered._tag === "set" ? "closed" : "answered";
-  for (const { widgetId, closedAt } of cards) {
-    if (closedAt !== null) continue;
+  for (const { widgetId } of cards) {
     const found = yield* repo.getWidget({ orgId, widgetId });
     if (Option.isNone(found)) return yield* notFound;
     const widget = found.value;
     const state = yield* decodeState(widget.state);
+    // A card put off for 30 days would still say Kin asks again once the country is set.
+    const putOff = state.answered?._tag === "not_now" && state.answered.round === 1;
+    if (widget.closedAt !== null && !putOff) continue;
     const closed = yield* repo.updateWidget({
       ...widget,
       audience: "chat",
       state: { ...state, answered },
       expectedRevision: widget.revision,
       awaiting: [],
-      closedAt: at,
+      closedAt: widget.closedAt ?? at,
       updatedAt: at,
     });
     for (const item of yield* repo.waitingForWidget(closed)) {
@@ -112,17 +119,18 @@ export const postCountryAsk = Effect.fn("KinCountryAsk.post")(
         const profile = yield* countryAskProfile(orgId);
         const { ask, country } = profile;
         if (country !== null) {
-          if (ask === undefined || ask.done || ask.nextAt !== null) return;
+          if (ask === undefined || ask.done) return;
           const repo = yield* Effect.serviceOption(KinChatRepository);
           const hub = yield* Effect.serviceOption(KinChatHub);
-          if (Option.isSome(repo) && Option.isSome(hub))
-            yield* closeCards(
-              orgId,
-              yield* countryCards(orgId),
-              { _tag: "set", country },
-              repo.value,
-              hub.value,
-            );
+          if (Option.isNone(repo) || Option.isNone(hub)) return;
+          yield* closeCards(
+            orgId,
+            yield* countryCards(orgId, undefined, true),
+            { _tag: "set", country },
+            repo.value,
+            hub.value,
+          );
+          yield* writeCountryAsk(orgId, { round: ask.round, nextAt: null, done: true });
           return;
         }
         if (ctx.chief === undefined) return;
@@ -254,7 +262,7 @@ export const answerCountryCard = Effect.fn("KinCountryAsk.answer")(function* (
         });
       }
       if (widget.closedAt !== null) return profile;
-      const cards = yield* countryCards(orgId);
+      const cards = yield* countryCards(orgId, undefined, answer._tag === "country");
       if (answer._tag === "country") {
         const saved =
           profile.country === answer.country
