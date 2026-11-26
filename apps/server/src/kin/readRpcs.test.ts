@@ -7,6 +7,7 @@ import {
   AuthStandardClientScopes,
   type EnvironmentAuthorizationError,
   type KinChatError,
+  KinAgentId,
   KinPersonId,
   type KinRpcs,
   type KinWorkEvent,
@@ -30,6 +31,7 @@ import * as Audit from "./approvals/Audit.ts";
 import * as KeySeal from "./approvals/KeySeal.ts";
 import * as PendingActions from "./approvals/PendingActions.ts";
 import * as Chat from "./chat/layer.ts";
+import { KinChatService } from "./chat/KinChatService.ts";
 import { KinIdentity } from "./chat/KinIdentity.ts";
 import * as Kin from "./layer.ts";
 import { kinHostDependencies } from "./lead/layer.testkit.ts";
@@ -129,6 +131,17 @@ const seed = Effect.gen(function* () {
     VALUES (${memberId}, ${orgId}, 'zoya', 'Zoya', '2026-01-01T00:00:00.000Z', 'member')`;
   yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
     VALUES (${memberSession.sessionId}, ${orgId}, ${memberId}, 0)`;
+  // A lead of the owner's, so `kin.leads.list` reads past its empty-list return.
+  yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+    VALUES ('growth', ${orgId}, 'Growth', 'lead', ${owner.personId}, '2026-01-01T00:00:00.000Z')`;
+  const { chatId } = yield* Context.get(services, KinChatService).createDirect(owner, {
+    orgId,
+    agentId: KinAgentId.make("growth"),
+  });
+  yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json,
+      worker_projects_json, owner_chat_id)
+    VALUES ('growth', ${orgId}, 'Growth', 0, '{"instanceId":"codex","model":"gpt-5.1"}', '[]',
+      ${chatId})`;
   const handlers = yield* makeKinHandlers(ownerSession);
   const create = (title: string) =>
     call(handlers, "kin.work.create", {
@@ -178,6 +191,8 @@ const cases = (
   "kin.watches.list": { payload: { orgId }, member: true },
   "kin.watches.followUps": { payload: { orgId }, member: true },
   "kin.watches.log": { payload: { orgId }, member: true },
+  "kin.org.get": { payload: { orgId }, member: true },
+  "kin.leads.list": { payload: { orgId }, member: true },
 });
 
 /** An answer, or a stream's first frame. */
