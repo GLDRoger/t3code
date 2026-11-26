@@ -741,8 +741,9 @@ export const KIN_COUNTRY_ASK = {
   save: "Save",
   notNow: "Not now",
   chose: (name: string, country: string) => `${name} chose ${country}.`,
-  notNowAgain: "Not now. Kin asks again in 30 days.",
-  notNowDone: "Not now. Kin won't ask again; Settings, Company details has it.",
+  notNowAgain: (by: string) => `${by} said not now. Kin asks again in 30 days.`,
+  notNowDone: (by: string) =>
+    `${by} said not now. Kin won't ask again; Settings, Company details has it.`,
   setElsewhere: (country: string) => `Set to ${country} in Settings.`,
   failed: "Couldn't save the country.",
 };
@@ -755,7 +756,9 @@ export const kinCountryAskLine = (
     case "chose":
       return KIN_COUNTRY_ASK.chose(answered.by, kinCountryName(answered.country));
     case "not_now":
-      return answered.round === 1 ? KIN_COUNTRY_ASK.notNowAgain : KIN_COUNTRY_ASK.notNowDone;
+      return answered.round === 1
+        ? KIN_COUNTRY_ASK.notNowAgain(answered.by)
+        : KIN_COUNTRY_ASK.notNowDone(answered.by);
     case "set":
       return KIN_COUNTRY_ASK.setElsewhere(kinCountryName(answered.country));
   }

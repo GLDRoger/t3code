@@ -585,10 +585,10 @@ describe("company details", () => {
     // A country card closes with one line per answer, the country named as Settings names it.
     for (const [answered, line] of [
       [{ _tag: "chose", by: "Meera", country: "US" }, "Meera chose United States."],
-      [{ _tag: "not_now", by: "Rhea", round: 1 }, "Not now. Kin asks again in 30 days."],
+      [{ _tag: "not_now", by: "Rhea", round: 1 }, "Rhea said not now. Kin asks again in 30 days."],
       [
         { _tag: "not_now", by: "Meera", round: 2 },
-        "Not now. Kin won't ask again; Settings, Company details has it.",
+        "Meera said not now. Kin won't ask again; Settings, Company details has it.",
       ],
       [{ _tag: "set", country: "GB" }, "Set to United Kingdom in Settings."],
     ] as const)
