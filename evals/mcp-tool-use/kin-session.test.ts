@@ -5,10 +5,14 @@ import * as NodeFS from "node:fs";
 import { assert, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 
-import { CARRIED_TURN_NOTE, TURN_DIVIDER } from "../../apps/server/src/kin/lead/LeadPrompt.ts";
+import {
+  CARRIED_TURN_NOTE,
+  PROMPT_HEADINGS,
+  TURN_DIVIDER,
+} from "../../apps/server/src/kin/lead/LeadPrompt.ts";
 import { fillKinRules, kinLegacyHeaderPlace, kinSessionSplit } from "./kin.ts";
 import { buildBase, buildMessages, makeSample, McpToolUseCase } from "./run.ts";
-import { expectationsForLayout } from "./kin-session-wire.ts";
+import { expectationsForLayout, kinSessionWireMessages } from "./kin-session-wire.ts";
 
 const decodeCase = Schema.decodeUnknownSync(Schema.fromJsonString(McpToolUseCase));
 const readCases = (name: string) =>
@@ -51,7 +55,7 @@ it("places every legacy wake-up block exactly once, splitting the server's tagge
 
 // Captured from mine/kin at 41f8a4f4705 before adding the layout flag.
 const legacyRequestPin = "2fc2cb5b182755fd7a3896a5a2dbfb4460815d16381e7aeee81d9d0be4d7a93a";
-const sessionRequestPin = "0fcf900fd03fb151570f3052253b68a12538eca95e8201d00c95b5ad0c154afc";
+const sessionRequestPin = "d627b8f88c11533fac671f4fcce04c4f43367dca5623a9621b3a6348d3a01c76";
 const pinnedIds = [
   "kin-lead-rereads-github-hint",
   "kin-lead-uses-display-name",
@@ -65,11 +69,8 @@ const pinnedIds = [
   "kin-lead-get-back-does-the-check",
 ];
 
-it.each([
-  ["legacy", legacyRequestPin],
-  ["session", sessionRequestPin],
-] as const)("pins ten Kin dry-run requests in the %s layout", (layout, pin) => {
-  const requests = NodeChildProcess.execFileSync(
+const dryRequests = (layout: "legacy" | "session", file: string, ids?: ReadonlyArray<string>) =>
+  NodeChildProcess.execFileSync(
     process.execPath,
     [
       "mcp-tool-use/run.ts",
@@ -78,14 +79,27 @@ it.each([
       "--kin-layout",
       layout,
       "--cases",
-      "mcp-tool-use/cases/kin.ndjson",
-      "--case",
-      pinnedIds.join(","),
+      `mcp-tool-use/cases/${file}`,
+      ...(ids === undefined ? [] : ["--case", ids.join(",")]),
     ],
     { cwd: new URL("..", import.meta.url), maxBuffer: 8 * 1024 * 1024 },
   );
-  assert.lengthOf(requests.toString().trimEnd().split("\n"), 10);
-  assert.equal(NodeCrypto.createHash("sha256").update(requests).digest("hex"), pin);
+
+const digest = (requests: Uint8Array) =>
+  NodeCrypto.createHash("sha256").update(requests).digest("hex");
+
+it("pins ten uncarried requests and keeps both layouts byte-identical", () => {
+  const legacy = dryRequests("legacy", "kin.ndjson", pinnedIds);
+  const session = dryRequests("session", "kin.ndjson", pinnedIds);
+  assert.lengthOf(legacy.toString().trimEnd().split("\n"), 10);
+  assert.equal(digest(legacy), legacyRequestPin);
+  assert.isTrue(session.equals(legacy), "Session layout changed an uncarried request.");
+});
+
+it("pins the session requests of both carry seeds", () => {
+  const requests = dryRequests("session", "kin-carry.ndjson");
+  assert.lengthOf(requests.toString().trimEnd().split("\n"), 2);
+  assert.equal(digest(requests), sessionRequestPin);
 });
 
 const header = 'Your reply goes to chat "direct-1", your direct chat with the owner.';
@@ -111,6 +125,9 @@ const carryCase: McpToolUseCase = {
   expect: {},
   sessionCallsMustNot: [{ tool: "records_query" }],
 };
+const txt = (text: string) => ({ type: "text", text });
+const deferred = txt("The deferred tools list.");
+const date = txt("Today's date is 2026-11-26.");
 const caseBase = () => ({
   ...buildBase(
     {
@@ -131,27 +148,20 @@ const caseBase = () => ({
       keepUserInstructions: false,
     },
   ),
-  reminders: [],
+  reminders: [deferred, date],
 });
-const txt = (text: string) => ({ type: "text", text });
 const context = (value: string) => txt(`UserPromptSubmit hook additional context: ${value}`);
 const rendered = (layout: "legacy" | "session", testCase = carryCase) =>
   buildMessages(makeSample(testCase, caseBase()), layout);
 
 it("replays only the last wake in legacy and the real earlier tool blocks in session", () => {
-  assert.deepEqual(rendered("legacy"), [{ role: "user", content: [txt(carryCase.prompt)] }]);
+  assert.deepEqual(rendered("legacy"), [
+    { role: "user", content: [deferred, date, txt(carryCase.prompt)] },
+  ]);
   const unchanged = context(`${CARRIED_TURN_NOTE}\n\n${header}`);
   assert.deepEqual(rendered("session"), [
-    {
-      role: "user",
-      content: [
-        txt(
-          `<system-reminder>\nSessionStart hook additional context: ${standing}\n\nAgent name: "Finance"\n</system-reminder>`,
-        ),
-        txt("# Events\n\nWhich invoices are open?"),
-      ],
-    },
-    { role: "system", content: [context(header)] },
+    { role: "user", content: [deferred, txt(earlier[0]!.prompt)] },
+    { role: "system", content: [date] },
     {
       role: "assistant",
       content: [
@@ -180,36 +190,31 @@ it("replays only the last wake in legacy and the real earlier tool blocks in ses
   });
 });
 
-it("replaces the compacted prefix with the provider summary and compact-time standing", () => {
-  const compacted = {
-    ...carryCase,
-    setup: {
-      ...carryCase.setup,
-      carry: {
-        earlier,
-        compactedBefore: 2,
-        summary: "Rhea asked about invoices before compaction.",
-      },
-    },
-  };
-  assert.deepEqual(rendered("session", compacted), [
-    {
-      role: "user",
-      content: [
-        txt(
-          "This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\nRhea asked about invoices before compaction.",
-        ),
-      ],
-    },
+const summary = "Rhea asked about invoices before compaction.";
+const summaryBlock = txt(
+  `This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion of the conversation.\n\n${summary}`,
+);
+const compactAt = (compactedBefore: number) => ({
+  ...carryCase,
+  setup: {
+    ...carryCase.setup,
+    carry: { earlier, compactedBefore, summary },
+  },
+});
+
+it("starts again with a full wake after compaction and carries from that wake", () => {
+  assert.deepEqual(rendered("session", compactAt(1)), [
+    { role: "user", content: [summaryBlock] },
+    { role: "user", content: [deferred, txt(earlier[1]!.prompt)] },
+    { role: "system", content: [date] },
+    { role: "assistant", content: [txt("Yes, it includes INV-7.")] },
     { role: "user", content: [txt("# Events\n\nAnd INV-9?")] },
-    {
-      role: "system",
-      content: [
-        txt(
-          `SessionStart hook additional context: ${standing}\n\nAgent name: "Finance"\n\nUserPromptSubmit hook additional context: ${CARRIED_TURN_NOTE}\n\n${header}`,
-        ),
-      ],
-    },
+    { role: "system", content: [context(`${CARRIED_TURN_NOTE}\n\n${header}`)] },
+  ]);
+  assert.deepEqual(rendered("session", compactAt(2)), [
+    { role: "user", content: [summaryBlock] },
+    { role: "user", content: [deferred, txt(carryCase.prompt)] },
+    { role: "system", content: [date] },
   ]);
   assert.throws(
     () =>
@@ -219,4 +224,40 @@ it("replaces the compacted prefix with the provider summary and compact-time sta
       }),
     "setup.carry and setup.priorTurns are mutually exclusive",
   );
+});
+
+it("keeps a 9,000-character change list in the hook and appends a longer list after events", () => {
+  const prefix = `${CARRIED_TURN_NOTE}\n\n${header}\n\n${PROMPT_HEADINGS.work}\n\n`;
+  const event = "And INV-9?";
+  const view = (size: number) => {
+    const work = "A".repeat(size - prefix.length);
+    const prompt = wake(event).replace(
+      "# Events",
+      `${PROMPT_HEADINGS.work}\n\n${work}\n\n# Events`,
+    );
+    const messages = rendered("session", { ...carryCase, prompt });
+    return {
+      changes: prefix + work,
+      tail: messages.slice(
+        messages.findIndex((message) =>
+          message.content.some((block) => block.text === "Yes, it includes INV-7."),
+        ) + 1,
+      ),
+    };
+  };
+
+  const ceiling = view(9_000);
+  assert.deepEqual(ceiling.tail, [
+    { role: "user", content: [txt(`# Events\n\n${event}`)] },
+    { role: "system", content: [context(ceiling.changes)] },
+  ]);
+  const overflow = view(9_001);
+  const appended = txt(`# Events\n\n${event}\n\n${overflow.changes}`);
+  assert.deepEqual(overflow.tail, [{ role: "user", content: [appended] }]);
+  assert.deepEqual(kinSessionWireMessages(overflow.tail), [
+    {
+      role: "user",
+      content: [{ ...appended, cache_control: { type: "ephemeral", ttl: "1h" } }],
+    },
+  ]);
 });

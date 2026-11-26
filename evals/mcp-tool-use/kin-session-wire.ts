@@ -10,9 +10,7 @@ export const KIN_SESSION_BETAS =
 
 export const KIN_SESSION_CACHE = { type: "ephemeral", ttl: "1h" } as const;
 
-const kinSessionStartText = (standing: string) =>
-  `SessionStart hook additional context: ${standing}`;
-
+const MAX_HOOK_CHANGE_CHARS = 9_000;
 const kinPromptSubmitText = (delta: string) => `UserPromptSubmit hook additional context: ${delta}`;
 
 const kinCompactionSummary = (summary: string) =>
@@ -65,8 +63,16 @@ export const carryMockState = (
 export const KIN_LAYOUTS = ["legacy", "session"] as const;
 export type KinLayout = (typeof KIN_LAYOUTS)[number];
 
-export const sessionLayout = (testCase: McpToolUseCase, layout: KinLayout, codex: boolean) =>
-  layout === "session" && !codex && hasKinSessionLayout(testCase);
+export const sessionLayout = (testCase: McpToolUseCase, layout: KinLayout, codex: boolean) => {
+  const carry = testCase.setup.carry;
+  return (
+    layout === "session" &&
+    !codex &&
+    carry !== undefined &&
+    (carry.earlier.length > 0 || carry.compactedBefore !== undefined) &&
+    hasKinSessionLayout(testCase)
+  );
+};
 
 export const expectationsForLayout = (testCase: McpToolUseCase, arm?: string, layout?: string) => {
   const expect = arm === "raw" ? (testCase.expectRaw ?? testCase.expect) : testCase.expect;
@@ -115,42 +121,42 @@ export const kinSessionReplay = (
   checkCarry(testCase);
   if (!sessionLayout(testCase, layout, codex)) return undefined;
   const { carry, world } = testCase.setup;
-  const split = (prompt: string) => kinSessionSplit(fillKinRules(prompt, world));
-  const earlier = carry?.earlier ?? [];
-  const wakes = [...earlier, { prompt: testCase.prompt }].map((turn) => ({
-    ...turn,
-    ...split(turn.prompt),
-  }));
   const first = carry?.compactedBefore ?? 0;
-  const compacted = carry?.compactedBefore !== undefined;
+  const earlier = carry?.earlier.slice(first) ?? [];
   const date = reminders.find(
     (block) => typeof block.text === "string" && /^Today's date is /.test(block.text),
   );
-  const turns = wakes.slice(first).map((current, offset) => {
-    const previous = wakes[first + offset - 1];
-    const { delta } = previous === undefined ? current : renderSessionDelta(current, previous);
-    const day = offset === 0 ? kinOwnerDay({ ...testCase, prompt: current.prompt }) : undefined;
-    const context = [
-      compacted && offset === 0 && current.standing
-        ? kinSessionStartText(current.standing)
-        : undefined,
-      delta ? kinPromptSubmitText(delta) : undefined,
-      offset !== 0 ? undefined : day ? `Today's date is ${day}.` : date?.text,
-    ]
-      .filter((part): part is string => typeof part === "string")
-      .join("\n\n");
-    return { message: current.message, context };
+  let previous: ReturnType<typeof kinSessionSplit> | undefined;
+  const turns = [...earlier, { prompt: testCase.prompt }].map(({ prompt }) => {
+    const full = fillKinRules(prompt, world);
+    const split = kinSessionSplit(full);
+    const prior = previous;
+    previous = split;
+    if (prior === undefined) {
+      const day = kinOwnerDay({ ...testCase, prompt });
+      return {
+        message: full,
+        context: day
+          ? `Today's date is ${day}.`
+          : typeof date?.text === "string"
+            ? date.text
+            : undefined,
+      };
+    }
+    const { delta } = renderSessionDelta(split, prior);
+    return delta.length > MAX_HOOK_CHANGE_CHARS
+      ? { message: `${split.message}\n\n${delta}`, context: undefined }
+      : { message: split.message, context: delta ? kinPromptSubmitText(delta) : undefined };
   });
   const last = turns.at(-1);
   if (last === undefined) throw new Error(`${testCase.id}: missing last carry turn.`);
-  const standing = wakes[first]?.standing;
   return {
     reminders: reminders.filter((block) => block !== date),
-    // Startup was not observed in the SDK probe; use the documented start reminder.
-    startup: !compacted && standing ? kinSessionStartText(standing) : undefined,
-    earlier: turns.slice(0, -1).map((turn, offset) => ({ ...earlier[first + offset], ...turn })),
+    earlier: turns.slice(0, -1).map((turn, i) => ({ ...earlier[i], ...turn })),
     last,
     summary:
-      compacted && carry?.summary !== undefined ? kinCompactionSummary(carry.summary) : undefined,
+      carry?.compactedBefore !== undefined && carry.summary !== undefined
+        ? kinCompactionSummary(carry.summary)
+        : undefined,
   };
 };

@@ -1377,7 +1377,6 @@ export const buildMessages = (sample: Sample, layout: KinLayout = "legacy") => {
     "user",
     ...(session?.reminders ?? reminders),
     ...notes.flatMap((note) => (note ? [reminder(note)] : [])),
-    ...(session?.startup ? [reminder(session.startup)] : []),
   );
   const toolSearch = findTool(base, "ToolSearch")?.name ?? "ToolSearch";
   let nextId = 0;
@@ -1421,8 +1420,10 @@ export const buildMessages = (sample: Sample, layout: KinLayout = "legacy") => {
     replayCalls(turn.toolCalls);
     if (turn.text) push(turn.role, text(fillKinRules(turn.text)));
   }
+  const pushPrompt = (prompt: string, files?: KinTurnFiles) =>
+    push("user", ...kinTurnBlocks(files, prompt, base.codex !== undefined));
   for (const turn of session?.earlier ?? []) {
-    push("user", text(turn.message));
+    pushPrompt(turn.message);
     if (turn.context) push("system", text(turn.context));
     replayCalls(turn.toolCalls);
     if (turn.reply) push("assistant", text(turn.reply));
@@ -1441,14 +1442,7 @@ export const buildMessages = (sample: Sample, layout: KinLayout = "legacy") => {
       : inline;
   const childPrompt = () => taskPrompt({ task: prompt, role: delegateRole });
   if (testCase.prompt !== "")
-    push(
-      "user",
-      ...kinTurnBlocks(
-        sample.kinFiles,
-        role === "delegated-child" ? childPrompt() : prompt,
-        base.codex !== undefined,
-      ),
-    );
+    pushPrompt(role === "delegated-child" ? childPrompt() : prompt, sample.kinFiles);
   if (session?.last.context) push("system", text(session.last.context));
   // Claude Code gives a subagent its SubagentStart hooks' context as a reminder after the task.
   if (native && base.subagentContext) {
@@ -3721,8 +3715,9 @@ const main = Effect.gen(function* () {
     ...testCase,
     expect: expectationsForLayout(testCase, flags.arm, activeLayout(testCase)),
   });
+  const carryCases = selected.filter((testCase) => testCase.setup.carry !== undefined);
   if (flags["kin-layout"] === "session") {
-    const fallbacks = selected.filter((testCase) => activeLayout(testCase) === "legacy");
+    const fallbacks = carryCases.filter((testCase) => activeLayout(testCase) === "legacy");
     process.stderr.write(`${fallbacks.length} cases have no session layout\n`);
   }
   // Trimmed captures without user data ship beside the cases. `--template` also takes a raw
@@ -3876,7 +3871,8 @@ const main = Effect.gen(function* () {
     // a regex that doesn't compile, a tool the agent lacks or a placeholder left unfilled.
     const problems: Array<string> = [];
     const sizes: Array<{ prefixChars: number; messageChars: number }> = [];
-    for (const testCase of selected) {
+    const dryCases = flags.estimate && flags["kin-layout"] === "session" ? carryCases : selected;
+    for (const testCase of dryCases) {
       const { sample, messages, encoded } = yield* firstRequest(testCase);
       const tools = new Set(
         [...sample.tools, ...sample.base.deferred].map((tool) => normalizeToolName(tool.name)),
