@@ -866,7 +866,8 @@ it.effect(
       };
       for (const given of [shared, owner]) {
         const legacy = yield* prompt.build(given);
-        const { standing, delta, message } = yield* prompt.buildSession(given);
+        const { full, standing, delta, message } = yield* prompt.buildSession(given);
+        expect(full).toBe(legacy);
         expect(standing).toContain(PROMPT_HEADINGS.character);
         expect(delta).toContain("Owner time:");
         expect(message).toContain(PROMPT_HEADINGS.events);
@@ -1046,6 +1047,8 @@ it.effect("capture keeps the reply out and leaves a later bills card for the nex
     expect(recent).toBeDefined();
     expect(recent).not.toContain("Paid on the 26th");
     expect(recent).toContain("Bill due $1,200");
+    expect(second.full).toBe(yield* prompt.build(given));
+    expect(second.full).not.toContain("Bill due $1,200");
     const secondCursor = yield* readCursor(orgId, direct, null, agentId);
     yield* sql`UPDATE kin_messages SET body = 'Bill paid' WHERE org_id = ${orgId}
       AND message_id = 'bills:harborview'`;
