@@ -595,7 +595,9 @@ it.live.each([
         }
         expect(outcome._tag).toBe("failed");
         if (outcome._tag === "failed")
-          expect(outcome.failures.join("\n")).toContain("MemorySyncConflict");
+          expect(outcome.failures).toEqual([
+            "Kin could not save a memory update because memory changed while Kin was working.",
+          ]);
         expect(
           yield* git(root, ["--git-dir", remote, "ls-tree", "-r", "--name-only", moving]),
         ).not.toContain("claims/new.md");

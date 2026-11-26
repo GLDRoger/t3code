@@ -32,6 +32,13 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { isOrgPaused } from "../lead/orgState.ts";
 import { isCheckoutPath } from "../memory/checkoutPaths.ts";
 import { spent } from "../memory/keeping.ts";
+import {
+  MEMORY_WRITE_FAILURE_WORDS,
+  memoryWriteFailure,
+  observeMemoryWrite,
+  saveMemoryWriteFailure,
+  type MemoryWriteFailure,
+} from "../memory/writeFailure.ts";
 import { readableFiles } from "../memory/quoteAccess.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
@@ -66,6 +73,7 @@ export type DreamOutcome =
       readonly dreamId: string;
       readonly branch: string;
       readonly failures: ReadonlyArray<string>;
+      readonly writeFailure?: MemoryWriteFailure;
     }
   | { readonly _tag: "cancelled"; readonly dreamId: string; readonly branch: string }
   | { readonly _tag: "busy" };
@@ -236,7 +244,11 @@ const make = Effect.gen(function* () {
       return;
     }
     const failure =
-      outcome._tag === "failed" ? outcome.failures.join("\n").slice(0, 4000) : "Cancelled";
+      outcome._tag !== "failed"
+        ? "Cancelled"
+        : outcome.writeFailure === undefined
+          ? outcome.failures.join("\n").slice(0, 4000)
+          : saveMemoryWriteFailure(outcome.writeFailure);
     if (Option.isSome(writer))
       yield* writer.value
         .deleteDreamBranch(orgId, branch)
@@ -367,7 +379,7 @@ const make = Effect.gen(function* () {
         yield* Effect.logInfo("Kin nightly pass retired spent notes", { orgId, retired });
     },
     (effect, orgId) =>
-      effect.pipe(
+      observeMemoryWrite(notices.writeEpisode, orgId, "spent-notes", effect).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("Kin nightly pass could not retire spent notes", { orgId, cause }),
         ),
@@ -644,13 +656,19 @@ const make = Effect.gen(function* () {
           (cause) => !Cause.hasInterruptsOnly(cause),
           (cause) => {
             const error = Cause.squash(cause);
+            const writeFailure = memoryWriteFailure(error);
             return Effect.logWarning("Kin dream failed", { orgId, dreamId, cause }).pipe(
               Effect.as<DreamOutcome>({
                 _tag: "failed",
                 dreamId,
                 branch,
+                ...(writeFailure === undefined ? {} : { writeFailure }),
                 failures: [
-                  error instanceof Error ? `${error.name}: ${error.message}` : "The dream failed",
+                  writeFailure !== undefined
+                    ? MEMORY_WRITE_FAILURE_WORDS[writeFailure]
+                    : error instanceof Error
+                      ? `${error.name}: ${error.message}`
+                      : "The dream failed",
                 ],
               }),
             );

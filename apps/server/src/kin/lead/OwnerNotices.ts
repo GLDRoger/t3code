@@ -6,6 +6,13 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { episodeNotice } from "../hostBackup.ts";
+import {
+  MEMORY_WRITE_FAILURE_WORDS,
+  MEMORY_WRITE_OPERATION_WORDS,
+  type WriteEpisode,
+} from "../memory/writeFailure.ts";
+import * as Chat from "../chat/KinChatService.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import * as Memory from "../memory/Memory.ts";
@@ -26,7 +33,31 @@ export const layer = Layer.effect(
     const sql = yield* SqlClient.SqlClient;
     const chat = yield* KinChatRepository.KinChatRepository;
     const hub = yield* Effect.serviceOption(KinChatHub);
+    const chatService = yield* Effect.serviceOption(Chat.KinChatService);
+    const writeEpisode: WriteEpisode = Effect.fn("KinMemoryRecovery.writeEpisode")(
+      function* (orgId, operation, failure, link) {
+        if (Option.isNone(chatService)) return;
+        yield* episodeNotice(
+          orgId,
+          `kin-memory-write:${orgId}:${operation}:`,
+          failure === undefined
+            ? undefined
+            : {
+                id: failure,
+                body: `${MEMORY_WRITE_OPERATION_WORDS[operation]} ${MEMORY_WRITE_FAILURE_WORDS[failure]}${link === undefined ? "" : ` ${link}`}`,
+                replaceOnChange: true,
+                silentDuringQuietHours: true,
+              },
+        ).pipe(
+          Effect.provideService(SqlClient.SqlClient, sql),
+          Effect.provideService(KinChatRepository.KinChatRepository, chat),
+          Effect.provideService(Chat.KinChatService, chatService.value),
+        );
+      },
+      Effect.catchCause((cause) => Effect.logError("Kin memory owner notice failed", cause)),
+    );
     return Memory.MemoryRecoveryHooks.of({
+      writeEpisode,
       notify: Effect.fn("KinMemoryRecovery.notify")(
         function* (notice) {
           yield* Effect.logWarning("Kin memory recovery requires operator attention", notice);
