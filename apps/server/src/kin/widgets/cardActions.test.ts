@@ -3757,6 +3757,30 @@ it.effect("a foreign credit question settles when the received amount is already
   ),
 );
 
+it.effect("a rate offer for money recorded by hand with its received amount is not raised", () =>
+  foreignCreditTest(
+    Effect.gen(function* () {
+      const kin = yield* foreignCredit({ rate: "82.000000" });
+      assert.strictEqual(
+        (yield* creditMatch(kin.orgId, kin.bank.recordId))?.first[0]?.candidate.fit,
+        "rate",
+      );
+      assert.exists(yield* kin.fact());
+
+      const other = yield* kin.invoiceOf("TW/002", 4);
+      yield* kin.records.pay(kin.orgId, kin.ownerWrites, other.key, {
+        amount: { currency: "USD", minor: 100_000 },
+        received: { currency: "INR", minor: 8_350_000 },
+        rate: "83.500000",
+        paidOn: "2026-11-15",
+        originKey: "recorded-by-hand",
+      });
+      assert.isUndefined(yield* kin.fact());
+      assert.notInclude((yield* kin.tick()).woken, kin.factKey);
+    }),
+  ),
+);
+
 it.effect("a foreign credit question needs a named client", () =>
   foreignCreditTest(
     Effect.gen(function* () {
