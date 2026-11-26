@@ -1669,6 +1669,25 @@ describe("recipe documents", () => {
         }),
       );
       assert.deepStrictEqual([made.invoice, made.problems], ["INV-1", []]);
+      // A client with no place of supply: the person reads which field to fill, and where.
+      const tidewater = yield* OwnerClients.createParty(people, {
+        orgId,
+        name: "Tidewater Freight",
+        clientRequestId: "tidewater",
+      });
+      const placeless = yield* OwnerMoneyAnswers.newInvoice(
+        people,
+        yield* decodeInvoiceForm({
+          orgId,
+          title: "Freight handling",
+          lines: [{ description: "Handling", sac: null, quantity: "1", rate: "₹20,000.00" }],
+          client: tidewater.key,
+          clientRequestId: "placeless-invoice",
+        }),
+      );
+      assert.deepStrictEqual(placeless.problems, [
+        "Tidewater Freight has no place of supply or GSTIN, which a GST invoice needs. Add one on its page in Clients, then try again.",
+      ]);
       const records = yield* KinRecords.KinRecords;
       assert.include(JSON.parse((yield* records.get(orgId, "INV-1"))!.fieldsJson), {
         billToName: "Asha Rao",

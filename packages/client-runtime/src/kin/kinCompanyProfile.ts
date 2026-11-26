@@ -533,6 +533,19 @@ export const kinCountryOffer = (
     ? null
     : { label: KIN_COMPANY.useCountry(kinCountryName(region)), country: kinCountryName(region) };
 
+/** The country a card offers: what the company's records name, else the device's where they allow it. */
+export const kinCountryCardRegion = (
+  fits: ReadonlyArray<string> | null,
+  device: string | null,
+): string | null =>
+  fits === null
+    ? device
+    : fits.length === 1
+      ? (fits[0] ?? null)
+      : device !== null && fits.includes(device)
+        ? device
+        : null;
+
 /**
  * The device's country offered to a company still waiting on its own, while none is typed: it is
  * in the draft only once accepted, so a save that didn't choose a country never sets one.
@@ -741,8 +754,9 @@ export const KIN_COUNTRY_ASK = {
   save: "Save",
   notNow: "Not now",
   chose: (name: string, country: string) => `${name} chose ${country}.`,
-  notNowAgain: "Not now. Kin asks again in 30 days.",
-  notNowDone: "Not now. Kin won't ask again; Settings, Company details has it.",
+  notNowAgain: (by: string) => `${by} said not now. Kin asks again in 30 days.`,
+  notNowDone: (by: string) =>
+    `${by} said not now. Kin won't ask again; Settings, Company details has it.`,
   setElsewhere: (country: string) => `Set to ${country} in Settings.`,
   failed: "Couldn't save the country.",
 };
@@ -755,7 +769,9 @@ export const kinCountryAskLine = (
     case "chose":
       return KIN_COUNTRY_ASK.chose(answered.by, kinCountryName(answered.country));
     case "not_now":
-      return answered.round === 1 ? KIN_COUNTRY_ASK.notNowAgain : KIN_COUNTRY_ASK.notNowDone;
+      return answered.round === 1
+        ? KIN_COUNTRY_ASK.notNowAgain(answered.by)
+        : KIN_COUNTRY_ASK.notNowDone(answered.by);
     case "set":
       return KIN_COUNTRY_ASK.setElsewhere(kinCountryName(answered.country));
   }
@@ -769,6 +785,8 @@ export interface KinCountryCardView {
   readonly open: boolean;
   /** How it was answered; null while open, or when it closed unanswered. */
   readonly closed: string | null;
+  /** The countries the company's records allow; null when the host doesn't say. */
+  readonly fits: ReadonlyArray<string> | null;
   readonly accessibilityLabel: string;
 }
 
@@ -786,6 +804,7 @@ export function kinCountryCardView(widget: KinWidget): KinCountryCardView | null
     question,
     open: answered === undefined && widget.closedAt === null,
     closed,
+    fits: decoded.value.fits ?? null,
     accessibilityLabel: closed === null ? question : `${question} ${closed}`,
   };
 }

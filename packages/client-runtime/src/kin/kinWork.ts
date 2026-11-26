@@ -122,6 +122,8 @@ export const KIN_WORK_GONE = {
 export const KIN_UNAVAILABLE_LINK = {
   doc: "This doc doesn't exist or isn't shared with you.",
   task: "This task doesn't exist or isn't shared with you.",
+  /** A key opened in Money, Clients or Docs: a bill, an invoice or any list's entry. */
+  entry: "This entry doesn't exist or isn't shared with you.",
   client: "This client doesn't exist or isn't shared with you.",
   project: "This project doesn't exist or isn't shared with you.",
 } as const;

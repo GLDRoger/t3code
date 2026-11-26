@@ -66,6 +66,7 @@ import {
   partyKind,
   principal,
   ownerZone,
+  owedInvoices,
   type RecordRow,
   recordSeq,
   selectRecords,
@@ -73,7 +74,8 @@ import {
   usableCredits,
 } from "./recordRows.ts";
 import { contactAll, contactSensitive } from "./contactDetails.ts";
-import { dayIn } from "./money.ts";
+import { homeCurrency } from "./companyProfile.ts";
+import { addUp, dayIn } from "./money.ts";
 import { playbookClientValues, playbookThresholds } from "./playbooks.ts";
 import { fromsOf } from "./promises.ts";
 import { spellingsOf } from "./tags.ts";
@@ -244,6 +246,13 @@ const partyRowsWhere = Effect.fn("KinCrm.partyRows")(function* (
           WHERE n = 1 ORDER BY party_id`;
   const nextBy = new Map(next.map((row) => [row.partyId, row]));
   const last = yield* lastContacts(orgId, ids, now, viewer);
+  const owing =
+    ids.length === 0 ? [] : yield* owedInvoices({ orgId, now, seen: crmSeenBy(sql, viewer) });
+  const home = owing.length === 0 ? "" : yield* homeCurrency(orgId);
+  const owedBy = new Map<string, ReadonlyArray<KinMoney>>();
+  for (const invoice of owing)
+    if (invoice.partyId !== null)
+      owedBy.set(invoice.partyId, [...(owedBy.get(invoice.partyId) ?? []), invoice.balance]);
   const campaigns = yield* campaignsNamed(
     orgId,
     rows.map((row) => fieldText(parseFields(row.fieldsJson), "source")),
@@ -254,6 +263,7 @@ const partyRowsWhere = Effect.fn("KinCrm.partyRows")(function* (
     const fields = parseFields(row.fieldsJson);
     const source = fieldText(fields, "source");
     const tags = fieldList(fields, "tags");
+    const owed = owedBy.get(row.recordId);
     return {
       recordId: KinRecordId.make(row.recordId),
       key: row.key,
@@ -269,6 +279,7 @@ const partyRowsWhere = Effect.fn("KinCrm.partyRows")(function* (
       theyOwe: row.theyOwe ?? 0,
       late: row.late ?? 0,
       overdue: row.overdue ?? 0,
+      ...(owed === undefined ? {} : { owed: addUp(owed, home) }),
       lastContactAt: last.has(row.recordId) ? iso(last.get(row.recordId)!) : null,
       next:
         soonest === undefined

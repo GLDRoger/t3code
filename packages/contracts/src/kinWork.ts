@@ -1187,6 +1187,8 @@ export const KinPartyRow = Schema.Struct({
   tags: Schema.optional(Tags),
   /** The contact whose name the list's search found, when the client's own name didn't have it. */
   contact: Schema.optional(KinTrimmedText),
+  /** Issued invoices' balances the reader sees, by currency; absent when they owe nothing. */
+  owed: Schema.optional(KinMoneyTotals),
   /** The soonest open entry we owe them. */
   next: Schema.NullOr(
     Schema.Struct({
