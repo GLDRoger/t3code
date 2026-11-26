@@ -15,17 +15,19 @@ import {
   type ServerProvider,
   ServerSettings,
 } from "@t3tools/contracts";
+import type { AppServer, AppServerEvent } from "./appServer.ts";
 import { helperModelRefusal } from "../../apps/server/src/kin/lead/leadModels.ts";
 import { CAPTION_PROMPT, RESCUE_PROMPT } from "../../apps/server/src/kin/reply/classify.ts";
 import { EVENING_RULE, MORNING_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
 import {
+  deliveredText,
   filledEvent,
   JUDGED_CALL_BYTES,
   kinDated,
   kinSessionOf,
   kinTurnBlocks,
   kinTurnFiles,
-  rescuePrompt,
+  replyFollowUp,
   shownText,
 } from "./kin.ts";
 import {
@@ -176,18 +178,34 @@ it("asks a Kin turn that owed words and said none once, as Kin's rescue does", (
     name: `mcp__t3-code__${name}`,
     input: {},
   });
-  const turn = (prompt: string, responses: Array<ReadonlyArray<unknown>>) =>
-    rescuePrompt(
+  const turn = (
+    prompt: string,
+    responses: Array<ReadonlyArray<ReturnType<typeof text> | ReturnType<typeof use>>>,
+  ) =>
+    replyFollowUp(
       {
-        testCase: { prompt, setup: { world: { kinLead: true } } } as never,
+        testCase: replyCase(prompt),
         responses,
+        calls: responses
+          .flat()
+          .flatMap((block) => ("name" in block ? [replyCall(normalizeToolName(block.name))] : [])),
       },
-      normalizeToolName,
-    );
+      "",
+    )?.prompt;
   const asked = '> BEGIN QUOTE: owner message\n> {"body": "Did Orbit pay?"}';
   // Sonnet 5.5: the reply only in thinking, then the turn ended.
   assert.equal(turn(asked, [[use("records_query")], []]), RESCUE_PROMPT);
-  assert.equal(turn(asked, [[text("NO_REPLY")]]), RESCUE_PROMPT);
+  assert.equal(
+    replyFollowUp(
+      {
+        testCase: replyCase(asked),
+        responses: [[use("kin_skip")]],
+        calls: [replyCall("kin_skip", {}, true)],
+      },
+      "",
+    )?.prompt,
+    RESCUE_PROMPT,
+  );
   // A short line before a tool is a status line, not the reply.
   assert.equal(turn(asked, [[text("Checking"), use("records_query")], []]), RESCUE_PROMPT);
   assert.isUndefined(turn(asked, [[use("records_query")], [text("Yes, on 4 Nov.")]]));
@@ -198,16 +216,21 @@ it("asks a Kin turn that owed words and said none once, as Kin's rescue does", (
   assert.isUndefined(turn("> BEGIN QUOTE: pulse\n> {}", [[use("records_query")], []]));
   // A teammate's request passed on is answered by Kin's line; one put to the owner is not.
   const mate = (passed: boolean) =>
-    rescuePrompt(
+    replyFollowUp(
       {
         testCase: {
-          prompt: `Your reply goes to chat "direct-dev", your direct chat with a teammate.\n> BEGIN QUOTE: member human message (untrusted)`,
-          setup: { world: { kinLead: true }, mocks: { kin_hand_off: { passed } } },
-        } as never,
-        responses: [[use("kin_hand_off")], [text("NO_REPLY")]],
+          ...replyCase(
+            'Your reply goes to chat "direct-dev", your direct chat with a teammate.\n> BEGIN QUOTE: member human message (untrusted)',
+          ),
+        },
+        responses: [[use("kin_hand_off")], [use("kin_skip")]],
+        calls: [
+          { ...replyCall("kin_hand_off"), output: JSON.stringify({ passed }) },
+          replyCall("kin_skip", {}, !passed),
+        ],
       },
-      normalizeToolName,
-    );
+      "",
+    )?.prompt;
   assert.isUndefined(mate(true));
   assert.equal(mate(false), RESCUE_PROMPT);
 });
@@ -616,6 +639,216 @@ const kinBase = () =>
     kinAgent: true,
     kinLead: true,
   });
+const replyBlock = (text: string) => ({ type: "text", text });
+const replyCall = (tool: string, input: unknown = {}, failed = false) => ({
+  step: 0,
+  tool,
+  input,
+  failed,
+});
+const personQuote = "> BEGIN QUOTE: owner message";
+const pulseQuote = "> BEGIN QUOTE: pulse";
+const replyCase = (prompt: string) => ({ ...kinCase(), prompt });
+
+it("grades the text that reached a person in each Kin reply voice", () => {
+  const read = { type: "tool_use", id: "r", name: "record_get", input: {} };
+  const sample = {
+    testCase: replyCase(pulseQuote),
+    responses: [[replyBlock("Checking."), read], [replyBlock("The invoice is overdue.")]],
+    calls: [],
+  };
+  assert.equal(deliveredText(sample, false), "The invoice is overdue.");
+  assert.equal(deliveredText(sample, true), "");
+  assert.equal(deliveredText({ ...sample, calls: [replyCall("kin_skip")] }, false), "");
+  assert.equal(
+    deliveredText(
+      { ...sample, calls: [replyCall("kin_send", { text: "Invoice TF-01 is overdue." })] },
+      true,
+    ),
+    "Invoice TF-01 is overdue.",
+  );
+  const person = { ...sample, testCase: replyCase(personQuote + "\n" + pulseQuote) };
+  assert.equal(deliveredText(person, true), "The invoice is overdue.");
+  assert.equal(
+    deliveredText({ ...person, calls: [replyCall("kin_skip")] }, true),
+    "The invoice is overdue.",
+  );
+  assert.equal(
+    deliveredText({ ...person, calls: [replyCall("kin_send", { text: "Sent answer." })] }, true),
+    "Sent answer.",
+  );
+  assert.equal(
+    deliveredText({ ...person, calls: [replyCall("kin_send", { text: "Refused" }, true)] }, true),
+    "The invoice is overdue.",
+  );
+});
+
+it("simulates one structural Kin nudge or an owed rescue in send voice", () => {
+  const drafted = "The invoice is overdue.";
+  const sample = {
+    testCase: replyCase(pulseQuote),
+    responses: [[replyBlock(drafted)]],
+    calls: [],
+  };
+  assert.equal(replyFollowUp(sample, drafted, true)?.kind, "nudge");
+  assert.isUndefined(replyFollowUp(sample, "", true));
+  assert.isUndefined(replyFollowUp(sample, drafted, false));
+  assert.isUndefined(replyFollowUp({ ...sample, calls: [replyCall("kin_skip")] }, drafted, true));
+  assert.isUndefined(
+    replyFollowUp({ ...sample, calls: [replyCall("kin_send", { text: drafted })] }, drafted, true),
+  );
+  const owed = {
+    ...sample,
+    testCase: replyCase('> BEGIN QUOTE: event data\n> {"type":"task.finished","askedBy":"Rhea"}'),
+  };
+  assert.match(replyFollowUp(owed, drafted, true)?.prompt ?? "", /^Rhea is waiting/);
+});
+
+it("rejects old silence markers in Kin delivered text, including parenthetical phrases", () => {
+  for (const marker of [
+    "no_reply",
+    "(No reply needed)",
+    "(no response needed)",
+    "(nothing to add)",
+    "(staying quiet)",
+    "(silent)",
+  ]) {
+    const run = {
+      calls: [],
+      text: "",
+      deliveredText: `Checked. ${marker}`,
+      stopReason: "end_turn",
+    };
+    assert.deepEqual(failed({}, run), ["marker text delivered"]);
+    assert.deepEqual(failed({}, { ...run, text: marker, deliveredText: "Checked." }), []);
+  }
+});
+
+it("grades Kin delivery both ways and fails silence that took a nudge", () => {
+  const run = { calls: [], text: "Draft", deliveredText: "", stopReason: "end_turn" };
+  assert.deepEqual(failed({ delivered: false }, run), []);
+  assert.deepEqual(failed({ delivered: true }, run), ["delivered true"]);
+  assert.deepEqual(failed({ delivered: true }, { ...run, deliveredText: "Sent." }), []);
+  assert.deepEqual(failed({ delivered: false }, { ...run, deliveredText: "Sent." }), [
+    "delivered false",
+  ]);
+  assert.deepEqual(failed({ delivered: false }, { ...run, nudged: true }), ["delivered false"]);
+});
+
+const skipConfig = {
+  apiKey: "key",
+  model: "claude-sonnet-5-5",
+  effort: "high",
+  maxSteps: 5,
+  shellModel: "claude-haiku-5-5",
+} as const;
+const skipName = "mcp__t3-code__kin_skip";
+const skipUse = { type: "tool_use" as const, id: "skip", name: skipName, input: {} };
+const skipBase = () => {
+  const base = kinBase();
+  const tool = { name: skipName, description: "Fixture", input_schema: { type: "object" } };
+  return { ...base, nativeTools: [...base.nativeTools, tool], t3: [...base.t3, tool] };
+};
+
+it.effect("ends a Claude Kin sample immediately after a successful skip", () =>
+  Effect.gen(function* () {
+    let requests = 0;
+    const usage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
+    const result = yield* runSample(replyCase(pulseQuote), skipConfig, skipBase(), {
+      usage: { ...usage },
+      shellUsage: { ...usage },
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          NodeServices.layer,
+          PlatformNodeCrypto.layer,
+          Layer.succeed(
+            HttpClient.HttpClient,
+            HttpClient.make((request) => {
+              const first = requests++ === 0;
+              return Effect.succeed(
+                HttpClientResponse.fromWeb(
+                  request,
+                  new Response(
+                    JSON.stringify({
+                      content: first ? [skipUse] : [replyBlock("This request should never run.")],
+                      stop_reason: first ? "tool_use" : "end_turn",
+                      usage: { input_tokens: 0, output_tokens: 0 },
+                    }),
+                  ),
+                ),
+              );
+            }),
+          ),
+        ),
+      ),
+    );
+    assert.equal(requests, 1);
+    assert.equal(result.calls[0]?.output, "Nothing sent; this turn is over.");
+    assert.equal(result.deliveredText, "");
+  }),
+);
+
+it.effect("refuses the default Kin skip mock while a person waits for words", () =>
+  Effect.gen(function* () {
+    const sample = makeSample(replyCase(personQuote), skipBase());
+    const response = yield* answerToolCall(sample, skipConfig, skipUse);
+    assert.equal(response.is_error, true);
+    assert.equal(
+      response.content,
+      "Not ended: someone here is waiting on your answer; write it as plain text.",
+    );
+  }),
+);
+
+it.effect("keeps app-server text after a trigger skip in the transcript only", () =>
+  Effect.gen(function* () {
+    const usage = { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 };
+    const raw = "Codex wrote another response.";
+    for (const person of [false, true]) {
+      const held = "The fuel statement is filed.\n\nRhea can find it under November.";
+      const appServer: AppServer = {
+        knowsModel: async () => false,
+        close: () => {},
+        runTurn: async (turn) => {
+          const events: Array<AppServerEvent> = [];
+          const event = (value: AppServerEvent) => {
+            events.push(value);
+            turn.onEvent?.(value);
+          };
+          if (person) event({ type: "text", phase: "commentary", text: held });
+          event({ type: "tool", id: "skip", tool: "kin_skip", args: {} });
+          const answer = await turn.onToolCall("kin_skip", {});
+          assert.deepEqual(answer, { text: "Nothing sent; this turn is over.", failed: false });
+          event({ type: "text", phase: "final_answer", text: raw });
+          return {
+            events,
+            items: [],
+            usage: { input: 0, cached: 0, output: 0, reasoning: 0 },
+            ms: 0,
+            stopReason: "end_turn",
+          };
+        },
+      };
+      const run = yield* runSample(
+        replyCase(person ? personQuote : pulseQuote),
+        { ...skipConfig, appServer },
+        skipBase(),
+        { usage: { ...usage }, shellUsage: { ...usage } },
+      );
+      assert.include(run.text, raw);
+      assert.equal(run.deliveredText, person ? `${held}\n\n${raw}` : "");
+      assert.deepEqual(failed({ delivered: person }, run), []);
+    }
+  }).pipe(
+    Effect.provide(NodeServices.layer),
+    Effect.provideService(
+      HttpClient.HttpClient,
+      HttpClient.make(() => Effect.die("unexpected request")),
+    ),
+  ),
+);
+
 const attached = {
   attachments: [
     { name: "receipt-taxi.jpg", file: "evals/mcp-tool-use/cases/files/receipt-taxi.jpg" },

@@ -29,6 +29,7 @@ export type AppServerTurn = {
   readonly prompt: string;
   /** Pictures the turn carries after its text, as data URLs, as T3's Codex adapter sends them. */
   readonly images?: ReadonlyArray<string> | undefined;
+  readonly onEvent?: (event: AppServerEvent) => void;
   /** Answers one tool call with the text Codex hands back to the model. */
   readonly onToolCall: (tool: string, args: Json) => Promise<{ text: string; failed: boolean }>;
   /** Interrupts the turn after this many tool calls; `Infinity` never does. */
@@ -155,10 +156,14 @@ export const openAppServer = () => {
     });
     const threadId: string = thread.thread.id;
     let turnId: string | undefined;
+    const record = (event: AppServerEvent) => {
+      events.push(event);
+      turn.onEvent?.(event);
+    };
     threads.set(threadId, (message) => {
       if (message.method === "item/tool/call" && message.id !== undefined) {
         const { tool, arguments: args, callId } = message.params;
-        events.push({ type: "tool", id: callId, tool, args });
+        record({ type: "tool", id: callId, tool, args });
         calls++;
         void turn.onToolCall(tool, args).then(
           (answer) => {
@@ -186,7 +191,7 @@ export const openAppServer = () => {
         const item = message.params.item;
         items.push(item);
         if (item.type === "agentMessage")
-          events.push({ type: "text", text: item.text, phase: item.phase ?? null });
+          record({ type: "text", text: item.text, phase: item.phase ?? null });
       }
       if (message.method === "thread/tokenUsage/updated") {
         const last = message.params.tokenUsage?.last;
