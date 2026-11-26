@@ -1,3 +1,4 @@
+import type { HookInput } from "@anthropic-ai/claude-agent-sdk";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 import {
@@ -23,6 +24,7 @@ import * as DreamIsolation from "../../../dreaming/DreamIsolation.ts";
 import contextBudget from "../../../mcp/agentContextBudget.json" with { type: "json" };
 import { builtinTools, claude, OWNER_SEAT_NATIVE_TOOLS, OWNER_SEAT_OFF } from "./claude.ts";
 import { kinInstructions, REVIEW_SEAT_INSTRUCTIONS } from "../session.ts";
+import { KinSessionContext } from "../sessionContext.ts";
 import { ownerOnlyWakeup, wakeupRun } from "../../Audience.testkit.ts";
 import {
   delegatedFromLead,
@@ -62,6 +64,137 @@ const optionsAt = (cwd: string, environment: NodeJS.ProcessEnv = { PATH: "/usr/b
     environment,
     mcpServers: { kin: { type: "http", url: "http://127.0.0.1/kin" } },
   });
+
+const hookBase = {
+  session_id: "native",
+  transcript_path: "/fake/transcript",
+  cwd: "/fake",
+};
+const hookOutputs = (options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions, input: HookInput) =>
+  Effect.promise(() =>
+    Promise.all(
+      (options.hooks?.[input.hook_event_name] ?? []).flatMap(({ hooks }) =>
+        hooks.map((hook) => hook(input, undefined, { signal: new AbortController().signal })),
+      ),
+    ),
+  );
+
+const withPreparedContext = <A, E>(
+  check: (options: ClaudeAdapterV2.ClaudeAgentSdkQueryOptions) => Effect.Effect<A, E>,
+) =>
+  Effect.gen(function* () {
+    const { stateDir } = yield* ServerConfig.ServerConfig;
+    const threadId = ThreadId.make("kin:tech");
+    const policy = KinAgentSessionPolicy.of({
+      refusal: () => Effect.undefined,
+      webSearch: () => Effect.undefined,
+      delegated: () => Effect.succeed(false),
+      toolDirectories: [],
+      agentName: () => Effect.undefined,
+    });
+    const services = Context.make(KinAgentSessionPolicy, policy) as Context.Context<KinServices>;
+    const opened: Array<ClaudeAdapterV2.ClaudeAgentSdkQueryOptions> = [];
+    const base = Layer.succeed(ClaudeAdapterV2.ClaudeAgentSdkQueryRunner, {
+      allocateSessionId: Effect.succeed("session"),
+      open: (input) =>
+        Effect.sync(() => opened.push(input.options)).pipe(
+          Effect.andThen(Effect.die("no process in the test")),
+        ),
+      forkSession: () => Effect.die("unused fork"),
+      subagentLaunchToolUseId: () => Effect.die("unused lookup"),
+      subagentModel: () => Effect.succeed(null),
+      assertComplete: Effect.void,
+    });
+    return yield* Effect.gen(function* () {
+      const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
+      const context = yield* KinSessionContext;
+      yield* runner
+        .open({
+          threadId,
+          providerSessionId: ProviderSessionId.make("session"),
+          options: optionsAt(`${stateDir}/kin/memory-read`, {
+            PATH: "/usr/bin",
+            HOME: "/home/kin",
+          }),
+        })
+        .pipe(Effect.exit);
+      yield* context.set(threadId, { standing: "prepared standing", delta: "prepared delta" });
+      yield* context.set(ThreadId.make("kin:other"), { standing: "other", delta: "other" });
+      const [options] = opened;
+      if (options === undefined) return yield* Effect.die("Claude did not open");
+      return yield* check(options);
+    }).pipe(
+      Effect.provide(
+        claude.install(base).pipe(
+          Layer.provide(
+            Layer.succeed(KinServer, {
+              taskCardUpdater: Layer.empty,
+              services: Option.some(services),
+              subscribeForViewer: Option.none(),
+            }),
+          ),
+          Layer.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
+        ),
+      ),
+    );
+  }).pipe(
+    Effect.scoped,
+    Effect.provide(
+      ServerConfig.layerTest(process.cwd(), { prefix: "kin-hook-context-" }).pipe(
+        Layer.provideMerge(NodeServices.layer),
+      ),
+    ),
+  );
+
+it.effect("SessionStart adds the standing context only on startup and compact", () =>
+  withPreparedContext((options) =>
+    Effect.gen(function* () {
+      for (const source of ["startup", "compact", "resume", "clear", "fork"] as const) {
+        const output = yield* hookOutputs(options, {
+          ...hookBase,
+          hook_event_name: "SessionStart",
+          source,
+        });
+        assert.deepStrictEqual(
+          output,
+          source === "startup" || source === "compact"
+            ? [
+                {
+                  hookSpecificOutput: {
+                    hookEventName: "SessionStart",
+                    additionalContext: "prepared standing",
+                  },
+                },
+              ]
+            : [{}],
+          source,
+        );
+      }
+    }),
+  ),
+);
+
+it.effect("the prompt hook returns prepared text without reading the database", () =>
+  withPreparedContext((options) =>
+    Effect.gen(function* () {
+      assert.deepStrictEqual(
+        yield* hookOutputs(options, {
+          ...hookBase,
+          hook_event_name: "UserPromptSubmit",
+          prompt: "original wake-up",
+        }),
+        [
+          {
+            hookSpecificOutput: {
+              hookEventName: "UserPromptSubmit",
+              additionalContext: "prepared delta",
+            },
+          },
+        ],
+      );
+    }),
+  ),
+);
 
 it.effect.each([
   [true, true],
@@ -150,7 +283,7 @@ it.effect.each([
       }
       const config = yield* ServerConfig.ServerConfig;
       const { hooks: leadHooks, ...leadRest } = leadOpened ?? lead;
-      assert.deepStrictEqual(leadRest, {
+      const confinedBaseline = {
         ...lead,
         // The instructions alone: no coding-agent preset, no T3 thread guidance.
         systemPrompt: {
@@ -187,7 +320,29 @@ it.effect.each([
           CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
           MCP_CONNECTION_NONBLOCKING: "0",
         },
-      });
+      } satisfies typeof leadRest;
+      assert.deepStrictEqual(leadRest, confinedBaseline);
+      const { hooks: sharedHooks, ...sharedRest } = sharedOpened ?? lead;
+      assert.deepStrictEqual(sharedRest, confinedBaseline);
+      for (const [seat, expectedPrompt] of [
+        [reviewOpened, REVIEW_SEAT_INSTRUCTIONS],
+        [billsOpened, kinInstructions("confined", "claudeAgent", false)],
+      ] as const) {
+        const { hooks, ...rest } = seat ?? lead;
+        assert.deepStrictEqual(rest, {
+          ...confinedBaseline,
+          systemPrompt: { type: "custom", prompt: expectedPrompt, snapshot: false },
+          tools: ["ToolSearch"],
+          disallowedTools: [...(lead.disallowedTools ?? []), ...builtinTools],
+        });
+        assert.deepStrictEqual(Object.keys(hooks ?? {}), ["PreToolUse"]);
+      }
+      assert.deepStrictEqual(Object.keys(sharedHooks ?? {}), ["PreToolUse"]);
+      assert.notProperty(dreamOpened?.env ?? {}, "CLAUDE_CODE_PROMPT_CACHE_TTL");
+      assert.notProperty(
+        typeof dreamOpened?.settings === "object" ? dreamOpened.settings : {},
+        "idleCompaction",
+      );
       assert.deepStrictEqual(leadHooks?.PreToolUse?.length, 1);
       for (const name of kinSecretVariables) {
         assert.notProperty(leadOpened?.env ?? {}, name);
@@ -320,7 +475,11 @@ it.effect(
         }),
       );
       const lead = optionsAt(memory, { PATH: "/usr/bin", HOME: "/home/kin" });
-      const open = (threadId: string, options = lead) =>
+      const open = (
+        threadId: string,
+        options: ClaudeAdapterV2.ClaudeAgentSdkQueryOpenInput["options"] = lead,
+        refresh?: true,
+      ) =>
         Effect.gen(function* () {
           const runner = yield* ClaudeAdapterV2.ClaudeAgentSdkQueryRunner;
           yield* runner
@@ -328,6 +487,7 @@ it.effect(
               threadId: ThreadId.make(threadId),
               providerSessionId: ProviderSessionId.make("session"),
               options,
+              ...(refresh === undefined ? {} : { refresh }),
             })
             .pipe(Effect.exit);
           return opened.at(-1);
@@ -349,28 +509,96 @@ it.effect(
         );
       const full = yield* open("kin:tech");
       assert.includeMembers(contextBudget.kinLeadOwnerNativeTools, [...OWNER_SEAT_NATIVE_TOOLS]);
-      assert.deepStrictEqual(full?.tools, [...OWNER_SEAT_NATIVE_TOOLS, "ToolSearch"]);
+      assert.isDefined(full);
+      if (full === undefined) return;
+      assert.notProperty(full, "maxTurns");
+      const { hooks: fullHooks, env: fullEnv, settings: fullSettings, ...fullRequest } = full;
+      const { env: _env, settings: leadSettings, ...leadRequest } = lead;
+      assert.deepStrictEqual(fullRequest, {
+        ...leadRequest,
+        systemPrompt: {
+          type: "custom",
+          prompt: kinInstructions("owner", "claudeAgent"),
+          snapshot: false,
+        },
+        settingSources: [],
+        tools: [...OWNER_SEAT_NATIVE_TOOLS, "ToolSearch"],
+        disallowedTools: [
+          ...new Set([
+            ...(lead.disallowedTools ?? []),
+            ...OWNER_SEAT_OFF,
+            "Agent",
+            "Task",
+            "Workflow",
+            "ListAgents",
+            "ReportFindings",
+            "SendMessage",
+            "TaskStop",
+            "DesignSync",
+            "Skill",
+          ]),
+        ],
+        strictMcpConfig: true,
+      });
+      assert.deepStrictEqual(fullEnv, {
+        PATH: `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:/usr/bin`,
+        HOME: "/home/kin",
+        KIN_AGENT_NAME: "Tech lead",
+        ENABLE_TOOL_SEARCH: "true",
+        CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+        MCP_CONNECTION_NONBLOCKING: "0",
+        CLAUDE_CODE_PROMPT_CACHE_TTL: "1h",
+      });
+      assert.deepStrictEqual(fullSettings, {
+        ...(typeof leadSettings === "object" ? leadSettings : {}),
+        attribution: { commit: "", pr: "", sessionUrl: false },
+        includeCoAuthoredBy: false,
+        autoMemoryEnabled: false,
+        autoDreamEnabled: false,
+        env: { ENABLE_TOOL_SEARCH: "true" },
+        idleCompaction: false,
+        ...dietSettings,
+      });
+      const preconfigured = yield* open("kin:tech", {
+        ...lead,
+        env: { ...lead.env, CLAUDE_CODE_PROMPT_CACHE_TTL: "5m" },
+      });
+      assert.deepStrictEqual(preconfigured?.env, {
+        ...fullEnv,
+        CLAUDE_CODE_PROMPT_CACHE_TTL: "5m",
+      });
+      assert.sameMembers(Object.keys(fullHooks ?? {}), [
+        "PreToolUse",
+        "SessionStart",
+        "UserPromptSubmit",
+        "PreCompact",
+        "PostCompact",
+      ]);
+      for (const hook of [
+        { ...hookBase, hook_event_name: "SessionStart", source: "startup" },
+        { ...hookBase, hook_event_name: "SessionStart", source: "resume" },
+        { ...hookBase, hook_event_name: "SessionStart", source: "compact" },
+        { ...hookBase, hook_event_name: "UserPromptSubmit", prompt: "original wake-up" },
+        {
+          ...hookBase,
+          hook_event_name: "PreCompact",
+          trigger: "manual",
+          custom_instructions: null,
+        },
+        {
+          ...hookBase,
+          hook_event_name: "PostCompact",
+          trigger: "manual",
+          compact_summary: "fixture",
+        },
+      ] satisfies ReadonlyArray<HookInput>) {
+        assert.deepStrictEqual(yield* hookOutputs(full, hook), [{}]);
+      }
       const { mcpServers: _mcpServers, ...withoutMcp } = lead;
       const withoutSearch = yield* open("kin:tech", withoutMcp);
       assert.deepStrictEqual(withoutSearch?.tools, [...OWNER_SEAT_NATIVE_TOOLS]);
       assert.strictEqual(withoutSearch?.env?.ENABLE_TOOL_SEARCH, "false");
-      assert.deepStrictEqual(full?.disallowedTools, [
-        ...new Set([
-          ...(lead.disallowedTools ?? []),
-          ...OWNER_SEAT_OFF,
-          "Agent",
-          "Task",
-          "Workflow",
-          "ListAgents",
-          "ReportFindings",
-          "SendMessage",
-          "TaskStop",
-          "DesignSync",
-          "Skill",
-        ]),
-      ]);
-      assert.include(typeof full?.settings === "object" ? full.settings : {}, dietSettings);
-      assert.notProperty(full ?? {}, "skills");
+      assert.notProperty(full, "skills");
       // The signing gh first, then the pinned one; Claude Code's own PR footer and trailer off.
       const signing = `${stateDir}/kin/gh-sign`;
       assert.strictEqual(full?.env?.PATH, `${signing}:/kin-home/kin-tools/gh-pinned:/usr/bin`);
@@ -420,6 +648,38 @@ it.effect(
         yield* sql`DELETE FROM kin_wakeup_outside_reads WHERE wakeup_id = 'wake-full'`;
         return row === undefined ? undefined : stampReads(row.source);
       });
+      const refresh = yield* open(
+        "kin:tech",
+        {
+          ...lead,
+          hooks: {
+            PreToolUse: [
+              {
+                onFailure: "block",
+                hooks: [
+                  async () => ({
+                    hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny" },
+                  }),
+                ],
+              },
+            ],
+          },
+        },
+        true,
+      );
+      assert.isDefined(refresh);
+      if (refresh === undefined) return;
+      const decisions = yield* hookOutputs(refresh, {
+        ...hookBase,
+        hook_event_name: "PreToolUse",
+        tool_name: "WebSearch",
+        tool_input: { query: "invented vendor" },
+        tool_use_id: "refresh-tool",
+      });
+      assert.isUndefined(yield* read, "a refused refresh tool must not mark a wake-up");
+      assert.deepStrictEqual(decisions, [
+        { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny" } },
+      ]);
       assert.isTrue(yield* allows("WebFetch", { url: "https://example.com/pricing?x=1" }));
       assert.isFalse(yield* allows("Bash", shell));
       assert.deepStrictEqual(yield* read, [{ k: "web", host: "example.com" }]);
@@ -442,6 +702,7 @@ it.effect(
       assert.isFalse(yield* allows("Bash", shell));
       // A turn others read never gets the full session.
       const shared = yield* open("kin-shared:tech");
+      assert.deepStrictEqual(Object.keys(shared?.hooks ?? {}), ["PreToolUse"]);
       assert.deepStrictEqual(shared?.tools, ["ToolSearch", "WebSearch"]);
       // Its web search runs at Anthropic; the turn reads as outside-read before results arrive.
       yield* sql`UPDATE kin_wakeups SET thread_id = 'kin-shared:tech' WHERE wakeup_id = 'wake-full'`;
@@ -774,6 +1035,29 @@ it.effect(
         child?.env?.PATH,
         `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:/usr/bin`,
       );
+      const { hooks: childHooks, ...childOptions } = child ?? task;
+      const { env: _taskEnv, settings: taskSettings, ...taskOptions } = task;
+      assert.deepStrictEqual(childOptions, {
+        ...taskOptions,
+        settingSources: [],
+        strictMcpConfig: true,
+        settings: {
+          ...(typeof taskSettings === "object" ? taskSettings : {}),
+          attribution: { commit: "", pr: "", sessionUrl: false },
+          includeCoAuthoredBy: false,
+          autoMemoryEnabled: false,
+          autoDreamEnabled: false,
+          env: { ENABLE_TOOL_SEARCH: "true" },
+        },
+        env: {
+          PATH: `${stateDir}/kin/gh-sign:/kin-home/kin-tools/gh-pinned:/usr/bin`,
+          HOME: "/home/kin",
+          KIN_AGENT_NAME: "Lead",
+          ENABLE_TOOL_SEARCH: "true",
+          CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
+        },
+      });
+      assert.deepStrictEqual(Object.keys(childHooks ?? {}), ["PreToolUse"]);
       const own = yield* open("kin:tech", optionsAt(`${stateDir}/kin/memory-read`, task.env));
       assert.strictEqual(own?.env?.KIN_AGENT_NAME, "Lead");
       for (const worker of [child, grandchild, yield* open(parent)]) {

@@ -29,6 +29,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
+import { fingerprintPrompt, type PromptFingerprint } from "./sessionCarry.ts";
 
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
@@ -239,6 +240,7 @@ export interface KinLeadPromptInput {
   readonly events: ReadonlyArray<KinEvent>;
   readonly memoryHead: string;
   readonly budgetContext?: string;
+  readonly observePrompt?: (fingerprint: PromptFingerprint) => void;
   /** The chat the lead's plain text goes to; see the reply bridge. */
   readonly lane?: {
     readonly chatId: KinChatId;
@@ -2625,6 +2627,16 @@ export class KinLeadPrompt extends Context.Service<
             ? [sharedPart("message", REPLY_SHAPE)]
             : []),
         ];
+        if (ownerOnly && input.observePrompt !== undefined) {
+          const standing = parts.flatMap((part) =>
+            part.place === "legacyHeader"
+              ? part.lines.flatMap((line) => (line.place === "standing" ? [line.text] : []))
+              : part.place === "standing" && part.index === undefined
+                ? [part.text]
+                : [],
+          );
+          input.observePrompt(fingerprintPrompt(standing, snapshot?.index));
+        }
         return { parts, ownerOnly };
       });
       const build = Effect.fn("KinLeadPrompt.build")(function* (input: KinLeadPromptInput) {
