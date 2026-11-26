@@ -714,6 +714,8 @@ const make = Effect.gen(function* () {
   const paused = (orgId: KinOrgId) =>
     isOrgPaused(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
+  const wasStopped = (row: typeof RunningRow.Type) =>
+    KinEventQueue.wasPersonStopped(row).pipe(provideSql);
   const sharedTurn = (row: typeof RunningRow.Type) =>
     effectiveAudience(row).pipe(
       provideSql,
@@ -1053,6 +1055,7 @@ const make = Effect.gen(function* () {
             ),
           });
           yield* holdFloor();
+          if (yield* wasStopped(row)) return;
           if (Option.isSome(bridge))
             yield* bridge.value.steered(orgId, wakeupId, {
               n,
@@ -1072,7 +1075,12 @@ const make = Effect.gen(function* () {
             });
           // Past its turn, the steer starts a run this wake-up adopts.
           yield* send("steer").pipe(
-            Effect.catchTags({ ThreadManagementNoSteerableRunError: () => send("queue") }),
+            Effect.catchTags({
+              ThreadManagementNoSteerableRunError: () =>
+                wasStopped(row).pipe(
+                  Effect.flatMap((stopped) => (stopped ? Effect.void : send("queue"))),
+                ),
+            }),
           );
         });
         // A steer that may have landed is never re-sent; one that did not goes back to the queue.
@@ -1175,7 +1183,7 @@ const make = Effect.gen(function* () {
                 (yield* threads.getThreadRecords(threadId, ["runs"], { runIds: [current] })).runs[0]
                   ?.ordinal ?? 0;
               const adopted =
-                result.timedOut || (yield* isAborted(row))
+                result.timedOut || (yield* isAborted(row)) || (yield* wasStopped(row))
                   ? undefined
                   : (yield* threads.getThreadRecords(threadId, ["runs"], {
                       runStatuses: ["queued", ...ThreadManagementService.ACTIVE_RUN_STATUSES],
@@ -1226,9 +1234,10 @@ const make = Effect.gen(function* () {
           : "failed";
       // The stop switch interrupted this run: hand its events back without spending an attempt.
       const stopped = ended === "failed" && (yield* paused(row.orgId));
-      // Otherwise an interrupted run was a person's Stop (`KinStop.interrupt`), not a failure.
+      // A person's Stop survives provider completion, adoption, and recovery.
       const status =
-        ended === "failed" && !stopped && result.run?.status === "interrupted"
+        !stopped &&
+        ((yield* wasStopped(row)) || (ended === "failed" && result.run?.status === "interrupted"))
           ? "interrupted"
           : ended;
       const setup = status === "failed" ? setupFailureIn(final, runId) : null;
