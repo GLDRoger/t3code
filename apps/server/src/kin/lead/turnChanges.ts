@@ -13,6 +13,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { isContinuation, replyGroupKeySql } from "../chat/KinChatRepository.ts";
 import { kindOf } from "../chat/messageLinks.ts";
 import { type TextClock, textLocale } from "../work/companyProfile.ts";
 import { isClosed, ownerZone, parseChanges } from "../work/recordRows.ts";
@@ -116,7 +117,7 @@ const whatOf = (
 
 /**
  * What each agent reply's wake-up changed, as this viewer sees it, oldest first: one read for the
- * whole page. Absent for any message that is not a reply from a wake-up.
+ * whole page. A split reply carries its receipt only on its last bubble, even across pages.
  */
 export const turnChanges = Effect.fn("KinAgentChanges.turn")(function* (
   viewer: KinViewer,
@@ -130,9 +131,18 @@ export const turnChanges = Effect.fn("KinAgentChanges.turn")(function* (
   const toOf = (field: string) => sql`(SELECT json_extract(f.value, '$.to')
     FROM json_each(c.fields_json) f WHERE json_extract(f.value, '$.field') = ${field} LIMIT 1)`;
   const rows = yield* sql<TurnRow>`WITH m AS (
-        SELECT message_id, source_wakeup_id AS wakeup_id, author_agent_id AS agent_id
-        FROM kin_messages WHERE org_id = ${orgId} AND message_id IN ${sql.in(messageIds)}
-          AND author_kind = 'agent' AND source_wakeup_id IS NOT NULL AND body <> ''),
+        SELECT reply.message_id, reply.source_wakeup_id AS wakeup_id, reply.author_agent_id AS agent_id
+        FROM kin_messages reply WHERE reply.org_id = ${orgId} AND reply.message_id IN ${sql.in(messageIds)}
+          AND reply.author_kind = 'agent' AND reply.source_wakeup_id IS NOT NULL AND reply.body <> ''
+          AND NOT EXISTS (
+            SELECT 1 FROM kin_messages m
+            WHERE m.org_id = reply.org_id AND m.chat_id = reply.chat_id
+              AND m.source_wakeup_id = reply.source_wakeup_id AND m.author_kind = 'agent'
+              AND m.author_agent_id = reply.author_agent_id AND m.author_thread_id IS reply.author_thread_id
+              AND m.seq > reply.seq AND m.kind = 'text' AND m.status = 'posted' AND m.body <> ''
+              AND m.silent = 1 AND ${isContinuation(sql, "m")}
+              AND ${replyGroupKeySql(sql, "m")} = ${replyGroupKeySql(sql, "reply")}
+          )),
       picked AS (SELECT m.message_id, c.seq,
           COUNT(c.seq) OVER (PARTITION BY m.message_id) AS total,
           ROW_NUMBER() OVER (PARTITION BY m.message_id ORDER BY c.seq) AS n
