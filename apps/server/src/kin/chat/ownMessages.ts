@@ -332,8 +332,8 @@ const removeContinuations = Effect.fnUntraced(function* (
 ) {
   if (ids.length === 0) return;
   const sql = yield* SqlClient.SqlClient;
-  yield* sql`UPDATE kin_messages SET status = 'deleted' WHERE org_id = ${orgId}
-    AND message_id IN ${sql.in(ids)} AND status = 'posted'`;
+  yield* sql`UPDATE kin_messages SET status = 'deleted', lapsed_question_json = NULL
+    WHERE org_id = ${orgId} AND message_id IN ${sql.in(ids)} AND status = 'posted'`;
   for (const id of ids) yield* told(orgId, id, []);
 });
 
@@ -386,7 +386,7 @@ export const withdrawOwn = Effect.fn("KinOwnMessages.withdraw")(function* (
     );
   const at = iso(input.now);
   const changed = yield* sql`UPDATE kin_messages SET status = 'deleted',
-      withdrawn_json = json_object('why', ${why}, 'at', ${at})
+      withdrawn_json = json_object('why', ${why}, 'at', ${at}), lapsed_question_json = NULL
     WHERE org_id = ${input.orgId} AND message_id = ${leadId} AND status = 'posted'
     RETURNING message_id`;
   if (changed.length === 0) return yield* refuse(OWN_MESSAGE_REFUSALS.withdrawn);
@@ -432,7 +432,8 @@ export const replaceOwn = Effect.fn("KinOwnMessages.replace")(function* (
   );
   if (named.body === row.body && continued.length === 0)
     return { messageId: input.messageId, replaced: true, changed: false } as const;
-  yield* sql`UPDATE kin_messages SET body = ${named.body}, edited_at = ${iso(input.now)}
+  yield* sql`UPDATE kin_messages SET body = ${named.body}, edited_at = ${iso(input.now)},
+      lapsed_question_json = NULL
     WHERE org_id = ${input.orgId} AND message_id = ${leadId} AND status = 'posted'`;
   yield* named.names.length === 0
     ? sql`DELETE FROM kin_message_names WHERE org_id = ${input.orgId}

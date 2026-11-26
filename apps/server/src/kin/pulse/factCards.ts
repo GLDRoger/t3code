@@ -2,6 +2,7 @@ import {
   formatKinWhen,
   KIN_TEXT_LOCALE,
   KinChatId,
+  kinRateShown,
   type KinChoiceOutcome,
   KinPersonId,
   KinWidgetId,
@@ -19,12 +20,13 @@ import type { SqlError } from "effect/sql/SqlError";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
-import { ownerLevel, ownerLevelPeople } from "../people/KinAccess.ts";
+import { accessSql, ownerLevel, ownerLevelPeople } from "../people/KinAccess.ts";
 import { holdFor } from "../triggers/quietHold.ts";
 import { storedWorkHours } from "../triggers/quietHours.ts";
 import {
   FACT_CARD_KIND_LIST,
   type FactCardPlan,
+  type InvoiceChoicePlan,
   isFactCard,
   plansOf,
   type DuePlan,
@@ -35,7 +37,10 @@ import {
 } from "../widgets/cardPlans.ts";
 import { dayIn } from "../work/money.ts";
 import { noticeDay } from "../work/crm.ts";
-import { daysOverdue, endOfDay, startOfDay } from "../work/recordRows.ts";
+import { daysOverdue, endOfDay, recordName, startOfDay } from "../work/recordRows.ts";
+import { shortDay } from "../work/statements/bankKnown.ts";
+import { paymentChanged } from "../work/statements/creditPayment.ts";
+import { rateMoney } from "../work/statements/invoiceCredits.ts";
 import { crmSees, teamGuard, viewSees } from "../work/teamView.ts";
 import { draftersFor } from "./draftWake.ts";
 import { daysAgoText, daysText, type SenseContext, type SensedFact } from "./senses/shared.ts";
@@ -77,6 +82,18 @@ export const factCardShown = (plan: FactCardPlan) => {
         : { label: "Done", line: `Mark ${plan.key} done` };
     case "waited_answer":
       return waitedShown(plan);
+    case "invoice_choice": {
+      const { payment } = plan;
+      if (payment === null) return { label: "None of these", line: "" };
+      const owed = rateMoney({ minor: payment.amountMinor, currency: payment.currency });
+      return {
+        label: clamp(
+          recordName(payment.key, payment.number === payment.key ? null : payment.number),
+          80,
+        ),
+        line: `${owed} owed. Records ${rateMoney(payment.received)} received for it, at ${kinRateShown(payment.rate)}.`,
+      };
+    }
     case "notice_renew":
       return {
         label: "Let it renew",
@@ -107,6 +124,7 @@ const waitedShown = (plan: WaitedPlan) => {
 
 /** What an unanswered card says once its fact stopped being true. */
 const closedOutcome = (plan: FactCardPlan): KinChoiceOutcome => {
+  if (plan.kind === "invoice_choice") return paymentChanged(plan.key, plan.payment?.key);
   const text = (() => {
     switch (plan.kind) {
       case "waited_answer":
@@ -323,7 +341,10 @@ export const postFactCard = Effect.fn("KinFactCards.post")(function* (input: {
         )
           return undefined;
         const shown = input.options.map((one) =>
-          one.plan === undefined ? undefined : factCardShown(one.plan),
+          one.plan === undefined ||
+          (one.plan.kind === "invoice_choice" && one.plan.payment === null)
+            ? undefined
+            : factCardShown(one.plan),
         );
         const card = yield* chat.ask(
           {
@@ -379,6 +400,8 @@ const settleFactCards = Effect.fn("KinFactCards.settle")(function* (
   standing: ReadonlySet<string>,
   actors: ReadonlyMap<string, string | undefined>,
   inHand: ReadonlySet<string>,
+  invoiceChoices: ReadonlySet<string>,
+  level: ReadonlySet<string>,
 ) {
   const chats = yield* Effect.serviceOption(KinChatService);
   if (Option.isNone(chats)) return;
@@ -392,6 +415,8 @@ const settleFactCards = Effect.fn("KinFactCards.settle")(function* (
             row.open === 1 &&
             (!standing.has(row.factKey) ||
               (row.kind === "waited_answer" && actors.get(row.factKey) !== row.personId) ||
+              (row.kind === "invoice_choice" &&
+                (!invoiceChoices.has(row.factKey) || !level.has(row.personId))) ||
               handed(row)),
         )
         .map((row) => row.widgetId),
@@ -940,6 +965,99 @@ const mayChange = (
     Effect.catchTags({ KinChatError: () => Effect.succeed(false) }),
   );
 
+const invoiceChoiceCards = Effect.fn("KinFactCards.invoiceChoices")(function* (input: {
+  readonly ctx: SenseContext;
+  readonly sensed: ReadonlyArray<SensedFact>;
+  readonly open: ReadonlyArray<KinPulseFact>;
+  readonly level: ReadonlySet<string>;
+  readonly posted: ReadonlyArray<CardRow>;
+}) {
+  const { ctx, level, posted } = input;
+  const agentId = ctx.finance;
+  if (agentId === undefined || level.size === 0) return;
+  const sensed = new Map(input.sensed.map((fact) => [fact.key, fact.paymentChoice]));
+  const pending = input.open.flatMap((fact) => {
+    const match = sensed.get(fact.key);
+    return match === undefined || asked(posted, fact.key, undefined, match.choice.round)
+      ? []
+      : [{ fact, ...match }];
+  });
+  if (pending.length === 0) return;
+  const sql = yield* SqlClient.SqlClient;
+  const [recipient] = yield* sql<{
+    personId: string;
+    name: string;
+  }>`SELECT p.person_id AS "personId",
+      p.display_name AS name FROM kin_people p
+    LEFT JOIN kin_agents a ON a.org_id = p.org_id AND a.agent_id = ${agentId}
+    WHERE p.org_id = ${ctx.orgId} AND p.person_id IN ${sql.in([...level])} AND p.removed_at IS NULL
+    ORDER BY p.person_id IS NOT a.owner_person_id,
+      ${sql.literal(accessSql("p"))} <> 'owner', p.person_id LIMIT 1`;
+  if (recipient === undefined) return;
+  const personId = KinPersonId.make(recipient.personId);
+  for (const { fact, credit, choice } of pending) {
+    const base = {
+      kind: "invoice_choice" as const,
+      factKey: fact.key,
+      round: choice.round,
+      personId,
+      personName: recipient.name,
+      agentId,
+      recordId: credit.recordId,
+      key: credit.key,
+      title: credit.title,
+      rev: credit.rev,
+    };
+    const plans: ReadonlyArray<InvoiceChoicePlan> = [
+      ...choice.options.map(({ invoice, owed, received, rate }) => ({
+        ...base,
+        payment: {
+          kind: "record_payment" as const,
+          recordId: invoice.recordId,
+          key: invoice.key,
+          title: invoice.title,
+          number: invoice.number ?? invoice.key,
+          client: choice.client,
+          seen: invoice.seen,
+          invoiceRev: invoice.rev,
+          bankRecordId: credit.recordId,
+          bankKey: credit.key,
+          rev: credit.rev,
+          amountMinor: owed.minor,
+          currency: owed.currency,
+          received,
+          rate,
+          day: credit.date,
+          withheldMinor: null,
+          owedAfterMinor: 0,
+        },
+      })),
+      { ...base, payment: null },
+    ];
+    const received = rateMoney({ minor: credit.amountMinor, currency: credit.currency });
+    const card = yield* postFactCard({
+      ctx,
+      personId,
+      agentId,
+      factKey: fact.key,
+      round: choice.round,
+      question: `Which invoice does ${credit.key} pay?`,
+      detail: `${credit.key}: ${received} received ${shortDay(credit.date)} from ${choice.client}. It names no invoice, and Kin has no recent rate close to the one it implies, so Kin won't guess.`,
+      options: plans.map((plan) => ({ label: factCardShown(plan).label, plan })),
+      posted,
+    });
+    if (card !== undefined)
+      yield* markTold({
+        orgId: ctx.orgId,
+        personId,
+        eventId: card.messageId,
+        facts: [fact],
+        at: ctx.at,
+        zone: ctx.zone,
+      });
+  }
+});
+
 /**
  * In the pulse's tick, after holders are told: Kin's cards about facts that stand open, and the
  * way out of each whose fact cleared. A card that can't be posted is logged and never fails it.
@@ -947,9 +1065,7 @@ const mayChange = (
 export const factCards = Effect.fn("KinFactCards.pass")(function* (input: {
   readonly ctx: SenseContext;
   /** Every fact sensed now, handled or not: what a card stands on. */
-  readonly sensed: ReadonlyArray<
-    Parameters<typeof standKeys>[0] & Pick<KinPulseFact, "actor"> & Pick<SensedFact, "quietForMs">
-  >;
+  readonly sensed: ReadonlyArray<SensedFact>;
   /** Those open: not handled, not set aside, not quiet. */
   readonly open: ReadonlyArray<KinPulseFact>;
   readonly sees: (
@@ -985,10 +1101,15 @@ export const factCards = Effect.fn("KinFactCards.pass")(function* (input: {
       ]),
     ),
     inHand,
+    new Set(
+      input.sensed.filter((fact) => fact.paymentChoice !== undefined).map((fact) => fact.key),
+    ),
+    level,
   );
   const budget = nudgeBudget(input.ctx, level);
   yield* waitedCards({ ...input, level, posted, budget });
   yield* stallCards({ ...input, level, posted, budget });
   yield* milestoneCards({ ...input, level, posted, budget });
   yield* noticeCards({ ...input, level, posted, budget });
+  yield* invoiceChoiceCards({ ...input, level, posted });
 });

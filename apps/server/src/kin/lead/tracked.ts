@@ -45,7 +45,10 @@ const decodeTracked = Schema.decodeUnknownEffect(Schema.Array(TrackedRow));
  * come due and the scheduled tasks still on. A deferral belongs to its chat's first-joined
  * lead, the one the trigger wakes for it (`orgLeads.liveLead`); a native schedule to its row's.
  */
-export const tracked = Effect.fn("KinTracked.tracked")(function* (orgId: KinOrgId) {
+export const tracked = Effect.fn("KinTracked.tracked")(function* (
+  orgId: KinOrgId,
+  alarmChatId?: string,
+) {
   const sql = yield* SqlClient.SqlClient;
   const firstLead = sql`(SELECT m.agent_id FROM kin_chat_members m
       JOIN kin_agents a ON a.org_id = m.org_id AND a.agent_id = m.agent_id
@@ -65,6 +68,7 @@ export const tracked = Effect.fn("KinTracked.tracked")(function* (orgId: KinOrgI
       0 AS "hostClock", NULL AS "ownerTime"
     FROM kin_records e WHERE e.org_id = ${orgId} AND e.register_id = 'work'
       AND e.owner_kind = 'agent' AND e.state NOT IN ('done', 'dropped')
+      AND ${alarmChatId === undefined}
     UNION ALL
     SELECT CASE r.on_due WHEN 'remind' THEN 'reminder' ELSE 'follow_up' END,
       COALESCE(json_extract(w.state_json, '$.title'), ''), COALESCE(f.next_run_at, r.due_at),
@@ -77,6 +81,7 @@ export const tracked = Effect.fn("KinTracked.tracked")(function* (orgId: KinOrgI
       AND f.trigger_id = 'deferral:' || r.item_id || ':due' AND f.enabled = 1
     WHERE r.org_id = ${orgId} AND (r.state = 'asked'
       OR (r.state IN ('armed', 'heads_up', 'grace', 'snoozed') AND f.next_run_at IS NOT NULL))
+      ${alarmChatId === undefined ? sql`` : sql`AND w.chat_id = ${alarmChatId} AND r.state <> 'asked'`}
     UNION ALL
     SELECT 'scheduled', COALESCE(json_extract(w.state_json, '$.title'), ''), NULL, w.chat_id,
       ${firstLead}, 3, t.updated_at, NULL, NULL, 0, NULL, NULL, (SELECT m.seq FROM kin_messages m WHERE m.org_id = w.org_id AND m.message_id = w.message_id), t.item_id, json_extract(w.state_json, '$.askedBy'), json_extract(w.state_json, '$.every'), 0, NULL
@@ -86,6 +91,7 @@ export const tracked = Effect.fn("KinTracked.tracked")(function* (orgId: KinOrgI
     JOIN kin_triggers f ON f.org_id = t.org_id
       AND f.trigger_id = 'schedule:' || t.item_id AND f.enabled = 1 AND f.next_run_at IS NOT NULL
     WHERE t.org_id = ${orgId} AND t.state = 'active' AND t.paused = 0
+      ${alarmChatId === undefined ? sql`` : sql`AND w.chat_id = ${alarmChatId}`}
     UNION ALL
     SELECT 'scheduled', n.title, NULL, COALESCE(w.chat_id, s.chat_id), s.agent_id, 3, s.updated_at,
       NULL, NULL, 0, NULL, NULL, (SELECT m.seq FROM kin_messages m WHERE m.org_id = w.org_id AND m.message_id = w.message_id), s.schedule_id, json_extract(w.state_json, '$.askedBy'), json_extract(w.state_json, '$.every'),
@@ -95,6 +101,7 @@ export const tracked = Effect.fn("KinTracked.tracked")(function* (orgId: KinOrgI
     LEFT JOIN kin_widgets w ON w.org_id = s.org_id
       AND w.widget_id = 'scheduled:' || s.org_id || ':' || s.schedule_id
     WHERE s.org_id = ${orgId} AND s.deleted_at IS NULL AND COALESCE(s.pending_enabled, 1) = 1
+      AND ${alarmChatId === undefined}
     ORDER BY rank, at, title`.pipe(
     Effect.mapError(toPersistenceSqlError("KinLeadProvision.tracked")),
   );

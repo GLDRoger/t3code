@@ -45,7 +45,8 @@ import * as HostBackup from "./hostBackup.ts";
 import * as KinEventQueue from "./lead/KinEventQueue.ts";
 import * as KinPersistence from "./persistence/KinPersistence.ts";
 import { KinWakeupError } from "./lead/WakeupRunner.ts";
-import { MemoryError } from "./memory/Memory.ts";
+import { MemoryError, MemoryRecoveryHooks } from "./memory/Memory.ts";
+import * as OwnerNotices from "./lead/OwnerNotices.ts";
 
 const HOUR = 60 * 60 * 1000;
 const NOW = 1794009600000;
@@ -316,6 +317,89 @@ it.effect(
         [true],
       );
     }).pipe(Effect.provide(services)),
+);
+
+it.effect("a memory write the writer refuses every night tells the owner once per cause", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(DAY_START);
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const night = (day: number, failure: string | null) =>
+      sql`INSERT INTO kin_dream_runs (org_id, owner_date, dream_id, full, status, branch, head,
+          material_from, material_until, failure, started_at, ended_at)
+        VALUES (${orgId}, ${`2026-11-${day}`}, ${`dream_${day}`}, 0,
+          ${failure === null ? "succeeded" : "failed"}, ${`dream/${day}`},
+          ${failure === null ? "abc" : null}, 0, ${NOW},
+          ${failure}, ${NOW}, ${NOW})`;
+    const told = sql<{ body: string; resolvedAt: string | null }>`SELECT m.body,
+        w.resolved_at AS "resolvedAt" FROM kin_messages m
+      JOIN kin_waiting w ON w.org_id = m.org_id AND w.message_id = m.message_id
+      WHERE m.org_id = ${orgId} AND m.message_id LIKE 'kin-dream-failed:%'
+      ORDER BY m.seq`;
+    const checkout = "MemoryCheckoutInvalid: fixture private path";
+    const scanner = "memory-write:scanner";
+    yield* night(11, checkout);
+    yield* HostBackupCheck.check();
+    assert.lengthOf(yield* told, 1);
+    yield* night(12, checkout);
+    yield* HostBackupCheck.check();
+    assert.lengthOf(yield* told, 1);
+    yield* night(13, scanner);
+    yield* HostBackupCheck.check();
+    assert.deepStrictEqual(
+      (yield* told).map(({ resolvedAt }) => resolvedAt === null),
+      [false, true],
+    );
+    yield* night(14, null);
+    yield* HostBackupCheck.check();
+    assert.deepStrictEqual(
+      (yield* told).map(({ resolvedAt }) => resolvedAt === null),
+      [false, false],
+    );
+    yield* night(15, scanner);
+    yield* HostBackupCheck.check();
+    const rows = yield* told;
+    assert.deepStrictEqual(
+      rows.map(({ resolvedAt }) => resolvedAt === null),
+      [false, false, true],
+    );
+    assert.include(rows[0]?.body, "copy of memory on this server");
+    assert.include(rows[1]?.body, "check for passwords and keys");
+    for (const { body } of rows) {
+      assert.notInclude(body, "fixture private");
+      assert.notInclude(body, "Error");
+      assert.notInclude(body, "MemoryCheckoutInvalid");
+    }
+  }).pipe(Effect.provide(services)),
+);
+
+it.effect("background memory refusals open one silent notice in the owner's private chat", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(DAY_START + 13 * HOUR);
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const { writeEpisode } = yield* MemoryRecoveryHooks;
+    if (writeEpisode === undefined) return assert.fail("Missing memory notices");
+    yield* Effect.all(
+      [
+        writeEpisode(orgId, "deleted-quotes", "remote"),
+        writeEpisode(orgId, "deleted-quotes", "remote"),
+      ],
+      { concurrency: "unbounded", discard: true },
+    );
+    yield* writeEpisode(orgId, "deleted-quotes", "scanner");
+    const rows = yield* sql<{ chatId: string; person: string; silent: number; open: number }>`SELECT
+        m.chat_id AS "chatId", w.person_id AS person, m.silent,
+        w.resolved_at IS NULL AS open
+      FROM kin_messages m JOIN kin_waiting w
+        ON w.org_id = m.org_id AND w.message_id = m.message_id
+      WHERE m.org_id = ${orgId} AND m.message_id LIKE 'kin-memory-write:%'
+      ORDER BY m.seq`;
+    assert.deepStrictEqual(rows, [
+      { chatId: "rhea-chief", person: "rhea", silent: 1, open: 0 },
+      { chatId: "rhea-chief", person: "rhea", silent: 1, open: 1 },
+    ]);
+  }).pipe(Effect.provide(OwnerNotices.layer.pipe(Layer.provideMerge(services)))),
 );
 
 const decodeCard = Schema.decodeUnknownSync(Schema.fromJsonString(KinHostTroubleCard));

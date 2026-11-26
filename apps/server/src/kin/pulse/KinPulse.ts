@@ -197,6 +197,7 @@ const withStored = (
     section: _section,
     overflow: _overflow,
     extraSection: _extraSection,
+    paymentChoice: _paymentChoice,
     ...shared
   } = fact;
   // One person reading a fact that names them reads it as theirs; a shared view keeps names.
@@ -251,6 +252,7 @@ export const standingNow = Effect.fn("KinPulse.standingNow")(function* (
       section: _section,
       overflow: _overflow,
       extraSection: _extraSection,
+      paymentChoice: _paymentChoice,
       ...fact
     } = one;
     return [{ ...fact, handled: null }];
@@ -575,6 +577,7 @@ const tellHolders = Effect.fn("KinPulse.tellHolders")(function* (
       section: _section,
       overflow: _overflow,
       extraSection: _extraSection,
+      paymentChoice: _paymentChoice,
       ...fact
     } = sensed;
     const open = { ...fact, handled: handledOf(stored.get(fact.key), at, sensed) };
@@ -822,6 +825,7 @@ const markQuiet = Effect.fn("KinPulse.markQuiet")(function* (
     section: _section,
     overflow: _overflow,
     extraSection: _extraSection,
+    paymentChoice: _paymentChoice,
     ...fact
   } of muted) {
     const destinations = new Set(owners);
@@ -1030,6 +1034,7 @@ export const tick = Effect.fn("KinPulse.tick")(function* (orgId: KinOrgId, at: n
           section: _section,
           overflow: _overflow,
           extraSection: _extraSection,
+          paymentChoice: _paymentChoice,
           ...fact
         } = sensed;
         const handled = handledOf(stored.get(fact.key), at, sensed);
