@@ -7,7 +7,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { codingAgentSource, codingAgentTextShown } from "../lead/OutsideContent.ts";
 import { SILENT_REPLY } from "../reply/classify.ts";
 import { dayIn, dayWords, timeIn } from "./money.ts";
-import { ownerZone } from "./recordRows.ts";
+import { readOwnerZone } from "./recordRows.ts";
 import { crmSeenBy, KIN_OWNER_LEVEL, seenBy, type KinViewer } from "./teamView.ts";
 import { WEEK_MS } from "../durations.ts";
 
@@ -191,6 +191,7 @@ export const buildWorkSection = Effect.fn("KinWorkPrompt.build")(function* (inpu
 }) {
   const sql = yield* SqlClient.SqlClient;
   const { orgId, agentId, chatId, now } = input;
+  const zone = yield* readOwnerZone(orgId);
   const since = yield* settledCursor(input);
   const [counts] = yield* sql<{
     open: number;
@@ -272,7 +273,6 @@ export const buildWorkSection = Effect.fn("KinWorkPrompt.build")(function* (inpu
     shown.map(({ row }) => row.recordId),
     KIN_OWNER_LEVEL,
   );
-  const zone = yield* ownerZone(orgId);
   const helping = yield* sql<{
     key: string;
     title: string;
