@@ -15,7 +15,6 @@ import {
   type ServerProvider,
   ServerSettings,
 } from "@t3tools/contracts";
-import { OWNER_SEAT_NATIVE_TOOLS } from "../../apps/server/src/kin/lead/turn/providers/claude.ts";
 import { helperModelRefusal } from "../../apps/server/src/kin/lead/leadModels.ts";
 import { CAPTION_PROMPT, RESCUE_PROMPT } from "../../apps/server/src/kin/reply/classify.ts";
 import { EVENING_RULE, MORNING_RULE } from "../../apps/server/src/kin/pulse/prompt.ts";
@@ -32,6 +31,7 @@ import {
 import {
   answerToolCall,
   buildBase,
+  type Base,
   buildMessages,
   gradeSample,
   judged,
@@ -65,14 +65,6 @@ const template = {
           type: "text",
           text: "<system-reminder>\nCodebase and user instructions are shown below.\n</system-reminder>",
         },
-        {
-          type: "text",
-          text: "<system-reminder>\nAvailable agent types for the Agent tool:\nUse a specialist.\n\nWhen you launch multiple agents for independent work, send them in a single message.\n</system-reminder>",
-        },
-        {
-          type: "text",
-          text: "<system-reminder>\nThe following skills are available for use with the Skill tool:\n- Example\n</system-reminder>",
-        },
         { type: "text", text: "The captured prompt." },
       ],
     },
@@ -84,17 +76,12 @@ const template = {
     {
       role: "system",
       content:
-        "You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.\n\nThe following deferred tools are now available via ToolSearch. Load them first:\nMonitor\nWebFetch\nWebSearch\nmcp__t3-code__retired_tool\n\nAfter the list.",
+        "You are powered by the model named Opus 5.5. The exact model ID is claude-opus-5-5.\n\nThe following deferred tools are now available via ToolSearch. Load them first:\nMonitor\nmcp__t3-code__retired_tool\n\nAfter the list.",
     },
     { role: "assistant", content: [{ type: "text", text: "A later turn." }] },
   ],
   tools: [
     { name: "mcp__host__term_Bash", input_schema: { type: "object" } },
-    { name: "mcp__host__priority_Read", input_schema: { type: "object" } },
-    { name: "mcp__host__gossip_Edit", input_schema: { type: "object" } },
-    { name: "mcp__host__slab_Write", input_schema: { type: "object" } },
-    { name: "mcp__host__layer_Agent", input_schema: { type: "object" } },
-    { name: "mcp__host__extra_Skill", input_schema: { type: "object" } },
     { name: "mcp__host__clown_ToolSearch", input_schema: { type: "object" } },
     { name: "mcp__t3-code__retired_tool", input_schema: { type: "object" }, defer_loading: true },
   ],
@@ -265,7 +252,7 @@ it("fills a Kin tool's left-out or message-id event as Kin's tool gate does", ()
 });
 
 it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with the owner's session, its default", () => {
-  const base = (kinSession: boolean) =>
+  const base = (kinSession: boolean): Base =>
     buildBase(template, {
       model: "claude-sonnet-5-5",
       keepUserInstructions: false,
@@ -278,45 +265,23 @@ it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with
     [...base(kinSession).nativeTools, ...base(kinSession).deferred].map((tool) => tool.name);
   const [before, after] = [names(false), names(true)];
   assert.notInclude(before, "mcp__t3-code__delegate_task");
+  // Only Kin's core loads up front; T3's tools wait to be searched for.
   const upFront = base(true).nativeTools.map((tool) => tool.name);
-  const waiting = base(true).deferred.map((tool) => tool.name);
-  assert.sameMembers(
-    upFront.filter((name) => name.startsWith("mcp__t3-code__")),
-    [
-      "mcp__t3-code__record_update",
-      "mcp__t3-code__record_assign",
-      "mcp__t3-code__kin_ask_person",
-      "mcp__t3-code__kin_relay",
-      "mcp__t3-code__kin_defer",
-      "mcp__t3-code__records_query",
-    ],
-  );
-  assert.includeMembers(waiting, ["mcp__t3-code__record_create", "mcp__t3-code__web_page"]);
+  assert.include(upFront, "mcp__t3-code__records_query");
+  assert.notInclude(upFront, "mcp__t3-code__delegate_task");
   assert.isFalse(before.some((name) => name.endsWith("Bash")));
   for (const name of ["mcp__t3-code__delegate_task", "mcp__t3-code__task_status"])
     assert.include(after, name);
-  const native = (toolNames: ReadonlyArray<string>) =>
-    toolNames.filter((name) => !name.startsWith("mcp__t3-code__")).map(normalizeToolName);
-  const ownerTools = new Set<string>(OWNER_SEAT_NATIVE_TOOLS);
-  const loadedNative = ["Bash", "Read", "Edit", "Write"].filter((name) => ownerTools.has(name));
-  const deferredNative = ["WebSearch"];
-  assert.deepStrictEqual(native(upFront), [...loadedNative, "ToolSearch"]);
-  assert.deepStrictEqual(native(base(true).deferred.map((tool) => tool.name)), deferredNative);
+  for (const name of ["Bash"])
+    assert.isTrue(
+      after.some((tool) => tool.endsWith(name)),
+      name,
+    );
   assert.notInclude(after, "mcp__t3-code__schedule_task");
-  const reminders = base(true)
-    .reminders.map((block) => block.text)
-    .join("\n");
-  for (const name of [...deferredNative, "mcp__t3-code__record_create", "mcp__t3-code__web_page"])
-    assert.include(reminders, `\n${name}\n`);
-  for (const prefix of [
-    "Available agent types for the Agent tool:",
-    "When you launch multiple agents",
-    "The following skills are available for use with the Skill tool:",
-    "\nMonitor\n",
-    "\nWebFetch\n",
-    "\nmcp__t3-code__records_query\n",
-  ])
-    assert.notInclude(reminders, prefix);
+  // Claude Code's own deferred tools wait behind ToolSearch, named in the list, as a real turn sends them.
+  assert.isFalse(base(true).nativeTools.some((tool) => tool.name === "Monitor"));
+  assert.notInclude(after, "Monitor");
+  assert.notInclude(String(base(true).deferredAnnouncement), "\nMonitor\n");
   // A lead case has the owner's seat, as production gives a thread nobody else reads, unless it says not.
   const lead = (prompt: string, kinSession?: boolean) =>
     kinSessionOf({
@@ -665,7 +630,7 @@ it.effect("hands a Kin case's files to the turn as Kin and the provider adapters
       Effect.gen(function* () {
         const sample = makeSample(testCase, kinBase());
         sample.kinFiles = yield* kinTurnFiles(testCase);
-        return buildMessages(sample).at(-1)?.content ?? [];
+        return buildMessages(sample).findLast(({ role }) => role === "user")?.content ?? [];
       });
     const photo = NodeFS.readFileSync(new URL("./cases/files/receipt-taxi.jpg", import.meta.url));
     const [image, prompt] = (yield* turn(kinCase(attached))).slice(-2);
@@ -959,3 +924,102 @@ it("answers the helper-model cases as T3's tools and Kin's gate really do", () =
         );
   }
 });
+
+it.effect("ranks deferred tools like Claude ToolSearch and keeps select order", () =>
+  Effect.gen(function* () {
+    const base = kinBase();
+    const tool = (name: string, description = "", hint?: string) => ({
+      name: `mcp__t3-code__${name}`,
+      description,
+      ...(hint === undefined ? {} : { _meta: { "anthropic/searchHint": hint } }),
+    });
+    const deferred = [
+      tool("kin_defer", "Send a message later."),
+      tool("kin_picture", "Send the result as a picture."),
+      tool("kin_relay", "Send it to a teammate."),
+      tool("kin_connection_call", "Use a connected account."),
+      tool("mailbox_open"),
+      tool("message_send"),
+      tool("note", "", "dispatch"),
+      tool("draft", "dispatch"),
+      tool("not_a_match", "dispatching"),
+    ];
+    const sample = makeSample(kinCase(), { ...base, deferred });
+    const config = {
+      apiKey: "key",
+      model: "claude-sonnet-5-5",
+      effort: "high",
+      maxSteps: 0,
+      shellModel: "claude-haiku-5-5",
+    } as const;
+    const searchName = base.nativeTools.find((tool) => tool.name.endsWith("ToolSearch"))!.name;
+    const cases = [
+      ["send", ["message_send", "kin_defer", "kin_picture", "kin_relay"]],
+      ["mailbox", ["mailbox_open"]],
+      ["dispatch", ["note", "draft"]],
+      ["mcp__t3-code__kin_picture", ["kin_picture"]],
+      ["select:kin_relay,kin_defer", ["kin_defer", "kin_relay"]],
+    ] as const;
+    for (const [query, names] of cases) {
+      const result = yield* answerToolCall(sample, config, {
+        type: "tool_use",
+        id: "search",
+        name: searchName,
+        input: { query },
+      });
+      assert.deepEqual(
+        result.content,
+        names.map((name) => ({
+          type: "tool_reference",
+          tool_name: `mcp__t3-code__${name}`,
+        })),
+        query,
+      );
+    }
+    const mail = makeSample(kinCase(), { ...base, deferred: deferred.slice(0, 4) });
+    const result = yield* answerToolCall(mail, config, {
+      type: "tool_use",
+      id: "search",
+      name: searchName,
+      input: { query: "mail send" },
+    });
+    assert.deepEqual(
+      result.content,
+      ["kin_defer", "kin_picture", "kin_relay"].map((name) => ({
+        type: "tool_reference",
+        tool_name: `mcp__t3-code__${name}`,
+      })),
+    );
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, noNetwork))),
+);
+
+it.effect("reports a deferred name differently from a name that does not exist", () =>
+  Effect.gen(function* () {
+    const base = kinBase();
+    const deferred = "mcp__t3-code__kin_github_comment";
+    const sample = makeSample(kinCase(), { ...base, deferred: [{ name: deferred }] });
+    const config = {
+      apiKey: "key",
+      model: "claude-sonnet-5-5",
+      effort: "high",
+      maxSteps: 0,
+      shellModel: "claude-haiku-5-5",
+    } as const;
+    for (const [name, error] of [
+      [
+        deferred,
+        `This tool's schema was not sent to the API. To use it, call ToolSearch with query "select:${deferred}", then retry.`,
+      ],
+      ["Absent", "No such tool available: Absent"],
+    ] as const) {
+      const result = yield* answerToolCall(sample, config, {
+        type: "tool_use",
+        id: "unloaded",
+        name,
+        input: {},
+      });
+      assert.equal(result.is_error, true);
+      assert.equal(result.content, `<tool_use_error>${error}</tool_use_error>`);
+    }
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, noNetwork))),
+);

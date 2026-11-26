@@ -29,6 +29,7 @@ import {
   kinBillsOf,
   kinDated,
   kinSessionOf,
+  kinGitHubOf,
   kinTurnFiles,
 } from "../kin.ts";
 import { filledKinMocks } from "../kin-checks.ts";
@@ -40,6 +41,8 @@ import {
   makeSample,
   McpToolUseCase,
   normalizeToolName,
+  requestBody,
+  requestEffort,
   NOT_GRADER,
   type RunConfig,
   t3SubagentContext,
@@ -304,32 +307,33 @@ export const surfaceOf = Effect.fn("changedCases.surfaceOf")(function* (input: {
       kinShared: prompt.includes("{{SHARED_TURN}}"),
       kinSocial: setup.world?.kinSocial === true,
       kinBills: kinBillsOf(testCase),
+      kinGitHub: kinGitHubOf(testCase),
+      kinEngineering: setup.world?.kinEngineering === true,
     };
   };
   const bases = new Map<string, Base>();
   const baseFor = Effect.fnUntraced(function* (testCase: McpToolUseCase) {
     const { role, ...seat } = options(testCase);
     const key = hashJson(options(testCase));
-    let base = bases.get(key);
-    if (base === undefined) {
-      const built = buildBase(native, {
-        model,
-        keepUserInstructions: false,
-        subagent: role === "delegated-child",
-        nativeSubagent: role === "native-subagent",
-        ...seat,
-      });
-      base =
-        role === "native-subagent"
-          ? {
-              ...built,
-              subagentContext: yield* Effect.promise(() =>
-                t3SubagentContext(model, seat.deviceAccess, seat.browserAccess),
-              ),
-            }
-          : built;
-      bases.set(key, base);
-    }
+    const cached = bases.get(key);
+    if (cached !== undefined) return kinDated(testCase, cached);
+    const built = buildBase(native, {
+      model,
+      keepUserInstructions: false,
+      subagent: role === "delegated-child",
+      nativeSubagent: role === "native-subagent",
+      ...seat,
+    });
+    const base: Base =
+      role === "native-subagent"
+        ? {
+            ...built,
+            subagentContext: yield* Effect.promise(() =>
+              t3SubagentContext(model, seat.deviceAccess, seat.browserAccess),
+            ),
+          }
+        : built;
+    bases.set(key, base);
     return kinDated(testCase, base);
   });
   const cases: Record<string, CaseSurface> = {};
@@ -339,19 +343,11 @@ export const surfaceOf = Effect.fn("changedCases.surfaceOf")(function* (input: {
     sample.kinFiles = yield* kinTurnFiles(testCase);
     const messages = buildMessages(sample);
     const { base, tools } = sample;
-    // run.ts `requestBody` off the gateway, as `firstRequest` hashes it.
-    const body = {
-      model: base.model,
-      max_tokens: 16_000,
-      thinking: { type: "adaptive", display: "summarized" },
-      output_config: { effort },
-      cache_control: { type: "ephemeral" },
-      system: base.system.map((block, i) =>
-        i === base.system.length - 1 ? { ...block, cache_control: { type: "ephemeral" } } : block,
-      ),
-      tools,
+    const body = requestBody(
+      sample,
+      requestEffort(base, effort === "mixed" ? undefined : effort),
       messages,
-    };
+    );
     const schemas: Record<string, string> = {};
     for (const tool of [...tools, ...base.deferred]) schemas[tool.name] = hashJson(tool);
     const names = new Set(Object.keys(schemas).map(normalizeToolName));
