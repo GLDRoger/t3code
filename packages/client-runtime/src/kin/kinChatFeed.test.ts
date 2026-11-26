@@ -6,7 +6,7 @@ import type {
   KinPresence,
   KinWidget,
 } from "@t3tools/contracts";
-import { KinMemberId } from "@t3tools/contracts";
+import { KinMemberId, KinWakeupId, KinWidgetId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -697,6 +697,63 @@ describe("streaming replies", () => {
       ["fixture-1", false],
       ["reply:a", true],
       ["reply:b", false],
+    ]);
+  });
+
+  it("puts Tidewater Freight's reply before its cards while streaming and after reload", () => {
+    const sourceWakeupId = KinWakeupId.make("tidewater-turn");
+    const card = (seq: number, type: string) => ({
+      ...agentMessage(seq, { body: "", widgetId: KinWidgetId.make(type) }),
+      sourceWakeupId,
+    });
+    const question = card(2, "choice");
+    const doc = card(3, "doc");
+    const text = {
+      ...agentMessage(4, {
+        clientMessageId: "reply:tidewater",
+        body: "Rhea, Zoya has two pickup options for Tidewater Freight.",
+      }),
+      sourceWakeupId,
+    };
+    const next = card(5, "choice-next");
+    const otherTurn = {
+      ...card(6, "choice-other"),
+      sourceWakeupId: KinWakeupId.make("later-turn"),
+    };
+    const prior = ownMessage(1);
+    const delta = {
+      _tag: "draft" as const,
+      draftId: "tidewater",
+      agentId: KIN_FIXTURE_AGENT,
+      offset: 0,
+      text: text.body,
+      sourceWakeupId,
+    };
+    const live = applyKinChatEvent(feed([prior, question, doc]), delta, text.createdAt);
+    const order = (rows: ReadonlyArray<KinMessage>, drafts = emptyKinChat.drafts) =>
+      shape(messageRows(rows, viewer, new Set(), streamingAt, drafts)).map((row) =>
+        typeof row === "string" ? row : row[0],
+      );
+    expect([
+      order(live.messages),
+      order(live.messages, live.drafts),
+      order([prior, question, doc, text, next, otherTurn]),
+      order([prior, question, { ...otherTurn, seq: 3 }, text]),
+      order([
+        prior,
+        {
+          ...question,
+          sourceWakeupId: otherTurn.sourceWakeupId,
+          body: "The earlier turn already answered.",
+        },
+        text,
+      ]),
+    ]).toEqual([
+      ["fixture-1", "m2", "m3"],
+      ["fixture-1", "reply:tidewater", "m2", "m3"],
+      ["fixture-1", "reply:tidewater", "m2", "m3", "m5", "m6"],
+      ["fixture-1", "m2", "m6", "reply:tidewater"],
+      ["fixture-1", "m2", "reply:tidewater"],
     ]);
   });
 

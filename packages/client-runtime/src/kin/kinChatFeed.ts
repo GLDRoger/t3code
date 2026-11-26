@@ -454,10 +454,69 @@ const authorKey = (message: KinMessage) =>
       ? `agent:${message.author.agentId}`
       : message.author.memberId;
 
+type FeedEntry = KinMessage | KinHeldDraft;
+
+function sameCardTurn(card: KinMessage, entry: FeedEntry) {
+  if (entry.sourceWakeupId === undefined || entry.sourceWakeupId !== card.sourceWakeupId)
+    return false;
+  if ("draftId" in entry)
+    return (
+      card.author._tag === "agent" &&
+      card.author.agentId === entry.agentId &&
+      card.floorRunId === null &&
+      card.discussionId === undefined
+    );
+  return (
+    entry.kind === "text" &&
+    entry.status === "posted" &&
+    entry.author._tag === "agent" &&
+    card.author._tag === "agent" &&
+    entry.author.agentId === card.author.agentId &&
+    entry.author.threadId === card.author.threadId &&
+    entry.floorRunId === card.floorRunId &&
+    entry.discussionId === card.discussionId &&
+    entry.relay === undefined
+  );
+}
+
+// Move only card-only rows, and never across another turn. Keep each card in its original order.
+function replyBeforeCards(
+  messages: ReadonlyArray<KinMessage>,
+  drafts: ReadonlyArray<KinHeldDraft>,
+) {
+  const entries: ReadonlyArray<FeedEntry> =
+    drafts.length === 0 ? messages : [...messages, ...drafts];
+  const ordered: FeedEntry[] = [];
+  let cards: KinMessage[] = [];
+  for (const entry of entries) {
+    const draft = "draftId" in entry;
+    const card =
+      !draft &&
+      entry.sourceWakeupId !== undefined &&
+      entry.author._tag === "agent" &&
+      entry.kind === "text" &&
+      entry.status === "posted" &&
+      entry.relay === undefined &&
+      entry.widgetId !== null &&
+      entry.body.trim() === "";
+    if (
+      cards.length > 0 &&
+      (!sameCardTurn(cards[0]!, entry) ||
+        (!draft && !card && (entry.widgetId !== null || entry.body.trim() === "")))
+    ) {
+      ordered.push(...cards);
+      cards = [];
+    }
+    if (card) cards.push(entry);
+    else ordered.push(entry);
+  }
+  ordered.push(...cards);
+  return ordered;
+}
+
 /**
- * Feed rows, oldest first, then streaming drafts. A floor run of two or more consecutive agent
- * messages from more than one agent folds into one line (chat spec, interface rule 3); an
- * expanded run lists its messages after that line. One agent's run shows as grouped bubbles.
+ * A floor run of two or more consecutive messages from more than one agent folds into one line;
+ * an expanded run lists its messages after that line. One agent's run shows as grouped bubbles.
  */
 export function buildKinFeedRows(
   messages: ReadonlyArray<KinMessage>,
@@ -478,6 +537,7 @@ export function buildKinFeedRows(
         !(message.kind === "widget_action" && kinTapAnswersChoice(message.body)),
     )
     .map((message) => kinMessageOnMyClock(message));
+  const ordered = replyBeforeCards(visible, drafts);
   const rows: KinFeedRow[] = [];
   const foldKeys = new Set<string>();
   let previousAuthor: string | null = null;
@@ -485,6 +545,8 @@ export function buildKinFeedRows(
   let previousAt: string | null = null;
 
   const startDay = (message: KinMessage) => {
+    // An older card under a newer reply does not start a backwards time divider.
+    if (message.widgetId !== null && previousAt !== null && message.createdAt < previousAt) return;
     const day = kinLocalDayKey(message.createdAt);
     const gap = gapBefore(previousAt, message.createdAt);
     previousAt = message.createdAt;
@@ -597,50 +659,7 @@ export function buildKinFeedRows(
     previousAuthor = author;
   };
 
-  for (let index = 0; index < visible.length;) {
-    const first = visible[index]!;
-    const runId = foldRunId(first);
-    let end = index + 1;
-    if (runId !== null) {
-      while (end < visible.length && foldRunId(visible[end]!) === runId) end += 1;
-    }
-    const run = visible.slice(index, end);
-    if (runId === null || new Set(run.map(authorKey)).size < 2) {
-      run.forEach(pushMessage);
-      index = end;
-      continue;
-    }
-    startDay(first);
-    previousAt = run[run.length - 1]!.createdAt;
-    const authors = [...new Set(run.map((message) => kinAuthorLabel(message, viewer)))];
-    const decision =
-      run.findLast((message) => message.intent === "decision" && message.status !== "deleted")
-        ?.body ?? null;
-    const last = run[run.length - 1]!;
-    const expanded = expandedRuns.has(runId) !== openRuns;
-    // Keyed by run so a page prepended into the run keeps the row; a run split by another
-    // author falls back to its first message.
-    const key = foldKeys.has(`fold:${runId}`)
-      ? `fold:${runId}:${first.messageId}`
-      : `fold:${runId}`;
-    foldKeys.add(key);
-    rows.push({
-      type: "fold",
-      key,
-      runId,
-      count: run.length,
-      authors,
-      decision,
-      discussionId: last.discussionId ?? null,
-      open: last.discussionId !== undefined && last.discussionOpen === true,
-      expanded,
-      lastSeq: last.seq,
-    });
-    previousAuthor = null;
-    if (expanded) run.forEach(pushMessage);
-    index = end;
-  }
-  for (const draft of drafts) {
+  const pushDraft = (draft: KinHeldDraft) => {
     const day = kinLocalDayKey(draft.startedAt);
     const gap = gapBefore(previousAt, draft.startedAt);
     previousAt = draft.startedAt;
@@ -663,6 +682,63 @@ export function buildKinFeedRows(
       continues: previousAuthor === author,
     });
     previousAuthor = author;
+  };
+
+  for (let index = 0; index < ordered.length;) {
+    const first = ordered[index]!;
+    if ("draftId" in first) {
+      pushDraft(first);
+      index += 1;
+      continue;
+    }
+    const runId = foldRunId(first);
+    if (runId === null) {
+      pushMessage(first);
+      index += 1;
+      continue;
+    }
+    const run: KinMessage[] = [first];
+    let end = index + 1;
+    while (end < ordered.length) {
+      const entry = ordered[end]!;
+      if ("draftId" in entry || foldRunId(entry) !== runId) break;
+      run.push(entry);
+      end += 1;
+    }
+    if (new Set(run.map(authorKey)).size < 2) {
+      run.forEach(pushMessage);
+      index = end;
+      continue;
+    }
+    startDay(first);
+    const authors = [...new Set(run.map((message) => kinAuthorLabel(message, viewer)))];
+    const decision =
+      run.findLast((message) => message.intent === "decision" && message.status !== "deleted")
+        ?.body ?? null;
+    const last = run.reduce((latest, message) => (message.seq > latest.seq ? message : latest));
+    const expanded = expandedRuns.has(runId) !== openRuns;
+    // Keyed by run so a page prepended into the run keeps the row; a run split by another
+    // author falls back to its first message.
+    const key = foldKeys.has(`fold:${runId}`)
+      ? `fold:${runId}:${first.messageId}`
+      : `fold:${runId}`;
+    foldKeys.add(key);
+    rows.push({
+      type: "fold",
+      key,
+      runId,
+      count: run.length,
+      authors,
+      decision,
+      discussionId: last.discussionId ?? null,
+      open: last.discussionId !== undefined && last.discussionOpen === true,
+      expanded,
+      lastSeq: last.seq,
+    });
+    previousAuthor = null;
+    if (expanded) run.forEach(pushMessage);
+    else previousAt = last.createdAt;
+    index = end;
   }
   return superseded.size === 0 ? rows : rows.filter((_, index) => !superseded.has(index));
 }

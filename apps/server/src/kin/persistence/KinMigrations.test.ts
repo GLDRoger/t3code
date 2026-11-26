@@ -815,6 +815,7 @@ describe("Kin migrations", () => {
         "prompt_index",
         "context_tokens",
         "last_request_at",
+        "ending",
       ])
         yield* sql`ALTER TABLE kin_wakeups DROP COLUMN ${sql(column)}`;
       yield* sql`DROP INDEX idx_kin_wakeups_running_lead`;
@@ -1951,8 +1952,38 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(
           (yield* runKinMigrations()).map(([id]) => id),
           [
-            196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
-            213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224,
+            196,
+            197,
+            198,
+            199,
+            200,
+            201,
+            202,
+            203,
+            204,
+            205,
+            206,
+            207,
+            208,
+            209,
+            210,
+            211,
+            212,
+            213,
+            214,
+            215,
+            216,
+            217,
+            218,
+            219,
+            220,
+            221,
+            222,
+            223,
+            224,
+            ...kinMigrationsFrom(224)
+              .slice(1)
+              .map(([id]) => id),
           ],
         );
         assert.deepStrictEqual(yield* receipts, [
@@ -2003,8 +2034,37 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(
         (yield* runKinMigrations()).map(([id]) => id),
         [
-          197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214,
-          215, 216, 217, 218, 219, 220, 221, 222, 223, 224,
+          197,
+          198,
+          199,
+          200,
+          201,
+          202,
+          203,
+          204,
+          205,
+          206,
+          207,
+          208,
+          209,
+          210,
+          211,
+          212,
+          213,
+          214,
+          215,
+          216,
+          217,
+          218,
+          219,
+          220,
+          221,
+          222,
+          223,
+          224,
+          ...kinMigrationsFrom(224)
+            .slice(1)
+            .map(([id]) => id),
         ],
       );
       const all = [
@@ -2790,6 +2850,12 @@ describe("Kin migrations", () => {
       yield* sql`INSERT INTO kin_wakeups (org_id, agent_id, wakeup_id, model, started_at, status, event_ids)
         VALUES ('org', 'lead', 'turn', 'test', 1, 'running', '[]')`;
       assert.deepStrictEqual(yield* sql`SELECT kind FROM kin_wakeups`, [{ kind: "turn" }]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT name, type, "notnull" AS required, dflt_value
+          FROM pragma_table_info('kin_wakeups') WHERE name = 'ending'`,
+        [{ name: "ending", type: "TEXT", required: 0, dflt_value: null }],
+      );
+      assert.deepStrictEqual(yield* sql`SELECT ending FROM kin_wakeups`, [{ ending: null }]);
       const upkeep = sql`INSERT INTO kin_wakeups (org_id, agent_id, wakeup_id, model, started_at, status, event_ids, kind)
         VALUES ('org', 'lead', 'upkeep', 'test', 2, 'running', '[]', 'upkeep')`;
       assert.isTrue(Exit.isFailure(yield* Effect.exit(upkeep)));
@@ -3000,6 +3066,7 @@ describe("Kin migrations", () => {
           prompt_index: null,
           context_tokens: null,
           last_request_at: null,
+          ending: null,
         },
         kin_events: {
           org_id: "org",
