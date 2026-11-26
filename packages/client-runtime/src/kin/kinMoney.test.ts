@@ -21,6 +21,7 @@ import {
   kinCountryChoices,
   kinCountryCodeOf,
   kinCountryAskLine,
+  kinCountryCardRegion,
   kinCountryName,
 } from "./kinCompanyProfile.ts";
 import { kinDatesMonth, kinMonthWindow, kinZonedDayStart } from "./kinDates.ts";
@@ -593,6 +594,15 @@ describe("company details", () => {
       [{ _tag: "set", country: "GB" }, "Set to United Kingdom in Settings."],
     ] as const)
       expect(kinCountryAskLine(answered)).toBe(line);
+    // The card offers what the company's records say, then the device's only where they allow it.
+    for (const [fits, device, offered] of [
+      [null, "US", "US"],
+      [["IN"], "US", "IN"],
+      [["US", "EC", "SV"], "SV", "SV"],
+      [["US", "EC", "SV"], "IN", null],
+      [["IN"], null, "IN"],
+    ] as const)
+      expect(kinCountryCardRegion(fits, device)).toBe(offered);
     expect(kinCompanyInput("org" as never, waiting, offer!.accept())).toEqual({
       ok: true,
       input: { orgId: "org", rev: 0, country: "IN" },

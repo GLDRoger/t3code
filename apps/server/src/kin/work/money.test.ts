@@ -61,6 +61,7 @@ import {
   setProfile,
 } from "./companyProfile.ts";
 import { answerCountryCard } from "./countryAsk.ts";
+import { COUNTRY_CURRENCIES } from "./countryCurrency.ts";
 import * as Goals from "./goals.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { KIN_OWN_REFUSAL } from "../people/KinAccess.ts";
@@ -5088,6 +5089,9 @@ describe("the company profile", () => {
   it.effect("asks only the owners of an older company without a country, once", () =>
     runCountryCards(({ orgId, rhea, meera, cards, tick, sql, waiting }) =>
       Effect.gen(function* () {
+        const usdCountries = Object.keys(COUNTRY_CURRENCIES).filter(
+          (code) => COUNTRY_CURRENCIES[code] === "USD",
+        );
         const writer = { _tag: "person" as const, personId: rhea.personId };
         yield* sql`DELETE FROM kin_company_profile WHERE org_id = ${orgId}`;
         yield* tick;
@@ -5136,6 +5140,7 @@ describe("the company profile", () => {
             company: "Ambermill",
             round: 1,
             question: "Which country is Ambermill in? It sets tax words and date formats.",
+            fits: usdCountries,
           });
         }
         assert.deepStrictEqual(
@@ -5171,6 +5176,7 @@ describe("the company profile", () => {
             company: "Ambermill",
             round: 1,
             question: "Which country is Ambermill in? It sets tax words and date formats.",
+            fits: usdCountries,
             answered: { _tag: "chose", by: "Meera", country: "US" },
           });
         }
@@ -5193,9 +5199,16 @@ describe("the company profile", () => {
   it.effect("a card put off with Not now says so once Settings sets the country", () =>
     runCountryCards(({ orgId, rhea, meera, cards, tick }) =>
       Effect.gen(function* () {
-        const saved = yield* setProfile(orgId, rhea, { homeCurrency: "CAD" }, undefined);
+        const saved = yield* setProfile(
+          orgId,
+          rhea,
+          { homeCurrency: "CAD", gstin: "27AAPFT1234C1Z2" },
+          undefined,
+        );
         yield* tick;
         const first = yield* cards;
+        // A tax number says its country, whatever the currency.
+        for (const card of first) assert.deepStrictEqual(JSON.parse(card.state).fits, ["IN"]);
         yield* answerCountryCard([rhea], {
           orgId,
           widgetId: first.find((card) => card.who === rhea.personId)!.widgetId,
@@ -5232,6 +5245,7 @@ describe("the company profile", () => {
         yield* tick;
         const first = yield* cards;
         assert.lengthOf(first, 2);
+        for (const card of first) assert.deepStrictEqual(JSON.parse(card.state).fits, ["CA"]);
         assert.deepStrictEqual(yield* state, [
           { ask: JSON.stringify({ round: 1, nextAt: null }), rev: saved.rev },
         ]);

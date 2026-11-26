@@ -32,7 +32,7 @@ import {
   unknownCountry,
   writeCountryAsk,
 } from "./companyProfile.ts";
-import { countryCurrency } from "./countryCurrency.ts";
+import { COUNTRY_CURRENCIES, countryCurrency } from "./countryCurrency.ts";
 import { theOwner } from "./ownerWork.ts";
 import { iso, workFailure } from "./recordRows.ts";
 
@@ -40,6 +40,15 @@ const notFound = new KinChatError({ reason: "not_found", message: "Kin record no
 const decodeState = Schema.decodeUnknownEffect(KinCountryCardState);
 const countryNames = new Intl.DisplayNames(["en"], { type: "region", fallback: "none" });
 const clientMessageId = (round: 1 | 2, personId: string) => `kin-country-ask:${round}:${personId}`;
+
+/** The countries the company's records allow: a GSTIN or PAN is India's; else its currency's. */
+const recordsFit = (profile: { readonly taxNumber: boolean; readonly homeCurrency: string }) => {
+  if (profile.taxNumber) return ["IN"];
+  const fit = Object.keys(COUNTRY_CURRENCIES).filter(
+    (code) => COUNTRY_CURRENCIES[code] === profile.homeCurrency,
+  );
+  return fit.length === 0 ? undefined : fit;
+};
 
 const asked = Effect.fn("KinCountryAsk.asked")(function* (
   orgId: KinOrgId,
@@ -150,10 +159,12 @@ export const postCountryAsk = Effect.fn("KinCountryAsk.post")(
           (yield* sql<{ name: string }>`SELECT name FROM kin_orgs WHERE org_id = ${orgId}`)[0]
             ?.name;
         if (company === undefined) return;
+        const fits = recordsFit(profile);
         const state = {
           company,
           round,
           question: `Which country is ${company} in? It sets tax words and date formats.`,
+          ...(fits === undefined ? {} : { fits }),
         } satisfies KinCountryCardState;
         let marked = !starts;
         for (const id of people) {
