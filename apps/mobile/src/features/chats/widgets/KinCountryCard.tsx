@@ -13,7 +13,7 @@ import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime"
 import type { EnvironmentId, KinAnswerCountryCardInput } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { memo, useState } from "react";
-import { View } from "react-native";
+import { ScrollView, View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
 import { Button } from "../../../components/ui/Button";
@@ -120,7 +120,11 @@ export const KinCountryCard = memo(function KinCountryCard(props: {
       )}
       {picking ? (
         <Sheet title={KIN_COUNTRY_ASK.country} onClose={() => setPicking(false)}>
-          <View className="px-4 pt-2 pb-10">
+          <ScrollView
+            contentInsetAdjustmentBehavior="automatic"
+            keyboardShouldPersistTaps="handled"
+            contentContainerClassName="px-4 pt-2 pb-10"
+          >
             <ListSection>
               <KinCountryPicker
                 label={KIN_COUNTRY_ASK.country}
@@ -133,7 +137,7 @@ export const KinCountryCard = memo(function KinCountryCard(props: {
                 }}
               />
             </ListSection>
-          </View>
+          </ScrollView>
         </Sheet>
       ) : null}
     </View>
