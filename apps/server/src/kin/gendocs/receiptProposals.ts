@@ -4,7 +4,9 @@ import * as NodeCrypto from "node:crypto";
 import {
   KinChatError,
   KinDay,
+  kinImpliedRate,
   KinMoney,
+  kinRateShown,
   type KinOrgId,
   KinPersonId,
   formatKinWhen,
@@ -22,6 +24,7 @@ import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { dayIn, formatMoney } from "../work/money.ts";
 import { billedParty } from "../work/billTo.ts";
 import { parseFields } from "../work/lists.ts";
+import { rateMoney } from "../work/statements/invoiceCredits.ts";
 import { endOfDay, issuedNumber, ownerZone } from "../work/recordRows.ts";
 import { recordReceipt, standing } from "./receipts.ts";
 
@@ -49,6 +52,8 @@ export const ReceiptRequest = Schema.Struct({
       amount: Schema.optionalKey(KinMoney),
       withheld: Schema.optionalKey(KinMoney),
       paidOn: KinDay,
+      /** Cash that came in another currency; `amount` is what it settles, in the invoice's. */
+      receivedAs: Schema.optionalKey(KinMoney),
       note: Schema.optionalKey(Schema.String),
       /** The owner said it is a second payment of the same amount on the same day. */
       another: Schema.optionalKey(Schema.Literal(true)),
@@ -69,7 +74,8 @@ const refused = (message: string) => new KinChatError({ reason: "not_allowed", m
 
 /**
  * Whether this exact payment is on the invoice already: on the same day, a live row of the same
- * amount for each part it has, cash and withheld, and none for a part it hasn't.
+ * amount for each part it has, cash and withheld, and none for a part it hasn't. Cash said as it
+ * came in another currency matches only that sum received.
  */
 export const samePayment = Effect.fn("KinReceipts.samePayment")(function* (
   orgId: KinOrgId,
@@ -77,22 +83,37 @@ export const samePayment = Effect.fn("KinReceipts.samePayment")(function* (
   received: {
     readonly amount?: KinMoney | undefined;
     readonly withheld?: KinMoney | undefined;
+    readonly receivedAs?: KinMoney | undefined;
     readonly paidOn: string;
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
   if (received.amount === undefined && received.withheld === undefined) return false;
-  const rows = yield* sql<{ minor: number; currency: string; withheld: number }>`SELECT
-      p.amount_minor AS minor, p.currency, p.withheld
+  const rows = yield* sql<{
+    minor: number;
+    currency: string;
+    withheld: number;
+    receivedMinor: number | null;
+    receivedCurrency: string | null;
+  }>`SELECT p.amount_minor AS minor, p.currency, p.withheld,
+      p.received_minor AS "receivedMinor", p.received_currency AS "receivedCurrency"
     FROM kin_record_payments p
     JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
     WHERE p.org_id = ${orgId} AND r.key = ${invoiceKey} AND p.voided_at IS NULL
       AND p.paid_on = ${received.paidOn}`;
+  const came = received.receivedAs;
   const matches = (money: KinMoney | undefined, withheld: number) => {
     const part = rows.filter((row) => row.withheld === withheld);
     return money === undefined
       ? part.length === 0
-      : part.some((row) => row.minor === money.minor && row.currency === money.currency);
+      : part.some(
+          (row) =>
+            row.minor === money.minor &&
+            row.currency === money.currency &&
+            (withheld === 1 ||
+              came === undefined ||
+              (row.receivedMinor === came.minor && row.receivedCurrency === came.currency)),
+        );
   };
   return matches(received.amount, 0) && matches(received.withheld, 1);
 });
@@ -280,7 +301,13 @@ const paymentLines = (snapshot: Snapshot, received: Received) => {
   const left = owedAfter(snapshot, received);
   return [
     `Client: ${payerOf(snapshot) ?? "none named"}`,
-    `Received: ${received.amount === undefined ? "nothing in cash" : formatMoney(received.amount)}`,
+    `Received: ${
+      received.amount === undefined
+        ? "nothing in cash"
+        : received.receivedAs === undefined
+          ? formatMoney(received.amount)
+          : `${rateMoney(received.receivedAs)} for ${rateMoney(received.amount)}, a rate of ${kinRateShown(kinImpliedRate(received.amount, received.receivedAs))}`
+    }`,
     ...(received.withheld === undefined
       ? []
       : [`Tax the client withheld: ${formatMoney(received.withheld)}`]),
@@ -394,7 +421,13 @@ const takenOutcome = (shown: Snapshot, key: string) => {
 /** What the owner's Confirm on a payment's card recorded. */
 const paidOutcome = (shown: Snapshot, received: Received) => {
   const parts = [
-    ...(received.amount === undefined ? [] : [formatMoney(received.amount)]),
+    ...(received.amount === undefined
+      ? []
+      : [
+          received.receivedAs === undefined
+            ? formatMoney(received.amount)
+            : `${formatMoney(received.amount)} (${rateMoney(received.receivedAs)} received, a rate of ${kinRateShown(kinImpliedRate(received.amount, received.receivedAs))})`,
+        ]),
     ...(received.withheld === undefined
       ? []
       : [`${formatMoney(received.withheld)} of tax the client withheld`]),
@@ -550,6 +583,12 @@ export const answerReceiptCard = Effect.fn("KinReceipts.answerCard")(function* (
         : records
             .pay(input.orgId, writer, received.key, {
               amount: money,
+              ...(part === "cash" && received.receivedAs !== undefined
+                ? {
+                    received: received.receivedAs,
+                    rate: kinImpliedRate(money, received.receivedAs),
+                  }
+                : {}),
               paidOn: received.paidOn,
               ...(received.note === undefined ? {} : { note: received.note }),
               ...(part === "tds" ? { withheld: true } : {}),

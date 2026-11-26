@@ -74,6 +74,7 @@ import { partnersAnswer, partnersOwed, partnersUnsaid } from "./partnersOwed.ts"
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
 import { homeCurrency, notRegisteredFact } from "./companyProfile.ts";
 import { dayIn, formatMinor, formatMoney, parseAmount, timeIn } from "./money.ts";
+import { rateMoney } from "./statements/invoiceCredits.ts";
 import { parseFields } from "./lists.ts";
 import {
   dates,
@@ -586,6 +587,10 @@ export const PaymentInput = Schema.Struct({
     description:
       'TDS the client deducted, as said, such as "18,000": it settles the invoice but is not cash received.',
   }),
+  received: Schema.optional(KinToolText(60)).annotate({
+    description:
+      'Only for money that came in another currency than the invoice\'s: the sum as it came in, with its currency, such as "INR 83,500"; amount is then what it settles, in the invoice\'s currency.',
+  }),
   paidOn: Schema.optional(KinDay).annotate({
     description: "The day it was received, in the owner's time zone.",
   }),
@@ -640,9 +645,12 @@ export const alreadyRecordedNext = (
   tds: KinMoney | undefined,
   paidOn: string,
   name: string,
+  came?: KinMoney,
 ) => {
   const parts = [
-    ...(cash === undefined ? [] : [formatMoney(cash)]),
+    ...(cash === undefined
+      ? []
+      : [came === undefined ? formatMoney(cash) : `${formatMoney(cash)} (${rateMoney(came)} received)`]),
     ...(tds === undefined ? [] : [`${formatMoney(tds)} of tax withheld`]),
   ].join(" and ");
   return `Nothing was recorded and no card was drawn: ${parts} on ${dayText(paidOn)} is already recorded on ${name}. Ask the owner in one line whether this is another payment; only if they say so, call payment_record again with another.`;
@@ -701,23 +709,37 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
       money === undefined || money.minor <= 0 ? undefined : money;
     const cash = part(yield* parsed(input.amount));
     const tds = part(yield* parsed(input.withheld));
+    const came = part(yield* parsed(input.received));
     if (cash === undefined && tds === undefined)
       return yield* invalid("A payment is more than nothing. Nothing was recorded.");
     // Refused now, as the tap would refuse it, rather than on a card nobody can confirm.
     for (const money of [cash, tds])
-      if (money !== undefined && before.currency !== null && money.currency !== before.currency)
+      if (money !== undefined && money.currency !== fallback)
         return yield* invalid(
-          `${before.key} is in ${before.currency}; record the payment in ${before.currency}.`,
+          `${before.key} is in ${fallback}; record the payment in ${fallback}. For money that came in another currency, pass it as received and what it settles, in ${fallback}, as amount. Nothing was recorded.`,
         );
+    if (came !== undefined && came.currency === fallback)
+      return yield* invalid(
+        `received is only for money that came in another currency than ${fallback}; pass this as amount. Nothing was recorded.`,
+      );
+    if (came !== undefined && cash === undefined)
+      return yield* invalid(
+        `Money that came in ${came.currency} needs amount too: what it settles on ${before.key}, in ${fallback}. Nothing was recorded.`,
+      );
     const name = issuedNumber(parseFields(before.fieldsJson).number).number ?? before.key;
     if (
       input.another !== true &&
-      (yield* samePayment(lead.orgId, before.key, { amount: cash, withheld: tds, paidOn }))
+      (yield* samePayment(lead.orgId, before.key, {
+        amount: cash,
+        withheld: tds,
+        receivedAs: came,
+        paidOn,
+      }))
     ) {
       return {
         status: "already_recorded" as const,
         key: before.key,
-        next: alreadyRecordedNext(cash, tds, paidOn, name),
+        next: alreadyRecordedNext(cash, tds, paidOn, name, came),
         sensitive: true as const,
       };
     }
@@ -735,6 +757,7 @@ const runPayment = Effect.fnUntraced(function* (lead: Lead, input: typeof Paymen
           ...(cash === undefined ? {} : { amount: cash }),
           ...(tds === undefined ? {} : { withheld: tds }),
           paidOn,
+          ...(came === undefined ? {} : { receivedAs: came }),
           ...(input.note === undefined ? {} : { note: input.note }),
           ...(input.another === true ? { another: true as const } : {}),
         },

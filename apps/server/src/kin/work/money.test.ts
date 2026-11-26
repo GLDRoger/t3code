@@ -3301,6 +3301,83 @@ describe("the owner's taps", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("put a payment in another currency to the owner with both amounts and the rate", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* defined(1, { template: "invoices" });
+      const asked = yield* turn(3, "Invoice Harbourline Logistics");
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [{ list: "clients", title: "Harbourline Logistics" }],
+      });
+      yield* LeadWork.create(scope, {
+        sourceEventId: asked,
+        records: [
+          {
+            list: "invoices",
+            title: "Invented port audit",
+            client: "Harbourline Logistics",
+            amount: "USD 2,000",
+            date: "2026-10-01",
+          },
+        ],
+      });
+      yield* LeadDocuments.issue(scope, {
+        sourceEventId: asked,
+        entry: KinRecordKey.make("INV-1"),
+      });
+      const sql = yield* SqlClient.SqlClient;
+      const stored = sql<{ minor: number; currency: string; rate: string | null }>`SELECT
+          received_minor AS minor, received_currency AS currency, rate
+        FROM kin_record_payments WHERE org_id = ${orgId} AND voided_at IS NULL`;
+      const payment = { key: "INV-1", amount: "1,000", received: "INR 83,500", paidOn: "2026-11-05" };
+      const drawn = yield* LeadMoney.payment(scope, {
+        sourceEventId: yield* turn(4, "Harbourline paid INR 83,500 for it"),
+        ...payment,
+      });
+      if (!("status" in drawn) || drawn.status !== "proposed")
+        return assert.fail(`expected a card: ${JSON.stringify(drawn)}`);
+      assert.include(drawn.shown, "Received: INR 83,500.00 for USD 1,000.00, a rate of 83.50");
+      assert.lengthOf(yield* stored, 0);
+      yield* agentPaid(scope, orgId, ownerId, {
+        sourceEventId: yield* turn(5, "Harbourline paid INR 83,500 for it"),
+        ...payment,
+      });
+      assert.deepStrictEqual(
+        (yield* stored).map((row) => ({ ...row })),
+        [{ minor: 8_350_000, currency: "INR", rate: "83.500000" }],
+      );
+      // Relayed again, as the bank card or this one stored it, it is the same payment.
+      const relayed = yield* turn(6, "Harbourline paid us on the 5th");
+      for (const again of [payment, { key: "INV-1", amount: "1,000", paidOn: "2026-11-05" }])
+        assert.include(yield* LeadMoney.payment(scope, { sourceEventId: relayed, ...again }), {
+          status: "already_recorded",
+        });
+      // Another sum received for it is not the payment on record.
+      assert.include(
+        yield* LeadMoney.payment(scope, {
+          sourceEventId: relayed,
+          ...payment,
+          received: "INR 84,000",
+        }),
+        { status: "proposed" },
+      );
+      // The money as it came in, alone, is refused with what to pass instead.
+      assert.include(
+        yield* LeadMoney.payment(scope, {
+          sourceEventId: relayed,
+          key: "INV-1",
+          amount: "INR 83,500",
+          paidOn: "2026-11-06",
+        }).pipe(Effect.flip),
+        {
+          message:
+            "INV-1 is in USD; record the payment in USD. For money that came in another currency, pass it as received and what it settles, in USD, as amount. Nothing was recorded.",
+        },
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("name who paid from the invoice's bill-to when it has no client record", () =>
     Effect.gen(function* () {
       yield* seed;
