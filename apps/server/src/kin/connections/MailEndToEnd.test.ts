@@ -746,6 +746,8 @@ const pulseEvents = Effect.gen(function* () {
     WHERE org_id = ${orgId} AND tag = 'pulse' ORDER BY queued_at, event_id`;
 });
 
+const isMemoryConfigError = Schema.is(Memory.MemoryConfigError);
+
 const voiceItem = (
   id: string,
   what: string,
@@ -801,8 +803,7 @@ describe("Mail tool results with the sender's memory", () => {
         const own = yield* connectOwn(fake, owner, ownAddress);
         yield* wake({ person: owner });
         const memory = {
-          items: () =>
-            Schema.is(Memory.MemoryConfigError)(items) ? Effect.fail(items) : Effect.succeed(items),
+          items: () => (isMemoryConfigError(items) ? Effect.fail(items) : Effect.succeed(items)),
         };
         yield* body({
           company,
