@@ -1952,7 +1952,7 @@ describe("Kin migrations", () => {
           (yield* runKinMigrations()).map(([id]) => id),
           [
             196, 197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212,
-            213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 225,
+            213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224,
           ],
         );
         assert.deepStrictEqual(yield* receipts, [
@@ -2004,7 +2004,7 @@ describe("Kin migrations", () => {
         (yield* runKinMigrations()).map(([id]) => id),
         [
           197, 198, 199, 200, 201, 202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214,
-          215, 216, 217, 218, 219, 220, 221, 222, 223, 225,
+          215, 216, 217, 218, 219, 220, 221, 222, 223, 224,
         ],
       );
       const all = [
@@ -2760,7 +2760,7 @@ describe("Kin migrations", () => {
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 
-  it.effect("K225 adds shadow fields and keeps one running wake-up across kinds", () =>
+  it.effect("K224 adds shadow fields and keeps one running wake-up across kinds", () =>
     Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
       yield* runKinMigrations();
