@@ -455,13 +455,10 @@ const textOf = (
     : item.text;
 /** Cards that show a chart, visual or file but say nothing: the turn still owes a line. */
 const SHOWS_ONLY = ["chart", KIN_VISUAL_CARD_TYPE, KIN_DOC_CARD];
-const withoutNul = (text: string) => text.replaceAll("\u0000", "");
-const capBody = (text: string) => {
-  const clean = withoutNul(text);
-  return clean.length <= KIN_MESSAGE_BODY_MAX_LENGTH
-    ? clean
-    : `${clean.slice(0, KIN_MESSAGE_BODY_MAX_LENGTH - OVERFLOW_SUFFIX.length)}${OVERFLOW_SUFFIX}`;
-};
+const capBody = (text: string) =>
+  text.length <= KIN_MESSAGE_BODY_MAX_LENGTH
+    ? text
+    : `${text.slice(0, KIN_MESSAGE_BODY_MAX_LENGTH - OVERFLOW_SUFFIX.length)}${OVERFLOW_SUFFIX}`;
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -914,6 +911,7 @@ const make = Effect.gen(function* () {
       ORDER BY m.seq DESC LIMIT 1`;
     return row;
   });
+  const withoutNul = (text: string) => text.replaceAll("\u0000", "");
   const replyText = Effect.fn("KinReplyBridge.replyText")(function* (wake: Wake, text: string) {
     return withoutAsked(
       stripTrailingSilenceMarker(withoutNul(text).trim()),
