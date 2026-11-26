@@ -390,7 +390,7 @@ export function KinInvoicePayments(
             payment.note,
             payment.source,
             number === null ? null : `Receipt ${number}`,
-            payment.voided ? KIN_INVOICES.takenBack : null,
+            payment.voidedLine,
           ]
             .filter((part) => part !== null)
             .join(" · ");

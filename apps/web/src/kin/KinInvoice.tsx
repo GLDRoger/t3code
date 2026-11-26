@@ -820,7 +820,7 @@ export function KinInvoicePayments(
                       payment.when,
                       payment.note,
                       payment.source,
-                      payment.voided ? KIN_INVOICES.takenBack : null,
+                      payment.voidedLine,
                     ]
                       .filter((part) => part !== null)
                       .join(" · ")}

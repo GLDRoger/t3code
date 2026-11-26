@@ -119,6 +119,8 @@ export const KIN_INVOICES = {
   noPayments: "No payments yet.",
   receivedAs: (received: string, rate: string) => `${received} received, a rate of ${rate}`,
   takenBack: "Taken back",
+  /** A payment from the client's credit, un-applied: the money is the client's credit again. */
+  unappliedBack: "Un-applied, back in credit",
   makeReceipt: "Make receipt",
   makePdf: "Make its PDF",
   openPdf: "Open PDF",
@@ -443,6 +445,8 @@ export interface KinInvoicePaymentView {
   readonly when: string;
   readonly note: string | null;
   readonly voided: boolean;
+  /** How a voided payment went: "Taken back", or back into the client's credit; null otherwise. */
+  readonly voidedLine: string | null;
   /** TDS the client deducted: it settles the invoice but is no money received. */
   readonly tds: boolean;
   /** Null on a voided payment or a TDS/credit-note line, which get no receipt. */
@@ -613,6 +617,12 @@ export function kinInvoiceView(
         when: kinWorkDueLabel(payment.paidOn, now),
         note: note === "" || shown ? null : note,
         voided: payment.voidedAt !== null,
+        voidedLine:
+          payment.voidedAt === null
+            ? null
+            : payment.fromCredit === true
+              ? KIN_INVOICES.unappliedBack
+              : KIN_INVOICES.takenBack,
         tds: withheld && creditNote === null,
         receipt,
         source: kinPaymentSourceText(payment.source, names),

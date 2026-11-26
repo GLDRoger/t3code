@@ -3789,6 +3789,10 @@ it.effect("a tap records a bank credit as the invoice's payment the matcher rank
       });
       yield* unsetAgainst(orgId, ownerWrites, left!.key);
       assert.strictEqual((yield* records.get(orgId, next.key))!.paid, 0);
+      // Un-applied, it still reads as the client's credit: it went back there, nothing was taken.
+      const [unapplied] = (yield* records.detail((yield* records.get(orgId, next.key))!)).payments!;
+      assert.include(unapplied, { paymentId: appliedPayment!.paymentId, fromCredit: true });
+      assert.isNotNull(unapplied!.voidedAt);
       assert.deepStrictEqual((yield* summary()).received, received);
       assert.deepStrictEqual(yield* undo(orgId, ownerWrites, over.key), { key: over.key });
       assert.deepStrictEqual(yield* undo(orgId, ownerWrites, over.key), { key: over.key });
