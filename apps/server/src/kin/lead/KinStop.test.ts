@@ -217,6 +217,7 @@ describe("KinStop", () => {
             chatId: KinChatId.make("owner-chat"),
             mode: "reply" as const,
             owed: true,
+            voice: "text",
             leadName: "Lead",
           }),
         preparing: () => Effect.void,
