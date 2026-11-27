@@ -105,7 +105,9 @@ const handlers = (memory?: Pick<Memory["Service"], "items">) =>
   });
 
 const register = (memory?: Pick<Memory["Service"], "items">) =>
-  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinConnectionsToolkit), handlers(memory));
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinConnectionsToolkit), handlers(memory), {
+    kin: true,
+  });
 
 export const registration = register();
 export const registrationWithMemory = Layer.unwrap(Effect.map(Memory, register));

@@ -74,6 +74,8 @@ const owner = { _tag: "person" as const, orgId, personId: ownerId };
 const mate = { _tag: "person" as const, orgId, personId: mateId };
 const DAY = 24 * 60 * 60 * 1000;
 const isChatError = Schema.is(KinChatError);
+const decodeCreate = Schema.decodeUnknownEffect(LeadWork.CreateInput);
+const decodeUpdate = Schema.decodeUnknownEffect(LeadWork.UpdateInput);
 type Services =
   | KinIdentity
   | KinLevelGate
@@ -3406,7 +3408,7 @@ it.effect(
       assert.deepStrictEqual(yield* stored(), []);
 
       // The prospect and its next step, in one call: theirs to look after, the call theirs to make.
-      const made = yield* LeadWork.create(scope, {
+      const createInput = {
         sourceEventId: "mate-event",
         records: [
           {
@@ -3430,7 +3432,8 @@ it.effect(
             emails: ["ingrid@tallmoor.invalid", "ingrid.home@tallmoor.invalid"],
           },
         ],
-      });
+      };
+      const made = yield* LeadWork.create(scope, yield* decodeCreate(createInput));
       const [prospect, call] = made.records;
       const page = yield* Clients.party([mate], { orgId, key: prospect!.key });
       assert.deepInclude(page.party, {
@@ -3460,12 +3463,15 @@ it.effect(
         phones: ["+00 1234 5678", "+00 1234 5679"],
       });
       // Her agent changes them as her Edit contact does: the main one off makes the next main.
-      const changed = yield* LeadWork.update(scope, {
+      const updateInput = {
         key: ingridRow!.key,
         sourceEventId: "mate-event",
         emails: ["ingrid.home@tallmoor.invalid"],
         phones: ["+00 1234 5678", "+00 1234 5679", "+00 1234 5670"],
-      });
+      };
+      const { key, ...change } = yield* decodeUpdate(updateInput);
+      if (key === undefined) return assert.fail("The decoded update has no record key");
+      const changed = yield* LeadWork.update(scope, { ...change, key });
       assert.includeMembers([...changed.changed], ["email", "emails", "phones"]);
       assert.deepInclude(
         (yield* Clients.party([mate], { orgId, key: prospect!.key })).contacts[0],

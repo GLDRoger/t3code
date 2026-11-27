@@ -103,7 +103,7 @@ export const acpFake: ProviderFake = {
         changed: given !== original || runtime !== base,
         instructions: preamble === T3_PREAMBLE ? undefined : preamble,
         // ACP lists every MCP tool up front; there is no search to hold one back for.
-        kinToolsUpFront: true,
+        kinToolsMounted: true,
         holdsBack: false,
         deferredFindable: true,
         // The agent's own skills and settings load as it decides (`ownConfigLoads`).

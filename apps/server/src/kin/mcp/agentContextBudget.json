@@ -2,20 +2,21 @@
   "mcpToolListJsonBytes": 64794,
   "kinToolListJsonBytes": 3071,
   "kinInstructionsBytes": {
-    "owner": 41758,
-    "confined": 41706
+    "owner": 44088,
+    "confined": 44036
   },
-  "kinSharedInstructionsHash": "e8ff35d793863a33123c4924099aa8d4c9c913e1a205dbd1e2753eb49c42f90d",
+  "kinSharedInstructionsHash": "02bd16739ecbb5c887a999efe843d28f36bd8f78c7d545940b63aefa7db0989c",
   "kinLeadToolListJsonBytes": {
-    "engineering": 172559,
-    "engineeringBesideFinanceAndSales": 156191,
-    "finance": 151737,
-    "shared": 101823,
-    "social": 154818,
-    "socialBesideFinanceAndSales": 138450,
-    "support": 151737
+    "engineering": 139300,
+    "engineeringBesideFinanceAndSales": 125491,
+    "finance": 118478,
+    "shared": 73725,
+    "social": 121207,
+    "socialBesideFinanceAndSales": 107398,
+    "support": 118478
   },
-  "kinLeadAlwaysLoadedToolBytes": 77461,
+  "kinLeadOwnerNativeTools": ["Bash", "Read", "Edit", "Write", "WebSearch"],
+  "kinLeadAlwaysLoadedToolBytes": 30332,
   "kinLeadToolBytes": {
     "agent_update": {
       "desc": 91,
@@ -27,7 +28,7 @@
     },
     "bill_read": {
       "desc": 170,
-      "schema": 1094
+      "schema": 890
     },
     "bills_add": {
       "desc": 367,
@@ -35,91 +36,91 @@
     },
     "budget_set": {
       "desc": 392,
-      "schema": 520
+      "schema": 432
     },
     "client_read": {
-      "desc": 728,
+      "desc": 544,
       "schema": 75
     },
     "company_profile": {
       "desc": 840,
-      "schema": 993
+      "schema": 843
     },
     "company_sections": {
       "desc": 413,
-      "schema": 662
+      "schema": 591
     },
     "dates_query": {
-      "desc": 382,
-      "schema": 317
+      "desc": 311,
+      "schema": 278
     },
     "deal_stages": {
       "desc": 158,
       "schema": 46
     },
     "doc_create": {
-      "desc": 1494,
-      "schema": 2172
+      "desc": 1089,
+      "schema": 1536
     },
     "doc_edit": {
-      "desc": 1017,
-      "schema": 1210
+      "desc": 762,
+      "schema": 1039
     },
     "doc_history": {
       "desc": 114,
-      "schema": 257
+      "schema": 220
     },
     "doc_link": {
-      "desc": 267,
-      "schema": 293
+      "desc": 201,
+      "schema": 266
     },
     "doc_move": {
-      "desc": 416,
-      "schema": 1189
+      "desc": 350,
+      "schema": 854
     },
     "doc_read": {
-      "desc": 428,
-      "schema": 374
+      "desc": 347,
+      "schema": 348
     },
     "doc_restore": {
-      "desc": 311,
-      "schema": 453
+      "desc": 245,
+      "schema": 429
     },
     "doc_rewrite": {
-      "desc": 374,
-      "schema": 562
+      "desc": 308,
+      "schema": 501
     },
     "docs_search": {
-      "desc": 426,
-      "schema": 490
+      "desc": 300,
+      "schema": 422
     },
     "kin_ask": {
-      "desc": 2440,
-      "schema": 812
+      "desc": 2350,
+      "schema": 769
     },
     "kin_ask_close": {
       "desc": 244,
       "schema": 182
     },
     "kin_ask_person": {
-      "desc": 1006,
-      "schema": 883
+      "desc": 819,
+      "schema": 825
     },
     "kin_cancel": {
       "desc": 231,
       "schema": 115
     },
     "kin_chart": {
-      "desc": 2996,
+      "desc": 1659,
       "schema": 2080
     },
     "kin_chat_post": {
       "desc": 515,
-      "schema": 363
+      "schema": 330
     },
     "kin_chat_read": {
       "desc": 222,
-      "schema": 237
+      "schema": 211
     },
     "kin_computer": {
       "desc": 290,
@@ -127,27 +128,27 @@
     },
     "kin_connection_call": {
       "desc": 812,
-      "schema": 226
+      "schema": 178
     },
     "kin_connection_note": {
       "desc": 291,
-      "schema": 153
+      "schema": 121
     },
     "kin_connection_offer": {
       "desc": 326,
-      "schema": 98
+      "schema": 83
     },
     "kin_connection_tools": {
       "desc": 974,
-      "schema": 120
+      "schema": 88
     },
     "kin_defer": {
-      "desc": 686,
+      "desc": 544,
       "schema": 877
     },
     "kin_document": {
-      "desc": 1667,
-      "schema": 1749
+      "desc": 1189,
+      "schema": 1228
     },
     "kin_github_comment": {
       "desc": 348,
@@ -155,7 +156,7 @@
     },
     "kin_github_diff": {
       "desc": 147,
-      "schema": 158
+      "schema": 146
     },
     "kin_github_link": {
       "desc": 172,
@@ -167,7 +168,7 @@
     },
     "kin_github_review": {
       "desc": 196,
-      "schema": 499
+      "schema": 485
     },
     "kin_github_review_ask": {
       "desc": 738,
@@ -178,7 +179,7 @@
       "schema": 114
     },
     "kin_hand_off": {
-      "desc": 2037,
+      "desc": 1451,
       "schema": 328
     },
     "kin_issue": {
@@ -187,14 +188,14 @@
     },
     "kin_journal": {
       "desc": 130,
-      "schema": 310
+      "schema": 208
     },
     "kin_leads": {
       "desc": 242,
       "schema": 46
     },
     "kin_picture": {
-      "desc": 6732,
+      "desc": 3458,
       "schema": 344
     },
     "kin_react": {
@@ -202,8 +203,8 @@
       "schema": 221
     },
     "kin_receipt": {
-      "desc": 1826,
-      "schema": 974
+      "desc": 1075,
+      "schema": 851
     },
     "kin_recipe_undo": {
       "desc": 215,
@@ -214,12 +215,12 @@
       "schema": 199
     },
     "kin_relay": {
-      "desc": 1107,
+      "desc": 882,
       "schema": 325
     },
     "kin_schedule": {
       "desc": 520,
-      "schema": 991
+      "schema": 941
     },
     "kin_skip": {
       "desc": 400,
@@ -230,20 +231,20 @@
       "schema": 92
     },
     "kin_visual": {
-      "desc": 4676,
+      "desc": 2421,
       "schema": 138
     },
     "kin_widget_upsert": {
       "desc": 250,
-      "schema": 1308
+      "schema": 1281
     },
     "list_define": {
-      "desc": 810,
-      "schema": 2828
+      "desc": 642,
+      "schema": 2208
     },
     "memory_label": {
       "desc": 380,
-      "schema": 212
+      "schema": 185
     },
     "memory_read": {
       "desc": 215,
@@ -251,15 +252,15 @@
     },
     "memory_search": {
       "desc": 225,
-      "schema": 543
+      "schema": 510
     },
     "memory_write": {
-      "desc": 2291,
-      "schema": 1963
+      "desc": 1769,
+      "schema": 1703
     },
     "message_replace": {
       "desc": 593,
-      "schema": 137
+      "schema": 119
     },
     "message_withdraw": {
       "desc": 669,
@@ -267,27 +268,27 @@
     },
     "money_query": {
       "desc": 938,
-      "schema": 597
+      "schema": 571
     },
     "money_summary": {
-      "desc": 501,
+      "desc": 430,
       "schema": 46
     },
     "number_record": {
       "desc": 250,
-      "schema": 382
+      "schema": 360
     },
     "numbers_read": {
       "desc": 192,
-      "schema": 147
+      "schema": 133
     },
     "numbers_watch": {
       "desc": 382,
-      "schema": 1231
+      "schema": 1059
     },
     "payment_record": {
-      "desc": 1008,
-      "schema": 1162
+      "desc": 940,
+      "schema": 892
     },
     "people_read": {
       "desc": 270,
@@ -295,7 +296,7 @@
     },
     "people_update": {
       "desc": 292,
-      "schema": 625
+      "schema": 543
     },
     "pipeline_read": {
       "desc": 715,
@@ -303,11 +304,11 @@
     },
     "project_note": {
       "desc": 149,
-      "schema": 166
+      "schema": 135
     },
     "pulse_handle": {
-      "desc": 996,
-      "schema": 1249
+      "desc": 847,
+      "schema": 1014
     },
     "pulse_nudge": {
       "desc": 283,
@@ -318,80 +319,80 @@
       "schema": 529
     },
     "record_assign": {
-      "desc": 933,
-      "schema": 1404
+      "desc": 542,
+      "schema": 977
     },
     "record_comment": {
       "desc": 343,
-      "schema": 239
+      "schema": 208
     },
     "record_create": {
-      "desc": 6262,
-      "schema": 8725
+      "desc": 2829,
+      "schema": 4434
     },
     "record_get": {
-      "desc": 1375,
-      "schema": 212
+      "desc": 992,
+      "schema": 183
     },
     "record_hand_back": {
       "desc": 324,
-      "schema": 318
+      "schema": 288
     },
     "record_link": {
       "desc": 162,
-      "schema": 174
+      "schema": 158
     },
     "record_update": {
-      "desc": 2272,
-      "schema": 8507
+      "desc": 1347,
+      "schema": 4026
     },
     "records_query": {
-      "desc": 1324,
-      "schema": 2079
+      "desc": 932,
+      "schema": 1501
     },
     "social_draft": {
       "desc": 430,
-      "schema": 356
+      "schema": 218
     },
     "social_lookup": {
       "desc": 193,
-      "schema": 115
+      "schema": 85
     },
     "social_pack": {
       "desc": 325,
-      "schema": 364
+      "schema": 271
     },
     "social_read": {
       "desc": 452,
-      "schema": 156
+      "schema": 111
     },
     "social_week": {
       "desc": 257,
-      "schema": 151
+      "schema": 105
     },
     "statement_read": {
-      "desc": 1325,
-      "schema": 2582
+      "desc": 1009,
+      "schema": 1990
     },
     "statement_rows": {
       "desc": 659,
-      "schema": 494
+      "schema": 444
     },
     "team_open": {
       "desc": 439,
-      "schema": 332
+      "schema": 319
     },
     "team_say": {
       "desc": 523,
-      "schema": 1114
+      "schema": 1049
     },
     "touch_log": {
       "desc": 362,
-      "schema": 735
+      "schema": 615
     },
     "web_page": {
       "desc": 494,
-      "schema": 106
+      "schema": 75
     }
   },
   "kinLeadPromptBytes": {

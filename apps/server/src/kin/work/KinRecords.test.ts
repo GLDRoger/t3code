@@ -216,6 +216,7 @@ const steps = [
 ];
 /** A Work tool's result as it reaches the agent: encoded by the tool's own schema. */
 const encodeQuery = Schema.encodeEffect(LeadWork.QueryResult);
+const decodeCreate = Schema.decodeEffect(Schema.toCodecJson(LeadWork.CreateInput));
 const encodeGet = Schema.encodeEffect(LeadWork.GetResult);
 const assignedEvents = SqlClient.SqlClient.pipe(
   Effect.flatMap(
@@ -272,6 +273,30 @@ it.effect("record_create makes many entries in one call and a retry makes none",
     assert.match(refused.message, /^Row 2 \("Invented: book the venue"\): owner: No one called/);
     assert.match(refused.message, /\nRow 3 \("Invented: pay the printer"\): amount: /);
     assert.include(refused.message, "Nothing in this call was saved. Fix these 2 and send all 3");
+    const wrongRows = yield* decodeCreate({
+      sourceEventId: "ask-event",
+      records: [
+        { title: "Invented: not saved either" },
+        { title: "Invented: wrong list", kind: "prospect" },
+        { title: "Invented: typo", emial: "typo@example.test" },
+        { title: "Invented: ignored before", cameFrom: "Web form" },
+      ],
+    });
+    const wrongList = yield* Effect.flip(LeadWork.create(scopeOf(lead), wrongRows));
+    assert.include(wrongList.message, 'Work takes no "kind", which goes on clients');
+    assert.include(wrongList.message, 'Work takes no "emial"; pass one of:');
+    assert.include(wrongList.message, 'Work takes no "cameFrom", which goes on clients');
+    assert.include(wrongList.message, "Nothing in this call was saved");
+    const wrongChange = yield* Effect.flip(
+      LeadWork.update(scopeOf(lead), {
+        key: "W-1",
+        sourceEventId: "ask-event",
+        kind: "client",
+        title: "Invented: not renamed",
+      }),
+    );
+    assert.include(wrongChange.message, 'Work takes no "kind", which goes on clients');
+    assert.strictEqual((yield* LeadWork.get(scopeOf(lead), { key: "W-1" })).title, steps[0]?.title);
     const sql = yield* SqlClient.SqlClient;
     assert.lengthOf(yield* sql`SELECT 1 FROM kin_records`, 3);
     // The owner said it, so it is confirmed, linked to the message, and the owner is its assigner.

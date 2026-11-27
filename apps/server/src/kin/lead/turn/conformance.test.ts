@@ -122,7 +122,7 @@ const limited = (driver: string, limit: KinProviderLimit) =>
 
 describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (driver, fake) => {
   it.effect(
-    "the owner's chat: Kin's instructions, Kin's tools up front and the rare ones findable, none of the user's own config, the provider's built-ins, each shell step checked, and a shell that signs as the agent and carries no Kin secret",
+    "the owner's chat: Kin's instructions, Kin's tools mounted and deferred ones findable, none of the user's own config, the provider's built-ins, each shell step checked, and a shell that signs as the agent and carries no Kin secret",
     () =>
       Effect.gen(function* () {
         const { stateDir } = yield* ServerConfig.ServerConfig;
@@ -132,7 +132,7 @@ describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (d
         assert.include(owner.instructions, "GitHub repos needs no card");
         for (const capability of kinProviderFacts(driver)?.lacks ?? [])
           assert.include(owner.instructions, KIN_CAPABILITY_WORDS[capability]);
-        assert.isTrue(owner.kinToolsUpFront);
+        assert.isTrue(owner.kinToolsMounted);
         assert.isTrue(owner.deferredFindable);
         assert.strictEqual(owner.personalConfig, limited(driver, "ownConfigLoads"));
         assert.isTrue(owner.builtins);
@@ -203,7 +203,7 @@ describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (d
         });
         assert.isTrue(shared.changed);
         assert.strictEqual(shared.instructions, kinInstructions("confined", driver));
-        assert.isTrue(shared.kinToolsUpFront);
+        assert.isTrue(shared.kinToolsMounted);
         assert.isTrue(shared.deferredFindable);
         assert.strictEqual(shared.personalConfig, limited(driver, "ownConfigLoads"));
         assert.isFalse(shared.builtins);
@@ -248,13 +248,13 @@ describe.each(FAKES.map((fake) => [fake.driver, fake] as const))("Kin on %s", (d
   );
 
   it.effect(
-    "on every model the provider runs, one its catalog lacks included, no Kin tool a chat allows is out of reach: a rare one waits only where the model can look it up",
+    "on every model the provider runs, one its catalog lacks included, no Kin tool a chat allows is out of reach: a tool waits only where the model can look it up",
     () =>
       Effect.gen(function* () {
         for (const model of fake.models)
           for (const thread of ["kin:tech", "kin-shared:tech"]) {
             const session = yield* open(fake, thread, { model });
-            assert.isTrue(session.kinToolsUpFront, `${model} ${thread}`);
+            assert.isTrue(session.kinToolsMounted, `${model} ${thread}`);
             assert.isTrue(
               !session.holdsBack || session.deferredFindable,
               `${model} ${thread} holds tools back that it can't find`,

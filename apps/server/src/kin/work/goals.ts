@@ -38,18 +38,15 @@ import { countedPayment, endOfDay, ownerZone, startOfDay } from "./recordRows.ts
 /** What `record_create` and `record_update` take for a goal (list goals); due is its date. */
 export const GoalInputs = {
   measure: Schema.optional(KinGoalMeasure).annotate({
-    description:
-      "A goal's measure: revenue_received (money in, from Money), clients_won, tasks_done, or manual (a number you keep current).",
+    description: "manual: a number you keep current.",
   }),
   target: Schema.optional(KinToolText(60)).annotate({
-    description: 'A goal\'s target: money as said for revenue_received ("40 lakh"), else a number.',
+    description: "Money as said for revenue_received, else a number.",
   }),
   current: Schema.optional(Schema.NullOr(Schema.Finite)).annotate({
-    description: "A manual goal's number now; say where it came from in notes.",
+    description: "A manual goal's number now; its source in notes.",
   }),
-  unit: Schema.optional(Schema.NullOr(KinToolText(40))).annotate({
-    description: 'What a manual goal counts, such as "hires".',
-  }),
+  unit: Schema.optional(Schema.NullOr(KinToolText(40))),
 };
 const WatchedNumberInputs = {
   direction: Schema.optional(Schema.NullOr(KinNumberDirection)),

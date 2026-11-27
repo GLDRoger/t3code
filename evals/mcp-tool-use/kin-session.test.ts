@@ -56,8 +56,8 @@ it("places every legacy wake-up block exactly once, splitting the server's tagge
   assert.deepEqual(failures, []);
 });
 
-const legacyRequestPin = "8f5b846bfffe469b5cdf56d8994be3e6e7ff95a2d72904452388a01408196483";
-const sessionRequestPin = "6e1e87a136cfdbef13bb805ca8ee19c9c69120ae2eb105fa28f6045c1a23c344";
+const legacyRequestPin = "3b224a6a25da0090c8065827a6b7320fbab6840faa49e9bf49b1b1da9d9739b6";
+const sessionRequestPin = "cca21371c383f34f4301136ce932fb3cbadd9ba1a0586092954e306da22b557a";
 const pinnedIds = [
   "kin-lead-rereads-github-hint",
   "kin-lead-uses-display-name",
@@ -115,7 +115,9 @@ const wake = (event: string) =>
 const earlier = [
   {
     prompt: wake("Which invoices are open?"),
-    toolCalls: [{ tool: "records_query", input: { list: "invoices" }, result: { total: 2 } }],
+    toolCalls: [
+      { tool: "record_comment", input: { key: "INV-7", text: "Checked" }, result: { ok: true } },
+    ],
     reply: "Two are open.",
   },
   { prompt: wake("Does that include INV-7?"), reply: "Yes, it includes INV-7." },
@@ -129,7 +131,7 @@ const carryCase: McpToolUseCase = {
   setup: { role: "top", world: { kinLead: true }, carry: { earlier } },
   prompt: wake("And INV-9?"),
   expect: {},
-  sessionCallsMustNot: [{ tool: "records_query" }],
+  sessionCallsMustNot: [{ tool: "record_comment" }],
 };
 const txt = (text: string) => ({ type: "text", text });
 const date = txt("Today's date is 2026-11-26.");
@@ -188,15 +190,37 @@ it("replays only the last wake in legacy and the real earlier tool blocks in ses
       content: [
         {
           type: "tool_use",
-          id: "toolu_prior_0",
-          name: "mcp__t3-code__records_query",
-          input: { list: "invoices" },
+          id: "toolu_prior_1",
+          name: "ToolSearch",
+          input: { query: "select:mcp__t3-code__record_comment", max_results: 1 },
         },
       ],
     },
     {
       role: "user",
-      content: [{ type: "tool_result", tool_use_id: "toolu_prior_0", content: '{"total":2}' }],
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_prior_1",
+          content: [{ type: "tool_reference", tool_name: "mcp__t3-code__record_comment" }],
+        },
+        txt("Tool loaded."),
+      ],
+    },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_prior_0",
+          name: "mcp__t3-code__record_comment",
+          input: { key: "INV-7", text: "Checked" },
+        },
+      ],
+    },
+    {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "toolu_prior_0", content: '{"ok":true}' }],
     },
     { role: "assistant", content: [txt("Two are open.")] },
     { role: "user", content: [txt("# Events\n\nDoes that include INV-7?")] },
@@ -207,7 +231,7 @@ it("replays only the last wake in legacy and the real earlier tool blocks in ses
   ]);
   assert.deepEqual(expectationsForLayout(carryCase, "tools", "legacy"), {});
   assert.deepEqual(expectationsForLayout(carryCase, "tools", "session"), {
-    callsMustNot: [{ tool: "records_query" }],
+    callsMustNot: [{ tool: "record_comment" }],
   });
 });
 
@@ -455,4 +479,31 @@ it("uses the product's default effort for Kin", () => {
 
 it("lets the run override Kin's default effort", () => {
   assert.equal(ownerFirstRequest("low").output_config.effort, "low");
+});
+
+it("uses the thirteen-tool Claude owner core, keeps WebSearch deferred, and drops WebFetch", () => {
+  const { tools, messages } = ownerFirstRequest();
+  assert.sameMembers(
+    tools
+      .map(({ name }: { name: string }) => name)
+      .filter((name: string) => name.startsWith("mcp__t3-code__")),
+    [
+      "record_update",
+      "record_assign",
+      "kin_ask_person",
+      "kin_relay",
+      "kin_defer",
+      "records_query",
+      "record_get",
+      "docs_search",
+      "client_read",
+      "doc_create",
+      "record_create",
+      "kin_ask",
+      "kin_skip",
+    ].map((name) => `mcp__t3-code__${name}`),
+  );
+  const announcement = String(messages.at(-1).content[0]?.text).split("\n");
+  assert.include(announcement, "WebSearch");
+  assert.notInclude(announcement, "WebFetch");
 });

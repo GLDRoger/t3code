@@ -5,6 +5,7 @@
  * harness capture supplies the prompt and native tools; a cheap model plays the shell. See
  * README.md for how to run it and add cases.
  */
+import { KIN_SEARCH_HINTS } from "../../apps/server/src/kin/lead/searchHints.ts";
 import { compileClaudeModelSelection } from "../../apps/server/src/claudeModelOptions.ts";
 import * as NodeChildProcess from "node:child_process";
 import * as NodeCrypto from "node:crypto";
@@ -599,6 +600,9 @@ export const normalizeToolInput = (name: string, input: unknown) => {
 
 // McpHttpServer advertises each tool's JSON schema, and Claude Code passes the MCP name,
 // description, and schema through unchanged.
+const kinSourceTools = new Set<Tool.Any>(
+  KIN_TOOLKITS.flatMap((toolkit): ReadonlyArray<Tool.Any> => Object.values(toolkit.tools)),
+);
 const t3SourceTools: ReadonlyArray<Tool.Any> = [
   OrchestratorToolkit,
   ThreadToolkit,
@@ -629,7 +633,7 @@ const t3InputDecoders = new Map(
 const t3Tools: ReadonlyArray<ApiTool> = t3SourceTools.map((tool) => ({
   name: `${T3_PREFIX}${tool.name}`,
   description: Tool.getDescription(tool) ?? "",
-  input_schema: advertisedJsonSchema(tool),
+  input_schema: advertisedJsonSchema(tool, { kin: kinSourceTools.has(tool) }),
 }));
 // T3 gates these on the `preview` capability, which agent browser access decides.
 const PREVIEW_TOOLS = new Set(
@@ -2106,7 +2110,12 @@ const keywordScore = (tool: ApiTool, words: ReadonlyArray<string>) => {
   const bare = normalizeToolName(tool.name).toLowerCase();
   const parts = bare.split("_");
   const description = typeof tool.description === "string" ? tool.description.toLowerCase() : "";
-  const hint = isRecord(tool._meta) ? tool._meta["anthropic/searchHint"] : undefined;
+  const hint =
+    isT3Name(tool.name) && Object.hasOwn(KIN_SEARCH_HINTS, normalizeToolName(tool.name))
+      ? KIN_SEARCH_HINTS[normalizeToolName(tool.name)]
+      : isRecord(tool._meta)
+        ? tool._meta["anthropic/searchHint"]
+        : undefined;
   let score = 0;
   for (const word of words) {
     if (parts.includes(word)) score += isT3Name(tool.name) ? 12 : 10;
@@ -2477,6 +2486,74 @@ const productRefusal = (sample: Sample, name: string, input: Readonly<Record<str
   return undefined;
 };
 
+const printfEscapes: Readonly<Record<string, string>> = {
+  a: "\x07",
+  b: "\b",
+  e: "\x1b",
+  f: "\f",
+  n: "\n",
+  r: "\r",
+  t: "\t",
+  v: "\v",
+  "\\": "\\",
+};
+
+const literalPrintf = ([format, ...args]: ReadonlyArray<string>): string | undefined => {
+  if (
+    format === undefined ||
+    format.startsWith("-") ||
+    /[%\\]/u.test(format.replaceAll(/%[%s]|\\[abefnrtv\\]/g, ""))
+  )
+    return undefined;
+  let arg = 0;
+  let output = "";
+  do {
+    const before = arg;
+    output += format.replaceAll(/%[%s]|\\[abefnrtv\\]/g, (token) =>
+      token === "%s" ? (args[arg++] ?? "") : token === "%%" ? "%" : printfEscapes[token[1]!]!,
+    );
+    if (arg === before) break;
+  } while (arg < args.length);
+  return output;
+};
+
+/** A complete literal command, simulated without a shell or the shell-model call. */
+const nativeNoop = (tool: string, input: unknown): string | undefined => {
+  if (!isRecord(input)) return undefined;
+  if (tool === "Read") return input.file_path === "/dev/null" ? "" : undefined;
+  if (tool !== "Bash" || typeof input.command !== "string" || /[\r\n\0]/u.test(input.command))
+    return undefined;
+  const command = input.command.replace(/^[ \t]+|[ \t]+$/g, "");
+  if (command === "true" || command === ":") return "";
+  const head = /^(echo|printf)(?=[ \t]|$)/u.exec(command);
+  if (head === null) return undefined;
+  const word =
+    /[ \t]+((?:[^ \t'"\\$\x60|<>&;(){}*?[\]#!~]|\\.|'[^']*'|"(?:[^"\\$\x60]|\\.)*")+)(?=[ \t]|$)/guy;
+  const part = /([^ \t'"\\$\x60|<>&;(){}*?[\]#!~]+)|\\(.)|'([^']*)'|"((?:[^"\\$\x60]|\\.)*)"/gu;
+  const args: Array<string> = [];
+  word.lastIndex = head[0].length;
+  while (word.lastIndex < command.length) {
+    const match = word.exec(command);
+    if (match === null) return undefined;
+    args.push(
+      [...match[1]!.matchAll(part)]
+        .map(
+          ([, bare, escaped, single, double]) =>
+            bare ?? escaped ?? single ?? double!.replaceAll(/\\(["\\$\x60])/g, "$1"),
+        )
+        .join(""),
+    );
+  }
+  if (head[1] === "printf") return literalPrintf(args);
+  let newline = true;
+  while (/^-[neE]+$/u.test(args[0] ?? "")) {
+    const option = args.shift()!;
+    if (option.includes("e")) return undefined;
+    if (option.includes("n")) newline = false;
+  }
+  return args.join(" ") + (newline ? "\n" : "");
+};
+
 export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(function* (
   sample: Sample,
   config: Config,
@@ -2504,6 +2581,8 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
       : `InputValidationError: ${call.name} is deferred. Load it with ToolSearch first.`;
     return failed(`<tool_use_error>${error}</tool_use_error>`);
   }
+  const noop = nativeNoop(name, input);
+  if (noop !== undefined) return toolResult(call.id, noop);
   const kin = kinCallRead(name, input);
   if (kin.refused !== undefined) return failed(kin.refused);
   input = kin.input;
@@ -2829,9 +2908,14 @@ export const gradeSample = (
     ),
   }));
   const calls = attempted.filter((call) => !(call.failed && isPageTool(call.tool)));
+  const nonNoopAttempts = attempted.filter(
+    (call) => nativeNoop(call.tool, call.input) === undefined,
+  );
+  const nonNoopSet = new Set(nonNoopAttempts);
+  const nonNoopCalls = calls.filter((call) => nonNoopSet.has(call));
   // `tool` may list alternatives, as in "link_pull_request|watch_pull_request"; counts add up.
-  const count = (tool: string) =>
-    calls.filter((call) => tool.split("|").includes(call.tool)).length;
+  const count = (tool: string, among = calls) =>
+    among.filter((call) => tool.split("|").includes(call.tool)).length;
   const found = ({ tool, args = {}, argsAnyOf, success }: McpToolUseCall, among = calls) =>
     among.some(
       (call) =>
@@ -2860,7 +2944,7 @@ export const gradeSample = (
     add("anyOf", expect.anyOf.some(passes));
   }
   for (const call of expect.callsMustNot ?? [])
-    add(`callsMustNot ${label(call)}`, !found(call, attempted));
+    add(`callsMustNot ${label(call)}`, !found(call, nonNoopAttempts));
   // A page check must not pass because the grader never saw the file a path call shows.
   const pageTools = [...(expect.calls ?? []), ...(expect.callsMustNot ?? [])].flatMap((call) =>
     call.args?.page === undefined ? [] : call.tool.split("|"),
@@ -2874,7 +2958,7 @@ export const gradeSample = (
     )
       add(`page known ${call.tool} ${valueText(call.input.path)}`, false);
   for (const tool of expect.notCalls ?? [])
-    add(`notCalls ${tool}`, !attempted.some((call) => call.tool === tool));
+    add(`notCalls ${tool}`, !nonNoopAttempts.some((call) => call.tool === tool));
   if (expect.order !== undefined) {
     const firsts = expect.order.map((tool) => calls.findIndex((call) => call.tool === tool));
     const inOrder = firsts.every((at, i) => at > (firsts[i - 1] ?? -1));
@@ -2883,9 +2967,12 @@ export const gradeSample = (
   for (const [t, n] of Object.entries(expect.minCalls ?? {}))
     add(`minCalls ${t} >= ${n}`, count(t) >= n);
   for (const [t, n] of Object.entries(expect.maxCalls ?? {}))
-    add(`maxCalls ${t} <= ${n}`, count(t) <= n);
+    add(`maxCalls ${t} <= ${n}`, count(t, nonNoopCalls) <= n);
   for (const call of expect.callsAtMostOnce ?? [])
-    add(`callsAtMostOnce ${label(call)}`, calls.filter((one) => found(call, [one])).length <= 1);
+    add(
+      `callsAtMostOnce ${label(call)}`,
+      nonNoopCalls.filter((one) => found(call, [one])).length <= 1,
+    );
   if (expect.newThreads !== undefined) {
     const requests = newThreadRequests(calls);
     add(
@@ -2908,17 +2995,20 @@ export const gradeSample = (
   const sources = scriptSources(calls);
   const shell = calls.flatMap((call, i) =>
     isRecord(call.input) && typeof call.input.command === "string"
-      ? [call.input.command, ...(sources[i] ?? [])]
+      ? [call.input.command, ...(sources[i] ?? [])].map((source) => ({ source, call }))
       : [],
   );
   const test = matchesPattern;
   for (const p of expect.shellMustNot ?? [])
-    add(`shellMustNot /${p}/`, !shell.some((c) => test(p, c)));
+    add(
+      `shellMustNot /${p}/`,
+      !shell.some(({ source, call }) => nonNoopSet.has(call) && test(p, source)),
+    );
   // A positive check also reads argv lists as command lines: spawnSync('pnpm', ['exec', …]).
   for (const p of expect.shellMust ?? [])
     add(
       `shellMust /${p}/`,
-      shell.some((c) => test(p, c) || test(p, argvForm(c))),
+      shell.some(({ source }) => test(p, source) || test(p, argvForm(source))),
     );
   // A Kin card's question is posted to the chat and stands for the turn's message, so it counts.
   const delivered = run.deliveredText;
@@ -3281,10 +3371,14 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   testCase: McpToolUseCase,
   config: Config,
   base: Base,
-  spent: { readonly usage: Usage; readonly shellUsage: Usage },
+  spent: { readonly usage: Usage; readonly shellUsage: Usage; noopCalls?: number },
 ) {
+  spent.noopCalls = 0;
   if (config.appServer !== undefined)
-    return yield* runAppServerSample(testCase, config, config.appServer, base, spent);
+    return {
+      ...(yield* runAppServerSample(testCase, config, config.appServer, base, spent)),
+      noopCalls: 0,
+    };
   const sample = { ...makeSample(testCase, base), shellUsage: spent.shellUsage };
   yield* withDevices(sample);
   yield* withBackgroundWait(sample);
@@ -3296,6 +3390,12 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   const transcript: Array<unknown> = [];
   const start = messages.length;
   const { calls, responses } = sample;
+  const recordCalls = (next: ReadonlyArray<Call>) => {
+    calls.push(...next);
+    spent.noopCalls =
+      (spent.noopCalls ?? 0) +
+      next.filter((call) => nativeNoop(call.tool, call.input) !== undefined).length;
+  };
   const { usage } = spent;
   let stopReason = "max_steps";
   let finalText = "";
@@ -3335,7 +3435,7 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     if (long !== undefined) yield* Effect.log(long);
     const texts = response.content.filter(isText).map((block) => block.text);
     const uses = response.content.filter(isToolUse);
-    calls.push(...ranCalls(sample, step, uses));
+    recordCalls(ranCalls(sample, step, uses));
     if (response.stop_reason !== "tool_use") {
       stopReason = response.stop_reason ?? "unknown";
       finalText = texts.join("\n\n");
@@ -3370,7 +3470,7 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
           let recorded = own;
           if (record) {
             recorded = { step, tool, input: normalized };
-            calls.push(recorded);
+            recordCalls([recorded]);
           }
           const call = { ...use, name, input: normalized };
           return answerToolCall(sample, config, call).pipe(
@@ -3445,6 +3545,7 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     stopReason,
     finalText,
     modelCalls,
+    noopCalls: spent.noopCalls,
     ...(followUp?.kind === "rescue" ? { rescue: followUp.prompt } : {}),
     ...(followUp?.kind === "nudge" ? { nudge: followUp.prompt, nudged: true } : {}),
     silent: replyFollowUp(sample, finalText)?.kind === "rescue",
@@ -3480,6 +3581,7 @@ type ResultRow = Pick<McpToolUseCase, "id" | "kind" | "pattern"> & {
   /** `max_steps` when the step limit ended the turn. */
   readonly stopReason?: string;
   readonly modelCalls?: number;
+  readonly noopCalls?: number;
   /** Set when the sample could not run to the end, even after retries. It is not graded. */
   readonly error?: string;
   readonly usage: Usage;
@@ -3609,6 +3711,7 @@ export const summarize = (
         ]
       : []),
     ...(options.noStepLimit === true ? modelCallLines(rows) : []),
+    `- Native no-op calls: ${rows.filter((row) => (row.noopCalls ?? 0) > 0).length} samples, ${rows.reduce((total, row) => total + (row.noopCalls ?? 0), 0)} calls.`,
     `- Estimated cost $${cost.toFixed(2)}, $${(cost / rows.length).toFixed(3)} per sample${codex ? ", at OpenAI's API prices; the run itself bills whatever provider the Codex config (`CODEX_HOME`) selects" : ""}.`,
     `- Agent tokens: ${agent.tokens} ($${agent.cost.toFixed(2)}).`,
     ...latencyLine(rows),
@@ -4167,7 +4270,7 @@ const main = Effect.gen(function* () {
       ...(activeLayout(testCase) === "session" ? { kinLayout: "session" as const } : {}),
       shellModel: config.shellModel,
     };
-    const usage = { usage: emptyUsage(), shellUsage: emptyUsage() };
+    const usage = { usage: emptyUsage(), shellUsage: emptyUsage(), noopCalls: 0 };
     const privateValues = [
       config.apiKey,
       config.anthropic?.url.replace(/\/v1$/, "") ?? "",
