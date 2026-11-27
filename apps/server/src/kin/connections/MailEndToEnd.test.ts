@@ -1215,6 +1215,61 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     ),
   );
 
+  it.effect.each([
+    {
+      name: "a Gmail sender spelled in capitals behind a display name is quiet",
+      service: "google" as const,
+      from: "Harbor Bank <ALERTS@HarborBank.example>",
+      wakes: 0,
+    },
+    {
+      name: "a plus-address of the bank sender still wakes",
+      service: "google" as const,
+      from: "alerts+offers@harborbank.example",
+      wakes: 1,
+    },
+    {
+      name: "a display name naming the bank sender still wakes",
+      service: "google" as const,
+      from: '"alerts@harborbank.example" <zoya@ambermill-leads.example>',
+      wakes: 1,
+    },
+    {
+      name: "a bank sender that is also a client contact is quiet",
+      service: "microsoft" as const,
+      from: CLIENT,
+      sender: "ravi@lumen.example",
+      wakes: 0,
+    },
+  ])("with Money off, $name", ({ service, from, sender, wakes }) =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const address = service === "google" ? ACCOUNTS : HELLO;
+        const mailbox = yield* connect(fake, service, address);
+        yield* readMail(mailbox);
+        yield* TestClock.adjust("2 minutes");
+        yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+          VALUES (${orgId}, '[{"id":"money","on":false}]', 1, ${owner}, ${NOW})`;
+        yield* approveFixtureAlertSender(orgId, owner);
+        if (sender !== undefined)
+          yield* sql`UPDATE kin_bank_senders SET address = ${sender} WHERE org_id = ${orgId}`;
+        fake.deliver({
+          to: address,
+          from,
+          subject: "A question about the schedule",
+          body: "Friday afternoon is open for the call.",
+          headers: { "Auto-Submitted": "no" },
+          at: NOW + 60_000,
+        });
+        assert.lengthOf((yield* readMail(mailbox)).recorded, 1);
+        const woken = yield* sql`SELECT 1 FROM kin_events
+          WHERE org_id = ${orgId} AND tag = 'pulse'`;
+        assert.lengthOf(woken, wakes);
+      }),
+    ),
+  );
+
   it.effect(
     "wakes once for an automated notice with the same outside mark as an unknown sender",
     () =>
