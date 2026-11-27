@@ -1,7 +1,9 @@
 import {
   KIN_CHOICE_CARD_TTL_MS,
+  type KinAgentId,
   KinChatError,
   KinChatId,
+  type KinOrgId,
   KinMailRuleCardState,
   KinMailRuleCreateInput,
   KinMailRuleMatch,
@@ -18,6 +20,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { keySentSql } from "../chat/keySent.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { effectiveAudience, SHARED_THREAD_PREFIX, turnChat } from "../lead/Audience.ts";
+import { agentsNamed, describeAgents } from "../lead/Handoff.ts";
 import { outsideRead } from "../lead/OutsideContent.ts";
 import type { resolveLead } from "../lead/LeadMemory.ts";
 import { sealPlans, type MailRulePlan } from "../widgets/cardPlans.ts";
@@ -89,6 +92,34 @@ const sourceOf = Effect.fn("KinMailRules.proposalSource")(function* (
   return { _tag: "person" as const, orgId: turn.orgId, personId: source.personId };
 });
 
+/** The lead a proposal names, by id or as kin_hand_off takes one: by name, else by domain. */
+const namedLead = Effect.fn("KinMailRules.proposalLead")(function* (
+  orgId: KinOrgId,
+  named: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const leads = yield* sql<{ agentId: KinAgentId; name: string; domain: string }>`
+    SELECT l.agent_id AS "agentId", l.name, l.domain FROM kin_leads l
+    JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
+    WHERE l.org_id = ${orgId} AND a.role = 'lead' AND a.retired_at IS NULL
+    ORDER BY a.created_at, l.agent_id`;
+  const byId = leads.find((lead) => lead.agentId === named);
+  if (byId !== undefined) return byId.agentId;
+  const matches = agentsNamed(leads, named);
+  if (matches.length === 1) return matches[0]!.agentId;
+  return yield* new KinChatError(
+    matches.length === 0
+      ? {
+          reason: "not_found",
+          message: `agentId names no active lead, so nothing was proposed. Leave agentId out for a rule that runs on you, or give one of these leads by name or domain: ${describeAgents(leads)}.`,
+        }
+      : {
+          reason: "invalid_state",
+          message: `agentId fits more than one lead, so nothing was proposed. Give one of these by a name or domain only it has: ${describeAgents(matches)}.`,
+        },
+  );
+});
+
 export const proposeMailRule = Effect.fn("KinMailRules.propose")(function* (
   turn: Effect.Success<ReturnType<typeof resolveLead>>,
   proposal: typeof MailRuleProposal.Type,
@@ -104,7 +135,8 @@ export const proposeMailRule = Effect.fn("KinMailRules.propose")(function* (
       const input = {
         ...proposal,
         connectionId: named._tag === "found" ? named.row.connectionId : proposal.connectionId,
-        agentId: proposal.agentId ?? turn.agentId,
+        agentId:
+          proposal.agentId === undefined ? turn.agentId : yield* namedLead(orgId, proposal.agentId),
       };
       const { contentSha256, monthlyCap } = yield* prepareMailRule(input);
       const mailbox = yield* companyMailRuleMailbox(orgId, input.connectionId);

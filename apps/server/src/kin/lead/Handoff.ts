@@ -246,10 +246,11 @@ const fromOwnerAlone = (event: KinEvent, self: Colleague) => {
   }
 };
 const fold = (value: string) => value.trim().toLowerCase();
-const describe = (leads: ReadonlyArray<{ readonly name: string; readonly domain: string }>) =>
-  leads.map((lead) => `${lead.name} (${lead.domain})`).join(", ");
+export const describeAgents = (
+  leads: ReadonlyArray<{ readonly name: string; readonly domain: string }>,
+) => leads.map((lead) => `${lead.name} (${lead.domain})`).join(", ");
 /** The agents a name picks: by name, else by domain. */
-const matching = <T extends { readonly name: string; readonly domain: string }>(
+export const agentsNamed = <T extends { readonly name: string; readonly domain: string }>(
   agents: ReadonlyArray<T>,
   to: string,
 ) => {
@@ -541,8 +542,8 @@ const make = Effect.gen(function* () {
         : restricted
       ).push(entry);
     // Names are looked up among the reachable first, so a miss never lists the others.
-    const reached = matching(reachable, input.to);
-    const unreached = reached.length === 0 ? matching(restricted, input.to) : [];
+    const reached = agentsNamed(reachable, input.to);
+    const unreached = reached.length === 0 ? agentsNamed(restricted, input.to) : [];
     const target = reached.length === 1 ? reached[0] : undefined;
     const asked = unreached.length === 1 ? unreached[0] : undefined;
     const dest = target ?? asked;
@@ -805,7 +806,7 @@ const make = Effect.gen(function* () {
     return Effect.fail(
       new KinChatError({
         reason: matches.length === 0 ? "not_found" : "invalid_state",
-        message: `${matches.length === 0 ? "No agent here answers to that name or domain" : "Several agents answer to that"}. The agents are: ${describe(agents)}. ${NOTHING} Call again with one of those names.`,
+        message: `${matches.length === 0 ? "No agent here answers to that name or domain" : "Several agents answer to that"}. The agents are: ${describeAgents(agents)}. ${NOTHING} Call again with one of those names.`,
       }),
     );
   };
@@ -1340,7 +1341,7 @@ const make = Effect.gen(function* () {
     if (matches.length !== 1 || target === undefined)
       return yield* new KinChatError({
         reason: matches.length === 0 ? "not_found" : "invalid_state",
-        message: `${matches.length === 0 ? "No agent here answers to that name or domain" : "Several agents answer to that"}. The agents are: ${describe(others)}. ${NOTHING} Call again with one of those names.`,
+        message: `${matches.length === 0 ? "No agent here answers to that name or domain" : "Several agents answer to that"}. The agents are: ${describeAgents(others)}. ${NOTHING} Call again with one of those names.`,
       });
     return target;
   });

@@ -2210,6 +2210,30 @@ it.effect.each([true, false])(
               yield* propose({ ...proposal, connectionId: "juniper orders", agentId: undefined }),
             )
             .toContain(card.widgetId);
+          // A lead knows another by name or domain, as kin_leads gives them, never by its id.
+          for (const named of ["Lead", " lead ", "engineering"])
+            expect
+              .soft(yield* propose({ ...proposal, agentId: named }), named)
+              .toContain(card.widgetId);
+          expect
+            .soft(yield* propose({ ...proposal, agentId: "Accounts" }))
+            .toContain(
+              "agentId names no active lead, so nothing was proposed. Leave agentId out for a rule that runs on you, or give one of these leads by name or domain: Lead (engineering).",
+            );
+          yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id,
+            created_at) VALUES ('lead-second', ${person.orgId}, 'Lead', 'lead', ${person.personId},
+            '1970-01-02')`;
+          yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json,
+            worker_projects_json, owner_chat_id, domain) VALUES ('lead-second', ${person.orgId},
+            'Lead', 'L1', 0, '{}', '[]', ${chat.chatId}, 'finance')`;
+          expect.soft(yield* propose({ ...proposal, agentId })).toContain(card.widgetId);
+          expect
+            .soft(yield* propose({ ...proposal, agentId: "LEAD" }))
+            .toContain(
+              "agentId fits more than one lead, so nothing was proposed. Give one of these by a name or domain only it has: Lead (engineering), Lead (finance).",
+            );
+          yield* sql`DELETE FROM kin_leads WHERE agent_id = 'lead-second'`;
+          yield* sql`DELETE FROM kin_agents WHERE agent_id = 'lead-second'`;
           expect.soft(yield* cards()).toEqual(drawn);
           // A changed proposal for the same filters is a new card showing the change.
           const changedCard = Effect.fn(function* (change: object) {
