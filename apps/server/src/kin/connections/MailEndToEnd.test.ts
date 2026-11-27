@@ -186,6 +186,7 @@ const gateFor = (cards: Array<Card>) =>
 type Gates = {
   file?: Effect.Effect<void>;
   send?: () => Promise<void>;
+  calendarDelete?: (url: URL) => void;
   /** Where a move holds, under its fence, as it keeps the sign-in for the new row. */
   keep?: Effect.Effect<void>;
 };
@@ -226,6 +227,9 @@ const layerFor = (fake: FakeMail, cards: Array<Card>, gates: Gates = {}) =>
             ((handle) =>
               (async (input, init) => {
                 const url = input instanceof Request ? input.url : String(input);
+                const method = input instanceof Request ? input.method : init?.method;
+                if (method === "DELETE" && url.includes("/events/"))
+                  gates.calendarDelete?.(new URL(url));
                 if (gates.send !== undefined && url.endsWith("/messages/send")) await gates.send();
                 return handle(input, init);
               }) as typeof handle)(
@@ -429,12 +433,17 @@ const connect = (fake: FakeMail, service: "google" | "microsoft", address: strin
   });
 
 /** `personId` connects their own mailbox at the (fake) vendor; its id. */
-const connectOwn = (fake: FakeMail, personId: KinPersonId, address: string) =>
+const connectOwn = (
+  fake: FakeMail,
+  personId: KinPersonId,
+  address: string,
+  service: "google" | "microsoft" = "google",
+) =>
   Effect.gen(function* () {
     const connections = yield* KinConnections;
     const started = yield* connections.mineSignInStart(people(personId), {
       orgId,
-      service: "google",
+      service,
       returnTo: "web",
       another: true,
     });
@@ -2122,6 +2131,129 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           // What was asked of her mailbox is not in the owner's activity log.
           const log = yield* connections.calls(people(owner), { orgId });
           assert.isFalse(log.calls.some((one) => one.connectionId === own));
+        }),
+      ),
+  );
+
+  it.effect.each(["google", "microsoft"] as const)(
+    "only the calendar owner confirms a %s deletion, one occurrence at a time",
+    (service) =>
+      setUp((fake, cards, gates) =>
+        Effect.gen(function* () {
+          const address = "meera+calendar@invented-co.example";
+          fake.addAccount({ provider: service, address, name: "Meera" });
+          const connectionId = yield* connectOwn(fake, member, address, service);
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`DELETE FROM kin_connection_tools
+            WHERE connection_id = ${connectionId} AND tool_name = 'calendar_delete_event'`;
+          const connections = yield* KinConnections;
+          const relist = yield* connections.mineSignInStart(people(member), {
+            orgId,
+            service,
+            returnTo: "web",
+            connectionId,
+          });
+          yield* connections.mineSignInFinish(people(member), {
+            orgId,
+            response: fake.approve(relist.authorizationUrl, address),
+          });
+          yield* wake({ person: member });
+          const deletes: URL[] = [];
+          gates.calendarDelete = (url) => deletes.push(url);
+          const event = {
+            account: address,
+            title: "Juniper Cold Chain review",
+            start: NOW + 3_600_000,
+            end: NOW + 7_200_000,
+            updated: NOW,
+          };
+          fake.putEvent({ ...event, id: "review", guests: ["zoya@client.example"] });
+          fake.putEvent({ ...event, id: "weekly", repeats: 2 });
+          const propose = (eventId: string) =>
+            callTool(address, "calendar_delete_event", { eventId });
+          const series = yield* propose("weekly").pipe(Effect.flip);
+          assert.strictEqual(
+            series.message,
+            "Kin can delete one occurrence, not a whole series. Delete the series in the calendar.",
+          );
+          assert.lengthOf(cards, 0);
+          const drafted = yield* propose("review");
+          assert.include(drafted.note ?? "", "Nothing was deleted.");
+          const card = cards.at(-1)!;
+          assert.strictEqual(card.chatId, `cos-${member}`);
+          assert.strictEqual(card.question, "Delete this event?");
+          assert.include(card.send!.body, address);
+          assert.include(card.send!.body, event.title);
+          assert.include(card.send!.body, "3:30 pm");
+          assert.include(
+            card.send!.body,
+            `${service === "google" ? "Google Calendar" : "Outlook Calendar"} will notify the guests.`,
+          );
+          assert.lengthOf(deletes, 0);
+          assert.strictEqual(
+            fake.load().calendar.find((one) => one.id === "review")?.state,
+            "confirmed",
+          );
+          for (const other of [owner, coOwner]) {
+            const refused = yield* tap(card.widgetId, other).pipe(Effect.flip);
+            assert.strictEqual(refused.reason, "not_allowed");
+          }
+          const reaction = yield* (yield* KinConnections)
+            .answerAsk({
+              orgId,
+              widgetId: card.widgetId,
+              personId: member,
+              confirmed: true,
+              via: "reaction",
+              now: NOW,
+            })
+            .pipe(Effect.flip);
+          assert.strictEqual(reaction.message, "Tap Confirm or Cancel on the card to answer it.");
+          assert.lengthOf(deletes, 0);
+          assert.deepStrictEqual(yield* tap(card.widgetId, member), {
+            state: "sent",
+            reason: null,
+          });
+          const duplicate = yield* tap(card.widgetId, member).pipe(Effect.flip);
+          assert.strictEqual(duplicate.reason, "widget_changed");
+          assert.deepStrictEqual(
+            deletes.map((url) => url.pathname.split("/").at(-1)),
+            ["review"],
+          );
+          assert.strictEqual(
+            deletes[0]!.searchParams.get("sendUpdates"),
+            service === "google" ? "all" : null,
+          );
+          assert.strictEqual(
+            fake.load().calendar.find((one) => one.id === "review")?.state,
+            "deleted",
+          );
+
+          yield* propose("weekly_0");
+          const occurrence = cards.at(-1)!;
+          assert.include(occurrence.send!.body, "Only this occurrence will be deleted.");
+          assert.notInclude(occurrence.send!.body, "will notify the guests.");
+          assert.deepStrictEqual(yield* tap(occurrence.widgetId, member), {
+            state: "sent",
+            reason: null,
+          });
+          assert.deepStrictEqual(
+            deletes.map((url) => url.pathname.split("/").at(-1)),
+            ["review", "weekly_0"],
+          );
+          const listed = yield* callTool(address, "calendar_list_events", {
+            timeMax: DateTime.formatIso(DateTime.makeUnsafe(NOW + 8 * 86_400_000)),
+          });
+          assert.include(listed.quoted ?? "", "weekly_1");
+          assert.notInclude(listed.quoted ?? "", "weekly_0");
+
+          fake.putEvent({ ...event, id: "changed" });
+          yield* propose("changed");
+          const changed = cards.at(-1)!;
+          fake.putEvent({ ...event, id: "changed", repeats: 2 });
+          const refused = yield* tap(changed.widgetId, member);
+          assert.deepInclude(refused ?? {}, { state: "failed" });
+          assert.lengthOf(deletes, 2);
         }),
       ),
   );

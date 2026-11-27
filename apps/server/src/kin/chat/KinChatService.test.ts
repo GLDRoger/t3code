@@ -1037,6 +1037,37 @@ describe("KinChatService", () => {
           value: "option-1",
           clientActionId,
         });
+        const deletion = yield* service.ask(agent, {
+          ...ask,
+          clientMessageId: "ask-delete",
+          question: "Delete this event?",
+          options: [
+            { label: "Confirm", kind: "yes" },
+            { label: "Cancel", kind: "no" },
+          ],
+          send: {
+            action: "call",
+            calendarDelete: true,
+            service: "Google Calendar",
+            from: "rhea@invented.example",
+            account: "rhea@invented.example",
+            to: [],
+            cc: [],
+            subject: "Delete this event",
+            body: "Event: Juniper Cold Chain review",
+            attachments: [],
+            outcome: null,
+          },
+        });
+        const actAsAgent = service.act as (
+          caller: typeof agent | typeof person,
+          request: ReturnType<typeof tap>,
+        ) => ReturnType<typeof service.act>;
+        assert.include(
+          yield* actAsAgent(agent, tap("agent-tap", 1, deletion.widgetId)).pipe(Effect.flip),
+          { reason: "not_found" },
+        );
+        assert.strictEqual(Option.getOrThrow(yield* repo.getWidget(deletion)).revision, 1);
         const outsider = { ...person, personId: decodeKinPersonId("outsider") };
         yield* repo.insertPerson({
           ...outsider,

@@ -80,14 +80,20 @@ const api = Effect.fn("KinGoogle.api")(function* (
   { http, token }: Pick<MailContext, "http" | "token">,
   url: string,
   params: Readonly<Record<string, string | ReadonlyArray<string> | undefined>> = {},
-  write?: { readonly method: "POST" | "PATCH"; readonly json: unknown },
+  write?:
+    | { readonly method: "POST" | "PATCH"; readonly json: unknown }
+    | { readonly method: "DELETE"; readonly revision: string },
 ) {
   const base =
     write === undefined
       ? HttpClientRequest.get(url)
-      : HttpClientRequest.make(write.method)(url).pipe(
-          HttpClientRequest.bodyJsonUnsafe(write.json),
-        );
+      : write.method === "DELETE"
+        ? HttpClientRequest.delete(url).pipe(
+            HttpClientRequest.setHeader("if-match", write.revision),
+          )
+        : HttpClientRequest.make(write.method)(url).pipe(
+            HttpClientRequest.bodyJsonUnsafe(write.json),
+          );
   const request = base.pipe(
     HttpClientRequest.acceptJson,
     HttpClientRequest.bearerToken(token),
@@ -187,6 +193,16 @@ const threadsById = (context: MailContext, ids: ReadonlyArray<string>, watch = f
     { concurrency: 5 },
   );
 
+const recurrenceOf = (event: unknown) => {
+  const recurrence = field(event, "recurrence");
+  const master = field(event, "recurringEventId");
+  if (Array.isArray(recurrence) && recurrence.length > 0) return "series";
+  if (typeof master === "string" && master !== "") return "occurrence";
+  return master === undefined && (recurrence === undefined || Array.isArray(recurrence))
+    ? "single"
+    : null;
+};
+
 const eventOf = (event: unknown): MailCalendarEvent => ({
   eventId: text(field(event, "id")) ?? "",
   summary: text(field(event, "summary")) ?? null,
@@ -204,6 +220,9 @@ const eventOf = (event: unknown): MailCalendarEvent => ({
   notes: htmlToText(text(field(event, "description")) ?? ""),
   meeting: text(field(event, "hangoutLink")) ?? null,
   updated: text(field(event, "updated")) ?? null,
+  recurrence: recurrenceOf(event),
+  revision: text(field(event, "etag")) ?? null,
+  notifiesGuests: field(event, "organizer", "self") === true,
 });
 const calendarOf = (calendarId: string | undefined) =>
   `${CALENDAR}/${encodeURIComponent(calendarId ?? "primary")}/events`;
@@ -525,6 +544,13 @@ const google: MailVendor = {
   sendAs: googleSendAs,
   sendMessage,
   saveEvent,
+  deleteEvent: (http, token, { calendarId, eventId, revision }) =>
+    api(
+      { http, token },
+      `${calendarOf(calendarId)}/${encodeURIComponent(eventId)}`,
+      { sendUpdates: "all" },
+      { method: "DELETE", revision },
+    ).pipe(Effect.as({ messageId: null, threadId: null, eventId })),
 };
 
 /** Gmail and Google Calendar behind Kin's mail tools. */

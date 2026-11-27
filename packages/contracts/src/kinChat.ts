@@ -471,6 +471,8 @@ export type KinSendTry = typeof KinSendTry.Type;
 export const KinSendCard = Schema.Struct({
   service: KinTrimmedText.check(Schema.isMaxLength(80)),
   action: Schema.Literals(["email", "reply", "event", "call"]),
+  /** Deletion uses the plain call presentation on older clients, not the event-save wording. */
+  calendarDelete: Schema.optionalKey(Schema.Literal(true)),
   /** The address it goes from; on cards from before accounts, the signed-in account. */
   from: Schema.NullOr(KinText.check(Schema.isMaxLength(320))),
   /** The From name shown beside the address, such as "Ana Rao". */

@@ -32,7 +32,12 @@ import { seenBy } from "../work/teamView.ts";
 import { logTouch } from "../work/touches.ts";
 import { MAIL_BODY_MAX } from "../textLimits.ts";
 import { KinGatewayError } from "./McpGateway.ts";
-import { MAIL_TOOL, type Mailbox, type MailProvider } from "./MailProvider.ts";
+import {
+  MAIL_TOOL,
+  type Mailbox,
+  type MailCalendarEvent,
+  type MailProvider,
+} from "./MailProvider.ts";
 
 /**
  * What an "Ask me" call sends, fixed when the agent asks and shown whole on the owner's card.
@@ -102,6 +107,17 @@ export const Prepared = Schema.Union([
     notes: Schema.NullOr(Schema.String),
     invitees: Schema.Array(Schema.String),
   }),
+  Schema.TaggedStruct("eventDelete", {
+    calendarId: Schema.String,
+    calendarName: Schema.NullOr(Schema.String),
+    eventId: Schema.String,
+    title: Schema.String,
+    start: Schema.String,
+    end: Schema.String,
+    occurrence: Schema.Boolean,
+    notifyGuests: Schema.Boolean,
+    revision: Schema.String,
+  }),
   Schema.TaggedStruct("call", { args: Schema.Record(Schema.String, Schema.Unknown) }),
 ]);
 export type Prepared = typeof Prepared.Type;
@@ -118,6 +134,41 @@ const decodeEvent = Schema.decodeUnknownOption(
   ),
 );
 const refused = (message: string) => new KinGatewayError({ reason: "protocol", message });
+
+const deleteTarget = (event: MailCalendarEvent, eventId: string) => {
+  if (event.recurrence === "series")
+    return Effect.fail(
+      refused(
+        "Kin can delete one occurrence, not a whole series. Delete the series in the calendar.",
+      ),
+    );
+  if (
+    event.eventId !== eventId ||
+    event.recurrence === null ||
+    !event.revision ||
+    !event.start ||
+    !event.end ||
+    event.status === "cancelled"
+  )
+    return Effect.fail(
+      refused("Kin could not verify this event for deletion. Check it in the calendar."),
+    );
+  if (event.guests.length > 0 && !event.notifiesGuests)
+    return Effect.fail(
+      refused(
+        "Only the organizer can cancel this event and notify the guests. To remove it from this calendar, use the calendar directly.",
+      ),
+    );
+  return Effect.succeed({
+    eventId,
+    title: event.summary?.trim().slice(0, 300) || "Untitled event",
+    start: event.start,
+    end: event.end,
+    occurrence: event.recurrence === "occurrence",
+    notifyGuests: event.guests.length > 0,
+    revision: event.revision,
+  });
+};
 
 const MAX_RECIPIENTS = 10;
 const MAX_INVITEES = 50;
@@ -393,6 +444,26 @@ export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (input:
     account: input.account,
     addresses: input.sendAs.map((one) => one.address),
   };
+  if (input.tool === MAIL_TOOL.deleteEvent) {
+    const eventId = optional(args, "eventId");
+    if (eventId === null) return yield* refused(`${MAIL_TOOL.deleteEvent} needs eventId.`);
+    if (input.account === null)
+      return yield* refused("Kin could not verify the calendar account for deletion.");
+    const calendarId = optional(args, "calendarId") ?? "primary";
+    const token = yield* input.token;
+    const event = yield* input.provider.calendarEvent(
+      input.http,
+      token,
+      mailbox,
+      calendarId,
+      eventId,
+    );
+    const target = yield* deleteTarget(event, eventId);
+    const calendarName = yield* input.provider
+      .calendarName(input.http, token, mailbox, calendarId)
+      .pipe(Effect.orElseSucceed(() => null));
+    return { _tag: "eventDelete", calendarId, calendarName, ...target } satisfies Prepared;
+  }
   if (input.tool === MAIL_TOOL.saveEvent) {
     const title = optional(args, "title");
     const start = optional(args, "start");
@@ -726,6 +797,40 @@ const cardOf = (
       },
     };
   }
+  if (prepared._tag === "eventDelete") {
+    const service = input.mail?.calendarService ?? input.service;
+    const subject = "Delete this event";
+    const lines = [
+      `Event: ${prepared.title}`,
+      plainWhen({ ...prepared, timeZone: null }, input.clock),
+      `Calendar account: ${input.account}`,
+      ...(prepared.calendarName?.trim()
+        ? [`Calendar: ${prepared.calendarName.trim().slice(0, 300)}`]
+        : prepared.calendarId === "primary"
+          ? []
+          : [`Calendar: ${prepared.calendarId.slice(0, 300)}`]),
+      ...(prepared.occurrence ? ["Only this occurrence will be deleted."] : []),
+      ...(prepared.notifyGuests ? [`${service} will notify the guests.`] : []),
+    ];
+    const body = lines.join("\n");
+    return {
+      question: `${subject}?`,
+      detail: body.slice(0, 2000),
+      send: {
+        service,
+        action: "call",
+        calendarDelete: true,
+        from: input.account,
+        account: input.account,
+        to: [],
+        cc: [],
+        subject,
+        body,
+        attachments: [],
+        outcome: null,
+      },
+    };
+  }
   if (prepared._tag === "event") {
     const target = eventTarget(prepared, input.clock);
     const changing = prepared.current?.title ?? null;
@@ -864,11 +969,25 @@ export const sendMail = Effect.fn("KinSending.sendMail")(function* (
   http: HttpClient.HttpClient,
   token: string,
   prepared: Exclude<Prepared, { _tag: "call" }>,
+  account: string | null,
   handOff: <A, E>(
     request: Effect.Effect<A, E>,
   ) => Effect.Effect<A, E | KinChatError | SqlError.SqlError>,
 ) {
   if (prepared._tag === "event") return yield* handOff(provider.saveEvent(http, token, prepared));
+  if (prepared._tag === "eventDelete") {
+    const event = yield* provider.calendarEvent(
+      http,
+      token,
+      { account, addresses: [] },
+      prepared.calendarId,
+      prepared.eventId,
+    );
+    const target = yield* deleteTarget(event, prepared.eventId);
+    if (target.revision !== prepared.revision)
+      return yield* refused("This event changed after the card was made. Ask for a new card.");
+    return yield* handOff(provider.deleteEvent(http, token, prepared));
+  }
   const raw = mime(prepared, yield* filesOf(prepared.attachments));
   return yield* handOff(provider.sendMessage(http, token, { raw, threadId: prepared.threadId }));
 });

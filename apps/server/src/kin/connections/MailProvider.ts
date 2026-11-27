@@ -21,11 +21,13 @@ export const MAIL_TOOL = {
   events: "calendar_list_events",
   event: "calendar_get_event",
   saveEvent: "calendar_save_event",
+  deleteEvent: "calendar_delete_event",
 } as const;
 export const MAIL_SEND_TOOL_NAMES: ReadonlySet<string> = new Set([
   MAIL_TOOL.send,
   MAIL_TOOL.reply,
   MAIL_TOOL.saveEvent,
+  MAIL_TOOL.deleteEvent,
 ]);
 /** Reads that answer for every account of a provider at once when the agent names the provider. */
 export const ACROSS_ACCOUNTS: ReadonlySet<string> = new Set([
@@ -203,6 +205,9 @@ export type MailCalendarEvent = {
   readonly status: string | null;
   readonly notes: string;
   readonly meeting: string | null;
+  readonly recurrence: "single" | "occurrence" | "series" | null;
+  readonly revision: string | null;
+  readonly notifiesGuests: boolean;
   readonly updated: string | null;
 };
 
@@ -314,6 +319,7 @@ export interface MailVendor {
   readonly sendAs: MailProvider["sendAs"];
   readonly sendMessage: MailProvider["sendMessage"];
   readonly saveEvent: MailProvider["saveEvent"];
+  readonly deleteEvent: MailProvider["deleteEvent"];
 }
 
 /**
@@ -403,6 +409,18 @@ export interface MailProvider {
   ) => Call<Sent>;
   /** Adds or changes an event on the account's calendar and invites its guests. */
   readonly saveEvent: (http: HttpClient.HttpClient, token: string, event: MailEvent) => Call<Sent>;
+  readonly calendarEvent: (
+    http: HttpClient.HttpClient,
+    token: string,
+    mailbox: Mailbox,
+    calendarId: string,
+    eventId: string,
+  ) => Call<MailCalendarEvent>;
+  readonly deleteEvent: (
+    http: HttpClient.HttpClient,
+    token: string,
+    event: { readonly calendarId: string; readonly eventId: string; readonly revision: string },
+  ) => Call<Sent>;
   /** A calendar's name as the account shows it, or null when it has none. */
   readonly calendarName: (
     http: HttpClient.HttpClient,

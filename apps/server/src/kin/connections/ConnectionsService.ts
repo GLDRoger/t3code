@@ -1391,6 +1391,7 @@ const make = Effect.gen(function* () {
     // Kin's own mail tools are Kin's words, not a server's: a new wording needs no review.
     const provider = mailProviderOf(row);
     const ours = provider !== undefined;
+    const own = ours && row.personId != null;
     const signedIn =
       ours &&
       Option.isSome(
@@ -1416,15 +1417,18 @@ const make = Effect.gen(function* () {
           const json = toJson(tool.definition);
           const digest = pinDigest(tool.definition);
           const open = tool.openWorld ? 1 : 0;
+          const suggested = suggestedMode(tool.definition);
           if (change._tag === "added")
             yield* sql`INSERT INTO kin_connection_tools (org_id, connection_id, tool_name,
-                definition_json, pin_digest, mode, suggested_mode, open_world, first_seen_at)
-              VALUES (${orgId}, ${row.connectionId}, ${tool.name}, ${json}, ${digest}, 'off',
-                ${suggestedMode(tool.definition)}, ${open}, ${now})
+                definition_json, pin_digest, mode, suggested_mode, open_world, first_seen_at,
+                accepted_json, accepted_digest, accepted_at)
+              VALUES (${orgId}, ${row.connectionId}, ${tool.name}, ${json}, ${digest},
+                ${own ? suggested : "off"}, ${suggested}, ${open}, ${now},
+                ${own ? json : null}, ${own ? digest : null}, ${own ? now : null})
               ON CONFLICT (org_id, connection_id, tool_name) DO NOTHING`;
           else
             yield* sql`UPDATE kin_connection_tools SET definition_json = ${json},
-                pin_digest = ${digest}, suggested_mode = ${suggestedMode(tool.definition)},
+                pin_digest = ${digest}, suggested_mode = ${suggested},
                 open_world = ${open}, removed_at = NULL,
                 changed_at = ${change._tag === "changed" ? now : sql`changed_at`},
                 accepted_digest = ${ours ? sql`CASE WHEN accepted_digest IS NULL THEN NULL ELSE ${digest} END` : sql`accepted_digest`},
@@ -3501,7 +3505,12 @@ const make = Effect.gen(function* () {
           ON CONFLICT (org_id, ask_id) DO NOTHING`;
         const own = yield* persisted(askId);
         // A mail made under the owner's Approve: its Confirm card is that approval's one result.
-        if (own !== undefined && MAIL_SEND_TOOL_NAMES.has(tool.name) && row.kind === "builtin")
+        if (
+          own !== undefined &&
+          prepared._tag !== "eventDelete" &&
+          MAIL_SEND_TOOL_NAMES.has(tool.name) &&
+          row.kind === "builtin"
+        )
           yield* madeUnderApproval(turn, { kind: "mail", askId }).pipe(provideSql);
         return done(own === undefined ? undefined : yield* toldFor(own));
       }),
@@ -3579,7 +3588,14 @@ const make = Effect.gen(function* () {
           ),
       );
     yield* record(turn, { ...entry, status: "awaiting_approval" });
-    const asked = row.personId != null ? ASKED_OWN : outside === undefined ? ASKED : DRAFTED;
+    const asked =
+      prepared._tag === "eventDelete"
+        ? "Nothing was deleted. The event can be deleted only by tapping Confirm on the card. Point to the card in one short line. A typed yes does not delete the event."
+        : row.personId != null
+          ? ASKED_OWN
+          : outside === undefined
+            ? ASKED
+            : DRAFTED;
     const older = new Set(replaced).size;
     const note = older === 0 ? asked : `${asked} ${REPLACED(older)}`;
     const names = [...new Set(savedOver.map((one) => one.name))].join(" and ");
@@ -4466,6 +4482,7 @@ const make = Effect.gen(function* () {
         fenced(
           [row.connectionId],
           Effect.gen(function* () {
+            if (prepared._tag === "eventDelete") yield* asShown;
             const now = yield* Clock.currentTimeMillis;
             const left = yield* sql`UPDATE kin_connection_asks SET left_at = ${now}
               WHERE org_id = ${orgId} AND ask_id = ${askId} AND state = 'sending'
@@ -4486,7 +4503,7 @@ const make = Effect.gen(function* () {
           tokenOf(orgId, connection, force).pipe(
             Effect.tap(() => asShown),
             Effect.flatMap((token) =>
-              sendMail(provider, http, token, prepared, handOff).pipe(
+              sendMail(provider, http, token, prepared, connection.accountLabel, handOff).pipe(
                 provideSql,
                 Effect.provide(files),
               ),
@@ -4507,7 +4524,9 @@ const make = Effect.gen(function* () {
           "failed",
           email
             ? `${where} gave no clear answer. ${UNKNOWN_DELIVERY} Check its sent mail before you confirm the same mail below.`
-            : `${where} gave no clear answer. ${UNKNOWN_DELIVERY} Check before sending again.`,
+            : prepared._tag === "eventDelete"
+              ? `${where} gave no clear answer. Check the calendar before trying to delete this event again.`
+              : `${where} gave no clear answer. ${UNKNOWN_DELIVERY} Check before sending again.`,
           MAY_HAVE_GONE,
           email,
         );

@@ -227,6 +227,20 @@ const sendTools = (vendor: MailVendor) => {
         required: ["title", "start", "end"],
       },
     },
+    {
+      name: MAIL_TOOL.deleteEvent,
+      title: "Delete a calendar event",
+      description: `Propose deleting one event from this account's ${words.calendar}. Nothing is deleted until the calendar owner taps Confirm on the card. Use the id of one occurrence for a repeating event. To delete a whole series, use the calendar directly.`,
+      inputSchema: {
+        type: "object",
+        properties: {
+          eventId: { type: "string", description: "The event or occurrence to delete." },
+          calendarId,
+        },
+        required: ["eventId"],
+        additionalProperties: false,
+      },
+    },
   ]);
 };
 
@@ -520,6 +534,9 @@ export const mailProvider = (vendor: MailVendor): MailProvider => {
       vendor.arrival({ http, token, mailbox: NO_MAILBOX }, messageId),
     sendMessage: vendor.sendMessage,
     saveEvent: vendor.saveEvent,
+    calendarEvent: (http, token, mailbox, calendarId, eventId) =>
+      vendor.event({ http, token, mailbox }, calendarId, eventId),
+    deleteEvent: vendor.deleteEvent,
     calendarName: (http, token, mailbox, calendarId) =>
       vendor.calendarName({ http, token, mailbox }, calendarId),
   };
