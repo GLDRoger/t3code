@@ -30,7 +30,7 @@ export const normalizeAddress = (value: string | null | undefined) => {
 /** A reply or forward cannot be authorized as a fresh message from a sender. */
 export const isReplyOrForward = (subject: string) => /^\s*(?:re|fwd?)\s*:/i.test(subject);
 
-const verifiedBillingAddress = (
+export const verifiedBillingAddress = (
   mail: Pick<MailArrival, "from" | "fromAddress" | "subject" | "authResults">,
 ) => {
   const address = normalizeAddress(mail.fromAddress);

@@ -17,6 +17,7 @@ import { KinChatService } from "../../chat/KinChatService.ts";
 import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import { normalizeAddress } from "../../connections/MailSignals.ts";
 import { onlyOwnerLevel } from "../mailSenderAccess.ts";
+import { queueHeld } from "./billSenderArrivals.ts";
 
 const OWNER_ONLY = "Only an owner or co-owner can manage billing senders.";
 const changed = () =>
@@ -120,7 +121,7 @@ export const add = Effect.fn("KinBillSenders.add")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
-  yield* sql.withTransaction(
+  return yield* sql.withTransaction(
     Effect.gen(function* () {
       yield* onlyOwnerLevel(orgId, personId, OWNER_ONLY);
       const address = normalizeAddress(value);
@@ -129,6 +130,8 @@ export const add = Effect.fn("KinBillSenders.add")(function* (
           reason: "invalid_state",
           message: "Enter a full email address for the billing sender.",
         });
+      const [before] = yield* sql<{ state: string }>`SELECT state FROM kin_bill_senders
+        WHERE org_id = ${orgId} AND address = ${address}`;
       const [row] = yield* sql<{ widgetId: string | null }>`INSERT INTO kin_bill_senders
         (org_id, address, state, decided_by_person_id, decided_at, created_at)
       VALUES (${orgId}, ${address}, 'approved', ${personId}, ${now}, ${now})
@@ -138,7 +141,10 @@ export const add = Effect.fn("KinBillSenders.add")(function* (
       RETURNING widget_id AS "widgetId"`;
       if (row === undefined) return;
       yield* closeCard(orgId, row.widgetId, "approved", address);
+      if (before?.state === "declined") yield* queueHeld(orgId, address, now);
       yield* (yield* KinRefreshObserver).touch(orgId, "billSenders");
+      if (before?.state === "declined")
+        return { message: `Kin will read held bills from ${address}.` };
     }),
   );
 });

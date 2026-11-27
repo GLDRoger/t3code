@@ -5,7 +5,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { arrivalIdOf, mailKeyOf } from "../../arrivals/ArrivalStore.ts";
 import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import type { MailArrival } from "../../connections/MailProvider.ts";
-import { billingHint } from "../../connections/MailSignals.ts";
+import { billingHint, verifiedBillingAddress } from "../../connections/MailSignals.ts";
 import { DAY_MS } from "../../durations.ts";
 
 const HOLD_MS = 30 * DAY_MS;
@@ -17,16 +17,29 @@ export const billsOnMail = Effect.fn("KinBillSenders.onMail")(function* (input: 
   readonly mail: MailArrival;
   readonly knownBillers: ReadonlySet<string>;
   readonly now: number;
+  readonly candidateAllowed?: boolean;
 }) {
   const { orgId, connectionId, mail, now } = input;
-  const hint = billingHint(mail);
-  if (hint === undefined || (!hint.billSubject && mail.hasBillFile !== true)) return;
-  const { address } = hint;
+  const address = verifiedBillingAddress(mail);
+  if (address === undefined) return;
   const sql = yield* SqlClient.SqlClient;
   const mailbox = yield* sql`SELECT 1 FROM kin_connections WHERE org_id = ${orgId}
     AND connection_id = ${connectionId} AND person_id IS NULL AND state = 'active'
     AND removed_at IS NULL AND paused_at IS NULL`;
   if (mailbox.length === 0) return;
+  const [approved] = yield* sql`SELECT 1 FROM kin_bill_senders
+    WHERE org_id = ${orgId} AND address = ${address} AND state = 'approved'`;
+  if (approved !== undefined) {
+    yield* sql`INSERT INTO kin_bill_mail
+        (org_id, connection_id, message_id, thread_id, address, received_at, state, next_at, queued_at)
+      VALUES (${orgId}, ${connectionId}, ${mail.messageId}, ${mail.threadId}, ${address},
+        ${mail.receivedAt}, 'waiting', ${now}, ${now})
+      ON CONFLICT (org_id, connection_id, message_id) DO NOTHING`;
+    return;
+  }
+  if (input.candidateAllowed === false) return;
+  const hint = billingHint(mail);
+  if (hint === undefined || (!hint.billSubject && mail.hasBillFile !== true)) return;
   const [local, domain] = address.split("@");
   const pieces = local!.split("+");
   // An existing address never vouches for a plus variant, including a tag appended to a tag.
@@ -62,4 +75,19 @@ export const billsOnMail = Effect.fn("KinBillSenders.onMail")(function* (input: 
 export const pruneHeldBillMail = Effect.fn("KinBillSenders.pruneHeld")(function* (now: number) {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`DELETE FROM kin_bill_sender_mail WHERE received_at < ${now - HOLD_MS}`;
+});
+
+export const queueHeld = Effect.fn("KinBillSenders.queueHeld")(function* (
+  orgId: KinOrgId,
+  address: string,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_bill_mail
+      (org_id, connection_id, message_id, thread_id, address, received_at, state, next_at, queued_at)
+    SELECT org_id, connection_id, message_id, thread_id, address, received_at, 'waiting', ${now}, ${now}
+    FROM kin_bill_sender_mail WHERE org_id = ${orgId} AND address = ${address}
+      AND received_at >= ${now - HOLD_MS}
+    ORDER BY received_at, mail_key
+    ON CONFLICT (org_id, connection_id, message_id) DO NOTHING`;
 });

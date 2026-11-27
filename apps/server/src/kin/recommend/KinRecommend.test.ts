@@ -1977,7 +1977,17 @@ it.effect(
           yield* ctx.sql`SELECT awaiting_json FROM kin_widgets WHERE widget_id = ${card!.widgetId}`,
           [{ awaiting_json: "[]" }],
         );
-        yield* meera["kin.billSenders.add"]({ ...ref, address: " BILLS@INKSPOT.EXAMPLE " });
+        yield* ctx.sql`INSERT INTO kin_bill_sender_mail
+          (org_id, mail_key, address, connection_id, message_id, thread_id, received_at)
+          VALUES (${ctx.orgId}, 'hold', ${address}, 'mailbox', 'message', 'thread', ${now})`;
+        assert.deepStrictEqual(
+          yield* meera["kin.billSenders.add"]({ ...ref, address: " BILLS@INKSPOT.EXAMPLE " }),
+          { message: "Kin will read held bills from bills@inkspot.example." },
+        );
+        assert.deepStrictEqual(
+          yield* ctx.sql`SELECT address, message_id, state FROM kin_bill_mail WHERE org_id = ${ctx.orgId}`,
+          [{ address, message_id: "message", state: "waiting" }],
+        );
         assert.include((yield* meera["kin.billSenders.list"](org)).rows[0], {
           address,
           state: "approved",

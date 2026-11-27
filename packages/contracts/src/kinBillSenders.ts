@@ -39,7 +39,11 @@ export const KinBillSenderRpcs = [
   Rpc.make(methods.approve, { payload: sender, error }),
   Rpc.make(methods.decline, { payload: sender, error }),
   Rpc.make(methods.remove, { payload: sender, error }),
-  Rpc.make(methods.add, { payload: sender, error }),
+  Rpc.make(methods.add, {
+    payload: sender,
+    success: Schema.Union([Schema.Void, Schema.Struct({ message: Schema.String })]),
+    error,
+  }),
 ] as const;
 
 export const KIN_BILL_SENDER_RPC_SCOPES = {
