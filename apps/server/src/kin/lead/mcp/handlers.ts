@@ -175,7 +175,16 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           : CardActions.draw(lead, chatId, option.action),
       );
       const drawn = yield* drawAll;
-      const asked = { ...card, actions: drawn };
+      const alternatives = drawn.flatMap((one) => {
+        const option = one === undefined ? undefined : CardActions.ordinaryExpenseOption(one.plan);
+        return option === undefined ? [] : [option];
+      });
+      const offered = [...drawn, ...alternatives];
+      const asked = {
+        ...card,
+        options: [...card.options, ...alternatives.map(({ label }) => ({ label }))],
+        actions: offered,
+      };
       const options = ChoiceCard.choiceCardState(asked).options;
       const room = ChoiceCard.detailRoom(options);
       if (card.detail !== undefined && card.detail.trim() !== "" && card.detail.length > room)
@@ -184,7 +193,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           message: ChoiceCard.detailTooLong(card.detail.length, room),
         });
       const plans = options.flatMap((option, index) => {
-        const one = drawn[index];
+        const one = offered[index];
         return one === undefined ? [] : [{ optionId: option.optionId, plan: one.plan }];
       });
       // The default may name an option by the agent's words or by the server's button; "none"
@@ -194,7 +203,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       const names = (label: string) => ChoiceCard.readAs(label) === wanted;
       const named = none
         ? []
-        : card.options.flatMap((option, index) =>
+        : asked.options.flatMap((option, index) =>
             names(option.label) || names(options[index]!.label) ? [index] : [],
           );
       if (plans.length > 0) {
@@ -212,7 +221,7 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           });
       }
       const at = named[0];
-      const defaultPlan = at === undefined ? undefined : drawn[at]?.plan;
+      const defaultPlan = at === undefined ? undefined : offered[at]?.plan;
       // A refused repeat posts nothing; an allowed one is stored in its card's own transaction.
       const planned = yield* Questions.planAsk({
         orgId: lead.orgId,

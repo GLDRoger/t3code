@@ -40,7 +40,15 @@ export const closeSubject = Effect.fn("KinOpen.closeSubject")(function* (
     : input.registerId === "work"
       ? "Closed with its task"
       : "Closed";
-  const text = doc ? `${title}: ${key} was deleted.` : `${title}: ${key} is ${word} now.`;
+  const explained =
+    state === "done" &&
+    (input.registerId === "bank_transactions" ||
+      def?.name.trim().toLowerCase() === "bank transactions");
+  const text = doc
+    ? `${title}: ${key} was deleted.`
+    : explained
+      ? `${title}: ${key} was ${word}.`
+      : `${title}: ${key} is ${word} now.`;
   const asks =
     state === "dropped"
       ? yield* staleAsksAbout(
