@@ -765,6 +765,15 @@ const actorIdOf = (writer: Writer) =>
     : writer.actor._tag === "person"
       ? writer.actor.personId
       : null;
+/** A clients-won goal pinned in a chat counts every client, even those outside a member's stream. */
+export const clientsPinned = (sql: SqlClient.SqlClient, orgId: KinOrgId) =>
+  sql`SELECT 1 FROM kin_chat_pins p JOIN kin_records g
+      ON g.org_id = p.org_id AND g.record_id = p.record_id
+    WHERE p.org_id = ${orgId} AND g.register_id = 'goals'
+      AND json_extract(g.fields_json, '$.measure') = 'clients_won' LIMIT 1`.pipe(
+    Effect.map((rows) => rows.length > 0),
+  );
+
 export const paymentIdFor = (orgId: string, originKey: string) =>
   `pay_${NodeCrypto.createHash("sha256").update(`${orgId.length}:${orgId}${originKey}`).digest("hex").slice(0, 20)}`;
 
@@ -1041,8 +1050,8 @@ const make = Effect.gen(function* () {
     recordId: string,
   ) {
     if (list === "clients" || list === "projects") yield* refreshes.touch(orgId, "workChoices");
-    // A member's clients-won goal counts even the clients outside their Work stream.
-    if (list === "clients") yield* refreshes.touch(orgId, "pins");
+    if (list === "clients" && (yield* clientsPinned(sql, orgId)))
+      yield* refreshes.touch(orgId, "pins");
     if (list === "goals") {
       const [pin] = yield* sql`SELECT 1 FROM kin_chat_pins
         WHERE org_id = ${orgId} AND record_id = ${recordId} LIMIT 1`;

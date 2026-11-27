@@ -616,6 +616,31 @@ describe("KinRefreshHub", () => {
         const memberWork = yield* WorkStream.makeWorkStream([zoya], { orgId, acceptRows: true });
         yield* ownerWork.start(opening.seq);
         yield* memberWork.start(opening.seq);
+        const writer = { actor: { _tag: "system" as const }, via: "import" as const };
+        const chatId = "kin-chat-tidewater-freight";
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+          VALUES (${chatId}, ${orgId}, 'team_group', 0, '2026-11-01T00:00:00.000Z')`;
+        // With no clients-won goal pinned, a client write tells a member nothing.
+        yield* records.create(orgId, writer, {
+          list: "clients",
+          title: "Tidewater Freight",
+          originKey: "import:tidewater:kin-client-tidewater",
+          owner: { _tag: "person", personId: rhea.personId },
+        });
+        yield* Queue.take(changes);
+        yield* undoBatch(orgId, rhea.personId, "tidewater", { apply: true, includeChanged: false });
+        const won = yield* records.create(orgId, writer, {
+          list: "goals",
+          title: "Clients won this quarter",
+          originKey: "kin-goal-clients-won",
+          owner: { _tag: "person", personId: rhea.personId },
+          fields: { measure: "clients_won", target: "4" },
+        });
+        yield* Queue.take(changes);
+        yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+        assert.strictEqual(yield* Queue.size(refreshes), 0);
+        yield* sql`INSERT INTO kin_chat_pins VALUES ('kin-chat-pin-clients-won', ${orgId}, ${chatId},
+          ${won.row.recordId}, ${rhea.personId}, 0)`;
         yield* records.create(
           orgId,
           { actor: { _tag: "system" }, via: "import" },
@@ -629,7 +654,7 @@ describe("KinRefreshHub", () => {
         const changed = yield* Queue.take(changes);
         assert.isTrue(
           (yield* ownerWork.batch(ownerWork.pendingOf(changed))).some(
-            (event) => event._tag === "upsert" && event.record.key === "C-1",
+            (event) => event._tag === "upsert" && event.record.key === "C-2",
           ),
         );
         assert.deepStrictEqual(memberWork.pendingOf(changed), []);
@@ -641,7 +666,6 @@ describe("KinRefreshHub", () => {
         assert.strictEqual(yield* Queue.size(refreshes), 1);
         assert.strictEqual((yield* Queue.take(refreshes)).pins, (before.pins ?? 0) + 2);
 
-        const writer = { actor: { _tag: "system" as const }, via: "import" as const };
         const goal = yield* records.create(orgId, writer, {
           list: "goals",
           title: "Juniper Cold Chain referrals",
@@ -650,9 +674,6 @@ describe("KinRefreshHub", () => {
           fields: { measure: "manual", target: "100", current: "62" },
         });
         yield* Queue.take(changes);
-        const chatId = "kin-chat-tidewater-freight";
-        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
-          VALUES (${chatId}, ${orgId}, 'team_group', 0, '2026-11-01T00:00:00.000Z')`;
         yield* sql`INSERT INTO kin_chat_pins VALUES ('kin-chat-pin-referrals', ${orgId}, ${chatId},
           ${goal.row.recordId}, ${rhea.personId}, 0)`;
         yield* records.update(
