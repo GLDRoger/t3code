@@ -2,6 +2,7 @@ import type { KinSettingsPage } from "@t3tools/client-runtime/kin/kinNavigation"
 
 import { KIN_APPROVER_PHONES_TITLE } from "@t3tools/client-runtime/kin/kinApprovalPresentation";
 import { KIN_BANK_SENDERS } from "@t3tools/client-runtime/kin/kinBankSenders";
+import { KIN_BILL_SENDERS } from "@t3tools/client-runtime/kin/kinBillSenders";
 import { KIN_CHATS_SETTLE } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { KIN_CLEAR_UPDATES } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { KIN_MESSAGE_ALERTS } from "@t3tools/client-runtime/kin/kinMessageAlerts";
@@ -126,6 +127,13 @@ export const KIN_SETTINGS_SEARCH_ITEMS = [
     title: KIN_BANK_SENDERS.title,
     to: "/settings/company",
     searchTerms: ["kin bank alert address sender email mail transactions account"],
+  },
+  {
+    id: "kin-bill-senders",
+    kinOnly: true,
+    title: KIN_BILL_SENDERS.title,
+    to: "/settings/company",
+    searchTerms: ["kin billing sender bills email mail address subscription expenses approve"],
   },
   {
     id: "kin-connections",

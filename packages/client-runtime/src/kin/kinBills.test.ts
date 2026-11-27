@@ -202,6 +202,22 @@ describe("a bill on the review list", () => {
     expect(kinBillRowView(row(), { skipped }).skipped).toBe("Already kept.");
     expect(kinBillRowView(row({ sha256: SHA(2) }), { skipped }).skipped).toBeNull();
   });
+
+  it("says who mailed it and the day it arrived, in the reader's own zone", () => {
+    const mail = { from: "billing@inkspot.example", receivedAt: "2026-11-24T22:30:00.000Z" };
+    const line = (zone: string) =>
+      kinBillRowView(row({ mail }), { zone, locale: "en-GB" }).mailLine;
+    expect(line("UTC")).toBe(
+      "Read by Kin from a mail from billing@inkspot.example, received 24 Nov.",
+    );
+    expect(line("Asia/Kolkata")).toBe(
+      "Read by Kin from a mail from billing@inkspot.example, received 25 Nov.",
+    );
+    expect(kinBillRowView(row({ mail }), { zone: "UTC" }).accessibilityLabel).toContain(
+      "Read by Kin from a mail from billing@inkspot.example",
+    );
+    expect(kinBillRowView(row()).mailLine).toBeNull();
+  });
 });
 
 describe("the files an add takes", () => {

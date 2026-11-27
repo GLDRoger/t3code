@@ -351,7 +351,7 @@ features:
     web: [chat, card:Bills added]
     phone: [tab:chats, KinChat, card:Bills added]
     roles: { owner: both, co_owner: both, lead: none, member: none }
-    tools: [bills_add, bill_read]
+    tools: [bills_add, bill_read, bill_cut]
     note: The batch's card counts while Kin reads, says when the reader's daily limit pauses it, and its Review opens the batch's list.
     proof:
       - apps/server/src/kin/work/bills.test.ts
@@ -706,7 +706,7 @@ features:
     web: [money, "?bills"]
     phone: [tab:money, KinList, KinBills]
     roles: { owner: both, co_owner: both, lead: none, member: none }
-    note: Reached from Expenses' Bills added, the batch's card in chat, and the add itself. Enter by hand opens New expense with the bill's file.
+    note: Reached from Expenses' Bills added, the batch's card in chat, and the add itself. Enter by hand opens New expense with the bill's file. A bill that came by mail says from which address and the day it arrived.
     proof:
       - packages/client-runtime/src/kin/kinBills.test.ts
       - apps/web/src/kin/KinBills.browser.test.tsx
@@ -1259,6 +1259,24 @@ features:
       - packages/client-runtime/src/kin/kinBankSenders.test.ts
       - apps/server/src/kin/work/statements/bankSenders.test.ts
       - apps/web/src/kin/KinSettingsMoved.browser.test.tsx
+
+  - id: billing-senders
+    name: Billing senders
+    tab: settings
+    web: [settings, section:Company details, dialog:Add a billing sender]
+    phone: [SettingsKin, KinCompany, KinBillSenderAdd]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      Every address whose mailed bills Kin may read, in three groups: waiting for an answer
+      (Approve, Decline), approved (Remove) and declined (Add back), each with mails seen and who
+      decided when. Approve and Add ask first with what reading means; only an owner's or a
+      co-owner's tap changes the list, here or on the card "Read bills from {address}?" in chat.
+      Teammates do not see the section.
+    proof:
+      - packages/client-runtime/src/kin/kinBillSenders.test.ts
+      - apps/server/src/kin/connections/MailEndToEnd.test.ts
+      - apps/web/src/kin/settings/KinBillSendersSection.browser.test.tsx
 
   - id: kins-computer
     name: Kin's computer, its space and backups, what stops agents now, and the fixes

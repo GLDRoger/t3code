@@ -39,6 +39,7 @@ import {
   KinSettingsRow,
   KinSettingsSection,
 } from "./KinSettingsLayout";
+import { KinSenderAddress } from "./KinSenderAddress";
 
 /** Settings → Company details → Bank alert addresses, for owner and co-owners only. */
 export function KinBankSendersSection(props: KinWorkTarget) {
@@ -264,19 +265,7 @@ function BankSenderRow(props: {
   return (
     <KinSettingsRow
       stack
-      title={
-        <span>
-          {row.addressSegments.map((segment) => (
-            // Each piece wraps as one unit, so the line breaks after an @ or a dot, never mid-label.
-            <span
-              key={segment.start}
-              className={`inline-block max-w-full ${segment.domain ? "font-semibold text-foreground" : "font-normal text-muted-foreground"}`}
-            >
-              {segment.text}
-            </span>
-          ))}
-        </span>
-      }
+      title={<KinSenderAddress segments={row.addressSegments} />}
       detail={
         <span className="flex flex-col gap-0.5">
           <span>{bankSummary}</span>

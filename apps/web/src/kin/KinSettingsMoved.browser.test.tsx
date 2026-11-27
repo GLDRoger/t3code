@@ -32,6 +32,7 @@ const HOLDS: Readonly<Record<string, KinSettingsPage>> = {
   "kin-sections": "sections",
   "company-details": "company",
   "kin-bank-senders": "company",
+  "kin-bill-senders": "company",
   "kin-time-zone": "company",
   "kin-daily-limit": "company",
   "kin-stop": "company",

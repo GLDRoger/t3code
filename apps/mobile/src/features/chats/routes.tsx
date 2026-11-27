@@ -9,6 +9,7 @@ import { KinChatScreen } from "./KinChatScreen";
 import { KinChatsScreen } from "./KinChatsScreen";
 import { KinClientScreen } from "./KinClientScreen";
 import { KinBankSenderAddScreen } from "./KinBankSenders";
+import { KinBillSenderAddScreen } from "./KinBillSenders";
 import { KinCompanyScreen } from "./KinCompanyScreen";
 import { KinHostScreen } from "./KinHostScreen";
 import { KinWatchLogScreen } from "./KinWatchLogScreen";
@@ -191,6 +192,10 @@ export const KIN_SCREENS = {
   }),
   KinBankSenderAdd: createNativeStackScreen({
     screen: KinBankSenderAddScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinBillSenderAdd: createNativeStackScreen({
+    screen: KinBillSenderAddScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinHost: createNativeStackScreen({
