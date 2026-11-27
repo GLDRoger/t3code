@@ -1243,6 +1243,23 @@ features:
       - packages/client-runtime/src/kin/kinBrand.test.ts
       - packages/client-runtime/src/kin/kinTemplates.test.ts
 
+  - id: bank-alert-addresses
+    name: Bank alert addresses
+    tab: settings
+    web: [settings, section:Company details, dialog:Add bank alert address]
+    phone: [SettingsKin, KinCompany, KinBankSenderAdd]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      Lists every bank alert address Kin counts, is waiting on the owner for in chat, or declined,
+      with its bank, approved account endings, recorded and held counts, and who decided and when.
+      The owner or a co-owner can add an address by hand or remove a counted one; waiting rows are
+      answered only on the owner's card in chat. Teammates do not see the section.
+    proof:
+      - packages/client-runtime/src/kin/kinBankSenders.test.ts
+      - apps/server/src/kin/work/statements/bankSenders.test.ts
+      - apps/web/src/kin/KinSettingsMoved.browser.test.tsx
+
   - id: kins-computer
     name: Kin's computer, its space and backups, what stops agents now, and the fixes
     tab: settings
@@ -1841,9 +1858,6 @@ unlisted:
   "rpc:kin.docs.clearRecipeLabel": Served; no client clears a recipe's label yet.
   "rpc:kin.work.statementPasswords": Served; no client manages statement passwords yet.
   "rpc:kin.work.statementForgetAccount": Served; no client forgets a statement account yet.
-  "rpc:kin.bankSenders.list": Served; the Bank alert addresses Settings list is not built yet.
-  "rpc:kin.bankSenders.add": Served; the Bank alert addresses Settings form is not built yet.
-  "rpc:kin.bankSenders.remove": Served; the Bank alert addresses Settings screen is not built yet.
   "rpc:kin.people.setOwnerName": Called by the kin-verify seed (scripts/kin-verify/seed.ts); no client calls it.
   "rpc:kin.refreshes.announce": Called by the host CLI (apps/server/src/kin/cli/announce.ts) from the owner's session.
   "rpc:kin.open.read": Served; clients follow kin.open.subscribe instead, and an agent's list_waiting reads the same list on the host.
