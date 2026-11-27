@@ -83,6 +83,7 @@ it("classifies client and project, money, and invoice and quote surfaces", () =>
     ["quote_unanswered", "invoices"],
     ["statement_missing", "money"],
     ["bank_alerts_unreadable", "money"],
+    ["bank_sender_waiting", "money"],
     ["payment_seen", "invoices"],
     ["repaid_seen", "money"],
     ["budget_near", "money"],

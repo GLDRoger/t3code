@@ -137,12 +137,15 @@ it("no agent, MCP tool or model-reachable path can reach bank sender decisions",
       NodePath.posix.normalize(NodePath.posix.join(NodePath.posix.dirname(file), match[1]!)),
     );
   const importers = (target: string) => files.filter((file) => imports(file).includes(target));
-  // The writes a person decides live in one module, and only test fixtures call it so far: a
-  // card or Settings caller joins this list on purpose, never a tool handler or the lead.
   assert.deepStrictEqual(importers("kin/work/statements/bankSenders.ts"), [
-    "kin/work/statements/bankAlerts.testkit.ts",
+    "kin/recommend/card.ts", // Only the active owner's sealed answer calls approve or decline.
+    "kin/work/statements/bankAlerts.testkit.ts", // Invented mail fixtures opt in explicitly.
+    "kin/work/statements/bankSenderRpcHandlers.ts", // Authenticated owner-level Settings only.
   ]);
   assert.deepStrictEqual(importers("kin/work/statements/bankAlerts.testkit.ts"), []);
+  assert.deepStrictEqual(importers("kin/work/statements/bankSenderRpcHandlers.ts"), [
+    "kin/rpcHandlers.ts",
+  ]);
   // Nothing else writes the table: discovery adds candidates only, and K229 carries once.
   assert.deepStrictEqual(
     files.filter((file) =>

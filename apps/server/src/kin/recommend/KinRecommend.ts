@@ -28,6 +28,7 @@ import { isOrgPaused } from "../lead/orgState.ts";
 import * as KinOpen from "../open/KinOpen.ts";
 import { personQuietUntil } from "../triggers/quietHold.ts";
 import { type RecommendPlan, sealPlans } from "../widgets/cardPlans.ts";
+import { BANK_SENDER_RULE } from "../work/statements/bankSenderRows.ts";
 import { dayIn } from "../work/money.ts";
 import { endOfDay } from "../work/recordRows.ts";
 import {
@@ -49,6 +50,7 @@ import {
   storedRows,
 } from "./ledger.ts";
 import {
+  bankSender,
   type Candidate,
   DAY_MS,
   RULES,
@@ -99,7 +101,7 @@ const turnRunning = Effect.fn("KinRecommend.turnRunning")(function* (
 /** Every rule that fires now, less what is quiet or already asked, best first. Read-only. */
 const sense = Effect.fn("KinRecommend.sense")(function* (ctx: RuleContext, newCompany: boolean) {
   const fired: Array<{ readonly rank: number; readonly candidate: Candidate }> = [];
-  for (const [rank, rule] of (newCompany ? [agentPaused] : RULES).entries())
+  for (const [rank, rule] of (newCompany ? [agentPaused, bankSender] : RULES).entries())
     for (const verdict of yield* rule(ctx)) {
       if (verdict._tag !== "fires") continue;
       const { candidate } = verdict;
@@ -218,9 +220,13 @@ export const tick = Effect.fn("KinRecommend.tick")(function* (orgId: KinOrgId, a
           chatId: lead.ownerChatId,
           clientMessageId: `kin-recommend:${recId}`,
           question: best.ask.slice(0, 240),
-          detail: `${best.noticed} ${best.gives}`.slice(0, 1500),
+          detail:
+            `${best.noticed}${best.rule === BANK_SENDER_RULE ? "\n\n" : " "}${best.gives}`.slice(
+              0,
+              1500,
+            ),
           options: shown.map((one) => ({ label: one.label })),
-          actions: shown,
+          ...(best.rule === BANK_SENDER_RULE ? {} : { actions: shown }),
           silent: true,
         },
       );
@@ -270,6 +276,8 @@ const rowOf = Effect.fn("KinRecommend.rowOf")(function* (ctx: RuleContext, row: 
         : shown("Not answered. Kin may suggest it again.");
     }
     case "declined":
+      if (row.rule === BANK_SENDER_RULE)
+        return shown(`No on ${decided}. Kin won't ask about this address again.`);
       return quiet === null
         ? shown(`Not now on ${decided}. Kin won't suggest this again.`, askAgain)
         : quiet === undefined
@@ -295,6 +303,8 @@ const doneNow = Effect.fn("KinRecommend.doneNow")(function* (
   shown: (outcome: string, action?: KinRecommendationRow["action"]) => KinRecommendationRow,
 ) {
   switch (change.kind) {
+    case "bank_sender":
+      return shown(`Done ${decided}: you approved ${change.address}.`);
     case "lead_access": {
       const { personName: person, agentName: agent } = change;
       // Who can message an agent is changed in one place, its page; the row only points there.
@@ -388,6 +398,12 @@ export const askAgain = Effect.fn("KinRecommend.askAgain")(function* (
       yield* onlyOwner(orgId, personId);
       const [row] = yield* storedRows(orgId, { recId }, 1);
       if (row === undefined) return yield* notFound();
+      if (row.rule === BANK_SENDER_RULE && row.state === "declined")
+        return yield* new KinChatError({
+          reason: "invalid_state",
+          message:
+            "To count alerts from this address, add it in Settings under Bank alert addresses.",
+        });
       const quieted =
         (row.state === "declined" || (row.state === "open" && ranOutAt(row, at) !== undefined)) &&
         quietAfter(row, at) !== undefined;

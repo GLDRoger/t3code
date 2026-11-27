@@ -1,4 +1,10 @@
-import { KinChatError, type KinOrgId, type KinPersonId } from "@t3tools/contracts";
+import {
+  KinChatError,
+  type KinBankSendersResult,
+  type KinOrgId,
+  type KinPersonId,
+} from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -12,10 +18,12 @@ import {
   bankKeyOf,
   encodeAccounts,
   endingsOf,
+  list as senderRows,
+  liveHeldMail,
   normalizeAddress,
 } from "./bankSenderRows.ts";
 
-export { list, noteCandidate, sendersOf } from "./bankSenderRows.ts";
+export { noteCandidate, sendersOf } from "./bankSenderRows.ts";
 
 const onlyOwnerLevel = Effect.fn("KinBankSenders.onlyOwnerLevel")(function* (
   orgId: KinOrgId,
@@ -36,6 +44,48 @@ const onlyOwnerLevel = Effect.fn("KinBankSenders.onlyOwnerLevel")(function* (
     message: "Only an owner or co-owner can change bank alert addresses.",
   });
 });
+
+const settingsList = Effect.fn("KinBankSenders.list")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql
+    .withTransaction(
+      Effect.gen(function* () {
+        yield* onlyOwnerLevel(orgId, personId);
+        const held = yield* liveHeldMail(orgId, yield* Clock.currentTimeMillis);
+        const heldByAddress = new Map<string, number>();
+        for (const { address, count } of held)
+          heldByAddress.set(address, (heldByAddress.get(address) ?? 0) + count);
+        const rows = (yield* senderRows(orgId, true)).flatMap((row) =>
+          row.state === "removed"
+            ? []
+            : [
+                {
+                  address: row.address,
+                  bankName: row.bankName,
+                  accounts: row.accounts,
+                  state: row.state === "candidate" ? ("waiting" as const) : row.state,
+                  firstSeenAt: row.firstSeenAt,
+                  decidedAt: row.decidedAt,
+                  decidedBy: row.decidedBy,
+                  recordedCount: row.recordedCount,
+                  heldCount: heldByAddress.get(row.address) ?? 0,
+                },
+              ],
+        );
+        return { rows } satisfies KinBankSendersResult;
+      }),
+    )
+    .pipe(NodeSqliteClient.readOnly);
+});
+
+export function list(orgId: KinOrgId): ReturnType<typeof senderRows>;
+export function list(orgId: KinOrgId, personId: KinPersonId): ReturnType<typeof settingsList>;
+export function list(orgId: KinOrgId, personId?: KinPersonId) {
+  return personId === undefined ? senderRows(orgId) : settingsList(orgId, personId);
+}
 
 export const approve = Effect.fn("KinBankSenders.approve")(function* (
   orgId: KinOrgId,
