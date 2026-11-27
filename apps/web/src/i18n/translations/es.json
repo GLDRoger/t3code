@@ -11807,7 +11807,6 @@
   "f2bf529f85e05494": "Compartir y acceso",
   "7cf24feddad00a5e": "Preferencias",
   "58058320796d28f6": "Código",
-  "8478d0e5c2bd1aef": "Kin",
   "d8cd577c915539bd": "Cuentas y token de {label}",
   "a5ea998202be1fbc": "Credenciales de {label}",
   "8f636f473e42e657": "cualquier archivos locales cambios sin commit archivos con seguimiento editados ignorados env salida de compilación limpieza",
@@ -12793,5 +12792,16 @@
   "99d51127f573296b": "Otra cuenta",
   "8ec2c57414669b79": "Conecta un segundo espacio de trabajo o usuario de {tracker}.",
   "99963c0142e17f00": "Para la nueva cuenta de {tracker}.",
-  "6d8e4ebc889bace9": "Añadir cuenta"
+  "6d8e4ebc889bace9": "Añadir cuenta",
+  "23fd04041c903c54": "Right away",
+  "9bcfd336d2f09a0a": "After 6 hours",
+  "e2bd6c2b77505107": "After 12 hours",
+  "0e4dd1f47ea0eb69": "After 24 hours",
+  "807d85adf70f3ac1": "Chats",
+  "4b58cd997a54f9da": "Settle read chats",
+  "36f2affbd51139e8": "A chat you have read moves under Settled this long after its last message. Unread chats and chats that need you always stay up.",
+  "9d981131ade0488f": "Couldn't save that.",
+  "0e8f3321924ca223": "Deals",
+  "3df9c49976cb55bf": "Sections",
+  "67508b5a9a7db096": "Profile"
 }

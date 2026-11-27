@@ -1,6 +1,7 @@
 import type { KinSettingsPage } from "@t3tools/client-runtime/kin/kinNavigation";
 
 import { KIN_APPROVER_PHONES_TITLE } from "@t3tools/client-runtime/kin/kinApprovalPresentation";
+import { KIN_CHATS_SETTLE } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { KIN_MESSAGE_ALERTS } from "@t3tools/client-runtime/kin/kinMessageAlerts";
 import { msg } from "gt-react";
 import {
@@ -179,6 +180,13 @@ export const KIN_SETTINGS_SEARCH_ITEMS = [
     kinOnly: true,
   },
   {
+    id: "kin-settle-read-chats",
+    title: KIN_CHATS_SETTLE.label,
+    to: "/settings/kin-profile",
+    searchTerms: ["kin chats settle read hide auto hours right away"],
+    kinOnly: true,
+  },
+  {
     id: "kin-sections",
     kinOnly: true,
     title: "Sections",
@@ -202,6 +210,7 @@ const KIN_SETTING_ELSEWHERE: Readonly<Record<string, KinSettingsPage>> = {
   "kin-agents": "agents",
   "kin-who-can-message": "team",
   "thread-notifications": "notifications",
+  "kin-settle-read-chats": "notifications",
 };
 
 /** The page of Kin's Settings that holds the setting `target`, reached from an address for `page`. */
