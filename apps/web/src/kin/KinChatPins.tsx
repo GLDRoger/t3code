@@ -270,7 +270,7 @@ export function KinChatPinsStrip(props: {
                     <>
                       <span
                         className={cn(
-                          "block truncate text-sm font-medium",
+                          "line-clamp-2 text-sm font-medium",
                           item.view.tone === "muted" ? "text-muted-foreground" : "text-foreground",
                         )}
                       >

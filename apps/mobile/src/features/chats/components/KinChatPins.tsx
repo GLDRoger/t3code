@@ -260,6 +260,8 @@ function KinPinSheetRow(props: {
       <View className="min-w-0 flex-1 gap-1">
         <Text
           textRole="body"
+          numberOfLines={2}
+          ellipsizeMode="tail"
           className={cn(
             "font-t3-medium",
             item.view.tone === "muted" ? "text-foreground-muted" : "text-foreground",
