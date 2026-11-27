@@ -33,7 +33,7 @@ export const fixtureBankAlertReader = BankAlertReader.BankAlertReader.of({
     }),
 });
 
-export const fixtureAlertAddress = "alerts@harborbank.example";
+const fixtureAlertAddress = "alerts@harborbank.example";
 export const approveFixtureAlertSender = (
   orgId: KinOrgId,
   personId: KinPersonId,

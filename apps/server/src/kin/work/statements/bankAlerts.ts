@@ -20,8 +20,15 @@ import {
   rowFields,
   rowTitle,
 } from "./bankList.ts";
-import { readApprovedAlert } from "./bankAlertMailReading.ts";
-import { normalizeAddress, sendersOf, type ApprovedSender } from "./bankSenders.ts";
+import { authenticationRejection, readApprovedAlert } from "./bankAlertMailReading.ts";
+import {
+  HELD_ALERT_WINDOW,
+  normalizeAddress,
+  noteCandidate,
+  sendersOf,
+  type ApprovedSender,
+} from "./bankSenderRows.ts";
+import { candidateEndings, type CandidateHint } from "./bankAlertCandidates.ts";
 import { MAIL_PRESETS } from "../../connections/mailProviders.ts";
 import * as BankAlertReader from "./BankAlertReader.ts";
 import type { Statement, StatementRow } from "./statementTable.ts";
@@ -266,20 +273,45 @@ export const ALERT_RETRY_WINDOW = 14 * DAY_MS;
 // Only unparsed rows use reference for an ordered parser marker instead of a bank reference.
 const PARSER_MARKER = "parser:0003";
 
-const canRetryAlert = (sql: SqlClient.SqlClient, now: number) =>
+const REMOVED_MARKER = "removed:pending";
+
+const retryableOnApproval = (sql: SqlClient.SqlClient, now: number) =>
+  sql`(outcome = 'held' OR (outcome = 'sender' AND reference = ${REMOVED_MARKER}))
+    AND sent_at BETWEEN ${now - HELD_ALERT_WINDOW} AND ${now}
+    AND EXISTS (SELECT 1 FROM kin_bank_senders s WHERE s.org_id = kin_bank_alerts.org_id
+      AND s.address = kin_bank_alerts.sender_address AND s.state = 'approved')`;
+
+const unparsedRetry = (sql: SqlClient.SqlClient, now: number) =>
   sql`outcome = 'unparsed' AND sent_at BETWEEN ${now - ALERT_RETRY_WINDOW} AND ${now}
     AND COALESCE(reference, '') < ${PARSER_MARKER}`;
+
+const canRetryAlert = (sql: SqlClient.SqlClient, now: number, address?: string) =>
+  address === undefined
+    ? sql`((${unparsedRetry(sql, now)}) OR (${retryableOnApproval(sql, now)}))`
+    : sql`(sender_address = ${address} AND ${retryableOnApproval(sql, now)})`;
 
 export const retryAlertThreads = Effect.fn("KinBankAlerts.retryThreads")(function* (
   orgId: KinOrgId,
   connectionId: string,
   now: number,
+  address?: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
   return yield* sql<{ threadId: string }>`SELECT DISTINCT thread_id AS "threadId"
     FROM kin_bank_alerts WHERE org_id = ${orgId} AND connection_id = ${connectionId}
-      AND ${canRetryAlert(sql, now)}
+      AND ${canRetryAlert(sql, now, address)}
     ORDER BY thread_id`;
+});
+
+export const retryAlertMailboxes = Effect.fn("KinBankAlerts.retryMailboxes")(function* (
+  orgId: KinOrgId,
+  address: string,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql<{ connectionId: string }>`SELECT DISTINCT connection_id AS "connectionId"
+    FROM kin_bank_alerts WHERE org_id = ${orgId} AND ${canRetryAlert(sql, now, address)}
+    ORDER BY connection_id`;
 });
 
 /**
@@ -294,6 +326,8 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
     readonly messages: ReadonlyArray<AlertMessage>;
     readonly now: number;
     readonly senders?: ReadonlyMap<string, ApprovedSender>;
+    readonly candidate?: { readonly address: string; readonly hint: CandidateHint | "removed" };
+    readonly replayAddress?: string;
     readonly retryOnly?: boolean;
     readonly recheckedThread?: boolean;
   },
@@ -305,9 +339,9 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
     return tally satisfies AlertTally;
   const senders = input.senders ?? (yield* sendersOf(orgId));
   const reader = yield* BankAlertReader.BankAlertReader;
-  const retryable = canRetryAlert(sql, input.now);
+  const retryable = canRetryAlert(sql, input.now, input.replayAddress);
   const seenAlert = (alertId: string) =>
-    sql<{ retry: number | null }>`SELECT
+    sql<{ retry: number | null; address: string | null }>`SELECT sender_address AS address,
       (${retryable} AND thread_id = ${input.threadId}) AS retry FROM kin_bank_alerts
     WHERE org_id = ${orgId} AND alert_id = ${alertId}`.pipe(Effect.map((rows) => rows[0]));
   const skip = (seen: { retry: number | null } | undefined) =>
@@ -320,27 +354,59 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
       address: string | undefined;
       sender: ApprovedSender | undefined;
       reading: AlertReading;
+      discovery?:
+        | { readonly hint: CandidateHint; readonly accounts: ReadonlyArray<string> }
+        | "removed";
     }
   >();
   for (const message of input.messages) {
     const sentAt = message.date === null ? Number.NaN : Date.parse(message.date);
-    if (sentAt < input.now - ALERT_RETRY_WINDOW) continue;
     const alertId = alertIdOf(input.connectionId, input.threadId, message);
-    if (reads.has(alertId) || skip(yield* seenAlert(alertId))) continue;
+    if (reads.has(alertId)) continue;
+    const seen = yield* seenAlert(alertId);
+    if (skip(seen)) continue;
     const address = normalizeAddress(message.fromAddress);
-    const sender = address === undefined ? undefined : senders.get(address);
-    const reading =
-      address === undefined || sender === undefined
-        ? ({ _tag: "rejected", reason: "sender" } as const)
-        : yield* readApprovedAlert(message, address, sender.accounts, currency, reader);
-    reads.set(alertId, { message, address, sender, reading });
+    if (seen?.address != null && seen.address !== address) continue;
+    const sender =
+      address === undefined ||
+      !senders.has(address) ||
+      !(yield* bankAlertMailbox(orgId, input.connectionId))
+        ? undefined
+        : (yield* sendersOf(orgId, address)).get(address);
+    const hint =
+      address !== undefined && address === input.candidate?.address
+        ? input.candidate.hint
+        : undefined;
+    const mayHold = hint !== undefined && Number.isFinite(sentAt) && sentAt <= input.now;
+    const window = seen?.retry === 1 || mayHold ? HELD_ALERT_WINDOW : ALERT_RETRY_WINDOW;
+    if (sentAt < input.now - window) continue;
+    if (address !== undefined && sender !== undefined) {
+      const reading = yield* readApprovedAlert(message, address, sender.accounts, currency, reader);
+      reads.set(alertId, { message, address, sender, reading });
+    } else {
+      const reason =
+        address !== undefined && mayHold ? authenticationRejection(message, address) : "sender";
+      const discovery =
+        reason !== undefined || hint === undefined
+          ? undefined
+          : hint === "removed"
+            ? hint
+            : { hint, accounts: candidateEndings(message.text, hint.accounts) };
+      reads.set(alertId, {
+        message,
+        address,
+        sender,
+        reading: { _tag: "rejected", reason: reason ?? "sender" },
+        ...(discovery === undefined ? {} : { discovery }),
+      });
+    }
   }
   if (reads.size === 0 && !input.recheckedThread) return tally satisfies AlertTally;
   yield* sql.withTransaction(
     Effect.gen(function* () {
       if (!(yield* bankAlertMailbox(orgId, input.connectionId))) return;
       const current = yield* sendersOf(orgId);
-      for (const [alertId, { message, address, sender, reading }] of reads) {
+      for (const [alertId, { message, address, sender, reading, discovery }] of reads) {
         const seen = yield* seenAlert(alertId);
         if (skip(seen)) continue;
         const authorized = address === undefined ? undefined : current.get(address);
@@ -360,12 +426,34 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
           sent_at: Number.isFinite(parsedTime) ? parsedTime : null,
         };
         const result = yield* Effect.gen(function* () {
+          if (address !== undefined && discovery !== undefined && seen === undefined) {
+            // Approval during the provider read is handled by the same retry path as existing holds.
+            if (discovery === "removed") {
+              const [removed] = yield* sql`SELECT 1 FROM kin_bank_senders WHERE org_id = ${orgId}
+                AND address = ${address} AND state IN ('removed', 'approved')`;
+              if (removed !== undefined)
+                return { ...identity, outcome: "sender", reference: REMOVED_MARKER };
+            } else if (
+              discovery.accounts.length > 0 &&
+              (authorized !== undefined ||
+                (yield* noteCandidate(orgId, {
+                  address,
+                  bankName: discovery.hint.bankName,
+                  matchedFrom: discovery.hint.matchedFrom,
+                  accounts: discovery.accounts,
+                  seenAt: input.now,
+                })))
+            ) {
+              return { ...identity, outcome: "held", account: discovery.accounts[0] };
+            }
+          }
           if (refusal !== undefined || reading._tag !== "alert" || authorized === undefined) {
             const outcome = refusal ?? "sender";
             if (outcome !== "sender") tally.rejected++;
             return {
               ...identity,
               outcome,
+              account: null,
               reference: outcome === "unparsed" ? PARSER_MARKER : null,
             };
           }
@@ -407,7 +495,7 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
       if (input.recheckedThread) {
         yield* sql`UPDATE kin_bank_alerts SET reference = ${PARSER_MARKER}
           WHERE org_id = ${orgId} AND connection_id = ${input.connectionId}
-            AND thread_id = ${input.threadId} AND ${retryable}`;
+            AND thread_id = ${input.threadId} AND ${unparsedRetry(sql, input.now)}`;
       }
     }),
   );

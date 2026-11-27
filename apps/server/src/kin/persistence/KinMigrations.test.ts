@@ -2306,8 +2306,8 @@ describe("Kin migrations", () => {
         WHERE tbl_name = 'kin_bank_alerts' ORDER BY name`;
       yield* runKinMigrations();
       const made = yield* shape;
-      // The table, its key's index, and four lookup indexes (including K229's).
-      assert.lengthOf(made, 6);
+      // The table, its key's index, and five lookup indexes (including K229's).
+      assert.lengthOf(made, 7);
       yield* sql`DROP TABLE kin_bank_alerts`;
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 204`;
       assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(204));

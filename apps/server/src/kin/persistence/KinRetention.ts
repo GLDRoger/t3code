@@ -5,6 +5,7 @@ import * as Schedule from "effect/Schedule";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { prunePushSent } from "../push/KinPushTopics.ts";
+import { pruneHeldAlerts } from "../work/statements/bankSenderRows.ts";
 import { pruneLooks } from "../watches/KinWatches.ts";
 
 /** How long history stays after its wake-up ended, and how much one pass deletes. */
@@ -18,7 +19,8 @@ const BATCHES = 20;
  */
 export const prune = Effect.fn("KinRetention.prune")(function* () {
   const sql = yield* SqlClient.SqlClient;
-  const before = (yield* Clock.currentTimeMillis) - Duration.toMillis(KEEP);
+  const now = yield* Clock.currentTimeMillis;
+  const before = now - Duration.toMillis(KEEP);
   for (let batch = 0; batch < BATCHES; batch++) {
     // A scheduler scan over every org, bounded by the batch size.
     const gone = yield* sql`DELETE FROM kin_lead_tool_calls WHERE rowid IN (
@@ -31,6 +33,7 @@ export const prune = Effect.fn("KinRetention.prune")(function* () {
   }
   // What Kin checked keeps 30 days (`watches/KinWatches.ts`).
   yield* pruneLooks(yield* Clock.currentTimeMillis);
+  yield* pruneHeldAlerts(now);
   // What pushes told each person of keeps 7 days (`push/KinPushTopics.ts`).
   yield* prunePushSent(yield* Clock.currentTimeMillis);
 });

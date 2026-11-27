@@ -996,6 +996,9 @@ importers:
       stream-json:
         specifier: 3.7.0
         version: 3.7.0
+      tldts:
+        specifier: 'catalog:'
+        version: 7.4.2
       transcribe-cpp:
         specifier: 0.4.1
         version: 0.4.1

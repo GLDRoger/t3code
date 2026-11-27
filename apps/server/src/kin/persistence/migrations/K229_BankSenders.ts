@@ -65,6 +65,7 @@ export default Effect.gen(function* () {
     ON kin_bank_alerts (org_id, bank, account, sent_at) WHERE balance_minor IS NOT NULL`;
   yield* sql`CREATE INDEX kin_bank_alerts_record
     ON kin_bank_alerts (org_id, record_id) WHERE record_id IS NOT NULL`;
+  yield* sql`CREATE INDEX kin_bank_alerts_held ON kin_bank_alerts (sent_at) WHERE outcome = 'held'`;
   yield* sql`CREATE INDEX kin_bank_alerts_sender
     ON kin_bank_alerts (org_id, sender_address, sent_at) WHERE sender_address IS NOT NULL`;
 });
