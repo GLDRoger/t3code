@@ -263,6 +263,40 @@ describe("kin inbox", () => {
     expect(state).toEqual(emptyKinInbox);
   });
 
+  it("never lets a progress update become a chat's last line in the list", () => {
+    const asked = message(4, {
+      author: { _tag: "human", personId: "owner", memberId: "me" },
+      body: "Reconcile Tidewater Freight's November invoices.",
+    } as Partial<KinMessage>);
+    const update = message(5, { progress: true, body: "Reading the bank feed first." });
+    const reply = message(6, { body: "Two of the three are timing; INV-0433 is short by $120." });
+    const listed = (lastSeq: number, lastMessage: KinMessage, minute: number) =>
+      chat("a", { lastSeq, lastMessage, lastMessageAt: at(minute) });
+    let state = applyKinInboxEvent(emptyKinInbox, {
+      _tag: "snapshot",
+      chats: [listed(4, asked, 4)],
+      waiting: [],
+    });
+    state = applyKinInboxEvent(state, {
+      _tag: "chat",
+      chat: { ...listed(5, update, 6), working: true },
+    });
+    expect(state.chats[0]).toMatchObject({
+      lastSeq: 5,
+      lastMessage: asked,
+      lastMessageAt: at(4),
+      working: true,
+    });
+    state = applyKinInboxEvent(state, {
+      _tag: "snapshot",
+      chats: [listed(5, update, 6)],
+      waiting: [],
+    });
+    expect(state.chats[0]!.lastMessage).toEqual(asked);
+    state = applyKinInboxEvent(state, { _tag: "chat", chat: listed(6, reply, 9) });
+    expect(state.chats[0]).toMatchObject({ lastMessage: reply, lastMessageAt: at(9) });
+  });
+
   it("replaces everything with a reconnect's fresh snapshot", () => {
     let state = applyKinInboxEvent(emptyKinInbox, {
       _tag: "snapshot",
@@ -361,6 +395,20 @@ describe("kin chat feed", () => {
     expect(seqs(state)).toEqual([1, 2, 3, 4, 5]);
     expect(state.widgets.map((w) => w.revision)).toEqual([2]);
     expect(state).toMatchObject({ contiguousSeq: 5, changeSeq: 120 });
+  });
+
+  it("takes the host's clearUpdates from a backlog, and keeps it through one from an older host", () => {
+    const flags: Array<boolean | undefined> = [];
+    let state = applyKinChatEvent(emptyKinChat, backlog([message(1)], 1));
+    flags.push(state.clearUpdates);
+    for (const clearUpdates of [true, undefined, false]) {
+      state = applyKinChatEvent(state, {
+        ...backlog([message(1)], 1),
+        ...(clearUpdates === undefined ? {} : { clearUpdates }),
+      });
+      flags.push(state.clearUpdates);
+    }
+    expect(flags).toEqual([false, true, true, false]);
   });
 
   it("keeps the highest widget revision", () => {

@@ -1,3 +1,4 @@
+import { UPDATE_REFUSALS } from "../../reply/turnVoice.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous retry-key hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
 import { KinChatError, KinWakeupId } from "@t3tools/contracts";
@@ -401,7 +402,10 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
   kin_send: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.send")(
       function* (input) {
-        const notRunning = new KinReplySendError({ reason: "not running" });
+        const notRunning =
+          input.level === "update"
+            ? new KinChatError({ reason: "invalid_state", message: UPDATE_REFUSALS["not running"] })
+            : new KinReplySendError({ reason: "not running" });
         const bridge = yield* Effect.serviceOption(KinReplyBridge);
         if (Option.isNone(bridge)) return yield* notRunning;
         const { orgId, wakeupId } = yield* resolveLead(yield* McpInvocationContext).pipe(

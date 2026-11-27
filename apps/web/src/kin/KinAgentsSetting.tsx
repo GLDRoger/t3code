@@ -4,9 +4,11 @@ import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import {
   KIN_AGENTS_COPY,
   KIN_AGENTS_PAGE,
+  KIN_CLEAR_UPDATES,
   KIN_OTHER_PROVIDER_AGENTS,
   kinLeadModelName,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import { applyKinClearUpdatesSave } from "@t3tools/client-runtime/kin/kinStreams";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { ModelSelection } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -34,16 +36,59 @@ export function KinAgentsSetting() {
 }
 
 /**
- * Settings → Agents, below the list: what new agents start on, then the experiment that lets
- * agents run on other providers. The owner and co-owners only.
+ * Settings → Agents, below the list: what new agents start on, how their chats read, then the
+ * experiment that lets agents run on other providers. The owner and co-owners only.
  */
 export function KinAgentDefaultsSections(props: KinWorkTarget) {
   if (!useKinOwnerLevel(props.environmentId)) return null;
   return (
     <>
       <CompanyDefault {...props} />
+      <ClearUpdates {...props} />
       <OpenAiAgents {...props} />
     </>
+  );
+}
+
+/** The host's switch that clears a turn's progress updates once its reply is posted; it saves on flip. */
+function ClearUpdates(props: KinWorkTarget) {
+  const settings = useEnvironmentSettings(props.environmentId);
+  const updateSettings = useUpdateEnvironmentSettings(props.environmentId);
+  const searchableSetting = useSearchableSetting();
+  return (
+    <KinSettingsSection
+      title={KIN_CLEAR_UPDATES.section}
+      searchId={searchableSetting("kin-clear-updates").id}
+    >
+      <KinSettingsRow
+        title={KIN_CLEAR_UPDATES.row}
+        wrap
+        detail={KIN_CLEAR_UPDATES.rowDetail}
+        control={
+          <Switch
+            checked={settings.kinClearUpdatesAfterReply}
+            onCheckedChange={(checked) => {
+              const next = Boolean(checked);
+              void applyKinClearUpdatesSave(
+                props.environmentId,
+                next,
+                () =>
+                  new Promise<boolean>((resolve) => {
+                    updateSettings(
+                      { kinClearUpdatesAfterReply: next },
+                      {
+                        onSaved: () => resolve(true),
+                        onFailed: () => resolve(false),
+                      },
+                    );
+                  }),
+              );
+            }}
+            aria-label={KIN_CLEAR_UPDATES.row}
+          />
+        }
+      />
+    </KinSettingsSection>
   );
 }
 

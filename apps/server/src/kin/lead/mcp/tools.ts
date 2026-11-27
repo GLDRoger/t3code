@@ -1,3 +1,4 @@
+import { UPDATE_SHOWN } from "../../reply/turnVoice.ts";
 import {
   KIN_WITHDRAW_WHY_MAX,
   KinAgentMessageBody,
@@ -209,20 +210,24 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_send", {
     ...shared,
     description:
-      'Post your message to the chat on the "Your reply goes to" line, and end the turn: call it last, after your other tools. Where the turn says a trigger started it, this is the only way your words reach anyone; in a turn a person started, plain text does the same. Once per turn: nothing you write after it is posted. Nothing anyone needs: end with kin_skip instead. A refusal says why and sent nothing.',
+      'Post a message to the chat on the "Your reply goes to" line. With level now, quiet or check_in it is your reply and ends the turn, so it comes after your other tools. Where the turn says a trigger started it, this is the only way your words reach anyone; in a turn a person started, plain text does the same. The reply is once per turn: nothing you write after it is posted. Nothing anyone needs: end with kin_skip instead. A refusal says why and posted nothing.',
     parameters: Schema.Struct({
       text: KinAgentMessageBody.annotate({
         description: "The whole message, written exactly as a reply: a bubble or a page.",
       }),
-      level: Schema.Literals(["now", "quiet", "check_in"]).annotate({
+      level: Schema.Literals(["now", "quiet", "check_in", "update"]).annotate({
         description:
-          "now rings: money at risk, a blocker only the owner can clear, an answer someone is waiting on, or a check-in's page. quiet shows it in the chat without a notification: worth having, needs nothing now. check_in gives it to the owner at the next check-in with you instead (the owner's own chat only). A due reminder always rings.",
+          "now rings: money at risk, a blocker only the owner can clear, an answer someone is waiting on, or a check-in's page. quiet shows it in the chat without a notification: worth having, needs nothing now. check_in gives it to the owner at the next check-in with you instead (the owner's own chat only). A due reminder always rings. update shows a line of progress at once, without a notification, and the turn goes on; only in a direct chat, in a turn a person started. One before a big job (many lines, records or files, or several tasks), another only when something changes; none for a quick answer. An update is never the reply.",
       }),
     }),
     success: Schema.Union([
       Schema.Struct({ sent: Schema.Literal(true), messageId: KinMessageId }),
       Schema.Struct({ held: Schema.Literal(true), when: Schema.String }),
+      Schema.Struct({ shown: Schema.Literal(true), messageId: KinMessageId }),
     ]),
+    toModelOutput: (result) => [
+      Prompt.textPart({ text: "shown" in result ? UPDATE_SHOWN : JSON.stringify(result) }),
+    ],
     dependencies: [...shared.dependencies, KinIdentity, SqlClient.SqlClient],
   })
     .annotate(EndsClaudeTurn, true)

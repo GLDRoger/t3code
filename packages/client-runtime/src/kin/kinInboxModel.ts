@@ -71,7 +71,12 @@ export function applyKinInboxEvent(state: KinInboxState, event: KinInboxEvent): 
   switch (event._tag) {
     case "snapshot":
       return {
-        chats: event.chats,
+        chats: event.chats.map((chat) =>
+          withoutUpdateLine(
+            chat,
+            state.chats.find((held) => held.chatId === chat.chatId),
+          ),
+        ),
         waiting: event.waiting.filter((item) => item.resolvedAt === null),
       };
     case "chat": {
@@ -83,7 +88,7 @@ export function applyKinInboxEvent(state: KinInboxState, event: KinInboxEvent): 
       // An upsert read before a newer one can arrive after it; never move a chat backwards.
       if (event.chat.lastSeq < state.chats[index]!.lastSeq) return state;
       const chats = state.chats.slice();
-      chats[index] = event.chat;
+      chats[index] = withoutUpdateLine(event.chat, state.chats[index]);
       return { ...state, chats };
     }
     case "waiting": {
@@ -99,6 +104,18 @@ export function applyKinInboxEvent(state: KinInboxState, event: KinInboxEvent): 
         waiting: state.waiting.filter((item) => item.chatId !== event.chatId),
       };
   }
+}
+
+// A progress update is never a chat's last line: the row keeps the line it had until the reply.
+function withoutUpdateLine(chat: KinChatSummary, held: KinChatSummary | undefined) {
+  if (chat.lastMessage?.progress !== true || held === undefined) return chat;
+  return {
+    ...chat,
+    lastMessage: held.lastMessage,
+    lastMessageAt: held.lastMessageAt,
+    lastPreview: held.lastPreview,
+    lastAuthorName: held.lastAuthorName,
+  };
 }
 
 /** The viewer is no longer in this chat: every member the row carries has left, or it ended. */
@@ -242,6 +259,8 @@ export const KinChatState = Schema.Struct({
   reactions: Schema.Array(KinReaction).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   /** Counts changes to who is in the chat, its name or its lead, so its details reread them. */
   memberChanges: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  /** The host's setting, from its latest backlog: a turn's updates go once its reply is posted. */
+  clearUpdates: Schema.optional(Schema.Boolean),
 });
 export type KinChatState = typeof KinChatState.Type;
 
@@ -260,6 +279,7 @@ export const emptyKinChat: KinChatState = {
   presence: [],
   reactions: [],
   memberChanges: 0,
+  clearUpdates: false,
 };
 
 /** Every Kin refusal but `unavailable`, which the stream retries. */
@@ -346,8 +366,10 @@ export function applyKinChatEvent(
       const clearedSeq = event.clearedSeq ?? state.clearedSeq;
       const readSeq =
         event.readSeq === undefined ? state.readSeq : Math.max(event.readSeq, state.readSeq ?? 0);
+      const clearUpdates = event.clearUpdates ?? state.clearUpdates;
       if (
         readSeq === state.readSeq &&
+        clearUpdates === state.clearUpdates &&
         clearedSeq === state.clearedSeq &&
         reactions === state.reactions &&
         messages === state.messages &&
@@ -370,6 +392,7 @@ export function applyKinChatEvent(
         clearedSeq,
         readSeq,
         reactions,
+        clearUpdates,
         ...live,
       };
     }

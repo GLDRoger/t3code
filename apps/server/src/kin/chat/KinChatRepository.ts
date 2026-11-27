@@ -1,3 +1,4 @@
+import { STORED_UPDATE_PREFIX } from "../reply/turnVoice.ts";
 import { ACTIVE_RUN_STATUSES } from "../../orchestration-v2/ThreadManagementService.ts";
 import type { McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import { wakeupOfRuns } from "./wakeupRuns.ts";
@@ -334,6 +335,11 @@ const MessageRow = Schema.Struct({
         ...(storedOrigin === null ? {} : { origin: storedOrigin }),
         ...(storedEmbeds === null ? {} : { embeds: storedEmbeds }),
         ...(storedForm === null ? {} : { form: storedForm }),
+        ...(message.author._tag === "agent" &&
+        storedSourceWakeupId !== null &&
+        storedClientMessageId?.startsWith(STORED_UPDATE_PREFIX)
+          ? { progress: true }
+          : {}),
         ...(storedAttachments === null ? {} : { attachments: storedAttachments }),
         ...(storedRefs === null ? {} : { refs: storedRefs }),
         ...(storedClientMessageId?.startsWith("send:")
