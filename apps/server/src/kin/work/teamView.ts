@@ -394,18 +394,26 @@ export const clientDocMoneySeen = (
  * `personSees` shows them, less anything labelled itself or through its client or project, tasks
  * included, and less money without the Money switch. Tasks keeps `personSees`.
  */
-export const crmSees = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
+export const crmSees = (
+  sql: SqlClient.SqlClient,
+  personId: KinPersonId,
+  includeSharedLists = false,
+) =>
   sql`(${personSees(sql, personId)} AND NOT ${keySensitive(sql)}
-    AND ${clientMoneySeen(sql, personId)})`;
+    AND (${clientMoneySeen(sql, personId)}${includeSharedLists ? sql` OR ${onTeamList(sql)}` : sql``}))`;
 
 /** `crmSees` for every one of a viewer's people; the owner level reads everything. */
-export const crmSeenBy = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
+export const crmSeenBy = (
+  sql: SqlClient.SqlClient,
+  viewer: KinViewer,
+  { includeSharedLists = false } = {},
+) =>
   sql`(${
     viewer._tag === "ownerLevel"
       ? sql`1 = 1`
       : viewer.people.length === 0
         ? sql`0 = 1`
-        : sql.and(viewer.people.map((person) => crmSees(sql, person)))
+        : sql.and(viewer.people.map((person) => crmSees(sql, person, includeSharedLists)))
   } AND ${keyedAs(sql, viewer)})`;
 
 /** `crmSees` over another alias of `kin_records`, such as the directory's `c`. */
@@ -1641,10 +1649,22 @@ const TEAM_FIELDS = new Set([
 ]);
 export const teamSeesField = (field: string, includesNotes = true) =>
   TEAM_FIELDS.has(field) && (includesNotes || field !== "notes");
-/** A field of `c` (`f`) a teammate reads: a list's private one stays out without Money (`listEntryFor`). */
+/** `r` is a project every one of `viewer`'s people leads (`seesProjectTerms`). */
+const leadsProject = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
+  viewer._tag === "ownerLevel"
+    ? sql`1 = 1`
+    : sql.and(
+        viewer.people.map((person) => sql`(r.owner_kind = 'person' AND r.owner_id = ${person})`),
+      );
+/**
+ * A field of `c` (`f`) a teammate reads: a list's private one stays out without Money
+ * (`listEntryFor`), and a project's notes unless they lead it (`projectDetail`).
+ */
 const teamField = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
   sql`(f.value ->> '$.field' IN ${sql.in([...TEAM_FIELDS])} AND (${listMoneySeenBy(sql, viewer)} = 1
-    OR NOT ${privateListField(sql, sql`f.value ->> '$.field'`)}))`;
+    OR NOT ${privateListField(sql, sql`f.value ->> '$.field'`)})
+    AND (r.register_id <> 'projects' OR f.value ->> '$.field' <> 'notes'
+      OR ${leadsProject(sql, viewer)}))`;
 export const teamSeesChange = (sql: SqlClient.SqlClient, viewer: KinViewer) =>
   sql`(c.kind = 'created' OR (c.kind = 'updated' AND EXISTS (
     SELECT 1 FROM json_each(c.fields_json) f WHERE ${teamField(sql, viewer)})))`;
