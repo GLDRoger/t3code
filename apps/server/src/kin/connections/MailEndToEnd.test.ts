@@ -1152,6 +1152,69 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     ),
   );
 
+  it.effect.each([
+    { name: "approved sender with Money off", state: "approved", money: false, wakes: false },
+    { name: "candidate sender with Money off", state: "candidate", money: false, wakes: false },
+    { name: "approved sender with Money on", state: "approved", money: true, wakes: true },
+    { name: "declined sender with Money off", state: "declined", money: false, wakes: true },
+    {
+      name: "approved sender and Zoya in the same read with Money off",
+      state: "approved",
+      money: false,
+      wakes: false,
+      mixed: true,
+    },
+  ])("records bank mail and checks watch wakes for $name", ({ state, money, wakes, mixed }) =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const hello = yield* connect(fake, "microsoft", HELLO);
+        yield* readMail(hello);
+        yield* TestClock.adjust("2 minutes");
+        if (!money)
+          yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+            VALUES (${orgId}, '[{"id":"money","on":false}]', 1, ${owner}, ${NOW})`;
+        yield* approveFixtureAlertSender(orgId, owner);
+        yield* sql`UPDATE kin_bank_senders SET state = ${state} WHERE org_id = ${orgId}
+          AND address = 'alerts@harborbank.example'`;
+
+        const bankFrom = mixed
+          ? "Harbor Bank <Alerts@HarborBank.example>"
+          : "alerts@harborbank.example";
+        const zoyaFrom = "zoya@ambermill-leads.example";
+        const deliver = (from: string, at: number) =>
+          fake.deliver({
+            to: HELLO,
+            from,
+            subject: "A question about the schedule",
+            body: "Friday afternoon is open for the call.",
+            headers: { "Auto-Submitted": "no" },
+            at,
+          });
+        const bank = deliver(bankFrom, NOW + 60_000);
+        const zoya = mixed ? deliver(zoyaFrom, NOW + 61_000) : undefined;
+
+        assert.lengthOf((yield* readMail(hello)).recorded, mixed ? 2 : 1);
+        const arrivals = yield* arrivalRows;
+        assert.deepStrictEqual(
+          arrivals.map((row) => row.messageId),
+          zoya === undefined ? [bank.id] : [bank.id, zoya.id],
+        );
+        assert.deepInclude(arrivals[0], {
+          class: "unknown_person",
+          reason: "someone Kin doesn't know yet",
+        });
+        const woken = yield* sql<{ who: string }>`SELECT
+          json_extract(json, '$.outside[0].who') AS who FROM kin_events
+          WHERE org_id = ${orgId} AND tag = 'pulse' ORDER BY who`;
+        assert.deepStrictEqual(
+          woken.map((one) => one.who),
+          mixed ? [zoyaFrom] : wakes ? [bankFrom] : [],
+        );
+      }),
+    ),
+  );
+
   it.effect(
     "wakes once for an automated notice with the same outside mark as an unknown sender",
     () =>

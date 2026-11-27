@@ -18,6 +18,8 @@ import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { DAY_MS, MINUTE_MS } from "../durations.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { type Matched, mailLine, NEW_SENDERS_PER_POLL, wakeMatches } from "../pulse/outside.ts";
+import { sectionOnFor } from "../shell/KinShell.ts";
+import { normalizeAddress, quietBankSenderAddresses } from "../work/statements/bankSenderRows.ts";
 import * as ArrivalStore from "./ArrivalStore.ts";
 import { type ArrivalRows, classify } from "./classify.ts";
 
@@ -134,6 +136,7 @@ const make = Effect.gen(function* () {
       const recorded = yield* sql.withTransaction(
         Effect.gen(function* () {
           let rows: ArrivalRows | undefined;
+          let hiddenBankSenders: Set<string> | undefined;
           let connection: Effect.Success<ReturnType<typeof connectionById>>;
           const recorded: Array<string> = [];
           const matches: Array<Matched> = [];
@@ -187,6 +190,15 @@ const make = Effect.gen(function* () {
             recorded.push(arrived.arrivalId);
             const { class: mailClass, look } = arrived;
             if (look === undefined || typeof look.by !== "string") continue;
+            hiddenBankSenders ??= yield* quietBankSenderAddresses(
+              orgId,
+              yield* sectionOnFor(orgId, "money"),
+            );
+            if (
+              hiddenBankSenders.size > 0 &&
+              hiddenBankSenders.has(normalizeAddress(result.arrival.fromAddress) ?? "")
+            )
+              continue;
             switch (mailClass) {
               case "unknown_person":
                 if (newSenders >= NEW_SENDERS_PER_POLL) continue;
