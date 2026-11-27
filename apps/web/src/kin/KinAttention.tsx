@@ -43,7 +43,7 @@ import { cn } from "../lib/utils";
 import { KinWorkSection } from "./KinWorkParts";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinAskAbout, useKinAttention, useKinAttentionHandle } from "./useKinAttention";
-import type { KinWorkTarget } from "./useKinWork";
+import { useKinWorkZone, type KinWorkTarget } from "./useKinWork";
 
 /** Everyone Kin can name, agents and people, for "has it until". */
 export const kinAttentionNames = (names: KinWorkNames) =>
@@ -56,10 +56,11 @@ function KinSetAsideDialog(props: {
   readonly title: string;
   readonly open: boolean;
   readonly allowUntilLifted: boolean;
+  readonly zone: string | null;
   readonly onOpenChange: (open: boolean) => void;
   readonly onSave: (until?: KinDay) => void;
 }) {
-  const days = kinSetAsideDays(new Date(useNowMinuteMs()));
+  const days = kinSetAsideDays(new Date(useNowMinuteMs()), props.zone);
   const copy = kinPickDayCopy(props.allowUntilLifted);
   const [day, setDay] = useState<string>(days.initial);
   const save = (until?: KinDay) => {
@@ -113,7 +114,8 @@ export function KinAttentionItem(
   const busy = handler.busy === row.factKey;
   const opens = row.open.type !== "none";
   const [asideOpen, setAsideOpen] = useState(false);
-  const menu = kinAttentionMenu(row, now);
+  const { zone } = useKinWorkZone(props);
+  const menu = kinAttentionMenu(row, now, zone);
   const pickDay = menu.later.choices.find((choice) => choice.id === "pick_day")!;
   const line = row.about === null ? row.detail : `${row.detail.replace(/\.$/, "")} · ${row.about}`;
   const body = (
@@ -219,6 +221,7 @@ export function KinAttentionItem(
         title={row.title}
         open={asideOpen}
         allowUntilLifted={pickDay.allowUntilLifted}
+        zone={zone}
         onOpenChange={setAsideOpen}
         onSave={(until) => runKinAttentionCall(handler, pickDay.callForDay(until))}
       />

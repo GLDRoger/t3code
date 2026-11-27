@@ -53,7 +53,7 @@ function KinSetAsidePicker(props: {
   readonly onCancel: () => void;
 }) {
   const now = new Date(useNowMinuteMs());
-  const days = kinSetAsideDays(now);
+  const days = kinSetAsideDays(now, props.names.zone);
   const copy = kinPickDayCopy(props.allowUntilLifted);
   const [month, setMonth] = useState(days.initial.slice(0, 7));
   const grid = kinDatesMonth(month, [], props.names, now);
@@ -94,7 +94,7 @@ export function KinAttentionItem(
   const asker = useKinAskAbout(props)(row.agentId);
   const ripple = useResolveClassNames("bg-subtle-strong");
   const busy = handler.busy === row.factKey;
-  const menu = kinAttentionMenu(row, now);
+  const menu = kinAttentionMenu(row, now, props.names.zone);
   const pickDay = menu.later.choices.find((choice) => choice.id === "pick_day")!;
   const description =
     row.about === null ? row.detail : `${row.detail.replace(/\.$/, "")} · ${row.about}`;
