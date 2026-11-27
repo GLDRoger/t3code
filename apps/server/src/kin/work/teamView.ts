@@ -890,6 +890,10 @@ const leadWrites = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
     AND (r.register_id NOT IN ${sql.in(DRAFT_LISTS)} OR r.state = 'open')
     AND ${inLedProject(sql, personId)})`;
 
+export const projectOpensFor = (sql: SqlClient.SqlClient, personId: KinPersonId) =>
+  sql`(r.register_id = 'projects' AND r.sensitive = 0
+    AND ${projectPerson(sql, personId, sql`r.record_id`)})`;
+
 /** Whether this person leads, is a member of, or holds a task in this unlabelled project. */
 export const inProject = Effect.fn("KinTeamView.inProject")(function* (
   orgId: KinOrgId,
@@ -898,8 +902,7 @@ export const inProject = Effect.fn("KinTeamView.inProject")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const [row] = yield* sql`SELECT 1 FROM kin_records r WHERE r.org_id = ${orgId}
-    AND r.record_id = ${projectId} AND r.register_id = 'projects' AND r.sensitive = 0
-    AND ${projectPerson(sql, personId, sql`r.record_id`)}`;
+    AND r.record_id = ${projectId} AND ${projectOpensFor(sql, personId)}`;
   return row !== undefined;
 });
 

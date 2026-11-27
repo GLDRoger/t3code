@@ -1498,6 +1498,13 @@ export const KinProjectPage = Schema.Struct({
     items: Schema.Array(KinWorkHistoryItem),
     total: NonNegativeInt,
   }),
+  lookedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  sinceLooked: Schema.optional(
+    Schema.Struct({
+      total: NonNegativeInt,
+      items: Schema.Array(KinWorkHistoryItem).check(Schema.isMaxLength(3)),
+    }),
+  ),
   // Absent from hosts before the project spine.
   /** By due date, undated last. */
   milestones: Schema.optional(Schema.Array(KinMilestone)),

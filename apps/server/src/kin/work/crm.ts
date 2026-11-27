@@ -14,6 +14,7 @@ import {
   type KinPartyKind,
   type KinPartyPage,
   type KinPartyRow,
+  KinPersonId,
   type KinProjectDetail,
   type KinProjectHealth,
   type KinProjectPage,
@@ -807,7 +808,12 @@ const capped = Effect.fn("KinCrm.capped")(function* (
  */
 export const history = Effect.fn("KinCrm.history")(function* (
   anchor: RecordRow,
-  input: { readonly beforeSeq?: number; readonly sinceAt?: number; readonly limit: number },
+  input: {
+    readonly beforeSeq?: number;
+    readonly sinceAt?: number;
+    readonly excludeBy?: KinPersonId;
+    readonly limit: number;
+  },
   viewer: KinViewer,
   seen: typeof seenBy = seenBy,
 ) {
@@ -827,6 +833,9 @@ export const history = Effect.fn("KinCrm.history")(function* (
     ...(teammateProject ? [teamSeesChange(sql)] : []),
     ...(input.beforeSeq === undefined ? [] : [sql`c.seq < ${input.beforeSeq}`]),
     ...(input.sinceAt === undefined ? [] : [sql`c.at >= ${input.sinceAt}`]),
+    ...(input.excludeBy === undefined
+      ? []
+      : [sql`NOT (c.actor_kind = 'person' AND c.actor_id IS ${input.excludeBy})`]),
   ]);
   const from = sql`FROM kin_records r JOIN kin_record_changes c
     ON c.org_id = r.org_id AND c.record_id = r.record_id WHERE ${filter}`;
@@ -842,9 +851,12 @@ export const history = Effect.fn("KinCrm.history")(function* (
     key: string;
     title: string;
     registerId: string;
+    askedBy: string | null;
+    total?: number;
   }>`SELECT c.seq, c.at, c.actor_kind AS "actorKind", c.actor_id AS "actorId", c.via, c.kind,
       c.fields_json AS "fieldsJson", r.record_id AS "recordId", r.key, r.title,
-      r.register_id AS "registerId"
+      r.register_id AS "registerId", c.asked_by_person_id AS "askedBy"
+      ${input.sinceAt === undefined ? sql`` : sql`, (SELECT COUNT(*) ${from}) AS total`}
     ${from} ORDER BY c.seq DESC LIMIT ${input.limit}`;
   const stages = rows.some((row) => row.registerId === "deals")
     ? (yield* stagesOf(orgId)).stages
@@ -853,6 +865,9 @@ export const history = Effect.fn("KinCrm.history")(function* (
     seq: row.seq,
     at: iso(row.at),
     by: actorOf(row.actorKind, row.actorId),
+    ...(input.excludeBy !== undefined && row.askedBy !== null
+      ? { askedBy: KinPersonId.make(row.askedBy) }
+      : {}),
     via: row.via,
     kind: row.kind,
     fields: parseChanges(row.fieldsJson)
@@ -869,10 +884,7 @@ export const history = Effect.fn("KinCrm.history")(function* (
       ...listNameOf(row.registerId),
     },
   }));
-  const total =
-    input.sinceAt === undefined
-      ? undefined
-      : ((yield* sql<{ total: number }>`SELECT COUNT(*) AS total ${from}`)[0]?.total ?? 0);
+  const total = input.sinceAt === undefined ? undefined : (rows[0]?.total ?? 0);
   return { items, total };
 });
 
@@ -1036,6 +1048,7 @@ export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
   now: number,
   seq: number,
   viewer: KinViewer,
+  look?: { readonly personId: KinPersonId; readonly mark: number },
 ) {
   const sql = yield* SqlClient.SqlClient;
   const orgId = row.orgId as KinOrgId;
@@ -1094,6 +1107,10 @@ export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
     return [{ url: pull.url, number, record: ref(pull.recordId, pull.key, pull.title) }];
   });
   const week = yield* history(row, { sinceAt: now - WEEK_MS, limit: 20 }, viewer);
+  const sinceLooked =
+    look === undefined
+      ? undefined
+      : yield* history(row, { sinceAt: look.mark + 1, excludeBy: look.personId, limit: 3 }, viewer);
   const milestones = yield* milestonesOf(orgId, row.recordId, now, viewer);
   return {
     project: yield* projectDetail(row, now, viewer),
@@ -1115,6 +1132,9 @@ export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
     nextDue: next === undefined ? null : toRecord(next, now),
     pullRequests,
     changedThisWeek: { items: week.items, total: week.total ?? week.items.length },
+    ...(sinceLooked?.total
+      ? { sinceLooked: { items: sinceLooked.items, total: sinceLooked.total } }
+      : {}),
     milestones,
     people: yield* peopleOf(row, now, viewer),
     meetings: yield* meetingsOf(orgId, row.recordId, now, viewer),

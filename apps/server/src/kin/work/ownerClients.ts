@@ -42,6 +42,8 @@ import { sectionOnFor as sectionOn } from "../shell/KinShell.ts";
 import { DEALS_OFF } from "../shell/sections.ts";
 import { createdOut, createIn as createDealIn, dealSeesField } from "./deals.ts";
 import { KinRecords, requestHashOf, type Patch, type Writer } from "./KinRecords.ts";
+import { CodingAgentCall } from "./keyCall.ts";
+import * as Looks from "./looks.ts";
 import { accountsForTax, fieldList, parseFields, type FieldValue, type ListName } from "./lists.ts";
 import {
   asViewer,
@@ -355,7 +357,14 @@ export const project = Effect.fn("KinWork.project")(function* (
     yield* unseen(viewer, row, input);
   }
   const { now, seq } = yield* asOf(input.orgId, viewer);
-  const page = yield* read(Crm.projectPage(row, now, seq, viewer));
+  const personId = person.person.personId;
+  const mark =
+    options.keyed === true || (yield* CodingAgentCall) !== undefined
+      ? undefined
+      : yield* read(Looks.lookedAt(input.orgId, personId, row.recordId));
+  const page = yield* read(
+    Crm.projectPage(row, now, seq, viewer, mark == null ? undefined : { personId, mark }),
+  );
   // Its people are the owner's, a co-owner's and its lead's to change (`teamGuard`).
   const leads =
     row.ownerKind === "person" && row.ownerId === person.person.personId && row.sensitive === 0;
@@ -367,6 +376,7 @@ export const project = Effect.fn("KinWork.project")(function* (
       : undefined;
   return {
     ...page,
+    ...(mark === undefined ? {} : { lookedAt: mark === null ? null : iso(mark) }),
     ...(note === undefined ? {} : { note: keyNamedFor(person, note) }),
     ...(results === undefined ? {} : { results }),
     can: { people: !person.teammate || leads, note: !person.teammate },
