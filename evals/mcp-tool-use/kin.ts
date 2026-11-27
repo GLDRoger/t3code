@@ -1054,15 +1054,17 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{OUTSIDE_THREAD_LINE}}", OUTSIDE_THREAD_LINE)
     .replaceAll("{{OUTSIDE_NOT_LISTED_LINE}}", OUTSIDE_NOT_LISTED_LINE)
     .replaceAll("{{HEAD_START_WAKE}}", HEAD_START_WAKE)
-    // A quiet bills turn's section for files named as the bill ids Kin gives them (`billTurn.ts`).
-    .replace(/\{\{BILLS_TURN:([^}]+)\}\}/g, (_, names: string) =>
+    // A quiet bills turn's section for files named as the bill ids Kin gives them (`billTurn.ts`);
+    // `{{BILLS_TURN:mail:<names>}}` when some came by mail.
+    .replace(/\{\{BILLS_TURN:(mail:)?([^}]+)\}\}/g, (_, mail: string | undefined, names: string) =>
       billTurnText(
         names.split(",").map((name) => ({
           id: name.split(".")[0]!,
-          image: !name.endsWith(".pdf"),
+          image: /\.(?:jpe?g|png|webp)$/i.test(name),
           name,
         })),
         PRESETS.expenses.categories,
+        mail !== undefined,
       ),
     )
     .replace(/\{\{DRAFT_DOCUMENT:([^}]+)\}\}/g, (_, name: string) => DRAFT_DOCUMENT(name))

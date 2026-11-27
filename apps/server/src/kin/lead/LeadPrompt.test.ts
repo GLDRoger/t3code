@@ -2427,7 +2427,7 @@ it.effect("a reader handed another lead's bills builds their turn in a chat it i
     expect(stamp === undefined ? [] : stampReads(stamp)).toEqual([
       { k: "service", id: "bills.read" },
     ]);
-    expect(built).toContain("Bills someone added to read in the background: B1 is image 1.");
+    expect(built).toContain("Bills to read in the background: B1 is image 1.");
     expect(built).toContain("Record nothing else, then end with kin_skip.");
   }).pipe(Effect.provide(layer)),
 );

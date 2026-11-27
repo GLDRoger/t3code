@@ -1,0 +1,12 @@
+From: billing@inkspot.example
+Received: 24 Nov 2026
+Subject: What's new at Inkspot Cloud this November
+Open the mail: https://mail.example/inbox/inkspot-news-11
+
+Inkspot Cloud: November news
+
+Shared folders now sync twice as fast, and the team plan gets 20 GB more storage at no extra cost.
+
+Join our live walkthrough on 3 December, or read the full release notes on our blog.
+
+You get this mail because you are an Inkspot Cloud customer. Change what we send you in your account settings.
