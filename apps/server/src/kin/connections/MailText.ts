@@ -3,6 +3,8 @@
  * text dropped, and bodies of sign-in and security mail withheld. All of it stays outside text.
  */
 
+import { isPlainAddress } from "./MailProvider.ts";
+
 const ENTITIES: Record<string, string> = {
   amp: "&",
   lt: "<",
@@ -68,14 +70,15 @@ export const looksLikeSignInMail = (subject: string, body: string) =>
 
 export const WITHHELD = "[body withheld: this looks like a sign-in or security message]";
 
-/** Whether the receiving server checked the sender, from `Authentication-Results`. */
-export const senderCheck = (results: ReadonlyArray<string>) => {
-  const all = results.join(";").toLowerCase();
-  const verdict = (name: string) => new RegExp(`\\b${name}=(\\w+)`).exec(all)?.[1];
-  const dmarc = verdict("dmarc");
-  if (dmarc === "pass") return "passed";
-  if (dmarc === "fail") return "failed";
-  if (verdict("dkim") === "pass" && verdict("spf") === "pass") return "passed";
+export const senderVerdictForAddress = (
+  results: ReadonlyArray<string>,
+  fromAddress: string | null,
+) => {
+  if (results.length > 0) {
+    const from = fromAddress?.trim().toLowerCase();
+    const domain = from !== undefined && isPlainAddress(from) ? (domainIn(from) ?? null) : null;
+    return senderVerdict(results, domain);
+  }
   return "not checked";
 };
 

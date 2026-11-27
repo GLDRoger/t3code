@@ -87,7 +87,7 @@ describe("classify", () => {
         "f: a client contact, in any language",
         mail("Ana <ana@lumen.example>", {
           subject: "Пожалуйста, перенесите встречу на четверг",
-          authResults: ["mx.example; dkim=pass; spf=pass; dmarc=pass"],
+          authResults: ["mx.google.com; dmarc=pass (p=REJECT) header.from=lumen.example"],
         }),
         "client",
         "chief",
@@ -222,6 +222,33 @@ describe("classify", () => {
       classify(cases[3]![1], rows).reason,
       "This mail failed the sender checks for ana@lumen.example.",
     );
+  });
+
+  it.each([
+    [
+      "a pass in the bounce address before the receiver's failure",
+      [
+        "mx.google.com; spf=pass (dmarc=pass+header.from=lumen.example@else.example); dmarc=fail header.from=lumen.example",
+      ],
+    ],
+    [
+      "a pass inside a quoted property before the receiver's failure",
+      [
+        'mx.google.com; spf=pass smtp.mailfrom="fixture; dmarc=pass header.from=lumen.example"; dmarc=fail header.from=lumen.example',
+      ],
+    ],
+    [
+      "a lower header claims DMARC passed but the receiver has only an SPF softfail",
+      ["mx.google.com; spf=softfail", "mx.example; dmarc=pass header.from=lumen.example"],
+    ],
+    [
+      "DMARC passes for a different domain and the receiver reports a failed DKIM check",
+      ["mx.google.com; dmarc=pass header.from=else.example; dkim=fail header.d=lumen.example"],
+    ],
+  ])("classifies a known contact as failed checks when %s", (_name, authResults) => {
+    const found = classify(mail("ana@lumen.example", { authResults }), rows);
+    assert.strictEqual(found.class, "failed_checks");
+    assert.isUndefined(found.look?.clientId);
   });
 
   const noticeCases: ReadonlyArray<

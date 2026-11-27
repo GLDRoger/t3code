@@ -2003,7 +2003,8 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
             { name: "Message-ID", value: "<m1@client.example>" },
             {
               name: "Authentication-Results",
-              value: "mx.google.com; dkim=pass; spf=pass; dmarc=pass",
+              value:
+                "mx.google.com; dkim=pass header.i=@client.example; spf=pass smtp.mailfrom=ana@client.example; dmarc=pass (p=REJECT) header.from=client.example",
             },
           ],
           parts:
