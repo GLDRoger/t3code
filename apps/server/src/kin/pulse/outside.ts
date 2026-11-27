@@ -160,15 +160,12 @@ export const fromConnections = (
       );
       for (const { label, activity } of mailboxes)
         lines.push(
-          ...linesOf(
-            label,
-            {
-              ...activity,
-              mail: activity.mail.filter(
-                (mail) => !hidden.has(normalizeAddress(addressesIn(mail.from)[0]) ?? ""),
-              ),
-            },
-          ),
+          ...linesOf(label, {
+            ...activity,
+            mail: activity.mail.filter(
+              (mail) => !hidden.has(normalizeAddress(addressesIn(mail.from)[0]) ?? ""),
+            ),
+          }),
         );
       return { lines, seen } satisfies OutsideRead;
     },
