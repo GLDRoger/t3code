@@ -39,6 +39,7 @@ import {
   type KinAccessMeInput,
   type KinAccessMeResult,
   type KinPeopleUpdateProfileInput,
+  KinChatsSettleAfterHours,
   KinPersonProfile,
   KinPersonQuietHours,
   type KinPeopleSetOwnerNameInput,
@@ -132,6 +133,7 @@ const deviceLimit = new KinChatError({
 const decodePersonRow = Schema.decodeUnknownSync(KinPerson);
 const decodePerson = (row: Record<string, unknown>) => decodePersonRow(row);
 const decodeProfileRow = Schema.decodeUnknownSync(KinPersonProfile);
+const decodeSettleAfter = Schema.decodeUnknownSync(KinChatsSettleAfterHours);
 const decodeQuiet = Schema.decodeUnknownOption(Schema.fromJsonString(KinPersonQuietHours));
 const decodeProfile = (
   row: {
@@ -1574,21 +1576,29 @@ export const make = Effect.gen(function* () {
             (yield* mayActOn(reader, orgId, row.personId).pipe(Effect.isSuccess))))
       )
         editable.add(row.personId);
-    const logins = yield* sql<{ personId: string; login: string | null; ring: number | null }>`
-      SELECT person_id AS "personId", github_login AS login, answers_ring AS ring FROM kin_people
+    const logins = yield* sql<{
+      personId: string;
+      login: string | null;
+      ring: number | null;
+      settleAfter: number | null;
+    }>`
+      SELECT person_id AS "personId", github_login AS login, answers_ring AS ring,
+        chats_settle_after_hours AS "settleAfter" FROM kin_people
       WHERE org_id = ${orgId} ORDER BY person_id`.pipe(
       Effect.mapError(toPersistenceSqlError("KinPeople.githubLogins")),
     );
     const login = new Map(logins.map((row) => [row.personId, row]));
     const withEdit = <A extends { readonly personId: string }>(profile: A) => {
       const own = login.get(profile.personId);
+      const isReader = reader?.personId === profile.personId;
       return {
         ...profile,
         canEdit: editable.has(profile.personId),
         ...(editable.has(profile.personId) ? { githubLogin: own?.login ?? null } : {}),
-        // Only they set it, so only they read it.
-        ...(reader?.personId === profile.personId && own?.ring != null
-          ? { answersRing: own.ring === 1 }
+        // Only they set these, so only they read them.
+        ...(isReader && own?.ring != null ? { answersRing: own.ring === 1 } : {}),
+        ...(isReader && own?.settleAfter != null
+          ? { chatsSettleAfterHours: decodeSettleAfter(own.settleAfter) }
           : {}),
       };
     };
@@ -1651,6 +1661,11 @@ export const make = Effect.gen(function* () {
         reason: "not_allowed",
         message: "Only they can set when Kin holds messages for them.",
       });
+    if (caller.personId !== input.personId && input.chatsSettleAfterHours !== undefined)
+      return yield* new KinChatError({
+        reason: "not_allowed",
+        message: "Only they can choose when their read chats settle.",
+      });
     const picture = input.picture;
     if (picture != null && picture.type !== "image")
       return yield* new KinChatError({
@@ -1698,14 +1713,24 @@ export const make = Effect.gen(function* () {
           yield* refresh.touch(input.orgId, "people");
           const [row] = yield* profileRows(input.orgId, input.personId);
           if (row === undefined) return yield* missing;
-          const [ring] =
+          const [own] =
             caller.personId === input.personId
-              ? yield* sql<{ ring: number | null }>`SELECT answers_ring AS ring FROM kin_people
+              ? yield* sql<{
+                  ring: number | null;
+                  settleAfter: number | null;
+                }>`SELECT answers_ring AS ring, chats_settle_after_hours AS "settleAfter"
+                  FROM kin_people
                   WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
                   Effect.mapError(toPersistenceSqlError("KinPeople.updateProfile")),
                 )
               : [];
-          const profile = ring?.ring == null ? row : { ...row, answersRing: ring.ring === 1 };
+          const profile = {
+            ...row,
+            ...(own?.ring == null ? {} : { answersRing: own.ring === 1 }),
+            ...(own?.settleAfter == null
+              ? {}
+              : { chatsSettleAfterHours: decodeSettleAfter(own.settleAfter) }),
+          };
           return { profile, replaced: pictureId === undefined ? null : before.pictureId };
         }),
       )

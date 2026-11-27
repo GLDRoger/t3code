@@ -6,6 +6,9 @@ import { IsoDateTime, KinText, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinAgentId, KinChatError, KinOrgId } from "./kinChat.ts";
 import { KinCardAsker, KinDeferralCard, KinMemoryItemId } from "./kinLead.ts";
 import { TimeZone } from "./kinTime.ts";
+import { KinWatchLine, KinWatchOutcome } from "./kinWatchLine.ts";
+
+export { KinWatchActor, KinWatchLine, KinWatchOutcome, KinWatchState } from "./kinWatchLine.ts";
 
 /**
  * What Kin keeps watch on (`kin_watches`): one open loop, its next look and what the last one found.
@@ -25,20 +28,6 @@ const KIN_WATCH_KINDS = [
 ] as const;
 export type KinWatchKind = (typeof KIN_WATCH_KINDS)[number];
 
-export const KinWatchState = Schema.Literals(["open", "closed", "stopped"]);
-export type KinWatchState = typeof KinWatchState.Type;
-
-/** What one look found. `skipped_limit`: a look that needed a model waited on the Daily limit. */
-export const KinWatchOutcome = Schema.Literals([
-  "nothing_new",
-  "closed",
-  "changed",
-  "problem",
-  "cant_tell",
-  "skipped_limit",
-]);
-export type KinWatchOutcome = typeof KinWatchOutcome.Type;
-
 /** Why a look ran: a person asked (their watch, Look now, Watch again), an agent's mark, or the round. */
 export const KinWatchWhy = Schema.Literals(["asked", "again", "routine"]);
 export type KinWatchWhy = typeof KinWatchWhy.Type;
@@ -52,40 +41,6 @@ export const KinWatchDid = Schema.Literals([
   "nothing_new",
 ]);
 export type KinWatchDid = typeof KinWatchDid.Type;
-
-/** Who closed or stopped a watch. `you` is the reader. */
-export const KinWatchActor = Schema.Struct({
-  kind: Schema.Literals(["person", "agent", "code"]),
-  name: Schema.NullOr(KinText),
-  you: Schema.Boolean,
-});
-export type KinWatchActor = typeof KinWatchActor.Type;
-
-/**
- * Exactly what one watch line shows (`kinWatchLine` in client-runtime words it). A record read
- * carries this for the record's watch; nothing more rides on every record.
- */
-export const KinWatchLine = Schema.Struct({
-  watchId: TrimmedNonEmptyString,
-  kind: TrimmedNonEmptyString,
-  /** What it is about, such as "Brightwell Labs' INV-11", or a person's own words. */
-  about: KinText,
-  state: KinWatchState,
-  lookedAt: Schema.NullOr(IsoDateTime),
-  nextLookAt: Schema.NullOr(IsoDateTime),
-  lastOutcome: Schema.NullOr(KinWatchOutcome),
-  /** What the last look found, in code's words: "the work failed". */
-  lastLine: Schema.NullOr(KinText),
-  /** Look now was asked and the look hasn't run yet. */
-  looking: Schema.Boolean,
-  /** Its record is set aside: no look until the hold ends (null: until someone lifts it). */
-  aside: Schema.NullOr(Schema.Struct({ until: Schema.NullOr(IsoDateTime) })),
-  closedAt: Schema.NullOr(IsoDateTime),
-  /** How it closed: "INV-11 was paid on 25 Nov". */
-  closedHow: Schema.NullOr(KinText),
-  closedBy: Schema.NullOr(KinWatchActor),
-});
-export type KinWatchLine = typeof KinWatchLine.Type;
 
 export const KinWatch = Schema.Struct({
   ...KinWatchLine.fields,

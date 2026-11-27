@@ -37,7 +37,7 @@ import {
   KinPayment,
   KinRepeatRule,
 } from "./kinMoney.ts";
-import { KinWatchLine } from "./kinWatches.ts";
+import { KinWatchLine } from "./kinWatchLine.ts";
 
 /**
  * Work: everything someone owes someone, as entries in lists. Built in: Work, and the light CRM's
