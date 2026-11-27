@@ -1792,6 +1792,35 @@ it.effect(
       const [switched] = yield* sql<{ ring: number }>`SELECT answers_ring AS ring FROM kin_people
         WHERE person_id = ${asha.person.personId}`;
       assert.strictEqual(switched?.ring, 0);
+      // How long a read chat stays up before settling is hers alone to set and read; unset by default.
+      assert.propertyVal(
+        yield* service
+          .updateProfile(ownerSession, {
+            orgId,
+            personId: asha.person.personId,
+            chatsSettleAfterHours: 0,
+          })
+          .pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
+      assert.notProperty(yield* ashaAs(asha.session), "chatsSettleAfterHours");
+      for (const hoursChoice of [0, 6, 12, 24] as const) {
+        assert.propertyVal(
+          yield* service.updateProfile(asha.session, {
+            orgId,
+            personId: asha.person.personId,
+            chatsSettleAfterHours: hoursChoice,
+          }),
+          "chatsSettleAfterHours",
+          hoursChoice,
+        );
+        assert.propertyVal(yield* ashaAs(asha.session), "chatsSettleAfterHours", hoursChoice);
+        assert.notProperty(yield* ashaAs(ownerSession), "chatsSettleAfterHours");
+      }
+      const [storedSettle] = yield* sql<{ hours: number | null }>`SELECT
+        chats_settle_after_hours AS hours FROM kin_people WHERE person_id = ${asha.person.personId}`;
+      assert.strictEqual(storedSettle?.hours, 24);
       const renamed = yield* service.updateProfile(ownerSession, {
         orgId,
         personId: asha.person.personId,

@@ -1,6 +1,7 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import type * as Schema from "effect/Schema";
 import type { ModelSelection, ProjectId, ProviderInstanceId } from "@t3tools/contracts";
 import {
   isProviderAvailable,
@@ -11,7 +12,10 @@ import * as DateTime from "effect/DateTime";
 import { exhaustedUsageWindow } from "@t3tools/shared/usageLimits";
 import { fallbackTextGenerationModelSelection } from "@t3tools/shared/serverSettings";
 import * as ServerSettings from "../serverSettings.ts";
-import type { ProviderTextGeneration } from "@t3tools/provider-core/server/textGeneration";
+import type {
+  ProviderTextGeneration,
+  StructuredTextGenerationInput,
+} from "@t3tools/provider-core/server/textGeneration";
 import { TextGenerationError } from "@t3tools/contracts";
 
 import * as ProviderInstallationGate from "../provider/ProviderInstallationGate.ts";
@@ -47,7 +51,8 @@ type TextGenerationOp =
   | "generateBranchName"
   | "generateThreadTitle"
   | "generateReviewGuide"
-  | "generateTranscriptionPostProcessing";
+  | "generateTranscriptionPostProcessing"
+  | "generateStructuredText";
 
 const resolveInstance = (
   registry: ProviderInstanceRegistry.ProviderInstanceRegistry["Service"],
@@ -93,15 +98,16 @@ export const make = Effect.gen(function* () {
       textGenerator !== undefined && operation === "generateReviewGuide";
     if (textGenerator !== undefined && !textGeneratorCannotRun) {
       return yield* invoke(
-        TextGenerationOperations.fromRunner("TextGenerator", textGenerator),
+        TextGenerationOperations.fromRunner("TextGenerator", textGenerator, { toolFree: true }),
         selection,
       );
     }
-    const snapshots = yield* registry.listInstances.pipe(
-      Effect.flatMap((instances) =>
-        Effect.forEach(instances, (instance) => instance.snapshot.getSnapshot),
-      ),
-    );
+    const instances = yield* registry.listInstances;
+    const snapshots = yield* Effect.forEach(instances, (instance) => instance.snapshot.getSnapshot);
+    const supportsOperation = (instanceId: ProviderInstanceId) =>
+      operation !== "generateStructuredText" ||
+      instances.find((instance) => instance.instanceId === instanceId)?.textGeneration
+        .generateStructuredText !== undefined;
     const now = DateTime.toEpochMillis(yield* DateTime.now);
     const selected = snapshots.find((provider) => provider.instanceId === selection.instanceId);
     const selectedDisabled = selected?.enabled === false;
@@ -109,6 +115,7 @@ export const make = Effect.gen(function* () {
     const unusable =
       textGeneratorCannotRun ||
       selectedDisabled ||
+      !supportsOperation(selection.instanceId) ||
       (selected?.enabled === true &&
         (!isProviderTextGenerationCapable(selected) ||
           selected.models.find((model) => model.slug === selection.model)
@@ -144,6 +151,7 @@ export const make = Effect.gen(function* () {
               provider.models.find((candidate) => candidate.slug === model)
                 ?.supportsTextGeneration !== false &&
               (operation !== "generateReviewGuide" || INVESTIGATING_DRIVERS.has(driver)) &&
+              supportsOperation(instanceId) &&
               !exhaustedUsageWindow(provider, now, model)
             );
           },
@@ -174,6 +182,25 @@ export const make = Effect.gen(function* () {
     );
   });
   return TextGeneration.of({
+    generateStructuredText: Effect.fn("TextGeneration.generateStructuredText")(function* <
+      S extends Schema.Decoder<unknown>,
+    >(input: StructuredTextGenerationInput<S>) {
+      const operation = "generateStructuredText";
+      return yield* generate(
+        operation,
+        input.modelSelection,
+        null,
+        (service, modelSelection) =>
+          service.generateStructuredText?.({ ...input, modelSelection }) ??
+          Effect.fail(
+            new TextGenerationError({
+              operation,
+              detail:
+                "The selected provider cannot generate text without tools and session persistence.",
+            }),
+          ),
+      );
+    }),
     generateCommitMessage: Effect.fn("TextGeneration.generateCommitMessage")(function (input) {
       return generate(
         "generateCommitMessage",

@@ -1,6 +1,6 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import { type ArrivalHeaders, type ArrivalRows, classify } from "./classify.ts";
+import { type ArrivalHeaders, type ArrivalRows, classify, isAutomatedNotice } from "./classify.ts";
 
 const rows: ArrivalRows = {
   own: new Set(["hello@ambermill.example", "accounts@ambermill.example", "rhea@ambermill.example"]),
@@ -87,7 +87,7 @@ describe("classify", () => {
         "f: a client contact, in any language",
         mail("Ana <ana@lumen.example>", {
           subject: "Пожалуйста, перенесите встречу на четверг",
-          authResults: ["mx.example; dkim=pass; spf=pass; dmarc=pass"],
+          authResults: ["mx.google.com; dmarc=pass (p=REJECT) header.from=lumen.example"],
         }),
         "client",
         "chief",
@@ -159,13 +159,13 @@ describe("classify", () => {
       [
         "h: bulk by precedence",
         mail("team@club.example", { precedence: "bulk" }),
-        "automated",
+        "automated_notice",
         undefined,
       ],
       [
         "h: auto-submitted, but not `no`",
         mail("robot@ci.example", { autoSubmitted: "auto-generated" }),
-        "automated",
+        "automated_notice",
         undefined,
       ],
       [
@@ -221,6 +221,94 @@ describe("classify", () => {
     assert.strictEqual(
       classify(cases[3]![1], rows).reason,
       "This mail failed the sender checks for ana@lumen.example.",
+    );
+  });
+
+  it.each([
+    [
+      "a pass in the bounce address before the receiver's failure",
+      [
+        "mx.google.com; spf=pass (dmarc=pass+header.from=lumen.example@else.example); dmarc=fail header.from=lumen.example",
+      ],
+    ],
+    [
+      "a pass inside a quoted property before the receiver's failure",
+      [
+        'mx.google.com; spf=pass smtp.mailfrom="fixture; dmarc=pass header.from=lumen.example"; dmarc=fail header.from=lumen.example',
+      ],
+    ],
+    [
+      "a lower header claims DMARC passed but the receiver has only an SPF softfail",
+      ["mx.google.com; spf=softfail", "mx.example; dmarc=pass header.from=lumen.example"],
+    ],
+    [
+      "DMARC passes for a different domain and the receiver reports a failed DKIM check",
+      ["mx.google.com; dmarc=pass header.from=else.example; dkim=fail header.d=lumen.example"],
+    ],
+  ])("classifies a known contact as failed checks when %s", (_name, authResults) => {
+    const found = classify(mail("ana@lumen.example", { authResults }), rows);
+    assert.strictEqual(found.class, "failed_checks");
+    assert.isUndefined(found.look?.clientId);
+  });
+
+  const noticeCases: ReadonlyArray<
+    [string, ArrivalHeaders, "automated_notice" | "unknown_person"]
+  > = [
+    [
+      "h: a Japanese notice sent in bulk",
+      mail("billing@utility.example", { precedence: "bulk", subject: "ご利用料金のお知らせ" }),
+      "automated_notice",
+    ],
+    [
+      "h: an Arabic notice marked auto-submitted",
+      mail("billing@utility.example", {
+        autoSubmitted: "auto-generated",
+        subject: "تم تعليق الخدمة",
+      }),
+      "automated_notice",
+    ],
+    [
+      "h: a Portuguese notice from a no-reply list",
+      mail("no-reply@utility.example", {
+        listUnsubscribe: true,
+        subject: "Seu recibo está disponível",
+      }),
+      "automated_notice",
+    ],
+    [
+      "j: a person's reply can carry an unsubscribe header",
+      mail("zoya@studio-nine.example", {
+        listUnsubscribe: true,
+        subject: "Re: Payment failed for the subscription",
+      }),
+      "unknown_person",
+    ],
+    [
+      "j: list precedence can belong to a person",
+      mail("arjun@studio-nine.example", {
+        precedence: "list",
+        listUnsubscribe: true,
+        subject: "Re: Final reminder",
+      }),
+      "unknown_person",
+    ],
+    [
+      "j: a list reply explicitly marked as human can carry bulk headers",
+      mail("zoya@studio-nine.example", {
+        autoSubmitted: " No ; example=1",
+        precedence: "bulk",
+        listUnsubscribe: true,
+        subject: "Re: Final reminder",
+      }),
+      "unknown_person",
+    ],
+  ];
+
+  it.each(noticeCases)("%s", (_name, headers, expected) => {
+    assert.strictEqual(classify(headers, rows).class, expected);
+    assert.strictEqual(
+      isAutomatedNotice(headers.subject, headers, headers.fromAddress),
+      expected === "automated_notice",
     );
   });
 });

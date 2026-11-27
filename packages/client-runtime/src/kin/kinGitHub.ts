@@ -274,10 +274,13 @@ export function createKinGitHubActions(options: {
 export const KIN_GITHUB_WATCH_COPY = {
   reposTitle: "Repos Kin watches",
   reposHint:
-    "An agent starts on its own when a teammate opens a pull request here, writes /kin or an agent's name at the start of a comment, or adds the kin label to an issue. Turn a repo off to leave it alone.",
+    "An agent starts on its own when a teammate opens a pull request here, writes /kin or an agent's name at the start of a comment, or adds the kin label to an issue. It also comments once on each new issue, from anyone: what it found in the code and what it suggests, without starting work. Turn a repo off to leave it alone.",
   watchEverything: "Watch every repo",
   noRepos: "No repos yet. Kin lists yours and your organisations' after its first look.",
   mentions: "Your @-mention calls an agent",
+  triageOff: "New issues get no reply",
+  stopTriage: "Stop replying to new issues",
+  startTriage: "Reply to new issues",
   fork: "Fork",
   showRepos: (count: number) => `Show repos (${count})`,
   hideRepos: "Hide repos",
@@ -324,9 +327,27 @@ export function createKinGitHubRepoActions(options: {
   return {
     watch: (repo: KinGitHubRepo, watched: boolean) => run({ repo: repo.repo, watched }),
     mentions: (repo: KinGitHubRepo, mentions: boolean) => run({ repo: repo.repo, mentions }),
+    triage: (repo: KinGitHubRepo, triage: boolean) => run({ repo: repo.repo, triage }),
     everything: () => run({ repo: null }),
   };
 }
+
+/** Note on a watched repo when new-issue replies are off; null otherwise. */
+export const kinGitHubTriageLine = (
+  repo: Pick<KinGitHubRepo, "watched" | "triage">,
+): string | null =>
+  repo.watched && repo.triage === false ? KIN_GITHUB_WATCH_COPY.triageOff : null;
+
+/** The one button a repo's row offers for new-issue replies, if any. */
+export const kinGitHubTriageAction = (
+  repo: Pick<KinGitHubRepo, "watched" | "triage">,
+  canChange: boolean,
+) =>
+  !canChange || !repo.watched || repo.triage === undefined
+    ? null
+    : repo.triage
+      ? ("stop" as const)
+      : ("start" as const);
 
 /** Watched repos whose main branch Kin's App can reach, what protecting does, and the owner's switch. */
 export const KIN_GITHUB_GUARD_COPY = {

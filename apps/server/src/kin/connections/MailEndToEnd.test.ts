@@ -61,6 +61,11 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import { round } from "../watches/KinWatchRounds.ts";
 import { alertsOnMail } from "../work/statements/alertMail.ts";
+import * as BankAlertReader from "../work/statements/BankAlertReader.ts";
+import {
+  approveFixtureAlertSender,
+  fixtureBankAlertReader,
+} from "../work/statements/bankAlerts.testkit.ts";
 import { presetDefinition } from "../work/registers.ts";
 import { waitingCards } from "../work/recordComments.ts";
 import * as ConnectionSecrets from "./ConnectionSecrets.ts";
@@ -186,6 +191,7 @@ const gateFor = (cards: Array<Card>) =>
 type Gates = {
   file?: Effect.Effect<void>;
   send?: () => Promise<void>;
+  calendarDelete?: (url: URL) => void;
   /** Where a move holds, under its fence, as it keeps the sign-in for the new row. */
   keep?: Effect.Effect<void>;
 };
@@ -213,6 +219,7 @@ const gatedFiles = (gates: Gates) =>
   );
 const layerFor = (fake: FakeMail, cards: Array<Card>, gates: Gates = {}) =>
   ArrivalFeed.layer.pipe(
+    Layer.provideMerge(Layer.succeed(BankAlertReader.BankAlertReader, fixtureBankAlertReader)),
     Layer.provideMerge(Layer.merge(Connections.layer, KinRecords.layer)),
     Layer.provide(gateFor(cards)),
     Layer.provideMerge(gatedSecrets(gates)),
@@ -226,6 +233,9 @@ const layerFor = (fake: FakeMail, cards: Array<Card>, gates: Gates = {}) =>
             ((handle) =>
               (async (input, init) => {
                 const url = input instanceof Request ? input.url : String(input);
+                const method = input instanceof Request ? input.method : init?.method;
+                if (method === "DELETE" && url.includes("/events/"))
+                  gates.calendarDelete?.(new URL(url));
                 if (gates.send !== undefined && url.endsWith("/messages/send")) await gates.send();
                 return handle(input, init);
               }) as typeof handle)(
@@ -429,12 +439,17 @@ const connect = (fake: FakeMail, service: "google" | "microsoft", address: strin
   });
 
 /** `personId` connects their own mailbox at the (fake) vendor; its id. */
-const connectOwn = (fake: FakeMail, personId: KinPersonId, address: string) =>
+const connectOwn = (
+  fake: FakeMail,
+  personId: KinPersonId,
+  address: string,
+  service: "google" | "microsoft" = "google",
+) =>
   Effect.gen(function* () {
     const connections = yield* KinConnections;
     const started = yield* connections.mineSignInStart(people(personId), {
       orgId,
-      service: "google",
+      service,
       returnTo: "web",
       another: true,
     });
@@ -951,18 +966,21 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           at: NOW + 90_000,
         });
 
-        yield* readMail(hello);
-        yield* readMail(accounts);
-        const beforeWatch = yield* arrivalRows;
-        assert.lengthOf(beforeWatch, 2);
         yield* watchMail();
+        assert.lengthOf(yield* arrivalRows, 0);
+        assert.lengthOf(yield* pulseEvents, 0);
+        const arrivalId = (yield* readMail(hello)).recorded[0]!;
+        yield* readMail(accounts);
+        const beforeReplay = yield* arrivalRows;
+        assert.lengthOf(beforeReplay, 2);
+        assert.deepStrictEqual(yield* pulseEvents, [{ agentId: lead, arrivalId }]);
         yield* round(orgId, yield* Clock.currentTimeMillis, { find: true }).pipe(
           Effect.provideService(KinRefreshObserver, { touch: () => Effect.void }),
         );
         yield* TestClock.adjust("1 minute");
         yield* watchMail();
         yield* readMail(hello);
-        assert.deepStrictEqual(yield* arrivalRows, beforeWatch);
+        assert.deepStrictEqual(yield* arrivalRows, beforeReplay);
         const events = yield* sql<{ eventId: string; agentId: string; json: string }>`SELECT
             event_id AS "eventId", agent_id AS "agentId", json FROM kin_events
           WHERE org_id = ${orgId} AND tag = 'pulse'`;
@@ -1133,7 +1151,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           const taxSubject = `Tax notice ${"🧾".repeat(170)}`;
           fake.deliver({
             to: ACCOUNTS,
-            from: "Billing Robot <billing@gmail-vendor.example>",
+            from: "Billing Robot <no-reply@gmail-vendor.example>",
             subject: taxSubject,
             body: "A tax notice sent to the accounts mailbox.",
             headers: { "List-Unsubscribe": "<mailto:stop@gmail-vendor.example>" },
@@ -1148,11 +1166,21 @@ describe("Kin mail end to end, on a fake mailbox", () => {
               at: NOW + 65_000,
             });
 
-          // The independent watch may run first. Header-only notices don't take a person's slot.
-          yield* watchMail();
-          assert.lengthOf(yield* pulseEvents, 3);
-          assert.lengthOf((yield* readMail(hello)).recorded, 8);
+          const digest = fake.deliver({
+            to: HELLO,
+            from: "Zoya <zoya@juniper.example>",
+            subject: "Weekly digest",
+            body: "This week's delivery totals.",
+            headers: { "Auto-Submitted": "auto-generated" },
+            at: NOW + 66_000,
+          });
+          assert.lengthOf((yield* readMail(hello)).recorded, 9);
           assert.lengthOf((yield* readMail(accounts)).recorded, 1);
+          assert.deepInclude(
+            (yield* arrivalRows).find(({ messageId }) => messageId === digest.id),
+            { class: "automated_notice", state: "settled" },
+          );
+          assert.lengthOf(yield* pulseEvents, 7);
           assert.deepInclude(
             (yield* arrivalRows).find(({ messageId }) => messageId === extra.id),
             {
@@ -1172,9 +1200,11 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           );
           const pulses = events.filter((event) => event._tag === "pulse");
           assert.lengthOf(pulses, 7);
+          assert.isTrue(pulses.every((event) => event.arrivalId !== undefined));
+          assert.isFalse(pulses.some((event) => event.outside?.[0]?.subject === "Weekly digest"));
           assert.deepStrictEqual(
             pulses
-              .filter((event) => event.arrivalId !== undefined)
+              .filter((event) => event.outside?.[0]?.matched?.startsWith("automated mail"))
               .map((event) => [event.outside?.[0]?.subject, event.agentId])
               .sort(),
             [
@@ -1281,7 +1311,9 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           assert.lengthOf(yield* pulseEvents, 0);
           const [before] = yield* sql<{ cursor: string }>`SELECT mail_cursor AS cursor
           FROM kin_connection_cursors WHERE connection_id = ${accounts}`;
-          assert.lengthOf((yield* readMail(accounts)).recorded, 1);
+          const arrivalId = (yield* readMail(accounts)).recorded[0]!;
+          assert.isString(arrivalId);
+          assert.deepStrictEqual(yield* pulseEvents, [{ agentId: lead, arrivalId }]);
           // The vendor replays the same page (a position kept before the commit): no second record.
           yield* sql`UPDATE kin_connection_cursors SET mail_cursor = ${before!.cursor}
           WHERE connection_id = ${accounts}`;
@@ -1293,7 +1325,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             (yield* arrivalRows).map((row) => [row.messageId, row.state, row.class, row.agentId]),
             [[first.id, "new", "client", null]],
           );
-          assert.lengthOf(yield* pulseEvents, 0);
+          assert.deepStrictEqual(yield* pulseEvents, [{ agentId: lead, arrivalId }]);
 
           // A message that won't read is parked, not dropped, and arrives once it reads.
           yield* TestClock.adjust("1 minute");
@@ -1307,9 +1339,12 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           fake.failRead(stuck.id, 500);
           assert.lengthOf((yield* readMail(accounts)).recorded, 0);
           assert.strictEqual((yield* arrivalRows).at(-1)?.state, "parked");
+          assert.deepStrictEqual(yield* pulseEvents, [{ agentId: lead, arrivalId }]);
           fake.failRead(stuck.id, null);
           yield* TestClock.adjust("1 minute");
-          assert.lengthOf((yield* readMail(accounts)).recorded, 1);
+          const paymentArrivalId = (yield* readMail(accounts)).recorded[0]!;
+          assert.isString(paymentArrivalId);
+          assert.deepInclude(yield* pulseEvents, { agentId: finance, arrivalId: paymentArrivalId });
           assert.deepInclude((yield* arrivalRows).at(-1), {
             messageId: stuck.id,
             state: "new",
@@ -1348,7 +1383,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           });
           assert.lengthOf((yield* readMail(accounts)).recorded, 1);
           assert.lengthOf(yield* arrivalRows, 5);
-          assert.lengthOf(yield* pulseEvents, 0);
+          assert.lengthOf(yield* pulseEvents, 4);
 
           // With its mail reads off, the mailbox isn't read at all.
           const detail = yield* (yield* KinConnections).get(people(owner), {
@@ -1400,7 +1435,8 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           body: "x",
           at: NOW + 40_000,
         });
-        assert.lengthOf((yield* readMail(hello)).recorded, 1);
+        const arrivalId = (yield* readMail(hello)).recorded[0]!;
+        assert.isString(arrivalId);
         assert.lengthOf((yield* readMail(accounts)).recorded, 1);
         assert.deepStrictEqual(
           (yield* arrivalRows).map((row) => [row.connectionId, row.class, row.agentId, row.reason]),
@@ -1409,7 +1445,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             [accounts, "unknown_person", null, "also recorded in another connected mailbox"],
           ],
         );
-        assert.lengthOf(yield* pulseEvents, 0);
+        assert.deepStrictEqual(yield* pulseEvents, [{ agentId: lead, arrivalId }]);
         // Graph forgot its delta (410): one gap row, and the feed goes on from now.
         fake.forgetPositions(HELLO);
         yield* readMail(hello);
@@ -2126,6 +2162,170 @@ describe("Kin mail end to end, on a fake mailbox", () => {
       ),
   );
 
+  it.effect.each(["google", "microsoft"] as const)(
+    "only the calendar owner confirms a %s deletion, one occurrence at a time",
+    (service) =>
+      setUp((fake, cards, gates) =>
+        Effect.gen(function* () {
+          const address = "meera+calendar@invented-co.example";
+          fake.addAccount({ provider: service, address, name: "Meera" });
+          const connectionId = yield* connectOwn(fake, member, address, service);
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`DELETE FROM kin_connection_tools
+            WHERE connection_id = ${connectionId} AND tool_name = 'calendar_delete_event'`;
+          const connections = yield* KinConnections;
+          const relist = yield* connections.mineSignInStart(people(member), {
+            orgId,
+            service,
+            returnTo: "web",
+            connectionId,
+          });
+          yield* connections.mineSignInFinish(people(member), {
+            orgId,
+            response: fake.approve(relist.authorizationUrl, address),
+          });
+          yield* wake({ person: member });
+          const deletes: URL[] = [];
+          gates.calendarDelete = (url) => deletes.push(url);
+          const event = {
+            account: address,
+            title: "Juniper Cold Chain review",
+            start: NOW + 3_600_000,
+            end: NOW + 7_200_000,
+            updated: NOW,
+          };
+          fake.putEvent({ ...event, id: "review", guests: ["zoya@client.example"] });
+          fake.putEvent({ ...event, id: "weekly", repeats: 2 });
+          const propose = (eventId: string) =>
+            callTool(address, "calendar_delete_event", { eventId });
+          const series = yield* propose("weekly").pipe(Effect.flip);
+          assert.strictEqual(
+            series.message,
+            "This is a whole repeating series, so nothing was deleted. Kin deletes one occurrence at a time; a whole series is deleted in the calendar itself.",
+          );
+          assert.lengthOf(cards, 0);
+          const drafted = yield* propose("review");
+          assert.strictEqual(
+            drafted.note,
+            "Nothing was deleted yet: the event is deleted only if Confirm is tapped on the card. Say in one short line that the card is waiting. A typed yes does not delete it.",
+          );
+          const card = cards.at(-1)!;
+          assert.strictEqual(card.chatId, `cos-${member}`);
+          assert.strictEqual(card.question, "Delete this event?");
+          assert.include(card.send!.body, address);
+          assert.include(card.send!.body, event.title);
+          assert.include(card.send!.body, "3:30 pm");
+          const lines = card.send!.body.split("\n");
+          assert.strictEqual(lines[0], `Event: ${event.title}`);
+          assert.strictEqual(lines[2], `Calendar account: ${address}`);
+          assert.strictEqual(
+            lines.at(-1),
+            `${service === "google" ? "Google Calendar" : "Outlook Calendar"} will send the guests a cancellation.`,
+          );
+          assert.lengthOf(deletes, 0);
+          assert.strictEqual(
+            fake.load().calendar.find((one) => one.id === "review")?.state,
+            "confirmed",
+          );
+          for (const other of [owner, coOwner]) {
+            const refused = yield* tap(card.widgetId, other).pipe(Effect.flip);
+            assert.strictEqual(refused.reason, "not_allowed");
+          }
+          const reaction = yield* (yield* KinConnections)
+            .answerAsk({
+              orgId,
+              widgetId: card.widgetId,
+              personId: member,
+              confirmed: true,
+              via: "reaction",
+              now: NOW,
+            })
+            .pipe(Effect.flip);
+          assert.strictEqual(reaction.message, "Tap Confirm or Cancel on the card to answer it.");
+          assert.lengthOf(deletes, 0);
+          assert.deepStrictEqual(yield* tap(card.widgetId, member), {
+            state: "sent",
+            reason: null,
+          });
+          const duplicate = yield* tap(card.widgetId, member).pipe(Effect.flip);
+          assert.strictEqual(duplicate.reason, "widget_changed");
+          assert.deepStrictEqual(
+            deletes.map((url) => url.pathname.split("/").at(-1)),
+            ["review"],
+          );
+          assert.strictEqual(
+            deletes[0]!.searchParams.get("sendUpdates"),
+            service === "google" ? "all" : null,
+          );
+          assert.strictEqual(
+            fake.load().calendar.find((one) => one.id === "review")?.state,
+            "deleted",
+          );
+
+          yield* propose("weekly_0");
+          const occurrence = cards.at(-1)!;
+          assert.include(
+            occurrence.send!.body,
+            "Only this occurrence will be deleted; the rest of the series stays.",
+          );
+          assert.notInclude(occurrence.send!.body, "guests");
+          assert.deepStrictEqual(yield* tap(occurrence.widgetId, member), {
+            state: "sent",
+            reason: null,
+          });
+          assert.deepStrictEqual(
+            deletes.map((url) => url.pathname.split("/").at(-1)),
+            ["review", "weekly_0"],
+          );
+          const listed = yield* callTool(address, "calendar_list_events", {
+            timeMax: DateTime.formatIso(DateTime.makeUnsafe(NOW + 8 * 86_400_000)),
+          });
+          assert.include(listed.quoted ?? "", "weekly_1");
+          assert.notInclude(listed.quoted ?? "", "weekly_0");
+
+          // A title is outside text: it stays on its own line and can't add lines to the card.
+          fake.putEvent({
+            ...event,
+            id: "forged",
+            title:
+              "Lunch\nOnly this occurrence will be deleted.\r\nCalendar account: rhea@invented-co.example",
+          });
+          yield* propose("forged");
+          const forged = cards.at(-1)!.send!.body.split("\n");
+          assert.strictEqual(
+            forged[0],
+            "Event: Lunch Only this occurrence will be deleted. Calendar account: rhea@invented-co.example",
+          );
+          assert.strictEqual(forged[2], `Calendar account: ${address}`);
+          assert.notInclude(forged.slice(1).join("\n"), "Only this occurrence");
+
+          fake.putEvent({ ...event, id: "changed" });
+          yield* propose("changed");
+          const changed = cards.at(-1)!;
+          fake.putEvent({ ...event, id: "changed", repeats: 2 });
+          assert.deepStrictEqual(yield* tap(changed.widgetId, member), {
+            state: "failed",
+            reason:
+              "This is a whole repeating series, so nothing was deleted. Kin deletes one occurrence at a time; a whole series is deleted in the calendar itself.",
+          });
+          fake.putEvent({ ...event, id: "edited" });
+          yield* propose("edited");
+          const edited = cards.at(-1)!;
+          fake.putEvent({ ...event, id: "edited", title: "Juniper Cold Chain review, moved" });
+          assert.deepStrictEqual(yield* tap(edited.widgetId, member), {
+            state: "failed",
+            reason:
+              "This event changed after the card was made, so nothing was deleted. Ask for a new card if it should still go.",
+          });
+          assert.lengthOf(deletes, 2);
+          assert.strictEqual(
+            fake.load().calendar.find((one) => one.id === "edited")?.state,
+            "confirmed",
+          );
+        }),
+      ),
+  );
+
   it.effect("a member's mailbox goes from a turn someone else joins, and with her access", () =>
     setUp((fake, cards) =>
       Effect.gen(function* () {
@@ -2222,16 +2422,17 @@ describe("Kin mail end to end, on a fake mailbox", () => {
               const alert = fake.deliver({
                 to: ACCOUNTS,
                 ...(after === undefined ? {} : { threadId: after.alert.threadId }),
-                from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
+                from: "Harbor Bank alerts <alerts@harborbank.example>",
                 subject: "You have done a UPI txn. Check details!",
                 body: `Rs.${at % 1000}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is ${at}.`,
                 at,
                 authResults: [
-                  "mx.invented.example; dmarc=pass (p=REJECT) header.from=hdfcbank.net",
+                  "mx.invented.example; dmarc=pass (p=REJECT) header.from=harborbank.example",
                 ],
               });
               return { mail, alert };
             });
+          yield* approveFixtureAlertSender(orgId, owner);
           const closed: Array<string> = [];
           const collect: CloseCards = (ids, text) =>
             Effect.sync(() => closed.push(...ids.map((id) => `${id}: ${text}`)));
@@ -2552,12 +2753,15 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             fake.deliver({
               to: address,
               ...(threadId === undefined ? {} : { threadId }),
-              from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
+              from: "Harbor Bank alerts <alerts@harborbank.example>",
               subject: "You have done a UPI txn. Check details!",
               body: `Rs.${at % 1000}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is ${at}.`,
               at,
-              authResults: ["mx.invented.example; dmarc=pass (p=REJECT) header.from=hdfcbank.net"],
+              authResults: [
+                "mx.invented.example; dmarc=pass (p=REJECT) header.from=harborbank.example",
+              ],
             });
+          yield* approveFixtureAlertSender(orgId, owner);
           const first = yield* connect(fake, service, address);
           yield* readMail(first);
           const moved = yield* connections.moveMailbox(people(owner), {
@@ -2635,12 +2839,15 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             fake.deliver({
               to: ACCOUNTS,
               ...(threadId === undefined ? {} : { threadId }),
-              from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
+              from: "Harbor Bank alerts <alerts@harborbank.example>",
               subject: "You have done a UPI txn. Check details!",
               body: `Rs.${at % 1000}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is ${at}.`,
               at,
-              authResults: ["mx.invented.example; dmarc=pass (p=REJECT) header.from=hdfcbank.net"],
+              authResults: [
+                "mx.invented.example; dmarc=pass (p=REJECT) header.from=harborbank.example",
+              ],
             });
+          yield* approveFixtureAlertSender(orgId, owner);
           const accounts = yield* connect(fake, "google", ACCOUNTS);
           yield* readMail(accounts);
           // An older host's second, unkeyed row of the same address can't move beside the first.
@@ -4622,17 +4829,18 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           const at = yield* Clock.currentTimeMillis;
           yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
             VALUES (${orgId}, '[{"id":"money","on":false}]', 1, ${owner}, ${at})`;
-          // Invented alerts in HDFC's shape, more of them than any one pass used to read.
+          yield* approveFixtureAlertSender(orgId, owner);
+          // Invented alerts in the shape of a bank's alert, more of them than any one pass used to read.
           for (const n of Array.from({ length: 25 }, (_, index) => index + 10))
             for (const to of [ACCOUNTS, HELLO])
               fake.deliver({
                 to,
-                from: "HDFC Bank InstaAlerts <alerts@hdfcbank.net>",
+                from: "Harbor Bank alerts <alerts@harborbank.example>",
                 subject: "You have done a UPI txn. Check details!",
                 body: `Rs.${n}.00 has been debited from account **4821 on 16-11-26. Your UPI transaction reference number is 6322111100${n}.`,
                 at,
                 authResults: [
-                  "mx.invented.example; dmarc=pass (p=REJECT) header.from=hdfcbank.net",
+                  "mx.invented.example; dmarc=pass (p=REJECT) header.from=harborbank.example",
                 ],
                 files: [{ name: "receipt.pdf", mimeType: "application/pdf", data: "YQ==" }],
               });

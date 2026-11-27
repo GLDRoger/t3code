@@ -104,7 +104,7 @@ export const KIN_OWN_REFUSAL = {
   payment:
     "No person started this turn, so Kin records and takes back no payment in it: tell the owner what you found and leave the payment to them.",
   review:
-    "No person started this turn, so Kin posts no review in it: put the review to the owner in your reply and leave posting it to them.",
+    "No person started this turn, so Kin posts no review in it: send the review to the owner with kin_send and leave posting it to them.",
 } as const;
 
 /** Refuses an agent's write in a turn no person started; anyone else's passes. */

@@ -37,6 +37,7 @@ import {
   type OutsideSource,
   outsideKey,
   poll,
+  wakeMatches,
 } from "./outside.ts";
 
 // Invented company, people, mail and calendar only; nothing here reads a real database or service.
@@ -1144,78 +1145,59 @@ describe("pulse check-ins", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect(
-    "between check-ins, only mail a watch matches or a new person wakes an agent, once",
-    () =>
-      Effect.gen(function* () {
-        yield* seed;
-        yield* record({ key: "C-1", list: "clients", title: "Lumen" });
-        yield* record({
-          key: "CT-1",
-          list: "contacts",
-          title: "Priya",
-          partyId: "r-C-1",
-          fields: '{"email":"priya@lumen.example"}',
-        });
-        yield* record({ key: "INV-4", list: "invoices", title: "October", state: "waiting" });
-        const lines = [
-          mail("t1:a", "Shop <news@shop.example>", "Weekend sale"),
-          mail("t2:a", "Priya <priya@lumen.example>", "Re: launch date"),
-          mail("t3:a", "accounts@lumen.example", "Re: INV-4 for October"),
-          // INV-40 is not INV-4.
-          mail("t4:a", "accounts@other.example", "INV-40 attached"),
-        ];
-        // Sent to one of the company's addresses: a person Kin doesn't know is maybe a new client
-        // (H07); a list, a no-reply sender or the company's own people are not.
-        const toUs = (line: KinPulseOutsideLine) => ({ ...line, to: "hello@studio.example" });
-        const unknown = [
-          toUs(
-            mail("t5:a", "Meera Iyer <meera@lumengrove.example>", "Booking app for our clinics"),
-          ),
-          toUs(mail("t6:a", "Shop <news@shop.example>", "Weekend sale")),
-          toUs(mail("t7:a", "Bank <no-reply@bank.example>", "Your statement")),
-          toUs(mail("t8:a", "Offers <deals@em.shop.example>", "Just for you")),
-          toUs(mail("t9:a", "Dev <dev@studio.example>", "Lunch?")),
-        ];
-        assert.lengthOf(
-          yield* poll(orgId, SLOT, source([lines[0]!, lines[3]!, ...unknown.slice(1)])),
-          0,
-        );
-        assert.lengthOf(yield* pulseEvents, 0);
-        assert.sameMembers(yield* poll(orgId, SLOT, source([...lines, ...unknown])), [
-          "t2:a",
-          "t3:a",
-          "t5:a",
-        ]);
-        assert.lengthOf(yield* poll(orgId, SLOT + 3 * MINUTE, source(lines)), 0);
-        const events = yield* pulseEvents;
-        assert.sameMembers(
-          events.map((event) => event.agent),
-          [chief, finance, chief],
-        );
-        const sql = yield* SqlClient.SqlClient;
-        const wakeFor = (id: string) =>
-          events.find((event) => JSON.parse(event.json).outside[0].id === id)!;
-        const done = wakeFor("t2:a");
-        const failed = wakeFor("t5:a");
-        yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at,
-            ended_at, status, event_ids)
-          VALUES ('mail-wake', ${orgId}, ${chief}, 'replay', ${SLOT}, ${SLOT + MINUTE},
-            'completed', '[]')`;
-        yield* sql`UPDATE kin_events SET state = 'done', wakeup_id = 'mail-wake'
-          WHERE org_id = ${orgId} AND dedupe_key = ${done.key}`;
-        yield* sql`UPDATE kin_events SET state = 'failed'
-          WHERE org_id = ${orgId} AND dedupe_key = ${failed.key}`;
-        const outside = { lines: [...lines, ...unknown], seen: [] };
-        assert.include(yield* checkIn(SLOT + 5 * MINUTE, outside), { _tag: "queued", outside: 8 });
-        const checkInEvent = (yield* pulseEvents).find((event) =>
-          event.key.startsWith("checkin:"),
-        )!;
-        assert.notInclude(
-          JSON.parse(checkInEvent.json).outside.map((line: KinPulseOutsideLine) => line.id),
-          "t2:a",
-        );
-      }).pipe(Effect.provide(layer)),
+  it.effect("wakes once for a matching calendar change", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      yield* record({ key: "C-1", list: "clients", title: "Tidewater Freight" });
+      const calendar: KinPulseOutsideLine = {
+        source: "calendar",
+        connection: "Google",
+        id: "evt_391:2026-11-16T10:41:00.000Z",
+        at: "2026-11-16T10:41:00.000Z",
+        who: null,
+        subject: "Tidewater Freight launch",
+        where: null,
+      };
+      assert.deepStrictEqual(
+        yield* poll(
+          orgId,
+          SLOT,
+          source([calendar, { ...calendar, id: "evt_392", subject: "Lunch" }]),
+        ),
+        [calendar.id],
+      );
+      assert.deepStrictEqual(yield* poll(orgId, SLOT + 3 * MINUTE, source([calendar])), []);
+      const [event] = yield* pulseEvents;
+      assert.strictEqual(event?.agent, chief);
+      assert.deepStrictEqual(JSON.parse(event!.json).outside, [
+        { ...calendar, matched: "client C-1 Tidewater Freight" },
+      ]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a check-in carries failed mail watches and skips completed ones", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const done = mail("thread_391:a", "Zoya <zoya@tidewater.example>", "Launch date");
+      const failed = mail("thread_392:a", "Arjun <arjun@juniper.example>", "Delivery schedule");
+      yield* wakeMatches(orgId, SLOT, [
+        { line: done, domain: "chief", arrivalId: "arr_35175a463fe31728ae445d624f622185" },
+        { line: failed, domain: "chief", arrivalId: "arr_115ffc8c4421235ffc6213f643f7590a" },
+      ]);
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, model, started_at,
+          ended_at, status, event_ids)
+        VALUES ('mail-wake', ${orgId}, ${chief}, 'replay', ${SLOT}, ${SLOT + MINUTE},
+          'completed', '[]')`;
+      yield* sql`UPDATE kin_events SET state = 'done', wakeup_id = 'mail-wake'
+        WHERE org_id = ${orgId} AND dedupe_key = ${outsideKey(done)}`;
+      yield* sql`UPDATE kin_events SET state = 'failed'
+        WHERE org_id = ${orgId} AND dedupe_key = ${outsideKey(failed)}`;
+      const outside = { lines: [done, failed], seen: [] };
+      assert.include(yield* checkIn(SLOT + 5 * MINUTE, outside), { _tag: "queued", outside: 1 });
+      const checkInEvent = (yield* pulseEvents).find((event) => event.key.startsWith("checkin:"))!;
+      assert.deepStrictEqual(JSON.parse(checkInEvent.json).outside, [failed]);
+    }).pipe(Effect.provide(layer)),
   );
 
   it.effect(

@@ -70,7 +70,8 @@ const list = (value: unknown): ReadonlyArray<unknown> => (Array.isArray(value) ?
 const odata = (value: string) => `'${value.replaceAll("'", "''")}'`;
 
 type Request = {
-  readonly method?: "GET" | "POST" | "PATCH";
+  readonly method?: "GET" | "POST" | "PATCH" | "DELETE";
+  readonly revision?: string;
   readonly params?: Readonly<Record<string, string | undefined>>;
   readonly json?: unknown;
   /** A MIME message as Graph takes it: base64 in a text/plain body. */
@@ -98,6 +99,8 @@ const api = Effect.fn("KinMicrosoft.api")(function* (
   if (params.length > 0) built = HttpClientRequest.setUrlParams(built, Object.fromEntries(params));
   if (request.prefer !== undefined)
     built = HttpClientRequest.setHeader(built, "prefer", request.prefer);
+  if (request.revision !== undefined)
+    built = HttpClientRequest.setHeader(built, "if-match", request.revision);
   if (request.json !== undefined) built = HttpClientRequest.bodyJsonUnsafe(built, request.json);
   if (request.mime !== undefined)
     built = HttpClientRequest.bodyText(
@@ -139,7 +142,7 @@ const bodyText = (message: unknown) => {
 };
 
 const SUMMARY =
-  "id,conversationId,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,bodyPreview";
+  "id,conversationId,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,bodyPreview,webLink";
 const FULL = `${SUMMARY},replyTo,internetMessageId,hasAttachments,body,internetMessageHeaders`;
 const automationOf = (message: unknown) => ({
   listUnsubscribe: internetHeader(message, "List-Unsubscribe").length > 0,
@@ -152,8 +155,15 @@ const receivedOf = (message: unknown) => {
   const at = Date.parse(text(field(message, "receivedDateTime")) ?? "");
   return Number.isFinite(at) ? at : null;
 };
+const linkOf = (message: unknown) => {
+  const id = text(field(message, "id"));
+  const webLink = text(field(message, "webLink"));
+  const url = id && webLink ? URL.parse(webLink) : null;
+  return webLink && url?.protocol === "https:" && !url.username && !url.password ? { webLink } : {};
+};
 const messageOf = (message: unknown, files?: unknown): MailMessage => ({
   threadId: text(field(message, "conversationId")) ?? "",
+  ...linkOf(message),
   from: nameOf(field(message, "from")),
   fromAddress: addressOf(field(message, "from")),
   to: recipients(message, "toRecipients"),
@@ -206,6 +216,19 @@ const instant = (value: unknown) => {
     ? `${dateTime.replace(/\.\d+$/, "")}Z`
     : dateTime;
 };
+const recurrenceOf = (event: unknown) => {
+  switch (field(event, "type")) {
+    case "singleInstance":
+      return "single";
+    case "occurrence":
+    case "exception":
+      return "occurrence";
+    case "seriesMaster":
+      return "series";
+    default:
+      return null;
+  }
+};
 const eventOf = (event: unknown): MailCalendarEvent => ({
   eventId: text(field(event, "id")) ?? "",
   summary: text(field(event, "subject")) ?? null,
@@ -227,6 +250,9 @@ const eventOf = (event: unknown): MailCalendarEvent => ({
   notes: bodyText(event),
   meeting: text(field(event, "onlineMeeting", "joinUrl")) ?? null,
   updated: text(field(event, "lastModifiedDateTime")) ?? null,
+  recurrence: recurrenceOf(event),
+  revision: text(field(event, "@odata.etag")) ?? null,
+  notifiesGuests: field(event, "isOrganizer") === true,
 });
 const EVENT_FIELDS =
   "id,subject,start,end,isAllDay,location,organizer,attendees,isCancelled,bodyPreview";
@@ -713,6 +739,11 @@ const microsoft: MailVendor = {
   sendAs: microsoftSendAs,
   sendMessage,
   saveEvent,
+  deleteEvent: (http, token, { calendarId, eventId, revision }) =>
+    api({ http, token }, `${calendarBase(calendarId)}/events/${encodeURIComponent(eventId)}`, {
+      method: "DELETE",
+      revision,
+    }).pipe(Effect.as({ messageId: null, threadId: null, eventId })),
 };
 
 /** Outlook mail and calendar, for work or school and personal Microsoft accounts. */

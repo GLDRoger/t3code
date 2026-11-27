@@ -28,6 +28,7 @@ import { KinSocialToolkit } from "../social/mcp.ts";
 import { KinSalesToolkit } from "../sales/mcp.ts";
 import { KinPulseToolkit } from "../pulse/mcp.ts";
 import { KinDocumentToolkit } from "../gendocs/mcp.ts";
+import { KinToolchain } from "../gendocs/toolchain.ts";
 import { KinPictureToolkit } from "../pictures/mcp.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { KinDocsToolkit } from "../work/mcp/docTools.ts";
@@ -74,6 +75,7 @@ const external = Layer.mergeAll(
   }),
   Layer.mock(KinSocial)({ provider: zernio }),
   Layer.mock(KinPictures)({}),
+  Layer.mock(KinToolchain)({}),
   Layer.mock(PreviewBrowser.PreviewBrowser)({}),
   Layer.mock(ProcessRunner)({}),
   Layer.mock(ServerEnvironment.ServerEnvironment)({}),
@@ -106,6 +108,7 @@ vi.mock("../memory/Memory.ts", async (importOriginal) => {
           landingState: () => Effect.die("unused"),
           purgeInFlight: () => Effect.die("unused"),
           historyGeneration: () => Effect.die("unused"),
+          checkoutPaths: () => Effect.succeed({ writer: "/private/tmp", read: "/private/tmp" }),
           ensureCheckouts: () => Effect.succeed({ writer: "/private/tmp", read: "/private/tmp" }),
           prepareWakeup: () =>
             Effect.sync(() => {

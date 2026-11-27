@@ -1,5 +1,5 @@
 import type { MailArrival, MailAutomation } from "../connections/MailProvider.ts";
-import { looksLikeSignInMail, senderCheck } from "../connections/MailText.ts";
+import { looksLikeSignInMail, senderVerdictForAddress } from "../connections/MailText.ts";
 import { recordName } from "../work/recordRows.ts";
 
 /**
@@ -89,6 +89,7 @@ const escaped = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const AUTOMATED_SENDER =
   /^(?:no-?reply|do-?not-?reply|donotreply|notifications?|notify|mailer-daemon|postmaster|bounces?|news(?:letter)?|marketing|digest|alerts?|updates?)(?:[+._-]|@)/i;
+const NO_REPLY_SENDER = /^(?:no-?reply|do-?not-?reply|donotreply)(?:[+._-]|@)/i;
 const BULK_DOMAIN = /@(?:em|email|mail|mailer|bounce|news|newsletter|marketing|send|e)\d*\./i;
 const domainOf = (address: string) => address.slice(address.lastIndexOf("@") + 1);
 
@@ -107,22 +108,27 @@ const keyIn = (key: string, subject: string) =>
     subject.toLowerCase(),
   );
 
-/** DMARC failed, or with no DMARC pass, SPF or DKIM failed. */
-const failsSenderChecks = (results: ReadonlyArray<string>) => {
-  if (senderCheck(results) !== "not checked") return senderCheck(results) === "failed";
-  return /\b(?:spf|dkim)=(?:fail|softfail)\b/i.test(results.join(";"));
+const automationOf = (mail: MailAutomation, from: string) => {
+  const autoSubmitted = mail.autoSubmitted?.split(";", 1)[0]?.trim().toLowerCase();
+  if (autoSubmitted === "no") return undefined;
+  if (
+    autoSubmitted ||
+    /^\s*(?:bulk|junk)\s*$/i.test(mail.precedence ?? "") ||
+    (mail.listUnsubscribe && NO_REPLY_SENDER.test(from))
+  )
+    return "notice";
+  if (mail.bulk || AUTOMATED_SENDER.test(from) || BULK_DOMAIN.test(from)) return "automated";
+  return undefined;
 };
 
-const automated = (mail: MailAutomation, from: string) =>
-  mail.listUnsubscribe ||
-  /^\s*(?:bulk|list|junk)\b/i.test(mail.precedence ?? "") ||
-  (mail.autoSubmitted !== null && !/^\s*no\b/i.test(mail.autoSubmitted)) ||
-  mail.bulk ||
-  AUTOMATED_SENDER.test(from) ||
-  BULK_DOMAIN.test(from);
-
-export const isAutomatedNotice = (subject: string, headers: MailAutomation, from: string | null) =>
-  NOTICE_SUBJECT.test(subject) && automated(headers, from?.toLowerCase() ?? "");
+export const isAutomatedNotice = (
+  subject: string,
+  headers: MailAutomation,
+  from: string | null,
+) => {
+  const automation = automationOf(headers, from ?? "");
+  return automation === "notice" || (automation === "automated" && NOTICE_SUBJECT.test(subject));
+};
 
 const contactLine = (contact: ArrivalContact) =>
   `contact ${contact.key} ${contact.title}${contact.clientKey === null ? "" : ` of client ${contact.clientKey} ${contact.clientTitle ?? ""}`.trimEnd()}`;
@@ -144,7 +150,10 @@ export const classify = (mail: ArrivalHeaders, rows: ArrivalRows): Classified =>
       look: { by: { agentId: sender }, matched: "a reply to mail Kin sent in this thread" },
     };
   const contact = rows.contacts.get(from);
-  if (contact !== undefined && failsSenderChecks(mail.authResults)) {
+  if (
+    contact !== undefined &&
+    senderVerdictForAddress(mail.authResults, mail.fromAddress) === "failed"
+  ) {
     const reason = `This mail failed the sender checks for ${from}.`.slice(0, 200);
     return { class: "failed_checks", reason, look: { by: "chief", matched: reason } };
   }
@@ -177,13 +186,16 @@ export const classify = (mail: ArrivalHeaders, rows: ArrivalRows): Classified =>
       reason: "a sender whose bill was filed before",
       look: { by: "finance", matched: "a sender whose bill Kin filed before" },
     };
-  if (automated(mail, from)) {
+  const automation = automationOf(mail, from);
+  if (automation !== undefined) {
     const notice = NOTICE_SUBJECT.exec(mail.subject);
     if (notice !== null) {
       const reason = `automated mail whose subject says “${notice[0]}”`.slice(0, 200);
       const by = notice.groups?.finance === undefined ? "chief" : "finance";
       return { class: "automated_notice", reason, look: { by, matched: reason } };
     }
+    if (automation === "notice")
+      return { class: "automated_notice", reason: "automated mail identified by its headers" };
     return mail.hasFile
       ? // Recorded, not woken for: an unknown sender's receipt costs a whole turn to say nothing.
         { class: "automated_file", reason: "automated mail with a file: maybe a bill or receipt" }

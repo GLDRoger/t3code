@@ -80,14 +80,20 @@ const api = Effect.fn("KinGoogle.api")(function* (
   { http, token }: Pick<MailContext, "http" | "token">,
   url: string,
   params: Readonly<Record<string, string | ReadonlyArray<string> | undefined>> = {},
-  write?: { readonly method: "POST" | "PATCH"; readonly json: unknown },
+  write?:
+    | { readonly method: "POST" | "PATCH"; readonly json: unknown }
+    | { readonly method: "DELETE"; readonly revision: string },
 ) {
   const base =
     write === undefined
       ? HttpClientRequest.get(url)
-      : HttpClientRequest.make(write.method)(url).pipe(
-          HttpClientRequest.bodyJsonUnsafe(write.json),
-        );
+      : write.method === "DELETE"
+        ? HttpClientRequest.delete(url).pipe(
+            HttpClientRequest.setHeader("if-match", write.revision),
+          )
+        : HttpClientRequest.make(write.method)(url).pipe(
+            HttpClientRequest.bodyJsonUnsafe(write.json),
+          );
   const request = base.pipe(
     HttpClientRequest.acceptJson,
     HttpClientRequest.bearerToken(token),
@@ -124,29 +130,37 @@ const receivedOf = (message: unknown) => {
 
 /** A Gmail message; its body only in `full` format. */
 const messageOf =
-  (full: boolean, watch = false) =>
-  (message: unknown): MailMessage => ({
-    threadId: text(field(message, "threadId")) ?? "",
-    from: header(message, "From"),
-    fromAddress: addressesIn(header(message, "From"))[0] ?? null,
-    to: addressesIn(header(message, "To")),
-    replyTo: addressesIn(header(message, "Reply-To")),
-    toLine: header(message, "To"),
-    ccLine: header(message, "Cc"),
-    deliveredTo: RECIPIENT_HEADERS.flatMap((name) =>
-      headerValues(message, name).flatMap(addressesIn),
-    ),
-    date: header(message, "Date"),
-    receivedAt: receivedOf(message),
-    subject: header(message, "Subject") ?? "",
-    preview: htmlToText(text(field(message, "snippet")) ?? ""),
-    unread: list(field(message, "labelIds")).includes("UNREAD"),
-    messageId: header(message, "Message-ID"),
-    references: header(message, "References"),
-    authResults: headerValues(message, "Authentication-Results"),
-    ...(watch ? { automation: automationOf(message) } : {}),
-    body: full ? messageBody(field(message, "payload")) : null,
-  });
+  (account: string | null, full: boolean, watch = false) =>
+  (message: unknown): MailMessage => {
+    const threadId = text(field(message, "threadId")) ?? "";
+    return {
+      threadId,
+      ...(account && threadId
+        ? {
+            webLink: `https://mail.google.com/mail/?authuser=${encodeURIComponent(account)}#all/${encodeURIComponent(threadId)}`,
+          }
+        : {}),
+      from: header(message, "From"),
+      fromAddress: addressesIn(header(message, "From"))[0] ?? null,
+      to: addressesIn(header(message, "To")),
+      replyTo: addressesIn(header(message, "Reply-To")),
+      toLine: header(message, "To"),
+      ccLine: header(message, "Cc"),
+      deliveredTo: RECIPIENT_HEADERS.flatMap((name) =>
+        headerValues(message, name).flatMap(addressesIn),
+      ),
+      date: header(message, "Date"),
+      receivedAt: receivedOf(message),
+      subject: header(message, "Subject") ?? "",
+      preview: htmlToText(text(field(message, "snippet")) ?? ""),
+      unread: list(field(message, "labelIds")).includes("UNREAD"),
+      messageId: header(message, "Message-ID"),
+      references: header(message, "References"),
+      authResults: headerValues(message, "Authentication-Results"),
+      ...(watch ? { automation: automationOf(message) } : {}),
+      body: full ? messageBody(field(message, "payload")) : null,
+    };
+  };
 
 const threadsOf = Effect.fn("KinGoogle.threads")(function* (
   context: MailContext,
@@ -183,9 +197,23 @@ const threadsById = (context: MailContext, ids: ReadonlyArray<string>, watch = f
           ...RECIPIENT_HEADERS,
           ...(watch ? AUTOMATION_HEADERS : []),
         ],
-      }).pipe(Effect.map((thread) => list(field(thread, "messages")).map(messageOf(false, watch)))),
+      }).pipe(
+        Effect.map((thread) =>
+          list(field(thread, "messages")).map(messageOf(context.mailbox.account, false, watch)),
+        ),
+      ),
     { concurrency: 5 },
   );
+
+const recurrenceOf = (event: unknown) => {
+  const recurrence = field(event, "recurrence");
+  const master = field(event, "recurringEventId");
+  if (Array.isArray(recurrence) && recurrence.length > 0) return "series";
+  if (typeof master === "string" && master !== "") return "occurrence";
+  return master === undefined && (recurrence === undefined || Array.isArray(recurrence))
+    ? "single"
+    : null;
+};
 
 const eventOf = (event: unknown): MailCalendarEvent => ({
   eventId: text(field(event, "id")) ?? "",
@@ -204,6 +232,9 @@ const eventOf = (event: unknown): MailCalendarEvent => ({
   notes: htmlToText(text(field(event, "description")) ?? ""),
   meeting: text(field(event, "hangoutLink")) ?? null,
   updated: text(field(event, "updated")) ?? null,
+  recurrence: recurrenceOf(event),
+  revision: text(field(event, "etag")) ?? null,
+  notifiesGuests: field(event, "organizer", "self") === true,
 });
 const calendarOf = (calendarId: string | undefined) =>
   `${CALENDAR}/${encodeURIComponent(calendarId ?? "primary")}/events`;
@@ -466,7 +497,9 @@ const google: MailVendor = {
     }),
   thread: (context, threadId) =>
     api(context, `${GMAIL}/threads/${encodeURIComponent(threadId)}`, { format: "full" }).pipe(
-      Effect.map((thread) => list(field(thread, "messages")).map(messageOf(true))),
+      Effect.map((thread) =>
+        list(field(thread, "messages")).map(messageOf(context.mailbox.account, true)),
+      ),
     ),
   events: (context, query) =>
     api(context, calendarOf(query.calendarId), {
@@ -525,6 +558,13 @@ const google: MailVendor = {
   sendAs: googleSendAs,
   sendMessage,
   saveEvent,
+  deleteEvent: (http, token, { calendarId, eventId, revision }) =>
+    api(
+      { http, token },
+      `${calendarOf(calendarId)}/${encodeURIComponent(eventId)}`,
+      { sendUpdates: "all" },
+      { method: "DELETE", revision },
+    ).pipe(Effect.as({ messageId: null, threadId: null, eventId })),
 };
 
 /** Gmail and Google Calendar behind Kin's mail tools. */

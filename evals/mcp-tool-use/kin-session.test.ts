@@ -56,8 +56,8 @@ it("places every legacy wake-up block exactly once, splitting the server's tagge
   assert.deepEqual(failures, []);
 });
 
-const legacyRequestPin = "7a0ab3560e6da7968e8c5f3c904269643588133f5546ec31377ee0fa419e76a8";
-const sessionRequestPin = "1ed3c4be2161c7c39fd30fb2b7d33062b03731a361113d2a3e2b3866eff28c7a";
+const legacyRequestPin = "bb6570fdd3cbd0ff5bf6700f5f3b439b580e3ffbf920d40222de9893cd254ac2";
+const sessionRequestPin = "df6e62a42055826fc241aeb32f3607c49fd3dcfa42b3326c55bc39c8ef6b6346";
 const pinnedIds = [
   "kin-lead-rereads-github-hint",
   "kin-lead-uses-display-name",
@@ -481,7 +481,7 @@ it("lets the run override Kin's default effort", () => {
   assert.equal(ownerFirstRequest("low").output_config.effort, "low");
 });
 
-it("uses the thirteen-tool Claude owner core, keeps WebSearch deferred, and drops WebFetch", () => {
+it("uses the fourteen-tool Claude owner core, keeps WebSearch deferred, and drops WebFetch", () => {
   const { tools, messages } = ownerFirstRequest();
   assert.sameMembers(
     tools
@@ -500,6 +500,7 @@ it("uses the thirteen-tool Claude owner core, keeps WebSearch deferred, and drop
       "doc_create",
       "record_create",
       "kin_ask",
+      "kin_send",
       "kin_skip",
     ].map((name) => `mcp__t3-code__${name}`),
   );

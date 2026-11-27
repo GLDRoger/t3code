@@ -1981,7 +1981,8 @@ const makeVendor = (fake: Fake, options: { readonly s256?: boolean } = {}) => {
             { name: "Message-ID", value: "<m1@client.example>" },
             {
               name: "Authentication-Results",
-              value: "mx.google.com; dkim=pass; spf=pass; dmarc=pass",
+              value:
+                "mx.google.com; dkim=pass header.i=@client.example; spf=pass smtp.mailfrom=ana@client.example; dmarc=pass (p=REJECT) header.from=client.example",
             },
           ],
           parts:
@@ -2467,7 +2468,7 @@ describe("KinConnections sign-in", () => {
         assert.isTrue(done.tools.every((tool) => tool.mode === "off"));
         assert.deepStrictEqual(
           done.tools.filter((tool) => tool.suggestedMode === "ask").map((tool) => tool.name),
-          ["calendar_save_event", "mail_reply", "mail_send"],
+          ["calendar_delete_event", "calendar_save_event", "mail_reply", "mail_send"],
         );
         assert.isTrue(done.connection.needsSignInToSend);
         assert.isTrue(done.tools.every((tool) => !tool.openWorld));

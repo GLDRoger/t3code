@@ -21,6 +21,7 @@ export const SECTIONS = {
     kin_ask: null,
     kin_ask_close: null,
     kin_ask_person: null,
+    kin_send: null,
     kin_skip: null,
     kin_react: null,
     message_withdraw: null,
@@ -224,10 +225,6 @@ export const SECTIONS = {
     client_cold: "clients",
     client_waiting_on_us: "clients",
     goal_behind: null,
-    pr_open_long: null,
-    pr_failing: null,
-    pr_review_waiting: null,
-    pr_ready: null,
     milestone_late: "clients",
     milestone_at_risk: "clients",
     project_no_plan: "clients",
@@ -253,7 +250,10 @@ export const SECTIONS = {
     notice_due: null,
     bill_due: "money",
     bill_paid_seen: "money",
-  } satisfies Record<KinPulseSense, SectionId | null>,
+  } satisfies Record<
+    Exclude<KinPulseSense, "pr_open_long" | "pr_failing" | "pr_review_waiting" | "pr_ready">,
+    SectionId | null
+  >,
 };
 
 const section = (table: Readonly<Record<string, SectionId | null>>, id: string) =>

@@ -25,15 +25,15 @@ import { fullSessionRefusal } from "../AgentSession.ts";
 import { SESSION_REFUSAL } from "../Audience.ts";
 import { approvedWakeup, ownerOnlyWakeup } from "../Audience.testkit.ts";
 import { KinAgentSessionPolicy } from "../sessionPolicy.ts";
-import type { Answer, ProviderFake } from "./conformance.testkit.ts";
+import type { Answer, Observed, ProviderFake } from "./conformance.testkit.ts";
 import { KIN_PROVIDERS } from "./providers.ts";
-import { acpFake } from "./providers/acp.testkit.ts";
+import { acpFake, antigravityFake, makeAcpFake } from "./providers/acp.testkit.ts";
 import { claudeFake } from "./providers/claude.testkit.ts";
 import { codexFake } from "./providers/codex.testkit.ts";
 import { CONFINED_WEB_SEARCH, kinInstructions } from "./session.ts";
 
 /** Every registered provider has a fake; a provider without one fails here, not in production. */
-const FAKES: ReadonlyArray<ProviderFake> = [claudeFake, codexFake, acpFake];
+const FAKES: ReadonlyArray<ProviderFake> = [claudeFake, codexFake, acpFake, antigravityFake];
 
 const AGENT = "Tech lead";
 const PINNED = "/kin-home/kin-tools/gh-pinned";
@@ -47,6 +47,7 @@ const host = {
 const kin = (
   refusal: (thread: ThreadId) => string | undefined,
   policy?: (thread: ThreadId) => Effect.Effect<string | undefined>,
+  onPlan?: () => void,
 ) =>
   Layer.succeed(KinServer, {
     taskCardUpdater: Layer.empty,
@@ -56,7 +57,11 @@ const kin = (
         KinAgentSessionPolicy.of({
           refusal: (thread) => policy?.(thread) ?? Effect.sync(() => refusal(thread)),
           webSearch: (thread) => Effect.sync(() => refusal(thread)),
-          delegated: (thread) => Effect.succeed(thread === "task-from-lead"),
+          delegated: (thread) =>
+            Effect.sync(() => {
+              onPlan?.();
+              return thread === "task-from-lead";
+            }),
           toolDirectories: [PINNED],
           agentName: () => Effect.succeed(AGENT),
         }),
@@ -65,8 +70,8 @@ const kin = (
     subscribeForViewer: Option.none(),
   });
 
-const open = (
-  fake: ProviderFake,
+const open = <Session extends Observed>(
+  fake: ProviderFake<Session>,
   thread: string,
   options: {
     readonly cwd?: (stateDir: string) => string;
@@ -75,6 +80,7 @@ const open = (
     readonly policy?: (thread: ThreadId) => Effect.Effect<string | undefined>;
     readonly enabled?: boolean;
     readonly model?: string;
+    readonly onPlan?: () => void;
   } = {},
 ) =>
   Effect.gen(function* () {
@@ -89,7 +95,7 @@ const open = (
   }).pipe(
     Effect.provide(
       Layer.merge(
-        kin(options.refusal ?? (() => undefined), options.policy),
+        kin(options.refusal ?? (() => undefined), options.policy, options.onPlan),
         ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: options.enabled ?? true })),
       ),
     ),
@@ -116,6 +122,61 @@ it("every registered provider has a conformance fake and its lacks match its des
     if ((facts?.limits.length ?? 0) > 0) assert.isTrue(facts?.devOnly, provider.driver);
   }
 });
+
+it("providers declare deferred tool lookup and beside-message context support", () => {
+  assert.deepStrictEqual(
+    KIN_PROVIDERS.map(({ driver, lookup, turnContextBeside }) => [
+      driver,
+      lookup,
+      turnContextBeside,
+    ]),
+    [
+      ["claudeAgent", "provider", true],
+      ["codex", "provider", false],
+      ["acpRegistry", "none", false],
+      ["antigravity", "none", false],
+    ],
+  );
+});
+
+it.effect.each([
+  ["antigravity", false],
+  ["antigravity", true],
+  ["acpRegistry", false],
+  ["grok", false],
+] as const)(
+  "maps ACP instructions once for %s (system append advertised: %s)",
+  ([driver, append]) =>
+    Effect.gen(function* () {
+      const { stateDir } = yield* ServerConfig.ServerConfig;
+      const expectedDriver = driver === "grok" ? "acpRegistry" : driver;
+      const fake = makeAcpFake(driver, append);
+      let plans = 0;
+      const onPlan = () => {
+        plans++;
+      };
+      const owner = yield* open(fake, "kin:tech", { onPlan });
+      const instructions = kinInstructions("owner", expectedDriver);
+      assert.strictEqual(owner.wire.append, append ? instructions : undefined);
+      assert.strictEqual(owner.wire.prompt.split(instructions).length - 1, append ? 0 : 1);
+      assert.notInclude(owner.wire.prompt, "T3's guidance");
+      assert.notInclude(owner.wire.prompt, "<pull_request_linking>");
+      assert.include(owner.wire.prompt, "<user_request>\nhi\n</user_request>");
+      assert.strictEqual(plans, 1);
+      const delegated = yield* open(fake, "task-from-lead", { cwd: () => `${stateDir}/scratch` });
+      assert.include(delegated.wire.prompt, "T3's guidance");
+      if (append) assert.include(delegated.wire.append, "<pull_request_linking>");
+      if (driver === "antigravity" && !append)
+        assert.include(delegated.wire.prompt, "<pull_request_linking>");
+      const shared = yield* open(fake, "kin-shared:tech");
+      const confined = kinInstructions("confined", expectedDriver);
+      assert.strictEqual(shared.wire.append, append ? confined : undefined);
+      assert.strictEqual(shared.wire.prompt.split(confined).length - 1, append ? 0 : 1);
+      assert.notInclude(shared.wire.prompt, "T3's guidance");
+      assert.notInclude(shared.wire.prompt, "<pull_request_linking>");
+      assert.isFalse(shared.builtins);
+    }).pipe(Effect.provide(layer(`kin-acp-instructions-${driver}-`))),
+);
 
 const limited = (driver: string, limit: KinProviderLimit) =>
   kinProviderFacts(driver)?.limits.includes(limit) ?? false;

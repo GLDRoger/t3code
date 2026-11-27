@@ -5607,5 +5607,14 @@
   "856812e7e1fc445e": "Llamadas a herramientas en el chat",
   "8d545d54c0a9e950": "Oculta los comandos, ediciones y búsquedas que ejecutan los agentes. Ocultar las correctas mantiene los fallos. Zen solo muestra las respuestas finales. Las aprobaciones, preguntas y errores siempre se muestran.",
   "99d51127f573296b": "Otra cuenta",
-  "8ec2c57414669b79": "Conecta un segundo espacio de trabajo o usuario de {tracker}."
+  "8ec2c57414669b79": "Conecta un segundo espacio de trabajo o usuario de {tracker}.",
+  "23fd04041c903c54": "Right away",
+  "9bcfd336d2f09a0a": "After 6 hours",
+  "e2bd6c2b77505107": "After 12 hours",
+  "0e4dd1f47ea0eb69": "After 24 hours",
+  "807d85adf70f3ac1": "Chats",
+  "4b58cd997a54f9da": "Settle read chats",
+  "36f2affbd51139e8": "A chat you have read moves under Settled this long after its last message. Unread chats and chats that need you always stay up.",
+  "9d981131ade0488f": "Couldn't save that.",
+  "bfbcb7fa64c13d58": "Add an environment to load projects and start coding sessions."
 }

@@ -2,6 +2,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
@@ -34,6 +35,7 @@ import {
   hasClaudeManagedMcpConfig,
   makeClaudeEnvironment,
 } from "../provider/Drivers/ClaudeHome.ts";
+import { readClaudeUserSettings } from "../provider/Drivers/ClaudeSkills.ts";
 import { readClaudeLaunchArgSettings } from "../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { resolveAttachmentPath } from "../attachmentStore.ts";
 import * as ServerConfig from "../config.ts";
@@ -63,6 +65,9 @@ const IMAGES_UNSUPPORTED =
 const ClaudeOutputEnvelope = Schema.Struct({
   structured_output: Schema.Unknown,
 });
+const decodeClaudePlainResult = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Struct({ result: Schema.String })),
+);
 const ClaudeOutputMessage = Schema.Struct({
   type: Schema.String,
   structured_output: Schema.optionalKey(Schema.Unknown),
@@ -99,6 +104,42 @@ function claudeErrorResult(stdout: string): string | undefined {
       ).trim(),
     )
     .findLast((result) => result.length > 0);
+}
+
+export function isClaudeSignInEnvName(name: string): boolean {
+  return (
+    name.startsWith("ANTHROPIC_") ||
+    name.startsWith("AWS_") ||
+    name.startsWith("CLAUDE_CODE_USE_") ||
+    name === "CLOUD_ML_REGION" ||
+    name === "HTTPS_PROXY" ||
+    name === "HTTP_PROXY" ||
+    name === "NO_PROXY" ||
+    name === "NODE_EXTRA_CA_CERTS"
+  );
+}
+
+function claudeSignInSettings(
+  userSettings: Record<string, unknown> | undefined,
+  launchArgSettings: Record<string, unknown> | undefined,
+) {
+  const { apiKeyHelper } = { ...userSettings, ...launchArgSettings };
+  const userEnv = userSettings?.env;
+  const launchEnv = launchArgSettings?.env;
+  const env = Object.fromEntries(
+    Object.entries({
+      ...(Predicate.isObject(userEnv) ? userEnv : {}),
+      ...(Predicate.isObject(launchEnv) ? launchEnv : {}),
+    }).filter(
+      (entry): entry is [string, string] =>
+        isClaudeSignInEnvName(entry[0]) && typeof entry[1] === "string",
+    ),
+  );
+  return {
+    argSettings:
+      typeof apiKeyHelper === "string" && apiKeyHelper.length > 0 ? { apiKeyHelper } : {},
+    env,
+  };
 }
 
 export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(function* (
@@ -242,23 +283,43 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         : undefined;
     const fastMode =
       fastModeDescriptor?.type === "boolean" ? fastModeDescriptor.currentValue : undefined;
-    const launchArgSettings = yield* readClaudeLaunchArgSettings({
+    const toolFree = operation === "generateStructuredText";
+    const readLaunchArgSettings = readClaudeLaunchArgSettings({
       settings: claudeSettings,
       cwd,
       fileSystem,
       path,
-    }).pipe(
-      Effect.mapError(
-        (cause) => new TextGenerationError({ operation, detail: cause.message, cause }),
-      ),
-    );
+    });
+    const signInSettings = toolFree
+      ? claudeSignInSettings(
+          yield* readClaudeUserSettings(claudeSettings, workingDirectory, claudeEnvironment).pipe(
+            Effect.provideService(FileSystem.FileSystem, fileSystem),
+            Effect.provideService(Path.Path, path),
+          ),
+          yield* readLaunchArgSettings.pipe(Effect.orElseSucceed(() => undefined)),
+        )
+      : undefined;
     const settings = {
-      ...launchArgSettings,
+      ...(signInSettings?.argSettings ??
+        (yield* readLaunchArgSettings.pipe(
+          Effect.mapError(
+            (cause) => new TextGenerationError({ operation, detail: cause.message, cause }),
+          ),
+        ))),
       disableAllHooks: true,
       ...(typeof thinking === "boolean" ? { alwaysThinkingEnabled: thinking } : {}),
       ...(fastMode ? { fastMode: true } : {}),
       ...(typeof ultracode === "boolean" ? { ultracode } : {}),
     };
+    const launchEnvironment =
+      signInSettings === undefined
+        ? claudeEnvironment
+        : {
+            ...claudeEnvironment,
+            ...signInSettings.env,
+            CLAUDE_CODE_SKIP_PROMPT_HISTORY: "1",
+            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+          };
     const settingsJson = yield* encodeJsonForOperation(
       operation,
       settings,
@@ -287,6 +348,12 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       const streamJson = withImages && imageStdin !== undefined;
       const stdin = streamJson ? imageStdin : prompt;
       const managedMcpConfig = yield* hasClaudeManagedMcpConfig();
+      if (toolFree && managedMcpConfig) {
+        return yield* new TextGenerationError({
+          operation,
+          detail: "Claude managed MCP configuration prevents tool-free text generation.",
+        });
+      }
       const spawnCommand = yield* resolveSpawnCommand(
         claudeSettings.binaryPath || "claude",
         [
@@ -294,8 +361,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           ...(streamJson
             ? ["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
             : ["--output-format", "json"]),
-          "--json-schema",
-          jsonSchemaStr,
+          ...(toolFree ? [] : ["--json-schema", jsonSchemaStr]),
           "--model",
           apiModelId,
           ...(cliEffort ? ["--effort", cliEffort] : []),
@@ -311,7 +377,11 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
                 CLAUDE_INVESTIGATION_DENIED,
               ]
             : ["--tools", ""]),
-          ...(investigate ? ["--setting-sources", "user"] : []),
+          ...(toolFree
+            ? ["--safe-mode", "--setting-sources", "", "--disallowedTools", "mcp__*"]
+            : investigate
+              ? ["--setting-sources", "user"]
+              : []),
           "--disable-slash-commands",
           ...(noSessionPersistence ? [NO_SESSION_PERSISTENCE] : []),
           // managed-mcp.json already isolates servers and makes Claude reject this flag.
@@ -319,10 +389,10 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           "--permission-mode",
           "dontAsk",
         ],
-        { env: claudeEnvironment },
+        { env: launchEnvironment },
       );
       const command = ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-        env: claudeEnvironment,
+        env: launchEnvironment,
         cwd: workingDirectory,
         shell: spawnCommand.shell,
         stdin: {
@@ -364,7 +434,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       runClaudeCommand(true, withImages).pipe(
         Effect.filterOrElse(
           (result) =>
-            result.exitCode === 0 || !result.stderr.includes(NO_SESSION_PERSISTENCE_REJECTED),
+            toolFree ||
+            result.exitCode === 0 ||
+            !result.stderr.includes(NO_SESSION_PERSISTENCE_REJECTED),
           () => runClaudeCommand(false, withImages),
         ),
       );
@@ -385,8 +457,29 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
             ),
           ),
       ),
+      // A subprocess error's cause can include the full command line.
+      Effect.mapError((error) =>
+        toolFree && error.cause !== undefined
+          ? new TextGenerationError({ operation, detail: error.detail })
+          : error,
+      ),
       Effect.flatMap(({ stdout, stderr, exitCode }) => {
         if (exitCode === 0) return Effect.succeed(stdout);
+        if (toolFree) {
+          const cliError = claudeErrorResult(stdout);
+          const echoedSettings = [
+            signInSettings?.argSettings.apiKeyHelper,
+            ...Object.values(signInSettings?.env ?? {}),
+          ].some((value) => value && cliError?.includes(value));
+          return Effect.fail(
+            new TextGenerationError({
+              operation,
+              detail: `Claude text generation failed with code ${exitCode}${
+                cliError && !echoedSettings ? `: ${cliError.slice(0, 160)}` : "."
+              }`,
+            }),
+          );
+        }
         const stderrDetail = stderr.trim();
         const stdoutDetail = stdout.trim();
         const detail =
@@ -415,6 +508,23 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       ),
     );
 
+    if (toolFree) {
+      const plain = yield* decodeClaudePlainResult(rawStdout).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TextGenerationError({
+              operation,
+              detail: "Claude CLI returned unexpected output format.",
+              cause,
+            }),
+        ),
+      );
+      return yield* TextGenerationOperations.decodeJsonReply(
+        { operation, outputSchema: outputSchemaJson },
+        "Claude",
+        plain.result,
+      );
+    }
     const output = yield* decodeClaudeOutput(rawStdout).pipe(
       Effect.catchTags({
         SchemaError: (cause) =>
@@ -450,5 +560,6 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     "ClaudeTextGeneration",
     <S extends Schema.Top>(request: TextGenerationOperations.Request<S>) =>
       Effect.scoped(runClaudeJson(request)),
+    { toolFree: true },
   );
 });

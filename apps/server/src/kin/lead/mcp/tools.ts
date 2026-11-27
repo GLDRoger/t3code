@@ -86,6 +86,7 @@ export const GitHubWatchInput = Schema.Struct({
   repo: Schema.optional(TrimmedNonEmptyString.annotate({ description: "owner/name" })),
   watch: Schema.optional(Schema.Boolean),
   mentions: Schema.optional(Schema.Boolean),
+  triage: Schema.optional(Schema.Boolean),
 });
 export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_leads", {
@@ -167,7 +168,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_ask", {
     ...chat,
     description:
-      "Ask with 2-4 tap-to-answer options in the chat your reply goes to; kind marks a yes/no pair. default: the label you'll take if they don't answer, or \"none\" when nothing is safe without them; by: that day, YYYY-MM-DD (left out: the end of their next working day); about: the record keys or a pull request's URL; intent: what you'd do, in a few words. Kin refuses an ask another agent already made. It shows under your reply: don't restate it; say what you did, and above an option with an action, in a line, what its tap will do. An option may carry action {kind, target}, which Kin runs when it is tapped, with no turn of yours: done or drop a task, start a due deferral, create_list for a new list from your list_define proposal, record_payment to record a Bank transactions credit as the payment of the invoice Kin's bank matching ranks first for it (only an owner's tap records it); after the credit's key and that invoice, more open invoices of the same client in the order to settle them, Kin keeping what is left as the client's credit; apply_credit, target a client's credit (RCT-3) and that client's invoice, to set the credit against it (only an owner's tap applies it), mark_repaid to mark the expenses a Bank transactions debit pays a partner back for as repaid, target the debit's key (only an owner's tap marks them), only for a debit Kin told you pays them back exactly: for any other Kin can't tell which expenses it repaid, so say that and that the owner marks them on the expenses in Money, or take_default of an open question of yours (it runs that default's own action), record_bill to record a bill to pay you suggested, target its key (only an owner's tap records it), mark_bill_paid to mark as paid the bill to pay that a Bank transactions debit matches, target the debit's key (only an owner's tap marks it). Kin checks it now, as you could do it (record_payment, against its bank matching), and writes that option's button and the line under it itself; your label for it isn't shown. A reaction or a passed day never runs it. A plain option's tap arrives later and is never an approval. For record_payment when the payment_seen fact names one exact fit, pass only the bank credit key as target (BNK-1, not BNK-1 INV-12). When Kin can't tell which of a client's invoices a credit pays, record_payment may start with any of them. For record_payment and apply_credit, use spaces between all keys in the target and set default to \"none\".",
+      "Ask with 2-4 tap-to-answer options in the chat your reply goes to; kind marks a yes/no pair. default: the label you'll take if they don't answer, or \"none\" when nothing is safe without them; by: that day, YYYY-MM-DD (left out: the end of their next working day); about: the record keys or a pull request's URL; intent: what you'd do, in a few words. Kin refuses an ask another agent already made. It shows under your reply: don't restate it; say what you did, and above an option with an action, in a line, what its tap will do. An option may carry action {kind, target}, which Kin runs when it is tapped, with no turn of yours: done or drop a task, start a due deferral, create_list for a new list from your list_define proposal, record_payment to record a Bank transactions credit as the payment of the invoice Kin's bank matching ranks first for it (only an owner's tap records it); after the credit's key and that invoice, more open invoices of the same client in the order to settle them, Kin keeping what is left as the client's credit; apply_credit, target a client's credit (RCT-3) and that client's invoice, to set the credit against it (only an owner's tap applies it), mark_repaid to mark the expenses a Bank transactions debit pays a partner back for as repaid, target the debit's key (only an owner's tap marks them), only for a debit Kin told you pays them back exactly: for any other Kin can't tell which expenses it repaid, so say that and that the owner marks them on the expenses in Money, or take_default of an open question of yours (it runs that default's own action), record_bill to record a bill to pay you suggested, target its key (only an owner's tap records it), mark_bill_paid to mark as paid the bill to pay that a Bank transactions debit matches, target the debit's key (only an owner's tap marks it). Kin checks it now, as you could do it (record_payment, against its bank matching), and writes that option's button and the line under it itself; your label for it isn't shown. A reaction or a passed day never runs it. A plain option's tap arrives later and is never an approval. When the payment_seen fact says a credit looks like one invoice's payment, offer one record_payment, target the credit's key alone (BNK-1, not BNK-1 INV-12), and no option for an invoice it also fits less closely; a credit more than that invoice owes is the exception: the credit, that invoice, then the client's other open invoices (BNK-4 INV-12 INV-14). When Kin can't tell which of a client's invoices a credit pays, record_payment may start with any of them. For record_payment and apply_credit, use spaces between all keys in the target and set default to \"none\".",
     parameters: ChoiceCard.LeadAskInput,
     success: ChoiceCard.AskResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -205,6 +206,27 @@ export const KinLeadToolkit = Toolkit.make(
     parameters: VisualCard.VisualInput,
     success: VisualCard.VisualResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
+  Tool.make("kin_send", {
+    ...shared,
+    description:
+      'Post your message to the chat on the "Your reply goes to" line, and end the turn: call it last, after your other tools. Where the turn says a trigger started it, this is the only way your words reach anyone; in a turn a person started, plain text does the same. Once per turn: nothing you write after it is posted. Nothing anyone needs: end with kin_skip instead. A refusal says why and sent nothing.',
+    parameters: Schema.Struct({
+      text: KinAgentMessageBody.annotate({
+        description: "The whole message, written exactly as a reply: a bubble or a page.",
+      }),
+      level: Schema.Literals(["now", "quiet", "check_in"]).annotate({
+        description:
+          "now rings: money at risk, a blocker only the owner can clear, an answer someone is waiting on, or a check-in's page. quiet shows it in the chat without a notification: worth having, needs nothing now. check_in gives it to the owner at the next check-in with you instead (the owner's own chat only). A due reminder always rings.",
+      }),
+    }),
+    success: Schema.Union([
+      Schema.Struct({ sent: Schema.Literal(true), messageId: KinMessageId }),
+      Schema.Struct({ held: Schema.Literal(true), when: Schema.String }),
+    ]),
+    dependencies: [...shared.dependencies, KinIdentity, SqlClient.SqlClient],
+  })
+    .annotate(EndsClaudeTurn, true)
+    .annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("kin_skip", {
     ...shared,
     description:
@@ -293,7 +315,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_defer", {
     ...shared,
     description:
-      'Set a reminder or one-time follow-up: what, due (a time with offset, from the Owner time line), onDue and chatId. A bare number with sleep, wait or pause is seconds ("sleep for 60" is due 60 s after the message). When the owner corrects a time, pass the old item as replaces so only the new one fires. A step with a client (a call, a mail, a follow-up), or something a person is to do on a day with no time ("remind me to send Meera the link on Thursday"), is a record_create task due that day instead. In a chat others read, only onDue remind.',
+      'Set a reminder or one-time follow-up: what, due (a time with offset, from the Owner time line), onDue and chatId. A bare number with sleep, wait or pause is seconds ("sleep for 60" is due 60 s after the message). When the owner corrects a time, pass the old reminder or follow-up as replaces so only the new one fires; never a scheduled task, whose repeats that would end (kin_schedule moves one). A step with a client (a call, a mail, a follow-up), or something a person is to do on a day with no time ("remind me to send Meera the link on Thursday"), is a record_create task due that day instead. In a chat others read, only onDue remind.',
     parameters: Lead.DeferInput,
     success: Lead.DeferResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -307,7 +329,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_cancel", {
     ...shared,
     description:
-      "Cancel a reminder, follow-up or scheduled task you set up, or another agent's reminder the owner tells you to drop in their own chat with you, by itemId; the result says whether it stopped. To move one, use kin_defer with replaces.",
+      "Cancel a reminder, follow-up or scheduled task you set up, or another agent's reminder the owner tells you to drop in their own chat with you, by itemId; the result says whether it stopped. To move a reminder or follow-up, use kin_defer with replaces; a scheduled task, kin_schedule with replaces.",
     parameters: Lead.CancelInput,
     success: Lead.CancelResult,
   }).annotate(McpSchema.EnabledWhen, enabled),
@@ -358,7 +380,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_github_watch", {
     ...prCare,
     description:
-      'The GitHub repos Kin watches for the owner (theirs and their organisations\'). Omit repo to list them. watch false is their "leave repo X alone", true undoes it; mentions true lets an @-mention of the owner there call you.',
+      'The GitHub repos Kin watches for the owner (theirs and their organisations\'). Omit repo to list them. watch false is their "leave repo X alone", true undoes it; mentions true lets an @-mention of the owner there call you; triage false stops the one comment on each new issue there, true turns it on again for issues opened from then on.',
     parameters: GitHubWatchInput,
     success: KinGitHubRepos,
   }).annotate(McpSchema.EnabledWhen, enabled),

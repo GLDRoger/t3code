@@ -7,6 +7,7 @@ import { invoiceCandidates } from "../../work/statements/statementReview.ts";
 import { dayIn, formatMoney, formatMoneyPlain, monthOf, shiftMonth } from "../../work/money.ts";
 import { endOfDay, owedInvoices, recordName, startOfDay } from "../../work/recordRows.ts";
 import { bankKnown, shortDay } from "../../work/statements/bankKnown.ts";
+import { UNREAD_ALERT_MARKER } from "../../work/statements/bankAlerts.ts";
 import { billMatches, billPaidFactKey } from "../../work/statements/debitBill.ts";
 import { repaidMatches } from "../../work/statements/debitRepaid.ts";
 import {
@@ -55,8 +56,9 @@ export const unreadableBankAlerts = Effect.fn("KinPulse.unreadableBankAlerts")(f
   finance?: SenseContext["finance"],
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [alerts] = yield* sql<{ count: number; first: number; last: number }>`SELECT
-    COUNT(*) AS count, MIN(sent_at) AS first, MAX(sent_at) AS last
+  const [alerts] = yield* sql<{ count: number; unread: number; first: number; last: number }>`SELECT
+    COUNT(*) AS count, MIN(sent_at) AS first, MAX(sent_at) AS last,
+    SUM(CASE WHEN reference = ${UNREAD_ALERT_MARKER} THEN 1 ELSE 0 END) AS unread
     FROM kin_bank_alerts WHERE org_id = ${ctx.orgId} AND outcome = 'unparsed'
       AND sent_at BETWEEN ${ctx.at - 14 * DAY_MS} AND ${ctx.at}
     HAVING COUNT(*) > 0`;
@@ -65,8 +67,12 @@ export const unreadableBankAlerts = Effect.fn("KinPulse.unreadableBankAlerts")(f
     formatKinWhen(ms, "day", { zone: ctx.zone, locale: KIN_TEXT_LOCALE });
   const first = when(alerts.first);
   const last = when(alerts.last);
-  const { count } = alerts;
+  const { count, unread } = alerts;
   const sent = first === last ? first : `between ${first} and ${last}`;
+  const noModel =
+    unread === 0
+      ? ""
+      : ` No model was available to read ${unread === count ? (count === 1 ? "it" : "them") : `${unread} of them`}.`;
   return {
     sense: UNREADABLE_BANK_ALERTS_KEY,
     family: "money",
@@ -79,7 +85,7 @@ export const unreadableBankAlerts = Effect.fn("KinPulse.unreadableBankAlerts")(f
     scope: {},
     since: iso(alerts.first),
     measure: { value: count, unit: "count", threshold: 1, from: { _tag: "default" } },
-    consequence: `Sent ${sent}. Money may have arrived that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.`,
+    consequence: `Sent ${sent}.${noModel} Money may have moved that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.`,
     actor: agentOrOwner(finance),
     sensitive: true,
     wake: "brief",
@@ -177,7 +183,7 @@ export const overpaymentConsequence = (input: {
   const others = input.others.map((one) => `${one.key} (${amount(one.owed)})`);
   return fitted(
     (shown) =>
-      `${key}, ${amount(received)} received ${shortDay(day)}, is more than the ${amount(owed)} this invoice owes: ${reason}. Recorded, it settles it and keeps ${amount(received - owed)} as ${client}'s credit.${
+      `${key}, ${amount(received)} received ${shortDay(day)}, is more than the ${amount(owed)} this invoice owes: ${reason}. Once confirmed, it pays this invoice in full and keeps ${amount(received - owed)} as ${client}'s credit.${
         others.length === 0 ? "" : ` ${client}'s other open invoices: ${listed(others, shown)}.`
       } It isn't recorded until it is confirmed on a card.`,
     Math.min(4, others.length),
@@ -349,7 +355,7 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
             }${
               alongside.length === 0
                 ? ""
-                : ` ${listed(alongside, Math.min(shown, alongside.length))} ${alongside.length === 1 ? "fits" : "fit"} this invoice as well.`
+                : ` ${listed(alongside, Math.min(shown, alongside.length))} ${alongside.length === 1 ? "could also be" : "could each also be"} this invoice's payment.`
             } It isn't recorded as paid until the owner confirms.`,
           Math.max(others.length, alongside.length),
         ),

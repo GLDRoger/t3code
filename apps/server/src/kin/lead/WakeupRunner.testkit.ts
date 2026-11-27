@@ -931,6 +931,7 @@ function parts(options: HarnessOptions) {
             indexAsOf: DateTime.makeUnsafe(timestamp),
             read: "/private/tmp",
           })),
+      checkoutPaths: () => Effect.succeed({ writer: "/private/tmp", read: "/private/tmp" }),
       ensureCheckouts: () => Effect.succeed({ writer: "/private/tmp", read: "/private/tmp" }),
       readPromptSnapshot: () =>
         Effect.succeed({ rules: "rules", index: "index", items: [], bodies: new Map() }),

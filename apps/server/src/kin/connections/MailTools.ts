@@ -20,7 +20,7 @@ import {
   receivedAfter,
   receivedAmong,
 } from "./MailProvider.ts";
-import { looksLikeSignInMail, senderCheck, WITHHELD } from "./MailText.ts";
+import { looksLikeSignInMail, senderVerdictForAddress, WITHHELD } from "./MailText.ts";
 import type { ListedTool } from "./Pinning.ts";
 import { DAY_MS } from "../durations.ts";
 
@@ -227,6 +227,20 @@ const sendTools = (vendor: MailVendor) => {
         required: ["title", "start", "end"],
       },
     },
+    {
+      name: MAIL_TOOL.deleteEvent,
+      title: "Delete a calendar event",
+      description: `Propose deleting one event from this account's ${words.calendar}. Nothing is deleted until the calendar's owner taps Confirm on a card showing it. For a repeating event, give the id of one occurrence; Kin can't delete a whole series.`,
+      inputSchema: {
+        type: "object",
+        properties: {
+          eventId: { type: "string", description: "The event or occurrence to delete." },
+          calendarId,
+        },
+        required: ["eventId"],
+        additionalProperties: false,
+      },
+    },
   ]);
 };
 
@@ -259,6 +273,7 @@ const threadSummary = (mailbox: Mailbox) => (messages: ReadonlyArray<MailMessage
   const incoming = messages.findLast((message) => !sentBy(mailbox, message)) ?? last;
   return {
     threadId: first.threadId,
+    webLink: last.webLink,
     account: mailbox.account,
     receivedBy: receivedBy(mailbox, incoming),
     subject: first.subject,
@@ -354,11 +369,12 @@ const call = Effect.fn("KinMail.call")(function* (
         receivedBy: receivedBy(mailbox, incoming),
         messages: all.map((message) => ({
           from: message.from,
+          webLink: message.webLink,
           to: message.toLine,
           cc: message.ccLine,
           date: message.date,
           subject: message.subject,
-          senderCheck: senderCheck(message.authResults),
+          senderCheck: senderVerdictForAddress(message.authResults, message.fromAddress),
           text: shownText(message.subject, message.body?.text ?? ""),
           attachments: message.body?.attachments ?? [],
         })),
@@ -520,6 +536,9 @@ export const mailProvider = (vendor: MailVendor): MailProvider => {
       vendor.arrival({ http, token, mailbox: NO_MAILBOX }, messageId),
     sendMessage: vendor.sendMessage,
     saveEvent: vendor.saveEvent,
+    calendarEvent: (http, token, mailbox, calendarId, eventId) =>
+      vendor.event({ http, token, mailbox }, calendarId, eventId),
+    deleteEvent: vendor.deleteEvent,
     calendarName: (http, token, mailbox, calendarId) =>
       vendor.calendarName({ http, token, mailbox }, calendarId),
   };
