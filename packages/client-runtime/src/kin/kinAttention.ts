@@ -42,6 +42,8 @@ export const KIN_ATTENTION = {
   notNeeded: "Not needed",
   handled: "Handled",
   undo: "Undo",
+  /** A screen reader's name for one row's Undo among several. */
+  undoFor: (title: string) => `Undo ${title}`,
   ask: (name: string) => `Ask ${name}`,
   setAsideTitle: "Set aside until",
   setAsideDay: "Until this day",
