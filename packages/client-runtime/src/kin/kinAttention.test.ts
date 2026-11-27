@@ -23,6 +23,7 @@ import {
   kinNeedsYouBeside,
   kinNotNowCall,
   kinPlainDates,
+  kinSetAsideDays,
   kinTasksAttention,
   kinTasksBadgeCount,
   kinTasksBlock,
@@ -398,6 +399,22 @@ describe("kinAttention", () => {
     ]);
     const mondayChoices = kinAttentionMenu(recordRow, new Date(2026, 10, 16)).later.choices;
     expect(mondayChoices[1]?.id === "monday" ? mondayChoices[1].until : null).toBe("2026-11-23");
+    // 22:00 Sunday on this device is already Monday 16 Nov at a company on Kiritimati's clock.
+    const lateSunday = new Date(2026, 10, 15, 22, 0);
+    expect(
+      kinAttentionMenu(recordRow, lateSunday, "Pacific/Kiritimati")
+        .later.choices.filter((choice) => choice.id !== "pick_day")
+        .map((choice) => [choice.label, choice.until]),
+    ).toEqual([
+      ["Tomorrow", "2026-11-17"],
+      ["Monday", "2026-11-23"],
+      ["A week", "2026-11-23"],
+    ]);
+    expect(kinSetAsideDays(lateSunday, "Pacific/Kiritimati")).toEqual({
+      min: "2026-11-17",
+      initial: "2026-12-16",
+    });
+    expect(kinSetAsideDays(lateSunday, null).min).toBe("2026-11-16");
     expect(recordMenu.later.label).toBe("Later");
     expect(recordMenu.later.choices.map((choice) => choice.label)).toEqual([
       "Tomorrow",

@@ -13,6 +13,8 @@ export function ThemedSwitch(props: ThemedSwitchProps) {
   return (
     <Switch
       {...props}
+      // iOS's Switch greys a disabled switch without telling VoiceOver.
+      accessibilityState={{ disabled: Boolean(props.disabled), checked: Boolean(props.value) }}
       ios_backgroundColorClassName="accent-switch-inactive-track"
       trackColorOffClassName="accent-switch-inactive-track"
       trackColorOnClassName="accent-switch-active-track"

@@ -117,6 +117,7 @@ function KinSectionRow(props: {
           description={detail}
           // Held off by another section: the line says which; nothing to send from here.
           disabled={busy || heldOff !== null}
+          labelWholeWords
           value={kinSectionOn(props.shell, props.id)}
           onValueChange={(next) => void send({ id: props.id, on: next })}
         />
@@ -142,6 +143,7 @@ function KinPlaceDockToggle(props: {
       label={KIN_PLACE_DOCK.label}
       description={dock.full ? KIN_PLACE_DOCK.full : kinPlaceDockDetail(props.shell, props.id)}
       disabled={props.busy || dock.disabled}
+      labelWholeWords
       value={dock.docked}
       onValueChange={(next) => props.onChange({ id: props.id, dock: next })}
     />
