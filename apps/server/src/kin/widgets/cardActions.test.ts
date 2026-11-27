@@ -4840,7 +4840,7 @@ it.effect.each(["repayment", "expense", "open bill"] as const)(
         );
         const seen = facts.find((fact) => fact.key === `repaid_seen:${debit.key}`);
         assert.include(seen?.consequence, `ordinary expense ${ordinary.key}`);
-        assert.include(seen?.consequence, "Zoya Rao");
+        assert.include(seen?.consequence, `Zoya Rao and adds up exactly to their oldest owed expense: ${owed.key}.`);
         yield* kin.turn("finance", kin.chatOf("finance"), "What does the debit pay?");
         const asked = yield* callAs("finance", "kin_ask", {
           question: "What did this debit pay?",
@@ -4853,9 +4853,10 @@ it.effect.each(["repayment", "expense", "open bill"] as const)(
         assert.isTrue(asked.ok, JSON.stringify(asked.value));
         const id = asked.value.widgetId;
         const options = card(yield* kin.widget(id)).options;
-        const expenseChoice = options.find((option) => option.label === "An ordinary expense");
+        const expenseChoice = options.find((option) => option.label === `It paid ${ordinary.key}`);
         assert.include(expenseChoice?.action?.line, ordinary.key);
-        if (chosen === "open bill") assert.include(expenseChoice?.action?.line, "mark it paid");
+        if (chosen === "open bill")
+          assert.include(expenseChoice?.action?.line, `mark ${ordinary.key} paid`);
         yield* kin.tap(
           owner,
           id,

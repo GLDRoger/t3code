@@ -129,8 +129,13 @@ const asDrawn = (match: RepaidMatch | undefined, plan: RepaidPlan) => {
 
 const money = (plan: RepaidPlan, minor: number) => formatMoney({ minor, currency: plan.currency });
 /** The keys, all when they fit in `max` with the rest of `build`'s words, else the first and a count. */
-const fitted = (plan: RepaidPlan, build: (keys: string) => string, max: number) => {
-  const keys = plan.repays.map((one) => one.key);
+const fitted = (plan: RepaidPlan, build: (keys: string) => string, max: number) =>
+  fittedKeys(
+    plan.repays.map((one) => one.key),
+    build,
+    max,
+  );
+const fittedKeys = (keys: ReadonlyArray<string>, build: (keys: string) => string, max: number) => {
   for (let shown = keys.length; shown > 0; shown--) {
     const left = keys.length - shown;
     const listed =
@@ -153,7 +158,7 @@ const total = (plan: RepaidPlan) =>
 
 const LABEL_MAX = 80;
 export const repaidLabel = (plan: RepaidPlan) => {
-  if (plan.asExpense) return "An ordinary expense";
+  if (plan.asExpense && plan.expense !== undefined) return `It paid ${plan.expense.key}`;
   const n = plan.repays.length;
   const expenses = `${n} expense${n === 1 ? "" : "s"}`;
   const label = `Mark ${plan.partner.name}'s ${expenses} repaid`;
@@ -172,7 +177,7 @@ const LINE_MAX = 200;
 export const repaidLine = (plan: RepaidPlan) => {
   if (plan.asExpense && plan.expense !== undefined) {
     const expense = plan.expense;
-    return `Link ${plan.key} to ${expense.key}${expense.open ? " and mark it paid" : ""}`;
+    return `Explain ${plan.key} in Bank transactions as paying ${expense.key}${expense.open ? `, and mark ${expense.key} paid` : ""}`;
   }
   const line = (quoted: boolean) =>
     fitted(
@@ -272,8 +277,8 @@ export const markRepaid = Effect.fn("KinRepaidCard.mark")(function* (
     yield* linkDebit(orgId, writer, plan, expense, records);
     return {
       outcome: {
-        title: "Ordinary expense",
-        text: `${plan.key} is explained by ${expense.key}${expense.open ? ", now marked paid" : ""}.`,
+        title: "Explained",
+        text: `${plan.key} is explained in Bank transactions as paying ${expense.key}${expense.open ? `, and ${expense.key} is marked paid` : ""}.`,
       },
     };
   }
@@ -319,7 +324,11 @@ export const markRepaid = Effect.fn("KinRepaidCard.mark")(function* (
       undo: {
         actionId: KIN_CHOICE_UNDO_ACTION,
         label: "Undo",
-        line: `Mark these expenses as owed again and return ${plan.key} to its earlier state.`,
+        line: fitted(
+          plan,
+          (keys) => `Mark ${keys} owed again and put ${plan.key} back as it was`,
+          200,
+        ),
       },
     } satisfies KinChoiceOutcome,
     undo: {
@@ -411,6 +420,11 @@ export const undoRepaid = Effect.fn("KinRepaidCard.undo")(function* (
   );
   return {
     title: "Repayment undone",
-    text: `The expenses are owed again, and ${bank.key} is back to its earlier state in Bank transactions.`,
+    text: fittedKeys(
+      plan.expenses.map((one) => one.key),
+      (keys) =>
+        `${keys} ${plan.expenses.length === 1 ? "is" : "are"} owed again, and ${bank.key} is back as it was in Bank transactions.`,
+      600,
+    ),
   } satisfies KinChoiceOutcome;
 });

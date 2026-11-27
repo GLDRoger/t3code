@@ -398,14 +398,11 @@ const repaidSeenSenses = (ctx: SenseContext, matches: ReadonlyArray<RepaidMatch>
         }),
         wake: "brief",
       };
-    if (expense !== undefined)
-      return {
-        ...shared,
-        key: `repaid_seen:${debit.key}`,
-        consequence: `${debit.key}, ${plain(debit.amountMinor, debit.currency)} debited ${shortDay(debit.date)}. It could be a repayment to ${partner.name} or payment for ordinary expense ${expense.key}. A mark-repaid card gives the owner both readings to choose from.`,
-        wake: "now",
-      };
     const one = repays.length === 1;
+    const unmarked =
+      expense === undefined
+        ? `${one ? "It isn't" : "They aren't"} marked repaid until it is confirmed on a card.`
+        : `It could instead pay ordinary expense ${expense.key}. Nothing is marked until the owner picks one on a mark_repaid card, which offers both.`;
     return {
       ...shared,
       key: `repaid_seen:${debit.key}`,
@@ -414,7 +411,7 @@ const repaidSeenSenses = (ctx: SenseContext, matches: ReadonlyArray<RepaidMatch>
           `${paid} and adds up exactly to their ${one ? "oldest owed expense" : `${repays.length} oldest owed expenses`}: ${keysOf(
             repays.map((each) => each.key),
             Math.max(shown, 1),
-          )}. ${one ? "It isn't" : "They aren't"} marked repaid until it is confirmed on a card.`,
+          )}. ${unmarked}`,
         repays.length,
       ),
       wake: "now",
