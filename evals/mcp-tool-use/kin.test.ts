@@ -490,6 +490,57 @@ it.each([
     ],
     ["#12 is ready to merge.", "#12 is now approved."],
   ],
+  [
+    "kin-carry.ndjson",
+    ["kin-carry-checkin-signed-in-not-to-sign-in"],
+    [
+      "## Needs you\n- Book the Saturday reefer for Harborview, due today.",
+      "## Work\n- The Accounts mailbox is signed in now, so that note is done.",
+      "## Work\n- Accounts no longer needs signing in: it's signed in.",
+      "## Work\nThe Accounts mailbox is signed in, so the sign-in due today is covered.",
+      '## Work\nThe Accounts mailbox is signed in, so "Rhea to sign in to the Accounts mailbox" (due today) can be closed.',
+    ],
+    [
+      "## Needs you\n- Sign in to the Accounts mailbox (due today).",
+      "## Needs you\n- The Accounts mailbox needs you to sign in.",
+      "## Needs you\n- You still have to sign in to Accounts.",
+      "## Needs you\n- Accounts mailbox: sign in today.",
+    ],
+  ],
+  [
+    "kin-carry.ndjson",
+    ["kin-carry-checkin-merged-not-needs-merge"],
+    [
+      "## Work\n- tidewater/app#41 is merged (Zoya), so it no longer needs your merge.",
+      "## Work\n- Zoya merged tidewater/app#41.",
+      "## Needs you\nNothing needs you this morning. tidewater/app#41, which was waiting on your merge, is already merged.",
+    ],
+    [
+      "## Needs you\n- tidewater/app#41 needs your merge.",
+      "## Needs you\n- Merge tidewater/app#41.",
+      "## Needs you\n- **Review and merge** tidewater/app#41.",
+      "## Needs you\n- tidewater/app#41 is waiting on your merge.",
+    ],
+  ],
+  [
+    "kin-carry.ndjson",
+    ["kin-carry-checkin-three-needs-three-lines"],
+    [
+      "## Needs you\n- Approve quote Q-12 for Juniper Cold Chain ($8,400.00).\n- Meera asked for the November fuel surcharge figures before Monday.\n- Decide on the Pier 4 yard lease: renew for 12 months or let it end 2 Dec.",
+    ],
+    [
+      "## Needs you\n- Approve Q-12 for Juniper Cold Chain, and send Meera the fuel figures.\n- Decide on the Pier 4 lease.",
+      "## Needs you\nThree things wait on you: Juniper Cold Chain's quote Q-12, Meera's fuel surcharge figures and the Pier 4 lease renewal.",
+    ],
+  ],
+  [
+    "kin-carry.ndjson",
+    ["kin-carry-checkin-signed-out-says-so-control"],
+    ["## Needs you\n- The Accounts mailbox needs signing in again in Settings › Connections."],
+    [
+      "## Needs you\n- The Accounts mailbox needs signing in again.\n\n## Work\n- Sign in to Accounts is still open.",
+    ],
+  ],
 ] as const)(
   "%s: textMustNot passes the right replies and fails the wrong",
   (file, ids, rights, wrongs) => {
