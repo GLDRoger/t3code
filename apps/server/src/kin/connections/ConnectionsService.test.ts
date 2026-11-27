@@ -4066,6 +4066,7 @@ describe("KinConnections Dates calendar", () => {
 
           fake.failWith(google, null);
           fake.setExpired(google, true);
+          yield* TestClock.adjust("5 seconds");
           assert.strictEqual(
             (yield* connections.mineCalendar(rhea, {
               ...calendarWindow,
@@ -4106,6 +4107,10 @@ describe("KinConnections Dates calendar", () => {
         assert.strictEqual((yield* read()).events[0]?.title, "Tidewater Freight trip");
         assert.lengthOf(reads, 2);
         put("Tidewater Freight review");
+        // Retry pressed in a loop keeps the answer it has until five seconds have passed.
+        assert.strictEqual((yield* read(true)).events[0]?.title, "Tidewater Freight trip");
+        assert.lengthOf(reads, 2);
+        yield* TestClock.adjust("5 seconds");
         assert.strictEqual((yield* read(true)).events[0]?.title, "Tidewater Freight review");
         assert.lengthOf(reads, 3);
 

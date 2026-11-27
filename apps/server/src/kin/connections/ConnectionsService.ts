@@ -426,6 +426,8 @@ type CalendarRead = {
   readonly status: KinCalendarSource["status"];
   readonly events: ReadonlyArray<MailAgendaEvent>;
 };
+// Retry skips the cache, but a client retrying in a loop reaches the vendor at most this often.
+const CALENDAR_RETRY_FLOOR_MS = 5_000;
 const calendarStatus = (status: Exclude<CalendarRead["status"], "ok">): CalendarRead => ({
   status,
   events: [],
@@ -1348,6 +1350,7 @@ const make = Effect.gen(function* () {
     ),
     Effect.timeoutOption("8 seconds"),
     Effect.map(Option.getOrElse(() => calendarStatus("unreachable"))),
+    Effect.flatMap((read) => Effect.map(Clock.currentTimeMillis, (at) => ({ ...read, at }))),
   );
 
   const calendarCache = yield* Cache.makeWith(readCalendar, {
@@ -1971,8 +1974,14 @@ const make = Effect.gen(function* () {
           });
           if (input.fresh) {
             // Invalidate settled values only, so concurrent retries still join the active lookup.
+            const now = yield* Clock.currentTimeMillis;
             const settled = Array.from(yield* Cache.entries(calendarCache));
-            if (settled.some(([existing]) => Equal.equals(key, existing)))
+            if (
+              settled.some(
+                ([existing, read]) =>
+                  Equal.equals(key, existing) && now - read.at >= CALENDAR_RETRY_FLOOR_MS,
+              )
+            )
               yield* Cache.invalidate(calendarCache, key);
           }
           return { ...source, read: yield* Cache.get(calendarCache, key) };
