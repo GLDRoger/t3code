@@ -74,8 +74,8 @@ const owner = { _tag: "person" as const, orgId, personId: ownerId };
 const mate = { _tag: "person" as const, orgId, personId: mateId };
 const DAY = 24 * 60 * 60 * 1000;
 const isChatError = Schema.is(KinChatError);
-const decodeCreate = Schema.decodeUnknownEffect(LeadWork.CreateInput);
-const decodeUpdate = Schema.decodeUnknownEffect(LeadWork.UpdateInput);
+const decodeCreate = Schema.decodeUnknownEffect(Schema.toCodecJson(LeadWork.CreateInput));
+const decodeUpdate = Schema.decodeUnknownEffect(Schema.toCodecJson(LeadWork.UpdateInput));
 type Services =
   | KinIdentity
   | KinLevelGate
@@ -212,6 +212,229 @@ const setup = (sourceEventId: string) =>
       { title: "Invented launch checklist", project: "Invented site", due: "1970-01-04" },
     ],
   });
+
+const recordWriteShapes = [
+  { list: "work", title: "Tidewater dispatch", before: { size: "S" }, after: { size: "M" } },
+  {
+    list: "clients",
+    title: "Juniper Cold Chain",
+    before: { kind: "prospect", gstin: "27ABCDE1234F1Z5", placeOfSupply: "Maharashtra" },
+    nested: { taxNumber: "27ABCDE1234F1Z5", taxPlace: "Maharashtra" },
+    category: "prospect",
+    after: { kind: "vendor", gstin: "29ABCDE1234F1Z5", placeOfSupply: "Karnataka" },
+    nestedAfter: { taxNumber: "29ABCDE1234F1Z5" },
+    topAfter: { category: "vendor", taxPlace: "Karnataka" },
+  },
+  {
+    list: "contacts",
+    title: "Zoya",
+    columns: { client: "C-1" },
+    before: { emails: ["zoya@juniper.invalid", "zoya@tidewater.invalid"] },
+    after: { role: "Dispatch" },
+  },
+  {
+    list: "projects",
+    title: "Tidewater Freight",
+    before: { repos: ["tidewater/dispatch"] },
+    after: { billing: "fixed", value: "4200" },
+  },
+  {
+    list: "milestones",
+    title: "Juniper handover",
+    columns: { project: "P-1", due: "2026-12-01" },
+    before: {},
+    after: {},
+    change: { due: "2026-12-02" },
+  },
+  {
+    list: "goals",
+    title: "Tidewater shipments",
+    columns: { due: "2026-12-01" },
+    before: { measure: "manual", target: "12", current: 4 },
+    after: { current: 6 },
+  },
+] as const;
+
+it.effect.each(recordWriteShapes)("record writes accept nested fields on $list", (row) =>
+  Effect.gen(function* () {
+    yield* seed;
+    yield* setup("ask-event");
+    if (row.list === "clients") {
+      const sql = yield* SqlClient.SqlClient;
+      const said = "Record 27ABCDE1234F1Z5 in Maharashtra, then 29ABCDE1234F1Z5 in Karnataka.";
+      yield* sql`UPDATE kin_messages SET body = ${said} WHERE org_id = ${orgId} AND message_id = 'ask'`;
+    }
+    const records = yield* KinRecords.KinRecords;
+    const create = (input: object) =>
+      Effect.gen(function* () {
+        const decoded = yield* decodeCreate({ sourceEventId: "again-event", records: [input] });
+        const made = yield* LeadWork.create(scope, decoded);
+        return made.records[0]!.key;
+      });
+    const stored = (key: string) =>
+      records.get(orgId, key).pipe(
+        Effect.map((value) => {
+          assert.isDefined(value);
+          return {
+            category: value!.category,
+            dueAt: value!.dueAt,
+            fields: JSON.parse(value!.fieldsJson),
+            partyId: value!.partyId,
+            projectId: value!.projectId,
+          };
+        }),
+      );
+    const columns = { list: row.list, ...("columns" in row ? row.columns : {}) };
+    const oldKey = yield* create({ ...columns, title: row.title, ...row.before });
+    const newKey = yield* create({
+      ...columns,
+      title: `${row.title} North`,
+      ...("category" in row ? { category: row.category } : {}),
+      fields: "nested" in row ? row.nested : row.before,
+    });
+    const initial = yield* stored(oldKey);
+    assert.deepStrictEqual(yield* stored(newKey), initial);
+    if (row.list === "clients")
+      assert.deepStrictEqual(initial.fields, {
+        gstin: row.before.gstin,
+        placeOfSupply: row.before.placeOfSupply,
+      });
+
+    const change = "change" in row ? row.change : {};
+    const update = (key: string, fields: object) =>
+      Effect.gen(function* () {
+        const decoded = yield* decodeUpdate({
+          sourceEventId: "third-event",
+          key,
+          ...change,
+          ...fields,
+        });
+        return yield* LeadWork.update(scope, { ...decoded, key });
+      });
+    yield* update(oldKey, row.after);
+    yield* update(newKey, {
+      ...("topAfter" in row ? row.topAfter : {}),
+      fields: "nestedAfter" in row ? row.nestedAfter : row.after,
+    });
+    const changed = yield* stored(oldKey);
+    assert.notDeepEqual(changed, initial);
+    assert.deepStrictEqual(yield* stored(newKey), changed);
+    if (row.list === "clients")
+      assert.deepStrictEqual(changed.fields, {
+        gstin: row.after.gstin,
+        placeOfSupply: row.after.placeOfSupply,
+      });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("record writes refuse conflicting names for a field", () =>
+  Effect.gen(function* () {
+    const row = { list: "clients", title: "Juniper Cold Chain", gstin: "27ABCDE1234F1Z5" };
+    for (const [refusal, name] of [
+      [
+        Effect.flip(
+          decodeCreate({
+            sourceEventId: "ask-event",
+            records: [{ ...row, fields: { taxNumber: "29ABCDE1234F1Z5" } }],
+          }),
+        ),
+        "taxNumber",
+      ],
+      [
+        Effect.flip(
+          decodeUpdate({
+            key: "C-1",
+            sourceEventId: "ask-event",
+            gstin: row.gstin,
+            taxNumber: "29ABCDE1234F1Z5",
+          }),
+        ),
+        "taxNumber",
+      ],
+      [
+        Effect.flip(
+          decodeUpdate({
+            key: "CT-1",
+            sourceEventId: "ask-event",
+            emails: ["zoya@juniper.invalid"],
+            fields: { emails: ["zoya@tidewater.invalid"] },
+          }),
+        ),
+        "emails",
+      ],
+      [
+        Effect.flip(
+          decodeCreate({
+            sourceEventId: "ask-event",
+            records: [{ ...row, kind: "client", category: "prospect" }],
+          }),
+        ),
+        "kind",
+      ],
+    ] as const)
+      assert.include((yield* refusal).message, `${name} given twice`);
+
+    const { records } = yield* decodeCreate({
+      sourceEventId: "ask-event",
+      records: [{ ...row, fields: { taxNumber: row.gstin } }],
+    });
+    assert.deepStrictEqual(records[0], row);
+  }),
+);
+
+it.effect("nested fields cannot supply shared record columns", () =>
+  Effect.gen(function* () {
+    const refused = yield* Effect.flip(
+      decodeUpdate({ key: "W-1", sourceEventId: "ask-event", fields: { owner: "Zoya" } }),
+    );
+    assert.include(refused.message, "owner");
+  }),
+);
+
+it.effect("client tax numbers go through the India check in every record write shape", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const org = yield* SqlClient.SqlClient;
+    yield* org`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+      updated_by_kind, updated_by_id)
+      VALUES (${orgId}, '{"country":"IN"}', 1, 0, 'person', ${ownerId})`;
+    const made = yield* LeadWork.create(scope, {
+      sourceEventId: "ask-event",
+      records: [{ list: "clients", title: "Juniper Cold Chain" }],
+    });
+    const key = made.records[0]!.key;
+    const taxRefusal = yield* Clients.updateParty([owner], {
+      orgId,
+      key,
+      rev: 1,
+      taxNumber: "GB123",
+    }).pipe(Effect.flip);
+    assert.include(taxRefusal.message, "taxNumber is not a GSTIN");
+    for (const args of [
+      { gstin: "GB123" },
+      { taxNumber: "GB123" },
+      { fields: { taxNumber: "GB123" } },
+    ]) {
+      const input = yield* decodeCreate({
+        sourceEventId: "again-event",
+        records: [{ list: "clients", title: "Tidewater Freight", ...args }],
+      });
+      assert.include(
+        (yield* LeadWork.create(scope, input).pipe(Effect.flip)).message,
+        taxRefusal.message,
+      );
+      const change = yield* decodeUpdate({ sourceEventId: "third-event", key, ...args });
+      assert.include(
+        (yield* LeadWork.update(scope, { ...change, key }).pipe(Effect.flip)).message,
+        taxRefusal.message,
+      );
+    }
+    const records = yield* KinRecords.KinRecords;
+    assert.deepStrictEqual(JSON.parse((yield* records.get(orgId, key))!.fieldsJson), {});
+    const [other] = yield* org`SELECT key FROM kin_records WHERE title = 'Tidewater Freight'`;
+    assert.isUndefined(other);
+  }).pipe(Effect.provide(layer)),
+);
 
 it.effect(
   "a lead sets up a client, its contacts and both-way obligations in one idempotent call",
@@ -990,7 +1213,9 @@ it.effect(
       yield* setup("ask-event");
       const sql = yield* SqlClient.SqlClient;
       const make = (sourceEventId: string, records: typeof LeadWork.CreateInput.Type.records) =>
-        LeadWork.create(scope, { sourceEventId, records });
+        decodeCreate({ sourceEventId, records }).pipe(
+          Effect.flatMap((input) => LeadWork.create(scope, input)),
+        );
       const shown = (result: typeof LeadWork.CreateResult.Type) =>
         result.records.map((row) => [row.key, row.created, row.alsoOpen]);
       // V28: the same title, client and due day in a later turn is the entry already there.
@@ -3481,6 +3706,41 @@ it.effect(
           phones: ["+00 1234 5678", "+00 1234 5679", "+00 1234 5670"],
         },
       );
+      const contactKey = ingridRow!.key;
+      for (const [index, change] of [
+        { email: "zoya@juniper.invalid" },
+        { fields: { email: "zoya@tidewater.invalid" } },
+      ].entries()) {
+        const input = yield* decodeUpdate({
+          key: contactKey,
+          sourceEventId: "mate-event",
+          ...change,
+        });
+        yield* LeadWork.update(scope, { ...input, key: contactKey });
+        assert.strictEqual(
+          (yield* Clients.party([mate], { orgId, key: prospect!.key })).contacts[0]?.email,
+          ["zoya@juniper.invalid", "zoya@tidewater.invalid"][index],
+        );
+      }
+      for (const change of [{ terms: "Net 30" }, { fields: { terms: "Net 30" } }]) {
+        const record = {
+          list: "clients",
+          title: "Juniper Cold Chain",
+          kind: "prospect",
+          ...change,
+        };
+        const decoded = yield* decodeCreate({ sourceEventId: "mate-event", records: [record] });
+        assert.include(
+          (yield* refused(decoded.records)).message,
+          "Only the owner or a co-owner sets a client's terms",
+        );
+        const key = prospect!.key;
+        const input = yield* decodeUpdate({ key, sourceEventId: "mate-event", ...change });
+        assert.include(
+          (yield* LeadWork.update(scope, { ...input, key }).pipe(Effect.flip)).message,
+          "Only the owner or a co-owner",
+        );
+      }
       // Not its client or label, and not a contact on a client someone else looks after.
       const acme = (yield* Clients.parties([owner], { orgId })).parties.find(
         (one) => one.name === "Invented Acme",
@@ -4350,20 +4610,23 @@ it.effect(
           ),
           "invalid_state",
         );
-      const made = yield* LeadWork.create(scope, {
-        sourceEventId: "ask-event",
-        records: [
-          {
-            list: "deals",
-            title: "Invented pilot",
-            client: prospect.key,
-            fields: { stage: "in-talks" },
-            amount: "18000",
-            currency: "EUR",
-            due: "2026-12-18",
-          },
-        ],
-      });
+      const made = yield* LeadWork.create(
+        scope,
+        yield* decodeCreate({
+          sourceEventId: "ask-event",
+          records: [
+            {
+              list: "deals",
+              title: "Invented pilot",
+              client: prospect.key,
+              fields: { stage: "in-talks" },
+              amount: "18000",
+              currency: "EUR",
+              due: "2026-12-18",
+            },
+          ],
+        }),
+      );
       const key = made.records[0]!.key;
       // The same row from the same event is a retry.
       const again = yield* LeadWork.create(scope, {
@@ -4398,12 +4661,13 @@ it.effect(
       assert.isUndefined(
         (yield* Clients.party([owner], { orgId, key: prospect.key })).party.prospect,
       );
-      const reopened = yield* LeadWork.update(scope, {
-        key: KinRecordKey.make(key),
+      const reopening = yield* decodeUpdate({
+        key,
         sourceEventId: "ask-event",
         state: "open",
         fields: { stage: "deciding" },
       });
+      const reopened = yield* LeadWork.update(scope, { ...reopening, key });
       assert.strictEqual(reopened.state, "open");
       assert.strictEqual((yield* Deals.page([owner], { orgId, key })).deal.stage, "deciding");
     }).pipe(Effect.provide(layer)),

@@ -33,7 +33,10 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as Equal from "effect/Equal";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
+import * as SchemaIssue from "effect/SchemaIssue";
 import { KinToolText } from "./leadSchemas.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -83,7 +86,7 @@ import {
   goalsNow,
   isMoneyMeasure,
 } from "./goals.ts";
-import { FieldInputs, turnFiles, typedFields } from "./leadFields.ts";
+import { FieldInputs, RawRecordFields, turnFiles, typedFields } from "./leadFields.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { sectionOfKey } from "../shell/sections.ts";
 import * as Deals from "./deals.ts";
@@ -163,7 +166,12 @@ import {
   sensitiveShown,
   showsSensitive,
 } from "./sensitiveReads.ts";
-import { memberAdds, memberAddsContact, memberChangesContact } from "./ownerClients.ts";
+import {
+  checkPartyTax,
+  memberAdds,
+  memberAddsContact,
+  memberChangesContact,
+} from "./ownerClients.ts";
 import {
   allSeeMoney,
   recordFieldAccess,
@@ -632,12 +640,6 @@ const CreateRow = Schema.Struct({
   deal: Schema.optional(KinToolText(40, "A promise's deal.")),
   ...GoalInputs,
 });
-export const CreateInput = Schema.Struct({
-  sourceEventId: TurnEvent,
-  records: Schema.Array(
-    Schema.StructWithRest(CreateRow, [Schema.Record(Schema.String, Schema.Unknown)]),
-  ).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
-});
 const Named = Schema.Struct({
   key: Schema.String,
   title: Schema.String,
@@ -683,7 +685,7 @@ export const CreateResult = Schema.Struct({
     }),
   ),
 });
-export const UpdateInput = Schema.Struct({
+const UpdateRow = Schema.Struct({
   key: Schema.optional(KinRecordKey),
   keys: Schema.optional(
     Schema.Array(KinRecordKey).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
@@ -742,8 +744,163 @@ export const UpdateInput = Schema.Struct({
   ...SpineInputs,
   ...GoalInputs,
 });
+const recordFields = {
+  work: [
+    "milestone",
+    "size",
+    "reason",
+    "from",
+    "at",
+    "attendees",
+    "where",
+    "alsoOn",
+    "promisedTo",
+    "deal",
+  ],
+  clients: ["cameFrom", "tags", "terms", "address", "gstin", "placeOfSupply", "heardFrom"],
+  contacts: ["role", "email", "phone", "emails", "phones", "tags"],
+  projects: [
+    "repos",
+    "billing",
+    "value",
+    "startsOn",
+    "renewsOn",
+    "members",
+    "audience",
+    "finishedOn",
+  ],
+  milestones: [],
+  goals: ["measure", "target", "current", "unit", "startsOn"],
+} satisfies Partial<Record<keyof typeof LISTS, ReadonlyArray<keyof typeof CreateRow.fields>>>;
+
+type FieldList = keyof typeof recordFields;
+const isFieldList = (list: string): list is FieldList => Object.hasOwn(recordFields, list);
+const fieldsByPrefix = new Map(
+  Object.keys(recordFields)
+    .filter(isFieldList)
+    .map((list) => [LISTS[list].prefix, list]),
+);
+const updateLists = ({
+  key,
+  keys,
+}: {
+  key?: string | undefined;
+  keys?: ReadonlyArray<string> | undefined;
+}) => {
+  const lists = (keys ?? (key === undefined ? [] : [key])).map((one) =>
+    fieldsByPrefix.get(one.slice(0, one.indexOf("-"))),
+  );
+  // A defined list's fields belong to that list, even when it shares a field name with a built-in.
+  return lists.every((one) => one !== undefined) ? [...new Set(lists)] : [];
+};
+
+const canonicalField = (key: string) =>
+  key === "taxNumber" ? "gstin" : key === "taxPlace" ? "placeOfSupply" : key;
+const parameterIssue = (message: string) => new SchemaIssue.InvalidValue({ message });
+const isPartyKind = Schema.is(NewPartyKind);
+
+const liftRecordFields = Effect.fnUntraced(function* (
+  {
+    fields,
+    taxNumber,
+    taxPlace,
+    ...out
+  }: Record<string, unknown> & {
+    fields?: Readonly<Record<string, unknown>> | undefined;
+  },
+  lists: ReadonlyArray<FieldList>,
+  rowKeys: object,
+) {
+  if (lists.length === 0) {
+    if (taxNumber !== undefined || taxPlace !== undefined)
+      return yield* Effect.fail(
+        parameterIssue(`${taxNumber === undefined ? "taxPlace" : "taxNumber"} goes on clients.`),
+      );
+    return fields === undefined ? out : { ...out, fields };
+  }
+  for (const [name, value] of Object.entries(fields ?? {})) {
+    const key = canonicalField(name);
+    if (
+      !Object.hasOwn(rowKeys, key) ||
+      !lists.every((list) => (recordFields[list] as ReadonlyArray<string>).includes(key))
+    )
+      return yield* Effect.fail(
+        parameterIssue(`${JSON.stringify(name)} is not a field for this record write.`),
+      );
+    if (out[key] !== undefined && !Equal.equals(out[key], value))
+      return yield* Effect.fail(parameterIssue(`${name} given twice with different values.`));
+    out[key] = value;
+  }
+  for (const [name, value] of [
+    ["taxNumber", taxNumber],
+    ["taxPlace", taxPlace],
+  ] as const) {
+    if (value === undefined) continue;
+    if (!lists.every((list) => list === "clients"))
+      return yield* Effect.fail(parameterIssue(`${name} goes on clients.`));
+    const key = canonicalField(name);
+    if (out[key] !== undefined && !Equal.equals(out[key], value))
+      return yield* Effect.fail(parameterIssue(`${name} given twice with different values.`));
+    out[key] = value;
+  }
+  if (lists.every((list) => list === "clients") && isPartyKind(out.category)) {
+    if (out.kind !== undefined && out.kind !== out.category)
+      return yield* Effect.fail(parameterIssue("kind given twice with different values."));
+    out.kind = out.category;
+    delete out.category;
+  }
+  return out;
+});
+
+const openRow = <S extends Schema.Struct.Fields>(fields: S) =>
+  Schema.StructWithRest(Schema.Struct(fields), [Schema.Record(Schema.String, Schema.Unknown)]);
+const rawCreate = openRow({
+  ...CreateRow.fields,
+  fields: Schema.optional(RawRecordFields),
+  taxNumber: CreateRow.fields.gstin,
+  taxPlace: CreateRow.fields.placeOfSupply,
+});
+const createRowWithFields = rawCreate.pipe(
+  Schema.toEncoded,
+  Schema.decodeTo(Schema.Unknown, {
+    decode: SchemaGetter.transformEffect((row) => {
+      const list = row.list ?? "work";
+      return liftRecordFields(row, isFieldList(list) ? [list] : [], CreateRow.fields);
+    }),
+    encode: SchemaGetter.passthrough({ strict: false }),
+  }),
+  Schema.decodeTo(openRow(CreateRow.fields)),
+);
+export const CreateInput = Schema.Struct({
+  sourceEventId: TurnEvent,
+  records: Schema.Array(createRowWithFields).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+});
+
+const rawUpdate = Schema.Struct({
+  ...UpdateRow.fields,
+  fields: Schema.optional(RawRecordFields),
+  taxNumber: UpdateRow.fields.gstin,
+  taxPlace: UpdateRow.fields.placeOfSupply,
+});
+export const UpdateInput = rawUpdate.pipe(
+  Schema.toEncoded,
+  Schema.decodeTo(Schema.Unknown, {
+    decode: SchemaGetter.transformEffect((row) =>
+      liftRecordFields(row, updateLists(row), UpdateRow.fields),
+    ),
+    encode: SchemaGetter.transform((value) => {
+      const row = value as
+        | typeof rawUpdate.Type
+        | (Omit<typeof rawUpdate.Type, "kind"> & { kind: "prospect" });
+      if (row.kind !== "prospect") return row;
+      const { kind, ...rest } = row;
+      return { ...rest, category: kind };
+    }),
+  }),
+  Schema.decodeTo(Schema.Struct({ ...UpdateRow.fields, kind: Schema.optional(NewPartyKind) })),
+);
 const createKeys = Object.keys(CreateRow.fields);
-const updateKeys = Object.keys(UpdateInput.fields);
+const updateKeys = Object.keys(UpdateRow.fields);
 const dealKeys = new Set([
   "title",
   "client",
@@ -3087,10 +3244,12 @@ const createRow = Effect.fnUntraced(function* (
   const held =
     list === "clients" ? yield* heldBack(lead, printedAsked(row, found), found?.recordId) : [];
   // Who may make the whole row is decided as before; only then does a part wait for a tap.
-  if (held.length > 0 && writer.view !== undefined && crmFor === undefined) {
+  const checksTax = list === "clients" && row.gstin !== undefined;
+  if ((held.length > 0 || checksTax) && writer.view !== undefined && crmFor === undefined) {
     const whole = { list, fields: allFields };
     yield* viewGuard(lead.orgId, writer.view, { row: found, changes: false, input: whole });
   }
+  if (checksTax) yield* checkPartyTax({ orgId: lead.orgId, taxNumber: row.gstin });
   const fields: typeof allFields =
     held.length === 0
       ? allFields
@@ -4203,12 +4362,14 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, asked: 
       ? yield* heldBack(lead, printedAsked(input, before), before.recordId)
       : [];
   // Who may make the whole change is decided as before; only then does a part wait for a tap.
-  if (held.length > 0 && team !== undefined)
+  const checksTax = before.registerId === "clients" && input.gstin !== undefined;
+  if ((held.length > 0 || checksTax) && team !== undefined)
     yield* viewGuard(
       lead.orgId,
       { people: team.people, askers: team.askers },
       { row: before, changes: true, input: written },
     );
+  if (checksTax) yield* checkPartyTax({ orgId: lead.orgId, taxNumber: input.gstin }, beforeFields);
   const seenBefore = yield* teamPairs(lead.orgId, [before.recordId]);
   // `memberChangesContact` decided it, as their form's own write.
   const after = yield* records.update(

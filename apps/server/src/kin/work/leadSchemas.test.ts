@@ -1,9 +1,13 @@
 import { assert, expect, it } from "@effect/vitest";
+import * as Context from "effect/Context";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 
 import { Tool } from "effect/ai";
-import { advertisedJsonSchema } from "../../mcp/advertisedJsonSchema.ts";
+import {
+  AcceptedUnadvertisedArguments,
+  advertisedJsonSchema,
+} from "../../mcp/advertisedJsonSchema.ts";
 import { inputPropertyPaths } from "../mcp/inputPropertyPaths.testHelper.ts";
 import { ImportHeader } from "./importFormat.ts";
 import { DefineInput } from "./leadMoney.ts";
@@ -98,12 +102,23 @@ it("advertises every accepted list definition key and a single field type enum",
   });
 });
 
-it("advertises every accepted record write key at every level", () => {
+it("advertises record write keys except the annotated arguments", () => {
   const { record_create, record_update } = KinWorkToolkit.tools;
   for (const tool of [record_create, record_update]) {
     const raw = Tool.getJsonSchema(tool);
     const advertised = advertisedJsonSchema(tool, { kin: true });
-    assert.deepStrictEqual(inputPropertyPaths(advertised), inputPropertyPaths(raw), tool.name);
+    const accepted = inputPropertyPaths(raw);
+    const hidden = Context.get(tool.annotations, AcceptedUnadvertisedArguments);
+    for (const name of ["taxNumber", "taxPlace"]) {
+      const path = tool.name === "record_create" ? `records[].${name}` : name;
+      assert.isTrue(accepted.has(path), path);
+      assert.include(hidden, path);
+    }
+    assert.deepStrictEqual(
+      inputPropertyPaths(advertised),
+      new Set([...accepted].filter((path) => !hidden.includes(path))),
+      tool.name,
+    );
     const prefix = tool.name === "record_create" ? "records.items.properties." : "";
     expect(advertised.properties).toHaveProperty(`${prefix}confirmed`, { type: "boolean" });
     expect(advertised.properties).toHaveProperty(`${prefix}due.description`, expect.any(String));
