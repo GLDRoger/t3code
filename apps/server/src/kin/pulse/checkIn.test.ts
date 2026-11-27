@@ -5,8 +5,11 @@ import {
   KinMemoryItemId,
   KinOrgId,
   KinPersonId,
+  KinWakeupId,
   type KinPulseOutsideLine,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
+import * as Fiber from "effect/Fiber";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as TestClock from "effect/testing/TestClock";
@@ -245,11 +248,12 @@ const decline = Effect.fn("test.decline")(function* (options: unknown = declineO
 const chatLine = Effect.fn("test.chatLine")(function* (input: {
   id: string;
   person?: KinPersonId;
-  to?: KinPersonId;
+  to?: KinPersonId | KinAgentId;
   seq: number;
   at: number;
   replyTo?: string;
   clientId?: string;
+  memberId?: string;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const { id, person, seq, at, replyTo, clientId } = input;
@@ -259,7 +263,7 @@ const chatLine = Effect.fn("test.chatLine")(function* (input: {
       author_member_id, author_role, kind, body, mentions_json, status, created_at, reply_to, client_message_id)
     VALUES (${id}, ${orgId}, ${`chat-${recipient}`}, ${seq}, ${person ? "human" : "agent"},
       ${person ?? null}, ${person ? null : chief}, ${person ? null : owner}, ${person ? null : "thread"},
-      ${person ? `member-${person}` : `lead-${recipient}`},
+      ${input.memberId ?? (person ? `member-${person}` : `lead-${recipient}`)},
       'member', 'text', 'Invented message', '[]', 'posted',
       ${DateTime.formatIso(DateTime.makeUnsafe(at))}, ${replyTo ?? null}, ${clientId ?? null})`;
 });
@@ -515,6 +519,147 @@ describe("pulse check-ins", () => {
       );
       assert.strictEqual(tuesday._tag, "queued");
       assert.notStrictEqual(looseOffsetMs(afternoon, "2026-11-17"), offset);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect.each([
+    { name: "waits for ten quiet minutes", expected: 7 * MINUTE, activity: "single" },
+    { name: "waits at most an hour", expected: HOUR, activity: "continuous" },
+    { name: "ignores other writes", expected: 0, activity: "other" },
+    { name: "stays in the evening's day", expected: 0, activity: "evening" },
+    { name: "keeps the usual loose minute in a quiet chat", expected: 0, activity: "quiet" },
+    { name: "survives restart once", expected: 7 * MINUTE, activity: "restart" },
+    { name: "holds from the end of quiet hours", expected: 7 * MINUTE, activity: "after-quiet" },
+    { name: "holds late on a long DST evening", expected: 7 * MINUTE, activity: "evening-dst" },
+  ])("a scheduled check-in $name", ({ expected, activity }) =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const chat = `chat-${chief}`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+          person_id, agent_id, role, joined_at)
+        VALUES (${`member-${owner}`}, ${orgId}, ${chat}, 'person', ${owner}, NULL, 'owner', ${stamp}),
+          (${`lead-${chief}`}, ${orgId}, ${chat}, 'agent', NULL, ${chief}, 'member', ${stamp}),
+          ('member-owner-finance', ${orgId}, ${`chat-${finance}`}, 'person', ${owner}, NULL, 'owner', ${stamp})`;
+      const dst = activity === "evening-dst";
+      const evening = activity === "evening" || dst;
+      if (evening)
+        yield* companyClock(dst ? "America/New_York" : "UTC", '{"from":"02:00","to":"03:00"}');
+      // Quiet hours past the slot's whole hour: the check-in first comes due when they end.
+      if (activity === "after-quiet") yield* companyClock("UTC", '{"from":"14:00","to":"17:00"}');
+      // 23:40 in New York on Sunday 1 November 2026, a 25-hour day: 04:40 UTC the next day.
+      const opens = dst ? Date.UTC(2026, 10, 2, 4, 40) : evening ? MONDAY + DAY - 3 * MINUTE : SLOT;
+      const due = evening
+        ? opens + 20_000
+        : activity === "after-quiet"
+          ? MONDAY + 17 * HOUR
+          : SLOT + looseOffsetMs(afternoon, "2026-11-16");
+      const personWrites = (seq: number, at: number) =>
+        chatLine({ id: `owner-${seq}`, to: chief, person: owner, seq, at });
+      yield* TestClock.setTime(opens);
+      yield* record({ key: "W-1", list: "work", title: "Invented site copy", dueAt: MONDAY - DAY });
+      if (activity === "other") {
+        yield* chatLine({ id: "agent", to: chief, seq: 1, at: due - 3 * MINUTE });
+        yield* chatLine({ id: "card", to: chief, person: owner, seq: 2, at: due - 2 * MINUTE });
+        yield* sql`UPDATE kin_messages SET kind = 'widget_action' WHERE message_id = 'card'`;
+        yield* chatLine({
+          id: "key",
+          to: chief,
+          person: owner,
+          seq: 3,
+          at: due - MINUTE,
+          clientId: "send:key:test:one",
+        });
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            author_role, kind, body, mentions_json, status, created_at)
+          VALUES ('notice', ${orgId}, ${chat}, 4, 'system', 'member', 'system', 'Invented notice',
+            '[]', 'posted', ${DateTime.formatIso(DateTime.makeUnsafe(due - MINUTE))})`;
+        yield* chatLine({
+          id: "elsewhere",
+          to: finance,
+          person: owner,
+          seq: 1,
+          at: due - MINUTE,
+          memberId: "member-owner-finance",
+        });
+        // Forwarded, deleted or only suggested text, and a co-owner's, is not the owner talking.
+        for (const [seq, id] of [
+          [5, "forwarded"],
+          [6, "deleted"],
+          [7, "suggested"],
+        ] as const)
+          yield* chatLine({ id, to: chief, person: owner, seq, at: due - MINUTE });
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind,
+            person_id, agent_id, role, joined_at)
+          VALUES (${`member-${mate}`}, ${orgId}, ${chat}, 'person', ${mate}, NULL, 'member', ${stamp})`;
+        yield* chatLine({ id: "co-owner", to: chief, person: mate, seq: 8, at: due - MINUTE });
+        yield* sql`UPDATE kin_messages SET origin_json = '{"chatId":"elsewhere"}'
+          WHERE message_id = 'forwarded'`;
+        yield* sql`UPDATE kin_messages SET status = message_id
+          WHERE message_id IN ('deleted', 'suggested')`;
+      }
+      const enqueue = evening
+        ? queueCheckIn({
+            orgId,
+            agentId: chief,
+            scheduleId: KinMemoryItemId.make("checkin-evening"),
+            title: "Evening check-in",
+            what: "Sum up today.",
+            dueAt: opens,
+            looseAt: null,
+            zone: "UTC",
+            at: opens,
+            outside: nothingOutside,
+            sumUp: true,
+          })
+        : checkIn(opens);
+      assert.strictEqual((yield* enqueue)._tag, "queued");
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const claim = (current: typeof queue, id: string) =>
+        Effect.scoped(
+          Effect.gen(function* () {
+            const wakeupId = KinWakeupId.make(id);
+            const events = yield* current.claim({ orgId, agentId: chief, wakeupId, model: "test" });
+            const started = yield* Clock.currentTimeMillis;
+            yield* current.finish({ orgId, wakeupId, status: "completed" });
+            return { started, events };
+          }),
+        );
+      if (activity !== "quiet" && activity !== "other") yield* personWrites(1, due - 3 * MINUTE);
+      const elapsed = due - opens;
+      if (activity === "restart") {
+        const first = yield* claim(queue, "before-restart").pipe(
+          Effect.timeoutOption(elapsed + 2 * MINUTE),
+          Effect.forkChild,
+        );
+        yield* TestClock.adjust(elapsed + 2 * MINUTE);
+        assert.isTrue(Option.isNone(yield* Fiber.join(first)), "no turn before restart");
+        yield* Effect.gen(function* () {
+          assert.strictEqual((yield* enqueue)._tag, "duplicate");
+          const restarted = yield* KinEventQueue.KinEventQueue;
+          const run = yield* claim(restarted, "after-restart").pipe(Effect.forkChild);
+          yield* TestClock.adjust(5 * MINUTE);
+          const { started, events } = yield* Fiber.join(run);
+          assert.strictEqual(started, due + expected);
+          assert.lengthOf(events, 1);
+        }).pipe(Effect.provide(KinEventQueue.layer));
+        const [count] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_wakeups`;
+        assert.strictEqual(count?.n, 1);
+      } else {
+        const run = yield* claim(queue, "page").pipe(Effect.forkChild);
+        yield* TestClock.adjust(elapsed);
+        if (activity === "continuous") {
+          for (let offset = 2; offset < 60; offset += 5) {
+            const at = due + offset * MINUTE;
+            yield* TestClock.adjust(at - (yield* Clock.currentTimeMillis));
+            yield* personWrites(2 + (offset - 2) / 5, at);
+          }
+        }
+        yield* TestClock.adjust(due + expected - (yield* Clock.currentTimeMillis));
+        const { started, events } = yield* Fiber.join(run);
+        assert.strictEqual(started, due + expected);
+        assert.lengthOf(events, 1);
+      }
     }).pipe(Effect.provide(layer)),
   );
 

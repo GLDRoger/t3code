@@ -62,6 +62,7 @@ const OUTSIDE_CAP = 60;
 const MORNING = "checkin-morning";
 const WEEKLY = "checkin-weekly";
 const EVENING = "checkin-evening";
+const CONVERSATION_HOLD_CAP_MS = 60 * MINUTE_MS;
 const WEEKDAYS = [1, 2, 3, 4, 5];
 const decodeHours = Schema.decodeUnknownOption(Schema.fromJsonString(KinWorkHours));
 
@@ -369,7 +370,18 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
           ...(sent.length === 0 ? {} : { outside: sent }),
           ...(notListed > 0 ? { outsideNotListed: notListed } : {}),
         }),
-        notBefore === undefined ? undefined : { notBefore },
+        {
+          ...(notBefore === undefined ? {} : { notBefore }),
+          ...(day === undefined
+            ? {}
+            : {
+                // From when it first comes due: its minute, or the end of the quiet hours it waits out.
+                checkInPause: {
+                  until: (notBefore ?? at) + CONVERSATION_HOLD_CAP_MS,
+                  ...(input.scheduleId === EVENING ? { dayEndsAt: endOfDay(day, company) } : {}),
+                },
+              }),
+        },
       )
       .pipe(
         Effect.tap((result) =>

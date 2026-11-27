@@ -1,3 +1,4 @@
+import { latestOwnTextAtSql } from "../chat/KinChatRepository.ts";
 // @effect-diagnostics nodeBuiltinImport:off -- each case copies one migrated database file.
 import K021PushDevices from "./migrations/K021_PushDevices.ts";
 import PeopleInvitesMigration from "./migrations/K038_PeopleInvites.ts";
@@ -626,6 +627,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_leads_org_domain" },
           { name: "idx_kin_messages_agent_thread" },
           { name: "idx_kin_messages_changes" },
+          { name: "idx_kin_messages_conversation" },
           { name: "idx_kin_offline_skips_at" },
           { name: "idx_kin_pending_actions_approved" },
           { name: "idx_kin_pending_actions_expiry" },
@@ -705,6 +707,19 @@ describe("Kin migrations", () => {
         assert.deepStrictEqual(
           yield* sql`SELECT name FROM pragma_index_info('idx_kin_widgets_type_closed_at') ORDER BY seqno`,
           [{ name: "type" }, { name: "closed_at" }],
+        );
+        const recentOwnText = latestOwnTextAtSql(
+          sql,
+          { orgId: sql`${"org_tidewater"}`, chatId: sql`${"chat"}`, personId: sql`${"person"}` },
+          "2026-11-27T10:00:00.000Z",
+          "2026-11-27T10:10:00.000Z",
+        );
+        const conversationPlan = yield* sql<{
+          detail: string;
+        }>`EXPLAIN QUERY PLAN ${recentOwnText}`;
+        assert.match(
+          conversationPlan[0]?.detail ?? "",
+          /SEARCH kin_messages USING INDEX idx_kin_messages_conversation .*created_at>\? AND created_at<\?/,
         );
         const waitingPlan = yield* sql<{ detail: string }>`
           EXPLAIN QUERY PLAN
@@ -2390,7 +2405,7 @@ describe("Kin migrations", () => {
         VALUES ('org', 'arrival', 'mail', 'message', 1, 'settled')`;
       const rows = sql`SELECT arrival_id, rule_id, rule_state, has_file, sender_check
         FROM kin_arrivals`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [[231, "MailRules"]]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(231));
       assert.deepStrictEqual(yield* rows, [
         {
           arrival_id: "arrival",
@@ -2409,7 +2424,7 @@ describe("Kin migrations", () => {
       const invalid = yield* Effect.exit(sql`UPDATE kin_arrivals SET has_file = 2`);
       assert.isTrue(Exit.isFailure(invalid));
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 231`;
-      assert.deepStrictEqual(yield* runKinMigrations(), [[231, "MailRules"]]);
+      assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(231));
       assert.deepStrictEqual(yield* rows, [
         {
           arrival_id: "arrival",
