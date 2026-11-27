@@ -331,7 +331,7 @@ const busy = () =>
   new KinChatError({
     reason: "unavailable",
     message:
-      "Not saved yet: memory is busy saving other work. Try the same call again in a moment; nothing retries it on its own.",
+      "Not saved yet: memory is busy saving other work. Try the same call again in a moment; nothing retries it on its own. If it stays busy, your reply opens by saying it isn't saved because memory was busy, and asks for it again in a moment; never say it is noted, kept or kept in mind, or that you will save it later.",
   });
 // Writer rejections about the caller rather than the request.
 const authorityRejections = new Set([
@@ -347,14 +347,15 @@ const authorityRejections = new Set([
 // Writer refusals a lead's write can meet, as words it can pass on; others keep the writer's.
 const WRITE_REFUSALS: Readonly<Record<string, string>> = {
   "Cannot overwrite malformed recorded item":
-    "Not saved: the note already saved under this id is damaged and can't be read, so Kin won't write over it, and whoever looks after Kin can repair it. Save this as a new item instead, leaving out id.",
+    "Not saved: the note already saved under this id is damaged and can't be read, so Kin won't write over it. Save this as a new item instead, leaving out id, and tell the person the old note is still there, damaged, until whoever looks after Kin repairs it.",
   "Supersession requires the same source and kind":
-    "Not saved: the item it would replace is closed, of another kind or came from somewhere else, so that item still stands. Update it instead, or save this as a new item.",
+    "Not saved: the item it would replace is closed, of another kind or came from somewhere else, so that item still stands. Update it instead, or save this as a new item; then your reply says the old one still stands beside it.",
 };
 const UNAVAILABLE = "Kin memory is unavailable.";
 const WRITE_UNAVAILABLE =
-  "Not saved: Kin memory is unavailable right now, and nothing retries this on its own. Try again later.";
-const WRITE_DENIED = "Not saved: Kin doesn't let this turn change memory.";
+  "Not saved: Kin memory is unavailable right now, and nothing retries this on its own. Your reply opens by saying it isn't saved because memory isn't working just now; never say it is noted, kept or kept in mind, or that you will save it later, unless you set a reminder to try again.";
+const WRITE_DENIED =
+  "Not saved: Kin doesn't let this turn change memory, and nothing retries it. Your reply opens by saying it isn't saved because Kin didn't let it be saved here; never say it is noted, kept or kept in mind.";
 const TITLES_SHOWN = 5;
 const isChatError = Schema.is(KinChatError);
 const isNotFound = Schema.is(Memory.MemoryNotFound);
