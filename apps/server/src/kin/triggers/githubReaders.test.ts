@@ -40,6 +40,7 @@ const mergedPr = {
   __typename: "PullRequest",
   number: 9,
   pullState: "MERGED",
+  author: { login: "zoya-dev" },
   assignees: { ...more, nodes: [] },
   reviewRequests: { ...more, nodes: [] },
   timelineItems: { pageInfo: { hasPreviousPage: false }, nodes: [] },
@@ -198,13 +199,23 @@ describe("Kin GitHub readers", () => {
         },
       ]);
       assert.deepStrictEqual(
-        yield* readGithubLinks(orgId, ["https://github.com/GLDRoger/t3code/issues/7"]),
+        yield* readGithubLinks(orgId, [
+          "https://github.com/GLDRoger/t3code/issues/7",
+          "https://github.com/GLDRoger/t3code/pull/9",
+        ]),
         [
           {
             link: "https://github.com/GLDRoger/t3code/issues/7",
             state: "closed",
             assignees: ["amir", "zoe"],
             linkedPrs: [9, 12, 31],
+          },
+          {
+            link: "https://github.com/GLDRoger/t3code/pull/9",
+            author: "zoya-dev",
+            state: "merged",
+            assignees: [],
+            linkedPrs: [],
           },
         ],
       );

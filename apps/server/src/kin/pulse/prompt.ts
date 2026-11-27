@@ -18,6 +18,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { sentMail, type SentMail } from "../connections/Sending.ts";
 import { cappedText, encoded } from "../lead/quote.ts";
 import { tracked } from "../lead/tracked.ts";
+import { ownerLevelSql } from "../people/KinAccess.ts";
 import { dayIn, timeIn } from "../work/money.ts";
 import { ownerZone, recordName } from "../work/recordRows.ts";
 import { declineLine, givenDeclines } from "./declines.ts";
@@ -30,6 +31,7 @@ import * as KinPulse from "./KinPulse.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { inOwnerTime } from "./checkInSeeds.ts";
 import { teamHoursNow } from "./nudge.ts";
+import { readNowState, RoutineHasNowState } from "./nowState.ts";
 import { lateReminders } from "./told.ts";
 import { LOOKED_AFTER_SENSES } from "./senses/deals.ts";
 
@@ -105,11 +107,32 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   const gone = wokeFor.filter((key) => !open.has(key));
   const setAside =
     tell === undefined ? [] : (yield* givenDeclines(input.orgId, input.now, tell)).map(declineLine);
-  if ((checkIn ? all.facts.length : all.total) === 0 && gone.length === 0 && setAside.length === 0)
-    return undefined;
+  const sql = yield* SqlClient.SqlClient;
+  const [checkInOwner] =
+    checkIn && !(yield* RoutineHasNowState)
+      ? yield* sql<{ id: string }>`SELECT a.owner_person_id AS id FROM kin_agents a
+        WHERE a.org_id = ${input.orgId} AND a.agent_id = ${input.agentId} AND a.retired_at IS NULL
+          AND ${sql.literal(ownerLevelSql("a.org_id", "a.owner_person_id"))}`
+      : [];
+  const quiet =
+    (checkIn ? all.facts.length : all.total) === 0 && gone.length === 0 && setAside.length === 0;
+  if (quiet && checkInOwner === undefined) return undefined;
   const shown = all.facts
     .toSorted((a, b) => Number(woke.has(b.key)) - Number(woke.has(a.key)))
     .slice(0, checkIn ? CHECK_IN_CAP : SECTION_CAP);
+  const zone = yield* ownerZone(input.orgId);
+  const now =
+    checkInOwner === undefined
+      ? undefined
+      : yield* readNowState({
+          orgId: input.orgId,
+          owner: KinPersonId.make(checkInOwner.id),
+          at: input.now,
+          zone,
+          links: [],
+          pulseRecords: [...new Set(shown.flatMap((fact) => fact.subject.recordId ?? []))],
+        });
+  if (quiet && now?.lines.length === 0) return undefined;
   // An overdue invoice or unanswered quote comes with the mail it went in, to reply in that thread.
   const mailed = new Map<string, SentMail>();
   for (const fact of shown)
@@ -138,7 +161,6 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
         yield* clientHistory(input.orgId, fact.subject.recordId, input.now),
       );
   const starts = yield* headStarts(input.orgId, shown, input.ownAccounts ?? []);
-  const zone = yield* ownerZone(input.orgId);
   const ended = checkIn
     ? yield* asideEnded(input.orgId, input.agentId, input.now, shown, input.checkInEvents ?? [])
     : new Map<string, string>();
@@ -198,6 +220,7 @@ export const buildPulseSection = Effect.fn("KinLeadPrompt.pulse")(function* (inp
   }
   const team = yield* teamHoursNow(input.orgId, input.now);
   return {
+    ...(now === undefined ? {} : { now }),
     asOf: timeIn(DateTime.toEpochMillis(all.asOf), zone),
     total: checkIn ? all.facts.length : all.total,
     ...(team.length === 0 ? {} : { teamHours: team }),

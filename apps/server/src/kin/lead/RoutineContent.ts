@@ -32,7 +32,9 @@ import * as Chat from "../chat/KinChatService.ts";
 import { memoryDateMillis, openBy, reviewOverdueBy } from "../memory/frontMatter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
-import { ownerLevelPeople } from "../people/KinAccess.ts";
+import { ownerLevelPeople, ownerLevelSql } from "../people/KinAccess.ts";
+import { readNowState } from "../pulse/nowState.ts";
+import { KinDeferralGithubReader } from "../triggers/deferralGithub.ts";
 import { deferralWidgetId } from "../triggers/deferrals.ts";
 import { withRuns } from "../triggers/deferralRuns.ts";
 import { draftOpening } from "../work/draftOpening.ts";
@@ -114,6 +116,7 @@ export class KinRoutineContent extends Context.Service<
     readonly morningFacts: (
       orgId: KinOrgId,
       agentId: KinAgentId,
+      wakeupId?: string,
     ) => Effect.Effect<string | null, KinRoutineContentError>;
     /**
      * The evening summary's sections as JSON, for the evening check-in; null with no live lead or
@@ -122,6 +125,7 @@ export class KinRoutineContent extends Context.Service<
     readonly eveningFacts: (
       orgId: KinOrgId,
       agentId: KinAgentId,
+      wakeupId?: string,
     ) => Effect.Effect<string | null, KinRoutineContentError>;
   }
 >()("t3/kin/lead/RoutineContent/KinRoutineContent") {}
@@ -191,6 +195,7 @@ const make = Effect.gen(function* () {
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
   const reader = yield* KinRoutineGithubReader;
+  const linkReader = yield* KinDeferralGithubReader;
   const threads = yield* ThreadManagement.ThreadManagementService;
 
   // The last assistant message of the child thread's latest run; null when it can't be read or has none.
@@ -217,8 +222,14 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     agentId: KinAgentId,
   ) {
-    const [row] = yield* sql<{ chatId: string; personId: string; login: string | null }>`
-      SELECT l.owner_chat_id AS "chatId", a.owner_person_id AS "personId", p.github_login AS login
+    const [row] = yield* sql<{
+      chatId: string;
+      personId: string;
+      login: string | null;
+      ownerLevel: number;
+    }>`
+      SELECT l.owner_chat_id AS "chatId", a.owner_person_id AS "personId", p.github_login AS login,
+        ${sql.literal(ownerLevelSql("a.org_id", "a.owner_person_id"))} AS "ownerLevel"
       FROM kin_leads l
       JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
       JOIN kin_chats c ON c.org_id = l.org_id AND c.chat_id = l.owner_chat_id
@@ -232,7 +243,12 @@ const make = Effect.gen(function* () {
   const gather = Effect.fn("KinRoutineContent.gather")(function* (
     orgId: KinOrgId,
     event: { readonly routine: "morning_brief" | "evening_summary"; readonly agentId: KinAgentId },
-    owner: { readonly personId: string; readonly login: string | null },
+    owner: {
+      readonly personId: string;
+      readonly login: string | null;
+      readonly ownerLevel: number;
+    },
+    checkIn?: { readonly wakeupId?: string },
   ) {
     const now = yield* Clock.currentTimeMillis;
     const zone = yield* cache.ownerTimeZone(orgId);
@@ -245,6 +261,44 @@ const make = Effect.gen(function* () {
       DateTime.formatIsoDate(DateTime.makeZonedUnsafe(ms, { timeZone: zone }));
     const dayLabel = (ms: number) => formatKinWhen(ms, "day", { zone, locale: KIN_TEXT_LOCALE });
     const timeLabel = (ms: number) => formatKinWhen(ms, "time", { zone, locale: KIN_TEXT_LOCALE });
+
+    const withLiveState = checkIn !== undefined && owner.ownerLevel === 1;
+    const written = (ms: number) => {
+      const days = (Date.parse(day) - Date.parse(dayOf(ms))) / DAY_MS;
+      const age =
+        days === 0
+          ? "today"
+          : days === 1
+            ? "1 day ago"
+            : days === -1
+              ? "in 1 day"
+              : days < 0
+                ? `in ${-days} days`
+                : `${days} days ago`;
+      return `${dayLabel(ms)}, ${age}`;
+    };
+    const links = new Set<string>();
+    const withNow = Effect.fn("KinRoutineContent.withNow")(function* (
+      rows: Omit<MorningFacts, "now"> | Omit<EveningFacts, "now">,
+    ) {
+      if (!withLiveState) return rows;
+      for (const row of rows.routine === "morning_brief" ? rows.reviews : rows.done)
+        if (row.link !== undefined) links.add(row.link);
+      const state = yield* readNowState({
+        orgId,
+        owner: KinPersonId.make(owner.personId),
+        at: now,
+        zone,
+        links: [...links],
+        ...checkIn,
+      }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.provideService(KinDeferralGithubReader, linkReader),
+      );
+      return rows.routine === "morning_brief"
+        ? ({ ...rows, now: state } satisfies MorningFacts)
+        : ({ ...rows, now: state } satisfies EveningFacts);
+    });
 
     // Deferrals as their runs make them: moved or cancelled by a tap, or already handed over.
     const all = yield* withRuns(
@@ -266,12 +320,16 @@ const make = Effect.gen(function* () {
             due(item) < until,
         )
         .toSorted(byDue);
-    const row = (item: MemoryItemHead, note?: string): RoutineRow => ({
-      title: item.title,
-      itemId: item.id,
-      ...(note === undefined ? {} : { note }),
-      ...(item.links[0] === undefined ? {} : { link: item.links[0] }),
-    });
+    const row = (item: MemoryItemHead, note?: string): RoutineRow => {
+      if (withLiveState) for (const link of item.links) links.add(link);
+      return {
+        title: item.title,
+        itemId: item.id,
+        ...(note === undefined ? {} : { note }),
+        ...(item.links[0] === undefined ? {} : { link: item.links[0] }),
+        ...(withLiveState ? { written: written(memoryDateMillis(item.recorded_at)) } : {}),
+      };
+    };
 
     const waitingRows = yield* sql<{ reason: string; createdAt: string; body: string | null }>`
       SELECT w.reason, w.created_at AS "createdAt", m.body
@@ -279,10 +337,21 @@ const make = Effect.gen(function* () {
       LEFT JOIN kin_messages m ON m.org_id = w.org_id AND m.message_id = w.message_id
       WHERE w.org_id = ${orgId} AND w.person_id = ${owner.personId} AND w.resolved_at IS NULL
       ORDER BY w.created_at, w.waiting_id`;
-    const waiting = waitingRows.map((waitingRow): RoutineRow => ({
-      title: waitingRow.body ?? waitingRow.reason,
-      note: `${waitingRow.reason}, since ${dayLabel(Date.parse(waitingRow.createdAt))}`,
-    }));
+    const waiting = waitingRows.map((waitingRow): RoutineRow => {
+      const body = waitingRow.body ?? waitingRow.reason;
+      const created = Date.parse(waitingRow.createdAt);
+      const note = `${waitingRow.reason}, since ${dayLabel(created)}`;
+      if (!withLiveState) return { title: body, note };
+      const whole = body.trim();
+      const [first = ""] = whole.split(/\r?\n[^\S\r\n]*\r?\n/, 1);
+      const title = Array.from(first).slice(0, 280).join("");
+      return {
+        title,
+        note,
+        written: written(created),
+        ...(title.length < whole.length ? { more: true } : {}),
+      };
+    });
     const budgetUnits = Effect.fn("KinRoutineContent.budgetUnits")(function* (budgetDay: string) {
       const [budget] = yield* sql<{ units: number }>`
         SELECT lead_units + worker_units AS units FROM kin_budget
@@ -354,7 +423,7 @@ const make = Effect.gen(function* () {
           ...(state.truncatedRepos > 0 ? (["more_pulls"] as const) : []),
         ],
       });
-      const facts: MorningFacts = {
+      const facts: Omit<MorningFacts, "now"> = {
         routine: "morning_brief",
         dueToday,
         // Mondays also look ahead to the rest of the owner's week.
@@ -398,7 +467,7 @@ const make = Effect.gen(function* () {
         yesterdayUnits: yield* budgetUnits(dayOf(dayStart - 1)),
         pastReview,
       };
-      return { day, dayLabel, timeLabel, facts, dayStart, dayEnd };
+      return { day, dayLabel, timeLabel, facts: yield* withNow(facts), dayStart, dayEnd };
     }
 
     const doneCards = (yield* taskCards(sql, orgId, dayStart)).filter(
@@ -450,7 +519,7 @@ const make = Effect.gen(function* () {
         input += incoming;
         cached += Math.min(incoming, Math.max(0, turn.turnTokenUsage?.cachedInputTokens ?? 0));
       }
-    const facts: EveningFacts = {
+    const facts: Omit<EveningFacts, "now"> = {
       routine: "evening_summary",
       done,
       slipped: [...moved, ...missed],
@@ -466,7 +535,7 @@ const make = Effect.gen(function* () {
       failedWakeups: failed?.n ?? 0,
       failedDreams: dreams?.n ?? 0,
     };
-    return { day, dayLabel, timeLabel, facts, dayStart, dayEnd };
+    return { day, dayLabel, timeLabel, facts: yield* withNow(facts), dayStart, dayEnd };
   });
 
   const prepare = Effect.fn("KinRoutineContent.prepare")(
@@ -591,10 +660,15 @@ const make = Effect.gen(function* () {
   );
 
   const morningFacts = Effect.fn("KinRoutineContent.morningFacts")(
-    function* (orgId: KinOrgId, agentId: KinAgentId) {
+    function* (orgId: KinOrgId, agentId: KinAgentId, wakeupId?: string) {
       const owner = yield* lead(orgId, agentId);
       if (owner === undefined) return null;
-      const gathered = yield* gather(orgId, { routine: "morning_brief", agentId }, owner);
+      const gathered = yield* gather(
+        orgId,
+        { routine: "morning_brief", agentId },
+        owner,
+        wakeupId === undefined ? {} : { wakeupId },
+      );
       return gathered.facts.routine === "morning_brief" ? yield* encodeFacts(gathered.facts) : null;
     },
     (effect, orgId) =>
@@ -612,10 +686,15 @@ const make = Effect.gen(function* () {
   );
 
   const eveningFacts = Effect.fn("KinRoutineContent.eveningFacts")(
-    function* (orgId: KinOrgId, agentId: KinAgentId) {
+    function* (orgId: KinOrgId, agentId: KinAgentId, wakeupId?: string) {
       const owner = yield* lead(orgId, agentId);
       if (owner === undefined) return null;
-      const gathered = yield* gather(orgId, { routine: "evening_summary", agentId }, owner);
+      const gathered = yield* gather(
+        orgId,
+        { routine: "evening_summary", agentId },
+        owner,
+        wakeupId === undefined ? {} : { wakeupId },
+      );
       if (gathered.facts.routine !== "evening_summary") return null;
       const viewer = (yield* ownerLevelPeople(orgId).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
