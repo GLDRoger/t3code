@@ -176,7 +176,7 @@ export function KinChatPinsStrip(props: { readonly pins: KinChatPinsController }
               numberOfLines={1}
               ellipsizeMode="tail"
               className={cn(
-                "min-w-0 shrink tabular-nums",
+                "shrink-0 tabular-nums",
                 first.view.tone === "late" ? "text-danger-foreground" : "text-foreground-muted",
               )}
             >
@@ -255,6 +255,8 @@ function KinPinSheetRow(props: {
 }) {
   const { item } = props;
   const opens = item.view.opens;
+  // At the largest text sizes the button would leave the title no room, so it goes under it.
+  const stacked = useWindowDimensions().fontScale >= LARGE_TEXT_SCALE;
   const body = (
     <View className="flex-row items-center gap-2 py-3.5">
       <View className="min-w-0 flex-1 gap-1">
@@ -289,16 +291,16 @@ function KinPinSheetRow(props: {
 
   return (
     <View className="border-b border-border pb-2">
-      <View className="flex-row items-center gap-3">
+      <View className={stacked ? "items-start" : "flex-row items-center gap-3"}>
         {opens === null ? (
-          <View accessible className="min-w-0 flex-1">
+          <View accessible className={stacked ? "self-stretch" : "min-w-0 flex-1"}>
             {body}
           </View>
         ) : (
           <Pressable
             accessibilityRole="link"
             onPress={() => props.onOpen(opens)}
-            className="min-w-0 flex-1 active:opacity-70"
+            className={cn(stacked ? "self-stretch" : "min-w-0 flex-1", "active:opacity-70")}
           >
             {body}
           </Pressable>

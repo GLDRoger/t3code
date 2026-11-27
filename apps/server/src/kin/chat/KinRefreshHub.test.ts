@@ -735,8 +735,12 @@ describe("KinRefreshHub", () => {
       // Pause and resume touch `stop`. The heartbeat and pending offline notices have no stop state.
       kin_org_state: ["lead/KinStop.ts", "host/offlineCatchUp.ts"],
       // A zone change renames due-keyed facts; KinRoutines.configure touches pulse (pinned below).
-      // A resolved invoice choice marks its payment fact handled and touches pulse itself.
-      kin_pulse_facts: ["pulse/KinPulse.ts", "work/allDayZone.ts", "work/statements/invoiceCredits.ts"],
+      // An invoice choice marks the fact of a credit its own transaction explains, which no read senses.
+      kin_pulse_facts: [
+        "pulse/KinPulse.ts",
+        "work/allDayZone.ts",
+        "work/statements/invoiceCredits.ts",
+      ],
       // Lists read only rows a company defined (`built_in = 0`). The deals files write the built-in
       // deals row's stages and pipeline flag, and KinRecords a built-in row and the next number,
       // which no list read selects.

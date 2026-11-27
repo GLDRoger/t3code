@@ -152,7 +152,6 @@ const MEMBER = [
   "kin.work.list",
   "kin.work.lists",
   "kin.work.logTouch",
-  // Their own look at a record they can see; the service marks nothing else.
   "kin.work.looked",
   "kin.work.marketing",
   "kin.work.money",

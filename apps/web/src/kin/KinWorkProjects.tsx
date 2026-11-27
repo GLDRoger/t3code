@@ -153,7 +153,7 @@ function ProjectPage(
   const { environmentId, orgId, page } = props;
   const { names } = props.directory;
   const pageVisible = useKinPageVisible();
-  const pinnedLook = useKinPinnedProjectLook(page);
+  const pinnedLook = useKinPinnedProjectLook(props, page);
   const lookedUpTo = kinProjectLookedUpTo(page);
   useKinRecordLooked(
     props,

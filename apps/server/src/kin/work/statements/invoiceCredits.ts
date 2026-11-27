@@ -10,7 +10,6 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import { DAY_MS } from "../../durations.ts";
 import { companyMoney } from "../companyProfile.ts";
 import { parseFields } from "../lists.ts";
@@ -392,8 +391,6 @@ export const resolveInvoiceChoice = Effect.fn("KinStatements.resolveInvoiceChoic
     ON CONFLICT (org_id, fact_key) DO UPDATE SET handled_by_kind = excluded.handled_by_kind,
       handled_by_id = excluded.handled_by_id, handled_at = excluded.handled_at,
       handled_note = excluded.handled_note, handled_until = NULL`;
-  // Needs attention lists handled facts too.
-  yield* (yield* KinRefreshObserver).touch(orgId, "pulse");
 });
 
 const rankAll = Effect.fn("KinStatements.rankCredits")(function* (
