@@ -4885,6 +4885,9 @@ it.effect.each([
   "debit edited",
   "co-owner",
   "teammate",
+  "a co-owner since demoted",
+  "in a company with Money off",
+  "tapped on two devices at once",
 ] as const)("Undo of a repayment handles an expense or tapper that is %s", (change) =>
   Effect.andThen(
     TestClock.setTime(MON),
@@ -4927,7 +4930,8 @@ it.effect.each([
           })
           .pipe(Effect.map(({ row }) => row));
       const debit = yield* debitFor("repayment", MON - DAY_MS);
-      const anotherReader = change === "co-owner" || change === "teammate";
+      const demoted = change === "a co-owner since demoted";
+      const anotherReader = change === "co-owner" || change === "teammate" || demoted;
       if (anotherReader)
         yield* kin.repo.addMember({
           orgId,
@@ -4951,15 +4955,36 @@ it.effect.each([
         });
       const asked = yield* ask(debit.key, "Is this Zoya Rao's repayment?");
       assert.isTrue(asked.ok, JSON.stringify(asked.value));
-      yield* kin.tap(owner, asked.value.widgetId, "option-1", "mark");
+      yield* kin.tap(demoted ? kin.person("meera") : owner, asked.value.widgetId, "option-1", "mark");
       const widget = yield* kin.widget(asked.value.widgetId);
-      const press = (who = owner) =>
+      const press = (who = owner, clientActionId = "undo") =>
         kin.chats.act(who, {
           widgetId: widget.widgetId,
           revision: widget.revision,
           actionId: "undo",
-          clientActionId: "undo",
+          clientActionId,
         });
+      if (change === "tapped on two devices at once") {
+        const taps = yield* Effect.all(
+          [press(owner, "undo-phone"), press(owner, "undo-laptop")].map(Effect.result),
+          { concurrency: "unbounded" },
+        );
+        assert.deepStrictEqual(
+          taps.map((one) => one._tag).toSorted(),
+          ["Failure", "Success"],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT COUNT(*) AS n FROM kin_record_changes c, json_each(c.fields_json) f
+            WHERE c.org_id = ${orgId} AND c.record_id = ${expense.recordId}
+              AND json_extract(f.value, '$.from') = 'repaid'
+              AND json_extract(f.value, '$.to') = 'owed'`,
+          [{ n: 1 }],
+        );
+        assert.include(card(yield* kin.widget(widget.widgetId)).outcome?.undone, {
+          personId: owner.personId,
+        });
+        return;
+      }
       if (change === "co-owner") {
         yield* press(kin.person("meera"));
         assert.include(card(yield* kin.widget(widget.widgetId)).outcome?.undone, {
@@ -4967,7 +4992,7 @@ it.effect.each([
         });
         return;
       }
-      if (change === "teammate") {
+      if (change === "teammate" || demoted) {
         yield* sql`UPDATE kin_people SET access = 'member'
             WHERE org_id = ${orgId} AND person_id = 'meera'`;
         assert.include(yield* press(kin.person("meera")).pipe(Effect.flip), {
@@ -4989,7 +5014,18 @@ it.effect.each([
         assert.isTrue(askedAgain.ok, JSON.stringify(askedAgain.value));
         yield* kin.tap(owner, askedAgain.value.widgetId, "option-1", "mark-again");
       }
-      if (change !== "teammate") {
+      if (change === "in a company with Money off") {
+        yield* KinShell.set(orgId, owner.personId, 0, [{ id: "money", on: false }]).pipe(
+          Effect.provide(kin.services),
+        );
+        assert.include((yield* press().pipe(Effect.flip)).message, "turned off");
+      }
+      if (
+        change === "edited" ||
+        change === "deleted" ||
+        change === "repaid again" ||
+        change === "debit edited"
+      ) {
         const error = yield* press().pipe(Effect.flip);
         const changed = change === "debit edited" ? debit.key : expense.key;
         assert.include(error.message, changed);

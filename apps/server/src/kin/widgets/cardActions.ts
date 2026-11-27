@@ -722,8 +722,11 @@ export const run = Effect.fn("KinCardActions.run")(function* (
   if (plan.kind === "leaver") return yield* runLeaver(tap, plan, deps.chat);
   if (plan.kind === "undo_repaid") {
     const { orgId, personId, widget } = tap;
-    if (personId !== plan.personId && !(yield* ownerLevel(orgId, personId)))
-      return yield* notAllowed("Only the person who marked the repayment or an owner can undo it.");
+    // The tapper's live access, as for the repayment itself: whoever marked it may since be demoted.
+    if (!(yield* ownerLevel(orgId, personId)))
+      return yield* notAllowed("Only the owner or a co-owner can undo a repayment.");
+    yield* refuseOff(orgId, "expenses");
+    yield* refuseOff(orgId, "bank_transactions");
     return yield* undoRepaid(
       orgId,
       plan,
@@ -893,6 +896,16 @@ const notStarted = (title: string) =>
     message: `${quoted(title)} couldn't start just now, so nothing changed. Try again.`,
   });
 
+const refuseOff = Effect.fnUntraced(function* (orgId: KinOrgId, list: string) {
+  const section = sectionOfList(list);
+  if (section === null) return;
+  const shell = yield* KinShell.get(orgId);
+  if (!KinShell.sectionOn(shell, section))
+    return yield* refuse(
+      `${KinShell.sectionName(shell, section)} is turned off for this company, so nothing changed. Turn it on in Settings › Sections and confirm again.`,
+    );
+});
+
 const runOne = Effect.fn("KinCardActions.runOne")(function* (
   tap: ActionTap,
   plan: RunPlan,
@@ -903,15 +916,6 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
   const { orgId, personId } = tap;
   const draws = [plan.draw, ...also];
   const owner = yield* ownerLevel(orgId, personId);
-  const refuseOff = Effect.fnUntraced(function* (list: string) {
-    const section = sectionOfList(list);
-    if (section === null) return;
-    const shell = yield* KinShell.get(orgId);
-    if (!KinShell.sectionOn(shell, section))
-      return yield* refuse(
-        `${KinShell.sectionName(shell, section)} is turned off for this company, so nothing changed. Turn it on in Settings › Sections and confirm again.`,
-      );
-  });
   switch (plan.kind) {
     case "done":
     case "drop": {
@@ -919,7 +923,7 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
       const row = yield* recordRow(orgId, { recordId: plan.recordId });
       if (row === undefined) return nothingDone(`${plan.key} is gone`);
       if (!owner) yield* teamGuard(orgId, personId, { row, changes: true, input: { state } });
-      yield* refuseOff(row.registerId);
+      yield* refuseOff(orgId, row.registerId);
       if (row.rev !== plan.rev) return nothingDone(`${plan.key} changed since this was offered`);
       const why = yield* drawsHold(orgId, draws);
       if (why !== undefined) return nothingDone(why);
@@ -994,7 +998,7 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
     case "create_list": {
       if (!owner) return yield* notAllowed("Only an owner can create a list.");
       const made = proposedList(plan.definition);
-      if (made !== undefined) yield* refuseOff(made);
+      if (made !== undefined) yield* refuseOff(orgId, made);
       const why =
         (yield* drawsHold(orgId, draws)) ??
         (yield* defineProposed({
@@ -1012,8 +1016,8 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
     }
     case "record_payment": {
       if (!owner) return yield* notAllowed(PAYMENT_TAP_REFUSAL);
-      yield* refuseOff("invoices");
-      yield* refuseOff("bank_transactions");
+      yield* refuseOff(orgId, "invoices");
+      yield* refuseOff(orgId, "bank_transactions");
       const why = yield* drawsHold(orgId, draws);
       if (why !== undefined) return nothingDone(why);
       const done = yield* recordPayment(
@@ -1034,7 +1038,7 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
     case "apply_credit": {
       if (!owner)
         return yield* notAllowed("Only the owner or a co-owner can apply a client's credit.");
-      yield* refuseOff("invoices");
+      yield* refuseOff(orgId, "invoices");
       const why = yield* drawsHold(orgId, draws);
       if (why !== undefined) return nothingDone(why);
       const done = yield* applyCredit(orgId, plan, {
@@ -1051,8 +1055,8 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
         return yield* notAllowed(
           "Only the owner or a co-owner marks what a partner is owed as repaid.",
         );
-      yield* refuseOff("expenses");
-      yield* refuseOff("bank_transactions");
+      yield* refuseOff(orgId, "expenses");
+      yield* refuseOff(orgId, "bank_transactions");
       const why = yield* drawsHold(orgId, draws);
       if (why !== undefined) return nothingDone(why);
       const done = yield* markRepaid(
@@ -1086,8 +1090,8 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
     case "mark_bill_paid": {
       if (!owner)
         return yield* notAllowed("Only the owner or a co-owner can record a bill or mark it paid.");
-      yield* refuseOff("expenses");
-      if (plan.kind === "mark_bill_paid") yield* refuseOff("bank_transactions");
+      yield* refuseOff(orgId, "expenses");
+      if (plan.kind === "mark_bill_paid") yield* refuseOff(orgId, "bank_transactions");
       const why = yield* drawsHold(orgId, draws);
       if (why !== undefined) return nothingDone(why);
       const writer = {
