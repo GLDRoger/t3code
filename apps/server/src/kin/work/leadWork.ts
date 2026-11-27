@@ -799,6 +799,9 @@ const canonicalField = (key: string) =>
 const parameterIssue = (message: string) => new SchemaIssue.InvalidValue({ message });
 const quoteFieldName = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 const isPartyKind = Schema.is(NewPartyKind);
+// The neutral alias uses the client editor's GSTIN format check.
+const clientTaxNumberAlias = Symbol("clientTaxNumberAlias");
+const TaxNumberAlias = { [clientTaxNumberAlias]: Schema.optionalKey(Schema.Literal(true)) };
 
 const liftRecordFields = Effect.fnUntraced(function* (
   {
@@ -819,6 +822,7 @@ const liftRecordFields = Effect.fnUntraced(function* (
       );
     return fields === undefined ? out : { ...out, fields };
   }
+  let usedTaxNumberAlias = taxNumber !== undefined;
   for (const [name, value] of Object.entries(fields ?? {})) {
     const key = canonicalField(name);
     if (
@@ -831,6 +835,7 @@ const liftRecordFields = Effect.fnUntraced(function* (
     if (out[key] !== undefined && !Equal.equals(out[key], value))
       return yield* Effect.fail(parameterIssue(`${name} given twice with different values.`));
     out[key] = value;
+    usedTaxNumberAlias ||= name === "taxNumber" && value !== undefined;
   }
   for (const [name, value] of [
     ["taxNumber", taxNumber],
@@ -851,7 +856,7 @@ const liftRecordFields = Effect.fnUntraced(function* (
     out.kind = category;
     delete out.category;
   }
-  return out;
+  return usedTaxNumberAlias ? { ...out, [clientTaxNumberAlias]: true } : out;
 });
 
 const openRow = <S extends Schema.Struct.Fields>(fields: S) =>
@@ -862,6 +867,7 @@ const rawCreate = openRow({
   taxNumber: CreateRow.fields.gstin,
   taxPlace: CreateRow.fields.placeOfSupply,
 });
+const canonicalCreate = openRow({ ...CreateRow.fields, ...TaxNumberAlias });
 const createRowWithFields = rawCreate.pipe(
   Schema.toEncoded,
   Schema.decodeTo(Schema.Unknown, {
@@ -869,9 +875,16 @@ const createRowWithFields = rawCreate.pipe(
       const list = row.list ?? "work";
       return liftRecordFields(row, isFieldList(list) ? [list] : [], CreateRow.fields);
     }),
-    encode: SchemaGetter.passthrough({ strict: false }),
+    encode: SchemaGetter.transform((value) => {
+      const {
+        [clientTaxNumberAlias]: alias,
+        gstin,
+        ...row
+      } = value as typeof canonicalCreate.Encoded;
+      return alias === true ? { ...row, taxNumber: gstin } : { ...row, gstin };
+    }),
   }),
-  Schema.decodeTo(openRow(CreateRow.fields)),
+  Schema.decodeTo(canonicalCreate),
 );
 export const CreateInput = Schema.Struct({
   sourceEventId: TurnEvent,
@@ -884,6 +897,11 @@ const rawUpdate = Schema.Struct({
   taxNumber: UpdateRow.fields.gstin,
   taxPlace: UpdateRow.fields.placeOfSupply,
 });
+const canonicalUpdate = Schema.Struct({
+  ...UpdateRow.fields,
+  kind: Schema.optional(NewPartyKind),
+  ...TaxNumberAlias,
+});
 export const UpdateInput = rawUpdate.pipe(
   Schema.toEncoded,
   Schema.decodeTo(Schema.Unknown, {
@@ -891,15 +909,20 @@ export const UpdateInput = rawUpdate.pipe(
       liftRecordFields(row, updateLists(row), UpdateRow.fields),
     ),
     encode: SchemaGetter.transform((value) => {
-      const row = value as
-        | typeof rawUpdate.Type
-        | (Omit<typeof rawUpdate.Type, "kind"> & { kind: "prospect" });
-      if (row.kind !== "prospect") return row;
-      const { kind, ...rest } = row;
-      return { ...rest, category: kind };
+      const {
+        [clientTaxNumberAlias]: alias,
+        gstin,
+        kind,
+        ...row
+      } = value as typeof canonicalUpdate.Encoded;
+      return {
+        ...row,
+        ...(alias === true ? { taxNumber: gstin } : { gstin }),
+        ...(kind === "prospect" ? { category: kind } : { kind }),
+      };
     }),
   }),
-  Schema.decodeTo(Schema.Struct({ ...UpdateRow.fields, kind: Schema.optional(NewPartyKind) })),
+  Schema.decodeTo(canonicalUpdate),
 );
 const createKeys = Object.keys(CreateRow.fields);
 const updateKeys = Object.keys(UpdateRow.fields);
@@ -3054,7 +3077,7 @@ const createRow = Effect.fnUntraced(function* (
   team: View | undefined,
   source: Effect.Success<ReturnType<typeof sourceOf>>,
   lists: Lists,
-  asked: typeof CreateRow.Type,
+  asked: typeof canonicalCreate.Type,
   notices: Array<AssignNotice>,
 ) {
   const records = yield* KinRecords;
@@ -3246,7 +3269,7 @@ const createRow = Effect.fnUntraced(function* (
   const held =
     list === "clients" ? yield* heldBack(lead, printedAsked(row, found), found?.recordId) : [];
   // Who may make the whole row is decided as before; only then does a part wait for a tap.
-  const checksTax = list === "clients" && row.gstin !== undefined;
+  const checksTax = list === "clients" && row[clientTaxNumberAlias] === true;
   if ((held.length > 0 || checksTax) && writer.view !== undefined && crmFor === undefined) {
     const whole = { list, fields: allFields };
     yield* viewGuard(lead.orgId, writer.view, { row: found, changes: false, input: whole });
@@ -4364,7 +4387,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, asked: 
       ? yield* heldBack(lead, printedAsked(input, before), before.recordId)
       : [];
   // Who may make the whole change is decided as before; only then does a part wait for a tap.
-  const checksTax = before.registerId === "clients" && input.gstin !== undefined;
+  const checksTax = before.registerId === "clients" && input[clientTaxNumberAlias] === true;
   if ((held.length > 0 || checksTax) && team !== undefined)
     yield* viewGuard(
       lead.orgId,
