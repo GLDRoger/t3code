@@ -15,12 +15,7 @@ import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import { mailRuleContentHash } from "./ruleContent.ts";
-import {
-  hasHiddenCharacters,
-  mailRuleFilter,
-  mailRuleMatchProblem,
-  mailRulePhrase,
-} from "./ruleMatch.ts";
+import { hasHiddenCharacters, mailRuleMatchProblem } from "./ruleMatch.ts";
 
 export const DEFAULT_MAIL_RULE_CAP = 30;
 export const mailRuleMatchJson = Schema.fromJsonString(KinMailRuleMatch);
@@ -71,19 +66,6 @@ export const prepareMailRule = Effect.fn("KinMailRules.prepareDraft")(function* 
     monthlyCap: input.monthlyCap ?? DEFAULT_MAIL_RULE_CAP,
   };
 });
-
-export const mailRuleMatchKey = (match: KinMailRuleMatch) => {
-  const sorted = (values: ReadonlyArray<string>) => [...new Set(values)].toSorted();
-  return mailRuleContentHash(
-    JSON.stringify({
-      from: sorted(match.from.flatMap((sender) => mailRuleFilter(sender).spelling ?? [])),
-      subjectHas: sorted(match.subjectHas.map(mailRulePhrase)),
-      withFile: match.withFile,
-      classes: match.classes === null ? null : sorted(match.classes),
-    }),
-    "",
-  );
-};
 
 export const checkMailRuleOwner = Effect.fn("KinMailRules.stillOwner")(function* (
   orgId: KinOrgId,

@@ -1846,13 +1846,6 @@ const make = Effect.gen(function* () {
     if (action === undefined || request.value !== undefined) return yield* invalidState;
     if (onMailRuleTap === undefined)
       return yield* new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
-    const previous = yield* repo.findClientMessage({
-      ...member,
-      kind: "act",
-      clientId: request.clientActionId,
-    });
-    if (Option.isSome(previous) && previous.value.widgetId !== widget.widgetId)
-      return yield* notAllowed;
     const body = yield* encodeAction({
       widgetId: widget.widgetId,
       revision: request.revision,
@@ -1860,6 +1853,16 @@ const make = Effect.gen(function* () {
       text: action === "turn_on" ? "Turn on" : "Not now",
       handled: true,
     }).pipe(Effect.mapError(() => invalidState));
+    const previous = yield* repo.findClientMessage({
+      ...member,
+      kind: "act",
+      clientId: request.clientActionId,
+    });
+    // The same tap sent again, as an offline retry does, gets the answer the first one got.
+    if (Option.isSome(previous))
+      return previous.value.widgetId === widget.widgetId && previous.value.body === body
+        ? previous.value
+        : yield* notAllowed;
     const message = yield* post(identity, member, {
       chatId: widget.chatId,
       kind: "widget_action",

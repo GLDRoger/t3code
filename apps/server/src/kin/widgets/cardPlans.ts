@@ -308,7 +308,6 @@ export type RecommendChange = typeof RecommendChange.Type;
 const MailRulePlan = Schema.Struct({
   kind: Schema.Literal("mail_rule"),
   personId: KinPersonId,
-  matchKey: Schema.String,
   shown: Schema.Struct({
     mailbox: KinMailRuleCardState.fields.mailbox,
     lead: KinMailRuleCardState.fields.lead,

@@ -23,7 +23,6 @@ import {
   checkMailRuleOwner,
   companyMailRuleMailbox,
   mailRuleDirectLead,
-  mailRuleMatchKey,
   prepareMailRule,
 } from "./ruleDraft.ts";
 import { mailRuleFilter } from "./ruleMatch.ts";
@@ -41,7 +40,7 @@ export const MailRuleProposalResult = Schema.Struct({ widgetId: KinWidgetId });
 const ownMessage = new KinChatError({
   reason: "not_allowed",
   message:
-    "A mail rule proposal needs an owner or co-owner's own message in their direct chat with this lead.",
+    "A mail rule proposal needs a message the owner or a co-owner typed this turn in a direct chat with this lead, so ask for the rule there.",
 });
 
 const sourceOf = Effect.fn("KinMailRules.proposalSource")(function* (
@@ -73,7 +72,9 @@ const sourceOf = Effect.fn("KinMailRules.proposalSource")(function* (
   if (source === undefined || (yield* turnChat(turn))?.chatId !== source.chatId)
     return yield* ownMessage;
   yield* checkMailRuleOwner(turn.orgId, source.personId);
-  yield* mailRuleDirectLead(turn.orgId, source.personId, turn.agentId, source.chatId);
+  yield* mailRuleDirectLead(turn.orgId, source.personId, turn.agentId, source.chatId).pipe(
+    Effect.catchTags({ KinChatError: () => ownMessage }),
+  );
   return { _tag: "person" as const, orgId: turn.orgId, personId: source.personId };
 });
 
@@ -90,7 +91,6 @@ export const proposeMailRule = Effect.fn("KinMailRules.propose")(function* (
       const { contentSha256, monthlyCap } = yield* prepareMailRule(input);
       const mailbox = yield* companyMailRuleMailbox(orgId, input.connectionId);
       const now = yield* Clock.currentTimeMillis;
-      const matchKey = mailRuleMatchKey(input.match);
       const [open] = yield* sql<{ widgetId: KinWidgetId }>`
       SELECT w.widget_id AS "widgetId" FROM kin_widgets w
       JOIN kin_card_plans p ON p.org_id = w.org_id AND p.widget_id = w.widget_id
@@ -98,7 +98,9 @@ export const proposeMailRule = Effect.fn("KinMailRules.propose")(function* (
       WHERE w.org_id = ${orgId} AND w.type = 'mail_rule'
         AND w.closed_at IS NULL AND json_extract(p.plan_json, '$.kind') = 'mail_rule'
         AND json_extract(p.plan_json, '$.personId') = ${person.personId}
-        AND json_extract(p.plan_json, '$.matchKey') = ${matchKey}
+        AND json_extract(p.plan_json, '$.shown.contentSha256') = ${contentSha256}
+        AND json_extract(p.plan_json, '$.shown.lead.agentId') = ${input.agentId}
+        AND json_extract(p.plan_json, '$.shown.monthlyCap') = ${monthlyCap}
         AND json_extract(p.plan_json, '$.shown.mailbox.connectionId') = ${input.connectionId}
         AND json_extract(p.plan_json, '$.shown.expiresAt') > ${now}
       LIMIT 1`;
@@ -133,7 +135,7 @@ export const proposeMailRule = Effect.fn("KinMailRules.propose")(function* (
           state,
         },
       );
-      const plan: MailRulePlan = { kind: "mail_rule", personId: person.personId, matchKey, shown };
+      const plan: MailRulePlan = { kind: "mail_rule", personId: person.personId, shown };
       yield* sealPlans({
         orgId,
         chatId,
