@@ -1,5 +1,6 @@
 import { KinChatError } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Digest from "effect/crypto/Digest";
@@ -17,11 +18,12 @@ import * as Stream from "effect/Stream";
 
 import { ServerConfig } from "../../config.ts";
 import { ProcessRunner } from "../../processRunner.ts";
+import { forkParked, ServerActivation } from "../../serverActivation.ts";
 
 /**
  * Typst, the one renderer recipes use for PDF: a single static binary with its own fonts,
- * Apache-2.0. Fetched by the server on first use from the release named here, checked against
- * the checksum pinned here, kept under the T3 home, and run by the server (`render.ts`).
+ * Apache-2.0. Fetched after server activation or on demand from the release named here, checked
+ * against the checksum pinned here, kept under the T3 home, and run by the server (`render.ts`).
  */
 
 const TYPST_VERSION = "0.15.1";
@@ -273,11 +275,9 @@ export const layer = Layer.effect(
       return binary;
     });
 
+    const installTypst = typst().pipe(lock.withPermits(1));
     const ensure: KinToolchain["Service"]["ensure"] = Effect.fn("KinToolchain.ensure")(
-      function* () {
-        return yield* typst();
-      },
-      lock.withPermits(1),
+      () => installTypst,
       Effect.catchIf(
         (cause) => !isChatError(cause),
         (cause) =>
@@ -297,7 +297,6 @@ export const layer = Layer.effect(
     /** Each pinned font, fetched once and checked; a font that won't fetch leaves Typst's own. */
     const fetchFonts = Effect.fn("KinToolchain.fetchFonts")(
       function* () {
-        yield* fs.makeDirectory(fontsDir, { recursive: true });
         for (const font of FONT_FILES) {
           const target = path.join(fontsDir, path.basename(font.path));
           const have = yield* fs.readFile(target).pipe(
@@ -326,6 +325,7 @@ export const layer = Layer.effect(
           }
           if ((yield* sha256(bytes)) !== font.sha256)
             return yield* unavailable(`${font.path} didn't match its pinned checksum`);
+          yield* fs.makeDirectory(fontsDir, { recursive: true });
           const scratch = `${target}.tmp`;
           yield* fs.writeFile(scratch, bytes);
           yield* fs.rename(scratch, target);
@@ -359,6 +359,22 @@ export const layer = Layer.effect(
       },
       lock.withPermits(1),
     );
+    if ((yield* ServerActivation) !== undefined) {
+      yield* installTypst.pipe(
+        Effect.andThen(fetchFonts()),
+        Effect.catchCauseIf(
+          (cause) => !Cause.hasInterruptsOnly(cause),
+          (cause) =>
+            Effect.logWarning(
+              "Kin couldn't warm the document toolchain. The next use tries again.",
+              {
+                cause,
+              },
+            ),
+        ),
+        forkParked,
+      );
+    }
     return KinToolchain.of({ ensure, present, fonts });
   }),
 );

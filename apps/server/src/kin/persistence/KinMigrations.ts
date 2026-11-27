@@ -148,6 +148,7 @@ import SessionCarry from "./migrations/K224_SessionCarry.ts";
 import WakeupEnding from "./migrations/K225_WakeupEnding.ts";
 import LapsedTextQuestions from "./migrations/K226_LapsedTextQuestions.ts";
 import DeclinedNudges from "./migrations/K227_DeclinedNudges.ts";
+import ChatsSettleAfter from "./migrations/K228_ChatsSettleAfter.ts";
 import BankSenders from "./migrations/K229_BankSenders.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -377,6 +378,7 @@ const migrations = {
   "225_WakeupEnding": WakeupEnding,
   "226_LapsedTextQuestions": LapsedTextQuestions,
   "227_DeclinedNudges": DeclinedNudges,
+  "228_ChatsSettleAfter": ChatsSettleAfter,
   "229_BankSenders": BankSenders,
 };
 const loader = Migrator.fromRecord(migrations);

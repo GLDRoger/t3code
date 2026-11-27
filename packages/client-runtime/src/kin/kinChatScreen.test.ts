@@ -184,6 +184,7 @@ const feedInput = (
   formatTime: (iso) => iso.slice(11, 16),
   follow: initialKinFeedFollow(4),
   landOn: null,
+  caughtUp: true,
   ownsLead: true,
   agentName: "Chief of staff",
   retired: false,
@@ -263,6 +264,10 @@ describe("kinChatFeedView", () => {
     expect(feed({ live: later, exhausted: false, landOn: "fixture-3" }).landPage).toBeNull();
     expect(feed({ live: later, exhausted: true, landOn: "fixture-99" }).landPage).toBeNull();
     expect(feed({ live: later, exhausted: false }).landPage).toBeNull();
+    // Only the saved copy shows, as on a cold start from a push: a message it lacks is likelier
+    // newer than older, so the chat waits for the stream instead of reading back.
+    const saved = feed({ live: later, exhausted: false, landOn: "fixture-99", caughtUp: false });
+    expect([saved.landPage, saved.openRow]).toEqual([null, null]);
   });
 
   it("draws the New line before the first unanswered row and opens on it unless a message was asked for", () => {

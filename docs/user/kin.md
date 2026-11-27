@@ -75,7 +75,10 @@ and approvals, Briefs, Devices and security), so you can silence one and keep th
 
 Opening a chat clears its unread dot and takes its notifications away. A **New** line marks where
 the messages you hadn't seen begin, and stays there while the chat is open. An agent may still
-correct or take back what it said until you reply, react to it or answer its card.
+correct or take back what it said until you reply, react to it or answer its card. A chat you have
+read stays up in Chats for 12 hours after its last message before moving under **Settled**; change
+that under **Settings → Notifications → Settle read chats** (on the phone, **Settings → Chats →
+Settle read chats**).
 
 ### Adding a teammate (owner and co-owners)
 

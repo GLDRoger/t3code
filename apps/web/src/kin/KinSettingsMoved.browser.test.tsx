@@ -42,6 +42,7 @@ const HOLDS: Readonly<Record<string, KinSettingsPage>> = {
   "kin-away": "profile",
   "kin-github-username": "profile",
   "kin-notifications": "notifications",
+  "kin-settle-read-chats": "notifications",
 };
 
 const kinEntries = () => KIN_SETTINGS_SEARCH_ITEMS;
