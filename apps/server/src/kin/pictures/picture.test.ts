@@ -51,6 +51,7 @@ import * as Docs from "../work/docs.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import * as LeadDocs from "../work/leadDocs.ts";
 import * as OwnerDocs from "../work/ownerDocs.ts";
+import * as Work from "../work/ownerWork.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { makeFakeImageVendor } from "./FakeImageVendor.ts";
 import { GENERATE_SENTENCES, KinPictures, makeLayer as picturesLayer } from "./KinPictures.ts";
@@ -630,6 +631,10 @@ describe("kin_picture", () => {
           VALUES ('team-chat-kabir', ${orgId}, 'team-chat', 'person', ${kabir}, 'member', ${at})`;
         yield* turn(1, "meera", "shared", "team-chat");
         const first = yield* makePicture(scope, post("48px"));
+        const reader = [person(meera)];
+        const opened = yield* OwnerDocs.get(reader, { orgId, key: first.doc });
+        yield* Work.looked(reader, { orgId, recordId: opened.recordId, upTo: opened.version.at });
+        yield* TestClock.adjust(1);
         yield* turn(2, "meera", "shared", "team-chat");
         drawing.next = { _tag: "drawn", png: Uint8Array.of(...PNG, 0), width: 1080, height: 1080 };
         const second = yield* makePicture(scope, post("72px", { doc: first.doc }));
@@ -695,13 +700,16 @@ describe("kin_picture", () => {
         ]);
         // The latest version's reply deleted, no member reads the doc any more, nor so its earlier
         // versions' files and images.
+        yield* TestClock.adjust(1);
         yield* turn(3, "meera", "shared", "team-chat");
         drawing.next = { _tag: "drawn", png: Uint8Array.of(...PNG, 1), width: 1080, height: 1080 };
         const third = yield* makePicture(scope, post("96px", { doc: key }));
         drawing.next = undefined;
         images.push(third.files[0]!);
-        yield* sql`UPDATE kin_messages SET status = 'deleted' WHERE message_id IN (SELECT message_id
-          FROM kin_message_attachments WHERE attachment_id = ${third.files[0]!})`;
+        const thirdReply = (status: "posted" | "deleted") =>
+          sql`UPDATE kin_messages SET status = ${status} WHERE message_id IN (SELECT message_id
+            FROM kin_message_attachments WHERE attachment_id = ${third.files[0]!})`;
+        yield* thirdReply("deleted");
         assert.deepStrictEqual(yield* table(3), [
           [ownerId, true, true, true],
           [zoya, true, true, true],
@@ -710,6 +718,18 @@ describe("kin_picture", () => {
           [dev, false, false, false],
           [kabir, false, false, false],
         ]);
+        yield* TestClock.adjust(1);
+        yield* thirdReply("posted");
+        yield* turn(4, "meera", "shared", "team-chat");
+        drawing.next = { _tag: "drawn", png: Uint8Array.of(...PNG, 2), width: 1080, height: 1080 };
+        yield* makePicture(scope, post("112px", { doc: key }));
+        drawing.next = undefined;
+        yield* thirdReply("deleted");
+        const { sinceLooked } = yield* OwnerDocs.get(reader, { orgId, key });
+        assert.deepStrictEqual(
+          { total: sinceLooked?.total, versions: sinceLooked?.versions.map((one) => one.version) },
+          { total: 2, versions: [4, 2] },
+        );
       }).pipe(Effect.provide(layer)),
   );
 

@@ -7,6 +7,7 @@ import {
   KinChatError,
   KinChatId,
   KinDocsRpcs,
+  type KinDocDetail,
   KinMessageId,
   KinOrgId,
   KinPersonId,
@@ -362,6 +363,80 @@ it.effect(
       );
       assert.strictEqual(changed.version.version, 2);
     }).pipe(Effect.provide(layer)),
+);
+
+const lookedDoc = Effect.gen(function* () {
+  yield* seed;
+  const { row } = yield* newDoc("Juniper Cold Chain packing list.");
+  const { key } = row;
+  const people = [owner];
+  const ref = { orgId, key };
+  const read = OwnerDocs.get(people, ref);
+  const first = yield* read;
+  const edit = Effect.fn("test.editLookedDoc")(function* (originKey: string, forReader = false) {
+    yield* TestClock.adjust(1);
+    return yield* Docs.edit(
+      orgId,
+      agentWriter(lead),
+      forReader ? { answered: { messageId: "01KAK0XMVCXC4FF969979K33DC", author: owner } } : {},
+      { key },
+      { operations: [{ op: "append", text: originKey }], originKey, summary: originKey },
+    );
+  });
+  const seen = yield* edit("Checked the crate labels");
+  const upTo = "1970-01-01T00:00:00.001Z";
+  yield* Work.looked(people, { orgId, recordId: first.recordId, upTo });
+  const empty = yield* read;
+  yield* TestClock.adjust(1);
+  yield* OwnerDocs.restore(people, { ...ref, version: 1, latest: seen.version.version });
+  yield* edit("Added the delivery address", true);
+  yield* edit("Added cold storage instructions");
+  return {
+    first,
+    empty,
+    upTo,
+    latest: yield* read,
+    old: yield* OwnerDocs.get(people, { ...ref, version: 2 }),
+    keyed: yield* OwnerDocs.get(people, ref, { keyed: true }),
+  };
+});
+
+it.effect("a doc returns a mark only for a person's current read", () =>
+  Effect.gen(function* () {
+    const { first, empty, old, keyed, upTo } = yield* lookedDoc;
+    assert.isNull(first.lookedAt);
+    assert.strictEqual(empty.lookedAt, upTo);
+    assert.notProperty(empty, "sinceLooked");
+    for (const detail of [old, keyed]) {
+      assert.notProperty(detail, "lookedAt");
+      assert.notProperty(detail, "sinceLooked");
+    }
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  {
+    name: "the last version at the mark",
+    check: (summary: NonNullable<KinDocDetail["sinceLooked"]>) =>
+      assert.strictEqual(summary.from, 2),
+  },
+  {
+    name: "visible changes by others, including an agent for the reader",
+    check: (summary: NonNullable<KinDocDetail["sinceLooked"]>) => {
+      assert.strictEqual(summary.total, 2);
+      assert.deepStrictEqual(
+        summary.versions.map((version) => version.version),
+        [5, 4],
+      );
+      assert.strictEqual(summary.versions[1]?.askedBy, ownerId);
+    },
+  },
+] as const)("a doc summary gives $name", ({ check }) =>
+  Effect.gen(function* () {
+    const { latest } = yield* lookedDoc;
+    assert.isDefined(latest.sinceLooked);
+    check(latest.sinceLooked!);
+  }).pipe(Effect.provide(layer)),
 );
 
 it.effect("a restore is a new version that brings the old text back, and is undoable", () =>
