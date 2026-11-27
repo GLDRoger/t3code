@@ -368,6 +368,8 @@ export const workForText = (names: string) =>
 const readFailed = (warning: string) => (cause: unknown) =>
   Effect.logWarning(warning, cause).pipe(Effect.as(null));
 
+const RECENT_CHAT_UNREADABLE =
+  "Kin couldn't read recent messages this turn, so don't treat this as the start of the conversation: say you couldn't read the earlier messages if the answer depends on them.";
 const WORK_UNREADABLE = "Kin couldn't read your Work this turn, so don't say there is none.";
 const RUN_DETAILS_UNREADABLE =
   "Kin couldn't read this item's latest run this turn, so its details, such as when it is due, may be out of date: don't state them as current.";
@@ -1869,12 +1871,12 @@ export class KinLeadPrompt extends Context.Service<
         const laneChat =
           input.lane === undefined
             ? undefined
-            : yield* chat.getChat({ orgId, chatId: input.lane.chatId }).pipe(
-                Effect.map(Option.getOrUndefined),
-                Effect.catch((cause) =>
-                  Effect.logWarning("Kin reply chat unavailable", cause).pipe(Effect.as(undefined)),
-                ),
-              );
+            : yield* chat
+                .getChat({ orgId, chatId: input.lane.chatId })
+                .pipe(
+                  Effect.map(Option.getOrUndefined),
+                  Effect.catch(readFailed("Kin reply chat unavailable")),
+                );
         // Whose direct chat this is, by their access now: a co-owner's isn't the owner's.
         const directWith =
           laneChat?.kind !== "direct"
@@ -1889,7 +1891,7 @@ export class KinLeadPrompt extends Context.Service<
               );
         // Who is in the group, from stored rows: the lead knows the room it is speaking in.
         const room =
-          laneChat === undefined || laneChat.kind === "direct"
+          laneChat == null || laneChat.kind === "direct"
             ? undefined
             : yield* Effect.gen(function* () {
                 const people = new Map(
@@ -1913,13 +1915,9 @@ export class KinLeadPrompt extends Context.Service<
                     ? []
                     : [{ member, name: Array.from(name).slice(0, 80).join("") }];
                 });
-              }).pipe(
-                Effect.catch((cause) =>
-                  Effect.logWarning("Kin group members unavailable", cause).pipe(Effect.as([])),
-                ),
-              );
+              }).pipe(Effect.catch(readFailed("Kin group members unavailable")));
         const names =
-          room === undefined
+          room == null
             ? undefined
             : new Map(room.map(({ member, name }) => [member.memberId as string, name]));
         // A brief is sent on a quiet day too (`pulse/checkIn.ts`), so it is never told to stay silent.
@@ -2024,13 +2022,20 @@ export class KinLeadPrompt extends Context.Service<
                 );
               }).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
-                Effect.catch((cause) =>
-                  Effect.logWarning("Kin own mailboxes unavailable", cause).pipe(Effect.as([])),
-                ),
+                Effect.catch(readFailed("Kin own mailboxes unavailable")),
               );
-        const addresses = ownRows.map((row) => encoded(row.accountLabel ?? row.label));
+        const addresses = (ownRows ?? []).map((row) => encoded(row.accountLabel ?? row.label));
         const mailboxLine =
-          addresses.length === 0 ? [] : [sharedPart("header", ownMailboxLine(addresses, ownLevel))];
+          ownRows === null
+            ? [
+                sharedPart(
+                  "header",
+                  "Kin couldn't read the mailboxes for this chat this turn, so don't guess which mailbox belongs to the person.",
+                ),
+              ]
+            : addresses.length === 0
+              ? []
+              : [sharedPart("header", ownMailboxLine(addresses, ownLevel))];
         const hasSpeaker = speaking !== undefined && speaking !== PASSED_ON_SPEAKER;
         // The domain picks the seat's static rules in every turn; the charter is the owner's.
         const [stored] = yield* sql<{ domain: string; charter: string }>`
@@ -2052,9 +2057,7 @@ export class KinLeadPrompt extends Context.Service<
           lane === undefined
             ? []
             : yield* recentMessages(lane.chatId).pipe(
-                Effect.catch((cause) =>
-                  Effect.logWarning("Kin recent chat unavailable", cause).pipe(Effect.as([])),
-                ),
+                Effect.catch(readFailed("Kin recent chat unavailable")),
               );
         const now = yield* Clock.currentTimeMillis;
         // Owner-only this slice: the teammate view of Work comes with slice 2.
@@ -2074,11 +2077,7 @@ export class KinLeadPrompt extends Context.Service<
         const started = ownerOnly
           ? yield* buildStartedSection({ orgId, agentId, now }).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
-              Effect.catch((cause) =>
-                Effect.logWarning("Kin started section unavailable", cause).pipe(
-                  Effect.as(undefined),
-                ),
-              ),
+              Effect.catch(readFailed("Kin started section unavailable")),
             )
           : undefined;
         // Kin's facts on what needs attention, on turns a fact or the morning brief woke; owner-only.
@@ -2100,9 +2099,7 @@ export class KinLeadPrompt extends Context.Service<
           ownerOnly && checkInEvents.length > 0
             ? yield* leftGiven(orgId, checkInEvents).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
-                Effect.catch((cause) =>
-                  Effect.logWarning("Kin left lines unavailable", cause).pipe(Effect.as([])),
-                ),
+                Effect.catch(readFailed("Kin left lines unavailable")),
               )
             : [];
         const pulse =
@@ -2123,7 +2120,7 @@ export class KinLeadPrompt extends Context.Service<
                 ),
                 checkIn,
                 checkInEvents,
-                ownAccounts: ownRows.map((row) => ({
+                ownAccounts: (ownRows ?? []).map((row) => ({
                   connection: row.connectionId,
                   account: row.accountLabel ?? row.label,
                 })),
@@ -2143,11 +2140,7 @@ export class KinLeadPrompt extends Context.Service<
             ? yield* buildWeeklySection({ orgId, now }).pipe(
                 Effect.tap(() => sensitiveShown({ orgId, wakeupId: input.wakeupId })),
                 Effect.provideService(SqlClient.SqlClient, sql),
-                Effect.catch((cause) =>
-                  Effect.logWarning("Kin weekly section unavailable", cause).pipe(
-                    Effect.as(undefined),
-                  ),
-                ),
+                Effect.catch(readFailed("Kin weekly section unavailable")),
               )
             : undefined;
         const morning = ownerOnly
@@ -2170,9 +2163,7 @@ export class KinLeadPrompt extends Context.Service<
         const playbooks = ownerOnly
           ? yield* playbookIndex(orgId).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
-              Effect.catch((cause) =>
-                Effect.logWarning("Kin playbook index unavailable", cause).pipe(Effect.as([])),
-              ),
+              Effect.catch(readFailed("Kin playbook index unavailable")),
             )
           : [];
         // Watched numbers are owner level until shared: asked as numbers_read asks, else none.
@@ -2203,14 +2194,12 @@ export class KinLeadPrompt extends Context.Service<
           );
         }).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
-          Effect.catch((cause) =>
-            Effect.logWarning("Kin list sections unavailable", cause).pipe(Effect.as([])),
-          ),
+          Effect.catch(readFailed("Kin list sections unavailable")),
         );
         // Only a company set up unlike Kin's default, showing a list as a section, or watching
         // a number, has these lines.
         const thisCompany = [
-          ...thisCompanyLines(shell, numbers ?? undefined, lists),
+          ...thisCompanyLines(shell, numbers ?? undefined, lists ?? []),
           ...(numbers === null
             ? [
                 "Kin couldn't read the company's watched numbers this turn, so don't say there are none.",
@@ -2307,20 +2296,14 @@ export class KinLeadPrompt extends Context.Service<
         const connected = ownerOnly
           ? yield* connectionsLine(orgId).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
-              Effect.catch((cause) =>
-                Effect.logWarning("Kin connections line unavailable", cause).pipe(
-                  Effect.as(undefined),
-                ),
-              ),
+              Effect.catch(readFailed("Kin connections line unavailable")),
             )
           : undefined;
         // Whose repos are the company's, so an agent never takes the owner's own for someone else's.
         const github = ownerOnly
           ? yield* companyAccounts(orgId).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
-              Effect.catch((cause) =>
-                Effect.logWarning("Kin GitHub accounts unavailable", cause).pipe(Effect.as([])),
-              ),
+              Effect.catch(readFailed("Kin GitHub accounts unavailable")),
             )
           : [];
         const seat = yield* buildSeat({
@@ -2345,22 +2328,14 @@ export class KinLeadPrompt extends Context.Service<
                 now,
               }).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
-                Effect.catch((cause) =>
-                  Effect.logWarning("Kin open questions unavailable", cause).pipe(
-                    Effect.as(undefined),
-                  ),
-                ),
+                Effect.catch(readFailed("Kin open questions unavailable")),
               );
         const askedFor =
           input.lane === undefined
             ? undefined
             : yield* askedForSection({ orgId, agentId, chatId: input.lane.chatId, now }).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
-                Effect.catch((cause) =>
-                  Effect.logWarning("Kin questions asked for this chat unavailable", cause).pipe(
-                    Effect.as(undefined),
-                  ),
-                ),
+                Effect.catch(readFailed("Kin questions asked for this chat unavailable")),
               );
         // What this agent said here that no one has answered or reacted to yet; a check-in also
         // looks at its other chats with the owner's side.
@@ -2394,11 +2369,7 @@ export class KinLeadPrompt extends Context.Service<
                 });
               }).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
-                Effect.catch((cause) =>
-                  Effect.logWarning("Kin unread messages unavailable", cause).pipe(
-                    Effect.as(undefined),
-                  ),
-                ),
+                Effect.catch(readFailed("Kin unread messages unavailable")),
               );
         // Only the owner's own chat with the agent holds drafts she sent back (`redoOf`).
         const redrafts =
@@ -2409,11 +2380,7 @@ export class KinLeadPrompt extends Context.Service<
                 input.lane.chatId,
               ).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
-                Effect.catch((cause) =>
-                  Effect.logWarning("Kin drafts back from Changes first unavailable", cause).pipe(
-                    Effect.as(undefined),
-                  ),
-                ),
+                Effect.catch(readFailed("Kin drafts back from Changes first unavailable")),
               );
         // The agent's own earlier lines here may say these wait; Kin's record says they don't.
         const declined =
@@ -2421,25 +2388,21 @@ export class KinLeadPrompt extends Context.Service<
             ? []
             : yield* declinedRequests({ orgId, agentId, chatId: input.lane.chatId, now }).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
-                Effect.catch((cause) =>
-                  Effect.logWarning("Kin declined requests unavailable", cause).pipe(Effect.as([])),
-                ),
+                Effect.catch(readFailed("Kin declined requests unavailable")),
               );
         // The owner taking something back: what this agent's last turns changed here, to put back.
         const changedLately =
           ownerOnly && input.lane !== undefined && asksUndo(events)
             ? yield* recentChanges({ orgId, agentId, chatId: input.lane.chatId, now }).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
-                Effect.catch((cause) =>
-                  Effect.logWarning("Kin recent changes unavailable", cause).pipe(Effect.as([])),
-                ),
+                Effect.catch(readFailed("Kin recent changes unavailable")),
               )
             : [];
         const zone = yield* cache.readOwnerTimeZone(orgId);
         const timeZone = zone._tag === "zone" ? zone.zone : undefined;
         // What is set for this chat, so a turn here knows what it may be asked to change.
         const setHere =
-          laneChat === undefined || laneChat.kind === "direct"
+          laneChat == null || laneChat.kind === "direct"
             ? undefined
             : yield* setInChat(orgId, laneChat.chatId).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
@@ -2487,7 +2450,7 @@ export class KinLeadPrompt extends Context.Service<
                   inTeamRoom
                     ? `This turn is in the Team room, chat ${encoded(input.lane.chatId)}.`
                     : `Your reply goes to chat ${encoded(input.lane.chatId)}${
-                        laneChat === undefined
+                        laneChat == null
                           ? ""
                           : laneChat.kind === "direct"
                             ? directWith === null
@@ -2502,6 +2465,14 @@ export class KinLeadPrompt extends Context.Service<
                               : `, the group ${encoded(laneChat.title)}`
                       }.`,
                 ),
+                ...(laneChat === null
+                  ? [
+                      sharedPart(
+                        "header",
+                        "Kin couldn't read the reply chat details this turn, so don't guess the chat type or who is in it.",
+                      ),
+                    ]
+                  : []),
                 ...(directWith === null
                   ? [
                       sharedPart(
@@ -2511,14 +2482,21 @@ export class KinLeadPrompt extends Context.Service<
                     ]
                   : []),
                 ...(hasSpeaker ? [] : mailboxLine),
-                ...(room === undefined || laneChat === undefined
-                  ? []
-                  : [
+                ...(room === null
+                  ? [
                       sharedPart(
                         "header",
-                        groupLine(room, agentId, laneChat.leadAgentId ?? null, inTeamRoom),
+                        "Kin couldn't read who is in this group this turn, so don't guess who is here.",
                       ),
-                    ]),
+                    ]
+                  : room === undefined || laneChat == null
+                    ? []
+                    : [
+                        sharedPart(
+                          "header",
+                          groupLine(room, agentId, laneChat.leadAgentId ?? null, inTeamRoom),
+                        ),
+                      ]),
                 ...(setHere === undefined ? [] : [sharedPart("header", setHere)]),
                 ...(input.lane.mode === "reply" || inTeamRoom
                   ? []
@@ -2565,18 +2543,34 @@ export class KinLeadPrompt extends Context.Service<
           ...(Number.isFinite(budgetLeft) && budgetLeft <= BUDGET_LOW_PERCENT
             ? [ownerPart("header", `Budget: ${input.budgetContext}. Keep this turn light.`)]
             : []),
-          ...(connected === undefined ? [] : [ownerPart("header", connected)]),
-          ...(github.length === 0
-            ? []
-            : [
+          ...(connected === null
+            ? [
                 ownerPart(
                   "header",
-                  `The company's GitHub accounts, the owner's and their organisations': ${github
-                    .slice(0, GITHUB_ACCOUNTS_SHOWN)
-                    .map((account) => encoded(account))
-                    .join(", ")}${github.length > GITHUB_ACCOUNTS_SHOWN ? ", …" : ""}.`,
+                  "Kin couldn't read the company's connections this turn, so don't say there are none.",
                 ),
-              ]),
+              ]
+            : connected === undefined
+              ? []
+              : [ownerPart("header", connected)]),
+          ...(github === null
+            ? [
+                ownerPart(
+                  "header",
+                  "Kin couldn't read the company's GitHub accounts this turn, so don't guess which accounts belong to the company.",
+                ),
+              ]
+            : github.length === 0
+              ? []
+              : [
+                  ownerPart(
+                    "header",
+                    `The company's GitHub accounts, the owner's and their organisations': ${github
+                      .slice(0, GITHUB_ACCOUNTS_SHOWN)
+                      .map((account) => encoded(account))
+                      .join(", ")}${github.length > GITHUB_ACCOUNTS_SHOWN ? ", …" : ""}.`,
+                  ),
+                ]),
         ];
         const setUp =
           ownerOnly &&
@@ -2598,27 +2592,30 @@ export class KinLeadPrompt extends Context.Service<
             ),
           }).pipe(
             Effect.provideService(SqlClient.SqlClient, sql),
-            Effect.catch((cause) =>
-              Effect.logWarning("Kin set-up turn unknown", cause).pipe(Effect.as(false)),
-            ),
+            Effect.catch(readFailed("Kin set-up turn unknown")),
           ));
-        const legacyRecent = continued
-          ? recent.filter(
-              ({ message }) =>
-                message.author._tag !== "system" ||
-                !message.messageId.startsWith("bills:") ||
-                isOutcomeLine(message.messageId),
-            )
-          : recent;
         const recentParts: PromptPart[] = [];
         const recentCoOwners =
-          recent.length > 0 && ownerOnly
+          (recent?.length ?? 0) > 0 && ownerOnly
             ? yield* ownerLevelPeople(orgId).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
                 Effect.catch(readFailed("Kin recent chat co-owner roles unavailable")),
               )
             : undefined;
-        if (recent.length > 0) {
+        if (recent === null) {
+          recentParts.push(
+            sharedPart(promptSectionPlaces.recentChat, PROMPT_HEADINGS.recentChat),
+            sharedPart("recentChat", RECENT_CHAT_UNREADABLE),
+          );
+        } else if (recent.length > 0) {
+          const legacyRecent = continued
+            ? recent.filter(
+                ({ message }) =>
+                  message.author._tag !== "system" ||
+                  !message.messageId.startsWith("bills:") ||
+                  isOutcomeLine(message.messageId),
+              )
+            : recent;
           const recentOptions = {
             now,
             timeZone,
@@ -2688,7 +2685,7 @@ export class KinLeadPrompt extends Context.Service<
             : []),
           ...salesRulesFor(stored?.domain).map((rule) => sharedPart("standing", rule)),
           // Rooms shared with other people and agents.
-          ...(laneChat !== undefined && laneChat.kind !== "direct"
+          ...(laneChat != null && laneChat.kind !== "direct"
             ? [
                 sharedPart(
                   "standing",
@@ -2731,71 +2728,119 @@ export class KinLeadPrompt extends Context.Service<
                   legacyText: null,
                 },
               ]),
-          ...(asked === undefined
-            ? []
-            : [
-                sharedPart(questionSectionPlaces.openQuestions, asked.heading),
-                sharedPart(questionSectionPlaces.openQuestions, asked.body),
-              ]),
-          ...(askedFor === undefined
-            ? []
-            : [
-                sharedPart(questionSectionPlaces.askedHere, askedFor.heading),
-                sharedPart(questionSectionPlaces.askedHere, askedFor.body),
-              ]),
-          ...(unread === undefined || unread.shown.length === 0
-            ? []
-            : [
+          ...(asked === null
+            ? [
+                sharedPart(questionSectionPlaces.openQuestions, "# Open questions"),
+                sharedPart(
+                  questionSectionPlaces.openQuestions,
+                  "Kin couldn't read open questions this turn, so don't ask again something that may already be waiting.",
+                ),
+              ]
+            : asked === undefined
+              ? []
+              : [
+                  sharedPart(questionSectionPlaces.openQuestions, asked.heading),
+                  sharedPart(questionSectionPlaces.openQuestions, asked.body),
+                ]),
+          ...(askedFor === null
+            ? [
+                sharedPart(questionSectionPlaces.askedHere, OPEN_QUESTION_HEADINGS.askedHere),
+                sharedPart(
+                  questionSectionPlaces.askedHere,
+                  "Kin couldn't read questions asked for this chat this turn, so don't ask again something that may already be waiting.",
+                ),
+              ]
+            : askedFor === undefined
+              ? []
+              : [
+                  sharedPart(questionSectionPlaces.askedHere, askedFor.heading),
+                  sharedPart(questionSectionPlaces.askedHere, askedFor.body),
+                ]),
+          ...(unread === null
+            ? [
                 sharedPart(promptSectionPlaces.unread, PROMPT_HEADINGS.unread),
                 sharedPart(
-                  "unread",
-                  unreadLines(unread, input.lane?.chatId, (at) => chatClock(at, now, timeZone)),
+                  promptSectionPlaces.unread,
+                  "Kin couldn't read which of your messages still have no answer or reaction this turn, so don't say they were all answered or reacted to.",
                 ),
-              ]),
-          ...(redrafts === undefined
-            ? []
-            : [
-                ownerPart(questionSectionPlaces.draftsBack, redrafts.heading),
-                ownerPart(questionSectionPlaces.draftsBack, redrafts.body),
-              ]),
-          ...(declined.length === 0
-            ? []
-            : [
-                sharedPart(promptSectionPlaces.declined, PROMPT_HEADINGS.declined),
-                sharedPart("declined", DECLINED_RULE),
-                sharedPart(
-                  "declined",
-                  quote(
-                    QUOTE_LABELS.declined,
-                    declined.map((row) => ({
-                      from: row.personName,
-                      for: row.agentName,
-                      asked: chatClock(row.askedAt, now, timeZone),
-                      request: clip(row.body, RECENT_BODY_LIMIT.other),
-                      answer: "not this time",
-                      by: row.by ?? "the owner",
-                      ...(row.answeredAt === undefined
-                        ? {}
-                        : { answered: chatClock(row.answeredAt, now, timeZone) }),
-                    })),
+              ]
+            : unread === undefined || unread.shown.length === 0
+              ? []
+              : [
+                  sharedPart(promptSectionPlaces.unread, PROMPT_HEADINGS.unread),
+                  sharedPart(
+                    "unread",
+                    unreadLines(unread, input.lane?.chatId, (at) => chatClock(at, now, timeZone)),
                   ),
-                ),
-              ]),
-          ...(changedLately.length === 0
-            ? []
-            : [
-                ownerPart(promptSectionPlaces.changedLately, PROMPT_HEADINGS.changedLately),
-                ownerPart("changedLately", UNDO_RULE),
+                ]),
+          ...(redrafts === null
+            ? [
+                ownerPart(questionSectionPlaces.draftsBack, OPEN_QUESTION_HEADINGS.draftsBack),
                 ownerPart(
-                  "changedLately",
-                  changedLately
-                    .map(
-                      (change) =>
-                        `- ${change.from}, ${chatClock(change.at, now, timeZone)}: ${change.line}`,
-                    )
-                    .join("\n"),
+                  questionSectionPlaces.draftsBack,
+                  "Kin couldn't read which drafts were sent back for changes this turn, so don't say none were sent back.",
                 ),
-              ]),
+              ]
+            : redrafts === undefined
+              ? []
+              : [
+                  ownerPart(questionSectionPlaces.draftsBack, redrafts.heading),
+                  ownerPart(questionSectionPlaces.draftsBack, redrafts.body),
+                ]),
+          ...(declined === null
+            ? [
+                sharedPart(promptSectionPlaces.declined, PROMPT_HEADINGS.declined),
+                sharedPart(
+                  promptSectionPlaces.declined,
+                  "Kin couldn't read declined requests this turn, so don't assume an earlier request is still waiting.",
+                ),
+              ]
+            : declined.length === 0
+              ? []
+              : [
+                  sharedPart(promptSectionPlaces.declined, PROMPT_HEADINGS.declined),
+                  sharedPart("declined", DECLINED_RULE),
+                  sharedPart(
+                    "declined",
+                    quote(
+                      QUOTE_LABELS.declined,
+                      declined.map((row) => ({
+                        from: row.personName,
+                        for: row.agentName,
+                        asked: chatClock(row.askedAt, now, timeZone),
+                        request: clip(row.body, RECENT_BODY_LIMIT.other),
+                        answer: "not this time",
+                        by: row.by ?? "the owner",
+                        ...(row.answeredAt === undefined
+                          ? {}
+                          : { answered: chatClock(row.answeredAt, now, timeZone) }),
+                      })),
+                    ),
+                  ),
+                ]),
+          ...(changedLately === null
+            ? [
+                ownerPart(promptSectionPlaces.changedLately, PROMPT_HEADINGS.changedLately),
+                ownerPart(
+                  promptSectionPlaces.changedLately,
+                  "Kin couldn't read recent changes this turn, so don't say there is nothing to take back.",
+                ),
+              ]
+            : changedLately.length === 0
+              ? []
+              : [
+                  ownerPart(promptSectionPlaces.changedLately, PROMPT_HEADINGS.changedLately),
+                  ownerPart("changedLately", UNDO_RULE),
+                  ownerPart(
+                    "changedLately",
+                    changedLately
+                      .map(
+                        (change) =>
+                          `- ${change.from}, ${chatClock(change.at, now, timeZone)}: ${change.line}`,
+                      )
+                      .join("\n"),
+                  ),
+                ]),
           ...recentParts,
           ...(recentCoOwners === null
             ? [
@@ -2811,18 +2856,33 @@ export class KinLeadPrompt extends Context.Service<
                 ownerPart(promptSectionPlaces.ownerReactions, PROMPT_HEADINGS.ownerReactions),
                 ownerPart("ownerReactions", feedback.join("\n")),
               ]),
-          ...(playbooks.length === 0
-            ? []
-            : [
-                ownerPart(promptSectionPlaces.playbooks, PROMPT_HEADINGS.playbooks),
-                ownerPart("standing", quote(QUOTE_LABELS.playbooks, playbooks)),
-              ]),
+          ...(playbooks === null
+            ? [
+                ownerPart(
+                  "message",
+                  "Kin couldn't read the playbook list this turn, so don't say there are no playbooks.",
+                ),
+              ]
+            : playbooks.length === 0
+              ? []
+              : [
+                  ownerPart(promptSectionPlaces.playbooks, PROMPT_HEADINGS.playbooks),
+                  ownerPart("standing", quote(QUOTE_LABELS.playbooks, playbooks)),
+                ]),
           ...(thisCompany.length === 0
             ? []
             : [
                 sharedPart(promptSectionPlaces.thisCompany, PROMPT_HEADINGS.thisCompany),
                 sharedPart("standing", thisCompany.join("\n")),
               ]),
+          ...(lists === null
+            ? [
+                sharedPart(
+                  "message",
+                  "Kin couldn't read which lists are shown as sections this turn, so don't say there are none.",
+                ),
+              ]
+            : []),
           ...(offerings._tag === "hidden"
             ? []
             : [
@@ -2836,12 +2896,19 @@ export class KinLeadPrompt extends Context.Service<
                       : quote(QUOTE_LABELS.whatWeSell, offerings.index),
                 ),
               ]),
-          ...(setUp
+          ...(setUp === null
             ? [
-                ownerPart(promptSectionPlaces.setUp, PROMPT_HEADINGS.setUp),
-                ownerPart("standing", CHIEF_OF_STAFF_SET_UP),
+                ownerPart(
+                  "message",
+                  "Kin couldn't read whether set-up was requested this turn, so don't start setting up the company based on this check.",
+                ),
               ]
-            : []),
+            : setUp
+              ? [
+                  ownerPart(promptSectionPlaces.setUp, PROMPT_HEADINGS.setUp),
+                  ownerPart("standing", CHIEF_OF_STAFF_SET_UP),
+                ]
+              : []),
           ...(checkIns.length === 0
             ? []
             : [
@@ -2862,20 +2929,36 @@ export class KinLeadPrompt extends Context.Service<
                   ownerPart("work", WORK_RULE),
                   ownerPart("work", quote(QUOTE_LABELS.work, work, true)),
                 ]),
-          ...(started === undefined
-            ? []
-            : [
+          ...(started === null
+            ? [
                 ownerPart(promptSectionPlaces.started, PROMPT_HEADINGS.started),
-                ownerPart("message", STARTED_RULE),
-                ownerPart("message", quote(QUOTE_LABELS.started, started, true)),
-              ]),
-          ...(weekly === undefined
-            ? []
-            : [
+                ownerPart(
+                  promptSectionPlaces.started,
+                  "Kin couldn't read what you started this turn, so don't say nothing is underway.",
+                ),
+              ]
+            : started === undefined
+              ? []
+              : [
+                  ownerPart(promptSectionPlaces.started, PROMPT_HEADINGS.started),
+                  ownerPart("message", STARTED_RULE),
+                  ownerPart("message", quote(QUOTE_LABELS.started, started, true)),
+                ]),
+          ...(weekly === null
+            ? [
                 ownerPart(promptSectionPlaces.weekly, PROMPT_HEADINGS.weekly),
-                ownerPart("message", WEEKLY_RULE),
-                ownerPart("message", quote(QUOTE_LABELS.weekly, weekly, true)),
-              ]),
+                ownerPart(
+                  promptSectionPlaces.weekly,
+                  "Kin couldn't read the weekly brief details this turn, so don't say there is nothing to report.",
+                ),
+              ]
+            : weekly === undefined
+              ? []
+              : [
+                  ownerPart(promptSectionPlaces.weekly, PROMPT_HEADINGS.weekly),
+                  ownerPart("message", WEEKLY_RULE),
+                  ownerPart("message", quote(QUOTE_LABELS.weekly, weekly, true)),
+                ]),
           ...(morning.length === 0
             ? []
             : [
@@ -2894,13 +2977,21 @@ export class KinLeadPrompt extends Context.Service<
                   ownerPart("message", quote(QUOTE_LABELS.evening, facts, true)),
                 ),
               ]),
-          ...(left.length === 0
-            ? []
-            : [
+          ...(left === null
+            ? [
                 ownerPart(promptSectionPlaces.left, PROMPT_HEADINGS.left),
-                ownerPart("message", LEFT_RULE),
-                ownerPart("message", quote(QUOTE_LABELS.left, left, true)),
-              ]),
+                ownerPart(
+                  promptSectionPlaces.left,
+                  "Kin couldn't read what people left for this check-in this turn, so don't say no one left anything.",
+                ),
+              ]
+            : left.length === 0
+              ? []
+              : [
+                  ownerPart(promptSectionPlaces.left, PROMPT_HEADINGS.left),
+                  ownerPart("message", LEFT_RULE),
+                  ownerPart("message", quote(QUOTE_LABELS.left, left, true)),
+                ]),
           ...(checkIn === null || pulse === null
             ? [
                 ownerPart(promptSectionPlaces.pulse, PROMPT_HEADINGS.pulse),
@@ -3412,6 +3503,7 @@ const newRecentChatLines = (
   changeSeqs: ReadonlyArray<number> | undefined,
   cursor: Pick<SessionDeltaSnapshot, "chatSeq" | "chatChangeSeq" | "heldChatChanges">,
 ) => {
+  if (section === `${PROMPT_HEADINGS.recentChat}\n\n${RECENT_CHAT_UNREADABLE}`) return section;
   const { chatSeq, chatChangeSeq, heldChatChanges } = cursor;
   const lines = section.split("\n");
   const quoted = lines.slice(3, -1);
