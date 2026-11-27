@@ -321,6 +321,14 @@ export function kinDocSinceLooked(
   if (sinceLooked.total <= 0 || sinceLooked.versions.length === 0) return null;
   const to = doc.latest.version;
   if (sinceLooked.from >= to) return null;
+  // The doc's own Updated line already names `doc.version`, so a lone change for it would repeat it.
+  if (
+    sinceLooked.total === 1 &&
+    sinceLooked.versions.length === 1 &&
+    sinceLooked.versions[0]!.version === doc.version.version
+  ) {
+    return null;
+  }
   return buildView({
     lookedAt: pinnedLookedAt,
     total: sinceLooked.total,

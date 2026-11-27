@@ -469,6 +469,64 @@ describe("kinDocSinceLooked", () => {
     });
   });
 
+  it("returns null when the single change since looked is already named by the doc's Updated line", () => {
+    const sameVersion: NonNullable<KinDocDetail["sinceLooked"]> = {
+      total: 1,
+      from: 1,
+      versions: [
+        docVersion({
+          version: 2,
+          at: "2026-11-27T13:24:00.000Z",
+          summary: 'Changed "When this applies" by hand',
+          provenance: { by: meera },
+        }),
+      ],
+    };
+    const d2 = doc({
+      version: { ...doc().version, version: 2, summary: 'Changed "When this applies" by hand' },
+      latest: { ...doc().latest, version: 2, summary: 'Changed "When this applies" by hand' },
+      sinceLooked: sameVersion,
+    });
+    expect(kinDocSinceLooked(d2, "2026-11-27T10:00:00.000Z", sameVersion, names, now)).toBeNull();
+
+    // If the reader saved a newer version after Meera's edit, the Updated line names v3, not v2.
+    const d3 = doc({
+      version: {
+        ...doc().version,
+        version: 3,
+        provenance: { ...doc().version.provenance, by: rhea },
+      },
+      latest: {
+        ...doc().latest,
+        version: 3,
+        provenance: { ...doc().latest.provenance, by: rhea },
+      },
+      sinceLooked: sameVersion,
+    });
+    const kept = kinDocSinceLooked(d3, "2026-11-27T10:00:00.000Z", sameVersion, names, now);
+    expect(kept?.text).toBe(
+      '1 change since earlier today: Meera: Changed "When this applies" by hand',
+    );
+
+    // Two or more changes are still drawn even when the newest matches doc.version.
+    const twoChanges: NonNullable<KinDocDetail["sinceLooked"]> = {
+      total: 2,
+      from: 1,
+      versions: [
+        docVersion({ version: 3, at: "2026-11-27T13:24:00.000Z", summary: "Second edit" }),
+        docVersion({ version: 2, at: "2026-11-27T12:00:00.000Z", summary: "First edit" }),
+      ],
+    };
+    const dTwo = doc({
+      version: { ...doc().version, version: 3 },
+      latest: { ...doc().latest, version: 3 },
+      sinceLooked: twoChanges,
+    });
+    expect(kinDocSinceLooked(dTwo, "2026-11-27T10:00:00.000Z", twoChanges, names, now)?.lead).toBe(
+      "2 changes since earlier today",
+    );
+  });
+
   it("returns null upTo for old or explicit versions and older hosts", () => {
     expect(kinDocLookedUpTo(doc({ lookedAt: undefined }), { isLatest: true })).toBeNull();
     expect(kinDocLookedUpTo(doc(), { isLatest: false })).toBeNull();
