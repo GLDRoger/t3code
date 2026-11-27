@@ -271,6 +271,87 @@ const firstCut = Effect.gen(function* () {
 });
 
 describe("bills in bulk", () => {
+  it.effect("quotes the body of a mail bill, refuses cutting and keeps a failed read visible", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const store = yield* AttachmentStore.KinAttachmentStore;
+      const sql = yield* SqlClient.SqlClient;
+      const text = "From: billing@inkspot.example\n\nInkspot Cloud sent a payment-failed notice.";
+      const bytes = new TextEncoder().encode(text);
+      const id = yield* store.storeFile(bytes, "txt");
+      const added = yield* sql.withTransaction(
+        Bills.addMailBills({
+          orgId,
+          adder: rhea,
+          mail: { from: "billing@inkspot.example", at: NOW },
+          files: [
+            {
+              attachment: {
+                id,
+                type: "file",
+                name: "Mail from billing@inkspot.example.txt",
+                mimeType: "text/plain",
+                sizeBytes: bytes.length,
+              },
+              sha256: "1".repeat(64),
+            },
+          ],
+        }),
+      );
+      assert.strictEqual(added._tag, "added");
+      if (added._tag !== "added") return;
+      const shown = yield* Bills.list(as(rhea), { orgId, batchId: added.batchId });
+      assert.strictEqual(shown.bills[0]?.state, "reading");
+      const { wakeupId, events } = yield* claimTurn(1);
+      const event = events[0]!;
+      assert.strictEqual(event._tag, "bills.read");
+      if (event._tag !== "bills.read") return;
+      const turn = (yield* billTurn(orgId, event))!;
+      assert.include(turn.text, "Some of these bills came by mail;");
+      assert.deepStrictEqual(
+        turn.attachments.map((file) => file.name),
+        ["B1.txt"],
+      );
+      const content = yield* KinTurnContent;
+      const prepared = yield* content.prepare({ text: turn.text, attachments: turn.attachments });
+      assert.include(JSON.stringify(prepared), "Inkspot Cloud sent a payment-failed notice.");
+      assert.include(
+        yield* Bills.cut(
+          { orgId, agentId: finance, wakeupId },
+          { bill: "B1", boxes: [[0, 0, 1000, 1000]] },
+        ).pipe(Effect.flip),
+        { message: "Only photos and PDF pages can be cut. Nothing was cut." },
+      );
+      yield* Bills.answer(
+        { orgId, agentId: finance, wakeupId },
+        {
+          bill: "B1",
+          readable: false,
+          read: {},
+          cannotRead: "Payment-failed notice.",
+        },
+      );
+      yield* endTurn(wakeupId);
+      assert.include((yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills[0], {
+        state: "unreadable",
+        problem: "Finance: Payment-failed notice.",
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT 1 FROM kin_records WHERE register_id = 'expenses'`,
+        [],
+      );
+      assert.strictEqual(
+        (yield* card(added.batchId)).text,
+        "1 bill from mail: 1 couldn't be read.",
+      );
+      yield* Bills.dismiss(as(rhea), { orgId, sha256: "1".repeat(64) });
+      assert.deepStrictEqual(
+        (yield* Bills.list(as(rhea), { orgId, batchId: added.batchId })).bills,
+        [],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("a single bill preserves the original row, expense and card bytes", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -492,6 +573,7 @@ describe("bills in bulk", () => {
         );
         assert.include(turn.text, "B1 is image 1, B2 is image 2, B3 is image 3.");
         assert.include(turn.text, "Record nothing else, then end with kin_skip.");
+        assert.notInclude(turn.text, "Some of these bills came by mail;");
 
         assert.deepStrictEqual(
           yield* read({

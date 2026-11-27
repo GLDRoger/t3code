@@ -2404,7 +2404,10 @@ describe("Kin migrations", () => {
       yield* runKinMigrations();
       yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 234`;
       for (const name of ["mail_from", "mail_at"]) {
-        if ((yield* sql`SELECT 1 FROM pragma_table_info('kin_bill_reads') WHERE name = ${name}`).length)
+        if (
+          (yield* sql`SELECT 1 FROM pragma_table_info('kin_bill_reads') WHERE name = ${name}`)
+            .length
+        )
           yield* sql`ALTER TABLE kin_bill_reads DROP COLUMN ${sql(name)}`;
       }
       yield* sql`DROP TABLE IF EXISTS kin_bill_mail`;
@@ -2427,7 +2430,9 @@ describe("Kin migrations", () => {
       assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, [
         { ...before[0], mail_from: "billing@inkspot.example", mail_at: 2 },
       ]);
-      assert.deepStrictEqual(yield* sql`SELECT message_id FROM kin_bill_mail`, [{ message_id: "message" }]);
+      assert.deepStrictEqual(yield* sql`SELECT message_id FROM kin_bill_mail`, [
+        { message_id: "message" },
+      ]);
     }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 

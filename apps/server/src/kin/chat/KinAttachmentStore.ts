@@ -57,6 +57,10 @@ export class KinAttachmentStore extends Context.Service<
     readonly discardPending: (attachments: ReadonlyArray<KinAttachment>) => Effect.Effect<void>;
     /** Keeps a page an agent wrote as a new file of Kin's, never replacing one. */
     readonly storePage: (html: string) => Effect.Effect<string, KinChatError>;
+    readonly storeFile: (
+      bytes: Uint8Array,
+      extension: "pdf" | "txt",
+    ) => Effect.Effect<string, KinChatError>;
     /** Keeps a picture Kin drew as a new image file of Kin's, read as any chat image is. */
     readonly storeImage: (
       bytes: Uint8Array,
@@ -131,6 +135,20 @@ export const layer = Layer.effect(
           Effect.mapError(() => refused("The page could not be saved.")),
         );
         return attachmentId;
+      }),
+      storeFile: Effect.fn("KinAttachmentStore.storeFile")(function* (bytes, extension) {
+        const id = createAttachmentId(KIN_ATTACHMENT_OWNER, extension);
+        const path =
+          id === null
+            ? null
+            : resolveAttachmentRelativePath({ attachmentsDir, relativePath: `${id}.${extension}` });
+        if (id === null || path === null) return yield* refused("The file could not be saved.");
+        const fs = Context.get(context, FileSystem.FileSystem);
+        yield* fs.makeDirectory(attachmentsDir, { recursive: true }).pipe(
+          Effect.andThen(fs.writeFile(path, bytes, { flag: "wx" })),
+          Effect.mapError(() => refused("The file could not be saved.")),
+        );
+        return id;
       }),
       storeImage: Effect.fn("KinAttachmentStore.storeImage")(function* (bytes, extension = "png") {
         // No suffix, as an uploaded image has none: clients and pages read it as a picture.

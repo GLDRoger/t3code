@@ -82,6 +82,7 @@ export const KinBillBatchCard = Schema.Struct({
   /** The card's fixed words: what older clients show, and all its push carries. */
   text: Text,
   batchId: KinBillBatchId,
+  from: Schema.optional(Schema.Literal("mail")),
   status: Schema.Literals(["reading", "done"]),
   /** Every image or PDF the add took, the already-added ones included. */
   total: NonNegativeInt,
@@ -182,6 +183,12 @@ export const KinBillRow = Schema.Struct({
   batchId: KinBillBatchId,
   /** Opened with `assets.createUrl`, as any file on an entry. */
   file: KinFileRef,
+  mail: Schema.optional(
+    Schema.Struct({
+      from: TrimmedNonEmptyString.check(Schema.isMaxLength(254)),
+      receivedAt: IsoDateTime,
+    }),
+  ),
   state: KinBillState,
   read: KinBillRead,
   /** In plain words, what could not be read. */
