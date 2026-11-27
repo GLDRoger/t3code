@@ -562,7 +562,7 @@ export class KinLeadPrompt extends Context.Service<
         )) {
           if (event._tag === "pulse" && event.rule !== undefined) {
             const checked =
-              ownerOnly && input.laneChatId === event.chatId && input.events.length === 1
+              input.laneChatId === event.chatId && input.events.length === 1
                 ? yield* checkRuleWake(event).pipe(
                     Effect.provideService(SqlClient.SqlClient, sql),
                     Effect.mapError(
@@ -575,12 +575,14 @@ export class KinLeadPrompt extends Context.Service<
                     ),
                   )
                 : { held: "destination_unavailable" as const };
-            if ("held" in checked)
+            if ("held" in checked || !ownerOnly) {
+              const reason = "held" in checked ? checked.held : "destination_unavailable";
               return yield* new KinLeadPromptError({
                 orgId,
-                reason: checked.held,
-                mailRuleHold: { eventId: event.eventId, reason: checked.held },
+                reason,
+                mailRuleHold: { eventId: event.eventId, reason },
               });
+            }
             const label = `${checked.setterName.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")}'s mail rule, as they turned it on`;
             events.push(
               `${quote(label, checked.what)}\n\n${quote(QUOTE_LABELS.eventData, eventFacts(event), true)}${outsideText(event)}`,

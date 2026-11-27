@@ -468,11 +468,14 @@ describe("WakeupRunner", () => {
         yield* seed;
         const sql = yield* SqlClient.SqlClient;
         const queue = yield* KinEventQueue.KinEventQueue;
-        yield* sql`UPDATE kin_chats SET kind = 'direct', direct_key = 'owner:lead' WHERE chat_id = ${chatId}`;
-        yield* sql`UPDATE kin_people SET display_name = 'Rhea', access = ${scenario.access}
-        WHERE org_id = ${orgId} AND person_id = 'owner'`;
+        yield* sql`UPDATE kin_chats SET kind = 'direct', direct_key = 'meera:lead' WHERE chat_id = ${chatId}`;
+        yield* sql`UPDATE kin_people SET display_name = 'Rhea', access = 'owner'
+          WHERE org_id = ${orgId} AND person_id = 'owner'`;
+        yield* sql`INSERT INTO kin_people (org_id, person_id, handle, display_name, created_at, access)
+          VALUES (${orgId}, 'meera', 'meera', 'Meera', '2026-11-08T00:00:00.000Z',
+            ${scenario.access === "owner" ? "co_owner" : scenario.access})`;
         yield* sql`INSERT INTO kin_chat_members (org_id, chat_id, principal_kind, person_id, member_id,
-        role, joined_at) VALUES (${orgId}, ${chatId}, 'person', 'owner', 'rhea_member',
+        role, joined_at) VALUES (${orgId}, ${chatId}, 'person', 'meera', 'meera_member',
           'member', '2026-11-08T00:00:00Z')`;
         yield* sql`INSERT INTO kin_chat_members (org_id, chat_id, principal_kind, agent_id, member_id,
         role, joined_at) VALUES (${orgId}, ${chatId}, 'agent', ${agentId}, 'finance_member',
@@ -486,7 +489,7 @@ describe("WakeupRunner", () => {
         agent_id, chat_id, said_by, source_event, content_sha256, state, monthly_cap,
         created_at, updated_at, activation) VALUES (${orgId}, ${ruleId}, 'con_a710a70',
           ${match}, ${scenario.changed ? "Send the invoice." : tapped}, ${agentId}, ${chatId},
-          'owner', 'tap_a830a4', ${mailRuleContentHash(match, tapped)}, ${scenario.state}, 30,
+          'meera', 'tap_a830a4', ${mailRuleContentHash(match, tapped)}, ${scenario.state}, 30,
           1, 1, ${scenario.activation})`;
         for (const [index, arrivalId] of arrivals.entries()) {
           yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id, noticed_at,
@@ -567,6 +570,7 @@ describe("WakeupRunner", () => {
                     leadName: "Finance",
                   }),
                 preparing: () => Effect.void,
+                begin: () => Effect.sync(() => assert.fail("A held rule reached provider setup.")),
                 end: () => Effect.void,
               }),
             ),
