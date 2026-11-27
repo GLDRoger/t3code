@@ -23,6 +23,7 @@ import { SHARED_REFUSAL } from "../Audience.ts";
 import { toolAdmitted } from "../SharedTools.ts";
 import { KinReplyBridge, KinReplySkipError } from "../../reply/KinReplyBridge.ts";
 import { laneFor } from "../../reply/replyLane.ts";
+import { proposeMailRule } from "../../arrivals/proposeMailRule.ts";
 import { KinChatService } from "../../chat/KinChatService.ts";
 import { KinServer } from "../../KinServer.ts";
 import * as Questions from "../../questions/openQuestions.ts";
@@ -511,6 +512,12 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
     Effect.fn("KinLeadToolkit.defer")(function* (input) {
       return yield* (yield* LeadMemory).defer(yield* McpInvocationContext, input);
     }),
+  ),
+  mail_rule: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.mailRule")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      return yield* proposeMailRule(lead, input);
+    }, Effect.mapError(failure)),
   ),
   kin_schedule: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.schedule")(function* (input) {

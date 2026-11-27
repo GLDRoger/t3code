@@ -126,7 +126,7 @@ type InsertMessage = Omit<KinMessage, "seq" | "authorRole" | "clientMessageId" |
   /** Pictures Kin drew for this agent: each doc version is read here, in the write's transaction. */
   readonly pictureRefs?: ReadonlyArray<PictureDoc> | undefined;
   // Only Kin itself (worker task cards, a failed send's mail again) posts outside a wake-up.
-  readonly serverPosted?: true;
+  readonly serverPosted?: true | "mail_rule";
   /** Shown in the chat, but never pushed and never counted as unread or on the badge. */
   readonly silent?: true;
   readonly clientMessageId: {
@@ -2302,23 +2302,26 @@ const make = Effect.gen(function* () {
                 ? yield* requireRecord(agentOne({ orgId: input.orgId, agentId: author.agentId }))
                 : null;
             if (author._tag === "agent" && agent !== null) {
-              const thread = yield* requireRecord(
-                agentThreadOne({ orgId: input.orgId, threadId: author.threadId }),
-              );
-              if (
-                agent.ownerPersonId !== author.ownerPersonId ||
-                thread.agentId !== agent.agentId ||
-                thread.endedAt !== null ||
-                agent.retiredAt !== null
-              )
+              if (agent.ownerPersonId !== author.ownerPersonId || agent.retiredAt !== null)
                 return yield* new KinChatError({
                   reason: "not_found",
                   message: "Kin record not found.",
                 });
+              // Kin may post a mail rule proposal before its destination lead has run a turn.
+              if (input.serverPosted !== "mail_rule") {
+                const thread = yield* requireRecord(
+                  agentThreadOne({ orgId: input.orgId, threadId: author.threadId }),
+                );
+                if (thread.agentId !== agent.agentId || thread.endedAt !== null)
+                  return yield* new KinChatError({
+                    reason: "not_found",
+                    message: "Kin record not found.",
+                  });
+              }
             }
             if (
               author._tag === "agent" &&
-              input.serverPosted !== true &&
+              input.serverPosted === undefined &&
               !(input.wakeupId !== undefined
                 ? yield* wakeupRunning({
                     orgId: input.orgId,
