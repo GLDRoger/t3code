@@ -113,10 +113,13 @@ import {
   KIN_TEXT_LOCALE,
   KinDocCardDraft,
   KinMoneySummary,
+  kinPageShape,
 } from "@t3tools/contracts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
 import { KIN_CLAUDE_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.ts";
 import { OWNER_SEAT_NATIVE_TOOLS } from "../../apps/server/src/kin/lead/turn/providers/claude.ts";
+import { TRIAGE_SEAT_INSTRUCTIONS } from "../../apps/server/src/kin/lead/outsideTriage.ts";
+import { type KinSeat, kinSeatOf } from "./kin-seat.ts";
 import { listedOnSharedThread } from "../../apps/server/src/kin/lead/SharedTools.ts";
 import { BILLS_TOOLS } from "../../apps/server/src/kin/lead/billsOnly.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
@@ -167,6 +170,7 @@ import {
   PASSED_ON_SPEAKER,
   UNREAD_RULE,
   REMINDER_DUE,
+  sendHeader,
   REPLY_SHAPE,
   SHARED_TURN_LINE,
   joinedWork,
@@ -230,22 +234,28 @@ import { characterForTurn, colleagueLine } from "../../apps/server/src/kin/lead/
 import {
   CAPTION_PROMPT,
   classifySegment,
+  normalized,
   replyNextForTool,
   repeats,
   RESCUE_PROMPT,
+  UPDATES_RESCUE_PROMPT,
 } from "../../apps/server/src/kin/reply/classify.ts";
 import {
   followUpFor,
   replyNudgePrompt,
+  SEND_REFUSALS,
   sendRescuePrompt,
   isPersonTag,
   startedBy,
   TRIGGER_TAGS,
+  triggerWords,
+  UPDATE_REFUSALS,
+  UPDATE_SHOWN,
   voiceFor,
 } from "../../apps/server/src/kin/reply/turnVoice.ts";
 import { TURN_EVENT_TOOLS } from "../../apps/server/src/kin/lead/eventIds.ts";
 import { noticeDay } from "../../apps/server/src/kin/work/crm.ts";
-import type { Call, McpToolUseCase } from "./run.ts";
+import type { Call, McpToolUseCase, SampleRun } from "./run.ts";
 
 export { kinInstructions, kinLeadInstructions };
 
@@ -287,6 +297,7 @@ export const KIN_TOOLKITS = [
 
 /** The world flags that shape a Kin turn's tool list and system text. */
 export type KinSeatOptions = {
+  readonly kinSeat?: KinSeat;
   readonly kinAgent?: boolean;
   readonly kinLead?: boolean;
   readonly kinSession?: boolean;
@@ -358,6 +369,7 @@ export const kinBillsOf = ({ prompt }: McpToolUseCase) => KIN_BILLS_PROMPT.test(
  * plans it; a case says `kinSession: false` only to model a turn without it on purpose.
  */
 export const kinSessionOf = ({ setup, prompt }: McpToolUseCase) => {
+  if (kinSeatOf({ setup }) !== undefined) return false;
   const stated = setup.world?.kinSession;
   return typeof stated === "boolean"
     ? stated
@@ -397,11 +409,15 @@ export const kinLeadBase = <M, E>(input: {
   readonly nativeSchema: (name: string) => object;
 }) => {
   const { options, t3 } = input;
+  const outsideTriage = options.kinSeat === "outside-triage";
   const ownerSeat =
-    options.kinSession === true && options.kinShared !== true && options.kinBills !== true;
-  const deferredKin = t3.filter(
-    (tool) => !KIN_CLAUDE_ALWAYS_LOADED.has(tool.name.slice(T3_PREFIX.length)),
-  );
+    !outsideTriage &&
+    options.kinSession === true &&
+    options.kinShared !== true &&
+    options.kinBills !== true;
+  const deferredKin = outsideTriage
+    ? []
+    : t3.filter((tool) => !KIN_CLAUDE_ALWAYS_LOADED.has(tool.name.slice(T3_PREFIX.length)));
   const toolSearch = input.templateTools
     .filter((tool) => tool.name === "ToolSearch")
     .map((tool) => ({ ...tool, description: TOOL_SEARCH_DESCRIPTION }));
@@ -418,9 +434,11 @@ export const kinLeadBase = <M, E>(input: {
     model: input.model,
     system: [
       text(
-        options.kinBills === true
-          ? kinInstructions("confined", "claudeAgent", false)
-          : kinInstructions(ownerSeat ? "owner" : "confined", "claudeAgent"),
+        outsideTriage
+          ? TRIAGE_SEAT_INSTRUCTIONS
+          : options.kinBills === true
+            ? kinInstructions("confined", "claudeAgent", false)
+            : kinInstructions(ownerSeat ? "owner" : "confined", "claudeAgent"),
       ),
     ],
     kinClaude: true as const,
@@ -435,8 +453,8 @@ export const kinLeadBase = <M, E>(input: {
       ...(ownerSeat
         ? input.templateTools.filter((tool) => ownerNative.has(tool.name))
         : // A confined Claude session keeps the provider's own web search (`claude.ts`), but
-          // for bills.
-          options.kinBills === true
+          // for bills and outside triage.
+          options.kinBills === true || outsideTriage
           ? []
           : [{ name: "WebSearch", ...input.nativeSchema("WebSearch") }]),
       ...(deferred.length > 0 ? toolSearch : []),
@@ -723,8 +741,22 @@ const promptTags = (
 const caseTags = ({ prompt, setup }: McpToolUseCase) => promptTags(prompt, setup.world);
 
 export const isReplyEnding = (name: string) => name === "kin_send" || name === "kin_skip";
-const replyEnding = (calls: ReadonlyArray<Call>) =>
-  calls.find((call) => isReplyEnding(call.tool) && call.failed === false);
+const isUpdate = (call: { readonly tool: string; readonly input?: unknown }) =>
+  call.tool === "kin_send" && isRecord(call.input) && call.input.level === "update";
+/** As Kin's end-turn wrapper: a successful send or skip ends the turn, an update never does. */
+export const endsTurn = (call: Call) =>
+  isReplyEnding(call.tool) && call.failed === false && !isUpdate(call);
+const replyEnding = (calls: ReadonlyArray<Call>) => calls.find(endsTurn);
+/** This turn's shown updates, a resumed case's earlier ones included. */
+const shownUpdates = (testCase: McpToolUseCase, calls: ReadonlyArray<Call>) => [
+  ...(testCase.setup.priorTurns ?? [])
+    .flatMap((turn) => turn.toolCalls ?? [])
+    .filter(
+      (call) =>
+        isUpdate(call) && (call.result === "{{UPDATE_SHOWN}}" || call.result === UPDATE_SHOWN),
+    ),
+  ...calls.filter((call) => isUpdate(call) && call.failed === false),
+];
 
 const replyVoice = (sample: ReplySample, sendOnly: boolean) =>
   voiceFor({ tags: caseTags(sample.testCase), sendOnly });
@@ -745,10 +777,25 @@ export const deliveredText = (
   return replyText(sample.responses, false, startedBy(caseTags(sample.testCase)) === "person");
 };
 
-export const kinDelivery = (sample: ReplySample, sendOnly?: boolean) => {
+const sendLevel = (testCase: McpToolUseCase, input: unknown) => {
+  if (!isRecord(input)) return undefined;
+  const { level } = input;
+  if (level !== "now" && level !== "quiet" && level !== "check_in") return undefined;
+  return startedBy(caseTags(testCase)) === "person" ||
+    quoteLabels(testCase.prompt).includes(QUOTE_LABELS.reminder)
+    ? "now"
+    : level;
+};
+
+export const kinDelivery = (
+  sample: ReplySample,
+  sendOnly?: boolean,
+): Pick<SampleRun, "deliveredText" | "deliveredLevel" | "deliveredBubbles"> => {
   if (sample.testCase.setup.world?.kinLead !== true) return {};
   const text = deliveredText(sample, sendOnly);
   const labels = quoteLabels(sample.testCase.prompt);
+  const ending = replyEnding(sample.calls);
+  const level = ending?.tool === "kin_send" ? sendLevel(sample.testCase, ending.input) : undefined;
   const page =
     labels.some((label) =>
       /^(?:morning|weekly|evening|left for this check-in|routine facts|Team room turn)\b/.test(
@@ -757,6 +804,7 @@ export const kinDelivery = (sample: ReplySample, sendOnly?: boolean) => {
     ) || /^This turn is in the Team room, chat /m.test(sample.testCase.prompt);
   return {
     deliveredText: text,
+    ...(level === undefined ? {} : { deliveredLevel: level }),
     deliveredBubbles: text === "" ? [] : page ? [text] : kinReplyBubbles(text),
   };
 };
@@ -877,6 +925,113 @@ const overpaymentCase = () =>
     others: [{ key: "INV-14", owed: 80000 }],
   });
 
+const CHECK_IN_TITLES: ReadonlyArray<readonly [RegExp, string]> = [
+  [/^morning\b/i, "checkin-morning"],
+  [/^evening\b/i, "checkin-evening"],
+  [/^weekly\b/i, "checkin-weekly"],
+];
+type Started = Parameters<typeof triggerWords>[0][number];
+type Question = NonNullable<Started["subject"]>;
+/** What started a triggered case, as the product's header names it (`turnVoice.triggerWords`). */
+const startedEvents = (prompt: string, world?: McpToolUseCase["setup"]["world"]) => {
+  const labels = quoteLabels(prompt);
+  const data = [...prompt.matchAll(/^> (\{.*\})$/gm)].flatMap((match) => {
+    try {
+      const value: unknown = JSON.parse(match[1]!);
+      return isRecord(value) && typeof value.type === "string" && eventTag(value.type)
+        ? [value]
+        : [];
+    } catch {
+      return [];
+    }
+  });
+  const events: Array<Started> = data.map((value) => {
+    const subject = isRecord(value.subject) && typeof value.subject.type === "string";
+    const title = typeof value.checkIn === "string" ? value.checkIn : undefined;
+    return {
+      _tag: value.type as Contracts.KinEvent["_tag"],
+      ...(subject ? { subject: { type: (value.subject as { type: string }).type } } : {}),
+      ...(title === undefined
+        ? {}
+        : {
+            checkIn: {
+              scheduleId: CHECK_IN_TITLES.find(([pattern]) => pattern.test(title))?.[1] ?? title,
+            },
+          }),
+      ...(typeof value.reason === "string" ? { reason: value.reason } : {}),
+    };
+  });
+  const ids =
+    data.length > 0 ? [] : [...prompt.matchAll(/^> \{"event": ?"([^"]+)"/gm)].map((m) => m[1]!);
+  const question = (flags: Omit<Question, "type"> = {}) =>
+    events.push({ _tag: "deferral.due", subject: { type: "question", ...flags } });
+  if (labels.includes("approved draft (data)")) question({ approved: true });
+  else if (labels.includes("answered question (data)")) question({ answered: true });
+  else if (labels.includes("lapsed question (data)")) question({ lapsed: true });
+  else if (labels.includes("reopened question (data)"))
+    question({ dismissed: true, reopened: true });
+  else if (labels.includes("dismissed question (data)")) question({ dismissed: true });
+  else if (prompt.includes("{{UNDONE_TOLD}}")) question({ undone: true });
+  else if (labels.includes("open question (data)") || ids.some((id) => id.startsWith("question_")))
+    question();
+  if (labels.includes("follow-up (data)") || /^> \{"event":[^}]*"changed":/m.test(prompt))
+    events.push({ _tag: "pulse" });
+  if (labels.includes("routine facts (server-gathered data)")) events.push({ _tag: "routine" });
+  if (labels.some((label) => /^work (?:taken from you|handed back to you)\b/.test(label)))
+    events.push({ _tag: "record.changed" });
+  if (ids.some((id) => id.startsWith("country_")))
+    events.push({ _tag: "deferral.due", subject: { type: "country" } });
+  if (ids.some((id) => id.startsWith("bills-"))) events.push({ _tag: "bills.read" });
+  if (/^> \{"event": ?"run-[^"]*", ?"item":/m.test(prompt))
+    events.push({ _tag: "deferral.due", subject: { type: "scheduled_task" } });
+  if (labels.includes("reminder (data)"))
+    events.push({ _tag: "deferral.due", subject: { type: "reminder" } });
+  if (
+    labels.includes("owner request (scheduled task)") &&
+    !events.some((event) => event.subject?.type === "scheduled_task")
+  )
+    events.push({ _tag: "deferral.due", subject: { type: "scheduled_task" } });
+  if (labels.some((label) => /^work given to you\b/.test(label)))
+    events.push({ _tag: "record.changed", reason: "assigned" });
+  if (labels.some((label) => /^(?:work you hold|work you are helping on)\b/.test(label)))
+    events.push({ _tag: "record.changed" });
+  for (const tag of promptTags(prompt, world))
+    if (!events.some((event) => event._tag === tag)) events.push({ _tag: tag });
+  return events;
+};
+/** The triggered-turn header the product builds for this case's events (`LeadPrompt.sendHeader`). */
+const triggerHeader = (prompt: string, world?: McpToolUseCase["setup"]["world"]) => {
+  const events = startedEvents(prompt, world);
+  const tags = events.map((event) => event._tag);
+  // Bills read in the background are a quiet lane: nothing it writes reaches a chat.
+  if (
+    tags.every((tag) => tag === "bills.read") ||
+    voiceFor({ tags, sendOnly: DEFAULT_SERVER_SETTINGS.kinTriggerSendOnly }) === "text"
+  )
+    return "Nobody is waiting on this turn.";
+  const owed = events.some(
+    (event) =>
+      event._tag === "task.finished" ||
+      (event._tag === "record.changed" && event.reason === "assigned"),
+  );
+  return sendHeader({
+    words: triggerWords(events),
+    asker: !owed
+      ? undefined
+      : /^Your reply goes to chat .*, your direct chat with the owner\.$/m.test(prompt)
+        ? "The owner"
+        : "The person who asked",
+    mustSend: events.some(
+      (event) =>
+        (event._tag === "deferral.due" && event.subject?.type === "reminder") ||
+        (event.checkIn !== undefined &&
+          ["checkin-morning", "checkin-evening", "checkin-weekly"].includes(
+            event.checkIn.scheduleId,
+          )),
+    ),
+  });
+};
+
 export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["world"]) =>
   fillCharacters(fillCardTaps(fillGitHubTrigger(prompt, world)))
     .replaceAll("{{UNDO_RULE}}", UNDO_RULE)
@@ -963,11 +1118,19 @@ export const fillKinRules = (prompt: string, world?: McpToolUseCase["setup"]["wo
     .replaceAll("{{UNISSUED_INVOICE}}", UNISSUED_INVOICE)
     .replaceAll("{{APPROVED_TURN_TEXT}}", APPROVED_TURN_TEXT)
     .replaceAll("{{NOTHING_TIMED}}", NOTHING_TIMED)
+    .replaceAll("{{UPDATE_SHOWN}}", UPDATE_SHOWN)
+    .replace(/\{\{UPDATE_REFUSAL:([a-z ]+)\}\}/g, (_, reason: keyof typeof UPDATE_REFUSALS) => {
+      if (!(reason in UPDATE_REFUSALS)) throw new Error(`unknown update refusal: ${reason}`);
+      return UPDATE_REFUSALS[reason];
+    })
     .replaceAll("{{CONNECTION_ASKED}}", ASKED)
     .replaceAll("{{SEVERAL_ACCOUNTS}}", SEVERAL_ACCOUNTS)
     .replaceAll("{{UNREAD_RULE}}", UNREAD_RULE)
     .replaceAll("{{REMINDER_DUE}}", REMINDER_DUE)
-    .replaceAll("{{REPLY_NUDGE}}", () => replyNudgePrompt(promptTags(prompt, world)))
+    .replaceAll("{{TRIGGER_HEADER}}", () => triggerHeader(fillCardTaps(prompt), world))
+    .replaceAll("{{REPLY_NUDGE}}", () =>
+      replyNudgePrompt(promptTags(prompt, world).map((tag) => ({ _tag: tag }))),
+    )
     .replaceAll("{{PASSED_ON_SPEAKER}}", PASSED_ON_SPEAKER)
     // A check-in fact's hand-off as the other agent's event quotes it, JSON-escaped for its body:
     // `{{PASSED_FACT:<request>|<check-in>|<about>|<consequence>|<fact key>}}`.
@@ -2041,6 +2204,7 @@ export const defaultReplyMock = (
 ) => {
   if (sample.testCase.setup.world?.kinLead !== true || !isReplyEnding(name)) return undefined;
   const ending = replyEnding(sample.calls);
+  if (name === "kin_send" && input.level === "update") return updateMock(sample, input, ending);
   if (name === "kin_skip") {
     if (
       ending?.tool !== "kin_send" &&
@@ -2052,23 +2216,55 @@ export const defaultReplyMock = (
       };
     return "Nothing sent; this turn is over.";
   }
-  if (ending?.tool === "kin_skip")
-    return { $error: "Nothing was sent: this turn already ended with kin_skip." };
-  if (ending?.tool === "kin_send")
-    return { $error: "This turn's message is already sent; end the turn" };
+  if (ending?.tool === "kin_skip") return { $error: SEND_REFUSALS["already skipped"] };
+  if (ending?.tool === "kin_send") {
+    if (
+      isRecord(ending.input) &&
+      ending.input.text === input.text &&
+      ending.input.level === input.level
+    )
+      return safeJson(ending.output ?? "");
+    return { $error: SEND_REFUSALS["already sent"] };
+  }
   if (typeof input.text !== "string" || input.text.trim() === "")
     return { $error: "Nothing was sent: pass the text to send." };
   const { prompt } = sample.testCase;
-  if (/^This turn is in the Team room, chat /m.test(prompt))
-    return { $error: "Nothing was sent: use team_say to speak in the Team room." };
-  if (!["now", "quiet", "check_in"].some((level) => input.level === level))
-    return { $error: "Nothing was sent: pass a valid level." };
-  if (input.level === "check_in" && !caseTags(sample.testCase).includes("deferral.due")) {
+  if (/^This turn is in the Team room, chat /m.test(prompt)) return { $error: SEND_REFUSALS.team };
+  const level = sendLevel(sample.testCase, input);
+  if (level === undefined) return { $error: "Nothing was sent: pass a valid level." };
+  if (level === "check_in") {
     if (/your direct chat with (?:a teammate|a co-owner)|, (?:a group|the group)/.test(prompt))
-      return { $error: "Nothing was sent: check_in is only for the owner's own chat." };
+      return { $error: SEND_REFUSALS["non-owner check-in"] };
     return { held: true, when: "At the next check-in." };
   }
-  return { sent: true, messageId: "kin-send:eval-turn" };
+  return { sent: true, messageId: "82136085-9468-4997-82b9-a1c46a81a809" };
+};
+
+// `KinReplyBridge.update`'s refusals, in its order.
+const updateMock = (
+  sample: ReplySample,
+  input: Record<string, unknown>,
+  ending: Call | undefined,
+) => {
+  const { prompt } = sample.testCase;
+  const text = typeof input.text === "string" ? input.text : "";
+  if (startedBy(caseTags(sample.testCase)) === "trigger")
+    return { $error: UPDATE_REFUSALS.trigger };
+  if (
+    /^This turn is in the Team room, chat /m.test(prompt) ||
+    /^Your reply goes to chat "[^"\n]*", (?:a group|the group )/m.test(prompt)
+  )
+    return { $error: UPDATE_REFUSALS["not direct"] };
+  if (ending !== undefined) return { $error: UPDATE_REFUSALS["already sent"] };
+  if (text.length > 600 || kinPageShape(text) !== "bubble")
+    return { $error: UPDATE_REFUSALS["too long"] };
+  if (
+    shownUpdates(sample.testCase, sample.calls).some(
+      (call) => isRecord(call.input) && normalized(String(call.input.text)) === normalized(text),
+    )
+  )
+    return { $error: UPDATE_REFUSALS.same };
+  return UPDATE_SHOWN;
 };
 
 /** What Kin asks once after a turn that owes an answer or has an unsent final message. */
@@ -2078,7 +2274,11 @@ export const replyFollowUp = (
   sendOnly = DEFAULT_SERVER_SETTINGS.kinTriggerSendOnly,
 ): { kind: "rescue" | "nudge"; prompt: string } | undefined => {
   const { testCase, calls } = sample;
-  if (testCase.setup.world?.kinLead !== true || testCase.prompt.includes("{{REPLY_NUDGE}}"))
+  if (
+    kinSeatOf(testCase) !== undefined ||
+    testCase.setup.world?.kinLead !== true ||
+    testCase.prompt.includes("{{REPLY_NUDGE}}")
+  )
     return undefined;
   const used = calls.filter((call) => call.failed === false);
   const tags = caseTags(testCase);
@@ -2117,10 +2317,17 @@ export const replyFollowUp = (
   const followUp = followUpFor(state);
   switch (followUp) {
     case "nudge":
-      return { kind: "nudge", prompt: replyNudgePrompt(tags) };
+      return { kind: "nudge", prompt: replyNudgePrompt(tags.map((tag) => ({ _tag: tag }))) };
     case "rescue": {
       if (voice === "text")
-        return { kind: "rescue", prompt: used.some(shows) ? CAPTION_PROMPT : RESCUE_PROMPT };
+        return {
+          kind: "rescue",
+          prompt: used.some(shows)
+            ? CAPTION_PROMPT
+            : shownUpdates(testCase, used).length > 0
+              ? UPDATES_RESCUE_PROMPT
+              : RESCUE_PROMPT,
+        };
       const asker =
         /^>.*"(?:askedBy|assignee)":\s*"([^"]+)"/m.exec(testCase.prompt)?.[1] ??
         "The person who asked";
@@ -2380,4 +2587,7 @@ export const kinJudgedCall = (call: { readonly tool: string; readonly input: unk
   return `${kept} [cut: this call is ${bytes.byteLength} bytes; only its first ${JUDGED_CALL_BYTES} are shown]`;
 };
 export const isKinCase = ({ setup }: McpToolUseCase) =>
-  setup.world?.kinAgent === true || setup.world?.kinLead === true || setup.world?.kinKey === true;
+  kinSeatOf({ setup }) !== undefined ||
+  setup.world?.kinAgent === true ||
+  setup.world?.kinLead === true ||
+  setup.world?.kinKey === true;

@@ -35,8 +35,25 @@ it.layer(layer)("Kin retention", (it) => {
         for (const key of ["item:def-1", "end"])
           yield* sql`INSERT INTO kin_lead_tool_calls (org_id, wakeup_id, call_key, request_hash) VALUES ('ambermill', ${wake.id}, ${key}, 'hash')`;
       }
+      // Held bank alert mail keeps 30 days; every other alert row stays.
+      for (const [id, outcome, days] of [
+        ["held-old", "held", 31],
+        ["held-recent", "held", 29],
+        ["unparsed-old", "unparsed", 31],
+        ["sender-old", "sender", 31],
+        ["recorded-old", "recorded", 31],
+      ] as const)
+        yield* sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, thread_id, sent_at,
+          outcome, seen_at) VALUES ('ambermill', ${id}, 'inbox', ${id}, ${now - days * DAY},
+          ${outcome}, ${now - days * DAY})`;
       yield* TestClock.setTime(now);
       yield* KinRetention.prune();
+      assert.deepStrictEqual(
+        (yield* sql<{
+          id: string;
+        }>`SELECT alert_id AS id FROM kin_bank_alerts ORDER BY alert_id`).map((row) => row.id),
+        ["held-recent", "recorded-old", "sender-old", "unparsed-old"],
+      );
       const kept = yield* sql<{ wakeupId: string; n: number }>`SELECT wakeup_id AS "wakeupId",
           COUNT(*) AS n FROM kin_lead_tool_calls WHERE org_id = 'ambermill'
         GROUP BY wakeup_id ORDER BY wakeup_id`;

@@ -10,6 +10,8 @@ type CodexCumulativeTokenUsage = {
 };
 
 interface CodexTurnTokenUsageAccumulator {
+  previousTotal: CodexCumulativeTokenUsage | undefined;
+  readonly seenSnapshots: Set<string>;
   inputTokens: number;
   cachedInputTokens: number;
   cacheCreationTokens: number | undefined;
@@ -20,7 +22,6 @@ interface CodexTurnTokenUsageAccumulator {
 }
 
 export interface CodexTurnTokenUsageState {
-  baseline: CodexCumulativeTokenUsage | undefined;
   activeTurnId: string | undefined;
   readonly byTurnId: Map<string, CodexTurnTokenUsageAccumulator>;
 }
@@ -41,7 +42,6 @@ function codexTokenUsageBreakdown(
 
 export function makeCodexTurnTokenUsageState(): CodexTurnTokenUsageState {
   return {
-    baseline: undefined,
     activeTurnId: undefined,
     byTurnId: new Map(),
   };
@@ -54,6 +54,8 @@ export function getCodexTurnAccumulator(
   const existing = state.byTurnId.get(turnId);
   if (existing) return existing;
   const created: CodexTurnTokenUsageAccumulator = {
+    previousTotal: undefined,
+    seenSnapshots: new Set(),
     inputTokens: 0,
     cachedInputTokens: 0,
     cacheCreationTokens: 0,
@@ -99,20 +101,17 @@ export function accumulateCodexTurnTokenUsage(
   turnId: string,
   usage: EffectCodexSchema.V2ThreadTokenUsageUpdatedNotification["tokenUsage"],
 ): void {
-  const current = codexTokenUsageBreakdown(usage.total);
-  if (state.activeTurnId !== turnId) {
-    // Every thread-wide total updates the baseline; late finished-turn updates do not count toward the live turn.
-    state.baseline = current;
-    return;
-  }
+  if (state.activeTurnId !== turnId) return;
 
   const accumulator = getCodexTurnAccumulator(state, turnId);
-  const delta = codexTurnTokenUsageDelta(
-    state.baseline,
-    current,
-    codexTokenUsageBreakdown(usage.last),
-  );
-  state.baseline = current;
+  const current = codexTokenUsageBreakdown(usage.total);
+  const last = codexTokenUsageBreakdown(usage.last);
+  // A replay of an older snapshot otherwise looks like a counter reset.
+  const snapshot = JSON.stringify([current, last]);
+  if (accumulator.seenSnapshots.has(snapshot)) return;
+  accumulator.seenSnapshots.add(snapshot);
+  const delta = codexTurnTokenUsageDelta(accumulator.previousTotal, current, last);
+  accumulator.previousTotal = current;
 
   if (
     delta.inputTokens > 0 ||

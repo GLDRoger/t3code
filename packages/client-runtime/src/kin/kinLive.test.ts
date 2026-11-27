@@ -1,5 +1,5 @@
 // @effect-diagnostics globalDate:off - Fixtures build ISO times relative to a fixed clock.
-import type { KinAgentId, KinPresence, KinWakeupId } from "@t3tools/contracts";
+import type { KinAgentId, KinPresence, KinWakeupId, KinWaitingItem } from "@t3tools/contracts";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import {
@@ -8,6 +8,7 @@ import {
   createKinLabelHold,
   kinMayStopAgent,
   kinWorkingLines,
+  kinWaitingAskHeld,
 } from "./kinLive.ts";
 
 const START = Date.parse("2026-11-26T09:00:00.000Z");
@@ -38,6 +39,23 @@ const lines = (entries: ReadonlyArray<KinPresence>, mayStop = owner) =>
     row.line.text,
     row.stop,
   ]);
+
+describe("kinWaitingAskHeld", () => {
+  const turn = { agentId: ada, wakeupId: "w1" as KinWakeupId };
+  const ask = { ordinaryTurnAsk: turn } as KinWaitingItem;
+  const unmarked = {} as KinWaitingItem;
+
+  it.each([
+    ["same wake-up", ask, [turn], true],
+    ["ended", ask, [], false],
+    ["moved on", ask, [{ ...turn, wakeupId: "w2" as KinWakeupId }], false],
+    ["another agent", ask, [{ ...turn, agentId: finance }], false],
+    ["unknown presence", ask, undefined, false],
+    ["unmarked", unmarked, [turn], false],
+  ] as const)("%s", (_name, item, active, held) => {
+    expect(kinWaitingAskHeld(item, active)).toBe(held);
+  });
+});
 
 describe("kinWorkingLines", () => {
   it.each([

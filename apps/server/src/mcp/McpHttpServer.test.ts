@@ -53,7 +53,11 @@ import * as PullRequestService from "../pullRequest/PullRequestService.ts";
 import * as ServerConfig from "../config.ts";
 import * as ServerHttp from "../http.ts";
 import * as ServerSettings from "../serverSettings.ts";
-import { AdvertisedDescriptions, advertisedJsonSchema } from "./advertisedJsonSchema.ts";
+import {
+  AcceptedUnadvertisedArguments,
+  AdvertisedDescriptions,
+  advertisedJsonSchema,
+} from "./advertisedJsonSchema.ts";
 import * as McpHttpServer from "./McpHttpServer.ts";
 import * as McpToolAccess from "./McpToolAccess.ts";
 import * as McpToolAccessTestkit from "./McpToolAccess.testkit.ts";
@@ -661,6 +665,49 @@ it.effect("lists every Kin argument but validates bounds not sent to the model",
       expect(refused, JSON.stringify(bad)).toBeInstanceOf(McpSchema.InvalidParams);
       expect(refused.message).not.toContain("Unknown argument");
     }
+  }).pipe(Effect.provide(registration));
+});
+
+it.effect("lists only advertised arguments while decoding accepted legacy keys", () => {
+  const parameters = Schema.Struct({
+    legacy: Schema.optional(Schema.String),
+    records: Schema.Array(
+      Schema.Struct({ title: Schema.String, legacy: Schema.optional(Schema.Int) }),
+    ),
+  });
+  const tools = Toolkit.make(
+    Tool.make("probe", { parameters, success: parameters }).annotate(
+      AcceptedUnadvertisedArguments,
+      ["legacy", "records[].legacy"],
+    ),
+  );
+  const registration = McpHttpServer.toolkitRegistration(
+    tools,
+    McpToolAccess.toLayer(tools, { probe: McpToolAccess.reads(Effect.succeed) }),
+    { kin: true },
+  ).pipe(Layer.provideMerge(McpHttpServer.layerInProcessMcpServer));
+  return Effect.gen(function* () {
+    const server = yield* McpServer.McpServer;
+    expect(server.tools).toMatchObject([{ tool: { name: "probe" } }]);
+    expect(server.tools[0]?.tool.inputSchema.properties).toEqual({
+      records: {
+        type: "array",
+        items: { type: "object", properties: { title: { type: "string" } }, required: ["title"] },
+      },
+    });
+
+    const legacyArgs = { legacy: "old", records: [{ title: "Tidewater Freight", legacy: 2 }] };
+    const currentArgs = { records: [{ title: "Tidewater Freight" }] };
+    expect(yield* callTool("probe", legacyArgs)).toMatchObject({ structuredContent: legacyArgs });
+    expect(yield* callTool("probe", currentArgs)).toMatchObject({ structuredContent: currentArgs });
+    const badValue = yield* Effect.flip(callTool("probe", { ...legacyArgs, legacy: 1 }));
+    expect(badValue).toBeInstanceOf(McpSchema.InvalidParams);
+    expect(badValue.message).not.toContain("Unknown argument");
+    const unknown = yield* Effect.flip(callTool("probe", { ...currentArgs, typo: 1 }));
+    expect(unknown).toBeInstanceOf(McpSchema.InvalidParams);
+    expect(unknown.message).toContain(
+      'Unknown argument "typo". Accepted arguments: legacy, records.',
+    );
   }).pipe(Effect.provide(registration));
 });
 

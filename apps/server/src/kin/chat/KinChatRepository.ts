@@ -1,3 +1,4 @@
+import { STORED_UPDATE_PREFIX } from "../reply/turnVoice.ts";
 import { ACTIVE_RUN_STATUSES } from "../../orchestration-v2/ThreadManagementService.ts";
 import type { McpThreadCaller } from "../../mcp/McpInvocationContext.ts";
 import { wakeupOfRuns } from "./wakeupRuns.ts";
@@ -279,6 +280,7 @@ const {
   withdrawn: _withdrawn,
   sourceWakeupId: _sourceWakeupId,
   lapsedQuestion: _lapsedQuestion,
+  ordinaryTurnAsk: _ordinaryTurnAsk,
   ...messageRowFields
 } = KinMessage.fields;
 const encodeRelay = Schema.encodeEffect(Schema.fromJsonString(KinMessageRelay));
@@ -296,6 +298,7 @@ const MessageRow = Schema.Struct({
     Schema.fromJsonString(KinMessage.fields.lapsedQuestion.schema),
   ),
   storedClientMessageId: Schema.NullOr(Schema.String),
+  storedOrdinaryTurnAsk: Schema.Literals([0, 1]),
   storedAttachments: Schema.NullOr(Schema.fromJsonString(StoredAttachments)),
   storedRefs: Schema.NullOr(Schema.fromJsonString(StoredRefs)),
   storedEmbeds: Schema.NullOr(Schema.fromJsonString(StoredEmbeds)),
@@ -309,6 +312,7 @@ const MessageRow = Schema.Struct({
     SchemaTransformation.transform({
       decode: ({
         storedClientMessageId,
+        storedOrdinaryTurnAsk,
         storedAttachments,
         storedRefs,
         storedDiscussionId,
@@ -334,6 +338,12 @@ const MessageRow = Schema.Struct({
         ...(storedOrigin === null ? {} : { origin: storedOrigin }),
         ...(storedEmbeds === null ? {} : { embeds: storedEmbeds }),
         ...(storedForm === null ? {} : { form: storedForm }),
+        ...(message.author._tag === "agent" &&
+        storedSourceWakeupId !== null &&
+        storedClientMessageId?.startsWith(STORED_UPDATE_PREFIX)
+          ? { progress: true }
+          : {}),
+        ...(storedOrdinaryTurnAsk === 1 ? { ordinaryTurnAsk: true } : {}),
         ...(storedAttachments === null ? {} : { attachments: storedAttachments }),
         ...(storedRefs === null ? {} : { refs: storedRefs }),
         ...(storedClientMessageId?.startsWith("send:")
@@ -355,6 +365,7 @@ const MessageRow = Schema.Struct({
         form,
         embeds,
         sourceWakeupId,
+        ordinaryTurnAsk: _ask,
         ...message
       }) => ({
         ...message,
@@ -370,16 +381,28 @@ const MessageRow = Schema.Struct({
         storedForm: form ?? null,
         storedAttachments: attachments ?? null,
         storedRefs: refs ?? null,
+        storedOrdinaryTurnAsk: 0,
         storedClientMessageId:
           message.clientMessageId === undefined ? null : `send:${message.clientMessageId}`,
       }),
     }),
   ),
 );
+// kin_ask mints this for its own lane; the Team room and executable options never wait.
+const ordinaryTurnAskSql = `kin_messages.author_kind = 'agent'
+ AND kin_messages.source_wakeup_id IS NOT NULL AND kin_messages.kind = 'text'
+ AND kin_messages.intent = 'question' AND kin_messages.widget_id GLOB 'choice:*'
+ AND instr(kin_messages.client_message_id, 'send:kin-ask:' || kin_messages.source_wakeup_id || ':') = 1
+ AND NOT EXISTS (SELECT 1 FROM kin_chats c WHERE c.org_id = kin_messages.org_id
+   AND c.chat_id = kin_messages.chat_id AND c.team_id = '${KIN_TEAM_ROOM_TEAM_ID}')
+ AND NOT EXISTS (SELECT 1 FROM kin_widgets w, json_each(w.state_json, '$.options') o
+   WHERE w.org_id = kin_messages.org_id AND w.widget_id = kin_messages.widget_id
+     AND w.type = 'choice' AND json_type(w.state_json, o.fullkey || '.action') = 'object')`;
 const messageColumns = `org_id AS "orgId", chat_id AS "chatId", message_id AS "messageId", seq AS "seq", change_seq AS "changeSeq", client_message_id AS "storedClientMessageId", author_role AS "authorRole", kind AS "kind", body AS "body", attachments_json AS "storedAttachments", refs_json AS "storedRefs", form AS "storedForm", embeds_json AS "storedEmbeds", intent AS "intent", mentions_json AS "mentions", reply_to AS "replyTo", widget_id AS "widgetId", floor_run_id AS "floorRunId", status AS "status", sent_by AS "sentBy", created_at AS "createdAt", edited_at AS "editedAt", discussion_id AS "storedDiscussionId", (SELECT 1 - final FROM kin_discussions d WHERE d.org_id = kin_messages.org_id AND d.discussion_id = kin_messages.discussion_id) AS "storedDiscussionOpen", relay_json AS "storedRelay", origin_json AS "storedOrigin", when_json AS "storedWhen", withdrawn_json AS "storedWithdrawn", lapsed_question_json AS "storedLapsedQuestion", CASE author_kind WHEN 'human' THEN json_object('_tag', 'human', 'personId', author_person_id, 'memberId', author_member_id)
  WHEN 'agent' THEN json_object('_tag', 'agent', 'agentId', author_agent_id, 'memberId', author_member_id,
  'ownerPersonId', author_owner_person_id, 'threadId', author_thread_id)
- ELSE json_object('_tag', author_kind) END AS author, source_wakeup_id AS "storedSourceWakeupId"`;
+ ELSE json_object('_tag', author_kind) END AS author, source_wakeup_id AS "storedSourceWakeupId",
+ CASE WHEN ${ordinaryTurnAskSql} THEN 1 ELSE 0 END AS "storedOrdinaryTurnAsk"`;
 const WidgetRow = Schema.Struct({
   ...KinWidget.fields,
   state: Schema.fromJsonString(KinWidget.fields.state),
@@ -408,6 +431,10 @@ const waitingColumns = `${waitingBaseColumns}, (SELECT json_extract(g.state_json
   LEFT JOIN kin_agents a ON a.org_id = q.org_id AND a.agent_id = q.agent_id
   WHERE q.org_id = kin_waiting.org_id AND q.state = 'open'
     AND (q.widget_id = kin_waiting.widget_id OR q.raise_widget_id = kin_waiting.widget_id)) AS "ask",
+ (SELECT json_object('agentId', author_agent_id, 'wakeupId', source_wakeup_id)
+  FROM kin_messages WHERE org_id = kin_waiting.org_id AND chat_id = kin_waiting.chat_id
+    AND message_id = kin_waiting.message_id AND widget_id = kin_waiting.widget_id
+    AND kin_waiting.reason <> 'approval' AND ${ordinaryTurnAskSql}) AS "ordinaryTurnAsk",
  (SELECT CASE WHEN json_extract(g.state_json, '$.send.action') IN ('email', 'reply') THEN 'mail'
     WHEN EXISTS (SELECT 1 FROM kin_questions q WHERE q.org_id = g.org_id AND q.draft_json IS NOT NULL
       AND (q.widget_id = g.widget_id OR q.raise_widget_id = g.widget_id)) THEN 'draft' END
@@ -418,6 +445,9 @@ const waitingColumns = `${waitingBaseColumns}, (SELECT json_extract(g.state_json
     AND json_extract(g.state_json, '$.send') IS NULL) AS "about"`;
 const WaitingAskRow = Schema.Struct({
   ...KinWaitingItem.fields,
+  ordinaryTurnAsk: Schema.NullOr(
+    Schema.fromJsonString(KinWaitingItem.fields.ordinaryTurnAsk.schema),
+  ),
   ask: Schema.optional(Schema.NullOr(Schema.fromJsonString(KinWaitingAsk))),
   card: Schema.optional(Schema.NullOr(KinWaitingItem.fields.card)),
   about: Schema.optional(
@@ -456,6 +486,7 @@ const excerptOf = (about: {
 const withoutNoQuestion = ({
   question,
   ask,
+  ordinaryTurnAsk,
   card,
   about,
   waitsForName,
@@ -466,6 +497,7 @@ const withoutNoQuestion = ({
     ...item,
     ...(question == null ? {} : { question }),
     ...(ask == null ? {} : { ask }),
+    ...(ordinaryTurnAsk === null ? {} : { ordinaryTurnAsk }),
     ...(card == null ? {} : { card }),
     ...(excerpt === undefined ? {} : { excerpt }),
     ...(waitsForName == null ? {} : { waitsFor: { personId: item.personId, name: waitsForName } }),

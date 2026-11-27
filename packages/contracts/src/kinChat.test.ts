@@ -139,6 +139,7 @@ const waitsForRow = {
   excerpt: "Workshop, 6 hours at the day rate",
   waitsFor: { personId: "person-2", name: "Rhea" },
 };
+const activeWakeup = { agentId: "agent-1", wakeupId: "wakeup-1" };
 const summary = { ...chat, members: [member], lastMessage: message, unread: 1 };
 const reaction = {
   orgId: "org-1",
@@ -245,6 +246,7 @@ const samples = {
     sendCard,
     { ...sendCard, outcome: { state: "failed", reason: "Google refused.", at } },
     { ...sendCard, mayHaveGone: { tryId: "ask-1", at } },
+    { ...sendCard, action: "call", calendarDelete: true },
   ],
   KinChoiceCardState: [
     choice,
@@ -295,6 +297,7 @@ const samples = {
     ...authors.map((author) => ({ ...message, author })),
     { ...message, changeSeq: 2, clientMessageId: "pending" },
     { ...message, body: "", status: "deleted", withdrawn: { why: "The client paid", at } },
+    { ...message, progress: true },
   ],
   KinMessageWithdrawn: [
     { why: "The client paid", at },
@@ -321,11 +324,12 @@ const samples = {
     waiting,
     { ...waiting, messageId: null, widgetId: "widget-1", resolvedAt: at, resolution: "superseded" },
     waitsForRow,
+    { ...waiting, ordinaryTurnAsk: activeWakeup },
   ],
   KinChatPreview: [{ gist: "Approve the venue deposit", brief: true }],
   KinChatSummary: [
     summary,
-    { ...summary, lastMessage: null },
+    { ...summary, lastMessage: null, working: true, activeWakeups: [activeWakeup] },
     { ...summary, lastPreview: { gist: "Approve the venue deposit", brief: false } },
   ],
   KinChatListEvent: [
@@ -337,6 +341,7 @@ const samples = {
     { _tag: "backlog", messages: [message], widgets: [widget], lastSeq: 1 },
     { _tag: "reset", lastSeq: 1 },
     { _tag: "backlog", messages: [message], widgets: [widget], lastSeq: 1, lastChangeSeq: 2 },
+    { _tag: "backlog", messages: [message], widgets: [widget], lastSeq: 1, clearUpdates: true },
     { _tag: "reset", lastSeq: 1, lastChangeSeq: 2 },
     { _tag: "message", message },
     { _tag: "widget", widget },
@@ -658,7 +663,7 @@ describe("Kin chat contracts", () => {
 
   // A phone in the field decodes with the schemas as they were before `waitsFor` and `decidedBy`.
   it("an older client still reads a waiting row and a card with the newer fields", () => {
-    expect(decodeWaitingBefore(waitsForRow)).toStrictEqual(
+    expect(decodeWaitingBefore({ ...waitsForRow, ordinaryTurnAsk: activeWakeup })).toStrictEqual(
       decodeWaitingBefore({ ...waiting, widgetId: "widget-1" }),
     );
     const { decidedBy: _decided, replacedBy: _replaced, ...before } = decidedCard;

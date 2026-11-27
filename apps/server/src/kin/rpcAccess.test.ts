@@ -22,6 +22,7 @@ import { authorizeRpc } from "../auth/RpcAuthorization.ts";
 import { layerKinAuthTest } from "./auth/ProofKeySessions.testkit.ts";
 import { KinIdentity } from "./chat/KinIdentity.ts";
 import type { Services } from "./KinServer.ts";
+import { KIN_READ_RPCS } from "./readRpcs.ts";
 import { admits, decodeKinAfterAccess, forPerson } from "./rpcHandlers.ts";
 import { countryFirstMessage } from "./work/companyProfile.ts";
 
@@ -55,6 +56,7 @@ const MEMBER = [
   // Their own mailbox only: `KinConnections.mine*` finds the caller's own row and no one
   // else's (`MailEndToEnd.test.ts` pins that the owner level can't reach it either).
   "kin.connections.mine",
+  "kin.connections.mineCalendar",
   "kin.connections.mineRemove",
   "kin.connections.mineSignInFinish",
   "kin.connections.mineSignInStart",
@@ -215,11 +217,41 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
           ],
         );
         assert.deepStrictEqual(table.member, MEMBER);
+        assert.isFalse(
+          KIN_READ_RPCS.has("kin.connections.mineCalendar"),
+          "Calendar token rotation needs the existing writer transaction.",
+        );
         for (const method of [
           "kin.work.undoCreditPayment",
           "kin.work.unapplyCredit",
           "kin.work.draftCreditNote",
         ] as const) {
+          assert.strictEqual(kinRpcAccess(method), "owner_level");
+          assert.strictEqual(CLIENT_GUARDED_RPC_SCOPES[method], AuthKinChatScope);
+        }
+        for (const method of [
+          "kin.bankSenders.list",
+          "kin.bankSenders.add",
+          "kin.bankSenders.remove",
+        ]) {
+          assert.include(table.owner, method);
+          assert.include(table.coOwner, method);
+          assert.notInclude(table.member, method);
+          assert.isFalse(yield* allowed("agent:finance", method));
+          assert.strictEqual(Reflect.get(CLIENT_GUARDED_RPC_SCOPES, method), AuthKinChatScope);
+        }
+        for (const method of [
+          "kin.mailRules.create",
+          "kin.mailRules.pause",
+          "kin.mailRules.resume",
+          "kin.mailRules.remove",
+          "kin.mailRules.list",
+          "kin.mailRules.history",
+          "kin.mailRules.preview",
+          "kin.mailRules.runNow",
+        ] as const) {
+          assert.include(table.coOwner, method);
+          assert.notInclude(table.member, method);
           assert.strictEqual(kinRpcAccess(method), "owner_level");
           assert.strictEqual(CLIENT_GUARDED_RPC_SCOPES[method], AuthKinChatScope);
         }

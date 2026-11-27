@@ -1407,7 +1407,9 @@ export const ServerSettings = Schema.Struct({
   fastWorktreeCheckout: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   /** Kin, experimental: agents may also run on Codex models, confined to their tools in every chat. */
   kinNonClaudeAgents: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
-  kinTriggerSendOnly: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  kinTriggerSendOnly: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(true))),
+  /** Kin: a turn's progress updates leave the chat once its reply is posted; nothing is deleted. */
+  kinClearUpdatesAfterReply: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   kinSessionCarry: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   kinSessionUpkeep: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
   kinSessionCompactAtTokens: KinSessionCompactAtTokens.pipe(
@@ -1903,6 +1905,7 @@ export const ServerSettingsPatch = Schema.Struct({
   fastWorktreeCheckout: Schema.optionalKey(Schema.Boolean),
   kinNonClaudeAgents: Schema.optionalKey(Schema.Boolean),
   kinTriggerSendOnly: Schema.optionalKey(Schema.Boolean),
+  kinClearUpdatesAfterReply: Schema.optionalKey(Schema.Boolean),
   kinSessionCarry: Schema.optionalKey(Schema.Boolean),
   kinSessionUpkeep: Schema.optionalKey(Schema.Boolean),
   kinSessionCompactAtTokens: Schema.optionalKey(KinSessionCompactAtTokens),

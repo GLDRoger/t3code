@@ -336,7 +336,7 @@ it.live(
       yield* identity.registerAgentThread({ orgId, agentId, threadId });
       const message = yield* chats.send(person!, {
         chatId: chat.chatId,
-        body: "Invented request: the demo client wants  every report as a PDF.",
+        body: "Invented request: the demo client wants  every report as a PDF. Me despido con «Un abrazo, Rhea».",
         clientMessageId: "fixture",
       });
       const run = yield* startWakeupRun(threadId, "fixture-wakeup");
@@ -507,6 +507,7 @@ it.live(
           "kin_ask_person",
           "kin_chart",
           "kin_visual",
+          "kin_send",
           "kin_skip",
           "kin_react",
           "message_withdraw",
@@ -732,7 +733,7 @@ it.live(
         if (misspelt._tag === "Failure")
           assert.include(
             misspelt.failure.message,
-            'Memory item takes no "titel"; pass one of: id, kind, title, status, due, what, on_due, on, every, owner, tz, quiet_hours, recorded_at, valid_from, invalid_at, superseded_by, review_by, source, said_by, trust, links, chat, body, sensitive.',
+            'Memory item takes no "titel"; pass one of: id, kind, title, status, due, what, on_due, on, every, owner, tz, quiet_hours, recorded_at, valid_from, invalid_at, superseded_by, review_by, source, said_by, trust, links, sender_mail_voice, chat, body, sensitive.',
           );
         assert.deepStrictEqual(
           yield* sql`SELECT * FROM kin_lead_tool_calls ORDER BY call_key`,
@@ -740,6 +741,29 @@ it.live(
         );
         assert.deepStrictEqual(yield* service.write(scope, quoted), { itemId: "new-claim" });
         assert.deepStrictEqual(yield* service.write(scope, quoted), { itemId: "new-claim" });
+        const closing = "Me despido con «Un abrazo, Rhea».";
+        const writeVoice = yield* server
+          .callTool({
+            name: "memory_write",
+            arguments: {
+              ...quoted,
+              quote: closing,
+              item: {
+                ...quoted.item,
+                id: "rhea-mail-closing",
+                title: "Despedida de Rhea",
+                body: closing,
+                sensitive: true,
+                sender_mail_voice: true,
+              },
+            },
+          })
+          .pipe(
+            Effect.provideService(McpInvocationContext, scope),
+            Effect.provideService(KinIdentity, identity),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+        assert.isFalse(writeVoice.isError, JSON.stringify(writeVoice));
         assert.strictEqual(
           (yield* service
             .write(scope, { ...input, item: { ...input.item, body: "Different" } })
@@ -1030,6 +1054,17 @@ it.live(
             .pipe(Effect.flip)).message,
           "Memory write refused: besides names only open items of the same kind that share a link with it.",
         );
+        // A writer refusal the lead passes on says first that nothing was saved, and why.
+        assert.strictEqual(
+          (yield* service
+            .write(scope, {
+              ...status,
+              op: "supersede",
+              supersedes: KinMemoryItemId.make("no-such-item"),
+            })
+            .pipe(Effect.flip)).message,
+          "Not saved: the item it would replace is closed, of another kind or came from somewhere else, so that item still stands. Update it instead, or save this as a new item.",
+        );
         assert.strictEqual(
           (yield* service
             .write(scope, {
@@ -1288,6 +1323,10 @@ it.live(
             Effect.map(({ frontMatter }) => frontMatter),
           );
         const explicit = yield* metadata("new-claim");
+        assert.strictEqual(explicit.sender_mail_voice, false);
+        const voice = yield* metadata("rhea-mail-closing");
+        assert.strictEqual(voice.sender_mail_voice, true);
+        assert.strictEqual(voice.said_by, explicit.said_by);
         assert.match(explicit.source, /^kin:chat:/);
         assert.notStrictEqual(explicit.said_by, "forged");
         for (const head of [yield* metadata("invented-claim"), explicit]) {

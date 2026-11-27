@@ -7,8 +7,10 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import {
   ACTIVITY_EVENTS,
   ACTIVITY_MAIL,
+  AGENDA_LIMIT,
   addressesIn,
   isPlainAddress,
+  type MailAgendaEvent,
   type MailArrival,
   type MailCalendarEvent,
   type MailContext,
@@ -16,8 +18,24 @@ import {
   type MailMessage,
   type MailVendor,
 } from "./MailProvider.ts";
-import { htmlToText, messageBody } from "./MailText.ts";
-import { answeredWith, failure, mailProvider, unreached, vendorAnswer } from "./MailTools.ts";
+import { attachmentPart, htmlToText, messageBody } from "./MailText.ts";
+import {
+  agendaPages,
+  agendaTime,
+  agendaZone,
+  answeredWith,
+  attachmentBytes,
+  attachmentJsonLimit,
+  checkMailFile,
+  failure,
+  httpsLink,
+  mailDate,
+  mailFileType,
+  mailProvider,
+  unreached,
+  safeMailFileName,
+  vendorAnswer,
+} from "./MailTools.ts";
 import type { AuthServer } from "./OAuth.ts";
 
 /** Google's sign-in, fixed: Kin uses the owner's own Web client, never discovery. */
@@ -80,14 +98,21 @@ const api = Effect.fn("KinGoogle.api")(function* (
   { http, token }: Pick<MailContext, "http" | "token">,
   url: string,
   params: Readonly<Record<string, string | ReadonlyArray<string> | undefined>> = {},
-  write?: { readonly method: "POST" | "PATCH"; readonly json: unknown },
+  write?:
+    | { readonly method: "POST" | "PATCH"; readonly json: unknown }
+    | { readonly method: "DELETE"; readonly revision: string },
+  limit?: ReturnType<typeof attachmentJsonLimit>,
 ) {
   const base =
     write === undefined
       ? HttpClientRequest.get(url)
-      : HttpClientRequest.make(write.method)(url).pipe(
-          HttpClientRequest.bodyJsonUnsafe(write.json),
-        );
+      : write.method === "DELETE"
+        ? HttpClientRequest.delete(url).pipe(
+            HttpClientRequest.setHeader("if-match", write.revision),
+          )
+        : HttpClientRequest.make(write.method)(url).pipe(
+            HttpClientRequest.bodyJsonUnsafe(write.json),
+          );
   const request = base.pipe(
     HttpClientRequest.acceptJson,
     HttpClientRequest.bearerToken(token),
@@ -98,7 +123,7 @@ const api = Effect.fn("KinGoogle.api")(function* (
     ),
   );
   const response = yield* http.execute(request).pipe(Effect.mapError(() => unreached(GOOGLE)));
-  return yield* vendorAnswer(GOOGLE, response);
+  return yield* vendorAnswer(GOOGLE, response, limit);
 });
 
 const headerValues = (message: unknown, name: string) =>
@@ -124,29 +149,38 @@ const receivedOf = (message: unknown) => {
 
 /** A Gmail message; its body only in `full` format. */
 const messageOf =
-  (full: boolean, watch = false) =>
-  (message: unknown): MailMessage => ({
-    threadId: text(field(message, "threadId")) ?? "",
-    from: header(message, "From"),
-    fromAddress: addressesIn(header(message, "From"))[0] ?? null,
-    to: addressesIn(header(message, "To")),
-    replyTo: addressesIn(header(message, "Reply-To")),
-    toLine: header(message, "To"),
-    ccLine: header(message, "Cc"),
-    deliveredTo: RECIPIENT_HEADERS.flatMap((name) =>
-      headerValues(message, name).flatMap(addressesIn),
-    ),
-    date: header(message, "Date"),
-    receivedAt: receivedOf(message),
-    subject: header(message, "Subject") ?? "",
-    preview: htmlToText(text(field(message, "snippet")) ?? ""),
-    unread: list(field(message, "labelIds")).includes("UNREAD"),
-    messageId: header(message, "Message-ID"),
-    references: header(message, "References"),
-    authResults: headerValues(message, "Authentication-Results"),
-    ...(watch ? { automation: automationOf(message) } : {}),
-    body: full ? messageBody(field(message, "payload")) : null,
-  });
+  (account: string | null, full: boolean, watch = false) =>
+  (message: unknown): MailMessage => {
+    const threadId = text(field(message, "threadId")) ?? "";
+    return {
+      providerMessageId: text(field(message, "id")) ?? "",
+      threadId,
+      ...(account && threadId
+        ? {
+            webLink: `https://mail.google.com/mail/?authuser=${encodeURIComponent(account)}#all/${encodeURIComponent(threadId)}`,
+          }
+        : {}),
+      from: header(message, "From"),
+      fromAddress: addressesIn(header(message, "From"))[0] ?? null,
+      to: addressesIn(header(message, "To")),
+      replyTo: addressesIn(header(message, "Reply-To")),
+      toLine: header(message, "To"),
+      ccLine: header(message, "Cc"),
+      deliveredTo: RECIPIENT_HEADERS.flatMap((name) =>
+        headerValues(message, name).flatMap(addressesIn),
+      ),
+      date: header(message, "Date"),
+      receivedAt: receivedOf(message),
+      subject: header(message, "Subject") ?? "",
+      preview: htmlToText(text(field(message, "snippet")) ?? ""),
+      unread: list(field(message, "labelIds")).includes("UNREAD"),
+      messageId: header(message, "Message-ID"),
+      references: header(message, "References"),
+      authResults: headerValues(message, "Authentication-Results"),
+      ...(watch ? { automation: automationOf(message) } : {}),
+      body: full ? messageBody(field(message, "payload")) : null,
+    };
+  };
 
 const threadsOf = Effect.fn("KinGoogle.threads")(function* (
   context: MailContext,
@@ -181,11 +215,25 @@ const threadsById = (context: MailContext, ids: ReadonlyArray<string>, watch = f
           "Subject",
           "Date",
           ...RECIPIENT_HEADERS,
-          ...(watch ? AUTOMATION_HEADERS : []),
+          ...(watch ? ["Authentication-Results", ...AUTOMATION_HEADERS] : []),
         ],
-      }).pipe(Effect.map((thread) => list(field(thread, "messages")).map(messageOf(false, watch)))),
+      }).pipe(
+        Effect.map((thread) =>
+          list(field(thread, "messages")).map(messageOf(context.mailbox.account, false, watch)),
+        ),
+      ),
     { concurrency: 5 },
   );
+
+const recurrenceOf = (event: unknown) => {
+  const recurrence = field(event, "recurrence");
+  const master = field(event, "recurringEventId");
+  if (Array.isArray(recurrence) && recurrence.length > 0) return "series";
+  if (typeof master === "string" && master !== "") return "occurrence";
+  return master === undefined && (recurrence === undefined || Array.isArray(recurrence))
+    ? "single"
+    : null;
+};
 
 const eventOf = (event: unknown): MailCalendarEvent => ({
   eventId: text(field(event, "id")) ?? "",
@@ -204,7 +252,30 @@ const eventOf = (event: unknown): MailCalendarEvent => ({
   notes: htmlToText(text(field(event, "description")) ?? ""),
   meeting: text(field(event, "hangoutLink")) ?? null,
   updated: text(field(event, "updated")) ?? null,
+  recurrence: recurrenceOf(event),
+  revision: text(field(event, "etag")) ?? null,
+  notifiesGuests: field(event, "organizer", "self") === true,
 });
+const agendaEvent = (event: unknown): ReadonlyArray<MailAgendaEvent> => {
+  const id = text(field(event, "id"));
+  const date = text(field(event, "start", "date"));
+  const allDay = date !== undefined;
+  const start = agendaTime(date ?? text(field(event, "start", "dateTime")), allDay);
+  if (!id || start === null || field(event, "status") === "cancelled") return [];
+  return [
+    {
+      id,
+      title: text(field(event, "summary")) ?? null,
+      start,
+      end: agendaTime(text(field(event, "end", allDay ? "date" : "dateTime")), allDay),
+      allDay,
+      zone: agendaZone(text(field(event, "start", "timeZone"))),
+      link: httpsLink(text(field(event, "htmlLink"))),
+      repeats: Boolean(text(field(event, "recurringEventId"))),
+    },
+  ];
+};
+
 const calendarOf = (calendarId: string | undefined) =>
   `${CALENDAR}/${encodeURIComponent(calendarId ?? "primary")}/events`;
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
@@ -438,6 +509,51 @@ const saveEvent = Effect.fn("KinGoogle.saveEvent")(function* (
   return { messageId: null, threadId: null, eventId: text(field(saved, "id")) ?? event.eventId };
 });
 
+const attachmentOf: MailVendor["attachment"] = Effect.fn("KinGoogle.attachment")(
+  function* (context, messageId, attachmentId) {
+    const url = `${GMAIL}/messages/${encodeURIComponent(messageId)}`;
+    const message = yield* api(
+      context,
+      url,
+      { format: "full", fields: "internalDate,payload" },
+      undefined,
+      attachmentJsonLimit("Attachment"),
+    );
+    const found = attachmentPart(field(message, "payload"), attachmentId);
+    if (found === undefined)
+      return yield* failure(
+        "protocol",
+        "Kin couldn't find that mail attachment. Read the thread again with mail_read_thread and use its messageId and attachmentId.",
+      );
+    const part = { ...found, type: mailFileType(found.name) };
+    const problem = checkMailFile(part);
+    if (problem !== undefined) return yield* problem;
+    const name = safeMailFileName(part.name);
+    const data =
+      part.fetchId === undefined
+        ? part.data
+        : text(
+            field(
+              yield* api(
+                context,
+                `${url}/attachments/${encodeURIComponent(part.fetchId)}`,
+                {},
+                undefined,
+                attachmentJsonLimit(name),
+              ),
+              "data",
+            ),
+          );
+    return {
+      name,
+      mimeType: part.type,
+      bytes: yield* attachmentBytes(data, part, "base64url"),
+      from: addressesIn(header(message, "From"))[0] ?? null,
+      date: mailDate(header(message, "Date"), receivedOf(message)),
+    };
+  },
+);
+
 const google: MailVendor = {
   preset: "google",
   name: GOOGLE.name,
@@ -458,15 +574,40 @@ const google: MailVendor = {
   },
   signIn: { server: GOOGLE_SERVER, scope: GOOGLE_SCOPES, extra: GOOGLE_AUTH_EXTRA },
   canSend,
+  readsCalendar: (granted) => googleGrant(granted).readsCalendar,
   threads: (context, page) =>
     threadsOf(context, {
       ...(page.query === null ? { labelIds: "INBOX" } : { q: page.query }),
       max: page.max,
       ...(page.pageToken === undefined ? {} : { pageToken: page.pageToken }),
     }),
+  attachment: attachmentOf,
   thread: (context, threadId) =>
     api(context, `${GMAIL}/threads/${encodeURIComponent(threadId)}`, { format: "full" }).pipe(
-      Effect.map((thread) => list(field(thread, "messages")).map(messageOf(true))),
+      Effect.map((thread) =>
+        list(field(thread, "messages")).map(messageOf(context.mailbox.account, true)),
+      ),
+    ),
+  agenda: (context, { from, to }) =>
+    agendaPages(
+      (next) =>
+        api(context, calendarOf(undefined), {
+          timeMin: from,
+          timeMax: to,
+          singleEvents: "true",
+          showDeleted: "false",
+          orderBy: "startTime",
+          maxResults: String(AGENDA_LIMIT + 1),
+          pageToken: next ?? undefined,
+          fields:
+            "nextPageToken,items(id,summary,start(date,dateTime,timeZone),end(date,dateTime),htmlLink,recurringEventId,status)",
+        }).pipe(
+          Effect.map((page) => ({
+            events: list(field(page, "items")).flatMap(agendaEvent),
+            next: text(field(page, "nextPageToken")) ?? null,
+          })),
+        ),
+      "start",
     ),
   events: (context, query) =>
     api(context, calendarOf(query.calendarId), {
@@ -525,6 +666,13 @@ const google: MailVendor = {
   sendAs: googleSendAs,
   sendMessage,
   saveEvent,
+  deleteEvent: (http, token, { calendarId, eventId, revision }) =>
+    api(
+      { http, token },
+      `${calendarOf(calendarId)}/${encodeURIComponent(eventId)}`,
+      { sendUpdates: "all" },
+      { method: "DELETE", revision },
+    ).pipe(Effect.as({ messageId: null, threadId: null, eventId })),
 };
 
 /** Gmail and Google Calendar behind Kin's mail tools. */

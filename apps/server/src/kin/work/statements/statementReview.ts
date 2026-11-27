@@ -104,6 +104,13 @@ export const reviewOf = (json: string): Review | undefined =>
       ...(stored.alerts === undefined ? {} : { alerts: stored.alerts as AlertCheck }),
     }),
   });
+export const withCompanyWithheldTax = Effect.fn("KinStatements.withCompanyWithheldTax")(function* (
+  orgId: KinOrgId,
+  review: Review,
+) {
+  const { country } = yield* companyMoney(orgId);
+  return { ...review, withheldTax: regionOf(country)?.withheldTax };
+});
 export const storeReview = (review: Review) =>
   encodeReview({
     statement: review.statement,
@@ -763,7 +770,7 @@ export const saveRead = Effect.fn("KinStatements.saveRead")(function* (input: {
   };
   const card = reviewCard(
     input.statementId,
-    input.review,
+    yield* withCompanyWithheldTax(input.orgId, input.review),
     yield* expenseCategories(input.orgId),
     selection,
     yield* heldRows(input.orgId, input.statementId),

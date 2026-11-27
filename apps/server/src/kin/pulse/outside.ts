@@ -15,7 +15,7 @@ import * as NodeCrypto from "node:crypto";
 import type { KinConnectionActivity, KinConnections } from "../connections/ConnectionsService.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { addressesIn } from "../connections/MailProvider.ts";
-import { isBankAlertSender } from "../work/statements/bankAlerts.ts";
+import { list, normalizeAddress } from "../work/statements/bankSenderRows.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -26,8 +26,6 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 /** What is new at an org's connections since its last check-in, and the cursors that marks. */
 export interface OutsideRead {
   readonly lines: ReadonlyArray<KinPulseOutsideLine>;
-  /** Lines the arrival feed owns, so a header-only notice can't wake as an unknown person. */
-  readonly automatedNotices?: ReadonlySet<KinPulseOutsideLine>;
   readonly seen: ReadonlyArray<{
     readonly connectionId: string;
     readonly until: number;
@@ -79,17 +77,12 @@ export const mailLine = (
 const linesOf = (
   label: string,
   activity: KinConnectionActivity,
-  automatedNotices: Set<KinPulseOutsideLine>,
 ): ReadonlyArray<KinPulseOutsideLine> => {
   const connection = cut(label, 120)!;
   switch (activity._tag) {
     case "mail":
       return [
-        ...activity.mail.map((mail) => {
-          const line = mailLine(label, activity.account, mail);
-          if (mail.automatedNotice) automatedNotices.add(line);
-          return line;
-        }),
+        ...activity.mail.map((mail) => mailLine(label, activity.account, mail)),
         ...activity.calendar.map((event): KinPulseOutsideLine => ({
           source: "calendar",
           connection,
@@ -132,8 +125,11 @@ export const fromConnections = (
         yield* KinShell.get(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
         "money",
       );
+      const mailboxes: Array<{
+        label: string;
+        activity: Extract<KinConnectionActivity, { readonly _tag: "mail" }>;
+      }> = [];
       const lines: Array<KinPulseOutsideLine> = [];
-      const automatedNotices = new Set<KinPulseOutsideLine>();
       const seen: Array<{ connectionId: string; until: number; cursor: string | null }> = [];
       for (const row of rows) {
         const activity = yield* connections.activity(orgId, row.connectionId).pipe(
@@ -148,27 +144,30 @@ export const fromConnections = (
         if (activity === undefined || activity._tag === "unsupported") continue;
         // As with a failed read: the mailbox stays where it was, and the next pass reads it again.
         if (onMail !== undefined && !(yield* onMail(orgId, activity))) continue;
-        lines.push(
-          ...linesOf(
-            row.label,
-            money
-              ? activity
-              : {
-                  ...activity,
-                  mail: activity.mail.filter(
-                    (mail) => !isBankAlertSender(addressesIn(mail.from)[0]),
-                  ),
-                },
-            automatedNotices,
-          ),
-        );
+        mailboxes.push({ label: row.label, activity });
         seen.push({
           connectionId: row.connectionId,
           until: activity.until,
           cursor: activity._tag === "mail" ? activity.cursor : null,
         });
       }
-      return { lines, seen, automatedNotices } satisfies OutsideRead;
+      const hidden = new Set(
+        money
+          ? []
+          : (yield* list(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+              .filter((row) => row.state === "candidate" || row.state === "approved")
+              .map((row) => row.address),
+      );
+      for (const { label, activity } of mailboxes)
+        lines.push(
+          ...linesOf(label, {
+            ...activity,
+            mail: activity.mail.filter(
+              (mail) => !hidden.has(normalizeAddress(addressesIn(mail.from)[0]) ?? ""),
+            ),
+          }),
+        );
+      return { lines, seen } satisfies OutsideRead;
     },
     Effect.catch((cause) =>
       Effect.logWarning("Kin pulse outside read failed", { cause }).pipe(
@@ -244,14 +243,12 @@ export interface Matched {
 }
 
 /**
- * The playbook watches, as code over stored rows: mail from a client contact's address, mail
- * naming a sent invoice or quote, a person Kin doesn't know writing to the company, and a
- * calendar change to a meeting or a client Kin knows.
+ * Prioritizes check-in mail and calendar lines using Kin's records, and matches calendar watches.
+ * Mail watches are matched when the arrival feed commits the classified message.
  */
 export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
   orgId: KinOrgId,
   lines: ReadonlyArray<KinPulseOutsideLine>,
-  automatedNotices?: ReadonlySet<KinPulseOutsideLine>,
 ) {
   const sql = yield* SqlClient.SqlClient;
   if (lines.length === 0) return [];
@@ -318,11 +315,7 @@ export const matchLines = Effect.fn("KinPulseOutside.match")(function* (
           domain: "chief",
           ...client,
         });
-      else if (
-        newSenders < NEW_SENDERS_PER_POLL &&
-        personToUs(line, addressOf(line.who)) &&
-        !automatedNotices?.has(line)
-      ) {
+      else if (newSenders < NEW_SENDERS_PER_POLL && personToUs(line, addressOf(line.who))) {
         newSenders += 1;
         matched.push({
           line: { ...line, matched: "a sender Kin doesn't know yet: maybe a new enquiry" },
@@ -363,16 +356,19 @@ export const outsideKey = (line: KinPulseOutsideLine) =>
   `outside:${shortHash(`${line.connection}\0${line.source}\0${line.id}`)}`;
 
 /**
- * Between check-ins: reads what is new, and wakes an agent once per item a watch matched. The
- * cursors stay where the last check-in left them, so unsettled mail can reach the next one.
+ * Between check-ins: processes bank alerts and wakes an agent once per calendar watch match.
+ * The cursors stay where the last check-in left them, so unsettled mail can reach the next one.
  */
 export const poll = Effect.fn("KinPulseOutside.poll")(function* (
   orgId: KinOrgId,
   at: number,
   source: OutsideSource,
 ) {
-  const { lines, automatedNotices } = yield* source.read(orgId);
-  const matched = yield* matchLines(orgId, lines, automatedNotices);
+  const { lines } = yield* source.read(orgId);
+  const matched = yield* matchLines(
+    orgId,
+    lines.filter((line) => line.source === "calendar"),
+  );
   return yield* wakeMatches(orgId, at, matched);
 });
 

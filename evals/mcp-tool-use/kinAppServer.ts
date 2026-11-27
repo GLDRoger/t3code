@@ -9,6 +9,8 @@ import {
   CONFINED_CONFIG,
   FULL_SESSION_CONFIG,
 } from "../../apps/server/src/kin/lead/turn/providers/codex.ts";
+import { TRIAGE_SEAT_INSTRUCTIONS } from "../../apps/server/src/kin/lead/outsideTriage.ts";
+import { kinSeatOf } from "./kin-seat.ts";
 import type { AppServer, AppServerEvent } from "./appServer.ts";
 import {
   kinDelivery,
@@ -114,7 +116,8 @@ export const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSamp
     .map((block) => block.text)
     .join("\n\n");
   // As Kin's sessions decide (`toolSearch`): a tool waits only where the model can look it up.
-  const lookup = yield* Effect.promise(() => server.knowsModel(config.model));
+  const outsideTriage = kinSeatOf(testCase) === "outside-triage";
+  const lookup = !outsideTriage && (yield* Effect.promise(() => server.knowsModel(config.model)));
   const deferred = new Set(lookup ? base.deferred.map((tool) => tool.name) : []);
   const runPromise = Effect.runPromiseWith(yield* Effect.context<HttpClient.HttpClient>());
   const { calls } = sample;
@@ -132,7 +135,10 @@ export const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSamp
           effort: config.effort,
           // An owner-only session's note says it has a shell, as Kin's does; the eval runs none, so
           // it keeps the session's web search and no sub-agents nobody here would answer.
-          baseInstructions: kinInstructions(ownerSession ? "owner" : "confined", "codex"),
+          baseInstructions: outsideTriage
+            ? TRIAGE_SEAT_INSTRUCTIONS
+            : kinInstructions(ownerSession ? "owner" : "confined", "codex"),
+          ...(outsideTriage ? { disableConfiguredMcpServers: true } : {}),
           config: ownerSession
             ? { ...FULL_SESSION_CONFIG, "agents.enabled": false }
             : CONFINED_CONFIG,
@@ -147,7 +153,7 @@ export const runAppServerSample = Effect.fn("evaluateMcpToolUse.runAppServerSamp
           prompt,
           images,
           maxToolCalls:
-            config.maxSteps === 0
+            outsideTriage || config.maxSteps === 0
               ? Infinity
               : Math.max(config.maxSteps, testCase.maxSteps ?? 0) * 3,
           onEvent: (event) => sample.responses.push([eventBlock(event)]),

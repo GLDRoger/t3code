@@ -1,5 +1,6 @@
-import { ThreadId } from "@t3tools/contracts";
+import { kinProviderFacts, ThreadId } from "@t3tools/contracts";
 import { AcpSessionShaper } from "@t3tools/provider-acp/server/adapter";
+import { PULL_REQUEST_LINKING_INSTRUCTIONS } from "@t3tools/provider-core/server/runtimeInstructions";
 import type * as AcpSessionRuntime from "@t3tools/provider-acp/server/AcpSessionRuntime";
 import { AgentScopeThreadId } from "@t3tools/shared/AgentScope";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -9,10 +10,9 @@ import * as AcpErrors from "effect-acp/errors";
 import type { AcpRequestHandler } from "effect-acp/protocol";
 import type * as AcpSchema from "effect-acp/compat";
 
+import { antigravityAppendsSystemPrompt } from "../../../../provider/acp/AntigravityAcpSupport.ts";
 import { type KinSessionPlan, KinSessions } from "../session.ts";
 import type { KinProvider } from "./provider.ts";
-
-const DRIVER = "acpRegistry";
 
 type Runtime = AcpSessionRuntime.AcpSessionRuntime["Service"];
 
@@ -23,12 +23,16 @@ const T3_INSTRUCTIONS =
 const withInstructions = (
   prompt: ReadonlyArray<AcpSchema.ContentBlock>,
   instructions: string,
+  antigravity: boolean,
 ): ReadonlyArray<AcpSchema.ContentBlock> =>
-  prompt.map((block) =>
-    block.type === "text" && T3_INSTRUCTIONS.test(block.text)
-      ? { ...block, text: block.text.replace(T3_INSTRUCTIONS, `${instructions}\n\n`) }
-      : block,
-  );
+  prompt.map((block, index) => {
+    if (block.type !== "text") return block;
+    if (T3_INSTRUCTIONS.test(block.text))
+      return { ...block, text: block.text.replace(T3_INSTRUCTIONS, () => instructions) };
+    if (antigravity && index === prompt.length - 1 && block.text.startsWith("<runtime_info>"))
+      return { ...block, text: block.text.replace(`\n\n${PULL_REQUEST_LINKING_INSTRUCTIONS}`, "") };
+    return block;
+  });
 
 const option = (request: AcpSchema.RequestPermissionRequest, kind: "allow" | "reject") =>
   request.options.find((each) => each.kind === `${kind}_once`) ??
@@ -38,7 +42,7 @@ const option = (request: AcpSchema.RequestPermissionRequest, kind: "allow" | "re
  * Kin answers the agent's asks and T3's own file and terminal service from the plan. ACP carries
  * no reason with a refusal, and can't take back tools an agent runs without asking.
  */
-const shaped = (runtime: Runtime, plan: KinSessionPlan): Runtime => {
+const shaped = (runtime: Runtime, plan: KinSessionPlan, antigravity: boolean): Runtime => {
   const guard =
     <Request, Response>(
       method: string,
@@ -55,15 +59,31 @@ const shaped = (runtime: Runtime, plan: KinSessionPlan): Runtime => {
         ),
       );
   const instructions = plan.instructions;
+  const promptInstructions =
+    instructions === undefined
+      ? undefined
+      : antigravity
+        ? runtime
+            .initialize()
+            .pipe(
+              Effect.map((result) =>
+                antigravityAppendsSystemPrompt(result) ? "" : `${instructions}\n\n`,
+              ),
+            )
+        : Effect.succeed(`${instructions}\n\n`);
   return {
     ...runtime,
-    ...(instructions === undefined
+    ...(promptInstructions === undefined
       ? {}
       : {
           prompt: (payload, options) =>
-            runtime.prompt(
-              { ...payload, prompt: withInstructions(payload.prompt, instructions) },
-              options,
+            promptInstructions.pipe(
+              Effect.flatMap((text) =>
+                runtime.prompt(
+                  { ...payload, prompt: withInstructions(payload.prompt, text, antigravity) },
+                  options,
+                ),
+              ),
             ),
         }),
     // Kin decides every ask itself, as on every provider; no one is shown one.
@@ -98,8 +118,9 @@ const install = <E, R>(base: Layer.Layer<never, E, R>) =>
       const sessions = yield* KinSessions;
       if (!sessions.enabled) return before;
       const environment = yield* HostProcess.Environment;
-      return (inner): ReturnType<Shaper> => {
-        const make = before(inner);
+      return (inner, driver): ReturnType<Shaper> => {
+        const make = before(inner, driver);
+        const isAntigravity = driver === "antigravity";
         return (input) =>
           Effect.gen(function* () {
             const thread = yield* AgentScopeThreadId;
@@ -109,7 +130,7 @@ const install = <E, R>(base: Layer.Layer<never, E, R>) =>
                 : yield* sessions.plan({
                     threadId: ThreadId.make(thread),
                     cwd: input.cwd,
-                    driver: DRIVER,
+                    driver: kinProviderFacts(driver)?.driver ?? "acpRegistry",
                     path: input.processEnvironment?.PATH ?? environment.PATH,
                     // ACP lists every MCP tool up front: there is no search to find one by.
                     toolLookup: false,
@@ -118,6 +139,9 @@ const install = <E, R>(base: Layer.Layer<never, E, R>) =>
             const confined = plan.seat === "confined";
             const runtime = yield* make({
               ...input,
+              ...(isAntigravity && plan.instructions !== undefined
+                ? { sessionSystemPromptAppend: plan.instructions }
+                : {}),
               processEnvironment: {
                 ...input.processEnvironment,
                 ...(plan.shell === undefined
@@ -137,7 +161,7 @@ const install = <E, R>(base: Layer.Layer<never, E, R>) =>
                   }
                 : input.clientCapabilities,
             });
-            return shaped(runtime, plan);
+            return shaped(runtime, plan, isAntigravity);
           });
       };
     }),
@@ -145,8 +169,16 @@ const install = <E, R>(base: Layer.Layer<never, E, R>) =>
 
 /** ACP agents bring their own tools; Kin reaches only what they ask for and what T3 serves them. */
 export const acp = {
+  driver: "acpRegistry",
+  lookup: "none",
   turnContextBeside: false,
-  driver: DRIVER,
   capabilities: {},
   install,
+} satisfies KinProvider<never>;
+
+// The ACP shaper is already installed by the registry descriptor.
+export const antigravity = {
+  ...acp,
+  driver: "antigravity",
+  install: (base) => base,
 } satisfies KinProvider<never>;

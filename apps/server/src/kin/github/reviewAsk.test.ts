@@ -78,8 +78,8 @@ import { emptyWorld, FakeGitHub, ghApiOutput, ghApiStderr, runGh } from "./fakeG
 import * as GitHubWatch from "./GitHubWatch.ts";
 import { KinGitHubApp, make as makeApp } from "./KinGitHubApp.ts";
 import { appHost, fakeHttp, installApp } from "./KinGitHubApp.testkit.ts";
-import { setRepo } from "./githubWatchStore.ts";
-import { triagedKey } from "./boundIssue.ts";
+import { setRepo, setTriage } from "./githubWatchStore.ts";
+import { ownerFlagKey, triagedKey } from "./boundIssue.ts";
 import { isOutsideTriage } from "../lead/outsideTriage.ts";
 import { headKey, POSTING } from "./boundReview.ts";
 import { READ_NEXT, READ_REFUSAL } from "./repoRead.ts";
@@ -2400,6 +2400,40 @@ it.effect(
   },
 );
 
+it.effect.each(["triage", "triage_reply"] as const)(
+  "%s refuses to post when the owner turns triage off during the turn",
+  (kind) => {
+    const { github, layer } = harness({}, { app: true });
+    return Effect.gen(function* () {
+      const { startIssue, end, handled, sql, orgId } = yield* tidewater(github, true);
+      const initial = yield* startIssue();
+      if (kind === "triage_reply") {
+        assert.isTrue((yield* postTriage("Which shipment is delayed?")).ok);
+        yield* end("completed");
+      }
+      const turn = kind === "triage_reply" ? yield* startIssue(true, initial.number) : initial;
+      const posted = yield* handled(triagedKey(TRIAGE_REPO, turn.number));
+      const calls = github.world.calls.length;
+      yield* setTriage(orgId, TRIAGE_REPO, false, yield* Clock.currentTimeMillis);
+
+      const result = yield* postTriage("The digest arrives early.", "rule");
+      assert.isFalse(result.ok, `${kind} posted after triage was off`);
+      assert.strictEqual(
+        result.value.message,
+        "Issue triage is off for this repository. Nothing was posted. End the turn.",
+      );
+      assert.isFalse(github.world.calls.slice(calls).some((call) => call.startsWith("POST ")));
+      assert.deepStrictEqual(yield* handled(turn.key), [{ outcome: "woke", url: null }]);
+      assert.deepStrictEqual(yield* handled(triagedKey(TRIAGE_REPO, turn.number)), posted);
+      assert.isEmpty(yield* handled(ownerFlagKey(turn.key)));
+      assert.isEmpty(
+        yield* sql`SELECT call_key FROM kin_lead_tool_calls
+        WHERE org_id = ${orgId} AND wakeup_id = ${turn.wakeupId} AND request_hash = 'issue-comment'`,
+      );
+    }).pipe(Effect.provide(layer));
+  },
+);
+
 it.effect(
   "triage returns a receipt on GitHub refusal, keeps it on no answer, and never falls back outside",
   () => {
@@ -2459,6 +2493,28 @@ it.effect("triage outside requires the app and inside can post as the owner", ()
       github.world.comments.map(({ number, user }) => [number, user]),
       [[issue.number, OWNER_LOGIN]],
     );
+  }).pipe(Effect.provide(layer));
+});
+
+it.effect("kin_github_watch lists triage and turns it off and on per repo", () => {
+  const { github, layer } = harness({}, { app: true });
+  return Effect.gen(function* () {
+    const { sql, orgId, startIssue } = yield* tidewater(github, true);
+    yield* startIssue(true);
+    const repos = JSON.stringify([{ repo: TRIAGE_REPO, fork: false }]);
+    yield* sql`INSERT INTO kin_github_watch (org_id, login, started_at, since_at, next_at, repos_json)
+      VALUES (${orgId}, ${OWNER_LOGIN}, 0, 0, 0, ${repos})
+      ON CONFLICT (org_id) DO UPDATE SET repos_json = excluded.repos_json`;
+    const triageOf = (answer: { readonly value: Record<string, unknown> }) =>
+      (answer.value.repos as ReadonlyArray<{ readonly triage?: boolean }>).map(
+        (repo) => repo.triage,
+      );
+    assert.deepStrictEqual(triageOf(yield* callAs("tech", "kin_github_watch", {})), [true]);
+    for (const triage of [false, true])
+      assert.deepStrictEqual(
+        triageOf(yield* callAs("tech", "kin_github_watch", { repo: TRIAGE_REPO, triage })),
+        [triage],
+      );
   }).pipe(Effect.provide(layer));
 });
 

@@ -1,3 +1,4 @@
+import { ServerSettingsService } from "../../serverSettings.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import type { PendingUploadOwner } from "../../assets/AttachmentUpload.ts";
 import * as Floor from "../floor/KinFloor.ts";
@@ -52,6 +53,7 @@ import {
   type KinChatsSubscribeInput,
   type KinOrgsListResult,
   type KinChatSummary,
+  kinHasActiveWakeup,
   type KinPresenceState,
   type KinChatHistoryInput,
   type KinChatHistoryResult,
@@ -765,6 +767,15 @@ const make = Effect.gen(function* () {
   const repo = yield* Repository.KinChatRepository;
   const hub = yield* Hub.KinChatHub;
   const presence = yield* Effect.serviceOption(KinPresence);
+  const settings = yield* Effect.serviceOption(ServerSettingsService);
+  const clearUpdates = Option.match(settings, {
+    onNone: () => Effect.succeed(false),
+    onSome: (service) =>
+      service.getSettings.pipe(
+        Effect.map((value) => value.kinClearUpdatesAfterReply),
+        Effect.orElseSucceed(() => false),
+      ),
+  });
   // Absent where no attachments directory exists; a send with files is then refused.
   const attachmentStore = yield* Effect.serviceOption(KinAttachmentStore);
   const stop = yield* Effect.serviceOption(KinStop);
@@ -1058,6 +1069,16 @@ const make = Effect.gen(function* () {
   const docFileReadable = (caller: PersonCaller, attachmentId: string) =>
     Effect.forEach("_tag" in caller ? [caller] : caller, (person) =>
       Effect.gen(function* () {
+        const [imported] = yield* sql<{ privateTo: string | null }>`SELECT
+            json_extract(file_json, '$.source.privateTo') AS "privateTo"
+          FROM kin_doc_versions
+          WHERE org_id = ${person.orgId} AND file_attachment_id = ${attachmentId}
+            AND json_extract(file_json, '$.source.kind') = 'mail'
+          LIMIT 1`;
+        if (imported !== undefined)
+          return imported.privateTo === null
+            ? yield* ownerLevel(person.orgId, person.personId)
+            : imported.privateTo === person.personId;
         const made = yield* sql`SELECT 1 FROM kin_doc_versions v
           JOIN kin_doc_jobs j ON j.org_id = v.org_id AND j.worker_id = v.worker_id
           LEFT JOIN kin_agents a ON a.org_id = j.org_id AND a.agent_id = j.agent_id
@@ -2304,6 +2325,10 @@ const make = Effect.gen(function* () {
       );
       if (latest !== undefined) lastMessageAt = latest.at;
     }
+    const lines = Option.isSome(presence) ? presence.value.lines(identity.orgId, chatId) : [];
+    const activeWakeups = lines
+      .filter(kinHasActiveWakeup)
+      .map(({ agentId, wakeupId }) => ({ agentId, wakeupId }));
     return {
       ...chat,
       lastMessageAt,
@@ -2316,11 +2341,8 @@ const make = Effect.gen(function* () {
       ...(chat.teamId === KIN_TEAM_ROOM_TEAM_ID
         ? { unread: 0, fresh: (known?.unread ?? (yield* repo.unreadCount(member))) > 0 }
         : { unread: known?.unread ?? (yield* repo.unreadCount(member)) }),
-      working:
-        Option.isSome(presence) &&
-        presence.value
-          .lines(identity.orgId, chatId)
-          .some((line) => WORKING_PRESENCE.has(line.state)),
+      working: lines.some((line) => WORKING_PRESENCE.has(line.state)),
+      ...(activeWakeups.length === 0 ? {} : { activeWakeups }),
     };
   });
   /** The rows' last messages linked for the viewer: one read of what they may open, for all. */
@@ -3097,6 +3119,10 @@ const make = Effect.gen(function* () {
                 _tag: "reset",
                 lastSeq: resumed.lastSeq,
                 lastChangeSeq: resumed.lastChangeSeq,
+                presence: Option.match(presence, {
+                  onNone: () => [],
+                  onSome: (live) => live.lines(identity.orgId, input.chatId),
+                }),
                 ...(resumed.cleared === true ? { cleared: true } : {}),
                 ...clearedAt(resumed.clearedSeq),
               }
@@ -3117,6 +3143,7 @@ const make = Effect.gen(function* () {
                   ? yield* presence.value.snapshot(identity.orgId, input.chatId)
                   : {}),
                 accessStamp: resumed.accessStamp,
+                clearUpdates: yield* clearUpdates,
                 readSeq: Option.match(yield* repo.getReadState(member), {
                   onNone: () => 0,
                   onSome: (read) => read.lastReadSeq,
@@ -3158,7 +3185,13 @@ const make = Effect.gen(function* () {
             );
             for (const m of messages) messageChanges.set(m.messageId, m.changeSeq ?? m.seq);
             for (const w of widgets) revisions.set(w.widgetId, w.revision);
-            return { _tag: "backlog", ...cursor, messages, widgets } satisfies KinChatStreamEvent;
+            return {
+              _tag: "backlog",
+              ...cursor,
+              messages,
+              widgets,
+              clearUpdates: yield* clearUpdates,
+            } satisfies KinChatStreamEvent;
           });
           return Stream.concat(
             Stream.succeed(backlog),

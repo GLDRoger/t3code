@@ -55,14 +55,17 @@ export function KinWaitingScreen() {
             title={KIN_WAITS_FOR_COPY.fold(group.name, group.items.length)}
             summary={null}
           >
-            {group.items.map((item) => (
-              <KinWaitsForRow
-                key={item.waitingId}
-                row={kinWaitingRowView(item, ready.inbox.value.chats, agentNames)}
-                detail={kinWaitsForDetail(item)}
-                when={formatKinTime(new Date(item.createdAt))}
-              />
-            ))}
+            {group.items.map((item) => {
+              const row = kinWaitingRowView(item, ready.inbox.value.chats, agentNames);
+              return (
+                <KinWaitsForRow
+                  key={item.waitingId}
+                  row={row}
+                  detail={kinWaitsForDetail(item, row.asking !== null)}
+                  when={formatKinTime(new Date(item.createdAt))}
+                />
+              );
+            })}
           </KinFoldSection>
         ));
         if (view.waiting.length === 0) {
@@ -94,14 +97,13 @@ export function KinWaitingScreen() {
         const rest = view.waiting.filter(
           (item) => !approvals.some((approval) => approval.item.waitingId === item.waitingId),
         );
-        // An agent's open question shows what it will do and when, with its answers to tap.
-        const asks = rest.flatMap((item) => {
-          const ask = kinWaitingAskView(item, nowMs);
-          return ask === null ? [] : [{ item, ask }];
+        const rows = rest.map((item) => {
+          const row = kinWaitingRowView(item, ready.inbox.value.chats, agentNames);
+          const ask = row.asking === null ? kinWaitingAskView(item, nowMs) : null;
+          return { item, row, ask };
         });
-        const plain = rest.filter(
-          (item) => !asks.some((one) => one.item.waitingId === item.waitingId),
-        );
+        const asks = rows.filter(({ row, ask }) => row.asking !== null || ask !== null);
+        const plain = rows.filter(({ row, ask }) => row.asking === null && ask === null);
         return (
           <>
             {approvals.map(({ item, actionId }) => (
@@ -121,43 +123,43 @@ export function KinWaitingScreen() {
                 </View>
               </View>
             ))}
-            {asks.map(({ item, ask }) => {
-              const row = kinWaitingRowView(item, ready.inbox.value.chats, agentNames);
-              return (
-                <ListSection key={item.waitingId}>
-                  <ListRow
-                    icon="questionmark.bubble"
-                    label={`${row.label} · ${row.chatTitle}`}
-                    description={row.text ?? KIN_CHAT_COPY.openChatWith(row.chatTitle)}
-                    detail={formatKinTime(new Date(row.createdAt))}
-                    meta={<KinWaitingExcerpt text={row.excerpt} />}
-                    onPress={() => openChat(item)}
-                  />
+            {asks.map(({ item, row, ask }) => (
+              <ListSection key={item.waitingId}>
+                <ListRow
+                  icon="questionmark.bubble"
+                  label={`${row.label} · ${row.chatTitle}`}
+                  description={row.text ?? KIN_CHAT_COPY.openChatWith(row.chatTitle)}
+                  detail={formatKinTime(new Date(row.createdAt))}
+                  meta={<KinWaitingExcerpt text={row.excerpt} />}
+                  onPress={() => openChat(item)}
+                />
+                {row.asking !== null ? (
+                  <Text textRole="footnote" className="px-4 pb-3 text-foreground-muted">
+                    {row.asking}
+                  </Text>
+                ) : ask === null ? null : (
                   <KinWaitingAsk
                     ask={ask}
                     item={item}
                     environmentId={ready.environmentId}
                     onReread={reread}
                   />
-                </ListSection>
-              );
-            })}
+                )}
+              </ListSection>
+            ))}
             {plain.length === 0 ? null : (
               <ListSection>
-                {plain.map((item) => {
-                  const row = kinWaitingRowView(item, ready.inbox.value.chats, agentNames);
-                  return (
-                    <ListRow
-                      key={item.waitingId}
-                      icon="exclamationmark.circle"
-                      label={`${row.label} · ${row.chatTitle}`}
-                      description={row.text ?? KIN_CHAT_COPY.openChatWith(row.chatTitle)}
-                      detail={formatKinTime(new Date(row.createdAt))}
-                      meta={<KinWaitingExcerpt text={row.excerpt} />}
-                      onPress={() => openChat(item)}
-                    />
-                  );
-                })}
+                {plain.map(({ item, row }) => (
+                  <ListRow
+                    key={item.waitingId}
+                    icon="exclamationmark.circle"
+                    label={`${row.label} · ${row.chatTitle}`}
+                    description={row.text ?? KIN_CHAT_COPY.openChatWith(row.chatTitle)}
+                    detail={formatKinTime(new Date(row.createdAt))}
+                    meta={<KinWaitingExcerpt text={row.excerpt} />}
+                    onPress={() => openChat(item)}
+                  />
+                ))}
               </ListSection>
             )}
             {others}

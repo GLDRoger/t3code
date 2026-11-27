@@ -36,6 +36,7 @@ import {
 } from "./components/KinWorkPieces";
 import { KinCountryPicker } from "./components/KinCountryPicker";
 import { KinLoadFailed, KinLoadFailedRow } from "./components/KinLoadFailed";
+import { KinBankSendersSection } from "./KinBankSenders";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected, useKinGate } from "./state/useKinHost";
 import { useKinCompanyProfile, useKinCountryNeeded } from "./state/useKinMoney";
@@ -138,7 +139,13 @@ function Profile(
       title={KIN_COMPANY.title}
       form={canEdit}
       onBack={() => navigation.goBack()}
-      refresh={{ accessibilityLabel: "Refresh", onPress: props.onRefresh }}
+      refresh={{
+        accessibilityLabel: "Refresh",
+        onPress: () => {
+          props.onRefresh();
+          appAtomRegistry.refresh(kinClient.bankSenders({ environmentId, input: { orgId } }));
+        },
+      }}
     >
       <View className="flex-row items-start gap-2 px-2">
         <View className="pt-0.5">
@@ -215,6 +222,7 @@ function Profile(
           </ListSection>
         ))
       )}
+      <KinBankSendersSection environmentId={environmentId} orgId={orgId} />
       <CompanyTimeZone environmentId={environmentId} orgId={orgId} />
       {canEdit ? (
         <Text textRole="footnote" className="px-2 text-foreground-muted">

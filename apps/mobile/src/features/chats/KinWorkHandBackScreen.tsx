@@ -10,7 +10,6 @@ import { TextInput, View } from "react-native";
 import { AppBar } from "../../components/ui/AppBar";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
-import { EmptyState } from "../../components/ui/EmptyState";
 import { ErrorBanner } from "../../components/ui/ErrorBanner";
 import { ListSection } from "../../components/ui/ListSection";
 import { ScreenContent } from "../../components/ui/ScreenContent";
@@ -18,7 +17,7 @@ import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { kinClient } from "./state/kinClient";
-import { KinWorkFieldBox } from "./components/KinWorkPieces";
+import { KinMissingLink, KinWorkFieldBox } from "./components/KinWorkPieces";
 
 export type KinWorkHandBackParams = {
   readonly environmentId: string;
@@ -73,10 +72,12 @@ export function KinWorkHandBackScreen({ route }: StaticScreenProps<KinWorkHandBa
           contentContainerStyle={{ padding: 16, paddingBottom: 32, gap: 20 }}
         >
           {environmentId === null || orgId === null || key === null ? (
-            <EmptyState
-              variant="plain"
+            <KinMissingLink
               title="This link doesn't name a task"
-              detail="Open Work from your Kin chats."
+              kind="task"
+              environmentId={environmentId}
+              orgId={orgId}
+              recordKey={key}
             />
           ) : (
             <>

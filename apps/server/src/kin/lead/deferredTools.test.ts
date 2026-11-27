@@ -84,6 +84,16 @@ it("each Kin tool's description and input schema weigh what the budget pins", ()
     "No tool tells an agent to write a marker word: kin_skip ends a turn quietly.",
   );
   assert.deepStrictEqual(
+    kinTools
+      .filter((tool) => {
+        const description = Tool.getDescription(tool) ?? "";
+        return /\b(?:your|in) plain text\b/i.test(description) && !description.includes("kin_send");
+      })
+      .map((tool) => tool.name),
+    [],
+    "Where a trigger started the turn only kin_send reaches anyone: no tool calls plain text the reply without it.",
+  );
+  assert.deepStrictEqual(
     measured,
     contextBudget.kinLeadToolBytes,
     "Set agentContextBudget.json to the measured values. Before you cut text to fit, run the evals that cover it (evals/README.md).",
@@ -99,20 +109,21 @@ it("advertises every accepted chart key at every level", () => {
   );
 });
 
-it("advertises every accepted memory write key and a single operation enum", () => {
+it("advertises every memory write key except the filled-in source event, with a single operation enum", () => {
   const tool = KinLeadToolkit.tools.memory_write;
   const advertised = advertisedJsonSchema(tool, { kin: true });
   assert.deepStrictEqual(
     inputPropertyPaths(advertised),
-    inputPropertyPaths(Tool.getJsonSchema(tool)),
+    inputPropertyPaths(Tool.getJsonSchema(tool)).difference(new Set(["sourceEventId"])),
   );
+  expect(advertised.properties).toHaveProperty("item.properties.sender_mail_voice.description");
   expect(advertised.properties).toHaveProperty("op", {
     type: "string",
     enum: ["create", "update", "supersede", "invalidate"],
   });
 });
 
-it("adds seven everyday tools to Claude's owner core without moving the Codex partition", () => {
+it("adds eight everyday tools to Claude's owner core without moving the Codex partition", () => {
   const actual = Object.values(withAlwaysLoaded(Toolkit.make(...kinTools)).tools)
     .filter((tool) => alwaysLoads(tool) === true)
     .map((tool) => tool.name);
@@ -124,6 +135,7 @@ it("adds seven everyday tools to Claude's owner core without moving the Codex pa
     "doc_create",
     "record_create",
     "kin_ask",
+    "kin_send",
     "kin_skip",
   ]);
 });

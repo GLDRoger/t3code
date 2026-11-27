@@ -295,6 +295,13 @@ export type TakenPlan = typeof TakenPlan.Type;
 /** The one setting a recommendation's Do it changes, as the setting's own place would. */
 export const RecommendChange = Schema.Union([
   Schema.Struct({
+    kind: Schema.Literal("bank_sender"),
+    address: Schema.String,
+    bankName: Schema.String,
+    accounts: Schema.Array(Schema.String),
+    siblingAddress: Schema.optional(Schema.String),
+  }),
+  Schema.Struct({
     kind: Schema.Literal("lead_access"),
     personId: Schema.String,
     personName: Schema.String,

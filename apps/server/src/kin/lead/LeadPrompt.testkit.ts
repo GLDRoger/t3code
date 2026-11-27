@@ -17,6 +17,7 @@ import * as Chat from "../chat/KinChatRepository.ts";
 import { authorityLayer } from "../chat/WakeupAuthority.testkit.ts";
 import * as Memory from "../memory/Memory.ts";
 import { buildIndex } from "../memory/buildIndex.ts";
+import { encodeDefinition, PRESETS } from "../work/registers.ts";
 import { KinLeadPrompt, TURN_DIVIDER, type KinLeadPromptInput } from "./LeadPrompt.ts";
 
 export const decodeEvent = Schema.decodeSync(KinEvent);
@@ -221,6 +222,7 @@ export const memory = Layer.succeed(
         bodies: new Map(notes.map((head) => [head.path, noteBody])),
       });
     },
+    checkoutPaths: () => Effect.die("Unused"),
     ensureCheckouts: () => Effect.die("Unused"),
     prepareWakeup: () => Effect.die("Unused"),
     readIndex: () => Effect.die("Unused"),
@@ -322,6 +324,15 @@ export const leadWithOwner = Effect.gen(function* () {
     VALUES (${agentId}, ${orgId}, 'Lead', 0, '{}', '[]', ${chatId})`;
   return repo;
 });
+export const showDispatchListSection = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at,
+      definition_json)
+    VALUES (${orgId}, 'dispatch', 'Dispatch invoices', 'DI', 0, 0, ${yield* encodeDefinition({ ...PRESETS.invoices, currency: "INR" })})`;
+  yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+    VALUES (${orgId}, '[{"id":"list:dispatch","on":true}]', 1, ${personId}, 0)`;
+});
+
 /** A finished wake-up whose stored events are `events`, which is all the audience reads. */
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 export const stored = Effect.fn("test.stored")(function* (

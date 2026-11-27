@@ -82,6 +82,7 @@ import { unsetAgainst } from "../gendocs/receipts.ts";
 import { undo } from "../work/statements/creditPayment.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
+import { buildPulseSection } from "../pulse/prompt.ts";
 import { DAY_MS } from "../pulse/thresholds.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import * as CardActions from "./cardActions.ts";
@@ -4717,7 +4718,7 @@ it.effect(
         WHERE org_id = ${orgId} AND record_id = ${third.recordId} ORDER BY seq DESC LIMIT 1`;
         assert.deepStrictEqual(change, { kind: "person", id: owner.personId });
         assert.notInclude(yield* told, factKey);
-        // Another open card for the debit closes with it explained, and its tap is refused.
+        // Another open card for the debit closes, and its tap is refused.
         assert.isNotNull((yield* kin.widget(later)).closedAt);
         const late = yield* kin.tap(owner, later, "option-1", "repaid-2").pipe(Effect.flip);
         assert.include(late, { reason: "widget_changed" });
@@ -4762,7 +4763,9 @@ it.effect(
           /already undone/,
         );
         assert.strictEqual((yield* kin.widget(now.value.widgetId)).revision, afterUndo.revision);
-        assert.isNotNull((yield* kin.widget(later)).closedAt);
+        const sibling = yield* kin.widget(later);
+        assert.isNotNull(sibling.closedAt);
+        assert.strictEqual(card(sibling).outcome?.text, `Closed: ${bank.key} was explained.`);
         assert.include(yield* told, factKey);
         const markedAgain = yield* ask(bank.key, "Mark the repayment again?");
         yield* kin.tap(owner, markedAgain.value.widgetId, "option-1", "mark-again");
@@ -4840,7 +4843,10 @@ it.effect.each(["repayment", "expense", "open bill"] as const)(
         );
         const seen = facts.find((fact) => fact.key === `repaid_seen:${debit.key}`);
         assert.include(seen?.consequence, `ordinary expense ${ordinary.key}`);
-        assert.include(seen?.consequence, `Zoya Rao and adds up exactly to their oldest owed expense: ${owed.key}.`);
+        assert.include(
+          seen?.consequence,
+          `Zoya Rao and adds up exactly to their oldest owed expense: ${owed.key}.`,
+        );
         yield* kin.turn("finance", kin.chatOf("finance"), "What does the debit pay?");
         const asked = yield* callAs("finance", "kin_ask", {
           question: "What did this debit pay?",
@@ -4889,6 +4895,10 @@ it.effect.each([
   "a co-owner since demoted",
   "in a company with Money off",
   "tapped on two devices at once",
+  "undone between pulse ticks",
+  "undone a second time",
+  "unmatched after Undo",
+  "asked again before the next pulse",
 ] as const)("Undo of a repayment handles an expense or tapper that is %s", (change) =>
   Effect.andThen(
     TestClock.setTime(MON),
@@ -4954,27 +4964,135 @@ it.effect.each([
           ],
           default: "none",
         });
+      const factKey = `repaid_seen:${debit.key}`;
+      const tick = Effect.fn("test.repaymentTick")(function* () {
+        return (yield* KinPulse.tick(orgId, yield* Clock.currentTimeMillis).pipe(
+          Effect.provide(kin.services),
+        )).woken.filter((key) => key === factKey);
+      });
+      const finishWake = sql`UPDATE kin_events SET state = 'done'
+        WHERE org_id = ${orgId} AND tag = 'pulse' AND dedupe_key LIKE ${`${factKey}:%`}`;
+      const reraises =
+        change === "undone between pulse ticks" ||
+        change === "undone a second time" ||
+        change === "unmatched after Undo" ||
+        change === "asked again before the next pulse";
+      if (reraises) {
+        assert.deepStrictEqual(yield* tick(), [factKey]);
+        yield* finishWake;
+      }
       const asked = yield* ask(debit.key, "Is this Zoya Rao's repayment?");
       assert.isTrue(asked.ok, JSON.stringify(asked.value));
-      yield* kin.tap(demoted ? kin.person("meera") : owner, asked.value.widgetId, "option-1", "mark");
+      yield* kin.tap(
+        demoted ? kin.person("meera") : owner,
+        asked.value.widgetId,
+        "option-1",
+        "mark",
+      );
       const widget = yield* kin.widget(asked.value.widgetId);
-      const press = (who = owner, clientActionId = "undo") =>
+      const press = (who = owner, clientActionId = "undo", target = widget) =>
         kin.chats.act(who, {
-          widgetId: widget.widgetId,
-          revision: widget.revision,
+          widgetId: target.widgetId,
+          revision: target.revision,
           actionId: "undo",
           clientActionId,
         });
+      if (reraises) {
+        const promptFact = Effect.fn("test.repaymentPromptFact")(function* () {
+          const pulse = yield* buildPulseSection({
+            orgId,
+            agentId: KinAgentId.make("finance"),
+            now: yield* Clock.currentTimeMillis,
+            wokeFor: [factKey],
+          });
+          return pulse?.byProject.flatMap(({ facts }) => facts).find((fact) => fact.key === factKey)
+            ?.consequence;
+        });
+        const posted = sql`SELECT message_id FROM kin_messages WHERE org_id = ${orgId}
+          AND status = 'posted' ORDER BY message_id`;
+        const beforeUndo = yield* posted;
+        const before = `${debit.key}, ₹450 paid 15 Nov, names Zoya Rao and adds up exactly to their oldest owed expense: ${expense.key}. It isn't marked repaid until it is confirmed on a card.`;
+        const after = `${before} The repayment mark was undone.`;
+        yield* TestClock.adjust(60_000);
+        yield* press();
+        assert.deepStrictEqual(yield* posted, beforeUndo);
+        const firstLine = yield* promptFact();
+        if (change === "asked again before the next pulse") {
+          const next = yield* ask(debit.key, "Mark this repayment again?");
+          assert.isTrue(next.ok, JSON.stringify(next.value));
+          assert.deepStrictEqual(
+            [firstLine, yield* promptFact(), yield* tick()],
+            [`${after} No repayment card is open.`, `${after} A repayment card is open.`, []],
+          );
+          return;
+        }
+        if (change === "unmatched after Undo") {
+          yield* records.update(orgId, writer, expense.key, { state: "dropped" });
+          const refused = yield* ask(debit.key, "Mark this repayment again?");
+          assert.isFalse(refused.ok);
+          assert.deepStrictEqual(
+            [firstLine, yield* promptFact(), yield* tick(), yield* posted],
+            [`${after} No repayment card is open.`, undefined, [], beforeUndo],
+          );
+          return;
+        }
+        const firstWake = yield* tick();
+        yield* TestClock.adjust(60_000);
+        const repeatedWake = yield* tick();
+        assert.deepStrictEqual(yield* posted, beforeUndo);
+        const next = yield* ask(debit.key, "Mark this repayment again?");
+        assert.isTrue(next.ok, JSON.stringify(next.value));
+        const nextCard = yield* kin.widget(next.value.widgetId);
+        const teammate = yield* CardActions.run(
+          {
+            orgId,
+            widget: nextCard,
+            personId: KinPersonId.make("dev"),
+            memberId: KinMemberId.make("dev-member"),
+            now: MON,
+          },
+          (yield* plansOf(orgId, nextCard.widgetId)).get("option-1")!,
+          { records, chat: kin.chats },
+        ).pipe(Effect.flip);
+        assert.include(teammate, { reason: "not_allowed" });
+        assert.strictEqual((yield* records.get(orgId, debit.key))!.state, "open");
+        assert.strictEqual(
+          parseFields((yield* records.get(orgId, expense.key))!.fieldsJson).reimbursement,
+          "owed",
+        );
+        const openLine = yield* promptFact();
+        const rounds = [
+          { line: firstLine, woken: firstWake },
+          { line: openLine, woken: repeatedWake },
+        ];
+        if (change === "undone a second time") {
+          yield* finishWake;
+          yield* kin.tap(owner, nextCard.widgetId, "option-1", "mark-again");
+          yield* TestClock.adjust(60_000);
+          yield* press(owner, "undo-again", yield* kin.widget(nextCard.widgetId));
+          rounds.push({ line: yield* promptFact(), woken: yield* tick() });
+          yield* TestClock.adjust(60_000);
+          rounds.push({ line: yield* promptFact(), woken: yield* tick() });
+        }
+        assert.deepStrictEqual(rounds, [
+          { line: `${after} No repayment card is open.`, woken: [factKey] },
+          { line: `${after} A repayment card is open.`, woken: [] },
+          ...(change === "undone a second time"
+            ? [
+                { line: `${after} No repayment card is open.`, woken: [factKey] },
+                { line: `${after} No repayment card is open.`, woken: [] },
+              ]
+            : []),
+        ]);
+        return;
+      }
       if (change === "tapped on two devices at once") {
         const taps = yield* Effect.forEach(
           ["undo-phone", "undo-laptop"],
           (device) => Effect.result(press(owner, device)),
           { concurrency: "unbounded" },
         );
-        assert.deepStrictEqual(
-          taps.map((one) => one._tag).toSorted(),
-          ["Failure", "Success"],
-        );
+        assert.deepStrictEqual(taps.map((one) => one._tag).toSorted(), ["Failure", "Success"]);
         assert.deepStrictEqual(
           yield* sql`SELECT COUNT(*) AS n FROM kin_record_changes c, json_each(c.fields_json) f
             WHERE c.org_id = ${orgId} AND c.record_id = ${expense.recordId}

@@ -212,7 +212,7 @@ export const PRESETS: Record<
       field("mode", "Mode", "choice", {
         choices: ["bank transfer", "upi", "cheque", "cash", "card", "other"],
       }),
-      field("reference", "Reference", "text"),
+      field("reference", "Payment reference", "text"),
       field("invoice", "Invoice", "text"),
       field("payment", "Payment", "text"),
       field("file", "Receipt file", "file", { sensitive: true }),

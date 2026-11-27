@@ -180,7 +180,7 @@ const base = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
  * its computed data, so a test reads the figures Kin worked out. Table recipes and storing are real.
  */
 const rendered: Array<{ readonly request: Render.RenderRequest; readonly data: unknown }> = [];
-const failing = { reason: undefined as string | undefined };
+const failing = { reason: undefined as string | undefined, toolchainMissing: false };
 const renderer = Layer.effect(
   Render.KinDocRenderer,
   Effect.gen(function* () {
@@ -192,7 +192,8 @@ const renderer = Layer.effect(
       render: (request) => {
         if (failing.reason !== undefined)
           return Effect.succeed({ _tag: "failed", reason: failing.reason });
-        if (request.recipe.kind === "table") return real.render(request);
+        if (failing.toolchainMissing || request.recipe.kind === "table")
+          return real.render(request);
         const computed = computeData(request.inputs, request.recipe.computed, request.tax);
         if ("error" in computed) return Effect.succeed({ _tag: "failed", reason: computed.error });
         rendered.push({ request, data: computed.data });
@@ -318,6 +319,7 @@ const company = Effect.gen(function* () {
   shownCards.length = 0;
   notices.length = 0;
   failing.reason = undefined;
+  failing.toolchainMissing = false;
   yield* TestClock.setTime(Date.parse("2026-11-12T06:00:00.000Z"));
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Invented Co', ${at})`;
   yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
@@ -1739,19 +1741,34 @@ describe("recipe documents", () => {
         amountConfirmed: false,
         clientRequestId: "form-1",
       });
-      // The renderer is down: the draft stands with the reason, and the same request finishes it.
-      failing.reason = "the renderer stopped";
+      failing.toolchainMissing = true;
       const first = yield* OwnerMoneyAnswers.newInvoice(people, asked);
+      const draft = (yield* records.get(orgId, first.invoice))!;
+      assert.deepStrictEqual([first.invoice, draft.state, first.documents], ["INV-2", "open", []]);
+      const held = yield* OwnerMoneyAnswers.entryLines(people, { orgId, key: first.invoice });
+      assert.deepStrictEqual(held, { lines: asked.lines, gstRate: "12" });
+      assert.deepStrictEqual(first.problems, ["no Typst in these tests"]);
+
+      failing.toolchainMissing = false;
+      failing.reason = "invoice.pdf: the template could not be compiled";
+      const failed = yield* OwnerMoneyAnswers.newInvoice(people, asked);
+      assert.deepStrictEqual([failed.invoice, failed.documents], [first.invoice, []]);
+      assert.match(failed.problems[0]!, /the template could not be compiled/);
+      assert.notInclude(failed.problems[0]!, "Nothing was made.");
       assert.deepStrictEqual(
-        [first.invoice, first.documents, first.problems.length],
-        ["INV-2", [], 1],
+        yield* OwnerMoneyAnswers.entryLines(people, { orgId, key: first.invoice }),
+        held,
       );
+
       failing.reason = undefined;
-      const made = yield* OwnerMoneyAnswers.newInvoice(people, asked);
-      assert.deepStrictEqual(
-        [made.invoice, made.documents.length, made.problems],
-        ["INV-2", 1, []],
-      );
+      const made = yield* OwnerDocs.render(people, {
+        orgId,
+        entry: first.invoice,
+        recipe: "invoice",
+        inputs: held,
+        clientRequestId: "retry-invoice-pdf",
+      });
+      assert.deepStrictEqual([made.draft, made.documents.length], [true, 1]);
       const row = (yield* records.get(orgId, "INV-2"))!;
       assert.deepStrictEqual(
         [
@@ -1774,7 +1791,7 @@ describe("recipe documents", () => {
       assert.strictEqual(row.dueAt, Date.parse("2026-12-12T18:29:59.999Z"));
       assert.deepStrictEqual(latestData().items[1].sac, "998391");
       assert.deepStrictEqual(
-        yield* OwnerMoneyAnswers.entryLines(people, { orgId, key: made.invoice }),
+        yield* OwnerMoneyAnswers.entryLines(people, { orgId, key: first.invoice }),
         { lines: asked.lines, gstRate: "12" },
       );
       // Never numbered, never owed: Issue takes over from its page.

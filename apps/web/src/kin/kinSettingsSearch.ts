@@ -1,7 +1,9 @@
 import type { KinSettingsPage } from "@t3tools/client-runtime/kin/kinNavigation";
 
 import { KIN_APPROVER_PHONES_TITLE } from "@t3tools/client-runtime/kin/kinApprovalPresentation";
+import { KIN_BANK_SENDERS } from "@t3tools/client-runtime/kin/kinBankSenders";
 import { KIN_CHATS_SETTLE } from "@t3tools/client-runtime/kin/kinChatListRows";
+import { KIN_CLEAR_UPDATES } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { KIN_MESSAGE_ALERTS } from "@t3tools/client-runtime/kin/kinMessageAlerts";
 import { msg } from "gt-react";
 import {
@@ -119,6 +121,13 @@ export const KIN_SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["kin legal name address gstin pan tax bank account ifsc upi invoice"],
   },
   {
+    id: "kin-bank-senders",
+    kinOnly: true,
+    title: KIN_BANK_SENDERS.title,
+    to: "/settings/company",
+    searchTerms: ["kin bank alert address sender email mail transactions account"],
+  },
+  {
     id: "kin-connections",
     kinOnly: true,
     title: "Connections",
@@ -138,6 +147,13 @@ export const KIN_SETTINGS_SEARCH_ITEMS = [
     title: "Agents",
     to: "/settings/company",
     searchTerms: ["kin agents model character personality pause retire new agents default"],
+  },
+  {
+    id: "kin-clear-updates",
+    kinOnly: true,
+    title: KIN_CLEAR_UPDATES.row,
+    to: "/settings/company",
+    searchTerms: ["kin chats progress updates clear hide reply arrives agent working"],
   },
   {
     id: "kin-who-can-message",
@@ -208,6 +224,7 @@ export const KIN_SETTINGS_SEARCH_ITEMS = [
 // A found Kin setting that Kin's Settings keeps on another page than its app address names.
 const KIN_SETTING_ELSEWHERE: Readonly<Record<string, KinSettingsPage>> = {
   "kin-agents": "agents",
+  "kin-clear-updates": "agents",
   "kin-who-can-message": "team",
   "thread-notifications": "notifications",
   "kin-settle-read-chats": "notifications",

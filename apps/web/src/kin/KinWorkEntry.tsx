@@ -1068,7 +1068,8 @@ export function KinListEntry(
                     {canDraft &&
                     !field.retired &&
                     (canChange || field.type !== "file") &&
-                    !(creditNote !== null && field.key === "invoice") ? (
+                    !(creditNote !== null && field.key === "invoice") &&
+                    !(item.list === "receipts" && field.key === KIN_INVOICE_NUMBER_FIELD) ? (
                       <FieldEdit
                         {...props}
                         field={field}

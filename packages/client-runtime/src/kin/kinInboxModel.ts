@@ -19,6 +19,8 @@ import {
   applyKinDraft,
   applyKinLiveBacklog,
   applyKinPresence,
+  kinHeldAskCards,
+  kinWaitingAskHeld,
   KinHeldDraft,
   settleKinDrafts,
 } from "./kinLive.ts";
@@ -71,7 +73,12 @@ export function applyKinInboxEvent(state: KinInboxState, event: KinInboxEvent): 
   switch (event._tag) {
     case "snapshot":
       return {
-        chats: event.chats,
+        chats: event.chats.map((chat) =>
+          withoutUpdateLine(
+            chat,
+            state.chats.find((held) => held.chatId === chat.chatId),
+          ),
+        ),
         waiting: event.waiting.filter((item) => item.resolvedAt === null),
       };
     case "chat": {
@@ -83,7 +90,7 @@ export function applyKinInboxEvent(state: KinInboxState, event: KinInboxEvent): 
       // An upsert read before a newer one can arrive after it; never move a chat backwards.
       if (event.chat.lastSeq < state.chats[index]!.lastSeq) return state;
       const chats = state.chats.slice();
-      chats[index] = event.chat;
+      chats[index] = withoutUpdateLine(event.chat, state.chats[index]);
       return { ...state, chats };
     }
     case "waiting": {
@@ -99,6 +106,18 @@ export function applyKinInboxEvent(state: KinInboxState, event: KinInboxEvent): 
         waiting: state.waiting.filter((item) => item.chatId !== event.chatId),
       };
   }
+}
+
+// A progress update is never a chat's last line: the row keeps the line it had until the reply.
+function withoutUpdateLine(chat: KinChatSummary, held: KinChatSummary | undefined) {
+  if (chat.lastMessage?.progress !== true || held === undefined) return chat;
+  return {
+    ...chat,
+    lastMessage: held.lastMessage,
+    lastMessageAt: held.lastMessageAt,
+    lastPreview: held.lastPreview,
+    lastAuthorName: held.lastAuthorName,
+  };
 }
 
 /** The viewer is no longer in this chat: every member the row carries has left, or it ended. */
@@ -138,12 +157,25 @@ export interface KinInboxView {
   readonly waitingCount: number;
 }
 
-/**
- * Waiting on you's number, alike on every screen: everything that waits on the viewer, a
- * question, a mail ready to send, a draft sent up, an approval; never what waits on someone else.
- */
-export const kinWaitingCount = (waiting: ReadonlyArray<KinWaitingItem>) =>
-  waiting.filter((item) => item.waitsFor === undefined).length;
+export const kinWaitingChat = (item: KinWaitingItem, chats: ReadonlyArray<KinChatSummary>) =>
+  chats.find((chat) => chat.orgId === item.orgId && chat.chatId === item.chatId);
+
+export const kinCountedWaiting = (
+  waiting: ReadonlyArray<KinWaitingItem>,
+  chats: ReadonlyArray<KinChatSummary>,
+) =>
+  waiting.filter(
+    (item) =>
+      item.waitsFor === undefined &&
+      (item.ordinaryTurnAsk === undefined ||
+        !kinWaitingAskHeld(item, kinWaitingChat(item, chats)?.activeWakeups)),
+  );
+
+/** The questions and decisions waiting on the viewer, not the ask still being raised. */
+export const kinWaitingCount = (
+  waiting: ReadonlyArray<KinWaitingItem>,
+  chats: ReadonlyArray<KinChatSummary> = [],
+) => kinCountedWaiting(waiting, chats).length;
 
 const activityAt = (chat: KinChatSummary) => chat.lastMessageAt ?? chat.createdAt;
 
@@ -196,7 +228,7 @@ export function selectKinInboxView(state: KinInboxState): KinInboxView {
       items: [...group.items].sort(byAge),
     })),
     unreadCount: kinBadgeCount(state),
-    waitingCount: kinWaitingCount(waiting),
+    waitingCount: kinWaitingCount(waiting, state.chats),
   };
 }
 
@@ -242,6 +274,8 @@ export const KinChatState = Schema.Struct({
   reactions: Schema.Array(KinReaction).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   /** Counts changes to who is in the chat, its name or its lead, so its details reread them. */
   memberChanges: Schema.Number.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+  /** The host's setting, from its latest backlog: a turn's updates go once its reply is posted. */
+  clearUpdates: Schema.optional(Schema.Boolean),
 });
 export type KinChatState = typeof KinChatState.Type;
 
@@ -260,6 +294,7 @@ export const emptyKinChat: KinChatState = {
   presence: [],
   reactions: [],
   memberChanges: 0,
+  clearUpdates: false,
 };
 
 /** Every Kin refusal but `unavailable`, which the stream retries. */
@@ -346,18 +381,19 @@ export function applyKinChatEvent(
       const clearedSeq = event.clearedSeq ?? state.clearedSeq;
       const readSeq =
         event.readSeq === undefined ? state.readSeq : Math.max(event.readSeq, state.readSeq ?? 0);
+      const clearUpdates = event.clearUpdates ?? state.clearUpdates;
       if (
         readSeq === state.readSeq &&
+        clearUpdates === state.clearUpdates &&
         clearedSeq === state.clearedSeq &&
         reactions === state.reactions &&
         messages === state.messages &&
         widgets === state.widgets &&
         contiguousSeq === state.contiguousSeq &&
         changeSeq === state.changeSeq &&
-        live.drafts.length === 0 &&
-        live.presence.length === 0 &&
-        state.drafts.length === 0 &&
-        state.presence.length === 0
+        (live.drafts === state.drafts || (live.drafts.length === 0 && state.drafts.length === 0)) &&
+        (live.presence === state.presence ||
+          (live.presence.length === 0 && state.presence.length === 0))
       ) {
         return state;
       }
@@ -370,6 +406,7 @@ export function applyKinChatEvent(
         clearedSeq,
         readSeq,
         reactions,
+        clearUpdates,
         ...live,
       };
     }
@@ -382,6 +419,7 @@ export function applyKinChatEvent(
         changeSeq: event.lastChangeSeq ?? 0,
         needsHistoryReload: true,
         clearedSeq: event.clearedSeq ?? state.clearedSeq,
+        presence: event.presence ?? state.presence,
         // A cleared chat keeps nothing that hung on its messages; a draft's later deltas no
         // longer line up, so its reply shows when it lands.
         ...(event.cleared === true ? { reactions: [], drafts: [] } : {}),
@@ -465,11 +503,19 @@ export function applyKinChatHistory(state: KinChatState, page: KinChatHistoryRes
 
 /** The latest messages and the widgets they anchor, for the device cache. */
 export function trimKinChatForCache(state: KinChatState): KinChatState {
-  const messages = state.messages.slice(-KIN_CACHED_MESSAGE_LIMIT);
+  // Presence isn't cached: replay from the first hidden card instead of painting it on boot.
+  const held = kinHeldAskCards(state.messages, state.presence);
+  const messages = (
+    held === null
+      ? state.messages
+      : state.messages.filter((message) => message.seq <= held.readThroughSeq)
+  ).slice(-KIN_CACHED_MESSAGE_LIMIT);
   const kept = new Set(messages.map((message) => message.messageId));
   return {
     ...state,
     messages,
+    contiguousSeq:
+      held === null ? state.contiguousSeq : Math.min(state.contiguousSeq, held.readThroughSeq),
     widgets: state.widgets.filter((widget) => kept.has(widget.messageId)),
     reactions: state.reactions.filter((reaction) => kept.has(reaction.messageId)),
     left: false,

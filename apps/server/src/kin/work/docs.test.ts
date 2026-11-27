@@ -49,8 +49,10 @@ import * as Work from "./ownerWork.ts";
 import { playbookIndex, playbookThreshold } from "./playbooks.ts";
 import { PLAYBOOK_SEEDS, seedPlaybooks } from "./playbookSeeds.ts";
 import { characters, parseCharacter, seedCharacters, setCharacter } from "../lead/characters.ts";
+import { defineList } from "./registers.ts";
 import { search } from "./search.ts";
 import { indexRecord, indexStoredSteps } from "./searchIndex.ts";
+import { ensureBankList } from "./statements/bankList.ts";
 import { KIN_OWNER_LEVEL, viewerOfPeople } from "./teamView.ts";
 
 // Invented org, people and docs only; nothing here reads a real database or memory.
@@ -1523,6 +1525,75 @@ it.effect("one search finds entries and docs, and the team view hides what label
     ]);
     assert.lengthOf((yield* found("owner")).hits, 4);
     assert.deepStrictEqual(yield* widened(true), [true, ["Invented booking project"]]);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  ["Kin-created", false],
+  ["adopted", true],
+] as const)("Work search finds the %s bank entry only for readers of the list", ([, adopted]) =>
+  Effect.gen(function* () {
+    yield* seed;
+    if (adopted)
+      yield* defineList(
+        orgId,
+        {
+          _tag: "new",
+          id: "bank_ledger",
+          name: "Bank Transactions",
+          prefix: "BT",
+          definition: {
+            noun: "transaction",
+            states: ["open", "done", "dropped"],
+            stateLabels: {},
+            defaultState: "open",
+            categories: [],
+            fields: [],
+            sensitive: true,
+            amount: true,
+            currency: "USD",
+          },
+        },
+        0,
+      );
+    const bank = yield* ensureBankList(orgId, 0);
+    const list = bank.id;
+    const records = yield* KinRecords.KinRecords;
+    const { row } = yield* records.create(
+      orgId,
+      { actor: { _tag: "system" }, via: "import" },
+      {
+        list,
+        originKey: "bank:687e47da73494428b040c719cccf531b",
+        title: "Juniper Cold Chain",
+        owner: { _tag: "person", personId: ownerId },
+        amount: { minor: 23700, currency: "USD" },
+        sensitive: true,
+      },
+    );
+    const member = { _tag: "person" as const, orgId, personId: mateId };
+    const text = "Juniper Cold";
+    const input = { orgId, text, everything: true } as const;
+    assert.lengthOf((yield* Work.list([member], { orgId, list })).records, 0);
+    assert.lengthOf((yield* OwnerDocs.search([member], input)).hits, 0);
+    assert.lengthOf((yield* OwnerDocs.search([owner], { orgId, text, kinds: ["docs"] })).hits, 0);
+    assert.lengthOf((yield* Work.list([owner], { orgId, list })).records, 1);
+    const findBankTitle = () =>
+      OwnerDocs.search([owner], input).pipe(
+        Effect.map(({ hits }) =>
+          hits.map((hit) => ({
+            key: hit.key,
+            bankTransaction: hit.kind === "memory" ? undefined : hit.bankTransaction,
+          })),
+        ),
+      );
+    const expected = [{ key: row.key, bankTransaction: true as const }];
+    assert.deepStrictEqual(yield* findBankTitle(), expected);
+    assert.strictEqual((yield* Work.get([owner], { orgId, key: row.key })).key, row.key);
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`DROP TABLE IF EXISTS kin_search`;
+    assert.deepStrictEqual(yield* findBankTitle(), expected);
+    assert.lengthOf((yield* OwnerDocs.search([member], input)).hits, 0);
   }).pipe(Effect.provide(layer)),
 );
 

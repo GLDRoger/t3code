@@ -45,6 +45,7 @@ import { KinMoneyLiveRpcs, KIN_MONEY_LIVE_RPC_SCOPES } from "./kinMoneyLive.ts";
 import { KinRefreshRpcs, KIN_REFRESH_RPC_SCOPES } from "./kinRefresh.ts";
 import { KinPulseRpcs, KIN_PULSE_RPC_SCOPES } from "./kinPulse.ts";
 import { KinOpenRpcs, KIN_OPEN_RPC_SCOPES } from "./kinOpen.ts";
+import { KinBankSenderRpcs, KIN_BANK_SENDER_RPC_SCOPES } from "./kinBankSenders.ts";
 import { KinRecommendationRpcs, KIN_RECOMMENDATION_RPC_SCOPES } from "./kinRecommendations.ts";
 import { KinHostRpcs, KIN_HOST_RPC_SCOPES } from "./kinHostCare.ts";
 import { KinWatchRpcs, KIN_WATCH_RPC_SCOPES } from "./kinWatches.ts";
@@ -63,6 +64,7 @@ import { KinPeopleRpcs, KIN_PEOPLE_RPC_SCOPES } from "./kinPeople.ts";
 import { KinTasksKeyRpcs, KIN_TASKS_KEY_RPC_SCOPES } from "./kinTasksKey.ts";
 import { KinVisualRpcs, KIN_VISUAL_RPC_SCOPES } from "./kinVisual.ts";
 import { KinConnectionRpcs, KIN_CONNECTION_RPC_SCOPES } from "./kinConnections.ts";
+import { KIN_MAIL_RULE_RPC_SCOPES, KinMailRuleRpcs } from "./kinMailRules.ts";
 import { KinSocialRpcs, KIN_SOCIAL_RPC_SCOPES } from "./kinSocial.ts";
 import { KinPicturesRpcs, KIN_PICTURES_RPC_SCOPES } from "./kinPictures.ts";
 import { KinOwnerTimeZone, KinOwnerTimeZoneGetInput, KinOwnerTimeZoneRead } from "./kinTriggers.ts";
@@ -218,12 +220,14 @@ export const KinRpcs = [
   ...KinShellRpcs,
   ...KinTasksKeyRpcs,
   ...KinConnectionRpcs,
+  ...KinMailRuleRpcs,
   ...KinSocialRpcs,
   ...KinPicturesRpcs,
   ...KinRefreshRpcs,
   ...KinPulseRpcs,
   ...KinOpenRpcs,
   ...KinRecommendationRpcs,
+  ...KinBankSenderRpcs,
   ...KinHostRpcs,
   ...KinWatchRpcs,
   ...KinBillRpcs,
@@ -234,6 +238,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_LEVEL_RPC_SCOPES,
   ...KIN_MEMORY_RPC_SCOPES,
   ...KIN_WORK_RPC_SCOPES,
+  ...KIN_BANK_SENDER_RPC_SCOPES,
   ...KIN_DEAL_RPC_SCOPES,
   ...KIN_IMPORT_RPC_SCOPES,
   ...KIN_DOCS_RPC_SCOPES,
@@ -248,6 +253,7 @@ export const KIN_RPC_SCOPES = {
   ...KIN_TASKS_KEY_RPC_SCOPES,
   ...KIN_VISUAL_RPC_SCOPES,
   ...KIN_CONNECTION_RPC_SCOPES,
+  ...KIN_MAIL_RULE_RPC_SCOPES,
   ...KIN_SOCIAL_RPC_SCOPES,
   ...KIN_PICTURES_RPC_SCOPES,
   ...KIN_REFRESH_RPC_SCOPES,
@@ -530,6 +536,10 @@ const KIN_RPC_ACCESS = {
   "kin.pulse.aside": "person",
   "kin.open.read": "person",
   "kin.open.subscribe": "person",
+  // Which mail may write Bank transactions: the owner level's, as other money settings are.
+  "kin.bankSenders.list": "owner_level",
+  "kin.bankSenders.add": "owner_level",
+  "kin.bankSenders.remove": "owner_level",
   // What Kin suggested to the owner and his answers: his alone, as the cards are.
   "kin.recommendations.list": "org_owner",
   "kin.recommendations.askAgain": "org_owner",
@@ -575,6 +585,14 @@ const KIN_RPC_ACCESS = {
   "kin.connections.update": "owner_level",
   "kin.connections.setReach": "owner_level",
   "kin.connections.remove": "owner_level",
+  "kin.mailRules.create": "owner_level",
+  "kin.mailRules.pause": "owner_level",
+  "kin.mailRules.resume": "owner_level",
+  "kin.mailRules.remove": "owner_level",
+  "kin.mailRules.list": "owner_level",
+  "kin.mailRules.history": "owner_level",
+  "kin.mailRules.preview": "owner_level",
+  "kin.mailRules.runNow": "owner_level",
   "kin.connections.calls": "owner_level",
   "kin.connections.signInStart": "owner_level",
   "kin.connections.signInFinish": "owner_level",
@@ -584,6 +602,7 @@ const KIN_RPC_ACCESS = {
   "kin.connections.saveEdited": "owner_level",
   // A person's own mailbox: theirs alone to connect, see and disconnect (`KinConnections.mine`).
   "kin.connections.mine": "person",
+  "kin.connections.mineCalendar": "person",
   "kin.connections.mineSignInStart": "person",
   "kin.connections.mineSignInFinish": "person",
   "kin.connections.mineRemove": "person",
@@ -646,6 +665,9 @@ export const KIN_RPC_AGGREGATES = {
   "kin.pulse.aside": "kin-pulse",
   "kin.open.read": "kin-pulse",
   "kin.open.subscribe": "kin-pulse",
+  "kin.bankSenders.list": "kin-work",
+  "kin.bankSenders.add": "kin-work",
+  "kin.bankSenders.remove": "kin-work",
   "kin.recommendations.list": "kin-recommendations",
   "kin.recommendations.askAgain": "kin-recommendations",
   "kin.host.status": "kin-host",
@@ -874,6 +896,14 @@ export const KIN_RPC_AGGREGATES = {
   "kin.connections.update": "kin-connections",
   "kin.connections.setReach": "kin-connections",
   "kin.connections.remove": "kin-connections",
+  "kin.mailRules.create": "kin-connections",
+  "kin.mailRules.pause": "kin-connections",
+  "kin.mailRules.resume": "kin-connections",
+  "kin.mailRules.remove": "kin-connections",
+  "kin.mailRules.list": "kin-connections",
+  "kin.mailRules.history": "kin-connections",
+  "kin.mailRules.preview": "kin-connections",
+  "kin.mailRules.runNow": "kin-connections",
   "kin.connections.calls": "kin-connections",
   "kin.connections.signInStart": "kin-connections",
   "kin.connections.signInFinish": "kin-connections",
@@ -882,6 +912,7 @@ export const KIN_RPC_AGGREGATES = {
   "kin.connections.sendEdited": "kin-connections",
   "kin.connections.saveEdited": "kin-connections",
   "kin.connections.mine": "kin-connections",
+  "kin.connections.mineCalendar": "kin-connections",
   "kin.connections.mineSignInStart": "kin-connections",
   "kin.connections.mineSignInFinish": "kin-connections",
   "kin.connections.mineRemove": "kin-connections",

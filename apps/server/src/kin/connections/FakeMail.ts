@@ -66,7 +66,14 @@ export type FakeMailEvent = {
   readonly end: number;
   readonly updated: number;
   readonly state: "confirmed" | "cancelled" | "deleted";
+  readonly allDay?: boolean;
+  readonly zone?: string;
+  readonly link?: string;
+  readonly notes?: string;
+  readonly location?: string;
   readonly repeats?: number;
+  readonly guests?: ReadonlyArray<string>;
+  readonly deletedOccurrences?: ReadonlyArray<string>;
   /** The fake's revision when it last changed: a delta round returns what moved past its own. */
   readonly rev: number;
 };
@@ -85,6 +92,7 @@ export type FakeMailState = {
     string,
     { readonly account: string; readonly raw: string; readonly threadId: string }
   >;
+  readonly failing: Record<string, number>;
   seq: number;
 };
 
@@ -101,6 +109,7 @@ const emptyFakeMail = (): FakeMailState => ({
   codes: {},
   granted: {},
   drafts: {},
+  failing: {},
   seq: 0,
 });
 
@@ -263,13 +272,14 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
   const setDown = (address: string, isDown: boolean) =>
     isDown ? void down.add(lower(address)) : void down.delete(lower(address));
   /** Every call for the account answers this HTTP status, as a refusal or a throttle does. */
-  const failing = new Map<string, number>();
   const failWith = (address: string, status: number | null) =>
-    status === null
-      ? void failing.delete(lower(address))
-      : void failing.set(lower(address), status);
-  const outage = (account: FakeMailAccount, request: Request) => {
-    const status = failing.get(lower(account.address));
+    edit((state) => {
+      const key = lower(address);
+      if (status === null) delete state.failing[key];
+      else state.failing[key] = status;
+    });
+  const outage = (state: FakeMailState, account: FakeMailAccount, request: Request) => {
+    const status = state.failing[lower(account.address)];
     if (status === 429)
       return new Response(JSON.stringify({ error: { code: status } }), {
         status,
@@ -509,19 +519,44 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
                 start: event.start + week * WEEK_MS,
                 end: event.end + week * WEEK_MS,
                 kind: "instance" as const,
-              }))
+              })).filter(({ id }) => !event.deletedOccurrences?.includes(id))
             : [{ event, id: event.id, start: event.start, end: event.end, kind: "master" }],
       );
+  const eventRevision = (item: Occurrence) => `"${item.event.rev}"`;
+  const eventById = (state: FakeMailState, account: FakeMailAccount, id: string) =>
+    occurrences(state, account, true).find((item) => item.id === id) ??
+    occurrences(state, account, false).find((item) => item.id === id);
+  const deleteEvent = (state: FakeMailState, item: Occurrence, request: Request) => {
+    if (request.headers.get("if-match") !== eventRevision(item)) return json({}, 412);
+    const at = state.calendar.indexOf(item.event);
+    state.calendar[at] =
+      item.kind === "instance"
+        ? {
+            ...item.event,
+            deletedOccurrences: [...(item.event.deletedOccurrences ?? []), item.id],
+            rev: ++state.seq,
+          }
+        : { ...item.event, state: "deleted", rev: ++state.seq };
+    return new Response(null, { status: 204 });
+  };
+  const googleTime = (item: Occurrence, at: number) => ({
+    ...(item.event.allDay ? { date: iso(at).split("T")[0] } : { dateTime: iso(at) }),
+    timeZone: item.event.zone,
+  });
   const googleEvent = (item: Occurrence) => ({
     kind: "calendar#event",
+    etag: eventRevision(item),
     id: item.id,
     status: item.event.state === "confirmed" ? "confirmed" : "cancelled",
     summary: item.event.title,
-    start: { dateTime: iso(item.start) },
-    end: { dateTime: iso(item.end) },
+    start: googleTime(item, item.start),
+    end: googleTime(item, item.end),
+    htmlLink: item.event.link,
+    description: item.event.notes,
+    location: item.event.location,
     updated: iso(item.event.updated),
-    organizer: { email: item.event.account },
-    attendees: [],
+    organizer: { email: item.event.account, self: true },
+    attendees: (item.event.guests ?? []).map((email) => ({ email })),
     ...(item.kind === "instance"
       ? { recurringEventId: item.event.id, originalStartTime: { dateTime: iso(item.start) } }
       : item.kind === "master"
@@ -534,28 +569,39 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
   });
   const graphEvent = (item: Occurrence) => ({
     "@odata.type": "#microsoft.graph.event",
+    "@odata.etag": eventRevision(item),
     id: item.id,
     subject: item.event.title,
     isCancelled: item.event.state === "cancelled",
-    isAllDay: false,
-    start: graphTime(item.start),
-    end: graphTime(item.end),
+    isAllDay: item.event.allDay ?? false,
+    start: {
+      ...graphTime(item.start),
+      timeZone: (item.event.allDay ? item.event.zone : undefined) ?? "UTC",
+    },
+    end: {
+      ...graphTime(item.end),
+      timeZone: (item.event.allDay ? item.event.zone : undefined) ?? "UTC",
+    },
+    originalStartTimeZone: item.event.zone,
+    webLink: item.event.link,
     lastModifiedDateTime: iso(item.event.updated),
     type: { single: "singleInstance", master: "seriesMaster", instance: "occurrence" }[item.kind],
     seriesMasterId: item.kind === "instance" ? item.event.id : null,
     organizer: { emailAddress: { address: item.event.account } },
-    attendees: [],
-    location: { displayName: "" },
-    bodyPreview: "",
-    body: { contentType: "html", content: "" },
+    isOrganizer: true,
+    attendees: (item.event.guests ?? []).map((address) => ({ emailAddress: { address } })),
+    location: { displayName: item.event.location ?? "" },
+    bodyPreview: item.event.notes ?? "",
+    body: { contentType: "html", content: item.event.notes ?? "" },
   });
 
   const gmail = async (request: Request, url: URL) => {
-    const body = request.method === "GET" ? undefined : await request.json();
+    const body =
+      request.method === "POST" || request.method === "PATCH" ? await request.json() : undefined;
     return edit((state) => {
       const account = bearer(state, request);
       if (account === undefined) return json({ error: { code: 401 } }, 401);
-      const unavailable = outage(account, request);
+      const unavailable = outage(state, account, request);
       if (unavailable !== undefined) return unavailable;
       const path = url.pathname;
       const mine = inbox(state, account);
@@ -590,6 +636,20 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
           ...(page.next === undefined ? {} : { nextPageToken: page.next }),
         });
       }
+      const attachment = /^\/gmail\/v1\/users\/me\/messages\/([^/]+)\/attachments\/([^/]+)$/.exec(
+        path,
+      );
+      if (attachment !== null) {
+        const message = mine.find((one) => one.id === decodeURIComponent(attachment[1]!));
+        const id = decodeURIComponent(attachment[2]!);
+        const file = message?.files?.find((_, index) => id === `${message.id}-a${index}`);
+        return file === undefined
+          ? json({ error: { code: 404 } }, 404)
+          : json({
+              size: sizeOf(file),
+              data: Buffer.from(file.data, "base64").toString("base64url"),
+            });
+      }
       const single = /^\/gmail\/v1\/users\/me\/messages\/([^/]+)$/.exec(path)?.[1];
       if (single !== undefined && request.method === "GET") {
         const one = mine.find((message) => message.id === decodeURIComponent(single));
@@ -597,6 +657,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         const failed = unreadable.get(one.id);
         if (failed !== undefined) return json({ error: { code: failed } }, failed);
         const full = gmailMessage(one);
+        if (url.searchParams.get("format") === "full") return json(full);
         const asked = new Set(url.searchParams.getAll("metadataHeaders").map(lower));
         const headers = [
           ...full.payload.headers,
@@ -688,7 +749,9 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
           const page = pageOf(
             params.get("orderBy") === "updated"
               ? items.toSorted((a, b) => a.event.updated - b.event.updated)
-              : items,
+              : params.get("orderBy") === "startTime"
+                ? items.toSorted((a, b) => a.start - b.start)
+                : items,
             params.get("maxResults"),
             params.get("pageToken"),
           );
@@ -697,10 +760,14 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
             ...(page.next === undefined ? {} : { nextPageToken: page.next }),
           });
         }
-        const one = occurrences(state, account, true).find(
-          (item) => item.id === decodeURIComponent(eventPath[1]!),
-        );
+        const one = eventById(state, account, decodeURIComponent(eventPath[1]));
         return one === undefined ? json({ error: { code: 404 } }, 404) : json(googleEvent(one));
+      }
+      if (eventPath?.[1] !== undefined && request.method === "DELETE") {
+        const one = eventById(state, account, decodeURIComponent(eventPath[1]));
+        return one === undefined
+          ? json({ error: { code: 404 } }, 404)
+          : deleteEvent(state, one, request);
       }
       if (eventPath !== null) {
         const id = next(state, "fev");
@@ -720,6 +787,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
   const graphMessage = (message: FakeMailMessage) => ({
     id: message.id,
     conversationId: message.threadId,
+    webLink: `https://outlook.office.com/mail/inbox/id/${message.id}`,
     subject: message.subject,
     from: who(message.from),
     toRecipients: message.to.map(who),
@@ -745,7 +813,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       const account = bearer(state, request);
       if (account === undefined)
         return json({ error: { code: "InvalidAuthenticationToken" } }, 401);
-      const unavailable = outage(account, request);
+      const unavailable = outage(state, account, request);
       if (unavailable !== undefined) return unavailable;
       const path = url.pathname;
       const mine = inbox(state, account).toSorted((a, b) => b.at - a.at);
@@ -827,20 +895,27 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
           ],
         });
       }
-      const attachmentsOf = /^\/v1\.0\/me\/messages\/([^/]+)\/attachments$/.exec(path)?.[1];
-      if (attachmentsOf !== undefined) {
-        const message = mine.find((one) => one.id === decodeURIComponent(attachmentsOf));
-        if (message === undefined) return json({ error: { code: "ErrorItemNotFound" } }, 404);
-        return json({
-          value: (message.files ?? []).map((file, index) => ({
-            "@odata.type": "#microsoft.graph.fileAttachment",
-            id: `${message.id}-a${index}`,
-            name: file.name,
-            contentType: file.mimeType,
-            size: sizeOf(file),
-            contentBytes: file.data,
-          })),
-        });
+      const attachmentsOf = /^\/v1\.0\/me\/messages\/([^/]+)\/attachments(?:\/([^/]+))?$/.exec(
+        path,
+      );
+      if (attachmentsOf !== null) {
+        const message = mine.find((one) => one.id === decodeURIComponent(attachmentsOf[1]!));
+        const missing = () => json({ error: { code: "ErrorItemNotFound" } }, 404);
+        if (message === undefined) return missing();
+        const select = url.searchParams.get("$select")?.split(",");
+        const found = (message.files ?? []).map((file, index) => ({
+          "@odata.type": "#microsoft.graph.fileAttachment",
+          id: `${message.id}-a${index}`,
+          name: file.name,
+          contentType: file.mimeType,
+          size: sizeOf(file),
+          ...(select === undefined || select.includes("contentBytes")
+            ? { contentBytes: file.data }
+            : {}),
+        }));
+        if (attachmentsOf[2] === undefined) return json({ value: found });
+        const attachment = found.find((file) => file.id === decodeURIComponent(attachmentsOf[2]!));
+        return attachment === undefined ? missing() : json(attachment);
       }
       const mime = () => Buffer.from(text, "base64").toString("utf8");
       if (path === `${GRAPH}/messages` && request.method === "POST") {
@@ -880,6 +955,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
             item.event.state === "deleted"
               ? {
                   "@odata.type": "#microsoft.graph.event",
+                  "@odata.etag": eventRevision(item),
                   id: item.id,
                   "@removed": { reason: "deleted" },
                 }
@@ -894,21 +970,25 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       if (/\/calendarView$/.test(path)) {
         const from = Date.parse(url.searchParams.get("startDateTime") ?? "1970-01-01T00:00:00Z");
         const until = Date.parse(url.searchParams.get("endDateTime") ?? "9999-01-01T00:00:00Z");
+        const items = occurrences(state, account, true).filter(
+          ({ event, start, end }) => event.state !== "deleted" && end > from && start < until,
+        );
+        if (!url.searchParams.has("$top")) return json({ value: items.map(graphEvent) });
+        const page = pageOf(items, url.searchParams.get("$top"), url.searchParams.get("$skip"));
+        const next = new URL(url);
+        next.searchParams.set("$skip", page.next ?? "");
         return json({
-          value: occurrences(state, account, true)
-            .filter(
-              ({ event, start, end }) => event.state !== "deleted" && end > from && start < until,
-            )
-            .map(graphEvent),
+          value: page.items.map(graphEvent),
+          ...(page.next === undefined ? {} : { "@odata.nextLink": next.href }),
         });
       }
       const graphEventId = /\/events\/([^/]+)$/.exec(path)?.[1];
-      if (graphEventId !== undefined && request.method === "GET") {
-        const one = occurrences(state, account, true).find(
-          (item) => item.id === decodeURIComponent(graphEventId) && item.event.state !== "deleted",
-        );
-        return one === undefined
-          ? json({ error: { code: "ErrorItemNotFound" } }, 404)
+      if (graphEventId !== undefined && (request.method === "GET" || request.method === "DELETE")) {
+        const one = eventById(state, account, decodeURIComponent(graphEventId));
+        if (one === undefined || one.event.state === "deleted")
+          return json({ error: { code: "ErrorItemNotFound" } }, 404);
+        return request.method === "DELETE"
+          ? deleteEvent(state, one, request)
           : json(graphEvent(one));
       }
       if (/\/events$/.test(path)) {

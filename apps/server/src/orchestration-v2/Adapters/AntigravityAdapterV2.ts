@@ -157,8 +157,9 @@ export function makeAntigravityAcpAdapterFlavor(
           Scope.close(scope, Exit.void),
           options.makeRuntime({
             ...input,
-            clientFileReads: true,
-            sessionSystemPromptAppend: PULL_REQUEST_LINKING_INSTRUCTIONS,
+            clientFileReads: input.clientCapabilities?.fs?.readTextFile !== false,
+            sessionSystemPromptAppend:
+              input.sessionSystemPromptAppend ?? PULL_REQUEST_LINKING_INSTRUCTIONS,
           }),
         )
         .pipe(Effect.provideService(Scope.Scope, scope));

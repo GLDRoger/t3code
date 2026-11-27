@@ -47,6 +47,7 @@ import { KinRecords } from "../work/KinRecords.ts";
 import * as Clients from "../work/ownerClients.ts";
 import { partnersOwed } from "../work/partnersOwed.ts";
 import { presetList } from "../work/registers.ts";
+import * as BankSenders from "../work/statements/bankSenders.ts";
 import { viewerOfPeople } from "../work/teamView.ts";
 import * as People from "./KinPeople.ts";
 
@@ -695,6 +696,43 @@ it.effect(
     ),
 );
 
+it.effect("a departing co-owner's mail rules pause and the owner hears once", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const { sql, orgId } = ctx;
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+        url_host, auth, reach, state, created_at, updated_at)
+        VALUES (${orgId}, 'mail', 'google', 'Juniper bills', 'builtin', 'gmail.googleapis.com',
+          'oauth', 'closed', 'active', 1, 1)`;
+      yield* sql`INSERT INTO kin_mail_rules (org_id, rule_id, connection_id, match_json, what, agent_id,
+        chat_id, said_by, source_event, content_sha256, state, monthly_cap, created_at, updated_at)
+        VALUES (${orgId}, 'meera-a', 'mail', '{}', 'File the bill.', ${chief}, 'meera-chief',
+          ${meeraId}, 'tap-a', 'hash', 'on', 30, 1, 1),
+          (${orgId}, 'meera-b', 'mail', '{}', 'Check the bill.', ${chief}, 'meera-chief',
+          ${meeraId}, 'tap-b', 'hash', 'on', 30, 1, 1)`;
+      yield* ctx.people.removeAccess(ownerSession, { orgId, personId: meeraId });
+      yield* ctx.people.removeAccess(ownerSession, { orgId, personId: meeraId });
+      assert.deepStrictEqual(
+        yield* sql`SELECT state, paused_why FROM kin_mail_rules ORDER BY rule_id`,
+        [
+          { state: "paused", paused_why: "left" },
+          { state: "paused", paused_why: "left" },
+        ],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT chat_id, body FROM kin_messages
+        WHERE org_id = ${orgId} AND body LIKE '%mail rules%'`,
+        [
+          {
+            chat_id: ctx.ownerChat,
+            body: "Meera left, so 2 mail rules Meera set up on Juniper bills are paused. Resume or remove each from its mailbox in Settings → Connections.",
+          },
+        ],
+      );
+    }),
+  ),
+);
+
 it.effect(
   "picture counts and settings keep the leaver's and the retired agent's names: they are the company's billing and audit history",
   () =>
@@ -742,9 +780,20 @@ it.effect(
             ${zoyaId}, 0, 'reading', 'bills-zoya', 1)`;
         yield* sql`INSERT INTO kin_bill_requests (org_id, person_id, kind, request_id, input_hash,
             result_json, created_at) VALUES (${orgId}, ${zoyaId}, 'add', 'add-1', 'h', '{}', 0)`;
+        yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind,
+          url_host, auth, reach, state, created_at, updated_at)
+          VALUES (${orgId}, 'mail', 'google', 'Juniper bills', 'builtin', 'gmail.googleapis.com',
+            'oauth', 'closed', 'active', 1, 1)`;
+        yield* sql`INSERT INTO kin_mail_rules (org_id, rule_id, connection_id, match_json, what,
+          agent_id, chat_id, said_by, source_event, content_sha256, state, monthly_cap, created_at,
+          updated_at) VALUES (${orgId}, 'rule', 'mail', '{}', 'File the bill.', ${chief},
+            ${ctx.ownerChat}, 'rhea', 'tap', 'hash', 'on', 30, 1, 1)`;
         yield* ctx.people.removeAccess(ownerSession, { orgId, personId: zoyaId });
         yield* sql`UPDATE kin_agents SET retired_at = ${at} WHERE org_id = ${orgId} AND agent_id = ${chief}`;
         yield* Retirement.retire({ orgId, agentId: chief, retiredAt: at, now: 1 }, ctx.chats);
+        assert.deepStrictEqual(yield* sql`SELECT state, paused_why FROM kin_mail_rules`, [
+          { state: "paused", paused_why: "agent" },
+        ]);
         // Who added it is the bill's history; its read waits for the sweep to give it to the
         // company's reader now (`bills.ts` `queueWaiting`, tested in `bills.test.ts`).
         assert.deepStrictEqual(
@@ -766,6 +815,30 @@ it.effect(
     ),
 );
 
+it.effect("a co-owner's bank sender decision stays company history after access is removed", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const { orgId } = ctx;
+      const sender = {
+        address: "notices@harborbank.example",
+        bankName: "Harbor Bank",
+        accounts: ["4821"],
+      };
+      yield* BankSenders.add(orgId, meeraId, sender);
+      yield* ctx.people.removeAccess(ownerSession, { orgId, personId: meeraId });
+      const [row] = yield* BankSenders.list(orgId);
+      assert.include(row, {
+        address: sender.address,
+        state: "approved",
+        decidedByPersonId: meeraId,
+      });
+      assert.include(yield* Effect.flip(BankSenders.remove(orgId, meeraId, sender.address)), {
+        reason: "not_allowed",
+      });
+    }),
+  ),
+);
+
 // Every column that holds a person or an agent, as last reviewed. A new one fails here until
 // someone decides what removing the person (`KinPeople.removeAccess`) and retiring the agent
 // (`lead/Retirement.ts`) do to it, tests that, and lists it.
@@ -773,6 +846,8 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_agent_threads: "agent_id",
   kin_agents: "agent_id owner_person_id retired_by_person_id",
   kin_arrivals: "agent_id",
+  // Past decisions stay company history; they are not ongoing authority for the decider.
+  kin_bank_senders: "decided_by_person_id",
   kin_bank_statements: "agent_id applied_by",
   // Who added a bill stays its record; a retired reader's bills go to the next reader (`bills.ts`).
   kin_bill_reads: "added_by_person_id agent_id",
@@ -803,6 +878,7 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_lead_access: "agent_id granted_by person_id",
   kin_lead_deliveries: "agent_id",
   kin_leads: "agent_id created_by_person_id",
+  kin_mail_rules: "agent_id said_by",
   kin_list_proposals: "agent_id",
   kin_memory_shared_writes: "person_id",
   kin_messages: "author_agent_id author_member_id author_owner_person_id author_person_id sent_by",

@@ -2,7 +2,11 @@ import { expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
-import { AdvertisedDescriptions, advertisedJsonSchema } from "./advertisedJsonSchema.ts";
+import {
+  AcceptedUnadvertisedArguments,
+  AdvertisedDescriptions,
+  advertisedJsonSchema,
+} from "./advertisedJsonSchema.ts";
 import { ThemeToolkit } from "./toolkits/theme/tools.ts";
 
 it("drops JSON noise, merges tagged unions, and keeps null where it is required", () => {
@@ -140,4 +144,59 @@ it("retains selected descriptions and advertises the remaining nested field shap
     "rows.description",
     "An array of rows.",
   );
+});
+
+it("omits selected arguments from the advertised properties and required keys", () => {
+  const tool = Tool.make("example", {
+    parameters: Schema.Struct({
+      legacy: Schema.String,
+      records: Schema.Array(
+        Schema.Struct({
+          title: Schema.String,
+          legacy: Schema.Int,
+          extra: Schema.optional(Schema.String),
+        }),
+      ),
+    }),
+  });
+  const annotated = tool.annotate(AcceptedUnadvertisedArguments, [
+    "legacy",
+    "records[].legacy",
+    "records[].extra",
+  ]);
+  const properties = {
+    records: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: { title: { type: "string" } },
+        required: ["title"],
+      },
+    },
+  };
+
+  expect(advertisedJsonSchema(annotated)).toEqual({
+    type: "object",
+    properties,
+    required: ["records"],
+  });
+  expect(advertisedJsonSchema(tool)).toEqual({
+    type: "object",
+    properties: {
+      legacy: { type: "string" },
+      records: {
+        ...properties.records,
+        items: {
+          ...properties.records.items,
+          properties: {
+            title: { type: "string" },
+            legacy: { type: "integer" },
+            extra: { type: "string" },
+          },
+          required: ["title", "legacy"],
+        },
+      },
+    },
+    required: ["legacy", "records"],
+  });
 });

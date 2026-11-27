@@ -97,6 +97,7 @@ export const keepDocFiles = Effect.fn("KinDocFiles.keep")(function* (
           FROM kin_doc_versions v JOIN kin_records r ON r.org_id = v.org_id
             AND r.record_id = v.record_id AND r.register_id = 'docs'
           WHERE v.org_id = ${orgId} AND v.file_attachment_id IN ${sql.in(missing)}
+            AND json_extract(v.file_json, '$.source.kind') IS NOT 'mail'
         ORDER BY 1`;
     for (const id of missing) {
       const found = [...fromChat, ...fromDocs].find((row) => row.attachmentId === id);

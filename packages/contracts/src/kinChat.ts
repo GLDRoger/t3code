@@ -348,6 +348,10 @@ export const KinMessage = Schema.Struct({
   ),
   // An agent's check-in or weekly brief, drawn as one; absent on everything else.
   form: Schema.optional(Schema.Literal("brief")),
+  // An agent's progress update during a turn whose reply still comes; absent on everything else.
+  progress: Schema.optional(Schema.Literal(true)),
+  // A plain kin_ask card in its own turn's chat, not the Team room or a confirmation.
+  ordinaryTurnAsk: Schema.optional(Schema.Boolean),
   intent: Schema.NullOr(KinAgentIntent),
   mentions: Schema.Array(KinMemberId),
   replyTo: Schema.NullOr(KinMessageId),
@@ -473,6 +477,8 @@ export type KinSendTry = typeof KinSendTry.Type;
 export const KinSendCard = Schema.Struct({
   service: KinTrimmedText.check(Schema.isMaxLength(80)),
   action: Schema.Literals(["email", "reply", "event", "call"]),
+  /** Deletion uses the plain call presentation on older clients, not the event-save wording. */
+  calendarDelete: Schema.optionalKey(Schema.Literal(true)),
   /** The address it goes from; on cards from before accounts, the signed-in account. */
   from: Schema.NullOr(KinText.check(Schema.isMaxLength(320))),
   /** The From name shown beside the address, such as "Ana Rao". */
@@ -705,6 +711,12 @@ export const KinPresence = Schema.Struct({
   since: IsoDateTime,
 });
 export type KinPresence = typeof KinPresence.Type;
+const KinActiveWakeup = Schema.Struct({ agentId: KinAgentId, wakeupId: KinWakeupId });
+export const kinHasActiveWakeup = (
+  line: KinPresence,
+): line is KinPresence & typeof KinActiveWakeup.Type =>
+  line.wakeupId !== null && line.state !== "seen" && line.state !== "deferred";
+
 /** An agent reply still streaming. `text` in a backlog is the whole draft so far. */
 export const KinDraft = Schema.Struct({
   draftId: TrimmedNonEmptyString,
@@ -813,6 +825,8 @@ export const KinWaitingItem = Schema.Struct({
   question: Schema.optional(Schema.NullOr(KinTrimmedText)),
   /** Set while an agent's question on that card is open; absent from servers without it. */
   ask: Schema.optional(KinWaitingAsk),
+  /** The agent and source wake-up, only for an ordinary question card raised in its own turn. */
+  ordinaryTurnAsk: Schema.optional(KinActiveWakeup),
   /** What the waiting card is, when more than a question: a mail ready to send, a draft sent up. */
   card: Schema.optional(Schema.Literals(["mail", "draft"])),
   /** The first lines of what the card asks about, such as a draft or a doc; absent without one. */
@@ -853,6 +867,8 @@ export const KinChatSummary = Schema.Struct({
   unread: NonNegativeInt,
   /** An agent in the chat is on a live wake-up. Absent from servers without it. */
   working: Schema.optional(Schema.Boolean),
+  /** Active wakes in this chat; absent when none are known or from older hosts. */
+  activeWakeups: Schema.optional(Schema.Array(KinActiveWakeup)),
   /** The Team room has something the viewer hasn't read: a quiet dot, never a count. */
   fresh: Schema.optional(Schema.Boolean),
 });
@@ -888,10 +904,14 @@ export const KinChatStreamEvent = Schema.Union([
     readSeq: Schema.optional(NonNegativeInt),
     /** On a stream's first backlog: changes when what this reader may open as a link may have changed, so a client drops its cached links for the chat. Absent from older hosts. */
     accessStamp: Schema.optional(Schema.String.check(Schema.isMaxLength(64))),
+    /** The host's setting: a turn's progress updates leave the feed once its reply is posted. Absent from older hosts. */
+    clearUpdates: Schema.optional(Schema.Boolean),
   }),
   Schema.TaggedStruct("reset", {
     lastSeq: NonNegativeInt,
     lastChangeSeq: Schema.optional(NonNegativeInt),
+    // The first event can be a reset instead of a backlog; history needs the same running lines.
+    presence: Schema.optional(Schema.Array(KinPresence)),
     // The chat was cleared: nothing held from before is kept, drafts and reactions included.
     cleared: Schema.optional(Schema.Boolean),
     clearedSeq: Schema.optional(NonNegativeInt),

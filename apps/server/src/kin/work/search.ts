@@ -9,6 +9,7 @@ import { latestOf } from "./docs.ts";
 import { listOf } from "./lists.ts";
 import { inheritedSensitive, sensitiveNow } from "./recordRows.ts";
 import { docKindWords, searchIndexed, stepText, teamListSearchText } from "./searchIndex.ts";
+import { findBankList } from "./statements/bankList.ts";
 import { ownMoneyDraft, seenBy, teamLists, type KinViewer } from "./teamView.ts";
 
 /**
@@ -22,6 +23,7 @@ export type Hit = {
   readonly recordId: string;
   readonly key: string;
   readonly kind: KinSearchKind;
+  readonly bankTransaction?: true;
   readonly title: string;
   readonly snippet: string;
   readonly section?: { readonly id: string; readonly title: string };
@@ -99,6 +101,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
     readonly widen?: boolean;
     /** Deals too, and a deal by its exact key: a person's own search box asks. */
     readonly deals?: boolean;
+    readonly bankTransactions?: boolean;
   },
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -109,10 +112,16 @@ export const search = Effect.fn("KinSearch.search")(function* (
   const shell = yield* KinShell.get(orgId);
   const deals = input.deals === true && KinShell.sectionOn(shell, "deals");
   const shared = kinds.includes("work") ? [...(yield* teamLists(orgId))] : [];
+  const bank =
+    input.bankTransactions === true && KinShell.sectionOn(shell, "money")
+      ? yield* findBankList(orgId)
+      : undefined;
+  const bankId = bank !== undefined && (bank.archivedAt === null || input.closed) ? bank.id : null;
   const registers = (deals ? [...kinds, "deals"] : kinds).filter((kind) => {
     const section = sectionOfList(kind);
     return section === null || KinShell.sectionOn(shell, section);
   });
+  if (bankId !== null) registers.push(bankId);
   if (registers.length === 0 && shared.length === 0)
     return { hits: [] as ReadonlyArray<Hit>, indexed, widened: false };
   const onTeamList = shared.length === 0 ? sql`0 = 1` : sql`r.register_id IN ${sql.in(shared)}`;
@@ -124,7 +133,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
     // their own priced draft as they read it.
     ...(input.viewer === "team"
       ? [
-          sql`(r.register_id IN ${sql.in([...MONEY])} OR NOT ${sensitiveNow(sql)}
+          sql`(r.register_id IN ${sql.in(bankId === null ? KIN_MONEY_SEARCH_KINDS : [...KIN_MONEY_SEARCH_KINDS, bankId])} OR NOT ${sensitiveNow(sql)}
             OR ${ownDraftOf(sql, input.scope)})`,
         ]
       : []),
@@ -200,6 +209,7 @@ export const search = Effect.fn("KinSearch.search")(function* (
             list === "milestones" || list === "goals" || list === "deals" ? "work" : list)(
             listOf(row.registerId),
           ),
+      ...(row.registerId === bankId ? { bankTransaction: true as const } : {}),
       title: row.title,
       // A project's notes carry its price and terms, which only its lead and the owner read; a
       // deal's fields (a stage id, a value in minor units) are no one's words.

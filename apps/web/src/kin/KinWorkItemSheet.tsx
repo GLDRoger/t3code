@@ -6,9 +6,7 @@ import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinTaskProjectsAllowed } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
   KIN_WORK_ASSIGN,
-  KIN_WORK_GONE,
   KIN_WORK_HAND_BACK,
-  KIN_WORK_ITEM_FAILED,
   KIN_WORK_MILESTONE,
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
@@ -16,6 +14,9 @@ import {
   KIN_WORK_STEPS,
   KIN_WORK_URGENT,
   kinSameRepeat,
+  kinWorkEntryKind,
+  kinWorkGone,
+  kinWorkItemFailed,
   kinWorkStepProblem,
   kinWorkAssignees,
   kinWorkClientStays,
@@ -172,6 +173,8 @@ import { useKinSectionNamed, useKinShell } from "./useKinShell";
 import {
   kinPickerNamed,
   kinPlaceFind,
+  kinSectionNamed,
+  kinSectionNamedWords,
   kinSectionNoun,
   kinSectionOf,
   kinSectionOffLine,
@@ -258,6 +261,10 @@ export function KinWorkItemSheet(
   const close = () => {
     if (!saving) props.onClose();
   };
+  const entryKind = kinWorkEntryKind(itemKey);
+  const entryNoun = kinSectionNamed(shell, entryKind.noun);
+  const goneCopy = kinSectionNamedWords(shell, kinWorkGone(itemKey));
+  const failedCopy = kinSectionNamedWords(shell, kinWorkItemFailed(itemKey));
   const entry = state._tag === "ready" && state.item.list !== undefined;
   const sheet = props.frame === "sheet" || entry;
   const Frame = sheet ? SHEET_FRAME : PAGE_FRAME;
@@ -349,22 +356,26 @@ export function KinWorkItemSheet(
         <Frame.Header>
           <Frame.Title>
             {state._tag === "gone"
-              ? KIN_WORK_GONE.title
+              ? goneCopy.title
               : state._tag === "failed"
-                ? KIN_WORK_ITEM_FAILED.title
+                ? failedCopy.title
                 : itemKey}
           </Frame.Title>
           <Frame.Description>
             {state._tag === "gone"
-              ? KIN_WORK_GONE.detail
+              ? goneCopy.detail
               : state._tag === "failed"
-                ? KIN_WORK_ITEM_FAILED.detail
+                ? failedCopy.detail
                 : "Loading…"}
           </Frame.Description>
         </Frame.Header>
         <div className="flex flex-col items-start gap-3 px-6 pb-6">
           {state._tag === "loading" ? (
-            <div className="flex w-full flex-col gap-2" role="status" aria-label="Loading task">
+            <div
+              className="flex w-full flex-col gap-2"
+              role="status"
+              aria-label={`Loading ${entryNoun}`}
+            >
               <Skeleton className="h-4 w-4/5" />
               <Skeleton className="h-3.5 w-3/5" />
               <Skeleton className="h-3.5 w-2/5" />
@@ -407,7 +418,7 @@ export function KinWorkItemSheet(
       {content}
       {props.frame === "page" ? null : (
         <div className="absolute end-2 top-2">
-          <Button size="icon" variant="ghost" aria-label="Close task" onClick={close}>
+          <Button size="icon" variant="ghost" aria-label={`Close ${entryNoun}`} onClick={close}>
             <XIcon />
           </Button>
         </div>

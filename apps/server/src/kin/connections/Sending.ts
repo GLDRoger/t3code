@@ -32,7 +32,12 @@ import { seenBy } from "../work/teamView.ts";
 import { logTouch } from "../work/touches.ts";
 import { MAIL_BODY_MAX } from "../textLimits.ts";
 import { KinGatewayError } from "./McpGateway.ts";
-import { MAIL_TOOL, type Mailbox, type MailProvider } from "./MailProvider.ts";
+import {
+  MAIL_TOOL,
+  type Mailbox,
+  type MailCalendarEvent,
+  type MailProvider,
+} from "./MailProvider.ts";
 
 /**
  * What an "Ask me" call sends, fixed when the agent asks and shown whole on the owner's card.
@@ -102,6 +107,17 @@ export const Prepared = Schema.Union([
     notes: Schema.NullOr(Schema.String),
     invitees: Schema.Array(Schema.String),
   }),
+  Schema.TaggedStruct("eventDelete", {
+    calendarId: Schema.String,
+    calendarName: Schema.NullOr(Schema.String),
+    eventId: Schema.String,
+    title: Schema.String,
+    start: Schema.String,
+    end: Schema.String,
+    occurrence: Schema.Boolean,
+    notifyGuests: Schema.Boolean,
+    revision: Schema.String,
+  }),
   Schema.TaggedStruct("call", { args: Schema.Record(Schema.String, Schema.Unknown) }),
 ]);
 export type Prepared = typeof Prepared.Type;
@@ -118,6 +134,45 @@ const decodeEvent = Schema.decodeUnknownOption(
   ),
 );
 const refused = (message: string) => new KinGatewayError({ reason: "protocol", message });
+
+// A title or calendar name is outside text: one line, so it can't add lines to the card.
+const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
+const deleteTarget = (event: MailCalendarEvent, eventId: string) => {
+  if (event.recurrence === "series")
+    return Effect.fail(
+      refused(
+        "This is a whole repeating series, so nothing was deleted. Kin deletes one occurrence at a time; a whole series is deleted in the calendar itself.",
+      ),
+    );
+  if (
+    event.eventId !== eventId ||
+    event.recurrence === null ||
+    !event.revision ||
+    !event.start ||
+    !event.end ||
+    event.status === "cancelled"
+  )
+    return Effect.fail(
+      refused(
+        "Kin couldn't check this event (it may be cancelled or gone), so nothing was deleted. Check it in the calendar itself.",
+      ),
+    );
+  if (event.guests.length > 0 && !event.notifiesGuests)
+    return Effect.fail(
+      refused(
+        "Someone else organized this event and it has guests, so nothing was deleted. To take it off this calendar, decline or remove it in the calendar itself.",
+      ),
+    );
+  return Effect.succeed({
+    eventId,
+    title: oneLine(event.summary ?? "").slice(0, 300) || "Untitled event",
+    start: event.start,
+    end: event.end,
+    occurrence: event.recurrence === "occurrence",
+    notifyGuests: event.guests.length > 0,
+    revision: event.revision,
+  });
+};
 
 const MAX_RECIPIENTS = 10;
 const MAX_INVITEES = 50;
@@ -194,6 +249,10 @@ export const attachmentOf = Effect.fn("KinSending.attachment")(function* (
     version?.fileJson == null ? undefined : Option.getOrUndefined(decodeFile(version.fileJson));
   if (version === undefined || file === undefined)
     return yield* refused(`${key.slice(0, 40)} is not a file Kin made, so it can't be attached.`);
+  if (file.source?.privateTo !== undefined)
+    return yield* refused(
+      "A file saved from a personal mailbox can't be attached to outgoing mail.",
+    );
   const [entry] =
     version.entryId === null
       ? []
@@ -393,6 +452,31 @@ export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (input:
     account: input.account,
     addresses: input.sendAs.map((one) => one.address),
   };
+  if (input.tool === MAIL_TOOL.deleteEvent) {
+    const eventId = optional(args, "eventId");
+    if (eventId === null)
+      return yield* refused(
+        `${MAIL_TOOL.deleteEvent} needs eventId, the id ${MAIL_TOOL.events} gives for the event.`,
+      );
+    if (input.account === null)
+      return yield* refused(
+        "Kin doesn't know which account this calendar is signed in as, so nothing was deleted. Signing in to it again in Settings › Connections fixes this.",
+      );
+    const calendarId = optional(args, "calendarId") ?? "primary";
+    const token = yield* input.token;
+    const event = yield* input.provider.calendarEvent(
+      input.http,
+      token,
+      mailbox,
+      calendarId,
+      eventId,
+    );
+    const target = yield* deleteTarget(event, eventId);
+    const calendarName = yield* input.provider
+      .calendarName(input.http, token, mailbox, calendarId)
+      .pipe(Effect.orElseSucceed(() => null));
+    return { _tag: "eventDelete", calendarId, calendarName, ...target } satisfies Prepared;
+  }
   if (input.tool === MAIL_TOOL.saveEvent) {
     const title = optional(args, "title");
     const start = optional(args, "start");
@@ -726,6 +810,42 @@ const cardOf = (
       },
     };
   }
+  if (prepared._tag === "eventDelete") {
+    const service = input.mail?.calendarService ?? input.service;
+    const subject = "Delete this event";
+    const lines = [
+      `Event: ${prepared.title}`,
+      plainWhen({ ...prepared, timeZone: null }, input.clock),
+      `Calendar account: ${input.account}`,
+      ...(prepared.calendarName && oneLine(prepared.calendarName)
+        ? [`Calendar: ${oneLine(prepared.calendarName).slice(0, 300)}`]
+        : prepared.calendarId === "primary"
+          ? []
+          : [`Calendar: ${oneLine(prepared.calendarId).slice(0, 300)}`]),
+      ...(prepared.occurrence
+        ? ["Only this occurrence will be deleted; the rest of the series stays."]
+        : []),
+      ...(prepared.notifyGuests ? [`${service} will send the guests a cancellation.`] : []),
+    ];
+    const body = lines.join("\n");
+    return {
+      question: `${subject}?`,
+      detail: body.slice(0, 2000),
+      send: {
+        service,
+        action: "call",
+        calendarDelete: true,
+        from: input.account,
+        account: input.account,
+        to: [],
+        cc: [],
+        subject,
+        body,
+        attachments: [],
+        outcome: null,
+      },
+    };
+  }
   if (prepared._tag === "event") {
     const target = eventTarget(prepared, input.clock);
     const changing = prepared.current?.title ?? null;
@@ -864,11 +984,27 @@ export const sendMail = Effect.fn("KinSending.sendMail")(function* (
   http: HttpClient.HttpClient,
   token: string,
   prepared: Exclude<Prepared, { _tag: "call" }>,
+  account: string | null,
   handOff: <A, E>(
     request: Effect.Effect<A, E>,
   ) => Effect.Effect<A, E | KinChatError | SqlError.SqlError>,
 ) {
   if (prepared._tag === "event") return yield* handOff(provider.saveEvent(http, token, prepared));
+  if (prepared._tag === "eventDelete") {
+    const event = yield* provider.calendarEvent(
+      http,
+      token,
+      { account, addresses: [] },
+      prepared.calendarId,
+      prepared.eventId,
+    );
+    const target = yield* deleteTarget(event, prepared.eventId);
+    if (target.revision !== prepared.revision)
+      return yield* refused(
+        "This event changed after the card was made, so nothing was deleted. Ask for a new card if it should still go.",
+      );
+    return yield* handOff(provider.deleteEvent(http, token, prepared));
+  }
   const raw = mime(prepared, yield* filesOf(prepared.attachments));
   return yield* handOff(provider.sendMessage(http, token, { raw, threadId: prepared.threadId }));
 });

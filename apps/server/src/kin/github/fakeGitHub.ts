@@ -1040,6 +1040,27 @@ export class FakeGitHub {
     const since = url.searchParams.get("since");
     const sinceMs = since === null ? 0 : Date.parse(since);
     if (method === "GET" && path === "user") return ok({ login: this.world.user });
+    if (method === "GET" && path === "search/issues") {
+      const query = url.searchParams.get("q") ?? "";
+      const scope = /^repo:(\S+) in:title (.+)$/.exec(query);
+      if (scope === null) return ok({ items: [] });
+      const repo = scope[1]!.toLowerCase();
+      const words = scope[2]!.toLowerCase().split(" ");
+      const limit = Number(url.searchParams.get("per_page") ?? 30);
+      return ok({
+        items: this.world.items
+          .filter(
+            (item) =>
+              item.repo.toLowerCase() === repo &&
+              words.every((word) => item.title.toLowerCase().includes(word)),
+          )
+          .slice(0, limit)
+          .map((item) => ({
+            ...this.issueJson(item),
+            repository_url: `https://api.github.com/repos/${item.repo}`,
+          })),
+      });
+    }
     if (method === "GET" && path === "notifications") {
       const lastModified = httpDate(this.world.modified);
       const asked = headers["if-modified-since"];

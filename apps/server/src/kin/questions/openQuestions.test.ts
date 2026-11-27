@@ -2786,6 +2786,42 @@ it.effect("the owner's Approve writes a sent-up proposal, or queues a turn to ma
   ),
 );
 
+it.effect("a draft names its actual Send to recipient, only in a teammate's own chat", () =>
+  Effect.andThen(
+    TestClock.setTime(IST_MON_1130),
+    Effect.gen(function* () {
+      const team = yield* askingTeam;
+      const { sql, orgId, chiefChat, wakeOn, services } = team;
+      const identity = Context.get(services, KinIdentity);
+      for (const who of ["meera", "rhea"] as const) {
+        const chatId = yield* chiefChat(who);
+        const wakeupId = yield* wakeOn("chief", who, chatId, "Draft a launch note for Arjun.");
+        const [event] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+          FROM kin_events WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} ORDER BY rowid`;
+        const filed = yield* LeadDocs.create(scopeOf("chief"), {
+          sourceEventId: event!.eventId,
+          title: "Tidewater Freight launch note",
+          body: "The first delivery is on Friday.",
+          draft: { kind: "mail" },
+        }).pipe(Effect.provideService(KinIdentity, identity));
+        const [card] = yield* sql<{ state: string }>`SELECT state_json AS state FROM kin_widgets
+          WHERE org_id = ${orgId} AND chat_id = ${chatId}
+            AND type = 'doc' AND json_extract(state_json, '$.key') = ${filed.key}`;
+        assert.notProperty(JSON.parse(card!.state).draft, "sendTo", who);
+        assert.include(filed.note ?? "", "nothing on the card sends it to anyone", who);
+        assert.notInclude(filed.note ?? "", "Send to", who);
+        assert.lengthOf(yield* sql`SELECT 1 FROM kin_questions WHERE org_id = ${orgId}`, 0);
+      }
+      const description = JSON.stringify(Schema.toJsonSchemaDocument(LeadDocs.CreateInput).schema);
+      assert.include(description, "Only a teammate's own card has Send to the named approver");
+      assert.include(
+        description,
+        "An owner or co-owner can use the draft without sending it for approval.",
+      );
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
 // A2: each draft is its own doc card; "Send to" on hers is X7's send-up, from her, once, after her
 // turn ended, under the checks a message of hers there meets, with what the card holds.
 it.effect("a teammate's drafts are cards of their own, and Send to raises one Approve card", () =>
@@ -4064,7 +4100,7 @@ it.effect("after the owner's Changes first, her redraft comes back to her to app
       const notYet = yield* Effect.flip(askHerself(early, "Tidewater: one survey day", "C-8"));
       // Her turns are told of a draft waiting on her redraft only while one does.
       const WAITING = "# Drafts back from Changes first (not redrafted yet)";
-      const waitsOnHer = `${WAITING}\n\n- Zoya Sheikh's proposal for Harbourline Hotels (C-7): its new draft goes up with kin_ask_person and draft, or doc_create with draft; Kin puts it back on Rhea Rao's Approve card.`;
+      const waitsOnHer = `${WAITING}\n\n- Zoya Sheikh's proposal for Harbourline Hotels (C-7): its new draft goes up with kin_ask_person and draft, or doc_create with draft; Kin puts it back on Rhea Rao's Approve card and tells Zoya Sheikh itself, so nothing needs relaying to Zoya Sheikh.`;
       assert.notInclude(yield* team.promptOf(early.wakeupId, chatOf("chief")), WAITING);
       assert.strictEqual(
         notYet.message,

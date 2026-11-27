@@ -141,6 +141,7 @@ export interface KinNeedsYouRow {
   readonly kind: "task" | "money" | "waiting";
   readonly title: string;
   readonly detail: string;
+  readonly asking?: string | null;
   readonly late: boolean;
   readonly open: KinNeedsYouOpen;
   /** How many things the row stands for, when it gathers several (Money's "2 things"). */
@@ -211,6 +212,7 @@ export function kinNeedsWaitingRow(
     kind: "waiting",
     title: `${row.label} · ${row.chatTitle}`,
     detail: row.text ?? `Open the chat with ${row.chatTitle}`,
+    asking: row.asking,
     late: false,
     open: { type: "chat", chatId: item.chatId, messageId: item.messageId },
   };

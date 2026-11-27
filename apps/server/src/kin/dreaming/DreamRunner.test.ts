@@ -86,6 +86,7 @@ const dreamJson = (contradictions: ReadonlyArray<object> = []) =>
 /** Run inside the runner: before `deleteDreamBranch`, after it removes a path, and at the end of a good extract turn. */
 type RunnerHooks = {
   beforeDelete: Effect.Effect<void>;
+  beforeMaterial: Effect.Effect<void>;
   removed: (path: string) => Effect.Effect<void>;
   extracted: (workspaceRoot: string) => Effect.Effect<void>;
 };
@@ -179,6 +180,7 @@ const fixture = <A, E>(
     const charged: Array<string> = [];
     const hooks: RunnerHooks = {
       beforeDelete: Effect.void,
+      beforeMaterial: Effect.void,
       removed: () => Effect.void,
       extracted: () => Effect.void,
     };
@@ -290,6 +292,10 @@ const fixture = <A, E>(
       FileSystem.FileSystem,
       Effect.map(FileSystem.FileSystem, (real) => ({
         ...real,
+        writeFileString: (target, content, options) =>
+          (target.endsWith("/.kin-dream/material.json") ? hooks.beforeMaterial : Effect.void).pipe(
+            Effect.andThen(real.writeFileString(target, content, options)),
+          ),
         remove: (target: string, options?: Parameters<typeof real.remove>[1]) =>
           real.remove(target, options).pipe(Effect.tap(() => hooks.removed(target))),
       })),
@@ -484,7 +490,7 @@ it.live("a fixture dream lands its changes on the default branch and records dre
       expect(row?.endedAt).toBeTypeOf("number");
       expect(notices).toEqual([]);
       const fs = yield* FileSystem.FileSystem;
-      expect(yield* fs.exists(`${root}/state/dreams/${outcome.dreamId}`)).toBe(false);
+      expect(yield* fs.exists(turns[0]!.workspaceRoot)).toBe(false);
     }),
   ),
 );
@@ -596,7 +602,7 @@ it.live.each([
         expect(outcome._tag).toBe("failed");
         if (outcome._tag === "failed")
           expect(outcome.failures).toEqual([
-            "Kin couldn't save a memory update because memory changed while Kin was working on it.",
+            "Kin couldn't save the nightly memory update because memory changed while it ran.",
           ]);
         expect(
           yield* git(root, ["--git-dir", remote, "ls-tree", "-r", "--name-only", moving]),
@@ -650,18 +656,27 @@ it.live("a dream never sees a quote the owner can't open, and a stated item keep
   ),
 );
 
-it.live("a dream clears scratch a crashed dream left and refuses a symlinked dreams folder", () =>
+it.live("dream recovery removes recorded scratch and refuses a symlinked dreams folder", () =>
   fixture(({ root, turns }) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const runner = yield* DreamRunner.DreamRunner;
-      const crashed = `${root}/state/dreams/dream_20261107_crashed`;
+      const sql = yield* SqlClient.SqlClient;
+      const crashedId = "dream_20261107_0123456789ab";
+      const crashed = `${root}/state/dreams/${crashedId}`;
+      const unrelated = `${root}/state/dreams/dream_20261107_bcdefghjkmnp`;
+      yield* fs.makeDirectory(unrelated, { recursive: true });
+      yield* sql`INSERT INTO kin_dream_runs (org_id, owner_date, dream_id, full, status, branch, material_from, material_until, started_at)
+        VALUES (${orgId}, '2026-11-07', ${crashedId}, 0, 'running', 'dream/2026-11-07', 0, 0, 0)`;
       yield* fs.makeDirectory(`${crashed}/claims`, { recursive: true });
       yield* fs.writeFileString(`${crashed}/claims/left.md`, "Left by a crash\n");
+      yield* runner.drain(orgId);
+      expect((yield* runRow())[0]?.status).toBe("failed");
+      expect(yield* fs.exists(crashed)).toBe(false);
       const outcome = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-08" });
       expect(outcome._tag).toBe("succeeded");
       expect(turns).toHaveLength(1);
-      expect(yield* fs.exists(crashed)).toBe(false);
+      expect(yield* fs.exists(unrelated)).toBe(true);
 
       yield* fs.remove(`${root}/state/dreams`, { recursive: true });
       yield* fs.makeDirectory(`${root}/outside/dream_20261108_victim`, { recursive: true });
@@ -679,6 +694,34 @@ it.live("a dream clears scratch a crashed dream left and refuses a symlinked dre
       );
     }),
   ),
+);
+
+it.live.each(["fails", "is interrupted"] as const)(
+  "dream scratch is removed when preparation %s",
+  (exit) =>
+    fixture(({ root, hooks, turns }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const runner = yield* DreamRunner.DreamRunner;
+        const preparing = yield* Deferred.make<void>();
+        hooks.beforeMaterial =
+          exit === "fails"
+            ? Effect.die(new Error("Fixture material write failed"))
+            : Deferred.succeed(preparing, undefined).pipe(Effect.andThen(Effect.never));
+        const fiber = yield* runner
+          .run(orgId, { full: false, ownerDate: "2026-11-08" })
+          .pipe(Effect.forkScoped);
+        if (exit === "is interrupted") {
+          yield* Deferred.await(preparing);
+          expect(yield* fs.readDirectory(`${root}/state/dreams`)).toHaveLength(1);
+          yield* Fiber.interrupt(fiber);
+        } else {
+          expect((yield* Fiber.join(fiber))._tag).toBe("failed");
+        }
+        expect(turns).toEqual([]);
+        expect(yield* fs.readDirectory(`${root}/state/dreams`)).toEqual([]);
+      }),
+    ),
 );
 
 it.live("a cancel after the dream decides returns false and the outcome stands", () =>
@@ -758,6 +801,7 @@ it.live.each([
         expect(row?.status).toBe("failed");
         expect(row?.failure).toContain(failure);
         expect(row?.head).toBeNull();
+        expect(yield* (yield* FileSystem.FileSystem).exists(turns[0]!.workspaceRoot)).toBe(false);
         expect(notices).toEqual([]);
         // The stop switch's fan-out finds the running turn's thread.
         expect(turnThreads).toEqual(
@@ -785,7 +829,7 @@ it.live("unresolved contradictions get a resolve turn on the same model before t
 );
 
 it.live("cancelling a rerun deletes that night's branch and ends the run cancelled", () =>
-  fixture(({ git, remote, root, behave, notices }) =>
+  fixture(({ git, remote, root, behave, notices, turns }) =>
     Effect.gen(function* () {
       const runner = yield* DreamRunner.DreamRunner;
       const first = yield* runner.run(orgId, { full: false, ownerDate: "2026-11-08" });
@@ -803,6 +847,7 @@ it.live("cancelling a rerun deletes that night's branch and ends the run cancell
       );
       expect(yield* runner.cancel(orgId)).toBe(true);
       expect((yield* Fiber.join(fiber))._tag).toBe("cancelled");
+      expect(yield* (yield* FileSystem.FileSystem).exists(turns[1]!.workspaceRoot)).toBe(false);
       expect(yield* git(root, ["ls-remote", "--heads", remote])).not.toContain("dream/");
       const rows = yield* runRow();
       expect(rows).toHaveLength(1);

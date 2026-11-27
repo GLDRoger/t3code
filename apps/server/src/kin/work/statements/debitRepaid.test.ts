@@ -25,21 +25,28 @@ import * as KinPersistence from "../../persistence/KinPersistence.ts";
 import * as KinRecords from "../KinRecords.ts";
 import { presetDefinition } from "../registers.ts";
 import { takeAlerts } from "./bankAlerts.ts";
+import * as BankAlertReader from "./BankAlertReader.ts";
+import {
+  approveFixtureAlertSender,
+  fixtureBankAlertReader,
+  seedFixtureAlertMailbox,
+} from "./bankAlerts.testkit.ts";
 import { ensureBankList, findBankList } from "./bankList.ts";
 import { repaidMatches } from "./debitRepaid.ts";
 import { drawRepaid, markRepaid, repaidLine, undoRepaid } from "./repaidCard.ts";
 import { bankDebitSenses } from "../../pulse/senses/bank.ts";
 
-// Invented: Ambermill's owner Rhea gets HDFC alerts; Zoya and Arjun paid bills from their own cards.
+// Invented: Ambermill's owner Rhea gets Harbor Bank alerts; Zoya and Arjun paid bills from their own cards.
 const orgId = KinOrgId.make("ambermill-repaid");
 const rhea = KinPersonId.make("ambermill-rhea");
 const NOW = Date.parse("2026-11-24T12:00:00Z");
 const AUTH = [
-  "mx.google.com; dkim=pass header.i=@hdfcbank.net; spf=pass smtp.mailfrom=alerts@hdfcbank.net; dmarc=pass (p=REJECT) header.from=hdfcbank.net",
+  "mx.google.com; dkim=pass header.i=@harborbank.example; spf=pass smtp.mailfrom=alerts@harborbank.example; dmarc=pass (p=REJECT) header.from=harborbank.example",
 ];
 
 const layer = Layer.mergeAll(
   KinRecords.layer,
+  Layer.succeed(BankAlertReader.BankAlertReader, fixtureBankAlertReader),
   Layer.mock(KinIdentity)({
     owner: { _tag: "person" as const, orgId, personId: rhea },
     isAgentThread: () => true,
@@ -112,9 +119,11 @@ it.layer(layer)((it) => {
         });
 
         // A UPI debit alert names its payee: Kin's entry for it carries the name it read.
+        yield* approveFixtureAlertSender(orgId, rhea);
+        yield* seedFixtureAlertMailbox(orgId, "work-mail");
         const upi = (reference: string, rupees: string, payee: string) => ({
-          messageId: `<${reference}@hdfc>`,
-          fromAddress: "alerts@hdfcbank.net",
+          messageId: `<${reference}@harborbank.example>`,
+          fromAddress: "alerts@harborbank.example",
           subject: "You have done a UPI txn. Check details!",
           date: "Tue, 24 Nov 2026 10:00:00 +0530",
           authResults: AUTH,
@@ -154,7 +163,7 @@ it.layer(layer)((it) => {
         }));
         assert.sameDeepMembers(matches, [
           {
-            title: "ZOYA RAO zoya.rao@invented",
+            title: "ZOYA RAO",
             minor: 12_400_00,
             partner: "Zoya Rao",
             repays: ["EXP-4", "EXP-7", "EXP-9"],
@@ -163,7 +172,7 @@ it.layer(layer)((it) => {
           },
           // A rupee short, or counting an expense from after it: nothing adds up, nothing is split.
           {
-            title: "ZOYA RAO zoya.rao@invented",
+            title: "ZOYA RAO",
             minor: 12_399_00,
             partner: "Zoya Rao",
             repays: undefined,
@@ -171,7 +180,7 @@ it.layer(layer)((it) => {
             marked: undefined,
           },
           {
-            title: "ZOYA RAO zoya.rao@invented",
+            title: "ZOYA RAO",
             minor: 13_400_00,
             partner: "Zoya Rao",
             repays: undefined,
@@ -180,7 +189,7 @@ it.layer(layer)((it) => {
           },
           // Arjun's 2,000 adds up to EXP-5, but the same money was marked repaid by hand that day.
           {
-            title: "ARJUN MEHTA arjun.m@invented",
+            title: "ARJUN MEHTA",
             minor: 2_000_00,
             partner: "Arjun Mehta",
             repays: ["EXP-5"],
@@ -246,7 +255,7 @@ const company = Effect.fn("test.company")(function* (org: KinOrgId) {
     sql,
     expense: (key: string, rupees: number, on: string, fields: object = {}) =>
       row(key, "expenses", `Phone bill ${key}`, rupees, on, { fundedBy: zoya, ...fields }, "done"),
-    debit: (key: string, rupees: number, on: string, title = "ZOYA RAO zoya.rao@invented") =>
+    debit: (key: string, rupees: number, on: string, title = "ZOYA RAO") =>
       row(key, bank.id, title, rupees, on, { direction: "debit" }, "open"),
     credit: (key: string, rupees: number, on: string) =>
       row(key, bank.id, "Tidewater Freight", rupees, on, { direction: "credit" }, "open"),

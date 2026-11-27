@@ -47,6 +47,7 @@ import type { KinLink } from "./kinHost.ts";
 import { KIN_SCOPE_ALL, kinScopeNote, type KinViewerScope } from "./kinViewerScope.ts";
 import { kinLinkToOpen } from "./kinChatFeed.ts";
 import { kinLinkLabel } from "./kinLinks.ts";
+import type { KinDestination } from "./kinNavigation.ts";
 import {
   formatKinTime,
   kinAgentAvatar,
@@ -114,10 +115,54 @@ export const kinWorkOffline = (place: KinWorkPageName) => {
     detail: `${name} ${plural ? "come" : "comes"} back when the connection does.`,
   };
 };
-export const KIN_WORK_GONE = {
-  title: "This task isn't here any more",
-  detail: "Open Tasks to see what there is now.",
+const KIN_KEY_PREFIX = /^([A-Z][A-Z0-9]*)-\d+$/;
+
+export interface KinWorkEntryKind {
+  /** Singular noun as read in a sentence: "task", "invoice", "client", "Bank transaction", "entry". */
+  readonly noun: string;
+  /** Heading / bar title: "Task", "Invoice", "Client", "Bank transaction", "Entry". */
+  readonly title: string;
+  /** The web sidebar's and the phone dock's place that shows entries of this kind. */
+  readonly place: "Tasks" | "Money" | "Clients" | "Docs";
+}
+
+// Docs shows every list Money doesn't (`kinPlaceLists`), so an entry of a list people made is there.
+const KIN_ENTRY_FALLBACK_KIND: KinWorkEntryKind = {
+  noun: "entry",
+  title: "Entry",
+  place: "Docs",
 };
+
+const KIN_ENTRY_KINDS: Readonly<Record<string, KinWorkEntryKind>> = {
+  W: { noun: "task", title: "Task", place: "Tasks" },
+  INV: { noun: "invoice", title: "Invoice", place: "Money" },
+  EXP: { noun: "expense", title: "Expense", place: "Money" },
+  RCT: { noun: "receipt", title: "Receipt", place: "Money" },
+  QT: { noun: "quote", title: "Quote", place: "Money" },
+  CN: { noun: "credit note", title: "Credit note", place: "Docs" },
+  BNK: { noun: "Bank transaction", title: "Bank transaction", place: "Docs" },
+  BTX: { noun: "Bank transaction", title: "Bank transaction", place: "Docs" },
+  BANK: { noun: "Bank transaction", title: "Bank transaction", place: "Docs" },
+  BKTX: { noun: "Bank transaction", title: "Bank transaction", place: "Docs" },
+  BK9: { noun: "Bank transaction", title: "Bank transaction", place: "Docs" },
+  DT: { noun: "date", title: "Date", place: "Money" },
+  G: { noun: "goal", title: "Goal", place: "Money" },
+  C: { noun: "client", title: "Client", place: "Clients" },
+  CT: { noun: "contact", title: "Contact", place: "Clients" },
+  P: { noun: "project", title: "Project", place: "Clients" },
+  M: { noun: "milestone", title: "Milestone", place: "Clients" },
+  DL: { noun: "deal", title: "Deal", place: "Clients" },
+  D: { noun: "doc", title: "Doc", place: "Docs" },
+};
+
+/** What kind of entry a link key names from its prefix, else a plain entry. */
+export function kinWorkEntryKind(key: string | null | undefined): KinWorkEntryKind {
+  if (key == null) return KIN_ENTRY_FALLBACK_KIND;
+  const match = KIN_KEY_PREFIX.exec(key);
+  if (match === null) return KIN_ENTRY_FALLBACK_KIND;
+  return KIN_ENTRY_KINDS[match[1]!] ?? KIN_ENTRY_FALLBACK_KIND;
+}
+
 /** One plain line for a missing, malformed, or unshared link; never says which of those it is. */
 export const KIN_UNAVAILABLE_LINK = {
   doc: "This doc doesn't exist or isn't shared with you.",
@@ -127,10 +172,96 @@ export const KIN_UNAVAILABLE_LINK = {
   client: "This client doesn't exist or isn't shared with you.",
   project: "This project doesn't exist or isn't shared with you.",
 } as const;
-export const KIN_WORK_ITEM_FAILED = {
-  title: "Couldn't load this task",
-  detail: KIN_CHECK_CONNECTION,
+
+/** Shared missing/unshared sentence for a Work entry link, naming its kind when the key says it. */
+export function kinUnavailableEntryLine(key: string | null | undefined): string {
+  return `This ${kinWorkEntryKind(key).noun} doesn't exist or isn't shared with you.`;
+}
+
+const KIN_PLACE_DESTINATION: Readonly<Record<KinWorkEntryKind["place"], KinDestination>> = {
+  Tasks: "tasks",
+  Money: "money",
+  Clients: "clients",
+  Docs: "docs",
 };
+
+/** A missing-link screen's kind when the link carries no valid record key. */
+export type KinMissingLinkKind =
+  | "task"
+  | "client"
+  | "contact"
+  | "project"
+  | "milestone"
+  | "doc"
+  | "date"
+  | "entry";
+
+const KIN_MISSING_LINK_KINDS: Readonly<Record<KinMissingLinkKind, KinWorkEntryKind>> = {
+  task: KIN_ENTRY_KINDS.W!,
+  client: KIN_ENTRY_KINDS.C!,
+  contact: KIN_ENTRY_KINDS.CT!,
+  project: KIN_ENTRY_KINDS.P!,
+  milestone: KIN_ENTRY_KINDS.M!,
+  doc: KIN_ENTRY_KINDS.D!,
+  date: KIN_ENTRY_KINDS.DT!,
+  entry: KIN_ENTRY_FALLBACK_KIND,
+};
+
+function kinPlaceDetail(kind: KinWorkEntryKind): string {
+  return `Open ${kind.place} to see ${kind.noun === "client" || kind.noun === "contact" ? "who" : "what"} there is now.`;
+}
+
+function kinWorkPlaceDetail(
+  kind: KinWorkEntryKind,
+  open?: ReadonlyArray<KinDestination> | null,
+): string {
+  if (open === undefined) return kinPlaceDetail(kind);
+  if (open === null) return kinPlaceDetail(KIN_ENTRY_FALLBACK_KIND);
+  if (open.includes(KIN_PLACE_DESTINATION[kind.place])) return kinPlaceDetail(kind);
+  if (open.includes(KIN_PLACE_DESTINATION[KIN_ENTRY_FALLBACK_KIND.place])) {
+    return kinPlaceDetail(KIN_ENTRY_FALLBACK_KIND);
+  }
+  return "Open Chats to see what there is now.";
+}
+
+/**
+ * Where to look on a malformed link, from the same table as `kinWorkGone`. When `open` lists the
+ * viewer's destinations and the kind's place is off for them, falls back to Docs if open, else Chats.
+ */
+export function kinWorkMissingLinkDetail(
+  kind: KinMissingLinkKind | null,
+  open?: ReadonlyArray<KinDestination> | null,
+): string {
+  return kinWorkPlaceDetail(
+    kind === null ? KIN_ENTRY_FALLBACK_KIND : KIN_MISSING_LINK_KINDS[kind],
+    open,
+  );
+}
+
+/** Missing-entry page copy shared by web and phone, matching `kinUnavailableEntryLine`. */
+export function kinWorkGone(
+  key?: string | null,
+  open?: ReadonlyArray<KinDestination> | null,
+): {
+  readonly title: string;
+  readonly detail: string;
+} {
+  const kind = kinWorkEntryKind(key);
+  return {
+    title: kinUnavailableEntryLine(key),
+    detail: kinWorkPlaceDetail(kind, open),
+  };
+}
+
+export function kinWorkItemFailed(key?: string | null): {
+  readonly title: string;
+  readonly detail: string;
+} {
+  return {
+    title: `Couldn't load this ${kinWorkEntryKind(key).noun}`,
+    detail: KIN_CHECK_CONNECTION,
+  };
+}
 export const KIN_WORK_TITLE_MAX = 280;
 /** Where a title's counter shows: nothing typed is ever cut, so the limit is said before Save. */
 const KIN_WORK_TITLE_COUNT_FROM = 240;

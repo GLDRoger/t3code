@@ -810,6 +810,15 @@ export const restore = Effect.fn("KinDocs.restore")(function* (
   );
 });
 
+export const savedFile = Effect.fn("KinDocs.savedFile")(function* (
+  orgId: KinOrgId,
+  originKey: string,
+) {
+  const made = yield* madeBy(orgId, originKey);
+  if (made === undefined) return undefined;
+  return yield* retried(orgId, made.recordId, originKey);
+});
+
 /**
  * A generated file as the next version of the doc `docOrigin` names, made with it on first use.
  * `originKey` is the build's own, so collecting the same build again changes nothing.

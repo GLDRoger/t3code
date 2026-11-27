@@ -481,7 +481,10 @@ hosting", "the GST filing is due on the 20th". It records the entry and answers 
 - **Subscriptions.** Tell an agent what you pay for each month or year, with a screenshot or the
   bill, and it keeps them under Subscriptions with what renews next.
 - **Budgets and goals.** **Add → Set a budget** or **Add goal**. Goals show to the whole team.
-- **Coming-up dates** lists renewals, dues and milestones in one calendar.
+- **Coming-up dates** lists renewals, dues and milestones in one calendar. Beside them it shows the
+  events in the main calendar of each mailbox you connected yourself; owners and co-owners also see
+  the company's. Tap an event to open it in Google Calendar or Outlook. **Calendar events** hides
+  them, and each device remembers your choice. Kin reads them as you look and keeps no copy.
 - **Currencies.** Every amount stays in its own currency, and totals are kept per currency. Set
   **Exchange rates** to see an "about" figure beside foreign amounts; invoices, receipts and exports
   always keep their own currency.
@@ -521,7 +524,8 @@ account is for ("accounts@ is for invoices") and it sends from the right one. A 
 from the account and thread the email is in.
 
 Anyone can also connect their own mail under **Settings → Connections → Your mailboxes**, one
-account or several (**Connect another mailbox**). Agents read them only when working for that person
+account or several (**Connect another mailbox**). Their calendars' events show beside your
+coming-up dates, to you alone. Agents read them only when working for that person
 alone: in their own direct chats, and for the owner also when Kin prepares something for him. Never
 in a shared or group chat, and Kin never watches them for the company. Only they confirm what goes
 from them. The owner can make an account connected as the company's his own without a new sign-in:

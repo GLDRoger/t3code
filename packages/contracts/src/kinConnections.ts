@@ -2,7 +2,7 @@ import * as Rpc from "effect/rpc/Rpc";
 import * as Schema from "effect/Schema";
 
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
-import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
+import { IsoDateTime, NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinChatError, KinOrgId, KinPersonId, KinSendTry } from "./kinChat.ts";
 
 /**
@@ -398,6 +398,43 @@ export const KinMyMailboxRemoveInput = Schema.Struct({
   connectionId: Schema.optional(KinConnectionId),
 });
 export type KinMyMailboxRemoveInput = typeof KinMyMailboxRemoveInput.Type;
+export const KinMineCalendarInput = Schema.Struct({
+  orgId: KinOrgId,
+  from: IsoDateTime,
+  to: IsoDateTime,
+  fresh: Schema.optional(Schema.Boolean),
+});
+export type KinMineCalendarInput = typeof KinMineCalendarInput.Type;
+
+export const KinCalendarSource = Schema.Struct({
+  connectionId: KinConnectionId,
+  service: Schema.Literals(["google", "microsoft"]),
+  account: Schema.NullOr(Schema.String),
+  company: Schema.Boolean,
+  status: Schema.Literals(["ok", "no_calendar_permission", "signed_out", "unreachable", "busy"]),
+});
+export type KinCalendarSource = typeof KinCalendarSource.Type;
+
+export const KinCalendarEvent = Schema.Struct({
+  connectionId: KinConnectionId,
+  id: Schema.String.check(Schema.isMaxLength(200)),
+  title: Schema.NullOr(Schema.String.check(Schema.isMaxLength(300))),
+  start: Schema.String,
+  end: Schema.NullOr(Schema.String),
+  allDay: Schema.Boolean,
+  zone: Schema.NullOr(Schema.String),
+  link: Schema.NullOr(Schema.String),
+  repeats: Schema.Boolean,
+});
+export type KinCalendarEvent = typeof KinCalendarEvent.Type;
+
+export const KinMineCalendarResult = Schema.Struct({
+  sources: Schema.Array(KinCalendarSource),
+  events: Schema.Array(KinCalendarEvent),
+  more: Schema.Boolean,
+});
+export type KinMineCalendarResult = typeof KinMineCalendarResult.Type;
+
 export const KinConnectionSignInStart = Schema.Struct({
   signInId: Schema.String,
   /** The service's sign-in page, opened in the device's browser. */
@@ -898,6 +935,11 @@ export const KinConnectionRpcs = [
     success: KinMyMailbox,
     error: KinError,
   }),
+  Rpc.make("kin.connections.mineCalendar", {
+    payload: KinMineCalendarInput,
+    success: KinMineCalendarResult,
+    error: KinError,
+  }),
   Rpc.make("kin.connections.mineSignInStart", {
     payload: KinMyMailboxSignInStartInput,
     success: KinConnectionSignInStart,
@@ -1000,6 +1042,7 @@ export const KIN_CONNECTION_RPC_SCOPES = {
   "kin.connections.sendEdited": AuthKinChatScope,
   "kin.connections.saveEdited": AuthKinChatScope,
   "kin.connections.mine": AuthKinChatScope,
+  "kin.connections.mineCalendar": AuthKinChatScope,
   "kin.connections.mineSignInStart": AuthKinChatScope,
   "kin.connections.mineSignInFinish": AuthKinChatScope,
   "kin.connections.mineRemove": AuthKinChatScope,

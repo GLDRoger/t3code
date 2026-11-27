@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { htmlToText, looksLikeSignInMail, messageBody, senderCheck } from "./MailText.ts";
+import { htmlToText, looksLikeSignInMail, messageBody, senderVerdict } from "./MailText.ts";
 
 const b64 = (text: string) => Buffer.from(text).toString("base64url");
 
@@ -11,6 +11,10 @@ describe("MailText", () => {
     ['<p style="font-size:0">tiny</p><p style="font-size:0.9em">kept</p>', "kept"],
     ["<style>p{}</style><script>x()</script>A &amp; B&nbsp;&#x41;", "A & B A"],
     ['<a href="https://client.example/pay">Pay</a>', "Pay (https://client.example/pay)"],
+    [
+      "<table><tr><td>Amount</td><td>INR 3,100.00</td></tr><tr><th>Date</th></tr></table>",
+      "Amount INR 3,100.00\nDate",
+    ],
   ])("turns HTML into the text a reader sees: %s", (html, text) => {
     expect(htmlToText(html)).toBe(text);
   });
@@ -40,11 +44,14 @@ describe("MailText", () => {
   });
 
   it.each([
-    [["mx; dkim=pass; spf=pass; dmarc=pass"], "passed"],
-    [["mx; dkim=pass; spf=fail; dmarc=fail"], "failed"],
-    [["mx; dkim=pass; spf=pass"], "passed"],
+    [["mx; dkim=pass; spf=pass; dmarc=pass header.from=client.example"], "passed"],
+    [["mx; dkim=pass; spf=fail; dmarc=fail header.from=client.example"], "failed"],
+    [
+      ["mx; dkim=pass header.d=client.example; spf=pass smtp.mailfrom=reply@mail.client.example"],
+      "passed",
+    ],
     [[], "not checked"],
   ])("reads the receiving server's check of the sender", (results, verdict) => {
-    expect(senderCheck(results)).toBe(verdict);
+    expect(senderVerdict(results, "client.example")).toBe(verdict);
   });
 });

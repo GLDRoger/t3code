@@ -6,7 +6,8 @@ import * as Path from "effect/Path";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import { McpSchema, Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool } from "effect/ai";
+import { turnEventToolkit } from "../lead/eventIds.ts";
 
 import { ServerConfig } from "../../config.ts";
 import { McpInvocationContext } from "../../mcp/McpInvocationContext.ts";
@@ -53,7 +54,7 @@ const shared = {
 };
 
 /** Files Kin makes from a recipe in the call, files the agent made, and recipes the agent writes. */
-export const KinDocumentToolkit = Toolkit.make(
+export const KinDocumentToolkit = turnEventToolkit(
   Tool.make("kin_document", {
     ...shared,
     description:

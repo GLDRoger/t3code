@@ -1,4 +1,4 @@
-import { KinChatError, type KinGithubTrigger, type KinOrgId } from "@t3tools/contracts";
+import { KinChatError, type KinOrgId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
@@ -6,10 +6,8 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import { POSTING, receiptOf } from "./boundReview.ts";
 import { sendIssueComment } from "./GitHubWatch.ts";
+import { triageIsOn } from "./githubWatchStore.ts";
 import { issueCommentText } from "./issueCommentText.ts";
-
-export const isTriage = (kind: KinGithubTrigger["kind"]) =>
-  kind === "triage" || kind === "triage_reply";
 
 type Turn = { readonly orgId: KinOrgId; readonly wakeupId: string };
 const decodeConversation = Schema.decodeUnknownOption(
@@ -54,6 +52,7 @@ export const boundIssue = Effect.fn("KinGitHubIssue.bound")(function* (turn: Tur
 export const COMMENT_REFUSAL = {
   unbound:
     "kin_github_comment posts only the one comment a new issue's turn is for. Comment anywhere else with gh issue comment.",
+  off: "Issue triage is off for this repository. Nothing was posted. End the turn.",
   again: (ref: string) => `The comment on ${ref} is already posted. Nothing more was posted.`,
   unsure: (ref: string) =>
     `A comment on ${ref} was sent and GitHub never said whether it took it, so Kin sends no other. Nothing was posted.`,
@@ -103,18 +102,10 @@ export const postIssueComment = Effect.fn("KinGitHubIssue.postComment")(function
   const running = sql`EXISTS (SELECT 1 FROM kin_wakeups WHERE org_id = ${lead.orgId}
     AND wakeup_id = ${lead.wakeupId} AND agent_id = ${lead.agentId}
     AND status = 'running' AND aborted_at IS NULL)`;
-  if (input.owner !== undefined)
-    yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id, outcome, at)
-      SELECT org_id, ${ownerFlagKey(key)}, repo, number, ${lead.agentId}, ${input.owner},
-        ${yield* Clock.currentTimeMillis}
-      FROM kin_github_handled WHERE org_id = ${lead.orgId} AND trigger_key = ${key}
-        AND repo = ${repo} AND number = ${number} AND outcome = 'woke' AND ${running}
-      ON CONFLICT (org_id, trigger_key) DO NOTHING`;
   const already = (url: string | null) => {
     const receipt = receiptOf(url);
     return receipt._tag === "unknown" ? COMMENT_REFUSAL.unsure(ref) : COMMENT_REFUSAL.again(ref);
   };
-  if (bound.url !== null) return yield* refuse(already(bound.url));
 
   const [agent] = yield* sql<{ name: string }>`SELECT name FROM kin_leads
     WHERE org_id = ${lead.orgId} AND agent_id = ${lead.agentId}`;
@@ -135,10 +126,18 @@ export const postIssueComment = Effect.fn("KinGitHubIssue.postComment")(function
     }
   }
   const comment = issueCommentText(input.body, agent?.name ?? "Agent", repo, people);
-  if ("refusal" in comment) return yield* refuse(comment.refusal);
 
   const claimed = yield* sql.withTransaction(
     Effect.gen(function* () {
+      if (!(yield* triageIsOn(lead.orgId, repo))) return yield* refuse(COMMENT_REFUSAL.off);
+      if (input.owner !== undefined)
+        yield* sql`INSERT INTO kin_github_handled (org_id, trigger_key, repo, number, agent_id, outcome, at)
+          SELECT org_id, ${ownerFlagKey(key)}, repo, number, ${lead.agentId}, ${input.owner},
+            ${yield* Clock.currentTimeMillis}
+          FROM kin_github_handled WHERE org_id = ${lead.orgId} AND trigger_key = ${key}
+            AND repo = ${repo} AND number = ${number} AND outcome = 'woke' AND ${running}
+          ON CONFLICT (org_id, trigger_key) DO NOTHING`;
+      if (bound.url !== null || "refusal" in comment) return false;
       const claimed = yield* sql`UPDATE kin_github_handled SET review_url = ${POSTING}
       WHERE org_id = ${lead.orgId} AND trigger_key = ${key} AND review_url IS NULL
       AND repo = ${repo} AND number = ${number} AND outcome = 'woke'
@@ -150,6 +149,8 @@ export const postIssueComment = Effect.fn("KinGitHubIssue.postComment")(function
       return true;
     }),
   );
+  if (bound.url !== null) return yield* refuse(already(bound.url));
+  if ("refusal" in comment) return yield* refuse(comment.refusal);
   if (!claimed) {
     const current = yield* boundIssue(lead);
     return yield* refuse(current?.url == null ? COMMENT_REFUSAL.unbound : already(current.url));

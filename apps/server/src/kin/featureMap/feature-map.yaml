@@ -46,7 +46,7 @@ features:
     web: [home, chat]
     phone: [tab:chats, KinChat]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    tools: [kin_chat_post, kin_chat_read, kin_react, kin_skip]
+    tools: [kin_chat_post, kin_chat_read, kin_react, kin_send, kin_skip]
     proof:
       - apps/server/src/kin/chat/KinChatService.test.ts
       - apps/server/src/kin/lead/ChatWake.test.ts
@@ -1243,6 +1243,23 @@ features:
       - packages/client-runtime/src/kin/kinBrand.test.ts
       - packages/client-runtime/src/kin/kinTemplates.test.ts
 
+  - id: bank-alert-addresses
+    name: Bank alert addresses
+    tab: settings
+    web: [settings, section:Company details, dialog:Add bank alert address]
+    phone: [SettingsKin, KinCompany, KinBankSenderAdd]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      Lists every bank alert address Kin counts, is waiting on the owner for in chat, or declined,
+      with its bank, approved account endings, recorded and held counts, and who decided and when.
+      The owner or a co-owner can add an address by hand or remove a counted one; waiting rows are
+      answered only on the owner's card in chat. Teammates do not see the section.
+    proof:
+      - packages/client-runtime/src/kin/kinBankSenders.test.ts
+      - apps/server/src/kin/work/statements/bankSenders.test.ts
+      - apps/web/src/kin/KinSettingsMoved.browser.test.tsx
+
   - id: kins-computer
     name: Kin's computer, its space and backups, what stops agents now, and the fixes
     tab: settings
@@ -1309,9 +1326,10 @@ features:
       When the same hold-up keeps happening and a setting would end it, Kin puts one silent card in
       the owner's chat with Chief of staff (so it waits in Needs you); Do it makes the same change
       the setting's own control makes: a teammate's access to an agent, the daily limit one step up,
-      or resuming a paused connection or agent. Settings lists each suggestion and what came of it;
-      a done one opens where that setting lives, and a put-off one can Ask again. The list is on
-      web only; on the phone the cards still come in Needs you.
+      resuming a paused connection or agent, or counting a bank alert address's mail. Settings lists
+      each suggestion and what came of it; a done one opens where that setting lives, and a put-off
+      one can Ask again, except a bank alert address, whose No is undone by adding it again. The
+      list is on web only; on the phone the cards still come in Needs you.
     proof:
       - apps/server/src/kin/recommend/KinRecommend.test.ts
       - apps/web/src/kin/KinRecommendations.browser.test.tsx
@@ -1844,3 +1862,11 @@ unlisted:
   "rpc:kin.people.setOwnerName": Called by the kin-verify seed (scripts/kin-verify/seed.ts); no client calls it.
   "rpc:kin.refreshes.announce": Called by the host CLI (apps/server/src/kin/cli/announce.ts) from the owner's session.
   "rpc:kin.open.read": Served; clients follow kin.open.subscribe instead, and an agent's list_waiting reads the same list on the host.
+  "rpc:kin.mailRules.create": Served; the company mailbox rule form has not shipped.
+  "rpc:kin.mailRules.pause": Served; the company mailbox rule controls have not shipped.
+  "rpc:kin.mailRules.resume": Served; the company mailbox rule controls have not shipped.
+  "rpc:kin.mailRules.remove": Served; the company mailbox rule controls have not shipped.
+  "rpc:kin.mailRules.list": Served; the company mailbox rule list has not shipped.
+  "rpc:kin.mailRules.history": Served; the company mailbox rule history has not shipped.
+  "rpc:kin.mailRules.preview": Served; the company mailbox rule preview has not shipped.
+  "rpc:kin.mailRules.runNow": Served; the company mailbox rule controls and lead wake have not shipped.
