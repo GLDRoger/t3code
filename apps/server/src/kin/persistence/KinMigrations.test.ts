@@ -63,6 +63,7 @@ const tableNames = [
   "kin_bank_senders",
   "kin_bank_statement_entries",
   "kin_bank_statements",
+  "kin_bill_mail",
   "kin_bill_reads",
   "kin_bill_requests",
   "kin_bill_sender_mail",
@@ -2384,15 +2385,28 @@ describe("Kin migrations", () => {
         VALUES ('org', 'hash', 'attachment', 'chat', 'message', 'bill.png', 'image', 'image/png', 8,
           'batch', 0, 'finance', 'chat', 'widget', 'rhea', 1, 'read', '{"amount":"1.00"}', 'expense')`;
         const before = yield* sql`SELECT * FROM kin_bill_reads`;
-        assert.deepStrictEqual(yield* runKinMigrations(), [[233, "BillCrops"]]);
+        assert.deepStrictEqual(yield* runKinMigrations(), [
+          [233, "BillCrops"],
+          [234, "BillMail"],
+        ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, [
-          { ...before[0], parent_sha256: null, cut_page: null, cut_box_json: null },
+          {
+            ...before[0],
+            parent_sha256: null,
+            cut_page: null,
+            cut_box_json: null,
+            mail_from: null,
+            mail_at: null,
+          },
         ]);
         yield* sql`UPDATE kin_bill_reads SET parent_sha256 = 'parent', cut_page = 1,
           cut_box_json = '[0,0,50,50]'`;
         const cropped = yield* sql`SELECT * FROM kin_bill_reads`;
-        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 233`;
-        assert.deepStrictEqual(yield* runKinMigrations(), [[233, "BillCrops"]]);
+        yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 233`;
+        assert.deepStrictEqual(yield* runKinMigrations(), [
+          [233, "BillCrops"],
+          [234, "BillMail"],
+        ]);
         assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bill_reads`, cropped);
         assert.deepStrictEqual(yield* runKinMigrations(), []);
       }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
