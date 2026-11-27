@@ -19,7 +19,7 @@ const layer = Delivery.layer.pipe(
   Layer.provideMerge(Sqlite.layerMemory),
 );
 
-it.effect.each(["reminder", "scheduled_task"] as const)(
+it.effect.each(["reminder", "scheduled_task", "card_tap"] as const)(
   "picks the right reply bubble for a %s delivery",
   (kind) =>
     Effect.gen(function* () {
@@ -47,6 +47,41 @@ it.effect.each(["reminder", "scheduled_task"] as const)(
         VALUES ('wake', ${orgId}, ${agentId}, 'thread', 'test', 0, 0, 'completed', '["event"]')`;
       yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
         VALUES (${eventId}, ${orgId}, ${agentId}, 'deferral.due', 'P1', '{}', 0, 0, 'done', 'wake')`;
+      if (kind === "card_tap") {
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_role, kind, body, mentions_json, status, created_at)
+          VALUES ('notice-card', ${orgId}, ${chatId}, 1, 'system', 'member', 'system', '', '[]', 'posted', ${at})`;
+        const state = JSON.stringify({
+          answer: {
+            optionId: "option-2",
+            personId: "owner",
+            via: "tap",
+            emoji: null,
+            answeredAt: at,
+          },
+        });
+        yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type,
+          revision, state_json, awaiting_json, updated_at, closed_at)
+          VALUES (${widgetId}, ${orgId}, ${chatId}, 'notice-card', 'native', 'choice', 2, ${state}, '[]', ${at}, ${at})`;
+        yield* sql`INSERT INTO kin_lead_deliveries (org_id, event_id, kind, agent_id, chat_id, widget_id,
+            widget_type, state_json, fallback_body, deadline_at, status, created_at, updated_at)
+          VALUES (${orgId}, ${eventId}, 'card_tap', ${agentId}, ${chatId}, ${widgetId}, 'choice', '{}', '', 60000, 'pending', 0, 0)`;
+        yield* delivery.settle(orgId);
+        assert.deepStrictEqual(
+          yield* sql`SELECT status, message_id AS id FROM kin_lead_deliveries
+          WHERE event_id = ${eventId}`,
+          [{ status: "delivered", id: null }],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT revision, state_json, closed_at FROM kin_widgets
+          WHERE widget_id = ${widgetId}`,
+          [{ revision: 2, state_json: state, closed_at: at }],
+        );
+        assert.deepStrictEqual(yield* sql`SELECT message_id AS id FROM kin_messages`, [
+          { id: "notice-card" },
+        ]);
+        return;
+      }
       const baseKey = kind === "reminder" ? "send:kin-send:wake" : "send:reply:answer";
       for (const [index, body] of [
         "The answer.",

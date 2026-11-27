@@ -423,6 +423,13 @@ export class KinChatService extends Context.Service<
       readonly widgetId: KinWidgetId;
       readonly awaiting: ReadonlyArray<KinPersonId>;
     }) => Effect.Effect<boolean, ServiceError>;
+    readonly reopenAnswered: (input: {
+      readonly orgId: KinOrgId;
+      readonly widgetId: KinWidgetId;
+      readonly revision: number;
+      readonly personId: KinPersonId;
+      readonly optionId: string;
+    }) => Effect.Effect<boolean, ServiceError>;
     /** Server-only: what became of a send card's Confirm: sending, then sent or failed. */
     readonly setSendOutcome: (input: {
       readonly orgId: KinOrgId;
@@ -829,6 +836,41 @@ const make = Effect.gen(function* () {
       ),
     );
   const now = DateTime.now.pipe(Effect.map(DateTime.formatIso));
+  const reopenChoice = Effect.fn("KinChatService.reopenChoice")(function* (
+    existing: KinWidget,
+    state: KinChoiceCardState,
+    awaiting: ReadonlyArray<KinPersonId>,
+  ) {
+    const at = yield* now;
+    const widget = yield* repo.updateWidget({
+      ...existing,
+      audience: "chat",
+      state,
+      awaiting,
+      expectedRevision: existing.revision,
+      closedAt: null,
+      updatedAt: at,
+    });
+    for (const personId of new Set(widget.awaiting)) {
+      const item: KinWaitingItem = {
+        orgId: existing.orgId,
+        chatId: widget.chatId,
+        waitingId: yield* decodeWaitingId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie),
+        personId,
+        messageId: widget.messageId,
+        widgetId: widget.widgetId,
+        reason: "question",
+        createdAt: at,
+        resolvedAt: null,
+        resolution: null,
+      };
+      if (yield* repo.addWaiting(item)) {
+        const added = Option.getOrElse(yield* repo.getWaiting(item), () => item);
+        yield* hub.publish({ type: "waiting.updated", orgId: existing.orgId, item: added });
+      }
+    }
+    yield* hub.publish({ type: "widget.updated", orgId: existing.orgId, widget });
+  });
   const identityFor = Effect.fn("KinChatService.identityFor")(function* (
     caller: Caller,
     target: {
@@ -4110,35 +4152,44 @@ const make = Effect.gen(function* () {
       if (card.answer !== null || existing.value.closedAt === null || card.outcome === undefined)
         return false;
       const { outcome: _outcome, ...asked } = card;
-      const at = yield* now;
-      const widget = yield* repo.updateWidget({
-        ...existing.value,
-        audience: "chat",
-        state: asked,
-        awaiting: input.awaiting,
-        expectedRevision: existing.value.revision,
-        closedAt: null,
-        updatedAt: at,
-      });
-      for (const personId of new Set(widget.awaiting)) {
-        const item: KinWaitingItem = {
-          orgId: input.orgId,
-          chatId: widget.chatId,
-          waitingId: yield* decodeWaitingId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie),
-          personId,
-          messageId: widget.messageId,
-          widgetId: widget.widgetId,
-          reason: "question",
-          createdAt: at,
-          resolvedAt: null,
-          resolution: null,
-        };
-        if (yield* repo.addWaiting(item)) {
-          const added = Option.getOrElse(yield* repo.getWaiting(item), () => item);
-          yield* hub.publish({ type: "waiting.updated", orgId: input.orgId, item: added });
-        }
-      }
-      yield* hub.publish({ type: "widget.updated", orgId: input.orgId, widget });
+      yield* reopenChoice(existing.value, asked, input.awaiting);
+      return true;
+    }, transaction),
+    reopenAnswered: Effect.fn("KinChatService.reopenAnswered")(function* (input) {
+      const existing = yield* repo.getWidget(input);
+      if (
+        Option.isNone(existing) ||
+        existing.value.type !== "choice" ||
+        existing.value.closedAt === null ||
+        existing.value.revision !== input.revision
+      )
+        return false;
+      const card = yield* decodeChoiceCard(existing.value.state).pipe(Effect.option);
+      if (
+        Option.isNone(card) ||
+        card.value.outcome !== undefined ||
+        card.value.answer?.via !== "tap" ||
+        card.value.answer.personId !== input.personId ||
+        card.value.answer.optionId !== input.optionId
+      )
+        return false;
+      const sealed = yield* CardPlans.planFor({ ...input, chatId: existing.value.chatId }).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.mapError(cardTapError),
+      );
+      if (sealed !== undefined) return false;
+      const members = yield* repo.listMembers(existing.value);
+      if (
+        !members.some(
+          (member) =>
+            member.leftAt === null &&
+            member.principal._tag === "person" &&
+            member.principal.personId === input.personId,
+        )
+      )
+        return false;
+      const { decidedBy: _decidedBy, ...asked } = card.value;
+      yield* reopenChoice(existing.value, { ...asked, answer: null }, [input.personId]);
       return true;
     }, transaction),
     setSendOutcome: Effect.fn("KinChatService.setSendOutcome")(function* (input) {

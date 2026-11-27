@@ -1985,11 +1985,13 @@ describe("WakeupRunner", () => {
       }).pipe(provideDeterministicTestRuntime),
   );
   it.effect.each([
-    { replied: true, said: ["replied"], state: "done" },
-    { replied: false, said: ["partway"], state: "failed" },
+    { replied: true, said: ["replied"], state: "done", cardTap: false },
+    { replied: false, said: ["partway"], state: "failed", cardTap: false },
+    // A card tap whose turn acted keeps its answer (`LeadDelivery`), so this line is its only word.
+    { replied: false, said: ["partway"], state: "failed", cardTap: true },
   ] as const)(
-    "a turn that fails after visible work says it stopped partway only when no reply came (replied $replied)",
-    ({ replied, said, state }) =>
+    "a turn that fails after visible work says it stopped partway only when no reply came (replied $replied, card tap $cardTap)",
+    ({ replied, said, state, cardTap }) =>
       Effect.gen(function* () {
         const outcomes: Array<string> = [];
         let db: SqlClient.SqlClient | undefined;
@@ -2021,6 +2023,11 @@ describe("WakeupRunner", () => {
           const sql = yield* SqlClient.SqlClient;
           db = sql;
           yield* (yield* KinEventQueue.KinEventQueue).enqueue(laneMessage("asked"));
+          if (cardTap)
+            yield* sql`INSERT INTO kin_lead_deliveries (org_id, event_id, kind, agent_id, chat_id,
+                widget_id, widget_type, state_json, fallback_body, deadline_at, status, created_at, updated_at)
+              VALUES (${orgId}, 'asked', 'card_tap', ${agentId}, 'owner-chat', 'notice-card', 'choice',
+                '{}', '', 3600000, 'pending', 0, 0)`;
           yield* Fiber.join(yield* run());
           assert.deepStrictEqual(outcomes, [...said]);
           assert.deepStrictEqual(yield* sql`SELECT state FROM kin_events`, [{ state }]);
