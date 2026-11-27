@@ -214,7 +214,8 @@ export const KIN_MAIL_RULES = {
   gone: "Kin can't find that mail rule. It may have been removed.",
   backToMailbox: "Back to the mailbox",
   previewIdle: "Preview shows which mail would have matched.",
-  pauseRow: "Stops it until it's resumed. Mail it matches meanwhile shows in its runs as held.",
+  pauseRow:
+    "Stops it until it's resumed. Runs already waiting show as held; mail that arrives meanwhile isn't picked up.",
   resumeRow: "Turns it on again. From then on it runs for you.",
   removeRow: "Stops it for good.",
   goneMailbox: "A mailbox no longer connected",
