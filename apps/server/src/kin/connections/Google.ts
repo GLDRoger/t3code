@@ -464,7 +464,10 @@ const attachmentOf: MailVendor["attachment"] = Effect.fn("KinGoogle.attachment")
     );
     const found = attachmentPart(field(message, "payload"), attachmentId);
     if (found === undefined)
-      return yield* failure("protocol", "Kin couldn't find that mail attachment.");
+      return yield* failure(
+        "protocol",
+        "Kin couldn't find that mail attachment. Read the thread again with mail_read_thread and use its messageId and attachmentId.",
+      );
     const part = { ...found, type: mailFileType(found.name) };
     const problem = checkMailFile(part);
     if (problem !== undefined) return yield* problem;

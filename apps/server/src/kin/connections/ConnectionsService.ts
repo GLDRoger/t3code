@@ -959,7 +959,7 @@ const mailToolMode = (builtin: boolean, tool: ListedTool) =>
   builtin && tool.name === MAIL_TOOL.saveAttachment ? "read" : suggestedMode(tool.definition);
 const saveReadRequired = fail(
   "not_allowed",
-  "Turn on Read for both mail_read_thread and mail_save_attachment before saving a file.",
+  "Saving files from this mailbox is off: Read must be on for mail_read_thread and mail_save_attachment in Settings → Connections. Nothing was saved.",
 );
 const usable = (tool: Parameters<typeof callable>[0]) =>
   callable(tool) && (tool.mode === "read" || tool.mode === "ask");
@@ -2953,7 +2953,10 @@ const make = Effect.gen(function* () {
         current.pausedAt !== null ||
         current.state === "needs_sign_in"
       )
-        return yield* fail("not_allowed", "Kin can no longer read this mailbox.");
+        return yield* fail(
+          "not_allowed",
+          "Kin can no longer read this mailbox. Nothing was saved.",
+        );
       const reads = yield* readable(orgId, current);
       if (
         !reads.some((tool) => tool.name === MAIL_TOOL.read) ||
@@ -2962,7 +2965,10 @@ const make = Effect.gen(function* () {
         return yield* saveReadRequired;
       const [person, ...others] = (yield* peopleBehind(turn))?.askers ?? [];
       if (person === undefined || others.length > 0)
-        return yield* fail("not_allowed", "One person must ask to save a mail attachment.");
+        return yield* fail(
+          "not_allowed",
+          "Only one person's own request can save a mail attachment, and this turn has none or several. Nothing was saved.",
+        );
       return { person, company: reach.company };
     }).pipe(provideSql);
     const asker = yield* admit;
@@ -3018,7 +3024,10 @@ const make = Effect.gen(function* () {
       Effect.gen(function* () {
         const current = yield* admit;
         if (current.person !== asker.person || current.company !== asker.company)
-          return yield* fail("not_allowed", "Kin can no longer read this mailbox.");
+          return yield* fail(
+            "not_allowed",
+            "Kin can no longer read this mailbox. Nothing was saved.",
+          );
         const again = yield* retry;
         if (again !== undefined) return answer(again);
         yield* mark;

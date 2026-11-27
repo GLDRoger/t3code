@@ -190,7 +190,10 @@ const attachmentOf: MailVendor["attachment"] = Effect.fn("KinMicrosoft.attachmen
     );
     const file = { ...listed, type: mailFileType(listed.name) };
     if (file.attachmentId !== attachmentId)
-      return yield* failure("protocol", "Kin couldn't find that mail attachment.");
+      return yield* failure(
+        "protocol",
+        "Kin couldn't find that mail attachment. Read the thread again with mail_read_thread and use its messageId and attachmentId.",
+      );
     const problem = checkMailFile(file);
     if (problem !== undefined) return yield* problem;
     const name = safeMailFileName(file.name);
