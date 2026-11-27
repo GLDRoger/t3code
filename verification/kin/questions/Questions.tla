@@ -11,13 +11,18 @@ EXTENDS Integers, FiniteSets
 
 CONSTANTS Broken, MaxOutages
 
-Agents == {"finance", "chief"}
 Qs == {1, 2}            \* question slots: the second can only be a later ask
+\* Who asks in each slot, Finance first, then the Chief of staff. Nothing reads the asker, so fixing
+\* it per slot keeps one copy of each state where either agent could have asked.
+Asks == <<"finance", "chief">>
 Delay == 2              \* rules.ts defaultDue: the end of the next working day
 RaiseGap == 1           \* rules.ts raiseAt: the next working morning
 DayLong == 1            \* KIN_CHOICE_CARD_TTL_MS: a plain card's day
 Horizon == 7
 DismissalWindow == 3    \* Seven days in planAsk, scaled to fit a repeat after expiry.
+\* A time every reader already finds passed: a due, or a raise time, once the clock is past its last
+\* reader's offset (RaiseGap after a due, Delay after a raise), and a closed question's.
+LongAgo == -1
 
 VARIABLES
   clock,    \* the host's wall clock
@@ -44,7 +49,7 @@ VARIABLES
   renewed,     \* the second ask was prompted by the person returning to the subject
   pend,     \* a broken return trip's answer, kept in memory until after commit
   unsigned, \* asked for another chat of someone who never signed in (people/signedIn.ts)
-  raisedAt, \* when it was raised (-1 before); kept only for one asked for another chat
+  raisedAt, \* when it was raised (-1 before, or LongAgo); kept only for one asked for another chat
   told      \* lapse lines in the chat it was asked for, each with its asker's one turn there
 
 vars == <<clock, up, outages, st, asker, safe, leaves, askedAt, due, raised, raises, card, turns,
@@ -88,7 +93,7 @@ Unchanged(vs) == UNCHANGED vs
    the person's quiet hours or away days (`holdFor`) it is stored with no card. *)
 RecentDismissal(at) == dismissedAt >= 0 /\ at <= dismissedAt + DismissalWindow
 
-Ask(q, a, says, isOut, isOther, isHeld, freshWords, isUnsigned) ==
+Ask(q, says, isOut, isOther, isHeld, freshWords, isUnsigned) ==
   /\ up
   /\ st[q] = "none"
   /\ q = 2 => st[1] # "none"
@@ -101,11 +106,12 @@ Ask(q, a, says, isOut, isOther, isHeld, freshWords, isUnsigned) ==
        freshWords \/ Broken = "forget-dismissal"
   /\ renewed' = (renewed \/ freshWords)
   /\ st' = [st EXCEPT ![q] = "open"]
-  /\ asker' = [asker EXCEPT ![q] = a]
-  /\ leaves' = [leaves EXCEPT ![q] = isOut]
+  /\ asker' = [asker EXCEPT ![q] = Asks[q]]
   /\ safe' = [safe EXCEPT ![q] =
        IF isOther /\ Broken # "default-for-other" THEN FALSE
        ELSE IF Broken = "no-words-check" THEN says ELSE says /\ ~isOut]
+  \* Only a default that can be taken is ever done, so only its truth is kept.
+  /\ leaves' = [leaves EXCEPT ![q] = isOut /\ (safe'[q] \/ Broken = "no-safety")]
   /\ askedAt' = [askedAt EXCEPT ![q] = clock]
   /\ due' = [due EXCEPT ![q] = clock + Delay]
   /\ card' = [card EXCEPT ![q] = ~isHeld]
@@ -146,6 +152,17 @@ Deliver(q) ==
                  turns, done, outside, memo, other, posted, there, dismissedAt, renewed>>
   /\ UNCHANGED lapse
 
+(* Answered, withdrawn or dismissed, nothing reads a question's default, day, hold or raise
+   again: they are cleared, so a closed question keeps one copy. *)
+Forget(q) ==
+  /\ safe' = [safe EXCEPT ![q] = FALSE]
+  /\ due' = [due EXCEPT ![q] = LongAgo]
+  /\ raised' = [raised EXCEPT ![q] = FALSE]
+  /\ raises' = [raises EXCEPT ![q] = 0]
+  /\ posted' = [posted EXCEPT ![q] = FALSE]
+  /\ unsigned' = [unsigned EXCEPT ![q] = FALSE]
+  /\ raisedAt' = [raisedAt EXCEPT ![q] = LongAgo]
+
 (* The person's tap, on the question's card or its raise card (cardAnswers.ts answerCard, in
    the tap's transaction). A closed card takes no tap (KinChatService.actOn). Asked for another
    chat, the tap is marked handled, so it starts no turn in the person's own chat. *)
@@ -158,9 +175,9 @@ Tap(q) ==
   /\ SendBack(q)
   /\ there' = IF other[q] /\ Broken = "tap-wakes-there"
        THEN [there EXCEPT ![q] = there[q] + 1] ELSE there
-  /\ UNCHANGED <<clock, up, outages, asker, safe, leaves, askedAt, due, raised, raises, turns,
-                 done, outside, memo, other, posted, dismissedAt, renewed>>
-  /\ UNCHANGED lapse
+  /\ Forget(q)
+  /\ UNCHANGED <<clock, up, outages, asker, leaves, askedAt, turns, done, outside, memo, other,
+                 dismissedAt, renewed, told>>
 
 (* kin_ask_close: answered in words by its asker from the person's own message in its chat, or
    withdrawn (from the asking side, when asked for another chat). Words go back as a tap does. *)
@@ -173,9 +190,9 @@ Close(q, outcome) ==
   /\ st' = [st EXCEPT ![q] = outcome]
   /\ card' = [card EXCEPT ![q] = FALSE]
   /\ IF outcome = "answered" THEN SendBack(q) ELSE UNCHANGED <<back, pend>>
-  /\ UNCHANGED <<clock, up, outages, asker, safe, leaves, askedAt, due, raised, raises, turns,
-                 done, outside, memo, other, posted, there, renewed>>
-  /\ UNCHANGED lapse
+  /\ Forget(q)
+  /\ UNCHANGED <<clock, up, outages, asker, leaves, askedAt, turns, done, outside, memo, other,
+                 there, renewed, told>>
 
 (* A plain choice card stops taking taps a day after it was posted; an open question's does not
    (choiceCard.ts choiceExpired, untilAnswered). *)
@@ -188,7 +205,10 @@ Expire(q) ==
   /\ UNCHANGED lane
   /\ UNCHANGED lapse
 
-(* The bound: time stops where a held card could no longer be posted and raised in the horizon. *)
+(* The bound: time stops where a held card could no longer be posted and raised in the horizon.
+   A due or raise time its readers all find passed becomes LongAgo, which they find passed too. *)
+Spent(t, k) == IF t + k <= clock + 1 THEN LongAgo ELSE t
+
 Tick ==
   /\ clock < Horizon
   /\ \A q \in Qs : (st[q] = "open" /\ ~posted[q]) => clock + 1 + Delay + RaiseGap + Delay <= Horizon
@@ -196,10 +216,12 @@ Tick ==
   /\ \A q \in Qs : (st[q] = "open" /\ other[q] /\ ~unsigned[q] /\ ~raised[q]) =>
        clock + 1 + Delay <= Horizon
   /\ clock' = clock + 1
-  /\ UNCHANGED <<up, outages, st, asker, safe, leaves, askedAt, due, raised, raises, card, turns,
+  /\ due' = [q \in Qs |-> Spent(due[q], RaiseGap)]
+  /\ raisedAt' = [q \in Qs |-> Spent(raisedAt[q], Delay)]
+  /\ UNCHANGED <<up, outages, st, asker, safe, leaves, askedAt, raised, raises, card, turns,
                  done, outside, memo>>
   /\ UNCHANGED lane
-  /\ UNCHANGED lapse
+  /\ UNCHANGED <<unsigned, told>>
 
 Stop ==
   /\ up /\ outages < MaxOutages
@@ -289,9 +311,9 @@ RunTurn(q) ==
   /\ UNCHANGED lapse
 
 Next ==
-  \/ \E q \in Qs, a \in Agents, says \in BOOLEAN, isOut \in BOOLEAN, isOther \in BOOLEAN,
+  \/ \E q \in Qs, says \in BOOLEAN, isOut \in BOOLEAN, isOther \in BOOLEAN,
        isHeld \in BOOLEAN, freshWords \in BOOLEAN, isUnsigned \in BOOLEAN :
-       Ask(q, a, says, isOut, isOther, isHeld, freshWords, isUnsigned)
+       Ask(q, says, isOut, isOther, isHeld, freshWords, isUnsigned)
   \/ \E q \in Qs : Tap(q) \/ Expire(q) \/ TakeDefault(q) \/ Raise(q) \/ RunTurn(q) \/ Lapse(q)
   \/ \E q \in Qs : Post(q) \/ Deliver(q)
   \/ \E q \in Qs, outcome \in {"answered", "withdrawn", "dismissed"} : Close(q, outcome)
