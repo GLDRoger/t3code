@@ -212,9 +212,16 @@ export type KinMailRuleRef = typeof KinMailRuleRef.Type;
 export const KinMailRuleResumeInput = Schema.Struct({ ...KinMailRuleRef.fields, ...destination });
 export type KinMailRuleResumeInput = typeof KinMailRuleResumeInput.Type;
 
+export const KinMailRuleSetLimitInput = Schema.Struct({
+  ...KinMailRuleRef.fields,
+  monthlyCap: cap,
+});
+export type KinMailRuleSetLimitInput = typeof KinMailRuleSetLimitInput.Type;
+
 export const KinMailRulesListInput = Schema.Struct({
   orgId: KinOrgId,
   connectionId: Schema.optional(id),
+  removed: Schema.optional(Schema.Literal(true)),
 });
 export type KinMailRulesListInput = typeof KinMailRulesListInput.Type;
 
@@ -274,6 +281,7 @@ const historyRow = Schema.Union([
     noticedAt: time,
     state: Schema.Literals(["woke", "batched", "held_cap", "held_unverified", "held_paused"]),
     outcome: Schema.NullOr(Schema.Literals(["draft", "task", "filed", "nothing"])),
+    manual: Schema.optional(Schema.Literal(true)),
     holdReason: Schema.optional(Schema.NullOr(KinMailRuleHoldReason)),
     runOutcome: Schema.optional(
       Schema.NullOr(Schema.Literals(["posted_message", "raised_card", "nothing", "held"])),
@@ -315,6 +323,11 @@ export const KinMailRuleRpcs = [
     error,
   }),
   Rpc.make("kin.mailRules.pause", { payload: KinMailRuleRef, success: KinMailRule, error }),
+  Rpc.make("kin.mailRules.setLimit", {
+    payload: KinMailRuleSetLimitInput,
+    success: KinMailRule,
+    error,
+  }),
   Rpc.make("kin.mailRules.resume", {
     payload: KinMailRuleResumeInput,
     success: KinMailRule,
@@ -342,6 +355,7 @@ export const KinMailRuleRpcs = [
 export const KIN_MAIL_RULE_RPC_SCOPES = {
   "kin.mailRules.create": AuthKinChatScope,
   "kin.mailRules.pause": AuthKinChatScope,
+  "kin.mailRules.setLimit": AuthKinChatScope,
   "kin.mailRules.resume": AuthKinChatScope,
   "kin.mailRules.remove": AuthKinChatScope,
   "kin.mailRules.list": AuthKinChatScope,

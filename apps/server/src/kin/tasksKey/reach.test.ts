@@ -739,6 +739,7 @@ const reach: Readonly<Record<string, ReadonlyArray<string> | string>> = {
   "kin.connections.remove": "stays in the app: 4 (connections, sign-ins, keys) / 6",
   "kin.mailRules.create": "stays in the app: 4 (connections, sign-ins, keys)",
   "kin.mailRules.pause": "stays in the app: 4 (connections, sign-ins, keys)",
+  "kin.mailRules.setLimit": "stays in the app: 4 (connections, sign-ins, keys)",
   "kin.mailRules.resume": "stays in the app: 4 (connections, sign-ins, keys)",
   "kin.mailRules.remove": "stays in the app: 4 (connections, sign-ins, keys)",
   "kin.mailRules.list": "stays in the app: 4 (connections, sign-ins, keys)",
