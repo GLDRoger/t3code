@@ -789,8 +789,32 @@ describe("kinProjectSinceLooked", () => {
     );
     expect(view?.lines[1]).toMatch(/^Meera set the target to Fri,? (4 Dec|Dec 4)$/);
     expect(view?.opens).toEqual({ kind: "projectHistory" });
+    expect(view?.accessibilityLabel).toMatch(/\. Open project history\.$/);
     expect(kinProjectLookedUpTo(p)).toBe("2026-11-27T14:00:00.000Z");
     expect(kinProjectLookedUpTo(projectPage({ lookedAt: undefined }))).toBeNull();
+  });
+
+  it("ends the accessible name with 'Show this week's changes.' when tapping opens This week instead of project history", () => {
+    const summary: NonNullable<KinProjectPage["sinceLooked"]> = {
+      total: 1,
+      items: [projectItem()],
+    };
+    const p = projectPage({ sinceLooked: summary });
+    const ownerView = kinProjectSinceLooked(p, "2026-11-24T12:00:00.000Z", summary, names, now, {
+      opensHistory: true,
+    });
+    expect(ownerView?.opens).toEqual({ kind: "projectHistory" });
+    expect(ownerView?.accessibilityLabel).toBe(
+      "1 change since Tuesday: Meera finished it (Confirm cold-chain carrier). Open project history.",
+    );
+
+    const teammateView = kinProjectSinceLooked(p, "2026-11-24T12:00:00.000Z", summary, names, now, {
+      opensHistory: false,
+    });
+    expect(teammateView?.opens).toEqual({ kind: "projectThisWeek" });
+    expect(teammateView?.accessibilityLabel).toBe(
+      "1 change since Tuesday: Meera finished it (Confirm cold-chain carrier). Show this week's changes.",
+    );
   });
 });
 

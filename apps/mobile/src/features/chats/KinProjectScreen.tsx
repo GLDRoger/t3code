@@ -222,6 +222,7 @@ function KinProjectBody(
     pinnedLook?.sinceLooked,
     props.directory.names,
     now,
+    { opensHistory: ownerLevel },
   );
   const [historyOpen, setHistoryOpen] = useState(false);
   const [changedOpen, setChangedOpen] = useState(false);

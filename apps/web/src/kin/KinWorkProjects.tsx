@@ -168,6 +168,7 @@ function ProjectPage(
     pinnedLook?.sinceLooked,
     names,
     now,
+    { opensHistory: ownerLevel },
   );
   const [editing, setEditing] = useState(false);
   const [addingMilestone, setAddingMilestone] = useState(false);

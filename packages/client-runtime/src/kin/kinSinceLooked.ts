@@ -29,7 +29,8 @@ const dateYearFormat = kinWhenFormat("dateYear", { zone: "UTC" });
 export type KinSinceLookedOpens =
   | { readonly kind: "history" }
   | { readonly kind: "diff"; readonly from: number; readonly to: number }
-  | { readonly kind: "projectHistory" };
+  | { readonly kind: "projectHistory" }
+  | { readonly kind: "projectThisWeek" };
 
 export interface KinSinceLookedView {
   /** "3 changes since Tuesday" or "50+ changes since 12 Nov". */
@@ -181,6 +182,7 @@ const OPENS_LABEL: Record<KinSinceLookedOpens["kind"], string> = {
   history: "Open history.",
   diff: "Compare with the version you last saw.",
   projectHistory: "Open project history.",
+  projectThisWeek: "Show this week's changes.",
 };
 
 interface CollapsedLine {
@@ -389,6 +391,7 @@ export function kinProjectSinceLooked(
   sinceLooked: KinProjectPage["sinceLooked"],
   names: KinWorkNames,
   now: Date,
+  options?: { readonly opensHistory?: boolean },
 ): KinSinceLookedView | null {
   if (pinnedLookedAt == null || sinceLooked === undefined) return null;
   if (sinceLooked.total <= 0 || sinceLooked.items.length === 0) return null;
@@ -399,7 +402,8 @@ export function kinProjectSinceLooked(
     lines: sinceLooked.items.map((item) =>
       formatProjectItemText(item, page.project.key, names, now),
     ),
-    opens: { kind: "projectHistory" },
+    opens:
+      options?.opensHistory === false ? { kind: "projectThisWeek" } : { kind: "projectHistory" },
     names,
     now,
   });
