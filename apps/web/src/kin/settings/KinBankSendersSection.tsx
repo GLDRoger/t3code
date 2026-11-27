@@ -370,7 +370,8 @@ function AddBankSenderDialog(
         {(ids) => (
           <Input
             id={ids.control}
-            type="email"
+            // Kin checks the address itself; the browser's own email check would hide the other fields' errors.
+            inputMode="email"
             value={draft.address}
             placeholder={KIN_BANK_SENDERS.addressPlaceholder}
             disabled={saving}
