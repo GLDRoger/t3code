@@ -95,6 +95,7 @@ import IconMicrophone from "@tabler/icons-react-native/IconMicrophone";
 import IconLink from "@tabler/icons-react-native/IconLink";
 import IconMail from "@tabler/icons-react-native/IconMail";
 import IconList from "@tabler/icons-react-native/IconList";
+import IconMap from "@tabler/icons-react-native/IconMap";
 import IconListNumbers from "@tabler/icons-react-native/IconListNumbers";
 import IconMenu2 from "@tabler/icons-react-native/IconMenu2";
 import IconMessageCircleQuestion from "@tabler/icons-react-native/IconMessageCircleQuestion";
@@ -248,6 +249,7 @@ const ANDROID_ICON_BY_SF_SYMBOL = {
   envelope: IconMail,
   phone: IconPhone,
   "list.bullet": IconList,
+  map: IconMap,
   "list.number": IconListNumbers,
   "line.3.horizontal": IconMenu2,
   "line.3.horizontal.decrease": IconFilter,
