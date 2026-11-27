@@ -1391,6 +1391,13 @@ export const CloudSpeechCredentials = Schema.Struct({
   openrouter: CloudSpeechCredential,
 });
 
+// Change the built-in model for Kin background checks here.
+export const DEFAULT_KIN_BACKGROUND_MODEL_SELECTION: ModelSelection = {
+  instanceId: ProviderInstanceId.make("claudeAgent"),
+  model: "claude-haiku-5-5",
+  options: [{ id: "effort", value: "medium" }],
+};
+
 export const ServerSettings = Schema.Struct({
   // Null means unmigrated; empty is authoritative and must not resurrect cleared preferences.
   favorites: Schema.NullOr(ModelFavorites).pipe(Schema.withDecodingDefault(Effect.succeed(null))),
@@ -1574,6 +1581,8 @@ export const ServerSettings = Schema.Struct({
   addProjectBaseDirectory: TrimmedString.pipe(Schema.withDecodingDefault(Effect.succeed(""))),
   /** Clones default to `<addProjectBaseDirectory>/<host>/<owner>/<repo>`, like ghq. */
   ghqCloneLayout: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  // Absent uses the built-in selection; null uses each agent’s own model.
+  kinBackgroundModelSelection: Schema.optionalKey(Schema.NullOr(ModelSelection)),
   textGenerationModelSelection: ModelSelection.pipe(
     Schema.withDecodingDefault(
       Effect.succeed({
@@ -1999,6 +2008,9 @@ export const ServerSettingsPatch = Schema.Struct({
   worktreeSubmodules: Schema.optionalKey(Schema.NullOr(WorktreeSubmodules)),
   addProjectBaseDirectory: Schema.optionalKey(TrimmedString),
   ghqCloneLayout: Schema.optionalKey(Schema.Boolean),
+  kinBackgroundModelSelection: Schema.optionalKey(
+    Schema.Union([Schema.NullOr(ModelSelection), Schema.Literal("default")]),
+  ),
   textGenerationModelSelection: Schema.optionalKey(ModelSelectionPatch),
   threadTitleInstructions: Schema.optionalKey(TrimmedString),
   branchNamingMode: Schema.optionalKey(BranchNamingMode),

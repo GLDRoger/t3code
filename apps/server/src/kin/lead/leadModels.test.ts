@@ -10,6 +10,7 @@ import * as Schema from "effect/Schema";
 
 import { matchModel } from "./agentUpdate.ts";
 import {
+  backgroundWake,
   chooseLeadModel,
   helperModelRefusal,
   kinAgentModels,
@@ -96,6 +97,16 @@ it.effect.each([
     );
   }),
 );
+
+it.each([
+  ["empty", [], false],
+  ["bills only", ["bills.read"], true],
+  ["watchdog and bills", ["watchdog", "bills.read"], true],
+  ["bills and a person's message", ["bills.read", "chat.message"], false],
+  ["pulse only", ["pulse"], false],
+] as const)("classifies a background wake-up: %s", (_name, tags, background) => {
+  expect(backgroundWake(tags)).toBe(background);
+});
 
 describe("chooseLeadModel", () => {
   const providers = [claude(["claude-sonnet-4-6", "claude-haiku-4-5"])];
