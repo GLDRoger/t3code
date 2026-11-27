@@ -62,6 +62,7 @@ const OUTSIDE_CAP = 60;
 const MORNING = "checkin-morning";
 const WEEKLY = "checkin-weekly";
 const EVENING = "checkin-evening";
+const CONVERSATION_HOLD_CAP_MS = 60 * MINUTE_MS;
 const WEEKDAYS = [1, 2, 3, 4, 5];
 const decodeHours = Schema.decodeUnknownOption(Schema.fromJsonString(KinWorkHours));
 
@@ -189,14 +190,12 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   const company = yield* ownerZone(orgId);
   // The minute is picked in the window as it stands that day, never from a late start: a run
   // that starts after its minute fires at once.
-  const minute =
+  const slotMinute =
     input.looseAt !== null && input.manualId === undefined
-      ? Math.max(
-          at,
-          looseWindowStartAt(input.dueAt, input.zone, input.looseAt) +
-            looseOffsetMs(input.scheduleId, slot, looseSpanMinutes(input.looseAt)),
-        )
+      ? looseWindowStartAt(input.dueAt, input.zone, input.looseAt) +
+        looseOffsetMs(input.scheduleId, slot, looseSpanMinutes(input.looseAt))
       : undefined;
+  const minute = slotMinute === undefined ? undefined : Math.max(at, slotMinute);
   const day = input.manualId === undefined ? dayIn(minute ?? at, company) : undefined;
   const page = day !== undefined && (input.scheduleId === MORNING || input.scheduleId === WEEKLY);
   if (page) {
@@ -364,7 +363,17 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
           ...(sent.length === 0 ? {} : { outside: sent }),
           ...(notListed > 0 ? { outsideNotListed: notListed } : {}),
         }),
-        notBefore === undefined ? undefined : { notBefore },
+        {
+          ...(notBefore === undefined ? {} : { notBefore }),
+          ...(day === undefined
+            ? {}
+            : {
+                checkInPause: {
+                  until: (slotMinute ?? input.dueAt) + CONVERSATION_HOLD_CAP_MS,
+                  ...(input.scheduleId === EVENING ? { dayEndsAt: endOfDay(day, company) } : {}),
+                },
+              }),
+        },
       )
       .pipe(
         Effect.tap((result) =>
