@@ -15,6 +15,7 @@ import {
   KinMemoryItemId,
   KinOrgId,
   KinPersonId,
+  type KinRefreshTopic,
   type KinSendTry,
   KinWidgetId,
   KinWakeupId,
@@ -219,6 +220,15 @@ const gatedFiles = (gates: Gates) =>
           : fs.readFile(path),
     })),
   );
+/** Every topic the services below were told moved, in order: what open screens hear. */
+const touched: Array<KinRefreshTopic> = [];
+const readTouches = Effect.fn("test.readTouches")(function* (
+  read: Effect.Effect<unknown, unknown>,
+) {
+  const before = touched.length;
+  yield* read.pipe(Effect.orDie);
+  return touched.slice(before);
+});
 const layerFor = (fake: FakeMail, cards: Array<Card>, gates: Gates = {}) =>
   ArrivalFeed.layer.pipe(
     Layer.provideMerge(Layer.succeed(BankAlertReader.BankAlertReader, fixtureBankAlertReader)),
@@ -259,7 +269,11 @@ const layerFor = (fake: FakeMail, cards: Array<Card>, gates: Gates = {}) =>
           }),
       }),
     ),
-    Layer.provide(Layer.succeed(KinRefreshObserver, { touch: () => Effect.void })),
+    Layer.provide(
+      Layer.succeed(KinRefreshObserver, {
+        touch: (_orgId, topic) => Effect.sync(() => void touched.push(topic)),
+      }),
+    ),
     Layer.provideMerge(KinEventQueue.layer),
     Layer.provideMerge(ChatHub.layer.pipe(Layer.provideMerge(Chat.layer))),
     Layer.provideMerge(KinPersistence.layer),
@@ -1111,11 +1125,15 @@ it.effect("the cap holds the next arrivals, tells once, and resets on the compan
       const mailbox = yield* connect(fake, "google", ACCOUNTS);
       yield* readMail(mailbox);
       yield* turnOnRule(mailbox, { cap: 1 });
+      const heard: Array<boolean> = [];
       for (const number of [1, 2, 3]) {
         ruleMail(fake, ACCOUNTS, yield* Clock.currentTimeMillis, number);
-        yield* readMail(mailbox);
+        heard.push((yield* readTouches(readMail(mailbox))).includes("connections"));
         yield* TestClock.adjust("10 minutes");
       }
+      // The run and each held mail show in the rule's history on every open screen.
+      assert.deepStrictEqual(heard, [true, true, true]);
+      assert.notInclude(yield* readTouches(readMail(mailbox)), "connections");
       assert.lengthOf(
         (yield* storedRuleEvents).filter(
           ({ event }) => event._tag === "pulse" && event.rule !== undefined,
@@ -1208,7 +1226,7 @@ it.effect("a named sender without an aligned pass is held", () =>
       yield* readMail(mailbox);
       yield* turnOnRule(mailbox, { named: true });
       ruleMail(fake, ACCOUNTS, NOW, 1, false);
-      yield* readMail(mailbox);
+      assert.include(yield* readTouches(readMail(mailbox)), "connections");
       assert.deepStrictEqual(
         (yield* storedRuleEvents).map(({ event }) =>
           event._tag === "pulse" ? (event.rule?.ruleId ?? event.agentId) : undefined,

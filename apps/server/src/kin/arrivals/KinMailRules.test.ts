@@ -434,7 +434,11 @@ it.effect("every rule change and run reaches each owner-level screen, and never 
     const queue = Context.get(services, EventQueue.KinEventQueue);
     const viewers = Layer.mergeAll(
       Layer.succeedContext(hub),
-      Layer.mock(KinIdentity)({ owner: { _tag: "person", orgId, personId: rhea } }),
+      Layer.mock(KinIdentity)({
+        owner: { _tag: "person", orgId, personId: rhea },
+        isAgentThread: () => false,
+        isLeadThread: () => false,
+      }),
       Layer.mock(KinConnections)({
         mine: () =>
           Effect.succeed({
