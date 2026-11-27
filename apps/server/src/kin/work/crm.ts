@@ -50,6 +50,7 @@ import {
   projectSpecChanges,
 } from "./projectSpine.ts";
 import {
+  allSeeMoney,
   crmSeenBy,
   crmSeesAs,
   KIN_OWNER_LEVEL,
@@ -57,6 +58,7 @@ import {
   personSees,
   personSeesAs,
   seenBy,
+  seesProjectTerms,
   teamChangeFields,
   teamSeesChange,
   type KinViewer,
@@ -753,9 +755,7 @@ export const projectDetail = Effect.fn("KinCrm.projectDetail")(function* (
   );
   const fields = parseFields(row.fieldsJson);
   // Someone in it who doesn't lead it gets no price or terms, which the notes often carry.
-  const leads =
-    viewer._tag === "ownerLevel" ||
-    viewer.people.every((one) => row.ownerKind === "person" && row.ownerId === one);
+  const leads = seesProjectTerms(viewer, row);
   const billing = leads ? fieldText(fields, "billing") : null;
   const value = leads ? fields.value : undefined;
   const day = (key: string) => {
@@ -1136,17 +1136,18 @@ export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
       ? undefined
       : yield* history(row, { sinceAt: look.mark + 1, excludeBy: look.personId, limit: 3 }, viewer);
   const milestones = yield* milestonesOf(orgId, { projectId: row.recordId }, now, viewer);
+  const showMoney = viewer._tag === "ownerLevel" || (yield* allSeeMoney(orgId, viewer.people));
   return {
     project: yield* projectDetail(row, now, viewer),
     counts,
     blocked: waiting.map(({ entry, since: at }) => {
-      const record = toRecord(entry, now);
+      const record = toRecord(entry, now, showMoney);
       const on: KinBlockedOn | null =
         record.waitingOn ??
         (record.party === undefined ? null : { _tag: "party" as const, ...record.party });
       return { record, on, since: iso(at) };
     }),
-    nextDue: next === undefined ? null : toRecord(next, now),
+    nextDue: next === undefined ? null : toRecord(next, now, showMoney),
     pullRequests,
     changedThisWeek: { items: week.items, total: week.total ?? week.items.length },
     ...(sinceLooked?.total
@@ -1154,7 +1155,7 @@ export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
       : {}),
     milestones,
     people: yield* peopleOf(row, now, viewer),
-    meetings: yield* meetingsOf(orgId, row.recordId, now, viewer),
+    meetings: yield* meetingsOf(orgId, row.recordId, now, viewer, showMoney),
     specChanged: yield* projectSpecChanges(orgId, row.recordId, viewer),
     money: yield* moneyOf(orgId, row.recordId, viewer),
     seq,
