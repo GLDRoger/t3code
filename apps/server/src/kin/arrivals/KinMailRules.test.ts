@@ -399,7 +399,11 @@ it.effect("a rule pulse claims alone and keeps the setter's private destination"
     assert.deepStrictEqual(yield* turnChat({ orgId, agentId, wakeupId }), { chatId, asked: true });
     assert.strictEqual(yield* turnAudience({ orgId, agentId, wakeupId }), "owner_only");
     assert.isTrue(yield* ruleWakeStillAllowed(event));
+    yield* TestClock.adjust("1 minute");
     yield* rules.pause(owners, ref);
+    assert.isFalse(yield* ruleWakeStillAllowed(event));
+    // A wake queued before a pause stays stopped after a resume, even by the same setter.
+    yield* rules.resume(owners, { ...ref, agentId, chatId, tapId: "resume-tap" });
     assert.isFalse(yield* ruleWakeStillAllowed(event));
   }).pipe(Effect.provide(rulesWithQueue.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
 );

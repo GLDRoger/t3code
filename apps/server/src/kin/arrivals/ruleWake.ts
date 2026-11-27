@@ -46,6 +46,7 @@ type WakeRule = {
   readonly fired: number;
   readonly monthlyCap: number;
   readonly lastWakeAt: number | null;
+  readonly updatedAt: number;
 };
 
 export type WakeMail = {
@@ -60,7 +61,7 @@ const ruleColumns = `org_id AS "orgId", rule_id AS "ruleId",
   connection_id AS "connectionId", agent_id AS "agentId", chat_id AS "chatId",
   said_by AS "saidBy", state, content_sha256 AS "contentHash",
   match_json AS "matchJson", what, month, fired, monthly_cap AS "monthlyCap",
-  last_wake_at AS "lastWakeAt"`;
+  last_wake_at AS "lastWakeAt", updated_at AS "updatedAt"`;
 
 const mailColumns = `arrival_id AS "arrivalId", from_address AS "fromAddress",
   thread_id AS "threadId", received_at AS "receivedAt", mail_key AS "mailKey"`;
@@ -301,6 +302,8 @@ export const ruleWakeStillAllowed = Effect.fn("KinMailRules.wakeStillAllowed")(f
     WHERE org_id = ${pulse.orgId} AND rule_id = ${pulse.rule.ruleId}`;
   return (
     rule !== undefined &&
+    // Pause, resume and remove move updated_at, so a wake queued before any of them never runs.
+    rule.updatedAt <= DateTime.toEpochMillis(pulse.receivedAt) &&
     rule.agentId === pulse.agentId &&
     rule.chatId === pulse.chatId &&
     "mailbox" in (yield* checked(rule))
