@@ -34,6 +34,7 @@ export type Review = {
   readonly statement: Statement;
   readonly format: string | null;
   readonly source: "file" | "agent";
+  readonly withheldTax?: string | undefined;
   readonly known: ReadonlyMap<number, KnownRow>;
   /** Every row not already explained in Bank transactions. */
   readonly matches: ReadonlyMap<number, RowMatch>;
@@ -63,7 +64,12 @@ const repaysNote = (repays: ReadonlyArray<{ readonly key: string }>) => {
     : `Marks ${repays.length} expenses repaid: ${repays[0]!.key} … ${repays.at(-1)!.key}`;
 };
 
-const target = (candidate: Candidate, option: number, currency: string): KinStatementTarget => ({
+const target = (
+  candidate: Candidate,
+  option: number,
+  currency: string,
+  withheldTax: string | undefined,
+): KinStatementTarget => ({
   option,
   kind: candidate.kind,
   key: candidate.key,
@@ -71,7 +77,9 @@ const target = (candidate: Candidate, option: number, currency: string): KinStat
   ...(candidate.repays !== undefined
     ? { note: repaysNote(candidate.repays) }
     : candidate.fit === "tds" && candidate.tdsMinor !== undefined
-      ? { note: `Paid with ${money(candidate.tdsMinor, currency)} TDS deducted` }
+      ? {
+          note: `Paid with ${money(candidate.tdsMinor, currency)} ${withheldTax === undefined ? "tax withheld by the client" : `${withheldTax} deducted`}`,
+        }
       : candidate.fit === "part"
         ? { note: "Part payment" }
         : candidate.fit === "foreign"
@@ -104,7 +112,7 @@ export const rowsOf = (
   limit: number,
   held: Held = NONE,
 ) => {
-  const { statement } = review;
+  const { statement, withheldTax } = review;
   const currency = statement.currency;
   const all = sectionRows(review, section);
   const shown = (index: number) => {
@@ -126,14 +134,16 @@ export const rowsOf = (
       section === "matched"
         ? page.map(([index, match]) => ({
             ...shown(index),
-            target: target(match.candidates[0]!, 0, currency),
+            target: target(match.candidates[0]!, 0, currency, withheldTax),
           }))
         : [],
     choose:
       section === "choose"
         ? page.map(([index, match]) => ({
             ...shown(index),
-            options: match.candidates.map((one, option) => target(one, option, currency)),
+            options: match.candidates.map((one, option) =>
+              target(one, option, currency, withheldTax),
+            ),
           }))
         : [],
     unmatched:
