@@ -141,6 +141,7 @@ import * as Repository from "./KinChatRepository.ts";
 import type { WriteAudience } from "./KinChatRepository.ts";
 import { KinAttachmentStore } from "./KinAttachmentStore.ts";
 import type { AgentIdentity, PersonIdentity } from "./KinIdentity.ts";
+import { roomReadable } from "./memberAccess.ts";
 import * as Reactions from "./reactions.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
@@ -823,13 +824,6 @@ const make = Effect.gen(function* () {
     const person = yield* identityFor(caller, target);
     return person._tag === "person" ? person : yield* notFound;
   });
-  /** The Team room's viewer rule: a membership row alone never lets a teammate read it. */
-  const roomReadable = (identity: PersonIdentity, chat: { readonly teamId: string | null }) =>
-    chat.teamId !== KIN_TEAM_ROOM_TEAM_ID
-      ? Effect.succeed(true)
-      : ownerLevel(identity.orgId, identity.personId).pipe(
-          Effect.provideService(SqlClient.SqlClient, sql),
-        );
   const memberFor = Effect.fn("KinChatService.memberFor")(function* (
     identity: Identity,
     chatId: KinChatId,
@@ -844,7 +838,10 @@ const make = Effect.gen(function* () {
           : row.principal._tag === "agent" && row.principal.agentId === identity.agentId),
     );
     if (member === undefined) return yield* notFound;
-    if (identity._tag === "person" && !(yield* roomReadable(identity, chat)))
+    if (
+      identity._tag === "person" &&
+      !(yield* roomReadable(identity, chat).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+    )
       return yield* notFound;
     if (identity._tag === "agent") {
       const agent = yield* requireRecord(repo.getAgent(identity));
@@ -2301,7 +2298,12 @@ const make = Effect.gen(function* () {
         for (const member of yield* repo.listMembersByPerson(identity)) {
           if (member.leftAt !== null) continue;
           const chat = yield* requireRecord(repo.getChat(member));
-          if (!(yield* roomReadable(identity, chat))) continue;
+          if (
+            !(yield* roomReadable(identity, chat).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+            ))
+          )
+            continue;
           rows.push(
             yield* unlinkedSummary(identity, member.chatId, {
               member,
@@ -2956,6 +2958,7 @@ const make = Effect.gen(function* () {
       });
       for (const item of cleared.waiting)
         yield* hub.publish({ type: "waiting.updated", orgId: chat.orgId, item });
+      if (cleared.removedPins) yield* refresh.touch(chat.orgId, "pins");
       if (cleared.endedSuggestion) yield* refresh.touch(chat.orgId, "recommendations");
       yield* hub.publish({
         type: "chat.cleared",

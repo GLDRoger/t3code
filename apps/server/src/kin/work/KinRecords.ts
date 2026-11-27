@@ -1035,9 +1035,20 @@ const make = Effect.gen(function* () {
   const ticks = yield* PubSub.unbounded<Tick & { readonly orgId: KinOrgId }>();
   const refreshes = yield* KinRefreshObserver;
   let closing: Closing | undefined;
-  /** The clients and projects a task or project can be put under (`workChoices`) changed. */
-  const choicesMoved = (orgId: KinOrgId, list: string) =>
-    list === "clients" || list === "projects" ? refreshes.touch(orgId, "workChoices") : Effect.void;
+  const recordReadsMoved = Effect.fn("KinRecords.recordReadsMoved")(function* (
+    orgId: KinOrgId,
+    list: string,
+    recordId: string,
+  ) {
+    if (list === "clients" || list === "projects") yield* refreshes.touch(orgId, "workChoices");
+    // A member's clients-won goal counts even the clients outside their Work stream.
+    if (list === "clients") yield* refreshes.touch(orgId, "pins");
+    if (list === "goals") {
+      const [pin] = yield* sql`SELECT 1 FROM kin_chat_pins
+        WHERE org_id = ${orgId} AND record_id = ${recordId} LIMIT 1`;
+      if (pin !== undefined) yield* refreshes.touch(orgId, "pins");
+    }
+  });
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
   const gstCompany = (orgId: KinOrgId) =>
     companyMoney(orgId).pipe(
@@ -2196,7 +2207,7 @@ const make = Effect.gen(function* () {
         provideSql,
       );
     const seq = yield* logChange(orgId, writer, { recordId, key, rev: 1 }, "created", changes, now);
-    yield* choicesMoved(orgId, list);
+    yield* recordReadsMoved(orgId, list, recordId);
     if (input.source !== undefined)
       yield* insertLink(
         orgId,
@@ -3361,7 +3372,7 @@ const make = Effect.gen(function* () {
         yield* sql`UPDATE kin_records SET ${sql.csv(sets)}
           WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
         yield* indexRecord(orgId, row.recordId).pipe(provideSql);
-        yield* choicesMoved(orgId, row.registerId);
+        yield* recordReadsMoved(orgId, row.registerId, row.recordId);
         const seq = yield* logChange(
           orgId,
           writer,

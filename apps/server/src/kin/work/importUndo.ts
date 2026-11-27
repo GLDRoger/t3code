@@ -439,6 +439,8 @@ export const undoBatch = Effect.fn("KinImport.undo")(function* (
         yield* removeChunk(orgId, chunk, indexed);
         if (entry !== undefined) entry.done = Math.min(gone.length, index + CHUNK);
       }
+      if (gone.some((row) => row.registerId === "clients"))
+        yield* (yield* KinRefreshObserver).touch(orgId, "pins");
       // A list's number series outlives it: defined again, the list carries on its numbers.
       for (const one of lists)
         if (one.action === "remove")

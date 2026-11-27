@@ -201,6 +201,47 @@ const turnChange = {
   undoable: true,
   undone: false,
 };
+const pinId = "kin-chat-pin-8e592342";
+const pinsInput = { orgId: "kin-default", chatId: "kin-chat-13ad6ddc" };
+const pinMeta = { pinId, pinnedAt: at, pinnedBy: "Rhea" };
+const livePins = [
+  {
+    ...pinMeta,
+    _tag: "task",
+    key: "W-142",
+    title: "Check the cold room",
+    state: "open",
+    dueAt: at,
+    dueAllDay: true,
+    steps: { done: 2, total: 5 },
+    late: false,
+  },
+  {
+    ...pinMeta,
+    _tag: "project",
+    key: "P-73",
+    name: "Tidewater Freight",
+    state: "doing",
+    targetAt: at,
+    targetAllDay: false,
+    done: 7,
+    total: 12,
+    late: 2,
+  },
+  {
+    ...pinMeta,
+    _tag: "goal",
+    key: "G-22",
+    title: "Juniper Cold Chain rollouts",
+    state: "open",
+    measure: "manual",
+    unit: "rollouts",
+    current: 62,
+    target: 100,
+    dueOn: "2026-11-20",
+    behind: true,
+  },
+];
 const samples = {
   KinText: ["", "Hello\nworld", "  Markdown  "],
   KinTrimmedText: ["Kin", "Owner name"],
@@ -422,6 +463,12 @@ const samples = {
     { chatId: "chat-1", afterSeq: 0 },
     { chatId: "chat-1", afterSeq: 1, afterChangeSeq: 2 },
   ],
+  KinChatPinId: [pinId],
+  KinChatPin: [...livePins, { ...pinMeta, _tag: "gone" }, { _tag: "hidden", pinId }],
+  KinChatPinsInput: [pinsInput],
+  KinChatPinInput: [{ ...pinsInput, key: "P-73" }],
+  KinChatUnpinInput: [{ ...pinsInput, pinId }],
+  KinChatPinsResult: [{ pins: [] }, { pins: livePins }],
   KinChatHistoryInput: [{ chatId: "chat-1", beforeSeq: 2, limit: 100 }],
   KinChatHistoryResult: [
     { messages: [message], widgets: [widget], hasMore: false },
@@ -544,6 +591,26 @@ const samples = {
 const decodeSend = Schema.decodeUnknownSync(Kin.KinMessagesSendInput);
 const decodeTurnChanges = Schema.decodeSync(Kin.KinTurnChanges);
 const decodeHistory = Schema.decodeSync(Kin.KinChatHistoryInput);
+
+const decodePin = Schema.decodeUnknownSync(Kin.KinChatPin);
+const encodePin = Schema.encodeSync(Kin.KinChatPin);
+
+it("encodes a hidden pin without source or author metadata", () => {
+  const value = {
+    _tag: "hidden",
+    pinId: "kin-chat-pin-8e592342",
+    title: "Juniper Cold Chain",
+    key: "P-5",
+    pinnedBy: "Rhea",
+    pinnedAt: at,
+    total: 73451,
+  };
+  const decoded = decodePin(value);
+  expect(encodePin(decoded)).toEqual({
+    _tag: "hidden",
+    pinId: value.pinId,
+  });
+});
 
 describe("Kin chat contracts", () => {
   it.each(Object.entries(samples))("round-trips %s", (name, values) => {

@@ -114,6 +114,14 @@ const noClients = new KinChatError({
   reason: "not_allowed",
   message: "Only the owner or a co-owner can open Clients for you.",
 });
+const requireClients = Effect.fn("KinWork.crm.requireClients")(function* (
+  orgId: KinOrgId,
+  personId: KinPersonId,
+) {
+  const places = yield* read(placesOf(orgId, personId));
+  if (!places.reaches.clients) return yield* noClients;
+});
+
 /** The caller; for anyone besides the owner, only with a Clients place or a project they lead. */
 export const reader = Effect.fn("KinWork.crm.reader")(function* (
   people: ReadonlyArray<PersonIdentity>,
@@ -121,8 +129,7 @@ export const reader = Effect.fn("KinWork.crm.reader")(function* (
 ) {
   const viewer = yield* viewerOf(people, orgId);
   if (!viewer.teammate) return KIN_OWNER_LEVEL;
-  const places = yield* read(placesOf(orgId, viewer.person.personId));
-  if (!places.reaches.clients) return yield* noClients;
+  yield* requireClients(orgId, viewer.person.personId);
   return viewerOfPeople([viewer.person.personId]);
 });
 /** Whether this member's Clients switch is on: a project they lead alone reaches names. */
@@ -335,6 +342,20 @@ const memberPage = Effect.fn("KinWork.crm.memberPage")(function* (
   } satisfies KinPartyPage;
 });
 
+export const projectOpens = Effect.fn("KinWork.crm.projectOpens")(function* (
+  person: Viewer,
+  viewer: KinViewer,
+  row: RecordRow,
+  input: { readonly key: string } | { readonly recordId: string },
+) {
+  // Anyone in it opens it, Clients place or not, and in it sees only what `personSees` shows them.
+  const orgId = person.person.orgId;
+  if (person.teammate && !(yield* read(inProject(orgId, person.person.personId, row.recordId)))) {
+    yield* requireClients(orgId, person.person.personId);
+    yield* unseen(viewer, row, input);
+  }
+});
+
 export const project = Effect.fn("KinWork.project")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinProjectPageInput,
@@ -346,14 +367,7 @@ export const project = Effect.fn("KinWork.project")(function* (
     options,
   );
   const row = yield* opened(input, "projects");
-  // Anyone in it opens it, Clients place or not, and in it sees only what `personSees` shows them.
-  if (
-    person.teammate &&
-    !(yield* read(inProject(input.orgId, person.person.personId, row.recordId)))
-  ) {
-    yield* reader(people, input.orgId);
-    yield* unseen(viewer, row, input);
-  }
+  yield* projectOpens(person, viewer, row, input);
   const { now, seq } = yield* asOf(input.orgId, viewer);
   const page = yield* read(Crm.projectPage(row, now, seq, viewer));
   // Its people are the owner's, a co-owner's and its lead's to change (`teamGuard`).

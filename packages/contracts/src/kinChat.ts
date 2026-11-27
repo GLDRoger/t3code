@@ -1171,6 +1171,67 @@ export class KinChatError extends Schema.TaggedError<KinChatError>()("KinChatErr
   privateNow: Schema.optionalKey(Schema.Struct({ by: Schema.String })),
 }) {}
 
+export const KinChatPinId = TrimmedNonEmptyString.pipe(Schema.brand("KinChatPinId"));
+export type KinChatPinId = typeof KinChatPinId.Type;
+
+export const KIN_CHAT_PINS_MAX = 3;
+
+const KinChatPinState = Schema.Literals(["open", "doing", "waiting", "done", "dropped"]);
+const KinChatPinMeta = {
+  pinId: KinChatPinId,
+  pinnedAt: IsoDateTime,
+  pinnedBy: Schema.String,
+};
+export const KinChatPin = Schema.Union([
+  Schema.TaggedStruct("task", {
+    ...KinChatPinMeta,
+    key: KinRefKey,
+    title: Schema.String,
+    state: KinChatPinState,
+    dueAt: Schema.NullOr(IsoDateTime),
+    dueAllDay: Schema.Boolean,
+    steps: Schema.optionalKey(Schema.Struct({ done: NonNegativeInt, total: PositiveInt })),
+    late: Schema.Boolean,
+  }),
+  Schema.TaggedStruct("project", {
+    ...KinChatPinMeta,
+    key: KinRefKey,
+    name: Schema.String,
+    state: KinChatPinState,
+    targetAt: Schema.NullOr(IsoDateTime),
+    targetAllDay: Schema.Boolean,
+    done: NonNegativeInt,
+    total: NonNegativeInt,
+    late: NonNegativeInt,
+  }),
+  Schema.TaggedStruct("goal", {
+    ...KinChatPinMeta,
+    key: KinRefKey,
+    title: Schema.String,
+    state: Schema.Literals(["open", "done", "dropped"]),
+    measure: Schema.Literals(["clients_won", "tasks_done", "manual"]),
+    unit: Schema.optionalKey(Schema.String),
+    current: Schema.Finite,
+    target: Schema.Finite,
+    dueOn: Schema.NullOr(Schema.String.check(Schema.isPattern(/^[1-9]\d{3}-\d{2}-\d{2}$/))),
+    behind: Schema.Boolean,
+  }),
+  Schema.TaggedStruct("gone", KinChatPinMeta),
+  Schema.TaggedStruct("hidden", { pinId: KinChatPinId }),
+]);
+export type KinChatPin = typeof KinChatPin.Type;
+
+export const KinChatPinsInput = Schema.Struct({ orgId: KinOrgId, chatId: KinChatId });
+export type KinChatPinsInput = typeof KinChatPinsInput.Type;
+export const KinChatPinInput = Schema.Struct({ ...KinChatPinsInput.fields, key: KinRefKey });
+export type KinChatPinInput = typeof KinChatPinInput.Type;
+export const KinChatUnpinInput = Schema.Struct({ ...KinChatPinsInput.fields, pinId: KinChatPinId });
+export type KinChatUnpinInput = typeof KinChatUnpinInput.Type;
+export const KinChatPinsResult = Schema.Struct({
+  pins: Schema.Array(KinChatPin).check(Schema.isMaxLength(KIN_CHAT_PINS_MAX)),
+});
+export type KinChatPinsResult = typeof KinChatPinsResult.Type;
+
 export const KIN_CHAT_WS_METHODS = {
   orgsList: "kin.orgs.list",
   chatsSubscribe: "kin.chats.subscribe",
@@ -1183,6 +1244,9 @@ export const KIN_CHAT_WS_METHODS = {
   chatWorking: "kin.chat.working",
   chatSubscribe: "kin.chat.subscribe",
   chatHistory: "kin.chat.history",
+  chatPins: "kin.chat.pins",
+  chatPin: "kin.chat.pin",
+  chatUnpin: "kin.chat.unpin",
   messagesSend: "kin.messages.send",
   messagesMarkRead: "kin.messages.markRead",
   widgetsAct: "kin.widgets.act",
@@ -1247,6 +1311,21 @@ export const KinChatRpcs = [
     success: KinChatHistoryResult,
     error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
   }),
+  Rpc.make(KIN_CHAT_WS_METHODS.chatPins, {
+    payload: KinChatPinsInput,
+    success: KinChatPinsResult,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(KIN_CHAT_WS_METHODS.chatPin, {
+    payload: KinChatPinInput,
+    success: KinChatPinsResult,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
+  Rpc.make(KIN_CHAT_WS_METHODS.chatUnpin, {
+    payload: KinChatUnpinInput,
+    success: KinChatPinsResult,
+    error: Schema.Union([KinChatError, EnvironmentAuthorizationError]),
+  }),
   Rpc.make(KIN_CHAT_WS_METHODS.messagesSend, {
     payload: KinMessagesSendInput,
     success: KinMessage,
@@ -1288,6 +1367,10 @@ export const KIN_CHAT_RPC_SCOPES = {
   [KIN_CHAT_WS_METHODS.chatWorking]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatSubscribe]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.chatHistory]: AuthKinChatScope,
+  // Membership and visibility are checked per chat.
+  [KIN_CHAT_WS_METHODS.chatPins]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.chatPin]: AuthKinChatScope,
+  [KIN_CHAT_WS_METHODS.chatUnpin]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.messagesSend]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.messagesMarkRead]: AuthKinChatScope,
   [KIN_CHAT_WS_METHODS.widgetsAct]: AuthKinChatScope,

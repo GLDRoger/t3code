@@ -9,6 +9,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Repository from "./KinChatRepository.ts";
 import * as Hub from "./KinChatHub.ts";
 import * as RefreshHub from "./KinRefreshHub.ts";
+import * as Pins from "./pins.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import * as Service from "./KinChatService.ts";
 import * as Groups from "./KinGroups.ts";
@@ -19,6 +20,7 @@ import { KinIdentity, KinIdentityConfig } from "./KinIdentity.ts";
 const stop = Stop.layer.pipe(Layer.provide(Presence.layer), Layer.provideMerge(Queue.layer));
 
 const service = Layer.mergeAll(
+  Pins.layer,
   // A clear stops the turns answering what it deleted, through the same fan-out as a join.
   LevelGate.layer.pipe(
     Layer.provideMerge(Service.layer),

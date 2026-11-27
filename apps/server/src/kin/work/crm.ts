@@ -1025,16 +1025,16 @@ const pullNumber = (url: string) => {
   return found === undefined ? undefined : Number.parseInt(found, 10);
 };
 
-export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
+const projectTasks = (sql: SqlClient.SqlClient, row: RecordRow, viewer: KinViewer) =>
+  sql`r.org_id = ${row.orgId} AND r.register_id = 'work'
+    AND r.project_id = ${row.recordId} AND ${seenBy(sql, viewer)}`;
+
+export const projectCounts = Effect.fn("KinCrm.projectCounts")(function* (
   row: RecordRow,
   now: number,
-  seq: number,
   viewer: KinViewer,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const orgId = row.orgId as KinOrgId;
-  const inProject = sql`r.org_id = ${orgId} AND r.register_id = 'work'
-    AND r.project_id = ${row.recordId} AND ${seenBy(sql, viewer)}`;
   const [counts] = yield* sql<{
     open: number | null;
     doing: number | null;
@@ -1046,7 +1046,27 @@ export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
       SUM(r.state = 'waiting') AS waiting, SUM(r.state = 'done') AS done,
       SUM(r.state = 'dropped') AS dropped,
       SUM(r.due_at IS NOT NULL AND r.due_at < ${now} AND r.state IN ${sql.in(OPEN)}) AS late
-    FROM kin_records r WHERE ${inProject}`;
+    FROM kin_records r WHERE ${projectTasks(sql, row, viewer)}`;
+  return {
+    open: counts?.open ?? 0,
+    doing: counts?.doing ?? 0,
+    waiting: counts?.waiting ?? 0,
+    done: counts?.done ?? 0,
+    dropped: counts?.dropped ?? 0,
+    late: counts?.late ?? 0,
+  };
+});
+
+export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
+  row: RecordRow,
+  now: number,
+  seq: number,
+  viewer: KinViewer,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const orgId = row.orgId as KinOrgId;
+  const inProject = projectTasks(sql, row, viewer);
+  const counts = yield* projectCounts(row, now, viewer);
   const since = yield* sql<{ recordId: string; since: number }>`SELECT r.record_id AS "recordId",
       ${waitingSince(sql, "r")} AS since
     FROM kin_records r WHERE ${inProject} AND r.state = 'waiting'
@@ -1088,17 +1108,10 @@ export const projectPage = Effect.fn("KinCrm.projectPage")(function* (
     return [{ url: pull.url, number, record: ref(pull.recordId, pull.key, pull.title) }];
   });
   const week = yield* history(row, { sinceAt: now - WEEK_MS, limit: 20 }, viewer);
-  const milestones = yield* milestonesOf(orgId, row.recordId, now, viewer);
+  const milestones = yield* milestonesOf(orgId, { projectId: row.recordId }, now, viewer);
   return {
     project: yield* projectDetail(row, now, viewer),
-    counts: {
-      open: counts?.open ?? 0,
-      doing: counts?.doing ?? 0,
-      waiting: counts?.waiting ?? 0,
-      done: counts?.done ?? 0,
-      dropped: counts?.dropped ?? 0,
-      late: counts?.late ?? 0,
-    },
+    counts,
     blocked: waiting.map(({ entry, since: at }) => {
       const record = toRecord(entry, now);
       const on: KinBlockedOn | null =
