@@ -39,6 +39,7 @@ const HOLDS: Readonly<Record<string, KinSettingsPage>> = {
   "kin-clear-updates": "agents",
   "kin-who-can-message": "team",
   "kin-connections": "connections",
+  "kin-mail-rules": "connections",
   "kin-quiet-hours": "profile",
   "kin-working-hours": "profile",
   "kin-away": "profile",

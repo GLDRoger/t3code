@@ -28,7 +28,9 @@ import {
   PersistenceSqlError,
   toPersistenceSqlError,
 } from "../../persistence/Errors.ts";
+import { linkRuleWake, settleRuleWakes } from "../arrivals/ruleRunStore.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinChatRepository, latestOwnTextAtSql } from "../chat/KinChatRepository.ts";
 import { MINUTE_MS } from "../durations.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
@@ -105,6 +107,8 @@ const LANE_OF = `CASE WHEN e.tag = 'bills.read' THEN 'bills:' || e.event_id
   WHEN e.tag IN ('record.changed', 'task.finished')
     AND json_extract(e.json, '$.chatId') IS NOT NULL
   THEN json_extract(e.json, '$.chatId')
+  WHEN e.tag = 'pulse' AND json_extract(e.json, '$.rule') IS NOT NULL
+  THEN 'mail-rule:' || e.event_id
   WHEN e.tag = 'pulse' AND json_extract(e.json, '$.review') IS NOT NULL
   THEN 'review:' || json_extract(e.json, '$.chatId')
   WHEN e.tag = 'pulse' AND json_extract(e.json, '$.chatId') IS NOT NULL
@@ -463,10 +467,14 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const repo = yield* Effect.serviceOption(KinChatRepository);
   const hub = yield* Effect.serviceOption(KinChatHub);
+  // A mail rule's run starting or ending shows in Settings; a caller's context has only the no-op.
+  const refresh = yield* KinRefreshObserver;
   const settled = (orgId: KinOrgId, eventIds: ReadonlyArray<string>) =>
     settleReviews({ repo, hub }, orgId, eventIds).pipe(
       Effect.andThen(settleTriage({ repo, hub }, orgId, eventIds)),
+      Effect.andThen(settleRuleWakes(orgId, eventIds)),
       Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.provideService(KinRefreshObserver, refresh),
     );
   const laneOf = sql.literal(LANE_OF);
   const retryAlone = sql.literal("json_extract(e.json, '$._retryAlone') IS 1");
@@ -898,6 +906,16 @@ const make = Effect.gen(function* () {
                       const enqueuedAt = Math.min(...rows.map((row) => row.queued_at));
                       yield* sql`UPDATE kin_wakeups SET event_ids = ${eventIds}, enqueued_at = ${enqueuedAt}
                 WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}`;
+                      yield* linkRuleWake(
+                        input.orgId,
+                        events.flatMap((event) =>
+                          event._tag === "pulse" && event.rule !== undefined ? [event.eventId] : [],
+                        ),
+                        input.wakeupId,
+                      ).pipe(
+                        Effect.provideService(SqlClient.SqlClient, sql),
+                        Effect.provideService(KinRefreshObserver, refresh),
+                      );
                       return events;
                     }),
                   )

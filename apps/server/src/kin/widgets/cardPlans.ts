@@ -1,6 +1,7 @@
 import {
   type KinChatId,
   KinMessageId,
+  KinMailRuleCardState,
   KinMoney,
   type KinOrgId,
   KinPersonId,
@@ -344,6 +345,19 @@ const RecommendPlan = Schema.Struct({
 });
 export type RecommendPlan = typeof RecommendPlan.Type;
 export type RecommendChange = typeof RecommendChange.Type;
+const MailRulePlan = Schema.Struct({
+  kind: Schema.Literal("mail_rule"),
+  personId: KinPersonId,
+  shown: Schema.Struct({
+    mailbox: KinMailRuleCardState.fields.mailbox,
+    lead: KinMailRuleCardState.fields.lead,
+    contentSha256: KinMailRuleCardState.fields.contentSha256,
+    monthlyCap: KinMailRuleCardState.fields.monthlyCap,
+    expiresAt: KinMailRuleCardState.fields.expiresAt,
+  }),
+});
+export type MailRulePlan = typeof MailRulePlan.Type;
+
 /**
  * On Kin's note that the asker took a question's answer from its person's words: Undo opens the
  * question again, Keep leaves it. Bound to that one answer by when it closed. Never drawn.
@@ -463,6 +477,7 @@ export const CardPlan = Schema.Union([
   RoutePlan,
   TakenPlan,
   RecommendPlan,
+  MailRulePlan,
   AnsweredPlan,
   LeaverPlan,
   WaitedPlan,

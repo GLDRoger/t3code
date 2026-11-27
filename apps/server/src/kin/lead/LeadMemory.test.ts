@@ -517,6 +517,7 @@ it.live(
           "memory_write",
           "memory_label",
           "kin_defer",
+          "mail_rule",
           "kin_schedule",
           "kin_cancel",
           "kin_journal",

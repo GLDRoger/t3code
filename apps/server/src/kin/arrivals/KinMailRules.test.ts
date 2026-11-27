@@ -5,24 +5,43 @@ import * as NodePath from "node:path";
 import * as NodeURL from "node:url";
 
 import { assert, it } from "@effect/vitest";
-import { KinAgentId, KinChatError, KinChatId, KinOrgId, KinPersonId } from "@t3tools/contracts";
+import {
+  KinAgentId,
+  KinChatError,
+  KinChatId,
+  KinOrgId,
+  KinPersonId,
+  KinWakeupId,
+} from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as EventQueue from "../lead/KinEventQueue.ts";
+import { turnAudience, turnChat } from "../lead/Audience.ts";
+import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
-import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
+import * as RefreshHub from "../chat/KinRefreshHub.ts";
+import { subscribeRefreshes } from "../chat/refreshes.ts";
 import { runKinMigrations } from "../persistence/KinMigrations.ts";
 import * as MailRules from "./KinMailRules.ts";
 import { monthlyMailRuleLimit, recordMailRuleWake } from "./ruleLimit.ts";
+import { pauseMailRulesFor } from "./ruleLifecycle.ts";
+import { checkRuleWake, mailRuleLimitNotice } from "./ruleWake.ts";
 
 const orgId = KinOrgId.make("org");
 const agentId = KinAgentId.make("finance");
 const chatId = KinChatId.make("meera-finance");
 const meera = KinPersonId.make("meera");
 const zoya = KinPersonId.make("zoya");
+const rhea = KinPersonId.make("rhea");
 const owners = [{ _tag: "person", orgId, personId: meera }] satisfies ReadonlyArray<PersonIdentity>;
 const teammates = [
   { _tag: "person", orgId, personId: zoya },
@@ -44,10 +63,10 @@ const tap = {
   tapId: "settings-tap",
 };
 const sqlLayer = NodeSqliteClient.layer({ filename: ":memory:" });
-const fixture = MailRules.layer.pipe(
-  Layer.provide(Layer.mock(KinConnections)({})),
-  Layer.provideMerge(sqlLayer),
+const rulesWithQueue = MailRules.layer.pipe(
+  Layer.provideMerge(Layer.merge(Layer.mock(KinConnections)({}), EventQueue.layer)),
 );
+const fixture = rulesWithQueue.pipe(Layer.provideMerge(sqlLayer));
 
 const seed = Effect.fn("KinMailRulesTest.seed")(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -258,7 +277,7 @@ it.effect(
       });
       const rules = yield* Effect.provide(
         MailRules.KinMailRules,
-        MailRules.layer.pipe(Layer.provide(headers)),
+        MailRules.layer.pipe(Layer.provide(Layer.merge(headers, EventQueue.layer))),
       );
       yield* sql`WITH RECURSIVE n(i) AS (VALUES (1) UNION ALL SELECT i + 1 FROM n WHERE i < 202)
       INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id, from_address,
@@ -291,11 +310,9 @@ it.effect(
       );
       assert.strictEqual(draft.matches[0]?.subject, "Juniper invoice");
       assert.strictEqual(draft.matches.at(-1)?.arrivalId, "a-3");
-      assert.deepStrictEqual(yield* rules.runNow(owners, ref), {
-        status: "not_yet",
-        arrivalId: "a-202",
-        message: "Kin can't run mail rules yet. Nothing ran.",
-      });
+      // a-202 is the newest match, but its sender check failed: Run now never picks it.
+      const result = yield* rules.runNow(owners, ref);
+      assert.include(result, { status: "queued", arrivalId: "a-201" });
       const missed = yield* rules.createFromTap(owners, {
         ...tap,
         tapId: "other-tap",
@@ -307,10 +324,27 @@ it.effect(
       });
       assert.deepStrictEqual(
         calls.slice(1).flat(),
-        Array.from({ length: 50 }, (_, i) => `m-${202 - i}`),
+        Array.from({ length: 50 }, (_, i) => `m-${201 - i}`),
       );
       assert.deepStrictEqual(yield* rules.history(owners, ref), {
-        entries: [{ kind: "gap", arrivalId: "gap", from: 20, to: 40 }],
+        entries: [
+          {
+            kind: "mail",
+            arrivalId: "a-201",
+            fromAddress: "bill@juniper.example",
+            receivedAt: 201,
+            noticedAt: 201,
+            state: "woke",
+            outcome: null,
+            eventId: "eventId" in result ? result.eventId : null,
+            wakeupId: null,
+            settledAt: null,
+            refs: null,
+            holdReason: null,
+            runOutcome: null,
+          },
+          { kind: "gap", arrivalId: "gap", from: 20, to: 40 },
+        ],
       });
       assert.deepStrictEqual(
         yield* sql`SELECT fired, last_wake_at FROM kin_mail_rules ORDER BY rule_id`,
@@ -319,11 +353,236 @@ it.effect(
           { fired: 0, last_wake_at: null },
         ],
       );
-      assert.deepStrictEqual(yield* sql`SELECT event_id FROM kin_events`, []);
+      assert.deepStrictEqual(
+        yield* sql`SELECT agent_id, tag, json_extract(json, '$.chatId') AS chat_id,
+          json_extract(json, '$.rule.ruleId') AS rule_id, json_extract(json, '$.rule.manual') AS manual
+        FROM kin_events`,
+        [{ agent_id: agentId, tag: "pulse", chat_id: chatId, rule_id: rule.ruleId, manual: 1 }],
+      );
     }).pipe(Effect.provide(sqlLayer)),
 );
 
+it.effect("pausing or disconnecting a rule settles its waiting mail before a feed tick", () =>
+  Effect.gen(function* () {
+    const sql = yield* seed();
+    const rules = yield* MailRules.KinMailRules;
+    const first = yield* rules.createFromTap(owners, tap);
+    const second = yield* rules.createFromTap(owners, { ...tap, tapId: "tap_53ea" });
+    for (const [n, rule] of [first, second].entries())
+      yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id, noticed_at,
+        class, state, rule_id, rule_state) VALUES (${orgId}, ${`arr_660bf${n}`}, ${connectionId},
+        ${`m_532ca${n}`}, 1, 'known_biller', 'new', ${rule.ruleId}, 'batched')`;
+    yield* rules.pause(owners, { orgId, ruleId: first.ruleId });
+    yield* sql.withTransaction(pauseMailRulesFor(orgId, { kind: "mailbox", id: connectionId }, 2));
+    assert.deepStrictEqual(
+      yield* sql`SELECT rule_state, rule_hold_reason AS reason FROM kin_arrivals ORDER BY arrival_id`,
+      [
+        { rule_state: "held_paused", reason: "paused" },
+        { rule_state: "held_paused", reason: "mailbox_unavailable" },
+      ],
+    );
+  }).pipe(Effect.provide(fixture)),
+);
+
+it.effect("a rule pulse claims alone and keeps the setter's private destination", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(9 * 60 * 60_000);
+    const sql = yield* seed();
+    const rules = yield* MailRules.KinMailRules;
+    const queue = yield* EventQueue.KinEventQueue;
+    yield* sql`UPDATE kin_people SET time_zone = 'UTC', hold_outside_hours = 0,
+      quiet_hours_json = '{"from":"22:00","to":"07:00"}' WHERE person_id = ${meera}`;
+    const rule = yield* rules.createFromTap(owners, tap);
+    yield* sql`INSERT INTO kin_chats (org_id, chat_id, kind, direct_key, last_seq, created_at)
+      VALUES ('org', 'rhea-finance', 'direct', 'rhea:finance', 0, '2026-11-27')`;
+    yield* sql`INSERT INTO kin_chat_members (org_id, chat_id, principal_kind, person_id, member_id,
+      role, joined_at) VALUES ('org', 'rhea-finance', 'person', 'zoya', 'rhea-finance-zoya',
+      'member', '2026-11-27')`;
+    yield* sql`UPDATE kin_leads SET owner_chat_id = 'rhea-finance' WHERE agent_id = ${agentId}`;
+    yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id, from_address,
+      received_at, noticed_at, class, state, sender_check)
+      VALUES ('org', 'arr_a99512', 'mail', 'm_7bcaf2', 'bill@juniper.example',
+        0, 0, 'known_biller', 'settled', 'passed')`;
+    const ref = { orgId, ruleId: rule.ruleId };
+    yield* rules.runNow(owners, ref);
+    yield* rules.runNow(owners, ref);
+    yield* sql`UPDATE kin_events SET json = json_set(json, '$.factKeys', json('["fixture"]'))`;
+    assert.deepStrictEqual(yield* sql`SELECT not_before FROM kin_events`, [
+      { not_before: null },
+      { not_before: null },
+    ]);
+    const wakeupId = KinWakeupId.make("01KA4Y3GD3FC3FR2A9G7K80JD1");
+    const [ready] = yield* queue.readyLeads(orgId);
+    assert.strictEqual(ready?.agentId, agentId);
+    yield* TestClock.setTime(ready!.readyAt);
+    const events = yield* queue.claim({ orgId, agentId, wakeupId, model: "fixture" });
+    assert.lengthOf(events, 1);
+    const [event] = events;
+    if (event?._tag !== "pulse") return assert.fail("Expected a rule pulse.");
+    assert.deepStrictEqual(yield* turnChat({ orgId, agentId, wakeupId }), { chatId, asked: true });
+    assert.strictEqual(yield* turnAudience({ orgId, agentId, wakeupId }), "owner_only");
+    assert.deepStrictEqual(yield* checkRuleWake(event), { setterName: "Meera", what: tap.what });
+    yield* TestClock.setTime(9 * 60 * 60_000);
+    yield* rules.pause(owners, ref);
+    assert.deepStrictEqual(yield* checkRuleWake(event), { held: "paused" });
+    // A wake queued before a pause stays stopped after a resume, even by the same setter.
+    yield* rules.resume(owners, { ...ref, agentId, chatId, tapId: "resume-tap" });
+    assert.deepStrictEqual(yield* checkRuleWake(event), { held: "paused" });
+  }).pipe(Effect.provide(rulesWithQueue.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+);
+
+it.effect("every rule change and run reaches each owner-level screen, and never a teammate's", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(9 * 60 * 60_000);
+    const sql = yield* seed();
+    yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id, from_address,
+      received_at, noticed_at, class, state, sender_check)
+      VALUES ('org', 'arr_c41e07', 'mail', 'm_19d2ab', 'bill@juniper.example',
+        0, 0, 'known_biller', 'settled', 'passed')`;
+    // As the server builds them: the hub is in the services' own layers, never in a caller's.
+    const hub = yield* Layer.build(RefreshHub.layer);
+    const services = yield* Layer.build(
+      rulesWithQueue.pipe(Layer.provide(Layer.succeedContext(hub))),
+    );
+    const rules = Context.get(services, MailRules.KinMailRules);
+    const queue = Context.get(services, EventQueue.KinEventQueue);
+    const viewers = Layer.mergeAll(
+      Layer.succeedContext(hub),
+      Layer.mock(KinIdentity)({
+        owner: { _tag: "person", orgId, personId: rhea },
+        isAgentThread: () => false,
+        isLeadThread: () => false,
+      }),
+      Layer.mock(KinConnections)({
+        mine: () =>
+          Effect.succeed({
+            orgId,
+            mailbox: null,
+            mailboxes: [],
+            services: [],
+            signInAddress: "https://tidewater.example/sign-in",
+          }),
+      }),
+    );
+    const screen = (personId: KinPersonId) =>
+      Stream.toQueue(subscribeRefreshes([{ _tag: "person", orgId, personId }], { orgId }), {
+        capacity: "unbounded",
+      }).pipe(Effect.provide(viewers));
+    const rheaPhone = yield* screen(rhea);
+    const rheaLaptop = yield* screen(rhea);
+    const meeraLaptop = yield* screen(meera);
+    const zoyaLaptop = yield* screen(zoya);
+    const ownerScreens = [rheaPhone, rheaLaptop, meeraLaptop];
+    yield* Queue.take(zoyaLaptop);
+    for (const owner of ownerScreens) assert.strictEqual((yield* Queue.take(owner)).connections, 0);
+    let moves = 0;
+    const settles = Effect.fn("KinMailRulesTest.settles")(function* (step: string) {
+      yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+      moves += 1;
+      for (const owner of ownerScreens) {
+        const heard = yield* Queue.poll(owner);
+        assert.strictEqual(Option.getOrUndefined(heard)?.connections, moves, step);
+      }
+      assert.strictEqual(yield* Queue.size(zoyaLaptop), 0, step);
+    });
+
+    const rule = yield* rules.createFromTap(owners, tap);
+    yield* settles("turned on");
+    const ref = { orgId, ruleId: rule.ruleId };
+    yield* rules.pause(owners, ref);
+    yield* settles("paused");
+    yield* rules.resume(owners, { ...ref, agentId, chatId, tapId: "resume-tap" });
+    yield* settles("resumed");
+    const ran = yield* rules.runNow(owners, ref);
+    yield* settles("run now");
+    const wakeupId = KinWakeupId.make("01KA4Y3GD3FC3FR2A9G7K80JD2");
+    const [ready] = yield* queue.readyLeads(orgId);
+    yield* TestClock.setTime(ready!.readyAt);
+    assert.lengthOf(yield* queue.claim({ orgId, agentId, wakeupId, model: "fixture" }), 1);
+    yield* settles("run started");
+    yield* queue.finish({ orgId, wakeupId, status: "completed" });
+    yield* settles("run settled");
+    const [entry] = (yield* rules.history(owners, ref)).entries;
+    assert.deepInclude(entry, {
+      eventId: "eventId" in ran ? ran.eventId : null,
+      wakeupId,
+      runOutcome: "nothing",
+    });
+    assert.isNotNull(entry?.kind === "mail" ? entry.settledAt : null, "read as finished");
+    yield* rules.remove(owners, ref);
+    yield* settles("removed");
+  }).pipe(Effect.scoped, Effect.provide(Sqlite.layerMemory)),
+);
+
+it.effect(
+  "a rule whose setter is no longer owner level says so on the next read and runs nothing",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* seed();
+      const rules = yield* MailRules.KinMailRules;
+      const rheas = [
+        { _tag: "person", orgId, personId: rhea },
+      ] satisfies ReadonlyArray<PersonIdentity>;
+      yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id, from_address,
+      received_at, noticed_at, class, state, sender_check)
+      VALUES ('org', 'arr_5d0f3e', 'mail', 'm_8a61c4', 'bill@juniper.example',
+        0, 0, 'known_biller', 'settled', 'passed')`;
+      const rule = yield* rules.createFromTap(owners, tap);
+      const ref = { orgId, ruleId: rule.ruleId };
+      assert.notProperty(rule, "setterDemoted");
+      const stored = sql`SELECT state, paused_why, updated_at FROM kin_mail_rules`;
+      const before = yield* stored;
+      // Rhea makes Meera a member: the rule row is untouched, and the next read says why it won't run.
+      yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = ${meera}`;
+      const [demoted] = (yield* rules.list(rheas, { orgId })).rules;
+      assert.include(demoted, { state: "on", setterDemoted: true });
+      assert.deepStrictEqual(yield* stored, before);
+      assert.strictEqual(
+        (yield* rules.runNow(rheas, ref).pipe(Effect.flip)).reason,
+        "not_allowed",
+        "Run now",
+      );
+      assert.deepStrictEqual(yield* sql`SELECT event_id FROM kin_events`, []);
+      for (const viewer of [teammates, owners])
+        assert.strictEqual(
+          (yield* rules.list(viewer, { orgId }).pipe(Effect.flip)).reason,
+          "not_allowed",
+        );
+      // A co-owner again: the flag clears.
+      yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = ${meera}`;
+      const [restored] = (yield* rules.list(rheas, { orgId })).rules;
+      assert.include(restored, { state: "on" });
+      assert.notProperty(restored, "setterDemoted");
+      // A setter with no profile left is the leaver's pause to tell, as the wake holds it `setter_left`.
+      yield* sql`UPDATE kin_mail_rules SET said_by = 'person_9c1e2a'`;
+      assert.notProperty((yield* rules.list(rheas, { orgId })).rules[0], "setterDemoted");
+    }).pipe(Effect.provide(fixture)),
+);
+
+it("the limit notice names the rule as Settings lists it, and counts one run or many", () => {
+  const notice = (monthlyCap: number) =>
+    mailRuleLimitNotice({
+      match: { ...match, subjectHas: ["invoice"] },
+      mailbox: "Accounts",
+      monthlyCap,
+      until: "Tuesday, 1 December",
+    });
+  assert.strictEqual(
+    notice(1),
+    "From juniper.example, subject has “invoice”: this mail rule on Accounts reached its limit of 1 run and is held until Tuesday, 1 December. Matched mail stays in the rule’s history in Settings → Connections.",
+  );
+  assert.strictEqual(
+    notice(30),
+    "From juniper.example, subject has “invoice”: this mail rule on Accounts reached its limit of 30 runs and is held until Tuesday, 1 December. Matched mail stays in the rule’s history in Settings → Connections.",
+  );
+});
+
 const here = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));
+
+// A rule is made or turned on only by the person's tap: no SQL an agent tool reaches may do either.
+const makesRule = /\bINSERT\s+(?:OR\s+\w+\s+)?INTO\s+kin_mail_rules\b/i;
+const turnsRuleOn =
+  /\bUPDATE\s+kin_mail_rules\s+SET\b(?:(?!\bWHERE\b)[\s\S])*?\bstate\s*=\s*(?!\s|'paused'|'removed')/i;
 
 it("keeps mail-rule writes out of the MCP import graph", () => {
   const seen = new Set<string>();
@@ -336,6 +595,8 @@ it("keeps mail-rule writes out of the MCP import graph", () => {
       [...via, file].join(" → "),
     );
     const source = NodeFS.readFileSync(file, "utf8");
+    assert.notMatch(source, makesRule, [...via, file].join(" → "));
+    assert.notMatch(source, turnsRuleOn, [...via, file].join(" → "));
     const imports =
       /^(?:import|export)\s+(?!type\b)(?:[^;"']*?\sfrom\s+)?["'](\.[^"']+\.tsx?)["']|\bimport\(\s*["'](\.[^"']+\.tsx?)["']\s*\)/gm;
     for (const [, declaration, dynamic] of source.matchAll(imports)) {
@@ -344,11 +605,22 @@ it("keeps mail-rule writes out of the MCP import graph", () => {
         graph(NodePath.resolve(NodePath.dirname(file), specifier), [...via, file]);
     }
   };
+  const source = (name: string) =>
+    name.endsWith(".ts") && !/\.(?:test|testkit|integration)\./.test(name);
   for (const folder of ["../lead/mcp", "../mcp", "../../mcp"]) {
     const root = NodePath.resolve(here, folder);
     for (const name of NodeFS.readdirSync(root, { recursive: true, encoding: "utf8" })) {
-      if (name.endsWith(".ts") && !/\.(?:test|testkit|integration)\./.test(name))
-        graph(NodePath.resolve(root, name));
+      if (source(name)) graph(NodePath.resolve(root, name));
     }
+  }
+  // Every agent tool, wherever it is declared: the coding-agent key's own tools are one.
+  const server = NodePath.resolve(here, "../..");
+  for (const name of NodeFS.readdirSync(server, { recursive: true, encoding: "utf8" })) {
+    const file = NodePath.resolve(server, name);
+    if (
+      source(name) &&
+      /McpToolAccess\.toLayer\(|Toolkit\.make\(/.test(NodeFS.readFileSync(file, "utf8"))
+    )
+      graph(file);
   }
 });

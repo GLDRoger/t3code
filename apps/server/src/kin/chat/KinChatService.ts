@@ -27,6 +27,9 @@ import {
   KinDeferralCard,
   KIN_MEMORY_CHANGES_CARD,
   KIN_DOC_CARD,
+  KIN_MAIL_RULE_CARD_TYPE,
+  KIN_MAIL_RULE_CARD_ACTIONS,
+  KinMailRuleCardState,
   type KinMessageRefInput,
   KIN_SOCIAL_PACK_CARD,
   KIN_SOCIAL_WEEK_CARD,
@@ -224,6 +227,15 @@ export type ChoiceAnswerHandler = (input: {
   KinChoiceOutcome | undefined,
   KinChatError | Repository.RepositoryError | SqlError.SqlError | Schema.SchemaError
 >;
+const decodeMailRuleCard = Schema.decodeUnknownOption(KinMailRuleCardState);
+
+export type MailRuleTapHandler = (input: {
+  readonly identity: PersonIdentity;
+  readonly widget: KinWidget;
+  readonly revision: number;
+  readonly action: (typeof KIN_MAIL_RULE_CARD_ACTIONS)[number];
+  readonly tapId: KinMessageId;
+}) => Effect.Effect<KinMailRuleCardState, KinChatError | SqlError.SqlError>;
 /**
  * Server work a person's Dismiss on a choice card, or their Undo of it, carries out in its own
  * transaction: the open question it asks closes as dismissed or opens again (`dismissed.ts`).
@@ -248,6 +260,9 @@ type WaitingInput = Pick<
 export class KinChatService extends Context.Service<
   KinChatService,
   {
+    readonly attachMailRuleTap: (
+      handler: MailRuleTapHandler,
+    ) => Effect.Effect<void, never, Scope.Scope>;
     /** `refused`: after a refused tap on a choice card rolled back, as its own step. */
     readonly attachChoiceAnswers: (
       handler: ChoiceAnswerHandler,
@@ -517,6 +532,15 @@ export class KinChatService extends Context.Service<
         readonly state: unknown;
         /** The turn's own: `evidence` in a turn nobody's message woke, as a chart posts. */
         readonly intent?: "answer" | "evidence";
+      },
+    ) => Effect.Effect<KinWidget, ServiceError>;
+    readonly showMailRule: (
+      identity: AgentIdentity,
+      input: {
+        readonly chatId: KinChatId;
+        readonly state: KinMailRuleCardState;
+        /** Older open proposals this one changes: each closes as replaced, so only one can be tapped. */
+        readonly replaces?: ReadonlyArray<KinWidgetId>;
       },
     ) => Effect.Effect<KinWidget, ServiceError>;
     /** `kin_chart`'s card: the agent's own message in that chat, limited like any other post. */
@@ -790,6 +814,7 @@ const make = Effect.gen(function* () {
   // Absent outside the server's layer: a chat list then hears no change of role while open.
   const refreshes = yield* Effect.serviceOption(KinRefreshHub);
   let onChoice: ChoiceAnswerHandler | undefined;
+  let onMailRuleTap: MailRuleTapHandler | undefined;
   let onRefused: ChoiceRefusedHandler | undefined;
   let onDismiss: ChoiceDismissHandler | undefined;
   let deferralItems: DeferralItemReader | undefined;
@@ -836,7 +861,7 @@ const make = Effect.gen(function* () {
     const person = yield* identityFor(caller, target);
     return person._tag === "person" ? person : yield* notFound;
   });
-  const memberFor = Effect.fn("KinChatService.memberFor")(function* (
+  const activeMemberFor = Effect.fn("KinChatService.activeMemberFor")(function* (
     identity: Identity,
     chatId: KinChatId,
   ) {
@@ -855,6 +880,13 @@ const make = Effect.gen(function* () {
       !(yield* roomReadable(identity, chat).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
     )
       return yield* notFound;
+    return member;
+  });
+  const memberFor = Effect.fn("KinChatService.memberFor")(function* (
+    identity: Identity,
+    chatId: KinChatId,
+  ) {
+    const member = yield* activeMemberFor(identity, chatId);
     if (identity._tag === "agent") {
       const agent = yield* requireRecord(repo.getAgent(identity));
       const thread = yield* requireRecord(repo.getAgentThread(identity));
@@ -1339,6 +1371,7 @@ const make = Effect.gen(function* () {
       readonly floorRunId?: string | null;
       readonly clientId: { readonly kind: "send" | "act"; readonly id: string } | null;
       readonly forChat?: boolean;
+      readonly serverMailRule?: true;
       readonly relay?: KinMessageRelay | undefined;
       readonly passedOn?: KinMessageOrigin | undefined;
       /** False for a tap whose fixed action the server ran: it answers nothing else here. */
@@ -1356,13 +1389,18 @@ const make = Effect.gen(function* () {
     const messageId = yield* decodeMessageId(SecureRandom.uuidV4Unsafe()).pipe(Effect.orDie);
     const message = yield* repo.insertMessage({
       orgId: identity.orgId,
-      audience: input.forChat === true ? "chat" : yield* authorAudience(identity),
+      audience:
+        input.serverMailRule === true
+          ? "owner"
+          : input.forChat === true
+            ? "chat"
+            : yield* authorAudience(identity),
       caller: identity._tag === "agent" ? identity.caller : undefined,
       wakeupId: identity._tag === "agent" ? identity.wakeupId : undefined,
       placeReplyFigures: input.placeReplyFigures,
       ...(input.pictureRefs === undefined ? {} : { pictureRefs: input.pictureRefs }),
       ...(identity._tag === "agent" && identity.hostPosted === true
-        ? { serverPosted: true as const }
+        ? { serverPosted: input.serverMailRule === true ? ("mail_rule" as const) : (true as const) }
         : {}),
       chatId: input.chatId,
       messageId,
@@ -1879,6 +1917,69 @@ const make = Effect.gen(function* () {
     );
     return yield* requireRecord(repo.getMessage(widget));
   });
+  const actOnMailRule = Effect.fn("KinChatService.actOnMailRule")(function* (
+    identity: PersonIdentity,
+    member: KinChatMember,
+    widget: KinWidget,
+    request: KinWidgetsActInput,
+  ) {
+    const action = KIN_MAIL_RULE_CARD_ACTIONS.find((action) => action === request.actionId);
+    if (action === undefined || request.value !== undefined) return yield* invalidState;
+    if (onMailRuleTap === undefined)
+      return yield* new KinChatError({ reason: "unavailable", message: "Kin is unavailable." });
+    const body = yield* encodeAction({
+      widgetId: widget.widgetId,
+      revision: request.revision,
+      actionId: action,
+      text: action === "turn_on" ? "Turn on" : "Not now",
+      handled: true,
+    }).pipe(Effect.mapError(() => invalidState));
+    const previous = yield* repo.findClientMessage({
+      ...member,
+      kind: "act",
+      clientId: request.clientActionId,
+    });
+    // The same tap sent again, as an offline retry does, gets the answer the first one got.
+    if (Option.isSome(previous))
+      return previous.value.widgetId === widget.widgetId && previous.value.body === body
+        ? previous.value
+        : yield* notAllowed;
+    const message = yield* post(identity, member, {
+      chatId: widget.chatId,
+      kind: "widget_action",
+      body,
+      intent: null,
+      mentions: [],
+      replyTo: widget.messageId,
+      widgetId: widget.widgetId,
+      clientId: { kind: "act", id: request.clientActionId },
+      replies: false,
+      publish: false,
+    });
+    const state = yield* onMailRuleTap({
+      identity,
+      widget,
+      revision: request.revision,
+      action,
+      tapId: message.messageId,
+    }).pipe(Effect.mapError(cardTapError));
+    const at = yield* now;
+    const updated = yield* repo.updateWidget({
+      ...widget,
+      audience: "owner",
+      expectedRevision: widget.revision,
+      state,
+      closedAt: at,
+      updatedAt: at,
+    });
+    yield* sql.afterCommit(
+      Effect.andThen(
+        hub.publish({ type: "message.posted", orgId: identity.orgId, message }),
+        hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: updated }),
+      ),
+    );
+    return message;
+  });
   /** A tap's own checks and effects, inside its transaction (`act` reads memory before it). */
   const actInside = Effect.fnUntraced(function* (
     caller: PersonCaller,
@@ -1888,6 +1989,8 @@ const make = Effect.gen(function* () {
     const identity = yield* personFor(caller, input);
     const request = yield* decodeAct(input).pipe(Effect.mapError(() => invalidState));
     const { widget, member } = yield* tapTarget(identity, request.widgetId);
+    if (widget.type === KIN_MAIL_RULE_CARD_TYPE)
+      return yield* actOnMailRule(identity, member, widget, request);
     if (
       widget.type === "choice" &&
       widget.closedAt === null &&
@@ -2502,7 +2605,12 @@ const make = Effect.gen(function* () {
     input: {
       readonly chatId: KinChatId;
       readonly clientMessageId: string;
-      readonly type: "choice" | "chart" | typeof KIN_DOC_CARD | typeof KIN_VISUAL_CARD_TYPE;
+      readonly type:
+        | "choice"
+        | "chart"
+        | typeof KIN_DOC_CARD
+        | typeof KIN_VISUAL_CARD_TYPE
+        | typeof KIN_MAIL_RULE_CARD_TYPE;
       readonly intent: KinAgentIntent;
       readonly state: Effect.Effect<unknown, KinChatError>;
       /** A stored file the card draws; read under the same rule as the message. */
@@ -2511,7 +2619,12 @@ const make = Effect.gen(function* () {
       readonly silent?: true | undefined;
     },
   ) {
-    const member = yield* memberFor(identity, input.chatId);
+    const mailRule = input.type === KIN_MAIL_RULE_CARD_TYPE;
+    if (mailRule && identity.hostPosted !== true) return yield* notAllowed;
+    // A proposal can name a lead before its first turn has a runtime thread.
+    const member = yield* mailRule
+      ? activeMemberFor(identity, input.chatId)
+      : memberFor(identity, input.chatId);
     yield* canWrite(identity, member);
     const state = yield* input.state;
     const existing = yield* repo.findClientMessage({
@@ -2557,6 +2670,7 @@ const make = Effect.gen(function* () {
       floorRunId: authorization.runId,
       clientId: { kind: "send", id: input.clientMessageId },
       publish: false,
+      ...(mailRule ? { serverMailRule: true } : {}),
       ...(input.forChat === true ? { forChat: true } : {}),
       silent: input.silent,
     });
@@ -2587,7 +2701,11 @@ const make = Effect.gen(function* () {
     };
     yield* repo.insertWidget({
       ...widget,
-      audience: input.forChat === true ? "chat" : yield* authorAudience(identity),
+      audience: mailRule
+        ? "owner"
+        : input.forChat === true
+          ? "chat"
+          : yield* authorAudience(identity),
     });
     if (input.file !== undefined)
       yield* repo.attachCardFile({
@@ -2905,6 +3023,17 @@ const make = Effect.gen(function* () {
       }
       return { message, waiting };
     }, transaction),
+    attachMailRuleTap: Effect.fn("KinChatService.attachMailRuleTap")(function* (handler) {
+      yield* Effect.acquireRelease(
+        Effect.sync(() => {
+          onMailRuleTap = handler;
+        }),
+        () =>
+          Effect.sync(() => {
+            if (onMailRuleTap === handler) onMailRuleTap = undefined;
+          }),
+      );
+    }),
     attachChoiceAnswers: Effect.fn("KinChatService.attachChoiceAnswers")(
       function* (handler, refused, dismissed) {
         yield* Effect.acquireRelease(
@@ -4133,6 +4262,7 @@ const make = Effect.gen(function* () {
         });
       if (
         input.type === "owner_check" ||
+        input.type === KIN_MAIL_RULE_CARD_TYPE ||
         input.type === "deferral" ||
         // Only Kin draws Social's cards, from its stored drafts and the service's own names.
         input.type === KIN_SOCIAL_WEEK_CARD ||
@@ -4740,6 +4870,37 @@ const make = Effect.gen(function* () {
         ),
       });
     }),
+    showMailRule: Effect.fn("KinChatService.showMailRule")(function* (identity, input) {
+      const card = yield* postCard(identity, {
+        chatId: input.chatId,
+        clientMessageId: `kin-mail-rule:${SecureRandom.uuidV4Unsafe()}`,
+        type: KIN_MAIL_RULE_CARD_TYPE,
+        intent: "answer",
+        state: validateState(KIN_MAIL_RULE_CARD_TYPE, input.state),
+        silent: true,
+      });
+      for (const widgetId of input.replaces ?? []) {
+        const older = Option.getOrUndefined(
+          yield* repo.getWidget({ orgId: identity.orgId, widgetId }),
+        );
+        if (older?.type !== KIN_MAIL_RULE_CARD_TYPE || older.closedAt !== null) continue;
+        const state = Option.getOrUndefined(decodeMailRuleCard(older.state));
+        if (state?.decision.status !== "proposed") continue;
+        const at = yield* now;
+        const closed = yield* repo.updateWidget({
+          ...older,
+          audience: "owner",
+          state: { ...state, decision: { status: "replaced" } } satisfies KinMailRuleCardState,
+          expectedRevision: older.revision,
+          closedAt: at,
+          updatedAt: at,
+        });
+        yield* sql.afterCommit(
+          hub.publish({ type: "widget.updated", orgId: identity.orgId, widget: closed }),
+        );
+      }
+      return card;
+    }, transaction),
     showCard: Effect.fn("KinChatService.showCard")(
       (identity, input) =>
         postCard(identity, {

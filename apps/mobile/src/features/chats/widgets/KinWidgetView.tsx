@@ -28,6 +28,7 @@ import { KinDeferralCard } from "./KinDeferralCard";
 import { KinDigestCard } from "./KinDigestCard";
 import { KinDocCard } from "./KinDocCard";
 import { KinHostTroubleCard } from "./KinHostTroubleCard";
+import { KinMailRuleCard } from "./KinMailRuleCard";
 import { KinMemoryChangesCard } from "./KinMemoryChangesCard";
 import { KinSocialPackCard, KinSocialWeekCard } from "./KinSocialCards";
 import { KinStatementPasswordCard, KinStatementReviewCard } from "./KinStatementCards";
@@ -68,13 +69,14 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const access = useAtomValue(kinAccessAtom(connectionAtomRuntime, props.environmentId));
   const modelName = useKinModelName(props.environmentId);
+  const ownerLevel = access === null ? undefined : kinOwnerLevel(access);
   // Before the catalog loads, assume the environment is known; the thread screen handles the rest.
   const view = kinCardView(
     props.widget,
     props.environmentId,
     (environmentId) => !catalog.isReady || catalog.entries.has(environmentId),
     props.heldFor ?? null,
-    access === null ? undefined : kinOwnerLevel(access),
+    ownerLevel,
     modelName,
   );
   switch (view.kind) {
@@ -143,6 +145,16 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
       return <KinSocialPackCard pack={view.pack} environmentId={props.environmentId} />;
     case "host_trouble":
       return <KinHostTroubleCard widget={view.widget} environmentId={props.environmentId} />;
+    case "mail_rule":
+      return (
+        <KinMailRuleCard
+          widget={view.widget}
+          environmentId={props.environmentId}
+          viewerPersonId={props.viewerPersonId}
+          ownerLevel={ownerLevel}
+          readOnly={props.readOnly === true}
+        />
+      );
     case "missing":
       return (
         <View className="rounded-[20px] border border-border bg-card-alt px-4 py-3">

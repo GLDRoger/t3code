@@ -1125,6 +1125,7 @@ export const make = Effect.gen(function* () {
               );
             yield* leaverChatOwn({ orgId: input.orgId, gone, removedAt: now }).pipe(
               Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.provideService(KinRefreshObserver, refresh),
               Effect.provideService(KinChatRepository, repo),
               Effect.provideService(KinChatHub, hub),
               Effect.mapError(sqlError("KinPeople.removeAccessChatOwn")),
