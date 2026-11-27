@@ -1,4 +1,8 @@
-import { DEFAULT_CLIENT_SETTINGS, type ClientSettings } from "@t3tools/contracts/settings";
+import {
+  DEFAULT_CLIENT_SETTINGS,
+  DEFAULT_UNIFIED_SETTINGS,
+  type ClientSettings,
+} from "@t3tools/contracts/settings";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 const persistenceMocks = vi.hoisted(() => ({
@@ -16,7 +20,7 @@ import {
   getClientSettings,
   persistClientSettingsPatch,
 } from "./useSettings";
-import { kinDefaultClientSettings } from "../kin/kinClientSettings";
+import { kinDefaultClientSettings, kinDefaultUnifiedSettings } from "../kin/kinClientSettings";
 
 function setKinDesktopWindow(enabled: boolean) {
   if (enabled) {
@@ -83,6 +87,12 @@ describe("Kin default notificationMode in client settings", () => {
     ).toBe("notifications-and-sound");
     expect(kinDefaultClientSettings({ kinWebOnly: false, inKinDesktopWindow: false })).toBe(
       DEFAULT_CLIENT_SETTINGS,
+    );
+    expect(
+      kinDefaultUnifiedSettings({ kinWebOnly: true, inKinDesktopWindow: false }).notificationMode,
+    ).toBe("notifications-and-sound");
+    expect(kinDefaultUnifiedSettings({ kinWebOnly: false, inKinDesktopWindow: false })).toBe(
+      DEFAULT_UNIFIED_SETTINGS,
     );
   });
 });

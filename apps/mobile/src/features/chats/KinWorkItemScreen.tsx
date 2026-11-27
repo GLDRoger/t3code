@@ -13,6 +13,7 @@ import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
 import { kinTaskProjectsAllowed } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
   kinSectionNamed,
+  kinSectionNamedWords,
   kinSectionOf,
   kinSectionOffLine,
 } from "@t3tools/client-runtime/kin/kinShell";
@@ -39,12 +40,13 @@ import {
   type KinRecordWho,
 } from "@t3tools/client-runtime/kin/kinTaskRecord";
 import {
-  KIN_WORK_GONE,
   KIN_WORK_HAND_BACK,
-  KIN_WORK_ITEM_FAILED,
   KIN_WORK_MILESTONE,
   KIN_WORK_NEW_COPY,
   KIN_WORK_NOTES_MAX,
+  kinWorkEntryKind,
+  kinWorkGone,
+  kinWorkItemFailed,
   kinWorkOnlyOwner,
   KIN_WORK_REPEAT,
   KIN_WORK_STEPS,
@@ -239,11 +241,10 @@ export function KinWorkItemScreen({ route }: StaticScreenProps<KinWorkItemParams
   const key = Option.getOrNull(decodeKey(route.params.task));
   if (environmentId === null || orgId === null || key === null) {
     return (
-      <KinWorkFrame title="Task" onBack={() => navigation.goBack()}>
+      <KinWorkFrame title={kinWorkEntryKind(null).title} onBack={() => navigation.goBack()}>
         <EmptyState
           variant="plain"
-          title="This link doesn't name a task"
-          detail="Open Work from your Kin chats."
+          {...kinWorkGone(null)}
         />
       </KinWorkFrame>
     );
@@ -256,6 +257,8 @@ type ItemTarget = KinWorkTarget & { readonly itemKey: KinRecordKey };
 
 function KinWorkItemGate(props: ItemTarget) {
   const navigation = useNavigation();
+  const shell = useKinShell(props.environmentId);
+  const title = kinSectionNamed(shell, kinWorkEntryKind(props.itemKey).title);
   const gate = useKinGate(
     kinClient.workRead.permissionStateAtom(props.environmentId),
     props.environmentId,
@@ -263,8 +266,8 @@ function KinWorkItemGate(props: ItemTarget) {
   // A teammate who follows a link asks the host nothing.
   if (gate !== null) {
     return (
-      <KinWorkFrame title="Task" onBack={() => navigation.goBack()}>
-        <KinGateView gate={gate} refused={kinWorkOnlyOwner("tasks")} label="Task" />
+      <KinWorkFrame title={title} onBack={() => navigation.goBack()}>
+        <KinGateView gate={gate} refused={kinWorkOnlyOwner("tasks")} label={title} />
       </KinWorkFrame>
     );
   }
@@ -336,16 +339,20 @@ function KinWorkItemBody(props: ItemTarget) {
   );
 
   if (state._tag !== "ready") {
+    const kind = kinWorkEntryKind(itemKey);
+    const barTitle = kinSectionNamed(shell, kind.title);
+    const gone = kinSectionNamedWords(shell, kinWorkGone(itemKey));
+    const failed = kinSectionNamedWords(shell, kinWorkItemFailed(itemKey));
     return (
-      <KinWorkFrame title="Task" onBack={back}>
+      <KinWorkFrame title={barTitle} onBack={back}>
         {state._tag === "loading" ? (
-          <KinWorkLoading label="Loading task" />
+          <KinWorkLoading label={`Loading ${kinSectionNamed(shell, kind.noun)}`} />
         ) : state._tag === "gone" ? (
-          <EmptyState variant="plain" {...KIN_WORK_GONE} />
+          <EmptyState variant="plain" {...gone} />
         ) : (
           <EmptyState
             variant="plain"
-            {...KIN_WORK_ITEM_FAILED}
+            {...failed}
             action={
               <Button
                 tone="secondary"

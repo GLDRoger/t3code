@@ -975,3 +975,89 @@ describe("a list by its definition", () => {
     ).toEqual(["SGD", "AUD", "CAD", "HKD", "NZD", "USD", "USD", "EUR", "JPY", "CNY"]);
   });
 });
+
+describe("payment receipt entry fields", () => {
+  const receiptsDef = list({
+    list: KinListId.make("receipts"),
+    name: "Receipts" as KinListDefinition["name"],
+    prefix: "RCT",
+    states: ["open", "waiting", "dropped"],
+    stateLabels: { open: "Draft" as never, waiting: "Issued" as never, dropped: "Void" as never },
+    defaultState: "open",
+    sensitive: true,
+    amount: true,
+    dateLabel: "Received on",
+    fields: [
+      { key: "number", label: "Receipt number", type: "text", sensitive: false },
+      { key: "towards", label: "Towards", type: "text", sensitive: false },
+      {
+        key: "mode",
+        label: "Mode",
+        type: "choice",
+        choices: ["bank transfer", "upi", "cheque", "cash", "card", "other"],
+        sensitive: false,
+      },
+      { key: "reference", label: "Reference", type: "text", sensitive: false },
+      { key: "invoice", label: "Invoice", type: "text", sensitive: false },
+      { key: "payment", label: "Payment", type: "text", sensitive: false },
+      { key: "file", label: "Receipt file", type: "file", sensitive: true },
+    ],
+  });
+
+  const receiptDetail: KinRecordDetail = {
+    ...record({
+      key: "RCT-1",
+      list: KinListId.make("receipts"),
+      title: "Received towards INV/26-27/003" as KinRecord["title"],
+      state: "waiting",
+      amount: { minor: 2_500_000, currency: "INR" },
+      fields: {
+        number: "RCT/26-27/001",
+        towards: "Invoice INV/26-27/003",
+        mode: "bank transfer",
+        reference: "UTR987654321",
+        invoice: "INV-3",
+        payment: "pay_8a3f9c0d1e2b3c4d5e6f",
+      },
+    }),
+    notes: "",
+    links: [],
+    changes: [],
+    comments: [],
+    files: [],
+    seq: 1,
+    source: { chatId: null, messageId: null },
+    assignedBy: null,
+    assignedAt: null,
+    createdBy: { _tag: "person", personId: "owner" as never },
+  };
+
+  it("hides raw internal invoice key and pay_ payment id and labels reference as Payment reference", () => {
+    const entry = kinListEntryView(receiptDetail, receiptsDef, context);
+    expect(entry.fields.map((field) => field.key)).toEqual([
+      "number",
+      "towards",
+      "mode",
+      "reference",
+      "file",
+    ]);
+    expect(entry.fields.find((field) => field.key === "reference")).toMatchObject({
+      label: "Payment reference",
+      text: "UTR987654321",
+    });
+    expect(entry.fields.map((field) => field.text).join(" ")).not.toContain("pay_");
+    expect(entry.fields.map((field) => field.text).join(" ")).not.toContain("INV-3");
+
+    const columns = kinListColumns(receiptsDef, [receiptDetail]);
+    expect(columns.map((column) => column.id)).not.toContain("field:payment");
+    expect(columns.map((column) => column.id)).not.toContain("field:invoice");
+    expect(columns.find((column) => column.id === "field:reference")?.label).toBe(
+      "Payment reference",
+    );
+
+    const row = kinListRow(receiptDetail, receiptsDef, context);
+    expect(row.cells["field:payment"]).toBeUndefined();
+    expect(row.cells["field:invoice"]).toBeUndefined();
+    expect(row.cells["field:reference"]).toBe("UTR987654321");
+  });
+});

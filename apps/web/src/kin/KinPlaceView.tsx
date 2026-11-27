@@ -12,6 +12,7 @@ import {
   KIN_WORK_LOAD_FAILED,
   KIN_WORK_NEW,
   KIN_WORK_NO_DRAFT,
+  kinUnavailableEntryLine,
   kinWorkItemState,
   kinWorkOffline,
   kinWorkOnlyOwner,
@@ -138,6 +139,7 @@ const NO_ITEM: ReturnType<typeof kinClient.workItem> = Atom.make(AsyncResult.ini
 
 type UnavailableLink = {
   readonly kind: KinInvalidLink;
+  readonly key?: KinRecordKey;
   readonly hides: "none" | "record" | "task";
 };
 
@@ -199,7 +201,7 @@ function useKinUnavailableLink(
       return { kind: "client", hides: "record" };
   }
   if (taskKey !== null && kinWorkItemState(taskResult, null)._tag === "gone")
-    return { kind: "task", hides: "task" };
+    return { kind: "task", key: taskKey, hides: "task" };
   return input.invalidLink === null ? null : { kind: input.invalidLink, hides: "none" };
 }
 
@@ -906,9 +908,11 @@ export function KinPlaceView({
       {unavailable === null ? null : (
         <KinUnavailableLinkNote
           line={named(
-            KIN_UNAVAILABLE_LINK[
-              unavailable.kind === "task" && place !== "tasks" ? "entry" : unavailable.kind
-            ],
+            unavailable.key !== undefined
+              ? kinUnavailableEntryLine(unavailable.key)
+              : KIN_UNAVAILABLE_LINK[
+                  unavailable.kind === "task" && place !== "tasks" ? "entry" : unavailable.kind
+                ],
           )}
         />
       )}
