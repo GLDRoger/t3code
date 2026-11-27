@@ -570,7 +570,10 @@ describe("pulse check-ins", () => {
         const [count] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_wakeups`;
         assert.strictEqual(count?.n, 1);
       } else {
-        const run = yield* claim(queue, "page").pipe(Effect.forkChild);
+        const run = yield* claim(queue, "page").pipe(
+          Effect.timeoutOption(elapsed + expected + 2 * MINUTE),
+          Effect.forkChild,
+        );
         yield* TestClock.adjust(elapsed);
         if (activity === "continuous") {
           for (let offset = 2; offset < 60; offset += 5) {
@@ -580,7 +583,10 @@ describe("pulse check-ins", () => {
           }
         }
         yield* TestClock.adjust(due + expected - (yield* Clock.currentTimeMillis));
-        const { started, events } = yield* Fiber.join(run);
+        yield* TestClock.adjust(2 * MINUTE);
+        const result = yield* Fiber.join(run);
+        assert(Option.isSome(result), "check-in claimed by deadline");
+        const { started, events } = result.value;
         assert.strictEqual(started, due + expected);
         assert.lengthOf(events, 1);
       }

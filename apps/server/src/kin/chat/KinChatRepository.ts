@@ -384,7 +384,7 @@ export const latestOwnTextAtSql = (
     readonly chatId: Statement.Fragment;
     readonly personId: Statement.Fragment;
   },
-  since: string,
+  since: string | Statement.Fragment,
   through: string,
 ) => sql`SELECT created_at FROM kin_messages
     WHERE org_id = ${scope.orgId} AND chat_id = ${scope.chatId} AND author_person_id = ${scope.personId}

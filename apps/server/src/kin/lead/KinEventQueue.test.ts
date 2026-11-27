@@ -589,9 +589,13 @@ describe("KinEventQueue", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect.each(["checkin-morning", "checkin-evening"])(
-    "the %s page is a turn of its own: it waits one turn for a message, which neither joins nor steers into it",
-    (scheduleId) =>
+  it.effect.each([
+    { scheduleId: "checkin-morning", pause: false },
+    { scheduleId: "checkin-evening", pause: false },
+    { scheduleId: "checkin-morning", pause: true },
+  ])(
+    "the $scheduleId page is a turn of its own in a quiet chat (pause enabled: $pause)",
+    ({ scheduleId, pause }) =>
       Effect.gen(function* () {
         yield* seed();
         const queue = yield* KinEventQueue.KinEventQueue;
@@ -612,6 +616,7 @@ describe("KinEventQueue", () => {
             factKeys: [],
             checkIn: { scheduleId, title: "Check-in", what: "Look.", slot: "s" },
           }),
+          pause ? { checkInPause: { until: 60 * 60_000 } } : undefined,
         );
         yield* queue.enqueue(yield* message("owner-ask"));
         yield* TestClock.adjust("2 seconds");
@@ -702,6 +707,99 @@ describe("KinEventQueue", () => {
         yield* sql`SELECT json_extract(json, '$._checkInPause.until') AS until FROM kin_events`,
         [{ until: held ? due + 60 * MINUTE : null }],
       );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect.each([
+    {
+      name: "gives a message waiting at release the first turn",
+      kind: "quiet",
+      first: "rhea-more",
+    },
+    { name: "runs before a message after the cap", kind: "cap", first: "checkin" },
+    { name: "uses the original minute at the evening boundary", kind: "evening", first: "checkin" },
+  ])("a held check-in $name", ({ kind, first }) =>
+    Effect.gen(function* () {
+      yield* seed();
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const sql = yield* SqlClient.SqlClient;
+      const MINUTE = 60_000;
+      const evening = kind === "evening";
+      // Midnight after New York's 25-hour fall-back day is 05:00 UTC.
+      const dayEndsAt = Date.UTC(2026, 10, 2, 5) - 1;
+      const due = evening ? Date.UTC(2026, 10, 2, 4, 55) : 15 * MINUTE;
+      const scheduleId = evening ? "checkin-evening" : "checkin-morning";
+      yield* TestClock.setTime(due - 10 * MINUTE);
+      const talk = Effect.fn("test.talk")(function* (id: string) {
+        yield* stored(id, "chat-lead-a");
+        const at = yield* Clock.currentTimeMillis;
+        yield* sql`UPDATE kin_messages SET created_at = ${DateTime.formatIso(DateTime.makeUnsafe(at))}
+          WHERE message_id = ${id}`;
+      });
+      const claim = (id: string) =>
+        Effect.scoped(queue.claim(input(id))).pipe(
+          Effect.map((events) => events.map((entry) => entry.eventId)),
+        );
+      const pulse = {
+        _tag: "pulse",
+        orgId: "a",
+        agentId: "lead-a",
+        receivedAt: DateTime.formatIso(DateTime.makeUnsafe(due - 10 * MINUTE)),
+        provenance: { _tag: "system" },
+      };
+      yield* queue.enqueue(
+        yield* decodeEvent({
+          ...pulse,
+          eventId: "checkin",
+          dedupeKey: `checkin:${scheduleId}:2026-11-01`,
+          factKeys: [],
+          checkIn: { scheduleId, title: "Check-in", what: "Look.", slot: "s" },
+        }),
+        {
+          notBefore: due,
+          checkInPause: { until: due + 60 * MINUTE, ...(evening ? { dayEndsAt } : {}) },
+        },
+      );
+      yield* queue.enqueue(
+        yield* decodeEvent({
+          ...pulse,
+          eventId: "prepare",
+          dedupeKey: "prepare",
+          factKeys: ["quote_unanswered:one:last=1"],
+        }),
+      );
+      yield* TestClock.adjust(MINUTE);
+      yield* talk("rhea-first");
+      yield* queue.enqueue(yield* event("rhea-first", "chat.message"));
+      yield* TestClock.adjust("2 seconds");
+      assert.deepStrictEqual(yield* claim("early"), ["rhea-first"]);
+      yield* finish("early");
+      assert.deepStrictEqual(yield* claim("busy"), ["prepare"]);
+      yield* sql`UPDATE kin_wakeups SET run_id = 'run' WHERE wakeup_id = 'busy'`;
+
+      if (kind === "cap") {
+        yield* TestClock.setTime(due + 59 * MINUTE);
+        yield* talk("rhea-at-cap");
+      }
+      yield* TestClock.setTime(due + (kind === "cap" ? 61 * MINUTE : 30_000));
+      yield* talk("rhea-more");
+      yield* queue.enqueue(yield* event("rhea-more", "chat.message"));
+      assert.deepStrictEqual(yield* queue.steer(input("busy")), []);
+
+      const claimAt = due + (kind === "cap" ? 62 : evening ? 2 : 11) * MINUTE;
+      yield* TestClock.setTime(claimAt);
+      yield* finish("busy");
+      const run = yield* claim("first").pipe(
+        Effect.flatMap((ids) => Clock.currentTimeMillis.pipe(Effect.map((at) => ({ at, ids })))),
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust(MINUTE);
+      assert.deepStrictEqual(yield* Fiber.join(run), { at: claimAt, ids: [first] });
+      yield* finish("first");
+      assert.deepStrictEqual(yield* claim("second"), [
+        first === "checkin" ? "rhea-more" : "checkin",
+      ]);
+      yield* finish("second");
     }).pipe(Effect.provide(layer)),
   );
 
