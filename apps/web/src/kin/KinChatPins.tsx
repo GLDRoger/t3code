@@ -17,7 +17,7 @@ import type {
 import { useNavigate } from "@tanstack/react-router";
 import { AsyncResult } from "effect/reactivity";
 import { EllipsisIcon, PinIcon } from "lucide-react";
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 
 import { Button } from "../components/ui/button";
 import { Popover, PopoverPopup, PopoverTitle, PopoverTrigger } from "../components/ui/popover";
@@ -82,6 +82,14 @@ function PinChip(props: {
   );
 }
 
+type PendingFocus =
+  | {
+      readonly kind: "unpin";
+      readonly pinId: KinChatPinId;
+      readonly removedPinId: KinChatPinId;
+    }
+  | { readonly kind: "trigger" };
+
 /**
  * One-row strip of live pinned cards directly under the chat header.
  * Shows nothing while empty, loading, or on hosts without pins.
@@ -107,6 +115,28 @@ export function KinChatPinsStrip(props: {
     readonly pinId: KinChatPinId;
     readonly text: string;
   } | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const unpinRefs = useRef<Map<KinChatPinId, HTMLButtonElement>>(new Map());
+  const pendingFocusRef = useRef<PendingFocus | null>(null);
+
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- moves DOM focus onto the next Unpin button or strip trigger on commit before Base UI restores focus to the popup
+  useLayoutEffect(() => {
+    const target = pendingFocusRef.current;
+    if (target === null) return;
+    if (target.kind === "trigger") {
+      if (popoverOpen || unpinning !== null) return;
+      pendingFocusRef.current = null;
+      triggerRef.current?.focus();
+      return;
+    }
+    const removed = !pins.some((pin) => pin.pinId === target.removedPinId);
+    if (!removed && unpinning !== null) return;
+    const button = unpinRefs.current.get(target.pinId);
+    if (button !== undefined) {
+      pendingFocusRef.current = null;
+      button.focus();
+    }
+  }, [unpinning, popoverOpen, pins]);
 
   const writable = kinChatMayWritePins(members, personId);
   const strip = kinPinStrip(pins, views, {
@@ -128,20 +158,44 @@ export function KinChatPinsStrip(props: {
     });
   };
 
-  const unpin = async (pinId: KinChatPinId) => {
+  const unpin = async (pinId: KinChatPinId, byKeyboard: boolean) => {
     if (unpinning !== null) return;
+    const unpinnable = strip.items
+      .filter((entry) => entry.canUnpin)
+      .map((entry) => entry.pin.pinId);
+    const at = unpinnable.indexOf(pinId);
+    const fallbackId = unpinnable[at + 1] ?? (at > 0 ? unpinnable[at - 1] : undefined);
+    // Record the target before the RPC so a synchronous pins refresh moves focus on the same commit.
+    if (byKeyboard) {
+      pendingFocusRef.current =
+        fallbackId !== undefined
+          ? { kind: "unpin", pinId: fallbackId, removedPinId: pinId }
+          : { kind: "trigger" };
+    }
     setUnpinning(pinId);
     setProblem(null);
     const outcome = await actions.unpin({ chatId, pinId });
-    setUnpinning(null);
     if (AsyncResult.isFailure(outcome)) {
+      pendingFocusRef.current = null;
+      setUnpinning(null);
       setProblem({
         pinId,
         text: kinPinFailureText(squashAtomCommandFailure(outcome), "unpin"),
       });
       return;
     }
-    if (outcome.value.pins.length === 0) setPopoverOpen(false);
+    const remaining = outcome.value.pins;
+    const nextUnpinId =
+      fallbackId !== undefined && remaining.some((pin) => pin.pinId === fallbackId)
+        ? fallbackId
+        : remaining.find((pin) => pin._tag !== "hidden")?.pinId;
+    if (remaining.length === 0 || nextUnpinId === undefined) {
+      if (byKeyboard) pendingFocusRef.current = { kind: "trigger" };
+      setPopoverOpen(false);
+    } else if (byKeyboard && pendingFocusRef.current !== null) {
+      pendingFocusRef.current = { kind: "unpin", pinId: nextUnpinId, removedPinId: pinId };
+    }
+    setUnpinning(null);
   };
 
   const first = strip.first;
@@ -186,6 +240,7 @@ export function KinChatPinsStrip(props: {
             <PopoverTrigger
               render={
                 <Button
+                  ref={triggerRef}
                   size={strip.more === null ? "icon-xs" : "xs"}
                   variant="ghost"
                   aria-label={KIN_PINS_COPY.openListLabel(strip.count)}
@@ -255,11 +310,15 @@ export function KinChatPinsStrip(props: {
                         {item.canUnpin ? (
                           <div className="shrink-0">
                             <Button
+                              ref={(node) => {
+                                if (node === null) unpinRefs.current.delete(item.pin.pinId);
+                                else unpinRefs.current.set(item.pin.pinId, node);
+                              }}
                               size="xs"
                               variant="ghost"
-                              disabled={unpinning !== null}
+                              aria-disabled={unpinning !== null || undefined}
                               aria-label={KIN_PINS_COPY.unpinLabel(item.view.title)}
-                              onClick={() => void unpin(item.pin.pinId)}
+                              onClick={(event) => void unpin(item.pin.pinId, event.detail === 0)}
                             >
                               {KIN_PINS_COPY.unpinFromChat}
                             </Button>

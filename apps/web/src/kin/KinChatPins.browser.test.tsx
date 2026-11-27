@@ -27,6 +27,8 @@ const host = vi.hoisted(() => ({
     readonly message: string;
   } | null,
   destinations: ["chats", "tasks", "money"] as ReadonlyArray<string>,
+  holdPinsRefresh: false,
+  chatPinsAtom: null as unknown,
 }));
 
 vi.mock(import("./useKinPlaces"), async (importOriginal) => ({
@@ -65,7 +67,10 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
       workZone: () => zone,
       profiles: () => profiles,
       chatPinsSupported: () => Atom.make(host.supported),
-      chatPins: () => Atom.make(AsyncResult.success({ pins: host.pins })),
+      chatPins: () => {
+        host.chatPinsAtom ??= Atom.make(() => AsyncResult.success({ pins: host.pins }));
+        return host.chatPinsAtom;
+      },
       inbox: () =>
         Atom.make(
           AsyncResult.success({
@@ -99,8 +104,9 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
             { input }: { readonly input: { readonly chatId: string; readonly pinId: string } },
           ) => {
             host.unpinCalls.push({ chatId: input.chatId, pinId: input.pinId });
-            host.pins = host.pins.filter((pin) => pin.pinId !== input.pinId);
-            return AsyncResult.success({ pins: host.pins });
+            const remaining = host.pins.filter((pin) => pin.pinId !== input.pinId);
+            if (!host.holdPinsRefresh) host.pins = remaining;
+            return AsyncResult.success({ pins: remaining });
           },
         ),
       },
@@ -140,6 +146,8 @@ function setup(patch: Partial<typeof host> = {}) {
   host.unpinCalls = [];
   host.pinRefusal = null;
   host.destinations = ["chats", "tasks", "money"];
+  host.holdPinsRefresh = false;
+  host.chatPinsAtom = null;
   Object.assign(host, patch);
 }
 
@@ -235,6 +243,71 @@ describe("pinned live cards on web", () => {
     await expect.element(unpinGone).toBeVisible();
     await userEvent.click(unpinGone);
     expect(host.unpinCalls).toEqual([{ chatId: "chat-1", pinId: "pin-gone" }]);
+  });
+
+  it("keeps focus on next, previous, or trigger after keyboard Unpin", async () => {
+    const taskPin = (id: string, key: string, title: string): KinChatPin => ({
+      _tag: "task",
+      pinId: KinChatPinId.make(id),
+      pinnedAt: "2026-11-26T00:00:00.000Z",
+      pinnedBy: "Rhea",
+      key: KinRecordKey.make(key),
+      title,
+      state: "open",
+      dueAt: null,
+      dueAllDay: false,
+      late: false,
+    });
+    setup({
+      pins: [
+        taskPin("pin-1", "W-1", "First pinned task"),
+        taskPin("pin-2", "W-2", "Second pinned task"),
+        taskPin("pin-3", "W-3", "Third pinned task"),
+      ],
+    });
+    await using _screen = await render(
+      <AppAtomRegistryProvider>
+        <KinChatPinsStrip
+          environmentId={envId}
+          orgId={orgId}
+          chatId={chatId}
+          personId={rheaId}
+          members={[member("owner")]}
+        />
+      </AppAtomRegistryProvider>,
+    );
+
+    const trigger = page.getByRole("button", { name: "Show all 3 pinned items" });
+    await expect.element(trigger).toBeVisible();
+    (trigger.element() as HTMLElement).focus();
+    await expect.element(trigger).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+    await expect.element(page.getByRole("list")).toBeVisible();
+
+    // Move to the first row's Unpin and activate it by keyboard -> focus moves to the next row's Unpin.
+    const unpinFirst = page.getByRole("button", { name: "Unpin First pinned task from chat" });
+    (unpinFirst.element() as HTMLElement).focus();
+    await expect.element(unpinFirst).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+
+    const unpinSecond = page.getByRole("button", { name: "Unpin Second pinned task from chat" });
+    await expect.element(unpinFirst).not.toBeInTheDocument();
+    await expect.element(unpinSecond).toHaveFocus();
+
+    // Tab to the last row's Unpin and activate it by keyboard -> focus moves to the previous row's Unpin.
+    await userEvent.keyboard("{Tab}{Tab}");
+    const unpinThird = page.getByRole("button", { name: "Unpin Third pinned task from chat" });
+    await expect.element(unpinThird).toHaveFocus();
+    await userEvent.keyboard("{Enter}");
+
+    await expect.element(unpinThird).not.toBeInTheDocument();
+    await expect.element(unpinSecond).toHaveFocus();
+
+    // Unpin the last remaining pin while the strip refresh is still in flight -> popover empties, closes, and focuses trigger.
+    host.holdPinsRefresh = true;
+    await userEvent.keyboard("{Enter}");
+    await expect.element(page.getByRole("list")).not.toBeInTheDocument();
+    await expect.element(page.getByRole("button", { name: "Show pinned item" })).toHaveFocus();
   });
 
   it("opens a goal pin only for a reader who has Money, where Goals live", async () => {
