@@ -42,7 +42,6 @@ import * as DateTime from "effect/DateTime";
 import * as Clock from "effect/Clock";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
-import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as ChatRepository from "../chat/KinChatRepository.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { turnAudience, turnChat, turnPeople } from "../lead/Audience.ts";
@@ -98,6 +97,8 @@ import { agentChanges, ownerLevelUndoAgentChange } from "../lead/agentChanges.ts
 import { turnChanges } from "../lead/turnChanges.ts";
 import { buildWorkSection } from "./workPrompt.ts";
 import { markQuotesSent } from "../connections/Sending.ts";
+import { makeMigratedSqliteLayer } from "../persistence/migratedSqlite.testkit.ts";
+import { withFixtureClock } from "../fixtureClock.testkit.ts";
 
 // Invented org, people and work only; nothing here reads a real database or memory.
 const orgId = KinOrgId.make("org");
@@ -139,10 +140,11 @@ const identity = Layer.mock(KinIdentity)({
 const gate = Layer.mock(KinLevelGate)({
   ask: () => Effect.fail(new KinChatError({ reason: "unavailable", message: "No chat here." })),
 });
+const sqlite = makeMigratedSqliteLayer();
 const layer = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
-  Layer.provideMerge(Sqlite.layerMemory),
+  Layer.provideMerge(sqlite),
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-records-" })),
   Layer.provideMerge(NodeServices.layer),
@@ -5164,6 +5166,7 @@ it.effect("a member sees a place only while it is on, and nothing of it while it
 
 const bookings = { orgId, list: "bookings" };
 const bookingTime = Date.parse(at);
+const bookingLayer = layer.pipe(withFixtureClock(bookingTime));
 const arjun = mate;
 const zoya = { ...mate, personId: KinPersonId.make("zoya") };
 const meera = { ...mate, personId: KinPersonId.make("meera") };
@@ -5173,7 +5176,6 @@ const book = (title: string, extra: Partial<KinRecords.CreateInput> = {}) =>
 
 const bookingList = Effect.fn("KinRecordsTest.bookingList")(function* (sensitive = false) {
   yield* seed;
-  yield* TestClock.setTime(bookingTime);
   const sql = yield* SqlClient.SqlClient;
   yield* sql`UPDATE kin_people SET display_name = CASE person_id WHEN ${ownerId} THEN 'Rhea'
     ELSE 'Arjun' END WHERE org_id = ${orgId}`;
@@ -5242,7 +5244,7 @@ it.effect(
         fourth.key,
         fifth.key,
       ]);
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect(
@@ -5268,7 +5270,7 @@ it.effect(
         (yield* OwnerDocs.search([arjun], { orgId, text: "booking" })).hits.map((hit) => hit.key),
         [visible.key],
       );
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("keeps a project lead's legacy list fields and totals separate from the team grant", () =>
@@ -5331,7 +5333,7 @@ it.effect("keeps a project lead's legacy list fields and totals separate from th
     assert.deepStrictEqual(agentRows.records?.find((row) => row.key === opened.key)?.fields, {
       note: "Second",
     });
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("withholds money fields, history and totals from a teammate and their agent", () =>
@@ -5376,7 +5378,7 @@ it.effect("withholds money fields, history and totals from a teammate and their 
       fields: { note: "Calendula", price: amount, privateNote: "Concealed" },
     });
     assert.deepStrictEqual(money.totals?.total, [amount]);
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect(
@@ -5414,7 +5416,7 @@ it.effect(
       assert.strictEqual(dates.dates.length, 1);
       assert.include(dates.dates[0], { key: record.key });
       assert.notProperty(dates.dates[0], "amount");
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("a teammate's prompt withholds a team list entry's sensitive number", () =>
@@ -5455,7 +5457,7 @@ it.effect("a teammate's prompt withholds a team list entry's sensitive number", 
     assert.include(shared, row.title);
     assert.notInclude(shared, number);
     assert.include((yield* text(true)) ?? "", number);
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect(
@@ -5524,7 +5526,7 @@ it.effect(
         assert.include(yield* Effect.flip(LeadWork.update(scope, input)), {
           reason: "not_allowed",
         });
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("Work create accepts a custom list only while it is open to the team", () =>
@@ -5555,7 +5557,7 @@ it.effect("Work create accepts a custom list only while it is open to the team",
     assert.strictEqual((yield* addBooking("Team booking")).list, bookings.list);
     yield* setBookingTeam(false, 2);
     assert.strictEqual((yield* addBooking("Closed booking").pipe(Effect.result))._tag, "Failure");
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("refuses team flags from a teammate and for built-in or sensitive lists", () =>
@@ -5586,7 +5588,7 @@ it.effect("refuses team flags from a teammate and for built-in or sensitive list
       "invalid_state",
       "A sensitive list can't be opened to the team. Unmark it as sensitive first.",
     ]);
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect(
@@ -5608,7 +5610,7 @@ it.effect(
       const newest = yield* book("New opening");
       assert.deepStrictEqual(yield* seen, [made.key, newest.key]);
       assert.lengthOf((yield* OwnerWork.list([owner], bookings)).records, 4);
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("on a team list whoever holds an entry may still archive it or give it away", () =>
@@ -5656,7 +5658,7 @@ it.effect("on a team list whoever holds an entry may still archive it or give it
     assert.strictEqual((yield* flipped(give(zoya, zoya.personId)))[0], "not_allowed");
     assert.include(yield* drop(dev), { state: "dropped" });
     assert.strictEqual(held.can?.give, true);
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("a team list assigned to Money follows the company's Money section", () =>
@@ -5677,7 +5679,7 @@ it.effect("a team list assigned to Money follows the company's Money section", (
     assert.include(yield* Effect.flip(read), { reason: "not_found" });
     assert.lengthOf((yield* OwnerDocs.search([arjun], { orgId, text: "Appointment" })).hits, 0);
     assert.include(yield* Effect.flip(addBooking("Section off")), { reason: "not_allowed" });
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("member list reads build team register membership once in SQLite", () =>
@@ -5697,7 +5699,7 @@ it.effect("member list reads build team register membership once in SQLite", () 
     assert.deepStrictEqual(yield* query, [{ n: 0 }]);
     yield* storedTeamList();
     assert.deepStrictEqual(yield* query, [{ n: 1 }]);
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("keeps a list without team sharing under the existing row and Money rules", () =>
@@ -5719,7 +5721,7 @@ it.effect("keeps a list without team sharing under the existing row and Money ru
       }
       assert.lengthOf((yield* OwnerDocs.search([person], { orgId, text: "plain" })).hits, 0);
     }
-  }).pipe(Effect.provide(layer)),
+  }).pipe(Effect.provide(bookingLayer)),
 );
 
 it.effect("a record lists what links to it, of what the reader sees, newest first and capped", () =>

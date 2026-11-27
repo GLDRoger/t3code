@@ -40,7 +40,6 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
-import * as Sqlite from "../../persistence/Sqlite.ts";
 import { Scheduler } from "../../scheduling/Scheduler.ts";
 import * as ArrivalFeed from "../arrivals/ArrivalFeed.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
@@ -106,6 +105,7 @@ import * as Connections from "./ConnectionsService.ts";
 import { guarded } from "./EgressGuard.ts";
 import { type FakeMail, makeFakeMail } from "./FakeMail.ts";
 import * as McpGateway from "./McpGateway.ts";
+import { makeMigratedSqliteLayer } from "../persistence/migratedSqlite.testkit.ts";
 
 // An invented company with two mail accounts on a local fake; nothing leaves the process.
 const orgId = KinOrgId.make("org");
@@ -216,6 +216,7 @@ const gatedFiles = (gates: Gates) =>
           : fs.readFile(path),
     })),
   );
+const sqlite = makeMigratedSqliteLayer();
 const layerFor = (fake: FakeMail, cards: Array<Card>, gates: Gates = {}) =>
   ArrivalFeed.layer.pipe(
     Layer.provideMerge(Layer.succeed(BankAlertReader.BankAlertReader, fixtureBankAlertReader)),
@@ -259,7 +260,7 @@ const layerFor = (fake: FakeMail, cards: Array<Card>, gates: Gates = {}) =>
     Layer.provide(Layer.succeed(KinRefreshObserver, { touch: () => Effect.void })),
     Layer.provideMerge(KinEventQueue.layer),
     Layer.provideMerge(KinPersistence.layer),
-    Layer.provideMerge(Sqlite.layerMemory),
+    Layer.provideMerge(sqlite),
     Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
     Layer.provide(gatedFiles(gates)),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-mail-e2e-" })),
@@ -465,8 +466,8 @@ const setUp = <E>(
     fake.addAccount({ provider: "microsoft", address: HELLO, name: "Invented Co" });
     const cards: Array<Card> = [];
     const gates: Gates = {};
+    yield* TestClock.setTime(NOW);
     yield* Effect.gen(function* () {
-      yield* TestClock.setTime(NOW);
       yield* seed;
       const connections = yield* KinConnections;
       yield* connections.setSignInClient(people(owner), {

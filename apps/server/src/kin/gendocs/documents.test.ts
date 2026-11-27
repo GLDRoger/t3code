@@ -30,7 +30,6 @@ import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
-import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { chatShared } from "../chat/sharing.ts";
@@ -70,6 +69,8 @@ import { sheetCells } from "./tables.ts";
 import { KinToolchain } from "./toolchain.ts";
 import * as Workspace from "./workspace.ts";
 import { KIN_OWNER_LEVEL } from "../work/teamView.ts";
+import { makeMigratedSqliteLayer } from "../persistence/migratedSqlite.testkit.ts";
+import { withFixtureClock } from "../fixtureClock.testkit.ts";
 
 // Invented org, company, client, GSTINs and amounts only; nothing here reads a real database.
 const orgId = KinOrgId.make("org");
@@ -169,10 +170,11 @@ const gate = Layer.unwrap(
     }),
   ),
 );
+const sqlite = makeMigratedSqliteLayer();
 const base = Layer.mergeAll(KinRecords.layer, identity, gate).pipe(
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
-  Layer.provideMerge(Sqlite.layerMemory),
+  Layer.provideMerge(sqlite),
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
 );
 /**
@@ -241,6 +243,7 @@ const layer = renderer.pipe(
   Layer.provideMerge(base),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-documents-" })),
   Layer.provideMerge(Layer.mergeAll(NodeServices.layer, PlatformCrypto.layer)),
+  withFixtureClock(Date.parse("2026-11-12T06:00:00.000Z")),
 );
 
 const git = (cwd: string, ...args: ReadonlyArray<string>) =>
@@ -318,7 +321,6 @@ const company = Effect.gen(function* () {
   shownCards.length = 0;
   notices.length = 0;
   failing.reason = undefined;
-  yield* TestClock.setTime(Date.parse("2026-11-12T06:00:00.000Z"));
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Invented Co', ${at})`;
   yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
       dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)

@@ -21,7 +21,6 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import { ServerConfig } from "../../config.ts";
-import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
@@ -56,6 +55,8 @@ import {
   withGuards,
 } from "./githubWatchStore.ts";
 import { WRITE_BRANCH_PREFIX } from "../memory/MemoryConfig.ts";
+import { makeMigratedSqliteLayer } from "../persistence/migratedSqlite.testkit.ts";
+import { withFixtureClock } from "../fixtureClock.testkit.ts";
 
 const orgId = KinOrgId.make("kin-default");
 const ownerId = KinPersonId.make("kin-default-owner");
@@ -178,8 +179,9 @@ const fakeApp = (github: FakeGitHub, repo: string) => {
   });
 };
 
+const sqlite = makeMigratedSqliteLayer();
 const database = KinPersistence.layer.pipe(
-  Layer.provideMerge(Sqlite.layerMemory),
+  Layer.provideMerge(sqlite),
   Layer.provideMerge(
     ConfigProvider.layer(
       ConfigProvider.fromUnknown({
@@ -192,6 +194,7 @@ const database = KinPersistence.layer.pipe(
   ),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-github-watch-" })),
   Layer.provideMerge(NodeServices.layer),
+  withFixtureClock(T0),
 );
 
 const setup = (
@@ -256,7 +259,6 @@ const look = (github: FakeGitHub, minutes = 1) =>
 
 const start = (github: FakeGitHub, options: { readonly triage?: false } = {}) =>
   Effect.gen(function* () {
-    yield* TestClock.setTime(T0);
     yield* seed;
     if (options.triage === false) yield* setTriage(orgId, REPO, false, T0);
     yield* (yield* GitHubWatch.KinGitHubWatch).poll(orgId, { force: true });
@@ -1597,7 +1599,6 @@ describe("automatic issue triage", () => {
   it.effect("starts triage at the first look after landing and leaves older issues alone", () => {
     const { github, layer } = setup({ repo });
     return Effect.gen(function* () {
-      yield* TestClock.setTime(T0);
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
       yield* sql`INSERT INTO kin_github_watch (org_id, login, started_at, since_at, next_at)
@@ -2105,7 +2106,6 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
     const { github, layer } = setup();
     world(github);
     return Effect.gen(function* () {
-      yield* TestClock.setTime(T0);
       yield* seedForkOff;
       yield* (yield* GitHubWatch.KinGitHubWatch).poll(orgId, { force: true });
       assert.deepStrictEqual(yield* guards, {
@@ -2229,7 +2229,6 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
         rulesets: [ruleset(65, [update], [admin], { bypassHidden: true })],
       });
       return Effect.gen(function* () {
-        yield* TestClock.setTime(T0);
         yield* seedForkOff;
         yield* (yield* GitHubWatch.KinGitHubWatch).poll(orgId, { force: true });
         assert.deepStrictEqual(yield* guards, {
@@ -2326,7 +2325,6 @@ describe("protecting a watched repo's default branch from Kin's App", () => {
       const { github, layer } = setup();
       world(github);
       return Effect.gen(function* () {
-        yield* TestClock.setTime(T0);
         yield* seedForkOff;
         const sql = yield* SqlClient.SqlClient;
         const misread = sql`UPDATE kin_github_branch_guards SET state = 'unknown', problem = 'no_access'

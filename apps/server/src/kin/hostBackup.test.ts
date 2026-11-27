@@ -30,7 +30,6 @@ import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerConfig from "../config.ts";
 import * as ProcessRunner from "../processRunner.ts";
-import * as Sqlite from "../persistence/Sqlite.ts";
 import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as Hub from "./chat/KinChatHub.ts";
 import * as Repository from "./chat/KinChatRepository.ts";
@@ -47,6 +46,8 @@ import * as KinPersistence from "./persistence/KinPersistence.ts";
 import { KinWakeupError } from "./lead/WakeupRunner.ts";
 import { MemoryError, MemoryRecoveryHooks } from "./memory/Memory.ts";
 import * as OwnerNotices from "./lead/OwnerNotices.ts";
+import { makeMigratedSqliteLayer } from "./persistence/migratedSqlite.testkit.ts";
+import { withFixtureClock } from "./fixtureClock.testkit.ts";
 
 const HOUR = 60 * 60 * 1000;
 const NOW = 1794009600000;
@@ -113,6 +114,7 @@ const fakeRunner = (seen: Array<ReadonlyArray<string>> = []) =>
 
 const config = (fields: Record<string, unknown>) =>
   ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true, ...fields }));
+const sqlite = makeMigratedSqliteLayer();
 const servicesWith = (
   fields: Record<string, unknown>,
   runner: Layer.Layer<ProcessRunner.ProcessRunner> = fakeRunner(),
@@ -124,10 +126,7 @@ const servicesWith = (
     Layer.provideMerge(Hub.layer),
     Layer.provideMerge(Repository.layer),
     Layer.provideMerge(
-      KinPersistence.layer.pipe(
-        Layer.provideMerge(Sqlite.layerMemory),
-        Layer.provideMerge(config(fields)),
-      ),
+      KinPersistence.layer.pipe(Layer.provideMerge(sqlite), Layer.provideMerge(config(fields))),
     ),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-host-backup-" })),
     Layer.provideMerge(NodeServices.layer),
@@ -136,6 +135,7 @@ const services = servicesWith({ KIN_CHECKOUT: "/srv/kin-current" });
 
 // 10:00 in Kolkata, outside the owner's quiet hours (22:00 to 07:00 there).
 const DAY_START = NOW + 4.5 * HOUR;
+const daytimeServices = services.pipe(withFixtureClock(DAY_START));
 
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -171,7 +171,6 @@ it.effect.each(["retired", "none", "paused", "stopped"] as const)(
   "tells the owner once while every lead is %s, clears the notice on recovery, and tells a new episode again",
   (scenario) =>
     Effect.gen(function* () {
-      yield* TestClock.setTime(DAY_START);
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
       const down = Effect.gen(function* () {
@@ -255,12 +254,11 @@ it.effect.each(["retired", "none", "paused", "stopped"] as const)(
         (yield* messages).map((message) => message.resolvedAt === null),
         [false, true],
       );
-    }).pipe(Effect.scoped, Effect.provide(services)),
+    }).pipe(Effect.scoped, Effect.provide(daytimeServices)),
 );
 
 it.effect("one lead awake, with the others paused, is no notice", () =>
   Effect.gen(function* () {
-    yield* TestClock.setTime(DAY_START);
     yield* seed;
     const sql = yield* SqlClient.SqlClient;
     const at = DateTime.formatIso(DateTime.makeUnsafe(DAY_START));
@@ -269,7 +267,7 @@ it.effect("one lead awake, with the others paused, is no notice", () =>
     const told = yield* sql`SELECT 1 FROM kin_messages
       WHERE org_id = ${orgId} AND message_id LIKE 'kin-no-lead:%' ORDER BY message_id`;
     assert.lengthOf(told, 0);
-  }).pipe(Effect.provide(services)),
+  }).pipe(Effect.provide(daytimeServices)),
 );
 
 it.effect(
@@ -277,7 +275,6 @@ it.effect(
   () =>
     Effect.gen(function* () {
       // 23:00 in Kolkata: inside the owner's quiet hours.
-      yield* TestClock.setTime(DAY_START + 13 * HOUR);
       yield* seed;
       const sql = yield* SqlClient.SqlClient;
       const night = (day: number, status: "failed" | "succeeded", failure: string | null) =>
@@ -316,12 +313,11 @@ it.effect(
         (yield* told).map((row) => row.resolvedAt !== null),
         [true],
       );
-    }).pipe(Effect.provide(services)),
+    }).pipe(Effect.provide(services.pipe(withFixtureClock(DAY_START + 13 * HOUR)))),
 );
 
 it.effect("a memory write the writer refuses every night tells the owner once per cause", () =>
   Effect.gen(function* () {
-    yield* TestClock.setTime(DAY_START);
     yield* seed;
     const sql = yield* SqlClient.SqlClient;
     const night = (day: number, failure: string | null) =>
@@ -370,12 +366,11 @@ it.effect("a memory write the writer refuses every night tells the owner once pe
       assert.notInclude(body, "Error");
       assert.notInclude(body, "MemoryCheckoutInvalid");
     }
-  }).pipe(Effect.provide(services)),
+  }).pipe(Effect.provide(daytimeServices)),
 );
 
 it.effect("background memory refusals open one silent notice in the owner's private chat", () =>
   Effect.gen(function* () {
-    yield* TestClock.setTime(DAY_START + 13 * HOUR);
     yield* seed;
     const sql = yield* SqlClient.SqlClient;
     const { writeEpisode } = yield* MemoryRecoveryHooks;
@@ -399,7 +394,14 @@ it.effect("background memory refusals open one silent notice in the owner's priv
       { chatId: "rhea-chief", person: "rhea", silent: 1, open: 0 },
       { chatId: "rhea-chief", person: "rhea", silent: 1, open: 1 },
     ]);
-  }).pipe(Effect.provide(OwnerNotices.layer.pipe(Layer.provideMerge(services)))),
+  }).pipe(
+    Effect.provide(
+      OwnerNotices.layer.pipe(
+        Layer.provideMerge(services),
+        withFixtureClock(DAY_START + 13 * HOUR),
+      ),
+    ),
+  ),
 );
 
 const decodeCard = Schema.decodeUnknownSync(Schema.fromJsonString(KinHostTroubleCard));
@@ -419,7 +421,6 @@ it.effect(
   "keeps one backup notice open outside quiet hours, and closes it once a backup is good",
   () =>
     Effect.gen(function* () {
-      yield* TestClock.setTime(NOW);
       yield* seed;
       const fs = yield* FileSystem.FileSystem;
       const file = (yield* Path.Path).join(
@@ -462,7 +463,7 @@ it.effect(
         [false],
       );
       assert.lengthOf(yield* notices, 1);
-    }).pipe(Effect.provide(services)),
+    }).pipe(Effect.provide(services.pipe(withFixtureClock(NOW)))),
 );
 
 it.effect(
@@ -474,7 +475,6 @@ it.effect(
       const care = yield* KinHostCare.KinHostCare;
       // Starting up measures (data, temporary files, builds, update backups), and so does the first
       // look once the clock is a day on.
-      yield* TestClock.setTime(NOW);
       yield* care.status(orgId);
       yield* TestClock.adjust("1 minute");
       const looked = walks();
@@ -487,7 +487,13 @@ it.effect(
       yield* care.status(orgId);
       yield* TestClock.adjust("1 minute");
       assert.strictEqual(walks(), looked + 4);
-    }).pipe(Effect.provide(servicesWith({ KIN_CHECKOUT: "/srv/kin-current" }, fakeRunner(seen))));
+    }).pipe(
+      Effect.provide(
+        servicesWith({ KIN_CHECKOUT: "/srv/kin-current" }, fakeRunner(seen)).pipe(
+          withFixtureClock(NOW),
+        ),
+      ),
+    );
   },
 );
 
@@ -630,7 +636,6 @@ const queued = (eventId: string, agent: string) =>
 
 it.effect("makes one notice per cause whose count goes up, and closes it when a turn runs", () =>
   Effect.gen(function* () {
-    yield* TestClock.setTime(DAY_START);
     yield* seed;
     const care = yield* KinHostCare.KinHostCare;
     const sql = yield* SqlClient.SqlClient;
@@ -719,12 +724,11 @@ it.effect("makes one notice per cause whose count goes up, and closes it when a 
       (yield* cards).filter((card) => card.cause === "space").map((card) => card.closed?.ran),
       [0, 1],
     );
-  }).pipe(Effect.provide(services)),
+  }).pipe(Effect.provide(daytimeServices)),
 );
 
 it.effect("commits a trouble notice with its card, and repairs a legacy bare notice", () =>
   Effect.gen(function* () {
-    yield* TestClock.setTime(DAY_START);
     yield* seed;
     const care = yield* KinHostCare.KinHostCare;
     const sql = yield* SqlClient.SqlClient;
@@ -755,12 +759,11 @@ it.effect("commits a trouble notice with its card, and repairs a legacy bare not
     assert.lengthOf(yield* notices, 1);
     assert.lengthOf(yield* cards, 1);
     assert.isTrue((yield* care.causeFor(orgId, failure.agentId))?.told);
-  }).pipe(Effect.provide(services)),
+  }).pipe(Effect.provide(daytimeServices)),
 );
 
 it.effect("a successful turn releases untouched space failures but not work stopped partway", () =>
   Effect.gen(function* () {
-    yield* TestClock.setTime(DAY_START);
     yield* seed;
     const care = yield* KinHostCare.KinHostCare;
     const queue = yield* KinEventQueue.KinEventQueue;
@@ -802,14 +805,13 @@ it.effect("a successful turn releases untouched space failures but not work stop
       { state: "queued", notBefore: DAY_START },
       { state: "expired", notBefore: DAY_START },
     ]);
-  }).pipe(Effect.provide(services)),
+  }).pipe(Effect.provide(daytimeServices)),
 );
 
 it.effect(
   "keeps a trouble's held turns on their own rows, however many, for Settings and Try again",
   () =>
     Effect.gen(function* () {
-      yield* TestClock.setTime(DAY_START);
       yield* seed;
       const care = yield* KinHostCare.KinHostCare;
       const sql = yield* SqlClient.SqlClient;
@@ -857,14 +859,13 @@ it.effect(
         (yield* cards).map((card) => [card.count, card.expiring]),
         [[599, undefined]],
       );
-    }).pipe(Effect.provide(services)),
+    }).pipe(Effect.provide(daytimeServices)),
 );
 
 it.effect(
   "an agent working again releases only its own held turns; the trouble closes when every agent has",
   () =>
     Effect.gen(function* () {
-      yield* TestClock.setTime(DAY_START);
       yield* seed;
       const care = yield* KinHostCare.KinHostCare;
       const sql = yield* SqlClient.SqlClient;
@@ -922,7 +923,7 @@ it.effect(
       );
       // Only the turn that finished counts as run.
       assert.strictEqual((yield* cards)[0]!.closed?.ran, 1);
-    }).pipe(Effect.provide(services)),
+    }).pipe(Effect.provide(daytimeServices)),
 );
 
 it.effect(
@@ -949,7 +950,6 @@ it.effect(
       }),
     );
     return Effect.gen(function* () {
-      yield* TestClock.setTime(DAY_START);
       yield* seed;
       const care = yield* KinHostCare.KinHostCare;
       const sql = yield* SqlClient.SqlClient;
@@ -970,7 +970,13 @@ it.effect(
       yield* care.succeeded(orgId, chief);
       assert.isTrue(yield* care.spaceFailed(orgId, finance));
       assert.strictEqual(cleans, 3);
-    }).pipe(Effect.provide(servicesWith({ KIN_CHECKOUT: "/srv/kin-current" }, runner)));
+    }).pipe(
+      Effect.provide(
+        servicesWith({ KIN_CHECKOUT: "/srv/kin-current" }, runner).pipe(
+          withFixtureClock(DAY_START),
+        ),
+      ),
+    );
   },
 );
 
@@ -978,7 +984,6 @@ it.effect(
   "tells the owner in a chat only they read, and keeps the trouble when there is none",
   () =>
     Effect.gen(function* () {
-      yield* TestClock.setTime(DAY_START);
       yield* seed;
       const care = yield* KinHostCare.KinHostCare;
       const sql = yield* SqlClient.SqlClient;
@@ -1020,7 +1025,7 @@ it.effect(
           ["signin", 1],
         ],
       );
-    }).pipe(Effect.provide(services)),
+    }).pipe(Effect.provide(daytimeServices)),
 );
 
 it.effect(
@@ -1047,7 +1052,6 @@ it.effect(
       }),
     );
     return Effect.gen(function* () {
-      yield* TestClock.setTime(DAY_START);
       yield* seed;
       const care = yield* KinHostCare.KinHostCare;
       yield* care.storageFailed(orgId);
@@ -1062,13 +1066,18 @@ it.effect(
       assert.lengthOf(yield* notices, 1);
       yield* care.storageRecovered(orgId);
       assert.lengthOf(yield* cards, 1);
-    }).pipe(Effect.provide(servicesWith({ KIN_CHECKOUT: "/srv/kin-current" }, runner)));
+    }).pipe(
+      Effect.provide(
+        servicesWith({ KIN_CHECKOUT: "/srv/kin-current" }, runner).pipe(
+          withFixtureClock(DAY_START),
+        ),
+      ),
+    );
   },
 );
 
 it.effect("Back up now says why it can't start, and a good backup closes the notice at once", () =>
   Effect.gen(function* () {
-    yield* TestClock.setTime(DAY_START);
     yield* seed;
     const care = yield* KinHostCare.KinHostCare;
     const fs = yield* FileSystem.FileSystem;
@@ -1089,7 +1098,11 @@ it.effect("Back up now says why it can't start, and a good backup closes the not
       (yield* cards).map((card) => [card.cause, card.open]),
       [["backup", false]],
     );
-  }).pipe(Effect.provide(servicesWith({ KIN_DEV_HOST_CARE: "/srv/kin-dev" }))),
+  }).pipe(
+    Effect.provide(
+      servicesWith({ KIN_DEV_HOST_CARE: "/srv/kin-dev" }).pipe(withFixtureClock(DAY_START)),
+    ),
+  ),
 );
 
 const space =
@@ -1101,7 +1114,6 @@ it.effect(
   "clears temporary files at once when a disk is under 20% free, and tells the owner once a day only when that wasn't enough",
   () =>
     Effect.gen(function* () {
-      yield* TestClock.setTime(NOW);
       yield* seed;
       let cleans = 0;
       const clean = Effect.sync(() => {
@@ -1146,13 +1158,12 @@ it.effect(
       const missing = (yield* Path.Path).join((yield* ServerConfig.ServerConfig).stateDir, "gone");
       yield* HostBackup.warnIfLowOnSpace(orgId, [missing]);
       assert.lengthOf(yield* notices, 1);
-    }).pipe(Effect.provide(services)),
+    }).pipe(Effect.provide(services.pipe(withFixtureClock(NOW)))),
 );
 
 it.effect("posts once after more than three hours, then once for a separate downtime", () =>
   Effect.gen(function* () {
     const minute = 60_000;
-    yield* TestClock.setTime(DAY_START);
     yield* seed;
     yield* OfflineCatchUp.markStarted();
     yield* TestClock.adjust(3 * HOUR - minute);
@@ -1236,12 +1247,11 @@ it.effect("posts once after more than three hours, then once for a separate down
     ]);
     assert.deepStrictEqual(yield* cards, []);
     assert.lengthOf(yield* sql`SELECT event_id FROM kin_events`, 4);
-  }).pipe(Effect.provide(services)),
+  }).pipe(Effect.provide(daytimeServices)),
 );
 
 it.effect("holds the offline notice during the same quiet hours as the backup notice", () =>
   Effect.gen(function* () {
-    yield* TestClock.setTime(NOW - 4 * HOUR);
     yield* seed;
     yield* OfflineCatchUp.markStarted();
     yield* TestClock.setTime(NOW);
@@ -1265,7 +1275,7 @@ it.effect("holds the offline notice during the same quiet hours as the backup no
       [" Nothing arrived while it was off.", " Caught up 2 messages."],
     );
     assert.lengthOf(yield* cards, 0);
-  }).pipe(Effect.provide(services)),
+  }).pipe(Effect.provide(services.pipe(withFixtureClock(NOW - 4 * HOUR)))),
 );
 
 it.effect("writes the offline line with known counts, omitted counts and singular nouns", () =>
@@ -1321,7 +1331,6 @@ it.effect("writes the offline line with known counts, omitted counts and singula
 
 it.effect("publishes the bare system line after the chat and scheduled startup passes", () =>
   Effect.gen(function* () {
-    yield* TestClock.setTime(DAY_START - 4 * HOUR);
     yield* seed;
     yield* OfflineCatchUp.markStarted();
     yield* TestClock.setTime(DAY_START);
@@ -1362,5 +1371,5 @@ it.effect("publishes the bare system line after the chat and scheduled startup p
         "Kin was offline from 6:00 am to 10:00 am. Caught up 1 message; 1 older message was skipped.",
       );
     }
-  }).pipe(Effect.scoped, Effect.provide(services)),
+  }).pipe(Effect.scoped, Effect.provide(services.pipe(withFixtureClock(DAY_START - 4 * HOUR)))),
 );

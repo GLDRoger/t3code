@@ -1,4 +1,3 @@
-// @effect-diagnostics nodeBuiltinImport:off -- each case copies one migrated database file.
 import K021PushDevices from "./migrations/K021_PushDevices.ts";
 import PeopleInvitesMigration from "./migrations/K038_PeopleInvites.ts";
 import ChatGrantsLapse from "./migrations/K055_ChatGrantsLapse.ts";
@@ -25,13 +24,9 @@ import K088MoneyRecords from "./migrations/K088_MoneyRecords.ts";
 import K107Connections from "./migrations/K107_Connections.ts";
 import LegacyBankAlerts from "./migrations/K204_BankAlerts.ts";
 import BankSendersMigration from "./migrations/K229_BankSenders.ts";
-import * as NodeFS from "node:fs";
-import * as NodeOS from "node:os";
-import * as NodePath from "node:path";
 
-import { assert, beforeAll, describe, it } from "@effect/vitest";
+import { assert, describe, it } from "@effect/vitest";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
-import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -43,6 +38,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import { PreparedJson } from "../connections/Sending.ts";
 import { kinMigrations, runKinMigrations } from "./KinMigrations.ts";
 import * as KinPersistence from "./KinPersistence.ts";
+import { makeMigratedSqliteLayer } from "./migratedSqlite.testkit.ts";
 
 const decodePrepared = Schema.decodeSync(PreparedJson);
 
@@ -368,42 +364,7 @@ const historyOf = (list: typeof kinMigrations) =>
   list.map(([migration_id, name]) => ({ migration_id, name }));
 const freshLayer = Layer.provideMerge(KinPersistence.layer, Sqlite.layerMemory);
 
-const tempDir = Effect.acquireRelease(
-  Effect.sync(() => NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "kin-migrations-"))),
-  (dir) => Effect.sync(() => NodeFS.rmSync(dir, { recursive: true, force: true })),
-);
-
-// Migrating is most of a case's time, so each case opens its own copy of one migrated database.
-const migratedFile = Deferred.makeUnsafe<string>();
-beforeAll(() =>
-  Effect.gen(function* () {
-    const file = NodePath.join(yield* tempDir, "migrated.sqlite");
-    yield* Effect.gen(function* () {
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`VACUUM INTO ${file}`;
-    }).pipe(Effect.provide(freshLayer));
-    yield* Deferred.succeed(migratedFile, file);
-  }),
-);
-
-// The one setting of the server's setup that changes what a case can write.
-const foreignKeysOn = Layer.effectDiscard(
-  Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* sql`PRAGMA foreign_keys = ON`;
-  }),
-);
-
-const layer = Layer.unwrap(
-  Effect.gen(function* () {
-    const file = NodePath.join(yield* tempDir, "kin.sqlite");
-    NodeFS.copyFileSync(yield* Deferred.await(migratedFile), file);
-    return Layer.provideMerge(
-      KinPersistence.layer,
-      Layer.provideMerge(foreignKeysOn, NodeSqliteClient.layer({ filename: file })),
-    );
-  }),
-);
+const layer = KinPersistence.layer.pipe(Layer.provideMerge(makeMigratedSqliteLayer()));
 
 const kinSchema = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;

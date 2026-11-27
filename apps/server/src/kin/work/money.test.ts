@@ -32,7 +32,6 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
-import * as Sqlite from "../../persistence/Sqlite.ts";
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
@@ -96,6 +95,8 @@ import { endOfDay } from "./recordRows.ts";
 import { moneyOf } from "./projectSpine.ts";
 import { agentPaid, agentTook } from "./agentPayment.testkit.ts";
 import { SHARED_REFUSAL } from "../lead/Audience.ts";
+import { makeMigratedSqliteLayer } from "../persistence/migratedSqlite.testkit.ts";
+import { withFixtureClock } from "../fixtureClock.testkit.ts";
 
 // Invented org, people, amounts and files only; nothing here reads a real database.
 const orgId = KinOrgId.make("org");
@@ -225,13 +226,15 @@ const documents = Layer.mergeAll(
   Layer.mock(KinDocRenderer)({ drawable: () => Effect.undefined }),
   Layer.mock(KinWorkspace)({}),
 );
+const sqlite = makeMigratedSqliteLayer();
 const layer = Layer.mergeAll(KinRecords.layer, identity, gate, documents, KinShell.layer).pipe(
   Layer.provideMerge(KinEventQueue.layer),
   Layer.provideMerge(KinPersistence.layer),
-  Layer.provideMerge(Sqlite.layerMemory),
+  Layer.provideMerge(sqlite),
   Layer.provideMerge(ConfigProvider.layer(ConfigProvider.fromUnknown({ KIN_ENABLED: true }))),
   Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-money-" })),
   Layer.provideMerge(NodeServices.layer),
+  withFixtureClock(NOW),
 );
 
 /**
@@ -309,7 +312,6 @@ const pulseTurn = (n: number, factKey: string) =>
 /** The owner, one lead with its direct chat in India's time zone, and a second org. */
 const seed = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
-  yield* TestClock.setTime(NOW);
   yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Invented Co', ${at}), (${otherOrg}, 'Other', ${at})`;
   yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
       dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
@@ -585,7 +587,7 @@ describe("amounts", () => {
       assert.isUndefined(
         yield* aboutInHome(orgId, [...totals, { minor: 10, currency: "JPY" }], "USD", at, read),
       );
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.provide(sqlite)),
   );
 
   it("formats totals past a float's exact range digit for digit, signed", () => {
