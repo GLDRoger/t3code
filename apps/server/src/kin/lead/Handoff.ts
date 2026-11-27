@@ -43,7 +43,7 @@ import {
 import { wakeEvent } from "./ChatWake.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
 import { resolveLead } from "./LeadMemory.ts";
-import { messageBodyLimit } from "./quote.ts";
+import { encoded, messageBodyLimit } from "./quote.ts";
 import { teammatesLimited } from "./KinBudget.ts";
 import * as LeadAccess from "./LeadAccess.ts";
 import * as Reach from "./Reach.ts";
@@ -485,7 +485,7 @@ const make = Effect.gen(function* () {
 
   /**
    * A teammate's own request goes to the agent that owns it, among the owner's leads they may
-   * message (`Reach`); one they may not is refused. Their stored words only, once per message.
+   * message (`Reach`); one they may not is refused. Their stored words stay separate from agent context.
    * Cards an earlier build drew to let them talk keep answering retries until they close.
    */
   /**
@@ -736,6 +736,27 @@ const make = Effect.gen(function* () {
       ON CONFLICT (org_id, message_id) DO NOTHING RETURNING message_id`;
     if (claimed.length === 0) return (yield* recorded()) ?? (yield* unavailable());
     const outside = yield* outsideStamp(ctx).pipe(access);
+    const note = input.request.trim().replace(/\s+/g, " ");
+    if (
+      note !== "" &&
+      fold(note) !== fold(ask.message.body.replace(/\s+/g, " ")) &&
+      (yield* unreadableBy(ctx.orgId, ask.personId, note).pipe(access)) === undefined
+    ) {
+      const direct = yield* chat.createDirect(
+        { _tag: "person", orgId: ctx.orgId, personId: ask.personId },
+        { orgId: ctx.orgId, agentId: target.agentId },
+      );
+      // The forwarded-notice prefix lets the receiving prompt quote this as recent chat data.
+      yield* chat.notice({
+        orgId: ctx.orgId,
+        chatId: direct.chatId,
+        audience: "chat",
+        messageId: KinMessageId.make(`kin-forwarded-context-${forwardEventId(messageId)}`),
+        body: `Context from ${self.name}: ${encoded(note)}`,
+        relay: { kind: "sent_by", agentId: ctx.agentId },
+        silent: true,
+      });
+    }
     yield* forward({ ask, from: self, to: target, outside }).pipe(
       Effect.provideService(KinChatService, chat),
       Effect.provideService(KinEventQueue, queue),
