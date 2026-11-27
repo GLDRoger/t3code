@@ -18,6 +18,7 @@ export const {
   useKinListContext,
   useKinListEntries,
   useKinDates,
+  useKinCalendar,
   useKinEntryChanges,
   useKinWorkFiles,
   useKinListChanges,

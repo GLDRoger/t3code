@@ -4,6 +4,7 @@
 //     --from "Ravi Menon <ravi@lumen.example>" --subject "Launch date" --body "Can we move it?" [--thread ft3] \
 //     [--auth "mx.invented.example; dmarc=pass header.from=lumen.example"]
 //   node scripts/kin-fake-mail.ts <stateDir>/kin-fake-mail.json sent
+//   node scripts/kin-fake-mail.ts <stateDir>/kin-fake-mail.json fail <address> <status|off>
 //   node scripts/kin-fake-mail.ts <stateDir>/kin-fake-mail.json expire hello@invented-co.example [--back]
 //   node scripts/kin-fake-mail.ts <stateDir>/kin-fake-mail.json approve <authorizationUrl> hello@invented-co.example
 import * as NodeFS from "node:fs";
@@ -15,10 +16,14 @@ import { fileStore, makeFakeMail } from "../src/kin/connections/FakeMail.ts";
 const [path, command, ...rest] = process.argv.slice(2);
 if (
   path === undefined ||
-  (command !== "deliver" && command !== "sent" && command !== "expire" && command !== "approve")
+  (command !== "deliver" &&
+    command !== "sent" &&
+    command !== "expire" &&
+    command !== "approve" &&
+    command !== "fail")
 ) {
   console.error(
-    "Usage: kin-fake-mail.ts <mailbox.json> deliver --to --from --subject --body | sent | expire <address> [--back] | approve <authorizationUrl> <address>",
+    "Usage: kin-fake-mail.ts <mailbox.json> deliver --to --from --subject --body | sent | expire <address> [--back] | approve <authorizationUrl> <address> | fail <address> <status|off>",
   );
   process.exit(2);
 }
@@ -45,6 +50,20 @@ if (command === "sent") {
   const back = rest.includes("--back");
   fake.setExpired(address, !back);
   console.log(`${address}: sign-in ${back ? "works again" : "expired"}`);
+} else if (command === "fail") {
+  const [address, value] = rest;
+  const status = value === "off" ? null : Number(value);
+  if (
+    address === undefined ||
+    rest.length !== 2 ||
+    (status !== null && (!Number.isInteger(status) || status < 400 || status > 599)) ||
+    !fake.load().accounts.some((one) => one.address.toLowerCase() === address.toLowerCase())
+  ) {
+    console.error("fail needs a fake mailbox address and an HTTP status from 400 to 599, or off.");
+    process.exit(2);
+  }
+  fake.failWith(address, status);
+  console.log(`${address}: ${status === null ? "failure cleared" : `failing with HTTP ${status}`}`);
 } else if (command === "approve") {
   // The owner signs in again at the "vendor": a working grant, and the page Kin's sign-in returns to.
   const [authorizationUrl, address] = rest;

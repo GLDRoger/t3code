@@ -7,8 +7,10 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import {
   ACTIVITY_EVENTS,
   ACTIVITY_MAIL,
+  AGENDA_LIMIT,
   addressesIn,
   isPlainAddress,
+  type MailAgendaEvent,
   type MailArrival,
   type MailCalendarEvent,
   type MailContext,
@@ -18,11 +20,15 @@ import {
 } from "./MailProvider.ts";
 import { attachmentPart, htmlToText, messageBody } from "./MailText.ts";
 import {
+  agendaPages,
+  agendaTime,
+  agendaZone,
   answeredWith,
   attachmentBytes,
   attachmentJsonLimit,
   checkMailFile,
   failure,
+  httpsLink,
   mailDate,
   mailFileType,
   mailProvider,
@@ -250,6 +256,26 @@ const eventOf = (event: unknown): MailCalendarEvent => ({
   revision: text(field(event, "etag")) ?? null,
   notifiesGuests: field(event, "organizer", "self") === true,
 });
+const agendaEvent = (event: unknown): ReadonlyArray<MailAgendaEvent> => {
+  const id = text(field(event, "id"));
+  const date = text(field(event, "start", "date"));
+  const allDay = date !== undefined;
+  const start = agendaTime(date ?? text(field(event, "start", "dateTime")), allDay);
+  if (!id || start === null || field(event, "status") === "cancelled") return [];
+  return [
+    {
+      id,
+      title: text(field(event, "summary")) ?? null,
+      start,
+      end: agendaTime(text(field(event, "end", allDay ? "date" : "dateTime")), allDay),
+      allDay,
+      zone: agendaZone(text(field(event, "start", "timeZone"))),
+      link: httpsLink(text(field(event, "htmlLink"))),
+      repeats: Boolean(text(field(event, "recurringEventId"))),
+    },
+  ];
+};
+
 const calendarOf = (calendarId: string | undefined) =>
   `${CALENDAR}/${encodeURIComponent(calendarId ?? "primary")}/events`;
 const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
@@ -548,6 +574,7 @@ const google: MailVendor = {
   },
   signIn: { server: GOOGLE_SERVER, scope: GOOGLE_SCOPES, extra: GOOGLE_AUTH_EXTRA },
   canSend,
+  readsCalendar: (granted) => googleGrant(granted).readsCalendar,
   threads: (context, page) =>
     threadsOf(context, {
       ...(page.query === null ? { labelIds: "INBOX" } : { q: page.query }),
@@ -560,6 +587,27 @@ const google: MailVendor = {
       Effect.map((thread) =>
         list(field(thread, "messages")).map(messageOf(context.mailbox.account, true)),
       ),
+    ),
+  agenda: (context, { from, to }) =>
+    agendaPages(
+      (next) =>
+        api(context, calendarOf(undefined), {
+          timeMin: from,
+          timeMax: to,
+          singleEvents: "true",
+          showDeleted: "false",
+          orderBy: "startTime",
+          maxResults: String(AGENDA_LIMIT + 1),
+          pageToken: next ?? undefined,
+          fields:
+            "nextPageToken,items(id,summary,start(date,dateTime,timeZone),end(date,dateTime),htmlLink,recurringEventId,status)",
+        }).pipe(
+          Effect.map((page) => ({
+            events: list(field(page, "items")).flatMap(agendaEvent),
+            next: text(field(page, "nextPageToken")) ?? null,
+          })),
+        ),
+      "start",
     ),
   events: (context, query) =>
     api(context, calendarOf(query.calendarId), {

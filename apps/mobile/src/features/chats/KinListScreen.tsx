@@ -4,9 +4,16 @@ import {
   KIN_RETRY,
   kinFailure,
 } from "@t3tools/client-runtime/kin/kinAnswers";
+import {
+  KIN_CALENDAR,
+  kinCalendarDeviceKey,
+  kinCalendarNotice,
+  kinCalendarSwitchShown,
+  type KinCalendarRowView,
+} from "@t3tools/client-runtime/kin/kinCalendar";
 import { LegendList } from "@legendapp/list/react-native";
 import { kinBillsEntry } from "@t3tools/client-runtime/kin/kinBills";
-import { useAtomValue } from "@effect/atom-react";
+import { useAtomSet, useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_DATES,
@@ -16,6 +23,7 @@ import {
   kinMonthWindow,
   kinOwnerToday,
   kinShiftMonth,
+  type KinDatesEntry,
 } from "@t3tools/client-runtime/kin/kinDates";
 import { kinEntryFacts } from "@t3tools/client-runtime/kin/kinAttention";
 import {
@@ -47,7 +55,7 @@ import {
   type KinListFilter,
   type KinListRowView,
 } from "@t3tools/client-runtime/kin/kinLists";
-import { kinListSettingsOnPhone } from "@t3tools/client-runtime/kin/kinMoney";
+import { KIN_MONEY, kinListSettingsOnPhone } from "@t3tools/client-runtime/kin/kinMoney";
 import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_HOME } from "@t3tools/client-runtime/kin/kinWorkHome";
@@ -61,11 +69,13 @@ import {
   type KinRecordKey,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
+import { AsyncResult } from "effect/reactivity";
 import * as Schema from "effect/Schema";
 import { useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
 
 import { AppBar } from "../../components/ui/AppBar";
+import { SymbolView } from "../../components/ui/AppSymbol";
 import type { AppBarMenu } from "../../components/ui/AppBar.types";
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
@@ -79,6 +89,8 @@ import { Menu } from "../../components/ui/Menu";
 import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useNowMinuteMs } from "../../lib/clock";
+import { cn } from "../../lib/cn";
+import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
 import { KinMonthGrid } from "./components/KinMonthGrid";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
@@ -91,10 +103,13 @@ import {
   KinWorkToggleRow,
 } from "./components/KinWorkPieces";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
+import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
 import { KinDateRowLine } from "./KinWorkMoney";
+import { kinCalendarHiddenAtom, setKinCalendarShownAtom } from "./state/kinCalendarShown";
 import { kinClient } from "./state/kinClient";
 import { useKinBillBatches } from "./state/useKinBills";
 import {
+  useKinCalendar,
   useKinDates,
   useKinListChanges,
   useKinListContext,
@@ -831,6 +846,51 @@ export function KinListRowLine(props: {
   );
 }
 
+/** A calendar event: never late or closed, read only, and opened on the provider's own page. */
+function KinCalendarRowLine(props: { readonly event: KinCalendarRowView; readonly dim: boolean }) {
+  const grows = useKinTextGrows();
+  const { event } = props;
+  const { link } = event;
+  const look = cn(
+    "min-h-14 flex-row items-center gap-3 bg-grouped-card px-4 py-2.5",
+    props.dim && "opacity-70",
+  );
+  const content = (
+    <>
+      <SymbolView name="calendar.badge.clock" size={18} tintColorClassName="accent-icon-muted" />
+      <View className="min-w-0 flex-1 gap-0.5">
+        <Text textRole="body" numberOfLines={kinLines(2, grows)} className="text-foreground">
+          {event.title}
+        </Text>
+        <Text
+          textRole="footnote"
+          numberOfLines={kinLines(2, grows)}
+          className="text-foreground-muted"
+        >
+          {event.line}
+        </Text>
+      </View>
+      {link === null ? null : (
+        <SymbolView name="arrow.up.right" size={13} tintColorClassName="accent-icon-muted" />
+      )}
+    </>
+  );
+  return link === null ? (
+    <View accessible accessibilityLabel={event.accessibilityLabel} className={look}>
+      {content}
+    </View>
+  ) : (
+    <Pressable
+      accessibilityRole="link"
+      accessibilityLabel={event.accessibilityLabel}
+      onPress={() => void tryOpenExternalUrl(link, "external-link")}
+      className={cn(look, "active:opacity-60")}
+    >
+      {content}
+    </Pressable>
+  );
+}
+
 export type KinDatesParams = { readonly environmentId: string; readonly orgId: string };
 
 /** Everything with a date, across every list, a day at a time. */
@@ -864,25 +924,114 @@ function KinDatesBody(props: KinWorkTarget) {
   const [mode, setMode] = useState<"agenda" | "month">("agenda");
   const [month, setMonth] = useState(() => today.slice(0, 7));
   const [picked, setPicked] = useState<string | null>(null);
+  const window = !ready
+    ? null
+    : mode === "agenda"
+      ? kinAgendaWindow(today, names.zone)
+      : kinMonthWindow(month, names.zone);
   const { state, retry } = useKinDates(
     props,
-    !ready
-      ? null
-      : mode === "agenda"
-        ? kinAgendaWindow(today, names.zone)
-        : kinMonthWindow(month, names.zone),
+    window,
     openOnly,
     ready && !work.stale ? work.live.seq : null,
   );
+  // Remembered on this phone for this person in this company; nothing is asked while off.
+  const hidden = useAtomValue(kinCalendarHiddenAtom);
+  const saveCalendarShown = useAtomSet(setKinCalendarShownAtom);
+  const [chosen, setChosen] = useState<{ readonly key: string; readonly on: boolean } | null>(null);
+  const deviceKey =
+    names.me === null ? null : kinCalendarDeviceKey(props.environmentId, props.orgId, names.me);
+  const calendarOn =
+    deviceKey === null
+      ? null
+      : chosen?.key === deviceKey
+        ? chosen.on
+        : AsyncResult.isSuccess(hidden)
+          ? !hidden.value.has(deviceKey)
+          : null;
+  const calendar = useKinCalendar(props, state._tag === "refused" ? null : window, calendarOn);
+  const events = calendar.state._tag === "ready" ? calendar.state.calendar : undefined;
+  const eventsDim = calendar.state._tag === "ready" && calendar.state.refreshing;
+  const calendarNotice = kinCalendarNotice(calendar.state);
   const frame = {
     title: KIN_DATES.title,
     onBack: () => navigation.goBack(),
-    refresh: { accessibilityLabel: "Refresh", onPress: retry },
+    refresh: {
+      accessibilityLabel: "Refresh",
+      onPress: () => {
+        retry();
+        calendar.retry();
+      },
+    },
   };
+  const toggles = (
+    <ListSection>
+      {deviceKey !== null && kinCalendarSwitchShown(calendar.state) ? (
+        <KinWorkToggleRow
+          label={KIN_CALENDAR.toggle}
+          value={calendarOn === true}
+          onValueChange={(on) => {
+            saveCalendarShown({ key: deviceKey, shown: on });
+            setChosen({ key: deviceKey, on });
+          }}
+        />
+      ) : null}
+      <KinWorkToggleRow label={KIN_DATES.openOnly} value={openOnly} onValueChange={setOpenOnly} />
+    </ListSection>
+  );
+  const openMailboxes = () =>
+    navigation.navigate("KinMyMailbox", {
+      environmentId: props.environmentId,
+      orgId: props.orgId,
+    });
+  const calendarLine =
+    calendarNotice === null ? null : (
+      <View className="flex-row flex-wrap items-center gap-2 px-2">
+        {calendarNotice.mailboxes ? (
+          <Pressable
+            accessibilityRole="link"
+            onPress={openMailboxes}
+            className="min-w-0 flex-1 active:opacity-60"
+          >
+            <Text textRole="footnote" className="text-foreground-muted underline">
+              {calendarNotice.text}
+            </Text>
+          </Pressable>
+        ) : (
+          <Text
+            textRole="footnote"
+            accessibilityLiveRegion={calendarNotice.status ? "polite" : "none"}
+            className="min-w-0 flex-1 text-foreground-muted"
+          >
+            {calendarNotice.text}
+          </Text>
+        )}
+        {calendarNotice.retry ? (
+          <Button tone="secondary" size="compact" label={KIN_RETRY} onPress={calendar.retry} />
+        ) : null}
+      </View>
+    );
+  const entryLine = (entry: KinDatesEntry) =>
+    entry.kind === "work" ? (
+      <KinDateRowLine
+        key={entry.id}
+        row={entry.row}
+        onPress={() => navigation.navigate("KinWorkItem", { ...props, task: entry.row.key })}
+      />
+    ) : (
+      <KinCalendarRowLine key={entry.id} event={entry.event} dim={eventsDim} />
+    );
   if (work._tag === "refused") {
     return (
       <KinWorkFrame {...frame}>
         <EmptyState variant="plain" {...KIN_LISTS.onlyOwner} />
+      </KinWorkFrame>
+    );
+  }
+  if (state._tag === "refused") {
+    return (
+      <KinWorkFrame title={frame.title} onBack={frame.onBack}>
+        <EmptyState variant="plain" {...KIN_MONEY.onlyOwner} />
       </KinWorkFrame>
     );
   }
@@ -899,21 +1048,17 @@ function KinDatesBody(props: KinWorkTarget) {
   );
   // A month keeps its grid while its entries are read, so stepping through months never blanks.
   if (mode === "month" && ready && !failed) {
-    const grid = kinDatesMonth(month, state._tag === "ready" ? state.rows : [], names, now);
+    const grid = kinDatesMonth(month, state._tag === "ready" ? state.rows : [], names, now, events);
     const day = picked !== null && picked.startsWith(month) ? picked : null;
     const shown = day ?? (today.startsWith(month) ? today : null);
-    const rows = grid.weeks.flat().find((cell) => cell.day === shown)?.rows ?? [];
-    const dated = grid.weeks.flat().filter((cell) => cell.inMonth && cell.rows.length > 0);
+    const entries = grid.weeks.flat().find((cell) => cell.day === shown)?.entries ?? [];
+    const dated = grid.weeks.flat().filter((cell) => cell.inMonth && cell.entries.length > 0);
+    const [firstEntry] = entries;
     return (
       <KinWorkFrame {...frame}>
         {modes}
-        <ListSection>
-          <KinWorkToggleRow
-            label={KIN_DATES.openOnly}
-            value={openOnly}
-            onValueChange={setOpenOnly}
-          />
-        </ListSection>
+        {toggles}
+        {calendarLine}
         <KinMonthGrid
           label={grid.label}
           weeks={grid.weeks}
@@ -926,15 +1071,11 @@ function KinDatesBody(props: KinWorkTarget) {
         />
         {state._tag !== "ready" ? (
           <KinWorkLoading label="Loading dates" />
-        ) : shown !== null && rows.length > 0 ? (
-          <ListSection title={rows[0]?.when ?? shown}>
-            {rows.map((row) => (
-              <KinDateRowLine
-                key={row.id}
-                row={row}
-                onPress={() => navigation.navigate("KinWorkItem", { ...props, task: row.key })}
-              />
-            ))}
+        ) : shown !== null && firstEntry !== undefined ? (
+          <ListSection
+            title={firstEntry.kind === "work" ? firstEntry.row.when : firstEntry.event.when}
+          >
+            {entries.map(entryLine)}
           </ListSection>
         ) : (
           <Text textRole="footnote" className="px-2 text-foreground-muted">
@@ -959,25 +1100,18 @@ function KinDatesBody(props: KinWorkTarget) {
       </KinWorkFrame>
     );
   }
-  const days = kinDatesAgenda(state.rows, names, now);
+  const days = kinDatesAgenda(state.rows, names, now, events);
   return (
     <KinWorkFrame {...frame}>
       {modes}
-      <ListSection>
-        <KinWorkToggleRow label={KIN_DATES.openOnly} value={openOnly} onValueChange={setOpenOnly} />
-      </ListSection>
+      {toggles}
+      {calendarLine}
       {days.length === 0 ? (
         <EmptyState variant="plain" {...KIN_DATES.none} />
       ) : (
         days.map((day) => (
           <ListSection key={day.day} title={day.label}>
-            {day.rows.map((row) => (
-              <KinDateRowLine
-                key={row.id}
-                row={row}
-                onPress={() => navigation.navigate("KinWorkItem", { ...props, task: row.key })}
-              />
-            ))}
+            {day.entries.map(entryLine)}
           </ListSection>
         ))
       )}

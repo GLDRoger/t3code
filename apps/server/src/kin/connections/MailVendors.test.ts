@@ -1,11 +1,14 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 
-import { type FakeMail, makeFakeMail } from "./FakeMail.ts";
+import { type FakeMail, fileStore, makeFakeMail } from "./FakeMail.ts";
 import { MAIL_TOOL, type MailActivity, type Mailbox, type MailProvider } from "./MailProvider.ts";
 import type { KinGatewayError } from "./McpGateway.ts";
 import { MAIL_PROVIDERS } from "./mailProviders.ts";
@@ -32,10 +35,27 @@ type Run = {
   readonly http: HttpClient.HttpClient;
   readonly token: string;
   readonly omitLinkId: () => void;
+  readonly requests: ReadonlyArray<URL>;
   readonly call: (
     tool: string,
     args?: Record<string, unknown>,
   ) => Effect.Effect<any, KinGatewayError>;
+};
+
+// What a vendor could send on an event though Dates never asks: none of it may come through.
+const UNASKED = {
+  description: "Private trip notes",
+  body: { contentType: "html", content: "Private trip notes" },
+  bodyPreview: "Private trip notes",
+  location: { displayName: "Private trip location" },
+  attendees: [{ email: "zoya@tidewater.example" }],
+  organizer: { email: "meera@tidewater.example" },
+  hangoutLink: "https://meet.google.com/abc-defg-hij",
+  conferenceData: { entryPoints: [{ uri: "https://meet.google.com/abc-defg-hij" }] },
+  onlineMeeting: { joinUrl: "https://teams.microsoft.com/l/meetup-join/trip" },
+  attachments: [{ fileUrl: "https://drive.google.com/file/d/trip" }],
+  calendarId: "primary",
+  etag: '"3181161784712000"',
 };
 
 const harness = (provider: MailProvider) => {
@@ -48,8 +68,26 @@ const harness = (provider: MailProvider) => {
   });
   let omitLinkId = false;
   const handle = fake.handle(() => Promise.reject(new Error("Nothing outside the fake.")));
+  const requests: Array<URL> = [];
   const fetch: typeof globalThis.fetch = async (input, init) => {
-    const response = await handle(input, init);
+    const request = new Request(input, init);
+    const url = new URL(request.url);
+    requests.push(new URL(url));
+    // Also exercise Kin's cancellation filter when Google sends a cancelled event.
+    if (url.searchParams.has("fields")) {
+      url.searchParams.set("showDeleted", "true");
+      url.searchParams.set("maxResults", "100");
+    }
+    const response = await handle(new Request(url, request));
+    const agenda =
+      url.searchParams.has("fields") ||
+      url.searchParams.get("$select")?.includes("originalStartTimeZone");
+    if (agenda && response.ok) {
+      const page = (await response.json()) as Record<string, Array<object> | undefined>;
+      for (const key of ["items", "value"])
+        page[key] = page[key]?.map((event) => ({ ...UNASKED, ...event }));
+      return Response.json(page);
+    }
     if (!omitLinkId || !response.ok) return response;
     const body = (await response.json()) as {
       messages?: Array<Record<string, unknown>>;
@@ -65,6 +103,7 @@ const harness = (provider: MailProvider) => {
   return {
     fake,
     layer,
+    requests,
     omitLinkId: () => {
       omitLinkId = true;
     },
@@ -72,7 +111,7 @@ const harness = (provider: MailProvider) => {
 };
 
 const run = (provider: MailProvider, body: (run: Run) => Effect.Effect<void, KinGatewayError>) => {
-  const { fake, layer, omitLinkId } = harness(provider);
+  const { fake, layer, omitLinkId, requests } = harness(provider);
   return Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
     const token = `fake-at.1.${OWNER}`;
@@ -82,7 +121,7 @@ const run = (provider: MailProvider, body: (run: Run) => Effect.Effect<void, Kin
         .pipe(
           Effect.map((result) => JSON.parse((result.content[0] as { readonly text: string }).text)),
         );
-    yield* body({ provider, fake, http, token, call, omitLinkId });
+    yield* body({ provider, fake, http, token, call, omitLinkId, requests });
   }).pipe(Effect.provide(layer));
 };
 
@@ -402,6 +441,88 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
         }),
     ],
     [
+      "reads only Dates fields, retaining all-day dates, exclusive ends and valid links",
+      ({ provider, fake, http, token, requests }) =>
+        Effect.gen(function* () {
+          const link =
+            provider.preset === "google"
+              ? "https://calendar.google.com/calendar/event?eid=trip"
+              : "https://outlook.office.com/calendar/item/trip";
+          const event = {
+            account: OWNER,
+            id: "trip",
+            title: "Tidewater Freight trip",
+            start: Date.parse("2026-11-27T00:00:00Z"),
+            end: Date.parse("2026-11-30T00:00:00Z"),
+            updated: NOW,
+            guests: ["zoya@tidewater.example"],
+            notes: "Private trip notes",
+            location: "Private trip location",
+          };
+          fake.putEvent({ ...event, allDay: true, zone: "Asia/Kolkata", link, repeats: 2 });
+          fake.putEvent({ ...event, id: "cancelled", state: "cancelled" });
+          fake.putEvent({
+            ...event,
+            id: "timed",
+            title: "Tidewater Freight check-in",
+            start: event.start,
+            end: event.start + HOUR,
+            link: "http://calendar.example/timed",
+          });
+          fake.putEvent({
+            ...event,
+            id: "credentials",
+            start: event.start + 3 * HOUR,
+            link: "https://rhea:secret@calendar.example/trip",
+          });
+          const agenda = yield* provider.agenda(http, token, {
+            from: "2026-11-26T00:00:00.000Z",
+            to: "2026-12-02T00:00:00.000Z",
+          });
+          assert.deepStrictEqual(agenda, [
+            {
+              id: "trip_0",
+              title: event.title,
+              start: "2026-11-27",
+              end: "2026-11-30",
+              allDay: true,
+              zone: "Asia/Kolkata",
+              link,
+              repeats: true,
+            },
+            {
+              id: "timed",
+              title: "Tidewater Freight check-in",
+              start: "2026-11-27T00:00:00.000Z",
+              end: "2026-11-27T01:00:00.000Z",
+              allDay: false,
+              zone: null,
+              link: null,
+              repeats: false,
+            },
+            {
+              id: "credentials",
+              title: event.title,
+              start: "2026-11-27T03:00:00.000Z",
+              end: "2026-11-30T00:00:00.000Z",
+              allDay: false,
+              zone: null,
+              link: null,
+              repeats: false,
+            },
+          ]);
+          const projection = requests[0]?.searchParams.get(
+            provider.preset === "google" ? "fields" : "$select",
+          );
+          assert.strictEqual(
+            projection,
+            provider.preset === "google"
+              ? "nextPageToken,items(id,summary,start(date,dateTime,timeZone),end(date,dateTime),htmlLink,recurringEventId,status)"
+              : "id,subject,start,end,isAllDay,type,webLink,isCancelled,originalStartTimeZone",
+          );
+        }),
+    ],
+    [
       "reports new mail and changed, cancelled, deleted and recurring events since a time",
       ({ provider, fake, http, token }) =>
         Effect.gen(function* () {
@@ -603,3 +724,54 @@ describe.each(Object.values(MAIL_PROVIDERS))("$name mail, on the fake mailbox", 
     ),
   );
 });
+
+it.effect("reads and clears a provider failure from another fake using the same file", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const dir = yield* fs.makeTempDirectoryScoped({ prefix: "kin-fake-mail-" });
+    const file = path.join(dir, "kin-fake-mail.json");
+    const vendor = makeFakeMail(fileStore(file));
+    const writer = makeFakeMail(fileStore(file));
+    vendor.addAccount({ address: OWNER, provider: "google", name: "Tidewater Freight" });
+    const handle = vendor.handle(() => Promise.reject(new Error("Nothing outside the fake.")));
+    const read = () =>
+      Effect.promise(() =>
+        handle("https://www.googleapis.com/calendar/v3/calendars/primary/events?fields=items", {
+          headers: { Authorization: `Bearer fake-at.1.${OWNER}` },
+        }),
+      );
+    writer.failWith(OWNER.toUpperCase(), 429);
+    assert.strictEqual((yield* read()).status, 429);
+    writer.failWith(OWNER, null);
+    assert.strictEqual((yield* read()).status, 200);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect("stops a start-ordered Google agenda after four pages of 100", () =>
+  run(MAIL_PROVIDERS.google, ({ provider, fake, http, token, requests }) =>
+    Effect.gen(function* () {
+      for (let index = 499; index >= 0; index--) {
+        const start = NOW + index * 60_000;
+        fake.putEvent({
+          account: OWNER,
+          id: `event_tidewater_${index}`,
+          title: "Tidewater Freight",
+          start,
+          end: start + 60_000,
+          updated: NOW,
+        });
+      }
+      const agenda = yield* provider.agenda(http, token, {
+        from: "2026-11-16T00:00:00Z",
+        to: "2026-11-17T00:00:00Z",
+      });
+      assert.lengthOf(requests, 4);
+      assert.lengthOf(agenda, 301);
+      assert.deepStrictEqual(
+        agenda.slice(0, 300).map(({ id }) => id),
+        Array.from({ length: 300 }, (_, index) => `event_tidewater_${index}`),
+      );
+    }),
+  ),
+);
