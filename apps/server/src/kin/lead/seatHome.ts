@@ -15,6 +15,7 @@ const SEAT_HOME: Readonly<Record<string, string>> = {
   statement_read: "finance",
   statement_rows: "finance",
   bills_add: "finance",
+  bill_cut: "finance",
   bill_read: "finance",
   money_query: "finance",
   money_summary: "finance",

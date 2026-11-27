@@ -9,10 +9,10 @@ import * as SqlClient from "effect/sql/SqlClient";
  */
 export const BILLS_THREAD_PREFIX = "kin-shared:bills:";
 
-export const BILLS_TOOLS: ReadonlySet<string> = new Set(["bill_read", "kin_skip"]);
+export const BILLS_TOOLS: ReadonlySet<string> = new Set(["bill_read", "kin_skip", "bill_cut"]);
 
 /** What every other tool answers in that turn. */
-export const BILLS_REFUSAL = "This turn only answers bills: bill_read.";
+export const BILLS_REFUSAL = "This turn only answers bills: bill_read or bill_cut.";
 
 type Turn = { readonly orgId: KinOrgId; readonly wakeupId: string };
 
