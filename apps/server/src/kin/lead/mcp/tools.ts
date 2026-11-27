@@ -14,7 +14,8 @@ import * as Context from "effect/Context";
 import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import { McpSchema, Prompt, Tool, Toolkit } from "effect/ai";
+import { McpSchema, Prompt, Tool } from "effect/ai";
+import { turnEventToolkit } from "../eventIds.ts";
 import { AdvertisedDescriptions } from "../../../mcp/advertisedJsonSchema.ts";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
 import { ThreadManagementService } from "../../../orchestration-v2/ThreadManagementService.ts";
@@ -89,7 +90,7 @@ export const GitHubWatchInput = Schema.Struct({
   mentions: Schema.optional(Schema.Boolean),
   triage: Schema.optional(Schema.Boolean),
 });
-export const KinLeadToolkit = Toolkit.make(
+export const KinLeadToolkit = turnEventToolkit(
   Tool.make("kin_leads", {
     ...handoff,
     description:
