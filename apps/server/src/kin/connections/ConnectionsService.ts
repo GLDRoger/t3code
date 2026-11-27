@@ -3023,7 +3023,8 @@ const make = Effect.gen(function* () {
         if (again !== undefined) return answer(again);
         yield* mark;
         const chat = yield* turnChat(turn).pipe(provideSql);
-        const draft = row.personId != null;
+        // Owner level: labelled private. A member: her own draft (`draftDoc`), as doc_create files it.
+        const team = asker.company ? undefined : { people: [asker.person], askers: [asker.person] };
         const written = yield* docServices(
           Docs.fileVersion(
             orgId,
@@ -3033,6 +3034,7 @@ const make = Effect.gen(function* () {
               wakeupId: turn.wakeupId,
               askedBy: asker.person,
               ...(chat === undefined ? {} : { chatId: KinChatId.make(chat.chatId) }),
+              ...(team === undefined ? {} : { view: team }),
             },
             { audience: asker.company ? "owner_only" : "shared" },
             {
@@ -3041,7 +3043,7 @@ const make = Effect.gen(function* () {
               title: file.name,
               summary: "Saved from a mail attachment.",
               owner: { _tag: "person", personId: asker.person },
-              sensitive: !draft,
+              sensitive: asker.company,
               file: {
                 attachmentId: storedId,
                 name: file.name,
