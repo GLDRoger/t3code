@@ -32,6 +32,7 @@ const mark = (key: string, amountMinor: number, bankRecordId: string | null = nu
   key,
   rev: 3,
   amountMinor,
+  day: "2026-01-02",
   bankRecordId,
 });
 const invoice = (over: Partial<InvoiceCandidate>): InvoiceCandidate => ({

@@ -513,7 +513,7 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
               )
                 return yield* changed;
               const day = dayIn(expense.dateAt ?? expense.createdAt, zone);
-              if (!alreadyRepaid && day > row.date)
+              if (day > row.date)
                 return yield* changedOn(`${expense.key} is dated after this bank line`);
               if (
                 one.by !== undefined &&

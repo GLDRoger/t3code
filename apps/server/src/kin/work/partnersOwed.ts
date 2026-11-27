@@ -120,6 +120,7 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
     rev: number;
     minor: number;
     currency: string;
+    paidAt: number;
     fieldsJson: string;
     linked: number;
     markedAt: number;
@@ -128,7 +129,7 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
     bankState: string | null;
   }>`
     SELECT r.record_id AS "recordId", r.key, r.rev, r.amount_minor AS minor,
-      r.currency, r.fields_json AS "fieldsJson",
+      r.currency, COALESCE(r.date_at, r.created_at) AS "paidAt", r.fields_json AS "fieldsJson",
       EXISTS (SELECT 1 FROM kin_bank_statement_entries e WHERE e.org_id = r.org_id
         AND e.target_record_id = r.record_id) AS linked,
       COALESCE((SELECT c.at FROM kin_record_changes c, json_each(c.fields_json) f
@@ -156,6 +157,7 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
     marks: Array<
       Pick<(typeof rows)[number], "recordId" | "key" | "rev"> & {
         amountMinor: number;
+        day: string;
         bankRecordId: string | null;
         hasBankEvidence?: true;
       }
@@ -195,6 +197,7 @@ export const partnerPayees = Effect.fn("KinPartnersOwed.payees")(function* (orgI
         key: row.key,
         rev: row.rev,
         amountMinor: row.minor,
+        day: dayIn(row.paidAt, zone),
         bankRecordId:
           bankDay === markedDay && row.bankState !== "dropped" ? row.bankEvidenceId : null,
         ...(row.bankEvidenceId === null ? {} : { hasBankEvidence: true }),

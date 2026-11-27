@@ -78,6 +78,8 @@ export type Repaid = {
   readonly by?: string;
 };
 type RepaidMark = Pick<Repaid, "recordId" | "key" | "amountMinor"> & {
+  /** The expense's own day: a line before it can't be its repayment, so it is never tied to one. */
+  readonly day: string;
   readonly rev: number;
   readonly bankRecordId: string | null;
   readonly hasBankEvidence?: true;
@@ -1128,7 +1130,9 @@ export const matchRows = (
       first !== undefined &&
       suggestions[index]!.action !== "transfer" &&
       (bank === undefined || (filed?.row.date === row.date && filed.currency === input.currency)) &&
-      repayment.marks.every((mark) => mark.bankRecordId === null && !mark.hasBankEvidence) &&
+      repayment.marks.every(
+        (mark) => mark.bankRecordId === null && !mark.hasBankEvidence && mark.day <= row.date,
+      ) &&
       repayment.marks.reduce((sum, mark) => sum + BigInt(mark.amountMinor), 0n) ===
         BigInt(row.amountMinor)
     ) {
@@ -1140,11 +1144,12 @@ export const matchRows = (
         fit: "exact",
         score: CONFIDENT,
         why: [alreadyMarkedWhy(repayment)],
-        repays: repayment.marks.map(({ recordId, key, rev, amountMinor }) => ({
+        repays: repayment.marks.map(({ recordId, key, rev, amountMinor, day }) => ({
           recordId,
           key,
           rev,
           amountMinor,
+          day,
         })),
         alreadyRepaid: true,
       };

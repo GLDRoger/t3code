@@ -32,6 +32,7 @@ import {
   fixtureBankAlertReader,
   seedFixtureAlertMailbox,
 } from "./bankAlerts.testkit.ts";
+import { partnerPayees, partnersOwed } from "../partnersOwed.ts";
 import { ensureBankList, findBankList } from "./bankList.ts";
 import { repaidMatch, repaidMatches } from "./debitRepaid.ts";
 import { drawRepaid, markRepaid, repaidLine, undoRepaid } from "./repaidCard.ts";
@@ -1249,5 +1250,439 @@ it("the card's line quotes the debit's own words, cut to fit", () => {
     repaidLine({ ...plan("SRI KIRANA STORES"), partner: { id: "k", name: "K".repeat(150) } })
       .length,
     200,
+  );
+});
+
+/** A statement of Arjun's debits read and stored for Rhea's Confirm; content differs by its rows. */
+const arjunReview = Effect.fn("test.arjunReview")(function* (
+  orgId: KinOrgId,
+  statementId: string,
+  rows: ReadonlyArray<
+    readonly [date: string, amountMinor: number, description?: string | undefined]
+  >,
+  currency = "INR",
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const personId = KinPersonId.make(`${orgId}-rhea`);
+  const agentId = `${orgId}-finance`;
+  const statement: Statement = {
+    ...repaymentStatement(0),
+    currency,
+    rows: rows.map(([date, amountMinor, description = arjunDebit], index) => ({
+      index,
+      date,
+      description,
+      reference: null,
+      amountMinor,
+      direction: "debit" as const,
+      balanceMinor: null,
+      foreign: null,
+    })),
+  };
+  const review = yield* buildReview(orgId, statement, null, "file", statementId);
+  const card = reviewCard(statementId, review, []);
+  yield* sql`INSERT OR IGNORE INTO kin_agents (agent_id, org_id, display_name, role,
+      owner_person_id, created_at)
+    VALUES (${agentId}, ${orgId}, 'Finance', 'specialist', ${personId}, '2026-11-01')`;
+  yield* sql`INSERT INTO kin_bank_statements (org_id, statement_id, attachment_id, file_name,
+      chat_id, agent_id, wakeup_id, status, account, review_json, review_hash, created_at)
+    VALUES (${orgId}, ${statementId}, ${statementId}, 'harbor-bank.csv', 'finance-chat', ${agentId},
+      ${statementId}, 'read', ${statement.account}, ${yield* storeReview(review)}, ${card.hash},
+      ${NOW})`;
+  const as = (who: string) => ({
+    orgId,
+    personId: KinPersonId.make(who),
+    statementId,
+    now: NOW,
+  });
+  return {
+    review,
+    ties: rows.map(
+      (_, index) =>
+        review.matches
+          .get(index)
+          ?.candidates.find((one) => one.alreadyRepaid)
+          ?.repays?.map((one) => one.key) ?? null,
+    ),
+    apply: applyStatement({ ...as(personId), hash: card.hash, revision: 0 }),
+    applyAs: (who: string) => applyStatement({ ...as(who), hash: card.hash, revision: 0 }),
+    undo: undoStatement(as(personId)),
+    undoAs: (who: string) => undoStatement(as(who)),
+  };
+});
+
+const fieldsOf = Effect.fn("test.fieldsOf")(function* (org: KinOrgId, key: string) {
+  const records = yield* KinRecords.KinRecords;
+  return JSON.parse((yield* records.get(org, key))!.fieldsJson) as Record<string, unknown>;
+});
+
+it.layer(layer)((it) => {
+  it.effect.each([
+    // [case, marks [key, rupees, expense day, repaid on], owed [key, rupees], rows, ties, owed after, repaid on after]
+    [
+      "one mark and one equal debit",
+      [["EXP-4", 1_200, "2026-10-01", "2026-11-18"]],
+      [["EXP-8", 1_200]],
+      [["2026-11-21", 120_000]],
+      [["EXP-4"]],
+      ["EXP-8"],
+      { "EXP-4": "2026-11-21" },
+    ],
+    [
+      "a mark then two equal debits: the second is not silenced",
+      [["EXP-4", 1_200, "2026-10-01", "2026-11-18"]],
+      [["EXP-8", 1_200]],
+      [
+        ["2026-11-21", 120_000],
+        ["2026-11-23", 120_000],
+      ],
+      [["EXP-4"], null],
+      [],
+      { "EXP-4": "2026-11-21", "EXP-8": "2026-11-23" },
+    ],
+    [
+      "two marks and one debit",
+      [
+        ["EXP-4", 1_200, "2026-10-01", "2026-11-18"],
+        ["EXP-5", 1_200, "2026-10-02", "2026-11-18"],
+      ],
+      [],
+      [["2026-11-21", 120_000]],
+      [["EXP-4"]],
+      [],
+      { "EXP-4": "2026-11-21", "EXP-5": "2026-11-18" },
+    ],
+    [
+      "a debit of a different amount",
+      [["EXP-4", 1_200, "2026-10-01", "2026-11-18"]],
+      [],
+      [["2026-11-21", 110_000]],
+      [null],
+      [],
+      { "EXP-4": "2026-11-18" },
+    ],
+    [
+      "a debit in another currency",
+      [["EXP-4", 1_200, "2026-10-01", "2026-11-18"]],
+      [],
+      [["2026-11-21", 120_000, arjunDebit, "USD"]],
+      [null],
+      [],
+      { "EXP-4": "2026-11-18" },
+    ],
+    [
+      "a debit to another partner of the same amount",
+      [["EXP-4", 1_200, "2026-10-01", "2026-11-18"]],
+      [],
+      [["2026-11-21", 120_000, "UPI ZOYA RAO"]],
+      [null],
+      [],
+      { "EXP-4": "2026-11-18" },
+    ],
+    [
+      "a mark dated after the debit",
+      [["EXP-4", 1_200, "2026-10-01", "2026-11-24"]],
+      [],
+      [["2026-11-21", 120_000]],
+      [["EXP-4"]],
+      [],
+      { "EXP-4": "2026-11-21" },
+    ],
+    [
+      "an expense dated after the debit",
+      [["EXP-4", 1_200, "2026-11-22", "2026-11-22"]],
+      [],
+      [["2026-11-21", 120_000]],
+      [null],
+      [],
+      { "EXP-4": "2026-11-22" },
+    ],
+    [
+      "a partial repayment",
+      [["EXP-4", 1_200, "2026-10-01", "2026-11-18"]],
+      [],
+      [["2026-11-21", 60_000]],
+      [null],
+      [],
+      { "EXP-4": "2026-11-18" },
+    ],
+    [
+      "amounts a paisa apart",
+      [["EXP-4", 1_200, "2026-10-01", "2026-11-18"]],
+      [],
+      [["2026-11-21", 120_001]],
+      [null],
+      [],
+      { "EXP-4": "2026-11-18" },
+    ],
+  ] as const)("the sums: %s", ([name, marks, owed, rows, ties, owedAfter, repaidOnAfter]) =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make(`tidewater-sums-${name.replace(/[^a-z]+/g, "-")}`);
+      const kin = yield* company(org);
+      for (const [key, rupees, on, repaidOn] of marks)
+        yield* kin.expense(key, rupees, on, { ...handMark(org), repaidOn });
+      for (const [key, rupees] of owed)
+        yield* kin.expense(key, rupees, "2026-11-01", {
+          fundedBy: handMark(org).fundedBy,
+          reimbursement: "owed",
+        });
+      const lines = rows as ReadonlyArray<readonly [string, number, string?, string?]>;
+      const review = yield* arjunReview(
+        org,
+        "st-sums",
+        lines.map(([date, minor, description]) => [date, minor, description] as const),
+        lines[0]![3] ?? "INR",
+      );
+      const owedNow = Effect.map(partnersOwed(org, "INR"), (partners) =>
+        partners
+          .filter((one) => one.personId === `${org}-arjun`)
+          .flatMap((one) => one.entries.map((entry) => entry.key)),
+      );
+      assert.deepStrictEqual<unknown>(review.ties, ties);
+      assert.deepStrictEqual<unknown>(
+        yield* owedNow,
+        owed.map(([key]) => key),
+      );
+      yield* review.apply;
+      assert.deepStrictEqual<unknown>(yield* owedNow, owedAfter);
+      for (const [key, day] of Object.entries(repaidOnAfter as Record<string, string>))
+        assert.include(yield* fieldsOf(org, key), { reimbursement: "repaid", repaidOn: day }, key);
+      // A hand mark left untied keeps no link; a tied one has exactly its two.
+      for (const [key] of marks) {
+        const links = yield* kin.sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_record_links
+          WHERE org_id = ${org} AND (record_id = ${`${org}-${key}`} OR target = ${`${org}-${key}`})`;
+        const tied = (ties as ReadonlyArray<ReadonlyArray<string> | null>).some(
+          (one) => one?.includes(key) === true,
+        );
+        assert.strictEqual(links[0]!.n, tied ? 2 : 0, key);
+      }
+    }),
+  );
+
+  it.effect.each([
+    ["with a repaid-on day", "2026-11-18"],
+    ["with no repaid-on day", undefined],
+  ] as const)("a full Undo returns the hand mark byte for byte, %s", ([, repaidOn]) =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make(`tidewater-bytes-${repaidOn ?? "none"}`);
+      const kin = yield* company(org);
+      const { repaidOn: _day, ...unDated } = handMark(org);
+      yield* kin.expense(
+        "EXP-4",
+        1_200,
+        "2026-10-01",
+        repaidOn === undefined ? unDated : handMark(org),
+      );
+      // Marked by hand on the 18th: with no repaid-on day, that day is the mark's.
+      yield* kin.sql`UPDATE kin_records SET created_at = ${day("2026-11-18")}
+        WHERE record_id = ${`${org}-EXP-4`}`;
+      const row = () =>
+        kin.sql<
+          Record<string, unknown>
+        >`SELECT * FROM kin_records WHERE record_id = ${`${org}-EXP-4`}`;
+      const [before] = yield* row();
+      const payeeDay = Effect.map(partnerPayees(org), (payees) =>
+        payees.flatMap((one) => one.repaid.map((each) => each.day)),
+      );
+      assert.deepStrictEqual(yield* payeeDay, ["2026-11-18"]);
+      const review = yield* arjunReview(org, "st-bytes", [["2026-11-21", 120_000]]);
+      assert.deepStrictEqual(review.ties, [["EXP-4"]]);
+      yield* review.apply;
+      assert.deepStrictEqual(yield* payeeDay, []);
+      yield* review.undo;
+      const [after] = yield* row();
+      const moved = Object.keys(before!).filter((column) => before![column] !== after![column]);
+      // Only the bookkeeping a write must move: its revision and when it was last written.
+      assert.deepStrictEqual(moved.toSorted(), ["rev", "updated_at"]);
+      assert.strictEqual(after!.fields_json, before!.fields_json);
+      assert.deepStrictEqual(yield* payeeDay, ["2026-11-18"]);
+      assert.deepStrictEqual(
+        (yield* kin.sql<{
+          kind: string;
+          fieldsJson: string;
+        }>`SELECT kind, fields_json AS "fieldsJson"
+          FROM kin_record_changes WHERE record_id = ${`${org}-EXP-4`} ORDER BY seq`).map((one) => [
+          one.kind,
+          JSON.parse(one.fieldsJson),
+        ]),
+        [
+          ["updated", [{ field: "repaidOn", from: repaidOn ?? null, to: "2026-11-21" }]],
+          // Undo takes the link off with no line of its own: the history keeps "linked".
+          ["linked", [{ field: "record", from: null, to: "Account ••4821 · 2026-11-21 · BNK-1" }]],
+          ["updated", [{ field: "repaidOn", from: "2026-11-21", to: repaidOn ?? null }]],
+        ],
+      );
+      assert.deepStrictEqual(
+        yield* kin.sql`SELECT * FROM kin_record_links WHERE org_id = ${org}`,
+        [],
+      );
+      assert.deepStrictEqual(
+        yield* kin.sql`SELECT * FROM kin_bank_statement_entries WHERE org_id = ${org}`,
+        [],
+      );
+    }),
+  );
+
+  it.effect("the tie and the statement's own rows commit together or not at all", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("tidewater-tie-atomic");
+      const kin = yield* company(org);
+      for (const key of ["EXP-4", "EXP-5"])
+        yield* kin.expense(key, 1_000, "2026-10-01", handMark(org));
+      const review = yield* arjunReview(org, "st-atomic", [["2026-11-21", 200_000]]);
+      assert.deepStrictEqual(review.ties, [["EXP-4", "EXP-5"]]);
+      // The second expense's link fails after the first expense was rewritten and linked.
+      const error = yield* Effect.flip(
+        review.apply.pipe(
+          Effect.updateService(KinRecords.KinRecords, (records) => ({
+            ...records,
+            link: (orgId, writer, recordId, link) =>
+              recordId === `${org}-EXP-5`
+                ? Effect.fail(new KinChatError({ reason: "unavailable", message: "link failed" }))
+                : records.link(orgId, writer, recordId, link),
+          })),
+        ),
+      );
+      assert.strictEqual(error.message, "link failed");
+      for (const key of ["EXP-4", "EXP-5"])
+        assert.deepStrictEqual(yield* fieldsOf(org, key), handMark(org));
+      for (const table of ["kin_record_links", "kin_bank_statement_entries"] as const)
+        assert.deepStrictEqual(
+          yield* kin.sql`SELECT * FROM ${kin.sql(table)} WHERE org_id = ${org}`,
+          [],
+        );
+      const bank = (yield* findBankList(org))!;
+      assert.deepStrictEqual(
+        yield* kin.sql`SELECT key FROM kin_records WHERE org_id = ${org} AND register_id = ${bank.id}`,
+        [],
+      );
+      assert.include(
+        (yield* review.apply).card.result,
+        "Linked 2 paid expenses to their bank rows.",
+      );
+    }),
+  );
+
+  it.effect("only the owner ties or unties; a co-owner's Confirm or Undo changes nothing", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("tidewater-tie-owner-only");
+      const kin = yield* company(org);
+      yield* kin.sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+          access)
+        VALUES (${`${org}-meera`}, ${org}, 'meera', 'Meera Iyer', '2026-09-01', 'co_owner')`;
+      yield* kin.expense("EXP-4", 1_200, "2026-10-01", handMark(org));
+      const review = yield* arjunReview(org, "st-owner", [["2026-11-21", 120_000]]);
+      for (const who of [`${org}-meera`, `${org}-zoya`])
+        assert.deepInclude(yield* Effect.flip(review.applyAs(who)), { reason: "not_allowed" });
+      assert.deepStrictEqual(yield* fieldsOf(org, "EXP-4"), handMark(org));
+      yield* review.apply;
+      for (const who of [`${org}-meera`, `${org}-zoya`])
+        assert.deepInclude(yield* Effect.flip(review.undoAs(who)), { reason: "not_allowed" });
+      assert.include(yield* fieldsOf(org, "EXP-4"), { repaidOn: "2026-11-21" });
+    }),
+  );
+
+  it.effect.each(["Confirm twice", "Confirm and Undo", "Undo and Confirm"] as const)(
+    "two taps at once tie at most once: %s",
+    (taps) =>
+      Effect.gen(function* () {
+        const org = KinOrgId.make(`tidewater-tie-race-${taps.replaceAll(" ", "-").toLowerCase()}`);
+        const kin = yield* company(org);
+        yield* kin.expense("EXP-4", 1_200, "2026-10-01", handMark(org));
+        const review = yield* arjunReview(org, "st-race", [["2026-11-21", 120_000]]);
+        const tap = (name: string) =>
+          Effect.exit(
+            name === "Confirm" ? Effect.asVoid(review.apply) : Effect.asVoid(review.undo),
+          );
+        const [first, second] =
+          taps === "Confirm twice" ? ["Confirm", "Confirm"] : taps.split(" and ");
+        const exits = yield* Effect.all([tap(first!), tap(second!)], { concurrency: 2 });
+        const links = (yield* kin.sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_record_links
+          WHERE org_id = ${org} AND record_id = ${`${org}-EXP-4`}`)[0]!.n;
+        const entries = (yield* kin.sql<{ n: number }>`SELECT COUNT(*) AS n
+          FROM kin_bank_statement_entries WHERE org_id = ${org}`)[0]!.n;
+        const fields = yield* fieldsOf(org, "EXP-4");
+        // Whatever won, the books agree with themselves: tied once, or the hand mark as it was.
+        if (entries === 0) {
+          assert.deepStrictEqual(fields, handMark(org));
+          assert.strictEqual(links, 0);
+        } else {
+          assert.strictEqual(entries, 1);
+          assert.strictEqual(links, 1);
+          assert.include(fields, { repaidOn: "2026-11-21" });
+        }
+        assert.deepStrictEqual(
+          exits.map((one) => one._tag),
+          taps === "Confirm twice"
+            ? ["Success", "Failure"]
+            : taps === "Confirm and Undo"
+              ? ["Success", "Success"]
+              : ["Failure", "Success"],
+        );
+      }),
+  );
+
+  it.effect.each(["first", "second"] as const)(
+    "two statements claiming one mark: the %s confirmed ties it, the other is refused",
+    (which) =>
+      Effect.gen(function* () {
+        const org = KinOrgId.make(`tidewater-two-statements-${which}`);
+        const kin = yield* company(org);
+        yield* kin.expense("EXP-4", 1_200, "2026-10-01", handMark(org));
+        const one = yield* arjunReview(org, "st-one", [["2026-11-21", 120_000]]);
+        const two = yield* arjunReview(org, "st-two", [["2026-11-22", 120_000]]);
+        assert.deepStrictEqual([one.ties, two.ties], [[["EXP-4"]], [["EXP-4"]]]);
+        const [winner, loser] = which === "first" ? [one, two] : [two, one];
+        yield* winner.apply;
+        assert.include((yield* Effect.flip(loser.apply)).message, "Nothing was applied");
+        assert.strictEqual(
+          (yield* kin.sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_record_links
+            WHERE org_id = ${org} AND record_id = ${`${org}-EXP-4`}`)[0]!.n,
+          1,
+        );
+        assert.include(yield* fieldsOf(org, "EXP-4"), {
+          repaidOn: which === "first" ? "2026-11-21" : "2026-11-22",
+        });
+      }),
+  );
+
+  it.effect("Undo after a rename and after the partner left still unties, keeping the rename", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("tidewater-undo-after");
+      const kin = yield* company(org);
+      const records = yield* KinRecords.KinRecords;
+      const owner = {
+        actor: { _tag: "person" as const, personId: KinPersonId.make(`${org}-rhea`) },
+        via: "owner" as const,
+      };
+      yield* kin.expense("EXP-4", 1_200, "2026-10-01", handMark(org));
+      yield* kin.expense("EXP-5", 800, "2026-10-01", { ...handMark(org), repaidOn: "2026-11-10" });
+      const review = yield* arjunReview(org, "st-after", [
+        ["2026-11-21", 120_000],
+        ["2026-11-12", 80_000],
+      ]);
+      assert.deepStrictEqual(review.ties, [["EXP-4"], ["EXP-5"]]);
+      yield* review.apply;
+      yield* records.update(org, owner, "EXP-4", { title: "Inkspot Cloud" });
+      // What the bank tied stays as the bank saw it until that repayment is undone.
+      assert.include(
+        (yield* Effect.flip(
+          records.update(org, owner, "EXP-5", { fields: { repaidOn: "2026-11-10" } }),
+        )).message,
+        "This was paid back on 2026-11-12. Undo that repayment first.",
+      );
+      yield* kin.sql`UPDATE kin_people SET removed_at = ${NOW} WHERE person_id = ${`${org}-arjun`}`;
+      const { card } = yield* review.undo;
+      assert.deepStrictEqual(card.result, [
+        "Undone: 2 rows taken back (2 expenses).",
+        "Confirm again to apply the rows taken back.",
+      ]);
+      assert.strictEqual((yield* records.get(org, "EXP-4"))?.title, "Inkspot Cloud");
+      assert.deepStrictEqual(yield* fieldsOf(org, "EXP-4"), handMark(org));
+      assert.deepStrictEqual(yield* fieldsOf(org, "EXP-5"), {
+        ...handMark(org),
+        repaidOn: "2026-11-10",
+      });
+    }),
   );
 });

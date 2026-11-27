@@ -603,6 +603,7 @@ describe("KinImport", () => {
                   key: repaidAfter.key,
                   rev: repaidAfter.rev,
                   amountMinor: 420_000,
+                  day: "2026-05-20",
                   bankRecordId: null,
                 },
               ],
