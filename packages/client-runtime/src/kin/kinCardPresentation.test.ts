@@ -1137,15 +1137,35 @@ describe("choice cards", () => {
       mayHaveGone: tick,
     };
     const open = choice({ state: { ...choiceState(null), send } });
-    const line = kinMayHaveGoneLine(at);
+    const line = kinMayHaveGoneLine(tick);
     expect(open.send?.mayHaveGone).toEqual({ line, ...tick, confirmId: "option-1" });
     expect(kinSendTry(open)).toEqual(tick);
-    expect(kinMayHaveGoneLine(at, tried)).toBe(
+    expect(kinMayHaveGoneLine(tick, tried)).toBe(
       `An earlier try at this mail at ${formatKinWhen(tried, "time")} may already have gone. Check the account's sent mail before you confirm.`,
     );
-    expect(kinMayHaveGoneLine(at, new Date(tried.getTime() + 3 * 86_400_000))).toContain(
+    expect(kinMayHaveGoneLine(tick, new Date(tried.getTime() + 3 * 86_400_000))).toContain(
       `on ${formatKinWhen(tried, "dayTime")}`,
     );
+    // Kin found the mail in sent mail: the line says so and when it went; the tick still holds.
+    const seenInSentAt = "2026-11-08T09:04:30.000Z";
+    const seen = new Date(seenInSentAt);
+    const foundTry = { ...tick, seenInSentAt };
+    expect(kinMayHaveGoneLine(foundTry, tried)).toBe(
+      `This mail went at ${formatKinWhen(seen, "time")} and is in the account's sent mail; ticking and confirming sends a second copy.`,
+    );
+    expect(kinMayHaveGoneLine(foundTry, new Date(seen.getTime() + 3 * 86_400_000))).toContain(
+      `went on ${formatKinWhen(seen, "dayTime")}`,
+    );
+    const found = choice({
+      state: { ...choiceState(null), send: { ...send, mayHaveGone: foundTry } },
+    });
+    expect(found.send?.mayHaveGone).toEqual({
+      line: kinMayHaveGoneLine(foundTry),
+      ...tick,
+      confirmId: "option-1",
+    });
+    expect(kinSendTry(found)).toEqual(tick);
+    expect(kinSendCheckPending(found, null, "option-1")).toBe(true);
     expect(kinChoiceAccessibilityLabel(open, null)).toContain("may already have gone");
     // Confirm and Send edited wait for the tick; Cancel never does.
     expect(kinSendCheckPending(open, null, "option-1")).toBe(true);
@@ -1197,7 +1217,7 @@ describe("choice cards", () => {
     expect(refused).toEqual({ ...typing, problem: "Tick first.", mayHaveGone: later });
     const warned = kinSendEditWarned(plain, refused, tried);
     expect(warned.send?.mayHaveGone).toEqual({
-      line: kinMayHaveGoneLine(later.at, tried),
+      line: kinMayHaveGoneLine(later, tried),
       ...later,
       confirmId: null,
     });
@@ -1207,6 +1227,18 @@ describe("choice cards", () => {
       { revision: refused.revision, checkedSent: later },
     );
     expect(kinSendCheckPending(plain, null, "option-1")).toBe(false);
+    const refusedFound = kinSendEditRefused(
+      typing,
+      plain,
+      new KinChatError({
+        reason: "conflict",
+        message: "Tick first.",
+        mayHaveGone: { ...later, seenInSentAt },
+      }),
+    );
+    expect(kinSendEditWarned(plain, refusedFound, tried).send?.mayHaveGone?.line).toBe(
+      kinMayHaveGoneLine({ ...later, seenInSentAt }, tried),
+    );
   });
 
   it("posts one tap at a time, and binds a late refusal to the card the press carried", async () => {

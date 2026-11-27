@@ -683,7 +683,31 @@ describe("kinTaskStep", () => {
         kind: "send",
         approveId: null,
         to: null,
-        gone: kinMayHaveGoneLine("2026-11-18T07:00:00.000Z", now),
+        gone: kinMayHaveGoneLine({ at: "2026-11-18T07:00:00.000Z" }, now),
+      },
+    ],
+    [
+      "a draft whose earlier try Kin found in sent mail: the line says when it went",
+      row("M", { owner: chief }),
+      {
+        key: "M",
+        group: "needsYou",
+        card: card({
+          mayHaveGone: {
+            tryId: "ask-1",
+            at: "2026-11-18T07:00:00.000Z",
+            seenInSentAt: "2026-11-18T06:59:40.000Z",
+          },
+        }),
+      },
+      {
+        kind: "send",
+        approveId: null,
+        to: null,
+        gone: kinMayHaveGoneLine(
+          { at: "2026-11-18T07:00:00.000Z", seenInSentAt: "2026-11-18T06:59:40.000Z" },
+          now,
+        ),
       },
     ],
     [
