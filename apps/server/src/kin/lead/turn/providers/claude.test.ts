@@ -192,6 +192,11 @@ it.effect("every seat's options match Kin byte for byte", () =>
       ["triage", "kin-shared:triage:tech", memory, true],
       ["bills", "kin-shared:bills:tech", memory, true],
       ["delegated", "task-from-lead", "/work/scratch", true],
+      ["shared without lookup", "kin-shared:tech", memory, false],
+      ["review without lookup", "kin-shared:review:tech", memory, false],
+      ["triage without lookup", "kin-shared:triage:tech", memory, false],
+      ["bills without lookup", "kin-shared:bills:tech", memory, false],
+      ["delegated without lookup", "task-from-lead", "/work/scratch", false],
       ["dream", "kin-dream:fixture:extract", `${stateDir}/kin/demo-a/dreams/fixture`, true],
     ] as const) {
       const { options } = yield* captureClaudeOptions(
