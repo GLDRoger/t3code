@@ -124,19 +124,34 @@ it.effect("only current owner-level people can change an org's senders", () =>
   }).pipe(Effect.provide(layer)),
 );
 
-it("MCP handlers do not import bank sender decisions", () => {
+it("no agent, MCP tool or model-reachable path can reach bank sender decisions", () => {
   const root = NodePath.resolve(import.meta.dirname, "../../..");
-  const files = ["mcp", "kin/mcp", "kin/lead/mcp"].flatMap((path) =>
-    (NodeFS.readdirSync(NodePath.join(root, path), { recursive: true }) as Array<string>)
-      .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))
-      .map((file) => NodePath.join(root, path, file)),
-  );
+  const files = (NodeFS.readdirSync(root, { recursive: true }) as Array<string>)
+    .filter((file) => file.endsWith(".ts") && !file.endsWith(".test.ts"))
+    .map((file) => file.split(NodePath.sep).join("/"))
+    .toSorted();
+  const source = (file: string) => NodeFS.readFileSync(NodePath.join(root, file), "utf8");
+  // Every relative specifier, static or dynamic, resolved from the importing file.
+  const imports = (file: string) =>
+    [...source(file).matchAll(/(?:from|import\s*\()\s*["'](\.{1,2}\/[^"']+)["']/g)].map((match) =>
+      NodePath.posix.normalize(NodePath.posix.join(NodePath.posix.dirname(file), match[1]!)),
+    );
+  const importers = (target: string) => files.filter((file) => imports(file).includes(target));
+  // The writes a person decides live in one module, and only test fixtures call it so far: a
+  // card or Settings caller joins this list on purpose, never a tool handler or the lead.
+  assert.deepStrictEqual(importers("kin/work/statements/bankSenders.ts"), [
+    "kin/work/statements/bankAlerts.testkit.ts",
+  ]);
+  assert.deepStrictEqual(importers("kin/work/statements/bankAlerts.testkit.ts"), []);
+  // Nothing else writes the table: discovery adds candidates only, and K229 carries once.
   assert.deepStrictEqual(
     files.filter((file) =>
-      /(?:from|import\s*\()\s*["'][^"']*\/bankSenders\.ts["']/.test(
-        NodeFS.readFileSync(file, "utf8"),
-      ),
+      /(?:INSERT INTO|UPDATE|DELETE FROM)\s+kin_bank_senders\b/.test(source(file)),
     ),
-    [],
+    [
+      "kin/persistence/migrations/K229_BankSenders.ts",
+      "kin/work/statements/bankSenderRows.ts",
+      "kin/work/statements/bankSenders.ts",
+    ],
   );
 });
