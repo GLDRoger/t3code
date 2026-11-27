@@ -17,7 +17,7 @@ import * as NodeCrypto from "node:crypto";
 import type { KinConnectionActivity, KinConnections } from "../connections/ConnectionsService.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { addressesIn } from "../connections/MailProvider.ts";
-import { list, normalizeAddress } from "../work/statements/bankSenderRows.ts";
+import { normalizeAddress, quietBankSenderAddresses } from "../work/statements/bankSenderRows.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { agentQuietUntil, personQuietUntil } from "../triggers/quietHold.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -121,9 +121,8 @@ export const fromConnections = (
       WHERE org_id = ${orgId} AND removed_at IS NULL AND paused_at IS NULL AND state = 'active'
         AND preset IN ${sql.in(MAIL_PRESETS)} AND person_id IS NULL
       ORDER BY created_at, connection_id`;
-      const money = KinShell.sectionOn(
-        yield* KinShell.get(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
-        "money",
+      const money = yield* KinShell.sectionOnFor(orgId, "money").pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
       );
       const mailboxes: Array<{
         connectionId: string;
@@ -153,12 +152,8 @@ export const fromConnections = (
           cursor: activity._tag === "mail" ? activity.cursor : null,
         });
       }
-      const hidden = new Set(
-        money
-          ? []
-          : (yield* list(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
-              .filter((row) => row.state === "candidate" || row.state === "approved")
-              .map((row) => row.address),
+      const hidden = yield* quietBankSenderAddresses(orgId, money).pipe(
+        Effect.provideService(SqlClient.SqlClient, sql),
       );
       for (const { connectionId, label, activity } of mailboxes) {
         for (const mail of activity.mail) {

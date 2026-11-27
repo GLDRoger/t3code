@@ -2317,6 +2317,124 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     ),
   );
 
+  it.effect.each([
+    { name: "approved sender with Money off", state: "approved", money: false, wakes: false },
+    { name: "candidate sender with Money off", state: "candidate", money: false, wakes: false },
+    { name: "approved sender with Money on", state: "approved", money: true, wakes: true },
+    { name: "declined sender with Money off", state: "declined", money: false, wakes: true },
+    {
+      name: "approved sender and Zoya in the same read with Money off",
+      state: "approved",
+      money: false,
+      wakes: false,
+      mixed: true,
+    },
+  ])("records bank mail and checks watch wakes for $name", ({ state, money, wakes, mixed }) =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const hello = yield* connect(fake, "microsoft", HELLO);
+        yield* readMail(hello);
+        yield* TestClock.adjust("2 minutes");
+        if (!money)
+          yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+            VALUES (${orgId}, '[{"id":"money","on":false}]', 1, ${owner}, ${NOW})`;
+        yield* approveFixtureAlertSender(orgId, owner);
+        yield* sql`UPDATE kin_bank_senders SET state = ${state} WHERE org_id = ${orgId}
+          AND address = 'alerts@harborbank.example'`;
+
+        const bankFrom = mixed
+          ? "Harbor Bank <Alerts@HarborBank.example>"
+          : "alerts@harborbank.example";
+        const zoyaFrom = "zoya@ambermill-leads.example";
+        const deliver = (from: string, at: number) =>
+          fake.deliver({
+            to: HELLO,
+            from,
+            subject: "A question about the schedule",
+            body: "Friday afternoon is open for the call.",
+            headers: { "Auto-Submitted": "no" },
+            at,
+          });
+        const bank = deliver(bankFrom, NOW + 60_000);
+        const zoya = mixed ? deliver(zoyaFrom, NOW + 61_000) : undefined;
+
+        assert.lengthOf((yield* readMail(hello)).recorded, mixed ? 2 : 1);
+        const arrivals = yield* arrivalRows;
+        assert.deepStrictEqual(
+          arrivals.map((row) => row.messageId),
+          zoya === undefined ? [bank.id] : [bank.id, zoya.id],
+        );
+        assert.deepInclude(arrivals[0], {
+          class: "unknown_person",
+          reason: "someone Kin doesn't know yet",
+        });
+        const woken = yield* sql<{ who: string }>`SELECT
+          json_extract(json, '$.outside[0].who') AS who FROM kin_events
+          WHERE org_id = ${orgId} AND tag = 'pulse' ORDER BY who`;
+        assert.deepStrictEqual(
+          woken.map((one) => one.who),
+          mixed ? [zoyaFrom] : wakes ? [bankFrom] : [],
+        );
+      }),
+    ),
+  );
+
+  it.effect.each([
+    {
+      name: "a Gmail sender spelled in capitals behind a display name is quiet",
+      service: "google" as const,
+      from: "Harbor Bank <ALERTS@HarborBank.example>",
+      wakes: 0,
+    },
+    {
+      name: "a plus-address of the bank sender still wakes",
+      service: "google" as const,
+      from: "alerts+offers@harborbank.example",
+      wakes: 1,
+    },
+    {
+      name: "a display name naming the bank sender still wakes",
+      service: "google" as const,
+      from: '"alerts@harborbank.example" <zoya@ambermill-leads.example>',
+      wakes: 1,
+    },
+    {
+      name: "a bank sender that is also a client contact is quiet",
+      service: "microsoft" as const,
+      from: CLIENT,
+      sender: "ravi@lumen.example",
+      wakes: 0,
+    },
+  ])("with Money off, $name", ({ service, from, sender, wakes }) =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const address = service === "google" ? ACCOUNTS : HELLO;
+        const mailbox = yield* connect(fake, service, address);
+        yield* readMail(mailbox);
+        yield* TestClock.adjust("2 minutes");
+        yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+          VALUES (${orgId}, '[{"id":"money","on":false}]', 1, ${owner}, ${NOW})`;
+        yield* approveFixtureAlertSender(orgId, owner);
+        if (sender !== undefined)
+          yield* sql`UPDATE kin_bank_senders SET address = ${sender} WHERE org_id = ${orgId}`;
+        fake.deliver({
+          to: address,
+          from,
+          subject: "A question about the schedule",
+          body: "Friday afternoon is open for the call.",
+          headers: { "Auto-Submitted": "no" },
+          at: NOW + 60_000,
+        });
+        assert.lengthOf((yield* readMail(mailbox)).recorded, 1);
+        const woken = yield* sql`SELECT 1 FROM kin_events
+          WHERE org_id = ${orgId} AND tag = 'pulse'`;
+        assert.lengthOf(woken, wakes);
+      }),
+    ),
+  );
+
   it.effect(
     "wakes once for an automated notice with the same outside mark as an unknown sender",
     () =>
