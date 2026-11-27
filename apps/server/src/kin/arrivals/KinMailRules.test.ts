@@ -106,6 +106,20 @@ it.effect(
           .pipe(Effect.flip)).reason,
         "invalid_state",
       );
+      for (const [domain, shown] of [
+        ["co.uk", "co.uk"],
+        [" COM. ", "com"],
+        ["github.io", "github.io"],
+      ] as const) {
+        const refused = yield* rules
+          .createFromTap(owners, { ...tap, match: { ...match, from: [{ domain }] }, tapId: domain })
+          .pipe(Effect.flip);
+        assert.strictEqual(refused.reason, "invalid_state");
+        assert.strictEqual(
+          refused.message,
+          `${shown} is a domain ending that many companies share, so a rule can't match all mail under it. Name the sender's own domain instead.`,
+        );
+      }
       assert.strictEqual((yield* rules.list(owners, { orgId })).rules.length, 1);
       const forbidden: ReadonlyArray<Effect.Effect<unknown, KinChatError>> = [
         rules.createFromTap(teammates, tap),

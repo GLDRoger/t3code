@@ -33,7 +33,13 @@ import { ownerLevelSql } from "../people/KinAccess.ts";
 import { readOwnerZone } from "../work/recordRows.ts";
 import { mailRuleContentHash } from "./ruleContent.ts";
 import { monthlyMailRuleLimit } from "./ruleLimit.ts";
-import { mailRuleAddress, mailRuleDomain, mailRulePhrase, matchMailRule } from "./ruleMatch.ts";
+import {
+  mailRuleAddress,
+  mailRuleDomain,
+  mailRulePhrase,
+  mailRuleSharedEnding,
+  matchMailRule,
+} from "./ruleMatch.ts";
 
 const DEFAULT_CAP = 30;
 const PREVIEW_HEADERS = 200;
@@ -226,7 +232,16 @@ const make = Effect.gen(function* () {
   ) {
     const { orgId, connectionId, agentId, chatId, what, tapId } = input;
     const personId = yield* owner(people, orgId);
-    if (!isCreate(input) || what.trim() === "" || !validMatch(input.match)) return yield* badRule;
+    if (!isCreate(input) || what.trim() === "") return yield* badRule;
+    const shared = input.match.from.flatMap((sender) =>
+      sender.address === undefined ? (mailRuleSharedEnding(sender.domain) ?? []) : [],
+    )[0];
+    if (shared !== undefined)
+      return yield* failure(
+        "invalid_state",
+        `${shared} is a domain ending that many companies share, so a rule can't match all mail under it. Name the sender's own domain instead.`,
+      );
+    if (!validMatch(input.match)) return yield* badRule;
     const matchJson = yield* encodeMatch(input.match).pipe(Effect.mapError(() => badRule));
     const hash = mailRuleContentHash(matchJson, what);
     const ruleId = `rule_${mailRuleContentHash(`${personId.length}:${personId}`, tapId)}`;

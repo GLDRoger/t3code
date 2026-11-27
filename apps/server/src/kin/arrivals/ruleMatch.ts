@@ -1,6 +1,8 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Node's IDNA conversion is pure.
 import * as NodeURL from "node:url";
 
+import { getPublicSuffix } from "tldts";
+
 import type { MailArrival } from "../connections/MailProvider.ts";
 import { senderVerdict } from "../connections/MailText.ts";
 import type { ArrivalClass } from "./classify.ts";
@@ -31,6 +33,14 @@ export const mailRuleDomain = (value: string) => {
       ascii,
     ) &&
     /[a-z]/.test(ascii.slice(ascii.lastIndexOf(".") + 1))
+    ? ascii
+    : null;
+};
+
+/** A domain filter that is itself a public suffix (co.uk, com), which many companies share. */
+export const mailRuleSharedEnding = (value: string) => {
+  const ascii = NodeURL.domainToASCII(value.trim().toLowerCase()).replace(/\.$/, "");
+  return ascii !== "" && getPublicSuffix(ascii, { allowPrivateDomains: true }) === ascii
     ? ascii
     : null;
 };
