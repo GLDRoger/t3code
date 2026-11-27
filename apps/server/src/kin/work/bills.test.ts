@@ -447,13 +447,13 @@ describe("bills in bulk", () => {
           tag: string;
           priority: string;
           bills: number;
-          outside: number;
+          outside: string | null;
         }>`SELECT tag,
             priority, json_array_length(json, '$.bills') AS bills,
-            json_extract(json, '$.outside') AS outside FROM kin_events
+            json_type(json, '$.outside') AS outside FROM kin_events
           WHERE org_id = ${orgId} ORDER BY event_id`;
         assert.deepStrictEqual(queued, [
-          { tag: "bills.read", priority: "P3", bills: 3, outside: 1 },
+          { tag: "bills.read", priority: "P3", bills: 3, outside: null },
         ]);
         assert.deepStrictEqual(
           (yield* billRows).map((row) => row.state),
