@@ -797,6 +797,7 @@ const updateLists = ({
 const canonicalField = (key: string) =>
   key === "taxNumber" ? "gstin" : key === "taxPlace" ? "placeOfSupply" : key;
 const parameterIssue = (message: string) => new SchemaIssue.InvalidValue({ message });
+const quoteFieldName = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 const isPartyKind = Schema.is(NewPartyKind);
 
 const liftRecordFields = Effect.fnUntraced(function* (
@@ -825,7 +826,7 @@ const liftRecordFields = Effect.fnUntraced(function* (
       !lists.every((list) => (recordFields[list] as ReadonlyArray<string>).includes(key))
     )
       return yield* Effect.fail(
-        parameterIssue(`${JSON.stringify(name)} is not a field for this record write.`),
+        parameterIssue(`${quoteFieldName(name)} is not a field for this record write.`),
       );
     if (out[key] !== undefined && !Equal.equals(out[key], value))
       return yield* Effect.fail(parameterIssue(`${name} given twice with different values.`));

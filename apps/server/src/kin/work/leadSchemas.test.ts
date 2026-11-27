@@ -108,7 +108,7 @@ it("advertises record write keys except the annotated arguments", () => {
     const raw = Tool.getJsonSchema(tool);
     const advertised = advertisedJsonSchema(tool, { kin: true });
     const accepted = inputPropertyPaths(raw);
-    const hidden = Context.get(tool.annotations, AcceptedUnadvertisedArguments);
+    const hidden = Context.getOrUndefined(tool.annotations, AcceptedUnadvertisedArguments) ?? [];
     for (const name of ["taxNumber", "taxPlace"]) {
       const path = tool.name === "record_create" ? `records[].${name}` : name;
       assert.isTrue(accepted.has(path), path);
