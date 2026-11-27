@@ -1436,7 +1436,11 @@ describe("choice cards", () => {
   it("posts Undo once, holds it until the host's card arrives, and says a refusal as the host does", async () => {
     const card = repaid();
     const posts: Array<unknown> = [];
-    const replies: Array<(result: AsyncResult.AsyncResult<unknown, unknown>) => void> = [];
+    const replies: Array<
+      (
+        result: AsyncResult.Success<unknown, unknown> | AsyncResult.Failure<unknown, unknown>,
+      ) => void
+    > = [];
     const seen = { pending: [] as Array<string | null>, status: [] as Array<KinChoiceCardStatus> };
     const taps = kinChoiceCardTaps();
     const actions = (pending: string | null) =>
