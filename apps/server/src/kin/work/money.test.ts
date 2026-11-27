@@ -5205,7 +5205,14 @@ const runCountryCards = <A, E>(
     TestClock.setTime(Date.UTC(2026, 10, 25, 10)),
     Effect.gen(function* () {
       const services = Option.getOrThrow((yield* Kin.KinServer).services);
-      return yield* seedCountryCards().pipe(Effect.flatMap(run), Effect.provideContext(services));
+      const now = yield* Clock.currentTimeMillis;
+      // These tests tick Pulse directly; advancing their clock must not replay server timers.
+      return yield* TestClock.setTime(now).pipe(
+        Effect.andThen(seedCountryCards()),
+        Effect.flatMap(run),
+        Effect.provide(TestClock.layer()),
+        Effect.provideContext(services),
+      );
     }).pipe(
       Effect.provide(
         Kin.layer.pipe(
