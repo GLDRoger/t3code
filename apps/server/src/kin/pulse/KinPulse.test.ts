@@ -61,6 +61,7 @@ import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { projectLastMoved } from "./senses/projects.ts";
 import { buildWeeklySection, wantsWeekly, WEEK_FIGURES_TITLE, weeklyFigures } from "./weekly.ts";
 import { ensureBankList } from "../work/statements/bankList.ts";
+import { UNREAD_ALERT_MARKER } from "../work/statements/bankAlerts.ts";
 import { formatMoneyPlain } from "../work/money.ts";
 
 // Invented org, people, entries and money only; nothing here reads a real database.
@@ -3129,6 +3130,19 @@ describe("KinPulse", () => {
       assert.equal(two?.subject.title, "2 bank alerts could not be read");
       assert.equal(two?.consequence, `Sent between Tue 17 Nov and Thu 19 Nov. ${advice}`);
       assert.notEqual(factSig(one!, at, zone), factSig(two!, at, zone));
+      yield* sql`UPDATE kin_bank_alerts SET reference = ${UNREAD_ALERT_MARKER}
+        WHERE org_id = ${orgId} AND alert_id = 'second'`;
+      assert.equal(
+        (yield* facts())[0]?.consequence,
+        `Sent between Tue 17 Nov and Thu 19 Nov. No model was available to read 1 of them. ${advice}`,
+      );
+      yield* sql`UPDATE kin_bank_alerts SET reference = ${UNREAD_ALERT_MARKER}
+        WHERE org_id = ${orgId} AND alert_id = 'first'`;
+      assert.equal(
+        (yield* facts())[0]?.consequence,
+        `Sent between Tue 17 Nov and Thu 19 Nov. No model was available to read them. ${advice}`,
+      );
+      yield* sql`UPDATE kin_bank_alerts SET reference = NULL WHERE org_id = ${orgId}`;
 
       const told = { orgId, personId: owner, at, zone };
       yield* markTold({ ...told, eventId: "first-checkin", facts: [one!] });

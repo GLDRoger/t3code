@@ -160,9 +160,11 @@ export const fromConnections = (
         });
       }
       const hidden = new Set(
-        (yield* list(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
-          .filter((row) => row.state === "candidate" || (!money && row.state === "approved"))
-          .map((row) => row.address),
+        money
+          ? []
+          : (yield* list(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+              .filter((row) => row.state === "candidate" || row.state === "approved")
+              .map((row) => row.address),
       );
       for (const { label, activity } of mailboxes)
         lines.push(

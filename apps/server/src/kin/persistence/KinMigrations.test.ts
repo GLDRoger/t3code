@@ -24,6 +24,7 @@ import K079ImportRuns from "./migrations/K079_ImportRuns.ts";
 import K088MoneyRecords from "./migrations/K088_MoneyRecords.ts";
 import K107Connections from "./migrations/K107_Connections.ts";
 import LegacyBankAlerts from "./migrations/K204_BankAlerts.ts";
+import BankSendersMigration from "./migrations/K229_BankSenders.ts";
 import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
@@ -3612,23 +3613,60 @@ describe("Kin migrations", () => {
   );
 });
 
+const legacyBankAlerts = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* runKinMigrations();
+  yield* sql`DROP TABLE IF EXISTS kin_bank_senders`;
+  yield* sql`DROP TABLE kin_bank_alerts`;
+  yield* LegacyBankAlerts;
+  yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 229`;
+  yield* sql`INSERT INTO kin_orgs VALUES
+    ('existing', 'Tidewater Freight', '2026-11-01'), ('new', 'Juniper Cold Chain', '2026-11-01')`;
+  yield* sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, thread_id, sent_at,
+    seen_at, outcome, bank, account, reference, record_id, currency, balance_minor)
+    VALUES ('existing', 'a1', 'inbox', 't1', 1763450000000, 1, 'recorded', 'HDFC Bank', '4821',
+        '632211112200', 'r1', 'INR', 41000000),
+      ('existing', 'a2', 'inbox', 't2', 1763450000001, 2, 'duplicate', 'HDFC Bank', '4821',
+        '632211112200', 'r1', 'INR', NULL),
+      ('existing', 'a3', 'inbox', 't3', NULL, 3, 'duplicate', 'HDFC Bank', '5530', NULL, 'r2',
+        NULL, NULL),
+      ('existing', 'a5', 'inbox', 't5', 1763450000002, 5, 'unparsed', NULL, NULL, 'parser:0002',
+        NULL, NULL, NULL),
+      ('existing', 'a6', 'inbox', 't6', 1763450000003, 6, 'recorded', 'Other Bank', '7310', 'x',
+        'r3', 'INR', 5),
+      ('new', 'a4', 'inbox', 't4', 4, 4, 'unparsed', NULL, NULL, NULL, NULL, NULL, NULL)`;
+  return sql;
+});
+const bankAlertRows = (sql: SqlClient.SqlClient) =>
+  sql`SELECT org_id, alert_id, connection_id, thread_id, sent_at, outcome, bank, account,
+    reference, record_id, currency, balance_minor, seen_at, typeof(sent_at) AS sent_type,
+    typeof(balance_minor) AS balance_type FROM kin_bank_alerts ORDER BY org_id, alert_id`;
+const bankAlertIndexes = (sql: SqlClient.SqlClient) =>
+  sql<{ name: string; partial: number; columns: string }>`SELECT l.name, l.partial,
+    (SELECT group_concat(i.name, ',') FROM pragma_index_info(l.name) i) AS columns
+    FROM pragma_index_list('kin_bank_alerts') l ORDER BY l.name`;
+
 it.effect("K229 carries only companies and endings with existing bank alerts", () =>
   Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
-    yield* runKinMigrations();
-    yield* sql`DROP TABLE IF EXISTS kin_bank_senders`;
-    yield* sql`DROP TABLE kin_bank_alerts`;
-    yield* LegacyBankAlerts;
-    yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 229`;
-    yield* sql`INSERT INTO kin_orgs VALUES
-      ('existing', 'Tidewater Freight', '2026-11-01'), ('new', 'Juniper Cold Chain', '2026-11-01')`;
-    yield* sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, thread_id, seen_at,
-      outcome, bank, account, record_id, balance_minor)
-      VALUES ('existing', 'a1', 'inbox', 't1', 1, 'recorded', 'HDFC Bank', '4821', 'r1', 123),
-        ('existing', 'a2', 'inbox', 't2', 2, 'duplicate', 'HDFC Bank', '4821', 'r1', NULL),
-        ('existing', 'a3', 'inbox', 't3', 3, 'duplicate', 'HDFC Bank', '5530', 'r2', NULL),
-        ('new', 'a4', 'inbox', 't4', 4, 'unparsed', NULL, NULL, NULL, NULL)`;
+    const sql = yield* legacyBankAlerts;
+    const rows = yield* bankAlertRows(sql);
+    const indexes = yield* bankAlertIndexes(sql);
     assert.deepStrictEqual(yield* runKinMigrations(), [[229, "BankSenders"]]);
+    // Every old row and value survives the table rebuild, and so do the old indexes.
+    assert.deepStrictEqual(yield* bankAlertRows(sql), rows);
+    assert.deepStrictEqual(
+      (yield* bankAlertIndexes(sql)).filter((one) => indexes.some((old) => old.name === one.name)),
+      indexes,
+    );
+    assert.deepInclude(indexes, {
+      name: "kin_bank_alerts_balance",
+      partial: 1,
+      columns: "org_id,bank,account,sent_at",
+    });
+    assert.deepStrictEqual(
+      yield* sql`SELECT COUNT(*) AS n FROM kin_bank_alerts WHERE sender_address IS NOT NULL`,
+      [{ n: 0 }],
+    );
     const carried = yield* sql`SELECT org_id, address, bank_key, bank_name, accounts_json, state,
       matched_from, seen_count, decided_by_person_id FROM kin_bank_senders ORDER BY address`;
     assert.lengthOf(carried, 2);
@@ -3646,13 +3684,36 @@ it.effect("K229 carries only companies and endings with existing bank alerts", (
         decided_by_person_id: null,
       });
     }
-    assert.deepStrictEqual(
-      yield* sql`SELECT sender_address, record_id, balance_minor FROM kin_bank_alerts
-        WHERE alert_id = 'a1'`,
-      [{ sender_address: null, record_id: "r1", balance_minor: 123 }],
-    );
     assert.deepStrictEqual(yield* runKinMigrations(), []);
-    assert.lengthOf(yield* sql`SELECT 1 FROM kin_bank_senders`, 2);
+    // Run again by hand, as on a database whose migration record was lost: nothing changes.
+    const senders = yield* sql`SELECT * FROM kin_bank_senders ORDER BY address`;
+    yield* BankSendersMigration;
+    assert.deepStrictEqual(yield* sql`SELECT * FROM kin_bank_senders ORDER BY address`, senders);
+    assert.deepStrictEqual(yield* bankAlertRows(sql), rows);
+  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+);
+
+it.effect("K229 failing midway leaves the old alert ledger as it was", () =>
+  Effect.gen(function* () {
+    const sql = yield* legacyBankAlerts;
+    const rows = yield* bankAlertRows(sql);
+    // Taken by another table, so K229 fails after it already rebuilt kin_bank_alerts.
+    yield* sql`CREATE INDEX kin_bank_alerts_held ON kin_orgs (org_id)`;
+    yield* Effect.flip(runKinMigrations());
+    assert.deepStrictEqual(yield* bankAlertRows(sql), rows);
+    assert.notInclude(
+      (yield* sql<{ name: string }>`PRAGMA table_info(kin_bank_alerts)`).map((one) => one.name),
+      "sender_address",
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT name FROM sqlite_master WHERE name IN
+        ('kin_bank_senders', 'kin_bank_alerts_before_senders')`,
+      [],
+    );
+    assert.deepStrictEqual(
+      yield* sql`SELECT migration_id FROM kin_sql_migrations WHERE migration_id = 229`,
+      [],
+    );
   }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );
 

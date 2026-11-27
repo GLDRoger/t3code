@@ -261,6 +261,12 @@ export type KinWorkHours = typeof KinWorkHours.Type;
 export const KinPersonQuietHours = Schema.Struct({ from: TimeOfDay, to: TimeOfDay });
 export type KinPersonQuietHours = typeof KinPersonQuietHours.Type;
 
+/** Hours after a chat's newest message before a read chat moves under Settled; 0 settles at once. */
+const KIN_CHATS_SETTLE_AFTER_HOURS_CHOICES = [0, 6, 12, 24] as const;
+export const KIN_CHATS_SETTLE_AFTER_DEFAULT_HOURS = 12;
+export const KinChatsSettleAfterHours = Schema.Literals(KIN_CHATS_SETTLE_AFTER_HOURS_CHOICES);
+export type KinChatsSettleAfterHours = typeof KinChatsSettleAfterHours.Type;
+
 /** Who someone is, in their own words. Everyone in the org reads it. */
 export const KinPersonProfile = Schema.Struct({
   personId: KinPersonId,
@@ -286,6 +292,11 @@ export const KinPersonProfile = Schema.Struct({
    * absent, on. Only on their own profile.
    */
   answersRing: Schema.optional(Schema.Boolean),
+  /**
+   * Hours after a chat's newest message before a read chat moves under Settled (0 settles at
+   * once); absent, 12 hours. Only on their own profile.
+   */
+  chatsSettleAfterHours: Schema.optional(KinChatsSettleAfterHours),
   /**
    * Away until this day, on their own calendar: Kin holds non-urgent lines until it starts.
    * Absent once the day has come, and from older hosts.
@@ -325,6 +336,8 @@ export const KinPeopleUpdateProfileInput = Schema.Struct({
   holdOutsideHours: Schema.optional(Schema.Boolean),
   /** Only their own. */
   answersRing: Schema.optional(Schema.Boolean),
+  /** Only their own. */
+  chatsSettleAfterHours: Schema.optional(KinChatsSettleAfterHours),
   /** Away until this day on their calendar; null is "I'm back". The owner level sets a teammate's. */
   awayUntil: Schema.optional(Schema.NullOr(KinDay)),
   picture: Schema.optional(Schema.NullOr(KinAttachment)),

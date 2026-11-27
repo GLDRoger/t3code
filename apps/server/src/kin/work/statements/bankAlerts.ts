@@ -77,7 +77,7 @@ export type AlertRejection =
   | "sender"
   /** From the address, but the receiving server didn't vouch for it. */
   | "unverified"
-  /** From the bank, verified, but not one transaction read one way. */
+  /** From the bank, verified, but not one transaction read one way, or no model could read it. */
   | "unparsed"
   | "other_account";
 
@@ -194,11 +194,9 @@ const existingEntry = Effect.fn("KinBankAlerts.existing")(function* (
         exact,
         matchesReference:
           said === reference &&
-          (one.createdByKind === "agent"
-            ? exact
-            : direction !== (alert.direction === "debit" ? "credit" : "debit") &&
-              (account === null || account === alert.account) &&
-              Math.abs(Date.parse(`${date}T00:00:00Z`) - day) <= 2 * DAY_MS),
+          direction !== (alert.direction === "debit" ? "credit" : "debit") &&
+          (account === null || account === alert.account) &&
+          Math.abs(Date.parse(`${date}T00:00:00Z`) - day) <= 2 * DAY_MS,
       },
     ];
   });
@@ -276,6 +274,8 @@ export const threadSeen = Effect.fn("KinBankAlerts.threadSeen")(function* (
 export const ALERT_RETRY_WINDOW = 14 * DAY_MS;
 // Only unparsed rows use reference for an ordered parser marker instead of a bank reference.
 const PARSER_MARKER = "parser:0003";
+/** An alert no model was available to read: retried like an older parser's, and told as such. */
+export const UNREAD_ALERT_MARKER = "parser:0000";
 
 const REMOVED_MARKER = "removed:pending";
 
@@ -357,12 +357,13 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
       message: AlertMessage;
       address: string | undefined;
       sender: ApprovedSender | undefined;
-      reading: AlertReading;
+      reading: AlertReading | "unread";
       discovery?:
         | { readonly hint: CandidateHint; readonly accounts: ReadonlyArray<string> }
         | "removed";
     }
   >();
+  let unread = false;
   for (const message of input.messages) {
     const sentAt = message.date === null ? Number.NaN : Date.parse(message.date);
     const alertId = alertIdOf(input.connectionId, input.threadId, message);
@@ -385,7 +386,20 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
     const window = seen?.retry === 1 || mayHold ? HELD_ALERT_WINDOW : ALERT_RETRY_WINDOW;
     if (sentAt < input.now - window) continue;
     if (address !== undefined && sender !== undefined) {
-      const reading = yield* readApprovedAlert(message, address, sender.accounts, currency, reader);
+      const reading = yield* readApprovedAlert(
+        message,
+        address,
+        sender.accounts,
+        currency,
+        reader,
+      ).pipe(
+        Effect.catchTags({
+          BankAlertReaderUnavailable: () => {
+            unread = true;
+            return Effect.succeed("unread" as const);
+          },
+        }),
+      );
       reads.set(alertId, { message, address, sender, reading });
     } else {
       const reason =
@@ -417,18 +431,40 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
         const revoked =
           sender !== undefined &&
           (authorized?.bankKey !== sender.bankKey || authorized.bankName !== sender.bankName);
-        const refusal = revoked
-          ? "sender"
-          : reading._tag === "rejected"
-            ? reading.reason
-            : authorized?.accounts.includes(reading.alert.account) !== true
-              ? "other_account"
-              : undefined;
         const parsedTime = message.date === null ? Number.NaN : Date.parse(message.date);
         const identity = {
           sender_address: address ?? null,
           sent_at: Number.isFinite(parsedTime) ? parsedTime : null,
         };
+        if (reading === "unread" && !revoked) {
+          // No model was reachable: kept to be read again, as an older parser's would be.
+          if (seen === undefined) {
+            yield* sql`INSERT INTO kin_bank_alerts ${sql.insert({
+              org_id: orgId,
+              alert_id: alertId,
+              connection_id: input.connectionId,
+              thread_id: input.threadId,
+              seen_at: input.now,
+              ...identity,
+              outcome: "unparsed",
+              reference: UNREAD_ALERT_MARKER,
+            })}`;
+            tally.rejected++;
+          } else {
+            // A held or re-added row stays retryable by its own rule.
+            yield* sql`UPDATE kin_bank_alerts SET reference = ${UNREAD_ALERT_MARKER}
+              WHERE org_id = ${orgId} AND alert_id = ${alertId} AND outcome = 'unparsed'`;
+          }
+          continue;
+        }
+        const refusal =
+          revoked || reading === "unread"
+            ? "sender"
+            : reading._tag === "rejected"
+              ? reading.reason
+              : authorized?.accounts.includes(reading.alert.account) !== true
+                ? "other_account"
+                : undefined;
         const result = yield* Effect.gen(function* () {
           if (address !== undefined && discovery !== undefined && seen === undefined) {
             // Approval during the provider read is handled by the same retry path as existing holds.
@@ -464,7 +500,12 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
               };
             }
           }
-          if (refusal !== undefined || reading._tag !== "alert" || authorized === undefined) {
+          if (
+            refusal !== undefined ||
+            typeof reading === "string" ||
+            reading._tag !== "alert" ||
+            authorized === undefined
+          ) {
             const outcome = refusal ?? "sender";
             if (outcome !== "sender") tally.rejected++;
             return {
@@ -509,7 +550,7 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
           })}`;
         }
       }
-      if (input.recheckedThread) {
+      if (input.recheckedThread && !unread) {
         yield* sql`UPDATE kin_bank_alerts SET reference = ${PARSER_MARKER}
           WHERE org_id = ${orgId} AND connection_id = ${input.connectionId}
             AND thread_id = ${input.threadId} AND ${unparsedRetry(sql, input.now)}`;
