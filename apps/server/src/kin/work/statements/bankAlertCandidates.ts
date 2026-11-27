@@ -32,7 +32,10 @@ export const candidateGate = Effect.fn("KinBankAlerts.candidateGate")(function* 
     ...statements.map(({ bankName }) => ({ bankName, matchedFrom: "statement" as const })),
   ].flatMap(({ bankName, matchedFrom }) => {
     if (typeof bankName !== "string") return [];
+    // A domain spells "Société" as "societe".
     const words = bankName
+      .normalize("NFKD")
+      .replace(/\p{M}/gu, "")
       .toLowerCase()
       .split(/[^\p{L}\p{N}]+/u)
       .filter((word) => word.length >= 4 && word !== "bank");

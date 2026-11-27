@@ -28,7 +28,10 @@ import { newCompanyProfileJson } from "../companyProfile.ts";
 import { parseFields } from "../lists.ts";
 import * as KinRecords from "../KinRecords.ts";
 import { MAIL_TOOL, type MailMessage } from "../../connections/MailProvider.ts";
+import { fromConnections } from "../../pulse/outside.ts";
+import * as KinShell from "../../shell/KinShell.ts";
 import { alertsOnMail, takeAlertMail } from "./alertMail.ts";
+import { candidateGate } from "./bankAlertCandidates.ts";
 import * as BankAlertReader from "./BankAlertReader.ts";
 import * as BankSenders from "./bankSenders.ts";
 import migrateBankSenders from "../../persistence/migrations/K229_BankSenders.ts";
@@ -48,6 +51,7 @@ import {
 import { ensureBankList, findBankList, knownRows } from "./bankList.ts";
 import { creditMatches, openEntries } from "./invoiceCredits.ts";
 import type { Statement, StatementRow } from "./statementTable.ts";
+import { DAY_MS } from "../../durations.ts";
 
 // Invented: Lakeview Studio's owner Rhea gets Harbor Bank alerts in two connected mailboxes.
 const orgId = KinOrgId.make("lakeview");
@@ -794,6 +798,139 @@ it.effect("carried addresses retain the original origin key on a replay", () =>
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("after the upgrade an unread alert recorded by hand is tied to that entry once", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(NOW);
+    const sql = yield* senderSetup;
+    for (const tool of [MAIL_TOOL.list, MAIL_TOOL.read]) {
+      yield* sql`INSERT INTO kin_connection_tools (org_id, connection_id, tool_name,
+        definition_json, pin_digest, mode, suggested_mode, open_world, first_seen_at)
+        VALUES (${orgId}, 'approved-inbox', ${tool}, '{}', 'digest', 'read', 'read', 0, ${NOW})`;
+    }
+    const hdfc = "alerts@hdfcbank.net";
+    const unread = withSender(hdfc, debit("632211112211"), "unread-before-upgrade");
+    // The live shape before K229: one recorded alert, and one the old parser couldn't read.
+    yield* BankSenders.add(orgId, rhea, {
+      address: hdfc,
+      bankName: "HDFC Bank",
+      accounts: ["4821"],
+    });
+    yield* takeAlerts(orgId, {
+      connectionId: "approved-inbox",
+      threadId: "unread",
+      messages: [unread],
+      now: NOW,
+    }).pipe(
+      Effect.provideService(BankAlertReader.BankAlertReader, {
+        read: () => Effect.succeed("not_one_transaction" as const),
+      }),
+    );
+    yield* sql`DELETE FROM kin_bank_senders`;
+    yield* sql`UPDATE kin_bank_alerts SET reference = 'parser:0002', sender_address = NULL`;
+    const def = yield* ensureBankList(orgId, NOW);
+    const records = yield* KinRecords.KinRecords;
+    const { row: recorded } = yield* records.create(
+      orgId,
+      { actor: { _tag: "system" }, via: "import" },
+      {
+        list: def.id,
+        originKey: "alert:hdfc:4821:debit:632211112210",
+        title: "Historic alert",
+        owner: { _tag: "person", personId: rhea },
+        state: "open",
+        amount: { minor: 125_000, currency: "INR" },
+        dateAt: Date.parse("2026-11-17T12:00:00Z"),
+        fields: { account: "HDFC Bank ••4821", direction: "debit", reference: "632211112210" },
+      },
+    );
+    yield* sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, thread_id, sent_at,
+      outcome, bank, account, reference, record_id, currency, balance_minor, seen_at)
+      VALUES (${orgId}, 'historic', 'approved-inbox', 'recorded', ${NOW - DAY_MS}, 'recorded',
+        'HDFC Bank', '4821', '632211112210', ${recorded.recordId}, 'INR', 41000000, ${NOW})`;
+    // Since then an agent recorded the unread one by hand.
+    yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+      owner_kind, owner_id, amount_minor, currency, date_at, date_all_day, fields_json,
+      created_by_kind, created_by_id, origin_key, created_at, updated_at)
+      VALUES (${orgId}, 'by-hand', ${def.id}, 'by-hand', 'Lakeview Cafe', 'open', 'person',
+        ${rhea}, 125000, 'INR', ${Date.parse("2026-11-18T12:00:00Z")}, 1,
+        '{"direction":"debit","account":"HDFC Bank ••4821","reference":"632211112211"}', 'agent',
+        'finance', 'manual:finance:by-hand', ${NOW}, ${NOW})`;
+    yield* sql`DROP INDEX kin_bank_alerts_sender`;
+    yield* sql`ALTER TABLE kin_bank_alerts DROP COLUMN sender_address`;
+    yield* migrateBankSenders;
+
+    const unreadCount = sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_bank_alerts
+      WHERE org_id = ${orgId} AND outcome = 'unparsed'`;
+    assert.deepStrictEqual(yield* unreadCount, [{ n: 1 }]);
+    const reads: Array<string> = [];
+    let modelCalls = 0;
+    const pass = takeAlertMail(
+      {
+        readThread: (_orgId, _connectionId, threadId) =>
+          Effect.sync(() => {
+            reads.push(threadId);
+            return [
+              {
+                ...unread,
+                threadId,
+                from: `HDFC Bank <${hdfc}>`,
+                to: [],
+                replyTo: [],
+                toLine: null,
+                ccLine: null,
+                deliveredTo: [],
+                unread: false,
+                preview: "",
+                references: null,
+                body: { text: unread.text, attachments: [] },
+              },
+            ];
+          }),
+      },
+      orgId,
+      {
+        _tag: "mail",
+        connectionId: KinConnectionId.make("approved-inbox"),
+        since: NOW - 1,
+        until: NOW,
+        account: "accounts@lakeview.example",
+        cursor: null,
+        calendar: [],
+        mail: [],
+      },
+    ).pipe(
+      Effect.provideService(BankAlertReader.BankAlertReader, {
+        read: (input) =>
+          Effect.sync(() => {
+            modelCalls++;
+          }).pipe(Effect.andThen(fixtureBankAlertReader.read(input))),
+      }),
+    );
+    assert.deepInclude(yield* pass, { recorded: 0, duplicate: 1 });
+    assert.deepInclude(yield* pass, { threads: 0 });
+    assert.deepStrictEqual(reads, ["unread"]);
+    assert.strictEqual(modelCalls, 1);
+    assert.deepStrictEqual(yield* unreadCount, [{ n: 0 }]);
+    assert.deepStrictEqual(
+      yield* sql`SELECT thread_id, outcome, record_id, sender_address FROM kin_bank_alerts
+        ORDER BY thread_id`,
+      [
+        {
+          thread_id: "recorded",
+          outcome: "recorded",
+          record_id: recorded.recordId,
+          sender_address: null,
+        },
+        { thread_id: "unread", outcome: "duplicate", record_id: "by-hand", sender_address: hdfc },
+      ],
+    );
+    assert.deepStrictEqual(
+      (yield* entries).map((entry) => entry.recordId).toSorted(),
+      ["by-hand", recorded.recordId].toSorted(),
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
 const candidateSetup = Effect.fn("Test.candidateSetup")(function* (
   source: "company_details" | "statement" | "no_ending",
 ) {
@@ -924,6 +1061,59 @@ it.effect.each([
       ],
     );
     assert.deepStrictEqual(yield* entries, []);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  ["Harbor Bank", "alerts@harborbank.example", true],
+  // A look-alike can raise one: the owner's tap decides, and the card shows the address.
+  ["Harbor Bank", "alerts@harbor.mail-relay.example", true],
+  ["Harbor Bank", "alerts@xn--harborbnk-7fg.example", true],
+  ["Harbor Bank", "harborbank@gmail.com", false],
+  ["Harbor Bank", "alerts@bank.example", false],
+  ["Harbor Bank", "alerts@example.harbor", false],
+  ["Société Générale", "alerts@societegenerale.example", true],
+] as const)("the candidate name rule: %s and %s gives %s", ([bankName, address, raised]) =>
+  Effect.gen(function* () {
+    const sql = yield* senderSetup;
+    yield* sql`INSERT INTO kin_company_profile (org_id, profile_json, rev, updated_at,
+        updated_by_kind, updated_by_id)
+      VALUES (${orgId}, json_set(${yield* newCompanyProfileJson}, '$.bank.bankName', ${bankName}),
+        1, 0, 'person', ${rhea})`;
+    assert.strictEqual((yield* candidateGate(orgId))(address) !== undefined, raised);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("a waiting address's mail stays in check-in lines unless Money is off", () =>
+  Effect.gen(function* () {
+    const sql = yield* candidateSetup("company_details");
+    yield* BankSenders.noteCandidate(orgId, {
+      address: "notices@harborbank-alerts.example",
+      bankName: "Harbor Bank",
+      accounts: ["4821"],
+      seenAt: NOW,
+      matchedFrom: "company_details",
+    });
+    yield* BankSenders.add(orgId, rhea, {
+      address: harbor,
+      bankName: "Harbor Bank",
+      accounts: ["4821"],
+    });
+    const { activity } = candidatePass(
+      material("waiting", { fromAddress: "notices@harborbank-alerts.example" }),
+      material("approved"),
+      material("stranger", { fromAddress: "notices@stranger.example" }),
+    );
+    const source = fromConnections(
+      KinConnections.of({ ...(yield* KinConnections), activity: () => Effect.succeed(activity) }),
+      sql,
+    );
+    const threads = Effect.map(source.read(orgId), ({ lines }) => lines.map((line) => line.thread));
+    assert.deepStrictEqual(yield* threads, ["waiting", "approved", "stranger"]);
+    yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+      VALUES (${orgId}, '[{"id":"money","on":false}]', 1, ${rhea}, ${NOW})`;
+    yield* KinShell.invalidate(orgId);
+    assert.deepStrictEqual(yield* threads, ["stranger"]);
   }).pipe(Effect.provide(layer)),
 );
 
