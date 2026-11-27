@@ -38,6 +38,7 @@ import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "./KinRecords.ts";
+import { CodingAgentCall } from "./keyCall.ts";
 import * as LeadClients from "./leadClients.ts";
 import * as ShellMcp from "../shell/mcp.ts";
 import * as NumbersWatch from "../numbers/watch.ts";
@@ -4555,6 +4556,109 @@ it.effect(
     }).pipe(Effect.provide(layer)),
 );
 
+it.effect("a project summary counts visible changes by others before limiting the lines", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const project = yield* Clients.createProject([owner], {
+      orgId,
+      name: "Tidewater Freight",
+      clientRequestId: "01KAK0XMVCXC4FF969979K33DC",
+    });
+    const task = yield* OwnerWork.create([owner], {
+      orgId,
+      title: "Check the packing list",
+      owner: { _tag: "person", personId: mateId },
+      project: project.key,
+      clientRequestId: "01KAK0XMVCXC4FF969979K33DD",
+    });
+    // A list shared with the team whose private field shares a name with a task's field.
+    const sql = yield* SqlClient.SqlClient;
+    const def = presetDefinition("expenses", "INR");
+    const confirmed = { ...def.fields[0]!, key: "confirmed", label: "Confirmed", sensitive: true };
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'payouts', 'Payouts', 'PAY', 0, 0, ${JSON.stringify({
+        ...def,
+        fields: [...def.fields, confirmed],
+        team: true,
+        sensitive: false,
+        teamSince: 0,
+      })})`;
+    yield* sql`UPDATE kin_people SET sees_money = 0 WHERE person_id = ${mateId}`;
+    const records = yield* KinRecords.KinRecords;
+    const rhea = { actor: { _tag: "person", personId: ownerId }, via: "owner" } as const;
+    const { row: payout } = yield* records.create(orgId, rhea, {
+      list: "payouts",
+      originKey: "payout:juniper",
+      title: "Juniper Cold Chain payout",
+      owner: { _tag: "person", personId: mateId },
+      projectId: project.recordId,
+    });
+    const input = { orgId, key: project.key };
+    const page = Clients.project([mate], input);
+    const first = yield* page;
+    assert.isNull(first.lookedAt);
+    assert.notProperty(first, "sinceLooked");
+    yield* OwnerWork.looked([mate], { orgId, recordId: project.recordId, upTo: first.asOf });
+    const current = yield* page;
+    assert.strictEqual(current.lookedAt, first.asOf);
+    assert.notProperty(current, "sinceLooked");
+
+    const edit = Effect.fn("test.editProjectTask")(function* (
+      writer: KinRecords.Writer,
+      patch: KinRecords.Patch,
+      key: string = task.key,
+    ) {
+      yield* TestClock.adjust(1);
+      yield* records.update(orgId, writer, key, patch);
+    });
+    yield* edit(rhea, { notes: "Check the crate labels." });
+    yield* edit(rhea, { state: "doing" });
+    yield* edit(rhea, { fields: { confirmed: "Paid to Arjun in cash" } }, payout.key);
+    const theirs = yield* OwnerWork.create([owner], {
+      orgId,
+      title: "Renegotiate the Juniper Cold Chain rate",
+      clientRequestId: "01KAK0XMVCXC4FF969979K33DE",
+    });
+    yield* records.link(orgId, rhea, task.recordId, {
+      kind: "record",
+      target: theirs.recordId,
+      relation: "relates",
+    });
+    yield* edit(
+      { actor: { _tag: "agent", agentId: lead }, via: "lead", askedBy: mateId },
+      { dueAt: 60_000 },
+    );
+    yield* edit(rhea, {
+      notes: "Call Juniper Cold Chain.",
+      amount: { minor: 120_000, currency: "INR" },
+    });
+    yield* edit(
+      { actor: { _tag: "person", personId: mateId }, via: "owner" },
+      {
+        notes: "Check the loading schedule.",
+      },
+    );
+    const after = yield* page;
+    for (const hidden of ["Paid to Arjun", theirs.recordId])
+      assert.notInclude(JSON.stringify(after.changedThisWeek), hidden);
+    const since = after.sinceLooked;
+    assert.strictEqual(since?.total, 4);
+    assert.deepStrictEqual(
+      since?.items.map((item) => item.fields.map((field) => field.field)),
+      [["notes"], ["due"], ["state"]],
+    );
+    assert.deepInclude(since?.items[1], { by: { _tag: "agent", agentId: lead }, askedBy: mateId });
+    for (const keyed of [
+      yield* Clients.project([mate], input, { keyed: true }),
+      yield* page.pipe(Effect.provideService(CodingAgentCall, "01KAK0XMVCXC4FF969979K33DC")),
+    ]) {
+      assert.notProperty(keyed, "lookedAt");
+      assert.notProperty(keyed, "sinceLooked");
+    }
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect(
   "a project's plan: milestones, tasks from spec sections that flag when the section changes",
   () =>
@@ -4740,6 +4844,23 @@ it.effect(
         WHERE key = 'P-1'`;
       yield* sql`UPDATE kin_records SET sensitive = 1, state = 'waiting' WHERE key = 'W-2'`;
       yield* sql`UPDATE kin_people SET sees_money = 0 WHERE person_id = ${mateId}`;
+      const firstLook = yield* Clients.project([mate], { orgId, key: "P-1" });
+      yield* OwnerWork.looked([mate], {
+        orgId,
+        recordId: firstLook.project.recordId,
+        upTo: firstLook.asOf,
+      });
+      yield* TestClock.adjust(1);
+      const privateTask = yield* OwnerWork.get([owner], { orgId, key: "W-2" });
+      yield* OwnerWork.update([owner], {
+        orgId,
+        key: privateTask.key,
+        rev: privateTask.rev,
+        notes: "Check the packing list.",
+      });
+      const privateOnly = yield* Clients.project([mate], { orgId, key: "P-1" });
+      assert.strictEqual(privateOnly.lookedAt, firstLook.asOf);
+      assert.notProperty(privateOnly, "sinceLooked");
       yield* TestClock.adjust(1);
       const task = yield* OwnerWork.get([owner], { orgId, key: "W-1" });
       yield* OwnerWork.update([owner], {
@@ -4759,6 +4880,7 @@ it.effect(
         theirs.changedThisWeek.items.map((one) => one.seq),
         amountChange!.seq,
       );
+      assert.notProperty(theirs, "sinceLooked");
       assert.deepStrictEqual(
         ours.blocked.map((one) => one.record.key),
         ["W-2"],

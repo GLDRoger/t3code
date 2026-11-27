@@ -1,4 +1,5 @@
 import type { KinScreenTarget as KinWorkTarget } from "@t3tools/client-runtime/kin/kinScreenReads";
+import { makeKinSinceLookedHooks } from "@t3tools/client-runtime/kin/react/kinSinceLookedHooks";
 import { makeKinWorkHooks } from "@t3tools/client-runtime/kin/react/kinWorkHooks";
 import { AsyncResult } from "effect/reactivity";
 
@@ -42,6 +43,13 @@ export const {
   catalogValueAtom: environmentCatalog.catalogValueAtom,
   keepAnswers: true,
 });
+
+export const {
+  useKinRecordLooked,
+  useKinPinnedEntryLook,
+  useKinPinnedDocLook,
+  useKinPinnedProjectLook,
+} = makeKinSinceLookedHooks(kinHookApp);
 
 /**
  * Reads Work's counts again inside the running stream, keeping what is on screen. A stream that

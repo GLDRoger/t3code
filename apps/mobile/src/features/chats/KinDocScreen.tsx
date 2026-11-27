@@ -44,6 +44,7 @@ import {
   type KinDocAsk,
   type KinDocEditOpened,
 } from "@t3tools/client-runtime/kin/kinDocs";
+import { kinDocLookedUpTo, kinDocSinceLooked } from "@t3tools/client-runtime/kin/kinSinceLooked";
 import { KIN_DOC_COMPANY, KIN_DOC_SHARE } from "@t3tools/client-runtime/kin/kinWork";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
 import {
@@ -105,9 +106,15 @@ import { useKinDoc } from "./state/useKinDocs";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { kinHostConnected } from "./state/useKinHost";
 import { useKinInbox } from "./state/useKinInbox";
-import { useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
+import {
+  useKinPinnedDocLook,
+  useKinRecordLooked,
+  useKinWorkDirectory,
+  type KinWorkTarget,
+} from "./state/useKinWork";
 import { KinEmbedView } from "./widgets/KinEmbedView";
 import { KinWatchLine } from "./KinWatchLine";
+import { KinSinceLookedLine, useKinScreenVisible } from "./components/KinSinceLookedLine";
 
 export type KinDocParams = {
   readonly environmentId: string;
@@ -356,6 +363,19 @@ function KinDocBody(
   const { names } = useKinWorkDirectory(target, true);
   const inbox = useKinInbox();
   const now = new Date(useNowMinuteMs());
+  const visible = useKinScreenVisible();
+  const isLatestView =
+    props.version === null && props.card == null && doc.version.version === doc.latest.version;
+  const pinnedLook = useKinPinnedDocLook(doc, isLatestView);
+  const lookedUpTo = kinDocLookedUpTo(doc, { isLatest: isLatestView });
+  useKinRecordLooked(
+    target,
+    lookedUpTo === null ? null : { recordId: doc.recordId, upTo: lookedUpTo },
+    visible && isLatestView && !props.stale,
+  );
+  const sinceLooked = !isLatestView
+    ? null
+    : kinDocSinceLooked(doc, pinnedLook?.lookedAt, pinnedLook?.sinceLooked, names, now);
   const styles = useMarkdownPreviewStyles();
   const openLink = useOpenPullRequest();
   const restore = useKinDocRestore(target, doc.key);
@@ -772,6 +792,20 @@ function KinDocBody(
               </ListSection>
             )}
             <KinWatchLine {...target} recordKey={doc.key} />
+            <KinSinceLookedLine
+              view={sinceLooked}
+              onPress={() => {
+                if (sinceLooked?.opens.kind === "diff") {
+                  navigation.navigate("KinDocChanges", {
+                    environmentId,
+                    orgId,
+                    doc: doc.key,
+                    to: String(sinceLooked.opens.to),
+                    from: String(sinceLooked.opens.from),
+                  });
+                }
+              }}
+            />
             {previous === null ? null : (
               <Pressable
                 accessibilityRole="button"

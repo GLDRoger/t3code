@@ -1,5 +1,6 @@
 import {
   EnvironmentId,
+  KinAgentId,
   KinOrgId,
   KinPersonId,
   KinRecordId,
@@ -14,6 +15,7 @@ const host = vi.hoisted(() => ({
   item: null as unknown,
   updates: [] as Array<Record<string, unknown>>,
   ticks: [] as Array<Record<string, unknown>>,
+  looked: [] as Array<Record<string, unknown>>,
   refuse: null as string | null,
   /** Who Work can name, beyond the reader; set by a test that puts people on a task. */
   people: [] as Array<{ readonly personId: string; readonly displayName: string }>,
@@ -29,9 +31,10 @@ vi.mock(import("./useKinWork"), async (importOriginal) => ({
         ["rhea", "Rhea"],
         ...host.people.map((one) => [one.personId, one.displayName] as const),
       ]),
-      agents: new Map(),
+      agents: new Map([[KinAgentId.make("chief"), "Chief of staff"]]),
       me: KinPersonId.make("rhea"),
-      zone: null,
+      zone: "UTC",
+      readerZone: "UTC",
     },
   })) as never,
   useKinWorkItemWatch: () => {},
@@ -102,6 +105,16 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
           },
         ),
       },
+      workLooked: {
+        label: "test:workLooked",
+        permissionAtom: () => allowed,
+        run: commandRun(
+          async (_registry: unknown, { input }: { readonly input: Record<string, unknown> }) => {
+            host.looked.push(input);
+            return AsyncResult.success({});
+          },
+        ),
+      },
     } as never,
   };
 });
@@ -150,6 +163,7 @@ function setup(key: string, refuse: string | null, extra: Partial<KinRecordDetai
   host.item = item;
   host.updates = [];
   host.ticks = [];
+  host.looked = [];
   host.refuse = refuse;
   host.people = [];
   return item;
@@ -297,5 +311,62 @@ describe("changing a task from its sheet", () => {
     await userEvent.click(page.getByRole("button", { name: "Leave this task" }));
     await vi.waitFor(() => expect(opened.mock.calls.at(-1)?.[0]).toBeNull());
     expect(host.updates.slice(2)).toEqual([{ orgId, key: "T-44", rev: 6, alsoOn: [] }]);
+  });
+
+  it("shows changes since the last look, including by the reader's agent, and posts looked once when visible", async () => {
+    await page.viewport(1440, 900);
+    const meera = { _tag: "person", personId: KinPersonId.make("meera") } as const;
+    const chief = { _tag: "agent", agentId: KinAgentId.make("chief") } as const;
+    setup("T-45", null, {
+      lookedAt: "2026-11-10T09:00:00.000Z",
+      updatedAt: "2026-11-15T09:00:00.000Z",
+      changes: [
+        {
+          seq: 5,
+          at: "2026-11-15T09:00:00.000Z",
+          by: chief,
+          via: "lead",
+          askedBy: rhea.personId,
+          kind: "updated",
+          fields: [{ field: "state", from: "open", to: "doing" }],
+        },
+        {
+          seq: 4,
+          at: "2026-11-14T09:00:00.000Z",
+          by: meera,
+          via: "owner",
+          kind: "updated",
+          fields: [{ field: "title", from: "Old", to: "Book the Ambermill van" }],
+        },
+      ],
+    });
+    host.people = [{ personId: "meera", displayName: "Meera" }];
+    await using _screen = await screen("T-45");
+
+    const line = page.getByRole("button", {
+      name: /2 changes since .*: Chief of staff, for you, started on it · Meera renamed it\. Open history\./,
+    });
+    await expect.element(line).toBeVisible();
+    await vi.waitFor(() =>
+      expect(host.looked).toEqual([
+        {
+          orgId,
+          recordId: "rec-T-45",
+          upTo: "2026-11-15T09:00:00.000Z",
+        },
+      ]),
+    );
+  });
+
+  it("omits the since-looked line and skips looked on an older host without lookedAt", async () => {
+    await page.viewport(1440, 900);
+    setup("T-46", null);
+    await using _screen = await screen("T-46");
+
+    await expect.element(page.getByText("Book the Ambermill van")).toBeVisible();
+    await expect
+      .element(page.getByRole("button", { name: /Open history\./ }))
+      .not.toBeInTheDocument();
+    expect(host.looked).toEqual([]);
   });
 });
