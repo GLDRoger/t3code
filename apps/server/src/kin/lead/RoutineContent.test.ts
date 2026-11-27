@@ -786,68 +786,93 @@ it.effect("a failed brief retries on its own with a counted attempt", () =>
   }),
 );
 
-it.effect("an evening summary that runs past its own day is not sent; its facts are untold", () =>
-  Effect.gen(function* () {
-    // Monday 22:30 in Tokyo, held by quiet hours to 08:00 there: still Monday on a UTC host.
-    yield* TestClock.setTime(now + 14 * 60 * 60_000);
-    yield* Effect.gen(function* () {
-      yield* seed;
-      const sql = yield* SqlClient.SqlClient;
-      yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+it.effect.each([
+  { scenario: "alone", anotherFails: false },
+  { scenario: "beside a failing turn", anotherFails: true },
+])(
+  "an evening summary past its own day is skipped and its facts are untold ($scenario)",
+  ({ anotherFails }) =>
+    Effect.gen(function* () {
+      // Monday 22:30 in Tokyo, held by quiet hours to 08:00 there: still Monday on a UTC host.
+      yield* TestClock.setTime(now + 14 * 60 * 60_000);
+      yield* Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
           dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
         VALUES (${orgId}, 'Asia/Tokyo', '09:00', '18:00', '02:00', 0, 1, '09:00', '{}')`;
-      const monday = "2026-11-09";
-      yield* (yield* Queue.KinEventQueue).enqueue(
-        decodeEvent({
-          _tag: "pulse",
-          orgId,
-          agentId,
-          eventId: "pulse-evening",
-          receivedAt: timestamp,
-          dedupeKey: `checkin:checkin-evening:${monday}`,
-          provenance: { _tag: "system" },
-          factKeys: [],
-          checkIn: {
-            scheduleId: "checkin-evening",
-            title: "Evening summary",
-            what: "Evening summary.",
-            slot: monday,
-            day: monday,
-          },
-        }),
-      );
-      yield* sql`INSERT INTO kin_pulse_told (org_id, person_id, fact_key, event_id, sig, told_at)
+        const monday = "2026-11-09";
+        yield* (yield* Queue.KinEventQueue).enqueue(
+          decodeEvent({
+            _tag: "pulse",
+            orgId,
+            agentId,
+            eventId: "pulse-evening",
+            receivedAt: timestamp,
+            dedupeKey: `checkin:checkin-evening:${monday}`,
+            provenance: { _tag: "system" },
+            factKeys: [],
+            checkIn: {
+              scheduleId: "checkin-evening",
+              title: "Evening summary",
+              what: "Evening summary.",
+              slot: monday,
+              day: monday,
+            },
+          }),
+        );
+        yield* sql`INSERT INTO kin_pulse_told (org_id, person_id, fact_key, event_id, sig, told_at)
         VALUES (${orgId}, 'owner', 'task_late:r-W-1', 'pulse-evening', 'sig', ${now})`;
-      const fiber = yield* (yield* WakeupRunner.WakeupRunner)
-        .runOnce(orgId, agentId)
-        .pipe(Effect.forkChild);
-      yield* TestClock.adjust("20 seconds");
-      yield* Fiber.join(fiber);
-      assert.deepStrictEqual(
-        yield* sql`SELECT state FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`,
-        [{ state: "done" }],
-      );
-      assert.deepStrictEqual(
-        yield* sql`SELECT status, thread_id AS "threadId" FROM kin_wakeups WHERE org_id = ${orgId}`,
-        [{ status: "completed", threadId: null }],
-      );
-      assert.lengthOf(yield* sql`SELECT 1 FROM kin_pulse_told WHERE org_id = ${orgId}`, 0);
-    }).pipe(
-      Effect.provide(
-        WakeupRunner.layer.pipe(
-          Layer.provide(
-            Layer.succeed(RoutineContent.KinRoutineContent, {
-              prepare: () => Effect.succeed(null),
-              post: () => Effect.succeed(null),
-              morningFacts: () => Effect.succeed(null),
-              eveningFacts: () => Effect.succeed('{"routine":"evening_summary"}'),
+        if (anotherFails) {
+          yield* (yield* Queue.KinEventQueue).enqueue(
+            decodeEvent({
+              _tag: "pulse",
+              orgId,
+              agentId,
+              eventId: "pulse-other",
+              receivedAt: timestamp,
+              dedupeKey: "pulse-other",
+              provenance: { _tag: "system" },
+              factKeys: [],
             }),
+          );
+        }
+        const fiber = yield* (yield* WakeupRunner.WakeupRunner)
+          .runOnce(orgId, agentId)
+          .pipe(Effect.forkChild);
+        yield* TestClock.adjust("20 seconds");
+        yield* Fiber.join(fiber);
+        assert.deepStrictEqual(
+          yield* sql`SELECT state FROM kin_events WHERE org_id = ${orgId} AND event_id = 'pulse-evening'`,
+          [{ state: "expired" }],
+        );
+        if (anotherFails)
+          assert.deepStrictEqual(
+            yield* sql`SELECT state, attempts FROM kin_events WHERE org_id = ${orgId} AND event_id = 'pulse-other'`,
+            [{ state: "queued", attempts: 1 }],
+          );
+        else
+          assert.deepStrictEqual(
+            yield* sql`SELECT status, thread_id AS "threadId" FROM kin_wakeups WHERE org_id = ${orgId}`,
+            [{ status: "completed", threadId: null }],
+          );
+        assert.lengthOf(yield* sql`SELECT 1 FROM kin_pulse_told WHERE org_id = ${orgId}`, 0);
+      }).pipe(
+        Effect.provide(
+          WakeupRunner.layer.pipe(
+            Layer.provide(
+              Layer.succeed(RoutineContent.KinRoutineContent, {
+                prepare: () => Effect.succeed(null),
+                post: () => Effect.succeed(null),
+                morningFacts: () => Effect.succeed(null),
+                eveningFacts: () => Effect.succeed('{"routine":"evening_summary"}'),
+              }),
+            ),
+            Layer.provideMerge(orchestrationHarness({ failed: anotherFails })),
           ),
-          Layer.provideMerge(orchestrationHarness()),
         ),
-      ),
-    );
-  }),
+      );
+    }),
 );
 
 it("a clipped line never ends on half of an escape pair", () => {
