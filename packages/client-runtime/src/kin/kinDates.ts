@@ -1,5 +1,5 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
-import { kinDateRowLate, kinWhenParts } from "@t3tools/contracts";
+import { kinDateRowLate, kinWhenFormat, kinWhenParts } from "@t3tools/contracts";
 import type {
   KinCalendarEvent,
   KinCalendarSource,
@@ -316,6 +316,21 @@ export interface KinMonthCell {
 }
 
 export const KIN_WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+// A cell's day is a calendar day: written in UTC so no device zone moves it.
+const cellDayFormat = kinWhenFormat("longDay", { zone: "UTC" });
+
+/** A day cell as a screen reader says it: "Friday, November 27, Today, 5 entries". */
+export function kinMonthCellLabel(cell: KinMonthCell): string {
+  const count = cell.entries.length;
+  return [
+    cellDayFormat.format(Date.parse(`${cell.day}T00:00:00.000Z`)),
+    cell.today ? "Today" : null,
+    count === 0 ? null : count === 1 ? "1 entry" : `${count} entries`,
+  ]
+    .filter((part) => part !== null)
+    .join(", ");
+}
 
 /** A month as whole weeks from Monday, each day holding what falls on it. */
 export function kinDatesMonth(

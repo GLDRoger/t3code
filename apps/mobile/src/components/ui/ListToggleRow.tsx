@@ -28,6 +28,7 @@ export function ListToggleRow(
       label={props.label}
       description={props.description}
       disabled={props.disabled}
+      labelWholeWords={props.labelWholeWords}
       accessory={
         props.value === null ? (
           <Pressable

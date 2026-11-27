@@ -1,4 +1,8 @@
-import { KIN_WEEKDAYS, type KinMonthCell } from "@t3tools/client-runtime/kin/kinDates";
+import {
+  KIN_WEEKDAYS,
+  kinMonthCellLabel,
+  type KinMonthCell,
+} from "@t3tools/client-runtime/kin/kinDates";
 import { Pressable, useWindowDimensions, View } from "react-native";
 
 import { AppText as Text } from "../../../components/ui/AppText";
@@ -96,17 +100,7 @@ export function KinMonthGrid(props: {
                 key={cell.day}
                 accessibilityRole="button"
                 accessibilityState={{ selected }}
-                accessibilityLabel={[
-                  cell.day,
-                  cell.today ? "Today" : null,
-                  cell.entries.length === 0
-                    ? null
-                    : cell.entries.length === 1
-                      ? "1 entry"
-                      : `${cell.entries.length} entries`,
-                ]
-                  .filter((part) => part !== null)
-                  .join(", ")}
+                accessibilityLabel={kinMonthCellLabel(cell)}
                 disabled={props.disabled}
                 onPress={() => props.onPick(cell.day)}
                 className={cn(

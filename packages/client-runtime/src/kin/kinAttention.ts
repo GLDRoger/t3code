@@ -42,6 +42,8 @@ export const KIN_ATTENTION = {
   notNeeded: "Not needed",
   handled: "Handled",
   undo: "Undo",
+  /** A screen reader's name for one row's Undo among several. */
+  undoFor: (title: string) => `Undo ${title}`,
   ask: (name: string) => `Ask ${name}`,
   setAsideTitle: "Set aside until",
   setAsideDay: "Until this day",
@@ -578,6 +580,24 @@ const dayOf = (date: Date) =>
 const plusDays = (date: Date, days: number) =>
   new Date(date.getFullYear(), date.getMonth(), date.getDate() + days);
 
+/** Today on `zone`'s calendar, the company's, else on this device. */
+const todayIn = (now: Date, zone: string | null) => {
+  if (zone === null) return dayOf(now);
+  try {
+    return kinWhenParts(now, zone).isoDay;
+  } catch {
+    return dayOf(now);
+  }
+};
+
+// The company's calendar is the one the server checks a set-aside day against.
+const companyToday = (now: Date, zone: string | null) => {
+  const [year, month, date] = todayIn(now, zone).split("-").map(Number);
+  return new Date(Date.UTC(year!, month! - 1, date!));
+};
+const companyDay = (today: Date, days: number) =>
+  new Date(today.getTime() + days * 86_400_000).toISOString().slice(0, 10);
+
 /** The existing host call an attention answer makes: hold the record, or mark the fact handled. */
 type KinAttentionCall =
   | {
@@ -622,16 +642,17 @@ interface KinAttentionMenu {
 }
 
 /** "Later"'s preset days, as the days the host hides a row until. */
-function kinLaterDays(now: Date) {
-  const toMonday = (8 - now.getDay()) % 7 || 7;
+function kinLaterDays(now: Date, zone: string | null) {
+  const today = companyToday(now, zone);
+  const toMonday = (8 - today.getUTCDay()) % 7 || 7;
   return [
-    { id: "tomorrow" as const, label: KIN_ATTENTION.laterTomorrow, until: dayOf(plusDays(now, 1)) },
+    { id: "tomorrow" as const, label: KIN_ATTENTION.laterTomorrow, until: companyDay(today, 1) },
     {
       id: "monday" as const,
       label: KIN_ATTENTION.laterMonday,
-      until: dayOf(plusDays(now, toMonday)),
+      until: companyDay(today, toMonday),
     },
-    { id: "week" as const, label: KIN_ATTENTION.laterWeek, until: dayOf(plusDays(now, 7)) },
+    { id: "week" as const, label: KIN_ATTENTION.laterWeek, until: companyDay(today, 7) },
   ] as const;
 }
 
@@ -679,12 +700,13 @@ function kinAttentionLaterCall(
 export function kinAttentionMenu(
   row: Pick<KinAttentionRow, "factKey" | "record">,
   now: Date,
+  zone: string | null = null,
 ): KinAttentionMenu {
   return {
     later: {
       label: KIN_ATTENTION.later,
       choices: [
-        ...kinLaterDays(now).map((choice) => ({
+        ...kinLaterDays(now, zone).map((choice) => ({
           id: choice.id,
           label: choice.label,
           until: choice.until,
@@ -743,8 +765,9 @@ export function runKinAttentionCall(
 }
 
 /** "Pick a day": the first day it may be set to (tomorrow) and the day it starts on. */
-export function kinSetAsideDays(now: Date) {
-  return { min: dayOf(plusDays(now, 1)), initial: dayOf(plusDays(now, 30)) } as const;
+export function kinSetAsideDays(now: Date, zone: string | null = null) {
+  const today = companyToday(now, zone);
+  return { min: companyDay(today, 1), initial: companyDay(today, 30) } as const;
 }
 
 // Goals
@@ -854,16 +877,6 @@ export function kinGoalsSummary(views: ReadonlyArray<Pick<KinGoalView, "status">
     .filter((part) => part !== null)
     .join(", ");
 }
-
-/** Today on `zone`'s calendar, the company's, else on this device. */
-const todayIn = (now: Date, zone: string | null) => {
-  if (zone === null) return dayOf(now);
-  try {
-    return kinWhenParts(now, zone).isoDay;
-  } catch {
-    return dayOf(now);
-  }
-};
 
 /** A goal as its edit sheet starts: the figures as a person would type them, days in `zone`. */
 export function kinGoalDraft(goal: KinGoal | null, now: Date, zone: string | null = null) {

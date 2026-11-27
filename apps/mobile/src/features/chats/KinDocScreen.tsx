@@ -706,6 +706,20 @@ function KinDocBody(
             <Text textRole="footnote" className="text-foreground-muted">
               {line.text}
             </Text>
+            <KinSinceLookedLine
+              view={sinceLooked}
+              onPress={() => {
+                if (sinceLooked?.opens.kind === "diff") {
+                  navigation.navigate("KinDocChanges", {
+                    environmentId,
+                    orgId,
+                    doc: doc.key,
+                    to: String(sinceLooked.opens.to),
+                    from: String(sinceLooked.opens.from),
+                  });
+                }
+              }}
+            />
             {
               <View className="flex-row flex-wrap gap-2">
                 <Chip
@@ -792,20 +806,6 @@ function KinDocBody(
               </ListSection>
             )}
             <KinWatchLine {...target} recordKey={doc.key} />
-            <KinSinceLookedLine
-              view={sinceLooked}
-              onPress={() => {
-                if (sinceLooked?.opens.kind === "diff") {
-                  navigation.navigate("KinDocChanges", {
-                    environmentId,
-                    orgId,
-                    doc: doc.key,
-                    to: String(sinceLooked.opens.to),
-                    from: String(sinceLooked.opens.from),
-                  });
-                }
-              }}
-            />
             {previous === null ? null : (
               <Pressable
                 accessibilityRole="button"

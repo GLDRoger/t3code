@@ -1443,9 +1443,13 @@ const kinWorkNameList = (shown: ReadonlyArray<string>): string =>
 /** "today", "yesterday" or "15 Nov" for an ISO time, on this device's calendar. */
 export const kinWorkDayOfTime = (iso: string, now: Date) => dayFromText(iso, now, null);
 
-/** A due date as the history wrote it, as the day it is where the owner is. */
-export const kinWorkDueDayText = (text: string | null, now: Date, zone: string | null) =>
-  dayFromText(text, now, zone);
+/** A due the history wrote, on the calendar the due itself reads in (`kinWorkDueZone`). */
+export const kinWorkDueDayText = (
+  text: string | null,
+  allDay: { readonly to: string | null } | undefined,
+  now: Date,
+  names: DueZones,
+) => dayFromText(text, now, kinWorkDueZone(dueSetAllDay(text, allDay, names.zone), names));
 
 /** A due time from the history, as the day it is where the owner is, like the due date itself. */
 const dayFromText = (text: string | null, now: Date, zone: string | null) => {
@@ -1585,11 +1589,7 @@ export function kinWorkChangeText(
     );
   const due = field("due");
   if (due !== undefined) {
-    const day = dayFromText(
-      due.to,
-      now,
-      kinWorkDueZone(dueSetAllDay(due.to, field("dueAllDay"), names.zone), names),
-    );
+    const day = kinWorkDueDayText(due.to, field("dueAllDay"), now, names);
     clauses.push(
       day === null
         ? "took the date off"
