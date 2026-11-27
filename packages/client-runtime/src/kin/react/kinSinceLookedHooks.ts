@@ -27,6 +27,10 @@ export interface KinLookedInput {
 /** Shared visit-pinning and `kin.work.looked` hooks for web and mobile record screens. */
 export function makeKinSinceLookedHooks<R, ER>(app: KinHookApp<R, ER>) {
   const { kinClient, useAtomCommand, kinHostConnected } = app;
+  // The newest look this app sent per record, so a revisit can tell the cache's older copy apart.
+  const lookedThisRun = new Map<string, string>();
+  const lookKey = ({ environmentId, orgId }: KinScreenTarget, recordId: KinRecordId) =>
+    `${environmentId}:${orgId}:${recordId}`;
 
   /**
    * Advances this person's look mark when they actually see the latest version of a record:
@@ -51,7 +55,7 @@ export function makeKinSinceLookedHooks<R, ER>(app: KinHookApp<R, ER>) {
       if (!kinHostConnected(environmentId)) return;
       const ms = Date.parse(upTo);
       if (Number.isNaN(ms)) return;
-      const key = `${environmentId}:${orgId}:${recordId}`;
+      const key = lookKey({ environmentId, orgId }, recordId);
       if (sent.current !== null && sent.current.key === key && ms <= sent.current.ms) return;
       if (inFlight.current !== null && inFlight.current.key === key && ms <= inFlight.current.ms)
         return;
@@ -62,6 +66,8 @@ export function makeKinSinceLookedHooks<R, ER>(app: KinHookApp<R, ER>) {
           if (sent.current === null || sent.current.key !== key || ms > sent.current.ms) {
             sent.current = { key, ms };
           }
+          const before = lookedThisRun.get(key);
+          if (before === undefined || ms > Date.parse(before)) lookedThisRun.set(key, upTo);
         }
       });
     }, [visible, allowed, environmentId, orgId, recordId, upTo, send]);
@@ -80,18 +86,26 @@ export function makeKinSinceLookedHooks<R, ER>(app: KinHookApp<R, ER>) {
 
   /** Pins a doc's visit mark and merges any live versions that arrive while the doc stays open. */
   function useKinPinnedDocLook(
+    target: KinScreenTarget,
     doc: Pick<KinDocDetail, "recordId" | "lookedAt" | "sinceLooked"> | null,
     active: boolean,
   ): KinPinnedDocLook | null {
     const [held, setHeld] = useState<KinPinnedDocLook | null>(null);
     if (!active || doc === null) return null;
-    const next = mergePinnedDocSinceLooked(held, doc.recordId, doc.lookedAt, doc.sinceLooked);
+    const next = mergePinnedDocSinceLooked(
+      held,
+      doc.recordId,
+      doc.lookedAt,
+      doc.sinceLooked,
+      lookedThisRun.get(lookKey(target, doc.recordId)) ?? null,
+    );
     if (next !== held) setHeld(next);
     return next;
   }
 
   /** Pins a project's visit mark and merges any live changes that arrive while the page stays open. */
   function useKinPinnedProjectLook(
+    target: KinScreenTarget,
     page: Pick<KinProjectPage, "project" | "lookedAt" | "sinceLooked"> | null,
   ): KinPinnedProjectLook | null {
     const [held, setHeld] = useState<KinPinnedProjectLook | null>(null);
@@ -101,6 +115,7 @@ export function makeKinSinceLookedHooks<R, ER>(app: KinHookApp<R, ER>) {
       page.project.recordId,
       page.lookedAt,
       page.sinceLooked,
+      lookedThisRun.get(lookKey(target, page.project.recordId)) ?? null,
     );
     if (next !== held) setHeld(next);
     return next;

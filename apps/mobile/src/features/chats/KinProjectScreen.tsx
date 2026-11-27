@@ -216,7 +216,7 @@ function KinProjectBody(
   const shell = useKinShell(environmentId);
   const ownerLevel = useKinIsOwnerLevel(environmentId);
   const visible = useKinScreenVisible();
-  const pinnedLook = useKinPinnedProjectLook(props.page);
+  const pinnedLook = useKinPinnedProjectLook(props, props.page);
   const lookedUpTo = kinProjectLookedUpTo(props.page);
   useKinRecordLooked(
     props,

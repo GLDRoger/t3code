@@ -195,7 +195,7 @@ export function KinDocPage(
   const pageVisible = useKinPageVisible();
   const isLatestView =
     comparing === undefined && where.version === undefined && where.card === undefined;
-  const pinnedLook = useKinPinnedDocLook(doc, isLatestView);
+  const pinnedLook = useKinPinnedDocLook(props, doc, isLatestView);
   const lookedUpTo = doc === null ? null : kinDocLookedUpTo(doc, { isLatest: isLatestView });
   useKinRecordLooked(
     props,

@@ -366,7 +366,7 @@ function KinDocBody(
   const visible = useKinScreenVisible();
   const isLatestView =
     props.version === null && props.card == null && doc.version.version === doc.latest.version;
-  const pinnedLook = useKinPinnedDocLook(doc, isLatestView);
+  const pinnedLook = useKinPinnedDocLook(target, doc, isLatestView);
   const lookedUpTo = kinDocLookedUpTo(doc, { isLatest: isLatestView });
   useKinRecordLooked(
     target,
