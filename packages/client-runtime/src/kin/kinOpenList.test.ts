@@ -1,5 +1,10 @@
 // @effect-diagnostics globalDate:off - Fixtures read due days against a fixed date.
 import {
+  KinAgentId,
+  KinChatId,
+  KinMessageId,
+  KinWakeupId,
+  type KinChatSummary,
   KinOrgId,
   KinPersonId,
   KinRecordId,
@@ -21,7 +26,7 @@ import {
   kinOpenShown,
   kinOpenTasksCount,
 } from "./kinOpenList.ts";
-import { kinWaitingBannerView } from "./kinScreenState.ts";
+import { kinWaitingBannerView, kinWaitingRowView } from "./kinScreenState.ts";
 import type { KinWorkNames } from "./kinWork.ts";
 
 // Ambermill, invented: Rhea owns it; Zoya is a teammate.
@@ -183,6 +188,69 @@ describe("one list behind every Needs you", () => {
     const facts = list.rows.filter((row) => row.item._tag === "fact").length;
     const tasks = list.rows.filter((row) => row.item._tag === "task").length;
     expect(facts + tasks + view.waitingCount).toBe(list.counts.needsYou);
+  });
+
+  it("keeps an asking row openable, without counting it until the turn ends", () => {
+    const turn = { agentId: KinAgentId.make("chief"), wakeupId: KinWakeupId.make("w1") };
+    const ask = {
+      ...question,
+      messageId: KinMessageId.make("ask-anchor"),
+      ordinaryTurnAsk: turn,
+    };
+    const chat: KinChatSummary = {
+      orgId,
+      chatId: KinChatId.make("chat-chief"),
+      title: "Chief of staff",
+      kind: "direct",
+      teamId: null,
+      lastSeq: 1,
+      lastMessageAt: ask.createdAt,
+      createdAt: ask.createdAt,
+      lastMessage: null,
+      archivedAt: null,
+      leadAgentId: turn.agentId,
+      unread: 1,
+      working: true,
+      activeWakeups: [turn],
+      members: [],
+    };
+    const read = { asOf, counts: { needsYou: 1, waiting: 1 }, rows: [waitingRow(ask)] };
+    const namesById = new Map();
+    for (const held of [true, false]) {
+      const chats = [held ? chat : { ...chat, working: false, activeWakeups: undefined }];
+      const shown = selectKinInboxView(kinInboxWithOpen({ ...inbox, chats }, orgId, read));
+      expect(shown.waiting).toEqual([ask]);
+      expect(shown.waitingCount).toBe(held ? 0 : 1);
+      expect(shown.unreadCount).toBe(1);
+      expect(shown.rows[0]).toMatchObject({ fold: "needsYou", waitingCount: 1 });
+      expect(kinWaitingBannerView(shown.waiting, shown.waitsFor, chats)).toMatchObject({
+        count: held ? 0 : 1,
+        summary: held ? "" : "1 question",
+      });
+      expect(kinWaitingRowView(ask, chats, namesById)).toMatchObject({
+        text: "Send it Monday?",
+        asking: held ? "Asking now…" : null,
+      });
+      const listed = kinOpenNeeds(read, { owed: null, chats, agentNames: namesById, names, now });
+      expect(listed.hidden).toBe(0);
+      const block = kinTasksBlock({
+        ownerLevel: true,
+        onMe: new Set(),
+        attention: [],
+        needs: listed.needs,
+        hidden: listed.hidden,
+        handled: 0,
+        expanded: true,
+      });
+      expect(block?.total).toBe(held ? 0 : 1);
+      expect(block?.needs).toMatchObject([
+        {
+          detail: "Send it Monday?",
+          asking: held ? "Asking now…" : null,
+          open: { type: "chat", chatId: chat.chatId, messageId: ask.messageId },
+        },
+      ]);
+    }
   });
 
   it("an answer leaves every place at once, and an older host's surfaces stay their own", () => {

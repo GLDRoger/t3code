@@ -785,7 +785,7 @@ describe("Kin streams", () => {
     }),
   );
 
-  it.effect("never keeps what waits for someone else in the offline inbox", () =>
+  it.effect("keeps only the viewer’s waiting rows and no live wake-ups in the offline inbox", () =>
     Effect.gen(function* () {
       const row = (waitingId: string, personId: string) =>
         ({
@@ -800,7 +800,9 @@ describe("Kin streams", () => {
           resolvedAt: null,
           resolution: null,
         }) as KinWaitingItem;
-      const own = row("w-own", "meera");
+      const turn = { agentId: KinAgentId.make("chief"), wakeupId: KinWakeupId.make("w1") };
+      const own = { ...row("w-own", "meera"), ordinaryTurnAsk: turn };
+      const chats = [{ ...summary("c1"), activeWakeups: [turn] }];
       const owners = {
         ...row("w-rhea", "rhea"),
         waitsFor: { personId: "rhea", name: "Rhea Rao" },
@@ -808,10 +810,7 @@ describe("Kin streams", () => {
       const ids = (inbox: KinInboxState) => inbox.waiting.map((item) => item.waitingId);
       // A cache an older build saved with the owner's row in it shows her own row only.
       const rows = new Map([
-        [
-          inboxRowKey,
-          encodeCachedInbox({ inbox: { chats: [], waiting: [own, owners] }, savedAt: at }),
-        ],
+        [inboxRowKey, encodeCachedInbox({ inbox: { chats, waiting: [own, owners] }, savedAt: at })],
       ]);
       const inbox = yield* Queue.unbounded<KinChatListEvent>();
       const views = yield* Queue.unbounded<KinSynced<KinInboxState>>();
@@ -826,11 +825,15 @@ describe("Kin streams", () => {
       );
       const cached = yield* Queue.take(views);
       expect([cached.live, ids(cached.value)]).toEqual([false, ["w-own"]]);
-      // Live, both show; what is saved keeps her own only.
-      yield* Queue.offer(inbox, { _tag: "snapshot", chats: [], waiting: [own, owners] });
-      expect(ids((yield* Queue.take(views)).value)).toEqual(["w-own", "w-rhea"]);
+      expect(cached.value.chats[0]?.activeWakeups).toBeUndefined();
+      yield* Queue.offer(inbox, { _tag: "snapshot", chats, waiting: [own, owners] });
+      const live = (yield* Queue.take(views)).value;
+      expect(ids(live)).toEqual(["w-own", "w-rhea"]);
+      expect(live.chats[0]?.activeWakeups).toEqual([turn]);
       yield* Fiber.interrupt(fiber);
-      expect(ids(decodeCachedInbox(rows.get(inboxRowKey) ?? "").inbox)).toEqual(["w-own"]);
+      const saved = decodeCachedInbox(rows.get(inboxRowKey) ?? "").inbox;
+      expect(saved.waiting).toEqual([own]);
+      expect(saved.chats[0]?.activeWakeups).toBeUndefined();
     }),
   );
 

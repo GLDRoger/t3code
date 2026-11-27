@@ -307,6 +307,20 @@ describe("KinChatRepository", () => {
           },
           audience: "chat",
         });
+        const waiting = {
+          orgId,
+          chatId,
+          personId,
+          waitingId: KinWaitingId.make(`waiting:${card.id}`),
+          messageId: anchor.messageId,
+          widgetId: KinWidgetId.make(card.widget),
+          createdAt: timestamp,
+          resolvedAt: null,
+          resolution: null,
+        } as const;
+        if (card.id === "approval")
+          assert.isTrue(yield* repo.addApprovalWaiting({ ...waiting, reason: "approval" }));
+        else assert.isTrue(yield* repo.addWaiting({ ...waiting, reason: "question" }));
       }
       const result = yield* repo.resume({ ...scope, afterSeq: 0 });
       const decoded = result.messages.map((row) => decodeMessage(encodeMessage(row)));
@@ -318,10 +332,27 @@ describe("KinChatRepository", () => {
           "human" in card ? key : undefined,
         ]),
       );
+      const waiting = yield* repo.listOpenWaiting({ orgId, personId });
+      assert.deepStrictEqual(
+        waiting.map((row) => [row.waitingId, row.ordinaryTurnAsk]),
+        cases
+          .map((card) => [`waiting:${card.id}`, "wait" in card ? { agentId, wakeupId } : undefined])
+          .sort(([a], [b]) => String(a).localeCompare(String(b))),
+      );
+      const ordinary = yield* repo.getWaiting({
+        orgId,
+        waitingId: KinWaitingId.make("waiting:ordinary"),
+      });
+      assert.deepStrictEqual(Option.getOrThrow(ordinary).ordinaryTurnAsk, { agentId, wakeupId });
       yield* sql`UPDATE kin_chats SET team_id = ${KIN_TEAM_ROOM_TEAM_ID} WHERE org_id = ${orgId} AND chat_id = ${chatId}`;
       const team = yield* repo.resume({ ...scope, afterSeq: 0 });
       assert.isUndefined(
         team.messages.find((row) => row.messageId === "ordinary")?.ordinaryTurnAsk,
+      );
+      assert.isUndefined(
+        (yield* repo.listOpenWaiting({ orgId, personId })).find(
+          (row) => row.waitingId === "waiting:ordinary",
+        )?.ordinaryTurnAsk,
       );
     }).pipe(Effect.provide(layer)),
   );

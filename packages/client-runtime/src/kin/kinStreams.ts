@@ -61,17 +61,19 @@ export const KIN_CHAT_LABEL = "kin:chat";
 const KIN_CACHE_SAVE_INTERVAL = Duration.millis(1500);
 
 const inboxCache = persistQuery(Schema.Struct({ inbox: KinInboxState, savedAt: Schema.String }));
-/** Offline the viewer sees their own waiting only: someone else's rows are kept live, never here. */
-const ownWaiting = <A extends { readonly inbox: KinInboxState }>(cached: A): A =>
-  cached.inbox.waiting.some((item) => item.waitsFor !== undefined)
-    ? {
-        ...cached,
-        inbox: {
-          ...cached.inbox,
-          waiting: cached.inbox.waiting.filter((item) => item.waitsFor === undefined),
-        },
-      }
-    : cached;
+/** Another person's rows and live wake-ups belong to the stream, not the offline cache. */
+const cacheableInbox = <A extends { readonly inbox: KinInboxState }>(cached: A): A => {
+  const { chats, waiting } = cached.inbox;
+  const own = waiting.some((item) => item.waitsFor !== undefined)
+    ? waiting.filter((item) => item.waitsFor === undefined)
+    : waiting;
+  const withoutWakeups = chats.some((chat) => chat.activeWakeups !== undefined)
+    ? chats.map(({ activeWakeups: _active, ...chat }) => chat)
+    : chats;
+  return own === waiting && withoutWakeups === chats
+    ? cached
+    : { ...cached, inbox: { chats: withoutWakeups, waiting: own } };
+};
 const chatCache = persistQuery(
   Schema.Struct({
     chat: KinChatState,
@@ -332,11 +334,11 @@ export function kinInboxStream(input: KinChatsSubscribeInput) {
     Effect.gen(function* () {
       const environmentId = yield* currentEnvironmentId;
       const key = queryPersistenceKey(KIN_INBOX_LABEL, input);
-      const cached = Option.map(yield* inboxCache.load(environmentId, key), ownWaiting);
+      const cached = Option.map(yield* inboxCache.load(environmentId, key), cacheableInbox);
       let state = Option.match(cached, { onNone: () => emptyKinInbox, onSome: (c) => c.inbox });
       let live = false;
       const saver = yield* throttledSave((value: { inbox: KinInboxState; savedAt: string }) =>
-        inboxCache.save(environmentId, key, ownWaiting(value)),
+        inboxCache.save(environmentId, key, cacheableInbox(value)),
       );
       const events: Stream.Stream<
         KinInboxEvent,

@@ -52,6 +52,7 @@ import {
   type KinChatsSubscribeInput,
   type KinOrgsListResult,
   type KinChatSummary,
+  kinHasActiveWakeup,
   type KinPresenceState,
   type KinChatHistoryInput,
   type KinChatHistoryResult,
@@ -2256,6 +2257,10 @@ const make = Effect.gen(function* () {
       );
       if (latest !== undefined) lastMessageAt = latest.at;
     }
+    const lines = Option.isSome(presence) ? presence.value.lines(identity.orgId, chatId) : [];
+    const activeWakeups = lines
+      .filter(kinHasActiveWakeup)
+      .map(({ agentId, wakeupId }) => ({ agentId, wakeupId }));
     return {
       ...chat,
       lastMessageAt,
@@ -2268,11 +2273,8 @@ const make = Effect.gen(function* () {
       ...(chat.teamId === KIN_TEAM_ROOM_TEAM_ID
         ? { unread: 0, fresh: (known?.unread ?? (yield* repo.unreadCount(member))) > 0 }
         : { unread: known?.unread ?? (yield* repo.unreadCount(member)) }),
-      working:
-        Option.isSome(presence) &&
-        presence.value
-          .lines(identity.orgId, chatId)
-          .some((line) => WORKING_PRESENCE.has(line.state)),
+      working: lines.some((line) => WORKING_PRESENCE.has(line.state)),
+      ...(activeWakeups.length === 0 ? {} : { activeWakeups }),
     };
   });
   /** The rows' last messages linked for the viewer: one read of what they may open, for all. */

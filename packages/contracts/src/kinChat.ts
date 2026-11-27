@@ -699,6 +699,12 @@ export const KinPresence = Schema.Struct({
   since: IsoDateTime,
 });
 export type KinPresence = typeof KinPresence.Type;
+const KinActiveWakeup = Schema.Struct({ agentId: KinAgentId, wakeupId: KinWakeupId });
+export const kinHasActiveWakeup = (
+  line: KinPresence,
+): line is KinPresence & typeof KinActiveWakeup.Type =>
+  line.wakeupId !== null && line.state !== "seen" && line.state !== "deferred";
+
 /** An agent reply still streaming. `text` in a backlog is the whole draft so far. */
 export const KinDraft = Schema.Struct({
   draftId: TrimmedNonEmptyString,
@@ -807,6 +813,8 @@ export const KinWaitingItem = Schema.Struct({
   question: Schema.optional(Schema.NullOr(KinTrimmedText)),
   /** Set while an agent's question on that card is open; absent from servers without it. */
   ask: Schema.optional(KinWaitingAsk),
+  /** The agent and source wake-up, only for an ordinary question card raised in its own turn. */
+  ordinaryTurnAsk: Schema.optional(KinActiveWakeup),
   /** What the waiting card is, when more than a question: a mail ready to send, a draft sent up. */
   card: Schema.optional(Schema.Literals(["mail", "draft"])),
   /** The first lines of what the card asks about, such as a draft or a doc; absent without one. */
@@ -847,6 +855,8 @@ export const KinChatSummary = Schema.Struct({
   unread: NonNegativeInt,
   /** An agent in the chat is on a live wake-up. Absent from servers without it. */
   working: Schema.optional(Schema.Boolean),
+  /** Active wakes in this chat; absent when none are known or from older hosts. */
+  activeWakeups: Schema.optional(Schema.Array(KinActiveWakeup)),
   /** The Team room has something the viewer hasn't read: a quiet dot, never a count. */
   fresh: Schema.optional(Schema.Boolean),
 });

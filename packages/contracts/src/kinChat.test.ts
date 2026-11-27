@@ -139,6 +139,7 @@ const waitsForRow = {
   excerpt: "Workshop, 6 hours at the day rate",
   waitsFor: { personId: "person-2", name: "Rhea" },
 };
+const activeWakeup = { agentId: "agent-1", wakeupId: "wakeup-1" };
 const summary = { ...chat, members: [member], lastMessage: message, unread: 1 };
 const reaction = {
   orgId: "org-1",
@@ -322,11 +323,12 @@ const samples = {
     waiting,
     { ...waiting, messageId: null, widgetId: "widget-1", resolvedAt: at, resolution: "superseded" },
     waitsForRow,
+    { ...waiting, ordinaryTurnAsk: activeWakeup },
   ],
   KinChatPreview: [{ gist: "Approve the venue deposit", brief: true }],
   KinChatSummary: [
     summary,
-    { ...summary, lastMessage: null },
+    { ...summary, lastMessage: null, working: true, activeWakeups: [activeWakeup] },
     { ...summary, lastPreview: { gist: "Approve the venue deposit", brief: false } },
   ],
   KinChatListEvent: [
@@ -660,7 +662,7 @@ describe("Kin chat contracts", () => {
 
   // A phone in the field decodes with the schemas as they were before `waitsFor` and `decidedBy`.
   it("an older client still reads a waiting row and a card with the newer fields", () => {
-    expect(decodeWaitingBefore(waitsForRow)).toStrictEqual(
+    expect(decodeWaitingBefore({ ...waitsForRow, ordinaryTurnAsk: activeWakeup })).toStrictEqual(
       decodeWaitingBefore({ ...waiting, widgetId: "widget-1" }),
     );
     const { decidedBy: _decided, replacedBy: _replaced, ...before } = decidedCard;

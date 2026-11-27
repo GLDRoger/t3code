@@ -20,6 +20,7 @@ import {
   applyKinLiveBacklog,
   applyKinPresence,
   kinHeldAskCards,
+  kinWaitingAskHeld,
   KinHeldDraft,
   settleKinDrafts,
 } from "./kinLive.ts";
@@ -156,12 +157,25 @@ export interface KinInboxView {
   readonly waitingCount: number;
 }
 
-/**
- * Waiting on you's number, alike on every screen: everything that waits on the viewer, a
- * question, a mail ready to send, a draft sent up, an approval; never what waits on someone else.
- */
-export const kinWaitingCount = (waiting: ReadonlyArray<KinWaitingItem>) =>
-  waiting.filter((item) => item.waitsFor === undefined).length;
+export const kinWaitingChat = (item: KinWaitingItem, chats: ReadonlyArray<KinChatSummary>) =>
+  chats.find((chat) => chat.orgId === item.orgId && chat.chatId === item.chatId);
+
+export const kinCountedWaiting = (
+  waiting: ReadonlyArray<KinWaitingItem>,
+  chats: ReadonlyArray<KinChatSummary>,
+) =>
+  waiting.filter(
+    (item) =>
+      item.waitsFor === undefined &&
+      (item.ordinaryTurnAsk === undefined ||
+        !kinWaitingAskHeld(item, kinWaitingChat(item, chats)?.activeWakeups)),
+  );
+
+/** The questions and decisions waiting on the viewer, not the ask still being raised. */
+export const kinWaitingCount = (
+  waiting: ReadonlyArray<KinWaitingItem>,
+  chats: ReadonlyArray<KinChatSummary> = [],
+) => kinCountedWaiting(waiting, chats).length;
 
 const activityAt = (chat: KinChatSummary) => chat.lastMessageAt ?? chat.createdAt;
 
@@ -214,7 +228,7 @@ export function selectKinInboxView(state: KinInboxState): KinInboxView {
       items: [...group.items].sort(byAge),
     })),
     unreadCount: kinBadgeCount(state),
-    waitingCount: kinWaitingCount(waiting),
+    waitingCount: kinWaitingCount(waiting, state.chats),
   };
 }
 

@@ -3210,16 +3210,45 @@ describe("KinChatService", () => {
       assert.strictEqual(initial._tag, "snapshot");
       if (initial._tag !== "snapshot") return;
       assert.isFalse(initial.chats.find((row) => row.chatId === chat.chatId)?.working);
-      const line = { agentId, wakeupId: null, label: null, startedAt: timestamp, since: timestamp };
-      const working = Effect.map(Queue.take(updates), (event) =>
-        event._tag === "chat" ? event.chat.working : event._tag,
+      const wakeupId = KinWakeupId.make("waiting-turn");
+      const nextWakeupId = KinWakeupId.make("next-turn");
+      const line = { agentId, wakeupId, label: null, startedAt: timestamp, since: timestamp };
+      const next = Effect.map(Queue.take(updates), (event) =>
+        event._tag === "chat" ? [event.chat.working, event.chat.activeWakeups] : event._tag,
       );
-      // "paused" leaves the row as it was, so the list sends nothing for it.
-      yield* presence.set(person.orgId, chat.chatId, { ...line, state: "paused" });
-      yield* presence.set(person.orgId, chat.chatId, { ...line, state: "thinking" });
-      assert.strictEqual(yield* working, true);
+      // A queued message does not own an active wake-up.
+      yield* presence.set(person.orgId, chat.chatId, {
+        ...line,
+        wakeupId: null,
+        state: "starting",
+      });
+      assert.deepStrictEqual(yield* next, [true, undefined]);
       yield* presence.clear(person.orgId, chat.chatId, agentId);
-      assert.strictEqual(yield* working, false);
+      assert.deepStrictEqual(yield* next, [false, undefined]);
+      yield* presence.set(person.orgId, chat.chatId, { ...line, state: "thinking" });
+      assert.deepStrictEqual(yield* next, [true, [{ agentId, wakeupId }]]);
+      yield* presence.set(person.orgId, chat.chatId, {
+        ...line,
+        wakeupId: nextWakeupId,
+        state: "thinking",
+      });
+      assert.deepStrictEqual(yield* next, [true, [{ agentId, wakeupId: nextWakeupId }]]);
+      yield* presence.set(person.orgId, chat.chatId, {
+        ...line,
+        wakeupId: nextWakeupId,
+        state: "paused",
+      });
+      assert.deepStrictEqual(yield* next, [false, [{ agentId, wakeupId: nextWakeupId }]]);
+      yield* presence.set(person.orgId, chat.chatId, {
+        ...line,
+        wakeupId: nextWakeupId,
+        state: "deferred",
+      });
+      assert.deepStrictEqual(yield* next, [false, undefined]);
+      yield* presence.set(person.orgId, chat.chatId, { ...line, state: "thinking" });
+      assert.deepStrictEqual(yield* next, [true, [{ agentId, wakeupId }]]);
+      yield* presence.clear(person.orgId, chat.chatId, agentId);
+      assert.deepStrictEqual(yield* next, [false, undefined]);
     }).pipe(Effect.provide(presenceLayer)),
   );
   it.effect(

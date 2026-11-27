@@ -2,6 +2,9 @@
 import {
   KinAgentId,
   KinDraft,
+  kinHasActiveWakeup,
+  type KinChatSummary,
+  type KinWaitingItem,
   type KinChatStreamEvent,
   type KinPresence,
   type KinMessage,
@@ -60,17 +63,26 @@ export function kinAskTurnKey(message: KinMessage) {
     : null;
 }
 
+export function kinWaitingAskHeld(
+  item: KinWaitingItem,
+  active: KinChatSummary["activeWakeups"],
+): boolean {
+  const turn = item.ordinaryTurnAsk;
+  return (
+    turn !== undefined &&
+    active?.some(
+      ({ agentId, wakeupId }) => agentId === turn.agentId && wakeupId === turn.wakeupId,
+    ) === true
+  );
+}
+
 export function kinHeldAskCards(
   messages: ReadonlyArray<KinMessage>,
   presence: ReadonlyArray<KinPresence>,
 ) {
   if (presence.length === 0) return null;
   const active = new Map(
-    presence
-      .filter(
-        (line) => line.wakeupId !== null && line.state !== "seen" && line.state !== "deferred",
-      )
-      .map((line) => [line.agentId, line.wakeupId]),
+    presence.filter(kinHasActiveWakeup).map((line) => [line.agentId, line.wakeupId]),
   );
   if (active.size === 0) return null;
 
