@@ -19,6 +19,7 @@ import {
   kinIsPeopleChat,
   KinChatError,
   KinChatId,
+  type KinEventId,
   KinMemberId,
   KinMessageId,
   KinWaitingId,
@@ -109,6 +110,7 @@ import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { validateState } from "../widgets/registry.ts";
 import * as DeferralCard from "../widgets/deferralCard.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
+import { cardTapFailureId } from "../lead/cardTapDeliveries.ts";
 import * as ChartCard from "../widgets/chartCard.ts";
 import * as VisualCard from "../widgets/visualCard.ts";
 import * as CardPlans from "../widgets/cardPlans.ts";
@@ -279,6 +281,11 @@ export class KinChatService extends Context.Service<
     readonly dismissArrival: (input: {
       readonly orgId: KinOrgId;
       readonly key: string;
+    }) => Effect.Effect<void, ServiceError>;
+    readonly dismissCardTapFailures: (input: {
+      readonly orgId: KinOrgId;
+      readonly chatId: KinChatId;
+      readonly eventIds: ReadonlyArray<KinEventId>;
     }) => Effect.Effect<void, ServiceError>;
     readonly notice: (input: {
       readonly messageId: KinMessageId;
@@ -2943,6 +2950,26 @@ const make = Effect.gen(function* () {
       if (changed.length === 0) return;
       const message = yield* requireRecord(repo.getMessage({ orgId, messageId }));
       yield* hub.publish({ type: "message.changed", orgId, message });
+    }, transaction),
+    dismissCardTapFailures: Effect.fn("KinChatService.dismissCardTapFailures")(function* ({
+      orgId,
+      chatId,
+      eventIds,
+    }) {
+      if (eventIds.length === 0) return;
+      const changed = yield* sql<{
+        messageId: KinMessageId;
+      }>`UPDATE kin_messages SET status = 'dismissed'
+        WHERE org_id = ${orgId} AND chat_id = ${chatId}
+          AND message_id IN ${sql.in(eventIds.map(cardTapFailureId))}
+          AND author_kind = 'system' AND kind = 'system' AND status = 'posted'
+        RETURNING message_id AS "messageId"`.pipe(
+        Effect.mapError(toPersistenceSqlError("KinChatService.dismissCardTapFailures")),
+      );
+      for (const { messageId } of changed) {
+        const message = yield* requireRecord(repo.getMessage({ orgId, messageId }));
+        yield* hub.publish({ type: "message.changed", orgId, message });
+      }
     }, transaction),
     notice: Effect.fn("KinChatService.notice")(function* (input) {
       yield* requireRecord(repo.getChat(input));

@@ -1,4 +1,4 @@
-import { KinPersonId, type KinEventId, type KinOrgId } from "@t3tools/contracts";
+import { KinMessageId, KinPersonId, type KinEventId, type KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -11,6 +11,9 @@ export const CardTapAnswer = Schema.Struct({
   agentName: Schema.String,
 });
 export const decodeCardTapAnswer = Schema.decodeUnknownEffect(CardTapAnswer);
+
+export const cardTapFailureId = (eventId: KinEventId) =>
+  KinMessageId.make(`kin-card-tap-failed:${eventId}`);
 
 export const trackedCardTapIds = Effect.fn("KinLeadDelivery.trackedCardTapIds")(function* (
   orgId: KinOrgId,
