@@ -269,7 +269,10 @@ function ConnectionsBody(
       return last;
     });
 
-  const rulesAt = useKinMailRulesLanding(props, open === null && findingRules && accounts.length > 1);
+  const rulesAt = useKinMailRulesLanding(
+    props,
+    open === null && findingRules && accounts.length > 1,
+  );
   const landed =
     open !== null || !findingRules
       ? null

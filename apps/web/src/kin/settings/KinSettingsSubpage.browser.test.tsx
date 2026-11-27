@@ -47,9 +47,13 @@ function MailboxThenRule() {
 describe("KinSettingsSubpage: where focus goes on a drill-in", () => {
   it("puts focus on the rule page's name when a rule opens from its mailbox, not on the body", async () => {
     await using _screen = await render(<MailboxThenRule />);
-    await userEvent.click(page.getByRole("button", { name: "Open rule: From junipercold.example" }));
+    await userEvent.click(
+      page.getByRole("button", { name: "Open rule: From junipercold.example" }),
+    );
     await expect.element(page.getByText("Mail rule", { exact: true })).toHaveFocus();
     await userEvent.click(page.getByRole("button", { name: "Back to accounts@ambermill.example" }));
-    await expect.element(page.getByText("accounts@ambermill.example", { exact: true })).toHaveFocus();
+    await expect
+      .element(page.getByText("accounts@ambermill.example", { exact: true }))
+      .toHaveFocus();
   });
 });

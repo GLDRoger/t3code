@@ -476,8 +476,7 @@ export function kinMailRuleActions(
   can: KinMailRulePermissions,
 ): KinMailRuleActions {
   const sound = !rule.wordingChanged && rule.match !== null;
-  const runnable =
-    (rule.state === "on" && rule.setterDemoted !== true) || rule.state === "paused";
+  const runnable = (rule.state === "on" && rule.setterDemoted !== true) || rule.state === "paused";
   return {
     open: can.ready,
     pause: can.pause && rule.state === "on",
