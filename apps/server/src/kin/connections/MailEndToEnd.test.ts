@@ -7,12 +7,15 @@ import * as PlatformCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import {
   EnvironmentId,
+  KIN_CHOICE_CARD_ACTION,
+  KinChoiceCardState,
   KinAgentId,
   KinChatId,
   KinChatError,
   KinEvent,
   KinMessageId,
   KinMemoryItemId,
+  type KinMessage,
   KinOrgId,
   KinPersonId,
   type KinSendTry,
@@ -32,8 +35,11 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import type * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
@@ -43,13 +49,19 @@ import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { Scheduler } from "../../scheduling/Scheduler.ts";
 import * as ArrivalFeed from "../arrivals/ArrivalFeed.ts";
+import * as ChatHub from "../chat/KinChatHub.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
+import * as ChatService from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { KinDocRenderer } from "../gendocs/render.ts";
+import { KinWorkspace } from "../gendocs/workspace.ts";
+import * as ChatWake from "../lead/ChatWake.ts";
+import { KinBudget } from "../lead/KinBudget.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import { KinLeadPrompt } from "../lead/LeadPrompt.ts";
-import { KinLevelGate } from "../lead/LevelGate.ts";
+import * as LevelGate from "../lead/LevelGate.ts";
 import { outsideStamp, renderSource, stampKey, stampReads } from "../lead/OutsideContent.ts";
 import * as Memory from "../memory/Memory.ts";
 import type { MemoryItem } from "../memory/MemoryCache.ts";
@@ -58,6 +70,7 @@ import * as KinPulse from "../pulse/KinPulse.ts";
 import { buildPulseSection } from "../pulse/prompt.ts";
 import { fromConnections } from "../pulse/outside.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { answerChoice, resumeInterruptedSends } from "../work/cardAnswers.ts";
 import * as KinRecords from "../work/KinRecords.ts";
 import { personSees } from "../work/teamView.ts";
 import { round } from "../watches/KinWatchRounds.ts";
@@ -143,7 +156,7 @@ const financeScope: McpInvocationScope = {
   thread: { ...scope.thread!, threadId: ThreadId.make("fin-thread") },
 };
 
-type Card = Parameters<KinLevelGate["Service"]["ask"]>[1] & {
+type Card = Parameters<LevelGate.KinLevelGate["Service"]["ask"]>[1] & {
   readonly widgetId: string;
   /** Every ask's state when this card became visible, oldest first. */
   asksWhenShown?: ReadonlyArray<string>;
@@ -151,7 +164,7 @@ type Card = Parameters<KinLevelGate["Service"]["ask"]>[1] & {
 const gateFor = (cards: Array<Card>) =>
   Layer.unwrap(
     Effect.map(SqlClient.SqlClient, (sql) =>
-      Layer.mock(KinLevelGate)({
+      Layer.mock(LevelGate.KinLevelGate)({
         ask: (agent, input, bind) =>
           Effect.gen(function* () {
             const widgetId = `w-${cards.length + 1}`;
@@ -218,11 +231,16 @@ const gatedFiles = (gates: Gates) =>
           : fs.readFile(path),
     })),
   );
-const layerFor = (fake: FakeMail, cards: Array<Card>, gates: Gates = {}) =>
+type GateLayer<R> = Layer.Layer<
+  LevelGate.KinLevelGate | R,
+  never,
+  SqlClient.SqlClient | KinEventQueue.KinEventQueue
+>;
+const layerFor = <R>(fake: FakeMail, gates: Gates, gate: GateLayer<R>) =>
   ArrivalFeed.layer.pipe(
     Layer.provideMerge(Layer.succeed(BankAlertReader.BankAlertReader, fixtureBankAlertReader)),
     Layer.provideMerge(Layer.merge(Connections.layer, KinRecords.layer)),
-    Layer.provide(gateFor(cards)),
+    Layer.provideMerge(gate),
     Layer.provideMerge(gatedSecrets(gates)),
     Layer.provide(McpGateway.layer),
     Layer.provide(
@@ -246,7 +264,7 @@ const layerFor = (fake: FakeMail, cards: Array<Card>, gates: Gates = {}) =>
         ),
       ),
     ),
-    Layer.provide(
+    Layer.provideMerge(
       Layer.mock(KinIdentity)({
         owner: people(owner)[0]!,
         isAgentThread: () => true,
@@ -461,8 +479,13 @@ const connectOwn = (
     return done.mailboxes!.find((one) => one.account === address)!.connectionId;
   });
 
-const setUp = <E>(
-  body: (fake: FakeMail, cards: Array<Card>, gates: Gates) => Effect.Effect<void, E, Env>,
+const setUpWithGate = <E, R>(
+  gate: (cards: Array<Card>) => GateLayer<R>,
+  body: (
+    fake: FakeMail,
+    cards: Array<Card>,
+    gates: Gates,
+  ) => Effect.Effect<void, E, Env | R | Scope.Scope>,
 ) =>
   Effect.gen(function* () {
     const fake = makeFakeMail();
@@ -492,13 +515,17 @@ const setUp = <E>(
         service: "microsoft",
         client: { clientId: "00000000-0000-4000-8000-000000000000" },
       });
-      yield* body(fake, cards, gates);
-    }).pipe(Effect.provide(layerFor(fake, cards, gates)));
+      yield* Effect.scoped(body(fake, cards, gates));
+    }).pipe(Effect.provide(layerFor(fake, gates, gate(cards))));
   });
+const setUp = <E>(
+  body: (fake: FakeMail, cards: Array<Card>, gates: Gates) => Effect.Effect<void, E, Env>,
+) => setUpWithGate(gateFor, body);
 type Env =
   | ArrivalFeed.KinArrivalFeed
   | ConnectionSecrets.KinConnectionSecrets
   | KinConnections
+  | KinIdentity
   | KinRecords.KinRecords
   | KinEventQueue.KinEventQueue
   | SqlClient.SqlClient
@@ -989,6 +1016,183 @@ describe("Mail tool results with the sender's memory", () => {
 });
 
 describe("Kin mail end to end, on a fake mailbox", () => {
+  it.effect("Cancel closes an Outlook send card, sends nothing and wakes the Chief of staff", () =>
+    setUpWithGate(
+      () =>
+        Layer.mergeAll(
+          LevelGate.layer.pipe(Layer.provideMerge(ChatService.layer)),
+          Layer.mock(KinDocRenderer)({}),
+          Layer.mock(KinWorkspace)({}),
+          Layer.mock(KinBudget)({}),
+        ).pipe(Layer.provideMerge(ChatHub.layer.pipe(Layer.provideMerge(Chat.layer)))),
+      (fake, _cards, gates) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const chat = yield* ChatService.KinChatService;
+          const repo = yield* Chat.KinChatRepository;
+          const hub = yield* ChatHub.KinChatHub;
+          const testScope = yield* Effect.scope;
+          const answerServices =
+            yield* Effect.context<Effect.Services<ReturnType<typeof answerChoice>>>();
+          yield* chat.attachChoiceAnswers((input) =>
+            answerChoice(input, testScope).pipe(Effect.provide(answerServices)),
+          );
+
+          const drained = yield* Queue.unbounded<void>();
+          const marker = KinMessageId.make("cancel-mail-wake-drained");
+          yield* Layer.build(
+            ChatWake.layer.pipe(
+              Layer.provide(
+                Layer.succeed(ChatHub.KinChatHub, {
+                  ...hub,
+                  subscribeAll: hub.subscribeAll.pipe(
+                    Effect.map(
+                      Stream.tap((event) =>
+                        event.type === "message.posted" && event.message.messageId === marker
+                          ? Queue.offer(drained, undefined)
+                          : Effect.void,
+                      ),
+                    ),
+                  ),
+                }),
+              ),
+            ),
+          );
+
+          const drainWake = (message: KinMessage) =>
+            hub
+              .publish({
+                type: "message.posted",
+                orgId,
+                message: {
+                  ...message,
+                  messageId: marker,
+                  author: { _tag: "system" },
+                  kind: "system",
+                },
+              })
+              .pipe(Effect.andThen(Queue.take(drained)));
+
+          let sendAttempts = 0;
+          gates.send = async () => {
+            sendAttempts += 1;
+          };
+          yield* sql`UPDATE kin_people SET display_name = 'Rhea'
+            WHERE org_id = ${orgId} AND person_id = ${owner}`;
+          yield* repo.registerAgentThread({
+            orgId,
+            agentId: lead,
+            threadId: scope.thread!.threadId,
+            startedAt: stamp,
+            endedAt: null,
+          });
+          yield* connect(fake, "microsoft", HELLO);
+          const request = yield* chat.send(people(owner), {
+            chatId: KinChatId.make("cos-owner"),
+            clientMessageId: "ask-to-email-tidewater",
+            body: "Email Tidewater Freight from our company mailbox.",
+          });
+          yield* drainWake(request);
+          const [requested] = yield* sql<{ eventId: string }>`SELECT event_id AS "eventId"
+            FROM kin_events WHERE org_id = ${orgId} AND agent_id = ${lead} AND tag = 'chat.message'
+              AND json_extract(json, '$.messageId') = ${request.messageId} AND state = 'queued'`;
+          assert.isDefined(requested);
+          yield* wake({ eventId: requested!.eventId });
+          const draft = yield* callTool(HELLO, "mail_send", {
+            to: ["zoya@tidewater.example"],
+            subject: "Friday delivery",
+            body: "Hi Zoya, can you confirm the Friday delivery? Thanks, Rhea",
+          });
+          assert.strictEqual(draft.note, ASKED);
+          const asks = sql<{
+            widgetId: KinWidgetId;
+            state: string;
+            decidedBy: string | null;
+            dispatchedAt: number | null;
+            owesCard: number;
+          }>`SELECT widget_id AS "widgetId", state, decided_by AS "decidedBy",
+              dispatched_at AS "dispatchedAt", owes_card AS "owesCard"
+            FROM kin_connection_asks WHERE org_id = ${orgId}`;
+          const [open] = yield* asks;
+          assert.strictEqual(open?.state, "open");
+          const widget = { orgId, widgetId: open!.widgetId };
+          const readCard = repo.getWidget(widget).pipe(Effect.map(Option.getOrThrow));
+          const card = yield* readCard;
+          assert.isNull(card.closedAt);
+          assert.deepStrictEqual(card.awaiting, [owner]);
+          const cardState = Schema.decodeUnknownEffect(KinChoiceCardState);
+          assert.strictEqual(
+            (yield* cardState(card.state)).question,
+            "Send this email from Outlook?",
+          );
+          const waiting = sql<{ personId: string; resolvedAt: string | null }>`SELECT
+            person_id AS "personId", resolved_at AS "resolvedAt" FROM kin_waiting
+            WHERE org_id = ${orgId} AND widget_id = ${widget.widgetId}`;
+          assert.deepStrictEqual(yield* waiting, [{ personId: owner, resolvedAt: null }]);
+
+          const press = (value: string, clientActionId: string, revision: number) =>
+            chat.act(people(owner), {
+              widgetId: widget.widgetId,
+              revision,
+              actionId: KIN_CHOICE_CARD_ACTION,
+              value,
+              clientActionId,
+            });
+          const action = yield* press("option-2", "cancel-mail", card.revision);
+          assert.include(JSON.parse(action.body), {
+            value: "option-2",
+            text: 'Chose "Cancel" on "Send this email from Outlook?"',
+          });
+          yield* drainWake(action);
+
+          const declined = {
+            widgetId: widget.widgetId,
+            state: "declined",
+            decidedBy: owner,
+            dispatchedAt: null,
+            owesCard: 0,
+          };
+          assert.deepStrictEqual(yield* asks, [declined]);
+          const closed = yield* readCard;
+          assert.isNotNull(closed.closedAt);
+          assert.deepStrictEqual(closed.awaiting, []);
+          const { answer, outcome } = yield* cardState(closed.state);
+          assert.include(answer, { optionId: "option-2", personId: owner, via: "tap" });
+          assert.deepStrictEqual(outcome, {
+            title: "Not sent",
+            text: "You cancelled it, so nothing was sent.",
+          });
+          assert.deepStrictEqual(yield* waiting, [
+            { personId: owner, resolvedAt: closed.closedAt },
+          ]);
+          assert.deepStrictEqual(fake.sent(), []);
+          assert.strictEqual(sendAttempts, 0);
+
+          for (const option of ["option-2", "option-1"])
+            assert.include(
+              yield* press(option, `closed-${option}`, closed.revision).pipe(Effect.flip),
+              { reason: "widget_changed", message: "This question was already settled." },
+            );
+          yield* resumeInterruptedSends(orgId, NOW + 1);
+          yield* drainWake(action);
+          assert.deepStrictEqual(yield* asks, [declined]);
+          assert.deepStrictEqual(fake.sent(), []);
+          assert.strictEqual(sendAttempts, 0);
+          const events = yield* sql<{ json: string; state: string }>`SELECT json, state
+            FROM kin_events WHERE org_id = ${orgId} AND tag = 'widget.action'`;
+          assert.lengthOf(events, 1);
+          assert.strictEqual(events[0]!.state, "queued");
+          assert.deepInclude(yield* decodeStoredEvent(events[0]!.json), {
+            _tag: "widget.action",
+            agentId: lead,
+            actionId: KIN_CHOICE_CARD_ACTION,
+            messageId: action.messageId,
+            chatId: card.chatId,
+            provenance: action.author,
+          });
+        }),
+    ),
+  );
   it.effect("wakes on client mail once, replies in its own account and thread, once", () =>
     setUp((fake, cards) =>
       Effect.gen(function* () {
