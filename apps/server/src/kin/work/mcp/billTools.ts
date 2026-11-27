@@ -4,7 +4,8 @@ import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
-import { McpSchema, Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool } from "effect/ai";
+import { turnEventToolkit } from "../../lead/eventIds.ts";
 
 import * as ServerConfig from "../../../config.ts";
 import { McpInvocationContext } from "../../../mcp/McpInvocationContext.ts";
@@ -47,7 +48,7 @@ const shared = {
 };
 
 /** Bills in bulk: a person's many bill photos read in the background, each a suggested expense. */
-export const KinBillToolkit = Toolkit.make(
+export const KinBillToolkit = turnEventToolkit(
   Tool.make("bills_add", {
     ...shared,
     description:
