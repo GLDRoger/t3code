@@ -13,9 +13,38 @@ const ChipGlass = withUniwind(GlassView, {
   tintColor: { fromClassName: "tintColorClassName", styleProperty: "accentColor" },
 });
 
+export type ChipTone = "default" | "success" | "warning" | "danger" | "secondary";
+
+const CHIP_TONE_CLASSES: Record<
+  Exclude<ChipTone, "default">,
+  { readonly bg: string; readonly text: string; readonly icon: string }
+> = {
+  success: {
+    bg: "bg-adaptive-emerald-500-a12-a16",
+    text: "text-adaptive-emerald-700-300",
+    icon: "accent-adaptive-emerald-700-300",
+  },
+  warning: {
+    bg: "bg-warning",
+    text: "text-warning-foreground",
+    icon: "accent-warning-foreground",
+  },
+  danger: {
+    bg: "bg-danger",
+    text: "text-danger-foreground",
+    icon: "accent-danger-foreground",
+  },
+  secondary: {
+    bg: "bg-adaptive-neutral-500-a10-a16",
+    text: "text-adaptive-zinc-600-300",
+    icon: "accent-adaptive-zinc-600-300",
+  },
+};
+
 export function Chip(props: {
   readonly label: string;
   readonly selected?: boolean;
+  readonly tone?: ChipTone;
   readonly icon?: AppSymbolName;
   /** Drawn before the label in place of an icon, such as a person's picture. */
   readonly leading?: ReactNode;
@@ -30,11 +59,14 @@ export function Chip(props: {
   readonly wrap?: boolean;
 }) {
   const small = props.size === "small";
+  const tone = props.tone && props.tone !== "default" ? CHIP_TONE_CLASSES[props.tone] : null;
   const layout = cn(
     "flex-row items-center gap-1.5 rounded-2xl px-3",
     small ? "py-1" : "min-h-8 py-1.5",
   );
-  const iconColor = props.selected ? "accent-primary-foreground" : "accent-icon-muted";
+  const iconColor = props.selected
+    ? "accent-primary-foreground"
+    : (tone?.icon ?? "accent-icon-muted");
   const content = (
     <>
       {props.leading}
@@ -47,8 +79,8 @@ export function Chip(props: {
         className={cn(
           "shrink",
           !small && !props.wrap && "max-w-[180px]",
-          !small && "font-t3-medium",
-          props.selected ? "text-primary-foreground" : "text-foreground-muted",
+          (!small || tone !== null) && "font-t3-medium",
+          props.selected ? "text-primary-foreground" : (tone?.text ?? "text-foreground-muted"),
         )}
       >
         {props.label}
@@ -72,7 +104,7 @@ export function Chip(props: {
       <View
         className={cn(
           layout,
-          props.selected ? "bg-primary" : small ? "bg-grouped-card" : "bg-subtle",
+          props.selected ? "bg-primary" : (tone?.bg ?? (small ? "bg-grouped-card" : "bg-subtle")),
         )}
       >
         {content}
