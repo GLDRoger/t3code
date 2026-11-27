@@ -271,3 +271,155 @@ it("keeps live pin mutations out of MCP, lead and scheduled pulse code", () => {
   });
   assert.deepStrictEqual(reached, []);
 });
+
+it.effect("admits and reads a source only through its own screen's gates, as they change", () =>
+  Effect.gen(function* () {
+    const { sql, rhea, zoya, pins, input, project, addZoya, create } = yield* setup;
+    yield* addZoya;
+    const shown = () =>
+      pins.list([zoya], input).pipe(Effect.map(({ pins }) => pins.map((pin) => pin._tag)));
+    const members = (people: ReadonlyArray<string>) =>
+      sql`UPDATE kin_records SET fields_json = ${JSON.stringify({ members: people })}
+        WHERE record_id = ${project.recordId}`;
+    yield* members([`person:${zoya.personId}`]);
+    yield* pins.pin([rhea], { ...input, key: project.key });
+    assert.deepStrictEqual(yield* shown(), ["project"]);
+    // A Clients place alone opens no project page, so it opens no pin of one either.
+    yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${zoya.personId}`;
+    yield* members([]);
+    assert.deepStrictEqual(yield* shown(), ["hidden"]);
+    const zoyas = { _tag: "person" as const, personId: zoya.personId };
+    const open = yield* create({
+      list: "work",
+      title: "Open the cold room",
+      owner: zoyas,
+      originKey: "kin-task-cold-room-open",
+    });
+    const secret = yield* create({
+      list: "work",
+      title: "Count the backup inventory",
+      owner: { _tag: "person", personId: rhea.personId },
+      originKey: "kin-task-secret",
+      sensitive: true,
+    });
+    assert.strictEqual(
+      (yield* Effect.flip(pins.pin([rhea], { ...input, key: secret.key }))).reason,
+      "not_allowed",
+    );
+    yield* pins.pin([rhea], { ...input, key: open.key });
+    assert.deepStrictEqual(yield* shown(), ["task", "hidden"]);
+    yield* sql`UPDATE kin_records SET owner_id = ${rhea.personId}, sensitive = 1
+      WHERE record_id = ${open.recordId}`;
+    assert.deepStrictEqual(yield* shown(), ["hidden", "hidden"]);
+    assert.deepStrictEqual(
+      (yield* pins.list([rhea], input)).pins.map((pin) => pin._tag),
+      ["task", "project"],
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("keeps a pin to its chat and out of archived groups and the Team room", () =>
+  Effect.gen(function* () {
+    const { sql, rhea, meera, zoya, pins, input, addZoya, create } = yield* setup;
+    yield* addZoya;
+    const one = yield* create({
+      list: "work",
+      title: "Check the cold room",
+      owner: { _tag: "person", personId: zoya.personId },
+      originKey: "kin-task-cold-room-one",
+    });
+    const {
+      pins: [pinned],
+    } = yield* pins.pin([rhea], { ...input, key: one.key });
+    assert.isDefined(pinned);
+    const other = yield* (yield* KinGroups).create([rhea], {
+      orgId: input.orgId,
+      title: "Juniper Cold Chain",
+      agentIds: [],
+      personIds: [meera.personId],
+    });
+    const elsewhere = { orgId: input.orgId, chatId: other.chatId };
+    assert.deepStrictEqual(
+      (yield* pins.unpin([rhea], { ...elsewhere, pinId: pinned.pinId })).pins,
+      [],
+    );
+    assert.lengthOf((yield* pins.list([rhea], input)).pins, 1);
+    yield* sql`UPDATE kin_chats SET team_id = 'team-room' WHERE chat_id = ${input.chatId}`;
+    assert.strictEqual((yield* Effect.flip(pins.list([zoya], input))).reason, "not_found");
+    assert.lengthOf((yield* pins.list([rhea], input)).pins, 1);
+    yield* sql`UPDATE kin_chats SET team_id = NULL, archived_at = 1 WHERE chat_id = ${input.chatId}`;
+    for (const who of [rhea, zoya])
+      assert.strictEqual((yield* Effect.flip(pins.list([who], input))).reason, "not_found");
+    assert.strictEqual(
+      (yield* Effect.flip(pins.unpin([rhea], { ...input, pinId: pinned.pinId }))).reason,
+      "not_found",
+    );
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("counts a milestone's steps by each reader's own tasks", () =>
+  Effect.gen(function* () {
+    const { sql, rhea, zoya, pins, input, project, addZoya, create } = yield* setup;
+    const owner = { _tag: "person" as const, personId: rhea.personId };
+    yield* sql`UPDATE kin_records SET fields_json = ${JSON.stringify({
+      members: [`person:${zoya.personId}`],
+    })} WHERE record_id = ${project.recordId}`;
+    const milestone = yield* create({
+      list: "milestones",
+      title: "Cold room ready",
+      owner,
+      originKey: "kin-milestone-cold-room",
+      projectId: project.recordId,
+    });
+    for (const [originKey, sensitive] of [
+      ["kin-task-milestone-open", false],
+      ["kin-task-milestone-secret", true],
+    ] as const) {
+      const linked = yield* create({
+        list: "work",
+        title: "Check the cold room",
+        owner,
+        originKey,
+        sensitive,
+        projectId: project.recordId,
+      });
+      yield* sql`UPDATE kin_records SET fields_json = ${JSON.stringify({ milestone: milestone.key })}
+        WHERE record_id = ${linked.recordId}`;
+    }
+    yield* addZoya;
+    const {
+      pins: [pinned],
+    } = yield* pins.pin([rhea], { ...input, key: milestone.key });
+    assert.deepInclude(pinned, { _tag: "task", steps: { done: 0, total: 2 } });
+    assert.deepInclude((yield* pins.list([zoya], input)).pins[0], {
+      _tag: "task",
+      steps: { done: 0, total: 1 },
+    });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("hides a pinned goal whose target becomes Money", () =>
+  Effect.gen(function* () {
+    const { sql, rhea, pins, input, create } = yield* setup;
+    const goal = yield* create({
+      list: "goals",
+      title: "Juniper Cold Chain deliveries",
+      owner: { _tag: "person", personId: rhea.personId },
+      originKey: "kin-goal-deliveries",
+      fields: { measure: "manual", target: "12", current: "3" },
+    });
+    const {
+      pins: [pinned],
+    } = yield* pins.pin([rhea], { ...input, key: goal.key });
+    assert.include(pinned, { _tag: "goal", current: 3, target: 12 });
+    if (pinned === undefined) return assert.fail("Expected a pin");
+    yield* sql`UPDATE kin_records SET fields_json = ${JSON.stringify({
+      measure: "manual",
+      target: { minor: 73451, currency: "INR" },
+      current: "3",
+    })} WHERE record_id = ${goal.recordId}`;
+    assert.deepStrictEqual((yield* pins.list([rhea], input)).pins, [
+      { _tag: "hidden", pinId: pinned.pinId },
+    ]);
+  }).pipe(Effect.provide(layer)),
+);
