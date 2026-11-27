@@ -233,10 +233,13 @@ const describe = Effect.fn("KinStatements.describe")(function* (
       : fit === "part"
         ? " (part payment)"
         : "";
-  const target = (one: (typeof entries)[number][1]["candidates"][number]) =>
-    one.repays === undefined
-      ? `${one.key}${note(one.fit, one.tdsMinor)}`
-      : `${one.repays.map((each) => each.key).join(", ")} (${one.title}, marked repaid on Confirm)`;
+  const target = (one: (typeof entries)[number][1]["candidates"][number]) => {
+    if (one.repays === undefined) return `${one.key}${note(one.fit, one.tdsMinor)}`;
+    const keys = one.repays.map((each) => each.key).join(", ");
+    return one.alreadyRepaid
+      ? `${keys} (${one.why[0]})`
+      : `${keys} (${one.title}, marked repaid on Confirm)`;
+  };
   const matched = of("matched");
   const choose = of("choose");
   const unmatched = of("unmatched");

@@ -1,4 +1,5 @@
 import { assert, describe, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
 
 import {
   assignRepaidMarks,
@@ -25,6 +26,13 @@ const row = (over: Partial<StatementRow>): StatementRow => ({
   balanceMinor: null,
   foreign: null,
   ...over,
+});
+const mark = (key: string, amountMinor: number, bankRecordId: string | null = null) => ({
+  recordId: `r-${key}`,
+  key,
+  rev: 3,
+  amountMinor,
+  bankRecordId,
 });
 const invoice = (over: Partial<InvoiceCandidate>): InvoiceCandidate => ({
   recordId: "rec_inv",
@@ -626,6 +634,7 @@ describe("statement matching", () => {
       owing: ReadonlyArray<PartnerCandidate>,
       payees: ReadonlyArray<PayeeCandidate> = [],
       bankRecordId?: string,
+      bankDescription = line.description,
     ) => {
       const [one] = matchRows([line], {
         currency: "INR",
@@ -640,7 +649,14 @@ describe("statement matching", () => {
         bankDebits:
           bankRecordId === undefined
             ? []
-            : [{ row: line, currency: "INR", key: bankRecordId, recordId: bankRecordId }],
+            : [
+                {
+                  row: { ...line, description: bankDescription },
+                  currency: "INR",
+                  key: bankRecordId,
+                  recordId: bankRecordId,
+                },
+              ],
         bankRows:
           bankRecordId === undefined
             ? new Map()
@@ -656,10 +672,7 @@ describe("statement matching", () => {
       currency: "INR",
       day: "2026-10-06",
       amountMinor: 200_000,
-      marks: [
-        { amountMinor: 120_000, bankRecordId: null },
-        { amountMinor: 80_000, bankRecordId: null },
-      ],
+      marks: [mark("EXP-4", 120_000), mark("EXP-5", 80_000)],
     };
     assert.deepStrictEqual(
       [
@@ -694,38 +707,34 @@ describe("statement matching", () => {
     const tied = {
       ...repaid,
       amountMinor: 270_000,
-      marks: [
-        { amountMinor: 120_000, bankRecordId: "r-BNK-9" },
-        { amountMinor: 80_000, bankRecordId: null },
-        { amountMinor: 70_000, bankRecordId: null },
-      ],
+      marks: [mark("EXP-4", 120_000, "r-BNK-9"), mark("EXP-5", 80_000), mark("EXP-6", 70_000)],
     };
     const three = {
       ...repaid,
       amountMinor: 400_000,
-      marks: [200_000, 120_000, 80_000].map((amountMinor) => ({ amountMinor, bankRecordId: null })),
+      marks: [mark("EXP-3", 200_000), ...repaid.marks],
     };
-    for (const [day, amount, marks, marked, bankRecordId] of [
-      ["2026-10-08", 200_000, repaid, true],
+    for (const [day, amount, marks, marked, keys, bankRecordId] of [
+      ["2026-10-08", 200_000, repaid, true, ["EXP-4", "EXP-5"]],
       ["2026-10-08", 50_000, repaid, false],
-      ["2026-10-08", 120_000, repaid, true],
+      ["2026-10-08", 120_000, repaid, true, ["EXP-4"]],
       ["2026-10-17", 120_000, repaid, false],
       ["2026-10-08", 120_000, tied, false],
       ["2026-10-08", 150_000, tied, false],
       ["2026-10-10", 120_000, tied, false],
-      ["2026-10-10", 150_000, tied, true],
-      ["2026-10-06", 120_000, tied, true, "r-BNK-9"],
-      ["2026-10-06", 120_000, tied, false, "r-BNK-10"],
+      ["2026-10-10", 150_000, tied, true, ["EXP-5", "EXP-6"]],
+      ["2026-10-06", 120_000, tied, true, undefined, "r-BNK-9"],
+      ["2026-10-06", 120_000, tied, false, undefined, "r-BNK-10"],
       // Within two days of the tied entry it may be that payment twice: the day's total stands.
       ["2026-10-04", 270_000, tied, true],
       ["2026-10-08", 270_000, tied, true],
       ["2026-10-09", 270_000, tied, false],
-      ["2026-10-03", 150_000, tied, true],
-      ["2026-10-09", 150_000, tied, true],
-      ["2026-10-16", 150_000, tied, true],
+      ["2026-10-03", 150_000, tied, true, ["EXP-5", "EXP-6"]],
+      ["2026-10-09", 150_000, tied, true, ["EXP-5", "EXP-6"]],
+      ["2026-10-16", 150_000, tied, true, ["EXP-5", "EXP-6"]],
       ["2026-10-17", 150_000, tied, false],
-      ["2026-10-08", 200_000, three, true],
-      ["2026-10-08", 400_000, three, true],
+      ["2026-10-08", 200_000, three, true, ["EXP-3"]],
+      ["2026-10-08", 400_000, three, true, ["EXP-3", "EXP-4", "EXP-5"]],
       ["2026-10-08", 320_000, three, false],
       ["2026-10-08", 120_000, { ...repaid, currency: "USD" }, false],
     ] as const) {
@@ -737,8 +746,8 @@ describe("statement matching", () => {
       );
       if (marked)
         assert.deepStrictEqual(result, [
-          "unmatched",
-          [],
+          keys === undefined ? "unmatched" : "matched",
+          keys === undefined ? [] : [[...keys]],
           {
             action: "later",
             why: "Looks like Meera Rao's repayment already marked on 2026-10-06, so it isn't recorded again",
@@ -746,6 +755,18 @@ describe("statement matching", () => {
         ]);
       else assert.notInclude(result[2].why ?? "", "repayment already marked");
     }
+    const transfer = placed(
+      debit(0, "2026-10-08", "NEFT DR-MEERA RAO TO OWN ACCOUNT", 120_000),
+      [],
+      [{ name: "Meera Rao", repaid: [repaid] }],
+      "r-BNK-9",
+      "NEFT DR-MEERA RAO",
+    );
+    assert.deepStrictEqual(transfer, [
+      "unmatched",
+      [],
+      { action: "transfer", why: "Looks like money moved between your own accounts" },
+    ]);
     // Money back from the partner is never the repayment they were sent.
     assert.notInclude(
       placed(
@@ -836,7 +857,7 @@ describe("statement matching", () => {
                   currency: "INR",
                   day: "2026-10-06",
                   amountMinor: marks.reduce<number>((sum, mark) => sum + mark * 100, 0),
-                  marks: marks.map((mark) => ({ amountMinor: mark * 100, bankRecordId: null })),
+                  marks: marks.map((amount, index) => mark(`EXP-${index + 4}`, amount * 100)),
                 },
               ],
             },
@@ -873,7 +894,7 @@ describe("statement matching", () => {
       currency: "INR",
       day: date,
       amountMinor: 120_000,
-      marks: [{ amountMinor: 120_000, bankRecordId: null }],
+      marks: [mark("EXP-4", 120_000)],
     });
     // The 12th fits both marks and the 22nd only the later one: each mark explains one of them.
     const real = [filed("BNK-9", "2026-10-12"), filed("BNK-12", "2026-10-22")];
@@ -919,6 +940,35 @@ describe("statement matching", () => {
           ]),
         );
       }
+  });
+
+  it.effect.each([
+    ["a single mark", "2026-10-09", 120_000, ["EXP-4"]],
+    ["a day total", "2026-10-09", 200_000, ["EXP-4", "EXP-5"]],
+    ["a possible duplicate", "2026-10-08", 270_000, ["EXP-4", "EXP-5"]],
+  ] as const)("returns the expenses spent by %s", ([, date, amountMinor, keys]) => {
+    const line = row({
+      direction: "debit",
+      date,
+      description: "NEFT DR-ARJUN MEHTA",
+      amountMinor,
+    });
+    const marks = [mark("EXP-4", 120_000), mark("EXP-5", 80_000), mark("EXP-6", 70_000, "r-BNK-9")];
+    const assigned = assignRepaidMarks(
+      [],
+      [
+        {
+          id: "arjun",
+          name: "Arjun Mehta",
+          repaid: [{ currency: "INR", day: "2026-10-06", amountMinor: 270_000, marks }],
+        },
+      ],
+      [],
+      { rows: [line], currency: "INR", ownAccounts: [] },
+    );
+    return Effect.sync(() =>
+      assert.deepStrictEqual(assigned.get(line)?.marks, marks.slice(0, keys.length)),
+    );
   });
 
   it("ranks a credit's refund and a partner's return together, and ticks neither on an amount alone", () => {

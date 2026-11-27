@@ -35,7 +35,9 @@ import {
 import { ensureBankList, findBankList } from "./bankList.ts";
 import { repaidMatch, repaidMatches } from "./debitRepaid.ts";
 import { drawRepaid, markRepaid, repaidLine, undoRepaid } from "./repaidCard.ts";
-import { buildReview } from "./statementReview.ts";
+import { applyStatement, undoStatement } from "./statementApply.ts";
+import { reviewCard } from "./statementCard.ts";
+import { buildReview, storeReview } from "./statementReview.ts";
 import type { Statement } from "./statementTable.ts";
 import { bankDebitSenses } from "../../pulse/senses/bank.ts";
 
@@ -214,6 +216,7 @@ const company = Effect.fn("test.company")(function* (org: KinOrgId) {
   for (const [id, name, access] of [
     [`${org}-rhea`, "Rhea Kapoor", "owner"],
     [`${org}-zoya`, "Zoya Rao", "member"],
+    [`${org}-arjun`, "Arjun Mehta", "member"],
   ] as const)
     yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
       VALUES (${id}, ${org}, ${id}, ${name}, '2026-09-01', ${access})`;
@@ -294,6 +297,62 @@ const cardMarkedCompany = Effect.fn("test.cardMarkedCompany")(function* (org: Ki
   const outcome = yield* kin.sql.withTransaction(markRepaid(org, plan, owner, records));
   assert.strictEqual(outcome?.outcome.title, "Marked repaid");
   return { kin, records, owner };
+});
+
+const arjunDebit = "UPI ARJUN MEHTA";
+const handMark = (org: KinOrgId) => ({
+  fundedBy: `person:${org}-arjun`,
+  reimbursement: "repaid",
+  repaidOn: "2026-11-18",
+});
+const repaymentStatement = (amountMinor: number): Statement => ({
+  kind: "account",
+  bank: null,
+  account: "4821",
+  currency: "INR",
+  from: null,
+  to: null,
+  openingMinor: null,
+  closingMinor: null,
+  check: { status: "adds_up", line: "" },
+  rows: [
+    {
+      index: 0,
+      date: "2026-11-21",
+      description: arjunDebit,
+      reference: null,
+      amountMinor,
+      direction: "debit",
+      balanceMinor: null,
+      foreign: null,
+    },
+  ],
+});
+
+const repaymentReview = Effect.fn("test.repaymentReview")(function* (
+  orgId: KinOrgId,
+  amountMinor: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const personId = KinPersonId.make(`${orgId}-rhea`);
+  const agentId = `${orgId}-finance`;
+  const statementId = "st-repayment";
+  const statement = repaymentStatement(amountMinor);
+  const review = yield* buildReview(orgId, statement, null, "file", statementId);
+  const card = reviewCard(statementId, review, []);
+  yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+    VALUES (${agentId}, ${orgId}, 'Finance', 'specialist', ${personId}, '2026-11-01')`;
+  yield* sql`INSERT INTO kin_bank_statements (org_id, statement_id, attachment_id, file_name,
+      chat_id, agent_id, wakeup_id, status, account, review_json, review_hash, created_at)
+    VALUES (${orgId}, ${statementId}, 'statement', 'harbor-bank.csv', 'finance-chat', ${agentId},
+      'wake', 'read', ${statement.account}, ${yield* storeReview(review)}, ${card.hash}, ${NOW})`;
+  const input = { orgId, personId, statementId, now: NOW };
+  return {
+    statement,
+    apply: applyStatement({ ...input, hash: card.hash, revision: 0 }),
+    undo: undoStatement(input),
+    owner: { actor: { _tag: "person" as const, personId }, via: "owner" as const },
+  };
 });
 
 it.layer(layer)((it) => {
@@ -447,6 +506,182 @@ it.layer(layer)((it) => {
         "BNK-10": undefined,
         "BNK-11": undefined,
       });
+    }),
+  );
+
+  it.effect("evidence dated away from a hand mark does not spend the mark", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("tidewater-repayment-evidence");
+      const kin = yield* company(org);
+      const records = yield* KinRecords.KinRecords;
+      const owner = {
+        actor: { _tag: "person" as const, personId: KinPersonId.make(`${org}-rhea`) },
+        via: "owner" as const,
+      };
+      yield* kin.expense("EXP-4", 1_200, "2026-10-01", {
+        reimbursement: "repaid",
+        repaidOn: "2026-11-18",
+      });
+      yield* kin.expense("EXP-8", 1_200, "2026-11-01", { reimbursement: "owed" });
+      yield* kin.debit("BNK-7", 1_200, "2026-10-01", "Inkspot Cloud");
+      yield* records.link(org, owner, `${org}-EXP-4`, {
+        kind: "record",
+        relation: "evidence",
+        target: `${org}-BNK-7`,
+      });
+      yield* kin.debit("BNK-9", 1_200, "2026-11-21");
+
+      assert.strictEqual((yield* repaidMatch(org, `${org}-BNK-9`, NOW))?.marked, "2026-11-18");
+      const statement = repaymentStatement(120_000);
+      const review = yield* buildReview(
+        org,
+        { ...statement, rows: [{ ...statement.rows[0]!, description: "ZOYA RAO" }] },
+        null,
+        "file",
+        "st-existing-evidence",
+      );
+      assert.deepStrictEqual(review.matches.get(0)?.candidates, []);
+    }),
+  );
+
+  it.effect("Confirm ties a hand mark so a later debit can repay another expense", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("tidewater-confirm-repayment");
+      const kin = yield* company(org);
+      const records = yield* KinRecords.KinRecords;
+      yield* kin.expense("EXP-4", 1_200, "2026-10-01", handMark(org));
+      yield* kin.expense("EXP-8", 1_200, "2026-11-01", {
+        fundedBy: handMark(org).fundedBy,
+        reimbursement: "owed",
+      });
+      yield* kin.debit("BNK-9", 1_200, "2026-11-21", arjunDebit);
+      const review = yield* repaymentReview(org, 120_000);
+      const { card } = yield* review.apply;
+      const bankAfterConfirm = yield* records.get(org, "BNK-9");
+      // Explaining the first debit used to free its mark.
+      yield* records.update(org, review.owner, "BNK-9", { state: "done" });
+      yield* kin.debit("BNK-10", 1_200, "2026-11-23", arjunDebit);
+
+      assert.strictEqual(yield* kin.draw("BNK-10"), "EXP-8");
+      assert.strictEqual(bankAfterConfirm?.state, "done");
+      assert.include(card.result, "Linked 1 paid expense to their bank rows.");
+      assert.notInclude(card.result, "Marked 1 partner-paid expense repaid.");
+      assert.include(JSON.parse((yield* records.get(org, "EXP-4"))!.fieldsJson), {
+        reimbursement: "repaid",
+        repaidOn: "2026-11-21",
+      });
+      assert.deepStrictEqual(
+        yield* kin.sql`SELECT record_id AS "recordId", target, relation FROM kin_record_links
+          WHERE org_id = ${org} AND kind = 'record' ORDER BY record_id`,
+        [
+          { recordId: `${org}-BNK-9`, target: `${org}-EXP-4`, relation: "relates" },
+          { recordId: `${org}-EXP-4`, target: `${org}-BNK-9`, relation: "evidence" },
+        ],
+      );
+      const again = yield* buildReview(org, review.statement, null, "file", "st-reupload");
+      assert.strictEqual(again.matches.size, 0);
+    }),
+  );
+
+  it.effect("Undo restores the hand repayment day and frees the debit", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("tidewater-undo-repayment");
+      const kin = yield* company(org);
+      const records = yield* KinRecords.KinRecords;
+      yield* kin.expense("EXP-4", 1_200, "2026-10-01", handMark(org));
+      yield* kin.expense("EXP-8", 1_200, "2026-11-01", {
+        fundedBy: handMark(org).fundedBy,
+        reimbursement: "owed",
+      });
+      const review = yield* repaymentReview(org, 120_000);
+      yield* review.apply;
+      const { card } = yield* review.undo;
+
+      assert.include(card.result, "Undone: 1 row taken back (1 expense).");
+      assert.deepStrictEqual(
+        JSON.parse((yield* records.get(org, "EXP-4"))!.fieldsJson),
+        handMark(org),
+      );
+      assert.deepStrictEqual(
+        yield* kin.sql`SELECT target FROM kin_record_links WHERE org_id = ${org}`,
+        [],
+      );
+      assert.strictEqual((yield* records.get(org, "BNK-1"))?.state, "open");
+      assert.strictEqual(
+        (yield* repaidMatch(org, (yield* records.get(org, "BNK-1"))!.recordId, NOW))?.marked,
+        "2026-11-18",
+      );
+      assert.include(
+        (yield* review.apply).card.result,
+        "Linked 1 paid expense to their bank rows.",
+      );
+    }),
+  );
+
+  it.effect.each([
+    ["an edit to the expense", "EXP-4 was edited"],
+    ["a newly filed debit", "Something changed"],
+    ["a new evidence link", "Something changed"],
+  ] as const)("Confirm refuses a stale hand mark after %s", ([change, message]) =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make(`tidewater-stale-repayment-${change.replaceAll(" ", "-")}`);
+      const kin = yield* company(org);
+      const records = yield* KinRecords.KinRecords;
+      yield* kin.expense("EXP-4", 1_200, "2026-10-01", handMark(org));
+      const review = yield* repaymentReview(org, 120_000);
+      if (change === "an edit to the expense")
+        yield* records.update(org, review.owner, "EXP-4", { title: "Inkspot Cloud" });
+      if (change === "a newly filed debit")
+        yield* kin.debit("BNK-7", 1_200, "2026-11-19", arjunDebit);
+      if (change === "a new evidence link") {
+        yield* kin.debit("BNK-7", 1_200, "2026-10-01", "Inkspot Cloud");
+        yield* records.link(org, review.owner, `${org}-EXP-4`, {
+          kind: "record",
+          relation: "evidence",
+          target: `${org}-BNK-7`,
+        });
+      }
+
+      const error = yield* Effect.flip(review.apply);
+      assert.include(error.message, message);
+      assert.notExists(yield* records.get(org, "BNK-1"));
+      assert.deepStrictEqual(
+        JSON.parse((yield* records.get(org, "EXP-4"))!.fieldsJson),
+        handMark(org),
+      );
+    }),
+  );
+
+  it.effect("Confirm ties every expense in a hand-marked day total", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("tidewater-day-total-repayment");
+      const kin = yield* company(org);
+      const records = yield* KinRecords.KinRecords;
+      for (const [key, amount] of [
+        ["EXP-4", 1_200],
+        ["EXP-5", 800],
+      ] as const)
+        yield* kin.expense(key, amount, "2026-10-01", handMark(org));
+      const review = yield* repaymentReview(org, 200_000);
+      const { card } = yield* review.apply;
+      assert.include(card.result, "Linked 2 paid expenses to their bank rows.");
+      assert.deepInclude(card.matched[0]?.target, {
+        label: "EXP-4, EXP-5 · Arjun Mehta",
+        note: "Looks like Arjun Mehta's repayment already marked on 2026-11-18, so it isn't recorded again",
+      });
+      const bank = (yield* records.get(org, "BNK-1"))!;
+      assert.strictEqual(bank.state, "done");
+      assert.deepStrictEqual(
+        yield* kin.sql`SELECT record_id AS "recordId" FROM kin_record_links
+          WHERE org_id = ${org} AND target = ${bank.recordId} AND relation = 'evidence'
+          ORDER BY record_id`,
+        [{ recordId: `${org}-EXP-4` }, { recordId: `${org}-EXP-5` }],
+      );
+      for (const key of ["EXP-4", "EXP-5"])
+        assert.include(JSON.parse((yield* records.get(org, key))!.fieldsJson), {
+          reimbursement: "repaid",
+          repaidOn: "2026-11-21",
+        });
     }),
   );
 
@@ -616,6 +851,22 @@ it.layer(layer)((it) => {
           ["EXP-8"],
         );
       }
+      const includingFiled = yield* buildReview(
+        org,
+        {
+          ...draft,
+          rows: [...draft.rows, { ...draft.rows[0]!, index: 1, date: "2026-11-19" }],
+        },
+        null,
+        "file",
+        "st-including-filed",
+      );
+      assert.deepStrictEqual(
+        [...includingFiled.matches.values()].map((match) =>
+          match.candidates[0]?.repays?.map((one) => one.key),
+        ),
+        [["EXP-8"], ["EXP-4"]],
+      );
     }),
   );
 

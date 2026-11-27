@@ -586,6 +586,7 @@ describe("KinImport", () => {
         fundedBy: "person:meera",
         reimbursement: "owed",
       });
+      const repaidAfter = (yield* records.get(orgId, repaid.key))!;
       assert.deepStrictEqual(yield* partnerPayees(orgId), [
         {
           id: "meera",
@@ -596,7 +597,15 @@ describe("KinImport", () => {
               currency: "INR",
               day: "2026-06-01",
               amountMinor: 420_000,
-              marks: [{ amountMinor: 420_000, bankRecordId: null }],
+              marks: [
+                {
+                  recordId: repaidAfter.recordId,
+                  key: repaidAfter.key,
+                  rev: repaidAfter.rev,
+                  amountMinor: 420_000,
+                  bankRecordId: null,
+                },
+              ],
             },
           ],
         },

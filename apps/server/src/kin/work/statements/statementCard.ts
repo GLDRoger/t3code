@@ -69,27 +69,41 @@ const target = (
   option: number,
   currency: string,
   withheldTax: string | undefined,
-): KinStatementTarget => ({
-  option,
-  kind: candidate.kind,
-  key: candidate.key,
-  label: clamp(`${candidate.key} · ${candidate.title}`, 200),
-  ...(candidate.repays !== undefined
-    ? { note: repaysNote(candidate.repays) }
-    : candidate.fit === "tds" && candidate.tdsMinor !== undefined
-      ? {
-          note: `Paid with ${money(candidate.tdsMinor, currency)} ${withheldTax === undefined ? "tax withheld by the client" : `${withheldTax} deducted`}`,
-        }
-      : candidate.fit === "part"
-        ? { note: "Part payment" }
-        : candidate.fit === "foreign"
-          ? { note: "Same amount in its own currency" }
-          : candidate.fit === "recorded"
-            ? { note: "Payment already recorded: this links the bank row to it" }
-            : candidate.fit === "open"
-              ? { note: OPEN_INVOICE_NOTE }
-              : {}),
-});
+): KinStatementTarget => {
+  const base = {
+    option,
+    kind: candidate.kind,
+    key: candidate.key,
+    label: clamp(`${candidate.key} · ${candidate.title}`, 200),
+  };
+  if (candidate.alreadyRepaid && candidate.repays !== undefined)
+    return {
+      ...base,
+      label: clamp(
+        `${candidate.repays.map((one) => one.key).join(", ")} · ${candidate.title}`,
+        200,
+      ),
+      note: clamp(candidate.why[0]!, 200),
+    };
+  return {
+    ...base,
+    ...(candidate.repays !== undefined
+      ? { note: repaysNote(candidate.repays) }
+      : candidate.fit === "tds" && candidate.tdsMinor !== undefined
+        ? {
+            note: `Paid with ${money(candidate.tdsMinor, currency)} ${withheldTax === undefined ? "tax withheld by the client" : `${withheldTax} deducted`}`,
+          }
+        : candidate.fit === "part"
+          ? { note: "Part payment" }
+          : candidate.fit === "foreign"
+            ? { note: "Same amount in its own currency" }
+            : candidate.fit === "recorded"
+              ? { note: "Payment already recorded: this links the bank row to it" }
+              : candidate.fit === "open"
+                ? { note: OPEN_INVOICE_NOTE }
+                : {}),
+  };
+};
 
 /**
  * Rows this statement already recorded and an undo kept, such as a payment with a receipt: shown
