@@ -33,6 +33,7 @@ export const makeKinMailRuleHandlers = Effect.fn("makeKinMailRuleHandlers")(func
   return group.of({
     "kin.mailRules.create": (input) => call((rules, people) => rules.createFromTap(people, input)),
     "kin.mailRules.pause": (input) => call((rules, people) => rules.pause(people, input)),
+    "kin.mailRules.setLimit": (input) => call((rules, people) => rules.setLimit(people, input)),
     "kin.mailRules.resume": (input) => call((rules, people) => rules.resume(people, input)),
     "kin.mailRules.remove": (input) => call((rules, people) => rules.remove(people, input)),
     "kin.mailRules.list": (input) => call((rules, people) => rules.list(people, input)),

@@ -14,6 +14,7 @@ import {
   kinMailRuleResumeSend,
   kinMailRuleRowView,
   kinMailRuleRunNowAnswer,
+  kinMailRuleSetLimitSend,
   kinMailRulesRead,
   type KinMailRuleLead,
   type KinMailRuleLineView,
@@ -61,6 +62,8 @@ type Target = { readonly environmentId: EnvironmentId; readonly orgId: KinOrgId 
 export type KinMailRuleParams = KinConnectionsParams & {
   readonly connectionId: string;
   readonly ruleId: string;
+  /** Opened from a mailbox's Removed group: read from the removed list, and read-only. */
+  readonly removed?: boolean;
 };
 
 const HISTORY_FIRST = 20;
@@ -80,6 +83,7 @@ function useMailRulePermissions(environmentId: EnvironmentId) {
     history: useAtomValue(kinClient.mailRuleHistoryRead.permissionAtom(environmentId)),
     preview: useAtomValue(kinClient.mailRulePreview.permissionAtom(environmentId)),
     runNow: useAtomValue(kinClient.mailRuleRunNow.permissionAtom(environmentId)),
+    setLimit: useAtomValue(kinClient.mailRuleSetLimit.permissionAtom(environmentId)),
   });
   return { list, can };
 }
@@ -89,15 +93,27 @@ function useMailRuleLeads(target: Target, ready: boolean): ReadonlyArray<KinMail
   return Option.getOrNull(AsyncResult.value(result))?.leads ?? [];
 }
 
-/** One company's rules, or one mailbox's, with the block's state. */
-function useMailRules(target: Target, connectionId: string | undefined) {
+/**
+ * One company's rules, or one mailbox's, with the block's state. `removed` reads the ones removed
+ * in the last 30 days instead, and only while `wanted`.
+ */
+function useMailRules(
+  target: Target,
+  connectionId: string | undefined,
+  options: { readonly removed?: boolean; readonly wanted?: boolean } = {},
+) {
   const { list, can } = useMailRulePermissions(target.environmentId);
+  const removed = options.removed === true ? { removed: true as const } : {};
   const listAtom = kinClient.mailRules({
     environmentId: target.environmentId,
     input:
-      connectionId === undefined ? { orgId: target.orgId } : { orgId: target.orgId, connectionId },
+      connectionId === undefined
+        ? { orgId: target.orgId, ...removed }
+        : { orgId: target.orgId, connectionId, ...removed },
   });
-  const result = useAtomValue(can.ready ? listAtom : KIN_MAIL_RULES_IDLE);
+  const result = useAtomValue(
+    can.ready && options.wanted !== false ? listAtom : KIN_MAIL_RULES_IDLE,
+  );
   const reload = useAtomRefresh(listAtom);
   const leads = useMailRuleLeads(target, can.ready);
   return { block: kinMailRulesRead(list, result), can, reload, leads };
@@ -107,6 +123,7 @@ function RuleRows(props: {
   readonly target: Target;
   readonly rules: ReadonlyArray<KinMailRule>;
   readonly leads: ReadonlyArray<KinMailRuleLead>;
+  readonly removed?: boolean;
 }) {
   const navigation = useNavigation();
   const now = useNowMinuteMs();
@@ -126,6 +143,7 @@ function RuleRows(props: {
                 orgId: props.target.orgId,
                 connectionId: rule.connectionId,
                 ruleId: rule.ruleId,
+                ...(props.removed === true ? { removed: true } : {}),
               })
             }
           />
@@ -138,21 +156,51 @@ function RuleRows(props: {
 /** A company mailbox's Rules on its Connection screen; absent for a teammate or an older host. */
 export function KinMailRulesSection(props: Target & { readonly connectionId: string }) {
   const { block, reload, leads } = useMailRules(props, props.connectionId);
+  // Removed rules are read only while their group is open, never on every screen load.
+  const [showRemoved, setShowRemoved] = useState(false);
+  const removed = useMailRules(props, props.connectionId, { removed: true, wanted: showRemoved });
   if (block._tag === "absent") return null;
+  const listed = block._tag === "ready" || block._tag === "empty";
   return (
-    <ListSection title={COPY.title} footer={block._tag === "empty" ? COPY.empty : COPY.description}>
-      {block._tag === "loading" ? (
-        <KinWorkLoading label={COPY.loading} />
-      ) : block._tag === "failed" ? (
-        <ListActionRow label={block.text} tone="danger" onPress={reload} />
-      ) : block._tag === "empty" ? (
-        <View className="bg-grouped-card">
-          <ListRowLayout label={COPY.emptyTitle} />
-        </View>
-      ) : (
-        <RuleRows target={props} rules={block.rules} leads={leads} />
-      )}
-    </ListSection>
+    <>
+      <ListSection
+        title={COPY.title}
+        footer={block._tag === "empty" ? COPY.empty : COPY.description}
+      >
+        {block._tag === "loading" ? (
+          <KinWorkLoading label={COPY.loading} />
+        ) : block._tag === "failed" ? (
+          <ListActionRow label={block.text} tone="danger" onPress={reload} />
+        ) : block._tag === "empty" ? (
+          <View className="bg-grouped-card">
+            <ListRowLayout label={COPY.emptyTitle} />
+          </View>
+        ) : (
+          <RuleRows target={props} rules={block.rules} leads={leads} />
+        )}
+        {listed ? (
+          <ListActionRow
+            label={showRemoved ? COPY.removedHide : COPY.removedShow}
+            onPress={() => setShowRemoved((shown) => !shown)}
+          />
+        ) : null}
+      </ListSection>
+      {listed && showRemoved ? (
+        <ListSection title={COPY.removedTitle}>
+          {removed.block._tag === "loading" ? (
+            <KinWorkLoading label={COPY.removedLoading} />
+          ) : removed.block._tag === "ready" ? (
+            <RuleRows target={props} rules={removed.block.rules} leads={leads} removed />
+          ) : removed.block._tag === "empty" ? (
+            <View className="bg-grouped-card">
+              <ListRowLayout label={COPY.removedEmpty} />
+            </View>
+          ) : (
+            <ListActionRow label={COPY.removedFailed} tone="danger" onPress={removed.reload} />
+          )}
+        </ListSection>
+      ) : null}
+    </>
   );
 }
 
@@ -285,7 +333,12 @@ export function KinMailRuleScreen({ route }: StaticScreenProps<KinMailRuleParams
   return target === null || connectionId === null ? (
     <KinConnectionsMissing title={COPY.pageTitle} />
   ) : (
-    <RulePage target={target} connectionId={connectionId} ruleId={route.params.ruleId} />
+    <RulePage
+      target={target}
+      connectionId={connectionId}
+      ruleId={route.params.ruleId}
+      removed={route.params.removed === true}
+    />
   );
 }
 
@@ -293,16 +346,27 @@ function RulePage(props: {
   readonly target: Target;
   readonly connectionId: KinConnectionId;
   readonly ruleId: string;
+  readonly removed: boolean;
 }) {
   const navigation = useNavigation();
   const { target, connectionId, ruleId } = props;
   const { environmentId, orgId } = target;
-  const { block, can, reload, leads } = useMailRules(target, connectionId);
+  const { block, can, reload, leads } = useMailRules(target, connectionId, {
+    removed: props.removed,
+  });
   // Rules aren't pushed: after any answer both lists a rule shows in are read again.
   const reloadAll = useAtomRefresh(kinClient.mailRules({ environmentId, input: { orgId } }));
   const now = useNowMinuteMs();
-  const rule =
+  const listed =
     block._tag === "ready" ? (block.rules.find((one) => one.ruleId === ruleId) ?? null) : null;
+  // The host's answer to a limit change shows at once, until the list read again catches up.
+  const [saved, setSaved] = useState<KinMailRule | null>(null);
+  const rule =
+    listed !== null && saved !== null && saved.ruleId === listed.ruleId
+      ? saved.updatedAt >= listed.updatedAt
+        ? saved
+        : listed
+      : listed;
   const actions = rule === null ? null : kinMailRuleActions(rule, can);
   const historyAtom = kinClient.mailRuleHistory({ environmentId, input: { orgId, ruleId } });
   const history = useAtomValue(
@@ -320,6 +384,7 @@ function RulePage(props: {
   const openChat = useAtomCommand(kinClient.chatWithAgent, { reportFailure: false });
   const previewCommand = useAtomCommand(kinClient.mailRulePreview, { reportFailure: false });
   const runNowCommand = useAtomCommand(kinClient.mailRuleRunNow, { reportFailure: false });
+  const setLimitCommand = useAtomCommand(kinClient.mailRuleSetLimit, { reportFailure: false });
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const [chosen, setChosen] = useState<KinAgentId | null>(null);
@@ -429,6 +494,25 @@ function RulePage(props: {
           if (ok === true) navigation.goBack();
         }),
     });
+  const changeLimit = () =>
+    Dialog.prompt({
+      title: COPY.limitTitle,
+      message: COPY.limitHint,
+      initialValue: String(rule.monthlyCap),
+      cancelText: COPY.limitCancel,
+      confirmText: COPY.limitSave,
+      onConfirm: (text) =>
+        void settle("limit", COPY.limitFailed, async () => {
+          const outcome = await kinMailRuleSetLimitSend({
+            rule,
+            text,
+            online,
+            send: (input) => setLimitCommand({ environmentId, input }),
+          });
+          if (outcome.ok) setSaved(outcome.rule);
+          return outcome;
+        }),
+    });
   const runPreview = async () => {
     setPreview({ _tag: "busy" });
     const sent = await kinListSend({
@@ -458,21 +542,35 @@ function RulePage(props: {
 
   return frame(
     <>
-      {view.state.detail === null ? null : (
+      {(view.removed ?? view.state.detail) === null ? null : (
         <ListSection>
           <View accessible className="bg-grouped-card">
-            <ListRowLayout label={view.state.label} description={view.state.detail} />
+            <ListRowLayout
+              label={view.state.label}
+              description={view.removed ?? view.state.detail ?? ""}
+            />
           </View>
         </ListSection>
       )}
       {problem === null ? null : <ErrorBanner message={problem} />}
 
       <ListSection title={COPY.matchesTitle}>
-        {view.facts.map((fact) => (
-          <View key={fact.label} accessible className="bg-grouped-card">
-            <ListRowLayout label={breakable(fact.value)} description={fact.label} />
-          </View>
-        ))}
+        {view.facts.map((fact) =>
+          fact.label === COPY.facts.limit && actions.setLimit ? (
+            <ListRow
+              key={fact.label}
+              label={breakable(fact.value)}
+              description={fact.label}
+              detail={busy === "limit" ? COPY.limitSaving : COPY.limitChange}
+              disabled={busy !== null}
+              onPress={changeLimit}
+            />
+          ) : (
+            <View key={fact.label} accessible className="bg-grouped-card">
+              <ListRowLayout label={breakable(fact.value)} description={fact.label} />
+            </View>
+          ),
+        )}
       </ListSection>
 
       <ListSection title={COPY.pageWhat}>

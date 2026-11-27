@@ -1881,3 +1881,4 @@ unlisted:
   "rpc:kin.refreshes.announce": Called by the host CLI (apps/server/src/kin/cli/announce.ts) from the owner's session.
   "rpc:kin.open.read": Served; clients follow kin.open.subscribe instead, and an agent's list_waiting reads the same list on the host.
   "rpc:kin.mailRules.create": Served; a rule is made only from its card in chat, by the tap, so no Settings form calls it.
+  "rpc:kin.mailRules.setLimit": Served; the Settings screens have yet to call it.
