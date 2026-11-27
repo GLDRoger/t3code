@@ -59,6 +59,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
+import * as PubSub from "effect/PubSub";
 import * as Queue from "effect/Queue";
 import * as DateTime from "effect/DateTime";
 import * as Stream from "effect/Stream";
@@ -316,16 +317,137 @@ const seed = Effect.fn("test.seed")(function* (
   return { repo, service, identity, person, agent, chat };
 });
 
+const progressSettings = Effect.fnUntraced(function* (flipOnRead = false) {
+  const settings = yield* Ref.make({
+    ...DEFAULT_SERVER_SETTINGS,
+    kinClearUpdatesAfterReply: true,
+  });
+  const changes = yield* PubSub.unbounded<typeof DEFAULT_SERVER_SETTINGS>();
+  const drained = yield* Queue.unbounded<void>();
+  const update = (patch: Partial<typeof DEFAULT_SERVER_SETTINGS>) =>
+    Ref.updateAndGet(settings, (value) => ({ ...value, ...patch })).pipe(
+      Effect.tap((value) => PubSub.publish(changes, value)),
+    );
+  const configured = layer.pipe(
+    Layer.provide(
+      Layer.mock(ServerSettingsService)({
+        getSettings: Ref.get(settings).pipe(
+          Effect.tap((value) =>
+            flipOnRead && value.kinClearUpdatesAfterReply
+              ? update({ kinClearUpdatesAfterReply: false })
+              : Effect.void,
+          ),
+        ),
+        streamChanges: Stream.fromPubSub(changes),
+        subscribeChanges: PubSub.subscribe(changes).pipe(
+          Effect.map((subscription) =>
+            Stream.fromSubscription(subscription).pipe(
+              Stream.flatMap((value) =>
+                Stream.concat(
+                  Stream.succeed(value),
+                  Stream.fromEffect(Queue.offer(drained, undefined)).pipe(Stream.drain),
+                ),
+              ),
+            ),
+          ),
+        ),
+      }),
+    ),
+  );
+  return { configured, settings, update, drained };
+});
+
 describe("KinChatService", () => {
+  it.effect.each([
+    ["sends the progress-update setting to an open chat at its current cursor", "single"],
+    ["ignores unrelated settings on open chats", "unrelated"],
+    ["sends the progress-update setting to both open viewers", "both"],
+    ["sends repeated progress-update settings only once", "repeat"],
+    ["catches the progress-update setting changing during the opening backlog", "opening"],
+  ] as const)("%s", ([, scenario]) =>
+    Effect.gen(function* () {
+      const { configured, update, drained } = yield* progressSettings(scenario === "opening");
+      yield* Effect.gen(function* () {
+        const {
+          repo,
+          service,
+          person: rhea,
+          chat,
+        } = yield* seed(false, {
+          owner: "Rhea",
+          agent: "Finance",
+        });
+        const { orgId } = rhea;
+        const viewers = [rhea];
+        if (scenario === "both") {
+          const meera = { ...rhea, personId: KinPersonId.make("meera") };
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+              VALUES (${meera.personId}, ${orgId}, 'meera', 'Meera', ${timestamp}, 'co_owner')`;
+          yield* repo.addMember({
+            orgId,
+            chatId: chat.chatId,
+            memberId: KinMemberId.make("meera-chat"),
+            principal: { _tag: "person", personId: meera.personId },
+            role: "member",
+            joinedAt: timestamp,
+            leftAt: null,
+            mutedUntil: null,
+          });
+          viewers.push(meera);
+        }
+        const streams = yield* Effect.forEach(viewers, (viewer) =>
+          Effect.gen(function* () {
+            const events = yield* Stream.toQueue(
+              service.subscribe(viewer, { chatId: chat.chatId }),
+              { capacity: "unbounded" },
+            );
+            const opened = yield* Queue.take(events);
+            if (opened._tag !== "backlog") return assert.fail("Expected the opening backlog");
+            assert.propertyVal(opened, "clearUpdates", true);
+            return { events, opened };
+          }),
+        );
+
+        if (scenario === "unrelated") {
+          yield* update({ kinTriggerSendOnly: !DEFAULT_SERVER_SETTINGS.kinTriggerSendOnly });
+        } else {
+          if (scenario !== "opening") yield* update({ kinClearUpdatesAfterReply: false });
+          for (const { events, opened } of streams) {
+            assert.deepStrictEqual(yield* Queue.take(events), {
+              _tag: "backlog",
+              lastSeq: opened.lastSeq,
+              lastChangeSeq: opened.lastChangeSeq,
+              messages: [],
+              widgets: [],
+              clearUpdates: false,
+            });
+          }
+        }
+        if (scenario === "unrelated" || scenario === "repeat") {
+          // Send the marker after the settings feed has yielded the event to the merge.
+          yield* Queue.take(drained);
+          if (scenario === "repeat") {
+            yield* update({ kinClearUpdatesAfterReply: false });
+            yield* Queue.take(drained);
+          }
+          const marker = yield* service.send(rhea, {
+            chatId: chat.chatId,
+            body: "Tidewater Freight",
+            clientMessageId: "after-setting",
+          });
+          assert.deepStrictEqual(yield* Queue.take(streams[0]!.events), {
+            _tag: "message",
+            message: marker,
+          });
+        }
+      }).pipe(Effect.provide(configured));
+    }).pipe(Effect.scoped),
+  );
+
   it.effect("both chat backlogs carry the host's current progress-update setting", () =>
     Effect.gen(function* () {
-      const settings = yield* Ref.make({
-        ...DEFAULT_SERVER_SETTINGS,
-        kinClearUpdatesAfterReply: true,
-      });
-      const configured = layer.pipe(
-        Layer.provide(Layer.mock(ServerSettingsService)({ getSettings: Ref.get(settings) })),
-      );
+      const { configured, settings } = yield* progressSettings();
       yield* Effect.gen(function* () {
         const { service, person, chat } = yield* seed(false, { owner: "Rhea", agent: "Finance" });
         const backlogs = service
