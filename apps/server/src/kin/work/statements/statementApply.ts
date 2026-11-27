@@ -37,6 +37,7 @@ import {
 import { changeSelection, decisionsOf, reviewCard, rowsOf } from "./statementCard.ts";
 import { SALARIES } from "./statementMatch.ts";
 import {
+  buildReview,
   cardState,
   encodeSelection,
   expenseCategories,
@@ -338,6 +339,19 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
         if (payment === undefined || payment.voidedAt !== null) return yield* changed;
         return paymentId;
       });
+      // Recheck before filing rows so existing debits still have first claim on the marks.
+      const currentRepayments = decisions.some(
+        ({ row, option }) =>
+          option !== undefined && review.matches.get(row)?.candidates[option]?.alreadyRepaid,
+      )
+        ? yield* buildReview(
+            input.orgId,
+            statement,
+            review.format,
+            review.source,
+            input.statementId,
+          )
+        : undefined;
 
       // Every row is saved, so what is left for later is there to see in Bank transactions.
       const bankRows = new Map<number, { readonly recordId: string; readonly key: string }>();
@@ -485,15 +499,18 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
           // A suggestion's line applies nothing: not its payment, not its bill, until it is kept.
           if (isSuggestion(targetRow)) return yield* invalid(stillSuggestion(targetRow.key));
           if (candidate.repays !== undefined) {
-            // Each must still be a kept Paid expense owed to a partner at the amount read, and the
-            // run must still add up to the line: otherwise it would be paid back wrong or twice.
-            const owed: Array<RecordRow> = [];
+            const alreadyRepaid = candidate.alreadyRepaid === true;
+            const repayments: Array<RecordRow> = [];
             for (const one of candidate.repays) {
               const expense = yield* records.getById(input.orgId, one.recordId);
               if (expense === undefined) return yield* changed;
               if (isSuggestion(expense)) return yield* invalid(stillSuggestion(expense.key));
               const funding = fundingOf(parseFields(expense.fieldsJson));
-              if (expense.state !== "done" || funding.by !== "partner" || funding.state !== "owed")
+              if (
+                expense.state !== "done" ||
+                funding.by !== "partner" ||
+                funding.state !== (alreadyRepaid ? "repaid" : "owed")
+              )
                 return yield* changed;
               const day = dayIn(expense.dateAt ?? expense.createdAt, zone);
               if (day > row.date)
@@ -509,26 +526,41 @@ export const applyStatement = Effect.fn("KinStatements.apply")(function* (
                 return yield* changedOn(`the date of ${expense.key} changed`);
               if (one.rev === undefined || expense.rev !== one.rev)
                 return yield* changedOn(`${expense.key} was edited`);
-              owed.push(expense);
+              repayments.push(expense);
             }
             const signed = BigInt(row.direction === "debit" ? row.amountMinor : -row.amountMinor);
-            if (owed.reduce((sum, one) => sum + BigInt(one.amountMinor!), 0n) !== signed)
+            if (repayments.reduce((sum, one) => sum + BigInt(one.amountMinor!), 0n) !== signed)
               return yield* changed;
+            if (alreadyRepaid) {
+              const current = currentRepayments?.matches.get(index)?.candidates[0];
+              const filed =
+                review.known.get(index) ?? saved.get(origins[index]!) ?? twins.get(index);
+              if (
+                current?.alreadyRepaid !== true ||
+                currentRepayments?.known.get(index)?.recordId !== filed?.recordId ||
+                current.repays?.length !== repayments.length ||
+                !current.repays.every((one, at) => one.recordId === repayments[at]!.recordId)
+              )
+                return yield* changed;
+            }
             const prior = yield* settleBank(row, states.explained, "expense");
-            for (const expense of owed) {
+            for (const expense of repayments) {
               const fields = parseFields(expense.fieldsJson);
-              yield* records.update(input.orgId, writer, expense.key, {
-                fields: { reimbursement: "repaid", repaidOn: row.date },
-              });
+              const reimbursement = fieldText(fields, "reimbursement");
+              const repaidOn = fieldText(fields, "repaidOn");
+              if (!alreadyRepaid || repaidOn !== row.date)
+                yield* records.update(input.orgId, writer, expense.key, {
+                  fields: alreadyRepaid
+                    ? { repaidOn: row.date }
+                    : { reimbursement: "repaid", repaidOn: row.date },
+                });
               yield* entry(row, "expense_linked", expense.recordId, null, {
                 bank: prior,
-                repaid: {
-                  reimbursement: fieldText(fields, "reimbursement"),
-                  repaidOn: fieldText(fields, "repaidOn"),
-                },
+                repaid: { reimbursement, repaidOn },
               });
               yield* linkBoth(row, expense.recordId, expense.key);
-              tally.repaid += 1;
+              if (alreadyRepaid) tally.linked += 1;
+              else tally.repaid += 1;
             }
             continue;
           }
