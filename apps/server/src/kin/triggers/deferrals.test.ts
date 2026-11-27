@@ -17,6 +17,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
@@ -28,6 +29,8 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as Scheduler from "../../scheduling/Scheduler.ts";
+import * as Vcs from "../../vcs/VcsProcess.ts";
 import * as Chat from "../chat/KinChatService.ts";
 import * as Repository from "../chat/KinChatRepository.ts";
 import { turnAudience } from "../lead/Audience.ts";
@@ -35,6 +38,7 @@ import * as Budget from "../lead/KinBudget.ts";
 import * as Queue from "../lead/KinEventQueue.ts";
 import * as LeadDelivery from "../lead/LeadDelivery.ts";
 import { leadWakeup } from "../lead/LeadDelivery.testkit.ts";
+import { memoryLayer } from "../lead/layer.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
@@ -42,12 +46,16 @@ import { fakeRepository } from "../memory/__fixtures__/repository.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import * as MemoryConfig from "../memory/MemoryConfig.ts";
+import * as Writer from "../memory/MemoryWriter.ts";
+import * as Scan from "../memory/secretScan.ts";
 import * as DeferralFlow from "./deferralFlow.ts";
 import { KinDeferralGithubReader, type GithubLinkState } from "./deferralGithub.ts";
 import * as Deferrals from "./deferrals.ts";
 import * as TriggerScheduler from "./KinTriggerScheduler.ts";
 import * as TriggerService from "./KinTriggerService.ts";
 import * as OwnerCheck from "./ownerCheck.ts";
+import * as Watchdogs from "./watchdogs.ts";
+import { scheduledTaskTriggerId } from "../widgets/scheduledTaskCard.ts";
 import { addLead, fixture, item, orgId, otherOrg, seed } from "./routines.testkit.ts";
 import { makeMigratedSqliteLayer } from "../persistence/migratedSqlite.testkit.ts";
 import { withFixtureClock } from "../fixtureClock.testkit.ts";
@@ -2143,6 +2151,309 @@ it.effect("a reminder whose wake-up fails falls back to Kin's line, marked as a 
     assert.include(line?.body ?? "", "couldn't write this one, so Kin sent it.");
   }).pipe(Effect.provide(layerFor([remind])));
 });
+
+const nodeGit = Vcs.layer.pipe(Layer.provideMerge(NodeServices.layer));
+
+it.effect.each([
+  "set two",
+  "move",
+  "cancel",
+  "cancel before firing",
+  "cancel during reconcile",
+  "cancel while reconcile holds the lock",
+  "sync lost after commit",
+  "undo cancel",
+  "legacy schedule",
+] as const)("committed memory arms or disarms immediately: %s", (scenario) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const vcs = yield* Vcs.VcsProcess;
+    const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+    const source = `${root}/seed`;
+    const remote = `${root}/remote.git`;
+    yield* fs.makeDirectory(`${source}/deferrals`, { recursive: true });
+    const git = Effect.fn("test.deferralGit")((cwd: string, args: ReadonlyArray<string>) =>
+      vcs.run({ operation: "test.deferralGit", command: "git", cwd, args }),
+    );
+    const oldDue = "2026-11-13T09:00+05:30";
+    const monday = "2026-11-16T09:00+05:30";
+    const path = "deferrals/def-written.md";
+    const content = (fields: Record<string, unknown> = {}) =>
+      fixtureItem({
+        id: "def-written",
+        due: oldDue,
+        on_due: "remind",
+        owner: "owner",
+        chat: "chat-a",
+        links: [],
+        ...fields,
+      });
+    const seeded = scenario !== "set two" && scenario !== "legacy schedule";
+    yield* git(source, ["init", "-b", "main"]);
+    yield* fs.writeFileString(`${source}/rules.md`, "Invented rules.\n");
+    if (seeded) yield* fs.writeFileString(`${source}/${path}`, content());
+    yield* git(source, ["add", "."]);
+    yield* git(source, [
+      "-c",
+      "user.name=Fixture Bot",
+      "-c",
+      "user.email=fixture@example.invalid",
+      "commit",
+      "-m",
+      "fixture",
+    ]);
+    yield* git(root, ["clone", "--bare", "--", source, remote]);
+
+    const config = Layer.succeed(MemoryConfig.MemoryConfig, {
+      baseDirectory: root,
+      repositories: [{ orgId, repoUrl: remote, path: "a" }],
+      directMainPush: true,
+    });
+    const writerLayer = Writer.layer.pipe(
+      Layer.provide(Scan.layer),
+      Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
+      Layer.provide(
+        Layer.succeed(Writer.MemoryWriterAuthority, {
+          resolve: (orgId, wakeupId) =>
+            Effect.succeed({
+              orgId,
+              wakeupId,
+              agentId: KinAgentId.make("lead-a"),
+              level: "L2",
+              timeZone: "Asia/Kolkata",
+              startedAt: "2026-11-09T09:00:00.000Z",
+              eventIds: [],
+              sources: new Map([
+                ["owner", { saidBy: "owner", trust: "owner", source: "fixture-owner" }],
+              ]),
+            }),
+        }),
+      ),
+      Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
+      Layer.provide(config),
+    );
+    const runtime = Layer.merge(writerLayer, Watchdogs.layer).pipe(
+      Layer.provideMerge(Layer.succeed(Scheduler.Scheduler, { register: () => Effect.void })),
+      Layer.provideMerge(
+        layerFor([], {
+          memory: memoryLayer.pipe(Layer.provide(config), Layer.provide(nodeGit)),
+        }),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      yield* setup();
+      const sql = yield* SqlClient.SqlClient;
+      const writer = yield* Writer.MemoryWriter;
+      const memory = yield* Memory.Memory;
+      const watchdog = yield* Watchdogs.KinWatchdogs;
+      const { head: base } = yield* memory.prepareWakeup(orgId);
+      const stage = (path: string, content: string) =>
+        writer.stage(orgId, "wake-write", { path, content, sourceEventId: "owner" });
+      const commit = writer.commitWakeup(orgId, "wake-write", "completed");
+      const dueTrigger = (id: string) => `deferral:${id}:due`;
+      const trigger = Effect.fn("test.committedTrigger")(function* (id: string) {
+        const [row] = yield* sql<{ enabled: number; nextRunAt: number | null }>`
+            SELECT enabled, next_run_at AS "nextRunAt" FROM kin_triggers
+            WHERE org_id = ${orgId} AND trigger_id = ${id}`;
+        return row;
+      });
+
+      if (seeded) {
+        yield* watchdog.run("trigger_reconcile", orgId);
+        assert.deepStrictEqual(yield* trigger(dueTrigger("def-written")), {
+          enabled: 1,
+          nextRunAt: dueAt,
+        });
+      }
+
+      if (scenario === "legacy schedule") {
+        yield* stage(
+          "deferrals/sch-written.md",
+          content({
+            id: "sch-written",
+            due: null,
+            on_due: undefined,
+            what: "Summarize open work",
+            every: { at: "08:00", days: [1, 2, 3, 4, 5] },
+          }),
+        );
+        yield* commit;
+        assert.deepStrictEqual(yield* trigger(scheduledTaskTriggerId("sch-written")), {
+          enabled: 1,
+          nextRunAt: Date.parse("2026-11-10T02:30:00Z"),
+        });
+        return;
+      }
+
+      if (scenario === "set two") {
+        yield* stage(path, content());
+        yield* stage("deferrals/def-start.md", content({ id: "def-start", on_due: "start" }));
+        assert.isUndefined(yield* runOf("def-written"));
+        yield* commit;
+        assert.deepStrictEqual(
+          [yield* trigger(dueTrigger("def-written")), yield* trigger(dueTrigger("def-start"))],
+          [
+            { enabled: 1, nextRunAt: dueAt },
+            { enabled: 1, nextRunAt: dueAt },
+          ],
+        );
+        assert.deepStrictEqual(yield* runOf("def-written"), { state: "armed", dueAt });
+        assert.deepStrictEqual(yield* runOf("def-start"), { state: "armed", dueAt });
+        const rows = sql`SELECT * FROM kin_triggers WHERE org_id = ${orgId} ORDER BY trigger_id`;
+        const runs = sql`SELECT * FROM kin_deferral_runs WHERE org_id = ${orgId} ORDER BY item_id`;
+        const before = { triggers: yield* rows, runs: yield* runs };
+        assert.lengthOf(before.triggers, 3);
+        assert.lengthOf(before.runs, 2);
+        yield* TestClock.adjust("1 minute");
+        yield* memory.items(orgId);
+        yield* watchdog.run("trigger_reconcile", orgId);
+        assert.deepStrictEqual({ triggers: yield* rows, runs: yield* runs }, before);
+        yield* tick(dueAt);
+        yield* tick(dueAt);
+        assert.deepStrictEqual(
+          (yield* handedReminders()).map((row) => row.itemId),
+          ["def-written"],
+        );
+        return;
+      }
+
+      if (scenario === "sync lost after commit") {
+        // The head is already synced, so only the watchdog's forced pass can restore the rows.
+        yield* sql`DELETE FROM kin_triggers WHERE org_id = ${orgId}`;
+        yield* sql`DELETE FROM kin_deferral_runs WHERE org_id = ${orgId}`;
+        yield* memory.items(orgId);
+        assert.isUndefined(yield* trigger(dueTrigger("def-written")));
+        yield* watchdog.run("trigger_reconcile", orgId);
+        assert.deepStrictEqual(yield* trigger(dueTrigger("def-written")), {
+          enabled: 1,
+          nextRunAt: dueAt,
+        });
+        assert.deepStrictEqual(yield* runOf("def-written"), { state: "armed", dueAt });
+        return;
+      }
+
+      if (scenario === "cancel while reconcile holds the lock") {
+        const held = yield* Deferred.make<void>();
+        const queued = yield* Deferred.make<void>();
+        let committing = false;
+        const holdingWatchdog = yield* Effect.service(Watchdogs.KinWatchdogs).pipe(
+          Effect.provide(Layer.fresh(Watchdogs.layer)),
+          Effect.provideService(Memory.Memory, {
+            ...memory,
+            // Inside the writer lock: the open item is read and not yet re-armed.
+            query: (org, query, view) =>
+              memory
+                .query(org, query, view)
+                .pipe(
+                  Effect.tap(() =>
+                    Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(queued))),
+                  ),
+                ),
+          }),
+        );
+        const queuedWriter = yield* Effect.service(Writer.MemoryWriter).pipe(
+          Effect.provide(Layer.fresh(writerLayer)),
+          Effect.provideService(Memory.Memory, {
+            ...memory,
+            withWriterLock: (org, effect) =>
+              Effect.suspend(() =>
+                committing ? Deferred.succeed(queued, undefined) : Effect.void,
+              ).pipe(Effect.andThen(memory.withWriterLock(org, effect))),
+          }),
+        );
+        yield* queuedWriter.stage(orgId, "wake-write", {
+          path,
+          content: content({ status: "cancelled" }),
+          sourceEventId: "owner",
+        });
+        const reconcile = yield* holdingWatchdog
+          .run("trigger_reconcile", orgId)
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(held);
+        committing = true;
+        const committed = yield* queuedWriter
+          .commitWakeup(orgId, "wake-write", "completed")
+          .pipe(Effect.forkScoped);
+        yield* Fiber.join(reconcile);
+        yield* Fiber.join(committed);
+        assert.equal((yield* trigger(dueTrigger("def-written")))?.enabled, 0);
+        assert.equal((yield* runOf("def-written"))?.state, "disarmed");
+        yield* tick(dueAt);
+        assert.deepStrictEqual(yield* handedReminders(), []);
+        return;
+      }
+
+      yield* stage(path, content({ status: "cancelled" }));
+      if (scenario === "move") {
+        yield* stage("deferrals/def-monday.md", content({ id: "def-monday", due: monday }));
+      }
+      if (scenario === "cancel during reconcile") {
+        const ready = yield* Deferred.make<void>();
+        const proceed = yield* Deferred.make<void>();
+        const gate = Deferred.succeed(ready, undefined).pipe(
+          Effect.andThen(Deferred.await(proceed)),
+        );
+        const racingWatchdog = yield* Effect.service(Watchdogs.KinWatchdogs).pipe(
+          Effect.provide(Layer.fresh(Watchdogs.layer)),
+          Effect.provideService(Memory.Memory, {
+            ...memory,
+            // A reconcile without the writer lock can already have read the old head at this gate.
+            query: (org, query, view) =>
+              memory.query(org, query, view).pipe(Effect.tap(() => gate)),
+            withWriterLock: (org, effect) =>
+              gate.pipe(Effect.andThen(memory.withWriterLock(org, effect))),
+          }),
+        );
+        const reconcile = yield* racingWatchdog
+          .run("trigger_reconcile", orgId)
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(ready);
+        yield* commit;
+        yield* Deferred.succeed(proceed, undefined);
+        yield* Fiber.join(reconcile);
+        assert.equal((yield* trigger(dueTrigger("def-written")))?.enabled, 0);
+        assert.equal((yield* runOf("def-written"))?.state, "disarmed");
+        return;
+      }
+      const { commit: written } = yield* commit;
+      if (scenario === "undo cancel") {
+        yield* watchdog.run("trigger_reconcile", orgId);
+        assert.equal((yield* runOf("def-written"))?.state, "disarmed");
+        const result = yield* writer.undoChange(orgId, {
+          agentId: KinAgentId.make("lead-a"),
+          branch: "main",
+          path,
+          itemId: KinMemoryItemId.make("def-written"),
+          base,
+          commit: written,
+        });
+        assert.equal(result._tag, "undone");
+        assert.deepStrictEqual(yield* trigger(dueTrigger("def-written")), {
+          enabled: 1,
+          nextRunAt: dueAt,
+        });
+        assert.deepStrictEqual(yield* runOf("def-written"), { state: "armed", dueAt });
+        return;
+      }
+
+      if (scenario === "move") {
+        assert.deepStrictEqual(
+          [yield* trigger(dueTrigger("def-written")), yield* trigger(dueTrigger("def-monday"))],
+          [
+            { enabled: 0, nextRunAt: null },
+            { enabled: 1, nextRunAt: Date.parse(monday) },
+          ],
+        );
+      }
+      if (scenario !== "cancel before firing") {
+        assert.equal((yield* trigger(dueTrigger("def-written")))?.enabled, 0);
+        assert.equal((yield* runOf("def-written"))?.state, "disarmed");
+      }
+      yield* tick(dueAt);
+      assert.deepStrictEqual(yield* handedReminders(), []);
+    }).pipe(Effect.provide(runtime));
+  }).pipe(Effect.provide(nodeGit), Effect.scoped),
+);
 
 it.effect("chases through the real memory lock without reading memory inside the write", () =>
   Effect.gen(function* () {

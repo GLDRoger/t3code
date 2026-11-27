@@ -318,7 +318,17 @@ const runner = Layer.effectDiscard(
 );
 
 const ownerNotices = OwnerNotices.layer.pipe(Layer.provide(KinChatRepository.layer));
-const memoryLayer = Memory.layer.pipe(Layer.provide(ownerNotices));
+// Memory captures its sync hook when the service is built.
+export const memoryLayer = Memory.layer.pipe(
+  Layer.provide(ownerNotices),
+  Layer.provide(
+    FollowUps.rememberSnapshots.pipe(
+      Layer.provide(TriggerService.syncHooksLayer),
+      Layer.provide(TriggerService.layer),
+      Layer.provide(KinChatRepository.layer),
+    ),
+  ),
+);
 
 const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
   entry.pipe(
@@ -329,13 +339,6 @@ const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
       ),
     ),
     Layer.provide(ownerNotices),
-    Layer.provide(
-      FollowUps.rememberSnapshots.pipe(
-        Layer.provide(TriggerService.syncHooksLayer),
-        Layer.provide(TriggerService.layer),
-        Layer.provide(KinChatRepository.layer),
-      ),
-    ),
     Layer.provide(KinPersistence.layer),
     Layer.provide(GithubReaders.layer),
   );
