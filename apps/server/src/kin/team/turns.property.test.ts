@@ -76,7 +76,7 @@ it.prop(
 );
 
 it.prop(
-  "only the decider or the Chief of staff decides, and the question widens once",
+  "only the decider or the Chief of staff decides or brings it to the owner, and the question widens once",
   [moves],
   ([seeds]) => {
     let d = Turns.opened({ openedBy: "social", decider: "finance", chair: "chief" });
@@ -92,10 +92,12 @@ it.prop(
         stakes: [],
       };
       const refusal = Turns.sayRefusal(d, said);
+      const deciderOrChair = ["finance", "chief"].includes(holder.agentId);
+      if (said.end === "decide" && !deciderOrChair && refusal === null) return false;
       if (
-        said.end === "decide" &&
-        !["finance", "chief"].includes(holder.agentId) &&
-        refusal === null
+        said.end === "bring" &&
+        holder.kind !== "closing" &&
+        deciderOrChair !== (refusal === null)
       )
         return false;
       if (said.widen && d.widened && refusal === null) return false;
@@ -133,7 +135,7 @@ it.prop(
     const d = Turns.opened({ openedBy: "social", decider: "finance", chair: "chief" });
     const spent = Turns.afterUnits(d, Turns.TEAM_UNITS_CAP + (seeds[0] ?? 0));
     const idle = Turns.afterIdle(d);
-    // Ten warm owner-seat turns (about 32,800 units each) reach the chair check, not the cap.
+    // Ten warm owner-seat turns (about 32,800 units each) stay under the cap.
     const talked = Turns.afterUnits(d, 10 * 32_800);
     return (
       talked.state === "open" &&
@@ -171,4 +173,61 @@ it("an objection can't also decide, and a decision at the limit stands", () => {
   const decided = Turns.afterSay(full, said("finance", { end: "decide", intent: "decision" }));
   assert.isTrue(decided.final);
   assert.strictEqual(decided.state, "decided");
+});
+
+// A pending or current chair turn in a stored discussion still runs (below); none is scheduled.
+it("no chair turn is scheduled at any message count", () => {
+  let d = Turns.opened({ openedBy: "social", decider: "finance", chair: "chief" });
+  const kinds = new Set<Turns.TurnKind>();
+  while (!d.final && d.turn!.kind !== "closing") {
+    const agentId = d.turn!.agentId;
+    d = Turns.afterSay(d, {
+      agentId,
+      intent: "answer",
+      to: [agentId === "social" ? "finance" : "social"],
+      widen: false,
+      end: null,
+      stakes: ["growth"],
+    });
+    for (const turn of [d.turn, ...d.pending]) if (turn !== null) kinds.add(turn.kind);
+  }
+  assert.strictEqual(d.messages, Turns.TEAM_MAX_MESSAGES);
+  assert.isFalse(kinds.has("chair"));
+});
+
+it("the decider brings a disagreement to the owner; a stored chair turn still runs once", () => {
+  const said = (agentId: string, extra: Partial<Turns.Said> = {}): Turns.Said => ({
+    agentId,
+    intent: "answer",
+    to: [],
+    widen: false,
+    end: null,
+    stakes: [],
+    ...extra,
+  });
+  let d = Turns.opened({ openedBy: "social", decider: "finance", chair: "chief" });
+  d = Turns.afterSay(d, said("social"));
+  assert.deepStrictEqual(d.turn, { agentId: "finance", kind: "decider" });
+  assert.isNull(Turns.sayRefusal(d, said("finance", { end: "bring", intent: "decision" })));
+  assert.strictEqual(
+    Turns.afterSay(d, said("finance", { end: "bring", intent: "decision" })).state,
+    "escalated",
+  );
+  const social = Turns.afterSay(d, said("finance", { to: ["social"] }));
+  assert.deepStrictEqual(social.turn, { agentId: "social", kind: "named" });
+  assert.isNotNull(Turns.sayRefusal(social, said("social", { end: "bring", intent: "decision" })));
+
+  const stored: Turns.Discussion = {
+    ...d,
+    messages: 10,
+    speakers: [...d.speakers, "finance", "social"],
+    turn: { agentId: "chief", kind: "chair" },
+    pending: [{ agentId: "finance", kind: "decider" }],
+    chaired: true,
+  };
+  assert.isNull(Turns.sayRefusal(stored, said("chief")));
+  const after = Turns.afterSay(stored, said("chief"));
+  assert.strictEqual(after.messages, 11);
+  assert.strictEqual(after.turn?.agentId, "finance");
+  assert.notStrictEqual(after.turn?.kind, "chair");
 });

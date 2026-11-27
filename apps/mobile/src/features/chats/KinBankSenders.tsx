@@ -220,6 +220,8 @@ function BankSenderMobileRow(props: {
   const { row } = props;
   const bankSummary =
     row.accountsLine === null ? row.bankName : `${row.bankName} · ${row.accountsLine}`;
+  const stateTone =
+    row.state === "approved" ? "success" : row.state === "waiting" ? "warning" : "secondary";
   return (
     <View className="gap-1.5 px-4 py-3">
       {/* One text per piece in a wrapping row: the line breaks only after an @ or a dot, where a
@@ -240,7 +242,7 @@ function BankSenderMobileRow(props: {
         ))}
       </View>
       <View className="flex-row flex-wrap items-center gap-2">
-        <Chip size="small" label={row.stateLabel} />
+        <Chip size="small" tone={stateTone} label={row.stateLabel} />
       </View>
       <Text textRole="footnote" className="text-foreground-muted">
         {bankSummary}

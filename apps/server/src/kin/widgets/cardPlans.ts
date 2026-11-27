@@ -30,7 +30,7 @@ export const CardActionInput = Schema.Struct({
   kind: Schema.Literals(CARD_ACTIONS),
   target: KinTrimmedText.check(Schema.isMaxLength(200)).annotate({
     description:
-      "done, drop: a task key such as W-4. start: a due deferral's id. create_list: a list_define proposal id for a new list. take_default: the id of an open question of yours. record_payment: a Bank transactions credit's key (BNK-1) when Kin ranks one invoice first for it, else the credit's key, a space and the key or number of an invoice Kin ranks first for it (BNK-1 INV-1). mark_repaid: a Bank transactions debit's key (BNK-4) that Kin reads as paying a partner back. record_payment may name more invoices of that client after the first (BNK-4 INV-12 INV-14). apply_credit: a client's credit and that client's invoice (RCT-3 INV-14). record_bill: the key of an Expenses entry you suggested as a bill to pay (EXP-7). mark_bill_paid: a Bank transactions debit's key (BNK-4) that Kin matches to one bill to pay.",
+      "done, drop: a task key such as W-4. start: a due deferral's id. create_list: a list_define proposal id for a new list. take_default: the id of an open question of yours. record_payment: a Bank transactions credit's key (BNK-1) when Kin ranks one invoice first for it, else the credit's key, a space and the key or number of an invoice Kin ranks first for it (BNK-1 INV-1). mark_repaid: a Bank transactions debit's key (BNK-4) that Kin reads as paying a partner back. record_payment may name more invoices of that client after the first (BNK-4 INV-12 INV-14); when Kin can't tell which invoice a credit pays, the first may be any of them. apply_credit: a client's credit and that client's invoice (RCT-3 INV-14). record_bill: the key of an Expenses entry you suggested as a bill to pay (EXP-7). mark_bill_paid: a Bank transactions debit's key (BNK-4) that Kin matches to one bill to pay.",
   }),
 }).annotate({
   description: "What Kin itself does when this option is tapped; Kin writes its button.",
@@ -100,6 +100,7 @@ const PaymentTerms = Schema.Struct({
         key: Schema.String,
         number: Schema.String,
         seen: Schema.String,
+        rev: Schema.optionalKey(Schema.Number),
         amountMinor: Schema.Number,
         owedAfterMinor: Schema.Number,
       }),
@@ -437,14 +438,7 @@ export type NoticePlan = typeof NoticePlan.Type;
 const InvoiceChoicePlan = Schema.Struct({
   kind: Schema.Literal("invoice_choice"),
   ...FactCardFields,
-  payment: Schema.NullOr(
-    Schema.Struct({
-      ...PaymentTerms.fields,
-      invoiceRev: Schema.Number,
-      received: KinMoney,
-      rate: Schema.String,
-    }),
-  ),
+  payment: Schema.NullOr(Schema.Struct({ ...PaymentTerms.fields, invoiceRev: Schema.Number })),
 });
 export type InvoiceChoicePlan = typeof InvoiceChoicePlan.Type;
 

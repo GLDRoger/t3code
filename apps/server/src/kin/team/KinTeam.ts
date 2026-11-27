@@ -97,7 +97,7 @@ export const TeamSayInput = Schema.Struct({
   end: Schema.optional(
     Schema.Literals(["decide", "park", "bring"]).annotate({
       description:
-        "decide: the decider or the Chief of staff settles it. park: the Chief of staff stops it for now, saying where it stands. bring: the Chief of staff takes a disagreement that is the owner's to decide to them.",
+        "decide: the decider or the Chief of staff settles it. park: the Chief of staff stops it for now, saying where it stands. bring: the decider or Chief of staff brings the owner a disagreement that is the owner's.",
     }),
   ),
   outcome: Schema.optional(
@@ -528,7 +528,7 @@ const make = Effect.gen(function* () {
     if (d.final) yield* tell(orgId, row.discussionId);
   });
 
-  /** Posts a disagreement card in the Chief of staff's chat with the owner: two taps. */
+  /** Posts a disagreement card in the bringer's chat with the owner: two taps. */
   const postCard = (orgId: KinOrgId, discussionId: string, card: HeldCard) =>
     chat.ask(
       {
@@ -1051,12 +1051,13 @@ const make = Effect.gen(function* () {
           ...(input.outcome === undefined ? {} : { outcome: oneLine(input.outcome) }),
         });
         if (end === "bring" && input.positions !== undefined && input.options !== undefined) {
-          const chair = all.find((agent) => agent.agentId === row.d.chair);
+          // In the bringer's own chat with the owner: an agent posts only in a chat it is in.
+          const bringer = all.find((agent) => agent.agentId === ctx.agentId);
           const card: HeldCard | undefined =
-            chair === undefined
+            bringer === undefined
               ? undefined
               : {
-                  chatId: chair.ownerChatId,
+                  chatId: bringer.ownerChatId,
                   agentId: ctx.agentId,
                   ownerPersonId: ctx.ownerPersonId,
                   threadId: ctx.threadId,
