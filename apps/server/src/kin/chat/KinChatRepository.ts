@@ -280,6 +280,7 @@ const {
   withdrawn: _withdrawn,
   sourceWakeupId: _sourceWakeupId,
   lapsedQuestion: _lapsedQuestion,
+  ordinaryTurnAsk: _ordinaryTurnAsk,
   ...messageRowFields
 } = KinMessage.fields;
 const encodeRelay = Schema.encodeEffect(Schema.fromJsonString(KinMessageRelay));
@@ -297,6 +298,7 @@ const MessageRow = Schema.Struct({
     Schema.fromJsonString(KinMessage.fields.lapsedQuestion.schema),
   ),
   storedClientMessageId: Schema.NullOr(Schema.String),
+  storedImmediateAsk: Schema.Literals([0, 1]),
   storedAttachments: Schema.NullOr(Schema.fromJsonString(StoredAttachments)),
   storedRefs: Schema.NullOr(Schema.fromJsonString(StoredRefs)),
   storedEmbeds: Schema.NullOr(Schema.fromJsonString(StoredEmbeds)),
@@ -310,6 +312,7 @@ const MessageRow = Schema.Struct({
     SchemaTransformation.transform({
       decode: ({
         storedClientMessageId,
+        storedImmediateAsk,
         storedAttachments,
         storedRefs,
         storedDiscussionId,
@@ -340,6 +343,16 @@ const MessageRow = Schema.Struct({
         storedClientMessageId?.startsWith(STORED_UPDATE_PREFIX)
           ? { progress: true }
           : {}),
+        // kin_ask mints this for its own lane; the Team room and executable options never wait.
+        ...(message.author._tag === "agent" &&
+        storedSourceWakeupId !== null &&
+        storedClientMessageId?.startsWith(`send:kin-ask:${storedSourceWakeupId}:`) &&
+        message.kind === "text" &&
+        message.intent === "question" &&
+        message.widgetId?.startsWith("choice:") &&
+        storedImmediateAsk === 0
+          ? { ordinaryTurnAsk: true }
+          : {}),
         ...(storedAttachments === null ? {} : { attachments: storedAttachments }),
         ...(storedRefs === null ? {} : { refs: storedRefs }),
         ...(storedClientMessageId?.startsWith("send:")
@@ -361,6 +374,7 @@ const MessageRow = Schema.Struct({
         form,
         embeds,
         sourceWakeupId,
+        ordinaryTurnAsk: _ask,
         ...message
       }) => ({
         ...message,
@@ -376,6 +390,7 @@ const MessageRow = Schema.Struct({
         storedForm: form ?? null,
         storedAttachments: attachments ?? null,
         storedRefs: refs ?? null,
+        storedImmediateAsk: 0,
         storedClientMessageId:
           message.clientMessageId === undefined ? null : `send:${message.clientMessageId}`,
       }),
@@ -385,7 +400,14 @@ const MessageRow = Schema.Struct({
 const messageColumns = `org_id AS "orgId", chat_id AS "chatId", message_id AS "messageId", seq AS "seq", change_seq AS "changeSeq", client_message_id AS "storedClientMessageId", author_role AS "authorRole", kind AS "kind", body AS "body", attachments_json AS "storedAttachments", refs_json AS "storedRefs", form AS "storedForm", embeds_json AS "storedEmbeds", intent AS "intent", mentions_json AS "mentions", reply_to AS "replyTo", widget_id AS "widgetId", floor_run_id AS "floorRunId", status AS "status", sent_by AS "sentBy", created_at AS "createdAt", edited_at AS "editedAt", discussion_id AS "storedDiscussionId", (SELECT 1 - final FROM kin_discussions d WHERE d.org_id = kin_messages.org_id AND d.discussion_id = kin_messages.discussion_id) AS "storedDiscussionOpen", relay_json AS "storedRelay", origin_json AS "storedOrigin", when_json AS "storedWhen", withdrawn_json AS "storedWithdrawn", lapsed_question_json AS "storedLapsedQuestion", CASE author_kind WHEN 'human' THEN json_object('_tag', 'human', 'personId', author_person_id, 'memberId', author_member_id)
  WHEN 'agent' THEN json_object('_tag', 'agent', 'agentId', author_agent_id, 'memberId', author_member_id,
  'ownerPersonId', author_owner_person_id, 'threadId', author_thread_id)
- ELSE json_object('_tag', author_kind) END AS author, source_wakeup_id AS "storedSourceWakeupId"`;
+ ELSE json_object('_tag', author_kind) END AS author, source_wakeup_id AS "storedSourceWakeupId",
+ CASE WHEN author_kind = 'agent' AND widget_id IS NOT NULL AND client_message_id GLOB 'send:kin-ask:*' THEN
+   EXISTS (SELECT 1 FROM kin_chats c WHERE c.org_id = kin_messages.org_id
+     AND c.chat_id = kin_messages.chat_id AND c.team_id = '${KIN_TEAM_ROOM_TEAM_ID}')
+   OR EXISTS (SELECT 1 FROM kin_widgets w, json_each(w.state_json, '$.options') o
+     WHERE w.org_id = kin_messages.org_id AND w.widget_id = kin_messages.widget_id
+       AND w.type = 'choice' AND json_type(w.state_json, o.fullkey || '.action') = 'object')
+ ELSE 0 END AS "storedImmediateAsk"`;
 const WidgetRow = Schema.Struct({
   ...KinWidget.fields,
   state: Schema.fromJsonString(KinWidget.fields.state),

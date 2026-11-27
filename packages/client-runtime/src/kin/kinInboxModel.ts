@@ -19,6 +19,7 @@ import {
   applyKinDraft,
   applyKinLiveBacklog,
   applyKinPresence,
+  kinHeldAskCards,
   KinHeldDraft,
   settleKinDrafts,
 } from "./kinLive.ts";
@@ -376,10 +377,9 @@ export function applyKinChatEvent(
         widgets === state.widgets &&
         contiguousSeq === state.contiguousSeq &&
         changeSeq === state.changeSeq &&
-        live.drafts.length === 0 &&
-        live.presence.length === 0 &&
-        state.drafts.length === 0 &&
-        state.presence.length === 0
+        (live.drafts === state.drafts || (live.drafts.length === 0 && state.drafts.length === 0)) &&
+        (live.presence === state.presence ||
+          (live.presence.length === 0 && state.presence.length === 0))
       ) {
         return state;
       }
@@ -405,6 +405,7 @@ export function applyKinChatEvent(
         changeSeq: event.lastChangeSeq ?? 0,
         needsHistoryReload: true,
         clearedSeq: event.clearedSeq ?? state.clearedSeq,
+        presence: event.presence ?? state.presence,
         // A cleared chat keeps nothing that hung on its messages; a draft's later deltas no
         // longer line up, so its reply shows when it lands.
         ...(event.cleared === true ? { reactions: [], drafts: [] } : {}),
@@ -488,11 +489,19 @@ export function applyKinChatHistory(state: KinChatState, page: KinChatHistoryRes
 
 /** The latest messages and the widgets they anchor, for the device cache. */
 export function trimKinChatForCache(state: KinChatState): KinChatState {
-  const messages = state.messages.slice(-KIN_CACHED_MESSAGE_LIMIT);
+  // Presence isn't cached: replay from the first hidden card instead of painting it on boot.
+  const held = kinHeldAskCards(state.messages, state.presence);
+  const messages = (
+    held === null
+      ? state.messages
+      : state.messages.filter((message) => message.seq <= held.readThroughSeq)
+  ).slice(-KIN_CACHED_MESSAGE_LIMIT);
   const kept = new Set(messages.map((message) => message.messageId));
   return {
     ...state,
     messages,
+    contiguousSeq:
+      held === null ? state.contiguousSeq : Math.min(state.contiguousSeq, held.readThroughSeq),
     widgets: state.widgets.filter((widget) => kept.has(widget.messageId)),
     reactions: state.reactions.filter((reaction) => kept.has(reaction.messageId)),
     left: false,

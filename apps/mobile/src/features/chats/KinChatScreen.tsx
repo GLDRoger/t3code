@@ -167,6 +167,7 @@ import {
   kinMayStopAgent,
   kinPresenceLine,
   kinPresenceNeedsClock,
+  kinLatestReadableSeq,
 } from "@t3tools/client-runtime/kin/kinLive";
 import {
   kinAgentAvatar,
@@ -1067,7 +1068,9 @@ function KinChatFeed(props: {
   const [heldPaging, setPaging] = useState<KinPaging>(initialKinPaging);
   const [expandedRuns, setExpandedRuns] = useState<ReadonlySet<string>>(new Set());
   const [follow, setFollow] = useState(() =>
-    initialKinFeedFollow(latestKinSeq(props.chat.value.messages)),
+    initialKinFeedFollow(
+      kinLatestReadableSeq(props.chat.value.messages, props.chat.value.presence),
+    ),
   );
 
   const live = props.chat.value;
@@ -1084,7 +1087,7 @@ function KinChatFeed(props: {
     heldLine,
     props.chatId,
     kinOwnReadSeq(live, viewerMemberId),
-    latestKinSeq(live.messages),
+    heldLine?.upTo ?? kinLatestReadableSeq(live.messages, live.presence),
   );
   if (newLine !== heldLine) setHeldLine(newLine);
   // Apart from `follow`, so a scroll recomputes only where the feed stands, not its rows.
@@ -1110,7 +1113,11 @@ function KinChatFeed(props: {
   });
   const { streamed, messages, widgets, pending, feedRows, rows, landIndex, openRow, earlierPage } =
     feed;
-  const { followsEnd, unseen } = kinChatFeedFollow(messages, follow, props.viewer.personId);
+  const { followsEnd, unseen } = kinChatFeedFollow(
+    feed.visibleMessages,
+    follow,
+    props.viewer.personId,
+  );
   const echoedKey = feed.echoed.join("\n");
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- frees outbox entries once the stream carries their message
   useEffect(() => {

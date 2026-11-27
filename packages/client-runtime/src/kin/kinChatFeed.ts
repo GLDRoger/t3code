@@ -34,7 +34,7 @@ import {
 } from "./kinInboxModel.ts";
 import { kinTapAnswersChoice, kinTapText } from "./kinTap.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
-import { kinReplyKey, type KinHeldDraft } from "./kinLive.ts";
+import { kinAskTurnKey, kinPostedReplyWakeup, kinReplyKey, type KinHeldDraft } from "./kinLive.ts";
 import { kinReplyButtons, type KinReplyButton } from "./kinReplyButtons.ts";
 import { kinPlainTables, kinSentences } from "./kinScreenState.ts";
 import type { KinSynced } from "./kinStreams.ts";
@@ -554,7 +554,39 @@ function replyBeforeCards(
     }
   }
   ordered.push(...cards);
-  return { ordered, teamCardRuns };
+  return { ordered: placeDeferredAsks(ordered), teamCardRuns };
+}
+
+// An unrelated row can break the ordinary grouping; only these asks still belong below their words.
+function placeDeferredAsks(entries: ReadonlyArray<FeedEntry>): ReadonlyArray<FeedEntry> {
+  const asks: Array<{ entry: KinMessage; index: number }> = [];
+  for (const [index, entry] of entries.entries()) {
+    if (!("draftId" in entry) && entry.ordinaryTurnAsk === true && isStandaloneCard(entry))
+      asks.push({ entry, index });
+  }
+  if (asks.length === 0) return entries;
+  const lastReply = new Map<string, number>();
+  for (const [index, entry] of entries.entries()) {
+    if ("draftId" in entry || kinPostedReplyWakeup(entry) === undefined) continue;
+    const turn = kinAskTurnKey(entry);
+    if (turn !== null) lastReply.set(turn, index);
+  }
+  const moved = new Set<number>();
+  const after = new Map<number, KinMessage[]>();
+  for (const { entry, index } of asks) {
+    const turn = kinAskTurnKey(entry);
+    const at = turn === null ? undefined : lastReply.get(turn);
+    if (at === undefined || at <= index) continue;
+    moved.add(index);
+    const group = after.get(at);
+    if (group === undefined) after.set(at, [entry]);
+    else group.push(entry);
+  }
+  return moved.size === 0
+    ? entries
+    : entries.flatMap((entry, index) =>
+        moved.has(index) ? [] : [entry, ...(after.get(index) ?? [])],
+      );
 }
 
 type ReplyFooterRow = Extract<KinFeedRow, { type: "footer" }>;
@@ -710,16 +742,8 @@ function placeReplyFooters(rows: ReadonlyArray<KinFeedRow>) {
 function repliedTurns(messages: ReadonlyArray<KinMessage>) {
   const turns = new Set<string>();
   for (const message of messages) {
-    if (
-      message.sourceWakeupId !== undefined &&
-      message.progress !== true &&
-      message.author._tag === "agent" &&
-      message.kind === "text" &&
-      message.status === "posted" &&
-      message.relay === undefined &&
-      message.body.trim() !== ""
-    )
-      turns.add(message.sourceWakeupId);
+    const wakeupId = kinPostedReplyWakeup(message);
+    if (wakeupId !== undefined) turns.add(wakeupId);
   }
   return turns;
 }
