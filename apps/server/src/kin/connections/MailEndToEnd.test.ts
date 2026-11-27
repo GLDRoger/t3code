@@ -1891,7 +1891,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
               orgId,
               connectionId,
               modes: detail.tools
-                .filter((tool) => tool.name === "mail_list_threads" || tool.name === "mail_search")
+                .filter((tool) => tool.name === "mail_list_threads")
                 .map((tool) => ({ tool: tool.name, mode: "off" as const, digest: tool.pinDigest })),
             });
             yield* approved();
@@ -2055,7 +2055,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           fake.deliver({ ...billMail, to, at: floor - 1 });
           fake.deliver({ ...billMail, to, at: floor });
           assert.include(yield* Effect.flip(catchUp()), {
-            message: "Kin has no company mailbox it can read.",
+            message: "Kin has no company mailbox it can search.",
           });
           yield* connections.moveMailbox(people(owner), {
             orgId,
@@ -2070,17 +2070,274 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             orgId,
             connectionId: newBox.connectionId,
           });
-          const read = detail.tools.find((one) => one.name === "mail_read_thread")!;
           yield* connections.setToolModes(people(owner), {
             orgId,
             connectionId: newBox.connectionId,
-            modes: [{ tool: read.name, mode: "read", digest: read.pinDigest }],
+            modes: detail.tools
+              .filter((one) => one.name === "mail_read_thread" || one.name === "mail_search")
+              .map((one) => ({ tool: one.name, mode: "read" as const, digest: one.pinDigest })),
           });
           const mail = fake.deliver({ ...billMail, to, at: floor + 1 });
           assert.include(yield* catchUp(), { queued: 1, older: false });
           assert.deepStrictEqual(yield* caughtIds, [mail.id]);
         }),
       ),
+    );
+
+    it.effect("queues only the sender's own mail from a mixed thread and asks for no text", () => {
+      const reads: Array<URL> = [];
+      return setUp(
+        (fake) =>
+          Effect.gen(function* () {
+            yield* connect(fake, vendor, to);
+            yield* approved();
+            const old = fake.deliver({ ...billMail, to, at: NOW - 3 * 86_400_000 });
+            const thread = { to, threadId: old.threadId };
+            fake.deliver({
+              ...billMail,
+              ...thread,
+              from: "Arjun <arjun@tidewater.example>",
+              at: NOW - 3,
+            });
+            const own = fake.deliver({ ...billMail, ...thread, at: NOW - 2 });
+            fake.deliver({
+              ...billMail,
+              ...thread,
+              from: `"${inkspot}" <arjun@tidewater.example>`,
+              at: NOW - 1,
+            });
+            reads.length = 0;
+            assert.include(yield* catchUp(), { queued: 1, older: false });
+            assert.deepStrictEqual(yield* caughtIds, [own.id]);
+            const asked = reads.map((url) => ({
+              path: url.pathname.replace(/\/threads\/[^/]+$/, "/threads/:id"),
+              fields: url.searchParams.get("fields"),
+              headers: url.searchParams.getAll("metadataHeaders"),
+              select: url.searchParams.get("$select"),
+            }));
+            assert.deepStrictEqual(
+              [...new Set(asked.map((one) => JSON.stringify(one)))].map((one) => JSON.parse(one)),
+              vendor === "google"
+                ? [
+                    {
+                      path: "/gmail/v1/users/me/threads",
+                      fields: "threads(id),nextPageToken",
+                      headers: [],
+                      select: null,
+                    },
+                    {
+                      path: "/gmail/v1/users/me/threads/:id",
+                      fields: "messages(id,threadId,internalDate,payload(headers))",
+                      headers: ["From"],
+                      select: null,
+                    },
+                  ]
+                : [
+                    {
+                      path: "/v1.0/me/messages",
+                      fields: null,
+                      headers: [],
+                      select: "id,conversationId,from,receivedDateTime",
+                    },
+                  ],
+            );
+          }),
+        {
+          mailRead: (url) => {
+            reads.push(url);
+          },
+        },
+      );
+    });
+
+    it.effect("starts on the owner's day across a clock change", () =>
+      setUp((fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* connect(fake, vendor, to);
+          yield* approved();
+          yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief, evening_summary,
+              dream, full_rebuild_weekday, owner_check_weekday, owner_check, quiet_hours_json)
+            VALUES (${orgId}, 'America/New_York', '08:30', '18:30', '03:00', 0, 1, '09:00', '{}')`;
+          // 1 Nov 2026 starts at 04:00 UTC (EDT) and ends at 05:00 UTC the next day (EST).
+          const midnight = Date.UTC(2026, 10, 1, 4);
+          fake.deliver({ ...billMail, to, at: midnight - 1 });
+          const first = fake.deliver({ ...billMail, to, at: midnight });
+          const result = yield* catchUp(owner, "2026-11-01");
+          assert.include(result, { queued: 1, older: false });
+          assert.strictEqual(result.text, `Kin is reading 1 mail from ${inkspot} since 1 Nov.`);
+          assert.deepStrictEqual(yield* caughtIds, [first.id]);
+        }),
+      ),
+    );
+
+    it.effect("never searches a mailbox whose Search is off", () => {
+      const searches: Array<URL> = [];
+      return setUp(
+        (fake) =>
+          Effect.gen(function* () {
+            const connectionId = yield* connect(fake, vendor, to);
+            const connections = yield* KinConnections;
+            const detail = yield* connections.get(people(owner), { orgId, connectionId });
+            const search = detail.tools.find((tool) => tool.name === "mail_search")!;
+            yield* connections.setToolModes(people(owner), {
+              orgId,
+              connectionId,
+              modes: [{ tool: search.name, mode: "off", digest: search.pinDigest }],
+            });
+            yield* approved();
+            fake.deliver({ ...pdfMail, to, at: NOW - 1 });
+            assert.include(yield* Effect.flip(catchUp()), {
+              message: "Kin has no company mailbox it can search.",
+            });
+            assert.deepStrictEqual(searches, []);
+            assert.deepStrictEqual(yield* caughtIds, []);
+          }),
+        {
+          mailRead: (url) => {
+            if (searchList(url)) searches.push(url);
+          },
+        },
+      );
+    });
+
+    it.effect("never reads queued mail once Read a thread is off", () => {
+      const reads: Array<URL> = [];
+      return setUp(
+        (fake) =>
+          Effect.gen(function* () {
+            const connectionId = yield* connect(fake, vendor, to);
+            const connections = yield* KinConnections;
+            yield* approved();
+            const mail = fake.deliver({ ...pdfMail, to, at: NOW - 1 });
+            assert.include(yield* catchUp(), { queued: 1 });
+            const detail = yield* connections.get(people(owner), { orgId, connectionId });
+            const read = detail.tools.find((tool) => tool.name === "mail_read_thread")!;
+            yield* connections.setToolModes(people(owner), {
+              orgId,
+              connectionId,
+              modes: [{ tool: read.name, mode: "off", digest: read.pinDigest }],
+            });
+            reads.length = 0;
+            yield* drain();
+            assert.deepStrictEqual(yield* billLedger, [{ state: "skipped", reason: "gone" }]);
+            assert.isFalse(reads.some((url) => url.pathname.includes(mail.id)));
+          }),
+        {
+          mailRead: (url) => {
+            reads.push(url);
+          },
+        },
+      );
+    });
+
+    it.effect("reads again mail skipped while the sender was removed, never twice", () => {
+      const reads: Array<URL> = [];
+      return setUp(
+        (fake) =>
+          Effect.gen(function* () {
+            yield* connect(fake, vendor, to);
+            yield* approved();
+            const mail = fake.deliver({ ...pdfMail, to, at: NOW - 1 });
+            fake.deliver({ ...pdfMail, to, at: NOW - 2, authResults: [] });
+            assert.include(yield* catchUp(), { queued: 2 });
+            yield* mailChange("removed");
+            yield* drain();
+            assert.deepStrictEqual(yield* billLedger, [
+              { state: "skipped", reason: "not_approved" },
+              { state: "skipped", reason: "not_approved" },
+            ]);
+            yield* BillSenders.add(orgId, owner, inkspot);
+            assert.deepStrictEqual(yield* catchUp(), {
+              queued: 2,
+              older: false,
+              text: `Kin is reading 2 mails from ${inkspot} since 16 Nov.`,
+            });
+            yield* drain();
+            assert.sameDeepMembers(
+              [...(yield* billLedger)],
+              [
+                { state: "done", reason: null },
+                { state: "skipped", reason: "unverified" },
+              ],
+            );
+            assert.lengthOf(parts(reads, mail.id), 1);
+            assert.include(yield* catchUp(), { queued: 0 });
+            yield* drain();
+            assert.lengthOf(parts(reads, mail.id), 1);
+          }),
+        {
+          mailRead: (url) => {
+            reads.push(url);
+          },
+        },
+      );
+    });
+  });
+
+  it.effect("starts a stopped catch-up over when the company's mailboxes change", () => {
+    let throttled = true;
+    const pages: Array<boolean> = [];
+    return setUp(
+      (fake) =>
+        Effect.gen(function* () {
+          yield* connect(fake, "google", ACCOUNTS);
+          yield* approved();
+          manyBills(fake, ACCOUNTS, 76);
+          assert.include(yield* catchUp(), { queued: 75, stopped: true });
+          yield* connect(fake, "microsoft", HELLO);
+          const outlook = fake.deliver({ ...billMail, to: HELLO, at: NOW - 500 });
+          throttled = false;
+          pages.length = 0;
+          assert.include(yield* catchUp(), { queued: 2, older: false });
+          assert.include(yield* caughtIds, outlook.id);
+          assert.strictEqual(pages[0], false);
+        }),
+      {
+        mailRead: (url) => {
+          if (!searchList(url)) return;
+          pages.push(laterPage(url));
+          if (throttled && laterPage(url)) return new Response(null, { status: 429 });
+        },
+      },
+    );
+  });
+
+  it.effect("resumes a stopped catch-up only for the same person within 15 minutes", () => {
+    let throttled = true;
+    const pages: Array<boolean> = [];
+    return setUp(
+      (fake) =>
+        Effect.gen(function* () {
+          yield* connect(fake, "google", ACCOUNTS);
+          yield* approved();
+          const mail = manyBills(fake, ACCOUNTS, 151);
+          assert.include(yield* catchUp(), { queued: 75, older: false, stopped: true });
+          throttled = false;
+          pages.length = 0;
+          // Meera starts from the newest page; Rhea's saved pages stay Rhea's.
+          assert.include(yield* catchUp(coOwner), { queued: 76, older: false });
+          assert.deepStrictEqual(pages, [false, true, true]);
+          pages.length = 0;
+          yield* TestClock.adjust("16 minutes");
+          assert.deepStrictEqual(yield* catchUp(), {
+            queued: 0,
+            older: false,
+            text: `Kin found no new mail from ${inkspot} since 16 Nov.`,
+          });
+          assert.deepStrictEqual(pages, [false, true, true]);
+          assert.deepStrictEqual(
+            yield* caughtIds,
+            mail.map(({ id }) => id),
+          );
+        }),
+      {
+        mailRead: (url) => {
+          if (!searchList(url)) return;
+          pages.push(laterPage(url));
+          if (throttled && laterPage(url)) return new Response(null, { status: 429 });
+        },
+      },
     );
   });
 

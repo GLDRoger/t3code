@@ -25,6 +25,8 @@ const MAX_MAIL = 200;
 const LISTING_MS = 20_000;
 const RESUME_MS = 15 * MINUTE_MS;
 const MAX_SAVED_SEARCHES = 64;
+// Skipped only because the sender or the mailbox couldn't be read then: an owner's catch-up asks again.
+const SKIPS_LIFTED = ["not_approved", "removed", "gone"];
 
 type Cursor = {
   readonly connectionId: string;
@@ -75,7 +77,7 @@ export const readSince = Effect.fn("KinBillSenders.readSince")(function* (
   const sinceMs = startOfDay(since, zone);
   const connections = yield* KinConnections;
   const mailboxes = yield* connections.billMailboxes(orgId);
-  if (mailboxes.length === 0) return yield* invalid("Kin has no company mailbox it can read.");
+  if (mailboxes.length === 0) return yield* invalid("Kin has no company mailbox it can search.");
 
   const saved = continuations.get(connections) ?? new Map<string, Continuation>();
   continuations.set(connections, saved);
@@ -118,7 +120,11 @@ export const readSince = Effect.fn("KinBillSenders.readSince")(function* (
           }));
           if (!Arr.isArrayNonEmpty(rows)) return [];
           return yield* sql`INSERT INTO kin_bill_mail ${sql.insert(rows)}
-            ON CONFLICT (org_id, connection_id, message_id) DO NOTHING RETURNING message_id`;
+            ON CONFLICT (org_id, connection_id, message_id) DO UPDATE SET state = 'waiting',
+              reason = NULL, done_at = NULL, next_at = excluded.next_at,
+              queued_at = excluded.queued_at, asked_by_person_id = excluded.asked_by_person_id
+            WHERE kin_bill_mail.state = 'skipped' AND kin_bill_mail.reason IN ${sql.in(SKIPS_LIFTED)}
+            RETURNING message_id`;
         }),
       );
       queued += inserted.length;
@@ -153,7 +159,8 @@ export const readSince = Effect.fn("KinBillSenders.readSince")(function* (
       const ids = yield* encodeStrings(page.messages.map((message) => message.messageId));
       const stored = yield* sql<{ messageId: string }>`SELECT message_id AS "messageId"
         FROM kin_bill_mail WHERE org_id = ${orgId} AND connection_id = ${cursor.connectionId}
-        AND message_id IN (SELECT value FROM json_each(${ids}))`;
+        AND message_id IN (SELECT value FROM json_each(${ids}))
+        AND NOT (state = 'skipped' AND reason IN ${sql.in(SKIPS_LIFTED)})`;
       const known = new Set(stored.map((row) => row.messageId));
       for (const message of pending) {
         if (message.connectionId === cursor.connectionId) known.add(message.messageId);

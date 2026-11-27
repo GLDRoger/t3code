@@ -198,6 +198,8 @@ const threadsOf = Effect.fn("KinGoogle.threads")(function* (
     labelIds: params.labelIds,
     maxResults: String(params.max),
     pageToken: params.pageToken,
+    // Gmail's thread list carries each thread's snippet unless told otherwise.
+    fields: params.headersOnly ? "threads(id),nextPageToken" : undefined,
   });
   const threads = yield* threadsById(
     context,

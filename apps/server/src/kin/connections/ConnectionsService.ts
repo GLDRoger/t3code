@@ -898,7 +898,7 @@ export class KinConnections extends Context.Service<
       connectionId: string,
       threadId: string,
     ) => Effect.Effect<ReadonlyArray<MailMessage>, KinChatError>;
-    /** Company mailboxes with bill reading enabled. Server use only, never an agent tool. */
+    /** Company mailboxes Kin may search for bills. Server use only, never an agent tool. */
     readonly billMailboxes: (
       orgId: KinOrgId,
     ) => Effect.Effect<
@@ -2972,25 +2972,30 @@ const make = Effect.gen(function* () {
   const billProvider = Effect.fn("KinConnections.billProvider")(function* (
     orgId: KinOrgId,
     row: ConnectionRow,
+    searching = false,
   ) {
     const provider = mailProviderOf(row);
     if (
       provider === undefined ||
       row.personId != null ||
       row.pausedAt !== null ||
-      row.state !== "active" ||
-      !(yield* readableTools(orgId, row.connectionId)).has(MAIL_TOOL.read)
+      row.state !== "active"
     )
       return undefined;
-    return provider;
+    const read = yield* readableTools(orgId, row.connectionId);
+    // A catch-up searches the mailbox, so it needs the owner's Search setting, as an agent would.
+    return read.has(MAIL_TOOL.read) && (!searching || read.has(MAIL_TOOL.search))
+      ? provider
+      : undefined;
   });
 
   const billMailbox = Effect.fn("KinConnections.billMailbox")(function* (
     orgId: KinOrgId,
     connectionId: string,
+    searching = false,
   ) {
     const row = yield* live(orgId, connectionId);
-    const provider = yield* billProvider(orgId, row);
+    const provider = yield* billProvider(orgId, row, searching);
     if (provider === undefined) return yield* notFound;
     return { row, provider };
   });
@@ -2999,7 +3004,7 @@ const make = Effect.gen(function* () {
     const rows = yield* liveConnections(orgId).pipe(provideSql);
     const mailboxes = [];
     for (const row of rows) {
-      const provider = yield* billProvider(orgId, row);
+      const provider = yield* billProvider(orgId, row, true);
       if (provider !== undefined)
         mailboxes.push({ connectionId: row.connectionId, service: provider.mailService });
     }
@@ -3013,7 +3018,7 @@ const make = Effect.gen(function* () {
     sinceMs: number,
     pageToken?: string,
   ) {
-    const { row, provider } = yield* billMailbox(orgId, connectionId);
+    const { row, provider } = yield* billMailbox(orgId, connectionId, true);
     const floor = yield* ownUntil(orgId, row.accountLabel).pipe(provideSql);
     const previous = sinceMs - DAY_MS;
     const gmail = provider.preset === "google";
