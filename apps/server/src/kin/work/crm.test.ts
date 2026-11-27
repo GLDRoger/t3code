@@ -393,17 +393,18 @@ it.effect("nested fields cannot supply shared record columns", () =>
     assert.include(refused.message, "owner");
     const columns = ["id", "key", "holder", "visibility", "client", "title", "sensitive", "list"];
     for (const name of [...columns, "kind", "category", "accountsForTax"])
-      for (const call of [
-        decodeCreate({
-          sourceEventId: "ask-event",
-          records: [{ list: "clients", title: "Juniper Cold Chain", fields: { [name]: "C-2" } }],
-        }),
-        decodeUpdate({ key: "C-1", sourceEventId: "ask-event", fields: { [name]: "C-2" } }),
+      for (const refused of [
+        yield* Effect.flip(
+          decodeCreate({
+            sourceEventId: "ask-event",
+            records: [{ list: "clients", title: "Juniper Cold Chain", fields: { [name]: "C-2" } }],
+          }),
+        ),
+        yield* Effect.flip(
+          decodeUpdate({ key: "C-1", sourceEventId: "ask-event", fields: { [name]: "C-2" } }),
+        ),
       ])
-        assert.include(
-          (yield* Effect.flip(call)).message,
-          `"${name}" is not a field for this record write.`,
-        );
+        assert.include(refused.message, `"${name}" is not a field for this record write.`);
   }),
 );
 
@@ -688,7 +689,7 @@ it.effect.each(fieldTurns)(
             };
           }),
         );
-      const outcome = <A>(effect: Effect.Effect<A, unknown, never>) =>
+      const outcome = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
         effect.pipe(
           Effect.match({
             onFailure: (error) =>
