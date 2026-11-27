@@ -1054,6 +1054,17 @@ it.live(
             .pipe(Effect.flip)).message,
           "Memory write refused: besides names only open items of the same kind that share a link with it.",
         );
+        // A writer refusal the lead passes on says first that nothing was saved, and why.
+        assert.strictEqual(
+          (yield* service
+            .write(scope, {
+              ...status,
+              op: "supersede",
+              supersedes: KinMemoryItemId.make("no-such-item"),
+            })
+            .pipe(Effect.flip)).message,
+          "Not saved: the item it would replace is closed, of another kind or came from somewhere else, so that item still stands. Update it instead, or save this as a new item.",
+        );
         assert.strictEqual(
           (yield* service
             .write(scope, {

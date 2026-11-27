@@ -330,7 +330,8 @@ const SHARED_BYTES_PER_DAY = 20_000;
 const busy = () =>
   new KinChatError({
     reason: "unavailable",
-    message: "Memory is busy finishing another wake-up. Try the same call again in a moment.",
+    message:
+      "Not saved yet: memory is busy saving other work. Try the same call again in a moment; nothing retries it on its own.",
   });
 // Writer rejections about the caller rather than the request.
 const authorityRejections = new Set([
@@ -343,6 +344,17 @@ const authorityRejections = new Set([
   "Invalid dream branch",
   "Invalid undo target",
 ]);
+// Writer refusals a lead's write can meet, as words it can pass on; others keep the writer's.
+const WRITE_REFUSALS: Readonly<Record<string, string>> = {
+  "Cannot overwrite malformed recorded item":
+    "Not saved: the note already saved under this id is damaged and can't be read, so Kin won't write over it, and whoever looks after Kin can repair it. Save this as a new item instead, leaving out id.",
+  "Supersession requires the same source and kind":
+    "Not saved: the item it would replace is closed, of another kind or came from somewhere else, so that item still stands. Update it instead, or save this as a new item.",
+};
+const UNAVAILABLE = "Kin memory is unavailable.";
+const WRITE_UNAVAILABLE =
+  "Not saved: Kin memory is unavailable right now, and nothing retries this on its own. Try again later.";
+const WRITE_DENIED = "Not saved: Kin doesn't let this turn change memory.";
 const TITLES_SHOWN = 5;
 const isChatError = Schema.is(KinChatError);
 const isNotFound = Schema.is(Memory.MemoryNotFound);
@@ -376,13 +388,22 @@ const failure = (error: unknown) => {
   }
   if (isRejected(error)) {
     if (error.reason === "Another wake-up owns the writer") return busy();
-    return authorityRejections.has(error.reason)
-      ? denied()
-      : invalid(`Memory write refused: ${error.reason}.`);
+    if (authorityRejections.has(error.reason)) return denied();
+    const words = WRITE_REFUSALS[error.reason];
+    return invalid(words ?? `Memory write refused: ${error.reason}.`);
   }
   if (isItemError(error)) return invalid(`Memory item is malformed: ${error.reason}.`);
   if (isQueryError(error)) return invalid("Memory search filters are invalid.");
-  return new KinChatError({ reason: "unavailable", message: "Kin memory is unavailable." });
+  return new KinChatError({ reason: "unavailable", message: UNAVAILABLE });
+};
+// A write memory couldn't take, or this turn may not make, says first that nothing was saved.
+const writeFailure = (error: unknown) => {
+  const refused = failure(error);
+  if (refused.message === UNAVAILABLE)
+    return new KinChatError({ reason: refused.reason, message: WRITE_UNAVAILABLE });
+  if (refused.message === denied().message)
+    return new KinChatError({ reason: refused.reason, message: WRITE_DENIED });
+  return refused;
 };
 const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(KinEvent));
 
@@ -1558,7 +1579,7 @@ const make = Effect.gen(function* () {
           return yield* stage(now.ctx, now.audience, { ...input, item: { ...input.item, id } });
         }),
       );
-    }, Effect.mapError(failure)),
+    }, Effect.mapError(writeFailure)),
     label: Effect.fn("LeadMemory.label")(function* (scope, input) {
       const ctx = yield* notes(scope);
       return yield* locked(
