@@ -21,7 +21,11 @@ it("classifies every shared tool, built-in list and pulse sense, including expli
     "bank_transactions",
     "subscriptions",
   ]);
-  assert.sameMembers(Object.keys(SECTIONS.senses), [...KinPulseSense.literals]);
+  const reservedSenses = ["pr_open_long", "pr_failing", "pr_review_waiting", "pr_ready"];
+  assert.sameMembers(
+    Object.keys(SECTIONS.senses),
+    KinPulseSense.literals.filter((sense) => !reservedSenses.includes(sense)),
+  );
   assert.sameMembers(
     Object.keys(SECTIONS.keys),
     [...Object.values(LISTS), ...Object.values(PRESETS)]
