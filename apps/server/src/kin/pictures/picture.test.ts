@@ -725,11 +725,21 @@ describe("kin_picture", () => {
         yield* makePicture(scope, post("112px", { doc: key }));
         drawing.next = undefined;
         yield* thirdReply("deleted");
-        const { sinceLooked } = yield* OwnerDocs.get(reader, { orgId, key });
-        assert.deepStrictEqual(
-          { total: sinceLooked?.total, versions: sinceLooked?.versions.map((one) => one.version) },
-          { total: 2, versions: [4, 2] },
-        );
+        const summary = (read: typeof opened) => ({
+          from: read.sinceLooked?.from,
+          total: read.sinceLooked?.total,
+          versions: read.sinceLooked?.versions.map((one) => one.version),
+        });
+        const fourth = yield* OwnerDocs.get(reader, { orgId, key });
+        assert.deepStrictEqual(summary(fourth), { from: 1, total: 2, versions: [4, 2] });
+        // Looked just after the hidden third: the diff starts at the last version Meera saw.
+        const afterThird = new Date(Date.parse(fourth.version.at) - 1).toISOString();
+        yield* Work.looked(reader, { orgId, recordId: opened.recordId, upTo: afterThird });
+        assert.deepStrictEqual(summary(yield* OwnerDocs.get(reader, { orgId, key })), {
+          from: 2,
+          total: 1,
+          versions: [4],
+        });
       }).pipe(Effect.provide(layer)),
   );
 
