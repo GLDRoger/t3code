@@ -2141,6 +2141,11 @@ export function makeKinClient<R, ER>(
     }),
     /** One page of everything dated in a window; the Dates view decides when. */
     workDates: workDatesRead,
+    /** The viewer's calendar events in a window, beside Dates; read live, never kept. */
+    myCalendar: createKinRpcCommand(runtime, {
+      label: "kin:my-calendar:read",
+      tag: "kin.connections.mineCalendar",
+    }),
     workListUpdate: createKinRpcCommand(runtime, {
       label: "kin:work:list:update",
       tag: "kin.work.updateList",
