@@ -160,19 +160,9 @@ it.effect("returns one-line service errors for bad section names from the set wi
 
 it.effect("limits newly docked lists and lets an overfull dock be edited", () =>
   Effect.gen(function* () {
-    const sql = yield* SqlClient.SqlClient;
+    yield* seedDock;
     const shell = yield* KinShell.KinShell;
-    yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Ambermill', '2026-11-22')`;
-    yield* sql`INSERT INTO kin_people (org_id, person_id, handle, display_name, access, created_at)
-      VALUES (${orgId}, ${rhea}, 'rhea', 'Rhea', 'owner', '2026-11-22')`;
-    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
-      created_at, definition_json)
-      VALUES (${orgId}, 'stock', 'Stock', 'STK', 0, 1, '{}'),
-        (${orgId}, 'bookings', 'Bookings', 'BK', 0, 1, '{}'),
-        (${orgId}, 'visits', 'Visits', 'VIS', 0, 1, '{}')`;
-    const stock = { id: "list:stock", on: true, dock: true };
-    const bookings = { id: "list:bookings", on: true, dock: true };
-    const visits = { id: "list:visits", on: true, dock: true };
+    const [stock, bookings, visits] = dockLists;
     const clientsOff = { id: "clients", on: false };
     const moneyOff = { id: "money", on: false };
     let current = yield* shell.get(orgId);
@@ -213,12 +203,98 @@ it.effect("limits newly docked lists and lets an overfull dock be edited", () =>
       } else {
         assert.strictEqual(
           result.failure.message,
-          "The dock holds five places. Turn one off first.",
+          "The dock holds five places. Take one out of the dock first.",
           label,
         );
       }
       assert.deepStrictEqual(yield* shell.get(orgId), current, label);
     }
+  }).pipe(Effect.provide(layer)),
+);
+
+const dockLists = [
+  { id: "list:stock", on: true, dock: true },
+  { id: "list:bookings", on: true, dock: true },
+  { id: "list:visits", on: true, dock: true },
+] as const;
+
+const seedDock = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Tidewater Freight', '2026-11-22')`;
+  yield* sql`INSERT INTO kin_people (org_id, person_id, handle, display_name, access, created_at)
+    VALUES (${orgId}, ${rhea}, 'rhea', 'Rhea', 'owner', '2026-11-22')`;
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+    created_at, definition_json)
+    VALUES (${orgId}, 'stock', 'Stock', 'STK', 0, 1, '{}'),
+      (${orgId}, 'bookings', 'Bookings', 'BK', 0, 1, '{}'),
+      (${orgId}, 'visits', 'Visits', 'VIS', 0, 1, '{}')`;
+});
+
+const undocked = (id: string) => ({ id, on: true, dock: false });
+const dockFull = "The dock holds five places. Take one out of the dock first.";
+
+it.effect.each([
+  { ids: [], room: 0, label: "no built-ins" },
+  { ids: ["money"], room: 1, label: "money" },
+  { ids: ["money", "clients"], room: 2, label: "money and clients" },
+  { ids: ["docs"], room: 1, label: "docs" },
+] as const)("fits $room docked lists with $label out of the dock", ({ ids, room }) =>
+  Effect.gen(function* () {
+    yield* seedDock;
+    const shell = yield* KinShell.KinShell;
+    const sections = [...ids.map(undocked), ...dockLists.slice(0, room)];
+    const saved = yield* Effect.result(shell.set(orgId, rhea, 0, sections));
+    assert.strictEqual(saved._tag, "Success", `fits ${room} docked lists`);
+    if (saved._tag === "Failure") return;
+    assert.isTrue(KinShell.builtInsOn(saved.success));
+    assert.deepStrictEqual(saved.success.sections.slice(5), dockLists.slice(0, room));
+    const over = yield* Effect.flip(
+      shell.set(orgId, rhea, saved.success.rev, [...saved.success.sections, dockLists[room]]),
+    );
+    assert.strictEqual(over.message, dockFull, `refuses ${room + 1} docked lists`);
+    assert.deepStrictEqual(yield* shell.get(orgId), saved.success);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect.each([
+  { section: { id: "docs", on: false, dock: false }, message: "Docs can't be turned off." },
+  { section: undocked("deals"), message: "Only Money, Clients and Docs have a place in the dock." },
+  {
+    section: { id: "invoices", on: true, dock: true },
+    message: "Only Money, Clients and Docs have a place in the dock.",
+  },
+] as const)("refuses the unsupported $section.id setting", ({ section, message }) =>
+  Effect.gen(function* () {
+    yield* seedDock;
+    const error = yield* Effect.result(KinShell.set(orgId, rhea, 0, [section]));
+    assert.deepInclude(error, { _tag: "Failure" });
+    if (error._tag === "Failure") assert.strictEqual(error.failure.message, message);
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("keeps a held list when editing and refuses to put Money back into a full dock", () =>
+  Effect.gen(function* () {
+    yield* seedDock;
+    const sql = yield* SqlClient.SqlClient;
+    const money = undocked("money");
+    const [stock] = dockLists;
+    yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+      VALUES (${orgId}, ${JSON.stringify([money, stock])}, 1, ${rhea}, 0)`;
+    const off = yield* KinShell.set(orgId, rhea, 1, [{ ...money, on: false }, stock]);
+    assert.deepInclude(off.sections, { ...money, on: false });
+    const on = yield* KinShell.set(orgId, rhea, off.rev, [money, stock]);
+    assert.deepInclude(on.sections, money);
+    const error = yield* Effect.result(
+      KinShell.set(orgId, rhea, on.rev, [{ ...money, dock: true }, stock]),
+    );
+    assert.deepInclude(error, { _tag: "Failure" });
+    if (error._tag === "Failure") assert.strictEqual(error.failure.message, dockFull);
+    assert.deepStrictEqual(yield* KinShell.get(orgId), on);
+    const restored = yield* KinShell.set(orgId, rhea, on.rev, [
+      { ...money, dock: true },
+      { ...stock, dock: false },
+    ]);
+    assert.deepInclude(restored.sections, { ...money, dock: true });
   }).pipe(Effect.provide(layer)),
 );
 
