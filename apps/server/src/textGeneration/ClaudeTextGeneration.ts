@@ -136,8 +136,9 @@ function claudeSignInSettings(
     ),
   );
   return {
-    ...(typeof apiKeyHelper === "string" && apiKeyHelper.length > 0 ? { apiKeyHelper } : {}),
-    ...(Object.keys(env).length > 0 ? { env } : {}),
+    argSettings:
+      typeof apiKeyHelper === "string" && apiKeyHelper.length > 0 ? { apiKeyHelper } : {},
+    env,
   };
 }
 
@@ -299,7 +300,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         )
       : undefined;
     const settings = {
-      ...(signInSettings ??
+      ...(signInSettings?.argSettings ??
         (yield* readLaunchArgSettings.pipe(
           Effect.mapError(
             (cause) => new TextGenerationError({ operation, detail: cause.message, cause }),
@@ -310,6 +311,15 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       ...(fastMode ? { fastMode: true } : {}),
       ...(typeof ultracode === "boolean" ? { ultracode } : {}),
     };
+    const launchEnvironment =
+      signInSettings === undefined
+        ? claudeEnvironment
+        : {
+            ...claudeEnvironment,
+            ...signInSettings.env,
+            CLAUDE_CODE_SKIP_PROMPT_HISTORY: "1",
+            CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+          };
     const settingsJson = yield* encodeJsonForOperation(
       operation,
       settings,
@@ -379,16 +389,10 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           "--permission-mode",
           "dontAsk",
         ],
-        { env: claudeEnvironment },
+        { env: launchEnvironment },
       );
       const command = ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-        env: toolFree
-          ? {
-              ...claudeEnvironment,
-              CLAUDE_CODE_SKIP_PROMPT_HISTORY: "1",
-              CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-            }
-          : claudeEnvironment,
+        env: launchEnvironment,
         cwd: workingDirectory,
         shell: spawnCommand.shell,
         stdin: {
@@ -464,7 +468,7 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         if (toolFree) {
           const cliError = claudeErrorResult(stdout);
           const echoedSettings = [
-            signInSettings?.apiKeyHelper,
+            signInSettings?.argSettings.apiKeyHelper,
             ...Object.values(signInSettings?.env ?? {}),
           ].some((value) => value && cliError?.includes(value));
           return Effect.fail(

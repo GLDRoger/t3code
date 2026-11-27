@@ -71,6 +71,8 @@ function withFakeClaudeEnv<A, E, R>(
     configDir?: string | null;
     homeDirectory?: string;
     settingsLog?: string;
+    envLog?: { path: string; names: ReadonlyArray<string> };
+    inheritedEnv?: NodeJS.ProcessEnv;
     claudeConfig?: Partial<ClaudeSettings>;
   },
   effectFn: (textGeneration: TextGeneration.TextGeneration["Service"]) => Effect.Effect<A, E, R>,
@@ -96,11 +98,16 @@ function withFakeClaudeEnv<A, E, R>(
       T3_FAKE_CLAUDE_CWD_MUST_NOT_BE: input.cwdMustNotBe,
       T3_FAKE_CLAUDE_CONFIG_DIR_MUST_BE: input.configDirMustBe,
       T3_FAKE_CLAUDE_SETTINGS_LOG: input.settingsLog,
+      T3_FAKE_CLAUDE_ENV_LOG: input.envLog === undefined ? undefined : JSON.stringify(input.envLog),
     };
+    const capturedNames = new Set(input.envLog?.names.map((name) => name.toUpperCase()));
     const environment: NodeJS.ProcessEnv = {
       ...Object.fromEntries(
-        Object.entries(hostEnv).filter(([name]) => !name.startsWith("T3_FAKE_CLAUDE_")),
+        Object.entries(hostEnv).filter(
+          ([name]) => !name.startsWith("T3_FAKE_CLAUDE_") && !capturedNames.has(name.toUpperCase()),
+        ),
       ),
+      ...input.inheritedEnv,
       ...Object.fromEntries(
         Object.entries(fakeClaudeEnv).filter(([, value]) => value !== undefined),
       ),
@@ -172,6 +179,7 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
         apiKeyHelper: "example-instance-helper",
         env: {
           ANTHROPIC_BASE_URL: "https://instance.example",
+          ANTHROPIC_AUTH_TOKEN: "synthetic-auth-token",
           AWS_REGION: "example-region",
           CLAUDE_CODE_USE_BEDROCK: "1",
           CLOUD_ML_REGION: "example-region",
@@ -189,6 +197,7 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
         env: {
           ...syntheticSignInEnv,
           ANTHROPIC_BASE_URL: "https://instance.example",
+          ANTHROPIC_AUTH_TOKEN: "synthetic-auth-token",
           AWS_REGION: "example-region",
           CLAUDE_CODE_USE_BEDROCK: "1",
           CLOUD_ML_REGION: "example-region",
@@ -213,6 +222,9 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
       const userDir = path.join(tempDir, row.useInstanceHome ? ".claude" : "config");
       const userSettingsPath = path.join(userDir, "settings.json");
       const settingsLog = path.join(tempDir, "settings-arg.json");
+      const envLog = path.join(tempDir, "child-env.json");
+      const inheritedEnv = { ANTHROPIC_BASE_URL: "https://inherited.example" };
+      const { env: expectedEnv, ...expectedSettings } = row.expected;
       yield* fs.makeDirectory(userDir);
       if (row.userSettings === null) {
         yield* fs.makeDirectory(userSettingsPath);
@@ -228,6 +240,18 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
           configDir: row.useInstanceHome ? null : userDir,
           homeDirectory: tempDir,
           settingsLog,
+          envLog: {
+            path: envLog,
+            names: [
+              "ANTHROPIC_BASE_URL",
+              "ANTHROPIC_DEFAULT_SONNET_MODEL",
+              "ANTHROPIC_BAD_TYPE",
+              "UNRELATED",
+              "CLAUDE_CODE_ENTRYPOINT",
+              ...Object.keys(expectedEnv ?? {}),
+            ],
+          },
+          inheritedEnv,
           ...(row.launchArgs === undefined ? {} : { claudeConfig: { launchArgs: row.launchArgs } }),
         },
         (textGeneration) =>
@@ -239,9 +263,12 @@ it.layer(layerClaudeTextGenerationTest)("ClaudeTextGeneration", (it) => {
             expect(result).toEqual({ kind: "other" });
           }),
       );
-      expect(yield* fs.readFileString(settingsLog)).toBe(
-        JSON.stringify({ ...row.expected, disableAllHooks: true }),
-      );
+      const settingsArg = yield* fs.readFileString(settingsLog);
+      const childEnv = yield* fs.readFileString(envLog);
+      expect({ settingsArg, childEnv: JSON.parse(childEnv) }).toEqual({
+        settingsArg: JSON.stringify({ ...expectedSettings, disableAllHooks: true }),
+        childEnv: { ...inheritedEnv, ...expectedEnv },
+      });
     }).pipe(Effect.scoped),
   );
 
