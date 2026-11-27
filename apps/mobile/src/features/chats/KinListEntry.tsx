@@ -781,7 +781,8 @@ export function KinListEntryBody(
                 canDraft &&
                 !field.retired &&
                 (canChange || field.type !== "file") &&
-                !(creditNote !== null && field.key === "invoice");
+                !(creditNote !== null && field.key === "invoice") &&
+                !(item.list === "receipts" && field.key === KIN_INVOICE_NUMBER_FIELD);
               const current = typeof field.value === "string" ? field.value : null;
               const openLink =
                 creditNote !== null && field.key === "invoice" && creditNote.invoiceKey !== null

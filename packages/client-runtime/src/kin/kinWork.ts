@@ -114,10 +114,53 @@ export const kinWorkOffline = (place: KinWorkPageName) => {
     detail: `${name} ${plural ? "come" : "comes"} back when the connection does.`,
   };
 };
-export const KIN_WORK_GONE = {
-  title: "This task isn't here any more",
-  detail: "Open Tasks to see what there is now.",
+const KIN_KEY_PREFIX = /^([A-Z][A-Z0-9]*)-\d+$/;
+
+export interface KinWorkEntryKind {
+  /** Singular noun as read in a sentence: "task", "invoice", "client", "Bank transaction", "entry". */
+  readonly noun: string;
+  /** Heading / bar title: "Task", "Invoice", "Client", "Bank transaction", "Entry". */
+  readonly title: string;
+  /** Place where entries of this kind live, when known; null for custom or unknown lists. */
+  readonly place: string | null;
+}
+
+const KIN_ENTRY_FALLBACK_KIND: KinWorkEntryKind = {
+  noun: "entry",
+  title: "Entry",
+  place: null,
 };
+
+const KIN_ENTRY_KINDS: Readonly<Record<string, KinWorkEntryKind>> = {
+  W: { noun: "task", title: "Task", place: "Tasks" },
+  INV: { noun: "invoice", title: "Invoice", place: "Money" },
+  EXP: { noun: "expense", title: "Expense", place: "Money" },
+  RCT: { noun: "receipt", title: "Receipt", place: "Money" },
+  QT: { noun: "quote", title: "Quote", place: "Money" },
+  CN: { noun: "credit note", title: "Credit note", place: "Money" },
+  BNK: { noun: "Bank transaction", title: "Bank transaction", place: "Money" },
+  BTX: { noun: "Bank transaction", title: "Bank transaction", place: "Money" },
+  BANK: { noun: "Bank transaction", title: "Bank transaction", place: "Money" },
+  BKTX: { noun: "Bank transaction", title: "Bank transaction", place: "Money" },
+  BK9: { noun: "Bank transaction", title: "Bank transaction", place: "Money" },
+  DT: { noun: "date", title: "Date", place: "Money" },
+  G: { noun: "goal", title: "Goal", place: "Money" },
+  C: { noun: "client", title: "Client", place: "Clients" },
+  CT: { noun: "contact", title: "Contact", place: "Clients" },
+  P: { noun: "project", title: "Project", place: "Projects" },
+  M: { noun: "milestone", title: "Milestone", place: "Projects" },
+  DL: { noun: "deal", title: "Deal", place: "Deals" },
+  D: { noun: "doc", title: "Doc", place: "Docs" },
+};
+
+/** What kind of entry a link key names from its prefix, else a plain entry. */
+export function kinWorkEntryKind(key: string | null | undefined): KinWorkEntryKind {
+  if (key == null) return KIN_ENTRY_FALLBACK_KIND;
+  const match = KIN_KEY_PREFIX.exec(key);
+  if (match === null) return KIN_ENTRY_FALLBACK_KIND;
+  return KIN_ENTRY_KINDS[match[1]!] ?? KIN_ENTRY_FALLBACK_KIND;
+}
+
 /** One plain line for a missing, malformed, or unshared link; never says which of those it is. */
 export const KIN_UNAVAILABLE_LINK = {
   doc: "This doc doesn't exist or isn't shared with you.",
@@ -127,10 +170,38 @@ export const KIN_UNAVAILABLE_LINK = {
   client: "This client doesn't exist or isn't shared with you.",
   project: "This project doesn't exist or isn't shared with you.",
 } as const;
-export const KIN_WORK_ITEM_FAILED = {
-  title: "Couldn't load this task",
-  detail: KIN_CHECK_CONNECTION,
-};
+
+/** Shared missing/unshared sentence for a Work entry link, naming its kind when the key says it. */
+export function kinUnavailableEntryLine(key: string | null | undefined): string {
+  return `This ${kinWorkEntryKind(key).noun} doesn't exist or isn't shared with you.`;
+}
+
+/** Missing-entry page copy shared by web and phone, matching `kinUnavailableEntryLine`. */
+export function kinWorkGone(key?: string | null): {
+  readonly title: string;
+  readonly detail: string;
+} {
+  const kind = kinWorkEntryKind(key);
+  return {
+    title: kinUnavailableEntryLine(key),
+    detail:
+      kind.place === "Clients"
+        ? "Open Clients to see who there is now."
+        : kind.place !== null
+          ? `Open ${kind.place} to see what there is now.`
+          : "Open Work to see what there is now.",
+  };
+}
+
+export function kinWorkItemFailed(key?: string | null): {
+  readonly title: string;
+  readonly detail: string;
+} {
+  return {
+    title: `Couldn't load this ${kinWorkEntryKind(key).noun}`,
+    detail: KIN_CHECK_CONNECTION,
+  };
+}
 export const KIN_WORK_TITLE_MAX = 280;
 /** Where a title's counter shows: nothing typed is ever cut, so the limit is said before Save. */
 const KIN_WORK_TITLE_COUNT_FROM = 240;

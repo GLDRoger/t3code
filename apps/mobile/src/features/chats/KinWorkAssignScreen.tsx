@@ -3,14 +3,15 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
   KIN_WORK_ASSIGN,
-  KIN_WORK_GONE,
-  KIN_WORK_ITEM_FAILED,
+  kinWorkGone,
+  kinWorkItemFailed,
   kinWorkOnlyOwner,
   createKinWorkActions,
   kinWorkAssignees,
   kinWorkItemState,
   type KinWorkAssignee,
 } from "@t3tools/client-runtime/kin/kinWork";
+import { kinSectionNamedWords } from "@t3tools/client-runtime/kin/kinShell";
 import { KIN_TASK_WITH, kinTaskWithChoices } from "@t3tools/client-runtime/kin/kinTaskRecord";
 import {
   EnvironmentId,
@@ -51,6 +52,7 @@ import {
   type KinWorkTarget,
 } from "./state/useKinWork";
 import { useKinGate } from "./state/useKinHost";
+import { useKinShell } from "./state/useKinShell";
 import { KinGateView } from "./components/KinWorkPieces";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
@@ -152,6 +154,7 @@ function KinWorkAssignBody(props: ItemTarget) {
   const [giving, setGiving] = useState<string | null>(null);
   const [problem, setProblem] = useState<string | null>(null);
   const close = () => navigation.goBack();
+  const shell = useKinShell(environmentId);
 
   if (state._tag !== "ready") {
     return (
@@ -161,11 +164,11 @@ function KinWorkAssignBody(props: ItemTarget) {
             <AppActivityIndicator />
           </View>
         ) : state._tag === "gone" ? (
-          <EmptyState variant="plain" {...KIN_WORK_GONE} />
+          <EmptyState variant="plain" {...kinSectionNamedWords(shell, kinWorkGone(itemKey))} />
         ) : (
           <EmptyState
             variant="plain"
-            {...KIN_WORK_ITEM_FAILED}
+            {...kinSectionNamedWords(shell, kinWorkItemFailed(itemKey))}
             action={
               <Button
                 tone="secondary"
@@ -258,6 +261,7 @@ function KinWorkWithBody(props: ItemTarget) {
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const close = () => navigation.goBack();
+  const shell = useKinShell(environmentId);
   if (state._tag !== "ready")
     return (
       <Frame title={KIN_TASK_WITH.add} onClose={close}>
@@ -268,7 +272,10 @@ function KinWorkWithBody(props: ItemTarget) {
         ) : (
           <EmptyState
             variant="plain"
-            {...(state._tag === "gone" ? KIN_WORK_GONE : KIN_WORK_ITEM_FAILED)}
+            {...kinSectionNamedWords(
+              shell,
+              state._tag === "gone" ? kinWorkGone(itemKey) : kinWorkItemFailed(itemKey),
+            )}
           />
         )}
       </Frame>

@@ -21,9 +21,14 @@ import { describe, expect, it } from "vite-plus/test";
 
 import type { AtomCommandResult } from "../state/runtime.ts";
 import {
+  KIN_UNAVAILABLE_LINK,
   KIN_WORK_DEFAULT_FILTER,
   KIN_WORK_NO_DRAFT,
   KIN_WORK_TITLE_TOO_LONG,
+  kinUnavailableEntryLine,
+  kinWorkEntryKind,
+  kinWorkGone,
+  kinWorkItemFailed,
   kinWorkDueChoices,
   kinWorkDueDays,
   kinWorkNames,
@@ -1460,5 +1465,87 @@ describe("createKinWorkActions", () => {
     const outcome = await h.made.add({ title: "Invented" }, "request-1");
     expect(outcome).toMatchObject({ ok: false, changed: false });
     expect(outcome.ok ? "" : outcome.problem).not.toContain("dueAt");
+  });
+});
+
+describe("missing entry wording by link key", () => {
+  it.each([
+    {
+      key: "W-12",
+      title: "Task",
+      noun: "task",
+      goneTitle: "This task doesn't exist or isn't shared with you.",
+      goneDetail: "Open Tasks to see what there is now.",
+      failedTitle: "Couldn't load this task",
+    },
+    {
+      key: "INV-3",
+      title: "Invoice",
+      noun: "invoice",
+      goneTitle: "This invoice doesn't exist or isn't shared with you.",
+      goneDetail: "Open Money to see what there is now.",
+      failedTitle: "Couldn't load this invoice",
+    },
+    {
+      key: "C-4",
+      title: "Client",
+      noun: "client",
+      goneTitle: "This client doesn't exist or isn't shared with you.",
+      goneDetail: "Open Clients to see who there is now.",
+      failedTitle: "Couldn't load this client",
+    },
+    {
+      key: "BNK-9",
+      title: "Bank transaction",
+      noun: "Bank transaction",
+      goneTitle: "This Bank transaction doesn't exist or isn't shared with you.",
+      goneDetail: "Open Money to see what there is now.",
+      failedTitle: "Couldn't load this Bank transaction",
+    },
+    {
+      key: "BTX-2",
+      title: "Bank transaction",
+      noun: "Bank transaction",
+      goneTitle: "This Bank transaction doesn't exist or isn't shared with you.",
+      goneDetail: "Open Money to see what there is now.",
+      failedTitle: "Couldn't load this Bank transaction",
+    },
+    {
+      key: "RCT-1",
+      title: "Receipt",
+      noun: "receipt",
+      goneTitle: "This receipt doesn't exist or isn't shared with you.",
+      goneDetail: "Open Money to see what there is now.",
+      failedTitle: "Couldn't load this receipt",
+    },
+    {
+      key: "EQ-7",
+      title: "Entry",
+      noun: "entry",
+      goneTitle: "This entry doesn't exist or isn't shared with you.",
+      goneDetail: "Open Work to see what there is now.",
+      failedTitle: "Couldn't load this entry",
+    },
+    {
+      key: null,
+      title: "Entry",
+      noun: "entry",
+      goneTitle: "This entry doesn't exist or isn't shared with you.",
+      goneDetail: "Open Work to see what there is now.",
+      failedTitle: "Couldn't load this entry",
+    },
+  ])("names $noun for $key and agrees with web unavailable copy", (row) => {
+    expect(kinWorkEntryKind(row.key)).toMatchObject({ title: row.title, noun: row.noun });
+    expect(kinUnavailableEntryLine(row.key)).toBe(row.goneTitle);
+    expect(kinWorkGone(row.key)).toEqual({ title: row.goneTitle, detail: row.goneDetail });
+    expect(kinWorkItemFailed(row.key).title).toBe(row.failedTitle);
+  });
+
+  it("matches KIN_UNAVAILABLE_LINK verbatim for shared kinds", () => {
+    expect(kinUnavailableEntryLine("W-1")).toBe(KIN_UNAVAILABLE_LINK.task);
+    expect(kinUnavailableEntryLine("C-1")).toBe(KIN_UNAVAILABLE_LINK.client);
+    expect(kinUnavailableEntryLine("P-1")).toBe(KIN_UNAVAILABLE_LINK.project);
+    expect(kinUnavailableEntryLine("D-1")).toBe(KIN_UNAVAILABLE_LINK.doc);
+    expect(kinUnavailableEntryLine("EQ-1")).toBe(KIN_UNAVAILABLE_LINK.entry);
   });
 });
