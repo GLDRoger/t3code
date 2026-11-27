@@ -27,7 +27,7 @@ import { presetDefinition } from "../registers.ts";
 import { takeAlerts } from "./bankAlerts.ts";
 import { ensureBankList, findBankList } from "./bankList.ts";
 import { repaidMatches } from "./debitRepaid.ts";
-import { drawRepaid, markRepaid, repaidLine } from "./repaidCard.ts";
+import { drawRepaid, markRepaid, repaidLine, undoRepaid } from "./repaidCard.ts";
 import { bankDebitSenses } from "../../pulse/senses/bank.ts";
 
 // Invented: Ambermill's owner Rhea gets HDFC alerts; Zoya and Arjun paid bills from their own cards.
@@ -312,32 +312,53 @@ it.layer(layer)((it) => {
     Effect.gen(function* () {
       const org = KinOrgId.make("ambermill-recurring");
       const kin = yield* company(org);
-      const repaid = {
-        reimbursement: "repaid",
-        repaidOn: "2026-11-22",
+      const records = yield* KinRecords.KinRecords;
+      const owner = {
+        actor: { _tag: "person" as const, personId: KinPersonId.make(`${org}-rhea`) },
+        via: "owner" as const,
       };
-      yield* kin.expense("EXP-4", 1_200, "2026-10-01", repaid);
-      yield* kin.expense("EXP-5", 800, "2026-10-02", repaid);
-      yield* kin.expense("EXP-8", 1_200, "2026-11-01", { reimbursement: "owed" });
+      for (const [key, amount, on] of [
+        ["EXP-4", 1_200, "2026-10-01"],
+        ["EXP-5", 800, "2026-10-02"],
+        ["EXP-8", 1_200, "2026-11-01"],
+      ] as const)
+        yield* kin.expense(key, amount, on, { reimbursement: "owed" });
       for (const [key, amount] of [
         ["BNK-9", 1_200],
         ["BNK-10", 2_000],
         ["BNK-11", 500],
       ] as const)
         yield* kin.debit(key, amount, "2026-11-23");
-      const matches = yield* repaidMatches(org, NOW);
-      assert.sameDeepMembers(
-        matches.map((match) => [match.debit.key, match.marked]),
-        [
-          ["BNK-9", "2026-11-22"],
-          ["BNK-10", "2026-11-22"],
-          ["BNK-11", undefined],
-        ],
-      );
+      const marked = () =>
+        Effect.map(repaidMatches(org, NOW), (matches) =>
+          Object.fromEntries(matches.map((match) => [match.debit.key, match.marked])),
+        );
+      const mark = (key: string, reimbursement: string, repaidOn: string | null) =>
+        records.update(org, owner, key, { fields: { reimbursement, repaidOn } });
+      // The debits came before the marks: nothing is marked yet.
+      assert.deepStrictEqual(yield* marked(), {
+        "BNK-9": undefined,
+        "BNK-10": undefined,
+        "BNK-11": undefined,
+      });
+      yield* mark("EXP-4", "repaid", "2026-11-22");
+      yield* mark("EXP-5", "repaid", "2026-11-22");
+      assert.deepStrictEqual(yield* marked(), {
+        "BNK-9": "2026-11-22",
+        "BNK-10": "2026-11-22",
+        "BNK-11": undefined,
+      });
       assert.strictEqual(
         yield* kin.draw("BNK-9"),
         "BNK-9 may be the repayment already marked by hand for Zoya Rao on 2026-11-22, so Kin offers no card for it. Nothing was asked; tell the owner what you see instead.",
       );
+      // One of the day's two marks set back to owed: the other still explains its own debit.
+      yield* mark("EXP-5", "owed", null);
+      assert.deepStrictEqual(yield* marked(), {
+        "BNK-9": "2026-11-22",
+        "BNK-10": undefined,
+        "BNK-11": undefined,
+      });
     }),
   );
 
@@ -384,6 +405,61 @@ it.layer(layer)((it) => {
         assert.strictEqual(reopened?.marked, "2026-11-20");
         assert.deepStrictEqual(yield* kin.told(at), ["repaid_seen:BNK-12"]);
       }),
+  );
+
+  it.effect("a card's mark undone leaves its debit unmarked and offered again", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("ambermill-undo-mark");
+      const kin = yield* company(org);
+      const records = yield* KinRecords.KinRecords;
+      const owner = {
+        actor: { _tag: "person" as const, personId: KinPersonId.make(`${org}-rhea`) },
+        via: "owner" as const,
+      };
+      yield* kin.expense("EXP-4", 5_000, "2026-10-01", { reimbursement: "owed" });
+      yield* kin.expense("EXP-5", 800, "2026-10-02", {
+        reimbursement: "repaid",
+        repaidOn: "2026-11-20",
+      });
+      yield* kin.expense("EXP-8", 5_000, "2026-11-01", { reimbursement: "owed" });
+      yield* kin.debit("BNK-9", 5_000, "2026-11-20");
+      yield* kin.debit("BNK-10", 800, "2026-11-21");
+      const plan = yield* kin.drawPlan("BNK-9");
+      const done = yield* kin.sql.withTransaction(markRepaid(org, plan, owner, records));
+      yield* kin.sql.withTransaction(undoRepaid(org, done!.undo!, owner, records));
+
+      const matches = yield* repaidMatches(org, NOW);
+      assert.sameDeepMembers(
+        matches.map((match) => [
+          match.debit.key,
+          match.marked,
+          match.repays?.map((one) => one.key),
+        ]),
+        [
+          ["BNK-9", undefined, ["EXP-4"]],
+          ["BNK-10", "2026-11-20", undefined],
+        ],
+      );
+      assert.include(yield* kin.told(), "repaid_seen:BNK-9");
+    }),
+  );
+
+  it.effect("a debit naming two partners with one name is no one's repayment", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("ambermill-two-zoyas");
+      const kin = yield* company(org);
+      yield* kin.sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+          access)
+        VALUES (${`${org}-zoya-2`}, ${org}, 'zoya-2', 'Zoya Rao', '2026-09-01', 'member')`;
+      yield* kin.expense("EXP-4", 1_200, "2026-10-01", {
+        fundedBy: `person:${org}-zoya-2`,
+        reimbursement: "repaid",
+        repaidOn: "2026-11-22",
+      });
+      yield* kin.expense("EXP-8", 1_200, "2026-11-01", { reimbursement: "owed" });
+      yield* kin.debit("BNK-9", 1_200, "2026-11-23", "UPI ZOYA RAO");
+      assert.deepStrictEqual(yield* repaidMatches(org, NOW), []);
+    }),
   );
 
   it.effect("the same payment recorded twice gets no second card", () =>

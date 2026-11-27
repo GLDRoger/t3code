@@ -695,6 +695,11 @@ describe("statement matching", () => {
         { amountMinor: 70_000, bankRecordId: null },
       ],
     };
+    const three = {
+      ...repaid,
+      amountMinor: 400_000,
+      marks: [200_000, 120_000, 80_000].map((amountMinor) => ({ amountMinor, bankRecordId: null })),
+    };
     for (const [day, amount, marks, marked, bankRecordId] of [
       ["2026-10-08", 200_000, repaid, true],
       ["2026-10-08", 50_000, repaid, false],
@@ -705,6 +710,19 @@ describe("statement matching", () => {
       ["2026-10-10", 120_000, tied, false],
       ["2026-10-10", 150_000, tied, true],
       ["2026-10-06", 120_000, tied, true, "r-BNK-9"],
+      ["2026-10-06", 120_000, tied, false, "r-BNK-10"],
+      // Within two days of the tied entry it may be that payment twice: the day's total stands.
+      ["2026-10-04", 270_000, tied, true],
+      ["2026-10-08", 270_000, tied, true],
+      ["2026-10-09", 270_000, tied, false],
+      ["2026-10-03", 150_000, tied, true],
+      ["2026-10-09", 150_000, tied, true],
+      ["2026-10-16", 150_000, tied, true],
+      ["2026-10-17", 150_000, tied, false],
+      ["2026-10-08", 200_000, three, true],
+      ["2026-10-08", 400_000, three, true],
+      ["2026-10-08", 320_000, three, false],
+      ["2026-10-08", 120_000, { ...repaid, currency: "USD" }, false],
     ] as const) {
       const result = placed(
         debit(0, day, "NEFT DR-MEERA RAO", amount),
@@ -722,6 +740,27 @@ describe("statement matching", () => {
           },
         ]);
       else assert.notInclude(result[2].why ?? "", "repayment already marked");
+    }
+    // Money back from the partner is never the repayment they were sent.
+    assert.notInclude(
+      placed(
+        { ...debit(0, "2026-10-08", "NEFT CR-MEERA RAO", 120_000), direction: "credit" },
+        [],
+        [{ name: "Meera Rao", repaid: [repaid, { ...repaid, amountMinor: 120_000 }] }],
+      )[2].why ?? "",
+      "repayment already marked",
+    );
+    // Another partner's mark explains nothing for a line that may be to someone else.
+    const rao = { name: "Meera Rao", id: "person:rao", repaid: [] };
+    const shah = { name: "Meera Shah", id: "person:shah", repaid: [repaid] };
+    for (const [description, payees, by] of [
+      ["REIMBURSE MEERA", [rao, shah], undefined],
+      ["NEFT DR-MEERA RAO", [{ ...shah, name: "Meera Rao" }, rao], undefined],
+      ["NEFT DR-MEERA RAO", [{ ...rao, repaid: [repaid] }, shah], "Meera Rao"],
+    ] as const) {
+      const { why } = placed(debit(0, "2026-10-08", description, 120_000), [], payees)[2];
+      if (by === undefined) assert.notInclude(why ?? "", "repayment already marked");
+      else assert.include(why, `${by}'s repayment already marked`);
     }
     // A line can't pay back what was spent after it.
     assert.deepStrictEqual(

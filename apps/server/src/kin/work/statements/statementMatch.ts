@@ -955,13 +955,17 @@ export const matchRows = (
   /** A repayment to someone this line names, marked by hand with no bank row: likely this one. */
   const markedFor = (row: StatementRow) => {
     const bankRecordId = input.bankRows?.get(row.index)?.recordId;
-    for (const payee of (input.payees ?? []).filter(named(row))) {
-      const marked = payee.repaid.find((one) =>
-        markedByHand(row, input.currency, one, bankRecordId),
-      );
-      if (marked !== undefined) return { name: payee.name, day: marked.day };
-    }
-    return undefined;
+    const all = (input.payees ?? []).filter(named(row));
+    const whole = all.filter((one) => identifies(one, row.description));
+    const [payee, ...more] = whole.length > 0 ? whole : all;
+    // Naming two people, it may be to the one with no mark: it is offered, not passed over.
+    if (
+      payee === undefined ||
+      more.some((one) => (one.id ?? one.name) !== (payee.id ?? payee.name))
+    )
+      return undefined;
+    const marked = payee.repaid.find((one) => markedByHand(row, input.currency, one, bankRecordId));
+    return marked === undefined ? undefined : { name: payee.name, day: marked.day };
   };
   // A move between the company's own accounts that names a partner repays nobody, and a
   // repayment already marked by hand isn't offered again.
