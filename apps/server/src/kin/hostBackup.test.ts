@@ -8,6 +8,7 @@ import {
   KinOrgId,
   KinPersonId,
   KinWakeupId,
+  KinWaitingId,
   type KinTroubleCause,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -348,15 +349,18 @@ it.effect("a memory write the writer refuses every night tells the owner once pe
     yield* HostBackupCheck.check();
     assert.deepStrictEqual(
       (yield* told).map(({ resolvedAt }) => resolvedAt === null),
-      [false, true],
+      [true, true],
     );
-    yield* night(14, null);
+    yield* night(14, checkout);
+    yield* HostBackupCheck.check();
+    assert.lengthOf(yield* told, 2);
+    yield* night(15, null);
     yield* HostBackupCheck.check();
     assert.deepStrictEqual(
       (yield* told).map(({ resolvedAt }) => resolvedAt === null),
       [false, false],
     );
-    yield* night(15, scanner);
+    yield* night(16, scanner);
     yield* HostBackupCheck.check();
     const rows = yield* told;
     assert.deepStrictEqual(
@@ -388,17 +392,42 @@ it.effect("background memory refusals open one silent notice in the owner's priv
       { concurrency: "unbounded", discard: true },
     );
     yield* writeEpisode(orgId, "deleted-quotes", "scanner");
-    const rows = yield* sql<{ chatId: string; person: string; silent: number; open: number }>`SELECT
+    yield* writeEpisode(orgId, "deleted-quotes", "remote");
+    const rows = sql<{ chatId: string; person: string; silent: number; open: number }>`SELECT
         m.chat_id AS "chatId", w.person_id AS person, m.silent,
         w.resolved_at IS NULL AS open
       FROM kin_messages m JOIN kin_waiting w
         ON w.org_id = m.org_id AND w.message_id = m.message_id
       WHERE m.org_id = ${orgId} AND m.message_id LIKE 'kin-memory-write:%'
       ORDER BY m.seq`;
-    assert.deepStrictEqual(rows, [
-      { chatId: "rhea-chief", person: "rhea", silent: 1, open: 0 },
+    assert.deepStrictEqual(yield* rows, [
+      { chatId: "rhea-chief", person: "rhea", silent: 1, open: 1 },
       { chatId: "rhea-chief", person: "rhea", silent: 1, open: 1 },
     ]);
+    const chat = yield* Chat.KinChatService;
+    const [answered] = yield* sql<{ waitingId: string }>`SELECT waiting_id AS "waitingId"
+      FROM kin_waiting WHERE org_id = ${orgId} AND message_id LIKE 'kin-memory-write:%:remote:%'`;
+    if (answered === undefined) return assert.fail("Missing owner notice");
+    yield* chat.resolveNotice({
+      orgId,
+      waitingId: KinWaitingId.make(answered.waitingId),
+      resolution: "answered",
+    });
+    yield* writeEpisode(orgId, "deleted-quotes", "remote");
+    assert.deepStrictEqual(
+      (yield* rows).map(({ open }) => open),
+      [0, 1],
+    );
+    yield* writeEpisode(orgId, "deleted-quotes", undefined);
+    assert.deepStrictEqual(
+      (yield* rows).map(({ open }) => open),
+      [0, 0],
+    );
+    yield* writeEpisode(orgId, "deleted-quotes", "remote");
+    assert.deepStrictEqual(
+      (yield* rows).map(({ open }) => open),
+      [0, 0, 1],
+    );
   }).pipe(Effect.provide(OwnerNotices.layer.pipe(Layer.provideMerge(services)))),
 );
 

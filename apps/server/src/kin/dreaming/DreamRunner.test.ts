@@ -602,7 +602,7 @@ it.live.each([
         expect(outcome._tag).toBe("failed");
         if (outcome._tag === "failed")
           expect(outcome.failures).toEqual([
-            "Kin couldn't save a memory update because memory changed while Kin was working on it.",
+            "Kin couldn't save the nightly memory update because memory changed while it ran.",
           ]);
         expect(
           yield* git(root, ["--git-dir", remote, "ls-tree", "-r", "--name-only", moving]),
