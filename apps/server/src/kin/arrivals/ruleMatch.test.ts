@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 
-import { mailRuleHeaderFacts, matchMailRule } from "./ruleMatch.ts";
+import { mailRuleFilter, mailRuleHeaderFacts, matchMailRule } from "./ruleMatch.ts";
 
 const rule = {
   connectionId: "company",
@@ -259,5 +259,34 @@ describe("mail rule matching", () => {
         { ...arrival, ...row, ...mailRuleHeaderFacts(mail), subject: mail.subject },
       ),
     ).toBe(result);
+  });
+});
+
+// The rows `tldts` must keep green when it replaces the vendored suffix list.
+describe("a sender domain filter that is a public suffix", () => {
+  it.each([
+    ["co.uk", "public_suffix"],
+    ["CO.UK.", "public_suffix"],
+    ["uk", "public_suffix"],
+    ["example", "public_suffix"],
+    ["junipercold.example", "junipercold.example"],
+    ["junipercold.co.uk", "junipercold.co.uk"],
+    ["github.io", "public_suffix"],
+    ["tidewater.github.io", "tidewater.github.io"],
+    ["a.ck", "public_suffix"],
+    ["www.ck", "www.ck"],
+    ["x.kobe.jp", "public_suffix"],
+    ["city.kobe.jp", "city.kobe.jp"],
+    ["x.c.ts.net", "public_suffix"],
+    ["c.ts.net", "c.ts.net"],
+    ["公司.cn", "public_suffix"],
+    ["xn--55qx5d.cn", "public_suffix"],
+  ] as const)("%s", (domain, result) => {
+    const filter = mailRuleFilter({ domain });
+    expect(filter.problem ?? filter.spelling).toBe(result);
+  });
+
+  it("never refuses an address for its domain", () => {
+    expect(mailRuleFilter({ address: "orders@co.uk" })).toEqual({ spelling: "orders@co.uk" });
   });
 });
