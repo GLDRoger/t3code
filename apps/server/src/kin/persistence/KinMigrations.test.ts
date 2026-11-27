@@ -675,6 +675,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_trigger_inbox_retention" },
           { name: "idx_kin_triggers_due" },
           { name: "idx_kin_troubles_open" },
+          { name: "idx_kin_waiting_message_id" },
           { name: "idx_kin_waiting_open_widget_person" },
           { name: "idx_kin_waiting_person_resolved_at" },
           { name: "idx_kin_wakeups_running_lead" },
@@ -704,6 +705,13 @@ describe("Kin migrations", () => {
           yield* sql`SELECT name FROM pragma_index_info('idx_kin_widgets_type_closed_at') ORDER BY seqno`,
           [{ name: "type" }, { name: "closed_at" }],
         );
+        const waitingPlan = yield* sql<{ detail: string }>`
+          EXPLAIN QUERY PLAN
+          SELECT 1 FROM kin_waiting
+          WHERE org_id = 'org_tidewater' AND message_id = 'msg_01jkh000000000000000000000'
+            AND widget_id IS NULL AND resolved_at IS NOT NULL
+        `;
+        assert.match(waitingPlan[0]?.detail ?? "", /USING INDEX idx_kin_waiting_message_id/);
         assert.deepStrictEqual(
           yield* sql`SELECT name FROM pragma_index_info('idx_kin_waiting_person_resolved_at') ORDER BY seqno`,
           [{ name: "person_id" }, { name: "resolved_at" }],
