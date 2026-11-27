@@ -644,6 +644,43 @@ const microsoftSendAs = Effect.fn("KinMicrosoft.sendAs")(function* (
 const inReplyToOf = (raw: string) =>
   /^In-Reply-To: *(\S+)\r?$/im.exec(raw.split(/\r?\n\r?\n/)[0] ?? "")?.[1] ?? null;
 
+const sentSince = Effect.fn("KinMicrosoft.sentSince")(function* (
+  http: HttpClient.HttpClient,
+  token: string,
+  since: number,
+  max: number,
+) {
+  const answer = yield* api({ http, token }, `${GRAPH}/mailFolders/sentitems/messages`, {
+    params: {
+      $filter: `sentDateTime ge ${iso(since)}`,
+      $select: "subject,toRecipients,ccRecipients,sentDateTime",
+      $orderby: "sentDateTime desc",
+      $top: String(max),
+    },
+  });
+  const messages = field(answer, "value");
+  if (!Array.isArray(messages))
+    return yield* failure("protocol", "Outlook sent mail could not be listed.");
+  return yield* Effect.forEach(
+    messages.slice(0, max),
+    Effect.fnUntraced(function* (message: unknown) {
+      const sentAt = Date.parse(text(field(message, "sentDateTime")) ?? "");
+      if (
+        !Number.isFinite(sentAt) ||
+        !Array.isArray(field(message, "toRecipients")) ||
+        !Array.isArray(field(message, "ccRecipients"))
+      )
+        return yield* failure("protocol", "Outlook sent mail headers could not be read.");
+      return {
+        sentAt,
+        to: recipients(message, "toRecipients"),
+        cc: recipients(message, "ccRecipients"),
+        subject: text(field(message, "subject")) ?? "",
+      };
+    }),
+  );
+});
+
 /**
  * A new message goes through sendMail; a reply goes through the answered message's own reply,
  * so Outlook keeps it in the conversation. Both take the message whole, as MIME.
@@ -858,6 +895,7 @@ const microsoft: MailVendor = {
   arrival: arrivalOf,
   account: (http, token) => profile(http, token).pipe(Effect.map(accountOf)),
   sendAs: microsoftSendAs,
+  sentSince,
   sendMessage,
   saveEvent,
   deleteEvent: (http, token, { calendarId, eventId, revision }) =>

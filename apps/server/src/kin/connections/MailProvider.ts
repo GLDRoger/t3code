@@ -155,6 +155,13 @@ export type Sent = {
   readonly eventId: string | null;
 };
 
+export type SentMailHeader = {
+  readonly sentAt: number;
+  readonly to: ReadonlyArray<string>;
+  readonly cc: ReadonlyArray<string>;
+  readonly subject: string;
+};
+
 type Call<A> = Effect.Effect<A, KinGatewayError>;
 
 export type MailFile = {
@@ -355,6 +362,7 @@ export interface MailVendor {
   readonly arrival: (context: MailContext, messageId: string) => Call<MailArrival | null>;
   readonly account: MailProvider["account"];
   readonly sendAs: MailProvider["sendAs"];
+  readonly sentSince: MailProvider["sentSince"];
   readonly sendMessage: MailProvider["sendMessage"];
   readonly saveEvent: MailProvider["saveEvent"];
   readonly deleteEvent: MailProvider["deleteEvent"];
@@ -446,6 +454,12 @@ export interface MailProvider {
     mailbox: Mailbox,
     threadId: string,
   ) => Call<ReplyTarget>;
+  readonly sentSince: (
+    http: HttpClient.HttpClient,
+    token: string,
+    since: number,
+    max: number,
+  ) => Call<ReadonlyArray<SentMailHeader>>;
   /** Sends a whole RFC 822 message, in its thread when `threadId` is set. */
   readonly sendMessage: (
     http: HttpClient.HttpClient,

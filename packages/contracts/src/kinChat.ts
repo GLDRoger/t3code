@@ -473,6 +473,7 @@ export const KIN_CHOICE_CARD_TTL_MS = 24 * 60 * 60 * 1000;
 export const KinSendTry = Schema.Struct({
   tryId: TrimmedNonEmptyString.check(Schema.isMaxLength(128)),
   at: IsoDateTime,
+  seenInSentAt: Schema.optional(IsoDateTime),
 });
 export type KinSendTry = typeof KinSendTry.Type;
 export const KinSendCard = Schema.Struct({
