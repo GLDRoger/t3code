@@ -90,6 +90,7 @@ import {
   type KinAttachment,
   type KinChatMember,
   type KinChatMembersResult,
+  type KinChatPinsResult,
   type KinLeadsListResult,
   type KinMessageRef,
   type KinPresence,
@@ -133,6 +134,7 @@ import { cn } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
+import { KinChatPinsStrip } from "./KinChatPins";
 import { KinStopButton, KinWorkingTimer } from "./KinPresenceControls";
 import {
   KinComposerAttachmentStrip,
@@ -197,6 +199,10 @@ type GroupResult = AsyncResult.AsyncResult<KinChatMembersResult, unknown> | null
 const noGroupAtom: Atom.Atom<GroupResult> = Atom.make<GroupResult>(null);
 const noChatAtom: Atom.Atom<ChatResult> = Atom.make<ChatResult>(null);
 const noInboxAtom: Atom.Atom<InboxResult> = Atom.make<InboxResult>(null);
+const noPinsSupportedAtom = Atom.make(false);
+const noPinsAtom = Atom.make<AsyncResult.AsyncResult<KinChatPinsResult, unknown>>(
+  AsyncResult.initial(),
+);
 const decodeChatId = Schema.decodeUnknownOption(KinChatId);
 
 // Mirrors the host's reactable cards; the host still refuses the rest.
@@ -315,6 +321,20 @@ export function KinChatView(props: {
       ? null
       : { environmentId, orgId: summary.orgId },
   );
+  const pinsOrgId = summary?.orgId ?? KinOrgId.make(props.orgId);
+  const pinsReady = state._tag === "ready" && environmentId !== null && chatId !== null;
+  const pinsSupported = useAtomValue(
+    pinsReady
+      ? kinClient.chatPinsSupported({ environmentId, input: { orgId: pinsOrgId } })
+      : noPinsSupportedAtom,
+  );
+  // Shares the atom KinChatPinsStrip already subscribes to; adds no read.
+  const pinsResult = useAtomValue(
+    pinsReady && pinsSupported
+      ? kinClient.chatPins({ environmentId, input: { orgId: pinsOrgId, chatId } })
+      : noPinsAtom,
+  );
+  const hasPins = (Option.getOrUndefined(AsyncResult.value(pinsResult))?.pins.length ?? 0) > 0;
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -338,6 +358,15 @@ export function KinChatView(props: {
               : () => setProfileOpen(true)
         }
       />
+      {pinsReady ? (
+        <KinChatPinsStrip
+          environmentId={environmentId}
+          orgId={pinsOrgId}
+          chatId={chatId}
+          personId={viewer.personId}
+          members={group?.members ?? summary?.members ?? []}
+        />
+      ) : null}
       {group === null ||
       environmentId === null ||
       summary === undefined ||
@@ -350,6 +379,7 @@ export function KinChatView(props: {
           orgId={summary.orgId}
           personId={viewer.personId}
           muted={muted}
+          hasPins={hasPins}
           retiredAgents={viewer.retiredAgents ?? NO_RETIRED_AGENTS}
         />
       )}
@@ -362,6 +392,7 @@ export function KinChatView(props: {
           environmentId={environmentId}
           chatId={chatId}
           muted={muted}
+          hasPins={hasPins}
           pinned={
             // The main agent's chat is always on top, so it offers no pin.
             summary === undefined ||

@@ -71,6 +71,7 @@ const tableNames = [
   "kin_card_plans",
   "kin_chat_levels",
   "kin_chat_members",
+  "kin_chat_pins",
   "kin_chats",
   "kin_client_touches",
   "kin_company_profile",
@@ -609,6 +610,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_bill_reads_event" },
           { name: "idx_kin_chat_members_agent" },
           { name: "idx_kin_chat_members_person" },
+          { name: "idx_kin_chat_pins_source" },
           { name: "idx_kin_chats_org_chat" },
           { name: "idx_kin_client_touches_party" },
           { name: "idx_kin_connection_calls_connection" },
@@ -3738,7 +3740,7 @@ it.effect("Looks upgrades K232 with one mark per org, person and record", () =>
     yield* runKinMigrations();
     yield* sql`DROP TABLE IF EXISTS kin_looks`;
     yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id > 232`;
-    assert.deepStrictEqual(yield* runKinMigrations(), [[233, "Looks"]]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(233));
     assert.deepStrictEqual(
       yield* sql`PRAGMA table_info(kin_looks)`.pipe(
         Effect.map((columns) =>

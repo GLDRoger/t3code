@@ -6,13 +6,15 @@ import {
   kinGoalsSummary,
   type KinGoalDraft,
 } from "@t3tools/client-runtime/kin/kinAttention";
+import { KIN_PINS_COPY, kinGoalPinnable } from "@t3tools/client-runtime/kin/kinPins";
 import {
   type EnvironmentId,
   KIN_GOAL_MEASURES,
   type KinGoal,
   type KinGoalMeasure,
+  type KinOrgId,
 } from "@t3tools/contracts";
-import { PlusIcon } from "lucide-react";
+import { PinIcon, PlusIcon } from "lucide-react";
 import { useId, useState } from "react";
 
 import { Button } from "../components/ui/button";
@@ -26,10 +28,12 @@ import {
 } from "../components/ui/select";
 import { cn, randomUUID } from "../lib/utils";
 import { KinCountryFirstField } from "./KinCountryFirst";
+import { KinPinToChatDialog } from "./KinPinToChatDialog";
 import { Field, FormShell } from "./KinWorkForms";
 import { KinWorkSection } from "./KinWorkParts";
 import { useNowMinuteMs } from "./useKinClock";
 import { useKinGoals } from "./useKinAttention";
+import { useKinPinActions } from "./useKinPins";
 import type { KinWorkTarget } from "./useKinWork";
 
 type Goals = ReturnType<typeof useKinGoals>;
@@ -63,8 +67,10 @@ function GoalBar(props: {
 export function KinGoals(props: KinWorkTarget & { readonly goals?: Goals }) {
   const own = useKinGoals(props, { enabled: props.goals === undefined });
   const goals = props.goals ?? own;
+  const pinActions = useKinPinActions({ environmentId: props.environmentId, orgId: props.orgId });
   const now = new Date(useNowMinuteMs());
   const [editing, setEditing] = useState<KinGoal | "new" | null>(null);
+  const [pinning, setPinning] = useState<KinGoal | null>(null);
   if (goals.state._tag !== "ready") return null;
   const list = goals.state.value.goals;
   if (list.length === 0 && !goals.canSave) return null;
@@ -72,6 +78,7 @@ export function KinGoals(props: KinWorkTarget & { readonly goals?: Goals }) {
     editing === null ? null : (
       <KinGoalSheet
         environmentId={props.environmentId}
+        orgId={props.orgId}
         goal={editing === "new" ? null : editing}
         goals={goals}
         onClose={() => setEditing(null)}
@@ -95,6 +102,7 @@ export function KinGoals(props: KinWorkTarget & { readonly goals?: Goals }) {
       <ul className="flex flex-col gap-1">
         {list.map((goal) => {
           const view = kinGoalView(goal, now);
+          const canPinGoal = pinActions.canPin && kinGoalPinnable(goal);
           const body = (
             <>
               <span className="flex items-baseline justify-between gap-3">
@@ -134,7 +142,7 @@ export function KinGoals(props: KinWorkTarget & { readonly goals?: Goals }) {
             </>
           );
           return (
-            <li key={goal.key}>
+            <li key={goal.key} className="flex flex-col gap-1">
               {goals.canSave ? (
                 <button
                   type="button"
@@ -146,11 +154,31 @@ export function KinGoals(props: KinWorkTarget & { readonly goals?: Goals }) {
               ) : (
                 <div className="flex flex-col gap-1.5 px-2 py-2">{body}</div>
               )}
+              {canPinGoal ? (
+                <div className="px-2">
+                  <Button size="xs" variant="ghost" onClick={() => setPinning(goal)}>
+                    <PinIcon />
+                    {KIN_PINS_COPY.pinToChat}
+                  </Button>
+                </div>
+              ) : null}
             </li>
           );
         })}
       </ul>
       {sheet}
+      {pinning === null ? null : (
+        <KinPinToChatDialog
+          open
+          onOpenChange={(open) => {
+            if (!open) setPinning(null);
+          }}
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          recordKey={pinning.key}
+          recordTitle={pinning.title}
+        />
+      )}
     </KinWorkSection>
   );
 }
@@ -158,6 +186,7 @@ export function KinGoals(props: KinWorkTarget & { readonly goals?: Goals }) {
 /** Add or change a goal: what it measures, its target and its dates. */
 export function KinGoalSheet(props: {
   readonly environmentId: EnvironmentId;
+  readonly orgId?: KinOrgId;
   readonly goal: KinGoal | null;
   readonly goals: Goals;
   readonly onClose: () => void;
@@ -166,7 +195,14 @@ export function KinGoalSheet(props: {
   const [requestId] = useState(randomUUID);
   const [draft, setDraft] = useState<KinGoalDraft>(() => kinGoalDraft(goal, kinNow()));
   const [saving, setSaving] = useState(false);
+  const [pinning, setPinning] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
+  const pinActions = useKinPinActions({
+    environmentId: props.environmentId,
+    orgId: props.orgId ?? ("" as KinOrgId),
+  });
+  const canPinHere =
+    props.orgId !== undefined && goal !== null && kinGoalPinnable(goal) && pinActions.canPin;
   const ids = {
     name: useId(),
     measure: useId(),
@@ -216,7 +252,18 @@ export function KinGoalSheet(props: {
       onClose={props.onClose}
       aside={
         goal === null ? undefined : (
-          <div className="flex gap-1">
+          <div className="flex flex-wrap gap-1">
+            {canPinHere ? (
+              <Button
+                type="button"
+                variant="ghost"
+                disabled={saving}
+                onClick={() => setPinning(true)}
+              >
+                <PinIcon />
+                {KIN_PINS_COPY.pinToChat}
+              </Button>
+            ) : null}
             {goal.state === "open" ? (
               <Button
                 type="button"
@@ -324,6 +371,16 @@ export function KinGoalSheet(props: {
           />
         </Field>
       </div>
+      {pinning && props.orgId !== undefined && goal !== null ? (
+        <KinPinToChatDialog
+          open={pinning}
+          onOpenChange={setPinning}
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          recordKey={goal.key}
+          recordTitle={goal.title}
+        />
+      ) : null}
     </FormShell>
   );
 }

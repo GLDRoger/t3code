@@ -79,6 +79,22 @@ describe("kinRefreshTriggers", () => {
     expect(registry.get(memory)).not.toBe(before);
   });
 
+  it("offers pins only when the host announces the topic, including revision zero", () => {
+    const { registry, revisions, triggers, heard } = setup();
+    const supported = triggers.hasTopic("pins")(target);
+    const unmount = registry.mount(supported);
+    expect(registry.get(supported)).toBe(false);
+    heard({ people: 0 });
+    expect(registry.get(supported)).toBe(false);
+    heard({ people: 0, pins: 0 });
+    expect(registry.get(supported)).toBe(true);
+    registry.set(revisions, AsyncResult.initial(true));
+    expect(registry.get(supported)).toBe(true);
+    heard({ people: 1 });
+    expect(registry.get(supported)).toBe(false);
+    unmount();
+  });
+
   it("keeps whether the host streams a read through a reconnect", () => {
     const { registry, revisions, triggers, heard } = setup();
     const pulse = triggers.serves("pulse")(target);

@@ -74,7 +74,10 @@ import { useKinSectionOn, useKinShell } from "./state/useKinShell";
 import { kinSectionOffLine } from "@t3tools/client-runtime/kin/kinShell";
 import { KinProjectPeopleSection } from "./KinProjectPeopleScreen";
 import { kinClient } from "./state/kinClient";
+import { KIN_PINS_COPY } from "@t3tools/client-runtime/kin/kinPins";
+import { KinPinToChatSheet } from "./components/KinPinToChatSheet";
 import { useKinAskRecord } from "./state/useKinAskRecord";
+import { useKinPinActions } from "./state/useKinPins";
 import { kinHostConnected, useKinGate } from "./state/useKinHost";
 import {
   useKinPinnedProjectLook,
@@ -208,6 +211,8 @@ function KinProjectBody(
   const now = new Date(useNowMinuteMs());
   const [problem, setProblem] = useState<KinWorkFormProblem | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pinning, setPinning] = useState(false);
+  const pinActions = useKinPinActions(props);
   const shell = useKinShell(environmentId);
   const ownerLevel = useKinIsOwnerLevel(environmentId);
   const visible = useKinScreenVisible();
@@ -263,6 +268,70 @@ function KinProjectBody(
   const asker = useKinAskRecord(props, { key: view.key, title: view.name });
   const openTask = (task: KinRecordKey) =>
     openRecord("KinWorkItem", { environmentId, orgId, task });
+  const moreItems = [
+    ...(pinActions.canPin
+      ? [
+          {
+            id: "pin-to-chat",
+            title: KIN_PINS_COPY.pinToChat,
+            disabled: busy,
+            onPress: () => setPinning(true),
+          },
+        ]
+      : []),
+    ...(!canChange
+      ? []
+      : view.state === "open"
+        ? [
+            {
+              id: "done",
+              title: KIN_PROJECTS.done,
+              disabled: busy,
+              onPress: () => void change({ state: "done" }),
+            },
+            {
+              id: "dropped",
+              title: KIN_PROJECTS.drop,
+              destructive: true,
+              disabled: busy,
+              onPress: () => void change({ state: "dropped" }),
+            },
+          ]
+        : [
+            {
+              id: "open",
+              title: KIN_PROJECTS.reopen,
+              disabled: busy,
+              onPress: () => void change({ state: "open" }),
+            },
+          ]),
+  ];
+  const bar = {
+    actions: [
+      ...asker.actions,
+      ...(canChange
+        ? [
+            {
+              accessibilityLabel: KIN_PROJECTS.edit,
+              icon: "pencil" as const,
+              disabled: busy,
+              onPress: () =>
+                navigation.navigate("KinProjectForm", {
+                  environmentId,
+                  orgId,
+                  project: view.key,
+                }),
+            },
+          ]
+        : []),
+    ],
+    menus: [
+      ...asker.menus,
+      ...(moreItems.length === 0
+        ? []
+        : [{ title: "More", icon: "ellipsis" as const, items: moreItems }]),
+    ],
+  };
   return (
     <>
       <KinTasksList
@@ -278,56 +347,7 @@ function KinProjectBody(
         within={{
           adds: view.adds,
           listRef,
-          bar: canChange
-            ? {
-                actions: [
-                  ...asker.actions,
-                  {
-                    accessibilityLabel: KIN_PROJECTS.edit,
-                    icon: "pencil",
-                    disabled: busy,
-                    onPress: () =>
-                      navigation.navigate("KinProjectForm", {
-                        environmentId,
-                        orgId,
-                        project: view.key,
-                      }),
-                  },
-                ],
-                menus: [
-                  ...asker.menus,
-                  {
-                    title: "More",
-                    icon: "ellipsis",
-                    items:
-                      view.state === "open"
-                        ? [
-                            {
-                              id: "done",
-                              title: KIN_PROJECTS.done,
-                              disabled: busy,
-                              onPress: () => void change({ state: "done" }),
-                            },
-                            {
-                              id: "dropped",
-                              title: KIN_PROJECTS.drop,
-                              destructive: true,
-                              disabled: busy,
-                              onPress: () => void change({ state: "dropped" }),
-                            },
-                          ]
-                        : [
-                            {
-                              id: "open",
-                              title: KIN_PROJECTS.reopen,
-                              disabled: busy,
-                              onPress: () => void change({ state: "open" }),
-                            },
-                          ],
-                  },
-                ],
-              }
-            : asker,
+          bar,
           header: (
             <>
               {offLine === null ? null : (
@@ -485,6 +505,15 @@ function KinProjectBody(
             openTask(key);
           }}
           onClose={() => setHistoryOpen(false)}
+        />
+      ) : null}
+      {pinning ? (
+        <KinPinToChatSheet
+          environmentId={environmentId}
+          orgId={orgId}
+          recordKey={view.key}
+          recordTitle={view.name}
+          onClose={() => setPinning(false)}
         />
       ) : null}
     </>
