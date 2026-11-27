@@ -88,6 +88,7 @@ export const KinWidgetView = memo(function KinWidgetView(props: {
           choice={view.choice}
           environmentId={props.environmentId}
           viewerPersonId={props.viewerPersonId}
+          ownerLevel={access === null ? undefined : kinOwnerLevel(access)}
         />
       );
     case "country":
