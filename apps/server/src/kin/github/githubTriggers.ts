@@ -85,6 +85,7 @@ export interface DecideContext {
   /** Who applied the `kin` label, when GitHub says. */
   readonly labeledBy?: string | undefined;
   readonly triageFrom?: number | undefined;
+  readonly kinCommented?: boolean | undefined;
   readonly kinSaid?: number | undefined;
   readonly repliesLeft?: number | undefined;
   readonly appOn?: boolean | undefined;
@@ -127,6 +128,24 @@ export interface Trigger {
 }
 
 const isBot = (login: string, bot: boolean) => bot || /\[bot\]$/i.test(login);
+
+export const isTriage = (kind: Trigger["kind"]) => kind === "triage" || kind === "triage_reply";
+
+export const triageReplies = (
+  comments: ReadonlyArray<ThreadComment>,
+  { kinSaid, botLogin, agentPosts }: Pick<DecideContext, "kinSaid" | "botLogin" | "agentPosts">,
+) =>
+  kinSaid === undefined
+    ? []
+    : comments
+        .filter(
+          (comment) =>
+            comment.kind === "issue" &&
+            comment.createdAt > kinSaid &&
+            !isAgentsOwn(comment.body, comment.author, botLogin, agentPosts) &&
+            !isBot(comment.author, comment.bot),
+        )
+        .toSorted((a, b) => a.createdAt - b.createdAt || a.id - b.id);
 
 const clip = (text: string) => (text.length <= TEXT_CAP ? text : `${text.slice(0, TEXT_CAP - 1)}…`);
 
@@ -297,6 +316,8 @@ export const decideTriggers = (
     thread.createdAt >= Math.max(context.since, triageFrom) &&
     !agentsOwn &&
     !isBot(thread.author, thread.authorBot) &&
+    kinSaid === undefined &&
+    !context.kinCommented &&
     !thread.comments.some((c) =>
       isAgentsOwn(c.body, c.author, context.botLogin, context.agentPosts),
     ) &&
@@ -311,15 +332,7 @@ export const decideTriggers = (
     });
 
   if (kinSaid !== undefined && (repliesLeft ?? 0) > 0) {
-    const after = thread.comments
-      .filter(
-        (comment) =>
-          comment.kind === "issue" &&
-          comment.createdAt > kinSaid &&
-          !isAgentsOwn(comment.body, comment.author, context.botLogin, context.agentPosts) &&
-          !isBot(comment.author, comment.bot),
-      )
-      .toSorted((a, b) => a.createdAt - b.createdAt || a.id - b.id);
+    const after = triageReplies(thread.comments, context);
     const last = after.at(-1);
     const inside = itemInside && after.every((comment) => context.writes(comment.author));
     if (last !== undefined && (inside || appOn === true))
