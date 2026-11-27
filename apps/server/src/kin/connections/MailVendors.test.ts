@@ -71,7 +71,10 @@ const harness = (provider: MailProvider) => {
     const url = new URL(request.url);
     requests.push(new URL(url));
     // Also exercise Kin's cancellation filter when Google sends a cancelled event.
-    if (url.searchParams.has("fields")) url.searchParams.set("showDeleted", "true");
+    if (url.searchParams.has("fields")) {
+      url.searchParams.set("showDeleted", "true");
+      url.searchParams.set("maxResults", "100");
+    }
     const response = await handle(new Request(url, request));
     const agenda =
       url.searchParams.has("fields") ||
@@ -653,3 +656,31 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
 describe.each(Object.values(MAIL_PROVIDERS))("$name mail, on the fake mailbox", (provider) => {
   it.effect.each(CASES)("%s", ([, body]) => run(provider, body));
 });
+
+it.effect("stops a start-ordered Google agenda after four pages of 100", () =>
+  run(MAIL_PROVIDERS.google, ({ provider, fake, http, token, requests }) =>
+    Effect.gen(function* () {
+      for (let index = 499; index >= 0; index--) {
+        const start = NOW + index * 60_000;
+        fake.putEvent({
+          account: OWNER,
+          id: `event_tidewater_${index}`,
+          title: "Tidewater Freight",
+          start,
+          end: start + 60_000,
+          updated: NOW,
+        });
+      }
+      const agenda = yield* provider.agenda(http, token, {
+        from: "2026-11-16T00:00:00Z",
+        to: "2026-11-17T00:00:00Z",
+      });
+      assert.lengthOf(requests, 4);
+      assert.lengthOf(agenda, 301);
+      assert.deepStrictEqual(
+        agenda.slice(0, 300).map(({ id }) => id),
+        Array.from({ length: 300 }, (_, index) => `event_tidewater_${index}`),
+      );
+    }),
+  ),
+);

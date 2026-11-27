@@ -425,9 +425,20 @@ class CalendarKey extends Data.Class<{
 type CalendarRead = {
   readonly status: KinCalendarSource["status"];
   readonly events: ReadonlyArray<MailAgendaEvent>;
+  readonly availableAt?: number;
 };
 // Retry skips the cache, but a client retrying in a loop reaches the vendor at most this often.
 const CALENDAR_RETRY_FLOOR_MS = 5_000;
+const CALENDAR_READ_LIMIT = 12;
+const CALENDAR_READ_INTERVAL_MS = 60_000;
+const CALENDAR_FAILURE_TTL_MS = 15_000;
+const calendarIso = (at: number) => DateTime.formatIso(DateTime.makeUnsafe(at));
+
+const overlapsCalendarWindow = (event: MailAgendaEvent, from: number, to: number) => {
+  const start = Date.parse(event.start);
+  const end = event.end === null ? start + (event.allDay ? DAY_MS : 0) : Date.parse(event.end);
+  return start < to && (start >= from || end > from);
+};
 const calendarStatus = (status: Exclude<CalendarRead["status"], "ok">): CalendarRead => ({
   status,
   events: [],
@@ -1299,6 +1310,24 @@ const make = Effect.gen(function* () {
   });
   const tokenOf = (orgId: KinOrgId, row: ConnectionRow, force: boolean) =>
     signInOf(orgId, row, force).pipe(Effect.map((secret) => secret.accessToken));
+  const calendarReads = new Map<string, number[]>();
+  let sweepCalendarReadsAt = Number.NEGATIVE_INFINITY;
+  const reserveCalendarRead = (orgId: KinOrgId, connectionId: string, now: number) => {
+    const since = now - CALENDAR_READ_INTERVAL_MS;
+    if (now >= sweepCalendarReadsAt) {
+      for (const [key, reads] of calendarReads)
+        if (reads[reads.length - 1]! <= since) calendarReads.delete(key);
+      sweepCalendarReadsAt = now + CALENDAR_READ_INTERVAL_MS;
+    }
+    const key = JSON.stringify([orgId, connectionId]);
+    const reads = calendarReads.get(key)?.filter((at) => at > since) ?? [];
+    const oldest = reads[0];
+    if (reads.length >= CALENDAR_READ_LIMIT && oldest !== undefined)
+      return oldest + CALENDAR_READ_INTERVAL_MS;
+    reads.push(now);
+    calendarReads.set(key, reads);
+  };
+
   const readCalendar = Effect.fn("KinConnections.readCalendar")(
     function* (key: CalendarKey): Effect.fn.Return<CalendarRead, unknown> {
       const { orgId, connectionId, signInGen, from, to } = key;
@@ -1327,11 +1356,15 @@ const make = Effect.gen(function* () {
         (force) =>
           signInOf(orgId, row, force, "read_only").pipe(
             Effect.flatMap((signIn) =>
-              provider.readsCalendar(signIn.scope)
-                ? provider
-                    .agenda(http, signIn.accessToken, { from, to })
-                    .pipe(Effect.map((events): CalendarRead => ({ status: "ok", events })))
-                : Effect.succeed(calendarStatus("no_calendar_permission")),
+              Effect.gen(function* (): Effect.fn.Return<CalendarRead, KinGatewayError> {
+                if (!provider.readsCalendar(signIn.scope))
+                  return calendarStatus("no_calendar_permission");
+                const now = yield* Clock.currentTimeMillis;
+                const availableAt = reserveCalendarRead(orgId, connectionId, now);
+                if (availableAt !== undefined) return { ...calendarStatus("busy"), availableAt };
+                const events = yield* provider.agenda(http, signIn.accessToken, { from, to });
+                return { status: "ok", events };
+              }),
             ),
           ),
         "read_only",
@@ -1355,8 +1388,13 @@ const make = Effect.gen(function* () {
 
   const calendarCache = yield* Cache.makeWith(readCalendar, {
     capacity: 64,
-    timeToLive: (exit) =>
-      Exit.isSuccess(exit) && exit.value.status === "ok" ? "60 seconds" : "15 seconds",
+    timeToLive: (exit) => {
+      if (!Exit.isSuccess(exit)) return Duration.millis(CALENDAR_FAILURE_TTL_MS);
+      const { status, availableAt, at } = exit.value;
+      if (status === "ok") return "60 seconds";
+      const retryIn = availableAt === undefined ? CALENDAR_FAILURE_TTL_MS : availableAt - at;
+      return Duration.millis(Math.max(0, Math.min(CALENDAR_FAILURE_TTL_MS, retryIn)));
+    },
   });
   const invalidateCalendar = Effect.fn("KinConnections.invalidateCalendar")(function* (
     connectionId: string,
@@ -1950,11 +1988,15 @@ const make = Effect.gen(function* () {
   ): Effect.fn.Return<KinMineCalendarResult, unknown> {
     const { orgId } = input;
     const personId = yield* self(people, orgId);
-    const from = agendaTime(input.from, false);
-    const to = agendaTime(input.to, false);
-    if (from === null || to === null) return yield* invalidCalendarWindow;
-    const span = Date.parse(to) - Date.parse(from);
+    const askedFrom = agendaTime(input.from, false);
+    const askedTo = agendaTime(input.to, false);
+    if (askedFrom === null || askedTo === null) return yield* invalidCalendarWindow;
+    const start = Date.parse(askedFrom);
+    const end = Date.parse(askedTo);
+    const span = end - start;
     if (span <= 0 || span > 125 * DAY_MS) return yield* invalidCalendarWindow;
+    const from = calendarIso(Math.floor(start / DAY_MS) * DAY_MS);
+    const to = calendarIso(Math.ceil(end / DAY_MS) * DAY_MS);
 
     const visible = yield* calendarSources(orgId, personId);
     const reads = yield* Effect.forEach(
@@ -1995,6 +2037,7 @@ const make = Effect.gen(function* () {
     );
     const sources: Array<KinCalendarSource> = [];
     const events: Array<KinMineCalendarResult["events"][number]> = [];
+    let truncated = false;
     for (const { row, provider, read } of reads) {
       const latest = current.get(row.connectionId);
       if (
@@ -2012,8 +2055,12 @@ const make = Effect.gen(function* () {
         service: provider.preset,
         status,
       });
-      if (status === "ok")
-        for (const event of read.events)
+      if (status === "ok") {
+        const last = read.events.at(-1);
+        if (read.events.length > AGENDA_LIMIT && last !== undefined && Date.parse(last.start) < end)
+          truncated = true;
+        for (const event of read.events) {
+          if (!overlapsCalendarWindow(event, start, end)) continue;
           events.push({
             ...event,
             connectionId,
@@ -2023,9 +2070,15 @@ const make = Effect.gen(function* () {
                 : NodeCrypto.createHash("sha256").update(event.id).digest("hex"),
             title: event.title?.slice(0, 300) ?? null,
           });
+        }
+      }
     }
     events.sort(agendaStartOrder);
-    return { sources, events: events.slice(0, AGENDA_LIMIT), more: events.length > AGENDA_LIMIT };
+    return {
+      sources,
+      events: events.slice(0, AGENDA_LIMIT),
+      more: truncated || events.length > AGENDA_LIMIT,
+    };
   }, settle);
 
   /**

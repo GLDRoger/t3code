@@ -92,12 +92,14 @@ type MailAgendaPage = {
 
 export const agendaPages = Effect.fn("KinMail.agendaPages")(function* (
   read: (next: string | null) => Effect.Effect<MailAgendaPage, KinGatewayError>,
+  order?: "start",
 ) {
   let earliest: ReadonlyArray<MailAgendaEvent> = [];
   let next: string | null = null;
   do {
     const page: MailAgendaPage = yield* read(next);
     earliest = [...earliest, ...page.events].sort(agendaStartOrder).slice(0, AGENDA_LIMIT + 1);
+    if (order === "start" && earliest.length > AGENDA_LIMIT) break;
     next = page.next;
   } while (next !== null);
   return earliest;

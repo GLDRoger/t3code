@@ -4114,6 +4114,95 @@ describe("KinConnections Dates calendar", () => {
       ),
   );
 
+  it.effect("shares a UTC-day lookup and returns events overlapping each asked window", () =>
+    withCalendars(({ connect, fake, reads }) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        const account = "dispatch@tidewater.example";
+        yield* connect(account, "google");
+        const at = calendarDay + 12 * 60 * 60_000;
+        for (const [id, start, end, allDay] of [
+          ["event_tidewater_early", at - 60_000, at + 1_000, false],
+          ["event_tidewater_late", at + 2_000, at + 60_000, false],
+          ["event_tidewater_trip", calendarDay, calendarDay + 86_400_000, true],
+        ] as const)
+          fake.putEvent({
+            account,
+            id,
+            start,
+            end,
+            allDay,
+            title: "Tidewater Freight",
+            updated: at,
+          });
+
+        const first = yield* connections.mineCalendar(rhea, {
+          orgId,
+          from: "2026-11-15T17:30:00+05:30",
+          to: "2026-11-15T12:00:02Z",
+        });
+        const second = yield* connections.mineCalendar(rhea, {
+          orgId,
+          from: "2026-11-15T12:00:01Z",
+          to: "2026-11-15T12:00:03Z",
+        });
+        assert.lengthOf(reads, 1);
+        assert.strictEqual(reads[0]?.searchParams.get("timeMin"), "2026-11-15T00:00:00.000Z");
+        assert.strictEqual(reads[0]?.searchParams.get("timeMax"), "2026-11-16T00:00:00.000Z");
+        assert.deepStrictEqual(
+          first.events.map(({ id }) => id),
+          ["event_tidewater_trip", "event_tidewater_early"],
+        );
+        assert.deepStrictEqual(
+          second.events.map(({ id }) => id),
+          ["event_tidewater_trip", "event_tidewater_late"],
+        );
+      }),
+    ),
+  );
+
+  it.effect("limits provider reads per connection across windows and viewers", () =>
+    withCalendars(({ connect, reads }) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        const google = yield* connect("dispatch@tidewater.example", "google");
+        const window = (day: number) => ({
+          orgId,
+          from: `2026-11-${day}T00:00:00Z`,
+          to: `2026-11-${day + 1}T00:00:00Z`,
+        });
+        for (let day = 11; day <= 22; day++) {
+          const { sources } = yield* connections.mineCalendar(rhea, window(day));
+          assert.strictEqual(sources[0]?.status, "ok");
+        }
+        assert.lengthOf(reads, 12);
+        const cached = yield* connections.mineCalendar(rhea, { ...window(11), fresh: true });
+        assert.strictEqual(cached.sources[0]?.status, "ok");
+        assert.lengthOf(reads, 12);
+
+        const outlook = yield* connect("office@tidewater.example", "microsoft");
+        yield* TestClock.adjust("59 seconds");
+        const statuses = (answer: typeof cached) =>
+          answer.sources.map(({ connectionId, status }) => [connectionId, status]);
+        const throttled = yield* connections.mineCalendar(meera, window(23));
+        assert.sameDeepMembers(statuses(throttled), [
+          [google, "busy"],
+          [outlook, "ok"],
+        ]);
+        assert.lengthOf(reads, 13);
+        assert.match(reads[12]!.pathname, /calendarView$/);
+
+        yield* TestClock.adjust("1 second");
+        const recovered = yield* connections.mineCalendar(meera, window(23));
+        assert.sameDeepMembers(statuses(recovered), [
+          [google, "ok"],
+          [outlook, "ok"],
+        ]);
+        assert.lengthOf(reads, 14);
+      }),
+    ),
+  );
+
   it.effect("caches live reads for 60 seconds and ends the entry on sign-in and removal", () =>
     withCalendars(({ connect, fake, reads }) =>
       Effect.gen(function* () {

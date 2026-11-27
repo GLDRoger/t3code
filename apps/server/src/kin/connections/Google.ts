@@ -535,23 +535,25 @@ const google: MailVendor = {
       ),
     ),
   agenda: (context, { from, to }) =>
-    agendaPages((next) =>
-      api(context, calendarOf(undefined), {
-        timeMin: from,
-        timeMax: to,
-        singleEvents: "true",
-        showDeleted: "false",
-        orderBy: "startTime",
-        maxResults: String(AGENDA_LIMIT + 1),
-        pageToken: next ?? undefined,
-        fields:
-          "nextPageToken,items(id,summary,start(date,dateTime,timeZone),end(date,dateTime),htmlLink,recurringEventId,status)",
-      }).pipe(
-        Effect.map((page) => ({
-          events: list(field(page, "items")).flatMap(agendaEvent),
-          next: text(field(page, "nextPageToken")) ?? null,
-        })),
-      ),
+    agendaPages(
+      (next) =>
+        api(context, calendarOf(undefined), {
+          timeMin: from,
+          timeMax: to,
+          singleEvents: "true",
+          showDeleted: "false",
+          orderBy: "startTime",
+          maxResults: String(AGENDA_LIMIT + 1),
+          pageToken: next ?? undefined,
+          fields:
+            "nextPageToken,items(id,summary,start(date,dateTime,timeZone),end(date,dateTime),htmlLink,recurringEventId,status)",
+        }).pipe(
+          Effect.map((page) => ({
+            events: list(field(page, "items")).flatMap(agendaEvent),
+            next: text(field(page, "nextPageToken")) ?? null,
+          })),
+        ),
+      "start",
     ),
   events: (context, query) =>
     api(context, calendarOf(query.calendarId), {
