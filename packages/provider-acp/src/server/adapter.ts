@@ -254,6 +254,8 @@ export interface AcpAdapterV2RuntimeInput {
   readonly resumeSessionId?: string;
   readonly interruptPromptOnCancel?: boolean;
   readonly sessionMeta?: NonNullable<AcpSessionRuntime.AcpSessionRuntimeOptions["sessionMeta"]>;
+  /** Replaces the flavor's default append when the runtime supports a system prompt. */
+  readonly sessionSystemPromptAppend?: string;
   readonly clientCapabilities: EffectAcpSchema.InitializeRequest["clientCapabilities"];
   readonly clientInfo: AcpSessionRuntime.AcpSessionRuntimeOptions["clientInfo"];
   readonly requestLogger?: NonNullable<AcpSessionRuntime.AcpSessionRuntimeOptions["requestLogger"]>;
@@ -269,10 +271,9 @@ export interface AcpAdapterV2RuntimeInput {
 export type AcpMakeRuntime = AcpAdapterV2Flavor["makeRuntime"];
 
 /** Lets the server shape each ACP session it opens (Kin plans its agents' sessions here). */
-export const AcpSessionShaper = Context.Reference<(make: AcpMakeRuntime) => AcpMakeRuntime>(
-  "@t3tools/provider-acp/AcpSessionShaper",
-  { defaultValue: () => (make) => make },
-);
+export const AcpSessionShaper = Context.Reference<
+  (make: AcpMakeRuntime, driver: ProviderDriverKind) => AcpMakeRuntime
+>("@t3tools/provider-acp/AcpSessionShaper", { defaultValue: () => (make) => make });
 
 export type AcpAdapterV2NativeLogging = Pick<
   AcpSessionRuntime.AcpSessionRuntimeOptions,
@@ -2103,7 +2104,7 @@ export const makeAcpAdapterV2 = Effect.fn("makeAcpAdapterV2")(function* (
   const host = yield* ProviderHost.ProviderHost;
   const mcpSessions = yield* McpProviderSessions.McpProviderSessions;
   const { flavor, selfInvocation: self } = options;
-  const makeRuntime = (yield* AcpSessionShaper)(flavor.makeRuntime);
+  const makeRuntime = (yield* AcpSessionShaper)(flavor.makeRuntime, flavor.driver);
   const callLauncher = yield* writeAcpMcpCallLauncher(host.paths.stateDir);
   const readMcpContext = (threadId: ThreadId | null) =>
     threadId === null
