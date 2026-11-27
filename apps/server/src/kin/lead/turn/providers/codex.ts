@@ -10,7 +10,6 @@ import * as Schema from "effect/Schema";
 import * as CodexAdapterV2 from "../../../../orchestration-v2/Adapters/CodexAdapterV2.ts";
 import { AGENT_THREAD_ENV } from "../../../../preview/PortScanner.ts";
 import { sessionVariablePatterns } from "../../../claudeConfinement.ts";
-import { KIN_ALWAYS_LOADED } from "../../deferredTools.ts";
 import { type KinSessionPlan, KinSessions, type KinShell } from "../session.ts";
 import type { KinProvider } from "./provider.ts";
 
@@ -75,8 +74,48 @@ type Server = Readonly<Record<string, Json>>;
 const isServer = (value: Json | undefined): value is Server =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+/** Codex's up-front partition for models with search is independent of Claude's MCP markers. */
+export const CODEX_ALWAYS_LOADED = [
+  "kin_ask",
+  "kin_defer",
+  "kin_cancel",
+  "kin_react",
+  "kin_hand_off",
+  "kin_relay",
+  "kin_ask_person",
+  "memory_search",
+  "memory_read",
+  "memory_write",
+  "records_query",
+  "record_get",
+  "record_create",
+  "record_update",
+  "client_read",
+  "pulse_handle",
+  "docs_search",
+  "doc_read",
+  "doc_edit",
+  "doc_create",
+  "pulse_read",
+  "people_read",
+  "kin_leads",
+  "dates_query",
+  "touch_log",
+  "kin_recipes",
+  "kin_connection_tools",
+  "kin_connection_call",
+  "web_page",
+  "record_assign",
+  "deal_stages",
+  "money_summary",
+  "money_query",
+  "pipeline_read",
+  "kin_document",
+  "kin_issue",
+] as const;
+
 /**
- * Kin's tools as a Claude lead gets them. A model with tool search (gpt-6.1) defers every MCP tool
+ * A model with tool search (gpt-6.1) defers every MCP tool
  * unless its server says otherwise: Kin's endpoint shows only its core up front, and a second mount
  * of it, left deferred, serves everything else. Without search there is one mount, all up front.
  */
@@ -87,7 +126,7 @@ const kinToolLoading = (config: Record<string, Json>, toolSearch: boolean) => {
     config["mcp_servers.t3-code"] = { ...kin, omit_tools_from: ["deferred"] };
     return;
   }
-  const core = [...KIN_ALWAYS_LOADED];
+  const core = [...CODEX_ALWAYS_LOADED];
   const disabled = Array.isArray(kin.disabled_tools) ? kin.disabled_tools : [];
   config["mcp_servers.t3-code"] = { ...kin, enabled_tools: core, omit_tools_from: ["deferred"] };
   config[`mcp_servers.${KIN_RARE_SERVER}`] = { ...kin, disabled_tools: [...disabled, ...core] };

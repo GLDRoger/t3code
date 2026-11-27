@@ -115,7 +115,8 @@ import {
   KinMoneySummary,
 } from "@t3tools/contracts";
 import { KinLeadToolkit } from "../../apps/server/src/kin/lead/mcp/tools.ts";
-import { KIN_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.ts";
+import { KIN_CLAUDE_ALWAYS_LOADED } from "../../apps/server/src/kin/lead/deferredTools.ts";
+import { OWNER_SEAT_NATIVE_TOOLS } from "../../apps/server/src/kin/lead/turn/providers/claude.ts";
 import { listedOnSharedThread } from "../../apps/server/src/kin/lead/SharedTools.ts";
 import { BILLS_TOOLS } from "../../apps/server/src/kin/lead/billsOnly.ts";
 import { KinChatToolkit } from "../../apps/server/src/kin/mcp/KinChatToolkit.ts";
@@ -376,7 +377,7 @@ export const kinGitHubOf = ({ setup }: McpToolUseCase) =>
     turn.toolCalls?.some(({ tool }) => tool.startsWith("kin_github_")),
   );
 
-const ownerNative = new Set(["Bash", "Edit", "Read", "Write", "WebFetch", "WebSearch"]);
+const ownerNative: ReadonlySet<string> = new Set(OWNER_SEAT_NATIVE_TOOLS);
 
 const TOOL_SEARCH_DESCRIPTION =
   'Fetches full schema definitions for deferred tools so they can be called.\n\nDeferred tools appear by name in a message from the system. Until fetched, only the name is known — there is no parameter schema, so the tool cannot be invoked. This tool takes a query, matches it against the deferred tool list, and returns the matched tools\' complete JSONSchema definitions inside a <functions> block. Once a tool\'s schema appears in that result, it is callable exactly like any tool defined at the top of the prompt.\n\nResult format: each matched tool appears as one <function>{"description": "...", "name": "...", "parameters": {...}}</function> line inside the <functions> block — the same encoding as the tool list at the top of this prompt.\n\nQuery forms:\n- "select:Read,Edit,Grep" — fetch these exact tools by name\n- "notebook jupyter" — keyword search, up to max_results best matches\n- "+slack send" — require "slack" in the name, rank by remaining terms';
@@ -402,7 +403,7 @@ export const kinLeadBase = <M, E>(input: {
   const ownerSeat =
     options.kinSession === true && options.kinShared !== true && options.kinBills !== true;
   const deferredKin = t3.filter(
-    (tool) => !KIN_ALWAYS_LOADED.has(tool.name.slice(T3_PREFIX.length)),
+    (tool) => !KIN_CLAUDE_ALWAYS_LOADED.has(tool.name.slice(T3_PREFIX.length)),
   );
   const toolSearch = input.templateTools
     .filter((tool) => tool.name === "ToolSearch")
@@ -599,7 +600,7 @@ const KIN_KEY_TOOLS: ReadonlyArray<ApiTool> = Object.values(TasksKeyToolkit.tool
   (tool: Tool.Any) => ({
     name: `${KIN_KEY_PREFIX}${tool.name}`,
     description: Tool.getDescription(tool) ?? "",
-    input_schema: advertisedJsonSchema(tool),
+    input_schema: advertisedJsonSchema(tool, { kin: true }),
   }),
 );
 const KIN_KEY_INSTRUCTIONS = `# MCP Server Instructions
@@ -634,7 +635,7 @@ export const kinLoadedBefore = <T extends ApiTool>(
 ) =>
   deferred.filter((tool) => {
     const bare = tool.name.replace(T3_PREFIX, "");
-    return !KIN_ALWAYS_LOADED.has(bare) && priorCalls.some((call) => call.tool === bare);
+    return !KIN_CLAUDE_ALWAYS_LOADED.has(bare) && priorCalls.some((call) => call.tool === bare);
   });
 
 // Decoding wraps secrets such as a statement password in Redacted; grade the value the agent sent.

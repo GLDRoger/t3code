@@ -121,7 +121,7 @@ export const codexFake: ProviderFake = {
         changed: started !== original,
         instructions:
           typeof started.baseInstructions === "string" ? started.baseInstructions : undefined,
-        kinToolsUpFront: (server("t3-code")?.omit_tools_from as unknown) !== undefined,
+        kinToolsMounted: (server("t3-code")?.omit_tools_from as unknown) !== undefined,
         holdsBack: rare !== undefined,
         // Codex gives a model outside its catalog fallback metadata: no tool search. The second
         // mount serves exactly what the first leaves out.

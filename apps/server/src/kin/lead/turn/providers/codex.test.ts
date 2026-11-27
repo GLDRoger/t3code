@@ -22,7 +22,6 @@ import * as Codex from "./codex.ts";
 import { kinInstructions } from "../session.ts";
 import { ownerOnlyWakeup } from "../../Audience.testkit.ts";
 import { SESSION_REFUSAL } from "../../Audience.ts";
-import { KIN_ALWAYS_LOADED } from "../../deferredTools.ts";
 import { KinAgentSessionPolicy } from "../../sessionPolicy.ts";
 import { KinServer, type Services as KinServices } from "../../../KinServer.ts";
 import * as KinPersistence from "../../../persistence/KinPersistence.ts";
@@ -192,11 +191,11 @@ it.effect(
           assert.strictEqual(config["mcp_servers.chrome.enabled"], false);
           assert.strictEqual(config["mcp_servers.sentry.enabled"], false);
           assert.notProperty(config, "mcp_servers.t3-code.enabled");
-          // Kin's core up front as a Claude lead gets it, everything else deferred on a second mount.
+          // Only search-capable models use the Codex core and a second, deferred mount.
           const endpoint = t3ThreadStart.config["mcp_servers.t3-code"];
           assert.deepStrictEqual(config["mcp_servers.t3-code"], {
             ...endpoint,
-            ...(searches ? { enabled_tools: [...KIN_ALWAYS_LOADED] } : {}),
+            ...(searches ? { enabled_tools: [...Codex.CODEX_ALWAYS_LOADED] } : {}),
             omit_tools_from: ["deferred"],
             default_tools_approval_mode: "approve",
           });
@@ -205,7 +204,7 @@ it.effect(
             searches
               ? {
                   ...endpoint,
-                  disabled_tools: ["t3_thread_wait", ...KIN_ALWAYS_LOADED],
+                  disabled_tools: ["t3_thread_wait", ...Codex.CODEX_ALWAYS_LOADED],
                   default_tools_approval_mode: "approve",
                 }
               : undefined,

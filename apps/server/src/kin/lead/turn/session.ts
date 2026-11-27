@@ -47,8 +47,8 @@ export interface KinSessionPlan {
   /** The whole system prompt for `owner` and `confined`; the provider's own otherwise. */
   readonly instructions: string | undefined;
   /**
-   * Only `KIN_ALWAYS_LOADED` loads up front and every other tool waits to be searched for; false
-   * where the model in use can't look a tool up, so every tool it may use loads up front.
+   * The provider can defer tools behind lookup; false where the model can't look a tool up,
+   * so every tool it may use loads up front.
    */
   readonly toolSearch: boolean;
   readonly shell: KinShell | undefined;

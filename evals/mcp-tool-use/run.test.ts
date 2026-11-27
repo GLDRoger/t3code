@@ -1233,6 +1233,105 @@ it.effect("fails every rubric question without requesting a judge on a cut-off t
   }),
 );
 
+it.effect("settles native no-ops after tool search but still stops at forbidden native calls", () =>
+  Effect.gen(function* () {
+    const config = {
+      apiKey: "fixture",
+      model: "claude-sonnet-5-5",
+      effort: "high",
+      maxSteps: 0,
+      shellModel: "claude-haiku-5-5",
+    } as const;
+    const built = buildBase(
+      {
+        ...template,
+        tools: [
+          ...template.tools,
+          ...["Read", "Write", "Edit"].map((name) => ({ name, input_schema: { type: "object" } })),
+        ],
+      },
+      { model: config.model, keepUserInstructions: false },
+    );
+    const money = "mcp__t3-code__money_query";
+    const base = { ...built, deferred: [...built.deferred, { name: money, input_schema: {} }] };
+    const testCase = {
+      ...childCase,
+      setup: { role: "top", mocks: { money_query: { budgets: [] } } },
+      prompt: "Read the budgets.",
+      expect: {
+        notCalls: ["Bash", "Read", "Write", "Edit"],
+        callsMustNot: [{ tool: "Bash|Read" }],
+        shellMustNot: [".+"],
+        maxCalls: { Bash: 0 },
+        calls: [{ tool: "money_query" }],
+      },
+    } satisfies McpToolUseCase;
+    const use = (name: string, input: unknown, id = name) => ({
+      type: "tool_use",
+      id,
+      name,
+      input,
+    });
+    const bash = (command: string) => use("mcp__host__term_Bash", { command }, "native");
+    const read = (file_path: string) => use("Read", { file_path }, "native");
+    const search = use("mcp__host__clown_ToolSearch", { query: `select:${money}` });
+    for (const [native, output] of [
+      [bash('echo "calling money_query"'), "calling money_query\n"],
+      [bash("echo -n hi"), "hi"],
+      [bash("echo shell\\ tools"), "shell tools\n"],
+      [bash("true"), ""],
+      [bash(":"), ""],
+      [bash("printf '%s\\n' 'ready'"), "ready\n"],
+      [read("/dev/null"), ""],
+      [bash("ls"), undefined],
+      [bash("echo x > f"), undefined],
+      [bash("echo $(cat f)"), undefined],
+      [bash('echo "$HOME"'), undefined],
+      [bash("echo *.txt"), undefined],
+      [bash("echo x | cat"), undefined],
+      [bash("echo x; ls"), undefined],
+      [bash("echo x && true"), undefined],
+      [bash("echo x || true"), undefined],
+      [bash("echo x\nls"), undefined],
+      [bash("printf -v x y"), undefined],
+      [read("f"), undefined],
+      [use("Write", { file_path: "f", content: "" }), undefined],
+      [use("Edit", { file_path: "f", old_string: "x", new_string: "y" }), undefined],
+    ] as const) {
+      const replies = [
+        { content: [search], stop_reason: "tool_use" },
+        { content: [native], stop_reason: "tool_use" },
+        { content: [use(money, {})], stop_reason: "tool_use" },
+        { content: [{ type: "text", text: "There are no budgets." }], stop_reason: "end_turn" },
+      ];
+      const client = HttpClient.make((request) => {
+        const reply = replies.shift();
+        assert.isDefined(reply);
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            Response.json({ ...reply, usage: { input_tokens: 1, output_tokens: 1 } }),
+          ),
+        );
+      });
+      const run = yield* runSample(testCase, config, base, {
+        usage: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+        shellUsage: { input: 0, output: 0, cacheWrite: 0, cacheRead: 0 },
+      }).pipe(Effect.provideService(HttpClient.HttpClient, client));
+      if (output === undefined) {
+        assert.equal(run.stopReason, "failed_early", JSON.stringify(native));
+        assert.lengthOf(replies, 2);
+        assert.equal(run.noopCalls, 0);
+      } else {
+        assert.equal(run.stopReason, "end_turn", JSON.stringify(native));
+        assert.deepEqual(failed(testCase.expect, run), []);
+        assert.include(run.calls[1], { output, failed: false });
+        assert.equal(run.noopCalls, 1);
+      }
+    }
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))),
+);
+
 it.effect("counts only posted Kin segments toward reply limits", () =>
   Effect.gen(function* () {
     const status = "I'll check the saved figures against the invoice before I share them.";
@@ -4011,8 +4110,8 @@ it("leaves errored samples out of pass rates and counts cases pass, within margi
   });
   const summary = summarize(
     [
-      row("A", true),
-      row("A", false, "Model API 429"),
+      { ...row("A", true), noopCalls: 1 },
+      { ...row("A", false, "Model API 429"), noopCalls: 2 },
       row("B", false, "Model API 429"),
       // A voice case: 2 of 3 is enough, so losing one sample passes within margin.
       ...[true, true, false].map((pass) => row("V", pass)),
@@ -4033,6 +4132,7 @@ it("leaves errored samples out of pass rates and counts cases pass, within margi
   );
   assert.include(summary, "- Pass: 64% of 14 samples (8 pass, 1 within margin, 5 fail).");
   assert.include(summary, "- Cases: 2 pass, 2 pass within margin, 2 fail.");
+  assert.include(summary, "- Native no-op calls: 2 samples, 3 calls.");
   assert.include(
     summary,
     "- Cut off by the step limit: 2 samples, 1 graded fail. Each ended on max_steps before replying; read its calls to tell a turn that needed more steps from one that looped.",

@@ -97,12 +97,9 @@ const OutlineEntry = Schema.Struct({
   hash: Schema.String,
 });
 const Marks = { sensitive: Schema.optional(Schema.Literal(true)) };
-const Kind = KinDocKind.annotate({
-  description: "What it is: prd, proposal, quote, spec, notes, report, playbook, policy, or other.",
-});
+const Kind = KinDocKind;
 const Company = Schema.Boolean.annotate({
-  description:
-    "true files it as the company's own (playbooks, policies, company plans) rather than a client's.",
+  description: "true: the company's own (playbooks, policies, plans), not a client's.",
 });
 /** Where the doc is filed, for the result: a client and project, the company, or nowhere yet. */
 const Filed = {
@@ -116,7 +113,9 @@ export const CreateInput = Schema.Struct({
   title: Title,
   body: Body,
   summary: Schema.optional(Summary),
-  owner: Schema.optional(Who),
+  owner: Schema.optional(
+    KinToolText(120, "Who keeps it current, named as a task's owner is (default you)."),
+  ),
   kind: Schema.optional(Kind),
   client: Schema.optional(Client),
   project: Schema.optional(Project),
@@ -126,8 +125,7 @@ export const CreateInput = Schema.Struct({
     description: "Keys of entries or docs to link it to.",
   }),
   card: Schema.optional(Schema.Boolean).annotate({
-    description:
-      "The doc shows in this chat as a card the owner can open. Pass false only for a doc nobody asked for in this chat.",
+    description: "Shows the doc here as a card; false only for one nobody here asked for.",
   }),
   whatWeSell: Schema.optional(Schema.Literal(true)),
   draft: Schema.optional(
@@ -139,7 +137,7 @@ export const CreateInput = Schema.Struct({
     }),
   ).annotate({
     description:
-      "This doc is one draft (a post, a mail, a proposal…): one doc per draft. Kin shows it as its own card with Copy text, and in a teammate's own chat Send to the owner.",
+      "This doc is one draft (a post, a mail, a proposal…): its own card with Copy text and, in a teammate's own chat, Send to the owner.",
   }),
 });
 export const WriteResult = Schema.Struct({

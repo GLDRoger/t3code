@@ -291,6 +291,7 @@ it("gives a Kin lead Claude Code's tools and T3's lead tools only in a turn with
   assert.notInclude(before, "mcp__t3-code__delegate_task");
   // Only Kin's core loads up front; T3's tools wait to be searched for.
   const upFront = base(true).nativeTools.map((tool) => tool.name);
+  assert.include(upFront, "mcp__t3-code__records_query");
   assert.include(upFront, "mcp__t3-code__record_create");
   assert.include(upFront, "mcp__t3-code__kin_skip");
   assert.include(upFront, "mcp__t3-code__kin_send");
@@ -1213,7 +1214,7 @@ it.effect("ranks deferred tools like Claude ToolSearch and keeps select order", 
     } as const;
     const searchName = base.nativeTools.find((tool) => tool.name.endsWith("ToolSearch"))!.name;
     const cases = [
-      ["send", ["message_send", "kin_defer", "kin_picture", "kin_relay"]],
+      ["send", ["message_send", "kin_connection_call", "kin_defer", "kin_picture", "kin_relay"]],
       ["mailbox", ["mailbox_open"]],
       ["dispatch", ["note", "draft"]],
       ["mcp__t3-code__kin_picture", ["kin_picture"]],
@@ -1244,7 +1245,7 @@ it.effect("ranks deferred tools like Claude ToolSearch and keeps select order", 
     });
     assert.deepEqual(
       result.content,
-      ["kin_defer", "kin_picture", "kin_relay"].map((name) => ({
+      ["kin_connection_call", "kin_defer", "kin_picture", "kin_relay"].map((name) => ({
         type: "tool_reference",
         tool_name: `mcp__t3-code__${name}`,
       })),

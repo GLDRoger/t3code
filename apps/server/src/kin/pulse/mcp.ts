@@ -66,12 +66,12 @@ export const PulseHandleInput = Schema.Struct({
   }),
   record: Schema.optional(KinRecordKey).annotate({
     description:
-      "Instead of factKey: a record's key (C-7, P-2, INV-9) to set aside or lift, also when nothing about it is open yet.",
+      "Instead of factKey: a record's key (C-7, P-2, INV-9), also when nothing about it is open yet.",
   }),
   action: Schema.optional(Schema.Literals([...KinPulseHandleAction.literals, "declined"])).annotate(
     {
       description:
-        "got_it (default): you or someone has it in hand; it comes back after until, or 3 days. not_a_problem: drop it until what it is about changes; an overdue invoice comes back at its next chase. set_aside: a person said to leave it; its record is set aside until the day in until, or until someone lifts it. undo: take any of these back. declined: the person whose message this turn answers turned down a nudge about it; no more nudges to that person about it until it changes or that person brings it up.",
+        "got_it (default): in hand; back after until, or 3 days. not_a_problem: dropped until it changes (an overdue invoice returns at its next chase). set_aside: a person said to leave it; until the day in until, or until lifted. undo: takes any back. declined: the person this turn answers turned down a nudge about it; no more nudges to them until it changes or they raise it.",
     },
   ),
   until: Schema.optional(
@@ -85,10 +85,10 @@ export const PulseHandleInput = Schema.Struct({
     ]),
   ).annotate({
     description:
-      "For got_it: hide it until this day (owner's time zone) or time with offset. For set_aside: the day the person named; leave it out for until they say.",
+      "got_it: hidden until this day or time. set_aside: the day the person named; leave it out for until they say.",
   }),
   note: Schema.optional(Schema.String.check(Schema.isMaxLength(500))).annotate({
-    description: "One line on what is being done, for whoever reads it next.",
+    description: "One line on what is being done.",
   }),
 });
 
@@ -432,7 +432,7 @@ export const KinPulseToolkit = Toolkit.make(
   Tool.make("pulse_handle", {
     ...shared,
     description:
-      'Once you have done what a pulse fact needs, or a person said to leave it: mark it got_it (optionally until a date) or not a problem so it stops coming back; undo takes that back. When a person, in their own message or tap this turn, says to leave something until a day or until they say ("leave INV-9 for a month", "they\'ll pay in two weeks, don\'t remind me"), set_aside its fact or its record, with until for a day and without for until lifted. Do it yourself in that turn, for any record you can read, also one another agent looks after: never hand it off, as a hand-off can\'t carry their word. If it is refused, tell them plainly it is not set aside and that they can set it aside from Needs attention. A client or project covers everything under it. That is the whole promise: Kin tells nothing and raises no question about it before then, so make no deferral or reminder for the same day, and tell them only what the result says. undo on their word lifts it. In any other turn it is refused.',
+      "Once a pulse fact is dealt with, or a person said to leave it: got_it (optionally until a day) or not_a_problem stops it coming back; undo takes either back. When a person's own message or tap this turn says to leave something until a day or until they say (\"leave INV-9 for a month\", \"they'll pay in two weeks, don't remind me\"), set_aside its fact or record, with until for a day and without for until lifted. Do it yourself, in that turn, also for a record another agent looks after: never hand it off, as a hand-off can't carry their word. A client or project covers everything under it, and Kin raises nothing about it before then: make no reminder for the same day, and tell them only what the result says. If it is refused, tell them plainly it is not set aside and that they can do it from Needs attention. In any other turn it is refused.",
     parameters: PulseHandleInput,
     success: Schema.Union([KinPulseFact, PulseAsideResult]),
   }).annotate(McpSchema.EnabledWhen, enabled),

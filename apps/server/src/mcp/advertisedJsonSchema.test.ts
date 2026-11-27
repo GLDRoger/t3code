@@ -2,7 +2,7 @@ import { expect, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
 import { Tool } from "effect/ai";
 
-import { advertisedJsonSchema } from "./advertisedJsonSchema.ts";
+import { AdvertisedDescriptions, advertisedJsonSchema } from "./advertisedJsonSchema.ts";
 import { ThemeToolkit } from "./toolkits/theme/tools.ts";
 
 it("drops JSON noise, merges tagged unions, and keeps null where it is required", () => {
@@ -58,4 +58,86 @@ it("advertises only string enum values, which Gemini requires", () => {
   collect(advertisedJsonSchema(ThemeToolkit.tools.t3_theme_set));
 
   expect(enumValues.filter((value) => typeof value !== "string")).toEqual([]);
+});
+
+it("keeps the annotated core descriptions and advertises the rest as bare shapes", () => {
+  const tool = Tool.make("example", {
+    parameters: Schema.Struct({
+      records: Schema.Array(
+        Schema.Struct({
+          shown: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(300)),
+          bare: Schema.Struct({
+            label: Schema.String.check(Schema.isMinLength(2)).annotate({ description: "Label." }),
+            kind: Schema.Literals(["first", "second"]),
+          }).annotate({ description: "Nested." }),
+          due: Schema.optional(Schema.NullOr(Schema.String).annotate({ description: "Due date." })),
+          count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(2), Schema.isLessThanOrEqualTo(8)),
+        }),
+      ).check(Schema.isMinLength(1), Schema.isMaxLength(3)),
+    }),
+  }).annotate(AdvertisedDescriptions, [
+    { path: ["properties", "records", "items"], keys: ["shown", "due", "count"] },
+  ]);
+
+  expect(advertisedJsonSchema(tool, { kin: true })).toEqual({
+    type: "object",
+    properties: {
+      records: {
+        type: "array",
+        items: {
+          type: "object",
+          properties: {
+            shown: { type: "string" },
+            due: { type: "string", description: "Due date." },
+            count: { type: "integer" },
+            bare: {
+              type: "object",
+              properties: {
+                label: { type: "string" },
+                kind: { type: "string", enum: ["first", "second"] },
+              },
+              required: ["label", "kind"],
+            },
+          },
+          required: ["shown", "bare", "count"],
+        },
+      },
+    },
+    required: ["records"],
+  });
+});
+
+it("retains selected descriptions and advertises the remaining nested field shapes", () => {
+  const tool = Tool.make("example", {
+    parameters: Schema.Struct({
+      title: Schema.String.annotate({ description: "Keep this text verbatim." }),
+      rows: Schema.Array(
+        Schema.Struct({
+          description: Schema.String.annotate({ description: "A row's own text." }),
+          score: Schema.Int.check(Schema.isGreaterThan(0)),
+          color: Schema.optional(Schema.Literals(["green", "red"])),
+        }),
+      ).annotate({ description: "An array of rows." }),
+    }),
+  }).annotate(AdvertisedDescriptions, [{ path: [], keys: ["title"] }]);
+
+  expect(advertisedJsonSchema(tool, { kin: true }).properties).toEqual({
+    title: { type: "string", description: "Keep this text verbatim." },
+    rows: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          description: { type: "string" },
+          score: { type: "integer" },
+          color: { type: "string", enum: ["green", "red"] },
+        },
+        required: ["description", "score"],
+      },
+    },
+  });
+  expect(Tool.getJsonSchema(tool).properties).toHaveProperty(
+    "rows.description",
+    "An array of rows.",
+  );
 });

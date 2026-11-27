@@ -34,7 +34,7 @@ import * as KinToolGate from "./KinToolGate.ts";
 import { KinAgentSessions } from "./KinAgentSessions.ts";
 import { KinBoot } from "../lead/sessionCarry.ts";
 
-const registration = McpHttpServer.toolkitRegistration(KinChatToolkit, handlers);
+const registration = McpHttpServer.toolkitRegistration(KinChatToolkit, handlers, { kin: true });
 
 const fromJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const toJson = Schema.encodeUnknownOption(Schema.fromJsonString(Schema.Unknown));

@@ -56,8 +56,8 @@ it("places every legacy wake-up block exactly once, splitting the server's tagge
   assert.deepEqual(failures, []);
 });
 
-const legacyRequestPin = "848daa8c8ce55a179d5ed53ffdf68acb61405517ee0ffd3e136420f1512185d9";
-const sessionRequestPin = "b3eda50c74f1fe0c259b223ef4fe1e8fef3489650387d2832c14a440eae43c5c";
+const legacyRequestPin = "31660b22201b69cdfc99534b34c78c9cbf4c942deef0d80fc4d31059fbdaf194";
+const sessionRequestPin = "b60042ee69cf2c81fb589610a0d55ca6389edde6112a0b6984c30e553686b008";
 const pinnedIds = [
   "kin-lead-rereads-github-hint",
   "kin-lead-uses-display-name",
@@ -115,7 +115,9 @@ const wake = (event: string) =>
 const earlier = [
   {
     prompt: wake("Which invoices are open?"),
-    toolCalls: [{ tool: "records_query", input: { list: "invoices" }, result: { total: 2 } }],
+    toolCalls: [
+      { tool: "record_comment", input: { key: "INV-7", text: "Checked" }, result: { ok: true } },
+    ],
     reply: "Two are open.",
   },
   { prompt: wake("Does that include INV-7?"), reply: "Yes, it includes INV-7." },
@@ -129,7 +131,7 @@ const carryCase: McpToolUseCase = {
   setup: { role: "top", world: { kinLead: true }, carry: { earlier } },
   prompt: wake("And INV-9?"),
   expect: {},
-  sessionCallsMustNot: [{ tool: "records_query" }],
+  sessionCallsMustNot: [{ tool: "record_comment" }],
 };
 const txt = (text: string) => ({ type: "text", text });
 const date = txt("Today's date is 2026-11-26.");
@@ -188,15 +190,37 @@ it("replays only the last wake in legacy and the real earlier tool blocks in ses
       content: [
         {
           type: "tool_use",
-          id: "toolu_prior_0",
-          name: "mcp__t3-code__records_query",
-          input: { list: "invoices" },
+          id: "toolu_prior_1",
+          name: "ToolSearch",
+          input: { query: "select:mcp__t3-code__record_comment", max_results: 1 },
         },
       ],
     },
     {
       role: "user",
-      content: [{ type: "tool_result", tool_use_id: "toolu_prior_0", content: '{"total":2}' }],
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "toolu_prior_1",
+          content: [{ type: "tool_reference", tool_name: "mcp__t3-code__record_comment" }],
+        },
+        txt("Tool loaded."),
+      ],
+    },
+    {
+      role: "assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "toolu_prior_0",
+          name: "mcp__t3-code__record_comment",
+          input: { key: "INV-7", text: "Checked" },
+        },
+      ],
+    },
+    {
+      role: "user",
+      content: [{ type: "tool_result", tool_use_id: "toolu_prior_0", content: '{"ok":true}' }],
     },
     { role: "assistant", content: [txt("Two are open.")] },
     { role: "user", content: [txt("# Events\n\nDoes that include INV-7?")] },
@@ -207,7 +231,7 @@ it("replays only the last wake in legacy and the real earlier tool blocks in ses
   ]);
   assert.deepEqual(expectationsForLayout(carryCase, "tools", "legacy"), {});
   assert.deepEqual(expectationsForLayout(carryCase, "tools", "session"), {
-    callsMustNot: [{ tool: "records_query" }],
+    callsMustNot: [{ tool: "record_comment" }],
   });
 });
 
@@ -455,4 +479,32 @@ it("uses the product's default effort for Kin", () => {
 
 it("lets the run override Kin's default effort", () => {
   assert.equal(ownerFirstRequest("low").output_config.effort, "low");
+});
+
+it("uses the fourteen-tool Claude owner core, keeps WebSearch deferred, and drops WebFetch", () => {
+  const { tools, messages } = ownerFirstRequest();
+  assert.sameMembers(
+    tools
+      .map(({ name }: { name: string }) => name)
+      .filter((name: string) => name.startsWith("mcp__t3-code__")),
+    [
+      "record_update",
+      "record_assign",
+      "kin_ask_person",
+      "kin_relay",
+      "kin_defer",
+      "records_query",
+      "record_get",
+      "docs_search",
+      "client_read",
+      "doc_create",
+      "record_create",
+      "kin_ask",
+      "kin_send",
+      "kin_skip",
+    ].map((name) => `mcp__t3-code__${name}`),
+  );
+  const announcement = String(messages.at(-1).content[0]?.text).split("\n");
+  assert.include(announcement, "WebSearch");
+  assert.notInclude(announcement, "WebFetch");
 });

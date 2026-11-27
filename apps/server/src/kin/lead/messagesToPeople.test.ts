@@ -764,10 +764,63 @@ it.effect("a visual in a teammate's chat goes only when everyone there may see i
       const hiddenChart = yield* chart([4_720_000, 100, 200], true);
       assert.isFalse(hiddenChart.ok);
       assert.match(String(hiddenChart.value.message), /not everyone in this chat may see/);
-      const shared = yield* chart([7, 2, 1], false);
+      const previousShape = {
+        chart: "bar",
+        title: "This week",
+        unit: { kind: "count" },
+        labelType: "day",
+        labels: ["2026-11-10", "2026-11-11", "2026-11-12"],
+        series: [{ name: "Done", values: [7, 2, 1], color: "green" }],
+        comparison: { name: "Previous", values: [3, 2, 1], color: "grey" },
+        target: { name: "Goal", value: 5 },
+        valueLabels: true,
+        caption: "Tidewater Freight",
+      };
+      const shared = yield* call("kin_chart", previousShape);
       assert.isTrue(shared.ok, String(shared.value.message));
       assert.match(String(shared.value.figure), /kin-figure:f_[A-Za-z0-9_-]{10}/);
       assert.match(String(shared.value.next), /^Made\. The chart shows under your reply/);
+
+      const before = yield* sql`SELECT * FROM kin_turn_figures ORDER BY figure_id`;
+      const bad = yield* call("kin_chart", {
+        ...previousShape,
+        title: "Misspelt series",
+        series: [{ ...previousShape.series[0], colour: "green" }],
+      }).pipe(Effect.result);
+      assert.strictEqual(bad._tag, "Failure");
+      if (bad._tag === "Failure")
+        assert.strictEqual(
+          bad.failure.message,
+          `Invalid parameters for tool 'kin_chart': Chart series takes no "colour"; pass one of: name, values, color.
+  at ["series"][0]`,
+        );
+      assert.deepStrictEqual(yield* sql`SELECT * FROM kin_turn_figures ORDER BY figure_id`, before);
+
+      const scatter = {
+        chart: "scatter",
+        title: "Length and cost",
+        unit: { kind: "count" },
+        scatter: {
+          xName: "Miles",
+          yName: "Cost",
+          xUnit: { kind: "count" },
+          series: [
+            { name: "Trips", color: "purple", points: [{ x: 20, y: 1300, label: "Depot" }] },
+          ],
+        },
+      };
+      const { comparison: _comparison, ...bar } = previousShape;
+      const colored = {
+        ...bar,
+        title: "Each day",
+        colors: ["green", null, "amber"],
+      };
+      for (const input of [scatter, colored]) {
+        const figure = yield* call("kin_chart", input);
+        assert.isTrue(figure.ok, String(figure.value.message));
+        assert.match(String(figure.value.figure), /kin-figure:f_[A-Za-z0-9_-]{10}/);
+      }
+
       const [turn] = yield* sql<{
         wakeupId: string;
       }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
@@ -787,7 +840,7 @@ it.effect("a visual in a teammate's chat goes only when everyone there may see i
       assert.lengthOf(replies, 1);
       assert.deepStrictEqual(
         replies[0]?.embeds?.map((embed) => embed._tag),
-        ["visual", "chart"],
+        ["visual", "chart", "chart", "chart"],
       );
     }).pipe(Effect.provide(layer)),
   ),

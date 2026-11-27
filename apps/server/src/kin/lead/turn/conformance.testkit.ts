@@ -13,9 +13,9 @@ export interface Observed {
   readonly changed: boolean;
   /** The system prompt the model gets; undefined leaves the provider's own. */
   readonly instructions: string | undefined;
-  /** Kin's tools, or at least its core (`KIN_ALWAYS_LOADED`), are listed up front. */
-  readonly kinToolsUpFront: boolean;
-  /** Kin tools beyond the core aren't listed up front. */
+  /** Kin's MCP tools are wired into the session, independently of when their schemas load. */
+  readonly kinToolsMounted: boolean;
+  /** Some or all Kin tool schemas are held back until lookup. */
   readonly holdsBack: boolean;
   /** The held-back tools are ones the model in use can find and call. */
   readonly deferredFindable: boolean;
