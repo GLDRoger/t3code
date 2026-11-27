@@ -131,7 +131,7 @@ export const KIN_SETTINGS_SEARCH_ITEMS = [
     kinOnly: true,
     title: KIN_MAIL_RULES.allTitle,
     to: "/settings/kin-connections",
-    searchTerms: ["kin mail rules email inbox mailbox when arrives lead automation"],
+    searchTerms: ["kin mail rules email inbox mailbox when arrives lead automation monthly limit"],
   },
   {
     id: "kin-time-zone",

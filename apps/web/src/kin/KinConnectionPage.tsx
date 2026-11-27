@@ -88,7 +88,7 @@ export function KinConnectionPage(props: {
   readonly differs: KinMailDiffers;
   readonly onRemoved: () => void;
   /** A company mailbox's Rules open one rule's page. */
-  readonly onOpenRule?: (ruleId: string) => void;
+  readonly onOpenRule?: (ruleId: string, removed: boolean) => void;
 }) {
   const { environmentId, orgId } = props;
   const ref = { orgId, connectionId: props.connection.connectionId };
