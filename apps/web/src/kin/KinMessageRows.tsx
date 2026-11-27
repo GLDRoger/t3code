@@ -89,6 +89,8 @@ const BUBBLE =
 // Dark accent is a 4% hover wash that vanishes on the black canvas, so dark takes the raised tone.
 const OTHER_BUBBLE =
   "min-w-0 max-w-[85%] rounded-2xl bg-accent px-3.5 py-2 text-sm text-foreground dark:bg-card";
+// An agent's progress update: in the column its next bubble's words take, muted, with no fill.
+const UPDATE_LINE = "min-w-0 max-w-[85%] px-3.5 py-1 text-sm text-muted-foreground";
 
 /** Who and when, over the first bubble of a group. The bubble's own label reads both aloud. */
 function HeadLine(props: {
@@ -216,6 +218,7 @@ export function KinMessageRow(props: {
   const deleted = message.status === "deleted";
   const suggested = message.status === "suggested";
   const hasBody = !deleted && message.body.trim().length > 0;
+  const update = hasBody && !row.own && message.progress === true;
   const hasCard =
     !deleted &&
     message.widgetId !== null &&
@@ -230,7 +233,7 @@ export function KinMessageRow(props: {
     (!hasCard && (deleted || attachments.length === 0));
   const mine = new Set(props.reactions.flatMap((chip) => (chip.mine ? [chip.emoji] : [])));
   const canReact = onReact !== null && !deleted;
-  const layout = row.own || !hasBody ? "bubble" : kinMessageLayout(message);
+  const layout = row.own || !hasBody || update ? "bubble" : kinMessageLayout(message);
   const label = kinMessageLabel(row, formatTime(message.createdAt));
   // A page's card is its foot, across the page's width.
   const onPage = hasBubble && layout !== "bubble";
@@ -317,7 +320,11 @@ export function KinMessageRow(props: {
             )}
           </div>
         ) : hasBubble ? (
-          <div role="article" aria-label={label} className={row.own ? BUBBLE : OTHER_BUBBLE}>
+          <div
+            role="article"
+            aria-label={label}
+            className={update ? UPDATE_LINE : row.own ? BUBBLE : OTHER_BUBBLE}
+          >
             {hasBody ? (
               <KinLinkedMarkdown
                 markdown={message.body}

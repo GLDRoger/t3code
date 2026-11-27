@@ -43,9 +43,13 @@ const idOf = (to: KinMessageLinkTarget) => {
  * None under a person's message, a system line, a brief, or a link back to the chat it is in.
  */
 export function kinReplyButtons(
-  message: Pick<KinMessage, "author" | "kind" | "status" | "links" | "chatId" | "form">,
+  message: Pick<
+    KinMessage,
+    "author" | "kind" | "status" | "links" | "chatId" | "form" | "progress"
+  >,
 ): ReadonlyArray<KinReplyButton> {
   if (
+    message.progress === true ||
     message.author._tag !== "agent" ||
     message.kind !== "text" ||
     message.status !== "posted" ||

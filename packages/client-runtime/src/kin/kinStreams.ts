@@ -342,7 +342,8 @@ const kinCachedPartChanged = (a: KinChatState, b: KinChatState) =>
   a.changeSeq !== b.changeSeq ||
   a.reads !== b.reads ||
   a.reactions !== b.reactions ||
-  a.needsHistoryReload !== b.needsHistoryReload;
+  a.needsHistoryReload !== b.needsHistoryReload ||
+  a.clearUpdates !== b.clearUpdates;
 
 /** Reads one page of `kin.chat.history`; the client wires in its scope-checked command. */
 export type KinReadHistory<E, R> = (

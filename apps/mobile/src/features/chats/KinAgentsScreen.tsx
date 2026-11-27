@@ -5,7 +5,11 @@ import {
   KIN_RETIRED_LABEL,
   kinAgentGroups,
 } from "@t3tools/client-runtime/kin/kinAgentRetire";
-import { kinDomainLabel, KIN_AGENTS_COPY } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import {
+  kinDomainLabel,
+  KIN_AGENTS_COPY,
+  KIN_CLEAR_UPDATES,
+} from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { KIN_DAILY_LIMIT, kinDailyLimitWaiting } from "@t3tools/client-runtime/kin/kinBudget";
 import { kinCount } from "@t3tools/client-runtime/kin/kinCount";
 import { KIN_SET_UP_ON_COMPUTER } from "@t3tools/client-runtime/kin/kinNavigation";
@@ -15,7 +19,7 @@ import {
   kinTeamAgentLabel,
 } from "@t3tools/client-runtime/kin/kinProfiles";
 import { kinTeamAgentDetail } from "@t3tools/client-runtime/kin/kinReach";
-import { EnvironmentId, KinOrgId } from "@t3tools/contracts";
+import { AuthSettingsWriteScope, EnvironmentId, KinOrgId } from "@t3tools/contracts";
 import { kinFailureText } from "@t3tools/client-runtime/kin/kinAnswers";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import * as Option from "effect/Option";
@@ -36,8 +40,12 @@ import { Menu } from "../../components/ui/Menu";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../components/ui/ScreenScrollView";
 import { appAtomRegistry } from "../../state/atom-registry";
+import { useEnvironmentServerConfig } from "../../state/entities";
+import { serverEnvironment } from "../../state/server";
+import { useEnvironmentScope } from "../../state/session";
 import { SettingsRow } from "../settings/components/SettingsRow";
 import { SettingsSection } from "../settings/components/SettingsSection";
+import { SettingsSwitchRow } from "../settings/components/SettingsSwitchRow";
 import { kinClient } from "./state/kinClient";
 import { useKinWorkingAgents } from "./state/useKinInbox";
 import { useAtomCommand } from "../../state/use-atom-command";
@@ -203,7 +211,36 @@ function KinAgentsBody(props: { readonly environmentId: EnvironmentId; readonly 
           {KIN_SET_UP_ON_COMPUTER.agents}
         </Text>
       ) : null}
+      <KinClearUpdatesSection environmentId={environmentId} />
     </KinAgentsFrame>
+  );
+}
+
+/** The host's switch that clears a turn's progress updates once its reply is posted, as on the web. */
+function KinClearUpdatesSection(props: { readonly environmentId: EnvironmentId }) {
+  const config = useEnvironmentServerConfig(props.environmentId);
+  // A teammate's chat-only session holds defaults, not the host's settings, and can't write them.
+  const canWrite = useEnvironmentScope(props.environmentId, AuthSettingsWriteScope);
+  const updateSettings = useAtomCommand(serverEnvironment.updateSettings, {
+    label: "kinClearUpdatesAfterReply update",
+    reportFailure: true,
+  });
+  if (config === null || !canWrite) return null;
+  return (
+    <SettingsSection title={KIN_CLEAR_UPDATES.section}>
+      <SettingsSwitchRow
+        icon="text.bubble"
+        label={KIN_CLEAR_UPDATES.row}
+        subtitle={KIN_CLEAR_UPDATES.rowDetail}
+        value={config.settings.kinClearUpdatesAfterReply}
+        onValueChange={(value) =>
+          void updateSettings({
+            environmentId: props.environmentId,
+            input: { patch: { kinClearUpdatesAfterReply: value } },
+          })
+        }
+      />
+    </SettingsSection>
   );
 }
 
