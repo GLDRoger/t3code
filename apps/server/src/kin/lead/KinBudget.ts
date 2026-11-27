@@ -52,8 +52,6 @@ const validLedger = (ledger: TurnTokenUsage) =>
   validCount(ledger.inputTokens) &&
   validCount(ledger.outputTokens) &&
   (ledger.cachedInputTokens === undefined || validCount(ledger.cachedInputTokens));
-const completeLedger = (ledger: TurnTokenUsage | undefined) =>
-  ledger?.usageStatus === "complete" && validLedger(ledger);
 // A partial ledger counts what a running or stopped turn has used so far, which is still a floor.
 const countedLedger = (ledger: TurnTokenUsage | undefined) =>
   (ledger?.usageStatus === "complete" || ledger?.usageStatus === "partial") && validLedger(ledger);
@@ -88,14 +86,6 @@ export const unitsOf = (usage: ReadonlyArray<Usage>) => {
   const units = rawUnits(usage);
   return Number.isFinite(units) ? units : 0;
 };
-/** Whether `unitsOf` read a total: some provider turn's complete ledger, and no floor beside it. */
-export const fromCompleteLedgers = (usage: ReadonlyArray<Usage>) =>
-  usage.some((turn) => completeLedger(turn.turnTokenUsage)) &&
-  usage.every(
-    (turn) =>
-      completeLedger(turn.turnTokenUsage) ||
-      (!countedLedger(turn.turnTokenUsage) && !validCount(turn.usedTokens)),
-  );
 /** Whose work a limit held back: the owner's own, or a teammate's. */
 export type HeldBy = "org" | "teammates";
 type Admission = {

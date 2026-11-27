@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vite-plus/test";
+import { it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import { describe, expect } from "vite-plus/test";
 import {
   claudeLedgerDelta,
   claudeModelLedger,
@@ -65,21 +67,49 @@ describe("billable native turn usage", () => {
     });
   });
 
-  it("does not bill late Codex updates against the next active turn", () => {
-    const state = makeCodexTurnTokenUsageState();
-    state.activeTurnId = "next";
-    accumulateCodexTurnTokenUsage(state, "previous", update(breakdown(100, 10, 20)));
-    accumulateCodexTurnTokenUsage(
-      state,
-      "next",
-      update(breakdown(104, 12, 21), breakdown(4, 2, 1)),
-    );
-    expect(completeCodexTurnTokenUsage(state, "next", true)).toMatchObject({
-      inputTokens: 4,
-      outputTokens: 1,
-    });
-    expect(completeCodexTurnTokenUsage(state, "missing", false).usageStatus).toBe("unavailable");
-  });
+  it.effect("counts no extra usage when a Codex retry replays an older snapshot", () =>
+    Effect.sync(() => {
+      const state = makeCodexTurnTokenUsageState();
+      state.activeTurnId = "turn-5";
+      const first = update(breakdown(1_010, 505, 102), breakdown(10, 5, 2));
+      const second = update(breakdown(1_030, 515, 108), breakdown(20, 10, 6));
+      for (const frame of [first, second, first, second]) {
+        accumulateCodexTurnTokenUsage(state, "turn-5", frame);
+      }
+      expect(completeCodexTurnTokenUsage(state, "turn-5", true)).toMatchObject({
+        inputTokens: 30,
+        cachedInputTokens: 15,
+        outputTokens: 8,
+      });
+    }),
+  );
+
+  it.effect("does not bill late Codex updates against the next active turn", () =>
+    Effect.sync(() => {
+      const state = makeCodexTurnTokenUsageState();
+      state.activeTurnId = "turn-4";
+      accumulateCodexTurnTokenUsage(state, "turn-4", update(breakdown(90, 8, 18)));
+      completeCodexTurnTokenUsage(state, "turn-4", true);
+      state.activeTurnId = "turn-5";
+      accumulateCodexTurnTokenUsage(
+        state,
+        "turn-5",
+        update(breakdown(104, 12, 21), breakdown(4, 2, 1)),
+      );
+      accumulateCodexTurnTokenUsage(state, "turn-4", update(breakdown(100, 10, 20)));
+      accumulateCodexTurnTokenUsage(
+        state,
+        "turn-5",
+        update(breakdown(110, 15, 24), breakdown(6, 3, 3)),
+      );
+      expect(completeCodexTurnTokenUsage(state, "turn-5", true)).toMatchObject({
+        inputTokens: 10,
+        cachedInputTokens: 5,
+        outputTokens: 4,
+      });
+      expect(completeCodexTurnTokenUsage(state, "missing", false).usageStatus).toBe("unavailable");
+    }),
+  );
 
   it("counts Claude cached input inside total input and bounds thinking output", () => {
     expect(
@@ -151,6 +181,35 @@ describe("billable native turn usage", () => {
       ).toMatchObject({ usageStatus: "partial", inputTokens: 120_500, outputTokens: 2_200 });
     }
   });
+
+  it.effect(
+    "keeps observed Claude subagent usage when a stopped result only measures the main agent",
+    () =>
+      Effect.sync(() => {
+        const requests: ClaudeTurnRequests = new Map();
+        recordClaudeRequestUsage(
+          requests,
+          "msg_3",
+          { input_tokens: 100, output_tokens: 20 },
+          false,
+        );
+        recordClaudeRequestUsage(requests, "msg_4", { input_tokens: 60, output_tokens: 12 }, true);
+        const result = {
+          subtype: "error_during_execution" as const,
+          usage: { input_tokens: 100, output_tokens: 20 },
+        };
+        for (const ledger of [undefined, { inputTokens: 120, outputTokens: 25 }]) {
+          expect(
+            normalizeClaudeTurnTokenUsage(result, true, "interrupted", [], { requests, ledger }),
+          ).toMatchObject({
+            usageStatus: "partial",
+            inputTokens: 100,
+            outputTokens: 20,
+            otherUsage: { inputTokens: 60, outputTokens: 12 },
+          });
+        }
+      }),
+  );
 
   it("does not turn a zeroed Claude crash result into a measured zero-cost turn", () => {
     expect(

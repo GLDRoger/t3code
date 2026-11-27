@@ -138,6 +138,13 @@ it.effect(
         (yield* notices).map((one) => one.open),
         [0, 0],
       );
+      // Preparing the next turn can reuse the thread before it records its own root run.
+      yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, thread_id, run_id, model,
+          started_at, status, event_ids)
+        VALUES (${orgId}, 'w-2', 'finance', 'kin:lead-1', NULL, 'cheap', ${NOW}, 'running', '[]')`;
+      yield* RunningSpend.check(read);
+      assert.lengthOf(yield* notices, 2, "the new wake-up has no usage yet");
+      yield* sql`UPDATE kin_wakeups SET status = 'completed', ended_at = ${NOW} WHERE wakeup_id = 'w-2'`;
       // A task an agent delegated counts against the tasks' limit, with no limit set the usual one.
       yield* sql`DELETE FROM kin_budget_limits`;
       yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
@@ -166,7 +173,7 @@ it.effect(
         body: "A task Finance started has used a quarter of a usual day's limit in one go\n\nA task Finance started has been running 30 minutes and has used at least 1.6M units so far, past a quarter of a usual day's limit for tasks your agents start (you have set no daily limit). It is still running; Kin hasn't stopped or slowed it. To watch it or stop it, open its card in Finance's chat.",
         open: 1,
       });
-      // A complete ledger is the total, so the figure stands without "at least".
+      // A provider can finish one segment while the task itself is still working.
       ledgers.set(ThreadId.make("task-thread"), {
         ...running,
         usageStatus: "complete",
@@ -175,8 +182,27 @@ it.effect(
       });
       yield* RunningSpend.check(read);
       assert.deepStrictEqual((yield* notices).at(-1), {
-        body: "A task Finance started has used all of a usual day's limit in one go\n\nA task Finance started has been running 30 minutes and has used 6.4M units so far, past the whole of a usual day's limit for tasks your agents start (you have set no daily limit). It is still running; Kin hasn't stopped or slowed it. To watch it or stop it, open its card in Finance's chat.",
+        body: "A task Finance started has used all of a usual day's limit in one go\n\nA task Finance started has been running 30 minutes and has used at least 6.4M units so far, past the whole of a usual day's limit for tasks your agents start (you have set no daily limit). It is still running; Kin hasn't stopped or slowed it. To watch it or stop it, open its card in Finance's chat.",
         open: 1,
       });
+      // A lower budget can let a later, smaller estimate cross the next threshold.
+      yield* sql`INSERT INTO kin_budget_limits (org_id, limits_json)
+        VALUES (${orgId}, '{"leadUnits":1000000,"workerUnits":null}')`;
+      yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, thread_id, run_id, model,
+          started_at, status, event_ids)
+        VALUES (${orgId}, 'w-3', 'finance', 'kin:lead-1', 'run-3', 'cheap', ${NOW}, 'running', '[]')`;
+      used.set("kin:lead-1", 400_000);
+      yield* RunningSpend.check(read);
+      yield* sql`UPDATE kin_budget_limits SET limits_json = '{"leadUnits":300000,"workerUnits":null}'
+        WHERE org_id = ${orgId}`;
+      used.set("kin:lead-1", 350_000);
+      yield* RunningSpend.check(read);
+      const figures = (yield* notices).slice(-2);
+      assert.include(figures[0]?.body, "has used at least 400k units so far");
+      assert.include(figures[1]?.body, "has used at least 350k units so far");
+      assert.include(
+        figures[1]?.body,
+        "An earlier notice put it at 400k units; that count was too high.",
+      );
     }).pipe(Effect.provide(services)),
 );
