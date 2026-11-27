@@ -53,8 +53,12 @@ export function KinAgentDefaultsSections(props: KinWorkTarget) {
 function ClearUpdates(props: KinWorkTarget) {
   const settings = useEnvironmentSettings(props.environmentId);
   const updateSettings = useUpdateEnvironmentSettings(props.environmentId);
+  const searchableSetting = useSearchableSetting();
   return (
-    <KinSettingsSection title={KIN_CLEAR_UPDATES.section}>
+    <KinSettingsSection
+      title={KIN_CLEAR_UPDATES.section}
+      searchId={searchableSetting("kin-clear-updates").id}
+    >
       <KinSettingsRow
         title={KIN_CLEAR_UPDATES.row}
         wrap
