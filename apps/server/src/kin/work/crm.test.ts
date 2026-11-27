@@ -366,7 +366,7 @@ it.effect("record writes refuse conflicting names for a field", () =>
         Effect.flip(
           decodeCreate({
             sourceEventId: "ask-event",
-            records: [{ ...row, kind: "client", category: "prospect" }],
+            records: [{ ...row, kind: "client", category: " prospect " }],
           }),
         ),
         "kind",

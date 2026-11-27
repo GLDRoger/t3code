@@ -843,10 +843,11 @@ const liftRecordFields = Effect.fnUntraced(function* (
       return yield* Effect.fail(parameterIssue(`${name} given twice with different values.`));
     out[key] = value;
   }
-  if (lists.every((list) => list === "clients") && isPartyKind(out.category)) {
-    if (out.kind !== undefined && out.kind !== out.category)
+  const category = typeof out.category === "string" ? out.category.trim() : out.category;
+  if (lists.every((list) => list === "clients") && isPartyKind(category)) {
+    if (out.kind !== undefined && out.kind !== category)
       return yield* Effect.fail(parameterIssue("kind given twice with different values."));
-    out.kind = out.category;
+    out.kind = category;
     delete out.category;
   }
   return out;
