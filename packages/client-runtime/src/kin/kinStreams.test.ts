@@ -25,12 +25,10 @@ import {
   type KinChatSubscribeInput,
   type KinChatSummary,
   type KinMessage,
-  type KinPersonId,
   type KinPulseEvent,
   type KinPulseFact,
   type KinPulseSubscribeInput,
   type KinWaitingItem,
-  type KinWakeupId,
 } from "@t3tools/contracts";
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
