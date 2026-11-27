@@ -99,8 +99,8 @@ const fakeDownloads = (http: HttpClient.HttpClient, activation: Effect.Effect<vo
     Layer.provide(runner),
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-tools-warm-" })),
     Layer.provideMerge(Layer.mergeAll(NodeServices.layer, digest)),
-    Layer.provide(Layer.succeed(HostProcess.Platform, "linux")),
-    Layer.provide(Layer.succeed(HostProcess.Architecture, "x64")),
+    Layer.provideMerge(Layer.succeed(HostProcess.Platform, "linux")),
+    Layer.provideMerge(Layer.succeed(HostProcess.Architecture, "x64")),
   );
 };
 
