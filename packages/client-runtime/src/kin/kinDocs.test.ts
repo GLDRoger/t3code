@@ -180,6 +180,8 @@ describe("kinSearchHit", () => {
     ).toBeNull();
     // A deal comes back among entries, under its own name, so an older app opens it as one.
     expect(kinSearchHit({ ...hitInput, key: "DL-4", kind: "work" }).kindLabel).toBe("Deal");
+    const transaction = { ...hitInput, key: "BT-4", kind: "work", bankTransaction: true } as const;
+    expect(kinSearchHit(transaction).kindLabel).toBe("Bank transaction");
     // A client reads in the company's own word for Clients.
     const patients: KinShell = {
       rev: 1,
