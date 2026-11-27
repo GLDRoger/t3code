@@ -499,6 +499,7 @@ function RulePage(props: {
       title: COPY.limitTitle,
       message: COPY.limitHint,
       initialValue: String(rule.monthlyCap),
+      keyboard: "number",
       cancelText: COPY.limitCancel,
       confirmText: COPY.limitSave,
       onConfirm: (text) =>
