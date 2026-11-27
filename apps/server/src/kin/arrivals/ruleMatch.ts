@@ -1,10 +1,11 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Node's IDNA conversion is pure.
 import * as NodeURL from "node:url";
 
+import { getPublicSuffix } from "tldts";
+
 import type { MailArrival } from "../connections/MailProvider.ts";
 import { senderVerdict } from "../connections/MailText.ts";
 import type { ArrivalClass } from "./classify.ts";
-import { isMailRulePublicSuffix } from "./mailRulePublicSuffixes.ts";
 
 export type MailRuleFilters = {
   readonly from: ReadonlyArray<{ readonly address: string } | { readonly domain: string }>;
@@ -57,6 +58,12 @@ const mixedSenderDomain = (domain: string) =>
     .split(".")
     .some((label) => mixedScripts.filter((script) => script.test(label)).length > 1);
 
+// Private suffixes too (github.io): a rule on one would trust every account under it.
+const isPublicSuffix = (domain: string) => {
+  const suffix = getPublicSuffix(domain, { allowPrivateDomains: true });
+  return suffix === null || suffix === domain;
+};
+
 export const mailRuleFilter = (sender: MailRuleFilters["from"][number]) => {
   const address = "address" in sender && typeof sender.address === "string";
   const raw = address ? sender.address : "domain" in sender ? sender.domain : undefined;
@@ -70,7 +77,7 @@ export const mailRuleFilter = (sender: MailRuleFilters["from"][number]) => {
   }
   const domain = spelling.slice(spelling.lastIndexOf("@") + 1);
   if (mixedSenderDomain(domain)) return { problem: "mixed_scripts" as const };
-  if (!address && isMailRulePublicSuffix(domain)) return { problem: "public_suffix" as const };
+  if (!address && isPublicSuffix(domain)) return { problem: "public_suffix" as const };
   return { spelling };
 };
 
