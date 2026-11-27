@@ -1133,7 +1133,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           const taxSubject = `Tax notice ${"🧾".repeat(170)}`;
           fake.deliver({
             to: ACCOUNTS,
-            from: "Billing Robot <billing@gmail-vendor.example>",
+            from: "Billing Robot <no-reply@gmail-vendor.example>",
             subject: taxSubject,
             body: "A tax notice sent to the accounts mailbox.",
             headers: { "List-Unsubscribe": "<mailto:stop@gmail-vendor.example>" },
