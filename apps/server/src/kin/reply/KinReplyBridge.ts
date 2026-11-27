@@ -53,6 +53,7 @@ import * as ThreadManagement from "../../orchestration-v2/ThreadManagementServic
 import { toPersistenceSqlError } from "../../persistence/Errors.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
+import { ownerPrivateChat } from "../chat/executionNotices.ts";
 import {
   isContinuation,
   isPrivateWriteRefused,
@@ -92,7 +93,8 @@ import * as KinLevels from "../lead/KinLevels.ts";
 import { leftNote } from "../lead/Handoff.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import { nextCheckIn } from "../pulse/leftForCheckIn.ts";
-import { holdLine } from "../triggers/quietHold.ts";
+import { holdLine, personQuietUntil } from "../triggers/quietHold.ts";
+import { accessSql } from "../people/KinAccess.ts";
 import { activityAt, waitWhileActive } from "../lead/runSilence.ts";
 import { KinLevelGate } from "../lead/LevelGate.ts";
 import * as Reach from "../lead/Reach.ts";
@@ -2046,6 +2048,10 @@ const make = Effect.gen(function* () {
       };
       if (stopped || !input.rescue) {
         yield* settled(stopped);
+        if (!stopped && wake.skipped?.dropText === true && skippedCurrentRequest(wake))
+          yield* sql`UPDATE kin_events SET state = 'expired'
+            WHERE org_id = ${wake.orgId} AND wakeup_id = ${wake.wakeupId} AND state = 'claimed'
+              AND tag = 'pulse' AND json_extract(json, '$.checkIn') IS NOT NULL`;
         return endingFor(null);
       }
       const followUp = followUpFor({
@@ -2165,23 +2171,16 @@ const make = Effect.gen(function* () {
         return yield* setupFailed({ ...input, cause: input.outcome });
       if (input.outcome === "held")
         return yield* setupFailed({ ...input, cause: input.cause ?? "unknown" });
-      if (input.outcome === "replied") return yield* failedAfterReply(input);
-      if (input.outcome === "gave_up" && !input.lane.owed) {
-        const missed = yield* missedCheckIn(input.orgId, input.wakeupId);
-        if (missed !== undefined) {
-          // The owner's standing notice for the cause already said it; a second line would repeat it.
-          if (input.cause !== undefined && (yield* troubleOpen(input.orgId, input.cause))) return;
-          return yield* chat.notice({
-            messageId: KinMessageId.make(`kin-failed:${input.wakeupId}`),
-            orgId: input.orgId,
-            chatId: input.lane.chatId,
-            audience: "chat",
-            body: missed.body,
-            silent: true,
-            when: missed.when,
-          });
-        }
+      if (
+        input.outcome === "gave_up" ||
+        input.outcome === "partway" ||
+        input.outcome === "replied" ||
+        input.outcome === "stopped"
+      ) {
+        const checkIn = yield* tellMissedCheckIns(input.orgId, input.wakeupId, input.cause);
+        if (checkIn && !input.lane.owed && input.outcome !== "replied") return;
       }
+      if (input.outcome === "replied") return yield* failedAfterReply(input);
       const notice = failedNotices[input.outcome];
       if (input.outcome === "retrying" || input.outcome === "retrying_later") {
         const agentId = yield* agentOf(input.orgId, input.wakeupId);
@@ -2207,53 +2206,103 @@ const make = Effect.gen(function* () {
     Effect.catchCause((cause) => Effect.logWarning("Kin failure notice failed", { cause })),
   );
 
-  /**
-   * The check-in this wake-up gave up on, as one line: which, when it first tried to run on the
-   * company's clock (each reader's client says it on theirs), and what the next one won't bring up:
-   * the connections' new items it carried (their cursors moved on when it was queued), and facts
-   * three failed check-ins now reserve. Untold facts and left lines go to the next check-in.
-   */
-  const missedCheckIn = Effect.fn("KinReplyBridge.missedCheckIn")(function* (
+  const tellMissedCheckIns = Effect.fn("KinReplyBridge.tellMissedCheckIns")(function* (
     orgId: KinOrgId,
     wakeupId: KinWakeupId,
+    cause: KinTroubleCause | undefined,
   ) {
-    const [row] = yield* sql<{
+    const rows = yield* sql<{
       eventId: string;
       title: string;
+      state: string;
       outside: number;
       startedAt: number;
+      status: string;
     }>`SELECT e.event_id AS "eventId", json_extract(e.json, '$.checkIn.title') AS title,
-        COALESCE(json_array_length(e.json, '$.outside'), 0)
+        e.state, w.status, COALESCE(json_array_length(e.json, '$.outside'), 0)
           + COALESCE(json_extract(e.json, '$.outsideNotListed'), 0) AS outside,
         (SELECT MIN(f.started_at) FROM kin_wakeups f, json_each(f.event_ids) k
           WHERE f.org_id = w.org_id AND f.agent_id = w.agent_id AND k.value = e.event_id) AS "startedAt"
       FROM kin_wakeups w, json_each(w.event_ids) j
       JOIN kin_events e ON e.org_id = w.org_id AND e.event_id = j.value
       WHERE w.org_id = ${orgId} AND w.wakeup_id = ${wakeupId} AND e.tag = 'pulse'
-        AND e.state = 'failed' AND json_extract(e.json, '$.checkIn.title') IS NOT NULL
-      ORDER BY e.event_id LIMIT 1`;
-    if (row === undefined) return undefined;
+        AND json_extract(e.json, '$.checkIn.title') IS NOT NULL
+      ORDER BY e.event_id`;
+    const failed = rows.filter((row) => row.state === "failed");
+    if (failed.length === 0) return rows.length > 0;
+    const [owner] = yield* sql<{ personId: KinPersonId }>`SELECT p.person_id AS "personId"
+      FROM kin_people p WHERE p.org_id = ${orgId} AND p.removed_at IS NULL
+        AND ${sql.literal(accessSql("p"))} = 'owner'
+      ORDER BY p.created_at, p.person_id LIMIT 1`;
+    if (owner === undefined) return true;
+    const chatId = yield* ownerPrivateChat(sql, orgId, owner.personId);
+    if (chatId === undefined) return true;
     const provide = Effect.provideService(SqlClient.SqlClient, sql);
     const zone = yield* ownerZone(orgId).pipe(provide);
     const locale = yield* textLocale(orgId).pipe(provide);
-    const part = (style: "time" | "day") =>
-      formatKinWhen(row.startedAt, style, { zone, locale }).replace(/,/g, "");
-    const at = `${part("time")} (${part("day")})`;
-    const reserved = yield* reservedByFailures(orgId, row.eventId).pipe(provide);
-    const left = [
-      ...(row.outside > 0 ? ["the new items from connections it would have listed"] : []),
-      ...(reserved > 0
-        ? [`${reserved} open ${reserved === 1 ? "item" : "items"} it has now missed three times`]
-        : []),
-    ];
-    return {
-      body: `${row.title} didn't run at ${at}. ${
-        left.length === 0
-          ? "Nothing was lost: the next check-in covers it."
-          : `The next check-in covers it, except ${left.join(" and ")}.`
-      }`,
-      when: { at: DateTime.formatIso(DateTime.makeUnsafe(row.startedAt)), zone, text: at },
-    };
+    const silent = cause !== undefined && (yield* troubleOpen(orgId, cause));
+    for (const row of failed) {
+      const messageId = KinMessageId.make(`kin-missed-checkin:${row.eventId}`);
+      yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const [unsent] = yield* sql`SELECT 1 FROM kin_events e
+            WHERE e.org_id = ${orgId} AND e.event_id = ${row.eventId} AND e.state = 'failed'
+              AND NOT EXISTS (SELECT 1 FROM kin_messages m
+                WHERE m.org_id = e.org_id AND m.message_id = ${messageId})
+              AND NOT EXISTS (SELECT 1 FROM kin_held_posts h
+                WHERE h.org_id = e.org_id AND h.kind = ${messageId})`;
+          if (unsent === undefined) return;
+          const part = (style: "time" | "day") =>
+            formatKinWhen(row.startedAt, style, { zone, locale }).replace(/,/g, "");
+          const at = `${part("time")} (${part("day")})`;
+          const reserved = yield* reservedByFailures(orgId, row.eventId).pipe(provide);
+          const left = [
+            ...(row.outside > 0 ? ["the new items from connections it would have listed"] : []),
+            ...(reserved > 0
+              ? [
+                  `${reserved} open ${reserved === 1 ? "item" : "items"} it has now missed three times`,
+                ]
+              : []),
+          ];
+          const why =
+            row.status === "timed_out"
+              ? "the agent ran out of time"
+              : KIN_TROUBLE_WHY[cause ?? "unknown"];
+          const body = `${row.title} didn't run at ${at} because ${why}. ${
+            left.length === 0
+              ? "Nothing was lost: the next check-in covers it."
+              : `The next check-in covers it, except ${left.join(" and ")}.`
+          }`;
+          const quietUntil = yield* personQuietUntil(
+            orgId,
+            owner.personId,
+            yield* Clock.currentTimeMillis,
+          ).pipe(provide);
+          if (quietUntil !== undefined) {
+            yield* holdLine({
+              orgId,
+              chatId,
+              personId: owner.personId,
+              key: messageId,
+              body,
+              audience: "owner",
+              at: quietUntil,
+            }).pipe(provide);
+            return;
+          }
+          yield* chat.notice({
+            orgId,
+            chatId,
+            messageId,
+            body,
+            audience: "owner",
+            ...(silent ? { silent: true } : {}),
+            when: { at: DateTime.formatIso(DateTime.makeUnsafe(row.startedAt)), zone, text: at },
+          });
+        }),
+      );
+    }
+    return true;
   });
 
   // A reply already answered: a second line comes only when what it promised did not happen.

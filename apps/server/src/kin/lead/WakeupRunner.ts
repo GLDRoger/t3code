@@ -1980,8 +1980,15 @@ const make = Effect.gen(function* () {
                       );
                 if (facts === null) {
                   dropped.add(event.eventId);
-                  yield* sql`DELETE FROM kin_pulse_told
-                    WHERE org_id = ${orgId} AND event_id = ${event.eventId}`;
+                  yield* sql.withTransaction(
+                    Effect.gen(function* () {
+                      yield* sql`UPDATE kin_events SET state = 'expired'
+                        WHERE org_id = ${orgId} AND event_id = ${event.eventId}
+                          AND wakeup_id = ${wakeupId} AND state = 'claimed'`;
+                      yield* sql`DELETE FROM kin_pulse_told
+                        WHERE org_id = ${orgId} AND event_id = ${event.eventId}`;
+                    }),
+                  );
                 } else if (facts !== "") routineFacts.set(event.eventId, facts);
               }
             if (Option.isSome(routineContent)) {

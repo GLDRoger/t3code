@@ -92,6 +92,7 @@ import { laneFor } from "./replyLane.ts";
 import { WEEK_FIGURES_TITLE } from "../pulse/weekly.ts";
 import { markPrivate } from "../connections/privateTurn.ts";
 import { KinHostCare } from "../host/KinHostCare.ts";
+import { deliverHeld } from "../triggers/heldDelivery.ts";
 
 const threadId = ThreadId.make("lead-thread");
 const agentId = KinAgentId.make("lead");
@@ -3431,59 +3432,69 @@ it.effect("a bills turn that fails posts nothing: the batch's card tells what wa
   }).pipe(Effect.provide(layer)),
 );
 
-// A check-in nobody waits on that failed for good before writing anything: one quiet line in
-// its chat says which one didn't run, when on the reader's clock, and what the next one covers.
 it.effect.each([
   {
     name: "nothing it held is lost",
-    said: "Afternoon check-in didn't run at 3:12 pm (Wed 25 Nov). Nothing was lost: the next check-in covers it.",
+    said: "Afternoon check-in didn't run at 3:12 pm (Wed 25 Nov) because Kin couldn't reach the AI provider. Nothing was lost: the next check-in covers it.",
   },
   {
     name: "new mail it carried",
     mail: true,
-    said: "Afternoon check-in didn't run at 3:12 pm (Wed 25 Nov). The next check-in covers it, except the new items from connections it would have listed.",
+    said: "Afternoon check-in didn't run at 3:12 pm (Wed 25 Nov) because Kin couldn't reach the AI provider. The next check-in covers it, except the new items from connections it would have listed.",
   },
   {
     name: "a fact three check-ins missed",
     missedThrice: true,
-    said: "Afternoon check-in didn't run at 3:12 pm (Wed 25 Nov). The next check-in covers it, except 1 open item it has now missed three times.",
+    said: "Afternoon check-in didn't run at 3:12 pm (Wed 25 Nov) because Kin couldn't reach the AI provider. The next check-in covers it, except 1 open item it has now missed three times.",
   },
-  // The owner's standing notice for the cause already says it: no second line.
-  { name: "a standing notice", trouble: true, said: undefined },
+  {
+    name: "a standing notice",
+    trouble: true,
+    said: "Afternoon check-in didn't run at 3:12 pm (Wed 25 Nov) because Kin couldn't reach the AI provider. Nothing was lost: the next check-in covers it.",
+  },
+  { name: "a deliberate skip", skip: true, said: undefined },
+  {
+    name: "quiet hours",
+    quiet: true,
+    said: "Afternoon check-in didn't run at 3:12 pm (Wed 25 Nov) because Kin couldn't reach the AI provider. Nothing was lost: the next check-in covers it.",
+  },
 ])("a check-in that fails for good says once which one didn't run ($name)", (row) =>
   Effect.gen(function* () {
-    const { bridge, owner, wakeupId, sql, services, direct } = yield* setup({
-      event: () =>
-        Effect.succeed((base: WakeupEventBase): KinEvent => ({
-          ...base,
-          _tag: "pulse",
-          provenance: { _tag: "system" },
-          factKeys: [],
-          checkIn: {
-            scheduleId: KinMemoryItemId.make("checkin-afternoon"),
-            title: "Afternoon check-in",
-            what: "Invented: what is open.",
-            slot: "2026-11-25",
-          },
-          ...(row.mail === true
-            ? {
-                outside: [
-                  {
-                    source: "mail",
-                    connection: "Invented mailbox",
-                    id: "thread-1",
-                    at: "Wed 25 Nov 14:50",
-                    who: "Tidewater Freight",
-                    subject: "Invented: freight quote",
-                    where: null,
-                  },
-                ],
-              }
-            : {}),
-        })),
-    });
+    const { bridge, owner, wakeupId, sql, services, direct, chats, projectId, runId } =
+      yield* setup({
+        event: () =>
+          Effect.succeed((base: WakeupEventBase): KinEvent => ({
+            ...base,
+            _tag: "pulse",
+            provenance: { _tag: "system" },
+            factKeys: [],
+            checkIn: {
+              scheduleId: KinMemoryItemId.make("checkin-afternoon"),
+              title: "Afternoon check-in",
+              what: "Invented: what is open.",
+              slot: "2026-11-25",
+            },
+            ...(row.mail === true
+              ? {
+                  outside: [
+                    {
+                      source: "mail",
+                      connection: "Invented mailbox",
+                      id: "thread-1",
+                      at: "Wed 25 Nov 14:50",
+                      who: "Tidewater Freight",
+                      subject: "Invented: freight quote",
+                      where: null,
+                    },
+                  ],
+                }
+              : {}),
+          })),
+      });
+    const quietHours =
+      row.quiet === true ? { from: "05:29", to: "05:31" } : { from: "22:00", to: "04:00" };
     yield* sql`INSERT INTO kin_trigger_settings VALUES (${owner.orgId}, 'Asia/Kolkata', '08:30',
-      '18:30', '03:00', 0, 1, '09:00', '[]')`;
+      '18:30', '03:00', 0, 1, '09:00', ${JSON.stringify(quietHours)})`;
     yield* sql`UPDATE kin_people SET time_zone = 'Asia/Kolkata' WHERE person_id = ${owner.personId}`;
     // It first tried at 15:12 in Kolkata, the company's and the owner's zone.
     yield* sql`UPDATE kin_wakeups SET started_at = ${Date.UTC(2026, 10, 25, 9, 42)}
@@ -3509,36 +3520,52 @@ it.effect.each([
         eventIds: [KinEventId.make(event!.eventId)],
       });
     const before = (yield* sql`SELECT 1 FROM kin_messages WHERE chat_id = ${direct.chatId}`).length;
-    // As the queue leaves it after its last try; Kin's later passes may say it failed again.
-    yield* sql`UPDATE kin_events SET state = 'failed', attempts = 4, wakeup_id = NULL
-      WHERE org_id = ${owner.orgId} AND event_id = ${event!.eventId}`;
-    for (let pass = 0; pass < 2; pass += 1)
-      yield* bridge.failed({
+    const said = sql<{ body: string }>`SELECT body FROM kin_messages
+      WHERE chat_id = ${direct.chatId} AND author_kind = 'system' ORDER BY seq`;
+    const fail = (id: KinWakeupId) =>
+      bridge.failed({
         orgId: owner.orgId,
-        wakeupId,
+        wakeupId: id,
         lane,
         outcome: "gave_up",
         cause: "unreachable",
       });
-    const said = yield* sql<{ body: string; silent: number; when: string | null }>`SELECT body,
-        silent, when_json AS "when" FROM kin_messages
-      WHERE chat_id = ${direct.chatId} AND author_kind = 'system' ORDER BY seq`;
-    assert.deepStrictEqual(
-      said.slice(before),
-      row.said === undefined
-        ? []
-        : [
-            {
-              body: row.said,
-              silent: 1,
-              when: JSON.stringify({
-                at: "2026-11-25T09:42:00.000Z",
-                zone: "Asia/Kolkata",
-                text: "3:12 pm (Wed 25 Nov)",
-              }),
-            },
-          ],
-    );
+    if (row.skip === true) {
+      yield* bridge.skip({ orgId: owner.orgId, wakeupId });
+      yield* bridge.complete({
+        orgId: owner.orgId,
+        wakeupId,
+        projectId,
+        rootRunId: runId,
+        rescue: false,
+      });
+      yield* sql`UPDATE kin_events SET attempts = 3 WHERE event_id = ${event!.eventId}`;
+      const queue = Context.get(services, KinEventQueue.KinEventQueue);
+      yield* queue.finish({ orgId: owner.orgId, wakeupId, status: "failed" });
+      yield* fail(wakeupId);
+      assert.deepStrictEqual((yield* said).slice(before), []);
+      return;
+    }
+    yield* sql`UPDATE kin_events SET state = 'failed', attempts = 4, wakeup_id = NULL
+      WHERE org_id = ${owner.orgId} AND event_id = ${event!.eventId}`;
+    yield* fail(wakeupId);
+    const second = KinWakeupId.make(`${wakeupId}-second`);
+    yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status, event_ids)
+      SELECT org_id, ${second}, agent_id, model, started_at + 1, 'failed', event_ids
+      FROM kin_wakeups WHERE wakeup_id = ${wakeupId}`;
+    yield* fail(second);
+    if (row.quiet === true) {
+      assert.deepStrictEqual((yield* said).slice(before), []);
+      assert.strictEqual(yield* deliverHeld(owner.orgId, chats), 0);
+      yield* TestClock.adjust("1 minute");
+      assert.strictEqual(yield* deliverHeld(owner.orgId, chats), 1);
+      assert.strictEqual(yield* deliverHeld(owner.orgId, chats), 0);
+    }
+    assert.deepStrictEqual((yield* said).slice(before), [{ body: row.said }]);
+    yield* sql`UPDATE kin_events SET state = 'done'
+      WHERE org_id = ${owner.orgId} AND event_id = ${event!.eventId}`;
+    yield* fail(second);
+    assert.deepStrictEqual((yield* said).slice(before), [{ body: row.said }]);
   }).pipe(Effect.provide(layer)),
 );
 
