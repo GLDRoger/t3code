@@ -183,13 +183,21 @@ export const kinGoalPinnable = (goal: Pick<KinGoal, "measure" | "currency">): bo
 export function kinPinStrip(
   pins: ReadonlyArray<KinChatPin>,
   views: ReadonlyArray<KinPinView>,
-  options: { readonly canUnpin: boolean; readonly writable: boolean },
+  options: {
+    readonly canUnpin: boolean;
+    readonly writable: boolean;
+    /** Goals live inside Money on web and phone; without Money a pinned goal is a glance only. */
+    readonly hasMoney?: boolean;
+  },
 ): KinPinStrip {
+  const canOpenGoal = options.hasMoney !== false;
   const items: Array<KinPinItem> = [];
   for (let index = 0; index < pins.length; index += 1) {
     const pin = pins[index];
-    const view = views[index];
-    if (pin === undefined || view === undefined) continue;
+    const rawView = views[index];
+    if (pin === undefined || rawView === undefined) continue;
+    const view =
+      !canOpenGoal && rawView.opens?.kind === "goal" ? { ...rawView, opens: null } : rawView;
     items.push({
       pin,
       view,

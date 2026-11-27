@@ -212,6 +212,37 @@ describe("pinned cards", () => {
     expect(onlyHidden.hasActions).toBe(false);
   });
 
+  it("turns a goal pin into a plain glance when the reader has no Money place", () => {
+    const goalView = kinPinView(goal, now, names);
+    const taskView = kinPinView(task, now, names);
+
+    const guestNoMoney = kinPinStrip([goal], [goalView], {
+      canUnpin: true,
+      writable: false,
+      hasMoney: false,
+    });
+    expect(guestNoMoney.first?.view.opens).toBeNull();
+    expect(guestNoMoney.hasActions).toBe(false);
+
+    const teammateNoMoney = kinPinStrip([goal, task], [goalView, taskView], {
+      canUnpin: true,
+      writable: true,
+      hasMoney: false,
+    });
+    expect(teammateNoMoney.items[0]?.view.opens).toBeNull();
+    expect(teammateNoMoney.items[0]?.canUnpin).toBe(true);
+    expect(teammateNoMoney.items[1]?.view.opens).toEqual({ kind: "task", key: "W-142" });
+    expect(teammateNoMoney.hasActions).toBe(true);
+
+    const withMoney = kinPinStrip([goal], [goalView], {
+      canUnpin: true,
+      writable: false,
+      hasMoney: true,
+    });
+    expect(withMoney.first?.view.opens).toEqual({ kind: "goal", key: "G-22" });
+    expect(withMoney.hasActions).toBe(true);
+  });
+
   it("checks active non-guest membership for writing pins", () => {
     const orgId = KinOrgId.make("org-tidewater");
     const personId = KinPersonId.make("person-rhea");

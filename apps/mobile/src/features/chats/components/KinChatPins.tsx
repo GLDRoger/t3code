@@ -1,3 +1,5 @@
+import { useAtomValue } from "@effect/atom-react";
+import type { KinPlaces } from "@t3tools/client-runtime/kin/kinPlaces";
 import {
   KIN_PINS_COPY,
   kinChatMayWritePins,
@@ -16,7 +18,7 @@ import type {
   KinOrgId,
 } from "@t3tools/contracts";
 import { useNavigation } from "@react-navigation/native";
-import { AsyncResult } from "effect/reactivity";
+import { AsyncResult, Atom } from "effect/reactivity";
 import { useState } from "react";
 import { Pressable, ScrollView, useWindowDimensions, View } from "react-native";
 
@@ -25,6 +27,7 @@ import { SymbolView } from "../../../components/ui/AppSymbol";
 import { Button } from "../../../components/ui/Button";
 import { Sheet } from "../../../components/ui/Sheet";
 import { cn } from "../../../lib/cn";
+import { kinPlacesAtom } from "../state/kinChatOnly";
 import {
   subscribeKinPinsForeground,
   useKinPinActions,
@@ -33,6 +36,7 @@ import {
 } from "../state/useKinPins";
 
 const LARGE_TEXT_SCALE = 1.5;
+const noPlacesAtom = Atom.make<KinPlaces>({ destinations: [], answered: false });
 
 export interface KinChatPinsController {
   readonly visible: boolean;
@@ -62,6 +66,7 @@ export function useKinChatPins(props: {
     subscribeForeground: subscribeKinPinsForeground,
   });
   const actions = useKinPinActions({ environmentId, orgId });
+  const places = useAtomValue(enabled ? kinPlacesAtom({ environmentId, orgId }) : noPlacesAtom);
   const [open, setOpen] = useState(false);
   const [unpinning, setUnpinning] = useState<KinChatPinId | null>(null);
   const [problem, setProblem] = useState<{
@@ -70,7 +75,11 @@ export function useKinChatPins(props: {
   } | null>(null);
 
   const writable = kinChatMayWritePins(members, personId);
-  const strip = kinPinStrip(pins, views, { canUnpin: actions.canUnpin, writable });
+  const strip = kinPinStrip(pins, views, {
+    canUnpin: actions.canUnpin,
+    writable,
+    hasMoney: places.destinations.includes("money"),
+  });
   const visible = enabled && supported && strip.count > 0 && strip.first !== null;
 
   const openSource = (opens: NonNullable<KinPinView["opens"]>) => {

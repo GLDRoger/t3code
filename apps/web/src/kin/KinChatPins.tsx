@@ -60,12 +60,11 @@ function PinChipContent(props: { readonly view: KinPinView }) {
 
 function PinChip(props: {
   readonly item: KinPinItem;
-  readonly opens: KinPinView["opens"];
   readonly onOpen: (opens: NonNullable<KinPinView["opens"]>) => void;
 }) {
   const { view } = props.item;
-  if (props.opens !== null) {
-    const target = props.opens;
+  if (view.opens !== null) {
+    const target = view.opens;
     return (
       <button
         type="button"
@@ -110,12 +109,12 @@ export function KinChatPinsStrip(props: {
   } | null>(null);
 
   const writable = kinChatMayWritePins(members, personId);
-  const strip = kinPinStrip(pins, views, { canUnpin: actions.canUnpin, writable });
+  const strip = kinPinStrip(pins, views, {
+    canUnpin: actions.canUnpin,
+    writable,
+    hasMoney: destinations.includes("money"),
+  });
   if (!supported || strip.count === 0 || strip.first === null) return null;
-
-  // Goals live inside Money on web; a reader without Money gets the glance and no dead end.
-  const opensFor = (view: KinPinView) =>
-    view.opens?.kind === "goal" && !destinations.includes("money") ? null : view.opens;
 
   const openSource = (opens: NonNullable<KinPinView["opens"]>) => {
     setPopoverOpen(false);
@@ -146,7 +145,7 @@ export function KinChatPinsStrip(props: {
   };
 
   const first = strip.first;
-  const firstOpens = opensFor(first.view);
+  const firstOpens = first.view.opens;
   const showTrigger = strip.more !== null || strip.canUnpinAny;
 
   return (
@@ -157,12 +156,7 @@ export function KinChatPinsStrip(props: {
     >
       <div className="hidden min-w-0 flex-1 items-center gap-2 md:flex">
         {strip.items.map((item) => (
-          <PinChip
-            key={item.pin.pinId}
-            item={item}
-            opens={opensFor(item.view)}
-            onOpen={openSource}
-          />
+          <PinChip key={item.pin.pinId} item={item} onOpen={openSource} />
         ))}
       </div>
       <div className="flex min-w-0 flex-1 items-center gap-2 md:hidden">
@@ -215,7 +209,7 @@ export function KinChatPinsStrip(props: {
               </div>
               <ul className="flex flex-col divide-y divide-border/60">
                 {strip.items.map((item) => {
-                  const opens = opensFor(item.view);
+                  const opens = item.view.opens;
                   const rowProblem = problem?.pinId === item.pin.pinId ? problem.text : null;
                   const body = (
                     <>
