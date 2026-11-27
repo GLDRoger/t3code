@@ -46,6 +46,7 @@ import {
   KinSettingsSection,
   KinSettingsStatus,
 } from "./settings/KinSettingsLayout";
+import { KinChatsSettleSetting } from "./settings/KinChatsSettleSetting";
 import { KinQuietHoursSetting } from "./settings/KinQuietHoursSetting";
 import type { KinSettingsTarget } from "./settings/kinSettingsTarget";
 import { closeSettledKinAlerts, keepKinAlert, kinAlertTag } from "./kinSystemAlerts";
@@ -130,6 +131,7 @@ export function KinSettingsNotifications(props: KinSettingsTarget) {
       <KinSettingsPage purpose={KIN_MESSAGE_ALERTS.purpose}>
         <MessageAlerts />
         <KinQuietHoursSetting {...props} />
+        <KinChatsSettleSetting {...props} />
       </KinSettingsPage>
     </SettingsScopeProvider>
   );

@@ -1,4 +1,5 @@
 import { KinChatId } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -8,6 +9,7 @@ import {
   kinChatListRowLabel,
   kinChatListRows,
   kinChatsKeptUp,
+  kinChatsSettleAfterHours,
   kinRoomLine,
 } from "./kinChatListRows.ts";
 import type { KinInboxRow, KinInboxView } from "./kinInboxModel.ts";
@@ -44,6 +46,8 @@ function row(
     readonly fresh?: boolean;
     /** The viewer's own member row: a pin or a mute. */
     readonly mine?: object;
+    /** Overrides the default lastMessageAt timestamp. */
+    readonly lastMessageAt?: string | null;
   } = {},
 ): KinInboxRow {
   return {
@@ -54,7 +58,8 @@ function row(
       title: null,
       teamId: extra.teamId ?? null,
       createdAt: "2026-11-08T09:00:00.000Z",
-      lastMessageAt: lastMessage === null ? null : "2026-11-08T09:30:00.000Z",
+      lastMessageAt:
+        lastMessage === null ? null : (extra.lastMessageAt ?? "2026-11-08T09:30:00.000Z"),
       members: [
         member({ _tag: "person", personId: "owner" }, extra.mine),
         member({ _tag: "agent", agentId: extra.agentId ?? "lead" }),
@@ -277,17 +282,26 @@ describe("kinRoomLine", () => {
 });
 
 describe("kinChatListFold", () => {
+  const NOW = Date.parse("2026-11-08T22:30:00.000Z");
+  const ago = (hours: number, shiftMs = 0) =>
+    DateTime.formatIso(DateTime.makeUnsafe(NOW - hours * 3_600_000 + shiftMs));
   const said = { body: "Done." };
   const pinned = (at: string) => ({ mine: { pinnedAt: at } });
   const muted = { mutedUntil: "9999-01-01T00:00:00.000Z" };
   const company = row("company", said, { kind: "team_group", teamId: "company" });
   const chief = row("chief", said, { agentId: "chief" });
   const old = (chatId: string) => row(chatId, said, { agentId: chatId });
+  const aged = (chatId: string, hours: number, shiftMs = 0) =>
+    row(chatId, said, { agentId: chatId, lastMessageAt: ago(hours, shiftMs) });
   const fold = (
     rows: ReadonlyArray<KinInboxRow>,
     options: Partial<Parameters<typeof kinChatListFold>[1]> = {},
   ) => {
-    const result = kinChatListFold(list(rows), { mainAgentId: "chief" as never, ...options });
+    const result = kinChatListFold(list(rows), {
+      mainAgentId: "chief" as never,
+      now: NOW,
+      ...options,
+    });
     return {
       up: result.up.map((item) => item.chat.chatId),
       settled: result.settled.map((item) => item.chat.chatId),
@@ -297,12 +311,14 @@ describe("kinChatListFold", () => {
     {
       name: "the company chat and the main agent's chat stay up; the rest settle",
       rows: [old("sales"), company, chief, old("books")],
+      settleAfterHours: 0,
       up: ["company", "chief"],
       settled: ["sales", "books"],
     },
     {
       name: "without a company chat, the main agent's chat alone is up",
       rows: [old("sales"), chief],
+      settleAfterHours: 0,
       up: ["chief"],
       settled: ["sales"],
     },
@@ -310,6 +326,7 @@ describe("kinChatListFold", () => {
       name: "with no main agent, the company chat alone is up",
       rows: [company, chief, old("sales")],
       mainAgentId: null,
+      settleAfterHours: 0,
       up: ["company"],
       settled: ["chief", "sales"],
     },
@@ -321,36 +338,42 @@ describe("kinChatListFold", () => {
         row("first", said, { agentId: "b", ...pinned("2026-11-19T10:00:00.000Z") }),
         chief,
       ],
+      settleAfterHours: 0,
       up: ["chief", "first", "later"],
       settled: ["sales"],
     },
     {
       name: "a pin on the main agent's chat changes nothing",
       rows: [row("chief", said, { agentId: "chief", ...pinned("2026-11-19T10:00:00.000Z") })],
+      settleAfterHours: 0,
       up: ["chief"],
       settled: [],
     },
     {
       name: "an unread chat comes up after the pins",
       rows: [chief, old("sales"), row("books", said, { agentId: "books", unread: 2 })],
+      settleAfterHours: 0,
       up: ["chief", "books"],
       settled: ["sales"],
     },
     {
       name: "a chat waiting on the viewer comes up",
       rows: [chief, row("books", said, { agentId: "books", fold: "needsYou" }), old("sales")],
+      settleAfterHours: 0,
       up: ["chief", "books"],
       settled: ["sales"],
     },
     {
       name: "a chat an agent is working in comes up",
       rows: [chief, old("sales"), row("books", said, { agentId: "books", working: true })],
+      settleAfterHours: 0,
       up: ["chief", "books"],
       settled: ["sales"],
     },
     {
       name: "a muted chat with unread words still comes up",
       rows: [chief, row("books", said, { agentId: "books", unread: 1, mine: muted })],
+      settleAfterHours: 0,
       up: ["chief", "books"],
       settled: [],
     },
@@ -360,12 +383,14 @@ describe("kinChatListFold", () => {
         chief,
         row("team", said, { kind: "team_group", teamId: "team-room", fresh: true, mine: muted }),
       ],
+      settleAfterHours: 0,
       up: ["chief", "team"],
       settled: [],
     },
     {
       name: "read again with nothing waiting, it settles",
       rows: [chief, row("books", said, { agentId: "books", mine: muted })],
+      settleAfterHours: 0,
       up: ["chief"],
       settled: ["books"],
     },
@@ -373,12 +398,14 @@ describe("kinChatListFold", () => {
       name: "read again while the list is on screen, it stays up",
       rows: [chief, old("books"), old("sales")],
       keptUp: new Set(["books"]),
+      settleAfterHours: 0,
       up: ["chief", "books"],
       settled: ["sales"],
     },
     {
       name: "with nobody settled, there is no fold",
       rows: [company, chief],
+      settleAfterHours: 0,
       up: ["company", "chief"],
       settled: [],
     },
@@ -386,12 +413,78 @@ describe("kinChatListFold", () => {
       name: "a new teammate's one chat is up, not alone under the fold",
       rows: [old("welcome")],
       mainAgentId: null,
+      settleAfterHours: 0,
       up: ["welcome"],
       settled: [],
     },
     {
       name: `with nothing up, the newest ${KIN_CHATS_UP_AT_LEAST} come up and the rest settle`,
       rows: [old("a"), old("b"), old("c"), old("d")],
+      settleAfterHours: 0,
+      up: ["a", "b", "c"],
+      settled: ["d"],
+    },
+    {
+      name: "a read chat 1 hour old stays up with the 12-hour default, while 13 hours old settles",
+      rows: [chief, aged("recent", 1), aged("older", 13)],
+      up: ["chief", "recent"],
+      settled: ["older"],
+    },
+    {
+      name: "with Right away (0), even a 1-hour-old read chat settles at once",
+      rows: [chief, aged("recent", 1)],
+      settleAfterHours: 0,
+      up: ["chief"],
+      settled: ["recent"],
+    },
+    {
+      name: "with 24 hours chosen, a 13-hour-old read chat stays up and a 25-hour-old one settles",
+      rows: [chief, aged("mid", 13), aged("stale", 25)],
+      settleAfterHours: 24,
+      up: ["chief", "mid"],
+      settled: ["stale"],
+    },
+    {
+      name: "with 6 hours chosen, a 5-hour-old read chat stays up and a 7-hour-old one settles",
+      rows: [chief, aged("fresh", 5), aged("stale", 7)],
+      settleAfterHours: 6,
+      up: ["chief", "fresh"],
+      settled: ["stale"],
+    },
+    {
+      name: "at the exact boundary a read chat settles, while 1 ms younger stays up",
+      rows: [chief, aged("just-in", 12, 1), aged("at-edge", 12)],
+      settleAfterHours: 12,
+      up: ["chief", "just-in"],
+      settled: ["at-edge"],
+    },
+    {
+      name: "pinned, unread, needs-you and working chats stay up at any age",
+      rows: [
+        chief,
+        row("pin", said, {
+          agentId: "pin",
+          lastMessageAt: ago(240),
+          ...pinned("2026-11-01T00:00:00.000Z"),
+        }),
+        row("unread", said, { agentId: "unread", lastMessageAt: ago(240), unread: 1 }),
+        row("needs", said, { agentId: "needs", lastMessageAt: ago(240), fold: "needsYou" }),
+        row("work", said, { agentId: "work", lastMessageAt: ago(240), working: true }),
+        aged("old-read", 240),
+      ],
+      settleAfterHours: 12,
+      up: ["chief", "pin", "unread", "needs", "work"],
+      settled: ["old-read"],
+    },
+    {
+      name: "an empty chat with no messages settles under the 12-hour default",
+      rows: [chief, row("empty", null, { agentId: "empty" })],
+      up: ["chief"],
+      settled: ["empty"],
+    },
+    {
+      name: `with nothing up under the 12-hour default, the newest ${KIN_CHATS_UP_AT_LEAST} still come up`,
+      rows: [aged("a", 20), aged("b", 30), aged("c", 40), aged("d", 50)],
       up: ["a", "b", "c"],
       settled: ["d"],
     },
@@ -399,9 +492,18 @@ describe("kinChatListFold", () => {
     expect(fold(rows, options as never)).toEqual({ up, settled });
   });
 
+  it("defaults settle-after hours to 12 and keeps any chosen value, including 0", () => {
+    expect(kinChatsSettleAfterHours(null)).toBe(12);
+    expect(kinChatsSettleAfterHours({})).toBe(12);
+    expect(kinChatsSettleAfterHours({ chatsSettleAfterHours: 0 })).toBe(0);
+    expect(kinChatsSettleAfterHours({ chatsSettleAfterHours: 6 })).toBe(6);
+    expect(kinChatsSettleAfterHours({ chatsSettleAfterHours: 24 })).toBe(24);
+  });
+
   it("names the two rows that are always up, so neither offers a pin", () => {
     const result = kinChatListFold(list([company, chief, old("sales")]), {
       mainAgentId: "chief" as never,
+      now: NOW,
     });
     expect([...result.fixed]).toEqual(["company", "chief"]);
   });

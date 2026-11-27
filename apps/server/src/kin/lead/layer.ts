@@ -55,7 +55,6 @@ import { handlers as documentHandlers, KinDocumentToolkit } from "../gendocs/mcp
 import { handlers as pictureHandlers, KinPictureToolkit } from "../pictures/mcp.ts";
 import * as PictureRenderer from "../pictures/renderer.ts";
 import * as Render from "../gendocs/render.ts";
-import * as Toolchain from "../gendocs/toolchain.ts";
 import * as Workspace from "../gendocs/workspace.ts";
 import { handlers as docHandlers } from "../work/mcp/docHandlers.ts";
 import { handlers as statementHandlers } from "../work/mcp/statementHandlers.ts";
@@ -392,7 +391,7 @@ export const layer = withServices(
 ).pipe(Layer.provide(memoryLayer));
 // Documents render on this server; agents' own files and recipe drafts come through it too.
 const documents = Layer.merge(Render.layer, PictureRenderer.layer).pipe(
-  Layer.provideMerge(Layer.mergeAll(Workspace.layer, Toolchain.layer)),
+  Layer.provideMerge(Workspace.layer),
 );
 // Once per item, at every start: what leads tracked before Work existed becomes entries.
 const workImport = Layer.effectDiscard(
