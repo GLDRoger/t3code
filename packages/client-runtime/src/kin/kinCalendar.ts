@@ -257,12 +257,14 @@ export function kinCalendarNotice(state: KinCalendarState): KinCalendarNotice | 
   }
   const { sources, more } = state.calendar;
   if (sources.length === 0) return notice(KIN_CALENDAR.notConnected, { mailboxes: true });
+  const withCap = (text: string, options: Partial<KinCalendarNotice>) =>
+    notice(more ? `${text} ${KIN_CALENDAR.more}` : text, options);
   const unreached = sources.filter(
     (source) => source.status === "unreachable" || source.status === "busy",
   );
   const [first] = unreached;
   if (first !== undefined)
-    return notice(
+    return withCap(
       unreached.length > 1
         ? `Couldn't reach ${unreached.length} of your calendars. Your Work dates are all here.`
         : first.account === null
@@ -273,7 +275,7 @@ export function kinCalendarNotice(state: KinCalendarState): KinCalendarNotice | 
   const stuck = sources.find((source) => source.status !== "ok");
   if (stuck !== undefined) {
     const where = stuck.company ? "Settings → Connections" : "Your mailboxes";
-    return notice(
+    return withCap(
       stuck.status === "signed_out"
         ? `Sign in to ${mailboxOf(stuck)} again under ${where}.`
         : `${capitalised(mailboxOf(stuck))} was connected without calendar access. Connect it again under ${where} and allow Calendar.`,

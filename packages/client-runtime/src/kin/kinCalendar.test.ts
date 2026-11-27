@@ -9,7 +9,9 @@ import {
   type KinDateRow,
   type KinRecord,
 } from "@t3tools/contracts";
+import { it as effectIt } from "@effect/vitest";
 import * as Cause from "effect/Cause";
+import * as Effect from "effect/Effect";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -213,6 +215,24 @@ describe("calendar events beside Work dates", () => {
       .find((one) => one.day === "2026-11-27")!;
     expect([order(cell.entries).length, cell.rows.length]).toEqual([5, 2]);
   });
+
+  effectIt.effect("keeps the event cap notice alongside a source that needs retry", () =>
+    Effect.sync(() => {
+      const notice = kinCalendarNotice({
+        _tag: "ready",
+        calendar: {
+          sources: sources.map((source) => ({ ...source, status: source.company ? "busy" : "ok" })),
+          events: [],
+          more: true,
+        },
+        refreshing: false,
+      });
+      expect(notice).toMatchObject({
+        retry: true,
+        text: expect.stringContaining("Some events don't fit here. Your calendar has them all."),
+      });
+    }),
+  );
 
   it("treats a host without the calendar as unavailable, not as a failure", () => {
     const scope = "env-1:org-tidewater";
