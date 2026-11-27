@@ -48,6 +48,7 @@ export const layer = Layer.effect(
                 scope: "cause",
                 silentDuringQuietHours: true,
               },
+          { rememberUntilRecovery: true },
         ).pipe(
           Effect.provideService(SqlClient.SqlClient, sql),
           Effect.provideService(KinChatRepository.KinChatRepository, chat),

@@ -8,6 +8,7 @@ import {
   KinOrgId,
   KinPersonId,
   KinWakeupId,
+  KinWaitingId,
   type KinTroubleCause,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
@@ -403,6 +404,20 @@ it.effect("background memory refusals open one silent notice in the owner's priv
       { chatId: "rhea-chief", person: "rhea", silent: 1, open: 1 },
       { chatId: "rhea-chief", person: "rhea", silent: 1, open: 1 },
     ]);
+    const chat = yield* Chat.KinChatService;
+    const [answered] = yield* sql<{ waitingId: string }>`SELECT waiting_id AS "waitingId"
+      FROM kin_waiting WHERE org_id = ${orgId} AND message_id LIKE 'kin-memory-write:%:remote:%'`;
+    if (answered === undefined) return assert.fail("Missing owner notice");
+    yield* chat.resolveNotice({
+      orgId,
+      waitingId: KinWaitingId.make(answered.waitingId),
+      resolution: "answered",
+    });
+    yield* writeEpisode(orgId, "deleted-quotes", "remote");
+    assert.deepStrictEqual(
+      (yield* rows).map(({ open }) => open),
+      [0, 1],
+    );
     yield* writeEpisode(orgId, "deleted-quotes", undefined);
     assert.deepStrictEqual(
       (yield* rows).map(({ open }) => open),
