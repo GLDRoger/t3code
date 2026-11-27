@@ -456,6 +456,30 @@ describe("WakeupRunner", () => {
     { state: "on", access: "owner", activation: 2, changed: false, reason: "paused" },
     { state: "on", access: "member", activation: 1, changed: false, reason: "setter_demoted" },
     { state: "on", access: "owner", activation: 1, changed: true, reason: "wording_changed" },
+    {
+      state: "on",
+      access: "owner",
+      activation: 1,
+      changed: false,
+      reason: "setter_left",
+      extra: "left",
+    },
+    {
+      state: "on",
+      access: "owner",
+      activation: 1,
+      changed: false,
+      reason: "mailbox_unavailable",
+      extra: "disconnected",
+    },
+    {
+      state: "on",
+      access: "owner",
+      activation: 1,
+      changed: false,
+      reason: "destination_unavailable",
+      extra: "second reader",
+    },
   ] as const)(
     "records a held mail rule wake ($state, $access, $activation, changed=$changed)",
     (scenario) => {
@@ -491,6 +515,16 @@ describe("WakeupRunner", () => {
           ${match}, ${scenario.changed ? "Send the invoice." : tapped}, ${agentId}, ${chatId},
           'meera', 'tap_a830a4', ${mailRuleContentHash(match, tapped)}, ${scenario.state}, 30,
           1, 1, ${scenario.activation})`;
+        yield* sql`UPDATE kin_mail_rules SET month = '2026-11', fired = 1 WHERE rule_id = ${ruleId}`;
+        const extra = "extra" in scenario ? scenario.extra : undefined;
+        if (extra === "left")
+          yield* sql`UPDATE kin_people SET removed_at = 1 WHERE person_id = 'meera'`;
+        if (extra === "disconnected")
+          yield* sql`UPDATE kin_connections SET removed_at = 1 WHERE connection_id = 'con_a710a70'`;
+        if (extra === "second reader")
+          yield* sql`INSERT INTO kin_chat_members (org_id, chat_id, principal_kind, person_id,
+            member_id, role, joined_at) VALUES (${orgId}, ${chatId}, 'person', 'owner',
+            'rhea_member', 'member', '2026-11-08T00:00:00Z')`;
         for (const [index, arrivalId] of arrivals.entries()) {
           yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id, noticed_at,
           class, state, rule_id, rule_state, event_id) VALUES (${orgId}, ${arrivalId},
@@ -529,13 +563,18 @@ describe("WakeupRunner", () => {
             hold_reason: scenario.reason,
           })),
         );
+        // A wake that never started gives its month's run back.
+        assert.deepStrictEqual(
+          yield* sql`SELECT fired FROM kin_mail_rules WHERE rule_id = ${ruleId}`,
+          [{ fired: 0 }],
+        );
         assert.deepStrictEqual(
           yield* sql`SELECT chat_id, body FROM kin_messages WHERE author_kind = 'system'`,
           scenario.changed
             ? [
                 {
                   chat_id: chatId,
-                  body: "This mail rule was changed outside Kin, so it won't run. Do you want to set it up again?",
+                  body: "The mail rule on Accounts was changed outside Kin, so it won't run. Remove it in Settings → Connections, then ask here for it again.",
                 },
               ]
             : [],

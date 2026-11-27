@@ -2,6 +2,9 @@ import type { KinMailRuleHoldReason, KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { refundRuleWakes } from "./ruleRunStore.ts";
+
 export const pendingRuleMail = (
   sql: SqlClient.SqlClient,
   orgId: KinOrgId,
@@ -39,6 +42,7 @@ export const stopQueuedRuleMail = Effect.fn("KinMailRules.stopQueuedMail")(funct
     ) RETURNING event_id AS "eventId"`;
   if (events.length === 0) return;
   const ids = events.map(({ eventId }) => eventId);
+  yield* refundRuleWakes(orgId, ids);
   yield* sql`UPDATE kin_mail_rule_runs SET outcome = 'held', hold_reason = ${reason},
     settled_at = ${at} WHERE org_id = ${orgId} AND event_id IN ${sql.in(ids)} AND settled_at IS NULL`;
   yield* sql`UPDATE kin_arrivals SET rule_state = 'held_paused', rule_hold_reason = ${reason},
@@ -67,5 +71,7 @@ export const pauseMailRulesFor = Effect.fn("KinMailRules.pauseFor")(function* (
   const ruleIds = paused.map((rule) => rule.ruleId);
   yield* holdRuleMail(orgId, ruleIds, "held_paused", reason, now);
   yield* stopQueuedRuleMail(orgId, ruleIds, reason, now);
+  // Settings on every device shows the pause and why.
+  if (paused.length > 0) yield* (yield* KinRefreshObserver).touch(orgId, "connections");
   return paused;
 });

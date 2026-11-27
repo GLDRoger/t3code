@@ -3,6 +3,9 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { readOwnerZone } from "../work/recordRows.ts";
+import { monthlyMailRuleLimit } from "./ruleLimit.ts";
+
 export const linkRuleWake = Effect.fn("KinMailRules.linkWake")(function* (
   orgId: KinOrgId,
   eventIds: ReadonlyArray<string>,
@@ -14,6 +17,31 @@ export const linkRuleWake = Effect.fn("KinMailRules.linkWake")(function* (
     WHERE org_id = ${orgId} AND event_id IN ${sql.in(eventIds)} AND settled_at IS NULL`;
 });
 
+// An automatic wake counts against its month when queued; one held before it started gives it back.
+export const refundRuleWakes = Effect.fn("KinMailRules.refundWakes")(function* (
+  orgId: KinOrgId,
+  eventIds: ReadonlyArray<string>,
+) {
+  if (eventIds.length === 0) return;
+  const sql = yield* SqlClient.SqlClient;
+  const wakes = yield* sql<{ ruleId: string; queuedAt: number }>`SELECT r.rule_id AS "ruleId",
+      e.received_at AS "queuedAt" FROM kin_mail_rule_runs r
+    JOIN kin_events e ON e.org_id = r.org_id AND e.event_id = r.event_id
+    WHERE r.org_id = ${orgId} AND r.event_id IN ${sql.in(eventIds)} AND r.state = 'woke'
+      AND r.manual = 0 AND r.settled_at IS NULL`;
+  if (wakes.length === 0) return;
+  const zone = yield* readOwnerZone(orgId);
+  for (const wake of wakes) {
+    const { month } = monthlyMailRuleLimit(
+      { month: null, fired: 0, monthlyCap: 1 },
+      wake.queuedAt,
+      zone,
+    );
+    yield* sql`UPDATE kin_mail_rules SET fired = fired - 1
+      WHERE org_id = ${orgId} AND rule_id = ${wake.ruleId} AND month = ${month} AND fired > 0`;
+  }
+});
+
 export const holdRuleWake = Effect.fn("KinMailRules.holdWake")(function* (
   orgId: KinOrgId,
   eventId: string,
@@ -22,6 +50,7 @@ export const holdRuleWake = Effect.fn("KinMailRules.holdWake")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const now = yield* Clock.currentTimeMillis;
+  yield* refundRuleWakes(orgId, [eventId]);
   yield* sql`UPDATE kin_mail_rule_runs SET outcome = 'held', hold_reason = ${reason},
     wakeup_id = ${wakeupId}, settled_at = ${now}
     WHERE org_id = ${orgId} AND event_id = ${eventId} AND settled_at IS NULL`;

@@ -583,7 +583,7 @@ export class KinLeadPrompt extends Context.Service<
                 mailRuleHold: { eventId: event.eventId, reason },
               });
             }
-            const label = `${checked.setterName.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")}'s mail rule, as they turned it on`;
+            const label = `${checked.setterName.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ")}'s mail rule, as turned on`;
             events.push(
               `${quote(label, checked.what)}\n\n${quote(QUOTE_LABELS.eventData, eventFacts(event), true)}${outsideText(event)}`,
             );

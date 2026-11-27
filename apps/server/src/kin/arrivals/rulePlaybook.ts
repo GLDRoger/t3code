@@ -92,11 +92,18 @@ export const routeLateRuleHolds = Effect.fn("KinMailRules.routeLateHolds")(funct
     WHERE rule_playbook_route IS NOT NULL AND rule_hold_reason IS NOT NULL`;
   for (const mailbox of mailboxes) {
     const orgId = KinOrgId.make(mailbox.orgId);
-    yield* sql.withTransaction(
-      Effect.gen(function* () {
-        const matches = yield* takeHeldRulePlaybook(orgId, mailbox.connectionId);
-        yield* wakePlaybookMail(orgId, at, matches);
-      }),
-    );
+    // One mailbox's failure must not stop the others, or the feed's reads after this.
+    yield* sql
+      .withTransaction(
+        Effect.gen(function* () {
+          const matches = yield* takeHeldRulePlaybook(orgId, mailbox.connectionId);
+          yield* wakePlaybookMail(orgId, at, matches);
+        }),
+      )
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't route held mail rule mail", { orgId, cause }),
+        ),
+      );
   }
 });

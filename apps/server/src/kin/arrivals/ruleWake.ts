@@ -354,10 +354,15 @@ export const reportRuleWordingChanged = Effect.fn("KinMailRules.reportChanged")(
   if (pulse.rule === undefined || pulse.chatId === undefined) return;
   const checked = yield* checkRuleWake(pulse);
   if (!("held" in checked) || checked.held !== "wording_changed") return;
+  const sql = yield* SqlClient.SqlClient;
+  const [mailbox] = yield* sql<{ label: string }>`SELECT c.label FROM kin_mail_rules r
+    JOIN kin_connections c ON c.org_id = r.org_id AND c.connection_id = r.connection_id
+    WHERE r.org_id = ${pulse.orgId} AND r.rule_id = ${pulse.rule.ruleId}`;
+  if (mailbox === undefined) return;
   yield* notice(
     { orgId: pulse.orgId, ruleId: pulse.rule.ruleId, chatId: pulse.chatId },
     `changed:${pulse.eventId}`,
-    "This mail rule was changed outside Kin, so it won't run. Do you want to set it up again?",
+    `The mail rule on ${mailbox.label} was changed outside Kin, so it won't run. Remove it in Settings → Connections, then ask here for it again.`,
     at,
   );
 });

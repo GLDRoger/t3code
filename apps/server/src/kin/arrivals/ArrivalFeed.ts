@@ -341,7 +341,10 @@ const runtimeLayer = Layer.effectDiscard(
             Effect.catch((cause) => Effect.logWarning("Kin couldn't prune arrivals", { cause })),
           );
         }
-        yield* routeLateRuleHolds(now).pipe(Effect.provideService(KinEventQueue, queue));
+        yield* routeLateRuleHolds(now).pipe(
+          Effect.provideService(KinEventQueue, queue),
+          Effect.catch((cause) => Effect.logWarning("Kin couldn't route held mail", { cause })),
+        );
         // Scheduler maintenance: every org's live mail connections; each read is org-scoped.
         // A person's own mailbox is theirs alone (`turnMailbox.ts`): never read for the company.
         const rows = yield* sql<{ orgId: string; connectionId: string }>`SELECT org_id AS "orgId",

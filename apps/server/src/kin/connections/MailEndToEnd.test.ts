@@ -896,7 +896,7 @@ it.effect("a rule wake quotes the tapped words and a send still waits on Confirm
           ),
         ),
       );
-      assert.include(built, "> BEGIN QUOTE: Meera's mail rule, as they turned it on");
+      assert.include(built, "> BEGIN QUOTE: Meera's mail rule, as turned on");
       assert.include(built, '> "Check the bill.\\u000aDraft a reply for Juniper Cold Chain."');
       assert.strictEqual(stampKey((yield* outsideStamp(turn))!), "check-in");
       assert.strictEqual(voiceFor({ tags: [event._tag], sendOnly: true }), "send");
