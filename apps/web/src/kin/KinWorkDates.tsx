@@ -19,6 +19,7 @@ import {
   type KinDateRowView,
   type KinDatesEntry,
 } from "@t3tools/client-runtime/kin/kinDates";
+import { KIN_MONEY } from "@t3tools/client-runtime/kin/kinMoney";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
 import type { KinRecordKey } from "@t3tools/contracts";
 import { CalendarIcon, ChevronLeftIcon, ChevronRightIcon, ExternalLinkIcon } from "lucide-react";
@@ -181,12 +182,13 @@ export function KinWorkDates(
       : chosen?.key === deviceKey
         ? chosen.on
         : kinCalendarShownHere(deviceKey);
-  const calendar = useKinCalendar(props, window, calendarOn);
+  const calendar = useKinCalendar(props, state._tag === "refused" ? null : window, calendarOn);
   const events = calendar.state._tag === "ready" ? calendar.state.calendar : undefined;
   const eventsDim = calendar.state._tag === "ready" && calendar.state.refreshing;
   const calendarNotice = kinCalendarNotice(calendar.state);
   const switchId = useId();
   const calendarSwitchId = useId();
+  if (state._tag === "refused") return <KinWorkNotice {...KIN_MONEY.onlyOwner} />;
   return (
     <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-6 scrollbar-gutter-both">
       <div

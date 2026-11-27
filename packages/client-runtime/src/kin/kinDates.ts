@@ -26,6 +26,7 @@ import {
   kinWorkDueZone,
   type KinWorkNames,
 } from "./kinWork.ts";
+import { kinWorkReadState } from "./kinWorkForms.ts";
 
 /** Everything with a date, whatever list it is in: an agenda by day, and a month to look across. */
 
@@ -108,22 +109,26 @@ export const kinMonthWindow = (month: string, zone: string | null): KinDatesWind
   to: kinZonedDayStart(`${kinShiftMonth(month, 1)}-01`, zone).toISOString(),
 });
 
+export type KinDatesRead =
+  | { readonly _tag: "failed" }
+  | { readonly _tag: "refused" }
+  | { readonly _tag: "ready"; readonly rows: ReadonlyArray<KinDateRow>; readonly more: boolean };
+
 /** Reads a window a page at a time, up to a cap that says so when it is reached. */
 export async function kinReadDates(
   read: (input: KinDatesInput) => Promise<AtomCommandResult<KinDatesResult, unknown>>,
   input: KinDatesInput,
-): Promise<
-  AtomCommandResult<{ readonly rows: ReadonlyArray<KinDateRow>; readonly more: boolean }, unknown>
-> {
+): Promise<KinDatesRead> {
   const rows: Array<KinDateRow> = [];
   let cursor: string | null = null;
   do {
     const result = await read({ ...input, limit: 200, ...(cursor === null ? {} : { cursor }) });
-    if (!AsyncResult.isSuccess(result)) return AsyncResult.failure(result.cause);
+    if (!AsyncResult.isSuccess(result))
+      return { _tag: kinWorkReadState(result)._tag === "refused" ? "refused" : "failed" };
     rows.push(...result.value.rows);
     cursor = result.value.nextCursor;
   } while (cursor !== null && rows.length < READ_CAP);
-  return AsyncResult.success({ rows, more: cursor !== null });
+  return { _tag: "ready", rows, more: cursor !== null };
 }
 
 export interface KinDateRowView {

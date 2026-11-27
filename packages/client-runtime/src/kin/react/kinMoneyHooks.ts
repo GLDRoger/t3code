@@ -2,7 +2,6 @@
 import { useAtomValue } from "@effect/atom-react";
 import type {
   KinCompanyProfile,
-  KinDateRow,
   KinListDefinition,
   KinListId,
   KinListTotals,
@@ -21,7 +20,7 @@ import { kinAccessMeAtom } from "../kinAccess.ts";
 import type { KinClient } from "../kinClient.ts";
 import { kinRatesOf } from "../kinCurrency.ts";
 import { kinCalendarHeld, kinCalendarState, type KinCalendarHeld } from "../kinCalendar.ts";
-import { kinReadDates, type KinDatesWindow } from "../kinDates.ts";
+import { kinReadDates, type KinDatesRead, type KinDatesWindow } from "../kinDates.ts";
 import { KIN_INVOICES, kinIssueNotice, kinReceiptNotice } from "../kinInvoices.ts";
 import {
   kinAmountConfirmed,
@@ -76,14 +75,8 @@ const schedule = (run: () => void, ms: number) => {
 
 export type KinDatesState =
   | { readonly _tag: "loading" }
-  | { readonly _tag: "failed" }
-  | {
-      readonly _tag: "ready";
-      readonly rows: ReadonlyArray<KinDateRow>;
-      readonly more: boolean;
-      /** Rows are up while they are read again. */
-      readonly refreshing: boolean;
-    };
+  | Exclude<KinDatesRead, { readonly _tag: "ready" }>
+  | (Extract<KinDatesRead, { readonly _tag: "ready" }> & { readonly refreshing: boolean });
 
 export type KinWorkFilesState =
   | { readonly _tag: "loading" }
@@ -244,9 +237,7 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
   ) {
     const [held, setHeld] = useState<{
       readonly request: string;
-      readonly rows: ReadonlyArray<KinDateRow>;
-      readonly more: boolean;
-      readonly failed: boolean;
+      readonly read: KinDatesRead;
     } | null>(null);
     const [attempt, setAttempt] = useState(0);
     const request = `${environmentId}:${orgId}:${window?.from}:${window?.to}:${openOnly}:${seq}:${attempt}`;
@@ -267,11 +258,9 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
       ).then((result) => {
         if (!current) return;
         setHeld((before) =>
-          AsyncResult.isSuccess(result)
-            ? { request, ...result.value, failed: false }
-            : before !== null && !before.failed
-              ? { ...before, request }
-              : { request, rows: [], more: false, failed: true },
+          result._tag === "failed" && before?.read._tag === "ready"
+            ? { ...before, request }
+            : { request, read: result },
         );
       });
       return () => {
@@ -279,16 +268,11 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
       };
     }, [environmentId, orgId, from, to, openOnly, request]);
     const state: KinDatesState =
-      held === null || (held.failed && held.request !== request)
+      held === null || (held.read._tag !== "ready" && held.request !== request)
         ? { _tag: "loading" }
-        : held.failed
-          ? { _tag: "failed" }
-          : {
-              _tag: "ready",
-              rows: held.rows,
-              more: held.more,
-              refreshing: held.request !== request,
-            };
+        : held.read._tag !== "ready"
+          ? held.read
+          : { ...held.read, refreshing: held.request !== request };
     return { state, retry: () => setAttempt((count) => count + 1) };
   }
 

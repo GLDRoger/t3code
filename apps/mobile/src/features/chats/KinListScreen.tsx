@@ -55,7 +55,7 @@ import {
   type KinListFilter,
   type KinListRowView,
 } from "@t3tools/client-runtime/kin/kinLists";
-import { kinListSettingsOnPhone } from "@t3tools/client-runtime/kin/kinMoney";
+import { KIN_MONEY, kinListSettingsOnPhone } from "@t3tools/client-runtime/kin/kinMoney";
 import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import type { KinWorkRef } from "@t3tools/client-runtime/kin/kinWork";
 import { KIN_WORK_HOME } from "@t3tools/client-runtime/kin/kinWorkHome";
@@ -946,7 +946,7 @@ function KinDatesBody(props: KinWorkTarget) {
         : AsyncResult.isSuccess(hidden)
           ? !hidden.value.has(deviceKey)
           : null;
-  const calendar = useKinCalendar(props, window, calendarOn);
+  const calendar = useKinCalendar(props, state._tag === "refused" ? null : window, calendarOn);
   const events = calendar.state._tag === "ready" ? calendar.state.calendar : undefined;
   const eventsDim = calendar.state._tag === "ready" && calendar.state.refreshing;
   const calendarNotice = kinCalendarNotice(calendar.state);
@@ -1022,6 +1022,13 @@ function KinDatesBody(props: KinWorkTarget) {
     return (
       <KinWorkFrame {...frame}>
         <EmptyState variant="plain" {...KIN_LISTS.onlyOwner} />
+      </KinWorkFrame>
+    );
+  }
+  if (state._tag === "refused") {
+    return (
+      <KinWorkFrame title={frame.title} onBack={frame.onBack}>
+        <EmptyState variant="plain" {...KIN_MONEY.onlyOwner} />
       </KinWorkFrame>
     );
   }
