@@ -117,6 +117,21 @@ it("every registered provider has a conformance fake and its lacks match its des
   }
 });
 
+it("providers declare deferred tool lookup and beside-message context support", () => {
+  assert.deepStrictEqual(
+    KIN_PROVIDERS.map(({ driver, lookup, turnContextBeside }) => [
+      driver,
+      lookup,
+      turnContextBeside,
+    ]),
+    [
+      ["claudeAgent", "provider", true],
+      ["codex", "provider", false],
+      ["acpRegistry", "none", false],
+    ],
+  );
+});
+
 const limited = (driver: string, limit: KinProviderLimit) =>
   kinProviderFacts(driver)?.limits.includes(limit) ?? false;
 
