@@ -658,6 +658,7 @@ export function KinMoneyArea(props: Shared) {
     ],
     rates,
   );
+  const { expenses } = view;
   const blocks: Record<KinMoneyBlock, React.ReactNode> = {
     owed: (
       <View className="gap-4">
@@ -770,6 +771,13 @@ export function KinMoneyArea(props: Shared) {
           <KinQuotesSection {...target} seq={seq} rates={rates} lists={kinListsOf(lists)} />
         ) : null}
         <KinBudgetsSection {...target} seq={seq} rates={rates} lists={kinListsOf(lists)} />
+        {expenses === null ? null : (
+          <KinFoldSection
+            title={expenses.label}
+            summary={expenses.summary}
+            onOpen={() => openList(expenses.open)}
+          />
+        )}
         <KinSubscriptionsSection
           {...target}
           lists={kinListsOf(lists)}
