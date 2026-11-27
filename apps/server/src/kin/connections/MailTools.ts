@@ -194,7 +194,7 @@ const attachmentTools = listed(write, [
     name: MAIL_TOOL.saveAttachment,
     title: "Save a mail attachment to Docs",
     description:
-      "Save one attachment from this mailbox to Docs, without reading its text. Use messageId and attachmentId from mail_read_thread on this mailbox. Returns the Doc's key and title, including when it was already saved.",
+      "Copy one attachment from this mailbox into Docs, only when someone asks to save or keep the file. Kin never reads the file's text, so saving won't show what it says. Use messageId and attachmentId from mail_read_thread on this mailbox; returns the Doc's key and title, also when it was already saved.",
     inputSchema: {
       type: "object",
       properties: { messageId: { type: "string" }, attachmentId: { type: "string" } },
