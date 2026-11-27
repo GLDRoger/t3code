@@ -703,6 +703,7 @@ export function KinPlaceView({
     if (mapShown)
       return (
         <KinDocsMap
+          key={`${props.environmentId}:${props.orgId}`}
           {...props}
           wide={wide}
           renderPeek={(peek, onPeek) =>

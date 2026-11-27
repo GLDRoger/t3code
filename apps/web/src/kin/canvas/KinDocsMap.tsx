@@ -53,7 +53,9 @@ export function KinDocsMap(
     items: model.items,
     aspect: wide ? 1.6 : 0.6,
   });
-  const [controller] = useState(() => new KinCanvasController());
+  const [controller] = useState(
+    () => new KinCanvasController(`${props.environmentId}:${props.orgId}`),
+  );
   const [peek, setPeek] = useState<KinDocsMapPeek | null>(null);
 
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- stops the camera's frames and timers when the map leaves
@@ -77,7 +79,10 @@ export function KinDocsMap(
     if (instant) controller.set(camera);
     else controller.flyTo(camera);
   };
-  const onSized = useStableCallback(() => fitAll(true));
+  // A map the person moved, here or before they opened a page, stays where they left it.
+  const onSized = useStableCallback(() => {
+    if (!controller.touched) fitAll(true);
+  });
 
   // The card comes to the middle of what the peek leaves free.
   const bringIn = (key: string) => {

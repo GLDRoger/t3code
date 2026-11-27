@@ -13,6 +13,9 @@ export type KinCanvasFrameListener = (
   height: number,
 ) => void;
 
+/** Where each company's map was left this session, so Back from an opened page returns to it. */
+const heldCameras = new Map<string, KinCanvasCamera>();
+
 const reducedMotion = () =>
   typeof window !== "undefined" &&
   window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
@@ -39,6 +42,14 @@ export class KinCanvasController {
   private settleTimer: ReturnType<typeof setTimeout> | undefined;
   private listeners = new Set<KinCanvasFrameListener>();
   private settleListeners = new Set<(camera: KinCanvasCamera) => void>();
+
+  /** `key` names the map, by company: one a person moved comes back where they left it. */
+  constructor(private readonly key: string | null = null) {
+    const held = key === null ? undefined : heldCameras.get(key);
+    if (held === undefined) return;
+    this.camera = held;
+    this.touched = true;
+  }
 
   /** A moment after it stops moving: sharpen the text and rework detail. */
   settled(listener: (camera: KinCanvasCamera) => void) {
@@ -96,6 +107,8 @@ export class KinCanvasController {
   }
 
   dispose() {
+    if (this.key !== null && this.touched)
+      heldCameras.set(this.key, this.flight?.to ?? this.camera);
     if (this.frame !== 0) cancelAnimationFrame(this.frame);
     this.frame = 0;
     this.flight = null;
