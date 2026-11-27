@@ -28,7 +28,7 @@ import { takeAlerts } from "./bankAlerts.ts";
 import { ensureBankList, findBankList } from "./bankList.ts";
 import { repaidMatches } from "./debitRepaid.ts";
 import { drawRepaid, markRepaid, repaidLine } from "./repaidCard.ts";
-import { repaidSeenSenses } from "../../pulse/senses/bank.ts";
+import { bankDebitSenses } from "../../pulse/senses/bank.ts";
 
 // Invented: Ambermill's owner Rhea gets HDFC alerts; Zoya and Arjun paid bills from their own cards.
 const orgId = KinOrgId.make("ambermill-repaid");
@@ -225,7 +225,7 @@ const company = Effect.fn("test.company")(function* (org: KinOrgId) {
         ${key}, 0, 0, ${JSON.stringify(fields)})`;
   const zoya = `person:${org}-zoya`;
   const toldFacts = (at: number) =>
-    repaidSeenSenses({
+    bankDebitSenses({
       orgId: org,
       at,
       zone: "Asia/Kolkata",
@@ -233,7 +233,7 @@ const company = Effect.fn("test.company")(function* (org: KinOrgId) {
       finance: KinAgentId.make("finance"),
       tech: undefined,
       liveAgents: new Set(),
-    });
+    }).pipe(Effect.map((facts) => facts.filter((fact) => fact.sense === "repaid_seen")));
   const drawPlan = (key: string) =>
     drawRepaid(org, key, {
       agentId: "finance",
@@ -280,7 +280,7 @@ const cardMarkedCompany = Effect.fn("test.cardMarkedCompany")(function* (org: Ki
     ["EXP-4"],
   );
   const outcome = yield* kin.sql.withTransaction(markRepaid(org, plan, owner, records));
-  assert.strictEqual(outcome?.title, "Marked repaid");
+  assert.strictEqual(outcome?.outcome.title, "Marked repaid");
   return { kin, records, owner };
 });
 

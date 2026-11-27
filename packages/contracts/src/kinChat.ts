@@ -446,6 +446,8 @@ export const kinChoiceActionNote = (options: ReadonlyArray<KinChoiceOption>) => 
 };
 /** A `choice` card's buttons post `actionId: "choose"` with the option id as `value`. */
 export const KIN_CHOICE_CARD_ACTION = "choose";
+/** Reverses the settled action named by a choice card's outcome. */
+export const KIN_CHOICE_UNDO_ACTION = "undo";
 /**
  * Closes an open choice card without choosing, for the person it asks; posts nothing in the chat.
  * A Confirm card for something leaving the company (`send`) is never dismissed.
@@ -628,6 +630,14 @@ export const KinChoiceCardState = Schema.Struct({
       refused: Schema.optionalKey(Schema.Literal(true)),
       /** The outcome is all the settled card says: its detail is cleared. */
       alone: Schema.optionalKey(Schema.Literal(true)),
+      /** A settled action the original tapper or an owner can reverse from the card. */
+      undo: Schema.optionalKey(
+        Schema.Struct({
+          actionId: Schema.Literal(KIN_CHOICE_UNDO_ACTION),
+          label: KinTrimmedText.check(Schema.isMaxLength(80)),
+          line: KinText.check(Schema.isMaxLength(200)),
+        }),
+      ),
       /** Set when the person undid what a default Kin took: who, by name then, and when. */
       undone: Schema.optionalKey(
         Schema.Struct({

@@ -26,9 +26,8 @@ import {
 } from "../../work/recordRows.ts";
 import { DAY_MS, thresholds, toMs } from "../thresholds.ts";
 import {
-  billPaidSeenSenses,
+  bankDebitSenses,
   paymentSeenSenses,
-  repaidSeenSenses,
   statementSenses,
   unreadableBankAlerts,
 } from "./bank.ts";
@@ -470,8 +469,7 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
   }
   facts.push(...(yield* statementSenses(ctx)));
   facts.push(...(yield* paymentSeenSenses(ctx)));
-  facts.push(...(yield* repaidSeenSenses(ctx)));
-  facts.push(...(yield* billPaidSeenSenses(ctx)));
+  facts.push(...(yield* bankDebitSenses(ctx)));
   const unreadable = yield* unreadableBankAlerts(ctx, ctx.finance);
   if (unreadable !== undefined) facts.push(unreadable);
   return facts;

@@ -1,11 +1,20 @@
-import { KinChatError, type KinChoiceOutcome, type KinOrgId } from "@t3tools/contracts";
+import {
+  KIN_CHOICE_UNDO_ACTION,
+  KinChatError,
+  type KinChoiceOutcome,
+  type KinOrgId,
+  type KinPersonId,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as SqlClient from "effect/sql/SqlClient";
 
 import { retell } from "../../pulse/KinPulse.ts";
-import type { CardDraw, RepaidPlan } from "../../widgets/cardPlans.ts";
+import type { CardDraw, RepaidPlan, RepaidUndoPlan } from "../../widgets/cardPlans.ts";
 import type { KinRecords, Writer } from "../KinRecords.ts";
+import { fieldText, parseFields } from "../lists.ts";
 import { formatMoney } from "../money.ts";
+import { endOfDay, ownerZone } from "../recordRows.ts";
 import { REIMBURSEMENT, REPAID_ON } from "../reimbursement.ts";
 import { bankStates, findBankList } from "./bankList.ts";
 import { shortDay } from "./bankKnown.ts";
@@ -81,6 +90,7 @@ const planOf = (match: RepaidMatch, repays: NonNullable<RepaidMatch["repays"]>, 
     partner: match.partner,
     repays: repays.map((one) => ({ ...one })),
     owedAfterMinor: Number(match.owedMinor - BigInt(match.debit.amountMinor)),
+    ...(match.expense === undefined ? {} : { expense: match.expense }),
     draw,
   }) satisfies RepaidPlan;
 
@@ -101,6 +111,8 @@ const asDrawn = (match: RepaidMatch | undefined, plan: RepaidPlan) => {
     now.partner.id === plan.partner.id &&
     now.partner.name === plan.partner.name &&
     now.owedAfterMinor === plan.owedAfterMinor &&
+    now.expense?.recordId === plan.expense?.recordId &&
+    now.expense?.rev === plan.expense?.rev &&
     now.repays.length === plan.repays.length &&
     now.repays.every((one, at) => {
       const was = plan.repays[at]!;
@@ -141,6 +153,7 @@ const total = (plan: RepaidPlan) =>
 
 const LABEL_MAX = 80;
 export const repaidLabel = (plan: RepaidPlan) => {
+  if (plan.asExpense) return "An ordinary expense";
   const n = plan.repays.length;
   const expenses = `${n} expense${n === 1 ? "" : "s"}`;
   const label = `Mark ${plan.partner.name}'s ${expenses} repaid`;
@@ -157,6 +170,10 @@ const narrationOf = (plan: RepaidPlan) => {
 };
 const LINE_MAX = 200;
 export const repaidLine = (plan: RepaidPlan) => {
+  if (plan.asExpense && plan.expense !== undefined) {
+    const expense = plan.expense;
+    return `Link ${plan.key} to ${expense.key}${expense.open ? " and mark it paid" : ""}.`;
+  }
   const line = (quoted: boolean) =>
     fitted(
       plan,
@@ -175,29 +192,58 @@ export const repaidLine = (plan: RepaidPlan) => {
  * explained, each linked to the other. Anything changed since the draw writes nothing, and the
  * fact is told again on the next pass if it still holds.
  */
+const linkDebit = Effect.fn("KinRepaidCard.linkDebit")(function* (
+  orgId: KinOrgId,
+  writer: Writer,
+  plan: RepaidPlan,
+  one: { readonly recordId: string; readonly key: string },
+  records: KinRecords["Service"],
+) {
+  const evidence = yield* records.link(orgId, writer, one.recordId, {
+    kind: "record",
+    target: plan.recordId,
+    relation: "evidence",
+    label: `${plan.day} · ${plan.key}`,
+  });
+  const relates = yield* records.link(orgId, writer, plan.recordId, {
+    kind: "record",
+    target: one.recordId,
+    relation: "relates",
+    label: one.key,
+  });
+  return { evidence, relates };
+});
+
+const lastChanges = Effect.fn("KinRepaidCard.lastChanges")(function* (
+  orgId: KinOrgId,
+  ids: ReadonlyArray<string>,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ recordId: string; change: number }>`SELECT
+    record_id AS "recordId", MAX(seq) AS change FROM kin_record_changes
+    WHERE org_id = ${orgId} AND record_id IN ${sql.in(ids)} GROUP BY record_id`;
+  return new Map(rows.map(({ recordId, change }) => [recordId, change]));
+});
+
+type RepaidWriter = Writer & { actor: { _tag: "person"; personId: KinPersonId } };
+
 export const markRepaid = Effect.fn("KinRepaidCard.mark")(function* (
   orgId: KinOrgId,
   plan: RepaidPlan,
-  writer: Writer,
+  writer: RepaidWriter,
   records: KinRecords["Service"],
 ) {
   const def = yield* findBankList(orgId);
+  const bank = yield* records.get(orgId, plan.key);
   if (
     def === undefined ||
+    bank === undefined ||
     !asDrawn(yield* repaidMatch(orgId, plan.recordId, yield* Clock.currentTimeMillis), plan)
   ) {
     yield* retell(orgId, repaidFactKey(plan.key));
     return undefined;
   }
-  for (const one of plan.repays)
-    yield* records.update(
-      orgId,
-      writer,
-      one.key,
-      { fields: { [REIMBURSEMENT]: "repaid", [REPAID_ON]: plan.day } },
-      one.rev,
-    );
-  yield* records.update(
+  const explain = records.update(
     orgId,
     writer,
     plan.key,
@@ -207,28 +253,164 @@ export const markRepaid = Effect.fn("KinRepaidCard.mark")(function* (
     },
     plan.rev,
   );
-  for (const one of plan.repays) {
-    yield* records.link(orgId, writer, one.recordId, {
-      kind: "record",
-      target: plan.recordId,
-      relation: "evidence",
-      label: `${plan.day} · ${plan.key}`,
-    });
-    yield* records.link(orgId, writer, plan.recordId, {
-      kind: "record",
-      target: one.recordId,
-      relation: "relates",
-      label: one.key,
-    });
+  if (plan.asExpense && plan.expense !== undefined) {
+    const expense = plan.expense;
+    if (expense.open)
+      yield* records.update(
+        orgId,
+        writer,
+        expense.key,
+        {
+          state: "done",
+          ...(expense.day === null
+            ? { dateAt: endOfDay(plan.day, yield* ownerZone(orgId)), dateAllDay: true }
+            : {}),
+        },
+        expense.rev,
+      );
+    yield* explain;
+    yield* linkDebit(orgId, writer, plan, expense, records);
+    return {
+      outcome: {
+        title: "Ordinary expense",
+        text: `${plan.key} is explained by ${expense.key}${expense.open ? ", now marked paid" : ""}.`,
+      },
+    };
   }
+  const expenses = yield* Effect.forEach(plan.repays, (one) =>
+    Effect.gen(function* () {
+      const before = yield* records.get(orgId, one.key);
+      if (before === undefined) return yield* refuse(`${one.key} is no longer there.`);
+      const fields = parseFields(before.fieldsJson);
+      const marked = yield* records.update(
+        orgId,
+        writer,
+        one.key,
+        { fields: { [REIMBURSEMENT]: "repaid", [REPAID_ON]: plan.day } },
+        one.rev,
+      );
+      return {
+        recordId: one.recordId,
+        key: one.key,
+        rev: marked.rev,
+        reimbursement: fieldText(fields, REIMBURSEMENT),
+        repaidOn: fieldText(fields, REPAID_ON),
+      };
+    }),
+  );
+  const explained = yield* explain;
+  const links = yield* Effect.forEach(expenses, (one) =>
+    linkDebit(orgId, writer, plan, one, records),
+  );
+  const changes = yield* lastChanges(orgId, [
+    plan.recordId,
+    ...expenses.map((one) => one.recordId),
+  ]);
   const rest = owedAfter(plan);
   return {
-    title: MARKED_REPAID,
-    text: fitted(
-      plan,
-      (keys) =>
-        `${keys} ${plan.repays.length === 1 ? "is" : "are"} repaid on ${shortDay(plan.day)} by ${plan.key}, which is explained in Bank transactions. ${rest.charAt(0).toUpperCase()}${rest.slice(1)}.`,
-      600,
-    ),
+    outcome: {
+      title: MARKED_REPAID,
+      text: fitted(
+        plan,
+        (keys) =>
+          `${keys} ${plan.repays.length === 1 ? "is" : "are"} repaid on ${shortDay(plan.day)} by ${plan.key}, which is explained in Bank transactions. ${rest.charAt(0).toUpperCase()}${rest.slice(1)}.`,
+        600,
+      ),
+      undo: {
+        actionId: KIN_CHOICE_UNDO_ACTION,
+        label: "Undo",
+        line: `Mark these expenses as owed again and return ${plan.key} to its earlier state.`,
+      },
+    } satisfies KinChoiceOutcome,
+    undo: {
+      kind: "undo_repaid",
+      personId: writer.actor.personId,
+      bank: {
+        recordId: plan.recordId,
+        key: plan.key,
+        state: bank.state,
+        category: bank.category,
+        rev: explained.rev,
+        change: changes.get(plan.recordId) ?? 0,
+      },
+      expenses: expenses.map((one, i) => ({
+        ...one,
+        ...links[i]!,
+        change: changes.get(one.recordId) ?? 0,
+      })),
+    } satisfies RepaidUndoPlan,
+  };
+});
+
+const changedSince = (key: string) =>
+  refuse(`Nothing was undone. ${key} changed since the repayment was marked.`);
+
+export const undoRepaid = Effect.fn("KinRepaidCard.undo")(function* (
+  orgId: KinOrgId,
+  plan: RepaidUndoPlan,
+  writer: RepaidWriter,
+  records: KinRecords["Service"],
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const entries = [plan.bank, ...plan.expenses];
+  const changes = yield* lastChanges(
+    orgId,
+    entries.map((one) => one.recordId),
+  );
+  for (const saved of entries) {
+    const now = yield* records.get(orgId, saved.key);
+    if (now === undefined || now.recordId !== saved.recordId || now.state === "dropped")
+      return yield* refuse(`Nothing was undone. ${saved.key} is no longer there.`);
+    if (now.rev === saved.rev && (changes.get(saved.recordId) ?? 0) === saved.change) continue;
+    if (
+      saved !== plan.bank &&
+      (yield* sql`SELECT 1 FROM kin_record_changes c, json_each(c.fields_json) f
+      WHERE c.org_id = ${orgId} AND c.record_id = ${saved.recordId} AND c.seq > ${saved.change}
+        AND json_extract(f.value, '$.field') = ${REIMBURSEMENT}
+        AND json_extract(f.value, '$.to') = 'repaid' LIMIT 1`).length > 0
+    )
+      return yield* refuse(
+        `Nothing was undone. ${saved.key} was marked repaid again after this card.`,
+      );
+    return yield* changedSince(saved.key);
+  }
+  for (const one of plan.expenses) {
+    if (
+      one.evidence &&
+      !(yield* records.unlink(orgId, writer, one.recordId, {
+        kind: "record",
+        target: plan.bank.recordId,
+      }))
+    )
+      return yield* changedSince(one.key);
+    if (
+      one.relates &&
+      !(yield* records.unlink(orgId, writer, plan.bank.recordId, {
+        kind: "record",
+        target: one.recordId,
+      }))
+    )
+      return yield* changedSince(plan.bank.key);
+    yield* records.update(
+      orgId,
+      writer,
+      one.key,
+      {
+        fields: { [REIMBURSEMENT]: one.reimbursement, [REPAID_ON]: one.repaidOn },
+      },
+      one.rev,
+    );
+  }
+  const bank = plan.bank;
+  yield* records.update(
+    orgId,
+    writer,
+    bank.key,
+    { state: bank.state, category: bank.category },
+    bank.rev,
+  );
+  return {
+    title: "Repayment undone",
+    text: `The expenses are owed again, and ${bank.key} is back to its earlier state in Bank transactions.`,
   } satisfies KinChoiceOutcome;
 });

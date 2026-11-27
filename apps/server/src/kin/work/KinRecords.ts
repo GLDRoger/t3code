@@ -911,14 +911,16 @@ export class KinRecords extends Context.Service<
       link: LinkInput,
     ) => Effect.Effect<boolean, KinChatError>;
     /**
-     * Takes off the link a "linked" change made (its kind, what it showed, when), and for an entry
-     * the link back made with it, each recorded on its entry. False when it is already gone.
+     * Takes off a link by target, or the link a "linked" change made and its link back.
+     * Each removal is recorded on its entry. False when the link is already gone.
      */
     readonly unlink: (
       orgId: KinOrgId,
       writer: Writer,
       recordId: string,
-      link: { readonly kind: string; readonly shown: string; readonly at: number },
+      link:
+        | { readonly kind: string; readonly shown: string; readonly at: number }
+        | { readonly kind: string; readonly target: string },
     ) => Effect.Effect<boolean, KinChatError>;
     /** Money paid against an entry paid over time; in full, it is marked paid. Never more than owed. */
     readonly pay: (
@@ -3625,25 +3627,33 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     writer: Writer,
     recordId: string,
-    link: { readonly kind: string; readonly shown: string; readonly at: number },
+    link:
+      | { readonly kind: string; readonly shown: string; readonly at: number }
+      | { readonly kind: string; readonly target: string },
   ) {
     return yield* transaction(
       Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
-        const [made] = yield* sql<{ target: string }>`SELECT target FROM kin_record_links
-          WHERE org_id = ${orgId} AND record_id = ${recordId} AND kind = ${link.kind}
-            AND created_at = ${link.at} AND COALESCE(label, target) = ${link.shown}`;
+        const exact = "target" in link;
+        const [made] = yield* sql<{ target: string; at: number }>`SELECT target, created_at AS at
+          FROM kin_record_links WHERE org_id = ${orgId} AND record_id = ${recordId}
+            AND kind = ${link.kind}
+            ${
+              exact
+                ? sql`AND target = ${link.target}`
+                : sql`AND created_at = ${link.at} AND COALESCE(label, target) = ${link.shown}`
+            }`;
         if (made === undefined) return false;
-        // The half back is written in its own moment of the same call, so a few ms either side.
+        // The half back may be made a few ms later, and is removed only for a history entry.
         const halves = [
-          { recordId, target: made.target, from: link.at, to: link.at },
-          ...(link.kind === "record"
+          { recordId, target: made.target, from: made.at, to: made.at },
+          ...(!exact && link.kind === "record"
             ? [
                 {
                   recordId: made.target,
                   target: recordId,
-                  from: link.at - 5000,
-                  to: link.at + 5000,
+                  from: made.at - 5000,
+                  to: made.at + 5000,
                 },
               ]
             : []),
