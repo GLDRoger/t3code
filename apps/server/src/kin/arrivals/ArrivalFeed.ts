@@ -51,7 +51,7 @@ export class KinArrivalFeed extends Context.Service<
   {
     /**
      * One read of one mailbox's change record. What it names that is new mail becomes one
-     * arrival, classified by code. Automated notices go through the outside watch's wake path.
+     * arrival, classified by code. Mail watches use the arrivals committed by that read.
      */
     readonly read: (
       orgId: KinOrgId,
@@ -109,7 +109,8 @@ const make = Effect.gen(function* () {
     if (!made) return undefined;
     return {
       arrivalId,
-      look: !elsewhere && classified.class === "automated_notice" ? classified.look : undefined,
+      class: classified.class,
+      look: elsewhere ? undefined : classified.look,
     };
   });
 
@@ -135,7 +136,9 @@ const make = Effect.gen(function* () {
           let rows: ArrivalRows | undefined;
           let connection: Effect.Success<ReturnType<typeof connectionById>>;
           const recorded: Array<string> = [];
-          const notices: Array<Matched> = [];
+          const matches: Array<Matched> = [];
+          let newSenders = 0;
+          let notices = 0;
           for (const [index, result] of reads.entries()) {
             const retried = index >= fresh.length ? parked[index - fresh.length] : undefined;
             const change = fresh[index];
@@ -182,13 +185,23 @@ const make = Effect.gen(function* () {
             });
             if (arrived === undefined) continue;
             recorded.push(arrived.arrivalId);
-            const { look } = arrived;
-            if (
-              look === undefined ||
-              typeof look.by !== "string" ||
-              notices.length >= NEW_SENDERS_PER_POLL
-            )
-              continue;
+            const { class: mailClass, look } = arrived;
+            if (look === undefined || typeof look.by !== "string") continue;
+            switch (mailClass) {
+              case "unknown_person":
+                if (newSenders >= NEW_SENDERS_PER_POLL) continue;
+                newSenders += 1;
+                break;
+              case "automated_notice":
+                if (notices >= NEW_SENDERS_PER_POLL) continue;
+                notices += 1;
+                break;
+              case "client":
+              case "names_money":
+                break;
+              default:
+                continue;
+            }
             connection ??= yield* connectionById(orgId, connectionId);
             if (connection === undefined) continue;
             const mailbox = { account: connection.accountLabel, addresses: found.addresses };
@@ -196,14 +209,15 @@ const make = Effect.gen(function* () {
               ...result.arrival,
               receivedBy: receivedAmong(mailbox, result.arrival.deliveredTo),
             });
-            notices.push({
+            matches.push({
               line: { ...line, matched: look.matched },
               domain: look.by,
+              ...(look.clientId === undefined ? {} : { clientId: look.clientId }),
               arrivalId: arrived.arrivalId,
             });
           }
-          if (notices.length > 0)
-            yield* wakeMatches(orgId, now, notices).pipe(
+          if (matches.length > 0)
+            yield* wakeMatches(orgId, now, matches).pipe(
               Effect.provideService(KinEventQueue, queue),
             );
           if (found.gap !== null)
