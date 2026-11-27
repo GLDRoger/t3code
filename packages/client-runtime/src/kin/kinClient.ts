@@ -1933,6 +1933,15 @@ export function makeKinClient<R, ER>(
       label: "kin:work:update",
       tag: "kin.work.update",
     }),
+    /** Records that this person saw the current version of a task, doc or project. */
+    workLooked: createKinRpcCommand(runtime, {
+      label: "kin:work:looked",
+      tag: "kin.work.looked",
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ input }) => `${input.orgId}:${input.recordId}:${input.upTo}`,
+      },
+    }),
     /** Ticks one of a task's steps, by whoever may change the task. */
     workTickStep: createKinRpcCommand(runtime, {
       label: "kin:work:tickStep",
