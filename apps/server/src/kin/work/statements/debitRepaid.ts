@@ -1,4 +1,5 @@
 import type { KinOrgId } from "@t3tools/contracts";
+import { readOnly } from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -6,18 +7,10 @@ import { homeCurrency } from "../companyProfile.ts";
 import { partnerPayees } from "../partnersOwed.ts";
 import { dayIn } from "../money.ts";
 import { ownerZone } from "../recordRows.ts";
-import type { ListDef } from "../registers.ts";
 import { bankStates, findBankList } from "./bankList.ts";
 import { expenseContests } from "./debitBill.ts";
-import { openEntries } from "./invoiceCredits.ts";
-import {
-  daysBetween,
-  identifies,
-  markedByHand,
-  repayment,
-  SALARIES,
-  suggest,
-} from "./statementMatch.ts";
+import { openEntries, openRepaymentDebits } from "./invoiceCredits.ts";
+import { assignRepaidMarks, identifies, repayment, SALARIES, suggest } from "./statementMatch.ts";
 import { partnerCandidates } from "./statementReview.ts";
 
 type OpenDebit = Effect.Success<ReturnType<typeof openEntries>>[number];
@@ -28,8 +21,7 @@ export const MARKED_REPAID = "Marked repaid";
 /**
  * One unexplained debit naming exactly one partner Kin owes in its currency (whole name or import
  * address). `repays`: the run of their oldest owed expenses adding up to it exactly, else undefined.
- * `marked`: the day the same money was marked repaid within ten days (`markedByHand`), excluding
- * amounts tied to another Bank transactions entry dated more than two days away.
+ * `marked`: the day an individual or total repayment was assigned to this debit.
  */
 export type RepaidMatch = {
   readonly debit: OpenDebit;
@@ -62,25 +54,39 @@ export type RepaidItem = {
 
 const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
   orgId: KinOrgId,
-  def: ListDef,
-  debits: ReadonlyArray<OpenDebit>,
   at: number,
+  target?: string,
 ) {
-  if (debits.length === 0) return [];
+  const def = yield* findBankList(orgId);
+  if (def === undefined) return [];
   const sql = yield* SqlClient.SqlClient;
   const zone = yield* ownerZone(orgId);
   const today = dayIn(at, zone);
   const partners = yield* partnerCandidates(orgId, yield* homeCurrency(orgId), zone);
   if (partners.length === 0) return [];
-  const payees = yield* partnerPayees(orgId);
-  const ownAccounts = (yield* sql<{ account: string }>`SELECT DISTINCT account
-    FROM kin_bank_statements WHERE org_id = ${orgId} AND account IS NOT NULL
-    ORDER BY account`).map((one) => one.account);
+  const { payees, debits, open, ownAccounts } = yield* Effect.gen(function* () {
+    const payees = yield* partnerPayees(orgId);
+    const debits = yield* openEntries(
+      orgId,
+      def,
+      "debit",
+      target === undefined ? undefined : { recordId: target },
+    );
+    if (debits.length === 0) return { payees, debits, open: [], ownAccounts: [] };
+    const open = yield* openRepaymentDebits(orgId, def, payees);
+    const ownAccounts = (yield* sql<{ account: string }>`SELECT DISTINCT account
+      FROM kin_bank_statements WHERE org_id = ${orgId} AND account IS NOT NULL
+      ORDER BY account`).map((one) => one.account);
+    return { payees, debits, open, ownAccounts };
+  }).pipe(sql.withTransaction, readOnly);
+  if (debits.length === 0) return [];
+  const assigned = assignRepaidMarks(open, payees, ownAccounts);
+  const markedById = new Map(open.map((debit) => [debit.recordId, assigned.get(debit.row)?.day]));
   const states = bankStates(def);
   const setBack = new Set(
     (yield* sql<{ recordId: string }>`SELECT DISTINCT c.record_id AS "recordId"
       FROM kin_record_changes c, json_each(c.fields_json) f
-      WHERE c.org_id = ${orgId} AND c.record_id IN ${sql.in(debits.map((one) => one.recordId))}
+      WHERE c.org_id = ${orgId} AND c.record_id IN ${sql.in(debits.map((debit) => debit.recordId))}
         AND c.actor_kind = 'person' AND json_extract(f.value, '$.field') = 'state'
         AND json_extract(f.value, '$.from') = ${states.explained}
         AND json_extract(f.value, '$.to') = ${states.open}
@@ -106,22 +112,7 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
     const [id, name] = only;
     const partner = partners.find((one) => one.id === id && one.currency === debit.currency);
     if (partner === undefined || partner.owed.length === 0) return [];
-    const payee = payees.find((one) => one.id === id);
-    const tiedElsewhere = new Map<string, number>();
-    for (const tied of payee?.tied ?? []) {
-      if (
-        tied.bankRecordId === debit.recordId ||
-        tied.currency !== debit.currency ||
-        Math.abs(daysBetween(tied.bankDay, debit.date)) <= 2
-      )
-        continue;
-      tiedElsewhere.set(tied.day, (tiedElsewhere.get(tied.day) ?? 0) + tied.amountMinor);
-    }
-    const marked = payee?.repaid.find((one) => {
-      if (one.currency !== debit.currency) return false;
-      const amountMinor = one.amountMinor - (tiedElsewhere.get(one.day) ?? 0);
-      return amountMinor !== 0 && markedByHand(debit.row, debit.currency, { ...one, amountMinor });
-    })?.day;
+    const marked = markedById.get(debit.recordId);
     const candidate = repayment(debit.row, partner, 0, true)?.candidate;
     const found = candidate?.repays;
     const repays = found?.flatMap((one) =>
@@ -172,14 +163,12 @@ const matchAll = Effect.fn("KinDebitRepaid.matchAll")(function* (
   });
 });
 
-/** Every unexplained Bank transactions debit that names one partner the company owes, read at `at`. */
+/** Among the newest 200 unexplained debits, those naming one partner the company owes. */
 export const repaidMatches = Effect.fn("KinDebitRepaid.matches")(function* (
   orgId: KinOrgId,
   at: number,
 ) {
-  const def = yield* findBankList(orgId);
-  if (def === undefined) return [];
-  return yield* matchAll(orgId, def, yield* openEntries(orgId, def, "debit", undefined), at);
+  return yield* matchAll(orgId, at);
 });
 
 /** One debit as the matcher reads it now; undefined when it names no one partner Kin owes. */
@@ -188,13 +177,6 @@ export const repaidMatch = Effect.fn("KinDebitRepaid.match")(function* (
   bankRecordId: string,
   at: number,
 ) {
-  const def = yield* findBankList(orgId);
-  if (def === undefined) return undefined;
-  const [match] = yield* matchAll(
-    orgId,
-    def,
-    yield* openEntries(orgId, def, "debit", { recordId: bankRecordId }),
-    at,
-  );
+  const [match] = yield* matchAll(orgId, at, bankRecordId);
   return match;
 });

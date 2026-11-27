@@ -591,8 +591,14 @@ describe("KinImport", () => {
           id: "meera",
           name: "Meera",
           ids: [],
-          repaid: [{ currency: "INR", day: "2026-06-01", amountMinor: 420_000 }],
-          tied: [],
+          repaid: [
+            {
+              currency: "INR",
+              day: "2026-06-01",
+              amountMinor: 420_000,
+              marks: [{ amountMinor: 420_000, bankRecordId: null }],
+            },
+          ],
         },
       ]);
       const owed = yield* partnersOwed(orgId, "INR");
