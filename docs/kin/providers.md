@@ -20,6 +20,8 @@ One descriptor in [`lead/turn/providers/`](../../apps/server/src/kin/lead/turn/p
 - `capabilities`: its names for each built-in Kin knows (shell, files, web, images, sub-agents). One it lacks is left out, and its row in the providers table must list it under `lacks`.
 - `install(base)`: wraps the T3 seam its adapter opens sessions through and applies `KinSessions.plan` to each session it opens. Claude wraps `ClaudeAgentSdkQueryRunner`, Codex `CodexAppServerClientFactory`, and ACP the `AcpSessionShaper` reference. Protocol plumbing stays here, and nothing else does.
 
+Antigravity and the ACP registry share one installed shaper. The adapter supplies the session's driver; an unlisted ACP driver gets the registry plan. Antigravity is dev-only and requires the host's Agents on other providers switch until its native pre-call hook is proven. On Kin owner and confined seats, Kin's instructions replace T3's session system-prompt append when `agy` advertises it, or replace the orchestration block in the prompt otherwise.
+
 Then add a fake to `conformance.test.ts`: a recording stand-in for the provider process that reports what the session got in Kin's words (`conformance.testkit.ts`). The suite runs the same cases on every provider: the owner's chat, a refused turn, a teammate's chat, a delegated task, and a thread that isn't Kin's. A provider with any `limits` must be `devOnly`, so it never reaches a real owner.
 
 ## Adding one

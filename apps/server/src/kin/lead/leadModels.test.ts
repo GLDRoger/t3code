@@ -1,11 +1,18 @@
 import { assert, describe, expect, it } from "@effect/vitest";
-import { ProviderInstanceId, type ServerProvider, ServerSettings } from "@t3tools/contracts";
+import {
+  ProviderDriverKind,
+  ProviderInstanceId,
+  type ServerProvider,
+  ServerSettings,
+} from "@t3tools/contracts";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
 import { matchModel } from "./agentUpdate.ts";
 import {
   chooseLeadModel,
   helperModelRefusal,
+  kinAgentModels,
   kinHelperProviders,
   leadModelProblem,
   leadProviderProblem,
@@ -18,6 +25,7 @@ const settings = Schema.decodeSync(ServerSettings)({
       config: { source: "local", commandPath: "node", commandArgs: ["script-agent.ts"] },
     },
     codex: { driver: "codex" },
+    antigravity: { driver: "antigravity" },
   },
 });
 const on = (instanceId: string) => ({
@@ -33,6 +41,9 @@ describe("leadProviderProblem", () => {
     ["another ACP or Codex instance, even on a dev server", "codex", true, false, true],
     ["Codex, with the host's switch on", "codex", false, true, false],
     ["another ACP instance, even with the switch on", "kinVerifyScript", false, true, true],
+    ["Antigravity, on a dev server with the switch on", "antigravity", true, true, false],
+    ["Antigravity, on a dev server with the switch off", "antigravity", true, false, true],
+    ["Antigravity, off a dev server with the switch on", "antigravity", false, true, true],
   ] as const)("%s", (_name, instanceId, devServer, codex, refused) => {
     expect(
       leadProviderProblem({ ...settings, kinNonClaudeAgents: codex }, on(instanceId), devServer) !==
@@ -67,6 +78,24 @@ const claude = (models: ReadonlyArray<string>, enabled = true) =>
     })),
   }) as unknown as ServerProvider;
 const pick = (model: string) => ({ instanceId: ProviderInstanceId.make("claudeAgent"), model });
+
+it.effect.each([
+  [true, true, true],
+  [false, true, false],
+  [true, false, false],
+] as const)("offers Antigravity models (switch %s, dev %s)", ([enabled, devServer, offered]) =>
+  Effect.sync(() => {
+    const gemini = {
+      ...claude(["invented-neon"]),
+      instanceId: ProviderInstanceId.make("antigravity"),
+      driver: ProviderDriverKind.make("antigravity"),
+    } satisfies ServerProvider;
+    assert.deepStrictEqual(
+      kinAgentModels([gemini], enabled, devServer).map(({ model }) => model.slug),
+      offered ? ["invented-neon"] : [],
+    );
+  }),
+);
 
 describe("chooseLeadModel", () => {
   const providers = [claude(["claude-sonnet-4-6", "claude-haiku-4-5"])];
