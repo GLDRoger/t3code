@@ -2,6 +2,7 @@ import type { KinSettingsPage } from "@t3tools/client-runtime/kin/kinNavigation"
 
 import { KIN_APPROVER_PHONES_TITLE } from "@t3tools/client-runtime/kin/kinApprovalPresentation";
 import { KIN_CHATS_SETTLE } from "@t3tools/client-runtime/kin/kinChatListRows";
+import { KIN_MAIL_RULES } from "@t3tools/client-runtime/kin/kinMailRules";
 import { KIN_MESSAGE_ALERTS } from "@t3tools/client-runtime/kin/kinMessageAlerts";
 import { msg } from "gt-react";
 import {
@@ -124,6 +125,13 @@ export const KIN_SETTINGS_SEARCH_ITEMS = [
     title: "Connections",
     to: "/settings/kin-connections",
     searchTerms: ["kin connected services tools posthog github key agents read"],
+  },
+  {
+    id: "kin-mail-rules",
+    kinOnly: true,
+    title: KIN_MAIL_RULES.allTitle,
+    to: "/settings/kin-connections",
+    searchTerms: ["kin mail rules email inbox mailbox when arrives lead automation"],
   },
   {
     id: "kin-time-zone",

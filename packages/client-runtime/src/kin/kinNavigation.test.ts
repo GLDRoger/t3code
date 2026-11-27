@@ -302,8 +302,19 @@ describe("kinSettingsGroups", () => {
   });
 
   it("keeps the phone's Settings to the day's rows: Company for the owner level, the log for a teammate", () => {
-    // Sections and Deals are the owner level's, for their switches.
-    const owner = ["team", "agents", "company", "sections", "deals", "watches", "host", "stop"];
+    // Sections and Deals are the owner level's, for their switches; mail rules are paused,
+    // resumed and looked into on the day, though a lead proposes each one in chat.
+    const owner = [
+      "team",
+      "agents",
+      "company",
+      "sections",
+      "deals",
+      "watches",
+      "mailRules",
+      "host",
+      "stop",
+    ];
     expect(kinPhoneSettingsRows(ROLES.owner)).toEqual({
       you: ["profile", "notifications", "appearance", "mailbox"],
       company: owner,
