@@ -266,6 +266,7 @@ export class Memory extends Context.Service<
     readonly purgeInFlight: (orgId: KinOrgId) => Effect.Effect<string | undefined, MemoryFailure>;
     /** Bumped whenever a history rewrite drops the checkouts; work staged under an older value is stale. */
     readonly historyGeneration: (orgId: KinOrgId) => Effect.Effect<number>;
+    readonly checkoutPaths: (orgId: KinOrgId) => Effect.Effect<MemoryPaths, MemoryFailure>;
     readonly ensureCheckouts: (orgId: KinOrgId) => Effect.Effect<MemoryPaths, MemoryFailure>;
     /**
      * Validates the writer and swaps in a fresh read checkout, `read`: the waking lead's own
@@ -2163,6 +2164,7 @@ const make = Effect.gen(function* () {
     ),
     anchor,
     record,
+    checkoutPaths: pathsFor,
     ensureCheckouts: Effect.fn("Memory.ensureCheckoutsLocked")((orgId) =>
       locked(orgId, ensureCheckouts(orgId, true)),
     ),

@@ -222,6 +222,7 @@ export const memory = Layer.succeed(
         bodies: new Map(notes.map((head) => [head.path, noteBody])),
       });
     },
+    checkoutPaths: () => Effect.die("Unused"),
     ensureCheckouts: () => Effect.die("Unused"),
     prepareWakeup: () => Effect.die("Unused"),
     readIndex: () => Effect.die("Unused"),
