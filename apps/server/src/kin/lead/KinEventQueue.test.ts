@@ -22,6 +22,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
+import { endOfDay } from "../work/recordRows.ts";
 import * as KinEventQueue from "./KinEventQueue.ts";
 
 const decodeEvent = Schema.decodeUnknownEffect(KinEvent);
@@ -122,6 +123,88 @@ const stored = Effect.fn("test.stored")(function* (
       (SELECT COALESCE(MAX(seq), 0) + 1 FROM kin_messages WHERE chat_id = ${chatId}), 'human',
       ${personId}, (SELECT member_id FROM kin_chat_members WHERE chat_id = ${chatId} AND person_id = ${personId}),
       'member', 'text', 'Invented', '[]', 'posted', '2026-11-07T00:00:00.000Z')`;
+});
+
+const ONE_MINUTE = 60_000;
+// Midnight after New York's 23-hour day (Sunday 8 March 2026) is 04:00 UTC.
+const SHORT_DAY_ENDS = Date.UTC(2026, 2, 9, 4) - 1;
+// An evening's last millisecond near the test clock's start: a jump to 2026 costs seconds.
+const DAY_ENDS = 180 * ONE_MINUTE - 1;
+
+/** A person's own post at the clock's time: a text, or the row a card tap stores. */
+const ownerPosts = Effect.fn("test.ownerPosts")(function* (
+  id: string,
+  kind: "text" | "widget_action",
+  chatId = "chat-lead-a",
+  personId = "person-lead-a",
+) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* stored(id, chatId, personId);
+  const at = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+  yield* sql`UPDATE kin_messages SET kind = ${kind}, created_at = ${at} WHERE message_id = ${id}`;
+});
+
+/** lead-a's check-in held for a pause from `due`, while another lane's turn ("busy") runs. */
+const holdCheckIn = Effect.fn("test.holdCheckIn")(function* (page: {
+  readonly due: number;
+  readonly until: number;
+  readonly dayEndsAt?: number;
+}) {
+  const queue = yield* KinEventQueue.KinEventQueue;
+  const sql = yield* SqlClient.SqlClient;
+  const scheduleId = page.dayEndsAt === undefined ? "checkin-morning" : "checkin-evening";
+  const pulse = {
+    _tag: "pulse",
+    orgId: "a",
+    agentId: "lead-a",
+    receivedAt: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+    provenance: { _tag: "system" },
+  };
+  yield* queue.enqueue(
+    yield* decodeEvent({
+      ...pulse,
+      eventId: "checkin",
+      dedupeKey: `checkin:${scheduleId}:2026-11-01`,
+      factKeys: [],
+      checkIn: { scheduleId, title: "Check-in", what: "Look.", slot: "s" },
+    }),
+    {
+      notBefore: page.due,
+      checkInPause: {
+        until: page.until,
+        ...(page.dayEndsAt === undefined ? {} : { dayEndsAt: page.dayEndsAt }),
+      },
+    },
+  );
+  yield* queue.enqueue(
+    yield* decodeEvent({
+      ...pulse,
+      eventId: "prepare",
+      dedupeKey: "prepare",
+      factKeys: ["quote_unanswered:one:last=1"],
+    }),
+  );
+  yield* TestClock.adjust("20 seconds");
+  assert.deepStrictEqual(
+    (yield* Effect.scoped(queue.claim(input("busy")))).map((entry) => entry.eventId),
+    ["prepare"],
+  );
+  yield* sql`UPDATE kin_wakeups SET run_id = 'run' WHERE wakeup_id = 'busy'`;
+});
+
+/** The next claim and when it returned; every claim here is ready within two seconds. */
+const claimAt = Effect.fn("test.claimAt")(function* (wakeupId: string) {
+  const queue = yield* KinEventQueue.KinEventQueue;
+  const run = yield* Effect.scoped(queue.claim(input(wakeupId))).pipe(
+    Effect.flatMap((events) =>
+      Clock.currentTimeMillis.pipe(
+        Effect.map((at) => ({ at, ids: events.map((entry) => entry.eventId) })),
+      ),
+    ),
+    Effect.forkChild,
+  );
+  yield* TestClock.adjust("2 seconds");
+  return yield* Fiber.join(run);
 });
 
 describe("KinEventQueue", () => {
@@ -801,6 +884,318 @@ describe("KinEventQueue", () => {
       ]);
       yield* finish("second");
     }).pipe(Effect.provide(layer)),
+  );
+
+  // Each row: a held check-in whose hold released while another lane's turn ran, and the owner's
+  // `posts` (a `text` is a line with no event); who goes first once that turn ends.
+  it.effect.each([
+    {
+      name: "gives a message from inside the hold the first turn after the cap",
+      due: 15 * ONE_MINUTE,
+      posts: [{ id: "ask", at: 65 * ONE_MINUTE, kind: "message" }],
+      claimAt: 77 * ONE_MINUTE,
+      first: "ask",
+    },
+    {
+      name: "gives a card tap made inside the hold an earlier line began the first turn",
+      due: 15 * ONE_MINUTE,
+      posts: [
+        { id: "said", at: 10 * ONE_MINUTE, kind: "text" },
+        { id: "tap", at: 17 * ONE_MINUTE, kind: "tap" },
+      ],
+      claimAt: 23 * ONE_MINUTE,
+      first: "tap",
+    },
+    {
+      name: "runs before a card tap made after an earlier line's pause ended",
+      due: 15 * ONE_MINUTE,
+      posts: [
+        { id: "said", at: 10 * ONE_MINUTE, kind: "text" },
+        { id: "tap", at: 21 * ONE_MINUTE, kind: "tap" },
+      ],
+      claimAt: 23 * ONE_MINUTE,
+      first: "checkin",
+    },
+    {
+      name: "counts a pause ending on the evening's last millisecond",
+      due: DAY_ENDS - 30 * ONE_MINUTE + 1,
+      dayEndsAt: DAY_ENDS,
+      posts: [{ id: "ask", at: DAY_ENDS - 10 * ONE_MINUTE, kind: "message" }],
+      claimAt: DAY_ENDS,
+      first: "ask",
+    },
+    {
+      name: "keeps its minute when the pause ends a millisecond into the next day",
+      due: DAY_ENDS - 30 * ONE_MINUTE + 1,
+      dayEndsAt: DAY_ENDS,
+      posts: [{ id: "ask", at: DAY_ENDS - 10 * ONE_MINUTE + 1, kind: "message" }],
+      claimAt: DAY_ENDS + 1,
+      first: "checkin",
+    },
+    {
+      name: "keeps its minute once moved past its day",
+      due: DAY_ENDS + 5 * ONE_MINUTE,
+      until: DAY_ENDS + 30 * ONE_MINUTE,
+      dayEndsAt: DAY_ENDS,
+      posts: [{ id: "ask", at: DAY_ENDS + 6 * ONE_MINUTE, kind: "message" }],
+      claimAt: DAY_ENDS + 8 * ONE_MINUTE,
+      first: "checkin",
+    },
+  ])("a check-in released during another lane's turn $name", (row) =>
+    Effect.gen(function* () {
+      yield* seed();
+      const queue = yield* KinEventQueue.KinEventQueue;
+      // The queue reads only the stored last millisecond; checkIn.ts takes it from endOfDay.
+      assert.strictEqual(endOfDay("2026-03-08", "America/New_York"), SHORT_DAY_ENDS);
+      yield* TestClock.setTime(row.due - 10 * ONE_MINUTE);
+      yield* holdCheckIn({
+        due: row.due,
+        until: row.until ?? row.due + 60 * ONE_MINUTE,
+        ...(row.dayEndsAt === undefined ? {} : { dayEndsAt: row.dayEndsAt }),
+      });
+      for (const post of row.posts) {
+        yield* TestClock.setTime(post.at);
+        yield* ownerPosts(post.id, post.kind === "tap" ? "widget_action" : "text");
+        if (post.kind !== "text")
+          yield* queue.enqueue(
+            yield* event(post.id, post.kind === "tap" ? "widget.action" : "chat.message"),
+          );
+      }
+      yield* TestClock.setTime(row.claimAt);
+      yield* finish("busy");
+      assert.deepStrictEqual(yield* claimAt("first"), { at: row.claimAt, ids: [row.first] });
+      yield* finish("first");
+      const asked = row.posts.find((post) => post.kind !== "text")!.id;
+      assert.deepStrictEqual((yield* claimAt("second")).ids, [
+        row.first === "checkin" ? asked : "checkin",
+      ]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a steady stream of the owner's messages holds a check-in no later than its cap and two turns",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const sql = yield* SqlClient.SqlClient;
+        const due = 15 * ONE_MINUTE;
+        const until = due + 60 * ONE_MINUTE;
+        yield* TestClock.setTime(due - 10 * ONE_MINUTE);
+        yield* holdCheckIn({ due, until });
+        // A message every minute from the check-in's minute for 90 minutes; each turn takes 90
+        // seconds, so one is always waiting when the next turn is claimed.
+        let next = due;
+        const postThrough = Effect.fn("test.postThrough")(function* (through: number) {
+          for (; next <= through && next <= due + 90 * ONE_MINUTE; next += ONE_MINUTE) {
+            yield* TestClock.setTime(next);
+            yield* ownerPosts(`m-${next / ONE_MINUTE}`, "text");
+            yield* queue.enqueue(yield* event(`m-${next / ONE_MINUTE}`, "chat.message"));
+          }
+        });
+        yield* postThrough(due);
+        yield* finish("busy");
+        const turns: Array<{ at: number; ids: ReadonlyArray<string> }> = [];
+        let turn = 0;
+        while (
+          (yield* sql<{
+            n: number;
+          }>`SELECT COUNT(*) AS n FROM kin_events WHERE state = 'queued'`)[0]!.n > 0
+        ) {
+          const claimed = yield* claimAt(`t-${turn}`);
+          turns.push(claimed);
+          yield* postThrough(claimed.at + 90_000);
+          yield* TestClock.setTime(Math.max(claimed.at + 90_000, yield* Clock.currentTimeMillis));
+          yield* finish(`t-${turn++}`);
+        }
+        const page = turns.findIndex((entry) => entry.ids.includes("checkin"));
+        assert.deepStrictEqual(turns[page]!.ids, ["checkin"]);
+        assert.isAtMost(turns[page]!.at, until + 2 * (90_000 + ONE_MINUTE));
+        // Every message claimed before it was received inside its hold or rode with one that was.
+        const before = turns.slice(0, page).flatMap((entry) => entry.ids);
+        assert.isTrue(
+          before.every((id) => Number(id.slice(2)) * ONE_MINUTE <= until + 2 * ONE_MINUTE),
+        );
+        assert.isTrue(turns.slice(page + 1).every((entry) => !entry.ids.includes("checkin")));
+      }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("another agent's messages neither wait for a held check-in nor move its pause", () =>
+    Effect.gen(function* () {
+      yield* seed();
+      yield* seed("a", "lead-b");
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const due = 15 * ONE_MINUTE;
+      yield* TestClock.setTime(due - 10 * ONE_MINUTE);
+      yield* holdCheckIn({ due, until: due + 60 * ONE_MINUTE });
+      // The owner's last line in their own chat pauses the check-in until 17 minutes.
+      yield* TestClock.setTime(due - 8 * ONE_MINUTE);
+      yield* ownerPosts("said", "text");
+      // The same person's text in lead-b's chat, and lead-b's owner asking lead-b.
+      yield* TestClock.setTime(due + ONE_MINUTE);
+      yield* ownerPosts("elsewhere", "text", "chat-lead-b");
+      yield* ownerPosts("b-ask", "text", "chat-lead-b", "person-lead-b");
+      yield* queue.enqueue(yield* event("b-ask", "chat.message", "a", "lead-b"));
+      const other = yield* Effect.scoped(queue.claim(input("b-turn", "a", "lead-b"))).pipe(
+        Effect.flatMap((events) =>
+          Clock.currentTimeMillis.pipe(
+            Effect.map((at) => ({ at, ids: events.map((entry) => entry.eventId) })),
+          ),
+        ),
+        Effect.forkChild,
+      );
+      yield* TestClock.adjust("2 seconds");
+      // Its own owner burst only: it never waits on lead-a.
+      assert.deepStrictEqual(yield* Fiber.join(other), {
+        at: due + ONE_MINUTE + 300,
+        ids: ["b-ask"],
+      });
+      yield* TestClock.setTime(due + 3 * ONE_MINUTE);
+      yield* ownerPosts("tap", "widget_action");
+      yield* queue.enqueue(yield* event("tap", "widget.action"));
+      yield* TestClock.setTime(due + 5 * ONE_MINUTE);
+      yield* finish("busy");
+      assert.deepStrictEqual((yield* claimAt("first")).ids, ["checkin"]);
+      yield* finish("first");
+      assert.deepStrictEqual((yield* claimAt("second")).ids, ["tap"]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a restart mid-hold or mid-claim runs the waiting message, then the check-in, each once",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const sql = yield* SqlClient.SqlClient;
+        const due = 15 * ONE_MINUTE;
+        const orgId = KinOrgId.make("a");
+        yield* TestClock.setTime(due - 10 * ONE_MINUTE);
+        yield* holdCheckIn({ due, until: due + 60 * ONE_MINUTE });
+        yield* TestClock.setTime(due + 30_000);
+        yield* ownerPosts("ask", "text");
+        yield* queue.enqueue(yield* event("ask", "chat.message"));
+        yield* TestClock.setTime(due + 11 * ONE_MINUTE);
+        // Restart while the other lane's turn ran: start-up recovery puts it back.
+        yield* Effect.gen(function* () {
+          const restarted = yield* KinEventQueue.KinEventQueue;
+          assert.strictEqual(
+            yield* restarted.requeueUnfinished(orgId, KinWakeupId.make("busy")),
+            1,
+          );
+          assert.deepStrictEqual(
+            (yield* Effect.scoped(restarted.claim(input("claimed")))).map((e) => e.eventId),
+            ["ask"],
+          );
+        }).pipe(Effect.provide(KinEventQueue.layer));
+        // Restart again before that turn's run started.
+        yield* Effect.gen(function* () {
+          const restarted = yield* KinEventQueue.KinEventQueue;
+          assert.strictEqual(
+            yield* restarted.requeueUnfinished(orgId, KinWakeupId.make("claimed")),
+            1,
+          );
+          const ids = (id: string) =>
+            Effect.scoped(restarted.claim(input(id))).pipe(
+              Effect.map((events) => events.map((entry) => entry.eventId)),
+            );
+          assert.deepStrictEqual(yield* ids("again"), ["ask"]);
+          yield* restarted.finish({
+            orgId,
+            wakeupId: KinWakeupId.make("again"),
+            status: "completed",
+          });
+          assert.deepStrictEqual(yield* ids("page"), ["checkin"]);
+          yield* restarted.finish({
+            orgId,
+            wakeupId: KinWakeupId.make("page"),
+            status: "completed",
+          });
+          assert.deepStrictEqual(yield* ids("rest"), ["prepare"]);
+          yield* restarted.finish({
+            orgId,
+            wakeupId: KinWakeupId.make("rest"),
+            status: "completed",
+          });
+        }).pipe(Effect.provide(KinEventQueue.layer));
+        assert.deepStrictEqual(
+          yield* sql`SELECT event_id, state, wakeup_id FROM kin_events ORDER BY event_id`,
+          [
+            { event_id: "ask", state: "done", wakeup_id: "again" },
+            { event_id: "checkin", state: "done", wakeup_id: "page" },
+            { event_id: "prepare", state: "done", wakeup_id: "rest" },
+          ],
+        );
+      }).pipe(Effect.provide(layer)),
+  );
+
+  // Who shares a turn with whom when a held check-in has every other kind beside it in the owner's lane.
+  it.effect.each([
+    {
+      name: "a card tap from before its minute",
+      post: { id: "tap", at: 7 * ONE_MINUTE, kind: "tap" },
+      claimAt: 16 * ONE_MINUTE,
+      turns: [["tap", "remind", "mail", "push"], ["checkin"]],
+    },
+    {
+      name: "a message waiting at its release",
+      post: { id: "ask", at: 15 * ONE_MINUTE + 30_000, kind: "message" },
+      claimAt: 26 * ONE_MINUTE,
+      turns: [["ask", "remind", "mail", "push"], ["checkin"]],
+    },
+    {
+      name: "only a message after its cap",
+      post: { id: "ask", at: 76 * ONE_MINUTE, kind: "message" },
+      claimAt: 77 * ONE_MINUTE,
+      turns: [["remind", "checkin", "mail", "push"], ["ask"]],
+    },
+  ])(
+    "a held check-in beside a reminder, mail and GitHub, with $name",
+    ({ post, claimAt: at, turns }) =>
+      Effect.gen(function* () {
+        yield* seed();
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const due = 15 * ONE_MINUTE;
+        yield* TestClock.setTime(due - 10 * ONE_MINUTE);
+        yield* holdCheckIn({ due, until: due + 60 * ONE_MINUTE });
+        yield* TestClock.setTime(due - 9 * ONE_MINUTE);
+        yield* queue.enqueue(yield* event("remind", "deferral.due"));
+        yield* queue.enqueue(yield* event("push"));
+        yield* queue.enqueue(
+          yield* decodeEvent({
+            _tag: "pulse",
+            eventId: "mail",
+            orgId: "a",
+            agentId: "lead-a",
+            receivedAt: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
+            dedupeKey: "mail",
+            provenance: { _tag: "system" },
+            factKeys: [],
+            outside: [
+              {
+                source: "mail",
+                connection: "Google",
+                id: "t-1",
+                thread: "t-1",
+                at: "Mon, 16 Nov 2026 10:41:00 +0000",
+                who: "arjun@tidewater.example",
+                subject: "Invented quote",
+                where: null,
+              },
+            ],
+          }),
+        );
+        yield* TestClock.setTime(post.at);
+        yield* ownerPosts(post.id, post.kind === "tap" ? "widget_action" : "text");
+        yield* queue.enqueue(
+          yield* event(post.id, post.kind === "tap" ? "widget.action" : "chat.message"),
+        );
+        yield* TestClock.setTime(at);
+        yield* finish("busy");
+        assert.deepStrictEqual((yield* claimAt("one")).ids, turns[0]);
+        yield* finish("one");
+        assert.deepStrictEqual((yield* claimAt("two")).ids, turns[1]);
+      }).pipe(Effect.provide(layer)),
   );
 
   it.effect(
