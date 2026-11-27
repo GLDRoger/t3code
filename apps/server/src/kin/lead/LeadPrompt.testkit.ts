@@ -114,6 +114,17 @@ const dueItems = new Map([
   ["rem", reminder],
   ["rem-marked", markedReminder],
 ]);
+dueItems.set("def-8b64eb64-9d23-4e37-98f5-2c62223ec5d3", {
+  head: decodeHead({
+    ...reminder.head,
+    id: "def-8b64eb64-9d23-4e37-98f5-2c62223ec5d3",
+    title: "Prepare the dispatch update",
+    chat: "fixture-chat",
+    for_chat: true,
+    source_event: "da64eb64-9d23-4e37-98f5-2c62223ec5d3:event-8d64eb64-9d23-4e37-98f5-2c62223ec5d3",
+  }),
+  body: reminder.body,
+});
 const roomReminder = decodeHead({
   ...task("rem-room", "owner").head,
   title: "Invented room reminder",
