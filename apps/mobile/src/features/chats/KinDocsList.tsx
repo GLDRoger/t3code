@@ -391,7 +391,9 @@ export function KinSearchHits(props: {
               )}
             </View>
             <Text textRole="footnote" className="text-foreground-muted">
-              {[props.docsOnly ? null : hit.kindLabel, hit.closed].filter(Boolean).join(" · ")}
+              {[props.docsOnly ? null : hit.kindLabel, hit.identifier, hit.closed]
+                .filter(Boolean)
+                .join(" · ")}
             </Text>
           </Pressable>
           <View className="ml-5 h-px bg-border-subtle" />

@@ -284,9 +284,9 @@ export function KinSearchHits(props: {
                 {hit.closed}
               </Badge>
             )}
-            {props.docsOnly ? null : (
-              <span className="shrink-0 text-xs text-muted-foreground">{hit.kindLabel}</span>
-            )}
+            <span className="shrink-0 text-xs text-muted-foreground">
+              {[props.docsOnly ? null : hit.kindLabel, hit.identifier].filter(Boolean).join(" · ")}
+            </span>
           </button>
         </li>
       ))}
