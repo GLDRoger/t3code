@@ -101,6 +101,8 @@ const hasReference = (text: string, reference: string) =>
 
 const endingsIn = (text: string) => [...text.matchAll(ENDING)].map((m) => m[1]!.slice(-4));
 
+export const printedAccountEndings = (text: string) => new Set(endingsIn(text));
+
 export const verifyBankAlert = (
   text: string,
   read: AlertProposal,
