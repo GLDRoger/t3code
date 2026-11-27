@@ -24,6 +24,7 @@ import * as ArrivalStore from "../arrivals/ArrivalStore.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as Chat from "../chat/layer.ts";
+import { KinDeferralGithubReader } from "../triggers/deferralGithub.ts";
 import { deliverHeld } from "../triggers/heldDelivery.ts";
 import { reholdAfter } from "../triggers/quietHold.ts";
 import { holderBody } from "./holderNotice.ts";
@@ -50,6 +51,7 @@ import {
   PROPOSE_PLAN,
   PROPOSE_STEP,
 } from "./draftWake.ts";
+import { RoutineHasNowState } from "./nowState.ts";
 import { buildPulseSection } from "./prompt.ts";
 import { screenFacts } from "./people.ts";
 import { factSig, markTold, untold } from "./told.ts";
@@ -527,6 +529,56 @@ describe("KinPulse", () => {
       const next = (yield* read(at + DAY)).facts.filter((fact) => fact.key === company.key);
       assert.lengthOf(next, 1);
       assert.isEmpty(yield* untold({ ...told, at: at + DAY, facts: next }));
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("an afternoon check-in has live state while an ordinary pulse turn has none", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_people SET access = 'owner' WHERE org_id = ${orgId} AND person_id = ${owner}`;
+      const input = { orgId, agentId: chief, now: Date.parse("2026-11-09T15:00:00Z"), wokeFor: [] };
+      assert.isUndefined(yield* buildPulseSection({ ...input, checkIn: new Set() }));
+      yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
+          auth, reach, state, account_label, created_at, updated_at, person_id)
+        VALUES (${orgId}, 'accounts', 'google', 'Accounts', 'builtin', 'gmail.googleapis.com',
+          'oauth', 'closed', 'active', 'accounts@tidewater.example', 0, 0, NULL)`;
+      yield* sql`UPDATE kin_people SET access = 'member' WHERE org_id = ${orgId} AND person_id = ${owner}`;
+      assert.isUndefined(yield* buildPulseSection({ ...input, checkIn: new Set() }));
+      yield* sql`UPDATE kin_people SET access = 'owner' WHERE org_id = ${orgId} AND person_id = ${owner}`;
+      const quiet = yield* buildPulseSection({ ...input, checkIn: new Set() });
+      assert.deepStrictEqual(quiet?.now, {
+        at: "Mon 9 Nov, 15:00",
+        lines: ["Accounts (accounts@tidewater.example): signed in"],
+      });
+
+      yield* sql`INSERT INTO kin_record_links (org_id, record_id, kind, target, relation, created_at)
+        VALUES (${orgId}, 'r-W-5', 'pull_request', 'https://github.com/tidewater/app/pull/41', 'relates', 0),
+               (${orgId}, 'r-W-8', 'pull_request', 'https://github.com/tidewater/app/pull/45', 'relates', 0)`;
+      const [shown] = keyed((yield* read(input.now)).facts, "theirs_late", "W-5");
+      assert.isDefined(shown);
+      const section = buildPulseSection({ ...input, checkIn: new Set([shown.key]) });
+      const afternoon = yield* section.pipe(
+        Effect.provideService(KinDeferralGithubReader, {
+          readRepo: (_org, _repo, numbers) =>
+            Effect.sync(() => {
+              assert.deepStrictEqual(numbers, [41]);
+              return new Map([
+                [41, { state: "merged", author: "zoya-dev", assignees: [], linkedPrs: [] }],
+              ]);
+            }),
+        }),
+      );
+      assert.deepStrictEqual(afternoon?.now?.lines, [
+        "Accounts (accounts@tidewater.example): signed in",
+        "tidewater/app#41 by zoya-dev: merged",
+      ]);
+      const morningPulse = yield* section.pipe(Effect.provideService(RoutineHasNowState, true));
+      assert.deepStrictEqual(morningPulse?.byProject, afternoon?.byProject);
+      assert.notProperty(morningPulse, "now");
+      const ordinary = yield* buildPulseSection({ ...input, wokeFor: [shown.key] });
+      assert.isDefined(ordinary);
+      assert.notProperty(ordinary, "now");
     }).pipe(Effect.provide(layer)),
   );
 
