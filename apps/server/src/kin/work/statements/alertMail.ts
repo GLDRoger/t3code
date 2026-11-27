@@ -28,6 +28,7 @@ import {
   type ApprovedSender,
 } from "./bankSenderRows.ts";
 import { candidateGate, type CandidateHint } from "./bankAlertCandidates.ts";
+import { senderDmarcPassed } from "./bankAlertMailReading.ts";
 
 /**
  * A connection's new mail, as the pulse reads it, checked for bank alerts: a thread whose sender
@@ -70,7 +71,10 @@ export const takeAlertMail = Effect.fn("KinBankAlerts.mail")(function* (
     if (newest < now - (approved ? ALERT_RETRY_WINDOW : HELD_ALERT_WINDOW)) continue;
     if (
       !approved &&
-      (!Number.isFinite(newest) || newest > now || candidates.size >= CANDIDATE_THREADS)
+      (!Number.isFinite(newest) ||
+        newest > now ||
+        candidates.size >= CANDIDATE_THREADS ||
+        !senderDmarcPassed(mail.authResults ?? [], address))
     )
       continue;
     const hint = approved

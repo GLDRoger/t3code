@@ -10,7 +10,8 @@ const rejected = (reason: AlertRejection): AlertReading => ({ _tag: "rejected", 
  * Only the topmost `Authentication-Results`, the one the receiving server added: a sender can
  * write its own lower down. It must say DMARC passed for the sender's own domain.
  */
-const vouched = (results: ReadonlyArray<string>, domain: string) => {
+export const senderDmarcPassed = (results: ReadonlyArray<string>, address: string) => {
+  const domain = address.slice(address.lastIndexOf("@") + 1);
   const top = (results[0] ?? "").toLowerCase();
   const dmarc = /\bdmarc=(\w+)[^;]*?\bheader\.from=([a-z0-9.-]+)/.exec(top);
   return dmarc !== null && dmarc[1] === "pass" && dmarc[2] === domain;
@@ -22,7 +23,7 @@ export const authenticationRejection = (
 ): "sender" | "unverified" | undefined =>
   /^\s*(?:re|fwd?)\s*:/i.test(mail.subject)
     ? "sender"
-    : vouched(mail.authResults, address.slice(address.lastIndexOf("@") + 1))
+    : senderDmarcPassed(mail.authResults, address)
       ? undefined
       : "unverified";
 
