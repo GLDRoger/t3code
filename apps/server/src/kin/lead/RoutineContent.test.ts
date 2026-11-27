@@ -822,6 +822,45 @@ it.effect(
     ),
 );
 
+it.effect(
+  "a server-written morning brief keeps its waiting message whole and reads no live state",
+  () =>
+    withFixture(
+      [],
+      Effect.gen(function* () {
+        const whole = "Pick the Tidewater launch day.\n\nReview the copy.\n\nApprove the design.";
+        const result = yield* runRoutine(
+          routine("brief-waiting", "morning_brief"),
+          Effect.gen(function* () {
+            const sql = yield* SqlClient.SqlClient;
+            yield* (yield* Chat.KinChatService).notice({
+              audience: "chat",
+              orgId,
+              chatId: KinChatId.make("owner-chat"),
+              messageId: KinMessageId.make("needs-owner"),
+              body: whole,
+            });
+            yield* sql`INSERT INTO kin_waiting (waiting_id, org_id, person_id, chat_id, message_id, reason, created_at)
+            VALUES ('waiting-owner', ${orgId}, 'owner', 'owner-chat', 'needs-owner', 'question', ${timestamp})`;
+            yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
+              auth, reach, state, account_label, created_at, updated_at, person_id)
+            VALUES (${orgId}, 'accounts', 'google', 'Accounts', 'builtin', 'gmail.googleapis.com',
+              'oauth', 'closed', 'active', 'accounts@tidewater.example', 0, 0, NULL)`;
+          }).pipe(Effect.orDie),
+        );
+        const card = decodeCard(result.widgets[0]?.state);
+        const waiting = card.rows.filter((row) => row.section === "waiting");
+        assert.deepStrictEqual(
+          waiting.map((row) => row.title),
+          ["Pick the Tidewater launch day. Review the copy. Approve the design."],
+        );
+        assert.notInclude(JSON.stringify(result.widgets), "written");
+        assert.notInclude(JSON.stringify(result.messages), "accounts@tidewater.example");
+      }),
+      { linkReader: { readRepo: () => Effect.die("a server-written brief read live state") } },
+    ),
+);
+
 it.effect("caps a crowded brief at twelve lines and keeps every row on the card", () =>
   withFixture(
     Array.from({ length: 15 }, (_, index) => {
