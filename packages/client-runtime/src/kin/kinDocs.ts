@@ -1444,11 +1444,13 @@ export function kinSearchHit(hit: KinSearchHit, shell?: KinShell | null): KinSea
       : { id: hit.section.id, title: hit.section.title };
   const closed = !hit.closed ? null : hit.kind === "docs" ? KIN_DOCS.archived : "Closed";
   const kindLabel =
-    hit.kind === "work" && kinIsDealKey(hit.key)
-      ? "Deal"
-      : hit.kind === "clients"
-        ? kinSectionNamed(shell, KIND_LABEL.clients)
-        : KIND_LABEL[hit.kind];
+    hit.bankTransaction === true
+      ? "Bank transaction"
+      : hit.kind === "work" && kinIsDealKey(hit.key)
+        ? "Deal"
+        : hit.kind === "clients"
+          ? kinSectionNamed(shell, KIND_LABEL.clients)
+          : KIND_LABEL[hit.kind];
   return {
     id: `${hit.recordId}:${hit.section?.id ?? ""}`,
     key: hit.key,
