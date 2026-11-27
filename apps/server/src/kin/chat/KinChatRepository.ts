@@ -61,6 +61,7 @@ import { viewVersionVisible } from "../work/teamView.ts";
 import { encodeNames, linkAccessStamp, nameKeys, nameThreads, withLinks } from "./messageLinks.ts";
 import { messageForViewer } from "./messageView.ts";
 import { dismissedArrivalSql } from "./arrivalNotes.ts";
+import { keySentSql } from "./keySent.ts";
 import { chatShared, readableBy, readableFrom, recordJoin } from "./sharing.ts";
 import { accessSql } from "../people/KinAccess.ts";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -398,6 +399,23 @@ const ordinaryTurnAskSql = `kin_messages.author_kind = 'agent'
  AND NOT EXISTS (SELECT 1 FROM kin_widgets w, json_each(w.state_json, '$.options') o
    WHERE w.org_id = kin_messages.org_id AND w.widget_id = kin_messages.widget_id
      AND w.type = 'choice' AND json_type(w.state_json, o.fullkey || '.action') = 'object')`;
+
+export const latestOwnTextAtSql = (
+  sql: SqlClient.SqlClient,
+  scope: {
+    readonly orgId: Statement.Fragment;
+    readonly chatId: Statement.Fragment;
+    readonly personId: Statement.Fragment;
+  },
+  since: string,
+  through: string,
+) => sql`SELECT created_at FROM kin_messages
+    WHERE org_id = ${scope.orgId} AND chat_id = ${scope.chatId} AND author_person_id = ${scope.personId}
+      AND author_kind = 'human' AND kind = 'text' AND status = 'posted' AND origin_json IS NULL
+      AND NOT ${sql.literal(keySentSql("client_message_id"))}
+      AND created_at > ${since} AND created_at <= ${through}
+    ORDER BY created_at DESC LIMIT 1`;
+
 const messageColumns = `org_id AS "orgId", chat_id AS "chatId", message_id AS "messageId", seq AS "seq", change_seq AS "changeSeq", client_message_id AS "storedClientMessageId", author_role AS "authorRole", kind AS "kind", body AS "body", attachments_json AS "storedAttachments", refs_json AS "storedRefs", form AS "storedForm", embeds_json AS "storedEmbeds", intent AS "intent", mentions_json AS "mentions", reply_to AS "replyTo", widget_id AS "widgetId", floor_run_id AS "floorRunId", status AS "status", sent_by AS "sentBy", created_at AS "createdAt", edited_at AS "editedAt", discussion_id AS "storedDiscussionId", (SELECT 1 - final FROM kin_discussions d WHERE d.org_id = kin_messages.org_id AND d.discussion_id = kin_messages.discussion_id) AS "storedDiscussionOpen", relay_json AS "storedRelay", origin_json AS "storedOrigin", when_json AS "storedWhen", withdrawn_json AS "storedWithdrawn", lapsed_question_json AS "storedLapsedQuestion", CASE author_kind WHEN 'human' THEN json_object('_tag', 'human', 'personId', author_person_id, 'memberId', author_member_id)
  WHEN 'agent' THEN json_object('_tag', 'agent', 'agentId', author_agent_id, 'memberId', author_member_id,
  'ownerPersonId', author_owner_person_id, 'threadId', author_thread_id)

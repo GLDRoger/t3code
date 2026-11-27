@@ -589,9 +589,9 @@ describe("KinEventQueue", () => {
     }).pipe(Effect.provide(layer)),
   );
 
-  it.effect(
-    "the morning page is a turn of its own: it waits one turn for a message, which neither joins nor steers into it",
-    () =>
+  it.effect.each(["checkin-morning", "checkin-evening"])(
+    "the %s page is a turn of its own: it waits one turn for a message, which neither joins nor steers into it",
+    (scheduleId) =>
       Effect.gen(function* () {
         yield* seed();
         const queue = yield* KinEventQueue.KinEventQueue;
@@ -607,10 +607,10 @@ describe("KinEventQueue", () => {
             orgId: "a",
             agentId: "lead-a",
             receivedAt: DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis)),
-            dedupeKey: "checkin:checkin-morning:2026-11-09",
+            dedupeKey: `checkin:${scheduleId}:2026-11-09`,
             provenance: { _tag: "system" },
             factKeys: [],
-            checkIn: { scheduleId: "checkin-morning", title: "Morning", what: "Look.", slot: "s" },
+            checkIn: { scheduleId, title: "Check-in", what: "Look.", slot: "s" },
           }),
         );
         yield* queue.enqueue(yield* message("owner-ask"));
@@ -633,6 +633,149 @@ describe("KinEventQueue", () => {
           "owner-more",
           "owner-again",
         ]);
+      }).pipe(Effect.provide(layer)),
+  );
+
+  // A check-in that enqueue gave a pause waits out the owner's own text in the owner chat; every
+  // other event is claimed at `COALESCE(not_before, queued_at)` as before, whoever is talking.
+  it.effect.each([
+    { tag: "chat.message", held: false },
+    { tag: "widget.action", held: false },
+    { tag: "github", held: false },
+    { tag: "routine", held: false },
+    { tag: "record.changed", held: false },
+    { tag: "pulse", held: false },
+    { tag: "pulse", held: true },
+  ])("owner talk holds only a paused check-in: $tag held $held", ({ tag, held }) =>
+    Effect.gen(function* () {
+      yield* seed();
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const sql = yield* SqlClient.SqlClient;
+      const MINUTE = 60_000;
+      const due = 5 * MINUTE;
+      const base =
+        tag === "pulse"
+          ? yield* decodeEvent({
+              _tag: "pulse",
+              eventId: "checkin",
+              orgId: "a",
+              agentId: "lead-a",
+              receivedAt: DateTime.formatIso(DateTime.makeUnsafe(0)),
+              dedupeKey: "checkin:checkin-evening:2026-11-09",
+              provenance: { _tag: "system" },
+              factKeys: [],
+              checkIn: {
+                scheduleId: "checkin-evening",
+                title: "Evening",
+                what: "Sum up.",
+                slot: "s",
+              },
+            })
+          : yield* event(`e-${tag}`, tag);
+      yield* queue.enqueue(base, {
+        notBefore: due,
+        ...(held ? { checkInPause: { until: due + 60 * MINUTE } } : {}),
+      });
+      yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+        VALUES ('talk', 'a', 'chat-lead-a', 99, 'human', 'person-lead-a', 'member-lead-a', 'member',
+          'text', 'Invented', '[]', 'posted', ${DateTime.formatIso(DateTime.makeUnsafe(due - MINUTE))})`;
+      const run = yield* Effect.scoped(
+        queue
+          .claim(input("turn"))
+          .pipe(
+            Effect.flatMap((events) =>
+              Clock.currentTimeMillis.pipe(Effect.map((at) => ({ at, events }))),
+            ),
+          ),
+      ).pipe(Effect.forkChild);
+      yield* TestClock.adjust(due + 20 * MINUTE);
+      const { at, events } = yield* Fiber.join(run);
+      assert.strictEqual(at, held ? due + 9 * MINUTE : due);
+      assert.deepStrictEqual(
+        events.map((entry) => entry.eventId),
+        [base.eventId],
+      );
+      // The pause stays a queue column in all but name: the agent's event never carries it.
+      assert.notProperty(events[0], "_checkInPause");
+      assert.deepStrictEqual(
+        yield* sql`SELECT json_extract(json, '$._checkInPause.until') AS until FROM kin_events`,
+        [{ until: held ? due + 60 * MINUTE : null }],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect(
+    "a retry or quiet-hours move keeps a check-in's pause cap: held within it, never past it, run once",
+    () =>
+      Effect.gen(function* () {
+        yield* seed();
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const sql = yield* SqlClient.SqlClient;
+        const MINUTE = 60_000;
+        const talk = (id: string, at: number) =>
+          sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+            author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+          VALUES (${id}, 'a', 'chat-lead-a', (SELECT COALESCE(MAX(seq), 0) + 1 FROM kin_messages),
+            'human', 'person-lead-a', 'member-lead-a', 'member', 'text', 'Invented', '[]', 'posted',
+            ${DateTime.formatIso(DateTime.makeUnsafe(at))})`;
+        const claimAt = (id: string) =>
+          Effect.scoped(
+            queue
+              .claim(input(id))
+              .pipe(
+                Effect.flatMap((events) =>
+                  Clock.currentTimeMillis.pipe(
+                    Effect.map((at) => ({ at, ids: events.map((entry) => entry.eventId) })),
+                  ),
+                ),
+              ),
+          ).pipe(Effect.forkChild);
+        yield* queue.enqueue(
+          yield* decodeEvent({
+            _tag: "pulse",
+            eventId: "checkin",
+            orgId: "a",
+            agentId: "lead-a",
+            receivedAt: DateTime.formatIso(DateTime.makeUnsafe(0)),
+            dedupeKey: "checkin:checkin-morning:2026-11-09",
+            provenance: { _tag: "system" },
+            factKeys: [],
+            checkIn: { scheduleId: "checkin-morning", title: "Morning", what: "Look.", slot: "s" },
+          }),
+          { checkInPause: { until: 60 * MINUTE } },
+        );
+        yield* TestClock.adjust(3 * MINUTE);
+        const first = yield* claimAt("first");
+        yield* TestClock.adjust(MINUTE);
+        assert.deepStrictEqual(yield* Fiber.join(first), { at: 3 * MINUTE, ids: ["checkin"] });
+        // A failed start goes back with a later `not_before`; the owner writes just before it.
+        yield* queue.release({
+          orgId: KinOrgId.make("a"),
+          wakeupId: KinWakeupId.make("first"),
+          countAttempt: true,
+          notBefore: 30 * MINUTE,
+        });
+        yield* talk("before-retry", 29 * MINUTE);
+        const retry = yield* claimAt("retry");
+        yield* TestClock.adjust(40 * MINUTE);
+        assert.deepStrictEqual(yield* Fiber.join(retry), { at: 39 * MINUTE, ids: ["checkin"] });
+        // Moved past its cap: it runs at its new minute, live talk or not.
+        yield* queue.release({
+          orgId: KinOrgId.make("a"),
+          wakeupId: KinWakeupId.make("retry"),
+          countAttempt: true,
+          notBefore: 90 * MINUTE,
+        });
+        yield* talk("past-cap", 89 * MINUTE);
+        const late = yield* claimAt("late");
+        yield* TestClock.adjust(60 * MINUTE);
+        assert.deepStrictEqual(yield* Fiber.join(late), { at: 90 * MINUTE, ids: ["checkin"] });
+        yield* finish("late");
+        assert.deepStrictEqual(
+          yield* sql`SELECT state, attempts FROM kin_events WHERE event_id = 'checkin'`,
+          [{ state: "done", attempts: 2 }],
+        );
       }).pipe(Effect.provide(layer)),
   );
 
