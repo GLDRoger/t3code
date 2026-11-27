@@ -129,10 +129,13 @@ export const KIN_MAIL_RULES = {
     atLimit: "At its limit",
     paused: "Paused",
     changed: "Won't run",
+    held: "Held",
     proposed: "Not on yet",
     removed: "Removed",
   },
   heldUntil: (day: string) => `Held until ${day}: its monthly limit.`,
+  setterDemoted: (setter: string) =>
+    `Held: ${setter === "" ? "the person who set it up" : setter} turned this on and is no longer an owner or co-owner. An owner or co-owner can turn it on again.`,
   pausedWhy: {
     person: "Paused by the owner or a co-owner.",
     left: (setter: string) =>
@@ -284,6 +287,13 @@ export function kinMailRuleState(
   if (state === "removed")
     return { label: copy.states.removed, tone: "quiet", detail: null, needsLead: false };
   if (state === "on") {
+    if (rule.setterDemoted === true)
+      return {
+        label: copy.states.held,
+        tone: "attention",
+        detail: copy.setterDemoted(rule.setterName.trim()),
+        needsLead: false,
+      };
     if (!rule.atLimit) return { label: copy.states.on, tone: "ok", detail: null, needsLead: false };
     return {
       label: copy.states.atLimit,
@@ -466,7 +476,8 @@ export function kinMailRuleActions(
   can: KinMailRulePermissions,
 ): KinMailRuleActions {
   const sound = !rule.wordingChanged && rule.match !== null;
-  const runnable = rule.state === "on" || rule.state === "paused";
+  const runnable =
+    (rule.state === "on" && rule.setterDemoted !== true) || rule.state === "paused";
   return {
     open: can.ready,
     pause: can.pause && rule.state === "on",

@@ -230,6 +230,36 @@ describe("kinMailRuleState: the state → sentence table", () => {
       },
     ],
     [
+      { setterDemoted: true, setterName: "Meera" },
+      {
+        label: "Held",
+        tone: "attention",
+        detail:
+          "Held: Meera turned this on and is no longer an owner or co-owner. An owner or co-owner can turn it on again.",
+        needsLead: false,
+      },
+    ],
+    [
+      { setterDemoted: true, setterName: "Meera", atLimit: true, fired: 30 },
+      {
+        label: "Held",
+        tone: "attention",
+        detail:
+          "Held: Meera turned this on and is no longer an owner or co-owner. An owner or co-owner can turn it on again.",
+        needsLead: false,
+      },
+    ],
+    [
+      { setterDemoted: true, setterName: " " },
+      {
+        label: "Held",
+        tone: "attention",
+        detail:
+          "Held: the person who set it up turned this on and is no longer an owner or co-owner. An owner or co-owner can turn it on again.",
+        needsLead: false,
+      },
+    ],
+    [
       { state: "proposed" },
       {
         label: "Not on yet",
@@ -463,6 +493,18 @@ describe("mail rule permissions: owner level sees and acts, a teammate sees noth
         remove: true,
         open: true,
         runNow: true,
+        preview: true,
+        history: true,
+      },
+    ],
+    [
+      { setterDemoted: true as const },
+      {
+        pause: true,
+        resume: false,
+        remove: true,
+        open: true,
+        runNow: false,
         preview: true,
         history: true,
       },
