@@ -193,6 +193,8 @@ type Gates = {
   file?: Effect.Effect<void>;
   send?: () => Promise<void>;
   calendarDelete?: (url: URL) => void;
+  fakeNow?: () => number;
+  mailResponse?: (request: URL, method: string | undefined, response: Response) => Response;
   /** Where a move holds, under its fence, as it keeps the sign-in for the new row. */
   keep?: Effect.Effect<void>;
 };
@@ -238,7 +240,8 @@ const layerFor = (fake: FakeMail, cards: Array<Card>, gates: Gates = {}) =>
                 if (method === "DELETE" && url.includes("/events/"))
                   gates.calendarDelete?.(new URL(url));
                 if (gates.send !== undefined && url.endsWith("/messages/send")) await gates.send();
-                return handle(input, init);
+                const response = await handle(input, init);
+                return gates.mailResponse?.(new URL(url), method, response) ?? response;
               }) as typeof handle)(
               fake.handle(() => Promise.reject(new Error("Only the fake mailbox answers here."))),
             ),
@@ -465,7 +468,11 @@ const setUp = <E>(
   body: (fake: FakeMail, cards: Array<Card>, gates: Gates) => Effect.Effect<void, E, Env>,
 ) =>
   Effect.gen(function* () {
-    const fake = makeFakeMail();
+    const gates: Gates = {};
+    const fake = makeFakeMail(
+      undefined,
+      () => gates.fakeNow?.() ?? DateTime.toEpochMillis(DateTime.nowUnsafe()),
+    );
     fake.addAccount({
       provider: "google",
       address: ACCOUNTS,
@@ -474,7 +481,6 @@ const setUp = <E>(
     });
     fake.addAccount({ provider: "microsoft", address: HELLO, name: "Invented Co" });
     const cards: Array<Card> = [];
-    const gates: Gates = {};
     yield* Effect.gen(function* () {
       yield* TestClock.setTime(NOW);
       yield* seed;
@@ -792,6 +798,228 @@ const voiceItem = (
     ...head,
   },
   body,
+});
+
+describe("looking in Sent after an unknown send", () => {
+  const mail = {
+    to: ["meera@tidewater.example", "zoya@tidewater.example"],
+    cc: ["rhea@tidewater.example"],
+    subject: "Tidewater Freight",
+    body: "The freight quote is ready.",
+  };
+  const since = NOW - 60_000;
+  const match = {
+    sentAt: since,
+    to: ["RHEA@TIDEWATER.EXAMPLE", "zoya@tidewater.example"],
+    cc: ["MEERA@tidewater.example", "zoya@tidewater.example"],
+    subject: "  TIDEWATER FREIGHT  ",
+  };
+  it.effect.each([
+    { name: "matches case, order and duplicate addresses", message: match, expected: true },
+    {
+      name: "rejects an extra Cc",
+      message: { ...match, cc: [...match.cc, "arjun@tidewater.example"] },
+      expected: false,
+    },
+    {
+      name: "rejects a changed subject",
+      message: { ...match, subject: "Tidewater invoice" },
+      expected: false,
+    },
+    {
+      name: "rejects mail before the window",
+      message: { ...match, sentAt: since - 1 },
+      expected: false,
+    },
+  ])("$name", ({ message, expected }) =>
+    Effect.sync(() =>
+      assert.strictEqual(Connections.matchesSentMail(mail, since, message), expected),
+    ),
+  );
+
+  it.effect.each([
+    { provider: "google", account: ACCOUNTS, outcome: "found" },
+    { provider: "microsoft", account: HELLO, outcome: "found" },
+    { provider: "google", account: ACCOUNTS, outcome: "missing" },
+    { provider: "microsoft", account: HELLO, outcome: "missing" },
+    { provider: "google", account: ACCOUNTS, outcome: "unreadable" },
+    { provider: "google", account: ACCOUNTS, outcome: "timing" },
+  ] as const)("$provider Sent look: $outcome", ({ provider, account, outcome }) =>
+    setUp((fake, cards, gates) =>
+      Effect.gen(function* () {
+        yield* connect(fake, provider, account);
+        gates.fakeNow = () => NOW;
+        const otherMailbox = "zoya@tidewater.example";
+        const sameMailElsewhere = outcome === "missing" && provider === "google";
+        if (sameMailElsewhere) {
+          fake.addAccount({ provider, address: otherMailbox, name: "Zoya" });
+          yield* connect(fake, provider, otherMailbox);
+          yield* wake({
+            person: owner,
+            says: "Send the quote from the Tidewater Freight mailbox.",
+          });
+          yield* callTool(otherMailbox, "mail_send", mail);
+          assert.deepStrictEqual(yield* tap(cards.at(-1)!.widgetId, owner), {
+            state: "sent",
+            reason: null,
+          });
+        }
+        yield* wake({ person: owner, says: "Send the quote to Tidewater Freight." });
+        yield* callTool(account, "mail_send", mail);
+        const first = cards.at(-1)!;
+        if (outcome === "found") {
+          yield* stored(first);
+          yield* saveEdited(first, owner, 1, { ...mail, subject: "Tidewater Freight quote" });
+        }
+        const connections = yield* KinConnections;
+        const sql = yield* SqlClient.SqlClient;
+        const rewrite = (yield* saveCards).rewrite;
+        const reads: Array<URL> = [];
+        const metadata: Array<URL> = [];
+        const tick = () => connections.lookInSent(orgId, rewrite);
+        let loseAnswer = outcome === "found";
+        gates.mailResponse = (url, method, response) => {
+          if (
+            url.pathname.endsWith("/mailFolders/sentitems/messages") ||
+            url.searchParams.get("labelIds") === "SENT"
+          )
+            reads.push(url);
+          if (url.searchParams.get("format") === "metadata") metadata.push(url);
+          if (loseAnswer && method === "POST" && url.pathname.endsWith("/send") && response.ok) {
+            loseAnswer = false;
+            return new Response(null, { status: 503 });
+          }
+          return response;
+        };
+        yield* tick();
+        assert.lengthOf(reads, 0);
+        fake.setDown(account, outcome !== "found");
+        const failed = yield* tap(first.widgetId, owner);
+        fake.setDown(account, false);
+        if (failed === undefined || !("state" in failed) || failed.fresh === undefined)
+          return assert.fail("Expected an unknown send and a fresh card");
+        const originalCount = outcome === "found" || sameMailElsewhere ? 1 : 0;
+        assert.lengthOf(fake.sent(), originalCount);
+        const tried = yield* tryOn(first.widgetId);
+        const retry = yield* connections.freshAsk(orgId, failed.fresh, NOW);
+        if (retry === undefined) return assert.fail("Expected a fresh card");
+        assert.deepStrictEqual(retry.card.send.mayHaveGone, tried);
+        const again = {
+          ...first,
+          widgetId: "w-00000000-0000-4000-8000-000000000068",
+          send: retry.card.send,
+        };
+        yield* retry.bind(again.widgetId);
+        yield* stored(again);
+        const result = sql<{ result: string }>`SELECT result_json AS result
+            FROM kin_connection_asks WHERE ask_id = ${tried.tryId}`.pipe(
+          Effect.map(([row]) => JSON.parse(row!.result)),
+        );
+        const shown = sql<{ state: string }>`SELECT state_json AS state
+            FROM kin_widgets WHERE widget_id = ${again.widgetId}`.pipe(
+          Effect.map(([row]) => JSON.parse(row!.state).send.mayHaveGone),
+        );
+        yield* TestClock.adjust(299_999);
+        yield* tick();
+        assert.lengthOf(reads, 0);
+        assert.deepStrictEqual(yield* result, { mayHaveGone: true });
+        yield* TestClock.adjust(1);
+        if (outcome === "timing") {
+          const tooOld = NOW + 300_000 - 7 * 86_400_000 - 1;
+          yield* sql`UPDATE kin_connection_asks SET done_at = ${tooOld} WHERE ask_id = ${tried.tryId}`;
+          yield* tick();
+          assert.lengthOf(reads, 0);
+          yield* sql`UPDATE kin_connection_asks SET done_at = ${NOW} WHERE ask_id = ${tried.tryId}`;
+          const redrawing = yield* Deferred.make<void>();
+          const interrupted = yield* connections
+            .lookInSent(orgId, () =>
+              Deferred.succeed(redrawing, undefined).pipe(Effect.andThen(Effect.never)),
+            )
+            .pipe(Effect.forkChild);
+          yield* Deferred.await(redrawing);
+          yield* Fiber.interrupt(interrupted);
+          assert.deepStrictEqual(yield* result, { mayHaveGone: true });
+          assert.lengthOf(reads, 1);
+          reads.length = 0;
+        }
+        if (outcome === "unreadable") fake.failWith(account, 403);
+        yield* tick();
+        fake.failWith(account, null);
+        const at = DateTime.formatIso(DateTime.makeUnsafe(NOW + 300_000));
+        const found = outcome === "found" ? tried.at : null;
+        assert.deepStrictEqual(yield* result, {
+          mayHaveGone: true,
+          sentLook: outcome === "unreadable" ? { at, unreadable: true } : { at, found },
+        });
+        assert.lengthOf(reads, 1);
+        const query = reads[0]!.searchParams;
+        if (provider === "google") {
+          assert.deepInclude(Object.fromEntries(query), {
+            labelIds: "SENT",
+            q: `after:${since / 1000 - 1}`,
+            maxResults: "25",
+          });
+          assert.lengthOf(metadata, outcome === "found" ? 1 : 0);
+          if (outcome === "found") {
+            assert.deepStrictEqual(metadata[0]!.searchParams.getAll("metadataHeaders"), [
+              "To",
+              "Cc",
+              "Subject",
+              "Date",
+            ]);
+            assert.strictEqual(
+              metadata[0]!.searchParams.get("fields"),
+              "internalDate,payload(headers)",
+            );
+          }
+        } else {
+          assert.deepStrictEqual(Object.fromEntries(query), {
+            $filter: `sentDateTime ge ${DateTime.formatIso(DateTime.makeUnsafe(since))}`,
+            $select: "subject,toRecipients,ccRecipients,sentDateTime",
+            $orderby: "sentDateTime desc",
+            $top: "25",
+          });
+        }
+        assert.lengthOf(fake.sent(), originalCount);
+        yield* tick();
+        assert.lengthOf(reads, 1);
+        if (outcome === "found" || outcome === "unreadable") {
+          const warning = found === null ? tried : { ...tried, seenInSentAt: found };
+          assert.deepStrictEqual(yield* shown, warning);
+          const refused = yield* tap(again.widgetId, owner).pipe(Effect.flip);
+          assert.deepInclude(refused, {
+            message: NOT_CHECKED,
+            ...(found === null ? {} : { mayHaveGone: warning }),
+          });
+          if (found !== null) {
+            const edited = yield* sendEdited(
+              cards,
+              again,
+              owner,
+              { ...mail, body: "The revised freight quote is ready." },
+              "00000000-0000-4000-8000-000000000068",
+              2,
+            ).pipe(Effect.flip);
+            assert.deepInclude(edited, { message: NOT_CHECKED, mayHaveGone: warning });
+          }
+          assert.lengthOf(fake.sent(), originalCount);
+          assert.deepStrictEqual(yield* tap(again.widgetId, owner, true, tried), {
+            state: "sent",
+            reason: null,
+          });
+        } else {
+          assert.isUndefined(yield* shown);
+          assert.deepStrictEqual(yield* tap(again.widgetId, owner), {
+            state: "sent",
+            reason: null,
+          });
+        }
+        const duplicate = yield* tap(again.widgetId, owner).pipe(Effect.flip);
+        assert.strictEqual(duplicate.reason, "widget_changed");
+        assert.lengthOf(fake.sent(), originalCount + 1);
+      }),
+    ),
+  );
 });
 
 describe("Mail tool results with the sender's memory", () => {

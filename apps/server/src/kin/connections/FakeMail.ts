@@ -224,7 +224,7 @@ const parseMime = (raw: string) => {
 
 const sizeOf = (file: FakeMailFile) => Buffer.from(file.data, "base64").length;
 
-export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
+export const makeFakeMail = (store: FakeMailStore = memoryStore(), now = Date.now) => {
   const edit = <A>(change: (state: FakeMailState) => A) => {
     const state = store.load();
     const result = change(state);
@@ -392,7 +392,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       cc: mail.cc,
       subject: mail.subject,
       // Sent now, and after anything already in the box so threads keep their order.
-      at: Math.max(Date.now(), ...state.messages.map((one) => one.at + 1)),
+      at: Math.max(now(), ...state.messages.map((one) => one.at + 1)),
       messageId: `<${id}@${account.address.split("@")[1]}>`,
       inReplyTo: mail.inReplyTo,
       references: mail.references,
@@ -650,6 +650,19 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
               data: Buffer.from(file.data, "base64").toString("base64url"),
             });
       }
+      if (path === `${GMAIL}/messages` && request.method === "GET") {
+        const after = Number(/after:(\d+)/.exec(url.searchParams.get("q") ?? "")?.[1] ?? 0);
+        const sentOnly = url.searchParams.get("labelIds") === "SENT";
+        const found = mine
+          .filter((one) => (!sentOnly || one.sent) && one.at > after * 1000)
+          .toSorted((a, b) => b.at - a.at);
+        const page = pageOf(found, url.searchParams.get("maxResults"), null);
+        return json({
+          resultSizeEstimate: found.length,
+          messages: page.items.map(({ id, threadId }) => ({ id, threadId })),
+          ...(page.next === undefined ? {} : { nextPageToken: page.next }),
+        });
+      }
       const single = /^\/gmail\/v1\/users\/me\/messages\/([^/]+)$/.exec(path)?.[1];
       if (single !== undefined && request.method === "GET") {
         const one = mine.find((message) => message.id === decodeURIComponent(single));
@@ -666,6 +679,8 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
             value: (one.files ?? []).length === 0 ? "text/plain" : "multipart/mixed; boundary=x",
           },
         ].filter((header) => asked.size === 0 || asked.has(lower(header.name)));
+        if (url.searchParams.get("fields") === "internalDate,payload(headers)")
+          return json({ internalDate: String(one.at), payload: { headers } });
         return json({
           id: one.id,
           threadId: one.threadId,
@@ -827,6 +842,21 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
             ...account.aliases.map((alias) => `smtp:${alias}`),
           ],
         });
+      if (path === `${GRAPH}/mailFolders/sentitems/messages` && request.method === "GET") {
+        const since = odata(filter, "sentDateTime");
+        const found = mine.filter(
+          (one) => one.sent && (since === undefined || iso(one.at) >= since),
+        );
+        const page = pageOf(found, url.searchParams.get("$top"), null);
+        return json({
+          value: page.items.map((one) => ({
+            subject: one.subject,
+            toRecipients: one.to.map(who),
+            ccRecipients: one.cc.map(who),
+            sentDateTime: iso(one.at),
+          })),
+        });
+      }
       if (path === `${GRAPH}/mailFolders/inbox/messages`) {
         const since = odata(filter, "receivedDateTime");
         const found = mine.filter(

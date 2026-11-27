@@ -1,3 +1,5 @@
+import { KinWidgetId } from "@t3tools/contracts";
+import * as Scheduler from "../scheduling/Scheduler.ts";
 import * as MailRules from "./arrivals/KinMailRules.ts";
 import { TaskCardIndex } from "./widgets/taskCard.ts";
 import { KinChatRepository } from "./chat/KinChatRepository.ts";
@@ -153,6 +155,17 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
         ),
         Effect.forkIn(scope),
       );
+      const connections = yield* Connections.KinConnections;
+      yield* (yield* Scheduler.Scheduler).register(
+        "kin-sent-look",
+        connections.lookInSent(owner.orgId, (card) =>
+          chat.setSendCard({
+            ...card,
+            orgId: owner.orgId,
+            widgetId: KinWidgetId.make(card.widgetId),
+          }),
+        ),
+      );
       const updaterServices = yield* Effect.context<
         KinChatRepository | TaskCardIndex | KinChatHub | SqlClient.SqlClient
       >();
@@ -260,6 +273,7 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           ),
       ),
     ),
+    Layer.provide(Scheduler.layer),
     // Everything Kin builds above reads the time from here: a play-test's moved clock in dev.
     Layer.provide(DevClock.layer),
     // Inside `enabled`: built only with Kin on, and a secret store failure disables Kin, not the server.
