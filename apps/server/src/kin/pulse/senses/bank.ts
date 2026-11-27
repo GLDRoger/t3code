@@ -1,4 +1,11 @@
-import { formatKinMoney, formatKinWhen, KIN_TEXT_LOCALE, KinRecordId } from "@t3tools/contracts";
+import {
+  formatKinMoney,
+  formatKinWhen,
+  KIN_CHOICE_CARD_TTL_MS,
+  KIN_TEXT_LOCALE,
+  type KinPulseFact,
+  KinRecordId,
+} from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -6,6 +13,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { invoiceCandidates } from "../../work/statements/statementReview.ts";
 import { dayIn, formatMoney, formatMoneyPlain, monthOf, shiftMonth } from "../../work/money.ts";
 import { endOfDay, owedInvoices, recordName, startOfDay } from "../../work/recordRows.ts";
+import { BANK_SENDER_RULE, liveHeldMail } from "../../work/statements/bankSenderRows.ts";
 import { bankKnown, shortDay } from "../../work/statements/bankKnown.ts";
 import { UNREAD_ALERT_MARKER } from "../../work/statements/bankAlerts.ts";
 import { billMatches, billPaidFactKey } from "../../work/statements/debitBill.ts";
@@ -50,6 +58,49 @@ const shiftDay = (day: string, days: number) =>
 const lastDayOf = (month: string) => shiftDay(`${shiftMonth(month, 1)}-01`, -1);
 
 export const UNREADABLE_BANK_ALERTS_KEY = "bank_alerts_unreadable";
+export const BANK_SENDER_WAITING = "bank_sender_waiting";
+
+export const bankBriefLine = (fact: Pick<KinPulseFact, "sense" | "consequence" | "subject">) =>
+  fact.sense === BANK_SENDER_WAITING
+    ? fact.consequence
+    : fact.sense === UNREADABLE_BANK_ALERTS_KEY
+      ? `${fact.subject.title}. ${fact.consequence}`
+      : undefined;
+
+export const bankSenderWaiting = Effect.fn("KinPulse.bankSenderWaiting")(function* (
+  ctx: Pick<SenseContext, "orgId" | "at">,
+) {
+  const { orgId, at } = ctx;
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql<{ address: string; bankName: string; postedAt: number }>`
+    SELECT s.address, s.bank_name AS "bankName", MAX(r.posted_at) AS "postedAt"
+    FROM kin_recommendations r JOIN kin_bank_senders s
+      ON s.org_id = r.org_id AND s.address = r.subject AND s.state = 'candidate'
+    WHERE r.org_id = ${orgId} AND r.rule = ${BANK_SENDER_RULE} AND r.state = 'open'
+      AND r.ended_at IS NULL AND r.posted_at > ${at - KIN_CHOICE_CARD_TTL_MS} AND r.posted_at <= ${at}
+    GROUP BY s.address ORDER BY s.address`;
+  if (rows.length === 0) return [];
+  const held = Map.groupBy(yield* liveHeldMail(orgId, at), (row) => row.address);
+  return rows.flatMap(({ address, bankName, postedAt }): ReadonlyArray<SensedFact> => {
+    const count = held.get(address)?.reduce((total, row) => total + row.count, 0) ?? 0;
+    if (count === 0) return [];
+    const key = `${BANK_SENDER_WAITING}:${address}`;
+    return [
+      {
+        sense: BANK_SENDER_WAITING,
+        key,
+        family: "money",
+        subject: { kind: "bank", key: address, title: address },
+        scope: {},
+        since: iso(postedAt),
+        consequence: `Kin is holding ${count} mail${count === 1 ? "" : "s"} from ${address} until you say whether it is ${bankName}'s alert address.`,
+        actor: { _tag: "owner" },
+        sensitive: true,
+        wake: "brief",
+      },
+    ];
+  });
+});
 
 export const unreadableBankAlerts = Effect.fn("KinPulse.unreadableBankAlerts")(function* (
   ctx: Pick<SenseContext, "orgId" | "at" | "zone">,

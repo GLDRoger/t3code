@@ -31,6 +31,7 @@ import {
   repaidSeenSenses,
   statementSenses,
   unreadableBankAlerts,
+  bankSenderWaiting,
 } from "./bank.ts";
 import {
   agentOrOwner,
@@ -474,5 +475,6 @@ export const moneySenses = Effect.fn("KinPulse.moneySenses")(function* (ctx: Sen
   facts.push(...(yield* billPaidSeenSenses(ctx)));
   const unreadable = yield* unreadableBankAlerts(ctx, ctx.finance);
   if (unreadable !== undefined) facts.push(unreadable);
+  facts.push(...(yield* bankSenderWaiting(ctx)));
   return facts;
 });

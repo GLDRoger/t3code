@@ -1,8 +1,10 @@
 import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
-import { kinSecretsTest } from "../lead/layer.testkit.ts";
+import { kinHostDependencies, kinSecretsTest } from "../lead/layer.testkit.ts";
 import { assert, it } from "@effect/vitest";
 import {
   AuthSessionId,
+  KinOrgId,
+  KinBankSenderRpcs,
   AuthStandardClientScopes,
   KinAgentId,
   KinConnectionId,
@@ -16,13 +18,15 @@ import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Deferred from "effect/Deferred";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as RpcGroup from "effect/rpc/RpcGroup";
+import * as RpcTest from "effect/rpc/RpcTest";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
-import type { OrchestratorV2 } from "../../orchestration-v2/Orchestrator.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -30,13 +34,21 @@ import { subscribeRefreshes } from "../chat/refreshes.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
-import type { Services } from "../KinServer.ts";
 import * as Handoff from "../lead/Handoff.ts";
+import { makeKinHandlers } from "../rpcHandlers.ts";
+import { KinRecords } from "../work/KinRecords.ts";
+import { newCompanyProfileJson } from "../work/companyProfile.ts";
+import { MAIL_TOOL, type MailMessage } from "../connections/MailProvider.ts";
+import { takeAlertMail } from "../work/statements/alertMail.ts";
+import * as BankSenders from "../work/statements/bankSenders.ts";
+import { BankAlertReader } from "../work/statements/BankAlertReader.ts";
+import { fixtureBankAlertReader } from "../work/statements/bankAlerts.testkit.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
 import { KinBudget } from "../lead/KinBudget.ts";
 import * as LeadProvision from "../lead/KinLeadProvision.ts";
 import * as KinOpen from "../open/KinOpen.ts";
 import type { RecommendPlan } from "../widgets/cardPlans.ts";
+import { bankSenderCopy } from "./bankSenderCopy.ts";
 import { runRecommend } from "./card.ts";
 import * as KinRecommend from "./KinRecommend.ts";
 import { ruleContext } from "./ledger.ts";
@@ -112,16 +124,16 @@ const setup = Effect.gen(function* () {
   const meera = { _tag: "person" as const, orgId, personId: "meera" as KinPersonId };
   const devId = "dev" as KinPersonId;
   const direct = yield* chats.createDirect(meera, { orgId, agentId: chief });
-  yield* TestClock.setTime(START);
+  if ((yield* Clock.currentTimeMillis) === 0) yield* TestClock.setTime(START);
   return { services, sql, orgId, owner, chats, chiefChat, meera, devId, direct: direct.chatId };
 });
 type Ctx = Effect.Success<typeof setup>;
 
-const run = <A, E>(
+const run = <A, E, R>(
   test: (input: {
     readonly ctx: Ctx;
     readonly handoff: Handoff.KinHandoff["Service"];
-  }) => Effect.Effect<A, E, SqlClient.SqlClient | OrchestratorV2 | Services>,
+  }) => Effect.Effect<A, E, R>,
 ) =>
   Effect.gen(function* () {
     const ctx = yield* setup;
@@ -1380,5 +1392,356 @@ it.effect(
         }
         assert.strictEqual(yield* declines(ctx), 0);
       }),
+    ),
+);
+
+const harborAddress = "notices@harborbank.example";
+const siblingAddress = "alerts@harborbank.example";
+const mailTime = "2026-11-24T09:00:00Z";
+const BANK_NOW = Date.parse("2026-11-24T10:00:00Z");
+const runBank = <A, E, R>(test: Parameters<typeof run<A, E, R>>[0]) =>
+  Effect.andThen(TestClock.setTime(BANK_NOW), run(test));
+
+const forwardBankMail = Effect.fn("RecommendTest.forwardBankMail")(function* (
+  ctx: Ctx,
+  endings: string,
+  known: string | null,
+  copies = 1,
+) {
+  yield* idle(ctx);
+  yield* ctx.sql`UPDATE kin_orgs SET name = 'Tidewater Freight' WHERE org_id = ${ctx.orgId}`;
+  yield* ctx.sql`INSERT INTO kin_company_profile
+      (org_id, profile_json, rev, updated_at, updated_by_kind, updated_by_id)
+    VALUES (${ctx.orgId}, json_set(json_remove(${yield* newCompanyProfileJson}, '$.countryPending'),
+      '$.bank.bankName', 'Harbor Bank', '$.bank.accountNumber', ${known}),
+      1, 0, 'person', ${ctx.owner.personId})`;
+  yield* ctx.sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
+      auth, reach, state, account_label, created_at, updated_at)
+    VALUES (${ctx.orgId}, 'accounts', 'google', 'Accounts', 'builtin', 'invented.example',
+      'oauth', 'closed', 'active', 'ops@tidewater.example', 0, 0)`;
+  for (const tool of [MAIL_TOOL.list, MAIL_TOOL.read])
+    yield* ctx.sql`INSERT INTO kin_connection_tools (org_id, connection_id, tool_name,
+      definition_json, pin_digest, mode, suggested_mode, open_world, first_seen_at)
+      VALUES (${ctx.orgId}, 'accounts', ${tool}, '{}', 'digest', 'read', 'read', 0, ${BANK_NOW})`;
+  const mail: MailMessage = {
+    threadId: "alert-thread",
+    from: `A display name the card must not show <${harborAddress}>`,
+    fromAddress: harborAddress,
+    to: [],
+    replyTo: [],
+    toLine: null,
+    ccLine: null,
+    deliveredTo: [],
+    date: mailTime,
+    subject: "A mail subject the card must not show",
+    preview: "",
+    unread: true,
+    messageId: "<invented@harborbank.example>",
+    references: null,
+    authResults: ["mx.tidewater.example; dmarc=pass header.from=harborbank.example"],
+    body: {
+      text: `INR 1,250.00 has been credited to account **4821 on 24-11-2026. UTR No: INVENTED1. ${endings}`,
+      attachments: [],
+    },
+  };
+  const messages = Array.from({ length: copies }, (_, index) => ({
+    ...mail,
+    messageId: `<invented-${index}@harborbank.example>`,
+  }));
+  const connections = { readThread: () => Effect.succeed(messages) };
+  const pass = takeAlertMail(connections, ctx.orgId, {
+    _tag: "mail",
+    connectionId: KinConnectionId.make("accounts"),
+    account: "ops@tidewater.example",
+    since: 0,
+    until: BANK_NOW,
+    cursor: null,
+    calendar: [],
+    mail: [{ ...mail, receivedBy: null }],
+  }).pipe(Effect.provideService(BankAlertReader, fixtureBankAlertReader));
+  yield* pass;
+  assert.include((yield* BankSenders.list(ctx.orgId))[0], {
+    state: "candidate",
+    seenCount: copies,
+  });
+  return { pass, mail, connections };
+});
+
+it.effect.each([
+  {
+    name: "normal",
+    known: "00004821",
+    endings: "",
+    phrase: "mention the account ending 4821",
+    gives: "about the account ending 4821",
+    yes: true,
+    copies: 3,
+  },
+  {
+    name: "look-alike",
+    known: "00004821",
+    endings: "",
+    phrase: "mention the account ending 4821",
+    gives: "about the account ending 4821",
+    sibling: true,
+  },
+  {
+    name: "no company ending",
+    known: null,
+    endings: "",
+    phrase: "mention an account ending 4821",
+    gives: "about that account",
+  },
+  {
+    name: "multiple endings",
+    known: "00004821",
+    endings: "**7310",
+    phrase: "mention the accounts ending 4821 and 7310",
+    gives: "about the account ending 4821",
+    multiple: true,
+  },
+] as const)("bank sender card ($name) offers only the endings it shows", (variant) =>
+  runBank(({ ctx }) =>
+    Effect.gen(function* () {
+      const copies = "copies" in variant ? variant.copies : 1;
+      const { pass, mail } = yield* forwardBankMail(ctx, variant.endings, variant.known, copies);
+      if (copies === 3) {
+        yield* ctx.sql`UPDATE kin_bank_senders SET seen_count = 9
+          WHERE org_id = ${ctx.orgId} AND address = ${harborAddress}`;
+        yield* ctx.sql`INSERT INTO kin_bank_alerts
+          (org_id, alert_id, connection_id, thread_id, sent_at, seen_at, outcome, sender_address, account)
+          VALUES (${ctx.orgId}, 'older-alert', 'accounts', 'older-thread',
+            ${BANK_NOW - 31 * DAY}, ${BANK_NOW - 31 * DAY}, 'held', ${harborAddress}, '0950')`;
+      }
+      if ("sibling" in variant)
+        yield* BankSenders.add(ctx.orgId, ctx.owner.personId, {
+          address: siblingAddress,
+          bankName: "Harbor Bank",
+          accounts: ["4821"],
+        });
+      const posted = yield* tick(ctx);
+      assert.strictEqual(posted._tag, "posted", "a verified candidate must get a card");
+      if (posted._tag !== "posted") return;
+      const [card] = yield* cards(ctx);
+      assert.strictEqual(
+        card!.state.question,
+        `Count alerts from ${harborAddress} as Harbor Bank's?`,
+      );
+      assert.deepStrictEqual(
+        card!.state.options.map((option) => option.label),
+        ["Yes, it's Harbor Bank", "No"],
+      );
+      assert.strictEqual(
+        card!.state.detail.replace(/\s+/g, " "),
+        [
+          copies === 3
+            ? `Kin has had 3 mails from ${harborAddress} in the Tidewater Freight mailbox ops@tidewater.example since 24 Nov. The mail server that received them confirmed they were sent by harborbank.example. Kin noticed this address because it matches Harbor Bank, the bank in Company details, and the mails mention the account ending 4821.`
+            : `Kin has had 1 mail from ${harborAddress} in the Tidewater Freight mailbox ops@tidewater.example since 24 Nov. The mail server that received it confirmed it was sent by harborbank.example. Kin noticed this address because it matches Harbor Bank, the bank in Company details, and the mail ${variant.phrase.replace("mention", "mentions")}.`,
+          ...("sibling" in variant
+            ? [
+                `Kin already counts Harbor Bank's alerts from ${siblingAddress}. This is a different address.`,
+              ]
+            : []),
+          `If you say yes, each alert from this address ${variant.gives} becomes a Bank transaction, marked Unexplained, and the ${copies === 3 ? "3 mails already here are" : "1 mail already here is"} added. Nothing is marked paid without you.`,
+          ...("multiple" in variant
+            ? [
+                "Kin won't count alerts about accounts ending 7310 unless you add that account in Settings.",
+              ]
+            : []),
+          "Say yes only if you know Harbor Bank sends alerts from exactly this address. Anyone can set up an address that looks like a bank's.",
+        ].join(" "),
+      );
+      assert.notInclude(card!.state.detail, mail.subject);
+      assert.notInclude(card!.state.detail, "A display name the card must not show");
+      assert.include(yield* tick(ctx), { _tag: "skipped", why: "card_open" });
+      assert.lengthOf(yield* cards(ctx), 1);
+      if ("yes" in variant) {
+        const error = yield* coOwnerTaps(ctx, posted.widgetId, "option-1");
+        assert.include(error, { reason: "not_allowed" });
+        assert.include((yield* BankSenders.list(ctx.orgId))[0], { state: "candidate" });
+        yield* tap(ctx, posted.widgetId, "option-1");
+        assert.deepStrictEqual(yield* outcomeOf(ctx), {
+          title: "Done",
+          text: `Kin will count alerts from ${harborAddress} about the account ending 4821.`,
+        });
+        const [approved] = yield* BankSenders.list(ctx.orgId);
+        assert.include(approved, { state: "approved" });
+        assert.deepStrictEqual(approved!.accounts, ["4821"]);
+        yield* pass;
+        yield* pass;
+        assert.deepStrictEqual(
+          yield* ctx.sql`SELECT outcome FROM kin_bank_alerts WHERE org_id = ${ctx.orgId}
+            ORDER BY outcome`,
+          [
+            { outcome: "duplicate" },
+            { outcome: "duplicate" },
+            { outcome: "held" },
+            { outcome: "recorded" },
+          ],
+        );
+        assert.lengthOf(
+          yield* ctx.sql`SELECT 1 FROM kin_records WHERE org_id = ${ctx.orgId}
+        AND register_id = 'bank_transactions'`,
+          1,
+        );
+      } else if ("sibling" in variant) {
+        yield* tap(ctx, posted.widgetId, "option-2");
+        assert.deepStrictEqual(yield* outcomeOf(ctx), {
+          title: "No",
+          text: "Kin won't ask about this address again. To count its alerts, add it in Settings under Bank alert addresses.",
+        });
+        assert.include(
+          yield* Effect.flip(KinRecommend.askAgain(ctx.orgId, ctx.owner.personId, posted.recId)),
+          {
+            reason: "invalid_state",
+          },
+        );
+        assert.include(
+          (yield* BankSenders.list(ctx.orgId)).find((one) => one.address === harborAddress),
+          {
+            state: "declined",
+          },
+        );
+        yield* TestClock.adjust("24 hours");
+        yield* pass;
+        assert.include(yield* tick(ctx), { _tag: "skipped", why: "nothing" });
+        assert.lengthOf(yield* cards(ctx), 1);
+      } else if ("multiple" in variant) {
+        yield* tap(ctx, posted.widgetId, "option-1");
+        assert.deepStrictEqual((yield* BankSenders.list(ctx.orgId))[0]!.accounts, ["4821"]);
+      }
+    }),
+  ),
+);
+
+it.each([
+  ["alerts@harborbank.example", undefined],
+  ["alerts@mail.harborbank.example", "That name belongs to whoever owns harborbank.example."],
+  ["alerts@harborbank.relay-mail.example", "That name belongs to whoever owns relay-mail.example."],
+] as const)(
+  "bank sender card %s names who owns the domain only under a sub-domain",
+  (address, owns) => {
+    const { noticed } = bankSenderCopy({
+      address,
+      bankName: "Harbor Bank",
+      source: "company_details",
+      company: "Tidewater Freight",
+      mailboxes: ["ops@tidewater.example"],
+      since: "24 Nov",
+      count: 1,
+      accounts: ["4821"],
+      knownAccounts: true,
+      shownUnknown: [],
+    });
+    const domain = address.slice(address.indexOf("@") + 1);
+    assert.include(
+      noticed,
+      `confirmed it was sent by ${domain}. ${owns === undefined ? "Kin noticed" : `${owns} Kin noticed`}`,
+    );
+  },
+);
+
+it.effect(
+  "bank sender Settings lists decisions and counts, removes without deleting, and can re-add",
+  () =>
+    runBank(({ ctx }) =>
+      Effect.gen(function* () {
+        const { connections } = yield* forwardBankMail(ctx, "", "00004821");
+        const committed = yield* Deferred.make<void>();
+        const records = Context.get(ctx.services, KinRecords);
+        const services = ctx.services.pipe(
+          Context.add(KinConnections, {
+            ...Context.get(ctx.services, KinConnections),
+            ...connections,
+          }),
+          Context.add(KinRecords, {
+            ...records,
+            create: (...args) =>
+              records
+                .create(...args)
+                .pipe(
+                  Effect.tap(() =>
+                    ctx.sql.afterCommit(Deferred.succeed(committed, undefined).pipe(Effect.asVoid)),
+                  ),
+                ),
+          }),
+        );
+        const calls = yield* makeKinHandlers({
+          sessionId: AuthSessionId.make("owner"),
+          subject: "browser",
+          method: "browser-session-cookie",
+          scopes: AuthStandardClientScopes,
+        }).pipe(
+          Effect.provideService(Kin.KinServer, {
+            taskCardUpdater: Layer.empty,
+            services: Option.some(services),
+            subscribeForViewer: Option.none(),
+          }),
+          Effect.provideService(BankAlertReader, fixtureBankAlertReader),
+        );
+        const group = RpcGroup.make(...KinBankSenderRpcs);
+        const client = yield* RpcTest.makeClient(group).pipe(Effect.provide(group.toLayer(calls)));
+        const listSenders = client["kin.bankSenders.list"];
+        const add = client["kin.bankSenders.add"];
+        const remove = client["kin.bankSenders.remove"];
+        const org = { orgId: ctx.orgId };
+        const item = {
+          address: harborAddress,
+          bankName: "Harbor Bank",
+          firstSeenAt: BANK_NOW,
+        };
+        assert.deepStrictEqual(yield* listSenders(org), {
+          rows: [
+            {
+              ...item,
+              state: "waiting",
+              accounts: [],
+              decidedAt: null,
+              decidedBy: null,
+              recordedCount: 0,
+              heldCount: 1,
+            },
+          ],
+        });
+        yield* BankSenders.decline(ctx.orgId, ctx.owner.personId, harborAddress);
+        assert.deepStrictEqual(yield* listSenders(org), {
+          rows: [
+            {
+              ...item,
+              state: "declined",
+              accounts: [],
+              decidedAt: BANK_NOW,
+              decidedBy: "Rhea",
+              recordedCount: 0,
+              heldCount: 1,
+            },
+          ],
+        });
+        yield* add({ ...org, address: item.address, bankName: item.bankName, accounts: ["4821"] });
+        yield* Deferred.await(committed);
+        assert.deepStrictEqual(yield* listSenders(org), {
+          rows: [
+            {
+              ...item,
+              state: "approved",
+              accounts: ["4821"],
+              decidedAt: BANK_NOW,
+              decidedBy: "Rhea",
+              recordedCount: 1,
+              heldCount: 0,
+            },
+          ],
+        });
+        yield* remove({ ...org, address: harborAddress });
+        assert.deepStrictEqual(yield* listSenders(org), { rows: [] });
+        assert.lengthOf(
+          yield* ctx.sql`SELECT 1 FROM kin_records WHERE org_id = ${ctx.orgId}
+      AND register_id = 'bank_transactions'`,
+          1,
+        );
+        assert.include(yield* Effect.flip(listSenders({ orgId: KinOrgId.make("other-company") })), {
+          reason: "not_found",
+        });
+      }).pipe(Effect.provide(kinHostDependencies)),
     ),
 );
