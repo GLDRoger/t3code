@@ -815,6 +815,27 @@ it.effect(
     ),
 );
 
+it.effect("a leaver's pins stay in their chats and their own looks stay theirs", () =>
+  run((ctx) =>
+    Effect.gen(function* () {
+      const { orgId, sql } = ctx;
+      yield* sql`INSERT INTO kin_chat_pins (org_id, chat_id, record_id, pinned_by_person_id, pinned_at, pin_id)
+        VALUES (${orgId}, ${ctx.ownerChat}, 'record-tallmoor', ${meeraId}, 1, 'pin-meera')`;
+      yield* sql`INSERT INTO kin_looks (org_id, person_id, record_id, looked_at)
+        VALUES (${orgId}, ${meeraId}, 'record-tallmoor', 1)`;
+      const held = sql`SELECT p.pin_id AS pin, person.display_name AS "pinnedBy", l.looked_at AS looked
+        FROM kin_chat_pins p JOIN kin_people person ON person.org_id = p.org_id
+          AND person.person_id = p.pinned_by_person_id
+        JOIN kin_looks l ON l.org_id = p.org_id AND l.person_id = p.pinned_by_person_id
+        WHERE p.org_id = ${orgId}`;
+      const before = yield* held;
+      assert.lengthOf(before, 1);
+      yield* ctx.people.removeAccess(ownerSession, { orgId, personId: meeraId });
+      assert.deepStrictEqual(yield* held, before);
+    }),
+  ),
+);
+
 it.effect("a co-owner's bank sender decision stays company history after access is removed", () =>
   run((ctx) =>
     Effect.gen(function* () {
@@ -854,6 +875,7 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_bill_requests: "person_id",
   kin_chat_levels: "agent_id",
   kin_chat_members: "agent_id member_id person_id",
+  kin_chat_pins: "pinned_by_person_id",
   kin_chats: "lead_agent_id",
   kin_client_touches: "logged_by_id person_id",
   kin_company_profile: "updated_by_id",
@@ -880,6 +902,7 @@ const HOLDS_SOMEONE: Record<string, string> = {
   kin_leads: "agent_id created_by_person_id",
   kin_mail_rules: "agent_id said_by",
   kin_list_proposals: "agent_id",
+  kin_looks: "person_id",
   kin_memory_shared_writes: "person_id",
   kin_messages: "author_agent_id author_member_id author_owner_person_id author_person_id sent_by",
   kin_money_budgets: "set_by_id",
