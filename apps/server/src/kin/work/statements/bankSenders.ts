@@ -10,11 +10,13 @@ import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { mayActAsOwner } from "../../people/KinAccess.ts";
+import { ranOutAt } from "../../recommend/ledger.ts";
 import { orgOwner } from "../toolNames.ts";
 
 import { startHeldAlertReplay } from "./alertMail.ts";
 import {
   accountsOf,
+  BANK_SENDER_RULE,
   bankKeyOf,
   encodeAccounts,
   endingsOf,
@@ -54,7 +56,20 @@ const settingsList = Effect.fn("KinBankSenders.list")(function* (
     .withTransaction(
       Effect.gen(function* () {
         yield* onlyOwnerLevel(orgId, personId);
-        const held = yield* liveHeldMail(orgId, yield* Clock.currentTimeMillis);
+        const now = yield* Clock.currentTimeMillis;
+        const held = yield* liveHeldMail(orgId, now);
+        const cards = yield* sql<{
+          subject: string;
+          postedAt: number;
+          endedAt: number | null;
+        }>`SELECT subject, posted_at AS "postedAt", ended_at AS "endedAt"
+          FROM kin_recommendations WHERE org_id = ${orgId} AND rule = ${BANK_SENDER_RULE}
+            AND state = 'open'`;
+        const asked = new Set(
+          cards.flatMap((card) =>
+            ranOutAt({ ...card, state: "open" }, now) === undefined ? [card.subject] : [],
+          ),
+        );
         const heldByAddress = new Map<string, number>();
         for (const { address, count } of held)
           heldByAddress.set(address, (heldByAddress.get(address) ?? 0) + count);
@@ -72,6 +87,7 @@ const settingsList = Effect.fn("KinBankSenders.list")(function* (
                   decidedBy: row.decidedBy,
                   recordedCount: row.recordedCount,
                   heldCount: heldByAddress.get(row.address) ?? 0,
+                  askedInChat: row.state === "candidate" && asked.has(row.address),
                 },
               ],
         );

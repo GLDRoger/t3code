@@ -1,6 +1,7 @@
 import type { KinSettingsPage } from "@t3tools/client-runtime/kin/kinNavigation";
 
 import { KIN_APPROVER_PHONES_TITLE } from "@t3tools/client-runtime/kin/kinApprovalPresentation";
+import { KIN_BANK_SENDERS } from "@t3tools/client-runtime/kin/kinBankSenders";
 import { KIN_CHATS_SETTLE } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { KIN_MESSAGE_ALERTS } from "@t3tools/client-runtime/kin/kinMessageAlerts";
 import { msg } from "gt-react";
@@ -117,6 +118,13 @@ export const KIN_SETTINGS_SEARCH_ITEMS = [
     title: "Company details",
     to: "/settings/company",
     searchTerms: ["kin legal name address gstin pan tax bank account ifsc upi invoice"],
+  },
+  {
+    id: "kin-bank-senders",
+    kinOnly: true,
+    title: KIN_BANK_SENDERS.title,
+    to: "/settings/company",
+    searchTerms: ["kin bank alert address sender email mail transactions account"],
   },
   {
     id: "kin-connections",

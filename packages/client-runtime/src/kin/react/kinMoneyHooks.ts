@@ -1,6 +1,7 @@
 // @effect-diagnostics globalDate:off globalTimers:off - React hooks read the clock and pace list reads outside an Effect runtime.
 import { useAtomValue } from "@effect/atom-react";
 import type {
+  KinBankSendersResult,
   KinCompanyProfile,
   KinDateRow,
   KinListDefinition,
@@ -67,6 +68,9 @@ const noMoneyAtom: Atom.Atom<AsyncResult.AsyncResult<KinMoneySummary, unknown>> 
 const noCompanyAtom: Atom.Atom<AsyncResult.AsyncResult<KinCompanyProfile, unknown>> = Atom.make(
   AsyncResult.initial(),
 );
+
+const noBankSendersAtom: Atom.Atom<AsyncResult.AsyncResult<KinBankSendersResult, unknown>> =
+  Atom.make(AsyncResult.initial());
 
 const schedule = (run: () => void, ms: number) => {
   const timer = setTimeout(run, ms);
@@ -449,6 +453,16 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
     return { state, refresh: () => registry.refresh(atom) };
   }
 
+  /** Bank alert addresses for the company. `enabled` is off where the host would refuse. */
+  function useKinBankSenders(target: KinScreenTarget, enabled: boolean) {
+    const atom = kinClient.bankSenders({
+      environmentId: target.environmentId,
+      input: { orgId: target.orgId },
+    });
+    const state = kinWorkReadState(useAtomValue(enabled ? atom : noBankSendersAtom));
+    return { state, refresh: () => registry.refresh(atom) };
+  }
+
   /** The owner's home currency and rates, for the estimates beside foreign amounts. Null for a teammate. */
   function useKinRates(target: KinScreenTarget, enabled = true) {
     // A teammate never asks: the host would refuse, and no figure reaches them anyway.
@@ -671,6 +685,7 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
     useKinListChanges,
     useKinAskAgent,
     useKinCompanyProfile,
+    useKinBankSenders,
     useKinRates,
     useKinHomeCurrency,
     useKinCountryNeeded,
