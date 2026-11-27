@@ -298,6 +298,8 @@ handling one. When nothing needs attention, the section isn't there.
 - **Add a link** under **Linked** keeps a web page with a task, such as its design file, with a
   name if you like. Whoever can change the task adds or removes one; everyone who sees it opens it.
 
+When you open a task or list entry, Kin says what changed since you last opened it; tap the line to jump to its history.
+
 Keep amounts, rates and client terms out of task titles and notes. Project people read those; put
 the figures in the quote or the invoice.
 
@@ -375,6 +377,8 @@ who can see the project read it on a task.
 A member sees client names and contacts only when the owner turns on **Can see Clients**, and never
 what a client is charged or owes. With it on, they also find the projects they're on, under their
 clients.
+
+When you open a project, Kin says what changed since you last opened it; tap the line for its history.
 
 ### Deals
 
@@ -501,7 +505,8 @@ Docs holds what's written for someone to read: briefs, specs, plans, notes, and 
 Each doc is filed under a client, a project or the company; **Unfiled** shows what still needs a
 home; a doc an agent writes for a project is filed under it. Ask an agent to write or change a doc
 and it edits only the sections that change. Every version is kept: open **History** to see what
-changed and, as owner or co-owner, restore an older one.
+changed and, as owner or co-owner, restore an older one. When you open a doc, Kin says what changed
+since you last opened it; tap the line to compare with the version you last saw.
 
 A doc is private when it's marked private or it's a quote. Otherwise a project's people can read the
 project's docs.

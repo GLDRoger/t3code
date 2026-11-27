@@ -198,6 +198,7 @@ export const KinDocLatestSlim = Schema.Struct({
   kind: KinDocVersionKind,
   summary: KinText,
   provenance: Schema.Struct({ by: KinWorkActor }),
+  askedBy: Schema.optional(KinPersonId),
 });
 export type KinDocLatestSlim = typeof KinDocLatestSlim.Type;
 
@@ -224,6 +225,14 @@ export const KinDocDetail = Schema.Struct({
   ...KinDocRow.fields,
   /** The version shown: the latest unless one was asked for. */
   version: KinDocVersion,
+  lookedAt: Schema.optional(Schema.NullOr(IsoDateTime)),
+  sinceLooked: Schema.optional(
+    Schema.Struct({
+      total: NonNegativeInt,
+      from: PositiveInt,
+      versions: Schema.Array(KinDocLatestSlim).check(Schema.isMaxLength(3)),
+    }),
+  ),
   body: KinText,
   outline: Schema.Array(KinDocSection),
   links: Schema.Array(KinRecordLink),

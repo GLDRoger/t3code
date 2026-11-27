@@ -2,6 +2,8 @@ import { kinEntryFacts } from "@t3tools/client-runtime/kin/kinAttention";
 import { KinAsideNote } from "./KinAttention";
 import { useKinAttention } from "./useKinAttention";
 import { KinWatchLine } from "./KinWatchLine";
+import { KinSinceLookedLine, scrollIntoViewRespectingMotion } from "./KinSinceLookedLine";
+import type { KinSinceLookedView } from "@t3tools/client-runtime/kin/kinSinceLooked";
 import { kinPersonChoices } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import { useKinOpensClients } from "./useKinOwnerLevel";
 import { KIN_DEFAULT_HOME_CURRENCY } from "@t3tools/contracts";
@@ -55,7 +57,7 @@ import {
   RepeatIcon,
   XIcon,
 } from "lucide-react";
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 
 import { useAssetUrls } from "../assets/assetUrls";
 import {
@@ -552,6 +554,7 @@ export function KinListEntry(
     readonly give?: React.ReactNode;
     /** That its section is off, for an entry opened by its link; null while it is on. */
     readonly offLine?: string | null;
+    readonly sinceLooked?: KinSinceLookedView | null;
     readonly onOpenClient: (key: KinRecordKey) => void;
     readonly onOpenProject: (key: KinRecordKey) => void;
     readonly onOpenDoc: (key: KinRecordKey) => void;
@@ -566,6 +569,7 @@ export function KinListEntry(
   const billing = clientsOn;
   const opensClients = useKinOpensClients(environmentId) && billing;
   const [naming, setNaming] = useState(false);
+  const historyRef = useRef<HTMLDivElement>(null);
   const lists = useKinLists(props, { enabled: true, archived: true });
   const context = useKinListContext(props, props.directory);
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
@@ -666,6 +670,10 @@ export function KinListEntry(
           )}
           <KinAsideNote {...props} record={item.key} names={props.directory.names} />
           <KinWatchLine environmentId={environmentId} orgId={props.orgId} recordKey={item.key} />
+          <KinSinceLookedLine
+            view={props.sinceLooked ?? null}
+            onOpen={() => scrollIntoViewRespectingMotion(historyRef.current)}
+          />
           {props.offLine == null ? null : (
             <p role="note" className="text-pretty text-sm text-muted-foreground">
               {props.offLine}
@@ -1235,21 +1243,23 @@ export function KinListEntry(
           </Section>
         )}
         {props.links}
-        <Section title={KIN_LISTS.entry.history}>
-          <ol className="flex flex-col gap-1.5">
-            {view.history.map((line) => (
-              <li key={line.key} className="flex gap-3 text-sm">
-                <span className="w-14 shrink-0 text-xs leading-5 text-muted-foreground tabular-nums">
-                  {line.when}
-                </span>
-                <span className="min-w-0 flex-1 text-foreground">{line.text}</span>
-              </li>
-            ))}
-          </ol>
-          {view.historyNote === null ? null : (
-            <p className="text-xs text-muted-foreground">{view.historyNote}</p>
-          )}
-        </Section>
+        <div ref={historyRef}>
+          <Section title={KIN_LISTS.entry.history}>
+            <ol className="flex flex-col gap-1.5">
+              {view.history.map((line) => (
+                <li key={line.key} className="flex gap-3 text-sm">
+                  <span className="w-14 shrink-0 text-xs leading-5 text-muted-foreground tabular-nums">
+                    {line.when}
+                  </span>
+                  <span className="min-w-0 flex-1 text-foreground">{line.text}</span>
+                </li>
+              ))}
+            </ol>
+            {view.historyNote === null ? null : (
+              <p className="text-xs text-muted-foreground">{view.historyNote}</p>
+            )}
+          </Section>
+        </div>
         {agent === null ? null : (
           <div>
             <Button
