@@ -7,6 +7,7 @@ import { KinRefreshObserver } from "../../chat/KinRefreshHub.ts";
 import type { MailArrival } from "../../connections/MailProvider.ts";
 import { billingHint, verifiedBillingAddress } from "../../connections/MailSignals.ts";
 import { DAY_MS } from "../../durations.ts";
+import { sectionOnFor } from "../../shell/KinShell.ts";
 
 const HOLD_MS = 30 * DAY_MS;
 
@@ -17,8 +18,10 @@ export const billsOnMail = Effect.fn("KinBillSenders.onMail")(function* (input: 
   readonly mail: MailArrival;
   readonly knownBillers: ReadonlySet<string>;
   readonly now: number;
+  readonly moneyOn: boolean;
   readonly candidateAllowed?: boolean;
 }) {
+  if (!input.moneyOn) return;
   const { orgId, connectionId, mail, now } = input;
   const address = verifiedBillingAddress(mail);
   if (address === undefined) return;
@@ -82,6 +85,7 @@ export const queueHeld = Effect.fn("KinBillSenders.queueHeld")(function* (
   address: string,
   now: number,
 ) {
+  if (!(yield* sectionOnFor(orgId, "money"))) return false;
   const sql = yield* SqlClient.SqlClient;
   yield* sql`INSERT INTO kin_bill_mail
       (org_id, connection_id, message_id, thread_id, address, received_at, state, next_at, queued_at)
@@ -90,4 +94,5 @@ export const queueHeld = Effect.fn("KinBillSenders.queueHeld")(function* (
       AND received_at >= ${now - HOLD_MS}
     ORDER BY received_at, mail_key
     ON CONFLICT (org_id, connection_id, message_id) DO NOTHING`;
+  return true;
 });

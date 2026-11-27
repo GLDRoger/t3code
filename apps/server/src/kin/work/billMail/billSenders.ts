@@ -142,9 +142,9 @@ export const add = Effect.fn("KinBillSenders.add")(function* (
       RETURNING widget_id AS "widgetId"`;
       if (row === undefined) return;
       yield* closeCard(orgId, row.widgetId, "approved", address);
-      yield* queueHeld(orgId, address, now);
+      const canReadHeld = yield* queueHeld(orgId, address, now);
       yield* (yield* KinRefreshObserver).touch(orgId, "billSenders");
-      if (before?.state === "declined")
+      if (canReadHeld && before?.state === "declined")
         return { message: `Kin will read held bills from ${address}.` };
     }),
   );

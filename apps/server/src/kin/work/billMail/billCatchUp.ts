@@ -16,6 +16,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { KinConnections, type BillSearchMessage } from "../../connections/ConnectionsService.ts";
 import { normalizeAddress } from "../../connections/MailSignals.ts";
 import { MINUTE_MS } from "../../durations.ts";
+import { sectionOnFor } from "../../shell/KinShell.ts";
 import { onlyOwnerLevel } from "../mailSenderAccess.ts";
 import { dayIn } from "../money.ts";
 import { ownerZone, startOfDay } from "../recordRows.ts";
@@ -60,7 +61,9 @@ export const readSince = Effect.fn("KinBillSenders.readSince")(function* (
   const address = normalizeAddress(value);
   if (address === undefined)
     return yield* invalid("Enter a full email address for the billing sender.");
-  const requireApproval = Effect.gen(function* () {
+  const requireReadable = Effect.gen(function* () {
+    if (!(yield* sectionOnFor(orgId, "money")))
+      return yield* invalid("Turn Money on to read bills from mail.");
     const [approved] = yield* sql`SELECT 1 FROM kin_bill_senders
       WHERE org_id = ${orgId} AND address = ${address} AND state = 'approved'`;
     if (approved === undefined)
@@ -68,7 +71,7 @@ export const readSince = Effect.fn("KinBillSenders.readSince")(function* (
         `Approve ${address} first: Kin reads bills only from approved senders.`,
       );
   });
-  yield* requireApproval;
+  yield* requireReadable;
 
   const zone = yield* ownerZone(orgId);
   const now = yield* Clock.currentTimeMillis;
@@ -104,7 +107,7 @@ export const readSince = Effect.fn("KinBillSenders.readSince")(function* (
       const inserted = yield* sql.withTransaction(
         Effect.gen(function* () {
           yield* onlyOwnerLevel(orgId, personId, BILL_SENDERS_OWNER_ONLY);
-          yield* requireApproval;
+          yield* requireReadable;
           const at = yield* Clock.currentTimeMillis;
           const rows = batch.map((message) => ({
             org_id: orgId,
@@ -138,7 +141,7 @@ export const readSince = Effect.fn("KinBillSenders.readSince")(function* (
   while (queued < MAX_MAIL && cursors.length > 0) {
     const cursor = cursors[0]!;
     yield* onlyOwnerLevel(orgId, personId, BILL_SENDERS_OWNER_ONLY);
-    yield* requireApproval;
+    yield* requireReadable;
     const remaining = deadline - (yield* Clock.currentTimeMillis);
     const found =
       remaining <= 0

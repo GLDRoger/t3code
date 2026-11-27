@@ -25,6 +25,7 @@ import { verifiedBillingAddress } from "../../connections/MailSignals.ts";
 import { httpsLink, mailFileType } from "../../connections/MailTools.ts";
 import { HOUR_MS, MINUTE_MS } from "../../durations.ts";
 import { ownerLevelSql } from "../../people/KinAccess.ts";
+import { sectionOnFor } from "../../shell/KinShell.ts";
 import { addMailBills, mailBillsReady } from "../bills.ts";
 import { ownerZone } from "../recordRows.ts";
 import { orgOwner } from "../toolNames.ts";
@@ -74,7 +75,9 @@ const bodyFile = (message: MailMessage, address: string, date: string) => {
 export const readBillMail = Effect.fn("KinBillMail.readDue")(function* (
   orgId: KinOrgId,
   now: number,
+  moneyOn?: boolean,
 ) {
+  if (!(moneyOn ?? (yield* sectionOnFor(orgId, "money")))) return;
   const sql = yield* SqlClient.SqlClient;
   const due = yield* sql<Row>`SELECT connection_id AS "connectionId", message_id AS "messageId",
       address, asked_by_person_id AS "askedBy", tries
