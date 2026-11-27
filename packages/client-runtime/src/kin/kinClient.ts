@@ -120,6 +120,7 @@ import {
   kinWorkLiveStream,
 } from "./kinWorkStream.ts";
 import { KIN_PERSON_TASKS, kinPersonTasksCount, kinTasksMostUrgent } from "./kinTasksList.ts";
+import { makeKinMailRules } from "./kinMailRules.ts";
 import { makeKinWatches } from "./kinWatches.ts";
 
 /** A dropped connection can leave a read pending; "Load earlier" fails after this and offers Retry. */
@@ -623,6 +624,7 @@ export function makeKinClient<R, ER>(
 
   /** Web's Kin reads and commands. Mobile's twin adds the device cache and push. */
   const kinClient = {
+    ...makeKinMailRules(runtime, kinGuardedRead),
     ...makeKinWatches(runtime, kinGuardedRead),
     orgs: createKinQueryAtomFamily(runtime, {
       label: "kin:orgs",

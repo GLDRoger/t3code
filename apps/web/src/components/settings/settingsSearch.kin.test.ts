@@ -27,6 +27,12 @@ it("finds Kin's own Profile settings only where a host runs Kin", () => {
   expect(first("quiet", false)?.id).not.toBe("kin-quiet-hours");
   expect(first("legal name", true)?.id).toBe("company-details");
   expect(first("legal name", false)?.id).not.toBe("company-details");
+  // Mail rules live under their mailbox on Connections.
+  expect(first("mail rules", true)).toMatchObject({
+    id: "kin-mail-rules",
+    to: "/settings/kin-connections",
+  });
+  expect(first("mail rules", false)?.id).not.toBe("kin-mail-rules");
   // Deal stages go with Deals.
   expect(first("deal stages", true)?.id).toBe("kin-deals");
   expect(first("deal stages", true, ["deals"])?.id).not.toBe("kin-deals");
