@@ -14,18 +14,24 @@ import { MAIL_PROVIDERS } from "./mailProviders.ts";
  * One table of cases, run through the fake mailbox against every mail vendor's mapping. A new
  * vendor passes this table before Kin offers it.
  */
-const OWNER = "owner@invented-co.example";
+const OWNER = "rhea+mail@invented-co.example";
 const BILLING = "billing@invented-co.example";
 const CLIENT = "Ana Client <ana@client.example>";
 const NOW = Date.parse("2026-11-16T09:00:00Z");
 const HOUR = 60 * 60 * 1000;
 const mailbox: Mailbox = { account: OWNER, addresses: [OWNER, BILLING] };
 
+const originalLink = (provider: MailProvider, message: { threadId: string; id: string }) =>
+  provider.preset === "google"
+    ? `https://mail.google.com/mail/?authuser=rhea%2Bmail%40invented-co.example#all/${message.threadId}`
+    : `https://outlook.office.com/mail/inbox/id/${message.id}`;
+
 type Run = {
   readonly provider: MailProvider;
   readonly fake: FakeMail;
   readonly http: HttpClient.HttpClient;
   readonly token: string;
+  readonly omitLinkId: () => void;
   readonly call: (
     tool: string,
     args?: Record<string, unknown>,
@@ -40,15 +46,33 @@ const harness = (provider: MailProvider) => {
     name: "Invented Co",
     aliases: [BILLING],
   });
-  const fetch = fake.handle(() => Promise.reject(new Error("Nothing outside the fake.")));
+  let omitLinkId = false;
+  const handle = fake.handle(() => Promise.reject(new Error("Nothing outside the fake.")));
+  const fetch: typeof globalThis.fetch = async (input, init) => {
+    const response = await handle(input, init);
+    if (!omitLinkId || !response.ok) return response;
+    const body = (await response.json()) as {
+      messages?: Array<Record<string, unknown>>;
+      value?: Array<Record<string, unknown>>;
+    };
+    for (const message of body.messages ?? body.value ?? [])
+      delete message[provider.preset === "google" ? "threadId" : "id"];
+    return Response.json(body);
+  };
   const layer = FetchHttpClient.layer.pipe(
     Layer.provide(Layer.succeed(FetchHttpClient.Fetch, fetch)),
   );
-  return { fake, layer };
+  return {
+    fake,
+    layer,
+    omitLinkId: () => {
+      omitLinkId = true;
+    },
+  };
 };
 
 const run = (provider: MailProvider, body: (run: Run) => Effect.Effect<void, KinGatewayError>) => {
-  const { fake, layer } = harness(provider);
+  const { fake, layer, omitLinkId } = harness(provider);
   return Effect.gen(function* () {
     const http = yield* HttpClient.HttpClient;
     const token = `fake-at.1.${OWNER}`;
@@ -58,7 +82,7 @@ const run = (provider: MailProvider, body: (run: Run) => Effect.Effect<void, Kin
         .pipe(
           Effect.map((result) => JSON.parse((result.content[0] as { readonly text: string }).text)),
         );
-    yield* body({ provider, fake, http, token, call });
+    yield* body({ provider, fake, http, token, call, omitLinkId });
   }).pipe(Effect.provide(layer));
 };
 
@@ -84,7 +108,7 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
   [
     [
       "lists inbox threads newest first, once each, by the address that received them",
-      ({ fake, call }) =>
+      ({ fake, provider, call }) =>
         Effect.gen(function* () {
           const quote = fake.deliver({
             to: BILLING,
@@ -93,7 +117,7 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
             body: "Can you send the quote?",
             at: NOW - 3 * HOUR,
           });
-          fake.deliver({
+          const latest = fake.deliver({
             to: BILLING,
             from: CLIENT,
             subject: "Re: Quote Q-7",
@@ -123,14 +147,15 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
             ],
           );
           assert.strictEqual(listed.threads[1].preview, "Any news?");
+          assert.strictEqual(listed.threads[1].webLink, originalLink(provider, latest));
           assert.include(listed.threads[1].from, "ana@client.example");
         }),
     ],
     [
       "searches by sender and words",
-      ({ fake, call }) =>
+      ({ fake, provider, call }) =>
         Effect.gen(function* () {
-          fake.deliver({
+          const paid = fake.deliver({
             to: OWNER,
             from: CLIENT,
             subject: "Invoice",
@@ -149,11 +174,12 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
             found.threads.map((one: any) => one.preview),
             ["Paid."],
           );
+          assert.strictEqual(found.threads[0].webLink, originalLink(provider, paid));
         }),
     ],
     [
       "reads a thread oldest first, with each file's name, type and size",
-      ({ fake, call }) =>
+      ({ fake, provider, call }) =>
         Effect.gen(function* () {
           const first = fake.deliver({
             to: BILLING,
@@ -169,7 +195,7 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
               },
             ],
           });
-          fake.deliver({
+          const second = fake.deliver({
             to: BILLING,
             from: CLIENT,
             subject: "Re: Quote Q-7",
@@ -188,6 +214,27 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
             { name: "brief.pdf", type: "application/pdf", bytes: 17 },
           ]);
           assert.include(thread.messages[0].to, BILLING);
+          assert.deepStrictEqual(
+            thread.messages.map((one: { webLink?: string }) => one.webLink),
+            [originalLink(provider, first), originalLink(provider, second)],
+          );
+        }),
+    ],
+    [
+      "omits the original mail link when the vendor supplies no id",
+      ({ fake, call, omitLinkId }) =>
+        Effect.gen(function* () {
+          const first = fake.deliver({
+            to: OWNER,
+            from: CLIENT,
+            subject: "Juniper Cold Chain review",
+            body: "Here is the brief.",
+            at: NOW - HOUR,
+          });
+          omitLinkId();
+          const thread = yield* call(MAIL_TOOL.read, { threadId: first.threadId });
+          assert.lengthOf(thread.messages, 1);
+          assert.notProperty(thread.messages[0], "webLink");
         }),
     ],
     [
