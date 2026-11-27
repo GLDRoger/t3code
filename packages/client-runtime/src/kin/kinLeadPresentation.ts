@@ -352,8 +352,8 @@ export const KIN_AGENTS_PAGE = {
   open: (name: string) => `Open ${name}`,
   working: "Working",
   paused: "Paused",
-  forNew: "For new agents",
-  model: "Model",
+  forNew: "Models",
+  model: "Model for new agents",
   defaultsTitle: "Choose what new agents run on",
   defaultsLabel: "Model",
   /** The row's line while nobody has chosen: what they start on meanwhile. */
