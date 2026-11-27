@@ -675,6 +675,7 @@ describe("Kin migrations", () => {
           { name: "idx_kin_trigger_inbox_retention" },
           { name: "idx_kin_triggers_due" },
           { name: "idx_kin_troubles_open" },
+          { name: "idx_kin_waiting_message_id" },
           { name: "idx_kin_waiting_open_widget_person" },
           { name: "idx_kin_waiting_person_resolved_at" },
           { name: "idx_kin_wakeups_running_lead" },
@@ -704,6 +705,13 @@ describe("Kin migrations", () => {
           yield* sql`SELECT name FROM pragma_index_info('idx_kin_widgets_type_closed_at') ORDER BY seqno`,
           [{ name: "type" }, { name: "closed_at" }],
         );
+        const waitingPlan = yield* sql<{ detail: string }>`
+          EXPLAIN QUERY PLAN
+          SELECT 1 FROM kin_waiting
+          WHERE org_id = 'org_tidewater' AND message_id = 'msg_01jkh000000000000000000000'
+            AND widget_id IS NULL AND resolved_at IS NOT NULL
+        `;
+        assert.match(waitingPlan[0]?.detail ?? "", /USING INDEX idx_kin_waiting_message_id/);
         assert.deepStrictEqual(
           yield* sql`SELECT name FROM pragma_index_info('idx_kin_waiting_person_resolved_at') ORDER BY seqno`,
           [{ name: "person_id" }, { name: "resolved_at" }],
@@ -3619,7 +3627,7 @@ const legacyBankAlerts = Effect.gen(function* () {
   yield* sql`DROP TABLE IF EXISTS kin_bank_senders`;
   yield* sql`DROP TABLE kin_bank_alerts`;
   yield* LegacyBankAlerts;
-  yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 229`;
+  yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 229`;
   yield* sql`INSERT INTO kin_orgs VALUES
     ('existing', 'Tidewater Freight', '2026-11-01'), ('new', 'Juniper Cold Chain', '2026-11-01')`;
   yield* sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, thread_id, sent_at,
@@ -3651,7 +3659,7 @@ it.effect("K229 carries only companies and endings with existing bank alerts", (
     const sql = yield* legacyBankAlerts;
     const rows = yield* bankAlertRows(sql);
     const indexes = yield* bankAlertIndexes(sql);
-    assert.deepStrictEqual(yield* runKinMigrations(), [[229, "BankSenders"]]);
+    assert.deepStrictEqual(yield* runKinMigrations(), kinMigrationsFrom(229));
     // Every old row and value survives the table rebuild, and so do the old indexes.
     assert.deepStrictEqual(yield* bankAlertRows(sql), rows);
     assert.deepStrictEqual(
