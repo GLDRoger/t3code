@@ -15,7 +15,7 @@ import * as NodeCrypto from "node:crypto";
 import type { KinConnectionActivity, KinConnections } from "../connections/ConnectionsService.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { addressesIn } from "../connections/MailProvider.ts";
-import { isBankAlertSender } from "../work/statements/bankAlerts.ts";
+import { list, normalizeAddress } from "../work/statements/bankSenderRows.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { agentQuietUntil } from "../triggers/quietHold.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -132,6 +132,10 @@ export const fromConnections = (
         yield* KinShell.get(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
         "money",
       );
+      const mailboxes: Array<{
+        label: string;
+        activity: Extract<KinConnectionActivity, { readonly _tag: "mail" }>;
+      }> = [];
       const lines: Array<KinPulseOutsideLine> = [];
       const automatedNotices = new Set<KinPulseOutsideLine>();
       const seen: Array<{ connectionId: string; until: number; cursor: string | null }> = [];
@@ -148,26 +152,33 @@ export const fromConnections = (
         if (activity === undefined || activity._tag === "unsupported") continue;
         // As with a failed read: the mailbox stays where it was, and the next pass reads it again.
         if (onMail !== undefined && !(yield* onMail(orgId, activity))) continue;
-        lines.push(
-          ...linesOf(
-            row.label,
-            money
-              ? activity
-              : {
-                  ...activity,
-                  mail: activity.mail.filter(
-                    (mail) => !isBankAlertSender(addressesIn(mail.from)[0]),
-                  ),
-                },
-            automatedNotices,
-          ),
-        );
+        mailboxes.push({ label: row.label, activity });
         seen.push({
           connectionId: row.connectionId,
           until: activity.until,
           cursor: activity._tag === "mail" ? activity.cursor : null,
         });
       }
+      const hidden = new Set(
+        money
+          ? []
+          : (yield* list(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql)))
+              .filter((row) => row.state === "candidate" || row.state === "approved")
+              .map((row) => row.address),
+      );
+      for (const { label, activity } of mailboxes)
+        lines.push(
+          ...linesOf(
+            label,
+            {
+              ...activity,
+              mail: activity.mail.filter(
+                (mail) => !hidden.has(normalizeAddress(addressesIn(mail.from)[0]) ?? ""),
+              ),
+            },
+            automatedNotices,
+          ),
+        );
       return { lines, seen, automatedNotices } satisfies OutsideRead;
     },
     Effect.catch((cause) =>

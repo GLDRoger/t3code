@@ -26,18 +26,22 @@ import * as KinRecords from "../KinRecords.ts";
 import { presetDefinition } from "../registers.ts";
 import { takeAlerts } from "./bankAlerts.ts";
 import * as BankAlertReader from "./BankAlertReader.ts";
-import { fixtureBankAlertReader } from "./bankAlerts.testkit.ts";
+import {
+  approveFixtureAlertSender,
+  fixtureBankAlertReader,
+  seedFixtureAlertMailbox,
+} from "./bankAlerts.testkit.ts";
 import { ensureBankList, findBankList } from "./bankList.ts";
 import { repaidMatches } from "./debitRepaid.ts";
 import { drawRepaid, markRepaid, repaidLine } from "./repaidCard.ts";
 import { repaidSeenSenses } from "../../pulse/senses/bank.ts";
 
-// Invented: Ambermill's owner Rhea gets HDFC alerts; Zoya and Arjun paid bills from their own cards.
+// Invented: Ambermill's owner Rhea gets Harbor Bank alerts; Zoya and Arjun paid bills from their own cards.
 const orgId = KinOrgId.make("ambermill-repaid");
 const rhea = KinPersonId.make("ambermill-rhea");
 const NOW = Date.parse("2026-11-24T12:00:00Z");
 const AUTH = [
-  "mx.google.com; dkim=pass header.i=@hdfcbank.net; spf=pass smtp.mailfrom=alerts@hdfcbank.net; dmarc=pass (p=REJECT) header.from=hdfcbank.net",
+  "mx.google.com; dkim=pass header.i=@harborbank.example; spf=pass smtp.mailfrom=alerts@harborbank.example; dmarc=pass (p=REJECT) header.from=harborbank.example",
 ];
 
 const layer = Layer.mergeAll(
@@ -115,9 +119,11 @@ it.layer(layer)((it) => {
         });
 
         // A UPI debit alert names its payee: Kin's entry for it carries the name it read.
+        yield* approveFixtureAlertSender(orgId, rhea);
+        yield* seedFixtureAlertMailbox(orgId, "work-mail");
         const upi = (reference: string, rupees: string, payee: string) => ({
-          messageId: `<${reference}@hdfc>`,
-          fromAddress: "alerts@hdfcbank.net",
+          messageId: `<${reference}@harborbank.example>`,
+          fromAddress: "alerts@harborbank.example",
           subject: "You have done a UPI txn. Check details!",
           date: "Tue, 24 Nov 2026 10:00:00 +0530",
           authResults: AUTH,

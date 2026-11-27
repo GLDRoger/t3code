@@ -4,15 +4,15 @@ import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 
 import type { AlertMail, AlertRejection } from "./bankAlerts.ts";
-import { readHdfcAlert } from "./hdfcAlerts.ts";
+import { readApprovedAlert } from "./bankAlertMailReading.ts";
 
-// Synthetic alerts, written for these tests in the shape of HDFC's InstaAlerts. Every account,
+// Synthetic alerts, written for these tests in the shape of a bank's instant alerts. Every account,
 // name, reference and amount is invented.
 const VOUCHED = [
-  "mx.google.com; dkim=pass header.i=@hdfcbank.net header.s=sel1 header.b=AbCd; spf=pass (google.com: domain of alerts@hdfcbank.net designates 192.0.2.1 as permitted sender) smtp.mailfrom=alerts@hdfcbank.net; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=hdfcbank.net",
+  "mx.google.com; dkim=pass header.i=@harborbank.example header.s=sel1 header.b=AbCd; spf=pass (google.com: domain of alerts@harborbank.example designates 192.0.2.1 as permitted sender) smtp.mailfrom=alerts@harborbank.example; dmarc=pass (p=REJECT sp=REJECT dis=NONE) header.from=harborbank.example",
 ];
 const mail = (text: string, more: Partial<AlertMail> = {}): AlertMail => ({
-  fromAddress: "alerts@hdfcbank.net",
+  fromAddress: "alerts@harborbank.example",
   subject: "You have done a UPI txn. Check details!",
   date: "Wed, 18 Nov 2026 14:05:09 +0530",
   authResults: VOUCHED,
@@ -20,7 +20,7 @@ const mail = (text: string, more: Partial<AlertMail> = {}): AlertMail => ({
   ...more,
 });
 const UPI_DEBIT =
-  "Dear Customer,\n\nRs.1,250.00 has been debited from account **4821 to VPA lakeview.cafe@invented LAKEVIEW CAFE on 18-11-26. Your UPI transaction reference number is 632211110001.\n\nIf you did not authorize this transaction, please report it immediately by calling 18000000000 or SMS BLOCK UPI to 7000000000.\n\nAvl bal: INR 4,10,250.50\n\nWarm Regards,\nHDFC Bank";
+  "Dear Customer,\n\nRs.1,250.00 has been debited from account **4821 to VPA lakeview.cafe@invented LAKEVIEW CAFE on 18-11-26. Your UPI transaction reference number is 632211110001.\n\nIf you did not authorize this transaction, please report it immediately by calling 18000000000 or SMS BLOCK UPI to 7000000000.\n\nAvl bal: INR 4,10,250.50\n\nWarm Regards,\nHarbor Bank";
 const NEFT_CREDIT =
   "Dear Customer, INR 95,000.00 was credited to your A/c No. XX4821 on 17-11-2026 for NEFT Cr-INVT0000001-AMBERMILL DESIGN LLP-Invoice 26-27/004. UTR No: INVTN52026111700042. Available balance: INR 5,05,250.50. Never share your OTP, PIN or CVV with anyone.";
 
@@ -28,7 +28,7 @@ const LABELLED_CREDIT = `(https://mail.invented.example/banner)
 
 Dear Customer,
 
-You've received a credit in your HDFC Bank account.
+You've received a credit in your Harbor Bank account.
 
 Details of the transaction:
 Amount received: INR 86,420.75
@@ -41,7 +41,7 @@ Available Balance: INR 3,24,610.80
 For more information about your account balance, contact the bank.
 
 Regards,
-HDFC Bank`;
+Harbor Bank`;
 
 const transaction = {
   kind: "transaction" as const,
@@ -57,13 +57,19 @@ const transaction = {
 };
 type Reading = typeof transaction | { readonly kind: "other" };
 const read = (input: AlertMail, result: Reading, fallback = "INR", called?: () => void) => {
-  return readHdfcAlert(input, fallback, {
-    read: () =>
-      Effect.sync(() => {
-        called?.();
-        return result.kind === "other" ? "not_one_transaction" : result;
-      }),
-  });
+  return readApprovedAlert(
+    input,
+    "alerts@harborbank.example",
+    ["4821", "5372", "1234", "7781", "6620", "4410"],
+    fallback,
+    {
+      read: () =>
+        Effect.sync(() => {
+          called?.();
+          return result.kind === "other" ? "not_one_transaction" : result;
+        }),
+    },
+  );
 };
 
 const labelledDebit = `Amount debited: INR 66,000.00
@@ -521,7 +527,6 @@ ${UPI_DEBIT}`),
 
   it.effect.each([
     ["too long", mail("a".repeat(20_001)), "unparsed"],
-    ["lookalike sender", mail(UPI_DEBIT, { fromAddress: "alerts@hdfcbank-secure.net" }), "sender"],
     ["forward", mail(UPI_DEBIT, { subject: "Fwd: alert" }), "sender"],
     ["reply", mail(UPI_DEBIT, { subject: "Re: alert" }), "sender"],
     ["missing Date", mail(UPI_DEBIT, { date: null }), "unparsed"],
@@ -534,7 +539,9 @@ ${UPI_DEBIT}`),
     [
       "wrong domain",
       mail(UPI_DEBIT, {
-        authResults: [VOUCHED[0]!.replace("header.from=hdfcbank.net", "header.from=evil.test")],
+        authResults: [
+          VOUCHED[0]!.replace("header.from=harborbank.example", "header.from=evil.test"),
+        ],
       }),
       "unverified",
     ],
