@@ -2160,6 +2160,8 @@ it.effect.each([
   "cancel",
   "cancel before firing",
   "cancel during reconcile",
+  "cancel while reconcile holds the lock",
+  "sync lost after commit",
   "undo cancel",
   "legacy schedule",
 ] as const)("committed memory arms or disarms immediately: %s", (scenario) =>
@@ -2312,6 +2314,72 @@ it.effect.each([
           (yield* handedReminders()).map((row) => row.itemId),
           ["def-written"],
         );
+        return;
+      }
+
+      if (scenario === "sync lost after commit") {
+        // The head is already synced, so only the watchdog's forced pass can restore the rows.
+        yield* sql`DELETE FROM kin_triggers WHERE org_id = ${orgId}`;
+        yield* sql`DELETE FROM kin_deferral_runs WHERE org_id = ${orgId}`;
+        yield* memory.items(orgId);
+        assert.isUndefined(yield* trigger(dueTrigger("def-written")));
+        yield* watchdog.run("trigger_reconcile", orgId);
+        assert.deepStrictEqual(yield* trigger(dueTrigger("def-written")), {
+          enabled: 1,
+          nextRunAt: dueAt,
+        });
+        assert.deepStrictEqual(yield* runOf("def-written"), { state: "armed", dueAt });
+        return;
+      }
+
+      if (scenario === "cancel while reconcile holds the lock") {
+        const held = yield* Deferred.make<void>();
+        const queued = yield* Deferred.make<void>();
+        let committing = false;
+        const holdingWatchdog = yield* Effect.service(Watchdogs.KinWatchdogs).pipe(
+          Effect.provide(Layer.fresh(Watchdogs.layer)),
+          Effect.provideService(Memory.Memory, {
+            ...memory,
+            // Inside the writer lock: the open item is read and not yet re-armed.
+            query: (org, query, view) =>
+              memory
+                .query(org, query, view)
+                .pipe(
+                  Effect.tap(() =>
+                    Deferred.succeed(held, undefined).pipe(Effect.andThen(Deferred.await(queued))),
+                  ),
+                ),
+          }),
+        );
+        const queuedWriter = yield* Effect.service(Writer.MemoryWriter).pipe(
+          Effect.provide(Layer.fresh(writerLayer)),
+          Effect.provideService(Memory.Memory, {
+            ...memory,
+            withWriterLock: (org, effect) =>
+              Effect.suspend(() =>
+                committing ? Deferred.succeed(queued, undefined) : Effect.void,
+              ).pipe(Effect.andThen(memory.withWriterLock(org, effect))),
+          }),
+        );
+        yield* queuedWriter.stage(orgId, "wake-write", {
+          path,
+          content: content({ status: "cancelled" }),
+          sourceEventId: "owner",
+        });
+        const reconcile = yield* holdingWatchdog
+          .run("trigger_reconcile", orgId)
+          .pipe(Effect.forkScoped);
+        yield* Deferred.await(held);
+        committing = true;
+        const committed = yield* queuedWriter
+          .commitWakeup(orgId, "wake-write", "completed")
+          .pipe(Effect.forkScoped);
+        yield* Fiber.join(reconcile);
+        yield* Fiber.join(committed);
+        assert.equal((yield* trigger(dueTrigger("def-written")))?.enabled, 0);
+        assert.equal((yield* runOf("def-written"))?.state, "disarmed");
+        yield* tick(dueAt);
+        assert.deepStrictEqual(yield* handedReminders(), []);
         return;
       }
 
