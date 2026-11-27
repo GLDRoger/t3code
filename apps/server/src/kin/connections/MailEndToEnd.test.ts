@@ -4853,7 +4853,16 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             )`;
 
           // A pass whose alert reading failed moves neither mailbox on: the next reads it all.
-          const failing = fromConnections(connections, sql, () => Effect.succeed(false));
+          const failing = fromConnections(connections, sql, (_orgId, activity) =>
+            Effect.sync(() => {
+              assert.lengthOf(activity.mail, 25);
+              for (const mail of activity.mail)
+                assert.deepStrictEqual(mail.authResults, [
+                  "mx.invented.example; dmarc=pass (p=REJECT) header.from=harborbank.example",
+                ]);
+              return false;
+            }),
+          );
           assert.deepStrictEqual((yield* failing.read(orgId)).seen, []);
 
           // Either reader can get there first, and neither reader consumes the other's cursor.
