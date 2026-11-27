@@ -2199,7 +2199,7 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           from: "Ravi Menon <ravi@lumen.example>",
           subject: "Offer letter",
           body: "Attached.",
-          at: stamp,
+          at: NOW,
           files: [{ name: "Offer.pdf", mimeType: "application/pdf", data: "YQ==" }],
         });
         yield* wake({ person: member, says: "Save the offer letter into Docs." });
