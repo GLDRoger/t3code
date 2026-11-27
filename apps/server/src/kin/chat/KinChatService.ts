@@ -3224,6 +3224,9 @@ const make = Effect.gen(function* () {
           const identity = yield* personFor(caller, input);
           const live = yield* hub.subscribeForViewer(identity, input.chatId);
           const member = yield* memberFor(identity, input.chatId);
+          const settingsChanges = Option.isSome(settings)
+            ? yield* settings.value.subscribeChanges
+            : undefined;
           const viewed = Effect.fn("KinChatService.viewed")(function* <
             T extends {
               readonly messages: ReadonlyArray<KinMessage>;
@@ -3286,6 +3289,8 @@ const make = Effect.gen(function* () {
             backlog._tag === "backlog" ? backlog.widgets.map((w) => [w.widgetId, w.revision]) : [],
           );
           let cursor = { lastSeq: resumed.lastSeq, lastChangeSeq: resumed.lastChangeSeq };
+          let lastClearUpdates =
+            backlog._tag === "backlog" ? backlog.clearUpdates : yield* clearUpdates;
           let delivered = 0;
           const checkpoint = Effect.fn("KinChatService.subscribeCheckpoint")(function* () {
             const next = yield* viewed(
@@ -3317,19 +3322,49 @@ const make = Effect.gen(function* () {
             );
             for (const m of messages) messageChanges.set(m.messageId, m.changeSeq ?? m.seq);
             for (const w of widgets) revisions.set(w.widgetId, w.revision);
+            lastClearUpdates = yield* clearUpdates;
             return {
               _tag: "backlog",
               ...cursor,
               messages,
               widgets,
-              clearUpdates: yield* clearUpdates,
+              clearUpdates: lastClearUpdates,
             } satisfies KinChatStreamEvent;
           });
+          const events = settingsChanges
+            ? live.pipe(
+                Stream.merge(
+                  settingsChanges.pipe(
+                    Stream.map((value) => ({
+                      type: "settings.clearUpdates" as const,
+                      value: value.kinClearUpdatesAfterReply,
+                    })),
+                  ),
+                  { haltStrategy: "left" },
+                ),
+              )
+            : live;
           return Stream.concat(
             Stream.succeed(backlog),
-            live.pipe(
+            events.pipe(
+              // Notifications queued during a snapshot can be older than the setting it read.
+              Stream.mapEffect((event) =>
+                event.type === "settings.clearUpdates" && event.value !== lastClearUpdates
+                  ? clearUpdates.pipe(Effect.map((value) => ({ ...event, value })))
+                  : Effect.succeed(event),
+              ),
               Stream.map((event) => {
                 switch (event.type) {
+                  case "settings.clearUpdates":
+                    if (event.value === lastClearUpdates) return Option.none();
+                    lastClearUpdates = event.value;
+                    return Option.some<KinChatStreamEvent>({
+                      _tag: "backlog",
+                      ...cursor,
+                      messages: [],
+                      widgets: [],
+                      clearUpdates: lastClearUpdates,
+                    });
                   case "message.posted":
                   case "message.changed": {
                     const change = event.message.changeSeq ?? event.message.seq;
