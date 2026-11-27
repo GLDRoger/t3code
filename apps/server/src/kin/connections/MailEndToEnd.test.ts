@@ -845,6 +845,14 @@ describe("Mail tool results with the sender's memory", () => {
       note: `${heading}\nMe despido con «Un abrazo, Rhea».`,
     },
     {
+      name: "uses a marked note whatever kind the agent saved it as",
+      what: "Me despido con «Un abrazo, Rhea».",
+      mark: true,
+      saidBy: "owner",
+      kind: "decision" as const,
+      note: `${heading}\nMe despido con «Un abrazo, Rhea».`,
+    },
+    {
       name: "excludes a contact's style explicitly marked as outside the sender's voice",
       what: "Zoya’s email signature ends with Cheers.",
       mark: false,
@@ -858,7 +866,7 @@ describe("Mail tool results with the sender's memory", () => {
       saidBy: "mate",
       note: undefined,
     },
-  ])("$name", ({ what, mark, saidBy, note }) =>
+  ])("$name", ({ what, mark, saidBy, note, ...row }) =>
     toolsWithVoice(
       ({ own, tools }) =>
         Effect.gen(function* () {
@@ -869,6 +877,7 @@ describe("Mail tool results with the sender's memory", () => {
           title: "Preferencia",
           said_by: saidBy,
           sender_mail_voice: mark,
+          ...("kind" in row ? { kind: row.kind } : {}),
         }),
       ],
     ),

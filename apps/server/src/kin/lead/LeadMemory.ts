@@ -151,7 +151,7 @@ const WriteItem = Schema.Struct({
   links: Schema.optional(writableFields.links),
   sender_mail_voice: writableFields.sender_mail_voice.annotate({
     description:
-      "Set true only for a claim or person note that records the speaker's own mail style, including greetings and sign-offs.",
+      "true only when the person telling you describes their own mail style (greeting, sign-off, tone); drafts in their name follow it. Not for anyone else's, such as a client's.",
   }),
   id: Schema.optional(itemId),
   chat: Schema.optional(KinChatId),
