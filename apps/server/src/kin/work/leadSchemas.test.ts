@@ -85,12 +85,12 @@ it("list_define takes number and yes or no fields; imports and unknown types sta
     assert.deepStrictEqual(accepted(type), [true, false], type);
 });
 
-it("advertises every accepted list definition key and a single field type enum", () => {
+it("advertises every list definition key except the filled-in source event, with a single field type enum", () => {
   const tool = KinWorkToolkit.tools.list_define;
   const advertised = advertisedJsonSchema(tool, { kin: true });
   assert.deepStrictEqual(
     inputPropertyPaths(advertised),
-    inputPropertyPaths(Tool.getJsonSchema(tool)),
+    inputPropertyPaths(Tool.getJsonSchema(tool)).difference(new Set(["sourceEventId"])),
   );
   expect(advertised.properties).toHaveProperty("fields.items.properties.type", {
     type: "string",
@@ -98,12 +98,16 @@ it("advertises every accepted list definition key and a single field type enum",
   });
 });
 
-it("advertises every accepted record write key at every level", () => {
+it("advertises every record write key except the filled-in source event", () => {
   const { record_create, record_update } = KinWorkToolkit.tools;
   for (const tool of [record_create, record_update]) {
     const raw = Tool.getJsonSchema(tool);
     const advertised = advertisedJsonSchema(tool, { kin: true });
-    assert.deepStrictEqual(inputPropertyPaths(advertised), inputPropertyPaths(raw), tool.name);
+    assert.deepStrictEqual(
+      inputPropertyPaths(advertised),
+      inputPropertyPaths(raw).difference(new Set(["sourceEventId"])),
+      tool.name,
+    );
     const prefix = tool.name === "record_create" ? "records.items.properties." : "";
     expect(advertised.properties).toHaveProperty(`${prefix}confirmed`, { type: "boolean" });
     expect(advertised.properties).toHaveProperty(`${prefix}due.description`, expect.any(String));

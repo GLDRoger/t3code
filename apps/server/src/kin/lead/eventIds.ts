@@ -3,6 +3,9 @@ import * as NodeCrypto from "node:crypto";
 import { KinEventId, TrimmedNonEmptyString } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { Tool, Toolkit } from "effect/ai";
+
+import { AcceptedUnadvertisedArguments } from "../../mcp/advertisedJsonSchema.ts";
 
 /** The memory writer accepts only `[a-zA-Z0-9_-]` in event ids, so a readable key is hashed. */
 export const hashedEventId = (prefix: string, key: string) =>
@@ -62,3 +65,12 @@ export const TURN_EVENT_TOOLS: ReadonlySet<string> = new Set([
   "statement_read",
   "touch_log",
 ]);
+
+export const turnEventToolkit = <Tools extends ReadonlyArray<Tool.Any>>(...tools: Tools) =>
+  Toolkit.make(
+    ...tools.map((tool): Tools[number] =>
+      TURN_EVENT_TOOLS.has(tool.name)
+        ? (tool.annotate(AcceptedUnadvertisedArguments, ["sourceEventId"]) as Tools[number])
+        : tool,
+    ),
+  );

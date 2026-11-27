@@ -5,7 +5,8 @@ import * as Fiber from "effect/Fiber";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import * as SqlClient from "effect/sql/SqlClient";
-import { McpSchema, Tool, Toolkit } from "effect/ai";
+import { McpSchema, Tool } from "effect/ai";
+import { turnEventToolkit } from "../../lead/eventIds.ts";
 
 import { AdvertisedDescriptions } from "../../../mcp/advertisedJsonSchema.ts";
 import { ServerConfig } from "../../../config.ts";
@@ -84,7 +85,7 @@ export const DatesResult = Money.DatesResult.mapFields((fields) => ({
 }));
 
 /** Work: the company's entries. The state of work comes from these tools and the Work section only. */
-export const KinWorkToolkit = Toolkit.make(
+export const KinWorkToolkit = turnEventToolkit(
   numberRecordTool.annotate(McpSchema.EnabledWhen, enabled),
   numbersReadTool.annotate(McpSchema.EnabledWhen, enabled),
   Tool.make("records_query", {

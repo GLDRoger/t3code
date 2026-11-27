@@ -1,14 +1,21 @@
 import * as NodeUtil from "node:util";
 import { assert, it } from "@effect/vitest";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as TestClock from "effect/testing/TestClock";
 import * as Schema from "effect/Schema";
+import * as SqlClient from "effect/sql/SqlClient";
 import { McpSchema, McpServer, Tool, Toolkit } from "effect/ai";
 import {
   EnvironmentId,
+  KinAgentId,
+  KinChatError,
+  KinOrgId,
+  KinPersonId,
   OrchestratorMcpFailure,
   ProviderInstanceId,
   type ServerProvider,
@@ -17,23 +24,29 @@ import {
 import { McpInvocationContext, type McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import * as McpToolAccess from "../../mcp/McpToolAccess.ts";
+import { advertisedJsonSchema } from "../../mcp/advertisedJsonSchema.ts";
+import * as Sqlite from "../../persistence/Sqlite.ts";
 import { ProviderRegistry } from "../../provider/ProviderRegistry.ts";
 import * as ServerSettings from "../../serverSettings.ts";
 
+import { KinIdentity } from "../chat/KinIdentity.ts";
+import { KinServer, type Services } from "../KinServer.ts";
 import * as Kin from "../layer.ts";
 import { KinDocumentToolkit } from "../gendocs/mcp.ts";
 import { TURN_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
+import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KinPulseToolkit } from "../pulse/mcp.ts";
+import { CreateInput, sourceOf } from "../work/leadWork.ts";
 import { KinDocsToolkit } from "../work/mcp/docTools.ts";
 import { KinBillToolkit } from "../work/mcp/billTools.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
-import { callCounts, helperModels } from "./KinToolGate.ts";
+import * as KinToolGate from "./KinToolGate.ts";
 import { McpProvidersOffered } from "./toolPolicy.ts";
 
-it("fills the event of every Kin tool that takes one, and of no other", () => {
-  const takes = [
+it("fills and hides the event of every Kin tool that takes one, and of no other", () => {
+  const tools = [
     KinLeadToolkit,
     KinWorkToolkit,
     KinDocsToolkit,
@@ -41,16 +54,21 @@ it("fills the event of every Kin tool that takes one, and of no other", () => {
     KinBillToolkit,
     KinDocumentToolkit,
     KinPulseToolkit,
-  ].flatMap((toolkit) =>
-    Object.values(toolkit.tools).flatMap((tool) =>
-      Predicate.hasProperty(tool.parametersSchema, "fields") &&
-      Predicate.hasProperty(tool.parametersSchema.fields, "sourceEventId")
-        ? [tool.name]
-        : [],
-    ),
+  ].flatMap((toolkit) => Object.values(toolkit.tools) as Array<Tool.Any>);
+  const takes = tools.flatMap((tool) =>
+    Predicate.hasProperty(tool.parametersSchema, "fields") &&
+    Predicate.hasProperty(tool.parametersSchema.fields, "sourceEventId")
+      ? [tool.name]
+      : [],
   );
   assert.isDefined(Kin.layer);
   assert.deepStrictEqual([...TURN_EVENT_TOOLS].toSorted(), takes.toSorted());
+  for (const tool of tools)
+    assert.notProperty(
+      advertisedJsonSchema(tool, { kin: true }).properties ?? {},
+      "sourceEventId",
+      tool.name,
+    );
 });
 
 const Invented = Toolkit.make(
@@ -93,6 +111,116 @@ const client = McpSchema.McpServerClient.of({
   getClient: Effect.die("unused"),
 });
 
+it.effect(
+  "fills an omitted source with the latest message, resolves old message IDs, and refuses unknown IDs",
+  () => {
+    const threadId = ThreadId.make("lead-thread");
+    const orgId = KinOrgId.make("org_tidewater_freight");
+    const agentId = KinAgentId.make("agent_chief_of_staff");
+    const ownerPersonId = KinPersonId.make("person_rhea");
+    const wakeupId = "wake_record_source";
+    const agent = { _tag: "agent" as const, orgId, agentId, ownerPersonId, threadId };
+    const Records = Toolkit.make(
+      Tool.make("record_create", {
+        parameters: CreateInput,
+        success: Schema.Struct({ sourceEventId: Schema.String }),
+        failure: KinChatError,
+        failureMode: "return",
+        dependencies: [SqlClient.SqlClient],
+      }).annotateMerge(KinWorkToolkit.tools.record_create.annotations),
+    );
+    const handlers = McpToolAccess.toLayer(Records, {
+      record_create: McpToolAccess.reads(({ sourceEventId }) =>
+        sourceOf({ ...agent, wakeupId, startedAt: 0 }, sourceEventId).pipe(
+          Effect.catchTags({ SqlError: Effect.die }),
+          Effect.as({ sourceEventId }),
+        ),
+      ),
+    });
+    return Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const server = yield* McpServer.McpServer;
+      const identity = yield* KinIdentity;
+      const services = Context.make(KinIdentity, identity).pipe(
+        Context.add(SqlClient.SqlClient, sql),
+      ) as unknown as Context.Context<Services>;
+      const at = "2026-11-27T09:00:00.000Z";
+      yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Tidewater Freight', ${at})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES (${ownerPersonId}, ${orgId}, 'rhea', 'Rhea', ${at})`;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+      VALUES (${agentId}, ${orgId}, 'Chief of staff', 'lead', ${ownerPersonId}, ${at})`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, direct_key, last_seq, created_at)
+      VALUES ('chat_rhea_chief', ${orgId}, 'direct', 'rhea:chief', 2, ${at})`;
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, thread_id, models_json,
+      worker_projects_json, owner_chat_id)
+      VALUES (${agentId}, ${orgId}, 'Chief of staff', 0, ${threadId}, '{}', '[]', 'chat_rhea_chief')`;
+      const messages = [
+        ["event_first_message", "message_first", 1],
+        ["event_latest_message", "message_latest", 2],
+      ] as const;
+      yield* sql`INSERT INTO kin_wakeups (wakeup_id, org_id, agent_id, thread_id, model, started_at,
+      status, event_ids, audience) VALUES (${wakeupId}, ${orgId}, ${agentId}, ${threadId}, 'test',
+        0, 'running', ${JSON.stringify(messages.map(([eventId]) => eventId))}, 'shared')`;
+      for (const [eventId, messageId, receivedAt] of messages) {
+        const payload = JSON.stringify({ chatId: "chat_rhea_chief", messageId });
+        yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json,
+        received_at, queued_at, state, wakeup_id)
+        VALUES (${eventId}, ${orgId}, ${agentId}, 'chat.message', 'P0', ${payload},
+          ${receivedAt}, ${receivedAt}, 'claimed', ${wakeupId})`;
+      }
+
+      const call = (args: { sourceEventId?: string }) =>
+        server
+          .callTool({
+            name: "record_create",
+            arguments: { ...args, records: [{ title: "Check the Juniper Cold Chain delivery" }] },
+          })
+          .pipe(
+            Effect.provideService(McpSchema.McpServerClient, client),
+            Effect.provideService(McpInvocationContext, caller),
+            Effect.provideService(KinServer, {
+              services: Option.some(services),
+              subscribeForViewer: Option.none(),
+              taskCardUpdater: Layer.empty,
+            }),
+          );
+      for (const [args, sourceEventId] of [
+        [{}, "event_latest_message"],
+        [{ sourceEventId: "message_first" }, "event_first_message"],
+      ] as const) {
+        const result = yield* call(args);
+        assert.deepStrictEqual(result.structuredContent, { sourceEventId });
+      }
+      const refused = yield* call({ sourceEventId: "event_unknown" });
+      assert.isTrue(refused.isError);
+      assert.include(
+        JSON.stringify(refused.content),
+        "sourceEventId must be one of this turn's events. Nothing was written.",
+      );
+    }).pipe(
+      Effect.provide(
+        Layer.mergeAll(
+          KinToolGate.layer,
+          McpHttpServer.toolkitRegistration(Records, handlers, { kin: true }),
+        ).pipe(
+          Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
+          Layer.provideMerge(
+            Layer.mock(KinIdentity)({
+              owner: { _tag: "person", orgId, personId: ownerPersonId },
+              isAgentThread: (thread) => thread === threadId,
+              isLeadThread: (thread) => thread === threadId,
+              resolveAgent: () => Effect.succeed(agent),
+            }),
+          ),
+          Layer.provideMerge(KinPersistence.layer),
+          Layer.provideMerge(Sqlite.layerMemory),
+        ),
+      ),
+    );
+  },
+);
+
 it.effect("counts each tool's calls in memory and logs them in one line an hour", () => {
   const lines: Array<string> = [];
   return Effect.gen(function* () {
@@ -123,7 +251,7 @@ it.effect("counts each tool's calls in memory and logs them in one line an hour"
   }).pipe(
     Effect.provide(
       Layer.mergeAll(
-        callCounts,
+        KinToolGate.callCounts,
         McpHttpServer.toolkitRegistration(Invented, inventedHandlers),
       ).pipe(
         Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
@@ -239,7 +367,7 @@ it.effect.each([
       Effect.provide(
         Layer.mergeAll(
           McpHttpServer.toolkitRegistration(Delegation, handlers),
-          kin ? helperModels : Layer.empty,
+          kin ? KinToolGate.helperModels : Layer.empty,
         ).pipe(
           Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
           Layer.provideMerge(
