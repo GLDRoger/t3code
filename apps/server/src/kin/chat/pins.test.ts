@@ -287,17 +287,20 @@ it.effect("refuses Money goals and Money-shaped targets", () =>
   }).pipe(Effect.provide(layer)),
 );
 
-it("keeps live pin mutations out of MCP, lead and scheduled pulse code", () => {
+it("keeps access to live pins in the chat RPC wiring", () => {
   const kin = NodePath.resolve(import.meta.dirname, "..");
+  const allowed = new Set(["chat/pins.ts", "chat/rpcHandlers.ts", "chat/layer.ts", "KinServer.ts"]);
   const access =
-    /\bKinChatPins\b|\bchat(?:Pin|Unpin)\b|\bkin\.chat\.(?:pin|unpin)\b|["'\x60][^"'\x60]*chat\/pins\.ts["'\x60]/;
-  const reached = ["mcp", "lead", "pulse"].flatMap((folder) => {
-    const root = NodePath.join(kin, folder);
-    return NodeFS.readdirSync(root, { recursive: true, encoding: "utf8" })
-      .filter((path) => path.endsWith(".ts") && !path.endsWith(".test.ts"))
-      .filter((path) => access.test(NodeFS.readFileSync(NodePath.join(root, path), "utf8")))
-      .map((path) => NodePath.join(folder, path));
-  });
+    /\bKinChatPins\b|\bchat(?:Pins?|Unpin)\b|\bkin\.chat\.(?:pins?|unpin)\b|["'`](?:\.\/|[^"'\r\n`]*chat\/)pins(?:\.[jt]s)?["'`]/;
+  const reached = NodeFS.readdirSync(kin, { recursive: true, withFileTypes: true })
+    .filter((entry) => entry.isFile() && !/\.(?:test|spec|testkit)\.[^.]+$/.test(entry.name))
+    .map((entry) =>
+      NodePath.relative(kin, NodePath.join(entry.parentPath, entry.name))
+        .split(NodePath.sep)
+        .join("/"),
+    )
+    .filter((path) => !allowed.has(path))
+    .filter((path) => access.test(NodeFS.readFileSync(NodePath.join(kin, path), "utf8")));
   assert.deepStrictEqual(reached, []);
 });
 
