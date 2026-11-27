@@ -70,6 +70,7 @@ const tableNames = [
   "kin_card_plans",
   "kin_chat_levels",
   "kin_chat_members",
+  "kin_chat_pins",
   "kin_chats",
   "kin_client_touches",
   "kin_company_profile",
@@ -3619,7 +3620,7 @@ const legacyBankAlerts = Effect.gen(function* () {
   yield* sql`DROP TABLE IF EXISTS kin_bank_senders`;
   yield* sql`DROP TABLE kin_bank_alerts`;
   yield* LegacyBankAlerts;
-  yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id = 229`;
+  yield* sql`DELETE FROM kin_sql_migrations WHERE migration_id >= 229`;
   yield* sql`INSERT INTO kin_orgs VALUES
     ('existing', 'Tidewater Freight', '2026-11-01'), ('new', 'Juniper Cold Chain', '2026-11-01')`;
   yield* sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, thread_id, sent_at,
