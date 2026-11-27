@@ -278,7 +278,7 @@ export class KinSessions extends Context.Service<
           nativeSearch,
           shell: undefined,
         } as const;
-        // Bills are outside text: Kin's tools only, and of those only `bill_read` (`billsOnly`).
+        // Bills are outside text: Kin's tools only, and of those only the bills tools (`billsOnly`).
         if (bills)
           return {
             ...confined,

@@ -273,7 +273,7 @@ export const visibleOnKinEndpoint = Effect.fn("KinAgentSession.visible")(functio
   name: string,
   threadId: ThreadId,
 ) {
-  // A bills turn's reader may be any lead: it lists `bill_read` whatever its seat.
+  // A bills turn's reader may be any lead: it lists the bills tools whatever its seat.
   if (threadId.startsWith(BILLS_THREAD_PREFIX)) return BILLS_TOOLS.has(name);
   if (threadId.startsWith(TRIAGE_THREAD_PREFIX)) return TRIAGE_TOOLS.has(name);
   const shared = threadId.startsWith(SHARED_THREAD_PREFIX);

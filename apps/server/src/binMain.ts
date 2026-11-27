@@ -22,6 +22,9 @@ export async function runCliCommand() {
   } else if (command === "__kin-statement") {
     const { runStatementWorker } = await import("./kin/work/statements/statementWorker.ts");
     await runStatementWorker();
+  } else if (command === "__kin-bill-cutter") {
+    const { runBillCutterWorker } = await import("./kin/work/billCutterWorker.ts");
+    await runBillCutterWorker(process.argv[3]!);
   } else if (command === "__kin-statement-check") {
     const { runStatementCheck } = await import("./kin/work/statements/statementCheck.ts");
     await runStatementCheck(process.argv[3]!);

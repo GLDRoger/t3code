@@ -151,6 +151,7 @@ export const OUTSIDE_TOOLS = {
   statement_read: "allowed",
   statement_rows: "allowed",
   bills_add: "allowed",
+  bill_cut: "allowed",
   bill_read: "allowed",
   kin_document: recipeOnly,
   kin_recipes: "allowed",

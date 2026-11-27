@@ -26,8 +26,12 @@
       "desc": 359,
       "schema": 179
     },
+    "bill_cut": {
+      "desc": 230,
+      "schema": 538
+    },
     "bill_read": {
-      "desc": 170,
+      "desc": 185,
       "schema": 890
     },
     "bills_add": {
