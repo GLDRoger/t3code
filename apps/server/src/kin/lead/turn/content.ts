@@ -85,7 +85,7 @@ type TurnContentInput = {
   /** The turn offers `bills_add`, so the files left out are named to it. */
   readonly offersBillsAdd?: boolean;
   /** Only an isolated bills.read lane; ordinary chat pictures are unchanged. */
-  readonly billPhotos?: boolean;
+  readonly billPhotos?: boolean | "legacy";
 };
 
 /**
@@ -254,15 +254,17 @@ export class KinTurnContent extends Context.Service<
       const prepare = Effect.fn("KinTurnContent.prepare")(function* (input: TurnContentInput) {
         if (!input.billPhotos) return yield* prepareFiles(input);
         const attachments = yield* Effect.forEach(input.attachments, (file) =>
-          file.type === "image" && shownAsPicture(file)
-            ? billPhotoForModel(attachmentsDir, file).pipe(
-                Effect.provideService(FileSystem.FileSystem, fs),
-              )
+          shownAsPicture(file) && !isPdf(file)
+            ? billPhotoForModel(attachmentsDir, file, {
+                cachedOnly: input.billPhotos !== "legacy",
+              }).pipe(Effect.provideService(FileSystem.FileSystem, fs))
             : Effect.succeed(file),
         );
         // Skipping just one image would point the prompt's B-numbers at the wrong photos.
         if (!attachments.every((file) => file !== undefined)) {
-          yield* Effect.logWarning("Kin couldn't prepare a bill photo");
+          yield* Effect.logWarning(
+            "Kin couldn't prepare a bill photo; leaving the turn without attachments",
+          );
           return { text: input.text, attachments: [] };
         }
         return yield* prepareFiles({ ...input, attachments });

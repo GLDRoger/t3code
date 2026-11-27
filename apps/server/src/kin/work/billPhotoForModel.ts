@@ -11,6 +11,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Semaphore from "effect/Semaphore";
 
+import { resolveAttachmentRelativePath } from "../../attachmentPaths.ts";
 import {
   createDeterministicAttachmentId,
   KIN_ATTACHMENT_ID_PREFIX,
@@ -29,9 +30,23 @@ export const billPhotoPreviewId = (sourceId: string) => {
   return id === null ? null : `${id}-jpg`;
 };
 
-/** Only the model uses this JPEG. The bill row and viewer keep the original attachment id. */
+export const billPhotoPreviewPath = (attachmentsDir: string, sourceId: string) => {
+  const id = billPhotoPreviewId(sourceId);
+  return id === null
+    ? null
+    : resolveAttachmentRelativePath({ attachmentsDir, relativePath: `${id}.jpg` });
+};
+
+export const isBillPdf = ({ mimeType, name }: Pick<ChatAttachment, "mimeType" | "name">) =>
+  mimeType.toLowerCase().split(";", 1)[0]?.trim() === "application/pdf" ||
+  name.split(".").at(-1)?.toLowerCase() === "pdf";
+
 export const billPhotoForModel = Effect.fn("KinBills.photoForModel")(
-  function* (attachmentsDir: string, attachment: ChatAttachment) {
+  function* (
+    attachmentsDir: string,
+    attachment: ChatAttachment,
+    { cachedOnly = false }: { readonly cachedOnly?: boolean } = {},
+  ) {
     const fs = yield* FileSystem.FileSystem;
     const source = resolveAttachmentPath({ attachmentsDir, attachment });
     const id = billPhotoPreviewId(attachment.id);
@@ -43,8 +58,19 @@ export const billPhotoForModel = Effect.fn("KinBills.photoForModel")(
       mimeType: "image/jpeg",
       sizeBytes: attachment.sizeBytes,
     };
-    const path = resolveAttachmentPath({ attachmentsDir, attachment: image });
+    const path = resolveAttachmentRelativePath({ attachmentsDir, relativePath: `${id}.jpg` });
     if (path === null) return undefined;
+    const readCached = fs.stat(path).pipe(
+      Effect.map((info) =>
+        info.type === "File" ? { ...image, sizeBytes: Number(info.size) } : undefined,
+      ),
+      Effect.orElseSucceed(() => undefined),
+    );
+    if (cachedOnly) {
+      const cached = yield* readCached;
+      if (cached !== undefined) return (yield* fs.exists(source)) ? cached : undefined;
+      if (attachment.sizeBytes > BILL_MODEL_IMAGE_BYTES) return undefined;
+    }
     const readHeader = fs.open(source, { flag: "r" }).pipe(
       Effect.flatMap((file) => file.readAlloc(IMAGE_DIMENSIONS_HEADER_BYTES)),
       Effect.scoped,
@@ -64,11 +90,13 @@ export const billPhotoForModel = Effect.fn("KinBills.photoForModel")(
     )
       return attachment;
 
+    if (cachedOnly) return undefined;
+
     return yield* previews.withPermit(
       Effect.gen(function* () {
         if (!(yield* fs.exists(source))) return undefined;
-        const cached = yield* fs.stat(path).pipe(Effect.option);
-        if (Option.isSome(cached)) return { ...image, sizeBytes: Number(cached.value.size) };
+        const cached = yield* readCached;
+        if (cached !== undefined) return cached;
         const bytes = yield* fs.readFile(source);
         const { outcome } = yield* cutBillPage({ kind: "photo", bytes, boxes: [] });
         if (outcome._tag !== "cut" || outcome.preview === undefined) return undefined;

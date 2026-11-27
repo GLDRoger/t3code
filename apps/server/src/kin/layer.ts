@@ -255,12 +255,12 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
           ),
         ),
       ).pipe(
-        (core) => MailRules.layer.pipe(Layer.provideMerge(core)),
         Layer.merge(KinShell.layer),
         Layer.merge(FollowUps.itemsLayer),
         Layer.merge(KinNumbers.layer),
         Layer.merge(OwnerNotices.layer),
         Layer.provideMerge(KinChat.layerWithWork),
+        (core) => MailRules.layer.pipe(Layer.provideMerge(core)),
         // Social's posting service sits on top: it reads cards, chats and the document renderer.
         (core) =>
           DevFakeSocial.layer.pipe(

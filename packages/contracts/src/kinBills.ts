@@ -181,6 +181,7 @@ export const KinBillRow = Schema.Struct({
   batchId: KinBillBatchId,
   /** Opened with `assets.createUrl`, as any file on an entry. */
   file: KinFileRef,
+  preview: Schema.optional(KinFileRef),
   state: KinBillState,
   read: KinBillRead,
   /** In plain words, what could not be read. */

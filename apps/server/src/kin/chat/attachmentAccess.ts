@@ -1,6 +1,7 @@
 import {
   AssetAttachmentNotFoundError,
   AuthKinChatScope,
+  isProviderSendTurnSupportedImageMimeType,
   type AssetResource,
   type AuthSessionId,
 } from "@t3tools/contracts";
@@ -17,6 +18,7 @@ import * as SessionStore from "../../auth/SessionStore.ts";
 import { logoFile } from "../gendocs/brand.ts";
 import { KinServer } from "../KinServer.ts";
 import { readProfile } from "../work/companyProfile.ts";
+import { billPhotoPreviewId, isBillPdf } from "../work/billPhotoForModel.ts";
 import { commentFileReadable } from "../work/recordComments.ts";
 import { KIN_ATTACHMENT_ID_PREFIX } from "./KinAttachmentStore.ts";
 import { KinChatService } from "./KinChatService.ts";
@@ -24,6 +26,24 @@ import { KinIdentity } from "./KinIdentity.ts";
 import { KinVisualHosts } from "./KinVisualHosts.ts";
 
 type AttachmentResource = Extract<AssetResource, { readonly _tag: "attachment" }>;
+
+const possiblePhotoPreview = /^kin-chat-[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}-jpg$/;
+
+const billPhotoSource = Effect.fn("Kin.billPhotoSource")(function* (
+  sql: SqlClient.SqlClient,
+  orgIds: ReadonlyArray<KinOrgId>,
+  attachmentId: string,
+) {
+  const photos = yield* sql<{ id: string; name: string; mimeType: string }>`
+    SELECT attachment_id AS id, name, mime_type AS "mimeType" FROM kin_bill_reads
+    WHERE org_id IN ${sql.in(orgIds)} AND file_type = 'image'`;
+  return photos.find(
+    (photo) =>
+      isProviderSendTurnSupportedImageMimeType(photo.mimeType) &&
+      !isBillPdf(photo) &&
+      billPhotoPreviewId(photo.id) === attachmentId,
+  )?.id;
+});
 
 /**
  * Who may be handed a URL for a stored attachment. A file on a Kin message goes only to people
@@ -48,21 +68,32 @@ export const authorizeAttachmentRead = Effect.fn("Kin.authorizeAttachmentRead")(
   const readable = yield* Context.get(kin.value, KinIdentity)
     .resolve(session)
     .pipe(
-      Effect.flatMap((people) =>
-        Context.get(kin.value, KinChatService)
-          .attachmentReadable(people, attachmentId)
-          .pipe(
-            // A file on a task's comment is read by whoever sees the task.
-            Effect.filterOrElse(
-              (onMessage) => onMessage || Option.isNone(sql),
-              () =>
-                Option.isNone(sql)
-                  ? Effect.succeed(false)
-                  : commentFileReadable(people, attachmentId).pipe(
-                      Effect.provideService(SqlClient.SqlClient, sql.value),
-                    ),
-            ),
-          ),
+      Effect.flatMap(
+        Effect.fnUntraced(function* (people) {
+          const source =
+            Option.isSome(sql) && people.length > 0 && possiblePhotoPreview.test(attachmentId)
+              ? yield* billPhotoSource(
+                  sql.value,
+                  people.map(({ orgId }) => orgId),
+                  attachmentId,
+                )
+              : undefined;
+          const fileId = source ?? attachmentId;
+          return yield* Context.get(kin.value, KinChatService)
+            .attachmentReadable(people, fileId)
+            .pipe(
+              // A file on a task's comment is read by whoever sees the task.
+              Effect.filterOrElse(
+                (onMessage) => onMessage || Option.isNone(sql),
+                () =>
+                  Option.isNone(sql)
+                    ? Effect.succeed(false)
+                    : commentFileReadable(people, fileId).pipe(
+                        Effect.provideService(SqlClient.SqlClient, sql.value),
+                      ),
+              ),
+            );
+        }),
       ),
       // A failed lookup is refused like a stranger: reading is denied by default.
       Effect.orElseSucceed(() => false),

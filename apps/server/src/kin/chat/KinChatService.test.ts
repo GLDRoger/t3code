@@ -15,6 +15,7 @@ import * as ServerConfig from "../../config.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
 import * as AttachmentStore from "./KinAttachmentStore.ts";
 import { authorizeAttachmentRead } from "./attachmentAccess.ts";
+import { billPhotoPreviewId } from "../work/billPhotoForModel.ts";
 import { environment } from "./TaskCard.testkit.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import { CommandId } from "@t3tools/contracts";
@@ -658,7 +659,7 @@ describe("KinChatService", () => {
     Effect.gen(function* () {
       const { repo, service, identity, person, chat } = yield* seed();
       const sql = yield* SqlClient.SqlClient;
-      const memberId = KinPersonId.make("suraj");
+      const memberId = KinPersonId.make("zoya");
       const memberSession = {
         ...session,
         sessionId: AuthSessionId.make("member-session"),
@@ -667,19 +668,19 @@ describe("KinChatService", () => {
       yield* repo.insertPerson({
         orgId: person.orgId,
         personId: memberId,
-        handle: "suraj",
-        displayName: "Suraj",
+        handle: "zoya",
+        displayName: "Zoya",
         githubLogin: null,
         createdAt: timestamp,
       });
       yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at) VALUES (${memberSession.sessionId}, ${person.orgId}, ${memberId}, 0)`;
       const members = yield* identity.resolve(memberSession);
-      const ownAgent = KinAgentId.make("suraj-lead");
+      const ownAgent = KinAgentId.make("zoya-lead");
       yield* repo.insertAgent({
         orgId: person.orgId,
         agentId: ownAgent,
         ownerPersonId: memberId,
-        displayName: "Suraj lead",
+        displayName: "Zoya lead",
         role: "lead",
         createdAt: timestamp,
       });
@@ -725,6 +726,7 @@ describe("KinChatService", () => {
       const kin = Option.some(
         Context.make(Identity.KinIdentity, identity).pipe(
           Context.add(Service.KinChatService, service),
+          Context.add(SqlClient.SqlClient, sql),
         ),
       );
       const read = (reader: AuthenticatedSession, attachmentId: string, host = kin) =>
@@ -772,6 +774,12 @@ describe("KinChatService", () => {
             'read')`;
       assert.strictEqual(yield* read(session, membersFile), "served");
       assert.strictEqual(yield* read(memberSession, ownersFile), "refused");
+      const preview = billPhotoPreviewId(ownersFile)!;
+      assert.strictEqual(yield* read(session, preview), "served");
+      for (const id of aliases(preview))
+        assert.strictEqual(yield* read(memberSession, id), "refused");
+      assert.strictEqual(yield* read(memberSession, strayFile), "served");
+      assert.strictEqual(yield* read(memberSession, billPhotoPreviewId(strayFile)!), "refused");
 
       yield* sql`UPDATE kin_chat_members SET left_at = ${timestamp} WHERE chat_id = ${own.chatId} AND person_id = ${memberId}`;
       assert.strictEqual(yield* read(memberSession, membersFile), "refused");
@@ -803,7 +811,7 @@ describe("KinChatService", () => {
           return sent.attachments![0]!.id;
         });
       const before = yield* groupFile("before.png");
-      yield* joinGroup("files-suraj", memberId, "member");
+      yield* joinGroup("files-zoya", memberId, "member");
       const after = yield* groupFile("after.png");
       assert.strictEqual(yield* read(memberSession, before), "refused");
       assert.strictEqual(yield* read(memberSession, after), "served");

@@ -9,17 +9,22 @@ import {
   KinAgentId,
   KinChatError,
   KinChatId,
+  KinMailRuleCardState,
+  KinMessageId,
   KinOrgId,
   KinPersonId,
   KinWakeupId,
+  KinWidgetId,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Queue from "effect/Queue";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -36,6 +41,10 @@ import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import { subscribeRefreshes } from "../chat/refreshes.ts";
 import { runKinMigrations } from "../persistence/KinMigrations.ts";
 import * as MailRules from "./KinMailRules.ts";
+import { sealPlans } from "../widgets/cardPlans.ts";
+import { mailRuleTap } from "./mailRuleTap.ts";
+import { prepareMailRule } from "./ruleDraft.ts";
+import { holdRuleWake } from "./ruleRunStore.ts";
 import { monthlyMailRuleLimit, recordMailRuleWake } from "./ruleLimit.ts";
 import { pauseMailRulesFor } from "./ruleLifecycle.ts";
 import {
@@ -57,6 +66,8 @@ const teammates = [
   { _tag: "person", orgId, personId: zoya },
 ] satisfies ReadonlyArray<PersonIdentity>;
 const connectionId = "mail";
+const iso = (ms: number) => DateTime.formatIso(DateTime.makeUnsafe(ms));
+const decodeCard = Schema.decodeUnknownEffect(KinMailRuleCardState);
 const match = {
   from: [{ domain: "juniper.example" }],
   subjectHas: [],
@@ -73,8 +84,9 @@ const tap = {
   tapId: "settings-tap",
 };
 const sqlLayer = NodeSqliteClient.layer({ filename: ":memory:" });
+const chats = ChatHub.layer.pipe(Layer.provideMerge(ChatRepository.layer));
 const rulesWithQueue = MailRules.layer.pipe(
-  Layer.provideMerge(Layer.merge(Layer.mock(KinConnections)({}), EventQueue.layer)),
+  Layer.provideMerge(Layer.mergeAll(Layer.mock(KinConnections)({}), EventQueue.layer, chats)),
 );
 const fixture = rulesWithQueue.pipe(Layer.provideMerge(sqlLayer));
 
@@ -253,7 +265,9 @@ it.effect("applies a changed cap to the next matching mail and keeps held mail h
   Effect.gen(function* () {
     const sql = yield* seed();
     const rules = yield* MailRules.KinMailRules;
+    const queue = yield* EventQueue.KinEventQueue;
     yield* TestClock.setTime(Date.parse("2026-11-27T12:00:00Z"));
+    yield* sql`UPDATE kin_people SET time_zone = 'UTC', hold_outside_hours = 0 WHERE person_id = ${meera}`;
     const rule = yield* rules.createFromTap(owners, { ...tap, monthlyCap: 10 });
     const ref = { orgId, ruleId: rule.ruleId };
     const feed = Effect.fn("KinMailRulesTest.feed")(function* (arrivalId: string) {
@@ -271,11 +285,24 @@ it.effect("applies a changed cap to the next matching mail and keeps held mail h
         }),
       );
     });
+    const claim = Effect.fn("KinMailRulesTest.claim")(function* (wakeupId: KinWakeupId) {
+      yield* TestClock.adjust(MINUTE_MS);
+      const [ready] = yield* queue.readyLeads(orgId);
+      assert.isAtMost(ready?.readyAt ?? Infinity, yield* Clock.currentTimeMillis);
+      const [event] = yield* Effect.scoped(
+        queue.claim({ orgId, agentId, wakeupId, model: "fixture" }),
+      );
+      yield* queue.finish({ orgId, wakeupId, status: "completed" });
+      return event;
+    });
     const before =
       yield* sql`SELECT content_sha256, said_by, source_event, activation FROM kin_mail_rules`;
     yield* feed("first");
     const lower = yield* rules.setLimit(owners, { ...ref, monthlyCap: 1 });
     assert.include(lower, { ...ref, monthlyCap: 1, fired: 1, atLimit: true, setterName: "Meera" });
+    yield* claim(KinWakeupId.make("01KA4Y3GD3FC3FR2A9G7K80JD4"));
+    const firstRanAt = iso(yield* Clock.currentTimeMillis);
+    assert.strictEqual((yield* rules.list(owners, { orgId })).rules[0]?.lastRanAt, firstRanAt);
     yield* feed("held");
     assert.deepInclude((yield* rules.history(owners, ref)).entries, {
       kind: "mail",
@@ -292,7 +319,16 @@ it.effect("applies a changed cap to the next matching mail and keeps held mail h
       settledAt: yield* Clock.currentTimeMillis,
       refs: null,
     });
-    assert.include(yield* rules.runNow(owners, ref), { status: "queued", arrivalId: "held" });
+    const manual = yield* rules.runNow(owners, ref);
+    assert.include(manual, { status: "queued", arrivalId: "held" });
+    if (manual.status !== "queued") return assert.fail("Expected Run now to queue the held mail.");
+    assert.strictEqual((yield* rules.list(owners, { orgId })).rules[0]?.lastRanAt, firstRanAt);
+    const second = yield* claim(KinWakeupId.make("01KA4Y3GD3FC3FR2A9G7K80JD5"));
+    assert.strictEqual(second?.eventId, manual.eventId);
+    assert.strictEqual(
+      (yield* rules.list(owners, { orgId })).rules[0]?.lastRanAt,
+      iso(yield* Clock.currentTimeMillis),
+    );
     const higher = yield* rules.setLimit(owners, { ...ref, monthlyCap: 10 });
     assert.include(higher, { monthlyCap: 10, fired: 1, atLimit: false });
     yield* feed("next");
@@ -312,14 +348,173 @@ it.effect("applies a changed cap to the next matching mail and keeps held mail h
       yield* sql`SELECT content_sha256, said_by, source_event, activation FROM kin_mail_rules`,
       before,
     );
-  }).pipe(
-    Effect.provide(
-      Layer.merge(
-        rulesWithQueue,
-        ChatHub.layer.pipe(Layer.provideMerge(ChatRepository.layer)),
-      ).pipe(Layer.provideMerge(sqlLayer)),
-    ),
-  ),
+  }).pipe(Effect.provide(rulesWithQueue.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+);
+
+const withChats = rulesWithQueue.pipe(Layer.provideMerge(Sqlite.layerMemory));
+
+it.effect("marks the answered rule card removed in open chats only once", () =>
+  Effect.gen(function* () {
+    const sql = yield* seed();
+    const rules = yield* MailRules.KinMailRules;
+    const repo = yield* ChatRepository.KinChatRepository;
+    const hub = yield* ChatHub.KinChatHub;
+    const identity = { _tag: "person", orgId, personId: rhea } as const;
+    const chatId = KinChatId.make("rhea-finance");
+    yield* sql`INSERT INTO kin_chats (org_id, chat_id, kind, direct_key, last_seq, created_at)
+      VALUES ('org', ${chatId}, 'direct', 'rhea:finance', 0, '2026-11-27')`;
+    yield* sql`INSERT INTO kin_chat_members (org_id, chat_id, principal_kind, person_id, member_id,
+      role, joined_at) VALUES ('org', ${chatId}, 'person', 'rhea', 'rhea-m', 'owner', '2026-11-27')`;
+    yield* sql`INSERT INTO kin_chat_members (org_id, chat_id, principal_kind, agent_id, member_id,
+      role, joined_at) VALUES ('org', ${chatId}, 'agent', 'finance', 'rhea-finance-m', 'member', '2026-11-27')`;
+    const now = 10_000;
+    yield* TestClock.setTime(now);
+    const at = iso(now);
+    const { contentSha256, monthlyCap } = yield* prepareMailRule(tap);
+    const shown = {
+      mailbox: { connectionId, label: "Mail" },
+      lead: { agentId, name: "Finance" },
+      monthlyCap,
+      contentSha256,
+      expiresAt: now + MINUTE_MS,
+    };
+    const widgetId = KinWidgetId.make("mail-rule-card");
+    const messageId = KinMessageId.make("mail-rule-message");
+    yield* repo.insertMessage({
+      orgId,
+      chatId,
+      messageId,
+      audience: "owner",
+      author: { _tag: "system" },
+      kind: "system",
+      body: "",
+      intent: null,
+      mentions: [],
+      replyTo: null,
+      widgetId: null,
+      floorRunId: null,
+      status: "posted",
+      sentBy: null,
+      clientMessageId: null,
+      createdAt: at,
+      editedAt: null,
+    });
+    yield* repo.insertWidget({
+      orgId,
+      chatId,
+      widgetId,
+      messageId,
+      audience: "owner",
+      widgetClass: "native",
+      type: "mail_rule",
+      state: {
+        ...shown,
+        what: tap.what,
+        match,
+        fromAscii: ["juniper.example"],
+        decision: { status: "proposed" },
+      },
+      source: null,
+      feed: null,
+      awaiting: [],
+      pinnedAt: null,
+      closedAt: null,
+      updatedAt: at,
+    });
+    yield* sealPlans({
+      orgId,
+      chatId,
+      widgetId,
+      now,
+      plans: [{ optionId: "turn_on", plan: { kind: "mail_rule", personId: rhea, shown } }],
+    });
+    const getCard = repo.getWidget({ orgId, widgetId }).pipe(Effect.map(Option.getOrThrow));
+    const widget = yield* getCard;
+    const answered = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const state = yield* mailRuleTap({
+          identity,
+          widget,
+          revision: widget.revision,
+          action: "turn_on",
+          tapId: KinMessageId.make("rhea-tap"),
+        });
+        return yield* repo.updateWidget({
+          ...widget,
+          state,
+          audience: "owner",
+          expectedRevision: widget.revision,
+          closedAt: at,
+          updatedAt: at,
+        });
+      }),
+    );
+    const state = yield* decodeCard(answered.state);
+    if (state.decision.status !== "on") return assert.fail("Expected a rule turned on by Rhea.");
+    assert.deepStrictEqual(state.decision.by, { personId: rhea, name: "Rhea" });
+    const ref = { orgId, ruleId: state.decision.ruleId };
+    const updates = yield* Stream.toQueue(yield* hub.subscribeForViewer(identity, chatId), {
+      capacity: "unbounded",
+    });
+    yield* rules.pause([identity], ref);
+    assert.deepStrictEqual(yield* getCard, answered);
+    yield* rules.resume([identity], { ...ref, chatId, agentId, tapId: "rhea-resume" });
+    assert.deepStrictEqual(yield* getCard, answered);
+    yield* TestClock.adjust("1 second");
+    const removedAt = iso(yield* Clock.currentTimeMillis);
+    const removed = yield* rules.remove([identity], ref);
+    const updated = yield* getCard;
+    assert.deepStrictEqual(updated.state, { ...state, decision: { ...state.decision, removedAt } });
+    assert.strictEqual(updated.revision, answered.revision + 1);
+    assert.deepStrictEqual(yield* Queue.take(updates), {
+      type: "widget.updated",
+      orgId,
+      widget: updated,
+    });
+
+    yield* TestClock.adjust("1 second");
+    assert.deepStrictEqual(yield* rules.remove([identity], ref), removed);
+    assert.deepStrictEqual(yield* getCard, updated);
+    assert.strictEqual(yield* Queue.size(updates), 0);
+  }).pipe(Effect.scoped, Effect.provide(withChats)),
+);
+
+it.effect("shows when a run started after a paused automatic wake", () =>
+  Effect.gen(function* () {
+    const sql = yield* seed();
+    const rules = yield* MailRules.KinMailRules;
+    const queue = yield* EventQueue.KinEventQueue;
+    const now = Date.parse("2026-11-27T12:00:00Z");
+    yield* TestClock.setTime(now);
+    yield* sql`UPDATE kin_people SET time_zone = 'UTC', hold_outside_hours = 0 WHERE person_id = ${meera}`;
+    const rule = yield* rules.createFromTap(owners, tap);
+    const ref = { orgId, ruleId: rule.ruleId };
+    const getRule = rules.list(owners, { orgId }).pipe(Effect.map(({ rules }) => rules[0]!));
+    yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id,
+      from_address, received_at, noticed_at, class, state, sender_check)
+      VALUES ('org', 'paused-mail', 'mail', 'paused-mail', 'bill@juniper.example',
+        ${now}, ${now}, 'known_biller', 'settled', 'passed')`;
+    yield* sql.withTransaction(
+      Effect.gen(function* () {
+        const matches = yield* matchingRules(orgId, connectionId);
+        yield* claimRuleMail(matches[0]!.rule, "paused-mail", null, "match", null);
+        yield* flushRuleMail(matches, now);
+      }),
+    );
+    assert.strictEqual((yield* rules.pause(owners, ref)).lastWakeAt, now);
+    assert.isUndefined((yield* getRule).lastRanAt);
+    yield* rules.resume(owners, { ...ref, agentId, chatId, tapId: "resume-after-pause" });
+    const manual = yield* rules.runNow(owners, ref);
+    if (manual.status !== "queued") return assert.fail("Expected Run now to queue the held mail.");
+    assert.isUndefined((yield* getRule).lastRanAt);
+    const [ready] = yield* queue.readyLeads(orgId);
+    yield* TestClock.setTime(ready!.readyAt);
+    const wakeupId = KinWakeupId.make("01KA4Y3GD3FC3FR2A9G7K80JD3");
+    assert.lengthOf(yield* queue.claim({ orgId, agentId, wakeupId, model: "fixture" }), 1);
+    assert.strictEqual((yield* getRule).lastRanAt, iso(ready!.readyAt));
+    yield* sql.withTransaction(holdRuleWake(orgId, manual.eventId, wakeupId, "paused"));
+    assert.isUndefined((yield* getRule).lastRanAt);
+  }).pipe(Effect.scoped, Effect.provide(withChats)),
 );
 
 it.effect("refuses limit changes for a teammate and for a proposed or removed rule", () =>
@@ -508,7 +703,7 @@ it.effect(
       });
       const rules = yield* Effect.provide(
         MailRules.KinMailRules,
-        MailRules.layer.pipe(Layer.provide(Layer.merge(headers, EventQueue.layer))),
+        MailRules.layer.pipe(Layer.provide(Layer.mergeAll(headers, EventQueue.layer, chats))),
       );
       yield* sql`WITH RECURSIVE n(i) AS (VALUES (1) UNION ALL SELECT i + 1 FROM n WHERE i < 202)
       INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id, from_address,

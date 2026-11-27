@@ -33,6 +33,7 @@ import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
+import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as PubSub from "effect/PubSub";
@@ -231,6 +232,11 @@ const decodeRunning = Schema.decodeUnknownEffect(RunningRow);
 const decodeTaskIds = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Array(Schema.String)),
 );
+const billPhotoMode = (events: ReadonlyArray<KinEvent>) => {
+  if (!events.every((event) => event._tag === "bills.read")) return false;
+  return events.every((event) => event.photosPrepared === true) ? true : "legacy";
+};
+
 const make = Effect.gen(function* () {
   const boot = yield* Effect.serviceOption(KinBoot);
   const bootId = Option.isSome(boot) ? boot.value : yield* ulid;
@@ -320,12 +326,13 @@ const make = Effect.gen(function* () {
       ...(forced ? { final: true } : {}),
     });
     // Its bills left unanswered are told as unread once the turn is over for good.
-    if (Option.isSome(chatRepository) && Option.isSome(chatHub))
+    if (Option.isSome(chatRepository) && Option.isSome(chatHub) && Option.isSome(billFiles))
       yield* Bills.turnEnded(row.orgId, row.wakeupId).pipe(
         Effect.provideService(KinEventQueue.KinEventQueue, queue),
         Effect.provideService(SqlClient.SqlClient, sql),
         Effect.provideService(Repository.KinChatRepository, chatRepository.value),
         Effect.provideService(KinChatHub, chatHub.value),
+        Effect.provide(billFiles.value),
         Effect.catchCause((cause) =>
           Effect.logWarning("Kin couldn't settle a bills turn", { cause }),
         ),
@@ -474,9 +481,12 @@ const make = Effect.gen(function* () {
         );
   const scope = yield* Effect.scope;
   const spaceChecks = new Set<KinOrgId>();
-  const spaceFolders = Option.map(yield* Effect.serviceOption(ServerConfig), (config) =>
-    HostBackup.spaceFolders(config.baseDir),
+  const config = yield* Effect.serviceOption(ServerConfig);
+  const fileSystem = yield* Effect.serviceOption(FileSystem.FileSystem);
+  const billFiles = Option.map(Option.all([config, fileSystem]), ([config, fileSystem]) =>
+    Context.make(ServerConfig, config).pipe(Context.add(FileSystem.FileSystem, fileSystem)),
   );
+  const spaceFolders = Option.map(config, (config) => HostBackup.spaceFolders(config.baseDir));
   // Before it is full: agents' commands fail one by one for a while before a wake-up does, so a
   // low disk is cleared at once and the owner hears only when that was not enough.
   const lowOnSpace = (orgId: KinOrgId) =>
@@ -1181,7 +1191,7 @@ const make = Effect.gen(function* () {
               first,
             }),
             attachments: yield* prompt.attachments({ orgId, events }),
-            billPhotos: events.every((event) => event._tag === "bills.read"),
+            billPhotos: billPhotoMode(events),
             offersBillsAdd: yield* offersBillsAdd(
               row,
               (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared",
@@ -2201,7 +2211,7 @@ const make = Effect.gen(function* () {
             const shared =
               (yield* recordedAudience({ orgId, wakeupId }).pipe(provideSql)) === "shared";
             const files = yield* prompt.attachments({ orgId, events });
-            const billPhotos = events.every((event) => event._tag === "bills.read");
+            const billPhotos = billPhotoMode(events);
             const canAddBills = yield* offersBillsAdd(row, shared);
             const legacyContent =
               built === undefined

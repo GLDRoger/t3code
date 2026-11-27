@@ -38,7 +38,11 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
 import { recordTestUploadOwner, TEST_UPLOAD_OWNER } from "../../assets/AttachmentUpload.testkit.ts";
-import { createPendingAttachmentId, resolveAttachmentPathById } from "../../attachmentStore.ts";
+import {
+  attachmentRelativePath,
+  createPendingAttachmentId,
+  resolveAttachmentPathById,
+} from "../../attachmentStore.ts";
 import { billPhoto, scannedBillPdf } from "../../../scripts/kin-bill-cutter-benchmark.ts";
 import type { McpInvocationScope } from "../../mcp/McpInvocationContext.ts";
 import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
@@ -60,6 +64,7 @@ import type { BillBox } from "./billCutterProtocol.ts";
 import * as LeadBills from "./leadBills.ts";
 import { cutBillPage } from "./billCutter.ts";
 import { billTurn } from "./billTurn.ts";
+import { billPhotoPreviewId } from "./billPhotoForModel.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { moneySummary } from "./moneyViews.ts";
 import { newExpense } from "./ownerMoneyAnswers.ts";
@@ -123,19 +128,28 @@ const layer = Layer.mergeAll(
 const upload = (name: string, input: string | Uint8Array, mimeType = "image/png") =>
   Effect.gen(function* () {
     const { attachmentsDir } = yield* ServerConfig.ServerConfig;
-    const extension = name.split(".").at(-1)!;
-    const id = createPendingAttachmentId(extension === "png" ? undefined : extension)!;
-    NodeFS.mkdirSync(attachmentsDir, { recursive: true });
-    const bytes = typeof input === "string" ? new TextEncoder().encode(input) : input;
-    NodeFS.writeFileSync(NodePath.join(attachmentsDir, `${id}.${extension}`), bytes);
-    recordTestUploadOwner(attachmentsDir, id, TEST_UPLOAD_OWNER);
-    return {
+    const sample = typeof input === "string" && mimeType === "image/png";
+    const bytes = sample
+      ? Buffer.concat([
+          yield* Effect.promise(() => createCanvas(40, 30).encode("jpeg", 90)),
+          Buffer.from(input),
+        ])
+      : typeof input === "string"
+        ? new TextEncoder().encode(input)
+        : input;
+    const attachment = {
       type: mimeType.startsWith("image/") ? ("image" as const) : ("file" as const),
-      id,
+      id: "",
       name,
-      mimeType,
+      mimeType: sample ? "image/jpeg" : mimeType,
       sizeBytes: bytes.byteLength,
     };
+    const extension = attachmentRelativePath(attachment)!.slice(1);
+    attachment.id = createPendingAttachmentId(extension === "png" ? undefined : extension)!;
+    NodeFS.mkdirSync(attachmentsDir, { recursive: true });
+    NodeFS.writeFileSync(NodePath.join(attachmentsDir, attachmentRelativePath(attachment)!), bytes);
+    recordTestUploadOwner(attachmentsDir, attachment.id, TEST_UPLOAD_OWNER);
+    return attachment;
   });
 
 const seed = Effect.gen(function* () {
@@ -1632,6 +1646,103 @@ describe("bill_cut", () => {
     }).pipe(Effect.provide(layer)),
   );
 
+  it.effect("isolates one damaged photo and reads the other four in order", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const jpeg = yield* Effect.promise(() => createCanvas(400, 300).encode("jpeg", 90));
+      const files = yield* Effect.forEach([1, 2, 3, 4, 5], (n) =>
+        n === 3
+          ? upload(
+              "IMG_0003.png",
+              Buffer.from("89504e470d0a1a0a0000000d49484452000001900000012c", "hex"),
+            )
+          : upload(
+              `IMG_000${n}.jpg`,
+              Buffer.concat([jpeg, Buffer.alloc(5 * 1024 * 1024, n)]),
+              "image/jpeg",
+            ),
+      );
+      const added = yield* Bills.add(
+        as(rhea),
+        { orgId, attachments: files, clientRequestId: "one-damaged" },
+        TEST_UPLOAD_OWNER,
+      );
+      const { wakeupId, events } = yield* claimTurn(1);
+      const turns = events.filter((one) => one._tag === "bills.read");
+      assert.lengthOf(turns, 1);
+      const turn = (yield* billTurn(orgId, turns[0]!))!;
+      const model = yield* (yield* KinTurnContent).prepare({ ...turn, billPhotos: true });
+      for (const [index] of model.attachments.entries())
+        yield* read({
+          bill: `B${index + 1}`,
+          vendor: "Inkspot Cloud",
+          amount: String(index + 1),
+          currency: "INR",
+          date: "2026-11-19",
+        });
+      yield* endTurn(wakeupId);
+
+      const { bills } = yield* Bills.list(as(rhea), { orgId, batchId: added.batchId });
+      assert.deepStrictEqual(
+        bills.map(({ state, problem, read }) => [state, problem, read.amount]),
+        [
+          ["read", undefined, "1"],
+          ["read", undefined, "2"],
+          ["unreadable", "Kin could not read this one", undefined],
+          ["read", undefined, "3"],
+          ["read", undefined, "4"],
+        ],
+      );
+      assert.deepStrictEqual(turn.ids, ["B1", "B2", "B3", "B4"]);
+      assert.deepStrictEqual(
+        model.attachments.map(({ name }) => name),
+        ["B1.jpg", "B2.jpg", "B3.jpg", "B4.jpg"],
+      );
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("lists the existing photo preview or the small original, and never a PDF", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+      const small = yield* Effect.promise(() => createCanvas(40, 30).encode("jpeg", 90));
+      const files = [
+        yield* photoPage,
+        yield* upload("small.jpg", small, "image/jpeg"),
+        yield* upload("bill.pdf", "%PDF fixture", "application/pdf"),
+      ];
+      const added = yield* Bills.add(
+        as(rhea),
+        { orgId, attachments: files, clientRequestId: "photo-previews" },
+        TEST_UPLOAD_OWNER,
+      );
+      const list = Bills.list(as(rhea), { orgId, batchId: added.batchId });
+      const [photo, original, pdf] = (yield* list).bills;
+      const id = billPhotoPreviewId(photo!.file.attachmentId)!;
+      assert.deepStrictEqual(photo!.preview, {
+        ...photo!.file,
+        attachmentId: id,
+        mimeType: "image/jpeg",
+      });
+      assert.deepStrictEqual(original!.preview, original!.file);
+      assert.isUndefined(pdf!.preview);
+
+      const path = NodePath.join(attachmentsDir, `${id}.jpg`);
+      NodeFS.unlinkSync(path);
+      assert.isUndefined((yield* list).bills[0]!.preview);
+      assert.isFalse(NodeFS.existsSync(path));
+      const { events } = yield* claimTurn(1);
+      const turn = (yield* billTurn(
+        orgId,
+        events.find((one) => one._tag === "bills.read")!,
+      ))!;
+      const prepare = (yield* KinTurnContent).prepare;
+      assert.isEmpty((yield* prepare({ ...turn, billPhotos: true })).attachments);
+      const legacy = yield* prepare({ ...turn, billPhotos: "legacy" });
+      assert.strictEqual(legacy.attachments[0]?.id, id);
+    }).pipe(Effect.provide(layer)),
+  );
+
   it.effect("a small WebP the cutter turns upright is shown to the model upright too", () =>
     Effect.gen(function* () {
       yield* seed;
@@ -1670,7 +1781,8 @@ describe("bill_cut", () => {
       const stored = (id: string) =>
         NodeFS.readFileSync(resolveAttachmentPathById({ attachmentsDir, attachmentId: id })!);
       const bytes = yield* Effect.promise(() => createCanvas(3000, 1440).encode("jpeg", 90));
-      yield* addPage(yield* upload("wide.jpg", bytes, "image/jpeg"));
+      const added = yield* addPage(yield* upload("wide.jpg", bytes, "image/jpeg"));
+      const list = Bills.list(as(rhea), { orgId, batchId: added.batchId });
       const { wakeupId } = yield* claimTurn(1);
       yield* Bills.cut(
         { orgId, agentId: finance, wakeupId },
@@ -1680,6 +1792,7 @@ describe("bill_cut", () => {
         WHERE org_id = ${orgId} AND parent_sha256 IS NOT NULL`;
       const crop = stored(piece!.id);
       assert.deepStrictEqual(readImageDimensions(crop), { width: 3000, height: 1325 });
+      assert.isUndefined((yield* list).bills[0]?.preview);
       yield* endTurn(wakeupId);
       const { events } = yield* claimTurn(2);
       const turn = (yield* billTurn(
@@ -1690,6 +1803,7 @@ describe("bill_cut", () => {
       const [image] = model.attachments;
       assert.deepStrictEqual(readImageDimensions(stored(image!.id)), { width: 2000, height: 883 });
       assert.notStrictEqual(image!.id, piece!.id);
+      assert.strictEqual((yield* list).bills[0]?.preview?.attachmentId, image!.id);
       assert.isTrue(stored(piece!.id).equals(crop));
       const store = yield* AttachmentStore.KinAttachmentStore;
       yield* store.remove([piece!.id]);
