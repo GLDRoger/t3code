@@ -26,6 +26,7 @@ import { companyRuleMailbox, directRuleLead, ruleSetter } from "./ruleAccess.ts"
 import { mailRuleContentHash } from "./ruleContent.ts";
 import { holdRuleMail, pendingRuleMail } from "./ruleLifecycle.ts";
 import { monthlyMailRuleLimit, recordMailRuleWake } from "./ruleLimit.ts";
+import { mailRulesMoved } from "./ruleRunStore.ts";
 
 const WINDOW_MS = 10 * MINUTE_MS;
 const LIST_SIZE = 25;
@@ -149,6 +150,7 @@ export const claimRuleMail = Effect.fn("KinMailRules.claimMail")(function* (
     rule_playbook_route = ${playbookRoute}, rule_mail_key = ${mailKey},
     rule_held_at = CASE WHEN ${result === "match"} THEN NULL ELSE noticed_at END
     WHERE org_id = ${rule.orgId} AND arrival_id = ${arrivalId}`;
+  yield* mailRulesMoved(rule.orgId);
 });
 
 const notice = Effect.fn("KinMailRules.notice")(function* (
@@ -251,12 +253,13 @@ const flush = Effect.fn("KinMailRules.flush")(function* (rule: WakeRule, at: num
   const destination = yield* checked(rule);
   if ("held" in destination) {
     yield* holdRuleMail(rule.orgId, [rule.ruleId], "held_paused", destination.held, at);
-    return;
+    return yield* mailRulesMoved(rule.orgId);
   }
   const zone = yield* readOwnerZone(rule.orgId);
   const limit = monthlyMailRuleLimit(rule, at, zone);
   if (limit.atLimit) {
     yield* holdRuleMail(rule.orgId, [rule.ruleId], "held_cap", "monthly_limit", at);
+    yield* mailRulesMoved(rule.orgId);
     const told = yield* sql`UPDATE kin_mail_rules SET cap_told = ${limit.month}
       WHERE org_id = ${rule.orgId} AND rule_id = ${rule.ruleId} AND cap_told IS NOT ${limit.month}
       RETURNING rule_id`;
@@ -308,6 +311,7 @@ const flush = Effect.fn("KinMailRules.flush")(function* (rule: WakeRule, at: num
   yield* sql`UPDATE kin_arrivals SET rule_state = CASE WHEN arrival_id = ${first.arrivalId}
       THEN 'woke' ELSE 'batched' END, ${pointAtWake(sql, rule.agentId, eventId)}
     WHERE ${pending}`;
+  yield* mailRulesMoved(rule.orgId);
   if (largestBatch !== undefined) {
     const day = DateTime.formatIsoDate(DateTime.makeZonedUnsafe(at, { timeZone: zone }));
     yield* notice(

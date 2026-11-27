@@ -14,16 +14,22 @@ import {
   KinWakeupId,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Queue from "effect/Queue";
 import * as SqlClient from "effect/sql/SqlClient";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as EventQueue from "../lead/KinEventQueue.ts";
 import { turnAudience, turnChat } from "../lead/Audience.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinConnections } from "../connections/ConnectionsService.ts";
-import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
+import * as RefreshHub from "../chat/KinRefreshHub.ts";
+import { subscribeRefreshes } from "../chat/refreshes.ts";
 import { runKinMigrations } from "../persistence/KinMigrations.ts";
 import * as MailRules from "./KinMailRules.ts";
 import { monthlyMailRuleLimit, recordMailRuleWake } from "./ruleLimit.ts";
@@ -35,6 +41,7 @@ const agentId = KinAgentId.make("finance");
 const chatId = KinChatId.make("meera-finance");
 const meera = KinPersonId.make("meera");
 const zoya = KinPersonId.make("zoya");
+const rhea = KinPersonId.make("rhea");
 const owners = [{ _tag: "person", orgId, personId: meera }] satisfies ReadonlyArray<PersonIdentity>;
 const teammates = [
   { _tag: "person", orgId, personId: zoya },
@@ -408,6 +415,85 @@ it.effect("a rule pulse claims alone and keeps the setter's private destination"
     yield* rules.resume(owners, { ...ref, agentId, chatId, tapId: "resume-tap" });
     assert.deepStrictEqual(yield* checkRuleWake(event), { held: "paused" });
   }).pipe(Effect.provide(rulesWithQueue.pipe(Layer.provideMerge(Sqlite.layerMemory)))),
+);
+
+it.effect("every rule change and run reaches each owner-level screen, and never a teammate's", () =>
+  Effect.gen(function* () {
+    yield* TestClock.setTime(9 * 60 * 60_000);
+    const sql = yield* seed();
+    yield* sql`INSERT INTO kin_arrivals (org_id, arrival_id, connection_id, message_id, from_address,
+      received_at, noticed_at, class, state, sender_check)
+      VALUES ('org', 'arr_c41e07', 'mail', 'm_19d2ab', 'bill@juniper.example',
+        0, 0, 'known_biller', 'settled', 'passed')`;
+    // As the server builds them: the hub is in the services' own layers, never in a caller's.
+    const hub = yield* Layer.build(RefreshHub.layer);
+    const services = yield* Layer.build(
+      rulesWithQueue.pipe(Layer.provide(Layer.succeedContext(hub))),
+    );
+    const rules = Context.get(services, MailRules.KinMailRules);
+    const queue = Context.get(services, EventQueue.KinEventQueue);
+    const viewers = Layer.mergeAll(
+      Layer.succeedContext(hub),
+      Layer.mock(KinIdentity)({ owner: { _tag: "person", orgId, personId: rhea } }),
+      Layer.mock(KinConnections)({
+        mine: () =>
+          Effect.succeed({
+            orgId,
+            mailbox: null,
+            mailboxes: [],
+            services: [],
+            signInAddress: "https://tidewater.example/sign-in",
+          }),
+      }),
+    );
+    const screen = (personId: KinPersonId) =>
+      Stream.toQueue(subscribeRefreshes([{ _tag: "person", orgId, personId }], { orgId }), {
+        capacity: "unbounded",
+      }).pipe(Effect.provide(viewers));
+    const rheaPhone = yield* screen(rhea);
+    const rheaLaptop = yield* screen(rhea);
+    const meeraLaptop = yield* screen(meera);
+    const zoyaLaptop = yield* screen(zoya);
+    const ownerScreens = [rheaPhone, rheaLaptop, meeraLaptop];
+    yield* Queue.take(zoyaLaptop);
+    for (const owner of ownerScreens) assert.strictEqual((yield* Queue.take(owner)).connections, 0);
+    let moves = 0;
+    const settles = Effect.fn("KinMailRulesTest.settles")(function* (step: string) {
+      yield* TestClock.adjust(RefreshHub.KIN_REFRESH_SETTLE);
+      moves += 1;
+      for (const owner of ownerScreens) {
+        const heard = yield* Queue.poll(owner);
+        assert.strictEqual(Option.getOrUndefined(heard)?.connections, moves, step);
+      }
+      assert.strictEqual(yield* Queue.size(zoyaLaptop), 0, step);
+    });
+
+    const rule = yield* rules.createFromTap(owners, tap);
+    yield* settles("turned on");
+    const ref = { orgId, ruleId: rule.ruleId };
+    yield* rules.pause(owners, ref);
+    yield* settles("paused");
+    yield* rules.resume(owners, { ...ref, agentId, chatId, tapId: "resume-tap" });
+    yield* settles("resumed");
+    const ran = yield* rules.runNow(owners, ref);
+    yield* settles("run now");
+    const wakeupId = KinWakeupId.make("01KA4Y3GD3FC3FR2A9G7K80JD2");
+    const [ready] = yield* queue.readyLeads(orgId);
+    yield* TestClock.setTime(ready!.readyAt);
+    assert.lengthOf(yield* queue.claim({ orgId, agentId, wakeupId, model: "fixture" }), 1);
+    yield* settles("run started");
+    yield* queue.finish({ orgId, wakeupId, status: "completed" });
+    yield* settles("run settled");
+    const [entry] = (yield* rules.history(owners, ref)).entries;
+    assert.deepInclude(entry, {
+      eventId: "eventId" in ran ? ran.eventId : null,
+      wakeupId,
+      runOutcome: "nothing",
+    });
+    assert.isNotNull(entry?.kind === "mail" ? entry.settledAt : null, "read as finished");
+    yield* rules.remove(owners, ref);
+    yield* settles("removed");
+  }).pipe(Effect.scoped, Effect.provide(Sqlite.layerMemory)),
 );
 
 const here = NodePath.dirname(NodeURL.fileURLToPath(import.meta.url));

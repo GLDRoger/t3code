@@ -50,7 +50,7 @@ import * as ProjectService from "../../project/ProjectService.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { noticeState } from "./TaskWake.ts";
 import * as KinIdentity from "../chat/KinIdentity.ts";
-import { KinRefreshHub } from "../chat/KinRefreshHub.ts";
+import { KinRefreshHub, KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import * as HostBackup from "../hostBackup.ts";
 import { ServerConfig } from "../../config.ts";
@@ -232,6 +232,8 @@ const make = Effect.gen(function* () {
   const workspace = Option.getOrUndefined(yield* Effect.serviceOption(KinWorkspace));
   const agentSessions = Option.getOrUndefined(yield* Effect.serviceOption(KinAgentSessions));
   const refreshHub = Option.getOrUndefined(yield* Effect.serviceOption(KinRefreshHub));
+  // A held mail rule run shows in Settings; a turn's own fiber may not carry the observer.
+  const refresh = yield* KinRefreshObserver;
   const ownerCheck = yield* Effect.serviceOption(OwnerCheck.OwnerCheck);
   const care = yield* Effect.serviceOption(KinHostCare);
   const refusals = yield* Effect.serviceOption(KinRefusedModels);
@@ -2064,7 +2066,9 @@ const make = Effect.gen(function* () {
               yield* sql
                 .withTransaction(
                   Effect.gen(function* () {
-                    yield* holdRuleWake(orgId, rendered.eventId, wakeupId, rendered.reason);
+                    yield* holdRuleWake(orgId, rendered.eventId, wakeupId, rendered.reason).pipe(
+                      Effect.provideService(KinRefreshObserver, refresh),
+                    );
                     const [event] = events;
                     if (
                       rendered.reason === "wording_changed" &&

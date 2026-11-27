@@ -30,6 +30,7 @@ import {
 } from "../../persistence/Errors.ts";
 import { linkRuleWake, settleRuleWakes } from "../arrivals/ruleRunStore.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import { fillAskedChats, settleReviews, settleTriage } from "../github/askedFor.ts";
@@ -459,11 +460,14 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const repo = yield* Effect.serviceOption(KinChatRepository);
   const hub = yield* Effect.serviceOption(KinChatHub);
+  // A mail rule's run starting or ending shows in Settings; a caller's context has only the no-op.
+  const refresh = yield* KinRefreshObserver;
   const settled = (orgId: KinOrgId, eventIds: ReadonlyArray<string>) =>
     settleReviews({ repo, hub }, orgId, eventIds).pipe(
       Effect.andThen(settleTriage({ repo, hub }, orgId, eventIds)),
       Effect.andThen(settleRuleWakes(orgId, eventIds)),
       Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.provideService(KinRefreshObserver, refresh),
     );
   const laneOf = sql.literal(LANE_OF);
   const retryAlone = sql.literal("json_extract(e.json, '$._retryAlone') IS 1");
@@ -873,7 +877,10 @@ const make = Effect.gen(function* () {
                           event._tag === "pulse" && event.rule !== undefined ? [event.eventId] : [],
                         ),
                         input.wakeupId,
-                      ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+                      ).pipe(
+                        Effect.provideService(SqlClient.SqlClient, sql),
+                        Effect.provideService(KinRefreshObserver, refresh),
+                      );
                       return events;
                     }),
                   )

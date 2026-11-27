@@ -1769,7 +1769,10 @@ const make = Effect.gen(function* () {
               input.orgId,
               { kind: "mailbox", id: input.connectionId },
               now,
-            ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+            ).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.provideService(KinRefreshObserver, refresh),
+            );
             yield* sql`DELETE FROM kin_connection_cursors
             WHERE org_id = ${input.orgId} AND connection_id = ${input.connectionId}`;
           }),
@@ -1943,6 +1946,7 @@ const make = Effect.gen(function* () {
             if (row.personId == null)
               yield* pauseMailRulesFor(orgId, { kind: "mailbox", id: row.connectionId }, now).pipe(
                 Effect.provideService(SqlClient.SqlClient, sql),
+                Effect.provideService(KinRefreshObserver, refresh),
               );
             const made = yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset,
                 label, kind, url, url_host, auth, auth_header, reach, state, account_label,

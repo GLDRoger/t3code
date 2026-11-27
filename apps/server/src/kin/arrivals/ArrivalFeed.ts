@@ -12,6 +12,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { KinConnections, MAIL_FEED_WINDOW } from "../connections/ConnectionsService.ts";
 import { type MailArrival, receivedAmong } from "../connections/MailProvider.ts";
@@ -85,6 +86,8 @@ const make = Effect.gen(function* () {
   const repo = yield* KinChatRepository;
   const hub = yield* KinChatHub;
   const sql = yield* SqlClient.SqlClient;
+  // The scheduler's tick runs outside Kin's layers, so rule history moves use this one.
+  const refresh = yield* KinRefreshObserver;
 
   // Per-message work shares the mailbox read's span.
   const arrive = Effect.fnUntraced(function* (input: {
@@ -309,6 +312,7 @@ const make = Effect.gen(function* () {
     (effect, _orgId, connectionId) =>
       effect.pipe(
         Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.provideService(KinRefreshObserver, refresh),
         Effect.mapError((cause) => new KinArrivalFeedError({ connectionId, cause })),
       ),
   );

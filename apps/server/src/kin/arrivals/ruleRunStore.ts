@@ -3,8 +3,13 @@ import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { readOwnerZone } from "../work/recordRows.ts";
 import { monthlyMailRuleLimit } from "./ruleLimit.ts";
+
+/** Rules and their runs show in Settings; the calling service provides the observer it was built with. */
+export const mailRulesMoved = (orgId: KinOrgId) =>
+  KinRefreshObserver.pipe(Effect.flatMap((refresh) => refresh.touch(orgId, "connections")));
 
 export const linkRuleWake = Effect.fn("KinMailRules.linkWake")(function* (
   orgId: KinOrgId,
@@ -13,8 +18,10 @@ export const linkRuleWake = Effect.fn("KinMailRules.linkWake")(function* (
 ) {
   if (eventIds.length === 0) return;
   const sql = yield* SqlClient.SqlClient;
-  yield* sql`UPDATE kin_mail_rule_runs SET wakeup_id = ${wakeupId}
-    WHERE org_id = ${orgId} AND event_id IN ${sql.in(eventIds)} AND settled_at IS NULL`;
+  const started = yield* sql`UPDATE kin_mail_rule_runs SET wakeup_id = ${wakeupId}
+    WHERE org_id = ${orgId} AND event_id IN ${sql.in(eventIds)} AND settled_at IS NULL
+    RETURNING event_id`;
+  if (started.length > 0) yield* mailRulesMoved(orgId);
 });
 
 // An automatic wake counts against its month when queued; one held before it started gives it back.
@@ -57,6 +64,7 @@ export const holdRuleWake = Effect.fn("KinMailRules.holdWake")(function* (
   yield* sql`UPDATE kin_arrivals SET rule_hold_reason = ${reason}, rule_state = 'held_paused',
     rule_held_at = ${now} WHERE org_id = ${orgId} AND event_id = ${eventId}
       AND rule_state IN ('woke', 'batched')`;
+  yield* mailRulesMoved(orgId);
 });
 
 export const settleRuleWakes = Effect.fn("KinMailRules.settleWakes")(function* (
@@ -96,6 +104,7 @@ export const settleRuleWakes = Effect.fn("KinMailRules.settleWakes")(function* (
     WHERE r.org_id = ${orgId} AND r.event_id = outcomes.event_id AND r.settled_at IS NULL
     RETURNING event_id AS id`;
   if (settled.length === 0) return;
+  yield* mailRulesMoved(orgId);
   yield* sql`UPDATE kin_arrivals SET rule_playbook_route = NULL, state = 'settled',
       settled_at = ${now}
     WHERE org_id = ${orgId} AND event_id IN ${sql.in([...new Set(settled.map(({ id }) => id))])}

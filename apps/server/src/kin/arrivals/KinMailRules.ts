@@ -117,6 +117,8 @@ const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   const connections = yield* KinConnections;
   const queue = yield* KinEventQueue;
+  // Read once here: a caller's context, such as an RPC's, holds only the no-op default.
+  const refresh = yield* KinRefreshObserver;
   const zoneFor = (orgId: KinOrgId) =>
     readOwnerZone(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   const settle = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
@@ -201,7 +203,7 @@ const make = Effect.gen(function* () {
         old.state === "removed"
       )
         return yield* tapUsed;
-    } else yield* (yield* KinRefreshObserver).touch(orgId, "connections");
+    } else yield* refresh.touch(orgId, "connections");
     return yield* view({ orgId, ruleId });
   }, transaction);
 
@@ -221,7 +223,7 @@ const make = Effect.gen(function* () {
       const reason = state === "paused" ? "paused" : "removed";
       yield* holdRuleMail(input.orgId, [input.ruleId], "held_paused", reason, now);
       yield* stopQueuedRuleMail(input.orgId, [input.ruleId], reason, now);
-      yield* (yield* KinRefreshObserver).touch(input.orgId, "connections");
+      yield* refresh.touch(input.orgId, "connections");
     }
     return yield* view(input);
   }, transaction);
@@ -250,7 +252,7 @@ const make = Effect.gen(function* () {
       agent_id = ${agentId}, chat_id = ${chatId}, source_event = ${tapId}, updated_at = ${now},
       activation = activation + 1
       WHERE org_id = ${orgId} AND rule_id = ${ruleId}`;
-    yield* (yield* KinRefreshObserver).touch(orgId, "connections");
+    yield* refresh.touch(orgId, "connections");
     return yield* view(input);
   }, transaction);
   const list = Effect.fn("KinMailRules.list")(function* (
@@ -508,6 +510,7 @@ const make = Effect.gen(function* () {
         const eventId = yield* wakeRuleMail(current, mailbox, stored, [], 0, now, true);
         if (eventId === undefined) return yield* unavailable;
         yield* recordManualRuleMail(current, arrivalId, eventId);
+        yield* refresh.touch(orgId, "connections");
         return { status: "queued", arrivalId, eventId } satisfies KinMailRuleRunNow;
       }).pipe(
         Effect.provideService(SqlClient.SqlClient, sql),

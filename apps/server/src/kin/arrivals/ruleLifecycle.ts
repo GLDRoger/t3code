@@ -2,8 +2,7 @@ import type { KinMailRuleHoldReason, KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
-import { refundRuleWakes } from "./ruleRunStore.ts";
+import { mailRulesMoved, refundRuleWakes } from "./ruleRunStore.ts";
 
 export const pendingRuleMail = (
   sql: SqlClient.SqlClient,
@@ -72,6 +71,6 @@ export const pauseMailRulesFor = Effect.fn("KinMailRules.pauseFor")(function* (
   yield* holdRuleMail(orgId, ruleIds, "held_paused", reason, now);
   yield* stopQueuedRuleMail(orgId, ruleIds, reason, now);
   // Settings on every device shows the pause and why.
-  if (paused.length > 0) yield* (yield* KinRefreshObserver).touch(orgId, "connections");
+  if (paused.length > 0) yield* mailRulesMoved(orgId);
   return paused;
 });
