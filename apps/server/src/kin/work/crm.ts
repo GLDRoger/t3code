@@ -57,8 +57,8 @@ import {
   personSees,
   personSeesAs,
   seenBy,
+  teamChangeFields,
   teamSeesChange,
-  teamSeesField,
   type KinViewer,
 } from "./teamView.ts";
 import {
@@ -830,7 +830,7 @@ export const history = Effect.fn("KinCrm.history")(function* (
     // A doc's history is its versions (`kin.docs.history`); clients older than Docs can't read it.
     sql`r.register_id != 'docs'`,
     seen(sql, viewer),
-    ...(teammateProject ? [teamSeesChange(sql)] : []),
+    ...(teammateProject ? [teamSeesChange(sql, viewer)] : []),
     ...(input.beforeSeq === undefined ? [] : [sql`c.seq < ${input.beforeSeq}`]),
     ...(input.sinceAt === undefined ? [] : [sql`c.at >= ${input.sinceAt}`]),
     ...(input.excludeBy === undefined
@@ -852,10 +852,12 @@ export const history = Effect.fn("KinCrm.history")(function* (
     title: string;
     registerId: string;
     askedBy: string | null;
+    teamFields?: string | null;
     total?: number;
   }>`SELECT c.seq, c.at, c.actor_kind AS "actorKind", c.actor_id AS "actorId", c.via, c.kind,
       c.fields_json AS "fieldsJson", r.record_id AS "recordId", r.key, r.title,
       r.register_id AS "registerId", c.asked_by_person_id AS "askedBy"
+      ${teammateProject ? sql`, ${teamChangeFields(sql, viewer)} AS "teamFields"` : sql``}
       ${input.sinceAt === undefined ? sql`` : sql`, (SELECT COUNT(*) ${from}) AS total`}
     ${from} ORDER BY c.seq DESC LIMIT ${input.limit}`;
   const stages = rows.some((row) => row.registerId === "deals")
@@ -872,7 +874,9 @@ export const history = Effect.fn("KinCrm.history")(function* (
     kind: row.kind,
     fields: parseChanges(row.fieldsJson)
       .filter((change) =>
-        teammateProject ? teamSeesField(change.field) : change.field.trim() !== "",
+        row.teamFields === undefined
+          ? change.field.trim() !== ""
+          : (row.teamFields ?? "").split(",").includes(change.field),
       )
       // A deal's stage is the company's id; the line reads its name.
       .map((change) =>

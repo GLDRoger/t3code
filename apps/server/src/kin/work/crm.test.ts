@@ -4001,6 +4001,29 @@ it.effect("a project summary counts visible changes by others before limiting th
       project: project.key,
       clientRequestId: "01KAK0XMVCXC4FF969979K33DD",
     });
+    // A list shared with the team whose private field shares a name with a task's field.
+    const sql = yield* SqlClient.SqlClient;
+    const def = presetDefinition("expenses", "INR");
+    const confirmed = { ...def.fields[0]!, key: "confirmed", label: "Confirmed", sensitive: true };
+    yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'payouts', 'Payouts', 'PAY', 0, 0, ${JSON.stringify({
+        ...def,
+        fields: [...def.fields, confirmed],
+        team: true,
+        sensitive: false,
+        teamSince: 0,
+      })})`;
+    yield* sql`UPDATE kin_people SET sees_money = 0 WHERE person_id = ${mateId}`;
+    const records = yield* KinRecords.KinRecords;
+    const rhea = { actor: { _tag: "person", personId: ownerId }, via: "owner" } as const;
+    const { row: payout } = yield* records.create(orgId, rhea, {
+      list: "payouts",
+      originKey: "payout:juniper",
+      title: "Juniper Cold Chain payout",
+      owner: { _tag: "person", personId: mateId },
+      projectId: project.recordId,
+    });
     const input = { orgId, key: project.key };
     const page = Clients.project([mate], input);
     const first = yield* page;
@@ -4011,17 +4034,27 @@ it.effect("a project summary counts visible changes by others before limiting th
     assert.strictEqual(current.lookedAt, first.asOf);
     assert.notProperty(current, "sinceLooked");
 
-    const records = yield* KinRecords.KinRecords;
     const edit = Effect.fn("test.editProjectTask")(function* (
       writer: KinRecords.Writer,
       patch: KinRecords.Patch,
+      key: string = task.key,
     ) {
       yield* TestClock.adjust(1);
-      yield* records.update(orgId, writer, task.key, patch);
+      yield* records.update(orgId, writer, key, patch);
     });
-    const rhea = { actor: { _tag: "person", personId: ownerId }, via: "owner" } as const;
     yield* edit(rhea, { notes: "Check the crate labels." });
     yield* edit(rhea, { state: "doing" });
+    yield* edit(rhea, { fields: { confirmed: "Paid to Arjun in cash" } }, payout.key);
+    const theirs = yield* OwnerWork.create([owner], {
+      orgId,
+      title: "Renegotiate the Juniper Cold Chain rate",
+      clientRequestId: "01KAK0XMVCXC4FF969979K33DE",
+    });
+    yield* records.link(orgId, rhea, task.recordId, {
+      kind: "record",
+      target: theirs.recordId,
+      relation: "relates",
+    });
     yield* edit(
       { actor: { _tag: "agent", agentId: lead }, via: "lead", askedBy: mateId },
       { dueAt: 60_000 },
@@ -4036,7 +4069,10 @@ it.effect("a project summary counts visible changes by others before limiting th
         notes: "Check the loading schedule.",
       },
     );
-    const since = (yield* page).sinceLooked;
+    const after = yield* page;
+    for (const hidden of ["Paid to Arjun", theirs.recordId])
+      assert.notInclude(JSON.stringify(after.changedThisWeek), hidden);
+    const since = after.sinceLooked;
     assert.strictEqual(since?.total, 4);
     assert.deepStrictEqual(
       since?.items.map((item) => item.fields.map((field) => field.field)),
