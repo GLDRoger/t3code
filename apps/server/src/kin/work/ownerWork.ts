@@ -84,6 +84,7 @@ import {
 import {
   KIN_OWNER_LEVEL,
   TEAM_REFUSED,
+  allSeeMoney,
   viewerOfPeople,
   inProject,
   ledProjects,
@@ -96,6 +97,7 @@ import {
   linkedFromOf,
   personSees,
   recordFieldAccess,
+  seesProjectTerms,
   placesOf,
   teamLists,
   teamSeq,
@@ -801,9 +803,18 @@ const getAs = Effect.fn("KinWork.getAs")(function* (
     !(yield* connectionReaches(connection, row.recordId).pipe(workFailure))
   )
     return yield* notFound("key" in input ? input.key : "with that id");
+  const people = [viewer.person.personId];
+  const projectHistory =
+    row.registerId === "projects" &&
+    viewer.teammate &&
+    !seesProjectTerms(viewerOfPeople(people), row)
+      ? (yield* allSeeMoney(input.orgId, people).pipe(workFailure))
+        ? "withoutNotes"
+        : "team"
+      : undefined;
   const shown = yield* shownTo(
     viewer,
-    yield* records.detail(row, KIN_RECORD_CHANGES_CAP),
+    yield* records.detail(row, KIN_RECORD_CHANGES_CAP, projectHistory),
     row,
     input,
     seq,

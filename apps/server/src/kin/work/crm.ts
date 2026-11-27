@@ -57,6 +57,7 @@ import {
   personSees,
   personSeesAs,
   seenBy,
+  seesProjectTerms,
   teamSeesChange,
   teamSeesField,
   type KinViewer,
@@ -753,9 +754,7 @@ export const projectDetail = Effect.fn("KinCrm.projectDetail")(function* (
   );
   const fields = parseFields(row.fieldsJson);
   // Someone in it who doesn't lead it gets no price or terms, which the notes often carry.
-  const leads =
-    viewer._tag === "ownerLevel" ||
-    viewer.people.every((one) => row.ownerKind === "person" && row.ownerId === one);
+  const leads = seesProjectTerms(viewer, row);
   const billing = leads ? fieldText(fields, "billing") : null;
   const value = leads ? fields.value : undefined;
   const day = (key: string) => {

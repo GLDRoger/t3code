@@ -544,6 +544,15 @@ export type KinViewer =
   | { readonly _tag: "people"; readonly people: ReadonlyArray<KinPersonId>; readonly keyed?: true };
 /** The unscoped read: the owner, a co-owner, or Kin's own work for them. */
 export const KIN_OWNER_LEVEL: KinViewer = { _tag: "ownerLevel" };
+
+/** A project's price and terms are for its lead and the owner level. */
+export const seesProjectTerms = (
+  viewer: KinViewer,
+  project: Pick<RecordRow, "ownerKind" | "ownerId">,
+) =>
+  viewer._tag === "ownerLevel" ||
+  viewer.people.every((person) => project.ownerKind === "person" && project.ownerId === person);
+
 export const viewerOfPeople = (people: ReadonlyArray<KinPersonId>): KinViewer => ({
   _tag: "people",
   people,
@@ -1627,10 +1636,11 @@ const TEAM_FIELDS = new Set([
   "handedBack",
   "repeat",
 ]);
-export const teamSeesField = (field: string) => TEAM_FIELDS.has(field);
-export const teamSeesChange = (sql: SqlClient.SqlClient) =>
+export const teamSeesField = (field: string, includesNotes = true) =>
+  TEAM_FIELDS.has(field) && (includesNotes || field !== "notes");
+export const teamSeesChange = (sql: SqlClient.SqlClient, includesNotes = true) =>
   sql`(c.kind = 'created' OR (c.kind = 'updated' AND EXISTS (
-    SELECT 1 FROM json_each(c.fields_json) f WHERE f.value ->> '$.field' IN ${sql.in([...TEAM_FIELDS])}
+    SELECT 1 FROM json_each(c.fields_json) f WHERE f.value ->> '$.field' IN ${sql.in([...TEAM_FIELDS].filter((field) => teamSeesField(field, includesNotes)))}
   )))`;
 
 /** Numbered among themselves, newest highest: the org's numbers would show what they can't see. */
