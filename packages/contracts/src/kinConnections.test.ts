@@ -3,7 +3,8 @@ import * as Schema from "effect/Schema";
 
 import { NonNegativeInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinOrgId } from "./kinChat.ts";
-import { KinGitHubStatus } from "./kinConnections.ts";
+import { KinGitHubStatus, KinMineCalendarInput, KinMineCalendarResult } from "./kinConnections.ts";
+import { kinRpcAccess, KIN_RPC_AGGREGATES } from "./kinRpcs.ts";
 
 // The whole GitHub status as phone builds already in people's hands decode it: copied from kin at
 // 5648c73163, before `instantOffer` and `elsewhere`.
@@ -139,5 +140,40 @@ describe("KinGitHubStatus on an older phone", () => {
     const elsewhere = wire(status({ instant: { ...instant, elsewhere: true } }));
     expect(elsewhere.agents.instant.elsewhere).toBe(true);
     expect(decodeOld(elsewhere).agents?.instant).toEqual(instant);
+  });
+});
+
+describe("Dates calendar RPC", () => {
+  it("accepts an optional retry flag and belongs to the person-scoped Connections group", () => {
+    const input = {
+      orgId: KinOrgId.make("org_tidewater"),
+      from: "2026-11-01T00:00:00.000Z",
+      to: "2026-12-01T00:00:00.000Z",
+    };
+    const decode = Schema.decodeUnknownSync(KinMineCalendarInput);
+    expect(decode(input)).toEqual(input);
+    expect(decode({ ...input, fresh: true })).toEqual({ ...input, fresh: true });
+    expect(() => decode({ ...input, from: 123 })).toThrow();
+    expect(kinRpcAccess("kin.connections.mineCalendar")).toBe("person");
+    expect(KIN_RPC_AGGREGATES["kin.connections.mineCalendar"]).toBe("kin-connections");
+  });
+
+  it("carries date-only events and rejects overlong event ids and titles", () => {
+    const event = {
+      connectionId: "conn_rhea",
+      id: "event_tidewater",
+      title: "Tidewater Freight",
+      start: "2026-11-27",
+      end: "2026-11-28",
+      allDay: true,
+      zone: null,
+      link: null,
+      repeats: false,
+    };
+    const decode = Schema.decodeUnknownSync(KinMineCalendarResult);
+    const result = { sources: [], events: [event], more: false };
+    expect(decode(result)).toEqual(result);
+    expect(() => decode({ ...result, events: [{ ...event, id: "a".repeat(201) }] })).toThrow();
+    expect(() => decode({ ...result, events: [{ ...event, title: "a".repeat(301) }] })).toThrow();
   });
 });

@@ -72,10 +72,12 @@ import {
 import { closeSubject } from "../open/closeSubject.ts";
 import * as Connections from "./ConnectionsService.ts";
 import { guarded } from "./EgressGuard.ts";
+import { type FakeMailProvider, makeFakeMail } from "./FakeMail.ts";
 import { CONNECTION_LIMITS } from "./limits.ts";
 import * as McpGateway from "./McpGateway.ts";
 import { KinConnectionsToolkit } from "./mcp.ts";
 import { GOOGLE_SCOPES, googleGrant, googleMail } from "./Google.ts";
+import { microsoftReadsCalendar } from "./Microsoft.ts";
 import { challengeOf } from "./OAuth.ts";
 import { promptLine } from "./ConnectionRows.ts";
 import { staleAsksStranded } from "./strandedAsks.ts";
@@ -3381,6 +3383,17 @@ describe("KinConnections sending", () => {
     ),
   );
 
+  it("reads calendar permission from Microsoft Graph scope names", () => {
+    for (const [granted, allowed] of [
+      ["Mail.Read Calendars.Read", true],
+      ["https://graph.microsoft.com/CALENDARS.ReadWrite", true],
+      ["Mail.Read Calendars.ReadBasic", false],
+      [undefined, false],
+    ] as const) {
+      assert.strictEqual(microsoftReadsCalendar(granted), allowed);
+    }
+  });
+
   it("reads what a Google grant allows from either family of scopes", () => {
     const auth = (...names: ReadonlyArray<string>) =>
       names.map((name) => `https://www.googleapis.com/auth/${name}`).join(" ");
@@ -3958,6 +3971,521 @@ describe("Mail attachment to Docs", () => {
           for (const name of [fileName, "Large.txt", "Odd.jxl"]) assert.notInclude(log, name);
         }),
       ),
+  );
+});
+
+const calendarWindow = {
+  orgId,
+  from: "2026-11-01T00:00:00.000Z",
+  to: "2026-12-01T00:00:00.000Z",
+};
+const calendarDay = Date.parse("2026-11-15T00:00:00.000Z");
+const rhea = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("rhea") }];
+const meera = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("meera") }];
+const zoya = [{ _tag: "person" as const, orgId, personId: KinPersonId.make("zoya") }];
+const calendarPeople = [rhea, meera, zoya] as const;
+
+const withCalendars = <A, E>(
+  body: (fixture: {
+    fake: ReturnType<typeof makeFakeMail>;
+    reads: ReadonlyArray<URL>;
+    holdNextRead: () => { readonly entered: Promise<void>; readonly release: () => void };
+    connect: (
+      address: string,
+      provider: FakeMailProvider,
+      person?: typeof rhea,
+      scope?: string,
+    ) => Effect.Effect<KinConnectionId, KinChatError, KinConnections>;
+  }) => Effect.Effect<A, E, Env>,
+) => {
+  const fake = makeFakeMail();
+  const reads: Array<URL> = [];
+  let held: { readonly entered: () => void; readonly released: Promise<void> } | undefined;
+  const holdNextRead = () => {
+    const entered = Promise.withResolvers<void>();
+    const released = Promise.withResolvers<void>();
+    held = { entered: entered.resolve, released: released.promise };
+    return { entered: entered.promise, release: released.resolve };
+  };
+  const handle = fake.handle(() => Promise.reject(new Error("Outside the calendar fixture.")));
+  const fetch = Object.assign(
+    async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.searchParams.has("fields") || url.pathname.endsWith("/calendarView")) {
+        reads.push(url);
+        const hold = held;
+        held = undefined;
+        if (hold !== undefined) {
+          hold.entered();
+          await hold.released;
+        }
+      }
+      return handle(request);
+    },
+    { preconnect() {} },
+  );
+  const connect = Effect.fnUntraced(function* (
+    address: string,
+    service: FakeMailProvider,
+    person?: typeof rhea,
+    granted?: string,
+  ) {
+    fake.addAccount({ address, provider: service, name: "Tidewater Freight" });
+    const connections = yield* KinConnections;
+    const approve = (authorizationUrl: string) => {
+      const url = new URL(authorizationUrl);
+      if (granted !== undefined) url.searchParams.set("scope", granted);
+      return fake.approve(url.href, address);
+    };
+    const start = { orgId, service, returnTo: "web" as const };
+    if (person === undefined) {
+      const started = yield* connections.signInStart(rhea, start);
+      const result = yield* connections.signInFinish(rhea, {
+        orgId,
+        response: approve(started.authorizationUrl),
+      });
+      return result.connection.connectionId;
+    }
+    const started = yield* connections.mineSignInStart(person, { ...start, another: true });
+    const result = yield* connections.mineSignInFinish(person, {
+      orgId,
+      response: approve(started.authorizationUrl),
+    });
+    const connected = result.mailboxes?.find((mailbox) => mailbox.account === address);
+    assert.isDefined(connected);
+    return connected!.connectionId;
+  });
+  return Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const connections = yield* KinConnections;
+    yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Tidewater Freight', ${at})`;
+    for (const [index, [person]] of calendarPeople.entries()) {
+      const id = person!.personId;
+      const access = (["owner", "co_owner", "member"] as const)[index]!;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, access)
+        VALUES (${id}, ${orgId}, ${id}, ${id}, ${at}, ${access})`;
+    }
+    yield* connections.setSignInClient(rhea, {
+      orgId,
+      service: "google",
+      client: { clientId: GOOGLE_CLIENT, clientSecret: Redacted.make(GOOGLE_SECRET) },
+    });
+    yield* connections.setSignInClient(rhea, {
+      orgId,
+      service: "microsoft",
+      client: { clientId: MICROSOFT_APP },
+    });
+    return yield* body({ fake, reads, holdNextRead, connect });
+  }).pipe(Effect.provide(layerFor({ fetch }, [])), Effect.scoped);
+};
+
+describe("KinConnections Dates calendar", () => {
+  it.effect("checks own and company visibility on every read, even with a warm cache", () =>
+    withCalendars(({ connect, fake, reads, holdNextRead }) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        const sql = yield* SqlClient.SqlClient;
+        const rheaMail = "rhea@tidewater.example";
+        const meeraMail = "meera@tidewater.example";
+        const zoyaMail = "zoya@tidewater.example";
+        const google = "dispatch@tidewater.example";
+        const microsoft = "office@tidewater.example";
+        yield* connect(rheaMail, "google", rhea);
+        yield* connect(meeraMail, "microsoft", meera);
+        yield* connect(zoyaMail, "google", zoya);
+        const companyGoogle = yield* connect(google, "google");
+        yield* connect(microsoft, "microsoft");
+        yield* connections.setReach(rhea, { orgId, connectionId: companyGoogle, reach: "open" });
+        for (const [index, address] of [rheaMail, meeraMail, zoyaMail, google, microsoft].entries())
+          fake.putEvent({
+            account: address,
+            id: `calendar_event_tidewater_${index}`,
+            title: address,
+            start: calendarDay,
+            end: calendarDay + 60_000,
+            updated: calendarDay,
+          });
+
+        const view = (person: typeof rhea) =>
+          connections.mineCalendar(person, calendarWindow).pipe(
+            Effect.map(({ sources, events }) => {
+              assert.sameMembers(
+                events.map((event) => event.title),
+                sources.map((source) => source.account),
+              );
+              return sources.map((source) => [source.account, source.company]);
+            }),
+          );
+        assert.sameDeepMembers(yield* view(rhea), [
+          [rheaMail, false],
+          [google, true],
+          [microsoft, true],
+        ]);
+        assert.sameDeepMembers(yield* view(meera), [
+          [meeraMail, false],
+          [google, true],
+          [microsoft, true],
+        ]);
+        assert.deepStrictEqual(yield* view(zoya), [[zoyaMail, false]]);
+        assert.lengthOf(reads, 7);
+
+        yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = 'meera'`;
+        assert.deepStrictEqual(yield* view(meera), [[meeraMail, false]]);
+        assert.lengthOf(reads, 7);
+
+        // Taking a company mailbox belongs to the acting owner.
+        yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = 'rhea'`;
+        yield* sql`UPDATE kin_people SET access = 'owner' WHERE person_id = 'meera'`;
+        yield* connections.moveMailbox(meera, { orgId, connectionId: companyGoogle, to: "mine" });
+        yield* sql`UPDATE kin_people SET access = 'co_owner' WHERE person_id = 'meera'`;
+        yield* sql`UPDATE kin_people SET access = 'owner' WHERE person_id = 'rhea'`;
+        assert.sameDeepMembers(yield* view(rhea), [
+          [rheaMail, false],
+          [microsoft, true],
+        ]);
+        assert.sameDeepMembers(yield* view(meera), [
+          [meeraMail, false],
+          [google, false],
+          [microsoft, true],
+        ]);
+        assert.deepStrictEqual(yield* view(zoya), [[zoyaMail, false]]);
+
+        // Moved down while a vendor answers: the company calendar is not in that answer.
+        const hold = holdNextRead();
+        const reading = yield* Effect.forkChild(
+          connections.mineCalendar(meera, { ...calendarWindow, to: "2026-12-02T00:00:00.000Z" }),
+        );
+        yield* Effect.promise(() => hold.entered);
+        yield* sql`UPDATE kin_people SET access = 'member' WHERE person_id = 'meera'`;
+        hold.release();
+        const answered = yield* Fiber.join(reading);
+        assert.sameMembers(
+          answered.sources.map((source) => source.account),
+          [meeraMail, google],
+        );
+        assert.sameMembers(
+          answered.events.map((event) => event.title),
+          [meeraMail, google],
+        );
+        yield* sql`UPDATE kin_people SET removed_at = ${at} WHERE person_id = 'zoya'`;
+        assert.strictEqual(
+          (yield* connections.mineCalendar(zoya, calendarWindow).pipe(Effect.flip)).reason,
+          "not_found",
+        );
+        assert.strictEqual(
+          (yield* connections.mineCalendar(stranger, calendarWindow).pipe(Effect.flip)).reason,
+          "not_found",
+        );
+      }),
+    ),
+  );
+
+  it.effect("refuses invalid windows and keeps the earliest 300 events across both vendors", () =>
+    withCalendars(({ connect, fake, reads }) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        for (const window of [
+          { ...calendarWindow, to: calendarWindow.from },
+          { ...calendarWindow, to: "2026-10-31T00:00:00.000Z" },
+          { ...calendarWindow, to: "2027-03-07T00:00:00.000Z" },
+          { ...calendarWindow, from: "2026-11-01" },
+        ])
+          assert.strictEqual(
+            (yield* connections.mineCalendar(rhea, window).pipe(Effect.flip)).reason,
+            "invalid_state",
+          );
+        assert.lengthOf(reads, 0);
+        assert.deepStrictEqual(
+          yield* connections.mineCalendar(rhea, {
+            ...calendarWindow,
+            to: "2027-03-06T00:00:00.000Z",
+          }),
+          { sources: [], events: [], more: false },
+        );
+
+        const google = "dispatch@tidewater.example";
+        const outlook = "office@tidewater.example";
+        yield* connect(google, "google");
+        yield* connect(outlook, "microsoft");
+        for (let index = 305; index >= 0; index--) {
+          const start = calendarDay + index * 60_000;
+          fake.putEvent({
+            account: index % 100 === 0 ? google : outlook,
+            id: `event_tidewater_${index}`,
+            title: "Tidewater Freight",
+            start,
+            end: start + 60_000,
+            updated: calendarDay,
+          });
+        }
+        const result = yield* connections.mineCalendar(rhea, calendarWindow);
+        assert.isTrue(result.more);
+        assert.lengthOf(reads, 3);
+        assert.deepStrictEqual(
+          result.events.map((event) => event.id),
+          Array.from({ length: 300 }, (_, index) => `event_tidewater_${index}`),
+        );
+      }),
+    ),
+  );
+
+  it.effect(
+    "isolates provider errors, avoids ungranted and paused sources, and marks only dead sign-ins",
+    () =>
+      withCalendars(({ connect, fake, reads, holdNextRead }) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const connections = yield* KinConnections;
+          const google = "dispatch@tidewater.example";
+          const outlook = "office@tidewater.example";
+          const limited = "rhea@tidewater.example";
+          const paused = "warehouse@tidewater.example";
+          const googleId = yield* connect(google, "google");
+          const outlookId = yield* connect(outlook, "microsoft");
+          const own = "meera@tidewater.example";
+          const ownId = yield* connect(own, "google", meera);
+          yield* connect(limited, "google", rhea, "https://www.googleapis.com/auth/gmail.readonly");
+          const pausedId = yield* connect(paused, "microsoft");
+          yield* connections.update(rhea, { orgId, connectionId: pausedId, paused: true });
+          const start = calendarDay;
+          fake.putEvent({
+            account: outlook,
+            id: "event_tidewater",
+            title: "Tidewater Freight",
+            start,
+            end: start + 60_000,
+            updated: start,
+          });
+          yield* sql`INSERT INTO kin_connection_cursors (org_id, connection_id, checked_until, updated_at)
+          VALUES (${orgId}, ${googleId}, 27, 30)`;
+          const cursors = yield* sql`SELECT * FROM kin_connection_cursors`;
+          const before = yield* sql`SELECT total_changes() AS changes`;
+
+          fake.failWith(google, 500);
+          const first = yield* connections.mineCalendar(rhea, calendarWindow);
+          assert.sameDeepMembers(
+            first.sources.map((source) => [source.account, source.status]),
+            [
+              [google, "unreachable"],
+              [outlook, "ok"],
+              [limited, "no_calendar_permission"],
+            ],
+          );
+          assert.deepStrictEqual(
+            first.events.map((event) => event.title),
+            ["Tidewater Freight"],
+          );
+          assert.lengthOf(reads, 2);
+
+          fake.failWith(google, 429);
+          assert.strictEqual(
+            (yield* connections.mineCalendar(rhea, calendarWindow)).sources.find(
+              (source) => source.account === google,
+            )?.status,
+            "unreachable",
+          );
+          assert.lengthOf(reads, 2);
+          yield* TestClock.adjust("15 seconds");
+          assert.strictEqual(
+            (yield* connections.mineCalendar(rhea, calendarWindow)).sources.find(
+              (source) => source.account === google,
+            )?.status,
+            "busy",
+          );
+          assert.lengthOf(reads, 3);
+
+          const hold = holdNextRead();
+          const reading = yield* Effect.forkChild(
+            connections.mineCalendar(rhea, { ...calendarWindow, to: "2026-12-02T00:00:00.000Z" }),
+          );
+          yield* Effect.promise(() => hold.entered);
+          yield* TestClock.adjust("8 seconds");
+          hold.release();
+          assert.include(
+            (yield* Fiber.join(reading)).sources.map((source) => source.status),
+            "unreachable",
+          );
+          assert.deepStrictEqual(yield* sql`SELECT total_changes() AS changes`, before);
+
+          fake.failWith(google, null);
+          fake.failWith(own, 401);
+          fake.setExpired(outlook, true);
+          const signedOut = yield* connections.mineCalendar(meera, calendarWindow);
+          assert.sameMembers(
+            signedOut.sources
+              .filter((source) => source.status === "signed_out")
+              .map((source) => source.account),
+            [own, outlook],
+          );
+          assert.strictEqual(
+            (yield* connections.mine(meera, { orgId })).mailboxes?.find(
+              (mailbox) => mailbox.connectionId === ownId,
+            )?.state,
+            "needs_sign_in",
+          );
+          const settings = yield* connections.list(rhea, { orgId });
+          assert.strictEqual(
+            settings.connections.find((source) => source.connectionId === outlookId)?.state,
+            "needs_sign_in",
+          );
+          assert.strictEqual(
+            settings.connections.find((source) => source.connectionId === googleId)?.state,
+            "active",
+          );
+          assert.strictEqual(
+            settings.connections.find((source) => source.connectionId === pausedId)?.state,
+            "active",
+          );
+          assert.deepStrictEqual(yield* sql`SELECT * FROM kin_connection_cursors`, cursors);
+        }),
+      ),
+  );
+
+  it.effect("shares a UTC-day lookup and returns events overlapping each asked window", () =>
+    withCalendars(({ connect, fake, reads }) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        const account = "dispatch@tidewater.example";
+        yield* connect(account, "google");
+        const at = calendarDay + 12 * 60 * 60_000;
+        for (const [id, start, end, allDay] of [
+          ["event_tidewater_early", at - 60_000, at + 1_000, false],
+          ["event_tidewater_late", at + 2_000, at + 60_000, false],
+          ["event_tidewater_trip", calendarDay, calendarDay + 86_400_000, true],
+        ] as const)
+          fake.putEvent({
+            account,
+            id,
+            start,
+            end,
+            allDay,
+            title: "Tidewater Freight",
+            updated: at,
+          });
+
+        const first = yield* connections.mineCalendar(rhea, {
+          orgId,
+          from: "2026-11-15T17:30:00+05:30",
+          to: "2026-11-15T12:00:02Z",
+        });
+        const second = yield* connections.mineCalendar(rhea, {
+          orgId,
+          from: "2026-11-15T12:00:01Z",
+          to: "2026-11-15T12:00:03Z",
+        });
+        assert.lengthOf(reads, 1);
+        assert.strictEqual(reads[0]?.searchParams.get("timeMin"), "2026-11-15T00:00:00.000Z");
+        assert.strictEqual(reads[0]?.searchParams.get("timeMax"), "2026-11-16T00:00:00.000Z");
+        assert.deepStrictEqual(
+          first.events.map(({ id }) => id),
+          ["event_tidewater_trip", "event_tidewater_early"],
+        );
+        assert.deepStrictEqual(
+          second.events.map(({ id }) => id),
+          ["event_tidewater_trip", "event_tidewater_late"],
+        );
+      }),
+    ),
+  );
+
+  it.effect("limits provider reads per connection across windows and viewers", () =>
+    withCalendars(({ connect, reads }) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        const google = yield* connect("dispatch@tidewater.example", "google");
+        const window = (day: number) => ({
+          orgId,
+          from: `2026-11-${day}T00:00:00Z`,
+          to: `2026-11-${day + 1}T00:00:00Z`,
+        });
+        for (let day = 11; day <= 22; day++) {
+          const { sources } = yield* connections.mineCalendar(rhea, window(day));
+          assert.strictEqual(sources[0]?.status, "ok");
+        }
+        assert.lengthOf(reads, 12);
+        const cached = yield* connections.mineCalendar(rhea, { ...window(11), fresh: true });
+        assert.strictEqual(cached.sources[0]?.status, "ok");
+        assert.lengthOf(reads, 12);
+
+        const outlook = yield* connect("office@tidewater.example", "microsoft");
+        yield* TestClock.adjust("59 seconds");
+        const statuses = (answer: typeof cached) =>
+          answer.sources.map(({ connectionId, status }) => [connectionId, status]);
+        const throttled = yield* connections.mineCalendar(meera, window(23));
+        assert.sameDeepMembers(statuses(throttled), [
+          [google, "busy"],
+          [outlook, "ok"],
+        ]);
+        assert.lengthOf(reads, 13);
+        assert.match(reads[12]!.pathname, /calendarView$/);
+
+        yield* TestClock.adjust("1 second");
+        const recovered = yield* connections.mineCalendar(meera, window(23));
+        assert.sameDeepMembers(statuses(recovered), [
+          [google, "ok"],
+          [outlook, "ok"],
+        ]);
+        assert.lengthOf(reads, 14);
+      }),
+    ),
+  );
+
+  it.effect("caches live reads for 60 seconds and ends the entry on sign-in and removal", () =>
+    withCalendars(({ connect, fake, reads }) =>
+      Effect.gen(function* () {
+        const connections = yield* KinConnections;
+        const account = "dispatch@tidewater.example";
+        const connectionId = yield* connect(account, "google");
+        const read = (fresh?: boolean) =>
+          connections.mineCalendar(rhea, { ...calendarWindow, fresh });
+        const put = (title: string) =>
+          fake.putEvent({
+            account,
+            id: "event_tidewater",
+            title,
+            start: calendarDay,
+            end: calendarDay + 60_000,
+            updated: calendarDay,
+          });
+        put("Tidewater Freight agenda");
+        const first = yield* read();
+        put("Tidewater Freight trip");
+        yield* TestClock.adjust("59 seconds");
+        assert.deepStrictEqual(yield* read(), first);
+        assert.lengthOf(reads, 1);
+        yield* TestClock.adjust("1 second");
+        assert.strictEqual((yield* read()).events[0]?.title, "Tidewater Freight trip");
+        assert.lengthOf(reads, 2);
+        put("Tidewater Freight review");
+        // Retry pressed in a loop keeps the answer it has until five seconds have passed.
+        assert.strictEqual((yield* read(true)).events[0]?.title, "Tidewater Freight trip");
+        assert.lengthOf(reads, 2);
+        yield* TestClock.adjust("5 seconds");
+        assert.strictEqual((yield* read(true)).events[0]?.title, "Tidewater Freight review");
+        assert.lengthOf(reads, 3);
+
+        const started = yield* connections.signInStart(rhea, {
+          orgId,
+          connectionId,
+          returnTo: "web",
+        });
+        yield* connections.signInFinish(rhea, {
+          orgId,
+          response: fake.approve(started.authorizationUrl, account),
+        });
+        assert.strictEqual((yield* read()).events[0]?.title, "Tidewater Freight review");
+        assert.lengthOf(reads, 4);
+        yield* connections.dropKeys([connectionId]);
+        const dropped = yield* read();
+        assert.strictEqual(dropped.sources[0]?.status, "signed_out");
+        assert.lengthOf(dropped.events, 0);
+        assert.lengthOf(reads, 4);
+        yield* connections.remove(rhea, { orgId, connectionId });
+        assert.deepStrictEqual(yield* read(), { sources: [], events: [], more: false });
+        assert.lengthOf(reads, 4);
+      }),
+    ),
   );
 });
 
