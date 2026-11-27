@@ -10,7 +10,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
-import { accessOf, accessSql } from "../people/KinAccess.ts";
+import { accessSql, isOwnerHimself } from "../people/KinAccess.ts";
 import { textLocale } from "../work/companyProfile.ts";
 import { RecommendChange } from "../widgets/cardPlans.ts";
 import { ownerZone } from "../work/recordRows.ts";
@@ -102,30 +102,33 @@ export const quietAfter = (row: StoredRow | undefined, at: number): number | nul
   return until > at ? until : undefined;
 };
 
+const currentOwner = Effect.fn("KinRecommendLedger.currentOwner")(function* (orgId: KinOrgId) {
+  const sql = yield* SqlClient.SqlClient;
+  const [row] = yield* sql<{ personId: string; name: string }>`SELECT
+      p.person_id AS "personId", p.display_name AS name FROM kin_people p
+    WHERE p.org_id = ${orgId} AND p.removed_at IS NULL AND ${sql.literal(accessSql("p"))} = 'owner'
+    ORDER BY p.access = 'owner' DESC, p.person_id LIMIT 1`;
+  return row;
+});
+
 /** The owner alone, never a co-owner, sees or answers a suggestion. */
 export const isOwner = Effect.fn("KinRecommendLedger.isOwner")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
 ) {
-  return (yield* accessOf(orgId, personId)) === "owner";
-});
-
-const ownerName = Effect.fn("KinRecommendLedger.ownerName")(function* (orgId: KinOrgId) {
-  const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ name: string }>`SELECT p.display_name AS name FROM kin_people p
-    WHERE p.org_id = ${orgId} AND p.removed_at IS NULL AND ${sql.literal(accessSql("p"))} = 'owner'
-    ORDER BY p.person_id LIMIT 1`;
-  return row?.name ?? "the owner";
+  const owner = yield* currentOwner(orgId);
+  return owner !== undefined && isOwnerHimself(owner, personId);
 });
 
 export const onlyOwner = Effect.fn("KinRecommendLedger.onlyOwner")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
 ) {
-  if (yield* isOwner(orgId, personId)) return;
+  const owner = yield* currentOwner(orgId);
+  if (owner !== undefined && isOwnerHimself(owner, personId)) return;
   return yield* new KinChatError({
     reason: "not_allowed",
-    message: `Only ${yield* ownerName(orgId)} can answer this.`,
+    message: `Only ${owner?.name ?? "the owner"} can answer this.`,
   });
 });
 

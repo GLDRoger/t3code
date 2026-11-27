@@ -177,13 +177,10 @@ const stillHolds = Effect.fn("KinRecommendCard.stillHolds")(function* (
 const make = Effect.fn("KinRecommendCard.make")(function* (
   orgId: KinOrgId,
   personId: KinPersonId,
-  change: RecommendChange,
+  change: Exclude<RecommendChange, { readonly kind: "bank_sender" }>,
 ) {
   const people = [{ _tag: "person" as const, orgId, personId }];
   switch (change.kind) {
-    case "bank_sender":
-      yield* BankSenders.approve(orgId, personId, change.address, change.accounts);
-      return `Kin will count alerts from ${change.address} about the account endings you approved.`;
     case "lead_access":
       yield* LeadProvision.allow({
         editor: { _tag: "person", personId },
@@ -261,15 +258,36 @@ export const runRecommend = Effect.fn("KinRecommendCard.run")(function* (
     yield* settle("stale", null);
     return { title: "Nothing changed", text: `Nothing changed: ${reason}.` };
   }
-  if (plan.answer === "not_now") {
-    if (plan.change.kind === "bank_sender") {
-      yield* BankSenders.decline(orgId, tap.personId, plan.change.address);
-      yield* settle("declined", null);
-      return {
-        title: "No",
-        text: "Kin won't ask about this address again. To count its alerts, add it in Settings under Bank alert addresses.",
-      };
+  if (plan.change.kind === "bank_sender") {
+    const { address, accounts } = plan.change;
+    const decline = plan.answer === "not_now";
+    const decided = yield* (
+      decline
+        ? BankSenders.decline(orgId, tap.personId, address)
+        : BankSenders.approve(orgId, tap.personId, address, accounts)
+    ).pipe(
+      Effect.as(true),
+      Effect.catchIf(
+        (error) => isChatError(error) && error.reason === "conflict",
+        () => Effect.succeed(false),
+      ),
+    );
+    if (!decided) {
+      yield* settle("stale", null);
+      return { title: "Nothing changed", text: "This was already answered." };
     }
+    yield* settle(decline ? "declined" : "done", null);
+    return decline
+      ? {
+          title: "No",
+          text: "Kin won't ask about this address again. To count its alerts, add it in Settings under Bank alert addresses.",
+        }
+      : {
+          title: "Done",
+          text: `Kin will count alerts from ${address} about the account endings you approved.`,
+        };
+  }
+  if (plan.answer === "not_now") {
     const [declined] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
       FROM kin_recommendations WHERE org_id = ${orgId} AND rule = ${row.rule}
         AND subject = ${row.subject} AND state = 'declined'`;

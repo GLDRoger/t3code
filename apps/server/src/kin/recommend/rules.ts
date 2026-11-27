@@ -22,9 +22,9 @@ import { candidateGate } from "../work/statements/bankAlertCandidates.ts";
 import {
   BANK_SENDER_RULE,
   liveHeldMail,
+  list as listSenders,
   normalizeAddress,
 } from "../work/statements/bankSenderRows.ts";
-import * as BankSenders from "../work/statements/bankSenders.ts";
 import { bankSenderCopy } from "./bankSenderCopy.ts";
 import { dayIn } from "../work/money.ts";
 import { DAY_MS } from "../durations.ts";
@@ -422,7 +422,7 @@ export const bankSender = Effect.fn("KinRecommendRules.bankSender")(function* (
   only?: { readonly address: string },
 ) {
   const { orgId, at } = ctx;
-  const senders = yield* BankSenders.list(orgId);
+  const senders = yield* listSenders(orgId);
   const waiting = senders.filter(
     (sender) =>
       sender.state === "candidate" && (only === undefined || sender.address === only.address),
