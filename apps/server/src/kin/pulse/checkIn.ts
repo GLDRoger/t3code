@@ -30,7 +30,7 @@ import {
 import { dayIn } from "../work/money.ts";
 import { endOfDay, ownerZone, startOfDay } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
-import { matchLines, outsideKey, type OutsideRead } from "./outside.ts";
+import { markMailLines, matchLines, outsideKey, type OutsideRead } from "./outside.ts";
 import { importedSince } from "./personMorning.ts";
 import { openDeclines, reserveDeclines } from "./declines.ts";
 import { leftOpen, reserveLeft } from "./leftForCheckIn.ts";
@@ -274,9 +274,14 @@ export const queueCheckIn = Effect.fn("KinPulse.checkIn")(function* (input: {
   const remaining = outside.filter(
     (line) => line.source !== "mail" || !handled.has(outsideKey(line)),
   );
-  const matched = yield* matchLines(orgId, remaining);
+  const matched = yield* matchLines(
+    orgId,
+    remaining.filter((line) => line.source === "calendar"),
+  );
   const byId = new Map(remaining.map((line) => [outsideKey(line), line]));
   for (const { line } of matched) byId.set(outsideKey(line), line);
+  const marked = yield* markMailLines(orgId, byId.values(), input.outside.mailThreads);
+  for (const line of marked) byId.set(outsideKey(line), line);
   const sent = [...byId.values()]
     .toSorted((a, b) => Number(b.matched !== undefined) - Number(a.matched !== undefined))
     .slice(0, OUTSIDE_CAP);

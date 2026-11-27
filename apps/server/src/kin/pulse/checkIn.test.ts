@@ -1,4 +1,4 @@
-import { assert, describe, it, vi } from "@effect/vitest";
+import { assert, describe, expect, it, vi } from "@effect/vitest";
 import {
   KinAgentId,
   KinChatId,
@@ -15,6 +15,8 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import * as ArrivalStore from "../arrivals/ArrivalStore.ts";
+import { classify, type ArrivalHeaders } from "../arrivals/classify.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
@@ -32,7 +34,6 @@ import { holdIfQuiet } from "../triggers/quietHold.ts";
 import { inHoursAt, nudge } from "./nudge.ts";
 import {
   mailLine,
-  matchLines,
   type OutsideRead,
   type OutsideSource,
   outsideKey,
@@ -131,6 +132,81 @@ const mail = (id: string, who: string, subject: string): KinPulseOutsideLine => 
   who,
   subject,
   where: null,
+});
+const mailbox = "company-mail";
+const companyMail = "hello@tidewater.example";
+const addMailbox = Effect.fn("test.addMailbox")(function* (connectionId = mailbox) {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
+      auth, reach, state, created_at, updated_at)
+    VALUES (${orgId}, ${connectionId}, 'google', 'Google', 'builtin', 'google.example',
+      'oauth', 'closed', 'active', 0, 0)`;
+});
+
+const storeArrival = Effect.fn("test.storeArrival")(function* (
+  line: KinPulseOutsideLine,
+  fromAddress: string,
+  options: {
+    readonly connectionId?: string;
+    readonly messageId?: string;
+    readonly receivedAt?: number;
+    readonly headers?: Partial<ArrivalHeaders>;
+  } = {},
+) {
+  const connectionId = options.connectionId ?? mailbox;
+  const threadId = line.thread!;
+  const messageId = options.messageId ?? line.id;
+  const classified = classify(
+    {
+      threadId,
+      from: line.who,
+      fromAddress,
+      to: line.to === undefined ? [] : [line.to],
+      cc: [],
+      subject: line.subject!,
+      authResults: [],
+      listUnsubscribe: false,
+      precedence: null,
+      autoSubmitted: null,
+      bulk: false,
+      hasFile: false,
+      ...options.headers,
+    },
+    yield* ArrivalStore.rowsFor(orgId, connectionId, [companyMail]),
+  );
+  assert.isTrue(
+    yield* ArrivalStore.claim(
+      orgId,
+      {
+        arrivalId: ArrivalStore.arrivalIdOf(orgId, connectionId, messageId),
+        connectionId,
+        messageId,
+        threadId,
+        mailKey: null,
+        fromAddress,
+        receivedAt: options.receivedAt ?? SLOT - MINUTE,
+        class: classified.class,
+        reason: classified.reason,
+        needsLook: classified.look !== undefined,
+      },
+      SLOT,
+      false,
+    ),
+  );
+});
+
+const outsideMail = (id: string, who: string, subject: string, to?: string) => ({
+  ...mail(id, who, subject),
+  thread: id.split(":")[0]!,
+  ...(to === undefined ? {} : { to }),
+});
+
+const mailOutside = (lines: ReadonlyArray<KinPulseOutsideLine>, identified = lines) => ({
+  lines,
+  seen: [],
+  mailThreads: new Map(
+    identified.map((line) => [line, { connectionId: mailbox, threadId: line.thread! }]),
+  ),
 });
 const source = (lines: ReadonlyArray<KinPulseOutsideLine>): OutsideSource => ({
   read: () => Effect.succeed({ lines, seen: [] }),
@@ -1013,25 +1089,58 @@ describe("pulse check-ins", () => {
           emails: ["ravi@lumen.example", "ravi.home@lumen.example", "priya@lumen.example"],
         }),
       });
-      const result = yield* checkIn(SLOT, {
-        lines: [
-          mail("t1:a", "Shop <news@shop.example>", "Weekend sale"),
-          mail("t2:a", "Priya <Priya@lumen.example>", "Re: launch date"),
-          mail("t3:a", "Ravi <ravi.home@lumen.example>", "Re: launch date"),
-        ],
-        seen: [],
+      yield* addMailbox();
+      yield* addMailbox("other-mail");
+      const newsletter = outsideMail("t1:a", "Shop <news@shop.example>", "Weekend sale");
+      const priya = outsideMail("t2:a", "Priya <Priya@lumen.example>", "Re: launch date");
+      const ravi = outsideMail("t3:a", "Ravi <ravi.home@lumen.example>", "Re: launch date");
+      const forged = outsideMail("t4:a", priya.who!, "New bank details", companyMail);
+      const signIn = outsideMail(
+        "t5:a",
+        "security@identity.example",
+        "Your verification code is 123456",
+        companyMail,
+      );
+      const pending = outsideMail("t6:a", priya.who!, "Still in the feed", companyMail);
+      yield* storeArrival(newsletter, "news@shop.example");
+      yield* storeArrival(priya, "priya@lumen.example");
+      yield* storeArrival(ravi, "ravi.home@lumen.example");
+      yield* storeArrival(forged, "priya@lumen.example", {
+        headers: { authResults: ["mx.example; dmarc=fail (p=reject) header.from=lumen.example"] },
       });
+      yield* storeArrival(forged, "priya@lumen.example", {
+        messageId: "older",
+        receivedAt: SLOT - 2 * MINUTE,
+      });
+      yield* storeArrival(forged, "priya@lumen.example", {
+        connectionId: "other-mail",
+        receivedAt: SLOT,
+      });
+      yield* storeArrival(signIn, "security@identity.example");
+      const result = yield* checkIn(
+        SLOT,
+        mailOutside([newsletter, priya, ravi, forged, signIn, pending]),
+      );
       assert.strictEqual(result._tag, "queued");
       const [event] = yield* pulseEvents;
       const parsed = JSON.parse(event!.json);
-      assert.deepStrictEqual(
-        parsed.outside.map((line: KinPulseOutsideLine) => [line.id, line.matched ?? null]),
-        [
-          ["t2:a", "contact CT-1 Priya of client C-1 Lumen"],
-          ["t3:a", "contact CT-2 Ravi of client C-1 Lumen"],
-          ["t1:a", null],
-        ],
+      const marks = new Map<string, string | undefined>(
+        parsed.outside.map((line: KinPulseOutsideLine) => [line.id, line.matched]),
       );
+      expect
+        .soft(marks.get(forged.id), "failed sender checks must not show as a contact")
+        .toBe("This mail failed the sender checks for priya@lumen.example.");
+      expect.soft(marks.get(signIn.id), "sign-in mail must not be raised").toBeUndefined();
+      expect
+        .soft(marks.get(pending.id), "mail not classified yet must not be raised")
+        .toBeUndefined();
+      assert.deepStrictEqual(
+        [...marks.keys()],
+        [priya.id, ravi.id, forged.id, newsletter.id, signIn.id, pending.id],
+      );
+      assert.strictEqual(marks.get(priya.id), "contact CT-1 Priya of client C-1 Lumen");
+      assert.strictEqual(marks.get(ravi.id), "contact CT-2 Ravi of client C-1 Lumen");
+      assert.isUndefined(marks.get(newsletter.id));
     }).pipe(Effect.provide(layer)),
   );
 
@@ -1065,8 +1174,10 @@ describe("pulse check-ins", () => {
           mail(`${prefix}${n}:a`, `Migration <noreply-${n}@tidewater.example>`, "Synced"),
         );
       const matched = ["q1:a", "q2:a", "q3:a"].map((id) =>
-        mail(id, "Arjun <arjun@tidewater.example>", "Urgent quote"),
+        outsideMail(id, "Arjun <arjun@tidewater.example>", "Urgent quote"),
       );
+      yield* addMailbox();
+      for (const line of matched) yield* storeArrival(line, "arjun@tidewater.example");
       const listed = Effect.fn("test.listed")(function* (day: string) {
         const events = yield* pulseEvents;
         const parsed = JSON.parse(events.find((event) => event.key.endsWith(day))!.json);
@@ -1075,7 +1186,7 @@ describe("pulse check-ins", () => {
           notListed: parsed.outsideNotListed,
         };
       });
-      assert.include(yield* checkIn(SLOT, { lines: [...many("a", 67), ...matched], seen: [] }), {
+      assert.include(yield* checkIn(SLOT, mailOutside([...many("a", 67), ...matched], matched)), {
         _tag: "queued",
         outside: 60,
       });
@@ -1129,19 +1240,33 @@ describe("pulse check-ins", () => {
         fields: '{"number":"2026-17"}',
       });
       yield* record({ key: "Q-1", list: "quotes", title: "Audit", fields: '{"number":"2026-17"}' });
-      const matched = (subject: string) =>
-        matchLines(orgId, [mail("m", "accounts@other.example", subject)]).pipe(
-          Effect.map((found) => found.map((match) => match.line.matched)),
-        );
-      const inv1 = ["invoice INV/26-27/004 (INV-1)"];
-      assert.deepStrictEqual(yield* matched("Invoice INV/26-27/004"), inv1);
-      assert.deepStrictEqual(yield* matched("Re: Invoice INV/26-27/004 paid."), inv1);
-      assert.deepStrictEqual(yield* matched("Re: INV-1 for the retainer"), inv1);
-      assert.deepStrictEqual(yield* matched("Invoice INV/26-27/0041"), []);
-      assert.deepStrictEqual(yield* matched("Invoice XINV/26-27/004"), []);
-      assert.deepStrictEqual(yield* matched("Invoice inv/26-27/004"), []);
-      // The invoice and the quote both show 2026-17: neither is guessed.
-      assert.deepStrictEqual(yield* matched("Re: 2026-17"), []);
+      yield* addMailbox();
+      const subjects = [
+        ["Invoice INV/26-27/004", true],
+        ["Re: Invoice INV/26-27/004 paid.", true],
+        ["Re: INV-1 for the retainer", true],
+        ["Invoice INV/26-27/0041", false],
+        ["Invoice XINV/26-27/004", false],
+        ["Invoice inv/26-27/004", false],
+        // The invoice and the quote both show 2026-17: neither is guessed.
+        ["Re: 2026-17", false],
+      ] as const;
+      const lines = subjects.map(([subject], index) =>
+        outsideMail(`number-${index}:a`, "accounts@other.example", subject),
+      );
+      for (const line of lines) yield* storeArrival(line, "accounts@other.example");
+      assert.include(yield* checkIn(SLOT, mailOutside(lines)), { _tag: "queued", outside: 7 });
+      const [event] = yield* pulseEvents;
+      assert.deepStrictEqual(
+        JSON.parse(event!.json).outside.map((line: KinPulseOutsideLine) => [
+          line.subject,
+          line.matched ?? null,
+        ]),
+        subjects.map(([subject, matched]) => [
+          subject,
+          matched ? "names invoice INV/26-27/004 (INV-1)" : null,
+        ]),
+      );
     }).pipe(Effect.provide(layer)),
   );
 

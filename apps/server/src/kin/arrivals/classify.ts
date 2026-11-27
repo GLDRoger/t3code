@@ -133,6 +133,36 @@ export const isAutomatedNotice = (
 const contactLine = (contact: ArrivalContact) =>
   `contact ${contact.key} ${contact.title}${contact.clientKey === null ? "" : ` of client ${contact.clientKey} ${contact.clientTitle ?? ""}`.trimEnd()}`;
 const UNKNOWN_LINE = "a sender Kin doesn't know yet: maybe a new enquiry";
+const REPLY_LINE = "a reply to mail Kin sent in this thread";
+const BILLER_LINE = "a sender whose bill Kin filed before";
+const NOTICE_SUBJECT_REASON = "automated mail whose subject says “";
+
+export const checkInMailMark = (arrival: {
+  readonly class: ArrivalClass;
+  readonly reason: string | null;
+}): string | undefined => {
+  switch (arrival.class) {
+    case "client":
+    case "names_money":
+    case "failed_checks":
+      return arrival.reason ?? undefined;
+    case "unknown_person":
+      return UNKNOWN_LINE;
+    case "known_biller":
+      return BILLER_LINE;
+    case "automated_notice":
+      return arrival.reason?.startsWith(NOTICE_SUBJECT_REASON) ? arrival.reason : undefined;
+    case "reply_to_us":
+      return REPLY_LINE;
+    case "own":
+    case "sign_in":
+    case "automated":
+    case "automated_file":
+    case "copied":
+    case "other":
+      return undefined;
+  }
+};
 
 export const classify = (mail: ArrivalHeaders, rows: ArrivalRows): Classified => {
   const from = (mail.fromAddress ?? addressOf(mail.from) ?? "").toLowerCase();
@@ -147,7 +177,7 @@ export const classify = (mail: ArrivalHeaders, rows: ArrivalRows): Classified =>
     return {
       class: "reply_to_us",
       reason: "a reply to mail we sent",
-      look: { by: { agentId: sender }, matched: "a reply to mail Kin sent in this thread" },
+      look: { by: { agentId: sender }, matched: REPLY_LINE },
     };
   const contact = rows.contacts.get(from);
   if (
@@ -184,13 +214,13 @@ export const classify = (mail: ArrivalHeaders, rows: ArrivalRows): Classified =>
     return {
       class: "known_biller",
       reason: "a sender whose bill was filed before",
-      look: { by: "finance", matched: "a sender whose bill Kin filed before" },
+      look: { by: "finance", matched: BILLER_LINE },
     };
   const automation = automationOf(mail, from);
   if (automation !== undefined) {
     const notice = NOTICE_SUBJECT.exec(mail.subject);
     if (notice !== null) {
-      const reason = `automated mail whose subject says “${notice[0]}”`.slice(0, 200);
+      const reason = `${NOTICE_SUBJECT_REASON}${notice[0]}”`.slice(0, 200);
       const by = notice.groups?.finance === undefined ? "chief" : "finance";
       return { class: "automated_notice", reason, look: { by, matched: reason } };
     }
