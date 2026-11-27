@@ -2,6 +2,7 @@ import type { KinOrgId } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import type * as SqlClient from "effect/sql/SqlClient";
 
 import type {
@@ -12,7 +13,14 @@ import { toolsOf } from "../../connections/ConnectionRows.ts";
 import { MAIL_TOOL, addressesIn } from "../../connections/MailProvider.ts";
 import type { OnMail } from "../../pulse/outside.ts";
 import type { KinRecords } from "../KinRecords.ts";
-import { isBankAlertSender, retryAlertThreads, takeAlerts, threadSeen } from "./bankAlerts.ts";
+import * as BankAlertReader from "./BankAlertReader.ts";
+import {
+  ALERT_RETRY_WINDOW,
+  isBankAlertSender,
+  retryAlertThreads,
+  takeAlerts,
+  threadSeen,
+} from "./bankAlerts.ts";
 
 /**
  * A connection's new mail, as the pulse reads it, checked for bank alerts: a thread whose sender
@@ -32,6 +40,7 @@ export const takeAlertMail = Effect.fn("KinBankAlerts.mail")(function* (
   for (const mail of activity.mail) {
     if (!isBankAlertSender(addressesIn(mail.from)[0])) continue;
     const newest = mail.date === null ? Number.NaN : Date.parse(mail.date);
+    if (newest < now - ALERT_RETRY_WINDOW) continue;
     if (
       Number.isFinite(newest) &&
       (yield* threadSeen(orgId, activity.connectionId, mail.threadId, newest))
@@ -55,6 +64,16 @@ export const takeAlertMail = Effect.fn("KinBankAlerts.mail")(function* (
       for (const { threadId } of pending) retries.add(threadId);
   }
 
+  // One unavailable read stands for the whole pass: the rest wait for the next without a call.
+  const reader = yield* BankAlertReader.BankAlertReader;
+  let down = false;
+  const onceDown = BankAlertReader.BankAlertReader.of({
+    read: Effect.fn("KinBankAlertReader.readOnce")((mail) =>
+      down
+        ? Effect.fail(new BankAlertReader.BankAlertReaderUnavailable())
+        : reader.read(mail).pipe(Effect.tapError(() => Effect.sync(() => (down = true)))),
+    ),
+  });
   for (const threadId of new Set([...threads, ...retries])) {
     const retryOnly = !threads.has(threadId);
     tally.threads++;
@@ -91,7 +110,7 @@ export const takeAlertMail = Effect.fn("KinBankAlerts.mail")(function* (
             ],
       ),
       now,
-    });
+    }).pipe(Effect.provideService(BankAlertReader.BankAlertReader, onceDown));
     tally.recorded += taken.recorded;
     tally.duplicate += taken.duplicate;
     tally.rejected += taken.rejected;
@@ -114,10 +133,20 @@ export const alertsOnMail = Effect.fn("KinBankAlerts.onMail")(function* (
   connections: Pick<KinConnections["Service"], "readThread">,
 ) {
   const context = yield* Effect.context<SqlClient.SqlClient | KinRecords>();
+  const reader = yield* Effect.serviceOption(BankAlertReader.BankAlertReader);
+  const unavailable = BankAlertReader.BankAlertReader.of({
+    read: Effect.fn("KinBankAlertReader.missing")(() =>
+      Effect.fail(new BankAlertReader.BankAlertReaderUnavailable()),
+    ),
+  });
   const onMail: OnMail = (orgId, activity) =>
     takeAlertMail(connections, orgId, activity).pipe(
       Effect.as(true),
-      Effect.provide(context),
+      Effect.provideService(
+        BankAlertReader.BankAlertReader,
+        Option.getOrElse(reader, () => unavailable),
+      ),
+      Effect.provideContext(context),
       Effect.catchCause((cause) => {
         const failed = Cause.squash(cause);
         return Effect.logWarning("Kin couldn't read bank alert mail", {

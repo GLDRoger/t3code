@@ -11,6 +11,10 @@ describe("MailText", () => {
     ['<p style="font-size:0">tiny</p><p style="font-size:0.9em">kept</p>', "kept"],
     ["<style>p{}</style><script>x()</script>A &amp; B&nbsp;&#x41;", "A & B A"],
     ['<a href="https://client.example/pay">Pay</a>', "Pay (https://client.example/pay)"],
+    [
+      "<table><tr><td>Amount</td><td>INR 3,100.00</td></tr><tr><th>Date</th></tr></table>",
+      "Amount INR 3,100.00\nDate",
+    ],
   ])("turns HTML into the text a reader sees: %s", (html, text) => {
     expect(htmlToText(html)).toBe(text);
   });

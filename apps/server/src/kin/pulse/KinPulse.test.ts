@@ -61,6 +61,7 @@ import { KIN_OWNER_LEVEL, viewerOfPeople } from "../work/teamView.ts";
 import { projectLastMoved } from "./senses/projects.ts";
 import { buildWeeklySection, wantsWeekly, WEEK_FIGURES_TITLE, weeklyFigures } from "./weekly.ts";
 import { ensureBankList } from "../work/statements/bankList.ts";
+import { UNREAD_ALERT_MARKER } from "../work/statements/bankAlerts.ts";
 import { formatMoneyPlain } from "../work/money.ts";
 
 // Invented org, people, entries and money only; nothing here reads a real database.
@@ -3105,7 +3106,7 @@ describe("KinPulse", () => {
           ),
         );
       const advice =
-        "Money may have arrived that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.";
+        "Money may have moved that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.";
       assert.isEmpty(yield* facts());
       yield* insertAlert("old", at - 15 * DAY);
       yield* insertAlert("future", at + DAY);
@@ -3132,6 +3133,19 @@ describe("KinPulse", () => {
       assert.equal(two?.subject.title, "2 bank alerts could not be read");
       assert.equal(two?.consequence, `Sent between Tue 17 Nov and Thu 19 Nov. ${advice}`);
       assert.notEqual(factSig(one!, at, zone), factSig(two!, at, zone));
+      yield* sql`UPDATE kin_bank_alerts SET reference = ${UNREAD_ALERT_MARKER}
+        WHERE org_id = ${orgId} AND alert_id = 'second'`;
+      assert.equal(
+        (yield* facts())[0]?.consequence,
+        `Sent between Tue 17 Nov and Thu 19 Nov. No model was available to read 1 of them. ${advice}`,
+      );
+      yield* sql`UPDATE kin_bank_alerts SET reference = ${UNREAD_ALERT_MARKER}
+        WHERE org_id = ${orgId} AND alert_id = 'first'`;
+      assert.equal(
+        (yield* facts())[0]?.consequence,
+        `Sent between Tue 17 Nov and Thu 19 Nov. No model was available to read them. ${advice}`,
+      );
+      yield* sql`UPDATE kin_bank_alerts SET reference = NULL WHERE org_id = ${orgId}`;
 
       const told = { orgId, personId: owner, at, zone };
       yield* markTold({ ...told, eventId: "first-checkin", facts: [one!] });
@@ -3424,7 +3438,7 @@ describe("KinPulse", () => {
       yield* sql`INSERT INTO kin_bank_alerts (org_id, alert_id, connection_id, thread_id, sent_at, seen_at, outcome)
         VALUES (${orgId}, 'invented-alert', 'invented-connection', 'invented-thread', ${B}, ${B}, 'unparsed')`;
       const title = "1 bank alert could not be read";
-      const expected = `${title}. Sent Sun 1 Nov. Money may have arrived that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.`;
+      const expected = `${title}. Sent Sun 1 Nov. Money may have moved that is not in Bank transactions. Open the mail to see the amount; it can be recorded by hand.`;
       const input = { orgId, now: B, viewer: KIN_OWNER_LEVEL };
       const offered = { ...input, offeredFacts: new Set(["bank_alerts_unreadable"]) };
       assert.isEmpty(yield* morningMoneyLines(input));

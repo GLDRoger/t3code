@@ -74,7 +74,10 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
         });
       }
       const launch = buildPiRpcLaunch({
-        launchArgs: resolvedLaunchArgs.args,
+        launchArgs:
+          request.operation === "generateStructuredText"
+            ? ["--no-context-files", "--no-skills", "--no-prompt-templates"]
+            : resolvedLaunchArgs.args,
         environment,
         mcpSession: undefined,
         extensionPath: undefined,
@@ -191,5 +194,6 @@ export const makePiTextGeneration = Effect.fn("makePiTextGeneration")(function* 
   return TextGenerationOperations.fromRunner(
     "PiTextGeneration",
     TextGenerationOperations.withoutInvestigation("Pi", runPiJson),
+    { toolFree: true },
   );
 });
