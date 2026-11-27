@@ -100,7 +100,7 @@ import {
   withSessionChanges,
   type KinLeadPromptInput,
 } from "./LeadPrompt.ts";
-import { KinTurnContent } from "./turn/content.ts";
+import { billPhotoMode, KinTurnContent } from "./turn/content.ts";
 import {
   backgroundWake,
   chooseLeadModel,
@@ -232,11 +232,6 @@ const decodeRunning = Schema.decodeUnknownEffect(RunningRow);
 const decodeTaskIds = Schema.decodeUnknownOption(
   Schema.fromJsonString(Schema.Array(Schema.String)),
 );
-const billPhotoMode = (events: ReadonlyArray<KinEvent>) => {
-  if (!events.every((event) => event._tag === "bills.read")) return false;
-  return events.every((event) => event.photosPrepared === true) ? true : "legacy";
-};
-
 const make = Effect.gen(function* () {
   const boot = yield* Effect.serviceOption(KinBoot);
   const bootId = Option.isSome(boot) ? boot.value : yield* ulid;

@@ -780,9 +780,48 @@ describe("KinChatService", () => {
         assert.strictEqual(yield* read(memberSession, id), "refused");
       assert.strictEqual(yield* read(memberSession, strayFile), "served");
       assert.strictEqual(yield* read(memberSession, billPhotoPreviewId(strayFile)!), "refused");
+      // The copy opens and closes with its original: a co-owner only while one, no other company.
+      const membersPreview = billPhotoPreviewId(membersFile)!;
+      assert.strictEqual(yield* read(memberSession, membersPreview), "served");
+      const access = (level: "co_owner" | "member") =>
+        sql`UPDATE kin_people SET access = ${level}
+          WHERE org_id = ${person.orgId} AND person_id = ${memberId}`;
+      yield* access("co_owner");
+      assert.deepStrictEqual(
+        [yield* read(memberSession, ownersFile), yield* read(memberSession, preview)],
+        ["served", "served"],
+      );
+      yield* access("member");
+      assert.deepStrictEqual(
+        [yield* read(memberSession, ownersFile), yield* read(memberSession, preview)],
+        ["refused", "refused"],
+      );
+      // One host serves one company, so a person of another is put in front of the check by hand.
+      const otherOrg = KinOrgId.make("org-tidewater-freight");
+      const arjun = KinPersonId.make("arjun");
+      yield* sql`INSERT INTO kin_orgs (org_id, name, created_at)
+        VALUES (${otherOrg}, 'Tidewater Freight', ${timestamp})`;
+      yield* repo.insertPerson({
+        orgId: otherOrg,
+        personId: arjun,
+        handle: "arjun",
+        displayName: "Arjun",
+        githubLogin: null,
+        createdAt: timestamp,
+      });
+      yield* sql`UPDATE kin_people SET access = 'owner' WHERE org_id = ${otherOrg}`;
+      const elsewhere = Option.map(kin, (services) =>
+        Context.add(services, Identity.KinIdentity, {
+          ...identity,
+          resolve: () => Effect.succeed([{ _tag: "person", orgId: otherOrg, personId: arjun }]),
+        }),
+      );
+      for (const id of [ownersFile, preview, membersFile, membersPreview])
+        assert.strictEqual(yield* read(session, id, elsewhere), "refused", id);
 
       yield* sql`UPDATE kin_chat_members SET left_at = ${timestamp} WHERE chat_id = ${own.chatId} AND person_id = ${memberId}`;
       assert.strictEqual(yield* read(memberSession, membersFile), "refused");
+      assert.strictEqual(yield* read(memberSession, membersPreview), "refused");
 
       // Added to a group later, they get its files from their join on, never one from before.
       const group = KinChatId.make("files-group");

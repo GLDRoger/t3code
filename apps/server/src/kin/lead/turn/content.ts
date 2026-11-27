@@ -2,6 +2,7 @@ import {
   type ChatAttachment,
   type ChatImageAttachment,
   isProviderSendTurnSupportedImageMimeType,
+  type KinEvent,
 } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -86,6 +87,12 @@ type TurnContentInput = {
   readonly offersBillsAdd?: boolean;
   /** Only an isolated bills.read lane; ordinary chat pictures are unchanged. */
   readonly billPhotos?: boolean | "legacy";
+};
+
+/** A bills turn queued before its photos were prepared up front still prepares them itself. */
+export const billPhotoMode = (events: ReadonlyArray<KinEvent>) => {
+  if (!events.every((event) => event._tag === "bills.read")) return false;
+  return events.every((event) => event.photosPrepared === true) ? true : "legacy";
 };
 
 /**

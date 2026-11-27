@@ -63,6 +63,76 @@ describe("cutBillPage", () => {
     }),
   );
 
+  it.effect("draws the preview upright for every EXIF orientation", () =>
+    Effect.gen(function* () {
+      const [width, height] = [200, 100];
+      const colors = [
+        [220, 30, 30],
+        [30, 30, 220],
+        [30, 200, 30],
+        [230, 220, 30],
+      ] as const;
+      const sheet = createCanvas(width, height);
+      const context = sheet.getContext("2d");
+      for (const [index, [r, g, b]] of colors.entries()) {
+        context.fillStyle = `rgb(${r}, ${g}, ${b})`;
+        context.fillRect((index % 2) * 100, Math.floor(index / 2) * 50, 100, 50);
+      }
+      const stored = yield* Effect.promise(() => sheet.encode("jpeg", 95));
+      // Where each shown pixel sits in the stored one, per the EXIF orientation tag.
+      const source = (tag: number, x: number, y: number): readonly [number, number] =>
+        [
+          [x, y],
+          [width - 1 - x, y],
+          [width - 1 - x, height - 1 - y],
+          [x, height - 1 - y],
+          [y, x],
+          [y, height - 1 - x],
+          [width - 1 - y, height - 1 - x],
+          [width - 1 - y, x],
+        ][tag - 1] as [number, number];
+      const quadrant = ([x, y]: readonly [number, number]) =>
+        (x < width / 2 ? 0 : 1) + (y < height / 2 ? 0 : 2);
+      const nearest = (pixel: ArrayLike<number>) =>
+        colors
+          .map((color, index) => [
+            color.reduce((sum, c, i) => sum + (c - pixel[i]!) ** 2, 0),
+            index,
+          ])
+          .toSorted(([a], [b]) => a! - b!)[0]![1];
+      for (const tag of [1, 2, 3, 4, 5, 6, 7, 8]) {
+        const { outcome } = yield* cutBillPage({
+          kind: "photo",
+          bytes: withJpegOrientation(stored, tag),
+          boxes: [],
+        });
+        if (outcome._tag !== "cut" || outcome.preview === undefined)
+          return expect.fail(`no preview for orientation ${tag}`);
+        const image = yield* Effect.promise(() =>
+          loadImage(NodeBuffer.Buffer.from(outcome.preview!)),
+        );
+        const shown = createCanvas(image.width, image.height).getContext("2d");
+        shown.drawImage(image, 0, 0);
+        const upright = tag >= 5 ? [height, width] : [width, height];
+        expect([tag, image.width, image.height]).toEqual([tag, ...upright]);
+        for (const [fx, fy] of [
+          [0.25, 0.25],
+          [0.75, 0.25],
+          [0.25, 0.75],
+          [0.75, 0.75],
+        ] as const) {
+          const [x, y] = [Math.floor(fx * image.width), Math.floor(fy * image.height)];
+          expect([tag, x, y, nearest(shown.getImageData(x, y, 1, 1).data)]).toEqual([
+            tag,
+            x,
+            y,
+            quadrant(source(tag, x, y)),
+          ]);
+        }
+      }
+    }),
+  );
+
   it.effect("refuses a box outside the page", () =>
     Effect.gen(function* () {
       const bytes = yield* Effect.promise(() => rotatedJpeg());
