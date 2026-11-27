@@ -23,6 +23,7 @@ export const {
   useKinListChanges,
   useKinAskAgent,
   useKinCompanyProfile,
+  useKinBankSenders,
   useKinRates,
   useKinHomeCurrency,
   useKinCountryNeeded,

@@ -1,8 +1,4 @@
-import {
-  type EnvironmentId,
-  isProviderSendTurnSupportedImageMimeType,
-  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
-} from "@t3tools/contracts";
+import { type EnvironmentId, PROVIDER_SEND_TURN_MAX_FILE_BYTES } from "@t3tools/contracts";
 import {
   clampFileAttachmentUploadBytes,
   fileAttachmentTooLargeMessage,
@@ -11,12 +7,14 @@ import { msg } from "gt-react";
 
 import type { ComposerFileAttachment, ComposerImageAttachment } from "../../composerDraftStore";
 import { m, type MessageResolver } from "../../i18n/messages";
-import { isHeicImageFile } from "../../lib/imageCompression";
 import { isVideoAttachment, videoMimeType } from "../../types";
-import { isSvgAttachment } from "@t3tools/shared/image";
-import { isWorkspaceImagePreviewPath } from "@t3tools/shared/mediaPreview";
-
-type ComposerAttachmentFileKind = "image" | "file" | "unsupported-image";
+import {
+  classifyComposerAttachmentFile,
+  inferComposerImageMimeType,
+  isDngFile,
+  isSvgAttachment,
+} from "@t3tools/shared/image";
+export { classifyComposerAttachmentFile } from "@t3tools/shared/image";
 
 interface FileAttachmentCapabilityState {
   readonly attachmentUploadsCapabilityKnown: boolean;
@@ -24,36 +22,8 @@ interface FileAttachmentCapabilityState {
   readonly maxFileAttachmentBytes: number | null;
 }
 
-const IMAGE_MIME_TYPE_BY_EXTENSION: Readonly<Record<string, string>> = {
-  gif: "image/gif",
-  jpeg: "image/jpeg",
-  jpg: "image/jpeg",
-  png: "image/png",
-  webp: "image/webp",
-};
-
-/**
- * Some sources (drags from other apps, files piped through a shell) hand over a
- * `File` with an empty or generic MIME type.
- */
-function inferImageMimeTypeFromName(name: string): string | null {
-  const dotIndex = name.lastIndexOf(".");
-  if (dotIndex <= 0) {
-    return null;
-  }
-  return IMAGE_MIME_TYPE_BY_EXTENSION[name.slice(dotIndex + 1).toLowerCase()] ?? null;
-}
-
-function inferImageMimeTypeForUnknownFile(file: Pick<File, "name" | "type">): string | null {
-  const mimeType = file.type.toLowerCase();
-  if (mimeType !== "" && mimeType !== "application/octet-stream") {
-    return null;
-  }
-  return inferImageMimeTypeFromName(file.name);
-}
-
 export function normalizeComposerImageFileMimeType(file: File): File {
-  const inferredMimeType = inferImageMimeTypeForUnknownFile(file);
+  const inferredMimeType = inferComposerImageMimeType(file);
   if (!inferredMimeType) {
     return file;
   }
@@ -135,16 +105,6 @@ export function rememberComposerImageSource(source: File, prepared: File): void 
   if (prepared !== source) composerImageSourceKeys.set(prepared, composerImageSourceKey(source));
 }
 
-function isDngFile(file: Pick<File, "name" | "type">): boolean {
-  const mimeType = file.type.split(";", 1)[0]?.trim().toLowerCase();
-  return (
-    file.name.toLowerCase().endsWith(".dng") ||
-    mimeType === "image/dng" ||
-    mimeType === "image/x-dng" ||
-    mimeType === "image/x-adobe-dng"
-  );
-}
-
 export function composerFileAttachmentMimeType(file: Pick<File, "name" | "type">): string {
   // Downstream image detection uses MIME, even for attachments staged as files.
   if (isDngFile(file)) return "image/x-adobe-dng";
@@ -153,25 +113,6 @@ export function composerFileAttachmentMimeType(file: Pick<File, "name" | "type">
     videoMimeType({ name: file.name, mimeType: file.type }) ??
     (file.type || "application/octet-stream")
   );
-}
-
-export function classifyComposerAttachmentFile(
-  file: Pick<File, "name" | "type">,
-): ComposerAttachmentFileKind {
-  if (isSvgAttachment({ name: file.name, mimeType: file.type })) return "file";
-  if (isDngFile(file)) return "file";
-  if (isHeicImageFile(file)) {
-    return "image";
-  }
-  if (inferImageMimeTypeForUnknownFile(file)) {
-    return "image";
-  }
-  if (!file.type.toLowerCase().startsWith("image/")) {
-    return "file";
-  }
-  if (isProviderSendTurnSupportedImageMimeType(file.type)) return "image";
-  // These can be previewed as files, but providers must not receive them as images.
-  return isWorkspaceImagePreviewPath(file.name) ? "file" : "unsupported-image";
 }
 
 export function isPreviewableComposerVideo(

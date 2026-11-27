@@ -59,6 +59,7 @@ import { buildPulseSection } from "../pulse/prompt.ts";
 import { fromConnections } from "../pulse/outside.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as KinRecords from "../work/KinRecords.ts";
+import { personSees } from "../work/teamView.ts";
 import { round } from "../watches/KinWatchRounds.ts";
 import { alertsOnMail } from "../work/statements/alertMail.ts";
 import * as BankAlertReader from "../work/statements/BankAlertReader.ts";
@@ -847,6 +848,53 @@ describe("Mail tool results with the sender's memory", () => {
         voiceItem("rhea-mail-sign-off", signOff, {}, signature),
         voiceItem("arjun-mail-sign-off", "Regards, Arjun", { said_by: "mate" }),
         voiceItem("rhea-old-sign-off", "Kind regards, Rhea", { status: "superseded" }),
+      ],
+    ),
+  );
+
+  it.effect.each([
+    {
+      name: "uses a marked note in Spanish without English keywords",
+      what: "Me despido con «Un abrazo, Rhea».",
+      mark: true,
+      saidBy: "owner",
+      note: `${heading}\nMe despido con «Un abrazo, Rhea».`,
+    },
+    {
+      name: "uses a marked note whatever kind the agent saved it as",
+      what: "Me despido con «Un abrazo, Rhea».",
+      mark: true,
+      saidBy: "owner",
+      kind: "decision" as const,
+      note: `${heading}\nMe despido con «Un abrazo, Rhea».`,
+    },
+    {
+      name: "excludes a contact's style explicitly marked as outside the sender's voice",
+      what: "Zoya’s email signature ends with Cheers.",
+      mark: false,
+      saidBy: "owner",
+      note: undefined,
+    },
+    {
+      name: "excludes another person's marked style",
+      what: "Zoya’s email signature ends with Cheers.",
+      mark: true,
+      saidBy: "mate",
+      note: undefined,
+    },
+  ])("$name", ({ what, mark, saidBy, note, ...row }) =>
+    toolsWithVoice(
+      ({ own, tools }) =>
+        Effect.gen(function* () {
+          assert.strictEqual((yield* tools(scope, { connection: own })).note, note);
+        }),
+      [
+        voiceItem("mail-voice-fixture", what, {
+          title: "Preferencia",
+          said_by: saidBy,
+          sender_mail_voice: mark,
+          ...("kind" in row ? { kind: row.kind } : {}),
+        }),
       ],
     ),
   );
@@ -2171,6 +2219,12 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           fake.addAccount({ provider: service, address, name: "Meera" });
           const connectionId = yield* connectOwn(fake, member, address, service);
           const sql = yield* SqlClient.SqlClient;
+          // The card reads the company's zone; unset, it is the host's, which tests don't fix.
+          yield* sql`INSERT INTO kin_trigger_settings (org_id, time_zone, morning_brief,
+              evening_summary, dream, full_rebuild_weekday, owner_check_weekday, owner_check,
+              quiet_hours_json)
+            VALUES (${orgId}, 'Asia/Kolkata', '08:30', '18:30', '03:00', 0, 1, '09:00', '{}')
+            ON CONFLICT (org_id) DO UPDATE SET time_zone = 'Asia/Kolkata'`;
           yield* sql`DELETE FROM kin_connection_tools
             WHERE connection_id = ${connectionId} AND tool_name = 'calendar_delete_event'`;
           const connections = yield* KinConnections;
@@ -2375,6 +2429,46 @@ describe("Kin mail end to end, on a fake mailbox", () => {
         // Her own Disconnect is the same way out.
         yield* connections.mineRemove(people(member), { orgId });
         assert.isNull((yield* connections.mine(people(member), { orgId })).mailbox);
+      }),
+    ),
+  );
+
+  it.effect("a file a member saves from her own mailbox is her Doc, and no other member's", () =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at,
+            access, sees_docs)
+          VALUES ('zoya', ${orgId}, 'zoya', 'Zoya', ${stamp}, 'member', 1)`;
+        yield* sql`UPDATE kin_people SET sees_docs = 1 WHERE person_id = ${member}`;
+        yield* sql`INSERT INTO kin_session_bindings (session_id, org_id, person_id, bound_at)
+          VALUES ('mate-session', ${orgId}, ${member}, 0)`;
+        yield* sql`UPDATE kin_registers SET next_number = 2
+          WHERE org_id = ${orgId} AND register_id = 'docs'`;
+        fake.addAccount({ provider: "google", address: MEERA, name: "Meera" });
+        yield* connectOwn(fake, member, MEERA);
+        const mail = fake.deliver({
+          to: MEERA,
+          from: "Ravi Menon <ravi@lumen.example>",
+          subject: "Offer letter",
+          body: "Attached.",
+          at: NOW,
+          files: [{ name: "Offer.pdf", mimeType: "application/pdf", data: "YQ==" }],
+        });
+        yield* wake({ person: member, says: "Save the offer letter into Docs." });
+        yield* callTool(MEERA, "mail_read_thread", { threadId: mail.threadId });
+        yield* callTool(MEERA, "mail_save_attachment", {
+          messageId: mail.id,
+          attachmentId: "part:1",
+        });
+        const seen = (person: string) =>
+          sql<{ seen: number }>`SELECT ${personSees(sql, KinPersonId.make(person))} AS seen
+            FROM kin_records r WHERE r.org_id = ${orgId} AND r.register_id = 'docs'
+              AND r.origin_key LIKE 'mail-attachment:%'`.pipe(
+            Effect.map((rows) => rows.map((row) => row.seen)),
+          );
+        assert.deepStrictEqual(yield* seen(member), [1]);
+        assert.deepStrictEqual(yield* seen("zoya"), [0]);
       }),
     ),
   );
@@ -4853,7 +4947,16 @@ describe("Kin mail end to end, on a fake mailbox", () => {
             )`;
 
           // A pass whose alert reading failed moves neither mailbox on: the next reads it all.
-          const failing = fromConnections(connections, sql, () => Effect.succeed(false));
+          const failing = fromConnections(connections, sql, (_orgId, activity) =>
+            Effect.sync(() => {
+              assert.lengthOf(activity.mail, 25);
+              for (const mail of activity.mail)
+                assert.deepStrictEqual(mail.authResults, [
+                  "mx.invented.example; dmarc=pass (p=REJECT) header.from=harborbank.example",
+                ]);
+              return false;
+            }),
+          );
           assert.deepStrictEqual((yield* failing.read(orgId)).seen, []);
 
           // Either reader can get there first, and neither reader consumes the other's cursor.

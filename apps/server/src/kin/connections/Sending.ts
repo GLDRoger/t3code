@@ -249,6 +249,10 @@ export const attachmentOf = Effect.fn("KinSending.attachment")(function* (
     version?.fileJson == null ? undefined : Option.getOrUndefined(decodeFile(version.fileJson));
   if (version === undefined || file === undefined)
     return yield* refused(`${key.slice(0, 40)} is not a file Kin made, so it can't be attached.`);
+  if (file.source?.privateTo !== undefined)
+    return yield* refused(
+      "A file saved from a personal mailbox can't be attached to outgoing mail.",
+    );
   const [entry] =
     version.entryId === null
       ? []

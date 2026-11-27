@@ -18,7 +18,20 @@ import {
   type MailVendor,
 } from "./MailProvider.ts";
 import { htmlToText } from "./MailText.ts";
-import { answeredWith, failure, mailProvider, unreached, vendorAnswer } from "./MailTools.ts";
+import {
+  answeredWith,
+  attachmentBytes,
+  attachmentJsonLimit,
+  checkMailFile,
+  failure,
+  mailDate,
+  mailFileMimeType,
+  mailFileType,
+  mailProvider,
+  unreached,
+  safeMailFileName,
+  vendorAnswer,
+} from "./MailTools.ts";
 import type { AuthServer } from "./OAuth.ts";
 import { DAY_MS } from "../durations.ts";
 
@@ -77,6 +90,7 @@ type Request = {
   /** A MIME message as Graph takes it: base64 in a text/plain body. */
   readonly mime?: string;
   readonly prefer?: string;
+  readonly limit?: ReturnType<typeof attachmentJsonLimit>;
 };
 
 /** One Graph call. */
@@ -109,7 +123,7 @@ const api = Effect.fn("KinMicrosoft.api")(function* (
       "text/plain",
     );
   const response = yield* http.execute(built).pipe(Effect.mapError(() => unreached(MICROSOFT)));
-  return yield* vendorAnswer(MICROSOFT, response);
+  return yield* vendorAnswer(MICROSOFT, response, request.limit);
 });
 
 const nextPage = (page: unknown) => text(field(page, "@odata.nextLink")) ?? null;
@@ -161,7 +175,55 @@ const linkOf = (message: unknown) => {
   const url = id && webLink ? URL.parse(webLink) : null;
   return webLink && url?.protocol === "https:" && !url.username && !url.password ? { webLink } : {};
 };
+const graphFile = (file: unknown) => {
+  const id = text(field(file, "id"));
+  const size = field(file, "size");
+  return {
+    name: text(field(file, "name")) ?? "",
+    type: mailFileMimeType(text(field(file, "contentType"))),
+    bytes: typeof size === "number" ? size : null,
+    ...(id === undefined || field(file, "@odata.type") !== "#microsoft.graph.fileAttachment"
+      ? {}
+      : { attachmentId: id }),
+  };
+};
+const attachmentOf: MailVendor["attachment"] = Effect.fn("KinMicrosoft.attachment")(
+  function* (context, messageId, attachmentId) {
+    const messageUrl = `${GRAPH}/messages/${encodeURIComponent(messageId)}`;
+    const fileUrl = `${messageUrl}/attachments/${encodeURIComponent(attachmentId)}`;
+    const listed = graphFile(
+      yield* api(context, fileUrl, {
+        params: { $select: "id,name,contentType,size" },
+        limit: { bytes: 64 * 1024, message: "Kin couldn't read that mail attachment." },
+      }),
+    );
+    const file = { ...listed, type: mailFileType(listed.name) };
+    if (file.attachmentId !== attachmentId)
+      return yield* failure(
+        "protocol",
+        "Kin couldn't find that mail attachment. Read the thread again with mail_read_thread and use its messageId and attachmentId.",
+      );
+    const problem = checkMailFile(file);
+    if (problem !== undefined) return yield* problem;
+    const name = safeMailFileName(file.name);
+    const message = yield* api(context, messageUrl, {
+      params: { $select: "from,receivedDateTime" },
+    });
+    // Graph documents contentBytes on the plain GET; selecting a fileAttachment property isn't.
+    const content = yield* api(context, fileUrl, { limit: attachmentJsonLimit(name) });
+    const from = addressOf(field(message, "from"));
+    return {
+      name,
+      mimeType: file.type,
+      bytes: yield* attachmentBytes(text(field(content, "contentBytes")), file, "base64"),
+      from: from !== null && isPlainAddress(from) ? from : null,
+      date: mailDate(text(field(message, "receivedDateTime")) ?? null),
+    };
+  },
+);
+
 const messageOf = (message: unknown, files?: unknown): MailMessage => ({
+  providerMessageId: text(field(message, "id")) ?? "",
   threadId: text(field(message, "conversationId")) ?? "",
   ...linkOf(message),
   from: nameOf(field(message, "from")),
@@ -184,11 +246,7 @@ const messageOf = (message: unknown, files?: unknown): MailMessage => ({
       ? null
       : {
           text: bodyText(message),
-          attachments: list(field(files, "value")).map((file) => ({
-            name: text(field(file, "name")) ?? "",
-            type: text(field(file, "contentType")) ?? "unknown",
-            bytes: typeof field(file, "size") === "number" ? (field(file, "size") as number) : null,
-          })),
+          attachments: list(field(files, "value")).map(graphFile),
         },
 });
 
@@ -288,7 +346,7 @@ const conversation = (context: MailContext, threadId: string, files: boolean) =>
             ? api(
                 context,
                 `${GRAPH}/messages/${encodeURIComponent(text(field(message, "id")) ?? "")}/attachments`,
-                { params: { $select: "name,contentType,size" } },
+                { params: { $select: "id,name,contentType,size" } },
               ).pipe(
                 Effect.orElseSucceed(() => undefined),
                 Effect.map((found) => messageOf(message, found)),
@@ -487,12 +545,14 @@ const arrivalOf = Effect.fn("KinMicrosoft.arrival")(function* (
     Number.isNaN(receivedAt)
   )
     return yield* failure("protocol", "Microsoft sent an answer Kin couldn't read.");
+  const from = field(message, "from");
+  const fromAddress = addressOf(from);
   return {
     messageId,
     threadId,
     receivedAt,
-    from: nameOf(field(message, "from")),
-    fromAddress: addressOf(field(message, "from")),
+    from: fromAddress === null ? null : nameOf(from),
+    fromAddress,
     to: recipients(message, "toRecipients"),
     cc: recipients(message, "ccRecipients"),
     deliveredTo: [...recipients(message, "toRecipients"), ...recipients(message, "ccRecipients")],
@@ -676,6 +736,7 @@ const microsoft: MailVendor = {
       })),
     );
   },
+  attachment: attachmentOf,
   thread: conversation,
   events: (context, query) => {
     const at = pageOr(query.pageToken, `${calendarBase(query.calendarId)}/calendarView`);

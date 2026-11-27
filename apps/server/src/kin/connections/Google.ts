@@ -16,8 +16,20 @@ import {
   type MailMessage,
   type MailVendor,
 } from "./MailProvider.ts";
-import { htmlToText, messageBody } from "./MailText.ts";
-import { answeredWith, failure, mailProvider, unreached, vendorAnswer } from "./MailTools.ts";
+import { attachmentPart, htmlToText, messageBody } from "./MailText.ts";
+import {
+  answeredWith,
+  attachmentBytes,
+  attachmentJsonLimit,
+  checkMailFile,
+  failure,
+  mailDate,
+  mailFileType,
+  mailProvider,
+  unreached,
+  safeMailFileName,
+  vendorAnswer,
+} from "./MailTools.ts";
 import type { AuthServer } from "./OAuth.ts";
 
 /** Google's sign-in, fixed: Kin uses the owner's own Web client, never discovery. */
@@ -83,6 +95,7 @@ const api = Effect.fn("KinGoogle.api")(function* (
   write?:
     | { readonly method: "POST" | "PATCH"; readonly json: unknown }
     | { readonly method: "DELETE"; readonly revision: string },
+  limit?: ReturnType<typeof attachmentJsonLimit>,
 ) {
   const base =
     write === undefined
@@ -104,7 +117,7 @@ const api = Effect.fn("KinGoogle.api")(function* (
     ),
   );
   const response = yield* http.execute(request).pipe(Effect.mapError(() => unreached(GOOGLE)));
-  return yield* vendorAnswer(GOOGLE, response);
+  return yield* vendorAnswer(GOOGLE, response, limit);
 });
 
 const headerValues = (message: unknown, name: string) =>
@@ -134,6 +147,7 @@ const messageOf =
   (message: unknown): MailMessage => {
     const threadId = text(field(message, "threadId")) ?? "";
     return {
+      providerMessageId: text(field(message, "id")) ?? "",
       threadId,
       ...(account && threadId
         ? {
@@ -195,7 +209,7 @@ const threadsById = (context: MailContext, ids: ReadonlyArray<string>, watch = f
           "Subject",
           "Date",
           ...RECIPIENT_HEADERS,
-          ...(watch ? AUTOMATION_HEADERS : []),
+          ...(watch ? ["Authentication-Results", ...AUTOMATION_HEADERS] : []),
         ],
       }).pipe(
         Effect.map((thread) =>
@@ -469,6 +483,51 @@ const saveEvent = Effect.fn("KinGoogle.saveEvent")(function* (
   return { messageId: null, threadId: null, eventId: text(field(saved, "id")) ?? event.eventId };
 });
 
+const attachmentOf: MailVendor["attachment"] = Effect.fn("KinGoogle.attachment")(
+  function* (context, messageId, attachmentId) {
+    const url = `${GMAIL}/messages/${encodeURIComponent(messageId)}`;
+    const message = yield* api(
+      context,
+      url,
+      { format: "full", fields: "internalDate,payload" },
+      undefined,
+      attachmentJsonLimit("Attachment"),
+    );
+    const found = attachmentPart(field(message, "payload"), attachmentId);
+    if (found === undefined)
+      return yield* failure(
+        "protocol",
+        "Kin couldn't find that mail attachment. Read the thread again with mail_read_thread and use its messageId and attachmentId.",
+      );
+    const part = { ...found, type: mailFileType(found.name) };
+    const problem = checkMailFile(part);
+    if (problem !== undefined) return yield* problem;
+    const name = safeMailFileName(part.name);
+    const data =
+      part.fetchId === undefined
+        ? part.data
+        : text(
+            field(
+              yield* api(
+                context,
+                `${url}/attachments/${encodeURIComponent(part.fetchId)}`,
+                {},
+                undefined,
+                attachmentJsonLimit(name),
+              ),
+              "data",
+            ),
+          );
+    return {
+      name,
+      mimeType: part.type,
+      bytes: yield* attachmentBytes(data, part, "base64url"),
+      from: addressesIn(header(message, "From"))[0] ?? null,
+      date: mailDate(header(message, "Date"), receivedOf(message)),
+    };
+  },
+);
+
 const google: MailVendor = {
   preset: "google",
   name: GOOGLE.name,
@@ -495,6 +554,7 @@ const google: MailVendor = {
       max: page.max,
       ...(page.pageToken === undefined ? {} : { pageToken: page.pageToken }),
     }),
+  attachment: attachmentOf,
   thread: (context, threadId) =>
     api(context, `${GMAIL}/threads/${encodeURIComponent(threadId)}`, { format: "full" }).pipe(
       Effect.map((thread) =>

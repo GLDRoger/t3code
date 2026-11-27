@@ -16,6 +16,7 @@ export const MAIL_TOOL = {
   list: "mail_list_threads",
   search: "mail_search",
   read: "mail_read_thread",
+  saveAttachment: "mail_save_attachment",
   send: "mail_send",
   reply: "mail_reply",
   events: "calendar_list_events",
@@ -83,6 +84,7 @@ export type MailActivity = {
     readonly from: string | null;
     readonly date: string | null;
     readonly unread: boolean;
+    readonly authResults?: ReadonlyArray<string>;
     readonly automatedNotice?: true;
   }>;
   readonly calendar: ReadonlyArray<{
@@ -156,6 +158,7 @@ export type Sent = {
 type Call<A> = Effect.Effect<A, KinGatewayError>;
 
 export type MailFile = {
+  readonly attachmentId?: string;
   readonly name: string;
   readonly type: string;
   readonly bytes: number | null;
@@ -163,6 +166,7 @@ export type MailFile = {
 
 /** One message as a vendor's mapping reads it. The shared tools see mail only through this. */
 export type MailMessage = {
+  readonly providerMessageId?: string;
   readonly threadId: string;
   readonly webLink?: string;
   /** The sender as the mail shows it, such as `Ana <ana@example.com>`. */
@@ -214,6 +218,14 @@ export type MailCalendarEvent = {
 
 /** Threads, newest first, each with its messages oldest first. */
 export type MailThreads = ReadonlyArray<ReadonlyArray<MailMessage>>;
+
+export type MailAttachment = {
+  readonly name: string;
+  readonly mimeType: string;
+  readonly bytes: Uint8Array;
+  readonly from: string | null;
+  readonly date: string | null;
+};
 
 export type MailContext = {
   readonly http: HttpClient.HttpClient;
@@ -268,6 +280,11 @@ export interface MailVendor {
     page: { readonly query: string | null; readonly max: number; readonly pageToken?: string },
   ) => Call<{ readonly threads: MailThreads; readonly nextPage: string | null }>;
   /** A thread's messages, oldest first, bodies included; none when the account hasn't it. */
+  readonly attachment: (
+    context: MailContext,
+    messageId: string,
+    attachmentId: string,
+  ) => Call<MailAttachment>;
   readonly thread: (
     context: MailContext,
     threadId: string,
@@ -348,6 +365,7 @@ export interface MailProvider {
   /** Whether the granted scopes allow sending; an older sign-in may lack them. */
   readonly canSend: (granted: string | undefined) => boolean;
   /** Reads, and the tools that send (always Ask me), named as in MAIL_TOOL. */
+  readonly attachment: MailVendor["attachment"];
   readonly tools: ReadonlyArray<ListedTool>;
   readonly sendTools: ReadonlyArray<ListedTool>;
   /** The address the sign-in belongs to. */

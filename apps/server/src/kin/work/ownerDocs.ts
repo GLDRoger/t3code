@@ -674,13 +674,16 @@ export const startWhatWeSell = Effect.fn("KinDocs.startWhatWeSell")(
 const MEMORY_HITS = 5;
 export const search = Effect.fn("KinDocs.search")(
   function* (people: ReadonlyArray<PersonIdentity>, input: KinSearchInput) {
-    const viewer = yield* viewerOf(people, input.orgId);
-    const team = viewer.teammate ? viewer.person.personId : undefined;
     const now = yield* Clock.currentTimeMillis;
     const limit = input.limit ?? 20;
     const asked = input.kinds ?? [];
     const recordKinds = asked.filter((kind) => kind !== "memory");
     const everything = input.everything === true;
+    const allLists = everything && asked.length === 0;
+    const { viewer, refused } = allLists
+      ? yield* placeRefusals(people, input.orgId)
+      : { viewer: yield* viewerOf(people, input.orgId), refused: undefined };
+    const team = viewer.teammate ? viewer.person.personId : undefined;
     // Memory is the owner level's alone: a teammate's search never reads it.
     const memory =
       everything && team === undefined && (asked.length === 0 || asked.includes("memory"))
@@ -711,6 +714,7 @@ export const search = Effect.fn("KinDocs.search")(
             viewer: team === undefined ? "owner" : "team",
             scope: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
             deals,
+            bankTransactions: allLists && refused?.money === false,
           });
     return {
       hits: [
@@ -728,6 +732,7 @@ export const search = Effect.fn("KinDocs.search")(
           recordId: hit.recordId as never,
           key: hit.key,
           kind: hit.kind,
+          ...(hit.bankTransaction === true ? { bankTransaction: true as const } : {}),
           title: hit.title as never,
           snippet: hit.snippet,
           ...(hit.section === undefined

@@ -61,9 +61,8 @@ export const KIN_MONEY_FORMS = {
     project: "Project",
     noProject: "No project",
     save: "Save draft",
-    /** The draft stands; only its document, which holds the lines, couldn't be made. */
     savedWithout: (key: string, problems: ReadonlyArray<string>) =>
-      `Saved as draft ${key}, but Kin couldn't make it from the lines: ${problems.join(" ")}`,
+      `Saved as draft ${key}. Kin couldn't make the PDF. ${problems.join(" ")}`,
     openDraft: (key: string) => `Open ${key}`,
     tryAgain: KIN_RETRY,
   },

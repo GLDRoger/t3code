@@ -1,3 +1,4 @@
+import { pauseMailRulesFor } from "../arrivals/ruleLifecycle.ts";
 import {
   KinCardAsker,
   KinChatId,
@@ -397,9 +398,44 @@ export const leaverChatOwn = Effect.fn("KinLeaver.chatOwn")(function* (input: {
       WHERE org_id = ${orgId} AND task_id = ${row.taskId}`;
     paused.push(`"${row.title}" in ${own.name}`);
   }
-  if (paused.length === 0) return;
+  const mailRules = yield* pauseMailRulesFor(orgId, { kind: "left", id: gone.personId }, removedAt);
+  if (paused.length === 0 && mailRules.length === 0) return;
   const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
   if (lead === undefined) return;
+  if (mailRules.length > 0) {
+    const mailboxes = yield* sql<{ label: string }>`SELECT DISTINCT label FROM kin_connections
+      WHERE org_id = ${orgId} AND connection_id IN ${sql.in(mailRules.map((row) => row.connectionId))}
+      ORDER BY label`;
+    const labels = mailboxes.map(({ label }) => label);
+    const on =
+      labels.length < 2
+        ? (labels[0] ?? "a mailbox")
+        : `${labels.slice(0, -1).join(", ")} and ${labels.at(-1)}`;
+    const message = yield* repo.insertMessage({
+      orgId,
+      chatId: lead.ownerChatId,
+      audience: "owner",
+      messageId: KinMessageId.make(`kin-leaver-mail-rules:${gone.personId}:${removedAt}`),
+      author: { _tag: "system" },
+      kind: "system",
+      body:
+        mailRules.length === 1
+          ? `${gone.displayName} left, so the mail rule ${gone.displayName} set up on ${on} is paused. Resume or remove it from its mailbox in Settings → Connections.`
+          : `${gone.displayName} left, so ${mailRules.length} mail rules ${gone.displayName} set up on ${on} are paused. Resume or remove each from its mailbox in Settings → Connections.`,
+      intent: null,
+      mentions: [],
+      replyTo: null,
+      widgetId: null,
+      floorRunId: null,
+      status: "posted",
+      sentBy: null,
+      clientMessageId: null,
+      createdAt: at,
+      editedAt: null,
+    });
+    yield* sql.afterCommit(hub.publish({ type: "message.posted", orgId, message }));
+  }
+  if (paused.length === 0) return;
   const message = yield* repo.insertMessage({
     orgId,
     chatId: lead.ownerChatId,

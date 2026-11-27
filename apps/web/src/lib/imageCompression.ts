@@ -1,3 +1,5 @@
+import { isHeicImageFile } from "@t3tools/shared/image";
+export { isHeicImageFile } from "@t3tools/shared/image";
 import {
   downscalableImageMimeType,
   fitImageAttachmentSize,
@@ -19,8 +21,6 @@ const MAX_HEIC_DECODE_PIXELS = 64_000_000;
 const MAX_HEIC_METADATA_BYTES = 1024 * 1024;
 const QUALITY_STEPS = [0.92, 0.85, 0.78, 0.68] as const;
 const FALLBACK_SCALE_STEPS = [0.75, 0.55] as const;
-const HEIC_IMAGE_MIME_TYPE = /^image\/hei(?:c|f)$/i;
-const HEIC_IMAGE_EXTENSION = /\.(?:heic|heif)$/i;
 
 type ImageSize = { width: number; height: number };
 
@@ -41,17 +41,6 @@ export type CompressStashImageResult =
 export type CompressImageFileResult =
   | { ok: true; file: File; recompressed: boolean; imageSize?: ImageSize }
   | { ok: false; reason: ImageCompressionFailureReason };
-
-/** Finder and some browsers omit the MIME type when dragging HEIC photos. */
-export function isHeicImageFile(file: Pick<File, "name" | "type">): boolean {
-  if (HEIC_IMAGE_MIME_TYPE.test(file.type)) {
-    return true;
-  }
-  return (
-    (file.type === "" || file.type.toLowerCase() === "application/octet-stream") &&
-    HEIC_IMAGE_EXTENSION.test(file.name)
-  );
-}
 
 interface HeicMetadataBox {
   payloadOffset: number;
