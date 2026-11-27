@@ -15,7 +15,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { episodeNotice } from "../hostBackup.ts";
-import { fromCompleteLedgers, unitsOf, USUAL_LIMITS, type Usage } from "../lead/KinBudget.ts";
+import { unitsOf, USUAL_LIMITS, type Usage } from "../lead/KinBudget.ts";
 import { runsFrom } from "../lead/wakeupRuns.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 
@@ -40,6 +40,8 @@ const unitsText = (n: number) =>
     : n >= 1_000
       ? `${Math.round(n / 1_000)}k`
       : `${Math.round(n)}`;
+const unitsValue = (text: string) =>
+  Number.parseFloat(text) * (text.endsWith("M") ? 1_000_000 : text.endsWith("k") ? 1_000 : 1);
 const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 const lasted = (ms: number) => {
   const minutes = Math.max(1, Math.round(ms / 60_000));
@@ -56,9 +58,8 @@ const runningSpendNotice = (input: {
   readonly forPerson: string | null;
   readonly task: boolean;
   readonly ranMs: number;
-  readonly units: number;
-  // Short of a complete ledger the figure is a floor: a partial one or a last request's size.
-  readonly atLeast: boolean;
+  readonly units: string;
+  readonly correctedFrom: string | undefined;
   readonly step: (typeof STEPS)[number];
   readonly limitSet: boolean;
 }) => {
@@ -68,7 +69,11 @@ const runningSpendNotice = (input: {
   const what = input.task
     ? `A task ${input.agent} started`
     : `${input.agent}'s turn${input.forPerson === null ? "" : ` for ${input.forPerson}`}`;
-  return `${input.task ? `A task ${input.agent} started` : input.agent} has used ${share} ${day} in one go\n\n${what} has been running ${lasted(input.ranMs)} and has used ${input.atLeast ? "at least " : ""}${unitsText(input.units)} units so far, ${input.step.words} ${day} for ${whose}${input.limitSet ? "" : " (you have set no daily limit)"}. It is still running; Kin hasn't stopped or slowed it. To watch it or stop it, open ${input.task ? `its card in ${input.agent}'s chat` : `${input.agent}'s chat`}.`;
+  const correction =
+    input.correctedFrom === undefined
+      ? ""
+      : `An earlier notice put it at ${input.correctedFrom} units; that count was too high. `;
+  return `${input.task ? `A task ${input.agent} started` : input.agent} has used ${share} ${day} in one go\n\n${what} has been running ${lasted(input.ranMs)} and has used at least ${input.units} units so far, ${input.step.words} ${day} for ${whose}${input.limitSet ? "" : " (you have set no daily limit)"}. ${correction}It is still running; Kin hasn't stopped or slowed it. To watch it or stop it, open ${input.task ? `its card in ${input.agent}'s chat` : `${input.agent}'s chat`}.`;
 };
 
 /**
@@ -142,10 +147,28 @@ const checkOrg = Effect.fn("KinRunningSpend.checkOrg")(function* (
   for (const turn of running) {
     const limit = turn.task ? (limits?.workerUnits ?? null) : (limits?.leadUnits ?? null);
     const yardstick = limit ?? (turn.task ? USUAL_LIMITS.workerUnits : USUAL_LIMITS.leadUnits);
-    const usage = yield* read({ threadId: turn.threadId, rootRunId: turn.rootRunId });
+    const usage =
+      turn.rootRunId === null && !turn.task
+        ? []
+        : yield* read({ threadId: turn.threadId, rootRunId: turn.rootRunId });
     const units = unitsOf(usage);
+    const shown = unitsText(units);
+    const turnPrefix = `${prefix}${turn.key}:`;
+    const [earlier] =
+      units < yardstick * STEPS[0].share
+        ? []
+        : yield* sql<{ body: string }>`SELECT body FROM kin_messages
+          WHERE org_id = ${orgId}
+            AND message_id IN ${sql.in(STEPS.map((step) => `${turnPrefix}${step.id}`))}
+          ORDER BY created_at DESC, seq DESC LIMIT 1`;
+    // Existing notices store the displayed figure only in the body.
+    const prior = earlier?.body.match(
+      / and has used (?:at least )?(\d+(?:\.\d+)?[kM]?) units so far,/u,
+    )?.[1];
+    const correctedFrom =
+      prior !== undefined && unitsValue(shown) < unitsValue(prior) ? prior : undefined;
     for (const step of STEPS) {
-      const id = `${prefix}${turn.key}:${step.id}`;
+      const id = `${turnPrefix}${step.id}`;
       live.add(id);
       if (units < yardstick * step.share) continue;
       yield* episodeNotice(orgId, id, {
@@ -155,8 +178,8 @@ const checkOrg = Effect.fn("KinRunningSpend.checkOrg")(function* (
           forPerson: turn.forPerson,
           task: turn.task,
           ranMs: now - turn.startedAt,
-          units,
-          atLeast: !fromCompleteLedgers(usage),
+          units: shown,
+          correctedFrom,
           step,
           limitSet: limit !== null,
         }),
