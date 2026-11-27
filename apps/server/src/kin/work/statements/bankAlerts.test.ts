@@ -1086,10 +1086,10 @@ it.effect.each([
   [
     "company_details",
     "held",
-    material("after-look-alikes"),
+    material("19b6b372d54a2c43"),
     ["harborbank-alerts.example", "harborbank-notices.example", "harborbank-mail.example"].map(
-      (domain) =>
-        material(domain, {
+      (domain, index) =>
+        material("19b6b372d54a2c4" + index, {
           fromAddress: "alerts@" + domain,
           auth: "dmarc=fail header.from=" + domain,
         }),
