@@ -214,27 +214,18 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
   )
     ? yield* invoiceCandidates(ctx.orgId, undefined)
     : [];
-  // A choice resolved for this bank row stays resolved even when a later match changes.
-  const resolved = new Set(
-    (yield* sql<{ recordId: string }>`SELECT CASE json_extract(p.plan_json, '$.kind')
-      WHEN 'invoice_choice' THEN json_extract(p.plan_json, '$.recordId')
-      ELSE json_extract(p.plan_json, '$.bankRecordId') END AS "recordId"
+  // A declined choice belongs to the bank row even if a later match is an ordinary offer.
+  const declined = new Set(
+    (yield* sql<{ recordId: string }>`SELECT json_extract(p.plan_json, '$.recordId') AS "recordId"
       FROM kin_card_plans p JOIN kin_widgets w ON w.org_id = p.org_id AND w.widget_id = p.widget_id
-      WHERE p.org_id = ${ctx.orgId} AND p.ran_message_id IS NOT NULL AND (
-        (json_extract(p.plan_json, '$.kind') = 'invoice_choice'
-          AND json_type(p.plan_json, '$.payment') = 'null'
-          AND json_type(w.state_json, '$.outcome') IS NULL)
-        OR (json_extract(w.state_json, '$.outcome.title') = 'Payment recorded' AND (
-          (json_extract(p.plan_json, '$.kind') = 'invoice_choice'
-            AND json_type(p.plan_json, '$.payment.client.id') = 'text')
-          OR (json_extract(p.plan_json, '$.kind') = 'record_payment'
-            AND json_type(p.plan_json, '$.invoiceRev') = 'integer')
-        ))
-      )
+      WHERE p.org_id = ${ctx.orgId} AND p.ran_message_id IS NOT NULL
+        AND json_extract(p.plan_json, '$.kind') = 'invoice_choice'
+        AND json_type(p.plan_json, '$.payment') = 'null'
+        AND json_type(w.state_json, '$.outcome') IS NULL
       ORDER BY p.widget_id, p.option_id`).map((row) => row.recordId),
   );
   return matches.flatMap(({ credit, ranked, first, choice }): Array<SensedFact> => {
-    if (resolved.has(credit.recordId)) return [];
+    if (declined.has(credit.recordId)) return [];
     const shared = {
       sense: "payment_seen" as const,
       family: "money" as const,

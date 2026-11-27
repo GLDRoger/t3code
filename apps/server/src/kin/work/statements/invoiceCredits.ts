@@ -1,4 +1,10 @@
-import { kinCurrency, type KinMoney, type KinOrgId, kinRateShown } from "@t3tools/contracts";
+import {
+  kinCurrency,
+  type KinMoney,
+  type KinOrgId,
+  type KinPersonId,
+  kinRateShown,
+} from "@t3tools/contracts";
 import { readOnly } from "@t3tools/shared/nodeSqliteClient";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -336,10 +342,40 @@ const takenBackPairs = Effect.fn("KinStatements.takenBackPairs")(function* (
   return { pairs, rounds };
 });
 
+export const INVOICE_CHOICE_RESOLVED = "Invoice choice resolved.";
+const paymentFactKey = (credit: OpenCredit) => `payment_seen:${credit.key}`;
+
+export const resolveInvoiceChoice = Effect.fn("KinStatements.resolveInvoiceChoice")(function* (
+  orgId: KinOrgId,
+  credit: OpenCredit,
+  personId: KinPersonId,
+  at: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  // A cleared chat deletes card plans. The bank decision lives on its pulse fact.
+  yield* sql`INSERT INTO kin_pulse_facts (org_id, fact_key, sense, subject_record_id,
+      scope_json, first_seen_at, last_seen_at, handled_by_kind, handled_by_id,
+      handled_at, handled_note)
+    VALUES (${orgId}, ${paymentFactKey(credit)}, 'payment_seen', ${credit.recordId},
+      '{}', ${at}, ${at}, 'person', ${personId}, ${at}, ${INVOICE_CHOICE_RESOLVED})
+    ON CONFLICT (org_id, fact_key) DO UPDATE SET handled_by_kind = excluded.handled_by_kind,
+      handled_by_id = excluded.handled_by_id, handled_at = excluded.handled_at,
+      handled_note = excluded.handled_note, handled_until = NULL`;
+});
+
 const rankAll = Effect.fn("KinStatements.rankCredits")(function* (
   orgId: KinOrgId,
-  credits: ReadonlyArray<OpenCredit>,
+  entries: ReadonlyArray<OpenCredit>,
 ) {
+  if (entries.length === 0) return [];
+  const sql = yield* SqlClient.SqlClient;
+  const resolved = new Set(
+    (yield* sql<{ key: string }>`SELECT fact_key AS key FROM kin_pulse_facts
+      WHERE org_id = ${orgId} AND fact_key IN ${sql.in(entries.map(paymentFactKey))}
+        AND handled_by_kind = 'person' AND handled_note = ${INVOICE_CHOICE_RESOLVED}
+      ORDER BY fact_key`).map(({ key }) => key),
+  );
+  const credits = entries.filter((credit) => !resolved.has(paymentFactKey(credit)));
   if (credits.length === 0) return [];
   const invoices = (yield* invoiceCandidates(orgId, undefined)).filter(
     (one) => one.amountMinor - one.paidMinor > 0,
@@ -361,7 +397,6 @@ const rankAll = Effect.fn("KinStatements.rankCredits")(function* (
     invoices.map((one) => one.currency),
   );
   let numbers: ReadonlyArray<Pick<InvoiceCandidate, "key" | "number">> | undefined;
-  const sql = yield* SqlClient.SqlClient;
   const matches: Array<CreditMatch> = [];
   for (const credit of credits) {
     const available = invoices.filter(

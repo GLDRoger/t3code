@@ -3986,6 +3986,11 @@ it.effect.each(["part", "split", "declined", "edited"] as const)(
         yield* TestClock.adjust(60_000);
         yield* kin.tick();
         assert.lengthOf(yield* kin.cards(), answer === "edited" ? 2 : 1);
+        if (answer === "split" || answer === "declined") {
+          yield* kin.chats.clear(person, { chatId: asked.chatId });
+          assert.isEmpty(yield* kin.cards());
+          assert.isUndefined(yield* kin.fact());
+        }
       }),
     ),
 );

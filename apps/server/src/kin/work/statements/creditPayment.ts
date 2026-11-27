@@ -4,6 +4,7 @@ import {
   type KinOrgId,
   kinRateShown,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
@@ -30,6 +31,7 @@ import {
   type CreditMatch,
   type CreditPair,
   rateMoney,
+  resolveInvoiceChoice,
 } from "./invoiceCredits.ts";
 
 /**
@@ -497,6 +499,15 @@ export const recordPayment = Effect.fn("KinCreditPayment.record")(
       relation: "relates",
       label: plan.key,
     });
+    if (choice?.kind === "same") {
+      if (writer.actor._tag !== "person") return yield* refuse(PAYMENT_TAP_REFUSAL);
+      yield* resolveInvoiceChoice(
+        orgId,
+        match.credit,
+        writer.actor.personId,
+        yield* Clock.currentTimeMillis,
+      );
+    }
     if (plan.splits !== undefined) {
       const settled = plan.splits
         .filter((part) => part.owedAfterMinor === 0)
