@@ -400,6 +400,7 @@ export function applyServerSettingsPatch(
     backgroundActivityProfile,
     backgroundActivity,
     worktreeCleanup: worktreeCleanupPatch,
+    kinBackgroundModelSelection,
     // Merged per entry below; its `null` removals must not reach deepMerge.
     usageLimitSources: usageLimitSourcesPatch,
     textGenerators: textGeneratorsPatch,
@@ -514,9 +515,17 @@ export function applyServerSettingsPatch(
       },
     };
   }
-  const next = deepMerge(current, patchForMerge);
+  const { kinBackgroundModelSelection: previousBackgroundModel, ...next } = deepMerge(
+    current,
+    patchForMerge,
+  );
+  const backgroundModel =
+    kinBackgroundModelSelection === undefined
+      ? previousBackgroundModel
+      : kinBackgroundModelSelection;
   const nextWithReplacementsBase = {
     ...next,
+    ...(backgroundModel == null ? {} : { kinBackgroundModelSelection: backgroundModel }),
     favorites,
     providerModelPreferences: nextModelPreferences,
     ...(worktreeCleanupPatch === undefined

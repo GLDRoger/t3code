@@ -98,11 +98,13 @@ import {
 } from "./LeadPrompt.ts";
 import { KinTurnContent } from "./turn/content.ts";
 import {
+  backgroundWake,
   chooseLeadModel,
   companyDefaultModel,
   isDevServer,
   leadModelProblem,
   driverOf,
+  findProviderModel,
   leadProviderProblem,
   modelNotOffered,
 } from "./leadModels.ts";
@@ -854,6 +856,7 @@ const make = Effect.gen(function* () {
       const contextTokens = last?.tokenUsage?.usedTokens ?? null;
       const lastRequestAt = last?.startedAt == null ? null : DateTime.toEpochMillis(last.startedAt);
       const [shadow] = yield* sql<{
+        background: number | null;
         carry: number | null;
         reason: string | null;
         chatId: string | null;
@@ -867,7 +870,8 @@ const make = Effect.gen(function* () {
         UPDATE kin_wakeups SET context_tokens = ${contextTokens}, last_request_at = ${lastRequestAt},
           carry_json = json_set(carry_json, '$.toolListSha', ${toolListSha})
         WHERE org_id = ${row.orgId} AND wakeup_id = ${row.wakeupId}
-        RETURNING json_extract(carry_json, '$.carry') AS carry,
+        RETURNING json_extract(carry_json, '$.background') AS background,
+          json_extract(carry_json, '$.carry') AS carry,
           json_extract(carry_json, '$.reason') AS reason,
           json_extract(carry_json, '$.sent') AS sent,
           json_extract(carry_json, '$.bootId') AS "bootId",
@@ -986,6 +990,7 @@ const make = Effect.gen(function* () {
               : (kinCharacterSeat(lead.domain) ?? "custom"),
         driver: driver ?? null,
         model: thread.modelSelection.model,
+        background: shadow?.background === 1,
         instructionsSha256:
           driver === undefined
             ? null
@@ -1038,10 +1043,12 @@ const make = Effect.gen(function* () {
       // Recovery resumes the count from the thread, so steer ids stay stable. T3's table has no
       // org; the thread is this wake-up's own.
       const steerPrefix = KinIdentity.steerMessagePrefix(wakeupId);
-      const [landedSteers] = yield* sql<{ steers: number }>`SELECT COUNT(*) AS steers
-        FROM orchestration_v2_projection_messages WHERE thread_id = ${threadId}
-          AND substr(message_id, 1, ${steerPrefix.length}) = ${steerPrefix}`;
-      const landed = landedSteers?.steers ?? 0;
+      const [wakeState] = yield* sql<{ steers: number; background: number | null }>`
+        SELECT json_extract(carry_json, '$.background') AS background,
+          (SELECT COUNT(*) FROM orchestration_v2_projection_messages WHERE thread_id = ${threadId}
+            AND substr(message_id, 1, ${steerPrefix.length}) = ${steerPrefix}) AS steers
+        FROM kin_wakeups WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}`;
+      const landed = wakeState?.steers ?? 0;
       const steered =
         landed === 0
           ? []
@@ -1051,7 +1058,8 @@ const make = Effect.gen(function* () {
               ),
             })).messages;
       const steering = {
-        open: true,
+        // A new message waits for the agent’s own model rather than joining this background turn.
+        open: wakeState?.background !== 1,
         steers: landed,
         // The session holds a steer's framing once it read one; a taken run's first steer is the
         // whole prompt, which has none.
@@ -1727,14 +1735,42 @@ const make = Effect.gen(function* () {
             const providers = Option.isSome(providerRegistry)
               ? yield* providerRegistry.value.getProviders
               : null;
+            const problemOf = (candidate: ModelSelection) =>
+              leadModelProblem(hostSettings, providers, candidate, devServer);
+            let own = current.model;
+            let background = false;
+            const backgroundModel = hostSettings.kinBackgroundModelSelection;
+            if (
+              backgroundModel !== undefined &&
+              backgroundWake(events.map((event) => event._tag))
+            ) {
+              const listed = providers?.find(
+                ({ instanceId }) => instanceId === backgroundModel.instanceId,
+              );
+              const slug =
+                findProviderModel(listed?.models ?? [], backgroundModel.model)?.slug ??
+                backgroundModel.model;
+              const refusedAt =
+                hostSettings.providerModelPreferences?.[backgroundModel.instanceId]?.refusedAt?.[
+                  slug
+                ];
+              const reason =
+                problemOf(backgroundModel) ??
+                (refusedAt === undefined
+                  ? undefined
+                  : "The provider previously refused this model.");
+              if (reason === undefined) {
+                own = backgroundModel;
+                background = true;
+              } else yield* Effect.logInfo("Kin background model not used", { reason });
+            }
             const { model: modelSelection } = chooseLeadModel({
-              own: current.model,
+              own,
               companyDefault: yield* companyDefaultModel(orgId).pipe(
                 provideSql,
                 Effect.orElseSucceed(() => null),
               ),
-              problemOf: (candidate) =>
-                leadModelProblem(hostSettings, providers, candidate, devServer),
+              problemOf,
             });
             // Provisioning refuses these too; a row written another way still never launches.
             const wrongProvider = leadProviderProblem(hostSettings, modelSelection, devServer);
@@ -2180,7 +2216,10 @@ const make = Effect.gen(function* () {
                 // The running turn's thread: one wake-up runs per lead at a time.
                 yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE org_id = ${orgId} AND agent_id = ${agentId}`;
                 yield* sql`UPDATE kin_wakeups SET thread_id = ${threadId}, model = ${modelSelection.model},
-                prepared_at = ${preparedAt}, run_id = ${claimed.runId}
+                prepared_at = ${preparedAt}, run_id = ${claimed.runId},
+                carry_json = CASE WHEN ${background}
+                  THEN json_set(COALESCE(carry_json, '{}'), '$.background', json('true'))
+                  ELSE carry_json END
               WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND agent_id = ${agentId} AND status = 'running'`;
               }),
             );
@@ -2277,6 +2316,7 @@ const make = Effect.gen(function* () {
                   fromWakeupIds: facts.sessionWakeupIds.filter((id) => id !== wakeupId),
                 });
               const stamp = yield* encodeShadowJson({
+                ...(background ? { background } : {}),
                 carry: reason === null,
                 reason,
                 sent,

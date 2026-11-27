@@ -1,6 +1,7 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as ServerConfig from "../../config.ts";
 import * as DocumentText from "../../provider/DocumentText.ts";
+import * as ProviderRegistryMock from "../../provider/testUtils/providerRegistryMock.ts";
 import * as ProviderSessionManager from "../../orchestration-v2/ProviderSessionManager.ts";
 import * as McpSessionRegistry from "../../mcp/McpSessionRegistry.ts";
 import * as McpSessionRegistryTestkit from "../../mcp/McpSessionRegistry.testkit.ts";
@@ -27,6 +28,7 @@ import {
   type ChatAttachment,
   type OrchestrationV2DomainEvent,
   type OrchestrationV2Run,
+  type ServerProvider,
 } from "@t3tools/contracts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as ChatService from "../chat/KinChatService.ts";
@@ -145,6 +147,26 @@ import { ProviderAdapterSteerRunError } from "@t3tools/provider-core/server/Prov
 import { ProviderDriverKind, ProviderThreadId } from "@t3tools/contracts";
 
 const decodeEvent = Schema.decodeSync(KinEvent);
+const backgroundSelection = { ...selection, model: "invented-background" };
+const blockedBackgroundSelection = {
+  ...backgroundSelection,
+  instanceId: ProviderInstanceId.make("codex"),
+};
+const backgroundProviders = ProviderRegistryMock.layer([
+  {
+    instanceId: selection.instanceId,
+    driver: ProviderDriverKind.make("claudeAgent"),
+    enabled: true,
+    installed: true,
+    version: "0.0.0",
+    status: "ready",
+    auth: { status: "authenticated" },
+    checkedAt: "2026-11-08T00:00:00.000Z",
+    models: [],
+    slashCommands: [],
+    skills: [],
+  } satisfies ServerProvider,
+]);
 const decodeCarryStamp = Schema.decodeUnknownSync(
   Schema.fromJsonString(
     Schema.Struct({
@@ -1300,6 +1322,73 @@ describe("WakeupRunner", () => {
         [{ model: "claude-opus-4-6", turns: 4 }],
       );
     }).pipe(Effect.provide(harness()), provideDeterministicTestRuntime),
+  );
+  it.effect.each([
+    ["configured", backgroundSelection, false, backgroundSelection, true, false],
+    ["absent", undefined, false, selection, false, false],
+    ["mixed with a person's message", backgroundSelection, true, selection, false, false],
+    ["blocked by provider policy", blockedBackgroundSelection, false, selection, false, true],
+  ] as const)(
+    "records the model on a bills wake-up: %s",
+    ([, configured, mixed, expected, background, refused]) => {
+      const contexts: unknown[] = [];
+      const reasons: unknown[] = [];
+      return Effect.gen(function* () {
+        yield* seed;
+        const sql = yield* SqlClient.SqlClient;
+        const queue = yield* KinEventQueue.KinEventQueue;
+        const settings = yield* ServerSettings.ServerSettingsService;
+        const eventId = "background-bills";
+        const batchId = "background-batch";
+        const hash = "a".repeat(64);
+        const chatId = mixed ? `bills:${eventId}` : "owner-chat";
+        if (configured !== undefined)
+          yield* settings.updateSettings({ kinBackgroundModelSelection: configured });
+        if (mixed) {
+          // Force a mixed claim: the queue normally reserves a separate lane for each bill batch.
+          yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, last_seq, created_at)
+          VALUES (${chatId}, ${orgId}, 'team_group', 0, '2026-11-08')`;
+          yield* queue.enqueue(yield* ownerSays("asked-with-bills", chatId));
+        }
+        yield* sql`INSERT INTO kin_bill_reads (org_id, sha256, attachment_id, chat_id, message_id,
+          name, file_type, mime_type, size_bytes, batch_id, position, agent_id, card_chat_id,
+          widget_id, added_by_person_id, added_at, state, event_id, reads)
+        VALUES (${orgId}, ${hash}, 'kin-chat-00000000-0000-4000-8000-000000000001', ${chatId},
+          'bill-message', 'IMG_0001.png', 'image', 'image/png', 68, ${batchId}, 0, ${agentId},
+          ${chatId}, 'bill-widget', 'owner', 0, 'reading', ${eventId}, 1)`;
+        yield* queue.enqueue(
+          decodeEvent({
+            ...event(eventId),
+            receivedAt: "2026-11-08T00:00:00.000Z",
+            _tag: "bills.read",
+            chatId,
+            batchId,
+            bills: [hash],
+          }),
+        );
+        yield* Fiber.join(yield* run());
+        assert.deepStrictEqual(
+          yield* sql`SELECT model, status, json_array_length(event_ids) AS events FROM kin_wakeups
+          WHERE org_id = ${orgId}`,
+          [{ model: expected.model, status: "completed", events: mixed ? 2 : 1 }],
+        );
+        assert.deepStrictEqual(contexts, [background]);
+        if (refused) assert.match(String(reasons[0]), /turn on Agents on other providers/);
+        else assert.deepStrictEqual(reasons, []);
+      }).pipe(
+        Effect.provide(harnessWith({}, backgroundProviders)),
+        Effect.provide(
+          Logger.layer([
+            Logger.make(({ message }) => {
+              if (!Array.isArray(message)) return;
+              if (message[0] === "Kin wake-up context.") contexts.push(message[1]?.background);
+              if (message[0] === "Kin background model not used") reasons.push(message[1]?.reason);
+            }),
+          ]),
+        ),
+        provideDeterministicTestRuntime,
+      );
+    },
   );
   it.effect(
     "at the limit runs the owner's urgent turn on the agent's one model, and holds a routine",
