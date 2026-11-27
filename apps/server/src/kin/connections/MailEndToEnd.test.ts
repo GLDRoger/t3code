@@ -1980,6 +1980,214 @@ describe("Kin mail end to end, on a fake mailbox", () => {
     );
   });
 
+  it.effect("queues bill mail only from the exact approved address, in any letter case", () => {
+    const reads: Array<URL> = [];
+    return setUp(
+      (fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const box = yield* connect(fake, "google", ACCOUNTS);
+          yield* readMail(box);
+          yield* approved();
+          yield* TestClock.adjust("1 minute");
+          const near = ["billing+eu@inkspot.example", "bil.ling@inkspot.example"];
+          for (const [index, from] of near.entries())
+            fake.deliver({ ...pdfMail, from, to: ACCOUNTS, at: NOW + 10 + index });
+          fake.deliver({
+            ...pdfMail,
+            from: `"${inkspot}" <accounts@harbor.example>`,
+            authResults: ["mx.example; dmarc=pass header.from=harbor.example"],
+            to: ACCOUNTS,
+            at: NOW + 20,
+          });
+          const upper = fake.deliver({
+            ...pdfMail,
+            from: "Billing@Inkspot.EXAMPLE",
+            to: ACCOUNTS,
+            at: NOW + 30,
+          });
+          yield* readMail(box);
+          assert.deepStrictEqual(yield* sql`SELECT message_id AS id, address FROM kin_bill_mail`, [
+            { id: upper.id, address: inkspot },
+          ]);
+          yield* drain();
+          assert.lengthOf(yield* sql`SELECT 1 FROM kin_bill_reads`, 1);
+          const full = reads.filter(fullRead);
+          assert.lengthOf(full, 1);
+          assert.isTrue(full[0]!.pathname.endsWith(`/messages/${upper.id}`));
+        }),
+      {
+        mailRead: (url) => {
+          reads.push(url);
+        },
+      },
+    );
+  });
+
+  it.effect("never reads an approved sender's mail held in a personal or private mailbox", () => {
+    const reads: Array<URL> = [];
+    return setUp(
+      (fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          fake.addAccount({ provider: "google", address: MEERA, name: "Meera" });
+          const own = yield* connectOwn(fake, member, MEERA);
+          const box = yield* connect(fake, "google", ACCOUNTS);
+          yield* readMail(box);
+          yield* approved();
+          yield* TestClock.adjust("1 minute");
+          const mine = fake.deliver({ ...pdfMail, to: MEERA });
+          const hidden = fake.deliver({ ...pdfMail, to: ACCOUNTS });
+          // ACCOUNTS was someone's own mailbox until after the mail came in.
+          yield* sql`CREATE TEMP TABLE was_own AS SELECT * FROM kin_connections
+            WHERE connection_id = ${box}`;
+          yield* sql`UPDATE was_own SET connection_id = 'was-own', person_id = ${member},
+            removed_at = ${NOW + 5}`;
+          yield* sql`INSERT INTO kin_connections SELECT * FROM was_own`;
+          for (const [connectionId, mail] of [
+            [own, mine],
+            [box, hidden],
+          ] as const)
+            yield* sql`INSERT INTO kin_bill_mail (org_id, connection_id, message_id, thread_id,
+              address, received_at, state, next_at, queued_at)
+              VALUES (${orgId}, ${connectionId}, ${mail.id}, ${mail.threadId}, ${inkspot},
+                ${billMail.at}, 'waiting', ${NOW}, ${NOW})`;
+          reads.length = 0;
+          yield* drain();
+          assert.deepStrictEqual(yield* billLedger, [
+            { state: "skipped", reason: "gone" },
+            { state: "skipped", reason: "gone" },
+          ]);
+          assert.isFalse(reads.some((url) => url.pathname.split("/").includes(mine.id)));
+          assert.isFalse(reads.some(fullRead));
+          assert.isFalse(reads.some((url) => url.pathname.includes("/attachments/")));
+          assert.deepStrictEqual(yield* sql`SELECT 1 FROM kin_bill_reads`, []);
+        }),
+      {
+        mailRead: (url) => {
+          reads.push(url);
+        },
+      },
+    );
+  });
+
+  it.effect("keeps a bill waiting while its mailbox is signed out, and reads it after", () =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const gmail = yield* connect(fake, "google", ACCOUNTS);
+        const outlook = yield* connect(fake, "microsoft", HELLO);
+        yield* readMail(gmail);
+        yield* approved();
+        yield* TestClock.adjust("1 minute");
+        fake.deliver({ ...pdfMail, to: ACCOUNTS });
+        yield* readMail(gmail);
+        // Another mailbox of the company still drains while this one waits for a sign-in.
+        yield* sql`UPDATE kin_connections SET state = 'needs_sign_in' WHERE connection_id = ${gmail}`;
+        yield* readMail(outlook);
+        yield* drain();
+        yield* sql`UPDATE kin_connections SET state = 'active' WHERE connection_id = ${gmail}`;
+        yield* drain(NOW + 2 * 60 * 60_000);
+        assert.deepStrictEqual(yield* billLedger, [{ state: "done", reason: null }]);
+        assert.lengthOf(yield* sql`SELECT 1 FROM kin_bill_reads`, 1);
+      }),
+    ),
+  );
+
+  it.effect("a drain whose lease ran out writes nothing, and a second drain waits its turn", () => {
+    const downloading = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    const unblock = [Promise.withResolvers<void>(), Promise.withResolvers<void>()];
+    let downloads = 0;
+    return setUp(
+      (fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const box = yield* connect(fake, "google", ACCOUNTS);
+          yield* readMail(box);
+          yield* approved();
+          yield* TestClock.adjust("1 minute");
+          fake.deliver({ ...pdfMail, to: ACCOUNTS });
+          yield* readMail(box);
+          const first = yield* Effect.forkScoped(drain());
+          yield* Effect.promise(() => downloading[0]!.promise);
+          yield* drain();
+          assert.strictEqual(downloads, 1);
+          const after = yield* Effect.forkScoped(drain(NOW + 60_000 + 31 * 60_000));
+          yield* Effect.promise(() => downloading[1]!.promise);
+          unblock[0]!.resolve();
+          yield* Fiber.join(first);
+          assert.deepStrictEqual(yield* sql`SELECT 1 FROM kin_bill_reads`, []);
+          assert.deepStrictEqual(yield* sql`SELECT state, tries FROM kin_bill_mail`, [
+            { state: "reading", tries: 2 },
+          ]);
+          unblock[1]!.resolve();
+          yield* Fiber.join(after);
+          assert.deepStrictEqual(yield* billLedger, [{ state: "done", reason: null }]);
+          assert.lengthOf(yield* sql`SELECT 1 FROM kin_bill_reads`, 1);
+        }).pipe(Effect.scoped),
+      {
+        mailRead: (url) => {
+          if (!url.pathname.includes("/attachments/")) return;
+          const n = downloads++;
+          downloading[n]?.resolve();
+          return unblock[n]?.promise;
+        },
+      },
+    );
+  });
+
+  it.effect("a co-owner's approval with no chat open with the reader still reads the bill", () =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const box = yield* connect(fake, "google", ACCOUNTS);
+        yield* readMail(box);
+        yield* approved(coOwner);
+        yield* TestClock.adjust("1 minute");
+        fake.deliver({ ...pdfMail, to: ACCOUNTS });
+        yield* readMail(box);
+        yield* drain();
+        assert.deepStrictEqual(yield* billLedger, [{ state: "done", reason: null }]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT added_by_person_id AS "addedBy" FROM kin_bill_reads`,
+          [{ addedBy: owner }],
+        );
+      }),
+    ),
+  );
+
+  it.effect("downloads nothing while the company has no bills reader", () => {
+    const reads: Array<URL> = [];
+    return setUp(
+      (fake) =>
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          const box = yield* connect(fake, "google", ACCOUNTS);
+          yield* readMail(box);
+          yield* approved();
+          yield* TestClock.adjust("1 minute");
+          const mail = fake.deliver({ ...pdfMail, to: ACCOUNTS });
+          yield* readMail(box);
+          yield* sql`UPDATE kin_agents SET retired_at = ${stamp} WHERE org_id = ${orgId}`;
+          for (const hours of [0, 1, 2, 3]) yield* drain(NOW + 60_000 + hours * 60 * 60_000);
+          assert.deepStrictEqual(
+            [reads.filter(fullRead).length, parts(reads, mail.id).length],
+            [0, 0],
+          );
+          assert.deepStrictEqual(yield* billLedger, [{ state: "waiting", reason: null }]);
+          yield* sql`UPDATE kin_agents SET retired_at = NULL WHERE org_id = ${orgId}`;
+          yield* drain(NOW + 5 * 60 * 60_000);
+          assert.deepStrictEqual(yield* billLedger, [{ state: "done", reason: null }]);
+          assert.lengthOf(parts(reads, mail.id), 1);
+        }),
+      {
+        mailRead: (url) => {
+          reads.push(url);
+        },
+      },
+    );
+  });
+
   it.effect(
     "the feed notices each mail once, across a crash, a replay and a forgotten position",
     () =>

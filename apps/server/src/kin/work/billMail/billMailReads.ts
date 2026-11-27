@@ -25,7 +25,7 @@ import { verifiedBillingAddress } from "../../connections/MailSignals.ts";
 import { httpsLink, mailFileType } from "../../connections/MailTools.ts";
 import { HOUR_MS, MINUTE_MS } from "../../durations.ts";
 import { ownerLevelSql } from "../../people/KinAccess.ts";
-import { addMailBills } from "../bills.ts";
+import { addMailBills, mailBillsReady } from "../bills.ts";
 import { ownerZone } from "../recordRows.ts";
 import { orgOwner } from "../toolNames.ts";
 
@@ -102,11 +102,14 @@ const readOne = Effect.fn("KinBillMail.readOne")(function* (
   const liveClaim = sql`SELECT 1 FROM kin_bill_mail WHERE ${claimed}`;
   const approved = sql<{ decidedBy: string | null }>`SELECT decided_by_person_id AS "decidedBy"
     FROM kin_bill_senders WHERE org_id = ${orgId} AND address = ${address} AND state = 'approved'`;
+  // A paused or signed-out company mailbox comes back: its mail waits; only a removed one is gone.
   const mailbox = connectionById(orgId, connectionId).pipe(
     Effect.map((connection) =>
-      connection?.personId == null && connection?.state === "active" && connection.pausedAt === null
-        ? connection
-        : undefined,
+      connection === undefined || connection.personId != null
+        ? ("gone" as const)
+        : connection.state === "active" && connection.pausedAt === null
+          ? connection
+          : ("held" as const),
     ),
   );
 
@@ -124,14 +127,39 @@ const readOne = Effect.fn("KinBillMail.readOne")(function* (
       Effect.asVoid,
     );
 
+  const liveAdder = (id: string | null) =>
+    id === null
+      ? Effect.undefined
+      : sql<{ id: string }>`SELECT p.person_id AS id FROM kin_people p
+      WHERE p.org_id = ${orgId} AND p.person_id = ${id} AND p.removed_at IS NULL
+        AND ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))}`.pipe(
+          Effect.map(([person]) =>
+            person === undefined ? undefined : KinPersonId.make(person.id),
+          ),
+        );
+  // The first owner-level person whose chat with the reader can take the card.
+  const adderFor = Effect.fnUntraced(function* (decidedBy: string | null) {
+    for (const id of [row.askedBy, decidedBy, yield* orgOwner(orgId)]) {
+      const person = yield* liveAdder(id);
+      if (person !== undefined && (yield* mailBillsReady(orgId, person))) return person;
+    }
+    return undefined;
+  });
+
   const claim = sql.withTransaction(
     Effect.gen(function* () {
-      if ((yield* approved).length === 0) {
+      const [sender] = yield* approved;
+      if (sender === undefined) {
         yield* skip("not_approved", due);
         return false;
       }
-      if ((yield* mailbox) === undefined) {
+      const box = yield* mailbox;
+      if (box === "gone") {
         yield* skip("gone", due);
+        return false;
+      }
+      if (box === "held" || (yield* adderFor(sender.decidedBy)) === undefined) {
+        yield* sql`UPDATE kin_bill_mail SET next_at = ${now + HOUR_MS} WHERE ${due}`;
         return false;
       }
       const rows = yield* sql`UPDATE kin_bill_mail SET state = 'reading', tries = ${tries},
@@ -148,8 +176,12 @@ const readOne = Effect.fn("KinBillMail.readOne")(function* (
           return false;
         }
         const connection = yield* mailbox;
+        if (connection === "held") {
+          yield* wait(HOUR_MS);
+          return false;
+        }
         if (
-          connection === undefined ||
+          connection === "gone" ||
           !receivedAfter(arrival.receivedAt, yield* ownUntil(orgId, connection.accountLabel))
         ) {
           yield* skip("gone");
@@ -196,17 +228,6 @@ const readOne = Effect.fn("KinBillMail.readOne")(function* (
     } satisfies File;
   }, Effect.uninterruptible);
 
-  const liveAdder = (id: string | null) =>
-    id === null
-      ? Effect.undefined
-      : sql<{ id: string }>`SELECT p.person_id AS id FROM kin_people p
-      WHERE p.org_id = ${orgId} AND p.person_id = ${id} AND p.removed_at IS NULL
-        AND ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))}`.pipe(
-          Effect.map(([person]) =>
-            person === undefined ? undefined : KinPersonId.make(person.id),
-          ),
-        );
-
   const write = (files: [File, ...Array<File>], at: number) =>
     sql
       .withTransaction(
@@ -217,14 +238,12 @@ const readOne = Effect.fn("KinBillMail.readOne")(function* (
             yield* skip("removed");
             return [];
           }
-          if ((yield* mailbox) === undefined) {
+          const box = yield* mailbox;
+          if (box === "gone") {
             yield* skip("gone");
             return [];
           }
-          const adder =
-            (yield* liveAdder(row.askedBy)) ??
-            (yield* liveAdder(sender.decidedBy)) ??
-            (yield* liveAdder(yield* orgOwner(orgId)));
+          const adder = box === "held" ? undefined : yield* adderFor(sender.decidedBy);
           const added =
             adder === undefined
               ? undefined

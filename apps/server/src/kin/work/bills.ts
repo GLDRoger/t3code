@@ -860,6 +860,15 @@ const startBatch = Effect.fn("KinBills.startBatch")(function* (input: {
   } satisfies KinBillsAddResult;
 });
 
+/** Whether `addMailBills` would add for `adder` now: a reader and its direct chat with them. */
+export const mailBillsReady = Effect.fn("KinBills.mailBillsReady")(function* (
+  orgId: KinOrgId,
+  adder: KinPersonId,
+) {
+  const reader = yield* billReader(orgId);
+  return reader !== undefined && (yield* cardChat(orgId, adder, reader.agentId)) !== undefined;
+});
+
 /** Adds the verified parts of one mail in the caller's transaction. */
 export const addMailBills = Effect.fn("KinBills.addMailBills")(function* (input: {
   readonly orgId: KinOrgId;

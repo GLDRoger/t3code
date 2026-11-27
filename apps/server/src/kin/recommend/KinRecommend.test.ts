@@ -2006,6 +2006,41 @@ it.effect(
     ),
 );
 
+it.effect("a teammate's own call cannot add a declined billing sender or queue its held mail", () =>
+  run(({ ctx }) =>
+    Effect.gen(function* () {
+      yield* idle(ctx);
+      const now = yield* Clock.currentTimeMillis;
+      const address = "bills@inkspot.example";
+      yield* ctx.sql`INSERT INTO kin_bill_senders (org_id, address, state, decided_by_person_id,
+        decided_at, created_at)
+        VALUES (${ctx.orgId}, ${address}, 'declined', ${ctx.devId}, ${now}, ${now})`;
+      yield* ctx.sql`INSERT INTO kin_bill_sender_mail
+        (org_id, mail_key, address, connection_id, message_id, thread_id, received_at)
+        VALUES (${ctx.orgId}, 'hold', ${address}, 'mailbox', 'message', 'thread', ${now})`;
+      for (const method of ["add", "approve", "remove"] as const) {
+        const tried =
+          method === "add"
+            ? BillSenders.add(ctx.orgId, ctx.meera.personId, address)
+            : BillSenders.decide(
+                ctx.orgId,
+                ctx.meera.personId,
+                address,
+                method === "approve" ? "approved" : "removed",
+              );
+        assert.include(yield* Effect.flip(tried), {
+          message: "Only an owner or co-owner can manage billing senders.",
+        });
+      }
+      assert.deepStrictEqual(
+        yield* ctx.sql`SELECT state FROM kin_bill_senders WHERE org_id = ${ctx.orgId}`,
+        [{ state: "declined" }],
+      );
+      assert.deepStrictEqual(yield* ctx.sql`SELECT 1 FROM kin_bill_mail`, []);
+    }).pipe(Effect.provide(kinHostDependencies)),
+  ),
+);
+
 it.effect(
   "a billing sender card decides only through its own sealed option, by an owner-level tap",
   () =>
