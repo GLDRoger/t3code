@@ -213,6 +213,31 @@ function leftChats(environmentId: EnvironmentId): PubSub.PubSub<KinChatId> {
   return pubsub;
 }
 
+// Local flips on this device reach every open chat on that host before its next backlog.
+const clearUpdatesByEnvironment = new Map<EnvironmentId, PubSub.PubSub<boolean>>();
+function clearUpdatesOf(environmentId: EnvironmentId): PubSub.PubSub<boolean> {
+  let pubsub = clearUpdatesByEnvironment.get(environmentId);
+  if (pubsub === undefined) {
+    pubsub = Effect.runSync(PubSub.unbounded<boolean>());
+    clearUpdatesByEnvironment.set(environmentId, pubsub);
+  }
+  return pubsub;
+}
+
+/**
+ * Runs a `kinClearUpdatesAfterReply` save and, only on success, applies the new value to every
+ * chat open on this device for that host.
+ */
+export async function applyKinClearUpdatesSave(
+  environmentId: EnvironmentId,
+  clearUpdates: boolean,
+  save: () => Promise<boolean>,
+): Promise<boolean> {
+  const saved = await save();
+  if (saved) Effect.runSync(PubSub.publish(clearUpdatesOf(environmentId), clearUpdates));
+  return saved;
+}
+
 const currentEnvironmentId = EnvironmentSupervisor.EnvironmentSupervisor.pipe(
   Effect.map((supervisor) => supervisor.target.environmentId),
 );
@@ -369,6 +394,7 @@ export function makeKinChatStream<E, R>(
         let shownAt = Option.match(cached, { onNone: () => null, onSome: (c) => c.savedAt });
         let savedMessages = Option.exists(cached, (c) => c.chat.messages.length > 0);
         let accessStamp = Option.getOrUndefined(cached)?.accessStamp;
+        const clearUpdatesSub = yield* PubSub.subscribe(clearUpdatesOf(environmentId));
         const saver = yield* throttledSave(
           (value: { chat: KinChatState; savedAt: string; accessStamp?: string }) =>
             chatCache.save(environmentId, key, value),
@@ -407,6 +433,15 @@ export function makeKinChatStream<E, R>(
           state = next;
           live = true;
           return [{ value: next, live: true, savedAt }];
+        };
+        const onClearUpdates = (clearUpdates: boolean): ReadonlyArray<KinSynced<KinChatState>> => {
+          if ((state.clearUpdates ?? false) === clearUpdates) return [];
+          const next = { ...state, clearUpdates };
+          const savedAt = nowIso();
+          shownAt = savedAt;
+          save(next, savedAt);
+          state = next;
+          return [{ value: next, live, savedAt }];
         };
 
         const rereadLatest = (applied: Effect.Effect<void> = Effect.void) =>
@@ -477,6 +512,10 @@ export function makeKinChatStream<E, R>(
                     Stream.mapEffect(() => rereadLatest()),
                   ),
               // The chat's own subscription decides when this stream ends.
+              { haltStrategy: "left" },
+            ),
+            Stream.merge(
+              Stream.fromSubscription(clearUpdatesSub).pipe(Stream.map(onClearUpdates)),
               { haltStrategy: "left" },
             ),
             Stream.flattenIterable,

@@ -10,6 +10,7 @@ import {
   KIN_AGENTS_COPY,
   KIN_CLEAR_UPDATES,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import { applyKinClearUpdatesSave } from "@t3tools/client-runtime/kin/kinStreams";
 import { KIN_DAILY_LIMIT, kinDailyLimitWaiting } from "@t3tools/client-runtime/kin/kinBudget";
 import { kinCount } from "@t3tools/client-runtime/kin/kinCount";
 import { KIN_SET_UP_ON_COMPUTER } from "@t3tools/client-runtime/kin/kinNavigation";
@@ -234,10 +235,14 @@ function KinClearUpdatesSection(props: { readonly environmentId: EnvironmentId }
         subtitle={KIN_CLEAR_UPDATES.rowDetail}
         value={config.settings.kinClearUpdatesAfterReply}
         onValueChange={(value) =>
-          void updateSettings({
-            environmentId: props.environmentId,
-            input: { patch: { kinClearUpdatesAfterReply: value } },
-          })
+          void applyKinClearUpdatesSave(props.environmentId, value, async () =>
+            AsyncResult.isSuccess(
+              await updateSettings({
+                environmentId: props.environmentId,
+                input: { patch: { kinClearUpdatesAfterReply: value } },
+              }),
+            ),
+          )
         }
       />
     </SettingsSection>

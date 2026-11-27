@@ -216,7 +216,7 @@ export const KIN_CLEAR_UPDATES = {
   section: "Chats",
   row: "Clear progress updates once the reply arrives",
   rowDetail:
-    "The reply stays, and so do the updates of a turn that ends without one; nothing is deleted.",
+    "Applies to everyone's chats in this company; updates from a turn that ends without a reply stay, and nothing is deleted.",
 };
 
 /** What an agent on this provider can't do, from the providers table; null when nothing. */

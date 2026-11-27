@@ -8,6 +8,7 @@ import {
   KIN_OTHER_PROVIDER_AGENTS,
   kinLeadModelName,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import { applyKinClearUpdatesSave } from "@t3tools/client-runtime/kin/kinStreams";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import type { ModelSelection } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -66,9 +67,23 @@ function ClearUpdates(props: KinWorkTarget) {
         control={
           <Switch
             checked={settings.kinClearUpdatesAfterReply}
-            onCheckedChange={(checked) =>
-              void updateSettings({ kinClearUpdatesAfterReply: Boolean(checked) })
-            }
+            onCheckedChange={(checked) => {
+              const next = Boolean(checked);
+              void applyKinClearUpdatesSave(
+                props.environmentId,
+                next,
+                () =>
+                  new Promise<boolean>((resolve) => {
+                    updateSettings(
+                      { kinClearUpdatesAfterReply: next },
+                      {
+                        onSaved: () => resolve(true),
+                        onFailed: () => resolve(false),
+                      },
+                    );
+                  }),
+              );
+            }}
             aria-label={KIN_CLEAR_UPDATES.row}
           />
         }
