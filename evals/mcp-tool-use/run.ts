@@ -69,6 +69,8 @@ import {
 } from "./margin.ts";
 import { needsTopUp, refusals, RunManifest, tallies, tally } from "./gate.ts";
 import { casePattern } from "./pattern.ts";
+import { KinSeat, kinSeatOf, triageToolVisible } from "./kin-seat.ts";
+import { TRIAGE_REFUSAL } from "../../apps/server/src/kin/lead/outsideTriage.ts";
 import { kinCaseProblems } from "./kin-checks.ts";
 import { Rubric, rubricChecks, rubricRequest } from "./rubric.ts";
 import { type AppServer, openAppServer } from "./appServer.ts";
@@ -80,6 +82,7 @@ import {
   isReplyEnding,
   kinAnswer,
   KinCaseAttachment,
+  KIN_SHARED_PROMPT,
   KIN_TOOLKITS,
   kinDated,
   kinDelivery,
@@ -370,6 +373,7 @@ const McpToolUseExpect = Schema.Struct({
  */
 const McpToolUseWorld = Schema.StructWithRest(
   Schema.Struct({
+    kinSeat: Schema.optional(KinSeat),
     /** GitHub `owner/name`. Defaults to `acme/app`. */
     repo: Schema.optional(Schema.String),
     /** `origin`'s host and path, such as `git.cafe/acme/app`. Defaults to `github.com/<repo>`. */
@@ -495,7 +499,16 @@ export const McpToolUseCase = Schema.Struct({
   maxSteps: Schema.optional(Schema.Number),
   source: Schema.optional(Schema.Record(Schema.String, Schema.Unknown)),
   notes: Schema.optional(Schema.String),
-});
+}).check(
+  Schema.makeFilter((testCase) => {
+    if (kinSeatOf(testCase) === undefined) return;
+    const { setup, prompt } = testCase;
+    if (setup.world?.kinShared === true || KIN_SHARED_PROMPT.test(prompt))
+      return `${testCase.id}: kinSeat cannot be combined with kinShared.`;
+    if (setup.world?.kinBills === true || kinBillsOf(testCase))
+      return `${testCase.id}: kinSeat cannot be combined with kinBills.`;
+  }),
+);
 export type McpToolUseCase = typeof McpToolUseCase.Type;
 
 const AnyBlock = Schema.StructWithRest(
@@ -704,15 +717,17 @@ const visibleT3Tools = (
   } & KinSeatOptions,
   claude = false,
 ) =>
-  t3Tools.filter(
-    (tool) =>
-      kinToolVisible(tool.name.slice(T3_PREFIX.length), options, claude) &&
-      !(options.arm === "raw" && forgeToolNames.has(tool.name)) &&
-      (options.links === true || !hiddenWhileLinksOff.has(tool.name)) &&
-      ((options.agentFeedback ?? "off") !== "off" || !hiddenWhileFeedbackOff.has(tool.name)) &&
-      (options.forge !== false || !hiddenWithoutForge.has(tool.name)) &&
-      !(options.subagent === true && hiddenFromSubagents.has(tool.name)),
-  );
+  options.kinSeat === "outside-triage"
+    ? t3Tools.filter((tool) => triageToolVisible(tool.name.slice(T3_PREFIX.length)))
+    : t3Tools.filter(
+        (tool) =>
+          kinToolVisible(tool.name.slice(T3_PREFIX.length), options, claude) &&
+          !(options.arm === "raw" && forgeToolNames.has(tool.name)) &&
+          (options.links === true || !hiddenWhileLinksOff.has(tool.name)) &&
+          ((options.agentFeedback ?? "off") !== "off" || !hiddenWhileFeedbackOff.has(tool.name)) &&
+          (options.forge !== false || !hiddenWithoutForge.has(tool.name)) &&
+          !(options.subagent === true && hiddenFromSubagents.has(tool.name)),
+      );
 
 /**
  * T3's Claude Code options for an eval thread: its system prompt append and its hooks. `device` and
@@ -904,7 +919,7 @@ export const buildBase = (
     platform: /Platform: (\w+)/.exec(joined)?.[1] ?? "linux",
     date: /Today's date is ([\d-]+)/.exec(reminders.join("\n"))?.[1],
   };
-  if (options.kinLead === true)
+  if (options.kinSeat === "outside-triage" || options.kinLead === true)
     return kinLeadBase({
       model,
       options,
@@ -1441,7 +1456,7 @@ export const buildMessages = (sample: Sample, layout: KinLayout = "legacy", appS
   let firstWake = true;
   const pushPrompt = (prompt: string, files?: KinTurnFiles, context?: string) => {
     push("user", ...kinTurnBlocks(files, prompt, base.codex !== undefined));
-    if (firstWake && base.kinClaude && !appServer) {
+    if (firstWake && base.kinClaude && !appServer && kinSeatOf(testCase) === undefined) {
       const { cwd, platform, date } = base.environment;
       const environment = [
         `# Environment\nYou have been invoked in the following environment: \n - Primary working directory: ${cwd}\n - Platform: ${platform}`,
@@ -2574,6 +2589,8 @@ export const answerToolCall = Effect.fn("evaluateMcpToolUse.answerToolCall")(fun
         : input;
   }
   const failed = (error: string): Block => ({ ...toolResult(call.id, error), is_error: true });
+  if (kinSeatOf(testCase) === "outside-triage" && !triageToolVisible(name))
+    return failed(TRIAGE_REFUSAL);
   if (!base.codex && !hasTool(tools, call.name)) {
     const error = base.kinClaude
       ? hasTool(base.deferred, call.name)
@@ -3361,7 +3378,10 @@ export const ranCalls = (
   uses: ReadonlyArray<typeof ToolUse.Type>,
 ) =>
   uses
-    .filter((use) => base.codex !== undefined || hasTool(tools, use.name))
+    .filter(
+      (use) =>
+        kinSeatOf(testCase) !== undefined || base.codex !== undefined || hasTool(tools, use.name),
+    )
     .map((use) => recordedCall(step, filledEvent(testCase, use, normalizeToolName)));
 
 /**
@@ -3401,8 +3421,10 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   let stopReason = "max_steps";
   let finalText = "";
   const kinLead = testCase.setup.world?.kinLead === true;
+  const outsideTriage = kinSeatOf(testCase) === "outside-triage";
   const { textMustNot: _textMustNot, limits: _limits, ...callChecks } = testCase.expect;
   const stopsEarly = () =>
+    !outsideTriage &&
     failedEarly(
       // A later send can replace any text so far.
       kinLead ? callChecks : testCase.expect,
@@ -3412,7 +3434,7 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
   // Codex's code-mode cells take more model calls, so a case's own budget grows for it too.
   const extra = isCodex(config.model) ? 4 : 0;
   let maxSteps = testCase.maxSteps === undefined ? config.maxSteps : testCase.maxSteps + extra;
-  if (config.maxSteps === 0) maxSteps = Infinity;
+  if (outsideTriage || config.maxSteps === 0) maxSteps = Infinity;
   let followUp: ReturnType<typeof replyFollowUp>;
   let modelCalls = 0;
   for (let step = 0; step < maxSteps; step++) {
@@ -3432,7 +3454,7 @@ export const runSample = Effect.fn("evaluateMcpToolUse.runSample")(function* (
     }
     messages.push({ role: "assistant", content: response.content });
     responses.push(response.content);
-    const long = config.maxSteps === 0 ? longTurnNote(testCase.id, responses.length) : undefined;
+    const long = maxSteps === Infinity ? longTurnNote(testCase.id, responses.length) : undefined;
     if (long !== undefined) yield* Effect.log(long);
     const texts = response.content.filter(isText).map((block) => block.text);
     const uses = response.content.filter(isToolUse);
@@ -3874,7 +3896,9 @@ const main = Effect.gen(function* () {
   );
   // Only a Kin lead runs in the app-server harness: other cases need the captured Codex harness.
   const runnable = appServer
-    ? matching.filter(({ setup }) => setup.world?.kinLead === true)
+    ? matching.filter(
+        (testCase) => testCase.setup.world?.kinLead === true || kinSeatOf(testCase) !== undefined,
+      )
     : matching;
   if (runnable.length < matching.length)
     yield* Effect.log(`Skipped ${matching.length - runnable.length} cases that are not Kin leads.`);
@@ -3882,6 +3906,13 @@ const main = Effect.gen(function* () {
     ? runnable.filter((one, i) => runnable.findIndex(({ area }) => area === one.area) === i)
     : runnable;
   if (selectedCases.length === 0) return yield* Effect.die(new Error("No case matches --case."));
+  if (replay) {
+    const outside = selectedCases.find((testCase) => kinSeatOf(testCase) !== undefined);
+    if (outside !== undefined)
+      return yield* Effect.die(
+        new Error(`${outside.id}: kinSeat requires --harness app-server on Codex.`),
+      );
+  }
   // The raw arm has no PR or issue tools, so a case whose prior turns call one cannot be replayed.
   const replaysForgeTool = (testCase: McpToolUseCase) =>
     [
@@ -3963,6 +3994,7 @@ const main = Effect.gen(function* () {
     kinBills = false,
     kinGitHub = false,
     kinEngineering = false,
+    kinSeat?: KinSeat,
   ): Effect.Effect<Base, Schema.SchemaError> =>
     replay
       ? decodeCodexCapture(template).pipe(
@@ -4010,6 +4042,7 @@ const main = Effect.gen(function* () {
               browserAccess,
               agentFeedback,
               arm: flags.arm,
+              ...(kinSeat === undefined ? {} : { kinSeat }),
             });
             return role === "native-subagent"
               ? Effect.promise(() =>
@@ -4022,11 +4055,11 @@ const main = Effect.gen(function* () {
   // A Kin turn others read carries Kin's shared-turn line, as the server's prompt does.
   const baseKey = (testCase: McpToolUseCase) => {
     const { setup, prompt } = testCase;
-    return `${replay && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.world?.browserAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.forge !== false}:${setup.world?.agentFeedback ?? "off"}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${kinSessionOf(testCase)}:${prompt.includes("{{SHARED_TURN}}")}:${setup.world?.kinSocial === true}:${kinBillsOf(testCase)}:${kinGitHubOf(testCase)}:${setup.world?.kinEngineering === true}`;
+    return `${replay && setup.role === "native-subagent" ? "top" : setup.role}:${setup.world?.deviceAgentAccess !== false}:${setup.world?.browserAgentAccess !== false}:${setup.linkedEnvironments === true}:${setup.forge !== false}:${setup.world?.agentFeedback ?? "off"}:${setup.world?.kinAgent === true}:${setup.world?.kinLead === true}:${kinSessionOf(testCase)}:${prompt.includes("{{SHARED_TURN}}")}:${setup.world?.kinSocial === true}:${kinBillsOf(testCase)}:${kinGitHubOf(testCase)}:${setup.world?.kinEngineering === true}:${kinSeatOf(testCase) ?? ""}`;
   };
   const base = yield* buildFor("top", true, true, false, true);
   const bases = new Map<string, Base>([
-    ["top:true:true:false:true:off:false:false:false:false:false:false:false:false", base],
+    ["top:true:true:false:true:off:false:false:false:false:false:false:false:false:", base],
   ]);
   for (const testCase of selected) {
     const key = baseKey(testCase);
@@ -4079,6 +4112,7 @@ const main = Effect.gen(function* () {
         kinBills === "true",
         kinGitHub === "true",
         kinEngineering === "true",
+        kinSeatOf(testCase),
       ),
     );
   }
@@ -4121,7 +4155,10 @@ const main = Effect.gen(function* () {
       );
       // Codex lists its tools differently; only Claude requests are checked for tool names.
       // The explicit send mock precedes its server tool.
-      const gradingTools = testCase.setup.world?.kinLead ? new Set([...tools, "kin_send"]) : tools;
+      const gradingTools =
+        testCase.setup.world?.kinLead && kinSeatOf(testCase) === undefined
+          ? new Set([...tools, "kin_send"])
+          : tools;
       const found = [
         ...(sample.base.codex ? [] : caseProblems(forGrading(testCase), gradingTools)),
         ...unfilled,
