@@ -305,7 +305,9 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
       const attended = (reader: string) => who.some((one) => one.id === reader);
       if (time <= at - toMs(followUp)) {
         const hours = elapsed(time, at, "hours");
-        const rest = ` was ${hours < 48 ? `${hoursText(hours)} ago` : `on ${whenOf(ctx, time)}`}, and no outcome is noted. How did it go? Add the outcome and any action items to it.`;
+        const when = ` was ${hours < 48 ? `${hoursText(hours)} ago` : `on ${whenOf(ctx, time)}`}, and no outcome is noted.`;
+        const rest = `${when} Ask how it went, then add the outcome and any action items to it.`;
+        const own = `${when} How did it go? Add the outcome and any action items to it.`;
         facts.push(
           projectFact(ctx, row, {
             sense: "meeting_passed",
@@ -314,7 +316,7 @@ export const projectSenses = Effect.fn("KinPulse.projectSenses")(function* (ctx:
             measure: measure(hours, followUp),
             consequence: `${meetingWho(who, null)}${rest}`,
             yours: (reader) =>
-              attended(reader) ? `${meetingWho(who, row.clientTitle, reader)}${rest}` : undefined,
+              attended(reader) ? `${meetingWho(who, row.clientTitle, reader)}${own}` : undefined,
             wake: "sweep",
           }),
         );
