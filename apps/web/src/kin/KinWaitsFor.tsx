@@ -53,13 +53,16 @@ function KinWaitsForFold(props: {
       </Button>
       {open ? (
         <ul className="flex flex-col p-1">
-          {group.items.map((item) => (
-            <KinWaitsForRow
-              key={item.waitingId}
-              row={kinWaitingRowView(item, props.chats, props.directory.agentNames)}
-              detail={kinWaitsForDetail(item)}
-            />
-          ))}
+          {group.items.map((item) => {
+            const row = kinWaitingRowView(item, props.chats, props.directory.agentNames);
+            return (
+              <KinWaitsForRow
+                key={item.waitingId}
+                row={row}
+                detail={kinWaitsForDetail(item, row.asking !== null)}
+              />
+            );
+          })}
         </ul>
       ) : null}
     </div>
@@ -85,6 +88,9 @@ function KinWaitsForRow(props: {
         </span>
         {row.text === null ? null : (
           <span className="line-clamp-2 text-xs text-muted-foreground">{row.text}</span>
+        )}
+        {row.asking === null ? null : (
+          <span className="text-xs text-muted-foreground">{row.asking}</span>
         )}
         <span className="text-xs text-muted-foreground">{row.waitsFor}</span>
         {open

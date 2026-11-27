@@ -563,6 +563,7 @@ describe("kinWaitingRowView", () => {
       label: "Question",
       chatTitle: "Atlas",
       text: "Merge #212 now?",
+      asking: null,
       excerpt: null,
       waitsFor: null,
       createdAt: "2026-11-08T09:30:00.000Z",
