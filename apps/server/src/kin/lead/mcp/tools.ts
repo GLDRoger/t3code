@@ -86,6 +86,7 @@ export const GitHubWatchInput = Schema.Struct({
   repo: Schema.optional(TrimmedNonEmptyString.annotate({ description: "owner/name" })),
   watch: Schema.optional(Schema.Boolean),
   mentions: Schema.optional(Schema.Boolean),
+  triage: Schema.optional(Schema.Boolean),
 });
 export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_leads", {
@@ -358,7 +359,7 @@ export const KinLeadToolkit = Toolkit.make(
   Tool.make("kin_github_watch", {
     ...prCare,
     description:
-      'The GitHub repos Kin watches for the owner (theirs and their organisations\'). Omit repo to list them. watch false is their "leave repo X alone", true undoes it; mentions true lets an @-mention of the owner there call you.',
+      'The GitHub repos Kin watches for the owner (theirs and their organisations\'). Omit repo to list them. watch false is their "leave repo X alone", true undoes it; mentions true lets an @-mention of the owner there call you; triage false stops the one comment on each new issue there, true turns it on again for issues opened from then on.',
     parameters: GitHubWatchInput,
     success: KinGitHubRepos,
   }).annotate(McpSchema.EnabledWhen, enabled),
