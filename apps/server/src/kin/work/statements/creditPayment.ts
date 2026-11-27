@@ -132,7 +132,9 @@ const drawSameChoice = Effect.fn("KinCreditPayment.drawSameChoice")(function* (
   draw: CardDraw,
 ) {
   if (words.length === 0 && choice.options.length > 1)
-    return yield* refuse(`Name the invoice or invoices to pay with ${credit.key}.`);
+    return yield* refuse(
+      `Kin can't tell which invoice ${credit.key} pays: name one or more after it, such as ${credit.key} ${choice.options[0]!.invoice.key}.`,
+    );
   const chosen =
     words.length === 0
       ? [choice.options[0]!]
@@ -142,7 +144,7 @@ const drawSameChoice = Effect.fn("KinCreditPayment.drawSameChoice")(function* (
             const option = choice.options.find(({ invoice }) => invoice.recordId === row.recordId);
             if (option === undefined)
               return yield* refuse(
-                `Every invoice must be open for ${choice.client} in the credit's currency on the day it came in.`,
+                `Each invoice must be ${choice.client}'s, still owed, in ${credit.currency}, and issued by ${shortDay(credit.date)}.`,
               );
             return option;
           }),
@@ -313,8 +315,8 @@ const settledWhat = (plan: PaymentTerms, showBankKey: boolean) => {
 
 export const paymentLabel = (plan: PaymentPlan) => {
   if (plan.invoiceRev !== undefined) {
-    const keys = plan.splits?.map(({ key }) => key) ?? [plan.key];
-    const label = `Record on ${keys.join(", ")}`;
+    const numbers = plan.splits?.map(({ number }) => number) ?? [plan.number];
+    const label = `Record ${money(plan, plan.amountMinor)} on ${numbers.join(", ")}`;
     return label.length <= 80 ? label : `${label.slice(0, 79)}…`;
   }
   return plan.splits !== undefined

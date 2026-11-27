@@ -67,14 +67,21 @@ const dayWord = (ms: number, zone: string) =>
 
 const sameChoiceLine = (payment: PaymentTerms) => {
   const money = (minor: number) => formatMoney({ minor, currency: payment.currency });
-  const parts = payment.splits ?? [payment];
-  const allocation = parts.map(({ amountMinor, key, owedAfterMinor }) =>
+  const parts = (payment.splits ?? [payment]).map(({ amountMinor, key, owedAfterMinor }) =>
     owedAfterMinor === 0
       ? `${money(amountMinor)} settles ${key}`
-      : `${money(amountMinor)} goes to ${key}`,
+      : `${money(amountMinor)} goes toward the ${money(amountMinor + owedAfterMinor)} owed on ${key}`,
   );
-  if (payment.leftMinor) allocation.push(`${money(payment.leftMinor)} stays as client credit`);
-  return `${allocation.join(", ")}.`;
+  if (payment.leftMinor) parts.push(`${money(payment.leftMinor)} stays as the client's credit`);
+  if (parts.length === 1)
+    return payment.owedAfterMinor === 0
+      ? `Records ${money(payment.amountMinor)}, which settles ${payment.key}.`
+      : `Records ${money(payment.amountMinor)} toward the ${money(payment.amountMinor + payment.owedAfterMinor)} owed on ${payment.key}.`;
+  const listed =
+    parts.length === 2
+      ? parts.join(" and ")
+      : `${parts.slice(0, -1).join(", ")}, and ${parts.at(-1)}`;
+  return `Records ${money(payment.amountMinor)}: ${listed}.`;
 };
 
 /** The card's button and the line under it, for each sealed answer. */
@@ -1074,7 +1081,7 @@ const invoiceChoiceCards = Effect.fn("KinFactCards.invoiceChoices")(function* (i
       detail:
         choice.kind === "rate"
           ? `${credit.key}: ${received} received ${shortDay(credit.date)} from ${choice.client}. It names no invoice, and Kin has no recent rate close to the one it implies, so Kin won't guess.`
-          : `${received} came in from ${choice.client} on ${shortDay(credit.date)}. Choose how to record ${credit.key}.`,
+          : `${credit.key}: ${formatMoney({ minor: credit.amountMinor, currency: credit.currency })} received ${shortDay(credit.date)} from ${choice.client}. It names no invoice; each option says what Kin will record.`,
       options: plans.map((plan) => ({ label: factCardShown(plan).label, plan })),
       posted,
     });

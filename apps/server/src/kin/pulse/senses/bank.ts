@@ -249,7 +249,7 @@ export const paymentSeenSenses = Effect.fn("KinPulse.paymentSeenSenses")(functio
         (shown) =>
           choice.kind === "rate"
             ? `${creditText(credit)}, names ${client} but none of ${client}'s open invoices in other currencies, and no recent rate the company was paid at is close to the one it would imply, so Kin can't tell which it pays: ${listed(items, shown, total)}. Nothing is recorded until an owner or co-owner picks one.`
-            : `${creditText(credit)} from ${client} could pay ${listed(items, shown, total)}. Kin can't tell which it pays. Nothing is recorded until an owner or co-owner chooses.`,
+            : `${creditText(credit)}, names ${client}, and Kin can't tell which of ${client}'s open invoices it pays: ${listed(items, shown, total)}. Nothing is recorded until an owner or co-owner chooses.`,
         items.length,
       );
       if (consequence.length > CONSEQUENCE_MAX) return [];

@@ -3935,8 +3935,14 @@ it.effect.each(["part", "split", "declined", "edited"] as const)(
         const state = card(asked);
         const fact = yield* kin.fact();
         assert.strictEqual(fact?.key, kin.factKey);
-        assert.include(fact?.consequence, "Kin can't tell which it pays");
-        assert.notInclude(fact?.consequence, later.key);
+        assert.strictEqual(
+          fact?.consequence,
+          `${bank.key}, ₹${answer === "part" ? "600" : "2,400"} received 15 Nov, names Tidewater Freight, and Kin can't tell which of Tidewater Freight's open invoices it pays: ${[first, second, invoice].map((row) => `${row.title} (${row.key}) (₹1,000 owed)`).join("; ")}. Nothing is recorded until an owner or co-owner chooses.`,
+        );
+        assert.strictEqual(
+          state.detail?.split("\n")[0],
+          `${bank.key}: ₹${answer === "part" ? "600" : "2,400"}.00 received 15 Nov from Tidewater Freight. It names no invoice; each option says what Kin will record.`,
+        );
         assert.deepStrictEqual(
           state.options.map(({ label }) => label),
           [
@@ -3947,7 +3953,9 @@ it.effect.each(["part", "split", "declined", "edited"] as const)(
         );
         assert.include(
           state.options[0]?.action?.line,
-          answer === "part" ? `₹600.00 goes to ${first.key}` : "₹1,400.00 stays as client credit",
+          answer === "part"
+            ? `Records ₹600.00 toward the ₹1,000.00 owed on ${first.key}.`
+            : `Records ₹2,400.00: ₹1,000.00 settles ${first.key} and ₹1,400.00 stays as the client's credit.`,
         );
         yield* TestClock.adjust(60_000);
         yield* kin.tick();
@@ -3968,7 +3976,10 @@ it.effect.each(["part", "split", "declined", "edited"] as const)(
         const person = kin.person("meera");
         const option = state.options[answer === "part" ? 0 : answer === "declined" ? 4 : 3]!;
         if (answer === "split")
-          assert.include(option.action?.line, `₹400.00 goes to ${invoice.key}`);
+          assert.strictEqual(
+            option.action?.line,
+            `Records ₹2,400.00: ₹1,000.00 settles ${first.key}, ₹1,000.00 settles ${second.key}, and ₹400.00 goes toward the ₹1,000.00 owed on ${invoice.key}.`,
+          );
         yield* kin.tap(person, asked.widgetId, option.optionId, "invoice-choice");
         if (answer === "declined" || answer === "edited") {
           assert.isEmpty(yield* payments());
@@ -4045,6 +4056,46 @@ it.effect("an agent's same-currency split card leaves the rest as the client's c
       assert.include(
         card(widget).options[0]?.action?.line,
         "₹1,400.00 stays as Tidewater Freight's credit",
+      );
+      assert.deepStrictEqual(
+        card(widget).options.map(({ label }) => label),
+        ["Record ₹3,400.00 on TW/001, TW/002", "Record ₹3,400.00 on TW/001"],
+      );
+      const unnamed = yield* callAs("finance", "kin_ask", {
+        question: "Record the freight wire?",
+        options: [
+          { label: "Record it", action: { kind: "record_payment", target: bank.key } },
+          { label: "Leave it" },
+        ],
+        default: "none",
+      });
+      assert.isFalse(unnamed.ok);
+      assert.include(
+        JSON.stringify(unnamed.value),
+        `Kin can't tell which invoice ${bank.key} pays: name one or more after it, such as ${bank.key} `,
+      );
+      const { row: stranger } = yield* records.create(orgId, ownerWrites, {
+        list: "clients",
+        title: "Juniper Cold Chain",
+        owner: kin.owner,
+        originKey: "juniper",
+      });
+      const elsewhere = yield* kin.invoiceOf("JC/001", 2, "INR", stranger.recordId);
+      const outside = yield* callAs("finance", "kin_ask", {
+        question: "Record the freight wire on Juniper's invoice?",
+        options: [
+          {
+            label: "Record it",
+            action: { kind: "record_payment", target: `${bank.key} ${elsewhere.key}` },
+          },
+          { label: "Leave it" },
+        ],
+        default: "none",
+      });
+      assert.isFalse(outside.ok);
+      assert.include(
+        JSON.stringify(outside.value),
+        "Each invoice must be Tidewater Freight's, still owed, in INR, and issued by 15 Nov.",
       );
       yield* kin.tap(kin.owner, widget.widgetId, "option-1", "record-split");
       for (const part of [invoice, second])
