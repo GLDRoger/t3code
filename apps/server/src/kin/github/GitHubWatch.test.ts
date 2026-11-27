@@ -23,6 +23,7 @@ import * as ServerSecretStore from "../../auth/ServerSecretStore.ts";
 import { ServerConfig } from "../../config.ts";
 import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
+import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { normaliseAbout } from "../questions/rules.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -37,8 +38,8 @@ import {
 } from "./fakeGitHub.ts";
 import { AGENT_POSTS_FILE, GH_APP_FOLDER } from "./ghSign.ts";
 import { KIN_RULESET_NAME, setGuards } from "./branchGuard.ts";
-import { KinGitHubApp } from "./KinGitHubApp.ts";
-import { BOT_EMAIL, BOT_LOGIN, installApp } from "./KinGitHubApp.testkit.ts";
+import { KinGitHubApp, make as makeGitHubApp } from "./KinGitHubApp.ts";
+import { appHost, BOT_EMAIL, BOT_LOGIN, fakeHttp, installApp } from "./KinGitHubApp.testkit.ts";
 import * as GitHubWatch from "./GitHubWatch.ts";
 import { headKey } from "./boundReview.ts";
 import * as AppHook from "./appHook.ts";
@@ -195,7 +196,7 @@ const database = KinPersistence.layer.pipe(
 
 const setup = (
   options: {
-    readonly app?: boolean;
+    readonly app?: boolean | "live";
     readonly repo?: string;
     readonly signedIn?: () => boolean;
     readonly chat?: Layer.Layer<KinChatService>;
@@ -208,7 +209,22 @@ const setup = (
   const layer = GitHubWatch.layer.pipe(
     Layer.provideMerge(KinEventQueue.layer),
     Layer.provideMerge(fakeApi(github, options.signedIn ?? (() => true))),
-    Layer.provideMerge(options.app === true ? fakeApp(github, repo) : Layer.empty),
+    Layer.provideMerge(
+      options.app === "live"
+        ? Layer.effect(KinGitHubApp, makeGitHubApp).pipe(
+            Layer.provide(
+              Layer.mergeAll(
+                appHost({ appId: "9001" }),
+                fakeHttp(github),
+                Layer.mock(KinIdentity)({ owner: { _tag: "person", orgId, personId: ownerId } }),
+                Layer.succeed(KinRefreshObserver, { touch: () => Effect.void }),
+              ),
+            ),
+          )
+        : options.app === true
+          ? fakeApp(github, repo)
+          : Layer.empty,
+    ),
     Layer.provideMerge(options.chat ?? Layer.empty),
     Layer.provideMerge(database),
   );
@@ -1510,6 +1526,70 @@ describe("automatic issue triage", () => {
     }).pipe(Effect.provide(layer));
   });
 
+  const noOutsideTriage = (github: FakeGitHub, number: number) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      assert.isEmpty(yield* events, "outside triage enqueued");
+      assert.isEmpty(github.world.reactions, "outside triage reacted");
+      assert.isEmpty(github.world.comments, "outside triage posted");
+      assert.isEmpty(
+        yield* sql`SELECT trigger_key FROM kin_github_handled WHERE org_id = ${orgId}
+        AND repo = ${repo} AND number = ${number}`,
+        "outside triage claimed or spent allowance",
+      );
+      assert.isEmpty(
+        yield* sql`SELECT message_id FROM kin_messages WHERE org_id = ${orgId}`,
+        "outside triage told the owner",
+      );
+    });
+
+  it.effect("does nothing for a stranger when the App is installed on a different repo", () => {
+    const { github, layer } = setup({ app: "live", repo });
+    return Effect.gen(function* () {
+      yield* start(github);
+      const other = "tidewater/intake";
+      github.addRepo({ full_name: other });
+      installApp(github, [{ id: 7, account: "tidewater", repos: [other], permissions: {} }]);
+      yield* (yield* KinGitHubApp).lookAgain();
+      const number = addIssue(github, "stranger-one");
+      yield* look(github);
+      yield* (yield* GitHubWatch.KinGitHubWatch).look(orgId, repo, number);
+      yield* noOutsideTriage(github, number);
+    }).pipe(Effect.provide(layer));
+  });
+
+  it.effect.each(["app/installations", "installation/repositories"])(
+    "retries an untouched stranger issue after %s recovers",
+    (path) => {
+      const { github, layer } = setup({ app: "live", repo });
+      return Effect.gen(function* () {
+        yield* start(github);
+        installApp(github, [{ id: 7, account: "tidewater", repos: [repo], permissions: {} }]);
+        const app = yield* KinGitHubApp;
+        yield* app.lookAgain();
+        github.world.failing = [path];
+        yield* app.lookAgain();
+
+        const number = addIssue(github, "stranger-one");
+        yield* look(github);
+        yield* noOutsideTriage(github, number);
+        assert.notInclude(github.world.calls, "GET search/issues");
+
+        github.world.failing = [];
+        yield* app.lookAgain();
+        yield* look(github);
+        const all = yield* events;
+        assert.deepStrictEqual(
+          all.map(({ key, inside }) => [key, inside]),
+          [[`triage:${repo}#${number}`, false]],
+        );
+        assert.deepStrictEqual(github.world.reactions, [
+          { on: `${repo}/issues/${number}/reactions`, content: "eyes", by: BOT_LOGIN },
+        ]);
+      }).pipe(Effect.provide(layer));
+    },
+  );
+
   it.effect("starts triage at the first look after landing and leaves older issues alone", () => {
     const { github, layer } = setup({ repo });
     return Effect.gen(function* () {
@@ -1528,8 +1608,8 @@ describe("automatic issue triage", () => {
       const newIssue = addIssue(github);
       yield* look(github);
       assert.deepStrictEqual(
-        (yield* events).map(({ number }) => number),
-        [newIssue],
+        (yield* events).map(({ number, kind, inside }) => ({ number, kind, inside })),
+        [{ number: newIssue, kind: "triage", inside: true }],
       );
     }).pipe(Effect.provide(layer));
   });

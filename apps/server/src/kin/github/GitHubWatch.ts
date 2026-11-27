@@ -985,7 +985,6 @@ export const make = Effect.gen(function* () {
     yield* sql`DELETE FROM kin_github_handled WHERE org_id = ${orgId} AND at < ${now - HANDLED_KEPT_MS}
       AND (trigger_key LIKE 'seen:%' OR outcome IN ('stale', 'note'))`;
   });
-  const botLogin = botLoginOf(app);
   /** Kin's own writes on a repo: as the App where it is installed, else as the owner. */
   const writer = Effect.fn("KinGitHubWatch.writer")(function* (repo: string) {
     const asApp = Option.isSome(app) ? yield* app.value.on(repo) : undefined;
@@ -1144,6 +1143,7 @@ export const make = Effect.gen(function* () {
     readonly triage: ReadonlyMap<string, { readonly outcome: "on" | "off"; readonly at: number }>;
     readonly agents: ReadonlyArray<{ readonly agentId: string; readonly name: string }>;
     readonly bot: string | undefined;
+    readonly appOn: (repo: string) => Effect.Effect<boolean | undefined>;
     readonly posts: ReadonlySet<string> | undefined;
     readonly lead: { readonly agentId: string; readonly name: string } | undefined;
   }
@@ -1163,6 +1163,37 @@ export const make = Effect.gen(function* () {
     const watched = new Map(
       repos.filter((repo) => repo.watched).map((repo) => [repo.repo.toLowerCase(), repo]),
     );
+    const service = Option.getOrUndefined(app);
+    const appState = yield* service?.state() ?? Effect.succeed(undefined);
+    const covered = new Set(
+      appState?._tag === "ok"
+        ? appState.app.installations.flatMap((installation) =>
+            installation.suspended ? [] : [...installation.repos],
+          )
+        : [],
+    );
+    const checked = new Map<string, boolean | undefined>();
+    let warned = false;
+    const appOn = Effect.fn("KinGitHubWatch.appOn")(function* (repo: string) {
+      if (checked.has(repo)) return checked.get(repo);
+      const present =
+        appState?._tag === "broken" ||
+        (appState?._tag === "ok" && appState.coverageUnverified === true)
+          ? undefined
+          : !covered.has(repo) || service === undefined
+            ? false
+            : (yield* service.on(repo)) === undefined
+              ? undefined
+              : true;
+      checked.set(repo, present);
+      if (present === undefined && !warned) {
+        warned = true;
+        yield* Effect.logWarning("Kin deferred outside issue triage", {
+          kind: "app_coverage_unavailable",
+        });
+      }
+      return present;
+    });
     return {
       orgId,
       now,
@@ -1172,7 +1203,8 @@ export const make = Effect.gen(function* () {
       watched,
       triage: yield* triageStates(orgId, [...watched.keys()], now),
       agents: yield* agentsOf(orgId),
-      bot: yield* botLogin,
+      bot: appState?._tag === "ok" ? appState.app.botLogin : undefined,
+      appOn,
       posts: yield* agentPosts,
       lead: yield* liveLead(sql, orgId, { prefer: ENGINEERING_DOMAIN }),
     } satisfies LookContext;
@@ -1391,7 +1423,7 @@ export const make = Effect.gen(function* () {
       triageFrom,
       kinCommented,
       ...history,
-      appOn: true,
+      appOn: triageFrom === undefined ? false : yield* context.appOn(repo),
     };
     // Someone who can't write is re-reviewed only from a head whose review GitHub took.
     const last =
@@ -1403,7 +1435,12 @@ export const make = Effect.gen(function* () {
         ? yield* lastReviewed(orgId, current.repo, current.number, true)
         : undefined;
     // Who can write is asked of GitHub only for what this look could still claim.
-    const everyone: DecideContext = { ...base, writes: () => true, labeledBy: "" };
+    const everyone: DecideContext = {
+      ...base,
+      appOn: base.appOn ?? true,
+      writes: () => true,
+      labeledBy: "",
+    };
     const possible = [...decideTriggers(current, everyone)];
     // A stranger's apparent /kin can hide a triage candidate in the all-writers pass.
     if (triageFrom !== undefined)
@@ -1443,7 +1480,20 @@ export const make = Effect.gen(function* () {
       writes: (login) => writers.has(login.toLowerCase()),
       labeledBy,
     };
+    const triggerTime = ({ kind, reactTo }: Trigger) => {
+      if (reactTo.type === "comment")
+        return current.comments.find(({ id }) => id === reactTo.id)?.createdAt ?? now;
+      return kind === "review" || kind === "triage" ? current.createdAt : now;
+    };
     const triggers = decideTriggers(current, decide);
+    if (base.appOn === undefined)
+      for (const trigger of decideTriggers(current, { ...decide, appOn: true })) {
+        if (!isTriage(trigger.kind) || trigger.inside || handled.has(trigger.key)) continue;
+        if (now - triggerTime(trigger) > STALE_MS) continue;
+        tally.later = true;
+        if (trigger.kind === "triage_reply")
+          for (const comment of replyComments) held.add(comment.id);
+      }
     const again =
       current.item === "pull"
         ? reReviewOf(current, decide.writes(current.author) ? last : lastPosted, decide, now)
@@ -1452,23 +1502,10 @@ export const make = Effect.gen(function* () {
       ? triggers
       : [...triggers.filter((one) => one.key !== again.trigger.key), again.trigger]) {
       if (handled.has(trigger.key)) continue;
-      if (
-        isTriage(trigger.kind) &&
-        !trigger.inside &&
-        (Option.isNone(app) || (yield* app.value.on(current.repo)) === undefined)
-      )
-        continue;
       const agentId = agents.some((agent) => agent.agentId === trigger.agentId)
         ? trigger.agentId
         : lead.agentId;
-      const happenedAt =
-        trigger.reactTo.type === "comment"
-          ? (current.comments.find(
-              (comment) => comment.id === (trigger.reactTo as { id: number }).id,
-            )?.createdAt ?? now)
-          : trigger.kind === "review" || trigger.kind === "triage"
-            ? current.createdAt
-            : now;
+      const happenedAt = triggerTime(trigger);
       const moved =
         again?.trigger === trigger ? yield* changesSince(current, again.from) : undefined;
       // Changes GitHub wouldn't give are read again on the next look; nothing is claimed.
