@@ -7,12 +7,14 @@ import {
   KIN_MAIL_RULE_HISTORY_IDLE,
   kinMailRuleActions,
   kinMailRuleHistoryRows,
+  kinMailRuleLimitDraft,
   kinMailRulePageView,
   kinMailRulePermissions,
   kinMailRulePreviewView,
   kinMailRuleResumeSend,
   kinMailRuleRowView,
   kinMailRuleRunNowAnswer,
+  kinMailRuleSetLimitSend,
   kinMailRulesRead,
   type KinMailRuleLead,
   type KinMailRuleLineView,
@@ -26,10 +28,11 @@ import type {
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { useState } from "react";
+import { useId, useRef, useState } from "react";
 
 import { useSearchableSetting } from "../../components/settings/settingsSearch";
 import { Button } from "../../components/ui/button";
+import { Input } from "../../components/ui/input";
 import {
   Select,
   SelectItem,
@@ -73,6 +76,7 @@ function useMailRulePermissions(environmentId: EnvironmentId) {
     history: useAtomValue(kinClient.mailRuleHistoryRead.permissionAtom(environmentId)),
     preview: useAtomValue(kinClient.mailRulePreview.permissionAtom(environmentId)),
     runNow: useAtomValue(kinClient.mailRuleRunNow.permissionAtom(environmentId)),
+    setLimit: useAtomValue(kinClient.mailRuleSetLimit.permissionAtom(environmentId)),
   });
   return { list, can };
 }
@@ -256,7 +260,7 @@ function Lines(props: { readonly lines: ReadonlyArray<string | null> }) {
 export function KinMailRulesBlock(
   props: Target & {
     readonly connectionId: string;
-    readonly onOpen: (ruleId: string) => void;
+    readonly onOpen: (ruleId: string, removed: boolean) => void;
   },
 ) {
   const { environmentId, orgId, connectionId } = props;
@@ -264,7 +268,20 @@ export function KinMailRulesBlock(
   const { list, can } = useMailRulePermissions(environmentId);
   const listAtom = kinClient.mailRules({ environmentId, input: { orgId, connectionId } });
   const result = useAtomValue(can.ready ? listAtom : KIN_MAIL_RULES_IDLE);
-  const reload = useAtomRefresh(listAtom);
+  const reloadList = useAtomRefresh(listAtom);
+  // Removed rules are read only while their group is open, never on every page load.
+  const [showRemoved, setShowRemoved] = useState(false);
+  const removedAtom = kinClient.mailRules({
+    environmentId,
+    input: { orgId, connectionId, removed: true },
+  });
+  const removedResult = useAtomValue(can.ready && showRemoved ? removedAtom : KIN_MAIL_RULES_IDLE);
+  const reloadRemoved = useAtomRefresh(removedAtom);
+  const reload = () => {
+    reloadList();
+    if (showRemoved) reloadRemoved();
+  };
+  const removedGroupId = useId();
   const leads = useMailRuleLeads(props, can.ready);
   const controls = useMailRuleControls(props, leads, reload);
   const now = useNowMinuteMs();
@@ -299,7 +316,7 @@ export function KinMailRulesBlock(
                 detail={<Lines lines={[row.does, row.state.detail, row.counts]} />}
                 status={statusOf(row.state.tone, row.state.label)}
                 openLabel={`${COPY.open}: ${row.title}`}
-                {...(actions.open ? { onOpen: () => props.onOpen(rule.ruleId) } : {})}
+                {...(actions.open ? { onOpen: () => props.onOpen(rule.ruleId, false) } : {})}
                 control={
                   actions.pause || actions.resume || actions.remove ? (
                     <>
@@ -340,9 +357,70 @@ export function KinMailRulesBlock(
             );
           })
         )}
+        {block._tag === "ready" || block._tag === "empty" ? (
+          <div className="flex min-h-10 items-center px-2 py-1">
+            <Button
+              size="xs"
+              variant="ghost"
+              aria-expanded={showRemoved}
+              aria-controls={removedGroupId}
+              onClick={() => setShowRemoved((shown) => !shown)}
+            >
+              {showRemoved ? COPY.removedHide : COPY.removedShow}
+            </Button>
+          </div>
+        ) : null}
       </KinSettingsSection>
+      {showRemoved && (block._tag === "ready" || block._tag === "empty") ? (
+        <div id={removedGroupId} className="contents">
+          <RemovedRules
+            block={kinMailRulesRead(list, removedResult)}
+            leads={leads}
+            now={now}
+            onRetry={reloadRemoved}
+            onOpen={(ruleId) => props.onOpen(ruleId, true)}
+          />
+        </div>
+      ) : null}
       {controls.dialogs}
     </>
+  );
+}
+
+/** A mailbox's rules removed in the last 30 days: each opens read-only, for its runs. */
+function RemovedRules(props: {
+  readonly block: ReturnType<typeof kinMailRulesRead>;
+  readonly leads: ReadonlyArray<KinMailRuleLead>;
+  readonly now: number;
+  readonly onRetry: () => void;
+  readonly onOpen: (ruleId: string) => void;
+}) {
+  const { block } = props;
+  return (
+    <KinSettingsSection title={COPY.removedTitle}>
+      {block._tag === "loading" ? (
+        <KinSettingsLoading rows={1} />
+      ) : block._tag === "failed" ? (
+        <KinSettingsLoadFailed onRetry={props.onRetry}>{COPY.removedFailed}</KinSettingsLoadFailed>
+      ) : block._tag === "ready" ? (
+        block.rules.map((rule) => {
+          const row = kinMailRuleRowView(rule, { leads: props.leads, now: props.now });
+          return (
+            <KinSettingsRow
+              key={rule.ruleId}
+              wrap
+              stack
+              title={<Breakable text={row.title} />}
+              detail={<Lines lines={[row.does, row.counts]} />}
+              openLabel={`${COPY.open}: ${row.title}`}
+              onOpen={() => props.onOpen(rule.ruleId)}
+            />
+          );
+        })
+      ) : (
+        <KinSettingsEmpty>{COPY.removedEmpty}</KinSettingsEmpty>
+      )}
+    </KinSettingsSection>
   );
 }
 
@@ -372,6 +450,8 @@ export function KinMailRulePage(
   props: Target & {
     readonly connectionId: string;
     readonly ruleId: string;
+    /** Opened from the Removed group: read from the removed list, and read-only. */
+    readonly removed?: boolean;
     /** The mailbox's address, as its row says it. */
     readonly mailbox: string;
     readonly onGone: () => void;
@@ -379,15 +459,27 @@ export function KinMailRulePage(
 ) {
   const { environmentId, orgId, connectionId, ruleId } = props;
   const { list, can } = useMailRulePermissions(environmentId);
-  const listAtom = kinClient.mailRules({ environmentId, input: { orgId, connectionId } });
+  const listAtom = kinClient.mailRules({
+    environmentId,
+    input:
+      props.removed === true ? { orgId, connectionId, removed: true } : { orgId, connectionId },
+  });
   const result = useAtomValue(can.ready ? listAtom : KIN_MAIL_RULES_IDLE);
   const reload = useAtomRefresh(listAtom);
   const leads = useMailRuleLeads(props, can.ready);
   const controls = useMailRuleControls(props, leads, reload, props.onGone);
   const now = useNowMinuteMs();
   const block = kinMailRulesRead(list, result);
-  const rule =
+  const listed =
     block._tag === "ready" ? (block.rules.find((one) => one.ruleId === ruleId) ?? null) : null;
+  // The host's answer to a limit change shows at once, until the list read again catches up.
+  const [saved, setSaved] = useState<KinMailRule | null>(null);
+  const rule =
+    listed !== null && saved !== null && saved.ruleId === listed.ruleId
+      ? saved.updatedAt >= listed.updatedAt
+        ? saved
+        : listed
+      : listed;
   const actions = rule === null ? null : kinMailRuleActions(rule, can);
   const historyAtom = kinClient.mailRuleHistory({ environmentId, input: { orgId, ruleId } });
   const history = useAtomValue(
@@ -396,11 +488,18 @@ export function KinMailRulePage(
   const reloadHistory = useAtomRefresh(historyAtom);
   const previewCommand = useAtomCommand(kinClient.mailRulePreview, { reportFailure: false });
   const runNowCommand = useAtomCommand(kinClient.mailRuleRunNow, { reportFailure: false });
+  const setLimitCommand = useAtomCommand(kinClient.mailRuleSetLimit, { reportFailure: false });
   const [preview, setPreview] = useState<Asked<ReturnType<typeof kinMailRulePreviewView>>>({
     _tag: "idle",
   });
   const [ran, setRan] = useState<Asked<string>>({ _tag: "idle" });
   const [allRuns, setAllRuns] = useState(false);
+  const [limit, setLimit] = useState<{ readonly text: string; readonly busy: boolean } | null>(
+    null,
+  );
+  const [limitProblem, setLimitProblem] = useState<string | null>(null);
+  const limitFieldId = useId();
+  const refocusChange = useRef(false);
   const online = () => kinHostConnected(environmentId);
 
   if (block._tag === "absent") return null;
@@ -438,6 +537,48 @@ export function KinMailRulePage(
     );
 
   const view = kinMailRulePageView(rule, { leads, mailbox: props.mailbox, now });
+  const closeLimit = () => {
+    refocusChange.current = true;
+    setLimit(null);
+  };
+  const saveLimit = async (text: string) => {
+    setLimit({ text, busy: true });
+    setLimitProblem(null);
+    const outcome = await kinMailRuleSetLimitSend({
+      rule,
+      text,
+      online,
+      send: (input) => setLimitCommand({ environmentId, input }),
+    });
+    if (outcome.ok) {
+      setSaved(outcome.rule);
+      closeLimit();
+      reload();
+      return;
+    }
+    // A number out of range stays in the field to fix; a refusal keeps the old limit.
+    if (kinMailRuleLimitDraft(text).ok) closeLimit();
+    else setLimit({ text, busy: false });
+    setLimitProblem(outcome.problem);
+  };
+  const changeLimit = (
+    <Button
+      size="xs"
+      variant="ghost"
+      ref={(node: HTMLButtonElement | null) => {
+        if (node !== null && refocusChange.current) {
+          refocusChange.current = false;
+          node.focus();
+        }
+      }}
+      onClick={() => {
+        setLimitProblem(null);
+        setLimit({ text: String(rule.monthlyCap), busy: false });
+      }}
+    >
+      {COPY.limitChange}
+    </Button>
+  );
   const runPreview = async () => {
     setPreview({ _tag: "busy" });
     const sent = await kinListSend({
@@ -467,17 +608,86 @@ export function KinMailRulePage(
   const busy = controls.busy !== null;
 
   return (
-    <KinSettingsPage purpose={view.state.detail ?? undefined}>
+    <KinSettingsPage purpose={view.removed ?? view.state.detail ?? undefined}>
       <KinSettingsSection
         title={COPY.matchesTitle}
         action={statusOf(view.state.tone, view.state.label) ?? undefined}
+        problem={limit === null ? limitProblem : null}
       >
         <KinSettingsFacts
           facts={view.facts.map((fact) => ({
             label: fact.label,
-            value: <Breakable text={fact.value} />,
+            value:
+              fact.label === COPY.facts.limit && actions.setLimit && limit === null ? (
+                <>
+                  <Breakable text={fact.value} /> {changeLimit}
+                </>
+              ) : (
+                <Breakable text={fact.value} />
+              ),
           }))}
         />
+        {actions.setLimit && limit !== null ? (
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              if (!limit.busy) void saveLimit(limit.text);
+            }}
+          >
+            <KinSettingsRow
+              wrap
+              stack
+              title={<label htmlFor={limitFieldId}>{COPY.limitField}</label>}
+              detail={
+                limitProblem === null ? COPY.limitHint : <span role="alert">{limitProblem}</span>
+              }
+              control={
+                <>
+                  <div className="w-20">
+                    <Input
+                      id={limitFieldId}
+                      size="sm"
+                      value={limit.text}
+                      inputMode="numeric"
+                      autoComplete="off"
+                      autoFocus
+                      disabled={limit.busy}
+                      aria-invalid={limitProblem !== null}
+                      onChange={(event) => setLimit({ text: event.target.value, busy: false })}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape" && !limit.busy) {
+                          event.stopPropagation();
+                          closeLimit();
+                        }
+                      }}
+                    />
+                  </div>
+                  <Button
+                    type="submit"
+                    size="xs"
+                    variant="outline"
+                    disabled={limit.busy}
+                    aria-busy={limit.busy}
+                  >
+                    {limit.busy ? COPY.limitSaving : COPY.limitSave}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="xs"
+                    variant="ghost"
+                    disabled={limit.busy}
+                    onClick={() => {
+                      setLimitProblem(null);
+                      closeLimit();
+                    }}
+                  >
+                    {COPY.limitCancel}
+                  </Button>
+                </>
+              }
+            />
+          </form>
+        ) : null}
       </KinSettingsSection>
 
       <KinSettingsSection title={COPY.pageWhat}>

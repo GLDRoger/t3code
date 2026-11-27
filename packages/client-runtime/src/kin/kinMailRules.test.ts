@@ -18,6 +18,7 @@ import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
 import { describe, expect, it } from "vite-plus/test";
 
+import type { AtomCommandResult } from "../state/runtime.ts";
 import { kinPermission } from "./kinAccess.ts";
 import {
   KIN_MAIL_RULES,
@@ -27,6 +28,7 @@ import {
   kinMailRuleBreaks,
   kinMailRuleCardView,
   kinMailRuleHistoryRows,
+  kinMailRuleLimitDraft,
   kinMailRuleListsAfterTurnOn,
   kinMailRulePageView,
   kinMailRulePermissions,
@@ -34,6 +36,7 @@ import {
   kinMailRuleRowView,
   kinMailRuleResumeSend,
   kinMailRuleRunNowAnswer,
+  kinMailRuleSetLimitSend,
   kinMailRulesRead,
   kinMailRuleState,
   kinMailRuleWhatShort,
@@ -49,6 +52,7 @@ const RULE = "rule_9b1c4e7a2d5f8c3b6e9a1d4f7c2b5e8a3d6f9c1b4e7a2d5f8c3b6e9a1d4f7
 const NOW = Date.UTC(2026, 10, 27, 12, 0);
 const NOV_24_0942 = Date.UTC(2026, 10, 24, 9, 42);
 const NOV_26_1042 = Date.UTC(2026, 10, 26, 10, 42);
+const NOV_25_0815 = Date.UTC(2026, 10, 25, 8, 15);
 const WORDS = { zone: "UTC", locale: "en-GB" } as const;
 const LEADS = [
   { agentId: FINANCE, name: "Finance" },
@@ -302,6 +306,22 @@ describe("kinMailRuleRowView: one line per rule under its mailbox", () => {
     expect(short.slice(0, -1).endsWith(" ")).toBe(false);
     expect(kinMailRuleWhatShort("File it.")).toBe("File it.");
   });
+
+  it("says when a removed rule was removed, under the Removed group", () => {
+    const row = kinMailRuleRowView(makeRule({ state: "removed", updatedAt: NOV_25_0815 }), {
+      leads: LEADS,
+      now: NOW,
+      words: WORDS,
+    });
+    expect(row).toEqual({
+      ruleId: RULE,
+      title: "From junipercold.example, with a file",
+      does: "Finance: File the bill under Juniper Cold Chain and tell me the amount.",
+      counts: "Removed 25 Nov",
+      // The group and the date say it, so the row carries no second "Removed".
+      state: { label: "Removed", tone: "ok", detail: null, needsLead: false },
+    });
+  });
 });
 
 describe("kinMailRulePageView: one rule's page", () => {
@@ -335,6 +355,14 @@ describe("kinMailRulePageView: one rule's page", () => {
       { label: "Monthly limit", value: "Runs at most 30 times a month · 12 this month" },
     ]);
     expect(view.what).toBe("File the bill under Juniper Cold Chain and tell me the amount.");
+  });
+
+  it("says a removed rule's runs stay 30 days; an active rule says nothing of it", () => {
+    const options = { leads: LEADS, mailbox: "billing@tidewater.example", now: NOW, words: WORDS };
+    expect(
+      kinMailRulePageView(makeRule({ state: "removed", updatedAt: NOV_25_0815 }), options).removed,
+    ).toBe("Removed 25 Nov. Its runs stay here for 30 days after removal.");
+    expect(kinMailRulePageView(makeRule(), options).removed).toBeNull();
   });
 
   it("says any sender, subject or kind when a filter is left out", () => {
@@ -372,6 +400,7 @@ describe("mail rule permissions: owner level sees and acts, a teammate sees noth
     for (const method of Object.values(KIN_MAIL_RULE_METHODS))
       expect(kinRpcAccess(method), method).toBe("owner_level");
     expect(Object.values(KIN_MAIL_RULE_METHODS)).not.toContain("kin.mailRules.create");
+    expect(Object.values(KIN_MAIL_RULE_METHODS)).toContain("kin.mailRules.setLimit");
   });
 
   it.each([
@@ -397,6 +426,7 @@ describe("mail rule permissions: owner level sees and acts, a teammate sees noth
     history: true,
     preview: true,
     runNow: true,
+    setLimit: true,
   };
   it.each([
     [
@@ -411,6 +441,7 @@ describe("mail rule permissions: owner level sees and acts, a teammate sees noth
         history: true,
         preview: true,
         runNow: true,
+        setLimit: true,
       },
     ],
     [
@@ -425,6 +456,7 @@ describe("mail rule permissions: owner level sees and acts, a teammate sees noth
         history: false,
         preview: false,
         runNow: false,
+        setLimit: false,
       },
     ],
     [
@@ -439,11 +471,12 @@ describe("mail rule permissions: owner level sees and acts, a teammate sees noth
         history: false,
         preview: false,
         runNow: false,
+        setLimit: false,
       },
     ],
     [
       "granted",
-      { ...all, remove: false, runNow: false },
+      { ...all, remove: false, runNow: false, setLimit: false },
       {
         visible: true,
         ready: true,
@@ -453,6 +486,7 @@ describe("mail rule permissions: owner level sees and acts, a teammate sees noth
         history: true,
         preview: true,
         runNow: false,
+        setLimit: false,
       },
     ],
   ] as const)("list %s with %j", (list, commands, expected) => {
@@ -471,6 +505,7 @@ describe("mail rule permissions: owner level sees and acts, a teammate sees noth
         runNow: true,
         preview: true,
         history: true,
+        setLimit: true,
       },
     ],
     [
@@ -483,6 +518,7 @@ describe("mail rule permissions: owner level sees and acts, a teammate sees noth
         runNow: true,
         preview: true,
         history: true,
+        setLimit: true,
       },
     ],
     [
@@ -495,6 +531,7 @@ describe("mail rule permissions: owner level sees and acts, a teammate sees noth
         runNow: true,
         preview: true,
         history: true,
+        setLimit: true,
       },
     ],
     [
@@ -507,6 +544,7 @@ describe("mail rule permissions: owner level sees and acts, a teammate sees noth
         runNow: false,
         preview: true,
         history: true,
+        setLimit: true,
       },
     ],
     [
@@ -519,6 +557,7 @@ describe("mail rule permissions: owner level sees and acts, a teammate sees noth
         runNow: false,
         preview: false,
         history: false,
+        setLimit: false,
       },
     ],
     [
@@ -531,10 +570,44 @@ describe("mail rule permissions: owner level sees and acts, a teammate sees noth
         runNow: false,
         preview: false,
         history: false,
+        setLimit: false,
+      },
+    ],
+    // A removed rule is read-only: its words and its runs, and nothing to do.
+    [
+      { state: "removed" as const },
+      {
+        pause: false,
+        resume: false,
+        remove: false,
+        open: true,
+        runNow: false,
+        preview: false,
+        history: true,
+        setLimit: false,
+      },
+    ],
+    [
+      { state: "proposed" as const },
+      {
+        pause: false,
+        resume: false,
+        remove: true,
+        open: true,
+        runNow: false,
+        preview: true,
+        history: true,
+        setLimit: false,
       },
     ],
   ])("a rule %j offers %j", (overrides, expected) => {
     expect(kinMailRuleActions(makeRule(overrides), granted)).toEqual(expected);
+  });
+
+  it("offers the limit only to a level that may change it", () => {
+    const noLimit = kinMailRulePermissions({ list: "granted", ...all, setLimit: false });
+    expect(kinMailRuleActions(makeRule(), noLimit).setLimit).toBe(false);
+    expect(kinMailRuleActions(makeRule({ state: "paused" }), noLimit).setLimit).toBe(false);
   });
 
   it("offers nothing on a rule while the viewer's level is not known", () => {
@@ -739,6 +812,13 @@ describe("kinMailRuleHistoryRows: what matched, when, and what happened", () => 
     ],
     [{ outcome: "nothing" as const, runOutcome: "nothing" as const }, "Nothing needed doing", "ok"],
     [{ runOutcome: null, holdReason: null }, "Running", "ok"],
+    // Run now, not a mail arriving, started it.
+    [
+      { manual: true as const, runOutcome: "posted_message" as const },
+      "Run now · Ran: the lead answered in the rule's chat",
+      "ok",
+    ],
+    [{ manual: true as const, settledAt: NOV_26_1042 + 120_000 }, "Run now · Ran", "ok"],
   ] as const)("%j says %s", (overrides, happened, tone) => {
     expect(row(mail(overrides))).toEqual({
       key: expect.stringMatching(/^arr_01JDCXD5E7F9G1H3J5K7M9N1P3:/),
@@ -912,6 +992,75 @@ describe("kinMailRuleBreaks: addresses never cut, broken only after @ and .", ()
   ])("%s", (text, parts) => {
     expect(kinMailRuleBreaks(text)).toEqual(parts);
     expect(kinMailRuleBreaks(text).join("")).toBe(text);
+  });
+});
+
+describe("kinMailRuleLimitDraft: a monthly limit typed in", () => {
+  it.each([
+    ["45", 45],
+    [" 7 ", 7],
+    ["1", 1],
+    ["1000", 1000],
+  ])("%j is %i", (text, cap) => {
+    expect(kinMailRuleLimitDraft(text)).toEqual({ ok: true, cap });
+  });
+
+  it.each(["", "0", "1001", "2.5", "-3", "abc", "1e3", "10 times"])("refuses %j", (text) => {
+    expect(kinMailRuleLimitDraft(text)).toEqual({
+      ok: false,
+      problem: "Enter a whole number from 1 to 1000.",
+    });
+  });
+});
+
+describe("kinMailRuleSetLimitSend: a new limit, or the host's reason it wasn't taken", () => {
+  const sending = (text: string, answer: () => AtomCommandResult<KinMailRule, unknown>) => {
+    const sent: Array<unknown> = [];
+    const outcome = kinMailRuleSetLimitSend({
+      rule: makeRule(),
+      text,
+      online: () => true,
+      send: async (input) => {
+        sent.push(input);
+        return answer();
+      },
+    });
+    return { sent, outcome };
+  };
+
+  it("sends the number and gives back the host's view of the rule", async () => {
+    const changed = makeRule({ monthlyCap: 12, atLimit: true });
+    const { sent, outcome } = sending("12", () => AsyncResult.success(changed));
+    expect(await outcome).toEqual({ ok: true, rule: changed });
+    expect(sent).toEqual([{ orgId: ORG, ruleId: RULE, monthlyCap: 12 }]);
+  });
+
+  it("sends nothing for a number out of range, or the limit it already has", async () => {
+    const bad = sending("0", () => AsyncResult.success(makeRule()));
+    expect(await bad.outcome).toEqual({
+      ok: false,
+      problem: "Enter a whole number from 1 to 1000.",
+    });
+    const same = sending("30", () => AsyncResult.success(makeRule()));
+    expect(await same.outcome).toEqual({ ok: true, rule: makeRule() });
+    expect([...bad.sent, ...same.sent]).toEqual([]);
+  });
+
+  it("keeps the old limit and says the host's reason when it refuses", async () => {
+    const { outcome } = sending("12", () =>
+      AsyncResult.failure(
+        Cause.fail(
+          new KinChatError({
+            reason: "invalid_state",
+            message: "Turn on the mail rule before running it.",
+          }),
+        ),
+      ),
+    );
+    expect(await outcome).toEqual({
+      ok: false,
+      problem: "Turn on the mail rule before running it.",
+    });
   });
 });
 
