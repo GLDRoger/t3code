@@ -77,7 +77,7 @@ import {
 import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import { EVERY_RECORD_KIND, search as runSearch } from "./search.ts";
-import { docKindWords, searchIndexed } from "./searchIndex.ts";
+import { docKindWords, keysOfSearch, searchIndexed } from "./searchIndex.ts";
 import {
   clientDocMoneySeen,
   KIN_OWNER_LEVEL,
@@ -377,6 +377,7 @@ const listWhere = Effect.fn("KinDocs.listWhere")(function* (
       ? undefined
       : (yield* inList(input.orgId, input.project, "projects")).recordId;
   const text = input.text?.trim().toLowerCase() ?? "";
+  const keys = keysOfSearch(text);
   return sql.and([
     sql`r.org_id = ${input.orgId}`,
     sql`r.register_id = 'docs'`,
@@ -420,7 +421,8 @@ const listWhere = Effect.fn("KinDocs.listWhere")(function* (
               WHERE v.org_id = r.org_id AND v.record_id = r.record_id
                 AND v.version = (SELECT MAX(w.version) FROM kin_doc_versions w
                   WHERE w.org_id = r.org_id AND w.record_id = r.record_id)
-                AND instr(lower(v.body), ${text}) > 0))`,
+                AND instr(lower(v.body), ${text}) > 0)
+            ${keys.length === 0 ? sql`` : sql`OR r.key IN ${sql.in(keys)}`})`,
         ]),
     ...(input.changedSince === undefined
       ? []
@@ -723,20 +725,37 @@ export const search = Effect.fn("KinDocs.search")(
     const deals = input.deals === true || recordKinds.length === 0 || recordKinds.includes("work");
     const found =
       asked.length > 0 && recordKinds.length === 0
-        ? { hits: [], indexed: yield* searchIndexed() }
+        ? { hits: [], indexed: yield* searchIndexed(), keyedCount: 0 }
         : yield* runSearch(input.orgId, {
             text: input.text,
             kinds:
               recordKinds.length > 0 ? recordKinds : everything ? EVERY_RECORD_KIND : undefined,
             closed: input.closed,
-            limit: limit - memoryHits.length,
+            limit,
             viewer: team === undefined ? "owner" : "team",
             scope: team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople([team]),
             deals,
+            allKeys: allLists,
             bankTransactions: allLists && refused?.money === false,
           });
+    const recordHits = found.hits.map((hit) => ({
+      recordId: hit.recordId as never,
+      key: hit.key,
+      kind: hit.kind,
+      ...(hit.bankTransaction === true ? { bankTransaction: true as const } : {}),
+      title: hit.title as never,
+      snippet: hit.snippet,
+      ...(hit.section === undefined
+        ? {}
+        : { section: { id: hit.section.id, title: hit.section.title } }),
+      ...(hit.client === undefined ? {} : { client: KinRecordKey.make(hit.client) }),
+      sensitive: hit.sensitive,
+      closed: hit.closed,
+      updatedAt: iso(hit.updatedAt),
+    }));
     return {
       hits: [
+        ...recordHits.slice(0, found.keyedCount),
         ...memoryHits.map((hit) => ({
           recordId: KinRecordId.make(`memory:${hit.itemId}`),
           key: hit.itemId,
@@ -747,22 +766,8 @@ export const search = Effect.fn("KinDocs.search")(
           closed: false,
           updatedAt: iso(hit.recordedAt),
         })),
-        ...found.hits.map((hit) => ({
-          recordId: hit.recordId as never,
-          key: hit.key,
-          kind: hit.kind,
-          ...(hit.bankTransaction === true ? { bankTransaction: true as const } : {}),
-          title: hit.title as never,
-          snippet: hit.snippet,
-          ...(hit.section === undefined
-            ? {}
-            : { section: { id: hit.section.id, title: hit.section.title } }),
-          ...(hit.client === undefined ? {} : { client: KinRecordKey.make(hit.client) }),
-          sensitive: hit.sensitive,
-          closed: hit.closed,
-          updatedAt: iso(hit.updatedAt),
-        })),
-      ],
+        ...recordHits.slice(found.keyedCount),
+      ].slice(0, limit),
       indexed: found.indexed,
       asOf: iso(now),
       ...(memory === null ? { memoryUnavailable: true } : {}),

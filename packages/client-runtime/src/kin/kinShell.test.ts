@@ -237,7 +237,10 @@ describe("kinSectionNamed", () => {
     expect(kinSearchPlaceholder(off("clients", "invoices"))).toBe("Search tasks, docs and money");
     expect(kinSearchPlaceholder(off("money"))).toBe("Search tasks, clients and docs");
     expect(kinSearchHint({ all: false, leads: [] }, defaults).detail).toBe(
-      "Tasks, clients, contacts, projects, docs and money you can see, by any words in them.",
+      "Tasks, clients, contacts, projects, docs and money you can see, by any words in them or an identifier like W-12.",
+    );
+    expect(kinSearchHint({ all: true, leads: [] }, defaults).detail).toBe(
+      "Tasks, clients, contacts, projects, docs, money, and the decisions your agents remember, by any words in them or an identifier like W-12.",
     );
   });
 });
