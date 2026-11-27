@@ -74,7 +74,17 @@ export const mailRuleFilter = (sender: MailRuleFilters["from"][number]) => {
   return { spelling };
 };
 
+// A person reads the card, so nothing in a filter or the words may be invisible or reorder text.
+const hidden = /(?![\t\n\r])[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}]/u;
+export const hasHiddenCharacters = (text: string) => hidden.test(text);
+
 export const mailRuleMatchProblem = (match: MailRuleFilters) => {
+  const raw = [
+    ...match.from.map((sender) => ("address" in sender ? sender.address : sender.domain)),
+    ...match.subjectHas,
+  ];
+  if (raw.some((text) => typeof text === "string" && hasHiddenCharacters(text)))
+    return "hidden_characters" as const;
   for (const sender of match.from) {
     const filter = mailRuleFilter(sender);
     if (filter.problem !== undefined) return filter.problem;

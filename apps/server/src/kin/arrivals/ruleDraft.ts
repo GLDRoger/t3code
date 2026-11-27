@@ -15,7 +15,12 @@ import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { directKey } from "../lead/LeadAccess.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
 import { mailRuleContentHash } from "./ruleContent.ts";
-import { mailRuleFilter, mailRuleMatchProblem, mailRulePhrase } from "./ruleMatch.ts";
+import {
+  hasHiddenCharacters,
+  mailRuleFilter,
+  mailRuleMatchProblem,
+  mailRulePhrase,
+} from "./ruleMatch.ts";
 
 export const DEFAULT_MAIL_RULE_CAP = 30;
 export const mailRuleMatchJson = Schema.fromJsonString(KinMailRuleMatch);
@@ -43,12 +48,19 @@ const matchProblem = {
   mixed_scripts: "Use a sender domain whose labels do not mix Latin, Cyrillic or Greek letters.",
   invalid_sender: "Use a valid sender address or domain.",
   invalid_phrase: "Use subject phrases that have 2 to 60 characters after normalization.",
+  hidden_characters:
+    "Use sender filters and subject phrases without invisible or control characters.",
 } as const;
 
 export const prepareMailRule = Effect.fn("KinMailRules.prepareDraft")(function* (
   input: Pick<KinMailRuleCreateInput, "match" | "what" | "monthlyCap">,
 ) {
   if (input.what.trim() === "") return yield* badMailRule;
+  if (hasHiddenCharacters(input.what))
+    return yield* new KinChatError({
+      reason: "invalid_state",
+      message: "Write the instruction without invisible or control characters.",
+    });
   const problem = mailRuleMatchProblem(input.match);
   if (problem !== undefined)
     return yield* new KinChatError({ reason: "invalid_state", message: matchProblem[problem] });
