@@ -383,6 +383,9 @@ it.layer(layer)((it) => {
           VALUES (${orgId}, ${activity.connectionId}, ${tool}, '{}', 'digest', 'read', 'read', 0,
             ${NOW})`;
       }
+      // One read by an older parser, retried while no model is available, stays to be read.
+      yield* sql`UPDATE kin_bank_alerts SET reference = 'parser:0002'
+        WHERE org_id = ${orgId} AND thread_id = 't-hdfc-2'`;
       assert.isTrue(yield* onMail(orgId, activity));
       assert.strictEqual(calls, 2);
       assert.lengthOf(

@@ -367,6 +367,9 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
               reference: UNREAD_ALERT_MARKER,
             })}`;
             tally.rejected++;
+          } else {
+            yield* sql`UPDATE kin_bank_alerts SET reference = ${UNREAD_ALERT_MARKER}
+              WHERE org_id = ${orgId} AND alert_id = ${alertId}`;
           }
           continue;
         }
@@ -420,11 +423,10 @@ export const takeAlerts = Effect.fn("KinBankAlerts.take")(function* (
         }
         tally[done.outcome]++;
       }
-      if (input.recheckedThread) {
+      if (input.recheckedThread && !unread) {
         yield* sql`UPDATE kin_bank_alerts SET reference = ${PARSER_MARKER}
           WHERE org_id = ${orgId} AND connection_id = ${input.connectionId}
-            AND thread_id = ${input.threadId} AND ${retryable}
-            AND (${unread ? 0 : 1} = 1 OR COALESCE(reference, '') <> ${UNREAD_ALERT_MARKER})`;
+            AND thread_id = ${input.threadId} AND ${retryable}`;
       }
     }),
   );
