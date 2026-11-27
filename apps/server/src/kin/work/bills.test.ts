@@ -58,6 +58,7 @@ import * as KinPersistence from "../persistence/KinPersistence.ts";
 import * as Bills from "./bills.ts";
 import type { BillBox } from "./billCutterProtocol.ts";
 import * as LeadBills from "./leadBills.ts";
+import { cutBillPage } from "./billCutter.ts";
 import { billTurn } from "./billTurn.ts";
 import * as KinRecords from "./KinRecords.ts";
 import { moneySummary } from "./moneyViews.ts";
@@ -1595,6 +1596,69 @@ describe("bill_cut", () => {
           reason: "This photo is too large to cut: take it under 50 megapixels.",
         },
       ]);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("five 6 MiB phone originals are read in one turn, all five shown", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const sql = yield* SqlClient.SqlClient;
+      const jpeg = yield* Effect.promise(() => createCanvas(400, 300).encode("jpeg", 90));
+      // A phone's original: a readable JPEG of about 6 MiB, each one different bytes.
+      const files = yield* Effect.forEach([1, 2, 3, 4, 5], (n) =>
+        upload(
+          `IMG_000${n}.jpg`,
+          Buffer.concat([jpeg, Buffer.alloc(6 * 1024 * 1024, n)]),
+          "image/jpeg",
+        ),
+      );
+      yield* Bills.add(
+        as(rhea),
+        { orgId, attachments: files, clientRequestId: "five" },
+        TEST_UPLOAD_OWNER,
+      );
+      const queued = yield* sql<{
+        bills: number;
+      }>`SELECT json_array_length(json, '$.bills') AS bills
+        FROM kin_events WHERE org_id = ${orgId} AND tag = 'bills.read' ORDER BY event_id`;
+      assert.deepStrictEqual(queued, [{ bills: 5 }]);
+      const { events } = yield* claimTurn(1);
+      const turn = (yield* billTurn(
+        orgId,
+        events.find((one) => one._tag === "bills.read")!,
+      ))!;
+      const model = yield* (yield* KinTurnContent).prepare({ ...turn, billPhotos: true });
+      assert.lengthOf(model.attachments, 5);
+    }).pipe(Effect.provide(layer)),
+  );
+
+  it.effect("a small WebP the cutter turns upright is shown to the model upright too", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const { attachmentsDir } = yield* ServerConfig.ServerConfig;
+      const webp = Buffer.from(yield* Effect.promise(() => stripes().encode("webp", 95)));
+      // The encoder writes VP8X; set its EXIF flag and append an EXIF chunk saying orientation 6.
+      const vp8x = Buffer.from(webp.subarray(12, 30));
+      vp8x[8]! |= 0x08;
+      const exif = Buffer.from("4d4d002a000000080001011200030000000100060000000000000000", "hex");
+      const chunk = Buffer.concat([Buffer.from("EXIF"), Buffer.alloc(4), exif]);
+      chunk.writeUInt32LE(exif.length, 4);
+      const body = Buffer.concat([Buffer.from("WEBP"), vp8x, webp.subarray(30), chunk]);
+      const riff = Buffer.concat([Buffer.from("RIFF"), Buffer.alloc(4), body]);
+      riff.writeUInt32LE(body.length, 4);
+      const { outcome } = yield* cutBillPage({ kind: "photo", bytes: riff, boxes: [] });
+      assert.deepInclude(outcome, { frame: { width: 120, height: 300 } });
+      yield* addPage(yield* upload("page.webp", riff, "image/webp"));
+      const { events } = yield* claimTurn(1);
+      const turn = (yield* billTurn(
+        orgId,
+        events.find((one) => one._tag === "bills.read")!,
+      ))!;
+      const model = yield* (yield* KinTurnContent).prepare({ ...turn, billPhotos: true });
+      const shown = NodeFS.readFileSync(
+        resolveAttachmentPathById({ attachmentsDir, attachmentId: model.attachments[0]!.id })!,
+      );
+      assert.deepStrictEqual(readImageDimensions(shown), { width: 120, height: 300 });
     }).pipe(Effect.provide(layer)),
   );
 

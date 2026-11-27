@@ -61,6 +61,7 @@ import { ownerLevelSql } from "../people/KinAccess.ts";
 import { directChatWith } from "../triggers/deferralOrigin.ts";
 import { cutBillPage } from "./billCutter.ts";
 import {
+  BILL_MODEL_IMAGE_BYTES,
   BILLS_PER_TURN,
   MAX_BILL_BOXES,
   refuseBillPage,
@@ -399,17 +400,18 @@ const queueWaiting = Effect.fn("KinBills.queueWaiting")(function* (
   let bytes = 0;
   for (const row of waiting) {
     const last = groups.at(-1);
-    const image = !isPdf(row);
+    // The turn shows a copy within BILL_MODEL_IMAGE_BYTES, never the stored original.
+    const shown = isPdf(row) ? 0 : Math.min(row.sizeBytes, BILL_MODEL_IMAGE_BYTES);
     if (
       last === undefined ||
       last.length >= BILLS_PER_TURN ||
-      (image && bytes + row.sizeBytes > PDF_PAGE_IMAGES.bytesPerTurn)
+      bytes + shown > PDF_PAGE_IMAGES.bytesPerTurn
     ) {
       groups.push([row]);
-      bytes = image ? row.sizeBytes : 0;
+      bytes = shown;
     } else {
       last.push(row);
-      if (image) bytes += row.sizeBytes;
+      bytes += shown;
     }
   }
   for (const group of groups) {

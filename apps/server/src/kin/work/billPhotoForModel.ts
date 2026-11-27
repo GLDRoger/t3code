@@ -53,9 +53,13 @@ export const billPhotoForModel = Effect.fn("KinBills.photoForModel")(
     if (Option.isNone(header)) return undefined;
     const size = readImageDimensions(header.value);
     if (size === null || size.width * size.height > BILL_PHOTO_MAX_PIXELS) return undefined;
+    // Only an unrotated JPEG is sure to look the same to the provider as to the cutter's decoder,
+    // which also turns a WebP's EXIF upright; any other picture is shown as the cutter draws it.
     if (
       Math.max(size.width, size.height) <= IMAGE_ATTACHMENT_MAX_EDGE &&
       attachment.sizeBytes <= BILL_MODEL_IMAGE_BYTES &&
+      header.value[0] === 0xff &&
+      header.value[1] === 0xd8 &&
       readJpegOrientation(header.value) === 1
     )
       return attachment;
