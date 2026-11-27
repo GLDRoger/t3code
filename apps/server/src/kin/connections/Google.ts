@@ -463,6 +463,51 @@ const googleSendAs = Effect.fn("KinGoogle.sendAs")(function* (
   return addresses.toSorted((a, b) => Number(b.isDefault) - Number(a.isDefault)).slice(0, 20);
 });
 
+const sentSince = Effect.fn("KinGoogle.sentSince")(function* (
+  http: HttpClient.HttpClient,
+  token: string,
+  since: number,
+  max: number,
+) {
+  const context = { http, token };
+  const page = yield* api(context, `${GMAIL}/messages`, {
+    labelIds: "SENT",
+    // Include the boundary second even if Gmail treats `after` as strict.
+    q: `after:${Math.ceil(since / 1000) - 1}`,
+    maxResults: String(max),
+  });
+  const messages = field(page, "messages");
+  if (messages === undefined && field(page, "resultSizeEstimate") === 0) return [];
+  if (!Array.isArray(messages))
+    return yield* failure("protocol", "Gmail sent mail could not be listed.");
+  return yield* Effect.forEach(
+    messages.slice(0, max),
+    Effect.fnUntraced(function* (entry: unknown) {
+      const id = text(field(entry, "id"));
+      if (id === undefined)
+        return yield* failure("protocol", "Gmail sent mail could not be listed.");
+      const message = yield* api(context, `${GMAIL}/messages/${encodeURIComponent(id)}`, {
+        format: "metadata",
+        metadataHeaders: ["To", "Cc", "Subject", "Date"],
+        fields: "internalDate,payload(headers)",
+      });
+      const sentAt = receivedOf(message) ?? Date.parse(header(message, "Date") ?? "");
+      if (!Number.isFinite(sentAt) || !Array.isArray(field(message, "payload", "headers")))
+        return yield* failure("protocol", "Gmail sent mail headers could not be read.");
+      return {
+        sentAt,
+        to: headerValues(message, "To").flatMap(addressesIn),
+        cc: headerValues(message, "Cc").flatMap(addressesIn),
+        subject: (header(message, "Subject") ?? "").replace(
+          /=\?utf-8\?b\?([A-Za-z0-9+/]+={0,2})\?=/gi,
+          (_, encoded: string) => Buffer.from(encoded, "base64").toString("utf8"),
+        ),
+      };
+    }),
+    { concurrency: 5 },
+  );
+});
+
 const sendMessage = Effect.fn("KinGoogle.sendMessage")(function* (
   http: HttpClient.HttpClient,
   token: string,
@@ -664,6 +709,7 @@ const google: MailVendor = {
       Effect.map((profile) => text(field(profile, "emailAddress")) ?? null),
     ),
   sendAs: googleSendAs,
+  sentSince,
   sendMessage,
   saveEvent,
   deleteEvent: (http, token, { calendarId, eventId, revision }) =>

@@ -191,12 +191,20 @@ const gateFor = (cards: Array<Card>) =>
     ),
   );
 
+const isSentRead = (url: URL) =>
+  url.pathname.endsWith("/mailFolders/sentitems/messages") ||
+  url.searchParams.get("labelIds") === "SENT";
+
 // Records beside connections, as on a running server (`kin/layer.ts`), not under them.
 /** Where a test holds a send: reading its file, or the provider's own send. */
 type Gates = {
   file?: Effect.Effect<void>;
   send?: () => Promise<void>;
   calendarDelete?: (url: URL) => void;
+  fakeNow?: () => number;
+  /** Where a look in Sent holds, before its list request reaches the mailbox. */
+  sentRead?: () => Promise<void>;
+  mailResponse?: (request: URL, method: string | undefined, response: Response) => Response;
   /** Where a move holds, under its fence, as it keeps the sign-in for the new row. */
   keep?: Effect.Effect<void>;
 };
@@ -251,7 +259,10 @@ const layerFor = (fake: FakeMail, cards: Array<Card>, gates: Gates = {}) =>
                 if (method === "DELETE" && url.includes("/events/"))
                   gates.calendarDelete?.(new URL(url));
                 if (gates.send !== undefined && url.endsWith("/messages/send")) await gates.send();
-                return handle(input, init);
+                if (gates.sentRead !== undefined && isSentRead(new URL(url)))
+                  await gates.sentRead();
+                const response = await handle(input, init);
+                return gates.mailResponse?.(new URL(url), method, response) ?? response;
               }) as typeof handle)(
               fake.handle(() => Promise.reject(new Error("Only the fake mailbox answers here."))),
             ),
@@ -483,7 +494,11 @@ const setUp = <E>(
   body: (fake: FakeMail, cards: Array<Card>, gates: Gates) => Effect.Effect<void, E, Env>,
 ) =>
   Effect.gen(function* () {
-    const fake = makeFakeMail();
+    const gates: Gates = {};
+    const fake = makeFakeMail(
+      undefined,
+      () => gates.fakeNow?.() ?? DateTime.toEpochMillis(DateTime.nowUnsafe()),
+    );
     fake.addAccount({
       provider: "google",
       address: ACCOUNTS,
@@ -492,7 +507,6 @@ const setUp = <E>(
     });
     fake.addAccount({ provider: "microsoft", address: HELLO, name: "Invented Co" });
     const cards: Array<Card> = [];
-    const gates: Gates = {};
     yield* TestClock.setTime(NOW);
     yield* Effect.gen(function* () {
       yield* seed;
@@ -1392,6 +1406,557 @@ const voiceItem = (
     ...head,
   },
   body,
+});
+
+describe("looking in Sent after an unknown send", () => {
+  const mail = {
+    to: ["meera@tidewater.example", "zoya@tidewater.example"],
+    cc: ["rhea@tidewater.example"],
+    subject: "Tidewater Freight",
+    body: "The freight quote is ready.",
+  };
+  const since = NOW - 60_000;
+  const match = {
+    sentAt: since,
+    to: ["RHEA@TIDEWATER.EXAMPLE", "zoya@tidewater.example"],
+    cc: ["MEERA@tidewater.example", "zoya@tidewater.example"],
+    subject: "  TIDEWATER FREIGHT  ",
+  };
+  it.effect.each([
+    { name: "matches case, order and duplicate addresses", message: match, expected: true },
+    {
+      name: "rejects an extra Cc",
+      message: { ...match, cc: [...match.cc, "arjun@tidewater.example"] },
+      expected: false,
+    },
+    {
+      name: "rejects a changed subject",
+      message: { ...match, subject: "Tidewater invoice" },
+      expected: false,
+    },
+    {
+      name: "rejects mail before the window",
+      message: { ...match, sentAt: since - 1 },
+      expected: false,
+    },
+  ])("$name", ({ message, expected }) =>
+    Effect.sync(() =>
+      assert.strictEqual(Connections.matchesSentMail(mail, since, message), expected),
+    ),
+  );
+
+  it.effect.each([
+    { provider: "google", account: ACCOUNTS, outcome: "found" },
+    { provider: "microsoft", account: HELLO, outcome: "found" },
+    { provider: "google", account: ACCOUNTS, outcome: "missing" },
+    { provider: "microsoft", account: HELLO, outcome: "missing" },
+    { provider: "google", account: ACCOUNTS, outcome: "unreadable" },
+    { provider: "google", account: ACCOUNTS, outcome: "timing" },
+  ] as const)("$provider Sent look: $outcome", ({ provider, account, outcome }) =>
+    setUp((fake, cards, gates) =>
+      Effect.gen(function* () {
+        yield* connect(fake, provider, account);
+        gates.fakeNow = () => NOW;
+        const otherMailbox = "zoya@tidewater.example";
+        const sameMailElsewhere = outcome === "missing" && provider === "google";
+        if (sameMailElsewhere) {
+          fake.addAccount({ provider, address: otherMailbox, name: "Zoya" });
+          yield* connect(fake, provider, otherMailbox);
+          yield* wake({
+            person: owner,
+            says: "Send the quote from the Tidewater Freight mailbox.",
+          });
+          yield* callTool(otherMailbox, "mail_send", mail);
+          assert.deepStrictEqual(yield* tap(cards.at(-1)!.widgetId, owner), {
+            state: "sent",
+            reason: null,
+          });
+        }
+        yield* wake({ person: owner, says: "Send the quote to Tidewater Freight." });
+        yield* callTool(account, "mail_send", mail);
+        const first = cards.at(-1)!;
+        if (outcome === "found") {
+          yield* stored(first);
+          yield* saveEdited(first, owner, 1, {
+            ...mail,
+            subject: "Tidewater Freight devis révisé",
+          });
+        }
+        const connections = yield* KinConnections;
+        const sql = yield* SqlClient.SqlClient;
+        const rewrite = (yield* saveCards).rewrite;
+        const reads: Array<URL> = [];
+        const metadata: Array<URL> = [];
+        const tick = () => connections.lookInSent(orgId, rewrite);
+        const accepted = outcome === "found" || outcome === "timing";
+        let loseAnswer = accepted;
+        let sentIsLagging = outcome === "timing";
+        gates.mailResponse = (url, method, response) => {
+          if (
+            url.pathname.endsWith("/mailFolders/sentitems/messages") ||
+            url.searchParams.get("labelIds") === "SENT"
+          ) {
+            reads.push(url);
+            if (sentIsLagging) return Response.json({ resultSizeEstimate: 0 });
+          }
+          if (url.searchParams.get("format") === "metadata") metadata.push(url);
+          if (loseAnswer && method === "POST" && url.pathname.endsWith("/send") && response.ok) {
+            loseAnswer = false;
+            return new Response(null, { status: 503 });
+          }
+          return response;
+        };
+        yield* tick();
+        assert.lengthOf(reads, 0);
+        fake.setDown(account, !accepted);
+        const failed = yield* tap(first.widgetId, owner);
+        fake.setDown(account, false);
+        if (failed === undefined || !("state" in failed) || failed.fresh === undefined)
+          return assert.fail("Expected an unknown send and a fresh card");
+        const originalCount = accepted || sameMailElsewhere ? 1 : 0;
+        assert.lengthOf(fake.sent(), originalCount);
+        const tried = yield* tryOn(first.widgetId);
+        const retry = yield* connections.freshAsk(orgId, failed.fresh, NOW);
+        if (retry === undefined) return assert.fail("Expected a fresh card");
+        assert.deepStrictEqual(retry.card.send.mayHaveGone, tried);
+        const again = {
+          ...first,
+          widgetId: "w-00000000-0000-4000-8000-000000000068",
+          send: retry.card.send,
+        };
+        yield* retry.bind(again.widgetId);
+        yield* stored(again);
+        const result = sql<{ result: string }>`SELECT result_json AS result
+            FROM kin_connection_asks WHERE ask_id = ${tried.tryId}`.pipe(
+          Effect.map(([row]) => JSON.parse(row!.result)),
+        );
+        const shown = sql<{ state: string }>`SELECT state_json AS state
+            FROM kin_widgets WHERE widget_id = ${again.widgetId}`.pipe(
+          Effect.map(([row]) => JSON.parse(row!.state).send.mayHaveGone),
+        );
+        yield* TestClock.adjust(299_999);
+        yield* tick();
+        assert.lengthOf(reads, 0);
+        assert.deepStrictEqual(yield* result, { mayHaveGone: true });
+        yield* TestClock.adjust(1);
+        if (outcome === "timing") {
+          const tooOld = NOW + 300_000 - 7 * 86_400_000 - 1;
+          yield* sql`UPDATE kin_connection_asks SET done_at = ${tooOld} WHERE ask_id = ${tried.tryId}`;
+          yield* tick();
+          assert.lengthOf(reads, 0);
+          yield* sql`UPDATE kin_connection_asks SET done_at = ${NOW} WHERE ask_id = ${tried.tryId}`;
+          const redrawing = yield* Deferred.make<void>();
+          const interrupted = yield* connections
+            .lookInSent(orgId, () =>
+              Deferred.succeed(redrawing, undefined).pipe(Effect.andThen(Effect.never)),
+            )
+            .pipe(Effect.forkChild);
+          yield* Deferred.await(redrawing);
+          yield* Fiber.interrupt(interrupted);
+          assert.deepStrictEqual(yield* result, { mayHaveGone: true });
+          assert.lengthOf(reads, 1);
+          reads.length = 0;
+        }
+        if (outcome === "unreadable") fake.failWith(account, 403);
+        yield* tick();
+        fake.failWith(account, null);
+        const at = DateTime.formatIso(DateTime.makeUnsafe(NOW + 300_000));
+        const found = outcome === "found" ? tried.at : null;
+        assert.deepStrictEqual(yield* result, {
+          mayHaveGone: true,
+          sentLook: outcome === "unreadable" ? { at, unreadable: true } : { at, found },
+        });
+        assert.lengthOf(reads, 1);
+        const query = reads[0]!.searchParams;
+        if (provider === "google") {
+          assert.deepInclude(Object.fromEntries(query), {
+            labelIds: "SENT",
+            q: `after:${since / 1000 - 1}`,
+            maxResults: "25",
+          });
+          assert.lengthOf(metadata, outcome === "found" ? 1 : 0);
+          if (outcome === "found") {
+            assert.deepStrictEqual(metadata[0]!.searchParams.getAll("metadataHeaders"), [
+              "To",
+              "Cc",
+              "Subject",
+              "Date",
+            ]);
+            assert.strictEqual(
+              metadata[0]!.searchParams.get("fields"),
+              "internalDate,payload(headers)",
+            );
+          }
+        } else {
+          assert.deepStrictEqual(Object.fromEntries(query), {
+            $filter: `sentDateTime ge ${DateTime.formatIso(DateTime.makeUnsafe(since))}`,
+            $select: "subject,toRecipients,ccRecipients,sentDateTime",
+            $orderby: "sentDateTime desc",
+            $top: "25",
+          });
+        }
+        assert.lengthOf(fake.sent(), originalCount);
+        sentIsLagging = false;
+        yield* tick();
+        assert.lengthOf(reads, 1);
+        if (outcome === "found" || outcome === "unreadable") {
+          const warning = found === null ? tried : { ...tried, seenInSentAt: found };
+          assert.deepStrictEqual(yield* shown, warning);
+          const refused = yield* tap(again.widgetId, owner).pipe(Effect.flip);
+          assert.deepInclude(refused, {
+            message: NOT_CHECKED,
+            ...(found === null ? {} : { mayHaveGone: warning }),
+          });
+          if (found !== null) {
+            const edited = yield* sendEdited(
+              cards,
+              again,
+              owner,
+              { ...mail, body: "The revised freight quote is ready." },
+              "00000000-0000-4000-8000-000000000068",
+              2,
+            ).pipe(Effect.flip);
+            assert.deepInclude(edited, { message: NOT_CHECKED, mayHaveGone: warning });
+          }
+          assert.lengthOf(fake.sent(), originalCount);
+          assert.deepStrictEqual(yield* tap(again.widgetId, owner, true, tried), {
+            state: "sent",
+            reason: null,
+          });
+        } else {
+          assert.isUndefined(yield* shown);
+          assert.deepStrictEqual(yield* tap(again.widgetId, owner), {
+            state: "sent",
+            reason: null,
+          });
+        }
+        const duplicate = yield* tap(again.widgetId, owner).pipe(Effect.flip);
+        assert.strictEqual(duplicate.reason, "widget_changed");
+        assert.lengthOf(fake.sent(), originalCount + 1);
+      }),
+    ),
+  );
+});
+
+describe("a look in Sent clears the tick only when it could look and found nothing", () => {
+  const mail = {
+    to: ["meera@tidewater.example"],
+    cc: ["zoya@tidewater.example"],
+    subject: "Tidewater Freight quote",
+    body: "The freight quote Rhea asked for is ready.",
+  };
+  const iso = (at: number) => DateTime.formatIso(DateTime.makeUnsafe(at));
+  /** The mailbox's answers as a test steers them: a lost answer to a send, a made-up Sent page. */
+  const steer = (gates: Gates) => {
+    const steering = {
+      loseAnswer: false,
+      reads: 0,
+      page: (_url: URL): Response | undefined => undefined,
+    };
+    gates.mailResponse = (url, method, response) => {
+      if (isSentRead(url)) steering.reads++;
+      const page = steering.page(url);
+      if (page !== undefined) return page;
+      if (
+        steering.loseAnswer &&
+        method === "POST" &&
+        url.pathname.endsWith("/send") &&
+        response.ok
+      ) {
+        steering.loseAnswer = false;
+        return new Response(null, { status: 503 });
+      }
+      return response;
+    };
+    return steering;
+  };
+  /** A Confirm whose send ends with no clear answer; `went`: whether the provider took it. */
+  const unknownTry = (
+    fake: FakeMail,
+    steering: ReturnType<typeof steer>,
+    account: string,
+    widgetId: string,
+    went: boolean,
+    checked?: KinSendTry,
+  ) =>
+    Effect.gen(function* () {
+      steering.loseAnswer = went;
+      fake.setDown(account, !went);
+      const failed = yield* tap(widgetId, owner, true, checked);
+      fake.setDown(account, false);
+      steering.loseAnswer = false;
+      if (failed === undefined || !("state" in failed) || failed.fresh === undefined)
+        return assert.fail("Expected an unknown send and a fresh card");
+      return { tried: yield* tryOn(widgetId), fresh: failed.fresh };
+    });
+  /** The same mail back on a fresh card, stored as the chat stores it. */
+  const comeBack = (
+    from: Card,
+    fresh: Parameters<KinConnections["Service"]["freshAsk"]>[1],
+    widgetId: string,
+  ) =>
+    Effect.gen(function* () {
+      const retry = yield* (yield* KinConnections).freshAsk(orgId, fresh, NOW);
+      if (retry === undefined) return assert.fail("Expected a fresh card");
+      const again: Card = { ...from, widgetId, send: retry.card.send };
+      yield* retry.bind(widgetId);
+      yield* stored(again);
+      return again;
+    });
+  const lookOn = (tryId: string) =>
+    Effect.gen(function* () {
+      const [row] = yield* (yield* SqlClient.SqlClient)<{ result: string }>`SELECT
+          result_json AS result FROM kin_connection_asks WHERE ask_id = ${tryId}`;
+      return JSON.parse(row!.result).sentLook;
+    });
+  const warningOn = (widgetId: string) =>
+    Effect.gen(function* () {
+      const [row] = yield* (yield* SqlClient.SqlClient)<{ state: string }>`SELECT
+          state_json AS state FROM kin_widgets WHERE widget_id = ${widgetId}`;
+      return JSON.parse(row!.state).send.mayHaveGone;
+    });
+  const look = Effect.gen(function* () {
+    yield* (yield* KinConnections).lookInSent(orgId, (yield* saveCards).rewrite);
+  });
+
+  // `reads`: Sent lists the mailbox answered; a read past its deadline never was.
+  it.effect.each([
+    { why: "the read passes its deadline", reads: 0 },
+    { why: "the provider refuses the sign-in", reads: 1 },
+    { why: "the sign-in needs renewing", reads: 0 },
+    { why: "the mailbox is paused", reads: 0 },
+    { why: "the mailbox was signed in again", reads: 0 },
+    { why: "the mailbox is disconnected", reads: 0 },
+    { why: "the try never noted when it left", reads: 0 },
+  ] as const)("an unreadable look keeps the tick: $why", ({ why, reads }) =>
+    setUp((fake, cards, gates) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const connectionId = yield* connect(fake, "google", ACCOUNTS);
+        gates.fakeNow = () => NOW;
+        const steering = steer(gates);
+        yield* wake({ person: owner, says: "Send Tidewater Freight the quote." });
+        yield* callTool(ACCOUNTS, "mail_send", mail);
+        const first = cards.at(-1)!;
+        const { tried, fresh } = yield* unknownTry(fake, steering, ACCOUNTS, first.widgetId, true);
+        const again = yield* comeBack(first, fresh, "w-00000000-0000-4000-8000-000000000070");
+        assert.lengthOf(fake.sent(), 1);
+        yield* TestClock.adjust(5 * 60_000);
+        let sentBefore = 1;
+        if (why === "the read passes its deadline") {
+          let reached = () => {};
+          const held = new Promise<void>((resolve) => {
+            reached = resolve;
+          });
+          gates.sentRead = () => {
+            reached();
+            return new Promise<void>(() => {});
+          };
+          const looking = yield* look.pipe(Effect.forkChild);
+          yield* Effect.promise(() => held);
+          // A first mail from the same mailbox, while the look holds its fence: no warning, and it
+          // goes once the read's deadline lets the fence go.
+          yield* wake({ person: owner, says: "Tell Arjun the dock times." });
+          yield* callTool(ACCOUNTS, "mail_send", {
+            to: ["arjun@tidewater.example"],
+            subject: "Dock times",
+            body: "The dock opens at eight.",
+          });
+          const sending = yield* tap(cards.at(-1)!.widgetId, owner).pipe(Effect.forkChild);
+          yield* TestClock.adjust(30_000);
+          yield* Fiber.join(looking);
+          assert.deepStrictEqual(yield* Fiber.join(sending), { state: "sent", reason: null });
+          delete gates.sentRead;
+          sentBefore = 2;
+        } else {
+          const [connection] = yield* sql<{ state: string }>`SELECT state FROM kin_connections
+            WHERE connection_id = ${connectionId}`;
+          const set = {
+            "the provider refuses the sign-in": Effect.sync(() => fake.setExpired(ACCOUNTS, true)),
+            "the sign-in needs renewing": sql`UPDATE kin_connections SET state = 'needs_sign_in'
+              WHERE connection_id = ${connectionId}`,
+            "the mailbox is paused": sql`UPDATE kin_connections SET paused_at = ${NOW}
+              WHERE connection_id = ${connectionId}`,
+            "the mailbox was signed in again": sql`UPDATE kin_connections
+              SET sign_in_gen = sign_in_gen + 1 WHERE connection_id = ${connectionId}`,
+            "the mailbox is disconnected": sql`UPDATE kin_connections SET removed_at = ${NOW}
+              WHERE connection_id = ${connectionId}`,
+            "the try never noted when it left": sql`UPDATE kin_connection_asks SET left_at = NULL
+              WHERE ask_id = ${tried.tryId}`,
+          }[why];
+          yield* set;
+          yield* look;
+          // Back as it was, so only the tick stands between the person and a second copy.
+          fake.setExpired(ACCOUNTS, false);
+          yield* sql`UPDATE kin_connections SET state = ${connection!.state}, paused_at = NULL,
+              removed_at = NULL,
+              sign_in_gen = sign_in_gen - ${why === "the mailbox was signed in again" ? 1 : 0}
+            WHERE connection_id = ${connectionId}`;
+        }
+        assert.strictEqual(steering.reads, reads);
+        assert.deepStrictEqual(yield* lookOn(tried.tryId), {
+          at: iso(NOW + 5 * 60_000 + (sentBefore === 2 ? 30_000 : 0)),
+          unreadable: true,
+        });
+        yield* look;
+        assert.strictEqual(steering.reads, reads);
+        assert.deepStrictEqual(yield* warningOn(again.widgetId), tried);
+        const refused = yield* tap(again.widgetId, owner).pipe(Effect.flip);
+        assert.strictEqual(refused.message, NOT_CHECKED);
+        assert.lengthOf(fake.sent(), sentBefore);
+        assert.deepStrictEqual(yield* tap(again.widgetId, owner, true, tried), {
+          state: "sent",
+          reason: null,
+        });
+        assert.lengthOf(fake.sent(), sentBefore + 1);
+      }),
+    ),
+  );
+
+  it.effect.each([
+    { provider: "google", account: ACCOUNTS },
+    { provider: "microsoft", account: HELLO },
+  ] as const)(
+    "a full page of Sent with no match keeps the tick: $provider",
+    ({ provider, account }) =>
+      setUp((fake, cards, gates) =>
+        Effect.gen(function* () {
+          yield* connect(fake, provider, account);
+          gates.fakeNow = () => NOW;
+          const steering = steer(gates);
+          yield* wake({ person: owner, says: "Send Tidewater Freight the quote." });
+          yield* callTool(account, "mail_send", mail);
+          const first = cards.at(-1)!;
+          const { tried, fresh } = yield* unknownTry(fake, steering, account, first.widgetId, true);
+          const again = yield* comeBack(first, fresh, "w-00000000-0000-4000-8000-000000000071");
+          // Twenty-five later mails fill the one page Kin reads; the copy that went is on the next.
+          const later = Array.from({ length: 25 }, (_, index) => ({
+            id: `fm-later-${index + 1}`,
+            at: NOW + 60_000 * (25 - index),
+            subject: `Tidewater Freight pallet note ${index + 1}`,
+          }));
+          const headersOf = (one: (typeof later)[number]) => [
+            { name: "To", value: "arjun@tidewater.example" },
+            { name: "Subject", value: one.subject },
+          ];
+          steering.page = (url) => {
+            if (url.searchParams.get("labelIds") === "SENT")
+              return Response.json({
+                messages: later.map(({ id }) => ({ id, threadId: id })),
+                nextPageToken: "page-2",
+                resultSizeEstimate: 26,
+              });
+            const one = later.find(({ id }) => url.pathname.endsWith(`/messages/${id}`));
+            if (one !== undefined)
+              return Response.json({
+                internalDate: String(one.at),
+                payload: { headers: headersOf(one) },
+              });
+            if (url.pathname.endsWith("/mailFolders/sentitems/messages"))
+              return Response.json({
+                value: later.map((one) => ({
+                  subject: one.subject,
+                  toRecipients: [{ emailAddress: { address: "arjun@tidewater.example" } }],
+                  ccRecipients: [],
+                  sentDateTime: iso(one.at),
+                })),
+                "@odata.nextLink":
+                  "https://graph.microsoft.com/v1.0/me/mailFolders/sentitems/messages?$skip=25",
+              });
+            return undefined;
+          };
+          yield* TestClock.adjust(5 * 60_000);
+          yield* look;
+          assert.strictEqual(steering.reads, 1);
+          assert.deepStrictEqual(yield* lookOn(tried.tryId), {
+            at: iso(NOW + 5 * 60_000),
+            unreadable: true,
+          });
+          assert.deepStrictEqual(yield* warningOn(again.widgetId), tried);
+          const refused = yield* tap(again.widgetId, owner).pipe(Effect.flip);
+          assert.strictEqual(refused.message, NOT_CHECKED);
+          assert.lengthOf(fake.sent(), 1);
+        }),
+      ),
+  );
+
+  it.effect.each([
+    { older: "found", went: true },
+    { older: "unreadable", went: true },
+    { older: "missing", went: false },
+  ] as const)(
+    "a newer try not found in Sent keeps the tick an older one $older still asks for",
+    ({ older, went }) =>
+      setUp((fake, cards, gates) =>
+        Effect.gen(function* () {
+          yield* connect(fake, "google", ACCOUNTS);
+          gates.fakeNow = () => NOW;
+          const steering = steer(gates);
+          yield* wake({ person: owner, says: "Send Tidewater Freight the quote." });
+          yield* callTool(ACCOUNTS, "mail_send", mail);
+          const first = cards.at(-1)!;
+          const one = yield* unknownTry(fake, steering, ACCOUNTS, first.widgetId, went);
+          const second = yield* comeBack(
+            first,
+            one.fresh,
+            "w-00000000-0000-4000-8000-000000000072",
+          );
+          // Rhea ticks the first try before its look, as before this change, and confirms again;
+          // that send never reaches the provider.
+          yield* TestClock.adjust(2 * 60_000);
+          const two = yield* unknownTry(
+            fake,
+            steering,
+            ACCOUNTS,
+            second.widgetId,
+            false,
+            one.tried,
+          );
+          const third = yield* comeBack(first, two.fresh, "w-00000000-0000-4000-8000-000000000073");
+          assert.deepStrictEqual(yield* warningOn(third.widgetId), two.tried);
+          yield* TestClock.adjust(3 * 60_000);
+          if (older === "unreadable") fake.failWith(ACCOUNTS, 403);
+          yield* look;
+          fake.failWith(ACCOUNTS, null);
+          yield* TestClock.adjust(2 * 60_000);
+          yield* look;
+          assert.strictEqual(steering.reads, 2);
+          const looked = iso(NOW + 5 * 60_000);
+          assert.deepStrictEqual(
+            yield* lookOn(one.tried.tryId),
+            older === "unreadable"
+              ? { at: looked, unreadable: true }
+              : { at: looked, found: older === "found" ? iso(NOW) : null },
+          );
+          assert.deepStrictEqual(yield* lookOn(two.tried.tryId), {
+            at: iso(NOW + 7 * 60_000),
+            found: null,
+          });
+          const sentBefore = went ? 1 : 0;
+          assert.lengthOf(fake.sent(), sentBefore);
+          if (older === "missing") {
+            assert.isUndefined(yield* warningOn(third.widgetId));
+            assert.deepStrictEqual(yield* tap(third.widgetId, owner), {
+              state: "sent",
+              reason: null,
+            });
+            return assert.lengthOf(fake.sent(), 1);
+          }
+          const warning = older === "found" ? { ...one.tried, seenInSentAt: iso(NOW) } : one.tried;
+          assert.deepStrictEqual(yield* warningOn(third.widgetId), warning);
+          const refused = yield* tap(third.widgetId, owner).pipe(Effect.flip);
+          assert.strictEqual(refused.message, NOT_CHECKED);
+          assert.lengthOf(fake.sent(), sentBefore);
+          const stale = yield* tap(third.widgetId, owner, true, two.tried).pipe(Effect.flip);
+          assert.strictEqual(stale.message, NOT_CHECKED);
+          assert.deepStrictEqual(yield* tap(third.widgetId, owner, true, one.tried), {
+            state: "sent",
+            reason: null,
+          });
+          assert.lengthOf(fake.sent(), sentBefore + 1);
+        }),
+      ),
+  );
 });
 
 describe("Mail tool results with the sender's memory", () => {
