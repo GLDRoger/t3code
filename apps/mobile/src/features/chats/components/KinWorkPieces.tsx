@@ -1,9 +1,17 @@
+import { useAtomValue } from "@effect/atom-react";
 import { KIN_GATE_FAILED, type KinGate } from "@t3tools/client-runtime/kin/kinAccess";
 import { KIN_OFFLINE_PAGE, KIN_RETRY } from "@t3tools/client-runtime/kin/kinAnswers";
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
+import { kinDockTabs } from "@t3tools/client-runtime/kin/kinJoin";
+import type { KinDestination } from "@t3tools/client-runtime/kin/kinNavigation";
+import type { KinPlaces } from "@t3tools/client-runtime/kin/kinPlaces";
+import { kinSectionNamed } from "@t3tools/client-runtime/kin/kinShell";
 import {
   KIN_WORK_PRIVATE,
+  kinWorkGone,
+  kinWorkMissingLinkDetail,
   kinWorkStaleNotice,
+  type KinMissingLinkKind,
   type KinWorkRowView,
 } from "@t3tools/client-runtime/kin/kinWork";
 import type { KinAvatarView } from "@t3tools/client-runtime/kin/kinScreenState";
@@ -22,7 +30,8 @@ import {
   type KinWorkFormProblem,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { useNavigation, usePreventRemove } from "@react-navigation/native";
-import type { EnvironmentId, KinRecordKey } from "@t3tools/contracts";
+import type { EnvironmentId, KinOrgId, KinRecordKey } from "@t3tools/contracts";
+import { Atom } from "effect/reactivity";
 import { type ComponentRef, createContext, use, useEffect, useRef, useState } from "react";
 import { Dimensions, Keyboard, Platform, Pressable, TextInput, View } from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
@@ -42,10 +51,14 @@ import { Notice } from "../../../components/ui/Notice";
 import { ScreenContent } from "../../../components/ui/ScreenContent";
 import { ScreenScrollView } from "../../../components/ui/ScreenScrollView";
 import { useBarOverlap } from "../../../components/ui/useBarInset";
+import { environmentCatalog } from "../../../connection/catalog";
 import { cn } from "../../../lib/cn";
 import { MOBILE_SHAPE } from "../../../lib/designTokens";
+import { environmentSession } from "../../../state/session";
+import { kinPlacesAtom } from "../state/kinChatOnly";
 import { retryKinAccess } from "../state/kinClient";
 import { useKinHost, useKinHostAt } from "../state/useKinHost";
+import { useKinShell } from "../state/useKinShell";
 import { KinLoadFailed } from "./KinLoadFailed";
 import { KinAvatar } from "./KinAvatar";
 import { KinWorkStateSymbol } from "./KinWorkStateSymbol";
@@ -1015,4 +1028,52 @@ export function KinGateView(props: {
       <AppActivityIndicator />
     </View>
   );
+}
+
+const noMissingLinkSessionAtom = Atom.make(null);
+const noMissingLinkPlacesAtom = Atom.make<KinPlaces | null>(null);
+
+/** Empty state for a malformed Kin link, naming a place this viewer can really open on the phone. */
+export function KinMissingLink(props: {
+  readonly title: string;
+  readonly kind: KinMissingLinkKind | null;
+  readonly environmentId?: EnvironmentId | null;
+  readonly orgId?: KinOrgId | null;
+  /** When the link carried a valid record key and only the company was missing. */
+  readonly recordKey?: KinRecordKey | null;
+}) {
+  const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
+  const host = useKinHost();
+  const hostOrgId =
+    host._tag === "host" && host.probe._tag === "ready"
+      ? (host.probe.orgs.me[0]?.orgId ?? null)
+      : null;
+  const resolved =
+    props.environmentId != null && props.orgId != null && catalog.entries.has(props.environmentId)
+      ? { environmentId: props.environmentId, orgId: props.orgId }
+      : host._tag === "host" && hostOrgId !== null
+        ? { environmentId: host.environmentId, orgId: hostOrgId }
+        : null;
+  const session = useAtomValue(
+    resolved === null
+      ? noMissingLinkSessionAtom
+      : environmentSession.sessionStateValueAtom(resolved.environmentId),
+  );
+  const chatsOnly =
+    session !== null &&
+    kinDockTabs(session, true, { money: false, clients: false, docs: false }).length === 1;
+  const places = useAtomValue(
+    resolved === null || chatsOnly ? noMissingLinkPlacesAtom : kinPlacesAtom(resolved),
+  );
+  const open: ReadonlyArray<KinDestination> | null = chatsOnly
+    ? ["chats"]
+    : (places?.destinations ?? null);
+  const shell = useKinShell(resolved?.environmentId ?? null);
+  const detail = kinSectionNamed(
+    shell,
+    props.recordKey != null
+      ? kinWorkGone(props.recordKey, open).detail
+      : kinWorkMissingLinkDetail(props.kind, open),
+  );
+  return <EmptyState variant="plain" title={props.title} detail={detail} />;
 }

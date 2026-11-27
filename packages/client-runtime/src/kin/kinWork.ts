@@ -47,6 +47,7 @@ import type { KinLink } from "./kinHost.ts";
 import { KIN_SCOPE_ALL, kinScopeNote, type KinViewerScope } from "./kinViewerScope.ts";
 import { kinLinkToOpen } from "./kinChatFeed.ts";
 import { kinLinkLabel } from "./kinLinks.ts";
+import type { KinDestination } from "./kinNavigation.ts";
 import {
   formatKinTime,
   kinAgentAvatar,
@@ -177,15 +178,78 @@ export function kinUnavailableEntryLine(key: string | null | undefined): string 
   return `This ${kinWorkEntryKind(key).noun} doesn't exist or isn't shared with you.`;
 }
 
+const KIN_PLACE_DESTINATION: Readonly<Record<KinWorkEntryKind["place"], KinDestination>> = {
+  Tasks: "tasks",
+  Money: "money",
+  Clients: "clients",
+  Docs: "docs",
+};
+
+/** A missing-link screen's kind when the link carries no valid record key. */
+export type KinMissingLinkKind =
+  | "task"
+  | "client"
+  | "contact"
+  | "project"
+  | "milestone"
+  | "doc"
+  | "date"
+  | "entry";
+
+const KIN_MISSING_LINK_KINDS: Readonly<Record<KinMissingLinkKind, KinWorkEntryKind>> = {
+  task: KIN_ENTRY_KINDS.W!,
+  client: KIN_ENTRY_KINDS.C!,
+  contact: KIN_ENTRY_KINDS.CT!,
+  project: KIN_ENTRY_KINDS.P!,
+  milestone: KIN_ENTRY_KINDS.M!,
+  doc: KIN_ENTRY_KINDS.D!,
+  date: KIN_ENTRY_KINDS.DT!,
+  entry: KIN_ENTRY_FALLBACK_KIND,
+};
+
+function kinPlaceDetail(kind: KinWorkEntryKind): string {
+  return `Open ${kind.place} to see ${kind.noun === "client" || kind.noun === "contact" ? "who" : "what"} there is now.`;
+}
+
+function kinWorkPlaceDetail(
+  kind: KinWorkEntryKind,
+  open?: ReadonlyArray<KinDestination> | null,
+): string {
+  if (open === undefined) return kinPlaceDetail(kind);
+  if (open === null) return kinPlaceDetail(KIN_ENTRY_FALLBACK_KIND);
+  if (open.includes(KIN_PLACE_DESTINATION[kind.place])) return kinPlaceDetail(kind);
+  if (open.includes(KIN_PLACE_DESTINATION[KIN_ENTRY_FALLBACK_KIND.place])) {
+    return kinPlaceDetail(KIN_ENTRY_FALLBACK_KIND);
+  }
+  return "Open Chats to see what there is now.";
+}
+
+/**
+ * Where to look on a malformed link, from the same table as `kinWorkGone`. When `open` lists the
+ * viewer's destinations and the kind's place is off for them, falls back to Docs if open, else Chats.
+ */
+export function kinWorkMissingLinkDetail(
+  kind: KinMissingLinkKind | null,
+  open?: ReadonlyArray<KinDestination> | null,
+): string {
+  return kinWorkPlaceDetail(
+    kind === null ? KIN_ENTRY_FALLBACK_KIND : KIN_MISSING_LINK_KINDS[kind],
+    open,
+  );
+}
+
 /** Missing-entry page copy shared by web and phone, matching `kinUnavailableEntryLine`. */
-export function kinWorkGone(key?: string | null): {
+export function kinWorkGone(
+  key?: string | null,
+  open?: ReadonlyArray<KinDestination> | null,
+): {
   readonly title: string;
   readonly detail: string;
 } {
   const kind = kinWorkEntryKind(key);
   return {
     title: kinUnavailableEntryLine(key),
-    detail: `Open ${kind.place} to see ${kind.noun === "client" || kind.noun === "contact" ? "who" : "what"} there is now.`,
+    detail: kinWorkPlaceDetail(kind, open),
   };
 }
 

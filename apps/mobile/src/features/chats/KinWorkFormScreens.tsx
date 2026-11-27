@@ -87,6 +87,7 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { useAtomCommand } from "../../state/use-atom-command";
 import {
   KinGateView,
+  KinMissingLink,
   KinWorkFrame,
   KinWorkLoading,
   KinWorkProblemNotice,
@@ -144,13 +145,7 @@ export function FormMessage(props: { readonly title: string; readonly children: 
   );
 }
 
-export const NO_LINK = (
-  <EmptyState
-    variant="plain"
-    title="This link doesn't open anything"
-    detail="Open Work from your Kin chats."
-  />
-);
+export const NO_LINK = <KinMissingLink title="This link doesn't open anything" kind={null} />;
 
 /** The form's states while what it edits is being read: nothing to type into yet. */
 function waiting(
@@ -223,7 +218,16 @@ export function KinClientFormScreen({ route }: StaticScreenProps<KinClientFormPa
   const party = useKinSectionWords(target?.environmentId ?? null, COPY.party);
   const title = route.params.party === undefined ? party.newTitle : party.editTitle;
   if (target === null || (route.params.party !== undefined && key === null))
-    return <FormMessage title={title}>{NO_LINK}</FormMessage>;
+    return (
+      <FormMessage title={title}>
+        <KinMissingLink
+          title="This link doesn't open anything"
+          kind="client"
+          environmentId={target?.environmentId ?? null}
+          orgId={target?.orgId ?? null}
+        />
+      </FormMessage>
+    );
   return key === null ? (
     <ClientFormGate
       {...target}
@@ -784,7 +788,16 @@ export function KinContactFormScreen({ route }: StaticScreenProps<KinContactForm
     client === null ||
     (route.params.contact !== undefined && contact === null)
   )
-    return <FormMessage title={title}>{NO_LINK}</FormMessage>;
+    return (
+      <FormMessage title={title}>
+        <KinMissingLink
+          title="This link doesn't open anything"
+          kind="contact"
+          environmentId={target?.environmentId ?? null}
+          orgId={target?.orgId ?? null}
+        />
+      </FormMessage>
+    );
   return <ContactFormRead {...target} clientKey={client} contactKey={contact} title={title} />;
 }
 
@@ -1055,7 +1068,16 @@ export function KinProjectFormScreen({ route }: StaticScreenProps<KinProjectForm
   const key = keyParam(route.params.project);
   const title = route.params.project === undefined ? COPY.project.newTitle : COPY.project.editTitle;
   if (target === null || (route.params.project !== undefined && key === null))
-    return <FormMessage title={title}>{NO_LINK}</FormMessage>;
+    return (
+      <FormMessage title={title}>
+        <KinMissingLink
+          title="This link doesn't open anything"
+          kind="project"
+          environmentId={target?.environmentId ?? null}
+          orgId={target?.orgId ?? null}
+        />
+      </FormMessage>
+    );
   return key === null ? (
     <ProjectFormGate
       {...target}
@@ -1394,7 +1416,16 @@ export function KinMilestoneFormScreen({ route }: StaticScreenProps<KinMilestone
   const target = targetOf(route.params);
   const project = keyParam(route.params.project);
   if (target === null || project === null)
-    return <FormMessage title={KIN_PROJECTS.addMilestone}>{NO_LINK}</FormMessage>;
+    return (
+      <FormMessage title={KIN_PROJECTS.addMilestone}>
+        <KinMissingLink
+          title="This link doesn't open anything"
+          kind="milestone"
+          environmentId={target?.environmentId ?? null}
+          orgId={target?.orgId ?? null}
+        />
+      </FormMessage>
+    );
   return <MilestoneForm {...target} project={project} />;
 }
 

@@ -53,7 +53,7 @@ import {
 } from "./state/useKinWork";
 import { useKinGate } from "./state/useKinHost";
 import { useKinShell } from "./state/useKinShell";
-import { KinGateView } from "./components/KinWorkPieces";
+import { KinGateView, KinMissingLink } from "./components/KinWorkPieces";
 
 const decodeEnvironmentId = Schema.decodeUnknownOption(EnvironmentId);
 const decodeOrgId = Schema.decodeUnknownOption(KinOrgId);
@@ -73,10 +73,12 @@ export function KinWorkAssignScreen({ route }: StaticScreenProps<KinWorkAssignPa
   if (environmentId === null || orgId === null || key === null) {
     return (
       <Frame onClose={() => navigation.goBack()}>
-        <EmptyState
-          variant="plain"
+        <KinMissingLink
           title="This link doesn't name a task"
-          detail="Open Work from your Kin chats."
+          kind="task"
+          environmentId={environmentId}
+          orgId={orgId}
+          recordKey={key}
         />
       </Frame>
     );

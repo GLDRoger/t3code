@@ -45,6 +45,7 @@ import { PullRequestGlyph } from "../pull-requests/pullRequestGlyphs";
 import {
   KinFoldSection,
   KinGateView,
+  KinMissingLink,
   KinWorkFrame,
   KinWorkLoading,
   KinWorkPrivateMark,
@@ -96,10 +97,11 @@ export function KinProjectScreen({ route }: StaticScreenProps<KinProjectParams>)
   if (environmentId === null || orgId === null || key === null) {
     return (
       <KinWorkFrame title={KIN_PROJECTS.title} onBack={() => navigation.goBack()}>
-        <EmptyState
-          variant="plain"
+        <KinMissingLink
           title="This link doesn't name a project"
-          detail="Open Work from your Kin chats."
+          kind="project"
+          environmentId={environmentId}
+          orgId={orgId}
         />
       </KinWorkFrame>
     );

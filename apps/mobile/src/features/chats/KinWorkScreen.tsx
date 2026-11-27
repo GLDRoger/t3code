@@ -37,6 +37,7 @@ import { KinClientsList } from "./KinWorkLists";
 import { KinMoneyArea } from "./KinWorkMoney";
 import { KinListBanner } from "./components/KinListBanner";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { KinMissingLink } from "./components/KinWorkPieces";
 import { useKinTab, kinTabFoot } from "./components/KinTab";
 import { useKinIsOwnerLevel, useKinViewerScope } from "./state/kinChatOnly";
 import { retryKinAccess } from "./state/kinClient";
@@ -168,12 +169,24 @@ export function KinWorkScreen({ route }: StaticScreenProps<KinWorkParams>) {
   const environmentId = Option.getOrNull(decodeEnvironmentId(route.params.environmentId));
   const orgId = Option.getOrNull(decodeOrgId(route.params.orgId));
   if (environmentId === null || orgId === null) {
+    const place = kinWorkPlaceParam(route.params.show);
+    const kind =
+      place.place === "money"
+        ? "date"
+        : place.place === "docs"
+          ? "doc"
+          : place.place === "clients"
+            ? place.projects
+              ? "project"
+              : "client"
+            : "task";
     return (
       <KinWorkMessage title={KIN_WORK_TITLE}>
-        <EmptyState
-          variant="plain"
+        <KinMissingLink
           title="This link doesn't open anything"
-          detail="Open Work from your Kin chats."
+          kind={kind}
+          environmentId={environmentId}
+          orgId={orgId}
         />
       </KinWorkMessage>
     );

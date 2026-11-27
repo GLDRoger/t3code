@@ -29,6 +29,7 @@ import {
   kinWorkEntryKind,
   kinWorkGone,
   kinWorkItemFailed,
+  kinWorkMissingLinkDetail,
   kinWorkDueChoices,
   kinWorkDueDays,
   kinWorkNames,
@@ -1603,5 +1604,51 @@ describe("missing entry wording by link key", () => {
     expect(kinUnavailableEntryLine("P-1")).toBe(KIN_UNAVAILABLE_LINK.project);
     expect(kinUnavailableEntryLine("D-1")).toBe(KIN_UNAVAILABLE_LINK.doc);
     expect(kinUnavailableEntryLine("EQ-1")).toBe(KIN_UNAVAILABLE_LINK.entry);
+  });
+
+  const ownerPlaces = ["chats", "tasks", "money", "clients", "docs"] as const;
+  const clientsOffPlaces = ["chats", "tasks", "money", "docs"] as const;
+  const moneyOffPlaces = ["chats", "tasks", "clients", "docs"] as const;
+  const memberClientsPlaces = ["chats", "tasks", "clients"] as const;
+  const memberTasksPlaces = ["chats", "tasks"] as const;
+  const chatOnlyPlaces = ["chats"] as const;
+
+  it.each([
+    { kind: "task", open: ownerPlaces, detail: "Open Tasks to see what there is now." },
+    { kind: "client", open: ownerPlaces, detail: "Open Clients to see who there is now." },
+    { kind: "contact", open: ownerPlaces, detail: "Open Clients to see who there is now." },
+    { kind: "project", open: ownerPlaces, detail: "Open Clients to see what there is now." },
+    { kind: "milestone", open: ownerPlaces, detail: "Open Clients to see what there is now." },
+    { kind: "doc", open: ownerPlaces, detail: "Open Docs to see what there is now." },
+    { kind: "date", open: ownerPlaces, detail: "Open Money to see what there is now." },
+    { kind: "entry", open: ownerPlaces, detail: "Open Docs to see what there is now." },
+    { kind: null, open: ownerPlaces, detail: "Open Docs to see what there is now." },
+    { kind: "project", open: clientsOffPlaces, detail: "Open Docs to see what there is now." },
+    { kind: "client", open: clientsOffPlaces, detail: "Open Docs to see what there is now." },
+    { kind: "date", open: moneyOffPlaces, detail: "Open Docs to see what there is now." },
+    { kind: "client", open: memberClientsPlaces, detail: "Open Clients to see who there is now." },
+    { kind: "doc", open: memberClientsPlaces, detail: "Open Chats to see what there is now." },
+    { kind: "task", open: memberTasksPlaces, detail: "Open Tasks to see what there is now." },
+    { kind: "project", open: memberTasksPlaces, detail: "Open Chats to see what there is now." },
+    { kind: "client", open: memberTasksPlaces, detail: "Open Chats to see what there is now." },
+    { kind: "doc", open: memberTasksPlaces, detail: "Open Chats to see what there is now." },
+    { kind: "date", open: memberTasksPlaces, detail: "Open Chats to see what there is now." },
+    { kind: null, open: memberTasksPlaces, detail: "Open Chats to see what there is now." },
+    { kind: "task", open: chatOnlyPlaces, detail: "Open Chats to see what there is now." },
+    { kind: "project", open: null, detail: "Open Docs to see what there is now." },
+  ] as const)(
+    "points malformed $kind link to an open place ($open) -> $detail",
+    ({ kind, open, detail }) => {
+      expect(kinWorkMissingLinkDetail(kind, open)).toBe(detail);
+    },
+  );
+
+  it("falls back in kinWorkGone when the entry's place is off for this viewer", () => {
+    expect(kinWorkGone("P-5", clientsOffPlaces).detail).toBe("Open Docs to see what there is now.");
+    expect(kinWorkGone("P-5", memberTasksPlaces).detail).toBe(
+      "Open Chats to see what there is now.",
+    );
+    expect(kinWorkGone("INV-3", moneyOffPlaces).detail).toBe("Open Docs to see what there is now.");
+    expect(kinWorkGone("W-12", chatOnlyPlaces).detail).toBe("Open Chats to see what there is now.");
   });
 });
