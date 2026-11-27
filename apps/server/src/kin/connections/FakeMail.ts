@@ -636,9 +636,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         const full = gmailMessage(one);
         if (url.searchParams.get("format") === "full") {
           const fields = url.searchParams.get("fields");
-          if (fields === null) return json(full);
-          if (!fields.includes("filename") || fields.includes("body"))
-            return json({ error: { code: 400 } }, 400);
+          if (fields === null || !fields.startsWith("payload(filename,mimeType")) return json(full);
           return json({
             payload: {
               mimeType: full.payload.mimeType,
