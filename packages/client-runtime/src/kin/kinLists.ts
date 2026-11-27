@@ -1230,6 +1230,15 @@ export const kinListOffersClients = (
 ) =>
   filter.party !== null || filter.noParty || records.some((record) => record.party !== undefined);
 
+/** Internal receipt ties written by Kin (`invoice` key and `payment` id); never shown to people. */
+const KIN_RECEIPT_INTERNAL_FIELDS: ReadonlySet<string> = new Set(["invoice", "payment"]);
+const kinReceiptInternalField = (list: string | undefined, key: string) =>
+  list === "receipts" && KIN_RECEIPT_INTERNAL_FIELDS.has(key);
+const kinFieldLabel = (list: string | undefined, field: Pick<KinListField, "key" | "label">) =>
+  list === "receipts" && field.key === "reference" && field.label === "Reference"
+    ? "Payment reference"
+    : field.label;
+
 export function kinListColumns(
   def: KinListDefinition,
   records: ReadonlyArray<KinRecord>,
@@ -1247,10 +1256,10 @@ export function kinListColumns(
       ? [text("party", KIN_LISTS.entry.client)]
       : []),
     ...def.fields
-      .filter((field) => field.retired !== true)
+      .filter((field) => field.retired !== true && !kinReceiptInternalField(def.list, field.key))
       .map((field) => ({
         id: `field:${field.key}`,
-        label: field.label,
+        label: kinFieldLabel(def.list, field),
         numeric: field.type === "money" || field.type === "number",
       })),
     ...(def.amount ? [{ id: "amount", label: KIN_LISTS.entry.amount, numeric: true }] : []),
@@ -1321,6 +1330,7 @@ export function kinListRow(
       : { owed: kinMoneyText(record.balance, true) }),
   };
   for (const field of def?.fields ?? []) {
+    if (kinReceiptInternalField(def?.list, field.key)) continue;
     const shown = kinFieldText(field, record.fields?.[field.key], context);
     if (shown !== null) cells[`field:${field.key}`] = shown;
   }
@@ -1478,6 +1488,7 @@ export function kinListEntryView(
   const filesById = new Map((item.files ?? []).map((file) => [file.attachmentId, file]));
   const held = new Set<string>();
   const allFields = (def?.fields ?? []).flatMap((field): ReadonlyArray<KinListFieldView> => {
+    if (kinReceiptInternalField(item.list, field.key)) return [];
     const type = shownFieldType(field);
     const value = item.fields?.[field.key];
     const ids = type === "file" && value !== undefined && isList(value) ? value : [];
@@ -1494,7 +1505,7 @@ export function kinListEntryView(
     return [
       {
         key: field.key,
-        label: field.label,
+        label: kinFieldLabel(item.list, field),
         type,
         text,
         value: value === undefined || text === null ? null : value,

@@ -593,7 +593,7 @@ describe("receipts", () => {
       india,
       india,
       india,
-      [false, "Reference"],
+      [false, "Payment reference"],
     ]);
   });
 

@@ -174,7 +174,7 @@ export const KIN_RECEIPTS = {
   towards: "What it is for",
   mode: "How it was paid",
   noMode: "Not said",
-  reference: "Reference",
+  reference: "Payment reference",
   referencePlaceholder: "UTR or cheque number",
   save: "Make receipt",
   setAgainst: "Set against invoice",
