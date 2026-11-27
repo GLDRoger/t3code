@@ -53,6 +53,8 @@ import { bankSenderCopy } from "./bankSenderCopy.ts";
 import { runRecommend } from "./card.ts";
 import * as KinRecommend from "./KinRecommend.ts";
 import * as BillSenderCards from "../work/billMail/billSenderCards.ts";
+import * as BillSenders from "../work/billMail/billSenders.ts";
+import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import { ruleContext } from "./ledger.ts";
 import {
   type RuleContext,
@@ -1861,6 +1863,33 @@ it.effect(
           (yield* billingCards(ctx)).map((card) => card.widgetId),
           drawn.map((card) => card.widgetId),
         );
+        // The day is the owner's: 23:30 and 00:30 in Kolkata are one UTC day but two of hers.
+        yield* ctx.sql`UPDATE kin_trigger_settings SET time_zone = 'Asia/Kolkata'
+          WHERE org_id = ${ctx.orgId}`;
+        const fresh = (address: string, at: number) =>
+          ctx.sql`INSERT INTO kin_bill_senders
+          (org_id, address, state, seen_count, first_seen_at, last_seen_at, created_at)
+          VALUES (${ctx.orgId}, ${address}, 'candidate', 1, ${at}, ${at}, ${at})`;
+        yield* TestClock.adjust("8 hours");
+        const late = yield* Clock.currentTimeMillis;
+        for (const address of ["a@late.example", "b@late.example", "c@late.example"])
+          yield* fresh(address, late);
+        yield* BillSenderCards.offer(ctx.orgId, late);
+        yield* fresh("d@late.example", late);
+        yield* BillSenderCards.offer(ctx.orgId, late);
+        yield* TestClock.adjust("1 hour");
+        const early = yield* Clock.currentTimeMillis;
+        yield* fresh("e@early.example", early);
+        yield* BillSenderCards.offer(ctx.orgId, early);
+        const days = yield* ctx.sql<{ address: string; day: string | null }>`SELECT address,
+            card_day AS day FROM kin_bill_senders
+          WHERE org_id = ${ctx.orgId}
+            AND (address LIKE '%@late.example' OR address = 'e@early.example')
+          ORDER BY address`;
+        assert.deepStrictEqual(
+          days.map((row) => row.day),
+          ["1970-01-02", "1970-01-02", "1970-01-02", null, "1970-01-03"],
+        );
       }),
     ),
 );
@@ -1964,5 +1993,105 @@ it.effect(
           state: "approved",
         });
       }).pipe(Effect.provide(kinHostDependencies)),
+    ),
+);
+
+it.effect(
+  "a billing sender card decides only through its own sealed option, by an owner-level tap",
+  () =>
+    run(({ ctx }) =>
+      Effect.gen(function* () {
+        yield* idle(ctx);
+        const now = yield* Clock.currentTimeMillis;
+        for (const address of ["bills@inkspot.example", "billing@harbor.example"])
+          yield* ctx.sql`INSERT INTO kin_bill_senders
+          (org_id, address, state, seen_count, first_seen_at, last_seen_at, created_at)
+          VALUES (${ctx.orgId}, ${address}, 'candidate', 1, ${now}, ${now}, ${now})`;
+        yield* BillSenderCards.offer(ctx.orgId, now);
+        const [harbor, inkspot] = yield* billingCards(ctx);
+        const states = () =>
+          ctx.sql<{ address: string; state: string; decidedAt: number | null }>`SELECT address,
+            state, decided_at AS "decidedAt" FROM kin_bill_senders
+          WHERE org_id = ${ctx.orgId} ORDER BY address`;
+        const events = () =>
+          ctx.sql<{ count: number }>`SELECT COUNT(*) AS count FROM kin_events
+          WHERE org_id = ${ctx.orgId}`.pipe(Effect.map((rows) => rows[0]?.count));
+        const waiting = [
+          { address: "billing@harbor.example", state: "candidate", decidedAt: null },
+          { address: "bills@inkspot.example", state: "candidate", decidedAt: null },
+        ];
+        // A card a turn could post: the same question and option ids, with no sealed plan.
+        const lookalike = yield* ctx.chats.ask(
+          {
+            _tag: "agent",
+            hostPosted: true,
+            orgId: ctx.orgId,
+            agentId: chief,
+            ownerPersonId: ctx.owner.personId,
+            threadId: ThreadId.make("chief-thread"),
+          },
+          {
+            chatId: ctx.chiefChat,
+            clientMessageId: "turn-lookalike",
+            question: "Read bills from bills@inkspot.example?",
+            options: [{ label: "Approve" }, { label: "Not a billing sender" }],
+          },
+        );
+        const stale = yield* ctx.chats
+          .act(ctx.owner, {
+            widgetId: harbor!.widgetId,
+            revision: 2,
+            actionId: "choose",
+            value: "option-1",
+            clientActionId: "billing-stale",
+          })
+          .pipe(Effect.flip);
+        assert.include(stale, { reason: "widget_changed" });
+        assert.deepStrictEqual(yield* states(), waiting);
+        // Demoted between the draw and the tap: the tap meets the same gate as Settings.
+        const setAccess = (personId: KinPersonId, access: string) =>
+          ctx.sql`UPDATE kin_people SET access = ${access}
+            WHERE org_id = ${ctx.orgId} AND person_id = ${personId}`;
+        yield* setAccess(ctx.owner.personId, "member");
+        yield* setAccess(ctx.devId, "owner");
+        assert.include(yield* Effect.flip(tap(ctx, harbor!.widgetId, "option-1", ":demoted")), {
+          reason: "not_allowed",
+        });
+        assert.deepStrictEqual(yield* states(), waiting);
+        yield* setAccess(ctx.devId, "co_owner");
+        yield* setAccess(ctx.owner.personId, "owner");
+        // The sender row is the record of the decision: no lead wakes, no memory item claims it.
+        const decisions: Array<string> = [];
+        const recorded = yield* Deferred.make<void>();
+        yield* Context.get(ctx.services, KinMemoryChanges).attachWriter({
+          undo: () => Effect.die("unused"),
+          relabel: () => Effect.die("unused"),
+          retire: () => Effect.die("unused"),
+          restore: () => Effect.die("unused"),
+          items: () => Effect.succeed([]),
+          recordDecision: (_org, item) =>
+            Effect.sync(() => decisions.push(item.link)).pipe(
+              Effect.andThen(Deferred.succeed(recorded, undefined)),
+              Effect.as({ recorded: true }),
+            ),
+        });
+        const before = yield* events();
+        yield* tap(ctx, harbor!.widgetId, "option-1");
+        const [approved] = yield* states();
+        assert.strictEqual(approved?.state, "approved");
+        assert.strictEqual(yield* events(), before);
+        // The turn's own card is answered as any card is, and changes no sender.
+        yield* tap(ctx, lookalike.widgetId, "option-1");
+        assert.strictEqual((yield* states())[1]?.state, "candidate");
+        yield* Deferred.await(recorded);
+        assert.deepStrictEqual(decisions, [`card:${lookalike.widgetId}`]);
+        yield* Effect.exit(tap(ctx, harbor!.widgetId, "option-1"));
+        yield* Effect.exit(tap(ctx, harbor!.widgetId, "option-2"));
+        assert.deepStrictEqual((yield* states())[0], approved);
+        // Settings decided first: the card it closed decides nothing.
+        yield* BillSenders.decide(ctx.orgId, ctx.devId, "bills@inkspot.example", "declined");
+        yield* Effect.exit(tap(ctx, inkspot!.widgetId, "option-1"));
+        assert.strictEqual((yield* states())[1]?.state, "declined");
+      }),
     ),
 );

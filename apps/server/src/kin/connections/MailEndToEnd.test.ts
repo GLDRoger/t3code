@@ -1352,7 +1352,53 @@ describe("Kin mail end to end, on a fake mailbox", () => {
       "Invoice",
       "dmarc=pass header.from=inkspot.example",
     ],
-  ] as const)("billing proposals refuse %s from headers alone", ([, from, subject, verdict]) => {
+    [
+      "a second From header",
+      ["no-reply@inkspot.example", "no-reply@harbor.example"],
+      "Invoice",
+      "dmarc=pass header.from=inkspot.example",
+    ],
+    [
+      "a pass written below the receiver's failure",
+      "no-reply@inkspot.example",
+      "Invoice",
+      [
+        "mx.example; dmarc=fail header.from=inkspot.example",
+        "relay.inkspot.example; dmarc=pass header.from=inkspot.example",
+      ],
+    ],
+    [
+      "failing DMARC beside passing SPF and DKIM",
+      "no-reply@inkspot.example",
+      "Invoice",
+      "dmarc=fail header.from=inkspot.example; dkim=pass header.d=inkspot.example; spf=pass smtp.mailfrom=inkspot.example",
+    ],
+    [
+      "a pass for another domain",
+      "no-reply@inkspot.example",
+      "Invoice",
+      "dmarc=pass header.from=harbor.example; dkim=pass header.d=harbor.example; spf=pass smtp.mailfrom=harbor.example",
+    ],
+    [
+      "the domain inside a longer one",
+      "no-reply@inkspot.example.evil.example",
+      "Invoice",
+      "dmarc=pass header.from=inkspot.example",
+    ],
+    [
+      "a person's own mail",
+      "zoya@inkspot.example",
+      "Invoice",
+      "dmarc=pass header.from=inkspot.example",
+    ],
+    [
+      "a bill word inside another word",
+      "no-reply@inkspot.example",
+      "Orderly billboards",
+      "dmarc=pass header.from=inkspot.example",
+    ],
+  ] as const)("billing proposals refuse %s from headers alone", ([, sender, subject, verdict]) => {
+    const [from, ...otherFrom] = typeof sender === "string" ? [sender] : sender;
     const reads: Array<URL> = [];
     return setUp(
       (fake) =>
@@ -1372,11 +1418,17 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           yield* readMail(accounts);
           const mail = fake.deliver({
             to: ACCOUNTS,
-            from,
+            from: from!,
             subject,
             body: "Harbor Power bill.",
             at: NOW + 2,
-            authResults: verdict === null ? [] : [`mx.example; ${verdict}`],
+            authResults:
+              verdict === null
+                ? []
+                : typeof verdict === "string"
+                  ? [`mx.example; ${verdict}`]
+                  : verdict,
+            ...(otherFrom[0] === undefined ? {} : { headers: { From: otherFrom[0] } }),
           });
           yield* readMail(accounts);
           const keyed = (id: string) =>
@@ -1484,6 +1536,58 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           );
         }),
       ),
+  );
+
+  it.effect.each([
+    ["google", ACCOUNTS],
+    ["microsoft", HELLO],
+  ] as const)("an approved billing address vouches for itself alone on %s", ([provider, to]) =>
+    setUp((fake) =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const connectionId = yield* connect(fake, provider, to);
+        yield* readMail(connectionId);
+        yield* TestClock.adjust("1 minute");
+        yield* sql`INSERT INTO kin_bill_senders (org_id, address, state, decided_at, created_at)
+          VALUES (${orgId}, 'billing@inkspot.example', 'approved', ${NOW}, ${NOW})`;
+        const passFor = (domain: string) => [`mx.example; dmarc=pass header.from=${domain}`];
+        const sent: ReadonlyArray<readonly [string, ReadonlyArray<string>]> = [
+          ["Billing@INKSPOT.example", passFor("inkspot.example")],
+          ["billing+x@inkspot.example", passFor("inkspot.example")],
+          ["billing@inkspot.example", passFor("harbor.example")],
+          ["billing@inkspot.example.evil.example", passFor("inkspot.example.evil.example")],
+          ["accounts@inkspot.example", passFor("inkspot.example")],
+        ];
+        for (const [index, [from, authResults]] of sent.entries())
+          fake.deliver({
+            to,
+            from,
+            subject: "November invoice",
+            body: "Inkspot Cloud bill.",
+            at: NOW + 1 + index,
+            authResults,
+            headers: { "Auto-Submitted": "auto-generated" },
+          });
+        yield* readMail(connectionId);
+        assert.deepStrictEqual(
+          yield* sql`SELECT address, state, seen_count AS count FROM kin_bill_senders
+            WHERE org_id = ${orgId} ORDER BY address`,
+          [
+            { address: "accounts@inkspot.example", state: "candidate", count: 1 },
+            { address: "billing@inkspot.example", state: "approved", count: 0 },
+            { address: "billing@inkspot.example.evil.example", state: "candidate", count: 1 },
+          ],
+        );
+        assert.deepStrictEqual(
+          yield* sql`SELECT address FROM kin_bill_sender_mail WHERE org_id = ${orgId}
+            ORDER BY address`,
+          [
+            { address: "accounts@inkspot.example" },
+            { address: "billing@inkspot.example.evil.example" },
+          ],
+        );
+      }),
+    ),
   );
 
   it.effect(
