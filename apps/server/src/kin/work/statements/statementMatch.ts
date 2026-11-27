@@ -888,16 +888,11 @@ export type BankRepaymentDebit = {
   readonly recordId: string;
 };
 
-const payeeForMark = (
-  row: StatementRow,
-  payees: ReadonlyArray<PayeeCandidate>,
-  allowPartial: boolean,
-) => {
+/** Filed or not, a line naming one payee only in part may be their repayment, so it spends a mark. */
+const payeeForMark = (row: StatementRow, payees: ReadonlyArray<PayeeCandidate>) => {
   const whole = payees.filter((one) => identifies(one, row.description));
   const [payee, ...more] =
-    whole.length > 0 || !allowPartial
-      ? whole
-      : payees.filter((one) => personIn(one.name, row.description) >= 0.5);
+    whole.length > 0 ? whole : payees.filter((one) => personIn(one.name, row.description) >= 0.5);
   if (payee !== undefined && more.every((one) => (one.id ?? one.name) === (payee.id ?? payee.name)))
     return payee;
 };
@@ -930,13 +925,16 @@ export const assignRepaidMarks = (
     recordId?: string,
   ) => {
     if (row.direction !== "debit" || row.amountMinor <= 0) return;
-    const payee = payeeForMark(row, payees, recordId === undefined);
+    const payee = payeeForMark(row, payees);
     if (payee === undefined || payee.repaid.length === 0) return;
     if (suggest(row, { ownAccounts: accounts, known: [], bank: null }).action === "transfer")
       return;
     const amount = BigInt(row.amountMinor);
     const claimed = used.get(payee)!;
-    for (const day of payee.repaid) {
+    // Oldest mark first, as debits are: a mark then explains the earliest debit it can.
+    for (const day of payee.repaid.toSorted((a, b) =>
+      a.day < b.day ? -1 : a.day > b.day ? 1 : 0,
+    )) {
       const singles = claimed.get(day);
       if (singles === "total" || !inMarkWindow(row, currency, day)) continue;
       const own = day.marks.findIndex(
@@ -1056,7 +1054,7 @@ export const matchRows = (
   );
   const markedFor = (row: StatementRow) => {
     if (row.direction === "credit") {
-      const payee = payeeForMark(row, payees, true);
+      const payee = payeeForMark(row, payees);
       // Credits retain the signed-total check; they neither use nor take an individual mark.
       const total = payee?.repaid.find(
         (day) =>

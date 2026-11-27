@@ -603,6 +603,76 @@ it.layer(layer)((it) => {
       }),
   );
 
+  it.effect("taking back a mark of a day whose total explained a debit frees that total", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("ambermill-total-undo");
+      const kin = yield* company(org);
+      const records = yield* KinRecords.KinRecords;
+      const owner = {
+        actor: { _tag: "person" as const, personId: KinPersonId.make(`${org}-rhea`) },
+        via: "owner" as const,
+      };
+      const markDay = "2026-11-18";
+      for (const [key, amount] of [
+        ["EXP-4", 1_200],
+        ["EXP-5", 800],
+      ] as const)
+        yield* kin.expense(key, amount, "2026-10-01", {
+          reimbursement: "repaid",
+          repaidOn: markDay,
+        });
+      yield* kin.expense("EXP-8", 1_200, "2026-10-15", { reimbursement: "owed" });
+      yield* kin.debit("BNK-10", 2_000, "2026-11-19");
+      yield* kin.debit("BNK-11", 1_200, "2026-11-21");
+      const marked = () =>
+        Effect.map(repaidMatches(org, NOW), (matches) =>
+          Object.fromEntries(matches.map((match) => [match.debit.key, match.marked])),
+        );
+      // The day's total explains the earlier debit, so neither mark explains the later one.
+      assert.deepStrictEqual(yield* marked(), { "BNK-10": markDay, "BNK-11": undefined });
+      yield* records.update(org, owner, "EXP-5", {
+        fields: { reimbursement: "owed", repaidOn: null },
+      });
+      assert.deepStrictEqual(yield* marked(), { "BNK-10": undefined, "BNK-11": markDay });
+      yield* records.update(org, owner, "EXP-4", {
+        fields: { reimbursement: "owed", repaidOn: null },
+      });
+      assert.deepStrictEqual(yield* marked(), { "BNK-10": undefined, "BNK-11": undefined });
+    }),
+  );
+
+  it.effect("a mark's ten days are the company's days, either side of its midnight", () =>
+    Effect.gen(function* () {
+      const org = KinOrgId.make("ambermill-midnight");
+      const kin = yield* company(org);
+      const bank = (yield* findBankList(org))!;
+      for (const key of ["EXP-4", "EXP-5"])
+        yield* kin.expense(key, 1_200, "2026-09-01", {
+          reimbursement: "repaid",
+          repaidOn: "2026-11-10",
+        });
+      yield* kin.expense("EXP-8", 1_200, "2026-09-15", { reimbursement: "owed" });
+      // 00:15 in Asia/Kolkata: 31 October there, ten days before the marks, though 30 October in UTC;
+      // and 21 November there, eleven days after them, though 20 November in UTC.
+      for (const [key, at] of [
+        ["BNK-8", "2026-10-30T18:45:00Z"],
+        ["BNK-10", "2026-11-20T18:45:00Z"],
+      ] as const)
+        yield* kin.sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, state,
+            owner_kind, owner_id, date_at, amount_minor, currency, confirmed, created_by_kind,
+            created_by_id, origin_key, created_at, updated_at, fields_json)
+          VALUES (${org}, ${`${org}-${key}`}, ${bank.id}, ${key}, 'ZOYA RAO', 'open', 'person',
+            ${`${org}-rhea`}, ${Date.parse(at)}, 120000, 'INR', 1, 'person', ${`${org}-rhea`},
+            ${key}, 0, 0, '{"direction":"debit"}')`;
+      assert.deepStrictEqual(
+        Object.fromEntries(
+          (yield* repaidMatches(org, NOW)).map((match) => [match.debit.key, match.marked]),
+        ),
+        { "BNK-8": "2026-11-10", "BNK-10": undefined },
+      );
+    }),
+  );
+
   it.effect(
     "a second debit within ten days of one a card marked is raised, not taken for a hand mark",
     () =>
