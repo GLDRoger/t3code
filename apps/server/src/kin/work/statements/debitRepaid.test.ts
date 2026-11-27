@@ -373,18 +373,22 @@ it.layer(layer)((it) => {
     }),
   );
 
-  it.effect.each([
-    ["one-mark-first", [1_200], [1_200, 1_200], "marks"],
-    ["one-debits-first", [1_200], [1_200, 1_200], "debits"],
-    ["one-statement-first", [1_200], [1_200, 1_200], "statement"],
-    ["two-equal", [1_200, 1_200], [1_200, 1_200, 1_200], "debits"],
-    ["two-unequal", [1_200, 800], [1_200, 1_200], "marks"],
-    ["single-before-total", [1_200, 800], [1_200, 2_000], "marks"],
-    ["total-before-single", [1_200, 800], [2_000, 1_200], "marks"],
-    ["same-day-key-order", [1_200], [1_200, 1_200], "debits"],
-  ] as const)(
-    "shares the repayment assignment for %s between list, statement, draw and tap",
-    (name, marks, amounts, order) =>
+  it.effect.each(
+    (
+      [
+        ["one-mark-first", [1_200], [1_200, 1_200], "marks"],
+        ["one-debits-first", [1_200], [1_200, 1_200], "debits"],
+        ["one-statement-first", [1_200], [1_200, 1_200], "statement"],
+        ["two-equal", [1_200, 1_200], [1_200, 1_200, 1_200], "debits"],
+        ["two-unequal", [1_200, 800], [1_200, 1_200], "marks"],
+        ["single-before-total", [1_200, 800], [1_200, 2_000], "marks"],
+        ["total-before-single", [1_200, 800], [2_000, 1_200], "marks"],
+        ["same-day-key-order", [1_200], [1_200, 1_200], "debits"],
+      ] as const
+    ).map(([name, marks, amounts, order]) => ({ name, marks, amounts, order })),
+  )(
+    "shares the repayment assignment for $name between list, statement, draw and tap",
+    ({ name, marks, amounts, order }) =>
       Effect.gen(function* () {
         const org = KinOrgId.make(`ambermill-${name}`);
         const kin = yield* company(org);
