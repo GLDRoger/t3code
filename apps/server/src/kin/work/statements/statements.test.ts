@@ -5,7 +5,7 @@ import * as NodeFS from "node:fs";
 import * as NodePath from "node:path";
 
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, describe, it } from "@effect/vitest";
+import { assert, describe, expect, it, vi } from "@effect/vitest";
 import {
   AuthSessionId,
   AuthStandardClientScopes,
@@ -68,6 +68,7 @@ import { parseRecipe, sourceOf } from "../../gendocs/recipe.ts";
 import { STARTER_FILES } from "../../gendocs/starter.ts";
 import { dayIn, formatMoney } from "../money.ts";
 import { setProfile } from "../companyProfile.ts";
+import * as Region from "../region.ts";
 import { ownerZone } from "../recordRows.ts";
 import { KIN_OWNER_LEVEL } from "../teamView.ts";
 import { queueTap, tellLead } from "./statementWake.ts";
@@ -420,6 +421,18 @@ describe("bank statements", () => {
         });
         assert.lengthOf(detail.rows, 1);
         assert.notMatch(detail.rows[0]!.reference!, /••/);
+        yield* setProfile(orgId, owner.actor, { country: "GB", homeCurrency: "INR" }, undefined);
+        const withoutLabel = opened(
+          yield* LeadStatements.read(scope, {
+            sourceEventId: "event-1",
+            attachment: "statement-layout-a.pdf",
+          }),
+        );
+        assert.include(
+          withoutLabel.matched.map((one) => one.to),
+          `${keys.tds} (paid with ₹10,000.00 of tax withheld)`,
+        );
+        assert.notInclude(JSON.stringify([withoutLabel.matched, withoutLabel.choose]), "TDS");
         // Nothing is recorded by reading.
         assert.lengthOf(yield* bankRows, 0);
         assert.lengthOf(yield* sql`SELECT 1 FROM kin_record_payments`, 0);
@@ -499,10 +512,8 @@ describe("bank statements", () => {
       yield* setProfile(orgId, owner.actor, { country: "GB", homeCurrency: "INR" }, undefined);
       const applied = yield* OwnerStatements.apply(people, confirmOf(later));
       assert.strictEqual(applied.card.status, "applied");
-      assert.include(
-        applied.card.result!.join(" "),
-        "Recorded 2 payments on invoices, 1 with TDS deducted.",
-      );
+      assert.include(applied.card.result!, "Recorded 2 payments on invoices, 1 with tax withheld.");
+      assert.notInclude(applied.card.result!.join(" "), "TDS");
       const exact = (yield* records.get(orgId, keys.exact))!;
       const tds = (yield* records.get(orgId, keys.tds))!;
       const aws = (yield* records.get(orgId, keys.aws))!;
@@ -2180,25 +2191,35 @@ describe("bank statement safety", () => {
         const records = yield* KinRecords.KinRecords;
         const sql = yield* SqlClient.SqlClient;
         const result = yield* read(1, "statement-layout-a.pdf");
-        yield* OwnerStatements.apply(
+        const first = yield* OwnerStatements.apply(
           people,
           yield* confirmAll((yield* reviewCardOf(result.statement)).card),
         );
+        assert.include(first.card.result!, "Recorded 2 payments on invoices, 1 with TDS deducted.");
         yield* OwnerStatements.undo(people, { orgId, statementId: result.statement });
         assert.lengthOf(yield* livePayments, 0);
-        // Kin matches it again: undo cleared nothing that a refresh can reset.
-        yield* LeadStatements.read(scope, {
-          sourceEventId: "event-1",
-          attachment: "statement-layout-a.pdf",
-          refresh: true,
+        const regionOf = Region.regionOf;
+        using _label = vi.spyOn(Region, "regionOf").mockImplementation((country) => {
+          const region = regionOf(country);
+          return region?.withheldTax === "TDS" ? { ...region, withheldTax: "WHT" } : region;
         });
+        // Kin matches it again: undo cleared nothing that a refresh can reset.
+        const refreshed = opened(
+          yield* LeadStatements.read(scope, {
+            sourceEventId: "event-1",
+            attachment: "statement-layout-a.pdf",
+            refresh: true,
+          }),
+        );
+        expect
+          .soft(refreshed.matched.map((one) => one.to))
+          .toContain(`${keys.tds} (paid with ₹10,000.00 WHT deducted)`);
         const fresh = (yield* reviewCardOf(result.statement)).card;
         assert.strictEqual(fresh.status, "undone");
         const applied = yield* OwnerStatements.apply(people, yield* confirmAll(fresh));
-        assert.include(
-          applied.card.result!.join(" "),
-          "Recorded 2 payments on invoices, 1 with TDS deducted.",
-        );
+        expect
+          .soft(applied.card.result)
+          .toContain("Recorded 2 payments on invoices, 1 with WHT deducted.");
         assert.deepStrictEqual(
           (yield* livePayments).map((one) => [one.key, one.minor]),
           [

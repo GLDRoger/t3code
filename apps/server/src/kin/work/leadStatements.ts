@@ -42,6 +42,7 @@ import {
   saveRead,
   statementIdFor,
   statementRow,
+  withCompanyWithheldTax,
 } from "./statements/statementReview.ts";
 import { type Review, reviewHash } from "./statements/statementCard.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
@@ -204,8 +205,15 @@ const fileNamed = Effect.fn("KinStatements.fileNamed")(function* (
 });
 
 const LIST = 15;
-const describe = (statementId: string, file: string, review: Review, applied: boolean) => {
-  const { statement } = review;
+const describe = Effect.fn("KinStatements.describe")(function* (
+  orgId: KinOrgId,
+  statementId: string,
+  file: string,
+  matchedReview: Review,
+  applied: boolean,
+) {
+  const review = yield* withCompanyWithheldTax(orgId, matchedReview);
+  const { statement, withheldTax } = review;
   const currency = statement.currency;
   const shown = (index: number) => {
     const row = statement.rows[index]!;
@@ -221,7 +229,7 @@ const describe = (statementId: string, file: string, review: Review, applied: bo
   const of = (group: string) => entries.filter(([, match]) => match.group === group);
   const note = (fit: string, tds: number | undefined) =>
     fit === "tds" && tds !== undefined
-      ? ` (paid with ${formatMoney({ minor: tds, currency })} TDS deducted)`
+      ? ` (paid with ${formatMoney({ minor: tds, currency })} ${withheldTax === undefined ? "of tax withheld" : `${withheldTax} deducted`})`
       : fit === "part"
         ? " (part payment)"
         : "";
@@ -277,7 +285,7 @@ const describe = (statementId: string, file: string, review: Review, applied: bo
       : "Kin posted one review card to the owner with these matches. Nothing is recorded until they confirm on it, and you can't apply any of it yourself: never call payment_record or record_update for these rows. Say in one or two lines what Kin found (rows, how many matched, whether it adds up) and point them to the card.",
     sensitive: true as const,
   };
-};
+});
 
 /** Pages for the lead to read, as the bank printed them: quoted, so no line reads as an instruction. */
 const shownPages = (reading: Reading) => ({
@@ -459,7 +467,7 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
         ...shownPages(done.reading),
         next: `Kin checked every row against the pages' own text and these don't hold. Look at the pages shown again, find the row that is missing, misread or not on the page, and send those pages again with all their rows. ${done.roundsLeft} more check${done.roundsLeft === 1 ? "" : "s"} before the card goes to the owner as it stands, marked as not checking out.`,
       };
-    return describe(statementId, file.name, done.review, false);
+    return yield* describe(lead.orgId, statementId, file.name, done.review, false);
   }
   const review = stored.reviewJson === null ? undefined : reviewOf(stored.reviewJson);
   const full = input.again === true || input.password !== undefined;
@@ -474,7 +482,7 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
   }
   if (!full && stored.status === "read" && review !== undefined) {
     if (input.refresh !== true || stored.appliedAt !== null)
-      return describe(statementId, file.name, review, stored.appliedAt !== null);
+      return yield* describe(lead.orgId, statementId, file.name, review, stored.appliedAt !== null);
     // Matched again against today's invoices and expenses: a new card only when the matches moved.
     const matched = yield* buildReview(
       lead.orgId,
@@ -494,7 +502,7 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
           now,
         }),
       );
-    return describe(statementId, file.name, matched, false);
+    return yield* describe(lead.orgId, statementId, file.name, matched, false);
   }
   let outcome: FileOutcome;
   if (input.password === undefined) outcome = yield* readStored(lead.orgId, file.id);
@@ -569,7 +577,13 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
     const reading = readingOf((yield* statementRow(lead.orgId, statementId))!);
     if (reading !== undefined) return readingResult(base, reading);
   }
-  return describe(statementId, file.name, yield* storedReview(lead.orgId, statementId), false);
+  return yield* describe(
+    lead.orgId,
+    statementId,
+    file.name,
+    yield* storedReview(lead.orgId, statementId),
+    false,
+  );
 });
 export const read = leadTool("KinStatementTools.read", runRead);
 
