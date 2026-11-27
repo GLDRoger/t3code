@@ -47,6 +47,7 @@ import {
   rejectedAlerts,
   takeAlerts,
   threadSeen,
+  UNREAD_ALERT_MARKER,
 } from "./bankAlerts.ts";
 import { ensureBankList, findBankList, knownRows } from "./bankList.ts";
 import { creditMatches, openEntries } from "./invoiceCredits.ts";
@@ -126,9 +127,11 @@ it.layer(layer)((it) => {
         "4821",
         "5530",
         "7001",
+        "7002",
         "7061",
         "7063",
         "7064",
+        "7065",
       ]);
       for (const id of ["work-mail", "home-mail", "other-mail"])
         yield* seedFixtureAlertMailbox(orgId, id);
@@ -298,9 +301,9 @@ it.layer(layer)((it) => {
     () =>
       Effect.gen(function* () {
         const reads: Array<string> = [];
-        const message = (text: string): MailMessage => ({
-          threadId: "t-bank",
-          from: "Harbor Bank InstaAlerts <alerts@harborbank.example>",
+        const message = (text: string, threadId: string): MailMessage => ({
+          threadId,
+          from: "Harbor Bank alerts <alerts@harborbank.example>",
           fromAddress: "alerts@harborbank.example",
           to: [],
           replyTo: [],
@@ -311,7 +314,7 @@ it.layer(layer)((it) => {
           subject: "You have done a UPI txn. Check details!",
           preview: "",
           unread: true,
-          messageId: "<m8@harborbank.example>",
+          messageId: `<${threadId}@harborbank.example>`,
           references: null,
           authResults: AUTH,
           body: { text, attachments: [] },
@@ -320,7 +323,9 @@ it.layer(layer)((it) => {
           readThread: (_orgId: KinOrgId, _connectionId: string, threadId: string) =>
             Effect.sync(() => {
               reads.push(threadId);
-              return [message(debit("632211110008").replace("**4821", "**7001"))];
+              const [reference, account] =
+                threadId === "t-bank" ? ["632211110008", "**7001"] : ["632211110018", "**7002"];
+              return [message(debit(reference).replace("**4821", account), threadId)];
             }),
         };
         const activity = {
@@ -336,7 +341,15 @@ it.layer(layer)((it) => {
               threadId: "t-bank",
               receivedBy: null,
               subject: "You have done a UPI txn. Check details!",
-              from: "Harbor Bank InstaAlerts <alerts@harborbank.example>",
+              from: "Harbor Bank alerts <alerts@harborbank.example>",
+              date: "Wed, 18 Nov 2026 10:00:00 +0530",
+              unread: true,
+            },
+            {
+              threadId: "t-bank-2",
+              receivedBy: null,
+              subject: "You have done a UPI txn. Check details!",
+              from: "Harbor Bank alerts <alerts@harborbank.example>",
               date: "Wed, 18 Nov 2026 10:00:00 +0530",
               unread: true,
             },
@@ -363,12 +376,26 @@ it.layer(layer)((it) => {
             }),
           }),
         );
-        assert.isFalse(yield* onMail(orgId, activity));
+        // The mailbox moves on, each alert is kept as one no model read, and one failed call
+        // stands for the pass.
+        assert.isTrue(yield* onMail(orgId, activity));
         assert.strictEqual(calls, 1);
-        assert.deepStrictEqual(yield* sql`SELECT COUNT(*) AS count FROM kin_bank_alerts`, [
-          before!,
-        ]);
-        assert.isFalse(
+        assert.deepStrictEqual(reads, ["t-bank", "t-bank-2"]);
+        assert.deepStrictEqual(
+          yield* sql`SELECT thread_id AS thread, outcome, reference FROM kin_bank_alerts
+          WHERE org_id = ${orgId} AND connection_id = ${activity.connectionId}
+            AND thread_id LIKE 't-bank%' ORDER BY thread_id`,
+          ["t-bank", "t-bank-2"].map((thread) => ({
+            thread,
+            outcome: "unparsed",
+            reference: UNREAD_ALERT_MARKER,
+          })),
+        );
+        assert.lengthOf(
+          yield* sql`SELECT alert_id FROM kin_bank_alerts`,
+          Number(before!.count) + 2,
+        );
+        assert.isTrue(
           yield* threadSeen(
             orgId,
             activity.connectionId,
@@ -376,13 +403,29 @@ it.layer(layer)((it) => {
             Date.parse(activity.mail[0]!.date),
           ),
         );
-        assert.deepStrictEqual(reads, ["t-bank"]);
+        // Still down on the next pass: nothing is marked read past it.
+        reads.length = 0;
+        for (const tool of [MAIL_TOOL.list, MAIL_TOOL.read]) {
+          yield* sql`INSERT INTO kin_connection_tools (org_id, connection_id, tool_name,
+          definition_json, pin_digest, mode, suggested_mode, open_world, first_seen_at)
+          VALUES (${orgId}, ${activity.connectionId}, ${tool}, '{}', 'digest', 'read', 'read', 0,
+            ${NOW})`;
+        }
+        // One read by an older parser, retried while no model is available, stays to be read.
+        yield* sql`UPDATE kin_bank_alerts SET reference = 'parser:0002'
+        WHERE org_id = ${orgId} AND thread_id = 't-bank-2'`;
+        assert.isTrue(yield* onMail(orgId, activity));
+        assert.strictEqual(calls, 2);
+        assert.lengthOf(
+          yield* sql`SELECT alert_id FROM kin_bank_alerts WHERE reference = ${UNREAD_ALERT_MARKER}`,
+          2,
+        );
         reads.length = 0;
         const first = yield* takeAlertMail(connections, orgId, activity);
-        assert.deepStrictEqual(first, { threads: 1, recorded: 1, duplicate: 0, rejected: 0 });
+        assert.deepStrictEqual(first, { threads: 2, recorded: 2, duplicate: 0, rejected: 0 });
         const again = yield* takeAlertMail(connections, orgId, activity);
         assert.deepStrictEqual(again, { threads: 0, recorded: 0, duplicate: 0, rejected: 0 });
-        assert.deepStrictEqual(reads, ["t-bank"]);
+        assert.deepStrictEqual(reads, ["t-bank", "t-bank-2"]);
       }),
   );
 
@@ -425,6 +468,7 @@ it.layer(layer)((it) => {
         reference: string | null,
         account: string,
         direction: "debit" | "credit",
+        dateAt = Date.parse("2026-11-18T18:29:59Z"),
       ) {
         const fields = JSON.stringify({
           direction,
@@ -435,7 +479,7 @@ it.layer(layer)((it) => {
           owner_kind, owner_id, amount_minor, currency, date_at, date_all_day, fields_json,
           created_by_kind, created_by_id, origin_key, created_at, updated_at)
           VALUES (${orgId}, ${id}, ${def.id}, ${id}, 'Juniper Cold Chain', 'open',
-          'person', ${rhea}, 125000, 'INR', ${Date.parse("2026-11-18T18:29:59Z")}, 1,
+          'person', ${rhea}, 125000, 'INR', ${dateAt}, 1,
           ${fields}, 'agent', 'finance', ${`manual:finance:${id}`}, ${NOW}, ${NOW})`;
         return id;
       });
@@ -516,12 +560,21 @@ it.layer(layer)((it) => {
       const noReference = yield* hand("e-no-reference", null, "Harbor Bank ••7063", "debit");
       yield* hand("f-ambiguous", null, "Harbor Bank ••7064", "debit");
       yield* hand("g-ambiguous", null, "Harbor Bank ••7064", "debit");
-      for (const [i, [digits, reference, expected]] of (
+      // Entered by hand the next morning, the reference typed in small letters with spaces.
+      const nextDay = yield* hand(
+        "h-next-day",
+        "ab 6322 1111 9882",
+        "Harbor Bank ••7065",
+        "debit",
+        Date.parse("2026-11-19T04:30:00Z"),
+      );
+      for (const [i, [digits, reference, expected, linked]] of (
         [
-          ["7063", "632211119879", { recorded: 0, duplicate: 1 }],
-          ["7063", "632211119879", { recorded: 0, duplicate: 1 }],
-          ["7063", "632211119880", { recorded: 1, duplicate: 0 }],
-          ["7064", "632211119881", { recorded: 1, duplicate: 0 }],
+          ["7063", "632211119879", { recorded: 0, duplicate: 1 }, noReference],
+          ["7063", "632211119879", { recorded: 0, duplicate: 1 }, noReference],
+          ["7063", "632211119880", { recorded: 1, duplicate: 0 }, null],
+          ["7064", "632211119881", { recorded: 1, duplicate: 0 }, null],
+          ["7065", "AB632211119882", { recorded: 0, duplicate: 1 }, nextDay],
         ] as const
       ).entries()) {
         const threadId = `reference-${i}`;
@@ -532,10 +585,10 @@ it.layer(layer)((it) => {
           messages: [alert(null, debit(reference).replace("**4821", `**${digits}`))],
         });
         assert.deepInclude(taken, expected);
-        if (expected.duplicate === 1) {
+        if (linked !== null) {
           const [picked] = yield* sql`SELECT record_id AS "recordId" FROM kin_bank_alerts
             WHERE org_id = ${orgId} AND thread_id = ${threadId}`;
-          assert.strictEqual(picked?.recordId, noReference);
+          assert.strictEqual(picked?.recordId, linked);
         }
       }
       const [unchanged] = yield* sql<{ fields: string; kind: string; origin: string | null }>`
