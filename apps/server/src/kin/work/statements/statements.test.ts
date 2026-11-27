@@ -67,6 +67,7 @@ import { gatherFacts } from "../../gendocs/facts.ts";
 import { parseRecipe, sourceOf } from "../../gendocs/recipe.ts";
 import { STARTER_FILES } from "../../gendocs/starter.ts";
 import { dayIn, formatMoney } from "../money.ts";
+import { setProfile } from "../companyProfile.ts";
 import { ownerZone } from "../recordRows.ts";
 import { KIN_OWNER_LEVEL } from "../teamView.ts";
 import { queueTap, tellLead } from "./statementWake.ts";
@@ -493,6 +494,9 @@ describe("bank statements", () => {
       assert.include(moneyOff.message, "Money is turned off for this company");
       assert.lengthOf(yield* bankRows, 0);
       yield* sql`UPDATE kin_company_shell SET shell_json = '[]', rev = 2 WHERE org_id = ${orgId}`;
+      const withheldRow = card.matched.find((one) => one.target.key === keys.tds)!;
+      assert.strictEqual(withheldRow.target.note, "Paid with ₹10,000.00 TDS deducted");
+      yield* setProfile(orgId, owner.actor, { country: "GB", homeCurrency: "INR" }, undefined);
       const applied = yield* OwnerStatements.apply(people, confirmOf(later));
       assert.strictEqual(applied.card.status, "applied");
       assert.include(
@@ -512,10 +516,10 @@ describe("bank statements", () => {
         }>`SELECT amount_minor AS minor, note FROM kin_record_payments
           WHERE record_id = ${tds.recordId} ORDER BY amount_minor`).map((one) => [
           one.minor,
-          one.note.slice(0, 12),
+          one.minor === 1_000_000 ? one.note : one.note.slice(0, 12),
         ]),
         [
-          [1_000_000, "TDS deducted"],
+          [1_000_000, `Tax withheld by the client on ${withheldRow.date}`],
           [9_000_000, "HDFC Bank ••"],
         ],
       );

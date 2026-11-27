@@ -1,6 +1,8 @@
 import { assert, describe, it } from "@effect/vitest";
 
-import { reviewHash, type Review } from "./statementCard.ts";
+import * as Effect from "effect/Effect";
+
+import { reviewHash, rowsOf, type Review } from "./statementCard.ts";
 import type { Candidate } from "./statementMatch.ts";
 import { checkBalances, type StatementRow } from "./statementTable.ts";
 
@@ -55,6 +57,16 @@ const reviewWith = (candidate: Partial<Candidate>, read: Partial<StatementRow> =
 });
 
 describe("statement review cards", () => {
+  it.effect("describes withholding without assuming a regional tax name", () =>
+    Effect.sync(() => {
+      const review = reviewWith({ fit: "tds", tdsMinor: 1_000_000 });
+      assert.strictEqual(
+        rowsOf(review, "matched", 0, 1).matched[0]?.target.note,
+        "Paid with ₹10,000.00 withheld by the client",
+      );
+    }),
+  );
+
   it("makes a new card when only a row as read, or how it fits its entry, changes", () => {
     const hashes = [
       reviewWith({}),
