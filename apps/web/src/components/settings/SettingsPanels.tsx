@@ -54,6 +54,7 @@ import { ProviderModelPicker } from "../chat/ProviderModelPicker";
 import { TraitsPicker } from "../chat/TraitsPicker";
 import { isElectron } from "../../env";
 import { buildHostedChannelSelectionUrl, type HostedAppChannel } from "../../hostedPairing";
+import { kinDefaultUnifiedSettings } from "../../kin/kinClientSettings";
 import {
   readAppearanceModePreference,
   readThemeHalves,
@@ -491,6 +492,7 @@ export function useSettingsRestore(onRestored?: () => void) {
   } = useTheme();
   const settings = useScopedSettings();
   const updateSettings = useUpdateScopedSettings();
+  const DEFAULT_UNIFIED_SETTINGS = kinDefaultUnifiedSettings();
 
   const isTextGenerationModelDirty = !Equal.equals(
     settings.textGenerationModelSelection ?? null,
