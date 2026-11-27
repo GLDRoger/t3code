@@ -37,7 +37,7 @@ import { TURN_EVENT_TOOLS } from "../lead/eventIds.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KinPulseToolkit } from "../pulse/mcp.ts";
-import { CreateInput, sourceOf } from "../work/leadWork.ts";
+import { CreateInput, sourceOf, UpdateInput } from "../work/leadWork.ts";
 import { KinDocsToolkit } from "../work/mcp/docTools.ts";
 import { KinBillToolkit } from "../work/mcp/billTools.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
@@ -119,22 +119,29 @@ it.effect(
     const ownerPersonId = KinPersonId.make("person_rhea");
     const wakeupId = "wake_record_source";
     const agent = { _tag: "agent" as const, orgId, agentId, ownerPersonId, threadId };
-    const Records = Toolkit.make(
-      Tool.make("record_create", {
-        parameters: CreateInput,
+    const recordTool = <Name extends "record_create" | "record_update">(
+      name: Name,
+      parameters: Name extends "record_create" ? typeof CreateInput : typeof UpdateInput,
+    ) =>
+      Tool.make(name, {
+        parameters,
         success: Schema.Struct({ sourceEventId: Schema.String }),
         failure: KinChatError,
         failureMode: "return",
         dependencies: [SqlClient.SqlClient],
-      }).annotateMerge(KinWorkToolkit.tools.record_create.annotations),
+      }).annotateMerge(KinWorkToolkit.tools[name].annotations);
+    const Records = Toolkit.make(
+      recordTool("record_create", CreateInput),
+      recordTool("record_update", UpdateInput),
     );
+    const filled = ({ sourceEventId }: { readonly sourceEventId: string }) =>
+      sourceOf({ ...agent, wakeupId, startedAt: 0 }, sourceEventId).pipe(
+        Effect.catchTags({ SqlError: Effect.die }),
+        Effect.as({ sourceEventId }),
+      );
     const handlers = McpToolAccess.toLayer(Records, {
-      record_create: McpToolAccess.reads(({ sourceEventId }) =>
-        sourceOf({ ...agent, wakeupId, startedAt: 0 }, sourceEventId).pipe(
-          Effect.catchTags({ SqlError: Effect.die }),
-          Effect.as({ sourceEventId }),
-        ),
-      ),
+      record_create: McpToolAccess.reads(filled),
+      record_update: McpToolAccess.reads(filled),
     });
     return Effect.gen(function* () {
       const sql = yield* SqlClient.SqlClient;
@@ -169,34 +176,36 @@ it.effect(
           ${receivedAt}, ${receivedAt}, 'claimed', ${wakeupId})`;
       }
 
-      const call = (args: { sourceEventId?: string }) =>
-        server
-          .callTool({
-            name: "record_create",
-            arguments: { ...args, records: [{ title: "Check the Juniper Cold Chain delivery" }] },
-          })
-          .pipe(
-            Effect.provideService(McpSchema.McpServerClient, client),
-            Effect.provideService(McpInvocationContext, caller),
-            Effect.provideService(KinServer, {
-              services: Option.some(services),
-              subscribeForViewer: Option.none(),
-              taskCardUpdater: Layer.empty,
-            }),
-          );
-      for (const [args, sourceEventId] of [
-        [{}, "event_latest_message"],
-        [{ sourceEventId: "message_first" }, "event_first_message"],
-      ] as const) {
-        const result = yield* call(args);
-        assert.deepStrictEqual(result.structuredContent, { sourceEventId });
+      const rows = {
+        record_create: { records: [{ title: "Check the Juniper Cold Chain delivery" }] },
+        record_update: { key: "W-12", title: "Check the Juniper Cold Chain delivery" },
+      };
+      const call = (name: keyof typeof rows, args: { sourceEventId?: string }) =>
+        server.callTool({ name, arguments: { ...args, ...rows[name] } }).pipe(
+          Effect.provideService(McpSchema.McpServerClient, client),
+          Effect.provideService(McpInvocationContext, caller),
+          Effect.provideService(KinServer, {
+            services: Option.some(services),
+            subscribeForViewer: Option.none(),
+            taskCardUpdater: Layer.empty,
+          }),
+        );
+      for (const name of ["record_create", "record_update"] as const) {
+        for (const [args, sourceEventId] of [
+          [{}, "event_latest_message"],
+          [{ sourceEventId: "message_first" }, "event_first_message"],
+          [{ sourceEventId: "event_first_message" }, "event_first_message"],
+        ] as const) {
+          const result = yield* call(name, args);
+          assert.deepStrictEqual(result.structuredContent, { sourceEventId }, name);
+        }
+        const refused = yield* call(name, { sourceEventId: "event_unknown" });
+        assert.isTrue(refused.isError, name);
+        assert.include(
+          JSON.stringify(refused.content),
+          "sourceEventId must be one of this turn's events. Nothing was written.",
+        );
       }
-      const refused = yield* call({ sourceEventId: "event_unknown" });
-      assert.isTrue(refused.isError);
-      assert.include(
-        JSON.stringify(refused.content),
-        "sourceEventId must be one of this turn's events. Nothing was written.",
-      );
     }).pipe(
       Effect.provide(
         Layer.mergeAll(

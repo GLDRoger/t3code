@@ -213,6 +213,8 @@ const setup = (sourceEventId: string) =>
     ],
   });
 
+const FIELDS_SAID =
+  "Juniper Cold Chain is 27ABCDE1234F1Z5 in Maharashtra; now 29ABCDE1234F1Z5 in Karnataka, Net 45, 2 Harbour Road.";
 const recordWriteShapes = [
   { list: "work", title: "Tidewater dispatch", before: { size: "S" }, after: { size: "M" } },
   {
@@ -388,7 +390,68 @@ it.effect("nested fields cannot supply shared record columns", () =>
       decodeUpdate({ key: "W-1", sourceEventId: "ask-event", fields: { owner: "Zoya" } }),
     );
     assert.include(refused.message, "owner");
+    const columns = ["id", "key", "holder", "visibility", "client", "title", "sensitive", "list"];
+    for (const name of [...columns, "kind", "category", "accountsForTax"])
+      for (const call of [
+        decodeCreate({
+          sourceEventId: "ask-event",
+          records: [{ list: "clients", title: "Juniper Cold Chain", fields: { [name]: "C-2" } }],
+        }),
+        decodeUpdate({ key: "C-1", sourceEventId: "ask-event", fields: { [name]: "C-2" } }),
+      ])
+        assert.include(
+          (yield* Effect.flip(call)).message,
+          `"${name}" is not a field for this record write.`,
+        );
   }),
+);
+
+it.effect(
+  "one call writes a built-in row's fields as its own and a defined list's as its list's",
+  () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* seed;
+      yield* sql`UPDATE kin_messages SET body = ${FIELDS_SAID} WHERE org_id = ${orgId} AND message_id = 'ask'`;
+      yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+        created_at, definition_json)
+      VALUES (${orgId}, 'expenses', 'Expenses', 'EXP', 0, 0, ${JSON.stringify(presetDefinition("expenses", "INR"))})`;
+      const made = yield* decodeCreate({
+        sourceEventId: "ask-event",
+        records: [
+          { list: "clients", title: "Juniper Cold Chain", fields: { terms: "Net 45" } },
+          {
+            list: "expenses",
+            title: "Juniper pallets",
+            amount: "1,200",
+            date: "2026-11-20",
+            fields: { vendor: "Tidewater Freight" },
+          },
+        ],
+      }).pipe(Effect.flatMap((input) => LeadWork.create(scope, input)));
+      const records = yield* KinRecords.KinRecords;
+      const stored = () =>
+        Effect.forEach(made.records, (row) =>
+          records.get(orgId, row.key).pipe(Effect.map((one) => JSON.parse(one!.fieldsJson))),
+        );
+      const [client, expense] = yield* stored();
+      assert.deepInclude(client, { terms: "Net 45" });
+      assert.deepInclude(expense, { vendor: "Tidewater Freight" });
+      // One change for both reads fields as the defined list's, which a client has none of.
+      const refused = yield* decodeUpdate({
+        sourceEventId: "again-event",
+        keys: made.records.map((row) => row.key),
+        fields: { terms: "Net 30" },
+      }).pipe(
+        Effect.flatMap((input) => LeadWork.updateMany(scope, input)),
+        Effect.flip,
+      );
+      assert.include(
+        refused.message,
+        "A client's details are named fields of their own, not fields.",
+      );
+      assert.deepStrictEqual(yield* stored(), [client, expense]);
+    }).pipe(Effect.provide(layer)),
 );
 
 it.effect("client tax number aliases go through the India check in both record write shapes", () =>

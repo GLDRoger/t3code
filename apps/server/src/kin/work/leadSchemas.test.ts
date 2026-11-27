@@ -107,11 +107,7 @@ it("advertises record write keys except the filled-in source event and the tax a
     const hidden = new Set(["sourceEventId", `${row}taxNumber`, `${row}taxPlace`]);
     const accepted = inputPropertyPaths(raw);
     assert.isTrue(hidden.isSubsetOf(accepted), tool.name);
-    assert.deepStrictEqual(
-      inputPropertyPaths(advertised),
-      accepted.difference(hidden),
-      tool.name,
-    );
+    assert.deepStrictEqual(inputPropertyPaths(advertised), accepted.difference(hidden), tool.name);
     const prefix = tool.name === "record_create" ? "records.items.properties." : "";
     expect(advertised.properties).toHaveProperty(`${prefix}confirmed`, { type: "boolean" });
     expect(advertised.properties).toHaveProperty(`${prefix}due.description`, expect.any(String));
