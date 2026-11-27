@@ -31,6 +31,7 @@ export function prompt(request: TextInputDialogRequest): void {
     ],
     "plain-text",
     request.initialValue,
+    request.keyboard === "number" ? "number-pad" : undefined,
   );
 }
 
