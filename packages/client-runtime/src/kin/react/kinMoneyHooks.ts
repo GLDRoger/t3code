@@ -20,6 +20,7 @@ import { useEffect, useState } from "react";
 import { kinAccessMeAtom } from "../kinAccess.ts";
 import type { KinClient } from "../kinClient.ts";
 import { kinRatesOf } from "../kinCurrency.ts";
+import { kinCalendarHeld, kinCalendarState, type KinCalendarHeld } from "../kinCalendar.ts";
 import { kinReadDates, type KinDatesWindow } from "../kinDates.ts";
 import { KIN_INVOICES, kinIssueNotice, kinReceiptNotice } from "../kinInvoices.ts";
 import {
@@ -289,6 +290,44 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
               refreshing: held.request !== request,
             };
     return { state, retry: () => setAttempt((count) => count + 1) };
+  }
+
+  /**
+   * The viewer's calendar events in a window, apart from Dates so Work's changes never read every
+   * calendar again. `on` is this device's switch, null until known; off or unknown, nothing is asked.
+   */
+  function useKinCalendar(
+    { environmentId, orgId }: KinScreenTarget,
+    window: KinDatesWindow | null,
+    on: boolean | null,
+  ) {
+    const [held, setHeld] = useState<KinCalendarHeld | null>(null);
+    const [retried, setRetried] = useState({ window: "", count: 0 });
+    const scope = `${environmentId}:${orgId}`;
+    const from = on === true ? (window?.from ?? null) : null;
+    const to = on === true ? (window?.to ?? null) : null;
+    const asked = `${scope}:${from}:${to}`;
+    // Try again skips the host's short-lived copy for this window only.
+    const fresh = retried.window === asked;
+    const request = from === null ? null : `${asked}:${fresh ? retried.count : 0}`;
+    // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the window's events from the host's calendars, again when the window changes or Try again is pressed
+    useEffect(() => {
+      if (from === null || to === null || request === null) return;
+      let current = true;
+      void runKinCommand(registry, kinClient.myCalendar, {
+        environmentId,
+        input: { orgId, from, to, ...(fresh ? { fresh: true } : {}) },
+      }).then((result) => {
+        if (current) setHeld(kinCalendarHeld(scope, request, result));
+      });
+      return () => {
+        current = false;
+      };
+    }, [environmentId, orgId, from, to, fresh, scope, request]);
+    return {
+      state: kinCalendarState({ on, held, scope, request }),
+      retry: () => setRetried((before) => ({ window: asked, count: before.count + 1 })),
+    };
   }
 
   /** The owner's taps on an entry: its status, dates, repeat and payments. */
@@ -666,6 +705,7 @@ export function makeKinMoneyHooks<R, ER>(app: KinHookApp<R, ER>, uses: KinMoneyU
     useKinListContext,
     useKinListEntries,
     useKinDates,
+    useKinCalendar,
     useKinEntryChanges,
     useKinWorkFiles,
     useKinListChanges,
