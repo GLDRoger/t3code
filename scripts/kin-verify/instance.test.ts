@@ -6,15 +6,30 @@ import * as NodePath from "node:path";
 
 import { assert, describe, it } from "@effect/vitest";
 
-import { withoutRealModels } from "./instance.ts";
+import { scriptedSettings, withoutRealModels } from "./instance.ts";
 
 describe("kin-verify instance", () => {
   it("starts the server where every provider CLI fails and no provider key is set", () => {
     const dir = NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "kin-verify-stubs-"));
     try {
-      const base = { PATH: process.env.PATH, ANTHROPIC_API_KEY: "sk-ambermill-test" };
+      const base = {
+        PATH: process.env.PATH,
+        ANTHROPIC_API_KEY: "sk-ambermill-test",
+        ANTHROPIC_AUTH_TOKEN: "ambermill-token",
+        ANTHROPIC_BASE_URL: "https://gateway.example",
+      };
       const env = withoutRealModels(base, NodePath.join(dir, "no-models"));
       assert.isUndefined(env.ANTHROPIC_API_KEY);
+      assert.isUndefined(env.ANTHROPIC_AUTH_TOKEN);
+      assert.isUndefined(env.ANTHROPIC_BASE_URL);
+      const kept = { kinBackgroundModelSelection: { instanceId: "claudeAgent", model: "any" } };
+      assert.isNull(scriptedSettings({}, false).kinBackgroundModelSelection);
+      assert.isNull(scriptedSettings(kept, false).kinBackgroundModelSelection);
+      assert.notProperty(scriptedSettings({}, true), "kinBackgroundModelSelection");
+      assert.strictEqual(
+        scriptedSettings(kept, true).kinBackgroundModelSelection,
+        kept.kinBackgroundModelSelection,
+      );
       const claude = NodeChildProcess.spawnSync("claude", ["-p", "hello"], {
         env,
         encoding: "utf8",
