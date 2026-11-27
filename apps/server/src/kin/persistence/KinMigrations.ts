@@ -158,6 +158,8 @@ import Pins from "./migrations/K234_Pins.ts";
 import MailRuleRuns from "./migrations/K235_MailRuleRuns.ts";
 import BillCrops from "./migrations/K236_BillCrops.ts";
 import CardTapDeliveries from "./migrations/K237_CardTapDeliveries.ts";
+import BillSenders from "./migrations/K238_BillSenders.ts";
+import BillMail from "./migrations/K239_BillMail.ts";
 
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
@@ -397,6 +399,8 @@ const migrations = {
   "235_MailRuleRuns": MailRuleRuns,
   "236_BillCrops": BillCrops,
   "237_CardTapDeliveries": CardTapDeliveries,
+  "238_BillSenders": BillSenders,
+  "239_BillMail": BillMail,
 };
 const loader = Migrator.fromRecord(migrations);
 

@@ -146,6 +146,38 @@ const sameInstant = (a: string | null, b: number) => assert.strictEqual(Date.par
 const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, KinGatewayError>]> =
   [
     [
+      "reads one message with PDF metadata and returns null for a missing message",
+      ({ fake, provider, http, token, requests }) =>
+        Effect.gen(function* () {
+          const mail = fake.deliver({
+            to: OWNER,
+            from: "billing@inkspot.example",
+            subject: "November",
+            at: NOW,
+            body: "Inkspot Cloud",
+            files: [{ name: "inkspot.pdf", mimeType: "application/pdf", data: "AA==" }],
+          });
+          fake.deliver({
+            to: OWNER,
+            from: "accounts@harbor.example",
+            subject: "Harbor Power",
+            at: NOW + 1,
+            threadId: mail.threadId,
+            body: "Harbor Power",
+          });
+          const found = yield* provider.message(http, token, mailbox, mail.id);
+          assert.strictEqual(found?.messageId, mail.messageId);
+          assert.strictEqual(found?.body?.text, "Inkspot Cloud");
+          assert.include(found?.body?.attachments[0], { name: "inkspot.pdf", bytes: 1 });
+          assert.isFalse(
+            requests.some(
+              (url) => url.pathname.includes("/threads/") || url.searchParams.has("$filter"),
+            ),
+          );
+          assert.isNull(yield* provider.message(http, token, mailbox, "missing"));
+        }),
+    ],
+    [
       "lists inbox threads newest first, once each, by the address that received them",
       ({ fake, provider, call }) =>
         Effect.gen(function* () {

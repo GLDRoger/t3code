@@ -254,6 +254,11 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
           "kin.bankSenders.list",
           "kin.bankSenders.add",
           "kin.bankSenders.remove",
+          "kin.billSenders.list",
+          "kin.billSenders.approve",
+          "kin.billSenders.decline",
+          "kin.billSenders.remove",
+          "kin.billSenders.add",
         ]) {
           assert.include(table.owner, method);
           assert.include(table.coOwner, method);

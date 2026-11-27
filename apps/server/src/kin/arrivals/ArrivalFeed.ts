@@ -11,17 +11,24 @@ import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Scheduler from "../../scheduling/Scheduler.ts";
+import { KinAttachmentStore } from "../chat/KinAttachmentStore.ts";
 import { KinChatHub } from "../chat/KinChatHub.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
 import { KinConnections, MAIL_FEED_WINDOW } from "../connections/ConnectionsService.ts";
 import { type MailArrival, receivedAmong } from "../connections/MailProvider.ts";
+import { normalizeAddress } from "../connections/MailSignals.ts";
 import { MAIL_PRESETS } from "../connections/mailProviders.ts";
 import { DAY_MS, MINUTE_MS } from "../durations.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { mailLine } from "../pulse/outside.ts";
 import { sectionOnFor } from "../shell/KinShell.ts";
-import { normalizeAddress, quietBankSenderAddresses } from "../work/statements/bankSenderRows.ts";
+import { billsOnMail, pruneHeldBillMail } from "../work/billMail/billSenderArrivals.ts";
+import { offer } from "../work/billMail/billSenderCards.ts";
+import { readBillMail } from "../work/billMail/billMailReads.ts";
+import { KinRecords } from "../work/KinRecords.ts";
+import { quietBankSenderAddresses } from "../work/statements/bankSenderRows.ts";
 import * as ArrivalStore from "./ArrivalStore.ts";
 import { type ArrivalRows, classify } from "./classify.ts";
 import { companyRuleMailbox } from "./ruleAccess.ts";
@@ -104,8 +111,16 @@ const make = Effect.gen(function* () {
     const classified = classify(arrival, input.rows);
     const arrivalId =
       parked?.arrivalId ?? ArrivalStore.arrivalIdOf(orgId, input.connectionId, arrival.messageId);
-    // Our own mail in our Inbox is not an arrival.
+    const billArrival = {
+      orgId,
+      connectionId: input.connectionId,
+      mail: arrival,
+      knownBillers: input.rows.billers,
+      now,
+    };
+    // A company address already approved for bills is independent of ordinary arrival classes.
     if (classified.class === "own") {
+      yield* billsOnMail({ ...billArrival, candidateAllowed: false });
       if (parked !== undefined)
         yield* ArrivalStore.settleNothing(orgId, arrivalId, classified.reason, now);
       return undefined;
@@ -134,6 +149,7 @@ const make = Effect.gen(function* () {
       parked !== undefined,
     );
     if (!made) return undefined;
+    yield* billsOnMail(billArrival);
     return {
       arrivalId,
       class: classified.class,
@@ -160,8 +176,21 @@ const make = Effect.gen(function* () {
       ];
       const startedOn =
         messageIds.length === 0 ? new Set<string>() : yield* activeRuleIds(orgId, connectionId);
+      const approved = new Set(
+        messageIds.length === 0
+          ? []
+          : (yield* sql<{ address: string }>`SELECT address FROM kin_bill_senders
+              WHERE org_id = ${orgId} AND state = 'approved'`).map((row) => row.address),
+      );
       const reads =
-        messageIds.length === 0 ? [] : yield* connections.arrivals(orgId, connectionId, messageIds);
+        messageIds.length === 0
+          ? []
+          : yield* connections.arrivals(
+              orgId,
+              connectionId,
+              messageIds,
+              (arrival) => !approved.has(normalizeAddress(arrival.fromAddress) ?? ""),
+            );
       return yield* sql.withTransaction(
         Effect.gen(function* () {
           let rows: ArrivalRows | undefined;
@@ -344,7 +373,25 @@ const runtimeLayer = Layer.effectDiscard(
     const feed = yield* KinArrivalFeed;
     const sql = yield* SqlClient.SqlClient;
     const ticks = yield* Scheduler.Scheduler;
+    const chat = yield* KinChatService;
+    const connections = yield* KinConnections;
     const queue = yield* KinEventQueue;
+    const store = yield* Effect.serviceOption(KinAttachmentStore);
+    const repo = yield* Effect.serviceOption(KinChatRepository);
+    const hub = yield* Effect.serviceOption(KinChatHub);
+    const records = yield* Effect.serviceOption(KinRecords);
+    const drain =
+      Option.isSome(store) && Option.isSome(repo) && Option.isSome(hub) && Option.isSome(records)
+        ? (orgId: KinOrgId, now: number) =>
+            readBillMail(orgId, now).pipe(
+              Effect.provideService(KinConnections, connections),
+              Effect.provideService(KinEventQueue, queue),
+              Effect.provideService(KinAttachmentStore, store.value),
+              Effect.provideService(KinChatRepository, repo.value),
+              Effect.provideService(KinChatHub, hub.value),
+              Effect.provideService(KinRecords, records.value),
+            )
+        : () => Effect.logDebug("Kin bill mail reader services are unavailable");
     const due = new Map<string, { readonly at: number; readonly failures: number }>();
     let pruned = Number.NEGATIVE_INFINITY;
     yield* ticks.register(
@@ -353,7 +400,7 @@ const runtimeLayer = Layer.effectDiscard(
         const now = yield* Clock.currentTimeMillis;
         if (now - pruned >= PRUNE_EVERY_MS) {
           pruned = now;
-          yield* ArrivalStore.prune(now).pipe(
+          yield* Effect.andThen(ArrivalStore.prune(now), pruneHeldBillMail(now)).pipe(
             Effect.catch((cause) => Effect.logWarning("Kin couldn't prune arrivals", { cause })),
           );
         }
@@ -368,12 +415,14 @@ const runtimeLayer = Layer.effectDiscard(
           WHERE preset IN ${sql.in(MAIL_PRESETS)} AND removed_at IS NULL AND paused_at IS NULL
             AND state = 'active' AND person_id IS NULL
           ORDER BY org_id, created_at, connection_id`.pipe(NodeSqliteClient.readOnly);
+        const companies = new Set<string>();
         for (const { orgId, connectionId } of rows) {
           const key = `${orgId}\0${connectionId}`;
           const next = due.get(key);
           if (next !== undefined && now < next.at) continue;
           const exit = yield* Effect.exit(feed.read(KinOrgId.make(orgId), connectionId));
           if (Exit.isSuccess(exit)) {
+            companies.add(orgId);
             due.set(key, {
               at: now + (exit.value.more ? 0 : FEED_EVERY_MS),
               failures: 0,
@@ -392,6 +441,15 @@ const runtimeLayer = Layer.effectDiscard(
             cause: exit.cause,
           });
         }
+        for (const orgId of companies)
+          yield* Effect.gen(function* () {
+            const company = KinOrgId.make(orgId);
+            yield* offer(company, now).pipe(
+              Effect.provideService(KinChatService, chat),
+              Effect.catch(() => Effect.logWarning("Kin couldn't offer billing sender cards")),
+            );
+            yield* drain(company, now);
+          }).pipe(Effect.catchCause(() => Effect.logWarning("Kin couldn't drain bill mail")));
       }).pipe(Effect.catch((cause) => Effect.logWarning("Kin arrival scan failed", { cause }))),
     );
   }),

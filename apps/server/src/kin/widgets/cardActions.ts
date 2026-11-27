@@ -47,6 +47,7 @@ import {
   deferralWidgetId,
   makeDeferralStarter,
 } from "../triggers/deferrals.ts";
+import * as BillSenders from "../work/billMail/billSenders.ts";
 import { isHelperRefusal, KinRecords } from "../work/KinRecords.ts";
 import { viewOf } from "../work/leadWork.ts";
 import { repeatOf } from "../work/recordRows.ts";
@@ -152,6 +153,8 @@ const labelOf = (plan: PresentedPlan): string => {
       return routeShown(plan).label;
     case "recommend":
       return recommendShown(plan).label;
+    case "bill_sender":
+      return BillSenders.decisionLabel(plan.state);
     case "leaver":
       return leaverShown(plan).label;
     case "quiet_keep":
@@ -203,6 +206,8 @@ const lineOf = (plan: PresentedPlan): string => {
       return routeShown(plan).line;
     case "recommend":
       return recommendShown(plan).line;
+    case "bill_sender":
+      return `${BillSenders.decisionLabel(plan.state)} · ${plan.address}`;
     case "leaver":
       return leaverShown(plan).line;
     case "quiet_keep":
@@ -458,6 +463,7 @@ const drawDefault = Effect.fn("KinCardActions.drawDefault")(function* (
     sealed?.kind === "let_talk" ||
     sealed?.kind === "recommend" ||
     sealed?.kind === "mail_rule" ||
+    sealed?.kind === "bill_sender" ||
     sealed?.kind === "leaver" ||
     sealed?.kind === "undo_repaid" ||
     (sealed !== undefined && (isFactCard(sealed) || isQuiet(sealed)))
@@ -594,6 +600,7 @@ export const redraw = Effect.fn("KinCardActions.redraw")(function* (
     sealed.kind === "let_talk" ||
     sealed.kind === "recommend" ||
     sealed.kind === "mail_rule" ||
+    sealed.kind === "bill_sender" ||
     sealed.kind === "leaver" ||
     sealed.kind === "undo_repaid" ||
     isFactCard(sealed) ||
@@ -705,6 +712,16 @@ export const run = Effect.fn("KinCardActions.run")(function* (
   if (plan.kind === "let_talk") return yield* runRoute(tap, plan);
   if (plan.kind === "recommend") return yield* runRecommend(tap, plan);
   if (plan.kind === "mail_rule") return yield* notAllowed("Answer the mail rule on its own card.");
+  if (plan.kind === "bill_sender") {
+    yield* BillSenders.decide(
+      tap.orgId,
+      tap.personId,
+      plan.address,
+      plan.state,
+      tap.widget.widgetId,
+    );
+    return BillSenders.decisionOutcome(plan.state, plan.address);
+  }
   if (plan.kind === "leaver") return yield* runLeaver(tap, plan, deps.chat);
   if (plan.kind === "undo_repaid") {
     const { orgId, personId, widget } = tap;
