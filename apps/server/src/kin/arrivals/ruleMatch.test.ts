@@ -331,7 +331,7 @@ describe("filters and words a person can't see", () => {
     ["a right-to-left override", "File the bill. \u202edias\u202c"],
     ["a variation selector", "File the bill \u2764\ufe0f"],
     ["a control character", "File the bill.\u0007"],
-  ])("refuses an instruction with %s", ([, what]) =>
+  ] as const)("refuses an instruction with %s", ([, what]) =>
     Effect.gen(function* () {
       const error = yield* Effect.flip(prepareMailRule({ match, what, monthlyCap: undefined }));
       assert.strictEqual(

@@ -2112,9 +2112,16 @@ it.effect.each([true, false])(
           what,
           monthlyCap: 10,
         };
-        const cards = () => sql<{ widgetId: string; revision: number; state: string }>`
-          SELECT widget_id AS "widgetId", revision, state_json AS state FROM kin_widgets
-          WHERE org_id = ${person.orgId} AND type = 'mail_rule'`;
+        const cards = () => sql<{
+          widgetId: string;
+          revision: number;
+          state: string;
+          plan: string;
+        }>`
+          SELECT w.widget_id AS "widgetId", w.revision, w.state_json AS state, p.plan_json AS plan
+          FROM kin_widgets w JOIN kin_card_plans p ON p.org_id = w.org_id
+            AND p.widget_id = w.widget_id AND p.option_id = 'turn_on'
+          WHERE w.org_id = ${person.orgId} AND w.type = 'mail_rule'`;
         const rules = () => sql<{
           what: string;
           matchJson: string;
@@ -2286,6 +2293,22 @@ it.effect.each([true, false])(
               "This mail rule card no longer matches what Kin showed, so nothing was turned on.",
             );
           yield* sql`UPDATE kin_widgets SET state_json = ${card.state} WHERE widget_id = ${card.widgetId}`;
+          // The sealed plan is what the tap compares with: an edit to it turns nothing on.
+          for (const [path, value] of [
+            ["$.shown.monthlyCap", 99],
+            ["$.shown.contentSha256", "0".repeat(64)],
+            ["$.shown.lead.agentId", "lead-juniper-other"],
+          ] as const) {
+            yield* sql`UPDATE kin_card_plans SET plan_json = json_set(plan_json, ${path}, ${value})
+              WHERE widget_id = ${card.widgetId}`;
+            expect
+              .soft(yield* refused(), path)
+              .toBe(
+                "This mail rule card no longer matches what Kin showed, so nothing was turned on.",
+              );
+            yield* sql`UPDATE kin_card_plans SET plan_json = json_set(plan_json, ${path}, json_extract(${card.plan}, ${path}))
+              WHERE widget_id = ${card.widgetId}`;
+          }
           expect.soft(yield* rules()).toEqual([]);
           const tapped = yield* chatService.act(person, action);
           expect.soft(yield* rules()).toEqual([
