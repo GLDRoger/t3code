@@ -32,6 +32,7 @@ const ITEM_FRAGMENT = `fragment KinItem on IssueOrPullRequest {
   __typename
   ... on Issue {
     number state
+    author { login }
     assignees(first: 50) { pageInfo { hasNextPage } nodes { login } }
     closedByPullRequestsReferences(first: 50, includeClosedPrs: true) {
       pageInfo { hasNextPage } nodes { number repository { nameWithOwner } }
@@ -39,6 +40,7 @@ const ITEM_FRAGMENT = `fragment KinItem on IssueOrPullRequest {
   }
   ... on PullRequest {
     number pullState: state
+    author { login }
     assignees(first: 50) { pageInfo { hasNextPage } nodes { login } }
     reviewRequests(first: 20) {
       pageInfo { hasNextPage } nodes { requestedReviewer { ... on User { login } } }
@@ -73,6 +75,7 @@ const Issue = Schema.Struct({
   number: Schema.Int,
   state: Schema.Literals(["OPEN", "CLOSED"]),
   assignees: Logins,
+  author: Schema.optional(Schema.NullOr(Schema.Struct({ login: Schema.String }))),
   closedByPullRequestsReferences: Schema.Struct({
     pageInfo: NextPage,
     nodes: Schema.Array(
@@ -90,6 +93,7 @@ const Pull = Schema.Struct({
   number: Schema.Int,
   pullState: Schema.Literals(["OPEN", "CLOSED", "MERGED"]),
   assignees: Logins,
+  author: Schema.optional(Schema.NullOr(Schema.Struct({ login: Schema.String }))),
   reviewRequests: Schema.Struct({
     pageInfo: NextPage,
     nodes: Schema.Array(Schema.NullOr(Schema.Struct({ requestedReviewer: Reviewer }))),
@@ -265,6 +269,7 @@ const make = Effect.gen(function* () {
           if (item.assignees.pageInfo.hasNextPage || linked?.pageInfo.hasNextPage) continue;
           states.set(item.number, {
             state: lowerState(item),
+            ...(item.author == null ? {} : { author: item.author.login }),
             assignees: item.assignees.nodes.flatMap((node) => (node === null ? [] : [node.login])),
             linkedPrs: (linked?.nodes ?? []).flatMap((node) =>
               node === null || !sameRepo(node.repository.nameWithOwner, repo) ? [] : [node.number],

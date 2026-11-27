@@ -6,6 +6,8 @@ import type {
   KinWidgetId,
 } from "@t3tools/contracts";
 
+import type { NowState } from "../pulse/nowState.ts";
+
 /** The most lines a morning brief or evening summary body may have, widgets aside. */
 export const ROUTINE_MAX_LINES = 12;
 const LINE_MAX = 200;
@@ -15,6 +17,8 @@ const TEXT_MAX = 280;
 
 export interface RoutineRow {
   readonly title: string;
+  readonly written?: string;
+  readonly more?: true;
   readonly note?: string;
   readonly itemId?: KinMemoryItemId;
   readonly link?: string;
@@ -23,6 +27,7 @@ export interface RoutineRow {
 
 export interface MorningFacts {
   readonly routine: "morning_brief";
+  readonly now: NowState;
   readonly dueToday: ReadonlyArray<RoutineRow>;
   /** Owner-local Mondays only; other days leave it empty. */
   readonly dueThisWeek: ReadonlyArray<RoutineRow>;
@@ -45,6 +50,7 @@ export type RoutineGithubGap = "unread_repos" | "more_pulls" | "no_login";
 
 export interface EveningFacts {
   readonly routine: "evening_summary";
+  readonly now: NowState;
   readonly done: ReadonlyArray<RoutineRow>;
   readonly slipped: ReadonlyArray<RoutineRow>;
   readonly promised: ReadonlyArray<RoutineRow>;
@@ -55,6 +61,9 @@ export interface EveningFacts {
   readonly failedWakeups: number;
   readonly failedDreams: number;
 }
+
+type MorningRows = Omit<MorningFacts, "now">;
+type EveningRows = Omit<EveningFacts, "now">;
 
 export interface RoutineHeader {
   readonly day: string;
@@ -119,7 +128,7 @@ function headerLines(routine: KinLeadRoutine, header: RoutineHeader) {
   ];
 }
 
-function morningLines(facts: MorningFacts) {
+function morningLines(facts: MorningRows) {
   const lines = [
     ...facts.dueToday.map((row) => `Due today: ${entry(row)}`),
     ...inline("Due this week", facts.dueThisWeek),
@@ -157,7 +166,7 @@ function morningLines(facts: MorningFacts) {
   return lines;
 }
 
-function eveningLines(facts: EveningFacts) {
+function eveningLines(facts: EveningRows) {
   const lines = [
     ...inline("Done", facts.done),
     ...inline("Slipped or moved", facts.slipped),
@@ -186,7 +195,7 @@ function fitLines(lines: ReadonlyArray<string>, max = ROUTINE_MAX_LINES) {
 }
 
 const sections = (
-  facts: MorningFacts | EveningFacts,
+  facts: MorningRows | EveningRows,
 ): ReadonlyArray<[KinRoutineSection, ReadonlyArray<RoutineRow>]> =>
   facts.routine === "morning_brief"
     ? [
@@ -214,7 +223,7 @@ const NOTHING = {
 };
 
 /** No fact needs the owner (what GitHub couldn't be read is not one): such a routine is not sent. */
-export const routineEmpty = (facts: MorningFacts | EveningFacts) =>
+export const routineEmpty = (facts: MorningRows | EveningRows) =>
   (facts.routine === "morning_brief" ? morningLines({ ...facts, github: [] }) : eveningLines(facts))
     .length === 0;
 
@@ -222,7 +231,7 @@ export const routineEmpty = (facts: MorningFacts | EveningFacts) =>
  * The routine message: at most `ROUTINE_MAX_LINES` lines of body plus one card. `empty` when no
  * fact needs the owner (what GitHub couldn't be read is not one): such a routine is not sent.
  */
-export function renderRoutine(header: RoutineHeader, facts: MorningFacts | EveningFacts) {
+export function renderRoutine(header: RoutineHeader, facts: MorningRows | EveningRows) {
   const lines = facts.routine === "morning_brief" ? morningLines(facts) : eveningLines(facts);
   const empty = routineEmpty(facts);
   const body = fitLines([

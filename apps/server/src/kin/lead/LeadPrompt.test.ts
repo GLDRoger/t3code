@@ -3458,6 +3458,67 @@ it.effect("a due reminder states its facts once and always gets a reply", () =>
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("a check-in's live state reaches only a turn its owner-level owner alone reads", () =>
+  Effect.gen(function* () {
+    const repo = yield* leadWithOwner;
+    const sql = yield* SqlClient.SqlClient;
+    yield* repo.insertPerson({
+      orgId,
+      personId: teammateId,
+      displayName: "Zoya",
+      handle: "teammate",
+      githubLogin: null,
+      createdAt: timestamp,
+    });
+    yield* sql`UPDATE kin_people SET access = CASE person_id WHEN ${teammateId} THEN 'member'
+      ELSE 'owner' END WHERE org_id = ${orgId}`;
+    yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url_host,
+        auth, reach, state, account_label, created_at, updated_at, person_id)
+      VALUES (${orgId}, 'accounts', 'google', 'Accounts', 'builtin', 'gmail.googleapis.com',
+        'oauth', 'closed', 'active', 'accounts@tidewater.example', 0, 0, NULL),
+        (${orgId}, 'zoya', 'google', 'Zoya mail', 'builtin', 'gmail.googleapis.com',
+        'oauth', 'closed', 'active', 'zoya@tidewater.example', 0, 0, ${teammateId})`;
+    const prompt = yield* KinLeadPrompt;
+    const build = Effect.fn("test.afternoon")(function* (wakeupId: string) {
+      const event = decodeEvent({
+        _tag: "pulse",
+        orgId,
+        agentId,
+        eventId: `pulse-${wakeupId}`,
+        receivedAt: timestamp,
+        provenance: { _tag: "system" },
+        dedupeKey: null,
+        factKeys: [],
+        checkIn: { scheduleId: "checkin-afternoon", title: "Check-in", what: "Look.", slot: "s" },
+      });
+      yield* stored(wakeupId, [event]);
+      return yield* prompt.build({
+        ...input,
+        wakeupId: KinWakeupId.make(wakeupId),
+        lane: { chatId, mode: "notice" },
+        events: [event],
+      });
+    });
+    const alone = yield* build("alone");
+    expect(alone).toContain("Accounts (accounts@tidewater.example): signed in");
+    expect(alone).not.toContain("zoya@tidewater.example");
+    yield* repo.addMember({
+      orgId,
+      chatId,
+      memberId: teammateMember,
+      principal: { _tag: "person", personId: teammateId },
+      role: "member",
+      joinedAt: timestamp,
+      leftAt: null,
+      mutedUntil: null,
+    });
+    const shared = yield* build("shared");
+    expect(shared).toContain("Someone besides the owner can read this reply.");
+    expect(shared).not.toContain("accounts@tidewater.example");
+    expect(shared).not.toContain("zoya@tidewater.example");
+  }).pipe(Effect.provide(layer)),
+);
+
 // Owner, 19 Nov: the morning brief comes every morning, a quiet one too, and so do the evening
 // summary and the weekly brief; only another check-in may end silent.
 it.effect.each([
