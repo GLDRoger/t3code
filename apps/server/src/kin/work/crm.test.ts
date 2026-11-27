@@ -1274,6 +1274,160 @@ it.effect("project health moves on read as entries go late or wait, with no turn
   }).pipe(Effect.provide(layer)),
 );
 
+it.effect("project task rows keep their amounts only for readers with Money", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const rhea = owner;
+    const zoya = mate;
+    const arjun = { ...mate, personId: KinPersonId.make("arjun") };
+    yield* sql`UPDATE kin_people SET display_name = 'Rhea' WHERE person_id = ${rhea.personId}`;
+    yield* sql`UPDATE kin_people SET display_name = 'Zoya', sees_money = 0
+      WHERE person_id = ${zoya.personId}`;
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at, sees_money)
+      VALUES (${arjun.personId}, ${orgId}, 'arjun', 'Arjun', ${at}, 1)`;
+    const project = yield* Clients.createProject([rhea], {
+      orgId,
+      name: "Tidewater Freight dispatch",
+      members: [zoya, arjun],
+      clientRequestId: "dispatch",
+    });
+    const dueAt = "1970-01-03T00:00:00.000Z";
+    const amount = { minor: 123_456, currency: "INR" };
+    for (const [title, category, state] of [
+      ["Confirm dispatch", "task", "open"],
+      ["Approve collection", "task", "waiting"],
+      ["Dispatch review", "meeting", "open"],
+    ] as const) {
+      const row = yield* OwnerWork.create([rhea], {
+        orgId,
+        project: project.key,
+        title,
+        category,
+        clientRequestId: title,
+        ...(title === "Confirm dispatch" ? { dueAt } : {}),
+      });
+      yield* OwnerWork.update([rhea], {
+        orgId,
+        key: row.key,
+        rev: row.rev,
+        amount,
+        ...(state === "waiting" ? { state, waitingOn: rhea } : {}),
+      });
+    }
+
+    assert.include(yield* Effect.flip(OwnerMoney.money([zoya], { orgId })), {
+      reason: "not_allowed",
+    });
+    const rowsOf = (page: Effect.Success<ReturnType<typeof Clients.project>>) => ({
+      nextDue: page.nextDue,
+      blocked: page.blocked[0]?.record,
+      meeting: page.meetings?.[0],
+    });
+    const before = yield* Clients.project([rhea], { orgId, key: project.key });
+    const allowed = yield* Clients.project([arjun], { orgId, key: project.key });
+    assert.strictEqual(JSON.stringify(rowsOf(allowed)), JSON.stringify(rowsOf(before)));
+    for (const row of Object.values(rowsOf(before)))
+      assert.strictEqual(JSON.stringify(row?.amount), JSON.stringify(amount));
+
+    const withheld = yield* Clients.project([zoya], { orgId, key: project.key });
+    const serialized = JSON.stringify(withheld);
+    assert.deepStrictEqual(
+      Object.fromEntries(
+        Object.entries(rowsOf(withheld)).map(([name, row]) => [
+          name,
+          JSON.stringify(row)?.includes('"amount":'),
+        ]),
+      ),
+      { nextDue: false, blocked: false, meeting: false },
+    );
+    assert.notInclude(serialized, '"amount":');
+    assert.notInclude(serialized, String(amount.minor));
+    const withoutAmount = Object.values(rowsOf(before)).map((value) => {
+      const { amount: _amount, ...row } = value!;
+      return row;
+    });
+    assert.deepStrictEqual(Object.values(rowsOf(withheld)), withoutAmount);
+    assert.include(withheld.nextDue, { title: "Confirm dispatch", dueAt });
+  }).pipe(Effect.provide(layer)),
+);
+
+it.effect("the generic project sheet keeps private notes and value history from members", () =>
+  Effect.gen(function* () {
+    yield* seed;
+    const sql = yield* SqlClient.SqlClient;
+    const rhea = owner;
+    const zoya = mate;
+    const arjun = { ...mate, personId: KinPersonId.make("arjun") };
+    yield* sql`UPDATE kin_people SET display_name = 'Rhea' WHERE person_id = ${rhea.personId}`;
+    yield* sql`UPDATE kin_people SET display_name = 'Zoya', sees_clients = 1, sees_money = 0
+      WHERE person_id = ${zoya.personId}`;
+    yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+      VALUES (${arjun.personId}, ${orgId}, 'arjun', 'Arjun', ${at})`;
+    const project = yield* Clients.createProject([rhea], {
+      orgId,
+      name: "Tidewater Freight dispatch",
+      owner: arjun,
+      members: [zoya],
+      notes: "Private terms for Juniper Cold Chain",
+      value: { minor: 123_456, currency: "USD" },
+      clientRequestId: "dispatch",
+    });
+    const revised = yield* Clients.updateProject([rhea], {
+      orgId,
+      key: project.key,
+      rev: project.rev,
+      name: "Dispatch to Juniper Cold Chain",
+      notes: "Revised private terms for Juniper Cold Chain",
+      value: { minor: 234_567, currency: "USD" },
+    });
+    yield* Clients.updateProject([rhea], {
+      orgId,
+      key: project.key,
+      rev: revised.rev,
+      value: { minor: 345_678, currency: "USD" },
+    });
+
+    const input = { orgId, key: project.key };
+    const snapshot = (sheet: Effect.Success<ReturnType<typeof OwnerWork.get>>) => ({
+      notes: sheet.notes,
+      history: sheet.changes.map(({ kind, fields }) =>
+        [kind, ...fields.map(({ field, from, to }) => `${field}: ${from} → ${to}`)].join(" | "),
+      ),
+    });
+    const before = {
+      notes: "Revised private terms for Juniper Cold Chain",
+      history: [
+        "updated | value: $2,345.67 → $3,456.78",
+        "updated | title: Tidewater Freight dispatch → Dispatch to Juniper Cold Chain | value: $1,234.56 → $2,345.67 | notes: Private terms for Juniper Cold Chain → Revised private terms for Juniper Cold Chain",
+        "created | title: null → Tidewater Freight dispatch | state: null → open | owner: null → person:arjun | value: null → $1,234.56 | members: null → person:mate",
+      ],
+    };
+    for (const reader of [rhea, arjun])
+      assert.deepStrictEqual(snapshot(yield* OwnerWork.get([reader], input)), before);
+
+    assert.strictEqual((yield* Clients.project([zoya], input)).project.notes, "");
+    const sheet = yield* OwnerWork.get([zoya], input);
+    const serialized = JSON.stringify(sheet);
+    assert.deepStrictEqual(
+      { notes: /private terms/i.test(serialized), amount: /[123],\d{3}\.\d{2}/u.test(serialized) },
+      { notes: false, amount: false },
+    );
+    assert.strictEqual(sheet.notes, "");
+    assert.deepStrictEqual(
+      sheet.changes.map(({ kind, fields }) => [kind, fields.map((field) => field.field)]),
+      [
+        ["updated", ["title"]],
+        ["created", ["title", "state", "owner"]],
+      ],
+    );
+    yield* sql`UPDATE kin_people SET sees_money = 1 WHERE person_id = ${zoya.personId}`;
+    const withMoney = JSON.stringify(yield* OwnerWork.get([zoya], input));
+    assert.notInclude(withMoney, "private terms");
+    assert.include(withMoney, "$3,456.78");
+  }).pipe(Effect.provide(layer)),
+);
+
 it.effect("an overdue invoice or a long silence with the client puts a project at risk", () =>
   Effect.gen(function* () {
     const sql = yield* SqlClient.SqlClient;
@@ -5486,7 +5640,7 @@ it.effect(
           value: { minor, currency: currency as never },
           clientRequestId: title,
         });
-      yield* deal(tallmoor.key, "Invented pilot", 1_000_000, "EUR");
+      const pilotDeal = yield* deal(tallmoor.key, "Invented pilot", 1_000_000, "EUR");
       yield* deal(tallmoor.key, "Invented support", 500_000, "USD");
       yield* deal(hidden.key, "Invented quiet deal", 5_000_000, "EUR");
       yield* deal(other.key, "Invented other deal", 100, "EUR");
@@ -5541,11 +5695,28 @@ it.effect(
         won: { count: 1, values: [{ minor: 900_000, currency: "EUR" }] },
         audience: 4,
       });
-      // A teammate on the campaign without Clients sees the project but none of its results.
+      // Deal values and campaign totals belong to Clients, not Money.
+      const pilotInput = { orgId, key: pilotDeal.deal.key };
+      yield* sql`UPDATE kin_people SET sees_clients = 0, sees_money = 0 WHERE person_id = ${mateId}`;
       const mateOff = yield* Clients.project([mate], { orgId, key: fair.key });
       assert.notProperty(mateOff, "results");
-      // With Clients on, the private prospect, its deal and its contact are in no count.
+      assert.include(yield* OwnerWork.get([mate], pilotInput).pipe(Effect.flip), {
+        reason: "not_found",
+      });
+      assert.include(yield* Deals.deals([mate], { orgId, campaign: fair.key }).pipe(Effect.flip), {
+        reason: "not_allowed",
+      });
+      // With Clients on and Money still off, a visible deal keeps its value even in history.
       yield* sql`UPDATE kin_people SET sees_clients = 1 WHERE person_id = ${mateId}`;
+      const pilotSheet = yield* OwnerWork.get([mate], pilotInput);
+      assert.deepInclude(
+        pilotSheet.changes.flatMap((change) => change.fields),
+        {
+          field: "value",
+          from: null,
+          to: "€10,000.00",
+        },
+      );
       const matePage = yield* Clients.project([mate], { orgId, key: fair.key });
       assert.deepStrictEqual(matePage.results, {
         prospects: 1,
@@ -5584,6 +5755,11 @@ it.effect(
         ["Invented pilot", "Invented support"],
       );
       assert.deepStrictEqual(mateOpen.open, matePage.results!.open);
+      const mateWon = yield* listed(mate, "won");
+      assert.deepStrictEqual(
+        mateWon.deals.map((one) => one.value),
+        matePage.results!.won.values,
+      );
       // Results move with the rows: winning makes a prospect a client.
       const pilot = (yield* Deals.deals([owner], { orgId, party: tallmoor.key })).deals.find(
         (one) => one.title === "Invented pilot",

@@ -127,6 +127,7 @@ import {
   parseChanges,
   principal,
   principalId,
+  type ProjectHistory,
   type RecordRow,
   repeatOf,
   samePrincipal,
@@ -995,6 +996,7 @@ export class KinRecords extends Context.Service<
     readonly detail: (
       row: RecordRow,
       changeLimit?: number,
+      projectHistory?: ProjectHistory,
     ) => Effect.Effect<
       Effect.Success<ReturnType<typeof toDetail>> &
         Pick<KinRecordDetail, "askedBy" | "comments" | "olderComments">,
@@ -4337,11 +4339,11 @@ const make = Effect.gen(function* () {
     getById: Effect.fn("KinRecords.getById")(function* (orgId, recordId) {
       return yield* failed(byId(orgId, recordId).pipe(provideSql));
     }),
-    detail: Effect.fn("KinRecords.detail")(function* (row, changeLimit) {
+    detail: Effect.fn("KinRecords.detail")(function* (row, changeLimit, projectHistory) {
       const now = yield* Clock.currentTimeMillis;
       return yield* failed(
         Effect.gen(function* () {
-          const detail = yield* toDetail(row, now, changeLimit);
+          const detail = yield* toDetail(row, now, changeLimit, projectHistory);
           const [record] = yield* sql<{ askedBy: string | null }>`SELECT
               asked_by_person_id AS "askedBy" FROM kin_records
             WHERE org_id = ${row.orgId} AND record_id = ${row.recordId}`;
