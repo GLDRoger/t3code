@@ -45,6 +45,7 @@ import { visualPage } from "../widgets/visualCard.ts";
 import { KinPictures } from "./KinPictures.ts";
 import { KinPictureRenderer, type PictureBrand, type PictureFile } from "./renderer.ts";
 import { KinPictureSize, pictureOutput } from "./sizes.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 /**
  * What `kin_picture` takes: `html` to draw a page or `prompt` to generate from words, never both.
@@ -124,6 +125,7 @@ const messageAskers = Effect.fn("KinPictures.askers")(function* (lead: Lead) {
     FROM kin_events e JOIN kin_messages m ON m.org_id = e.org_id
       AND m.message_id = json_extract(e.json, '$.messageId')
       AND m.chat_id = json_extract(e.json, '$.chatId') AND m.author_kind = 'human'
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
     WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId}
       AND e.wakeup_id = ${lead.wakeupId} AND e.tag IN ('chat.message', 'widget.action')
       AND json_extract(e.json, '$.origin') IS NULL

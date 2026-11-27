@@ -6,8 +6,10 @@ import type {
   KinMoneySummary,
   KinMoneyTotals,
   KinRecordKey,
+  KinShell,
 } from "@t3tools/contracts";
 
+import { kinBilledName } from "./kinBillTo.ts";
 import {
   KIN_LIST_DEFAULT_FILTER,
   KIN_MONEY_NOTHING,
@@ -25,6 +27,7 @@ import {
   type KinListFilter,
 } from "./kinLists.ts";
 import { kinCount } from "./kinCount.ts";
+import { kinSectionNamed } from "./kinShell.ts";
 
 /**
  * The Money part of Work: what is owed to us, what came in and went out, and the year so far.
@@ -36,11 +39,14 @@ export const KIN_MONEY = {
   loadFailed: "Couldn't load Money",
   owed: "Owed to us",
   overdue: "Overdue",
+  toPay: "To pay",
+  dueSoon: "Due within 7 days",
+  late: (count: number) => `${count} late`,
   byClient: "Who owes us",
   noClient: "No client",
   nothingOwed: "Nobody owes you anything right now.",
   received: "Received",
-  tdsDeducted: "TDS deducted",
+  tdsDeducted: "Tax withheld",
   spent: "Spent",
   byCategory: "Spent by category",
   uncategorised: "No category",
@@ -94,11 +100,12 @@ export const KIN_MONEY = {
 };
 
 /**
- * Money's blocks, top to bottom: who owes us, then this month against last, ahead of what is
- * suggested, the next 30 days and cash; the folded rows last.
+ * Money's blocks, top to bottom: who owes us and what we owe, then this month against last, ahead
+ * of what is suggested, the next 30 days and cash; the folded rows last.
  */
 export const KIN_MONEY_BLOCKS = [
   "owed",
+  "toPay",
   "month",
   "suggested",
   "outlook",
@@ -183,6 +190,9 @@ export interface KinMoneyView {
   readonly suggestedMore: ReadonlyArray<{ readonly label: string; readonly open: KinListOpen }>;
   readonly owed: KinMoneyFigure;
   readonly overdue: KinMoneyFigure;
+  /** Kept To-pay expenses; null when there are none or from an older host. */
+  readonly toPay: KinMoneyFigure | null;
+  readonly dueSoon: KinMoneyFigure | null;
   readonly clients: ReadonlyArray<KinMoneyClientView>;
   /** The owing clients past those sent, as one row; null with none, and from an older host. */
   readonly clientsMore: string | null;
@@ -212,12 +222,17 @@ export interface KinMoneyView {
 const lines = (totals: KinMoneyTotals) =>
   totals.length === 0 ? [KIN_MONEY_NOTHING] : kinTotalsLines(totals);
 
-/** The Money summary as the screen shows it. `lists` says which figures have entries to open. */
+/**
+ * The Money summary as the screen shows it. `lists` says which figures have entries to open;
+ * `shell` says Kin's words about clients in the company's own name for them.
+ */
 export function kinMoneyView(
   summary: KinMoneySummary,
   lists: ReadonlyArray<KinListDefinition>,
+  shell?: KinShell | null,
 ): KinMoneyView {
-  const has = (id: string) => lists.find((def) => def.list === id && def.archivedAt === null);
+  // An archived list's entries still count, so its figures still open it, marked archived.
+  const has = (id: string) => lists.find((def) => def.list === id);
   const invoices = has(INVOICES);
   const expenses = has(EXPENSES);
   const open = (
@@ -230,11 +245,11 @@ export function kinMoneyView(
         { list: def.list, filter: { ...KIN_LIST_DEFAULT_FILTER, kept: true, ...filter } };
   // Issued and not yet paid in full: the state the host counts as owed.
   const owing = { show: "waiting" as const };
-  // Paid expenses by their own date: what the host counts as spent.
-  const spentIn = (period: KinListFilter["period"], category?: string | null) =>
+  // Money out by the day it left the accounts: exactly what the host counts as spent.
+  const spentIn = (spent: KinListFilter["spent"], category?: string | null) =>
     open(expenses, {
       show: "done",
-      period,
+      spent,
       ...(category === undefined ? {} : category === null ? { noCategory: true } : { category }),
     });
   const receivedIn = (paid: KinListFilter["paid"]) => open(invoices, { paid });
@@ -252,11 +267,14 @@ export function kinMoneyView(
     totals.find((money) => money.currency === currency)?.minor ?? 0;
   const nothing =
     summary.owed.invoices === 0 &&
+    summary.toPay === undefined &&
     summary.upcomingTotal === 0 &&
     currencies.length === 0 &&
     summary.receivedThisFinancialYear.length === 0 &&
     summary.spentThisFinancialYear.length === 0 &&
     (summary.suggested ?? []).length === 0;
+  const bills = summary.toPay;
+  const openBills = open(expenses, { show: "open" });
   return {
     empty: nothing && !lists.some((def) => !def.builtIn),
     suggested: (summary.suggested ?? []).map(({ record, listName }) => ({
@@ -264,7 +282,7 @@ export function kinMoneyView(
       rev: record.rev,
       title: record.title,
       amount: record.amount === undefined ? null : kinMoneyText(record.amount),
-      line: [record.key, listName, KIN_SUGGESTED, record.party?.title ?? null]
+      line: [record.key, listName, KIN_SUGGESTED, kinBilledName(record)]
         .filter((part) => part !== null)
         .join(" · "),
     })),
@@ -298,9 +316,37 @@ export function kinMoneyView(
       late: summary.owed.overdueInvoices > 0,
       open: open(invoices, { ...owing, late: true }),
     },
+    toPay:
+      bills === undefined
+        ? null
+        : {
+            id: "to-pay",
+            label: KIN_MONEY.toPay,
+            lines: lines(bills.total),
+            note: bills.bills === 0 ? null : kinCount(bills.bills, "bill"),
+            late: false,
+            open: openBills,
+          },
+    dueSoon:
+      bills === undefined
+        ? null
+        : {
+            id: "due-soon",
+            label: KIN_MONEY.dueSoon,
+            lines: lines(bills.dueSoon),
+            note:
+              bills.lateBills > 0
+                ? KIN_MONEY.late(bills.lateBills)
+                : bills.dueSoonBills === 0
+                  ? null
+                  : kinCount(bills.dueSoonBills, "bill"),
+            late: bills.lateBills > 0,
+            open: openBills,
+          },
     clients: summary.owed.byClient.map((client) => ({
       key: client.party?.key ?? "none",
-      name: client.party?.title ?? KIN_MONEY.noClient,
+      // The no-client group names the typed names it holds, when the host sends them.
+      name: client.party?.title ?? client.billTo ?? kinSectionNamed(shell, KIN_MONEY.noClient),
       owed: lines(client.owed),
       overdue:
         client.oldestOverdueDays === null
@@ -317,7 +363,7 @@ export function kinMoneyView(
     clientsMore:
       (summary.owed.byClientMore ?? 0) === 0
         ? null
-        : KIN_MONEY.clientsMore(summary.owed.byClientMore ?? 0),
+        : kinSectionNamed(shell, KIN_MONEY.clientsMore(summary.owed.byClientMore ?? 0)),
     monthLabel: kinMonthLabel(summary.thisMonth),
     received: {
       id: "received",

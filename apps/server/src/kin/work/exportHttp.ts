@@ -64,4 +64,6 @@ export const layer = HttpRouter.add(
       Effect.logWarning("Kin export refused.", cause).pipe(Effect.as(refused())),
     ),
   ),
+  // The path carries a signed token; spans and request logs record it as REDACTED.
+  { redactedParams: ["*"] },
 );

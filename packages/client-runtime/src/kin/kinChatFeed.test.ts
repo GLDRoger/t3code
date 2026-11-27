@@ -6,6 +6,7 @@ import type {
   KinPresence,
   KinWidget,
 } from "@t3tools/contracts";
+import { KinMemberId, KinWakeupId, KinWidgetId } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -39,7 +40,11 @@ import {
   kinRowSeq,
   kinSeqToMarkRead,
   kinUnreadToMark,
+  kinNewLineSeq,
+  kinNextNewLineHold,
+  kinOwnReadSeq,
   kinUnseenCount,
+  latestKinSeq,
   mergeKinFeed,
   type KinFeedRow,
   type KinFeedViewer,
@@ -224,6 +229,58 @@ describe("rows", () => {
     });
   });
 
+  it("keeps the Team-room card with its own reply inside the discussion fold", () => {
+    const discussionId = "TD-1" as NonNullable<KinMessage["discussionId"]>;
+    const discussion = { floorRunId: `team:${discussionId}`, discussionId };
+    const sourceWakeupId = KinWakeupId.make("standup-ask");
+    const person = { ...ownMessage(1), body: "Work out Monday's standup with the team." };
+    const card = agentMessage(2, {
+      floorRunId: "6379903d-38e8-455d-8100-f0b1e845a6f9",
+      sourceWakeupId,
+      body: "",
+      widgetId: KinWidgetId.make("choice"),
+    });
+    const reply = agentMessage(3, {
+      ...discussion,
+      sourceWakeupId,
+      body: "Monday's agenda is written. Pick a time for standup.",
+    });
+    const peer = agentMessage(4, {
+      ...discussion,
+      sourceWakeupId: KinWakeupId.make("finance-answer"),
+      author: { ...reply.author, agentId: KIN_FIXTURE_QA } as KinMessage["author"],
+      body: "The Orbit Dental Care invoice is ready for review.",
+    });
+    const closing = agentMessage(5, {
+      ...discussion,
+      sourceWakeupId: KinWakeupId.make("standup-close"),
+      intent: "decision",
+      body: "Calling it for Monday.",
+    });
+    const order = (messages: ReadonlyArray<KinMessage>, closed = false) =>
+      messageRows(
+        messages,
+        viewer,
+        closed ? new Set([discussion.floorRunId]) : new Set(),
+        new Date(person.createdAt),
+        [],
+        true,
+      ).map((row) => row.key);
+    const rows = [person, card, reply, peer, closing];
+    const fold = `fold:${discussion.floorRunId}`;
+    expect([
+      order(rows, true),
+      order(rows),
+      order([person, card, { ...peer, sourceWakeupId }, reply, closing]),
+      order([person, card, { ...reply, floorRunId: "unrelated" }, peer, closing]),
+    ]).toEqual([
+      [person.messageId, fold],
+      [person.messageId, fold, reply.messageId, card.messageId, peer.messageId, closing.messageId],
+      [person.messageId, card.messageId, fold, peer.messageId, reply.messageId, closing.messageId],
+      [person.messageId, card.messageId, reply.messageId, fold, peer.messageId, closing.messageId],
+    ]);
+  });
+
   it("keeps a deleted agent message inside its run's fold", () => {
     const messages = all
       .slice(19, 26)
@@ -354,6 +411,17 @@ describe("rows", () => {
           author: { _tag: "system" },
           widgetId: "memory-changes:w1" as KinMessage["widgetId"],
         }),
+        // Bills added from Money: their files ride on the card's message for who may open
+        // them, and show in the card's review list, not in the chat.
+        agentMessage(7, {
+          kind: "system",
+          author: { _tag: "system" },
+          widgetId: "bills:b-1" as KinMessage["widgetId"],
+          body: "8 bills: 8 read.",
+          attachments: [
+            { type: "image", id: "bill-1", name: "b1.jpg", mimeType: "image/jpeg", sizeBytes: 9 },
+          ],
+        }),
         agentMessage(6, {
           kind: "system",
           author: { _tag: "system" },
@@ -378,6 +446,7 @@ describe("rows", () => {
       true,
       true,
       false,
+      false,
     ]);
     expect(rows[1]!.type).toBe("system");
     // A host card is a system message with a widget; it draws as its card, not a line.
@@ -385,11 +454,52 @@ describe("rows", () => {
       type: "message",
       message: { widgetId: "memory-changes:w1", body: "" },
     });
-    // A worker's screenshots draw as a message with its words and the images.
     expect(rows[4]).toMatchObject({
+      type: "message",
+      message: { widgetId: "bills:b-1", body: "", attachments: [] },
+    });
+    // A worker's screenshots draw as a message with its words and the images.
+    expect(rows[5]).toMatchObject({
       type: "message",
       message: { body: "Screenshots from Test PR 7", attachments: [{ name: "01-home.png" }] },
     });
+  });
+
+  it("a hand-off row already in the cache is not drawn", () => {
+    const handoff = (seq: number, messageId: string, overrides: Partial<KinMessage> = {}) =>
+      agentMessage(seq, {
+        messageId: messageId as KinMessage["messageId"],
+        kind: "system",
+        author: { _tag: "system" },
+        relay: { kind: "sent_by", agentId: KIN_FIXTURE_AGENT },
+        ...overrides,
+      });
+    const rows = messageRows(
+      [
+        agentMessage(1),
+        handoff(2, "kin-handoff:a1"),
+        handoff(3, "kin-handoff-back:a1", {
+          relay: { kind: "reply_from", agentId: KIN_FIXTURE_AGENT },
+        }),
+        handoff(4, "kin-handoff:b2", { relay: undefined }),
+        handoff(5, "kin-handoff:c3", {
+          relay: {
+            kind: "sent_by",
+            agentId: KIN_FIXTURE_AGENT,
+            personId: "zoya" as KinPersonId,
+            personName: "Zoya",
+          },
+        }),
+        handoff(6, "kin-handoff:d4", { discussionId: "d-1" as KinMessage["discussionId"] }),
+      ],
+      viewer,
+      new Set(),
+    );
+    expect(rows.flatMap((row) => ("message" in row ? [row.message.messageId] : []))).toEqual([
+      "m1",
+      "kin-handoff:c3",
+      "kin-handoff:d4",
+    ]);
   });
 
   it("draws Kin's morning page as a page under the greeting, never as a notice line", () => {
@@ -679,6 +789,209 @@ describe("streaming replies", () => {
     ]);
   });
 
+  it("puts Tidewater Freight's reply before its cards while streaming and after reload", () => {
+    const sourceWakeupId = KinWakeupId.make("tidewater-turn");
+    const card = (seq: number, type: string) => ({
+      ...agentMessage(seq, { body: "", widgetId: KinWidgetId.make(type) }),
+      sourceWakeupId,
+    });
+    const question = card(2, "choice");
+    const doc = card(3, "doc");
+    const text = {
+      ...agentMessage(4, {
+        clientMessageId: "reply:tidewater",
+        body: "Rhea, Zoya has two pickup options for Tidewater Freight.",
+      }),
+      sourceWakeupId,
+    };
+    const next = card(5, "choice-next");
+    const otherTurn = {
+      ...card(6, "choice-other"),
+      sourceWakeupId: KinWakeupId.make("later-turn"),
+    };
+    const prior = ownMessage(1);
+    const delta = {
+      _tag: "draft" as const,
+      draftId: "tidewater",
+      agentId: KIN_FIXTURE_AGENT,
+      offset: 0,
+      text: text.body,
+      sourceWakeupId,
+    };
+    const live = applyKinChatEvent(feed([prior, question, doc]), delta, text.createdAt);
+    const order = (rows: ReadonlyArray<KinMessage>, drafts = emptyKinChat.drafts) =>
+      shape(messageRows(rows, viewer, new Set(), streamingAt, drafts)).map((row) =>
+        typeof row === "string" ? row : row[0],
+      );
+    expect([
+      order(live.messages),
+      order(live.messages, live.drafts),
+      order([prior, question, doc, text, next, otherTurn]),
+      order([prior, question, { ...otherTurn, seq: 3 }, text]),
+      order([
+        prior,
+        {
+          ...question,
+          sourceWakeupId: otherTurn.sourceWakeupId,
+          body: "The earlier turn already answered.",
+        },
+        text,
+      ]),
+    ]).toEqual([
+      ["fixture-1", "m2", "m3"],
+      ["fixture-1", "reply:tidewater", "m2", "m3"],
+      ["fixture-1", "reply:tidewater", "m2", "m3", "m5", "m6"],
+      ["fixture-1", "m2", "m6", "reply:tidewater"],
+      ["fixture-1", "m2", "reply:tidewater"],
+    ]);
+  });
+
+  it("draws a reply's buttons and receipt after its last separate card", () => {
+    const sourceWakeupId = KinWakeupId.make("tidewater-footer");
+    const question = agentMessage(2, {
+      sourceWakeupId,
+      body: "",
+      widgetId: KinWidgetId.make("choice"),
+    });
+    const doc = agentMessage(3, { sourceWakeupId, body: "", widgetId: KinWidgetId.make("doc") });
+    const text = agentMessage(4, {
+      sourceWakeupId,
+      body: "I updated the Tidewater Freight draft.",
+      links: [
+        {
+          text: "Tidewater Freight draft",
+          to: { _tag: "record", key: "D-12", kind: "doc" },
+          note: null,
+        },
+      ],
+      turnChanges: {
+        count: 1,
+        more: 0,
+        items: [
+          {
+            key: "D-12",
+            title: "Tidewater Freight draft",
+            what: "updated",
+            change: { agentId: KIN_FIXTURE_AGENT, seq: 1 },
+            undoable: true,
+            undone: false,
+          },
+        ],
+      },
+    });
+    const footer = `footer:${text.messageId}`;
+    const draw = (messages: ReadonlyArray<KinMessage>) => messageRows(messages, viewer, new Set());
+    expect(draw([question, doc, text]).map((row) => row.key)).toEqual([
+      text.messageId,
+      question.messageId,
+      doc.messageId,
+      footer,
+    ]);
+    expect(draw([question, doc, text])).toMatchObject([
+      { type: "message", footerInFeed: true, message: text },
+      { type: "message" },
+      { type: "message" },
+      { type: "footer", message: text },
+    ]);
+    expect(draw([question, text, doc]).map((row) => row.key)).toEqual([
+      text.messageId,
+      question.messageId,
+      doc.messageId,
+      footer,
+    ]);
+    expect(draw([{ ...text, widgetId: doc.widgetId }]).map((row) => row.key)).toEqual([
+      text.messageId,
+    ]);
+    expect(draw([text]).map((row) => row.key)).toEqual([text.messageId]);
+  });
+
+  it("collects a reply group's buttons once after the last bubble or card", () => {
+    const sourceWakeupId = KinWakeupId.make("invented-reply");
+    const realBase = "send:reply:turn-item:provider:claudeAgent:native-item:item-1";
+    const sendBase = "send:kin-send:wake-1";
+    const linked = (
+      seq: number,
+      links: NonNullable<KinMessage["links"]>,
+      body: string,
+      clientMessageId?: string,
+    ) =>
+      agentMessage(seq, {
+        sourceWakeupId,
+        ...(clientMessageId === undefined ? {} : { clientMessageId }),
+        body,
+        links,
+      });
+    const recordLink = (key: string, text: string, kind: "doc" | "task" | "client" = "doc") => ({
+      text,
+      to: { _tag: "record" as const, key, kind },
+      note: null,
+    });
+    const w2 = recordLink("W-2", "Patient onboarding copy and walkthrough", "task");
+    const clinic = recordLink("C-1", "Lumen Grove Clinics", "client");
+    const d11 = recordLink("D-11", "Checklist: chasing INV/26-27/004", "doc");
+    const inv = recordLink("INV-4", "INV/26-27/004", "doc");
+    const draw = (messages: ReadonlyArray<KinMessage>) => messageRows(messages, viewer, new Set());
+
+    // Three bubbles naming the same record twice (bubbles 1 & 3) and one client once (bubble 2),
+    // tested with real `send:reply:…` ids and with viewer-stripped ids (`clientMessageId: undefined`).
+    for (const ids of [
+      [realBase, `${realBase}~b2`, `${realBase}~b3`, `${realBase}~b4`],
+      [sendBase, `${sendBase}~b2`, `${sendBase}~b3`, `${sendBase}~b4`],
+      [undefined, undefined, undefined, undefined],
+    ] as const) {
+      const first = linked(2, [w2], "First paragraph about W-2.", ids[0]);
+      const second = linked(3, [clinic], "Second paragraph about Lumen Grove Clinics.", ids[1]);
+      const third = linked(4, [w2], "Third paragraph mentioning W-2 again.", ids[2]);
+      const later = {
+        ...linked(5, [d11], "Separate later turn.", ids[3]),
+        sourceWakeupId: KinWakeupId.make("other-turn"),
+      };
+      const footer = {
+        type: "footer",
+        key: `footer:${third.messageId}`,
+        message: third,
+        buttons: [
+          { id: "record:W-2", label: "Open Patient onboarding copy and walkthrough" },
+          { id: "record:C-1", label: "Open Lumen Grove Clinics" },
+        ],
+      };
+      const group = [first, second, third].map((message) => ({
+        type: "message",
+        footerInFeed: true,
+        message,
+      }));
+      expect(draw([first, second, third, later])).toMatchObject([
+        ...group,
+        footer,
+        { type: "message", message: later },
+      ]);
+      expect(draw([first]).map((row) => row.type)).toEqual(["message"]);
+    }
+
+    // Two bubbles plus a doc card: one combined footer row after the doc card.
+    const docCard = agentMessage(1, {
+      sourceWakeupId,
+      body: "",
+      widgetId: KinWidgetId.make("doc"),
+    });
+    const b1 = linked(2, [clinic], "Orbit Dental checklist overview.", realBase);
+    const b2 = linked(3, [inv], "INV/26-27/004 is 12 days overdue.", `${realBase}~b2`);
+    expect(draw([docCard, b1, b2])).toMatchObject([
+      { type: "message", footerInFeed: true, message: b1 },
+      { type: "message", footerInFeed: true, message: b2 },
+      { type: "message", message: docCard },
+      {
+        type: "footer",
+        key: `footer:${b2.messageId}`,
+        message: b2,
+        buttons: [
+          { id: "record:C-1", label: "Open Lumen Grove Clinics" },
+          { id: "record:INV-4", label: "Open INV/26-27/004" },
+        ],
+      },
+    ]);
+  });
+
   it("keeps a draft's key and author line when its message lands, so the bubble stays put", () => {
     const before = [ownMessage(1), reply(2, "a", "First.")];
     const streaming = messageRows(before, viewer, new Set(), streamingAt, [draft(3, "b", "Sec")]);
@@ -713,7 +1026,7 @@ describe("kinPresenceLine", () => {
   it("names each state in one static line; a note or tool label wins", () => {
     expect(kinPresenceLine(undefined, start)).toBeNull();
     expect(text(presence(), 0)).toBe("Thinking…");
-    expect(text(presence({ state: "writing" }), 0)).toBe("Writing…");
+    expect(text(presence({ state: "writing" }), 0)).toBe("Writing a reply…");
     expect(text(presence({ state: "working" }), 0)).toBe("Working…");
     expect(text(presence({ state: "working", label: "Checking memory" }), 0)).toBe(
       "Checking memory",
@@ -831,14 +1144,23 @@ describe("message labels", () => {
       "Tech lead, agent. Merge it? 9:30. Suggestion, not sent yet.",
     ],
     [
-      "an edit",
+      "an agent's update",
       row({ body: "Done", editedAt: "2026-11-08T09:31:00.000Z" }),
-      "Tech lead, agent. Done. 9:30. Edited.",
+      "Tech lead, agent. Done. 9:30. Updated.",
     ],
     [
       "a deleted message",
       row({ body: "secret", status: "deleted" }),
       "Tech lead, agent. Message deleted. 9:30.",
+    ],
+    [
+      "a message its agent withdrew, as its one line",
+      row({
+        body: "",
+        status: "deleted",
+        withdrawn: { why: "the client paid", at: "2026-11-08T11:00:00.000Z" },
+      }),
+      "Tech lead withdrew a message: the client paid. 9:30.",
     ],
     [
       "a card with a caption, which the card itself labels",
@@ -1052,6 +1374,75 @@ describe("new messages pill", () => {
     // Seqs 7-10 alternate owner and lead.
     expect(kinUnseenCount(messages, 6, KIN_FIXTURE_OWNER)).toBe(2);
     expect(kinUnseenCount(messages, 6, null)).toBe(4);
+  });
+});
+
+describe("new line", () => {
+  const mine = (seq: number) =>
+    ({ ...all.find((m) => m.author._tag === "human")!, messageId: `o${seq}`, seq }) as KinMessage;
+  const opened = (messages: ReadonlyArray<KinMessage>, readSeq?: number) =>
+    applyKinChatEvent(emptyKinChat, {
+      _tag: "backlog",
+      messages,
+      widgets: [],
+      lastSeq: latestKinSeq(messages),
+      ...(readSeq === undefined ? {} : { readSeq }),
+    });
+  const lineOf = (state: KinChatState, held: ReturnType<typeof kinNextNewLineHold> = null) => {
+    const hold = kinNextNewLineHold(
+      held,
+      "chat",
+      kinOwnReadSeq(state, "me"),
+      latestKinSeq(state.messages),
+    );
+    return { hold, seq: kinNewLineSeq(state.messages, hold, KIN_FIXTURE_OWNER) };
+  };
+  const agentRun = [agentMessage(1), mine(2), agentMessage(3), mine(4), agentMessage(5)];
+
+  it.each([
+    ["nothing after the mark", agentRun, 5, null],
+    ["only the viewer's own after the mark", [...agentRun, mine(6)], 5, null],
+    ["mixed after the mark", agentRun, 2, 3],
+    ["own first, then another's", agentRun, 3, 5],
+    ["a host without the mark", agentRun, undefined, null],
+    ["a page that starts after the mark", agentRun.slice(2), 0, null],
+  ] as const)("%s", (_, messages, readSeq, expected) => {
+    expect(lineOf(opened(messages, readSeq)).seq).toBe(expected);
+  });
+
+  it("holds where the chat opened it while it is open, whatever the viewer's mark does", () => {
+    const open = opened(agentRun, 2);
+    const first = lineOf(open);
+    expect(first.seq).toBe(3);
+    // Opening moves the viewer's seen mark at once: the line stays.
+    const seen = applyKinChatEvent(open, {
+      _tag: "read",
+      memberId: KinMemberId.make("me"),
+      seq: 5,
+    });
+    expect(lineOf(seen, first.hold)).toEqual(first);
+    // A message arriving while the chat is open lands below the line.
+    const arrived = applyKinChatEvent(seen, { _tag: "message", message: agentMessage(6) });
+    expect(lineOf(arrived, first.hold)).toEqual(first);
+    // A reply, and the seen mark it moves, leave it where it is too.
+    const replied = applyKinChatEvent(
+      applyKinChatEvent(arrived, { _tag: "message", message: mine(7) }),
+      { _tag: "read", memberId: KinMemberId.make("me"), seq: 7 },
+    );
+    expect(lineOf(replied, first.hold)).toEqual(first);
+    // Opened again with nothing new (a fresh hold from the mark now): no line.
+    expect(lineOf(replied).seq).toBeNull();
+    // Another chat gets its own hold.
+    expect(kinNextNewLineHold(first.hold, "other", 0, 5)).toEqual({
+      chatId: "other",
+      mark: 0,
+      upTo: 5,
+    });
+    // Nothing new at open: a message arriving while open gets no line either.
+    const read = opened(agentRun, 5);
+    const none = lineOf(read);
+    const later = applyKinChatEvent(read, { _tag: "message", message: agentMessage(6) });
+    expect(lineOf(later, none.hold).seq).toBeNull();
   });
 });
 

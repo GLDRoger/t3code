@@ -36,12 +36,12 @@ const toolCallGateFn =
  */
 export const toolCallGate = <R>(
   admit: (name: string, args: unknown) => Effect.Effect<boolean, never, R>,
-  refusal: string | ((args: unknown) => string),
+  refusal: string | ((args: unknown, name: string) => string),
 ) =>
   McpServer.middleware()(
     toolCallGateFn((name, args) =>
       Effect.map(admit(name, args), (admitted) =>
-        admitted ? undefined : typeof refusal === "string" ? refusal : refusal(args),
+        admitted ? undefined : typeof refusal === "string" ? refusal : refusal(args, name),
       ),
     ),
     { global: true },
@@ -51,8 +51,12 @@ export const toolCallGate = <R>(
  * As `toolCallGate`, for a refusal that depends on the call: `undefined` lets it through. `make`
  * runs once, when the server is built.
  */
-export const toolCallRefusal = <R>(
-  make: Effect.Effect<(name: string, args: unknown) => Effect.Effect<string | undefined>, never, R>,
+export const toolCallRefusal = <R, CallR>(
+  make: Effect.Effect<
+    (name: string, args: unknown) => Effect.Effect<string | undefined, never, CallR>,
+    never,
+    R
+  >,
 ) => McpServer.middleware()(Effect.map(make, toolCallGateFn), { global: true });
 
 type ProvidersOffered = (

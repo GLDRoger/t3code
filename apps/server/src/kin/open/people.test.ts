@@ -166,7 +166,7 @@ it.effect("a card that starts waiting on her reaches her stream as only what mov
         { ...kinOpenApply(first.read, change), asOf: fresh.asOf },
         fresh,
       );
-      assert.deepStrictEqual(fresh.counts, { needsYou: 2, waiting: 1 });
+      assert.deepStrictEqual(fresh.counts, { needsYou: 2, waiting: 1, tasks: 1 });
       assert.isFalse(mentions(fresh, "W-1"));
     }),
   ).pipe(Effect.provide(layer)),
@@ -234,7 +234,7 @@ it.effect("an approval waiting on her leaves her stream when it lapses, nothing 
   ).pipe(Effect.provide(layer)),
 );
 
-it.effect("her day turns at her own midnight: tomorrow's task becomes today's", () =>
+it.effect("her day turns at her own midnight: a task coming into her week joins", () =>
   Effect.scoped(
     Effect.gen(function* () {
       yield* seed;
@@ -242,7 +242,8 @@ it.effect("her day turns at her own midnight: tomorrow's task becomes today's", 
       // 17:30 in Kolkata: her day turns at 18:30 UTC, hours before the company's.
       yield* sql`UPDATE kin_people SET time_zone = 'Asia/Kolkata' WHERE org_id = ${orgId}
         AND person_id = ${meera}`;
-      yield* task("W-3", meera, NOW + 8 * HOUR);
+      // A week and three hours off now; inside the week, as Tasks counts it, by her midnight.
+      yield* task("W-3", meera, NOW + 7 * DAY + 3 * HOUR);
       const events = yield* follow(as(meera));
       const first = yield* snapshotOf(events);
       assert.deepStrictEqual(

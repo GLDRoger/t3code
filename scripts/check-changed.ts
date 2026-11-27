@@ -1,4 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off - hashes inputs with node:crypto and sizes the budget with node:os.
+// @effect-diagnostics nodeBuiltinImport:off - uses Node's hash, memory budget and POSIX Git paths.
 // Runs CI's fast checks for this branch's changes: format and lint of the
 // changed files, knip, generated GraphQL operations, typecheck of the affected
 // packages and their dependents, the test files beside the changed files, and
@@ -20,6 +20,7 @@
 // run's summary.
 import * as NodeCrypto from "node:crypto";
 import * as NodeOS from "node:os";
+import * as NodePath from "node:path";
 
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -41,7 +42,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { decide, readWorkspace } from "../.github/scripts/ci-changes.cjs";
 import { vitePlusCommand } from "./check-changed-command.ts";
 import { MIGRATIONS, SHIPPING_BRANCH, kinBranchChecks } from "./kin-branch-checks.ts";
-import { modelsFor, modelsToReconfirm } from "./kin-model.ts";
+import { modelsFor, modelsToReconfirm, splitSkippedModels } from "./kin-model.ts";
 
 const GiB = 1024 ** 3;
 
@@ -229,6 +230,7 @@ const CODE = /\.(?:[cm]?[jt]sx?|astro)$/;
 const KIN_WIRE =
   /^(apps\/server\/src\/kin\/|packages\/contracts\/src\/kin|packages\/client-runtime\/src\/kin\/)/;
 const TEST = /\.test\.[cm]?[jt]sx?$/;
+const TEST_HELPER = /\.(?:testkit|fixture)\.ts$|(?:^|\/)(?:test|testing|__fixtures__)\//;
 // CI runs the .github/scripts tests with `node --test`; vitest passes a failing node:test file.
 const NODE_TEST = /^\.github[/\\]scripts[/\\]/;
 export const splitTests = (tests: Iterable<string>) => {
@@ -263,6 +265,11 @@ export const crossFileTests = (files: ReadonlyArray<string>) => {
   const tests: string[] = [];
   if (files.includes("docs/user/t3-connect-troubleshooting.md"))
     tests.push("apps/server/src/cloud/ConnectReachability.test.ts");
+  if (files.some((file) => /^(apps\/mobile|packages\/client-runtime)\/src\//.test(file)))
+    tests.push(
+      "apps/mobile/src/features/chats/contract/mcpAppWebView.kin-contract.test.ts",
+      "apps/mobile/src/features/chats/widgets/kinVisualMessage.test.ts",
+    );
   if (files.some((file) => KIN_MIGRATIONS.test(file)))
     tests.push("apps/server/src/kin/people/leaver.test.ts");
   // The wire list also uses shared schemas and the T3 tools that Kin exposes.
@@ -279,6 +286,67 @@ export const crossFileTests = (files: ReadonlyArray<string>) => {
     );
   return tests;
 };
+
+const testHelperImporters = Effect.fn("checkChanged.testHelperImporters")(function* (
+  root: string,
+  files: ReadonlyArray<string>,
+  packages: ReadonlyArray<{ readonly dir: string }>,
+) {
+  const helpers = files.filter((file) => TEST_HELPER.test(file));
+  const dirs = packages
+    .map(({ dir }) => dir)
+    .filter((dir) => helpers.some((file) => file.startsWith(`${dir}/`)));
+  if (dirs.length === 0) return [];
+
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const { default: ts } = yield* Effect.promise(() => import("typescript-legacy"));
+  const changedHelpers = new Set(helpers);
+  const listed = yield* git(root, [
+    "ls-files",
+    "-z",
+    "--cached",
+    "--others",
+    "--exclude-standard",
+    "--",
+    ...dirs,
+  ]);
+  const candidates = [...new Set(listed.toString().split("\0"))].filter((file) =>
+    /\.test\.tsx?$/.test(file),
+  );
+  return yield* Effect.filter(
+    candidates,
+    (file) =>
+      Effect.gen(function* () {
+        const absolute = path.join(root, file);
+        if (!(yield* fs.exists(absolute))) return false;
+        const source = yield* fs.readFileString(absolute);
+        const module = ts.createSourceFile(file, source, ts.ScriptTarget.Latest);
+        const dir = NodePath.posix.dirname(file);
+        const packageDir = dirs.find((dir) => file.startsWith(`${dir}/`));
+        if (packageDir === undefined) return false;
+        return module.statements.some((statement) => {
+          if (
+            !ts.isImportDeclaration(statement) ||
+            statement.importClause === undefined ||
+            !ts.isStringLiteral(statement.moduleSpecifier)
+          ) {
+            return false;
+          }
+          const specifier = statement.moduleSpecifier.text;
+          if (!specifier.startsWith("./") && !specifier.startsWith("../")) return false;
+          const target = NodePath.posix.join(dir, specifier);
+          return (
+            target.startsWith(`${packageDir}/`) &&
+            [target, `${target}.ts`, `${target}.tsx`].some((candidate) =>
+              changedHelpers.has(candidate),
+            )
+          );
+        });
+      }),
+    { concurrency: 16 },
+  );
+});
 
 const checkChanged = Effect.fn("checkChanged")(function* (input: {
   readonly ref: Option.Option<string>;
@@ -390,6 +458,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       if (entry.startsWith(prefix) && TEST.test(entry)) tests.add(path.join(dir, entry));
     }
   }
+  for (const test of yield* testHelperImporters(root, files, packages)) tests.add(test);
   for (const test of crossFileTests(files)) tests.add(test);
   // It reads files other than the ones beside it, so no changed file selects it.
   if (affected.includes("t3")) tests.add("apps/server/src/provider/AgentContextBudget.test.ts");
@@ -480,6 +549,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
       file === ".pnpmfile.cjs" ||
       file.startsWith("patches/") ||
       file.startsWith("apps/mobile/deps/") ||
+      file.startsWith("apps/web/deps/") ||
       path.basename(file) === "package.json",
   );
 
@@ -526,7 +596,7 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
           if (yield* fs.exists(inRoot(manifest))) yield* copy(manifest);
         }
       }
-      for (const extra of ["apps/mobile/deps", "patches", ".pnpmfile.cjs"]) {
+      for (const extra of ["apps/mobile/deps", "apps/web/deps", "patches", ".pnpmfile.cjs"]) {
         if (yield* fs.exists(inRoot(extra))) yield* copy(extra);
       }
       const result = yield* vp(["install", "--lockfile-only", "--ignore-scripts"], temp);
@@ -574,7 +644,12 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
     : [];
 
   // Kin's TLA+ models, each only when a file it stands for changed; skipped without Java.
-  const kinModels = modelsFor(files).map((name) =>
+  // CHECK_CHANGED_SKIP_MODELS names models a local run leaves to the end of a stack; CI never sets it.
+  const { run: modelsToRun, skipped } = splitSkippedModels(
+    modelsFor(files),
+    Option.getOrElse(yield* Config.option(Config.String("CHECK_CHANGED_SKIP_MODELS")), () => ""),
+  );
+  const kinModels = modelsToRun.map((name) =>
     command(`kin model ${name}`, ["exec", "node", "scripts/kin-model.ts", name, "--if-java"]),
   );
 
@@ -674,6 +749,10 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   if (ciOnly.length > 0) summary.push(`  CI also runs: ${ciOnly.join(", ")}`);
   if (!runPatchCheck) summary.push("  unused patch check skipped: no dependency files changed");
   if (!runKnip) summary.push("  knip skipped: no code or manifest changed");
+  if (skipped.length > 0)
+    summary.push(
+      `  kin model ${skipped.join(", ")}: NOT RUN (CHECK_CHANGED_SKIP_MODELS); run it before the stack lands its last change`,
+    );
   const reconfirm = modelsToReconfirm(files);
   if (reconfirm.length > 0)
     summary.push(
@@ -684,6 +763,10 @@ const checkChanged = Effect.fn("checkChanged")(function* (input: {
   if (results.some((result) => result.outcome !== "pass")) return false;
   if ((yield* inputKey) !== key) {
     yield* Console.log("  pass not cached: files changed during the run");
+    return true;
+  }
+  if (skipped.length > 0) {
+    yield* Console.log("  pass not cached: a model was skipped");
     return true;
   }
   // Write then rename, so a concurrent run never reads half a file.

@@ -1,5 +1,7 @@
+// @effect-diagnostics globalDate:off globalTimers:off - Pure presence helpers and a per-line hold timer for React, outside an Effect runtime.
 import {
   KinAgentId,
+  KinDraft,
   type KinChatStreamEvent,
   type KinPresence,
   type KinMessage,
@@ -17,6 +19,7 @@ type BacklogEvent = Extract<KinChatStreamEvent, { readonly _tag: "backlog" }>;
 export const KinHeldDraft = Schema.Struct({
   /** The turn item; its message carries `clientMessageId: "reply:<draftId>"`. */
   draftId: Schema.String,
+  sourceWakeupId: KinDraft.fields.sourceWakeupId,
   agentId: KinAgentId,
   text: Schema.String,
   /** When this client first saw it, for the author line and day. */
@@ -71,6 +74,7 @@ export function applyKinDraft(
     const draft: KinHeldDraft = {
       draftId: event.draftId,
       agentId: event.agentId,
+      ...(event.sourceWakeupId === undefined ? {} : { sourceWakeupId: event.sourceWakeupId }),
       text: event.text,
       startedAt: now,
     };
@@ -89,8 +93,10 @@ export function applyKinPresence(
   presence: ReadonlyArray<KinPresence>,
   event: PresenceEvent,
 ): ReadonlyArray<KinPresence> {
+  const prev = presence.find((entry) => entry.agentId === event.agentId);
   const rest = presence.filter((entry) => entry.agentId !== event.agentId);
   if (event.presence === null) return rest.length === presence.length ? presence : rest;
+  carryLabelHold(prev, event.presence, Date.now());
   return [...rest, event.presence];
 }
 
@@ -104,9 +110,7 @@ export function applyKinLiveBacklog(
   const startedAt = new Map(state.drafts.map((draft) => [draft.draftId, draft.startedAt]));
   const drafts = settleKinDrafts(
     (backlog.drafts ?? []).map((draft) => ({
-      draftId: draft.draftId,
-      agentId: draft.agentId,
-      text: draft.text,
+      ...draft,
       startedAt: startedAt.get(draft.draftId) ?? now,
     })),
     messages,
@@ -158,7 +162,7 @@ const DEFAULT_TEXT: Record<Exclude<ShownState, "stalled">, string> = {
   starting: "Starting…",
   thinking: "Thinking…",
   working: "Working…",
-  writing: "Writing…",
+  writing: "Writing a reply…",
   paused: "Paused",
   deferred: "Waiting for budget",
 };
@@ -213,4 +217,319 @@ export function kinPresenceTimerStart(presence: KinPresence | undefined): string
 /** Whether the line reads differently as time passes, so it needs the clock. */
 export function kinPresenceNeedsClock(presence: KinPresence | undefined): boolean {
   return presence?.state === "stalled" || presence?.state === "starting";
+}
+
+// Stop on the working line
+
+/** A run's Stop on its line: none, a plain one from the first second, or the stalled run's. */
+export type KinPresenceStop = "none" | "offer" | "urgent";
+
+/**
+ * Who may stop an agent's run in this chat: in a direct chat, the person who owns its lead
+ * (unless it is retired); in a group or the Team room, an owner or co-owner. The host decides.
+ */
+export function kinMayStopAgent(input: {
+  readonly canInterrupt: boolean;
+  readonly direct: boolean;
+  readonly ownedAgentId: string | null;
+  readonly retired: boolean;
+  readonly ownerLevel: boolean;
+}): (agentId: string) => boolean {
+  if (!input.canInterrupt) return () => false;
+  if (input.direct)
+    return (agentId) =>
+      !input.retired && input.ownedAgentId !== null && agentId === input.ownedAgentId;
+  return () => input.ownerLevel;
+}
+
+function kinPresenceStop(
+  presence: KinPresence | undefined,
+  mayStop: (agentId: string) => boolean,
+): KinPresenceStop {
+  if (presence === undefined || presence.wakeupId === null || !mayStop(presence.agentId))
+    return "none";
+  switch (presence.state) {
+    case "starting":
+    case "thinking":
+    case "working":
+    case "writing":
+      return "offer";
+    case "stalled":
+      return "urgent";
+    default:
+      return "none";
+  }
+}
+
+/** Minimum time a non-"Thinking" label stays readable before a following "Thinking" replaces it. */
+export const KIN_LABEL_HOLD_MS = 1_500;
+
+export interface KinHeldLabel {
+  readonly wakeupId: KinPresence["wakeupId"];
+  readonly since: string;
+  readonly line: KinPresenceLine;
+  readonly until: number;
+}
+
+export interface KinLabelHoldSnapshot {
+  readonly entries: ReadonlyMap<string, KinHeldLabel>;
+  readonly expired: WeakSet<KinPresence>;
+}
+
+export interface KinLabelHold {
+  /** Updates per-line holds from `presence` and arms or cancels at most one timer per line. */
+  sync(presence: ReadonlyArray<KinPresence>): void;
+  /** Immutable snapshot for `kinWorkingLines` and `useSyncExternalStore`. */
+  snapshot(): KinLabelHoldSnapshot;
+  /** Subscribes to hold expirations. */
+  subscribe(listener: () => void): () => void;
+  /** Cancels all pending timers and clears held state. */
+  dispose(): void;
+}
+
+// Carries a brief tool label across fast tool-to-Thinking bursts that coalesce before React commits.
+const carriedHolds = new WeakMap<KinPresence, KinHeldLabel>();
+
+function isThinkingPresence(entry: KinPresence): boolean {
+  if (entry.state !== "thinking") return false;
+  const label = entry.label?.trim();
+  return label === undefined || label === "" || label === "Thinking" || label === "Thinking…";
+}
+
+function isHoldablePresence(entry: KinPresence): boolean {
+  return entry.state === "working" || entry.state === "writing" || entry.state === "starting";
+}
+
+function carryLabelHold(prev: KinPresence | undefined, next: KinPresence, now: number): void {
+  if (isHoldablePresence(next)) {
+    const line = kinPresenceLine(next, now);
+    if (line === null) return;
+    const prevHold = prev === undefined ? undefined : carriedHolds.get(prev);
+    const same =
+      prevHold !== undefined &&
+      prevHold.wakeupId === next.wakeupId &&
+      prevHold.since === next.since &&
+      prevHold.line.text === line.text;
+    carriedHolds.set(
+      next,
+      same
+        ? prevHold
+        : { wakeupId: next.wakeupId, since: next.since, line, until: now + KIN_LABEL_HOLD_MS },
+    );
+    return;
+  }
+  if (isThinkingPresence(next) && prev !== undefined) {
+    const prevHold = carriedHolds.get(prev);
+    if (prevHold !== undefined && prevHold.wakeupId === next.wakeupId && now < prevHold.until) {
+      carriedHolds.set(next, prevHold);
+    }
+  }
+}
+
+/**
+ * Per-chat hold controller for `kinWorkingLines`: keeps at most one `setTimeout` per working line
+ * so brief tool labels stay readable for `KIN_LABEL_HOLD_MS` before "Thinking" replaces them.
+ */
+export function createKinLabelHold(): KinLabelHold {
+  const entries = new Map<string, KinHeldLabel>();
+  const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  const holding = new Set<string>();
+  const latest = new Map<string, KinPresence>();
+  const expired = new WeakSet<KinPresence>();
+  const listeners = new Set<() => void>();
+  let current: KinLabelHoldSnapshot = { entries: new Map(), expired };
+
+  const notifyAll = () => {
+    for (const listener of listeners) listener();
+  };
+
+  const cancel = (agentId: string) => {
+    const timer = timers.get(agentId);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timers.delete(agentId);
+    }
+  };
+
+  const arm = (agentId: string, until: number, now: number) => {
+    cancel(agentId);
+    const wait = Math.max(0, until - now);
+    timers.set(
+      agentId,
+      setTimeout(() => {
+        timers.delete(agentId);
+        const wasHolding = holding.delete(agentId);
+        const active = latest.get(agentId);
+        if (active !== undefined) expired.add(active);
+        if (entries.delete(agentId)) {
+          current = { entries: new Map(entries), expired };
+          if (wasHolding) notifyAll();
+        }
+      }, wait),
+    );
+  };
+
+  return {
+    sync(presence) {
+      const now = Date.now();
+      let changed = false;
+      let notify = false;
+      const activeIds = new Set<string>(presence.map((entry) => entry.agentId));
+      for (const agentId of new Set([
+        ...entries.keys(),
+        ...timers.keys(),
+        ...holding,
+        ...latest.keys(),
+      ])) {
+        if (activeIds.has(agentId)) continue;
+        cancel(agentId);
+        holding.delete(agentId);
+        latest.delete(agentId);
+        if (entries.delete(agentId)) changed = true;
+      }
+      for (const entry of presence) {
+        const agentId = entry.agentId;
+        latest.set(agentId, entry);
+        const raw = kinPresenceLine(entry, now);
+        if (raw === null) {
+          cancel(agentId);
+          holding.delete(agentId);
+          if (entries.delete(agentId)) changed = true;
+          continue;
+        }
+        if (isHoldablePresence(entry)) {
+          holding.delete(agentId);
+          const carried = carriedHolds.get(entry);
+          const existing = entries.get(agentId);
+          const same =
+            existing !== undefined &&
+            existing.wakeupId === entry.wakeupId &&
+            existing.since === entry.since &&
+            existing.line.text === raw.text;
+          if (!same) {
+            const next: KinHeldLabel =
+              carried !== undefined && carried.wakeupId === entry.wakeupId
+                ? carried
+                : {
+                    wakeupId: entry.wakeupId,
+                    since: entry.since,
+                    line: raw,
+                    until: now + KIN_LABEL_HOLD_MS,
+                  };
+            if (now < next.until) {
+              entries.set(agentId, next);
+              arm(agentId, next.until, now);
+              changed = true;
+            } else {
+              cancel(agentId);
+              if (entries.delete(agentId)) changed = true;
+            }
+          }
+          continue;
+        }
+        if (isThinkingPresence(entry)) {
+          const carried = expired.has(entry) ? undefined : carriedHolds.get(entry);
+          const existing = entries.get(agentId);
+          const candidate =
+            carried !== undefined && carried.wakeupId === entry.wakeupId
+              ? carried
+              : existing !== undefined && existing.wakeupId === entry.wakeupId
+                ? existing
+                : undefined;
+          if (candidate !== undefined && now < candidate.until) {
+            holding.add(agentId);
+            if (existing !== candidate) {
+              entries.set(agentId, candidate);
+              arm(agentId, candidate.until, now);
+              changed = true;
+            } else if (!timers.has(agentId)) {
+              arm(agentId, candidate.until, now);
+            }
+          } else {
+            cancel(agentId);
+            const wasHolding = holding.delete(agentId);
+            const hadCarried = carriedHolds.has(entry) && !expired.has(entry);
+            expired.add(entry);
+            if (entries.delete(agentId) || hadCarried) {
+              changed = true;
+              if (wasHolding || hadCarried) notify = true;
+            }
+          }
+          continue;
+        }
+        cancel(agentId);
+        holding.delete(agentId);
+        if (entries.delete(agentId)) changed = true;
+      }
+      if (changed) {
+        current = { entries: new Map(entries), expired };
+        if (notify) notifyAll();
+      }
+    },
+    snapshot() {
+      return current;
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    dispose() {
+      for (const timer of timers.values()) clearTimeout(timer);
+      timers.clear();
+      holding.clear();
+      latest.clear();
+      if (entries.size > 0) {
+        entries.clear();
+        current = { entries: new Map(), expired };
+      }
+    },
+  };
+}
+
+function heldLineFor(
+  entry: KinPresence,
+  raw: KinPresenceLine,
+  held: KinLabelHoldSnapshot | undefined,
+): KinPresenceLine {
+  if (held === undefined || !isThinkingPresence(entry) || held.expired.has(entry)) return raw;
+  const kept = held.entries.get(entry.agentId) ?? carriedHolds.get(entry);
+  if (kept === undefined || kept.wakeupId !== entry.wakeupId) return raw;
+  return kept.line;
+}
+
+export interface KinWorkingLine {
+  readonly presence: KinPresence;
+  readonly line: KinPresenceLine;
+  readonly stop: KinPresenceStop;
+}
+
+/**
+ * The chat's working lines, one per agent with something to show, in the order their runs
+ * started, so a label change never reorders them.
+ */
+export function kinWorkingLines(
+  presence: ReadonlyArray<KinPresence>,
+  now: number,
+  mayStop: (agentId: string) => boolean,
+  held?: KinLabelHoldSnapshot,
+): ReadonlyArray<KinWorkingLine> {
+  const rows = presence.flatMap((entry): Array<KinWorkingLine> => {
+    const raw = kinPresenceLine(entry, now);
+    if (raw === null) return [];
+    return [
+      {
+        presence: entry,
+        line: heldLineFor(entry, raw, held),
+        stop: kinPresenceStop(entry, mayStop),
+      },
+    ];
+  });
+  // Hermes has no Array#toSorted; `rows` is this call's own array.
+  return rows.sort(
+    (a, b) =>
+      a.presence.startedAt.localeCompare(b.presence.startedAt) ||
+      a.presence.agentId.localeCompare(b.presence.agentId),
+  );
 }

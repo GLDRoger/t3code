@@ -172,5 +172,7 @@ export function kinPushRegisterInput(input: {
     platform: input.os,
     apsEnvironment: input.os === "ios" && input.sandbox ? "development" : "production",
     ...(input.os === "android" ? { quietChannel: true } : {}),
+    // This build removes a notification by its topic when the host withdraws it.
+    withdraws: true,
   };
 }

@@ -1,4 +1,9 @@
-import { KinApprovalError, KinApprovalRpcs, type KinOrgId } from "@t3tools/contracts";
+import {
+  KinApprovalError,
+  KinApprovalRpcs,
+  type KinActionId,
+  type KinOrgId,
+} from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -8,6 +13,7 @@ import * as RpcGroup from "effect/rpc/RpcGroup";
 import type { AuthenticatedSession } from "../../auth/EnvironmentAuth.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
+import { KinChatService } from "../chat/KinChatService.ts";
 import { ApproverKeys, type KinKeyCaller } from "./ApproverKeys.ts";
 import * as Audit from "./Audit.ts";
 import { GrantVerifier } from "./GrantVerifier.ts";
@@ -24,9 +30,24 @@ const disabled = new KinApprovalError({
 const failed = () =>
   new KinApprovalError({ reason: "unavailable", message: "Kin audit is unavailable." });
 
+/**
+ * After the person's own approve or reject committed, their read mark reaches the card. Its own
+ * transaction: the decision stands even when the mark can't be moved.
+ */
+const answered =
+  (chat: KinChatService["Service"], caller: KinKeyCaller) =>
+  (decided: { readonly actionId: KinActionId }) =>
+    chat
+      .answeredApproval(caller.people, decided.actionId)
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't mark an answered approval card read", { cause }),
+        ),
+      );
+
 export const makeKinApprovalHandlers = Effect.fn("makeKinApprovalHandlers")(function* (
   session: AuthenticatedSession,
-  kin: Option.Option<Context.Context<KinIdentity | ApproverKeys | GrantVerifier>>,
+  kin: Option.Option<Context.Context<KinIdentity | ApproverKeys | GrantVerifier | KinChatService>>,
 ) {
   const audit = yield* Audit.make;
   const keys = Effect.gen(function* () {
@@ -37,6 +58,7 @@ export const makeKinApprovalHandlers = Effect.fn("makeKinApprovalHandlers")(func
     return {
       keys: Context.get(services, ApproverKeys),
       grants: Context.get(services, GrantVerifier),
+      chat: Context.get(services, KinChatService),
       caller,
     };
   });
@@ -63,9 +85,17 @@ export const makeKinApprovalHandlers = Effect.fn("makeKinApprovalHandlers")(func
     "kin.approvals.challenge": (input) =>
       keys.pipe(Effect.flatMap(({ grants, caller }) => grants.challenge(caller, input))),
     "kin.approvals.submitGrant": (input) =>
-      keys.pipe(Effect.flatMap(({ grants, caller }) => grants.submitGrant(caller, input))),
+      keys.pipe(
+        Effect.flatMap(({ grants, chat, caller }) =>
+          grants.submitGrant(caller, input).pipe(Effect.tap(answered(chat, caller))),
+        ),
+      ),
     "kin.approvals.reject": (input) =>
-      keys.pipe(Effect.flatMap(({ grants, caller }) => grants.reject(caller, input))),
+      keys.pipe(
+        Effect.flatMap(({ grants, chat, caller }) =>
+          grants.reject(caller, input).pipe(Effect.tap(answered(chat, caller))),
+        ),
+      ),
     "kin.approvals.keyChallenge": () =>
       keys.pipe(Effect.flatMap(({ keys, caller }) => keys.keyChallenge(caller))),
     "kin.approvals.registerKey": (input) =>

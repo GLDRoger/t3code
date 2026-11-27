@@ -19,7 +19,7 @@ import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { turnChat } from "../lead/Audience.ts";
 import { quote } from "../lead/quote.ts";
 import { turnFiles } from "./leadFields.ts";
-import { admitted, type Lead, leadTool, ownerTurn, sourceOf } from "./leadWork.ts";
+import { admitted, countryWorded, type Lead, leadTool, ownerTurn, sourceOf } from "./leadWork.ts";
 import { formatMoney } from "./money.ts";
 import { bankStates, findBankList, originKeyOf, rowFingerprints } from "./statements/bankList.ts";
 import {
@@ -46,6 +46,7 @@ import {
 import { type Review, reviewHash } from "./statements/statementCard.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 import { fileNamed as namedIn } from "../gendocs/brand.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 /** The lead tools for statements. Kin reads and matches; the owner confirms on Kin's card. */
 
@@ -73,23 +74,22 @@ export const ReadInput = Schema.Struct({
   }),
   account: Schema.optional(Schema.String.check(Schema.isPattern(/^\d{4}$/))).annotate({
     description:
-      "Its account's or card's last four digits, only when the owner wrote them in this chat and the statement doesn't show them.",
+      "Its last four digits, only when the owner wrote them here and the statement doesn't show them.",
   }),
   currency: Schema.optional(Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/))).annotate({
-    description:
-      "With pages: the code of the currency the statement's amounts are in, such as USD, as its pages print it. Kin takes it only when the statement's own text names it.",
+    description: "With pages: the currency code the statement's own text names.",
   }),
   refresh: Schema.optional(Schema.Boolean).annotate({
     description:
-      "Match the rows Kin already read against the current invoices and expenses again, as after they changed. It never reads the pages again and never replaces a card the owner confirmed.",
+      "Rematch rows already read against current invoices and expenses; never rereads pages or replaces a confirmed card.",
   }),
   again: Schema.optional(Schema.Boolean).annotate({
     description:
-      "Read the file from the start again, only when the owner asked for that in this turn's own message. Rows already recorded stay recorded.",
+      "Read the file again from the start, only when the owner's own message this turn asks; recorded rows stay.",
   }),
   password: Schema.optional(KinStatementPassword).annotate({
     description:
-      "The statement's password, exactly as the owner wrote it in a message in this chat. Kin uses it once to open this file and doesn't store it in its own records; once it opens the file, Kin hides it in the owner's message.",
+      "Exactly as the owner wrote it in this chat; Kin uses it once, doesn't store it, and hides it in their message.",
   }),
   pages: Schema.optional(
     Schema.Array(
@@ -108,13 +108,13 @@ export const ReadInput = Schema.Struct({
           ).check(Schema.isMaxLength(500)),
         ).annotate({
           description:
-            "Lines on this page that start with a date but aren't transactions, such as an opening-balance line: each one's date and the words after it.",
+            "Lines starting with a date that aren't transactions (an opening balance): each one's date and words.",
         }),
       }),
     ).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
   ).annotate({
     description:
-      "Only after Kin says the statement waits for you to read it: each page (or part) you read, with every transaction row on it as printed, rows [] for a page with none. Every line that starts with a date is a row or is listed in notTransactions. A page sent again replaces it.",
+      "Only after Kin says it waits for you: each page (or part) with every transaction row as printed, rows [] for none; every line starting with a date is a row or in notTransactions. A page sent again replaces it.",
   }),
   opening: Schema.optional(Amount),
   closing: Schema.optional(Amount),
@@ -192,6 +192,7 @@ const fileNamed = Effect.fn("KinStatements.fileNamed")(function* (
       json_each(COALESCE(m.attachments_json, '[]')) f
     WHERE m.org_id = ${lead.orgId} AND m.chat_id = ${chatId} AND m.status <> 'deleted'
       AND m.author_kind = 'human' AND m.author_person_id = a.owner_person_id
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
     ORDER BY m.seq DESC`;
   const row = namedIn(earlier, named);
   if (row === undefined)
@@ -224,6 +225,10 @@ const describe = (statementId: string, file: string, review: Review, applied: bo
       : fit === "part"
         ? " (part payment)"
         : "";
+  const target = (one: (typeof entries)[number][1]["candidates"][number]) =>
+    one.repays === undefined
+      ? `${one.key}${note(one.fit, one.tdsMinor)}`
+      : `${one.repays.map((each) => each.key).join(", ")} (${one.title}, marked repaid on Confirm)`;
   const matched = of("matched");
   const choose = of("choose");
   const unmatched = of("unmatched");
@@ -248,11 +253,11 @@ const describe = (statementId: string, file: string, review: Review, applied: bo
     },
     matched: matched.slice(0, LIST).map(([index, match]) => ({
       ...shown(index),
-      to: `${match.candidates[0]!.key}${note(match.candidates[0]!.fit, match.candidates[0]!.tdsMinor)}`,
+      to: target(match.candidates[0]!),
     })),
     choose: choose.slice(0, LIST).map(([index, match]) => ({
       ...shown(index),
-      options: match.candidates.map((one) => `${one.key}${note(one.fit, one.tdsMinor)}`),
+      options: match.candidates.map(target),
     })),
     unmatched: unmatched.slice(0, LIST).map(([index, match]) => ({
       ...shown(index),
@@ -331,6 +336,7 @@ const hideTyped = Effect.fn("KinStatements.hideTyped")(function* (
     WHERE m.org_id = ${lead.orgId} AND m.chat_id = ${chatId} AND m.kind = 'text'
       AND m.status <> 'deleted' AND m.author_kind = 'human'
       AND m.author_person_id = a.owner_person_id AND instr(m.body, ${words}) > 0
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
     ORDER BY m.seq DESC LIMIT 200`;
   for (const row of rows) {
     yield* sql`UPDATE kin_messages SET body = ${row.body.replaceAll(words, HIDDEN)}
@@ -375,6 +381,7 @@ const ownerWrote = Effect.fn("KinStatements.ownerWrote")(function* (
     WHERE m.org_id = ${lead.orgId} AND m.chat_id = ${chatId} AND m.kind = 'text'
       AND m.status <> 'deleted' AND m.author_kind = 'human'
       AND m.author_person_id = a.owner_person_id AND m.origin_json IS NULL
+      AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
       AND m.seq >= COALESCE((SELECT MIN(f.seq) FROM kin_messages f,
           json_each(COALESCE(f.attachments_json, '[]')) one
         WHERE f.org_id = m.org_id AND f.chat_id = m.chat_id
@@ -394,7 +401,7 @@ const runRead = Effect.fnUntraced(function* (lead: Lead, input: typeof ReadInput
     input.refresh === true ||
     input.password !== undefined ||
     input.pages !== undefined;
-  yield* countryFirst(lead.orgId, { saved: reread });
+  yield* countryWorded(lead, reread, countryFirst(lead.orgId));
   yield* sourceOf(lead, input.sourceEventId);
   const chat = yield* turnChat(lead);
   if (chat === undefined) return yield* invalid("This turn has no chat to read a statement in.");

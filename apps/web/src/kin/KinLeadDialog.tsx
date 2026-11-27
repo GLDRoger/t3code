@@ -18,6 +18,7 @@ import {
   KIN_AGENTS_COPY,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import { kinFormTyped } from "@t3tools/client-runtime/kin/kinWorkForms";
+import { KIN_SET_UP } from "@t3tools/client-runtime/kin/kinSetUp";
 import type { ModelSelection } from "@t3tools/contracts";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useNavigate } from "@tanstack/react-router";
@@ -84,6 +85,9 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
   const model =
     pickedModel ?? companyDefault ?? (starting === null ? null : withMediumEffort(starting));
   const [character, setCharacter] = useState("");
+  // A new company's first agent asks what it sells; the answer opens What we sell.
+  const [sells, setSells] = useState("");
+  const startWhatWeSell = useAtomCommand(kinClient.docStartWhatWeSell, { reportFailure: false });
   const [writeForMe, setWriteForMe] = useState(false);
   const setCharacterBody = useAtomCommand(kinClient.characterSet, { reportFailure: false });
   const [name, setName] = useState(initial.name);
@@ -97,11 +101,13 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
   const charterId = useId();
   const introId = useId();
   const characterId = useId();
+  const sellsId = useId();
 
   const checked = kinLeadDraftCheck({ name, area, charter, intro });
   const discard = useKinFormDiscard(
     kinFormTyped(initial, { name, area, charter, intro }) ||
       character.trim() !== "" ||
+      sells.trim() !== "" ||
       writeForMe ||
       pickedModel !== null,
     closeLeadForm,
@@ -131,6 +137,12 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
             },
           }).then(async (result) => {
             if (result._tag !== "Success") return { cause: squashAtomCommandFailure(result) };
+            // Unsaved, the agent asks it itself in the first chat; the agent is made either way.
+            if (firstAgent && sells.trim() !== "")
+              await startWhatWeSell({
+                environmentId,
+                input: { orgId, sells: sells.trim().slice(0, KIN_SET_UP.max) },
+              });
             // The host gives every new agent a starter character; the owner's own replaces it.
             if (character.trim() !== "")
               await setCharacterBody({
@@ -203,6 +215,20 @@ function KinLeadDialog(props: { readonly target: KinLeadFormTarget }) {
           </DialogHeader>
           <DialogPanel>
             <div className="flex flex-col gap-4">
+              {firstAgent ? (
+                <div className="flex flex-col gap-1.5">
+                  <Label htmlFor={sellsId}>{KIN_SET_UP.question}</Label>
+                  <Textarea
+                    id={sellsId}
+                    rows={2}
+                    value={sells}
+                    maxLength={KIN_SET_UP.max}
+                    placeholder={KIN_SET_UP.example}
+                    onChange={(event) => setSells(event.target.value)}
+                  />
+                  <p className="text-xs text-muted-foreground">{KIN_SET_UP.hint}</p>
+                </div>
+              ) : null}
               <div className="flex flex-col gap-1.5">
                 <Label htmlFor={nameId}>Name</Label>
                 <Input

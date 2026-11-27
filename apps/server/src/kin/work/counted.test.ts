@@ -22,10 +22,11 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "gendocs/facts.ts": 2,
   // A receipt's payment; the receipts list a screen shows, void ones marked.
   "gendocs/receipts.ts": 2,
-  // A receipt already made for this advance: one entry's own amount matched, nothing summed.
-  "gendocs/receiptProposals.ts": 1,
+  // A receipt already made for this advance, and the same payment already on one invoice: one
+  // entry's own amounts matched, nothing summed.
+  "gendocs/receiptProposals.ts": 2,
   // The columns every read selects, with an entry's own paid and withheld; one entry's payments.
-  "work/recordRows.ts": 2,
+  "work/recordRows.ts": 3,
   // Money's suggestions: the entries its figures leave out, listed one by one, nothing summed.
   "work/moneyViews.ts": 1,
   // One entry's payments, read to check a retry and to void one; a totals query's has-amount filter.
@@ -36,16 +37,19 @@ const OWN_READS: Readonly<Record<string, number>> = {
   "pulse/senses/projects.ts": 1,
   // Download everything: each entry's own amount and payments, copied out as they are, never summed.
   "work/exportBundle.ts": 2,
-  // One settlement's parts, read to check a retry.
-  "work/leadMoney.ts": 1,
   // Duplicate and paired-entry candidates, including the two sign filters for undated refunds.
   "work/leadWork.ts": 4,
+  // The expenses one bill may already be, by its own amount; the expenses a batch's bills became,
+  // each shown on its own row as it stands. Nothing summed.
+  "work/bills.ts": 2,
   // A statement's own rows, and the entries and recorded payments one row may match.
   "work/statements/bankList.ts": 1,
   // The entries one bank alert may already be, and a statement's alert entries listed one by
   // one against its rows: amounts matched and named, nothing summed.
   "work/statements/bankAlerts.ts": 2,
   "work/statements/statementReview.ts": 4,
+  // Each kept open bill is matched by its own amount, never added up here.
+  "work/statements/debitBill.ts": 1,
   // One invoice's own amount and payments: whether it is paid in full, so its watch closes.
   "watches/kinds/invoicePaid.ts": 1,
   // Whether a figure in a message is the sum on some entry or payment its reader can't see.

@@ -222,6 +222,9 @@ describe("statement review card", () => {
     const mixed = [offers[0]!, { ...target(1, "INV-4"), note: "Part payment" }];
     expect(kinStatementSharedNote(mixed)).toBeNull();
     expect(kinStatementTargetLine(mixed[1]!, null)).toBe("INV-4 · Retainer, part payment");
+    expect(
+      kinStatementTargetLine({ ...target(1, "EXP-4"), note: "Marks EXP-4, EXP-7 repaid" }, null),
+    ).toBe("EXP-4 · Retainer, marks EXP-4, EXP-7 repaid");
   });
 
   it("never offers money in as a new expense", () => {

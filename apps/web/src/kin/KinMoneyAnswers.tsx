@@ -1,7 +1,11 @@
 import { useAtomValue } from "@effect/atom-react";
 import { KIN_DEFAULT_HOME_CURRENCY } from "@t3tools/contracts";
 import type { KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
-import { KIN_BANK, KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
+import {
+  KIN_BANK,
+  KIN_LIST_DEFAULT_FILTER,
+  kinCategoryLabel,
+} from "@t3tools/client-runtime/kin/kinLists";
 import type { KinListOpen } from "@t3tools/client-runtime/kin/kinMoney";
 import {
   KIN_BUDGETS,
@@ -11,12 +15,14 @@ import {
   KIN_OUTLOOK,
   KIN_QUOTES,
   KIN_QUOTES_LIST,
+  kinBudgetCategoryShown,
   kinBudgetDraftOf,
   kinBudgetInput,
   kinBudgetRemoval,
   kinBudgetsView,
   kinCashView,
   kinOutlookView,
+  type KinOutlookView,
   kinQuoteRow,
   kinQuotesSummary,
   kinBudgetsSummary,
@@ -25,8 +31,14 @@ import {
   type KinLineDraft,
   type KinOutlookRowView,
 } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
+import type { KinLineTax } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
-import type { KinListDefinition, KinMoneyBudget, KinRecordKey } from "@t3tools/contracts";
+import {
+  type KinListDefinition,
+  type KinMoneyBudget,
+  KinPersonId,
+  type KinRecordKey,
+} from "@t3tools/contracts";
 import { PencilIcon, PlusIcon, Trash2Icon } from "lucide-react";
 import { useId, useState } from "react";
 
@@ -51,6 +63,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "../components/ui/select";
+import { Radio, RadioGroup } from "../components/ui/radio-group";
 import { Skeleton } from "../components/ui/skeleton";
 import { cn, randomUUID } from "../lib/utils";
 import { kinClient } from "./kinClient";
@@ -58,8 +71,14 @@ import { KinPlaceCombobox } from "./KinPlaceCombobox";
 import { KinWorkSection } from "./KinWorkParts";
 import { useNowMinuteMs } from "./useKinClock";
 import { kinListsOf, useKinAskAgent, useKinListEntries, type KinListsHandle } from "./useKinMoney";
-import { useKinBudgets, useKinBudgetSet, useKinCash, useKinOutlook } from "./useKinMoneyAnswers";
-import { useKinWorkChoices, type KinWorkTarget } from "./useKinWork";
+import {
+  useKinBudgets,
+  useKinBudgetSet,
+  useKinCash,
+  useKinMatchPartner,
+  useKinOutlook,
+} from "./useKinMoneyAnswers";
+import { useKinWorkChoices, useKinWorkDirectory, type KinWorkTarget } from "./useKinWork";
 
 const OPENS =
   "rounded-md outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset";
@@ -293,7 +312,7 @@ function OutlookRows(props: {
               note={row.note}
               amount={row.amount}
               estimate={row.estimate}
-              onOpen={() => props.onOpenKey(row.key)}
+              {...(row.key === null ? {} : { onOpen: () => props.onOpenKey(row.key!) })}
             />
           </li>
         ))}
@@ -302,6 +321,234 @@ function OutlookRows(props: {
         <p className="px-2 text-xs text-muted-foreground">{KIN_OUTLOOK.more(props.more)}</p>
       ) : null}
     </div>
+  );
+}
+
+/** Who the company owes back; one no teammate is matched to yet gets a person picked. */
+function PartnersOwed(
+  props: Section & {
+    readonly rows: KinOutlookView["partners"];
+    readonly unsaid: KinOutlookView["unsaid"];
+  },
+) {
+  const directory = useKinWorkDirectory(
+    props,
+    props.rows.some((one) => one.match !== null) || props.unsaid.length > 0,
+  );
+  const matching = useKinMatchPartner(props);
+  // The dialog shows the address as Money has it now, so what it sends is what it shows.
+  const [sayingAddress, setSaying] = useState<string | null>(null);
+  const saying = props.unsaid.find((one) => one.address === sayingAddress) ?? null;
+  const people = [...directory.names.people].toSorted((a, b) => a[1].localeCompare(b[1]));
+  if (props.rows.length + props.unsaid.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-3">
+      {props.rows.length === 0 ? null : (
+        <div className="flex flex-col gap-1">
+          <span className="px-2 text-xs text-muted-foreground">{KIN_OUTLOOK.partners}</span>
+          <ul className="flex flex-col">
+            {props.rows.map((row) => (
+              <li key={row.id} className="flex items-center justify-between gap-3 px-2 py-1">
+                <span className="flex min-w-0 flex-col">
+                  <span className="truncate text-sm text-foreground">{row.name}</span>
+                  <span className="truncate text-xs text-muted-foreground">{row.note}</span>
+                </span>
+                <span className="flex shrink-0 items-center gap-2">
+                  {row.match === null ? null : (
+                    <Select
+                      value={null}
+                      disabled={matching.busy}
+                      onValueChange={(personId) => {
+                        if (typeof personId === "string")
+                          void matching.match(
+                            row.match!.address,
+                            row.match!.seen,
+                            KinPersonId.make(personId),
+                          );
+                      }}
+                    >
+                      <SelectTrigger size="sm" aria-label={`${KIN_OUTLOOK.whoIsThis} ${row.name}`}>
+                        <SelectValue>{KIN_OUTLOOK.whoIsThis}</SelectValue>
+                      </SelectTrigger>
+                      <SelectPopup>
+                        {people.map(([id, name]) => (
+                          <SelectItem key={id} value={id}>
+                            {name}
+                          </SelectItem>
+                        ))}
+                      </SelectPopup>
+                    </Select>
+                  )}
+                  <span className="text-sm font-medium text-foreground tabular-nums">
+                    {row.amount}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {props.unsaid.length === 0 ? null : (
+        <div className="flex flex-col gap-1">
+          <span className="px-2 text-xs text-muted-foreground">{KIN_OUTLOOK.unsaid}</span>
+          <ul className="flex flex-col">
+            {props.unsaid.map((row) => (
+              <li
+                key={row.address}
+                className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-2 py-1"
+              >
+                <span className="flex min-w-0 flex-1 basis-56 flex-col">
+                  <span className="truncate text-sm text-foreground">{row.address}</span>
+                  <span className="text-xs text-muted-foreground">{row.note}</span>
+                </span>
+                <span className="flex shrink-0 items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={matching.busy}
+                    onClick={() => setSaying(row.address)}
+                  >
+                    {KIN_OUTLOOK.sayWho}
+                  </Button>
+                  <span className="text-sm font-medium text-foreground tabular-nums">
+                    {row.amount}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {matching.problem === null || saying !== null ? null : (
+        <p className="px-2 text-xs text-destructive">{matching.problem}</p>
+      )}
+      {saying === null ? null : (
+        <SayWhoPaid
+          row={saying}
+          people={people}
+          busy={matching.busy}
+          problem={matching.problem}
+          onSay={async (personId, settled) => {
+            if (await matching.match(saying.address, saying.seen, personId, settled))
+              setSaying(null);
+          }}
+          onClose={() => setSaying(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** The owner's word on an imported address: who it was, and whether the company still owes them. */
+function SayWhoPaid(props: {
+  readonly row: KinOutlookView["unsaid"][number];
+  readonly people: ReadonlyArray<readonly [string, string]>;
+  readonly busy: boolean;
+  readonly problem: string | null;
+  readonly onSay: (personId: KinPersonId, settled: "owed" | "repaid") => Promise<void>;
+  readonly onClose: () => void;
+}) {
+  const [personId, setPersonId] = useState<string | null>(null);
+  const [settled, setSettled] = useState<"owed" | "repaid" | null>(null);
+  const ids = { person: useId(), settled: useId() };
+  const ready = personId !== null && settled !== null;
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => {
+        if (!open && !props.busy) props.onClose();
+      }}
+    >
+      <DialogPopup className="max-w-lg">
+        <form
+          className="contents"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (ready) void props.onSay(KinPersonId.make(personId), settled);
+          }}
+        >
+          <DialogHeader>
+            <DialogTitle className="break-all">
+              {KIN_OUTLOOK.sayTitle(props.row.address)}
+            </DialogTitle>
+            <DialogDescription>
+              {KIN_OUTLOOK.sayDetail(props.row.expenses, props.row.amount)}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogPanel>
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={ids.person}>{KIN_OUTLOOK.paidBy}</Label>
+                <Select
+                  value={personId}
+                  disabled={props.busy}
+                  onValueChange={(value) => setPersonId(typeof value === "string" ? value : null)}
+                >
+                  <SelectTrigger id={ids.person}>
+                    <SelectValue>
+                      {(value: string | null) =>
+                        props.people.find(([id]) => id === value)?.[1] ?? KIN_OUTLOOK.pickPerson
+                      }
+                    </SelectValue>
+                  </SelectTrigger>
+                  <SelectPopup>
+                    {props.people.map(([id, name]) => (
+                      <SelectItem key={id} value={id}>
+                        {name}
+                      </SelectItem>
+                    ))}
+                  </SelectPopup>
+                </Select>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <span id={ids.settled} className="text-sm font-medium text-foreground">
+                  {KIN_OUTLOOK.settledQuestion}
+                </span>
+                <RadioGroup
+                  aria-labelledby={ids.settled}
+                  value={settled ?? ""}
+                  disabled={props.busy}
+                  onValueChange={(value) => setSettled(value === "owed" ? "owed" : "repaid")}
+                >
+                  {(
+                    [
+                      ["owed", KIN_OUTLOOK.stillOwed, KIN_OUTLOOK.stillOwedHint],
+                      ["repaid", KIN_OUTLOOK.paidBack, KIN_OUTLOOK.paidBackHint],
+                    ] as const
+                  ).map(([value, label, hint]) => (
+                    <label
+                      key={value}
+                      className="flex min-h-11 cursor-pointer items-start gap-3 rounded-md px-2 py-2 hover:bg-accent"
+                    >
+                      <span className="mt-0.5 flex">
+                        <Radio value={value} />
+                      </span>
+                      <span className="flex flex-col gap-0.5">
+                        <span className="text-sm text-foreground">{label}</span>
+                        <span className="text-xs text-muted-foreground">{hint}</span>
+                      </span>
+                    </label>
+                  ))}
+                </RadioGroup>
+              </div>
+              {props.problem === null ? null : (
+                <Alert variant="error">
+                  <AlertDescription>{props.problem}</AlertDescription>
+                </Alert>
+              )}
+            </div>
+          </DialogPanel>
+          <DialogFooter>
+            <Button type="button" variant="outline" disabled={props.busy} onClick={props.onClose}>
+              {KIN_WORK_COPY.cancel}
+            </Button>
+            <Button type="submit" disabled={!ready || props.busy} aria-busy={props.busy}>
+              {props.busy ? KIN_OUTLOOK.saving : KIN_OUTLOOK.confirm}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogPopup>
+    </Dialog>
   );
 }
 
@@ -381,6 +628,7 @@ export function KinOutlookSection(
             more={view.more.outgoing}
             onOpenKey={props.onOpenKey}
           />
+          <PartnersOwed {...props} rows={view.partners} unsaid={view.unsaid} />
           {view.notes.length + view.runway.length === 0 ? null : (
             <p className="px-2 text-xs text-muted-foreground">
               {[...view.notes, ...view.runway.map((one) => one.text)].join(" ")}
@@ -514,6 +762,9 @@ function BudgetRow(props: {
         {view.notCounted === null ? null : (
           <span className="text-xs text-muted-foreground">{view.notCounted}</span>
         )}
+        {view.about === null ? null : (
+          <span className="text-xs text-muted-foreground">{view.about}</span>
+        )}
       </div>
       {props.canChange ? (
         <Button
@@ -604,7 +855,7 @@ export function KinBudgetDialog(
   const { projects } = useKinWorkChoices(props, true);
   const ids = { category: useId(), limit: useId() };
   const categories = props.expenses?.categories ?? [];
-  const label = (category: string) => props.expenses?.categoryLabels?.[category] ?? category;
+  const label = (category: string) => kinCategoryLabel(category, props.expenses);
   const home = props.rates?.home ?? props.expenses?.currency ?? KIN_DEFAULT_HOME_CURRENCY;
   const save = async () => {
     const checked = kinBudgetInput(props.orgId, draft, home, requestId);
@@ -659,9 +910,7 @@ export function KinBudgetDialog(
                   }
                 >
                   <SelectTrigger id={ids.category} className="w-full">
-                    <SelectValue>
-                      {draft.category === null ? KIN_BUDGETS.anyCategory : label(draft.category)}
-                    </SelectValue>
+                    <SelectValue>{kinBudgetCategoryShown(draft, label)}</SelectValue>
                   </SelectTrigger>
                   <SelectPopup>
                     <SelectItem value={ANY}>{KIN_BUDGETS.anyCategory}</SelectItem>
@@ -733,8 +982,13 @@ export function KinLinesEditor(props: {
   /** Each line's SAC or HSN code, which only India's invoices carry; shown unless false. */
   readonly codes?: boolean;
   readonly detail?: string;
+  /** Per-line Tax % input and placeholder, or the client-accounts line when hidden for that reason. */
+  readonly tax?: KinLineTax;
 }) {
   const codes = props.codes !== false;
+  const showTax = props.tax?.show === true;
+  const defaultRate = props.tax?.show ? props.tax.defaultRate : null;
+  const taxNote = props.tax?.show ? KIN_LINES.taxDetail(defaultRate) : (props.tax?.note ?? null);
   const set = (index: number, patch: Partial<KinLineDraft>) =>
     props.onChange(props.lines.map((one, at) => (at === index ? { ...one, ...patch } : one)));
   const field = (
@@ -743,6 +997,7 @@ export function KinLinesEditor(props: {
     label: string,
     extra: {
       readonly className: string;
+      readonly placeholder?: string;
       readonly inputMode?: "numeric" | "decimal";
       readonly maxLength?: number;
     },
@@ -750,7 +1005,7 @@ export function KinLinesEditor(props: {
     <Input
       aria-label={`${label}, line ${index + 1}`}
       className={extra.className}
-      placeholder={label}
+      placeholder={extra.placeholder ?? label}
       autoComplete="off"
       {...(extra.inputMode === undefined ? {} : { inputMode: extra.inputMode })}
       {...(extra.maxLength === undefined ? {} : { maxLength: extra.maxLength })}
@@ -759,11 +1014,25 @@ export function KinLinesEditor(props: {
       onChange={(event) => set(index, { [key]: event.target.value })}
     />
   );
+  const removeButton = (index: number) => (
+    <Button
+      type="button"
+      size="icon-sm"
+      variant="ghost"
+      className="sm:order-last"
+      aria-label={`${KIN_LINES.remove} ${index + 1}`}
+      disabled={props.disabled}
+      onClick={() => props.onChange(props.lines.filter((__, at) => at !== index))}
+    >
+      <Trash2Icon />
+    </Button>
+  );
   return (
     <div className="flex flex-col gap-2">
       <div className="flex flex-col">
         <span className="text-sm font-medium text-foreground">{KIN_LINES.title}</span>
         <span className="text-xs text-muted-foreground">{props.detail ?? KIN_LINES.detail}</span>
+        {taxNote === null ? null : <span className="text-xs text-muted-foreground">{taxNote}</span>}
       </div>
       {props.lines.map((_, index) => (
         <div
@@ -771,9 +1040,13 @@ export function KinLinesEditor(props: {
           key={index}
           className={cn(
             "grid grid-cols-[1fr_1fr_auto] gap-2",
-            codes
-              ? "sm:grid-cols-[3fr_1.4fr_0.8fr_1fr_1.6fr_auto]"
-              : "sm:grid-cols-[3fr_0.8fr_1fr_1.6fr_auto]",
+            codes && showTax
+              ? "sm:grid-cols-[2.6fr_1.2fr_0.75fr_0.9fr_1.4fr_0.85fr_auto]"
+              : codes
+                ? "sm:grid-cols-[3fr_1.4fr_0.8fr_1fr_1.6fr_auto]"
+                : showTax
+                  ? "sm:grid-cols-[2.8fr_0.8fr_1fr_1.5fr_0.9fr_auto]"
+                  : "sm:grid-cols-[3fr_0.8fr_1fr_1.6fr_auto]",
           )}
         >
           {field(index, "description", KIN_LINES.description, {
@@ -788,25 +1061,24 @@ export function KinLinesEditor(props: {
               })
             : null}
           {field(index, "quantity", KIN_LINES.quantity, {
-            className: codes ? "" : "col-span-2 sm:col-span-1",
+            className: !codes && !showTax ? "col-span-2 sm:col-span-1" : "",
             inputMode: "decimal",
           })}
-          <Button
-            type="button"
-            size="icon-sm"
-            variant="ghost"
-            className="sm:order-last"
-            aria-label={`${KIN_LINES.remove} ${index + 1}`}
-            disabled={props.disabled}
-            onClick={() => props.onChange(props.lines.filter((__, at) => at !== index))}
-          >
-            <Trash2Icon />
-          </Button>
+          {codes || !showTax ? removeButton(index) : null}
           {field(index, "unit", KIN_LINES.unit, { className: "", maxLength: 20 })}
+          {!codes && showTax ? removeButton(index) : null}
           {field(index, "rate", KIN_LINES.rate, {
-            className: "col-span-2 sm:col-span-1",
+            className: !codes && showTax ? "" : "col-span-2 sm:col-span-1",
             inputMode: "decimal",
           })}
+          {showTax
+            ? field(index, "taxRate", KIN_LINES.tax, {
+                className: codes ? "" : "col-span-2 sm:col-span-1",
+                placeholder: defaultRate ?? KIN_LINES.tax,
+                inputMode: "decimal",
+                maxLength: 7,
+              })
+            : null}
         </div>
       ))}
       <div>

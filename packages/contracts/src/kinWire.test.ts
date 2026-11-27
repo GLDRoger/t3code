@@ -304,6 +304,11 @@ describe("kinPulsePage", () => {
       records: ["M1", "T1", "T2", "H1", "T3"],
       invoiceOverdue: false,
     });
+    // "N more not listed" is not a thing to answer: always on the page, never counted.
+    const more = fact("sense_overflow:task_late", "work", "sense_overflow");
+    const withMore = kinPulsePage([...facts, more], 2);
+    expect(withMore.facts.map((one) => one.key)).toEqual(["t2", "t1", more.key, "h1"]);
+    expect(withMore.outline).toMatchObject({ open: 4, money: 1 });
   });
 });
 

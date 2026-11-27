@@ -26,6 +26,7 @@ import {
   type KinLeadDraft,
   KIN_AGENTS_COPY,
 } from "@t3tools/client-runtime/kin/kinLeadPresentation";
+import { KIN_SET_UP } from "@t3tools/client-runtime/kin/kinSetUp";
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -181,6 +182,9 @@ function LeadForm(props: {
     lead === null ? (props.suggested ?? NEW_LEAD) : kinLeadDraftOf(lead),
   );
   const [draft, setDraft] = useState(initial);
+  // A new company's first agent asks what it sells; the answer opens What we sell.
+  const [sells, setSells] = useState("");
+  const startWhatWeSell = useAtomCommand(kinClient.docStartWhatWeSell, { reportFailure: false });
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<{
     readonly field: keyof KinLeadDraft | null;
@@ -219,7 +223,8 @@ function LeadForm(props: {
     draft.name !== initial.name ||
     draft.area !== initial.area ||
     draft.charter !== initial.charter ||
-    draft.intro !== initial.intro;
+    draft.intro !== initial.intro ||
+    sells.trim() !== "";
 
   usePreventRemove(dirty || saving, ({ data }) => {
     if (saved.current) {
@@ -307,6 +312,12 @@ function LeadForm(props: {
       setProblem({ field: null, text: kinLeadSaveProblem(cause, true) });
       return;
     }
+    // Unsaved, the agent asks it itself in the first chat; the agent is made either way.
+    if (firstAgent && sells.trim() !== "")
+      await startWhatWeSell({
+        environmentId,
+        input: { orgId, sells: sells.trim().slice(0, KIN_SET_UP.max) },
+      });
     saved.current = true;
     refreshLeads();
     navigation.goBack();
@@ -328,6 +339,25 @@ function LeadForm(props: {
       }}
     >
       {problem?.field === null ? <ErrorBanner message={problem.text} /> : null}
+      {firstAgent ? (
+        <View className="gap-2">
+          <ListSection title={KIN_SET_UP.question}>
+            <TextInput
+              multiline
+              accessibilityLabel={KIN_SET_UP.question}
+              value={sells}
+              editable={allowed && !saving}
+              maxLength={KIN_SET_UP.max}
+              onChangeText={setSells}
+              placeholder={KIN_SET_UP.example}
+              placeholderTextColorClassName="accent-placeholder"
+              textAlignVertical="top"
+              className="min-h-20 px-4 py-3 font-sans text-base leading-normal text-foreground"
+            />
+          </ListSection>
+          <Note problem={null} hint={KIN_SET_UP.hint} />
+        </View>
+      ) : null}
       {allowed ? null : (
         <Text textRole="footnote" className="px-2 text-foreground-muted">
           {creating

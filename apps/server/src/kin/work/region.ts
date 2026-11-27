@@ -17,10 +17,13 @@ export interface CompanyRegion {
   readonly locale?: string;
   /** A client here pays an invoice less tax it withholds at source (TDS). */
   readonly withholdsAtSource?: true;
+  /** What a withheld-tax line is called here. */
+  readonly withheldTax?: string;
   /** Company details keep the company's tax number here (the profile's `gstin`). */
   readonly keepsTaxNumber?: true;
   /** What a document says in place of its tax lines when the company is not registered for it. */
   readonly notRegistered?: string;
+  readonly customerAccounts?: string;
 }
 
 const vat = (currency: string, financialYearStartMonth = 1): CompanyRegion => ({
@@ -30,6 +33,8 @@ const vat = (currency: string, financialYearStartMonth = 1): CompanyRegion => ({
   taxIdLabel: "VAT number",
   filings: [["vat", "VAT"]],
 });
+
+const reverseCharge = { customerAccounts: "Reverse charge." };
 
 const REGIONS: Readonly<Record<string, CompanyRegion>> = {
   IN: {
@@ -43,6 +48,7 @@ const REGIONS: Readonly<Record<string, CompanyRegion>> = {
       ["tds", "TDS"],
     ],
     withholdsAtSource: true,
+    withheldTax: "TDS",
     keepsTaxNumber: true,
     notRegistered: "GST not charged: the supplier is not registered under GST.",
     // oxlint-disable-next-line t3code/kin-one-format -- the region table is where India's locale lives.
@@ -50,6 +56,7 @@ const REGIONS: Readonly<Record<string, CompanyRegion>> = {
   },
   GB: {
     ...vat("GBP", 4),
+    ...reverseCharge,
     filings: [
       ["vat", "VAT"],
       ["paye", "PAYE"],
@@ -98,17 +105,20 @@ const REGIONS: Readonly<Record<string, CompanyRegion>> = {
     filings: [["gst", "GST"]],
   },
   AE: { ...vat("AED"), taxIdLabel: "TRN" },
-  IE: vat("EUR"),
-  DE: vat("EUR"),
-  FR: vat("EUR"),
-  NL: vat("EUR"),
-  ES: vat("EUR"),
-  IT: vat("EUR"),
+  IE: { ...vat("EUR"), ...reverseCharge },
+  DE: { ...vat("EUR"), ...reverseCharge },
+  FR: { ...vat("EUR"), ...reverseCharge },
+  NL: { ...vat("EUR"), ...reverseCharge },
+  ES: { ...vat("EUR"), ...reverseCharge },
+  IT: { ...vat("EUR"), ...reverseCharge },
 };
 
 /** The country's row; none for a country with no row, or none at all. */
 export const regionOf = (country: string | null | undefined): CompanyRegion | undefined =>
   country == null || !Object.hasOwn(REGIONS, country) ? undefined : REGIONS[country];
+
+export const customerAccountsLine = (country: string | null | undefined) =>
+  regionOf(country)?.customerAccounts ?? "Tax to be accounted for by the customer.";
 
 /** The tax a company here charges and what its documents say when it is not registered for it. */
 export const unregisteredTax = (country: string | null, ownTax: string | undefined) => {

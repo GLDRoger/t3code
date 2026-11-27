@@ -5,6 +5,7 @@ import {
   kinFailure,
 } from "@t3tools/client-runtime/kin/kinAnswers";
 import { LegendList } from "@legendapp/list/react-native";
+import { kinBillsEntry } from "@t3tools/client-runtime/kin/kinBills";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
@@ -16,11 +17,16 @@ import {
   kinOwnerToday,
   kinShiftMonth,
 } from "@t3tools/client-runtime/kin/kinDates";
+import { kinEntryFacts } from "@t3tools/client-runtime/kin/kinAttention";
 import {
+  KIN_LIST_DEFAULT_FILTER,
+  KIN_LIST_WATCH,
+  KIN_LIST_WATCHES_CHANGE,
   KIN_LISTS,
   kinCategoryLabel,
   kinListChips,
   kinListColumns,
+  kinListOffersClients,
   kinListFilterParam,
   kinListFooter,
   kinListGroupings,
@@ -29,6 +35,14 @@ import {
   kinListFilterLabel,
   kinListNothing,
   kinListRow,
+  kinListCheckDraftOf,
+  kinListCheckFields,
+  kinListCheckInput,
+  kinListCheckWords,
+  kinListRemindChoices,
+  kinListWatches,
+  kinListWatchesEditable,
+  type KinListCheckDraft,
   type KinListColumn,
   type KinListFilter,
   type KinListRowView,
@@ -43,6 +57,7 @@ import {
   KinListId,
   KinOrgId,
   type KinListDefinition,
+  type KinListUpdateInput,
   type KinRecordKey,
 } from "@t3tools/contracts";
 import * as Option from "effect/Option";
@@ -56,7 +71,12 @@ import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
 import { Chip } from "../../components/ui/Chip";
 import { EmptyState } from "../../components/ui/EmptyState";
+import { ListActionRow } from "../../components/ui/ListActionRow";
+import { ListRow } from "../../components/ui/ListRow";
+import { ListRowLayout } from "../../components/ui/ListRowLayout";
 import { ListSection } from "../../components/ui/ListSection";
+import { Menu } from "../../components/ui/Menu";
+import { Notice } from "../../components/ui/Notice";
 import { ScreenContent } from "../../components/ui/ScreenContent";
 import { useNowMinuteMs } from "../../lib/clock";
 import { NativeScrollView } from "../../native/NativeScrollViewMarker";
@@ -66,13 +86,16 @@ import {
   KinWorkFrame,
   KinWorkLoading,
   KinWorkStaleNotice,
+  KinWorkTextField,
   KinWorkToggleRow,
 } from "./components/KinWorkPieces";
 import { KinWorkStateSymbol } from "./components/KinWorkStateSymbol";
 import { KinDateRowLine } from "./KinWorkMoney";
 import { kinClient } from "./state/kinClient";
+import { useKinBillBatches } from "./state/useKinBills";
 import {
   useKinDates,
+  useKinListChanges,
   useKinListContext,
   useKinListEntries,
   useKinLists,
@@ -86,6 +109,10 @@ import {
   type KinWorkTarget,
 } from "./state/useKinWork";
 import { KinLoadFailed } from "./components/KinLoadFailed";
+import { kinTabBar, kinTabFoot, useKinTab } from "./components/KinTab";
+import { useKinAttention } from "./state/useKinAttention";
+import { useKinSectionOn, useKinShell } from "./state/useKinShell";
+import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 
 export type KinListParams = {
   readonly environmentId: string;
@@ -130,10 +157,16 @@ export function KinListScreen({ route }: StaticScreenProps<KinListParams>) {
   );
 }
 
+/** A list shown as a section in the phone's dock: its page, as a tab. */
+export function KinListTab(props: KinWorkTarget & { readonly list: KinListId }) {
+  return <KinListGate {...props} initial={KIN_LIST_DEFAULT_FILTER} />;
+}
+
 function KinListGate(
   props: KinWorkTarget & { readonly list: KinListId; readonly initial: KinListFilter },
 ) {
   const navigation = useNavigation();
+  const tab = useKinTab();
   const work = useKinWork(props);
   const ready = work._tag === "ready";
   const directory = useKinWorkDirectory(props, ready);
@@ -141,7 +174,8 @@ function KinListGate(
     enabled: ready,
     archived: true,
   });
-  const back = () => navigation.goBack();
+  // A tab has no Back: the dock is the way out.
+  const back = tab === null ? () => navigation.goBack() : undefined;
   if (work._tag === "refused" || lists.state._tag === "refused") {
     return (
       <KinWorkFrame title={KIN_LISTS.title} onBack={back}>
@@ -179,11 +213,13 @@ function KinListGate(
           title={found ? KIN_LISTS.listGone : KIN_LISTS.loadFailed}
           detail={found ? KIN_LISTS.goneDetail : failure.text.trim()}
           action={
-            <Button
-              tone="secondary"
-              label={retry ? KIN_RETRY : "Back"}
-              onPress={retry ? lists.refresh : back}
-            />
+            retry || back !== undefined ? (
+              <Button
+                tone="secondary"
+                label={retry ? KIN_RETRY : "Back"}
+                onPress={retry || back === undefined ? lists.refresh : back}
+              />
+            ) : undefined
           }
         />
       </KinWorkFrame>
@@ -390,9 +426,15 @@ function KinListEntries(
   },
 ) {
   const navigation = useNavigation();
+  const tab = useKinTab();
   const { def, environmentId, orgId } = props;
   const context = useKinListContext(props, props.directory);
+  const watches = kinListWatches(def);
+  const ownerLevel = useKinIsOwnerLevel(environmentId);
+  // Late, due today or off its check, in the host's own words: the pulse read Tasks shares.
+  const facts = kinEntryFacts(useKinAttention(props));
   const canEdit = useAtomValue(kinClient.workListUpdate.permissionAtom(environmentId));
+  const shell = useKinShell(environmentId);
   const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
   const canExpense = useAtomValue(kinClient.workNewExpense.permissionAtom(environmentId));
   const { state, entries, totals } = useKinListEntries(
@@ -416,6 +458,7 @@ function KinListEntries(
   );
   const narrowed = kinListFilterLabel(def, filter);
   const { clients } = useKinWorkChoices(props, true);
+  const clientsOn = useKinSectionOn(environmentId, "clients");
   const [table, setTable] = useState(false);
   const columns = kinListColumns(def, state.records);
   const groupings = kinListGroupings(def);
@@ -472,7 +515,16 @@ function KinListEntries(
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
         title={def.name}
-        onBack={() => navigation.goBack()}
+        {...kinTabBar(tab, {
+          onBack: () => navigation.goBack(),
+          search: {
+            value: filter.text,
+            onChangeText: (text) => entries.setFilter({ ...filter, text }),
+            placeholder: KIN_LISTS.search,
+            closeAccessibilityLabel: "Close search",
+            clearAccessibilityLabel: "Clear search",
+          },
+        })}
         refresh={{ accessibilityLabel: "Refresh", onPress: retry }}
         menus={[
           kinListFilterMenu({
@@ -485,13 +537,6 @@ function KinListEntries(
           }),
         ]}
         {...(actions.length === 0 ? {} : { actions })}
-        search={{
-          value: filter.text,
-          onChangeText: (text) => entries.setFilter({ ...filter, text }),
-          placeholder: KIN_LISTS.search,
-          closeAccessibilityLabel: "Close search",
-          clearAccessibilityLabel: "Clear search",
-        }}
       />
       <ScreenContent surface="screen">
         <LegendList<KinListRowView>
@@ -500,8 +545,10 @@ function KinListEntries(
           contentInsetAdjustmentBehavior="automatic"
           keyboardDismissMode="on-drag"
           keyboardShouldPersistTaps="handled"
-          // The search field floats over the foot of the list.
-          contentContainerStyle={{ paddingBottom: 96 }}
+          // The search field, or the dock on a tab, floats over the foot of the list.
+          contentContainerStyle={{
+            paddingBottom: tab === null ? 96 : kinTabFoot(tab.bottomClearance),
+          }}
           data={table ? [] : rows}
           keyExtractor={(row) => row.key}
           extraData={state}
@@ -511,33 +558,54 @@ function KinListEntries(
           onEndReachedThreshold={0.5}
           ListHeaderComponent={
             <View className="gap-3 pb-1 pt-2">
+              {kinListWatchesEditable(def, shell, canEdit) ? (
+                <View className="px-4">
+                  <KinListWatchControls {...props} />
+                </View>
+              ) : watches.length === 0 ? null : (
+                <View className="px-5">
+                  {watches.map((line) => (
+                    <Text key={line} textRole="footnote" className="text-foreground-muted">
+                      {line}
+                    </Text>
+                  ))}
+                  {ownerLevel ? (
+                    <Text textRole="footnote" className="text-foreground-muted">
+                      {KIN_LIST_WATCHES_CHANGE}
+                    </Text>
+                  ) : null}
+                </View>
+              )}
               {props.stale || state.stale ? (
                 <View className="px-4">
                   <KinWorkStaleNotice environmentId={environmentId} onRetry={retry} />
                 </View>
               ) : null}
-              <View className="px-4">
-                <ListSection>
-                  <KinWorkPlacePicker
-                    target={props}
-                    noun="client"
-                    icon="person.2"
-                    label={KIN_LISTS.clientFilter}
-                    none={KIN_LISTS.anyClient}
-                    extra={NO_CLIENT}
-                    held={filter.noParty ? NO_CLIENT : filter.party}
-                    choices={clients}
-                    disabled={false}
-                    onPick={(party) =>
-                      entries.setFilter(
-                        party?.key === NO_CLIENT.key
-                          ? { ...filter, noParty: true, party: null }
-                          : { ...filter, noParty: false, party },
-                      )
-                    }
-                  />
-                </ListSection>
-              </View>
+              {def.list === "expenses" ? <KinBillsAddedRow {...props} /> : null}
+              {!clientsOn || !kinListOffersClients(state.records, filter) ? null : (
+                <View className="px-4">
+                  <ListSection>
+                    <KinWorkPlacePicker
+                      target={props}
+                      noun="client"
+                      icon="person.2"
+                      label={KIN_LISTS.clientFilter}
+                      none={KIN_LISTS.anyClient}
+                      extra={NO_CLIENT}
+                      held={filter.noParty ? NO_CLIENT : filter.party}
+                      choices={clients}
+                      disabled={false}
+                      onPick={(party) =>
+                        entries.setFilter(
+                          party?.key === NO_CLIENT.key
+                            ? { ...filter, noParty: true, party: null }
+                            : { ...filter, noParty: false, party },
+                        )
+                      }
+                    />
+                  </ListSection>
+                </View>
+              )}
               {narrowed === null ? null : (
                 <View className="flex-row px-4">
                   <Chip
@@ -687,7 +755,9 @@ function KinListEntries(
               </View>
             )
           }
-          renderItem={({ item: row }) => <KinListRowLine row={row} onPress={() => open(row.key)} />}
+          renderItem={({ item: row }) => (
+            <KinListRowLine row={row} facts={facts.get(row.key)} onPress={() => open(row.key)} />
+          )}
         />
       </ScreenContent>
     </View>
@@ -697,6 +767,8 @@ function KinListEntries(
 /** One entry of any list: its name, what the list says about it, and its amount when it has one. */
 export function KinListRowLine(props: {
   readonly row: KinListRowView;
+  /** What the host says of it being late, due today or off its check. */
+  readonly facts?: ReadonlyArray<string> | undefined;
   readonly onPress: () => void;
   /** Inside a rounded section the row keeps to the section's edges. */
   readonly inset?: boolean;
@@ -728,6 +800,11 @@ export function KinListRowLine(props: {
           <Text textRole="footnote" numberOfLines={2} className="text-foreground-muted">
             {row.line}
           </Text>
+          {props.facts === undefined ? null : (
+            <Text textRole="footnote" className="text-danger-foreground">
+              {props.facts.join(" ")}
+            </Text>
+          )}
         </View>
         <View className="items-end gap-0.5 py-3 pl-3">
           {row.amount === null ? null : (
@@ -907,5 +984,186 @@ function KinDatesBody(props: KinWorkTarget) {
         </Text>
       ) : null}
     </KinWorkFrame>
+  );
+}
+
+/** On Expenses, once there are bills added in bulk: one quiet row to them. */
+function KinBillsAddedRow(props: KinWorkTarget) {
+  const navigation = useNavigation();
+  const { allowed, state } = useKinBillBatches(props);
+  const nowMs = useNowMinuteMs();
+  if (!allowed || state._tag !== "ready") return null;
+  const entry = kinBillsEntry(state.value.batches, new Date(nowMs));
+  if (entry === null) return null;
+  const { batchId } = entry;
+  return (
+    <View className="px-4">
+      <ListSection>
+        <ListRow
+          icon="doc.text"
+          label={entry.label}
+          description={entry.detail}
+          onPress={() =>
+            navigation.navigate("KinBills", {
+              environmentId: String(props.environmentId),
+              orgId: String(props.orgId),
+              ...(batchId === null ? {} : { batch: batchId }),
+            })
+          }
+        />
+      </ListSection>
+    </View>
+  );
+}
+
+/** One choice of a few, picked from a menu right on its row. */
+function WatchPick(props: {
+  readonly label: string;
+  readonly current: string;
+  readonly choices: ReadonlyArray<{ readonly id: string; readonly label: string }>;
+  readonly disabled: boolean;
+  readonly onPick: (id: string) => void;
+}) {
+  const shown = props.choices.find((one) => one.id === props.current)?.label ?? "";
+  return (
+    <Menu
+      title={props.label}
+      accessibilityRole="button"
+      accessibilityLabel={`${props.label}: ${shown}. Change`}
+      actions={props.choices.map((choice) => ({
+        id: choice.id,
+        title: choice.label,
+        state: choice.id === props.current ? ("on" as const) : ("off" as const),
+      }))}
+      onPressAction={({ nativeEvent: { event } }) => {
+        if (!props.disabled && event !== props.current) props.onPick(event);
+      }}
+    >
+      <View pointerEvents="none">
+        <ListRowLayout label={props.label} detail={shown} disabled={props.disabled} />
+      </View>
+    </Menu>
+  );
+}
+
+// A fixed number in a check, not a field: field keys start with a letter.
+const A_NUMBER = "#number";
+
+/** What Kin watches on a section list, set by the owner level here: its reminder day and its check. */
+function KinListWatchControls(props: KinWorkTarget & { readonly def: KinListDefinition }) {
+  const { def, orgId } = props;
+  const changes = useKinListChanges(props);
+  const [draft, setDraft] = useState<KinListCheckDraft | null>(null);
+  const edit = (next: KinListCheckDraft) => {
+    changes.dismiss();
+    setDraft(next);
+  };
+  const remind = kinListRemindChoices(def);
+  const numbers = kinListCheckFields(def).map((field) => ({ id: field.key, label: field.label }));
+  const rule = kinListCheckWords(def);
+  const send = (patch: Pick<KinListUpdateInput, "remindOn" | "check">) =>
+    changes.send({ orgId, list: def.list, rev: def.rev, accept: ["remindOn", "check"], ...patch });
+  const save = async (held: KinListCheckDraft) => {
+    const checked = kinListCheckInput(held);
+    if (!checked.ok) return changes.setProblem(checked.problem);
+    if (await send({ check: checked.check })) setDraft(null);
+  };
+  return (
+    <View className="gap-3">
+      {changes.problem === null ? null : (
+        <Notice message={changes.problem} tone="danger" onDismiss={changes.dismiss} />
+      )}
+      <ListSection>
+        <WatchPick
+          label={KIN_LIST_WATCH.remindOn}
+          current={remind.current}
+          choices={remind.choices}
+          disabled={changes.busy}
+          onPick={(id) => {
+            const choice = remind.choices.find((one) => one.id === id);
+            if (choice !== undefined) void send({ remindOn: choice.remindOn });
+          }}
+        />
+        {numbers.length === 0 && rule === null ? null : draft === null ? (
+          <>
+            <ListRowLayout
+              label={KIN_LIST_WATCH.warnWhen}
+              description={rule ?? KIN_LIST_WATCH.notSet}
+            />
+            {numbers.length === 0 ? null : (
+              <ListActionRow
+                label={KIN_LIST_WATCH.change}
+                disabled={changes.busy}
+                onPress={() => {
+                  changes.dismiss();
+                  setDraft(kinListCheckDraftOf(def));
+                }}
+              />
+            )}
+            {rule === null ? null : (
+              <ListActionRow
+                label={KIN_LIST_WATCH.stop}
+                disabled={changes.busy}
+                onPress={() => void send({ check: null })}
+              />
+            )}
+          </>
+        ) : (
+          <>
+            <WatchPick
+              label={KIN_LIST_WATCH.field}
+              current={draft.field}
+              choices={numbers}
+              disabled={changes.busy}
+              onPick={(field) =>
+                edit({ ...draft, field, other: draft.other === field ? "" : draft.other })
+              }
+            />
+            <WatchPick
+              label={KIN_LIST_WATCH.side}
+              current={draft.side}
+              choices={[
+                { id: "below", label: KIN_LIST_WATCH.below },
+                { id: "above", label: KIN_LIST_WATCH.above },
+              ]}
+              disabled={changes.busy}
+              onPick={(side) => (side === "below" || side === "above") && edit({ ...draft, side })}
+            />
+            <WatchPick
+              label={KIN_LIST_WATCH.compare}
+              current={draft.other === "" ? A_NUMBER : draft.other}
+              choices={[
+                { id: A_NUMBER, label: KIN_LIST_WATCH.aNumber },
+                ...numbers.filter((field) => field.id !== draft.field),
+              ]}
+              disabled={changes.busy}
+              onPick={(other) => edit({ ...draft, other: other === A_NUMBER ? "" : other })}
+            />
+            {draft.other === "" ? (
+              <KinWorkTextField
+                label={KIN_LIST_WATCH.number}
+                value={draft.number}
+                keyboard="decimal"
+                disabled={changes.busy}
+                onChangeText={(number) => edit({ ...draft, number })}
+              />
+            ) : null}
+            <ListActionRow
+              label={KIN_LIST_WATCH.save}
+              loading={changes.busy}
+              onPress={() => void save(draft)}
+            />
+            <ListActionRow
+              label={KIN_LIST_WATCH.cancel}
+              disabled={changes.busy}
+              onPress={() => {
+                changes.dismiss();
+                setDraft(null);
+              }}
+            />
+          </>
+        )}
+      </ListSection>
+    </View>
   );
 }

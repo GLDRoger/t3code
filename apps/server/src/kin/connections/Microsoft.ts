@@ -141,7 +141,17 @@ const bodyText = (message: unknown) => {
 const SUMMARY =
   "id,conversationId,subject,from,toRecipients,ccRecipients,receivedDateTime,isRead,bodyPreview";
 const FULL = `${SUMMARY},replyTo,internetMessageId,hasAttachments,body,internetMessageHeaders`;
+const automationOf = (message: unknown) => ({
+  listUnsubscribe: internetHeader(message, "List-Unsubscribe").length > 0,
+  precedence: internetHeader(message, "Precedence")[0] ?? null,
+  autoSubmitted: internetHeader(message, "Auto-Submitted")[0] ?? null,
+  bulk: false,
+});
 
+const receivedOf = (message: unknown) => {
+  const at = Date.parse(text(field(message, "receivedDateTime")) ?? "");
+  return Number.isFinite(at) ? at : null;
+};
 const messageOf = (message: unknown, files?: unknown): MailMessage => ({
   threadId: text(field(message, "conversationId")) ?? "",
   from: nameOf(field(message, "from")),
@@ -152,6 +162,7 @@ const messageOf = (message: unknown, files?: unknown): MailMessage => ({
   ccLine: recipientLine(message, "ccRecipients"),
   deliveredTo: [...recipients(message, "toRecipients"), ...recipients(message, "ccRecipients")],
   date: text(field(message, "receivedDateTime")) ?? null,
+  receivedAt: receivedOf(message),
   subject: text(field(message, "subject")) ?? "",
   preview: text(field(message, "bodyPreview")) ?? "",
   unread: field(message, "isRead") === false,
@@ -172,12 +183,16 @@ const messageOf = (message: unknown, files?: unknown): MailMessage => ({
 });
 
 /** Graph lists messages, newest first; Kin shows conversations, each oldest message first. */
-const conversations = (messages: ReadonlyArray<unknown>, max: number) => {
+const conversations = (messages: ReadonlyArray<unknown>, max: number, watch = false) => {
   const byConversation = new Map<string, Array<MailMessage>>();
   for (const message of messages) {
     const id = text(field(message, "conversationId"));
     if (id === undefined) continue;
-    byConversation.set(id, [messageOf(message), ...(byConversation.get(id) ?? [])]);
+    const mapped = messageOf(message);
+    byConversation.set(id, [
+      watch ? { ...mapped, automation: automationOf(message) } : mapped,
+      ...(byConversation.get(id) ?? []),
+    ]);
   }
   return [...byConversation.values()].slice(0, max);
 };
@@ -341,7 +356,7 @@ const inboxSince = Effect.fn("KinMicrosoft.inboxSince")(function* (
   let params: Request["params"] = {
     $filter: `receivedDateTime ge ${iso(since)}`,
     $orderby: "receivedDateTime asc",
-    $select: SUMMARY,
+    $select: `${SUMMARY},internetMessageHeaders`,
     $top: "50",
   };
   let next: string | undefined;
@@ -354,7 +369,7 @@ const inboxSince = Effect.fn("KinMicrosoft.inboxSince")(function* (
   } while (next !== undefined && messages.length < ACTIVITY_MAIL);
   const last = Date.parse(text(field(messages.at(-1), "receivedDateTime")) ?? "");
   return {
-    threads: conversations(messages.toReversed(), Infinity),
+    threads: conversations(messages.toReversed(), Infinity, true),
     until: next === undefined || Number.isNaN(last) ? undefined : last,
   };
 });
@@ -446,7 +461,6 @@ const arrivalOf = Effect.fn("KinMicrosoft.arrival")(function* (
     Number.isNaN(receivedAt)
   )
     return yield* failure("protocol", "Microsoft sent an answer Kin couldn't read.");
-  const one = (name: string) => internetHeader(message, name)[0] ?? null;
   return {
     messageId,
     threadId,
@@ -460,10 +474,7 @@ const arrivalOf = Effect.fn("KinMicrosoft.arrival")(function* (
     date: text(field(message, "receivedDateTime")) ?? null,
     internetId: text(field(message, "internetMessageId")) ?? null,
     authResults: internetHeader(message, "Authentication-Results"),
-    listUnsubscribe: one("List-Unsubscribe") !== null,
-    precedence: one("Precedence"),
-    autoSubmitted: one("Auto-Submitted"),
-    bulk: false,
+    ...automationOf(message),
     hasFile: field(message, "hasAttachments") === true,
   } satisfies MailArrival;
 });

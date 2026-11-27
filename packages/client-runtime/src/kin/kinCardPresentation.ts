@@ -1,5 +1,6 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import {
+  KIN_BILL_BATCH_CARD,
   KIN_DOC_CARD,
   KIN_HOST_TROUBLE_CARD,
   KIN_MEMORY_CHANGES_CARD,
@@ -23,6 +24,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 import { kinHeldLine } from "./kinAgentRetire.ts";
+import { kinBillBatchCardView, type KinBillBatchCardView } from "./kinBills.ts";
 import { kinApprovalWidgetView, type KinApprovalWidgetView } from "./kinApprovalPresentation.ts";
 import { kinChartCardView, type KinChartView } from "./kinChart.ts";
 import { kinDocCardView, type KinDocCardView } from "./kinDocs.ts";
@@ -37,9 +39,11 @@ import {
   type KinSocialWeekView,
 } from "./kinSocial.ts";
 import { kinChoiceCardView, type KinChoiceCardView } from "./kinChoicePresentation.ts";
+import { kinCountryCardView, type KinCountryCardView } from "./kinCompanyProfile.ts";
 import {
   formatKinDeferralTime,
   KIN_DEFERRAL_ACTIONS,
+  kinAskedByLine,
   kinDeferralCardView,
   kinDeferralIsBookkeeping,
   type KinDeferralCardView,
@@ -83,6 +87,7 @@ export type KinCardView =
   | { readonly kind: "task"; readonly task: KinTaskCardView }
   | { readonly kind: "deferral"; readonly deferral: KinDeferralCardView }
   | { readonly kind: "choice"; readonly choice: KinChoiceCardView }
+  | { readonly kind: "country"; readonly country: KinCountryCardView }
   | { readonly kind: "chart"; readonly chart: KinChartView }
   | { readonly kind: "visual"; readonly orgId: KinOrgId; readonly visual: KinVisualCardState }
   | { readonly kind: "digest"; readonly digest: KinDigestCardView }
@@ -91,6 +96,7 @@ export type KinCardView =
   | { readonly kind: "doc"; readonly doc: KinDocCardView }
   | { readonly kind: "statement_review"; readonly review: KinStatementReviewView }
   | { readonly kind: "statement_password"; readonly password: KinStatementPasswordView }
+  | { readonly kind: "bill_batch"; readonly bills: KinBillBatchCardView }
   | { readonly kind: "social_week"; readonly week: KinSocialWeekView }
   | { readonly kind: "social_pack"; readonly pack: KinSocialPackView }
   /** Drawn with the reader's clock (`kinHostTroubleCardView`), so it carries the widget. */
@@ -310,7 +316,7 @@ export function kinReminderCardView(
   const card = decoded.value;
   const title = clamp(card.title, 200) || "This reminder";
   const open = widget.closedAt === null && card.status !== "done";
-  const lines =
+  const lines: Array<string> =
     widget.closedAt !== null
       ? ["Closed."]
       : card.status === "done"
@@ -318,6 +324,8 @@ export function kinReminderCardView(
         : card.status === "snoozed" && card.snoozedUntil !== undefined
           ? [`Snoozed until ${formatKinDeferralTime(Date.parse(card.snoozedUntil), timeZone)}.`]
           : [`Due ${formatKinDeferralTime(Date.parse(card.dueAt), timeZone)}.`];
+  const asked = kinAskedByLine(card.askedBy);
+  if (asked !== null) lines.push(asked);
   return {
     widgetId: widget.widgetId,
     revision: widget.revision,
@@ -325,6 +333,7 @@ export function kinReminderCardView(
     phase: open ? "reminder" : "closed",
     eyebrow: "Reminder",
     title,
+    agent: null,
     lines,
     countdown: null,
     actions: open ? reminderActions(card, ownerLevel) : [],
@@ -338,6 +347,8 @@ export function kinReminderCardView(
  */
 function reminderActions(card: KinReminderCard, ownerLevel: boolean | undefined) {
   const finish = [actions.done, actions.snooze_10m, actions.snooze_1h, actions.snooze_tomorrow];
+  // A shared chat's own: its asker, the owner or a co-owner finishes it; the host says who.
+  if (card.askedBy !== undefined) return finish;
   if (ownerLevel !== false || card.theirs === true) return [...finish, actions.change];
   return card.theirs === false ? finish : [];
 }
@@ -422,6 +433,10 @@ export function kinScheduledTaskCardView(
           ? [`Next run ${formatKinDeferralTime(nextMs, timeZone)}.`]
           : []),
         ...(card.lastRun === null ? [] : [lastRunLine(card.lastRun, timeZone)]),
+        ...((card.overlapSkipped ?? 0) > 1
+          ? [`Skipped ${card.overlapSkipped} runs in a row.`]
+          : []),
+        ...[kinAskedByLine(card.askedBy)].filter((line) => line !== null),
       ];
   const running = card.lastRun?.status === "running";
   return {
@@ -431,6 +446,7 @@ export function kinScheduledTaskCardView(
     phase: open ? "scheduled" : "closed",
     eyebrow: "Scheduled task",
     title,
+    agent: null,
     lines,
     countdown:
       open && card.status === "active" && nextMs !== null ? { to: nextMs, kind: "run" } : null,
@@ -565,7 +581,7 @@ function kinLiveCardView(
         : unknown(widget);
     }
     case "deferral": {
-      const deferral = kinDeferralCardView(widget);
+      const deferral = kinDeferralCardView(widget, undefined, ownerLevel);
       return deferral === null ? unknown(widget) : { kind: "deferral", deferral };
     }
     case "reminder": {
@@ -579,6 +595,10 @@ function kinLiveCardView(
     case "choice": {
       const choice = kinChoiceCardView(widget);
       return choice === null ? unknown(widget) : { kind: "choice", choice };
+    }
+    case "country": {
+      const country = kinCountryCardView(widget);
+      return country === null ? unknown(widget) : { kind: "country", country };
     }
     case "chart": {
       const chart = kinChartCardView(widget);
@@ -611,6 +631,10 @@ function kinLiveCardView(
     case KIN_STATEMENT_PASSWORD_CARD: {
       const password = kinStatementPasswordView(widget);
       return password === null ? unknown(widget) : { kind: "statement_password", password };
+    }
+    case KIN_BILL_BATCH_CARD: {
+      const bills = kinBillBatchCardView(widget);
+      return bills === null ? unknown(widget) : { kind: "bill_batch", bills };
     }
     case KIN_MEMORY_CHANGES_CARD: {
       const changes = kinMemoryChangesView(widget);

@@ -23,10 +23,13 @@ import {
   KIN_CACHED_MESSAGE_LIMIT,
   kinBadgeCount,
   kinChatSettled,
+  kinInboxSettledSince,
   kinWaitingCount,
   selectKinInboxView,
   trimKinChatForCache,
   type KinChatState,
+  type KinInboxEvent,
+  type KinInboxState,
 } from "./kinInboxModel.ts";
 import { kinReactionChips, kinReactionToggle } from "./kinReactions.ts";
 
@@ -196,30 +199,41 @@ describe("kin inbox", () => {
   });
 
   it("upserts chats without moving one backwards, and resolves waiting rows", () => {
+    // Whether each step settled something the phone may still show, so it asks the host again.
+    const settles: Array<boolean> = [];
+    const step = (before: KinInboxState, event: KinInboxEvent) => {
+      const after = applyKinInboxEvent(before, event);
+      settles.push(kinInboxSettledSince(before, after));
+      return after;
+    };
     let state = applyKinInboxEvent(emptyKinInbox, {
       _tag: "snapshot",
-      chats: [chat("a", { lastSeq: 5, unread: 1 })],
+      chats: [chat("a", { lastSeq: 5, unread: 2 })],
       waiting: [waiting("w1", "a")],
     });
-    state = applyKinInboxEvent(state, { _tag: "chat", chat: chat("a", { lastSeq: 4, unread: 9 }) });
-    expect(state.chats[0]!.unread).toBe(1);
-    state = applyKinInboxEvent(state, { _tag: "chat", chat: chat("a", { lastSeq: 5, unread: 0 }) });
+    state = step(state, { _tag: "chat", chat: chat("a", { lastSeq: 4, unread: 9 }) });
+    expect(state.chats[0]!.unread).toBe(2);
+    state = step(state, { _tag: "chat", chat: chat("a", { lastSeq: 5, unread: 0 }) });
     expect(state.chats[0]!.unread).toBe(0);
-    state = applyKinInboxEvent(state, { _tag: "chat", chat: chat("b", { unread: 2 }) });
+    state = step(state, { _tag: "chat", chat: chat("b", { unread: 2 }) });
     expect(state.chats.map((c) => c.chatId)).toEqual(["a", "b"]);
 
-    state = applyKinInboxEvent(state, { _tag: "waiting", item: waiting("w2", "b") });
+    state = step(state, { _tag: "waiting", item: waiting("w2", "b") });
     // The badge is the list's unread: what waits on the viewer is shown, not counted.
     expect(kinBadgeCount(state)).toBe(2);
     // Read (its card still waiting), unread, and a chat no longer listed.
     expect(
       (["a", "b", "gone"] as const).map((id) => kinChatSettled(state, id as KinChatId)),
     ).toEqual([true, false, true]);
-    state = applyKinInboxEvent(state, {
+    state = step(state, {
       _tag: "waiting",
       item: waiting("w1", "a", { resolvedAt: at(3), resolution: "answered" }),
     });
     expect(state.waiting.map((w) => w.waitingId)).toEqual(["w2"]);
+    state = step(state, { _tag: "left", chatId: "b" as KinChatId });
+    // Older row ignored, read 2 → 0, new unread chat, new waiting row, answered, left unread chat.
+    expect(settles).toEqual([false, true, false, false, true, true]);
+    state = applyKinInboxEvent(state, { _tag: "chat", chat: chat("b", { unread: 2 }) });
     // An archived chat leaves the list, so its unread leaves the badge.
     state = applyKinInboxEvent(state, { _tag: "chat", chat: chat("c", { unread: 5 }) });
     expect(kinBadgeCount(state)).toBe(7);

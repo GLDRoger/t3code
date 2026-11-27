@@ -35,6 +35,7 @@ import {
 import { kinTapAnswersChoice, kinTapText } from "./kinTap.ts";
 import { kinLinkLabel, kinSafeWebUrl } from "./kinLinks.ts";
 import { kinReplyKey, type KinHeldDraft } from "./kinLive.ts";
+import { kinReplyButtons, type KinReplyButton } from "./kinReplyButtons.ts";
 import { kinPlainTables, kinSentences } from "./kinScreenState.ts";
 import type { KinSynced } from "./kinStreams.ts";
 
@@ -224,6 +225,7 @@ export type KinFeedRow =
       readonly type: "message";
       readonly key: string;
       readonly message: KinMessage;
+      readonly footerInFeed?: true;
       readonly own: boolean;
       /** Who wrote it, for others' messages; the author line shows only when `showAuthor`. */
       readonly authorLabel: string;
@@ -231,6 +233,12 @@ export type KinFeedRow =
       readonly showAuthor: boolean;
       /** The row above is a bubble by the same author, so this one sits tight under it. */
       readonly continues: boolean;
+    }
+  | {
+      readonly type: "footer";
+      readonly key: string;
+      readonly message: KinMessage;
+      readonly buttons?: ReadonlyArray<KinReplyButton>;
     }
   /** A reply still streaming. Its key is its durable message's, so the bubble stays in place. */
   | {
@@ -393,6 +401,9 @@ const messageRowKey = (message: KinMessage) =>
 
 // A card tap shows as the button's label, never its JSON, and never repeats the card it answered.
 const shownMessage = (message: KinMessage): KinMessage => {
+  // Bills added from Money ride on their card's message; they show in its review list.
+  if (isSystem(message) && message.widgetId?.startsWith("bills:") === true)
+    return { ...message, body: "", attachments: [] };
   // A host card's body is its inbox summary; the card says the same, so it isn't repeated.
   if (isSystem(message) && message.widgetId !== null)
     return message.body === "" ? message : { ...message, body: "" };
@@ -451,10 +462,251 @@ const authorKey = (message: KinMessage) =>
       ? `agent:${message.author.agentId}`
       : message.author.memberId;
 
+// The server's `isAgentHandoff` (apps/server/src/kin/chat/sharing.ts); the two must say the same.
+// What one agent passed another is that agent's input: a device may still hold rows sent before.
+const handoffPrefixes = ["kin-handoff:", "kin-handoff-back:"] as const;
+const isAgentHandoff = (message: KinMessage) =>
+  message.discussionId === undefined &&
+  message.relay?.personId === undefined &&
+  handoffPrefixes.some((prefix) => message.messageId.startsWith(prefix));
+
+type FeedEntry = KinMessage | KinHeldDraft;
+
+const FLOOR_RUN_ID = /^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i;
+
+// A Team-room ask spends a floor grant; team_say writes into the discussion's synthetic run.
+function teamCardScope(card: KinMessage, reply: KinMessage) {
+  return (
+    card.discussionId === undefined &&
+    card.floorRunId !== null &&
+    FLOOR_RUN_ID.test(card.floorRunId) &&
+    reply.discussionId !== undefined &&
+    reply.floorRunId === `team:${reply.discussionId}`
+  );
+}
+
+function sameCardTurn(card: KinMessage, entry: FeedEntry) {
+  if (entry.sourceWakeupId === undefined || entry.sourceWakeupId !== card.sourceWakeupId)
+    return false;
+  if ("draftId" in entry)
+    return (
+      card.author._tag === "agent" &&
+      card.author.agentId === entry.agentId &&
+      card.floorRunId === null &&
+      card.discussionId === undefined
+    );
+  return (
+    entry.kind === "text" &&
+    entry.status === "posted" &&
+    entry.author._tag === "agent" &&
+    card.author._tag === "agent" &&
+    entry.author.agentId === card.author.agentId &&
+    entry.author.threadId === card.author.threadId &&
+    entry.orgId === card.orgId &&
+    entry.chatId === card.chatId &&
+    ((entry.floorRunId === card.floorRunId && entry.discussionId === card.discussionId) ||
+      teamCardScope(card, entry)) &&
+    entry.relay === undefined
+  );
+}
+
+function isStandaloneCard(message: KinMessage) {
+  return (
+    message.sourceWakeupId !== undefined &&
+    message.author._tag === "agent" &&
+    message.kind === "text" &&
+    message.status === "posted" &&
+    message.relay === undefined &&
+    message.widgetId !== null &&
+    message.body.trim() === ""
+  );
+}
+
+// Move only card-only rows, and never across another turn. Keep each card in its original order.
+function replyBeforeCards(
+  messages: ReadonlyArray<KinMessage>,
+  drafts: ReadonlyArray<KinHeldDraft>,
+) {
+  const entries: ReadonlyArray<FeedEntry> =
+    drafts.length === 0 ? messages : [...messages, ...drafts];
+  const ordered: FeedEntry[] = [];
+  const teamCardRuns = new Map<KinMessage, string>();
+  let cards: KinMessage[] = [];
+  for (const entry of entries) {
+    const draft = "draftId" in entry;
+    const card = !draft && isStandaloneCard(entry);
+    if (
+      cards.length > 0 &&
+      (!sameCardTurn(cards[0]!, entry) ||
+        (!draft && !card && (entry.widgetId !== null || entry.body.trim() === "")))
+    ) {
+      ordered.push(...cards);
+      cards = [];
+    }
+    if (card) cards.push(entry);
+    else {
+      ordered.push(entry);
+      if (!draft && cards.length > 0 && teamCardScope(cards[0]!, entry)) {
+        for (const held of cards) teamCardRuns.set(held, entry.floorRunId!);
+        ordered.push(...cards);
+        cards = [];
+      }
+    }
+  }
+  ordered.push(...cards);
+  return { ordered, teamCardRuns };
+}
+
+type ReplyFooterRow = Extract<KinFeedRow, { type: "footer" }>;
+
+const deferredFooters = new WeakMap<
+  MessageRow,
+  { readonly body: MessageRow; readonly footer: ReplyFooterRow }
+>();
+
+function deferredFooter(row: MessageRow) {
+  let held = deferredFooters.get(row);
+  if (held === undefined) {
+    held = {
+      body: { ...row, footerInFeed: true },
+      footer: { type: "footer", key: `footer:${row.key}`, message: row.message },
+    };
+    deferredFooters.set(row, held);
+  }
+  return held;
+}
+
+// Mirrors `replyGroupKey` in apps/server/src/kin/chat/KinChatRepository.ts (used by
+// apps/server/src/kin/chat/ownMessages.ts). `messageForViewer` in
+// apps/server/src/kin/chat/messageView.ts strips `clientMessageId` for human viewers, so
+// consecutive same-turn text bubbles without keys also group by `sourceWakeupId`.
+const CONTINUATION_SUFFIX = /~b(?:[2-9]|[1-9][0-9]+)$/;
+const REPLY_KEY_PREFIX = /^(?:send:)?(?:reply:|kin-send:)/;
+
+function continuesReply(previous: KinMessage, next: KinMessage) {
+  if (
+    next.seq !== previous.seq + 1 ||
+    previous.author._tag !== "agent" ||
+    previous.status !== "posted" ||
+    previous.kind !== "text" ||
+    previous.widgetId !== null ||
+    next.widgetId !== null ||
+    previous.form === "brief" ||
+    next.form === "brief" ||
+    previous.turnChanges !== undefined ||
+    previous.body.trim() === "" ||
+    next.body.trim() === "" ||
+    previous.floorRunId !== next.floorRunId ||
+    previous.discussionId !== next.discussionId ||
+    !sameCardTurn(previous, next)
+  )
+    return false;
+  const key = previous.clientMessageId;
+  const continuation = next.clientMessageId;
+  if (key === undefined && continuation === undefined) return true;
+  return (
+    key !== undefined &&
+    REPLY_KEY_PREFIX.test(key) &&
+    continuation !== undefined &&
+    CONTINUATION_SUFFIX.test(continuation) &&
+    continuation.replace(CONTINUATION_SUFFIX, "") === key.replace(CONTINUATION_SUFFIX, "")
+  );
+}
+
+function cardFooterAnchors(rows: ReadonlyArray<KinFeedRow>) {
+  const anchors = new Map<number, number>();
+  for (let index = 1; index < rows.length; index += 1) {
+    const card = rows[index]!;
+    const reply = rows[index - 1]!;
+    if (
+      card.type !== "message" ||
+      !isStandaloneCard(card.message) ||
+      reply.type !== "message" ||
+      reply.message.body.trim() === "" ||
+      !sameCardTurn(card.message, reply.message)
+    )
+      continue;
+    const firstCard = index;
+    while (index + 1 < rows.length) {
+      const next = rows[index + 1]!;
+      if (
+        next.type !== "message" ||
+        !isStandaloneCard(next.message) ||
+        !sameCardTurn(next.message, reply.message)
+      )
+        break;
+      index += 1;
+    }
+    for (let i = firstCard - 1; i >= 0; i -= 1) {
+      const words = rows[i]!;
+      if (
+        words.type !== "message" ||
+        words.message.body.trim() === "" ||
+        !sameCardTurn(card.message, words.message)
+      )
+        break;
+      anchors.set(i, index);
+    }
+  }
+  return anchors;
+}
+
+// Do this after folding: neither a collapsed discussion nor an intervening row lends out footers.
+function placeReplyFooters(rows: ReadonlyArray<KinFeedRow>) {
+  const anchors = cardFooterAnchors(rows);
+  const footers = new Map<number, ReplyFooterRow[]>();
+  const out: KinFeedRow[] = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const first = rows[index]!;
+    if (first.type === "message") {
+      let last = first;
+      let group: MessageRow[] | undefined;
+      while (index + 1 < rows.length) {
+        const next = rows[index + 1]!;
+        if (next.type !== "message" || !continuesReply(last.message, next.message)) break;
+        (group ??= [first]).push(next);
+        last = next;
+        index += 1;
+      }
+      const anchor = anchors.get(index);
+      if (group !== undefined) {
+        for (const row of group) out.push(deferredFooter(row).body);
+        const buttons = kinReplyButtons({
+          ...last.message,
+          links: group.flatMap((row) => row.message.links ?? []),
+        });
+        if (buttons.length > 0 || (last.message.turnChanges?.count ?? 0) > 0) {
+          const footer: ReplyFooterRow = {
+            ...deferredFooter(last).footer,
+            buttons,
+          };
+          if (anchor === undefined) out.push(footer);
+          else addFooter(anchor, footer);
+        }
+      } else if (
+        anchor !== undefined &&
+        ((first.message.turnChanges?.count ?? 0) > 0 || kinReplyButtons(first.message).length > 0)
+      ) {
+        const held = deferredFooter(first);
+        out.push(held.body);
+        addFooter(anchor, held.footer);
+      } else out.push(first);
+    } else out.push(first);
+    const after = footers.get(index);
+    if (after !== undefined) out.push(...after);
+  }
+  return out;
+
+  function addFooter(anchor: number, footer: ReplyFooterRow) {
+    const existing = footers.get(anchor);
+    if (existing === undefined) footers.set(anchor, [footer]);
+    else existing.push(footer);
+  }
+}
+
 /**
- * Feed rows, oldest first, then streaming drafts. A floor run of two or more consecutive agent
- * messages from more than one agent folds into one line (chat spec, interface rule 3); an
- * expanded run lists its messages after that line. One agent's run shows as grouped bubbles.
+ * A floor run of two or more consecutive messages from more than one agent folds into one line;
+ * an expanded run lists its messages after that line. One agent's run shows as grouped bubbles.
  */
 export function buildKinFeedRows(
   messages: ReadonlyArray<KinMessage>,
@@ -472,9 +724,12 @@ export function buildKinFeedRows(
     .filter(
       (message) =>
         message.status !== "dismissed" &&
+        !isAgentHandoff(message) &&
         !(message.kind === "widget_action" && kinTapAnswersChoice(message.body)),
     )
     .map((message) => kinMessageOnMyClock(message));
+  const { ordered, teamCardRuns } = replyBeforeCards(visible, drafts);
+  const runOf = (message: KinMessage) => teamCardRuns.get(message) ?? foldRunId(message);
   const rows: KinFeedRow[] = [];
   const foldKeys = new Set<string>();
   let previousAuthor: string | null = null;
@@ -482,6 +737,8 @@ export function buildKinFeedRows(
   let previousAt: string | null = null;
 
   const startDay = (message: KinMessage) => {
+    // An older card under a newer reply does not start a backwards time divider.
+    if (message.widgetId !== null && previousAt !== null && message.createdAt < previousAt) return;
     const day = kinLocalDayKey(message.createdAt);
     const gap = gapBefore(previousAt, message.createdAt);
     previousAt = message.createdAt;
@@ -594,50 +851,7 @@ export function buildKinFeedRows(
     previousAuthor = author;
   };
 
-  for (let index = 0; index < visible.length;) {
-    const first = visible[index]!;
-    const runId = foldRunId(first);
-    let end = index + 1;
-    if (runId !== null) {
-      while (end < visible.length && foldRunId(visible[end]!) === runId) end += 1;
-    }
-    const run = visible.slice(index, end);
-    if (runId === null || new Set(run.map(authorKey)).size < 2) {
-      run.forEach(pushMessage);
-      index = end;
-      continue;
-    }
-    startDay(first);
-    previousAt = run[run.length - 1]!.createdAt;
-    const authors = [...new Set(run.map((message) => kinAuthorLabel(message, viewer)))];
-    const decision =
-      run.findLast((message) => message.intent === "decision" && message.status !== "deleted")
-        ?.body ?? null;
-    const last = run[run.length - 1]!;
-    const expanded = expandedRuns.has(runId) !== openRuns;
-    // Keyed by run so a page prepended into the run keeps the row; a run split by another
-    // author falls back to its first message.
-    const key = foldKeys.has(`fold:${runId}`)
-      ? `fold:${runId}:${first.messageId}`
-      : `fold:${runId}`;
-    foldKeys.add(key);
-    rows.push({
-      type: "fold",
-      key,
-      runId,
-      count: run.length,
-      authors,
-      decision,
-      discussionId: last.discussionId ?? null,
-      open: last.discussionId !== undefined && last.discussionOpen === true,
-      expanded,
-      lastSeq: last.seq,
-    });
-    previousAuthor = null;
-    if (expanded) run.forEach(pushMessage);
-    index = end;
-  }
-  for (const draft of drafts) {
+  const pushDraft = (draft: KinHeldDraft) => {
     const day = kinLocalDayKey(draft.startedAt);
     const gap = gapBefore(previousAt, draft.startedAt);
     previousAt = draft.startedAt;
@@ -660,8 +874,67 @@ export function buildKinFeedRows(
       continues: previousAuthor === author,
     });
     previousAuthor = author;
+  };
+
+  for (let index = 0; index < ordered.length;) {
+    const first = ordered[index]!;
+    if ("draftId" in first) {
+      pushDraft(first);
+      index += 1;
+      continue;
+    }
+    const runId = runOf(first);
+    if (runId === null) {
+      pushMessage(first);
+      index += 1;
+      continue;
+    }
+    const run: KinMessage[] = [first];
+    let end = index + 1;
+    while (end < ordered.length) {
+      const entry = ordered[end]!;
+      if ("draftId" in entry || runOf(entry) !== runId) break;
+      run.push(entry);
+      end += 1;
+    }
+    if (new Set(run.map(authorKey)).size < 2) {
+      run.forEach(pushMessage);
+      index = end;
+      continue;
+    }
+    startDay(first);
+    const authors = [...new Set(run.map((message) => kinAuthorLabel(message, viewer)))];
+    const decision =
+      run.findLast((message) => message.intent === "decision" && message.status !== "deleted")
+        ?.body ?? null;
+    const last = run.reduce((latest, message) => (message.seq > latest.seq ? message : latest));
+    const expanded = expandedRuns.has(runId) !== openRuns;
+    // Keyed by run so a page prepended into the run keeps the row; a run split by another
+    // author falls back to its first message.
+    const key = foldKeys.has(`fold:${runId}`)
+      ? `fold:${runId}:${first.messageId}`
+      : `fold:${runId}`;
+    foldKeys.add(key);
+    rows.push({
+      type: "fold",
+      key,
+      runId,
+      count: run.length,
+      authors,
+      decision,
+      discussionId: last.discussionId ?? null,
+      open: last.discussionId !== undefined && last.discussionOpen === true,
+      expanded,
+      lastSeq: last.seq,
+    });
+    previousAuthor = null;
+    if (expanded) run.forEach(pushMessage);
+    else previousAt = last.createdAt;
+    index = end;
   }
-  return superseded.size === 0 ? rows : rows.filter((_, index) => !superseded.has(index));
+  return placeReplyFooters(
+    superseded.size === 0 ? rows : rows.filter((_, index) => !superseded.has(index)),
+  );
 }
 
 /** The local calendar day of an ISO time, as `2026-11-08`. */
@@ -794,6 +1067,8 @@ export const kinImageText = (image: { readonly alt: string | null }) =>
 export function kinMessageLabel(row: MessageRow, time: string): string {
   const { message } = row;
   const deleted = message.status === "deleted";
+  const withdrawn = kinWithdrawnLine(row);
+  if (withdrawn !== null) return kinSentences([withdrawn, time]);
   const parts = [row.own ? "You" : `${row.authorLabel}, ${row.authorKind}`];
   if (deleted) parts.push("Message deleted");
   else {
@@ -802,8 +1077,22 @@ export function kinMessageLabel(row: MessageRow, time: string): string {
   }
   parts.push(time);
   if (message.status === "suggested") parts.push("Suggestion, not sent yet");
-  else if (message.editedAt !== null && !deleted) parts.push("Edited");
+  else if (message.editedAt !== null && !deleted)
+    parts.push(message.author._tag === "agent" ? "Updated" : "Edited");
   return kinSentences(parts);
+}
+
+/** A message its agent took back, as the one line everyone sees; null for any other message. */
+export function kinWithdrawnLine(row: MessageRow): string | null {
+  const { withdrawn } = row.message;
+  if (withdrawn === undefined) return null;
+  return `${row.own ? "You" : row.authorLabel} withdrew a message: ${withdrawn.why}`;
+}
+
+/** The mark under a changed message: an agent puts the current version in place, a person edits. */
+export function kinChangedMark(message: KinMessage, time: (iso: string) => string): string | null {
+  if (message.editedAt === null || message.status !== "posted") return null;
+  return message.author._tag === "agent" ? `Updated ${time(message.editedAt)}` : "Edited";
 }
 
 // Follow-the-end
@@ -819,6 +1108,7 @@ export function kinRowSeq(row: KinFeedRow): number {
       return row.lastSeq;
     case "day":
     case "draft":
+    case "footer":
       return 0;
   }
 }
@@ -840,6 +1130,57 @@ export function kinUnseenCount(
     if (!own && message.status !== "dismissed" && !isSystem(message)) count += 1;
   }
   return count;
+}
+
+/** The viewer's own seen mark: the stream's opening one, moved by their member's read events. */
+export function kinOwnReadSeq(
+  state: Pick<KinChatState, "readSeq" | "reads">,
+  viewerMemberId: string | null,
+): number | null {
+  if (state.readSeq === null) return null;
+  const moved = viewerMemberId === null ? 0 : (state.reads[viewerMemberId] ?? 0);
+  return Math.max(state.readSeq, moved);
+}
+
+/** The mark the "New" line was placed from, and the latest seq held then: later arrivals fall below it. */
+export type KinNewLineHold = {
+  readonly chatId: string;
+  readonly mark: number;
+  readonly upTo: number;
+};
+
+/**
+ * The line is placed once, from the viewer's seen mark as the chat opens, and stays there while it
+ * is open: opening moves that mark at once, and a later move never places it again.
+ */
+export function kinNextNewLineHold(
+  held: KinNewLineHold | null,
+  chatId: string,
+  mark: number | null,
+  latestSeq: number,
+): KinNewLineHold | null {
+  if (held !== null && held.chatId === chatId) return held;
+  if (mark === null) return null;
+  return { chatId, mark, upTo: Math.max(latestSeq, mark) };
+}
+
+/**
+ * The message the "New" line goes above: the first after the mark, up to `upTo`, that the viewer
+ * did not write. Null when there is none, or when what has loaded starts after the mark.
+ */
+export function kinNewLineSeq(
+  messages: ReadonlyArray<KinMessage>,
+  hold: KinNewLineHold | null,
+  viewerPersonId: KinPersonId | null,
+): number | null {
+  if (hold === null || messages.length === 0 || messages[0]!.seq > hold.mark + 1) return null;
+  for (const message of messages) {
+    if (message.seq <= hold.mark) continue;
+    if (message.seq > hold.upTo) return null;
+    const own = message.author._tag === "human" && message.author.personId === viewerPersonId;
+    if (!own && message.status === "posted") return message.seq;
+  }
+  return null;
 }
 
 export const latestKinSeq = (messages: ReadonlyArray<KinMessage>) =>
@@ -906,6 +1247,8 @@ export function kinFeedViewer(orgs: KinOrgsListResult | null, orgId: string | nu
 /** Words in an open chat and its rows. */
 export const KIN_CHAT_COPY = {
   back: "Back to chats",
+  showWithdrawn: "Show what it said",
+  hideWithdrawn: "Hide what it said",
   loadingEarlier: "Loading earlier messages…",
   none: "No messages yet",
   sayHello: (agentName: string) => `Say hello to ${agentName}`,

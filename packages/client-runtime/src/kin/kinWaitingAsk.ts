@@ -1,6 +1,8 @@
 // @effect-diagnostics globalDate:off - Pure view helpers read the device's clock for React render, outside an Effect runtime.
-import { formatKinWhen } from "@t3tools/contracts";
+import { formatKinWhen, KIN_CHOICE_DISMISS_ACTION } from "@t3tools/contracts";
 import type { KinWaitingItem, KinWidgetId } from "@t3tools/contracts";
+
+import { kinChoiceActInput, kinChoiceDismissInput } from "./kinChoicePresentation.ts";
 
 export interface KinWaitingAskView {
   /** What a tap names: the card it answers, as `kinChoiceActInput` takes it. */
@@ -53,3 +55,13 @@ export function kinWaitingAskView(item: KinWaitingItem, nowMs: number): KinWaiti
     })),
   };
 }
+
+/** A tap in Waiting on you: one of the question's answers, or its Dismiss. */
+export const kinWaitingAskInput = (
+  target: KinWaitingAskView["target"],
+  optionId: string,
+  clientActionId: string,
+) =>
+  optionId === KIN_CHOICE_DISMISS_ACTION
+    ? kinChoiceDismissInput(target, false, clientActionId)
+    : kinChoiceActInput(target, optionId, clientActionId);

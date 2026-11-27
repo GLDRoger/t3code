@@ -393,7 +393,46 @@ describe("KinPings", () => {
     }).pipe(Effect.provide(layer())),
   );
 
-  it.effect.each(["deleted", "duplicate", "departed", "mismatch", "owner"] as const)(
+  it.effect("delivers a person's pings in both chats and keeps the other chase open", () =>
+    Effect.gen(function* () {
+      yield* seed;
+      const pings = yield* Pings.KinPings;
+      const chat = yield* Chat.KinChatService;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+        VALUES (${group}, ${orgId}, 'project_group', 'Review', 0, '2026-01-01')`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+        VALUES ('extra', ${orgId}, ${group}, 'person', ${person}, 'member', '2026-01-01')`;
+      const other = yield* decodeItem("other");
+      yield* pings.put(request);
+      yield* pings.put({ ...request, itemId: other, chatId: group });
+      yield* TestClock.setTime(Date.parse("2026-11-01T15:00:00Z"));
+      yield* pings.sweep(orgId);
+      assert.deepStrictEqual(
+        yield* sql`SELECT chat_id FROM kin_messages WHERE org_id = ${orgId} ORDER BY chat_id`,
+        [{ chat_id: chatId }, { chat_id: group }],
+      );
+      yield* TestClock.adjust("1 day");
+      yield* pings.sweep(orgId);
+      yield* chat.send(
+        { _tag: "person", orgId, personId: person },
+        { chatId: group, clientMessageId: "answer", body: "Done" },
+      );
+      yield* pings.sweep(orgId);
+      assert.deepStrictEqual(
+        yield* sql`SELECT item_id FROM kin_ping_items WHERE org_id = ${orgId} AND stopped_at IS NULL ORDER BY item_id`,
+        [{ item_id: request.itemId }],
+      );
+      assert.deepStrictEqual(
+        yield* sql`SELECT e.item_id FROM kin_ping_escalations e JOIN kin_waiting w
+        ON w.org_id = e.org_id AND w.waiting_id = e.waiting_id
+        WHERE e.org_id = ${orgId} AND w.resolved_at IS NULL ORDER BY e.item_id`,
+        [{ item_id: request.itemId }],
+      );
+    }).pipe(Effect.provide(layer())),
+  );
+
+  it.effect.each(["deleted", "duplicate", "departed", "owner"] as const)(
     "isolates $0 rows",
     (scenario) =>
       Effect.gen(function* () {
@@ -409,13 +448,7 @@ describe("KinPings", () => {
           yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at) VALUES (${other}, ${orgId}, 'other', 'Other', '2026-01-01')`;
           yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
           VALUES ('other-member', ${orgId}, ${ownerChatId}, 'person', ${other}, 'member', '2026-01-01')`;
-          if (scenario === "mismatch") {
-            yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
-            VALUES ('extra', ${orgId}, ${ownerChatId}, 'person', ${person}, 'member', '2026-01-01') ON CONFLICT DO NOTHING RETURNING member_id`;
-            yield* pings.put({ ...request, itemId: bad, chatId: ownerChatId });
-          } else {
-            yield* pings.put({ ...request, itemId: bad, person: other, chatId: ownerChatId });
-          }
+          yield* pings.put({ ...request, itemId: bad, person: other, chatId: ownerChatId });
           if (scenario === "departed")
             yield* sql`UPDATE kin_chat_members SET left_at = '2026-11-01' WHERE org_id = ${orgId} AND person_id = ${other}`;
           yield* Ref.set(removed, true);

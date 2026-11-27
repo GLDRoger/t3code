@@ -54,6 +54,19 @@ export const kinBadgeCount = (state: KinInboxState) =>
 export const kinChatSettled = (state: KinInboxState, chatId: KinChatId) =>
   (state.chats.find((chat) => chat.chatId === chatId)?.unread ?? 0) === 0;
 
+/**
+ * Something the viewer had was settled between two inbox states: a chat's unread went down or it
+ * left the list, or a waiting row was resolved. Its notifications may be settled on the host now.
+ */
+export function kinInboxSettledSince(before: KinInboxState, after: KinInboxState): boolean {
+  const unread = new Map(after.chats.map((chat) => [chat.chatId, chat.unread]));
+  const waiting = new Set(after.waiting.map((item) => item.waitingId));
+  return (
+    before.chats.some((chat) => chat.unread > (unread.get(chat.chatId) ?? 0)) ||
+    before.waiting.some((item) => !waiting.has(item.waitingId))
+  );
+}
+
 export function applyKinInboxEvent(state: KinInboxState, event: KinInboxEvent): KinInboxState {
   switch (event._tag) {
     case "snapshot":
@@ -199,6 +212,8 @@ export const KinChatState = Schema.Struct({
   /** The last backlog's `lastChangeSeq`; the `afterChangeSeq` that replays edits made offline. */
   changeSeq: Schema.Number,
   reads: Schema.Record(Schema.String, Schema.Number),
+  /** The viewer's own read mark from the stream's backlog; null from a host without it. Never cached. */
+  readSeq: Schema.NullOr(Schema.Number).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   /** The server reported a gap of more than 200; reload the latest page with history. */
   needsHistoryReload: Schema.Boolean,
   /** The chat's seq when it was last cleared; nothing older than the next one exists. */
@@ -236,6 +251,7 @@ export const emptyKinChat: KinChatState = {
   contiguousSeq: 0,
   changeSeq: 0,
   reads: {},
+  readSeq: null,
   needsHistoryReload: false,
   clearedSeq: 0,
   left: false,
@@ -328,7 +344,10 @@ export function applyKinChatEvent(
       // The host sends the chat's live reactions in full; a backlog without them keeps ours.
       const reactions = event.reactions ?? state.reactions;
       const clearedSeq = event.clearedSeq ?? state.clearedSeq;
+      const readSeq =
+        event.readSeq === undefined ? state.readSeq : Math.max(event.readSeq, state.readSeq ?? 0);
       if (
+        readSeq === state.readSeq &&
         clearedSeq === state.clearedSeq &&
         reactions === state.reactions &&
         messages === state.messages &&
@@ -349,6 +368,7 @@ export function applyKinChatEvent(
         contiguousSeq,
         changeSeq,
         clearedSeq,
+        readSeq,
         reactions,
         ...live,
       };
@@ -454,6 +474,7 @@ export function trimKinChatForCache(state: KinChatState): KinChatState {
     reactions: state.reactions.filter((reaction) => kept.has(reaction.messageId)),
     left: false,
     closed: null,
+    readSeq: null,
     drafts: [],
     presence: [],
     memberChanges: 0,

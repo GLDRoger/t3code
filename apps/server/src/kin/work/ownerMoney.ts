@@ -9,6 +9,7 @@ import {
   type KinCompanyProfileSetInput,
   type KinDatesInput,
   type KinIssueInput,
+  type KinDraftCreditNoteInput,
   type KinListsInput,
   type KinListUpdateInput,
   type KinMoney,
@@ -36,24 +37,32 @@ import { readableFrom } from "../chat/sharing.ts";
 import { remakeForEntry } from "../gendocs/make.ts";
 import { issueEntry } from "../gendocs/amounts.ts";
 import * as Numbers from "../gendocs/numbering.ts";
-import { listReceipts, makeReceipt as makeReceiptFor } from "../gendocs/receipts.ts";
-import { readProfile, setProfile } from "./companyProfile.ts";
+import * as CreditNotes from "../gendocs/creditNotes.ts";
+import { undo } from "./statements/creditPayment.ts";
+import { listReceipts, makeReceipt as makeReceiptFor, unsetAgainst } from "../gendocs/receipts.ts";
+import { readProfile, setProfile, waitingOnCountry } from "./companyProfile.ts";
+import { wakeRefused } from "./countryWake.ts";
 import { KinRecords } from "./KinRecords.ts";
 import { dates as datesView, moneySummary } from "./moneyViews.ts";
 import { found, ownerWriter, placeRefusals, theOwner } from "./ownerWork.ts";
 import { chatLinksFor, iso, workFailure } from "./recordRows.ts";
 import {
   allLists,
+  checkWatch,
   encodeDefinition,
   type FieldDef,
   isUnissuedDraft,
   listDef,
   openCounts,
+  remindTarget,
+  sectionOptionsRefusal,
   storedCategoryLabels,
+  teamListChange,
+  teamListRefusal,
   toDefinition,
   unknownList,
 } from "./registers.ts";
-import { KIN_OWNER_LEVEL, keyedViewer, placesOf, viewerOfPeople } from "./teamView.ts";
+import { KIN_OWNER_LEVEL, keyedViewer, placesOf, teamLists, viewerOfPeople } from "./teamView.ts";
 
 /** What the owner's clients read and do with lists, money and the company profile. Owner only. */
 
@@ -67,7 +76,10 @@ export const lists = Effect.fn("KinMoney.lists")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinListsInput,
 ) {
-  const team = yield* moneyReader(people, input.orgId);
+  const { viewer, refused } = yield* placeRefusals(people, input.orgId);
+  const team = viewer.teammate ? viewer.person.personId : undefined;
+  const shared = team === undefined ? new Set<string>() : yield* teamLists(input.orgId);
+  if (refused.money && shared.size === 0) return yield* noMoney;
   const all = yield* allLists(input.orgId);
   const open = yield* openCounts(
     input.orgId,
@@ -82,9 +94,14 @@ export const lists = Effect.fn("KinMoney.lists")(function* (
           def.id !== "deals" &&
           (input.archived === true || def.archivedAt === null),
       )
-      // Anyone else gets the lists they see an entry of, never Work's own.
-      .filter((def) => team === undefined || (def.builtIn === null && open.has(def.id)))
+      .filter(
+        (def) =>
+          team === undefined ||
+          shared.has(def.id) ||
+          (!refused.money && def.builtIn === null && open.has(def.id)),
+      )
       .map((def) => toDefinition(def, open.get(def.id) ?? 0, input.accept)),
+    billToByName: true,
   };
 }, workFailure);
 
@@ -93,10 +110,14 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
   people: ReadonlyArray<PersonIdentity>,
   input: KinListUpdateInput,
 ) {
-  yield* theOwner(people, input.orgId);
   const sql = yield* SqlClient.SqlClient;
   return yield* sql.withTransaction(
     Effect.gen(function* () {
+      yield* theOwner(people, input.orgId);
+      if (input.team === true) {
+        const reserved = teamListRefusal(input.list, input.list);
+        if (reserved !== undefined) return yield* reserved;
+      }
       const def = yield* listDef(input.orgId, input.list);
       if (def === undefined) return yield* unknownList(input.list);
       if (def.builtIn !== null) return yield* invalid(`${def.name} is built in and can't change.`);
@@ -131,6 +152,11 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
             ? (def.archivedAt ?? now)
             : null;
       const name = input.name ?? def.name;
+      if ((input.team ?? def.team) === true) {
+        const refused = teamListRefusal(def.id, name, def.sensitive);
+        if (refused !== undefined) return yield* refused;
+      }
+      const team = teamListChange(def, input.team, now);
       const unused = Object.keys(input.stateLabels ?? {}).filter(
         (state) => !def.states.some((one) => one === state),
       );
@@ -162,10 +188,49 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
             `Some ${def.name} entries have payments. Take those back first, then turn this off.`,
           );
       }
+      const sectionRefused = yield* sectionOptionsRefusal(input.orgId, def.id, {
+        remindOn: input.remindOn,
+        check: input.check,
+      });
+      if (sectionRefused !== undefined) return yield* sectionRefused;
+      const {
+        id: _id,
+        builtIn: _builtIn,
+        name: _name,
+        prefix: _prefix,
+        archivedAt: _archivedAt,
+        rev: _rev,
+        categoryLabels: _labels,
+        payments: _payments,
+        remindOn: previousReminder,
+        check: previousCheck,
+        ...definition
+      } = def;
+      const reminder =
+        input.remindOn === undefined
+          ? previousReminder
+          : input.remindOn === null
+            ? undefined
+            : remindTarget(fields, def, input.remindOn);
+      const check = input.check === undefined ? previousCheck : (input.check ?? undefined);
+      const next = {
+        ...definition,
+        ...team,
+        fields,
+        stateLabels,
+        ...(reminder === undefined || reminder === "due" ? {} : { remindOn: reminder }),
+        ...(check === undefined ? {} : { check }),
+        ...(numbering === undefined ? {} : { numbering }),
+        ...(Object.keys(categoryLabels).length === 0 ? {} : { categoryLabels }),
+        ...(payments ? { payments: true as const } : {}),
+      };
+      const watchRefused = checkWatch(next);
+      if (watchRefused !== undefined) return yield* watchRefused;
       const sameLabels = (a: Readonly<Record<string, string>>, b: typeof a) =>
         Object.keys(a).length === Object.keys(b).length &&
         Object.entries(a).every(([key, label]) => b[key] === label);
       const changed =
+        team.team !== undefined ||
         name !== def.name ||
         payments !== (def.payments === true) ||
         !sameLabels(categoryLabels, def.categoryLabels ?? {}) ||
@@ -173,6 +238,10 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
         archivedAt !== def.archivedAt ||
         fields.length !== def.fields.length ||
         fields.some((one, index) => one.retired !== def.fields[index]?.retired) ||
+        def.remindOn !== next.remindOn ||
+        def.check?.field !== next.check?.field ||
+        def.check?.below !== next.check?.below ||
+        def.check?.above !== next.check?.above ||
         numbering?.prefix !== def.numbering?.prefix ||
         numbering?.series !== def.numbering?.series ||
         numbering?.width !== def.numbering?.width;
@@ -182,36 +251,19 @@ export const updateList = Effect.fn("KinMoney.updateList")(function* (
             reason: "conflict",
             message: `${def.name} changed since you read it; it is at revision ${def.rev} now.`,
           });
-        const {
-          id: _id,
-          builtIn: _builtIn,
-          name: _name,
-          prefix: _prefix,
-          archivedAt: _archivedAt,
-          rev: _rev,
-          categoryLabels: _labels,
-          payments: _payments,
-          ...definition
-        } = def;
-        const next = {
-          ...definition,
-          fields,
-          stateLabels,
-          ...(Object.keys(categoryLabels).length === 0 ? {} : { categoryLabels }),
-          ...(payments ? { payments: true as const } : {}),
-        };
         yield* sql`UPDATE kin_registers SET name = ${name}, archived_at = ${archivedAt},
-            definition_json = ${yield* encodeDefinition({
-              ...next,
-              ...(numbering === undefined ? {} : { numbering }),
-            })},
+            definition_json = ${yield* encodeDefinition(next)},
             rev = rev + 1
           WHERE org_id = ${input.orgId} AND register_id = ${def.id}`;
         yield* (yield* KinRefreshObserver).touch(input.orgId, "workLists");
       }
-      const next = yield* listDef(input.orgId, def.id);
-      if (next === undefined) return yield* unknownList(def.id);
-      return toDefinition(next, (yield* openCounts(input.orgId, KIN_OWNER_LEVEL)).get(def.id) ?? 0);
+      const stored = yield* listDef(input.orgId, def.id);
+      if (stored === undefined) return yield* unknownList(def.id);
+      return toDefinition(
+        stored,
+        (yield* openCounts(input.orgId, KIN_OWNER_LEVEL)).get(def.id) ?? 0,
+        input.accept,
+      );
     }),
   );
 }, workFailure);
@@ -325,55 +377,64 @@ export const moneyViewer = (orgId: KinOrgId, personId: KinPersonId) =>
  * The owner's Issue tap: the entry's number from its list's series, the same one if asked twice.
  * On a quote it is Mark sent, so a draft quote also reads sent.
  */
-export const issue = Effect.fn("KinMoney.issue")(function* (
-  people: ReadonlyArray<PersonIdentity>,
-  input: KinIssueInput,
-) {
-  const person = yield* theOwner(people, input.orgId);
-  const writer = ownerWriter(person);
-  const sql = yield* SqlClient.SqlClient;
-  const records = yield* KinRecords;
-  const issued = yield* sql.withTransaction(
-    Effect.gen(function* () {
-      const issued = yield* issueEntry(input.orgId, writer, input.key);
-      if (issued.number === null || issued.state !== "open") return issued;
-      if ((yield* records.get(input.orgId, issued.key))?.registerId !== "quotes") return issued;
-      const sent = yield* records.update(input.orgId, writer, issued.key, { state: "waiting" });
-      return { ...issued, state: sent.state };
-    }),
-  );
-  const remade =
-    issued.number !== null && issued.state !== "dropped"
-      ? yield* remakeForEntry({
-          orgId: input.orgId,
-          entryKey: issued.key,
-          requester: { _tag: "owner", personId: person.personId, writer },
-          admit: Effect.void,
-        })
-      : { documents: [], problems: [] };
-  return {
-    ...issued,
-    documents: remade.documents.map((doc) => ({
-      key: KinRecordKey.make(doc.key),
-      title: doc.title,
-      version: doc.version,
-    })),
-    problems: remade.problems,
-  };
-}, workFailure);
+export const issue = Effect.fn("KinMoney.issue")(
+  function* (people: ReadonlyArray<PersonIdentity>, input: KinIssueInput) {
+    const person = yield* theOwner(people, input.orgId);
+    const writer = ownerWriter(person);
+    const sql = yield* SqlClient.SqlClient;
+    const records = yield* KinRecords;
+    const notes = yield* CreditNotes.CreditNotes;
+    const issued = yield* sql.withTransaction(
+      Effect.gen(function* () {
+        if ((yield* records.get(input.orgId, input.key))?.registerId === "credit_notes")
+          return yield* notes.issue(input.orgId, writer, input.key);
+        const issued = yield* issueEntry(input.orgId, writer, input.key);
+        if (issued.number === null || issued.state !== "open") return issued;
+        if ((yield* records.get(input.orgId, issued.key))?.registerId !== "quotes") return issued;
+        const sent = yield* records.update(input.orgId, writer, issued.key, { state: "waiting" });
+        return { ...issued, state: sent.state };
+      }),
+    );
+    const remade =
+      issued.number !== null && issued.state !== "dropped"
+        ? yield* remakeForEntry({
+            orgId: input.orgId,
+            entryKey: issued.key,
+            requester: { _tag: "owner", personId: person.personId, writer },
+            admit: Effect.void,
+          })
+        : { documents: [], problems: [] };
+    return {
+      ...issued,
+      documents: remade.documents.map((doc) => ({
+        key: KinRecordKey.make(doc.key),
+        title: doc.title,
+        version: doc.version,
+      })),
+      problems: remade.problems,
+    };
+  },
+  (effect) => effect.pipe(Effect.provide(CreditNotes.layer), workFailure),
+);
 
 /** The owner's Void tap: kept with its number, so the series stays complete. */
-export const voidEntry = Effect.fn("KinMoney.void")(function* (
-  people: ReadonlyArray<PersonIdentity>,
-  input: KinVoidInput,
-) {
-  const person = yield* theOwner(people, input.orgId);
-  return {
-    ...(yield* Numbers.voidEntry(input.orgId, ownerWriter(person), input.key)),
-    documents: [],
-    problems: [],
-  };
-}, workFailure);
+export const voidEntry = Effect.fn("KinMoney.void")(
+  function* (people: ReadonlyArray<PersonIdentity>, input: KinVoidInput) {
+    const person = yield* theOwner(people, input.orgId);
+    const records = yield* KinRecords;
+    const row = yield* records.get(input.orgId, input.key);
+    const notes = yield* CreditNotes.CreditNotes;
+    const writer = ownerWriter(person);
+    return {
+      ...(yield* row?.registerId === "credit_notes"
+        ? notes.voidEntry(input.orgId, writer, input.key)
+        : Numbers.voidEntry(input.orgId, writer, input.key)),
+      documents: [],
+      problems: [],
+    };
+  },
+  (effect) => effect.pipe(Effect.provide(CreditNotes.layer), workFailure),
+);
 
 /** The owner's Undo void: back to owed, or paid, with the number it had. */
 export const unvoidEntry = Effect.fn("KinMoney.unvoid")(function* (
@@ -536,7 +597,22 @@ export const setCompanyProfile = Effect.fn("KinMoney.setCompanyProfile")(functio
 ) {
   const person = yield* theOwner(people, input.orgId);
   const { orgId, rev, ...patch } = input;
-  return yield* setProfile(orgId, { _tag: "person", personId: person.personId }, patch, rev);
+  const sql = yield* SqlClient.SqlClient;
+  return yield* sql.withTransaction(
+    Effect.gen(function* () {
+      const before = yield* waitingOnCountry(orgId);
+      const saved = yield* setProfile(
+        orgId,
+        { _tag: "person", personId: person.personId },
+        patch,
+        rev,
+      );
+      // The save that chose a new company's country cleared its list: each on it is woken once.
+      if (before.pending && saved.country !== null)
+        yield* wakeRefused(orgId, before.waiting, saved.country, saved.homeCurrency);
+      return saved;
+    }),
+  );
 }, workFailure);
 
 /** Receipts for Money: newest first, each with its number, who it was from and what for. */
@@ -581,3 +657,31 @@ export const makeReceipt = Effect.fn("KinMoney.makeReceipt")(function* (
     });
   return { receipt: made.receipt, problems: made.problems };
 }, workFailure);
+
+export const undoCreditPayment = Effect.fn("KinMoney.undoCreditPayment")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinIssueInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  const result = yield* undo(input.orgId, ownerWriter(person), input.key);
+  return { key: KinRecordKey.make(result.key) };
+}, workFailure);
+
+export const unapplyCredit = Effect.fn("KinMoney.unapplyCredit")(function* (
+  people: ReadonlyArray<PersonIdentity>,
+  input: KinIssueInput,
+) {
+  const person = yield* theOwner(people, input.orgId);
+  const result = yield* unsetAgainst(input.orgId, ownerWriter(person), input.key);
+  return { key: KinRecordKey.make(result.key) };
+}, workFailure);
+
+export const draftCreditNote = Effect.fn("KinMoney.draftCreditNote")(
+  function* (people: ReadonlyArray<PersonIdentity>, input: KinDraftCreditNoteInput) {
+    const person = yield* theOwner(people, input.orgId);
+    const notes = yield* CreditNotes.CreditNotes;
+    const { row } = yield* notes.draft(input.orgId, ownerWriter(person), input);
+    return { key: KinRecordKey.make(row.key) };
+  },
+  (effect) => effect.pipe(Effect.provide(CreditNotes.layer), workFailure),
+);

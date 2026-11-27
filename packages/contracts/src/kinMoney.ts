@@ -127,8 +127,15 @@ export type KinPaymentSource = typeof KinPaymentSource.Type;
 export const KinBankKnown = Schema.Struct({ through: Schema.NullOr(KinDay) });
 export type KinBankKnown = typeof KinBankKnown.Type;
 export const KinPayment = Schema.Struct({
+  creditNote: Schema.optionalKey(Schema.Struct({ key: Schema.String, number: Schema.String })),
+  splitCredit: Schema.optionalKey(Schema.String),
+  appliedCredit: Schema.optionalKey(Schema.String),
+  /** Set from a client's credit; voided, it went back to that credit rather than being taken back. */
+  fromCredit: Schema.optionalKey(Schema.Literal(true)),
   paymentId: TrimmedNonEmptyString,
   amount: KinMoney,
+  received: Schema.optionalKey(KinMoney),
+  rate: Schema.optionalKey(Schema.String),
   paidOn: KinDay,
   note: Schema.String,
   recordedAt: IsoDateTime,

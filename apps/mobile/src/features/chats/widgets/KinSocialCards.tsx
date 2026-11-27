@@ -6,6 +6,7 @@ import {
   kinSocialCardTaps,
   kinSocialNoticeShown,
   kinSocialPostActions,
+  kinSocialWeekEyebrow,
   type KinSocialNotice,
   type KinSocialPackView,
   type KinSocialTap,
@@ -33,6 +34,7 @@ import { uuidv4 } from "../../../lib/uuid";
 import { useAssetUrl } from "../../../state/assets";
 import { useAtomCommand } from "../../../state/use-atom-command";
 import { kinClient } from "../state/kinClient";
+import { useKinSectionNamed, useKinShell } from "../state/useKinShell";
 
 const TONE_CLASSES: Record<KinSocialPostTone, string> = {
   waiting: "text-foreground-muted",
@@ -232,13 +234,15 @@ export function KinSocialWeekCard(props: {
   const { canAct, pending, notice, press } = useSocialTaps(environmentId, week);
   const review = week.clientReview;
   const sharePreview = useShareFile(environmentId, review?.preview ?? null);
+  const shell = useKinShell(environmentId);
+  const named = useKinSectionNamed(environmentId);
   return (
     <View
       accessibilityLabel={week.accessibilityLabel}
       className="gap-2 rounded-[20px] border border-border bg-card-alt p-4"
     >
       <Text textRole="caption" className="text-foreground-muted">
-        {week.eyebrow}
+        {kinSocialWeekEyebrow(week.group, shell)}
       </Text>
       <Text textRole="body" className="font-t3-medium text-foreground">
         {week.title}
@@ -281,7 +285,7 @@ export function KinSocialWeekCard(props: {
             )}
             {canAct && review.canPreview ? (
               <Button
-                label={review.previewLabel}
+                label={named(review.previewLabel)}
                 tone="text"
                 size="compact"
                 disabled={pending !== null}
@@ -290,7 +294,7 @@ export function KinSocialWeekCard(props: {
               />
             ) : review.making ? (
               <Text textRole="caption" className="text-foreground-muted">
-                {review.previewLabel}
+                {named(review.previewLabel)}
               </Text>
             ) : null}
           </View>

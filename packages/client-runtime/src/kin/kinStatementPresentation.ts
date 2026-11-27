@@ -382,7 +382,7 @@ export function kinStatementSections(card: KinStatementReviewCard): ReadonlyArra
 export const kinStatementTargetLine = (target: KinStatementTarget, shared?: string | null) =>
   target.note === undefined || target.note === shared
     ? target.label
-    : `${target.label}, ${target.note.toLowerCase()}`;
+    : `${target.label}, ${target.note.charAt(0).toLowerCase()}${target.note.slice(1)}`;
 
 /**
  * The note every option of a row carries, such as open invoices offered for money nothing

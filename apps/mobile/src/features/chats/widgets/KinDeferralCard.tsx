@@ -68,7 +68,7 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
     });
     if (outcome.status === "ignored") return;
     setPending(null);
-    setLastStatus(kinCardStatusAfter(outcome, actionId, revision));
+    setLastStatus(kinCardStatusAfter(outcome, actionId, revision, deferral.agent));
   };
 
   // A settled card has nothing left to press, so it shrinks to what it was and how it ended.
@@ -85,6 +85,17 @@ export const KinDeferralCard = memo(function KinDeferralCard(props: {
         <Text textRole="footnote" numberOfLines={2} className="text-foreground-muted">
           {deferral.title}
         </Text>
+        {/* A refused tap is told even when the card closed before its answer came. */}
+        {status?.notice == null ? null : (
+          <Text
+            accessibilityRole="alert"
+            accessibilityLiveRegion="polite"
+            textRole="footnote"
+            className={cn("font-t3-medium", NOTICE_CLASSES[status.notice.kind])}
+          >
+            {status.notice.text}
+          </Text>
+        )}
       </View>
     );
   }

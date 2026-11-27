@@ -12,6 +12,7 @@ import {
   ProviderTurnId,
   RunId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Deferred from "effect/Deferred";
@@ -190,6 +191,37 @@ describe("idleCompactionWindow", () => {
     };
     expect(idleCompactionWindow(sideChat, NOW_MS)).toBeNull();
   });
+
+  it("still compacts while a delegated child thread runs on its own", () => {
+    const delegating = records({ cacheExpiresInMs: 60 * MINUTE_MS });
+    delegating.turnItems = [
+      {
+        id: TurnItemId.make("delegate-item"),
+        threadId,
+        runId,
+        nodeId: NodeId.make("delegate-node"),
+        providerThreadId,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "running",
+        title: "Implement the feature",
+        startedAt: at(-MINUTE_MS),
+        completedAt: null,
+        updatedAt: at(-MINUTE_MS),
+        type: "subagent",
+        subagentId: NodeId.make("delegate-node"),
+        origin: "app_owned",
+        driver: ProviderDriverKind.make("codex"),
+        providerInstanceId: ProviderInstanceId.make("codex"),
+        childThreadId: ThreadId.make("delegate-child"),
+        prompt: "Implement the feature",
+        result: null,
+      },
+    ];
+    expect(idleCompactionWindow(delegating, NOW_MS)?.runId).toBe(runId);
+  });
 });
 
 describe("IdleCompactionService", () => {
@@ -205,8 +237,19 @@ describe("IdleCompactionService", () => {
     { mode: "beforeCacheExpires", driver: "codex", instance: "custom-codex", reads: 0 },
     { mode: "beforeCacheExpires", driver: "claudeAgent", instance: "custom-claude", reads: 1 },
     { mode: "beforeCacheExpires", unconfigured: true, reads: 1 },
+    {
+      mode: "beforeCacheExpires",
+      kinThreads: [
+        "kin:lead",
+        "kin-shared:chat",
+        "kin-shared:review:pr",
+        "kin-shared:bills:batch",
+        "kin-dream:run:1",
+      ],
+      reads: 1,
+    },
   ] as const)(
-    "loads history only for eligible idle compaction: $mode/$override/$enabled/$projectDisabled/$instance/$unconfigured",
+    "loads history only for eligible idle compaction: $mode/$override/$enabled/$projectDisabled/$instance/$unconfigured/kin=$kinThreads",
     (scenario) => {
       const test = {
         override: "default",
@@ -249,8 +292,13 @@ describe("IdleCompactionService", () => {
           visibleTurnItems: [],
           updatedAt: at(),
         };
+        const threadIds = [
+          threadId,
+          ...("kinThreads" in test ? test.kinThreads.map((id) => ThreadId.make(id)) : []),
+        ];
         let historyReads = 0;
-        let dispatches = 0;
+        const dispatched: ThreadId[] = [];
+        let completed = 0;
         const done = yield* Deferred.make<void>();
         const tracer = Tracer.make({
           span(options) {
@@ -258,7 +306,10 @@ describe("IdleCompactionService", () => {
             const end = span.end.bind(span);
             span.end = (...args) => {
               end(...args);
-              if (span.name === "IdleCompactionService.compactWhenDue")
+              if (
+                span.name === "IdleCompactionService.compactWhenDue" &&
+                ++completed === threadIds.length
+              )
                 Deferred.doneUnsafe(done, Effect.void);
             };
             return span;
@@ -266,26 +317,28 @@ describe("IdleCompactionService", () => {
         });
         const dependencies = Layer.mergeAll(
           Layer.mock(Orchestrator.OrchestratorV2)({
-            streamDomainEvents: Stream.make({
-              id: EventId.make("idle-completed"),
-              type: "run.updated",
-              threadId,
-              runId,
-              occurredAt: at(),
-              payload: data.runs[0]!,
-            }),
-            dispatch: () =>
+            streamDomainEvents: Stream.fromIterable(
+              threadIds.map((id) => ({
+                id: EventId.make(`idle-completed:${id}`),
+                type: "run.updated" as const,
+                threadId: id,
+                runId,
+                occurredAt: at(),
+                payload: { ...data.runs[0]!, threadId: id },
+              })),
+            ),
+            dispatch: (command) =>
               Effect.sync(() => {
-                dispatches++;
+                if (command.type === "message.dispatch") dispatched.push(command.threadId);
                 return { sequence: 1, storedEvents: [] };
               }),
           }),
           Layer.mock(ProjectionStore.ProjectionStoreV2)({
-            getThread: () => Effect.succeed(data.thread),
-            getThreadRecords: () =>
+            getThread: (id) => Effect.succeed({ ...data.thread, id }),
+            getThreadRecords: (id) =>
               Effect.sync(() => {
                 historyReads++;
-                return data;
+                return { ...data, thread: { ...data.thread, id } };
               }),
           }),
           Layer.mock(ServerSettings.ServerSettingsService)({
@@ -317,8 +370,8 @@ describe("IdleCompactionService", () => {
           yield* service.start();
           yield* Deferred.await(done);
         }).pipe(Effect.provide(dependencies), Effect.withTracer(tracer));
+        expect(dispatched).toEqual(test.reads === 1 ? [threadId] : []);
         expect(historyReads).toBe(test.reads);
-        expect(dispatches).toBe(test.reads);
       });
     },
   );

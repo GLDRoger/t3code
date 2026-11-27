@@ -7,7 +7,12 @@ import type { SqlError } from "effect/sql/SqlError";
 import { LEAD_T3_TOOLS } from "./t3Tools.ts";
 import { SALES_SHARED_TOOLS } from "../sales/policies.ts";
 import { aborted, askedIn, askersDirectChat, effectiveAudience, turnChat } from "./Audience.ts";
+import { billToolAllowed } from "./billsOnly.ts";
+import { triageToolAllowed } from "./outsideTriage.ts";
 import { reviewToolAllowed } from "./outsideReview.ts";
+import { boundIssue } from "../github/boundIssue.ts";
+import { boundReview } from "../github/boundReview.ts";
+import { mailboxPerson } from "../connections/turnMailbox.ts";
 
 type Turn = {
   readonly orgId: KinOrgId;
@@ -35,6 +40,22 @@ const inTurnChat: Condition = Effect.fnUntraced(function* (turn, args) {
   return typeof chatId === "string" && (yield* turnChat(turn))?.chatId === chatId;
 });
 
+/** A message in the chat the turn answers; `ownMessages.ts` checks the rest inside the change. */
+const messageInTurnChat: Condition = Effect.fnUntraced(function* (turn, args) {
+  const messageId = field(args, "messageId");
+  if (typeof messageId !== "string") return false;
+  const sql = yield* SqlClient.SqlClient;
+  const chatId = (yield* turnChat(turn))?.chatId;
+  if (chatId === undefined) return false;
+  const rows = yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${turn.orgId}
+    AND message_id = ${messageId} AND chat_id = ${chatId} LIMIT 1`;
+  return rows.length > 0;
+});
+
+const askedReview: Condition = Effect.fnUntraced(function* (turn) {
+  return (yield* boundReview(turn))?.asked === true;
+});
+
 const inAskedChat: Condition = Effect.fnUntraced(function* (turn, args) {
   const chatId = field(args, "chatId");
   return typeof chatId === "string" && (yield* askedIn(turn, chatId));
@@ -50,10 +71,43 @@ const ownReminder: Condition = Effect.fnUntraced(function* (turn, args) {
   return typeof chatId === "string" && (yield* askersDirectChat(turn, chatId));
 });
 
-/** Asked in the asker's own chat with this agent; `LeadMemory.cancelOwn` checks the item is theirs. */
+/** `chatId` is a chat with other people, not a direct one, that this turn was asked in. */
+const sharedAsked = Effect.fnUntraced(function* (turn: Turn, chatId: unknown) {
+  if (typeof chatId !== "string" || !(yield* askedIn(turn, chatId))) return false;
+  const sql = yield* SqlClient.SqlClient;
+  const rows = yield* sql`SELECT 1 FROM kin_chats WHERE org_id = ${turn.orgId}
+    AND chat_id = ${chatId} AND kind <> 'direct' AND archived_at IS NULL LIMIT 1`;
+  return rows.length > 0;
+});
+
+/**
+ * A reminder for the asker in their own chat with this agent, for the chat it was asked in, or for
+ * the asker alone; `LeadMemory.placeFor` checks the speaker and source in the write.
+ */
+const chatReminder: Condition = Effect.fnUntraced(function* (turn, args) {
+  if (field(args, "onDue") !== "remind") return false;
+  if (field(args, "alone") === true) return true;
+  return (yield* ownReminder(turn, args)) || (yield* sharedAsked(turn, field(args, "chatId")));
+});
+
+/** A routine for the chat it was asked in, or the asker alone; who may set one is `LeadMemory`'s. */
+const chatRoutine: Condition = Effect.fnUntraced(function* (turn, args) {
+  return field(args, "alone") === true || (yield* sharedAsked(turn, field(args, "chatId")));
+});
+
+/**
+ * Asked in the asker's own chat with this agent, or in a chat with other people;
+ * `LeadMemory.cancelOwn` and `chatsOwn` check the item and who may change it.
+ */
 const ownReminderCancel: Condition = Effect.fnUntraced(function* (turn) {
   const chat = yield* turnChat(turn);
-  return chat !== undefined && (yield* askersDirectChat(turn, chat.chatId));
+  if (chat === undefined) return false;
+  return (yield* askersDirectChat(turn, chat.chatId)) || (yield* sharedAsked(turn, chat.chatId));
+});
+
+/** The turn is one person's own (`mailboxPerson`): it may reach their own mailbox, never the company's. */
+const ownMailboxTurn: Condition = Effect.fnUntraced(function* (turn) {
+  return (yield* mailboxPerson(turn)) !== null;
 });
 
 /** The turn answers in the company chat: what it makes is shared with the whole team. */
@@ -80,7 +134,12 @@ export const SHARED_TOOLS = {
   kin_ask_close: "allowed",
   // Checked against everyone behind the turn, in its own transaction (`askPerson`).
   kin_ask_person: "allowed",
+  kin_send: "allowed",
+  kin_skip: "allowed",
   kin_react: "allowed",
+  // Its own unread message, only in the chat this turn answers.
+  message_withdraw: messageInTurnChat,
+  message_replace: messageInTurnChat,
   // Numbers the agent supplies, which it could have written in that chat as text; it reads nothing.
   kin_chart: "allowed",
   // Like a chart, in the sealed frame; its figures are checked against everyone behind the
@@ -117,10 +176,16 @@ export const SHARED_TOOLS = {
   kin_journal: "team_memory",
   // Who may know an item is the owner's to decide.
   memory_label: "refused",
-  kin_defer: ownReminder,
-  kin_schedule: "refused",
+  kin_defer: chatReminder,
+  kin_schedule: chatRoutine,
   kin_cancel: ownReminderCancel,
-  kin_github_review: "refused",
+  // Only the review someone asked for, on its pull request: `postReview` checks where it posts.
+  kin_github_review: askedReview,
+  kin_github_comment: (turn) => Effect.map(boundIssue(turn), (issue) => issue?.outside === false),
+  kin_github_diff: askedReview,
+  // A public repo for anyone here; a private one only for the asker GitHub lets see it, in their
+  // own chat with this agent, by the review ask's check (`readRepo`, `maySee`). Reads only.
+  kin_github_read: "allowed",
   // Only from the asker's own direct chat with this agent, checked by the service (`askReview`).
   kin_github_review_ask: "allowed",
   kin_github_link: "refused",
@@ -136,7 +201,10 @@ export const SHARED_TOOLS = {
   record_update: "view",
   // Work facts on tasks every person behind the turn may see; money and system facts are the owner's.
   pulse_read: "view",
-  pulse_handle: "refused",
+  pulse_handle: (_turn, args) => {
+    const action = field(args, "action");
+    return Effect.succeed(action === "declined" || action === "undo");
+  },
   pulse_nudge: "refused",
   // Giving out a task everyone there sees; handing back is the asker's own task, in their view.
   record_assign: "view",
@@ -168,20 +236,29 @@ export const SHARED_TOOLS = {
   money_summary: "view",
   money_query: "refused",
   budget_set: "refused",
+  number_record: "refused",
+  numbers_read: "refused",
   dates_query: "view",
   company_profile: "refused",
+  // How Kin is set up for the company is the owner level's to change.
+  company_sections: "refused",
+  numbers_watch: "refused",
   // A statement is the owner's bank account; reading one marks the turn as a sensitive read.
   statement_read: "refused",
   statement_rows: "refused",
+  // Bills become the owner's expenses.
+  bills_add: "refused",
+  bill_read: "refused",
   // Generated files, recipes and issued numbers read and make the owner's records and money.
   kin_document: "refused",
   kin_recipes: "refused",
   kin_issue: "refused",
   kin_recipe_undo: "refused",
   kin_receipt: "refused",
-  // Connected services are the owner's accounts; the service checks the audience again.
-  kin_connection_tools: "refused",
-  kin_connection_call: "refused",
+  // Connected services are the owner's accounts, and a person's own mailbox theirs alone, in a
+  // turn that is theirs alone; the service decides which again (`turnMailboxes`).
+  kin_connection_tools: ownMailboxTurn,
+  kin_connection_call: ownMailboxTurn,
   kin_connection_offer: "refused",
   kin_connection_note: "refused",
   // The company's and clients' social accounts are the owner's.
@@ -223,14 +300,19 @@ export const sharedToolAllowed = Effect.fn("KinSharedTools.allowed")(
 
 /**
  * The one check for a tool call: nothing in a turn aborted for its audience, only `REVIEW_TOOLS`
- * in an outside review, everything in an owner-only turn, else what `SHARED_TOOLS` allows. The
- * gate runs it before every call; services whose writes outlive the call run it again inside them.
+ * in an outside review and `BILLS_TOOLS` in a bills turn, everything in an owner-only turn, else
+ * what `SHARED_TOOLS` allows. The gate runs it before every call; services whose writes outlive
+ * the call run it again inside them.
  */
 export const toolAdmitted = Effect.fn("KinSharedTools.admitted")(
   function* (turn: Turn, name: string, args: unknown) {
     if (yield* aborted(turn)) return false;
+    const triage = yield* triageToolAllowed(turn, name);
+    if (triage !== undefined) return triage;
     const review = yield* reviewToolAllowed(turn, name, args);
     if (review !== undefined) return review;
+    const bills = yield* billToolAllowed(turn, name, args);
+    if (bills !== undefined) return bills;
     if ((yield* effectiveAudience(turn)) === "owner_only") return true;
     return yield* sharedToolAllowed(turn, name, args);
   },

@@ -1,4 +1,9 @@
-import { KIN_REFRESH_TOPICS, type KinOrgId, type KinRefreshTopic } from "@t3tools/contracts";
+import {
+  KIN_REFRESH_TOPICS,
+  type KinChatError,
+  type KinOrgId,
+  type KinRefreshTopic,
+} from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
@@ -27,6 +32,11 @@ export class KinRefreshObserver extends Context.Reference<{
   readonly touch: (orgId: KinOrgId, topic: KinRefreshTopic) => Effect.Effect<void>;
 }>("t3/kin/chat/KinRefreshObserver", { defaultValue: () => ({ touch: () => Effect.void }) }) {}
 
+/** The Work stream's existing whole-view announcement, supplied by KinRecords. */
+export const KinWorkRefresh = Context.Reference<
+  (orgId: KinOrgId) => Effect.Effect<void, KinChatError>
+>("t3/kin/work/KinWorkRefresh", { defaultValue: () => () => Effect.void });
+
 /**
  * Fails when `services` would run on the no-op observer: every notice would be dropped, and the
  * screens it serves would stay stale with nothing to say why. The server checks it at startup.
@@ -46,6 +56,7 @@ export class KinRefreshHub extends Context.Service<
   {
     /** The org's revisions now, then after each settled burst. Server only: callers filter by viewer. */
     readonly changes: (orgId: KinOrgId) => Stream.Stream<KinRevisions>;
+    readonly stopRevision: (orgId: KinOrgId) => number;
     /** This run of the host: revisions count from zero in each. */
     readonly boot: string;
     /**
@@ -53,6 +64,7 @@ export class KinRefreshHub extends Context.Service<
      * run so a viewer's reconnect reads the same number when nothing they see moved. Null moves it.
      */
     readonly counted: (key: string, view: string | null) => number;
+    readonly lastCount: (key: string) => number | undefined;
   }
 >()("t3/kin/chat/KinRefreshHub") {}
 
@@ -100,6 +112,8 @@ const make = Effect.gen(function* () {
   });
   const hub = KinRefreshHub.of({
     boot,
+    stopRevision: (orgId) => current(orgId).stop,
+    lastCount: (key) => views.get(key)?.count,
     counted: (key, view) => {
       const held = views.get(key);
       if (held === undefined) {

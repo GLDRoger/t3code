@@ -2,7 +2,7 @@ import { pairSession } from "../auth/ProofKeySessions.testkit.ts";
 import { kinSecretsTest } from "./layer.testkit.ts";
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { assert, it } from "@effect/vitest";
+import { assert, expect, it, vi } from "@effect/vitest";
 import {
   AuthSessionId,
   CommandId,
@@ -10,6 +10,7 @@ import {
   EnvironmentId,
   KinAgentId,
   KinMemoryItemId,
+  KinPersonId,
   KinChatId,
   KinWakeupId,
   KinOrgId,
@@ -32,6 +33,7 @@ import { liveThreadShell } from "../../mcp/McpToolAccess.testkit.ts";
 import * as Orchestrator from "../../orchestration-v2/Orchestrator.ts";
 import * as Threads from "../../orchestration-v2/ThreadManagementService.ts";
 import * as Vcs from "../../vcs/VcsProcess.ts";
+import * as Sqlite from "../../persistence/Sqlite.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as KinChatRepository from "../chat/KinChatRepository.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
@@ -39,6 +41,7 @@ import { authorityLayer, startWakeupRun } from "../chat/WakeupAuthority.testkit.
 import { environment } from "../chat/TaskCard.testkit.ts";
 import * as Kin from "../layer.ts";
 import * as Memory from "../memory/Memory.ts";
+import { parseFrontMatter } from "../memory/frontMatter.ts";
 import * as Cache from "../memory/MemoryCache.ts";
 import { MemoryConfig } from "../memory/MemoryConfig.ts";
 import * as Writer from "../memory/MemoryWriter.ts";
@@ -46,9 +49,12 @@ import * as Scan from "../memory/secretScan.ts";
 import { authorise, fingerprint, storedLabels, visibility } from "../memory/sensitivity.ts";
 import * as TriggerService from "../triggers/KinTriggerService.ts";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
+import { fakeRepository } from "../memory/__fixtures__/repository.ts";
+import * as KinPersistence from "../persistence/KinPersistence.ts";
 import { KinHandoff } from "./Handoff.ts";
 import { KinTeam } from "../team/KinTeam.ts";
 import { SHARED_REFUSAL } from "./Audience.ts";
+import { ownerOnlyWakeup } from "./Audience.testkit.ts";
 import { markOutside, stampReads, storedStamp } from "./OutsideContent.ts";
 import * as Lead from "./LeadMemory.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
@@ -103,6 +109,123 @@ const whole = (read: typeof Lead.ReadResult.Type) => {
   return read;
 };
 const decodeDefer = Schema.decodeUnknownEffect(Lead.DeferInput);
+const decodeSearch = Schema.decodeEffect(Lead.SearchInput);
+const decodeRead = Schema.decodeEffect(Lead.ReadInput);
+
+it.effect("searches memory by words and opens index paths within the turn's audience", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+    const orgId = KinOrgId.make("tidewater");
+    const ownerPersonId = KinPersonId.make(`${orgId}:owner`);
+    const wakeupId = "memory-words";
+    const repository = fakeRepository(fs);
+    yield* fs.makeDirectory(`${root}/memory/memory/.git/objects`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/memory/memory/.git/refs`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/memory/memory-read`);
+    for (const [id, body, sensitive] of [
+      ["private", "The East Dock is reserved.", true],
+      ["spare", "Dispatch closes at six.", false],
+      ["team", "The East Dock opens at six.", false],
+    ] as const) {
+      repository.files.set(
+        `claims/${id}-note.md`,
+        fixtureItem({ id, kind: "claim", due: null, sensitive }).replace(
+          "Invented fixture body.",
+          body,
+        ),
+      );
+    }
+    const memoryLayer = Memory.layer.pipe(
+      Layer.provide(repository.layer),
+      Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
+      Layer.provide(
+        Layer.succeed(MemoryConfig, {
+          baseDirectory: root,
+          repositories: [{ orgId, path: "memory", repoUrl: "unused" }],
+        }),
+      ),
+    );
+    const leadLayer = Lead.layer.pipe(
+      Layer.provideMerge(memoryLayer),
+      Layer.provide(
+        Layer.mock(KinIdentity)({
+          owner: { _tag: "person", orgId, personId: ownerPersonId },
+          isAgentThread: (id) => id === threadId,
+          isLeadThread: (id) => id === threadId,
+          resolveAgent: () =>
+            Effect.succeed({
+              _tag: "agent",
+              orgId,
+              agentId,
+              ownerPersonId,
+              threadId,
+            }),
+        }),
+      ),
+      Layer.provide(Layer.mock(Writer.MemoryWriter)({})),
+      Layer.provide(Layer.mock(Writer.MemoryWriterAuthority)({})),
+      Layer.provide(Layer.mock(KinSchedules.KinSchedules)({})),
+      Layer.provide(Layer.mock(KinChatRepository.KinChatRepository)({})),
+      Layer.provide(NodeCrypto.layer),
+    );
+    yield* ownerOnlyWakeup({ orgId, agentId, wakeupId });
+    const sql = yield* SqlClient.SqlClient;
+    yield* sql`UPDATE kin_leads SET thread_id = ${threadId} WHERE org_id = ${orgId}`;
+    yield* sql`UPDATE kin_wakeups SET thread_id = ${threadId}, status = 'running', audience = 'owner_only'
+      WHERE wakeup_id = ${wakeupId}`;
+    yield* sql`INSERT INTO kin_team_memory (org_id, is_on, set_by, set_at)
+      VALUES (${orgId}, 1, ${ownerPersonId}, 0)`;
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      const lead = yield* Lead.LeadMemory;
+      yield* memory.anchor(orgId, "main", repository.head());
+      for (const id of ["spare", "team"]) {
+        const item = yield* memory.readItemQuietly(orgId, KinMemoryItemId.make(id));
+        yield* authorise(orgId, id, fingerprint(item), "owner_setting");
+      }
+      const searchByWords = yield* decodeSearch({
+        text: "eAst DoCK",
+      });
+      const ownerMatches = yield* lead.search(scope, searchByWords);
+      expect.soft(ownerMatches.map(({ id }) => id).toSorted()).toEqual(["private", "team"]);
+      const byPath = yield* lead
+        .read(scope, yield* decodeRead({ id: "claims/team-note.md" }))
+        .pipe(Effect.result);
+      expect
+        .soft(yield* sql`SELECT item_id FROM kin_memory_reads WHERE org_id = ${orgId}`)
+        .toEqual([{ item_id: "team" }]);
+      const byId = yield* lead.read(scope, yield* decodeRead({ id: "team" })).pipe(Effect.result);
+      expect.soft(byPath).toEqual(byId);
+
+      yield* sql`UPDATE kin_wakeups SET audience = 'shared' WHERE wakeup_id = ${wakeupId}`;
+      const sharedMatches = yield* lead.search(scope, { ...searchByWords, limit: 1 });
+      expect.soft(sharedMatches).toEqual([expect.objectContaining({ id: "team" })]);
+      expect.soft(sharedMatches[0]).not.toHaveProperty("body");
+      const alsoShared = yield* lead.search(scope, searchByWords);
+      expect.soft(alsoShared.map(({ id }) => id)).toEqual(["team"]);
+      const hidden = yield* lead
+        .read(scope, yield* decodeRead({ id: "claims/private-note.md" }))
+        .pipe(Effect.flip);
+      const absent = yield* lead
+        .read(scope, yield* decodeRead({ id: "claims/missing.md" }))
+        .pipe(Effect.flip);
+      expect.soft(hidden.reason).toBe("not_found");
+      expect.soft(hidden.message).toBe(absent.message);
+      expect
+        .soft(yield* sql`SELECT item_id FROM kin_memory_reads WHERE org_id = ${orgId}`)
+        .toEqual([{ item_id: "team" }]);
+    }).pipe(Effect.provide(leadLayer));
+  }).pipe(
+    Effect.provide(
+      Layer.merge(
+        NodeServices.layer,
+        KinPersistence.layer.pipe(Layer.provideMerge(Sqlite.layerMemory)),
+      ),
+    ),
+    Effect.scoped,
+  ),
+);
 
 it.live(
   "lead tools isolate organizations, record reads, enforce retries and journal through the git writer",
@@ -384,7 +507,11 @@ it.live(
           "kin_ask_person",
           "kin_chart",
           "kin_visual",
+          "kin_send",
+          "kin_skip",
           "kin_react",
+          "message_withdraw",
+          "message_replace",
           "memory_search",
           "memory_read",
           "memory_write",
@@ -393,6 +520,9 @@ it.live(
           "kin_schedule",
           "kin_cancel",
           "kin_journal",
+          "kin_github_comment",
+          "kin_github_diff",
+          "kin_github_read",
           "kin_github_review",
           "kin_github_review_ask",
           "kin_github_watch",
@@ -591,6 +721,24 @@ it.live(
         ] as const)
           assert.include(yield* refusedQuote({ ...input, quote, sourceEventId }), refusal);
         const quoted = { ...input, quote: "The demo client wants every report as a PDF" };
+        const before = yield* sql`SELECT * FROM kin_lead_tool_calls ORDER BY call_key`;
+        const misspelt = yield* decodeWrite({
+          ...quoted,
+          item: { ...quoted.item, titel: "Invented claim" },
+        }).pipe(
+          Effect.flatMap((write) => service.write(scope, write)),
+          Effect.result,
+        );
+        assert.strictEqual(misspelt._tag, "Failure");
+        if (misspelt._tag === "Failure")
+          assert.include(
+            misspelt.failure.message,
+            'Memory item takes no "titel"; pass one of: id, kind, title, status, due, what, on_due, on, every, owner, tz, quiet_hours, recorded_at, valid_from, invalid_at, superseded_by, review_by, source, said_by, trust, links, chat, body, sensitive.',
+          );
+        assert.deepStrictEqual(
+          yield* sql`SELECT * FROM kin_lead_tool_calls ORDER BY call_key`,
+          before,
+        );
         assert.deepStrictEqual(yield* service.write(scope, quoted), { itemId: "new-claim" });
         assert.deepStrictEqual(yield* service.write(scope, quoted), { itemId: "new-claim" });
         assert.strictEqual(
@@ -630,8 +778,18 @@ it.live(
           { itemId: "new-claim" },
         );
         // K055: a create needs no id; it is the title's slug, numbered past what is taken.
-        const { id: _id, ...unnamed } = quoted.item;
-        const fresh = { ...quoted, item: unnamed };
+        const {
+          id: _id,
+          recorded_at: _recorded,
+          valid_from: _valid,
+          invalid_at: _invalid,
+          superseded_by: _superseded,
+          source: _source,
+          said_by: _speaker,
+          links: _links,
+          ...unnamed
+        } = quoted.item;
+        const fresh = yield* decodeWrite({ ...quoted, item: unnamed });
         assert.deepStrictEqual(yield* service.write(scope, fresh), { itemId: "invented-claim" });
         assert.deepStrictEqual(yield* service.write(scope, fresh), { itemId: "invented-claim" });
         for (const [changed, itemId] of [
@@ -681,13 +839,14 @@ it.live(
         assert.strictEqual(first.scheduled, "due_card");
         assert.strictEqual(
           first.note,
-          "No question was posted. Planned for its due time: a card asking to start, move or cancel it; Kin checks then who and what still stand.",
+          "No question was posted. Planned for its due time: a card asking to start, move or cancel it; Kin checks then who and what still stand. Nothing starts on its own then, so confirm that they will be asked, not that it will start.",
         );
-        for (const [onDue, ask, scheduled, asks] of [
-          ["remind", undefined, "reminder", undefined],
-          ["start", undefined, "start", undefined],
-          ["chase", undefined, "chase_ping", { name: "Owner" }],
-          ["chase", "Memb", "chase_ping", { name: "Member" }],
+        // A due start asks first while LEAD-11's stop switch is unbuilt: the note says so.
+        for (const [onDue, ask, scheduled, asks, planned] of [
+          ["remind", undefined, "reminder", undefined, "a reminder"],
+          ["start", undefined, "start", undefined, "a card asking to start, move or cancel it"],
+          ["chase", undefined, "chase_ping", { name: "Owner" }, "a ping to Owner"],
+          ["chase", "Memb", "chase_ping", { name: "Member" }, "a ping to Member"],
         ] as const) {
           const set = yield* service.defer(scope, {
             ...deferred,
@@ -696,7 +855,7 @@ it.live(
             ...(ask === undefined ? {} : { ask }),
           });
           assert.strictEqual(set.scheduled, scheduled, `${onDue} ${ask}`);
-          assert.match(set.note ?? "", /^No question was posted\. Planned for its due time: a /);
+          assert.include(set.note, `No question was posted. Planned for its due time: ${planned};`);
           assert.deepStrictEqual(set.asks, asks, `${onDue} ${ask}`);
         }
         // Who to ask is named as people are found here, and kept as the item's person.
@@ -992,7 +1151,45 @@ it.live(
           "Only the owner's own message can set up a scheduled task",
         );
         yield* copied(null);
-        const scheduled = yield* service.schedule(scope, scheduleInput);
+        // A feed of watched numbers changes only through numbers_watch, and its ids are its own.
+        yield* sql`INSERT INTO kin_profile_changes (org_id, change_id, agent_id, wakeup_id,
+            patch_json, base_rev, widget_id, proposed_at, applied_at)
+          VALUES (${orgId}, 'nw_feed', 'chief', 'earlier', ${JSON.stringify({
+            numbers: [],
+            feed: { source: "Invented analytics", every: "day", at: "08:00" },
+            base: "invented",
+          })}, 0, NULL, 0, 0)`;
+        yield* sql`INSERT INTO kin_schedules (task_id, org_id, schedule_id, agent_id, chat_id,
+            source_event, said_by, audience, content_sha256, inbox_thread_id, created_at,
+            updated_at)
+          VALUES ('task-feed', ${orgId}, 'feed-invented', 'chief', 'first-chat',
+            'kin-numbers:nw_feed', 'fixture-member', 'owner_only', 'hash', 'inbox', 0, 0)`;
+        assert.strictEqual(
+          (yield* Effect.flip(
+            service.schedule(scope, {
+              ...scheduleInput,
+              replaces: KinMemoryItemId.make("feed-invented"),
+            }),
+          )).message,
+          "That schedule fetches watched numbers. Change it with numbers_watch, or archive the number to stop it.",
+        );
+        assert.include(
+          (yield* Effect.flip(
+            service.schedule(scope, {
+              ...scheduleInput,
+              itemId: KinMemoryItemId.make("feed-mine"),
+            }),
+          )).message,
+          "That id is a feed's.",
+        );
+        // The owner's own time, as he said it, is kept; the native task runs it on the host's clock.
+        const scheduled = yield* Effect.gen(function* () {
+          using _host = vi.spyOn(KinSchedules, "hostTimeZone").mockReturnValue("Asia/Tokyo");
+          yield* sql`UPDATE kin_trigger_settings SET time_zone = 'Asia/Kolkata' WHERE org_id = ${orgId}`;
+          const made = yield* service.schedule(scope, scheduleInput);
+          yield* sql`UPDATE kin_trigger_settings SET time_zone = 'UTC' WHERE org_id = ${orgId}`;
+          return made;
+        });
         yield* sql`INSERT INTO scheduled_tasks (task_id, title, prompt, enabled, schedule_json,
             project_id, workspace_strategy_json, model_selection_json, runtime_mode,
             interaction_mode, created_by, creation_source, created_at, updated_at,
@@ -1079,12 +1276,33 @@ it.live(
           scheduleId: scheduled.itemId,
           existing: false,
           prompt: "Summarise the open PRs",
-          every: { at: "08:00", days: [1, 5] },
+          every: { at: "11:30", days: [1, 5] },
+          ownerTime: { at: "08:00", days: [1, 5] },
           sourceEvent: "fixture-event",
         });
         assert.deepStrictEqual(nativeCancels, [scheduled.itemId, recurring.itemId]);
         assert.include(files, `deferrals/${fromSchedule.itemId}.md`);
         const saved = (id: string) => git(remote, ["show", `${committed.commit}:claims/${id}.md`]);
+        const metadata = (id: string) =>
+          saved(id).pipe(
+            Effect.flatMap((content) => parseFrontMatter(orgId, `claims/${id}.md`, content)),
+            Effect.map(({ frontMatter }) => frontMatter),
+          );
+        const explicit = yield* metadata("new-claim");
+        assert.match(explicit.source, /^kin:chat:/);
+        assert.notStrictEqual(explicit.said_by, "forged");
+        for (const head of [yield* metadata("invented-claim"), explicit]) {
+          assert.include(head, {
+            recorded_at: "2026-11-08T00:00:00.000Z",
+            valid_from: "2026-11-08T00:00:00.000Z",
+            invalid_at: null,
+            superseded_by: null,
+            source: explicit.source,
+            said_by: explicit.said_by,
+          });
+          assert.strictEqual(head.source_event, "fixture-event");
+          assert.deepStrictEqual(head.links, []);
+        }
         assert.include(yield* saved("amount-claim"), "sensitive: true");
         assert.include(yield* saved("vault-claim"), "sensitive: true");
         assert.include(yield* saved("status-claim"), "sensitive: false");
@@ -1210,6 +1428,33 @@ it.live(
         assert.strictEqual(
           whole(yield* service.read(scope, { id: reminder.itemId })).head.title,
           "Invented stretch",
+        );
+        // What a tap did to its run is what the lead reads: moved to Monday, or cancelled.
+        const runOf = (set: string) =>
+          sql.unsafe(`UPDATE kin_deferral_runs SET ${set} WHERE org_id = ? AND item_id = ?`, [
+            orgId,
+            reminder.itemId,
+          ]);
+        const memoryDue = Date.parse("2026-11-09T16:09:12Z");
+        const monday = Date.parse("2026-11-16T03:30:00.000Z");
+        yield* runOf(
+          `due_at = ${monday}, snapshot_json = json_set(snapshot_json, '$.movedFrom', ${memoryDue})`,
+        );
+        const found = (yield* service.search(scope, { kind: "deferral", status: "open" })).find(
+          (item) => item.id === reminder.itemId,
+        );
+        assert.strictEqual(
+          found !== undefined && "due" in found ? found.due : undefined,
+          "2026-11-16T03:30:00.000Z",
+        );
+        yield* runOf(`state = 'undone'`);
+        assert.notInclude(yield* openDeferrals("open"), reminder.itemId);
+        assert.strictEqual(
+          whole(yield* service.read(scope, { id: reminder.itemId })).head.status,
+          "cancelled",
+        );
+        yield* runOf(
+          `state = 'armed', due_at = ${memoryDue}, snapshot_json = json_remove(snapshot_json, '$.movedFrom')`,
         );
         // The owner's words show only while he can open the message they came from.
         const quotesShown = Effect.gen(function* () {

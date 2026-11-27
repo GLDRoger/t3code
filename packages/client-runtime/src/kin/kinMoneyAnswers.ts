@@ -1,3 +1,4 @@
+import { kinBilledName } from "./kinBillTo.ts";
 import {
   KinSacCode,
   type KinCash,
@@ -8,6 +9,7 @@ import {
   type KinMoneyBudgetSetInput,
   type KinMoneyBudgets,
   type KinOrgId,
+  type KinMatchPartnerInput,
   type KinOutlook,
   type KinOutlookItem,
   type KinRecord,
@@ -15,11 +17,13 @@ import {
   type KinRecordLink,
   type KinRunway,
   type KinSignedMoney,
+  type KinShell,
 } from "@t3tools/contracts";
 import * as Schema from "effect/Schema";
 
-import { kinEstimate, type KinRates } from "./kinCurrency.ts";
+import { kinEstimate, kinRateDay, type KinRates } from "./kinCurrency.ts";
 import {
+  afterLabel,
   kinBankKnownText,
   kinCategoryLabel,
   kinMoneyText,
@@ -28,6 +32,7 @@ import {
   kinSuggestionText,
   kinTotalsLines,
 } from "./kinLists.ts";
+import { kinSectionOn } from "./kinShell.ts";
 import { formatKinTime } from "./kinScreenState.ts";
 import { kinWorkDueLabel, type KinWorkRef } from "./kinWork.ts";
 
@@ -104,6 +109,33 @@ export const KIN_OUTLOOK = {
   apart: (currency: string) => `No ${currency} runway: two accounts look the same.`,
   notRunningDown: (currency: string) =>
     `${currency} cash isn't running down: the last three months brought in at least what went out.`,
+  partners: "Partners to name",
+  partnerNote: (count: number, oldest: string) =>
+    `${count} expense${count === 1 ? "" : "s"} they paid, since ${oldest}`,
+  partnerOwed: (name: string) => `Owed back to ${name}`,
+  partnerReturns: (name: string) => `Refunds ${name} holds, coming back`,
+  unmatched: "An imported address no teammate is matched to yet",
+  nameless: "Marked owed with no partner named",
+  whoIsThis: "Who is this?",
+  nothingMatched: "Nothing was left to match: Money is up to date.",
+  matchMoved: "New expenses arrived since you opened this. Nothing was changed; look again.",
+  unsaid: "Paid personally, not counted as owed yet",
+  unsaidNote: (count: number, since: string) =>
+    `${count} imported expense${count === 1 ? "" : "s"} since ${since}, counted as the company's own until you say`,
+  sayWho: "Say who paid",
+  sayTitle: (address: string) => `Who is ${address}?`,
+  sayDetail: (count: number, amount: string) =>
+    `An import says this address paid ${amount} across ${count} expense${count === 1 ? "" : "s"} with personal money. Until you say, Money counts them as the company's own spending.`,
+  paidBy: "Teammate",
+  pickPerson: "Pick a teammate",
+  settledQuestion: "Has the company paid them back?",
+  stillOwed: "Still owed",
+  stillOwedHint: "Counted as going out now, and as spending on the day you pay them back.",
+  paidBack: "Already paid back",
+  paidBackHint: "Nothing in Money changes; each expense says who paid it.",
+  confirm: "Confirm",
+  cancel: "Cancel",
+  saving: "Saving…",
 };
 
 export const KIN_BUDGETS = {
@@ -118,6 +150,8 @@ export const KIN_BUDGETS = {
   save: "Save budget",
   category: "Category",
   anyCategory: "Every category",
+  /** No category and no project yet: a budget needs one, so "every category" isn't a choice made. */
+  pickCategory: "Pick a category",
   project: "Project",
   anyProject: "Every project",
   limit: "Monthly limit",
@@ -134,6 +168,18 @@ export const KIN_BUDGETS = {
     `+ ${amounts.join(" and ")} not counted in this ${currency} budget`,
   removedProject: "a removed project",
 };
+
+/** A total across currencies at rates the company was paid at; never an exact figure. */
+const KIN_MONEY_ABOUT = {
+  /** "About ₹1,30,000 in all · approximate, at the rate of a payment on Nov 12, 2026". */
+  inAll: (total: string, days: ReadonlyArray<string>) =>
+    `About ${total} in all · approximate, at ${days.length === 1 ? "the rate of a payment" : "the rates of payments"} on ${days.map(kinRateDay).join(" and ")}`,
+};
+
+export const kinMoneyAboutText = (
+  about: { readonly total: KinSignedMoney; readonly rateDays: ReadonlyArray<string> } | undefined,
+) =>
+  about === undefined ? null : KIN_MONEY_ABOUT.inAll(kinMoneyText(about.total), about.rateDays);
 
 export const KIN_QUOTES = {
   title: "Quotes",
@@ -175,13 +221,22 @@ export const KIN_LINES = {
   quantity: "Qty",
   unit: "Unit",
   rate: "Rate",
+  tax: "Tax %",
+  taxDetail: (rate?: string | null) =>
+    rate === ""
+      ? "Tax %: leave empty for the invoice's usual rate, 0 for no tax."
+      : rate != null && rate.trim() !== ""
+        ? `Tax %: leave empty for ${rate.trim()}%, 0 for no tax.`
+        : "Tax %: leave empty for none, or give a line its own rate.",
   add: "Add line",
   remove: "Remove line",
   badSac: (row: number) => `Line ${row}: a SAC or HSN code is 4 to 8 digits.`,
   badQuantity: (row: number) => `Line ${row}: enter a quantity like 3 or 2.5.`,
   badRate: (row: number) => `Line ${row}: enter a rate like 25,000.`,
+  badTax: (row: number) => `Line ${row}: enter the tax rate as a number, or 0 for no tax.`,
   noDescription: (row: number) => `Line ${row}: say what it is.`,
   mixed: "Every line is in the same currency as the invoice.",
+  clientAccounts: "The client accounts for the tax themselves: these lines carry none.",
 };
 
 const isSac = Schema.is(KinSacCode);
@@ -333,7 +388,8 @@ export function kinCashView(cash: KinCash, rates: KinRates | null, now: Date): K
 
 export interface KinOutlookRowView {
   readonly id: string;
-  readonly key: KinRecordKey;
+  /** Null for a partner's balance: it sums their expenses and opens none. */
+  readonly key: KinRecordKey | null;
   readonly title: string;
   /** "Invoices · 20 Nov · repeats". */
   readonly note: string;
@@ -352,7 +408,29 @@ export interface KinOutlookView {
   readonly more: { readonly incoming: number; readonly outgoing: number };
   readonly notes: ReadonlyArray<string>;
   readonly runway: ReadonlyArray<{ readonly currency: string; readonly text: string }>;
+  /**
+   * Who the company owes back. One no teammate is matched to yet has `match`: the import's address
+   * to name a person for, or null for expenses marked owed with no partner at all.
+   */
+  readonly partners: ReadonlyArray<{
+    readonly id: string;
+    readonly name: string;
+    readonly amount: string;
+    readonly note: string;
+    readonly match: { readonly address: string | null; readonly seen: KinPartnerSeen } | null;
+  }>;
+  /** Imported addresses that paid personally, waiting for an owner to say who and whether owed. */
+  readonly unsaid: ReadonlyArray<{
+    readonly address: string;
+    readonly amount: string;
+    readonly expenses: number;
+    readonly note: string;
+    readonly seen: KinPartnerSeen;
+  }>;
 }
+
+/** The expenses and totals a partner row showed; the host changes exactly those or nothing. */
+export type KinPartnerSeen = NonNullable<KinMatchPartnerInput["seen"]>;
 
 /** Runway in a line: the host's months when it has them, else plainly why not. */
 export function kinRunwayText(one: KinRunway): string {
@@ -391,7 +469,32 @@ export function kinOutlookView(
     const about = estimateOf(money, rates);
     if (about !== null) estimates.set(kinSignedText(money, false), about);
   }
-  const outgoing = [...outlook.pastDueOut, ...outlook.goingOut];
+  // A partner's balance in each currency is its own row, under the figure it counts in.
+  const balances = (outlook.owedToPartners ?? []).flatMap((one) =>
+    one.owed.map((money) => ({ one, money })),
+  );
+  const partnerRow = ({ one, money }: (typeof balances)[number]): KinOutlookRowView => {
+    const shownMoney = money.minor < 0 ? { ...money, minor: -money.minor } : money;
+    return {
+      id: `partner:${one.personId ?? one.address ?? one.name}:${money.currency}`,
+      key: null,
+      title:
+        money.minor < 0 ? KIN_OUTLOOK.partnerReturns(one.name) : KIN_OUTLOOK.partnerOwed(one.name),
+      note:
+        one.personId !== null
+          ? KIN_OUTLOOK.partnerNote(one.expenses, afterLabel(onLabel(one.oldest, now)))
+          : one.address === null
+            ? KIN_OUTLOOK.nameless
+            : KIN_OUTLOOK.unmatched,
+      amount: kinMoneyText(shownMoney),
+      estimate: kinEstimate(shownMoney, rates)?.text ?? null,
+    };
+  };
+  const outgoing = [
+    ...outlook.pastDueOut.map(row("out")),
+    ...outlook.goingOut.map((one, index) => row("out")(one, outlook.pastDueOut.length + index)),
+    ...balances.filter(({ money }) => money.minor > 0).map(partnerRow),
+  ];
   return {
     empty:
       outlook.expectedIn.length === 0 &&
@@ -401,14 +504,42 @@ export function kinOutlookView(
     goingOut: kinTotalsLines(outlook.expectedOut),
     net: outlook.net.map((one) => kinSignedText(one, false)),
     estimates,
-    incoming: outlook.comingIn.map(row("in")),
-    outgoing: outgoing.map(row("out")),
+    incoming: [
+      ...outlook.comingIn.map(row("in")),
+      ...balances.filter(({ money }) => money.minor < 0).map(partnerRow),
+    ],
+    outgoing,
     more: { incoming: outlook.moreComingIn, outgoing: outlook.moreGoingOut },
     notes: [
       ...(outlook.overdueIn.length === 0 ? [] : [KIN_OUTLOOK.overdueIn(outlook.overdueIn.length)]),
       ...(outlook.incomplete.length === 0 ? [] : [KIN_OUTLOOK.short]),
     ],
     runway: outlook.runway.map((one) => ({ currency: one.currency, text: kinRunwayText(one) })),
+    // Only who still needs a person named: every balance is already a row above.
+    partners: (outlook.owedToPartners ?? [])
+      .filter((one) => one.personId === null)
+      .map((one) => ({
+        id: one.personId ?? `address:${one.address ?? one.name}`,
+        name: one.name,
+        amount: kinTotalsLines(one.owed).join(" + "),
+        note:
+          one.personId !== null
+            ? KIN_OUTLOOK.partnerNote(one.expenses, afterLabel(onLabel(one.oldest, now)))
+            : one.address === null
+              ? KIN_OUTLOOK.nameless
+              : KIN_OUTLOOK.unmatched,
+        match:
+          one.personId === null
+            ? { address: one.address, seen: { entries: one.entries ?? [], totals: one.owed } }
+            : null,
+      })),
+    unsaid: (outlook.partnersUnsaid ?? []).map((one) => ({
+      address: one.address,
+      amount: kinTotalsLines(one.total).join(" + "),
+      expenses: one.expenses,
+      note: KIN_OUTLOOK.unsaidNote(one.expenses, afterLabel(onLabel(one.oldest, now))),
+      seen: { entries: one.entries ?? [], totals: one.total },
+    })),
   };
 }
 
@@ -427,6 +558,8 @@ export interface KinBudgetView {
   readonly estimate: string | null;
   /** Spending on it in other currencies, which `spent` leaves out. */
   readonly notCounted: string | null;
+  /** All of it in the home currency, at rates the company was paid at. */
+  readonly about: string | null;
   readonly budget: KinMoneyBudget;
 }
 
@@ -471,6 +604,7 @@ export function kinBudgetsView(
                 budget.notCounted.map((one) => kinMoneyText(one.spent)),
                 budget.limit.currency,
               ),
+        about: kinMoneyAboutText(budget.about),
         budget,
       };
     })
@@ -494,6 +628,17 @@ export interface KinBudgetDraft {
   readonly project: KinWorkRef | null;
   readonly limit: string;
 }
+
+/** The category row's value: "Every category" only beside a project, which makes it a budget. */
+export const kinBudgetCategoryShown = (
+  draft: KinBudgetDraft,
+  label: (category: string) => string,
+) =>
+  draft.category !== null
+    ? label(draft.category)
+    : draft.project === null
+      ? KIN_BUDGETS.pickCategory
+      : KIN_BUDGETS.anyCategory;
 
 export const kinBudgetDraftOf = (budget: KinMoneyBudget | null): KinBudgetDraft => ({
   category: budget?.category ?? null,
@@ -587,7 +732,7 @@ export function kinQuoteRow(record: KinRecord, rates: KinRates | null, now: Date
   return {
     key: record.key,
     number: kinRecordName(record.key, record.fields?.number),
-    party: record.party?.title ?? KIN_QUOTES.noClient,
+    party: kinBilledName(record) ?? KIN_QUOTES.noClient,
     title: record.title,
     amount: record.amount === undefined ? null : kinMoneyText(record.amount),
     estimate:
@@ -628,10 +773,16 @@ export function kinQuoteInvoice(links: ReadonlyArray<KinRecordLink>): KinRecordK
 }
 
 /** A quote invoiced once offers its invoice, not another one. */
-export function kinQuoteActions(state: KinQuoteState, numbered: boolean, invoiced = false) {
+export function kinQuoteActions(
+  state: KinQuoteState,
+  numbered: boolean,
+  invoiced = false,
+  /** The company's sections: a quote opened by its link while they're off makes no invoice. */
+  shell?: KinShell | null,
+) {
   return {
     send: state === "draft" && numbered,
-    makeInvoice: state !== "declined" && !invoiced,
+    makeInvoice: state !== "declined" && !invoiced && kinSectionOn(shell, "invoices"),
     accept: state === "draft" || state === "sent" || state === "expired",
     decline: state !== "declined" && state !== "accepted",
     unaccept: state === "accepted",
@@ -647,6 +798,7 @@ export interface KinLineDraft {
   readonly quantity: string;
   readonly unit: string;
   readonly rate: string;
+  readonly taxRate: string;
 }
 
 export const KIN_EMPTY_LINE: KinLineDraft = {
@@ -655,6 +807,7 @@ export const KIN_EMPTY_LINE: KinLineDraft = {
   quantity: "1",
   unit: "",
   rate: "",
+  taxRate: "",
 };
 
 export const kinLineDrafts = (lines: ReadonlyArray<KinDocumentLine> | null): KinLineDraft[] =>
@@ -664,9 +817,11 @@ export const kinLineDrafts = (lines: ReadonlyArray<KinDocumentLine> | null): Kin
     quantity: line.quantity,
     unit: line.unit ?? "",
     rate: line.rate,
+    taxRate: line.taxRate ?? "",
   }));
 
 const QUANTITY = /^\d{1,9}(\.\d{1,3})?$/;
+export const KIN_TAX_RATE = /^(?:100|\d{1,2}(?:\.\d{1,3})?)$/;
 
 /**
  * Lines as the template takes them, or the first problem. Rows left wholly empty are dropped; none
@@ -675,11 +830,17 @@ const QUANTITY = /^\d{1,9}(\.\d{1,3})?$/;
 export function kinLinesInput(
   drafts: ReadonlyArray<KinLineDraft>,
   currency: string,
+  options?: { readonly tax?: boolean; readonly keepStoredTax?: boolean },
 ):
   | { readonly ok: true; readonly lines: ReadonlyArray<KinDocumentLine> | null }
   | { readonly ok: false; readonly problem: string } {
+  const tax = options?.tax !== false;
   const filled = drafts.filter(
-    (one) => one.description.trim() !== "" || one.sac.trim() !== "" || one.rate.trim() !== "",
+    (one) =>
+      one.description.trim() !== "" ||
+      one.sac.trim() !== "" ||
+      one.rate.trim() !== "" ||
+      (tax && one.taxRate.trim() !== ""),
   );
   const lines: KinDocumentLine[] = [];
   for (const [index, draft] of filled.entries()) {
@@ -694,6 +855,9 @@ export function kinLinesInput(
     const rate: KinMoney | null = kinParseMoney(draft.rate, currency);
     if (rate === null) return { ok: false, problem: KIN_LINES.badRate(row) };
     if (rate.currency !== currency) return { ok: false, problem: KIN_LINES.mixed };
+    const taxRate = tax ? draft.taxRate.trim() : options?.keepStoredTax ? draft.taxRate : "";
+    if (taxRate !== "" && !KIN_TAX_RATE.test(taxRate))
+      return { ok: false, problem: KIN_LINES.badTax(row) };
     const unit = draft.unit.trim().slice(0, 20);
     lines.push({
       description: description.slice(0, 300),
@@ -701,6 +865,7 @@ export function kinLinesInput(
       quantity,
       ...(unit === "" ? {} : { unit }),
       rate: kinMoneyText(rate, true),
+      ...(taxRate === "" ? {} : { taxRate }),
     });
   }
   return { ok: true, lines: lines.length === 0 ? null : lines };

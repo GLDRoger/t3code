@@ -49,7 +49,7 @@ export const LeadAskInput = Schema.Struct({
   default: KinTrimmedText.check(Schema.isMaxLength(80)),
   by: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(10))),
   about: Schema.optional(
-    Schema.Array(KinTrimmedText.check(Schema.isMaxLength(20))).check(Schema.isMaxLength(8)),
+    Schema.Array(KinTrimmedText.check(Schema.isMaxLength(200))).check(Schema.isMaxLength(8)),
   ),
   intent: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(120))),
 });
@@ -66,6 +66,8 @@ export type AskInput = typeof AskInput.Type & {
   readonly whileOpen?: string;
   /** A sent-up draft's own words, which `detail` also carries: the card renders them. */
   readonly draft?: string;
+  /** A long draft's doc and the version that went up: `draft` is its opening. */
+  readonly draftDoc?: KinChoiceCardState["draftDoc"];
   /** An agent's open question: it takes taps until the question closes. */
   readonly untilAnswered?: true;
   /**
@@ -98,7 +100,11 @@ export const CloseInput = Schema.Struct({
   outcome: Schema.Literals(["answered", "withdrawn"]),
   answer: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(200))),
 });
-export const CloseResult = Schema.Struct({ question: KinTrimmedText, state: KinTrimmedText });
+export const CloseResult = Schema.Struct({
+  question: KinTrimmedText,
+  state: KinTrimmedText,
+  note: Schema.optional(Schema.String),
+});
 
 const decode = Schema.decodeUnknownEffect(KinChoiceCardState);
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
@@ -112,7 +118,15 @@ export const readAs = (label: string) =>
     .trim()
     .toLowerCase();
 
-const DETAIL_MAX = 2000;
+export const DETAIL_MAX = 2000;
+/** What is left of `detail` for the agent's words once Kin adds its action options' lines. */
+export const detailRoom = (options: ReadonlyArray<KinChoiceOption>) => {
+  const note = kinChoiceActionNote(options);
+  return note === "" ? DETAIL_MAX : DETAIL_MAX - note.length - 2;
+};
+/** Why `kin_ask` made no card: its detail would have to be cut. */
+export const detailTooLong = (length: number, room: number) =>
+  `detail is ${length.toLocaleString("en-US")} characters, and with the lines Kin adds for options with an action this card holds ${room.toLocaleString("en-US")} of it: shorten detail and ask again.`;
 /**
  * An option that runs an action shows the server's button and line and has no yes/no kind, so no
  * reaction can pick it. The lines are in `detail` too, for clients that don't read `action`.
@@ -129,7 +143,7 @@ export const choiceCardState = (input: AskInput): KinChoiceCardState => {
   });
   const note = kinChoiceActionNote(options);
   const own = input.detail === undefined || input.detail.trim() === "" ? null : input.detail;
-  const room = DETAIL_MAX - note.length - 2;
+  const room = detailRoom(options);
   const detail =
     note === ""
       ? own
@@ -145,6 +159,7 @@ export const choiceCardState = (input: AskInput): KinChoiceCardState => {
     ...(input.askedBy === undefined ? {} : { askedBy: input.askedBy }),
     ...(input.whileOpen === undefined ? {} : { whileOpen: input.whileOpen }),
     ...(input.draft === undefined ? {} : { draft: input.draft }),
+    ...(input.draftDoc === undefined ? {} : { draftDoc: input.draftDoc }),
     ...(input.untilAnswered === true ? { untilAnswered: true as const } : {}),
     answer: null,
   };
@@ -159,7 +174,8 @@ export const choiceExpired = (widget: Pick<KinWidget, "updatedAt" | "state">, no
   now - Date.parse(widget.updatedAt) >= KIN_CHOICE_CARD_TTL_MS;
 
 /** The owner's tap as the lead reads it: their reply, in words. */
-const choiceResumeText = (label: string, question: string) => `Chose "${label}" on "${question}"`;
+export const choiceResumeText = (label: string, question: string) =>
+  `Chose "${label}" on "${question}"`;
 
 /** The option a tap names, and its text. Fixed by the card, so a replayed tap reads the same. */
 export const readChoice = Effect.fn("KinChoiceCard.read")(function* (

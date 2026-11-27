@@ -24,11 +24,14 @@ import {
   KinWorkFrame,
   KinWorkLoading,
   KinWorkTextField,
+  KinWorkToggleRow,
   useKinAskBeforeDiscard,
 } from "./components/KinWorkPieces";
 import { FormMessage, FormShell, NO_LINK, targetOf } from "./KinWorkFormScreens";
+import { useKinIsOwnerLevel } from "./state/kinChatOnly";
 import { useKinDealPage, useKinDealSend } from "./state/useKinDeals";
 import { useKinHomeCurrency } from "./state/useKinMoney";
+import { useKinSectionNamed } from "./state/useKinShell";
 import { useKinWorkDirectory, type KinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 
 export type KinDealEditParams = {
@@ -78,6 +81,8 @@ function KinDealEditForm(
   const now = new Date(useNowMinuteMs());
   const send = useKinDealSend(props);
   const home = useKinHomeCurrency(props) ?? null;
+  const ownerLevel = useKinIsOwnerLevel(props.environmentId);
+  const named = useKinSectionNamed(props.environmentId);
   const [opened] = useState(() => kinDealEditDraft({ ...deal, notes: page.notes }, names));
   const [draft, setDraft] = useState(opened);
   const quotes = kinDealQuoteChoices(page, draft.quote);
@@ -108,8 +113,8 @@ function KinDealEditForm(
       problem={problem === null ? null : { kind: "invalid", text: problem }}
       onSave={() => void save()}
     >
-      <ListSection footer={KIN_DEALS.clientStays}>
-        <ListRowLayout label={KIN_DEALS.clientField} detail={deal.party.title} />
+      <ListSection footer={named(KIN_DEALS.clientStays)}>
+        <ListRowLayout label={named(KIN_DEALS.clientField)} detail={deal.party.title} />
       </ListSection>
       <ListSection>
         <KinWorkTextField
@@ -162,6 +167,18 @@ function KinDealEditForm(
           <KinDealQuoteRow quotes={quotes} disabled={saving} onPick={(quote) => set({ quote })} />
         )}
       </ListSection>
+      {!ownerLevel ? null : (
+        <ListSection>
+          <KinWorkToggleRow
+            icon="lock"
+            label={KIN_DEALS.privateLabel}
+            description={named(draft.private ? KIN_DEALS.privateOn : KIN_DEALS.privateOff)}
+            value={draft.private}
+            disabled={saving}
+            onValueChange={(on) => set({ private: on })}
+          />
+        </ListSection>
+      )}
     </FormShell>
   );
 }

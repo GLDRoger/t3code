@@ -10,6 +10,7 @@ import { buildIndex } from "./buildIndex.ts";
 import { isCheckoutPath } from "./checkoutPaths.ts";
 import * as MemoryCache from "./MemoryCache.ts";
 import {
+  KinChatError,
   MemoryItemFrontMatter,
   RepoSlug,
   type KinAgentId,
@@ -60,6 +61,12 @@ import { deletedQuotes } from "./quoteAccess.ts";
 import { retireLabels } from "./sensitivity.ts";
 import * as MemoryLander from "./MemoryLander.ts";
 import { MemoryPullRequests } from "./MemoryPullRequests.ts";
+import {
+  memoryWriteFailure,
+  observeMemoryWrite,
+  type MemoryWriteFailure,
+  type MemoryWriteOperation,
+} from "./writeFailure.ts";
 
 export const RESTART_JOURNAL_LINE =
   "Kin restarted during this turn; what was noted before the restart may not have been saved.";
@@ -86,13 +93,6 @@ export interface WakeupContext extends JournalContext {
           readonly kind: "owner_check";
           readonly itemId: string;
           readonly action: "keep" | "update" | "drop";
-        }
-      | { readonly kind: "deferral_card"; readonly itemId: string; readonly action: "remind" }
-      | {
-          readonly kind: "deferral_card";
-          readonly itemId: string;
-          readonly action: "monday";
-          readonly due: string;
         }
     )
   >;
@@ -155,6 +155,10 @@ export interface MemoryUndo {
   readonly branch: string;
   readonly base: string;
   readonly commit: string;
+  readonly codingAgent?: {
+    readonly personId: KinPersonId;
+    readonly admit: (item: MemoryCache.MemoryItem) => Effect.Effect<void, KinChatError>;
+  };
 }
 export type MemoryUndoResult =
   | { readonly _tag: "undone"; readonly commit: string }
@@ -257,7 +261,7 @@ export class MemoryWriter extends Context.Service<
     readonly undoChange: (
       orgId: KinOrgId,
       input: MemoryUndo,
-    ) => Effect.Effect<MemoryUndoResult, Failure>;
+    ) => Effect.Effect<MemoryUndoResult, Failure | KinChatError>;
     /**
      * The owner's own choice of who may know an item, outside any wake-up: one commit on the
      * default branch that sets its label and, when the team may now know it, who decided and when.
@@ -415,6 +419,11 @@ const make = Effect.gen(function* () {
       Effect.provideService(VcsProcess, vcs),
     );
   const locked = memory.withWriterLock;
+  const observedWrite = <A>(
+    orgId: KinOrgId,
+    operation: MemoryWriteOperation,
+    effect: Effect.Effect<A, Failure>,
+  ) => locked(orgId, observeMemoryWrite(recovery.writeEpisode, orgId, operation, effect));
   // Staged changes are per wake-up, so concurrent leads never share a session; the
   // git commit and push themselves stay serialized per repository under `locked`.
   // `changes` keeps each staged change so the commit replays them all against its own head
@@ -1067,22 +1076,6 @@ const make = Effect.gen(function* () {
             source.action === "keep"
           )
             mutable.add("review_by");
-          if (
-            source.kind === "deferral_card" &&
-            source.action === "remind" &&
-            source.itemId === item.id &&
-            item.kind === "deferral" &&
-            fm.on_due === "remind"
-          )
-            mutable.add("on_due");
-          if (
-            source.kind === "deferral_card" &&
-            source.action === "monday" &&
-            source.itemId === item.id &&
-            item.kind === "deferral" &&
-            fm.due === source.due
-          )
-            mutable.add("due");
           if (changedKeys(item, fm).some((key) => !mutable.has(key)))
             return yield* new MemoryConflict({ existingId: item.id });
         }
@@ -1190,8 +1183,9 @@ const make = Effect.gen(function* () {
       ),
     ),
     commitWakeup: Effect.fn("MemoryWriter.commitWakeup")((orgId, wakeupId, outcome) =>
-      locked(
+      observedWrite(
         orgId,
+        "wake-up",
         report(
           orgId,
           wakeupId,
@@ -1465,30 +1459,32 @@ const make = Effect.gen(function* () {
         ),
       ),
     ),
-    deleteDreamBranch: Effect.fn("MemoryWriter.deleteDreamBranch")((orgId, branch) =>
-      memory.withLandingLock(
-        orgId,
-        Effect.gen(function* () {
-          if (!dreamBranch.test(branch))
-            return yield* new MemoryWriteRejected({ reason: "Invalid dream branch" });
-          const { writer, repo } = yield* locked(
-            orgId,
-            Effect.gen(function* () {
-              const { writer } = yield* validate(orgId);
-              yield* refuseDuringPurge(orgId);
-              return { writer, repo: yield* repoFor(orgId) };
-            }),
-          );
-          const advertised = yield* git(orgId, writer, [
-            "ls-remote",
-            "--",
-            repo.repoUrl,
-            `refs/heads/${branch}`,
-          ]);
-          if (advertised)
-            yield* git(orgId, writer, ["push", "--", repo.repoUrl, `:refs/heads/${branch}`]);
-        }),
-      ),
+    deleteDreamBranch: Effect.fn("MemoryWriter.deleteDreamBranch")(
+      (orgId, branch) =>
+        memory.withLandingLock(
+          orgId,
+          Effect.gen(function* () {
+            if (!dreamBranch.test(branch))
+              return yield* new MemoryWriteRejected({ reason: "Invalid dream branch" });
+            const { writer, repo } = yield* locked(
+              orgId,
+              Effect.gen(function* () {
+                const { writer } = yield* validate(orgId);
+                yield* refuseDuringPurge(orgId);
+                return { writer, repo: yield* repoFor(orgId) };
+              }),
+            );
+            const advertised = yield* git(orgId, writer, [
+              "ls-remote",
+              "--",
+              repo.repoUrl,
+              `refs/heads/${branch}`,
+            ]);
+            if (advertised)
+              yield* git(orgId, writer, ["push", "--", repo.repoUrl, `:refs/heads/${branch}`]);
+          }),
+        ),
+      (effect, orgId) => observeMemoryWrite(recovery.writeEpisode, orgId, "dream-cleanup", effect),
     ),
     landDream: Effect.fn("MemoryWriter.landDream")((orgId, input) =>
       locked(
@@ -1576,6 +1572,15 @@ const make = Effect.gen(function* () {
           const head = yield* branchHead(orgId, writer, input.branch);
           const headFiles = yield* filesAt(orgId, writer, head);
           const current = headFiles.get(input.path);
+          const key = input.codingAgent;
+          if (key !== undefined && current !== undefined) {
+            const { frontMatter, body } = yield* parseFrontMatter(
+              orgId,
+              input.path,
+              current.toString("utf8"),
+            );
+            yield* key.admit({ head: { ...frontMatter, orgId, path: input.path }, body });
+          }
           const written = (yield* filesAt(orgId, writer, input.commit)).get(input.path);
           if (current === undefined || written === undefined || !current.equals(written))
             return stale;
@@ -1595,6 +1600,16 @@ const make = Effect.gen(function* () {
             restored = render({ ...frontMatter, invalid_at: invalidAt }, body);
           }
           const { frontMatter } = yield* parseFrontMatter(orgId, input.path, restored);
+          if (
+            key !== undefined &&
+            (before === undefined ||
+              endedBy(frontMatter, yield* Clock.currentTimeMillis) ||
+              frontMatter.superseded_by !== null)
+          )
+            return yield* new KinChatError({
+              reason: "not_allowed",
+              message: "A coding agent's key never deletes or archives anything.",
+            });
           if (frontMatter.id !== input.itemId)
             return yield* new MemoryWriteRejected({ reason: "Invalid undo target" });
           // Whatever retired it on the way, the restored words reach no one until the owner says.
@@ -1606,7 +1621,7 @@ const make = Effect.gen(function* () {
             head,
             headFiles,
             files: new Map([[input.path, restored]]),
-            message: `kin(${input.agentId}): owner undo ${input.itemId}\n\nKin-Undo: ${input.commit}\n`,
+            message: `kin(${input.agentId}): owner${key === undefined ? "" : " (coding agent)"} undo ${input.itemId}\n\nKin-Undo: ${input.commit}\n${key === undefined ? "" : `Kin-Coding-Agent-For: ${key.personId}\n`}`,
           });
           return { _tag: "undone", commit } as const;
         }),
@@ -1754,8 +1769,9 @@ const make = Effect.gen(function* () {
       ),
     ),
     recordDecision: Effect.fn("MemoryWriter.recordDecision")((orgId, input) =>
-      locked(
+      observedWrite(
         orgId,
+        "decision",
         Effect.gen(function* () {
           const main = config.defaultBranch ?? "main";
           const { writer } = yield* validate(orgId);
@@ -1811,8 +1827,9 @@ const make = Effect.gen(function* () {
       ),
     ),
     reconcileSharing: Effect.fn("MemoryWriter.reconcileSharing")((orgId) =>
-      locked(
+      observedWrite(
         orgId,
+        "retired-sharing",
         Effect.gen(function* () {
           const main = config.defaultBranch ?? "main";
           const { writer } = yield* validate(orgId);
@@ -1847,17 +1864,17 @@ const make = Effect.gen(function* () {
           ]))
             .split("\n")
             .filter((branch) => branch !== "");
-          // The nightly sync tells the owner nothing when the default branch refuses writes.
           const mainWritable =
             mainWrites === "direct" ||
             (mainWrites === "pull_request" &&
               (yield* refuseOffGitHub(orgId).pipe(Effect.result))._tag === "Success");
+          let failure: MemoryWriteFailure | undefined;
           const [clears] = yield* sql<{ mark: number }>`SELECT
               COALESCE(SUM(cleared_change_seq), 0) AS mark FROM kin_chats WHERE org_id = ${orgId}`.pipe(
             Effect.mapError(toPersistenceSqlError("MemoryWriter.stripQuotes")),
           );
           // A branch that fails is logged and left unmarked, so the next sweep retries it.
-          for (const branch of [...(mainWritable ? [main] : []), ...shadows.toSorted()])
+          for (const branch of [main, ...shadows.toSorted()])
             yield* Effect.gen(function* () {
               const head = yield* branchHead(orgId, writer, branch);
               const swept = `${head}\u0000${clears?.mark ?? 0}`;
@@ -1874,6 +1891,10 @@ const make = Effect.gen(function* () {
                 unquotedHeads.set(`${orgId}\u0000${branch}`, swept);
                 return;
               }
+              if (branch === main && !mainWritable) {
+                failure ??= "setup";
+                return;
+              }
               yield* ownerCommit(orgId, {
                 writer,
                 repoUrl: repo.repoUrl,
@@ -1886,15 +1907,34 @@ const make = Effect.gen(function* () {
             }).pipe(
               Effect.catchCauseIf(
                 (cause) => !Cause.hasInterruptsOnly(cause),
-                (cause) =>
-                  Effect.logWarning("Kin could not drop deleted messages' quotes on a branch", {
-                    orgId,
-                    branch,
-                    cause,
-                  }),
+                (cause) => {
+                  failure ??= memoryWriteFailure(Cause.squash(cause)) ?? "storage";
+                  return Effect.logWarning(
+                    "Kin could not drop deleted messages' quotes on a branch",
+                    {
+                      orgId,
+                      branch,
+                      cause,
+                    },
+                  );
+                },
               ),
             );
-        }),
+          return failure;
+        }).pipe(
+          Effect.tap(
+            (failure) => recovery.writeEpisode?.(orgId, "deleted-quotes", failure) ?? Effect.void,
+          ),
+          Effect.tapError(
+            (error) =>
+              recovery.writeEpisode?.(
+                orgId,
+                "deleted-quotes",
+                memoryWriteFailure(error) ?? "storage",
+              ) ?? Effect.void,
+          ),
+          Effect.asVoid,
+        ),
       ),
     ),
     landShadows: Effect.fn("MemoryWriter.landShadows")((orgId) =>

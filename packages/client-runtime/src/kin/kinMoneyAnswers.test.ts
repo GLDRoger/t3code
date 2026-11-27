@@ -1,7 +1,9 @@
 // @effect-diagnostics globalDate:off - Fixtures build days relative to a fixed clock.
 import {
   KinOrgId,
+  KinPersonId,
   type KinCash,
+  type KinOutlook,
   type KinMoneyBudget,
   type KinRecord,
   type KinRunway,
@@ -21,8 +23,10 @@ import {
   kinQuoteRow,
   kinQuoteState,
   kinQuotesSummary,
+  kinOutlookView,
   kinRunwayText,
 } from "./kinMoneyAnswers.ts";
+import { kinRateDay } from "./kinCurrency.ts";
 
 const orgId = KinOrgId.make("org");
 const now = new Date("2026-11-15T06:00:00.000Z");
@@ -71,6 +75,12 @@ describe("kinQuoteState", () => {
     });
     expect(kinQuoteActions("draft", false).send).toBe(false);
     expect(kinQuoteActions("accepted", true, true).makeInvoice).toBe(false);
+    // Opened by its link while Invoices and quotes is off (or Money): no new invoice from it.
+    const moneyOff = { rev: 2, sections: [{ id: "money", on: false }] };
+    expect(kinQuoteActions("accepted", true, false, moneyOff)).toMatchObject({
+      makeInvoice: false,
+      unaccept: true,
+    });
   });
 });
 
@@ -81,6 +91,7 @@ describe("kinLinesInput", () => {
     quantity: "5",
     unit: "days",
     rate: "20,000",
+    taxRate: "",
   };
   it("takes SAC or HSN codes of 4 to 8 digits, and drops empty rows", () => {
     expect(kinLinesInput([line, { ...line, description: "", sac: "", rate: "" }], "INR")).toEqual({
@@ -99,6 +110,18 @@ describe("kinLinesInput", () => {
         problem: "Line 1: a SAC or HSN code is 4 to 8 digits.",
       });
     expect(kinLinesInput([], "INR")).toEqual({ ok: true, lines: null });
+    const stored = [
+      { ...line, taxRate: "0" },
+      { ...line, taxRate: "5.00" },
+    ];
+    expect(kinLinesInput(stored, "INR", { tax: false, keepStoredTax: true })).toMatchObject({
+      lines: [{ taxRate: "0" }, { taxRate: "5.00" }],
+    });
+    const unregistered = kinLinesInput(stored, "INR", { tax: false });
+    expect(unregistered.ok && unregistered.lines?.map((one) => one.taxRate)).toEqual([
+      undefined,
+      undefined,
+    ]);
   });
 
   it("refuses a zero quantity and a rate in another currency", () => {
@@ -144,17 +167,24 @@ describe("kinBudgets", () => {
           {
             ...budget("c", 30_000, 50_000, "ok", "USD"),
             notCounted: [{ currency: "EUR", spent: { minor: 76_800, currency: "EUR" } }],
+            about: { total: { minor: 1_30_000_00, currency: "INR" }, rateDays: ["2026-11-12"] },
           },
         ],
       },
       null,
       null,
     );
-    expect(euros.map((one) => one.notCounted)).toEqual(["+ €768 not counted in this USD budget"]);
+    expect(euros.map((one) => [one.notCounted, one.about])).toEqual([
+      [
+        "+ €768 not counted in this USD budget",
+        `About ₹1,30,000 in all · approximate, at the rate of a payment on ${kinRateDay("2026-11-12")}`,
+      ],
+    ]);
+    expect(view.map((one) => one.about)).toEqual([null, null]);
     // A project the host gives no name for is gone: never shown by its key.
     const nameless = { ...budget("d", -500, 100, "ok"), project: { key: "P-7", title: null } };
     expect(kinBudgetsView({ month: "2026-11", budgets: [nameless] }, null, null)[0]?.label).toBe(
-      "travel in a removed project",
+      "Travel in a removed project",
     );
     expect(kinBudgetDraftOf(nameless).project).toBeNull();
     expect(kinBudgetsView({ month: "2026-11", budgets: [nameless] }, null, null)[0]?.share).toBe(0);
@@ -332,5 +362,55 @@ describe("kinRunwayText", () => {
     expect(
       kinRunwayText({ ...runway, runwayTenths: null, enoughHistory: false, historySince: null }),
     ).toBe("Runway needs three full months of history.");
+  });
+});
+
+describe("kinOutlookView", () => {
+  it("lists every partner balance under the figure it counts in, never one against another", () => {
+    const partner = (id: string, name: string, owed: KinOutlook["expectedOut"]) => ({
+      personId: KinPersonId.make(id),
+      name,
+      address: null,
+      owed,
+      expenses: 2,
+      oldest: "2026-10-02",
+    });
+    const view = kinOutlookView(
+      {
+        today: "2026-11-15",
+        days: 30,
+        through: "2026-12-14",
+        expectedIn: [inr(3_000)],
+        expectedOut: [inr(10_000)],
+        net: [inr(-7_000)],
+        comingIn: [],
+        moreComingIn: 0,
+        goingOut: [],
+        moreGoingOut: 0,
+        pastDueOut: [],
+        overdueIn: [],
+        owedToPartners: [
+          partner("meera", "Meera Rao", [inr(10_000)]),
+          partner("zoya", "Zoya Sheikh", [inr(-3_000)]),
+        ],
+        incomplete: [],
+        runway: [],
+      },
+      rates,
+      now,
+    );
+    expect([
+      view.goingOut,
+      view.outgoing.map((row) => [row.title, row.amount, row.key]),
+      view.comingIn,
+      view.incoming.map((row) => [row.title, row.amount, row.key]),
+      view.partners,
+    ]).toEqual([
+      ["₹100"],
+      [["Owed back to Meera Rao", "₹100", null]],
+      ["₹30"],
+      [["Refunds Zoya Sheikh holds, coming back", "₹30", null]],
+      [],
+    ]);
   });
 });

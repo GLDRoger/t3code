@@ -1,5 +1,7 @@
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- a pure, synchronous retry-key hash; Digest would add a service.
 import * as NodeCrypto from "node:crypto";
+import { stableStringify } from "@t3tools/shared/relaySigning";
+import * as CreditNotes from "../gendocs/creditNotes.ts";
 import {
   KinAgentId,
   KinChatError,
@@ -48,11 +50,12 @@ import { resolveLead } from "../lead/LeadMemory.ts";
 import { codingAgentSource, codingAgentTextShown } from "../lead/OutsideContent.ts";
 import { inCompanyChat, toolAdmitted } from "../lead/SharedTools.ts";
 import { heldUntil } from "../triggers/quietHold.ts";
-import { ownerLevelAsked, ownerLevelPeople } from "../people/KinAccess.ts";
+import { ownerLevel, ownerLevelAsked } from "../people/KinAccess.ts";
 import { sentMail, SentMailView } from "../connections/Sending.ts";
 import {
   countryFirst,
   countryRefusal,
+  rememberRefused,
   homeCurrency,
   isCountryFirst,
   notRegisteredFact,
@@ -60,9 +63,18 @@ import {
 } from "./companyProfile.ts";
 import { campaignsNamed, partyPage, projectDetail, sourceShown } from "./crm.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
+import { keyEventSql } from "../chat/keySent.ts";
 import { fold, matchName } from "./nameMatch.ts";
 import { lastContacts } from "./touches.ts";
-import { clientFamily, KinRecords, type Patch, type TotalsBy, type Writer } from "./KinRecords.ts";
+import {
+  agentMayFund,
+  clientFamily,
+  KinRecords,
+  type Patch,
+  type TotalsBy,
+  type Writer,
+} from "./KinRecords.ts";
+import { FUNDED_BY } from "./reimbursement.ts";
 import {
   GOAL_INPUTS,
   GoalInputs,
@@ -77,6 +89,7 @@ import { sectionOfKey } from "../shell/sections.ts";
 import * as Deals from "./deals.ts";
 import { stagesOf } from "./dealStages.ts";
 import {
+  CreateFrom,
   OWNERS_SPINE,
   ProjectRead,
   SpineInputs,
@@ -87,6 +100,7 @@ import {
   taskSpecChanged,
 } from "./leadSpine.ts";
 import { contactAll, contactFields, contactSensitive } from "./contactDetails.ts";
+import { checkedFrom, dealFor, dealLink, theirsHolder } from "./promises.ts";
 import {
   fieldList,
   fieldText,
@@ -112,15 +126,17 @@ import { latestComments, projectNoteOf } from "./recordComments.ts";
 import {
   endOfDay,
   byNumber,
+  dueText,
   iso,
   isSuggestion,
+  notBouncedBack,
   notFound,
   overdueFor,
   owedInvoices,
   isClosed,
   ownerZone,
-  principalId,
   recordName,
+  creditForInvoice,
   type RecordRow,
   sensitiveNow,
   stepsOf,
@@ -132,8 +148,10 @@ import {
 import {
   allLists,
   isBuiltIn,
+  isFieldNumber,
   isInvoiceDraft,
   type ListDef,
+  listEntryFor,
   listOrPreset,
   sensitiveKeys,
   stateLabel,
@@ -147,6 +165,9 @@ import {
 } from "./sensitiveReads.ts";
 import { memberAdds, memberAddsContact, memberChangesContact } from "./ownerClients.ts";
 import {
+  allSeeMoney,
+  recordFieldAccess,
+  listLinksFor,
   crmSeenBy,
   crmVisible,
   KIN_OWNER_LEVEL,
@@ -155,22 +176,32 @@ import {
   teamPairs,
   viewerOfPeople,
   viewReadsWhole,
+  viewGuard,
   viewSees,
   viewVisible,
 } from "./teamView.ts";
+import {
+  heldBack,
+  type PrintedField,
+  PRINTED_FIELDS,
+  propose,
+  unconfirmedLines,
+} from "./unconfirmedFacts.ts";
 import { type AssignNotice, movedNotices, tellHolding } from "./assignNotices.ts";
-import { leadNamer, shownName, type ToolNamer } from "./toolNames.ts";
+import { leadNamer, shownName, toolNameOfText, type ToolNamer } from "./toolNames.ts";
 import { BankAnswer, bankAnswer, bankKnown } from "./statements/bankKnown.ts";
+import { invoiceCredits } from "./statements/invoiceCredits.ts";
 import { bankStates, findBankList } from "./statements/bankList.ts";
 import { TurnEvent } from "../lead/eventIds.ts";
 import { DAY_MS } from "../durations.ts";
 import { withArticle } from "../article.ts";
+import { NOTES_MAX } from "../textLimits.ts";
 
 /** The lead tools' inputs, results and the one call each makes. Model-facing text lives in `mcp/tools.ts`. */
 
 export const Who = KinToolText(
   120,
-  '"you" for yourself; "me" for the person who asked in this turn; "owner" for the owner (in someone else\'s turn, only with reason saying why only the owner can do it); an agent\'s agentId from kin_leads or people_read; or a teammate\'s name exactly as people_read lists it (or its personId when two share a name).',
+  '"you"; "me" for whoever asked; "owner" (in another\'s turn, with a reason only the owner can); an agentId from kin_leads; or a name as people_read lists it (its personId when two share one).',
 );
 const Due = Schema.NullOr(
   Schema.String.check(
@@ -180,59 +211,53 @@ const Due = Schema.NullOr(
   ),
 ).annotate({
   description:
-    "A calendar day in the owner's time zone (2026-11-20), or a time with its offset (2026-11-20T18:00+05:30). null clears it.",
+    "A day in the owner's time zone (2026-11-20) or a time with offset (2026-11-20T18:00+05:30). null clears it.",
 });
-const WaitingOn = KinToolText(120, "Who it waits on, written as owner is.");
+const WaitingOn = KinToolText(120, "Who it waits on, named as owner is.");
 /** A task's checklist, in order: each step is a line under the task, never a task. */
 const Steps = Schema.Array(
   Schema.Struct({ title: KinToolText(200), done: Schema.optional(Schema.Boolean) }),
 ).check(Schema.isMaxLength(30));
 const Title = KinToolText(280);
-const Notes = Schema.String.check(Schema.isMaxLength(4_000));
+const Notes = Schema.String.check(Schema.isMaxLength(NOTES_MAX));
 const List = KinListId.annotate({
   description:
-    "work (default), clients, contacts, projects, milestones, goals, or a list defined with list_define, such as expenses, invoices or dates.",
+    "work (default), clients, contacts, projects, milestones, goals, deals, or a defined list such as expenses or invoices.",
 });
 const Category = KinToolText(
   60,
-  "Work: task, issue or obligation. A project: campaign. A defined list: one of its categories.",
+  "work: task, issue, obligation or meeting; a project: campaign; a defined list: one of its own.",
 );
 const Amount = KinToolText(
   60,
   'The amount as said or written: "4200", "4,200.50", "€30", "12k". Kin turns it into exact minor units and refuses a form it can\'t read one way. For an expense refund or credit, give a negative amount.',
 );
 const Currency = Schema.String.check(Schema.isPattern(/^[A-Z]{3}$/)).annotate({
-  description:
-    "ISO code, when the amount doesn't name one; default this entry's, else the list's, else the company's.",
+  description: "ISO code, when the amount names none.",
 });
 const Day = Schema.NullOr(KinDay).annotate({
-  description: "When it happened, was issued or starts: a day in the owner's time zone.",
+  description: "When it happened, was issued or starts.",
 });
 const Repeat = Schema.NullOr(KinRepeatRule).annotate({
-  description:
-    'Kin makes the next one when this one closes: {"every":"month"}, "quarter", "year", or {"every":"days","days":14}. null stops it.',
+  description: "Kin makes the next one when this one closes. null stops it.",
 });
 const TaxId = KinToolText(60);
-const Address = KinToolText(500, "A client's billing address, as its invoices show it.");
+const Address = KinToolText(500);
 export const Client = KinToolText(200, "A client or vendor: its key (C-3) or exact name.");
 export const Project = KinToolText(200, "A project: its key (P-2) or exact name.");
 const Detail = KinToolText(200);
 const Details = Schema.Array(Detail).check(Schema.isMaxLength(50));
 /** A client's kind on create; a prospect is a client we haven't sold to yet. */
 const NewPartyKind = Schema.Literals(["client", "vendor", "prospect"]);
-const CameFrom = KinToolText(
-  120,
-  "A client's: where it came from, such as a referral or an event.",
-);
+const CameFrom = KinToolText(120);
 // Past twenty, Kin's own rule (`cleanTags`) refuses in words an agent can pass on.
-const PartyTags = Schema.Array(KinToolText(60))
-  .check(Schema.isMaxLength(50))
-  .annotate({ description: "A client's or contact's: the company's own words for them." });
-const Audience = KinToolText(
-  60,
-  "A campaign's (a project with category campaign): the tag whose contacts are its list.",
-);
+const PartyTags = Schema.Array(KinToolText(60)).check(Schema.isMaxLength(50));
+const Audience = KinToolText(60);
 const Terms = KinToolText(4_000);
+const HeardFrom = KinToolText(
+  200,
+  'Where printed details came from when no person typed them here ("their mail of 3 Nov"); whoever confirms them sees it.',
+);
 const Repos = Schema.Array(KinRepoName).check(Schema.isMaxLength(20));
 
 export const QueryInput = Schema.Struct({
@@ -254,11 +279,13 @@ export const QueryInput = Schema.Struct({
     ]),
   ).annotate({
     description:
-      "Also count the matches per group, with exact totals per currency where they have amounts. month and financialYear (the company's own year) go by each entry's date.",
+      "Counts per group, with exact totals per currency; month and financialYear go by each entry's date.",
   }),
   dateFrom: Schema.optional(KinDay).annotate({ description: "Its own date on or after this day." }),
   dateTo: Schema.optional(KinDay).annotate({ description: "Its own date on or before this day." }),
-  owner: Schema.optional(Who),
+  owner: Schema.optional(
+    KinToolText(120, 'Whose, named as an owner is: "you", "me", a name or an agentId.'),
+  ),
   states: Schema.optional(Schema.Array(KinRecordState)),
   open: Schema.optional(Schema.Boolean).annotate({ description: "Neither done nor dropped." }),
   late: Schema.optional(Schema.Boolean),
@@ -270,10 +297,9 @@ export const QueryInput = Schema.Struct({
   ),
   offset: Schema.optional(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(100_000)),
-  ).annotate({ description: "Skip this many matches: the next a result gave, for its next page." }),
+  ).annotate({ description: "The next a result gave, for its next page." }),
   summary: Schema.optional(Schema.Boolean).annotate({
-    description:
-      "Only total, totals and groups, with keys for the page's matches instead of rows: for how many or how much.",
+    description: "Only total, totals and groups, with keys instead of rows.",
   }),
 });
 /** The entry is sensitive, its own label or inherited; these fields are, whatever the label. */
@@ -304,6 +330,23 @@ const DealShown = Schema.Struct({
       accepted: Schema.optional(Schema.Literal(true)),
     }),
   ),
+  promises: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        key: Schema.String,
+        title: Schema.String,
+        side: Schema.String,
+        state: Schema.String,
+        owner: Schema.String,
+        due: Schema.optional(Schema.String),
+        late: Schema.optional(Schema.Literal(true)),
+        from: Schema.optional(Schema.String),
+      }),
+    ),
+  ).annotate({
+    description:
+      "record_get only: its promises, ours then theirs, each with whose it is and where it was made.",
+  }),
   concerns: Schema.optional(Schema.Array(Schema.String)),
 });
 const Row = Schema.Struct({
@@ -345,7 +388,9 @@ const Row = Schema.Struct({
   balance: Schema.optional(Schema.String),
   date: Schema.optional(Schema.String),
   repeat: Schema.optional(Schema.String),
-  fields: Schema.optional(Schema.Record(Schema.String, Schema.String)),
+  fields: Schema.optional(
+    Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Finite, Schema.Boolean])),
+  ),
   deal: Schema.optional(DealShown).annotate({
     description: "A deal's, as its page shows the people this turn is for.",
   }),
@@ -403,6 +448,8 @@ export const GetResult = Schema.Struct({
   ...Row.fields,
   /** A goal's progress, counted now. */
   progress: Schema.optional(Schema.String),
+  /** A client's printed details an agent proposed that wait for a person's tap. */
+  unconfirmed: Schema.optional(Schema.Array(Schema.String)),
   notes: Schema.String,
   assignedBy: Schema.optional(Schema.String),
   links: Schema.Array(
@@ -430,15 +477,21 @@ export const GetResult = Schema.Struct({
       Schema.Struct({
         paymentId: Schema.String,
         amount: Schema.String,
+        received: Schema.optional(Schema.String),
+        rate: Schema.optional(Schema.String),
         paidOn: Schema.String,
         note: Schema.optional(Schema.String),
         /** TDS the client deducted: it settles the invoice, but no cash came in. */
         withheld: Schema.optional(Schema.Literal(true)),
+        creditNote: Schema.optional(Schema.Struct({ key: Schema.String, number: Schema.String })),
         voided: Schema.optional(Schema.Literal(true)),
         /** Where it came from: a confirmed bank statement, or who recorded it on whose word. */
         source: Schema.optional(Schema.String),
       }),
     ),
+  ),
+  creditOffer: Schema.optional(
+    Schema.Struct({ receipt: Schema.String, amount: Schema.String, receivedOn: Schema.String }),
   ),
   /** An invoice's or client's: how far Kin sees the bank, for whether money arrived. */
   bank: Schema.optional(BankAnswer),
@@ -454,11 +507,13 @@ export const GetResult = Schema.Struct({
       tasksTheyOwe: Schema.Number,
       tasksWeOweLate: Schema.Number,
       tasksTheyOweLate: Schema.Number,
-      money: Schema.Struct({
-        unpaid: Schema.Array(Schema.String),
-        overdue: Schema.Array(Schema.String),
-        invoices: Schema.Array(Schema.String),
-      }),
+      money: Schema.optional(
+        Schema.Struct({
+          unpaid: Schema.Array(Schema.String),
+          overdue: Schema.Array(Schema.String),
+          invoices: Schema.Array(Schema.String),
+        }),
+      ),
     }),
   ),
   contacts: Schema.optional(Schema.Array(Schema.Struct({ ...Row.fields }))),
@@ -507,15 +562,20 @@ export const GetResult = Schema.Struct({
   /** Present when a line above has `via`: how to read what a coding agent wrote. */
   codingAgent: Schema.optional(Schema.String),
   /** The note its project leaves on every task: the project's words, not this entry's. */
-  projectNote: Schema.optional(Schema.Struct({ from: Schema.String, text: Schema.String })),
+  projectNote: Schema.optional(
+    Schema.Struct({
+      from: Schema.String,
+      text: Schema.String,
+      via: Schema.optional(Schema.String),
+    }),
+  ),
 });
 /** A deal's next step: a task of ours on its client, linked to the deal, as its page adds one. */
 const DealNext = Schema.Struct({
   title: Title,
-  due: Schema.optional(Due.annotate({ description: "Written as due is." })),
+  due: Schema.optional(Due),
 }).annotate({
-  description:
-    "A deal's next step, with due as its day: a task of ours on its client, linked to the deal. Only on a deal.",
+  description: "A deal's next step: a task of ours on its client.",
 });
 const CreateRow = Schema.Struct({
   list: Schema.optional(List),
@@ -544,13 +604,13 @@ const CreateRow = Schema.Struct({
   address: Schema.optional(Address),
   gstin: Schema.optional(TaxId),
   placeOfSupply: Schema.optional(TaxId),
+  heardFrom: Schema.optional(HeardFrom),
   amount: Schema.optional(Amount),
   currency: Schema.optional(Currency),
   date: Schema.optional(Day),
   finishedOn: Schema.optional(
     KinDay.annotate({
-      description:
-        "For one recorded already done, such as a project that ended in September: the day it ended.",
+      description: "The day one recorded as already done ended.",
     }),
   ),
   repeat: Schema.optional(Repeat),
@@ -561,18 +621,22 @@ const CreateRow = Schema.Struct({
   suggested: Schema.optional(Schema.Boolean),
   confirmed: Schema.optional(Schema.Boolean).annotate({
     description:
-      "true when an amount far above the rest of its list, or an invoice issued after its due day, is right as given.",
+      "true: an amount far above the rest of its list, or an invoice issued after its due day, is right.",
   }),
   besides: Schema.optional(Schema.Array(KinRecordKey).check(Schema.isMaxLength(20))).annotate({
-    description: "Keys of open entries this row repeats on purpose, as a refusal named them.",
+    description: "Keys a refusal named, to add this anyway.",
   }),
   next: Schema.optional(DealNext),
   ...SpineInputs,
+  from: Schema.optional(CreateFrom),
+  deal: Schema.optional(KinToolText(40, "A promise's deal.")),
   ...GoalInputs,
 });
 export const CreateInput = Schema.Struct({
   sourceEventId: TurnEvent,
-  records: Schema.Array(CreateRow).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
+  records: Schema.Array(
+    Schema.StructWithRest(CreateRow, [Schema.Record(Schema.String, Schema.Unknown)]),
+  ).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
 });
 const Named = Schema.Struct({
   key: Schema.String,
@@ -589,6 +653,8 @@ const Tell = Schema.optional(Schema.Literal(false));
 export const CreateResult = Schema.Struct({
   told: Told,
   toldLater: ToldLater,
+  /** How many rows it made in each list, when it made rows in more than one. */
+  made: Schema.optional(Schema.Record(Schema.String, Schema.Number)),
   records: Schema.Array(
     Schema.Struct({
       key: Schema.String,
@@ -601,6 +667,7 @@ export const CreateResult = Schema.Struct({
       state: Schema.optional(KinRecordState),
       stateLabel: Schema.optional(Schema.String),
       suggested: Schema.optional(Schema.Literal(true)),
+      bill: Schema.optional(Schema.String),
       ...Marks.fields,
       /** Open entries close to this one that it was made beside. */
       alsoOpen: Schema.optional(Schema.Array(Near)),
@@ -609,6 +676,10 @@ export const CreateResult = Schema.Struct({
       /** Other contacts with the same email. */
       sameEmail: Schema.optional(Schema.Array(Named)),
       notWoken: Schema.optional(Schema.String),
+      /** A printed detail kept unconfirmed for a person's tap (`unconfirmedFacts.ts`). */
+      unconfirmed: Schema.optional(Schema.String),
+      /** A task given a due or a time: its date as its page shows it. */
+      shows: Schema.optional(Schema.String),
     }),
   ),
 });
@@ -617,8 +688,7 @@ export const UpdateInput = Schema.Struct({
   keys: Schema.optional(
     Schema.Array(KinRecordKey).check(Schema.isMinLength(1), Schema.isMaxLength(100)),
   ).annotate({
-    description:
-      "Instead of key: up to 100 entries to change the same way in one call, all or none.",
+    description: "Instead of key: up to 100 entries changed the same way, all or none.",
   }),
   sourceEventId: TurnEvent,
   title: Schema.optional(Title),
@@ -645,6 +715,7 @@ export const UpdateInput = Schema.Struct({
   address: Schema.optional(Schema.NullOr(Address)),
   gstin: Schema.optional(Schema.NullOr(TaxId)),
   placeOfSupply: Schema.optional(Schema.NullOr(TaxId)),
+  heardFrom: Schema.optional(HeardFrom),
   amount: Schema.optional(Schema.NullOr(Amount)),
   currency: Schema.optional(Currency),
   date: Schema.optional(Day),
@@ -655,20 +726,109 @@ export const UpdateInput = Schema.Struct({
   sensitive: Schema.optional(Schema.Literal(true)),
   confirmed: Schema.optional(Schema.Boolean).annotate({
     description:
-      "true keeps an entry that reads suggested when the owner or a co-owner asked you to in person; it also says an amount far above the rest of its list, or an invoice issued after its due day, is right as given.",
+      "true keeps a suggested entry the owner or a co-owner asked you to in person; also says an amount far above its list, or an invoice issued after its due day, is right.",
   }),
   expectedRev: Schema.optional(Schema.Int),
-  tell: Tell,
+  tell: Tell.annotate({
+    description: "false holds a new owner's notice; no other change tells anyone.",
+  }),
   leftover: Schema.optional(
     KinToolText(
       2_000,
-      "Only with state done and work still undone: that work, which Kin files as a new follow-up task linked to this one. When nothing is left, omit this field; any text here, even what you did or that nothing is left, becomes a task. Never leave what is left only in a comment.",
+      'Only with state done and work still undone: that work, filed as a linked follow-up task. Omit it when nothing is left: any text here, even "nothing left", becomes a task. Never leave what is left only in a comment.',
     ),
   ),
   next: Schema.optional(DealNext),
   ...SpineInputs,
   ...GoalInputs,
 });
+const createKeys = Object.keys(CreateRow.fields);
+const updateKeys = Object.keys(UpdateInput.fields);
+const dealKeys = new Set([
+  "title",
+  "client",
+  "owner",
+  "due",
+  "notes",
+  "amount",
+  "currency",
+  "sensitive",
+  "fields",
+  "next",
+]);
+const dealCreateKeys = new Set([...dealKeys, "list", "besides"]);
+const dealUpdateKeys = new Set([
+  ...dealKeys,
+  "project",
+  "key",
+  "keys",
+  "sourceEventId",
+  "expectedRev",
+  "state",
+]);
+const creditNoteKeys = new Set(["list", "title", "amount", "currency", "fields"]);
+
+const routedFields = new Map<string, ReadonlyArray<string>>([
+  ["kind", ["clients"]],
+  ["cameFrom", ["clients"]],
+  ["heardFrom", ["clients"]],
+  ["deal", ["work"]],
+  ["from", ["work"]],
+  ["tell", ["work"]],
+  ["leftover", ["work"]],
+  ["next", ["deals"]],
+]);
+const storedFieldLists = new Map<string, Array<string>>();
+for (const [list, def] of Object.entries(LISTS)) {
+  if (list === "deals" || list === "docs") continue;
+  for (const key of def.fields) {
+    if (!storedFieldLists.has(key)) storedFieldLists.set(key, []);
+    storedFieldLists.get(key)!.push(list);
+  }
+}
+
+const recordArgumentError = (
+  list: string,
+  name: string,
+  input: object,
+  op: "create" | "update",
+  def?: ListDef,
+) => {
+  const keys = op === "create" ? createKeys : updateKeys;
+  const takes = (key: string) => {
+    if (list === "deals") return (op === "create" ? dealCreateKeys : dealUpdateKeys).has(key);
+    if (list === "credit_notes" && op === "create") return creditNoteKeys.has(key);
+    if (key === "fields") return def?.builtIn === null;
+    const routed = routedFields.get(key);
+    if (routed !== undefined) return routed.includes(list);
+    const stored = storedFieldLists.get(key);
+    return (
+      stored === undefined ||
+      stored.includes(list) ||
+      def?.fields.some((field) => field.key === key)
+    );
+  };
+  const unexpected = Object.entries(input).find(
+    ([key, value]) =>
+      value !== undefined &&
+      (!keys.includes(key) ||
+        // The existing refusal for fields/next names the correct shape.
+        (((key !== "fields" && key !== "next") || list === "credit_notes") && !takes(key))),
+  );
+  if (unexpected === undefined) return undefined;
+  const [key] = unexpected;
+  const quoted = JSON.stringify(key.slice(0, 64));
+  const belongs = keys.includes(key)
+    ? (routedFields.get(key) ?? storedFieldLists.get(key))?.filter((other) => other !== list)
+    : undefined;
+  const valid = keys.filter(takes).join(", ");
+  return invalid(
+    belongs !== undefined && belongs.length > 0
+      ? `${name} takes no ${quoted}, which goes on ${belongs.join(" or ")}; pass one of: ${valid}.`
+      : `${name} takes no ${quoted}; pass one of: ${valid}.`,
+  );
+};
+
 const Updated = Schema.Struct({
   key: Schema.String,
   rev: Schema.Number,
@@ -689,6 +849,10 @@ const Updated = Schema.Struct({
   notesKept: Schema.optional(Schema.String),
   /** Agents put on a closed task: saved there, and never woken for it (`KinRecords.update`). */
   notWoken: Schema.optional(Schema.String),
+  /** A printed detail kept unconfirmed for a person's tap (`unconfirmedFacts.ts`). */
+  unconfirmed: Schema.optional(Schema.String),
+  /** A task given a due or a time: its date as its page shows it. */
+  shows: Schema.optional(Schema.String),
   openSteps: Schema.optional(
     Schema.Array(
       Schema.Struct({
@@ -718,13 +882,15 @@ export const UpdateResult = Schema.Struct({
   projectLeft: Updated.fields.projectLeft,
   notesKept: Updated.fields.notesKept,
   notWoken: Updated.fields.notWoken,
+  unconfirmed: Updated.fields.unconfirmed,
+  shows: Updated.fields.shows,
   openSteps: Updated.fields.openSteps,
   entries: Schema.optional(Schema.Array(Updated)),
 });
 
 const Why = KinToolText(
   200,
-  'One line on why them, from what people_read shows, such as "iOS, 2 open, free Thursday". Kin shows it on the task and tells them.',
+  'One line on why them, from people_read, read by them and anyone opening the task: "iOS, 2 open, free Thursday"; never their name and a colon, never about them in the third person.',
 );
 export const AssignInput = Schema.Struct({
   sourceEventId: TurnEvent,
@@ -794,6 +960,8 @@ export const askedBy = Effect.fn("KinWorkTools.askedBy")(function* (lead: Lead) 
   const rows = yield* sql<{ person: string | null; owner: string }>`
     SELECT CASE
         WHEN json_extract(e.json, '$.origin.personId') IS NOT NULL THEN NULL
+        -- What a coding agent's key sent or wrote is nobody's own ask.
+        WHEN ${sql.literal(keyEventSql("e"))} THEN NULL
         WHEN e.tag IN ('chat.message', 'widget.action') AND m.author_kind = 'human'
           AND m.chat_id = json_extract(e.json, '$.chatId') THEN m.author_person_id
         WHEN e.tag IN ('chat.reaction', 'record.changed')
@@ -983,6 +1151,29 @@ const spineOf = Effect.fnUntraced(function* (
   );
 });
 
+/** A task's time is its due, which its page shows; `at` is only a meeting's start. */
+const timeIsDue = <
+  Row extends { readonly at?: string | null | undefined; readonly due?: string | null | undefined },
+>(
+  list: string,
+  category: string | null | undefined,
+  row: Row,
+): Row =>
+  list !== "work" || category === "meeting" || typeof row.at !== "string"
+    ? row
+    : { ...row, at: undefined, due: row.at };
+
+/** A plain task's date as its page shows it ("Due: No date" too), so the agent says the same. */
+export const dueShows = (dueAt: number | null, allDay: boolean, zone: string) =>
+  `Due: ${dueAt === null ? "No date" : dueText(dueAt, allDay, zone)}`;
+const shownDue = Effect.fn("KinWorkTools.shownDue")(function* (
+  orgId: KinOrgId,
+  row: Pick<RecordRow, "registerId" | "category" | "dueAt" | "dueAllDay">,
+) {
+  if (listOf(row.registerId) !== "work" || row.category === "meeting") return {};
+  return { shows: dueShows(row.dueAt, row.dueAllDay === 1, yield* ownerZone(orgId)) };
+});
+
 const dueOf = Effect.fn("KinWorkTools.dueOf")(function* (orgId: KinOrgId, due: string | null) {
   if (due === null) return { dueAt: null, dueAllDay: false };
   if (isCalendarDay(due)) return { dueAt: endOfDay(due, yield* ownerZone(orgId)), dueAllDay: true };
@@ -1015,16 +1206,19 @@ const marksOf = (lists: Lists, row: RecordRow): typeof Marks.Type => {
 /** A defined list's own fields as a lead reads them: names for people, keys for links. */
 const shownFields = (
   def: ListDef | undefined,
-  row: RecordRow,
+  fields: ReturnType<typeof parseFields>,
   name: ToolNamer,
   keys: ReadonlyMap<string, string>,
 ) => {
   if (def === undefined || def.builtIn !== null) return {};
-  const fields = parseFields(row.fieldsJson);
-  const shown: Record<string, string> = {};
+  const shown: Record<string, string | number | boolean> = {};
   for (const [key, value] of Object.entries(fields)) {
     const spec = def.fields.find((one) => one.key === key);
     if (isMoney(value)) shown[key] = formatMoney(value);
+    else if (spec?.type === "number" && typeof value === "string" && isFieldNumber(value))
+      shown[key] = Number(value);
+    else if (spec?.type === "yesno" && (value === "yes" || value === "no"))
+      shown[key] = value === "yes";
     else if (Array.isArray(value))
       shown[key] = `${value.length} file${value.length === 1 ? "" : "s"}`;
     else if (spec?.type === "person") {
@@ -1177,12 +1371,18 @@ const goalShown = (fields: ReturnType<typeof parseFields>) => {
 
 const rowFor = (view: Shown, row: RecordRow, now: number) => {
   const { name } = view;
-  const record = toRecord(row, now);
-  const waitingOn = name(record.waitingOn);
   const list = row.registerId;
   const def = defOf(view.lists, row);
   const defined = def !== undefined && def.builtIn === null;
-  const fields = parseFields(row.fieldsJson);
+  const record = listEntryFor(
+    { ...toRecord(row, now), fields: parseFields(row.fieldsJson) },
+    list,
+    def,
+    row.listMoneyVisible !== 0,
+  );
+  const { sensitiveFields, ...marks } = marksOf(view.lists, row);
+  const waitingOn = name(record.waitingOn);
+  const fields = record.fields ?? {};
   const text = (key: string) => {
     const value = fieldText(fields, key);
     return value === null ? {} : { [key]: value };
@@ -1203,7 +1403,7 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
           listName: def.name,
           stateLabel:
             isSuggestion(row) && row.state !== "dropped"
-              ? suggestedStateLabel(row.registerId, row.state, stateLabel(def, row.state))
+              ? suggestedStateLabel(row.registerId, row.state)
               : stateLabel(def, row.state),
         }
       : {}),
@@ -1248,19 +1448,22 @@ const rowFor = (view: Shown, row: RecordRow, now: number) => {
     ...(repos.length === 0 ? {} : { repos: [...repos] }),
     ...(defined ? {} : { ...text("address"), ...text("gstin"), ...text("placeOfSupply") }),
     ...(defined && row.category !== null ? { category: row.category } : {}),
-    ...(record.amount === undefined ? {} : { amount: formatMoney(record.amount) }),
-    ...(record.balance === undefined || isInvoiceDraft(list, record.state)
+    ...(!("amount" in record) || record.amount === undefined
+      ? {}
+      : { amount: formatMoney(record.amount) }),
+    ...(!("balance" in record) || record.balance === undefined || isInvoiceDraft(list, record.state)
       ? {}
       : { balance: formatMoney(record.balance) }),
     ...(record.dateAt === undefined
       ? {}
       : { date: dayOrTime(record.dateAt, record.dateAllDay === true, view.zone) }),
     ...(record.repeat === undefined ? {} : { repeat: shownRepeatRule(record.repeat) }),
-    ...shownFields(def, row, name, view.keys),
+    ...shownFields(def, fields, name, view.keys),
     ...(list === "work" || list === "projects" ? spineShown(row, name) : {}),
     ...(list === "goals" ? goalShown(fields) : {}),
     ...(list === "work" ? stepsShown(row) : {}),
-    ...marksOf(view.lists, row),
+    ...marks,
+    ...(sensitiveFields !== undefined && row.listMoneyVisible !== 0 ? { sensitiveFields } : {}),
     rev: record.rev,
   } as typeof Row.Type;
 };
@@ -1343,6 +1546,48 @@ const dealsShown = Effect.fnUntraced(function* (
       },
     ]),
   );
+});
+/** A deal read by itself carries its promises, as its page shows them to the turn's people. */
+const withPromises = Effect.fnUntraced(function* (
+  lead: Lead,
+  team: View | undefined,
+  view: Shown,
+  row: RecordRow,
+  deals: ReadonlyMap<string, typeof DealShown.Type>,
+) {
+  const deal = deals.get(row.key);
+  if (deal === undefined || row.registerId !== "deals") return deals;
+  const now = yield* Clock.currentTimeMillis;
+  const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
+  const promises = yield* Deals.promisesOf(lead.orgId, viewer, row, now, []).pipe(workFailure);
+  const fromText = (from: (typeof promises)[number]["from"]) =>
+    from === undefined
+      ? undefined
+      : from.kind === "note"
+        ? from.note
+        : `${from.kind}${from.at === undefined ? "" : ` on ${dayOrTime(from.at, true, view.zone)}`}`;
+  if (promises.length === 0) return deals;
+  return new Map([
+    [
+      row.key,
+      {
+        ...deal,
+        promises: promises.map((one) => {
+          const from = fromText(one.from);
+          return {
+            key: one.key,
+            title: one.title,
+            side: one.side,
+            state: one.state,
+            owner: view.name(one.owner) ?? "someone",
+            ...(one.dueAt === null ? {} : { due: dayOrTime(one.dueAt, one.dueAllDay, view.zone) }),
+            ...(one.late ? { late: true as const } : {}),
+            ...(from === undefined ? {} : { from }),
+          };
+        }),
+      },
+    ],
+  ]);
 });
 const withDeal = <R extends { readonly key: string }>(
   deals: ReadonlyMap<string, typeof DealShown.Type>,
@@ -1475,7 +1720,7 @@ export const refRecord = Effect.fn("KinWorkTools.refRecord")(function* (
     message:
       team === undefined
         ? `No ${LISTS[list].noun} called ${text.slice(0, 60)}.${nearest} Find it with records_query list ${list}, or create it if it's new.`
-        : `No ${LISTS[list].noun} called ${text.slice(0, 60)} that everyone in this chat may see.${nearest} Leave it off here, or ask the owner in his own chat; don't add it again.`,
+        : `No ${LISTS[list].noun} called ${text.slice(0, 60)} that everyone in this chat may see.${nearest} Leave it off here, or ask the owner in their own chat; don't add it again.`,
   });
 });
 const resolveRef = (lead: Lead, text: string, list: "clients" | "projects") =>
@@ -1525,6 +1770,40 @@ const fieldsFrom = (row: {
       ] as const
     ).flatMap((key) => (row[key] === undefined ? [] : [[key, row[key]]])),
   ) as Record<string, string | ReadonlyArray<string> | null>;
+
+/** A client's printed details a write sets, beside what it holds; a new client's name is its own. */
+const printedAsked = (
+  row: { readonly title?: string | undefined } & Partial<
+    Record<Exclude<PrintedField, "title">, string | null | undefined>
+  >,
+  before: RecordRow | undefined,
+) => {
+  const stored = before === undefined ? {} : parseFields(before.fieldsJson);
+  return PRINTED_FIELDS.flatMap((field) => {
+    const value = row[field];
+    if (value === undefined || (field === "title" && before === undefined)) return [];
+    const was = field === "title" ? (before?.title ?? null) : fieldText(stored, field);
+    return [{ field, value, before: was }];
+  });
+};
+
+/** A write without what waits for a person's tap (`unconfirmedFacts.ts`). */
+const withoutHeld = <P extends { readonly title?: string; readonly fields?: object }>(
+  patch: P,
+  held: ReadonlyArray<{ readonly field: string }>,
+): P => {
+  const out = new Set(held.map((one) => one.field));
+  const { title, fields, ...rest } = patch;
+  const left =
+    fields === undefined
+      ? {}
+      : Object.fromEntries(Object.entries(fields).filter(([key]) => !out.has(key)));
+  return {
+    ...rest,
+    ...(title === undefined || out.has("title") ? {} : { title }),
+    ...(Object.keys(left).length === 0 ? {} : { fields: left }),
+  } as P;
+};
 
 /**
  * Where a client came from, a client's or contact's tags and a campaign's audience, under the keys
@@ -1840,10 +2119,29 @@ export const leadTool = <I, A, E, R>(
     // A refusal's own write rolled back, so its mark is made here, after it.
     const result = yield* body(lead, input).pipe(
       Effect.tapError((error) => (isSensitiveRefusal(error) ? marked : Effect.void)),
+      Effect.tapError((error) =>
+        isKinChatError(error) && isCountryFirst(error) ? refusedForCountry(lead) : Effect.void,
+      ),
     );
     if (showsSensitive(result)) yield* marked;
     return result;
   });
+
+/** Kin wakes this agent in this turn's chat once the company's country is chosen. */
+const refusedForCountry = Effect.fn("KinWorkTools.refusedForCountry")(
+  function* (lead: Lead) {
+    const chat = yield* turnChat(lead);
+    if (chat === undefined) return;
+    yield* rememberRefused({
+      orgId: lead.orgId,
+      agentId: lead.agentId,
+      chatId: chat.chatId,
+      personId: yield* turnAsker(lead),
+      wakeupId: lead.wakeupId,
+    });
+  },
+  Effect.catchCause((cause) => Effect.logWarning("Kin couldn't note a country refusal", cause)),
+);
 
 const NAMED_REFUSALS = 25;
 type Refusal = { readonly label: string; readonly error: KinChatError };
@@ -2133,15 +2431,20 @@ const clientOwed = Effect.fnUntraced(function* (
     readonly overdue: number;
   },
   now: number,
+  invoicesOn: boolean,
 ) {
-  const invoices = yield* owedInvoices({ orgId, now, partyId });
-  const zone = yield* ownerZone(orgId);
-  const home = yield* homeCurrency(orgId);
-  return {
+  const work: NonNullable<(typeof GetResult.Type)["owed"]> = {
     tasksWeOwe: party.weOwe,
     tasksTheyOwe: party.theyOwe,
     tasksWeOweLate: party.late,
     tasksTheyOweLate: party.overdue,
+  };
+  if (!invoicesOn) return work;
+  const invoices = yield* owedInvoices({ orgId, now, partyId });
+  const zone = yield* ownerZone(orgId);
+  const home = yield* homeCurrency(orgId);
+  return {
+    ...work,
     money: {
       unpaid: addUp(
         invoices.map((one) => one.balance),
@@ -2191,6 +2494,7 @@ const MAILED_LISTS: ReadonlySet<string> = new Set(["invoices", "quotes", "receip
 const mailedFor = Effect.fnUntraced(function* (
   orgId: KinOrgId,
   row: { readonly recordId: string; readonly registerId: string },
+  omitLists: ReadonlyArray<string>,
 ) {
   if (!MAILED_LISTS.has(row.registerId)) return [];
   if (row.registerId !== "clients") return yield* sentMail({ orgId, recordIds: [row.recordId] });
@@ -2203,6 +2507,7 @@ const mailedFor = Effect.fnUntraced(function* (
   return yield* sentMail({
     orgId,
     recordIds: related.map((one) => one.recordId),
+    omitLists,
     addresses: related.flatMap((one) => contactAll(parseFields(one.fieldsJson), "email")),
   });
 });
@@ -2227,20 +2532,36 @@ const linkShown = (link: KinRecordDetail["links"][number]) =>
             : (link.label ?? link.target),
       };
 const dealsOn = Effect.fn("KinWorkTools.dealsOn")((orgId: KinOrgId) =>
-  KinShell.sectionOn(orgId, "deals").pipe(Effect.orElseSucceed(() => false)),
+  KinShell.sectionOnFor(orgId, "deals").pipe(Effect.orElseSucceed(() => false)),
 );
 
 const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.Type) {
   const records = yield* KinRecords;
   const team = yield* viewOf(lead);
-  const row =
-    (yield* records.get(lead.orgId, input.key)) ?? (yield* byNumber(lead.orgId, input.key));
-  if (row === undefined) return yield* notFound(input.key);
-  if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, row.recordId)))
-    return yield* notFound(input.key);
-  if (listOf(row.registerId) === "docs") return yield* isDoc(input.key);
+  const byExactKey = yield* records.get(lead.orgId, input.key);
+  const found = byExactKey ?? (yield* byNumber(lead.orgId, input.key));
+  if (found === undefined) return yield* notFound(input.key);
   const viewer = team === undefined ? KIN_OWNER_LEVEL : viewerOfPeople(team.people);
-  const detail = yield* records.detail(row, 10);
+  const access =
+    team === undefined ? undefined : yield* recordFieldAccess(lead.orgId, viewer, found.recordId);
+  if (team !== undefined && access === undefined) return yield* notFound(input.key);
+  const row = { ...found, ...(access === undefined ? {} : { listMoneyVisible: access.full }) };
+  if (listOf(row.registerId) === "docs") return yield* isDoc(input.key);
+  const view = yield* viewFor(lead, [row]);
+  const def = defOf(view.lists, row);
+  const money = row.listMoneyVisible !== 0;
+  if (
+    byExactKey === undefined &&
+    !money &&
+    (def === undefined || sensitiveKeys(def).includes("number"))
+  )
+    return yield* notFound(input.key);
+  const safe = listEntryFor(yield* records.detail(row, 10), row.registerId, def, money);
+  const detail = {
+    ...safe,
+    links: yield* listLinksFor(lead.orgId, viewer, safe.links),
+    changes: safe.changes ?? [],
+  };
   const dealLinks = new Set<string>();
   if (!(yield* dealsOn(lead.orgId))) {
     const sql = yield* SqlClient.SqlClient;
@@ -2264,7 +2585,6 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
     }
   }
   const now = yield* Clock.currentTimeMillis;
-  const view = yield* viewFor(lead, [row]);
   const { name } = view;
   const actor = (by: (typeof detail.changes)[number]["by"]) =>
     by._tag === "system" ? "Kin" : (name(by) ?? "someone");
@@ -2311,14 +2631,26 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
     (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, noteFrom)))
       ? undefined
       : yield* projectNoteOf(lead.orgId, noteFrom);
+  if (note?.codingAgent !== undefined)
+    yield* codingAgentTextShown(lead, codingAgentSource(note.codingAgent));
   const fromProject =
     note === undefined
       ? {}
       : {
-          projectNote: { from: `${note.project.key} ${note.project.title}`, text: note.body },
+          projectNote: {
+            from: `${note.project.key} ${note.project.title}`,
+            text: note.body,
+            ...viaKey(note),
+          },
         };
   const whole = team !== undefined && (yield* viewWhole(lead, team, row));
-  const deals = yield* dealsShown(lead, team, view, [row]);
+  const deals = yield* withPromises(
+    lead,
+    team,
+    view,
+    row,
+    yield* dealsShown(lead, team, view, [row]),
+  );
   if (team !== undefined && !whole) {
     const shown: typeof GetResult.Type = {
       ...withDeal(deals, teamRow(rowFor(view, row, now))),
@@ -2338,6 +2670,11 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
     };
     return shown;
   }
+  const shell = yield* KinShell.get(lead.orgId);
+  const moneyOn = KinShell.sectionOn(shell, "money");
+  const creditOffer =
+    moneyOn && team === undefined ? yield* creditForInvoice(lead.orgId, row) : undefined;
+  const invoicesOn = KinShell.sectionOn(shell, "invoices");
   const list = row.registerId;
   const sensitive = new Set(marksOf(view.lists, row).sensitiveFields ?? []);
   const hiddenLinks = yield* unseenOf(
@@ -2347,25 +2684,36 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
   const page = list === "clients" ? yield* partyPage(row, now, 0, viewer) : undefined;
   const project = list === "projects" ? yield* projectDetail(row, now, viewer) : undefined;
   const taxNote =
-    team === undefined && (list === "invoices" || list === "quotes" || list === "clients")
+    team === undefined &&
+    moneyOn &&
+    (list === "invoices" || list === "quotes" || list === "clients")
       ? notRegisteredFact(yield* readProfile(lead.orgId))
       : undefined;
   const specChanged = list === "work" && (yield* taskSpecChanged(row, viewer));
   const goal =
     list === "goals"
-      ? (yield* goalsNow(lead.orgId, now, { money: true })).goals.find((one) => one.key === row.key)
+      ? (yield* goalsNow(lead.orgId, now, { money: team === undefined })).goals.find(
+          (one) => one.key === row.key,
+        )
       : undefined;
-  const mailed = yield* mailedFor(lead.orgId, row);
+  const mailed = yield* mailedFor(lead.orgId, row, [
+    ...(invoicesOn ? [] : ["invoices", "quotes"]),
+    ...(moneyOn ? [] : ["receipts"]),
+  ]);
+  // A client's tax details are the owner level's, so only their turns read what waits on them.
+  const unconfirmed =
+    list === "clients" && team === undefined ? yield* unconfirmedLines(lead.orgId, row) : [];
   return {
     ...withDeal(deals, rowFor(view, row, now)),
     ...(mailed.length === 0 ? {} : { mailed }),
     ...(goal === undefined ? {} : { progress: goalLine(goal) }),
+    ...(unconfirmed.length === 0 ? {} : { unconfirmed }),
     ...(specChanged ? { specChanged: true as const } : {}),
-    ...(project === undefined ? {} : { plan: yield* projectRead(row, now, name, viewer) }),
+    ...(project === undefined ? {} : { plan: yield* projectRead(row, now, name, viewer, moneyOn) }),
     ...(page === undefined
       ? {}
       : {
-          owed: yield* clientOwed(lead.orgId, row.recordId, page.party, now),
+          owed: yield* clientOwed(lead.orgId, row.recordId, page.party, now, invoicesOn),
           contacts: (yield* records.query(lead.orgId, {
             list: "contacts",
             partyId: row.recordId,
@@ -2395,7 +2743,7 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
             late: project.late,
             waitingOverAWeek: project.healthBecause.waitingOverAWeek,
             targetPassed: project.healthBecause.targetPassed,
-            ...(project.healthBecause.overdueInvoices
+            ...(invoicesOn && project.healthBecause.overdueInvoices
               ? { overdueInvoices: project.healthBecause.overdueInvoices }
               : {}),
             ...(project.healthBecause.noContact === undefined
@@ -2403,24 +2751,48 @@ const runGet = Effect.fnUntraced(function* (lead: Lead, input: typeof GetInput.T
               : { noContact: project.healthBecause.noContact }),
           },
         }),
-    ...(detail.payments === undefined
+    ...(!("payments" in detail) || detail.payments === undefined
       ? {}
       : {
           payments: detail.payments.map((payment) => ({
             paymentId: payment.paymentId,
             amount: formatMoney(payment.amount),
+            ...(payment.received === undefined ? {} : { received: formatMoney(payment.received) }),
+            ...(payment.rate === undefined ? {} : { rate: payment.rate }),
             paidOn: payment.paidOn,
             ...(payment.note === "" ? {} : { note: payment.note }),
-            ...(payment.withheld === true ? { withheld: true as const } : {}),
+            ...(payment.creditNote !== undefined
+              ? { creditNote: payment.creditNote }
+              : payment.withheld === true
+                ? { withheld: true as const }
+                : {}),
             ...(payment.voidedAt === null ? {} : { voided: true as const }),
             ...(payment.source === undefined
               ? {}
               : { source: paymentSourceText(payment.source, name) }),
           })),
         }),
-    ...(list === "invoices" || page !== undefined
-      ? { bank: bankAnswer(yield* bankKnown(lead.orgId)) }
+    ...(moneyOn && (list === "invoices" || page !== undefined)
+      ? {
+          bank: bankAnswer(
+            yield* bankKnown(lead.orgId),
+            false,
+            // Bank transactions are the owner level's alone (`teamView.ts`).
+            team === undefined && list === "invoices"
+              ? yield* invoiceCredits(lead.orgId, row.recordId)
+              : [],
+          ),
+        }
       : {}),
+    ...(creditOffer === undefined
+      ? {}
+      : {
+          creditOffer: {
+            receipt: creditOffer.key,
+            amount: formatMoney(creditOffer.amount),
+            receivedOn: creditOffer.receivedOn,
+          },
+        }),
     ...(taxNote === undefined ? {} : { taxNote }),
     notes: detail.notes,
     ...(assignedBy === undefined ? {} : { assignedBy }),
@@ -2496,8 +2868,25 @@ const runCreate = Effect.fnUntraced(function* (lead: Lead, input: typeof CreateI
     (row, index) => `Row ${index + 1} ("${row.title.slice(0, 60)}")`,
     (row) => createRow(lead, input.sourceEventId, writer, team, source, lists, row, notices),
   );
-  return { ...(yield* tell(lead, notices)), records: results };
+  return {
+    ...(yield* tell(lead, notices)),
+    ...madeIn(input.records, results),
+    records: results,
+  };
 });
+
+/** A call's rows made, counted by the list each was asked for: `{ work: 7, milestones: 2 }`. */
+export const madeIn = (
+  asked: ReadonlyArray<{ readonly list?: string | undefined }>,
+  results: ReadonlyArray<{ readonly created: boolean }>,
+) => {
+  const made: Record<string, number> = {};
+  results.forEach((one, index) => {
+    const list = asked[index]?.list ?? "work";
+    if (one.created) made[list] = (made[list] ?? 0) + 1;
+  });
+  return Object.keys(made).length > 1 ? { made } : {};
+};
 
 const createRow = Effect.fnUntraced(function* (
   lead: Lead,
@@ -2506,17 +2895,76 @@ const createRow = Effect.fnUntraced(function* (
   team: View | undefined,
   source: Effect.Success<ReturnType<typeof sourceOf>>,
   lists: Lists,
-  row: typeof CreateRow.Type,
+  asked: typeof CreateRow.Type,
   notices: Array<AssignNotice>,
 ) {
   const records = yield* KinRecords;
   // Before the list is read, so an expense for a list not made yet says what comes first.
-  if (row.amount !== undefined) yield* countryFirst(lead.orgId);
-  const def = yield* listFor(lead, row.list ?? "work");
+  if (asked.amount !== undefined) yield* countryFirst(lead.orgId);
+  if (asked.list === "credit_notes") {
+    const refusal = recordArgumentError("credit_notes", "Credit notes", asked, "create");
+    if (refusal !== undefined) return yield* refusal;
+    const invoice = asked.fields?.invoice;
+    const reason = asked.fields?.reason;
+    if (
+      typeof invoice !== "string" ||
+      typeof reason !== "string" ||
+      typeof asked.amount !== "string"
+    )
+      return yield* invalid("A credit note needs fields.invoice, amount and fields.reason.");
+    if (team !== undefined) return yield* TEAM_REFUSED;
+    const target =
+      (yield* records.get(lead.orgId, invoice)) ?? (yield* byNumber(lead.orgId, invoice));
+    if (target?.registerId !== "invoices") return yield* notFound(invoice);
+    const parsed = parseAmount(
+      asked.amount,
+      asked.currency ?? target.currency ?? (yield* homeCurrency(lead.orgId)),
+    );
+    if ("error" in parsed) return yield* parsed.error;
+    const notes = yield* CreditNotes.CreditNotes;
+    const { row, created } = yield* notes.draft(lead.orgId, writer, {
+      invoice: target.key,
+      amount: parsed.money,
+      reason,
+      originKey: `lead:${sourceEventId}:${retryKey(stableStringify([target.key, asked.title, reason, parsed.money]))}`,
+    });
+    return {
+      key: row.key,
+      title: row.title,
+      created,
+      state: row.state,
+      stateLabel: "Draft",
+    };
+  }
+  const def = yield* listFor(lead, asked.list ?? "work");
   const list = def.id;
+  if (
+    team !== undefined &&
+    def.team === true &&
+    (asked.amount !== undefined ||
+      sensitiveKeys(def).some((key) => Object.hasOwn(asked.fields ?? {}, key))) &&
+    !(yield* allSeeMoney(lead.orgId, team.people))
+  )
+    return yield* TEAM_REFUSED;
+  const refusal = recordArgumentError(list, def.name, asked, "create", def);
+  if (refusal !== undefined) return yield* refusal;
   // A deal's rules are `deals.ts`'s, whoever writes it.
   if (list === "deals")
-    return yield* dealRow(lead, sourceEventId, writer, def, lists, row, notices);
+    return yield* dealRow(lead, sourceEventId, writer, def, lists, asked, notices);
+  // A Work row on a deal is a promise; its own next step is a deal's next, not this.
+  if (
+    list === "work" &&
+    asked.deal !== undefined &&
+    (asked.category ?? "obligation") !== "obligation"
+  )
+    return yield* invalid("A row on a deal is a promise: category obligation.");
+  const row = timeIsDue(
+    list,
+    asked.deal !== undefined ? "obligation" : asked.category,
+    list === "work" && asked.deal !== undefined
+      ? { ...asked, category: "obligation" as const }
+      : asked,
+  );
   if (row.next !== undefined) return yield* NEXT_IS_A_DEALS;
   // For a teammate alone in the turn, a prospect or a contact is what their own Clients form adds
   // (`memberAdds`, `memberAddsContact`).
@@ -2536,11 +2984,10 @@ const createRow = Effect.fnUntraced(function* (
     list === "work"
       ? yield* routedTo(lead, named, row.reason)
       : { who: named, reason: undefined, note: undefined };
-  const owner = holder.who;
   if (prospectFor !== undefined)
     yield* memberAdds(lead.orgId, prospectFor, {
       prospect: true,
-      owner,
+      owner: named,
       ownersFields:
         [row.terms, row.address, row.gstin, row.placeOfSupply, row.sensitive].some(
           (value) => value !== undefined,
@@ -2566,7 +3013,30 @@ const createRow = Effect.fnUntraced(function* (
     row.client === undefined
       ? undefined
       : yield* refRecord(lead, row.client, "clients", PARTY_KIND[list]);
-  const partyId = party?.recordId;
+  // A promise names its deal and where it was made (`promises.ts`); a plan's `from` is its doc's.
+  const promised = typeof row.from === "string" ? row.from : undefined;
+  if ((row.deal !== undefined || promised !== undefined) && list !== "work")
+    return yield* invalid("Only a Work row has a deal or a promise's from.");
+  const deal =
+    row.deal === undefined
+      ? undefined
+      : yield* dealFor(lead.orgId, row.deal, party?.recordId, team?.people ?? []).pipe(
+          asField("deal"),
+        );
+  const partyId = party?.recordId ?? (deal?.partyId === null ? undefined : deal?.partyId);
+  // What a client owes us is chased by whoever looks after them, unless the row names someone.
+  const theirs =
+    row.owner === undefined &&
+    row.side === "theirs" &&
+    row.category === "obligation" &&
+    partyId !== undefined
+      ? yield* theirsHolder(lead.orgId, partyId, deal)
+      : undefined;
+  const owner = theirs ?? holder.who;
+  const from =
+    promised === undefined
+      ? undefined
+      : yield* checkedFrom(lead.orgId, partyId, promised).pipe(asField("from"));
   if (contactFor !== undefined && partyId !== undefined)
     yield* memberAddsContact(lead.orgId, contactFor, {
       party: { recordId: partyId },
@@ -2586,7 +3056,13 @@ const createRow = Effect.fnUntraced(function* (
       dateAt: "dateAt" in money ? money.dateAt : undefined,
       dueAt: "dueAt" in due && typeof due.dueAt === "number" ? due.dueAt : undefined,
     });
-  const spine = yield* spineOf(lead, def, row, projectId);
+  const { from: planFrom, ...plain } = row;
+  const spine = yield* spineOf(
+    lead,
+    def,
+    typeof planFrom === "string" || planFrom === undefined ? plain : { ...plain, from: planFrom },
+    projectId,
+  );
   const spineSet = Object.fromEntries(
     Object.entries({
       ...spine.fields,
@@ -2600,14 +3076,32 @@ const createRow = Effect.fnUntraced(function* (
   )
     return yield* invalid("A goal needs its measure and target, and due as its date.");
   const goal = yield* goalFields(lead.orgId, row);
-  const fields = {
+  const allFields = {
     ...fieldsFrom(row),
     ...partyWords(list, row),
     ...spineSet,
     ...goal,
+    ...(from === undefined ? {} : { from }),
   };
+  const found = existing === undefined ? undefined : yield* records.get(lead.orgId, existing.key);
+  const held =
+    list === "clients" ? yield* heldBack(lead, printedAsked(row, found), found?.recordId) : [];
+  // Who may make the whole row is decided as before; only then does a part wait for a tap.
+  if (held.length > 0 && writer.view !== undefined && crmFor === undefined) {
+    const whole = { list, fields: allFields };
+    yield* viewGuard(lead.orgId, writer.view, { row: found, changes: false, input: whole });
+  }
+  const fields: typeof allFields =
+    held.length === 0
+      ? allFields
+      : Object.fromEntries(
+          Object.entries(allFields).filter(([key]) => !held.some((one) => one.field === key)),
+        );
+  const unconfirmedOn = (record: RecordRow) =>
+    held.length === 0
+      ? Effect.succeed({})
+      : Effect.map(propose(lead, record, held, row.heardFrom), (unconfirmed) => ({ unconfirmed }));
   if (existing !== undefined) {
-    const found = yield* records.get(lead.orgId, existing.key);
     // The same details again is a retry; new ones are a change, which only record_update makes.
     const stored = found === undefined ? {} : parseFields(found.fieldsJson);
     const given = list === "contacts" ? contactFields({}, fields) : fields;
@@ -2628,6 +3122,7 @@ const createRow = Effect.fnUntraced(function* (
       created: false,
       ...(found === undefined ? {} : marksOf(lists, found)),
       ...(party?.also === undefined ? {} : { alsoNamed: party.also }),
+      ...(found === undefined ? {} : yield* unconfirmedOn(found)),
     };
   }
   // The same row from the same event is the same entry: a retry, or a repeat in one call.
@@ -2709,6 +3204,7 @@ const createRow = Effect.fnUntraced(function* (
             ...(row.notes === undefined ? {} : { notes: row.notes }),
             ...categoryOf(list, row),
             ...(row.side === undefined ? {} : { side: row.side }),
+            ...(deal === undefined ? {} : { links: [dealLink(deal)] }),
             // What an owner-level person asked for in person is kept; what a lead inferred waits
             // for Keep. A shared turn's tasks keep the default; its quotes and invoices
             // `KinRecords` decides.
@@ -2755,23 +3251,35 @@ const createRow = Effect.fnUntraced(function* (
     ...(isSuggestion(stored) && stored.state !== "dropped"
       ? {
           state: stored.state,
-          stateLabel: suggestedStateLabel(
-            stored.registerId,
-            stored.state,
-            stateLabel(def, stored.state),
-          ),
+          stateLabel: suggestedStateLabel(stored.registerId, stored.state),
           suggested: true as const,
         }
       : isInvoiceDraft(stored.registerId, stored.state)
         ? { state: stored.state, stateLabel: UNISSUED_INVOICE }
         : {}),
     ...marksOf(lists, stored),
+    ...(row.due === undefined ? {} : yield* shownDue(lead.orgId, stored)),
     ...(created && alsoOpen.length > 0 ? { alsoOpen } : {}),
     ...(alsoNamed === undefined ? {} : { alsoNamed }),
     ...(sameEmail === undefined ? {} : { sameEmail }),
     ...(created ? closedNotWoken(lead, [], stored) : {}),
+    ...(writer.actor._tag !== "agent" || stored.registerId !== "expenses" || stored.state !== "open"
+      ? {}
+      : pair?.receipt === true
+        ? {
+            bill: `${stored.key} keeps the receipt and stays To pay: only the owner or a co-owner marks it paid. Say so, or offer mark_bill_paid if a bank debit paid it.`,
+          }
+        : isSuggestion(stored) && stored.amountMinor !== null
+          ? {
+              bill: suggestedBillResult(stored.key),
+            }
+          : {}),
+    ...(yield* unconfirmedOn(stored)),
   };
 });
+export const suggestedBillResult = (key: string) =>
+  `${key} waits as a suggested bill to pay; it counts in To pay once the owner records it. Ask once with kin_ask, an option with action record_bill on ${key}.`;
+
 const DEAL_FIELDS = ["stage", "source", "lostReason", "concerns"];
 const dealFields = (fields: FieldInputs | undefined) => {
   const given = fields ?? {};
@@ -3024,23 +3532,39 @@ const dealUpdate = Effect.fnUntraced(function* (
 
 const orList = (items: ReadonlyArray<string>) =>
   items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} or ${items.at(-1)}`;
-/** The country refusal as the call reads it: in a batch nothing was saved; whose choice it is. */
-const countryWorded = <A, E, R>(lead: Lead, saved: boolean, call: Effect.Effect<A, E, R>) =>
+/**
+ * The country refusal as the call reads it: in a batch nothing was saved; whose choice it is, and
+ * whether the one person this turn answers is who chooses it.
+ */
+export const countryWorded = <A, E, R>(lead: Lead, saved: boolean, call: Effect.Effect<A, E, R>) =>
   call.pipe(
     Effect.catchIf(
       (error) => isKinChatError(error) && isCountryFirst(error),
       () =>
         Effect.gen(function* () {
           const team = yield* viewOf(lead).pipe(Effect.orElseSucceed(() => undefined));
+          const asker =
+            team === undefined
+              ? yield* turnAsker(lead).pipe(Effect.orElseSucceed(() => null))
+              : null;
           return yield* yield* countryRefusal(lead.orgId, {
             saved,
             forTeammate: team !== undefined,
+            answeringChooser:
+              asker !== null &&
+              (yield* ownerLevel(lead.orgId, KinPersonId.make(asker)).pipe(
+                Effect.orElseSucceed(() => false),
+              )),
           });
         }),
     ),
   );
 export const create = leadTool("KinWorkTools.create", (lead, input: typeof CreateInput.Type) =>
-  countryWorded(lead, input.records.length > 1, runCreate(lead, input)),
+  countryWorded(
+    lead,
+    input.records.length > 1,
+    runCreate(lead, input).pipe(Effect.provide(CreditNotes.layer)),
+  ),
 );
 
 /** A client's kind or an entry's category; a client with neither is a client. */
@@ -3084,6 +3608,28 @@ const PARTY_KIND: Partial<Record<string, KinPartyKind>> = {
 const NEAR_DAYS = 3;
 const REPEAT_CANDIDATES = 2000;
 const REPEATS_SHOWN = 5;
+
+/**
+ * What `record_create` answers when a task or promise is already open: it is tracked, so the agent
+ * confirms it in one line rather than advising on it.
+ */
+export const repeatedPromise = (input: {
+  readonly key: string;
+  readonly title: string;
+  readonly client: boolean;
+  readonly also: string;
+  readonly holder: string;
+  readonly dueAt: number | null;
+  readonly zone: string;
+  readonly besides: string;
+}) =>
+  `${input.key} "${input.title.slice(0, 80)}" is open with the same title${input.client ? ", client" : ""} and due day${input.also}: it is tracked already, held by ${input.holder}, ${
+    input.dueAt === null
+      ? "with no due day"
+      : `due ${formatKinWhen(input.dueAt, "day", { zone: input.zone, locale: KIN_TEXT_LOCALE }).replace(/,/g, "")}`
+  }. Tell them so in one line, and nothing about when or how to do it${
+    input.dueAt === null ? "" : "; Kin tells its holder on its day"
+  }. Pass ${input.besides} only if this is another one.`;
 
 /**
  * Open entries a new row repeats, among those this turn may see. The same title, client and due
@@ -3133,8 +3679,10 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
     originKey: string | null;
     vendor: unknown;
     sensitive: number;
+    holder: string;
   }>`SELECT r.key, r.title, r.due_at AS "dueAt", r.date_at AS "dateAt",
       r.origin_key AS "originKey", json_extract(r.fields_json, '$.vendor') AS vendor,
+      r.owner_kind || ':' || r.owner_id AS holder,
       ${sensitiveNow(sql)} AS sensitive
     FROM kin_records r
     WHERE r.org_id = ${lead.orgId} AND r.register_id = ${row.list} AND r.party_id IS ${row.partyId}
@@ -3181,6 +3729,8 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
         differs: differs.join(", "),
         vendor: one.vendor,
         sensitive: one.sensitive === 1,
+        holder: one.holder,
+        dueAt: one.dueAt,
       },
     ];
   });
@@ -3193,13 +3743,26 @@ const repeatsOf = Effect.fn("KinWorkTools.repeatsOf")(function* (
         ? `records the same amount ${row.partyId !== null ? "for the same party" : sameVendor(first) ? "for the same vendor" : "and title"} on the same day`
         : `is open with the same title${row.partyId === null ? "" : ", client"} and due day`;
     const Refused = repeats.some((one) => one.sensitive) ? SensitiveRefusal : KinChatError;
+    const also =
+      keys.length > 1
+        ? ` (so ${keys.length === 2 ? "does" : "do"} ${keys.slice(1).join(", ")})`
+        : "";
+    const besides = `besides: [${keys.map((key) => `"${key}"`).join(", ")}]`;
     return yield* new Refused({
       reason: "conflict",
-      message: `${first.key} "${first.title.slice(0, 80)}" ${same}${
-        keys.length > 1
-          ? ` (so ${keys.length === 2 ? "does" : "do"} ${keys.slice(1).join(", ")})`
-          : ""
-      }. Use ${first.key}, or pass besides: [${keys.map((key) => `"${key}"`).join(", ")}] to add another.`,
+      message:
+        row.list === "work"
+          ? repeatedPromise({
+              key: first.key,
+              title: first.title,
+              client: row.partyId !== null,
+              also,
+              holder: toolNameOfText(first.holder, yield* namer(lead)),
+              dueAt: first.dueAt,
+              zone,
+              besides,
+            })
+          : `${first.key} "${first.title.slice(0, 80)}" ${same}${also}. Use ${first.key}, or pass ${besides} to add another.`,
     });
   }
   return {
@@ -3237,21 +3800,27 @@ const keepPairedFiles = Effect.fn("KinWorkTools.keepPairedFiles")(function* (
       return more.length === 0 ? [] : [[field, [...theirs, ...more]]];
     }),
   );
+  // A receipt names a funder only where none is said yet, and only as the owner may (`agentMayFund`).
+  const mayFund =
+    shownField(stored[FUNDED_BY]) === null && (yield* agentMayFund(lead.orgId, writer));
   const how = paid.receipt
     ? Object.fromEntries(
         PAYMENT_FIELDS.flatMap((field) =>
-          given[field] === undefined || shownField(given[field]) === shownField(stored[field])
+          given[field] === undefined ||
+          shownField(given[field]) === shownField(stored[field]) ||
+          (field === FUNDED_BY && !mayFund)
             ? []
             : [[field, given[field]]],
         ),
       )
     : {};
+  const settles = paid.receipt && !(writer.actor._tag === "agent" && entry.state === "open");
   const patch = {
     ...(Object.keys(added).length + Object.keys(how).length === 0
       ? {}
       : { fields: { ...added, ...how } }),
-    ...(paid.receipt && entry.state !== "done" ? { state: "done" as const } : {}),
-    ...(paid.receipt && paid.dateAt !== undefined && paid.dateAt !== entry.dateAt
+    ...(settles && entry.state !== "done" ? { state: "done" as const } : {}),
+    ...(settles && paid.dateAt !== undefined && paid.dateAt !== entry.dateAt
       ? { dateAt: paid.dateAt, dateAllDay: paid.dateAllDay ?? true }
       : {}),
   };
@@ -3260,7 +3829,7 @@ const keepPairedFiles = Effect.fn("KinWorkTools.keepPairedFiles")(function* (
     : yield* records.update(lead.orgId, writer, key, patch, entry.rev);
 });
 
-const PAYMENT_FIELDS = ["paidWith", "paidBy"];
+const PAYMENT_FIELDS = ["paidWith", "paidBy", FUNDED_BY];
 
 /** What a file's name says it is; a name saying both, or neither, says nothing. */
 const documentKind = (name: string | null) => {
@@ -3443,44 +4012,6 @@ const explainedHonestly = Effect.fn("KinWorkTools.explainedHonestly")(function* 
       `${before.key} stays unexplained: no invoice payment or expense records its money yet. Record that first (payment_record, or an expense with record_create), or ask the owner to confirm it on the statement's card; a transfer, bank charges or interest may be marked so with its category. Don't say it is explained.`,
     );
 });
-/** What a hand-off itself writes: none of it addresses why the task was handed back. */
-const HAND_OFF_FIELDS = new Set(["owner", "handedBack", "reason", "state"]);
-/**
- * G13: a task handed back goes to the same holder again only once something on it changed since,
- * or the owner says so in this turn; otherwise ask the owner or give it to someone else. Other
- * hand-offs since, to anyone, are no change.
- */
-const notBouncedBack = Effect.fn("KinWorkTools.notBouncedBack")(function* (
-  lead: Lead,
-  before: RecordRow,
-  to: KinWorkPrincipal,
-) {
-  const who = `${to._tag}:${principalId(to)}`;
-  let back: { readonly to: string | null } | undefined;
-  for (const change of (yield* (yield* KinRecords).detail(before, 50)).changes) {
-    back = change.fields.find((field) => field.field === "handedBack" && field.from === who);
-    if (back !== undefined) break;
-    if (change.fields.some((field) => !HAND_OFF_FIELDS.has(field.field))) return;
-  }
-  if (back === undefined) return;
-  const sql = yield* SqlClient.SqlClient;
-  const owners = [...(yield* ownerLevelPeople(lead.orgId))];
-  const said = yield* sql`SELECT 1 FROM kin_events e
-    JOIN kin_messages m ON m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
-      AND m.chat_id = json_extract(e.json, '$.chatId')
-    WHERE e.org_id = ${lead.orgId} AND e.agent_id = ${lead.agentId}
-      AND e.wakeup_id = ${lead.wakeupId} AND e.tag = 'chat.message' AND m.author_kind = 'human'
-      AND m.origin_json IS NULL
-      AND m.author_person_id IN ${sql.in(owners.length === 0 ? [""] : owners)}
-    LIMIT 1`;
-  if (said.length > 0) return;
-  const name = yield* namer(lead);
-  return yield* new KinChatError({
-    reason: "not_allowed",
-    message: `${name(to) ?? "They"} handed ${before.key} back${back.to === null ? "" : `: "${back.to}"`}. Nothing on it has changed since, so don't give it straight back. Fix what blocks it first, ask the owner, or give it to someone else.`,
-  });
-});
-
 /** `record_update`'s answer when the notes it gave would have replaced a person's. */
 export const NOTES_KEPT =
   "Its notes are a person's, so they stay as they are; your text went on its activity as a note.";
@@ -3518,19 +4049,35 @@ const runUpdateMany = Effect.fnUntraced(function* (lead: Lead, input: typeof Upd
     entries: done.map((one) => one.result),
   };
 });
-const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: Change) {
-  yield* admitted(lead, "record_update", { ...input, key });
+const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, asked: Change) {
+  yield* admitted(lead, "record_update", { ...asked, key });
   const records = yield* KinRecords;
   const team = yield* viewOf(lead);
-  yield* sourceOf(lead, input.sourceEventId);
+  yield* sourceOf(lead, asked.sourceEventId);
   const owned = yield* writerFor(lead);
   const writer = team === undefined ? owned : viewWriter(owned, team);
   const before = yield* records.get(lead.orgId, key);
   if (before === undefined) return yield* notFound(key);
+  const input = timeIsDue(
+    listOf(before.registerId),
+    asked.category === undefined ? before.category : asked.category,
+    asked,
+  );
   if (team !== undefined && !(yield* viewVisible(lead.orgId, team.people, before.recordId)))
     return yield* notFound(key);
+  const beforeFields = parseFields(before.fieldsJson);
+  if (
+    before.registerId === "goals" &&
+    beforeFields.target === undefined &&
+    (input.current !== undefined || input.fields?.current !== undefined)
+  )
+    return yield* invalid(
+      `${before.title} is a watched number: record its value with number_record (the value, the day it is as of, and where it came from).`,
+    );
   if (listOf(before.registerId) === "docs") return yield* isDoc(key);
   if (before.registerId === "deals") {
+    const refusal = recordArgumentError("deals", LISTS.deals.name, asked, "update");
+    if (refusal !== undefined) return yield* refusal;
     const { out, notices } = yield* dealUpdate(lead, writer, before, input);
     return { result: out, notices, held: [] };
   }
@@ -3550,6 +4097,16 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     });
   yield* explainedHonestly(lead, before, input.state, input.kind ?? input.category ?? undefined);
   const def = yield* listFor(lead, before.registerId);
+  const refusal = recordArgumentError(def.id, def.name, asked, "update", def);
+  if (refusal !== undefined) return yield* refusal;
+  if (
+    team !== undefined &&
+    def.team === true &&
+    (input.amount !== undefined ||
+      sensitiveKeys(def).some((key) => Object.hasOwn(input.fields ?? {}, key))) &&
+    !(yield* allSeeMoney(lead.orgId, team.people))
+  )
+    return yield* TEAM_REFUSED;
   const work = before.registerId === "work";
   const route = (who: KinWorkPrincipal) =>
     work
@@ -3584,9 +4141,18 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     ...(input.urgent === undefined ? {} : { urgent: input.urgent }),
     ...(input.leftover === undefined ? {} : { leftover: input.leftover }),
   };
-  if (patch.owner !== undefined) yield* notBouncedBack(lead, before, patch.owner);
+  if (patch.owner !== undefined) {
+    const back = yield* notBouncedBack(lead.orgId, before, patch.owner, lead);
+    if (back !== undefined) {
+      const name = yield* namer(lead);
+      return yield* new KinChatError({
+        reason: "not_allowed",
+        message: `${name(patch.owner) ?? "They"}${back.codingAgent ? " (coding agent)" : ""} handed ${before.key} back${back.to === null ? "" : `: "${back.to}"`}. Nothing on it has changed since, so don't give it straight back. Fix what blocks it first, ask the owner, or give it to someone else.`,
+      });
+    }
+  }
   // tell false holds the new holder's notice on the task; giving it to them again tells them.
-  const heldFor = parseFields(before.fieldsJson).untold;
+  const heldFor = beforeFields.untold;
   const giving =
     before.registerId === "work" && patch.owner?._tag === "person" ? patch.owner : undefined;
   const moves =
@@ -3607,7 +4173,7 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
     ...partyWords(before.registerId, { tags: input.tags, audience: input.audience }),
     ...spine.fields,
     ...(routedReason === undefined ? {} : { reason: routedReason }),
-    ...(yield* goalFields(lead.orgId, input, parseFields(before.fieldsJson))),
+    ...(yield* goalFields(lead.orgId, input, beforeFields)),
     ...(holds ? { untold: `person:${giving.personId}` } : releases ? { untold: null } : {}),
   };
   const money = yield* moneyPatch(lead, def, input, before.currency);
@@ -3621,12 +4187,28 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
   const inProject = projectId !== undefined ? projectId : spine.projectId;
   const written: Patch = {
     ...patch,
+    ...(before.registerId === "goals" &&
+    input.measure !== undefined &&
+    isMoneyMeasure(input.measure)
+      ? { sensitive: true }
+      : {}),
     ...(partyId === undefined ? {} : { partyId }),
     ...(inProject === undefined ? {} : { projectId: inProject }),
     ...(Object.keys(fields).length === 0 ? {} : { fields }),
     ...money,
     ...spine.at,
   };
+  const held =
+    listOf(before.registerId) === "clients"
+      ? yield* heldBack(lead, printedAsked(input, before), before.recordId)
+      : [];
+  // Who may make the whole change is decided as before; only then does a part wait for a tap.
+  if (held.length > 0 && team !== undefined)
+    yield* viewGuard(
+      lead.orgId,
+      { people: team.people, askers: team.askers },
+      { row: before, changes: true, input: written },
+    );
   const seenBefore = yield* teamPairs(lead.orgId, [before.recordId]);
   // `memberChangesContact` decided it, as their form's own write.
   const after = yield* records.update(
@@ -3635,9 +4217,11 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
       ? writer
       : { ...unguardedOf(viewWriter(owned, team)), namesSeenBy: contactFor },
     key,
-    written,
+    held.length === 0 ? written : withoutHeld(written, held),
     input.expectedRev,
   );
+  const unconfirmed =
+    held.length === 0 ? undefined : yield* propose(lead, after, held, input.heardFrom);
   const seenAfter = new Set(
     (yield* teamPairs(lead.orgId, [after.recordId])).map((p) => p.personId),
   );
@@ -3678,6 +4262,8 @@ const updateCore = Effect.fnUntraced(function* (lead: Lead, key: string, input: 
         ? { stateLabel: UNISSUED_INVOICE }
         : {}),
       changed,
+      ...(input.due === undefined ? {} : yield* shownDue(lead.orgId, after)),
+      ...(unconfirmed === undefined ? {} : { unconfirmed }),
       ...((holder?.note ?? waitsOn?.note) === undefined
         ? {}
         : { routed: holder?.note ?? waitsOn?.note }),
@@ -3786,7 +4372,7 @@ const runHandBack = Effect.fnUntraced(function* (lead: Lead, input: typeof HandB
   const after = yield* records.handBack(lead.orgId, writer, input.key, holder, input.note);
   const to = toRecord(after, 0).owner;
   const notices: Array<AssignNotice> =
-    to._tag === "person"
+    to._tag === "person" && !isSuggestion(after)
       ? [
           {
             personId: to.personId,

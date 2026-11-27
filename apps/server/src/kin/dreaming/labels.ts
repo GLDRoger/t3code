@@ -12,6 +12,8 @@ import {
   type StoredLabels,
 } from "../memory/sensitivity.ts";
 
+const ITEM_PARTS = /^((?:\uFEFF)?---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$)[\s\S]*)$/;
+
 const valuesOf = (front: string) => {
   try {
     const doc = parseDocument(front, FRONT_MATTER_YAML);
@@ -27,7 +29,7 @@ const valuesOf = (front: string) => {
  * a quoted, indented or flow-style label is re-rendered by the parser.
  */
 export const withLabel = (text: string, sensitive: boolean) => {
-  const parts = /^((?:\uFEFF)?---\r?\n)([\s\S]*?)(\r?\n---(?:\r?\n|$)[\s\S]*)$/.exec(text);
+  const parts = ITEM_PARTS.exec(text);
   if (parts === null) return undefined;
   const [, open = "", front = "", rest = ""] = parts;
   const doc = parseDocument(front, FRONT_MATTER_YAML);
@@ -49,9 +51,25 @@ export const withLabel = (text: string, sensitive: boolean) => {
   }
 };
 
+export const withRecordedAt = (text: string, at: string) => {
+  const parts = ITEM_PARTS.exec(text);
+  if (parts === null) return undefined;
+  const [, open = "", front = "", rest = ""] = parts;
+  const original = valuesOf(front);
+  if (original === undefined) return undefined;
+  const doc = parseDocument(front, FRONT_MATTER_YAML);
+  const want = JSON.stringify({ ...doc.toJS(), recorded_at: at });
+  if (original === want) return text;
+  const dated = front.replace(
+    /^([ \t]*)(?:recorded_at|"recorded_at"|'recorded_at'):[^\r\n]*$/m,
+    (_, indent: string) => `${indent}recorded_at: ${at}`,
+  );
+  return valuesOf(dated) === want ? `${open}${dated}${rest}` : undefined;
+};
+
 /**
  * Labels settled by code, not the model: kept, the most sensitive through a merge, sensitive for
- * money, access or no label. `classified` labels what had none, for `classify`; `suggested` is the
+ * money, access, private material cited or no label. `classified` labels what had none, for `classify`; `suggested` is the
  * new words of each item the dream made or reworded for the team, which only the owner confirms.
  */
 export const keepLabels = Effect.fn("DreamLabels.keep")(function* (input: {
@@ -61,6 +79,9 @@ export const keepLabels = Effect.fn("DreamLabels.keep")(function* (input: {
   readonly changes: ReadonlyMap<string, string>;
   readonly merges: ReadonlyArray<{ readonly into: string; readonly from: ReadonlyArray<string> }>;
   readonly labels: Pick<StoredLabels, "held" | "classified">;
+  /** What the dream reported citing, and the material refs marked private (`MaterialEntry`). */
+  readonly cited: ReadonlyArray<{ readonly path: string; readonly sources: ReadonlyArray<string> }>;
+  readonly privateRefs: ReadonlySet<string>;
 }) {
   const parse = (path: string, text: string) =>
     parseFrontMatter(input.orgId, path, text).pipe(Effect.option);
@@ -102,6 +123,10 @@ export const keepLabels = Effect.fn("DreamLabels.keep")(function* (input: {
     )
       into(frontMatter.superseded_by, frontMatter.id);
 
+  const cites = new Map(input.cited.map((change) => [change.path, change.sources]));
+  const fromPrivate = (path: string, source: string) =>
+    input.privateRefs.has(source) ||
+    (cites.get(path) ?? []).some((ref) => input.privateRefs.has(ref));
   const changes = new Map(input.changes);
   const classified = new Map<string, { sensitive: boolean; content: string }>();
   const suggested = new Map<string, string>();
@@ -115,6 +140,7 @@ export const keepLabels = Effect.fn("DreamLabels.keep")(function* (input: {
       // The quote is stored beside those words, and money or access in it is as private.
       mustBeSensitive(`${content}\n${frontMatter.quote ?? ""}`) ||
       [...(sources.get(id) ?? [])].some(wasSensitive) ||
+      fromPrivate(path, frontMatter.source) ||
       // A label the dream dropped comes back; one nobody ever set reads as the owner's alone.
       (frontMatter.sensitive ?? labelBefore(id) ?? true);
     const words = fingerprint({ head: frontMatter, body });

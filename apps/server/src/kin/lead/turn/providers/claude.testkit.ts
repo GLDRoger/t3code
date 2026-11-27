@@ -67,9 +67,7 @@ export const claudeFake: ProviderFake = {
           typeof prompt === "object" && !Array.isArray(prompt) && prompt.type === "custom"
             ? String(prompt.prompt)
             : undefined,
-        // Kin's server is mounted; its core carries `anthropic/alwaysLoad` from registration
-        // (the endpoint's list is checked in `kin/mcp/layer.test.ts`).
-        kinToolsUpFront: servers.length > 0,
+        kinToolsMounted: servers.length > 0,
         // Claude Code holds back every other MCP tool only while ToolSearch is on, and turns that
         // off itself for a model without it.
         holdsBack: searchable,

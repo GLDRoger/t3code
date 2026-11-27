@@ -21,6 +21,7 @@ vi.mock(import("./KinNewLeadButton"), async (importOriginal) => ({
 vi.mock(import("./kinClient"), async (importOriginal) => {
   const real = await importOriginal();
   const { Atom: A, AsyncResult: R } = await import("effect/reactivity");
+  const { sync } = await import("effect/Effect");
   const { appAtomRegistry: registry } = await import("../rpc/atomRegistry");
   const { KinOrgId } = await import("@t3tools/contracts");
   const budget = (): KinBudget => ({
@@ -42,25 +43,28 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
       budgetSet: {
         ...real.kinClient.budgetSet,
         permissionAtom: () => allowed,
-        run: async (
+        run: (
           _registry: unknown,
           { input }: { readonly input: { readonly limits: KinBudgetLimits } },
-        ) => {
-          host.calls.push(input.limits);
-          host.limits = input.limits;
-          return R.success(budget());
-        },
+        ) =>
+          sync(() => {
+            host.calls.push(input.limits);
+            host.limits = input.limits;
+            return budget();
+          }),
       },
     },
   };
 });
 
-vi.mock("../state/use-atom-command", () => ({
-  useAtomCommand:
-    (command: { run: (registry: unknown, input: unknown) => Promise<unknown> }) =>
-    (input: unknown) =>
-      command.run(null, input),
-}));
+vi.mock("../state/use-atom-command", async () => {
+  const { runAtomCommand } = await import("@t3tools/client-runtime/state/runtime");
+  const { appAtomRegistry } = await import("../rpc/atomRegistry");
+  return {
+    useAtomCommand: (command: Parameters<typeof runAtomCommand>[1]) => (input: unknown) =>
+      runAtomCommand(appAtomRegistry, command, input),
+  };
+});
 
 function setup() {
   host.limits = { leadUnits: 2_000_000, workerUnits: 6_000_000 };

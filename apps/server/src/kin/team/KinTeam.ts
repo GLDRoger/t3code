@@ -52,6 +52,7 @@ import { KinMemoryChanges } from "../memory/MemoryChanges.ts";
 import { stakeholders } from "./stakes.ts";
 import { TEAM_ROOM_MUTED, TEAM_ROOM_TITLE, namedAgents, teamRoomOf } from "./teamRoom.ts";
 import * as Turns from "./turns.ts";
+import { keySentSql } from "../chat/keySent.ts";
 
 const Name = TrimmedNonEmptyString.check(Schema.isMaxLength(80));
 const Intent = Schema.Literals(["answer", "evidence", "objection", "decision", "question"]);
@@ -96,7 +97,7 @@ export const TeamSayInput = Schema.Struct({
   end: Schema.optional(
     Schema.Literals(["decide", "park", "bring"]).annotate({
       description:
-        "decide: the decider or the Chief of staff settles it. park: the Chief of staff stops it for now, saying where it stands. bring: the Chief of staff takes a disagreement that is the owner's to decide to him.",
+        "decide: the decider or the Chief of staff settles it. park: the Chief of staff stops it for now, saying where it stands. bring: the Chief of staff takes a disagreement that is the owner's to decide to them.",
     }),
   ),
   outcome: Schema.optional(
@@ -637,9 +638,7 @@ const make = Effect.gen(function* () {
       Effect.orElseSucceed(() => []),
     );
     return [
-      ...new Set(
-        owed.flatMap((invoice) => (invoice.partyTitle === null ? [] : [invoice.partyTitle])),
-      ),
+      ...new Set(owed.flatMap((invoice) => invoice.partyTitle ?? invoice.billTo ?? [])),
     ].filter((name) => name.trim().length >= 3);
   });
 
@@ -651,6 +650,7 @@ const make = Effect.gen(function* () {
       readonly text: string;
       readonly intent: typeof Intent.Type;
       readonly mentions: ReadonlyArray<KinMemberId>;
+      readonly recordWakeup?: true;
     },
   ) {
     const [me] = yield* sql<{ memberId: KinMemberId }>`SELECT member_id AS "memberId"
@@ -685,6 +685,7 @@ const make = Effect.gen(function* () {
       editedAt: null,
       discussionId: row.discussionId,
       wakeupId: KinWakeupId.make(ctx.wakeupId),
+      recordWakeup: input.recordWakeup,
     });
     yield* sql.afterCommit(hub.publish({ type: "message.posted", orgId: ctx.orgId, message }));
     return message;
@@ -707,6 +708,7 @@ const make = Effect.gen(function* () {
     const rows = yield* sql<{ personId: KinPersonId }>`SELECT m.author_person_id AS "personId"
       FROM kin_events e JOIN kin_messages m ON m.org_id = e.org_id
         AND m.message_id = json_extract(e.json, '$.messageId') AND m.author_kind = 'human'
+        AND NOT ${sql.literal(keySentSql("m.client_message_id"))}
       WHERE e.org_id = ${ctx.orgId} AND e.agent_id = ${ctx.agentId} AND e.wakeup_id = ${ctx.wakeupId}
         AND e.tag = 'chat.message' AND json_extract(e.json, '$.origin') IS NULL`;
     for (const row of rows)
@@ -1031,12 +1033,13 @@ const make = Effect.gen(function* () {
           (input.positions === undefined || input.lean === undefined || input.options === undefined)
         )
           return yield* refuse(
-            "To bring it to the owner, give both positions, your lean and his two options.",
+            "To bring it to the owner, give both positions, your lean and the owner's two options.",
           );
         yield* post(ctx, row, {
           text: input.text,
           intent: end === "decide" ? "decision" : input.intent,
           mentions: yield* memberIds(ctx.orgId, row.chatId, said.to),
+          recordWakeup: true,
         });
         const now = yield* Clock.currentTimeMillis;
         const next = Turns.afterSay(row.d, said);

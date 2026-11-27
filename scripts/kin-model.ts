@@ -42,6 +42,10 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/lead/LevelGate.ts",
     "apps/server/src/kin/reply/classify.ts",
     "apps/server/src/kin/pulse/nudge.ts",
+    "apps/server/src/kin/lead/ChatSharing.ts",
+    "apps/server/src/kin/lead/Audience.ts",
+    "apps/server/src/kin/chat/KinGroups.ts",
+    "apps/server/src/kin/people/KinPeople.ts",
   ],
   checkin: [
     "apps/server/src/scheduledTasks/Schedule.ts",
@@ -64,6 +68,8 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/lead/Handoff.ts",
     "apps/server/src/kin/work/assignNotices.ts",
     "apps/server/src/kin/pulse/nudge.ts",
+    "apps/server/src/kin/pulse/factCards.ts",
+    "apps/server/src/kin/pulse/factCardTaps.ts",
   ],
   money: [
     "apps/server/src/kin/gendocs/receiptProposals.ts",
@@ -84,6 +90,7 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
     "apps/server/src/kin/pulse/senses/work.ts",
   ],
   stream: [
+    "apps/server/src/kin/shell/KinShell.ts",
     "apps/server/src/kin/work/workStream.ts",
     "apps/server/src/kin/work/KinRecords.ts",
     "apps/server/src/kin/work/teamView.ts",
@@ -93,6 +100,7 @@ export const MODEL_COVERS: Readonly<Record<string, ReadonlyArray<string>>> = {
   tasks: [
     "apps/server/src/kin/work/KinRecords.ts",
     "apps/server/src/kin/work/leadWork.ts",
+    "apps/server/src/kin/work/recordRows.ts",
     "apps/server/src/kin/work/ownerWork.ts",
     "apps/server/src/kin/work/assignNotices.ts",
     "apps/server/src/kin/work/teamView.ts",
@@ -795,3 +803,14 @@ if (import.meta.main)
       process.exit(2);
     },
   );
+
+/** Splits the models a local check would run from the ones `CHECK_CHANGED_SKIP_MODELS` names. */
+export const splitSkippedModels = (models: ReadonlyArray<string>, skip: string) => {
+  const named = new Set(
+    skip.split(",").flatMap((name) => (name.trim() === "" ? [] : [name.trim()])),
+  );
+  return {
+    run: models.filter((name) => !named.has(name)),
+    skipped: models.filter((name) => named.has(name)),
+  };
+};

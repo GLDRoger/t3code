@@ -1843,6 +1843,23 @@ describe("OpenAiLanguageModel", () => {
           }))
         ))
 
+      it.effect("advertises and handles non-strict record parameters", () =>
+        Effect.gen(function*() {
+          const received = yield* Ref.make<unknown>(undefined)
+          const toolkit = Toolkit.make(Tool.make("Search", { parameters: Schema.Record(Schema.String, Schema.String) }))
+          yield* LanguageModel.generateText({ prompt: "Search", toolkit }).pipe(
+            Effect.provide(OpenAiLanguageModel.model("gpt-4o-mini", { strictJsonSchema: false })),
+            Effect.provide(toolkit.toLayer({ Search: (params) => Ref.set(received, params) }))
+          )
+          const requests = yield* MockHttpClient.requests
+          const body = yield* getRequestBody(requests[0])
+          strictEqual(body.tools[0].strict, false)
+          deepStrictEqual(body.tools[0].parameters, { type: "object", additionalProperties: { type: "string" } })
+          deepStrictEqual(yield* Ref.get(received), { status: "open" })
+        }).pipe(Effect.provide(makeTestLayer({
+          body: { output: [makeFunctionCall("Search", { status: "open" })] }
+        }))))
+
       it.effect("converts transformed tool call params to the tool's standard encoded form", () =>
         Effect.gen(function*() {
           const received = yield* Ref.make<number | undefined>(undefined)
@@ -2208,6 +2225,42 @@ describe("OpenAiLanguageModel", () => {
   })
 
   describe("streamText", () => {
+    it.effect("preserves refusal metadata in the reconstructed prompt", () =>
+      Effect.gen(function*() {
+        const item = makeTextOutput("", {
+          content: [
+            { type: "refusal", refusal: "First explanation." },
+            { type: "refusal", refusal: "Second explanation." }
+          ]
+        })
+        const refusal = "First explanation.\n\nSecond explanation."
+
+        const parts = yield* LanguageModel.streamText({ prompt: "Do something bad" }).pipe(
+          Stream.runCollect,
+          Effect.provide(OpenAiLanguageModel.model("gpt-4o-mini")),
+          Effect.provide(makeStreamTestLayer([
+            {
+              type: "response.output_item.added",
+              sequence_number: 1,
+              output_index: 0,
+              item: { ...item, status: "in_progress", content: [] }
+            },
+            { type: "response.output_item.done", sequence_number: 2, output_index: 0, item }
+          ]))
+        )
+
+        strictEqual(parts.some((part) => part.type === "text-delta"), false)
+        deepStrictEqual(parts.find((part) => part.type === "text-end")?.metadata.openai, { itemId: item.id, refusal })
+        const message = Prompt.fromResponseParts(parts).content[0]
+        assert(message?.role === "assistant")
+        const text = message.content[0]
+        assert(text.type === "text")
+        deepStrictEqual(
+          [text.text, text.options.openai?.itemId, text.options.openai?.refusal],
+          ["", item.id, refusal]
+        )
+      }))
+
     it.effect("uses call_id for streamed shell calls and keeps the item ID in metadata", () =>
       Effect.gen(function*() {
         const item = {

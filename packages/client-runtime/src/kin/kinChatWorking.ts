@@ -148,41 +148,36 @@ export function kinChatWorkingItems(input: {
   return [...agents, ...handoffs, ...workers];
 }
 
-/** The pill's words; null when nothing is working. Never names a provider or model. */
+/**
+ * What the pill counts: work other than the chat's own agents' turns, which the line at the end of
+ * the messages already shows.
+ */
+export const kinWorkingPillItems = (items: ReadonlyArray<KinWorkingItem>) =>
+  items.filter((item) => item.kind !== "agent");
+
+/** The pill's words; null when nothing but the chat's own turn is working. No provider or model. */
 export function kinWorkingPillLabel(items: ReadonlyArray<KinWorkingItem>): string | null {
-  const [first] = items;
-  if (first === undefined) return null;
-  const named = items.find((item) => item.kind !== "worker");
+  const counted = kinWorkingPillItems(items);
+  if (counted.length === 0) return null;
+  const named = counted.find((item) => item.kind === "handoff");
   if (named === undefined)
-    return items.length === 1 ? "Waiting on a worker" : `Waiting on ${items.length} workers`;
-  if (items.length > 1) return `${named.name} and ${items.length - 1} more are working`;
-  if (named.kind === "handoff")
-    return named.held ? `Waiting on ${named.name}` : `${named.name} is working`;
-  switch (named.state) {
-    case "Working":
-      return `${named.name} is working`;
-    case "Starting":
-      return `${named.name} is starting`;
-    case "Paused":
-      return `${named.name} is paused`;
-    case "Waiting for budget":
-      return `${named.name} is waiting for budget`;
-    default:
-      return `${named.name}: ${named.state.toLowerCase()}`;
-  }
+    return counted.length === 1 ? "Waiting on a worker" : `Waiting on ${counted.length} workers`;
+  if (counted.length > 1) return `${named.name} and ${counted.length - 1} more are working`;
+  return named.held ? `Waiting on ${named.name}` : `${named.name} is working on this`;
 }
 
 /** Whether this person may stop the item: the host lets them interrupt, and it has a wake-up. */
 export const kinWorkingStoppable = (item: KinWorkingItem, canInterrupt: boolean) =>
   canInterrupt && item.wakeupId !== null;
 
-/** The pill offers Stop only when the one thing working can be stopped. */
+/** The pill offers Stop only when the one thing it counts can be stopped. */
 export function kinWorkingPillStop(
   items: ReadonlyArray<KinWorkingItem>,
   canInterrupt: boolean,
 ): KinWorkingItem | null {
-  const [only] = items;
-  return items.length === 1 && only !== undefined && kinWorkingStoppable(only, canInterrupt)
+  const counted = kinWorkingPillItems(items);
+  const [only] = counted;
+  return counted.length === 1 && only !== undefined && kinWorkingStoppable(only, canInterrupt)
     ? only
     : null;
 }

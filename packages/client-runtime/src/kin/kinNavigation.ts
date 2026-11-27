@@ -3,17 +3,27 @@
  * gear on Chats) holds for each person.
  */
 
+import type { KinShell } from "@t3tools/contracts";
+
+import { kinSectionName, kinSectionOn } from "./kinShell.ts";
 import { KIN_WATCH_LOG_TITLE } from "./kinWatches.ts";
 
 export type KinDestination = "chats" | "tasks" | "money" | "clients" | "docs";
 
-export const KIN_DESTINATION_NAMES: Readonly<Record<KinDestination, string>> = {
+const KIN_DESTINATION_NAMES: Readonly<Record<KinDestination, string>> = {
   chats: "Chats",
   tasks: "Tasks",
   money: "Money",
   clients: "Clients",
   docs: "Docs",
 };
+
+/** A destination's name as this company says it: Clients renamed reads "Patients". */
+export const kinDestinationName = (
+  destination: KinDestination,
+  shell: KinShell | null | undefined,
+): string =>
+  destination === "clients" ? kinSectionName(shell, "clients") : KIN_DESTINATION_NAMES[destination];
 
 /** Places the host has answered it won't show this viewer, which a grant can't tell apart. */
 export interface KinPlacesRefused {
@@ -25,17 +35,21 @@ export interface KinPlacesRefused {
 /**
  * Chats, then Tasks when the viewer may read Work, then each place the host hasn't refused: every
  * one for the owner or a co-owner, for anyone else the ones the host says they reach, none until
- * it has. A destination the viewer can't open is absent, never disabled.
+ * it has. A place whose section the company turned off is gone for everyone. A destination the
+ * viewer can't open is absent, never disabled.
  */
 export function kinDestinations(input: {
   readonly work: boolean;
   readonly ownerLevel: boolean;
   readonly refused: KinPlacesRefused;
   readonly reaches: KinPlacesRefused | null;
+  readonly shell?: KinShell | null | undefined;
 }): ReadonlyArray<KinDestination> {
   if (!input.work) return ["chats"];
   const shown = (place: keyof KinPlacesRefused) =>
-    !input.refused[place] && (input.ownerLevel || input.reaches?.[place] === true);
+    (place === "docs" || kinSectionOn(input.shell, place)) &&
+    !input.refused[place] &&
+    (input.ownerLevel || input.reaches?.[place] === true);
   return [
     "chats",
     "tasks",
@@ -50,10 +64,10 @@ export function kinDestinations(input: {
  * last drew, so a cold start offline keeps its places; Chats alone with neither. Each place still
  * reads live and says offline or loading, never refused, until the host answers.
  */
-export function kinDockShown(input: {
-  readonly live: ReadonlyArray<KinDestination> | null;
-  readonly cached: ReadonlyArray<KinDestination> | null;
-}): { readonly tabs: ReadonlyArray<KinDestination>; readonly known: boolean } {
+export function kinDockShown<Tab extends string = KinDestination>(input: {
+  readonly live: ReadonlyArray<Tab> | null;
+  readonly cached: ReadonlyArray<Tab> | null;
+}): { readonly tabs: ReadonlyArray<Tab | "chats">; readonly known: boolean } {
   return { tabs: input.live ?? input.cached ?? ["chats"], known: input.live !== null };
 }
 
@@ -62,11 +76,11 @@ export function kinDockShown(input: {
  * (`leave`: to Chats, for good); a place not known yet shows Chats meanwhile and comes back, and a
  * place appearing never opens itself.
  */
-export function kinDockSelection(input: {
-  readonly held: KinDestination;
-  readonly tabs: ReadonlyArray<KinDestination>;
+export function kinDockSelection<Tab extends string = KinDestination>(input: {
+  readonly held: Tab;
+  readonly tabs: ReadonlyArray<Tab>;
   readonly known: boolean;
-}): { readonly shown: KinDestination; readonly leave: boolean } {
+}): { readonly shown: Tab | "chats"; readonly leave: boolean } {
   if (input.tabs.includes(input.held)) return { shown: input.held, leave: false };
   return { shown: "chats", leave: input.known };
 }
@@ -94,6 +108,7 @@ export type KinSettingsPage =
   | "check-ins"
   | "watches"
   | "connections"
+  | "sections"
   | "deals"
   | "memory"
   | "company"
@@ -110,6 +125,7 @@ const KIN_SETTINGS_PAGES: ReadonlyArray<KinSettingsPage> = [
   "check-ins",
   "watches",
   "connections",
+  "sections",
   "deals",
   "memory",
   "company",
@@ -127,6 +143,7 @@ export const KIN_SETTINGS_PAGE_TITLES: Readonly<Record<KinSettingsPage, string>>
   "check-ins": "Check-ins",
   watches: KIN_WATCH_LOG_TITLE,
   connections: "Connections",
+  sections: "Sections",
   deals: "Deals",
   memory: "Memory",
   company: "Company details",
@@ -169,14 +186,15 @@ export function kinSettingsGroups(input: {
     title: KIN_SETTINGS_GROUP_TITLES.you,
     pages: ["profile", ...(input.notifications ? (["notifications"] as const) : []), "appearance"],
   };
-  // A teammate's What Kin checked holds the watches on their own things, or says there are none.
+  // A teammate's What Kin checked holds the watches on their own things, or says there are none;
+  // their Connections holds only their own mailbox.
   if (!input.ownerLevel)
     return [
       you,
       {
         id: "company",
         title: KIN_SETTINGS_GROUP_TITLES.company,
-        pages: [...(input.deals === true ? (["deals"] as const) : []), "watches"],
+        pages: [...(input.deals === true ? (["deals"] as const) : []), "watches", "connections"],
       },
     ];
   return [
@@ -190,6 +208,7 @@ export function kinSettingsGroups(input: {
         "check-ins",
         "watches",
         "connections",
+        "sections",
         "deals",
         "memory",
         "company",
@@ -212,9 +231,11 @@ export type KinPhoneSettingsRow =
   | "team"
   | "agents"
   | "company"
+  | "sections"
   | "deals"
   | "watches"
   | "host"
+  | "mailbox"
   | "stop";
 
 /**
@@ -226,9 +247,9 @@ export function kinPhoneSettingsRows(input: { readonly ownerLevel: boolean }): {
   readonly company: ReadonlyArray<KinPhoneSettingsRow>;
 } {
   return {
-    you: ["profile", "notifications", "appearance"],
+    you: ["profile", "notifications", "appearance", "mailbox"],
     company: input.ownerLevel
-      ? ["team", "agents", "company", "deals", "watches", "host", "stop"]
+      ? ["team", "agents", "company", "sections", "deals", "watches", "host", "stop"]
       : ["watches"],
   };
 }
@@ -273,4 +294,5 @@ export const KIN_SETTINGS_MOVED: Readonly<Record<string, KinSettingsPage>> = {
   "kin-connections": "connections",
   approvals: "approvals",
   deals: "deals",
+  sections: "sections",
 };

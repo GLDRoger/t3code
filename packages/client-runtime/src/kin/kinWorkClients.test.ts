@@ -21,6 +21,7 @@ import {
   kinShortFormFold,
   kinWorkDraftAnother,
   kinClientContactLine,
+  kinClientPageKeys,
   kinClientPageView,
   kinClientsChosenAtom,
   kinClientsChosenKey,
@@ -160,6 +161,14 @@ describe("kinClientRow", () => {
       names,
       null,
       "Nothing open · No logged contact yet",
+      "No next step",
+    ],
+    [
+      "a client that owes money and nothing else",
+      { ...row, lastContactAt: null, owed: [{ currency: "INR", minor: 4_720_000 }] },
+      names,
+      null,
+      "₹47,200 owed · No logged contact yet",
       "No next step",
     ],
     // Without counts a row can't know there is no next step; a vendor has none to take.
@@ -382,6 +391,13 @@ describe("kinClientPageView", () => {
       nextStep: { next: null },
     });
     expect(kinClientPageView(page({}), names, now, true).line).toBe("Client");
+    // Opened by its link while Clients is off: its record stays editable, nothing new is offered.
+    expect(kinClientPageView(page({}), names, now, true).adds).toBe(true);
+    const clientsOff = { rev: 3, sections: [{ id: "clients", on: false }] };
+    expect(kinClientPageView(page({}), names, now, true, clientsOff)).toMatchObject({
+      adds: false,
+      can: { edit: true },
+    });
   });
 
   it("opens with the soonest thing owed, and a vendor has no Next step row", () => {
@@ -398,13 +414,61 @@ describe("kinClientPageView", () => {
     expect(kinClientPageView(page({ kind: "vendor" }), names, now, true).nextStep).toBeNull();
   });
 
+  it("marks a promise row with where it was made, and reads the contract's dates", () => {
+    const record = (key: string, category: string, from?: object) => ({
+      recordId: `r-${key}`,
+      orgId: "org",
+      key,
+      title: `Invented ${key}`,
+      state: "open",
+      waitingOn: null,
+      owner: { _tag: "person", personId: zoya },
+      category,
+      side: "ours",
+      dueAt: null,
+      dueAllDay: false,
+      late: false,
+      confirmed: true,
+      sensitive: false,
+      working: false,
+      pullRequest: null,
+      rev: 1,
+      createdAt: "2026-11-01T10:00:00.000Z",
+      updatedAt: "2026-11-01T10:00:00.000Z",
+      closedAt: null,
+      ...(from === undefined ? {} : { from }),
+    });
+    const view = kinClientPageView(
+      {
+        ...page({}),
+        weOwe: {
+          records: [
+            record("W-1", "obligation", { kind: "note", note: "At the site visit" }),
+            record("W-2", "task"),
+          ],
+          total: 2,
+        },
+        contract: { project: "P-1", renewsOn: "2027-03-01", noticeBy: "2026-12-31" },
+      } as unknown as KinPartyPage,
+      names,
+      now,
+      true,
+    );
+    expect(view.weOwe.rows.map((row) => row.promise)).toEqual([
+      { from: "At the site visit", open: null },
+      null,
+    ]);
+    expect(view.contract).toEqual({ text: "Renews 1 Mar · notice by 31 Dec", soon: false });
+    expect(kinClientPageView(page({}), names, now, true).contract).toBeNull();
+  });
+
   it("says who adds its contacts to a reader who can't", () => {
     const reader = (can: KinPartyPage["can"], party: Partial<KinPartyPage["party"]> = {}) =>
       kinClientPageView(page(party, can), names, now, false).contactsWho;
     expect(reader({ edit: true, log: true, owner: false })).toBeNull();
     expect(reader({ edit: false, log: true, owner: false, contacts: true })).toBeNull();
     expect(reader({ edit: false, log: true, owner: false, contacts: false })).toBe(
-      "Zoya looks after this one. They, or anyone with an open deal here, add and change its contacts.",
+      "Zoya, who looks after this one, and anyone with an open deal here add and change its contacts.",
     );
     expect(reader({ edit: false, log: true, owner: false }, { kind: "vendor" })).toBe(
       "Zoya looks after this one, and adds and changes its contacts.",
@@ -424,6 +488,50 @@ describe("kinClientPageView", () => {
       log: false,
       owner: false,
     });
+    // Outside India: tax number shows as "Tax number <number>", plus the client-accounts line when on.
+    const uk = kinClientPageView(
+      page({ gstin: "GB123456789", accountsForTax: true }),
+      names,
+      now,
+      true,
+      null,
+      "GB",
+    );
+    expect([uk.tax, uk.accountsForTax]).toEqual([
+      "Tax number GB123456789",
+      "Accounts for the tax themselves: invoices carry no tax.",
+    ]);
+    expect(
+      kinClientPageView(
+        page({ gstin: "27ABCDE1234F1Z5", accountsForTax: true }),
+        names,
+        now,
+        true,
+        null,
+        "IN",
+      ),
+    ).toMatchObject({
+      tax: "GSTIN 27ABCDE1234F1Z5",
+      accountsForTax: "Accounts for the tax themselves: invoices carry no tax.",
+    });
+  });
+
+  it("shows usable credit rows as amount from day and watches their receipt keys", () => {
+    const withCredit = {
+      ...page({}),
+      credit: [
+        {
+          key: KinRecordKey.make("RCT-3"),
+          amount: { minor: 120_000, currency: "USD" },
+          receivedOn: "2026-11-04",
+        },
+      ],
+    } as unknown as KinPartyPage;
+    expect(kinClientPageView(withCredit, names, now, true).credit).toEqual([
+      { key: "RCT-3", line: "$1,200.00 from 4 Nov" },
+    ]);
+    expect(kinClientPageKeys(withCredit).has("RCT-3")).toBe(true);
+    expect(kinClientPageView(page({}), names, now, false).credit).toEqual([]);
   });
 });
 
@@ -734,6 +842,43 @@ describe("kinProjectPageView", () => {
         now,
       ).why,
     ).toEqual(["Nothing is late."]);
+  });
+
+  it("leaves the money and overdue invoices off the page with Invoices and quotes off", () => {
+    const base = page([]);
+    const billed: KinProjectPage = {
+      ...base,
+      project: {
+        ...base.project,
+        health: "at_risk",
+        healthBecause: { ...base.project.healthBecause, overdueInvoices: 1 },
+      },
+      money: {
+        quoted: [],
+        invoiced: [{ minor: 500000, currency: "INR" }],
+        received: [],
+        unpaid: [],
+      },
+    };
+    const shown = kinProjectPageView(billed, names, now);
+    expect(shown.money.map((line) => line.label)).toEqual(["Invoiced"]);
+    expect(shown.why).toContain("1 invoice for this project is overdue.");
+    const invoicesOff = {
+      rev: 2,
+      sections: [
+        { id: "money", on: true },
+        { id: "invoices", on: false },
+      ],
+    };
+    const hidden = kinProjectPageView(billed, names, now, invoicesOff);
+    expect(hidden.money).toEqual([]);
+    expect(hidden.why).not.toContain("1 invoice for this project is overdue.");
+  });
+
+  it("offers nothing new under a project opened by its link while Clients is off", () => {
+    const clientsOff = { rev: 3, sections: [{ id: "clients", on: false }] };
+    expect(kinProjectPageView(page([]), names, now).adds).toBe(true);
+    expect(kinProjectPageView(page([]), names, now, clientsOff).adds).toBe(false);
   });
 });
 

@@ -21,7 +21,10 @@ export function KinNextStep(props: {
   readonly onAct: (act: KinNextStepAct) => void;
   /** A line under the buttons on what pressing them does, such as stopping the agent. */
   readonly footnote?: string | null;
+  /** The chat with the agent holding it: the card's secondary action, after its own. */
+  readonly chat?: { readonly label: string; readonly onPress: () => void } | null;
 }) {
+  const chat = props.chat ?? null;
   const { step } = props;
   return (
     <View className="gap-2.5 rounded-[20px] border border-border bg-card-alt p-4">
@@ -58,7 +61,7 @@ export function KinNextStep(props: {
           ))}
         </View>
       )}
-      {step.acts.length === 0 ? null : (
+      {step.acts.length === 0 && chat === null ? null : (
         <View className="flex-row flex-wrap gap-2">
           {step.acts.map((act, index) => (
             <Button
@@ -72,6 +75,15 @@ export function KinNextStep(props: {
               onPress={() => props.onAct(act.id)}
             />
           ))}
+          {chat === null ? null : (
+            <Button
+              tone="secondary"
+              size="compact"
+              label={chat.label}
+              icon="bubble.left"
+              onPress={chat.onPress}
+            />
+          )}
         </View>
       )}
       {[step.note, props.footnote ?? null].map((line) =>

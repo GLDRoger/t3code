@@ -6,6 +6,9 @@ import * as SqlClient from "effect/sql/SqlClient";
 export const headKey = (repo: string, number: number, headSha: string) =>
   `review:${repo.toLowerCase()}#${number}:${headSha}`;
 
+/** Kept beside a head's row when its review was posted meaning to block: a requeued turn keeps it. */
+export const blocksKey = (key: string) => `blocks:${key}`;
+
 /**
  * A head row's `review_url` while a post of it was sent and GitHub's answer is unknown: it holds
  * the head as posted might have, so at worst no review goes out, never two.

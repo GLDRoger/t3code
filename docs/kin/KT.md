@@ -85,7 +85,7 @@ A lead just works in chats its owner placed it in (its DM, the owner's groups): 
 
 ## Running Kin locally
 
-Set up the repo as upstream's [development runbook](../operations/development.md) describes (`vp i`). Then:
+Set up the repo as upstream's [development runbook](../operations/00_development.md) describes (`vp i`). Then:
 
 1. Start the dev server with Kin on:
 

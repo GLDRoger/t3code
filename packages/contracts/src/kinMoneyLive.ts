@@ -92,6 +92,7 @@ export function kinMoneyApply(held: KinMoneyLive, change: KinMoneyChange): KinMo
       ? {}
       : {
           lists: {
+            ...held.lists,
             lists: held.lists.lists.map((def) =>
               open.has(def.list) ? { ...def, open: open.get(def.list)! } : def,
             ),

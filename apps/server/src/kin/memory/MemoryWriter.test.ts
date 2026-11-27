@@ -9,6 +9,7 @@ import {
   KinChatId,
   KinMemoryItemId,
   KinOrgId,
+  KinPersonId,
   type MemoryItemHead,
   type VcsError,
   VcsProcessSpawnError,
@@ -28,7 +29,14 @@ import * as Scan from "./secretScan.ts";
 import * as PullRequests from "./MemoryPullRequests.ts";
 import { journalEntry } from "./journal.ts";
 import { FIXTURE_QUOTE, FIXTURE_SAID, fixtureItem } from "./__fixtures__/items.ts";
-import { authorise, fingerprint, reaches, storedLabels, suggest } from "./sensitivity.ts";
+import {
+  authorise,
+  fingerprint,
+  reaches,
+  storedLabels,
+  suggest,
+  visibility,
+} from "./sensitivity.ts";
 
 const orgId = KinOrgId.make("fixture-org");
 const agentId = KinAgentId.make("fixture-lead");
@@ -37,6 +45,7 @@ it.live.each([
   "supersede-retry",
   "update-provenance",
   "undo-created",
+  "undo-coding-agent",
   "undo",
   "recovered-commit",
   "lost-session-retry",
@@ -79,10 +88,7 @@ it.live.each([
   "review-null",
   "credentials",
   "read-during-record",
-  "deferral-card-remind",
-  "deferral-card-monday",
   "deferral-plain-remind",
-  "deferral-card-other-item",
   "H3-packed-ref",
   "M1-unanchored",
   "M2-nondescendant",
@@ -149,6 +155,23 @@ it.live.each([
             }),
       );
     }
+    const undoFiles = ["created", "ended", "superseded", "normal"] as const;
+    const undoFile = (id: (typeof undoFiles)[number]) => `claims/${id}.md`;
+    const writeUndoLine = (
+      id: (typeof undoFiles)[number],
+      title: string,
+      fields: Record<string, unknown> = {},
+    ) =>
+      fs.writeFileString(
+        `${source}/${undoFile(id)}`,
+        fixtureItem({ id, kind: "claim", title, sensitive: false, ...fields }),
+      );
+    if (scenario === "undo-coding-agent") {
+      yield* fs.makeDirectory(`${source}/claims`);
+      yield* writeUndoLine("ended", "Ended stock", { invalid_at: "2026-11-02T00:00:00.000Z" });
+      yield* writeUndoLine("superseded", "Old stock", { superseded_by: "normal" });
+      yield* writeUndoLine("normal", "Three boxes");
+    }
     if (scenario.startsWith("deferral-")) {
       yield* fs.makeDirectory(`${source}/deferrals`);
       yield* fs.writeFileString(`${source}/deferrals/def-001.md`, fixtureItem());
@@ -174,6 +197,11 @@ it.live.each([
     if (scenario === "M4-modes")
       yield* git(source, ["update-index", "--chmod=+x", "owner-executable"]);
     yield* commit(source);
+    if (scenario === "undo-coding-agent") {
+      for (const id of undoFiles) yield* writeUndoLine(id, `Updated ${id}`);
+      yield* git(source, ["add", "--", "claims"]);
+      yield* commit(source);
+    }
     if (scenario === "M4-modes") {
       const head = yield* git(source, ["rev-parse", "HEAD"]);
       yield* git(source, [
@@ -318,35 +346,12 @@ it.live.each([
                           itemId: scenario === "owner-other-item-keep" ? "other-item" : "def-001",
                           action: scenario === "owner-drop-keep" ? "drop" : "keep",
                         }
-                      : scenario === "deferral-card-monday"
-                        ? {
-                            saidBy: "fixture-owner",
-                            trust: "owner",
-                            source: "fixture-owner-message",
-                            text: FIXTURE_SAID,
-                            kind: "deferral_card",
-                            itemId: "def-001",
-                            action: "monday",
-                            due: "2026-11-16T09:00:00.000+05:30",
-                          }
-                        : scenario === "deferral-card-remind" ||
-                            scenario === "deferral-card-other-item"
-                          ? {
-                              saidBy: "fixture-owner",
-                              trust: "owner",
-                              source: "fixture-owner-message",
-                              text: FIXTURE_SAID,
-                              kind: "deferral_card",
-                              itemId:
-                                scenario === "deferral-card-other-item" ? "other-item" : "def-001",
-                              action: "remind",
-                            }
-                          : {
-                              saidBy: "fixture-owner",
-                              trust: "owner",
-                              source: "fixture-owner-message",
-                              text: FIXTURE_SAID,
-                            },
+                      : {
+                          saidBy: "fixture-owner",
+                          trust: "owner",
+                          source: "fixture-owner-message",
+                          text: FIXTURE_SAID,
+                        },
                   ],
                   [
                     "member",
@@ -614,6 +619,43 @@ it.live.each([
         const committed = yield* writer.commitWakeup(orgId, "wake1", "completed");
         yield* writer.discard(orgId, "wake1");
         expect(yield* writer.commitWakeup(orgId, "wake1", "completed")).toEqual(committed);
+        return;
+      }
+      if (scenario === "undo-coding-agent") {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_orgs VALUES (${orgId}, 'Fixture', '2026-11-08T00:00:00.000Z')`;
+        const base = yield* git(paths.writer, ["rev-parse", "main^"]);
+        const head = yield* git(paths.writer, ["rev-parse", "main"]);
+        const undo = (id: (typeof undoFiles)[number]) =>
+          writer.undoChange(orgId, {
+            agentId,
+            branch: "main",
+            base,
+            commit: head,
+            itemId: KinMemoryItemId.make(id),
+            path: undoFile(id),
+            codingAgent: { personId: KinPersonId.make("owner"), admit: () => Effect.void },
+          });
+        for (const id of ["created", "ended", "superseded"] as const)
+          expect(yield* Effect.flip(undo(id)), id).toMatchObject({
+            reason: "not_allowed",
+            message: "A coding agent's key never deletes or archives anything.",
+          });
+        expect(yield* git(paths.writer, ["rev-parse", "main"])).toBe(head);
+
+        const normal = KinMemoryItemId.make("normal");
+        const current = yield* memory.readItemQuietly(orgId, normal);
+        yield* authorise(orgId, normal, fingerprint(current), "owner_setting");
+        expect(visibility(current, yield* storedLabels(orgId))).toBe("team");
+        expect((yield* undo("normal"))._tag).toBe("undone");
+        const restored = yield* memory.readItemQuietly(orgId, normal);
+        const labels = yield* storedLabels(orgId);
+        expect(restored.head.title).toBe("Three boxes");
+        expect(labels.shared.has(normal)).toBe(false);
+        expect(visibility(restored, labels)).toBe("only_owner");
+        expect(yield* git(remote, ["--git-dir=.", "log", "-1", "--format=%s", "main"])).toBe(
+          `kin(${agentId}): owner (coding agent) undo normal`,
+        );
         return;
       }
       if (scenario === "undo-created" || scenario === "undo") {
@@ -1028,7 +1070,7 @@ it.live.each([
         ).toBe("Success");
         return;
       }
-      if (scenario === "deferral-plain-remind" || scenario === "deferral-card-other-item") {
+      if (scenario === "deferral-plain-remind") {
         const result = yield* writer
           .stage(orgId, "wake1", {
             path: "deferrals/def-001.md",
@@ -1037,45 +1079,6 @@ it.live.each([
           })
           .pipe(Effect.result);
         expect(result._tag === "Failure" && result.failure._tag).toBe("MemoryConflict");
-        return;
-      }
-      if (scenario === "deferral-card-monday") {
-        const stage = (fields: Record<string, unknown>) =>
-          writer
-            .stage(orgId, "wake1", {
-              path: "deferrals/def-001.md",
-              content: fixtureItem(fields),
-              sourceEventId: "owner",
-            })
-            .pipe(Effect.result);
-        for (const forged of [
-          { due: "2026-11-17T09:00:00.000+05:30" },
-          { due: "2026-11-16T09:00:00.000+05:30", on_due: "remind" },
-        ]) {
-          const result = yield* stage(forged);
-          expect(result._tag === "Failure" && result.failure._tag).toBe("MemoryConflict");
-        }
-        expect((yield* stage({ due: "2026-11-16T09:00:00.000+05:30" }))._tag).toBe("Success");
-        return;
-      }
-      if (scenario === "deferral-card-remind") {
-        const stage = (onDue: string) =>
-          writer
-            .stage(orgId, "wake1", {
-              path: "deferrals/def-001.md",
-              content: fixtureItem({ on_due: onDue }),
-              sourceEventId: "owner",
-            })
-            .pipe(Effect.result);
-        const forged = yield* stage("ask");
-        expect(forged._tag === "Failure" && forged.failure._tag).toBe("MemoryConflict");
-        expect((yield* stage("remind"))._tag).toBe("Success");
-        const committed = yield* writer.commitWakeup(orgId, "wake1", "completed");
-        expect(
-          yield* git(paths.writer, ["show", `${committed.commit}:deferrals/def-001.md`]),
-        ).toContain("on_due: remind");
-        const last = synced.at(-1)?.find((item) => item.id === "def-001");
-        expect(last?.on_due).toBe("remind");
         return;
       }
       if (scenario.endsWith("-keep")) {
@@ -1849,6 +1852,7 @@ it.effect(
         directMainPush: true,
         repositories: [{ orgId, repoUrl: remote, path: "state" }],
       });
+      const episodes: Array<{ operation: string; failure: string | undefined }> = [];
       const layer = Writer.layer.pipe(
         Layer.provideMerge(
           Memory.layer.pipe(
@@ -1857,7 +1861,15 @@ it.effect(
           ),
         ),
         Layer.provideMerge(Repository.layer),
-        Layer.provide(Layer.succeed(Memory.MemoryRecoveryHooks, { notify: () => Effect.void })),
+        Layer.provide(
+          Layer.succeed(Memory.MemoryRecoveryHooks, {
+            notify: () => Effect.void,
+            writeEpisode: (_org: KinOrgId, operation: string, failure: string | undefined) =>
+              Effect.sync(() => {
+                episodes.push({ operation, failure });
+              }),
+          }),
+        ),
         Layer.provide(config),
         Layer.provide(Layer.succeed(Writer.MemoryWriterHooks, { notify: () => Effect.void })),
         Layer.provide(
@@ -1930,10 +1942,15 @@ it.effect(
         yield* fs.chmod(hook, 0o755);
         // Whether a clear's own event ran it or, after a crash, the sync at startup does.
         yield* writer.stripQuotes(orgId);
+        assert.deepStrictEqual(episodes.at(-1), { operation: "deleted-quotes", failure: "remote" });
         assert.include(yield* show("main", "claims/said.md"), "quote:");
         assert.notInclude(yield* show(shadow, "claims/said.md"), "quote:");
         yield* fs.remove(hook);
         yield* writer.stripQuotes(orgId);
+        assert.deepStrictEqual(episodes.at(-1), {
+          operation: "deleted-quotes",
+          failure: undefined,
+        });
         for (const branch of ["main", shadow]) {
           const text = yield* show(branch, "claims/said.md");
           assert.notInclude(text, "quote:", branch);

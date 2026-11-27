@@ -25,6 +25,7 @@ import {
   KinMessageOrigin,
   KinMessageRelay,
   KinMessageWhen,
+  KinMessageWithdrawn,
   KinMessageRef,
   type KinMessageRefInput,
   KIN_MESSAGE_REFS_CAP,
@@ -56,8 +57,9 @@ import { isOrgOwner } from "../lead/orgState.ts";
 import { sectionsOf } from "../work/docBody.ts";
 import { sensitiveNow } from "../work/recordRows.ts";
 import { viewVersionVisible } from "../work/teamView.ts";
-import { encodeNames, nameKeys, nameThreads, withLinks } from "./messageLinks.ts";
+import { encodeNames, linkAccessStamp, nameKeys, nameThreads, withLinks } from "./messageLinks.ts";
 import { messageForViewer } from "./messageView.ts";
+import { dismissedArrivalSql } from "./arrivalNotes.ts";
 import { chatShared, readableBy, readableFrom, recordJoin } from "./sharing.ts";
 import { accessSql } from "../people/KinAccess.ts";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -82,6 +84,7 @@ const KinReadState = Schema.Struct({
   chatId: KinChatId,
   memberId: KinMemberId,
   lastReadSeq: NonNegativeInt,
+  answeredSeq: NonNegativeInt,
   updatedAt: IsoDateTime,
 });
 type KinReadState = typeof KinReadState.Type;
@@ -118,7 +121,8 @@ type InsertMessage = Omit<KinMessage, "seq" | "authorRole" | "clientMessageId" |
   readonly caller?: McpThreadCaller | undefined;
   // The reply bridge posts for a wake-up it resolved itself; its running row is the authority.
   readonly wakeupId?: KinWakeupId | undefined;
-  readonly placeReplyFigures?: true | undefined;
+  readonly placeReplyFigures?: true | "named" | undefined;
+  readonly recordWakeup?: true | undefined;
   /** Pictures Kin drew for this agent: each doc version is read here, in the write's transaction. */
   readonly pictureRefs?: ReadonlyArray<PictureDoc> | undefined;
   // Only Kin itself (worker task cards, a failed send's mail again) posts outside a wake-up.
@@ -145,6 +149,28 @@ const decodeWidgetText = Schema.decodeEffect(
 );
 const decodeWidgetFeed = Schema.decodeEffect(KinWidget.fields.feed);
 const decodeBody = Schema.decodeEffect(KinMessage.fields.body);
+const CONTINUATION_SUFFIX = /~b(?:[2-9]|[1-9][0-9]+)$/;
+
+export const replyGroupKey = (key: string | null) =>
+  key !== null && /^(?:send:)?(?:reply:|kin-send:)/.test(key)
+    ? key.replace(CONTINUATION_SUFFIX, "")
+    : null;
+
+export const isContinuation = (sql: SqlClient.SqlClient, alias: "m" | "reply") => {
+  const key = sql(`${alias}.client_message_id`);
+  return sql`COALESCE((
+    (${key} GLOB 'send:reply:*' OR ${key} GLOB 'send:kin-send:*')
+    AND (${key} GLOB '*~b[2-9]' OR ${key} GLOB '*~b[1-9][0-9]*')
+  ), 0)`;
+};
+
+export const replyGroupKeySql = (sql: SqlClient.SqlClient, alias: "m" | "reply") => {
+  const key = sql(`${alias}.client_message_id`);
+  return sql`CASE WHEN ${sql(`${alias}.silent`)} = 1 AND ${isContinuation(sql, alias)}
+    THEN substr(${key}, 1, length(rtrim(${key}, '0123456789')) - 2)
+    ELSE ${key} END`;
+};
+
 const decodeHistory = Schema.decodeEffect(KinChatHistoryInput);
 const decodeSeq = Schema.decodeEffect(NonNegativeInt);
 const decodeResume = Schema.decodeEffect(
@@ -250,6 +276,9 @@ const {
   embeds: _embeds,
   form: _form,
   turnChanges: _turnChanges,
+  withdrawn: _withdrawn,
+  sourceWakeupId: _sourceWakeupId,
+  lapsedQuestion: _lapsedQuestion,
   ...messageRowFields
 } = KinMessage.fields;
 const encodeRelay = Schema.encodeEffect(Schema.fromJsonString(KinMessageRelay));
@@ -262,11 +291,16 @@ const MessageRow = Schema.Struct({
   storedRelay: Schema.NullOr(Schema.fromJsonString(KinMessageRelay)),
   storedOrigin: Schema.NullOr(Schema.fromJsonString(KinMessageOrigin)),
   storedWhen: Schema.NullOr(Schema.fromJsonString(KinMessageWhen)),
+  storedWithdrawn: Schema.NullOr(Schema.fromJsonString(KinMessageWithdrawn)),
+  storedLapsedQuestion: Schema.NullOr(
+    Schema.fromJsonString(KinMessage.fields.lapsedQuestion.schema),
+  ),
   storedClientMessageId: Schema.NullOr(Schema.String),
   storedAttachments: Schema.NullOr(Schema.fromJsonString(StoredAttachments)),
   storedRefs: Schema.NullOr(Schema.fromJsonString(StoredRefs)),
   storedEmbeds: Schema.NullOr(Schema.fromJsonString(StoredEmbeds)),
   storedForm: Schema.NullOr(Schema.Literal("brief")),
+  storedSourceWakeupId: Schema.NullOr(KinWakeupId),
   author: Schema.fromJsonString(KinMessage.fields.author),
   mentions: Schema.fromJsonString(KinMessage.fields.mentions),
 }).pipe(
@@ -282,12 +316,18 @@ const MessageRow = Schema.Struct({
         storedRelay,
         storedOrigin,
         storedWhen,
+        storedWithdrawn,
+        storedLapsedQuestion,
         storedForm,
         storedEmbeds,
+        storedSourceWakeupId,
         ...message
       }): KinMessage => ({
         ...message,
+        ...(storedSourceWakeupId === null ? {} : { sourceWakeupId: storedSourceWakeupId }),
         ...(storedWhen === null ? {} : { when: storedWhen }),
+        ...(storedWithdrawn === null ? {} : { withdrawn: storedWithdrawn }),
+        ...(storedLapsedQuestion === null ? {} : { lapsedQuestion: storedLapsedQuestion }),
         ...(storedDiscussionId === null ? {} : { discussionId: storedDiscussionId }),
         ...(storedDiscussionOpen === null ? {} : { discussionOpen: storedDiscussionOpen === 1 }),
         ...(storedRelay === null ? {} : { relay: storedRelay }),
@@ -310,12 +350,18 @@ const MessageRow = Schema.Struct({
         when,
         links: _links,
         turnChanges: _turnChanges,
+        withdrawn,
+        lapsedQuestion,
         form,
         embeds,
+        sourceWakeupId,
         ...message
       }) => ({
         ...message,
         storedWhen: when ?? null,
+        storedSourceWakeupId: sourceWakeupId ?? null,
+        storedWithdrawn: withdrawn === undefined ? null : { why: withdrawn.why, at: withdrawn.at },
+        storedLapsedQuestion: lapsedQuestion ?? null,
         storedDiscussionId: discussionId ?? null,
         storedDiscussionOpen: null,
         storedRelay: relay ?? null,
@@ -330,10 +376,10 @@ const MessageRow = Schema.Struct({
     }),
   ),
 );
-const messageColumns = `org_id AS "orgId", chat_id AS "chatId", message_id AS "messageId", seq AS "seq", change_seq AS "changeSeq", client_message_id AS "storedClientMessageId", author_role AS "authorRole", kind AS "kind", body AS "body", attachments_json AS "storedAttachments", refs_json AS "storedRefs", form AS "storedForm", embeds_json AS "storedEmbeds", intent AS "intent", mentions_json AS "mentions", reply_to AS "replyTo", widget_id AS "widgetId", floor_run_id AS "floorRunId", status AS "status", sent_by AS "sentBy", created_at AS "createdAt", edited_at AS "editedAt", discussion_id AS "storedDiscussionId", (SELECT 1 - final FROM kin_discussions d WHERE d.org_id = kin_messages.org_id AND d.discussion_id = kin_messages.discussion_id) AS "storedDiscussionOpen", relay_json AS "storedRelay", origin_json AS "storedOrigin", when_json AS "storedWhen", CASE author_kind WHEN 'human' THEN json_object('_tag', 'human', 'personId', author_person_id, 'memberId', author_member_id)
+const messageColumns = `org_id AS "orgId", chat_id AS "chatId", message_id AS "messageId", seq AS "seq", change_seq AS "changeSeq", client_message_id AS "storedClientMessageId", author_role AS "authorRole", kind AS "kind", body AS "body", attachments_json AS "storedAttachments", refs_json AS "storedRefs", form AS "storedForm", embeds_json AS "storedEmbeds", intent AS "intent", mentions_json AS "mentions", reply_to AS "replyTo", widget_id AS "widgetId", floor_run_id AS "floorRunId", status AS "status", sent_by AS "sentBy", created_at AS "createdAt", edited_at AS "editedAt", discussion_id AS "storedDiscussionId", (SELECT 1 - final FROM kin_discussions d WHERE d.org_id = kin_messages.org_id AND d.discussion_id = kin_messages.discussion_id) AS "storedDiscussionOpen", relay_json AS "storedRelay", origin_json AS "storedOrigin", when_json AS "storedWhen", withdrawn_json AS "storedWithdrawn", lapsed_question_json AS "storedLapsedQuestion", CASE author_kind WHEN 'human' THEN json_object('_tag', 'human', 'personId', author_person_id, 'memberId', author_member_id)
  WHEN 'agent' THEN json_object('_tag', 'agent', 'agentId', author_agent_id, 'memberId', author_member_id,
  'ownerPersonId', author_owner_person_id, 'threadId', author_thread_id)
- ELSE json_object('_tag', author_kind) END AS author`;
+ ELSE json_object('_tag', author_kind) END AS author, source_wakeup_id AS "storedSourceWakeupId"`;
 const WidgetRow = Schema.Struct({
   ...KinWidget.fields,
   state: Schema.fromJsonString(KinWidget.fields.state),
@@ -432,7 +478,7 @@ const ActiveAgentThreadRow = Schema.Struct({
 });
 const agentThreadColumns = `org_id AS "orgId", thread_id AS "threadId", agent_id AS "agentId", started_at AS "startedAt", ended_at AS "endedAt"`;
 const ReadStateRow = KinReadState;
-const readStateColumns = `org_id AS "orgId", chat_id AS "chatId", member_id AS "memberId", last_read_seq AS "lastReadSeq", updated_at AS "updatedAt"`;
+const readStateColumns = `org_id AS "orgId", chat_id AS "chatId", member_id AS "memberId", last_read_seq AS "lastReadSeq", answered_seq AS "answeredSeq", updated_at AS "updatedAt"`;
 
 export const activeMemberStatement = (
   sql: SqlClient.SqlClient,
@@ -460,6 +506,14 @@ export class KinChatRepository extends Context.Service<
     ) => Effect.Effect<Option.Option<KinChatMember>, RepositoryError>;
     readonly getMessage: (
       input: Scope & { readonly messageId: KinMessageId },
+    ) => Effect.Effect<Option.Option<KinMessage>, RepositoryError>;
+    readonly markLapsedQuestion: (
+      input: ChatScope & {
+        readonly messageId: KinMessageId;
+        readonly personId: KinPersonId;
+        readonly agentId: KinAgentId;
+        readonly lapse: NonNullable<KinMessage["lapsedQuestion"]>;
+      },
     ) => Effect.Effect<Option.Option<KinMessage>, RepositoryError>;
     /** The chat whose message carries a stored file, unless that message was deleted. */
     readonly attachmentChat: (
@@ -551,10 +605,12 @@ export class KinChatRepository extends Context.Service<
         readonly memberId: KinMemberId;
         readonly afterSeq: number;
         readonly afterChangeSeq?: number | undefined;
+        readonly includeAccessStamp?: boolean;
       },
     ) => Effect.Effect<
       {
         readonly reset: boolean;
+        readonly accessStamp?: string;
         /** The reset is a clear made after the caller's cursor: nothing it holds survives. */
         readonly cleared?: boolean;
         /** The chat's `last_seq` at its last clear; 0 when it never was. */
@@ -567,6 +623,9 @@ export class KinChatRepository extends Context.Service<
       RepositoryError
     >;
     readonly listOpenWaiting: (
+      input: Scope & { readonly personId: KinPersonId },
+    ) => Effect.Effect<ReadonlyArray<KinWaitingItem>, RepositoryError>;
+    readonly listOpenWaitingRelayedBy: (
       input: Scope & { readonly personId: KinPersonId },
     ) => Effect.Effect<ReadonlyArray<KinWaitingItem>, RepositoryError>;
     /** What waits on the owner that this viewer, a co-owner, may see (`ownersWaiting`). */
@@ -648,6 +707,8 @@ export class KinChatRepository extends Context.Service<
         readonly lead?: true;
         /** The body is the page as stored with these lines in its Money section (`kinPageWithLines`). */
         readonly money?: ReadonlyArray<string>;
+        /** Refused once anything but Kin's own lines follows it in its chat. */
+        readonly onlyIfLast?: true;
       },
     ) => Effect.Effect<KinMessage, RepositoryError>;
     readonly history: (
@@ -683,10 +744,12 @@ export class KinChatRepository extends Context.Service<
     readonly getReadState: (
       input: MemberScope,
     ) => Effect.Effect<Option.Option<KinReadState>, RepositoryError>;
+    /** Seen up to `seq`; with `answered`, answered up to there too. Neither mark moves back. */
     readonly markRead: (
       input: MemberScope & {
         readonly seq: typeof NonNegativeInt.Type;
         readonly updatedAt: IsoDateTime;
+        readonly answered?: boolean;
       },
     ) => Effect.Effect<void, RepositoryError>;
     readonly unreadCount: (input: MemberScope) => Effect.Effect<number, RepositoryError>;
@@ -766,13 +829,14 @@ const make = Effect.gen(function* () {
   const linked = (...args: Parameters<typeof withLinks>) =>
     withLinks(...args).pipe(Effect.provideService(SqlClient.SqlClient, sql));
   // People read an agent's helper threads and entries by their names, never a link or a key.
-  const named_ = (orgId: KinOrgId, chatId: KinChatId, body: string) =>
+  const named_ = (orgId: KinOrgId, chatId: KinChatId, body: string, max = Infinity) =>
     nameThreads(orgId, chatId, body).pipe(
       Effect.flatMap((worded) => nameKeys(orgId, chatId, worded)),
-      Effect.map((named) => ({
-        body: named.body,
-        json: named.names.length === 0 ? null : encodeNames(named.names),
-      })),
+      Effect.map((named) =>
+        named.body.length > max
+          ? { body, json: null }
+          : { body: named.body, json: named.names.length === 0 ? null : encodeNames(named.names) },
+      ),
       Effect.provideService(SqlClient.SqlClient, sql),
     );
   const keepNames = (orgId: KinOrgId, messageId: string, json: string | null) =>
@@ -1021,6 +1085,7 @@ const make = Effect.gen(function* () {
           AND m.created_at >= strftime('%Y-%m-%dT%H:%M:%fZ', w.started_at / 1000.0, 'unixepoch')
         WHERE w.org_id = ${input.orgId} AND w.agent_id = ${input.agentId}
           AND w.thread_id = ${input.threadId} AND w.status = 'running'
+          AND NOT ${isContinuation(sql, "m")}
         GROUP BY w.wakeup_id ORDER BY w.wakeup_id LIMIT 1`;
       return { messages: rows[0]?.messages ?? 0, chars: rows[0]?.chars ?? 0 };
     },
@@ -1101,7 +1166,11 @@ const make = Effect.gen(function* () {
     Effect.mapError(toRepositoryError("KinChatRepository.replyCard")),
   );
   const placeFigures = Effect.fn("KinChatRepository.placeFigures")(function* (
-    input: ReplyScope & { readonly body: string; readonly previous?: KinMessage },
+    input: ReplyScope & {
+      readonly body: string;
+      readonly previous?: KinMessage;
+      readonly namedOnly?: boolean;
+    },
   ) {
     const { body: prior = "", embeds: existing = [] } = input.previous ?? {};
     const figures = yield* decodeFigures(
@@ -1111,13 +1180,16 @@ const make = Effect.gen(function* () {
         AND kind <> 'picture'
       ORDER BY created_at, rowid`,
     );
-    const pictures = yield* decodePictures(
-      yield* sql`SELECT figure_id AS id, embed_json AS picture, attachment_id AS "attachmentId"
+    const pictures =
+      input.namedOnly === true
+        ? []
+        : yield* decodePictures(
+            yield* sql`SELECT figure_id AS id, embed_json AS picture, attachment_id AS "attachmentId"
       FROM kin_turn_figures WHERE org_id = ${input.orgId} AND wakeup_id = ${input.wakeupId}
         AND agent_id = ${input.agentId} AND chat_id = ${input.chatId} AND message_id IS NULL
         AND kind = 'picture'
       ORDER BY created_at, rowid`,
-    );
+          );
     const tail = input.body
       .slice(prior.length)
       .replace(/^([ ]{0,3}(?:`{3,}|~{3,})[ \t]*)kin_(?:chart|visual)\b/gm, "$1text");
@@ -1148,9 +1220,10 @@ const make = Effect.gen(function* () {
         accept(body.slice(0, at) + block + body.slice(at + stripped.length), figure);
       at += (next ? block.length : stripped.length) + 1;
     }
-    for (const figure of figures)
-      if (!placed.has(figure.id))
-        accept(`${body}${body === "" ? "" : "\n\n"}${figureBlock(figure)}`, figure);
+    if (input.namedOnly !== true)
+      for (const figure of figures)
+        if (!placed.has(figure.id))
+          accept(`${body}${body === "" ? "" : "\n\n"}${figureBlock(figure)}`, figure);
     const ordered = kinDocBlocks(body).flatMap((block) => {
       const figure = placed.get(block.content);
       return figure === undefined ? [] : [figure];
@@ -1351,10 +1424,14 @@ const make = Effect.gen(function* () {
     Effect.mapError(toRepositoryError("KinChatRepository.addWaiting")),
   );
   // A card with no words of its own, once closed (answered, replaced, run out), is Kin's status
-  // of it, not a message: it leaves the unread count. A card that carries words still counts.
+  // of it, not a message: it leaves the unread count. A card that carries words still counts. Kin's
+  // notice leaves it once what it waited on is resolved (the trouble is over).
   const notStatusLine = sql`NOT (kin_messages.body = '' AND EXISTS (SELECT 1 FROM kin_widgets w
  WHERE w.org_id = kin_messages.org_id AND w.message_id = kin_messages.message_id
- AND w.closed_at IS NOT NULL))`;
+ AND w.closed_at IS NOT NULL))
+ AND NOT (kin_messages.author_kind = 'system' AND EXISTS (SELECT 1 FROM kin_waiting n
+ WHERE n.org_id = kin_messages.org_id AND n.message_id = kin_messages.message_id
+ AND n.widget_id IS NULL AND n.resolved_at IS NOT NULL))`;
   // `unreadCount` for each of a person's chats in one read, each from its own member row's join.
   const unreadByChat = (
     input: Scope & { readonly personId: KinPersonId },
@@ -1398,6 +1475,21 @@ const make = Effect.gen(function* () {
     getChat: chatOne,
     getMember: memberOne,
     getMessage: messageOne,
+    markLapsedQuestion: Effect.fn("KinChatRepository.markLapsedQuestion")(
+      function* (input) {
+        const changed = yield* sql`UPDATE kin_messages SET
+            lapsed_question_json = json_object('question', ${input.lapse.question}, 'at', ${input.lapse.at})
+          WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
+            AND message_id = ${input.messageId} AND author_agent_id = ${input.agentId}
+            AND status = 'posted'
+            AND EXISTS (SELECT 1 FROM kin_chat_members
+              WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}
+                AND person_id = ${input.personId} AND left_at IS NULL)
+          RETURNING message_id`;
+        return changed.length === 0 ? Option.none() : yield* messageOne(input);
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.markLapsedQuestion")),
+    ),
     attachmentChat,
     chatFiles: Effect.fn("KinChatRepository.chatFiles")(
       function (input) {
@@ -1645,7 +1737,9 @@ const make = Effect.gen(function* () {
           };
         // Without a change cursor, replay only new messages; change_seq runs ahead of seq.
         const afterChangeSeq = input.afterChangeSeq ?? lastChangeSeq;
-        const visible = sql`(${member.role === "owner" ? 1 : 0} = 1 OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${member.memberId}) AND ${readableBy(sql, input.orgId, member.memberId)}`;
+        const visible = sql`(${member.role === "owner" ? 1 : 0} = 1 OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${member.memberId})`;
+        const arrival = member.principal._tag === "person" ? dismissedArrivalSql(sql) : sql`0`;
+        const readable = readableBy(sql, input.orgId, member.memberId);
         const messages = yield* SqlSchema.findAll({
           Request: Schema.Unknown,
           Result: MessageRow,
@@ -1653,11 +1747,11 @@ const make = Effect.gen(function* () {
             sql`SELECT ${sql.literal(messageColumns)} FROM kin_messages
               WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id IN (
                 SELECT message_id FROM (SELECT message_id FROM kin_messages
-                  WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND seq > ${input.afterSeq} AND ${visible}
+                  WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND seq > ${input.afterSeq} AND ${visible} AND ${readable} AND NOT ${arrival}
                   ORDER BY seq LIMIT 201)
                 UNION
                 SELECT message_id FROM (SELECT message_id FROM kin_messages
-                  WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND change_seq > ${afterChangeSeq} AND ${visible}
+                  WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND change_seq > ${afterChangeSeq} AND (${visible} OR ${arrival}) AND ${readable}
                   ORDER BY change_seq, seq LIMIT 201)
               ) ORDER BY seq LIMIT 201`,
         })(input);
@@ -1679,8 +1773,15 @@ const make = Effect.gen(function* () {
                 execute: () =>
                   sql`SELECT ${sql.literal(widgetColumns)} FROM kin_widgets WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND (message_id IN ${sql.in(messages.map((m) => m.messageId))} OR widget_id IN ${sql.in(messages.flatMap((m) => (m.widgetId === null ? [] : [m.widgetId])))}) ORDER BY message_id, widget_id`,
               })(input);
+        const accessStamp =
+          input.includeAccessStamp === true && member.principal._tag === "person"
+            ? yield* linkAccessStamp(input.orgId, member.principal.personId).pipe(
+                Effect.provideService(SqlClient.SqlClient, sql),
+              )
+            : undefined;
         return {
           reset: false,
+          ...(accessStamp === undefined ? {} : { accessStamp }),
           messages: yield* linked(
             input.orgId,
             member.principal,
@@ -1708,6 +1809,24 @@ const make = Effect.gen(function* () {
         );
       },
       Effect.mapError(toRepositoryError("KinChatRepository.listOpenWaiting")),
+    ),
+    listOpenWaitingRelayedBy: Effect.fn("KinChatRepository.listOpenWaitingRelayedBy")(
+      function* (input) {
+        return yield* SqlSchema.findAll({
+          Request: Schema.Unknown,
+          Result: WaitingRow,
+          execute: () =>
+            sql`SELECT ${sql.literal(waitingBaseColumns)} FROM kin_waiting
+              WHERE org_id = ${input.orgId} AND person_id <> ${input.personId}
+                AND reason = 'question' AND widget_id IS NULL AND resolved_at IS NULL
+                AND EXISTS (SELECT 1 FROM kin_messages m WHERE m.org_id = kin_waiting.org_id
+                  AND m.message_id = kin_waiting.message_id AND m.chat_id = kin_waiting.chat_id
+                  AND json_extract(m.relay_json, '$.kind') = 'sent_by'
+                  AND json_extract(m.relay_json, '$.personId') = ${input.personId})
+              ORDER BY created_at, waiting_id`,
+        })(input).pipe(NodeSqliteClient.readOnly);
+      },
+      Effect.mapError(toRepositoryError("KinChatRepository.listOpenWaitingRelayedBy")),
     ),
     listOwnersOpenWaiting: Effect.fn("KinChatRepository.listOwnersOpenWaiting")(
       function* (input) {
@@ -2032,7 +2151,11 @@ const make = Effect.gen(function* () {
                 message.body !== "" &&
                 (yield* sql`SELECT 1 FROM kin_messages
                 WHERE org_id = ${input.orgId} AND message_id = ${input.messageId} AND source_wakeup_id = ${input.wakeupId}`)
-                  .length === 0)
+                  .length === 0) ||
+              (input.onlyIfLast === true &&
+                (yield* sql`SELECT 1 FROM kin_messages WHERE org_id = ${input.orgId}
+                  AND chat_id = ${input.chatId} AND seq > ${message.seq} AND author_kind <> 'system'
+                  LIMIT 1`).length > 0)
             )
               return yield* new KinChatError({
                 reason: "not_found",
@@ -2055,7 +2178,12 @@ const make = Effect.gen(function* () {
                 : yield* briefForm({ ...input, kind: message.kind, author: message.author });
             const shaped = briefed(kept, input.body, message.body);
             const placed = yield* placeFigures({ ...input, body: shaped.body, previous: message });
-            const named = yield* named_(input.orgId, input.chatId, placed.body);
+            const named = yield* named_(
+              input.orgId,
+              input.chatId,
+              placed.body,
+              KIN_MESSAGE_BODY_MAX_LENGTH,
+            );
             yield* sql`UPDATE kin_messages SET body = ${named.body}, form = ${shaped.form},
               embeds_json = ${placed.embeds.length === 0 ? null : yield* encodeEmbeds(placed.embeds)}
               WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId} AND message_id = ${input.messageId}`;
@@ -2271,12 +2399,13 @@ const make = Effect.gen(function* () {
               author._tag === "agent" &&
               input.kind === "text" &&
               input.wakeupId !== undefined &&
-              input.placeReplyFigures === true &&
+              input.placeReplyFigures !== undefined &&
               body !== "" &&
               input.widgetId === null
                 ? yield* placeFigures({
                     ...input,
                     body,
+                    namedOnly: input.placeReplyFigures === "named",
                     agentId: author.agentId,
                     threadId: author.threadId,
                     wakeupId: input.wakeupId,
@@ -2299,7 +2428,12 @@ const make = Effect.gen(function* () {
             // People read an entry by its name, not Kin's key for it.
             const named =
               author._tag === "agent" && input.kind === "text"
-                ? yield* named_(input.orgId, input.chatId, placed.body)
+                ? yield* named_(
+                    input.orgId,
+                    input.chatId,
+                    placed.body,
+                    input.placeReplyFigures === undefined ? undefined : KIN_MESSAGE_BODY_MAX_LENGTH,
+                  )
                 : { body: placed.body, json: null };
             const inserted =
               yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_person_id, author_agent_id,
@@ -2314,7 +2448,7 @@ const make = Effect.gen(function* () {
  ${input.relay === undefined ? null : yield* encodeRelay(input.relay)},
  ${input.origin === undefined ? null : yield* encodeOrigin(input.origin)},
  ${input.when === undefined ? null : yield* encodeWhen(input.when)},
- ${placed.embeds.length === 0 ? null : yield* encodeEmbeds(placed.embeds)}, ${(input.body === "" || input.placeReplyFigures === true) && author._tag === "agent" ? (input.wakeupId ?? null) : null})
+ ${placed.embeds.length === 0 ? null : yield* encodeEmbeds(placed.embeds)}, ${(input.body === "" || input.placeReplyFigures !== undefined || input.recordWakeup === true) && author._tag === "agent" ? (input.wakeupId ?? null) : null})
  ON CONFLICT DO NOTHING RETURNING message_id`;
             if (inserted.length === 0)
               return yield* new KinChatError({
@@ -2358,6 +2492,7 @@ const make = Effect.gen(function* () {
  AND chat_id = ${input.chatId} AND seq < ${request.beforeSeq}
  AND (${viewer === null || viewer.role === "owner" ? 1 : 0} = 1 OR status NOT IN ('suggested', 'dismissed') OR author_member_id = ${viewer?.memberId ?? null})
  AND ${readableBy(sql, input.orgId, viewer?.memberId)}
+ AND NOT ${viewer?.principal._tag === "person" ? dismissedArrivalSql(sql) : sql`0`}
  ORDER BY seq DESC LIMIT ${request.limit + 1}`,
               })(input);
               const shaped = rows
@@ -2495,10 +2630,15 @@ const make = Effect.gen(function* () {
         const member = yield* requireRecord(memberOne(input));
         if (member.chatId !== input.chatId)
           return yield* new KinChatError({ reason: "not_found", message: "Kin record not found." });
-        yield* sql`INSERT INTO kin_read_state (org_id, chat_id, member_id, last_read_seq, updated_at)
- VALUES (${input.orgId}, ${input.chatId}, ${input.memberId}, MIN(${seq}, (SELECT last_seq FROM kin_chats WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId})), ${input.updatedAt})
- ON CONFLICT (chat_id, member_id) DO UPDATE SET last_read_seq = excluded.last_read_seq, updated_at = excluded.updated_at
- WHERE kin_read_state.org_id = excluded.org_id AND excluded.last_read_seq > kin_read_state.last_read_seq`;
+        const capped = sql`MIN(${seq}, (SELECT last_seq FROM kin_chats WHERE org_id = ${input.orgId} AND chat_id = ${input.chatId}))`;
+        yield* sql`INSERT INTO kin_read_state (org_id, chat_id, member_id, last_read_seq, answered_seq, updated_at)
+ VALUES (${input.orgId}, ${input.chatId}, ${input.memberId}, ${capped}, ${input.answered === true ? capped : 0}, ${input.updatedAt})
+ ON CONFLICT (chat_id, member_id) DO UPDATE SET
+   last_read_seq = MAX(kin_read_state.last_read_seq, excluded.last_read_seq),
+   answered_seq = MAX(kin_read_state.answered_seq, excluded.answered_seq),
+   updated_at = excluded.updated_at
+ WHERE kin_read_state.org_id = excluded.org_id AND (excluded.last_read_seq > kin_read_state.last_read_seq
+   OR excluded.answered_seq > kin_read_state.answered_seq)`;
       },
       (effect) => sql.withTransaction(effect),
       Effect.mapError(toRepositoryError("KinChatRepository.markRead")),

@@ -46,7 +46,13 @@ import {
 } from "@t3tools/client-runtime/kin/kinDocs";
 import { KIN_DOC_COMPANY, KIN_DOC_SHARE } from "@t3tools/client-runtime/kin/kinWork";
 import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
-import { EnvironmentId, KinOrgId, KinRecordKey, type KinDocDetail } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  KinOrgId,
+  KinRecordKey,
+  KinWidgetId,
+  type KinDocDetail,
+} from "@t3tools/contracts";
 import * as Linking from "expo-linking";
 import * as Option from "effect/Option";
 import { AsyncResult } from "effect/reactivity";
@@ -83,9 +89,11 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { usePreparedConnection } from "../../state/session";
 import { useAtomQueryRunner } from "../../state/use-atom-query-runner";
 import { useAtomCommand } from "../../state/use-atom-command";
+import { useKinShell } from "./state/useKinShell";
 import { useMarkdownPreviewStyles } from "../files/FileMarkdownPreview";
 import { useOpenPullRequest } from "../../native/useOpenPullRequest";
 import { ThreadMarkdownImage } from "../threads/ThreadMarkdownImage";
+import { KinDocReadersRow } from "./components/KinDocReadersRow";
 import { KinWorkFrame, KinWorkLoading } from "./components/KinWorkPieces";
 import { KinDocFileRows } from "./KinInvoice";
 import { KinLinkedSection, useKinOpenLinked } from "./KinWorkItemScreen";
@@ -110,6 +118,8 @@ export type KinDocParams = {
   readonly section?: string;
   /** An earlier version to read; the latest otherwise. */
   readonly v?: string;
+  /** The long draft card it was opened from: its reader may read that version without Docs. */
+  readonly card?: string;
   /** The version that was latest before a restore, which restoring again undoes. */
   readonly undo?: string;
 };
@@ -189,6 +199,7 @@ export function KinDocScreen({ route }: StaticScreenProps<KinDocParams>) {
       orgId={orgId}
       docKey={key}
       version={kinDocVersionParam(route.params.v)}
+      card={route.params.card === undefined ? null : KinWidgetId.make(route.params.card)}
       section={route.params.section ?? null}
       undo={kinDocVersionParam(route.params.undo)}
     />
@@ -198,13 +209,14 @@ export function KinDocScreen({ route }: StaticScreenProps<KinDocParams>) {
 type DocTarget = KinWorkTarget & {
   readonly docKey: KinRecordKey;
   readonly version: number | null;
+  readonly card?: KinWidgetId | null;
   readonly section: string | null;
   readonly undo: number | null;
 };
 
 function KinDocStates(props: DocTarget) {
   const navigation = useNavigation();
-  const { state, refresh } = useKinDoc(props, props.docKey, props.version);
+  const { state, refresh } = useKinDoc(props, props.docKey, props.version, props.card ?? null);
   if (state._tag === "ready")
     return <KinDocBody {...props} doc={state.value} stale={state.stale} onRefresh={refresh} />;
   return (
@@ -213,6 +225,8 @@ function KinDocStates(props: DocTarget) {
         <KinWorkLoading label="Loading doc" />
       ) : state._tag === "gone" ? (
         <EmptyState variant="plain" {...KIN_DOCS.gone} />
+      ) : state._tag === "private" ? (
+        <EmptyState variant="plain" {...KIN_DOCS.privateNow(state.by)} />
       ) : state._tag === "refused" ? (
         <EmptyState variant="plain" {...KIN_DOCS.unavailable} />
       ) : (
@@ -375,7 +389,8 @@ function KinDocBody(
   );
   const old = doc.version.version !== doc.latest.version;
   const previous = kinDocPrevious(doc.version);
-  const privacy = kinDocPrivacy(doc);
+  const shell = useKinShell(environmentId);
+  const privacy = doc.readers === undefined ? kinDocPrivacy(doc, shell) : null;
   const label = useKinDocLabel(target, doc);
   const deleting = useKinDocDelete(target);
   const mayDelete = deleting.allowed && doc.deletable === true;
@@ -724,9 +739,18 @@ function KinDocBody(
                 )}
               </View>
             }
-            {doc.archived ||
-            doc.sensitive ||
-            doc.sensitiveInherited === true ? null : doc.company === true ? (
+            {doc.archived || doc.sensitiveInherited === true ? null : doc.readers !== undefined ? (
+              <ListSection>
+                <KinDocReadersRow
+                  environmentId={environmentId}
+                  orgId={orgId}
+                  doc={doc}
+                  names={names}
+                  disabled={false}
+                  onSettled={props.onRefresh}
+                />
+              </ListSection>
+            ) : doc.sensitive ? null : doc.company === true ? (
               <ListSection title={KIN_DOC_COMPANY.label}>
                 <View className="px-4 py-3">
                   <Text textRole="body" className="text-foreground-muted">

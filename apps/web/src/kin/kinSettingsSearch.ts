@@ -1,6 +1,7 @@
 import type { KinSettingsPage } from "@t3tools/client-runtime/kin/kinNavigation";
 
 import { KIN_APPROVER_PHONES_TITLE } from "@t3tools/client-runtime/kin/kinApprovalPresentation";
+import { KIN_CHATS_SETTLE } from "@t3tools/client-runtime/kin/kinChatListRows";
 import { KIN_MESSAGE_ALERTS } from "@t3tools/client-runtime/kin/kinMessageAlerts";
 import { msg } from "gt-react";
 import {
@@ -8,6 +9,7 @@ import {
   CalendarCheckIcon,
   CircleUserIcon,
   FingerprintIcon,
+  LayoutListIcon,
   PlugIcon,
   TrendingUpIcon,
 } from "lucide-react";
@@ -24,6 +26,7 @@ export type KinSettingsPath =
   | "/settings/company"
   | "/settings/check-ins"
   | "/settings/deals"
+  | "/settings/sections"
   | "/settings/kin-connections"
   | "/settings/kin-profile";
 
@@ -32,6 +35,7 @@ export const KIN_SETTINGS_SECTION_LABELS: Readonly<Record<KinSettingsPath, strin
   "/settings/company": msg("Company details"),
   "/settings/check-ins": msg("Check-ins"),
   "/settings/deals": msg("Deals"),
+  "/settings/sections": msg("Sections"),
   "/settings/kin-connections": msg("Connections"),
   "/settings/kin-profile": msg("Profile"),
 };
@@ -43,6 +47,7 @@ export const KIN_SETTINGS_SECTION_ICONS: Readonly<
   "/settings/company": Building2Icon,
   "/settings/check-ins": CalendarCheckIcon,
   "/settings/deals": TrendingUpIcon,
+  "/settings/sections": LayoutListIcon,
   "/settings/kin-connections": PlugIcon,
   "/settings/kin-profile": CircleUserIcon,
 };
@@ -54,6 +59,7 @@ export const KIN_SETTINGS_CATEGORY_SCOPES: Readonly<
   "/settings/company": null,
   "/settings/check-ins": null,
   "/settings/deals": null,
+  "/settings/sections": null,
   "/settings/kin-connections": null,
   "/settings/kin-profile": null,
 };
@@ -174,6 +180,22 @@ export const KIN_SETTINGS_SEARCH_ITEMS = [
     kinOnly: true,
   },
   {
+    id: "kin-settle-read-chats",
+    title: KIN_CHATS_SETTLE.label,
+    to: "/settings/kin-profile",
+    searchTerms: ["kin chats settle read hide auto hours right away"],
+    kinOnly: true,
+  },
+  {
+    id: "kin-sections",
+    kinOnly: true,
+    title: "Sections",
+    to: "/settings/sections",
+    searchTerms: [
+      "kin sections turn off on clients projects money invoices quotes deals rename call patients donors",
+    ],
+  },
+  {
     id: "kin-deals",
     kinOnly: true,
     kinSection: "deals",
@@ -188,6 +210,7 @@ const KIN_SETTING_ELSEWHERE: Readonly<Record<string, KinSettingsPage>> = {
   "kin-agents": "agents",
   "kin-who-can-message": "team",
   "thread-notifications": "notifications",
+  "kin-settle-read-chats": "notifications",
 };
 
 /** The page of Kin's Settings that holds the setting `target`, reached from an address for `page`. */

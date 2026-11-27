@@ -29,16 +29,39 @@ features:
       - packages/client-runtime/src/kin/kinChatListRows.test.ts
       - apps/server/src/kin/chat/KinChatService.test.ts
 
+  - id: chat-desktop-notifications
+    name: Desktop notices for messages and cards while Kin is not in front
+    tab: chats
+    web: [home]
+    roles: { owner: web, co_owner: web, lead: web, member: web }
+    note: Electron only. The page follows kin.push.desktopNotices on the current host; a plain browser keeps its own alerts.
+    proof:
+      - packages/client-runtime/src/kin/kinMessageAlerts.test.ts
+      - apps/server/src/kin/push/KinPushSender.test.ts
+      - apps/desktop/src/kin/kinDesktopLink.test.ts
+
   - id: chat-agent
     name: Talk to an agent
     tab: chats
     web: [home, chat]
     phone: [tab:chats, KinChat]
     roles: { owner: both, co_owner: both, lead: both, member: both }
-    tools: [kin_chat_post, kin_chat_read, kin_react]
+    tools: [kin_chat_post, kin_chat_read, kin_react, kin_send, kin_skip]
     proof:
       - apps/server/src/kin/chat/KinChatService.test.ts
       - apps/server/src/kin/lead/ChatWake.test.ts
+      - apps/server/src/kin/reply/KinReplyBridge.test.ts
+
+  - id: chat-kept-true
+    name: An agent takes back or puts right its plain message nobody has read yet; the owner side can show what it said, the last version only
+    tab: chats
+    web: [home, chat, button:Show what it said]
+    phone: [tab:chats, KinChat, button:Show what it said]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    tools: [message_withdraw, message_replace]
+    proof:
+      - apps/server/src/kin/chat/ownMessages.test.ts
+      - packages/client-runtime/src/kin/kinChatFeed.test.ts
 
   - id: chat-attachments
     name: Attach pictures, PDFs and documents in a chat
@@ -213,7 +236,16 @@ features:
     note: >-
       Through the agent, which reads repos, PRs and runs with gh and posts as Kin's GitHub App
       where it is installed, else as the owner's login (Settings, Connections).
-    tools: [kin_github_review, kin_github_review_ask, kin_github_link, kin_github_watch]
+    tools:
+      [
+        kin_github_comment,
+        kin_github_review,
+        kin_github_diff,
+        kin_github_read,
+        kin_github_review_ask,
+        kin_github_link,
+        kin_github_watch,
+      ]
     proof:
       - apps/server/src/kin/github/GitHubWatch.test.ts
       - apps/server/src/kin/github/reviewAsk.test.ts
@@ -312,6 +344,18 @@ features:
     proof:
       - apps/server/src/kin/work/statements/statements.test.ts
       - apps/server/src/kin/work/statements/statementMatch.test.ts
+
+  - id: bills
+    name: Read many bills at once into suggested expenses
+    tab: chats
+    web: [chat, card:Bills added]
+    phone: [tab:chats, KinChat, card:Bills added]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [bills_add, bill_read]
+    note: The batch's card counts while Kin reads, says when the reader's daily limit pauses it, and its Review opens the batch's list.
+    proof:
+      - apps/server/src/kin/work/bills.test.ts
+      - packages/client-runtime/src/kin/kinBills.test.ts
 
   - id: groups
     name: Start a group chat
@@ -643,6 +687,31 @@ features:
       - apps/server/src/kin/work/money.test.ts
       - packages/client-runtime/src/kin/kinMoneyForms.test.ts
 
+  - id: bills-add
+    name: Add many bills at once, as photos or PDFs
+    tab: money
+    web: [money, menu:Add, dialog:Add bills]
+    phone: [tab:money, menu:Add, KinBillsAdd]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: On the phone from the photo library, Files or the camera. Each bill Kin reads becomes a suggested expense with its file. A file added before says so, with a link to its expense when that was dropped; a dismissed one is read again.
+    proof:
+      - packages/client-runtime/src/kin/kinBills.test.ts
+      - apps/web/src/kin/KinBills.browser.test.tsx
+      - apps/server/src/kin/work/bills.test.ts
+
+  - id: bills-review
+    name: Review bills added at once, keeping each or every one read cleanly
+    tab: money
+    web: [money, "?bills"]
+    phone: [tab:money, KinList, KinBills]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: Reached from Expenses' Bills added, the batch's card in chat, and the add itself. Enter by hand opens New expense with the bill's file.
+    proof:
+      - packages/client-runtime/src/kin/kinBills.test.ts
+      - apps/web/src/kin/KinBills.browser.test.tsx
+      - apps/mobile/src/features/chats/state/kinBillsPick.test.ts
+
   - id: receipt-apply
     name: Set a receipt against an invoice
     tab: money
@@ -672,6 +741,38 @@ features:
     form: true
     roles: { owner: both, co_owner: both, lead: none, member: none }
     proof: [.agents/skills/verify-kin/scripts/owner-money-forms.sh]
+
+  - id: numbers
+    name: Numbers, each watched number's latest value with today's typed on its row
+    tab: chats
+    web: [numbers]
+    phone: [tab:chats, KinNumbers]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      A place of its own, off the phone dock: the sidebar after the work places, and a row on the
+      phone's Chats. Anyone below the owner level has it only while a number is shared with them
+      (Money on), and types only a typed number shared with them.
+    proof:
+      - packages/client-runtime/src/kin/kinNumbers.test.ts
+      - apps/web/src/kin/KinNumberTypeField.browser.test.tsx
+      - apps/server/src/kin/numbers/KinNumbers.test.ts
+
+  - id: number-page
+    name: A number's page, its line, limits and history, with Correct
+    tab: chats
+    web: [numbers, section:History]
+    phone: [tab:chats, KinNumbers, KinNumber]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    proof: [packages/client-runtime/src/kin/kinNumbers.test.ts]
+
+  - id: number-watch
+    name: Watch a number, change, share, archive and restore it
+    tab: chats
+    web: [numbers, dialog:Watch a number]
+    phone: [tab:chats, KinNumbers, KinNumberForm]
+    form: true
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    proof: [apps/server/src/kin/numbers/KinNumbers.test.ts]
 
   - id: subscriptions
     name: Subscriptions
@@ -913,14 +1014,34 @@ features:
     web: [settings, section:Deals]
     phone: [SettingsKin, KinDealStages]
     roles: { owner: both, co_owner: both, lead: none, member: none }
+    tools: [company_sections]
     note: >-
       Off hides the Deals tab, deals on client and project pages, New deal, deal search hits,
       nudges, the Monday pipeline and deal tools for everyone; nothing is deleted, and on restores
-      it. A deal still opens by its link, saying Deals is turned off.
+      it. A deal still opens by its link, saying Deals is turned off. The server also honours
+      Clients (including Projects), Money, and Invoices and quotes. Clients can have a company
+      name; Invoices and quotes requires Clients and behaves as off with Money off. Bank-alert
+      intake keeps running with Money off, without telling anyone.
     proof:
       - packages/client-runtime/src/kin/kinShell.test.ts
       - apps/web/src/kin/KinDeals.browser.test.tsx
       - apps/server/src/kin/shell/KinShell.test.ts
+
+  - id: sections-settings
+    name: Settings › Sections, switching Clients, Deals, Money, and Invoices and quotes, and renaming Clients
+    tab: settings
+    web: [settings, section:Sections]
+    phone: [SettingsKin, KinSections]
+    roles: { owner: both, co_owner: both, lead: none, member: none }
+    note: >-
+      One row per section with its switch; a section another holds off says why and cannot be
+      switched there. Clients takes the company's own name and singular, and Use Kin's name puts it
+      back. Every place, picker, fold, search box and palette row follows the same shell for
+      everyone; a record of an off section still opens, with one line.
+    proof:
+      - packages/client-runtime/src/kin/kinShell.test.ts
+      - packages/client-runtime/src/kin/kinNavigation.test.ts
+      - apps/web/src/kin/KinDeals.browser.test.tsx
 
   - id: marketing-list
     name: A campaign's results, a tag's list, and Export list
@@ -1005,7 +1126,8 @@ features:
     note: >-
       The owner level, and a project's lead for that project's docs, change a section by hand
       (kin.docs.editSection); history keeps both versions. Anyone else's Suggest a change opens
-      their chat with the team agent, the doc attached.
+      their chat with the team agent, the doc attached. A teammate writing a doc chooses who reads
+      it (kin.docs.readers) and owners may widen it.
     tools: [doc_create, doc_read, doc_edit, doc_rewrite, doc_link]
     proof:
       - .agents/skills/verify-kin/scripts/member-suggests-playbook.sh
@@ -1260,6 +1382,21 @@ features:
     proof:
       - apps/server/src/kin/connections/ConnectionsService.test.ts
       - packages/client-runtime/src/kin/kinConnections.test.ts
+
+  - id: own-mailbox
+    name: Your mailbox, each person's own
+    tab: settings
+    web: [settings, section:Connections, section:Your mailbox]
+    phone: [SettingsKin, KinMyMailbox]
+    roles: { owner: both, co_owner: both, lead: both, member: both }
+    note: >-
+      Anyone connects their own Google or Microsoft mail; the sales agent drafts their due
+      follow-ups from it in their own chat, and only they confirm a send. The owner level sees
+      whose address is connected and can disconnect it, never what is in it.
+    proof:
+      - apps/server/src/kin/connections/MailEndToEnd.test.ts
+      - apps/server/src/kin/pulse/KinPulse.test.ts
+      - apps/web/src/kin/KinMyMailbox.browser.test.tsx
 
   - id: social-accounts
     name: Social accounts, our own and each client's
@@ -1567,12 +1704,38 @@ features:
       - apps/server/src/kin/people/KinPeople.test.ts
 
   - id: coding-agent-keys
-    name: Coding agent keys for the tasks you hold
+    name: Coding agent keys that act as you
     tab: settings
     web: [home, sheet:Profile, section:Coding agent keys]
     roles: { owner: web, co_owner: web, lead: web, member: web }
     tools:
       [
+        list_people,
+        list_tasks,
+        create_task,
+        update_task,
+        create_project,
+        update_project,
+        create_client,
+        update_client,
+        log_contact,
+        list_deals,
+        create_deal,
+        update_deal,
+        add_promise,
+        close_promise,
+        write_doc,
+        list_invoices,
+        open_invoice,
+        draft_invoice,
+        list_lists,
+        list_entries,
+        add_entry,
+        update_entry,
+        read_numbers,
+        record_number,
+        list_waiting,
+        ask_agent,
         list_my_tasks,
         get_task,
         comment_on_task,
@@ -1583,16 +1746,34 @@ features:
         read_doc,
         money_summary,
         search_memory,
+        tick_task_step,
+        hand_task_back,
+        nudge_task,
+        hand_over_tasks,
+        add_link,
+        set_project_note,
+        restore_doc_version,
+        undo_memory_change,
+        budgets,
+        restart_watch,
+        save_goal,
       ]
     note: >-
-      A person makes a key for their own coding agent (Claude Code, Codex, Cursor) to read the
-      tasks they hold, comment and set state through `/kin/you/mcp`. It also reads, never writes,
-      the projects, clients, docs, Money and team memory that person's own screens show them,
-      through the same reads, minus anything a person marked private and everything under a
-      private client or project, which stay in Kin for every key.
-      Money and memory are listed only for those whose screens open them. The key shows once; the
-      address and the setup lines, with the key left to fill, stay on their own section. At most
-      three live keys, 30 days each. Settings → Profile on the web shows the same section.
+      A person makes a key for their own coding agent (Claude Code, Codex, Cursor), which acts as
+      them through `/kin/you/mcp`: it reads what their own screens show them and does what those
+      screens let them do, through the same service methods, and every write is marked as from their
+      coding agent. It can tick and hand back tasks, nudge holders, hand over open tasks, add entry
+      links, pin a project note, restore document versions, undo a shareable memory change, read
+      budgets, restart watches and save goals using the app's permissions. It sends the person's words to their agents in their own direct chats (marked as
+      from their coding agent, never counted as their own word, answering nothing), and no agent's
+      reply comes back through the key. Anything a person marked private, and everything under a
+      private client or project, stays in Kin for every key. A tool whose section is off or whose
+      switch the person lacks is not listed. Answering cards, money or mail leaving the company,
+      people and access, connections and keys, the host and settings, and deleting or archiving have
+      no tool, and the repository refuses any key-marked write that drops anything or touches a
+      money list but making an invoice draft: the server's MCP instructions say so. The key shows
+      once; the address and the setup lines, with the key left to fill, stay on their own section.
+      At most three live keys, 30 days each. Settings → Profile on the web shows the same section.
     proof:
       - packages/client-runtime/src/kin/kinTasksKeys.test.ts
       - apps/web/src/kin/KinTasksKeys.browser.test.tsx
@@ -1623,6 +1804,14 @@ features:
       - apps/server/src/kin/people/http.test.ts
       - packages/client-runtime/src/kin/kinJoin.test.ts
 
+  - id: watched-numbers
+    name: Read and record watched numbers with an agent
+    tab: chats
+    roles: { owner: none, co_owner: none, lead: none, member: none }
+    tools: [number_record, numbers_read, numbers_watch]
+    proof:
+      - apps/server/src/kin/numbers/KinNumbers.test.ts
+
 unlisted:
   "web:team": Old address; opens the Settings modal on Team.
   "web:memory": Old address; opens the Settings modal on Memory.
@@ -1631,12 +1820,15 @@ unlisted:
   "web:settings/check-ins": The app's old address; opens Kin's Settings → Check-ins.
   "web:settings/kin-connections": The app's old address; opens Kin's Settings → Connections.
   "web:settings/deals": The app's settings address for Deals; opens Kin's Settings → Deals.
+  "web:settings/sections": The app's settings address for Sections; opens Kin's Settings → Sections.
   "web:settings/kin-profile": Where app Settings search lands for quiet hours, working hours, away and GitHub username; opens Kin's Settings → Profile.
   "web:?v": Picks the version of the open doc; not a screen.
+  "web:?card": The draft card a doc was opened from, so its reader reads that version without the Docs place; not a screen.
   "web:?tab": Switches the Clients place between its Clients, Deals and Projects lists; not a screen.
   "web:?person": Starts Tasks narrowed to what one person holds, from their page's See all in Tasks; not a screen.
   "web:?section": Scrolls the open doc to a section; not a screen.
   "web:?from": The base version of the compare view (`?changes`); not a screen.
+  "web:?invalidLink": Keeps the one-line "doesn't exist or isn't shared with you" notice over the place after a link held a malformed key; not a screen.
   "rpc:kin.lead.access.list": Served; no client shows an agent's access grants yet.
   "rpc:kin.lead.access.grant": Served; no client grants an agent access yet.
   "rpc:kin.lead.access.revoke": Served; no client revokes an agent's access yet.
@@ -1651,5 +1843,4 @@ unlisted:
   "rpc:kin.work.statementForgetAccount": Served; no client forgets a statement account yet.
   "rpc:kin.people.setOwnerName": Called by the kin-verify seed (scripts/kin-verify/seed.ts); no client calls it.
   "rpc:kin.refreshes.announce": Called by the host CLI (apps/server/src/kin/cli/announce.ts) from the owner's session.
-  "rpc:kin.open.read": Served; no client reads the open list (Needs you and Tasks use their own reads).
-  "rpc:kin.open.subscribe": Served; no host lists "open" in its streams, so no client follows it.
+  "rpc:kin.open.read": Served; clients follow kin.open.subscribe instead, and an agent's list_waiting reads the same list on the host.

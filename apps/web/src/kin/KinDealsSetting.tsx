@@ -40,6 +40,7 @@ import {
 import { KinSectionInactive, KinSectionSwitch } from "./settings/KinSectionSwitch";
 import { useKinDealQuietDaysSet, useKinDealStages, useKinDealStagesSet } from "./useKinDeals";
 import { useKinHost } from "./useKinHost";
+import { useKinSectionNamed } from "./useKinShell";
 import type { KinWorkTarget } from "./useKinWork";
 
 /** Settings → Deals: the company's stages, with Won and Lost as fixed ends. */
@@ -82,6 +83,7 @@ function Stages(
   props: KinWorkTarget & { readonly held: KinDealStagesResult; readonly searchId: string },
 ) {
   const { held } = props;
+  const named = useKinSectionNamed(props.environmentId);
   const [editing, setEditing] = useState<Editing | null>(null);
   const canAdd = held.can && held.stages.length < 12;
   return (
@@ -124,7 +126,7 @@ function Stages(
             leading={<TrophyIcon aria-hidden className="size-4 text-success-foreground" />}
             title="Won"
             wrap
-            detail={KIN_DEAL_STAGES_SETTINGS.wonDetail}
+            detail={named(KIN_DEAL_STAGES_SETTINGS.wonDetail)}
           />
           <KinSettingsRow
             leading={<XIcon aria-hidden className="size-4 text-destructive-foreground" />}

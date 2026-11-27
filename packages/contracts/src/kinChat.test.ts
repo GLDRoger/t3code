@@ -294,6 +294,11 @@ const samples = {
     },
     ...authors.map((author) => ({ ...message, author })),
     { ...message, changeSeq: 2, clientMessageId: "pending" },
+    { ...message, body: "", status: "deleted", withdrawn: { why: "The client paid", at } },
+  ],
+  KinMessageWithdrawn: [
+    { why: "The client paid", at },
+    { why: "The client paid", at, said: "Lumen Grove still owes INV-14." },
   ],
   KinWidget: [
     widget,
@@ -625,6 +630,16 @@ describe("Kin chat contracts", () => {
   ])("rejects out-of-range values %#", ({ schema, value }) => {
     const codec: Schema.Codec<unknown> = schema;
     expect(() => Schema.decodeSync(codec)(value)).toThrow();
+  });
+
+  it("a list update's null still stops a watch once it has crossed the wire as JSON", () => {
+    const decode = Schema.decodeUnknownSync(Schema.toCodecJson(KinListUpdateInput));
+    const base = { orgId: "org", list: "stock", rev: 1 };
+    expect(decode({ ...base, remindOn: null, check: null })).toEqual({
+      ...base,
+      remindOn: null,
+      check: null,
+    });
   });
 
   it.each([0, 101, 1.5])("rejects history limit %s", (limit) => {

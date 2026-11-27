@@ -296,6 +296,10 @@ declare module "effect/ai/Prompt" {
        */
       readonly itemId?: string | null
       /**
+       * The model’s refusal explanation. Streamed explanations are separated by a blank line.
+       */
+      readonly refusal?: string | null
+      /**
        * The status of item.
        */
       readonly status?: typeof OpenAiSchema.MessageStatus.Encoded | null
@@ -383,6 +387,10 @@ declare module "effect/ai/Response" {
        * The OpenAI item ID associated with the streamed text part.
        */
       readonly itemId?: string | null
+      /**
+       * Refusal explanations from the completed message, separated by a blank line.
+       */
+      readonly refusal?: string | null
       /**
        * The annotations collected for the completed streamed text part.
        */
@@ -732,6 +740,7 @@ export const make = Effect.fnUntraced(function*({ model, config: providerConfig 
         const [rawResponse, response] = yield* client.createResponse(request)
         annotateResponse(options.span, rawResponse)
         return yield* makeResponse({
+          config,
           options,
           rawResponse,
           response,
@@ -1416,11 +1425,13 @@ const isKnownResponseStreamEvent = (
 
 const makeResponse = Effect.fnUntraced(
   function*<Tools extends ReadonlyArray<Tool.Any>>({
+    config,
     options,
     rawResponse,
     response,
     toolNameMapper
   }: {
+    readonly config: typeof Config.Service
     readonly options: LanguageModel.ProviderOptions
     readonly rawResponse: OpenAiSchema.Response
     readonly response: HttpClientResponse.HttpClientResponse
@@ -1528,7 +1539,7 @@ const makeResponse = Effect.fnUntraced(
               })
           })
 
-          const params = yield* transformToolCallParams(options, part.name, toolParams)
+          const params = yield* transformToolCallParams(config, options, part.name, toolParams)
 
           parts.push({
             type: "tool-call",
@@ -2318,7 +2329,7 @@ const makeStreamResponse = Effect.fnUntraced(
                     })
                 })
 
-                const params = yield* transformToolCallParams(options, toolName, toolParams)
+                const params = yield* transformToolCallParams(config, options, toolName, toolParams)
 
                 parts.push({
                   type: "tool-params-end",
@@ -2437,13 +2448,22 @@ const makeStreamResponse = Effect.fnUntraced(
               }
 
               case "message": {
+                const refusals = event.item.content.filter((part) => part.type === "refusal")
                 const annotations = activeAnnotations.length > 0
                   ? { annotations: activeAnnotations.slice() }
                   : undefined
                 parts.push({
                   type: "text-end",
                   id: event.item.id,
-                  metadata: { openai: { ...annotations, ...makeItemIdMetadata(event.item.id) } }
+                  metadata: {
+                    openai: {
+                      ...annotations,
+                      ...makeItemIdMetadata(event.item.id),
+                      ...(refusals.length > 0
+                        ? { refusal: refusals.map((part) => part.refusal).join("\n\n") }
+                        : undefined)
+                    }
+                  }
                 })
                 break
               }
@@ -2626,7 +2646,7 @@ const makeStreamResponse = Effect.fnUntraced(
                   })
               })
 
-              const params = yield* transformToolCallParams(options, toolCall.name, toolParams)
+              const params = yield* transformToolCallParams(config, options, toolCall.name, toolParams)
 
               parts.push({
                 type: "tool-params-end",
@@ -2904,9 +2924,9 @@ const prepareTools = Effect.fnUntraced(function*<Tools extends ReadonlyArray<Too
   // Convert the tools in the toolkit to the provider-defined format
   for (const tool of allowedTools) {
     if (Tool.isUserDefined(tool) || Tool.isDynamic(tool)) {
-      const strict = Tool.getStrictMode(tool) ?? config.strictJsonSchema ?? true
+      const strict = getToolStrictMode(tool, config)
       const description = Tool.getDescription(tool)
-      const parameters = yield* tryToolJsonSchema(tool, "prepareTools")
+      const parameters = yield* tryToolJsonSchema(tool, strict, "prepareTools")
       tools.push({
         type: "function",
         name: tool.name,
@@ -3218,9 +3238,13 @@ const toolParametersError = (tool: Tool.Any, error: unknown, method: string): Ai
     method
   )
 
-const tryToolJsonSchema = <T extends Tool.Any>(tool: T, method: string) =>
+const getToolStrictMode = (tool: Tool.Any, config: typeof Config.Service): boolean =>
+  Tool.getStrictMode(tool) ?? config.strictJsonSchema ?? true
+
+const tryToolJsonSchema = <T extends Tool.Any>(tool: T, strict: boolean, method: string) =>
   Effect.try({
-    try: () => Tool.getJsonSchema(tool, { transformer: toCodecOpenAI }),
+    try: () =>
+      Tool.getJsonSchema(tool, { transformer: strict ? toCodecOpenAI : LanguageModel.defaultCodecTransformer }),
     catch: (error) => toolParametersError(tool, error, method)
   })
 
@@ -3387,6 +3411,7 @@ const getUsageTokenDetail = (details: unknown, key: string): number | undefined 
   Predicate.hasProperty(details, key) && typeof details[key] === "number" ? details[key] : undefined
 
 const transformToolCallParams = Effect.fnUntraced(function*(
+  config: typeof Config.Service,
   options: LanguageModel.ProviderOptions,
   toolName: string,
   toolParams: unknown
@@ -3407,7 +3432,7 @@ const transformToolCallParams = Effect.fnUntraced(function*(
     })
   }
 
-  if (Tool.isDynamic(tool) && tool.jsonSchema !== undefined) {
+  if (!getToolStrictMode(tool, config) || (Tool.isDynamic(tool) && tool.jsonSchema !== undefined)) {
     return toolParams
   }
 

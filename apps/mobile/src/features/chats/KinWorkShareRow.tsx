@@ -105,7 +105,7 @@ export function KinWorkAudienceRow(
   const row = (
     <View accessible accessibilityLabel={`${KIN_WORK_AUDIENCE.label}: ${audience.answer}`}>
       <ListRowLayout
-        icon={audience.current === "me" ? "lock" : "person.2"}
+        icon={audience.current === "me" ? "lock" : "eye"}
         label={KIN_WORK_AUDIENCE.label}
         detail={audience.short}
         detailEllipsizeMode="tail"

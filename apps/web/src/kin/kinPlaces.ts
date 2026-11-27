@@ -3,10 +3,12 @@ import { kinInMoney } from "@t3tools/client-runtime/kin/kinMoney";
 import type { KinClientsTab } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
   KinAgentId,
+  KinBillBatchId,
   KinDocSectionId,
   KinListId,
   KinPersonId,
   KinRecordKey,
+  KinWidgetId,
   type KinMessageLinkTarget,
   type KinSearchKind,
 } from "@t3tools/contracts";
@@ -89,14 +91,21 @@ export function kinSearchDialogPlace(
   return from.place === "clients" && from.tab === home.search.tab ? null : home;
 }
 
-/** The record open beside a place's list: a client, project, list, the coming dates, the subscriptions, or a doc. */
+/**
+ * The record open beside a place's list: a client, project, list, the coming dates, the
+ * subscriptions, bills added in bulk (one batch, or every batch for null), or a doc.
+ */
 export type KinRecordWhere =
   | { readonly party: KinRecordKey }
   | { readonly project: KinRecordKey }
   | { readonly list: KinListId }
   | { readonly dates: true }
   | { readonly subscriptions: true }
+  | { readonly bills: KinBillBatchId | null }
   | KinDocWhere;
+
+/** A link param whose value wasn't a valid key, flagged once by `validateSearch`. */
+export type KinInvalidLink = "doc" | "task" | "client" | "project";
 
 export interface KinPlaceSearch {
   /** The open task, shown over whatever else is open. */
@@ -106,9 +115,13 @@ export interface KinPlaceSearch {
   project?: KinRecordKey;
   dates?: true;
   subscriptions?: true;
+  /** Bills added in bulk: one batch's list, or `true` for every batch. */
+  bills?: KinBillBatchId | true;
   /** The open doc: the version read, the section arrived at, or the versions compared. */
   doc?: KinRecordKey;
   v?: number;
+  /** The long draft card the doc was opened from (`KinDocWhere.card`). */
+  card?: KinWidgetId;
   section?: string;
   changes?: number;
   from?: number;
@@ -119,6 +132,8 @@ export interface KinPlaceSearch {
   tab?: "deals" | "projects";
   /** Tasks opens narrowed to what this person holds, as their page's "See all in Tasks" asks. */
   person?: KinPersonId;
+  /** Set only when a link param held a malformed non-empty value; never kept on navigation. */
+  invalidLink?: KinInvalidLink;
 }
 
 /** `import` is Clients' Import a file, which opens in the place itself. */
@@ -129,9 +144,23 @@ export interface KinAgentSearch {
   agent?: KinAgentId;
 }
 
+/**
+ * TanStack Router spreads validated search over raw URL params; writing `undefined` for any owned
+ * key that failed clears the raw value so it cannot leak to the page.
+ */
+export function validatedSearch<T extends object>(
+  raw: Record<string, unknown>,
+  keys: ReadonlyArray<keyof T & string>,
+  keep: T,
+): T {
+  const out: Record<string, unknown> = Object.fromEntries(Object.entries(keep));
+  for (const key of keys) if (key in raw && !(key in out)) out[key] = undefined;
+  return out as T;
+}
+
 const isAgent = Schema.is(KinAgentId);
 export const validateKinAgentSearch = (raw: Record<string, unknown>): KinAgentSearch =>
-  isAgent(raw.agent) ? { agent: raw.agent } : {};
+  validatedSearch(raw, ["agent"], isAgent(raw.agent) ? { agent: raw.agent } : {});
 
 /** The address with an agent's page open over it; Settings closes as it opens. */
 export const withKinAgentPage = <T extends object>(search: T, agent: KinAgentId) => {
@@ -143,6 +172,10 @@ const isKey = Schema.is(KinRecordKey);
 const isPerson = Schema.is(KinPersonId);
 const isList = Schema.is(KinListId);
 const isSection = Schema.is(KinDocSectionId);
+const isCard = Schema.is(KinWidgetId);
+const isBatch = Schema.is(KinBillBatchId);
+const isEmptyParam = (raw: unknown) =>
+  raw === undefined || raw === "" || (typeof raw === "string" && raw.trim() === "");
 const versionOf = (raw: unknown) => {
   const version = Number(raw);
   return Number.isSafeInteger(version) && version > 0 ? version : undefined;
@@ -150,19 +183,59 @@ const versionOf = (raw: unknown) => {
 // The address says "client"; reading it by name keeps it apart from an RPC client in lint's eyes.
 const CLIENT = "client";
 
+const PLACE_SEARCH_KEYS: ReadonlyArray<keyof KinPlaceSearch> = [
+  "task",
+  "list",
+  CLIENT,
+  "project",
+  "dates",
+  "subscriptions",
+  "bills",
+  "doc",
+  "v",
+  "card",
+  "section",
+  "changes",
+  "from",
+  "history",
+  "open",
+  "tab",
+  "person",
+  "invalidLink",
+];
+
+const isInvalidLink = (raw: unknown): raw is KinInvalidLink =>
+  raw === "doc" || raw === "task" || raw === "client" || raw === "project";
+
+function invalidLinkOf(raw: Record<string, unknown>): KinInvalidLink | undefined {
+  if (!isEmptyParam(raw.doc) && !isKey(raw.doc)) return "doc";
+  if (!isEmptyParam(raw[CLIENT]) && !isKey(raw[CLIENT])) return "client";
+  if (!isEmptyParam(raw.project) && !isKey(raw.project)) return "project";
+  if (!isEmptyParam(raw.task) && !isKey(raw.task)) return "task";
+  return isInvalidLink(raw.invalidLink) ? raw.invalidLink : undefined;
+}
+
 export function validateKinPlaceSearch(raw: Record<string, unknown>): KinPlaceSearch {
   const v = versionOf(raw.v);
   const changes = versionOf(raw.changes);
   const from = versionOf(raw.from);
-  return {
+  const invalidLink = invalidLinkOf(raw);
+  return validatedSearch<KinPlaceSearch>(raw, PLACE_SEARCH_KEYS, {
     ...(isKey(raw.task) ? { task: raw.task } : {}),
     ...(isList(raw.list) ? { list: raw.list } : {}),
     ...(isKey(raw[CLIENT]) ? { client: raw[CLIENT] } : {}),
     ...(isKey(raw.project) ? { project: raw.project } : {}),
     ...(raw.dates === true ? { dates: true } : {}),
     ...(raw.subscriptions === true ? { subscriptions: true } : {}),
+    // `?bills` with no value is every batch, as `bills=true` is.
+    ...(raw.bills === true || raw.bills === ""
+      ? { bills: true }
+      : isBatch(raw.bills)
+        ? { bills: raw.bills }
+        : {}),
     ...(isKey(raw.doc) ? { doc: raw.doc } : {}),
     ...(v === undefined ? {} : { v }),
+    ...(isCard(raw.card) ? { card: raw.card } : {}),
     ...(isSection(raw.section) ? { section: raw.section } : {}),
     ...(changes === undefined ? {} : { changes }),
     ...(from === undefined ? {} : { from }),
@@ -172,7 +245,8 @@ export function validateKinPlaceSearch(raw: Record<string, unknown>): KinPlaceSe
       : {}),
     ...(raw.tab === "projects" || raw.tab === "deals" ? { tab: raw.tab } : {}),
     ...(isPerson(raw.person) ? { person: raw.person } : {}),
-  };
+    ...(invalidLink === undefined ? {} : { invalidLink }),
+  });
 }
 
 export function kinRecordOf(search: KinPlaceSearch): KinRecordWhere | null {
@@ -180,6 +254,7 @@ export function kinRecordOf(search: KinPlaceSearch): KinRecordWhere | null {
     return {
       doc: search.doc,
       ...(search.v === undefined ? {} : { version: search.v }),
+      ...(search.card === undefined ? {} : { card: search.card }),
       ...(search.section === undefined ? {} : { section: search.section }),
       ...(search.changes === undefined
         ? {}
@@ -196,6 +271,9 @@ export function kinRecordOf(search: KinPlaceSearch): KinRecordWhere | null {
   if (search.list !== undefined) return { list: search.list };
   if (search.dates === true) return { dates: true };
   if (search.subscriptions === true) return { subscriptions: true };
+  // The router lays the raw search under the validated one: a value it dropped is still here.
+  if (search.bills === true) return { bills: null };
+  if (isBatch(search.bills)) return { bills: search.bills };
   return null;
 }
 
@@ -206,9 +284,11 @@ export function kinSearchOf(record: KinRecordWhere | null): KinPlaceSearch {
   if ("list" in record) return { list: record.list };
   if ("dates" in record) return { dates: true };
   if ("subscriptions" in record) return { subscriptions: true };
+  if ("bills" in record) return { bills: record.bills ?? true };
   return {
     doc: record.doc,
     ...(record.version === undefined ? {} : { v: record.version }),
+    ...(record.card === undefined ? {} : { card: record.card }),
     ...(record.section === undefined ? {} : { section: record.section }),
     ...(record.changes === undefined
       ? {}
@@ -236,7 +316,7 @@ export function kinTaskAddress(place: KinPlace, search: KinPlaceSearch, task: Ki
 export function kinPlaceOfRecord(record: KinRecordWhere | null): KinPlace {
   if (record === null) return "tasks";
   if ("party" in record || "project" in record) return "clients";
-  if ("dates" in record || "subscriptions" in record) return "money";
+  if ("dates" in record || "subscriptions" in record || "bills" in record) return "money";
   if ("list" in record) return kinInMoney(record) ? "money" : "docs";
   return "docs";
 }

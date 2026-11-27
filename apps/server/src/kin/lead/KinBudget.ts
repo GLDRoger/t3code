@@ -45,6 +45,57 @@ export type Usage = {
   readonly usedTokens?: number | undefined;
 };
 type BudgetError = KinChatError | PersistenceSqlError;
+const validCount = (value: number | undefined) =>
+  value !== undefined && Number.isFinite(value) && value >= 0;
+const count = (value: number | undefined) => (validCount(value) ? value! : 0);
+const validLedger = (ledger: TurnTokenUsage) =>
+  validCount(ledger.inputTokens) &&
+  validCount(ledger.outputTokens) &&
+  (ledger.cachedInputTokens === undefined || validCount(ledger.cachedInputTokens));
+const completeLedger = (ledger: TurnTokenUsage | undefined) =>
+  ledger?.usageStatus === "complete" && validLedger(ledger);
+// A partial ledger counts what a running or stopped turn has used so far, which is still a floor.
+const countedLedger = (ledger: TurnTokenUsage | undefined) =>
+  (ledger?.usageStatus === "complete" || ledger?.usageStatus === "partial") && validLedger(ledger);
+const rawUnits = (usage: ReadonlyArray<Usage>) => {
+  let units = 0;
+  const ids = new Set<string>();
+  for (const turn of usage) {
+    if (ids.has(turn.providerTurnId)) continue;
+    ids.add(turn.providerTurnId);
+    const ledger = turn.turnTokenUsage;
+    if (!countedLedger(ledger) && validCount(turn.usedTokens)) {
+      units += count(turn.usedTokens);
+      continue;
+    }
+    const incoming = count(ledger?.inputTokens);
+    const cached = Math.min(incoming, count(ledger?.cachedInputTokens));
+    units +=
+      incoming -
+      cached +
+      0.1 * cached +
+      4 * count(ledger?.outputTokens) +
+      count(ledger?.otherUsage?.inputTokens) +
+      4 * count(ledger?.otherUsage?.outputTokens);
+  }
+  return units;
+};
+/**
+ * The units a turn's provider turns cost, as the daily limit charges them. A provider turn without
+ * a complete ledger counts its partial ledger or its last request's size: a floor until it ends.
+ */
+export const unitsOf = (usage: ReadonlyArray<Usage>) => {
+  const units = rawUnits(usage);
+  return Number.isFinite(units) ? units : 0;
+};
+/** Whether `unitsOf` read a total: some provider turn's complete ledger, and no floor beside it. */
+export const fromCompleteLedgers = (usage: ReadonlyArray<Usage>) =>
+  usage.some((turn) => completeLedger(turn.turnTokenUsage)) &&
+  usage.every(
+    (turn) =>
+      completeLedger(turn.turnTokenUsage) ||
+      (!countedLedger(turn.turnTokenUsage) && !validCount(turn.usedTokens)),
+  );
 /** Whose work a limit held back: the owner's own, or a teammate's. */
 export type HeldBy = "org" | "teammates";
 type Admission = {
@@ -456,10 +507,6 @@ const make = Effect.gen(function* () {
     usage: ReadonlyArray<Usage>,
     context: Readonly<Record<string, string>>,
   ) {
-    let units = 0;
-    const valid = (value: number | undefined) =>
-      value !== undefined && Number.isFinite(value) && value >= 0;
-    const count = (value: number | undefined) => (valid(value) ? value! : 0);
     const ids = new Set<string>();
     if (usage.length === 0)
       yield* Effect.logWarning("Kin budget turn usage unavailable", {
@@ -469,43 +516,27 @@ const make = Effect.gen(function* () {
       if (ids.has(turn.providerTurnId)) continue;
       ids.add(turn.providerTurnId);
       const ledger = turn.turnTokenUsage;
-      const complete =
-        ledger?.usageStatus === "complete" &&
-        valid(ledger.inputTokens) &&
-        valid(ledger.outputTokens) &&
-        (ledger.cachedInputTokens === undefined || valid(ledger.cachedInputTokens));
-      if (!complete) {
+      if (!countedLedger(ledger)) {
         yield* Effect.logWarning("Kin budget using fallback usage", {
           ...context,
           usageStatus: ledger?.usageStatus ?? "missing",
-          hasUsedTokens: valid(turn.usedTokens),
+          hasUsedTokens: validCount(turn.usedTokens),
         });
       }
-      if (!complete && valid(turn.usedTokens)) {
-        units += count(turn.usedTokens);
-        continue;
-      }
-      const incoming = count(ledger?.inputTokens);
-      const cached = Math.min(incoming, count(ledger?.cachedInputTokens));
-      if (cached !== count(ledger?.cachedInputTokens))
+      if (
+        (countedLedger(ledger) || !validCount(turn.usedTokens)) &&
+        Math.min(count(ledger?.inputTokens), count(ledger?.cachedInputTokens)) !==
+          count(ledger?.cachedInputTokens)
+      )
         yield* Effect.logWarning("Kin budget clamped cached usage", {
           ...context,
         });
-      units +=
-        incoming -
-        cached +
-        0.1 * cached +
-        4 * count(ledger?.outputTokens) +
-        count(ledger?.otherUsage?.inputTokens) +
-        4 * count(ledger?.otherUsage?.outputTokens);
     }
-    if (!Number.isFinite(units)) {
+    if (!Number.isFinite(rawUnits(usage)))
       yield* Effect.logWarning("Kin budget usage overflow", {
         ...context,
       });
-      units = 0;
-    }
-    return units;
+    return unitsOf(usage);
   });
   return KinBudget.of({
     get,
@@ -620,6 +651,8 @@ const make = Effect.gen(function* () {
           // Each chat reads the time on the clock of the person who asked there.
           const chats = new Map<string, KinPersonId | undefined>();
           for (const event of input.events) {
+            // Bills read in the background say it on their batch's card (`Bills.paused`).
+            if (event._tag === "bills.read") continue;
             const chatId =
               "chatId" in event && event.chatId !== undefined ? event.chatId : lead.ownerChatId;
             const asker =

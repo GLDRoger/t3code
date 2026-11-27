@@ -130,6 +130,26 @@ import CompanyShell from "./migrations/K206_CompanyShell.ts";
 import HostTroubles from "./migrations/K207_HostTroubles.ts";
 import QuietDelivery from "./migrations/K208_QuietDelivery.ts";
 import Pictures from "./migrations/K209_Pictures.ts";
+import PartnerReimbursements from "./migrations/K210_PartnerReimbursements.ts";
+import PersonMailbox from "./migrations/K211_PersonMailbox.ts";
+import NumberValues from "./migrations/K212_NumberValues.ts";
+import PushSent from "./migrations/K213_PushSent.ts";
+import MessageWithdrawn from "./migrations/K214_MessageWithdrawn.ts";
+import OfflineCatchUp from "./migrations/K215_OfflineCatchUp.ts";
+import OfflineSkips from "./migrations/K216_OfflineSkips.ts";
+import BillReads from "./migrations/K217_BillReads.ts";
+import AnsweredSeq from "./migrations/K218_AnsweredSeq.ts";
+import SeveralOwnMailboxes from "./migrations/K219_SeveralOwnMailboxes.ts";
+import PaymentReceived from "./migrations/K220_PaymentReceived.ts";
+import TaxByCustomer from "./migrations/K221_TaxByCustomer.ts";
+import QuietRuns from "./migrations/K222_QuietRuns.ts";
+import SearchDraftFor from "./migrations/K223_SearchDraftFor.ts";
+import SessionCarry from "./migrations/K224_SessionCarry.ts";
+import WakeupEnding from "./migrations/K225_WakeupEnding.ts";
+import LapsedTextQuestions from "./migrations/K226_LapsedTextQuestions.ts";
+import DeclinedNudges from "./migrations/K227_DeclinedNudges.ts";
+import ChatsSettleAfter from "./migrations/K228_ChatsSettleAfter.ts";
+import BankSenders from "./migrations/K229_BankSenders.ts";
 import * as Effect from "effect/Effect";
 import * as Migrator from "effect/sql/Migrator";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -340,6 +360,26 @@ const migrations = {
   "207_HostTroubles": HostTroubles,
   "208_QuietDelivery": QuietDelivery,
   "209_Pictures": Pictures,
+  "210_PartnerReimbursements": PartnerReimbursements,
+  "211_PersonMailbox": PersonMailbox,
+  "212_NumberValues": NumberValues,
+  "213_PushSent": PushSent,
+  "214_MessageWithdrawn": MessageWithdrawn,
+  "215_OfflineCatchUp": OfflineCatchUp,
+  "216_OfflineSkips": OfflineSkips,
+  "217_BillReads": BillReads,
+  "218_AnsweredSeq": AnsweredSeq,
+  "219_SeveralOwnMailboxes": SeveralOwnMailboxes,
+  "220_PaymentReceived": PaymentReceived,
+  "221_TaxByCustomer": TaxByCustomer,
+  "222_QuietRuns": QuietRuns,
+  "223_SearchDraftFor": SearchDraftFor,
+  "224_SessionCarry": SessionCarry,
+  "225_WakeupEnding": WakeupEnding,
+  "226_LapsedTextQuestions": LapsedTextQuestions,
+  "227_DeclinedNudges": DeclinedNudges,
+  "228_ChatsSettleAfter": ChatsSettleAfter,
+  "229_BankSenders": BankSenders,
 };
 const loader = Migrator.fromRecord(migrations);
 

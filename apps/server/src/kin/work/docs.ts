@@ -1,3 +1,4 @@
+import { isKeyRequest } from "../chat/keySent.ts";
 import {
   KIN_DOC_KINDS,
   KinChatError,
@@ -22,7 +23,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
 import { KinChatService } from "../chat/KinChatService.ts";
-import { mayActAsOwner } from "../people/KinAccess.ts";
+import { mayActAsOwner, ownerLevelSql } from "../people/KinAccess.ts";
 import {
   applyOperations,
   DOC_BODY_MAX,
@@ -33,6 +34,7 @@ import {
   sectionsOf,
 } from "./docBody.ts";
 import { keepDocFiles } from "./docFiles.ts";
+import { draftOnCard } from "./draftOpening.ts";
 import { KinRecords, type Writer } from "./KinRecords.ts";
 import { fieldText, listOf, parseFields } from "./lists.ts";
 import { guardPlaybook } from "./playbooks.ts";
@@ -40,6 +42,8 @@ import { actorOf, iso, principal, type RecordRow, toRecord, unavailable } from "
 import { indexRecord } from "./searchIndex.ts";
 import {
   KIN_OWNER_LEVEL,
+  keyedAs,
+  MONEY_DOC_KINDS,
   PICTURE_DOC_ORIGIN,
   pictureVersionSeen,
   viewerOfPeople,
@@ -126,6 +130,9 @@ export const CHARACTER_ORIGIN = "kin-character:";
 /** The company's What we sell is the doc with this origin; `offerings.ts` keeps the same, as a test pins. */
 export const OFFERINGS_ORIGIN = "kin-offerings";
 
+/** What the person a draft was filed for, alone, hears once an owner kept it to owners only. */
+export const privateNowLine = (key: string, owner: string) =>
+  `${key} is private now: ${owner} kept it to owners only.`;
 export const docNotFound = (key: string) =>
   new KinChatError({ reason: "not_found", message: `No doc ${key.slice(0, 40)}.` });
 const fileOnly = (key: string) =>
@@ -217,20 +224,54 @@ const writerSees = (writer: Writer): KinViewer =>
 export const docRow = Effect.fn("KinDocs.row")(function* (
   orgId: KinOrgId,
   ref: { readonly key: string } | { readonly recordId: string },
-  /** For a person, a doc they may not see is no doc at all (`personSees`). */
+  /**
+   * For a person, a doc they may not see is no doc at all (`personSees`); for a keyed viewer, so is
+   * one a key never carries (`keyedAs`).
+   */
   viewer: KinViewer,
 ) {
   const records = yield* KinRecords;
+  const sql = yield* SqlClient.SqlClient;
   const row =
     "key" in ref ? yield* records.get(orgId, ref.key) : yield* records.getById(orgId, ref.recordId);
   const hidden =
     row !== undefined &&
-    viewer._tag === "people" &&
-    !(yield* viewVisible(orgId, viewer.people, row.recordId));
+    ((viewer._tag === "people" && !(yield* viewVisible(orgId, viewer.people, row.recordId))) ||
+      (viewer.keyed === true &&
+        (yield* sql`SELECT 1 FROM kin_records r WHERE r.org_id = ${orgId}
+          AND r.record_id = ${row.recordId} AND NOT ${keyedAs(sql, viewer)}`).length > 0));
+  if (hidden && viewer._tag === "people" && viewer.keyed !== true && viewer.people.length === 1) {
+    const [kept] = yield* privateNow(sql, orgId, row.recordId, viewer.people[0]!);
+    if (kept !== undefined)
+      return yield* new KinChatError({
+        reason: "not_found",
+        privateNow: { by: kept.name },
+        message: privateNowLine(row.key, kept.name),
+      });
+  }
   if (row === undefined || hidden || listOf(row.registerId) !== "docs")
     return yield* docNotFound("key" in ref ? ref.key : "with that id");
   return row;
 });
+
+/**
+ * Who labelled `recordId` for owners only, when it is a live doc filed as `personId`'s own draft:
+ * they knew it existed, so they alone hear it went private. Anyone else still finds no doc.
+ */
+const privateNow = (
+  sql: SqlClient.SqlClient,
+  orgId: KinOrgId,
+  recordId: string,
+  personId: KinPersonId,
+) =>
+  sql<{ name: string }>`SELECT p.display_name AS name FROM kin_records r
+    JOIN kin_people p ON p.org_id = r.org_id AND p.person_id = r.marked_by_person_id
+    WHERE r.org_id = ${orgId} AND r.record_id = ${recordId} AND r.register_id = 'docs'
+      AND r.state <> 'dropped' AND r.sensitive = 1
+      AND json_extract(r.fields_json, '$.draftFor') = ${personId}
+      AND r.marked_by_person_id <> ${personId}
+      AND ${sql.literal(ownerLevelSql("p.org_id", "p.person_id"))}
+    ORDER BY r.record_id LIMIT 1`;
 
 /**
  * Which of a doc's versions the viewer reads: every one, but a picture's each by its own rule
@@ -373,7 +414,6 @@ const settle = Effect.fn("KinDocs.settle")(function* (orgId: KinOrgId, recordId:
  * Kinds that carry prices or terms: private from the start. Any other doc is private only by its
  * own label, never by what the turn that wrote it had read; agents keep prices out of the rest.
  */
-const MONEY_DOC_KINDS: ReadonlyArray<KinDocKind> = ["quote", "proposal"];
 const moneyKind = (kind: KinDocKind | undefined) =>
   kind !== undefined && MONEY_DOC_KINDS.includes(kind);
 
@@ -475,7 +515,8 @@ const revise = Effect.fn("KinDocs.revise")(function* (
     [{ field: "version", from: String(current.version), to: String(version) }],
   );
   yield* guardPlaybook(orgId, row.recordId);
-  if (next.file === undefined) yield* refreshCards(orgId, row.recordId, next.body);
+  if (next.file === undefined)
+    yield* refreshCards(orgId, row.recordId, { text: next.body, version, key: row.key });
   return { ...(yield* settle(orgId, row.recordId)), created: true };
 });
 
@@ -483,14 +524,14 @@ const revise = Effect.fn("KinDocs.revise")(function* (
 const refreshCards = Effect.fn("KinDocs.refreshCards")(function* (
   orgId: KinOrgId,
   recordId: string,
-  text?: string,
+  next?: { readonly text: string; readonly version: number; readonly key: string },
 ) {
   const chats = yield* Effect.serviceOption(KinChatService);
   if (Option.isSome(chats))
     yield* chats.value.refreshDocCards({
       orgId,
       recordId,
-      ...(text === undefined ? {} : { text }),
+      ...(next === undefined ? {} : draftOnCard(next.text, next.version, next.key)),
     });
 });
 
@@ -713,7 +754,9 @@ export const editSectionByHand = Effect.fn("KinDocs.editSectionByHand")(function
         title: row.title,
         body: applied.body,
         kind: "edited",
-        summary: `Changed ${section.id === "top" ? "the introduction" : `"${section.title}"`} by hand`,
+        summary: `Changed ${section.id === "top" ? "the introduction" : `"${section.title}"`} ${
+          isKeyRequest(input.originKey) ? "through their coding agent" : "by hand"
+        }`,
         operations: [{ op: "replace_section", section: section.id }],
         originKey: input.originKey,
       });
@@ -737,6 +780,8 @@ export const restore = Effect.fn("KinDocs.restore")(function* (
   return yield* transaction(
     Effect.gen(function* () {
       const row = yield* docRow(orgId, ref, writerSees(writer));
+      if (isKeyRequest(input.originKey) && row.originKey.startsWith(CHARACTER_ORIGIN))
+        return yield* characterByHand;
       const again = yield* retried(orgId, row.recordId, input.originKey);
       if (again !== undefined) return again;
       const current = yield* versionOf(orgId, row.recordId);
@@ -754,7 +799,9 @@ export const restore = Effect.fn("KinDocs.restore")(function* (
         title: old.title,
         body: old.body,
         kind: "restored",
-        summary: input.summary ?? `Restored version ${old.version}`,
+        summary:
+          input.summary ??
+          `Restored version ${old.version}${isKeyRequest(input.originKey) ? " (coding agent)" : ""}`,
         operations: [{ op: "restore" }],
         restoredFrom: old.version,
         originKey: input.originKey,

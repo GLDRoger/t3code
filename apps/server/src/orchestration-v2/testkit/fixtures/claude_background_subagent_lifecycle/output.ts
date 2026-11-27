@@ -3,6 +3,7 @@ import type {
   OrchestrationV2ThreadProjection,
   ProviderReplayTranscript,
   ThreadId,
+  TurnTokenUsage,
 } from "@t3tools/contracts";
 
 import type { OrchestratorV2ScenarioResult } from "../../OrchestratorScenario.ts";
@@ -227,5 +228,61 @@ export function assertClaudeBackgroundSubagentLifecycleOutput(
         event.type === "provider-thread.updated" &&
         (event.payload.pendingBackgroundTasks?.length ?? 0) > 0,
     ),
+  );
+
+  // Each turn's last running ledger against its final one. Main-agent input, cache reads and
+  // writes, and subagent input are all there mid-turn; subagent output and helper calls arrive
+  // only with the result's process-wide ledger.
+  const ledgers = new Map<string, Array<TurnTokenUsage | undefined>>();
+  for (const event of result.domainEvents) {
+    if (event.type !== "provider-turn.updated" || !event.payload.turnTokenUsage) continue;
+    const [running, final] = ledgers.get(event.payload.id) ?? [];
+    ledgers.set(
+      event.payload.id,
+      event.payload.status === "running"
+        ? [event.payload.turnTokenUsage, final]
+        : [running, event.payload.turnTokenUsage],
+    );
+  }
+  const counts = (usage: TurnTokenUsage | undefined) => [
+    usage?.inputTokens,
+    usage?.cachedInputTokens,
+    usage?.cacheCreationTokens,
+    usage?.outputTokens,
+    usage?.otherUsage?.inputTokens ?? 0,
+    usage?.otherUsage?.outputTokens ?? 0,
+  ];
+  assert.deepEqual(
+    [...ledgers.values()].map((turn) => turn.map(counts)),
+    [
+      [
+        [74_412, 61_381, 13_027, 303, 20_324, 4],
+        [74_412, 61_381, 13_027, 303, 21_531, 69],
+      ],
+      [
+        [38_155, 37_726, 426, 1, 0, 0],
+        [38_155, 37_726, 426, 7, 0, 0],
+      ],
+      [
+        [76_551, 76_333, 214, 127, 19_852, 8],
+        [76_551, 76_333, 214, 127, 19_852, 217],
+      ],
+      [
+        [77_504, 76_737, 761, 2, 0, 0],
+        [77_504, 76_737, 761, 63, 0, 0],
+      ],
+      [
+        [77_912, 77_583, 325, 176, 20_418, 4],
+        [77_912, 77_583, 325, 176, 20_418, 42],
+      ],
+      [
+        [39_515, 39_084, 428, 8, 0, 0],
+        [39_515, 39_084, 428, 10, 0, 0],
+      ],
+      [
+        [39_635, 39_512, 120, 7, 0, 0],
+        [39_635, 39_512, 120, 7, 0, 0],
+      ],
+    ],
   );
 }

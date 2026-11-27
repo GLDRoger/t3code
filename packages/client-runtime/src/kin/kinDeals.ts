@@ -106,6 +106,9 @@ export const KIN_DEALS = {
   notes: "Notes",
   notesPlaceholder: "Prices mentioned, rough numbers",
   notesHint: "Anything to remember when you talk numbers.",
+  privateLabel: "Keep private",
+  privateOn: "Private. Only the owner and co-owners see this deal and the promises made on it.",
+  privateOff: "Whoever sees the client sees this deal and its promises.",
   stepPlaceholder: "What happens next",
   cameFromPlaceholder: "Such as a referral or an event",
   add: "Add deal",
@@ -797,12 +800,14 @@ export interface KinDealEditDraft {
   readonly quote: KinRecordKey | null;
   /** What was said about price and the like: the deal page's notes. */
   readonly notes: string;
+  /** Keep private: only the owner level sees it and the promises made on it. */
+  readonly private: boolean;
 }
 
 /** A deal as Edit opens it: its row, with the notes its page carries. */
 type KinDealEditable = Pick<
   KinDealRow,
-  "title" | "value" | "expectedAt" | "expectedAllDay" | "source" | "quote"
+  "title" | "value" | "expectedAt" | "expectedAllDay" | "source" | "quote" | "sensitive"
 > & { readonly notes?: string };
 
 export function kinDealEditDraft(deal: KinDealEditable, names: KinWorkNames): KinDealEditDraft {
@@ -813,6 +818,7 @@ export function kinDealEditDraft(deal: KinDealEditable, names: KinWorkNames): Ki
     source: deal.source ?? "",
     quote: deal.quote?.key ?? null,
     notes: deal.notes ?? "",
+    private: deal.sensitive,
   };
 }
 
@@ -856,6 +862,7 @@ export function kinDealEditRequest(
       ...(source === was.source ? {} : { source: source === "" ? null : source }),
       ...(draft.quote === was.quote ? {} : { quote: draft.quote }),
       ...(notes === was.notes.trim() ? {} : { notes }),
+      ...(draft.private === was.private ? {} : { sensitive: draft.private }),
     },
   };
 }

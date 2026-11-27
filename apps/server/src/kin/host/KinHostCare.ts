@@ -18,6 +18,7 @@ import {
   type KinHostStatus,
   type KinHostUsage,
   type KinOrgId,
+  type KinPersonId,
   type KinTroubleCause,
 } from "@t3tools/contracts";
 import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
@@ -48,6 +49,7 @@ import { CHIEF_OF_STAFF_DOMAIN, liveLead } from "../lead/orgLeads.ts";
 import { personHoldNow } from "../triggers/quietHold.ts";
 import { textLocale } from "../work/companyProfile.ts";
 import { ownerZone } from "../work/recordRows.ts";
+import { offlineCatchUpWords, type OfflineCounts } from "./offlineWords.ts";
 
 /** How long a held turn waits before it tries again by itself, by cause. */
 export const HOLD_MS: Readonly<Partial<Record<KinTroubleCause, number>>> = {
@@ -210,6 +212,10 @@ export class KinHostCare extends Context.Service<
       orgId: KinOrgId,
       problem: { readonly lastGoodAt: number | null } | undefined,
     ) => Effect.Effect<void>;
+    readonly postOfflineNotice: (
+      orgId: KinOrgId,
+      notice: OfflineCounts & { readonly from: number; readonly to: number },
+    ) => Effect.Effect<boolean, KinChatError>;
     readonly status: (orgId: KinOrgId) => Effect.Effect<KinHostStatus, KinChatError>;
     readonly freeSpace: (orgId: KinOrgId) => Effect.Effect<KinHostFreeSpaceResult, KinChatError>;
     readonly backUpNow: (orgId: KinOrgId) => Effect.Effect<KinHostBackUpResult, KinChatError>;
@@ -552,33 +558,97 @@ const make = Effect.gen(function* () {
     } satisfies KinHostTroubleCard;
   });
 
-  const words = Effect.fn("KinHostCare.words")(function* (
-    orgId: KinOrgId,
-    card: KinHostTroubleCard,
-  ) {
+  const noticeWhen = Effect.fn("KinHostCare.noticeWhen")(function* (orgId: KinOrgId) {
     const zone = yield* ownerZone(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     const now = yield* Clock.currentTimeMillis;
     const locale = yield* textLocale(orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     const options = { zone, locale };
     const today = formatKinWhen(now, "date", options);
     // Today's time alone, as the notice is read the same day; another day names it.
-    const at = (value: string) => {
-      const ms = Date.parse(value);
-      return formatKinWhen(
+    return (ms: number) =>
+      formatKinWhen(
         ms,
         formatKinWhen(ms, "date", options) === today ? "time" : "dateTime",
         options,
       );
-    };
-    // The message says what is wrong; its card carries what changes (the count, the fix).
-    return kinTroubleWords(card, at).what;
   });
+
+  const words = Effect.fn("KinHostCare.words")(function* (
+    orgId: KinOrgId,
+    card: KinHostTroubleCard,
+  ) {
+    const at = yield* noticeWhen(orgId);
+    // The message says what is wrong; its card carries what changes (the count, the fix).
+    return kinTroubleWords(card, (value) => at(Date.parse(value))).what;
+  });
+
+  const noticeOwner = (orgId: KinOrgId) => liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
+  const noticeHeld = (orgId: KinOrgId, personId: KinPersonId) =>
+    personHoldNow(orgId, personId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
 
   /** Where the owner is told: a chat only they read, else nowhere (Settings still shows it). */
   const noticeChat = Effect.fn("KinHostCare.noticeChat")(function* (orgId: KinOrgId) {
-    const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
+    const lead = yield* noticeOwner(orgId);
     return lead === undefined ? undefined : yield* ownerPrivateChat(sql, orgId, lead.ownerPersonId);
   });
+
+  const insertNotice = Effect.fn("KinHostCare.insertNotice")(function* (
+    orgId: KinOrgId,
+    chatId: KinChatId,
+    messageId: KinMessageId,
+    body: string,
+    now: number,
+  ) {
+    return yield* repo.insertMessage({
+      orgId,
+      chatId,
+      audience: "owner",
+      messageId,
+      author: { _tag: "system" },
+      kind: "system",
+      body,
+      intent: null,
+      mentions: [],
+      replyTo: null,
+      widgetId: null,
+      floorRunId: null,
+      status: "posted",
+      sentBy: null,
+      clientMessageId: null,
+      createdAt: iso(now),
+      editedAt: null,
+    });
+  });
+
+  const postOfflineNotice = Effect.fn("KinHostCare.postOfflineNotice")(
+    function* (
+      orgId: KinOrgId,
+      notice: OfflineCounts & { readonly from: number; readonly to: number },
+    ) {
+      return yield* sql.withTransaction(
+        Effect.gen(function* () {
+          const messageId = KinMessageId.make(`kin-offline:${notice.from}`);
+          if (Option.isSome(yield* repo.getMessage({ orgId, messageId }))) return true;
+          const lead = yield* noticeOwner(orgId);
+          if (lead === undefined || (yield* noticeHeld(orgId, lead.ownerPersonId)) !== undefined)
+            return false;
+          const chatId = yield* ownerPrivateChat(sql, orgId, lead.ownerPersonId);
+          if (chatId === undefined) return false;
+          const at = yield* noticeWhen(orgId);
+          const message = yield* insertNotice(
+            orgId,
+            chatId,
+            messageId,
+            offlineCatchUpWords(at(notice.from), at(notice.to), notice),
+            yield* Clock.currentTimeMillis,
+          );
+          yield* publish({ type: "message.posted", orgId, message });
+          return true;
+        }),
+      );
+    },
+    Effect.mapError(() => unavailable),
+  );
 
   /**
    * Draws the trouble's notice from its stored state: redraws a posted one when its facts changed,
@@ -628,25 +698,7 @@ const make = Effect.gen(function* () {
         const chatId = bare?.chatId ?? (yield* noticeChat(orgId));
         if (chatId === undefined) return;
         if (bare === undefined && body !== undefined)
-          yield* repo.insertMessage({
-            orgId,
-            chatId,
-            audience: "owner",
-            messageId,
-            author: { _tag: "system" },
-            kind: "system",
-            body,
-            intent: null,
-            mentions: [],
-            replyTo: null,
-            widgetId: null,
-            floorRunId: null,
-            status: "posted",
-            sentBy: null,
-            clientMessageId: null,
-            createdAt: iso(now),
-            editedAt: null,
-          });
+          yield* insertNotice(orgId, chatId, messageId, body, now);
         const widget = {
           orgId,
           chatId,
@@ -963,12 +1015,9 @@ const make = Effect.gen(function* () {
         return;
       }
       // Opened outside the owner's quiet hours: the next hourly check tries again.
-      const lead = yield* liveLead(sql, orgId, { prefer: CHIEF_OF_STAFF_DOMAIN });
-      if (lead === undefined) return;
-      const hold = yield* personHoldNow(orgId, lead.ownerPersonId).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-      );
-      if (hold !== undefined) return;
+      const lead = yield* noticeOwner(orgId);
+      if (lead === undefined || (yield* noticeHeld(orgId, lead.ownerPersonId)) !== undefined)
+        return;
       const troubleId = yield* troubleLock.withPermits(1)(
         sql.withTransaction(
           Effect.gen(function* () {
@@ -1138,6 +1187,7 @@ const make = Effect.gen(function* () {
     causeFor,
     refresh,
     checkBackup,
+    postOfflineNotice,
     status,
     freeSpace,
     backUpNow,

@@ -33,6 +33,7 @@ export const KIN_REFRESH_TOPICS = [
   "stop",
   "watches",
   "shell",
+  "numbers",
 ] as const;
 export const KinRefreshTopic = Schema.Literals(KIN_REFRESH_TOPICS);
 export type KinRefreshTopic = typeof KinRefreshTopic.Type;
@@ -66,6 +67,7 @@ export const KinRefreshes = Schema.Struct({
   /** What Kin keeps watch on and its looks (`kin.watches.*`). Absent from older hosts. */
   watches: Schema.optional(NonNegativeInt),
   shell: Schema.optional(NonNegativeInt),
+  numbers: Schema.optional(NonNegativeInt),
   /**
    * The host run these revisions count in. Unchanged across a reconnect, an unchanged revision
    * means nothing moved; a new one means anything may have. Absent from older hosts.
@@ -81,8 +83,8 @@ export const KinRefreshes = Schema.Struct({
 });
 export type KinRefreshes = typeof KinRefreshes.Type;
 
-/** `pulse`: `kin.pulse.subscribe`; `money`: `kin.money.subscribe`. */
-export const KIN_STREAMS = ["pulse", "money"] as const;
+/** `pulse`: `kin.pulse.subscribe`; `money`: `kin.money.subscribe`; `open`: `kin.open.subscribe`. */
+export const KIN_STREAMS = ["pulse", "money", "open"] as const;
 
 export const KinRefreshesSubscribeInput = Schema.Struct({ orgId: KinOrgId });
 export type KinRefreshesSubscribeInput = typeof KinRefreshesSubscribeInput.Type;

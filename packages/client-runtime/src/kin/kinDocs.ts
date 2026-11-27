@@ -30,16 +30,12 @@ import {
   type KinWidget,
   type KinWorkActor,
   type KinWorkPrincipal,
-  kinPlainBody,
+  kinDraftOpeningOf,
   kinSalesLead,
-  kinThreadLinksAsWords,
   kinWhenFormat,
 } from "@t3tools/contracts";
 import { kinDocBlockIndex, kinDocBlocks, kinDocParts } from "@t3tools/shared/kinDocBlocks";
-import type { PhrasingContent, RootContent } from "mdast";
-import remarkGfm from "remark-gfm";
-import remarkParse from "remark-parse";
-import { unified } from "unified";
+import { kinDocCopyText } from "@t3tools/shared/kinDocCopyText";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -48,12 +44,16 @@ import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runti
 import {
   isKinChatError,
   kinMidSentence,
+  kinWorkFailuresOf,
   kinWorkName,
   kinWorkRefused,
   type KinWorkNames,
 } from "./kinWork.ts";
+import { kinWorkReadState, type KinWorkReadState } from "./kinWorkForms.ts";
 import { kinCount } from "./kinCount.ts";
 import { kinIsMine, type KinMineCount, type KinMineHeld } from "./kinWorkClients.ts";
+import { kinSectionNamed, kinSectionOn } from "./kinShell.ts";
+import type { KinShell } from "@t3tools/contracts";
 
 export const KIN_DOCS = {
   earlierVersions: "Show earlier versions",
@@ -117,8 +117,10 @@ export const KIN_DOCS = {
   restore: "Restore this version",
   restoring: "Restoring…",
   compare: "Compare with the latest",
-  private: "Private. Only you can see this.",
-  privateInherited: "Private, because its client or project is. Only you can see this.",
+  private: "Private. Only owners see this.",
+  /** A teammate's draft in an owner's list, marked "Me and owners". */
+  draftOf: (name: string) => `${name}'s draft`,
+  privateInherited: "Private, because its client or project is. Only owners see this.",
   top: "Introduction",
   empty: {
     title: "No docs yet",
@@ -148,6 +150,11 @@ export const KIN_DOCS = {
     title: "This doc isn't here any more",
     detail: "Open Docs to see what there is now.",
   },
+  // A draft filed for this reader that an owner has since kept to owners only.
+  privateNow: (by: string) => ({
+    title: "This doc is private now",
+    detail: `${by} kept it to owners only.`,
+  }),
   failed: {
     title: "Couldn't load this doc",
     detail: KIN_CHECK_CONNECTION,
@@ -177,6 +184,10 @@ export const KIN_DOCS = {
   sentTo: (name: string) => `Sent to ${name} to approve.`,
   sentHeld: (name: string) => `Sent. ${name} gets it to approve when they're back.`,
   changesFirst: (name: string) => `${name} asked for changes first.`,
+  changedSinceSent: "It changed after it was sent, so it wasn't approved. Send it again.",
+  longDraft: "A long draft. Open it to read all of it.",
+  copying: "Copying…",
+  copyFailed: "Couldn't copy the text.",
   sendFailed: "Couldn't send it.",
   sendOffline: "You're offline. Send it when the connection is back.",
   noAccount: (service: string, by: string | null) =>
@@ -225,19 +236,44 @@ export const KIN_SEARCH = {
   includeClosed: "Include closed and archived",
 } as const;
 
+/** What search looks through, as the company's sections have it: "tasks, patients, docs". */
+function searchKinds(shell: KinShell | null | undefined, detailed: boolean): ReadonlyArray<string> {
+  const clients = kinSectionOn(shell, "clients");
+  return [
+    "tasks",
+    ...(!clients
+      ? []
+      : detailed
+        ? [kinSectionNamed(shell, "clients"), "contacts", "projects"]
+        : [kinSectionNamed(shell, "clients")]),
+    "docs",
+    ...(kinSectionOn(shell, "money") ? ["money"] : []),
+  ];
+}
+
+const andList = (parts: ReadonlyArray<string>) =>
+  parts.length < 2 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`;
+
+/** The search box's placeholder, naming only the sections the company has on. */
+export const kinSearchPlaceholder = (shell?: KinShell | null) =>
+  `Search ${andList(searchKinds(shell, false))}`;
+
 /** What the empty search box says it looks through: the owner level finds what memory keeps too. */
-export const kinSearchHint = (scope: KinViewerScope) =>
-  scope.all
+export const kinSearchHint = (scope: KinViewerScope, shell?: KinShell | null) => {
+  const kinds = searchKinds(shell, true);
+  const listed = kinds.map((kind, index) => (index === 0 ? upperFirst(kind) : kind));
+  return scope.all
     ? {
         title: KIN_SEARCH.hint.title,
-        detail:
-          "Tasks, clients, contacts, projects, docs, money, and the decisions your agents remember, by any words in them.",
+        detail: `${listed.join(", ")}, and the decisions your agents remember, by any words in them.`,
       }
     : {
         title: KIN_SEARCH.hint.title,
-        detail:
-          "Tasks, clients, contacts, projects, docs and money you can see, by any words in them.",
+        detail: `${andList(listed)} you can see, by any words in them.`,
       };
+};
+
+const upperFirst = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
 
 // When and who
 
@@ -394,10 +430,11 @@ export function kinDocRow(row: KinDocListRow, names: KinWorkNames, now: Date): K
   const isPrivate = row.sensitive || row.sensitiveInherited === true;
   const kind = kinDocKindOf(row);
   const kindLabel = kind === "other" ? null : KIN_DOC_KIND_LABELS[kind].one;
+  const draft = row.draftOf === undefined ? null : KIN_DOCS.draftOf(row.draftOf.name);
   return {
     key: row.key,
     title: row.title,
-    line: kindLabel === null ? text : `${kindLabel} · ${text}`,
+    line: [draft, kindLabel, text].filter((part) => part !== null).join(" · "),
     pinned,
     kind: kindLabel,
     under: under === "" ? null : under,
@@ -412,6 +449,7 @@ export function kinDocRow(row: KinDocListRow, names: KinWorkNames, now: Date): K
       kindLabel,
       under === "" ? KIN_DOC_HOMES.unfiled : under,
       text,
+      draft,
       isPrivate ? "Private" : null,
       row.archived ? KIN_DOCS.archived : null,
     ]
@@ -439,6 +477,7 @@ const RECENT_MAX = 4;
 export function kinDocLibrary(
   rows: ReadonlyArray<KinDocListRow>,
   pinned: KinDocListRow | null = null,
+  shell?: KinShell | null,
 ): {
   readonly recent: ReadonlyArray<KinDocListRow>;
   readonly homes: ReadonlyArray<KinDocHome>;
@@ -459,7 +498,7 @@ export function kinDocLibrary(
     else if (row.company === true) company.push(row);
     else if (row.party !== undefined || row.project !== undefined) {
       const id = row.party?.key ?? NO_PARTY;
-      const title = row.party?.title ?? KIN_DOC_HOMES.noClient;
+      const title = row.party?.title ?? kinSectionNamed(shell, KIN_DOC_HOMES.noClient);
       const held = clients.get(id);
       if (held === undefined) clients.set(id, { title, rows: [row] });
       else held.rows.push(row);
@@ -724,86 +763,7 @@ export function kinDocFileInput(
   };
 }
 
-// Copy text
-
-const copyParser = unified().use(remarkParse).use(remarkGfm);
-
-const inlineText = (nodes: ReadonlyArray<PhrasingContent>): string =>
-  nodes
-    .map((node): string => {
-      switch (node.type) {
-        case "text":
-        case "inlineCode":
-          return node.value;
-        case "break":
-          return "\n";
-        case "image":
-          return node.alt ?? "";
-        case "html":
-          return node.value.replace(/<[^>]*>/g, "");
-        case "link": {
-          const words = inlineText(node.children);
-          return /^https?:/i.test(node.url) && words !== node.url && words !== ""
-            ? `${words} (${node.url})`
-            : words === ""
-              ? node.url
-              : words;
-        }
-        case "emphasis":
-        case "strong":
-        case "delete":
-          return inlineText(node.children);
-        default:
-          return "";
-      }
-    })
-    .join("");
-
-const blockText = (node: RootContent): ReadonlyArray<string> => {
-  switch (node.type) {
-    case "paragraph":
-    case "heading":
-      return [inlineText(node.children)];
-    case "code":
-      return [node.value];
-    case "html":
-      return [node.value.replace(/<[^>]*>/g, "")];
-    case "blockquote":
-      return node.children.flatMap(blockText);
-    case "list":
-      return [
-        node.children
-          .map((item, index) => {
-            const lines = item.children.flatMap(blockText).filter((line) => line !== "");
-            const number = node.ordered === true ? `${(node.start ?? 1) + index}. ` : "";
-            return `${number}${lines.join("\n")}`;
-          })
-          .join("\n"),
-      ];
-    case "table":
-      return [
-        node.children
-          .map((row) =>
-            row.children.map((cell) => inlineText(cell.children).replace(/\s+/g, " ")).join("\t"),
-          )
-          .join("\n"),
-      ];
-    default:
-      return [];
-  }
-};
-
-/**
- * A doc's markdown as text to paste anywhere: no marks, a list's items one per line, a table's
- * rows as tab-separated cells, and its charts and visuals left out.
- */
-export function kinDocCopyText(markdown: string): string {
-  const tree = copyParser.parse(kinThreadLinksAsWords(kinPlainBody(markdown)));
-  return tree.children
-    .flatMap(blockText)
-    .filter((block) => block.trim() !== "")
-    .join("\n\n");
-}
+export { kinDocCopyText };
 
 // The reader
 
@@ -893,15 +853,107 @@ export function kinDocOutline(
 export const kinDocHasContents = (outline: ReadonlyArray<KinDocSection>) =>
   outline.filter((section) => section.id !== "top").length > 1;
 
-/** Why a doc is marked private, in words; null when the whole team may read it. */
+export type KinDocReaders = NonNullable<KinDocDetail["readers"]>;
+
+export const KIN_DOC_READERS = {
+  title: "Who can read this",
+  change: "Change",
+  failed: "Couldn't change who reads this.",
+  labels: {
+    draft: "Me and owners (draft)",
+    owners: "Owners",
+    team: "The team",
+  },
+  answer: {
+    writerDraft: "Draft. The owners read it too; nobody else does.",
+    writerOwners: "The owners read it.",
+    writerOwnersProject: (project: string) => `The owners and the people on ${project} read it.`,
+    team: "Everyone on the team with Docs reads it.",
+    ownerDraft: (name: string) => `${name}'s draft. Only ${name} and the owners read it.`,
+    ownerOwners: (name: string) => `${name} and the owners read it.`,
+    ownerOwnersProject: (name: string, project: string) =>
+      `${name}, the owners and the people on ${project} read it.`,
+  },
+} as const;
+
+export interface KinDocReadersChoice {
+  readonly id: KinDocReaders;
+  readonly label: string;
+}
+
+export interface KinDocReadersView {
+  readonly current: KinDocReaders;
+  readonly answer: string;
+  readonly choices: ReadonlyArray<KinDocReadersChoice>;
+}
+
+const DOC_READERS_ORDER: ReadonlyArray<KinDocReaders> = ["draft", "owners", "team"];
+
+/** Who reads a teammate's doc and what this viewer may change it to; null outside those docs. */
+export function kinDocReaders(
+  doc: Partial<
+    Pick<KinDocDetail, "readers" | "readersCan" | "draftOf" | "project" | "owner" | "kindLabel">
+  >,
+  names?: Pick<KinWorkNames, "me" | "people">,
+): KinDocReadersView | null {
+  const current = doc.readers;
+  if (current === undefined) return null;
+  const can = doc.readersCan ?? [];
+  const ownerView =
+    doc.draftOf !== undefined || (doc.readersCan !== undefined && !can.includes("draft"));
+  const writerName =
+    doc.draftOf?.name ??
+    (doc.kindLabel?.reader !== undefined && doc.kindLabel.reader.you !== true
+      ? doc.kindLabel.reader.name
+      : undefined) ??
+    (doc.owner?._tag === "person" && doc.owner.personId !== names?.me
+      ? names?.people.get(doc.owner.personId)
+      : undefined) ??
+    "A teammate";
+  const project = doc.project?.title;
+  const answer =
+    current === "team"
+      ? KIN_DOC_READERS.answer.team
+      : current === "draft"
+        ? ownerView
+          ? KIN_DOC_READERS.answer.ownerDraft(writerName)
+          : KIN_DOC_READERS.answer.writerDraft
+        : ownerView
+          ? project === undefined
+            ? KIN_DOC_READERS.answer.ownerOwners(writerName)
+            : KIN_DOC_READERS.answer.ownerOwnersProject(writerName, project)
+          : project === undefined
+            ? KIN_DOC_READERS.answer.writerOwners
+            : KIN_DOC_READERS.answer.writerOwnersProject(project);
+  const choices = DOC_READERS_ORDER.filter((id) => can.includes(id)).map((id) => ({
+    id,
+    label: KIN_DOC_READERS.labels[id],
+  }));
+  return { current, answer, choices };
+}
+
+/** Why a doc is marked private, and who reads it, in words; null when the whole team may read it. */
 export const kinDocPrivacy = (
-  doc: Pick<KinDocListRow, "sensitive" | "sensitiveInherited">,
-): string | null =>
-  doc.sensitive
-    ? KIN_DOCS.private
-    : doc.sensitiveInherited === true
-      ? KIN_DOCS.privateInherited
+  doc: Pick<KinDocListRow, "sensitive" | "sensitiveInherited"> &
+    Partial<Pick<KinDocDetail, "kindLabel" | "readers" | "readersCan" | "draftOf">>,
+  shell?: KinShell | null,
+): string | null => {
+  if (!doc.sensitive)
+    return doc.sensitiveInherited === true
+      ? kinSectionNamed(shell, KIN_DOCS.privateInherited)
       : null;
+  if (doc.readers === "draft") {
+    if (doc.draftOf !== undefined) return KIN_DOC_READERS.answer.ownerDraft(doc.draftOf.name);
+    if (doc.readersCan === undefined || doc.readersCan.includes("draft"))
+      return KIN_DOC_READERS.answer.writerDraft;
+    return KIN_DOC_READERS.answer.ownerDraft("A teammate");
+  }
+  const reader = doc.kindLabel?.reader;
+  if (reader === undefined) return KIN_DOCS.private;
+  return reader.you === true
+    ? KIN_DOC_READERS.answer.writerDraft
+    : KIN_DOC_READERS.answer.ownerDraft(reader.name);
+};
 
 export type KinDocReadState =
   | { readonly _tag: "loading" }
@@ -909,6 +961,20 @@ export type KinDocReadState =
   | { readonly _tag: "refused" }
   | { readonly _tag: "failed" }
   | { readonly _tag: "ready"; readonly doc: KinDocDetail; readonly stale: boolean };
+
+/** A doc's read: the reader's own draft an owner kept to owners only is private now, not gone. */
+export type KinDocState =
+  | KinWorkReadState<KinDocDetail>
+  | { readonly _tag: "private"; readonly by: string };
+
+export function kinDocState(result: AsyncResult.AsyncResult<KinDocDetail, unknown>): KinDocState {
+  const kept = (AsyncResult.isFailure(result) ? kinWorkFailuresOf(result.cause) : []).find(
+    (error) => isKinChatError(error) && error.privateNow !== undefined,
+  );
+  if (isKinChatError(kept) && kept.privateNow !== undefined)
+    return { _tag: "private", by: kept.privateNow.by };
+  return kinWorkReadState(result);
+}
 
 export function kinDocExport(doc: Pick<KinDocDetail, "title" | "body" | "key">): {
   readonly filename: string;
@@ -1236,6 +1302,11 @@ export function kinDocCardView(widget: KinWidget): KinDocCardView | null {
 export interface KinDocCardDraftView {
   /** The draft as clean text, without the markdown marks (Copy text). */
   readonly copyText: string;
+  /**
+   * Set when the card holds only a long draft's opening: the line saying so, and the doc version
+   * whose whole text Copy text fetches instead of `copyText`.
+   */
+  readonly long?: { readonly line: string; readonly version: number };
   /** The "Send to" button's label, or null when this reader has nothing to send up. */
   readonly sendTo: string | null;
   /** That it went up, and to whom, once sent; or that its owner asked for changes first. */
@@ -1250,23 +1321,33 @@ export interface KinDocCardDraftView {
  * have nothing to send up, so Copy text only.
  */
 export function kinDocCardDraft(
-  card: Pick<KinDocCardView, "draft">,
+  card: Pick<KinDocCardView, "draft" | "key">,
   ownerLevel: boolean,
   readOnly: boolean,
 ): KinDocCardDraftView | null {
   const { draft } = card;
   if (draft === null) return null;
+  const changed =
+    draft.changed !== undefined &&
+    (draft.changesFirst === undefined || draft.changed.at > draft.changesFirst.at);
   return {
-    copyText: kinDocCopyText(draft.text),
+    copyText: kinDocCopyText(
+      draft.whole === undefined ? draft.text : kinDraftOpeningOf(draft.text, card.key),
+    ),
+    ...(draft.whole === undefined
+      ? {}
+      : { long: { line: KIN_DOCS.longDraft, version: draft.whole.version } }),
     sendTo:
       draft.sendTo === undefined || draft.sent !== undefined || ownerLevel || readOnly
         ? null
         : KIN_DOCS.sendTo(draft.sendTo.name),
     sent:
       draft.sent === undefined
-        ? draft.changesFirst === undefined
-          ? null
-          : KIN_DOCS.changesFirst(draft.changesFirst.name)
+        ? changed
+          ? KIN_DOCS.changedSinceSent
+          : draft.changesFirst === undefined
+            ? null
+            : KIN_DOCS.changesFirst(draft.changesFirst.name)
         : draft.sent.held === true
           ? KIN_DOCS.sentHeld(draft.sent.name)
           : KIN_DOCS.sentTo(draft.sent.name),
@@ -1275,6 +1356,15 @@ export function kinDocCardDraft(
         ? null
         : KIN_DOCS.noAccount(draft.noAccount.service, ownerLevel ? null : draft.noAccount.by.name),
   };
+}
+
+/** What a long draft's Copy text came to: the whole version's text to copy, or why not. */
+export function kinDocWholeCopy(
+  result: AtomCommandResult<Pick<KinDocDetail, "body">, unknown>,
+): { readonly text: string } | { readonly problem: string } {
+  return AsyncResult.isSuccess(result)
+    ? { text: kinDocCopyText(result.value.body) }
+    : { problem: KIN_DOCS.copyFailed };
 }
 
 /** What a "Send to" tap came to: nothing to say once sent (the card says it), else why not. */
@@ -1344,7 +1434,8 @@ const snippetText = (snippet: string) =>
     .replace(/(?:· )+(?=·)/g, "")
     .trim();
 
-export function kinSearchHit(hit: KinSearchHit): KinSearchHitView {
+/** `shell` names a client in the company's own word for Clients. */
+export function kinSearchHit(hit: KinSearchHit, shell?: KinShell | null): KinSearchHitView {
   const text = snippetText(hit.snippet);
   const snippet = text === hit.title ? "" : text;
   const section =
@@ -1352,7 +1443,12 @@ export function kinSearchHit(hit: KinSearchHit): KinSearchHitView {
       ? null
       : { id: hit.section.id, title: hit.section.title };
   const closed = !hit.closed ? null : hit.kind === "docs" ? KIN_DOCS.archived : "Closed";
-  const kindLabel = hit.kind === "work" && kinIsDealKey(hit.key) ? "Deal" : KIND_LABEL[hit.kind];
+  const kindLabel =
+    hit.kind === "work" && kinIsDealKey(hit.key)
+      ? "Deal"
+      : hit.kind === "clients"
+        ? kinSectionNamed(shell, KIND_LABEL.clients)
+        : KIND_LABEL[hit.kind];
   return {
     id: `${hit.recordId}:${hit.section?.id ?? ""}`,
     key: hit.key,

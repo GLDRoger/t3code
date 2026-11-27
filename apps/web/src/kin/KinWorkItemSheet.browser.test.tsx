@@ -57,6 +57,7 @@ vi.mock(import("./KinWorkTasks"), async (importOriginal) => ({
   KinWorkTaskList: (() => <ul />) as never,
 }));
 vi.mock(import("./kinClient"), async (importOriginal) => {
+  const { commandRun } = await import("../../test/commandRun");
   const real = await importOriginal();
   const { AsyncResult, Atom } = await import("effect/reactivity");
   const Cause = await import("effect/Cause");
@@ -71,31 +72,35 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
       workUpdate: {
         label: "test:workUpdate",
         permissionAtom: () => allowed,
-        run: async (_registry: unknown, { input }: { readonly input: Record<string, unknown> }) => {
-          host.updates.push(input);
-          if (host.refuse !== null)
-            return AsyncResult.failure(
-              Cause.fail(new Refused({ reason: "not_allowed", message: host.refuse })),
-            );
-          const { orgId: _org, key: _key, rev, ...changed } = input;
-          return AsyncResult.success({
-            ...(host.item as KinRecordDetail),
-            ...changed,
-            rev: Number(rev) + 1,
-          });
-        },
+        run: commandRun(
+          async (_registry: unknown, { input }: { readonly input: Record<string, unknown> }) => {
+            host.updates.push(input);
+            if (host.refuse !== null)
+              return AsyncResult.failure(
+                Cause.fail(new Refused({ reason: "not_allowed", message: host.refuse })),
+              );
+            const { orgId: _org, key: _key, rev, ...changed } = input;
+            return AsyncResult.success({
+              ...(host.item as KinRecordDetail),
+              ...changed,
+              rev: Number(rev) + 1,
+            });
+          },
+        ),
       },
       workTickStep: {
         label: "test:workTickStep",
         permissionAtom: () => allowed,
-        run: async (_registry: unknown, { input }: { readonly input: Record<string, unknown> }) => {
-          host.ticks.push(input);
-          const item = host.item as KinRecordDetail;
-          const checklist = (item.checklist ?? []).map((step, index) =>
-            index === input.index ? { ...step, done: input.done === true } : step,
-          );
-          return AsyncResult.success({ ...item, checklist, rev: item.rev + 1 });
-        },
+        run: commandRun(
+          async (_registry: unknown, { input }: { readonly input: Record<string, unknown> }) => {
+            host.ticks.push(input);
+            const item = host.item as KinRecordDetail;
+            const checklist = (item.checklist ?? []).map((step, index) =>
+              index === input.index ? { ...step, done: input.done === true } : step,
+            );
+            return AsyncResult.success({ ...item, checklist, rev: item.rev + 1 });
+          },
+        ),
       },
     } as never,
   };

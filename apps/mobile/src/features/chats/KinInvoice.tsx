@@ -1,6 +1,7 @@
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import {
+  KIN_CREDIT_NOTES_LIST,
   KIN_INVOICES,
   KIN_RECEIPTS,
   kinReceiptModeLabel,
@@ -24,6 +25,11 @@ import {
   kinLinesInput,
   type KinLineDraft,
 } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
+import {
+  kinInvoiceTax,
+  kinKeepsLineTax,
+  kinLineTax,
+} from "@t3tools/client-runtime/kin/kinMoneyForms";
 import { kinDefaultTemplate, KIN_TEMPLATES } from "@t3tools/client-runtime/kin/kinTemplates";
 import { kinWorkDayOf, kinWorkDueLabel } from "@t3tools/client-runtime/kin/kinWork";
 import {
@@ -31,6 +37,7 @@ import {
   KinListId,
   KinOrgId,
   KinRecordKey,
+  KinRecipe,
   type KinDocFile,
   type KinListDefinition,
   type KinRecord,
@@ -75,16 +82,23 @@ import type { KinMakeStep } from "./kinMakeStep";
 import { kinClient } from "./state/kinClient";
 import {
   useKinCompanyCountry,
+  useKinCompanyProfile,
   useKinHomeCurrency,
   useKinMoneyActions,
   useKinReceipts,
   useKinRecipes,
 } from "./state/useKinMoney";
 import { useKinEntryLines } from "./state/useKinMoneyAnswers";
-import { kinWorkChoicesAtom, type KinWorkTarget } from "./state/useKinWork";
+import {
+  kinWorkChoicesAtom,
+  useKinClientAccountsForTax,
+  type KinWorkTarget,
+} from "./state/useKinWork";
+import { useKinSectionNamed } from "./state/useKinShell";
 import { useKinWorkLink } from "./state/kinWorkLink";
 import { useKinGate } from "./state/useKinHost";
 import { KinGateView } from "./components/KinWorkPieces";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 type MoneyActions = ReturnType<typeof useKinMoneyActions>;
 
@@ -128,6 +142,8 @@ export function KinInvoiceActions(
     readonly currency?: string;
     /** Opens Make invoice as the entry sheet's next step. */
     readonly onMake: (step: KinMakeStep) => void;
+    /** Opens the small form to draft a credit note on an issued open invoice. */
+    readonly onCreditNote?: () => void;
   },
 ) {
   const { environmentId, invoice, actions, itemKey } = props;
@@ -135,6 +151,7 @@ export function KinInvoiceActions(
     render: useAtomValue(kinClient.docRender.permissionAtom(environmentId)),
     issue: useAtomValue(kinClient.workIssue.permissionAtom(environmentId)),
     receipt: useAtomValue(kinClient.makeReceipt.permissionAtom(environmentId)),
+    creditNote: useAtomValue(kinClient.draftCreditNote.permissionAtom(environmentId)),
   });
   const [reading, setReading] = useState(false);
   const busy = props.busy || actions.busy || reading;
@@ -154,7 +171,8 @@ export function KinInvoiceActions(
       onConfirm: () => void actions.issue(itemKey),
     });
   };
-  if (!can.make && !can.issue && !can.void && !can.unvoid) return null;
+  const offersCreditNote = can.creditNote && props.onCreditNote !== undefined;
+  if (!can.make && !can.issue && !can.void && !can.unvoid && !offersCreditNote) return null;
   return (
     <View className="gap-2">
       {can.make ? (
@@ -182,6 +200,18 @@ export function KinInvoiceActions(
           loading={actions.busy || reading}
           disabled={busy}
           onPress={() => void askIssue()}
+        />
+      ) : null}
+      {offersCreditNote ? (
+        <Button
+          tone="secondary"
+          fullWidth
+          label={KIN_INVOICES.creditNoteButton}
+          disabled={busy}
+          onPress={() => {
+            actions.dismiss();
+            props.onCreditNote?.();
+          }}
         />
       ) : null}
       {can.unvoid ? (
@@ -257,6 +287,16 @@ export function KinInvoiceFigures(props: { readonly invoice: KinInvoiceView }) {
           {invoice.received}
         </Text>
       </View>
+      {invoice.credited === null ? null : (
+        <View className="gap-0.5">
+          <Text textRole="footnote" className="text-foreground-muted">
+            {KIN_INVOICES.credited}
+          </Text>
+          <Text textRole="body" selectable className="tabular-nums text-foreground">
+            {invoice.credited}
+          </Text>
+        </View>
+      )}
       {invoice.tdsDeducted === null ? null : (
         <View className="gap-0.5">
           <Text textRole="footnote" className="text-foreground-muted">
@@ -276,6 +316,45 @@ export function KinInvoiceFigures(props: { readonly invoice: KinInvoiceView }) {
   );
 }
 
+/** Offers an unapplied client credit that fits this invoice, owner level only. */
+export function KinInvoiceCreditOffer(
+  props: KinWorkTarget & {
+    readonly itemKey: KinRecordKey;
+    readonly invoice: KinInvoiceView;
+    readonly actions: MoneyActions;
+    readonly busy: boolean;
+  },
+) {
+  const { invoice, actions } = props;
+  const offer = invoice.creditOffer;
+  const canApply = useAtomValue(kinClient.makeReceipt.permissionAtom(props.environmentId));
+  if (offer === null || !canApply) return null;
+  const busy = props.busy || actions.busy;
+  return (
+    <ListSection>
+      <ListRowLayout label={offer.line} />
+      <ListActionRow
+        label={offer.action}
+        disabled={busy}
+        onPress={() => {
+          const requestId = uuidv4();
+          Dialog.confirm({
+            title: offer.title,
+            message: offer.detail,
+            confirmText: offer.action,
+            onConfirm: () =>
+              void actions.makeReceipt(
+                props.itemKey,
+                { key: offer.receipt, against: props.itemKey },
+                requestId,
+              ),
+          });
+        }}
+      />
+    </ListSection>
+  );
+}
+
 /** Each payment with its receipt, and taking a payment back. */
 export function KinInvoicePayments(
   props: KinWorkTarget & {
@@ -290,6 +369,8 @@ export function KinInvoicePayments(
   const openRecord = useKinWorkLink();
   const { environmentId, orgId, invoice, actions } = props;
   const canReceipt = useAtomValue(kinClient.makeReceipt.permissionAtom(environmentId));
+  const canUnapply = useAtomValue(kinClient.unapplyCredit.permissionAtom(environmentId));
+  const canUndoSplit = useAtomValue(kinClient.undoCreditPayment.permissionAtom(environmentId));
   const busy = props.busy || actions.busy;
   return (
     <ListSection title={KIN_INVOICES.payments}>
@@ -299,25 +380,47 @@ export function KinInvoicePayments(
         </Text>
       ) : (
         invoice.payments.map((payment) => {
-          const { receipt } = payment;
+          const { receipt, creditNote, splitCredit, appliedCredit } = payment;
           const number = receipt === null || receipt._tag === "none" ? null : receipt.number;
           const detail = [
+            creditNote?.label ?? null,
+            splitCredit?.line ?? null,
             payment.tds ? KIN_INVOICES.tdsDeducted : null,
             payment.when,
             payment.note,
             payment.source,
             number === null ? null : `Receipt ${number}`,
-            payment.voided ? KIN_INVOICES.takenBack : null,
+            payment.voidedLine,
           ]
             .filter((part) => part !== null)
             .join(" · ");
           return (
             <View key={payment.paymentId}>
-              <ListRowLayout
-                label={payment.amount}
-                description={detail}
-                disabled={payment.voided}
-              />
+              {creditNote !== null ? (
+                <ListRow
+                  label={payment.amount}
+                  description={detail}
+                  disabled={payment.voided}
+                  onPress={() =>
+                    openRecord("KinWorkItem", { environmentId, orgId, task: creditNote.key })
+                  }
+                />
+              ) : (
+                <ListRowLayout
+                  label={payment.amount}
+                  description={detail}
+                  {...(payment.received === null
+                    ? {}
+                    : {
+                        meta: (
+                          <Text textRole="footnote" className="tabular-nums text-foreground-muted">
+                            {payment.received}
+                          </Text>
+                        ),
+                      })}
+                  disabled={payment.voided}
+                />
+              )}
               {receipt?._tag === "ready" ? (
                 <ListActionRow
                   label={`${KIN_INVOICES.openPdf} ${number ?? ""}`.trim()}
@@ -340,14 +443,48 @@ export function KinInvoicePayments(
                   }
                 />
               )}
-              {payment.voided || !props.canPay ? null : (
+              {payment.voided || creditNote !== null ? null : splitCredit !== null ? (
+                canUndoSplit ? (
+                  <ListActionRow
+                    label={splitCredit.action}
+                    tone="danger"
+                    disabled={busy}
+                    onPress={() =>
+                      Dialog.confirm({
+                        title: splitCredit.title,
+                        message: splitCredit.detail,
+                        confirmText: splitCredit.action,
+                        destructive: true,
+                        onConfirm: () =>
+                          void actions.undoCreditPayment(props.itemKey, splitCredit.key),
+                      })
+                    }
+                  />
+                ) : null
+              ) : appliedCredit !== null ? (
+                canUnapply ? (
+                  <ListActionRow
+                    label={appliedCredit.action}
+                    disabled={busy}
+                    onPress={() =>
+                      Dialog.confirm({
+                        title: appliedCredit.title,
+                        message: appliedCredit.detail,
+                        confirmText: appliedCredit.action,
+                        onConfirm: () =>
+                          void actions.unapplyCredit(props.itemKey, appliedCredit.key),
+                      })
+                    }
+                  />
+                ) : null
+              ) : props.canPay ? (
                 <ListActionRow
                   label={`${KIN_LISTS.entry.takeBack} ${payment.amount}`}
                   tone="danger"
                   disabled={busy}
                   onPress={() => props.onTakeBack(payment.paymentId)}
                 />
-              )}
+              ) : null}
             </View>
           );
         })
@@ -482,28 +619,54 @@ export function KinMakeDocumentStep(
 ) {
   const navigation = useNavigation();
   const actions = useKinMoneyActions(props);
+  const hasLines = props.list !== KIN_CREDIT_NOTES_LIST;
+  const named = useKinSectionNamed(props.environmentId);
+  const profile = useKinCompanyProfile(props, true);
+  const tax = profile.state._tag === "ready" ? kinInvoiceTax(profile.state.value) : null;
+  const partyKey = Option.getOrNull(decodeKey(props.party?.key));
+  const clientAccountsForTax = useKinClientAccountsForTax(props, partyKey);
+  const [gstRate, setGstRate] = useState<string | null>(null);
+  const rawLineTax = kinLineTax(tax, { clientAccountsForTax, gstRate });
+  const lineTax = rawLineTax.show
+    ? rawLineTax
+    : { show: false as const, note: rawLineTax.note === null ? null : named(rawLineTax.note) };
   const readLines = useKinEntryLines(props);
-  const [lines, setLines] = useState<ReadonlyArray<KinLineDraft> | null>(null);
+  const [lines, setLines] = useState<ReadonlyArray<KinLineDraft> | null>(hasLines ? null : []);
   const [linesProblem, setLinesProblem] = useState<string | null>(null);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the lines its last document was made with from the host once, when the sheet opens
   useEffect(() => {
+    if (!hasLines) return;
     let live = true;
     void readLines(props.itemKey).then((held) => {
-      if (live) setLines(kinLineDrafts(held));
+      if (live) {
+        setLines(kinLineDrafts(held?.lines ?? null));
+        setGstRate(held?.gstRate ?? null);
+      }
     });
     return () => {
       live = false;
     };
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- once per entry; the reader is remade every render
-  }, [props.itemKey]);
-  const inputsOf = () => {
-    const checked = kinLinesInput(lines ?? [], props.currency);
+  }, [props.itemKey, hasLines]);
+  const inputsOf = (recipe: KinRecipe) => {
+    if (!hasLines) return {};
+    const checked = kinLinesInput(lines ?? [], props.currency, {
+      tax: lineTax.show,
+      keepStoredTax: kinKeepsLineTax(tax),
+    });
     if (!checked.ok) {
       setLinesProblem(checked.problem);
       return null;
     }
     setLinesProblem(null);
-    return checked.lines === null ? {} : { lines: checked.lines };
+    return {
+      ...(checked.lines === null ? {} : { lines: checked.lines }),
+      ...(tax?._tag === "gst" &&
+      gstRate !== null &&
+      recipe.inputs.some((input) => input.name === "gstRate" && input.from === "agent")
+        ? { gstRate }
+        : {}),
+    };
   };
   const gate = useKinGate(
     kinClient.docRender.permissionStateAtom(props.environmentId),
@@ -534,7 +697,7 @@ export function KinMakeDocumentStep(
   const missing = kinInvoiceMissingClient(actions.problem, props.party);
   const preview = async () => {
     if (recipe === null) return;
-    const inputs = inputsOf();
+    const inputs = inputsOf(recipe);
     if (inputs === null) return;
     setFailed(null);
     const files = await actions.preview(recipe.name, props.itemKey, inputs);
@@ -553,6 +716,8 @@ export function KinMakeDocumentStep(
   return (
     <KinWorkFrame
       title={title}
+      form
+      showTop={linesProblem}
       onBack={close}
       guardBack
       confirm={
@@ -563,7 +728,7 @@ export function KinMakeDocumentStep(
               loading: actions.busy && ready,
               disabled: actions.busy || !ready,
               onPress: async () => {
-                const inputs = inputsOf();
+                const inputs = inputsOf(recipe);
                 if (inputs === null) return;
                 if ((await actions.file(recipe.name, props.itemKey, requestId, inputs)) !== null)
                   close();
@@ -582,8 +747,8 @@ export function KinMakeDocumentStep(
       ) : recipe === null ? (
         <EmptyState
           variant="plain"
-          title="No invoice template yet"
-          detail="Ask an agent to set one up."
+          title={KIN_INVOICES.noTemplate(props.list).title}
+          detail={KIN_INVOICES.noTemplate(props.list).detail}
         />
       ) : (
         <>
@@ -614,12 +779,14 @@ export function KinMakeDocumentStep(
               {recipe.description}
             </Text>
           )}
-          {lines === null ? (
+          {!hasLines ? null : lines === null ? (
             <KinWorkLoading label={KIN_LINES.title} />
           ) : (
             <KinLinesFields
               lines={lines}
               disabled={actions.busy}
+              {...(tax === null ? {} : { codes: tax._tag === "gst" })}
+              tax={lineTax}
               onChange={(next) => {
                 setLines(next);
                 setLinesProblem(null);
@@ -685,6 +852,7 @@ export function KinReceiptsSection(props: KinWorkTarget & { readonly seq: number
   const navigation = useNavigation();
   const openRecord = useKinWorkLink();
   const { environmentId, orgId } = props;
+  const named = useKinSectionNamed(environmentId);
   const canRead = useAtomValue(kinClient.receiptsRead.permissionAtom(environmentId));
   const canMake = useAtomValue(kinClient.makeReceipt.permissionAtom(environmentId));
   const { state, refresh } = useKinReceipts(props, { enabled: canRead });
@@ -721,7 +889,7 @@ export function KinReceiptsSection(props: KinWorkTarget & { readonly seq: number
         />
       ) : receipts.length === 0 ? (
         <Text textRole="body" className="px-4 py-3 text-foreground-muted">
-          {KIN_RECEIPTS.empty}
+          {named(KIN_RECEIPTS.empty)}
         </Text>
       ) : (
         shown.map((receipt) => (
@@ -796,6 +964,7 @@ export function KinReceiptNewScreen({ route }: StaticScreenProps<KinReceiptNewPa
 
 function ReceiptForm(props: KinWorkTarget) {
   const navigation = useNavigation();
+  const named = useKinSectionNamed(props.environmentId);
   const actions = useKinMoneyActions(props);
   // A plain number is in the home currency; a typed symbol or code still names its own.
   const home = useKinHomeCurrency(props) ?? KIN_DEFAULT_HOME_CURRENCY;
@@ -843,9 +1012,9 @@ function ReceiptForm(props: KinWorkTarget) {
         <Menu
           title={KIN_RECEIPTS.party}
           accessibilityRole="button"
-          accessibilityLabel={`${KIN_RECEIPTS.party}: ${payer?.name ?? KIN_RECEIPTS.noClient}. Change`}
+          accessibilityLabel={`${KIN_RECEIPTS.party}: ${payer?.name ?? named(KIN_RECEIPTS.noClient)}. Change`}
           actions={[
-            { id: "", title: KIN_RECEIPTS.noClient, state: payer === null ? "on" : "off" },
+            { id: "", title: named(KIN_RECEIPTS.noClient), state: payer === null ? "on" : "off" },
             ...clients.map((one) => ({
               id: one.key,
               title: one.name,
@@ -858,7 +1027,7 @@ function ReceiptForm(props: KinWorkTarget) {
         >
           <View pointerEvents="none">
             <ListRowLayout
-              label={payer?.name ?? KIN_RECEIPTS.noClient}
+              label={payer?.name ?? named(KIN_RECEIPTS.noClient)}
               detail={KIN_RECEIPTS.party}
             />
           </View>
@@ -959,6 +1128,7 @@ function ApplyReceipt(
 ) {
   const navigation = useNavigation();
   const { environmentId, orgId, party: payer } = props;
+  const named = useKinSectionNamed(environmentId);
   const actions = useKinMoneyActions(props);
   const [attempt, setAttempt] = useState(0);
   const [held, setHeld] = useState<{
@@ -970,25 +1140,23 @@ function ApplyReceipt(
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- reads the client's open invoices from the host when the sheet opens or Try again is pressed
   useEffect(() => {
     let current = true;
-    void kinClient.workList
-      .run(appAtomRegistry, {
-        environmentId,
-        input: {
-          orgId,
-          list: INVOICES,
-          states: ["waiting"],
-          ...(payer === null ? {} : { party: payer }),
-          limit: 50,
-        },
-      })
-      .then((result) => {
-        if (current)
-          setHeld({
-            attempt,
-            invoices: AsyncResult.isSuccess(result) ? result.value.records : null,
-            cause: result,
-          });
-      });
+    void runKinCommand(appAtomRegistry, kinClient.workList, {
+      environmentId,
+      input: {
+        orgId,
+        list: INVOICES,
+        states: ["waiting"],
+        ...(payer === null ? {} : { party: payer }),
+        limit: 50,
+      },
+    }).then((result) => {
+      if (current)
+        setHeld({
+          attempt,
+          invoices: AsyncResult.isSuccess(result) ? result.value.records : null,
+          cause: result,
+        });
+    });
     return () => {
       current = false;
     };
@@ -1010,7 +1178,11 @@ function ApplyReceipt(
           onRetry={() => setAttempt((count) => count + 1)}
         />
       ) : invoices.length === 0 ? (
-        <EmptyState variant="plain" title="No open invoice" detail={KIN_RECEIPTS.noInvoices} />
+        <EmptyState
+          variant="plain"
+          title="No open invoice"
+          detail={named(KIN_RECEIPTS.noInvoices)}
+        />
       ) : (
         <ListSection title={KIN_RECEIPTS.pickInvoice}>
           {invoices.map((invoice) => (

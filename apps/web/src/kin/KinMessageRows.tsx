@@ -1,6 +1,8 @@
 import {
   kinBodyMarkdown,
+  kinChangedMark,
   kinMessageLabel,
+  kinWithdrawnLine,
   kinPlainText,
   type KinFeedRow,
   type KinNoticeOpen,
@@ -46,6 +48,7 @@ import {
   KIN_REACTION_EMOJI,
   KinOrgId,
   type EnvironmentId,
+  type KinMessage,
   type KinMessageRef,
   KinPersonId,
   type KinReactionEmoji,
@@ -200,6 +203,16 @@ export function KinMessageRow(props: {
   const { row, onReact } = props;
   const { message } = row;
   const { author } = message;
+  const withdrawn = kinWithdrawnLine(row);
+  if (withdrawn !== null)
+    return (
+      <KinWithdrawnRow
+        line={withdrawn}
+        said={message.withdrawn?.said ?? null}
+        environmentId={props.environmentId}
+      />
+    );
+  const changed = kinChangedMark(message, formatTime);
   const deleted = message.status === "deleted";
   const suggested = message.status === "suggested";
   const hasBody = !deleted && message.body.trim().length > 0;
@@ -219,8 +232,6 @@ export function KinMessageRow(props: {
   const canReact = onReact !== null && !deleted;
   const layout = row.own || !hasBody ? "bubble" : kinMessageLayout(message);
   const label = kinMessageLabel(row, formatTime(message.createdAt));
-  const receipt = deleted ? null : kinTurnReceiptLine(message.turnChanges);
-  const buttons = kinReplyButtons(message);
   // A page's card is its foot, across the page's width.
   const onPage = hasBubble && layout !== "bubble";
   const card =
@@ -301,9 +312,9 @@ export function KinMessageRow(props: {
               head={kinPageHead(message, props.firstName ?? null)}
               foot={hasCard ? card : null}
             />
-            {message.editedAt !== null ? (
-              <p className="pt-0.5 text-xs text-muted-foreground">Edited</p>
-            ) : null}
+            {changed === null ? null : (
+              <p className="pt-0.5 text-xs text-muted-foreground">{changed}</p>
+            )}
           </div>
         ) : hasBubble ? (
           <div role="article" aria-label={label} className={row.own ? BUBBLE : OTHER_BUBBLE}>
@@ -317,9 +328,9 @@ export function KinMessageRow(props: {
             ) : deleted ? (
               <p className="italic text-muted-foreground">Message deleted</p>
             ) : null}
-            {suggested || message.editedAt !== null ? (
+            {suggested || changed !== null ? (
               <p className="pt-0.5 text-xs text-muted-foreground">
-                {suggested ? KIN_CHAT_COPY.suggestion : "Edited"}
+                {suggested ? KIN_CHAT_COPY.suggestion : changed}
               </p>
             ) : null}
           </div>
@@ -334,18 +345,9 @@ export function KinMessageRow(props: {
           {canReact && !hasBubble ? <KinReactMenu mine={mine} onReact={onReact} /> : null}
         </div>
       ) : null}
-      {buttons.length === 0 ? null : (
-        <KinReplyButtons
-          buttons={buttons}
-          environmentId={props.environmentId}
-          orgId={props.orgId}
-        />
-      )}
-      {receipt === null ? null : (
-        <KinTurnReceipt
-          line={receipt}
-          turnChanges={message.turnChanges}
-          links={message.links}
+      {row.footerInFeed === true ? null : (
+        <KinReplyFooter
+          message={message}
           environmentId={props.environmentId}
           orgId={props.orgId}
           connected={props.connected}
@@ -377,6 +379,46 @@ export function KinMessageRow(props: {
 }
 
 /** Up to three buttons under an agent's reply, each opening what it named. */
+export function KinReplyFooter(props: {
+  readonly message: KinMessage;
+  readonly buttons?: ReadonlyArray<KinReplyButton> | undefined;
+  readonly environmentId: EnvironmentId;
+  readonly orgId: string;
+  readonly connected: boolean;
+  readonly standalone?: boolean;
+}) {
+  const { message } = props;
+  const receipt = message.status === "deleted" ? null : kinTurnReceiptLine(message.turnChanges);
+  const buttons = props.buttons ?? kinReplyButtons(message);
+  if (buttons.length === 0 && receipt === null) return null;
+  const content = (
+    <>
+      {buttons.length === 0 ? null : (
+        <KinReplyButtons
+          buttons={buttons}
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+        />
+      )}
+      {receipt === null ? null : (
+        <KinTurnReceipt
+          line={receipt}
+          turnChanges={message.turnChanges}
+          links={message.links}
+          environmentId={props.environmentId}
+          orgId={props.orgId}
+          connected={props.connected}
+        />
+      )}
+    </>
+  );
+  return props.standalone ? (
+    <div className={cn(ROW, "items-start", rowSpacing(true))}>{content}</div>
+  ) : (
+    content
+  );
+}
+
 function KinReplyButtons(props: {
   readonly buttons: ReadonlyArray<KinReplyButton>;
   readonly environmentId: EnvironmentId;
@@ -501,6 +543,35 @@ export function KinDraftRow(props: {
           <KinBody markdown={text} environmentId={props.environmentId} />
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * A message its agent took back: one quiet line in its place. The owner side may open what it
+ * said; the server sends those words to no one else.
+ */
+function KinWithdrawnRow(props: {
+  readonly line: string;
+  readonly said: string | null;
+  readonly environmentId: EnvironmentId;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="mx-auto flex max-w-3xl flex-col items-center gap-1 px-8 py-1">
+      <div className="flex flex-wrap items-center justify-center gap-2">
+        <p className="text-center text-xs text-muted-foreground">{props.line}</p>
+        {props.said === null ? null : (
+          <Button size="xs" variant="ghost" onClick={() => setOpen(!open)} aria-expanded={open}>
+            {open ? KIN_CHAT_COPY.hideWithdrawn : KIN_CHAT_COPY.showWithdrawn}
+          </Button>
+        )}
+      </div>
+      {open && props.said !== null ? (
+        <div className="w-full max-w-xl text-sm text-muted-foreground">
+          <KinBody markdown={props.said} environmentId={props.environmentId} />
+        </div>
+      ) : null}
     </div>
   );
 }

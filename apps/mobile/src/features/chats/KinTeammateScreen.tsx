@@ -72,6 +72,7 @@ import { KinPageFold } from "./components/KinPageFold";
 import { kinClient } from "./state/kinClient";
 import { KinPersonReachSections } from "./KinReachSections";
 import { refreshKinTeam, useKinTeam, type KinTeamTarget } from "./state/useKinTeam";
+import { useKinSectionNamed, useKinShell } from "./state/useKinShell";
 import { useKinOpenCounts, useKinProfiles } from "./state/useKinProfiles";
 import { KinWorkToggleRow } from "./components/KinWorkPieces";
 
@@ -192,6 +193,8 @@ function KinTeammateDetails(props: {
   const offered = kinTeammateActions(teammate, props.viewer);
   // The host says whose profile this reader may change: the owner's and a co-owner's alike.
   const profiles = useKinProfiles(props.target.environmentId, props.target.orgId).held;
+  const shell = useKinShell(props.target.environmentId);
+  const named = useKinSectionNamed(props.target.environmentId);
   useKinOpenCounts(props.target);
   const profile = profiles?.profiles.find((held) => held.personId === teammate.personId) ?? null;
   const mayEdit = profile?.canEdit ?? props.viewer === "owner";
@@ -232,7 +235,7 @@ function KinTeammateDetails(props: {
   const askKind = (access: (typeof KIN_ACCESS_CHOICES)[number]["access"]) => {
     const { personId } = teammate;
     if (personId === null || access === kinTeammateKind(teammate)) return;
-    const copy = kinAccessChangeCopy(teammate.name, access, teammate.backAs !== null);
+    const copy = kinAccessChangeCopy(teammate.name, access, teammate.backAs !== null, shell);
     Dialog.confirm({
       title: copy.title,
       message: copy.detail,
@@ -321,7 +324,7 @@ function KinTeammateDetails(props: {
             <ListChoiceRow
               key={choice.access}
               label={choice.label}
-              description={choice.detail}
+              description={named(choice.detail)}
               selected={kinTeammateKind(teammate) === choice.access}
               separated={index > 0}
               disabled={busy}
@@ -515,6 +518,7 @@ function KinTeammatePlaces(props: {
   readonly places: KinPersonPlaces;
 }) {
   const { target, personId, places } = props;
+  const named = useKinSectionNamed(target.environmentId);
   // What the owner just switched, shown until the host's next read agrees or refuses.
   const [asked, setAsked] = useState<Partial<KinPersonPlaceSwitches>>({});
   const [problem, setProblem] = useState<string | null>(null);
@@ -548,8 +552,8 @@ function KinTeammatePlaces(props: {
             className={index === 0 ? undefined : "border-t border-border-subtle"}
           >
             <KinWorkToggleRow
-              label={entry.label}
-              description={entry.detail}
+              label={named(entry.label)}
+              description={named(entry.detail)}
               value={asked[entry.place] ?? places[entry.place]}
               disabled={asked[entry.place] !== undefined}
               onValueChange={(on) => void flip(entry.place, on)}

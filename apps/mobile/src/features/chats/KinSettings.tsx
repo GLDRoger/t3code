@@ -3,6 +3,7 @@ import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import type { KinHost } from "@t3tools/client-runtime/kin/kinHost";
 import { KIN_PROFILE_COPY, kinRoleLine } from "@t3tools/client-runtime/kin/kinProfiles";
+import { KIN_MY_MAILBOX_COPY } from "@t3tools/client-runtime/kin/kinConnections";
 import {
   KIN_NOTIFICATIONS_OPENS,
   KIN_SET_UP_ON_COMPUTER,
@@ -24,6 +25,7 @@ import { SettingsSection } from "../settings/components/SettingsSection";
 import { useSettingsPageBack } from "../settings/useSettingsPageBack";
 import { useKinTab, kinTabFoot } from "./components/KinTab";
 import { KinBriefsSection } from "./KinBriefs";
+import { KinChatsSettleRows } from "./KinChatsSettleRows";
 import { KinQuietHoursRows } from "./KinQuietHoursRows";
 import { useKinIsHome } from "./state/kinHome";
 import { openKinNotificationSettings } from "./notifications/installKinNotifications";
@@ -45,11 +47,19 @@ const COMPANY_ROWS: Partial<
   Record<
     KinPhoneSettingsRow,
     {
-      readonly icon: "person.2" | "robot" | "doc.text" | "chart.bar.xaxis" | "eye" | "server.rack";
+      readonly icon:
+        | "person.2"
+        | "robot"
+        | "doc.text"
+        | "square.grid.2x2"
+        | "chart.bar.xaxis"
+        | "eye"
+        | "server.rack";
       readonly route:
         | "KinTeam"
         | "KinAgents"
         | "KinCompany"
+        | "KinSections"
         | "KinDealStages"
         | "KinWatchLog"
         | "KinHost";
@@ -60,6 +70,11 @@ const COMPANY_ROWS: Partial<
   team: { icon: "person.2", route: "KinTeam", title: KIN_SETTINGS_PAGE_TITLES.team },
   agents: { icon: "robot", route: "KinAgents", title: KIN_SETTINGS_PAGE_TITLES.agents },
   company: { icon: "doc.text", route: "KinCompany", title: KIN_SETTINGS_PAGE_TITLES.company },
+  sections: {
+    icon: "square.grid.2x2",
+    route: "KinSections",
+    title: KIN_SETTINGS_PAGE_TITLES.sections,
+  },
   deals: { icon: "chart.bar.xaxis", route: "KinDealStages", title: KIN_SETTINGS_PAGE_TITLES.deals },
   watches: { icon: "eye", route: "KinWatchLog", title: KIN_SETTINGS_PAGE_TITLES.watches },
   host: { icon: "server.rack", route: "KinHost", title: KIN_SETTINGS_PAGE_TITLES.host },
@@ -164,6 +179,21 @@ export function KinSettings(props: {
                       onPress={() => void openKinNotificationSettings()}
                     />
                   );
+                case "mailbox":
+                  return host._tag !== "host" || orgId === null ? null : (
+                    <SettingsRow
+                      labelWholeWords
+                      key={page}
+                      icon="envelope"
+                      label={KIN_MY_MAILBOX_COPY.title}
+                      onPress={() =>
+                        navigation.navigate("KinMyMailbox", {
+                          environmentId: host.environmentId,
+                          orgId,
+                        })
+                      }
+                    />
+                  );
                 case "appearance":
                   return inCodingApp ? null : (
                     <SettingsRow
@@ -183,12 +213,20 @@ export function KinSettings(props: {
           orgId === null ||
           profiles === null ||
           myPersonId === null ? null : (
-            <KinQuietHoursRows
-              environmentId={host.environmentId}
-              orgId={orgId}
-              profiles={profiles}
-              personId={myPersonId}
-            />
+            <>
+              <KinQuietHoursRows
+                environmentId={host.environmentId}
+                orgId={orgId}
+                profiles={profiles}
+                personId={myPersonId}
+              />
+              <KinChatsSettleRows
+                environmentId={host.environmentId}
+                orgId={orgId}
+                profiles={profiles}
+                personId={myPersonId}
+              />
+            </>
           )}
           {host._tag !== "host" || orgId === null ? null : (
             <KinBriefsSection

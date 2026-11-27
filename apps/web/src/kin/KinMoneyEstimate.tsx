@@ -2,10 +2,12 @@ import { kinNow } from "@t3tools/client-runtime/kin/kinNow";
 import { useAtomValue } from "@effect/atom-react";
 import {
   KIN_CURRENCY,
+  kinCurrencyName,
   kinInvoiceCurrency,
   kinRateInput,
   kinRateLine,
   kinSettled,
+  kinSettledPayment,
   type KinRateDraft,
   type KinRates,
 } from "@t3tools/client-runtime/kin/kinCurrency";
@@ -173,6 +175,10 @@ function KinRatesForm(
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
+  const edit = (next: KinRateDraft) => {
+    setDraft(next);
+    setProblem(null);
+  };
   const send = async (next: KinRateDraft, remove: boolean) => {
     const made = kinRateInput(orgId, profile, next, remove);
     if ("problem" in made) return setProblem(made.problem);
@@ -213,7 +219,7 @@ function KinRatesForm(
           )}
           <section className="flex flex-col gap-1">
             <h3 className="text-xs font-medium text-muted-foreground">
-              {KIN_CURRENCY.homeCurrency}: {profile.homeCurrency}
+              {KIN_CURRENCY.homeCurrency}: {kinCurrencyName(profile.homeCurrency)}
             </h3>
             {profile.rates.length === 0 ? (
               <p className="text-sm text-muted-foreground">{KIN_CURRENCY.noRates}</p>
@@ -227,10 +233,12 @@ function KinRatesForm(
                     <button
                       type="button"
                       aria-label={`Change the ${rate.currency} rate`}
-                      onClick={() => setDraft({ ...rate })}
+                      onClick={() => edit({ ...rate })}
                       className="flex min-w-0 flex-1 flex-col items-start rounded-md px-2 py-1 text-start outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
                     >
-                      <span className="text-sm text-foreground">{rate.currency}</span>
+                      <span className="text-sm text-foreground">
+                        {kinCurrencyName(rate.currency)}
+                      </span>
                       <span className="truncate text-xs text-muted-foreground">
                         {kinRateLine(rate, profile.homeCurrency)}
                       </span>
@@ -261,7 +269,7 @@ function KinRatesForm(
                   autoComplete="off"
                   spellCheck={false}
                   onChange={(event) =>
-                    setDraft({ ...draft, currency: event.target.value.toUpperCase() })
+                    edit({ ...draft, currency: event.target.value.toUpperCase() })
                   }
                 />
               </div>
@@ -274,7 +282,7 @@ function KinRatesForm(
                   value={draft.rate}
                   inputMode="decimal"
                   autoComplete="off"
-                  onChange={(event) => setDraft({ ...draft, rate: event.target.value })}
+                  onChange={(event) => edit({ ...draft, rate: event.target.value })}
                 />
               </div>
             </div>
@@ -284,7 +292,7 @@ function KinRatesForm(
                 id={ids.asOf}
                 type="date"
                 value={draft.asOf}
-                onChange={(event) => setDraft({ ...draft, asOf: event.target.value })}
+                onChange={(event) => edit({ ...draft, asOf: event.target.value })}
               />
             </div>
           </section>
@@ -310,24 +318,26 @@ const noBankAtom: ReturnType<typeof kinClient.workItem> = Atom.make(AsyncResult.
  */
 export function KinInvoiceCurrency(
   props: KinWorkTarget & {
-    readonly item: Pick<KinRecordDetail, "amount" | "links">;
+    readonly item: Pick<KinRecordDetail, "amount" | "links" | "payments">;
     readonly rates: KinRates | null;
     readonly settled: boolean;
   },
 ) {
   const { environmentId, orgId, rates } = props;
   const view = kinInvoiceCurrency(props.item, rates);
+  const stored = kinSettledPayment(props.item, rates);
   const bankAtom =
-    view?.bank == null
+    stored !== null || !props.settled || view?.bank == null
       ? noBankAtom
       : kinClient.workItem({ environmentId, input: { orgId, key: view.bank } });
   const bank = Option.getOrNull(AsyncResult.value(useAtomValue(bankAtom)));
   if (view === null || props.item.amount === undefined) return null;
   const bankDay = bank?.dateAt?.slice(0, 10) ?? null;
   const settled =
-    bank?.amount === undefined || bankDay === null
+    stored ??
+    (!props.settled || bank?.amount === undefined || bankDay === null
       ? null
-      : kinSettled(props.item.amount, bank.amount, bankDay, rates);
+      : kinSettled(props.item.amount, bank.amount, bankDay, rates));
   return (
     <div className="flex flex-col items-start gap-1 rounded-lg border border-border/70 px-3 py-2">
       <p className="text-sm font-medium text-foreground">{view.label}</p>

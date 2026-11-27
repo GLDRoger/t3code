@@ -1,13 +1,19 @@
 import { expect, it } from "@effect/vitest";
-import { KIN_TEAM_ROOM_TEAM_ID, KinMessageId, type KinAuthor, KinEvent } from "@t3tools/contracts";
+import {
+  DEFAULT_SERVER_SETTINGS,
+  KIN_TEAM_ROOM_TEAM_ID,
+  KinMessageId,
+  type KinAuthor,
+  KinEvent,
+} from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import * as Chat from "../chat/KinChatRepository.ts";
 import { directKey } from "./LeadAccess.ts";
-import * as KinSchedules from "../triggers/kinSchedules.ts";
 import contextBudget from "../mcp/agentContextBudget.json" with { type: "json" };
-import { KinLeadPrompt } from "./LeadPrompt.ts";
+import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
+import { voiceFor } from "../reply/turnVoice.ts";
 import {
   agentId,
   chatId,
@@ -120,9 +126,19 @@ const due = (
     });
   });
 
-/** The seven kinds of turn a lead is woken for, as `LeadPrompt.test.ts` builds each. */
+/** The eight kinds of turn a lead is woken for, as `LeadPrompt.test.ts` builds each. */
 const TURN_KINDS = {
   ownerReply: { mode: "reply", event: ownerAsks },
+  // The Chief of staff's set-up turn: the owner's first word to the company's first agent.
+  setUp: {
+    mode: "reply",
+    event: Effect.gen(function* () {
+      const event = yield* ownerAsks;
+      const sql = yield* SqlClient.SqlClient;
+      yield* sql`UPDATE kin_leads SET domain = 'chief-of-staff' WHERE agent_id = ${agentId}`;
+      return event;
+    }),
+  },
   checkIn: { mode: "notice", event: checkIn("checkin-morning") },
   pulse: { mode: "notice", event: checkIn("checkin-afternoon") },
   scheduled: {
@@ -157,15 +173,24 @@ it.effect.each(Object.keys(TURN_KINDS) as Array<keyof typeof TURN_KINDS>)(
       const turn = TURN_KINDS[kind];
       const event = yield* turn.event;
       yield* stored(input.wakeupId, [event]);
-      const built = yield* (yield* KinLeadPrompt).build({
+      const prompt = yield* KinLeadPrompt;
+      const given: KinLeadPromptInput = {
         ...input,
-        lane: { chatId, mode: turn.mode },
+        // The voice the runner's lane carries with the switch at its default (`replyLane.ts`).
+        lane: {
+          chatId,
+          mode: turn.mode,
+          voice: voiceFor({
+            tags: [event._tag],
+            sendOnly: DEFAULT_SERVER_SETTINGS.kinTriggerSendOnly,
+          }),
+        },
         events: [event],
-      });
-      // The owner's zone is pinned to UTC; a machine on another zone adds this clause.
-      const hostClock = `; scheduled tasks run on the host clock, ${JSON.stringify(KinSchedules.hostTimeZone())}`;
+      };
+      const built = yield* prompt.build(given);
+      expect((yield* prompt.buildSession(given)).full).toBe(built);
       expect(
-        Buffer.byteLength(built.replace(hostClock, ""), "utf8"),
+        Buffer.byteLength(built, "utf8"),
         "Set kinLeadPromptBytes in agentContextBudget.json to the measured value. Before you cut text to fit, run the evals that cover it (evals/README.md).",
       ).toBe(contextBudget.kinLeadPromptBytes[kind]);
     }).pipe(Effect.provide(layer)),

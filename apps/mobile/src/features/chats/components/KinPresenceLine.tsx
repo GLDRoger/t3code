@@ -1,5 +1,5 @@
 import { KIN_CHAT_COPY } from "@t3tools/client-runtime/kin/kinChatFeed";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import { AccessibilityInfo, View } from "react-native";
 import Animated, {
   cancelAnimation,
@@ -12,20 +12,22 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 
-import { ComposerActionButton } from "../../../components/ComposerToolbar";
+import { ComposerActionButton, ComposerToolbarButton } from "../../../components/ComposerToolbar";
 import { AppText as Text } from "../../../components/ui/AppText";
 import { useReduceMotionEnabled } from "../../../lib/appState";
 import { KinAvatar } from "./KinAvatar";
-import type { KinAvatarView } from "@t3tools/client-runtime/kin/kinScreenState";
+import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import { useVisibleSecondClock } from "../../threads/use-visible-second-clock";
 import type { KinPresence } from "@t3tools/contracts";
 
 import {
   KIN_PRESENCE_TICK_MS,
-  kinPresenceLine,
+  createKinLabelHold,
   kinPresenceNeedsClock,
   kinPresenceTimerStart,
+  kinWorkingLines,
+  type KinWorkingLine,
 } from "@t3tools/client-runtime/kin/kinLive";
 
 /**
@@ -54,75 +56,159 @@ export function useKinPresenceNow(active: boolean): number {
 export type KinStopState = "idle" | "stopping" | "failed";
 
 /**
- * What the lead is doing, in one line above the composer: pulsing dots while it is queued or
- * starting, else its avatar and a gently breathing line while it works. The row keeps its
- * height when empty, so a reply landing never shifts the feed.
+ * What each working agent is doing, one line each above the composer: pulsing dots while it is
+ * queued or starting, else its avatar and a gently breathing line while it works. The row keeps
+ * its height when empty, so a reply landing never shifts the feed.
  */
-export function KinPresenceLine(props: {
-  readonly presence: KinPresence | undefined;
-  /** The lead's avatar; null where the chat has no single lead. */
-  readonly avatar: KinAvatarView | null;
+export function KinPresenceLines(props: {
+  readonly presence: ReadonlyArray<KinPresence>;
   /** The row is on screen: the chat is focused and its end shows. Motion stops otherwise. */
   readonly visible: boolean;
-  /** Null when the viewer can't stop this lead. */
-  readonly onStop: (() => void) | null;
-  readonly stop: KinStopState;
-  /** The pill above the composer is saying it: keep the row's height and its announcements only. */
-  readonly quiet?: boolean;
+  readonly showName?: boolean;
+  readonly mayStop: (agentId: string) => boolean;
+  readonly agentNames: ReadonlyMap<string, string>;
+  readonly stops: ReadonlyMap<string, KinStopState>;
+  /** Null when nothing here can be stopped. */
+  readonly onStop: ((wakeupId: string) => void) | null;
 }) {
-  const now = useKinPresenceNow(kinPresenceNeedsClock(props.presence));
-  const line = kinPresenceLine(props.presence, now);
-  const announcement = line?.announcement ?? null;
+  const now = useKinPresenceNow(props.presence.some(kinPresenceNeedsClock));
+  const [hold] = useState(createKinLabelHold);
+  const held = useSyncExternalStore(hold.subscribe, hold.snapshot, hold.snapshot);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- arms or cancels a single expiry timer per working line so brief tool labels stay readable
+  useEffect(() => {
+    hold.sync(props.presence);
+  }, [hold, props.presence]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- cancels any pending label-hold timers on unmount
+  useEffect(() => () => hold.dispose(), [hold]);
+  const rows = kinWorkingLines(
+    props.presence,
+    now,
+    props.onStop === null ? noStop : props.mayStop,
+    held,
+  );
+  // Empty placeholder matches a single working row's height so the composer and feed never jump.
+  if (rows.length === 0) {
+    return (
+      <View className="pt-1.5">
+        <View className="h-12 android:h-[52px]" />
+      </View>
+    );
+  }
+  return (
+    <View className="gap-1.5 pt-1.5">
+      {rows.map((row) => (
+        <KinPresenceLine
+          key={row.presence.agentId}
+          row={row}
+          name={props.agentNames.get(row.presence.agentId) ?? null}
+          showName={props.showName === true}
+          visible={props.visible}
+          stop={
+            row.presence.wakeupId === null
+              ? "idle"
+              : (props.stops.get(row.presence.wakeupId) ?? "idle")
+          }
+          onStop={props.onStop}
+        />
+      ))}
+    </View>
+  );
+}
+
+const noStop = () => false;
+
+function KinPresenceLine(props: {
+  readonly row: KinWorkingLine;
+  readonly name: string | null;
+  readonly showName: boolean;
+  readonly visible: boolean;
+  readonly onStop: ((wakeupId: string) => void) | null;
+  readonly stop: KinStopState;
+}) {
+  const { presence, line } = props.row;
+  const showName = props.showName && props.name !== null;
+  const announcement = showName ? `${props.name}: ${line.announcement}` : line.announcement;
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- announces a change of state to screen readers, not every tick
   useEffect(() => {
-    if (announcement !== null) AccessibilityInfo.announceForAccessibility(announcement);
+    AccessibilityInfo.announceForAccessibility(announcement);
   }, [announcement]);
   const reduceMotion = useReduceMotionEnabled();
   // Motion only while a run is live and on screen; Reduce Motion leaves the row still.
-  const animate = line !== null && props.visible && !reduceMotion;
+  const animate = props.visible && !reduceMotion;
 
-  const { onStop } = props;
-  if (props.quiet === true) return <View className="h-8" />;
-  const stoppable = line?.stalled === true && onStop !== null;
-  const timerStart = kinPresenceTimerStart(props.presence);
+  const { onStop, stop } = props;
+  const wakeupId = presence.wakeupId;
+  const stoppable = props.row.stop !== "none" && onStop !== null && wakeupId !== null;
+  const press = () => {
+    if (wakeupId !== null) onStop?.(wakeupId);
+  };
+  const stopName = props.name ?? "the agent";
+  const stopLabel = stop === "failed" ? KIN_CHAT_COPY.stopAgain : `Stop ${stopName}`;
+  const timerStart = kinPresenceTimerStart(presence);
   return (
-    <View className="h-8 flex-row items-center gap-2 px-5">
-      {line === null ? null : line.motion === "dots" ? (
+    <View className="min-h-12 flex-row items-center gap-2 px-5 py-0.5 android:min-h-[52px]">
+      {line.motion === "dots" ? (
         <KinPulsingDots animate={animate} />
-      ) : props.avatar === null ? null : (
-        <KinAvatar avatar={props.avatar} size="small" />
+      ) : (
+        <KinAvatar avatar={kinAgentAvatar(presence.agentId)} size="small" />
       )}
-      {line === null ? null : (
+      <View className="min-w-0 shrink flex-row items-center gap-1.5">
+        {showName ? (
+          <>
+            <Text
+              textRole="footnote"
+              className="max-w-[140px] shrink font-t3-medium text-foreground"
+              numberOfLines={1}
+              ellipsizeMode="tail"
+            >
+              {props.name}
+            </Text>
+            <Text textRole="footnote" className="shrink-0 text-foreground-muted">
+              ·
+            </Text>
+          </>
+        ) : null}
         <KinBreathing animate={animate && line.motion === "shimmer"}>
-          <Text textRole="footnote" className="text-foreground-muted" numberOfLines={1}>
+          <Text
+            textRole="footnote"
+            className="text-foreground-muted"
+            numberOfLines={1}
+            ellipsizeMode="tail"
+          >
             {line.text}
           </Text>
         </KinBreathing>
-      )}
+      </View>
       {timerStart === null ? null : <KinWorkingTimer startedAt={timerStart} />}
       {stoppable ? (
-        <>
-          {props.stop === "idle" ? null : (
+        <View className="shrink-0 flex-row items-center gap-2">
+          {stop === "idle" ? null : (
             <Text
               textRole="caption"
-              className={
-                props.stop === "failed" ? "text-danger-foreground" : "text-foreground-muted"
-              }
+              className={stop === "failed" ? "text-danger-foreground" : "text-foreground-muted"}
             >
-              {props.stop === "failed" ? "Couldn't stop" : "Stopping…"}
+              {stop === "failed" ? "Couldn't stop" : "Stopping…"}
             </Text>
           )}
-          {/* The 44 pt target overhangs the 32 pt row, so the row keeps its height. */}
-          <View className="-my-1.5">
+          {props.row.stop === "urgent" ? (
             <ComposerActionButton
-              accessibilityLabel={props.stop === "failed" ? KIN_CHAT_COPY.stopAgain : "Stop"}
+              accessibilityLabel={stopLabel}
               icon="stop.fill"
               variant="danger"
-              disabled={props.stop === "stopping"}
-              onPress={onStop}
+              disabled={stop === "stopping"}
+              onPress={press}
             />
-          </View>
-        </>
+          ) : (
+            <ComposerToolbarButton
+              label="Stop"
+              accessibilityLabel={stopLabel}
+              icon="stop.fill"
+              showChevron={false}
+              disabled={stop === "stopping"}
+              onPress={press}
+            />
+          )}
+        </View>
       ) : null}
     </View>
   );

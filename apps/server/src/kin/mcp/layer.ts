@@ -28,16 +28,13 @@ import * as SqlitePersistence from "../../persistence/Sqlite.ts";
 import { KinServer } from "../KinServer.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
-import * as KinConnectionsMcp from "../connections/mcp.ts";
 import * as KinIssuedTokens from "./KinIssuedTokens.ts";
 import * as KinToolGate from "./KinToolGate.ts";
 
-export class KinAgentSessions extends Context.Service<
-  KinAgentSessions,
-  { readonly resolveAgent: McpSessionRegistry.McpSessionRegistryShape["resolve"] }
->()("t3/kin/mcp/layer/KinAgentSessions") {}
+import { KinAgentSessions } from "./KinAgentSessions.ts";
+import { KinBoot } from "../lead/sessionCarry.ts";
 
-const registration = McpHttpServer.toolkitRegistration(KinChatToolkit, handlers);
+const registration = McpHttpServer.toolkitRegistration(KinChatToolkit, handlers, { kin: true });
 
 const fromJson = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
 const toJson = Schema.encodeUnknownOption(Schema.fromJsonString(Schema.Unknown));
@@ -50,6 +47,7 @@ const logToolList = Effect.fnUntraced(function* (
   request: HttpServerRequest.HttpServerRequest,
   response: HttpServerResponse.HttpServerResponse,
   thread: McpThreadCaller | undefined,
+  registry: KinAgentSessions["Service"],
 ) {
   if (request.method !== "POST" || response.body._tag !== "Uint8Array") return;
   const message = yield* Effect.orElseSucceed(request.json, () => undefined);
@@ -66,10 +64,13 @@ const logToolList = Effect.fnUntraced(function* (
   const encoded = toJson(result);
   if (Option.isNone(encoded)) return;
   const served = encoded.value;
+  const toolListSha256 = NodeCrypto.createHash("sha256").update(served).digest("hex");
+  if (thread !== undefined)
+    registry.recordToolList(thread.threadId, thread.providerSessionId, toolListSha256);
   yield* Effect.logInfo("Kin endpoint tool list.", {
     threadId: thread?.threadId,
     providerSessionId: thread?.providerSessionId,
-    toolListSha256: NodeCrypto.createHash("sha256").update(served).digest("hex"),
+    toolListSha256,
     toolListBytes: new TextEncoder().encode(served).length,
     tools: result.tools.length,
   });
@@ -113,7 +114,7 @@ const auth = HttpRouter.middleware<{ provides: KinBearerScope | KinServer | KinI
         Effect.provideService(KinServer, kin),
         Effect.provideService(KinIdentity, identity),
       );
-      yield* logToolList(request, response, scope.thread).pipe(
+      yield* logToolList(request, response, scope.thread, registry).pipe(
         Effect.catchCause((cause) => Effect.logWarning("Kin tool list log failed", { cause })),
       );
       return response;
@@ -155,6 +156,7 @@ export const transport = (base: typeof McpHttpServer.layer) =>
       // T3's own tools are served here too, shown to a lead only as `AgentSession` allows:
       // never scheduling or thread-launch tools, which would start work outside Kin's chats.
       const host = yield* KinToolGate.helperModelHost;
+      const boot = yield* KinBoot;
       return Layer.merge(
         base.pipe(
           Layer.provide(
@@ -165,10 +167,8 @@ export const transport = (base: typeof McpHttpServer.layer) =>
           Layer.mergeAll(
             McpHttpServer.layerTools,
             registration,
-            KinConnectionsMcp.registration.pipe(
-              Layer.provide(Layer.succeedContext(kin.services.value)),
-            ),
-            KinLead.layerRuntime.pipe(
+            KinLead.layerRuntimeWithConnections.pipe(
+              Layer.provide(Layer.succeed(KinBoot, boot)),
               // Agents' turns run on Kin's clock; T3's orchestration keeps the one its worker reads.
               Layer.provide(
                 Layer.mergeAll(
@@ -192,6 +192,11 @@ export const registry = <E, R>(base: Layer.Layer<McpSessionRegistry.McpSessionRe
       const base = yield* McpSessionRegistry.McpSessionRegistry;
       const kin = yield* KinServer;
       const agentSessions = new Map<string, ThreadId>();
+      const toolLists = new Map<ThreadId, string>();
+      const recordToolList = (threadId: ThreadId, sessionId: string, sha: string) => {
+        if (agentSessions.get(sessionId) === threadId) toolLists.set(threadId, sha);
+      };
+      const lastToolList = (threadId: ThreadId) => toolLists.get(threadId) ?? null;
       const tokens = yield* KinIssuedTokens.make;
       const isAgentThread = (thread: {
         readonly threadId: ThreadId;
@@ -230,11 +235,17 @@ export const registry = <E, R>(base: Layer.Layer<McpSessionRegistry.McpSessionRe
         revokeThread: Effect.fn("KinMcp.revokeThread")(function* (threadId) {
           yield* base.revokeThread(threadId);
           yield* tokens.revokeThread(threadId);
+          toolLists.delete(threadId);
           for (const [id, owner] of agentSessions) if (owner === threadId) agentSessions.delete(id);
         }),
         revokeAll: base.revokeAll.pipe(
           Effect.andThen(tokens.revokeAll),
-          Effect.tap(() => Effect.sync(() => agentSessions.clear())),
+          Effect.tap(() =>
+            Effect.sync(() => {
+              agentSessions.clear();
+              toolLists.clear();
+            }),
+          ),
         ),
         issue: Effect.fn("KinMcp.issue")(function* (request) {
           const issued = yield* base.issue(request);
@@ -259,7 +270,7 @@ export const registry = <E, R>(base: Layer.Layer<McpSessionRegistry.McpSessionRe
         }),
       });
       return Context.make(McpSessionRegistry.McpSessionRegistry, wrapped).pipe(
-        Context.add(KinAgentSessions, { resolveAgent }),
+        Context.add(KinAgentSessions, { resolveAgent, recordToolList, lastToolList }),
         Context.add(KinIssuedTokens.KinIssuedTokens, tokens.service),
       );
     }),

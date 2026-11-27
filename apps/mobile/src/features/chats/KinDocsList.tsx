@@ -43,6 +43,7 @@ import {
   kinWorkAskDraft,
 } from "@t3tools/client-runtime/kin/kinWorkHome";
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
+import { kinListSections, kinSectionNamed } from "@t3tools/client-runtime/kin/kinShell";
 import { kinWorkOffline } from "@t3tools/client-runtime/kin/kinWork";
 import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import type { KinWorkLive } from "@t3tools/client-runtime/kin/kinWorkStream";
@@ -54,7 +55,7 @@ import {
   type KinMineHeld,
   type KinMineSide,
 } from "@t3tools/client-runtime/kin/kinWorkClients";
-import type { KinDocListRow, KinPersonId, KinRecordKey } from "@t3tools/contracts";
+import type { KinDocListRow, KinPersonId, KinRecordKey, KinShell } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import * as Option from "effect/Option";
 import { AsyncResult, Atom } from "effect/reactivity";
@@ -87,6 +88,7 @@ import {
   useKinWhatWeSellStart,
 } from "./state/useKinDocs";
 import { useKinAskAgent, useKinLists } from "./state/useKinMoney";
+import { useKinShell } from "./state/useKinShell";
 import {
   kinWorkChoicesAtom,
   refreshKinWorkLive,
@@ -337,6 +339,7 @@ export function KinSearchHits(props: {
   readonly scope?: KinViewerScope;
   /** Finding nothing says nothing: the list above already answers for the search. */
   readonly quietWhenNone?: boolean;
+  readonly shell?: KinShell | null | undefined;
 }) {
   const { state } = props;
   const grows = useKinTextGrows();
@@ -351,6 +354,7 @@ export function KinSearchHits(props: {
     return props.quietWhenNone ? null : (
       <EmptyState variant="plain" {...kinSearchNothing(state.answered, props.scope)} />
     );
+  const hits = state.hits.map((hit) => kinSearchHit(hit, props.shell));
   return (
     <View className={cn(state.loading && "opacity-60")}>
       {state.failed ? (
@@ -361,7 +365,7 @@ export function KinSearchHits(props: {
           />
         </View>
       ) : null}
-      {state.hits.map(kinSearchHit).map((hit) => (
+      {hits.map((hit) => (
         <View key={hit.id}>
           <Pressable
             accessibilityRole="button"
@@ -510,6 +514,7 @@ export function KinDocsList(
   const { environmentId, orgId } = props;
   const { names } = props.directory;
   const now = new Date(useNowMinuteMs());
+  const shell = useKinShell(environmentId);
   const { refused, live } = useKinDocsLive(props);
   const { state, list } = useKinDocsList(props, props.stale ? null : (live?.seq ?? null));
   const { state: found, search } = useKinSearch(props, DOCS_ONLY);
@@ -543,6 +548,9 @@ export function KinDocsList(
   const chip = kinDocsChip(filter);
   const index = kinListsIndex(
     lists.state._tag === "ready" ? kinPlaceLists(lists.state.value.lists) : [],
+    kinListSections(shell)
+      .filter((section) => section.on)
+      .map((section) => section.list),
   );
   const words = filter.text.trim().toLowerCase();
   const listRows = (filter.archived ? index.archived : index.active).filter(
@@ -570,7 +578,7 @@ export function KinDocsList(
     pinnedRow === null || !onMine || (held !== null && kinIsMine(pinnedRow, held))
       ? pinnedRow
       : null;
-  const library = kinDocLibrary(records, pin);
+  const library = kinDocLibrary(records, pin, shell);
   const whatWeSell: ReadonlyArray<Item> =
     !refused && !onMine && shown === "rows" && pinShown && pinned === null && starter !== null
       ? [{ type: "whatWeSell", id: "what-we-sell" }]
@@ -862,7 +870,11 @@ export function KinDocsList(
               ) : passages ? null : searching || !everything ? (
                 <EmptyState variant="plain" {...KIN_DOCS.noMatch} />
               ) : onMine && !filter.archived && all.length > 0 ? (
-                <EmptyState variant="plain" {...KIN_DOCS.noneMine} />
+                <EmptyState
+                  variant="plain"
+                  title={KIN_DOCS.noneMine.title}
+                  detail={kinSectionNamed(shell, KIN_DOCS.noneMine.detail)}
+                />
               ) : (
                 <EmptyState
                   variant="plain"

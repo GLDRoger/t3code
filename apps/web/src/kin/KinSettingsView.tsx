@@ -20,6 +20,7 @@ import {
   CircleUserIcon,
   FingerprintIcon,
   HardDriveIcon,
+  LayoutListIcon,
   SlidersHorizontalIcon,
   PaletteIcon,
   PlugIcon,
@@ -71,6 +72,7 @@ import { KinAppearancePage } from "./settings/KinAppearancePage";
 import { KinCompanyPage } from "./settings/KinCompanyPage";
 import { KinConnectionsPage } from "./settings/KinConnectionsPage";
 import { KinDealsPage } from "./settings/KinDealsPage";
+import { KinSectionsPage } from "./settings/KinSectionsPage";
 import { KinHostPage } from "./settings/KinHostPage";
 import { KinMemoryPage } from "./settings/KinMemoryPage";
 import { KinProfilePage } from "./settings/KinProfilePage";
@@ -89,6 +91,7 @@ const PAGE_ICON: Record<KinSettingsPage, LucideIcon> = {
   "check-ins": CalendarCheckIcon,
   watches: EyeIcon,
   connections: PlugIcon,
+  sections: LayoutListIcon,
   deals: TrendingUpIcon,
   memory: BrainIcon,
   company: Building2Icon,
@@ -361,6 +364,8 @@ function KinSettingsPageBody(props: {
       return <KinWatchLogPage key={target.orgId} {...target} />;
     case "connections":
       return <KinConnectionsPage />;
+    case "sections":
+      return <KinSectionsPage />;
     case "deals":
       return <KinDealsPage />;
     case "memory":

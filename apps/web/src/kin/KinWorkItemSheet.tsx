@@ -1,4 +1,4 @@
-import { useKinOpensClients } from "./useKinOwnerLevel";
+import { useKinOpensClients, useKinOwnerLevel } from "./useKinOwnerLevel";
 import { KIN_DOCS } from "@t3tools/client-runtime/kin/kinDocs";
 import { KIN_RETIRED_LABEL } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { useAtomValue } from "@effect/atom-react";
@@ -42,9 +42,10 @@ import {
   KIN_TASK_RECORD,
   kinBriefBy,
   kinNextStep,
-  kinRecordAskedBy,
   kinRecordChip,
-  kinRecordWho,
+  kinRecordHeld,
+  kinTaskOrigin,
+  kinTaskBrief,
   kinTaskControls,
   kinTaskWith,
   kinTaskWithChoices,
@@ -52,6 +53,7 @@ import {
   type KinNextStepAct,
   type KinRecordWho,
 } from "@t3tools/client-runtime/kin/kinTaskRecord";
+import { kinNotesVersions } from "@t3tools/client-runtime/kin/kinTemplates";
 import {
   KIN_WORK_COPY,
   kinWorkApplied,
@@ -166,6 +168,14 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./useKinWork";
+import { useKinSectionNamed, useKinShell } from "./useKinShell";
+import {
+  kinPickerNamed,
+  kinPlaceFind,
+  kinSectionNoun,
+  kinSectionOf,
+  kinSectionOffLine,
+} from "@t3tools/client-runtime/kin/kinShell";
 
 const LINK_ICON: Record<KinWorkLinkView["kind"], typeof LinkIcon> = {
   pull_request: PullRequestGlyph.pullRequest,
@@ -234,6 +244,8 @@ export function KinWorkItemSheet(
   const canGive = useAtomValue(kinClient.workAssign.permissionAtom(environmentId));
   const canComment = useAtomValue(kinClient.workComment.permissionAtom(environmentId));
   const place = useKinWorkPlace(environmentId);
+  const shell = useKinShell(environmentId);
+  const ownerLevel = useKinOwnerLevel(environmentId);
   const now = new Date(useNowMinuteMs());
   const state = kinWorkItemState(result, changed.answers[itemKey] ?? null);
   useKinWorkItemWatch(
@@ -249,14 +261,47 @@ export function KinWorkItemSheet(
   const entry = state._tag === "ready" && state.item.list !== undefined;
   const sheet = props.frame === "sheet" || entry;
   const Frame = sheet ? SHEET_FRAME : PAGE_FRAME;
+  // An entry of a section that is off, opened by its link, says so, as its page on the phone does.
+  const section =
+    state._tag === "ready" && state.item.list !== undefined
+      ? kinSectionOf({ list: state.item.list })
+      : null;
+  const offLine = section === null ? null : kinSectionOffLine(shell, section, ownerLevel);
 
+  const entryView =
+    state._tag === "ready" && state.item.list !== undefined
+      ? kinWorkItemView(state.item, names, now, KIN_RECORD_CHANGES_CAP, place)
+      : null;
   const content =
-    state._tag === "ready" && state.item.list !== undefined ? (
+    state._tag === "ready" && state.item.list !== undefined && entryView !== null ? (
       <KinListEntry
         {...props}
         item={state.item}
-        view={kinWorkItemView(state.item, names, now, KIN_RECORD_CHANGES_CAP, place)}
+        view={entryView}
         now={now}
+        give={
+          !kinRecordHeld({ item: state.item, view: entryView, names, give: canGive })
+            .opens ? null : (
+            <Menu>
+              <MenuTrigger render={<Button size="sm" variant="outline" disabled={saving} />}>
+                {entryView.assignLabel}
+                <ChevronDownIcon />
+              </MenuTrigger>
+              <MenuPopup align="start">
+                <GiveItems
+                  assignees={kinWorkAssignees({
+                    ...props.directory,
+                    orgId,
+                    current: entryView.owner.principal,
+                  })}
+                  onGive={(to) =>
+                    void changes.run(state.item, { type: "give", to: to.principal }, names)
+                  }
+                />
+              </MenuPopup>
+            </Menu>
+          )
+        }
         links={
           <KinWorkLinks
             {...props}
@@ -264,6 +309,7 @@ export function KinWorkItemSheet(
             links={kinWorkItemView(state.item, names, now, KIN_RECORD_CHANGES_CAP, place).links}
           />
         }
+        offLine={offLine}
       />
     ) : state._tag === "ready" ? (
       <KinWorkItem
@@ -695,8 +741,14 @@ function KinWorkItem(
     give: give !== null,
   });
   const chip = kinRecordChip(shown, view, names, props.now);
-  const askedBy = kinRecordAskedBy(props.item);
+  const origin = kinTaskOrigin(shown, names, props.now);
   const briefBy = kinBriefBy(shown, names, props.now);
+  const brief = kinTaskBrief({
+    view,
+    step,
+    edit: reword !== null,
+    versions: kinNotesVersions(props.item, names, props.now).length,
+  });
   const stepAct = (id: KinNextStepAct) => {
     if (change === null) return;
     if (id === "keep") return change({ type: "confirm" });
@@ -1002,24 +1054,11 @@ function KinWorkItem(
         )}
         <Section title={KIN_TASK_RECORD.details}>
           <dl className="grid grid-cols-[auto_1fr] items-center gap-x-4 gap-y-2 text-sm">
-            {askedBy === null ? null : (
-              <DetailPerson label={KIN_TASK_RECORD.askedBy} who={kinRecordWho(askedBy, names)} />
-            )}
             <DetailPerson
               label={KIN_TASK_RECORD.heldBy}
               who={{ name: view.owner.name, avatar: view.owner.avatar }}
               extra={view.owner.retired ? KIN_RETIRED_LABEL : null}
             />
-            {view.given === null && (view.reason === null || step.words !== null) ? null : (
-              <dd className="col-start-2 -mt-1 flex min-w-0 flex-col gap-0.5 text-xs">
-                {view.given === null ? null : (
-                  <span className="text-muted-foreground">{view.given}</span>
-                )}
-                {view.reason === null || step.words !== null ? null : (
-                  <span className="text-foreground/80">“{view.reason}”</span>
-                )}
-              </dd>
-            )}
             {view.owner.principal._tag === "agent" ? (
               <dd className="col-start-2 -mt-1">
                 <KinWorkLeadChat
@@ -1193,6 +1232,7 @@ function KinWorkItem(
             disabled={saving}
             onMark={change === null ? null : (on) => change({ type: "private", private: on })}
           />
+          {origin === null ? null : <p className="text-xs text-muted-foreground">{origin}</p>}
         </Section>
         {view.tasks === null ? null : (
           <Section title={KIN_WORK_MILESTONE.tasks}>
@@ -1214,7 +1254,7 @@ function KinWorkItem(
             )}
           </Section>
         )}
-        {edit !== null ? null : (
+        {edit !== null || brief === null ? null : (
           <Section
             title={KIN_TASK_RECORD.brief}
             action={
@@ -1232,15 +1272,17 @@ function KinWorkItem(
               )
             }
           >
-            <p
-              className={
-                view.notes === null
-                  ? "text-sm text-muted-foreground"
-                  : "whitespace-pre-wrap wrap-break-word text-sm text-foreground"
-              }
-            >
-              {view.notes ?? KIN_TASK_RECORD.noBrief}
-            </p>
+            {brief.words ? (
+              <p
+                className={
+                  view.notes === null
+                    ? "text-sm text-muted-foreground"
+                    : "whitespace-pre-wrap wrap-break-word text-sm text-foreground"
+                }
+              >
+                {view.notes ?? KIN_TASK_RECORD.noBrief}
+              </p>
+            ) : null}
             {briefBy === null ? null : (
               <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 {briefBy.avatar === null ? null : <KinAvatar avatar={briefBy.avatar} size="xs" />}
@@ -1264,6 +1306,7 @@ function KinWorkItem(
           names={names}
           now={props.now}
           note={view.historyNote}
+          reason={step.words === view.reason ? null : view.reason}
           onOpenProject={props.onOpenProject}
         />
         <KinWorkLinks
@@ -1313,6 +1356,7 @@ export function KinWorkLinks(
   },
 ) {
   const navigate = useNavigate();
+  const named = useKinSectionNamed(props.environmentId);
   const rest = kinLinkedRest(props.links);
   return (
     <KinLinkedGroups
@@ -1320,6 +1364,7 @@ export function KinWorkLinks(
       title={props.title ?? "Links"}
       // Both panels show the entry's client, project and milestone in their rows already.
       parentsShown
+      named={named}
       // A task or list entry opens on this panel; a doc, client or project has its own page.
       onOpen={(to) =>
         to._tag === "record" && (to.kind === "task" || to.kind === "entry")
@@ -1362,6 +1407,8 @@ export function KinLinkedGroups(props: {
   readonly item: Parameters<typeof kinLinked>[0];
   readonly title: string;
   readonly parentsShown: boolean;
+  /** Kin's words about clients in the company's own name for them. */
+  readonly named?: (text: string) => string;
   readonly onOpen: (to: KinNotificationDestination) => void;
   readonly children?: React.ReactNode;
 }) {
@@ -1373,7 +1420,9 @@ export function KinLinkedGroups(props: {
     <Section title={props.title}>
       {linked.groups.map((group) => (
         <div key={group.group} className="flex flex-col">
-          <h4 className="px-1 text-xs text-muted-foreground">{KIN_LINKED.group[group.group]}</h4>
+          <h4 className="px-1 text-xs text-muted-foreground">
+            {(props.named ?? String)(KIN_LINKED.group[group.group])}
+          </h4>
           <ul className="flex flex-col">
             {group.items.map((item) => {
               const { open } = item;
@@ -1436,7 +1485,7 @@ const PLACE_ROW = "flex min-w-0 flex-1 truncate";
  * The client or project a task is under: pick another, found by typing as the new-task form
  * does, take it off, or open the one it has.
  */
-export function KinTaskPlaceMenu(props: {
+export function KinTaskPlaceMenu(given: {
   readonly target: KinWorkTarget;
   readonly noun: "client" | "project";
   readonly label: string;
@@ -1459,7 +1508,12 @@ export function KinTaskPlaceMenu(props: {
     readonly onPick: (side: "ours" | "theirs") => void;
   };
 }) {
+  // A client picker says the company's own word for Clients in its label and its own rows.
+  const clientShell = useKinShell(given.target.environmentId);
+  const props = kinPickerNamed(clientShell, given);
   const { value, onPick, side } = props;
+  const clientNoun = kinSectionNoun(clientShell, "clients");
+  const find = kinPlaceFind(props.noun, clientShell);
   const search = useKinPickerSearch(
     props.target,
     props.noun === "client" ? "clients" : "projects",
@@ -1472,6 +1526,7 @@ export function KinTaskPlaceMenu(props: {
     loaded: { open: props.choices, done: props.done ?? [] },
     held: value,
     only: props.only ?? null,
+    called: props.noun === "client" ? clientNoun : "project",
   });
   const groups = kinTaskProjectMenu({ projects: view.open, doneProjects: view.done });
   const first = groups
@@ -1523,8 +1578,8 @@ export function KinTaskPlaceMenu(props: {
             search.type("");
             onPick(first);
           }}
-          placeholder={`Find a ${props.noun}`}
-          aria-label={`Find a ${props.noun}`}
+          placeholder={find}
+          aria-label={find}
         />
         {value === null || props.onOpen === null ? null : (
           <>

@@ -44,4 +44,12 @@ export function assertClaudeBackgroundTaskInterruptOutput(
     ["completed", "interrupted"],
     "the background launch completed; the foreground command was interrupted",
   );
+  // No result follows the interrupt; the turn keeps what its two requests used.
+  assert.deepInclude(projection.providerTurns[0]?.turnTokenUsage, {
+    usageStatus: "partial",
+    inputTokens: 73_574,
+    cachedInputTokens: 61_326,
+    cacheCreationTokens: 12_244,
+    outputTokens: 310,
+  });
 }

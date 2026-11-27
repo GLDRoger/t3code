@@ -3,6 +3,7 @@ import { kinDocPieceKey, kinDocPieces } from "@t3tools/client-runtime/kin/kinDoc
 import {
   kinLinkedMarkdown,
   kinLinkOf,
+  kinLinkTitle,
   kinPageView,
 } from "@t3tools/client-runtime/kin/kinMessagePage";
 import {
@@ -35,7 +36,7 @@ interface Where {
 function KinInAppLink(props: Where & { readonly link: KinMessageLink; readonly label: string }) {
   const { link, label } = props;
   const params = { environmentId: props.environmentId, orgId: props.orgId };
-  const title = link.note ?? undefined;
+  const title = kinLinkTitle(link);
   const to = link.to;
   const router = useRouter();
   switch (to._tag) {

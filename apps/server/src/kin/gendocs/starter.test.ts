@@ -1,12 +1,16 @@
 // @effect-diagnostics nodeBuiltinImport:off -- a workbook part is inflated to read the cells Kin wrote.
 import * as NodeZlib from "node:zlib";
 
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 
 import { computeData, type TaxRegime } from "./compute.ts";
 import { taxRegimeOf } from "./facts.ts";
 import { sampleInputs } from "./recipeLabels.ts";
 import { assembleInputs, parseRecipe, type Recipe, type Value } from "./recipe.ts";
+import { runCapped, typstEnv } from "./render.ts";
 import { typeMismatch } from "./returnPath.ts";
 import { STARTER_FILES } from "./starter.ts";
 import { sheetCells, tableFiles, tableTooLarge, toCsv, toXlsx } from "./tables.ts";
@@ -18,6 +22,7 @@ const recipe = (name: string): Recipe => {
   return parsed;
 };
 const invoice = recipe("invoice");
+type ShownMoney = { readonly minor: number; readonly currency: string; readonly text: string };
 const notRegistered = taxRegimeOf({ country: "IN", tax: null, taxRegistered: false });
 const inr = (minor: number) => ({ minor, currency: "INR" });
 const base: Readonly<Record<string, Value>> = {
@@ -45,15 +50,19 @@ const computeInvoice = (given: Readonly<Record<string, Value>>, tax?: TaxRegime)
     readonly tax: {
       readonly registered: boolean;
       readonly notCharged?: string;
+      readonly customerAccounts?: { readonly line: string };
       readonly placeOfSupply: string | null;
       readonly exportUnderLut: boolean;
       readonly country: string | null;
-      readonly taxable: { readonly text: string };
-      readonly total: { readonly text: string };
+      readonly taxable: ShownMoney;
+      readonly total: ShownMoney;
+      readonly tax: ShownMoney;
+      readonly exported: boolean;
+      readonly supplierState: string | null;
       readonly taxes: ReadonlyArray<{
         readonly name: string;
         readonly rate: string;
-        readonly amount: { readonly text: string };
+        readonly amount: ShownMoney;
       }>;
     };
     readonly words: string;
@@ -61,6 +70,79 @@ const computeInvoice = (given: Readonly<Record<string, Value>>, tax?: TaxRegime)
     readonly lutText: string | null;
   };
 };
+
+const typst = process.env.KIN_TEST_TYPST;
+for (const name of ["invoice", "quotation"]) {
+  for (const scenario of ["client accounts for tax", "export under LUT", "mixed rates"]) {
+    it.live.skipIf(typst === undefined)(`${name} prints the right Tax column for ${scenario}`, () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const root = yield* fs.makeTempDirectoryScoped({ prefix: "kin-starter-tax-" });
+        const path = `recipes/${name}/`;
+        const one = recipe(name);
+        const sample = sampleInputs(one, STARTER_FILES[path + "sample.json"]);
+        if (typeof sample === "string") return assert.fail(sample);
+        const lut = scenario === "export under LUT";
+        const marked = scenario === "client accounts for tax";
+        const computed = computeData(
+          {
+            ...sample,
+            draft: true,
+            logo: null,
+            total: null,
+            taxRecorded: null,
+            clientGstin: null,
+            clientPlace: lut ? "United Kingdom" : "Maharashtra",
+            exportUnderLut: true,
+            lines: [
+              { description: "Consulting", quantity: "1", sac: null, unit: null, rate: inr(10000) },
+              {
+                description: "Manual",
+                quantity: "1",
+                sac: null,
+                unit: null,
+                rate: inr(1000),
+                taxRate: "0",
+              },
+            ],
+          },
+          one.computed,
+          marked
+            ? {
+                _tag: "gst",
+                customerAccounts: {
+                  line: "Tax to be accounted for by the customer.",
+                  taxIdLabel: "GSTIN",
+                  taxNumber: "27AAAAA1111A1Z5",
+                },
+              }
+            : undefined,
+        );
+        if ("error" in computed) return assert.fail(computed.error);
+        yield* fs.writeFileString(`${root}/template.typ`, STARTER_FILES[path + "template.typ"]!);
+        yield* fs.writeFileString(`${root}/inputs.json`, JSON.stringify(computed.data));
+        const query = yield* runCapped({
+          command: typst!,
+          args: ["eval", "query(table).first()", "--in", "template.typ", "--root", root],
+          env: typstEnv(),
+          cwd: root,
+          timeoutMs: 5_000,
+          maxStdout: 100_000,
+        });
+        if (query._tag !== "exited") return assert.fail(query._tag);
+        assert.strictEqual(query.code, 0, query.stderr);
+        const table = new TextDecoder().decode(query.stdout);
+        if (marked || lut) {
+          assert.notInclude(table, '"text":"Tax"');
+        } else {
+          assert.include(table, '"text":"Tax"');
+          assert.include(table, '"text":"18%"');
+          assert.include(table, '"text":"0%"');
+        }
+      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    );
+  }
+}
 
 describe("invoice", () => {
   it("charges a company outside India its own one tax, and none without a rate", () => {
@@ -74,6 +156,12 @@ describe("invoice", () => {
     ];
     // No GSTIN, SAC or place of supply: none is asked for outside India.
     const plain = { ...base, supplierGstin: null, supplierPlace: null, sac: null, lines };
+    const second = { ...lines[0]!, quantity: "1", rate: gbp(4000) };
+    const customerAccounts = {
+      line: "Reverse charge.",
+      taxIdLabel: "VAT number",
+      taxNumber: "GB123",
+    };
     const cases = [
       {
         name: "on top",
@@ -88,6 +176,41 @@ describe("invoice", () => {
         tax: { ...uk, pricesInclude: true },
         taxes: [["VAT", "20%", "£166.66"]],
         total: "£999.99",
+      },
+      {
+        name: "a line at its own rate",
+        input: { ...plain, lines: [...lines, { ...second, taxRate: "5" }] },
+        tax: uk,
+        taxes: [
+          ["VAT", "20%", "£200.00"],
+          ["VAT", "5%", "£2.00"],
+        ],
+        total: "£1,241.99",
+      },
+      {
+        name: "a line with no tax",
+        input: { ...plain, lines: [...lines, { ...second, taxRate: "0" }] },
+        tax: uk,
+        taxes: [["VAT", "20%", "£200.00"]],
+        total: "£1,239.99",
+      },
+      {
+        name: "in the prices per rate",
+        input: { ...plain, lines: [...lines, { ...second, taxRate: "5" }] },
+        tax: { ...uk, pricesInclude: true },
+        taxes: [
+          ["VAT", "20%", "£166.66"],
+          ["VAT", "5%", "£1.90"],
+        ],
+        total: "£1,039.99",
+      },
+      {
+        name: "client accounts for the tax",
+        input: plain,
+        tax: { ...uk, customerAccounts },
+        taxes: [],
+        total: "£999.99",
+        customerAccounts,
       },
       {
         name: "out of the entry's total",
@@ -135,17 +258,45 @@ describe("invoice", () => {
       );
       assert.strictEqual(tax.total.text, one.total, one.name);
       assert.isFalse(tax.registered, one.name);
+      assert.deepStrictEqual(
+        tax.customerAccounts,
+        "customerAccounts" in one ? one.customerAccounts : undefined,
+      );
       assert.strictEqual(
         tax.notCharged,
         "notCharged" in one ? one.notCharged : undefined,
         one.name,
       );
     }
+    const inclusive = cases.find((one) => one.name === "in the prices per rate")!;
+    assert.strictEqual(
+      computeInvoice({ ...inclusive.input, taxRecorded: gbp(16856) }, inclusive.tax).tax.tax.minor,
+      16856,
+    );
+    assert.throws(
+      () => computeInvoice({ ...inclusive.input, taxRecorded: gbp(16857) }, inclusive.tax),
+      "the lines come to £168.56 in tax, but the entry records £168.57 in tax",
+    );
     // India keeps its GST from the states, whatever the profile's tax says.
     assert.deepStrictEqual(taxRegimeOf({ country: "IN", tax: null }), { _tag: "gst" });
   });
 
   it("decides the tax lines from the states and keeps every paisa", () => {
+    assert.deepStrictEqual(computeInvoice({ ...base, clientGstin: "29BBBBB2222B1Z5" }).tax, {
+      registered: true,
+      exported: false,
+      exportUnderLut: false,
+      supplierState: "Karnataka (29)",
+      placeOfSupply: "Karnataka (29)",
+      country: null,
+      taxable: { minor: 99999, currency: "INR", text: "₹999.99" },
+      taxes: [
+        { name: "CGST", rate: "9", amount: { minor: 9000, currency: "INR", text: "₹90.00" } },
+        { name: "SGST", rate: "9", amount: { minor: 9000, currency: "INR", text: "₹90.00" } },
+      ],
+      tax: { minor: 18000, currency: "INR", text: "₹180.00" },
+      total: { minor: 117999, currency: "INR", text: "₹1,179.99" },
+    });
     const cases = [
       // 3 x 333.33 = 999.99; 9% of it is 89.9991, so 90.00 each way.
       {
@@ -156,6 +307,25 @@ describe("invoice", () => {
           ["SGST", "9%", "₹90.00"],
         ],
         total: "₹1,179.99",
+        registered: true,
+      },
+      {
+        name: "mixed rates in the same state",
+        input: {
+          ...base,
+          clientGstin: "29BBBBB2222B1Z5",
+          lines: [
+            { description: "Advisory", quantity: "3", rate: inr(33333) },
+            { description: "Manual", quantity: "1", rate: inr(4000), taxRate: "5" },
+          ],
+        },
+        taxes: [
+          ["CGST", "9%", "₹90.00"],
+          ["SGST", "9%", "₹90.00"],
+          ["CGST", "2.5%", "₹1.00"],
+          ["SGST", "2.5%", "₹1.00"],
+        ],
+        total: "₹1,221.99",
         registered: true,
       },
       {
@@ -498,9 +668,10 @@ it("ships four recipes that parse, read only what Kin supplies, and make their s
       "accounts-2026-10.xlsx",
       "sales-register-2026-10.csv",
       "receipts-2026-10.csv",
-      "tds-2026-10.csv",
+      "tax-withheld-2026-10.csv",
       "expenses-2026-10.csv",
       "unpaid-expenses-2026-10.csv",
+      "owed-to-partners-2026-10.csv",
       "bank-2026-10.csv",
     ],
   );

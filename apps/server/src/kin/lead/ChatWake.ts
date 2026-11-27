@@ -27,6 +27,7 @@ import { forkParked } from "../../serverActivation.ts";
 import { KinChatHub, type KinChatHubEvent } from "../chat/KinChatHub.ts";
 import { KinChatRepository } from "../chat/KinChatRepository.ts";
 import { speakerOrder } from "../floor/KinFloor.ts";
+import { InitialPass } from "../host/offlineCatchUp.ts";
 import { KinPresence, queueLabel, syncQueued } from "../reply/KinPresence.ts";
 import { KinTeam } from "../team/KinTeam.ts";
 import { KinEventQueue } from "./KinEventQueue.ts";
@@ -36,6 +37,7 @@ import * as LeadAccess from "./LeadAccess.ts";
 import * as Reach from "./Reach.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
 import { HOUR_MS } from "../durations.ts";
+import { SKIP_KEEP_DAYS } from "../host/offlineSkips.ts";
 
 const decodeTap = Schema.decodeUnknownEffect(
   Schema.fromJsonString(
@@ -393,8 +395,8 @@ const make = Effect.gen(function* () {
 
   // Messages posted while the server was down or Kin was off never reached the hub.
   const catchUpOrg = Effect.fn("KinChatWake.catchUpOrg")(
-    function* (orgId: KinOrgId, since: string) {
-      const rows = yield* sql<{ messageId: string }>`
+    function* (orgId: KinOrgId, since: string, keepSince: string) {
+      const candidates = (after: string) => sql`
       SELECT DISTINCT m.message_id AS "messageId", m.created_at AS "createdAt"
       FROM kin_leads l
       JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id AND a.retired_at IS NULL
@@ -412,16 +414,31 @@ const make = Effect.gen(function* () {
             SELECT 1 FROM json_each(m.mentions_json) j
             JOIN kin_chat_members x ON x.org_id = m.org_id AND x.chat_id = m.chat_id
               AND x.member_id = j.value AND x.principal_kind = 'agent' AND x.left_at IS NULL)))
-        AND m.created_at > ${since}
+        AND m.created_at > ${after}
         -- Written while it was retired: Kin already answered, and a restored agent doesn't.
         AND NOT EXISTS (SELECT 1 FROM kin_messages n WHERE n.org_id = m.org_id
           AND n.message_id = ${RETIRED_NOTICE_PREFIX} || m.message_id)
         AND m.seq > COALESCE((SELECT MAX(x.seq) FROM kin_messages x
           WHERE x.org_id = m.org_id AND x.chat_id = m.chat_id AND x.author_kind = 'agent'
-            AND x.author_agent_id = l.agent_id), 0)
-      ORDER BY m.created_at DESC, m.message_id DESC LIMIT ${CATCH_UP_LIMIT_PER_ORG}`.pipe(
-        Effect.mapError(toPersistenceSqlError("KinChatWake.catchUpOrg")),
-      );
+            AND x.author_agent_id = l.agent_id), 0)`;
+      const rows = yield* sql
+        .withTransaction(
+          // What the limits below leave out is recorded as skipped, in the same snapshot.
+          sql`INSERT INTO kin_offline_skips (org_id, kind, ref, reason, at)
+          SELECT ${orgId}, 'message', "messageId",
+            CASE WHEN "createdAt" > ${since} THEN 'over_the_count' ELSE 'older_than_a_day' END,
+            CAST(ROUND((julianday("createdAt") - 2440587.5) * 86400000) AS INTEGER)
+          FROM (SELECT "messageId", "createdAt", "createdAt" > ${since} AS recent,
+              ROW_NUMBER() OVER (PARTITION BY "createdAt" > ${since}
+                ORDER BY "createdAt" DESC, "messageId" DESC) AS n
+            FROM (${candidates(keepSince)}))
+          WHERE NOT recent OR n > ${CATCH_UP_LIMIT_PER_ORG}
+          ON CONFLICT (org_id, kind, ref) DO NOTHING`.pipe(
+            Effect.andThen(sql<{ messageId: string }>`${candidates(since)}
+              ORDER BY m.created_at DESC, m.message_id DESC LIMIT ${CATCH_UP_LIMIT_PER_ORG}`),
+          ),
+        )
+        .pipe(Effect.mapError(toPersistenceSqlError("KinChatWake.catchUpOrg")));
       for (const row of rows) {
         const message = yield* repo.getMessage({
           orgId,
@@ -439,20 +456,25 @@ const make = Effect.gen(function* () {
   );
   const catchUp = Effect.fn("KinChatWake.catchUp")(
     function* () {
-      const since = DateTime.formatIso(DateTime.subtract(yield* DateTime.now, CATCH_UP_WINDOW));
+      const now = yield* DateTime.now;
+      const since = DateTime.formatIso(DateTime.subtract(now, CATCH_UP_WINDOW));
+      const keepSince = DateTime.formatIso(DateTime.subtract(now, { days: SKIP_KEEP_DAYS }));
       const orgs = yield* sql<{ orgId: string }>`
         SELECT DISTINCT org_id AS "orgId" FROM kin_leads ORDER BY org_id`.pipe(
         Effect.mapError(toPersistenceSqlError("KinChatWake.catchUp")),
       );
       // Per organization, so one busy organization cannot use up another's catch-up.
-      for (const org of orgs) yield* catchUpOrg(KinOrgId.make(org.orgId), since);
+      for (const org of orgs) yield* catchUpOrg(KinOrgId.make(org.orgId), since, keepSince);
     },
     Effect.catchCause((cause) => Effect.logError("Kin chat wake-up catch-up failed", { cause })),
   );
 
   // Subscribe before activation so nothing posted from here on is missed.
   const events = yield* hub.subscribeAll;
-  yield* catchUp().pipe(
+  const initialPass = yield* InitialPass;
+  yield* (initialPass?.started ?? Effect.void).pipe(
+    Effect.andThen(catchUp()),
+    Effect.ensuring(initialPass?.chatDone ?? Effect.void),
     Effect.andThen(
       Stream.runForEach(events, (event) =>
         event.type === "message.posted"

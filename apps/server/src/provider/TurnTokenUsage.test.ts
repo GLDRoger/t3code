@@ -3,6 +3,9 @@ import {
   claudeLedgerDelta,
   claudeModelLedger,
   normalizeClaudeTurnTokenUsage,
+  recordClaudeRequestUsage,
+  runningClaudeTurnTokenUsage,
+  type ClaudeTurnRequests,
 } from "./ClaudeTurnTokenUsage.ts";
 import {
   accumulateCodexTurnTokenUsage,
@@ -104,6 +107,49 @@ describe("billable native turn usage", () => {
       outputTokens: 20,
       reasoningTokens: 20,
     });
+  });
+
+  it("adds a running Claude turn's requests once each, with subagents as other usage", () => {
+    const requests: ClaudeTurnRequests = new Map();
+    const first = {
+      input_tokens: 1_000,
+      cache_read_input_tokens: 57_000,
+      cache_creation_input_tokens: 2_000,
+      output_tokens: 1,
+    };
+    // message_start, message_delta, then the assistant snapshot of the same request.
+    recordClaudeRequestUsage(requests, "msg_1", first, false);
+    recordClaudeRequestUsage(requests, "msg_1", { ...first, output_tokens: 1_500 }, false);
+    recordClaudeRequestUsage(requests, "msg_1", { ...first, output_tokens: 1_500 }, false);
+    recordClaudeRequestUsage(
+      requests,
+      "msg_2",
+      { input_tokens: 500, cache_read_input_tokens: 60_000, output_tokens: 700 },
+      false,
+    );
+    const subagent = {
+      input_tokens: 10,
+      cache_read_input_tokens: 14_652,
+      cache_creation_input_tokens: 5_662,
+    };
+    recordClaudeRequestUsage(requests, "msg_sub", { ...subagent, output_tokens: 56 }, true);
+    recordClaudeRequestUsage(requests, "msg_sub", { ...subagent, output_tokens: 4 }, true);
+    expect(runningClaudeTurnTokenUsage(requests)).toEqual({
+      usageStatus: "partial",
+      usageScope: "main_agent",
+      hasSubagents: true,
+      inputTokens: 120_500,
+      cachedInputTokens: 117_000,
+      cacheCreationTokens: 2_000,
+      outputTokens: 2_200,
+      otherUsage: { inputTokens: 20_324, outputTokens: 56 },
+    });
+    // A turn that ends with no result, or a zeroed one, keeps what its requests used.
+    for (const result of [undefined, { subtype: "error_during_execution" as const, usage: {} }]) {
+      expect(
+        normalizeClaudeTurnTokenUsage(result, true, "interrupted", [], { requests }),
+      ).toMatchObject({ usageStatus: "partial", inputTokens: 120_500, outputTokens: 2_200 });
+    }
   });
 
   it("does not turn a zeroed Claude crash result into a measured zero-cost turn", () => {

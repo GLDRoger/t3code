@@ -24,11 +24,13 @@ import {
   type KinWorkHistoryItem,
   type KinWorkPrincipal,
 } from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { stageLine, stagesOf } from "./dealStages.ts";
 import {
+  accountsForTax,
   fieldList,
   fieldText,
   isMoney,
@@ -63,13 +65,19 @@ import {
   parseChanges,
   partyKind,
   principal,
+  ownerZone,
+  owedInvoices,
   type RecordRow,
   recordSeq,
   selectRecords,
   toRecord,
+  usableCredits,
 } from "./recordRows.ts";
 import { contactAll, contactSensitive } from "./contactDetails.ts";
-import { playbookClientValues } from "./playbooks.ts";
+import { homeCurrency } from "./companyProfile.ts";
+import { addUp, dayIn } from "./money.ts";
+import { playbookClientValues, playbookThresholds } from "./playbooks.ts";
+import { fromsOf } from "./promises.ts";
 import { spellingsOf } from "./tags.ts";
 import {
   daysSince,
@@ -81,6 +89,7 @@ import {
 } from "./touches.ts";
 import { WEEK_MS } from "../durations.ts";
 import { ownerLevelSql } from "../people/KinAccess.ts";
+import * as KinShell from "../shell/KinShell.ts";
 
 /**
  * The light CRM's read model: the client page, the project page and their history, computed on
@@ -237,6 +246,13 @@ const partyRowsWhere = Effect.fn("KinCrm.partyRows")(function* (
           WHERE n = 1 ORDER BY party_id`;
   const nextBy = new Map(next.map((row) => [row.partyId, row]));
   const last = yield* lastContacts(orgId, ids, now, viewer);
+  const owing =
+    ids.length === 0 ? [] : yield* owedInvoices({ orgId, now, seen: crmSeenBy(sql, viewer) });
+  const home = owing.length === 0 ? "" : yield* homeCurrency(orgId);
+  const owedBy = new Map<string, ReadonlyArray<KinMoney>>();
+  for (const invoice of owing)
+    if (invoice.partyId !== null)
+      owedBy.set(invoice.partyId, [...(owedBy.get(invoice.partyId) ?? []), invoice.balance]);
   const campaigns = yield* campaignsNamed(
     orgId,
     rows.map((row) => fieldText(parseFields(row.fieldsJson), "source")),
@@ -247,6 +263,7 @@ const partyRowsWhere = Effect.fn("KinCrm.partyRows")(function* (
     const fields = parseFields(row.fieldsJson);
     const source = fieldText(fields, "source");
     const tags = fieldList(fields, "tags");
+    const owed = owedBy.get(row.recordId);
     return {
       recordId: KinRecordId.make(row.recordId),
       key: row.key,
@@ -262,6 +279,7 @@ const partyRowsWhere = Effect.fn("KinCrm.partyRows")(function* (
       theyOwe: row.theyOwe ?? 0,
       late: row.late ?? 0,
       overdue: row.overdue ?? 0,
+      ...(owed === undefined ? {} : { owed: addUp(owed, home) }),
       lastContactAt: last.has(row.recordId) ? iso(last.get(row.recordId)!) : null,
       next:
         soonest === undefined
@@ -319,6 +337,8 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
   seen: typeof seenBy = seenBy,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  // With Invoices and quotes off, an overdue invoice is no reason a project is at risk.
+  const invoicesOn = yield* KinShell.sectionOnFor(orgId, "invoices");
   const filter = sql.and([sql`p.org_id = ${orgId}`, sql`p.register_id = 'projects'`, ...where]);
   // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- only narrows whose contact is read; WHERE scopes the rows, the touches apply the viewer
   const clientsOfRows = sql`SELECT p.party_id FROM kin_records p WHERE ${filter} AND p.state = 'open'`;
@@ -365,6 +385,7 @@ const projectRowsWhere = Effect.fn("KinCrm.projectRows")(function* (
     LEFT JOIN (
       SELECT r.project_id, COUNT(*) AS overdue
       FROM kin_records r WHERE r.org_id = ${orgId} AND r.project_id IS NOT NULL
+        AND ${invoicesOn ? sql`1` : sql`0`}
         AND ${overdueInvoice(sql, now)} AND ${seen(sql, viewer)}
       GROUP BY r.project_id) i ON i.project_id = p.record_id
     LEFT JOIN (${lastContactRows(sql, orgId, clientsOfRows, now, viewer)}) lc
@@ -701,6 +722,7 @@ export const partyDetail = Effect.fn("KinCrm.partyDetail")(function* (
     terms: fieldText(fields, "terms"),
     address: fieldText(fields, "address"),
     gstin: fieldText(fields, "gstin"),
+    ...(viewer._tag === "ownerLevel" ? { accountsForTax: accountsForTax(fields) } : {}),
     placeOfSupply: fieldText(fields, "placeOfSupply"),
     sensitiveFields: [...sensitiveFields("clients")],
     createdAt: iso(row.createdAt),
@@ -745,6 +767,7 @@ export const projectDetail = Effect.fn("KinCrm.projectDetail")(function* (
     value: value !== undefined && isMoney(value) ? value : null,
     startsOn: day("startsOn"),
     renewsOn: day("renewsOn"),
+    noticeDays: noticeDaysOf(fieldText(fields, "noticeDays")),
     members: fieldList(fields, "members").flatMap((text) => {
       const who = principalOfText(text);
       return who === null ? [] : [who];
@@ -870,6 +893,8 @@ export const partyPage = Effect.fn("KinCrm.partyPage")(function* (
   now: number,
   seq: number,
   viewer: KinViewer,
+  /** Who reads it, for a promise's chat they may open; none for an agent. */
+  readers: ReadonlyArray<string> = [],
 ) {
   const sql = yield* SqlClient.SqlClient;
   const orgId = row.orgId as KinOrgId;
@@ -902,18 +927,38 @@ export const partyPage = Effect.fn("KinCrm.partyPage")(function* (
     viewer,
     crmSeenBy,
   );
+  const weOwe = yield* capped(orgId, now, open("ours"), sql`r.due_at IS NULL, r.due_at, r.key`);
+  const theyOwe = yield* capped(
+    orgId,
+    now,
+    open("theirs"),
+    sql`(r.due_at IS NOT NULL AND r.due_at < ${now}) DESC, r.due_at IS NULL, r.due_at, r.key`,
+  );
+  const froms = yield* fromsOf(
+    orgId,
+    [...weOwe.records, ...theyOwe.records].map((record) => record.recordId),
+    readers,
+  );
+  const withFrom = (side: typeof weOwe) => ({
+    ...side,
+    records: side.records.map((record) => {
+      const from = froms.get(record.recordId);
+      return from === undefined ? record : { ...record, from };
+    }),
+  });
+  const contract = yield* contractOf(orgId, row.recordId, viewer, now);
+  const credit = yield* usableCredits(orgId, row.recordId, viewer);
   return {
     party: yield* partyDetail(row, now, viewer),
+    ...(credit.length === 0
+      ? {}
+      : { credit: credit.map(({ key, amount, receivedOn }) => ({ key, amount, receivedOn })) }),
     contacts: contacts.map(toContact),
     projects: projectRows.map((project) => project.row),
-    weOwe: yield* capped(orgId, now, open("ours"), sql`r.due_at IS NULL, r.due_at, r.key`),
-    theyOwe: yield* capped(
-      orgId,
-      now,
-      open("theirs"),
-      sql`(r.due_at IS NOT NULL AND r.due_at < ${now}) DESC, r.due_at IS NULL, r.due_at, r.key`,
-    ),
+    weOwe: withFrom(weOwe),
+    theyOwe: withFrom(theyOwe),
     touches: yield* touchesOf(orgId, row.recordId, now, TOUCHES_SHOWN, viewer),
+    ...(contract === undefined ? {} : { contract }),
     ...(viewer._tag === "ownerLevel" && row.sensitive === 0
       ? { privateHides: yield* privateHides(orgId, row.recordId) }
       : {}),
@@ -921,6 +966,59 @@ export const partyPage = Effect.fn("KinCrm.partyPage")(function* (
     asOf: iso(now),
   } satisfies KinPartyPage;
 });
+
+/**
+ * A client's Contract dates line: the soonest renewal still ahead (or today) among its open
+ * projects, with its notice day (`noticeDay`), amber within the client's renewal heads-up days.
+ * Anyone who reads the client reads its days, bar a private project's.
+ */
+const contractOf = Effect.fn("KinCrm.contractOf")(function* (
+  orgId: KinOrgId,
+  partyId: string,
+  viewer: KinViewer,
+  now: number,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const zone = yield* ownerZone(orgId);
+  const today = dayIn(now, zone);
+  const rows = yield* sql<{ key: string; renewsOn: string | null; noticeDays: string | null }>`
+    SELECT r.key, json_extract(r.fields_json, '$.renewsOn') AS "renewsOn",
+      json_extract(r.fields_json, '$.noticeDays') AS "noticeDays"
+    FROM kin_records r WHERE r.org_id = ${orgId} AND r.party_id = ${partyId}
+      AND r.register_id = 'projects' AND r.state = 'open'
+      AND ${viewer._tag === "ownerLevel" ? sql`1 = 1` : sql`r.sensitive = 0`}
+      AND json_extract(r.fields_json, '$.renewsOn') >= ${today}
+    ORDER BY "renewsOn", r.key LIMIT 1`;
+  const [soonest] = rows;
+  if (soonest === undefined || soonest.renewsOn === null || !isCalendarDay(soonest.renewsOn))
+    return undefined;
+  const noticeBy = noticeDay(soonest.renewsOn, soonest.noticeDays);
+  const heads = (yield* playbookThresholds(orgId))("renewal_heads_up_days", partyId).value;
+  const watched = noticeBy ?? soonest.renewsOn;
+  return {
+    project: soonest.key,
+    renewsOn: soonest.renewsOn,
+    ...(noticeBy === undefined ? {} : { noticeBy }),
+    ...(daysBetween(today, watched) <= heads ? { soon: true as const } : {}),
+  };
+});
+
+const noticeDaysOf = (text: string | null) => {
+  const days = text === null ? NaN : Number(text);
+  return Number.isInteger(days) && days >= 1 ? days : null;
+};
+
+/** Whole calendar days from one `YYYY-MM-DD` to another. */
+const daysBetween = (from: string, to: string) =>
+  Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
+
+/** The last day to give notice: `renewsOn` less `noticeDays` calendar days; none without them. */
+export const noticeDay = (renewsOn: string, noticeDays: string | null | undefined) => {
+  const days = noticeDaysOf(noticeDays ?? null);
+  if (days === null) return undefined;
+  const at = Date.parse(`${renewsOn}T00:00:00Z`) - days * 86_400_000;
+  return DateTime.formatIsoDateUtc(DateTime.makeUnsafe(at));
+};
 
 const pullNumber = (url: string) => {
   const found = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/(\d{1,9})(?:[/?#]|$)/.exec(url)?.[1];

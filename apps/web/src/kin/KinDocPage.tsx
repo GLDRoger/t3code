@@ -31,7 +31,7 @@ import { KIN_TASK_RECORD } from "@t3tools/client-runtime/kin/kinTaskRecord";
 import { KIN_DOC_CHANGES } from "@t3tools/client-runtime/kin/kinDocChanges";
 import { KIN_DOC_COMPANY, KIN_DOC_SHARE } from "@t3tools/client-runtime/kin/kinWork";
 import { kinWorkReadState } from "@t3tools/client-runtime/kin/kinWorkForms";
-import type { KinDocDetail, KinRecordKey } from "@t3tools/contracts";
+import type { KinDocDetail, KinRecordKey, KinWidgetId } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import { ArrowLeftIcon, FolderInputIcon, XIcon } from "lucide-react";
 import { useNavigate } from "@tanstack/react-router";
@@ -90,6 +90,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinDocChangesView } from "./KinDocChangesView";
 import { KinDocFileDialog } from "./KinDocFileDialog";
 import { KinDocReader } from "./KinDocReader";
+import { KinDocReadersRow } from "./KinDocReadersRow";
 import { openDestination } from "./KinNotifications";
 import { KinLinkedGroups } from "./KinWorkItemSheet";
 import { KinWatchLine } from "./KinWatchLine";
@@ -107,6 +108,8 @@ import type { KinWorkDirectory, KinWorkTarget } from "./useKinWork";
 export interface KinDocWhere {
   readonly doc: KinRecordKey;
   readonly version?: number;
+  /** The long draft card it was opened from: its reader may read that version without Docs. */
+  readonly card?: KinWidgetId;
   readonly section?: string;
   /** The two versions compared; `from` is the one before `to` when absent. */
   readonly changes?: { readonly to: number; readonly from?: number };
@@ -139,7 +142,12 @@ export function KinDocPage(
   const key = where.doc;
   const comparing = where.changes;
   // Compared versions are read at `to`, so the page names the doc as it was then.
-  const { state, refresh } = useKinDoc(props, key, comparing?.to ?? where.version ?? null);
+  const { state, refresh } = useKinDoc(
+    props,
+    key,
+    comparing?.to ?? where.version ?? null,
+    comparing === undefined ? (where.card ?? null) : null,
+  );
   const doc = state._tag === "ready" ? state.value : null;
   const canRestore = useAtomValue(kinClient.docRestore.permissionAtom(environmentId));
   const canRender = useAtomValue(kinClient.docRender.permissionAtom(environmentId));
@@ -348,8 +356,18 @@ export function KinDocPage(
       {doc === null ||
       comparing !== undefined ||
       doc.archived ||
-      doc.sensitive ||
-      doc.sensitiveInherited === true ? null : (
+      doc.sensitiveInherited === true ? null : doc.readers !== undefined ? (
+        <div className="mx-auto w-full max-w-3xl px-6 pt-3">
+          <KinDocReadersRow
+            environmentId={environmentId}
+            orgId={orgId}
+            doc={doc}
+            names={names}
+            disabled={busy}
+            onSettled={refresh}
+          />
+        </div>
+      ) : doc.sensitive ? null : (
         <div className="mx-auto w-full max-w-3xl px-6 pt-3">
           {doc.company === true ? (
             <div className="flex flex-col gap-0.5">
@@ -387,9 +405,9 @@ export function KinDocPage(
       ) : null}
       {state._tag === "refused" ? (
         <KinWorkNotice {...KIN_DOCS.unavailable} />
-      ) : state._tag === "gone" ? (
+      ) : state._tag === "gone" || state._tag === "private" ? (
         <KinWorkNotice
-          {...KIN_DOCS.gone}
+          {...(state._tag === "private" ? KIN_DOCS.privateNow(state.by) : KIN_DOCS.gone)}
           action={
             <Button size="sm" variant="outline" onClick={() => onGo(null)}>
               Back to {placeTitle}

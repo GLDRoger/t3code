@@ -46,6 +46,8 @@ export type FakeMailMessage = {
   readonly headers?: Readonly<Record<string, string>>;
   /** More Gmail labels, such as `CATEGORY_PROMOTIONS`. */
   readonly labels?: ReadonlyArray<string>;
+  /** The sender's `Date` header, when it isn't the delivery time. */
+  readonly dateHeader?: string;
 };
 
 export type FakeMailFile = {
@@ -268,6 +270,11 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
       : void failing.set(lower(address), status);
   const outage = (account: FakeMailAccount, request: Request) => {
     const status = failing.get(lower(account.address));
+    if (status === 429)
+      return new Response(JSON.stringify({ error: { code: status } }), {
+        status,
+        headers: { "content-type": "application/json", "retry-after": "30" },
+      });
     if (status !== undefined) return json({ error: { code: status } }, status);
     return request.method === "POST" && down.has(lower(account.address))
       ? json({ error: { code: 503, message: "The service is unavailable." } }, 503)
@@ -294,6 +301,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     readonly at: number;
     readonly files?: ReadonlyArray<FakeMailFile>;
     readonly headers?: Readonly<Record<string, string>>;
+    readonly dateHeader?: string;
     readonly labels?: ReadonlyArray<string>;
     /** The Message-ID header, as the sender's server wrote it. */
     readonly messageId?: string;
@@ -327,6 +335,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         unread: true,
         sent: false,
         ...(input.headers === undefined ? {} : { headers: input.headers }),
+        ...(input.dateHeader === undefined ? {} : { dateHeader: input.dateHeader }),
         ...(input.labels === undefined ? {} : { labels: input.labels }),
       };
       const stored = { ...message, revs: [++state.seq] };
@@ -437,7 +446,11 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
   const gmailMessage = (message: FakeMailMessage) => ({
     id: message.id,
     threadId: message.threadId,
-    labelIds: message.sent ? ["SENT"] : ["INBOX", ...(message.unread ? ["UNREAD"] : [])],
+    internalDate: String(message.at),
+    labelIds: [
+      ...(message.sent ? ["SENT"] : ["INBOX", ...(message.unread ? ["UNREAD"] : [])]),
+      ...(message.labels ?? []),
+    ],
     snippet: message.body.slice(0, 100),
     payload: {
       mimeType: (message.files ?? []).length === 0 ? "text/plain" : "multipart/mixed",
@@ -447,10 +460,11 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         ...(message.cc.length === 0 ? [] : [{ name: "Cc", value: message.cc.join(", ") }]),
         ...(message.sent ? [] : [{ name: "Delivered-To", value: message.account }]),
         { name: "Subject", value: message.subject },
-        { name: "Date", value: rfc2822(message.at) },
+        { name: "Date", value: message.dateHeader ?? rfc2822(message.at) },
         { name: "Message-ID", value: message.messageId },
         ...(message.references === null ? [] : [{ name: "References", value: message.references }]),
         ...authHeaders(message),
+        ...headersOf(message),
       ],
       ...((message.files ?? []).length === 0
         ? { body: { data: Buffer.from(message.body).toString("base64url") } }
@@ -586,7 +600,6 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         const asked = new Set(url.searchParams.getAll("metadataHeaders").map(lower));
         const headers = [
           ...full.payload.headers,
-          ...headersOf(one),
           {
             name: "Content-Type",
             value: (one.files ?? []).length === 0 ? "text/plain" : "multipart/mixed; boundary=x",
@@ -595,7 +608,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
         return json({
           id: one.id,
           threadId: one.threadId,
-          labelIds: [...full.labelIds, ...(one.labels ?? [])],
+          labelIds: full.labelIds,
           snippet: full.snippet,
           internalDate: String(one.at),
           payload: { mimeType: full.payload.mimeType, headers },
@@ -718,6 +731,7 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
     hasAttachments: (message.files ?? []).length > 0,
     body: { contentType: "text", content: message.body },
     internetMessageHeaders: [
+      ...headersOf(message),
       ...authHeaders(message),
       ...(message.references === null ? [] : [{ name: "References", value: message.references }]),
     ],
@@ -810,7 +824,6 @@ export const makeFakeMail = (store: FakeMailStore = memoryStore()) => {
           internetMessageHeaders: [
             ...shown.internetMessageHeaders,
             { name: "Message-ID", value: one.messageId },
-            ...headersOf(one),
           ],
         });
       }

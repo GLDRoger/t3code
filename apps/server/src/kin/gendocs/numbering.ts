@@ -10,10 +10,14 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { billedParty, billingClientId, hasBillTo } from "../work/billTo.ts";
 import type { Documented } from "./amounts.ts";
+import { followsCodingAgent } from "../lead/OutsideContent.ts";
+import { markedKey } from "../work/keyCall.ts";
 import { companyMoney } from "../work/companyProfile.ts";
-import { KinRecords, type Writer } from "../work/KinRecords.ts";
-import { isMoney, parseFields } from "../work/lists.ts";
+import { CREDIT_NOTE_TAP, CREDIT_NOTE_VOID, KinRecords, type Writer } from "../work/KinRecords.ts";
+import { KIN_OWN_REFUSAL, refuseKinOwn } from "../people/KinAccess.ts";
+import { accountsForTax, isMoney, parseFields } from "../work/lists.ts";
 import { dayIn, financialYearOf, formatMoney } from "../work/money.ts";
 import {
   stillSuggestion,
@@ -101,16 +105,20 @@ export type Issued = {
   readonly notice?: string;
 };
 
-/** The number an entry was issued, if it has one. */
-export const issuedNumber = Effect.fn("KinNumbers.issued")(function* (
+export const issuedDetails = Effect.fn("KinNumbers.issued")(function* (
   orgId: KinOrgId,
   recordId: string,
 ) {
   const sql = yield* SqlClient.SqlClient;
-  const [row] = yield* sql<{ number: string }>`SELECT number FROM kin_issued_numbers
+  const [row] = yield* sql<{ number: string; taxByCustomer: number | null }>`SELECT number,
+    tax_by_customer AS "taxByCustomer" FROM kin_issued_numbers
     WHERE org_id = ${orgId} AND record_id = ${recordId} ORDER BY record_id`;
-  return row?.number;
+  return row;
 });
+
+/** The number an entry was issued, if it has one. */
+export const issuedNumber = (orgId: KinOrgId, recordId: string) =>
+  Effect.map(issuedDetails(orgId, recordId), (row) => row?.number);
 
 /** The series a number issued now goes in, and how far past it the old system's receipts reach. */
 const seriesToday = Effect.fn("KinNumbers.seriesToday")(function* (
@@ -142,12 +150,14 @@ const paymentDays = Effect.fn("KinNumbers.paymentDays")(function* (
   row: RecordRow,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  const partyId = billingClientId(row);
+  const inheritsProject = partyId === null && billedParty(row, undefined) === undefined;
   const [client] = yield* sql<{ id: string; terms: string | null }>`SELECT c.record_id AS id,
       json_extract(c.fields_json, '$.terms') AS terms
     FROM kin_records c
     WHERE c.org_id = ${orgId} AND c.register_id = 'clients' AND c.record_id = COALESCE(
-      ${row.partyId}, (SELECT p.party_id FROM kin_records p
-        WHERE p.org_id = ${orgId} AND p.record_id = ${row.projectId}))`;
+      ${partyId}, (SELECT p.party_id FROM kin_records p
+        WHERE p.org_id = ${orgId} AND p.record_id = ${inheritsProject ? row.projectId : null}))`;
   return (
     termsDays(client?.terms) ??
     (yield* playbookThreshold(orgId, "payment_due_days", client?.id)).value
@@ -188,12 +198,16 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
   /** What the entry's documents come to (`amounts.ts`): the amount and tax it is issued with. */
   documented?: Documented,
 ) {
+  yield* byAPerson(orgId, writer);
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
+  yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.number);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const row = yield* records.get(orgId, key);
       if (row === undefined) return yield* notFound(key);
+      if (row.registerId === "credit_notes" && writer.creditNote !== true)
+        return yield* new KinChatError({ reason: "not_allowed", message: CREDIT_NOTE_TAP });
       const def = yield* listDef(orgId, row.registerId);
       if (def === undefined) return yield* unknownList(row.registerId);
       const rule = numberingOf(def);
@@ -236,10 +250,17 @@ export const issue = Effect.fn("KinNumbers.issue")(function* (
             ? { kind: "agent", id: writer.actor.agentId }
             : undefined;
       if (by === undefined) return yield* invalid("Only the owner or an agent issues a number.");
+      const clientId = billingClientId(row);
+      const client =
+        clientId === null || !hasBillTo(def.id)
+          ? undefined
+          : yield* records.getById(orgId, clientId);
+      const taxByCustomer =
+        client !== undefined && accountsForTax(parseFields(client.fieldsJson)) ? 1 : null;
       yield* sql`INSERT INTO kin_issued_numbers (org_id, register_id, series, seq, number,
-            record_id, issued_at, issued_by_kind, issued_by_id)
+            record_id, issued_at, issued_by_kind, issued_by_id, tax_by_customer)
           VALUES (${orgId}, ${def.id}, ${series}, ${next.seq}, ${number}, ${row.recordId}, ${now},
-            ${by.kind}, ${by.id})`;
+            ${by.kind}, ${by.id}, ${taxByCustomer})`;
       if (def.fields.some((field) => field.key === "number"))
         yield* sql`UPDATE kin_records SET fields_json = json_set(fields_json, '$.number', ${number})
             WHERE org_id = ${orgId} AND record_id = ${row.recordId}`;
@@ -378,10 +399,13 @@ export const adopt = Effect.fn("KinNumbers.adopt")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
+  yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.number);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const row = yield* records.get(orgId, key);
       if (row === undefined) return yield* notFound(key);
+      if (row.registerId === "credit_notes")
+        return yield* new KinChatError({ reason: "not_allowed", message: CREDIT_NOTE_TAP });
       const def = yield* listDef(orgId, row.registerId);
       if (def === undefined) return yield* unknownList(row.registerId);
       const rule = numberingOf(def);
@@ -455,10 +479,12 @@ export const unvoidEntry = Effect.fn("KinNumbers.unvoid")(function* (
 ) {
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
+  yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.number);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const row = yield* records.get(orgId, key);
       if (row === undefined) return yield* notFound(key);
+      if (row.registerId === "credit_notes") return yield* invalid(CREDIT_NOTE_VOID);
       const def = yield* listDef(orgId, row.registerId);
       if (def === undefined) return yield* unknownList(row.registerId);
       if (def.id === "receipts")
@@ -479,18 +505,41 @@ export const unvoidEntry = Effect.fn("KinNumbers.unvoid")(function* (
   );
 }, workFailure);
 
+const BY_THE_PERSON = new KinChatError({
+  reason: "not_allowed",
+  message:
+    "Words from a person's coding agent can't issue or void an entry: the person issues or voids it in Kin.",
+});
+/**
+ * Issuing and voiding need a person: never a write through a coding agent's key, nor a turn that
+ * follows words it sent or wrote, directly or passed on.
+ */
+const byAPerson = Effect.fn("KinNumbers.byAPerson")(function* (orgId: KinOrgId, writer: Writer) {
+  if ((yield* markedKey(writer)) !== undefined) return yield* BY_THE_PERSON;
+  if (
+    writer.actor._tag === "agent" &&
+    writer.wakeupId !== undefined &&
+    (yield* followsCodingAgent({ orgId, wakeupId: writer.wakeupId }))
+  )
+    return yield* BY_THE_PERSON;
+});
+
 /** Voids the entry: kept, with its number if it was issued. Voiding a void entry changes nothing. */
 export const voidEntry = Effect.fn("KinNumbers.void")(function* (
   orgId: KinOrgId,
   writer: Writer,
   key: string,
 ) {
+  yield* byAPerson(orgId, writer);
   const sql = yield* SqlClient.SqlClient;
   const records = yield* KinRecords;
+  yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.number);
   return yield* sql.withTransaction(
     Effect.gen(function* () {
       const row = yield* records.get(orgId, key);
       if (row === undefined) return yield* notFound(key);
+      if (row.registerId === "credit_notes" && writer.creditNote !== true)
+        return yield* new KinChatError({ reason: "not_allowed", message: CREDIT_NOTE_TAP });
       const def = yield* listDef(orgId, row.registerId);
       if (def === undefined) return yield* unknownList(row.registerId);
       if (numberingOf(def) === undefined || !def.states.includes("dropped"))

@@ -8,23 +8,30 @@ import {
   kinExpenseDraft,
   kinExpenseInput,
   kinExpenseTyped,
+  kinPersonChoices,
   kinInvoiceBeforeTax,
+  kinInvoiceBillsByName,
   kinInvoiceDraft,
   kinInvoiceDueChoices,
   kinInvoiceInput,
   kinInvoiceTax,
   kinInvoiceTaxText,
   kinInvoiceTyped,
+  kinLineTax,
 } from "./kinMoneyForms.ts";
+import { KIN_LINES } from "./kinMoneyAnswers.ts";
+import { KIN_BILL_TO } from "./kinBillTo.ts";
+import { KIN_GSTIN_WRONG } from "./kinWorkForms.ts";
 
 const orgId = KinOrgId.make("org");
 const acme = KinRecordKey.make("CL-1");
-const line = (description: string, quantity: string, rate: string) => ({
+const line = (description: string, quantity: string, rate: string, taxRate = "") => ({
   description,
   sac: "",
   quantity,
   unit: "",
   rate,
+  taxRate,
 });
 const options = { currency: "INR", gst: true, clientRequestId: "form-1" };
 
@@ -62,6 +69,13 @@ describe("an invoice typed by hand", () => {
         clientRequestId: "form-1",
       },
     });
+    // A project with a client bills that client when none was picked, as the form says.
+    const retainer = KinRecordKey.make("P-2");
+    const forProject = { ...filled, party: null, project: retainer, gstRate: "5" };
+    expect(kinInvoiceInput(orgId, forProject, { ...options, projectClient: acme })).toMatchObject({
+      ok: true,
+      input: { client: acme, project: retainer },
+    });
     // Elsewhere the company's own tax applies, so no rate is sent however it reads.
     const abroad = kinInvoiceInput(
       orgId,
@@ -70,6 +84,105 @@ describe("an invoice typed by hand", () => {
     );
     expect(abroad.ok && abroad.input).toMatchObject({ lines: [{ rate: "£400.00" }] });
     expect(abroad.ok && "gstRate" in abroad.input).toBe(false);
+    // A line's own tax rate is sent only when given (0 for no tax); a bad one fails with badTax.
+    const perLine = kinInvoiceInput(
+      orgId,
+      {
+        ...filled,
+        lines: [line("Consulting", "10", "£120"), line("Manual", "1", "£40", "0")],
+      },
+      { ...options, currency: "GBP", gst: false },
+    );
+    expect(perLine).toMatchObject({
+      ok: true,
+      input: {
+        lines: [
+          { description: "Consulting", rate: "£120.00" },
+          { description: "Manual", rate: "£40.00", taxRate: "0" },
+        ],
+      },
+    });
+    expect(perLine.ok && "taxRate" in perLine.input.lines[0]!).toBe(false);
+    expect(
+      kinInvoiceInput(
+        orgId,
+        { ...filled, lines: [line("Consulting", "1", "£120", "120")] },
+        { ...options, currency: "GBP", gst: false },
+      ),
+    ).toEqual({ ok: false, problem: "Line 1: enter the tax rate as a number, or 0 for no tax." });
+    expect(kinInvoiceTyped({ ...forAcme, lines: [line("", "1", "", "0")] }, forAcme)).toBe(true);
+  });
+
+  it("bills a client, or a typed name with only the details given, as the form shows it", () => {
+    const filled = {
+      ...kinInvoiceDraft(acme),
+      title: "Saturday workshop",
+      lines: [line("Workshop", "1", "12,000")],
+    };
+    const shape = (draft: typeof filled, byName: boolean) => {
+      const checked = kinInvoiceInput(orgId, draft, { ...options, byName });
+      return checked.ok
+        ? { client: checked.input.client, billTo: checked.input.billTo }
+        : checked.problem;
+    };
+    // A client: today's payload, whatever was typed under a name.
+    const typed = { ...filled, billTo: { ...filled.billTo, name: "Asha Rao" } };
+    expect(shape(typed, false)).toEqual({ client: acme, billTo: undefined });
+    // A typed name with no details sends the name alone; blank details are left out, not empty.
+    expect(shape({ ...typed, billTo: { ...typed.billTo, email: "  " } }, true)).toEqual({
+      client: undefined,
+      billTo: { name: "Asha Rao" },
+    });
+    const detailed = {
+      ...typed,
+      billTo: {
+        name: " Asha Rao ",
+        address: "4 Mill Lane, Pune",
+        taxNumber: "27ABCDE1234F1Z5",
+        place: "Maharashtra",
+        email: "asha@example.com",
+      },
+    };
+    expect(shape(detailed, true)).toEqual({
+      client: undefined,
+      billTo: {
+        name: "Asha Rao",
+        address: "4 Mill Lane, Pune",
+        taxNumber: "27ABCDE1234F1Z5",
+        place: "Maharashtra",
+        email: "asha@example.com",
+      },
+    });
+    // In India the tax number is a GSTIN: spaced or lower case it goes as one, else the form asks.
+    const india = (taxNumber: string) =>
+      kinInvoiceInput(
+        orgId,
+        { ...detailed, billTo: { ...detailed.billTo, taxNumber } },
+        { ...options, byName: true, india: true },
+      );
+    expect(india(" 27abcde1234f1z5 ")).toMatchObject({
+      ok: true,
+      input: { billTo: { taxNumber: "27ABCDE1234F1Z5" } },
+    });
+    expect(india("GSTIN 27ABCDE1234F1Z5")).toEqual({ ok: false, problem: KIN_GSTIN_WRONG });
+    // Nobody named: the form says so before sending, client picked or not.
+    expect(shape({ ...detailed, billTo: { ...detailed.billTo, name: " " } }, true)).toBe(
+      KIN_BILL_TO.noName,
+    );
+    expect(kinInvoiceTyped({ ...kinInvoiceDraft(), billTo: typed.billTo }, kinInvoiceDraft())).toBe(
+      true,
+    );
+  });
+
+  it("bills by name always with Clients off, never for a project with a client", () => {
+    const on = { clientsOn: true, offered: true, projectClient: null };
+    expect(kinInvoiceBillsByName({ byName: false }, on)).toBe(false);
+    expect(kinInvoiceBillsByName({ byName: true }, on)).toBe(true);
+    // Clients off: no picker at all, so the name fields, whatever was chosen.
+    expect(kinInvoiceBillsByName({ byName: false }, { ...on, clientsOn: false })).toBe(true);
+    // The project bills its client; an older host takes no name.
+    expect(kinInvoiceBillsByName({ byName: true }, { ...on, projectClient: "C-2" })).toBe(false);
+    expect(kinInvoiceBillsByName({ byName: true }, { ...on, offered: false })).toBe(false);
   });
 
   it("asks before closing only when something was typed, not for the client it opened with", () => {
@@ -98,6 +211,28 @@ describe("an invoice typed by hand", () => {
       { _tag: "none" },
     );
     expect(kinInvoiceTax({ ...uk, country: null, tax: null })).toEqual({ _tag: "none" });
+    expect(kinLineTax(kinInvoiceTax(profile))).toEqual({ show: false, note: null });
+    expect(kinLineTax(kinInvoiceTax({ ...uk, tax: null, taxRegistered: false }))).toEqual({
+      show: false,
+      note: null,
+    });
+    expect(kinLineTax(vat)).toEqual({ show: true, defaultRate: "20" });
+    for (const [rate, placeholder, hint] of [
+      ["12", "12", "Tax %: leave empty for 12%, 0 for no tax."],
+      [null, "", "Tax %: leave empty for the invoice's usual rate, 0 for no tax."],
+    ] as const) {
+      const lineTax = kinLineTax(kinInvoiceTax(before), { gstRate: rate });
+      expect(lineTax).toEqual({ show: true, defaultRate: placeholder });
+      expect(lineTax.show && KIN_LINES.taxDetail(lineTax.defaultRate)).toBe(hint);
+    }
+    expect(kinLineTax(vat, { clientAccountsForTax: true })).toEqual({
+      show: false,
+      note: KIN_LINES.clientAccounts,
+    });
+    expect(kinLineTax(kinInvoiceTax({ ...uk, tax: null }))).toEqual({
+      show: true,
+      defaultRate: null,
+    });
   });
 
   it("adds the lines up before tax as the template does, each rounded half up", () => {
@@ -155,10 +290,42 @@ describe("an expense typed by hand", () => {
     });
     expect(kinExpenseTyped(draft, draft)).toBe(false);
     expect(kinExpenseTyped({ ...draft, paidOn: "2026-11-20" }, draft)).toBe(true);
+    // A partner who paid it themselves goes as who funded it; left empty, the company did.
+    const funded = kinExpenseInput(orgId, { ...named, amount: "12", fundedBy: "meera" }, send);
+    expect(funded.ok && funded.input.fundedBy).toBe("meera");
+    expect(kinExpenseTyped({ ...draft, fundedBy: "meera" }, draft)).toBe(true);
+  });
+
+  it("offers only people, and only on a list that has Funded by, as who funded an expense", () => {
+    const people = new Map([
+      ["zoya", "Zoya"],
+      ["meera", "Meera"],
+    ]);
+    expect(kinExpenseChoices(null, people).fundedBy).toEqual([
+      { value: "meera", label: "Meera" },
+      { value: "zoya", label: "Zoya" },
+    ]);
+    // An Expenses list with no room for Funded by says so in a line, and offers no picker.
+    const full = {
+      fields: Array.from({ length: 20 }, (_, n) => ({ key: `extra${n}`, retired: false })),
+      categories: [],
+    } as unknown as Parameters<typeof kinExpenseChoices>[0];
+    expect(kinExpenseChoices(full, people)).toMatchObject({
+      fundedBy: [],
+      fundedByNote: KIN_MONEY_FORMS.expense.fundedByNoRoom,
+    });
+    expect(
+      kinPersonChoices("fundedBy", [{ value: "person:meera" }, { value: "agent:finance" }]),
+    ).toEqual([{ value: "person:meera" }]);
+    expect(kinPersonChoices("paidBy", [{ value: "agent:finance" }])).toEqual([
+      { value: "agent:finance" },
+    ]);
   });
 
   it("offers no categories before the Expenses list exists, which the first one makes", () => {
     expect(kinExpenseChoices(null)).toEqual({
+      fundedByNote: null,
+      fundedBy: [],
       categories: [],
       paidWith: [],
       receipt: true,

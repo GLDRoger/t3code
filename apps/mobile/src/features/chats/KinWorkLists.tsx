@@ -8,7 +8,7 @@ import { LegendList } from "@legendapp/list/react-native";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation } from "@react-navigation/native";
 import {
-  KIN_CLIENTS,
+  KIN_CLIENTS as KIN_CLIENTS_WORDS,
   KIN_MINE,
   kinClientsSide,
   kinMineOpens,
@@ -69,6 +69,8 @@ import { useKinHostAt } from "./state/useKinHost";
 import { KinDealsView, KinListPinned, KinMineSwitch } from "./KinDealsList";
 import { useKinExportList, useKinMarketing } from "./KinMarketing";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
+import { useKinSectionNamed, useKinSectionWords, useKinShell } from "./state/useKinShell";
+import { kinSectionNamedWords } from "@t3tools/client-runtime/kin/kinShell";
 
 const HEALTH_TONE: Record<KinHealthView["tone"], string> = {
   good: "text-foreground-muted",
@@ -220,6 +222,8 @@ function NamedList(props: {
   readonly onOpen: (key: KinRecordKey) => void;
   readonly onOpenClient: (key: KinRecordKey) => void;
 }) {
+  const shell = useKinShell(props.environmentId);
+  const named = <Words extends object>(words: Words) => kinSectionNamedWords(shell, words);
   const navigation = useNavigation();
   const tab = useKinTab();
   const { state, list, add, items } = props;
@@ -282,7 +286,7 @@ function NamedList(props: {
           ListEmptyComponent={
             <View className="px-4 pt-4">
               {shown === "offline" ? (
-                <EmptyState variant="plain" {...kinWorkOffline("clients")} />
+                <EmptyState variant="plain" {...named(kinWorkOffline("clients"))} />
               ) : shown === "loading" ? (
                 <KinWorkLoading label={props.loading} />
               ) : shown === "failed" ? (
@@ -385,22 +389,23 @@ function clientsMenu(
   seesClients: boolean,
   marketing: KinMarketing,
   onExport: () => void,
+  named: (text: string) => string,
 ): AppBarMenu["items"] {
   const { clients } = showing;
   return [
     {
       id: "show",
-      title: KIN_CLIENTS.show,
+      title: KIN_CLIENTS_WORDS.show,
       inline: true,
       items: [
         ...kinClientsShowChoices(seesClients).map((one) => ({
           id: `show:${one.id}`,
-          title: one.label,
+          title: named(one.label),
           selected: clients.show === one.id,
           onPress: () => onShow({ ...showing, clients: { ...clients, show: one.id } }),
         })),
         // Said once, here: the order never changes.
-        { id: "show:order", title: KIN_CLIENTS.order, disabled: true, onPress: () => {} },
+        { id: "show:order", title: KIN_CLIENTS_WORDS.order, disabled: true, onPress: () => {} },
       ],
     },
     ...(!seesClients
@@ -456,13 +461,14 @@ function showMenu(
   seesClients: boolean,
   marketing: KinMarketing,
   onExport: () => void,
+  named: (text: string) => string,
 ): AppBarMenu {
   return {
     title: KIN_WORK_HOME.show,
     icon: "line.3.horizontal.decrease.circle",
     items:
       tab === "clients"
-        ? clientsMenu(showing, onShow, seesClients, marketing, onExport)
+        ? clientsMenu(showing, onShow, seesClients, marketing, onExport, named)
         : KIN_PROJECT_VIEWS.map((view) => ({
             id: view.id,
             title: view.label,
@@ -474,6 +480,7 @@ function showMenu(
 
 /** Clients, or their projects grouped under them, one segment at a time. */
 export function KinClientsList(props: ListProps & { readonly projects: boolean }) {
+  const named = useKinSectionNamed(props.environmentId);
   const { me } = props.directory.names;
   const remembered = kinClientsTabAtom(`${props.environmentId}:${me ?? ""}`);
   const [asked, setTab] = useState<KinClientsTab>(() =>
@@ -527,11 +534,12 @@ export function KinClientsList(props: ListProps & { readonly projects: boolean }
         void exporter.run(
           kinContactListOfClients(kinClientsQuery(props.orgId, { ...clients, text: "" })),
         ),
+      named,
     );
   };
   const header = (
     <SegmentedControl
-      options={kinClientsTabs(seesDeals).map((one) => ({ value: one.id, label: one.label }))}
+      options={kinClientsTabs(seesDeals).map((one) => ({ value: one.id, label: named(one.label) }))}
       selected={tab}
       onSelect={(next) => {
         appAtomRegistry.set(remembered, next);
@@ -632,6 +640,8 @@ const clientsCount = (list: ClientsList | null) =>
 function ClientsView(
   props: ClientsProps & { readonly mine: ClientsList | null; readonly everyone: ClientsList },
 ) {
+  const KIN_CLIENTS = useKinSectionWords(props.environmentId, KIN_CLIENTS_WORDS);
+  const named = useKinSectionNamed(props.environmentId);
   const navigation = useNavigation();
   const { environmentId, orgId } = props;
   const scope = useKinViewerScope(environmentId);
@@ -730,7 +740,7 @@ function ClientsView(
             }
           : null
       }
-      loading="Loading clients"
+      loading={named("Loading clients")}
       loadFailed={KIN_CLIENTS.loadFailed}
       onOpen={openClient}
       onOpenClient={openClient}
@@ -739,6 +749,7 @@ function ClientsView(
 }
 
 function ProjectsView(props: ViewProps & { readonly view: KinProjectsFilter["view"] }) {
+  const KIN_CLIENTS = useKinSectionWords(props.environmentId, KIN_CLIENTS_WORDS);
   const navigation = useNavigation();
   const { environmentId, orgId } = props;
   const canAdd = useAtomValue(kinClient.workProjectCreate.permissionAtom(environmentId));

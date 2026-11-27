@@ -53,7 +53,7 @@ import { KinProjectPeopleSection } from "./KinProjectPeople";
 import { KinMilestoneDialog, KinProjectDialog } from "./KinWorkForms";
 import { KinCampaignDealsDialog } from "./KinDeals";
 import { KinCampaignResultsSection, KinContactListDialog } from "./KinMarketing";
-import { useKinSectionOn } from "./useKinShell";
+import { useKinSectionOn, useKinShell } from "./useKinShell";
 import { KinWorkClientsList } from "./KinWorkClients";
 import {
   KinWorkHealthBadge,
@@ -144,7 +144,8 @@ function ProjectPage(
   const [choosingLead, setChoosingLead] = useState(false);
   const [openResult, setOpenResult] = useState<KinCampaignResultId | null>(null);
   const privateId = useId();
-  const view = kinProjectPageView(page, names, now);
+  const shell = useKinShell(props.environmentId);
+  const view = kinProjectPageView(page, names, now, shell);
   const { party } = view;
   const opened =
     openResult === null ? null : kinCampaignResultOpens(orgId, view.key, view.name, openResult);
@@ -176,9 +177,9 @@ function ProjectPage(
   const leads =
     view.lead.personId !== null &&
     view.lead.personId === kinFeedViewer(props.directory.orgs, orgId).personId;
-  const addsMilestone = (canChange || leads) && view.closed === null;
+  const addsMilestone = (canChange || leads) && view.adds && view.closed === null;
   const addTask =
-    props.onAddTask === null || view.closed !== null
+    props.onAddTask === null || view.closed !== null || !view.adds
       ? null
       : () => props.onAddTask?.(kinWorkDraftFor({ party, project: view.ref }));
   const summary = (
@@ -295,6 +296,7 @@ function ProjectPage(
           results={page.results}
           audience={view.audience}
           deals={dealsOn}
+          shell={shell}
           onOpen={setOpenResult}
         />
       )}

@@ -31,6 +31,7 @@ import * as Groups from "../chat/KinGroups.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { destination, turnAudience, turnPeople } from "../lead/Audience.ts";
 import * as LeadProvision from "../lead/KinLeadProvision.ts";
+import * as LevelGate from "../lead/LevelGate.ts";
 import * as Reach from "../lead/Reach.ts";
 import { readPeople } from "../lead/peopleRead.ts";
 import { buildSeat } from "../lead/seat.ts";
@@ -40,6 +41,7 @@ import * as Stop from "../lead/KinStop.ts";
 import * as Presence from "../reply/KinPresence.ts";
 import { KinIdentity, KinIdentityConfig } from "../chat/KinIdentity.ts";
 import { layerKinAuthTest, pairSession } from "../auth/ProofKeySessions.testkit.ts";
+import { personClock } from "../questions/openQuestions.ts";
 import { personHoldNow } from "../triggers/quietHold.ts";
 import { newCompanyProfileJson, readProfile, setProfile } from "../work/companyProfile.ts";
 import * as Records from "../work/KinRecords.ts";
@@ -48,6 +50,7 @@ import { makeDocsStream } from "../work/ownerDocs.ts";
 import { KinPushSender, type KinPushNotification } from "../push/KinPushSender.ts";
 import * as TasksKeys from "../tasksKey/TasksKeys.ts";
 import * as People from "./KinPeople.ts";
+import { MAILBOX_GONE } from "../connections/ConnectionsService.ts";
 
 const database = layerKinAuthTest("kin-people-");
 const identities = KinIdentity.layer.pipe(
@@ -346,6 +349,10 @@ it.effect("removing a device takes the devices linked from it and the links it l
               ),
             ),
           flushKeyPushes: Effect.succeed(0),
+          settle: () => Effect.void,
+          drainWithdrawals: Effect.void,
+          recover: Effect.void,
+          reconcile: () => Effect.succeed({ remove: [], unknown: [], badge: 0 }),
         }),
       ),
     );
@@ -1129,7 +1136,37 @@ it.effect(
         assert.deepStrictEqual(after, before);
         assert.isTrue(shell?.sections.some((section) => section.id === "deals" && !section.on));
       }
-      yield* changeShell(1, true);
+      const set = (rev: number, sections: Parameters<KinShell.KinShell["Service"]["set"]>[3]) =>
+        KinShell.KinShell.use((shell) => shell.set(orgId, coOwner.personId, rev, sections)).pipe(
+          Effect.provide(KinShell.layer),
+        );
+      yield* set(1, [
+        { id: "clients", on: false, name: " Donors ", noun: " donor " },
+        { id: "money", on: false, name: "Ignored", noun: "ignored" },
+        { id: "deals", on: false },
+        { id: "invoices", on: false },
+      ]);
+      for (const [n, session] of parties.entries()) {
+        const { shell, refused } = yield* service.accessMe(session, { orgId });
+        assert.deepStrictEqual(refused, original[n]!.refused);
+        assert.deepStrictEqual(
+          shell?.sections.find(({ id }) => id === "clients"),
+          {
+            id: "clients",
+            on: false,
+            name: "Donors",
+            noun: "donor",
+          },
+        );
+        assert.deepStrictEqual(
+          shell?.sections.find(({ id }) => id === "money"),
+          {
+            id: "money",
+            on: false,
+          },
+        );
+      }
+      yield* changeShell(2, true);
       const sql = yield* SqlClient.SqlClient;
       yield* sql`UPDATE kin_company_shell SET shell_json = 'broken' WHERE org_id = ${orgId}`;
       const { shell: fallback, ...still } = yield* service.accessMe(raviSession, { orgId });
@@ -1572,13 +1609,22 @@ it.effect(
         }),
         [],
       );
-      // Leaving lowers the group's floor only to what Tomas, still there, could always read.
+      // Leaving lowers the group's floor only to what Tomas, still there, could always read; each
+      // join said once that it left a question unanswered.
+      const unanswered =
+        "Tech lead didn't reply: someone joined before it answered. Send it again.";
       const turn = yield* wake();
       assert.deepStrictEqual(
         (yield* chats.read(turn, { chatId: group.chatId, afterSeq: 0, limit: 100 })).map(
           (message) => message.body,
         ),
-        ["Invented-tomas-early", "Invented-mira-in-group", "Invented-tomas-in-group"],
+        [
+          unanswered,
+          "Invented-tomas-early",
+          unanswered,
+          "Invented-mira-in-group",
+          "Invented-tomas-in-group",
+        ],
       );
       yield* queue.finish({ orgId, wakeupId: turn.wakeupId, status: "completed" });
 
@@ -1746,6 +1792,35 @@ it.effect(
       const [switched] = yield* sql<{ ring: number }>`SELECT answers_ring AS ring FROM kin_people
         WHERE person_id = ${asha.person.personId}`;
       assert.strictEqual(switched?.ring, 0);
+      // How long a read chat stays up before settling is hers alone to set and read; unset by default.
+      assert.propertyVal(
+        yield* service
+          .updateProfile(ownerSession, {
+            orgId,
+            personId: asha.person.personId,
+            chatsSettleAfterHours: 0,
+          })
+          .pipe(Effect.flip),
+        "reason",
+        "not_allowed",
+      );
+      assert.notProperty(yield* ashaAs(asha.session), "chatsSettleAfterHours");
+      for (const hoursChoice of [0, 6, 12, 24] as const) {
+        assert.propertyVal(
+          yield* service.updateProfile(asha.session, {
+            orgId,
+            personId: asha.person.personId,
+            chatsSettleAfterHours: hoursChoice,
+          }),
+          "chatsSettleAfterHours",
+          hoursChoice,
+        );
+        assert.propertyVal(yield* ashaAs(asha.session), "chatsSettleAfterHours", hoursChoice);
+        assert.notProperty(yield* ashaAs(ownerSession), "chatsSettleAfterHours");
+      }
+      const [storedSettle] = yield* sql<{ hours: number | null }>`SELECT
+        chats_settle_after_hours AS hours FROM kin_people WHERE person_id = ${asha.person.personId}`;
+      assert.strictEqual(storedSettle?.hours, 24);
       const renamed = yield* service.updateProfile(ownerSession, {
         orgId,
         personId: asha.person.personId,
@@ -1840,6 +1915,25 @@ it.effect(
       assert.deepStrictEqual(yield* ownerAway, { shown: "2026-11-19", held: "away" });
       yield* TestClock.setTime(Date.parse("2026-11-18T18:30:00.000Z"));
       assert.deepStrictEqual(yield* ownerAway, { shown: undefined, held: undefined });
+      // His working hours, a night shift included, are on his own clock too, while he holds to
+      // them, once back: 21:00 Thursday in Kolkata he is off, and midnight is Thursday's shift.
+      yield* service.updateProfile(ownerSession, {
+        orgId,
+        personId: owner.personId,
+        workHours: { days: [1, 2, 3, 4, 5], start: "22:00", end: "06:00" },
+        holdOutsideHours: true,
+      });
+      assert.strictEqual((yield* personClock(orgId, owner.personId)).zone, "Asia/Kolkata");
+      yield* TestClock.setTime(Date.parse("2026-11-19T15:30:00.000Z"));
+      assert.strictEqual(yield* personHoldNow(orgId, owner.personId), "off");
+      yield* TestClock.setTime(Date.parse("2026-11-19T18:30:00.000Z"));
+      assert.isUndefined(yield* personHoldNow(orgId, owner.personId));
+      yield* service.updateProfile(ownerSession, {
+        orgId,
+        personId: owner.personId,
+        workHours: null,
+        holdOutsideHours: false,
+      });
       yield* sql`DELETE FROM kin_agents WHERE org_id = ${orgId} AND agent_id = 'chief-of-staff'`;
       yield* TestClock.setTime(Date.parse("2026-11-16T12:00:00.000Z"));
       // Every minute of every day is no hours: saved as not set, read as not set if stored, and
@@ -2318,6 +2412,130 @@ it.effect(
     }).pipe(Effect.provide(teamLayer)),
 );
 
+it.effect.each([
+  { status: "completed" },
+  { status: "failed", final: true },
+  { status: "timed_out", final: true },
+] as const)(
+  "a co-owner made a member after the reply, while the turn still works, leaves that message answered",
+  (finish) =>
+    Effect.gen(function* () {
+      const people = yield* People.KinPeople;
+      const identity = yield* KinIdentity;
+      const repo = yield* Repository.KinChatRepository;
+      const chats = yield* Service.KinChatService;
+      const queue = yield* KinEventQueue.KinEventQueue;
+      const gate = yield* LevelGate.KinLevelGate;
+      const sql = yield* SqlClient.SqlClient;
+      const { owner } = identity;
+      const { orgId } = owner;
+      yield* pairSession(ownerSession.sessionId);
+      const agentId = KinAgentId.make("finance");
+      const threadId = ThreadId.make("finance-thread");
+      yield* repo.insertAgent({
+        orgId,
+        agentId,
+        ownerPersonId: owner.personId,
+        displayName: "Finance",
+        role: "lead",
+        createdAt: at,
+      });
+      yield* identity.registerAgentThread({ orgId, agentId, threadId });
+      const ownerChat = yield* chats.createDirect(owner, { orgId, agentId });
+      yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level, level_since, models_json,
+          worker_projects_json, owner_chat_id)
+        VALUES (${agentId}, ${orgId}, 'Finance', 'L1', 0, '{}', '[]', ${ownerChat.chatId})`;
+      const { person } = yield* people.accept({
+        secret: (yield* people.createInvite(ownerSession, { orgId, displayName: "Meera" })).secret,
+      });
+      const meera = { _tag: "person" as const, orgId, personId: person.personId };
+      yield* people.setAccess(ownerSession, { ...meera, access: "co_owner" });
+      const { chatId } = yield* chats.createDirect(meera, { orgId, agentId });
+      const first = ChatWake.wakeEvent(
+        yield* chats.send(meera, {
+          chatId,
+          body: "Is the invoice ready?",
+          clientMessageId: "first",
+        }),
+        agentId,
+        undefined,
+      );
+      yield* queue.enqueue(first);
+      const second = ChatWake.wakeEvent(
+        yield* chats.send(meera, {
+          chatId,
+          body: "When is payment due?",
+          clientMessageId: "second",
+        }),
+        agentId,
+        undefined,
+      );
+      yield* queue.enqueue(second);
+      yield* TestClock.adjust(2_000);
+      const wakeupId = KinWakeupId.make("finance-wakeup");
+      yield* Effect.scoped(queue.claim({ orgId, agentId, wakeupId, model: "test" }));
+      yield* sql`UPDATE kin_wakeups SET thread_id = ${threadId}, audience = 'owner_only'
+        WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}`;
+      const agent = Option.getOrThrow(yield* identity.agentForWakeup({ orgId, wakeupId }));
+      const reply = yield* gate.post(
+        agent,
+        { chatId, body: "The invoice is ready.", clientMessageId: "reply", intent: "answer" },
+        () =>
+          sql`UPDATE kin_events SET replied_at = 2000
+            WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND event_id = ${first.eventId}`.pipe(
+            Effect.asVoid,
+          ),
+      );
+
+      const events = sql`SELECT event_id AS "eventId", state, wakeup_id AS "wakeupId", attempts,
+          replied_at IS NOT NULL AS replied
+        FROM kin_events WHERE org_id = ${orgId} ORDER BY replied DESC, event_id`;
+      const answered = {
+        eventId: first.eventId,
+        state: "claimed",
+        wakeupId,
+        attempts: 0,
+        replied: 1,
+      };
+      const unanswered = {
+        eventId: second.eventId,
+        state: "claimed",
+        wakeupId,
+        attempts: 0,
+        replied: 0,
+      };
+      assert.deepStrictEqual(yield* events, [answered, unanswered]);
+      yield* people.setAccess(ownerSession, { orgId, personId: meera.personId, access: "member" });
+      assert.isTrue(
+        yield* Reach.reaches(orgId, Reach.person(meera.personId), Reach.agent(agentId)),
+      );
+      assert.lengthOf(
+        yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId}
+          AND status = 'running' AND aborted_at IS NOT NULL`,
+        1,
+      );
+      assert.deepStrictEqual(yield* events, [answered, unanswered]);
+
+      const finished = yield* queue.finish({ orgId, wakeupId, ...finish });
+      assert.deepStrictEqual(yield* events, [
+        { ...answered, state: "done" },
+        { ...unanswered, state: "queued", wakeupId: null },
+      ]);
+      assert.deepStrictEqual(finished, {
+        failedEventIds: [],
+        stranded: 0,
+        replied: 0,
+        retried: 0,
+        retryInMs: 0,
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT message_id AS "messageId" FROM kin_messages
+          WHERE org_id = ${orgId} AND chat_id = ${chatId} AND author_kind <> 'human' ORDER BY seq`,
+        [{ messageId: reply.messageId }],
+      );
+    }).pipe(Effect.provide(LevelGate.layer.pipe(Layer.provideMerge(teamLayer)))),
+);
+
 const withRecords = People.layer.pipe(
   Layer.provideMerge(Records.layer),
   Layer.provideMerge(Service.layer),
@@ -2328,6 +2546,68 @@ const withRecords = People.layer.pipe(
   Layer.provideMerge(identities),
   Layer.provideMerge(database),
   Layer.provideMerge(environment),
+);
+
+it.effect("removing a teammate ends the requests they passed on", () =>
+  Effect.gen(function* () {
+    const service = yield* People.KinPeople;
+    const identity = yield* KinIdentity;
+    const { owner } = identity;
+    const sql = yield* SqlClient.SqlClient;
+    const repo = yield* Repository.KinChatRepository;
+    const chats = yield* Service.KinChatService;
+    const { orgId } = owner;
+    yield* pairSession(ownerSession.sessionId);
+    const tech = KinAgentId.make("tech");
+    yield* repo.insertAgent({
+      orgId,
+      agentId: tech,
+      ownerPersonId: owner.personId,
+      displayName: "Tech lead",
+      role: "lead",
+      createdAt: at,
+    });
+    yield* identity.registerAgentThread({
+      orgId,
+      agentId: tech,
+      threadId: ThreadId.make("tech-thread"),
+    });
+    const chat = yield* chats.createDirect(owner, { orgId, agentId: tech });
+    yield* sql`INSERT INTO kin_leads (agent_id, org_id, name, level_since, models_json,
+        worker_projects_json, owner_chat_id, thread_id)
+      VALUES (${tech}, ${orgId}, 'Tech lead', 0, '{}', '[]', ${chat.chatId}, 'tech-thread')`;
+    const passedOn = Effect.fn("KinPeopleTest.passedOn")(function* (
+      name: string,
+      question: string,
+    ) {
+      const { person } = yield* service.accept({
+        secret: (yield* service.createInvite(ownerSession, { orgId, displayName: name })).secret,
+      });
+      const { waiting } = yield* chats.notice({
+        orgId,
+        chatId: chat.chatId,
+        audience: "chat",
+        messageId: KinMessageId.make(`request-${person.personId}`),
+        from: tech,
+        waitingFor: owner.personId,
+        body: `${name} asked Tech lead:\n"${question}"`,
+        relay: { kind: "sent_by", agentId: tech, personId: person.personId, personName: name },
+      });
+      return { personId: person.personId, item: waiting! };
+    });
+    const zoya = yield* passedOn("Zoya", "Can the rollout move to Friday?");
+    const arjun = yield* passedOn("Arjun", "Can the demo move to Monday?");
+    assert.lengthOf(yield* repo.listOpenWaiting(owner), 2);
+    yield* service.removeAccess(ownerSession, { orgId, personId: zoya.personId });
+    assert.strictEqual(
+      Option.getOrThrow(yield* repo.getWaiting(zoya.item)).resolution,
+      "cancelled",
+    );
+    assert.deepStrictEqual(
+      (yield* repo.listOpenWaiting(owner)).map((item) => item.waitingId),
+      [arjun.item.waitingId],
+    );
+  }).pipe(Effect.provide(withRecords)),
 );
 
 it.effect("removing a person closes their open questions and leaves their tasks flagged", () =>
@@ -2388,7 +2668,36 @@ it.effect("removing a person closes their open questions and leaves their tasks 
           ${widgetId === null ? "text" : "card"}, ${widgetId}, 'Invented?', 0, 0, 1, 1, 'open')`;
     yield* ask("q-arjun", arjun, card.widgetId);
     yield* ask("q-owner", owner.personId, null);
-    assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: arjun }), 1);
+    // Arjun's own mailbox, with a follow-up waiting on his Confirm in his chat.
+    yield* sql`INSERT INTO kin_connections (org_id, connection_id, preset, label, kind, url,
+        url_host, auth, reach, state, account_label, created_at, updated_at, person_id)
+      VALUES (${orgId}, 'conn_arjun', 'google', 'arjun@invented.example', 'builtin', NULL,
+        'gmail.googleapis.com', 'oauth', 'closed', 'active', 'arjun@invented.example', 0, 0,
+        ${arjun})`;
+    const mail = yield* chats.ask(
+      {
+        _tag: "agent",
+        orgId,
+        agentId: finance,
+        ownerPersonId: owner.personId,
+        threadId,
+        hostPosted: true,
+      },
+      {
+        chatId: direct.chatId,
+        clientMessageId: "mail-arjun",
+        question: "Invented: send this follow-up?",
+        options: [
+          { label: "Confirm", kind: "yes" },
+          { label: "Cancel", kind: "no" },
+        ],
+      },
+    );
+    yield* sql`INSERT INTO kin_connection_asks (org_id, ask_id, connection_id, tool_name,
+        pin_digest, payload_json, agent_id, wakeup_id, chat_id, widget_id, proposed_at)
+      VALUES (${orgId}, 'ask_arjun', 'conn_arjun', 'mail_send', 'p', '{}', ${finance}, 'w',
+        ${direct.chatId}, ${mail.widgetId}, 0)`;
+    assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: arjun }), 2);
     const { row: task } = yield* records.create(
       orgId,
       {
@@ -2420,6 +2729,16 @@ it.effect("removing a person closes their open questions and leaves their tasks 
       },
     });
     assert.lengthOf(yield* repo.listOpenWaiting({ orgId, personId: arjun }), 0);
+    // His mailbox went with him: removed, its waiting send stale, its card closed saying so.
+    assert.deepStrictEqual(
+      yield* sql`SELECT (c.removed_at IS NOT NULL) AS removed, k.state FROM kin_connections c
+        JOIN kin_connection_asks k ON k.connection_id = c.connection_id
+        WHERE c.connection_id = 'conn_arjun'`,
+      [{ removed: 1, state: "stale" }],
+    );
+    const mailClosed = Option.getOrThrow(yield* repo.getWidget({ orgId, widgetId: mail.widgetId }));
+    assert.isNotNull(mailClosed.closedAt);
+    assert.deepInclude(mailClosed.state, { outcome: { title: "Not sent", text: MAILBOX_GONE } });
     // The task is neither closed nor moved: it stays Arjun's, flagged for the owner to decide.
     const kept = (yield* records.get(orgId, task.key))!;
     assert.deepStrictEqual([kept.ownerKind, kept.ownerId, kept.state], ["person", arjun, "open"]);

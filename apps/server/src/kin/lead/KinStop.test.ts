@@ -1,13 +1,19 @@
 import { assert, describe, it } from "@effect/vitest";
 import {
   CommandId,
+  EventId,
   KinAgentId,
   KinChatId,
+  KinMemberId,
+  KinMessageId,
   KinPersonId,
   KinWakeupId,
   MessageId,
+  NodeId,
   ProjectId,
+  ProviderDriverKind,
   ProviderInstanceId,
+  RunId,
   ThreadId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
@@ -21,6 +27,7 @@ import * as DateTime from "effect/DateTime";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 
+import * as EventSink from "../../orchestration-v2/EventSink.ts";
 import * as EffectWorker from "../../orchestration-v2/EffectWorker.ts";
 import * as ThreadLaunch from "../../orchestration-v2/ThreadLaunchService.ts";
 import * as ThreadManagement from "../../orchestration-v2/ThreadManagementService.ts";
@@ -174,7 +181,10 @@ describe("KinStop", () => {
   );
 
   // QA: Stop pressed twice answered true both times, so a client couldn't tell it was done.
-  it.effect("an owner's stop answers true once, then false while the wake-up winds down", () =>
+  it.effect.each([
+    ["an owner's stop answers true once, then false while the wake-up winds down", false],
+    ["a card stop force-stops the run after the interrupt is ignored for 30 seconds", true],
+  ] as const)("%s", ([, asked]) =>
     Effect.gen(function* () {
       const entered = yield* Queue.unbounded<ThreadId>();
       // Whatever a failure would set off: a trouble's notice, or a line in the chat.
@@ -194,6 +204,7 @@ describe("KinStop", () => {
           causeFor: () => Effect.undefined,
           refresh: () => Effect.void,
           checkBackup: () => Effect.void,
+          postOfflineNotice: () => Effect.die("no startup pass here"),
           status: () => Effect.die("not read here"),
           freeSpace: () => Effect.die("not tapped here"),
           backUpNow: () => Effect.die("not tapped here"),
@@ -206,6 +217,7 @@ describe("KinStop", () => {
             chatId: KinChatId.make("owner-chat"),
             mode: "reply" as const,
             owed: true,
+            voice: "text",
             leadName: "Lead",
           }),
         preparing: () => Effect.void,
@@ -221,17 +233,88 @@ describe("KinStop", () => {
         const runner = yield* WakeupRunner.WakeupRunner;
         const stop = yield* KinStop.KinStop;
         const worker = yield* EffectWorker.OrchestrationEffectWorkerV2;
-        yield* stop.attach(yield* KinStop.makeFanOut(Option.none()));
+        const threads = yield* ThreadManagement.ThreadManagementService;
+        const forceStops: Array<string> = [];
+        const fanOut = yield* KinStop.makeFanOut(Option.none()).pipe(
+          Effect.provideService(
+            ThreadManagement.ThreadManagementService,
+            asked
+              ? {
+                  ...threads,
+                  interruptThread: () => Effect.succeed({ type: "no_active_run" as const }),
+                  stopDelegatedTasks: (input) =>
+                    Effect.sync(() => void forceStops.push("tasks")).pipe(
+                      Effect.andThen(threads.stopDelegatedTasks(input)),
+                    ),
+                  forceStopThread: (input) =>
+                    Effect.sync(() => void forceStops.push("agent")).pipe(
+                      Effect.andThen(threads.forceStopThread(input)),
+                    ),
+                }
+              : threads,
+          ),
+        );
+        yield* stop.attach(fanOut);
         yield* queue.enqueue(event("work"));
         yield* queue.enqueue(event("more-work"));
         const run = yield* runner.runOnce(orgId, agentId).pipe(Effect.forkChild);
         yield* TestClock.adjust("20 seconds");
-        yield* Queue.take(entered);
+        const threadId = yield* Queue.take(entered);
         const [running] = yield* sql<{ wakeupId: KinWakeupId }>`SELECT wakeup_id AS "wakeupId"
           FROM kin_wakeups WHERE org_id = ${orgId} AND status = 'running' ORDER BY wakeup_id`;
         const input = { orgId, wakeupId: running!.wakeupId };
-        assert.deepStrictEqual(yield* stop.interrupt(owner, input), { interrupted: true });
-        assert.deepStrictEqual(yield* stop.interrupt(owner, input), { interrupted: false });
+        if (asked) {
+          const taskId = NodeId.make("earlier-task");
+          const earlierRun = RunId.make("earlier-run");
+          const now = yield* DateTime.now;
+          const run = (yield* threads.getThreadProjection(threadId)).runs[0]!;
+          yield* (yield* EventSink.EventSinkV2).write({
+            events: [
+              {
+                id: EventId.make("earlier-task-completed"),
+                type: "subagent.updated",
+                threadId,
+                runId: earlierRun,
+                nodeId: taskId,
+                occurredAt: now,
+                payload: {
+                  id: taskId,
+                  threadId,
+                  runId: earlierRun,
+                  parentNodeId: NodeId.make("earlier-node"),
+                  origin: "app_owned",
+                  createdBy: "agent",
+                  driver: ProviderDriverKind.make("claudeAgent"),
+                  providerInstanceId: run.providerInstanceId,
+                  providerThreadId: null,
+                  childThreadId: null,
+                  nativeTaskRef: null,
+                  prompt: "Earlier work",
+                  title: null,
+                  model: null,
+                  status: "completed",
+                  result: "Done.",
+                  startedAt: null,
+                  completedAt: now,
+                  updatedAt: now,
+                },
+              },
+            ],
+          });
+          yield* stop.stopAsked(orgId, input.wakeupId, owner[0]!.personId);
+          yield* stop.stopAsked(orgId, input.wakeupId, owner[0]!.personId);
+          yield* TestClock.adjust("29 seconds");
+          assert.deepStrictEqual(forceStops, []);
+          assert.deepStrictEqual(
+            yield* sql`SELECT status FROM kin_wakeups WHERE org_id = ${orgId}`,
+            [{ status: "running" }],
+          );
+          yield* TestClock.adjust("1 second");
+          assert.deepStrictEqual(forceStops, ["tasks", "agent"]);
+        } else {
+          assert.deepStrictEqual(yield* stop.interrupt(owner, input), { interrupted: true });
+          assert.deepStrictEqual(yield* stop.interrupt(owner, input), { interrupted: false });
+        }
         yield* worker.drain();
         yield* Fiber.join(run);
         assert.deepStrictEqual(yield* stop.interrupt(owner, input), { interrupted: false });
@@ -247,10 +330,24 @@ describe("KinStop", () => {
         // Its batch is over: not split to run alone, no try spent, nothing held for a trouble.
         assert.deepStrictEqual(
           yield* sql`SELECT event_id, state, attempts, json_extract(json, '$._retryAlone') AS alone,
-            held_by FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`,
+            held_by, json_extract(json, '$._personStopped') AS stopped FROM kin_events WHERE org_id = ${orgId} ORDER BY event_id`,
           [
-            { event_id: "more-work", state: "done", attempts: 0, alone: null, held_by: null },
-            { event_id: "work", state: "done", attempts: 0, alone: null, held_by: null },
+            {
+              event_id: "more-work",
+              state: "done",
+              attempts: 0,
+              alone: null,
+              held_by: null,
+              stopped: 1,
+            },
+            {
+              event_id: "work",
+              state: "done",
+              attempts: 0,
+              alone: null,
+              held_by: null,
+              stopped: 1,
+            },
           ],
         );
         assert.deepStrictEqual(failures, []);
@@ -422,7 +519,43 @@ describe("KinStop", () => {
       yield* stop.pause(owner, { orgId }).pipe(told);
       assert.deepStrictEqual(touched, [`${orgId}:stop`]);
       assert.isTrue(yield* stop.isPaused(orgId));
-      yield* queue.enqueue(event("old"));
+      const directChat = KinChatId.make("direct");
+      const groupChat = KinChatId.make("renewals");
+      const meera = KinPersonId.make("meera");
+      const createdAt = "2026-11-08T00:00:00.000Z";
+      yield* sql`UPDATE kin_chats SET title = 'Chief of staff' WHERE org_id = ${orgId} AND chat_id = 'owner-chat'`;
+      yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, direct_key, last_seq, created_at)
+        VALUES (${directChat}, ${orgId}, 'direct', NULL, 'meera:lead', 1, ${createdAt}),
+          (${groupChat}, ${orgId}, 'project_group', 'Renewals', NULL, 1, ${createdAt})`;
+      yield* sql`INSERT INTO kin_people (person_id, org_id, handle, display_name, created_at)
+        VALUES (${meera}, ${orgId}, 'meera', 'Meera', ${createdAt})`;
+      yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id, role, joined_at)
+        VALUES ('direct-lead', ${orgId}, ${directChat}, 'agent', ${agentId}, 'member', ${createdAt})`;
+      for (const [id, chatId] of [
+        ["old-direct", directChat],
+        ["old-group", groupChat],
+      ] as const) {
+        const memberId = KinMemberId.make(`member-${id}`);
+        const messageId = KinMessageId.make(`message-${id}`);
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, person_id, role, joined_at)
+          VALUES (${memberId}, ${orgId}, ${chatId}, 'person', ${meera}, 'member', ${createdAt})`;
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind,
+          author_person_id, author_member_id, author_role, kind, body, mentions_json, status, created_at)
+          VALUES (${messageId}, ${orgId}, ${chatId}, 1, 'human', ${meera}, ${memberId}, 'member',
+            'text', 'Can you check the renewal?', '[]', 'posted', ${createdAt})`;
+        yield* queue.enqueue({
+          ...event(id),
+          _tag: "chat.message",
+          provenance: { _tag: "human", personId: meera, memberId },
+          chatId,
+          messageId,
+        });
+      }
+      for (let n = 0; n < 10; n++)
+        yield* queue.enqueue({
+          ...event(`routine-${n}`),
+          receivedAt: DateTime.makeUnsafe("2026-11-08T00:01:00.000Z"),
+        });
       yield* TestClock.adjust("25 hours");
       yield* queue.enqueue(event("fresh"));
 
@@ -438,18 +571,23 @@ describe("KinStop", () => {
       assert.deepStrictEqual(touched, [`${orgId}:stop`, `${orgId}:stop`]);
       assert.isFalse(yield* stop.isPaused(orgId));
       assert.deepStrictEqual(
-        yield* sql`SELECT author_kind, body FROM kin_messages WHERE org_id = ${orgId} ORDER BY seq`,
+        yield* sql`SELECT body FROM kin_messages WHERE org_id = ${orgId} AND author_kind = 'system' ORDER BY seq`,
         [
-          { author_kind: "system", body: KinStop.PAUSED_NOTICE },
-          { author_kind: "system", body: "Kin resumed. 1 queued event expired." },
+          { body: KinStop.PAUSED_NOTICE },
+          {
+            body: [
+              "Kin resumed. 11 queued events expired.",
+              "Renewals (from Meera)",
+              ...Array.from({ length: 9 }, () => "Chief of staff (from Kin)"),
+              "and 1 more",
+            ].join("\n"),
+          },
         ],
       );
       assert.deepStrictEqual(
-        yield* sql`SELECT event_id, state FROM kin_events WHERE org_id = ${orgId} AND tag != 'resume' ORDER BY event_id`,
-        [
-          { event_id: "fresh", state: "queued" },
-          { event_id: "old", state: "expired" },
-        ],
+        yield* sql`SELECT event_id FROM kin_events WHERE org_id = ${orgId} AND state = 'queued'
+          AND tag != 'resume' ORDER BY event_id`,
+        [{ event_id: "fresh" }, { event_id: "old-direct" }],
       );
       const resumes = yield* sql<{
         json: string;
@@ -463,10 +601,14 @@ describe("KinStop", () => {
         _tag: "resume",
         pausedAt: paused.pausedAt === null ? null : DateTime.formatIso(paused.pausedAt),
       });
-      assert.deepStrictEqual(JSON.parse(resumes[0]!.json).expired, {
-        count: 1,
-        events: [{ eventId: "old", tag: "routine", receivedAt: "2026-11-08T00:00:00.000Z" }],
+      const expired = JSON.parse(resumes[0]!.json).expired;
+      assert.strictEqual(expired.count, 11);
+      assert.deepStrictEqual(expired.events[0], {
+        eventId: "old-group",
+        tag: "chat.message",
+        receivedAt: createdAt,
       });
+      assert.lengthOf(expired.events, 11);
 
       yield* TestClock.adjust("2 seconds");
       const batch = yield* Effect.scoped(

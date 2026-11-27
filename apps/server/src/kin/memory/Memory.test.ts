@@ -20,7 +20,7 @@ import * as Sqlite from "../../persistence/Sqlite.ts";
 import { ownerOnlyWakeup } from "../lead/Audience.testkit.ts";
 import * as Memory from "./Memory.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
-import { KinLeadPrompt } from "../lead/LeadPrompt.ts";
+import { KinLeadPrompt, SESSION_CHANGES_CAP } from "../lead/LeadPrompt.ts";
 import * as MemoryCache from "./MemoryCache.ts";
 import * as MemoryConfig from "./MemoryConfig.ts";
 import { devMemoryRepository } from "./devMemory.ts";
@@ -63,6 +63,108 @@ const memoryLayer = (base: string, repo: string) =>
     Layer.provide(gitLayer),
     Layer.provide(NodeServices.layer),
   );
+
+it.effect("reads every touched memory path with one log, including edits that were undone", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const base = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+    const writer = `${base}/a/memory`;
+    yield* fs.makeDirectory(`${writer}/.git/objects`, { recursive: true });
+    const real = yield* VcsProcess.VcsProcess;
+    const run = (args: ReadonlyArray<string>) =>
+      real.run({
+        operation: "Test.memoryHistory",
+        command: "git",
+        cwd: writer,
+        args,
+      });
+    yield* run(["init", "--initial-branch=main"]);
+    yield* fs.makeDirectory(`${writer}/claims`);
+    const title = `${writer}/claims/harborview-terms.md`;
+    const commit = (subject: string) =>
+      run([
+        "-c",
+        "user.name=Meera",
+        "-c",
+        "user.email=meera@example.invalid",
+        "commit",
+        "-am",
+        subject,
+      ]);
+    yield* fs.writeFileString(title, "Original Harborview renewal terms");
+    yield* run(["add", "--", "claims"]);
+    yield* commit("Before");
+    const before = (yield* run(["rev-parse", "HEAD"])).stdout.trim();
+    yield* fs.writeFileString(title, "Changed Harborview renewal terms");
+    yield* commit("kin(finance): owner edits item");
+    yield* fs.writeFileString(title, "Original Harborview renewal terms");
+    yield* commit("kin(finance): owner undoes edit");
+    for (let index = 1; index < 500; index++)
+      yield* fs.writeFileString(`${writer}/claims/item-${index}.md`, "Invented");
+    yield* run(["add", "--", "claims"]);
+    yield* commit("Tidewater Freight");
+    const after = (yield* run(["rev-parse", "HEAD"])).stdout.trim();
+    const calls: string[][] = [];
+    const service = memoryTestLayer.pipe(
+      Layer.provide(configLayer(base, "unused")),
+      Layer.provide(
+        Layer.succeed(VcsProcess.VcsProcess, {
+          run: (input) => {
+            calls.push([...input.args]);
+            return real.run(input);
+          },
+        }),
+      ),
+    );
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      const one = yield* memory.changedItems!(orgA, before, after, {
+        limit: 31,
+        excludeSubjects: new Set(["Tidewater Freight"]),
+      });
+      expect(one.items).toMatchObject([
+        { path: "claims/harborview-terms.md", subject: "kin(finance): owner undoes edit" },
+      ]);
+      const all = yield* memory.changedItems!(orgA, before, after, {
+        limit: 31,
+        excludeSubjects: new Set(),
+      });
+      expect(all.items).toHaveLength(31);
+      expect(all.overflow).toBe(469);
+      expect(calls).toHaveLength(2);
+      expect(calls.every((args) => args.includes("log"))).toBe(true);
+      const bad = yield* memory.changedItems!(orgA, "--all", after, {
+        limit: 31,
+        excludeSubjects: new Set(),
+      }).pipe(Effect.flip);
+      expect(bad).toMatchObject({ _tag: "MemoryChangeHeadInvalid" });
+      expect(calls).toHaveLength(2);
+
+      // A path-filtered log can walk past commits that never touched Memory.
+      yield* real.run({
+        operation: "Test.memoryHistory",
+        command: "git",
+        cwd: writer,
+        args: ["fast-import", "--quiet"],
+        stdin: Array.from(
+          { length: 2_000 },
+          (_, n) =>
+            `commit refs/heads/main\ncommitter Meera <meera@example.invalid> ${n + 2_000_000_000} +0000\n` +
+            `data 6\nUpdate\n${n === 0 ? `from ${after}\n` : ""}M 100644 inline notes.txt\ndata 1\n${n % 2}\n\n`,
+        ).join(""),
+      });
+      const distantHead = (yield* run(["rev-parse", "HEAD"])).stdout.trim();
+      const distant = yield* memory.changedItems!(orgA, before, distantHead, {
+        limit: SESSION_CHANGES_CAP + 1,
+        excludeSubjects: new Set(),
+      });
+      expect(calls).toHaveLength(3);
+      expect(calls[2]).toContain(`--max-count=${(SESSION_CHANGES_CAP + 1) * 4}`);
+      expect(distant.items).toEqual([]);
+      expect(distant.overflow).toBeGreaterThan(0);
+    }).pipe(Effect.provide(service));
+  }).pipe(Effect.provide(Layer.mergeAll(gitLayer, NodeServices.layer, databaseLayer))),
+);
 
 it.live.each([
   { name: "committed lead edits", binary: false, indexDirectory: false, missingIndex: false },
@@ -222,6 +324,18 @@ it.live.each([
         expect((yield* memory.readPromptSnapshot(orgA, prepared.head)).index).toBe(
           yield* memory.readIndex(orgA),
         );
+        // A tap cancelled the deferral: the turn reads it cancelled, and its index leaves it out.
+        const before = yield* memory.readPromptSnapshot(orgA, prepared.head);
+        const deferral = before.items.find((item) => item.id === "def-001");
+        expect(before.index).toContain("def-001");
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due,
+            snapshot_json, updated_at)
+          VALUES (${orgA}, 'def-001', 'undone', ${Date.parse(deferral?.due ?? "")}, 'start', '{}', 0)`;
+        const cancelled = yield* memory.readPromptSnapshot(orgA, prepared.head);
+        expect(cancelled.items.find((item) => item.id === "def-001")?.status).toBe("cancelled");
+        expect(cancelled.index).not.toContain("def-001");
+        yield* sql`DELETE FROM kin_deferral_runs WHERE org_id = ${orgA}`;
         expect(
           yield* memory.readPromptSnapshot(orgA, "wrong-head").pipe(Effect.result),
         ).toMatchObject({ _tag: "Failure", failure: { _tag: "MemoryError" } });
@@ -518,13 +632,24 @@ it.effect(
             fixtureItem({
               id: `extra-${n}`,
               recorded_at: "2027-02-27T00:00:00.000Z",
-              title: "Multiline\nfixture",
-            }),
+              title: n === 202 ? "Multiline\nCargo tally" : "Multiline\nfixture",
+              ...(n === 203 ? { what: "Cargo tally" } : {}),
+            }).replace(
+              "Invented fixture body.",
+              n === 204 ? "Cargo tally." : "Invented fixture body.",
+            ),
           );
         }
         yield* memory.record(orgA, "main", yield* memory.anchor(orgA, "main"), repository.commit());
         yield* memory.prepareWakeup(orgA);
         yield* memory.rebuildIndex(orgA);
+        const tally = (yield* memory.query(orgA, { text: "cArGo TaLLy" })).map(({ id }) => id);
+        expect.soft(tally.toSorted()).toEqual(["extra-202", "extra-203", "extra-204"]);
+        const limited = yield* memory.query(orgA, { text: "cArGo TaLLy", limit: 2 });
+        expect.soft(limited).toHaveLength(2);
+        expect
+          .soft(limited.every(({ id }) => ["extra-202", "extra-203", "extra-204"].includes(id)))
+          .toBe(true);
         expect((yield* memory.readIndex(orgA)).trimEnd().split("\n")).toHaveLength(200);
         expect(yield* memory.readIndex(orgA)).toContain("more");
         const before = yield* memory.readIndex(orgA);
@@ -580,6 +705,12 @@ it.effect(
         expect(duplicateRead._tag).toBe("Failure");
         if (duplicateRead._tag === "Failure")
           expect(duplicateRead.failure._tag).toBe("MemoryDuplicateId");
+        const path = KinMemoryItemId.make("deferrals/duplicate.md");
+        const duplicatePath = yield* memory.readItem(orgA, path).pipe(Effect.result);
+        expect.soft(duplicatePath).toEqual(duplicateRead);
+        expect((yield* memory.readItemQuietly(orgA, path).pipe(Effect.flip))._tag).toBe(
+          "MemoryNotFound",
+        );
         yield* memory.rebuildIndex(orgA);
         expect(yield* memory.readIndex(orgA)).toContain("[duplicate id]");
         const beforeFallback = yield* memory.query(orgA, {});
@@ -819,6 +950,39 @@ it.effect("a snapshot read takes no lock and makes no git call, trigger sync or 
       expect(yield* memory.snapshotItems(orgA)).toEqual(loaded);
       yield* Deferred.succeed(release, undefined);
       yield* Fiber.join(blocked);
+    }).pipe(Effect.provide(layer));
+  }).pipe(Effect.provide(Layer.merge(NodeServices.layer, databaseLayer)), Effect.scoped),
+);
+
+it.effect("a read of an unchanged head checks no checkout path under the memory lock", () =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+    const repository = fakeRepository(fs);
+    repository.files.set("deferrals/def-001.md", fixtureItem({}));
+    yield* fs.makeDirectory(`${root}/a/memory-read/deferrals`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/a/memory/.git/objects`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/a/memory/.git/refs`, { recursive: true });
+    let pathChecks = 0;
+    const countingFs = Layer.succeed(FileSystem.FileSystem, {
+      ...fs,
+      exists: (path) => Effect.suspend(() => (pathChecks++, fs.exists(path))),
+      lstat: (path) => Effect.suspend(() => (pathChecks++, fs.lstat(path))),
+    });
+    const layer = memoryTestLayer.pipe(
+      Layer.provide(configLayer(root, "unused")),
+      Layer.provide(repository.layer),
+      Layer.provide(Layer.merge(NodeServices.layer, countingFs)),
+    );
+    yield* Effect.gen(function* () {
+      const memory = yield* Memory.Memory;
+      yield* memory.anchor(orgA, "main", repository.head());
+      const loaded = yield* memory.items(orgA);
+      expect(pathChecks).toBeGreaterThan(0);
+      pathChecks = 0;
+      // Every await under the lock is an event-loop turn a busy server makes the next read wait.
+      expect(yield* memory.items(orgA)).toEqual(loaded);
+      expect(pathChecks).toBe(0);
     }).pipe(Effect.provide(layer));
   }).pipe(Effect.provide(Layer.merge(NodeServices.layer, databaseLayer)), Effect.scoped),
 );

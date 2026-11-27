@@ -14,8 +14,9 @@ import * as Redacted from "effect/Redacted";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
-import { HttpClient, HttpClientRequest } from "effect/http";
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
 
 import { ServerConfig } from "../../config.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
@@ -58,6 +59,8 @@ const RENEW_BEFORE_MS = 30 * MINUTE_MS;
 const TICK = "30 seconds";
 const MAX_PAGES = 10;
 const COMMAND_CAP = 400;
+/** The most of one answer a read takes in, unless it asks for less. */
+const READ_LIMIT = 2 * 1024 * 1024;
 
 /**
  * Never in a token an agent's shell holds: with these it could change a repo's settings, access or
@@ -190,7 +193,26 @@ const shortfallProblem = ({ asked, status }: Shortfall) =>
 export type AppState =
   | { readonly _tag: "none" }
   | { readonly _tag: "broken"; readonly problem: string }
-  | { readonly _tag: "ok"; readonly app: Described };
+  | { readonly _tag: "ok"; readonly app: Described; readonly coverageUnverified?: true };
+
+/** One read's answer: its bytes up to the read's limit, and whether GitHub sent more (`cut`). */
+export interface KinGitHubAppRead {
+  readonly status: number;
+  readonly headers: Readonly<Record<string, string>>;
+  readonly bytes: Uint8Array;
+  readonly cut: boolean;
+}
+
+/**
+ * Reads as the App's installation on one repo: GET only, no redirect followed, the body bounded
+ * before anything decodes it. Status 0 for no answer; nothing falls back to the owner's login.
+ */
+export interface KinGitHubAppReader {
+  readonly get: (
+    path: string,
+    options?: { readonly accept?: string; readonly limit?: number },
+  ) => Effect.Effect<KinGitHubAppRead>;
+}
 
 export interface KinGitHubAppAs {
   readonly login: string;
@@ -204,6 +226,8 @@ export class KinGitHubApp extends Context.Service<
     readonly state: () => Effect.Effect<AppState>;
     /** GitHub's API as the App on `repo` (owner/name); undefined where the App can't reach it. */
     readonly on: (repo: string) => Effect.Effect<KinGitHubAppAs | undefined>;
+    /** GET-only reads as the App on `repo` (owner/name); undefined where the App can't reach it. */
+    readonly reader?: (repo: string) => Effect.Effect<KinGitHubAppReader | undefined>;
     /** Renews what is due (the App's description, tokens, the shell's files) and records owner switches. */
     readonly refresh: () => Effect.Effect<void>;
     /** Looks at the App on GitHub now, as after the owner changed where it is installed. */
@@ -439,6 +463,7 @@ export const make = Effect.gen(function* () {
     if (Option.isNone(about)) return short("about the App", app.status);
     const botLogin = namedBot ?? `${about.value.slug}[bot]`;
     const installations: Array<Installation> = [];
+    let coverageUnverified = false;
     for (let page = 1; page <= MAX_PAGES; page++) {
       const answer = yield* request(appToken, {
         path: `app/installations?per_page=100&page=${page}`,
@@ -454,6 +479,8 @@ export const make = Effect.gen(function* () {
             ? held
             : yield* mint(appToken, installation);
         const repos = new Set<string>();
+        const suspended = installation.suspended_at != null;
+        if (token === undefined && !suspended) coverageUnverified = true;
         for (let reposPage = 1; token !== undefined && reposPage <= MAX_PAGES; reposPage++) {
           let answer = yield* request(token.token, {
             path: `installation/repositories?per_page=100&page=${reposPage}`,
@@ -461,13 +488,19 @@ export const make = Effect.gen(function* () {
           // A token GitHub stopped taking (revoked, or the installation was replaced): mint once more.
           if (answer.status === 401 && token === held) {
             token = yield* mint(appToken, installation);
-            if (token === undefined) break;
+            if (token === undefined) {
+              if (!suspended) coverageUnverified = true;
+              break;
+            }
             answer = yield* request(token.token, {
               path: `installation/repositories?per_page=100&page=${reposPage}`,
             });
           }
           const found = answer.status === 200 ? decodeRepos(answer.body) : Option.none();
-          if (Option.isNone(found)) break;
+          if (Option.isNone(found)) {
+            if (!suspended) coverageUnverified = true;
+            break;
+          }
           for (const repo of found.value.repositories) repos.add(repo.full_name.toLowerCase());
           if (found.value.repositories.length < 100) break;
         }
@@ -475,7 +508,7 @@ export const make = Effect.gen(function* () {
           id: installation.id,
           account,
           selection: installation.repository_selection === "all" ? "all" : "selected",
-          suspended: installation.suspended_at != null,
+          suspended,
           settingsUrl: installation.html_url?.startsWith("https://github.com/")
             ? installation.html_url
             : null,
@@ -516,6 +549,7 @@ export const make = Effect.gen(function* () {
     }
     return {
       _tag: "ok",
+      ...(coverageUnverified ? { coverageUnverified: true as const } : {}),
       app: {
         id: Number(appId),
         name: about.value.name,
@@ -645,8 +679,11 @@ export const make = Effect.gen(function* () {
                 status: described.status,
               });
             loggedProblem = problem;
-            // A working App stays on through a passing failure; its tokens still hold.
-            if (before._tag !== "ok") state = { _tag: "broken", problem };
+            // Existing App work keeps its tokens, but new outside triage needs verified coverage.
+            state =
+              before._tag === "ok"
+                ? { ...before, coverageUnverified: true }
+                : { _tag: "broken", problem };
           } else {
             loggedProblem = null;
             state = described;
@@ -689,6 +726,101 @@ export const make = Effect.gen(function* () {
     },
     (effect) => lock.withPermits(1)(effect),
   );
+
+  /** The installation token for `repo`, minted anew when it is close to lapsing. */
+  const tokenFor = Effect.fn("KinGitHubApp.tokenFor")(function* (repo: string) {
+    const state = yield* Ref.get(current);
+    const appId = yield* appIdNow();
+    if (state._tag !== "ok" || Option.isNone(appId)) return undefined;
+    const wanted = repo.trim().toLowerCase();
+    const installation = state.app.installations.find(
+      (entry) => !entry.suspended && entry.repos.has(wanted),
+    );
+    if (installation === undefined) return undefined;
+    const now = yield* Clock.currentTimeMillis;
+    let held = tokens.get(installation.id);
+    if (held === undefined || held.expiresAt - now < 5 * MINUTE_MS) {
+      const appToken = yield* jwt(appId.value).pipe(Effect.orElseSucceed(() => undefined));
+      held = appToken === undefined ? undefined : yield* mint(appToken, installation);
+    }
+    return held?.token;
+  });
+
+  const readGet = Effect.fn("KinGitHubApp.read")(function* (
+    token: Redacted.Redacted<string>,
+    path: string,
+    accept: string,
+    limit: number,
+  ) {
+    const outgoing = HttpClientRequest.get(`${API}/${path.replace(/^\//, "")}`).pipe(
+      HttpClientRequest.setHeaders({
+        accept,
+        "x-github-api-version": "2022-11-28",
+        "user-agent": "kin",
+      }),
+      HttpClientRequest.bearerToken(token),
+    );
+    const none: KinGitHubAppRead = { status: 0, headers: {}, bytes: new Uint8Array(), cut: false };
+    return yield* client.execute(outgoing).pipe(
+      Effect.flatMap((response) => {
+        const chunks: Array<Uint8Array> = [];
+        let size = 0;
+        let cut = false;
+        // GitHub's 204 and 304 carry no body, which the stream reads as a failure.
+        if (response.status === 204 || response.status === 304)
+          return Effect.succeed<KinGitHubAppRead>({
+            status: response.status,
+            headers: { ...response.headers },
+            bytes: new Uint8Array(),
+            cut: false,
+          });
+        return response.stream.pipe(
+          Stream.runForEachWhile((chunk) =>
+            Effect.sync(() => {
+              const room = limit - size;
+              if (chunk.length > room) {
+                chunks.push(chunk.subarray(0, room));
+                size = limit;
+                cut = true;
+                return false;
+              }
+              chunks.push(chunk);
+              size += chunk.length;
+              return true;
+            }),
+          ),
+          Effect.map((): KinGitHubAppRead => {
+            const bytes = new Uint8Array(size);
+            let at = 0;
+            for (const chunk of chunks) {
+              bytes.set(chunk, at);
+              at += chunk.length;
+            }
+            return { status: response.status, headers: { ...response.headers }, bytes, cut };
+          }),
+        );
+      }),
+      // A redirect is GitHub's answer, never another request.
+      Effect.provideService(FetchHttpClient.RequestInit, { redirect: "manual" }),
+      Effect.timeout("30 seconds"),
+      // No cause: requests and answers here can hold tokens.
+      Effect.orElseSucceed(() => none),
+    );
+  });
+
+  const reader = Effect.fn("KinGitHubApp.reader")(function* (repo: string) {
+    const token = yield* tokenFor(repo);
+    if (token === undefined) return undefined;
+    return {
+      get: (path, options) =>
+        readGet(
+          token,
+          path,
+          options?.accept ?? "application/vnd.github+json",
+          options?.limit ?? READ_LIMIT,
+        ),
+    } satisfies KinGitHubAppReader;
+  });
 
   const on = Effect.fn("KinGitHubApp.on")(function* (repo: string) {
     const state = yield* Ref.get(current);
@@ -750,7 +882,7 @@ export const make = Effect.gen(function* () {
     ),
   };
 
-  return KinGitHubApp.of({ state, on, refresh, lookAgain, origin, hook });
+  return KinGitHubApp.of({ state, on, reader, refresh, lookAgain, origin, hook });
 });
 
 /** Looks once at startup and then every 30 seconds, for as long as Kin runs. */

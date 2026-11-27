@@ -23,7 +23,16 @@ import { PreviewControlsToolkit } from "../../../apps/server/src/mcp/toolkits/pr
 import { PreviewToolkit } from "../../../apps/server/src/mcp/toolkits/preview/tools.ts";
 import { TURN_EVENT_TOOLS } from "../../../apps/server/src/kin/lead/eventIds.ts";
 import { CAPTION_PROMPT, RESCUE_PROMPT } from "../../../apps/server/src/kin/reply/classify.ts";
-import { fillKinRules, kinDated, kinSessionOf, kinTurnFiles } from "../kin.ts";
+import {
+  fillKinRules,
+  KIN_CALL_REFUSAL,
+  kinBillsOf,
+  kinDated,
+  kinSessionOf,
+  kinGitHubOf,
+  kinTurnFiles,
+} from "../kin.ts";
+import { kinSeatOf } from "../kin-seat.ts";
 import { filledKinMocks } from "../kin-checks.ts";
 import { rubricRequest } from "../rubric.ts";
 import {
@@ -33,6 +42,8 @@ import {
   makeSample,
   McpToolUseCase,
   normalizeToolName,
+  requestBody,
+  requestEffort,
   NOT_GRADER,
   type RunConfig,
   t3SubagentContext,
@@ -61,7 +72,7 @@ export const runnerHash = () =>
   );
 
 /** The runner this file's part list was checked against. */
-export const REVIEWED_RUNNER = "7149f16ac2853421";
+export const REVIEWED_RUNNER = "b1f337c0e2192d2a";
 
 export const CaseSurface = Schema.Struct({
   /** The case as run.json hashes it, and its first request as run.json hashes it. */
@@ -142,6 +153,9 @@ const previewUnavailable = new Contracts.PreviewAutomationUnavailableError({
 }).message;
 const decodePreviewError = Schema.decodeUnknownOption(Contracts.PreviewAutomationError);
 const CLASSIFY_SOURCE = sources(["apps/server/src/kin/reply/classify.ts"]);
+const BUBBLES_SOURCE = sources(["packages/contracts/src/kinPage.ts"]);
+const TURN_VOICE_SOURCE = sources(["apps/server/src/kin/reply/turnVoice.ts"]);
+const CALL_ARGUMENTS_SOURCE = sources(["apps/server/src/kin/connections/callArguments.ts"]);
 const QUOTED_MESSAGE = /BEGIN QUOTE: (?:owner|co-owner|member human|guest human) message/;
 
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
@@ -165,7 +179,7 @@ export const laterParts = (testCase: McpToolUseCase, tools: ReadonlySet<string>)
   const has = (set: ReadonlySet<string>) => [...tools].some((tool) => set.has(tool));
   const { setup, expect } = testCase;
   const later: Record<string, string> = {
-    // The rescue decision and shownText read Kin's reply classifier; the judge reads shownText.
+    // The reply checks and follow-up prompts read Kin's reply classifier.
     "kin/reply/classify.ts": CLASSIFY_SOURCE,
     TURN_EVENT_TOOLS: hashJson([...TURN_EVENT_TOOLS].toSorted()),
   };
@@ -173,10 +187,18 @@ export const laterParts = (testCase: McpToolUseCase, tools: ReadonlySet<string>)
   // A Kin mock's answer is filled in by Kin's own builders, so it moves when they do.
   const kinMocks = filledKinMocks(setup);
   if (kinMocks.length > 0) later.kinMocks = hashJson(kinMocks);
-  if (setup.world?.kinLead === true && QUOTED_MESSAGE.test(testCase.prompt)) {
-    later.RESCUE_PROMPT = hash(RESCUE_PROMPT);
-    later.CAPTION_PROMPT = hash(CAPTION_PROMPT);
+  if (setup.world?.kinLead === true) {
+    later["contracts/kinPage.ts"] = BUBBLES_SOURCE;
+    later["kin/reply/turnVoice.ts"] = TURN_VOICE_SOURCE;
+    later.kinTriggerSendOnly = hashJson(Contracts.DEFAULT_SERVER_SETTINGS.kinTriggerSendOnly);
+    if (QUOTED_MESSAGE.test(testCase.prompt)) {
+      later.RESCUE_PROMPT = hash(RESCUE_PROMPT);
+      later.CAPTION_PROMPT = hash(CAPTION_PROMPT);
+    }
   }
+  // A connection call's text arguments are read as Kin reads them; text with no object is refused.
+  if (tools.has("kin_connection_call"))
+    later["kin/connections/callArguments.ts"] = hash(CALL_ARGUMENTS_SOURCE + KIN_CALL_REFUSAL);
   if (tools.has("t3_theme_read")) later.THEME_GUIDE = hash(THEME_GUIDE);
   if (tools.has("request_secret")) later.SECRET_REQUEST_UNSAVED_NOTE = hashJson(unsavedSecretNote);
   if (tools.has("delegate_task") || tools.has("task_status"))
@@ -270,7 +292,7 @@ const readTemplate = (bytes: Uint8Array) =>
 export const surfaceOf = Effect.fn("changedCases.surfaceOf")(function* (input: {
   readonly cases: ReadonlyArray<McpToolUseCase>;
   readonly model: Model;
-  readonly effort: string;
+  readonly effort?: string | undefined;
   readonly shellModel: string;
 }) {
   const { model, effort } = input;
@@ -281,6 +303,7 @@ export const surfaceOf = Effect.fn("changedCases.surfaceOf")(function* (input: {
   // run.ts `baseKey` for a Claude model.
   const options = (testCase: McpToolUseCase) => {
     const { setup, prompt } = testCase;
+    const kinSeat = kinSeatOf(testCase);
     return {
       role: setup.role,
       deviceAccess: setup.world?.deviceAgentAccess !== false,
@@ -292,54 +315,48 @@ export const surfaceOf = Effect.fn("changedCases.surfaceOf")(function* (input: {
       kinSession: kinSessionOf(testCase),
       kinShared: prompt.includes("{{SHARED_TURN}}"),
       kinSocial: setup.world?.kinSocial === true,
+      kinBills: kinBillsOf(testCase),
+      kinGitHub: kinGitHubOf(testCase),
+      kinEngineering: setup.world?.kinEngineering === true,
+      ...(kinSeat === undefined ? {} : { kinSeat }),
     };
   };
   const bases = new Map<string, Base>();
   const baseFor = Effect.fnUntraced(function* (testCase: McpToolUseCase) {
     const { role, ...seat } = options(testCase);
     const key = hashJson(options(testCase));
-    let base = bases.get(key);
-    if (base === undefined) {
-      const built = buildBase(native, {
-        model,
-        keepUserInstructions: false,
-        subagent: role === "delegated-child",
-        nativeSubagent: role === "native-subagent",
-        ...seat,
-      });
-      base =
-        role === "native-subagent"
-          ? {
-              ...built,
-              subagentContext: yield* Effect.promise(() =>
-                t3SubagentContext(model, seat.deviceAccess, seat.browserAccess),
-              ),
-            }
-          : built;
-      bases.set(key, base);
-    }
+    const cached = bases.get(key);
+    if (cached !== undefined) return kinDated(testCase, cached);
+    const built = buildBase(native, {
+      model,
+      keepUserInstructions: false,
+      subagent: role === "delegated-child",
+      nativeSubagent: role === "native-subagent",
+      ...seat,
+    });
+    const base: Base =
+      role === "native-subagent"
+        ? {
+            ...built,
+            subagentContext: yield* Effect.promise(() =>
+              t3SubagentContext(model, seat.deviceAccess, seat.browserAccess),
+            ),
+          }
+        : built;
+    bases.set(key, base);
     return kinDated(testCase, base);
   });
   const cases: Record<string, CaseSurface> = {};
+  const efforts = new Set<string>();
   for (const testCase of input.cases) {
     const sample = makeSample(testCase, yield* baseFor(testCase));
     yield* Effect.scoped(Effect.andThen(withDevices(sample), withBackgroundWait(sample)));
     sample.kinFiles = yield* kinTurnFiles(testCase);
     const messages = buildMessages(sample);
     const { base, tools } = sample;
-    // run.ts `requestBody` off the gateway, as `firstRequest` hashes it.
-    const body = {
-      model: base.model,
-      max_tokens: 16_000,
-      thinking: { type: "adaptive", display: "summarized" },
-      output_config: { effort },
-      cache_control: { type: "ephemeral" },
-      system: base.system.map((block, i) =>
-        i === base.system.length - 1 ? { ...block, cache_control: { type: "ephemeral" } } : block,
-      ),
-      tools,
-      messages,
-    };
+    const wireEffort = requestEffort(base, effort === "mixed" ? undefined : effort);
+    efforts.add(wireEffort);
+    const body = requestBody(sample, wireEffort, messages);
     const schemas: Record<string, string> = {};
     for (const tool of [...tools, ...base.deferred]) schemas[tool.name] = hashJson(tool);
     const names = new Set(Object.keys(schemas).map(normalizeToolName));
@@ -367,7 +384,7 @@ export const surfaceOf = Effect.fn("changedCases.surfaceOf")(function* (input: {
   return {
     runner: runnerHash(),
     model,
-    effort,
+    effort: effort ?? (efforts.size === 1 ? [...efforts][0]! : "mixed"),
     shellModel: input.shellModel,
     cases,
   } satisfies Surface;

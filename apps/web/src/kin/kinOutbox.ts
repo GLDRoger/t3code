@@ -19,6 +19,7 @@ import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { environmentPresentations } from "../state/presentation";
 import { kinClient } from "./kinClient";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 const OUTBOX_KEY = "t3code:kin:outbox";
 /** Who each host last said this browser's session is, so a change of person is noticed. */
@@ -57,7 +58,7 @@ export const kinOutbox = createKinOutbox({
       AsyncResult.getOrElse(appAtomRegistry.get(sessionOrgsAtom(environmentId)), () => null),
     ),
   send: async (record) => {
-    const result = await kinClient.send.run(appAtomRegistry, {
+    const result = await runKinCommand(appAtomRegistry, kinClient.send, {
       environmentId: record.environmentId,
       input: {
         chatId: record.chatId,

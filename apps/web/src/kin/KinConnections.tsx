@@ -2,6 +2,7 @@ import { useAtomRefresh, useAtomValue } from "@effect/atom-react";
 import {
   KIN_CONNECTIONS_COPY as COPY,
   KIN_MAIL_COPY as MAIL,
+  KIN_MY_MAILBOX_COPY as MINE,
   KIN_MAIL_PERMISSIONS,
   createKinConnectionActions,
   KIN_OWNER_CLIENT_SETUP,
@@ -62,6 +63,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { KinConnectionPage, type KinMailDiffers } from "./KinConnectionPage";
 import { OwnerClientSetup, openSignInWindow, SignInWaiting } from "./KinConnectionSignIn";
 import { KinGitHubConnect, KinGitHubPage } from "./KinGitHubConnect";
+import { KinMyMailbox, KinPeopleMailboxes } from "./KinMyMailbox";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { useKinFormDiscard } from "./KinFormDiscard";
 import { KinSocialConnect } from "./KinSocialConnect";
@@ -310,6 +312,12 @@ function ConnectionsBody(
   return (
     <KinSettingsPage purpose={COPY.purpose}>
       <div className="flex flex-col gap-5">
+        <KinMyMailbox environmentId={environmentId} orgId={orgId} />
+        <KinPeopleMailboxes
+          environmentId={environmentId}
+          orgId={orgId}
+          mailboxes={view?.mailboxes ?? []}
+        />
         <KinSettingsSection
           title={MAIL.section}
           description={accounts.length === 0 ? undefined : MAIL.sectionDetail}
@@ -378,7 +386,11 @@ function ConnectionsBody(
                 account.label === address || account.label === kinConnectionProvider(account)
                   ? undefined
                   : account.label;
-              return openRow(account, address, label);
+              return openRow(
+                account,
+                address,
+                label === undefined ? MINE.companys : `${label} · ${MINE.companys}`,
+              );
             })}
           </KinSettingsSection>
         ))}

@@ -1,76 +1,58 @@
-import { formatKinWhen, isKinCurrency, KIN_TEXT_LOCALE } from "@t3tools/contracts";
+import { formatKinWhen, isKinCurrency, KIN_TEXT_LOCALE, kinWhenParts } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import { DAY_MS, HOUR_MS } from "../durations.ts";
+import { hoursEndAfter, hoursStartAfter } from "../triggers/quietHours.ts";
 
 /**
- * A person's working day, as their profile's hours give it. Without hours a question's day ends at
- * 19:30 and a raise comes at 10:30, on their clock.
+ * A person's working day, as their profile's hours give it: `start` after `end` is a shift that
+ * ends the next morning. Without hours a question's day ends at 19:30 and a raise comes at 10:30,
+ * on their clock, Monday to Friday.
  */
 export type Workday = {
   readonly days: ReadonlyArray<number>;
   readonly start: string;
   readonly end: string;
 };
-const DAY_ENDS = { hour: 19, minute: 30 } as const;
-const MORNING = { hour: 10, minute: 30 } as const;
-const timeOf = (text: string) => {
-  const [hour, minute] = text.split(":").map(Number);
-  return { hour: hour ?? 0, minute: minute ?? 0 };
-};
-/** Their own start and end when the day has both in order; an overnight shift keeps the defaults. */
-const bounds = (work: Workday | undefined) =>
-  work !== undefined && work.start < work.end
-    ? { morning: timeOf(work.start), ends: timeOf(work.end) }
-    : { morning: MORNING, ends: DAY_ENDS };
 const WEEKDAYS: ReadonlyArray<number> = [1, 2, 3, 4, 5];
+/** Their own hours, on their own days else Monday to Friday; hours of no minutes keep the defaults. */
+const shift = (work: Workday | undefined): Workday => {
+  const days = work === undefined || work.days.length === 0 ? WEEKDAYS : work.days;
+  return work !== undefined && work.start !== work.end
+    ? { days, start: work.start, end: work.end }
+    : { days, start: "10:30", end: "19:30" };
+};
 /** A day the asker names is at least this far off, and at most a month. */
 const SOONEST_MS = HOUR_MS;
 const LATEST_MS = 31 * DAY_MS;
 
-const partsIn = (ms: number, zone: string) =>
-  DateTime.toParts(DateTime.makeZonedUnsafe(ms, { timeZone: zone }));
 const wallTime = (
   day: { readonly year: number; readonly month: number; readonly day: number },
-  at: { readonly hour: number; readonly minute: number },
+  time: string,
   zone: string,
-) =>
-  DateTime.toEpochMillis(
+) => {
+  const [hour, minute] = time.split(":").map(Number);
+  return DateTime.toEpochMillis(
     DateTime.makeZonedUnsafe(
-      { year: day.year, month: day.month, day: day.day, hour: at.hour, minute: at.minute },
+      { year: day.year, month: day.month, day: day.day, hour: hour ?? 0, minute: minute ?? 0 },
       { timeZone: zone, adjustForTimeZone: true },
     ),
   );
+};
 
 /**
- * The first `at` on a working day strictly after `after`, on the person's clock. Their own work
- * days when set, else Monday to Friday.
+ * The day a question is answered by when the asker names none: the end of the next stretch of
+ * their hours after today's end, on their clock.
  */
-const nextWorkingAt = (
-  after: number,
-  zone: string,
-  at: { readonly hour: number; readonly minute: number },
-  days: ReadonlyArray<number> | undefined,
-) => {
-  const working = days === undefined || days.length === 0 ? WEEKDAYS : days;
-  // Noon steps from day to day without a daylight-saving change skipping or repeating one.
-  const start = partsIn(after, zone);
-  let noon = wallTime(start, { hour: 12, minute: 0 }, zone);
-  for (let step = 0; step < 15; step++, noon += DAY_MS) {
-    const day = partsIn(noon, zone);
-    const candidate = wallTime(day, at, zone);
-    if (candidate > after && working.includes(day.weekDay)) return candidate;
-  }
-  return after + DAY_MS;
-};
-
-/** The day a question is answered by when the asker names none: the end of the next working day. */
 export const defaultDue = (now: number, zone: string, work?: Workday) => {
-  const { ends } = bounds(work);
-  const endOfToday = Math.max(now, wallTime(partsIn(now, zone), ends, zone));
-  return nextWorkingAt(endOfToday, zone, ends, work?.days);
+  const hours = shift(work);
+  const endOfToday = Math.max(now, wallTime(kinWhenParts(now, zone), hours.end, zone));
+  return hoursEndAfter(hours, zone, endOfToday) ?? endOfToday + DAY_MS;
 };
 
-/** A `YYYY-MM-DD` the asker named, as the end of that day on the person's clock; why not, when it can't be. */
+/**
+ * A `YYYY-MM-DD` the asker named, as the end of that day's stretch on the person's clock (the next
+ * morning for a shift past midnight); why not, when it can't be.
+ */
 export const namedDue = (
   by: string,
   now: number,
@@ -78,14 +60,20 @@ export const namedDue = (
   work?: Workday,
 ): { readonly at: number } | { readonly refused: string } => {
   const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(by.trim());
-  const at =
+  const hours = shift(work);
+  const named =
     match === null
-      ? Number.NaN
-      : wallTime(
-          { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]) },
-          bounds(work).ends,
-          zone,
+      ? undefined
+      : DateTime.toParts(
+          DateTime.add(
+            DateTime.makeZonedUnsafe(
+              { year: Number(match[1]), month: Number(match[2]), day: Number(match[3]), hour: 12 },
+              { timeZone: zone, adjustForTimeZone: true },
+            ),
+            { days: hours.start > hours.end ? 1 : 0 },
+          ),
         );
+  const at = named === undefined ? Number.NaN : wallTime(named, hours.end, zone);
   if (!Number.isFinite(at) || at < now + SOONEST_MS || at > now + LATEST_MS)
     return {
       refused:
@@ -94,9 +82,9 @@ export const namedDue = (
   return { at };
 };
 
-/** When a question with no safe default is raised once more: the next working morning after its day. */
+/** When a question with no safe default is raised once more: the next start of their hours after its day. */
 export const raiseAt = (due: number, zone: string, work?: Workday) =>
-  nextWorkingAt(due, zone, bounds(work).morning, work?.days);
+  hoursStartAfter(shift(work), zone, due) ?? due + DAY_MS;
 
 const STOP = new Set(
   "a an the to for of on in at by with and or should shall i we you me my our us it its them they this that these those please can could will would do does did be is are was were if about any some let".split(
@@ -128,13 +116,24 @@ export const normaliseIntent = (intent: string | undefined) =>
     .slice(0, 12)
     .join(" ");
 
-/** The records a question is about, as their keys (INV-8, C-2); anything else is dropped. */
+/** A pull request as Kin's GitHub events and `kin_github_link` name it, in one spelling. */
+export const pullRequestAbout = (repo: string, number: number) =>
+  `https://github.com/${repo.toLowerCase()}/pull/${number}`;
+const PULL_URL = /^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/([1-9]\d{0,8})\/?$/i;
+
+/**
+ * What a question is about: records by their keys (INV-8, C-2) and pull requests by their URL;
+ * anything else is dropped.
+ */
 export const normaliseAbout = (about: ReadonlyArray<string> | undefined) =>
   [
     ...new Set(
-      (about ?? [])
-        .map((key) => key.trim().toUpperCase())
-        .filter((key) => /^[A-Z]{1,6}-\d{1,6}$/.test(key)),
+      (about ?? []).flatMap((said) => {
+        const pull = PULL_URL.exec(said.trim());
+        if (pull !== null) return [pullRequestAbout(pull[1]!, Number(pull[2]))];
+        const key = said.trim().toUpperCase();
+        return /^[A-Z]{1,6}-\d{1,6}$/.test(key) ? [key] : [];
+      }),
     ),
   ]
     .toSorted()

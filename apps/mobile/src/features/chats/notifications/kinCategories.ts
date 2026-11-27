@@ -19,7 +19,6 @@ export const KIN_CHOICE_ANSWERS = ["answer_1", "answer_2"] as const;
 export type KinChoiceAnswer = (typeof KIN_CHOICE_ANSWERS)[number];
 
 // Every action opens the app: a background action is not delivered reliably to a killed app.
-const open = { opensAppToForeground: true } as const;
 const openAfterUnlock = { opensAppToForeground: true, isAuthenticationRequired: true } as const;
 
 /** The buttons each `aps.category` shows. `kin.message` has none: a tap opens the chat. */
@@ -31,10 +30,8 @@ export const KIN_NOTIFICATION_CATEGORIES = {
     { identifier: "answer_1", buttonTitle: "Answer 1", options: openAfterUnlock },
     { identifier: "answer_2", buttonTitle: "Answer 2", options: openAfterUnlock },
   ],
-  "kin.deferral.confirmed": [
-    { identifier: "change", buttonTitle: "Change", options: open },
-    { identifier: "remind", buttonTitle: "Just remind me", options: open },
-  ],
+  // The confirm card's only tap is Undo, which the card itself offers.
+  "kin.deferral.confirmed": [],
   "kin.deferral.heads_up": [
     { identifier: "start_now", buttonTitle: "Start now", options: openAfterUnlock },
     { identifier: "monday", buttonTitle: "Monday", options: openAfterUnlock },

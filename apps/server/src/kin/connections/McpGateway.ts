@@ -1,8 +1,10 @@
 import { McpClient, McpClientError, McpProtocol, McpSchema } from "effect/ai";
 import * as Context from "effect/Context";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
@@ -79,6 +81,20 @@ const egressRefusal = (error: unknown, depth = 0): string | undefined => {
   );
 };
 
+/** When a service that said "too often" (429) asks to be called again, from its Retry-After. */
+export const tryAgain = (retryAfter: string | undefined) => {
+  const seconds = /^\d+$/.test(retryAfter?.trim() ?? "") ? Number(retryAfter) : undefined;
+  if (seconds !== undefined)
+    return seconds <= 90
+      ? `try again in ${seconds} second${seconds === 1 ? "" : "s"}`
+      : `try again in ${Math.ceil(seconds / 60)} minutes`;
+  const at =
+    retryAfter === undefined ? undefined : Option.getOrUndefined(DateTime.make(retryAfter));
+  return at === undefined
+    ? "try again in a minute or so"
+    : `try again after ${DateTime.formatIso(at)}`;
+};
+
 const gatewayError = (error: McpClientError.McpClientError, host: string) => {
   const reason = error.reason;
   const refused = egressRefusal(error);
@@ -86,6 +102,11 @@ const gatewayError = (error: McpClientError.McpClientError, host: string) => {
     return new KinGatewayError({ reason: "refused_address", message: refused });
   switch (reason._tag) {
     case "HttpError":
+      if (reason.status === 429)
+        return new KinGatewayError({
+          reason: "unreachable",
+          message: `${host} says Kin is asking too often (HTTP 429); ${tryAgain(reason.retryAfter)}.`,
+        });
       return reason.status === 401 || reason.status === 403
         ? new KinGatewayError({
             reason: "key_refused",

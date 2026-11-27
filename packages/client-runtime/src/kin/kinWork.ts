@@ -118,6 +118,15 @@ export const KIN_WORK_GONE = {
   title: "This task isn't here any more",
   detail: "Open Tasks to see what there is now.",
 };
+/** One plain line for a missing, malformed, or unshared link; never says which of those it is. */
+export const KIN_UNAVAILABLE_LINK = {
+  doc: "This doc doesn't exist or isn't shared with you.",
+  task: "This task doesn't exist or isn't shared with you.",
+  /** A key opened in Money, Clients or Docs: a bill, an invoice or any list's entry. */
+  entry: "This entry doesn't exist or isn't shared with you.",
+  client: "This client doesn't exist or isn't shared with you.",
+  project: "This project doesn't exist or isn't shared with you.",
+} as const;
 export const KIN_WORK_ITEM_FAILED = {
   title: "Couldn't load this task",
   detail: KIN_CHECK_CONNECTION,
@@ -150,6 +159,8 @@ export interface KinWorkNames {
   readonly owner?: KinPersonId | null;
   /** The owner's time zone, where an all-day due date is a calendar day. Null until read. */
   readonly zone: string | null;
+  /** The reader's profile zone, where a timed due's day and clock read; absent or null, `zone`. */
+  readonly readerZone?: string | null;
 }
 
 export function kinWorkNames(input: {
@@ -157,6 +168,7 @@ export function kinWorkNames(input: {
   readonly orgId: KinOrgId;
   readonly people: ReadonlyArray<KinPerson> | null;
   readonly zone: string | null;
+  readonly readerZone?: string | null;
 }): KinWorkNames {
   const org = input.orgs?.orgs.find((held) => held.orgId === input.orgId);
   return {
@@ -175,6 +187,7 @@ export function kinWorkNames(input: {
     me: input.orgs?.me.find((me) => me.orgId === input.orgId)?.personId ?? null,
     owner: input.people?.find((person) => person.access === "owner")?.personId ?? null,
     zone: input.zone,
+    readerZone: input.readerZone ?? null,
   };
 }
 
@@ -573,29 +586,35 @@ function dayInZone(date: Date, zone: string | null): Date {
   }
 }
 
+type DueZones = Pick<KinWorkNames, "zone" | "readerZone">;
+// A due day is the company's calendar day for anyone; a due time reads on the reader's own clock.
+export const kinWorkDueZone = (allDay: boolean, names: DueZones) =>
+  allDay ? names.zone : (names.readerZone ?? names.zone);
+
 export const kinWorkDueText = (
   record: Pick<KinRecord, "dueAt" | "dueAllDay">,
-  names: Pick<KinWorkNames, "zone">,
+  names: DueZones,
   now: Date,
 ): string | null => {
   if (record.dueAt === null) return null;
   const due = new Date(record.dueAt);
   if (Number.isNaN(due.getTime())) return null;
-  // Due days and times are the owner's, and so is the today they are counted from.
-  const day = kinWorkDay(dayInZone(due, names.zone), dayInZone(now, names.zone));
-  return record.dueAllDay ? day : `${day}, ${kinWorkClock(due, names.zone)}`;
+  const zone = kinWorkDueZone(record.dueAllDay, names);
+  const day = kinWorkDay(dayInZone(due, zone), dayInZone(now, zone));
+  return record.dueAllDay ? day : `${day}, ${kinWorkClock(due, zone)}`;
 };
 
 /** Days from today to the due day (0 today, negative past), counted as `kinWorkDueText` says it. */
 export const kinWorkDueDays = (
   record: Pick<KinRecord, "dueAt" | "dueAllDay">,
-  names: Pick<KinWorkNames, "zone">,
+  names: DueZones,
   now: Date,
 ): number | null => {
   if (record.dueAt === null) return null;
   const due = new Date(record.dueAt);
   if (Number.isNaN(due.getTime())) return null;
-  return daysBetween(dayInZone(now, names.zone), dayInZone(due, names.zone));
+  const zone = kinWorkDueZone(record.dueAllDay, names);
+  return daysBetween(dayInZone(now, zone), dayInZone(due, zone));
 };
 
 /** Sentences joined for a label, never doubling the stop a title already ends with. */
@@ -1258,7 +1277,7 @@ export const KIN_DOC_COMPANY = {
 const CATEGORY_LABEL = {
   task: null,
   issue: "Issue",
-  obligation: "Commitment",
+  obligation: "Promise",
   meeting: "Meeting",
 } as const;
 
@@ -1304,6 +1323,20 @@ const dayFromText = (text: string | null, now: Date, zone: string | null) => {
   return Number.isNaN(date.getTime())
     ? null
     : kinWorkDay(dayInZone(date, zone), dayInZone(now, zone));
+};
+
+// History keeps the all-day flag only when it changed; an all-day due is the company day's last millisecond.
+const dueSetAllDay = (
+  to: string | null,
+  flag: { readonly to: string | null } | undefined,
+  zone: string | null,
+) => {
+  if (flag !== undefined) return flag.to === "true";
+  const at = to === null ? Number.NaN : Date.parse(to);
+  return (
+    !Number.isNaN(at) &&
+    civilDayOf(dayInZone(new Date(at), zone)) !== civilDayOf(dayInZone(new Date(at + 1), zone))
+  );
 };
 
 const ADDED = {
@@ -1421,7 +1454,11 @@ export function kinWorkChangeText(
     );
   const due = field("due");
   if (due !== undefined) {
-    const day = dayFromText(due.to, now, names.zone);
+    const day = dayFromText(
+      due.to,
+      now,
+      kinWorkDueZone(dueSetAllDay(due.to, field("dueAllDay"), names.zone), names),
+    );
     clauses.push(
       day === null
         ? "took the date off"
@@ -1618,6 +1655,62 @@ export function kinWorkClientStays(
     : KIN_WORK_NEW_COPY.clientStays(party.title);
 }
 
+/**
+ * How a task reached its holder: handed back, or given by someone (an agent that gave it on its
+ * own over the authority it gave it with), through the agent a person asked. Null when nobody gave it.
+ */
+export function kinWorkGiven(
+  item: Pick<
+    KinRecordDetail,
+    | "assignedBy"
+    | "assignedByAgent"
+    | "assignedAt"
+    | "changes"
+    | "handedBack"
+    | "state"
+    | "owner"
+    | "createdBy"
+  >,
+):
+  | { readonly kind: "handedBack"; readonly by: KinWorkPrincipal; readonly at: string }
+  | { readonly kind: "handedBackChange"; readonly by: KinWorkActor; readonly at: string }
+  | {
+      readonly kind: "gave";
+      readonly giver: KinWorkPrincipal;
+      readonly via: KinWorkActor | null;
+      readonly at: string | null;
+    }
+  | null {
+  const giver: KinWorkPrincipal | null =
+    item.assignedByAgent === undefined
+      ? item.assignedBy
+      : { _tag: "agent", agentId: item.assignedByAgent };
+  const lastMove = item.changes.find((change) => change.fields.some((f) => f.field === "owner"));
+  if (item.handedBack !== undefined && !kinWorkClosed(item.state))
+    return { kind: "handedBack", by: item.handedBack.by, at: item.handedBack.at };
+  if (lastMove !== undefined && lastMove.fields.some((f) => f.field === "handedBack"))
+    return { kind: "handedBackChange", by: lastMove.by, at: lastMove.at };
+  if (
+    giver === null ||
+    kinWorkSamePrincipal(giver, item.owner) ||
+    // An agent that made the task for itself was given it by no one.
+    (item.assignedByAgent === undefined &&
+      lastMove?.kind === "created" &&
+      item.createdBy._tag !== "system" &&
+      kinWorkSamePrincipal(item.createdBy, item.owner))
+  )
+    return null;
+  return {
+    kind: "gave",
+    giver,
+    via:
+      giver._tag === "person" && lastMove !== undefined && lastMove.by._tag === "agent"
+        ? lastMove.by
+        : null,
+    at: item.assignedAt,
+  };
+}
+
 export function kinWorkItemView(
   item: KinRecordDetail,
   names: KinWorkNames,
@@ -1628,35 +1721,23 @@ export function kinWorkItemView(
   const row = kinWorkRow(item, names, now);
   const category = item.category === null ? null : CATEGORY_LABEL[item.category];
   const ownerName = kinWorkName(item.owner, names);
-  // The agent that gave it on its own says more than the authority it gave it with; one a person
-  // asked is named after them: "Zoya gave this to you, via Chief of staff".
+  const move = kinWorkGiven(item);
   const giver: KinWorkPrincipal | null =
     item.assignedByAgent === undefined
       ? item.assignedBy
       : { _tag: "agent", agentId: item.assignedByAgent };
-  // Handed back, it is with whoever gave it, and the holder's words say why.
   const lastMove = item.changes.find((change) => change.fields.some((f) => f.field === "owner"));
   const handBack = lastMove?.fields.find((f) => f.field === "handedBack");
-  const via =
-    giver?._tag === "person" && lastMove !== undefined && lastMove.by._tag === "agent"
-      ? `, via ${kinWorkActorName(lastMove.by, names)}`
-      : "";
   const given =
-    item.handedBack !== undefined && !kinWorkClosed(item.state)
-      ? `Handed back by ${kinWorkName(item.handedBack.by, names, "you")} · ${formatKinTime(new Date(item.handedBack.at), now)}`
-      : lastMove !== undefined && handBack !== undefined
-        ? `${kinWorkActorName(lastMove.by, names)} handed this back · ${formatKinTime(new Date(lastMove.at), now)}`
-        : giver === null ||
-            kinWorkSamePrincipal(giver, item.owner) ||
-            // An agent that made the task for itself was given it by no one.
-            (item.assignedByAgent === undefined &&
-              lastMove?.kind === "created" &&
-              item.createdBy._tag !== "system" &&
-              kinWorkSamePrincipal(item.createdBy, item.owner))
-          ? null
+    move === null
+      ? null
+      : move.kind === "handedBack"
+        ? `Handed back by ${kinWorkName(move.by, names, "you")} · ${formatKinTime(new Date(move.at), now)}`
+        : move.kind === "handedBackChange"
+          ? `${kinWorkActorName(move.by, names)} handed this back · ${formatKinTime(new Date(move.at), now)}`
           : [
-              `${kinWorkName(giver, names)} gave this to ${kinWorkName(item.owner, names, "you")}${via}`,
-              item.assignedAt === null ? null : formatKinTime(new Date(item.assignedAt), now),
+              `${kinWorkName(move.giver, names)} gave this to ${kinWorkName(item.owner, names, "you")}${move.via === null ? "" : `, via ${kinWorkActorName(move.via, names)}`}`,
+              move.at === null ? null : formatKinTime(new Date(move.at), now),
             ]
               .filter((part) => part !== null)
               .join(" · ");
@@ -1843,7 +1924,7 @@ export function kinWorkItemState(
   if (
     AsyncResult.isFailure(result) &&
     kinWorkFailuresOf(result.cause).some(
-      (error) => isKinChatError(error) && error.reason === "not_found",
+      (error) => (isKinChatError(error) && error.reason === "not_found") || kinWorkRefused(error),
     )
   )
     return { _tag: "gone" };
@@ -1939,6 +2020,10 @@ export interface KinWorkDraft {
   readonly side: KinRecordSide | null;
   /** How it comes back once closed; null when it doesn't. */
   readonly repeat: KinRepeatRule | null;
+  /** The deal a promise sits on, when made from the deal's page. */
+  readonly deal?: KinWorkRef | null;
+  /** Where a promise was made, in the person's own words; empty for unsaid. */
+  readonly from?: string;
   /** Who else is on it besides its holder; absent or empty for nobody. */
   readonly alsoOn?: ReadonlyArray<KinWorkPrincipal>;
 }
@@ -1972,9 +2057,9 @@ export const KIN_WORK_NO_DRAFT: KinWorkDraft = {
   repeat: null,
 };
 
-/** A form opened from a client or a project starts out about it. */
+/** A form opened from a client, a deal or a project starts out about it. */
 export const kinWorkDraftFor = (
-  about: Partial<Pick<KinWorkDraft, "party" | "project" | "side">>,
+  about: Partial<Pick<KinWorkDraft, "party" | "project" | "side" | "deal">>,
 ): KinWorkDraft => ({ ...KIN_WORK_NO_DRAFT, ...about });
 
 /** The form's name and its first field, which say whose move it is when a client is set. */
@@ -2015,6 +2100,9 @@ export const KIN_WORK_NEW_COPY = {
   sideTheirs: "They owe it",
   /** Neither side: a plain task about the client, not something owed. */
   sideNone: "Nobody, it's a task",
+  dealLabel: "Deal",
+  fromLabel: "Where it was promised",
+  fromPlaceholder: "At the site visit",
   noMatch: "Nothing by that name.",
   /** A task moved to another project keeps a client that is neither project's. */
   clientStays: (name: string) => `Client stays ${name}`,
@@ -2024,6 +2112,8 @@ export const KIN_WORK_NEW_COPY = {
 
 /** What happens next, said before the owner commits to it. */
 export function kinWorkDraftHint(draft: KinWorkDraft, names: KinWorkNames): string | null {
+  if (draft.owner === null && draft.side === "theirs" && draft.party !== null)
+    return `Whoever looks after ${draft.party.title} chases it.`;
   return draft.owner?._tag === "agent"
     ? `${kinWorkName(draft.owner, names)} starts on it right away. Its progress shows here.`
     : null;
@@ -2080,6 +2170,13 @@ export function kinWorkDraftCheck(draft: KinWorkDraft): KinWorkDraftCheck {
     return { ok: false, problem: "That date doesn't look right." };
   if (draft.repeat !== null && draft.due === null)
     return { ok: false, problem: KIN_WORK_REPEAT.needsDue };
+  const promise = draft.side !== null && draft.party !== null;
+  const from = promise ? (draft.from ?? "").trim() : "";
+  if (from.length > KIN_WORK_FROM_MAX)
+    return {
+      ok: false,
+      problem: `Say where it was promised in under ${KIN_WORK_FROM_MAX} characters.`,
+    };
   return {
     ok: true,
     input: {
@@ -2097,10 +2194,13 @@ export function kinWorkDraftCheck(draft: KinWorkDraft): KinWorkDraftCheck {
             ...(draft.side === "theirs" ? { side: "theirs" as const } : {}),
           }),
       ...(draft.repeat === null ? {} : { repeat: draft.repeat }),
+      ...(draft.deal === null || draft.deal === undefined ? {} : { deal: draft.deal.key }),
+      ...(from === "" ? {} : { from }),
       ...(draft.alsoOn === undefined || draft.alsoOn.length === 0 ? {} : { alsoOn: draft.alsoOn }),
     },
   };
 }
+const KIN_WORK_FROM_MAX = 280;
 
 // The owner's changes
 
@@ -2154,6 +2254,29 @@ export function kinWorkSettled(
 export interface KinWorkAnswers {
   readonly get: (key: KinRecordKey) => KinRecordDetail | undefined;
   readonly put: (item: KinRecordDetail) => void;
+}
+
+/** The answers kept for one host and org, each with the person it answered. */
+export type KinWorkAnswersHeld = Readonly<
+  Record<string, { readonly viewer: string | null; readonly item: KinRecordDetail }>
+>;
+
+/** This person's answer for a task; the next person signed in on the same host gets none. */
+export const kinWorkAnswerOf = (
+  held: KinWorkAnswersHeld,
+  key: string,
+  viewer: string | null,
+): KinRecordDetail | undefined => (held[key]?.viewer === viewer ? held[key].item : undefined);
+
+/** The answers with this one kept, unless the same person already holds one as new. */
+export function kinWorkAnswerKept(
+  held: KinWorkAnswersHeld,
+  item: KinRecordDetail,
+  viewer: string | null,
+): KinWorkAnswersHeld {
+  const one = held[item.key];
+  if (one !== undefined && one.viewer === viewer && one.item.rev >= item.rev) return held;
+  return { ...held, [item.key]: { viewer, item } };
 }
 
 /** A task as held, or the host's newer answer to a change made to it from any screen. */

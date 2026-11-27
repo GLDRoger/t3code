@@ -35,6 +35,7 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { kinClient } from "./kinClient";
 import { kinHostConnected } from "./useKinHost";
 import { kinWorkChoicesAtom, type KinWorkTarget } from "./useKinWork";
+import { useKinSectionNamed, useKinSectionOn } from "./useKinShell";
 
 const NO_PROJECT = "";
 
@@ -57,7 +58,12 @@ export function KinDocFileDialog(
   const [draft, setDraft] = useState<KinDocFileDraft>(() => kinDocFileDraft(doc));
   const [busy, setBusy] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
-  const clients = (held?.clients ?? []).filter((one) => one.active && one.kind === "client");
+  // With Clients off a doc is filed under the company or nothing, never a client.
+  const clientsOn = useKinSectionOn(environmentId, "clients");
+  const named = useKinSectionNamed(environmentId);
+  const clients = clientsOn
+    ? (held?.clients ?? []).filter((one) => one.active && one.kind === "client")
+    : [];
   const projects = (held?.projects ?? []).filter(
     (one) =>
       one.state === "open" &&
@@ -66,7 +72,7 @@ export function KinDocFileDialog(
   const homes = [
     { value: "company", label: KIN_DOC_HOMES.company },
     ...clients.map((one) => ({ value: String(one.key), label: one.name })),
-    { value: "none", label: KIN_DOC_HOMES.noClient },
+    { value: "none", label: named(KIN_DOC_HOMES.noClient) },
   ];
   // A client the list no longer offers still reads as itself until it is changed.
   const homeLabel =

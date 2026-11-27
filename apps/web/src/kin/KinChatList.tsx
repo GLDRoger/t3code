@@ -8,6 +8,7 @@ import {
   kinChatListRowLabel,
   kinChatListRows,
   kinChatsKeptUp,
+  kinChatsSettleAfterHours,
   KIN_CHATS_SETTLED,
   KIN_CHATS_AGENTS_TITLE,
   KIN_TEAMMATE_WELCOME,
@@ -64,6 +65,7 @@ import { ApproveOnPhone } from "./ApproveOnPhone";
 import { KinRestoreButton, useKinRestore } from "./KinAgentRetire";
 import { KinAvatar } from "./KinAvatar";
 import { kinClient } from "./kinClient";
+import { useKinProfiles } from "./kinPictures";
 import { kinNewLeadTarget, openKinLeadForm } from "./KinNewLeadButton";
 import type { KinLeadFormTarget } from "./kinLeadForm";
 import { useNowMinuteMs } from "./useKinClock";
@@ -72,7 +74,8 @@ import { KinWaitsForFolds } from "./KinWaitsFor";
 import { kinWaitingAskView } from "@t3tools/client-runtime/kin/kinWaitingAsk";
 import { KinStandInLine } from "./KinStandInLine";
 import { kinAccessCopy } from "./kinTeammateMark";
-import { useKinInbox } from "./useKinHost";
+import { useKinInboxShown } from "./useKinAttention";
+import { kinHostKeptTarget, useKinInbox } from "./useKinHost";
 import { useKinOpenAgentChat } from "./useKinOpenChat";
 import { kinAgentAvatar } from "@t3tools/client-runtime/kin/kinScreenState";
 
@@ -102,7 +105,10 @@ const STATE_COPY: Record<
 export function KinChatList() {
   const params = useParams({ strict: false });
   const openChatId = "chatId" in params ? (params.chatId ?? null) : null;
-  const { host, state, retry } = useKinInbox();
+  const held = useKinInbox();
+  const { host, retry, reread } = held;
+  const keptTarget = kinHostKeptTarget(host);
+  const state = useKinInboxShown(held.state, keptTarget);
   const nowMs = useNowMinuteMs();
   const { isMobile, setOpenMobile } = useSidebar();
   if (state._tag === "loading") {
@@ -170,6 +176,7 @@ export function KinChatList() {
         chats={inbox.chats}
         directory={directory}
         environmentId={state.environmentId}
+        onReread={reread}
       />
       {rows.length === 0 ? (
         mine === null ? (
@@ -187,6 +194,7 @@ export function KinChatList() {
           rows={liveRows}
           me={directory.me}
           environmentId={state.environmentId}
+          orgId={keptTarget?.orgId ?? null}
           target={mine}
           openChatId={openChatId}
           now={now}
@@ -237,6 +245,7 @@ function KinFoldedChats(props: {
   readonly rows: ReadonlyArray<KinChatListRow>;
   readonly me: ReadonlySet<string>;
   readonly environmentId: EnvironmentId;
+  readonly orgId: KinOrgId | null;
   readonly target: KinLeadFormTarget | null;
   readonly openChatId: string | null;
   readonly now: Date;
@@ -255,15 +264,24 @@ function KinFoldedChats(props: {
       ),
     ),
   );
+  const profilesResult = useKinProfiles(props.environmentId, props.orgId);
+  const profiles =
+    profilesResult === null ? null : Option.getOrNull(AsyncResult.value(profilesResult));
+  const myProfile = profiles?.profiles.find((one) => props.me.has(one.personId)) ?? null;
+  const settleAfterHours = kinChatsSettleAfterHours(myProfile);
   const inView = useSyncExternalStore(subscribeVisibility, pageVisible, () => true);
-  const [kept, setKept] = useState({ inView: false, ids: NOBODY_KEPT });
+  const [kept, setKept] = useState({ inView: false, settleAfterHours, ids: NOBODY_KEPT });
   const entering = inView && !kept.inView;
+  const refold = entering || kept.settleAfterHours !== settleAfterHours;
   const fold = kinChatListFold(props.rows, {
     mainAgentId: leads?.teamAgentId ?? null,
-    keptUp: entering ? NOBODY_KEPT : kept.ids,
+    keptUp: refold ? NOBODY_KEPT : kept.ids,
+    now: props.now.getTime(),
+    settleAfterHours,
   });
-  const keptNext = kinChatsKeptUp(entering ? NOBODY_KEPT : kept.ids, fold.up);
-  if (inView !== kept.inView || keptNext !== kept.ids) setKept({ inView, ids: keptNext });
+  const keptNext = kinChatsKeptUp(refold ? NOBODY_KEPT : kept.ids, fold.up);
+  if (inView !== kept.inView || settleAfterHours !== kept.settleAfterHours || keptNext !== kept.ids)
+    setKept({ inView, settleAfterHours, ids: keptNext });
   const [open, setOpen] = useLocalStorage(SETTLED_OPEN_KEY, false, Schema.Boolean);
   const [toggled, setToggled] = useState<boolean | null>(null);
   // The open chat's row is in sight until the fold is closed by hand.
@@ -623,6 +641,7 @@ function KinWaiting(props: {
   readonly chats: ReadonlyArray<KinChatSummary>;
   readonly directory: KinDirectory;
   readonly environmentId: EnvironmentId;
+  readonly onReread: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const nowMs = useNowMinuteMs();
@@ -678,7 +697,12 @@ function KinWaiting(props: {
                   {item.reason === "approval" ? <ApproveOnPhone /> : null}
                 </Link>
                 {ask === null ? null : (
-                  <KinWaitingAsk ask={ask} environmentId={props.environmentId} />
+                  <KinWaitingAsk
+                    ask={ask}
+                    item={item}
+                    environmentId={props.environmentId}
+                    onReread={props.onReread}
+                  />
                 )}
               </li>
             );

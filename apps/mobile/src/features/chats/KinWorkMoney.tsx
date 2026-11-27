@@ -1,3 +1,4 @@
+import { KIN_BILLS } from "@t3tools/client-runtime/kin/kinBills";
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import { kinWorkOffline } from "@t3tools/client-runtime/kin/kinWork";
 import { kinWorkReadUnreachable } from "@t3tools/client-runtime/kin/kinWorkForms";
@@ -85,6 +86,7 @@ import { refreshKinWorkLive, type KinWorkDirectory, type KinWorkTarget } from ".
 import { KinChart } from "./widgets/KinChart";
 import { KinLoadFailed } from "./components/KinLoadFailed";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
+import { useKinSectionOn, useKinShell } from "./state/useKinShell";
 
 type Shared = KinWorkTarget & {
   readonly live: KinWorkLive;
@@ -120,12 +122,14 @@ function AreaFrame(props: {
   const canBudget = useAtomValue(
     kinClient.workSetBudget.permissionAtom(props.target.environmentId),
   );
-  const canInvoice = useAtomValue(
-    kinClient.workNewInvoice.permissionAtom(props.target.environmentId),
-  );
+  // Invoices and quotes off: no way to make one.
+  const invoicesOn = useKinSectionOn(props.target.environmentId, "invoices");
+  const canInvoice =
+    useAtomValue(kinClient.workNewInvoice.permissionAtom(props.target.environmentId)) && invoicesOn;
   const canExpense = useAtomValue(
     kinClient.workNewExpense.permissionAtom(props.target.environmentId),
   );
+  const canBills = useAtomValue(kinClient.billsAdd.permissionAtom(props.target.environmentId));
   const base = {
     environmentId: String(props.target.environmentId),
     orgId: String(props.target.orgId),
@@ -164,6 +168,17 @@ function AreaFrame(props: {
               onPress: () => agent.ask("Log an expense: "),
             },
           ]),
+    ...(canBills
+      ? [
+          {
+            id: "bills",
+            title: KIN_BILLS.add,
+            subtitle: KIN_BILLS.addDetail,
+            icon: "photo" as const,
+            onPress: () => navigation.navigate("KinBillsAdd", base),
+          },
+        ]
+      : []),
     ...(canReceipt
       ? [
           {
@@ -207,13 +222,17 @@ function AreaFrame(props: {
             icon: "arrow.clockwise" as const,
             onPress: () => agent.ask(KIN_SUBSCRIPTIONS.addMessage),
           },
-          {
-            id: "quote",
-            title: KIN_MONEY.newQuote,
-            subtitle: `${agent.name} drafts it`,
-            icon: "doc.plaintext" as const,
-            onPress: () => agent.ask(KIN_QUOTES.askMessage),
-          },
+          ...(invoicesOn
+            ? [
+                {
+                  id: "quote",
+                  title: KIN_MONEY.newQuote,
+                  subtitle: `${agent.name} drafts it`,
+                  icon: "doc.plaintext" as const,
+                  onPress: () => agent.ask(KIN_QUOTES.askMessage),
+                },
+              ]
+            : []),
         ]),
   ];
   const addItems = props.waiting === true ? offered.filter((item) => item.id === "goal") : offered;
@@ -433,6 +452,8 @@ export function KinDateRowLine(props: {
 export function KinMoneyArea(props: Shared) {
   const navigation = useNavigation();
   const target = { environmentId: props.environmentId, orgId: props.orgId };
+  const invoicesOn = useKinSectionOn(props.environmentId, "invoices");
+  const shell = useKinShell(props.environmentId);
   const seq = props.stale ? null : props.live.seq;
   const datesAllowed = useAtomValue(kinClient.workDates.permissionAtom(target.environmentId));
   // Only a viewer who can't open Dates is drawn the coming-up rows themselves.
@@ -531,12 +552,12 @@ export function KinMoneyArea(props: Shared) {
     );
   }
   const summary = state.value;
-  const view = kinMoneyView(summary, kinListsOf(lists));
+  const view = kinMoneyView(summary, kinListsOf(lists), shell);
   const owing = allClients && every.state._tag === "ready" ? every.state.value.owed : summary.owed;
   const clients =
     owing === summary.owed
       ? view.clients
-      : kinMoneyView({ ...summary, owed: owing }, kinListsOf(lists)).clients;
+      : kinMoneyView({ ...summary, owed: owing }, kinListsOf(lists), shell).clients;
   const openRecord = (to: KinAttentionOpen) => {
     if (to.type === "record") navigation.navigate("KinWorkItem", { ...target, task: to.key });
   };
@@ -605,6 +626,8 @@ export function KinMoneyArea(props: Shared) {
     [
       ...summary.owed.total,
       ...summary.owed.overdue,
+      ...(summary.toPay?.total ?? []),
+      ...(summary.toPay?.dueSoon ?? []),
       ...summary.received.thisMonth,
       ...summary.received.lastMonth,
       ...summary.spent.thisMonth.total,
@@ -618,6 +641,7 @@ export function KinMoneyArea(props: Shared) {
   const missing = kinMissingRates(
     [
       ...summary.owed.total,
+      ...(summary.toPay?.total ?? []),
       ...summary.spentThisFinancialYear,
       ...summary.receivedThisFinancialYear,
     ],
@@ -675,6 +699,20 @@ export function KinMoneyArea(props: Shared) {
         </ListSection>
       </View>
     ),
+    toPay:
+      view.toPay === null || view.dueSoon === null ? null : (
+        <View className="gap-4">
+          <View className="flex-row gap-4 px-2">
+            <Figure figure={view.toPay} onOpen={openList} estimates={estimates} />
+            <Figure figure={view.dueSoon} onOpen={openList} estimates={estimates} />
+          </View>
+          {!invoicesOn && missing.length > 0 ? (
+            <View className="px-2">
+              <KinSetRateLink {...target} currencies={missing} />
+            </View>
+          ) : null}
+        </View>
+      ),
     month: (
       <KinFoldSection
         title={view.monthLabel}
@@ -717,7 +755,9 @@ export function KinMoneyArea(props: Shared) {
     cash: <KinMoneyCash {...target} seq={seq} rates={rates} />,
     folded: (
       <View className="gap-2">
-        <KinQuotesSection {...target} seq={seq} rates={rates} lists={kinListsOf(lists)} />
+        {invoicesOn ? (
+          <KinQuotesSection {...target} seq={seq} rates={rates} lists={kinListsOf(lists)} />
+        ) : null}
         <KinBudgetsSection {...target} seq={seq} rates={rates} lists={kinListsOf(lists)} />
         <KinSubscriptionsSection
           {...target}
@@ -778,7 +818,8 @@ export function KinMoneyArea(props: Shared) {
   return (
     <AreaFrame {...frame}>
       {top}
-      {KIN_MONEY_BLOCKS.map((block) => (
+      {/* What clients owe is invoices: it goes with Invoices and quotes. */}
+      {KIN_MONEY_BLOCKS.filter((block) => invoicesOn || block !== "owed").map((block) => (
         <Fragment key={block}>{blocks[block]}</Fragment>
       ))}
     </AreaFrame>

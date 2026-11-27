@@ -325,6 +325,29 @@ describe("github_recheck", () => {
       ),
   );
 
+  it.effect("a deferral a tap cancelled is not told done, whatever memory still says", () => {
+    const cancelled = item("rate-limit", {
+      kind: "deferral",
+      path: "deferrals/rate-limit.md",
+      links: ["owner/repo#9"],
+      due: "2026-11-20T00:00:00.000Z",
+    });
+    return run([cancelled], () =>
+      Effect.gen(function* () {
+        yield* watching;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due,
+            snapshot_json, updated_at)
+          VALUES (${orgId}, 'rate-limit', 'undone', ${Date.parse("2026-11-20T00:00:00.000Z")},
+            'start', '{}', 0)`;
+        const service = yield* build;
+        yield* putRecheck("1");
+        yield* service.run("github_recheck", orgId).pipe(withGithub(fakeGithub(states, [])));
+        assert.deepEqual(yield* watchdogEvents, []);
+      }),
+    );
+  });
+
   it.effect("leaves recheck requests pending until a reader reads every repo", () =>
     run([closesIssue], () =>
       Effect.gen(function* () {

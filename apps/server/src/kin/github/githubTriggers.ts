@@ -1,3 +1,4 @@
+import type { KinGithubTrigger } from "@t3tools/contracts";
 import { WRITE_BRANCH_PREFIX } from "../memory/MemoryConfig.ts";
 import { isAgentText, postKey } from "./agentMark.ts";
 
@@ -7,11 +8,13 @@ import { isAgentText, postKey } from "./agentMark.ts";
  */
 
 export const KIN_LABEL = "kin";
+export const TRIAGE_REPLIES = 3;
 const TEXT_CAP = 4_000;
 
 export interface ThreadComment {
   readonly id: number;
   readonly kind: "issue" | "review";
+  readonly bot: boolean;
   readonly body: string;
   readonly author: string;
   readonly association: string;
@@ -28,6 +31,7 @@ export interface ThreadSnapshot {
   readonly title: string;
   readonly body: string;
   readonly author: string;
+  readonly authorBot: boolean;
   readonly association: string;
   readonly open: boolean;
   readonly draft: boolean;
@@ -41,6 +45,7 @@ export interface ThreadSnapshot {
         readonly headRef: string;
         readonly baseRef: string;
         readonly headSha: string;
+        readonly baseSha?: string | undefined;
         readonly fork: boolean;
         /** When GitHub last changed the PR; a push moves it, so the head is at least this still. */
         readonly updatedAt?: number | undefined;
@@ -79,6 +84,11 @@ export interface DecideContext {
   readonly kinsPull?: boolean | undefined;
   /** Who applied the `kin` label, when GitHub says. */
   readonly labeledBy?: string | undefined;
+  readonly triageFrom?: number | undefined;
+  readonly kinCommented?: boolean | undefined;
+  readonly kinSaid?: number | undefined;
+  readonly repliesLeft?: number | undefined;
+  readonly appOn?: boolean | undefined;
 }
 
 /**
@@ -103,7 +113,7 @@ export const isAgentsOwn = (
 
 export interface Trigger {
   readonly key: string;
-  readonly kind: "review" | "call" | "label" | "review_request" | "checks";
+  readonly kind: KinGithubTrigger["kind"];
   readonly agentId: string;
   readonly inside: boolean;
   readonly author: string;
@@ -116,6 +126,26 @@ export interface Trigger {
     | { readonly type: "issue" }
     | { readonly type: "comment"; readonly kind: "issue" | "review"; readonly id: number };
 }
+
+const isBot = (login: string, bot: boolean) => bot || /\[bot\]$/i.test(login);
+
+export const isTriage = (kind: Trigger["kind"]) => kind === "triage" || kind === "triage_reply";
+
+export const triageReplies = (
+  comments: ReadonlyArray<ThreadComment>,
+  { kinSaid, botLogin, agentPosts }: Pick<DecideContext, "kinSaid" | "botLogin" | "agentPosts">,
+) =>
+  kinSaid === undefined
+    ? []
+    : comments
+        .filter(
+          (comment) =>
+            comment.kind === "issue" &&
+            comment.createdAt > kinSaid &&
+            !isAgentsOwn(comment.body, comment.author, botLogin, agentPosts) &&
+            !isBot(comment.author, comment.bot),
+        )
+        .toSorted((a, b) => a.createdAt - b.createdAt || a.id - b.id);
 
 const clip = (text: string) => (text.length <= TEXT_CAP ? text : `${text.slice(0, TEXT_CAP - 1)}…`);
 
@@ -276,6 +306,46 @@ export const decideTriggers = (
       ...(comment.line === undefined ? {} : { line: comment.line }),
       reactTo: { type: "comment", kind: comment.kind, id: comment.id },
     });
+  }
+  const starts = triggers.some(({ kind }) => kind === "label" || kind === "call");
+  const { triageFrom, kinSaid, repliesLeft, appOn } = context;
+  if (thread.item !== "issue" || !thread.open || triageFrom === undefined || starts)
+    return triggers;
+
+  if (
+    thread.createdAt >= Math.max(context.since, triageFrom) &&
+    !agentsOwn &&
+    !isBot(thread.author, thread.authorBot) &&
+    kinSaid === undefined &&
+    !context.kinCommented &&
+    !thread.comments.some((c) =>
+      isAgentsOwn(c.body, c.author, context.botLogin, context.agentPosts),
+    ) &&
+    (itemInside || appOn === true)
+  )
+    triggers.push({
+      ...onItem,
+      key: `triage:${at}`,
+      kind: "triage",
+      inside: itemInside,
+      text: clip(thread.body),
+    });
+
+  if (kinSaid !== undefined && (repliesLeft ?? 0) > 0) {
+    const after = triageReplies(thread.comments, context);
+    const last = after.at(-1);
+    const inside = itemInside && after.every((comment) => context.writes(comment.author));
+    if (last !== undefined && (inside || appOn === true))
+      triggers.push({
+        key: `triage_reply:${at}:c${last.id}`,
+        kind: "triage_reply",
+        agentId: context.defaultAgentId,
+        inside,
+        author: last.author,
+        association: last.association,
+        text: clip(after.map((comment) => `${comment.author}: ${comment.body}`).join("\n\n")),
+        reactTo: { type: "comment", kind: "issue", id: last.id },
+      });
   }
   return triggers;
 };

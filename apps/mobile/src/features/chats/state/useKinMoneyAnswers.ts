@@ -12,4 +12,5 @@ export const {
   useKinInvoiceFromQuote,
   useKinNewInvoice,
   useKinNewExpense,
+  useKinMatchPartner,
 } = makeKinMoneyAnswersHooks(kinHookApp, { useKinMoneyLive });

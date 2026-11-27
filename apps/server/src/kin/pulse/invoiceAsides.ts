@@ -1,5 +1,6 @@
 import { KinRecordId, type KinOrgId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import { billingClientFromProject } from "../work/billTo.ts";
 import * as SqlClient from "effect/sql/SqlClient";
 
 import { ownerLevelPeople } from "../people/KinAccess.ts";
@@ -56,7 +57,7 @@ export const invoiceAsides = Effect.fn("KinInvoiceAsides.read")(function* (input
     SELECT r.record_id AS "recordId", p.key AS "projectKey", c.key AS "clientKey"
     FROM kin_records r
     LEFT JOIN kin_records p ON p.org_id = r.org_id AND p.record_id = r.project_id
-    LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = COALESCE(r.party_id, p.party_id)
+    LEFT JOIN kin_records c ON c.org_id = r.org_id AND c.record_id = ${billingClientFromProject(sql, sql`p.party_id`)}
     WHERE r.org_id = ${orgId} AND r.record_id IN ${sql.in(ids)}
     ORDER BY r.record_id`;
   for (const row of scopes) {
@@ -138,6 +139,7 @@ export const setAsideOverdue = Effect.fn("KinInvoiceAsides.overdue")(function* (
   readonly orgId: KinOrgId;
   readonly now: number;
   readonly viewer: KinViewer;
+  readonly clientsOn?: boolean;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const owed = (yield* owedInvoices({
@@ -160,7 +162,12 @@ export const setAsideOverdue = Effect.fn("KinInvoiceAsides.overdue")(function* (
           {
             invoice: one.key,
             ...issuedNumber(one.number),
-            client: one.partyTitle === null ? "no client" : `${one.partyTitle} (${one.partyKey})`,
+            client:
+              one.partyTitle === null
+                ? (one.billTo ?? "no client")
+                : input.clientsOn === false
+                  ? one.partyTitle
+                  : `${one.partyTitle} (${one.partyKey})`,
             owed: one.balance,
             daysOverdue: one.daysOverdue,
             until: aside.until === null ? "until lifted" : dayIn(aside.until, zone),

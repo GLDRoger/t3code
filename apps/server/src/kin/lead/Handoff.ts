@@ -56,7 +56,9 @@ import { ownerLevel, ownsAgent } from "../people/KinAccess.ts";
 import { personMiss, personNamed } from "../people/personNamed.ts";
 import { signedIn } from "../people/signedIn.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
+import { leftKind, nextCheckIn } from "../pulse/leftForCheckIn.ts";
 import { relayPrefix } from "../reply/promises.ts";
+import { arrivalNoteId } from "../chat/arrivalNotes.ts";
 import { heldUntil, holdFor, holdLine, theirTime, urgentNow } from "../triggers/quietHold.ts";
 import { unreadableBy } from "../work/teamView.ts";
 import { TurnEvent } from "./eventIds.ts";
@@ -73,9 +75,9 @@ export const LeadsResult = Schema.Struct({
     }),
   ),
 });
-/** A hand-off to an agent this turn put on a task: being put on it already woke it with it. */
-export const alreadyOnIt = (keys: ReadonlyArray<string>) =>
-  `Nothing was passed on: you put them on ${keys.join(", ")} in this turn, and that already wakes them with it.`;
+/** Refused: this turn gave `agent` the task or put them on it, so its wake carries the brief. */
+export const alreadyOnIt = (agent: string, titles: ReadonlyArray<string>) =>
+  `Nothing was passed on: ${agent} already has ${titles.map((title) => JSON.stringify(title)).join(" and ")}, which you gave them or put them on in this turn, and that already wakes them with it.`;
 export const HandOffInput = Schema.Struct({
   to: TrimmedNonEmptyString.check(Schema.isMaxLength(80)).annotate({
     description: "The agent to pass it to, by name or domain, as kin_leads lists them.",
@@ -142,6 +144,10 @@ export const RelayInput = Schema.Struct({
         "Only when it can't wait for their quiet hours to end: why, in a few words. Logged; it skips quiet hours and rings them.",
     }),
   ),
+  checkIn: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "true: not now but at the owner's next check-in with you, which Kin gives it to tell them once. Only to the owner.",
+  }),
 });
 export const RelayResult = Schema.Struct({
   to: Schema.String,
@@ -150,9 +156,30 @@ export const RelayResult = Schema.Struct({
   // After an outside read: what it went with, as this turn may name it.
   source: Schema.optional(Schema.String),
 });
+/** What the agent tells the asker of a line left for the owner's check-in (`leftForCheckIn.ts`). */
+export const leftNote = (
+  name: string,
+  next: { readonly title: string; readonly when: string },
+  asker: string,
+) =>
+  `Left for ${name}'s next check-in with you (${next.title}, ${next.when} on the company's clock), which Kin gives it to tell once; if none tells it by the day after, it is sent as a message. Tell ${asker} ${name} hears it then.`;
 /** What `relay` posts with: the gate's message to one person (`KinLevelGate.postTo`). */
 type PostTo = KinLevelGate["Service"]["postTo"];
 
+/** The message a check-in's fact hand-off posts in the other agent's chat with the owner. */
+export const passedFactBody = (input: {
+  readonly request: string;
+  readonly from: string | undefined;
+  readonly about: string;
+  readonly consequence: string;
+  readonly key: string;
+}) =>
+  [
+    input.request.replace(/\s+/g, " "),
+    `From ${input.from ?? "Kin's facts"}: ${input.about}: ${input.consequence} (${input.key})`,
+  ]
+    .join("\n")
+    .slice(0, messageBodyLimit);
 const NOTHING = "Nothing was passed on.";
 /** What a hand-off or relay sent after an outside read tells the sending agent. */
 const AS_REQUEST = " It went as a request, with its source.";
@@ -269,10 +296,7 @@ export class KinHandoff extends Context.Service<
       input: typeof RelayInput.Type,
       postTo: PostTo,
     ) => Effect.Effect<typeof RelayResult.Type, KinChatError>;
-    /**
-     * A wake-up that answered a hand-off ended: its last reply in that chat goes back to the agent
-     * that passed it on, as a quiet callout naming who answered, and wakes that agent to carry on.
-     */
+    /** Claims the answer and wakes the passing agent if a reply was requested. */
     readonly reportBack: (input: {
       readonly orgId: KinOrgId;
       readonly agentId: KinAgentId;
@@ -316,7 +340,7 @@ export const arrivesNote = Effect.fn("KinHandoff.arrivesNote")(function* (
     .notice({
       orgId: ctx.orgId,
       chatId: KinChatId.make(here.chatId),
-      messageId: KinMessageId.make(`kin-arrives:${key}`),
+      messageId: arrivalNoteId(key),
       audience,
       body: `${why}: it arrives at ${text}.`,
       silent: true,
@@ -464,21 +488,35 @@ const make = Effect.gen(function* () {
    * message (`Reach`); one they may not is refused. Their stored words only, once per message.
    * Cards an earlier build drew to let them talk keep answering retries until they close.
    */
-  /** The tasks this turn put `agentId` on: their own wake already carries the brief. */
+  /**
+   * Open tasks this turn gave `target` or put them on that they still hold or are on: the
+   * wake-up that brings each already carries its brief.
+   */
   const putOnThisTurn = Effect.fn("KinHandoff.putOnThisTurn")(function* (
     ctx: Lead,
-    agentId: KinAgentId,
+    target: { readonly agentId: KinAgentId; readonly name: string },
   ) {
-    const rows = yield* sql<{ key: string }>`SELECT DISTINCT json_extract(e.json, '$.key') AS key
+    const rows = yield* sql<{ title: string }>`SELECT DISTINCT r.title, r.key
       FROM kin_events e JOIN kin_record_changes c ON c.org_id = e.org_id
         AND c.record_id = json_extract(e.json, '$.recordId') AND c.seq = json_extract(e.json, '$.seq')
-      WHERE e.org_id = ${ctx.orgId} AND e.agent_id = ${agentId} AND e.tag = 'record.changed'
-        AND json_extract(e.json, '$.reason') = 'joined' AND c.actor_kind = 'agent'
+        JOIN kin_records r ON r.org_id = c.org_id AND r.record_id = c.record_id
+      WHERE e.org_id = ${ctx.orgId} AND e.agent_id = ${target.agentId} AND e.tag = 'record.changed'
+        AND json_extract(e.json, '$.reason') IN ('assigned', 'joined') AND c.actor_kind = 'agent'
         AND c.actor_id = ${ctx.agentId} AND c.wakeup_id = ${ctx.wakeupId}
-      ORDER BY key`;
+        AND r.register_id = 'work' AND r.state IN ('open', 'doing', 'waiting')
+        AND ((r.owner_kind = 'agent' AND r.owner_id = ${target.agentId})
+          OR EXISTS (SELECT 1 FROM json_each(r.fields_json, '$.alsoOn') o
+            WHERE o.value = ${`agent:${target.agentId}`}))
+      ORDER BY r.key`;
     return rows.length === 0
       ? undefined
-      : { passed: false as const, note: alreadyOnIt(rows.map((row) => row.key)) };
+      : {
+          passed: false as const,
+          note: alreadyOnIt(
+            target.name,
+            rows.map((row) => row.title),
+          ),
+        };
   });
 
   const passOn = Effect.fn("KinHandoff.passOn")(function* (
@@ -513,7 +551,7 @@ const make = Effect.gen(function* () {
         reason: reached.length > 1 ? "invalid_state" : "not_found",
         message: `${reached.length > 1 ? "Several agents answer to that" : "No agent answers to that"}. ${reachable.length === 0 ? `${ask.personName} may message no other agent.` : `The ones they may message: ${reachable.map((entry) => entry.name).join(", ")}.`} ${NOTHING}`,
       });
-    const onIt = target === undefined ? undefined : yield* putOnThisTurn(ctx, target.agentId);
+    const onIt = target === undefined ? undefined : yield* putOnThisTurn(ctx, target);
     if (onIt !== undefined) return onIt;
     const { messageId } = ask.message;
     const now = yield* Clock.currentTimeMillis;
@@ -527,7 +565,7 @@ const make = Effect.gen(function* () {
     const directly = `${person} may message ${agent} now, so they can ask it directly.`;
     const cannot = `${person} and ${agent} can't message each other here now.`;
     const confirm = `Anything that would leave the company, such as a mail or a payment, still needs ${owner}'s own Confirm.`;
-    const alreadyShown = `Kin has posted a line in this chat telling ${person} it went to ${agent}, who answers them in their chat with it, so don't say that again. If you have nothing to add, write exactly NO_REPLY.${mayNow ? "" : ` ${person} may not message ${agent} now.`}`;
+    const alreadyShown = `Kin has posted a line in this chat telling ${person} it went to ${agent}, who answers them in their chat with it, so don't say that again. If you have nothing to add, end with kin_skip.${mayNow ? "" : ` ${person} may not message ${agent} now.`}`;
     const asksOnCard = `The card asks ${owner} to let this request reach ${agent} and to let ${person} message ${agent} from then on. ${confirm} When a yes or a not this time takes effect, Kin posts it in this chat.`;
     const waits = {
       passed: false as const,
@@ -930,8 +968,19 @@ const make = Effect.gen(function* () {
       JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
       WHERE l.org_id = ${ctx.orgId} AND l.agent_id = ${ctx.agentId} ORDER BY l.agent_id`;
     if (self === undefined) return yield* missing();
+    const hash = NodeCrypto.createHash("sha256").update(to.personId).digest("hex").slice(0, 16);
+    const next =
+      input.checkIn === true ? yield* nextCheckIn(ctx.orgId, ctx.agentId).pipe(access) : undefined;
+    if (input.checkIn === true && to.personId !== self.owner)
+      return yield* refuse(
+        `Only the owner has check-ins with you: leave out checkIn to send it to ${to.name} now.`,
+      );
+    if (input.checkIn === true && next === undefined)
+      return yield* refuse(
+        `None of your check-ins with ${to.name} is on: leave out checkIn to send it now.`,
+      );
     const messageId = KinMessageId.make(
-      `${relayPrefix(ctx.wakeupId)}${NodeCrypto.createHash("sha256").update(to.personId).digest("hex").slice(0, 16)}`,
+      next === undefined ? `${relayPrefix(ctx.wakeupId)}${hash}` : leftKind(ctx.wakeupId, hash),
     );
     const toOwnerSide =
       (yield* ownerLevel(ctx.orgId, to.personId).pipe(access)) || to.personId === self.owner;
@@ -1002,6 +1051,37 @@ const make = Effect.gen(function* () {
     if (ownerTurn) {
       const direct = { chatId: theirChat };
       // Whose words these are: the one person the turn acts for, drawn as sent by them.
+      const sentBy =
+        sender === null
+          ? {}
+          : {
+              relay: {
+                kind: "sent_by" as const,
+                agentId: ctx.agentId,
+                personId: KinPersonId.make(sender),
+                ...(senderRow === undefined ? {} : { personName: senderRow.name }),
+                ...afterReading,
+              },
+            };
+      if (next !== undefined) {
+        yield* holdLine({
+          orgId: ctx.orgId,
+          chatId: direct.chatId,
+          personId: to.personId,
+          key: messageId,
+          body: input.text,
+          audience: "chat",
+          at: next.fallbackAt,
+          agentId: ctx.agentId,
+          ...sentBy,
+        }).pipe(access);
+        return {
+          to: to.name,
+          sent: true as const,
+          note: `${leftNote(to.name, next, "the asker")}${sentAs}`,
+          ...named,
+        };
+      }
       const posted = yield* postTo(
         { ...ctx, wakeupId: KinWakeupId.make(ctx.wakeupId) },
         to.personId,
@@ -1011,21 +1091,18 @@ const make = Effect.gen(function* () {
           body: input.text,
           intent: "answer",
           urgent: input.urgent,
-          ...(sender === null
-            ? {}
-            : {
-                relay: {
-                  kind: "sent_by" as const,
-                  agentId: ctx.agentId,
-                  personId: KinPersonId.make(sender),
-                  ...(senderRow === undefined ? {} : { personName: senderRow.name }),
-                  ...afterReading,
-                },
-              }),
+          ...sentBy,
         },
       );
       if (isHeld(posted))
-        yield* arrivesNote(chat, ctx, to.name, posted, messageId, "owner").pipe(access);
+        yield* sql.withTransaction(
+          Effect.gen(function* () {
+            const [kept] = yield* sql`SELECT 1 FROM kin_held_posts
+              WHERE org_id = ${ctx.orgId} AND chat_id = ${direct.chatId} AND kind = ${messageId}`;
+            if (kept !== undefined)
+              yield* arrivesNote(chat, ctx, to.name, posted, messageId, "owner").pipe(access);
+          }),
+        );
       return {
         to: to.name,
         sent: true as const,
@@ -1108,15 +1185,36 @@ const make = Effect.gen(function* () {
             RETURNING message_id`;
           if (claimed.length === 0) return yield* refuse(askedAlready);
         }
+        if (next !== undefined) {
+          yield* holdLine({
+            ...where,
+            key: messageId,
+            body,
+            audience: "chat",
+            at: next.fallbackAt,
+            waits: true,
+            agentId: ctx.agentId,
+            relay,
+          }).pipe(access);
+          return {
+            to: to.name,
+            sent: true as const,
+            note: `${leftNote(to.name, next, who?.name ?? "the asker")}${sentAs}`,
+            ...named,
+          };
+        }
         const replaced =
           input.urgent === undefined
             ? 0
-            : yield* urgentNow({
-                ...where,
-                agentId: ctx.agentId,
-                wakeupId: ctx.wakeupId,
-                reason: input.urgent,
-              }).pipe(access);
+            : yield* urgentNow(
+                {
+                  ...where,
+                  agentId: ctx.agentId,
+                  wakeupId: ctx.wakeupId,
+                  reason: input.urgent,
+                },
+                chat,
+              ).pipe(access);
         const held = input.urgent === undefined ? yield* holdFor(where).pipe(access) : undefined;
         if (held !== undefined) {
           const at = yield* holdLine({
@@ -1318,15 +1416,15 @@ const make = Effect.gen(function* () {
       fact.subject.key === fact.subject.title
         ? fact.subject.title
         : `${recordName(fact.subject.key, fact.subject.number)} ${fact.subject.title}`;
-    const body = [
-      input.request.replace(/\s+/g, " "),
-      `From ${event.checkIn?.title ?? "Kin's facts"}: ${about}: ${fact.consequence} (${fact.key})`,
-    ]
-      .join("\n")
-      .slice(0, messageBodyLimit);
+    const body = passedFactBody({
+      request: input.request,
+      from: event.checkIn?.title,
+      about,
+      consequence: fact.consequence,
+      key: fact.key,
+    });
     const read = yield* outsideStamp(ctx).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     const named = yield* readNames(ctx, read, target.ownerPersonId);
-    // Shown the T3 way, on the owner's side as sent by the passing agent; he didn't write it.
     const { message } = yield* chat.notice({
       orgId: ctx.orgId,
       chatId: target.ownerChatId,
@@ -1368,7 +1466,7 @@ const make = Effect.gen(function* () {
       ...(named === undefined
         ? {}
         : {
-            note: `Passed to ${target.name} as a request, with its source: what ${target.name} makes from it waits to be kept.`,
+            note: `Passed to ${target.name} as a request, with its source: a task ${target.name} makes from it is saved, money waits to be kept.`,
             source: named.turn,
           }),
     };
@@ -1444,13 +1542,11 @@ const make = Effect.gen(function* () {
         });
         const before = yield* already();
         if (before !== undefined) return before;
-        const onIt = yield* putOnThisTurn(ctx, target.agentId);
+        const onIt = yield* putOnThisTurn(ctx, target);
         if (onIt !== undefined) return onIt;
         const dedupeKey = `handoff:${event.messageId}`;
         const id = NodeCrypto.createHash("sha256").update(dedupeKey).digest("hex").slice(0, 32);
         // The lead's own words, then the owner's whole, quoted, so neither passes for the other.
-        // Who sent it travels as the row's sender (`relay`), drawn the way T3 draws a message
-        // another thread sent.
         const note = input.request.replace(/\s+/g, " ");
         const quoted = `The owner wrote: "${asked.body}"`;
         const adds = fold(note) === fold(asked.body) ? [] : [note];
@@ -1515,7 +1611,7 @@ const make = Effect.gen(function* () {
           ...(named === undefined
             ? {}
             : {
-                note: `Passed to ${target.name} as a request, with its source: what ${target.name} makes from it waits to be kept.`,
+                note: `Passed to ${target.name} as a request, with its source: a task ${target.name} makes from it is saved, money waits to be kept.`,
                 source: named.turn,
               }),
         };
@@ -1588,7 +1684,7 @@ const make = Effect.gen(function* () {
             const claimed = yield* sql`UPDATE kin_handoffs SET reply_message_id = ${reply.messageId}
               WHERE org_id = ${input.orgId} AND message_id = ${handoff.messageId}
                 AND reply_message_id IS NULL RETURNING message_id`;
-            if (claimed.length === 0) return;
+            if (claimed.length === 0 || handoff.wantsAnswer === 0) return;
             const [asker] = yield* sql<{
               ownerChatId: KinChatId;
               ownerPersonId: KinPersonId;
@@ -1626,7 +1722,6 @@ const make = Effect.gen(function* () {
               relay: { kind: "reply_from", agentId: input.agentId, ...afterReading },
               silent: true,
             });
-            if (handoff.wantsAnswer === 0) return;
             // The asking lead's turn that handed the message on: this answer is its result.
             const asked = yield* sql<{ wakeupId: KinWakeupId }>`SELECT DISTINCT
                 wakeup_id AS "wakeupId" FROM kin_events

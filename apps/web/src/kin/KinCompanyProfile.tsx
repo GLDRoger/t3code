@@ -30,6 +30,7 @@ import { Textarea } from "../components/ui/textarea";
 import { useAtomCommand } from "../state/use-atom-command";
 import { readPreparedConnection } from "../state/session";
 import { KinBrandSection } from "./KinBrand";
+import { KinCountryCombobox } from "./KinCountryCombobox";
 import { KinTemplatesSection } from "./KinTemplates";
 import { kinNewLeadTarget } from "./KinNewLeadButton";
 import { kinClient } from "./kinClient";
@@ -209,7 +210,6 @@ function ProfileDialog(
     props.onClose();
   };
   const suggestion = kinCompanyCountrySuggestion(draft, region, waiting);
-  const typedCountry = draft.country.trim().toUpperCase();
   return (
     <KinSettingsFormDialog
       title={KIN_COMPANY_SETTINGS.editTitle}
@@ -241,11 +241,7 @@ function ProfileDialog(
             const help =
               fieldProblem === undefined ? (
                 field.id === "country" ? (
-                  /^[A-Z]{2}$/.test(typedCountry) ? (
-                    kinCountryName(typedCountry)
-                  ) : (
-                    KIN_COMPANY_SETTINGS.countryHelp
-                  )
+                  KIN_COMPANY_SETTINGS.countryHelp
                 ) : undefined
               ) : (
                 <span className="text-destructive-foreground">{fieldProblem}</span>
@@ -262,7 +258,18 @@ function ProfileDialog(
                   };
                   return (
                     <>
-                      {field.multiline ? (
+                      {field.id === "country" ? (
+                        <KinCountryCombobox
+                          id={ids.control}
+                          value={draft.country}
+                          placeholder={field.placeholder}
+                          disabled={saving}
+                          invalid={fieldProblem !== undefined}
+                          onChange={(country) =>
+                            setDraft(kinCompanyDraftEdit(draft, "country", country))
+                          }
+                        />
+                      ) : field.multiline ? (
                         <Textarea
                           {...shared}
                           rows={3}

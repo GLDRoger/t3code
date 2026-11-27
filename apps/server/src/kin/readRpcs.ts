@@ -27,7 +27,11 @@ const READS = [
   "kin.refreshes.subscribe",
   // What Kin keeps watch on, and its log.
   "kin.watches.list",
+  "kin.watches.followUps",
   "kin.watches.log",
+  // Whether Kin is stopped, and the agents a person may chat with.
+  "kin.org.get",
+  "kin.leads.list",
 ] as const satisfies ReadonlyArray<(typeof KinRpcs)[number]["_tag"]>;
 export type KinReadRpc = (typeof READS)[number];
 export const KIN_READ_RPCS: ReadonlySet<string> = new Set(READS);

@@ -10,6 +10,7 @@ import {
   type KinDocSection,
   type KinDocVersion,
   type KinSearchResult,
+  type KinShell,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import { AsyncResult } from "effect/reactivity";
@@ -38,10 +39,13 @@ import {
   kinDocEditInput,
   kinDocEditOpen,
   kinDocEditOutcome,
+  kinDocPrivacy,
+  kinDocReaders,
   kinDocRestoreOutcome,
   kinDocSameWords,
   kinDocSections,
   kinDocRow,
+  kinDocState,
   kinWhatWeSellAgent,
   kinWhatWeSellShown,
   type KinSearchState,
@@ -176,6 +180,15 @@ describe("kinSearchHit", () => {
     ).toBeNull();
     // A deal comes back among entries, under its own name, so an older app opens it as one.
     expect(kinSearchHit({ ...hitInput, key: "DL-4", kind: "work" }).kindLabel).toBe("Deal");
+    // A client reads in the company's own word for Clients.
+    const patients: KinShell = {
+      rev: 1,
+      sections: [{ id: "clients", on: true, name: "Patients", noun: "patient" }],
+    };
+    const client = { ...hitInput, key: "C-2", kind: "clients" as const };
+    expect(kinSearchHit(client, patients).kindLabel).toBe("Patient");
+    expect(kinSearchHit(client, patients).accessibilityLabel).toMatch(/^Patient: /);
+    expect(kinSearchHit(client).kindLabel).toBe("Client");
     // A contact carries its client, whose page opens for it; an older host sends none.
     expect(hit.clientKey).toBeNull();
     expect(
@@ -448,6 +461,18 @@ describe("kinDocCopyText", () => {
         "Read the invented thread or https://example.com/faq.",
       ].join("\n"),
     );
+    // What a mail keeps besides (`listMarks`) leaves Copy text as it was.
+    const extras = [
+      "Write to [billing](mailto:billing@invented.example), call [the desk](tel:+10000000000), or",
+      "<billing@invented.example>; see [the terms][terms].[^1] Quote your <PO number>, <b>please</b>.",
+      "",
+      "[terms]: https://invented.example/terms",
+      "",
+      "[^1]: Prices hold for 30 days.",
+    ].join("\n");
+    expect(kinDocCopyText(extras)).toBe(
+      "Write to billing, call the desk, or\nbilling@invented.example; see . Quote your , please.",
+    );
   });
 
   // A draft's card copies the same clean text, and offers Send to only to the teammate it's for.
@@ -459,44 +484,69 @@ describe("kinDocCopyText", () => {
       sendTo: rhea,
       noAccount: { service: "Instagram", by: rhea },
     };
-    const teammate = kinDocCardDraft({ draft }, false, false);
+    const teammate = kinDocCardDraft({ key: "D-4", draft }, false, false);
     expect(teammate).toEqual({
       copyText: "Teaser\n\nSoon at Harbourline.",
       sendTo: "Send to Rhea",
       sent: null,
       noAccount: "No Instagram account is connected. Rhea can connect one on their computer.",
     });
-    expect(kinDocCardDraft({ draft }, true, false)).toEqual({
+    expect(kinDocCardDraft({ key: "D-4", draft }, true, false)).toEqual({
       ...teammate,
       sendTo: null,
       noAccount:
         "No Instagram account is connected. You can connect one in Settings on your computer.",
     });
     const sent = { ...draft, sent: { name: "Rhea", at: "2026-11-16T06:00:00.000Z" } };
-    expect(kinDocCardDraft({ draft: sent }, false, false)).toMatchObject({
+    expect(kinDocCardDraft({ key: "D-4", draft: sent }, false, false)).toMatchObject({
       sendTo: null,
       sent: "Sent to Rhea to approve.",
     });
     const { sendTo: _sendTo, ...ownersOwn } = draft;
-    expect(kinDocCardDraft({ draft: ownersOwn }, true, false)?.sendTo).toBeNull();
+    expect(kinDocCardDraft({ key: "D-4", draft: ownersOwn }, true, false)?.sendTo).toBeNull();
     // A chat she may only read takes no send from her, so the card offers none.
-    expect(kinDocCardDraft({ draft }, false, true)?.sendTo).toBeNull();
+    expect(kinDocCardDraft({ key: "D-4", draft }, false, true)?.sendTo).toBeNull();
     // Waiting for the owner to be back, it says so rather than that it reached them.
     const held = { ...draft, sent: { ...sent.sent, held: true as const } };
-    expect(kinDocCardDraft({ draft: held }, false, false)?.sent).toBe(
+    expect(kinDocCardDraft({ key: "D-4", draft: held }, false, false)?.sent).toBe(
       "Sent. Rhea gets it to approve when they're back.",
     );
     // The owner asked for changes first: sendable again, and it says why; sent again, it says so.
     const changesFirst = { name: "Rhea", at: "2026-11-16T07:00:00.000Z" };
-    expect(kinDocCardDraft({ draft: { ...draft, changesFirst } }, false, false)).toMatchObject({
+    expect(
+      kinDocCardDraft({ key: "D-4", draft: { ...draft, changesFirst } }, false, false),
+    ).toMatchObject({
       sendTo: "Send to Rhea",
       sent: "Rhea asked for changes first.",
     });
-    expect(kinDocCardDraft({ draft: { ...sent, changesFirst } }, false, false)).toMatchObject({
+    expect(
+      kinDocCardDraft({ key: "D-4", draft: { ...sent, changesFirst } }, false, false),
+    ).toMatchObject({
       sendTo: null,
       sent: "Sent to Rhea to approve.",
     });
-    expect(kinDocCardDraft({ draft: null }, false, false)).toBeNull();
+    expect(kinDocCardDraft({ key: "D-4", draft: null }, false, false)).toBeNull();
+    // A long draft's card holds its opening: it says so, and Copy text fetches its version; from
+    // an older host the same text is a short draft's. Changed after it went up, it may go again.
+    // Its text ends with a line for older clients, which read it as the whole draft; this one
+    // says so in its own line instead, and copies none of it.
+    const opening = `${draft.text}\n\nThis is only the opening. Open D-4 to read the whole draft.`;
+    const long = { ...draft, text: opening, whole: { version: 3, chars: 6200 } };
+    expect(kinDocCardDraft({ key: "D-4", draft: long }, false, false)).toEqual({
+      ...teammate,
+      long: { line: "A long draft. Open it to read all of it.", version: 3 },
+    });
+    const { whole: _whole, ...older } = long;
+    expect(kinDocCardDraft({ key: "D-4", draft: older }, false, false)?.copyText).toBe(
+      `${teammate!.copyText}\n\nThis is only the opening. Open D-4 to read the whole draft.`,
+    );
+    const changed = { at: "2026-11-16T08:00:00.000Z" };
+    expect(
+      kinDocCardDraft({ key: "D-4", draft: { ...long, changesFirst, changed } }, false, false),
+    ).toMatchObject({
+      sendTo: "Send to Rhea",
+      sent: "It changed after it was sent, so it wasn't approved. Send it again.",
+    });
   });
 });
 
@@ -582,6 +632,92 @@ describe("kinDocChangeItem", () => {
   });
 });
 
+describe("kinDocReaders", () => {
+  const project = {
+    recordId: KinRecordId.make("p-1"),
+    key: "P-1",
+    title: "Lumen Grove app",
+  };
+  const draftOf = { name: "Zoya Sheikh" };
+  const all = ["draft", "owners", "team"] as const;
+  const ownerCan = ["owners", "team"] as const;
+  const allChoices = [
+    { id: "draft", label: "Me and owners (draft)" },
+    { id: "owners", label: "Owners" },
+    { id: "team", label: "The team" },
+  ];
+  const ownerChoices = [
+    { id: "owners", label: "Owners" },
+    { id: "team", label: "The team" },
+  ];
+
+  it.each([
+    [
+      "writer, draft",
+      { readers: "draft" as const, readersCan: all, sensitive: true },
+      "Draft. The owners read it too; nobody else does.",
+      allChoices,
+      "Draft. The owners read it too; nobody else does.",
+    ],
+    [
+      "writer, owners (no project)",
+      { readers: "owners" as const, readersCan: all, sensitive: false },
+      "The owners read it.",
+      allChoices,
+      null,
+    ],
+    [
+      "writer, owners (project)",
+      { readers: "owners" as const, readersCan: all, project, sensitive: false },
+      "The owners and the people on Lumen Grove app read it.",
+      allChoices,
+      null,
+    ],
+    [
+      "writer, team",
+      { readers: "team" as const, readersCan: all, sensitive: false },
+      "Everyone on the team with Docs reads it.",
+      allChoices,
+      null,
+    ],
+    [
+      "owner, draft",
+      { readers: "draft" as const, readersCan: ownerCan, draftOf, sensitive: true },
+      "Zoya Sheikh's draft. Only Zoya Sheikh and the owners read it.",
+      ownerChoices,
+      "Zoya Sheikh's draft. Only Zoya Sheikh and the owners read it.",
+    ],
+    [
+      "owner, owners (no project)",
+      { readers: "owners" as const, readersCan: ownerCan, draftOf, sensitive: false },
+      "Zoya Sheikh and the owners read it.",
+      ownerChoices,
+      null,
+    ],
+    [
+      "owner, owners (project)",
+      { readers: "owners" as const, readersCan: ownerCan, draftOf, project, sensitive: false },
+      "Zoya Sheikh, the owners and the people on Lumen Grove app read it.",
+      ownerChoices,
+      null,
+    ],
+    [
+      "owner, team",
+      { readers: "team" as const, readersCan: ownerCan, draftOf, sensitive: false },
+      "Everyone on the team with Docs reads it.",
+      ownerChoices,
+      null,
+    ],
+  ])("%s: answer, choices and private line", (_case, doc, answer, choices, privacy) => {
+    expect(kinDocReaders(doc, names)).toEqual({ current: doc.readers, answer, choices });
+    expect(kinDocPrivacy(doc)).toBe(privacy);
+  });
+
+  it("returns null when readers is absent", () => {
+    expect(kinDocReaders({}, names)).toBeNull();
+  });
+});
+
 describe("kinDocEditOpen", () => {
   const read = (pricing: string, timeline: string) => ({
     key: KinRecordKey.make("D-3"),
@@ -644,6 +780,19 @@ describe("kinDocEditOutcome", () => {
       moved: false,
       text: refusal,
     });
+  });
+});
+
+describe("kinDocState", () => {
+  it("reads the reader's own draft an owner kept to owners only as private now, any other as gone", () => {
+    const missing = (patch: { readonly privateNow?: { readonly by: string } }) =>
+      kinDocState(
+        AsyncResult.failure(
+          Cause.fail(new KinChatError({ reason: "not_found", message: "D-31", ...patch })),
+        ),
+      );
+    expect(missing({ privateNow: { by: "Rhea" } })).toEqual({ _tag: "private", by: "Rhea" });
+    expect(missing({})).toEqual({ _tag: "gone" });
   });
 });
 

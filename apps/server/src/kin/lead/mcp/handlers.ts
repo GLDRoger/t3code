@@ -16,9 +16,16 @@ import { ghApiLayer } from "../../github/GitHubWatch.ts";
 import { agentsView, gitHubApp } from "../../github/KinGitHubApp.ts";
 import { isMemoryRepo, repoList, setRepo } from "../../github/githubWatchStore.ts";
 import { linkGithubItem } from "../../github/githubLink.ts";
-import { askReview, postReview } from "../../github/reviewAsk.ts";
+import { postIssueComment } from "../../github/boundIssue.ts";
+import { readRepo } from "../../github/repoRead.ts";
+import { askReview, postReview, readReviewDiff } from "../../github/reviewAsk.ts";
 import { SHARED_REFUSAL } from "../Audience.ts";
 import { toolAdmitted } from "../SharedTools.ts";
+import {
+  KinReplyBridge,
+  KinReplySendError,
+  KinReplySkipError,
+} from "../../reply/KinReplyBridge.ts";
 import { laneFor } from "../../reply/replyLane.ts";
 import { KinChatService } from "../../chat/KinChatService.ts";
 import { KinServer } from "../../KinServer.ts";
@@ -40,6 +47,8 @@ import { updatePeople } from "../peopleUpdate.ts";
 import { setAway } from "../awaySet.ts";
 import { updateAgent } from "../agentUpdate.ts";
 import { wordOf } from "../../pulse/holds.ts";
+import * as OwnMessages from "../../chat/ownMessages.ts";
+import { KinPushSender } from "../../push/KinPushSender.ts";
 import { KinLeadToolkit } from "./tools.ts";
 
 const isKinChatError = Schema.is(KinChatError);
@@ -167,6 +176,12 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       const drawn = yield* drawAll;
       const asked = { ...card, actions: drawn };
       const options = ChoiceCard.choiceCardState(asked).options;
+      const room = ChoiceCard.detailRoom(options);
+      if (card.detail !== undefined && card.detail.trim() !== "" && card.detail.length > room)
+        return yield* new KinChatError({
+          reason: "invalid_state",
+          message: ChoiceCard.detailTooLong(card.detail.length, room),
+        });
       const plans = options.flatMap((option, index) => {
         const one = drawn[index];
         return one === undefined ? [] : [{ optionId: option.optionId, plan: one.plan }];
@@ -218,6 +233,8 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         ownerLevelAsked:
           (yield* wordOf({ orgId: lead.orgId, agentId: lead.agentId, wakeupId }))?.ownerLevel ===
           true,
+        wakeupId,
+        detail: card.detail,
       });
       // Asked in a task's own turn, the card is about that task too: it can't close under it.
       const turn = { orgId: lead.orgId, agentId: lead.agentId, wakeupId };
@@ -320,7 +337,11 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           Context.get(services, KinEventQueue),
         ),
       );
-      return { question: closed.questionId, state: closed.state };
+      return {
+        question: closed.questionId,
+        state: closed.state,
+        ...(!closed.changed || closed.note === undefined ? {} : { note: closed.note }),
+      };
     }, Effect.mapError(failure)),
   ),
   kin_chart: McpToolAccess.actsAsCaller(
@@ -377,6 +398,38 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           };
     }, Effect.mapError(failure)),
   ),
+  kin_send: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.send")(
+      function* (input) {
+        const notRunning = new KinReplySendError({ reason: "not running" });
+        const bridge = yield* Effect.serviceOption(KinReplyBridge);
+        if (Option.isNone(bridge)) return yield* notRunning;
+        const { orgId, wakeupId } = yield* resolveLead(yield* McpInvocationContext).pipe(
+          Effect.mapError(() => notRunning),
+        );
+        return yield* bridge.value.send({ ...input, orgId, wakeupId: KinWakeupId.make(wakeupId) });
+      },
+      Effect.mapError(
+        (error) => new KinChatError({ reason: "invalid_state", message: error.message }),
+      ),
+    ),
+  ),
+  kin_skip: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.skip")(
+      function* (input) {
+        const notRunning = new KinReplySkipError({ reason: "not running" });
+        const bridge = yield* Effect.serviceOption(KinReplyBridge);
+        if (Option.isNone(bridge)) return yield* notRunning;
+        const { orgId, wakeupId } = yield* resolveLead(yield* McpInvocationContext).pipe(
+          Effect.mapError(() => notRunning),
+        );
+        return yield* bridge.value.skip({ ...input, orgId, wakeupId: KinWakeupId.make(wakeupId) });
+      },
+      Effect.mapError(
+        (error) => new KinChatError({ reason: "invalid_state", message: error.message }),
+      ),
+    ),
+  ),
   kin_react: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.react")(function* (input) {
       const lead = yield* resolveLead(yield* McpInvocationContext);
@@ -388,6 +441,70 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         { ...lead, wakeupId },
         { ...input, chatId: lane.value.chatId },
       );
+    }, Effect.mapError(failure)),
+  ),
+  message_withdraw: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.messageWithdraw")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      const wakeupId = KinWakeupId.make(lead.wakeupId);
+      const services = Option.getOrThrow((yield* KinServer).services);
+      const chatId = yield* OwnMessages.chatOfMessage(lead.orgId, input.messageId).pipe(
+        Effect.provideContext(services),
+      );
+      if (chatId === undefined)
+        return yield* new KinChatError({
+          reason: "not_found",
+          message: OwnMessages.OWN_MESSAGE_REFUSALS.unknown,
+        });
+      const withdrawn = yield* Context.get(services, KinLevelGate).amend(
+        { ...lead, wakeupId },
+        chatId,
+        OwnMessages.withdrawOwn(
+          { ...lead, ...input, now: yield* Clock.currentTimeMillis },
+          Context.get(services, KinChatService),
+          Context.get(services, KinEventQueue),
+        ).pipe(Effect.provideContext(services), Effect.mapError(failure)),
+      );
+      // Its chat's banner shows the words still unread there, quietly, or goes.
+      yield* Context.get(services, KinPushSender).notify({
+        _tag: "restate",
+        orgId: lead.orgId,
+        chatId,
+        messageId: input.messageId,
+      });
+      return withdrawn;
+    }, Effect.mapError(failure)),
+  ),
+  message_replace: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.messageReplace")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      const wakeupId = KinWakeupId.make(lead.wakeupId);
+      const services = Option.getOrThrow((yield* KinServer).services);
+      const chatId = yield* OwnMessages.chatOfMessage(lead.orgId, input.messageId).pipe(
+        Effect.provideContext(services),
+      );
+      if (chatId === undefined)
+        return yield* new KinChatError({
+          reason: "not_found",
+          message: OwnMessages.OWN_MESSAGE_REFUSALS.unknown,
+        });
+      const { changed, ...replaced } = yield* Context.get(services, KinLevelGate).amend(
+        { ...lead, wakeupId },
+        chatId,
+        OwnMessages.replaceOwn({ ...lead, ...input, now: yield* Clock.currentTimeMillis }).pipe(
+          Effect.provideContext(services),
+          Effect.mapError(failure),
+        ),
+      );
+      // The banner showing it takes the new words quietly, never a new ring.
+      if (changed)
+        yield* Context.get(services, KinPushSender).notify({
+          _tag: "restate",
+          orgId: lead.orgId,
+          chatId,
+          messageId: input.messageId,
+        });
+      return replaced;
     }, Effect.mapError(failure)),
   ),
   memory_search: McpToolAccess.reads(
@@ -430,6 +547,12 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
       return yield* (yield* LeadMemory).journal(yield* McpInvocationContext, input);
     }),
   ),
+  kin_github_comment: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.githubComment")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      return yield* postIssueComment(lead, input).pipe(Effect.provide(ghApiLayer));
+    }, Effect.mapError(failure)),
+  ),
   kin_github_review: McpToolAccess.actsAsCaller(
     Effect.fn("KinLeadToolkit.githubReview")(function* (input) {
       const lead = yield* resolveLead(yield* McpInvocationContext);
@@ -440,6 +563,19 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
         reason: "unavailable",
         message: "GitHub isn't connected. The owner connects it in Settings, Connections.",
       });
+    }, Effect.mapError(failure)),
+  ),
+  kin_github_diff: McpToolAccess.actsAsCaller(
+    Effect.fn("KinLeadToolkit.githubDiff")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      yield* admitted(lead, "kin_github_diff", input);
+      return yield* readReviewDiff(lead, input).pipe(Effect.provide(ghApiLayer));
+    }, Effect.mapError(failure)),
+  ),
+  kin_github_read: McpToolAccess.readsAsCaller(
+    Effect.fn("KinLeadToolkit.githubRead")(function* (input) {
+      const lead = yield* resolveLead(yield* McpInvocationContext);
+      return yield* readRepo(lead, input);
     }, Effect.mapError(failure)),
   ),
   kin_github_review_ask: McpToolAccess.actsAsCaller(
@@ -477,10 +613,10 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
           return yield* new KinChatError({
             reason: "not_found",
             message:
-              "Kin doesn't watch that repo: it isn't the owner's or his organisations', or GitHub isn't connected.",
+              "Kin doesn't watch that repo: it isn't the owner's or their organisations', or GitHub isn't connected.",
           });
         const changed =
-          input.watch === undefined && input.mentions === undefined
+          input.watch === undefined && input.mentions === undefined && input.triage === undefined
             ? repos
             : yield* setRepo(
                 {
@@ -488,10 +624,13 @@ export const handlers = McpToolAccess.toLayer(KinLeadToolkit, {
                   repo: named,
                   ...(input.watch === undefined ? {} : { watched: input.watch }),
                   ...(input.mentions === undefined ? {} : { mentions: input.mentions }),
+                  ...(input.triage === undefined ? {} : { triage: input.triage }),
                 },
                 yield* Clock.currentTimeMillis,
               );
-        return { repos: changed.filter((repo) => repo.repo.toLowerCase() === named) };
+        return {
+          repos: changed.filter((repo) => repo.repo.toLowerCase() === named),
+        };
       },
       Effect.catchTags({ SqlError: () => Effect.fail(failure(undefined)) }),
       Effect.mapError(failure),

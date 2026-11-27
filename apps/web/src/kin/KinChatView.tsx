@@ -21,7 +21,10 @@ import {
   kinMarkReadRearms,
   kinSeqToMarkRead,
   kinUnreadToMark,
+  kinNextNewLineHold,
+  kinOwnReadSeq,
   latestKinSeq,
+  type KinNewLineHold,
   type KinChatScreenState,
   type KinFeedRow,
   type KinFeedViewer,
@@ -45,6 +48,7 @@ import {
   KIN_INTRO_PROMPTS,
   KIN_INTRO_START_HINT,
 } from "@t3tools/client-runtime/kin/kinIntro";
+import { kinIntroSetUpLine } from "@t3tools/client-runtime/kin/kinSetUp";
 import {
   kinHeldCardAgent,
   kinRetiredChatLine,
@@ -53,9 +57,12 @@ import {
 } from "@t3tools/client-runtime/kin/kinAgentRetire";
 import { kinChatReadOnlyLine } from "@t3tools/client-runtime/kin/kinLeadPresentation";
 import {
-  kinPresenceLine,
+  createKinLabelHold,
+  kinMayStopAgent,
   kinPresenceNeedsClock,
   kinPresenceTimerStart,
+  kinWorkingLines,
+  type KinWorkingLine,
 } from "@t3tools/client-runtime/kin/kinLive";
 import { KIN_MESSAGE_MAX_LENGTH, KIN_COMPOSER_COPY } from "@t3tools/client-runtime/kin/kinOutbox";
 import {
@@ -78,6 +85,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinDocs";
 import {
   KinChatId,
+  KinOrgId,
   type EnvironmentId,
   type KinAttachment,
   type KinChatMember,
@@ -94,18 +102,18 @@ import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { AsyncResult, Atom } from "effect/reactivity";
-import { ArrowDownIcon, ArrowLeftIcon, ChevronUpIcon, XIcon } from "lucide-react";
+import { ArrowDownIcon, ArrowLeftIcon, ChevronUpIcon, CircleStopIcon, XIcon } from "lucide-react";
 import {
   useEffect,
   useId,
   useRef,
   useState,
+  useSyncExternalStore,
   type ClipboardEvent,
   type DragEvent,
   type KeyboardEvent,
 } from "react";
 
-import { ComposerAttachButton } from "../components/chat/ComposerAttachmentStrip";
 import { shouldHandleComposerAttachmentPaste } from "../components/chat/composerAttachmentFiles";
 import { ExpandedImageDialogHost } from "../components/chat/ExpandedImageDialog";
 import { ComposerPrimaryActions } from "../components/chat/ComposerPrimaryActions";
@@ -130,6 +138,7 @@ import {
   KinComposerAttachmentStrip,
   kinPreviewKey,
   useKinComposerAttachments,
+  KinAttachButton,
 } from "./KinComposerAttachments";
 import { KinRestoreAgent, type KinAgentTarget } from "./KinAgentRetire";
 import { kinClient } from "./kinClient";
@@ -145,6 +154,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinGroups";
 import { deliverKinOutbox, kinLocalPreviews, kinOutbox, startKinOutbox } from "./kinOutbox";
 import {
+  KIN_LAND_MARK_MS,
   kinChatFeedView,
   kinChatReads,
   kinChatScreen,
@@ -158,6 +168,7 @@ import {
   KinFoldRow,
   KinRelayRow,
   KinMessageRow,
+  KinReplyFooter,
   KinPendingRow,
   KinSystemRow,
 } from "./KinMessageRows";
@@ -168,12 +179,14 @@ import { kinAccessCopy } from "./kinTeammateMark";
 import { useKinHostAt } from "./useKinHost";
 import { useKinCountryNeeded } from "./useKinMoney";
 import { useKinOwnerLevel } from "./useKinOwnerLevel";
+import { useKinWhatWeSellAnswer } from "./useKinDocs";
 import { kinStopNotice } from "@t3tools/client-runtime/kin/kinStop";
 import { useKinStopLine } from "./useKinStop";
 import { openKinSettings } from "./kinSettingsAddress";
 import { useKinProfiles } from "./kinPictures";
 import { kinDraftAtom, kinDraftKey, restoreDraft } from "./kinDraft";
 import { Skeleton } from "../components/ui/skeleton";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 type ChatResult = AsyncResult.AsyncResult<KinSynced<KinChatState>, unknown> | null;
 type InboxResult = AsyncResult.AsyncResult<KinSynced<KinInboxState>, unknown> | null;
@@ -210,6 +223,7 @@ export function KinChatView(props: {
   const chatResult = useAtomValue(chatAtom);
   const inbox = useAtomValue(inboxAtom);
   const canInterrupt = useAtomValue(kinClient.leadInterrupt.permissionAtom(props.environmentId));
+  const ownerLevel = useKinOwnerLevel(props.environmentId);
   const state: KinChatScreenState =
     chatId === null ? { _tag: "gone", reason: "not_found" } : kinChatScreenState(host, chatResult);
   const viewer = kinFeedViewer(
@@ -285,8 +299,8 @@ export function KinChatView(props: {
 
   const presence =
     state._tag === "ready" && state.connected && state.chat.live
-      ? state.chat.value.presence.at(-1)
-      : undefined;
+      ? state.chat.value.presence
+      : NO_PRESENCE;
   const tasks = state._tag === "ready" ? kinChatStatusLine(state.chat.value.widgets) : null;
   const pairProfile =
     pairWith === null || profiles === null
@@ -385,21 +399,24 @@ export function KinChatView(props: {
           mentionable={screen.mentionable}
           unread={kinUnreadToMark(summary)}
           presence={presence}
+          mayStop={kinMayStopAgent({
+            canInterrupt,
+            direct: summary?.kind === "direct",
+            ownedAgentId,
+            retired: screen.retired !== null,
+            ownerLevel,
+          })}
           stopLead={
-            summary === undefined ||
-            ownedAgentId === null ||
-            !canInterrupt ||
-            screen.retired !== null
+            summary === undefined
               ? null
               : (wakeupId) =>
-                  kinClient.leadInterrupt
-                    .run(appAtomRegistry, {
-                      environmentId: state.environmentId,
-                      input: { orgId: summary.orgId, wakeupId: wakeupId as KinWakeupId },
-                    })
-                    .then((result) => result._tag === "Success")
+                  runKinCommand(appAtomRegistry, kinClient.leadInterrupt, {
+                    environmentId: state.environmentId,
+                    input: { orgId: summary.orgId, wakeupId: wakeupId as KinWakeupId },
+                  }).then((result) => result._tag === "Success")
           }
           charter={screen.charter}
+          setsUp={screen.setsUp}
           members={group?.members ?? summary?.members ?? []}
           direct={summary?.kind === "direct"}
           teamRoomId={teamRoomId}
@@ -557,6 +574,7 @@ function KinChatStateView(props: {
 const offlineTime = kinWhenFormat("time");
 
 type StopState = "idle" | "stopping" | "failed";
+const NO_PRESENCE: ReadonlyArray<KinPresence> = [];
 
 function KinChatFeed(props: {
   readonly orgId: string;
@@ -573,10 +591,14 @@ function KinChatFeed(props: {
   readonly onRetry: () => void;
   readonly viewer: KinFeedViewer;
   readonly unread: number | null;
-  readonly presence: KinPresence | undefined;
+  readonly presence: ReadonlyArray<KinPresence>;
+  /** Whether the viewer may stop this agent's run here; the host still decides. */
+  readonly mayStop: (agentId: string) => boolean;
   readonly stopLead: ((wakeupId: string) => Promise<boolean>) | null;
   /** What the owner wrote this lead is for; the intro shows it before the first message. */
   readonly charter: string | null;
+  /** The viewer's own Chief of staff, whose intro may name the company's answer. */
+  readonly setsUp: boolean;
   readonly members: ReadonlyArray<KinChatMember>;
   /** A group's leads, which the composer offers on `@`. */
   readonly mentionable: ReadonlyArray<KinMentionCandidate>;
@@ -607,16 +629,23 @@ function KinChatFeed(props: {
   const [follow, setFollow] = useState(() =>
     initialKinFeedFollow(latestKinSeq(props.chat.value.messages)),
   );
-  const [stop, setStop] = useState<{ readonly wakeupId: string; readonly state: StopState }>({
-    wakeupId: "",
-    state: "idle",
-  });
+  // Per wake-up, so a new run starts with a fresh Stop and one agent's Stop never shows on another.
+  const [stops, setStops] = useState<ReadonlyMap<string, StopState>>(new Map());
 
   const live = props.chat.value;
   const paging = kinActivePaging(heldPaging, live);
   const outbox = useAtomValue(kinOutbox.chatAtom(props.environmentId, props.chatId));
   const dayStart = new Date(nowMs);
   dayStart.setHours(0, 0, 0, 0);
+  const viewerMemberId = kinViewerMemberId(props.members, props.viewer.personId);
+  const [heldLine, setHeldLine] = useState<KinNewLineHold | null>(null);
+  const newLine = kinNextNewLineHold(
+    heldLine,
+    props.chatId,
+    kinOwnReadSeq(live, viewerMemberId),
+    latestKinSeq(live.messages),
+  );
+  if (newLine !== heldLine) setHeldLine(newLine);
   const feed = kinChatFeedView({
     chatId: props.chatId,
     live,
@@ -631,12 +660,15 @@ function KinChatFeed(props: {
     formatTime: formatKinMessageTime,
     follow,
     landOn: props.landOn,
+    caughtUp: props.chat.live,
     ownsLead: props.ownsLead,
     agentName: props.agentName,
     retired: props.retired !== null,
     readOnly: props.readOnly !== null,
+    newLine,
   });
-  const { streamed, widgets, pending, rows, display, landIndex, followsEnd, unseen } = feed;
+  const { streamed, widgets, pending, rows, display, landIndex, openRow, followsEnd, unseen } =
+    feed;
   const echoedKey = feed.echoed.join("\n");
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- frees outbox entries once the stream carries their message
   useEffect(() => {
@@ -644,7 +676,6 @@ function KinChatFeed(props: {
   }, [echoedKey]);
   const canReactHere = useAtomValue(kinClient.react.permissionAtom(props.environmentId));
   const react = useAtomCommand(kinClient.react, "react");
-  const viewerMemberId = kinViewerMemberId(props.members, props.viewer.personId);
   const canReact =
     canReactHere &&
     viewerMemberId !== null &&
@@ -658,22 +689,23 @@ function KinChatFeed(props: {
   };
   const { landOn } = props;
   const landed = useRef<string | null>(null);
+  const openingLine = useRef(false);
+  // The message a row opened, tinted a moment once it has loaded so the eye lands on it.
+  const [markDone, setMarkDone] = useState<string | null>(null);
 
-  const { presence, stopLead } = props;
-  const wakeupId = presence?.wakeupId ?? null;
-  // A new wake-up starts with a fresh Stop.
-  const stopState = wakeupId !== null && stop.wakeupId === wakeupId ? stop.state : "idle";
+  const { stopLead } = props;
+  const setStopState = (wakeupId: string, state: StopState) =>
+    setStops((current) => new Map(current).set(wakeupId, state));
   const onStop =
-    stopLead === null || wakeupId === null
+    stopLead === null
       ? null
-      : () => {
-          setStop({ wakeupId, state: "stopping" });
+      : (wakeupId: string) => {
+          if (stops.get(wakeupId) === "stopping") return;
+          setStopState(wakeupId, "stopping");
           // Stopping holds until the wake-up's presence clears.
-          void stopLead(wakeupId).then((sent) =>
-            setStop((current) =>
-              current.wakeupId === wakeupId && !sent ? { wakeupId, state: "failed" } : current,
-            ),
-          );
+          void stopLead(wakeupId).then((sent) => {
+            if (!sent) setStopState(wakeupId, "failed");
+          });
         };
 
   const { earlierPage, latestSeq, showIntro } = feed;
@@ -683,12 +715,10 @@ function KinChatFeed(props: {
   const { connected, unread } = props;
   const focused = typeof document === "undefined" || document.visibilityState === "visible";
   const markRead = (seq: number) =>
-    kinClient.markRead
-      .run(appAtomRegistry, {
-        environmentId: props.environmentId,
-        input: { chatId: props.chatId, seq },
-      })
-      .then((result) => result._tag === "Success");
+    runKinCommand(appAtomRegistry, kinClient.markRead, {
+      environmentId: props.environmentId,
+      input: { chatId: props.chatId, seq },
+    }).then((result) => result._tag === "Success");
   const seesEnd = followsEnd && focused && connected && props.chat.live;
   const reading = useRef({ markRead, seesEnd, latestSeq, unread, connected, focused });
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- tells the host what the reader has seen, one call in flight at a time
@@ -766,15 +796,52 @@ function KinChatFeed(props: {
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- loadEarlier is rebuilt each render and reads the page these name.
   }, [seekBefore, pageFailed, loading, canLoadEarlier, landOn, landed]);
 
-  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the list, outside React, to the message the chat was opened on, once it has loaded
+  const openKind = openRow?.kind ?? null;
+  const openKey = openRow?.key ?? null;
+  const openIndex = openRow?.index ?? -1;
+  const openViewPosition = openRow?.viewPosition ?? 0;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- scrolls the list, outside React, to the requested message or the "New" line on open
   useEffect(() => {
-    if (landOn === null || landIndex < 0 || landed.current === landOn) return;
+    if (openKind === null || openKey === null || openIndex < 0) return;
+    if (openKind === "new-line" ? landed.current !== null : landed.current === openKey) return;
+    // Leave the scroll position alone when the reader already moved away before the backlog arrived.
+    if (openKind === "new-line" && !followsEnd && !openingLine.current) {
+      landed.current = openKey;
+      return;
+    }
     // Let go of the end first, so the list's pin to its end can't take the reader back down.
-    if (followsEnd) return transition({ type: "land" });
-    landed.current = landOn;
-    void listRef.current?.scrollToIndex({ index: landIndex, animated: false, viewPosition: 0.3 });
+    if (followsEnd) {
+      if (openKind === "new-line") openingLine.current = true;
+      return transition({ type: "land", seq: reading.current.latestSeq });
+    }
+    openingLine.current = false;
+    landed.current = openKey;
+    const list = listRef.current;
+    if (list === null) return;
+    let active = true;
+    void list
+      .scrollToIndex({ index: openIndex, animated: false, viewPosition: openViewPosition })
+      .then(() => {
+        if (!active || openKind !== "new-line" || followRef.current.away) return;
+        const scrollNode = list.getScrollableNode();
+        const atEnd =
+          scrollNode instanceof HTMLElement && scrollNode.clientHeight > 0
+            ? scrollNode.scrollHeight - scrollNode.scrollTop - scrollNode.clientHeight <= 2
+            : list.getState().isAtEnd;
+        if (atEnd) transition({ type: "jump-to-end" });
+      });
+    return () => {
+      active = false;
+    };
     // oxlint-disable-next-line react/exhaustive-effect-dependencies -- transition reads only refs and the stable setFollow.
-  }, [landIndex, landOn, followsEnd, listRef, landed]);
+  }, [openKind, openKey, openIndex, openViewPosition, followsEnd, listRef, landed]);
+  const marked = landOn !== null && landIndex >= 0 && markDone !== landOn;
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- a timer: the mark on the message a row opened lasts a moment, then goes
+  useEffect(() => {
+    if (!marked || landOn === null) return;
+    const timer = setTimeout(() => setMarkDone(landOn), KIN_LAND_MARK_MS);
+    return () => clearTimeout(timer);
+  }, [marked, landOn]);
 
   const checkEnd = () => {
     const isAtEnd = listRef.current?.getState().isAtEnd ?? true;
@@ -913,6 +980,17 @@ function KinChatFeed(props: {
     switch (item.type) {
       case "message":
         return renderMessage(item);
+      case "footer":
+        return (
+          <KinReplyFooter
+            standalone
+            message={item.message}
+            buttons={item.buttons}
+            environmentId={props.environmentId}
+            orgId={props.orgId}
+            connected={props.connected}
+          />
+        );
       case "cards":
         return renderMessage(item.first, item);
       case "system": {
@@ -1005,8 +1083,10 @@ function KinChatFeed(props: {
     showIntro && props.agentName !== null ? (
       <KinIntro
         environmentId={props.environmentId}
+        orgId={props.orgId}
         agentName={props.agentName}
         charter={props.charter}
+        setsUp={props.setsUp}
         onSend={(text) => void sendText(text)}
         onStart={(text) => {
           appAtomRegistry.set(kinDraftAtom(draftKey), text);
@@ -1093,9 +1173,15 @@ function KinChatFeed(props: {
               ? "other"
               : row.type
         }
-        renderItem={renderItem}
+        renderItem={({ item, index }: { readonly item: KinChatRow; readonly index: number }) =>
+          marked && index === landIndex ? (
+            <div className="rounded-lg bg-primary/10">{renderItem({ item })}</div>
+          ) : (
+            renderItem({ item })
+          )
+        }
         // Both reach rows only through renderItem, which the list doesn't watch.
-        extraData={[streamed.widgets, streamed.reactions, canReact, display]}
+        extraData={[marked, streamed.widgets, streamed.reactions, canReact, display]}
         estimatedItemSize={72}
         recycleItems={false}
         alignItemsAtEnd
@@ -1111,10 +1197,13 @@ function KinChatFeed(props: {
         ListHeaderComponent={header}
         ListEmptyComponent={empty}
         ListFooterComponent={
-          <KinPresenceLine
+          <KinPresenceLines
             environmentId={props.environmentId}
             presence={props.presence}
-            stop={stopState}
+            showName={!props.direct}
+            mayStop={props.mayStop}
+            stops={stops}
+            agentNames={props.viewer.agentNames}
             onStop={onStop}
           />
         }
@@ -1180,44 +1269,120 @@ function KinChatFeed(props: {
 }
 
 /**
- * What the lead is doing, in one line under the feed. Its row keeps its height when empty, so a
- * reply landing never shifts the feed. Static text: it changes on 15 s ticks, never animates.
+ * What each working agent is doing, with its pebble, one line each under the feed. The row keeps
+ * its height when empty, so a reply landing never shifts the feed. Static text: it changes on
+ * 15 s ticks.
  */
+function KinPresenceLines(props: {
+  readonly environmentId: EnvironmentId;
+  readonly presence: ReadonlyArray<KinPresence>;
+  readonly showName: boolean;
+  readonly mayStop: (agentId: string) => boolean;
+  readonly stops: ReadonlyMap<string, StopState>;
+  readonly agentNames: ReadonlyMap<string, string>;
+  readonly onStop: ((wakeupId: string) => void) | null;
+}) {
+  const now = useKinPresenceNow(props.presence.some(kinPresenceNeedsClock));
+  const [hold] = useState(createKinLabelHold);
+  const held = useSyncExternalStore(hold.subscribe, hold.snapshot, hold.snapshot);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- arms or cancels a single expiry timer per working line so brief tool labels stay readable
+  useEffect(() => {
+    hold.sync(props.presence);
+  }, [hold, props.presence]);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- cancels any pending label-hold timers on unmount
+  useEffect(() => () => hold.dispose(), [hold]);
+  const rows = kinWorkingLines(
+    props.presence,
+    now,
+    props.onStop === null ? noStop : props.mayStop,
+    held,
+  );
+  if (rows.length === 0) return <div className="h-9" />;
+  return rows.map((row) => (
+    <KinPresenceLine
+      key={row.presence.agentId}
+      environmentId={props.environmentId}
+      row={row}
+      name={props.agentNames.get(row.presence.agentId) ?? null}
+      showName={props.showName}
+      stop={
+        row.presence.wakeupId === null ? "idle" : (props.stops.get(row.presence.wakeupId) ?? "idle")
+      }
+      onStop={props.onStop}
+    />
+  ));
+}
+
+const noStop = () => false;
+
 function KinPresenceLine(props: {
   readonly environmentId: EnvironmentId;
-  readonly presence: KinPresence | undefined;
-  readonly onStop: (() => void) | null;
+  readonly row: KinWorkingLine;
+  readonly name: string | null;
+  readonly showName: boolean;
   readonly stop: StopState;
+  readonly onStop: ((wakeupId: string) => void) | null;
 }) {
-  const now = useKinPresenceNow(kinPresenceNeedsClock(props.presence));
-  const line = kinPresenceLine(props.presence, now);
-  const timerStart = kinPresenceTimerStart(props.presence);
-  const { onStop } = props;
-  const stoppable = line?.stalled === true && onStop !== null;
+  const { presence, line } = props.row;
+  const timerStart = kinPresenceTimerStart(presence);
+  const { onStop, stop } = props;
+  const wakeupId = presence.wakeupId;
+  const stoppable = props.row.stop !== "none" && onStop !== null && wakeupId !== null;
+  const press = () => {
+    if (wakeupId !== null) onStop?.(wakeupId);
+  };
+  const stopName = props.name ?? "the agent";
+  const showName = props.showName && props.name !== null;
   return (
     <div className="mx-auto flex h-9 w-full max-w-3xl items-center gap-2 px-5 text-muted-foreground text-xs">
-      <p role="status" aria-live="polite" className="truncate">
-        {line === null ? "" : line.text}
+      <div className="shrink-0">
+        <KinAvatar avatar={kinAgentAvatar(presence.agentId)} size="xs" />
+      </div>
+      <p role="status" aria-live="polite" className="flex min-w-0 items-center gap-1.5">
+        {showName ? (
+          <>
+            <span className="max-w-44 truncate font-medium text-foreground">{props.name}</span>
+            <span aria-hidden="true" className="shrink-0">
+              ·
+            </span>
+          </>
+        ) : null}
+        <span className="min-w-0 truncate">{line.text}</span>
       </p>
       {timerStart === null ? null : (
         // The timer ticks on its own; screen readers hear the presence text, not every second.
-        <span aria-hidden="true">
+        <span aria-hidden="true" className="shrink-0">
           <KinWorkingTimer createdAt={timerStart} environmentId={props.environmentId} />
         </span>
       )}
       {stoppable ? (
         <>
-          {props.stop === "idle" ? null : (
-            <span role={props.stop === "failed" ? "alert" : undefined}>
-              {props.stop === "failed" ? "Couldn't stop" : "Stopping…"}
+          {stop === "idle" ? null : (
+            <span role={stop === "failed" ? "alert" : undefined} className="shrink-0">
+              {stop === "failed" ? "Couldn't stop" : "Stopping…"}
             </span>
           )}
-          <KinStopButton
-            label={props.stop === "failed" ? KIN_CHAT_COPY.stopAgain : "Stop"}
-            tooltip={props.stop === "failed" ? KIN_RETRY : "Stop"}
-            disabled={props.stop === "stopping"}
-            onClick={onStop}
-          />
+          <div className="shrink-0">
+            {props.row.stop === "urgent" ? (
+              <KinStopButton
+                label={stop === "failed" ? KIN_CHAT_COPY.stopAgain : `Stop ${stopName}`}
+                tooltip={stop === "failed" ? KIN_RETRY : "Stop"}
+                disabled={stop === "stopping"}
+                onClick={press}
+              />
+            ) : (
+              <Button
+                size="xs"
+                variant="outline"
+                aria-label={stop === "failed" ? KIN_CHAT_COPY.stopAgain : `Stop ${stopName}`}
+                disabled={stop === "stopping"}
+                onClick={press}
+              >
+                <CircleStopIcon />
+                {stop === "failed" ? KIN_CHAT_COPY.stopAgain : "Stop"}
+              </Button>
+            )}
+          </div>
         </>
       ) : null}
     </div>
@@ -1227,8 +1392,10 @@ function KinPresenceLine(props: {
 /** First run in the owner's chat with their lead: what it does and a few asks to start with. */
 function KinIntro(props: {
   readonly environmentId: EnvironmentId;
+  readonly orgId: string;
   readonly agentName: string;
   readonly charter: string | null;
+  readonly setsUp: boolean;
   readonly onSend: (text: string) => void;
   readonly onStart: (text: string) => void;
 }) {
@@ -1236,6 +1403,10 @@ function KinIntro(props: {
   const countryNeeded = useKinCountryNeeded(props);
   const ownerLevel = useKinOwnerLevel(props.environmentId);
   const countryFirst = countryNeeded && ownerLevel;
+  const answer = useKinWhatWeSellAnswer(
+    { environmentId: props.environmentId, orgId: KinOrgId.make(props.orgId) },
+    props.setsUp && ownerLevel,
+  );
   return (
     <Empty size="compact">
       <EmptyHeader>
@@ -1244,6 +1415,9 @@ function KinIntro(props: {
           {props.charter ??
             `Ask for what you need in plain words. ${props.agentName} replies here, and asks you when a decision is yours.`}
         </EmptyDescription>
+        {typeof answer === "string" ? (
+          <EmptyDescription>{kinIntroSetUpLine(props.agentName, answer)}</EmptyDescription>
+        ) : null}
       </EmptyHeader>
       <div className="flex flex-wrap justify-center gap-2">
         {countryFirst ? (
@@ -1522,7 +1696,7 @@ function KinComposer(props: {
               <div className="flex items-center justify-between px-2 pb-2">
                 <div className="flex items-center">
                   {files.canAttach ? (
-                    <ComposerAttachButton
+                    <KinAttachButton
                       addComposerAttachments={(picked) => files.add(picked)}
                       focusComposer={() => textareaRef.current?.focus()}
                     />

@@ -807,6 +807,14 @@ leaks:
         - apps/web/src/components/chat/TimelineUserMessageRow.tsx
         - apps/mobile/src/features/threads/ThreadQueueControl.tsx
         - apps/mobile/src/features/threads/ThreadFeed.tsx
+    - reason: The User-Agent header sent to a TanStack Source host a person connects; never shown.
+      leak: scheme-name
+      text: "^t3code$"
+      files: [packages/source-control-tanstack-source/src/server/**]
+    - reason: The git identity of a benchmark's throwaway scratch repository; never shown or sent.
+      leak: t3-domain
+      text: "bench@t3\\.codes"
+      files: [scripts/server-metrics.ts]
     - reason: Demo data for upstream's store screenshots; the project is named after the T3 Code repo.
       leak: scheme-name
       text: "^t3code$"
@@ -925,6 +933,7 @@ leaks:
       text: "^https://github\\.com/pingdotgg/t3code/blob/main/docs/user/"
       files:
         - apps/web/src/components/settings/MultipleAccountsNote.tsx
+        - apps/web/src/components/workflows/WorkflowRunsView.tsx
         - packages/contracts/src/environmentHttp.ts
     - reason: >-
         The provider model manifest the server reads from upstream's main branch; Kin uses the

@@ -1,5 +1,15 @@
+import * as Context from "effect/Context";
 import * as Predicate from "effect/Predicate";
 import { Tool } from "effect/ai";
+
+interface FieldSelection {
+  readonly path: ReadonlyArray<string>;
+  readonly keys: ReadonlyArray<string>;
+}
+
+export const AdvertisedDescriptions = Context.Service<ReadonlyArray<FieldSelection>>(
+  "t3/mcp/AdvertisedDescriptions",
+);
 
 type Json = unknown;
 type JsonObject = { [key: string]: Json };
@@ -71,24 +81,54 @@ const mergeTaggedObjects = (branches: ReadonlyArray<Json>): JsonObject | undefin
   return { type: "object", properties, required: [tag, ...requiredByAll] };
 };
 
-const compact = (schema: Json, optional: boolean): Json => {
-  if (Array.isArray(schema)) return schema.map((item) => compact(item, false));
+const isOpenRest = (value: Json) => {
+  if (!Array.isArray(value) || value.length !== 1) return false;
+  const [rest] = value;
+  return (
+    Predicate.isObject(rest) &&
+    rest.type === "object" &&
+    Object.keys(rest).length === 2 &&
+    Predicate.isObject(rest.additionalProperties) &&
+    Object.keys(rest.additionalProperties).length === 0
+  );
+};
+
+const compact = (
+  schema: Json,
+  optional: boolean,
+  options: { readonly kin: boolean; readonly stripOpenRest: boolean },
+): Json => {
+  if (Array.isArray(schema)) return schema.map((item) => compact(item, false, options));
   if (!Predicate.isObject(schema)) return schema;
   const required = new Set(Array.isArray(schema.required) ? schema.required : []);
   let result: JsonObject = {};
   for (const [key, value] of Object.entries(schema)) {
     if (key === "additionalProperties" && value === true) continue;
+    // An open rest schema lets a refinement see extra keys. Its allOf adds no JSON validation.
+    if (options.stripOpenRest && key === "allOf" && schema.type === "object" && isOpenRest(value))
+      continue;
     if (SAFE_INTEGER_BOUNDS[key] === value) continue;
     if (isNonStringEnum(key, value)) continue;
+    if (
+      options.kin &&
+      ((key === "minLength" && value === 1) ||
+        key === "maxLength" ||
+        key === "maxItems" ||
+        key === "minItems" ||
+        (schema.type === "integer" && (key === "minimum" || key === "maximum")))
+    )
+      continue;
     result[key] =
       key === "properties" && Predicate.isObject(value)
         ? Object.fromEntries(
             Object.entries(value).map(([name, property]) => [
               name,
-              compact(property, !required.has(name)),
+              compact(property, !required.has(name), options),
             ]),
           )
-        : compact(value, false);
+        : options.kin && key === "anyOf" && Array.isArray(value)
+          ? value.map((branch) => compact(branch, optional, options))
+          : compact(value, false, options);
   }
   if (Array.isArray(result.anyOf)) {
     const branches = result.anyOf
@@ -101,11 +141,64 @@ const compact = (schema: Json, optional: boolean): Json => {
   return result;
 };
 
+const shapeKeywords = new Set([
+  "type",
+  "enum",
+  "const",
+  "required",
+  "properties",
+  "items",
+  "anyOf",
+  "allOf",
+  "oneOf",
+  "additionalProperties",
+]);
+
+const bareShape = (schema: Json): Json => {
+  if (Array.isArray(schema)) return schema.map(bareShape);
+  if (!Predicate.isObject(schema)) return schema;
+  return Object.fromEntries(
+    Object.entries(schema)
+      .filter(([key]) => shapeKeywords.has(key))
+      .map(([key, value]) => [
+        key,
+        key === "properties" && Predicate.isObject(value)
+          ? Object.fromEntries(
+              Object.entries(value).map(([name, property]) => [name, bareShape(property)]),
+            )
+          : key === "enum" || key === "const"
+            ? value
+            : bareShape(value),
+      ]),
+  );
+};
+
 /**
  * The input schema T3 advertises for a tool. Drops JSON noise that every thread pays for:
  * `additionalProperties: true`, safe-integer bounds, nested `anyOf`, JSON-string fallbacks, and
  * the `null` branch of optional properties. A tagged union of objects becomes one object.
  * Decoding still uses the full schema, so each tag's own required fields still apply.
  */
-export const advertisedJsonSchema = (tool: Tool.Any) =>
-  compact(Tool.getJsonSchema(tool), false) as ReturnType<typeof Tool.getJsonSchema>;
+export const advertisedJsonSchema = (tool: Tool.Any, options?: { readonly kin?: boolean }) => {
+  const describedFields = Context.getOrUndefined(tool.annotations, AdvertisedDescriptions);
+  const schema = compact(Tool.getJsonSchema(tool), false, {
+    kin: options?.kin === true,
+    stripOpenRest: describedFields !== undefined,
+  });
+  for (const { path, keys } of describedFields ?? []) {
+    const target = path.reduce<Json>(
+      (node, key) => (Predicate.isObject(node) ? node[key] : undefined),
+      schema,
+    );
+    if (!Predicate.isObject(target) || !Predicate.isObject(target.properties))
+      throw new Error(`No object for ${tool.name} at ${path.join(".")}.`);
+    const described = new Set(keys);
+    target.properties = Object.fromEntries(
+      Object.entries(target.properties).map(([key, property]) => [
+        key,
+        described.has(key) ? property : bareShape(property),
+      ]),
+    );
+  }
+  return schema as ReturnType<typeof Tool.getJsonSchema>;
+};

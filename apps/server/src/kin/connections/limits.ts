@@ -1,8 +1,8 @@
 import * as Duration from "effect/Duration";
 
 /**
- * Every bound on the gateway, in one place. They keep a host and a turn responsive, not a model
- * in check: a looping agent or a server that floods are what they stop.
+ * Every bound on the gateway, in one place. They keep a host responsive against a server that
+ * floods; none counts or stops a turn's calls.
  */
 export const CONNECTION_LIMITS = {
   /** One MCP message, read or written. */
@@ -13,9 +13,6 @@ export const CONNECTION_LIMITS = {
   maxPages: 20,
   /** What one call returns to the agent; past it the result is cut with a marker. */
   resultChars: 80_000,
-  /** What one turn may read from connections, counted from its call rows. */
-  turnChars: 400_000,
-  turnCalls: 200,
   /** Arguments kept in the call log, in UTF-8 bytes. */
   argsBytes: 8 * 1024,
   /** How long the call log keeps a call, and how much one prune pass deletes. */

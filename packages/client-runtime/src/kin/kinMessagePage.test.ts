@@ -10,6 +10,7 @@ import {
 import {
   kinDraftMarkdown,
   kinLinkedMarkdown,
+  kinLinkTitle,
   kinLinkOf,
   kinMessageCopyText,
   kinMessageGistMarkdown,
@@ -300,6 +301,23 @@ describe("kinLinkedMarkdown", () => {
     expect(kinLinkOf("https://x.example", links)).toBeNull();
     expect(kinLinkedMarkdown("Ask Finance.", links, "plain")).toBe("Ask [Finance](kin-link:0).");
     expect(kinLinkOf("kin-link:0", links)?.text).toBe("Finance");
+  });
+
+  it("writes a key as the name its link carries, shortened, and a key without one as written", () => {
+    const named: ReadonlyArray<KinMessageLink> = [
+      { ...links[3]!, name: "INV/26-27/004" as never },
+      {
+        text: "W-12",
+        to: { _tag: "record", key: "W-12", kind: "task" },
+        note: "Check the *logo* files · Open",
+        name: "Check the *logo* files for the new Orbit Dental waiting room signs" as never,
+      },
+    ];
+    expect(kinLinkedMarkdown("Sent INV-1; W-12 next; W-13 stays.", named, "plain")).toBe(
+      "Sent [INV/26-27/004](kin-link:0); [Check the \\*logo\\* files for the new Orbi…](kin-link:1) next; W-13 stays.",
+    );
+    expect(kinLinkTitle(named[0]!)).toBe("INV-1 · INV-1");
+    expect(kinLinkTitle(links[0]!)).toBeUndefined();
   });
 
   it("leaves a body with no links as written", () => {

@@ -3,6 +3,7 @@ import { KIN_RETRY, kinFailureText } from "@t3tools/client-runtime/kin/kinAnswer
 import { squashAtomCommandFailure } from "@t3tools/client-runtime/state/runtime";
 import { useAtomValue } from "@effect/atom-react";
 import { useNavigation, type StaticScreenProps } from "@react-navigation/native";
+import { KIN_PROMISES, type KinPromiseView } from "@t3tools/client-runtime/kin/kinPromises";
 import { kinWorkHostEdits } from "@t3tools/client-runtime/kin/kinWork";
 import {
   KIN_WORK_COPY,
@@ -10,7 +11,7 @@ import {
   type KinWorkAction,
 } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
-  KIN_CLIENTS,
+  KIN_CLIENTS as KIN_CLIENTS_WORDS,
   KIN_CLIENT_FAILED,
   KIN_CLIENT_REFUSED,
   KIN_CLIENT_GONE,
@@ -24,6 +25,7 @@ import {
 import { KIN_MONEY_FORMS } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import {
   KIN_WORK_FORM_COPY,
+  kinIndiaFields,
   kinWorkSend,
   type KinWorkFormProblem,
 } from "@t3tools/client-runtime/kin/kinWorkForms";
@@ -64,7 +66,18 @@ import {
   KinWorkToggleRow,
 } from "./components/KinWorkPieces";
 import { KinClientDeals } from "./KinDealsList";
-import { useKinSectionOn } from "./state/useKinShell";
+import {
+  useKinSectionNamed,
+  useKinSectionOn,
+  useKinSectionWords,
+  useKinShell,
+} from "./state/useKinShell";
+import {
+  kinSectionNamed,
+  kinSectionNamedWords,
+  kinSectionOffLine,
+  kinSectionOn,
+} from "@t3tools/client-runtime/kin/kinShell";
 import { KinWorkNamedRow } from "./KinWorkLists";
 import { KinAvatar } from "./components/KinAvatar";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
@@ -73,6 +86,7 @@ import { KinPlaceLists } from "./KinPlaceLists";
 import { KinDocsUnder } from "./KinDocsList";
 import { kinClient } from "./state/kinClient";
 import { kinHostConnected } from "./state/useKinHost";
+import { useKinCompanyCountry } from "./state/useKinMoney";
 import {
   useKinClientPage,
   useKinWork,
@@ -103,12 +117,14 @@ export function KinClientScreen({ route }: StaticScreenProps<KinClientParams>) {
   const environmentId = Option.getOrNull(decodeEnvironmentId(route.params.environmentId));
   const orgId = Option.getOrNull(decodeOrgId(route.params.orgId));
   const key = Option.getOrNull(decodeKey(route.params.party));
+  const KIN_CLIENTS = useKinSectionWords(environmentId, KIN_CLIENTS_WORDS);
+  const named = useKinSectionNamed(environmentId);
   if (environmentId === null || orgId === null || key === null) {
     return (
       <KinWorkFrame title={KIN_CLIENTS.title} onBack={() => navigation.goBack()}>
         <EmptyState
           variant="plain"
-          title="This link doesn't name a client"
+          title={named("This link doesn't name a client")}
           detail="Open Work from your Kin chats."
         />
       </KinWorkFrame>
@@ -121,12 +137,14 @@ type ClientTarget = KinWorkTarget & { readonly clientKey: KinRecordKey };
 
 function KinClientGate(props: ClientTarget) {
   const navigation = useNavigation();
+  const KIN_CLIENTS = useKinSectionWords(props.environmentId, KIN_CLIENTS_WORDS);
+  const shell = useKinShell(props.environmentId);
   const allowed = useAtomValue(kinClient.workRead.permissionAtom(props.environmentId));
   // A teammate who follows a link asks the host nothing.
   if (!allowed) {
     return (
       <KinWorkFrame title={KIN_CLIENTS.title} onBack={() => navigation.goBack()}>
-        <EmptyState variant="plain" {...KIN_CLIENT_REFUSED} />
+        <EmptyState variant="plain" {...kinSectionNamedWords(shell, KIN_CLIENT_REFUSED)} />
       </KinWorkFrame>
     );
   }
@@ -135,6 +153,8 @@ function KinClientGate(props: ClientTarget) {
 
 function KinClientStates(props: ClientTarget) {
   const navigation = useNavigation();
+  const KIN_CLIENTS = useKinSectionWords(props.environmentId, KIN_CLIENTS_WORDS);
+  const shell = useKinShell(props.environmentId);
   const { state, refresh } = useKinClientPage(props, props.clientKey);
   if (state._tag === "ready") {
     return <KinClientBody {...props} page={state.value} stale={state.stale} onRefresh={refresh} />;
@@ -142,15 +162,15 @@ function KinClientStates(props: ClientTarget) {
   return (
     <KinWorkFrame title={KIN_CLIENTS.title} onBack={() => navigation.goBack()}>
       {state._tag === "loading" ? (
-        <KinWorkLoading label="Loading client" />
+        <KinWorkLoading label={kinSectionNamed(shell, "Loading client")} />
       ) : state._tag === "gone" ? (
-        <EmptyState variant="plain" {...KIN_CLIENT_GONE} />
+        <EmptyState variant="plain" {...kinSectionNamedWords(shell, KIN_CLIENT_GONE)} />
       ) : state._tag === "refused" ? (
-        <EmptyState variant="plain" {...KIN_CLIENT_REFUSED} />
+        <EmptyState variant="plain" {...kinSectionNamedWords(shell, KIN_CLIENT_REFUSED)} />
       ) : (
         <EmptyState
           variant="plain"
-          {...KIN_CLIENT_FAILED}
+          {...kinSectionNamedWords(shell, KIN_CLIENT_FAILED)}
           action={<Button tone="secondary" label={KIN_RETRY} onPress={refresh} />}
         />
       )}
@@ -175,8 +195,16 @@ function KinClientBody(
   const { names } = directory;
   const { state: changed, changes } = useKinWorkChanges(target);
   const ownerLevel = useKinIsOwnerLevel(environmentId);
+  const country = useKinCompanyCountry(target);
+  const india = kinIndiaFields(country);
   const canAddTask = useAtomValue(kinClient.workCreate.permissionAtom(environmentId));
-  const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
+  const KIN_CLIENTS = useKinSectionWords(environmentId, KIN_CLIENTS_WORDS);
+  const shell = useKinShell(environmentId);
+  // A client opened by its link while Clients is off says so; Invoices off takes its invoicing.
+  const offLine = kinSectionOffLine(shell, "clients", ownerLevel);
+  const canInvoice =
+    useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId)) &&
+    kinSectionOn(shell, "invoices");
   const dealsOn = useKinSectionOn(environmentId, "deals");
   const canChangeTasks =
     useAtomValue(kinClient.workUpdate.permissionAtom(environmentId)) &&
@@ -223,6 +251,8 @@ function KinClientBody(
     names,
     now,
     ownerLevel,
+    shell,
+    country,
   );
   const { can } = view;
   // Clients on, or the owner level: what's owed, the contact log, notes and history show.
@@ -263,6 +293,23 @@ function KinClientBody(
       setUnopened(`This phone has nothing set up to ${what}.`);
   };
   const about = { party: view.key, partyName: view.name };
+  const promiseRow = (promise: KinPromiseView | null) => {
+    if (promise === null) return null;
+    const { open: at } = promise;
+    return {
+      from: promise.from,
+      onOpen:
+        at === null
+          ? null
+          : () =>
+              navigation.navigate("KinChat", {
+                environmentId,
+                orgId,
+                chatId: at.chatId,
+                message: at.messageId,
+              }),
+    };
+  };
   const owed = (
     title: string,
     side: KinOwedView,
@@ -282,6 +329,7 @@ function KinClientBody(
             saving={changed.pending[row.key] !== undefined}
             onPress={() => openRecord("KinWorkItem", { environmentId, orgId, task: row.key })}
             onAct={canChangeTasks ? (action) => act(row.key, action) : null}
+            promise={promiseRow(row.promise)}
           />
         ))
       )}
@@ -293,7 +341,7 @@ function KinClientBody(
           }
         />
       )}
-      {canAddTask && !view.closed ? (
+      {canAddTask && view.adds && !view.closed ? (
         <ListActionRow
           label={add.label}
           onPress={() =>
@@ -301,7 +349,7 @@ function KinClientBody(
           }
         />
       ) : null}
-      {also !== undefined && canAddTask && !view.closed ? (
+      {also !== undefined && canAddTask && view.adds && !view.closed ? (
         <ListActionRow
           label={also.label}
           onPress={() =>
@@ -407,6 +455,11 @@ function KinClientBody(
           }
         : {})}
     >
+      {offLine === null ? null : (
+        <Text textRole="footnote" className="px-2 text-foreground-muted">
+          {offLine}
+        </Text>
+      )}
       <View className="gap-1 px-2">
         <Text
           textRole="headline"
@@ -434,6 +487,15 @@ function KinClientBody(
             {view.lookedAfter.name}
           </Text>
         </View>
+        {view.contract === null ? null : (
+          <Text
+            textRole="footnote"
+            accessibilityLabel={`${KIN_PROMISES.contract}: ${view.contract.text}`}
+            className={view.contract.soon ? "text-warning-foreground" : "text-foreground-muted"}
+          >
+            {view.contract.text}
+          </Text>
+        )}
         {view.privacy.private ? <KinWorkPrivateMark /> : null}
       </View>
       {props.stale ? (
@@ -458,7 +520,7 @@ function KinClientBody(
           {view.nextStep.next === null ? (
             <>
               <ListRowLayout label={KIN_CLIENTS.noNextStep} disabled />
-              {canAddTask && !view.closed ? (
+              {canAddTask && view.adds && !view.closed ? (
                 <ListActionRow
                   label={KIN_CLIENTS.addNextStep}
                   onPress={() =>
@@ -516,7 +578,7 @@ function KinClientBody(
               />
             ))
           )}
-          {can.owner && !view.closed ? (
+          {can.owner && view.adds && !view.closed ? (
             <ListActionRow
               label={KIN_PROJECTS.add}
               onPress={() =>
@@ -540,7 +602,7 @@ function KinClientBody(
       >
         {view.contacts.length === 0 ? (
           <ListRowLayout
-            label={keepsContacts ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
+            label={keepsContacts && view.adds ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
             disabled
           />
         ) : (
@@ -566,7 +628,7 @@ function KinClientBody(
             />
           ))
         )}
-        {keepsContacts ? (
+        {keepsContacts && view.adds ? (
           <ListActionRow
             label={KIN_CLIENTS.addContact}
             onPress={() =>
@@ -575,6 +637,17 @@ function KinClientBody(
           />
         ) : null}
       </ListSection>
+      {view.credit.length === 0 ? null : (
+        <ListSection title={KIN_CLIENTS_WORDS.credit}>
+          {view.credit.map((one) => (
+            <ListRow
+              key={one.key}
+              label={one.line}
+              onPress={() => openRecord("KinWorkItem", { environmentId, orgId, task: one.key })}
+            />
+          ))}
+        </ListSection>
+      )}
       <KinPlaceLists
         environmentId={environmentId}
         orgId={orgId}
@@ -659,18 +732,29 @@ function KinClientBody(
               )}
               {!can.owner ? null : (
                 <>
-                  {view.vendor && view.tax === null ? null : (
+                  {(view.vendor || !india) &&
+                  view.tax === null &&
+                  view.accountsForTax === null ? null : (
                     <View className="gap-1">
                       <Text textRole="footnote" className="text-foreground-muted">
                         {KIN_CLIENTS.tax}
                       </Text>
-                      <Text
-                        textRole="body"
-                        selectable
-                        className={view.tax === null ? "text-foreground-muted" : "text-foreground"}
-                      >
-                        {view.tax ?? KIN_CLIENTS.noTax}
-                      </Text>
+                      {view.tax === null && !india ? null : (
+                        <Text
+                          textRole="body"
+                          selectable
+                          className={
+                            view.tax === null ? "text-foreground-muted" : "text-foreground"
+                          }
+                        >
+                          {view.tax ?? KIN_CLIENTS.noTax}
+                        </Text>
+                      )}
+                      {view.accountsForTax === null ? null : (
+                        <Text textRole="body" selectable className="text-foreground">
+                          {view.accountsForTax}
+                        </Text>
+                      )}
                     </View>
                   )}
                   <View className="gap-1">

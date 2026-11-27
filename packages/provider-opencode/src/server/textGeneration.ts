@@ -1,7 +1,13 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-import { NonNegativeInt, settingsSecretLiteral, TextGenerationError } from "@t3tools/contracts";
+import {
+  NonNegativeInt,
+  ProviderDriverKind,
+  settingsSecretLiteral,
+  TextGenerationError,
+} from "@t3tools/contracts";
+import { brokenVersionDetail } from "@t3tools/provider-core/server/compatibility";
 import type { OpenCodeSettings } from "../settings.ts";
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 
@@ -183,10 +189,17 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
   const runOpenCodeJson = Effect.fn("runOpenCodeJson")(function* <S extends Schema.Top>(
     input: TextGenerationOperations.Request<S>,
   ) {
+    const { operation } = input;
+    if (operation === "generateStructuredText") {
+      return yield* new TextGenerationError({
+        operation,
+        detail: "OpenCode text generation requires a session with tools.",
+      });
+    }
     const parsedModel = OpenCodeRuntime.parseOpenCodeModelSlug(input.modelSelection.model);
     if (!parsedModel) {
       return yield* new TextGenerationError({
-        operation: input.operation,
+        operation,
         detail: "OpenCode model selection must use the 'provider/model' format.",
       });
     }
@@ -203,6 +216,15 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
           "url" | "serverPassword" | "version"
         >,
       ) {
+        // Text generation does not open a session, so the shared session check never sees it.
+        const broken = brokenVersionDetail({
+          name: "OpenCode",
+          version: server.version,
+          advisory: yield* host.compatibility(ProviderDriverKind.make("opencode"), server.version),
+        });
+        if (broken !== undefined) {
+          return yield* new TextGenerationError({ operation, detail: broken });
+        }
         const client = openCodeRuntime.createOpenCodeSdkClient({
           baseUrl: server.url,
           directory: input.cwd,
@@ -223,14 +245,14 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
             ),
           catch: (cause) =>
             new OpenCodeTextGenerationSessionRequestError({
-              operation: input.operation,
+              operation,
               cwd: input.cwd,
               cause,
             }),
         });
         if (!session.data) {
           return yield* new OpenCodeTextGenerationSessionPayloadError({
-            operation: input.operation,
+            operation,
             cwd: input.cwd,
           });
         }
@@ -243,10 +265,10 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
         const selectedVariant = yield* OpenCodeRuntime.resolveOpenCodeVariant(
           client,
           parsedModel,
-          getModelSelectionStringOptionValue(input.modelSelection, "variant"),
+          OpenCodeRuntime.openCodeVariant(input.modelSelection),
         );
         const promptContext = {
-          operation: input.operation,
+          operation,
           cwd: input.cwd,
           sessionId: session.data.id,
           providerId: parsedModel.providerID,
@@ -375,7 +397,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
         orElse: () =>
           Effect.fail(
             new TextGenerationError({
-              operation: input.operation,
+              operation,
               detail: "OpenCode did not finish generating in time.",
             }),
           ),
@@ -384,7 +406,7 @@ export const makeOpenCodeTextGeneration = Effect.fn("makeOpenCodeTextGeneration"
         OpenCodeRuntimeError: (cause) =>
           Effect.fail(
             new TextGenerationError({
-              operation: input.operation,
+              operation,
               detail: OpenCodeRuntime.openCodeRuntimeErrorDetail(cause),
               cause,
             }),

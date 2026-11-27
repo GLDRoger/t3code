@@ -18,6 +18,7 @@ vi.mock(import("./useKinOwnerLevel"), async (importOriginal) => ({
   useKinOwnerLevel: () => true,
 }));
 vi.mock(import("./kinClient"), async (importOriginal) => {
+  const { commandRun } = await import("../../test/commandRun");
   const real = await importOriginal();
   const { AsyncResult, Atom } = await import("effect/reactivity");
   const Cause = await import("effect/Cause");
@@ -34,8 +35,10 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
   const command = (answer: (input: Record<string, unknown>) => unknown) => ({
     label: "test:github",
     permissionAtom: () => allowed,
-    run: async (_registry: unknown, { input }: { readonly input: Record<string, unknown> }) =>
-      answer(input),
+    run: commandRun(
+      async (_registry: unknown, { input }: { readonly input: Record<string, unknown> }) =>
+        answer(input),
+    ),
   });
   return {
     ...real,

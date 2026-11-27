@@ -21,11 +21,21 @@ const sensitiveField = (sql: SqlClient.SqlClient) =>
         AND json_extract(f.value, '$.sensitive') = 1)`,
   ]);
 /** Fields that hold who is on it as ids, which are no one's words (`KinSearch.shown`). */
-const ID_FIELDS = ["members", "attendees", "alsoOn"];
+const ID_FIELDS = ["members", "attendees", "alsoOn", "draftFor"];
 const fieldText = (sql: SqlClient.SqlClient, sensitive: boolean) =>
   sql`COALESCE((SELECT group_concat(j.value, ' ') FROM json_each(r.fields_json) j
     WHERE j.key NOT IN ${sql.in(ID_FIELDS)}
       AND ${sensitive ? sensitiveField(sql) : sql`NOT ${sensitiveField(sql)}`}), '')`;
+export const teamListSearchText = (sql: SqlClient.SqlClient) =>
+  sql`r.notes || ' ' || COALESCE((SELECT group_concat(j.value, ' ')
+    FROM json_each(r.fields_json) j
+    JOIN kin_registers g ON g.org_id = r.org_id AND g.register_id = r.register_id
+    JOIN json_each(g.definition_json, '$.fields') f ON json_extract(f.value, '$.key') = j.key
+    WHERE j.key NOT IN ${sql.in(ID_FIELDS)}
+      AND j.type <> 'object'
+      AND json_extract(f.value, '$.sensitive') = 0
+      AND json_extract(f.value, '$.type') <> 'money'), '')`;
+
 export const stepText = (sql: SqlClient.SqlClient) => sql`CASE WHEN r.register_id = 'work'
   THEN COALESCE((SELECT group_concat(json_extract(step.value, '$.title'), ' ')
     FROM json_each(r.steps_json) step), '') ELSE '' END`;

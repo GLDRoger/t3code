@@ -45,6 +45,7 @@ import {
   type KinPreviewFile,
 } from "./useKinMoney";
 import { useKinWorkDirectory, type KinWorkTarget } from "./useKinWork";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 type Ask = { readonly kind: "undo" | "clear" | "set"; readonly template: KinTemplateView };
 
@@ -82,7 +83,7 @@ export function KinTemplatesSection(props: KinWorkTarget) {
     setProblem(null);
     let entry;
     if (list !== null) {
-      const latest = await kinClient.workList.run(appAtomRegistry, {
+      const latest = await runKinCommand(appAtomRegistry, kinClient.workList, {
         environmentId,
         input: { orgId, list, limit: 1 },
       });

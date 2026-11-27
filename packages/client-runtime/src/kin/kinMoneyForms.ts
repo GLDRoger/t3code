@@ -8,12 +8,21 @@ import {
   type KinNewExpenseInput,
   type KinNewInvoiceInput,
   type KinOrgId,
+  KinPersonId,
   type KinRecordKey,
 } from "@t3tools/contracts";
 
 import { KIN_RETRY } from "./kinAnswers.ts";
+import { KIN_BILL_TO } from "./kinBillTo.ts";
+import { KIN_GSTIN_WRONG, kinGstinTyped } from "./kinWorkForms.ts";
 import { kinCategoryLabel, kinMoneyText, kinParseMoney } from "./kinLists.ts";
-import { KIN_EMPTY_LINE, kinLinesInput, type KinLineDraft } from "./kinMoneyAnswers.ts";
+import {
+  KIN_EMPTY_LINE,
+  KIN_LINES,
+  KIN_TAX_RATE,
+  kinLinesInput,
+  type KinLineDraft,
+} from "./kinMoneyAnswers.ts";
 import { kinWorkDueLabel } from "./kinWork.ts";
 
 /**
@@ -75,6 +84,11 @@ export const KIN_MONEY_FORMS = {
     noCategory: "No category",
     paidWith: "Paid with",
     notSaid: "Not said",
+    fundedBy: "Funded by",
+    company: "The company",
+    fundedByHint: "A partner who paid with personal money is owed it back until it's repaid.",
+    fundedByNoRoom:
+      "Expenses has no room for Funded by: a list holds at most 20 fields, so who paid with personal money can't be recorded.",
     receipt: "Receipt",
     noReceipt: "No receipt",
     receiptHint:
@@ -101,15 +115,28 @@ export const KIN_MONEY_FORMS = {
 };
 
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
-const RATE = /^(?:100|\d{1,2}(?:\.\d{1,3})?)$/;
 const QUANTITY = /^(\d{1,9})(?:\.(\d{1,3}))?$/;
 const GST_DEFAULT = "18";
 const oneLine = (text: string) => text.trim().replace(/\s+/g, " ");
 
 // The invoice
 
+/** A name to bill instead of a client, and its details; a blank one is left out. */
+export interface KinBillToDraft {
+  readonly name: string;
+  readonly address: string;
+  readonly taxNumber: string;
+  readonly place: string;
+  readonly email: string;
+}
+
+const NO_BILL_TO: KinBillToDraft = { name: "", address: "", taxNumber: "", place: "", email: "" };
+
 export interface KinInvoiceDraft {
   readonly party: KinRecordKey | null;
+  /** The person chose "Bill someone else by name" over the client picker. */
+  readonly byName: boolean;
+  readonly billTo: KinBillToDraft;
   readonly title: string;
   readonly lines: ReadonlyArray<KinLineDraft>;
   /** India's GST percent; unused elsewhere. */
@@ -123,6 +150,8 @@ export interface KinInvoiceDraft {
 /** An empty invoice, already for `client` when it is opened from one, with one line to fill. */
 export const kinInvoiceDraft = (party: KinRecordKey | null = null): KinInvoiceDraft => ({
   party,
+  byName: false,
+  billTo: NO_BILL_TO,
   title: "",
   lines: [KIN_EMPTY_LINE],
   gstRate: GST_DEFAULT,
@@ -134,6 +163,7 @@ export const kinInvoiceDraft = (party: KinRecordKey | null = null): KinInvoiceDr
 /** Whether closing the form would lose words the person typed: a client it opened with isn't theirs. */
 export const kinInvoiceTyped = (draft: KinInvoiceDraft, opened: KinInvoiceDraft) =>
   draft.party !== opened.party ||
+  Object.values(draft.billTo).some((value) => value.trim() !== "") ||
   draft.title.trim() !== "" ||
   draft.notes.trim() !== "" ||
   draft.dueOn !== null ||
@@ -145,6 +175,7 @@ export const kinInvoiceTyped = (draft: KinInvoiceDraft, opened: KinInvoiceDraft)
       line.rate.trim() !== "" ||
       line.sac.trim() !== "" ||
       line.unit.trim() !== "" ||
+      line.taxRate.trim() !== "" ||
       line.quantity.trim() !== KIN_EMPTY_LINE.quantity,
   );
 
@@ -157,11 +188,11 @@ export type KinInvoiceTax =
       readonly rate: string;
       readonly included: boolean;
     }
-  | { readonly _tag: "none" };
+  | { readonly _tag: "none"; readonly notRegistered?: true };
 
 /** As the host decides it: India charges GST when the company has a GSTIN; elsewhere its one tax. */
 export function kinInvoiceTax(
-  profile: Pick<KinCompanyProfile, "country" | "homeCurrency" | "gstin" | "tax">,
+  profile: Pick<KinCompanyProfile, "country" | "homeCurrency" | "gstin" | "tax" | "taxRegistered">,
 ): KinInvoiceTax {
   // A company stored before countries existed reads as India while it keeps rupees.
   const country =
@@ -170,11 +201,42 @@ export function kinInvoiceTax(
       : profile.homeCurrency === KIN_DEFAULT_HOME_CURRENCY
         ? "IN"
         : null;
-  if (country === "IN") return { _tag: "gst", registered: profile.gstin !== null };
+  if (country === "IN")
+    return { _tag: "gst", registered: profile.taxRegistered !== false && profile.gstin !== null };
+  if (profile.taxRegistered === false) return { _tag: "none", notRegistered: true };
   const tax = profile.tax ?? null;
   return tax === null || tax.rate === null
     ? { _tag: "none" }
     : { _tag: "flat", name: tax.name, rate: tax.rate, included: tax.pricesInclude === true };
+}
+
+export const kinKeepsLineTax = (tax: KinInvoiceTax | null): boolean =>
+  tax?._tag === "gst" ? tax.registered : tax?._tag !== "none" || tax.notRegistered !== true;
+
+/** Whether the line editor shows a Tax % input and its usual-rate placeholder, or why not. */
+export type KinLineTax =
+  | { readonly show: true; readonly defaultRate: string | null }
+  | { readonly show: false; readonly note: string | null };
+
+export function kinLineTax(
+  tax: KinInvoiceTax | null,
+  options: {
+    /** The document's GST rate (India); null if not available from the entry. */
+    readonly gstRate?: string | null;
+    readonly clientAccountsForTax?: boolean;
+  } = {},
+): KinLineTax {
+  if (tax === null || !kinKeepsLineTax(tax)) return { show: false, note: null };
+  if (options.clientAccountsForTax === true) return { show: false, note: KIN_LINES.clientAccounts };
+  const defaultRate =
+    tax._tag === "flat"
+      ? tax.rate
+      : tax._tag === "gst"
+        ? options.gstRate === null
+          ? ""
+          : options.gstRate?.trim() || GST_DEFAULT
+        : null;
+  return { show: true, defaultRate };
 }
 
 /** The tax line the form shows; null where a rate is typed instead. */
@@ -233,27 +295,82 @@ export type KinMoneyFormCheck<A> =
   | { readonly ok: true; readonly input: A }
   | { readonly ok: false; readonly problem: string };
 
-/** The invoice as the host takes it, or the first thing to fix; `gst` when India's rate applies. */
+/**
+ * Whether the form bills a typed name: always with Clients off, never when the chosen project has
+ * a client, and otherwise when the person chose it on a host that takes it.
+ */
+export const kinInvoiceBillsByName = (
+  draft: Pick<KinInvoiceDraft, "byName">,
+  context: {
+    readonly clientsOn: boolean;
+    readonly offered: boolean;
+    readonly projectClient: string | null;
+  },
+) => !context.clientsOn || (context.projectClient === null && context.offered && draft.byName);
+
+const billToInput = (billTo: KinBillToDraft, india: boolean) => {
+  const text = (value: string, max: number) => value.trim().slice(0, max);
+  const address = text(billTo.address, 500);
+  const typed = text(billTo.taxNumber, 100);
+  // In India the tax number is a GSTIN, checked as the client form checks one.
+  const taxNumber = india && typed !== "" ? (kinGstinTyped(typed) ?? typed) : typed;
+  const place = text(billTo.place, 100);
+  const email = text(billTo.email, 100);
+  return {
+    name: text(billTo.name, 200),
+    ...(address === "" ? {} : { address }),
+    ...(taxNumber === "" ? {} : { taxNumber }),
+    ...(place === "" ? {} : { place }),
+    ...(email === "" ? {} : { email }),
+  };
+};
+
+/**
+ * The invoice as the host takes it, or the first thing to fix; `gst` when India's rate applies,
+ * `byName` (from `kinInvoiceBillsByName`) when it bills a typed name instead of a client.
+ */
 export function kinInvoiceInput(
   orgId: KinOrgId,
   draft: KinInvoiceDraft,
-  options: { readonly currency: string; readonly gst: boolean; readonly clientRequestId: string },
+  options: {
+    readonly currency: string;
+    readonly gst: boolean;
+    readonly clientRequestId: string;
+    readonly byName?: boolean;
+    /** The company is in India, where the tax number is a GSTIN. */
+    readonly india?: boolean;
+    /** Whether per-line tax rates are shown and read; false when unregistered or client-accounted. */
+    readonly tax?: boolean;
+    /** The chosen project's client, which it bills when no client was picked. */
+    readonly projectClient?: KinRecordKey | null;
+  },
 ): KinMoneyFormCheck<KinNewInvoiceInput> {
-  if (draft.party === null) return { ok: false, problem: KIN_MONEY_FORMS.problem.client };
+  const india = options.india === true;
+  const party = draft.party ?? options.projectClient ?? null;
+  const billTo = options.byName === true ? billToInput(draft.billTo, india) : null;
+  if (billTo !== null && billTo.name === "") return { ok: false, problem: KIN_BILL_TO.noName };
+  if (india && billTo?.taxNumber !== undefined && kinGstinTyped(billTo.taxNumber) === null)
+    return { ok: false, problem: KIN_GSTIN_WRONG };
+  if (billTo === null && party === null)
+    return { ok: false, problem: KIN_MONEY_FORMS.problem.client };
   const title = oneLine(draft.title).slice(0, 280);
   if (title === "") return { ok: false, problem: KIN_MONEY_FORMS.problem.what };
-  const lines = kinLinesInput(draft.lines, options.currency);
+  const lines = kinLinesInput(
+    draft.lines,
+    options.currency,
+    options.tax === undefined ? undefined : { tax: options.tax },
+  );
   if (!lines.ok) return { ok: false, problem: lines.problem };
   if (lines.lines === null) return { ok: false, problem: KIN_MONEY_FORMS.problem.noLines };
   const gstRate = draft.gstRate.trim();
-  if (options.gst && !RATE.test(gstRate))
+  if (options.gst && !KIN_TAX_RATE.test(gstRate))
     return { ok: false, problem: KIN_MONEY_FORMS.problem.gstRate };
   const notes = draft.notes.trim().slice(0, 4_000);
   return {
     ok: true,
     input: {
       orgId,
-      client: draft.party,
+      ...(billTo !== null ? { billTo } : party === null ? {} : { client: party }),
       title,
       lines: lines.lines.slice(0, 50),
       ...(options.gst ? { gstRate } : {}),
@@ -277,6 +394,8 @@ export interface KinExpenseDraft {
   /** One of the list's categories as stored, or empty. */
   readonly category: string;
   readonly paidWith: string;
+  /** The partner who paid from their own money, as a person id; empty is the company. */
+  readonly fundedBy: string;
   /** A file's attachment id from the person's chats, or none. */
   readonly receipt: string | null;
 }
@@ -288,6 +407,7 @@ export const kinExpenseDraft = (today: string): KinExpenseDraft => ({
   vendor: "",
   category: "",
   paidWith: "",
+  fundedBy: "",
   receipt: null,
 });
 
@@ -301,14 +421,27 @@ export const kinExpenseTyped = (draft: KinExpenseDraft, opened: KinExpenseDraft)
   draft.paidOn !== opened.paidOn ||
   draft.category !== "" ||
   draft.paidWith !== "" ||
+  draft.fundedBy !== "" ||
   draft.receipt !== null;
 
 /**
- * What the Expenses list offers to pick: its categories and its Paid with choices. With no list
- * yet there are none; the first expense makes the list, and they are set on its page.
+ * What the Expenses list offers to pick: its categories, its Paid with choices, and the people who
+ * may have funded it. With no list yet there are no categories; the first expense makes the list.
  */
-export function kinExpenseChoices(def: KinListDefinition | null | undefined) {
+export function kinExpenseChoices(
+  def: KinListDefinition | null | undefined,
+  people: ReadonlyMap<string, string> = new Map(),
+) {
+  const funded =
+    def == null || def.fields.some((field) => field.key === "fundedBy" && !field.retired);
   return {
+    /** Said in place of the picker when Expenses has no Funded by to save it in. */
+    fundedByNote: funded || people.size === 0 ? null : KIN_MONEY_FORMS.expense.fundedByNoRoom,
+    fundedBy: funded
+      ? [...people]
+          .map(([value, label]) => ({ value, label }))
+          .sort((a, b) => a.label.localeCompare(b.label))
+      : [],
     categories: (def?.categories ?? []).map((value) => ({
       value,
       label: kinCategoryLabel(value, def),
@@ -345,8 +478,16 @@ export function kinExpenseInput(
       ...(vendor === "" ? {} : { vendor }),
       ...(draft.category === "" ? {} : { category: draft.category }),
       ...(draft.paidWith === "" ? {} : { paidWith: draft.paidWith }),
+      ...(draft.fundedBy === "" ? {} : { fundedBy: KinPersonId.make(draft.fundedBy) }),
       ...(draft.receipt === null ? {} : { receipt: [draft.receipt] }),
       clientRequestId: options.clientRequestId,
     },
   };
 }
+
+/** Who a person field offers: Funded by takes only people, since only a person pays themselves. */
+export const kinPersonChoices = <C extends { readonly value: string }>(
+  fieldKey: string,
+  choices: ReadonlyArray<C>,
+): ReadonlyArray<C> =>
+  fieldKey === "fundedBy" ? choices.filter((one) => one.value.startsWith("person:")) : choices;

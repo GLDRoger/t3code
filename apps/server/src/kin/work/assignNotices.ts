@@ -11,6 +11,7 @@ import {
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as DateTime from "effect/DateTime";
+import { CodingAgentCall } from "./keyCall.ts";
 import * as Effect from "effect/Effect";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Option from "effect/Option";
@@ -305,8 +306,9 @@ const line = (notice: AssignNotice, clock: NoticeClock, gaveTo: string | null = 
   if (notice.kind === "lead") return `made you the lead of ${task}`;
   if (notice.kind === "commented") return `commented on ${task}${why}`;
   if (notice.kind === "nudged") return `asked where ${task} stands`;
+  // Why they were chosen is the giver's reason, written about them: it stays on the task's history.
   return notice.kind === "given"
-    ? `${task}${dueText(notice.row, clock)}${notice.why === null ? "" : `. Why: ${notice.why}`}${
+    ? `${task}${dueText(notice.row, clock)}${
         notice.afterReading === undefined ? "" : `. ${notice.afterReading}`
       }`
     : notice.kind === "taken"
@@ -624,10 +626,12 @@ export const tellHolding = Effect.fn("KinAssignNotices.tell")(function* (
     const now = yield* Clock.currentTimeMillis;
     const gaveTo = (notice: AssignNotice) => names.get(notice) ?? null;
     const body = bodyFor(giver, theirs, clock, now, gaveTo);
-    // The same lines from the same turn are one message, so a retried call posts nothing more.
+    // The same lines about the same revisions from the same turn are one message, so a retried
+    // call posts nothing more, and a task given to them again in that turn still posts.
+    const revisions = theirs.map((notice) => `${notice.row.recordId}@${notice.row.rev}`).join(",");
     const messageId = KinMessageId.make(
       `kin-assign-${NodeCrypto.createHash("sha256")
-        .update(`${turn.wakeupId}:${person}:${body}`)
+        .update(`${turn.wakeupId}:${person}:${revisions}:${body}`)
         .digest("hex")
         .slice(0, 32)}`,
     );
@@ -707,6 +711,7 @@ const NEWS_BURST_MS = MINUTE_MS;
 const TaskNews = Schema.Struct({
   by: KinPersonId,
   name: Schema.String,
+  codingAgent: Schema.optional(Schema.Boolean),
   kind: Schema.Literals(NOTICE_KINDS),
   recordId: Schema.String,
   key: Schema.String,
@@ -749,6 +754,7 @@ export const tellOnTasks = Effect.fn("KinAssignNotices.tellOnTasks")(function* (
           WHERE org_id = ${orgId} AND agent_id = ${id}`
     ).pipe(Effect.map((rows) => rows[0]?.name ?? null));
   const name = (yield* nameOf("person", mover.personId)) ?? "Someone";
+  const coding = (yield* CodingAgentCall) !== undefined;
   const now = yield* Clock.currentTimeMillis;
   const byPerson = new Map<string, Array<AssignNotice>>();
   for (const notice of yield* forDelivery(orgId, notices, mover.personId))
@@ -780,7 +786,8 @@ export const tellOnTasks = Effect.fn("KinAssignNotices.tellOnTasks")(function* (
       const to = notice.to;
       const body = yield* encodeNews({
         by: mover.personId,
-        name: participantKind(notice.kind) ? firstName(name) : name,
+        name: participantKind(notice.kind) && !coding ? firstName(name) : name,
+        ...(coding ? { codingAgent: true } : {}),
         kind: notice.kind,
         recordId: notice.row.recordId,
         key: notice.row.key,
@@ -830,7 +837,8 @@ const newsText = (news: ReadonlyArray<TaskNews>) => {
   const records = new Set(news.map((one) => one.recordId)).size;
   const mixed = new Set(news.map((one) => one.kind)).size > 1;
   const task = `${first.key} ${first.title}`;
-  const text = `${first.name} ${
+  const name = first.codingAgent === true ? `${first.name} (coding agent)` : first.name;
+  const text = `${name} ${
     records === 1
       ? mixed
         ? `updated ${task}`
@@ -898,10 +906,18 @@ export const taskNewsBanner = Effect.fn("KinAssignNotices.taskNewsBanner")(funct
   const chatId = rows.find((row) => row.chatId !== "")?.chatId;
   return {
     personId: person,
-    body: newsText(told),
+    body: [
+      told.filter((one) => one.codingAgent !== true),
+      told.filter((one) => one.codingAgent === true),
+    ]
+      .filter((group) => group.length > 0)
+      .map(newsText)
+      .join(". "),
     /** Some of it is work now theirs: given to them, or handed back. */
     gives: told.some((news) => news.kind === "given" || news.kind === "returned"),
     chatId: chatId === undefined ? undefined : KinChatId.make(chatId),
+    /** Every task it tells of, by key: its push stands while one of them is still theirs. */
+    tasks: [...new Set(told.map((news) => news.key))],
     opens:
       only === undefined || more.length > 0 || !["work", "projects"].includes(only.register)
         ? undefined
@@ -916,7 +932,7 @@ export const askedOf = Effect.fn("KinAssignNotices.askedOf")(function* (
   recordIds: ReadonlyArray<string>,
   since: number,
 ) {
-  const asked = new Map<string, KinPersonId>();
+  const asked = new Map<string, { by: KinPersonId; codingAgent: boolean }>();
   if (recordIds.length === 0) return asked;
   const sql = yield* SqlClient.SqlClient;
   const rows = yield* sql<{ body: string }>`SELECT body FROM kin_held_posts
@@ -927,7 +943,8 @@ export const askedOf = Effect.fn("KinAssignNotices.askedOf")(function* (
     ORDER BY held_at DESC, rowid DESC`;
   for (const row of rows) {
     const news = Option.getOrUndefined(decodeNews(row.body));
-    if (news !== undefined && !asked.has(news.recordId)) asked.set(news.recordId, news.by);
+    if (news !== undefined && !asked.has(news.recordId))
+      asked.set(news.recordId, { by: news.by, codingAgent: news.codingAgent === true });
   }
   return asked;
 });

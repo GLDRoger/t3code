@@ -469,7 +469,11 @@ const CASES: ReadonlyArray<readonly [string, (run: Run) => Effect.Effect<void, K
           for (const [status, reason, words] of [
             [401, "key_refused", `${provider.name} refused the sign-in (401).`],
             [403, "unreachable", `${provider.name} refused (403).`],
-            [429, "unreachable", `${provider.name} says Kin is asking too often (429).`],
+            [
+              429,
+              "unreachable",
+              `${provider.name} says Kin is asking too often (429); try again in 30 seconds.`,
+            ],
             [500, "unreachable", `${provider.name} answered with an error (HTTP 500).`],
           ] as const) {
             fake.failWith(OWNER, status);

@@ -28,6 +28,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { markedKey } from "./keyCall.ts";
 import { PreparedJson, shownMail } from "../connections/Sending.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
 import { CODING_AGENT_NAME } from "./recordRows.ts";
@@ -170,8 +171,10 @@ export const commentsPage = Effect.fn("KinRecordComments.page")(function* (
   beforeSeq?: number,
 ) {
   const sql = yield* SqlClient.SqlClient;
+  // Clear receipts track retries without adding empty entries to Activity.
   const rows = yield* sql<CommentRow>`SELECT ${sql.literal(COLUMNS)} FROM kin_record_comments
     WHERE org_id = ${orgId} AND record_id = ${recordId}
+      AND NOT (removed_at IS NOT NULL AND body = '' AND substr(comment_id, 1, ${NOTE_ID.length}) = ${NOTE_ID})
       AND ${beforeSeq === undefined ? sql`1 = 1` : sql`seq < ${beforeSeq}`}
     ORDER BY seq DESC LIMIT ${KIN_RECORD_COMMENTS_PAGE + 1}`;
   return {
@@ -268,7 +271,7 @@ export const insertComment = Effect.fn("KinRecordComments.insert")(function* <E>
       ${input.author._tag}, ${authorId(input.author)},
       ${input.author._tag === "agent" ? input.author.askedBy : null}, ${input.body},
       ${yield* encodeFiles(input.files)}, ${input.requestHash}, ${input.now},
-      ${input.codingAgentKey ?? null})
+      ${(yield* markedKey(input)) ?? null})
     ON CONFLICT DO NOTHING
     RETURNING ${sql.literal(COLUMNS)}`;
   if (inserted === undefined)
@@ -345,8 +348,7 @@ const aboutKeys = (about: string) => new Set(about.split(/\s+/).filter((word) =>
 // A project's note for every task is a comment on the project whose id starts so.
 const NOTE_ID = "pnote_";
 
-/** The note a project leaves on every task: its newest standing note comment, if any. */
-export const projectNoteOf = Effect.fn("KinRecordComments.projectNote")(function* (
+const standingProjectNote = Effect.fn("KinRecordComments.standingProjectNote")(function* (
   orgId: KinOrgId,
   projectId: string,
 ) {
@@ -355,6 +357,34 @@ export const projectNoteOf = Effect.fn("KinRecordComments.projectNote")(function
     WHERE org_id = ${orgId} AND record_id = ${projectId} AND removed_at IS NULL
       AND substr(comment_id, 1, ${NOTE_ID.length}) = ${NOTE_ID}
     ORDER BY seq DESC LIMIT 1`;
+  return row;
+});
+
+export const projectNoteRevision = Effect.fn("KinRecordComments.projectNoteRevision")(function* (
+  orgId: KinOrgId,
+  key: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const [last] = yield* sql<{ id: string; standing: number }>`SELECT c.comment_id AS id,
+      c.removed_at IS NULL AS standing
+    FROM kin_records r JOIN kin_record_comments c
+      ON c.org_id = r.org_id AND c.record_id = r.record_id
+    WHERE r.org_id = ${orgId} AND r.key = ${key} AND r.register_id = 'projects'
+      AND substr(c.comment_id, 1, ${NOTE_ID.length}) = ${NOTE_ID}
+    ORDER BY standing DESC, c.seq DESC LIMIT 1`;
+  return {
+    noteId: last?.standing === 1 ? last.id : null,
+    ...(last?.standing === 0 ? { clearedAfter: last.id } : {}),
+  };
+});
+
+/** The note a project leaves on every task: its newest standing note comment, if any. */
+export const projectNoteOf = Effect.fn("KinRecordComments.projectNote")(function* (
+  orgId: KinOrgId,
+  projectId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const row = yield* standingProjectNote(orgId, projectId);
   if (row === undefined) return undefined;
   const [project] = yield* sql<{ key: string; title: string }>`SELECT key, title FROM kin_records
     WHERE org_id = ${orgId} AND record_id = ${projectId} AND register_id = 'projects'`;
@@ -363,6 +393,7 @@ export const projectNoteOf = Effect.fn("KinRecordComments.projectNote")(function
     body: row.body,
     at: iso(row.createdAt),
     by: principalOf(row.authorKind, row.authorId),
+    ...(row.codingAgent === null ? {} : { codingAgent: row.codingAgent }),
     project: {
       recordId: KinRecordId.make(projectId),
       key: KinRecordKey.make(project.key),
@@ -388,6 +419,11 @@ export const writeProjectNote = Effect.fn("KinRecordComments.writeProjectNote")(
 }) {
   const sql = yield* SqlClient.SqlClient;
   const body = input.body.trim();
+  const codingAgentKey = (yield* markedKey({})) ?? null;
+  if (codingAgentKey !== null) {
+    const standing = yield* standingProjectNote(input.orgId, input.projectId);
+    if ((standing?.body ?? "") === body) return;
+  }
   const requestHash = requestHashOf(body, []);
   const by = input.by._tag === "person" ? input.by.personId : input.by.agentId;
   const commentId = `${NOTE_ID}${hash([input.orgId, input.projectId, by, input.requestId]).slice(0, 24)}`;
@@ -404,13 +440,16 @@ export const writeProjectNote = Effect.fn("KinRecordComments.writeProjectNote")(
     SET removed_at = ${input.now}, removed_by_kind = ${input.by._tag}, removed_by_id = ${by}
     WHERE org_id = ${input.orgId} AND record_id = ${input.projectId} AND removed_at IS NULL
       AND substr(comment_id, 1, ${NOTE_ID.length}) = ${NOTE_ID}`;
-  if (body === "") return;
+  if (body === "" && codingAgentKey === null) return;
   yield* sql`INSERT INTO kin_record_comments (org_id, comment_id, record_id, seq, author_kind,
-      author_id, body, files_json, request_hash, created_at)
+      author_id, body, files_json, request_hash, created_at, coding_agent_key, removed_at,
+      removed_by_kind, removed_by_id)
     VALUES (${input.orgId}, ${commentId}, ${input.projectId},
       (SELECT COALESCE(MAX(seq), 0) + 1 FROM kin_record_comments
         WHERE org_id = ${input.orgId} AND record_id = ${input.projectId}),
-      ${input.by._tag}, ${by}, ${body}, '[]', ${requestHash}, ${input.now})
+      ${input.by._tag}, ${by}, ${body}, '[]', ${requestHash}, ${input.now}, ${codingAgentKey},
+      ${body === "" ? input.now : null}, ${body === "" ? input.by._tag : null},
+      ${body === "" ? by : null})
     ON CONFLICT DO NOTHING`;
 });
 
@@ -553,6 +592,6 @@ export const sheetExtras = Effect.fn("KinRecordComments.sheetExtras")(function* 
       : { comments: detail.comments.map((one) => withCanRemove(viewer, one)) }),
     ...(detail.olderComments === undefined ? {} : { olderComments: detail.olderComments }),
     ...(waiting === undefined ? {} : { waiting }),
-    ...(projectNote === undefined ? {} : { projectNote }),
+    ...(projectNote === undefined ? {} : { projectNote: keyNamedFor(viewer, projectNote) }),
   };
 });

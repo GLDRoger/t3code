@@ -18,8 +18,17 @@ import type { KinChatService } from "../chat/KinChatService.ts";
 import { turnChat } from "../lead/Audience.ts";
 import * as Reach from "../lead/Reach.ts";
 import type { KinPushSender } from "../push/KinPushSender.ts";
+import { aboutOf, noteAbout } from "../push/pushAbout.ts";
+import { factsStand } from "../pulse/factState.ts";
+import { reservedByCheckIn } from "../pulse/leftForCheckIn.ts";
 import { heldGivenBody, isGivenHeld, TASK_NEWS } from "../work/assignNotices.ts";
-import { ANSWERS_WITHIN_MS, personQuietUntil, relayWakeup, sameAsk } from "./quietHold.ts";
+import {
+  ANSWERS_WITHIN_MS,
+  cancelHeld,
+  personQuietUntil,
+  relayWakeup,
+  sameAsk,
+} from "./quietHold.ts";
 
 /** A delivered held line's message id is this before its first hold's id. */
 export const HELD_ID = "kin-held:";
@@ -38,7 +47,7 @@ const decodeRelay = Schema.decodeUnknownOption(Schema.fromJsonString(KinMessageR
  */
 export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
   orgId: KinOrgId,
-  chat: Pick<KinChatService["Service"], "notice">,
+  chat: Pick<KinChatService["Service"], "notice" | "dismissArrival">,
   push?: Pick<KinPushSender["Service"], "notify">,
 ) {
   const sql = yield* SqlClient.SqlClient;
@@ -64,6 +73,7 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
     WHERE org_id = ${orgId} AND delivered_at IS NULL AND deliver_at <= ${now}
       AND substr(kind, 1, ${TASK_NEWS.length}) != ${TASK_NEWS}
       AND substr(kind, 1, ${DM_NEWS.length}) != ${DM_NEWS}
+      AND NOT ${reservedByCheckIn(sql)}
     ORDER BY held_at, rowid`;
   const groups = new Map<string, Array<(typeof rows)[number]>>();
   for (const row of rows) {
@@ -90,24 +100,33 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
         )
       : [...new Set(group.map((row) => row.body))].join("\n\n");
     if (body === undefined) {
-      yield* sql`DELETE FROM kin_held_posts WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
+      yield* cancelHeld(orgId, ids, chat);
+      continue;
+    }
+    // Kin's notice of facts that all settled while it waited says nothing true any more.
+    const facts = yield* aboutOf(orgId, first.kind, "fact:");
+    if (facts.length > 0 && !(yield* factsStand(orgId, first.personId, facts, now))) {
+      yield* cancelHeld(orgId, ids, chat);
       continue;
     }
     if (yield* urgentSince(orgId, first)) {
-      yield* sql`DELETE FROM kin_held_posts WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
+      yield* cancelHeld(orgId, ids, chat);
       continue;
     }
     // An agent's words to a pair restricted since they were held go nowhere; the asker hears so.
     const closed = yield* restrictedSince(orgId, first);
     if (closed !== undefined) {
-      yield* sql`DELETE FROM kin_held_posts WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
-      yield* tellAsker(orgId, first, closed, chat);
+      if ((yield* cancelHeld(orgId, ids, chat)) > 0) yield* tellAsker(orgId, first, closed, chat);
       continue;
     }
     // One that can't post (they left the chat) stays held and doesn't block the others.
     const sent = yield* sql
       .withTransaction(
         Effect.gen(function* () {
+          const [pending] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
+            FROM kin_held_posts WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}
+              AND delivered_at IS NULL`;
+          if (pending?.count !== ids.length) return false;
           yield* chat.notice({
             orgId,
             chatId: KinChatId.make(first.chatId),
@@ -123,10 +142,16 @@ export const deliverHeld = Effect.fn("KinQuiet.deliver")(function* (
           });
           yield* sql`UPDATE kin_held_posts SET delivered_at = ${now}
           WHERE org_id = ${orgId} AND hold_id IN ${sql.in(ids)}`;
+          // Its push is about what the held line was: the same facts.
+          yield* noteAbout(
+            orgId,
+            `${HELD_ID}${first.holdId}`,
+            facts.map((key) => `fact:${key}`),
+          );
+          return true;
         }),
       )
       .pipe(
-        Effect.as(true),
         Effect.catch((cause) =>
           Effect.logWarning("Kin held line not delivered", {
             orgId,

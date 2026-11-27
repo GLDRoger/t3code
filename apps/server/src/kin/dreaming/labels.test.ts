@@ -5,7 +5,7 @@ import * as Effect from "effect/Effect";
 import { fixtureItem } from "../memory/__fixtures__/items.ts";
 import { parseFrontMatter } from "../memory/frontMatter.ts";
 import { fingerprint } from "../memory/sensitivity.ts";
-import { keepLabels, withLabel } from "./labels.ts";
+import { keepLabels, withLabel, withRecordedAt } from "./labels.ts";
 
 const orgId = KinOrgId.make("fixture-org");
 const claim = (id: string, fields: Record<string, unknown> = {}) =>
@@ -99,6 +99,20 @@ it.effect.each([
     ],
     sensitive: { "claims/quoted.md": true },
   },
+  {
+    name: "what it makes from private material stays the owner's, by its source or what it cites",
+    tree: [
+      [
+        "claims/edited.md",
+        claim("edited", { sensitive: false, source: "kin:doc:d1:version:1..2" }),
+      ],
+      ["claims/cites.md", claim("cites", { sensitive: false, source: "kin:send:open" })],
+      ["claims/open.md", claim("open", { sensitive: false, source: "kin:send:open" })],
+    ],
+    cited: [{ path: "claims/cites.md", sources: ["kin:send:open", "kin:doc:d1:version:1..2"] }],
+    sensitive: { "claims/edited.md": true, "claims/cites.md": true, "claims/open.md": false },
+    suggested: ["open"],
+  },
 ] as const)("keepLabels: $name", (row) =>
   Effect.gen(function* () {
     const tree = new Map([...base, ...row.tree]);
@@ -110,6 +124,8 @@ it.effect.each([
       changes: touched,
       merges: "merges" in row ? row.merges : [],
       labels: { held: new Set(["held"]), classified: new Map([["sorted", false]]) },
+      cited: "cited" in row ? row.cited : [],
+      privateRefs: new Set(["kin:doc:d1:version:1..2"]),
     });
     // An item's label is its file's when the dream touched it, else what is recorded for it.
     const label = (path: string) =>
@@ -168,4 +184,21 @@ it("withLabel refuses front matter where setting the label would change another 
     withLabel(item.replace("sensitive: false", "sensitive: &label false"), true),
     item.replace("sensitive: false", "sensitive: true"),
   );
+});
+
+it("withRecordedAt replaces only the recorded_at line", () => {
+  const before = "2026-11-09T03:00:00.000Z";
+  const after = "2026-11-07T13:00:00.000Z";
+  const item = fixtureItem({ recorded_at: before, sensitive: false }).replaceAll("\n", "\r\n");
+  const dated = item.replace(`recorded_at: "${before}"`, `recorded_at: ${after}`);
+  assert.strictEqual(withRecordedAt(item, after), dated);
+  assert.strictEqual(withRecordedAt(item, before), item);
+  assert.strictEqual(withLabel(dated, true), dated.replace("sensitive: false", "sensitive: true"));
+});
+
+it("withRecordedAt refuses front matter where dating the item would change another value", () => {
+  const item = fixtureItem()
+    .replace("recorded_at: ", "recorded_at: &date ")
+    .replace(/^valid_from:.*$/m, "valid_from: *date");
+  assert.isUndefined(withRecordedAt(item, "2026-11-07T13:00:00.000Z"));
 });

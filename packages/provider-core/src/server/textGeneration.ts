@@ -7,9 +7,10 @@ import type {
   TextGenerationError,
 } from "@t3tools/contracts";
 import type * as Effect from "effect/Effect";
+import type * as Schema from "effect/Schema";
 
 import type { TextGenerationPolicy } from "./textGenerationPolicy.ts";
-import type { ThreadTitleForkSource } from "./textGenerationPrompts.ts";
+import type { ChangeProducer, ThreadTitleForkSource } from "./textGenerationPrompts.ts";
 
 export interface CommitMessageGenerationInput {
   cwd: string;
@@ -37,6 +38,7 @@ export interface PrContentGenerationInput {
   diffPatch: string;
   changeRequestTemplate?: string | undefined;
   threadContext?: string | undefined;
+  producedBy?: ReadonlyArray<ChangeProducer> | undefined;
   policy?: TextGenerationPolicy | undefined;
   modelSelection: ModelSelection;
   projectId?: ProjectId | null | undefined;
@@ -114,7 +116,19 @@ export interface TranscriptionPostProcessingResult {
   transcription: string;
 }
 
+export interface StructuredTextGenerationInput<S extends Schema.Decoder<unknown>> {
+  readonly cwd: string;
+  readonly prompt: string;
+  readonly outputSchema: S;
+  readonly modelSelection: ModelSelection;
+}
+
 export interface ProviderTextGeneration {
+  /** Only providers that can run without tools and without persisting the session opt in. */
+  readonly generateStructuredText?: <S extends Schema.Decoder<unknown>>(
+    input: StructuredTextGenerationInput<S>,
+  ) => Effect.Effect<S["Type"], TextGenerationError>;
+
   readonly generateTranscriptionPostProcessing: (
     input: TranscriptionPostProcessingInput,
   ) => Effect.Effect<TranscriptionPostProcessingResult, TextGenerationError>;

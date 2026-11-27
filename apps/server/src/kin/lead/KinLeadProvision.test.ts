@@ -19,7 +19,9 @@ import {
 import * as Clock from "effect/Clock";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Layer from "effect/Layer";
@@ -37,6 +39,7 @@ import * as Repository from "../chat/KinChatRepository.ts";
 import * as ChatService from "../chat/KinChatService.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as HostCare from "../host/KinHostCare.ts";
+import * as Memory from "../memory/Memory.ts";
 import * as RefreshHub from "../chat/KinRefreshHub.ts";
 import * as ArrivalStore from "../arrivals/ArrivalStore.ts";
 import * as KinWatches from "../watches/KinWatches.ts";
@@ -990,6 +993,21 @@ describe("KinLeadProvision", () => {
         yield* deferral("soon", "snoozed", "remind", due - 3_600_000, due);
         yield* deferral("given", "reminded", "remind", due, null);
         yield* deferral("fired", "armed", "remind", due - 1000, null);
+        // A room's reminder for this lead, in a room the viewer is not in: not on their list.
+        yield* sql`INSERT INTO kin_chats (chat_id, org_id, kind, title, last_seq, created_at)
+          VALUES ('room-x', ${orgId}, 'team_group', 'Invented room', 1, '2026-11-09T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_chat_members (member_id, org_id, chat_id, principal_kind, agent_id,
+            role, joined_at)
+          VALUES ('room-x-lead', ${orgId}, 'room-x', 'agent', ${tech.agentId}, 'member',
+            '2026-11-09T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_messages (message_id, org_id, chat_id, seq, author_kind, author_role, kind, body, mentions_json, status, created_at)
+          VALUES ('room-card', ${orgId}, 'room-x', 1, 'system', 'owner', 'system', '', '[]', 'posted', '2026-11-09T00:00:00.000Z')`;
+        yield* sql`INSERT INTO kin_deferral_runs (org_id, item_id, state, due_at, on_due, snapshot_json, updated_at)
+          VALUES (${orgId}, 'roomy', 'armed', ${due - 7_200_000}, 'remind', '{}', 0)`;
+        yield* sql`INSERT INTO kin_widgets (widget_id, org_id, chat_id, message_id, widget_class, type, revision, state_json, awaiting_json, updated_at)
+          VALUES (${`deferral:${orgId}:roomy`}, ${orgId}, 'room-x', 'room-card', 'native', 'card', 1,
+            ${JSON.stringify({ title: "Invented: the room's own" })}, '[]', '2026-11-09T00:00:00.000Z')`;
+        yield* trigger("deferral:roomy:due", due - 7_200_000);
         const scheduled = (itemId: string, paused: number, nextRunAt: number | null = due) =>
           sql`INSERT INTO kin_scheduled_tasks (org_id, item_id, chat_id, state, paused, recorded_at, updated_at)
             VALUES (${orgId}, ${itemId}, ${tech.ownerChatId}, 'active', ${paused}, '2026-11-09T00:00:00.000Z', 0)`.pipe(
@@ -1092,7 +1110,7 @@ describe("KinLeadProvision", () => {
           WHERE a.org_id = ${tech.orgId} AND a.agent_id = ${tech.agentId} ORDER BY a.agent_id`,
         [{ name: "Tech lead", lead: "Tech lead", level: "L0", chat: tech.ownerChatId }],
       );
-      // An omitted field stays; two live leads can't share a name and domain.
+      // An omitted field stays; two live leads can't share a name.
       assert.deepInclude(yield* edit({ domain: "platform" }), {
         name: "Tech lead",
         charter: "Ship the app.",
@@ -1129,6 +1147,170 @@ describe("KinLeadProvision", () => {
       );
       yield* Provision.retireOnHost(growth.agentId);
       assert.strictEqual(yield* refusal(edit({ name: "X" }, growth.agentId)), "retired");
+    }).pipe(Effect.provide(paired)),
+  );
+  it.effect("refuses a name another live agent has, in any case, and frees a retired one's", () =>
+    Effect.gen(function* () {
+      const ada = (yield* Provision.create(input(owner, []))).lead;
+      const growth = (yield* Provision.create({
+        ...input(owner, []),
+        name: "Growth",
+        domain: "growth",
+      })).lead;
+      const refused = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+        effect.pipe(
+          Effect.flip,
+          Effect.map((error) => (isRefusal(error) ? `${error.reason}: ${error.message}` : error)),
+        );
+      const rename = (name: string, agentId = ada.agentId) =>
+        Provision.update({ editor: owner, orgId: ada.orgId, agentId, fields: { name } });
+      const taken = (name: string) => `conflict: Another agent is already called ${name}.`;
+      for (const name of ["Growth", "growth", " GROWTH "])
+        assert.strictEqual(yield* refused(rename(name)), taken("Growth"));
+      assert.strictEqual(
+        yield* refused(Provision.create({ ...input(owner, []), name: "ADA", domain: "sales" })),
+        taken("Ada"),
+      );
+      // A re-run of the same create still reports the agent it made.
+      assert.strictEqual((yield* Provision.create(input(owner, [])))._tag, "existing");
+      // Keeping its own name, or changing only its case, isn't a clash.
+      assert.deepInclude(yield* rename("Ada"), { name: "Ada" });
+      assert.deepInclude(yield* rename("ADA"), { name: "ADA" });
+      // A retired agent's name is free, and it can't come back while another agent has it.
+      yield* Provision.retireOnHost(growth.agentId);
+      assert.deepInclude(yield* rename("growth"), { name: "growth" });
+      assert.strictEqual(yield* refused(Provision.restoreOnHost(growth.agentId)), taken("growth"));
+    }).pipe(Effect.provide(paired)),
+  );
+  it.effect(
+    "compares names caselessly after canonical normalization, and keeps accents apart",
+    () =>
+      Effect.gen(function* () {
+        const make = (name: string, domain: string) =>
+          Provision.create({ ...input(owner, []), name, domain });
+        const named = (name: string, domain: string) =>
+          make(name, domain).pipe(Effect.map((result) => result.lead.name));
+        assert.strictEqual(yield* named("Σ", "greek"), "Σ");
+        assert.strictEqual(yield* refusal(make("ς", "other")), "conflict");
+        assert.strictEqual(yield* refusal(make("σ", "other")), "conflict");
+        assert.strictEqual(yield* named("\u00c9lodie", "french"), "\u00c9lodie");
+        assert.strictEqual(yield* refusal(make("E\u0301lodie", "other")), "conflict");
+        assert.strictEqual(yield* refusal(make("\u00e9LODIE", "other")), "conflict");
+        assert.strictEqual(yield* named("Elodie", "plain"), "Elodie");
+      }).pipe(Effect.provide(paired)),
+  );
+  it.effect(
+    "refuses a rename onto an older duplicate, but still lets that pair edit the rest",
+    () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const ada = (yield* Provision.create(input(owner, []))).lead;
+        const twin = (yield* Provision.create({
+          ...input(owner, []),
+          name: "Bea",
+          domain: "sales",
+        })).lead;
+        // Two agents could share a name before the rule existed.
+        yield* sql`UPDATE kin_leads SET name = 'ADA' WHERE org_id = ${twin.orgId} AND agent_id = ${twin.agentId}`;
+        yield* sql`UPDATE kin_agents SET display_name = 'ADA' WHERE org_id = ${twin.orgId} AND agent_id = ${twin.agentId}`;
+        const edit = (fields: Parameters<typeof Provision.update>[0]["fields"]) =>
+          Provision.update({ editor: owner, orgId: ada.orgId, agentId: ada.agentId, fields });
+        assert.strictEqual(yield* refusal(edit({ name: "ADA" })), "conflict");
+        assert.deepInclude(yield* edit({ charter: "Ship it.", domain: "platform" }), {
+          name: "Ada",
+          charter: "Ship it.",
+        });
+        assert.deepInclude(yield* edit({ name: "Ada", charter: "Ship it now." }), { name: "Ada" });
+      }).pipe(Effect.provide(paired)),
+  );
+  it.effect("lets only one of two concurrent renames take a free name", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const first = (yield* Provision.create(input(owner, []))).lead;
+      const second = (yield* Provision.create({
+        ...input(owner, []),
+        name: "Bea",
+        domain: "sales",
+      })).lead;
+      // Both writers are parked at the gate before it opens, so neither has read the names first.
+      const go = yield* Deferred.make<void>();
+      const writer = (agentId: KinAgentId) =>
+        Effect.gen(function* () {
+          const ready = yield* Deferred.make<void>();
+          const fiber = yield* Deferred.succeed(ready, undefined).pipe(
+            Effect.andThen(Deferred.await(go)),
+            Effect.andThen(
+              Provision.update({
+                editor: owner,
+                orgId: first.orgId,
+                agentId,
+                fields: { name: "Free" },
+              }),
+            ),
+            Effect.as("renamed"),
+            Effect.catch((error) => Effect.succeed(isRefusal(error) ? error.reason : "other")),
+            Effect.forkChild,
+          );
+          yield* Deferred.await(ready);
+          return fiber;
+        });
+      const fibers = [yield* writer(first.agentId), yield* writer(second.agentId)];
+      yield* Deferred.succeed(go, undefined);
+      const outcomes = yield* Effect.forEach(fibers, Fiber.join);
+      assert.sameMembers(outcomes, ["renamed", "conflict"]);
+      assert.deepStrictEqual(
+        yield* sql`SELECT name FROM kin_leads WHERE org_id = ${first.orgId} AND name = 'Free'`,
+        [{ name: "Free" }],
+      );
+    }).pipe(Effect.provide(paired)),
+  );
+  it.effect("tells the owner when the nightly memory update changes models", () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const settings = yield* ServerSettings.ServerSettingsService;
+      yield* settings.updateSettings({ kinNonClaudeAgents: true });
+      const finance = (yield* Provision.create({ ...input(owner, []), name: "Finance" })).lead;
+      const chief = (yield* Provision.create({
+        ...input(owner, []),
+        name: "Chief of staff",
+        domain: "chief-of-staff",
+      })).lead;
+      const sonnet = { instanceId: ProviderInstanceId.make("work"), model: "claude-sonnet-4-6" };
+      const codex = { instanceId: ProviderInstanceId.make("mine"), model: "invented-codex" };
+      const notices: Array<string | undefined> = [];
+      const change = (model: typeof chief.model, agentId = chief.agentId) =>
+        Provision.update({
+          editor: owner,
+          orgId: chief.orgId,
+          agentId,
+          fields: { model },
+        }).pipe(
+          Effect.provideService(Memory.MemoryRecoveryHooks, {
+            notify: (notice) =>
+              Effect.gen(function* () {
+                assert.strictEqual(notice.orgId, chief.orgId);
+                assert.isTrue(Option.isNone(yield* Effect.serviceOption(sql.transactionService)));
+                notices.push(notice.owner);
+              }),
+          }),
+        );
+
+      yield* change(sonnet, finance.agentId);
+      assert.deepStrictEqual(notices, []);
+      yield* change(sonnet);
+      yield* change(sonnet);
+      yield* change({ ...sonnet, options: [{ id: "effort", value: "high" }] });
+      assert.deepStrictEqual(notices, [
+        "Kin's nightly memory update now runs on claude-sonnet-4-6, the model Chief of staff uses.",
+      ]);
+
+      yield* change(codex);
+      yield* change({ ...codex, model: "invented-codex-two" });
+      yield* change(sonnet);
+      assert.deepStrictEqual(notices.slice(1), [
+        "Kin's nightly memory update stops while Chief of staff runs on invented-codex: it needs a Claude model. Switch Chief of staff back to a Claude model and it starts again that night.",
+        "Kin's nightly memory update starts again tonight on claude-sonnet-4-6, the model Chief of staff uses.",
+      ]);
     }).pipe(Effect.provide(paired)),
   );
   it.effect(
@@ -1236,6 +1418,20 @@ describe("KinLeadProvision", () => {
         assert.isDefined((yield* pause(true)).paused);
         assert.strictEqual(yield* refusal(pause(false, teammate)), "not_found");
         assert.isUndefined((yield* pause(false)).paused);
+
+        // The last lead paused tells the owner at once, not at the next hourly check; a resume closes it.
+        const noAgent = sql<{ open: number }>`SELECT CASE WHEN resolved_at IS NULL THEN 1 ELSE 0 END
+            AS open FROM kin_waiting WHERE org_id = ${tech.orgId} AND message_id LIKE 'kin-no-lead:%'
+          ORDER BY waiting_id`;
+        const live = yield* sql<{
+          agentId: KinAgentId;
+        }>`SELECT agent_id AS "agentId" FROM kin_agents
+          WHERE org_id = ${tech.orgId} AND role = 'lead' AND retired_at IS NULL ORDER BY agent_id`;
+        for (const { agentId } of live)
+          yield* Provision.setPaused({ by: owner, orgId: tech.orgId, agentId, paused: true });
+        assert.deepStrictEqual(yield* noAgent, [{ open: 1 }]);
+        yield* pause(false);
+        assert.deepStrictEqual(yield* noAgent, [{ open: 0 }]);
       }).pipe(Effect.provide(paired)),
   );
   it.effect("shows an agent's page and keeps an edited character's old version", () =>

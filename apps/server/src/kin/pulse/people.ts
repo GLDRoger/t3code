@@ -101,6 +101,7 @@ export const read = Effect.fn("KinPulsePeople.read")(function* (
     personId: person.personId,
     includeHandled: input.includeHandled,
     scope: input.scope,
+    excludeOverflow: !input.acceptSenses?.includes("sense_overflow"),
     limit: SCREEN_CAP,
   }).pipe(Effect.catchTags({ SqlError: unavailableOn }));
   const facts = screenFacts(read.facts, input.acceptSenses);

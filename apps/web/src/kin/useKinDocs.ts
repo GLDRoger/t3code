@@ -23,12 +23,14 @@ import { kinHookApp } from "./kinHookApp";
 import { useKinOpenChat } from "./useKinOpenChat";
 import { useKinInbox } from "./useKinHost";
 import { kinSchedule, useKinPagedList, type KinWorkTarget } from "./useKinWork";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 export const {
   useKinDocsLive,
   useKinDocsList,
   useKinDocsUnder,
   useKinWhatWeSell,
+  useKinWhatWeSellAnswer,
   useKinWhatWeSellStart,
   useKinDoc,
   useKinDocHistory,
@@ -55,7 +57,7 @@ export function useKinPaletteHits(target: KinWorkTarget | null, text: string) {
               onChange: setState,
               schedule: kinSchedule,
               read: ({ text: asked, closed }) =>
-                kinClient.search.run(appAtomRegistry, {
+                runKinCommand(appAtomRegistry, kinClient.search, {
                   environmentId,
                   input: { orgId, text: asked, closed, everything: true },
                 }),

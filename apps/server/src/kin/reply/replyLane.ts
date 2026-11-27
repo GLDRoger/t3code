@@ -1,6 +1,7 @@
 import {
   KIN_TEAM_ROOM_TEAM_ID,
   KinChatId,
+  type KinEvent,
   type KinOrgId,
   type KinAgentId,
   type KinWakeupId,
@@ -10,7 +11,11 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import { owedNotice } from "../floor/KinFloor.ts";
 import { CHAT_ANSWER_TAGS } from "../lead/Audience.ts";
+import { billsOnly } from "../lead/billsOnly.ts";
+import { outsideTriage } from "../lead/outsideTriage.ts";
 import { outsideReview } from "../lead/outsideReview.ts";
+import { ServerSettingsService } from "../../serverSettings.ts";
+import { PERSON_TAGS, voiceFor } from "./turnVoice.ts";
 
 /**
  * Where a wake-up's text goes. One wake-up answers one chat: the chat of its highest-priority
@@ -20,21 +25,27 @@ import { outsideReview } from "../lead/outsideReview.ts";
 export type Lane = {
   readonly chatId: KinChatId;
   readonly mode: "reply" | "notice";
+  readonly voice: "text" | "send";
   readonly owed: boolean;
   readonly leadName: string;
   /** A Team-room turn: it speaks only through `team_say`, and passing says nothing. */
   readonly team?: true;
-  /** An outsider's pull request's review: Kin tells the owner from the post (`askedFor.ts`). */
+  /**
+   * Kin's own review of an outsider's pull request (Kin tells the owner from the post,
+   * `askedFor.ts`), or bills read in the background: nothing the model writes reaches a chat.
+   */
   readonly quiet?: true;
+  /** Bills read in the background: their card tells what wasn't read, so a failure says nothing. */
+  readonly bills?: true;
 };
 
 /** The same turn-level reply/notice split, for a live reply or a recorded wake-up. */
-export const turnAsked = (sql: SqlClient.SqlClient, row: "e" | "w") =>
+const turnAsked = (sql: SqlClient.SqlClient, row: "e" | "w") =>
   sql`EXISTS (SELECT 1 FROM kin_events h
     WHERE h.org_id = ${sql.literal(`${row}.org_id`)}
       AND h.agent_id = ${sql.literal(`${row}.agent_id`)}
       AND h.wakeup_id = ${sql.literal(`${row}.wakeup_id`)}
-      AND h.tag IN ('chat.message', 'widget.action', 'chat.reaction'))`;
+      AND h.tag IN ${sql.in(PERSON_TAGS)})`;
 
 /** The lane of a running wake-up, from its stored events; `kin_ask` posts its card there too. */
 export const laneFor = Effect.fn("KinReplyBridge.lane")(
@@ -57,14 +68,41 @@ export const laneFor = Effect.fn("KinReplyBridge.lane")(
       ORDER BY priority, received_at, event_id LIMIT 1`;
     const chatId = first?.chatId ?? lead?.ownerChatId;
     if (chatId === undefined) return Option.none<Lane>();
-    // Nothing the model writes there reaches a chat, so no reply can become a question either.
-    if ((yield* outsideReview(input)) !== undefined)
+    const settings = yield* Effect.serviceOption(ServerSettingsService);
+    const sendOnly = Option.isSome(settings)
+      ? yield* settings.value.getSettings.pipe(
+          Effect.map((value) => value.kinTriggerSendOnly),
+          Effect.orElseSucceed(() => false),
+        )
+      : false;
+    const tags = sendOnly
+      ? (yield* sql<{ tag: KinEvent["_tag"] }>`SELECT tag FROM kin_events
+          WHERE org_id = ${input.orgId} AND agent_id = ${input.agentId}
+            AND wakeup_id = ${input.wakeupId} ORDER BY event_id`).map(({ tag }) => tag)
+      : [];
+    const voice = voiceFor({ tags, sendOnly });
+    // Kin's own review of an outsider's: nothing the model writes reaches a chat, so no reply can
+    // become a question either. One someone asked for answers them.
+    const outside = yield* outsideReview(input);
+    if ((yield* outsideTriage(input)) !== undefined || (outside !== undefined && !outside.asked))
       return Option.some<Lane>({
         chatId: KinChatId.make(chatId),
         mode: "notice",
+        voice,
         owed: false,
         leadName: lead?.name ?? "Agent",
         quiet: true,
+      });
+    // Bills read in the background (`work/bills.ts`): their batch's card tells what came of them.
+    if (yield* billsOnly(input))
+      return Option.some<Lane>({
+        chatId: KinChatId.make(chatId),
+        mode: "notice",
+        voice,
+        owed: false,
+        leadName: lead?.name ?? "Agent",
+        quiet: true,
+        bills: true,
       });
     // Only discussion turns Kin handed on in the Team room (`team:` keys), nothing else there.
     const [team] = yield* sql<{ others: number }>`SELECT COUNT(e.event_id) FILTER (
@@ -78,6 +116,7 @@ export const laneFor = Effect.fn("KinReplyBridge.lane")(
       return Option.some<Lane>({
         chatId: KinChatId.make(chatId),
         mode: "notice",
+        voice,
         owed: false,
         leadName: lead?.name ?? "Agent",
         team: true,
@@ -89,6 +128,7 @@ export const laneFor = Effect.fn("KinReplyBridge.lane")(
     return Option.some<Lane>({
       chatId: KinChatId.make(chatId),
       mode,
+      voice,
       owed: mode === "reply" || waiting.length > 0,
       leadName: lead?.name ?? "Agent",
     });

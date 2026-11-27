@@ -1,5 +1,8 @@
+import { kinEntryFacts } from "@t3tools/client-runtime/kin/kinAttention";
 import { KinAsideNote } from "./KinAttention";
+import { useKinAttention } from "./useKinAttention";
 import { KinWatchLine } from "./KinWatchLine";
+import { kinPersonChoices } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import { useKinOpensClients } from "./useKinOwnerLevel";
 import { KIN_DEFAULT_HOME_CURRENCY } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
@@ -7,7 +10,9 @@ import { kinHasNotesHistory } from "@t3tools/client-runtime/kin/kinTemplates";
 import { kinAskRecordDraft } from "@t3tools/client-runtime/kin/kinAskRecord";
 import {
   KIN_FIELD_FILES_MAX,
+  KIN_YES_NO,
   KIN_LISTS,
+  kinEntryPrivateLine,
   kinAmountCheck,
   kinFieldCheck,
   kinListEntryView,
@@ -26,9 +31,12 @@ import {
 import { KIN_QUOTES_LIST, kinQuoteRow } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
 import { KIN_WORK_COPY } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
+  KIN_CREDIT_NOTES_LIST,
   KIN_INVOICE_NUMBER_FIELD,
   KIN_INVOICES,
+  kinCreditNoteView,
   kinInvoiceView,
+  kinIsCreditNote,
   kinIsInvoice,
   kinInvoiceFileDoc,
   kinInvoiceDraftNote,
@@ -84,6 +92,7 @@ import { SheetDescription, SheetHeader, SheetTitle } from "../components/ui/shee
 import { cn, randomUUID } from "../lib/utils";
 import {
   KinInvoiceActions,
+  KinInvoiceCreditOffer,
   KinMakeDocumentStep,
   KinQuoteActions,
   KinInvoiceDocuments,
@@ -92,6 +101,7 @@ import {
   KinInvoicePayments,
   KinMoneyActionNotice,
 } from "./KinInvoice";
+import { KinCreditNoteActions, KinCreditNoteDraftForm } from "./KinCreditNote";
 import { KinSuggestionKeep } from "./KinMoneySuggested";
 import { KinInvoiceCurrency } from "./KinMoneyEstimate";
 import { KinNotesVersions } from "./KinConfirm";
@@ -112,6 +122,13 @@ import {
   useKinRates,
 } from "./useKinMoney";
 import { kinWorkChoicesAtom, type KinWorkDirectory, type KinWorkTarget } from "./useKinWork";
+import { useKinSectionNamed, useKinSectionOn, useKinShell } from "./useKinShell";
+import { kinListCanBeSection } from "@t3tools/client-runtime/kin/kinShell";
+import {
+  KIN_BILL_TO,
+  kinBillToFieldPatch,
+  kinUseClientInstead,
+} from "@t3tools/client-runtime/kin/kinBillTo";
 
 const isImage = (file: KinFileRef) => file.mimeType.startsWith("image/");
 
@@ -383,14 +400,26 @@ function FieldEdit(
   const [picking, setPicking] = useState(false);
   const current = typeof field.value === "string" ? field.value : null;
   switch (field.type) {
+    case "yesno":
+      return (
+        <KinEntryPick
+          label={field.label}
+          shown={field.text}
+          current={current}
+          disabled={busy}
+          choices={KIN_YES_NO}
+          onPick={(value) => void props.onSet(value)}
+        />
+      );
     case "text":
+    case "number":
     case "money": {
       const edit = (
         <KinEntryText
           label={field.label}
           shown={field.text}
           draft={field.draft}
-          numeric={field.type === "money"}
+          numeric={field.type === "money" || field.type === "number"}
           {...(field.type === "money" ? { placeholder: KIN_LISTS.entry.amountPlaceholder } : {})}
           disabled={busy}
           onSave={async (text) => {
@@ -429,7 +458,7 @@ function FieldEdit(
           disabled={busy}
           choices={
             field.type === "person"
-              ? props.people
+              ? kinPersonChoices(field.key, props.people)
               : field.choices.map((choice) => ({ value: choice, label: choice }))
           }
           onPick={(value) => void props.onSet(value)}
@@ -519,6 +548,10 @@ export function KinListEntry(
     readonly directory: KinWorkDirectory;
     readonly now: Date;
     readonly links: React.ReactNode;
+    /** Giving it to someone, where the host lets this reader; shown on a company's own list. */
+    readonly give?: React.ReactNode;
+    /** That its section is off, for an entry opened by its link; null while it is on. */
+    readonly offLine?: string | null;
     readonly onOpenClient: (key: KinRecordKey) => void;
     readonly onOpenProject: (key: KinRecordKey) => void;
     readonly onOpenDoc: (key: KinRecordKey) => void;
@@ -526,15 +559,24 @@ export function KinListEntry(
   },
 ) {
   const { item, view, environmentId } = props;
-  const opensClients = useKinOpensClients(environmentId);
+  const clientsOn = useKinSectionOn(environmentId, "clients");
+  const named = useKinSectionNamed(environmentId);
+  const shell = useKinShell(environmentId);
+  // Clients off: an entry's client and project are names alone, with no link or picker.
+  const billing = clientsOn;
+  const opensClients = useKinOpensClients(environmentId) && billing;
+  const [naming, setNaming] = useState(false);
   const lists = useKinLists(props, { enabled: true, archived: true });
   const context = useKinListContext(props, props.directory);
   const def = kinListsOf(lists).find((one) => one.list === item.list) ?? null;
   const entry = kinListEntryView(item, def, context);
+  const said = kinEntryFacts(useKinAttention(props)).get(item.key);
   const invoice = kinIsInvoice(item)
     ? kinInvoiceView(item, def, props.now, props.directory.names)
     : null;
   const quote = item.list === KIN_QUOTES_LIST ? kinQuoteRow(item, null, props.now) : null;
+  const creditNote = kinIsCreditNote(item) ? kinCreditNoteView(item) : null;
+  const creditNoteLocked = creditNote !== null && creditNote.state !== "draft";
   const money = useKinMoneyActions(props);
   const rates = useKinRates(props, invoice !== null || quote !== null);
   const changes = useKinEntryChanges(props, item.key);
@@ -543,10 +585,15 @@ export function KinListEntry(
   const ownerLevel = useKinOwnerLevel(environmentId);
   // A project's lead drafts its entries' words and figures (`can.edit`); state, files and the
   // rest are owner-level, which the host says by letting this reader set its client.
-  const canChange = mayUpdate && view.can.party;
-  const canDraft = mayUpdate && view.can.edit;
+  const canChange = mayUpdate && view.can.party && !creditNoteLocked;
+  const canDraft = mayUpdate && view.can.edit && !creditNoteLocked;
+  // A company's own list: its status and who has it, as far as the host lets this reader.
+  const ownList = def !== null && kinListCanBeSection({ ...def, archivedAt: null });
+  const moves = canChange || (ownList && mayUpdate && view.can.states.length > 0);
+  const give = ownList ? (props.give ?? null) : null;
   const canPay = useAtomValue(kinClient.workPaymentRecord.permissionAtom(environmentId));
   const [paying, setPaying] = useState(false);
+  const [draftingCreditNote, setDraftingCreditNote] = useState(false);
   const [takingBack, setTakingBack] = useState<string | null>(null);
   // The amount box waits on this question's answer: the reason it wasn't saved, or null.
   const [askingAmount, setAskingAmount] = useState<{
@@ -586,7 +633,7 @@ export function KinListEntry(
       .map(([id, name]) => ({ value: `agent:${id}`, label: name })),
   ];
   const open = (fact: KinListEntryView["facts"][number]) =>
-    fact.opens === null || (fact.id !== "project" && !opensClients)
+    fact.opens === null || !billing || (fact.id !== "project" && !opensClients)
       ? null
       : fact.id === "project"
         ? () => props.onOpenProject(fact.opens!)
@@ -596,12 +643,15 @@ export function KinListEntry(
       <KinMakeDocumentStep
         {...props}
         itemKey={item.key}
-        list={def?.list ?? (making === "pdf" ? "quotes" : "invoices")}
+        list={
+          def?.list ??
+          (creditNote !== null ? KIN_CREDIT_NOTES_LIST : making === "pdf" ? "quotes" : "invoices")
+        }
         {...(making === "pdf" ? { title: KIN_INVOICES.makePdf } : {})}
         currency={item.amount?.currency ?? def?.currency ?? KIN_DEFAULT_HOME_CURRENCY}
         actions={money}
         party={item.party ?? null}
-        backLabel={invoice?.heading ?? item.title}
+        backLabel={invoice?.heading ?? creditNote?.heading ?? item.title}
         onClose={() => setMaking(null)}
       />
     );
@@ -610,12 +660,17 @@ export function KinListEntry(
       <SheetHeader>
         <div className="flex flex-col gap-1 pe-8">
           <SheetDescription>{entry.heading}</SheetDescription>
-          <SheetTitle>{invoice?.heading ?? item.title}</SheetTitle>
+          <SheetTitle>{invoice?.heading ?? creditNote?.heading ?? item.title}</SheetTitle>
           {invoice?.description == null ? null : (
             <p className="text-sm text-muted-foreground">{invoice.description}</p>
           )}
           <KinAsideNote {...props} record={item.key} names={props.directory.names} />
           <KinWatchLine environmentId={environmentId} orgId={props.orgId} recordKey={item.key} />
+          {props.offLine == null ? null : (
+            <p role="note" className="text-pretty text-sm text-muted-foreground">
+              {props.offLine}
+            </p>
+          )}
         </div>
       </SheetHeader>
       <div className="flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-6 pb-6">
@@ -633,11 +688,16 @@ export function KinListEntry(
                   disabled={busy}
                   ask={changes.ask}
                   onSave={async (text) => {
-                    const checked = kinAmountCheck(text, amountEdit.currency, amountEdit.received);
+                    const checked = kinAmountCheck(
+                      text,
+                      amountEdit.currency,
+                      amountEdit.received,
+                      amountEdit.belowZero,
+                    );
                     if (!checked.ok) return checked.problem;
                     const save = () =>
                       changes.edit(item.rev, { amount: checked.value }, text.trim());
-                    const question = kinIssuedAmountQuestion(item, checked.value);
+                    const question = kinIssuedAmountQuestion(item, checked.value, shell);
                     if (question === null) return save();
                     return new Promise<string | null>((done) =>
                       setAskingAmount({ question, save, done }),
@@ -653,14 +713,14 @@ export function KinListEntry(
           )}
           <div className="flex flex-wrap items-center gap-2 text-sm text-foreground">
             <KinWorkStateIcon state={entry.state} />
-            <span>{quote?.stateLabel ?? entry.stateLabel}</span>
+            <span>{quote?.stateLabel ?? creditNote?.stateLabel ?? entry.stateLabel}</span>
             {invoice?.void === true ? (
               entry.stateLabel === KIN_INVOICES.void ? null : (
                 <Badge size="sm" variant="secondary">
                   {KIN_INVOICES.void}
                 </Badge>
               )
-            ) : entry.late && quote === null ? (
+            ) : entry.late && quote === null && creditNote === null ? (
               <Badge size="sm" variant="error">
                 {KIN_LISTS.late}
               </Badge>
@@ -671,11 +731,21 @@ export function KinListEntry(
               </span>
             ) : null}
           </div>
+          {said === undefined ? null : (
+            <p className="text-sm text-destructive-foreground">{said.join(" ")}</p>
+          )}
           {invoice !== null ? (
             <>
               <KinInvoiceCurrency {...props} item={item} rates={rates} settled={invoice.settled} />
               <KinInvoiceFigures invoice={invoice} />
               <KinInvoiceSent invoice={invoice} />
+              <KinInvoiceCreditOffer
+                {...props}
+                itemKey={item.key}
+                invoice={invoice}
+                actions={money}
+                busy={busy}
+              />
             </>
           ) : entry.balance === null ? null : (
             <dl className="grid grid-cols-2 gap-x-6 text-sm">
@@ -703,12 +773,21 @@ export function KinListEntry(
               onState={(state) => void changes.update(item.rev, { state })}
               onMakePdf={() => setMaking("pdf")}
             />
-          ) : !canChange ? null : (
+          ) : creditNote !== null ? (
+            <KinCreditNoteActions
+              {...props}
+              item={item}
+              note={creditNote}
+              actions={money}
+              busy={busy}
+              onMakePdf={() => setMaking("pdf")}
+            />
+          ) : !moves && give === null ? null : (
             <div className="flex flex-wrap items-center gap-2">
               {payLater === null ? null : (
                 <p className="w-full text-sm text-muted-foreground">{payLater}</p>
               )}
-              {finish === null ? null : (
+              {finish === null || !canChange ? null : (
                 <Button
                   size="sm"
                   disabled={busy || (finish.pays !== null && !canPay)}
@@ -726,29 +805,37 @@ export function KinListEntry(
                   {finish.label}
                 </Button>
               )}
-              {finish?.pays == null || !canPay || paying ? null : (
+              {finish?.pays == null || !canPay || paying || !canChange ? null : (
                 <Button size="sm" variant="outline" disabled={busy} onClick={() => setPaying(true)}>
                   {KIN_LISTS.entry.recordPayment}
                 </Button>
               )}
-              <Menu>
-                <MenuTrigger render={<Button size="sm" variant="outline" disabled={busy} />}>
-                  {KIN_LISTS.entry.status}
-                  <ChevronDownIcon />
-                </MenuTrigger>
-                <MenuPopup align="start">
-                  {entry.states.map((choice) => (
-                    <MenuItem
-                      key={choice.state}
-                      disabled={choice.current}
-                      onClick={() => void changes.update(item.rev, { state: choice.state })}
-                    >
-                      <KinWorkStateIcon state={choice.state} />
-                      {choice.label}
-                    </MenuItem>
-                  ))}
-                </MenuPopup>
-              </Menu>
+              {!moves ? null : (
+                <Menu>
+                  <MenuTrigger render={<Button size="sm" variant="outline" disabled={busy} />}>
+                    {KIN_LISTS.entry.status}
+                    <ChevronDownIcon />
+                  </MenuTrigger>
+                  <MenuPopup align="start">
+                    {entry.states
+                      .filter(
+                        (choice) =>
+                          canChange || choice.current || view.can.states.includes(choice.state),
+                      )
+                      .map((choice) => (
+                        <MenuItem
+                          key={choice.state}
+                          disabled={choice.current}
+                          onClick={() => void changes.update(item.rev, { state: choice.state })}
+                        >
+                          <KinWorkStateIcon state={choice.state} />
+                          {choice.label}
+                        </MenuItem>
+                      ))}
+                  </MenuPopup>
+                </Menu>
+              )}
+              {give}
             </div>
           )}
           {canChange && kinSuggestion(item) ? (
@@ -764,6 +851,7 @@ export function KinListEntry(
               busy={busy}
               party={item.party ?? null}
               onMake={() => setMaking("invoice")}
+              onCreditNote={() => setDraftingCreditNote(true)}
             />
           )}
           <KinMoneyActionNotice actions={money} onOpenDoc={props.onOpenDoc} />
@@ -774,6 +862,20 @@ export function KinListEntry(
               busy={busy}
               onSave={pay}
               onCancel={() => setPaying(false)}
+            />
+          ) : null}
+          {draftingCreditNote && invoice?.creditNoteMax != null ? (
+            <KinCreditNoteDraftForm
+              owed={invoice.creditNoteMax}
+              busy={busy || money.busy}
+              onSave={async (input) => {
+                const made = await money.draftCreditNote(item.key, input);
+                if (made === null) return false;
+                setDraftingCreditNote(false);
+                props.onOpenKey(made.key);
+                return true;
+              }}
+              onCancel={() => setDraftingCreditNote(false)}
             />
           ) : null}
           {changes.problem === null ? null : (
@@ -832,51 +934,99 @@ export function KinListEntry(
                 </dd>
               </>
             )}
-            {entry.facts.map((fact) => {
-              const opens = open(fact);
-              const picks = canChange && fact.id !== "owner";
-              if (!picks && fact.value === null) return null;
-              return (
-                <div key={fact.id} className="contents">
-                  <dt className="text-muted-foreground">{fact.label}</dt>
-                  <dd className="flex min-w-0 flex-wrap items-center gap-1 text-foreground">
-                    {picks ? (
-                      <KinEntryPick
-                        label={fact.label}
-                        shown={fact.value}
-                        current={fact.current}
-                        disabled={busy}
-                        choices={
-                          fact.id === "category"
-                            ? fact.choices
-                            : (fact.id === "project" ? projects : clients).map((row) => ({
-                                value: row.key,
-                                label: row.name,
-                              }))
-                        }
-                        onPick={(value) =>
-                          void changes.update(
-                            item.rev,
+            {entry.facts
+              .map((said) => ({
+                ...said,
+                label: said.id === "party" ? named(said.label) : said.label,
+              }))
+              .map((fact) => {
+                const { billTo } = entry;
+                if (
+                  fact.id === "party" &&
+                  billTo !== null &&
+                  item.party === undefined &&
+                  (billTo.typed || naming || !clientsOn)
+                )
+                  return (
+                    <BillToRows
+                      key={fact.id}
+                      billTo={billTo}
+                      canName={canDraft && billTo.editable}
+                      canUseClient={canChange && billTo.editable && clientsOn && billTo.typed}
+                      useClientLabel={named(KIN_BILL_TO.useClient)}
+                      opening={naming}
+                      busy={busy}
+                      clients={clients.map((row) => ({ value: row.key, label: row.name }))}
+                      onSave={async (key, value) => {
+                        const failed = await changes.edit(item.rev, {
+                          fields: kinBillToFieldPatch(key, value),
+                        });
+                        if (failed === null) setNaming(false);
+                        return failed;
+                      }}
+                      onCancelName={() => setNaming(false)}
+                      onUseClient={(key) => void changes.update(item.rev, kinUseClientInstead(key))}
+                    />
+                  );
+                const opens = open(fact);
+                const picks =
+                  canChange &&
+                  fact.id !== "owner" &&
+                  !(creditNote !== null && fact.id === "party") &&
+                  (fact.id === "category" || billing);
+                const offersName =
+                  fact.id === "party" &&
+                  billTo !== null &&
+                  item.party === undefined &&
+                  canDraft &&
+                  billTo.editable;
+                if (!picks && fact.value === null) return null;
+                return (
+                  <div key={fact.id} className="contents">
+                    <dt className="text-muted-foreground">{fact.label}</dt>
+                    <dd className="flex min-w-0 flex-wrap items-center gap-1 text-foreground">
+                      {picks ? (
+                        <KinEntryPick
+                          label={fact.label}
+                          shown={fact.value}
+                          current={fact.current}
+                          disabled={busy}
+                          choices={
                             fact.id === "category"
-                              ? { listCategory: value as never }
-                              : fact.id === "project"
-                                ? { project: value }
-                                : { party: value },
-                          )
-                        }
-                      />
-                    ) : opens === null ? (
-                      <span className="truncate">{fact.value}</span>
-                    ) : null}
-                    {opens === null ? null : (
-                      <Button size="xs" variant="ghost" onClick={opens}>
-                        {picks ? "Open" : fact.value}
-                      </Button>
-                    )}
-                  </dd>
-                </div>
-              );
-            })}
+                              ? fact.choices
+                              : (fact.id === "project" ? projects : clients).map((row) => ({
+                                  value: row.key,
+                                  label: row.name,
+                                }))
+                          }
+                          onPick={(value) =>
+                            void changes.update(
+                              item.rev,
+                              fact.id === "category"
+                                ? { listCategory: value as never }
+                                : fact.id === "project"
+                                  ? { project: value }
+                                  : { party: value },
+                            )
+                          }
+                        />
+                      ) : opens === null ? (
+                        <span className="truncate">{fact.value}</span>
+                      ) : null}
+                      {opens === null ? null : (
+                        <Button size="xs" variant="ghost" className="max-w-full" onClick={opens}>
+                          <span className="truncate">{picks ? "Open" : fact.value}</span>
+                        </Button>
+                      )}
+                      {offersName ? (
+                        <Button size="xs" variant="ghost" onClick={() => setNaming(true)}>
+                          {KIN_BILL_TO.byName}
+                        </Button>
+                      ) : null}
+                    </dd>
+                  </div>
+                );
+              })}
             {entry.repeat === null ? null : (
               <>
                 <dt className="text-muted-foreground">{KIN_LISTS.entry.repeats}</dt>
@@ -899,7 +1049,11 @@ export function KinListEntry(
               </>
             )}
             {entry.fields
-              .filter((field) => invoice === null || field.key !== KIN_INVOICE_NUMBER_FIELD)
+              .filter(
+                (field) =>
+                  (invoice === null && creditNote === null) ||
+                  field.key !== KIN_INVOICE_NUMBER_FIELD,
+              )
               .map((field) => (
                 <div key={field.key} className="contents">
                   <dt className="flex items-center gap-1.5 self-start pt-0.5 text-muted-foreground">
@@ -908,10 +1062,13 @@ export function KinListEntry(
                   </dt>
                   <dd className="flex min-w-0 flex-col items-start gap-1.5 text-foreground">
                     <InvoiceFileDoc
-                      doc={kinInvoiceFileDoc(field, invoice)}
+                      doc={kinInvoiceFileDoc(field, invoice ?? creditNote)}
                       onOpenDoc={props.onOpenDoc}
                     />
-                    {canDraft && !field.retired && (canChange || field.type !== "file") ? (
+                    {canDraft &&
+                    !field.retired &&
+                    (canChange || field.type !== "file") &&
+                    !(creditNote !== null && field.key === "invoice") ? (
                       <FieldEdit
                         {...props}
                         field={field}
@@ -931,6 +1088,18 @@ export function KinListEntry(
                           changes.edit(item.rev, { fields: { [field.key]: value } })
                         }
                       />
+                    ) : creditNote !== null &&
+                      field.key === "invoice" &&
+                      creditNote.invoiceKey !== null ? (
+                      <div>
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          onClick={() => props.onOpenKey(creditNote.invoiceKey!)}
+                        >
+                          {creditNote.invoiceName ?? field.text}
+                        </Button>
+                      </div>
                     ) : field.files.length > 0 ? (
                       <EntryFiles {...props} files={field.files} previewKey={previewKey} />
                     ) : field.opens !== null &&
@@ -972,7 +1141,7 @@ export function KinListEntry(
           {view.privacy.private && ownerLevel && !view.shared ? (
             <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
               <KinWorkPrivateMark />
-              {KIN_LISTS.entry.private}
+              {kinEntryPrivateLine(item.owner, props.directory.names)}
             </p>
           ) : null}
           {view.can.share ? (
@@ -1001,6 +1170,7 @@ export function KinListEntry(
               canPay={canPay}
               busy={busy}
               onTakeBack={setTakingBack}
+              onOpenKey={props.onOpenKey}
             />
             <KinInvoiceDocuments invoice={invoice} onOpenDoc={props.onOpenDoc} />
           </>
@@ -1158,6 +1328,75 @@ export function KinListEntry(
           </AlertDialogFooter>
         </AlertDialogPopup>
       </AlertDialog>
+    </>
+  );
+}
+
+/**
+ * Who an invoice or quote with no client bills: its typed name and the details this reader was
+ * sent, edited in place on a draft. Clearing the name clears the details, as the host does.
+ */
+function BillToRows(props: {
+  readonly billTo: NonNullable<KinListEntryView["billTo"]>;
+  readonly canName: boolean;
+  readonly canUseClient: boolean;
+  /** "Use a client instead", in the company's word for Clients. */
+  readonly useClientLabel: string;
+  /** The person just chose to bill by name: the name opens as a box. */
+  readonly opening: boolean;
+  readonly busy: boolean;
+  readonly clients: ReadonlyArray<{ readonly value: KinRecordKey; readonly label: string }>;
+  readonly onSave: (key: string, value: string) => Promise<string | null>;
+  readonly onCancelName: () => void;
+  readonly onUseClient: (key: KinRecordKey) => void;
+}) {
+  const { name, details } = props.billTo;
+  const rows = [name, ...(props.billTo.typed ? details : [])];
+  return (
+    <>
+      {rows.map((field) => {
+        if (!props.canName && field.text === null) return null;
+        const isName = field === name;
+        return (
+          <div key={field.key} className="contents">
+            <dt className="flex items-center gap-1.5 self-start pt-0.5 text-muted-foreground">
+              {isName ? KIN_BILL_TO.label : field.label}
+              {field.private ? <KinWorkPrivateMark /> : null}
+            </dt>
+            <dd className="flex min-w-0 flex-col items-start gap-1.5 text-foreground">
+              {props.canName ? (
+                <KinEntryText
+                  label={isName ? KIN_BILL_TO.label : field.label}
+                  shown={field.text}
+                  draft={field.draft}
+                  disabled={props.busy}
+                  {...(isName && props.opening && field.text === null
+                    ? { open: true, onCancel: props.onCancelName }
+                    : {})}
+                  onSave={(text) => props.onSave(field.key, text)}
+                />
+              ) : (
+                <span className="whitespace-pre-wrap">{field.text}</span>
+              )}
+              {isName && props.canUseClient && props.clients.length > 0 ? (
+                <Menu>
+                  <MenuTrigger render={<Button size="xs" variant="ghost" disabled={props.busy} />}>
+                    {props.useClientLabel}
+                    <ChevronDownIcon />
+                  </MenuTrigger>
+                  <MenuPopup align="start">
+                    {props.clients.map((client) => (
+                      <MenuItem key={client.value} onClick={() => props.onUseClient(client.value)}>
+                        {client.label}
+                      </MenuItem>
+                    ))}
+                  </MenuPopup>
+                </Menu>
+              ) : null}
+            </dd>
+          </div>
+        );
+      })}
     </>
   );
 }

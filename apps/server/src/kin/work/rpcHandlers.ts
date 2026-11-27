@@ -1,4 +1,5 @@
 import {
+  KinBillRpcs,
   KinChatError,
   KinDealRpcs,
   KinDocsRpcs,
@@ -32,6 +33,7 @@ import * as Pulse from "../pulse/people.ts";
 import * as Open from "../open/people.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import { withWatch } from "../watches/readRpcs.ts";
+import * as CountryAsk from "./countryAsk.ts";
 import * as Goals from "./goals.ts";
 import * as Clients from "./ownerClients.ts";
 import * as Deals from "./deals.ts";
@@ -44,6 +46,7 @@ import * as Money from "./ownerMoney.ts";
 import * as MoneyAnswers from "./ownerMoneyAnswers.ts";
 import * as MoneyStream from "./moneyStream.ts";
 import * as Statements from "./ownerStatements.ts";
+import * as Bills from "./bills.ts";
 import * as Work from "./ownerWork.ts";
 import * as Comments from "./workComments.ts";
 import * as WorkStream from "./workStream.ts";
@@ -53,6 +56,7 @@ const finance = RpcGroup.make(...KinFinanceRpcs);
 const answers = RpcGroup.make(...KinMoneyAnswerRpcs);
 const moneyLive = RpcGroup.make(...KinMoneyLiveRpcs);
 const statements = RpcGroup.make(...KinStatementRpcs);
+const bills = RpcGroup.make(...KinBillRpcs);
 const refreshes = RpcGroup.make(...KinRefreshRpcs);
 const pulse = RpcGroup.make(...KinPulseRpcs);
 const open = RpcGroup.make(...KinOpenRpcs);
@@ -291,6 +295,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.docs.editSection": Effect.fn("KinDocs.rpc.editSection")(function* (input) {
         return yield* call((people) => Docs.editSection(people, input));
       }),
+      "kin.docs.readers": Effect.fn("KinDocs.rpc.readers")(function* (input) {
+        return yield* call((people) => Docs.setReaders(people, input));
+      }),
       "kin.docs.delete": Effect.fn("KinDocs.rpc.delete")(function* (input) {
         return yield* call((people) => Docs.remove(people, input));
       }),
@@ -363,6 +370,8 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       "kin.work.setCompanyProfile": Effect.fn("KinWork.rpc.setCompanyProfile")(function* (input) {
         return yield* call((people) => Money.setCompanyProfile(people, input));
       }),
+      "kin.work.answerCountryCard": (input) =>
+        call((people) => CountryAsk.answerCountryCard(people, input)),
       "kin.work.issue": Effect.fn("KinWork.rpc.issue")(function* (input) {
         return yield* call((people) => Money.issue(people, input));
       }),
@@ -377,6 +386,15 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       }),
       "kin.work.receipts": Effect.fn("KinWork.rpc.receipts")(function* (input) {
         return yield* call((people) => Money.receipts(people, input));
+      }),
+      "kin.work.undoCreditPayment": Effect.fn("KinWork.rpc.undoCreditPayment")(function* (input) {
+        return yield* call((people) => Money.undoCreditPayment(people, input));
+      }),
+      "kin.work.draftCreditNote": Effect.fn("KinWork.rpc.draftCreditNote")(function* (input) {
+        return yield* call((people) => Money.draftCreditNote(people, input));
+      }),
+      "kin.work.unapplyCredit": Effect.fn("KinWork.rpc.unapplyCredit")(function* (input) {
+        return yield* call((people) => Money.unapplyCredit(people, input));
       }),
       "kin.work.makeReceipt": Effect.fn("KinWork.rpc.makeReceipt")(function* (input) {
         return yield* call((people) => Money.makeReceipt(people, input));
@@ -406,6 +424,9 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
       }),
       "kin.work.newExpense": Effect.fn("KinWork.rpc.newExpense")(function* (input) {
         return yield* call((people) => MoneyAnswers.newExpense(people, input));
+      }),
+      "kin.work.matchPartner": Effect.fn("KinWork.rpc.matchPartner")(function* (input) {
+        return yield* call((people) => MoneyAnswers.matchPartner(people, input));
       }),
     }),
     ...moneyLive.of({
@@ -443,6 +464,26 @@ export const makeKinWorkHandlers = Effect.fn("makeKinWorkHandlers")(function* (
           return yield* call((people) => Statements.forgetAccount(people, input));
         },
       ),
+    }),
+    ...bills.of({
+      "kin.bills.add": Effect.fn("KinWork.rpc.billsAdd")(function* (input) {
+        return yield* call((people) => Bills.add(people, input, sessionUploadOwner(session)));
+      }),
+      "kin.bills.list": Effect.fn("KinWork.rpc.billsList")(function* (input) {
+        return yield* call((people) => Bills.list(people, input));
+      }),
+      "kin.bills.keepRead": Effect.fn("KinWork.rpc.billsKeepRead")(function* (input) {
+        return yield* call((people) => Bills.keepRead(people, input));
+      }),
+      "kin.bills.addAnyway": Effect.fn("KinWork.rpc.billsAddAnyway")(function* (input) {
+        return yield* call((people) => Bills.addAnyway(people, input));
+      }),
+      "kin.bills.dismiss": Effect.fn("KinWork.rpc.billsDismiss")(function* (input) {
+        return yield* call((people) => Bills.dismiss(people, input));
+      }),
+      "kin.bills.readAgain": Effect.fn("KinWork.rpc.billsReadAgain")(function* (input) {
+        return yield* call((people) => Bills.readAgain(people, input));
+      }),
     }),
     ...refreshes.of({
       "kin.refreshes.subscribe": (input) => stream((people) => subscribeRefreshes(people, input)),

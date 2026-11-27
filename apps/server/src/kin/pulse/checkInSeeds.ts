@@ -38,7 +38,7 @@ const CHECK_IN_SEEDS = [
     title: "Weekly brief",
     at: "09:00",
     days: [1],
-    what: "Weekly brief: in one short message, tell the owner what slipped last week, what is due this week and what needs his decision.",
+    what: "Weekly brief: in one short message, tell the owner what slipped last week, what is due this week and what needs their decision.",
   },
   {
     seed: "check-in-evening",
@@ -74,6 +74,23 @@ export const onHostClock = (
     at: `${String(Math.floor(inDay / 60)).padStart(2, "0")}:${String(inDay % 60).padStart(2, "0")}`,
     days: days.map((day) => (((day + dayShift) % 7) + 7) % 7).toSorted((a, b) => a - b),
   };
+};
+
+/**
+ * A native schedule in the owner's own time: the time he said (`owner_time_json`) while the task
+ * still runs where Kin put it, else its host time turned to his zone as of `now`.
+ */
+export const inOwnerTime = (
+  host: { readonly at: string; readonly days: ReadonlyArray<number> },
+  kept: string | null,
+  ownerZoneId: string,
+  now: number,
+  hostZone = KinSchedules.hostTimeZone(),
+) => {
+  const own = kept === null ? undefined : Option.getOrUndefined(KinSchedules.decodeOwnerTime(kept));
+  return own !== undefined && own.host.at === host.at && own.host.days.join() === host.days.join()
+    ? { at: own.at, days: own.days }
+    : onHostClock(host.at, host.days, hostZone, ownerZoneId, now);
 };
 
 const seedSource = (orgId: KinOrgId) => `kin-seed:check-ins:${orgId}`;

@@ -24,6 +24,7 @@ import * as RepositoryIdentityResolver from "./project/RepositoryIdentityResolve
 import { SourceControlDrivers } from "./sourceControl/builtInDrivers.ts";
 import * as WorkspacePaths from "./workspace/WorkspacePaths.ts";
 import * as AssetSigner from "./assets/AssetSigner.ts";
+import * as WorkspacePreviewRevisions from "./assets/WorkspacePreviewRevisions.ts";
 import * as ServerSecretStore from "./auth/ServerSecretStore.ts";
 import * as SessionStore from "./auth/SessionStore.ts";
 import { base64UrlEncode } from "./auth/utils.ts";
@@ -113,6 +114,7 @@ describe("Kin chat file URLs", () => {
         }),
         Layer.succeedContext(signerContext),
         WorkspacePaths.layer,
+        WorkspacePreviewRevisions.layer.pipe(Layer.provide(NodeCrypto.layer)),
         NodeCrypto.layer,
         // Reached only by other asset kinds.
         Layer.mock(Orchestrator.OrchestratorV2)({}),

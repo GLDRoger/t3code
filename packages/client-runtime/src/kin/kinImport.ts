@@ -15,12 +15,14 @@ import {
   type KinImportTarget,
   type KinImportUndone,
   type KinImportUpload,
+  type KinShell,
   KinChatError,
 } from "@t3tools/contracts";
 import { AsyncResult } from "effect/reactivity";
 import * as Schema from "effect/Schema";
 
 import { squashAtomCommandFailure, type AtomCommandResult } from "../state/runtime.ts";
+import { kinSectionNamed } from "./kinShell.ts";
 
 /** Every word the import screens show, on the web and the phone alike. */
 export const KIN_IMPORT = {
@@ -32,6 +34,8 @@ export const KIN_IMPORT = {
   drop: "Drop a file here, or",
   choose: "choose one",
   chooseFile: "Choose a file",
+  /** A file shared into Kin from another app, read only when this is pressed. */
+  checkFile: (name: string) => `Check ${name}`,
   limits: "CSV, up to 50,000 rows",
   earlier: "Earlier imports",
   noneEarlier: "Nothing imported yet.",
@@ -276,9 +280,14 @@ export const kinImportNeedsLook = (check: KinImportCheck) =>
   check.stages.reduce((sum, one) => sum + one.rows, 0) +
   check.ownersUnknown;
 
-export const kinImportTiles = (check: KinImportCheck) => [
+export const kinImportTiles = (check: KinImportCheck, shell?: KinShell | null) => [
   { id: "prospects", value: check.will.prospects, label: "new prospects", alert: false },
-  { id: "clients", value: check.will.clients, label: "new clients", alert: false },
+  {
+    id: "clients",
+    value: check.will.clients,
+    label: kinSectionNamed(shell, "new clients"),
+    alert: false,
+  },
   { id: "contacts", value: check.will.contacts, label: "new contacts", alert: false },
   { id: "deals", value: check.will.deals, label: "new deals", alert: false },
   { id: "matched", value: check.matched, label: "match what you have", alert: false },
@@ -307,17 +316,22 @@ export const kinImportLeftOutLine = (item: KinImportLeftOut) =>
 export const kinImportMoreLine = (more: number) =>
   more === 0 ? null : `And ${plural(more, "more line", "more lines")}.`;
 
-const countsParts = (counts: {
-  readonly prospects?: number;
-  readonly clients: number;
-  readonly contacts: number;
-  readonly deals: number;
-  readonly other?: number;
-}) => [
+const countsParts = (
+  counts: {
+    readonly prospects?: number;
+    readonly clients: number;
+    readonly contacts: number;
+    readonly deals: number;
+    readonly other?: number;
+  },
+  shell: KinShell | null | undefined,
+) => [
   ...(counts.prospects === undefined || counts.prospects === 0
     ? []
     : [plural(counts.prospects, "prospect", "prospects")]),
-  ...(counts.clients === 0 ? [] : [plural(counts.clients, "client", "clients")]),
+  ...(counts.clients === 0
+    ? []
+    : [kinSectionNamed(shell, plural(counts.clients, "client", "clients"))]),
   ...(counts.contacts === 0 ? [] : [plural(counts.contacts, "contact", "contacts")]),
   ...(counts.deals === 0 ? [] : [plural(counts.deals, "deal", "deals")]),
   ...(counts.other === undefined || counts.other === 0
@@ -325,8 +339,8 @@ const countsParts = (counts: {
     : [plural(counts.other, "other entry", "other entries")]),
 ];
 
-export const kinImportDoneLine = (applied: KinImportApplied) => {
-  const added = countsParts(applied.added);
+export const kinImportDoneLine = (applied: KinImportApplied, shell?: KinShell | null) => {
+  const added = countsParts(applied.added, shell);
   const total =
     applied.added.prospects + applied.added.clients + applied.added.contacts + applied.added.deals;
   return [
@@ -336,7 +350,7 @@ export const kinImportDoneLine = (applied: KinImportApplied) => {
     ...(applied.matched === 0 ? [] : [`${number(applied.matched)} matched what you had.`]),
   ].join(" ");
 };
-export const kinImportNoticed = (applied: KinImportApplied) => [
+export const kinImportNoticed = (applied: KinImportApplied, shell?: KinShell | null) => [
   ...(applied.noticed.noNextStep === 0
     ? []
     : [
@@ -350,18 +364,24 @@ export const kinImportNoticed = (applied: KinImportApplied) => [
   ...(applied.filled === 0
     ? []
     : [
-        `Filled in empty fields on ${plural(applied.filled, "client or contact", "clients and contacts")} you had; nothing you typed changed.`,
+        kinSectionNamed(
+          shell,
+          `Filled in empty fields on ${plural(applied.filled, "client or contact", "clients and contacts")} you had; nothing you typed changed.`,
+        ),
       ]),
 ];
 
-export const kinImportUndoneLines = (undone: KinImportUndone) => {
-  const removed = countsParts(undone.removed);
+export const kinImportUndoneLines = (undone: KinImportUndone, shell?: KinShell | null) => {
+  const removed = countsParts(undone.removed, shell);
   return [
     removed.length === 0 ? "Nothing was left to take away." : `Removed ${listed(removed)}.`,
     ...(undone.restored === 0
       ? []
       : [
-          `Emptied what it filled in on ${plural(undone.restored, "client or contact", "clients and contacts")}.`,
+          kinSectionNamed(
+            shell,
+            `Emptied what it filled in on ${plural(undone.restored, "client or contact", "clients and contacts")}.`,
+          ),
         ]),
     ...undone.kept.map((one) => `${one.key} stays: ${one.reason}.`),
   ];
@@ -370,10 +390,13 @@ export const kinImportUndoneLines = (undone: KinImportUndone) => {
 /** A day in the reader's own zone. */
 const day = (iso: string) => formatKinWhen(Date.parse(iso), "date");
 /** One earlier import: its file, who ran it, when, and what it added. */
-export const kinImportRunLine = (run: KinImportRun, by: string) =>
-  [run.file ?? run.batch, by, day(run.at), listed(countsParts(run.added)) || "nothing added"].join(
-    " · ",
-  );
+export const kinImportRunLine = (run: KinImportRun, by: string, shell?: KinShell | null) =>
+  [
+    run.file ?? run.batch,
+    by,
+    day(run.at),
+    listed(countsParts(run.added, shell)) || "nothing added",
+  ].join(" · ");
 /** Why a batch has no Undo: it was taken away already. */
 export const kinImportUndoneLine = (run: KinImportRun, by: (personId: string) => string) =>
   run.undone === null

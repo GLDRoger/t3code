@@ -21,6 +21,7 @@ import * as KeySeal from "./approvals/KeySeal.ts";
 import * as ApprovalCards from "./chat/approvalCards.ts";
 import * as ExecutionNotices from "./chat/executionNotices.ts";
 import * as KinPush from "./push/layer.ts";
+import * as KinPushDispatch from "./push/KinPushDispatch.ts";
 import * as KinHostCare from "./host/KinHostCare.ts";
 import * as LevelControl from "./levels/LevelControl.ts";
 import * as MemoryChanges from "./memory/MemoryChanges.ts";
@@ -49,6 +50,8 @@ import type * as McpSessionRegistry from "../mcp/McpSessionRegistry.ts";
 import * as SqlitePersistence from "../persistence/Sqlite.ts";
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as KinMcp from "./mcp/layer.ts";
+import * as SessionCarry from "./lead/sessionCarry.ts";
+import { KinSessionContext } from "./lead/turn/sessionContext.ts";
 import * as KinTasksKeyMcp from "./tasksKey/mcp.ts";
 import * as Render from "./gendocs/render.ts";
 import * as Toolchain from "./gendocs/toolchain.ts";
@@ -62,6 +65,7 @@ import * as KinGitHubAppSetup from "./github/appSetup.ts";
 import * as Keychain from "./github/Keychain.ts";
 import * as AgentSession from "./lead/AgentSession.ts";
 import * as KinRefusedModels from "./lead/refusedModels.ts";
+import * as OwnerNotices from "./lead/OwnerNotices.ts";
 import * as Workspace from "./gendocs/workspace.ts";
 import * as Vcs from "../vcs/VcsProcess.ts";
 import * as ProcessRunner from "../processRunner.ts";
@@ -74,13 +78,15 @@ import * as McpGateway from "./connections/McpGateway.ts";
 import * as DevFakeSocial from "./social/DevFakeSocial.ts";
 import * as DevFakeImages from "./pictures/DevFakeImages.ts";
 
+import * as KinNumbers from "./numbers/KinNumbers.ts";
 import * as KinShell from "./shell/KinShell.ts";
+import * as FollowUps from "./watches/followUps.ts";
 
 const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
   Layer.effect(
     KinServer,
     Effect.gen(function* () {
-      const services = yield* Effect.context<Services>();
+      const services = yield* Effect.context<Services | KinSessionContext>();
       yield* requireRefreshObserver(services);
       const chat = yield* KinChatService;
       yield* (yield* KinRecords.KinRecords).attachClosing((subject) =>
@@ -119,6 +125,11 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
       yield* DevFakeMail.connectFakeAccounts(owner).pipe(Effect.provide(services));
       const hub = yield* KinChatHub;
       const scope = yield* Effect.scope;
+      // What pushes told of a task is withdrawn once it is done, dropped or handed on.
+      yield* KinPushDispatch.settleTasks(
+        owner.orgId,
+        (yield* KinRecords.KinRecords).changes(owner.orgId),
+      );
       const files = yield* Effect.context<FileSystem.FileSystem | ServerConfig>();
       // Receipt and statement cards' answers carry out their work here, in the tap's transaction.
       yield* chat.attachChoiceAnswers(
@@ -165,10 +176,10 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
               KinRefusedModels.layer,
               LevelControl.layer,
               MemoryChanges.layer,
-              KinImport.layer.pipe(Layer.provideMerge(KinRecords.layer)),
+              KinImport.layer,
               Render.layer.pipe(
                 Layer.provideMerge(Workspace.layer),
-                Layer.provide(
+                Layer.provideMerge(
                   Toolchain.layer.pipe(
                     Layer.provide(ProcessRunner.layer),
                     Layer.provide(FetchHttpClient.layer),
@@ -228,7 +239,10 @@ const enabled = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
         ),
       ).pipe(
         Layer.merge(KinShell.layer),
-        Layer.provideMerge(KinChat.layer),
+        Layer.merge(FollowUps.itemsLayer),
+        Layer.merge(KinNumbers.layer),
+        Layer.merge(OwnerNotices.layer),
+        Layer.provideMerge(KinChat.layerWithWork),
         // Social's posting service sits on top: it reads cards, chats and the document renderer.
         (core) =>
           DevFakeSocial.layer.pipe(
@@ -302,7 +316,10 @@ const middleware = HttpRouter.middleware<{ provides: KinServer }>()(
 
 /** Tests pass `KeySeal.layerTest()` so they can seal the key rows they write. */
 export const layerWithSeal = <E, R>(seal: Layer.Layer<KeySeal.KinKeySeal, E, R>) =>
-  middleware.pipe(Layer.provideMerge(runtime(seal)));
+  middleware.pipe(
+    Layer.provideMerge(runtime(seal)),
+    Layer.provideMerge(Layer.merge(SessionCarry.layer, KinSessionContext.layer)),
+  );
 
 export const layer = layerWithSeal(KeySeal.layer);
 

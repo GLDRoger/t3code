@@ -1,3 +1,4 @@
+import { keyRequestSql } from "../chat/keySent.ts";
 import {
   KinChatError,
   KinRecordId,
@@ -51,7 +52,9 @@ const touchColumns = (sql: Sql) =>
 
 /** One logged contact as a row of the union; removed ones only when `removed` is asked. */
 const loggedRows = (sql: Sql) => sql`SELECT t.party_id AS "partyId", t.touch_id AS id, t.at,
-      t.kind, t.note, COALESCE(wp.display_name, lp.display_name) AS who, 1 AS logged,
+      t.kind, t.note, COALESCE(wp.display_name, lp.display_name)
+        || CASE WHEN ${sql.literal(keyRequestSql("t.origin_key"))} THEN ' (coding agent)' ELSE '' END
+        AS who, 1 AS logged,
       t.logged_by_kind AS "byKind", COALESCE(lp.handle, t.logged_by_id) AS "byName",
       NULL AS "recordId", NULL AS key, NULL AS title, NULL AS "number", t.created_at AS recorded
     FROM kin_client_touches t
@@ -144,13 +147,17 @@ const newestContacts = Effect.fn("KinTouches.newest")(function* (
   partyIds: ReadonlyArray<string>,
   now: number,
   viewer: KinViewer,
+  sections = { invoices: true, money: true },
 ) {
   if (partyIds.length === 0) return new Map<string, { at: number; kind: TouchSql["kind"] }>();
   const sql = yield* SqlClient.SqlClient;
   // SQLite takes the bare `kind` from the row MAX(at) picks.
   const rows = yield* sql<{ partyId: string; at: number; kind: TouchSql["kind"] }>`SELECT
       "partyId", MAX(at) AS at, kind
-    FROM (${touchUnion(sql, orgId, partyIds, now, viewer)}) GROUP BY "partyId" ORDER BY "partyId"`;
+    FROM (${touchUnion(sql, orgId, partyIds, now, viewer)})
+    WHERE (${sections.invoices} OR kind NOT IN ('invoice', 'quote'))
+      AND (${sections.money} OR kind != 'payment')
+    GROUP BY "partyId" ORDER BY "partyId"`;
   return new Map(rows.map((row) => [row.partyId, { at: row.at, kind: row.kind }]));
 });
 
@@ -338,6 +345,7 @@ export const clientRows = Effect.fn("KinTouches.clientRows")(function* (
 export const clientSenses = Effect.fn("KinTouches.senses")(function* (
   orgId: KinOrgId,
   now: number,
+  sections?: { readonly invoices: boolean; readonly money: boolean },
 ) {
   const clients = yield* clientRows(orgId, now);
   const lookup = yield* playbookThresholds(orgId);
@@ -346,6 +354,7 @@ export const clientSenses = Effect.fn("KinTouches.senses")(function* (
     clients.map((client) => client.partyId),
     now,
     KIN_OWNER_LEVEL,
+    sections,
   );
   const senses: Array<ClientSense> = [];
   for (const client of clients) {

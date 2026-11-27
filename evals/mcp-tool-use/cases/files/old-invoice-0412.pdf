@@ -9,10 +9,11 @@ endobj
 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
 endobj
 4 0 obj
-<<  /Length 1630 >>
+<<  /Length 1666 >>
 stream
 BT /F1 16 Tf 34 800 Td (ACME STUDIO PRIVATE LIMITED) Tj ET
-BT /F1 8 Tf 34 788 Td (14 Lake View Road, Pune 411001   GSTIN 27AAACA0000A1Z5) Tj ET
+BT /F1 8 Tf 34 788 Td (14 Lake View Road, Pune 411001) Tj ET
+BT /F1 8 Tf 162.08 788 Td (GSTIN 27AAACA0000A1Z5) Tj ET
 BT /F1 13 Tf 430 764 Td (TAX INVOICE) Tj ET
 BT /F1 8 Tf 430 752 Td (Invoice No. 0412) Tj ET
 BT /F1 8 Tf 430 740 Td (Date 12 Apr 2026) Tj ET
@@ -43,7 +44,7 @@ BT /F1 8 Tf 480 620 Td (16,200.00) Tj ET
 BT /F1 8 Tf 400 608 Td (Total) Tj ET
 BT /F1 8 Tf 480 608 Td (1,06,200.00) Tj ET
 BT /F1 8 Tf 34 584 Td (Amount in words: Rupees One Lakh Six Thousand Two Hundred only) Tj ET
-BT /F1 8 Tf 34 572 Td (Bank: HDFC Bank, A/c 50200000004821, IFSC HDFC0000123) Tj ET
+BT /F1 8 Tf 34 572 Td (Bank: Lakeview Bank, A/c 50200000004821, IFSC LKVB0000123) Tj ET
 BT /F1 8 Tf 430 560 Td (For Acme Studio Private Limited) Tj ET
 BT /F1 8 Tf 430 548 Td (Authorised signatory) Tj ET
 endstream
@@ -58,9 +59,9 @@ xref
 0000000058 00000 n 
 0000000115 00000 n 
 0000000185 00000 n 
-0000001868 00000 n 
+0000001904 00000 n 
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-1994
+2030
 %%EOF

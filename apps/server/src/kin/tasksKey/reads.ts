@@ -10,9 +10,11 @@ import { keyHidden } from "../work/codingAgent.ts";
 import * as Deals from "../work/deals.ts";
 import * as Clients from "../work/ownerClients.ts";
 import * as Docs from "../work/ownerDocs.ts";
+import * as MoneyAnswers from "../work/ownerMoneyAnswers.ts";
 import { money, moneyViewer } from "../work/ownerMoney.ts";
 import { connectionViewer, list } from "../work/ownerWork.ts";
 import { workFailure } from "../work/recordRows.ts";
+import { placesOf } from "../work/teamView.ts";
 import {
   clientRows,
   clientSheet,
@@ -300,10 +302,7 @@ export const readDoc = Effect.fn("KinTasksKeyReads.readDoc")(function* (
   },
 ) {
   const doc = yield* readAs(holder, (people) =>
-    Docs.get(people, { orgId: holder.orgId, key: input.key }, keyed).pipe(
-      Effect.mapError(hidden),
-      Effect.tap((found) => reachable(holder, found.recordId)),
-    ),
+    Docs.get(people, { orgId: holder.orgId, key: input.key }, keyed).pipe(Effect.mapError(hidden)),
   );
   if (doc.bodyKind === "file")
     return yield* new KinChatError({
@@ -351,6 +350,17 @@ export const moneySummary = Effect.fn("KinTasksKeyReads.money")(function* (holde
   );
 });
 
+export const budgets = Effect.fn("KinTasksKeyReads.budgets")(function* (holder: TasksKeyHolder) {
+  return yield* readAs(holder, (people) =>
+    Effect.gen(function* () {
+      const input = { orgId: holder.orgId };
+      const shown = yield* MoneyAnswers.budgets(people, input, keyed);
+      const whole = yield* MoneyAnswers.budgets(people, input);
+      return { ...shown, privateLeftOut: !same(shown, whole) };
+    }),
+  );
+});
+
 /** Plain data compared by value: answers built from the same read model. */
 const same = (a: unknown, b: unknown): boolean => {
   if (Array.isArray(a) && Array.isArray(b))
@@ -364,6 +374,15 @@ const same = (a: unknown, b: unknown): boolean => {
   }
   return a === b;
 };
+
+/** Whether the person's own screens open Clients, or Docs: the owner level, or their switch. */
+const reachesPlace = (place: "clients" | "docs") =>
+  Effect.fn("KinTasksKeyReads.reachesPlace")(function* (holder: TasksKeyHolder) {
+    if (yield* ownerLevel(holder.orgId, holder.personId).pipe(workFailure)) return true;
+    return (yield* placesOf(holder.orgId, holder.personId).pipe(workFailure)).reaches[place];
+  });
+export const readsClients = reachesPlace("clients");
+export const readsDocs = reachesPlace("docs");
 
 /** Whether the person has a Memory page: the owner level, as that page checks. */
 export const readsMemory = Effect.fn("KinTasksKeyReads.readsMemory")(function* (

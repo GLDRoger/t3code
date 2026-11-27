@@ -11,6 +11,8 @@ export const guide =
   "Each box is what the newest card for one mail says, such as an invoice an agent wants to send a client for you. Each arrow is something that happens: you tap, the agent corrects itself, the mail account's sign-in expires, it is signed in again as someone else, the mail service fails, or Kin restarts. A tap that changes nothing draws no arrow: a member's tap, a second tap, a tap on a closed card, or a tap while the sign-in has expired (the card stays open for after you sign in again). Red boxes are where a rule below breaks. The model allows two cards from the agent (a draft and its correction) and at most two of these, once each: the invoice is re-made, the sign-in expires, the mail service fails, Kin restarts.";
 
 export const rules: Record<string, string> = {
+  RetryNeedsSentCheck:
+    "When an earlier try may have gone, Confirm requires a sent-mail check for that try.",
   SentAtMostOnce: "A mail you confirmed goes out at most once.",
   MemberNeverSends: "Only the owner's or a co-owner's Confirm sends; a member's tap never does.",
   SentAsShown: "What goes out is exactly the file the card showed when you tapped.",
@@ -27,6 +29,11 @@ export const rules: Record<string, string> = {
 };
 
 export const variants = [
+  {
+    name: "no-sent-check",
+    breaks: "RetryNeedsSentCheck",
+    what: "Confirm skips the sent-mail check after an uncertain send",
+  },
   {
     name: "member-confirms",
     breaks: "MemberNeverSends",
@@ -136,7 +143,9 @@ export const step = (action: string, from: Vars, to: Vars) => {
         ? at(to, "why", c) === "account"
           ? "You tap Confirm, but the account was signed in again as someone else: that card closes"
           : "You tap Confirm, but the invoice was re-made: that card closes"
-        : `${person} ${person === "You" ? "tap" : "taps"} Confirm`;
+        : at(to, "why", c) === "unchecked"
+          ? "You tap Confirm without checking the earlier try"
+          : `${person} ${person === "You" ? "tap" : "taps"} Confirm`;
     }
     case "TapCancel":
       return "You tap Cancel";
@@ -149,7 +158,9 @@ export const step = (action: string, from: Vars, to: Vars) => {
           ? "The send finds the account signed in as someone else, and sends nothing"
           : now === "signin"
             ? "The send finds the mail account's sign-in has expired"
-            : "The mail service fails";
+            : now === "unknown"
+              ? "The mail service gives no clear answer"
+              : "The mail service fails";
     }
     case "SendRecorded": {
       const [c] = changed(from, to, "card");
@@ -157,8 +168,12 @@ export const step = (action: string, from: Vars, to: Vars) => {
         ? "The card says Sent"
         : "The card says it failed";
     }
-    case "Recovered":
-      return "Kin, starting, marks it failed: it may or may not have gone";
+    case "Recovered": {
+      const [c] = changed(from, to, "card");
+      return c !== undefined && at(to, "why", c) === "unknown"
+        ? "Kin restarts and marks it failed because delivery is uncertain"
+        : "Kin restarts and marks it failed before dispatch";
+    }
     case "FreshCard":
       return "The same mail comes back on a new card";
     case "Restart":

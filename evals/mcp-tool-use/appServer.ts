@@ -21,6 +21,7 @@ export type AppServerTurn = {
   readonly effort: string;
   readonly baseInstructions: string;
   readonly config: Readonly<Record<string, Json>>;
+  readonly disableConfiguredMcpServers?: boolean;
   /** The namespace Codex lists the tools under, as it lists an MCP server's. */
   readonly namespace: string;
   readonly tools: ReadonlyArray<AppServerTool>;
@@ -29,6 +30,7 @@ export type AppServerTurn = {
   readonly prompt: string;
   /** Pictures the turn carries after its text, as data URLs, as T3's Codex adapter sends them. */
   readonly images?: ReadonlyArray<string> | undefined;
+  readonly onEvent?: (event: AppServerEvent) => void;
   /** Answers one tool call with the text Codex hands back to the model. */
   readonly onToolCall: (tool: string, args: Json) => Promise<{ text: string; failed: boolean }>;
   /** Interrupts the turn after this many tool calls; `Infinity` never does. */
@@ -135,30 +137,50 @@ export const openAppServer = () => {
       finish = resolve;
       fail = reject;
     });
-    const thread = await request("thread/start", {
-      model: turn.model,
-      cwd,
-      ephemeral: true,
-      approvalPolicy: "never",
-      sandbox: "read-only",
-      environments: [],
-      baseInstructions: turn.baseInstructions,
-      config: turn.config,
-      dynamicTools: [
-        {
-          type: "namespace",
-          name: turn.namespace,
-          description: "Tools of the app this agent works in.",
-          tools: turn.tools.map((tool) => ({ type: "function", ...tool })),
-        },
-      ],
-    });
-    const threadId: string = thread.thread.id;
+    let threadId: string;
+    try {
+      const config = turn.disableConfiguredMcpServers
+        ? {
+            ...turn.config,
+            ...Object.fromEntries(
+              Object.keys((await request("config/read", { cwd })).config.mcp_servers ?? {}).map(
+                (name) => [`mcp_servers.${name}.enabled`, false],
+              ),
+            ),
+          }
+        : turn.config;
+      const thread = await request("thread/start", {
+        model: turn.model,
+        cwd,
+        ephemeral: true,
+        approvalPolicy: "never",
+        sandbox: "read-only",
+        environments: [],
+        baseInstructions: turn.baseInstructions,
+        config,
+        dynamicTools: [
+          {
+            type: "namespace",
+            name: turn.namespace,
+            description: "Tools of the app this agent works in.",
+            tools: turn.tools.map((tool) => ({ type: "function", ...tool })),
+          },
+        ],
+      });
+      threadId = thread.thread.id;
+    } catch (error) {
+      NodeFS.rmSync(cwd, { recursive: true, force: true });
+      throw error;
+    }
     let turnId: string | undefined;
+    const record = (event: AppServerEvent) => {
+      events.push(event);
+      turn.onEvent?.(event);
+    };
     threads.set(threadId, (message) => {
       if (message.method === "item/tool/call" && message.id !== undefined) {
         const { tool, arguments: args, callId } = message.params;
-        events.push({ type: "tool", id: callId, tool, args });
+        record({ type: "tool", id: callId, tool, args });
         calls++;
         void turn.onToolCall(tool, args).then(
           (answer) => {
@@ -186,7 +208,7 @@ export const openAppServer = () => {
         const item = message.params.item;
         items.push(item);
         if (item.type === "agentMessage")
-          events.push({ type: "text", text: item.text, phase: item.phase ?? null });
+          record({ type: "text", text: item.text, phase: item.phase ?? null });
       }
       if (message.method === "thread/tokenUsage/updated") {
         const last = message.params.tokenUsage?.last;

@@ -25,6 +25,8 @@ import {
   kinGitHubInstantRow,
   kinGitHubRow,
   kinGitHubSheet,
+  kinGitHubTriageAction,
+  kinGitHubTriageLine,
   kinGitHubWatchLine,
 } from "@t3tools/client-runtime/kin/kinGitHub";
 import { KIN_SET_UP_ON_COMPUTER } from "@t3tools/client-runtime/kin/kinNavigation";
@@ -557,6 +559,8 @@ function repoNote(repo: KinGitHubRepo): string | undefined {
   if (repo.agentsAs !== undefined) parts.push(repo.agentsAs === "app" ? WATCH.asApp : WATCH.asYou);
   if (repo.fork) parts.push(WATCH.fork);
   if (repo.mentions) parts.push(WATCH.mentions);
+  const triage = kinGitHubTriageLine(repo);
+  if (triage !== null) parts.push(triage);
   const guard = kinGitHubGuardLine(repo);
   if (guard !== null) parts.push(guard);
   return parts.length === 0 ? undefined : parts.join(" · ");
@@ -579,6 +583,21 @@ function RepoRows(props: {
   const settle = (outcome: Awaited<ReturnType<typeof actions.everything>>) =>
     props.onProblem(outcome.ok ? null : outcome.problem);
   const guard = useGuardActions(props.target);
+  const canChange = useAtomValue(kinClient.githubReposSet.permissionAtom(environmentId));
+  const [triageBusy, setTriageBusy] = useState<ReadonlySet<string>>(() => new Set());
+  const runTriage = (repo: KinGitHubRepo, on: boolean) => {
+    if (triageBusy.has(repo.repo)) return;
+    props.onProblem(null);
+    setTriageBusy((prev) => new Set(prev).add(repo.repo));
+    void actions.triage(repo, on).then((outcome) => {
+      setTriageBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(repo.repo);
+        return next;
+      });
+      settle(outcome);
+    });
+  };
   const repos = Option.getOrNull(AsyncResult.value(result))?.repos ?? null;
   if (repos === null)
     return AsyncResult.isFailure(result) ? (
@@ -598,6 +617,7 @@ function RepoRows(props: {
       {guard.notice}
       {repos.map((repo) => {
         const action = kinGitHubGuardAction(repo.guard);
+        const triage = kinGitHubTriageAction(repo, canChange);
         return (
           <View key={repo.repo}>
             <KinWorkToggleRow
@@ -614,10 +634,18 @@ function RepoRows(props: {
                 onPress={() => guard.run([repo.repo], action === "protect")}
               />
             )}
+            {triage === null ? null : (
+              <ListActionRow
+                label={triage === "stop" ? WATCH.stopTriage : WATCH.startTriage}
+                description={repo.repo}
+                loading={triageBusy.has(repo.repo)}
+                onPress={() => runTriage(repo, triage === "start")}
+              />
+            )}
           </View>
         );
       })}
-      {repos.some((repo) => !repo.watched && !repo.fork) ? (
+      {repos.some((repo) => !repo.watched) ? (
         <ListActionRow
           label={WATCH.watchEverything}
           onPress={() => void actions.everything().then(settle)}

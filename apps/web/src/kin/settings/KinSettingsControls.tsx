@@ -185,7 +185,7 @@ export function KinSettingsFormDialog(props: {
             <div className="flex flex-col gap-4">
               {props.children}
               {props.problem == null ? (
-                notReady === null ? null : (
+                notReady === null || notReady === "" ? null : (
                   <p className="text-xs text-muted-foreground">{notReady}</p>
                 )
               ) : (

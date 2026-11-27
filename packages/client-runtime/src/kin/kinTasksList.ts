@@ -17,7 +17,12 @@ import {
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 
-import { KIN_DEAL_SENSES, kinAttention, type KinAttentionRow } from "./kinAttention.ts";
+import {
+  KIN_DEAL_SENSES,
+  KIN_ENTRY_SENSES,
+  kinAttention,
+  type KinAttentionRow,
+} from "./kinAttention.ts";
 import { kinMayHaveGoneLine } from "./kinChoicePresentation.ts";
 import { kinLateWords } from "./kinTaskRecord.ts";
 import type { KinWorkAction, KinWorkChangesState, KinWorkNotice } from "./kinWorkChanges.ts";
@@ -51,10 +56,10 @@ export const KIN_TASKS = {
   comingUp: "Coming up",
   yourProjects: "Your projects",
   done: "Done in the last 14 days",
-  clearTitle: "Nothing needs you right now",
-  clearDetail:
-    "No drafts to approve, no questions waiting, nothing late. New ones will show here first.",
+  clearTitle: "No tasks need you right now",
+  clearDetail: "Nothing late or due. Cards waiting on you are in Chats.",
   teammateFoot: "You see tasks you hold, tasks you asked for, and tasks on your projects.",
+  teammateFootWithoutClients: "You see tasks you hold and tasks you asked for.",
   groupBy: "Group by",
   showOnly: "Show only",
   order: "Inside each group: late first, then soonest due, then tasks with no date.",
@@ -372,17 +377,25 @@ export function kinTaskStep(
         };
   const holder = record.owner;
   if (holder._tag === "person" && holder.personId === names.me) {
-    const first = (by: KinRecord["owner"]) => kinWorkName(by, names).split(/\s+/)[0] ?? "";
+    const first = (by: KinRecord["owner"], codingAgent?: boolean) => {
+      const name = kinWorkName(by, names).split(/\s+/)[0] ?? "";
+      return codingAgent === true ? `${name} (coding agent)` : name;
+    };
     // From the stored hand-back, as the task's page reads it: a change and its Undo keep it.
     if (record.handedBack !== undefined)
       return {
         kind: "told",
-        line: KIN_TASKS.handedBack(first(record.handedBack.by), move.handedBackNote ?? null),
+        line: KIN_TASKS.handedBack(
+          first(record.handedBack.by, move.handedBackByCodingAgent),
+          move.handedBackNote ?? null,
+        ),
       };
     if (move.askedBy !== undefined)
       return {
         kind: "told",
-        line: KIN_TASKS.asked(first({ _tag: "person", personId: move.askedBy })),
+        line: KIN_TASKS.asked(
+          first({ _tag: "person", personId: move.askedBy }, move.askedByCodingAgent),
+        ),
       };
     return null;
   }
@@ -576,7 +589,7 @@ export function kinTasksDealFactsOf(
   const all = (pulse?.facts ?? []).filter((fact) => fact.handled === null);
   return all.filter(
     (fact) =>
-      KIN_DEAL_SENSES.has(fact.sense) &&
+      (KIN_DEAL_SENSES.has(fact.sense) || KIN_ENTRY_SENSES.has(fact.sense)) &&
       ((fact.actor._tag === "person" && fact.actor.personId === input.me) ||
         (fact.actor._tag === "owner" && input.ownerLevel)),
   );
@@ -617,6 +630,7 @@ export function kinTasksByMove<R extends KinRecord>(input: {
   /** The Needs you number the badge shows too (`kinNeedsYouCount`). */
   readonly needsYou: number | null;
   readonly ownerLevel: boolean;
+  readonly clientsOn?: boolean;
   readonly names: KinWorkNames;
   /** Deal and prospect facts (`kinTasksDealFacts`), first under Needs you. */
   readonly facts?: ReadonlyArray<KinAttentionRow>;
@@ -644,7 +658,7 @@ export function kinTasksByMove<R extends KinRecord>(input: {
       ? KIN_TASKS.noDateGroup
       : place === "comingUp"
         ? KIN_TASKS.comingUp
-        : place === "rest" && !ownerLevel
+        : place === "rest" && !ownerLevel && input.clientsOn !== false
           ? KIN_TASKS.yourProjects
           : KIN_TASKS.groups[place];
   const items: Array<KinTasksItem<R>> = [];
@@ -682,7 +696,13 @@ export function kinTasksByMove<R extends KinRecord>(input: {
   }
   if (counts !== null && counts.doneRecently > 0)
     items.push({ type: "done", key: "done", count: counts.doneRecently });
-  if (!ownerLevel) items.push({ type: "foot", key: "foot", text: KIN_TASKS.teammateFoot });
+  if (!ownerLevel)
+    items.push({
+      type: "foot",
+      key: "foot",
+      text:
+        input.clientsOn === false ? KIN_TASKS.teammateFootWithoutClients : KIN_TASKS.teammateFoot,
+    });
   return items;
 }
 

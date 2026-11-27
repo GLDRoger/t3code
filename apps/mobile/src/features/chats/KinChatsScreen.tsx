@@ -7,8 +7,10 @@ import type { KinNewChatAgent } from "@t3tools/client-runtime/kin/kinPeopleChat"
 import { useIsFocused, useNavigation } from "@react-navigation/native";
 import {
   EnvironmentId,
+  KIN_CHATS_SETTLE_AFTER_DEFAULT_HOURS,
   type KinAgentId,
   type KinChatId,
+  type KinChatsSettleAfterHours,
   type KinLeadsListResult,
   type KinOrgId,
 } from "@t3tools/contracts";
@@ -37,6 +39,7 @@ import { KinTeamEntry } from "./KinTeamScreen";
 import { KinWorkEntry } from "./KinWorkScreen";
 import { KinAvatar } from "./components/KinAvatar";
 import { KinChatRow, KinChatRowSkeletons } from "./components/KinChatRow";
+import { KinNumbersEntry } from "./KinNumbersScreens";
 import { KinInboxNotice, KinScreenState } from "./components/KinScreenState";
 import { KinWaitingBanner } from "./components/KinWaitingBanner";
 import { selectKinInboxView } from "@t3tools/client-runtime/kin/kinInboxModel";
@@ -46,6 +49,7 @@ import {
   kinChatListRowLabel,
   kinChatListRows,
   kinChatsKeptUp,
+  kinChatsSettleAfterHours,
   kinRoomLine,
   KIN_CHATS_PIN,
   type KinChatListRow,
@@ -53,6 +57,7 @@ import {
   KIN_CHATS_EMPTY,
   KIN_CHATS_INTRO,
 } from "@t3tools/client-runtime/kin/kinChatListRows";
+import { kinNowMs } from "@t3tools/client-runtime/kin/kinNow";
 import {
   formatKinTime,
   kinDirectory,
@@ -70,6 +75,7 @@ import {
 import { kinChatsSettledOpenAtom, setKinChatsSettledOpenAtom } from "./state/kinChatsSettledOpen";
 import { kinJoinedNameAtom } from "./state/kinJoin";
 import { useKinOpenAgentChat } from "./state/useKinOpenChat";
+import { useKinInboxShown } from "./state/useKinAttention";
 import { useKinInbox } from "./state/useKinInbox";
 import { useKinProfiles } from "./state/useKinProfiles";
 import { kinTabFoot, useKinTab } from "./components/KinTab";
@@ -96,15 +102,26 @@ export function KinChatsList({
   readonly bottomClearance?: number;
 }) {
   const navigation = useNavigation();
-  const { host, state, retry } = useKinInbox();
+  const inbox = useKinInbox();
+  const { host, retry } = inbox;
   const orgId =
     host._tag === "host" && host.probe._tag === "ready"
       ? (host.probe.orgs.me[0]?.orgId ?? null)
       : null;
+  const state = useKinInboxShown(
+    inbox.state,
+    host._tag === "host" && orgId !== null ? { environmentId: host.environmentId, orgId } : null,
+  );
   const myPersonId =
     host._tag === "host" && host.probe._tag === "ready"
       ? (host.probe.orgs.me[0]?.personId ?? null)
       : null;
+  const { held: profiles } = useKinProfiles(
+    host._tag === "host" ? host.environmentId : null,
+    orgId,
+  );
+  const myProfile = profiles?.profiles.find((profile) => profile.personId === myPersonId) ?? null;
+  const settleAfterHours = kinChatsSettleAfterHours(myProfile);
   const newLeadAt =
     state._tag === "ready" && orgId !== null ? { environmentId: state.environmentId, orgId } : null;
   const canAddLead = useAtomValue(
@@ -141,6 +158,7 @@ export function KinChatsList({
           bottomClearance={bottomClearance}
           {...(empty === undefined ? {} : { empty })}
           mainAgentId={leads?.teamAgentId ?? null}
+          settleAfterHours={settleAfterHours}
           agents={agents}
           onOpenAgent={(agentId) => {
             if (newLeadAt === null) return;
@@ -162,6 +180,15 @@ export function KinChatsList({
               {state._tag === "ready" && myPersonId !== null ? (
                 <KinWhatKinIs environmentId={state.environmentId} personId={myPersonId} />
               ) : null}
+              {
+                // Numbers is a place off the dock: its row sits here, where Chats opens.
+                newLeadAt === null ? null : (
+                  <KinNumbersEntry
+                    environmentId={newLeadAt.environmentId}
+                    orgId={newLeadAt.orgId}
+                  />
+                )
+              }
               {
                 // Where Kin is the whole app, or a dock is drawn under the list, these are
                 // Settings pages and tabs, and the list is chats.
@@ -343,6 +370,8 @@ export function KinChatsView(props: {
   readonly onOpenAgent?: (agentId: KinAgentId) => void;
   /** The host's team agent, whose chat stays on top; null when off or not read yet. */
   readonly mainAgentId?: KinAgentId | null;
+  /** Hours after a chat's newest message before a read chat settles; defaults to 12. */
+  readonly settleAfterHours?: KinChatsSettleAfterHours;
 }) {
   const { state, onOpenChat } = props;
   const view = state._tag === "ready" ? selectKinInboxView(state.inbox.value) : null;
@@ -404,6 +433,7 @@ export function KinChatsView(props: {
       rows={kinChatListRows(view, props.directory)}
       directory={props.directory}
       mainAgentId={props.mainAgentId ?? null}
+      settleAfterHours={props.settleAfterHours ?? KIN_CHATS_SETTLE_AFTER_DEFAULT_HOURS}
       bottomClearance={props.bottomClearance ?? 0}
       banner={banner}
       memory={props.memory}
@@ -430,6 +460,7 @@ function KinChatsFoldedList(props: {
   readonly rows: ReadonlyArray<KinChatListRow>;
   readonly directory: KinDirectory;
   readonly mainAgentId: KinAgentId | null;
+  readonly settleAfterHours: KinChatsSettleAfterHours;
   readonly bottomClearance: number;
   readonly banner: ReturnType<typeof kinWaitingBannerView>;
   readonly memory: ReactNode;
@@ -441,14 +472,29 @@ function KinChatsFoldedList(props: {
   const focused = useIsFocused();
   const active = useAppActive();
   const inView = focused && active;
-  const [kept, setKept] = useState({ inView: false, ids: NOBODY_KEPT });
+  const [kept, setKept] = useState(() => ({
+    inView: false,
+    settleAfterHours: props.settleAfterHours,
+    now: kinNowMs(),
+    ids: NOBODY_KEPT,
+  }));
   const entering = inView && !kept.inView;
+  const refold = entering || kept.settleAfterHours !== props.settleAfterHours;
+  const foldNow = refold ? kinNowMs() : kept.now;
   const fold = kinChatListFold(props.rows, {
     mainAgentId: props.mainAgentId,
-    keptUp: entering ? NOBODY_KEPT : kept.ids,
+    keptUp: refold ? NOBODY_KEPT : kept.ids,
+    now: foldNow,
+    settleAfterHours: props.settleAfterHours,
   });
-  const keptNext = kinChatsKeptUp(entering ? NOBODY_KEPT : kept.ids, fold.up);
-  if (inView !== kept.inView || keptNext !== kept.ids) setKept({ inView, ids: keptNext });
+  const keptNext = kinChatsKeptUp(refold ? NOBODY_KEPT : kept.ids, fold.up);
+  if (
+    inView !== kept.inView ||
+    props.settleAfterHours !== kept.settleAfterHours ||
+    foldNow !== kept.now ||
+    keptNext !== kept.ids
+  )
+    setKept({ inView, settleAfterHours: props.settleAfterHours, now: foldNow, ids: keptNext });
   const saved = useAtomValue(kinChatsSettledOpenAtom);
   const saveOpen = useAtomSet(setKinChatsSettledOpenAtom);
   const [openNow, setOpenNow] = useState<boolean | null>(null);

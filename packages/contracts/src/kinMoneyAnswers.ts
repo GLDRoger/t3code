@@ -3,7 +3,7 @@ import * as Schema from "effect/Schema";
 
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { IsoDateTime, NonNegativeInt, PositiveInt, TrimmedNonEmptyString } from "./baseSchemas.ts";
-import { KinChatError, KinOrgId, KinTrimmedText } from "./kinChat.ts";
+import { KinChatError, KinOrgId, KinPersonId, KinTrimmedText } from "./kinChat.ts";
 import { KinSacCode } from "./kinFinance.ts";
 import {
   KinBankKnown,
@@ -132,6 +132,37 @@ export const KinRunway = Schema.Struct({
 });
 export type KinRunway = typeof KinRunway.Type;
 
+/** One expense as the person saw it, so a match changes exactly what was shown. */
+export const KinPartnerSeenEntry = Schema.Struct({ key: KinRecordKey, rev: NonNegativeInt });
+export type KinPartnerSeenEntry = typeof KinPartnerSeenEntry.Type;
+
+/**
+ * What the company owes one partner back for Paid expenses they funded: a Kin person, or an
+ * import's address that no person matches yet (`personId` null).
+ */
+export const KinPartnerOwed = Schema.Struct({
+  personId: Schema.NullOr(KinPersonId),
+  name: Schema.String,
+  address: Schema.NullOr(Schema.String),
+  owed: KinMoneyTotals,
+  expenses: NonNegativeInt,
+  oldest: KinDay,
+  /** With no person yet: the expenses a match would name them on. Absent from older hosts. */
+  entries: Schema.optional(Schema.Array(KinPartnerSeenEntry)),
+});
+export type KinPartnerOwed = typeof KinPartnerOwed.Type;
+
+/** Paid expenses an import says an address paid personally, not counted as owed until said. */
+export const KinPartnerUnsaid = Schema.Struct({
+  address: Schema.String,
+  expenses: NonNegativeInt,
+  total: KinMoneyTotals,
+  oldest: KinDay,
+  /** The expenses a match would settle. Absent from older hosts. */
+  entries: Schema.optional(Schema.Array(KinPartnerSeenEntry)),
+});
+export type KinPartnerUnsaid = typeof KinPartnerUnsaid.Type;
+
 /** The next `days`: invoices due in, amounts owed and repeating bills out, and runway. */
 export const KinOutlook = Schema.Struct({
   today: KinDay,
@@ -149,6 +180,13 @@ export const KinOutlook = Schema.Struct({
   pastDueOut: Schema.Array(KinOutlookItem),
   /** Overdue invoices: listed, never counted as coming in. */
   overdueIn: Schema.Array(KinOutlookItem),
+  /**
+   * What partners are owed back, per currency: a positive balance counts going out now, a negative
+   * one (refunds they hold) coming in; never netted across partners. Absent from older hosts.
+   */
+  owedToPartners: Schema.optional(Schema.Array(KinPartnerOwed)),
+  /** Imported partner addresses waiting for the owner's word; counted as before until then. */
+  partnersUnsaid: Schema.optional(Schema.Array(KinPartnerUnsaid)),
   /** Keys of repeating entries that repeat more often than the host projects. */
   incomplete: Schema.Array(Schema.String),
   runway: Schema.Array(KinRunway),
@@ -177,6 +215,7 @@ export const KinMoneyBudget = Schema.Struct({
   notCounted: Schema.optional(
     Schema.Array(Schema.Struct({ currency: KinCurrency, spent: KinSignedMoney })),
   ),
+  about: Schema.optional(Schema.Struct({ total: KinSignedMoney, rateDays: Schema.Array(KinDay) })),
 });
 export type KinMoneyBudget = typeof KinMoneyBudget.Type;
 export const KinMoneyBudgets = Schema.Struct({
@@ -208,12 +247,25 @@ export const KinDocumentLine = Schema.Struct({
   unit: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isMaxLength(20)))),
   /** As said, such as "₹1,200": templates read amounts the way an agent gives them. */
   rate: Schema.String.check(Schema.isMaxLength(40)),
+  taxRate: Schema.optional(
+    Schema.NullOr(
+      Schema.String.check(Schema.isPattern(/^(?:100|\d{1,2}(?:\.\d{1,3})?)$/)),
+    ).annotate({
+      description:
+        "The line's tax percent, such as 5, only when the person gave this line its own rate; 0 for no tax. Left out, the invoice's usual rate applies.",
+    }),
+  ),
 });
 export type KinDocumentLine = typeof KinDocumentLine.Type;
 export const KinEntryLinesInput = Schema.Struct({ orgId: KinOrgId, key: KinRecordKey });
 export type KinEntryLinesInput = typeof KinEntryLinesInput.Type;
-/** The lines the entry's latest document was made with; null when it had none Kin can read. */
-export const KinEntryLines = Schema.Struct({ lines: Schema.NullOr(Schema.Array(KinDocumentLine)) });
+const InvoiceGstRate = Schema.String.check(Schema.isPattern(/^(?:100|\d{1,2}(?:\.\d{1,3})?)$/));
+
+/** The lines and GST rate the entry's latest document was made with. */
+export const KinEntryLines = Schema.Struct({
+  lines: Schema.NullOr(Schema.Array(KinDocumentLine)),
+  gstRate: Schema.optional(InvoiceGstRate),
+});
 export type KinEntryLines = typeof KinEntryLines.Type;
 
 export const KinInvoiceFromQuoteInput = Schema.Struct({
@@ -238,13 +290,20 @@ export type KinInvoiceFromQuoteResult = typeof KinInvoiceFromQuoteResult.Type;
  */
 export const KinNewInvoiceInput = Schema.Struct({
   orgId: KinOrgId,
-  client: KinRecordKey,
+  client: Schema.optional(KinRecordKey),
+  billTo: Schema.optional(
+    Schema.Struct({
+      name: KinTrimmedText.check(Schema.isMaxLength(200)),
+      address: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(500))),
+      taxNumber: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(100))),
+      place: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(100))),
+      email: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(100))),
+    }),
+  ),
   title: KinTrimmedText.check(Schema.isMaxLength(280)),
   lines: Schema.Array(KinDocumentLine).check(Schema.isMinLength(1), Schema.isMaxLength(50)),
   /** GST percent, in India only; elsewhere the company's own tax applies. */
-  gstRate: Schema.optional(
-    Schema.String.check(Schema.isPattern(/^(?:100|\d{1,2}(?:\.\d{1,3})?)$/)),
-  ),
+  gstRate: Schema.optional(InvoiceGstRate),
   dueOn: Schema.optional(KinDay),
   notes: Schema.optional(Schema.String.check(Schema.isMaxLength(4_000))),
   project: Schema.optional(KinRecordKey),
@@ -270,6 +329,8 @@ export const KinNewExpenseInput = Schema.Struct({
   category: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(60))),
   /** One of its "Paid with" choices. */
   paidWith: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(60))),
+  /** The partner who paid from their own money; left out, the company did. */
+  fundedBy: Schema.optional(KinPersonId),
   /** Files already in the person's chats (`kin.work.files`). */
   receipt: Schema.optional(
     Schema.Array(TrimmedNonEmptyString.check(Schema.isMaxLength(128))).check(Schema.isMaxLength(5)),
@@ -284,6 +345,28 @@ export const KinNewExpenseInput = Schema.Struct({
 export type KinNewExpenseInput = typeof KinNewExpenseInput.Type;
 export const KinNewExpenseResult = Schema.Struct({ expense: KinRecordKey });
 export type KinNewExpenseResult = typeof KinNewExpenseResult.Type;
+
+/**
+ * The owner or a co-owner says which person an import's partner address is, and for its expenses
+ * nobody has said yet, whether they are still owed or were already paid back. With no address, the
+ * owed expenses that name no partner at all take them.
+ */
+export const KinMatchPartnerInput = Schema.Struct({
+  orgId: KinOrgId,
+  address: Schema.optional(TrimmedNonEmptyString.check(Schema.isMaxLength(200))),
+  personId: KinPersonId,
+  settled: Schema.optional(Schema.Literals(["owed", "repaid"])),
+  /**
+   * The expenses and per-currency totals the person saw (`entries` and the total of the row):
+   * a host changes exactly those, or nothing when any moved. Older clients send none.
+   */
+  seen: Schema.optional(
+    Schema.Struct({ entries: Schema.Array(KinPartnerSeenEntry), totals: KinMoneyTotals }),
+  ),
+});
+export type KinMatchPartnerInput = typeof KinMatchPartnerInput.Type;
+export const KinMatchPartnerResult = Schema.Struct({ matched: Schema.Array(KinRecordKey) });
+export type KinMatchPartnerResult = typeof KinMatchPartnerResult.Type;
 
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 export const KinMoneyAnswerRpcs = [
@@ -315,6 +398,11 @@ export const KinMoneyAnswerRpcs = [
     success: KinNewExpenseResult,
     error,
   }),
+  Rpc.make("kin.work.matchPartner", {
+    payload: KinMatchPartnerInput,
+    success: KinMatchPartnerResult,
+    error,
+  }),
 ] as const;
 
 export const KIN_MONEY_ANSWER_RPC_SCOPES = {
@@ -326,4 +414,5 @@ export const KIN_MONEY_ANSWER_RPC_SCOPES = {
   "kin.work.invoiceFromQuote": AuthKinChatScope,
   "kin.work.newInvoice": AuthKinChatScope,
   "kin.work.newExpense": AuthKinChatScope,
+  "kin.work.matchPartner": AuthKinChatScope,
 } as const;

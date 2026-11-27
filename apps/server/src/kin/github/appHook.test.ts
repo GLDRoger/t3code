@@ -68,6 +68,8 @@ const seed = Effect.gen(function* () {
       { repo: REPO, fork: false },
       { repo: "ambermill/old-fork", fork: true },
     ])}, 0)`;
+  yield* sql`INSERT INTO kin_github_repo_prefs (org_id, repo, watched, mentions, updated_at)
+    VALUES (${orgId}, 'ambermill/old-fork', 0, 0, 0)`;
 });
 
 /** What a race test holds back: a hook call on its way to GitHub, the hook's store, the fence. */

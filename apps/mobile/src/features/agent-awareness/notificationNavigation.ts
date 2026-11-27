@@ -1,6 +1,7 @@
 import * as Notifications from "expo-notifications";
 
 import { setAndroidThreadOnScreen } from "./androidNotifications";
+import { kinPushSettledNow } from "../chats/notifications/kinNotificationSync";
 import { foregroundNotificationBehavior } from "./foregroundNotificationBehavior";
 import { routeAgentNotificationResponseOnce, threadDeepLinkOnScreen } from "./notificationPayload";
 import { consumeLastAgentNotificationResponse } from "./notificationResponseConsumer";
@@ -21,8 +22,12 @@ export function setAgentNotificationPathname(pathname: string): void {
 export function installAgentNotificationNavigation(navigate: (href: string) => void): () => void {
   const handledResponseIds = new Set<string>();
   Notifications.setNotificationHandler({
-    handleNotification: (notification) =>
-      Promise.resolve(foregroundNotificationBehavior(notification, deepLinkOnScreen)),
+    handleNotification: async (notification) =>
+      foregroundNotificationBehavior(
+        notification,
+        deepLinkOnScreen,
+        await kinPushSettledNow(notification),
+      ),
   });
 
   const handleResponse = (response: Notifications.NotificationResponse): void => {

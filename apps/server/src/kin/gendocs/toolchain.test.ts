@@ -8,11 +8,14 @@ import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
+import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import * as TestClock from "effect/testing/TestClock";
 
 import { ServerConfig } from "../../config.ts";
 import * as ProcessRunner from "../../processRunner.ts";
+import { ServerActivation } from "../../serverActivation.ts";
 import { KIN_VISUAL_FONTS } from "@t3tools/shared/kinVisual";
 
 import {
@@ -25,6 +28,184 @@ import {
 
 const LINUX_X64 = "a6d077d0a95eed5a2eba715b2dae06be954f624ccbf85758a03f389ded33118c";
 const MiB = 1024 * 1024;
+
+const archiveRoot = "typst-x86_64-unknown-linux-musl";
+const version = "0.15.1";
+const downloadHashes = [
+  LINUX_X64,
+  "7e65201e9b79159e2300267cc885e16c8dcef2424cdfa09a29bfb0980a94a7ba",
+  "983676516167748b74de6f4771fb384c664fd913acb8b471122ecacf5da5ea6c",
+  "2958e4af564507df2a856164df6f9978dacb03f999a4f34a0c269dc8a4de9688",
+  "7d22891cd57507b04af95a67ffaf59b7073b3595a27d1cfbbcefb418de820a12",
+];
+
+const fakeDownloads = (http: HttpClient.HttpClient, activation: Effect.Effect<void>) => {
+  const digest = Layer.effect(
+    Digest.Digest,
+    Effect.map(Digest.Digest, (real) =>
+      Digest.Digest.of({
+        ...real,
+        digest: (algorithm, bytes) => {
+          const pin = bytes.length === 1 ? downloadHashes[bytes[0]!] : undefined;
+          return pin === undefined
+            ? real.digest(algorithm, bytes)
+            : Effect.succeed(Buffer.from(pin, "hex"));
+        },
+      }),
+    ),
+  ).pipe(Layer.provide(NodeCrypto.layer));
+  const runner = Layer.effect(
+    ProcessRunner.ProcessRunner,
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      return ProcessRunner.ProcessRunner.of({
+        run: ({ args }) =>
+          Effect.gen(function* () {
+            let stdout = "";
+            switch (args[0]) {
+              case "-tJf":
+                stdout = `${archiveRoot}/typst`;
+                break;
+              case "-tvJf":
+                stdout = `-rwxr-xr-x 0/0 1 2026-01-01 00:00 ${archiveRoot}/typst`;
+                break;
+              case "-xJf": {
+                const unpacked = `${args[3]}/${archiveRoot}`;
+                yield* fs.makeDirectory(unpacked);
+                yield* fs.writeFileString(`${unpacked}/typst`, "fixture Typst program");
+                break;
+              }
+              default:
+                assert.deepStrictEqual(args, ["--version"]);
+                stdout = `typst ${version}`;
+            }
+            return {
+              stdout,
+              stderr: "",
+              code: ChildProcessSpawner.ExitCode(0),
+              timedOut: false,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+              stdoutInvalidUtf8: false,
+              stderrInvalidUtf8: false,
+            };
+          }).pipe(Effect.orDie),
+      });
+    }),
+  );
+  return layer.pipe(
+    Layer.provide(Layer.succeed(ServerActivation, activation)),
+    Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
+    Layer.provide(runner),
+    Layer.provideMerge(ServerConfig.layerTest(process.cwd(), { prefix: "kin-tools-warm-" })),
+    Layer.provideMerge(Layer.mergeAll(NodeServices.layer, digest)),
+    Layer.provideMerge(Layer.succeed(HostProcess.Platform, "linux")),
+    Layer.provideMerge(Layer.succeed(HostProcess.Architecture, "x64")),
+  );
+};
+
+it.effect("parks warm-up until activation and shares downloads with concurrent saves", () => {
+  const activate = Deferred.makeUnsafe<void>();
+  const parked = Deferred.makeUnsafe<void>();
+  const typstStarted = Deferred.makeUnsafe<void>();
+  const releaseTypst = Deferred.makeUnsafe<void>();
+  const fontsStarted = Deferred.makeUnsafe<void>();
+  const releaseFonts = Deferred.makeUnsafe<void>();
+  const requests: Array<string> = [];
+  const http = HttpClient.make((request) =>
+    Effect.gen(function* () {
+      const file = new URL(request.url).pathname.split("/").at(-1)!;
+      requests.push(file);
+      const font = PINNED_FONT_FILES.indexOf(file);
+      if (font === -1) {
+        yield* Deferred.succeed(typstStarted, undefined);
+        yield* Deferred.await(releaseTypst);
+      } else if (font === PINNED_FONT_FILES.length - 1) {
+        yield* Deferred.succeed(fontsStarted, undefined);
+        yield* Deferred.await(releaseFonts);
+      }
+      return HttpClientResponse.fromWeb(request, new Response(new Uint8Array([font + 1])));
+    }),
+  );
+  return Effect.gen(function* () {
+    const toolchain = yield* KinToolchain;
+    const fs = yield* FileSystem.FileSystem;
+    const [directory] = toolDirectories((yield* ServerConfig).baseDir);
+    yield* Deferred.await(parked);
+    assert.isEmpty(requests);
+    yield* Deferred.succeed(activate, undefined);
+    yield* Deferred.await(typstStarted);
+    const first = yield* Effect.forkChild(toolchain.ensure(), { startImmediately: true });
+    const second = yield* Effect.forkChild(toolchain.ensure(), { startImmediately: true });
+    assert.isUndefined(first.pollUnsafe());
+    assert.isUndefined(second.pollUnsafe());
+    yield* Deferred.succeed(releaseTypst, undefined);
+    yield* Deferred.await(fontsStarted);
+    const fonts = yield* Effect.forkChild(toolchain.fonts(), { startImmediately: true });
+    assert.isUndefined(fonts.pollUnsafe());
+    yield* Deferred.succeed(releaseFonts, undefined);
+    const binary = `${directory}/typst`;
+    assert.deepStrictEqual(yield* Fiber.joinAll([first, second]), [binary, binary]);
+    const fontsDir = yield* Fiber.join(fonts);
+    assert.isDefined(fontsDir);
+    assert.sameMembers(yield* fs.readDirectory(fontsDir!), [...PINNED_FONT_FILES]);
+    assert.strictEqual(yield* toolchain.ensure(), binary);
+    assert.deepStrictEqual(requests, [`${archiveRoot}.tar.xz`, ...PINNED_FONT_FILES]);
+  }).pipe(
+    Effect.provide(
+      fakeDownloads(
+        http,
+        Deferred.succeed(parked, undefined).pipe(Effect.andThen(Deferred.await(activate))),
+      ),
+    ),
+  );
+});
+
+it.effect.each(["Typst", "fonts"] as const)(
+  "logs a failed %s warm-up once and retries it on the first save",
+  (failedTool) => {
+    const warmed = Deferred.makeUnsafe<void>();
+    const warnings: Array<unknown> = [];
+    const requests: Array<string> = [];
+    const failedFile = failedTool === "Typst" ? `${archiveRoot}.tar.xz` : PINNED_FONT_FILES[0]!;
+    const http = HttpClient.make((request) =>
+      Effect.sync(() => {
+        const file = new URL(request.url).pathname.split("/").at(-1)!;
+        const fail = file === failedFile && !requests.includes(file);
+        requests.push(file);
+        const response = fail
+          ? new Response(null, { status: 503 })
+          : new Response(new Uint8Array([PINNED_FONT_FILES.indexOf(file) + 1]));
+        return HttpClientResponse.fromWeb(request, response);
+      }),
+    );
+    const logger = Logger.make(({ logLevel, message }) => {
+      if (logLevel === "Warn") {
+        warnings.push(message);
+        Deferred.doneUnsafe(warmed, Effect.void);
+      }
+    });
+    return Effect.gen(function* () {
+      const toolchain = yield* KinToolchain;
+      const [directory] = toolDirectories((yield* ServerConfig).baseDir);
+      yield* Deferred.await(warmed);
+      assert.lengthOf(warnings, 1);
+      assert.strictEqual(requests.at(-1), failedFile);
+      assert.strictEqual(yield* toolchain.ensure(), `${directory}/typst`);
+      assert.isDefined(yield* toolchain.fonts());
+      const expected = [`${archiveRoot}.tar.xz`, ...PINNED_FONT_FILES];
+      expected.splice(expected.indexOf(failedFile), 0, failedFile);
+      assert.deepStrictEqual(requests, expected);
+      assert.lengthOf(warnings, 1);
+    }).pipe(
+      Effect.provide(
+        fakeDownloads(http, Effect.void).pipe(
+          Layer.provideMerge(Logger.layer([logger], { mergeWithExisting: false })),
+        ),
+      ),
+    );
+  },
+);
 
 it.effect("re-checks the installed Typst, and stops a download as it passes the cap", () => {
   let requests = 0;

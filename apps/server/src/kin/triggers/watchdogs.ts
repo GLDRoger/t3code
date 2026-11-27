@@ -33,6 +33,7 @@ import { memoryDateMillis } from "../memory/frontMatter.ts";
 import * as Memory from "../memory/Memory.ts";
 import * as MemoryCache from "../memory/MemoryCache.ts";
 import { githubRef } from "./deferralGithub.ts";
+import { withRuns } from "./deferralRuns.ts";
 import { repoList } from "../github/githubWatchStore.ts";
 import * as KinTriggerInbox from "./KinTriggerInbox.ts";
 import * as KinTriggerService from "./KinTriggerService.ts";
@@ -299,7 +300,10 @@ const make = Effect.gen(function* () {
     if (reader === null) return;
     const now = yield* Clock.currentTimeMillis;
     const requests = yield* inbox.listPending(orgId, PAGE, undefined, ["github_recheck"]);
-    const items = yield* openItems(orgId);
+    // A deferral a tap cancelled is no longer tracked, whatever memory still says.
+    const items = (yield* withRuns(orgId, yield* openItems(orgId)).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+    )).filter((item) => item.status === "open");
     const tracked = items.filter((item) => item.kind === "commitment" || item.kind === "deferral");
     const conditions = items.filter((item) => item.on !== undefined);
     const repos =

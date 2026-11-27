@@ -56,10 +56,16 @@ const CLAUDE_INVESTIGATION_DENIED = ["Bash(git * --output*)", "Bash(git * -o *)"
 const NO_SESSION_PERSISTENCE = "--no-session-persistence";
 // Claude Code before 2.0.63 exits with this on stderr; those runs retry without the flag.
 const NO_SESSION_PERSISTENCE_REJECTED = `error: unknown option '${NO_SESSION_PERSISTENCE}'`;
+// Only a rejection of images as such marks a model text-only, not a size or count limit.
+const IMAGES_UNSUPPORTED =
+  /image[^\n]*(?:not support|unsupported)|(?:not support|unsupported)[^\n]*image/i;
 
 const ClaudeOutputEnvelope = Schema.Struct({
   structured_output: Schema.Unknown,
 });
+const decodeClaudePlainResult = Schema.decodeEffect(
+  Schema.fromJsonString(Schema.Struct({ result: Schema.String })),
+);
 const ClaudeOutputMessage = Schema.Struct({
   type: Schema.String,
   structured_output: Schema.optionalKey(Schema.Unknown),
@@ -115,6 +121,8 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
   const scopedModelCatalog = modelCatalog.pipe(
     Effect.map((catalog) => scopeClaudeModelCatalog(catalog, claudeSettings.customModels)),
   );
+  // Models that failed with images and then succeeded without them; later runs skip the image attempt.
+  const textOnlyModels = new Set<string>();
 
   const readStreamAsString = <E>(
     operation: string,
@@ -237,16 +245,19 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         : undefined;
     const fastMode =
       fastModeDescriptor?.type === "boolean" ? fastModeDescriptor.currentValue : undefined;
-    const launchArgSettings = yield* readClaudeLaunchArgSettings({
-      settings: claudeSettings,
-      cwd,
-      fileSystem,
-      path,
-    }).pipe(
-      Effect.mapError(
-        (cause) => new TextGenerationError({ operation, detail: cause.message, cause }),
-      ),
-    );
+    const toolFree = operation === "generateStructuredText";
+    const launchArgSettings = toolFree
+      ? {}
+      : yield* readClaudeLaunchArgSettings({
+          settings: claudeSettings,
+          cwd,
+          fileSystem,
+          path,
+        }).pipe(
+          Effect.mapError(
+            (cause) => new TextGenerationError({ operation, detail: cause.message, cause }),
+          ),
+        );
     const settings = {
       ...launchArgSettings,
       disableAllHooks: true,
@@ -261,23 +272,33 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     );
 
     // `claude -p` accepts images only as content blocks of a stream-json user message.
-    const imageBlocks = yield* readImageBlocks(attachments);
-    const streamJson = imageBlocks.length > 0;
-    const stdin = streamJson
-      ? `${yield* encodeJsonForOperation(
-          operation,
-          {
-            type: "user",
-            message: { role: "user", content: [{ type: "text", text: prompt }, ...imageBlocks] },
-          },
-          "Failed to encode Claude CLI input.",
-        )}\n`
-      : prompt;
+    const apiModelId = resolveClaudeCatalogApiModelId(catalog, resolvedModelSelection);
+    const imageBlocks = textOnlyModels.has(apiModelId) ? [] : yield* readImageBlocks(attachments);
+    const imageStdin =
+      imageBlocks.length > 0
+        ? `${yield* encodeJsonForOperation(
+            operation,
+            {
+              type: "user",
+              message: { role: "user", content: [{ type: "text", text: prompt }, ...imageBlocks] },
+            },
+            "Failed to encode Claude CLI input.",
+          )}\n`
+        : undefined;
 
     const runClaudeCommand = Effect.fn("runClaudeJson.runClaudeCommand")(function* (
       noSessionPersistence: boolean,
+      withImages: boolean,
     ) {
+      const streamJson = withImages && imageStdin !== undefined;
+      const stdin = streamJson ? imageStdin : prompt;
       const managedMcpConfig = yield* hasClaudeManagedMcpConfig();
+      if (toolFree && managedMcpConfig) {
+        return yield* new TextGenerationError({
+          operation,
+          detail: "Claude managed MCP configuration prevents tool-free text generation.",
+        });
+      }
       const spawnCommand = yield* resolveSpawnCommand(
         claudeSettings.binaryPath || "claude",
         [
@@ -285,10 +306,9 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
           ...(streamJson
             ? ["--input-format", "stream-json", "--output-format", "stream-json", "--verbose"]
             : ["--output-format", "json"]),
-          "--json-schema",
-          jsonSchemaStr,
+          ...(toolFree ? [] : ["--json-schema", jsonSchemaStr]),
           "--model",
-          resolveClaudeCatalogApiModelId(catalog, resolvedModelSelection),
+          apiModelId,
           ...(cliEffort ? ["--effort", cliEffort] : []),
           "--settings",
           settingsJson,
@@ -302,7 +322,11 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
                 CLAUDE_INVESTIGATION_DENIED,
               ]
             : ["--tools", ""]),
-          ...(investigate ? ["--setting-sources", "user"] : []),
+          ...(toolFree
+            ? ["--safe-mode", "--setting-sources", "", "--disallowedTools", "mcp__*"]
+            : investigate
+              ? ["--setting-sources", "user"]
+              : []),
           "--disable-slash-commands",
           ...(noSessionPersistence ? [NO_SESSION_PERSISTENCE] : []),
           // managed-mcp.json already isolates servers and makes Claude reject this flag.
@@ -313,7 +337,13 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
         { env: claudeEnvironment },
       );
       const command = ChildProcess.make(spawnCommand.command, spawnCommand.args, {
-        env: claudeEnvironment,
+        env: toolFree
+          ? {
+              ...claudeEnvironment,
+              CLAUDE_CODE_SKIP_PROMPT_HISTORY: "1",
+              CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+            }
+          : claudeEnvironment,
         cwd: workingDirectory,
         shell: spawnCommand.shell,
         stdin: {
@@ -351,14 +381,43 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       };
     });
 
-    const rawStdout = yield* runClaudeCommand(true).pipe(
+    const runClaudeAttempt = (withImages: boolean) =>
+      runClaudeCommand(true, withImages).pipe(
+        Effect.filterOrElse(
+          (result) =>
+            toolFree ||
+            result.exitCode === 0 ||
+            !result.stderr.includes(NO_SESSION_PERSISTENCE_REJECTED),
+          () => runClaudeCommand(false, withImages),
+        ),
+      );
+
+    const rawStdout = yield* runClaudeAttempt(true).pipe(
+      // Text-only models (custom models behind Anthropic-compatible endpoints) reject image blocks.
       Effect.filterOrElse(
-        (result) =>
-          result.exitCode === 0 || !result.stderr.includes(NO_SESSION_PERSISTENCE_REJECTED),
-        () => runClaudeCommand(false),
+        (result) => result.exitCode === 0 || imageStdin === undefined,
+        (imageResult) =>
+          runClaudeAttempt(false).pipe(
+            Effect.tap((result) =>
+              Effect.sync(() => {
+                const imageFailure = `${imageResult.stdout}\n${imageResult.stderr}`;
+                if (result.exitCode === 0 && IMAGES_UNSUPPORTED.test(imageFailure)) {
+                  textOnlyModels.add(apiModelId);
+                }
+              }),
+            ),
+          ),
       ),
       Effect.flatMap(({ stdout, stderr, exitCode }) => {
         if (exitCode === 0) return Effect.succeed(stdout);
+        if (toolFree) {
+          return Effect.fail(
+            new TextGenerationError({
+              operation,
+              detail: `Claude text generation failed with code ${exitCode}.`,
+            }),
+          );
+        }
         const stderrDetail = stderr.trim();
         const stdoutDetail = stdout.trim();
         const detail =
@@ -387,6 +446,23 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
       ),
     );
 
+    if (toolFree) {
+      const plain = yield* decodeClaudePlainResult(rawStdout).pipe(
+        Effect.mapError(
+          (cause) =>
+            new TextGenerationError({
+              operation,
+              detail: "Claude CLI returned unexpected output format.",
+              cause,
+            }),
+        ),
+      );
+      return yield* TextGenerationOperations.decodeJsonReply(
+        { operation, outputSchema: outputSchemaJson },
+        "Claude",
+        plain.result,
+      );
+    }
     const output = yield* decodeClaudeOutput(rawStdout).pipe(
       Effect.catchTags({
         SchemaError: (cause) =>
@@ -422,5 +498,6 @@ export const makeClaudeTextGeneration = Effect.fn("makeClaudeTextGeneration")(fu
     "ClaudeTextGeneration",
     <S extends Schema.Top>(request: TextGenerationOperations.Request<S>) =>
       Effect.scoped(runClaudeJson(request)),
+    { toolFree: true },
   );
 });

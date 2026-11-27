@@ -27,6 +27,16 @@ export interface FakeRepo {
   collaborators?: string[];
   /** Each login's role here as GitHub's permission read says it; unlisted, see `permissionOf`. */
   roles?: Record<string, "admin" | "maintain" | "write" | "triage" | "read" | "none">;
+  /** Its files by ref (a branch, tag or commit), then path; the default branch's under its name. */
+  files?: Record<string, Record<string, string>>;
+  /** GitHub's code search hasn't indexed it: a search finds nothing. */
+  unindexed?: boolean;
+  /** Links on the default branch by path: a symlink GitHub follows to a file, or a submodule. */
+  links?: Record<string, { type: "symlink"; target: string } | { type: "submodule" }>;
+  /** GitHub's id for it; by default from its place in the world. */
+  id?: number;
+  /** Renamed: GitHub answers this name with a 301 to the new one. */
+  movedTo?: string;
 }
 export interface FakeRuleset {
   id: number;
@@ -77,6 +87,10 @@ export interface FakeItem {
   labels: string[];
   head_ref: string;
   head_sha: string;
+  /** The base branch's commit; a compare from it reads the PR as it was opened. */
+  base_sha: string;
+  /** What a compare from the base branch by name gives once that branch moved on (`moveBase`). */
+  baseMoved?: string;
   fork: boolean;
   additions: number;
   deletions: number;
@@ -159,6 +173,11 @@ export interface FakeWorld {
   failing?: string[];
   /** Paths GitHub refuses while listed (422), having done nothing. */
   refusing?: string[];
+  /**
+   * GitHub's rate limit: from the issue read after `reads` more, every call is refused (429),
+   * saying to wait `retryAfter` seconds.
+   */
+  limit?: { reads: number; retryAfter: number; hit?: boolean; status?: 403 | 429; reset?: number };
   /** The seconds GitHub asks between looks; real GitHub says 60. */
   pollInterval?: number;
   repos: FakeRepo[];
@@ -180,6 +199,8 @@ export interface FakeWorld {
   modified: number;
   eventsVersion: number;
   calls: string[];
+  /** A repo whose matches code search adds to every search, as a mis-scoped answer would. */
+  searchLeak?: string;
 }
 
 export interface FakeAnswer {
@@ -211,8 +232,14 @@ const httpDate = (ms: number) => new Date(Math.floor(ms / 1000) * 1000).toUTCStr
 
 export class FakeGitHub {
   readonly world: FakeWorld;
-  /** Every call, and whether it asked only for what changed (an ETag or a date). */
-  readonly requests: Array<{ readonly call: string; readonly conditional: boolean }> = [];
+  /** Every call, whether it asked only for what changed (an ETag or a date), and as whom. */
+  readonly requests: Array<{
+    readonly call: string;
+    readonly conditional: boolean;
+    by?: "app" | "installation" | "login";
+  }> = [];
+  /** Runs as each call arrives, before it is answered: GitHub changing mid-read. */
+  onRequest: ((call: string) => void) | undefined;
   constructor(world: FakeWorld) {
     this.world = world;
   }
@@ -298,6 +325,7 @@ export class FakeGitHub {
       labelEvents: (input.labels ?? []).map((label) => ({ label, actor: input.author })),
       head_ref: input.headRef ?? `change-${number}`,
       head_sha: `sha${this.next()}`,
+      base_sha: `base${number}`,
       fork: input.fork ?? false,
       additions: 12,
       deletions: 3,
@@ -365,6 +393,20 @@ export class FakeGitHub {
     item.state = "closed";
     item.merged = true;
     this.happened(input.repo, input.number, input.actor, "PullRequestEvent");
+  }
+  /** Closed without a merge. */
+  close(input: { repo: string; number: number; actor: string }) {
+    this.item(input.repo, input.number).state = "closed";
+    this.happened(input.repo, input.number, input.actor, "PullRequestEvent");
+  }
+  /**
+   * The base branch moves on (a merge into it): a compare from the branch by name now gives
+   * `diff`, one from the commit the PR had as its base still gives the PR's own.
+   */
+  moveBase(input: { repo: string; number: number; diff: string }) {
+    const item = this.item(input.repo, input.number);
+    item.base_sha = `${item.base_sha}-moved`;
+    item.baseMoved = input.diff;
   }
   /** New commits on a PR's branch: GitHub sends no notification, but the PR's `updated_at` moves. */
   push(input: { repo: string; number: number; diff?: string; force?: boolean }) {
@@ -453,7 +495,7 @@ export class FakeGitHub {
     const index = this.world.repos.findIndex(
       (repo) => repo.full_name.toLowerCase() === fullName.toLowerCase(),
     );
-    return index < 0 ? undefined : 2000 + index;
+    return index < 0 ? undefined : (this.world.repos[index]!.id ?? 2000 + index);
   }
   /** The repos an installation reaches: all of the account's under `all`, else those picked. */
   installedRepos(installation: FakeApp["installations"][number]) {
@@ -671,6 +713,166 @@ export class FakeGitHub {
     });
   }
 
+  private filesAt(repo: FakeRepo, ref: string | null) {
+    const files = repo.files ?? {};
+    const at = ref ?? repo.default_branch ?? "main";
+    const pull = /^refs\/pull\/(\d+)\/head$/.exec(at);
+    const head = pull
+      ? this.world.items.find(
+          (item) =>
+            item.repo.toLowerCase() === repo.full_name.toLowerCase() &&
+            item.number === Number(pull[1]),
+        )?.head_sha
+      : undefined;
+    return files[head ?? at];
+  }
+
+  /** GitHub's contents API: a folder's entries, or a file base64-encoded (raw when asked). */
+  private contents(
+    fullName: string,
+    rawPath: string,
+    ref: string | null,
+    headers: Record<string, string>,
+  ): FakeAnswer {
+    const missing: FakeAnswer = { status: 404, headers: {}, body: { message: "Not Found" } };
+    const repo = this.world.repos.find(
+      (entry) => entry.full_name.toLowerCase() === fullName.toLowerCase(),
+    );
+    const files = repo === undefined ? undefined : this.filesAt(repo, ref);
+    if (files === undefined) return missing;
+    const asked = decodeURIComponent(rawPath).replace(/\/$/, "");
+    const links = ref === null ? (repo?.links ?? {}) : {};
+    const link = links[asked];
+    if (link?.type === "submodule")
+      return {
+        status: 200,
+        headers: {},
+        body: { type: "submodule", name: asked.split("/").at(-1), path: asked, size: 0 },
+      };
+    if (link?.type === "symlink" && files[link.target] === undefined)
+      return {
+        status: 200,
+        headers: {},
+        body: { type: "symlink", name: asked.split("/").at(-1), path: asked, target: link.target },
+      };
+    // GitHub answers a symlink to a file with the file it names.
+    const path = link?.type === "symlink" ? link.target : asked;
+    const file = files[path];
+    if (file !== undefined) {
+      const bytes = Buffer.from(file, "utf8");
+      if (headers.accept === "application/vnd.github.raw")
+        return { status: 200, headers: {}, body: file };
+      const large = bytes.length > 1_000_000;
+      return {
+        status: 200,
+        headers: {},
+        body: {
+          type: "file",
+          name: path.split("/").at(-1),
+          path,
+          size: bytes.length,
+          encoding: large ? "none" : "base64",
+          content: large ? "" : (bytes.toString("base64").match(/.{1,60}/g) ?? []).join("\n"),
+        },
+      };
+    }
+    const prefix = path === "" ? "" : `${path}/`;
+    const entries = new Map<
+      string,
+      { type: string; name: string; path: string; size: number; download_url: string | null }
+    >();
+    for (const [name, text] of Object.entries(files)) {
+      if (!name.startsWith(prefix)) continue;
+      const [first, ...more] = name.slice(prefix.length).split("/");
+      const entryPath = `${prefix}${first}`;
+      entries.set(entryPath, {
+        type: more.length > 0 ? "dir" : "file",
+        name: first!,
+        path: entryPath,
+        size: more.length > 0 ? 0 : Buffer.byteLength(text, "utf8"),
+        download_url:
+          more.length > 0
+            ? null
+            : `https://raw.githubusercontent.com/${fullName}/main/${entryPath}`,
+      });
+    }
+    // As GitHub lists them: a symlink as itself, a submodule as a file with nothing to download.
+    for (const [name, one] of Object.entries(links)) {
+      if (!name.startsWith(prefix) || name.slice(prefix.length).includes("/")) continue;
+      entries.set(name, {
+        type: one.type === "symlink" ? "symlink" : "file",
+        name: name.slice(prefix.length),
+        path: name,
+        size: 0,
+        download_url: null,
+      });
+    }
+    if (entries.size === 0) return missing;
+    return {
+      status: 200,
+      headers: {},
+      body: [...entries.values()].sort((a, b) => a.path.localeCompare(b.path)),
+    };
+  }
+
+  /**
+   * GitHub's code search on the default branch, text matches when asked: each unquoted `repo:`
+   * adds a repo, as GitHub reads it; a quoted phrase is words only. An installation reaches only
+   * its own repos; `searchLeak` stands for an answer GitHub scoped wrongly.
+   */
+  private searchCode(
+    params: URLSearchParams,
+    headers: Record<string, string>,
+    reached?: ReadonlyArray<string>,
+  ): FakeAnswer {
+    const query = params.get("q") ?? "";
+    const scopes: string[] = [];
+    const words: string[] = [];
+    for (const [, phrase, bare] of query.matchAll(/"([^"]*)"|(\S+)/g)) {
+      if (bare !== undefined && bare.startsWith("repo:")) scopes.push(bare.slice(5).toLowerCase());
+      else words.push(...(phrase ?? bare ?? "").toLowerCase().split(/\s+/));
+    }
+    const terms = words.filter((word) => word !== "");
+    const repos = this.world.repos.filter(
+      (entry) =>
+        scopes.includes(entry.full_name.toLowerCase()) &&
+        (reached === undefined ||
+          reached.some((name) => name.toLowerCase() === entry.full_name.toLowerCase())),
+    );
+    if (scopes.length === 0 || terms.length === 0)
+      return { status: 422, headers: {}, body: { message: "Validation Failed" } };
+    const leak = this.world.repos.find(
+      (entry) => entry.full_name.toLowerCase() === this.world.searchLeak?.toLowerCase(),
+    );
+    const items = [...repos, ...(leak === undefined ? [] : [leak])].flatMap((repo) =>
+      Object.entries(repo.unindexed === true ? {} : (this.filesAt(repo, null) ?? {}))
+        .filter(([, text]) => terms.every((word) => text.toLowerCase().includes(word)))
+        .map(([path, text]) => ({
+          name: path.split("/").at(-1),
+          path,
+          repository: { id: this.repoId(repo.full_name), full_name: repo.full_name },
+          ...(headers.accept === "application/vnd.github.text-match+json"
+            ? {
+                text_matches: [
+                  {
+                    fragment: text
+                      .split("\n")
+                      .filter((line) => line.toLowerCase().includes(terms[0]!))
+                      .slice(0, 2)
+                      .join("\n"),
+                  },
+                ],
+              }
+            : {}),
+        })),
+    );
+    return {
+      status: 200,
+      headers: {},
+      body: { total_count: items.length, incomplete_results: false, items },
+    };
+  }
+
   /** One REST call, as `gh api` makes it. */
   handle(
     method: string,
@@ -681,11 +883,13 @@ export class FakeGitHub {
     const url = new URL(rawPath.replace(/^\/?/, "/"), "https://api.github.com");
     const path = url.pathname.replace(/^\//, "");
     this.world.calls.push(`${method} ${path}`);
-    this.requests.push({
+    const request: (typeof this.requests)[number] = {
       call: `${method} ${path}`,
       conditional:
         headers["if-none-match"] !== undefined || headers["if-modified-since"] !== undefined,
-    });
+    };
+    this.requests.push(request);
+    this.onRequest?.(request.call);
     const ok = (value: unknown, extra: Record<string, string> = {}): FakeAnswer => ({
       status: method === "POST" ? 201 : 200,
       headers: extra,
@@ -698,6 +902,22 @@ export class FakeGitHub {
       return { status: 502, headers: {}, body: { message: "Server Error" } };
     if (this.world.refusing?.includes(path) === true)
       return { status: 422, headers: {}, body: { message: "Validation Failed" } };
+    const limit = this.world.limit;
+    if (limit !== undefined) {
+      if (/^repos\/[^/]+\/[^/]+\/issues\/\d+$/.test(path)) {
+        if (limit.reads <= 0) limit.hit = true;
+        else limit.reads -= 1;
+      }
+      if (limit.hit === true)
+        return {
+          status: limit.status ?? 429,
+          headers:
+            limit.reset === undefined
+              ? { "retry-after": String(limit.retryAfter) }
+              : { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(limit.reset) },
+          body: { message: "API rate limit exceeded" },
+        };
+    }
     const app = this.world.app ?? null;
     const bearer = /^bearer (.+)$/i.exec(headers.authorization ?? "")?.[1];
     const asApp = app !== null && bearer !== undefined && bearer.split(".").length === 3;
@@ -707,6 +927,7 @@ export class FakeGitHub {
     if (minted !== undefined && minted.expiresAt <= this.world.now)
       return { status: 401, headers: {}, body: { message: "Bad credentials" } };
     const installation = app?.installations.find((entry) => entry.id === minted?.installation);
+    request.by = asApp ? "app" : installation !== undefined ? "installation" : "login";
     const actor = installation === undefined ? this.world.user : `${app!.slug}[bot]`;
     const association = actor === this.world.user ? "OWNER" : "NONE";
     // As real GitHub: the App's JWT works only on `/app…`, which take nothing else, and
@@ -809,13 +1030,37 @@ export class FakeGitHub {
           repository_selection: installation.selection ?? "selected",
           repositories: reached.map((full_name) => ({ full_name })),
         });
-      const scoped = /^repos\/([^/]+\/[^/]+)\//.exec(path)?.[1]?.toLowerCase();
+      // Code search reaches only the installation's repos; any other call names one of them.
+      if (method === "GET" && path === "search/code")
+        return this.searchCode(url.searchParams, headers, reached);
+      const scoped = /^repos\/([^/]+\/[^/]+)(?:\/|$)/.exec(path)?.[1]?.toLowerCase();
       if (scoped === undefined || !reached.some((repo) => repo.toLowerCase() === scoped))
         return { status: 404, headers: {}, body: { message: "Not Found" } };
     }
     const since = url.searchParams.get("since");
     const sinceMs = since === null ? 0 : Date.parse(since);
     if (method === "GET" && path === "user") return ok({ login: this.world.user });
+    if (method === "GET" && path === "search/issues") {
+      const query = url.searchParams.get("q") ?? "";
+      const scope = /^repo:(\S+) in:title (.+)$/.exec(query);
+      if (scope === null) return ok({ items: [] });
+      const repo = scope[1]!.toLowerCase();
+      const words = scope[2]!.toLowerCase().split(" ");
+      const limit = Number(url.searchParams.get("per_page") ?? 30);
+      return ok({
+        items: this.world.items
+          .filter(
+            (item) =>
+              item.repo.toLowerCase() === repo &&
+              words.every((word) => item.title.toLowerCase().includes(word)),
+          )
+          .slice(0, limit)
+          .map((item) => ({
+            ...this.issueJson(item),
+            repository_url: `https://api.github.com/repos/${item.repo}`,
+          })),
+      });
+    }
     if (method === "GET" && path === "notifications") {
       const lastModified = httpDate(this.world.modified);
       const asked = headers["if-modified-since"];
@@ -976,6 +1221,21 @@ export class FakeGitHub {
         })),
       );
     }
+    if (method === "GET" && path === "search/code")
+      return this.searchCode(url.searchParams, headers);
+    const moved = this.world.repos.find(
+      (entry) =>
+        entry.movedTo !== undefined &&
+        path.toLowerCase().startsWith(`repos/${entry.full_name.toLowerCase()}`),
+    );
+    if (moved !== undefined)
+      return {
+        status: 301,
+        headers: {
+          location: `https://api.github.com/repos/${moved.movedTo}${path.slice(`repos/${moved.full_name}`.length)}`,
+        },
+        body: { message: "Moved Permanently" },
+      };
     const whole = /^repos\/([^/]+\/[^/]+)$/.exec(path);
     if (method === "GET" && whole !== null) {
       const repo = this.world.repos.find(
@@ -983,13 +1243,20 @@ export class FakeGitHub {
       );
       return repo === undefined
         ? missing
-        : ok({ full_name: repo.full_name, private: repo.private });
+        : ok({
+            id: this.repoId(repo.full_name),
+            full_name: repo.full_name,
+            private: repo.private,
+          });
     }
     const match = /^repos\/([^/]+\/[^/]+)\/(.*)$/.exec(path);
     if (match === null) return missing;
     const repo = match[1]!;
     const rest = match[2]!;
     let found: RegExpExecArray | null;
+    const contents = /^contents(?:\/(.*))?$/.exec(rest);
+    if (method === "GET" && contents !== null)
+      return this.contents(repo, contents[1] ?? "", url.searchParams.get("ref"), headers);
     const guarded = this.rulesAnswer(method, repo, rest, body, actor, installation !== undefined);
     if (guarded !== undefined) return guarded;
     try {
@@ -1045,7 +1312,7 @@ export class FakeGitHub {
             ahead_by: Math.max(0, pushes.length - since),
             behind_by: forced ? 1 : 0,
           });
-        if (!known) return ok(item.diff);
+        if (!known) return ok(base === "main" ? (item.baseMoved ?? item.diff) : item.diff);
         if (forced) return ok(pushes.findLast((push) => push.force === true)!.diff);
         return ok(
           pushes
@@ -1076,7 +1343,7 @@ export class FakeGitHub {
       if (method === "GET" && (found = /^pulls\/(\d+)$/.exec(rest))) {
         const item = this.item(repo, Number(found[1]));
         if (!item.pull) return missing;
-        if ((headers.accept ?? "").includes("diff")) return ok(item.diff);
+        if ((headers.accept ?? "").includes("diff")) return ok(item.baseMoved ?? item.diff);
         const etag = `"p${item.updated_at ?? item.created_at}-${item.head_sha}-${item.state}"`;
         if (headers["if-none-match"] === etag)
           return { status: 304, headers: { etag }, body: null };
@@ -1090,7 +1357,7 @@ export class FakeGitHub {
               sha: item.head_sha,
               repo: { full_name: item.fork ? `someone/${repo.split("/")[1]}` : repo },
             },
-            base: { ref: "main" },
+            base: { ref: "main", sha: item.base_sha },
             additions: item.additions,
             deletions: item.deletions,
             changed_files: item.changed_files,
@@ -1147,6 +1414,7 @@ export class FakeGitHub {
         return ok({
           id,
           html_url: `https://github.com/${repo}/issues/${found[1]}#issuecomment-${id}`,
+          created_at: iso(this.world.now),
         });
       }
       if (method === "POST" && (found = /^pulls\/(\d+)\/reviews$/.exec(rest))) {

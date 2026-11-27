@@ -300,7 +300,7 @@ const librariesHost = Effect.gen(function* () {
     KIN_VISUAL_LIBRARIES.map((library) => {
       const entry = import.meta.resolve(library.name);
       const marker = `/node_modules/${library.name}/`;
-      const root = new URL(entry).pathname;
+      const root = NodeURL.fileURLToPath(entry);
       return [
         LIBRARY(library),
         NodeFS.readFileSync(root.slice(0, root.lastIndexOf(marker) + marker.length) + library.file),

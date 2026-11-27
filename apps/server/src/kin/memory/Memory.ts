@@ -18,6 +18,7 @@ import {
   type MemoryItemKind,
   type MemoryItemFrontMatter,
 } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
@@ -37,6 +38,7 @@ import { memoryGit as runMemoryGit } from "./git.ts";
 import { VcsProcess } from "../../vcs/VcsProcess.ts";
 import * as MemoryCache from "./MemoryCache.ts";
 import { mergeMemoryFiles, uniqueMergeBase } from "./merge.ts";
+import { withRuns } from "../triggers/deferralRuns.ts";
 import { buildIndex, indexIsStale } from "./buildIndex.ts";
 import { leadOwner, readableFiles } from "./quoteAccess.ts";
 import { gitHubApp } from "../github/KinGitHubApp.ts";
@@ -50,6 +52,7 @@ import {
   parseFrontMatter,
 } from "./frontMatter.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import type { WriteEpisode } from "./writeFailure.ts";
 
 export class MemoryError extends Schema.TaggedError<MemoryError>()("MemoryError", {
   orgId: Schema.String,
@@ -82,6 +85,19 @@ export class MemoryQueryDecodeError extends Schema.TaggedError<MemoryQueryDecode
   "MemoryQueryDecodeError",
   failureFields,
 ) {}
+
+class MemoryChangeHeadInvalid extends Schema.TaggedError<MemoryChangeHeadInvalid>()(
+  "MemoryChangeHeadInvalid",
+  { orgId: Schema.String },
+) {}
+
+interface ChangedItem {
+  readonly path: string;
+  readonly at: number;
+  readonly subject: string;
+  readonly coding: boolean;
+  readonly head?: MemoryItemHead;
+}
 
 type MemoryFailure =
   | MemoryError
@@ -135,6 +151,7 @@ export const LANDED_REF = "refs/kin/landed";
 export const LANDED_SEARCH_DEPTH = 200;
 
 export interface MemoryQuery {
+  readonly text?: string;
   readonly kind?: MemoryItemKind;
   readonly status?: MemoryItemHead["status"];
   readonly dueBefore?: string;
@@ -145,6 +162,11 @@ export interface MemoryQuery {
   readonly excludeInvalid?: boolean;
   readonly limit?: number;
 }
+
+export const matchesMemoryText = ({ head, body }: MemoryCache.MemoryItem, needle: string) =>
+  head.title.toLowerCase().includes(needle) ||
+  (head.what?.toLowerCase().includes(needle) ?? false) ||
+  body.toLowerCase().includes(needle);
 
 export class MemoryRecoveryHooks extends Context.Service<
   MemoryRecoveryHooks,
@@ -159,6 +181,7 @@ export class MemoryRecoveryHooks extends Context.Service<
       /** The agent whose turn a restart cut, so the owner's line names it. */
       restartOf?: KinAgentId;
     }) => Effect.Effect<void>;
+    readonly writeEpisode?: WriteEpisode;
   }
 >()("t3/kin/memory/Memory/MemoryRecoveryHooks") {}
 
@@ -261,6 +284,15 @@ export class Memory extends Context.Service<
      * until it passes.
      */
     readonly syncCheckout: (orgId: KinOrgId) => Effect.Effect<void, MemoryFailure>;
+    readonly changedItems?: (
+      orgId: KinOrgId,
+      from: string,
+      to: string,
+      options: { readonly limit: number; readonly excludeSubjects: ReadonlySet<string> },
+    ) => Effect.Effect<
+      { readonly items: ReadonlyArray<ChangedItem>; readonly overflow: number },
+      MemoryFailure | MemoryChangeHeadInvalid
+    >;
     readonly readPromptSnapshot: (
       orgId: KinOrgId,
       expectedHead: string,
@@ -757,7 +789,6 @@ const make = Effect.gen(function* () {
     branch: string = mainBranch,
     explicitHead?: string,
   ) {
-    const paths = yield* pathsFor(orgId);
     // An explicit head reads that commit as pinned at prepare time, even after another lead's
     // commit moved the shared pin; it is returned uncached so branch snapshots stay current.
     const key =
@@ -779,6 +810,8 @@ const make = Effect.gen(function* () {
     } else head = yield* anchor(orgId, branch);
     const previous = snapshots.get(key);
     if (!force && previous?.head === head) return previous;
+    // After the cache hit: its awaited checks would hold the memory lock on every read.
+    const paths = yield* pathsFor(orgId);
     const blobCache = blobCaches.get(key) ?? {
       blobs: new Map<string, string | undefined>(),
       parsedBlobs: new Map<string, ParsedBlob | undefined>(),
@@ -948,8 +981,10 @@ const make = Effect.gen(function* () {
     return snapshot;
   });
 
+  // On a reader, not the writer: these run under the memory lock, so a writer queue holds it.
   const sqlRead = <A, E>(orgId: KinOrgId, effect: Effect.Effect<A, E>) =>
     effect.pipe(
+      NodeSqliteClient.readOnly,
       Effect.mapError(toPersistenceSqlError("Memory.view")),
       Effect.mapError((cause) => new MemoryError({ orgId, operation: "view", cause })),
     );
@@ -1107,7 +1142,10 @@ const make = Effect.gen(function* () {
     const { items } = yield* load(orgId, false, view);
     const counts = new Map<string, number>();
     for (const { head } of items) counts.set(head.id, (counts.get(head.id) ?? 0) + 1);
-    return items
+    const needle = q.text?.toLowerCase();
+    const matched =
+      needle === undefined ? items : items.filter((item) => matchesMemoryText(item, needle));
+    return matched
       .map((item) => ({ ...item.head, duplicate: (counts.get(item.head.id) ?? 0) > 1 }))
       .filter(
         (item) =>
@@ -1132,15 +1170,25 @@ const make = Effect.gen(function* () {
     admit?: (item: MemoryCache.MemoryItem) => boolean,
   ) {
     const { items } = yield* load(orgId, false, view);
-    const matches = items.filter((item) => item.head.id === id && (admit?.(item) ?? true));
+    // Quiet lookups also serve mutations, which still take ids only.
+    const matches = items.filter(
+      (item) =>
+        (item.head.id === id || (recordRead && item.head.path === id)) && (admit?.(item) ?? true),
+    );
     const item = matches[0];
     if (!item) return yield* new MemoryNotFound({ orgId, id });
     if (matches.length > 1) return yield* new MemoryDuplicateId({ orgId, id });
+    const itemId = item.head.id;
+    if (
+      id !== itemId &&
+      items.some((other) => other !== item && other.head.id === itemId && (admit?.(other) ?? true))
+    )
+      return yield* new MemoryDuplicateId({ orgId, id: itemId });
     if (recordRead)
-      yield* cache.read(orgId, id).pipe(
+      yield* cache.read(orgId, itemId).pipe(
         Effect.catchTags({
           MemoryHistoryError: () =>
-            Effect.logWarning("Could not record memory read", { orgId, id }),
+            Effect.logWarning("Could not record memory read", { orgId, id: itemId }),
         }),
       );
     return item;
@@ -2148,6 +2196,92 @@ const make = Effect.gen(function* () {
         ),
       );
     }),
+    changedItems: Effect.fn("Memory.changedItems")((orgId, from, to, options) =>
+      locked(
+        orgId,
+        Effect.gen(function* () {
+          const sha = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/i;
+          if (!sha.test(from) || !sha.test(to))
+            return yield* new MemoryChangeHeadInvalid({ orgId });
+          if (from === to) return { items: [], overflow: 0 };
+          const { writer } = yield* pathsFor(orgId);
+          const commitLimit = Math.min(128, Math.max(1, options.limit * 4));
+          // Count all commits: a path filter can walk arbitrarily far to find matching commits.
+          const log = yield* git(orgId, writer, [
+            "log",
+            "-z",
+            `--max-count=${commitLimit}`,
+            "--diff-merges=first-parent",
+            "--no-renames",
+            "--name-only",
+            "--format=%x00%ct%x00%s%x00%B",
+            `${from}..${to}`,
+            "--",
+          ]);
+          const seen = new Set<string>();
+          const items = new Map<string, ChangedItem>();
+          const prefix = `${orgId}\0`;
+          const pinned = [...snapshots.entries()].find(
+            ([key, snapshot]) => key.startsWith(prefix) && snapshot.head === to,
+          )?.[1];
+          const heads = new Map(pinned?.items.map(({ head }) => [head.path, head]));
+          let at = 0;
+          let subject = "";
+          let coding = false;
+          let excluded = true;
+          let commits = 0;
+          const tokens = log.split("\0");
+          for (let index = 0; index < tokens.length; index++) {
+            const token = tokens[index]!;
+            if (token === "") {
+              if (index === tokens.length - 1) break;
+              commits++;
+              at = Number(tokens[++index]) * 1_000;
+              subject = tokens[++index] ?? "";
+              const message = tokens[++index] ?? "";
+              if (!Number.isFinite(at))
+                return yield* new MemoryError({
+                  orgId,
+                  operation: "changedItems",
+                  reason: "Malformed log",
+                });
+              coding =
+                /^Kin-Coding-Agent-For:/m.test(message) || subject.includes("(coding agent)");
+              excluded = options.excludeSubjects.has(subject);
+              continue;
+            }
+            const path = token.replace(/^\n/, "");
+            if (
+              excluded ||
+              !path.endsWith(".md") ||
+              !folders.some((folder) => path.startsWith(`${folder}/`))
+            )
+              continue;
+            if (seen.has(path)) {
+              const newer = items.get(path);
+              if (coding && newer !== undefined && !newer.coding)
+                items.set(path, { ...newer, coding: true });
+              continue;
+            }
+            seen.add(path);
+            if (items.size < options.limit) {
+              const head = heads.get(path);
+              items.set(path, {
+                path,
+                at,
+                subject,
+                coding,
+                ...(head === undefined ? {} : { head }),
+              });
+            }
+          }
+          return {
+            items: [...items.values()],
+            overflow: Math.max(seen.size - items.size, commits === commitLimit ? 1 : 0),
+          };
+        }),
+      ),
+    ),
     readPromptSnapshot: Effect.fn("Memory.readPromptSnapshot")((orgId, expectedHead, view) =>
       locked(
         orgId,
@@ -2158,17 +2292,35 @@ const make = Effect.gen(function* () {
               ? current
               : yield* pinnedSnapshot(orgId, current.branch, expectedHead);
           const rules = snapshot.files.get("rules.md");
-          const index = snapshot.index ?? snapshot.files.get("INDEX.md") ?? "";
           if (rules === undefined)
             return yield* new MemoryError({
               orgId,
               operation: "promptSnapshot",
               reason: "Missing committed prompt rules",
             });
+          // Deferrals as their runs make them (a tap moved or cancelled one): the index is drawn
+          // again only then, so an unchanged prompt keeps its stored index.
+          const heads = snapshot.items.map((item) => item.head);
+          const items = yield* withRuns(orgId, heads).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError(
+              (cause) => new MemoryError({ orgId, operation: "promptSnapshot", cause }),
+            ),
+          );
+          const index = items.some((head, at) => head !== heads[at])
+            ? buildIndex(
+                items,
+                yield* cache
+                  .lastReads(orgId)
+                  .pipe(Effect.orElseSucceed(() => Object.fromEntries<number>([]))),
+                yield* Clock.currentTimeMillis,
+                yield* cache.ownerTimeZone(orgId),
+              )
+            : (snapshot.index ?? snapshot.files.get("INDEX.md") ?? "");
           return {
             rules,
             index,
-            items: snapshot.items.map((item) => item.head),
+            items,
             bodies: new Map(snapshot.items.map((item) => [item.head.path, item.body])),
           };
         }),

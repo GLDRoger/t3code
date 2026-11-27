@@ -39,6 +39,7 @@ import {
   type KinAccessMeInput,
   type KinAccessMeResult,
   type KinPeopleUpdateProfileInput,
+  KinChatsSettleAfterHours,
   KinPersonProfile,
   KinPersonQuietHours,
   type KinPeopleSetOwnerNameInput,
@@ -77,8 +78,8 @@ import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import { KinPushSender } from "../push/KinPushSender.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { placeRefusals } from "../work/ownerWork.ts";
-import { placesOf } from "../work/teamView.ts";
-import * as KinShell from "../shell/KinShell.ts";
+import { KIN_OWNER_LEVEL, placesOf, viewerOfPeople } from "../work/teamView.ts";
+import { shellFor } from "../shell/listSections.ts";
 import { accessOf, accessSql, isOwnerHimself, mayActAsOwner, ownerLevel } from "./KinAccess.ts";
 import { KIN_DEFAULT_QUIET_HOURS, stillAway, storedWorkHours } from "../triggers/quietHours.ts";
 import { profileSets } from "./profileFields.ts";
@@ -88,7 +89,9 @@ import { ownerZone } from "../work/recordRows.ts";
 import { closeHeldQuestions } from "../questions/openQuestions.ts";
 import { live as liveKey } from "../tasksKey/TasksKeys.ts";
 import { staleAsksStranded } from "../connections/strandedAsks.ts";
-import { leaverBack, leaverCards } from "./leaver.ts";
+import { leaverBack, leaverCards, leaverChatOwn } from "./leaver.ts";
+import { personConnections, revokeMailboxes } from "../connections/ConnectionRows.ts";
+import { KinConnections, MAILBOX_GONE } from "../connections/ConnectionsService.ts";
 
 const isKinError = Schema.is(KinChatError);
 const isSqlError = Schema.is(PersistenceSqlError);
@@ -130,6 +133,7 @@ const deviceLimit = new KinChatError({
 const decodePersonRow = Schema.decodeUnknownSync(KinPerson);
 const decodePerson = (row: Record<string, unknown>) => decodePersonRow(row);
 const decodeProfileRow = Schema.decodeUnknownSync(KinPersonProfile);
+const decodeSettleAfter = Schema.decodeUnknownSync(KinChatsSettleAfterHours);
 const decodeQuiet = Schema.decodeUnknownOption(Schema.fromJsonString(KinPersonQuietHours));
 const decodeProfile = (
   row: {
@@ -261,6 +265,7 @@ export const make = Effect.gen(function* () {
   const groups = yield* Effect.serviceOption(KinGroups);
   const records = yield* Effect.serviceOption(KinRecords);
   const push = yield* Effect.serviceOption(KinPushSender);
+  const connections = yield* Effect.serviceOption(KinConnections);
   /** Work's live streams re-read what this person may see once the change commits. */
   const viewMoved = (orgId: KinOrgId, personId: KinPersonId) =>
     Option.isSome(records) ? records.value.peopleMoved(orgId, [personId]) : Effect.void;
@@ -1061,6 +1066,21 @@ export const make = Effect.gen(function* () {
     session: AuthenticatedSession,
     input: KinPeopleRemoveAccessInput,
   ) {
+    // Their own mailboxes are revoked inside, under the fence a send's hand-off takes.
+    const mailboxIds = (yield* personConnections(input.orgId, input.personId).pipe(
+      Effect.provideService(SqlClient.SqlClient, sql),
+      Effect.mapError(sqlError("KinPeople.removeAccessMailboxes")),
+    )).map((row) => row.connectionId);
+    const removed = yield* Option.isSome(connections)
+      ? connections.value.fenced(mailboxIds, removeAccessIn(session, input))
+      : removeAccessIn(session, input);
+    if (Option.isSome(connections)) yield* connections.value.forgetSignIns(input.personId);
+    return removed;
+  });
+  const removeAccessIn = Effect.fnUntraced(function* (
+    session: AuthenticatedSession,
+    input: KinPeopleRemoveAccessInput,
+  ) {
     return yield* sql
       .withTransaction(
         Effect.gen(function* () {
@@ -1103,6 +1123,12 @@ export const make = Effect.gen(function* () {
                   }),
                 ),
               );
+            yield* leaverChatOwn({ orgId: input.orgId, gone, removedAt: now }).pipe(
+              Effect.provideService(SqlClient.SqlClient, sql),
+              Effect.provideService(KinChatRepository, repo),
+              Effect.provideService(KinChatHub, hub),
+              Effect.mapError(sqlError("KinPeople.removeAccessChatOwn")),
+            );
           }
           // An unused link would let them straight back in.
           yield* sql`UPDATE kin_people_invites SET revoked_at = ${now}
@@ -1133,6 +1159,28 @@ export const make = Effect.gen(function* () {
         WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
             Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessPush")),
           );
+          // Their own mailbox goes with them: nothing waiting on it can send, and its keys are
+          // deleted once this commits. A new link doesn't bring it back; they connect it again.
+          const mailboxes = yield* revokeMailboxes(
+            input.orgId,
+            input.personId,
+            MAILBOX_GONE,
+            now,
+          ).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+            Effect.mapError(toPersistenceSqlError("KinPeople.removeAccessMailbox")),
+          );
+          if (Option.isSome(chats))
+            for (const widgetId of mailboxes.cards)
+              yield* chats.value
+                .closeReplaced({
+                  orgId: input.orgId,
+                  widgetId: KinWidgetId.make(widgetId),
+                  outcome: { title: "Not sent", text: MAILBOX_GONE },
+                })
+                .pipe(Effect.mapError(sqlError("KinPeople.removeAccessMailboxCards")));
+          if (mailboxes.connectionIds.length > 0 && Option.isSome(connections))
+            yield* sql.afterCommit(connections.value.dropKeys(mailboxes.connectionIds));
           yield* refresh.touch(input.orgId, "people");
           yield* refresh.touch(input.orgId, "leads");
           // Nobody is left to answer what agents asked them; tasks stay theirs, flagged above.
@@ -1175,8 +1223,10 @@ export const make = Effect.gen(function* () {
                 hub.publish({ type: "member.removed", orgId: input.orgId, member: gone.value }),
               );
           }
-          // Anything still waiting on them outside the chats they just left.
-          for (const item of yield* repo.listOpenWaiting(input))
+          for (const item of [
+            ...(yield* repo.listOpenWaiting(input)),
+            ...(yield* repo.listOpenWaitingRelayedBy(input)),
+          ])
             if (
               yield* repo.resolveWaiting({ ...item, resolvedAt: leftAt, resolution: "cancelled" })
             ) {
@@ -1405,9 +1455,10 @@ export const make = Effect.gen(function* () {
         : { clients: places.clients, docs: places.docs, money: places.money },
       leads: places.leads,
       refused,
-      shell: yield* KinShell.getForDisplay(input.orgId).pipe(
-        Effect.provideService(SqlClient.SqlClient, sql),
-      ),
+      shell: yield* shellFor(
+        input.orgId,
+        all ? KIN_OWNER_LEVEL : viewerOfPeople([caller.personId]),
+      ).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
       ...(yield* companyMoney(input.orgId).pipe(
         Effect.map(({ homeCurrency, country, financialYearStartMonth }) => ({
           homeCurrency,
@@ -1525,21 +1576,29 @@ export const make = Effect.gen(function* () {
             (yield* mayActOn(reader, orgId, row.personId).pipe(Effect.isSuccess))))
       )
         editable.add(row.personId);
-    const logins = yield* sql<{ personId: string; login: string | null; ring: number | null }>`
-      SELECT person_id AS "personId", github_login AS login, answers_ring AS ring FROM kin_people
+    const logins = yield* sql<{
+      personId: string;
+      login: string | null;
+      ring: number | null;
+      settleAfter: number | null;
+    }>`
+      SELECT person_id AS "personId", github_login AS login, answers_ring AS ring,
+        chats_settle_after_hours AS "settleAfter" FROM kin_people
       WHERE org_id = ${orgId} ORDER BY person_id`.pipe(
       Effect.mapError(toPersistenceSqlError("KinPeople.githubLogins")),
     );
     const login = new Map(logins.map((row) => [row.personId, row]));
     const withEdit = <A extends { readonly personId: string }>(profile: A) => {
       const own = login.get(profile.personId);
+      const isReader = reader?.personId === profile.personId;
       return {
         ...profile,
         canEdit: editable.has(profile.personId),
         ...(editable.has(profile.personId) ? { githubLogin: own?.login ?? null } : {}),
-        // Only they set it, so only they read it.
-        ...(reader?.personId === profile.personId && own?.ring != null
-          ? { answersRing: own.ring === 1 }
+        // Only they set these, so only they read them.
+        ...(isReader && own?.ring != null ? { answersRing: own.ring === 1 } : {}),
+        ...(isReader && own?.settleAfter != null
+          ? { chatsSettleAfterHours: decodeSettleAfter(own.settleAfter) }
           : {}),
       };
     };
@@ -1602,6 +1661,11 @@ export const make = Effect.gen(function* () {
         reason: "not_allowed",
         message: "Only they can set when Kin holds messages for them.",
       });
+    if (caller.personId !== input.personId && input.chatsSettleAfterHours !== undefined)
+      return yield* new KinChatError({
+        reason: "not_allowed",
+        message: "Only they can choose when their read chats settle.",
+      });
     const picture = input.picture;
     if (picture != null && picture.type !== "image")
       return yield* new KinChatError({
@@ -1649,14 +1713,24 @@ export const make = Effect.gen(function* () {
           yield* refresh.touch(input.orgId, "people");
           const [row] = yield* profileRows(input.orgId, input.personId);
           if (row === undefined) return yield* missing;
-          const [ring] =
+          const [own] =
             caller.personId === input.personId
-              ? yield* sql<{ ring: number | null }>`SELECT answers_ring AS ring FROM kin_people
+              ? yield* sql<{
+                  ring: number | null;
+                  settleAfter: number | null;
+                }>`SELECT answers_ring AS ring, chats_settle_after_hours AS "settleAfter"
+                  FROM kin_people
                   WHERE org_id = ${input.orgId} AND person_id = ${input.personId}`.pipe(
                   Effect.mapError(toPersistenceSqlError("KinPeople.updateProfile")),
                 )
               : [];
-          const profile = ring?.ring == null ? row : { ...row, answersRing: ring.ring === 1 };
+          const profile = {
+            ...row,
+            ...(own?.ring == null ? {} : { answersRing: own.ring === 1 }),
+            ...(own?.settleAfter == null
+              ? {}
+              : { chatsSettleAfterHours: decodeSettleAfter(own.settleAfter) }),
+          };
           return { profile, replaced: pictureId === undefined ? null : before.pictureId };
         }),
       )

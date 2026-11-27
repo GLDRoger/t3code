@@ -18,6 +18,7 @@ import {
   type KinOutboxStorage,
 } from "@t3tools/client-runtime/kin/kinOutbox";
 import { createKinOutboxRetry } from "@t3tools/client-runtime/kin/kinOutboxRetry";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 const OUTBOX_FILE = "kin-outbox.json";
 
@@ -47,7 +48,7 @@ export const kinOutbox = createKinOutbox({
       AsyncResult.getOrElse(appAtomRegistry.get(sessionOrgsAtom(environmentId)), () => null),
     ),
   send: async (record) => {
-    const result = await kinClient.send.run(appAtomRegistry, {
+    const result = await runKinCommand(appAtomRegistry, kinClient.send, {
       environmentId: record.environmentId,
       input: {
         chatId: record.chatId,

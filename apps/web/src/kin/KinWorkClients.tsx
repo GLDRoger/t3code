@@ -1,3 +1,4 @@
+import { KIN_PROMISES } from "@t3tools/client-runtime/kin/kinPromises";
 import {
   useKinClientsStart,
   useKinOwnerLevel,
@@ -11,13 +12,12 @@ import {
   kinWorkPrincipalKey,
   type KinWorkDraft,
   type KinWorkRef,
-  type KinWorkRowView,
 } from "@t3tools/client-runtime/kin/kinWork";
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import { kinWorkApplied, type KinWorkAction } from "@t3tools/client-runtime/kin/kinWorkChanges";
 import {
-  KIN_CLIENTS,
+  KIN_CLIENTS as KIN_CLIENTS_WORDS,
   KIN_CLIENT_FAILED,
   KIN_CLIENT_REFUSED,
   KIN_CLIENT_GONE,
@@ -47,6 +47,7 @@ import {
 } from "@t3tools/client-runtime/kin/kinWorkClients";
 import {
   KIN_WORK_FORM_COPY,
+  kinIndiaFields,
   kinWorkSend,
   type KinClientDraftKind,
   type KinWorkFormProblem,
@@ -69,7 +70,14 @@ import type {
 } from "@t3tools/contracts";
 import { useAtomValue } from "@effect/atom-react";
 import { LegendList } from "@legendapp/list/react";
-import { EllipsisIcon, MailIcon, PencilIcon, PhoneIcon, PlusIcon } from "lucide-react";
+import {
+  CalendarIcon,
+  EllipsisIcon,
+  MailIcon,
+  PencilIcon,
+  PhoneIcon,
+  PlusIcon,
+} from "lucide-react";
 import { useId, useState } from "react";
 
 import { Badge } from "../components/ui/badge";
@@ -102,12 +110,15 @@ import {
   KinWorkTimeline,
   KinWorkStaleLine,
 } from "./KinWorkParts";
+import { KinPromiseFrom } from "./KinPromises";
 import { KinWorkRow } from "./KinWorkTasks";
 import { kinClient } from "./kinClient";
 import { KinClientDeals } from "./KinDeals";
-import { useKinSectionOn } from "./useKinShell";
+import { kinSectionNamedWords, kinSectionOn } from "@t3tools/client-runtime/kin/kinShell";
+import { useKinSectionNamed, useKinSectionWords, useKinShell } from "./useKinShell";
 import { KinConfirm } from "./KinConfirm";
 import { useNowMinuteMs } from "./useKinClock";
+import { useKinCompanyCountry } from "./useKinMoney";
 import { kinHostConnected, useKinHostAt } from "./useKinHost";
 import {
   useKinClientPage,
@@ -139,6 +150,9 @@ export function KinWorkClientsList(
     readonly start?: KinClientsFilter;
   },
 ) {
+  const KIN_CLIENTS = useKinSectionWords(props.environmentId, KIN_CLIENTS_WORDS);
+  const named = useKinSectionNamed(props.environmentId);
+  const shell = useKinShell(props.environmentId);
   const { names } = props.directory;
   const now = new Date(useNowMinuteMs());
   const scope = useKinViewerScope(props.environmentId);
@@ -173,7 +187,7 @@ export function KinWorkClientsList(
   const someone = kinClientsLookedAfterChoices(names);
   const shown = KIN_CLIENTS_SHOW.find((one) => one.id === filter.show);
   const chip = [
-    filter.show === "open" ? null : (shown?.label ?? null),
+    filter.show === "open" || shown === undefined ? null : named(shown.label),
     filter.lookedAfter === "anyone"
       ? null
       : mine
@@ -236,7 +250,7 @@ export function KinWorkClientsList(
                   value: filter.show,
                   options: kinClientsShowChoices(seesClients).map((one) => ({
                     value: one.id,
-                    label: one.label,
+                    label: named(one.label),
                   })),
                   onChange: (value) =>
                     setFilter({
@@ -307,9 +321,9 @@ export function KinWorkClientsList(
       ListEmptyComponent={
         <div className="mx-auto w-full max-w-3xl px-4">
           {listShown === "offline" ? (
-            <KinWorkNotice {...kinWorkOffline("clients")} />
+            <KinWorkNotice {...kinSectionNamedWords(shell, kinWorkOffline("clients"))} />
           ) : listShown === "loading" ? (
-            <div role="status" aria-label="Loading clients">
+            <div role="status" aria-label={named("Loading clients")}>
               <KinWorkRowSkeletons />
             </div>
           ) : listShown === "failed" ? (
@@ -343,7 +357,9 @@ export function KinWorkClientsList(
             <KinListMore
               failed={state.moreFailed}
               loading={state.loadingMore}
-              shown={`Showing ${state.records.length} of ${state.total ?? state.records.length} clients`}
+              shown={named(
+                `Showing ${state.records.length} of ${state.total ?? state.records.length} clients`,
+              )}
               onMore={() => void list.loadMore()}
             />
           )}
@@ -438,6 +454,7 @@ export function KinWorkProjectsTab(
     readonly selected?: KinRecordKey | null;
   },
 ) {
+  const shell = useKinShell(props.environmentId);
   const now = new Date(useNowMinuteMs());
   const scope = useKinViewerScope(props.environmentId);
   const { state, list } = useKinProjectsList(props, props.stale ? null : props.live.seq);
@@ -497,7 +514,7 @@ export function KinWorkProjectsTab(
       ListEmptyComponent={
         <div className="mx-auto w-full max-w-3xl px-4">
           {listShown === "offline" ? (
-            <KinWorkNotice {...kinWorkOffline("clients")} />
+            <KinWorkNotice {...kinSectionNamedWords(shell, kinWorkOffline("clients"))} />
           ) : listShown === "loading" ? (
             <div role="status" aria-label="Loading projects">
               <KinWorkRowSkeletons />
@@ -660,19 +677,27 @@ export function KinWorkClientPage(
     readonly onNewDeal?: ((party: KinWorkRef) => void) | null;
   },
 ) {
+  const named = useKinSectionNamed(props.environmentId);
+  const shell = useKinShell(props.environmentId);
   const { state, refresh } = useKinClientPage(props, props.clientKey);
   if (state._tag === "loading")
     return (
-      <div className="mx-auto w-full max-w-3xl p-4" role="status" aria-label="Loading client">
+      <div
+        className="mx-auto w-full max-w-3xl p-4"
+        role="status"
+        aria-label={named("Loading client")}
+      >
         <KinWorkRowSkeletons />
       </div>
     );
-  if (state._tag === "gone") return <KinWorkNotice {...KIN_CLIENT_GONE} />;
-  if (state._tag === "refused") return <KinWorkNotice {...KIN_CLIENT_REFUSED} />;
+  if (state._tag === "gone")
+    return <KinWorkNotice {...kinSectionNamedWords(shell, KIN_CLIENT_GONE)} />;
+  if (state._tag === "refused")
+    return <KinWorkNotice {...kinSectionNamedWords(shell, KIN_CLIENT_REFUSED)} />;
   if (state._tag === "failed")
     return (
       <KinLoadFailed
-        what={KIN_CLIENT_FAILED.title}
+        what={named(KIN_CLIENT_FAILED.title)}
         cause={state.cause}
         onRetry={refresh}
         className="mx-auto w-full max-w-3xl p-4"
@@ -688,13 +713,18 @@ function ClientPage(
     readonly onRefresh: () => void;
   },
 ) {
+  const KIN_CLIENTS = useKinSectionWords(props.environmentId, KIN_CLIENTS_WORDS);
   const { environmentId, orgId, page } = props;
   const { names } = props.directory;
   const { state: changed, changes } = props.changes;
   const ownerLevel = useKinOwnerLevel(environmentId);
+  const country = useKinCompanyCountry(props);
+  const india = kinIndiaFields(country);
   const update = useAtomCommand(kinClient.workClientUpdate, { reportFailure: false });
   const canInvoice = useAtomValue(kinClient.workNewInvoice.permissionAtom(environmentId));
-  const dealsOn = useKinSectionOn(environmentId, "deals");
+  const shell = useKinShell(environmentId);
+  const dealsOn = kinSectionOn(shell, "deals");
+  const invoicesOn = kinSectionOn(shell, "invoices");
   const now = new Date(useNowMinuteMs());
   const [dialog, setDialog] = useState<ClientDialog>(null);
   const [tagList, setTagList] = useState<string | null>(null);
@@ -715,6 +745,8 @@ function ClientPage(
     names,
     now,
     ownerLevel,
+    shell,
+    country,
   );
   const { can } = view;
   // Clients on, or the owner level: what's owed, the contact log, notes and history show.
@@ -759,14 +791,16 @@ function ClientPage(
         <p className="text-sm text-muted-foreground">{empty}</p>
       ) : (
         <ul className="flex flex-col">
-          {side.rows.map((row: KinWorkRowView) => (
+          {side.rows.map((row) => (
             <li key={row.key} className="border-b border-border/60 last:border-b-0">
               <KinWorkRow
                 row={row}
                 saving={changed.pending[row.key] !== undefined}
                 onOpen={() => props.onOpenTask(row.key)}
                 onAct={props.canChangeTasks ? (action) => act(row.key, action) : null}
+                promised={row.promise !== null}
               />
+              <KinPromiseFrom environmentId={environmentId} orgId={orgId} promise={row.promise} />
             </li>
           ))}
         </ul>
@@ -781,7 +815,7 @@ function ClientPage(
     </KinWorkSection>
   );
   const addTask = (side: "ours" | "theirs", label: string) =>
-    props.onAddTask === null || view.closed ? undefined : (
+    props.onAddTask === null || view.closed || !view.adds ? undefined : (
       <Button
         size="xs"
         variant="ghost"
@@ -809,8 +843,20 @@ function ClientPage(
                 <KinAvatar avatar={view.lookedAfter.avatar} size="xs" />
                 <span className="truncate text-foreground">{view.lookedAfter.name}</span>
               </p>
+              {view.contract === null ? null : (
+                <div>
+                  <Badge
+                    size="lg"
+                    variant={view.contract.soon ? "warning" : "secondary"}
+                    aria-label={`${KIN_PROMISES.contract}: ${view.contract.text}`}
+                  >
+                    <CalendarIcon />
+                    {view.contract.text}
+                  </Badge>
+                </div>
+              )}
             </div>
-            {can.edit || can.owner || canInvoice ? (
+            {can.edit || can.owner || (canInvoice && invoicesOn) ? (
               <div className="flex shrink-0 items-center gap-1">
                 {can.edit ? (
                   <Button
@@ -832,7 +878,7 @@ function ClientPage(
                     <EllipsisIcon />
                   </MenuTrigger>
                   <MenuPopup align="end">
-                    {canInvoice && !view.vendor && !view.closed ? (
+                    {canInvoice && invoicesOn && !view.vendor && !view.closed ? (
                       <MenuItem onClick={() => setDialog({ type: "invoice" })}>
                         {KIN_MONEY_FORMS.invoice.title}
                       </MenuItem>
@@ -910,7 +956,7 @@ function ClientPage(
           <KinWorkSection
             title={KIN_CLIENTS.projects}
             action={
-              can.owner && !view.closed ? (
+              can.owner && view.adds && !view.closed ? (
                 <Button size="xs" variant="ghost" onClick={() => setDialog({ type: "project" })}>
                   <PlusIcon />
                   {KIN_PROJECTS.add}
@@ -947,7 +993,7 @@ function ClientPage(
         <KinWorkSection
           title={KIN_CLIENTS.contacts}
           action={
-            keepsContacts ? (
+            keepsContacts && view.adds ? (
               <Button
                 size="xs"
                 variant="ghost"
@@ -961,7 +1007,7 @@ function ClientPage(
         >
           {view.contacts.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              {keepsContacts ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
+              {keepsContacts && view.adds ? KIN_CLIENTS.noContacts : KIN_CLIENTS.noContactsYet}
             </p>
           ) : (
             <>
@@ -992,6 +1038,23 @@ function ClientPage(
             <p className="text-xs text-muted-foreground">{view.contactsWho}</p>
           )}
         </KinWorkSection>
+        {view.credit.length === 0 ? null : (
+          <KinWorkSection title={KIN_CLIENTS_WORDS.credit}>
+            <ul className="-mx-2 flex flex-col">
+              {view.credit.map((one) => (
+                <li key={one.key}>
+                  <button
+                    type="button"
+                    onClick={() => props.onOpenTask(one.key)}
+                    className="flex w-full items-center justify-between gap-3 rounded-md px-2 py-1.5 text-start text-sm text-foreground tabular-nums outline-none ring-ring hover:bg-accent focus-visible:ring-2 focus-visible:ring-inset"
+                  >
+                    <span>{one.line}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </KinWorkSection>
+        )}
         <KinWorkPlaceLists
           environmentId={environmentId}
           orgId={orgId}
@@ -1046,16 +1109,24 @@ function ClientPage(
                   <p className="whitespace-pre-wrap text-sm text-foreground">{view.address}</p>
                 </KinWorkSection>
               )}
-              {!can.owner || (view.vendor && view.tax === null) ? null : (
+              {!can.owner ||
+              ((view.vendor || !india) &&
+                view.tax === null &&
+                view.accountsForTax === null) ? null : (
                 <KinWorkSection title={KIN_CLIENTS.tax}>
-                  <p
-                    className={cn(
-                      "text-sm",
-                      view.tax === null ? "text-muted-foreground" : "text-foreground",
-                    )}
-                  >
-                    {view.tax ?? KIN_CLIENTS.noTax}
-                  </p>
+                  {view.tax === null && !india ? null : (
+                    <p
+                      className={cn(
+                        "text-sm",
+                        view.tax === null ? "text-muted-foreground" : "text-foreground",
+                      )}
+                    >
+                      {view.tax ?? KIN_CLIENTS.noTax}
+                    </p>
+                  )}
+                  {view.accountsForTax === null ? null : (
+                    <p className="text-sm text-foreground">{view.accountsForTax}</p>
+                  )}
                 </KinWorkSection>
               )}
               {can.owner ? (
@@ -1226,9 +1297,12 @@ function KinClientNextStep(props: {
 }) {
   const { next } = props;
   return (
-    <KinWorkSection title={KIN_CLIENTS.nextStep} action={next === null ? props.add : undefined}>
+    <KinWorkSection
+      title={KIN_CLIENTS_WORDS.nextStep}
+      action={next === null ? props.add : undefined}
+    >
       {next === null ? (
-        <p className="text-sm text-warning-foreground">{KIN_CLIENTS.noNextStep}</p>
+        <p className="text-sm text-warning-foreground">{KIN_CLIENTS_WORDS.noNextStep}</p>
       ) : (
         <button
           type="button"

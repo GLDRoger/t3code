@@ -16,6 +16,8 @@ import { KinDealNewScreen } from "./KinDealNewScreen";
 import { KinDealScreen } from "./KinDealScreen";
 import { KinDealsConcernScreen } from "./KinDealsConcernScreen";
 import { KinDealStagesScreen } from "./KinDealsSettings";
+import { KinSectionsScreen } from "./KinSectionsScreen";
+import { KinNumberFormScreen, KinNumberScreen, KinNumbersScreen } from "./KinNumbersScreens";
 import { KinImportScreen } from "./KinImportScreen";
 import {
   KinConnectionAddScreen,
@@ -23,6 +25,7 @@ import {
 } from "./connections/KinConnectionFormScreens";
 import { KinConnectionScreen } from "./connections/KinConnectionScreen";
 import { KinConnectionsScreen } from "./connections/KinConnectionsScreen";
+import { KinMyMailboxScreen } from "./connections/KinMyMailboxScreen";
 import { KinGitHubConnectScreen } from "./connections/KinGitHubConnect";
 import { KinSocialConnectScreen, KinSocialLinkScreen } from "./connections/KinSocialConnect";
 import { KinDocFileScreen } from "./KinDocFileScreen";
@@ -51,6 +54,7 @@ import { KinGoalFormScreen } from "./KinGoals";
 import { KinInviteScreen } from "./KinInviteScreen";
 import { KinReceiptApplyScreen, KinReceiptNewScreen } from "./KinInvoice";
 import { KinExpenseNewScreen, KinInvoiceNewScreen } from "./KinMoneyForms";
+import { KinBillsAddScreen, KinBillsScreen } from "./KinBills";
 import { KinJoinScreen } from "./KinJoinScreen";
 import { KinBudgetScreen } from "./KinMoneyAnswers";
 import { KinTeamScreen } from "./KinTeamScreen";
@@ -143,6 +147,15 @@ export const KIN_SCREENS = {
     screen: KinExpenseNewScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
+  KinBillsAdd: createNativeStackScreen({
+    screen: KinBillsAddScreen,
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinBills: createNativeStackScreen({
+    screen: KinBillsScreen,
+    linking: "kin/:environmentId/:orgId/bills",
+    options: pageRoute({ title: "Bills added" }),
+  }),
   KinReceiptApply: createNativeStackScreen({
     screen: KinReceiptApplyScreen,
     options: sheetRoute({ detent: 0.75 }),
@@ -184,6 +197,11 @@ export const KIN_SCREENS = {
     screen: KinConnectionsScreen,
     linking: "kin/:environmentId/:orgId/connections",
     options: pageRoute({ title: "Connections" }),
+  }),
+  KinMyMailbox: createNativeStackScreen({
+    screen: KinMyMailboxScreen,
+    linking: "kin/:environmentId/:orgId/mailbox",
+    options: pageRoute({ title: "Your mailbox" }),
   }),
   KinConnection: createNativeStackScreen({
     screen: KinConnectionScreen,
@@ -255,6 +273,11 @@ export const KIN_SCREENS = {
     linking: "kin/:environmentId/:orgId/settings/deals",
     options: pageRoute({ title: "Deals" }),
   }),
+  KinSections: createNativeStackScreen({
+    screen: KinSectionsScreen,
+    linking: "kin/:environmentId/:orgId/settings/sections",
+    options: pageRoute({ title: "Sections" }),
+  }),
   KinImport: createNativeStackScreen({
     screen: KinImportScreen,
     options: pageRoute({ title: "Import a file" }),
@@ -282,6 +305,20 @@ export const KIN_SCREENS = {
   KinSearch: createNativeStackScreen({
     screen: KinSearchScreen,
     linking: "kin/:environmentId/:orgId/search",
+    options: sheetRoute({ detent: "full", android: "fullScreen" }),
+  }),
+  KinNumbers: createNativeStackScreen({
+    screen: KinNumbersScreen,
+    linking: "kin/:environmentId/:orgId/numbers",
+    options: pageRoute({ title: "Numbers" }),
+  }),
+  KinNumber: createNativeStackScreen({
+    screen: KinNumberScreen,
+    linking: "kin/:environmentId/:orgId/numbers/:number",
+    options: pageRoute({ title: "Number" }),
+  }),
+  KinNumberForm: createNativeStackScreen({
+    screen: KinNumberFormScreen,
     options: sheetRoute({ detent: "full", android: "fullScreen" }),
   }),
   KinGoalForm: createNativeStackScreen({

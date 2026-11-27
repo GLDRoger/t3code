@@ -39,3 +39,16 @@ export function isChunkLoadError(error: unknown): boolean {
     message !== undefined && CHUNK_LOAD_ERROR_PREFIXES.some((prefix) => message.startsWith(prefix))
   );
 }
+
+// `reload` is replaceable once main loads: Kin carries unsent drafts across it.
+export const chunkLoadState = { reloadScheduled: false, reload: () => window.location.reload() };
+
+// Registered from the entry before main loads, so main-chunk and route-chunk failures share one decision.
+export function handleChunkLoadErrors() {
+  window.addEventListener("vite:preloadError", (event) => {
+    if (reloadOnceForChunkLoadError(undefined, () => chunkLoadState.reload())) {
+      chunkLoadState.reloadScheduled = true;
+      event.preventDefault();
+    }
+  });
+}

@@ -213,6 +213,9 @@ describe("KinChatRepository", () => {
           wakeupId,
           placeReplyFigures: true,
         });
+        assert.strictEqual(posted.sourceWakeupId, wakeupId);
+        const page = yield* repo.history({ orgId, chatId, beforeSeq: posted.seq + 1, limit: 10 });
+        assert.strictEqual(page.messages[0]?.sourceWakeupId, wakeupId);
         assert.notInclude(posted.body, "kin-figure:");
         if (lane === "current") {
           assert.deepStrictEqual(posted.embeds, [...figures].reverse());
@@ -479,6 +482,7 @@ describe("KinChatRepository", () => {
         assert.deepStrictEqual(Option.getOrThrow(yield* repo.getReadState(scope)), {
           ...scope,
           lastReadSeq: 1,
+          answeredSeq: 0,
           updatedAt: timestamp,
         });
         const waiting = {
@@ -1433,15 +1437,17 @@ describe("KinChatRepository", () => {
       yield* Effect.all(
         [
           repo.markRead({ ...scope, seq: 3, updatedAt: later }),
-          repo.markRead({ ...scope, seq: 1, updatedAt: later }),
+          repo.markRead({ ...scope, seq: 1, updatedAt: later, answered: true }),
           repo.markRead({ ...scope, seq: 2, updatedAt: later }),
         ],
         { concurrency: "unbounded" },
       );
-      yield* repo.markRead({ ...scope, seq: 0, updatedAt: timestamp });
+      yield* repo.markRead({ ...scope, seq: 0, updatedAt: timestamp, answered: true });
+      // Seen and answered each move only forward, on their own.
       assert.deepStrictEqual(Option.getOrThrow(yield* repo.getReadState(scope)), {
         ...scope,
         lastReadSeq: 3,
+        answeredSeq: 1,
         updatedAt: later,
       });
       assert.strictEqual(yield* repo.unreadCount(scope), 0);
@@ -1473,6 +1479,19 @@ describe("KinChatRepository", () => {
         message("after-card", { author: agentAuthor, authorRole: "member" }),
       );
       assert.strictEqual(yield* repo.unreadTotal({ orgId, personId }), 2);
+      // Kin's notice counts while its trouble stands; resolved, it no longer needs reading.
+      yield* repo.insertMessage(
+        message("notice", { author: { _tag: "system" }, mentions: [], kind: "system" }),
+      );
+      yield* sql`INSERT INTO kin_waiting (waiting_id, org_id, person_id, chat_id, message_id,
+          widget_id, reason, created_at, resolved_at, resolution)
+        VALUES ('notice-waiting', ${orgId}, ${personId}, ${chatId}, 'notice', NULL, 'question',
+          ${timestamp}, NULL, NULL)`;
+      assert.strictEqual(yield* repo.unreadTotal({ orgId, personId }), 3);
+      yield* sql`UPDATE kin_waiting SET resolved_at = ${later}, resolution = 'closed'
+        WHERE waiting_id = 'notice-waiting'`;
+      assert.strictEqual(yield* repo.unreadTotal({ orgId, personId }), 2);
+      assert.strictEqual(yield* repo.unreadCount(scope), 2);
       yield* repo.markRead({ ...scope, seq: 999, updatedAt: later });
       assert.deepStrictEqual(
         Option.getOrThrow(yield* repo.getMessage({ orgId, messageId: decodeMessageId("agent") }))

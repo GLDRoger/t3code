@@ -266,6 +266,16 @@ describe("KinTriggerScheduler", () => {
       assert.isNull((yield* store.get(orgA, trigger({ id: "once" }).id))?.nextRunAt);
       const sql = yield* SqlClient.SqlClient;
       assert.lengthOf(yield* sql`SELECT fire_id FROM kin_trigger_fires ORDER BY fire_id`, 3);
+      // The routine's six mornings in between are skipped once; the watchdog and the late
+      // heads-up (it still fires) skip nothing.
+      const skipped = ["02", "03", "04", "05", "06", "07"].map((day) => {
+        const at = millis(`2026-11-${day}T03:30:00.000Z`);
+        return { kind: "scheduled", ref: `routine:${at}`, reason: "time_passed", at };
+      });
+      assert.deepStrictEqual(
+        yield* sql`SELECT kind, ref, reason, at FROM kin_offline_skips ORDER BY at`,
+        skipped,
+      );
     }).pipe(Effect.provide(layer)),
   );
 

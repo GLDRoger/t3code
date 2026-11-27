@@ -39,19 +39,29 @@ import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError } from "effect/sql/SqlError";
 
-import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { KinRefreshObserver, KinWorkRefresh } from "../chat/KinRefreshHub.ts";
 import type { ClosedSubject } from "../open/closeSubject.ts";
 import { hashedEventId } from "../lead/eventIds.ts";
 import { KinEventQueue } from "../lead/KinEventQueue.ts";
 import { teammatesLimited } from "../lead/KinBudget.ts";
 import * as LeadAccess from "../lead/LeadAccess.ts";
 import * as Reach from "../lead/Reach.ts";
-import { ownerLevel, ownerLevelAsked, ownsAgent } from "../people/KinAccess.ts";
-import { approvedFor, DRAFT_LIST, recordMade } from "../questions/approval.ts";
+import {
+  accessSql,
+  KIN_OWN_REFUSAL,
+  kinOwnTurn,
+  ownerLevel,
+  ownerLevelAsked,
+  ownsAgent,
+  refuseKinOwn,
+} from "../people/KinAccess.ts";
+import { approvedClient, approvedFor, DRAFT_LIST, recordMade } from "../questions/approval.ts";
 import {
   changeStampKey,
   codingAgentSource,
+  firstOutsideChange,
   followsOutsideRead,
+  outsideRead,
   outsideStamp,
   stampEvent,
 } from "../lead/OutsideContent.ts";
@@ -74,7 +84,16 @@ import {
   type ListName,
   parseFields,
   shownField,
+  TEAM_LIST_RESERVED,
 } from "./lists.ts";
+import {
+  BILL_TO_FIELDS,
+  billToNameOf,
+  clearedBillTo,
+  clearsBillTo,
+  hasBillTo,
+  validateBillTo,
+} from "./billTo.ts";
 import {
   addUp,
   askSlip,
@@ -131,6 +150,7 @@ import {
   type ListDef,
   listDef,
   owedState,
+  isInvoiceDraft,
   owesIn,
   startState,
   stateLabel,
@@ -138,9 +158,24 @@ import {
   verifyRefs,
 } from "./registers.ts";
 import { contactFields } from "./contactDetails.ts";
-import { directionOf, findBankList } from "./statements/bankList.ts";
+import {
+  BANK_CREDIT_ORIGIN,
+  bankStates,
+  directionOf,
+  findBankList,
+} from "./statements/bankList.ts";
+import { markedKey } from "./keyCall.ts";
+import { keyRefusal, moneyOf } from "./keyGuard.ts";
 import { cleanTags } from "./tags.ts";
 import { notAVendor } from "./vendorName.ts";
+import {
+  companyCashOut,
+  FUNDED_BY,
+  fundingOf,
+  partnerRepaidDay,
+  REIMBURSEMENT,
+  REPAID_ON,
+} from "./reimbursement.ts";
 import { withArticle } from "../article.ts";
 import { anchorOf, nextDates } from "./repeat.ts";
 import {
@@ -152,11 +187,14 @@ import {
 import {
   alsoOnIt,
   bumpTeamSeqs,
-  dependents,
+  dependentRows,
   teamGuard,
   crmSees,
   teamPairs,
   personSees,
+  legacySeenBy,
+  listMoneySeenBy,
+  viewerOfPeople,
   ROOM_LISTS,
   teamSeesField,
   teamSeq,
@@ -165,6 +203,7 @@ import {
   viewReadsWhole,
   viewSees,
 } from "./teamView.ts";
+import { holderFor, theirsHeldBy, theirsHolder } from "./promises.ts";
 
 /** A follow-up's title: the leftover's first line, this long at most; the rest goes in its notes. */
 const LEFTOVER_TITLE = 160;
@@ -184,15 +223,18 @@ export type Writer = {
   readonly teammate?: boolean;
   /** `deals.ts`, which decided the write's rules: no other path writes a deal. */
   readonly deal?: true;
+  readonly creditNote?: true;
+  readonly undoingBankCredit?: true;
   /** A member's write in Clients: a name clashes only with what this person sees there (`crmSees`). */
   readonly namesSeenBy?: KinPersonId;
-  /**
-   * The person's own coding agent, with this key: the write reaches only a Work task that person
-   * holds now, whatever their level, and its history names the key.
-   */
+  /** The person's own coding agent, with this key: the change's history names the key. */
   readonly codingAgentKey?: string;
   /** Shared with the team when made; a turn others read shares its tasks too (`ROOM_LISTS`). */
   readonly teamShared?: boolean;
+  /** The holder whose doc head start this turn is (`docHeadStart`): its one new doc is theirs. */
+  readonly headStartFor?: KinPersonId;
+  /** A draft filed to go up from its card (`doc_create` with draft): `draftDoc` decides its label. */
+  readonly draftCard?: true;
   /** A lead's turn others read: `viewGuard` decides the write inside its transaction. */
   // oxlint-disable-next-line t3code/kin-viewer-scoped-reads -- a write's guard, not a read; absent is an owner-level writer.
   readonly view?: {
@@ -201,6 +243,8 @@ export type Writer = {
   };
   /** The cards a person's tap settles itself: closing the entry leaves them to the tap. */
   readonly answering?: ReadonlyArray<string>;
+  /** An agent's write with no turn of its own, made from what one read: that turn's stamp. */
+  readonly outside?: string;
   /**
    * Putting back a default `asker` took (`defaultTaken.ts`): reopened, a task is given to nobody
    * anew, and an agent holding it other than `asker` hears it is open again.
@@ -217,23 +261,6 @@ export type Writer = {
     readonly tappedBy?: KinPersonId;
   };
 };
-/** A Work task this writer, a person, holds or is on now, and nobody dropped. */
-const heldBy = (
-  row: {
-    readonly registerId: string;
-    readonly ownerKind: string;
-    readonly ownerId: string;
-    readonly state: KinRecordState;
-    readonly fieldsJson: string;
-  },
-  writer: Writer,
-) =>
-  row.registerId === "work" &&
-  row.state !== "dropped" &&
-  writer.actor._tag === "person" &&
-  ((row.ownerKind === "person" && row.ownerId === writer.actor.personId) ||
-    fieldList(parseFields(row.fieldsJson), "alsoOn").includes(`person:${writer.actor.personId}`));
-
 /** What an agent on a task hears when it tries what only its holder, or a person's word, may do. */
 export const ALSO_ON_UNASKED =
   "Who is on a task changes only when a person asks for it in this turn. Nothing was saved: ask them.";
@@ -425,6 +452,16 @@ export type QueryInput = {
   readonly late?: boolean;
   readonly dueBy?: number;
   readonly dueAfter?: number;
+  /**
+   * Paid expenses Money's "spent" counts in these days: the company's own by their date in
+   * `[fromAt, toAt)`, a partner's by the day it was paid back, `from` to `to`.
+   */
+  readonly spent?: {
+    readonly from: string;
+    readonly to: string;
+    readonly fromAt: number;
+    readonly toAt: number;
+  };
   /** Its own date, or the time it was added when it has none, in `[dateFrom, dateTo)`. */
   readonly dateFrom?: number;
   readonly dateTo?: number;
@@ -479,6 +516,8 @@ export type Tick = {
   readonly created?: true;
   /** Each person who could see what changed, before or after it, and their own number now. */
   readonly team?: ReadonlyMap<string, number>;
+  /** Rows to read again for a teammate because this write can change their visibility. */
+  readonly dependents?: ReadonlyArray<{ readonly key: string; readonly registerId: string }>;
   /** People whose level or places changed, so what they may see may have (`peopleMoved`). */
   readonly people?: ReadonlyArray<string>;
   /**
@@ -491,6 +530,7 @@ export type Tick = {
 type TeamScope = {
   readonly scope: ReadonlyArray<string>;
   readonly before: ReadonlyArray<{ readonly personId: string; readonly recordId: string }>;
+  readonly dependents?: Tick["dependents"];
   /** People joined to or taken off a project: their tasks there read differently, seen or not. */
   readonly joined?: ReadonlyArray<string>;
 };
@@ -513,11 +553,14 @@ type Sums = {
   readonly net?: ReadonlyArray<KinMoney>;
 };
 export type Totals = Sums & {
+  readonly withheld?: true;
   readonly counted: number;
   readonly groups?: ReadonlyArray<Sums & { readonly group: string | null; readonly count: number }>;
 };
 export type PaymentInput = {
   readonly amount: KinMoney;
+  readonly received?: KinMoney;
+  readonly rate?: string;
   /** A day in the owner's zone. */
   readonly paidOn: string;
   readonly note?: string;
@@ -526,11 +569,24 @@ export type PaymentInput = {
   /** A retry with the same key records nothing more; one whose payment was voided is refused. */
   readonly originKey: string;
 };
+export const CREDIT_NOTE_TAP =
+  "Kin issues and voids a credit note only on the owner's own tap on its page; offer the owner that there.";
+export const CREDIT_NOTE_VOID =
+  "A void credit note can't be brought back. Make a new one from the invoice.";
+
 const CLOSED = ["done", "dropped"] as const;
 /** Quotes and invoices: real only on an owner-level person's word (`startsKept`). */
-const ISSUED_LISTS: ReadonlySet<string> = new Set(["quotes", "invoices"]);
+const ISSUED_LISTS: ReadonlySet<string> = new Set(["quotes", "invoices", "credit_notes"]);
+
+const alwaysKept = (list: string) => list === "work" || list === "milestones";
 /** Lists whose entries are issued, sent or paid: a suggestion there is none of those. */
-const MONEY_LISTS: ReadonlySet<string> = new Set(["quotes", "invoices", "expenses", "receipts"]);
+const MONEY_LISTS: ReadonlySet<string> = new Set([
+  "quotes",
+  "invoices",
+  "expenses",
+  "receipts",
+  "credit_notes",
+]);
 /** A client and a prospect share names: one company is either, never both at once. */
 export const clientFamily = (sql: SqlClient.SqlClient, category: Statement.Fragment) =>
   sql`(CASE COALESCE(${category}, 'client') WHEN 'prospect' THEN 'client'
@@ -588,7 +644,109 @@ const FIELD_NAMES: Readonly<Record<string, string>> = {
 /** What a refusal may quote of an entry that isn't sensitive; money, notes and a list's own fields it doesn't. */
 const QUOTED = new Set(["title", "state", "owner", "waitingOn", "due", "date", "category", "side"]);
 const invalid = (message: string) => new KinChatError({ reason: "invalid_state", message });
-/** Whether an entry's amount or fields put money on it. */
+const notAllowed = (message: string) => new KinChatError({ reason: "not_allowed", message });
+/** A person named as an expense's funder, on a list that keeps a reimbursement for it. */
+const funds = (def: ListDef, funder: unknown) =>
+  def.id === "expenses" &&
+  typeof funder === "string" &&
+  funder.startsWith("person:") &&
+  def.fields.some((one) => one.key === REIMBURSEMENT);
+/** A repaid day after today in the owner's zone: nothing is paid back before it happens. */
+const repaidAhead = (fields: Readonly<Record<string, unknown>>, today: string) => {
+  const day = fields[REPAID_ON];
+  return typeof day === "string" && day.slice(0, 10) > today
+    ? invalid(`Repaid on can't be after today, ${today}.`)
+    : undefined;
+};
+/** Who funded an expense and whether it was paid back: a person's word, or one they gave in person. */
+const FUNDING = [FUNDED_BY, REIMBURSEMENT, REPAID_ON] as const;
+export const FUNDING_IS_THE_OWNERS =
+  "Only the owner or a co-owner says who funded an expense or that it was paid back, in their own message or tap before anything outside is read. Nothing changed. Put it to them as a card or a question.";
+/**
+ * Why a payment isn't taken back on its own: a split bank credit is undone whole, a credit
+ * note's reduction goes with the note, and a payment from the client's credit is un-applied.
+ */
+export const takeBackBlocked = Effect.fn("KinRecords.takeBackBlocked")(function* (
+  orgId: KinOrgId,
+  row: { readonly registerId: string; readonly originKey: string },
+  payment: { readonly paymentId: string; readonly originKey: string; readonly voided: boolean },
+  mode?: "undo_split" | "unapply_credit",
+  creditNote = false,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const bankId = payment.originKey.startsWith(BANK_CREDIT_ORIGIN)
+    ? payment.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]
+    : undefined;
+  const splitBankId =
+    bankId !== undefined && payment.originKey.includes(":split:")
+      ? bankId
+      : row.registerId === "receipts" &&
+          row.originKey.startsWith(BANK_CREDIT_ORIGIN) &&
+          row.originKey.endsWith(":left")
+        ? row.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]
+        : undefined;
+  if (mode !== "undo_split" && splitBankId !== undefined) {
+    const [bank] = yield* sql<{ key: string }>`SELECT key FROM kin_records
+      WHERE org_id = ${orgId} AND record_id = ${splitBankId}`;
+    if (bank === undefined) return unavailable;
+    return invalid(
+      `That payment is one of several from ${bank.key}; undo them together from ${bank.key}.`,
+    );
+  }
+  if (payment.originKey.startsWith("credit_note:") && !creditNote)
+    return invalid("This came from a credit note. Void the credit note to take it back.");
+  if (payment.voided || mode === "unapply_credit" || row.registerId !== "invoices")
+    return undefined;
+  const receiptId = /^receipt:([^:]+)(?::after:.+)?$/.exec(payment.originKey)?.[1];
+  if (receiptId === undefined) return undefined;
+  const [receipt] = yield* sql`SELECT 1 FROM kin_records
+    WHERE org_id = ${orgId} AND record_id = ${receiptId} AND register_id = 'receipts'
+      AND json_extract(fields_json, '$.payment') = ${payment.paymentId}`;
+  return receipt === undefined
+    ? undefined
+    : invalid("This payment came from the client's credit. Un-apply it instead. Nothing changed.");
+});
+/** An agent's Paid on an invoice that still has money owed, refused. */
+export const paidWhileOwed = (key: string, owed: string, paid: string) =>
+  `Nothing was changed: ${key} still has ${owed} owed. Put money received to the owner with payment_record; their tap on its card marks it ${paid}.`;
+export const REPAID_IS_THE_OWNERS =
+  "Nothing was changed: an agent doesn't mark an expense repaid. The owner marks it on the mark-repaid card when Kin has matched the bank debit, or on the expense in Money.";
+/** Whether these fields newly say a partner was paid back. */
+const marksRepaid = (
+  before: Parameters<typeof fundingOf>[0],
+  after: Parameters<typeof fundingOf>[0],
+) => {
+  const was = fundingOf(before);
+  const now = fundingOf(after);
+  return (
+    now.by === "partner" &&
+    now.state === "repaid" &&
+    !(was.by === "partner" && was.state === "repaid")
+  );
+};
+export const FUNDING_A_PERSON_SET =
+  "A person said who funded this expense or whether it was paid back, and an agent doesn't change that. Nothing changed. Put it to the owner as a card or a question.";
+
+/**
+ * Whether an agent may say who funded an expense or that it was paid back: an owner-level person
+ * started the turn with their own message or tap, and it has read nothing from outside.
+ */
+export const agentMayFund = Effect.fn("KinRecords.agentMayFund")(function* (
+  orgId: KinOrgId,
+  writer: Writer,
+) {
+  if (writer.actor._tag !== "agent") return true;
+  const wakeupId = writer.wakeupId;
+  if (wakeupId === undefined) return false;
+  return (
+    (yield* personSpokeInTurn(orgId, writer.actor.agentId, wakeupId)) &&
+    (yield* ownerLevelAsked(orgId, writer.actor.agentId, wakeupId)) &&
+    !(yield* outsideRead({ orgId, wakeupId })) &&
+    !(yield* followsOutsideRead(orgId, wakeupId))
+  );
+});
+
+/** Whether an amount or fields put money on an entry. */
 const recordsMoney = (
   amount: KinMoney | null | undefined,
   fields: Readonly<Record<string, FieldValue | null>> | undefined,
@@ -775,7 +933,13 @@ export class KinRecords extends Context.Service<
       writer: Writer,
       key: string,
       paymentId: string,
+      mode?: "unapply_credit",
     ) => Effect.Effect<RecordRow, KinChatError>;
+    readonly undoCreditPayment: (
+      orgId: KinOrgId,
+      writer: Writer,
+      key: string,
+    ) => Effect.Effect<{ readonly key: string }, KinChatError>;
     /** Exact sums of the amounts `query`'s filter matches, per currency, and per group if asked. */
     readonly totals: (
       orgId: KinOrgId,
@@ -875,6 +1039,11 @@ const make = Effect.gen(function* () {
   const choicesMoved = (orgId: KinOrgId, list: string) =>
     list === "clients" || list === "projects" ? refreshes.touch(orgId, "workChoices") : Effect.void;
   const provideSql = Effect.provideService(SqlClient.SqlClient, sql);
+  const gstCompany = (orgId: KinOrgId) =>
+    companyMoney(orgId).pipe(
+      provideSql,
+      Effect.map((money) => money.country === "IN"),
+    );
 
   const failed = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
@@ -935,7 +1104,7 @@ const make = Effect.gen(function* () {
       wakeup_id: writer.wakeupId ?? null,
       chat_id: writer.chatId ?? null,
       asked_by_person_id: writer.actor._tag === "agent" ? (writer.askedBy ?? null) : null,
-      coding_agent_key: writer.codingAgentKey ?? null,
+      coding_agent_key: (yield* markedKey(writer)) ?? null,
     };
   });
 
@@ -953,7 +1122,9 @@ const make = Effect.gen(function* () {
       ${sql.insert(values)} RETURNING seq`;
     const seq = change?.seq ?? 0;
     // What the agent's turn had read from outside when it wrote this, for the entry's sheet.
-    if (writer.actor._tag === "agent" && writer.wakeupId !== undefined)
+    if (writer.actor._tag === "agent" && writer.outside !== undefined)
+      yield* stampEvent(orgId, changeStampKey(row.recordId, seq), writer.outside).pipe(provideSql);
+    else if (writer.actor._tag === "agent" && writer.wakeupId !== undefined)
       yield* outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(
         Effect.flatMap((source) => stampEvent(orgId, changeStampKey(row.recordId, seq), source)),
         provideSql,
@@ -1024,6 +1195,7 @@ const make = Effect.gen(function* () {
         ...(stored === undefined ? {} : { registerId: stored.registerId }),
         ...(kind === "created" ? { created: true as const } : {}),
         team: numbers,
+        ...(team?.dependents === undefined ? {} : { dependents: team.dependents }),
         ...(projects.length === 0 ? {} : { projects }),
       }),
     );
@@ -1089,6 +1261,24 @@ const make = Effect.gen(function* () {
     return { chatId: KinChatId.make(chat.chatId), memberId: chat.memberId };
   });
 
+  const wakeOutsideStamp = Effect.fn("KinRecords.wakeOutsideStamp")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    recordId: string,
+    codingAgentKey: string | undefined,
+  ) {
+    if (codingAgentKey !== undefined) {
+      const [key] = yield* sql<{ label: string }>`SELECT label FROM kin_tasks_keys
+        WHERE org_id = ${orgId} AND session_id = ${codingAgentKey}`;
+      return codingAgentSource(key?.label ?? "Coding agent");
+    }
+    const turnStamp =
+      writer.wakeupId === undefined
+        ? undefined
+        : yield* outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(provideSql);
+    return turnStamp ?? (yield* firstOutsideChange(orgId, recordId).pipe(provideSql))?.source;
+  });
+
   /**
    * Wakes a lead about an entry someone else changed, with that human as the turn's provenance:
    * given to it (`assigned`), closed or taken back while it held it or was on it (`withdrawn`; only
@@ -1117,6 +1307,7 @@ const make = Effect.gen(function* () {
     )
       return false;
     if (assignedBy === null) return false;
+    const codingAgentKey = yield* markedKey(writer);
     const [lead] = yield* sql<{ memberId: string; ownerPersonId: string }>`
       SELECT m.member_id AS "memberId", a.owner_person_id AS "ownerPersonId"
       FROM kin_leads l JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
@@ -1159,22 +1350,11 @@ const make = Effect.gen(function* () {
             }),
       })
       .pipe(
-        // Given out after an outside read, or by a coding agent: the receiving turn starts marked.
         Effect.tap(({ event }) =>
-          writer.codingAgentKey !== undefined
-            ? sql<{ label: string }>`SELECT label FROM kin_tasks_keys
-                WHERE org_id = ${orgId} AND session_id = ${writer.codingAgentKey}`.pipe(
-                Effect.flatMap(([key]) =>
-                  stampEvent(orgId, event.eventId, codingAgentSource(key?.label ?? "Coding agent")),
-                ),
-                Effect.provideService(SqlClient.SqlClient, sql),
-              )
-            : writer.wakeupId === undefined
-              ? Effect.void
-              : outsideStamp({ orgId, wakeupId: writer.wakeupId }).pipe(
-                  Effect.flatMap((source) => stampEvent(orgId, event.eventId, source)),
-                  Effect.provideService(SqlClient.SqlClient, sql),
-                ),
+          wakeOutsideStamp(orgId, writer, row.recordId, codingAgentKey).pipe(
+            Effect.flatMap((source) => stampEvent(orgId, event.eventId, source)),
+            provideSql,
+          ),
         ),
         Effect.as(true),
         Effect.catchTags({
@@ -1477,6 +1657,23 @@ const make = Effect.gen(function* () {
     return list;
   });
 
+  /** The person a task was promised to (`fields.promisedTo`): one person here, never its holder. */
+  const promisedToFor = Effect.fn("KinRecords.promisedToFor")(function* (
+    orgId: KinOrgId,
+    asked: FieldValue | null | undefined,
+    holder: KinWorkPrincipal,
+  ) {
+    if (asked === undefined || asked === null) return;
+    const who = typeof asked === "string" ? storedPrincipal(asked) : undefined;
+    if (who === undefined || who === null || who._tag !== "person")
+      return yield* invalid("Who a task was promised to is one person:<id>.");
+    if (asked === shownPrincipal(holder))
+      return yield* invalid(
+        "A task isn't promised to whoever holds it: leave promisedTo off, or name the person it was promised to.",
+      );
+    yield* ownerExists(orgId, who, "to be promised it", { joiningTask: true });
+  });
+
   const insertLink = Effect.fn("KinRecords.insertLink")(function* (
     orgId: KinOrgId,
     recordId: string,
@@ -1497,8 +1694,13 @@ const make = Effect.gen(function* () {
     recordId: string,
     list: "clients" | "projects",
   ) {
-    const [row] = yield* sql<{ key: string; partyId: string | null; state: KinRecordState }>`
-      SELECT key, party_id AS "partyId", state FROM kin_records
+    const [row] = yield* sql<{
+      key: string;
+      title: string;
+      partyId: string | null;
+      state: KinRecordState;
+    }>`
+      SELECT key, title, party_id AS "partyId", state FROM kin_records
       WHERE org_id = ${orgId} AND record_id = ${recordId} AND register_id = ${list}`;
     if (row === undefined)
       return yield* new KinChatError({
@@ -1562,6 +1764,12 @@ const make = Effect.gen(function* () {
         AND ${seenBy === undefined ? sql`1 = 1` : crmSees(sql, seenBy)}
       ORDER BY +r.key LIMIT 1`;
     if (row !== undefined) {
+      // Through a coding agent's key, one it can't reach is named by nothing.
+      if (row.sensitive === 1 && (yield* markedKey({})) !== undefined)
+        return yield* new KinChatError({
+          reason: "conflict",
+          message: "Another entry already has that name.",
+        });
       const error = {
         reason: "conflict" as const,
         message: `There is already ${withArticle(LISTS[list].noun)} named ${title.slice(0, 80)}: ${row.key}.`,
@@ -1606,7 +1814,7 @@ const make = Effect.gen(function* () {
 
   /**
    * An agent's turn that follows an outside read it did not make, and that no owner-level person
-   * asked in person: anything new it makes, on any list, waits to be kept.
+   * asked in person: what it makes outside Work and milestones waits to be kept.
    */
   const followsUnasked = Effect.fn("KinRecords.followsUnasked")(function* (
     orgId: KinOrgId,
@@ -1618,10 +1826,8 @@ const make = Effect.gen(function* () {
   });
 
   /**
-   * Whether a new entry starts kept, from who makes it, in the write's transaction. Made from a
-   * suggestion, or asked to be one, it is one. A quote or invoice is real only on an owner-level
-   * person's word: theirs, or their ask in person of an agent (an approved draft's one entry is
-   * `approvalKeeps`'). Anything else starts kept, unless its caller asks for less.
+   * Work and milestones are saved on creation, including repeats of legacy suggestions.
+   * Elsewhere a suggestion stays so when copied, and quotes and invoices need owner-level authority.
    */
   const startsKept = Effect.fn("KinRecords.startsKept")(function* (
     orgId: KinOrgId,
@@ -1629,13 +1835,15 @@ const make = Effect.gen(function* () {
     list: string,
     input: Pick<CreateInput, "confirmed" | "from">,
   ) {
+    if (alwaysKept(list)) return true;
     if (input.confirmed === false) return false;
     if (input.from !== undefined) {
       const [source] = yield* sql<{ confirmed: number }>`SELECT confirmed FROM kin_records
         WHERE org_id = ${orgId} AND record_id = ${input.from}`;
       if (source !== undefined && isSuggestion(source)) return false;
     }
-    if (!ISSUED_LISTS.has(list) || writer.actor._tag === "system") return true;
+    if (list === "credit_notes" || !ISSUED_LISTS.has(list) || writer.actor._tag === "system")
+      return true;
     return yield* mayKeep(orgId, writer);
   });
 
@@ -1659,11 +1867,11 @@ const make = Effect.gen(function* () {
     }).pipe(provideSql);
     if (approval === undefined) return undefined;
     const { draft } = approval;
-    const keeps =
-      approval.made === null &&
-      DRAFT_LIST[draft.kind] === list &&
-      (draft.for === null || draft.for.partyId === partyId);
-    return { questionId: approval.questionId, keeps };
+    const approved = approval.made === null && DRAFT_LIST[draft.kind] === list;
+    // The approved entry is for the card's client: another, or none, is refused before it is written.
+    if (approved && draft.for !== null && draft.for.partyId !== partyId)
+      return yield* invalid(approvedClient(draft.for.title));
+    return { questionId: approval.questionId, keeps: approved };
   });
 
   type InsertOptions = {
@@ -1713,6 +1921,18 @@ const make = Effect.gen(function* () {
       steps: (input.steps?.length ?? 0) > 0 || input.urgent === true,
     });
     if (invalidFor !== undefined) return yield* invalidFor;
+    // An agent's funder the owner didn't give in person waits with the new entry for Keep.
+    const unaskedFunding =
+      list === "expenses" &&
+      writer.actor._tag === "agent" &&
+      FUNDING.some((field) => field in fields) &&
+      !(yield* agentMayFund(orgId, writer).pipe(provideSql));
+    // Money counts a partner's expense as owed: the entry says so too, not "None".
+    if (funds(def, fields[FUNDED_BY]) && fields[REIMBURSEMENT] === undefined)
+      fields[REIMBURSEMENT] = "owed";
+    // Paid back is the owner's mark: on the mark-repaid card or the expense, never an agent's.
+    if (list === "expenses" && writer.actor._tag === "agent" && marksRepaid({}, fields))
+      return yield* notAllowed(REPAID_IS_THE_OWNERS);
     const zero = zeroOwed(def, input.amount, input.category, writer);
     if (zero !== undefined) return yield* zero;
     if (input.askSlip === true && input.amount != null)
@@ -1740,6 +1960,14 @@ const make = Effect.gen(function* () {
     const invalidRefs = checkRefs(def, partyId, projectId);
     if (invalidRefs !== undefined) return yield* invalidRefs;
     const party = partyId === null ? undefined : yield* target(orgId, partyId, "clients");
+    if (
+      hasBillTo(list) &&
+      Object.keys(fields).some((field) => Object.hasOwn(BILL_TO_FIELDS, field))
+    ) {
+      yield* validateBillTo(gstCompany(orgId), undefined, party, fields, fields.billToName, false);
+      if (party === undefined && billToNameOf(fields) === null)
+        for (const field of Object.keys(clearedBillTo)) delete fields[field];
+    }
     yield* sameName(orgId, list, input.title, partyId, null, input.category, writer.namesSeenBy);
     if (batch === undefined) yield* ownerExists(orgId, input.owner);
     if (list === "work") {
@@ -1748,6 +1976,8 @@ const make = Effect.gen(function* () {
       const alsoOn = yield* alsoOnFor(orgId, writer, fields.alsoOn, copied, input.owner);
       if (alsoOn.length === 0) delete fields.alsoOn;
       else fields.alsoOn = alsoOn;
+      yield* promisedToFor(orgId, fields.promisedTo, input.owner);
+      if (fields.promisedTo === null) delete fields.promisedTo;
     }
     const repeat =
       options.repeat ??
@@ -1755,19 +1985,27 @@ const make = Effect.gen(function* () {
         ? undefined
         : yield* storedRepeat(orgId, input.repeat, input.dueAt ?? null, input.dateAt ?? null));
     const now = yield* Clock.currentTimeMillis;
+    if (list === "expenses" && REPAID_ON in fields) {
+      const ahead = repaidAhead(fields, dayIn(now, yield* ownerZone(orgId).pipe(provideSql)));
+      if (ahead !== undefined) return yield* ahead;
+    }
     const next = batch ?? (yield* reserveKeys(orgId, def, now, 1));
     const key = `${next.prefix}-${next.next}`;
+    const saveOnCreate = alwaysKept(list);
     const approved =
-      options.kept === undefined ? yield* approvalKeeps(orgId, writer, list, partyId) : undefined;
-    const kept =
+      options.kept === undefined && !saveOnCreate
+        ? yield* approvalKeeps(orgId, writer, list, partyId)
+        : undefined;
+    const startsConfirmed =
       options.kept ??
-      ((approved === undefined ? yield* startsKept(orgId, writer, list, input) : approved.keeps) &&
-        !(yield* followsUnasked(orgId, writer)));
+      (!unaskedFunding &&
+        (approved === undefined ? yield* startsKept(orgId, writer, list, input) : approved.keeps) &&
+        (saveOnCreate || !(yield* followsUnasked(orgId, writer))));
     // Nobody issued, sent or was paid for what nobody kept: it waits as a draft on its own day.
     // Only Issue makes an invoice owed, with its number; an agent sets none, so it starts a draft.
     // An approval's entry is the owner's Draft whatever state it was given.
     const state =
-      (!kept && ISSUED_LISTS.has(list)) ||
+      (!startsConfirmed && ISSUED_LISTS.has(list)) ||
       (writer.actor._tag === "agent" && list === "invoices") ||
       approved?.keeps === true
         ? "open"
@@ -1781,6 +2019,18 @@ const make = Effect.gen(function* () {
                 ? yield* ownerZone(orgId).pipe(provideSql)
                 : "UTC",
           }));
+    const kept =
+      startsConfirmed &&
+      !(writer.actor._tag === "agent" && list === "expenses" && state === "open");
+    if ((yield* markedKey(writer)) !== undefined) {
+      const refused = keyRefusal({
+        list,
+        money: moneyOf(def),
+        state,
+        numbered: "number" in fields,
+      });
+      if (refused !== undefined) return yield* refused;
+    }
     const waitingOn = state === "waiting" ? (input.waitingOn ?? null) : null;
     const givenAway =
       !(writer.actor._tag === "agent" && samePrincipal(writer.actor, input.owner)) &&
@@ -1833,7 +2083,7 @@ const make = Effect.gen(function* () {
       request_hash: input.requestHash ?? null,
       team_shared:
         input.team === true ||
-        writer.teammate === true ||
+        (writer.teammate === true && def.team !== true) ||
         writer.teamShared === true ||
         (writer.view !== undefined && (ROOM_LISTS as ReadonlyArray<string>).includes(list))
           ? 1
@@ -1845,7 +2095,8 @@ const make = Effect.gen(function* () {
         givenAway && writer.actor._tag === "agent" && writer.askedBy == null
           ? writer.actor.agentId
           : null,
-      marked_by_person_id: input.sensitive === true ? author : null,
+      // A teammate's draft keeps its kind's label, not theirs: they can't lift it (`teamRule`).
+      marked_by_person_id: input.sensitive === true && guarded === undefined ? author : null,
       asked_by_person_id: author,
       steps_json: steps.length === 0 ? null : yield* encodeSteps(steps),
       urgent: input.urgent === true ? 1 : null,
@@ -1894,6 +2145,10 @@ const make = Effect.gen(function* () {
     input: CreateInput,
     options: InsertOptions,
   ) {
+    if (input.list === "credit_notes" && writer.creditNote !== true)
+      return yield* invalid(
+        "A credit note starts from its invoice: open the invoice and choose Credit note.",
+      );
     const recordId = recordIdFor(orgId, input.originKey);
     const existing = yield* byId(orgId, recordId).pipe(provideSql);
     if (writer.teammate === true && writer.actor._tag === "person")
@@ -1910,7 +2165,12 @@ const make = Effect.gen(function* () {
             writer.view,
             { row: existing, changes: false, input },
             writer.actor._tag === "agent" && writer.wakeupId !== undefined
-              ? { agentId: writer.actor.agentId, wakeupId: writer.wakeupId }
+              ? {
+                  agentId: writer.actor.agentId,
+                  wakeupId: writer.wakeupId,
+                  headStartFor: writer.headStartFor,
+                  draftCard: writer.draftCard,
+                }
               : undefined,
           ).pipe(provideSql);
     if (existing !== undefined) {
@@ -2016,7 +2276,7 @@ const make = Effect.gen(function* () {
       Object.entries(parseFields(row.fieldsJson)).filter(([key]) => !dropped.has(key)),
     );
     const amount = amountOf(row);
-    // The next one is whoever closed this one's to keep, and a suggestion if this one is.
+    // On gated lists, the closer and the source still decide whether the next one is kept.
     const keptNext = yield* startsKept(orgId, writer, row.registerId, { from: row.recordId });
     yield* insert(
       orgId,
@@ -2190,8 +2450,28 @@ const make = Effect.gen(function* () {
                 ...given,
                 fields: yield* cleanTags(orgId, row.registerId, given.fields).pipe(provideSql),
               };
-        if (writer.codingAgentKey !== undefined && !heldBy(row, writer))
-          return yield* notFound(key);
+        if ((yield* markedKey(writer)) !== undefined) {
+          const stored = parseFields(row.fieldsJson);
+          const listed = yield* listDef(orgId, row.registerId).pipe(provideSql);
+          const refused = keyRefusal({
+            list: row.registerId,
+            money:
+              listed === undefined
+                ? { paidOverTime: row.takesPayments === 1, carriesAmount: false }
+                : moneyOf(listed),
+            state: patch.state ?? row.state,
+            numbered: "number" in stored || patch.fields?.number != null,
+            before: { state: row.state, numbered: "number" in stored },
+            touches: Object.entries(patch).flatMap(([field, value]) =>
+              value === undefined
+                ? []
+                : field === "fields" && value !== null && typeof value === "object"
+                  ? Object.keys(value)
+                  : [field],
+            ),
+          });
+          if (refused !== undefined) return yield* refused;
+        }
         const write = {
           row,
           changes: true,
@@ -2229,6 +2509,18 @@ const make = Effect.gen(function* () {
         )
           yield* askSlip(orgId, def, patch.amount, row.recordId).pipe(provideSql);
         if (list === "receipts") {
+          if (
+            row.originKey.startsWith(BANK_CREDIT_ORIGIN) &&
+            row.originKey.endsWith(":left") &&
+            writer.undoingBankCredit !== true &&
+            ((patch.state === "dropped" && row.state !== "dropped") ||
+              (patch.dateAt !== undefined && patch.dateAt !== row.dateAt) ||
+              (patch.partyId !== undefined && patch.partyId !== row.partyId) ||
+              patch.confirmed === false)
+          )
+            return yield* invalid(
+              "This credit is what a bank credit left after paying its invoices. Undo that bank credit to change it. Nothing changed.",
+            );
           if (RECEIPT_TIES.some((field) => field in (patch.fields ?? {})))
             return yield* invalid(RECEIPT_TIES_ARE_KINS);
           // Its payment may have a new receipt since: two live ones would count it twice.
@@ -2302,9 +2594,11 @@ const make = Effect.gen(function* () {
               : row.partyId;
         const invalidRefs = checkRefs(def, partyId, projectId);
         if (invalidRefs !== undefined) return yield* invalidRefs;
-        if (partyId !== row.partyId) {
-          const party = partyId === null ? null : yield* target(orgId, partyId, "clients");
-          changes.push({ field: "party", from: row.partyKey, to: party?.key ?? null });
+        const partyChanged = partyId !== row.partyId;
+        const newParty =
+          partyChanged && partyId !== null ? yield* target(orgId, partyId, "clients") : undefined;
+        if (partyChanged) {
+          changes.push({ field: "party", from: row.partyKey, to: newParty?.key ?? null });
           set("party_id", partyId);
         }
         if (projectId !== row.projectId) {
@@ -2344,11 +2638,45 @@ const make = Effect.gen(function* () {
             : undefined;
         if (alsoOn !== undefined)
           yield* helperGuard(orgId, writer, row, before.owner, patch, alsoOn);
+        // Given to the person it was promised to, it is theirs now and owed to no one.
+        const promisedOff =
+          list === "work" &&
+          patch.fields?.promisedTo === undefined &&
+          patch.owner !== undefined &&
+          stored.promisedTo === shownPrincipal(patch.owner);
+        if (list === "work" && !promisedOff)
+          yield* promisedToFor(orgId, patch.fields?.promisedTo, patch.owner ?? before.owner);
+        const billToPatch =
+          hasBillTo(list) &&
+          (partyChanged ||
+            Object.keys(patch.fields ?? {}).some((field) => Object.hasOwn(BILL_TO_FIELDS, field)))
+            ? (patch.fields ?? {})
+            : undefined;
+        const name =
+          patch.fields?.billToName === undefined ? stored.billToName : patch.fields.billToName;
+        if (billToPatch !== undefined) {
+          const client =
+            newParty ?? (partyId === null ? undefined : yield* target(orgId, partyId, "clients"));
+          yield* validateBillTo(
+            gstCompany(orgId),
+            row.key,
+            client,
+            billToPatch,
+            name,
+            partyChanged,
+          );
+        }
+        const clearBilling =
+          hasBillTo(list) &&
+          ((billToPatch !== undefined && clearsBillTo(billToPatch)) ||
+            (partyId === null && billToNameOf({ billToName: name ?? null }) === null));
         const merged: Record<string, FieldValue> = { ...stored };
         let fieldsChanged = false;
         for (const [field, value] of Object.entries({
           ...patch.fields,
+          ...(clearBilling ? clearedBillTo : {}),
           ...(alsoOn === undefined ? {} : { alsoOn: alsoOn.length === 0 ? null : alsoOn }),
+          ...(promisedOff ? { promisedTo: null } : {}),
         })) {
           const from = shownField(stored[field]);
           const to = shownField(value);
@@ -2381,12 +2709,88 @@ const make = Effect.gen(function* () {
           delete merged.untold;
           fieldsChanged = true;
         }
+        // Who funded it decides what is owed: a partner's reads owed, the company's nothing.
+        if (
+          shownField(stored[FUNDED_BY]) !== shownField(merged[FUNDED_BY]) &&
+          patch.fields?.[REIMBURSEMENT] === undefined &&
+          def.fields.some((one) => one.key === REIMBURSEMENT)
+        ) {
+          const was = shownField(merged[REIMBURSEMENT]);
+          if (funds(def, merged[FUNDED_BY]) && merged[REIMBURSEMENT] === undefined)
+            merged[REIMBURSEMENT] = "owed";
+          else if (merged[FUNDED_BY] === undefined) {
+            delete merged[REIMBURSEMENT];
+            delete merged[REPAID_ON];
+          }
+          if (shownField(merged[REIMBURSEMENT]) !== was) {
+            changes.push({
+              field: REIMBURSEMENT,
+              from: was,
+              to: shownField(merged[REIMBURSEMENT]),
+            });
+            fieldsChanged = true;
+          }
+        }
         if (fieldsChanged) set("fields_json", yield* encodeFieldValues(merged));
         const amount = amountOf(row) ?? null;
         const byOwner = writer.via === "owner";
         const amountChanged =
           patch.amount !== undefined &&
           (patch.amount?.minor !== amount?.minor || patch.amount?.currency !== amount?.currency);
+        if (
+          list === "expenses" &&
+          shownField(stored[REPAID_ON]) !== shownField(merged[REPAID_ON])
+        ) {
+          const today = dayIn(
+            yield* Clock.currentTimeMillis,
+            yield* ownerZone(orgId).pipe(provideSql),
+          );
+          const ahead = repaidAhead(merged, today);
+          if (ahead !== undefined) return yield* ahead;
+        }
+        const fundingMoved =
+          list === "expenses"
+            ? FUNDING.filter((field) => shownField(stored[field]) !== shownField(merged[field]))
+            : [];
+        if (writer.actor._tag === "agent" && fundingMoved.length > 0) {
+          if (!(yield* agentMayFund(orgId, writer).pipe(provideSql)))
+            return yield* notAllowed(FUNDING_IS_THE_OWNERS);
+          const set = fundingMoved.filter((field) => shownField(stored[field]) !== null);
+          if (set.length > 0) {
+            const [byPerson] = yield* sql`SELECT 1 FROM kin_record_changes c
+              WHERE c.org_id = ${orgId} AND c.record_id = ${row.recordId}
+                AND c.actor_kind <> 'agent'
+                AND c.seq = (SELECT MAX(l.seq) FROM kin_record_changes l, json_each(l.fields_json) f
+                  WHERE l.org_id = c.org_id AND l.record_id = c.record_id
+                    AND json_extract(f.value, '$.field') IN ${sql.in(set)})
+              LIMIT 1`;
+            if (byPerson !== undefined) return yield* notAllowed(FUNDING_A_PERSON_SET);
+          }
+        }
+        // Paid back is the owner's mark: on the mark-repaid card or the expense, never an agent's.
+        if (writer.actor._tag === "agent" && fundingMoved.length > 0 && marksRepaid(stored, merged))
+          return yield* notAllowed(REPAID_IS_THE_OWNERS);
+        // A repayment Confirm linked to a bank row binds the expenses it settled: what they cost,
+        // who is paid back and when stay as the bank saw them until that repayment is undone.
+        if (list === "expenses") {
+          const was = fundingOf(stored);
+          const moves =
+            amountChanged ||
+            (patch.state !== undefined && patch.state !== row.state) ||
+            [FUNDED_BY, REIMBURSEMENT, REPAID_ON].some(
+              (field) => shownField(stored[field]) !== shownField(merged[field]),
+            );
+          if (moves && was.by === "partner" && was.state === "repaid") {
+            const [bound] = yield* sql`SELECT 1 FROM kin_bank_statement_entries
+              WHERE org_id = ${orgId} AND target_record_id = ${row.recordId}
+                AND action = 'expense_linked' AND json_extract(prior_json, '$.repaid') IS NOT NULL
+              LIMIT 1`;
+            if (bound !== undefined)
+              return yield* invalid(
+                `This was paid back on ${was.repaidOn ?? "its bank line's day"}. Undo that repayment first.`,
+              );
+          }
+        }
         if (amountChanged && row.paid > 0) {
           const received = formatMoney({ minor: row.paid, currency: amount!.currency });
           // An invoice's payments are in its currency: a different one would make them nonsense.
@@ -2427,6 +2831,91 @@ const make = Effect.gen(function* () {
                 : row.state
             : undefined;
         const wanted = patch.state ?? settled ?? row.state;
+        if (list === "credit_notes" && writer.creditNote !== true) {
+          if (wanted !== row.state)
+            return yield* new KinChatError({ reason: "not_allowed", message: CREDIT_NOTE_TAP });
+          if (
+            row.state !== "open" &&
+            (patch.amount !== undefined ||
+              patch.dateAt !== undefined ||
+              patch.fields?.reason !== undefined ||
+              patch.confirmed === false)
+          )
+            return yield* invalid(
+              "An issued credit note keeps its invoice, amount and reason. To change them, void it and make a new one.",
+            );
+          if (
+            patch.fields?.invoice !== undefined ||
+            patch.fields?.number !== undefined ||
+            (patch.partyId !== undefined && patch.partyId !== row.partyId)
+          )
+            return yield* invalid(
+              "A credit note stays with the invoice it was made from. To credit another invoice, make a new one from that invoice.",
+            );
+        }
+        const agentExpense = writer.actor._tag === "agent" && list === "expenses";
+        if (agentExpense && row.state !== wanted) {
+          if (wanted === "done")
+            return yield* invalid(
+              `Only the owner or a co-owner marks a bill paid, by a tap. Nothing changed. If a bank debit paid it, offer kin_ask with action mark_bill_paid on that debit's key; else say the owner or a co-owner marks it paid on ${row.key}'s page in Money.`,
+            );
+          if (wanted === "open" && !isSuggestion(row))
+            return yield* invalid(
+              `Only the owner or a co-owner puts a bill back to pay, on ${row.key}'s page in Money. Nothing changed.`,
+            );
+        }
+        // A turn no person started settles nothing paid over time, and voids or reopens no
+        // numbered entry, by its state: the other ways to a payment or a void (`refuseKinOwn`).
+        const settles = wanted === "done" && row.takesPayments === 1;
+        if (
+          writer.actor._tag === "agent" &&
+          writer.wakeupId !== undefined &&
+          wanted !== row.state &&
+          !isSuggestion(row) &&
+          (settles ||
+            (yield* sql`SELECT 1 FROM kin_issued_numbers
+              WHERE org_id = ${orgId} AND record_id = ${row.recordId} LIMIT 1`).length > 0) &&
+          (yield* kinOwnTurn(orgId, writer.actor.agentId, writer.wakeupId).pipe(provideSql))
+        )
+          return yield* new KinChatError({
+            reason: "not_allowed",
+            message: settles ? KIN_OWN_REFUSAL.payment : KIN_OWN_REFUSAL.number,
+          });
+        // In an agent's turn money is marked received only by the owner's tap on a payment card:
+        // no Paid with money still owed, and no void or restore that makes payments count or not.
+        if (
+          writer.actor._tag === "agent" &&
+          row.takesPayments === 1 &&
+          !isSuggestion(row) &&
+          wanted !== row.state &&
+          (wanted === "dropped" || row.state === "dropped" || wanted === "done")
+        ) {
+          const total = patch.amount ?? amount;
+          const owedNow = total === null ? 0 : total.minor - row.paid;
+          if (
+            wanted === "done" &&
+            row.state !== "dropped" &&
+            owedNow > 0 &&
+            (yield* sql`SELECT 1 FROM kin_issued_numbers
+              WHERE org_id = ${orgId} AND record_id = ${row.recordId} LIMIT 1`).length > 0
+          )
+            return yield* new SensitiveRefusal({
+              reason: "invalid_state",
+              message: paidWhileOwed(
+                row.key,
+                formatMoney({ minor: owedNow, currency: total!.currency }),
+                stateLabel(def, "done"),
+              ),
+            });
+          if (
+            (wanted === "dropped" || row.state === "dropped") &&
+            (yield* sql`SELECT 1 FROM kin_record_payments WHERE org_id = ${orgId}
+              AND record_id = ${row.recordId} AND voided_at IS NULL LIMIT 1`).length > 0
+          )
+            return yield* notAllowed(
+              `Nothing was changed: ${row.key} has payments recorded on it, so the owner voids or restores it on the invoice in Money.`,
+            );
+        }
         // An agent never issues or settles an invoice by its state: Issue gives it its number.
         const unissued =
           writer.actor._tag === "agent" &&
@@ -2443,7 +2932,7 @@ const make = Effect.gen(function* () {
           list === "work" &&
           wanted === "done" &&
           !isClosed(row.state) &&
-          (writer.actor._tag === "agent" || writer.codingAgentKey !== undefined)
+          (writer.actor._tag === "agent" || (yield* markedKey(writer)) !== undefined)
             ? yield* sql<{ personId: string }>`SELECT person_id AS "personId" FROM kin_questions
                 WHERE org_id = ${orgId} AND state = 'open'
                   AND (' ' || about || ' ') LIKE ${`% ${row.key} %`}
@@ -2455,7 +2944,10 @@ const make = Effect.gen(function* () {
         // Only who may keep one keeps a suggestion, and only an owner-level person takes it back;
         // anyone else's `confirmed` changes nothing, so an agent's slip ack stays only that.
         const keeping =
-          patch.confirmed === true && isSuggestion(row) && (yield* mayKeep(orgId, writer));
+          patch.confirmed === true &&
+          isSuggestion(row) &&
+          (!agentExpense || state === "dropped") &&
+          (yield* mayKeep(orgId, writer));
         const unkeeping =
           patch.confirmed === false &&
           !isSuggestion(row) &&
@@ -2478,10 +2970,22 @@ const make = Effect.gen(function* () {
           isClosed(state) &&
           !isClosed(row.state)
         ) {
-          const open = yield* sql<{ key: string }>`SELECT key FROM kin_records
-            WHERE org_id = ${orgId} AND (party_id = ${row.recordId} OR project_id = ${row.recordId})
-              AND register_id IN ('work', 'projects') AND state NOT IN ${sql.in(CLOSED)}
-            ORDER BY created_at, key`;
+          const open = yield* sql<{ key: string; withheld: number }>`SELECT r.key,
+              ${keyWithheld(sql)} AS withheld FROM kin_records r
+            WHERE r.org_id = ${orgId}
+              AND (r.party_id = ${row.recordId} OR r.project_id = ${row.recordId})
+              AND r.register_id IN ('work', 'projects') AND r.state NOT IN ${sql.in(CLOSED)}
+            ORDER BY r.created_at, r.key`;
+          // Through a coding agent's key, what it can't reach is not named or counted.
+          if (open.length > 0 && (yield* markedKey(writer)) !== undefined) {
+            const shown = open.filter((one) => one.withheld !== 1).map((one) => one.key);
+            return yield* new KinChatError({
+              reason: "invalid_state",
+              message: `${row.key} still has open entries pointing at it${
+                shown.length === 0 ? "" : `: ${shown.slice(0, OPEN_KEYS_NAMED).join(", ")}`
+              }${shown.length < open.length ? ", and open entries you cannot see here" : ""}. Close or move them first.`,
+            });
+          }
           if (open.length > 0) {
             const named = open.slice(0, OPEN_KEYS_NAMED).map((one) => one.key);
             const more = open.length - named.length;
@@ -2773,13 +3277,23 @@ const make = Effect.gen(function* () {
           set("confirmed", patch.confirmed ? 1 : 0);
         }
         // Anyone may raise a label; only a person lowers one, and only the owner reaches here so.
+        // An owner-level label on a doc with no one to name is the owner's: it ends a draft's read.
+        const labelBy = Effect.gen(function* () {
+          const by = textBy(writer);
+          if (by !== null || row.registerId !== "docs") return by;
+          if (writer.view !== undefined || writer.teammate === true) return by;
+          const [owner] = yield* sql<{ id: string }>`SELECT p.person_id AS id FROM kin_people p
+            WHERE p.org_id = ${orgId} AND ${sql.literal(accessSql("p"))} = 'owner'
+            ORDER BY p.access = 'owner' DESC, p.person_id LIMIT 1`;
+          return owner === undefined ? null : KinPersonId.make(owner.id);
+        });
         if (patch.sensitive === true && row.sensitive === 0) {
           changes.push({ field: "sensitive", from: "false", to: "true" });
           set("sensitive", 1);
-          set("marked_by_person_id", textBy(writer));
+          set("marked_by_person_id", yield* labelBy);
         } else if (patch.sensitive === true && row.markedBy === null) {
           // Labelled only by its list's default until now: whose label it is now is recorded.
-          set("marked_by_person_id", textBy(writer));
+          set("marked_by_person_id", yield* labelBy);
         } else if (
           patch.sensitive === false &&
           row.sensitive === 1 &&
@@ -2810,18 +3324,23 @@ const make = Effect.gen(function* () {
         const rev = row.rev + 1;
         set("rev", rev);
         set("updated_at", now);
-        // Who saw what before this change, for who it moves: the entry, and what a client's or
-        // project's label, client, lead or people show or hide.
-        const scope = [
-          row.recordId,
-          ...((list === "clients" || list === "projects") &&
+        // A viewer may see a dependent row without seeing the record that changes it.
+        const directoryChanged =
+          (list === "clients" || list === "projects") &&
           (patch.sensitive !== undefined ||
             patch.partyId !== undefined ||
             patch.owner !== undefined ||
-            (list === "projects" && patch.fields?.["members"] !== undefined))
-            ? yield* dependents(orgId, row.recordId).pipe(provideSql)
-            : []),
-        ];
+            (list === "projects" && patch.fields?.["members"] !== undefined));
+        const changesIndirectRows =
+          (list === "deals" && changes.some((field) => field.field === "sensitive")) ||
+          (row.takesPayments === 1 &&
+            list !== "receipts" &&
+            (partyId !== row.partyId || projectId !== row.projectId));
+        const dependents =
+          directoryChanged || changesIndirectRows
+            ? yield* dependentRows(orgId, row.recordId, list).pipe(provideSql)
+            : [];
+        const scope = [row.recordId, ...dependents.map((dependent) => dependent.recordId)];
         const members = (fields: Record<string, FieldValue>) =>
           fieldList(fields, "members").flatMap((text) =>
             text.startsWith("person:") ? [text.slice("person:".length)] : [],
@@ -2835,6 +3354,7 @@ const make = Effect.gen(function* () {
         const team: TeamScope = {
           scope,
           before: yield* teamPairs(orgId, scope).pipe(provideSql),
+          ...(changesIndirectRows && dependents.length > 0 ? { dependents } : {}),
           joined,
         };
         // Each update rewrites only the fields it changed, so two changes to one entry both land.
@@ -2876,41 +3396,40 @@ const make = Effect.gen(function* () {
             team,
           );
         }
-        // Kept, a suggestion given to an agent is given now, once: not if its work already began.
-        if (
-          keeping &&
-          reassigned === undefined &&
-          !isClosed(state) &&
-          before.owner._tag === "agent"
-        )
-          if (!(yield* alreadyGiven(orgId, row.recordId, before.owner.agentId)))
+        if (keeping) {
+          const holder = reassigned ?? before.owner;
+          if (
+            !isClosed(state) &&
+            holder._tag === "agent" &&
+            !(yield* alreadyGiven(orgId, row.recordId, holder.agentId))
+          )
+            yield* wakeLead(orgId, writer, row, holder, textBy(writer), seq, now);
+        } else if (!isSuggestion(row) && !unkeeping) {
+          if (reassigned !== undefined && patch.handedBack !== undefined)
             yield* wakeLead(
               orgId,
               writer,
               row,
-              before.owner,
-              row.assignedBy === null ? textBy(writer) : KinPersonId.make(row.assignedBy),
+              reassigned,
+              row.assignedBy === null
+                ? yield* agentOwner(orgId, reassigned)
+                : KinPersonId.make(row.assignedBy),
+              seq,
+              now,
+              "handed_back",
+              patch.handedBack.note,
+            );
+          else if (reassigned !== undefined || reopened || undoneFor)
+            yield* wakeLead(
+              orgId,
+              writer,
+              row,
+              reassigned ?? before.owner,
+              writer.askedBy ?? null,
               seq,
               now,
             );
-        if (reassigned !== undefined && patch.handedBack !== undefined)
-          yield* wakeLead(
-            orgId,
-            writer,
-            row,
-            reassigned,
-            row.assignedBy === null
-              ? yield* agentOwner(orgId, reassigned)
-              : KinPersonId.make(row.assignedBy),
-            seq,
-            now,
-            "handed_back",
-            patch.handedBack.note,
-          );
-        else if (reassigned !== undefined)
-          yield* wakeLead(orgId, writer, row, reassigned, writer.askedBy ?? null, seq, now);
-        if (reopened || undoneFor)
-          yield* wakeLead(orgId, writer, row, before.owner, writer.askedBy ?? null, seq, now);
+        }
         // A lead never keeps working an open entry a person closed or took from it; a suggestion
         // nobody kept was never its work.
         const withdrawnFrom: Principal | undefined =
@@ -2980,6 +3499,33 @@ const make = Effect.gen(function* () {
     );
   });
 
+  /** `update`; a client handed to someone else takes with it what it owes us (`promises.ts`). */
+  const updateFollowing = Effect.fn("KinRecords.updateFollowing")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    key: string,
+    asked: Patch,
+    expectedRev?: number,
+    also: ReadonlyArray<FieldChange> = [],
+  ) {
+    if (asked.owner === undefined)
+      return yield* update(orgId, writer, key, asked, expectedRev, also);
+    return yield* transaction(
+      Effect.gen(function* () {
+        const row = yield* byKey(orgId, key).pipe(provideSql);
+        const updated = yield* update(orgId, writer, key, asked, expectedRev, also);
+        if (row === undefined || row.registerId !== "clients") return updated;
+        const was = yield* holderFor(orgId, row.ownerKind, row.ownerId).pipe(provideSql);
+        const holder = yield* theirsHolder(orgId, row.recordId).pipe(provideSql);
+        if (was === undefined || holder === undefined || samePrincipal(was, holder)) return updated;
+        const moving: Writer = { actor: writer.actor, via: writer.via };
+        for (const owed of yield* theirsHeldBy(orgId, row.recordId, was).pipe(provideSql))
+          yield* update(orgId, moving, owed, { owner: holder });
+        return updated;
+      }),
+    );
+  });
+
   const handBack = Effect.fn("KinRecords.handBack")(function* (
     orgId: KinOrgId,
     writer: Writer,
@@ -3039,6 +3585,24 @@ const make = Effect.gen(function* () {
   ) {
     return yield* transaction(
       Effect.gen(function* () {
+        if (input.kind === "url" && (yield* markedKey(writer)) !== undefined) {
+          const row = yield* byId(orgId, recordId).pipe(provideSql);
+          if (row === undefined) return yield* notFound(recordId);
+          const listed = yield* listDef(orgId, row.registerId).pipe(provideSql);
+          const numbered = "number" in parseFields(row.fieldsJson);
+          const refused = keyRefusal({
+            list: row.registerId,
+            money:
+              listed === undefined
+                ? { paidOverTime: row.takesPayments === 1, carriesAmount: false }
+                : moneyOf(listed),
+            state: row.state,
+            numbered,
+            before: { state: row.state, numbered },
+            touches: ["links"],
+          });
+          if (refused !== undefined) return yield* refused;
+        }
         const now = yield* Clock.currentTimeMillis;
         if (!(yield* insertLink(orgId, recordId, input, now))) return false;
         const [row] = yield* sql<{ rev: number; key: string }>`SELECT rev, key FROM kin_records
@@ -3114,6 +3678,7 @@ const make = Effect.gen(function* () {
   ) {
     return yield* transaction(
       Effect.gen(function* () {
+        yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.payment).pipe(provideSql);
         const row = yield* byKey(orgId, key).pipe(provideSql);
         if (row === undefined) return yield* notFound(key);
         if (row.takesPayments !== 1)
@@ -3129,10 +3694,14 @@ const make = Effect.gen(function* () {
           paidOn: string;
           note: string;
           withheld: number;
+          receivedMinor: number | null;
+          receivedCurrency: string | null;
+          rate: string | null;
           voidedAt: number | null;
         }>`
           SELECT record_id AS "recordId", amount_minor AS minor, currency, paid_on AS "paidOn", note,
-            withheld, voided_at AS "voidedAt"
+            withheld, voided_at AS "voidedAt", received_minor AS "receivedMinor",
+            received_currency AS "receivedCurrency", rate
           FROM kin_record_payments WHERE org_id = ${orgId} AND origin_key = ${payment.originKey}`;
         if (earlier !== undefined) {
           if (
@@ -3141,7 +3710,10 @@ const make = Effect.gen(function* () {
             earlier.currency !== payment.amount.currency ||
             earlier.paidOn !== payment.paidOn ||
             earlier.note !== (payment.note ?? "") ||
-            earlier.withheld !== (payment.withheld === true ? 1 : 0)
+            earlier.withheld !== (payment.withheld === true ? 1 : 0) ||
+            earlier.receivedMinor !== (payment.received?.minor ?? null) ||
+            earlier.receivedCurrency !== (payment.received?.currency ?? null) ||
+            earlier.rate !== (payment.rate ?? null)
           )
             return yield* new KinChatError({
               reason: "not_allowed",
@@ -3161,6 +3733,10 @@ const make = Effect.gen(function* () {
             `${row.key} is in ${amount.currency}; record the payment in ${amount.currency}.`,
           );
         if (payment.amount.minor <= 0) return yield* invalid("A payment is more than nothing.");
+        if (payment.received?.currency === payment.amount.currency)
+          return yield* invalid(
+            "Only a payment received in a different currency has a received amount and rate.",
+          );
         const balance = amount.minor - row.paid;
         if (payment.amount.minor > balance)
           return yield* new SensitiveRefusal({
@@ -3170,11 +3746,12 @@ const make = Effect.gen(function* () {
         const now = yield* Clock.currentTimeMillis;
         yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor,
             currency, paid_on, note, origin_key, created_at, created_by_kind, created_by_id,
-            withheld)
+            withheld, received_minor, received_currency, rate)
           VALUES (${orgId}, ${paymentId}, ${row.recordId}, ${payment.amount.minor},
             ${payment.amount.currency}, ${payment.paidOn}, ${payment.note ?? ""},
             ${payment.originKey}, ${now}, ${writer.actor._tag}, ${actorIdOf(writer)},
-            ${payment.withheld === true ? 1 : 0})`;
+            ${payment.withheld === true ? 1 : 0}, ${payment.received?.minor ?? null},
+            ${payment.received?.currency ?? null}, ${payment.rate ?? null})`;
         const paidUp =
           payment.amount.minor === balance && row.state !== "done" && def.states.includes("done");
         const rev = row.rev + 1;
@@ -3212,9 +3789,11 @@ const make = Effect.gen(function* () {
     writer: Writer,
     key: string,
     paymentId: string,
+    mode?: "undo_split" | "unapply_credit",
   ) {
     return yield* transaction(
       Effect.gen(function* () {
+        yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.payment).pipe(provideSql);
         const row = yield* byKey(orgId, key).pipe(provideSql);
         if (row === undefined) return yield* notFound(key);
         const [found] = yield* sql<{
@@ -3222,8 +3801,10 @@ const make = Effect.gen(function* () {
           currency: string;
           paidOn: string;
           voidedAt: number | null;
+          originKey: string;
         }>`
-          SELECT amount_minor AS minor, currency, paid_on AS "paidOn", voided_at AS "voidedAt"
+          SELECT amount_minor AS minor, currency, paid_on AS "paidOn", voided_at AS "voidedAt",
+            origin_key AS "originKey"
           FROM kin_record_payments WHERE org_id = ${orgId} AND payment_id = ${paymentId}
             AND record_id = ${row.recordId}`;
         if (found === undefined)
@@ -3231,6 +3812,17 @@ const make = Effect.gen(function* () {
             reason: "not_found",
             message: `No payment ${paymentId.slice(0, 40)} on ${row.key}.`,
           });
+        const bankId = found.originKey.startsWith(BANK_CREDIT_ORIGIN)
+          ? found.originKey.slice(BANK_CREDIT_ORIGIN.length).split(":")[0]
+          : undefined;
+        const blocked = yield* takeBackBlocked(
+          orgId,
+          row,
+          { paymentId, originKey: found.originKey, voided: found.voidedAt !== null },
+          mode,
+          writer.creditNote === true,
+        ).pipe(provideSql);
+        if (blocked !== undefined) return yield* blocked;
         if (found.voidedAt !== null) return row;
         const now = yield* Clock.currentTimeMillis;
         yield* sql`UPDATE kin_record_payments SET voided_at = ${now}
@@ -3257,12 +3849,111 @@ const make = Effect.gen(function* () {
           ],
           now,
         );
+        if (mode !== "undo_split" && bankId !== undefined) yield* reopenCredit(orgId, bankId, now);
         const updated = yield* byId(orgId, row.recordId).pipe(provideSql);
         if (updated === undefined) return yield* unavailable;
         return updated;
       }),
     );
   });
+
+  /**
+   * A card's payment from a Bank transactions credit taken back: the credit is Unexplained again,
+   * written as Kin's own. The voided payment keeps that pair from being offered again
+   * (`invoiceCredits.ts`).
+   */
+  const reopenCredit = Effect.fn("KinRecords.reopenCredit")(function* (
+    orgId: KinOrgId,
+    bankRecordId: string,
+    now: number,
+  ) {
+    const def = yield* findBankList(orgId).pipe(provideSql);
+    const bank = yield* byId(orgId, bankRecordId).pipe(provideSql);
+    if (def === undefined || bank === undefined || bank.registerId !== def.id) return;
+    const states = bankStates(def);
+    if (bank.state !== states.explained) return;
+    const rev = bank.rev + 1;
+    yield* sql`UPDATE kin_records SET rev = ${rev}, updated_at = ${now}, state = ${states.open},
+        category = NULL, closed_at = NULL
+      WHERE org_id = ${orgId} AND record_id = ${bank.recordId}`;
+    yield* logChange(
+      orgId,
+      { actor: { _tag: "system" }, via: "import" },
+      { recordId: bank.recordId, key: bank.key, rev },
+      "updated",
+      [
+        { field: "state", from: bank.state, to: states.open },
+        ...(bank.category === null ? [] : [{ field: "category", from: bank.category, to: null }]),
+      ],
+      now,
+    );
+  });
+
+  const undoCreditPayment = Effect.fn("KinRecords.undoCreditPayment")(function* (
+    orgId: KinOrgId,
+    writer: Writer,
+    key: string,
+  ) {
+    return yield* transaction(
+      Effect.gen(function* () {
+        if (
+          writer.actor._tag !== "person" ||
+          !(yield* ownerLevel(orgId, writer.actor.personId).pipe(provideSql))
+        )
+          return yield* new KinChatError({
+            reason: "not_allowed",
+            message:
+              "Only the owner or a co-owner can undo what a bank credit paid. Nothing changed.",
+          });
+        yield* refuseKinOwn(orgId, writer, KIN_OWN_REFUSAL.payment).pipe(provideSql);
+        const bank = yield* byKey(orgId, key).pipe(provideSql);
+        const def = yield* findBankList(orgId).pipe(provideSql);
+        if (bank === undefined || bank.registerId !== def?.id) return yield* notFound(key);
+        const prefix = `${BANK_CREDIT_ORIGIN}${bank.recordId}:`;
+        const split = yield* sql<{ key: string; paymentId: string; origin: string }>`SELECT r.key,
+          p.payment_id AS "paymentId", p.origin_key AS origin
+        FROM kin_record_payments p JOIN kin_records r ON r.org_id = p.org_id AND r.record_id = p.record_id
+        WHERE p.org_id = ${orgId} AND p.voided_at IS NULL
+          AND p.origin_key GLOB ${`${prefix}*:split:*`}
+        ORDER BY p.payment_id`;
+        for (const leftOrigin of new Set(
+          split.map((part) => `${part.origin.split(":split:")[0]}:left`),
+        )) {
+          const [left] = yield* sql<{
+            key: string;
+            invoice: string | null;
+            payment: string | null;
+            state: string;
+          }>`
+          SELECT r.key, r.state, json_extract(r.fields_json, '$.invoice') AS invoice, p.payment_id AS payment
+          FROM kin_records r LEFT JOIN kin_record_payments p ON p.org_id = r.org_id
+            AND p.payment_id = json_extract(r.fields_json, '$.payment') AND p.voided_at IS NULL
+          WHERE r.org_id = ${orgId} AND r.register_id = 'receipts' AND r.origin_key = ${leftOrigin}`;
+          if (left === undefined) continue;
+          if (left.invoice !== null && left.payment !== null)
+            return yield* invalid(`Un-apply the credit from ${left.invoice} first.`);
+          if (left.payment !== null)
+            yield* voidPayment(orgId, writer, left.key, left.payment, "undo_split");
+          if (left.state !== "dropped")
+            yield* update(orgId, { ...writer, undoingBankCredit: true }, left.key, {
+              state: "dropped",
+            });
+        }
+        for (const part of split)
+          yield* voidPayment(orgId, writer, part.key, part.paymentId, "undo_split");
+        if (split.length > 0)
+          yield* reopenCredit(orgId, bank.recordId, yield* Clock.currentTimeMillis);
+        return { key: bank.key };
+      }),
+    );
+  });
+
+  const queryViewer = (input: QueryInput) =>
+    input.team !== undefined
+      ? viewerOfPeople([input.team])
+      : input.view === undefined
+        ? undefined
+        : viewerOfPeople(input.view);
 
   const totals = Effect.fn("KinRecords.totals")(function* (
     orgId: KinOrgId,
@@ -3280,9 +3971,16 @@ const make = Effect.gen(function* () {
             : sql.and([filterOf(orgId, input, now), sql`r.amount_minor IS NOT NULL`]);
         // A void entry's amount is no money: a total leaves it out unless the filter names it.
         const asked = input.states ?? (input.open === false ? ["done", "dropped"] : undefined);
-        const [count] = yield* sql<{ n: number }>`SELECT COUNT(*) AS n FROM kin_records r
-          WHERE ${filter} AND ${countedEntry(sql, asked)}`;
+        const viewer = queryViewer(input);
+        const checkAccess =
+          viewer !== undefined && !TEAM_LIST_RESERVED.includes(input.list ?? "work");
+        const hidden = checkAccess
+          ? sql`, MAX(CASE WHEN ${legacySeenBy(sql, viewer)} THEN 0 ELSE 1 END) AS hidden`
+          : sql``;
+        const [count] = yield* sql<{ n: number; hidden?: number }>`SELECT COUNT(*) AS n${hidden}
+          FROM kin_records r WHERE ${filter} AND ${countedEntry(sql, asked)}`;
         const counted = count?.n ?? 0;
+        if (count?.hidden === 1) return { total: [], counted, withheld: true } satisfies Totals;
         if (counted > TOTALS_CAP)
           return yield* invalid(
             `${counted} entries match; narrow it to under ${TOTALS_CAP} by dates or category to total them.`,
@@ -3303,6 +4001,7 @@ const make = Effect.gen(function* () {
           paid: number;
           received: number;
           fields: string;
+          legacy?: number;
         }>`SELECT r.amount_minor AS minor, r.currency, r.category, r.party_id AS party,
             r.project_id AS project, r.side, r.state, r.owner_kind || ':' || r.owner_id AS owner,
             ${moneyDay(sql)} AS at,
@@ -3310,9 +4009,11 @@ const make = Effect.gen(function* () {
             (SELECT COALESCE(SUM(p.amount_minor), 0) ${live} AND p.withheld = 0
               AND p.paid_on >= ${input.paidFrom ?? "0000-00-00"}
               AND p.paid_on <= ${input.paidTo ?? "9999-12-31"}) AS received,
-            r.fields_json AS fields
+            r.fields_json AS fields${checkAccess ? sql`, ${legacySeenBy(sql, viewer)} AS legacy` : sql``}
           FROM kin_records r WHERE ${filter} AND ${countedEntry(sql, asked)}
           ORDER BY r.record_id`;
+        if (checkAccess && rows.some((row) => row.legacy !== 1))
+          return { total: [], counted, withheld: true } satisfies Totals;
         const listDef = yield* resolveList(orgId, input.list ?? "work");
         const paidOverTime = listDef.payments === true;
         const directed = (yield* findBankList(orgId).pipe(provideSql))?.id === listDef.id;
@@ -3328,7 +4029,11 @@ const make = Effect.gen(function* () {
               home,
             );
           return {
-            total: addUp(priced, home),
+            // A draft invoice is neither billed nor owed yet; Clients and Money read the same.
+            total: addUp(
+              priced.filter((row) => !isInvoiceDraft(listDef.id, row.state)),
+              home,
+            ),
             ...(directed
               ? {
                   moneyIn: side("credit"),
@@ -3458,11 +4163,22 @@ const make = Effect.gen(function* () {
     if (input.dateFrom !== undefined) where.push(sql`${moneyDay(sql)} >= ${input.dateFrom}`);
     if (input.dateTo !== undefined) where.push(sql`${moneyDay(sql)} < ${input.dateTo}`);
     if (input.category !== undefined) where.push(sql`r.category IS ${input.category}`);
-    if (input.paidFrom !== undefined || input.paidTo !== undefined)
+    // The tile's own rule (`moneyViews` spent): money that left the company's accounts.
+    if (input.spent !== undefined)
+      where.push(sql`(r.state = 'done' AND ${countedEntry(sql)} AND r.amount_minor IS NOT NULL
+        AND ${companyCashOut(sql)}
+        AND CASE WHEN ${partnerRepaidDay(sql)} IS NOT NULL
+          THEN ${partnerRepaidDay(sql)} BETWEEN ${input.spent.from} AND ${input.spent.to}
+          ELSE ${moneyDay(sql)} >= ${input.spent.fromAt} AND ${moneyDay(sql)} < ${input.spent.toAt}
+        END)`);
+    if (input.paidFrom !== undefined || input.paidTo !== undefined) {
+      const viewer = queryViewer(input);
+      if (viewer !== undefined) where.push(listMoneySeenBy(sql, viewer));
       where.push(sql`EXISTS (SELECT 1 FROM kin_record_payments p
         WHERE p.org_id = r.org_id AND p.record_id = r.record_id AND p.voided_at IS NULL
           AND p.paid_on >= ${input.paidFrom ?? "0000-00-00"}
           AND p.paid_on <= ${input.paidTo ?? "9999-12-31"})`);
+    }
     if (input.kept === true) where.push(countedEntry(sql, input.states));
     else if (input.kept === false) where.push(sql`NOT ${keptEntry(sql)} AND r.state <> 'dropped'`);
     if (input.side !== undefined) where.push(sql`r.side = ${input.side}`);
@@ -3501,7 +4217,12 @@ const make = Effect.gen(function* () {
                 ? sql`r.state IN ('done', 'dropped'), lower(r.title), r.key`
                 : sql`r.state IN ('done', 'dropped'), r.due_at IS NULL, r.due_at,
                   ${moneyDay(sql)} DESC, r.created_at DESC, r.key`;
-        const rows = yield* sql<RecordRow>`${selectRecords(sql)} WHERE ${filter}
+        const viewer = queryViewer(input);
+        const extra =
+          viewer === undefined || TEAM_LIST_RESERVED.includes(list)
+            ? sql``
+            : sql`, ${listMoneySeenBy(sql, viewer)} AS "listMoneyVisible"`;
+        const rows = yield* sql<RecordRow>`${selectRecords(sql, extra)} WHERE ${filter}
           ORDER BY ${order}
           LIMIT ${limit} OFFSET ${Math.max(input.offset ?? 0, 0)}`;
         return { rows, total: count?.total ?? 0, seq };
@@ -3566,7 +4287,7 @@ const make = Effect.gen(function* () {
   return KinRecords.of({
     create,
     createImportChunk,
-    update,
+    update: updateFollowing,
     principalExists: Effect.fn("KinRecords.principalExists")(function* (orgId, who, role) {
       return yield* failed(ownerExists(orgId, who, role));
     }),
@@ -3575,6 +4296,7 @@ const make = Effect.gen(function* () {
     unlink,
     pay,
     voidPayment,
+    undoCreditPayment,
     totals,
     query,
     moveRows,
@@ -3749,4 +4471,12 @@ const make = Effect.gen(function* () {
   });
 });
 
-export const layer = Layer.effect(KinRecords, make);
+export const layer = Layer.effectContext(
+  make.pipe(
+    Effect.map((records) =>
+      Context.make(KinRecords, records).pipe(
+        Context.add(KinWorkRefresh, (orgId) => records.announce(orgId)),
+      ),
+    ),
+  ),
+);

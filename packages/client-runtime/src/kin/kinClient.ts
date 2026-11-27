@@ -5,8 +5,11 @@ import {
   KIN_PEOPLE_WS_METHODS,
   type EnvironmentId,
   type KinApprovalsOrgInput,
+  type KinBillsListInput,
   type KinChatHistoryInput,
   type KinChatId,
+  type KinDesktopNotice,
+  type KinDesktopNoticesInput,
   type KinChatMembersInput,
   type KinCompanyProfileInput,
   type KinReceiptsInput,
@@ -24,9 +27,13 @@ import {
   type KinHostInput,
   type KinOrgGetInput,
   type KinGoalsInput,
+  type KinNumbersDefinitionsInput,
+  type KinNumbersListInput,
+  type KinNumbersValuesInput,
   type KinBriefsInput,
   type KinCheckInsInput,
   type KinPulseListInput,
+  type KinOpenSubscribeInput,
   type KinPulseSubscribeInput,
   type KinMemoryListInput,
   type KinPeopleListInput,
@@ -64,10 +71,12 @@ import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as PubSub from "effect/PubSub";
 import * as Stream from "effect/Stream";
-import { AsyncResult, Atom, AtomRegistry } from "effect/reactivity";
+import { Atom, AtomRegistry } from "effect/reactivity";
 
 import * as EnvironmentSupervisor from "../connection/supervisor.ts";
 import type * as EnvironmentRegistry from "../connection/registry.ts";
+import { subscribe } from "../rpc/index.ts";
+import { followStreamInEnvironment } from "../state/environmentStreams.ts";
 import {
   createEnvironmentQueryAtomFamily,
   createEnvironmentSubscriptionAtomFamily,
@@ -79,9 +88,11 @@ import {
   retryKinAccess,
 } from "./kinAccess.ts";
 import { KIN_DOCS_LABEL, kinDocsLiveStream } from "./kinDocsStream.ts";
+import { KIN_LIST_ACCEPT } from "./kinLists.ts";
 import { kinReachPairKey } from "./kinReach.ts";
 import type { KinChatState } from "./kinInboxModel.ts";
 import { KIN_MONEY_LIVE_LABEL, kinMoneyLiveStream } from "./kinMoneyStream.ts";
+import { KIN_OPEN_LIVE_LABEL, KIN_OPEN_SENSES, kinOpenLiveStream } from "./kinOpenStream.ts";
 import { KIN_PULSE_LIVE_LABEL, kinPulseLiveStream } from "./kinPulseStream.ts";
 import {
   createKinDirectoryTrigger,
@@ -123,19 +134,13 @@ export function kinGuardedRead<Input, A, E>(command: {
   readonly run: (
     registry: AtomRegistry.AtomRegistry,
     target: { readonly environmentId: EnvironmentId; readonly input: Input },
-  ) => Promise<AsyncResult.AsyncResult<A, E>>;
+  ) => Effect.Effect<A, E>;
 }) {
   return (input: Input) =>
     Effect.gen(function* () {
       const registry = yield* AtomRegistry.AtomRegistry;
       const environmentId = yield* currentEnvironmentId;
-      // A caller's timeout abandons this promise without cancelling the request; the session bounds it.
-      const result = yield* Effect.promise(() => command.run(registry, { environmentId, input }));
-      return yield* result._tag === "Success"
-        ? Effect.succeed(result.value)
-        : result._tag === "Failure"
-          ? Effect.failCause(result.cause)
-          : Effect.never;
+      return yield* command.run(registry, { environmentId, input });
     });
 }
 
@@ -225,6 +230,11 @@ export function makeKinClient<R, ER>(
     tag: "kin.connections.calls",
   });
   const readConnectionCalls = kinGuardedRead(connectionCallsRead);
+  const myMailboxRead = createKinRpcCommand(runtime, {
+    label: "kin:my-mailbox:read",
+    tag: "kin.connections.mine",
+  });
+  const readMyMailbox = kinGuardedRead(myMailboxRead);
   const githubRead = createKinRpcCommand(runtime, {
     label: "kin:github:read",
     tag: "kin.github.connect.status",
@@ -315,6 +325,19 @@ export function makeKinClient<R, ER>(
     tag: "kin.goals.list",
   });
   const readGoals = kinGuardedRead(goalsRead);
+  const numbersRead = createKinRpcCommand(runtime, {
+    label: "kin:numbers:read",
+    tag: "kin.numbers.list",
+  });
+  const readNumbers = kinGuardedRead(numbersRead);
+  const readNumberValues = kinGuardedRead(
+    createKinRpcCommand(runtime, { label: "kin:numbers:values:read", tag: "kin.numbers.values" }),
+  );
+  const numberDefinitionsRead = createKinRpcCommand(runtime, {
+    label: "kin:numbers:definitions:read",
+    tag: "kin.numbers.definitions",
+  });
+  const readNumberDefinitions = kinGuardedRead(numberDefinitionsRead);
   const checkInsRead = createKinRpcCommand(runtime, {
     label: "kin:checkIns:read",
     tag: "kin.checkIns.list",
@@ -406,6 +429,11 @@ export function makeKinClient<R, ER>(
     tag: "kin.work.money",
   });
   const readWorkMoney = kinGuardedRead(workMoneyRead);
+  const billsRead = createKinRpcCommand(runtime, {
+    label: "kin:bills:read",
+    tag: "kin.bills.list",
+  });
+  const readBills = kinGuardedRead(billsRead);
   const workCashRead = createKinRpcCommand(runtime, {
     label: "kin:work:cash:read",
     tag: "kin.work.cash",
@@ -478,6 +506,13 @@ export function makeKinClient<R, ER>(
       ),
   });
   const kinWorkRefreshOn = createKinWorkRefreshTriggers(runtime, workLive);
+  // Counts this app's adds of bills per company: a bill that came back leaves the batch an earlier
+  // read listed it in, and no expense moves to say so.
+  const billsAddedFamily = Atom.family((_key: string) => Atom.make(0).pipe(Atom.keepAlive));
+  const billsAdded = (target: {
+    readonly environmentId: EnvironmentId;
+    readonly input: { readonly orgId: KinOrgId };
+  }) => billsAddedFamily(`${target.environmentId}:${target.input.orgId}`);
 
   const workFilesRead = createKinRpcCommand(runtime, {
     label: "kin:work:files:read",
@@ -715,6 +750,15 @@ export function makeKinClient<R, ER>(
       staleTimeMs: 30_000,
       refreshTrigger: kinRefreshOn("connections"),
     }),
+    /** The person's own mailbox; anyone's, live on the `connections` topic. */
+    myMailbox: createKinQueryAtomFamily(runtime, {
+      label: "kin:my-mailbox",
+      execute: Effect.fn("KinClient.myMailbox")(function* (input: KinConnectionsInput) {
+        return yield* readMyMailbox(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinRefreshOn("connections"),
+    }),
     connection: createKinQueryAtomFamily(runtime, {
       label: "kin:connection",
       execute: Effect.fn("KinClient.connection")(function* (input: KinConnectionRef) {
@@ -891,6 +935,27 @@ export function makeKinClient<R, ER>(
       label: "kin:connection:signInFinish",
       tag: "kin.connections.signInFinish",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:signIn` },
+    }),
+    /** A person signs in to their own mailbox: theirs alone to connect and disconnect. */
+    myMailboxSignInStart: createKinRpcCommand(runtime, {
+      label: "kin:my-mailbox:signInStart",
+      tag: "kin.connections.mineSignInStart",
+    }),
+    myMailboxSignInFinish: createKinRpcCommand(runtime, {
+      label: "kin:my-mailbox:signInFinish",
+      tag: "kin.connections.mineSignInFinish",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:mine` },
+    }),
+    myMailboxRemove: createKinRpcCommand(runtime, {
+      label: "kin:my-mailbox:remove",
+      tag: "kin.connections.mineRemove",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:mine` },
+    }),
+    /** The owner level moves a mailbox between the company's and their own, on its sign-in. */
+    mailboxMove: createKinRpcCommand(runtime, {
+      label: "kin:mailbox:move",
+      tag: "kin.connections.moveMailbox",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:mine` },
     }),
     connectionSetSignInClient: createKinRpcCommand(runtime, {
       label: "kin:connection:setSignInClient",
@@ -1137,6 +1202,21 @@ export function makeKinClient<R, ER>(
       tag: KIN_CHAT_WS_METHODS.chatsClear,
       concurrency: { mode: "singleFlight", key: ({ input }) => `preview:${input.chatId}` },
     }),
+    subscribeDesktopNotices: (
+      environmentId: EnvironmentId,
+      input: KinDesktopNoticesInput,
+      onNotice: (notice: KinDesktopNotice) => void,
+    ) =>
+      registry.mount(
+        runtime
+          .atom(
+            followStreamInEnvironment(
+              environmentId,
+              subscribe("kin.push.desktopNotices", input),
+            ).pipe(Stream.runForEach((notice) => Effect.sync(() => onNotice(notice)))),
+          )
+          .pipe(Atom.setIdleTTL(0), Atom.withLabel("kin:push:desktop-notices")),
+      ),
     inbox: createEnvironmentSubscriptionAtomFamily(runtime, {
       label: KIN_INBOX_LABEL,
       subscribe: (input: Parameters<typeof kinInboxStream>[0]) =>
@@ -1150,14 +1230,9 @@ export function makeKinClient<R, ER>(
     /** One "Load earlier" page, read fresh every time so a retry after a failure refetches. */
     readHistoryPage: (environmentId: EnvironmentId, input: KinChatHistoryInput) =>
       Effect.runPromiseExit(
-        Effect.promise(() => historyRead.run(registry, { environmentId, input })).pipe(
-          Effect.flatMap((result) =>
-            result._tag === "Success"
-              ? Effect.succeed(result.value)
-              : Effect.failCause(result.cause),
-          ),
-          Effect.timeout(KIN_HISTORY_PAGE_TIMEOUT),
-        ),
+        historyRead
+          .run(registry, { environmentId, input })
+          .pipe(Effect.timeout(KIN_HISTORY_PAGE_TIMEOUT)),
       ),
     send: createKinRpcCommand(runtime, {
       label: "kin:send",
@@ -1295,6 +1370,14 @@ export function makeKinClient<R, ER>(
     }),
     /** Whether the host streams Money; null until its refreshes say. */
     moneyStreamed: kinRefreshOn.serves("money"),
+    /** What is open for the viewer, one list every Needs you, Waiting on you and badge reads. */
+    openLive: createEnvironmentSubscriptionAtomFamily(runtime, {
+      label: KIN_OPEN_LIVE_LABEL,
+      subscribe: (input: Omit<KinOpenSubscribeInput, "held">) =>
+        kinOpenLiveStream({ ...input, acceptSenses: KIN_OPEN_SENSES }),
+    }),
+    /** Whether the host streams the open list; null until its refreshes say. */
+    openStreamed: kinRefreshOn.serves("open"),
     attentionHandle: createKinRpcCommand(runtime, {
       label: "kin:pulse:handle",
       tag: "kin.pulse.handle",
@@ -1314,6 +1397,59 @@ export function makeKinClient<R, ER>(
       }),
       staleTimeMs: 30_000,
       refreshTrigger: kinWorkRefreshOn("any", kinRefreshOn("pulse")),
+    }),
+    /**
+     * Watched numbers with their latest values. Values move `numbers`; a number's set-up is a goals
+     * entry, so Work's changes to it move it too; a section switched off hides computed ones.
+     */
+    numbers: createKinQueryAtomFamily(runtime, {
+      label: "kin:numbers",
+      execute: Effect.fn("KinClient.numbers")(function* (input: KinNumbersListInput) {
+        return yield* readNumbers(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: (target: {
+        readonly environmentId: EnvironmentId;
+        readonly input: KinNumbersListInput;
+      }) => {
+        const work = kinWorkRefreshOn(["goals"])(target);
+        const values = kinRefreshOn("numbers")(target);
+        const shell = kinRefreshOn("shell")(target);
+        return Atom.make((get) => `${get(work)}|${get(values)}|${get(shell)}`);
+      },
+    }),
+    /** Its `permissionAtom` is whether this viewer may read Numbers at all. */
+    numbersRead,
+    /** One number's recorded values between two days, for its page. */
+    numberValues: createKinQueryAtomFamily(runtime, {
+      label: "kin:numbers:values",
+      execute: Effect.fn("KinClient.numberValues")(function* (input: KinNumbersValuesInput) {
+        return yield* readNumberValues(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinRefreshOn("numbers"),
+    }),
+    /** How each number is set up, archived ones too: the owner level's form and Restore. */
+    numberDefinitions: createKinQueryAtomFamily(runtime, {
+      label: "kin:numbers:definitions",
+      execute: Effect.fn("KinClient.numberDefinitions")(function* (
+        input: KinNumbersDefinitionsInput,
+      ) {
+        return yield* readNumberDefinitions(input);
+      }),
+      staleTimeMs: 30_000,
+      refreshTrigger: kinWorkRefreshOn(["goals"]),
+    }),
+    numberRecord: createKinRpcCommand(runtime, {
+      label: "kin:numbers:record",
+      tag: "kin.numbers.record",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    /** Its `permissionAtom` is whether this viewer may watch, change and archive numbers. */
+    numberSave: createKinRpcCommand(runtime, {
+      label: "kin:numbers:save",
+      tag: "kin.numbers.save",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.key ?? input.clientRequestId },
     }),
     goalSave: createKinRpcCommand(runtime, {
       label: "kin:goals:save",
@@ -1764,6 +1900,8 @@ export function makeKinClient<R, ER>(
       tag: "kin.docs.delete",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
     }),
+    /** One version of a doc, read once: a long draft's Copy text takes its whole text. */
+    docVersion: docRead,
     /** A teammate's own draft goes up to the agent's owner to approve; a second tap finds the first. */
     docSendUp: createKinRpcCommand(runtime, {
       label: "kin:docs:sendUp",
@@ -1880,7 +2018,7 @@ export function makeKinClient<R, ER>(
     workLists: createKinQueryAtomFamily(runtime, {
       label: "kin:work:lists",
       execute: Effect.fn("KinClient.workLists")(function* (input: KinListsInput) {
-        return yield* readWorkLists(input);
+        return yield* readWorkLists({ ...input, accept: KIN_LIST_ACCEPT });
       }),
       staleTimeMs: 30_000,
       refreshTrigger: kinWorkRefreshOn(KIN_WORK_NOT_TASKS, kinRefreshOn("workLists")),
@@ -1953,6 +2091,54 @@ export function makeKinClient<R, ER>(
       tag: "kin.work.newExpense",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
     }),
+    /** Its `permissionAtom` says whether this session may see bills added in bulk at all. */
+    billsRead,
+    /** Bumped after an add: every list of the company's bills reads again. */
+    billsAdded,
+    /** Bills added in bulk: the batches, newest first, or one batch's bills in the order added. */
+    bills: createKinQueryAtomFamily(runtime, {
+      label: "kin:bills",
+      execute: Effect.fn("KinClient.bills")(function* (input: KinBillsListInput) {
+        return yield* readBills(input);
+      }),
+      staleTimeMs: 30_000,
+      // Expenses move as bills are read and kept; the screen follows the batch's card for the rest.
+      refreshTrigger: kinWorkRefreshOn(["expenses"], billsAdded),
+    }),
+    billsAdd: createKinRpcCommand(runtime, {
+      label: "kin:bills:add",
+      tag: "kin.bills.add",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    billsKeepRead: createKinRpcCommand(runtime, {
+      label: "kin:bills:keep-read",
+      tag: "kin.bills.keepRead",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    billsAddAnyway: createKinRpcCommand(runtime, {
+      label: "kin:bills:add-anyway",
+      tag: "kin.bills.addAnyway",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.clientRequestId },
+    }),
+    billsDismiss: createKinRpcCommand(runtime, {
+      label: "kin:bills:dismiss",
+      tag: "kin.bills.dismiss",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.sha256 },
+    }),
+    billsReadAgain: createKinRpcCommand(runtime, {
+      label: "kin:bills:read-again",
+      tag: "kin.bills.readAgain",
+      concurrency: {
+        mode: "singleFlight",
+        key: ({ input }) => input.sha256 ?? input.batchId ?? "",
+      },
+    }),
+    /** In order per address: a second pick runs after the first and says if nothing is left. */
+    workMatchPartner: createKinRpcCommand(runtime, {
+      label: "kin:work:match-partner",
+      tag: "kin.work.matchPartner",
+      concurrency: { mode: "serial", key: ({ input }) => `${input.orgId}:${input.address}` },
+    }),
     /** One page of everything dated in a window; the Dates view decides when. */
     workDates: workDatesRead,
     workListUpdate: createKinRpcCommand(runtime, {
@@ -1969,6 +2155,21 @@ export function makeKinClient<R, ER>(
       label: "kin:work:payment:void",
       tag: "kin.work.voidPayment",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.paymentId },
+    }),
+    undoCreditPayment: createKinRpcCommand(runtime, {
+      label: "kin:work:credit-payment:undo",
+      tag: "kin.work.undoCreditPayment",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
+    unapplyCredit: createKinRpcCommand(runtime, {
+      label: "kin:work:credit:unapply",
+      tag: "kin.work.unapplyCredit",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
+    draftCreditNote: createKinRpcCommand(runtime, {
+      label: "kin:work:credit-note:draft",
+      tag: "kin.work.draftCreditNote",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.originKey },
     }),
     /** One page of the files in the owner's chats, for keeping one on an entry. */
     workFiles: workFilesRead,
@@ -2018,6 +2219,11 @@ export function makeKinClient<R, ER>(
       label: "kin:company:set",
       tag: "kin.work.setCompanyProfile",
       concurrency: { mode: "singleFlight", key: ({ input }) => input.orgId },
+    }),
+    answerCountryCard: createKinRpcCommand(runtime, {
+      label: "kin:company:country-card",
+      tag: "kin.work.answerCountryCard",
+      concurrency: { mode: "singleFlight", key: ({ input }) => input.widgetId },
     }),
     workIssue: createKinRpcCommand(runtime, {
       label: "kin:work:issue",
@@ -2087,6 +2293,11 @@ export function makeKinClient<R, ER>(
     docLabel: createKinRpcCommand(runtime, {
       label: "kin:docs:label",
       tag: "kin.docs.label",
+      concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
+    }),
+    docReaders: createKinRpcCommand(runtime, {
+      label: "kin:docs:readers",
+      tag: "kin.docs.readers",
       concurrency: { mode: "singleFlight", key: ({ input }) => `${input.orgId}:${input.key}` },
     }),
     docFile: createKinRpcCommand(runtime, {

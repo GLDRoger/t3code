@@ -3,6 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 
+import { billedParty, billingClientId } from "../work/billTo.ts";
 import { KinRecords, type Writer } from "../work/KinRecords.ts";
 import { amountOf, notFound, principal } from "../work/recordRows.ts";
 
@@ -49,6 +50,8 @@ export const invoiceFromQuote = Effect.fn("KinQuotes.invoiceFrom")(function* (
   const owner = principal(quote.ownerKind, quote.ownerId);
   if (owner === null) return yield* invalid(`${quote.key} has no owner. Nothing was made.`);
   const amount = amountOf(quote);
+  const partyId = billingClientId(quote);
+  const billTo = partyId === null ? billedParty(quote, undefined) : undefined;
   const { row } = yield* records.create(orgId, writer, {
     list: "invoices",
     originKey: `quote:${quote.recordId}`,
@@ -56,7 +59,18 @@ export const invoiceFromQuote = Effect.fn("KinQuotes.invoiceFrom")(function* (
     title: quote.title,
     owner,
     state: "open",
-    ...(quote.partyId === null ? {} : { partyId: quote.partyId }),
+    ...(partyId === null && billTo === undefined ? {} : { partyId }),
+    ...(billTo === undefined
+      ? {}
+      : {
+          fields: {
+            billToName: billTo.name,
+            billToAddress: billTo.address,
+            billToTaxNumber: billTo.taxNumber,
+            billToPlace: billTo.place,
+            billToEmail: billTo.email,
+          },
+        }),
     ...(quote.projectId === null ? {} : { projectId: quote.projectId }),
     // Lines make the invoice's total; a quote with none bills its own amount.
     ...(Array.isArray(given.lines) || amount === undefined ? {} : { amount }),

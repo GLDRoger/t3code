@@ -24,6 +24,7 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import * as SqlClient from "effect/sql/SqlClient";
 import * as TestClock from "effect/testing/TestClock";
 import { McpSchema, McpServer } from "effect/ai";
@@ -39,6 +40,7 @@ import { KinIdentity } from "../chat/KinIdentity.ts";
 import { environment } from "../chat/TaskCard.testkit.ts";
 import { authorityLayer, startAgentWakeup } from "../chat/WakeupAuthority.testkit.ts";
 import * as Kin from "../layer.ts";
+import * as ReplyBridge from "../reply/KinReplyBridge.ts";
 import { agentServices } from "../mcp/KinChatToolkit.ts";
 import { handlers as pulseHandlers, KinPulseToolkit } from "../pulse/mcp.ts";
 import { handlers as workHandlers } from "../work/mcp/handlers.ts";
@@ -99,6 +101,7 @@ const kinServices = Layer.unwrap(
     const services = Option.getOrThrow((yield* Kin.KinServer).services);
     return Layer.mergeAll(
       Handoff.layer,
+      ReplyBridge.layer,
       Team.layer,
       Layer.mock(LeadMemory)({
         defer: (_scope, input) =>
@@ -124,9 +127,10 @@ const layer = Layer.mergeAll(
   KinToolGate.layer,
 ).pipe(
   Layer.provideMerge(McpHttpServer.layerInProcessMcpServer),
-  Layer.provide(kinServices),
+  Layer.provideMerge(kinServices),
   Layer.provideMerge(
     Layer.mock(ThreadManagement.ThreadManagementService)({
+      streamDomainEvents: Stream.empty,
       getThreadShell: (id) => Effect.succeed({ ...liveThreadShell(id), providerInstanceId }),
     }),
   ),
@@ -161,6 +165,88 @@ const call = Effect.fn("test.call")(function* (name: string, args: Record<string
   const text = result.content.find((item) => item.type === "text")?.text ?? "{}";
   return { ok: result.isError !== true, value: JSON.parse(text) as Record<string, unknown> };
 });
+
+it.effect.each(["kin_skip", "kin_send"] as const)(
+  "%s validates input and only successful results close the turn",
+  (name) =>
+    Effect.gen(function* () {
+      const server = yield* McpServer.McpServer;
+      const identity = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinIdentity);
+      const words = "Tidewater Freight booked the loading slot.";
+      const callEnding = (valid: boolean) =>
+        server
+          .callTool({
+            name,
+            arguments:
+              name === "kin_skip"
+                ? { note: "a".repeat(valid ? 280 : 281) }
+                : { text: words, level: valid ? "quiet" : "later" },
+          })
+          .pipe(
+            Effect.provideService(McpInvocationContext, scope),
+            Effect.provideService(KinIdentity, identity),
+            Effect.provideService(McpSchema.McpServerClient, client),
+          );
+      const sessionId = AuthSessionId.make("owner");
+      yield* pairSession(sessionId);
+      const [owner] = yield* identity.resolve({
+        sessionId,
+        subject: "browser",
+        method: "browser-session-cookie",
+        scopes: AuthStandardClientScopes,
+      });
+      const sql = yield* SqlClient.SqlClient;
+      const orgId = owner!.orgId;
+      yield* sql`INSERT INTO kin_agents (agent_id, org_id, display_name, role, owner_person_id, created_at)
+      VALUES (${chief}, ${owner!.orgId}, 'Ada', 'lead', ${owner!.personId}, ${at})`;
+      yield* identity.registerAgentThread({
+        orgId: owner!.orgId,
+        agentId: chief,
+        threadId,
+      });
+      const chats = Context.get(Option.getOrThrow((yield* Kin.KinServer).services), KinChatService);
+      const chat = yield* chats.createDirect(owner!, { orgId, agentId: chief });
+      yield* sql`INSERT INTO kin_leads (
+      agent_id, org_id, name, level_since, thread_id, models_json, worker_projects_json, owner_chat_id
+    ) VALUES (${chief}, ${orgId}, 'Ada', 0, ${threadId}, '{}', '[]', ${chat.chatId})`;
+      const wakeupId = KinWakeupId.make(
+        yield* startAgentWakeup({ orgId, agentId: chief, threadId }),
+      );
+      const invalid = yield* Effect.flip(callEnding(false));
+      assert.match(JSON.stringify(invalid), name === "kin_skip" ? /note/ : /level/);
+      const refused = yield* callEnding(true);
+      assert.isTrue(refused.isError);
+      assert.notProperty(refused._meta ?? {}, "claude/endTurn");
+      assert.include(
+        JSON.stringify(refused.content),
+        name === "kin_skip"
+          ? "Nothing was ended: this turn is no longer running."
+          : "Nothing was sent: this turn is no longer running.",
+      );
+      const bridge = yield* ReplyBridge.KinReplyBridge;
+      yield* bridge.begin({ orgId, agentId: chief, wakeupId, threadId, startedAt: 0 });
+      const ended = yield* callEnding(true);
+      assert.isFalse(ended.isError);
+      assert.deepStrictEqual(ended._meta, { "claude/endTurn": true });
+      if (name === "kin_skip")
+        assert.deepStrictEqual(ended.content, [
+          { type: "text", text: "Nothing sent; this turn is over." },
+        ]);
+      else {
+        const [message] =
+          yield* sql`SELECT message_id AS "messageId", body, silent FROM kin_messages
+        WHERE org_id = ${orgId} AND chat_id = ${chat.chatId} AND source_wakeup_id = ${wakeupId} ORDER BY seq`;
+        assert.deepStrictEqual(message, { messageId: message?.messageId, body: words, silent: 1 });
+        assert.deepStrictEqual(
+          JSON.parse(ended.content.find((part) => part.type === "text")!.text),
+          {
+            sent: true,
+            messageId: message!.messageId,
+          },
+        );
+      }
+    }).pipe(Effect.provide(layer)),
+);
 
 const rowsIn = (sql: SqlClient.SqlClient, orgId: KinOrgId, chatId: KinChatId) =>
   sql<{ author: string; body: string }>`SELECT author_kind AS author, body FROM kin_messages
@@ -678,10 +764,63 @@ it.effect("a visual in a teammate's chat goes only when everyone there may see i
       const hiddenChart = yield* chart([4_720_000, 100, 200], true);
       assert.isFalse(hiddenChart.ok);
       assert.match(String(hiddenChart.value.message), /not everyone in this chat may see/);
-      const shared = yield* chart([7, 2, 1], false);
+      const previousShape = {
+        chart: "bar",
+        title: "This week",
+        unit: { kind: "count" },
+        labelType: "day",
+        labels: ["2026-11-10", "2026-11-11", "2026-11-12"],
+        series: [{ name: "Done", values: [7, 2, 1], color: "green" }],
+        comparison: { name: "Previous", values: [3, 2, 1], color: "grey" },
+        target: { name: "Goal", value: 5 },
+        valueLabels: true,
+        caption: "Tidewater Freight",
+      };
+      const shared = yield* call("kin_chart", previousShape);
       assert.isTrue(shared.ok, String(shared.value.message));
       assert.match(String(shared.value.figure), /kin-figure:f_[A-Za-z0-9_-]{10}/);
       assert.match(String(shared.value.next), /^Made\. The chart shows under your reply/);
+
+      const before = yield* sql`SELECT * FROM kin_turn_figures ORDER BY figure_id`;
+      const bad = yield* call("kin_chart", {
+        ...previousShape,
+        title: "Misspelt series",
+        series: [{ ...previousShape.series[0], colour: "green" }],
+      }).pipe(Effect.result);
+      assert.strictEqual(bad._tag, "Failure");
+      if (bad._tag === "Failure")
+        assert.strictEqual(
+          bad.failure.message,
+          `Invalid parameters for tool 'kin_chart': Chart series takes no "colour"; pass one of: name, values, color.
+  at ["series"][0]`,
+        );
+      assert.deepStrictEqual(yield* sql`SELECT * FROM kin_turn_figures ORDER BY figure_id`, before);
+
+      const scatter = {
+        chart: "scatter",
+        title: "Length and cost",
+        unit: { kind: "count" },
+        scatter: {
+          xName: "Miles",
+          yName: "Cost",
+          xUnit: { kind: "count" },
+          series: [
+            { name: "Trips", color: "purple", points: [{ x: 20, y: 1300, label: "Depot" }] },
+          ],
+        },
+      };
+      const { comparison: _comparison, ...bar } = previousShape;
+      const colored = {
+        ...bar,
+        title: "Each day",
+        colors: ["green", null, "amber"],
+      };
+      for (const input of [scatter, colored]) {
+        const figure = yield* call("kin_chart", input);
+        assert.isTrue(figure.ok, String(figure.value.message));
+        assert.match(String(figure.value.figure), /kin-figure:f_[A-Za-z0-9_-]{10}/);
+      }
+
       const [turn] = yield* sql<{
         wakeupId: string;
       }>`SELECT wakeup_id AS "wakeupId" FROM kin_wakeups
@@ -701,7 +840,7 @@ it.effect("a visual in a teammate's chat goes only when everyone there may see i
       assert.lengthOf(replies, 1);
       assert.deepStrictEqual(
         replies[0]?.embeds?.map((embed) => embed._tag),
-        ["visual", "chart"],
+        ["visual", "chart", "chart", "chart"],
       );
     }).pipe(Effect.provide(layer)),
   ),
@@ -967,6 +1106,15 @@ it.effect("an urgent message replaces what the agent held for them from the same
       assert.include(tooLong.message, "text is 2001 characters; at most 2000");
       const first = yield* call("kin_relay", { to: "Zoya", text: pointers, sourceEventId: ask });
       assert.isTrue(first.ok, JSON.stringify(first.value));
+      const arrivals = () =>
+        chats
+          .history(owner, { chatId: ownerChat, beforeSeq: 100, limit: 50 })
+          .pipe(
+            Effect.map(({ messages }) =>
+              messages.filter((message) => message.messageId.startsWith("kin-arrives:")),
+            ),
+          );
+      assert.lengthOf(yield* arrivals(), 1);
       // Meera's own request to her, held from another chat, is not this one.
       const meeras = yield* says(person("meera"), meerasChat, "Tell Zoya the call moved.");
       const other = yield* call("kin_relay", {
@@ -996,6 +1144,7 @@ it.effect("an urgent message replaces what the agent held for them from the same
         "Sent in Zoya Sheikh's chat with you; their answer arrives there. This replaced your held message to Zoya Sheikh.",
       );
       assert.deepStrictEqual(yield* waiting, [{ body: "The Lumen Grove call moved to Thursday." }]);
+      assert.lengthOf(yield* arrivals(), 0);
       assert.strictEqual(yield* inHerChat(pointers), 1);
 
       // Her morning: what an older build held is dropped, as its urgent twin went; Meera's goes.
@@ -1269,8 +1418,8 @@ it.effect(
           notice?.body,
           [
             "Chief of staff gave you 2 tasks:",
-            `• ${prices} Invented price sheet. Why: She knows the client`,
-            `• ${poster} Invented poster. Why: She drew the last one`,
+            `• ${prices} Invented price sheet`,
+            `• ${poster} Invented poster`,
           ].join("\n"),
         );
         assert.deepStrictEqual(
@@ -1473,7 +1622,7 @@ const awayThenBack = (how: "date" | "early" | "restart") =>
       assert.strictEqual(yield* deliverHeld(orgId, chats), 0);
       assert.deepStrictEqual(yield* arjunReads, [
         {
-          body: `Chief of staff gave you ${phone} Invented phone number screen. Why: He built the reminders.`,
+          body: `Chief of staff gave you ${phone} Invented phone number screen.`,
         },
       ]);
       // What the owner and the co-owner gave on their screens is no chat line: one banner each

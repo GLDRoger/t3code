@@ -45,7 +45,6 @@ import {
 } from "lucide-react";
 import { type ClipboardEvent, type KeyboardEvent, useId, useRef, useState } from "react";
 
-import { ComposerAttachButton } from "../components/chat/ComposerAttachmentStrip";
 import { shouldHandleComposerAttachmentPaste } from "../components/chat/composerAttachmentFiles";
 import { ComposerSurface } from "../components/chat/ComposerSurface";
 import { ExpandedImageDialogHost } from "../components/chat/ExpandedImageDialog";
@@ -66,7 +65,11 @@ import { randomUUID } from "../lib/utils";
 import { appAtomRegistry } from "../rpc/atomRegistry";
 import { useAtomCommand } from "../state/use-atom-command";
 import { KinAvatar } from "./KinAvatar";
-import { KinComposerAttachmentStrip, useKinComposerAttachments } from "./KinComposerAttachments";
+import {
+  KinComposerAttachmentStrip,
+  useKinComposerAttachments,
+  KinAttachButton,
+} from "./KinComposerAttachments";
 import { KinMessageAttachments } from "./KinMessageAttachments";
 import { kinClient } from "./kinClient";
 import { kinDraftAtom, kinDraftKey } from "./kinDraft";
@@ -255,6 +258,8 @@ export function KinTaskActivity(
     readonly names: KinWorkNames;
     readonly now: Date;
     readonly note: string | null;
+    /** Why its holder has it, quoted under the hand-over (`kinTaskActivity`). */
+    readonly reason?: string | null;
     readonly onOpenProject: (key: KinRecordKey) => void;
   },
 ) {
@@ -284,6 +289,7 @@ export function KinTaskActivity(
     { changes: props.item.changes, comments: thread.comments },
     names,
     props.now,
+    props.reason ?? null,
   );
   const previewKey = `kin-task:${environmentId}:${itemKey}`;
   const me = names.me === null ? null : ({ _tag: "person", personId: names.me } as const);
@@ -377,6 +383,9 @@ export function KinTaskActivity(
                     )}
                     {activityTail(line)}
                   </p>
+                  {line.quote === null ? null : (
+                    <p className="wrap-break-word text-foreground/80">“{line.quote}”</p>
+                  )}
                   {comment === null || comment.removed ? null : (
                     <>
                       {comment.body === "" ? null : (
@@ -770,7 +779,7 @@ export function KinTaskNoteComposer(props: TaskTarget) {
               />
               <div className="flex items-end gap-1 p-1.5">
                 {files.canAttach ? (
-                  <ComposerAttachButton
+                  <KinAttachButton
                     addComposerAttachments={(picked) => files.add(picked)}
                     focusComposer={() => textareaRef.current?.focus()}
                   />
@@ -805,7 +814,7 @@ export function KinTaskNoteComposer(props: TaskTarget) {
 }
 
 /**
- * The With line under "Who has it": each person's picture and first name, × for a reader who may
+ * Details' With line: each person's picture and first name, × for a reader who may
  * change the task and Leave on their own name, and + to put someone on it (`picker`, the holder's
  * people-and-agents list), absent once the task holds as many as it takes.
  */

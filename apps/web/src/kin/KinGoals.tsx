@@ -125,6 +125,12 @@ export function KinGoals(props: KinWorkTarget & { readonly goals?: Goals }) {
                   .filter((part) => part !== null)
                   .join(" · ")}
               </span>
+              {view.notCounted === null ? null : (
+                <span className="text-xs text-muted-foreground">{view.notCounted}</span>
+              )}
+              {view.about === null ? null : (
+                <span className="text-xs text-muted-foreground">{view.about}</span>
+              )}
             </>
           );
           return (

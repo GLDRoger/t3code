@@ -12,13 +12,16 @@ import { page, userEvent } from "vite-plus/test/browser";
 const host = vi.hoisted(() => ({ created: [] as Array<unknown>, searched: [] as Array<string> }));
 
 vi.mock(import("./kinClient"), async (importOriginal) => {
+  const { commandRun } = await import("../../test/commandRun");
   const real = await importOriginal();
   const { AsyncResult, Atom } = await import("effect/reactivity");
   const allowed = Atom.make(true);
   const command = (answer: (input: unknown) => unknown) => ({
     label: "test",
     permissionAtom: () => allowed,
-    run: async (_registry: unknown, { input }: { readonly input: unknown }) => answer(input),
+    run: commandRun(async (_registry: unknown, { input }: { readonly input: unknown }) =>
+      answer(input),
+    ),
   });
   return {
     ...real,

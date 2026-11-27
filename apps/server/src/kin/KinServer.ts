@@ -19,13 +19,16 @@ import type { KinRetiredActions } from "./lead/Retirement.ts";
 import type { KinStop } from "./lead/KinStop.ts";
 import type { KinLevelGate } from "./lead/LevelGate.ts";
 import type { KinLevelControl } from "./levels/LevelControl.ts";
+import type { MemoryRecoveryHooks } from "./memory/Memory.ts";
 import type { KinMemoryChanges } from "./memory/MemoryChanges.ts";
 import type { KinOwnerTimeZone } from "./triggers/ownerTimeZone.ts";
 import type { KinPushDevices } from "./push/KinPushDevices.ts";
+import type { KinDesktopNotices } from "./push/KinDesktopNotices.ts";
 import type { KinPushPresence } from "./push/KinPushPresence.ts";
 import type { KinPushSender } from "./push/KinPushSender.ts";
 import type { KinPresence } from "./reply/KinPresence.ts";
 import type { KinDocRenderer } from "./gendocs/render.ts";
+import type { KinToolchain } from "./gendocs/toolchain.ts";
 import type { KinWorkspace } from "./gendocs/workspace.ts";
 import type { KinImport } from "./work/KinImport.ts";
 import type { KinRecords } from "./work/KinRecords.ts";
@@ -41,7 +44,13 @@ import type { KinRefusedModels } from "./lead/refusedModels.ts";
 
 import type { KinShell } from "./shell/KinShell.ts";
 
+import type { KinNumbers } from "./numbers/KinNumbers.ts";
+
+import type { KinFollowUpItems } from "./watches/followUps.ts";
+
 export type Services =
+  | KinFollowUpItems
+  | KinNumbers
   | KinShell
   | KinIdentity
   | KinDevClock
@@ -60,10 +69,12 @@ export type Services =
   | KinLevelGate
   | KinLevelControl
   | KinMemoryChanges
+  | MemoryRecoveryHooks
   | ApproverKeys
   | GrantVerifier
   | KinRetiredActions
   | KinPushDevices
+  | KinDesktopNotices
   | KinPushPresence
   | KinPushSender
   | KinPresence
@@ -71,6 +82,7 @@ export type Services =
   | KinImport
   | KinWorkspace
   | KinDocRenderer
+  | KinToolchain
   | KinConnections
   | KinGitHubLogin
   | KinGitHubApp

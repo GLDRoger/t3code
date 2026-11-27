@@ -2,7 +2,8 @@
 (* The owner's loose morning check-in over two days, one pulse fact about a member's task, and
    one unprompted post to the owner or to a member at a time it must wait: the owner's quiet
    hours (the first four ticks of his day), or the member's quiet hours or time outside her
-   working hours, on her own clock, half a day ahead of his.
+   working hours, on her own clock, half a day ahead of his. Or the post is a line someone left
+   with the agent for the owner's next check-in instead of sending it (a relay with checkIn).
    Time is in five-minute ticks, twelve to a day; the slot's window opens at tick 5 (the slot time
    minus five minutes) and closes at tick 10 (plus twenty). Each action names the code it stands
    for (apps/server/src/scheduledTasks for T3's scheduler, apps/server/src/kin otherwise). *)
@@ -38,7 +39,7 @@ VARIABLES
   upInWindow,\* per day: Kin was up at some tick of that day's window
   fact,      \* the pulse fact: "none", "open", "held", "cleared"
   heldBy,    \* who holds it: "", "owner", "member"
-  told,      \* per day: the check-in that day carried the fact
+  told,      \* per day: the offered signature and whether the turn omitted it
   toldAs,    \* kin_pulse_told: the fact's state when last told ("" never), its told-once key
   tells,     \* times the fact was told since it last changed
   skipped,   \* per day: the slot ran with the fact open but queued nothing ("nothing new")
@@ -50,12 +51,15 @@ VARIABLES
   delivered, \* times it reached the chat
   inQuiet,   \* it reached the chat inside their quiet hours
   offHours,  \* it reached the member outside her working hours
+  left,      \* the post was left for the owner's next check-in (leftForCheckIn.ts)
+  taken,     \* d + 1 when day d's check-in took it to tell (kin_pulse_told left:<hold>), else 0
   jumps, outages
 
 told2 == <<toldAs, tells>>
 quiet == <<posted, to, held, deliverAt, delivered, inQuiet, offHours>>
+leftVars == <<left, taken>>
 vars == <<clock, up, slot, moved, nextRun, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, upInWindow,
-          fact, heldBy, told, skipped, taskShown, jumps, outages, told2, quiet>>
+          fact, heldBy, told, skipped, taskShown, jumps, outages, told2, quiet, leftVars>>
 
 DayOf(c) == c \div Day
 Opens(d) == d * Day + slot
@@ -73,11 +77,12 @@ Init ==
   /\ dueAt = [d \in DayRange |-> 0] /\ ran = [d \in DayRange |-> FALSE]
   /\ upInWindow = [d \in DayRange |-> FALSE]
   /\ fact = "open" /\ heldBy = ""
-  /\ told = [d \in DayRange |-> FALSE] /\ skipped = [d \in DayRange |-> FALSE]
+  /\ told = [d \in DayRange |-> <<"", FALSE>>] /\ skipped = [d \in DayRange |-> FALSE]
   /\ taskShown = TRUE /\ jumps = 0 /\ outages = 0
   /\ toldAs = "" /\ tells = 0
   /\ posted = FALSE /\ to = "" /\ held = FALSE /\ deliverAt = 0 /\ delivered = 0
   /\ inQuiet = FALSE /\ offHours = FALSE
+  /\ left = FALSE /\ taken = 0
 
 InWindow(c) == DayOf(c) \in DayRange /\ c >= Opens(DayOf(c)) /\ c <= Closes(DayOf(c))
 Seen(c) == [d \in DayRange |-> upInWindow[d] \/ (up /\ InWindow(c) /\ DayOf(c) = d)]
@@ -97,6 +102,11 @@ CodeHolds(p, c) == CodeLocal(p, c) < QuietTicks
 FreeAt(p, c) == CHOOSE t \in c .. c + Day :
   ~CodeHolds(p, t) /\ \A u \in c .. t - 1 : CodeHolds(p, u)
 
+\* leftForCheckIn.ts leftOpen: a left line no check-in has taken; it alone brings a check-in.
+LeftOpen == left /\ held /\ taken = 0
+\* heldDelivery.ts reservedByCheckIn: deliverHeld leaves a taken line to its check-in.
+Untaken == taken = 0 \/ Broken = "deliver-taken"
+
 (* checkInCatchUp.ts missedSlot: T3's scheduler has moved past today's slot (next_run_at after
    now) and it has not run since its window opened, on the same day, within the grace. *)
 Missed == /\ DayOf(clock) \in DayRange
@@ -106,7 +116,7 @@ Missed == /\ DayOf(clock) \in DayRange
 
 \* Kin's scheduler, queue and tick look every few seconds: while Kin is up nothing due waits a tick.
 Due == up /\ ((nextRun <= clock /\ DayOf(clock) \in DayRange) \/ Missed
-               \/ (held /\ clock >= deliverAt /\ ~CodeHolds(to, clock))
+               \/ (held /\ clock >= deliverAt /\ ~CodeHolds(to, clock) /\ Untaken)
                \/ \E d \in DayRange : queued[d] # 0 /\ clock >= queued[d] - 1)
 
 Tick ==
@@ -114,7 +124,7 @@ Tick ==
   /\ clock' = clock + 1
   /\ upInWindow' = [d \in DayRange |-> upInWindow[d] \/ (up /\ InWindow(clock + 1) /\ DayOf(clock + 1) = d)]
   /\ UNCHANGED <<up, slot, moved, nextRun, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, fact, heldBy, told, skipped,
-                 taskShown, jumps, outages, told2, quiet>>
+                 taskShown, jumps, outages, told2, quiet, leftVars>>
 
 (* The host's clock is set forward or back fifteen minutes. *)
 ClockJumps ==
@@ -123,7 +133,7 @@ ClockJumps ==
        /\ clock' = clock + delta
   /\ jumps' = jumps + 1
   /\ UNCHANGED <<up, slot, moved, nextRun, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, upInWindow, fact, heldBy,
-                 told, skipped, taskShown, outages, told2, quiet>>
+                 told, skipped, taskShown, outages, told2, quiet, leftVars>>
 
 (* The host sleeps or Kin stops, then starts again; next_run_at is stored, never recomputed. *)
 GoesDown == up /\ outages < 1 /\ ~Due /\ up' = FALSE /\ outages' = outages + 1
@@ -131,34 +141,38 @@ GoesDown == up /\ outages < 1 /\ ~Due /\ up' = FALSE /\ outages' = outages + 1
   /\ held' = (held /\ Broken # "held-in-memory")
   /\ UNCHANGED <<clock, slot, moved, nextRun, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, upInWindow, fact,
                  heldBy, told, skipped, taskShown, jumps, told2, posted, to, deliverAt, delivered, inQuiet,
-                 offHours>>
+                 offHours, leftVars>>
 ComesUp == ~up /\ up' = TRUE
   /\ upInWindow' = Seen(clock)
   /\ UNCHANGED <<clock, slot, moved, nextRun, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, fact, heldBy, told,
-                 skipped, taskShown, jumps, outages, told2, quiet>>
+                 skipped, taskShown, jumps, outages, told2, quiet, leftVars>>
 
 (* runNative → checkIn.ts queueCheckIn for day d, from a run that started at `clock`. told.ts
-   untold gates it: a fact open or in hand is told unless it was told as it stands now
+   untold gates it: a fact open or in hand is offered unless reserved or already told as it stands now
    (kin_pulse_told); with nothing untold no event is queued and no model runs. The minute is the
    window's start plus the day's offset, or at once when that has passed; the dedupe key is the
    day (KinEventQueue.enqueue ON CONFLICT DO NOTHING). *)
 Tellable == fact = "open" \/ (fact = "held" /\ Broken # "held-left-out")
+Reserved == \E d \in DayRange : queued[d] # 0 /\ queued[d] <= Horizon + 1 /\ told[d][1] = fact
+Queue(d, due, offered) ==
+  /\ queued' = [queued EXCEPT ![d] =
+       (IF Broken \in {"late-offset", "fire-early"} THEN clock + offset[d]
+        ELSE IF Opens(d) + offset[d] >= clock THEN Opens(d) + offset[d] ELSE clock) + 1]
+  /\ queuedAt' = [queuedAt EXCEPT ![d] = clock]
+  /\ dueAt' = [dueAt EXCEPT ![d] = due]
+  /\ told' = [told EXCEPT ![d] = <<offered, FALSE>>]
+  /\ taken' = IF LeftOpen THEN d + 1 ELSE taken
 Fire(d, due) ==
   /\ ran' = [ran EXCEPT ![d] = TRUE]
-  /\ IF Tellable /\ (fact # toldAs \/ Broken = "tell-again")
-       THEN /\ IF queued[d] # 0 /\ Broken # "no-dedupe" THEN UNCHANGED <<queued, queuedAt, dueAt, told2, told>>
-               ELSE /\ queued' = [queued EXCEPT ![d] =
-                         (IF Broken \in {"late-offset", "fire-early"} THEN clock + offset[d]
-                          ELSE IF Opens(d) + offset[d] >= clock THEN Opens(d) + offset[d] ELSE clock) + 1]
-                    /\ queuedAt' = [queuedAt EXCEPT ![d] = clock]
-                    /\ dueAt' = [dueAt EXCEPT ![d] = due]
-                    /\ told' = [told EXCEPT ![d] = TRUE]
-                    /\ tells' = IF fact = toldAs THEN tells + 1 ELSE 1
-                    /\ toldAs' = fact
+  /\ IF Tellable /\ ((fact # toldAs /\ ~Reserved) \/ Broken = "tell-again")
+       THEN /\ IF queued[d] # 0 /\ Broken # "no-dedupe" THEN UNCHANGED <<queued, queuedAt, dueAt, told, taken>>
+               ELSE Queue(d, due, fact)
             /\ UNCHANGED skipped
        ELSE /\ skipped' = [skipped EXCEPT ![d] =
-                skipped[d] \/ (fact \in {"open", "held"} /\ fact # toldAs /\ queued[d] = 0)]
-            /\ UNCHANGED <<queued, queuedAt, told, dueAt, told2>>
+                skipped[d] \/ (fact \in {"open", "held"} /\ fact # toldAs /\ ~Reserved /\ queued[d] = 0)]
+            \* Only a left line to tell: the check-in comes for it, offering no fact ("").
+            /\ IF LeftOpen /\ queued[d] = 0 THEN Queue(d, due, "")
+               ELSE UNCHANGED <<queued, queuedAt, told, dueAt, taken>>
 
 (* ScheduledTaskService.runDueTasks: a run more than ten minutes late is rescheduled unseen;
    otherwise KinTriggerSink → scheduledTasks.ts runNative with dueAt = the run's start.
@@ -168,10 +182,10 @@ SlotRuns ==
   /\ up /\ nextRun <= clock + (IF Broken = "fire-early" THEN 1 ELSE 0) /\ DayOf(clock) \in DayRange
   /\ nextRun' = NextAfter(slot, clock)
   /\ IF clock - nextRun > Grace
-       THEN UNCHANGED <<queued, queuedAt, told, skipped, dueAt, ran, told2>>
+       THEN UNCHANGED <<queued, queuedAt, told, skipped, dueAt, ran, taken>>
        ELSE Fire(DayOf(clock), nextRun)
   /\ UNCHANGED <<clock, up, slot, moved, offset, woke, wokeAt, upInWindow, fact, heldBy, taskShown,
-                 jumps, outages, quiet>>
+                 jumps, outages, told2, quiet, left>>
 
 (* scheduledTasks.ts tick (at start-up and every tick) → checkInCatchUp.ts missedCheckIns: the
    fire the slot would have made, `ns:<task>:<window start>:scheduled`, put once and run now. *)
@@ -179,16 +193,34 @@ CatchUp ==
   /\ up /\ Missed
   /\ Fire(DayOf(clock), Opens(DayOf(clock)))
   /\ UNCHANGED <<clock, up, slot, moved, nextRun, offset, woke, wokeAt, upInWindow, fact, heldBy,
-                 taskShown, jumps, outages, quiet>>
+                 taskShown, jumps, outages, told2, quiet, left>>
 
 (* KinEventQueue readiness: the event wakes the agent from notBefore on (stored +1 so 0 = none). *)
-AgentWakes(d) ==
+(* The successful turn and its ledger settlement are one step here. settleCheckInTold releases
+   an offered fact omitted from the turn's posts. It keeps one named or handled in that turn. *)
+(* A left line it took is told when the turn posted (kept) and closed with its delivery mark
+   (settleLeft), or, when it posted nothing, freed for the next check-in ("close-unposted": closed
+   anyway). *)
+AgentWakes(d, kept) ==
   /\ up /\ queued[d] # 0 /\ clock >= queued[d] - 1
+  /\ told' = IF kept \/ told[d][1] = "" THEN told ELSE [told EXCEPT ![d] = <<told[d][1], TRUE>>]
+  /\ IF (kept \/ Broken = "keep-omission") /\ told[d][1] # ""
+       THEN /\ tells' = IF told[d][1] = toldAs THEN tells + 1 ELSE 1
+            /\ toldAs' = told[d][1]
+       ELSE UNCHANGED told2
+  \* leftGiven gives the turn the line it took, whatever deliverHeld did meanwhile.
+  /\ IF taken = d + 1
+       THEN IF kept \/ Broken = "close-unposted"
+              THEN /\ held' = FALSE /\ delivered' = delivered + (IF kept THEN 1 ELSE 0)
+                   /\ UNCHANGED taken
+              ELSE /\ taken' = 0 /\ UNCHANGED <<held, delivered>>
+       ELSE UNCHANGED <<held, delivered, taken>>
+  \* The check-in's own quiet hold (agentQuietUntil) is left out here, so its tell is not a post.
   /\ woke' = [woke EXCEPT ![d] = woke[d] + 1]
   /\ wokeAt' = IF woke[d] = 0 THEN [wokeAt EXCEPT ![d] = clock] ELSE wokeAt
   /\ queued' = IF Broken = "no-dedupe" THEN [queued EXCEPT ![d] = 0] ELSE [queued EXCEPT ![d] = Horizon + 99]
-  /\ UNCHANGED <<clock, up, slot, moved, nextRun, queuedAt, offset, dueAt, ran, upInWindow, fact, heldBy, told, skipped,
-                 taskShown, jumps, outages, told2, quiet>>
+  /\ UNCHANGED <<clock, up, slot, moved, nextRun, queuedAt, offset, dueAt, ran, upInWindow, fact, heldBy, skipped,
+                 taskShown, jumps, outages, posted, to, deliverAt, inQuiet, offHours, left>>
 
 \* A moved slot's day is measured against its new window: being up in the old one no longer counts.
 Remeasured(s) ==
@@ -202,7 +234,7 @@ OwnerMoves ==
   /\ nextRun' = NextAfter(MovedSlot, clock)
   /\ upInWindow' = Remeasured(MovedSlot)
   /\ UNCHANGED <<clock, up, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, fact, heldBy, told, skipped,
-                 taskShown, jumps, outages, told2, quiet>>
+                 taskShown, jumps, outages, told2, quiet, leftVars>>
 
 (* pulse/checkInSeeds.ts followOwnerZone: re-keys seed rows only (kin-seed source event). *)
 SeedFollows ==
@@ -210,19 +242,19 @@ SeedFollows ==
   /\ slot' = SeedSlot /\ nextRun' = NextAfter(SeedSlot, clock)
   /\ upInWindow' = Remeasured(SeedSlot)
   /\ UNCHANGED <<clock, up, moved, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, fact, heldBy, told,
-                 skipped, taskShown, jumps, outages, told2, quiet>>
+                 skipped, taskShown, jumps, outages, told2, quiet, leftVars>>
 
 (* KinPulse tick senses the member's overdue task; pulse_handle got_it / not_a_problem / undo. *)
 FactAppears == fact = "none" /\ fact' = "open"
   /\ UNCHANGED <<clock, up, slot, moved, nextRun, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, upInWindow, heldBy,
-                 told, skipped, taskShown, jumps, outages, told2, quiet>>
+                 told, skipped, taskShown, jumps, outages, told2, quiet, leftVars>>
 FactHeld(p) == fact = "open" /\ fact' = "held" /\ heldBy' = p
   /\ taskShown' = (taskShown /\ Broken # "handle-hides-task")
   /\ UNCHANGED <<clock, up, slot, moved, nextRun, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, upInWindow, told,
-                 skipped, jumps, outages, told2, quiet>>
+                 skipped, jumps, outages, told2, quiet, leftVars>>
 FactClears == fact \in {"open", "held"} /\ fact' = "cleared"
   /\ UNCHANGED <<clock, up, slot, moved, nextRun, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, upInWindow, heldBy,
-                 told, skipped, taskShown, jumps, outages, told2, quiet>>
+                 told, skipped, taskShown, jumps, outages, told2, quiet, leftVars>>
 
 (* An unprompted line to a person at a time it must wait (a night job's notice, a fact wake's
    turn, a relay, nudge or notice the agent sends them): quietHold.ts holdIfQuiet or
@@ -236,26 +268,39 @@ QuietPost(p) ==
        ELSE /\ held' = TRUE /\ deliverAt' = FreeAt(p, clock)
             /\ UNCHANGED <<delivered, inQuiet, offHours>>
   /\ UNCHANGED <<clock, up, slot, moved, nextRun, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, upInWindow,
-                 fact, heldBy, told, skipped, taskShown, jumps, outages, told2>>
+                 fact, heldBy, told, skipped, taskShown, jumps, outages, told2, leftVars>>
+
+(* Handoff.ts relay with checkIn on the first day, before the window or after it: the line is
+   stored for the owner's next check-in instead of sent (holdLine), and deliverHeld may post it a
+   day later if none took it. *)
+Leave ==
+  /\ ~posted /\ clock \in {QuietTicks, Day - 1}
+  /\ posted' = TRUE /\ to' = "owner" /\ left' = TRUE /\ held' = TRUE
+  /\ deliverAt' = FreeAt("owner", clock + Day)
+  /\ UNCHANGED <<clock, up, slot, moved, nextRun, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, upInWindow,
+                 fact, heldBy, told, skipped, taskShown, jumps, outages, told2, delivered, inQuiet, offHours,
+                 taken>>
 
 (* heldDelivery.ts deliverHeld on the drain tick: posts what is due and marks it delivered in one
    transaction ("deliver-twice": the mark is lost and the next tick posts it again). A host that
    slept past their free time holds it again ("deliver-late-night": it posts once due). *)
 Deliver ==
-  /\ delivered < 2 /\ up /\ held /\ clock >= deliverAt
+  /\ delivered < 2 /\ up /\ held /\ clock >= deliverAt /\ Untaken
   /\ (~CodeHolds(to, clock) \/ Broken = "deliver-late-night")
   /\ held' = (Broken = "deliver-twice")
   /\ delivered' = delivered + 1
   /\ inQuiet' = (inQuiet \/ QuietFor(to, clock))
   /\ offHours' = (offHours \/ OffFor(to, clock))
   /\ UNCHANGED <<clock, up, slot, moved, nextRun, queued, queuedAt, offset, woke, wokeAt, dueAt, ran, upInWindow,
-                 fact, heldBy, told, skipped, taskShown, jumps, outages, told2, posted, to, deliverAt>>
+                 fact, heldBy, told, skipped, taskShown, jumps, outages, told2, posted, to, deliverAt,
+                 leftVars>>
 
 Next ==
   \/ Tick \/ ClockJumps \/ GoesDown \/ ComesUp \/ SlotRuns \/ CatchUp \/ OwnerMoves \/ SeedFollows
-  \/ \E d \in DayRange : AgentWakes(d)
+  \/ \E d \in DayRange, kept \in BOOLEAN : AgentWakes(d, kept)
   \/ FactAppears \/ FactClears \/ \E p \in {"owner", "member"} : FactHeld(p)
   \/ \E p \in {"owner", "member"} : QuietPost(p)
+  \/ Leave
   \/ Deliver
 
 Spec == Init /\ [][Next]_vars
@@ -274,6 +319,9 @@ FiresWhenUp == \A d \in DayRange : (clock > Closes(d) /\ upInWindow[d]) => ran[d
 FactNeverAbsent == \A d \in DayRange : ~skipped[d]
 HandleKeepsTask == taskShown
 ToldOnce == tells <= 1
+OmissionsReleased ==
+  (\E d \in DayRange : told[d] = <<toldAs, TRUE>>) =>
+    \E d \in DayRange : woke[d] > 0 /\ told[d] = <<toldAs, FALSE>>
 HeldDeliveredOnce == delivered <= 1
 HeldNeverLost == posted => (held \/ delivered >= 1)
 QuietIsQuiet == ~inQuiet

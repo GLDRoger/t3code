@@ -105,7 +105,7 @@ header: |
    */
 excludeAnnotations:
   - examples
-disableAdditionalProperties: true
+closeObjects: true
 replacements:
   # Schema.Unknown doesn't work with Schema.toCodecJson (used by HttpClientResponse.schemaBodyJson)
   # Replace with Schema.Json which properly handles arbitrary JSON values
@@ -125,7 +125,7 @@ replacements:
     to: "export type JsonValue = unknown"
   - from: 'export const JsonValue = Schema.Json.annotate({ "expected": "JSON value", "identifier": "JsonValue" })'
     to: "export const JsonValue = Schema.Unknown"
-  - from: 'readonly "anthropic-beta"?: ReadonlyArray<AnthropicBeta>'
-    to: 'readonly "anthropic-beta"?: string | ReadonlyArray<AnthropicBeta>'
+  - from: 'readonly "anthropic-beta"?: globalThis.ReadonlyArray<AnthropicBeta>'
+    to: 'readonly "anthropic-beta"?: string | globalThis.ReadonlyArray<AnthropicBeta>'
   - from: '"anthropic-beta": Schema.optionalKey(Schema.Array(AnthropicBeta).annotate('
     to: '"anthropic-beta": Schema.optionalKey(Schema.Union([Schema.String, Schema.Array(AnthropicBeta)]).annotate('

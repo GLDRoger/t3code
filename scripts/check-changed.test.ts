@@ -59,15 +59,23 @@ describe("check:changed", () => {
     ["packages/contracts/src/kinChat.ts", ["budgets"]],
     ["packages/shared/src/kinVisual.ts", ["budgets"]],
     ["apps/web/src/components/sidebar/SidebarThreadRow.tsx", []],
+    ["apps/mobile/src/features/chats/widgets/KinVisual.tsx", ["phone"]],
+    ["packages/client-runtime/src/mcpApps/host.ts", ["phone"]],
     ["apps/server/src/kin/people/leaver.test.ts", []],
   ] as const)("runs cross-file checks for %s", (file, checks) => {
     const tests = {
       leaver: ["apps/server/src/kin/people/leaver.test.ts"],
+      phone: [
+        "apps/mobile/src/features/chats/contract/mcpAppWebView.kin-contract.test.ts",
+        "apps/mobile/src/features/chats/widgets/kinVisualMessage.test.ts",
+      ],
       budgets: [
         "apps/server/src/kin/lead/deferredTools.test.ts",
         "apps/server/src/kin/mcp/layer.test.ts",
       ],
     };
+    if (checks.some((check) => check === "phone"))
+      assert.include(decide([file], readWorkspace(), false).affected, "@t3tools/mobile");
     assert.deepStrictEqual(
       crossFileTests([file]),
       checks.flatMap((check) => tests[check]),
@@ -404,7 +412,7 @@ it("lists the ignored inputs that main's pathspecs list, without entering node_m
   assert.deepStrictEqual(await inFixture(ignoredCheckInputs(project.root)), old);
 });
 
-function launcherFixture() {
+function launcherFixture(extraFiles: Record<string, string> = {}) {
   const root = NodeFS.realpathSync(
     NodeFS.mkdtempSync(NodePath.join(NodeOS.tmpdir(), "t3 checks & (fixture) ")),
   );
@@ -461,7 +469,7 @@ function launcherFixture() {
       'vitePlusCommand(args, "win32")',
     ),
   );
-  for (const name of ["effect", "@effect/platform-node", "@t3tools/shared"]) {
+  for (const name of ["effect", "@effect/platform-node", "@t3tools/shared", "typescript-legacy"]) {
     const dest = NodePath.join(root, "node_modules", name);
     NodeFS.mkdirSync(NodePath.dirname(dest), { recursive: true });
     NodeFS.symlinkSync(
@@ -470,6 +478,7 @@ function launcherFixture() {
       "junction",
     );
   }
+  for (const [file, content] of Object.entries(extraFiles)) write(file, content);
   const git = (...args: Array<string>) =>
     NodeChildProcess.execFileSync("git", args, { cwd: root, stdio: "pipe", env });
   git("init");
@@ -509,6 +518,45 @@ function launcherFixture() {
     },
   };
 }
+
+const pulse = "apps/server/src/kin/pulse";
+const pulseSource = `${pulse}/weekMeasure.ts`;
+const pulseHelper = `${pulse}/weekMeasure.testkit.ts`;
+const measureTest = `${pulse}/weekMeasure.test.ts`;
+const weeklyTest = `${pulse}/weekly.test.ts`;
+
+it.each([
+  { changed: pulseSource, pulseTests: [measureTest] },
+  { changed: pulseHelper, pulseTests: [measureTest, weeklyTest] },
+])("selects the tests for $changed", ({ changed, pulseTests }) => {
+  const fromRepo = (file: string) =>
+    NodeFS.readFileSync(NodePath.join(import.meta.dirname, "..", file), "utf8");
+  using project = launcherFixture({
+    "pnpm-workspace.yaml": "packages:\n  - apps/*\n  - packages/*\n",
+    "apps/server/package.json": JSON.stringify({ name: "@t3tools/server" }),
+    ...Object.fromEntries(
+      [pulseSource, pulseHelper, measureTest, weeklyTest].map((file) => [file, fromRepo(file)]),
+    ),
+  });
+  project.write(changed, fromRepo(changed) + "\n");
+  const result = project.run();
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+  const tests = project
+    .calls()
+    .find(({ args }) => args[0] === "test")
+    ?.args.slice(3);
+  expect(tests?.sort()).toEqual(
+    [
+      ...pulseTests,
+      "apps/server/src/kin/lead/deferredTools.test.ts",
+      "apps/server/src/kin/mcp/layer.test.ts",
+      "apps/server/src/kin/wireBudget.test.ts",
+      "apps/server/src/kin/work/counted.test.ts",
+      "apps/server/src/kin/featureMap/featureMap.test.ts",
+      "evals/mcp-tool-use/kin-checks.test.ts",
+    ].sort(),
+  );
+});
 
 it("checks changed source paths through the Windows launcher", () => {
   using project = launcherFixture();

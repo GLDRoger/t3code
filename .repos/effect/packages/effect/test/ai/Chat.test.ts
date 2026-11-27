@@ -1,5 +1,5 @@
 import { assert, describe, it } from "@effect/vitest"
-import { Effect, Layer, Predicate, Ref, Schema, Stream } from "effect"
+import { Effect, Layer, Option, Predicate, Ref, Schema, Stream } from "effect"
 import { Chat, IdGenerator, type LanguageModel, Prompt, type Response, Tool, Toolkit } from "effect/ai"
 import { KeyValueStore, Persistence } from "effect/persistence"
 import { TestClock } from "effect/testing"
@@ -54,6 +54,40 @@ const PersistenceLayer = Layer.provideMerge(
 )
 
 describe("Chat", () => {
+  it.effect("generateObject with allowEmpty preserves tool calls and results in history", () =>
+    Effect.gen(function*() {
+      const chat = yield* Chat.empty
+      const response = yield* chat.generateObject({
+        prompt: "Look it up",
+        schema: Schema.Struct({ answer: Schema.String }),
+        toolkit: LoopToolkit,
+        allowEmpty: true
+      }).pipe(
+        TestUtils.withLanguageModel({
+          generateText: [
+            { type: "tool-call", id: "call-1", name: "Lookup", params: { key: "a" } },
+            { type: "finish", reason: "tool-calls", usage: { inputTokens: {}, outputTokens: {} } }
+          ]
+        })
+      )
+
+      assert.deepStrictEqual(response.value, Option.none())
+      assert.deepStrictEqual(
+        yield* Ref.get(chat.history),
+        Prompt.make([
+          { role: "user", content: "Look it up" },
+          {
+            role: "assistant",
+            content: [{ type: "tool-call", id: "call-1", name: "Lookup", params: { key: "a" } }]
+          },
+          {
+            role: "tool",
+            content: [{ type: "tool-result", id: "call-1", name: "Lookup", result: "value of a", isFailure: false }]
+          }
+        ])
+      )
+    }).pipe(Effect.provide(LoopToolkitLayer)))
+
   for (
     const [name, data] of [
       ["bytes", new Uint8Array([0, 137, 255, 65])],
@@ -273,6 +307,52 @@ describe("Chat", () => {
 
       assert.strictEqual(executions, 1)
     }).pipe(
+      Effect.provide(toolkit.toLayer({ Counter: () => Effect.sync(() => ++executions) }))
+    )
+  })
+
+  it.effect("preserves approval results when streaming with tool call resolution disabled", () => {
+    let executions = 0
+    const toolkit = Toolkit.make(Tool.make("Counter", {
+      success: Schema.Number,
+      needsApproval: true
+    }))
+
+    return Effect.gen(function*() {
+      const chat = yield* Chat.empty
+      const initial = yield* chat.generateText({ prompt: "Run the counters", toolkit }).pipe(
+        TestUtils.withLanguageModel({
+          generateText: [
+            { type: "tool-call", id: "approved", name: "Counter", params: {} },
+            { type: "tool-call", id: "denied", name: "Counter", params: {} }
+          ]
+        })
+      )
+      const parts = yield* chat.streamText({
+        toolkit,
+        disableToolCallResolution: true,
+        prompt: [Prompt.toolMessage({
+          content: initial.content.filter((part) => part.type === "tool-approval-request").map((part) =>
+            Prompt.toolApprovalResponsePart({
+              approvalId: part.approvalId,
+              approved: part.toolCallId === "approved"
+            })
+          )
+        })]
+      }).pipe(Stream.runCollect)
+
+      assert.deepStrictEqual(parts.map((part) => part.type === "tool-result" ? part.id : part.type), [
+        "approved",
+        "denied",
+        "finish"
+      ])
+      assert.strictEqual(executions, 1)
+
+      yield* chat.streamText({ prompt: "Continue", toolkit, disableToolCallResolution: true }).pipe(Stream.runDrain)
+
+      assert.strictEqual(executions, 1)
+    }).pipe(
+      withRounds([]).provide,
       Effect.provide(toolkit.toLayer({ Counter: () => Effect.sync(() => ++executions) }))
     )
   })

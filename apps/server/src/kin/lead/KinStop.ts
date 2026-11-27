@@ -1,9 +1,11 @@
 import {
+  isOrchestrationV2WorkActive,
   KinAgentId,
   KinChatError,
   KinChatId,
   KinEvent,
   KinMessageId,
+  type KinPersonId,
   KinOrgState,
   ThreadId,
   type KinMessage,
@@ -36,11 +38,13 @@ import * as ThreadManagement from "../../orchestration-v2/ThreadManagementServic
 import { PersistenceSqlError, toPersistenceSqlError } from "../../persistence/Errors.ts";
 import * as Hub from "../chat/KinChatHub.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
-import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { isAdoptedRunMessage, wakeupMessageId, type PersonIdentity } from "../chat/KinIdentity.ts";
 import * as Chat from "../chat/KinChatRepository.ts";
+import { chatShared } from "../chat/sharing.ts";
 import { KinPresence, syncQueued } from "../reply/KinPresence.ts";
 import type * as Routines from "../triggers/routines.ts";
 import { KinHostCare } from "../host/KinHostCare.ts";
+import { checkLeadNoticeNow } from "../hostBackup.ts";
 import { laneFor } from "../reply/replyLane.ts";
 import * as Queue from "./KinEventQueue.ts";
 import { hashedEventId } from "./eventIds.ts";
@@ -56,6 +60,8 @@ const resumedNotice = (expired: number) =>
     ? "Kin resumed."
     : `Kin resumed. ${expired} queued ${expired === 1 ? "event" : "events"} expired.`;
 const EXPIRED_LISTED = 50;
+const EXPIRED_IN_NOTICE = 10;
+const noticeName = (value: string) => value.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/gu, " ");
 
 export class KinStopFanOutError extends Schema.TaggedError<KinStopFanOutError>()(
   "KinStopFanOutError",
@@ -69,6 +75,7 @@ export type KinStopFanOut = {
   readonly interrupt?: (
     orgId: KinOrgId,
     wakeupId: KinWakeupId,
+    afterAskedInterrupt?: Effect.Effect<void>,
   ) => Effect.Effect<boolean, KinStopFanOutError>;
   /** Stops a wake-up aborted for its audience, dropping its draft; its runner requeues its events. */
   readonly abort?: (orgId: KinOrgId, wakeupId: KinWakeupId) => Effect.Effect<void>;
@@ -124,6 +131,12 @@ export class KinStop extends Context.Service<
       orgId: KinOrgId,
       wakeupIds: ReadonlyArray<KinWakeupId>,
     ) => Effect.Effect<void>;
+    /** Only after a committed, authorized Stop tap on a sealed quiet-run card. */
+    readonly stopAsked: (
+      orgId: KinOrgId,
+      wakeupId: KinWakeupId,
+      personId: KinPersonId,
+    ) => Effect.Effect<void>;
     /** Owner only: the presence line's Stop on one wake-up. Its events are not retried. */
     readonly interrupt: (
       people: ReadonlyArray<PersonIdentity>,
@@ -134,6 +147,7 @@ export class KinStop extends Context.Service<
 
 const make = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
+  const scope = yield* Effect.scope;
   const presence = yield* Effect.serviceOption(KinPresence);
   const queue = yield* Queue.KinEventQueue;
   const chat = yield* Chat.KinChatRepository;
@@ -198,6 +212,7 @@ const make = Effect.gen(function* () {
     now: number,
     kind: "pause" | "resume",
     body: string,
+    privateBody = body,
   ) {
     const chats = yield* sql<{
       chatId: string;
@@ -205,28 +220,56 @@ const make = Effect.gen(function* () {
       JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id AND a.retired_at IS NULL
       WHERE l.org_id = ${orgId} ORDER BY l.owner_chat_id`;
     return yield* Effect.forEach(chats, (row) =>
-      chat.insertMessage({
-        orgId,
-        chatId: KinChatId.make(row.chatId),
-        // Fixed words; the switch never waits on who reads its notice.
-        audience: "chat",
-        messageId: KinMessageId.make(`kin-${kind}:${now}:${row.chatId}`),
-        author: { _tag: "system" },
-        kind: "text",
-        body,
-        intent: null,
-        mentions: [],
-        replyTo: null,
-        widgetId: null,
-        floorRunId: null,
-        status: "posted",
-        sentBy: null,
-        clientMessageId: null,
-        createdAt: iso(now),
-        editedAt: null,
+      Effect.gen(function* () {
+        const chatId = KinChatId.make(row.chatId);
+        const showNames = body !== privateBody && !(yield* chatShared(sql, { orgId, chatId }));
+        return yield* chat.insertMessage({
+          orgId,
+          chatId,
+          audience: showNames ? "owner" : "chat",
+          messageId: KinMessageId.make(`kin-${kind}:${now}:${row.chatId}`),
+          author: { _tag: "system" },
+          kind: "text",
+          body: showNames ? privateBody : body,
+          intent: null,
+          mentions: [],
+          replyTo: null,
+          widgetId: null,
+          floorRunId: null,
+          status: "posted",
+          sentBy: null,
+          clientMessageId: null,
+          createdAt: iso(now),
+          editedAt: null,
+        });
       }),
     );
   });
+
+  const expiredNames = Effect.fn("KinStop.expiredNames")(function* (
+    orgId: KinOrgId,
+    ids: ReadonlyArray<string>,
+  ) {
+    if (ids.length === 0) return [];
+    const names = yield* sql<{ chat: string; from: string }>`SELECT
+        COALESCE(c.title, CASE c.kind WHEN 'direct' THEN l.name ELSE 'Group' END, 'Kin') AS chat,
+        COALESCE(p.display_name, a.display_name, 'Kin') AS "from"
+      FROM kin_events e
+      LEFT JOIN kin_leads l ON l.org_id = e.org_id AND l.agent_id = e.agent_id
+      LEFT JOIN kin_chats c ON c.org_id = e.org_id AND c.chat_id = COALESCE(
+        json_extract(e.json, '$.origin.chatId'), json_extract(e.json, '$.chatId'), l.owner_chat_id)
+      LEFT JOIN kin_messages m ON m.org_id = e.org_id AND m.chat_id = c.chat_id
+        AND m.message_id = json_extract(e.json, '$.messageId')
+      LEFT JOIN kin_people p ON p.org_id = e.org_id AND p.person_id = COALESCE(
+        m.author_person_id, json_extract(e.json, '$.origin.personId'),
+        json_extract(e.json, '$.provenance.personId'), json_extract(e.json, '$.askedBy'))
+      LEFT JOIN kin_agents a ON a.org_id = e.org_id AND a.agent_id = COALESCE(
+        m.author_agent_id, json_extract(e.json, '$.provenance.agentId'))
+      WHERE e.org_id = ${orgId} AND e.event_id IN ${sql.in(ids)}
+      ORDER BY e.received_at, e.event_id`;
+    return names.map((row) => `${noticeName(row.chat)} (from ${noticeName(row.from)})`);
+  });
+
   /** Where a wake-up answers, and as whom, for the line saying it was stopped. */
   const stoppedLane = Effect.fn("KinStop.stoppedLane")(function* (
     orgId: KinOrgId,
@@ -262,10 +305,10 @@ const make = Effect.gen(function* () {
     orgId: KinOrgId,
     wakeupId: KinWakeupId,
     lane: { readonly chatId: KinChatId; readonly leadName: string },
-    person: PersonIdentity,
+    personId: KinPersonId,
   ) {
     const [who] = yield* sql<{ name: string }>`SELECT display_name AS name FROM kin_people
-      WHERE org_id = ${orgId} AND person_id = ${person.personId} ORDER BY person_id`;
+      WHERE org_id = ${orgId} AND person_id = ${personId} ORDER BY person_id`;
     if (who === undefined) return;
     const message = yield* chat.insertMessage({
       orgId,
@@ -326,7 +369,7 @@ const make = Effect.gen(function* () {
         const changed =
           inserted.length > 0
             ? inserted
-            : yield* sql`UPDATE kin_org_state SET paused = 1, paused_at = ${now},
+            : yield* sql`UPDATE kin_org_state SET stop_managed = 1, paused = 1, paused_at = ${now},
                 paused_by = ${person.personId}, reason = ${reason}
               WHERE org_id = ${input.orgId} AND paused = 0 RETURNING org_id`;
         if (changed.length > 0) yield* (yield* KinRefreshObserver).touch(input.orgId, "stop");
@@ -336,6 +379,7 @@ const make = Effect.gen(function* () {
       }),
     );
     yield* publish(input.orgId, result.messages);
+    yield* checkLeadNoticeNow(input.orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     if (result.state.paused)
       yield* fanOut(
         input.orgId,
@@ -364,27 +408,41 @@ const make = Effect.gen(function* () {
           WHERE org_id = ${input.orgId} AND paused = 1`;
         yield* (yield* KinRefreshObserver).touch(input.orgId, "stop");
         const now = yield* Clock.currentTimeMillis;
-        const expired = yield* sql<{
+        const expiredRows = yield* sql<{
           eventId: string;
           agentId: string;
           tag: string;
           receivedAt: number;
-        }>`UPDATE kin_events SET state = 'expired'
+        }>`UPDATE kin_events AS e SET state = 'expired'
           WHERE org_id = ${input.orgId} AND state = 'queued' AND queued_at <= ${now - PAUSE_EXPIRY_MS}
+            AND NOT (e.tag = 'chat.message' AND EXISTS (
+              SELECT 1 FROM kin_messages m
+              JOIN kin_chats c ON c.org_id = m.org_id AND c.chat_id = m.chat_id
+                AND c.kind = 'direct' AND c.archived_at IS NULL
+              JOIN kin_chat_members cm ON cm.org_id = c.org_id AND cm.chat_id = c.chat_id
+                AND cm.principal_kind = 'agent' AND cm.agent_id = e.agent_id AND cm.left_at IS NULL
+              WHERE m.org_id = e.org_id AND m.message_id = json_extract(e.json, '$.messageId')
+                AND m.chat_id = json_extract(e.json, '$.chatId')
+                AND m.author_kind = 'human' AND m.kind = 'text' AND m.status = 'posted'
+                AND m.origin_json IS NULL
+                AND NOT EXISTS (SELECT 1 FROM kin_messages r
+                  WHERE r.org_id = m.org_id AND r.chat_id = m.chat_id AND r.seq > m.seq
+                    AND r.author_kind = 'agent' AND r.author_agent_id = e.agent_id
+                    AND r.status = 'posted' AND r.relay_json IS NULL
+                    AND (r.reply_to IS NULL OR r.reply_to = m.message_id))))
           RETURNING event_id AS "eventId", agent_id AS "agentId", tag, received_at AS "receivedAt"`;
+        const expired = expiredRows.toSorted(
+          (a, b) =>
+            a.receivedAt - b.receivedAt ||
+            (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0),
+        );
         const leads = yield* sql<{
           agentId: string;
         }>`SELECT l.agent_id AS "agentId" FROM kin_leads l
           JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
           WHERE l.org_id = ${input.orgId} AND a.retired_at IS NULL ORDER BY l.agent_id`;
         for (const lead of leads) {
-          const mine = expired
-            .filter((row) => row.agentId === lead.agentId)
-            .toSorted(
-              (a, b) =>
-                a.receivedAt - b.receivedAt ||
-                (a.eventId < b.eventId ? -1 : a.eventId > b.eventId ? 1 : 0),
-            );
+          const mine = expired.filter((row) => row.agentId === lead.agentId);
           const dedupeKey = `resume:${cleared.pausedAt}:${lead.agentId}`;
           const eventId = hashedEventId("resume", dedupeKey);
           yield* queue.enqueue(
@@ -408,7 +466,14 @@ const make = Effect.gen(function* () {
             }),
           );
         }
-        return yield* notice(input.orgId, now, "resume", resumedNotice(expired.length));
+        const body = resumedNotice(expired.length);
+        const names = yield* expiredNames(
+          input.orgId,
+          expired.slice(0, EXPIRED_IN_NOTICE).map((row) => row.eventId),
+        );
+        const more = expired.length - names.length;
+        if (more > 0) names.push(`and ${more} more`);
+        return yield* notice(input.orgId, now, "resume", body, [body, ...names].join("\n"));
       }),
     );
     if (resumed !== undefined) {
@@ -421,6 +486,7 @@ const make = Effect.gen(function* () {
             Effect.provideService(SqlClient.SqlClient, sql),
           );
       if (attached !== undefined) yield* attached.resume(input.orgId);
+      yield* checkLeadNoticeNow(input.orgId).pipe(Effect.provideService(SqlClient.SqlClient, sql));
     }
     return yield* state(input.orgId);
   });
@@ -459,6 +525,28 @@ const make = Effect.gen(function* () {
         { discard: true },
       );
     }),
+    stopAsked: Effect.fn("KinStop.stopAsked")(
+      function* (orgId, wakeupId, personId) {
+        const interrupt = attached?.interrupt;
+        if (interrupt === undefined) return;
+        const lane = yield* stoppedLane(orgId, wakeupId);
+        const tell =
+          lane === undefined
+            ? Effect.void
+            : tellStopped(orgId, wakeupId, lane, personId).pipe(
+                Effect.catchCause((cause) => Effect.logWarning("Kin stop line failed", { cause })),
+              );
+        yield* interrupt(orgId, wakeupId, tell);
+      },
+      (effect, orgId, wakeupId) =>
+        effect.pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin could not stop a quiet run", { orgId, wakeupId, cause }),
+          ),
+          Effect.forkIn(scope),
+          Effect.asVoid,
+        ),
+    ),
     interrupt: Effect.fn("KinStop.interrupt")(function* (people, input) {
       const person = yield* owner(people, input.orgId);
       if (attached?.interrupt === undefined) return yield* unavailable;
@@ -468,7 +556,7 @@ const make = Effect.gen(function* () {
         .interrupt(input.orgId, input.wakeupId)
         .pipe(Effect.mapError(() => unavailable));
       if (interrupted && lane !== undefined)
-        yield* tellStopped(input.orgId, input.wakeupId, lane, person).pipe(
+        yield* tellStopped(input.orgId, input.wakeupId, lane, person.personId).pipe(
           Effect.catchCause((cause) => Effect.logWarning("Kin stop line failed", { cause })),
         );
       return { interrupted };
@@ -488,7 +576,7 @@ const make = Effect.gen(function* () {
       const orgs = yield* sql<{
         orgId: KinOrgId;
         // Startup scan across orgs on purpose; each org is then handled under its own lock.
-      }>`SELECT org_id AS "orgId" FROM kin_org_state ORDER BY org_id`.pipe(
+      }>`SELECT org_id AS "orgId" FROM kin_org_state WHERE stop_managed = 1 ORDER BY org_id`.pipe(
         Effect.catchCause((cause) =>
           Effect.logError("Kin stop catch-up unavailable", { cause }).pipe(Effect.as([])),
         ),
@@ -610,35 +698,94 @@ export const makeFanOut = Effect.fn("KinStop.makeFanOut")(function* (
     interrupt: Effect.fn("KinStop.fanOut.interrupt")(function* (
       orgId: KinOrgId,
       wakeupId: KinWakeupId,
+      afterAskedInterrupt?: Effect.Effect<void>,
     ) {
       const failed = (cause: unknown) => new KinStopFanOutError({ orgId, cause });
-      const [row] = yield* sql<{ threadId: string }>`SELECT thread_id AS "threadId" FROM kin_wakeups
+      const [row] = yield* sql<{ threadId: string; runId: string | null }>`
+        SELECT thread_id AS "threadId", run_id AS "runId" FROM kin_wakeups
         WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND status = 'running'
-          AND thread_id IS NOT NULL ORDER BY wakeup_id`.pipe(Effect.mapError(failed));
+          AND thread_id IS NOT NULL AND (${afterAskedInterrupt === undefined ? 0 : 1} = 0 OR aborted_at IS NULL)
+        ORDER BY wakeup_id`.pipe(Effect.mapError(failed));
       if (row === undefined) {
+        if (afterAskedInterrupt !== undefined) return false;
         // Not running: a turn a trouble holds for later is dropped instead, and its notice redrawn.
         const dropped = yield* queue.dropHeld(orgId, wakeupId).pipe(Effect.mapError(failed));
         if (dropped > 0 && Option.isSome(care)) yield* care.value.refresh(orgId);
         return dropped > 0;
       }
-      // The owner chose to stop: the run's failure must not requeue its events. A stop that
-      // finds none left is a repeat of one still winding the run down.
-      const released = yield* sql`UPDATE kin_events SET state = 'done'
-        WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'
-        RETURNING event_id`.pipe(Effect.mapError(failed));
-      if (released.length === 0) return false;
       const threadId = ThreadId.make(row.threadId);
       const projection = yield* threads.getThreadProjection(threadId).pipe(Effect.mapError(failed));
-      const run = projection.runs.at(-1);
+      const belongsToWakeup = (candidate: OrchestrationV2Run) =>
+        candidate.id === row.runId ||
+        candidate.userMessageId === wakeupMessageId(wakeupId) ||
+        isAdoptedRunMessage(wakeupId, candidate.userMessageId);
+      const run =
+        afterAskedInterrupt === undefined
+          ? projection.runs.at(-1)
+          : projection.runs.findLast(
+              (candidate) => ThreadManagement.isActiveRun(candidate) && belongsToWakeup(candidate),
+            );
       if (run === undefined) return false;
+      // This mark closes steering and reply delivery before the provider sees the interrupt.
+      const released = yield* sql`UPDATE kin_events
+        SET state = 'done', json = json_set(json, '$._personStopped', 1)
+        WHERE org_id = ${orgId} AND wakeup_id = ${wakeupId} AND state = 'claimed'
+          AND EXISTS (SELECT 1 FROM kin_wakeups w WHERE w.org_id = ${orgId}
+            AND w.wakeup_id = ${wakeupId} AND w.status = 'running'
+            AND (${afterAskedInterrupt === undefined ? 0 : 1} = 0 OR w.aborted_at IS NULL))
+        RETURNING event_id`.pipe(Effect.mapError(failed));
+      if (released.length === 0) return false;
+      const projectId = projection.thread.projectId;
       yield* threads
         .interruptThread({
-          projectId: projection.thread.projectId,
+          projectId,
           threadId,
           runId: run.id,
           commandId: CommandId.make(`kin-owner-stop:${wakeupId}:${run.id}`),
         })
         .pipe(Effect.mapError(failed));
+      if (afterAskedInterrupt === undefined) return true;
+      yield* afterAskedInterrupt;
+      const settled = yield* threads
+        .waitForThread({ projectId, threadId, runId: run.id, timeoutMs: 30_000 })
+        .pipe(Effect.mapError(failed));
+      if (settled.timedOut && settled.run !== null && ThreadManagement.isActiveRun(settled.run)) {
+        // The thread may still own tasks from a different wake-up; a card cannot stop those.
+        yield* Effect.gen(function* () {
+          const { runs, subagents } = yield* threads.getThreadRecords(threadId, [
+            "runs",
+            "subagents",
+          ]);
+          const target = runs.find((candidate) => candidate.id === settled.run?.id);
+          if (
+            target === undefined ||
+            !ThreadManagement.isActiveRun(target) ||
+            !belongsToWakeup(target)
+          )
+            return;
+          const ownedRuns = new Set(runs.filter(belongsToWakeup).map((candidate) => candidate.id));
+          if (
+            subagents.some(
+              (task) =>
+                task.origin === "app_owned" &&
+                (task.status === "idle" || isOrchestrationV2WorkActive(task.status)) &&
+                (task.runId === null || !ownedRuns.has(task.runId)),
+            )
+          )
+            return;
+          yield* threads.stopDelegatedTasks({
+            threadId,
+            commandId: CommandId.make(`kin-quiet-stop:${wakeupId}`),
+          });
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("Kin could not stop a stuck turn's tasks", { threadId, cause }),
+          ),
+        );
+        yield* threads
+          .forceStopThread({ threadId, runId: settled.run.id })
+          .pipe(Effect.mapError(failed));
+      }
       return true;
     }),
     resume: Effect.fn("KinStop.fanOut.resume")(function* (orgId: KinOrgId) {

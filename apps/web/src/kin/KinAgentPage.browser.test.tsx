@@ -17,6 +17,7 @@ const host = vi.hoisted(() => ({
 }));
 
 vi.mock(import("./kinClient"), async (importOriginal) => {
+  const { commandRun } = await import("../../test/commandRun");
   const real = await importOriginal();
   const { AsyncResult, Atom } = await import("effect/reactivity");
   const Cause = await import("effect/Cause");
@@ -35,14 +36,14 @@ vi.mock(import("./kinClient"), async (importOriginal) => {
       leadUpdate: {
         label: "test:leadUpdate",
         permissionAtom: () => allowed,
-        run: async (_registry: unknown, { input }: { readonly input: unknown }) => {
+        run: commandRun(async (_registry: unknown, { input }: { readonly input: unknown }) => {
           host.updates.push(input);
           return host.refuse === null
             ? AsyncResult.success((host.page as KinAgentPage).profile)
             : AsyncResult.failure(
                 Cause.fail(new Refused({ reason: "not_allowed", message: host.refuse })),
               );
-        },
+        }),
       },
     } as never,
   };

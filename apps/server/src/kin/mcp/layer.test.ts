@@ -1,3 +1,18 @@
+import * as HostProcess from "@t3tools/shared/HostProcess";
+import * as ClaudeAdapter from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
+import * as CodexAdapter from "../../orchestration-v2/Adapters/CodexAdapterV2.ts";
+import { provideDeterministicTestRuntime } from "../../orchestration-v2/testkit/DeterministicRuntime.ts";
+import { KinWorkspace } from "../gendocs/workspace.ts";
+import {
+  harnessWith,
+  harborviewChanged,
+  seedCarry,
+  selection,
+  wake,
+} from "../lead/WakeupRunner.testkit.ts";
+import { kinAdapters } from "../lead/turn/providers/infrastructure.ts";
+import { KinSessionContext } from "../lead/turn/sessionContext.ts";
+import { presetDefinition } from "../work/registers.ts";
 import * as KinShell from "../shell/KinShell.ts";
 import { EnvironmentThemeService } from "../../environmentTheme.ts";
 import { IssueService } from "../../issue/IssueService.ts";
@@ -20,10 +35,11 @@ import {
   KinAgentId,
   KinOrgId,
   ProviderInstanceId,
+  ProviderSessionId,
   ThreadId,
 } from "@t3tools/contracts";
 import { McpServer, Tool, Toolkit } from "effect/ai";
-import { KinAgentSessions } from "./layer.ts";
+import { KinAgentSessions } from "./KinAgentSessions.ts";
 import * as KinIssuedTokens from "./KinIssuedTokens.ts";
 import { REMOTE_REFUSAL, TASK_LIMIT_REFUSAL, WORKER_REFUSAL } from "./KinToolGate.ts";
 import { OUTSIDE_REFUSAL, OUTSIDE_TOOLS } from "../lead/OutsideContent.ts";
@@ -33,13 +49,27 @@ import { SHARED_TOOLS, sharedToolAllowed, toolAdmitted } from "../lead/SharedToo
 import { isSocialTool } from "../social/mcp.ts";
 import { LEAD_T3_TOOLS } from "../lead/t3Tools.ts";
 import { visibleOnKinEndpoint } from "../lead/AgentSession.ts";
+import { BILLS_THREAD_PREFIX, BILLS_TOOLS } from "../lead/billsOnly.ts";
 import { REVIEW_REFUSAL, REVIEW_THREAD_PREFIX, REVIEW_TOOLS } from "../lead/outsideReview.ts";
-import { APPROVED_REFUSAL, approvedToolAllowed } from "../lead/approvedDraft.ts";
-import { approvalDedupeKey, approvalEventId } from "../questions/approval.ts";
+import {
+  APPROVED_REFUSAL,
+  approvedRefusal,
+  approvedToolAllowed,
+  approvedWords,
+  ONE_ENTRY,
+  POST_FIRST,
+  WRITTEN_ITSELF,
+} from "../lead/approvedDraft.ts";
+import {
+  approvalDedupeKey,
+  approvalEventId,
+  mailKeepsDraft,
+  plainMail,
+} from "../questions/approval.ts";
 import { KinLeadToolkit } from "../lead/mcp/tools.ts";
 import { kinInstructions } from "../lead/turn/session.ts";
 import { instructions } from "../lead/instructions.ts";
-import { KIN_ALWAYS_LOADED } from "../lead/deferredTools.ts";
+import { KIN_CLAUDE_ALWAYS_LOADED } from "../lead/deferredTools.ts";
 import * as FileSystem from "effect/FileSystem";
 import { KinChatToolkit, handlers } from "./KinChatToolkit.ts";
 import contextBudget from "./agentContextBudget.json" with { type: "json" };
@@ -72,7 +102,7 @@ import * as Kin from "../layer.ts";
 import { ServerActivation } from "../../serverActivation.ts";
 import { KinIdentity } from "../chat/KinIdentity.ts";
 import * as OwnerClients from "../work/ownerClients.ts";
-import { companyMoney } from "../work/companyProfile.ts";
+import { companyMoney, setProfile } from "../work/companyProfile.ts";
 import { KinChatService } from "../chat/KinChatService.ts";
 import { AssetSigner } from "../../assets/AssetSigner.ts";
 import { ServerSecretStore } from "../../auth/ServerSecretStore.ts";
@@ -80,6 +110,10 @@ import { ServerConfig } from "../../config.ts";
 import { DeviceService } from "../../device/DeviceService.ts";
 import { ServerEnvironment } from "../../environment/ServerEnvironment.ts";
 import { GitManager } from "../../git/GitManager.ts";
+import { FeedbackStore } from "../../feedback/FeedbackStore.ts";
+import { MilestoneHub } from "../../milestones/MilestoneHub.ts";
+import { Workflows } from "../../workflows/Workflows.ts";
+import { TaskFolders } from "../../workspace/TaskFolders.ts";
 import { GitWorkflowService } from "../../git/GitWorkflowService.ts";
 import * as McpHttpServer from "../../mcp/McpHttpServer.ts";
 import { PreviewAutomationBroker } from "../../mcp/PreviewAutomationBroker.ts";
@@ -170,7 +204,7 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(GitVcsDriver)({}),
   Layer.mock(GitWorkflowService)({}),
   Layer.mock(ManagedProjectFolders)({ namedProjectsRoot: "" }),
-  Layer.mock(McpProviderSessions)({}),
+  Layer.mock(McpProviderSessions)({ toolResultEpoch: () => Effect.succeed(0) }),
   Layer.mock(OrchestrationEventStore)({}),
   Layer.mock(PeerForwarding)({ call: () => forwardedTo("call") }),
   Layer.mock(EnvironmentThemeService)({}),
@@ -188,6 +222,10 @@ const toolHandlerServices = Layer.mergeAll(
   Layer.mock(ProcessRunner)({}),
   FetchHttpClient.layer,
   Layer.mock(GitManager)({}),
+  Layer.mock(FeedbackStore)({}),
+  Layer.mock(MilestoneHub)({}),
+  Layer.mock(TaskFolders)({}),
+  Layer.mock(Workflows)({}),
   Layer.mock(ProviderAdapterRegistryV2)({}),
   Layer.mock(ProviderInstanceRegistry)({}),
   Layer.mock(ProviderRegistry)({ getProviders: Effect.succeed([]) }),
@@ -227,17 +265,32 @@ it.effect.each([true, false])(
         for (const dir of ["state", "home", "config"]) yield* fs.makeDirectory(`${github}/${dir}`);
         yield* fs.copyFile(`${import.meta.dirname}/../connections/fakeGh.sh`, `${github}/gh`);
         yield* fs.chmod(`${github}/gh`, 0o755);
-        const ready =
-          yield* Deferred.make<
-            Context.Context<
-              | Kin.KinServer
-              | KinAgentSessions
-              | KinIssuedTokens.KinIssuedTokens
-              | McpSessions.McpSessionRegistry
-              | SqlClient.SqlClient
-              | OrchestratorV2
-            >
-          >();
+        type Composed =
+          | Kin.KinServer
+          | KinAgentSessions
+          | KinIssuedTokens.KinIssuedTokens
+          | McpSessions.McpSessionRegistry
+          | SqlClient.SqlClient
+          | OrchestratorV2
+          | ClaudeAdapter.ClaudeAgentSdkQueryRunner
+          | KinSessionContext
+          | ServerConfig;
+        const ready = yield* Deferred.make<Context.Context<Composed>>();
+        const offered: ClaudeAdapter.ClaudeAgentSdkQueryOptions[] = [];
+        const adapters = kinAdapters(
+          Layer.mock(ClaudeAdapter.ClaudeAgentSdkQueryRunner)({
+            open: ({ options }) =>
+              Effect.sync(() => offered.push(options)).pipe(
+                Effect.andThen(
+                  new ClaudeAdapter.ClaudeAgentSdkQueryRunnerError({
+                    method: "open",
+                    cause: "The composition fixture never opens an SDK process",
+                  }),
+                ),
+              ),
+          }),
+          Layer.mock(CodexAdapter.CodexAppServerClientFactory)({}),
+        );
         let tokenLookups = 0;
         let tokenClock = 0;
         const baseRegistry = Layer.effect(
@@ -255,16 +308,12 @@ it.effect.each([true, false])(
         const routes = Layer.merge(
           Kin.mcpLayer(t3Composition),
           Layer.effectDiscard(
-            Effect.context<
-              | Kin.KinServer
-              | KinAgentSessions
-              | KinIssuedTokens.KinIssuedTokens
-              | McpSessions.McpSessionRegistry
-              | SqlClient.SqlClient
-              | OrchestratorV2
-            >().pipe(Effect.flatMap((context) => Deferred.succeed(ready, context))),
+            Effect.context<Composed>().pipe(
+              Effect.flatMap((context) => Deferred.succeed(ready, context)),
+            ),
           ),
         ).pipe(
+          Layer.provideMerge(adapters),
           Layer.provideMerge(Kin.mcpRegistryLayer(baseRegistry)),
           Layer.provideMerge(
             authorityLayerWithDatabase(
@@ -301,9 +350,9 @@ it.effect.each([true, false])(
         );
         const http = yield* HttpRouter.toHttpEffect(routes);
         // The wake-up runner, the chat wake bridge, the worker tracker, the finished-task watch,
-        // the Work import, the issued amounts check and archiving Kin's earlier projects.
-        if (enabled) yield* Queue.takeN(runnerStarts, 7);
-        assert.strictEqual(yield* Queue.size(runnerStarts), 0);
+        // the Work import, the issued amounts check, archiving earlier projects, offline notices,
+        // and the document toolchain warm-up.
+        assert.strictEqual(yield* Queue.size(runnerStarts), enabled ? 9 : 0);
         const services = yield* Deferred.await(ready);
         const kin = Context.get(services, Kin.KinServer);
         const registry = Context.get(services, McpSessions.McpSessionRegistry);
@@ -422,6 +471,83 @@ it.effect.each([true, false])(
           return;
         }
         assert.isTrue(enabled);
+        const runnerContext = Context.getOption(kin.services.value, KinSessionContext).pipe(
+          Option.getOrThrow,
+        );
+        assert.strictEqual(runnerContext, Context.get(services, KinSessionContext));
+        const claude = Context.get(services, ClaudeAdapter.ClaudeAgentSdkQueryRunner);
+        const { stateDir } = Context.get(services, ServerConfig);
+        const reads: Array<string | undefined> = [];
+        yield* Effect.gen(function* () {
+          yield* seedCarry;
+          yield* wake("tidewater-first");
+          yield* harborviewChanged();
+          yield* wake("tidewater-second");
+        }).pipe(
+          Effect.provide(
+            harnessWith(
+              {
+                settings: { kinSessionCarry: true },
+                beforeTurn: ({ threadId, runOrdinal }) =>
+                  Effect.gen(function* () {
+                    if (runOrdinal !== 2) return;
+                    yield* claude
+                      .open({
+                        threadId,
+                        providerSessionId: ProviderSessionId.make("carry-fixture"),
+                        options: ClaudeAdapter.makeClaudeQueryOptions({
+                          modelSelection: selection,
+                          nativeThreadId: "tidewater",
+                          resume: true,
+                          cwd: `${stateDir}/kin/memory-read`,
+                          attachmentsDir: stateDir,
+                          environment: {
+                            PATH: "/usr/bin",
+                            HOME: stateDir,
+                            CLAUDE_CONFIG_DIR: stateDir,
+                          },
+                        }),
+                      })
+                      .pipe(Effect.ignore);
+                    const [hook] = offered[0]?.hooks?.UserPromptSubmit?.at(-1)?.hooks ?? [];
+                    assert.isDefined(hook);
+                    const result = yield* Effect.promise(() =>
+                      hook!(
+                        {
+                          hook_event_name: "UserPromptSubmit",
+                          session_id: "tidewater",
+                          transcript_path: "/fixture",
+                          cwd: stateDir,
+                          prompt: "Tidewater message",
+                        },
+                        undefined,
+                        { signal: new AbortController().signal },
+                      ),
+                    );
+                    reads.push(
+                      "hookSpecificOutput" in result &&
+                        result.hookSpecificOutput?.hookEventName === "UserPromptSubmit"
+                        ? result.hookSpecificOutput.additionalContext
+                        : undefined,
+                    );
+                  }).pipe(Effect.provideService(HostProcess.Environment, { PATH: "/usr/bin" })),
+              },
+              Layer.merge(
+                Layer.mock(KinAgentSessions)({
+                  recordToolList: () => {},
+                  lastToolList: () => "a".repeat(64),
+                }),
+                Layer.mock(KinWorkspace)({ recipes: () => Effect.succeed([]) }),
+              ),
+            ),
+            { local: true },
+          ),
+          Effect.provideService(KinSessionContext, runnerContext),
+          provideDeterministicTestRuntime,
+        );
+        assert.lengthOf(reads, 1);
+        assert.isString(reads[0]);
+        assert.include(reads[0], "Harborview Cold Storage");
         const identity = Context.get(kin.services.value, KinIdentity);
         // The company the running server creates starts with its country not chosen.
         assert.deepInclude(
@@ -449,6 +575,8 @@ it.effect.each([true, false])(
         const issued = yield* registry.issue({
           threadId,
           providerInstanceId: ProviderInstanceId.make("codex"),
+          // As the session manager issues it for a provider that holds for background work.
+          capabilities: new Set(["preview", "background-wait"]),
         });
         assert.strictEqual(issued.config.endpoint, "http://127.0.0.1:43123/kin/mcp");
         assert.strictEqual(
@@ -498,6 +626,8 @@ it.effect.each([true, false])(
         ).result.tools.map((tool) => tool.name);
         // The owner's own thread: Kin's tools and T3's, GitHub connected or not.
         assert.includeMembers(toolNames, ["kin_chat_read", "delegate_task"]);
+        // Asked to watch a number, an agent searching its tools finds the one that proposes it.
+        assert.includeMembers(toolNames, ["numbers_read", "number_record", "numbers_watch"]);
         for (const name of ["schedule_task", "t3_thread_launch", "create_threads"])
           assert.notInclude(toolNames, name);
         // Nothing a lead asks for goes to another machine, where Kin's checks don't follow it.
@@ -530,6 +660,14 @@ it.effect.each([true, false])(
           ["record_create", createDeal],
           ["record_create", { records: [{ title: "Invented call" }, { list: "deals" }] }],
           ["records_query", { list: "deals" }],
+          [
+            "record_create",
+            {
+              records: [
+                { title: "Invented promise", category: "obligation", client: "C-1", deal: "DL-3" },
+              ],
+            },
+          ],
         ] as const;
         const dealsRefusal = "Deals is turned off for this company.";
         const leadMcp = yield* open("/kin/mcp", issued.config.authorizationHeader);
@@ -647,6 +785,244 @@ it.effect.each([true, false])(
         assert.include(money, '"isError":false');
         assert.notInclude(money, key);
         yield* toggle(3, true);
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at, definition_json)
+          VALUES (${person.orgId}, 'receipts', 'Receipts', 'RCT', 0, ${JSON.stringify(presetDefinition("receipts", "GBP"))})`;
+        const receipt = {
+          records: [{ list: "receipts", title: "Invented receipt", amount: "GBP 10" }],
+        };
+        const readClient = { key: client.key };
+        const moneyOff = [{ id: "money", on: false }];
+        const clientsOff = [
+          { id: "clients", on: false, name: "Donors" },
+          { id: "invoices", on: false },
+        ];
+        const store = (
+          rev: number,
+          sections: ReadonlyArray<{ id: string; on: boolean; name?: string }>,
+        ) => shell.set(person.orgId, person.personId, rev, sections);
+        yield* store(4, moneyOff);
+        assert.notInclude(yield* leadMcp.list, "money_summary");
+        assert.notInclude(yield* leadMcp.list, "payment_record");
+        assert.include(
+          yield* leadCall("record_create", { list: "receipts" }),
+          "Money is turned off for this company.",
+        );
+        assert.include(
+          yield* leadCall("record_create", receipt),
+          "Money is turned off for this company.",
+        );
+        assert.include(
+          yield* leadCall("payment_record", {}),
+          "Invoices and quotes is turned off for this company.",
+        );
+        assert.include(yield* leadCall("record_get", readClient), '"isError":false');
+        yield* store(5, clientsOff);
+        const linear = yield* leadCall("kin_connection_call", {
+          connection: "linear",
+          tool: "create_issue",
+          arguments: { project: "Website" },
+          reason: "Invented issue",
+        });
+        assert.notInclude(linear, "Donors is turned off for this company.");
+        assert.match(linear, /connection|connected/i);
+        // A reason naming a hidden record refuses the call, also when swallowed into text arguments.
+        for (const hidden of [
+          { arguments: { project: "Website" }, reason: client.key },
+          { arguments: `{"project":"Website"},"reason":${JSON.stringify(client.key)}}` },
+        ])
+          assert.include(
+            yield* leadCall("kin_connection_call", {
+              connection: "linear",
+              tool: "create_issue",
+              ...hidden,
+            }),
+            "Donors is turned off for this company.",
+            JSON.stringify(hidden),
+          );
+        assert.notInclude(yield* leadMcp.list, "client_read");
+        assert.notInclude(yield* leadMcp.list, "pipeline_read");
+        for (const args of [readClient, { key: project.key }])
+          assert.include(
+            yield* leadCall("record_get", args),
+            "Donors is turned off for this company.",
+          );
+        assert.include(
+          yield* leadCall("record_create", {
+            records: [
+              { list: "work", title: "Invented hidden link", client: client.key },
+              { list: "receipts", title: "Invented row with no link", amount: "GBP 10" },
+            ],
+          }),
+          "Donors is turned off for this company.",
+        );
+        yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, created_at, definition_json)
+          VALUES (${person.orgId}, 'invoices', 'Invoices', 'BL', 0, ${JSON.stringify(presetDefinition("invoices", "GBP"))}),
+          (${person.orgId}, 'board', 'Board', 'INV', 0, ${JSON.stringify({ ...presetDefinition("dates", "GBP"), noun: "note" })}),
+          (${person.orgId}, 'bank-ledger', 'Bank transactions', 'BKX', 0, ${JSON.stringify(presetDefinition("dates", "GBP"))})`;
+        for (const [list, key, number] of [
+          ["invoices", "BL-4", "INV/26-27/003"],
+          ["invoices", "BL-5", "RETAINED"],
+          ["receipts", "RCT-4", "RCT/26-27/001"],
+          ["bank-ledger", "BKX-1", ""],
+          ["board", "INV-3", ""],
+        ] as const)
+          yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+            owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
+            VALUES (${person.orgId}, ${key}, ${list}, ${key}, 'Invented billing fixture',
+              'person', ${person.personId}, 'person', ${key}, 0, 0, ${JSON.stringify({ number })})`;
+        const invoicesOff = [{ id: "invoices", on: false }];
+        const invoiceRefusal = "Invoices and quotes is turned off for this company.";
+        const moneyRefusal = "Money is turned off for this company.";
+        yield* store(6, invoicesOff);
+        const lookup = (key: string) => leadCall("record_get", { key });
+        const resolved = [
+          (yield* lookup("INV/26-27/003")).includes(invoiceRefusal),
+          (yield* lookup("BL-4")).includes(invoiceRefusal),
+          (yield* lookup("RETAINED")).includes(invoiceRefusal),
+          (yield* lookup("INV-3")).includes('"isError":false'),
+          (yield* leadCall("kin_issue", { entry: "INV/26-27/003" })).includes(invoiceRefusal),
+          (yield* leadCall("kin_receipt", { against: "INV/26-27/003" })).includes(invoiceRefusal),
+        ];
+        yield* store(7, moneyOff);
+        resolved.push(
+          (yield* lookup("RCT/26-27/001")).includes(moneyRefusal),
+          (yield* lookup("BKX-1")).includes(moneyRefusal),
+          (yield* leadCall("kin_receipt", { entry: "RCT/26-27/001" })).includes(moneyRefusal),
+        );
+        assert.deepStrictEqual(resolved, [true, true, true, true, true, true, true, true, true]);
+        yield* store(8, []);
+        yield* setProfile(
+          person.orgId,
+          { _tag: "person", personId: person.personId },
+          { country: "GB" },
+          undefined,
+        ).pipe(Effect.provideService(SqlClient.SqlClient, sql));
+        const madeReceipt = yield* leadCall("record_create", receipt);
+        assert.include(madeReceipt, '"isError":false', madeReceipt);
+        assert.include(yield* leadCall("record_get", readClient), '"isError":false');
+        yield* sql`UPDATE kin_registers SET key_prefix = 'DASH'
+          WHERE org_id = ${person.orgId} AND register_id = 'board'`;
+        yield* sql`UPDATE kin_records SET key = 'DASH-3'
+          WHERE org_id = ${person.orgId} AND register_id = 'board' AND key = 'INV-3'`;
+        yield* sql`UPDATE kin_registers SET key_prefix = 'INV', next_number = 2
+          WHERE org_id = ${person.orgId} AND register_id = 'invoices'`;
+        const typed = {
+          list: "invoices",
+          title: "Saturday workshop",
+          amount: "4,000",
+          fields: { billToName: "Asha Rao", billToAddress: "9 Invented Road" },
+        };
+        yield* store(9, [{ id: "clients", on: false, name: "Donors" }]);
+        assert.include(
+          yield* leadCall("record_create", { records: [{ ...typed, client: client.key }] }),
+          "Donors is turned off for this company.",
+        );
+        const madeTyped = yield* leadCall("record_create", { records: [typed] });
+        assert.include(madeTyped, '"isError":false', madeTyped);
+        assert.include(
+          yield* leadCall("record_create", {
+            records: [{ ...typed, title: "No name", fields: { billToEmail: "asha@example.com" } }],
+          }),
+          "Give the name to bill first (billToName). Nothing changed.",
+        );
+        const [typedInvoice] = yield* sql<{
+          key: string;
+          partyId: string | null;
+        }>`SELECT key, party_id AS "partyId" FROM kin_records
+          WHERE org_id = ${person.orgId} AND title = ${typed.title}`;
+        assert.isNull(typedInvoice!.partyId);
+        // Outside India a tax number has no shape Kin knows, so it is kept as typed.
+        const edited = yield* leadCall("record_update", {
+          key: typedInvoice!.key,
+          fields: { billToEmail: "asha@example.com", billToTaxNumber: "GB 123 4567 89" },
+        });
+        assert.include(edited, '"isError":false', edited);
+        assert.include(yield* leadCall("record_get", { key: typedInvoice!.key }), "GB 123 4567 89");
+        const typedRows = yield* leadCall("records_query", { list: "invoices", text: typed.title });
+        assert.include(typedRows, "Asha Rao");
+        assert.include(typedRows, "asha@example.com");
+        const typedGet = yield* leadCall("record_get", { key: typedInvoice!.key });
+        assert.include(typedGet, "Asha Rao");
+        assert.include(
+          typedGet,
+          '"sensitiveFields":["amount","tax","file","billToAddress","billToTaxNumber","billToEmail"]',
+        );
+        yield* sql`UPDATE kin_records SET state = 'waiting', confirmed = 1, due_at = ${-15 * 86_400_000}
+          WHERE org_id = ${person.orgId} AND key = ${typedInvoice!.key}`;
+        const chaseGet = yield* leadCall("record_get", { key: typedInvoice!.key });
+        const chasePulse = yield* leadCall("pulse_read", { family: "money" });
+        assert.include(chaseGet, "asha@example.com");
+        assert.include(chasePulse, "Asha Rao");
+        yield* sql`UPDATE kin_records SET state = 'open', confirmed = 0, due_at = NULL
+          WHERE org_id = ${person.orgId} AND key = ${typedInvoice!.key}`;
+        yield* store(10, []);
+        const lumen = yield* OwnerClients.createParty([person], {
+          orgId: person.orgId,
+          name: "Lumen",
+          clientRequestId: "shell-lumen",
+        }).pipe(Effect.provideContext(kin.services.value));
+        const madeLinked = yield* leadCall("record_create", {
+          records: [{ list: "invoices", title: "The audit", amount: "12,000", client: "Lumen" }],
+        });
+        assert.include(madeLinked, '"isError":false', madeLinked);
+        const [audit] = yield* sql<{
+          key: string;
+          partyId: string | null;
+          fieldsJson: string;
+        }>`SELECT
+          key, party_id AS "partyId", fields_json AS "fieldsJson" FROM kin_records
+          WHERE org_id = ${person.orgId} AND title = 'The audit'`;
+        assert.isNotNull(audit!.partyId);
+        assert.notInclude(audit!.fieldsJson, "billToName");
+        const linkedRows = yield* leadCall("records_query", { list: "clients", text: "Lumen" });
+        assert.include(linkedRows, "Lumen", linkedRows);
+        const refusedTyped = yield* leadCall("record_update", {
+          key: typedInvoice!.key,
+          client: lumen.key,
+        });
+        assert.include(
+          refusedTyped,
+          `${typedInvoice!.key} bills Asha Rao by name. Clear that name first to give it a client. Nothing changed.`,
+        );
+        assert.include(
+          yield* leadCall("record_update", {
+            key: audit!.key,
+            fields: { billToName: "Asha Rao" },
+          }),
+          `${audit!.key} is for Lumen: its billing details come from that client. Nothing changed.`,
+        );
+        const clear = (key: string, client?: string) =>
+          leadCall("record_update", { key, client, fields: { billToName: null } });
+        const cleared = yield* clear(typedInvoice!.key);
+        assert.include(cleared, '"isError":false', cleared);
+        const [empty] = yield* sql<{ fieldsJson: string }>`SELECT fields_json AS "fieldsJson"
+          FROM kin_records WHERE org_id = ${person.orgId} AND key = ${typedInvoice!.key}`;
+        assert.notInclude(empty!.fieldsJson, "billTo");
+        const typedAgain = yield* leadCall("record_update", {
+          key: typedInvoice!.key,
+          fields: { ...typed.fields, billToEmail: "asha@example.com" },
+        });
+        assert.include(typedAgain, '"isError":false', typedAgain);
+        const linked = yield* clear(typedInvoice!.key, lumen.key);
+        assert.include(linked, '"isError":false', linked);
+        const [clean] = yield* sql<{ partyId: string | null; fieldsJson: string }>`SELECT
+          party_id AS "partyId", fields_json AS "fieldsJson" FROM kin_records
+          WHERE org_id = ${person.orgId} AND key = ${typedInvoice!.key}`;
+        assert.isNotNull(clean!.partyId);
+        assert.notInclude(clean!.fieldsJson, "billTo");
+
+        const linkedAddress = yield* leadCall("record_update", {
+          key: audit!.key,
+          fields: { billToAddress: "9 Invented Road" },
+        });
+        assert.include(linkedAddress, '"isError":false', linkedAddress);
+        yield* sql`UPDATE kin_records SET state = 'waiting', confirmed = 1
+          WHERE org_id = ${person.orgId} AND key = ${audit!.key}`;
+        yield* store(11, [{ id: "clients", on: false }]);
+        const offMoney = yield* leadCall("money_summary", {});
+        assert.include(offMoney, '"client":"Lumen"');
+        assert.notInclude(offMoney, lumen.key);
+        yield* store(12, []);
         yield* sql`UPDATE kin_leads SET thread_id = NULL
           WHERE org_id = ${person.orgId} AND agent_id = ${agentId}`;
         const elsewhere = [
@@ -705,6 +1081,16 @@ it.effect.each([true, false])(
             )
               reviewListed.push(name);
           assert.sameMembers(reviewListed, [...REVIEW_TOOLS]);
+          // A bills turn's thread lists only `bill_read`, before any seat hides it (`SEAT_HOME`).
+          const billsListed: Array<string> = [];
+          for (const name of new Set([...toolNames, ...kinGitHub, ...LEAD_T3_TOOLS, "bill_read"]))
+            if (
+              yield* visibleOnKinEndpoint(name, ThreadId.make(`${BILLS_THREAD_PREFIX}lead`)).pipe(
+                Effect.provideService(Kin.KinServer, signedIn),
+              )
+            )
+              billsListed.push(name);
+          assert.sameMembers(billsListed, [...BILLS_TOOLS]);
           assert.isTrue(yield* visibleOnKinEndpoint("kin_relay", ThreadId.make("kin-shared:x")));
         }
         // Every tool a lead can call says what it may do where others read; a tool added later
@@ -765,6 +1151,8 @@ it.effect.each([true, false])(
           };
         });
         const engineering = yield* seatList("engineering");
+        // Listed by name only, as the provider defers it, beside the other number tools.
+        assert.notInclude(engineering.upFront, "numbers_watch");
         const seats = {
           finance: yield* seatList("finance"),
           social: yield* seatList("social"),
@@ -832,9 +1220,8 @@ it.effect.each([true, false])(
             homed.filter((name) => seat.names.includes(name)),
             [],
           );
-        // One core loads up front in every seat; a seat that leaves money and the pipeline to
-        // another loads the core without them.
-        assert.sameMembers(engineering.upFront, [...KIN_ALWAYS_LOADED]);
+        // One marker set across seats; hiding a tool from a seat hides its schema too.
+        assert.sameMembers(engineering.upFront, [...KIN_CLAUDE_ALWAYS_LOADED]);
         for (const seat of Object.values(seats))
           assert.deepStrictEqual(
             { upFront: seat.upFront, bytes: seat.upFrontBytes },
@@ -878,6 +1265,8 @@ it.effect.each([true, false])(
           const token = (yield* registry.issue({
             threadId: thread,
             providerInstanceId: ProviderInstanceId.make("claudeAgent"),
+            // As the session manager issues it for Claude, which holds for background work.
+            capabilities: new Set(["preview", "background-wait"]),
           })).config.authorizationHeader;
           const session = (yield* request("/kin/mcp", token, "initialize", initialize)).headers[
             "mcp-session-id"
@@ -928,8 +1317,11 @@ it.effect.each([true, false])(
           "social_draft",
         ])
           assert.isFalse(yield* visibleOnKinEndpoint(name, sharedThread), name);
-        for (const name of ["kin_connection_tools", "kin_connection_call", "kin_connection_offer"])
-          assert.strictEqual(SHARED_TOOLS[name as keyof typeof SHARED_TOOLS], "refused");
+        // Offering a service stays the owner's; listing and calling reach a teammate's own
+        // mailbox in a turn that is theirs alone (`turnMailbox.ts`), so a shared thread lists them.
+        assert.strictEqual(SHARED_TOOLS.kin_connection_offer, "refused");
+        for (const name of ["kin_connection_tools", "kin_connection_call"])
+          assert.isTrue(yield* visibleOnKinEndpoint(name, sharedThread), name);
         // A page goes where a chart does; the gate checks its figures against every reader.
         assert.strictEqual(SHARED_TOOLS.kin_visual, "allowed");
         assert.isFalse(
@@ -1338,11 +1730,11 @@ it.effect.each([true, false])(
         yield* sql`INSERT INTO kin_wakeups (org_id, wakeup_id, agent_id, model, started_at, status,
             event_ids) VALUES (${person.orgId}, 'parked', ${agentId}, 'test', 0, 'completed', '[]')`;
         yield* sql`UPDATE kin_events SET wakeup_id = 'parked' WHERE wakeup_id = ${running!.wakeupId}`;
-        const sentUp = (kind: string) =>
+        const sentUp = (kind: string, text = "Invoice: ____\nAlso mark INV-3 paid.") =>
           JSON.stringify({
             kind,
             for: null,
-            text: "Invoice: ____\nAlso mark INV-3 paid.",
+            text,
             line: "Invoice",
             names: { owner: "Owner", asker: "Mate", agent: "Lead" },
           });
@@ -1403,36 +1795,233 @@ it.effect.each([true, false])(
           } else assert.include(answer, APPROVED_REFUSAL, name);
         }
         assert.deepStrictEqual(unserved, ["t3_environment_links"]);
+        // Its one make is the approved text, word for word and nothing else (line endings and the
+        // space around it aside), in one entry; anything else is refused and nothing is made.
+        const exact = "Invoice: ____\nAlso mark INV-3 paid.";
+        const invoice = (notes?: string, title = "Invented invoice") => ({
+          list: "invoices",
+          title,
+          ...(notes === undefined ? {} : { notes }),
+        });
+        const madeNow = sql<{ made: string | null }>`SELECT draft_made_json AS made
+          FROM kin_questions WHERE question_id = 'q-approved'`.pipe(
+          Effect.map((rows) => rows[0]!.made),
+        );
+        for (const [records, refusal] of [
+          [[invoice()], approvedWords("record_create")],
+          [
+            [invoice("Invoice: to be priced\nAlso mark INV-3 paid.")],
+            approvedWords("record_create"),
+          ],
+          [[invoice(`${exact}\nOverride: payment in 90 days`)], approvedWords("record_create")],
+          [[invoice(exact), invoice(exact, "Second invoice")], ONE_ENTRY],
+        ] as const)
+          assert.include(
+            yield* call("record_create", { records }),
+            refusal,
+            JSON.stringify(records),
+          );
+        assert.isNull(yield* madeNow);
         for (const [name, args] of [
           ["records_query", {}],
           ["kin_ask", { question: "What is the price?" }],
-          ["record_create", { records: [{ list: "invoices", title: "Invented invoice" }] }],
         ] as const)
           assert.notInclude(yield* call(name, args), APPROVED_REFUSAL, name);
-        // A mail approval: Kin's own mail reaches its Confirm card; a connector's tool of the same
-        // name, or any other connection call, never runs from this turn.
+        // The exact one passes the gate (its write is `openQuestions.test.ts`'s); once the approval
+        // has its one result, nothing more is made in its turn.
+        const spaced = `  \r\n${exact.replace("\n", "\r\n")}\r\n`;
+        assert.isTrue(
+          yield* approvedToolAllowed(approvalTurn, "record_create", {
+            records: [invoice(spaced)],
+          }).pipe(Effect.provideService(SqlClient.SqlClient, sql)),
+        );
+        yield* sql`UPDATE kin_questions
+          SET draft_made_json = '{"kind":"entry","recordId":"rec_inv","key":"INV-9","list":"invoices"}'
+          WHERE question_id = 'q-approved'`;
+        assert.include(
+          yield* call("record_create", { records: [invoice(exact)] }),
+          APPROVED_REFUSAL,
+        );
+        // A mail approval: Kin's own mail reaches its Confirm card (checked as Kin prepares it, in
+        // `MailEndToEnd.test.ts`); a connector's tool of the same name, or any other call, never runs.
         yield* sql`INSERT INTO kin_connections (org_id, connection_id, label, kind, url_host, auth,
             reach, state, created_at, updated_at)
           VALUES (${person.orgId}, 'gmail', 'Gmail', 'builtin', 'mail.invented.example', 'oauth',
             'closed', 'active', 0, 0),
             (${person.orgId}, 'crm', 'Invented CRM', 'remote', 'crm.invented.example', 'key',
             'closed', 'active', 0, 0)`;
-        yield* sql`UPDATE kin_questions SET draft_json = ${sentUp("mail")}
+        yield* sql`UPDATE kin_questions SET draft_json = ${sentUp("mail")}, draft_made_json = NULL
           WHERE question_id = 'q-approved'`;
-        assert.notInclude(
-          yield* call("kin_connection_call", {
-            connection: "Gmail",
-            tool: "mail_send",
-            arguments: {},
-          }),
-          APPROVED_REFUSAL,
-        );
+        const mailCall = {
+          connection: "Gmail",
+          tool: "mail_send",
+          arguments: { to: ["kabir@invented.example"], subject: "The shoot", body: exact },
+        };
+        assert.notInclude(yield* call("kin_connection_call", mailCall), APPROVED_REFUSAL);
+        yield* sql`UPDATE kin_questions SET draft_made_json = '{"kind":"mail","askId":"ask_1"}'
+          WHERE question_id = 'q-approved'`;
+        assert.include(yield* call("kin_connection_call", mailCall), APPROVED_REFUSAL);
         for (const args of [
           { connection: "Invented CRM", tool: "mail_send", arguments: {} },
           { connection: "Invented CRM", tool: "send_message", arguments: {} },
           { connection: "Gmail", tool: "mail_search", arguments: {} },
         ])
           assert.include(yield* call("kin_connection_call", args), APPROVED_REFUSAL, args.tool);
+        // A mail's own heading is parsed, nothing looser: its Subject is the subject, a To or Cc
+        // naming addresses names the mail's, and the rest is the body; a reply keeps its thread's.
+        const noHeading =
+          "Do not proceed without written approval\nQuote is valid for 30 days.\n\nThank you.";
+        const headed =
+          "To: Kabir <kabir@invented.example>\nSubject: Shoot moves\n\nHi Kabir,\nFriday now.";
+        // Filed as a doc, a mail opens with its section's title: the heading is below it.
+        const filed = `## Mail\n\n${headed}`;
+        const filedNoHeading = `## Mail\n\n${noHeading}`;
+        // A mail goes as plain text: the draft's words, its marks gone, lists and links readable.
+        const marked =
+          "## Week 1\n\n**Who we are**: an invented studio.\n\n- Shoot on Friday\n- Edit on Monday\n\n1. Book the room\n2. Send the invite\n\nSee [the plan](https://invented.example/plan).";
+        const plainText =
+          "Week 1\n\nWho we are: an invented studio.\n\n- Shoot on Friday\n- Edit on Monday\n\n1. Book the room\n2. Send the invite\n\nSee the plan (https://invented.example/plan).";
+        assert.strictEqual(plainMail(marked), plainText);
+        // Nothing a reader would miss is lost: every link's target, text in angle brackets that is
+        // no tag, a footnote; real tags still go.
+        const extras = [
+          "Write to [billing](mailto:billing@invented.example), call [the desk](tel:+10000000000), or",
+          "<billing@invented.example>; see [the terms][terms].[^1] Quote your <PO number>, <b>please</b>.",
+          "",
+          "[terms]: https://invented.example/terms",
+          "",
+          "[^1]: Prices hold for 30 days.",
+        ].join("\n");
+        const extrasText =
+          "Write to billing (mailto:billing@invented.example), call the desk (tel:+10000000000), or\nbilling@invented.example; see the terms (https://invented.example/terms).[1] Quote your <PO number>, please.\n\n[1] Prices hold for 30 days.";
+        assert.strictEqual(plainMail(extras), extrasText);
+        const headedMarked = `To: Kabir <kabir@invented.example>\nSubject: Shoot moves\n\n${marked}`;
+        const prepared = (subject: string, body: string, to = ["kabir@invented.example"]) => ({
+          to,
+          cc: [],
+          subject,
+          body,
+        });
+        for (const [draft, mailed, reply, kept] of [
+          [noHeading, prepared("approval", "Thank you."), false, false],
+          [noHeading, prepared("Anything", noHeading), false, true],
+          [headed, prepared("moves", "Hi Kabir,\nFriday now."), false, false],
+          [headed, prepared("Shoot moves", "Hi Kabir,\nFriday now."), false, true],
+          [headed, prepared("Shoot moves", "Hi Kabir,\nFriday now.\n\nDev"), false, false],
+          [
+            headed,
+            prepared("Shoot moves", "Hi Kabir,\nFriday now.", ["dev@invented.example"]),
+            false,
+            false,
+          ],
+          [headed, prepared("Re: the shoot", "Hi Kabir,\nFriday now."), true, true],
+          [headed, prepared("Re: the shoot", headed), true, true],
+          [headed, prepared("Re: the shoot", "Hi Kabir, Friday."), true, false],
+          [filed, prepared("Shoot moves", "Hi Kabir,\nFriday now."), false, true],
+          [filed, prepared("moves", "Hi Kabir,\nFriday now."), false, false],
+          [filed, prepared("Shoot moves", "## Mail\n\nHi Kabir,\nFriday now."), false, false],
+          [filedNoHeading, prepared("Anything", noHeading), false, true],
+          [marked, prepared("Anything", plainText), false, true],
+          [marked, prepared("Anything", marked), false, true],
+          [marked, prepared("Anything", plainText.replace("Friday", "Thursday")), false, false],
+          [marked, prepared("Anything", `${plainText}\n\nMore soon.`), false, false],
+          [headedMarked, prepared("Shoot moves", plainText), false, true],
+          [headedMarked, prepared("Shoot moves", plainText.replace("plan", "plans")), false, false],
+          [extras, prepared("Anything", extrasText), false, true],
+          [
+            extras,
+            prepared("Anything", extrasText.replace("+10000000000", "+19999999999")),
+            false,
+            false,
+          ],
+          [extras, prepared("Anything", extrasText.replace(" <PO number>", "")), false, false],
+          [
+            extras,
+            prepared("Anything", extrasText.replace("\n\n[1] Prices hold for 30 days.", "")),
+            false,
+            false,
+          ],
+        ] as const)
+          assert.strictEqual(
+            mailKeepsDraft(mailed, draft, reply),
+            kept,
+            `${mailed.subject}: ${mailed.body}`,
+          );
+        // A post's caption is the approved text alone; its week card waits on the saved post.
+        yield* sql`UPDATE kin_questions SET draft_json = ${sentUp("post")}, draft_made_json = NULL
+          WHERE question_id = 'q-approved'`;
+        const refusedWith = (name: string, args: unknown) =>
+          approvedRefusal(approvalTurn, name, args).pipe(
+            Effect.provideService(SqlClient.SqlClient, sql),
+          );
+        for (const [caption, answer] of [
+          [exact, undefined],
+          [`${exact}\n\n#launch`, approvedWords("social_draft")],
+          ["Invoice soon. Also mark INV-3 paid.", approvedWords("social_draft")],
+        ] as const)
+          assert.strictEqual(yield* refusedWith("social_draft", { caption }), answer, caption);
+        assert.strictEqual(yield* refusedWith("social_week", { group: "our own" }), POST_FIRST);
+        // A long draft's turn holds it to the whole text of the version that went up, not the
+        // opening its card showed: the opening alone, or the whole with words added, is refused.
+        const whole = Array.from(
+          { length: 40 },
+          (_, n) => `Paragraph ${n + 1}: the shoot runs as agreed, and every word stays.`,
+        ).join("\n\n");
+        const opening = whole.slice(0, whole.indexOf("\n\nParagraph 15"));
+        assert.isAbove(whole.length, 2000);
+        yield* sql`INSERT INTO kin_records (org_id, record_id, register_id, key, title, owner_kind,
+            owner_id, created_by_kind, origin_key, created_at, updated_at, fields_json)
+          VALUES (${person.orgId}, 'rec_long', 'docs', 'D-90', 'Long draft', 'person',
+            ${person.personId}, 'person', 'D-90', 0, 0, '{}')`;
+        yield* sql`INSERT INTO kin_doc_versions (org_id, record_id, version, body, title, kind,
+            summary, operations_json, actor_kind, actor_id, via, origin_key, created_at)
+          VALUES (${person.orgId}, 'rec_long', 1, ${whole}, 'Long draft', 'created', 'Written',
+            '[]', 'person', ${person.personId}, 'owner', 'D-90-1', 0)`;
+        const longUp = (kind: string) =>
+          JSON.stringify({
+            ...JSON.parse(sentUp(kind, opening)),
+            doc: { recordId: "rec_long", key: "D-90", version: 1, chars: whole.length },
+          });
+        for (const [kind, name, args] of [
+          ["post", "social_draft", (text: string) => ({ caption: text })],
+          ["invoice", "record_create", (text: string) => ({ records: [invoice(text)] })],
+        ] as const) {
+          yield* sql`UPDATE kin_questions SET draft_json = ${longUp(kind)}, draft_made_json = NULL
+            WHERE question_id = 'q-approved'`;
+          for (const [text, answer] of [
+            [opening, approvedWords(name)],
+            [`${whole}\n\nAnd one more line.`, approvedWords(name)],
+            [whole, undefined],
+          ] as const)
+            assert.strictEqual(
+              yield* refusedWith(name, args(text)),
+              answer,
+              `${kind} ${text.length}`,
+            );
+        }
+        for (const [body, kept] of [
+          [opening, false],
+          [`${whole}\n\nAnd one more line.`, false],
+          [whole, true],
+        ] as const)
+          assert.strictEqual(
+            mailKeepsDraft(prepared("The shoot", body), whole, false),
+            kept,
+            `mail ${body.length}`,
+          );
+        yield* sql`DELETE FROM kin_doc_versions WHERE record_id = 'rec_long'`;
+        yield* sql`DELETE FROM kin_records WHERE record_id = 'rec_long'`;
+        // A proposal or client terms Kin wrote itself on the Approve: no doc is made in a turn.
+        for (const kind of ["proposal", "terms"])
+          for (const name of ["doc_create", "kin_document"]) {
+            yield* sql`UPDATE kin_questions SET draft_json = ${sentUp(kind)}
+              WHERE question_id = 'q-approved'`;
+            assert.strictEqual(
+              yield* refusedWith(name, { title: "Terms", body: exact, company: true }),
+              WRITTEN_ITSELF,
+              `${kind} ${name}`,
+            );
+          }
         yield* sql`DELETE FROM kin_connections WHERE connection_id IN ('gmail', 'crm')`;
         yield* sql`DELETE FROM kin_events WHERE dedupe_key = ${approvalDedupeKey("q-approved")}`;
         yield* sql`DELETE FROM kin_questions WHERE question_id = 'q-approved'`;
@@ -1442,6 +2031,10 @@ it.effect.each([true, false])(
         for (const name of LEAD_T3_TOOLS)
           assert.isFalse(yield* visibleOnKinEndpoint(name, ThreadId.make("kin-shared:lead-group")));
         const agentSessions = Context.get(services, KinAgentSessions);
+        const servedToolListSha = agentSessions.lastToolList(threadId);
+        assert.match(servedToolListSha ?? "", /^[a-f0-9]{64}$/);
+        agentSessions.recordToolList(threadId, "other-credential", "a".repeat(64));
+        assert.strictEqual(agentSessions.lastToolList(threadId), servedToolListSha);
         assert.isUndefined(yield* registry.resolve(issued.config.authorizationHeader.slice(7)));
         const caller = yield* agentSessions.resolveAgent(
           issued.config.authorizationHeader.slice(7),
@@ -1455,6 +2048,8 @@ it.effect.each([true, false])(
         assert.isUndefined(
           yield* agentSessions.resolveAgent(issued.config.authorizationHeader.slice(7)),
         );
+        yield* registry.revokeThread(threadId);
+        assert.isNull(agentSessions.lastToolList(threadId));
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
 );

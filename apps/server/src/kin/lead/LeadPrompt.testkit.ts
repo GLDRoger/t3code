@@ -17,7 +17,8 @@ import * as Chat from "../chat/KinChatRepository.ts";
 import { authorityLayer } from "../chat/WakeupAuthority.testkit.ts";
 import * as Memory from "../memory/Memory.ts";
 import { buildIndex } from "../memory/buildIndex.ts";
-import { KinLeadPrompt, type KinLeadPromptInput } from "./LeadPrompt.ts";
+import { encodeDefinition, PRESETS } from "../work/registers.ts";
+import { KinLeadPrompt, TURN_DIVIDER, type KinLeadPromptInput } from "./LeadPrompt.ts";
 
 export const decodeEvent = Schema.decodeSync(KinEvent);
 export const decodeUnknownEvent = Schema.decodeUnknownSync(KinEvent);
@@ -114,6 +115,17 @@ const dueItems = new Map([
   ["rem", reminder],
   ["rem-marked", markedReminder],
 ]);
+dueItems.set("def-8b64eb64-9d23-4e37-98f5-2c62223ec5d3", {
+  head: decodeHead({
+    ...reminder.head,
+    id: "def-8b64eb64-9d23-4e37-98f5-2c62223ec5d3",
+    title: "Prepare the dispatch update",
+    chat: "fixture-chat",
+    for_chat: true,
+    source_event: "da64eb64-9d23-4e37-98f5-2c62223ec5d3:event-8d64eb64-9d23-4e37-98f5-2c62223ec5d3",
+  }),
+  body: reminder.body,
+});
 const roomReminder = decodeHead({
   ...task("rem-room", "owner").head,
   title: "Invented room reminder",
@@ -192,15 +204,24 @@ export const memory = Layer.succeed(
     historyGeneration: () => Effect.die("Unused"),
     items: () => Effect.die("Unused"),
     snapshotItems: () => Effect.die("Unused"),
-    readPromptSnapshot: (org, head) =>
-      org !== orgId || !["head-one", "head-two"].includes(head)
-        ? Effect.fail(new Memory.MemoryError({ orgId: org, operation: "promptSnapshot" }))
-        : Effect.succeed({
-            rules: `Invented rules ${head}`,
-            index: `Invented index ${head}\n- [deferral] Invented room reminder (deferrals/rem-room.md)\n- [deferral] Invented legacy reminder (deferrals/rem-legacy.md)\n${buildIndex(notes, {}, Date.parse(timestamp), "UTC").split("\n").slice(1).join("\n")}`,
-            items: notes,
-            bodies: new Map(notes.map((head) => [head.path, noteBody])),
-          }),
+    changedItems: () => Effect.die("Unused"),
+    readPromptSnapshot: (org, head) => {
+      if (org !== orgId || !["head-one", "head-two", "carry-small", "carry-large"].includes(head))
+        return Effect.fail(new Memory.MemoryError({ orgId: org, operation: "promptSnapshot" }));
+      const fixtureHead = head.startsWith("carry-") ? "head-one" : head;
+      const index = `Invented index ${fixtureHead}\n- [deferral] Invented room reminder (deferrals/rem-room.md)\n- [deferral] Invented legacy reminder (deferrals/rem-legacy.md)\n${buildIndex(notes, {}, Date.parse(timestamp), "UTC").split("\n").slice(1).join("\n")}`;
+      return Effect.succeed({
+        rules: `Invented rules ${fixtureHead}`,
+        index:
+          head === "carry-small"
+            ? index.replace("Invented index head-one", "Invented added one\nInvented added two")
+            : head === "carry-large"
+              ? [index, ...Array.from({ length: 41 }, (_, i) => `Invented added ${i}`)].join("\n")
+              : index,
+        items: notes,
+        bodies: new Map(notes.map((head) => [head.path, noteBody])),
+      });
+    },
     ensureCheckouts: () => Effect.die("Unused"),
     prepareWakeup: () => Effect.die("Unused"),
     readIndex: () => Effect.die("Unused"),
@@ -302,6 +323,15 @@ export const leadWithOwner = Effect.gen(function* () {
     VALUES (${agentId}, ${orgId}, 'Lead', 0, '{}', '[]', ${chatId})`;
   return repo;
 });
+export const showDispatchListSection = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`INSERT INTO kin_registers (org_id, register_id, name, key_prefix, built_in, created_at,
+      definition_json)
+    VALUES (${orgId}, 'dispatch', 'Dispatch invoices', 'DI', 0, 0, ${yield* encodeDefinition({ ...PRESETS.invoices, currency: "INR" })})`;
+  yield* sql`INSERT INTO kin_company_shell (org_id, shell_json, rev, set_by, set_at)
+    VALUES (${orgId}, '[{"id":"list:dispatch","on":true}]', 1, ${personId}, 0)`;
+});
+
 /** A finished wake-up whose stored events are `events`, which is all the audience reads. */
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 export const stored = Effect.fn("test.stored")(function* (
@@ -315,3 +345,20 @@ export const stored = Effect.fn("test.stored")(function* (
     yield* sql`INSERT INTO kin_events (event_id, org_id, agent_id, tag, priority, json, received_at, queued_at, state, wakeup_id)
       VALUES (${`${wakeupId}:${item.eventId}`}, ${orgId}, ${agentId}, ${item._tag}, 'P0', ${encodeJson(item)}, 0, 0, 'done', ${wakeupId})`;
 });
+
+// The legacy header uses single newlines; every other join uses a blank line.
+export const promptChunks = (text: string, legacy = false) => {
+  const parts = text.split("\n\n");
+  if (!legacy)
+    return parts.flatMap((part) =>
+      /^(Agent name:|Your reply goes to chat |This turn is in the Team room, chat |Owner time:)/.test(
+        part,
+      )
+        ? part.split("\n")
+        : [part],
+    );
+  const divider = parts.indexOf(TURN_DIVIDER);
+  return parts.flatMap((part, i) =>
+    i === divider ? [] : i === divider + 1 ? part.split("\n") : [part],
+  );
+};

@@ -1,10 +1,12 @@
 import {
   KinChatError,
+  type KinChatId,
   KinEvent,
   KinEventId,
   KinOrgId,
   type KinGithubTrigger,
   type KinPersonId,
+  type KinWakeupId,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -20,6 +22,7 @@ import * as SqlClient from "effect/sql/SqlClient";
 import { ServerConfig } from "../../config.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import { KinRefreshObserver } from "../chat/KinRefreshHub.ts";
+import { pullRequestAbout } from "../questions/rules.ts";
 import { KinGitHubLogin } from "../connections/GitHubLogin.ts";
 import { KinServer } from "../KinServer.ts";
 import * as KinEventQueue from "../lead/KinEventQueue.ts";
@@ -34,7 +37,10 @@ import {
   type DecideContext,
   decideTriggers,
   isAgentsOwn,
+  isTriage,
   KIN_LABEL,
+  TRIAGE_REPLIES,
+  triageReplies,
   type ThreadComment,
   type ThreadSnapshot,
   type Trigger,
@@ -45,6 +51,7 @@ import {
   knownRepos,
   type KnownRepo,
   repoList,
+  triageStates,
   watchRow,
   type WatchRow,
 } from "./githubWatchStore.ts";
@@ -75,12 +82,12 @@ const POSTS_KEPT_MS = 7 * 24 * HOUR_MS;
 const HANDLED_KEPT_MS = 30 * 24 * HOUR_MS;
 const PRUNE_EVERY_MS = 24 * HOUR_MS;
 export const WAKES_PER_LOOK = 10;
-/** Automatic wakes an hour, per org, for people who can't write to the repo. */
-export const OUTSIDE_WAKES_PER_HOUR = 10;
+/** Automatic wakes an hour for outside activity per org and for issue triage per repo. */
+export const AUTO_WAKES_PER_HOUR = 10;
 const THREADS_PER_LOOK = 30;
 /** Replies an agent makes in one issue or PR in an hour before it stops and says so. */
 export const PER_THREAD_HOURLY = 5;
-const DIFF_CAP = 30_000;
+export const DIFF_CAP = 30_000;
 /** A moved head is re-reviewed once nothing has changed on the PR for this long. */
 const STILL_MS = 5 * MINUTE_MS;
 /** How long after Kin's last review of a repo's PR the watch still lists that repo's PRs. */
@@ -100,6 +107,8 @@ export interface ApiAnswer {
   readonly headers: Readonly<Record<string, string>>;
   readonly body: unknown;
   readonly text: string;
+  /** gh's output was cut at Kin's limit: the body is only its start. */
+  readonly truncated?: true;
 }
 
 const parseJson = (text: string): { readonly ok: boolean; readonly value: unknown } => {
@@ -181,7 +190,8 @@ export const ghApiLayer = Layer.effect(
           args,
           request.body === undefined ? undefined : toJson(request.body),
         );
-        return parseGhApi(run.out);
+        const answer = parseGhApi(run.out);
+        return run.truncated === true ? { ...answer, truncated: true as const } : answer;
       }),
     });
   }),
@@ -198,7 +208,7 @@ const problemOf = (answer: ApiAnswer) => {
   return `GitHub answered ${answer.status}. Kin tries again in a few minutes.`;
 };
 
-const Login = Schema.Struct({ login: Schema.String });
+const Login = Schema.Struct({ login: Schema.String, type: Schema.optional(Schema.String) });
 const Notification = Schema.Struct({
   reason: Schema.String,
   updated_at: Schema.optional(Schema.String),
@@ -249,7 +259,7 @@ const Pull = Schema.Struct({
     sha: Schema.String,
     repo: Schema.NullOr(Schema.Struct({ full_name: Schema.String })),
   }),
-  base: Schema.Struct({ ref: Schema.String }),
+  base: Schema.Struct({ ref: Schema.String, sha: Schema.optional(Schema.String) }),
   updated_at: Schema.optional(Schema.String),
   additions: Schema.optional(Schema.Int),
   deletions: Schema.optional(Schema.Int),
@@ -288,6 +298,19 @@ const decodeMemberships = Schema.decodeUnknownOption(
 );
 const decodeIssue = Schema.decodeUnknownOption(Issue);
 const decodePull = Schema.decodeUnknownOption(Pull);
+const decodeIssueSearch = Schema.decodeUnknownOption(
+  Schema.Struct({
+    items: Schema.Array(
+      Schema.Struct({
+        number: Schema.Int,
+        title: Schema.String,
+        state: Schema.String,
+        repository_url: Schema.String,
+        pull_request: Schema.optional(Schema.Unknown),
+      }),
+    ),
+  }),
+);
 const decodeComments = Schema.decodeUnknownOption(Schema.Array(Comment));
 const decodeChecks = Schema.decodeUnknownOption(CheckRuns);
 const decodePermission = Schema.decodeUnknownOption(Permission);
@@ -326,7 +349,25 @@ interface Thread {
   activeAt?: number;
 }
 
-/** Reads one issue or PR and what is new on it since `since`. */
+/**
+ * GitHub refusing Kin's requests for now (403 or 429, its rate limits), and when it said it takes
+ * them again, from its `retry-after` or `x-ratelimit-reset`; undefined for any other answer.
+ */
+export const refusedFor = (answer: ApiAnswer, now: number) => {
+  if (answer.status !== 403 && answer.status !== 429) return undefined;
+  const after = Number(answer.headers["retry-after"]);
+  const reset = Number(answer.headers["x-ratelimit-reset"]);
+  return {
+    until:
+      Number.isFinite(after) && after > 0
+        ? now + after * 1000
+        : Number.isFinite(reset) && reset > 0
+          ? reset * 1000
+          : undefined,
+  };
+};
+
+/** Reads one issue or PR and what is new on it since `since`; `refused` when GitHub refused it. */
 export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
   get: (path: string) => Effect.Effect<ApiAnswer>,
   thread: Thread,
@@ -334,6 +375,8 @@ export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
 ) {
   const base = `repos/${thread.repo}`;
   const issueAnswer = yield* get(`${base}/issues/${thread.number}`);
+  const refused = refusedFor(issueAnswer, yield* Clock.currentTimeMillis);
+  if (refused !== undefined) return { refused };
   const issue = issueAnswer.status === 200 ? decodeIssue(issueAnswer.body) : Option.none();
   if (Option.isNone(issue)) return undefined;
   const pull = issue.value.pull_request !== undefined;
@@ -341,6 +384,8 @@ export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
   let pullTag: string | undefined;
   if (pull) {
     const answer = yield* get(`${base}/pulls/${thread.number}`);
+    const pullRefused = refusedFor(answer, yield* Clock.currentTimeMillis);
+    if (pullRefused !== undefined) return { refused: pullRefused };
     pullFacts = answer.status === 200 ? decodePull(answer.body) : Option.none();
     pullTag = answer.headers.etag;
   }
@@ -356,6 +401,7 @@ export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
         kind,
         body: comment.body ?? "",
         author: comment.user?.login ?? "ghost",
+        bot: comment.user?.type === "Bot",
         association: comment.author_association,
         createdAt: parsed(comment.created_at),
         ...(comment.path === undefined ? {} : { path: comment.path }),
@@ -374,6 +420,7 @@ export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
       title: issue.value.title,
       body: issue.value.body ?? "",
       author: issue.value.user?.login ?? "ghost",
+      authorBot: issue.value.user?.type === "Bot",
       association: issue.value.author_association,
       open: issue.value.state === "open",
       draft: facts?.draft === true,
@@ -389,6 +436,7 @@ export const readThread = Effect.fn("KinGitHubWatch.snapshot")(function* (
               headRef: facts.head.ref,
               baseRef: facts.base.ref,
               headSha: facts.head.sha,
+              ...(facts.base.sha === undefined ? {} : { baseSha: facts.base.sha }),
               fork: (facts.head.repo?.full_name ?? "").toLowerCase() !== thread.repo.toLowerCase(),
               ...(facts.updated_at === undefined ? {} : { updatedAt: parsed(facts.updated_at) }),
             },
@@ -463,6 +511,7 @@ const triggerFacts = (
           deletions: thread.pull.deletions,
           headRef: thread.pull.headRef,
           baseRef: thread.pull.baseRef,
+          ...(thread.pull.baseSha === undefined ? {} : { baseSha: thread.pull.baseSha }),
           fork: thread.pull.fork,
           ownersOwn: thread.author.toLowerCase() === ownerLogin.toLowerCase(),
           headSha: thread.pull.headSha,
@@ -473,26 +522,136 @@ const triggerFacts = (
   ...(trigger.kind === "checks" ? { failing: trigger.text.split(", ") } : {}),
 });
 
-/** A PR's diff as the server reads it for a turn with no shell, clipped; at `at`, that head's. */
+const readRelatedIssues = Effect.fn("KinGitHubWatch.relatedIssues")(function* (
+  get: (path: string) => Effect.Effect<ApiAnswer>,
+  { repo, number, title }: ThreadSnapshot,
+) {
+  const words = (title.slice(0, 120).match(/[\p{L}\p{N}]+/gu) ?? []).join(" ");
+  if (words === "") return undefined;
+  const query = encodeURIComponent(`repo:${repo} in:title ${words}`);
+  const answer = yield* get(`search/issues?q=${query}&per_page=6`);
+  const found = answer.status === 200 ? decodeIssueSearch(answer.body) : Option.none();
+  const repositoryUrl = `https://api.github.com/repos/${repo.toLowerCase()}`;
+  return Option.map(found, ({ items }) =>
+    items
+      .filter(
+        (item) => item.number !== number && item.repository_url.toLowerCase() === repositoryUrl,
+      )
+      .slice(0, 5)
+      .map((item) => ({
+        number: item.number,
+        title: item.title.slice(0, pieceEnd(item.title, 120)),
+        kind: item.pull_request === undefined ? ("issue" as const) : ("pull" as const),
+        state: item.state,
+      })),
+  ).pipe(Option.getOrUndefined);
+});
+
+const readConversation = Effect.fn("KinGitHubWatch.conversation")(function* (
+  get: (path: string) => Effect.Effect<ApiAnswer>,
+  { repo, number, comments }: ThreadSnapshot,
+  context: DecideContext,
+  inside: boolean,
+) {
+  const answer = yield* get(`repos/${repo}/issues/${number}/comments?per_page=100`);
+  const found = answer.status === 200 ? decodeComments(answer.body) : Option.none();
+  const byId = new Map(comments.map((comment) => [comment.id, comment]));
+  for (const comment of Option.getOrElse(found, () => []))
+    byId.set(comment.id, {
+      id: comment.id,
+      kind: "issue",
+      author: comment.user?.login ?? "ghost",
+      association: comment.author_association,
+      bot: comment.user?.type === "Bot",
+      createdAt: parsed(comment.created_at),
+      body: comment.body ?? "",
+    });
+  let left = 12_000;
+  const conversation: NonNullable<KinGithubTrigger["conversation"]>[number][] = [];
+  for (const comment of [...byId.values()].toSorted(
+    (a, b) => b.createdAt - a.createdAt || b.id - a.id,
+  )) {
+    if (left <= 0) break;
+    const login = comment.author.toLowerCase();
+    // A marker can be copied, so history in an inside turn needs a trusted login.
+    if (
+      inside &&
+      login !== context.ownerLogin.toLowerCase() &&
+      login !== context.botLogin?.toLowerCase() &&
+      !context.writes(comment.author)
+    )
+      continue;
+    const text = comment.body.slice(0, pieceEnd(comment.body, Math.min(2_000, left)));
+    if (text.length === 0) continue;
+    left -= text.length;
+    conversation.push({
+      author: comment.author,
+      kin: isAgentsOwn(comment.body, comment.author, context.botLogin, context.agentPosts),
+      text,
+    });
+  }
+  return conversation.reverse();
+});
+
+const triageHistory = Effect.fn("KinGitHubWatch.triageHistory")(function* (
+  orgId: KinOrgId,
+  ref: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const prefix = `triage_reply:${ref}:`;
+  const [row] = yield* sql<{ kinSaid: number | null; replies: number }>`
+    SELECT MAX(CASE WHEN outcome = 'posted' THEN at END) AS "kinSaid",
+           COUNT(CASE WHEN outcome = 'woke' THEN 1 END) AS replies
+    FROM kin_github_handled WHERE org_id = ${orgId} AND
+      (trigger_key = ${`triaged:${ref}`} OR
+        (trigger_key >= ${prefix} AND trigger_key < ${`triage_reply:${ref};`}))`;
+  return { kinSaid: row?.kinSaid ?? undefined, repliesLeft: TRIAGE_REPLIES - (row?.replies ?? 0) };
+});
+
+/**
+ * A PR's diff as GitHub gives it, from `base` (a commit, so every read compares the same) to that
+ * head; `partial` when GitHub's answer ran past what Kin keeps of it.
+ */
+export const wholeDiff = (
+  get: (path: string, headers?: Record<string, string>) => Effect.Effect<ApiAnswer>,
+  repo: string,
+  at: { readonly base: string; readonly headSha: string },
+) =>
+  get(`repos/${repo}/compare/${encodeURIComponent(at.base)}...${at.headSha}`, {
+    Accept: "application/vnd.github.diff",
+  }).pipe(
+    Effect.map((answer) =>
+      answer.status === 200 ? { text: answer.text, partial: answer.truncated === true } : undefined,
+    ),
+  );
+
+/** Where a piece of `text` read up to `at` ends: never between the two halves of one character. */
+export const pieceEnd = (text: string, at: number) =>
+  at > 0 && at < text.length && /[\uD800-\uDBFF]/.test(text[at - 1]!) ? at - 1 : at;
+
+/** Where a diff a turn reads goes on past its prompt: `kin_github_diff` reads on from there. */
+export const diffGoesOn = (rest: number, from: number) =>
+  `…[the diff goes on for ${rest} more characters: read them with kin_github_diff, from ${from}]`;
+/** Where Kin's read of a diff stopped short of its end. */
+const DIFF_CUT_SHORT =
+  "…[GitHub's answer stopped here, so Kin couldn't read the rest of this diff: your review is partial]";
+
+/** A PR's diff as the server reads it for a turn with no shell, its first `DIFF_CAP` characters. */
 export const readDiff = (
   get: (path: string, headers?: Record<string, string>) => Effect.Effect<ApiAnswer>,
   repo: string,
-  number: number,
-  at?: { readonly baseRef: string; readonly headSha: string },
+  at: { readonly base: string; readonly headSha: string },
 ) =>
-  get(
-    at === undefined
-      ? `repos/${repo}/pulls/${number}`
-      : `repos/${repo}/compare/${encodeURIComponent(at.baseRef)}...${at.headSha}`,
-    { Accept: "application/vnd.github.diff" },
-  ).pipe(
-    Effect.map((answer) =>
-      answer.status === 200
-        ? answer.text.length <= DIFF_CAP
-          ? answer.text
-          : `${answer.text.slice(0, DIFF_CAP)}\n…[diff cut at ${DIFF_CAP} characters]`
-        : undefined,
-    ),
+  wholeDiff(get, repo, at).pipe(
+    Effect.map((read) => {
+      if (read === undefined) return undefined;
+      const { text, partial } = read;
+      if (text.length > DIFF_CAP) {
+        const cut = pieceEnd(text, DIFF_CAP);
+        return `${text.slice(0, cut)}\n${diffGoesOn(text.length - cut, cut)}`;
+      }
+      return partial ? `${text}\n${DIFF_CUT_SHORT}` : text;
+    }),
   );
 
 /** The head a first review (`review:<repo>#<n>`) read, kept under that head's own key. */
@@ -559,6 +718,31 @@ const reReviewOf = (
   return trigger === undefined ? undefined : { trigger, from: last.head };
 };
 
+const hasAutomaticAllowance = Effect.fn("KinGitHubWatch.automaticAllowance")(function* (
+  orgId: KinOrgId,
+  repo: string,
+  trigger: Trigger,
+  now: number,
+  outside: boolean,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  if (outside) {
+    const [spent] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
+      FROM kin_github_handled WHERE org_id = ${orgId}
+        AND trigger_key >= 'outside:' AND trigger_key < 'outside;' AND at > ${now - HOUR_MS}`;
+    if ((spent?.count ?? 0) >= AUTO_WAKES_PER_HOUR) return false;
+  }
+  if (isTriage(trigger.kind)) {
+    const [spent] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
+      FROM kin_github_handled WHERE org_id = ${orgId} AND repo = ${repo}
+        AND outcome = 'woke' AND at > ${now - HOUR_MS}
+        AND ((trigger_key >= ${`triage:${repo}#`} AND trigger_key < ${`triage:${repo}$`})
+          OR (trigger_key >= ${`triage_reply:${repo}#`} AND trigger_key < ${`triage_reply:${repo}$`}))`;
+    if ((spent?.count ?? 0) >= AUTO_WAKES_PER_HOUR) return false;
+  }
+  return true;
+});
+
 /**
  * Stores the trigger once and, when it may, wakes its agent in the same transaction: the watch's
  * every trigger, and a review someone asked for in Kin (`askedBy`). An ask the caps refuse claims
@@ -575,7 +759,10 @@ export const claimTrigger = Effect.fn("KinGitHubWatch.handle")(function* (input:
   readonly happenedAt: number;
   readonly diff: string | undefined;
   readonly askedBy?: KinPersonId | undefined;
+  /** With `askedBy`: the ask's chat and turn, where its result is told. */
+  readonly asked?: { readonly chatId: KinChatId; readonly wakeupId: KinWakeupId } | undefined;
   readonly reReview?: ReReview | undefined;
+  readonly triageContext?: Pick<KinGithubTrigger, "related" | "conversation"> | undefined;
 }) {
   const sql = yield* SqlClient.SqlClient;
   const queue = yield* KinEventQueue.KinEventQueue;
@@ -612,21 +799,21 @@ export const claimTrigger = Effect.fn("KinGitHubWatch.handle")(function* (input:
       // Past the look's cap, it waits for the next look, which reads from the same point.
       if (now - input.happenedAt <= STALE_MS && input.woken >= WAKES_PER_LOOK)
         return "later" as const;
-      // Wakes for people who can't write share one hour across the poll and every look: past
-      // it, unclaimed, for a later look; a teammate's allowance is untouched.
       const outside = askedBy === undefined && !trigger.inside;
-      if (outside && now - input.happenedAt <= STALE_MS) {
-        const [spent] = yield* sql<{ count: number }>`SELECT COUNT(*) AS count
-          FROM kin_github_handled WHERE org_id = ${orgId}
-            AND trigger_key >= 'outside:' AND trigger_key < 'outside;' AND at > ${now - HOUR_MS}`;
-        if ((spent?.count ?? 0) >= OUTSIDE_WAKES_PER_HOUR) return "later" as const;
+      const stale = now - input.happenedAt > STALE_MS;
+      // Automatic wakes past their hour's allowance stay unclaimed until a later look.
+      if (!stale && !(yield* hasAutomaticAllowance(orgId, repo, trigger, now, outside)))
+        return "later" as const;
+      if (!stale && trigger.kind === "triage_reply") {
+        const { kinSaid, repliesLeft } = yield* triageHistory(orgId, `${repo}#${thread.number}`);
+        if (kinSaid === undefined || kinSaid >= input.happenedAt || repliesLeft <= 0)
+          return "seen" as const;
       }
-      const outcome =
-        now - input.happenedAt > STALE_MS
-          ? "stale"
-          : (recent?.count ?? 0) >= PER_THREAD_HOURLY
-            ? "capped"
-            : "woke";
+      const outcome = stale
+        ? "stale"
+        : (recent?.count ?? 0) >= PER_THREAD_HOURLY
+          ? "capped"
+          : "woke";
       if (askedBy !== undefined && outcome !== "woke") return outcome;
       yield* retry
         ? sql`UPDATE kin_github_handled SET outcome = ${outcome}, agent_id = ${input.agentId},
@@ -664,8 +851,11 @@ export const claimTrigger = Effect.fn("KinGitHubWatch.handle")(function* (input:
           summary: `${trigger.kind} on ${thread.repo}#${thread.number} by ${trigger.author}`,
           // GitHub text is outside input unless its author can write to the repo.
           provenance: { _tag: "system" },
-          trigger: facts,
+          trigger: { ...facts, ...input.triageContext },
           ...(askedBy === undefined ? {} : { askedBy }),
+          ...(askedBy === undefined || input.asked === undefined
+            ? {}
+            : { chatId: input.asked.chatId, askedIn: [input.asked.wakeupId] }),
         }),
       );
       return outcome;
@@ -717,6 +907,12 @@ export const make = Effect.gen(function* () {
   const api = yield* KinGitHubApi;
   const queue = yield* KinEventQueue.KinEventQueue;
   const records = yield* Effect.serviceOption(KinRecords);
+  // Loaded at build: static imports of these close an import cycle through Kin's leads.
+  const { KinChatService } = yield* Effect.promise(() => import("../chat/KinChatService.ts"));
+  const { closeQuestionsAbout } = yield* Effect.promise(
+    () => import("../questions/openQuestions.ts"),
+  );
+  const chat = yield* Effect.serviceOption(KinChatService);
   const refresh = yield* KinRefreshObserver;
   const app = yield* gitHubApp;
   const config = yield* Effect.serviceOption(ServerConfig);
@@ -789,7 +985,6 @@ export const make = Effect.gen(function* () {
     yield* sql`DELETE FROM kin_github_handled WHERE org_id = ${orgId} AND at < ${now - HANDLED_KEPT_MS}
       AND (trigger_key LIKE 'seen:%' OR outcome IN ('stale', 'note'))`;
   });
-  const botLogin = botLoginOf(app);
   /** Kin's own writes on a repo: as the App where it is installed, else as the owner. */
   const writer = Effect.fn("KinGitHubWatch.writer")(function* (repo: string) {
     const asApp = Option.isSome(app) ? yield* app.value.on(repo) : undefined;
@@ -945,8 +1140,10 @@ export const make = Effect.gen(function* () {
     readonly startedAt: number;
     readonly since: number;
     readonly watched: ReadonlyMap<string, { readonly repo: string; readonly mentions: boolean }>;
+    readonly triage: ReadonlyMap<string, { readonly outcome: "on" | "off"; readonly at: number }>;
     readonly agents: ReadonlyArray<{ readonly agentId: string; readonly name: string }>;
     readonly bot: string | undefined;
+    readonly appOn: (repo: string) => Effect.Effect<boolean | undefined>;
     readonly posts: ReadonlySet<string> | undefined;
     readonly lead: { readonly agentId: string; readonly name: string } | undefined;
   }
@@ -963,17 +1160,51 @@ export const make = Effect.gen(function* () {
     row: WatchRow,
   ) {
     const repos = yield* repoList(orgId);
+    const watched = new Map(
+      repos.filter((repo) => repo.watched).map((repo) => [repo.repo.toLowerCase(), repo]),
+    );
+    const service = Option.getOrUndefined(app);
+    const appState = yield* service?.state() ?? Effect.undefined;
+    const covered = new Set(
+      appState?._tag === "ok"
+        ? appState.app.installations.flatMap((installation) =>
+            installation.suspended ? [] : [...installation.repos],
+          )
+        : [],
+    );
+    const checked = new Map<string, boolean | undefined>();
+    let warned = false;
+    const appOn = Effect.fn("KinGitHubWatch.appOn")(function* (repo: string) {
+      if (checked.has(repo)) return checked.get(repo);
+      const present =
+        appState?._tag === "broken" ||
+        (appState?._tag === "ok" && appState.coverageUnverified === true)
+          ? undefined
+          : !covered.has(repo) || service === undefined
+            ? false
+            : (yield* service.on(repo)) === undefined
+              ? undefined
+              : true;
+      checked.set(repo, present);
+      if (present === undefined && !warned) {
+        warned = true;
+        yield* Effect.logWarning("Kin deferred outside issue triage", {
+          kind: "app_coverage_unavailable",
+        });
+      }
+      return present;
+    });
     return {
       orgId,
       now,
       account,
       startedAt: row.startedAt,
       since: row.sinceAt - OVERLAP_MS,
-      watched: new Map(
-        repos.filter((repo) => repo.watched).map((repo) => [repo.repo.toLowerCase(), repo]),
-      ),
+      watched,
+      triage: yield* triageStates(orgId, [...watched.keys()], now),
       agents: yield* agentsOf(orgId),
-      bot: yield* botLogin,
+      bot: appState?._tag === "ok" ? appState.app.botLogin : undefined,
+      appOn,
       posts: yield* agentPosts,
       lead: yield* liveLead(sql, orgId, { prefer: ENGINEERING_DOMAIN }),
     } satisfies LookContext;
@@ -1068,18 +1299,16 @@ export const make = Effect.gen(function* () {
     from: string,
   ) {
     if (thread.pull === undefined) return null;
-    const { headSha, baseRef } = thread.pull;
+    const { headSha, baseRef, baseSha } = thread.pull;
     // A three-dot compare is from where the heads meet: what changed since only when the new
     // head builds on the reviewed one.
     const range = yield* get(`repos/${thread.repo}/compare/${from}...${headSha}`);
     const ahead =
       range.status === 200 &&
       Option.exists(decodeCompare(range.body), (found) => found.status === "ahead");
-    const since = ahead
-      ? yield* readDiff(get, thread.repo, thread.number, { baseRef: from, headSha })
-      : undefined;
+    const since = ahead ? yield* readDiff(get, thread.repo, { base: from, headSha }) : undefined;
     if (since !== undefined) return { diff: since, reReview: { from, whole: false } };
-    const whole = yield* readDiff(get, thread.repo, thread.number, { baseRef, headSha });
+    const whole = yield* readDiff(get, thread.repo, { base: baseSha ?? baseRef, headSha });
     return whole === undefined ? null : { diff: whole, reReview: { from, whole: true } };
   });
 
@@ -1092,7 +1321,7 @@ export const make = Effect.gen(function* () {
     const { orgId, now, account, since, agents, bot, posts, lead } = context;
     const { held } = tally;
     const read = yield* readThread(get, thread, since);
-    if (read === undefined) return;
+    if (read === undefined || "refused" in read) return;
     let current: ThreadSnapshot = read.thread;
     const at = `${current.repo.toLowerCase()}#${current.number}`;
     if (current.item === "pull" && read.merged && Option.isSome(records))
@@ -1106,6 +1335,27 @@ export const make = Effect.gen(function* () {
         Effect.provideService(SqlClient.SqlClient, sql),
         Effect.catchCause((cause) =>
           Effect.logWarning("Kin couldn't close Work entries for a merge", { cause }),
+        ),
+      );
+    // A question about it stops waiting; its asker learns as of any closed question, unwoken.
+    if (current.item === "pull" && !current.open && Option.isSome(chat))
+      yield* closeQuestionsAbout(
+        {
+          orgId,
+          key: pullRequestAbout(current.repo, current.number),
+          cards: [],
+          sparing: [],
+          text: read.merged
+            ? "Closed: the pull request was merged."
+            : "Closed: the pull request was closed.",
+          closedAt: now,
+        },
+        chat.value,
+      ).pipe(
+        sql.withTransaction,
+        Effect.provideService(SqlClient.SqlClient, sql),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Kin couldn't close questions about a pull request", { cause }),
         ),
       );
     const by = (login: string | undefined) =>
@@ -1150,6 +1400,14 @@ export const make = Effect.gen(function* () {
               (found) => found.key,
             ),
           );
+    const repo = current.repo.toLowerCase();
+    const triage = context.triage.get(repo);
+    const triageFrom =
+      current.item === "issue" && current.open && triage?.outcome === "on" ? triage.at : undefined;
+    const history = triageFrom === undefined ? undefined : yield* triageHistory(orgId, at);
+    const kinCommented =
+      triageFrom !== undefined &&
+      current.comments.some((comment) => isAgentsOwn(comment.body, comment.author, bot, posts));
     const fresh = current.comments.filter((comment) => !seen.has(seenKey(comment)));
     current = { ...current, comments: fresh };
     const base = {
@@ -1162,6 +1420,10 @@ export const make = Effect.gen(function* () {
       botLogin: bot,
       agentPosts: posts,
       kinsPull,
+      triageFrom,
+      kinCommented,
+      ...history,
+      appOn: triageFrom === undefined ? false : yield* context.appOn(repo),
     };
     // Someone who can't write is re-reviewed only from a head whose review GitHub took.
     const last =
@@ -1173,8 +1435,20 @@ export const make = Effect.gen(function* () {
         ? yield* lastReviewed(orgId, current.repo, current.number, true)
         : undefined;
     // Who can write is asked of GitHub only for what this look could still claim.
-    const everyone: DecideContext = { ...base, writes: () => true, labeledBy: "" };
+    const everyone: DecideContext = {
+      ...base,
+      appOn: base.appOn ?? true,
+      writes: () => true,
+      labeledBy: "",
+    };
     const possible = [...decideTriggers(current, everyone)];
+    // A stranger's apparent /kin can hide a triage candidate in the all-writers pass.
+    if (triageFrom !== undefined)
+      possible.push(
+        ...decideTriggers(current, { ...everyone, writes: () => false }).filter(({ kind }) =>
+          isTriage(kind),
+        ),
+      );
     const possibleAgain = reReviewOf(current, last, everyone, now);
     if (possibleAgain !== undefined) possible.push(possibleAgain.trigger);
     const handled =
@@ -1188,6 +1462,11 @@ export const make = Effect.gen(function* () {
           );
     const open = possible.filter((one) => !handled.has(one.key));
     const logins = new Set(open.map((one) => one.author));
+    const replyComments = open.some((one) => one.kind === "triage_reply")
+      ? triageReplies(current.comments, base)
+      : [];
+    if (open.some(({ kind }) => isTriage(kind))) logins.add(current.author);
+    for (const comment of replyComments) logins.add(comment.author);
     const labeledBy = open.some((one) => one.kind === "label")
       ? yield* labelActor(get, current.repo, current.number)
       : undefined;
@@ -1201,7 +1480,20 @@ export const make = Effect.gen(function* () {
       writes: (login) => writers.has(login.toLowerCase()),
       labeledBy,
     };
+    const triggerTime = ({ kind, reactTo }: Trigger) => {
+      if (reactTo.type === "comment")
+        return current.comments.find(({ id }) => id === reactTo.id)?.createdAt ?? now;
+      return kind === "review" || kind === "triage" ? current.createdAt : now;
+    };
     const triggers = decideTriggers(current, decide);
+    if (base.appOn === undefined)
+      for (const trigger of decideTriggers(current, { ...decide, appOn: true })) {
+        if (!isTriage(trigger.kind) || trigger.inside || handled.has(trigger.key)) continue;
+        if (now - triggerTime(trigger) > STALE_MS) continue;
+        tally.later = true;
+        if (trigger.kind === "triage_reply")
+          for (const comment of replyComments) held.add(comment.id);
+      }
     const again =
       current.item === "pull"
         ? reReviewOf(current, decide.writes(current.author) ? last : lastPosted, decide, now)
@@ -1213,14 +1505,7 @@ export const make = Effect.gen(function* () {
       const agentId = agents.some((agent) => agent.agentId === trigger.agentId)
         ? trigger.agentId
         : lead.agentId;
-      const happenedAt =
-        trigger.reactTo.type === "comment"
-          ? (current.comments.find(
-              (comment) => comment.id === (trigger.reactTo as { id: number }).id,
-            )?.createdAt ?? now)
-          : trigger.kind === "review"
-            ? current.createdAt
-            : now;
+      const happenedAt = triggerTime(trigger);
       const moved =
         again?.trigger === trigger ? yield* changesSince(current, again.from) : undefined;
       // Changes GitHub wouldn't give are read again on the next look; nothing is claimed.
@@ -1229,9 +1514,25 @@ export const make = Effect.gen(function* () {
       const diff =
         moved !== undefined
           ? moved.diff
-          : !trigger.inside && current.item === "pull"
-            ? yield* readDiff(get, current.repo, current.number)
+          : !trigger.inside && current.pull !== undefined
+            ? yield* readDiff(get, current.repo, {
+                base: current.pull.baseSha ?? current.pull.baseRef,
+                headSha: current.pull.headSha,
+              })
             : undefined;
+      const triageContext =
+        isTriage(trigger.kind) &&
+        now - happenedAt <= STALE_MS &&
+        tally.woken < WAKES_PER_LOOK &&
+        (yield* hasAutomaticAllowance(orgId, repo, trigger, now, !trigger.inside))
+          ? {
+              related: yield* readRelatedIssues(get, current),
+              conversation:
+                trigger.kind === "triage_reply"
+                  ? yield* readConversation(get, read.thread, decide, trigger.inside)
+                  : undefined,
+            }
+          : undefined;
       const outcome = yield* handle({
         orgId,
         thread: current,
@@ -1243,10 +1544,13 @@ export const make = Effect.gen(function* () {
         happenedAt: moved === undefined ? happenedAt : (current.pull?.updatedAt ?? now),
         diff,
         reReview: moved?.reReview,
+        triageContext,
       });
       if (outcome === "later") {
         tally.later = true;
         if (trigger.reactTo.type === "comment") held.add(trigger.reactTo.id);
+        if (trigger.kind === "triage_reply")
+          for (const comment of replyComments) held.add(comment.id);
       }
       if (outcome === "woke") {
         tally.woken += 1;
@@ -1508,7 +1812,7 @@ const ownerReview = Effect.fn("KinGitHubWatch.review")(
         _tag: "refused",
         reason: "not_allowed",
         message:
-          "That repo isn't the company's. Ask the owner in chat before posting there, then post with gh in a turn he started.",
+          "That repo isn't the company's. Ask the owner in chat before posting there, then post with gh in a turn the owner started.",
       } satisfies Sent as Sent;
     const pullAnswer = yield* get(`repos/${ours.repo}/issues/${input.number}`);
     const issue = pullAnswer.status === 200 ? decodeIssue(pullAnswer.body) : Option.none();
@@ -1664,14 +1968,129 @@ export const sendReview = Effect.fn("KinGitHubWatch.sendReview")(function* (
   });
 });
 
-/** What `kin_github_review` answers for a review GitHub took. */
-export const postedResult = (sent: Extract<Sent, { _tag: "posted" }>) => ({
-  status: "posted" as const,
-  url: sent.url,
-  next: sent.asOwner
-    ? "Posted on the PR as the owner: Kin's GitHub App can't write there. Tell the owner in one line with the link, and that it went out as him."
-    : "Posted on the PR. Tell the owner in one line with the link.",
-});
+const decodePostedComment = Schema.decodeUnknownOption(
+  Schema.Struct({
+    html_url: Schema.String,
+    created_at: Schema.String,
+  }),
+);
+
+// Words under eval: change them only with the triage cases.
+const COMMENT_SEND = {
+  notCompany: "That repo isn't the company's. Nothing was posted.",
+  app: (repo: string) => `Kin's GitHub App isn't installed on ${repo}. Nothing was posted.`,
+  disconnected: "GitHub isn't connected. The owner connects it in Settings, Connections.",
+  rejected: (status: number) => `GitHub didn't post the comment (HTTP ${status}).`,
+  unavailable: "Kin couldn't read its repo list. Nothing was posted.",
+};
+
+type SentIssueComment =
+  | { readonly _tag: "posted"; readonly url: string; readonly createdAt: number }
+  | {
+      readonly _tag: "refused";
+      readonly reason: "not_allowed" | "unavailable";
+      readonly message: string;
+    }
+  | { readonly _tag: "unknown" };
+
+export const sendIssueComment = Effect.fn("KinGitHubWatch.sendIssueComment")(
+  function* (
+    orgId: KinOrgId,
+    input: {
+      readonly repo: string;
+      readonly number: number;
+      readonly body: string;
+      readonly outside: boolean;
+    },
+  ) {
+    const api = yield* KinGitHubApi;
+    const ours = yield* companyRepo(orgId, input.repo);
+    if (ours === undefined)
+      return {
+        _tag: "refused",
+        reason: "not_allowed",
+        message: COMMENT_SEND.notCompany,
+      } satisfies SentIssueComment as SentIssueComment;
+    const app = yield* gitHubApp;
+    const asApp = Option.isSome(app) ? yield* app.value.on(ours.repo) : undefined;
+    if (input.outside && asApp === undefined)
+      return {
+        _tag: "refused",
+        reason: "not_allowed",
+        message: COMMENT_SEND.app(input.repo),
+      } satisfies SentIssueComment as SentIssueComment;
+    const request = {
+      path: `repos/${ours.repo}/issues/${input.number}/comments`,
+      method: "POST",
+      body: { body: input.body },
+    } as const;
+    const owner = Effect.fn("KinGitHubWatch.sendIssueCommentAsOwner")(function* () {
+      if ((yield* api.connected()) === null) return undefined;
+      return yield* api.call(request);
+    });
+    let answer = asApp === undefined ? yield* owner() : yield* asApp.call(request);
+    if (!input.outside && asApp !== undefined && (answer?.status === 403 || answer?.status === 404))
+      answer = (yield* owner()) ?? answer;
+    if (answer === undefined)
+      return {
+        _tag: "refused",
+        reason: "unavailable",
+        message: COMMENT_SEND.disconnected,
+      } satisfies SentIssueComment as SentIssueComment;
+    if (answer.status >= 400 && answer.status < 500)
+      return {
+        _tag: "refused",
+        reason: "unavailable",
+        message: COMMENT_SEND.rejected(answer.status),
+      } satisfies SentIssueComment as SentIssueComment;
+    const posted =
+      answer.status >= 200 && answer.status < 300
+        ? decodePostedComment(answer.body)
+        : Option.none();
+    const createdAt = Option.isSome(posted) ? Date.parse(posted.value.created_at) : NaN;
+    return Option.isSome(posted) && Number.isFinite(createdAt)
+      ? ({
+          _tag: "posted",
+          url: posted.value.html_url,
+          createdAt,
+        } satisfies SentIssueComment as SentIssueComment)
+      : ({ _tag: "unknown" } satisfies SentIssueComment as SentIssueComment);
+  },
+  Effect.catchTags({
+    SqlError: () =>
+      Effect.succeed<SentIssueComment>({
+        _tag: "refused",
+        reason: "unavailable",
+        message: COMMENT_SEND.unavailable,
+      }),
+  }),
+);
+
+/**
+ * What `kin_github_review` answers for a review GitHub took. A review someone asked for is told to
+ * them in their chat (`askedFor.ts`); Kin's own review of one pull request (`boundReview`) tells the
+ * owner only of a block, as its turn's closing line says (`eventPrompt.ts`).
+ */
+export const postedResult = (
+  sent: Extract<Sent, { _tag: "posted" }>,
+  review?: "asked" | "kins" | "outside",
+) => {
+  const asOwner = sent.asOwner ? " as the owner: Kin's GitHub App can't write there" : "";
+  return {
+    status: "posted" as const,
+    url: sent.url,
+    next:
+      review === "asked"
+        ? `Posted on the PR${asOwner}. Tell the person who asked, in one or two sentences, what it found, with the link.`
+        : review === "kins"
+          ? `Posted on the PR${asOwner}. If nothing in it blocks, end with kin_skip; if it blocks, send the owner the one sentence your instructions shape, with the link.`
+          : review === "outside"
+            ? "Posted on the PR as a comment. Kin tells the owner itself if it blocks; write nothing more."
+            : sent.asOwner
+              ? "Posted on the PR as the owner: Kin's GitHub App can't write there. Tell the owner in one line with the link, and that it went out as them."
+              : "Posted on the PR. Tell the owner in one line with the link.",
+  };
+};
 
 /**
  * `kin_github_review` with the owner's GitHub connected: posted at once on the company's repos and

@@ -9,6 +9,7 @@ import type * as Layer from "effect/Layer";
  */
 export interface KinProvider<Seam> {
   readonly driver: string;
+  readonly turnContextBeside: boolean;
   readonly capabilities: Partial<Readonly<Record<KinCapability, ReadonlyArray<string>>>>;
   readonly install: <E, R>(base: Layer.Layer<Seam, E, R>) => Layer.Layer<Seam, unknown, unknown>;
 }

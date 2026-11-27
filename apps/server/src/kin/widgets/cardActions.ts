@@ -1,3 +1,5 @@
+import * as KinShell from "../shell/KinShell.ts";
+import { listSectionRefused, sectionOfList } from "../shell/sections.ts";
 import {
   KinAgentId,
   KinChatError,
@@ -13,6 +15,7 @@ import {
   type KinWidget,
   KinWidgetId,
 } from "@t3tools/contracts";
+import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
@@ -22,7 +25,10 @@ import type { KinChatService } from "../chat/KinChatService.ts";
 import { SHARED_REFUSAL, aborted, peopleBehind } from "../lead/Audience.ts";
 import { routeShown, runRoute } from "../lead/routeCard.ts";
 import { recommendShown, runRecommend } from "../recommend/card.ts";
+import { quietShown, runQuiet } from "../lead/quietRunCard.ts";
 import { leaverShown, runLeaver } from "../people/leaver.ts";
+import { factCardShown } from "../pulse/factCards.ts";
+import { runFactCard } from "../pulse/factCardTaps.ts";
 import { toolAdmitted } from "../lead/SharedTools.ts";
 import * as Memory from "../memory/Memory.ts";
 import { ownerLevel } from "../people/KinAccess.ts";
@@ -40,17 +46,48 @@ import {
   deferralWidgetId,
   makeDeferralStarter,
 } from "../triggers/deferrals.ts";
-import { isHelperRefusal, type KinRecords } from "../work/KinRecords.ts";
+import { isHelperRefusal, KinRecords } from "../work/KinRecords.ts";
 import { viewOf } from "../work/leadWork.ts";
 import { repeatOf } from "../work/recordRows.ts";
-import { defineProposed, listPlace, proposalToCreate, proposedList } from "../work/registers.ts";
+import {
+  defineProposed,
+  listDef,
+  listPlace,
+  proposalToCreate,
+  proposedList,
+} from "../work/registers.ts";
 import { teamGuard, viewVisible } from "../work/teamView.ts";
+import {
+  applyCredit,
+  applyLabel,
+  applyLine,
+  drawApply,
+  drawPayment,
+  PAYMENT_TAP_REFUSAL,
+  paymentChanged,
+  paymentLabel,
+  paymentLine,
+  recordPayment,
+} from "../work/statements/creditPayment.ts";
+import {
+  billPaidLabel,
+  billPaidLine,
+  drawBill,
+  drawBillPaid,
+  markBillPaid,
+  recordBill,
+  recordBillLabel,
+  recordBillLine,
+} from "../work/statements/billCard.ts";
+import { drawRepaid, markRepaid, repaidLabel, repaidLine } from "../work/statements/repaidCard.ts";
 import {
   type CardActionInput,
   type CardDraw,
   type CardPlan,
   type RunPlan,
   isAnswered,
+  isQuiet,
+  isFactCard,
   isTaken,
   plansOf,
   takesAsDefault,
@@ -84,13 +121,19 @@ const LABEL_MAX = 80;
 const labelOf = (plan: CardPlan): string => {
   switch (plan.kind) {
     case "done":
-      return `Mark ${plan.key} done`;
+      return plan.heldMeeting === true ? "Nothing to follow up" : `Mark ${plan.key} done`;
     case "drop":
-      return `Drop ${plan.key}`;
+      return plan.heldMeeting === true ? "It didn't happen" : `Drop ${plan.key}`;
     case "start":
       return "Start it now";
     case "create_list":
       return "Create the list";
+    case "record_payment":
+      return paymentLabel(plan);
+    case "apply_credit":
+      return applyLabel(plan);
+    case "mark_repaid":
+      return repaidLabel(plan);
     case "take_default": {
       const label = `Take the default: ${plan.label}`;
       return label.length <= LABEL_MAX ? label : `${label.slice(0, LABEL_MAX - 1)}…`;
@@ -101,6 +144,16 @@ const labelOf = (plan: CardPlan): string => {
       return recommendShown(plan).label;
     case "leaver":
       return leaverShown(plan).label;
+    case "quiet_keep":
+    case "quiet_stop":
+      return quietShown(plan).label;
+    case "waited_answer":
+    case "stall_answer":
+    case "move_due":
+    case "keep_due":
+    case "notice_renew":
+    case "invoice_choice":
+      return factCardShown(plan).label;
     case "undo_default":
       return "Undo";
     case "keep_default":
@@ -108,6 +161,10 @@ const labelOf = (plan: CardPlan): string => {
       return "Keep it";
     case "undo_answer":
       return "Undo";
+    case "record_bill":
+      return recordBillLabel;
+    case "mark_bill_paid":
+      return billPaidLabel(plan);
   }
 };
 
@@ -122,6 +179,12 @@ const lineOf = (plan: CardPlan): string => {
       return `Start ${quoted(plan.title)} now`;
     case "create_list":
       return `Create the list ${quoted(plan.name, 60)}`;
+    case "record_payment":
+      return paymentLine(plan);
+    case "apply_credit":
+      return applyLine(plan);
+    case "mark_repaid":
+      return repaidLine(plan);
     case "take_default": {
       const went = `Go with ${quoted(plan.label, 40)} on ${quoted(plan.question, 60)}`;
       return plan.final === null ? went : `${went}: ${lineOf(plan.final)}`;
@@ -132,6 +195,16 @@ const lineOf = (plan: CardPlan): string => {
       return recommendShown(plan).line;
     case "leaver":
       return leaverShown(plan).line;
+    case "quiet_keep":
+    case "quiet_stop":
+      return quietShown(plan).line;
+    case "waited_answer":
+    case "stall_answer":
+    case "move_due":
+    case "keep_due":
+    case "notice_renew":
+    case "invoice_choice":
+      return factCardShown(plan).line;
     case "undo_default":
       return undoLine(plan);
     case "keep_default":
@@ -140,6 +213,10 @@ const lineOf = (plan: CardPlan): string => {
       return UNDO_ANSWER_LINE;
     case "keep_answer":
       return plan.answer === null ? "Keep it" : `Keep ${quoted(plan.answer, 40)}`;
+    case "record_bill":
+      return recordBillLine(plan);
+    case "mark_bill_paid":
+      return billPaidLine(plan);
   }
 };
 
@@ -195,7 +272,10 @@ const recordRow = Effect.fn("KinCardActions.recordRow")(function* (
     title: string;
     state: string;
     rev: number;
-  }>`SELECT record_id AS "recordId", register_id AS "registerId", key, title, state, rev
+    category: string | null;
+    dateAt: number | null;
+  }>`SELECT record_id AS "recordId", register_id AS "registerId", key, title, state, rev,
+      category, date_at AS "dateAt"
     FROM kin_records WHERE org_id = ${orgId} AND ${
       "key" in where ? sql`key = ${where.key.toUpperCase()}` : sql`record_id = ${where.recordId}`
     }`;
@@ -255,10 +335,23 @@ const drawRun = Effect.fn("KinCardActions.drawRun")(function* (
           (teammates.length > 0 && !(yield* viewVisible(orgId, teammates, row.recordId)))
         )
           return yield* notFound(`entry ${input.target.slice(0, 40)}`);
-        if (row.registerId !== "work") return yield* refuse(`${row.key} is not a task.`);
+        const state = input.kind === "done" ? "done" : "dropped";
+        // A task, or an entry of one of the company's own lists, as record_update closes it.
+        if (row.registerId !== "work") {
+          const def = yield* listDef(orgId, row.registerId);
+          if (
+            def === undefined ||
+            def.builtIn !== null ||
+            listSectionRefused({ ...def, payments: def.payments === true ? 1 : null })
+          )
+            return yield* refuse(
+              `${row.key} is not a task or an entry of the company's own lists.`,
+            );
+          if (!def.states.includes(state))
+            return yield* refuse(`${def.name} has no ${state} state for ${row.key}.`);
+        }
         if (row.state === "done" || row.state === "dropped")
           return yield* refuse(`${row.key} is ${row.state} already.`);
-        const state = input.kind === "done" ? "done" : "dropped";
         if (!(yield* teamMay(orgId, drawn, row, state)))
           return yield* notAllowed(`The people you are acting for can't change ${row.key}.`);
         return {
@@ -267,6 +360,11 @@ const drawRun = Effect.fn("KinCardActions.drawRun")(function* (
           key: row.key,
           title: row.title,
           rev: row.rev,
+          ...(row.category === "meeting" &&
+          row.dateAt !== null &&
+          row.dateAt <= (yield* Clock.currentTimeMillis)
+            ? { heldMeeting: true as const }
+            : {}),
           draw: drawn,
         } as const;
       }
@@ -320,6 +418,26 @@ const drawRun = Effect.fn("KinCardActions.drawRun")(function* (
           draw: drawn,
         } as const;
       }
+      case "record_payment": {
+        yield* ownerTier("payment_record");
+        return yield* drawPayment(orgId, input.target, drawn);
+      }
+      case "apply_credit": {
+        yield* ownerTier("payment_record");
+        return yield* drawApply(orgId, input.target, drawn);
+      }
+      case "mark_repaid": {
+        yield* ownerTier("record_update");
+        return yield* drawRepaid(orgId, input.target, drawn);
+      }
+      case "record_bill": {
+        yield* ownerTier("record_update");
+        return yield* drawBill(orgId, input.target, drawn);
+      }
+      case "mark_bill_paid": {
+        yield* ownerTier("record_update");
+        return yield* drawBillPaid(orgId, input.target, drawn);
+      }
     }
   });
   return plan;
@@ -344,7 +462,12 @@ const drawDefault = Effect.fn("KinCardActions.drawDefault")(function* (
   if (source === undefined)
     return yield* refuse("That question's card is gone or answered, so there's no default.");
   const sealed = source.final;
-  if (sealed?.kind === "let_talk" || sealed?.kind === "recommend" || sealed?.kind === "leaver")
+  if (
+    sealed?.kind === "let_talk" ||
+    sealed?.kind === "recommend" ||
+    sealed?.kind === "leaver" ||
+    (sealed !== undefined && (isFactCard(sealed) || isQuiet(sealed)))
+  )
     return yield* refuse("That question has no default to take.");
   if (sealed?.kind === "take_default")
     return yield* refuse(
@@ -389,11 +512,20 @@ export const draw = Effect.fn("KinCardActions.draw")(function* (
 const actionOf = (plan: RunPlan): RunInput => ({
   kind: plan.kind,
   target:
-    plan.kind === "start" ? plan.itemId : plan.kind === "create_list" ? plan.proposalId : plan.key,
+    plan.kind === "start"
+      ? plan.itemId
+      : plan.kind === "create_list"
+        ? plan.proposalId
+        : plan.kind === "record_payment"
+          ? [plan.bankKey, ...(plan.splits?.map((part) => part.key) ?? [plan.key])].join(" ")
+          : plan.kind === "apply_credit"
+            ? `${plan.receipt} ${plan.key}`
+            : plan.key,
 });
-/** The same action on the same thing at the same revision, whoever drew it. */
+/** The same action on the same thing at the same revision, whoever drew it and whatever it's labelled. */
 const sameAction = (a: CardPlan, b: CardPlan) =>
-  JSON.stringify({ ...a, draw: null }) === JSON.stringify({ ...b, draw: null });
+  JSON.stringify({ ...a, draw: null, heldMeeting: undefined }) ===
+  JSON.stringify({ ...b, draw: null, heldMeeting: undefined });
 
 /**
  * A question's card while it still offers its person the default option, by its sealed id, and
@@ -456,8 +588,10 @@ export const redraw = Effect.fn("KinCardActions.redraw")(function* (
     sealed.kind === "let_talk" ||
     sealed.kind === "recommend" ||
     sealed.kind === "leaver" ||
+    isFactCard(sealed) ||
     isTaken(sealed) ||
-    isAnswered(sealed)
+    isAnswered(sealed) ||
+    isQuiet(sealed)
   )
     return undefined;
   const lead = {
@@ -546,13 +680,15 @@ export const run = Effect.fn("KinCardActions.run")(function* (
     readonly records: KinRecords["Service"];
     readonly chat: Pick<
       KinChatService["Service"],
-      "closeReplaced" | "reopenClosed" | "notice" | "setDocCardChangesFirst"
+      "closeReplaced" | "reopenClosed" | "notice" | "setDocCardChangesFirst" | "setDocCardChanged"
     >;
   },
 ) {
   if (plan.kind === "let_talk") return yield* runRoute(tap, plan);
   if (plan.kind === "recommend") return yield* runRecommend(tap, plan);
   if (plan.kind === "leaver") return yield* runLeaver(tap, plan, deps.chat);
+  if (isFactCard(plan)) return yield* runFactCard(tap, plan, deps.records);
+  if (isQuiet(plan)) return yield* runQuiet(tap, plan);
   if (isAnswered(plan)) return yield* runAnswered(tap, plan, deps.chat);
   if (isTaken(plan))
     return yield* runTaken(
@@ -719,6 +855,15 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
   const { orgId, personId } = tap;
   const draws = [plan.draw, ...also];
   const owner = yield* ownerLevel(orgId, personId);
+  const refuseOff = Effect.fnUntraced(function* (list: string) {
+    const section = sectionOfList(list);
+    if (section === null) return;
+    const shell = yield* KinShell.get(orgId);
+    if (!KinShell.sectionOn(shell, section))
+      return yield* refuse(
+        `${KinShell.sectionName(shell, section)} is turned off for this company, so nothing changed. Turn it on in Settings › Sections and confirm again.`,
+      );
+  });
   switch (plan.kind) {
     case "done":
     case "drop": {
@@ -726,6 +871,7 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
       const row = yield* recordRow(orgId, { recordId: plan.recordId });
       if (row === undefined) return nothingDone(`${plan.key} is gone`);
       if (!owner) yield* teamGuard(orgId, personId, { row, changes: true, input: { state } });
+      yield* refuseOff(row.registerId);
       if (row.rev !== plan.rev) return nothingDone(`${plan.key} changed since this was offered`);
       const why = yield* drawsHold(orgId, draws);
       if (why !== undefined) return nothingDone(why);
@@ -799,6 +945,8 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
     }
     case "create_list": {
       if (!owner) return yield* notAllowed("Only an owner can create a list.");
+      const made = proposedList(plan.definition);
+      if (made !== undefined) yield* refuseOff(made);
       const why =
         (yield* drawsHold(orgId, draws)) ??
         (yield* defineProposed({
@@ -807,12 +955,92 @@ const runOne = Effect.fn("KinCardActions.runOne")(function* (
           proposalId: plan.proposalId,
           definition: plan.definition,
           now: tap.now,
+          by: personId,
         }));
       if (why !== undefined) return nothingDone(why);
-      const made = proposedList(plan.definition);
       if (made === undefined) return { title: "List created", text: "Created." };
       const { words, ...open } = yield* listPlace(orgId, made);
       return { title: "List created", text: `Created. It's in ${words}.`, open };
+    }
+    case "record_payment": {
+      if (!owner) return yield* notAllowed(PAYMENT_TAP_REFUSAL);
+      yield* refuseOff("invoices");
+      yield* refuseOff("bank_transactions");
+      const why = yield* drawsHold(orgId, draws);
+      if (why !== undefined) return nothingDone(why);
+      const done = yield* recordPayment(
+        orgId,
+        plan,
+        {
+          actor: { _tag: "person", personId },
+          via: "owner",
+          askedBy: personId,
+          chatId: tap.widget.chatId,
+          answering: [tap.widget.widgetId, ...alsoAnswering],
+        },
+        tap.widget.widgetId,
+        records,
+      ).pipe(Effect.provideService(KinRecords, records));
+      return done ?? paymentChanged(plan.bankKey, plan.key);
+    }
+    case "apply_credit": {
+      if (!owner)
+        return yield* notAllowed("Only the owner or a co-owner can apply a client's credit.");
+      yield* refuseOff("invoices");
+      const why = yield* drawsHold(orgId, draws);
+      if (why !== undefined) return nothingDone(why);
+      const done = yield* applyCredit(orgId, plan, {
+        actor: { _tag: "person", personId },
+        via: "owner",
+        askedBy: personId,
+        chatId: tap.widget.chatId,
+        answering: [tap.widget.widgetId, ...alsoAnswering],
+      }).pipe(Effect.provideService(KinRecords, records));
+      return done ?? nothingDone(`${plan.receipt} or ${plan.key} changed since this was offered`);
+    }
+    case "mark_repaid": {
+      if (!owner)
+        return yield* notAllowed(
+          "Only the owner or a co-owner marks what a partner is owed as repaid.",
+        );
+      yield* refuseOff("expenses");
+      yield* refuseOff("bank_transactions");
+      const why = yield* drawsHold(orgId, draws);
+      if (why !== undefined) return nothingDone(why);
+      const done = yield* markRepaid(
+        orgId,
+        plan,
+        {
+          actor: { _tag: "person", personId },
+          via: "owner",
+          askedBy: personId,
+          chatId: tap.widget.chatId,
+          answering: [tap.widget.widgetId, ...alsoAnswering],
+        },
+        records,
+      );
+      return (
+        done ?? nothingDone(`${plan.key} or an expense it repays changed since this was offered`)
+      );
+    }
+    case "record_bill":
+    case "mark_bill_paid": {
+      if (!owner)
+        return yield* notAllowed("Only the owner or a co-owner can record a bill or mark it paid.");
+      yield* refuseOff("expenses");
+      if (plan.kind === "mark_bill_paid") yield* refuseOff("bank_transactions");
+      const why = yield* drawsHold(orgId, draws);
+      if (why !== undefined) return nothingDone(why);
+      const writer = {
+        actor: { _tag: "person" as const, personId },
+        via: "owner" as const,
+        askedBy: personId,
+        chatId: tap.widget.chatId,
+        answering: [tap.widget.widgetId, ...alsoAnswering],
+      };
+      if (plan.kind === "record_bill") return yield* recordBill(orgId, plan, writer, records);
+      const done = yield* markBillPaid(orgId, plan, writer, records);
+      return done ?? nothingDone(`${plan.key} or ${plan.bill.key} changed since this was offered`);
     }
   }
 });

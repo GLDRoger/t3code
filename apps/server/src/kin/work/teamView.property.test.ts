@@ -45,6 +45,7 @@ import * as OwnerDocs from "./ownerDocs.ts";
 import * as OwnerMoney from "./ownerMoney.ts";
 import * as OwnerClients from "./ownerClients.ts";
 import * as OwnerWork from "./ownerWork.ts";
+import { PRESETS } from "./registers.ts";
 import * as WorkStream from "./workStream.ts";
 import { search } from "./search.ts";
 import { indexWhere, searchIndexed } from "./searchIndex.ts";
@@ -1515,6 +1516,70 @@ layer(testLayer)("Work's live stream", (it) => {
   );
   it.effect("a teammate whose task in a project leaves them reads its other tasks afresh", () =>
     streamCase(PINNED_MOVE),
+  );
+
+  it.effect("a shared receipt follows its payment's invoice and client visibility", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(at + 3_600_000);
+        const entry = {
+          ...rowsOf(emptyWorld)[0]!,
+          owner: "owner",
+          sensitive: false,
+          shared: true,
+          title: "Invented payment",
+          party: "c2",
+        } as const;
+        yield* once;
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT OR IGNORE INTO kin_registers (org_id, register_id, name, key_prefix, built_in,
+          created_at, definition_json) VALUES (${orgId}, 'receipts', 'Receipts', 'RCT', 0,
+          ${at}, ${JSON.stringify({ ...PRESETS.receipts, currency: "INR" })})`;
+        yield* install(
+          { ...emptyWorld, clients: [{ sensitive: true, shared: false }, emptyWorld.clients[1]!] },
+          [
+            { ...entry, id: "inv1", list: "invoices" },
+            { ...entry, id: "rct1", list: "receipts", fields: { payment: "invented-payment" } },
+          ],
+        );
+        yield* sql`UPDATE kin_registers SET definition_json = ${JSON.stringify({ ...PRESETS.invoices, currency: "INR" })}
+          WHERE org_id = ${orgId} AND register_id = 'invoices'`;
+        yield* sql`UPDATE kin_people SET sees_money = 1 WHERE org_id = ${orgId} AND person_id = 'ana'`;
+        yield* sql`INSERT INTO kin_record_payments (org_id, payment_id, record_id, amount_minor,
+          currency, paid_on, origin_key, created_at, created_by_kind) VALUES
+          (${orgId}, 'invented-payment', 'inv1', 100, 'INR', '2026-11-11', 'test-payment', ${at}, 'person')`;
+        const records = yield* KinRecords.KinRecords;
+        const ana = peopleOf("ana");
+        const receipt = KinRecordKey.make("RCT-1");
+        const session = yield* WorkStream.makeWorkStream(ana, { orgId, acceptRows: true });
+        const pull = yield* Stream.toPull(records.changes(orgId));
+        yield* session.start((yield* pull)[0]!.seq);
+        assert.isTrue((yield* seen("ana")).has("rct1"));
+        for (const { key, patch, visible } of [
+          { key: "INV-1", patch: { partyId: "c1" }, visible: false },
+          { key: "C-1", patch: { sensitive: false }, visible: true },
+          { key: "C-1", patch: { sensitive: true }, visible: false },
+          { key: "INV-1", patch: { partyId: "c2" }, visible: true },
+        ]) {
+          yield* records.update(
+            orgId,
+            { actor: { _tag: "person", personId: KinPersonId.make(ownerId) }, via: "owner" },
+            key,
+            patch,
+          );
+          assert.strictEqual((yield* seen("ana")).has("rct1"), visible);
+          const events = yield* session.batch((yield* pull).flatMap(session.pendingOf));
+          assert.isTrue(
+            events.some((event) =>
+              visible
+                ? event._tag === "upsert" && event.record.key === receipt
+                : event._tag === "removed" && event.key === receipt,
+            ),
+            `receipt row after changing ${key} to ${JSON.stringify(patch)}`,
+          );
+        }
+      }),
+    ),
   );
 
   it.effect("a late tick can't let a resume skip its change, or use up a removal", () =>

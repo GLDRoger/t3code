@@ -74,6 +74,7 @@ import { useKinDeals, useKinDealsStart } from "./state/useKinDeals";
 import { useKinRates } from "./state/useKinMoney";
 import type { KinWorkDirectory, KinWorkTarget } from "./state/useKinWork";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
+import { useKinSectionNamed } from "./state/useKinShell";
 
 const TONE: Record<KinDealNextView["tone"], string> = {
   plain: "text-foreground-muted",
@@ -235,6 +236,8 @@ export function KinDealsView(
     readonly ask: AppBarAction | null;
   },
 ) {
+  const named = useKinSectionNamed(props.environmentId);
+  const clientsTitle = named(KIN_CLIENTS.title);
   const navigation = useNavigation();
   const tab = useKinTab();
   const { environmentId, orgId } = props;
@@ -348,7 +351,7 @@ export function KinDealsView(
     <View collapsable={false} className="flex-1 bg-screen">
       <AppBar
         // The place's own name, as on its Clients and Projects tabs.
-        title={KIN_CLIENTS.title}
+        title={clientsTitle}
         refresh={{ accessibilityLabel: "Refresh", onPress: refresh }}
         actions={[
           ...(props.ask === null ? [] : [props.ask]),
@@ -476,7 +479,7 @@ export function KinDealsView(
                 <EmptyState
                   variant="card"
                   title={nothing.title}
-                  detail={nothing.detail}
+                  detail={named(nothing.detail)}
                   {...(add === null || filter.state !== "open"
                     ? {}
                     : {

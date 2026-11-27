@@ -37,6 +37,7 @@ import { KinAvatar } from "./components/KinAvatar";
 import { kinClient } from "./state/kinClient";
 import { useKinHostAt } from "./state/useKinHost";
 import { useKinProfiles } from "./state/useKinProfiles";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 export type KinPeoplePickParams = {
   readonly environmentId: string;
@@ -54,7 +55,7 @@ export function useOpenKinPeopleChat() {
     readonly orgId: KinOrgId;
     readonly personId: KinPersonId;
   }) => {
-    const result = await kinClient.chatWithPerson.run(appAtomRegistry, {
+    const result = await runKinCommand(appAtomRegistry, kinClient.chatWithPerson, {
       environmentId: target.environmentId,
       input: { orgId: target.orgId, personId: target.personId },
     });
@@ -77,7 +78,7 @@ function useOpenKinAgentChat() {
     readonly orgId: KinOrgId;
     readonly agentId: KinAgentId;
   }) => {
-    const result = await kinClient.chatWithAgent.run(appAtomRegistry, {
+    const result = await runKinCommand(appAtomRegistry, kinClient.chatWithAgent, {
       environmentId: target.environmentId,
       input: { orgId: target.orgId, agentId: target.agentId },
     });

@@ -22,19 +22,27 @@ import {
   type KinPersonId,
   calendarTimeMillis,
   KinChatError,
+  KinGstin,
 } from "@t3tools/contracts";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
 import { isSqlError, type SqlError } from "effect/sql/SqlError";
 
+import { ServerConfig } from "../../config.ts";
+import { KinWorkspace } from "../gendocs/workspace.ts";
 import type { PersonIdentity } from "../chat/KinIdentity.ts";
+import { priceDraft, pricedByDocuments } from "../gendocs/amounts.ts";
+import { readProfile } from "./companyProfile.ts";
 import * as Crm from "./crm.ts";
-import { sectionOn } from "../shell/KinShell.ts";
+import { sectionOnFor as sectionOn } from "../shell/KinShell.ts";
 import { DEALS_OFF } from "../shell/sections.ts";
 import { createdOut, createIn as createDealIn, dealSeesField } from "./deals.ts";
 import { KinRecords, requestHashOf, type Patch, type Writer } from "./KinRecords.ts";
-import { fieldList, parseFields, type FieldValue, type ListName } from "./lists.ts";
+import { accountsForTax, fieldList, parseFields, type FieldValue, type ListName } from "./lists.ts";
 import {
   asViewer,
   dueMillis,
@@ -49,7 +57,7 @@ import {
   writerOf,
 } from "./ownerWork.ts";
 import { principalOfText, principalText } from "./projectSpine.ts";
-import { projectNoteOf } from "./recordComments.ts";
+import { keyNamedFor, projectNoteOf } from "./recordComments.ts";
 import {
   iso,
   notFound,
@@ -239,7 +247,8 @@ export const party = Effect.fn("KinWork.party")(function* (
   const row = yield* opened(input, "clients");
   yield* unseen(viewer, row, input);
   const { now, seq } = yield* asOf(input.orgId, viewer);
-  const page = yield* read(Crm.partyPage(row, now, seq, viewer));
+  const readers = people.filter((one) => one.orgId === input.orgId).map((one) => one.personId);
+  const page = yield* read(Crm.partyPage(row, now, seq, viewer, readers));
   if (viewer._tag === "ownerLevel")
     return { ...page, can: { edit: true, log: true, owner: true } } satisfies KinPartyPage;
   const [team] = viewer.people;
@@ -358,7 +367,7 @@ export const project = Effect.fn("KinWork.project")(function* (
       : undefined;
   return {
     ...page,
-    ...(note === undefined ? {} : { note }),
+    ...(note === undefined ? {} : { note: keyNamedFor(person, note) }),
     ...(results === undefined ? {} : { results }),
     can: { people: !person.teammate || leads, note: !person.teammate },
   };
@@ -485,9 +494,79 @@ const fieldsOf = (value: Readonly<Record<string, FieldValue | null | undefined>>
 const partyFields = (input: KinPartyCreateInput | KinPartyUpdateInput) => ({
   terms: input.terms,
   address: input.address,
-  gstin: input.gstin,
+  gstin: input.taxNumber === undefined ? input.gstin : input.taxNumber,
+  accountsForTax: input.accountsForTax === undefined ? undefined : String(input.accountsForTax),
   placeOfSupply: input.placeOfSupply,
 });
+const isGstin = Schema.is(KinGstin);
+const invalidTax = (message: string) => new KinChatError({ reason: "invalid_state", message });
+
+const checkPartyTax = Effect.fn("KinWork.crm.checkPartyTax")(function* (
+  input: KinPartyCreateInput | KinPartyUpdateInput,
+  before = parseFields("{}"),
+) {
+  if (input.gstin !== undefined && input.taxNumber !== undefined)
+    return yield* invalidTax("Give gstin or taxNumber, not both. Nothing changed.");
+  if (
+    typeof input.taxNumber === "string" &&
+    !isGstin(input.taxNumber) &&
+    (yield* readProfile(input.orgId)).country === "IN"
+  )
+    return yield* invalidTax(
+      "taxNumber is not a GSTIN: give the 15 characters alone, like 29ABCDE1234F1Z5. Nothing changed.",
+    );
+  const number = partyFields(input).gstin;
+  if (
+    (input.accountsForTax ?? accountsForTax(before)) &&
+    !(number === undefined ? before.gstin : number)
+  )
+    return yield* invalidTax(
+      number === null && accountsForTax(before)
+        ? "Invoices to this client leave the tax to the client and print this number. Turn off Accounts for the tax themselves first. Nothing changed."
+        : "Add the client's tax number first: invoices that leave the tax to the client print it. Nothing changed.",
+    );
+});
+
+const draftRepricingFor = Effect.fn("KinWork.crm.draftRepricingFor")(function* (
+  orgId: KinOrgId,
+  partyId: string,
+) {
+  const sql = yield* SqlClient.SqlClient;
+  const records = yield* KinRecords;
+  const rows = yield* sql<{ key: string }>`
+    SELECT r.key FROM kin_records r
+    WHERE r.org_id = ${orgId} AND r.party_id = ${partyId}
+      AND r.register_id IN ('invoices', 'quotes') AND r.state <> 'dropped'
+      AND EXISTS (SELECT 1 FROM kin_doc_jobs j WHERE j.org_id = r.org_id
+        AND j.entry_record_id = r.record_id AND j.given_json IS NOT NULL
+        AND j.recipe IS NOT NULL AND j.outcome_json IS NOT NULL)
+      AND NOT EXISTS (SELECT 1 FROM kin_issued_numbers n
+        WHERE n.org_id = r.org_id AND n.record_id = r.record_id)
+    ORDER BY r.key`;
+  if (rows.length === 0) return undefined;
+  const workspace = yield* Effect.serviceOption(KinWorkspace);
+  const files = yield* Effect.serviceOption(FileSystem.FileSystem);
+  const config = yield* Effect.serviceOption(ServerConfig);
+  if (Option.isNone(workspace) || Option.isNone(files) || Option.isNone(config))
+    return yield* unavailable;
+  const withDocuments = <A, E, R>(run: Effect.Effect<A, E, R>) =>
+    run.pipe(
+      Effect.provideService(KinWorkspace, workspace.value),
+      Effect.provideService(FileSystem.FileSystem, files.value),
+      Effect.provideService(ServerConfig, config.value),
+    );
+  const priced: string[] = [];
+  for (const { key } of rows) {
+    const row = yield* records.get(orgId, key);
+    if (row !== undefined && (yield* withDocuments(pricedByDocuments(orgId, row))))
+      priced.push(key);
+  }
+  return (writer: Writer) =>
+    Effect.forEach(priced, (key) => withDocuments(priceDraft(orgId, writer, key, true)), {
+      discard: true,
+    });
+});
+
 const detailsOf = (input: KinContactCreateInput | KinContactUpdateInput) => ({
   role: input.role,
   email: input.email,
@@ -717,19 +796,29 @@ export const createParty = Effect.fn("KinWork.createParty")(function* (
     viewer.teammate,
   );
   const made = !viewer.teammate
-    ? create
+    ? Effect.andThen(checkPartyTax(input), create)
     : Effect.gen(function* () {
         yield* memberAdds(input.orgId, person.personId, {
           prospect: input.prospect === true && input.kind !== "vendor",
           owner: input.owner,
-          ownersFields: defines(input, ["terms", "address", "gstin", "placeOfSupply", "sensitive"]),
+          ownersFields: defines(input, [
+            "terms",
+            "address",
+            "gstin",
+            "taxNumber",
+            "accountsForTax",
+            "placeOfSupply",
+            "sensitive",
+          ]),
         });
         return yield* stillSeen(person, yield* create, input.name);
       });
   const { contact } = input;
   const row =
     contact === undefined
-      ? yield* asViewer(viewer, made)
+      ? viewer.teammate
+        ? yield* asViewer(viewer, made.pipe(workFailure))
+        : yield* (yield* SqlClient.SqlClient).withTransaction(made).pipe(workFailure)
       : yield* (yield* SqlClient.SqlClient)
           .withTransaction(
             Effect.gen(function* () {
@@ -786,7 +875,13 @@ export const updateParty = Effect.fn("KinWork.updateParty")(function* (
   const fields = { ...defined(partyFields(input)), ...defined(tagged(input)) };
   const write = Effect.gen(function* () {
     const before = yield* inList(input.orgId, input.key, "clients");
-    return yield* saved(
+    const beforeFields = parseFields(before.fieldsJson);
+    if (!viewer.teammate) yield* checkPartyTax(input, beforeFields);
+    const reprice =
+      input.accountsForTax !== undefined && input.accountsForTax !== accountsForTax(beforeFields)
+        ? yield* draftRepricingFor(input.orgId, before.recordId)
+        : undefined;
+    const row = yield* saved(
       person,
       input.orgId,
       input.key,
@@ -805,8 +900,13 @@ export const updateParty = Effect.fn("KinWork.updateParty")(function* (
       input.rev,
       viewer.teammate,
     );
+    if (reprice !== undefined) yield* reprice(ownerWriter(person));
+    return row;
   });
-  if (!viewer.teammate) return yield* partyOut(yield* write);
+  if (!viewer.teammate) {
+    const sql = yield* SqlClient.SqlClient;
+    return yield* partyOut(yield* sql.withTransaction(write).pipe(workFailure));
+  }
   const row = yield* asViewer(
     viewer,
     Effect.gen(function* () {
@@ -816,6 +916,8 @@ export const updateParty = Effect.fn("KinWork.updateParty")(function* (
           "terms",
           "address",
           "gstin",
+          "taxNumber",
+          "accountsForTax",
           "placeOfSupply",
           "sensitive",
           "active",
@@ -825,7 +927,7 @@ export const updateParty = Effect.fn("KinWork.updateParty")(function* (
       )
         return yield* MEMBER_FIELDS;
       return yield* write;
-    }),
+    }).pipe(workFailure),
   );
   return yield* memberOut(row, person);
 });
@@ -951,6 +1053,10 @@ const spineFields = (input: KinProjectCreateInput | KinProjectUpdateInput) => ({
   value: input.value,
   startsOn: input.startsOn,
   renewsOn: input.renewsOn,
+  noticeDays:
+    input.noticeDays === undefined || input.noticeDays === null
+      ? input.noticeDays
+      : String(input.noticeDays),
   members: input.members?.map(principalText),
   audience: input.audience,
 });

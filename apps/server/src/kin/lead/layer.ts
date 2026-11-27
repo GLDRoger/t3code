@@ -1,5 +1,6 @@
 import * as SocialMcp from "../social/mcp.ts";
 import * as SalesMcp from "../sales/mcp.ts";
+import * as ConnectionsMcp from "../connections/mcp.ts";
 import * as Scheduler from "../../scheduling/Scheduler.ts";
 import * as Routines from "../triggers/routines.ts";
 import * as DeferralFlow from "../triggers/deferralFlow.ts";
@@ -7,6 +8,8 @@ import * as ScheduledTasks from "../triggers/scheduledTasks.ts";
 import * as KinSchedules from "../triggers/kinSchedules.ts";
 import * as Watchdogs from "../triggers/watchdogs.ts";
 import * as HostBackupCheck from "../host/backupCheck.ts";
+import * as RunningSpend from "../host/runningSpend.ts";
+import * as OfflineCatchUp from "../host/offlineCatchUp.ts";
 import * as GithubReaders from "../triggers/githubReaders.ts";
 import * as OwnerCheck from "../triggers/ownerCheck.ts";
 import * as TriggerScheduler from "../triggers/KinTriggerScheduler.ts";
@@ -17,8 +20,10 @@ import * as OwnerTimeZone from "../triggers/ownerTimeZone.ts";
 import { forkParked } from "../../serverActivation.ts";
 import * as OwnerNotices from "./OwnerNotices.ts";
 import * as Option from "effect/Option";
+import { KinChatService } from "../chat/KinChatService.ts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -50,13 +55,16 @@ import { handlers as documentHandlers, KinDocumentToolkit } from "../gendocs/mcp
 import { handlers as pictureHandlers, KinPictureToolkit } from "../pictures/mcp.ts";
 import * as PictureRenderer from "../pictures/renderer.ts";
 import * as Render from "../gendocs/render.ts";
-import * as Toolchain from "../gendocs/toolchain.ts";
 import * as Workspace from "../gendocs/workspace.ts";
 import { handlers as docHandlers } from "../work/mcp/docHandlers.ts";
 import { handlers as statementHandlers } from "../work/mcp/statementHandlers.ts";
+import * as Bills from "../work/bills.ts";
+import { handlers as billHandlers } from "../work/mcp/billHandlers.ts";
+import { KinBillToolkit } from "../work/mcp/billTools.ts";
 import { KinStatementToolkit } from "../work/mcp/statementTools.ts";
 import * as ArrivalFeed from "../arrivals/ArrivalFeed.ts";
 import * as KinPulse from "../pulse/KinPulse.ts";
+import * as FollowUps from "../watches/followUps.ts";
 import * as KinWatchRounds from "../watches/KinWatchRounds.ts";
 import * as KinRecommend from "../recommend/KinRecommend.ts";
 import { handlers as pulseHandlers, KinPulseToolkit } from "../pulse/mcp.ts";
@@ -112,6 +120,7 @@ const routineRuntime = Layer.mergeAll(
   GitHubWatch.liveLayer,
   Watchdogs.layer,
   HostBackupCheck.layer,
+  RunningSpend.layer,
   KinPulse.layer,
   ArrivalFeed.liveLayer,
   KinWatchRounds.layer,
@@ -121,7 +130,16 @@ const routineRuntime = Layer.mergeAll(
   Layer.provideMerge(TriggerScheduler.layer),
   Layer.provideMerge(Layer.mergeAll(TriggerStore.layer, TriggerInbox.layer)),
   // Kin builds in its contained startup scope; orchestration runtime does not expose its scheduler.
-  Layer.provideMerge(Scheduler.layer),
+  Layer.provideMerge(
+    Layer.effect(
+      Scheduler.Scheduler,
+      Effect.gen(function* () {
+        const scheduler = yield* Scheduler.Scheduler;
+        const initialPass = yield* OfflineCatchUp.InitialPass;
+        return initialPass?.observe(scheduler) ?? scheduler;
+      }),
+    ).pipe(Layer.provide(Scheduler.layer)),
+  ),
 );
 const dreamRuntime = DreamRunner.layer.pipe(
   Layer.provide(DreamSession.layer),
@@ -222,6 +240,17 @@ const memorySync = Effect.fn("KinMemory.syncDue")(function* (
   });
 });
 
+/** At start, then every five minutes: bills a stopped host left mid-read are queued again. */
+const billsSweep = () => {
+  let due = 0;
+  return Effect.gen(function* () {
+    const now = yield* Clock.currentTimeMillis;
+    if (now < due) return;
+    due = now + 5 * 60_000;
+    yield* Bills.sweep();
+  });
+};
+
 const runner = Layer.effectDiscard(
   Effect.gen(function* () {
     const runner = yield* WakeupRunner.WakeupRunner;
@@ -241,6 +270,18 @@ const runner = Layer.effectDiscard(
         Stream.runForEach((event) => stripQuotes(writer.value, event.orgId)),
         Effect.forkScoped,
       );
+    // A deferral card's decision tap reads its committed item through this runtime's memory.
+    const chat = yield* Effect.serviceOption(KinChatService);
+    if (Option.isSome(chat))
+      yield* chat.value.attachDeferralItems((orgId, itemId) =>
+        memory.readItemQuietly(orgId, itemId, "triggers").pipe(
+          Effect.asSome,
+          Effect.catchTags({
+            MemoryNotFound: () => Effect.succeedNone,
+            MemoryDuplicateId: () => Effect.succeedNone,
+          }),
+        ),
+      );
     if (Option.isSome(writer) && Option.isSome(memoryChanges))
       yield* memoryChanges.value.attachWriter({
         undo: writer.value.undoChange,
@@ -251,8 +292,13 @@ const runner = Layer.effectDiscard(
         items: (orgId) => memory.items(orgId),
         snapshot: (orgId) => memory.snapshotItems(orgId),
       });
+    const initialPass = yield* OfflineCatchUp.InitialPass;
     yield* Effect.gen(function* () {
-      const context = yield* Layer.build(routineRuntime);
+      const context = yield* Layer.build(routineRuntime).pipe(
+        Effect.onExit(
+          (exit) => initialPass?.sourcesRegistered(Exit.isSuccess(exit)) ?? Effect.void,
+        ),
+      );
       yield* Context.get(context, Scheduler.Scheduler).register(
         "kin-memory-sync",
         yield* memorySync(memory, writer),
@@ -267,6 +313,7 @@ const runner = Layer.effectDiscard(
           "kin-team-sweep",
           team.value.sweep(),
         );
+      yield* Context.get(context, Scheduler.Scheduler).register("kin-bills", billsSweep());
       yield* Layer.build(dreamRuntime.pipe(Layer.provide(Layer.succeedContext(context)))).pipe(
         Effect.catchCause((cause) => Effect.logError("Kin dreams unavailable", { cause })),
       );
@@ -278,20 +325,24 @@ const runner = Layer.effectDiscard(
     }).pipe(forkParked);
   }),
 ).pipe(
-  Layer.provide(WakeupRunner.layer.pipe(Layer.provide(ReplyBridge.layer))),
+  Layer.provide(WakeupRunner.layer),
   Layer.provide(Layer.mergeAll(OwnerCheck.layer, RoutineContent.layer)),
 );
+
+const ownerNotices = OwnerNotices.layer.pipe(Layer.provide(KinChatRepository.layer));
+const memoryLayer = Memory.layer.pipe(Layer.provide(ownerNotices));
 
 const withServices = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
   entry.pipe(
     Layer.provide(
       Layer.mergeAll(KinLeadRegistry.layer, KinLeadPrompt.layer, KinTurnContent.layer).pipe(
-        Layer.provideMerge(Layer.mergeAll(Memory.layer, KinChatRepository.layer)),
+        Layer.provideMerge(KinChatRepository.layer),
       ),
     ),
-    Layer.provide(OwnerNotices.layer.pipe(Layer.provide(KinChatRepository.layer))),
+    Layer.provide(ownerNotices),
     Layer.provide(
-      TriggerService.syncHooksLayer.pipe(
+      FollowUps.rememberSnapshots.pipe(
+        Layer.provide(TriggerService.syncHooksLayer),
         Layer.provide(TriggerService.layer),
         Layer.provide(KinChatRepository.layer),
       ),
@@ -313,13 +364,20 @@ const memoryPullRequests = Layer.unwrap(
 const registration = Layer.mergeAll(
   SocialMcp.registration,
   SalesMcp.registration,
-  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinLeadToolkit), handlers),
-  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinWorkToolkit), workHandlers),
-  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocsToolkit), docHandlers),
-  McpHttpServer.toolkitRegistration(KinStatementToolkit, statementHandlers),
-  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocumentToolkit), documentHandlers),
-  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinPictureToolkit), pictureHandlers),
-  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinPulseToolkit), pulseHandlers),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinLeadToolkit), handlers, { kin: true }),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinWorkToolkit), workHandlers, { kin: true }),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocsToolkit), docHandlers, { kin: true }),
+  McpHttpServer.toolkitRegistration(KinStatementToolkit, statementHandlers, { kin: true }),
+  McpHttpServer.toolkitRegistration(KinBillToolkit, billHandlers, { kin: true }),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinDocumentToolkit), documentHandlers, {
+    kin: true,
+  }),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinPictureToolkit), pictureHandlers, {
+    kin: true,
+  }),
+  McpHttpServer.toolkitRegistration(withAlwaysLoaded(KinPulseToolkit), pulseHandlers, {
+    kin: true,
+  }),
 );
 const toolkit = LeadMemory.layer.pipe(
   Layer.provide(KinSchedules.layer),
@@ -341,10 +399,12 @@ const toolkit = LeadMemory.layer.pipe(
   ),
 );
 
-export const layer = withServices(Layer.merge(runner, ChatWake.layer));
+export const layer = withServices(
+  Layer.merge(runner, ChatWake.layer).pipe(Layer.provide(ReplyBridge.layer)),
+).pipe(Layer.provide(memoryLayer));
 // Documents render on this server; agents' own files and recipe drafts come through it too.
 const documents = Layer.merge(Render.layer, PictureRenderer.layer).pipe(
-  Layer.provideMerge(Layer.mergeAll(Workspace.layer, Toolchain.layer)),
+  Layer.provideMerge(Workspace.layer),
 );
 // Once per item, at every start: what leads tracked before Work existed becomes entries.
 const workImport = Layer.effectDiscard(
@@ -455,29 +515,40 @@ const production = withServices(
     draftAmounts,
     earlierProjects,
   ).pipe(
+    Layer.provide(ReplyBridge.layer),
     Layer.provideMerge(documents),
     Layer.provideMerge(Team.layer),
     Layer.provideMerge(Handoff.layer),
     Layer.provideMerge(toolkit),
+    Layer.provide(OfflineCatchUp.layer),
   ),
 );
 
-const configured = <A, E, R>(entry: Layer.Layer<A, E, R>) =>
-  Layer.merge(
-    containStartup(
-      Layer.unwrap(
-        Effect.gen(function* () {
-          const repositories = yield* MemoryConfig.configuredRepositories;
-          if (repositories.length > 0)
-            return entry.pipe(Layer.provide(MemoryConfig.layer(repositories)));
-          const dev = yield* devMemoryRepository();
-          if (dev === undefined) return Layer.empty;
-          return entry.pipe(Layer.provide(MemoryConfig.layer(dev, { directMainPush: true })));
-        }),
+const configured = <R, R2>(
+  entry: Layer.Layer<never, never, R>,
+  withoutMemory: Layer.Layer<never, never, R2>,
+) => {
+  const withMemory = (config: ReturnType<typeof MemoryConfig.layer>) =>
+    entry.pipe(Layer.provide(memoryLayer), Layer.provide(config));
+  type WithMemory = ReturnType<typeof withMemory>;
+  type Runtime = Layer.Layer<never, Layer.Error<WithMemory>, Layer.Services<WithMemory> | R2>;
+  const selected = Effect.gen(function* () {
+    const repositories = yield* MemoryConfig.configuredRepositories;
+    if (repositories.length > 0) return withMemory(MemoryConfig.layer(repositories));
+    const dev = yield* devMemoryRepository();
+    return dev === undefined
+      ? withoutMemory
+      : withMemory(MemoryConfig.layer(dev, { directMainPush: true }));
+  }).pipe(Effect.map((layer): Runtime => layer));
+  return Layer.merge(
+    Layer.unwrap(selected).pipe(
+      Layer.catchCause((cause) =>
+        Layer.merge(containStartup(Layer.effectDiscard(Effect.failCause(cause))), withoutMemory),
       ),
     ),
     unconfigured,
   );
+};
 
 // An installed host with no memory repository runs no agent; each chat with one hears why.
 const unconfigured = containStartup(
@@ -494,4 +565,9 @@ const unconfigured = containStartup(
 );
 
 /** Kin's agent runtime as the server builds it, inside the Kin MCP endpoint (`kin/mcp/layer.ts`). */
-export const layerRuntime = configured(production);
+export const layerRuntime = configured(containStartup(production), Layer.empty);
+
+export const layerRuntimeWithConnections = configured(
+  Layer.merge(containStartup(production), ConnectionsMcp.registrationWithMemory),
+  ConnectionsMcp.registration,
+);

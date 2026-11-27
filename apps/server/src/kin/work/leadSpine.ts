@@ -30,10 +30,10 @@ import { ownerZone, type RecordRow, selectRecords, toRecord } from "./recordRows
  */
 
 const Who = KinToolText(120);
-const Size = Schema.Literals(["S", "M", "L"]).annotate({ description: "S, M or L." });
+const Size = Schema.Literals(["S", "M", "L"]);
 const Reason = KinToolText(
   200,
-  'One line on why its owner was picked, such as "Kabir: tech, 3 open, free Thursday". Shown beside the task.',
+  'One line on why its owner, read by them beside the task: "Knows the billing code; free from Thursday", never their name and a colon or about them in the third person.',
 );
 const From = Schema.NullOr(
   Schema.Struct({
@@ -42,46 +42,47 @@ const From = Schema.NullOr(
   }),
 ).annotate({
   description:
-    "The doc and section id (from doc_read's outline) it was written from. Kin flags the task when that section changes; giving it again re-anchors it. null clears.",
+    "The doc and section id (doc_read's outline) it came from; Kin flags the task when that section changes, and giving it again re-anchors it. null clears.",
 });
+/** A new row's `from`: a plan's doc section, or where a promise was made. */
+export const CreateFrom = Schema.Union([
+  From,
+  KinToolText(
+    280,
+    'Where a promise was made: chat:<message id> for a message this turn, else a few words ("At the site visit").',
+  ),
+]);
 
 /** What a Work or project row may also carry; rows of other lists refuse them. */
 export const SpineInputs = {
   milestone: Schema.optional(Schema.NullOr(KinToolText(200))).annotate({
     description:
-      "A task's milestone: its key (M-2) or exact name in the task's project. Sets the project too when it has none. null clears.",
+      "Its key (M-2) or exact name in the task's project; sets the project too. null clears.",
   }),
   size: Schema.optional(Schema.NullOr(Size)),
   reason: Schema.optional(Schema.NullOr(Reason)),
   from: Schema.optional(From),
   at: Schema.optional(Schema.NullOr(Schema.String.check(Schema.isMaxLength(40)))).annotate({
-    description: "A meeting's start: a time with its offset (2026-11-20T15:00+05:30).",
+    description: "A meeting's start, a time with offset; on any other task, its due.",
   }),
-  attendees: Schema.optional(Schema.Array(Who).check(Schema.isMaxLength(30))).annotate({
-    description: "A meeting's people: each as owner is named.",
-  }),
+  attendees: Schema.optional(Schema.Array(Who).check(Schema.isMaxLength(30))),
   where: Schema.optional(Schema.NullOr(KinToolText(200))),
-  billing: Schema.optional(Schema.NullOr(KinProjectBilling)).annotate({
-    description: "A project's billing: fixed, hourly or retainer.",
-  }),
+  billing: Schema.optional(Schema.NullOr(KinProjectBilling)),
   value: Schema.optional(Schema.NullOr(KinToolText(60))).annotate({
-    description: 'A project\'s value as said ("6 lakh", "$12,000"); for a retainer, per period.',
+    description: "As said; a retainer's, per period.",
   }),
-  startsOn: Schema.optional(Schema.NullOr(KinDay)).annotate({
-    description: "When a project or a goal's period starts.",
-  }),
-  renewsOn: Schema.optional(Schema.NullOr(KinDay)).annotate({
-    description: "A retainer's next renewal day.",
-  }),
+  startsOn: Schema.optional(Schema.NullOr(KinDay)),
+  renewsOn: Schema.optional(Schema.NullOr(KinDay)),
   members: Schema.optional(Schema.Array(Who).check(Schema.isMaxLength(50))).annotate({
-    description:
-      "A project's people and agents besides its owner (its lead), each as owner is named; replaces the list.",
+    description: "Besides its lead; the whole list.",
   }),
   alsoOn: Schema.optional(
     Schema.Array(Who).check(Schema.isMaxLength(KIN_WORK_ALSO_ON_MAX)),
   ).annotate({
-    description:
-      "A task's people and agents besides its owner, each as owner is named; replaces the list. They help; its owner answers for it.",
+    description: "Who helps besides its owner, who answers for it; the whole list.",
+  }),
+  promisedTo: Schema.optional(Schema.NullOr(Who)).annotate({
+    description: "The one person here it was promised to, never its owner. null clears.",
   }),
 };
 type SpineRow = {
@@ -193,6 +194,9 @@ export const spineFields = Effect.fn("KinLeadSpine.fields")(function* <E, R>(
   if (row.attendees !== undefined) fields.attendees = yield* people(row.attendees);
   if (row.members !== undefined) fields.members = yield* people(row.members);
   if (row.alsoOn !== undefined) fields.alsoOn = yield* people(row.alsoOn);
+  if (row.promisedTo !== undefined)
+    fields.promisedTo =
+      row.promisedTo === null ? null : principalText(yield* resolve.who(row.promisedTo));
   for (const key of ["size", "reason", "where", "billing", "startsOn", "renewsOn"] as const)
     if (row[key] !== undefined) fields[key] = row[key] ?? null;
   if (row.value !== undefined) {
@@ -226,7 +230,8 @@ export const spineShown = (row: RecordRow, name: ToolNamer) => {
     milestone: text("milestone"),
     size: text("size"),
     reason: text("reason"),
-    from: doc === undefined ? undefined : `${doc} § ${text("fromSection") ?? ""}`,
+    // A plan's doc section, or where a promise was made as it was given.
+    from: doc === undefined ? text("from") : `${doc} § ${text("fromSection") ?? ""}`,
     attendees: names("attendees"),
     where: text("where"),
     billing: text("billing"),
@@ -235,6 +240,10 @@ export const spineShown = (row: RecordRow, name: ToolNamer) => {
     renewsOn: text("renewsOn"),
     members: names("members"),
     alsoOn: names("alsoOn"),
+    promisedTo: ((who) =>
+      who === undefined ? undefined : (name(principalOfText(who)) ?? "someone"))(
+      text("promisedTo"),
+    ),
   };
   return Object.fromEntries(Object.entries(shown).filter((entry) => entry[1] !== undefined)) as {
     readonly [K in keyof typeof shown]?: string;
@@ -255,6 +264,7 @@ export const SpineShown = {
   renewsOn: Schema.optional(Schema.String),
   members: Schema.optional(Schema.String),
   alsoOn: Schema.optional(Schema.String),
+  promisedTo: Schema.optional(Schema.String),
 };
 
 const Line = Schema.Struct({
@@ -315,12 +325,14 @@ export const ProjectRead = Schema.Struct({
       gone: Schema.optional(Schema.Literal(true)),
     }),
   ),
-  money: Schema.Struct({
-    quoted: Schema.Array(Schema.String),
-    invoiced: Schema.Array(Schema.String),
-    received: Schema.Array(Schema.String),
-    unpaid: Schema.Array(Schema.String),
-  }),
+  money: Schema.optional(
+    Schema.Struct({
+      quoted: Schema.Array(Schema.String),
+      invoiced: Schema.Array(Schema.String),
+      received: Schema.Array(Schema.String),
+      unpaid: Schema.Array(Schema.String),
+    }),
+  ),
   /** No milestones and no tasks yet: the first plan is still to be proposed. */
   noPlan: Schema.optional(Schema.Literal(true)),
 });
@@ -332,6 +344,7 @@ export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
   now: number,
   name: ToolNamer,
   viewer: KinViewer,
+  money = true,
 ) {
   const sql = yield* SqlClient.SqlClient;
   const page = yield* projectPage(row, now, 0, viewer);
@@ -409,12 +422,16 @@ export const projectRead = Effect.fn("KinLeadSpine.projectRead")(function* (
       section: one.section,
       ...(one.gone ? { gone: true as const } : {}),
     })),
-    money: {
-      quoted: shownMoney(page.money?.quoted),
-      invoiced: shownMoney(page.money?.invoiced),
-      received: shownMoney(page.money?.received),
-      unpaid: shownMoney(page.money?.unpaid),
-    },
+    ...(money
+      ? {
+          money: {
+            quoted: shownMoney(page.money?.quoted),
+            invoiced: shownMoney(page.money?.invoiced),
+            received: shownMoney(page.money?.received),
+            unpaid: shownMoney(page.money?.unpaid),
+          },
+        }
+      : {}),
     ...(milestones.length === 0 && tasksTotal === 0 ? { noPlan: true as const } : {}),
   } satisfies typeof ProjectRead.Type;
 });

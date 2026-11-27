@@ -557,7 +557,7 @@ it.effect("streams a real delegated child state change through kin.chat.subscrib
               }),
               Layer.mock(SecretRequests)({}),
               Layer.mock(ThreadLaunchService)({}),
-              Layer.mock(ProjectService)({}),
+              Layer.mock(ProjectService)({ getById: () => Effect.succeedNone }),
               Layer.mock(ScheduledTaskService)({}),
               Layer.mock(RemoteDelegation)({}),
               Layer.mock(GitVcsDriver)({}),

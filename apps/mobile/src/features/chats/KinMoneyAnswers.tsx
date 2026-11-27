@@ -3,7 +3,11 @@ import { useNavigation, type StaticScreenProps } from "@react-navigation/native"
 import type { KinRates } from "@t3tools/client-runtime/kin/kinCurrency";
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import { KIN_INVOICES, kinConfirmTotal } from "@t3tools/client-runtime/kin/kinInvoices";
-import { KIN_BANK, KIN_LIST_DEFAULT_FILTER } from "@t3tools/client-runtime/kin/kinLists";
+import {
+  KIN_BANK,
+  KIN_LIST_DEFAULT_FILTER,
+  kinCategoryLabel,
+} from "@t3tools/client-runtime/kin/kinLists";
 import { kinWorkReadUnreachable } from "@t3tools/client-runtime/kin/kinWorkForms";
 import { kinListShown } from "@t3tools/client-runtime/kin/kinWorkList";
 import {
@@ -14,12 +18,14 @@ import {
   KIN_OUTLOOK,
   KIN_QUOTES,
   KIN_QUOTES_LIST,
+  kinBudgetCategoryShown,
   kinBudgetDraftOf,
   kinBudgetInput,
   kinBudgetRemoval,
   kinBudgetsView,
   kinCashView,
   kinOutlookView,
+  type KinOutlookView,
   kinQuoteActions,
   kinQuoteInvoice,
   kinQuoteRow,
@@ -31,10 +37,12 @@ import {
   type KinOutlookRowView,
   type KinQuoteRowView,
 } from "@t3tools/client-runtime/kin/kinMoneyAnswers";
+import type { KinLineTax } from "@t3tools/client-runtime/kin/kinMoneyForms";
 import {
   EnvironmentId,
   KinMoneyBudget,
   KinOrgId,
+  KinPersonId,
   type KinListDefinition,
   type KinRecordDetail,
   type KinRecordKey,
@@ -45,7 +53,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { useState } from "react";
 import type { KinMakeStep } from "./kinMakeStep";
-import { Pressable, View } from "react-native";
+import { Alert, Pressable, View } from "react-native";
 
 import { AppText as Text } from "../../components/ui/AppText";
 import { Button } from "../../components/ui/Button";
@@ -74,12 +82,14 @@ import {
   useKinBudgetSet,
   useKinCash,
   useKinInvoiceFromQuote,
+  useKinMatchPartner,
   useKinOutlook,
 } from "./state/useKinMoneyAnswers";
 import { useKinHostAt } from "./state/useKinHost";
-import { useKinWorkChoices, type KinWorkTarget } from "./state/useKinWork";
+import { useKinWorkChoices, useKinWorkDirectory, type KinWorkTarget } from "./state/useKinWork";
 import { KinWorkPlacePicker } from "./components/KinWorkPlacePicker";
 import { kinLines, useKinTextGrows } from "./components/kinTextGrows";
+import { useKinShell } from "./state/useKinShell";
 
 const PEEK = 5;
 type Section = KinWorkTarget & { readonly seq: number | null; readonly rates: KinRates | null };
@@ -303,10 +313,121 @@ function OutlookRows(props: {
           note={row.note}
           amount={row.amount}
           estimate={row.estimate}
-          onPress={() => props.onOpen(row.key)}
+          {...(row.key === null ? {} : { onPress: () => props.onOpen(row.key!) })}
         />
       ))}
       {props.all && props.more > 0 ? <Plain>{KIN_OUTLOOK.more(props.more)}</Plain> : null}
+    </>
+  );
+}
+
+/** Who the company owes back; one no teammate is matched to yet gets a person picked. */
+function PartnersOwed(
+  props: Section & {
+    readonly rows: KinOutlookView["partners"];
+    readonly unsaid: KinOutlookView["unsaid"];
+  },
+) {
+  const directory = useKinWorkDirectory(
+    props,
+    props.rows.some((one) => one.match !== null) || props.unsaid.length > 0,
+  );
+  const matching = useKinMatchPartner(props);
+  const people = [...directory.names.people].sort((a, b) => a[1].localeCompare(b[1]));
+  if (props.rows.length + props.unsaid.length === 0) return null;
+  // While one pick saves, the menus open greyed and say so: a second pick is never lost silently.
+  const pickable = people.map(([id, name]) => ({
+    id,
+    title: name,
+    attributes: { disabled: matching.busy },
+  }));
+  const say = (row: KinOutlookView["unsaid"][number], event: string) => {
+    const [personId, settled] = event.split("\n");
+    const name = people.find(([id]) => id === personId)?.[1];
+    if (matching.busy || name === undefined || (settled !== "owed" && settled !== "repaid")) return;
+    Alert.alert(
+      KIN_OUTLOOK.sayTitle(row.address),
+      `${name}: ${settled === "owed" ? KIN_OUTLOOK.stillOwed : KIN_OUTLOOK.paidBack}. ${settled === "owed" ? KIN_OUTLOOK.stillOwedHint : KIN_OUTLOOK.paidBackHint}`,
+      [
+        { text: KIN_OUTLOOK.cancel, style: "cancel" },
+        {
+          text: KIN_OUTLOOK.confirm,
+          onPress: () =>
+            void matching.match(row.address, row.seen, KinPersonId.make(personId!), settled),
+        },
+      ],
+    );
+  };
+  return (
+    <>
+      {props.rows.length === 0 ? null : (
+        <Text textRole="footnote" className="bg-grouped-card px-4 pt-2 text-foreground-muted">
+          {KIN_OUTLOOK.partners}
+        </Text>
+      )}
+      {props.rows.map((row) =>
+        row.match === null ? (
+          <ListRowLayout key={row.id} label={row.name} description={row.note} detail={row.amount} />
+        ) : (
+          <Menu
+            key={row.id}
+            title={KIN_OUTLOOK.whoIsThis}
+            accessibilityRole="button"
+            accessibilityLabel={`${row.name}, ${row.amount}. ${KIN_OUTLOOK.whoIsThis}`}
+            actions={pickable}
+            onPressAction={({ nativeEvent: { event } }) => {
+              if (!matching.busy)
+                void matching.match(row.match!.address, row.match!.seen, KinPersonId.make(event));
+            }}
+          >
+            <View pointerEvents="none">
+              <ListRowLayout
+                label={row.name}
+                description={`${row.note} · ${matching.busy ? KIN_OUTLOOK.saving : KIN_OUTLOOK.whoIsThis}`}
+                detail={row.amount}
+              />
+            </View>
+          </Menu>
+        ),
+      )}
+      {props.unsaid.length === 0 ? null : (
+        <Text textRole="footnote" className="bg-grouped-card px-4 pt-2 text-foreground-muted">
+          {KIN_OUTLOOK.unsaid}
+        </Text>
+      )}
+      {props.unsaid.map((row) => (
+        <Menu
+          key={row.address}
+          title={KIN_OUTLOOK.sayWho}
+          accessibilityRole="button"
+          accessibilityLabel={`${row.address}, ${row.amount}. ${KIN_OUTLOOK.sayWho}`}
+          actions={people.map(([id, name]) => ({
+            id,
+            title: name,
+            attributes: { disabled: matching.busy },
+            subactions: (
+              [
+                ["owed", KIN_OUTLOOK.stillOwed],
+                ["repaid", KIN_OUTLOOK.paidBack],
+              ] as const
+            ).map(([settled, title]) => ({ id: `${id}\n${settled}`, title })),
+          }))}
+          onPressAction={({ nativeEvent: { event } }) => say(row, event)}
+        >
+          <View pointerEvents="none">
+            <ListRowLayout
+              label={row.address}
+              description={`${row.note} · ${matching.busy ? KIN_OUTLOOK.saving : KIN_OUTLOOK.sayWho}`}
+              detail={row.amount}
+            />
+          </View>
+        </Menu>
+      ))}
+      {matching.problem === null ? null : (
+        <Text textRole="footnote" className="bg-grouped-card px-4 py-1 text-destructive">
+          {matching.problem}
+        </Text>
+      )}
     </>
   );
 }
@@ -379,6 +500,7 @@ export function KinOutlookSection(props: Section) {
             more={view.more.outgoing}
             onOpen={open}
           />
+          <PartnersOwed {...props} rows={view.partners} unsaid={view.unsaid} />
           {view.notes.length + view.runway.length === 0 ? null : (
             <Text textRole="footnote" className="bg-grouped-card px-4 py-2 text-foreground-muted">
               {[...view.notes, ...view.runway.map((one) => one.text)].join(" ")}
@@ -462,7 +584,7 @@ function BudgetRow(props: { readonly view: KinBudgetView; readonly onPress?: () 
   return (
     <Pressable
       accessibilityRole={props.onPress === undefined ? "text" : "button"}
-      accessibilityLabel={[view.label, view.spent, view.standing, view.notCounted]
+      accessibilityLabel={[view.label, view.spent, view.standing, view.notCounted, view.about]
         .filter((part) => part !== null)
         .join(". ")}
       {...(props.onPress === undefined ? {} : { accessibilityHint: KIN_BUDGETS.edit })}
@@ -510,6 +632,11 @@ function BudgetRow(props: { readonly view: KinBudgetView; readonly onPress?: () 
       {view.notCounted === null ? null : (
         <Text textRole="footnote" className="text-foreground-muted">
           {view.notCounted}
+        </Text>
+      )}
+      {view.about === null ? null : (
+        <Text textRole="footnote" className="text-foreground-muted">
+          {view.about}
         </Text>
       )}
     </Pressable>
@@ -604,7 +731,7 @@ function BudgetForm(props: KinWorkTarget & { readonly budget: KinMoneyBudget | n
   const setter = useKinBudgetSet(props);
   const close = () => navigation.goBack();
   const categories = expenses?.categories ?? [];
-  const label = (category: string) => expenses?.categoryLabels?.[category] ?? category;
+  const label = (category: string) => kinCategoryLabel(category, expenses);
   const home = rates?.home ?? expenses?.currency ?? KIN_DEFAULT_HOME_CURRENCY;
   const save = async () => {
     const checked = kinBudgetInput(props.orgId, draft, home, requestId);
@@ -653,7 +780,7 @@ function BudgetForm(props: KinWorkTarget & { readonly budget: KinMoneyBudget | n
         <Menu
           title={KIN_BUDGETS.category}
           accessibilityRole="button"
-          accessibilityLabel={`${KIN_BUDGETS.category}: ${draft.category === null ? KIN_BUDGETS.anyCategory : label(draft.category)}. Change`}
+          accessibilityLabel={`${KIN_BUDGETS.category}: ${kinBudgetCategoryShown(draft, label)}. Change`}
           actions={[ANY, ...categories].map((one) => ({
             id: one,
             title: one === ANY ? KIN_BUDGETS.anyCategory : label(one),
@@ -665,7 +792,7 @@ function BudgetForm(props: KinWorkTarget & { readonly budget: KinMoneyBudget | n
         >
           <View pointerEvents="none">
             <ListRowLayout
-              label={draft.category === null ? KIN_BUDGETS.anyCategory : label(draft.category)}
+              label={kinBudgetCategoryShown(draft, label)}
               detail={KIN_BUDGETS.category}
             />
           </View>
@@ -728,7 +855,12 @@ export function KinQuoteActions(
     invoice: useAtomValue(kinClient.workInvoiceFromQuote.permissionAtom(environmentId)),
   };
   const invoiced = invoicing.invoice ?? kinQuoteInvoice(item.links);
-  const can = kinQuoteActions(quote.state, props.def?.numbering !== undefined, invoiced !== null);
+  const can = kinQuoteActions(
+    quote.state,
+    props.def?.numbering !== undefined,
+    invoiced !== null,
+    useKinShell(environmentId),
+  );
   const [requestId] = useState(uuidv4);
   const busy = props.busy || actions.busy || invoicing.busy;
   const numbered = quote.number !== item.key;
@@ -850,7 +982,12 @@ export function KinLinesFields(props: {
   /** Each line's SAC or HSN code, which only India's invoices carry; shown unless false. */
   readonly codes?: boolean;
   readonly detail?: string;
+  /** Per-line Tax % input and placeholder, or the client-accounts line when hidden for that reason. */
+  readonly tax?: KinLineTax;
 }) {
+  const showTax = props.tax?.show === true;
+  const defaultRate = props.tax?.show ? props.tax.defaultRate : null;
+  const taxNote = props.tax?.show ? KIN_LINES.taxDetail(defaultRate) : (props.tax?.note ?? null);
   const set = (index: number, patch: Partial<KinLineDraft>) =>
     props.onChange(props.lines.map((one, at) => (at === index ? { ...one, ...patch } : one)));
   return (
@@ -862,6 +999,11 @@ export function KinLinesFields(props: {
         <Text textRole="footnote" className="text-foreground-muted">
           {props.detail ?? KIN_LINES.detail}
         </Text>
+        {taxNote === null ? null : (
+          <Text textRole="footnote" className="text-foreground-muted">
+            {taxNote}
+          </Text>
+        )}
       </View>
       {props.lines.map((line, index) => (
         // oxlint-disable-next-line react/no-array-index-key -- lines have no id; a row is its place
@@ -878,7 +1020,7 @@ export function KinLinesFields(props: {
               label={KIN_LINES.sac}
               value={line.sac}
               maxLength={8}
-              keyboard="numbers"
+              keyboard="decimal"
               disabled={props.disabled}
               onChangeText={(sac) => set(index, { sac })}
             />
@@ -886,7 +1028,7 @@ export function KinLinesFields(props: {
           <KinWorkTextField
             label={KIN_LINES.quantity}
             value={line.quantity}
-            keyboard="numbers"
+            keyboard="decimal"
             disabled={props.disabled}
             onChangeText={(quantity) => set(index, { quantity })}
           />
@@ -904,6 +1046,17 @@ export function KinLinesFields(props: {
             disabled={props.disabled}
             onChangeText={(rate) => set(index, { rate })}
           />
+          {showTax ? (
+            <KinWorkTextField
+              label={KIN_LINES.tax}
+              value={line.taxRate}
+              {...(defaultRate === null ? {} : { placeholder: defaultRate })}
+              maxLength={7}
+              keyboard="decimal"
+              disabled={props.disabled}
+              onChangeText={(taxRate) => set(index, { taxRate })}
+            />
+          ) : null}
           <ListActionRow
             label={KIN_LINES.remove}
             onPress={() => props.onChange(props.lines.filter((_, at) => at !== index))}

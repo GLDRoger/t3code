@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as SchemaIssue from "effect/SchemaIssue";
 import { defaultReviewBy } from "./freshness.ts";
-import { isSeq, parseDocument } from "yaml";
+import { isScalar, isSeq, parseDocument } from "yaml";
 
 export class MemoryItemError extends Schema.TaggedError<MemoryItemError>()("MemoryItemError", {
   orgId: Schema.String,
@@ -128,7 +128,18 @@ export const parseFrontMatter = Effect.fnUntraced(function* (
           { cause: problem },
         );
       }
-      return doc.toJS();
+      const value: unknown = doc.toJS();
+      // A bare `quote: 50` or `quote: true` is the words as written, not a number or a flag.
+      const quote = doc.get("quote", true);
+      if (
+        isScalar(quote) &&
+        (typeof quote.value === "number" || typeof quote.value === "boolean") &&
+        typeof quote.source === "string" &&
+        typeof value === "object" &&
+        value !== null
+      )
+        Reflect.set(value, "quote", quote.source);
+      return value;
     },
     catch: (cause) =>
       new MemoryItemError({

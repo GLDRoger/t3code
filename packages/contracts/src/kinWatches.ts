@@ -4,7 +4,11 @@ import * as Schema from "effect/Schema";
 import { AuthKinChatScope, EnvironmentAuthorizationError } from "./auth.ts";
 import { IsoDateTime, KinText, TrimmedNonEmptyString } from "./baseSchemas.ts";
 import { KinAgentId, KinChatError, KinOrgId } from "./kinChat.ts";
+import { KinCardAsker, KinDeferralCard, KinMemoryItemId } from "./kinLead.ts";
 import { TimeZone } from "./kinTime.ts";
+import { KinWatchLine, KinWatchOutcome } from "./kinWatchLine.ts";
+
+export { KinWatchActor, KinWatchLine, KinWatchOutcome, KinWatchState } from "./kinWatchLine.ts";
 
 /**
  * What Kin keeps watch on (`kin_watches`): one open loop, its next look and what the last one found.
@@ -20,22 +24,9 @@ const KIN_WATCH_KINDS = [
   "host",
   "prepare",
   "arrival",
+  "turn_quiet",
 ] as const;
 export type KinWatchKind = (typeof KIN_WATCH_KINDS)[number];
-
-export const KinWatchState = Schema.Literals(["open", "closed", "stopped"]);
-export type KinWatchState = typeof KinWatchState.Type;
-
-/** What one look found. `skipped_limit`: a look that needed a model waited on the Daily limit. */
-export const KinWatchOutcome = Schema.Literals([
-  "nothing_new",
-  "closed",
-  "changed",
-  "problem",
-  "cant_tell",
-  "skipped_limit",
-]);
-export type KinWatchOutcome = typeof KinWatchOutcome.Type;
 
 /** Why a look ran: a person asked (their watch, Look now, Watch again), an agent's mark, or the round. */
 export const KinWatchWhy = Schema.Literals(["asked", "again", "routine"]);
@@ -50,40 +41,6 @@ export const KinWatchDid = Schema.Literals([
   "nothing_new",
 ]);
 export type KinWatchDid = typeof KinWatchDid.Type;
-
-/** Who closed or stopped a watch. `you` is the reader. */
-export const KinWatchActor = Schema.Struct({
-  kind: Schema.Literals(["person", "agent", "code"]),
-  name: Schema.NullOr(KinText),
-  you: Schema.Boolean,
-});
-export type KinWatchActor = typeof KinWatchActor.Type;
-
-/**
- * Exactly what one watch line shows (`kinWatchLine` in client-runtime words it). A record read
- * carries this for the record's watch; nothing more rides on every record.
- */
-export const KinWatchLine = Schema.Struct({
-  watchId: TrimmedNonEmptyString,
-  kind: TrimmedNonEmptyString,
-  /** What it is about, such as "Brightwell Labs' INV-11", or a person's own words. */
-  about: KinText,
-  state: KinWatchState,
-  lookedAt: Schema.NullOr(IsoDateTime),
-  nextLookAt: Schema.NullOr(IsoDateTime),
-  lastOutcome: Schema.NullOr(KinWatchOutcome),
-  /** What the last look found, in code's words: "the work failed". */
-  lastLine: Schema.NullOr(KinText),
-  /** Look now was asked and the look hasn't run yet. */
-  looking: Schema.Boolean,
-  /** Its record is set aside: no look until the hold ends (null: until someone lifts it). */
-  aside: Schema.NullOr(Schema.Struct({ until: Schema.NullOr(IsoDateTime) })),
-  closedAt: Schema.NullOr(IsoDateTime),
-  /** How it closed: "INV-11 was paid on 25 Nov". */
-  closedHow: Schema.NullOr(KinText),
-  closedBy: Schema.NullOr(KinWatchActor),
-});
-export type KinWatchLine = typeof KinWatchLine.Type;
 
 export const KinWatch = Schema.Struct({
   ...KinWatchLine.fields,
@@ -177,7 +134,37 @@ export type KinWatchActInput = typeof KinWatchActInput.Type;
 export const KinWatchActResult = Schema.Struct({ watch: KinWatch });
 export type KinWatchActResult = typeof KinWatchActResult.Type;
 
+export const KinWatchesFollowUpsInput = Schema.Struct({ orgId: KinOrgId });
+export type KinWatchesFollowUpsInput = typeof KinWatchesFollowUpsInput.Type;
+
+export const KinFollowUp = Schema.Struct({
+  itemId: Schema.suspend(() => KinMemoryItemId),
+  title: Schema.String,
+  dueAt: IsoDateTime,
+  onDue: Schema.suspend(() => KinDeferralCard.fields.onDue),
+  agent: Schema.NullOr(Schema.Struct({ agentId: KinAgentId, name: KinText })),
+  askedBy: Schema.optional(Schema.suspend(() => KinCardAsker)),
+  held: Schema.optional(
+    Schema.Struct({
+      section: Schema.Literals(["clients", "deals", "money", "invoices", "docs"]),
+      sectionName: KinText,
+    }),
+  ),
+});
+export type KinFollowUp = typeof KinFollowUp.Type;
+
+export const KinWatchesFollowUpsResult = Schema.Struct({ followUps: Schema.Array(KinFollowUp) });
+export type KinWatchesFollowUpsResult = typeof KinWatchesFollowUpsResult.Type;
+
+export const KinWatchesStopFollowUpInput = Schema.Struct({
+  orgId: KinOrgId,
+  itemId: Schema.suspend(() => KinMemoryItemId),
+});
+export type KinWatchesStopFollowUpInput = typeof KinWatchesStopFollowUpInput.Type;
+
 const KIN_WATCH_WS_METHODS = {
+  stopFollowUp: "kin.watches.stopFollowUp",
+  followUps: "kin.watches.followUps",
   list: "kin.watches.list",
   log: "kin.watches.log",
   look: "kin.watches.look",
@@ -188,6 +175,15 @@ const KIN_WATCH_WS_METHODS = {
 const error = Schema.Union([KinChatError, EnvironmentAuthorizationError]);
 
 export const KinWatchRpcs = [
+  Rpc.make(KIN_WATCH_WS_METHODS.stopFollowUp, {
+    payload: KinWatchesStopFollowUpInput,
+    error,
+  }),
+  Rpc.make(KIN_WATCH_WS_METHODS.followUps, {
+    payload: KinWatchesFollowUpsInput,
+    success: KinWatchesFollowUpsResult,
+    error,
+  }),
   Rpc.make(KIN_WATCH_WS_METHODS.list, {
     payload: KinWatchesListInput,
     success: KinWatchesListResult,
@@ -216,6 +212,8 @@ export const KinWatchRpcs = [
 ] as const;
 
 export const KIN_WATCH_RPC_SCOPES = {
+  [KIN_WATCH_WS_METHODS.stopFollowUp]: AuthKinChatScope,
+  [KIN_WATCH_WS_METHODS.followUps]: AuthKinChatScope,
   [KIN_WATCH_WS_METHODS.list]: AuthKinChatScope,
   [KIN_WATCH_WS_METHODS.log]: AuthKinChatScope,
   [KIN_WATCH_WS_METHODS.look]: AuthKinChatScope,

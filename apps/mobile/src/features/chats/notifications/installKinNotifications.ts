@@ -1,4 +1,3 @@
-import { kinChoiceFailureNotice } from "@t3tools/client-runtime/kin/kinChoicePresentation";
 import {
   environmentSessionGenerationAtom,
   runAtomCommand,
@@ -6,7 +5,6 @@ import {
 } from "@t3tools/client-runtime/state/runtime";
 import {
   EnvironmentAuthorizationError,
-  KIN_CHOICE_CARD_ACTION,
   KinChatError,
   type EnvironmentId,
   type KinWidgetsActInput,
@@ -28,7 +26,7 @@ import { startApproverKeyCleanup } from "../approvals/useKinApproverKey";
 import { kinCachedOrgsAtom, kinClient } from "../state/kinClient";
 import { kinHostAtom } from "../state/useKinHost";
 import { KIN_ANDROID_CHANNELS, KIN_NOTIFICATION_CATEGORIES } from "./kinCategories";
-import { kinActionDelivery, kinNotificationRoute } from "./kinPushPayload";
+import { kinActionDelivery, kinNotificationRoute, kinRefusedActionAlert } from "./kinPushPayload";
 import {
   createKinPushFence,
   createKinPushRefusals,
@@ -63,7 +61,13 @@ function createChannels(): void {
 
 function registerCategories(): void {
   for (const [identifier, actions] of Object.entries(KIN_NOTIFICATION_CATEGORIES)) {
-    if (actions.length === 0) continue;
+    // An older build may have registered buttons here; the OS keeps them until removed.
+    if (actions.length === 0) {
+      void Notifications.deleteNotificationCategoryAsync(identifier).catch((cause: unknown) =>
+        console.warn(`Removing ${identifier} failed`, cause),
+      );
+      continue;
+    }
     void Notifications.setNotificationCategoryAsync(
       identifier,
       actions.map((action) => ({ ...action, options: { ...action.options } })),
@@ -112,13 +116,8 @@ function createActionDelivery() {
           // The chat is open by now, and its card shows the current state.
           pending.delete(key);
           console.warn("A Kin notification action was refused", failure.message);
-          if (target.input.actionId === KIN_CHOICE_CARD_ACTION)
-            Dialog.alert(
-              "Your answer wasn't recorded",
-              failure._tag === "KinChatError"
-                ? kinChoiceFailureNotice(failure).text
-                : failure.message,
-            );
+          const alert = kinRefusedActionAlert(target.input.actionId, failure);
+          Dialog.alert(alert.title, alert.message);
         }
       });
     }

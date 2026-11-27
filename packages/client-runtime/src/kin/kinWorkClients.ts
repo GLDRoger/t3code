@@ -1,7 +1,13 @@
 // @effect-diagnostics globalDate:off - Pure view helpers format host ISO times for React render, outside an Effect runtime.
 import { KIN_MARKETING, type KinCampaignResultId } from "./kinMarketing.ts";
 import { KIN_CHECK_CONNECTION } from "./kinAnswers.ts";
-import { KIN_CAMPAIGN_SOURCE, kinOwnerLevel, formatKinWhen } from "@t3tools/contracts";
+import { KIN_BILL_TO } from "./kinBillTo.ts";
+import {
+  KIN_CAMPAIGN_SOURCE,
+  KIN_TEXT_LOCALE,
+  kinOwnerLevel,
+  formatKinWhen,
+} from "@t3tools/contracts";
 import type {
   KinAccessMeResult,
   KinClientTouch,
@@ -21,13 +27,15 @@ import type {
   KinProjectState,
   KinProjectsInput,
   KinRecordKey,
+  KinShell,
   KinTouchLogInput,
   KinWorkHistoryItem,
   KinWorkPrincipal,
 } from "@t3tools/contracts";
 
 import { kinLinkToOpen } from "./kinChatFeed.ts";
-import { kinMoneyText, kinRecordName } from "./kinLists.ts";
+import { kinMoneyText, kinRecordName, kinTotalsText } from "./kinLists.ts";
+import { kinContractLine, kinPromiseOf, type KinPromiseView } from "./kinPromises.ts";
 import { formatKinTime, type KinAvatarView } from "./kinScreenState.ts";
 import { KIN_SCOPE_ALL, kinNothingShown, type KinViewerScope } from "./kinViewerScope.ts";
 import {
@@ -46,6 +54,7 @@ import {
   type KinWorkRowView,
 } from "./kinWork.ts";
 import { kinCount } from "./kinCount.ts";
+import { kinSectionNamed, kinSectionOn } from "./kinShell.ts";
 import { Atom } from "effect/reactivity";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -152,6 +161,7 @@ export const KIN_CLIENTS = {
   title: "Clients",
   tax: "Tax details",
   noTax: "No GSTIN or state yet. Invoices need one to work out GST.",
+  accountsForTax: "Accounts for the tax themselves: invoices carry no tax.",
   all: "All clients",
   search: "Search clients",
   /** A client the search found through one of its contacts. */
@@ -172,7 +182,7 @@ export const KIN_CLIENTS = {
   contactsWho: (lookedAfter: string, vendor: boolean) =>
     vendor
       ? `${lookedAfter} looks after this one, and adds and changes its contacts.`
-      : `${lookedAfter} looks after this one. They, or anyone with an open deal here, add and change its contacts.`,
+      : `${lookedAfter}, who looks after this one, and anyone with an open deal here add and change its contacts.`,
   projects: "Projects",
   noProjects: "No projects for them yet.",
   terms: "Terms",
@@ -228,6 +238,8 @@ export const KIN_CLIENTS = {
   tags: "Tags",
   makeClient: "Make it a client",
   makeProspect: "Make it a prospect again",
+  credit: "Credit",
+  creditFrom: (amount: string, day: string) => `${amount} from ${day}`,
 };
 
 const andList = (names: ReadonlyArray<string>) =>
@@ -679,11 +691,12 @@ export function kinClientsLookedAfterChoices(
   }));
 }
 
-type Owed = Pick<KinPartyRow, "weOwe" | "theyOwe" | "late" | "overdue">;
+type Owed = Pick<KinPartyRow, "weOwe" | "theyOwe" | "late" | "overdue" | "owed">;
 
-/** "2 to do (1 late) · Waiting on 1 (1 overdue)", or "Nothing open". */
+/** "₹47,200 owed · 2 to do (1 late) · Waiting on 1 (1 overdue)", or "Nothing open". */
 function kinOwedLine(owed: Owed): string {
   const parts = [
+    owed.owed === undefined || owed.owed.length === 0 ? null : `${kinTotalsText(owed.owed)} owed`,
     owed.weOwe > 0 ? `${owed.weOwe} to do${owed.late > 0 ? ` (${owed.late} late)` : ""}` : null,
     owed.theyOwe > 0
       ? `Waiting on ${owed.theyOwe}${owed.overdue > 0 ? ` (${owed.overdue} overdue)` : ""}`
@@ -880,8 +893,11 @@ function kinContactView(contact: KinContact): KinContactView {
 }
 
 /** One side of what is owed: the rows read, and how many more the host has. */
+/** A client's or deal's row, with its "Promised" mark and where it was made when it is a promise. */
+export type KinOwedRowView = KinWorkRowView & { readonly promise: KinPromiseView | null };
+
 export interface KinOwedView {
-  readonly rows: ReadonlyArray<KinWorkRowView>;
+  readonly rows: ReadonlyArray<KinOwedRowView>;
   readonly total: number;
   /** "See all 62"; null when everything is shown. */
   readonly more: string | null;
@@ -902,8 +918,16 @@ export type KinClientCan = NonNullable<KinPartyPage["can"]>;
 const CAN_ALL: KinClientCan = { edit: true, log: true, owner: true };
 const CAN_NONE: KinClientCan = { edit: false, log: false, owner: false };
 
+export interface KinClientCreditView {
+  readonly key: KinRecordKey;
+  /** "$1,200.00 from 4 Nov" */
+  readonly line: string;
+}
+
 export interface KinClientPageView {
   readonly key: KinRecordKey;
+  /** Whether it offers making anything new under it: not while Clients is off. */
+  readonly adds: boolean;
   readonly rev: number;
   readonly ref: KinWorkRef;
   readonly name: string;
@@ -921,18 +945,24 @@ export interface KinClientPageView {
   readonly privacy: KinWorkPrivacy;
   readonly weOwe: KinOwedView;
   readonly theyOwe: KinOwedView;
+  /** "Renews 1 Mar · notice by 31 Dec" under the name; amber when `soon`. Null with no renewal. */
+  readonly contract: { readonly text: string; readonly soon: boolean } | null;
   readonly projects: ReadonlyArray<KinProjectRowView>;
   readonly contacts: ReadonlyArray<KinContactView>;
   /** Who adds and changes its contacts, for a reader who can't; null for one who can. */
   readonly contactsWho: string | null;
   readonly terms: string | null;
   readonly address: string | null;
-  /** "GSTIN 27ABCDE1234F1Z5 · Maharashtra"; null when neither is set. */
+  /** "GSTIN 27ABCDE1234F1Z5 · Maharashtra", or outside India "Tax number …"; null when unset. */
   readonly tax: string | null;
+  /** "Accounts for the tax themselves: invoices carry no tax." when on; null otherwise. */
+  readonly accountsForTax: string | null;
   readonly notes: string | null;
   /** Newest first; null from a host before contact logs. */
   readonly touches: ReadonlyArray<KinTouchView> | null;
   readonly lastContact: string | null;
+  /** Unapplied advance credits this reader may see, oldest first; empty when none or hidden. */
+  readonly credit: ReadonlyArray<KinClientCreditView>;
 }
 
 export function kinClientPageView(
@@ -941,14 +971,19 @@ export function kinClientPageView(
   now: Date,
   /** A host before prospects sends no `can`: there only the owner level changes a client. */
   ownerLevel: boolean,
+  /** The company's sections: a renamed Clients names the kind line too. */
+  shell?: KinShell | null,
+  /** The company's country; undefined or "IN" shows India's GSTIN/state format. */
+  country?: string | null,
 ): KinClientPageView {
+  const india = country === undefined || country === "IN";
   const { party } = page;
   const ref = { key: party.key, title: party.name };
   const weOwe = page.weOwe.records.map((record) =>
     kinWorkRow(record, names, now, { party: ref, project: null, sided: true }),
   );
   const owed = (side: KinPartyPage["weOwe"], rows: ReadonlyArray<KinWorkRowView>): KinOwedView => ({
-    rows,
+    rows: rows.map((row, index) => ({ ...row, promise: kinPromiseOf(side.records[index]!) })),
     total: side.total,
     more: side.total > side.records.length ? `See all ${side.total}` : null,
   });
@@ -969,6 +1004,7 @@ export function kinClientPageView(
     rev: party.rev,
     ref,
     name: party.name,
+    adds: kinSectionOn(shell, "clients"),
     vendor,
     prospect,
     line: [
@@ -976,7 +1012,7 @@ export function kinClientPageView(
         ? KIN_CLIENTS.kindVendor
         : prospect
           ? KIN_CLIENTS.kindProspect
-          : KIN_CLIENTS.kindClient,
+          : kinSectionNamed(shell, KIN_CLIENTS.kindClient),
       party.active ? null : KIN_CLIENTS.closed,
       source === null ? null : `from ${source}`,
     ]
@@ -995,20 +1031,36 @@ export function kinClientPageView(
     },
     weOwe: owed(page.weOwe, weOwe),
     theyOwe: owed(page.theyOwe, theyOwe),
+    contract: kinContractLine(page.contract),
     projects: page.projects.map((row) => kinProjectRow(row, names, now, ref)),
     contacts: page.contacts.map(kinContactView),
     contactsWho: (can.contacts ?? can.edit) ? null : KIN_CLIENTS.contactsWho(lookedAfter, vendor),
     terms: terms === "" ? null : terms,
     address: party.address?.trim() || null,
-    tax:
-      [party.gstin === null ? null : `GSTIN ${party.gstin}`, party.placeOfSupply?.trim() || null]
-        .filter((part) => part !== null)
-        .join(" · ") || null,
+    tax: india
+      ? [party.gstin === null ? null : `GSTIN ${party.gstin}`, party.placeOfSupply?.trim() || null]
+          .filter((part) => part !== null)
+          .join(" · ") || null
+      : party.gstin === null
+        ? null
+        : `${KIN_BILL_TO.taxNumber} ${party.gstin}`,
+    accountsForTax:
+      party.accountsForTax === true ? kinSectionNamed(shell, KIN_CLIENTS.accountsForTax) : null,
     notes: notes === "" ? null : notes,
     touches,
     lastContact:
       (party.kind === "client" ? kinClientContactLine(party, touches?.[0], now) : null) ??
       (touches?.length === 0 ? KIN_CLIENTS.noneLogged : null),
+    credit: (page.credit ?? []).map((one) => ({
+      key: one.key,
+      line: KIN_CLIENTS.creditFrom(
+        kinMoneyText(one.amount, true),
+        formatKinWhen(Date.parse(`${one.receivedOn}T12:00:00Z`), "date", {
+          zone: "UTC",
+          locale: KIN_TEXT_LOCALE,
+        }),
+      ),
+    })),
   };
 }
 
@@ -1040,6 +1092,7 @@ export const kinClientPageKeys = (page: KinPartyPage): ReadonlySet<string> =>
     ...page.projects.map((project) => project.key),
     ...page.weOwe.records.map((record) => record.key),
     ...page.theyOwe.records.map((record) => record.key),
+    ...(page.credit ?? []).map((one) => one.key),
   ]);
 
 // Projects
@@ -1264,6 +1317,8 @@ function waited(since: string, now: Date): string {
 
 export interface KinProjectPageView {
   readonly key: KinRecordKey;
+  /** Whether it offers making anything new under it: not while Clients is off. */
+  readonly adds: boolean;
   readonly rev: number;
   readonly ref: KinWorkRef;
   readonly name: string;
@@ -1412,8 +1467,11 @@ export function kinProjectPageView(
   page: KinProjectPage,
   names: KinWorkNames,
   now: Date,
+  /** The company's sections: with Invoices and quotes off, the money it took leaves the page. */
+  shell?: KinShell | null,
 ): KinProjectPageView {
   const { project, counts } = page;
+  const invoices = kinSectionOn(shell, "invoices");
   const ref = { key: project.key, title: project.name };
   const because = project.healthBecause;
   const client = project.party?.title ?? "the client";
@@ -1428,7 +1486,7 @@ export function kinProjectPageView(
           because.waitingOverAWeek > 0
             ? `${kinCount(because.waitingOverAWeek, "task")} ${because.waitingOverAWeek === 1 ? "has" : "have"} waited more than a week.`
             : null,
-          (because.overdueInvoices ?? 0) > 0
+          invoices && (because.overdueInvoices ?? 0) > 0
             ? `${kinCount(because.overdueInvoices!, "invoice")} for this project ${because.overdueInvoices === 1 ? "is" : "are"} overdue.`
             : null,
           because.noContact === undefined
@@ -1450,6 +1508,7 @@ export function kinProjectPageView(
     rev: project.rev,
     ref,
     name: project.name,
+    adds: kinSectionOn(shell, "clients"),
     party: project.party === null ? null : { key: project.party.key, title: project.party.title },
     kind: project.campaign === true ? KIN_MARKETING.campaign : null,
     audience: project.audience ?? null,
@@ -1542,7 +1601,7 @@ export function kinProjectPageView(
       doc: one.doc.key,
     })),
     money:
-      page.money === undefined
+      page.money === undefined || !invoices
         ? []
         : (
             [

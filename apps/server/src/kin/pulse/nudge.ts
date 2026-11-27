@@ -20,6 +20,7 @@ import {
 import { dayIn } from "../work/money.ts";
 import { ownerZone } from "../work/recordRows.ts";
 import * as KinPulse from "./KinPulse.ts";
+import { nudgeDeclined } from "./declines.ts";
 import { DAY_MS } from "./thresholds.ts";
 
 /** An unanswered nudge holds off the next for this long; after it, Kin may try once more. */
@@ -122,7 +123,7 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
     ORDER BY p.person_id`;
   if (person === undefined) return yield* refuse("That person just left the company.");
   if (person.isOwner === 1)
-    return yield* refuse("That's the owner: tell him in your own chat instead of nudging.");
+    return yield* refuse("That's the owner: tell them in your own chat instead of nudging.");
   const personId = KinPersonId.make(person.personId);
   const theirs = yield* KinPulse.read({
     orgId,
@@ -130,10 +131,19 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
     viewer: { _tag: "people", people: [personId] },
     limit: 200,
   });
-  if (!theirs.facts.some((fact) => fact.key === input.factKey))
-    return yield* refuse(
+  const fact = theirs.facts.find((one) => one.key === input.factKey);
+  const unavailable = () =>
+    refuse(
       `${person.name} can't see that fact, or it no longer needs attention. Nudge only about their own open Work; tell the owner about anything else.`,
     );
+  if (fact === undefined) return yield* unavailable();
+  const recordId = fact.subject.recordId;
+  const declined = () =>
+    refuse(
+      `${person.name} turned down a nudge about this. Don't nudge ${person.name} about it again until it changes or ${person.name} brings it up.`,
+    );
+  if (recordId !== undefined && (yield* nudgeDeclined(orgId, recordId, personId, at)))
+    return yield* declined();
   const zone = person.timeZone ?? (yield* ownerZone(orgId));
   // Outside their hours it is held until they start, and counts for that day.
   const starts = inHoursAt(person, zone, at) ? undefined : nextInHours(person, zone, at);
@@ -160,10 +170,16 @@ export const nudge = Effect.fn("KinPulse.nudge")(function* (input: {
       );
   }
   const chatId = yield* input.chatFor(personId);
-  const claimed = yield* sql`INSERT INTO kin_pulse_nudges (org_id, person_id, day, agent_id,
-      chat_id, fact_key, sent_at)
-    VALUES (${orgId}, ${personId}, ${day}, ${input.agentId}, ${chatId}, ${input.factKey}, ${at})
-    ON CONFLICT (org_id, person_id, day) DO NOTHING RETURNING day`;
+  const claimed = yield* sql.withTransaction(
+    Effect.gen(function* () {
+      if (recordId !== undefined && (yield* nudgeDeclined(orgId, recordId, personId, at)))
+        return yield* declined();
+      return yield* sql`INSERT INTO kin_pulse_nudges (org_id, person_id, day, agent_id,
+        chat_id, fact_key, sent_at)
+      VALUES (${orgId}, ${personId}, ${day}, ${input.agentId}, ${chatId}, ${input.factKey}, ${at})
+      ON CONFLICT (org_id, person_id, day) DO NOTHING RETURNING day`;
+    }),
+  );
   if (claimed.length === 0)
     return yield* refuse(`${person.name} was already nudged today. One nudge a day: leave it.`);
   const held = yield* input

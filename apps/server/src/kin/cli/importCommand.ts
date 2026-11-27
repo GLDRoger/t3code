@@ -49,8 +49,8 @@ const ownerOf = Effect.fn("kin.import.owner")(function* (
 });
 
 type Counts = KinImport.ImportReport["entries"];
-const counts = (name: string, one: Counts) =>
-  `${name}: ${one.create} new, ${one.unchanged} imported before, ${one.matched} matched by name, ${one.changed} changed in Kin since (left alone), ${one.problems} with problems`;
+const counts = (name: string, one: Counts, matchedBy = "name") =>
+  `${name}: ${one.create} new, ${one.unchanged} imported before, ${one.matched} matched by ${matchedBy}, ${one.changed} changed in Kin since (left alone), ${one.problems} with problems`;
 
 const describeImport = (report: KinImport.ImportReport) =>
   [
@@ -61,13 +61,17 @@ const describeImport = (report: KinImport.ImportReport) =>
     ),
     counts("Clients", report.clients),
     counts("Projects", report.projects),
-    counts("Entries", report.entries),
+    counts("Entries", report.entries, "key"),
     counts("Payments", report.payments),
     counts("Contacts", report.contacts),
     counts("Deals", report.deals),
-    ...(report.filled === 0
+    ...(report.fileProblems === 0
       ? []
-      : [`Filled in empty fields on ${report.filled} clients and contacts Kin had.`]),
+      : [`Rows that don't fit the file format: ${report.fileProblems} with problems`]),
+    ...(report.filled === 0 ? [] : [`Fills on records Kin already had: ${report.filled}.`]),
+    ...(report.voided === 0
+      ? []
+      : [`Entries Kin already had ${report.applied ? "voided" : "to void"}: ${report.voided}.`]),
     ...report.money.map(
       (one) =>
         `Money in ${one.list}: ${one.entries} entries, ${formatMoney(one.total)}, ${formatMoney(one.paid)} paid`,
@@ -82,6 +86,13 @@ const describeImport = (report: KinImport.ImportReport) =>
         ? `Client ${one.source} (${one.name}) is ${one.key}, matched by name.`
         : `Client ${one.source} (${one.name}) isn't ${one.key}: its ${report.taxIdLabel} differs, so it is a new client, ${one.made}.`,
     ),
+    ...report.entryMatches.map((one) => {
+      const parts = [
+        ...(one.fields.length === 0 ? [] : [`fills ${one.fields.join(", ")}`]),
+        ...(one.void === undefined ? [] : [one.void === "voids" ? "voids" : "already voided"]),
+      ];
+      return `${one.key}: ${parts.length === 0 ? "nothing to fill" : parts.join(", ")}`;
+    }),
     ...report.problems.map(
       (one) =>
         `Problem${one.line === null ? "" : ` on line ${one.line}`} (${one.kind}${one.source === null ? "" : ` ${one.source}`}): ${one.reason}`,
@@ -95,7 +106,12 @@ const describeUndo = (report: UndoReport) =>
     ...(report.restored === 0
       ? []
       : [
-          `Fields it filled in on ${report.restored} clients and contacts ${report.applied ? "emptied" : "to empty"} again.`,
+          `Fields and notes it filled on ${report.restored} existing records ${report.applied ? "emptied" : "to empty"} again.`,
+        ]),
+    ...(report.unvoided === 0
+      ? []
+      : [
+          `Entries it voided ${report.applied ? "brought back" : "to bring back"}: ${report.unvoided}.`,
         ]),
     `Changed since import: ${report.changed.length}${report.changed.length === 0 ? "" : ` (${report.changed.join(", ")})`}, ${report.includeChanged ? "removed with the rest." : "left as they are. Add --include-changed to remove them too."}`,
     ...report.kept.map((one) => `Kept ${one.key}: ${one.reason}.`),
@@ -124,7 +140,9 @@ export const importCommand = Command.make("import", {
     Flag.withDefault(false),
   ),
   includeChanged: Flag.Boolean("include-changed").pipe(
-    Flag.withDescription("With --undo, also remove imported entries someone changed since."),
+    Flag.withDescription(
+      "With --undo, also remove imported entries and empty matched entry fills changed since.",
+    ),
     Flag.withDefault(false),
   ),
   org: Flag.String("org").pipe(

@@ -176,7 +176,7 @@ export function kinFixtureReplyScript(
   return [
     presence(0, "thinking", "Thinking"),
     presence(1_500, "working", "Checking memory"),
-    presence(3_500, "writing", "Writing"),
+    presence(3_500, "writing", "Writing a reply"),
     ...deltas,
     { atMs: doneMs, event: { _tag: "message", message } },
     {

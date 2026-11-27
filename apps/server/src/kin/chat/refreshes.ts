@@ -8,14 +8,17 @@ import {
   type KinRefreshesSubscribeInput,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Stream from "effect/Stream";
 
+import { KinConnections } from "../connections/ConnectionsService.ts";
 import * as LeadProvision from "../lead/KinLeadProvision.ts";
 import { accessOf } from "../people/KinAccess.ts";
 import { KinIdentity, type PersonIdentity } from "./KinIdentity.ts";
 import { KinRecords } from "../work/KinRecords.ts";
 import { countryNeeded } from "../work/companyProfile.ts";
 import * as Money from "../work/ownerMoney.ts";
+import { visibleValueRevision } from "../numbers/KinNumbers.ts";
 import { theOwner } from "../work/ownerWork.ts";
 import { KinRefreshHub, KinRefreshObserver, type KinRevisions } from "./KinRefreshHub.ts";
 
@@ -25,6 +28,8 @@ type Reads = {
   readonly kind: Effect.Effect<KinPersonAccess | undefined>;
   readonly view: Effect.Effect<string | null>;
   readonly lists: Effect.Effect<string | null>;
+  readonly connections: Effect.Effect<string | null> | undefined;
+  readonly numbers: Effect.Effect<string>;
 };
 /**
  * One person's reads for one settled burst, shared by their devices. A burst's revisions are a new
@@ -53,13 +58,14 @@ const same = (a: KinRefreshes, b: KinRefreshes) =>
   a.stop === b.stop &&
   a.watches === b.watches &&
   a.shell === b.shell &&
+  a.numbers === b.numbers &&
   a.boot === b.boot;
 
 /**
  * The revisions this viewer may see. Owner-level people read every topic but the owner's own
  * recommendations. A member reads the time zone, profiles, Needs attention, the stop switch, their
- * lead list and work lists (moved only when what those show them changed) and, while a new company
- * waits on its country, the company topic.
+ * lead list, work lists and their own connections (moved only when those views change) and, while
+ * a new company waits on its country, the company topic.
  */
 export const subscribeRefreshes = (
   people: ReadonlyArray<PersonIdentity>,
@@ -86,11 +92,17 @@ export const subscribeRefreshes = (
         // An unreadable list counts as changed; the client's own read then reports the failure.
         Effect.orElseSucceed(() => null),
       );
-      // Without the Money place the read is refused: null, and it stays null until that changes.
+      // The view includes open team lists even for someone without the Money place.
       const listsView = Money.lists([person], { orgId: input.orgId, archived: true }).pipe(
         Effect.map((shown) => JSON.stringify(shown)),
         Effect.orElseSucceed(() => null),
       );
+      const connectionsService = Option.getOrUndefined(yield* Effect.serviceOption(KinConnections));
+      const connectionsView = connectionsService?.mine([person], { orgId: input.orgId }).pipe(
+        Effect.map((shown) => JSON.stringify(shown)),
+        Effect.orElseSucceed(() => null),
+      );
+      const numbersView = visibleValueRevision(person).pipe(Effect.orElseSucceed(() => "refused"));
       const bursts = burstReads.get(hub) ?? new WeakMap<KinRevisions, Map<string, Reads>>();
       burstReads.set(hub, bursts);
       const readsOf = Effect.fn("KinRefreshes.readsOf")(function* (now: KinRevisions) {
@@ -100,12 +112,16 @@ export const subscribeRefreshes = (
         const held = people.get(key);
         if (held !== undefined) return held;
         const services = yield* Effect.context<
-          Effect.Services<typeof kind> | Effect.Services<typeof view | typeof listsView>
+          | Effect.Services<typeof kind>
+          | Effect.Services<typeof view | typeof listsView | typeof numbersView>
         >();
         const reads: Reads = {
           kind: yield* Effect.cached(Effect.provide(kind, services)),
           view: yield* Effect.cached(Effect.provide(view, services)),
           lists: yield* Effect.cached(Effect.provide(listsView, services)),
+          connections:
+            connectionsView === undefined ? undefined : yield* Effect.cached(connectionsView),
+          numbers: yield* Effect.cached(Effect.provide(numbersView, services)),
         };
         people.set(key, reads);
         return reads;
@@ -116,6 +132,8 @@ export const subscribeRefreshes = (
       let heard: KinRevisions | undefined;
       let leads = 0;
       let lists = 0;
+      let connections: number | undefined;
+      let numbers = 0;
       let company = 0;
       let waited = false;
       return changes.pipe(
@@ -135,14 +153,30 @@ export const subscribeRefreshes = (
             }
             if (heard === undefined || heard.leads !== now.leads || heard.people !== now.people)
               leads = hub.counted(counter("leads"), yield* reads.view);
-            if (heard === undefined || heard.workLists !== now.workLists)
+            if (
+              heard === undefined ||
+              heard.workLists !== now.workLists ||
+              heard.shell !== now.shell
+            )
               // A refusal that stands is no change.
               lists = hub.counted(counter("workLists"), (yield* reads.lists) ?? "refused");
+            if (
+              reads.connections !== undefined &&
+              (heard === undefined || heard.connections !== now.connections)
+            ) {
+              const key = counter("connections");
+              const shown = yield* reads.connections;
+              // A failed read says nothing: a move here would tell of someone else's change.
+              if (shown !== null) connections = hub.counted(key, shown);
+              else connections ??= hub.lastCount(key);
+            }
             if (heard === undefined || heard.company !== now.company) {
               const still = yield* waiting;
               waited ||= still;
               company = hub.counted(counter("company"), String(still));
             }
+            if (heard === undefined || heard.numbers !== now.numbers || heard.people !== now.people)
+              numbers = hub.counted(counter("numbers"), yield* reads.numbers);
             heard = now;
             // Everyone's profile is readable by the whole org. Pulse moves only say "read your
             // Needs attention again"; the read shows them only what they may see.
@@ -152,10 +186,12 @@ export const subscribeRefreshes = (
               leads,
               pulse: now.pulse,
               workLists: lists,
+              ...(connections === undefined ? {} : { connections }),
               stop: now.stop,
               // Moves say "read again"; the reads show a teammate only their own watches.
               watches: now.watches,
               shell: now.shell,
+              numbers,
               // Only a company that waited on its country: no other gains a byte.
               ...(waited ? { company } : {}),
               boot: hub.boot,

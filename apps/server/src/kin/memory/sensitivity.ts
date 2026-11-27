@@ -26,6 +26,7 @@ export const SHARED_HEAD_FIELDS = ["id", "kind", "title", "what", "links", "shar
 export const NEVER_SHARED_FIELDS = [
   "orgId",
   "path",
+  "for_chat",
   "status",
   "due",
   "chat",

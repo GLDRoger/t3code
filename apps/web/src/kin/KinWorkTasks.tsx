@@ -1,4 +1,5 @@
 import { kinAccessMeAtom } from "@t3tools/client-runtime/kin/kinAccess";
+import { KIN_PROMISES } from "@t3tools/client-runtime/kin/kinPromises";
 import { connectionAtomRuntime } from "../connection/runtime";
 import { kinHostLink } from "@t3tools/client-runtime/kin/kinHost";
 import { useKinHostAt } from "./useKinHost";
@@ -84,8 +85,9 @@ import {
   PlusIcon,
   XIcon,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
+import { useKinSectionNamed, useKinSectionOn } from "./useKinShell";
 import { Alert, AlertAction, AlertDescription } from "../components/ui/alert";
 import { Badge } from "../components/ui/badge";
 import { Button } from "../components/ui/button";
@@ -117,6 +119,7 @@ import {
   type KinWorkDirectory,
   type KinWorkTarget,
 } from "./useKinWork";
+import { runKinCommand } from "@t3tools/client-runtime/kin/kinRunCommand";
 
 /** Task lists kept while their screen is away, so coming back reads nothing the stream brought. */
 const kinTaskLists = createKinListKeeper<KinWorkList, KinWorkListState>(Date.now);
@@ -170,6 +173,7 @@ export function KinWorkTaskList(
   const { environmentId, orgId, live, within } = props;
   const navigate = useNavigate();
   const scope = useKinViewerScope(environmentId);
+  const named = useKinSectionNamed(environmentId);
   const { names } = props.directory;
   const { state: changed, changes } = props.changes;
   const hostEdits = kinWorkHostEdits(live.summary);
@@ -195,7 +199,8 @@ export function KinWorkTaskList(
         createKinWorkList({
           orgId,
           initial,
-          read: (input) => kinClient.workList.run(appAtomRegistry, { environmentId, input }),
+          read: (input) =>
+            runKinCommand(appAtomRegistry, kinClient.workList, { environmentId, input }),
           onChange,
           now: Date.now,
           // The first counts are in before the list exists, and say which filters the host has.
@@ -247,9 +252,19 @@ export function KinWorkTaskList(
     names,
     kinTasksOnCount(listState.records, names.me),
   );
-  const records = kinWorkShown(filter, listState.records, hostEdits).map((record) =>
-    kinWorkApplied(record, changed),
-  );
+  const clientsOn = useKinSectionOn(environmentId, "clients");
+  const previousClientsOn = useRef(clientsOn);
+  // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- section saves do not change task sequence numbers
+  useEffect(() => {
+    if (previousClientsOn.current !== clientsOn) list.refresh();
+    previousClientsOn.current = clientsOn;
+  }, [clientsOn, list]);
+  const records = kinWorkShown(filter, listState.records, hostEdits).map((record) => {
+    const applied = kinWorkApplied(record, changed);
+    if (clientsOn) return applied;
+    const { party: _party, project: _project, ...task } = applied;
+    return task;
+  });
   const ownerLevel = useKinOwnerLevel(environmentId);
   const pulse = useKinAttention({ environmentId, orgId }, within === undefined);
   const facts = kinTasksDealFacts({ ownerLevel, names, now, pulse });
@@ -262,13 +277,15 @@ export function KinWorkTaskList(
   const [ticked, setTicked] = useState<ReadonlyArray<KinTaskTicked<KinRecord>>>([]);
   const held = kinTasksTickedShown(ticked, changed, notice);
   const listed: ReadonlyArray<KinTasksItem<KinRecord>> =
-    within === undefined && kinWorkByMove(filter)
+    within === undefined &&
+    (kinWorkByMove(filter) || (!clientsOn && groupBy === "project" && !searching))
       ? kinTasksByMove({
           records,
           moves: list.moves(),
           counts,
           needsYou,
           ownerLevel,
+          clientsOn,
           names,
           facts,
           read: listState.seq !== null,
@@ -343,6 +360,7 @@ export function KinWorkTaskList(
               records={records}
               everyone={within === undefined}
               grouped={grouped}
+              named={named}
               onChange={setFilter}
             />
             {notice === null || notice.undo !== null ? null : (
@@ -880,6 +898,7 @@ function KinWorkFilters(props: {
   readonly everyone: boolean;
   /** The chip saying the list is grouped some other way than Me first; null when it isn't. */
   readonly grouped: string | null;
+  readonly named: (text: string) => string;
   readonly onChange: (filter: KinWorkFilter) => void;
 }) {
   const { overview, filter, choices } = props;
@@ -977,8 +996,8 @@ function KinWorkFilters(props: {
               }),
           },
           scope(
-            KIN_WORK_HOME.byClient,
-            KIN_WORK_HOME.allClients,
+            props.named(KIN_WORK_HOME.byClient),
+            props.named(KIN_WORK_HOME.allClients),
             clients,
             filter.party,
             (party) => ({
@@ -1029,6 +1048,8 @@ export function KinWorkRow(props: {
   readonly onOpen: () => void;
   /** Null where this browser or this host can't change a task. */
   readonly onAct: ((action: KinWorkAction) => void) | null;
+  /** A promise to or from a client: its "Promised" mark, or the mark given, such as "They owe". */
+  readonly promised?: boolean | string;
 }) {
   const { row, onAct } = props;
   const tick = onAct === null ? null : row.tick;
@@ -1086,6 +1107,11 @@ export function KinWorkRow(props: {
             )}
           </span>
         </span>
+        {props.promised === undefined || props.promised === false ? null : (
+          <Badge size="sm" variant="info">
+            {props.promised === true ? KIN_PROMISES.mark : props.promised}
+          </Badge>
+        )}
         {row.markText === null ? null : (
           <Badge
             size="sm"

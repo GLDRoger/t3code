@@ -124,11 +124,71 @@ export function addClaudeLedgerUsage(
       };
 }
 
+export interface ClaudeRequestUsage {
+  readonly input_tokens?: number | null | undefined;
+  readonly cache_creation_input_tokens?: number | null | undefined;
+  readonly cache_read_input_tokens?: number | null | undefined;
+  readonly output_tokens?: number | null | undefined;
+}
+
+/** Each model request of a turn, by message id; a subagent's bill as other usage. */
+export type ClaudeTurnRequests = Map<
+  string,
+  { readonly usage: ClaudeRequestUsage; readonly subagent: boolean }
+>;
+
+// A message repeats its usage on every frame; a subagent's snapshots can lag its output count.
+export function recordClaudeRequestUsage(
+  requests: ClaudeTurnRequests,
+  messageId: string,
+  usage: ClaudeRequestUsage,
+  subagent: boolean,
+): void {
+  const earlier = finiteNonNegativeInteger(requests.get(messageId)?.usage.output_tokens) ?? 0;
+  const output = Math.max(earlier, finiteNonNegativeInteger(usage.output_tokens) ?? 0);
+  requests.set(messageId, { usage: { ...usage, output_tokens: output }, subagent });
+}
+
+/** The turn so far, counted as its result will count it; subagent output arrives only then. */
+export function runningClaudeTurnTokenUsage(requests: ClaudeTurnRequests): TurnTokenUsage {
+  const main = { input: 0, read: 0, write: 0, output: 0 };
+  const other = { input: 0, output: 0 };
+  for (const { usage, subagent } of requests.values()) {
+    const read = finiteNonNegativeInteger(usage.cache_read_input_tokens) ?? 0;
+    const write = finiteNonNegativeInteger(usage.cache_creation_input_tokens) ?? 0;
+    const input = (finiteNonNegativeInteger(usage.input_tokens) ?? 0) + read + write;
+    const output = finiteNonNegativeInteger(usage.output_tokens) ?? 0;
+    if (subagent) {
+      other.input += input;
+      other.output += output;
+      continue;
+    }
+    main.input += input;
+    main.read += read;
+    main.write += write;
+    main.output += output;
+  }
+  return {
+    usageStatus: "partial",
+    usageScope: "main_agent",
+    hasSubagents: [...requests.values()].some((request) => request.subagent),
+    inputTokens: main.input,
+    cachedInputTokens: main.read,
+    cacheCreationTokens: main.write,
+    outputTokens: main.output,
+    ...(other.input + other.output === 0
+      ? {}
+      : { otherUsage: { inputTokens: other.input, outputTokens: other.output } }),
+  };
+}
+
 export interface ClaudeTurnObservations {
   // Models on the turn's root assistant messages.
   readonly rootModels?: ReadonlySet<string>;
   // Ledger growth across every result this turn consumed, including steered segments.
   readonly ledger?: ClaudeLedgerUsage | undefined;
+  // The turn's requests, which stand in when no result reports usage.
+  readonly requests?: ClaudeTurnRequests;
 }
 
 export function normalizeClaudeTurnTokenUsage(
@@ -181,7 +241,12 @@ export function normalizeClaudeTurnTokenUsage(
       (rawOutputTokens ?? 0) >
     0;
 
-  if (!hasKnownUsage || (result?.subtype !== "success" && !hasPositiveUsage)) {
+  const unmeasured = !hasKnownUsage || (result?.subtype !== "success" && !hasPositiveUsage);
+  const requests = observed.requests;
+  if ((result === undefined || unmeasured) && requests !== undefined && requests.size > 0) {
+    return { ...runningClaudeTurnTokenUsage(requests), hasSubagents, ...observedFields };
+  }
+  if (unmeasured) {
     return {
       usageStatus: "unavailable",
       usageScope: "main_agent",

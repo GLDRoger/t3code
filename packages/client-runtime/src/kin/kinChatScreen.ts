@@ -1,3 +1,4 @@
+import { kinIsChiefOfStaff } from "./kinSetUp.ts";
 import {
   KIN_TEAM_ROOM_TEAM_ID,
   type KinChatId,
@@ -22,6 +23,8 @@ import {
   mergeKinFeed,
   type KinFeedRow,
   type KinFeedViewer,
+  kinNewLineSeq,
+  type KinNewLineHold,
 } from "./kinChatFeed.ts";
 import { kinFeedDisplay } from "./kinFeedDisplay.ts";
 import { kinFollowsEnd, type KinFeedFollow } from "./kinFeedFollow.ts";
@@ -54,6 +57,9 @@ function kinIntroCharter(charter: string): string | null {
  * What a chat's screen reads besides the chat and the inbox: a direct chat's leads (the owner's
  * list, retired ones too, where they may restore), and a group's members. `orgId` is the chat's.
  */
+/** How long the message a Waiting on you row opened stays tinted. */
+export const KIN_LAND_MARK_MS = 1_600;
+
 export function kinChatReads(input: {
   readonly chatId: KinChatId | null;
   readonly chats: ReadonlyArray<KinChatSummary> | null;
@@ -128,6 +134,8 @@ export function kinChatScreen(input: {
     contact,
     /** The lead's charter, which the empty chat's intro opens with. */
     charter: lead === null ? null : kinIntroCharter(lead.charter),
+    /** The viewer's own Chief of staff: its intro says what it does with What we sell's answer. */
+    setsUp: lead !== null && kinIsChiefOfStaff(lead.domain),
     /** What the owner of someone else's lead wrote for the people it talks to. */
     about: contact === null || contact.intro.trim() === "" ? null : contact.intro,
     activeAgents: leads === null ? 0 : kinAgentGroups(leads.leads).active.length,
@@ -205,11 +213,70 @@ type KinChatFeedInput = {
    * Team-room discussion's id, which opens on its first row.
    */
   readonly landOn: string | null;
+  /**
+   * The stream has answered since the chat opened. Until then only the saved copy shows, which
+   * can't hold what a push just named, so a `landOn` it lacks isn't read back for.
+   */
+  readonly caughtUp: boolean;
   readonly ownsLead: boolean;
   readonly agentName: string | null;
   readonly retired: boolean;
   readonly readOnly: boolean;
+  /** Where the "New" line was placed; absent or null draws none. */
+  readonly newLine?: KinNewLineHold | null;
 };
+
+const NEW_LINE_KEY = "new-line";
+const NEW_LINE_LABEL = "New";
+const LAND_VIEW_POSITION = 0.3;
+const NEW_LINE_VIEW_POSITION = 0.08;
+
+/** Where a chat opens once its rows have loaded: a requested message/discussion, or its "New" line. */
+export type KinChatOpenRow = {
+  readonly kind: "land" | "new-line";
+  /** Stable id for "opened once": the requested `landOn` id, or `"new-line"`. */
+  readonly key: string;
+  readonly index: number;
+  readonly viewPosition: number;
+};
+
+/** The highest seq a chat row shows; 0 for rows that show none. */
+function kinChatRowSeq(row: KinChatRow): number {
+  switch (row.type) {
+    case "message":
+    case "system":
+    case "relay":
+      return row.message.seq;
+    case "fold":
+      return row.lastSeq;
+    case "cards":
+      return Math.max(
+        row.first.message.seq,
+        row.question?.message.seq ?? 0,
+        ...row.tasks.map((task) => task.message.seq),
+      );
+    case "day":
+    case "draft":
+    case "footer":
+    case "pending":
+      return 0;
+  }
+}
+
+/** The "New" line, drawn as a divider before the row that holds `seq`, and its row index (-1 if none). */
+function withNewLine(rows: ReadonlyArray<KinChatRow>, seq: number | null) {
+  if (seq === null) return { rows, newLineIndex: -1 };
+  const index = rows.findIndex((row) => kinChatRowSeq(row) >= seq);
+  if (index < 0) return { rows, newLineIndex: -1 };
+  return {
+    rows: [
+      ...rows.slice(0, index),
+      { type: "day" as const, key: NEW_LINE_KEY, label: NEW_LINE_LABEL },
+      ...rows.slice(index),
+    ],
+    newLineIndex: index,
+  };
+}
 
 /**
  * What a chat's feed shows and in what order, and whether the person may write; scrolling does
@@ -249,11 +316,13 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
       ),
     ),
   );
+  const newLineSeq = kinNewLineSeq(messages, input.newLine ?? null, input.viewer.personId);
+  const { rows: linedRows, newLineIndex } = withNewLine(groupedRows, newLineSeq);
   const rows: ReadonlyArray<KinChatRow> =
     pending.length === 0
-      ? groupedRows
+      ? linedRows
       : [
-          ...groupedRows,
+          ...linedRows,
           ...pending.map((entry, index) => ({
             type: "pending" as const,
             key: `pending:${entry.clientMessageId}`,
@@ -273,9 +342,22 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
               : row.type === "cards" &&
                 [row.question, ...row.tasks].some((card) => card?.message.messageId === landOn),
         );
+  const openRow: KinChatOpenRow | null =
+    landOn !== null
+      ? landIndex >= 0
+        ? { kind: "land", key: landOn, index: landIndex, viewPosition: LAND_VIEW_POSITION }
+        : null
+      : newLineIndex >= 0
+        ? {
+            kind: "new-line",
+            key: NEW_LINE_KEY,
+            index: newLineIndex,
+            viewPosition: NEW_LINE_VIEW_POSITION,
+          }
+        : null;
   const earlierPage = kinEarlierPage(input.chatId, messages, input.exhausted, live.clearedSeq);
   // Older than what has loaded: page back to it rather than open at the end.
-  const landPage = landOn !== null && landIndex < 0 ? earlierPage : null;
+  const landPage = landOn !== null && landIndex < 0 && input.caughtUp ? earlierPage : null;
   const showIntro = kinIntroVisible({
     // Nobody is there to greet in a retired agent's chat.
     ownsLead: input.ownsLead && !input.retired,
@@ -305,6 +387,8 @@ export function kinChatFeedRows(input: KinChatFeedInput) {
     landIndex,
     /** The page to read next to reach `landOn`; null once it has loaded or nothing is left. */
     landPage,
+    /** The row to open the feed on, or null to open at its end. */
+    openRow,
     latestSeq: latestKinSeq(messages),
     earlierPage,
     showIntro,

@@ -16,6 +16,7 @@ const state = vi.hoisted(() => ({
   shells: null as unknown as { set: (id: string, value: unknown) => void },
   navigate: vi.fn(),
   sound: vi.fn(),
+  unlock: vi.fn(),
   badge: vi.fn(),
   settingsListeners: new Set<() => void>(),
 }));
@@ -80,7 +81,7 @@ vi.mock(import("../hooks/useSettings"), async (original) => ({
 vi.mock(import("../threadNotifications"), async (original) => ({
   ...(await original()),
   playNotificationSound: state.sound,
-  unlockNotificationAudio: vi.fn(),
+  unlockNotificationAudio: state.unlock,
   setNotificationBadge: state.badge,
 }));
 
@@ -112,6 +113,7 @@ class TestNotification extends EventTarget {
 const thread = {
   id: "thread",
   title: "Test thread",
+  projectId: "project",
   archivedAt: null as string | null,
   hasPendingApprovals: false,
   hasPendingUserInput: false,
@@ -128,7 +130,7 @@ function toV2ThreadShell(input: typeof thread) {
   const latestTurn = input.latestTurn;
   return {
     id: input.id,
-    projectId: "project",
+    projectId: input.projectId,
     title: input.title,
     providerInstanceId: "codex",
     modelSelection: { instanceId: "codex", model: "gpt-5.4" },
@@ -291,6 +293,35 @@ it("presents completion notifications and sound as soon as the shell completes",
   );
   expect(TestNotification.sent.map((sent) => sent.title)).toEqual(["Thread completed"]);
   expect(state.sound).toHaveBeenCalledWith("completion", expect.any(Function));
+  // A Kin agent's run: Kin's own message alert speaks for it.
+  const kinRun = { id: "kin-run", projectId: "kin:kin-default:finance", title: "Finance" };
+  const done = { turnId: "turn", state: "completed", completedAt: "2026-09-13T07:00:01.000Z" };
+  state.shells.set("one", shell({ latestTurn: done }, kinRun));
+  state.shells.set(
+    "one",
+    shell(
+      { latestTurn: done },
+      {
+        ...kinRun,
+        latestTurn: { ...done, turnId: "kin-turn", completedAt: "2026-09-13T07:00:02.000Z" },
+      },
+    ),
+  );
+  expect(TestNotification.sent.map((sent) => sent.title)).toEqual(["Thread completed"]);
+  expect(state.sound).toHaveBeenCalledTimes(1);
+});
+
+it.each([
+  { client: "desktop app", when: "at startup", bridge: {}, beforeGesture: 1 },
+  { client: "browser", when: "on the first gesture", bridge: undefined, beforeGesture: 0 },
+])("readies notification sound in the $client $when", async ({ bridge, beforeGesture }) => {
+  await using app = setup();
+  using _bridge = stubGlobal("desktopBridge", bridge);
+  state.mode = "sound";
+  app.start();
+  expect(state.unlock).toHaveBeenCalledTimes(beforeGesture);
+  document.dispatchEvent(new Event("pointerdown"));
+  expect(state.unlock).toHaveBeenCalledTimes(beforeGesture + 1);
 });
 
 it.each([false, true])(

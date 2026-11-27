@@ -38,7 +38,7 @@ import * as Stream from "effect/Stream";
 
 import { KinIdentity, type PersonIdentity } from "../chat/KinIdentity.ts";
 import { mayActAsOwner } from "../people/KinAccess.ts";
-import { sectionOn } from "../shell/KinShell.ts";
+import { sectionOnFor as sectionOn } from "../shell/KinShell.ts";
 import { DEALS_OFF } from "../shell/sections.ts";
 import { companyMoneyState } from "./companyProfile.ts";
 import { contactAll } from "./contactDetails.ts";

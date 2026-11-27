@@ -5,6 +5,7 @@ import * as Duration from "effect/Duration"
 import * as Effect from "effect/Effect"
 import * as Exit from "effect/Exit"
 import * as Fiber from "effect/Fiber"
+import * as Layer from "effect/Layer"
 import * as Scheduler from "effect/Scheduler"
 import * as TestClock from "effect/testing/TestClock"
 import * as TestConsole from "effect/testing/TestConsole"
@@ -13,7 +14,7 @@ import { vi } from "vitest"
 describe("TestClock", () => {
   describe("warnings", { concurrent: false }, () => {
     for (const warning of ["not advancing the test clock", "still running without suspending"] as const) {
-      it.effect(`warnings bypass TestConsole - ${warning}`, () =>
+      it.live(`warnings bypass TestConsole - ${warning}`, () =>
         Effect.gen(function*() {
           const output: Array<unknown> = []
           yield* Effect.acquireRelease(
@@ -48,7 +49,11 @@ describe("TestClock", () => {
           }).pipe(Effect.timeout("3 seconds"), TestClock.withLive)
           assert.deepStrictEqual(captured, ["ordinary output"])
           assert.isTrue(containsWarning(output))
-        }))
+        }).pipe(
+          // The environment `it.effect` provides, with a shorter warning delay. `it.live`
+          // starts without TestConsole, so the clock captures the real console.
+          Effect.provide(Layer.mergeAll(TestConsole.layer, TestClock.layer({ warningDelay: "10 millis" })))
+        ))
     }
   })
 
@@ -101,6 +106,28 @@ describe("TestClock", () => {
       yield* TestClock.adjust("11 hours")
       assert.deepStrictEqual(fiber.pollUnsafe(), Exit.void)
       assert.isTrue(elapsed)
+    }))
+
+  it.effect("sleep - preserves interruption masking in a finalizer on first use", () =>
+    Effect.gen(function*() {
+      const clock = yield* TestClock.make()
+      const events: Array<string> = []
+      const fiber = yield* Effect.never.pipe(
+        Effect.ensuring(Effect.gen(function*() {
+          events.push("cleanup started")
+          yield* Effect.sleep("1 second")
+          events.push("cleanup finished")
+        })),
+        Effect.provideService(Clock.Clock, clock),
+        Effect.forkChild({ startImmediately: true })
+      )
+      fiber.interruptUnsafe()
+      yield* Effect.yieldNow
+      assert.deepStrictEqual(events, ["cleanup started"])
+      assert.isUndefined(fiber.pollUnsafe())
+      yield* clock.adjust("1 second")
+      yield* Fiber.await(fiber)
+      assert.deepStrictEqual(events, ["cleanup started", "cleanup finished"])
     }))
 
   it.effect("sleep - handles multiple sleeps", () =>

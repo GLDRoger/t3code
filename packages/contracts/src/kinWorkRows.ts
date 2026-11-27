@@ -283,6 +283,8 @@ function kinWorkMatches(
     input.dateTo !== undefined ||
     input.paidFrom !== undefined ||
     input.paidTo !== undefined ||
+    input.spentFrom !== undefined ||
+    input.spentTo !== undefined ||
     input.totalsBy !== undefined
   )
     return undefined;

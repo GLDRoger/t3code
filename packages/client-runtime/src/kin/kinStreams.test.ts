@@ -96,7 +96,13 @@ const leftEvent = {
 
 const chatRowKey = queryPersistenceKey(KIN_CHAT_LABEL, { chatId });
 const CachedChat = Schema.fromJsonString(
-  Schema.toCodecJson(Schema.Struct({ chat: KinChatState, savedAt: Schema.String })),
+  Schema.toCodecJson(
+    Schema.Struct({
+      chat: KinChatState,
+      savedAt: Schema.String,
+      accessStamp: Schema.optional(Schema.String),
+    }),
+  ),
 );
 const encodeCachedChat = Schema.encodeSync(CachedChat);
 const decodeCachedChat = Schema.decodeSync(CachedChat);
@@ -369,6 +375,7 @@ describe("Kin streams", () => {
             contiguousSeq: 1,
             changeSeq: 0,
             reads: {},
+            readSeq: null,
             memberChanges: 0,
             drafts: [],
             presence: [],
@@ -543,6 +550,7 @@ describe("Kin streams", () => {
             drafts: [],
             presence: [],
             reads: {},
+            readSeq: null,
             memberChanges: 0,
             needsHistoryReload: false,
             clearedSeq: 0,
@@ -648,6 +656,7 @@ describe("Kin streams", () => {
         drafts: [],
         presence: [],
         reads: {},
+        readSeq: null,
         memberChanges: 0,
         needsHistoryReload: false,
         clearedSeq: 0,
@@ -765,6 +774,101 @@ describe("Kin streams", () => {
       yield* Queue.offer(moves, "1");
       expect((yield* Queue.take(views)).value.messages[0]?.links).toBeUndefined();
     }),
+  );
+
+  it.effect(
+    "a changed access stamp re-reads a chat's links once; an equal or absent one reads nothing",
+    () =>
+      Effect.gen(function* () {
+        const linked = {
+          ...message(1),
+          links: [
+            { text: "INV-8", to: { _tag: "record", key: "INV-8", kind: "entry" }, note: null },
+          ],
+        } as unknown as KinMessage;
+        const cachedChat = (chat: KinChatState, accessStamp?: string) =>
+          encodeCachedChat({
+            chat,
+            savedAt: "cached-at",
+            ...(accessStamp === undefined ? {} : { accessStamp }),
+          });
+        const rows = new Map<string, string>();
+        rows.set(
+          chatRowKey,
+          cachedChat(
+            {
+              messages: [linked],
+              widgets: [],
+              reactions: [],
+              contiguousSeq: 1,
+              changeSeq: 4,
+              drafts: [],
+              presence: [],
+              reads: {},
+              readSeq: null,
+              memberChanges: 0,
+              needsHistoryReload: false,
+              clearedSeq: 0,
+              left: false,
+              closed: null,
+            },
+            "A",
+          ),
+        );
+        let reads = 0;
+        const readHistory = () =>
+          Effect.sync(() => {
+            reads += 1;
+            return { messages: [message(1)], widgets: [], hasMore: false };
+          });
+        const stored = () => decodeCachedChat(rows.get(chatRowKey) ?? "");
+        // Opens the chat, answers its first backlog, closes it so the cache is written: the reads.
+        const open = Effect.fnUntraced(function* (accessStamp?: string) {
+          const events = yield* Queue.unbounded<KinChatStreamEvent>();
+          const views = yield* Queue.unbounded<KinSynced<KinChatState>>();
+          const provide = yield* provider(
+            yield* SubscriptionRef.make<Option.Option<RpcSession>>(
+              Option.some(
+                fakeSession({ chat: () => Stream.fromQueue(events), inbox: Stream.never }),
+              ),
+            ),
+            rows,
+          );
+          const fiber = yield* makeKinChatStream(readHistory)({ chatId }).pipe(
+            Stream.runForEach((view) => Queue.offer(views, view)),
+            provide,
+            Effect.forkChild,
+          );
+          expect((yield* Queue.take(views)).live).toBe(false);
+          yield* Queue.offer(events, {
+            _tag: "backlog",
+            messages: [],
+            widgets: [],
+            lastSeq: 1,
+            lastChangeSeq: 4,
+            ...(accessStamp === undefined ? {} : { accessStamp }),
+          } as unknown as KinChatStreamEvent);
+          // The backlog's view is emitted after any page it asked for was read.
+          expect((yield* Queue.take(views)).live).toBe(true);
+          yield* Fiber.interrupt(fiber);
+          const read = reads;
+          reads = 0;
+          return read;
+        });
+
+        expect(yield* open("B")).toBe(1);
+        expect(stored().accessStamp).toBe("B");
+        expect(stored().chat.messages[0]?.links).toBeUndefined();
+        expect(yield* open("B")).toBe(0);
+        expect(yield* open()).toBe(0);
+        expect(stored().accessStamp).toBe("B");
+
+        // A cache written by an older build has no stamp: this one is kept, nothing is read.
+        rows.set(chatRowKey, cachedChat({ ...stored().chat, messages: [linked] }));
+        expect(yield* open("C")).toBe(0);
+        expect(stored().accessStamp).toBe("C");
+        expect(stored().chat.messages[0]?.links).toHaveLength(1);
+      }),
   );
 
   it.effect("rereads the leads when a group or the Team room starts or stops working", () =>

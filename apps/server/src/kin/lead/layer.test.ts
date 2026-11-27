@@ -28,6 +28,7 @@ import { KinSocialToolkit } from "../social/mcp.ts";
 import { KinSalesToolkit } from "../sales/mcp.ts";
 import { KinPulseToolkit } from "../pulse/mcp.ts";
 import { KinDocumentToolkit } from "../gendocs/mcp.ts";
+import { KinToolchain } from "../gendocs/toolchain.ts";
 import { KinPictureToolkit } from "../pictures/mcp.ts";
 import { KinWorkToolkit } from "../work/mcp/tools.ts";
 import { KinDocsToolkit } from "../work/mcp/docTools.ts";
@@ -51,7 +52,8 @@ import * as KinLead from "./layer.ts";
 import { event, harness, seed, orgId } from "./WakeupRunner.testkit.ts";
 
 const external = Layer.mergeAll(
-  Layer.mock(ChatService.KinChatService)({}),
+  // The lead runtime attaches its memory reader for deferral card taps.
+  Layer.mock(ChatService.KinChatService)({ attachDeferralItems: () => Effect.void }),
   Layer.mock(ScheduledTaskService.ScheduledTaskService)({}),
   Layer.mock(KinRecords.KinRecords)({}),
   Layer.mock(ChatHub.KinChatHub)({ subscribeAll: Effect.succeed(Stream.never) }),
@@ -73,6 +75,7 @@ const external = Layer.mergeAll(
   }),
   Layer.mock(KinSocial)({ provider: zernio }),
   Layer.mock(KinPictures)({}),
+  Layer.mock(KinToolchain)({}),
   Layer.mock(PreviewBrowser.PreviewBrowser)({}),
   Layer.mock(ProcessRunner)({}),
   Layer.mock(ServerEnvironment.ServerEnvironment)({}),

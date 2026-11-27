@@ -20,6 +20,7 @@ export * from "./kinMoney.ts";
 export * from "./kinCurrency.ts";
 export * from "./kinWhen.ts";
 export * from "./kinPulse.ts";
+export * from "./kinNumbers.ts";
 export * from "./kinOpen.ts";
 export * from "./kinRecommendations.ts";
 export * from "./kinWatches.ts";
@@ -30,6 +31,7 @@ export * from "./kinWorkMove.ts";
 export * from "./kinFinance.ts";
 export * from "./kinMoneyAnswers.ts";
 export * from "./kinStatements.ts";
+export * from "./kinBills.ts";
 export * from "./kinPush.ts";
 
 export * from "./kinRpcs.ts";

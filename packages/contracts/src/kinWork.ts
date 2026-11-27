@@ -37,7 +37,7 @@ import {
   KinPayment,
   KinRepeatRule,
 } from "./kinMoney.ts";
-import { KinWatchLine } from "./kinWatches.ts";
+import { KinWatchLine } from "./kinWatchLine.ts";
 
 /**
  * Work: everything someone owes someone, as entries in lists. Built in: Work, and the light CRM's
@@ -144,6 +144,21 @@ export const KinRecordCan = Schema.Struct({
 });
 export type KinRecordCan = typeof KinRecordCan.Type;
 
+/**
+ * Where a promise (an obligation) was made, as its reader may follow it: a meeting or mail logged
+ * on its client, a chat message, or words someone typed. `chatId` and `messageId` only where the
+ * reader may open that chat; `at` is when the meeting, mail or message happened.
+ */
+export const KinPromiseFrom = Schema.Struct({
+  kind: Schema.Literals(["meeting", "mail", "chat", "note"]),
+  at: Schema.optional(IsoDateTime),
+  /** A typed note's own words. */
+  note: Schema.optional(KinTrimmedText),
+  chatId: Schema.optional(KinChatId),
+  messageId: Schema.optional(KinMessageId),
+});
+export type KinPromiseFrom = typeof KinPromiseFrom.Type;
+
 /** A step's words: one checklist line under a task. */
 export const KIN_WORK_STEP_MAX = 200;
 /** How many steps a task holds. */
@@ -230,6 +245,8 @@ export const KinRecord = Schema.Struct({
   markedBy: Schema.optional(KinPersonId),
   /** Its true list when that is newer than older clients know, such as a deal. */
   listName: Schema.optional(KinRecordListName),
+  /** A promise's source, on a client's or deal's page; absent elsewhere and from older hosts. */
+  from: Schema.optional(KinPromiseFrom),
   /** A task's steps, ticked of all; absent with none, and from older hosts. */
   steps: Schema.optional(KinWorkStepCount),
   /** Someone marked the task urgent: first within its day; absent otherwise. */
@@ -345,6 +362,11 @@ export const KIN_TAKEN_DEFAULT_FIELD = "kin:default";
  * which stopped the task waiting on them: the question's id in `to`.
  */
 export const KIN_DISMISSED_FIELD = "kin:dismissed";
+/**
+ * The field a change carries when the person a task waited on said on Kin's card that what it
+ * waited on is done, which put it back to open: the card's id in `to`.
+ */
+export const KIN_WAITED_DONE_FIELD = "kin:waited";
 /** The field a hand-over carries for someone who left the team: `person:<id>` in `from`. */
 export const KIN_LEFT_FIELD = "kin:left";
 /** The field a deal's hand-over carries for each next step that went with it: the step's key in `to`. */
@@ -400,6 +422,7 @@ export const KinProjectNote = Schema.Struct({
   body: KinText,
   at: IsoDateTime,
   by: KinWorkPrincipal,
+  codingAgent: Schema.optional(Schema.String),
   project: KinRecordRef,
 });
 export type KinProjectNote = typeof KinProjectNote.Type;
@@ -428,6 +451,10 @@ export type KinRecordAfterReading = typeof KinRecordAfterReading.Type;
 
 /** An entry with everything the entry sheet shows. */
 export const KinRecordDetail = Schema.Struct({
+  creditOffer: Schema.optionalKey(
+    Schema.Struct({ receipt: KinRecordKey, amount: KinMoney, receivedOn: KinDay }),
+  ),
+  credited: Schema.optionalKey(KinMoney),
   ...KinRecord.fields,
   notes: KinText,
   /** A task's milestone; absent with none, and from older hosts. */
@@ -560,13 +587,20 @@ export const KinWorkListInput = Schema.Struct({
   listCategory: Schema.optional(Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(60)))),
   /**
    * Its own date, or the day it was added when it has none, on or after this day and on or
-   * before `dateTo`, in the owner's time zone: the rule Money's "spent" uses.
+   * before `dateTo`, in the owner's time zone.
    */
   dateFrom: Schema.optional(KinDay),
   dateTo: Schema.optional(KinDay),
   /** A payment was received against it on or after this day, and on or before `paidTo`. */
   paidFrom: Schema.optional(KinDay),
   paidTo: Schema.optional(KinDay),
+  /**
+   * A Paid expense whose money left the company's accounts on or after this day, and on or before
+   * `spentTo`, in the owner's time zone: exactly what Money's "spent" counts. A partner's counts
+   * on the day it was paid back, never while owed. Ignored by older servers.
+   */
+  spentFrom: Schema.optional(KinDay),
+  spentTo: Schema.optional(KinDay),
   /**
    * `true`: only entries a figure counts, so a list opened from one matches it. `false`: only
    * suggestions nobody kept or dropped yet. Ignored by older servers.
@@ -617,8 +651,10 @@ export const KinWorkRowMove = Schema.Struct({
   nudgedAt: Schema.optional(IsoDateTime),
   /** A task handed back to the reader: its holder's words on why, when they left any. */
   handedBackNote: Schema.optional(KinText),
+  handedBackByCodingAgent: Schema.optional(Schema.Boolean),
   /** A task the reader holds: who last asked them today where it stands. */
   askedBy: Schema.optional(KinPersonId),
+  askedByCodingAgent: Schema.optional(Schema.Boolean),
   /** A Needs you task nothing asks of yet: undated, or dated past the coming week. */
   under: Schema.optional(KinWorkMoveUnder),
 });
@@ -800,8 +836,11 @@ export type KinWorkEvent = typeof KinWorkEvent.Type;
 /** The owner's "New": a short form. Long text belongs in chat. */
 export const KinWorkCreateInput = Schema.Struct({
   orgId: KinOrgId,
-  /** `milestones` adds a milestone to `project`; default a Work entry. */
-  list: Schema.optional(Schema.Literal("milestones")),
+  /** A milestone in its project or a team list entry. Default is a Work entry. */
+  list: Schema.optional(KinListId),
+  fields: Schema.optional(
+    Schema.Record(KinListFieldKey, Schema.NullOr(KinFieldValue)).check(Schema.isMaxProperties(20)),
+  ),
   title: KinTrimmedText.check(Schema.isMaxLength(280)),
   /** Defaults to the owner. A lead given work this way is woken to do it. */
   owner: Schema.optional(KinWorkPrincipal),
@@ -818,6 +857,10 @@ export const KinWorkCreateInput = Schema.Struct({
   repo: Schema.optional(KinRepoName),
   /** A task that comes back: when it closes, the next one is made from its due date. */
   repeat: Schema.optional(KinRepeatRule),
+  /** A deal's key: the entry sits on that deal, and takes its client when `party` is absent. */
+  deal: Schema.optional(KinRecordKey),
+  /** Where a promise was made, in the person's own words ("At the site visit"). */
+  from: Schema.optional(KinTrimmedText.check(Schema.isMaxLength(280))),
   /** A task's steps, in order, none ticked. */
   steps: Schema.optional(
     Schema.Array(KinWorkStepTitle).check(Schema.isMaxLength(KIN_WORK_STEPS_MAX)),
@@ -1144,6 +1187,8 @@ export const KinPartyRow = Schema.Struct({
   tags: Schema.optional(Tags),
   /** The contact whose name the list's search found, when the client's own name didn't have it. */
   contact: Schema.optional(KinTrimmedText),
+  /** Issued invoices' balances the reader sees, by currency; absent when they owe nothing. */
+  owed: Schema.optional(KinMoneyTotals),
   /** The soonest open entry we owe them. */
   next: Schema.NullOr(
     Schema.Struct({
@@ -1166,6 +1211,7 @@ export const KinPartyDetail = Schema.Struct({
   address: Schema.NullOr(KinText),
   /** Its GSTIN, when it has one; its invoices are taxed by its state. */
   gstin: Schema.NullOr(KinText),
+  accountsForTax: Schema.optional(Schema.Boolean),
   /** Where it is supplied: an Indian state, or a country outside India for an export. */
   placeOfSupply: Schema.NullOr(KinText),
   /** Which fields here are sensitive whatever `sensitive` says. */
@@ -1236,6 +1282,8 @@ export const KinProjectDetail = Schema.Struct({
   startsOn: Schema.optional(Schema.NullOr(KinDay)),
   /** A retainer's next renewal day. */
   renewsOn: Schema.optional(Schema.NullOr(KinDay)),
+  /** Days of notice before `renewsOn` to end or change the contract; absent from older hosts. */
+  noticeDays: Schema.optional(Schema.NullOr(NonNegativeInt)),
   /** The people and agents on it besides its lead (`owner`). Membership only; it grants nothing. */
   members: Schema.optional(Schema.Array(KinWorkPrincipal)),
   /** A campaign's audience, the contacts carrying this tag; kept on one turned back to a project. */
@@ -1323,6 +1371,9 @@ export type KinPartyCan = typeof KinPartyCan.Type;
 
 /** The client page. `weOwe` is soonest due first; `theyOwe` is overdue first, then soonest. */
 export const KinPartyPage = Schema.Struct({
+  credit: Schema.optionalKey(
+    Schema.Array(Schema.Struct({ key: KinRecordKey, amount: KinMoney, receivedOn: KinDay })),
+  ),
   party: KinPartyDetail,
   /** Active first, then by name. */
   contacts: Schema.Array(KinContact),
@@ -1333,6 +1384,18 @@ export const KinPartyPage = Schema.Struct({
   /** Newest first, a few; absent from hosts before contact logs. */
   touches: Schema.optional(Schema.Array(KinClientTouch)),
   can: Schema.optional(KinPartyCan),
+  /**
+   * The soonest renewal among its open projects the reader sees, with the last day to give notice
+   * (`renewsOn` less the project's `noticeDays`); `soon` within the renewal heads-up days.
+   */
+  contract: Schema.optional(
+    Schema.Struct({
+      project: KinRecordKey,
+      renewsOn: KinDay,
+      noticeBy: Schema.optional(KinDay),
+      soon: Schema.optional(Schema.Literal(true)),
+    }),
+  ),
   /**
    * To the owner level while it isn't private: who sees it now and wouldn't once kept private,
    * by name. Absent otherwise and from older hosts.
@@ -1545,6 +1608,8 @@ export const KinPartyCreateInput = Schema.Struct({
   terms: Schema.optional(Notes),
   address: Schema.optional(Address),
   gstin: Schema.optional(KinGstin),
+  accountsForTax: Schema.optional(Schema.Boolean),
+  taxNumber: Schema.optional(Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(100)))),
   /** A state from `KIN_GST_STATES`, or a country for an export. */
   placeOfSupply: Schema.optional(PlaceOfSupply),
   /** Labels everything pointing at it sensitive too. */
@@ -1577,6 +1642,8 @@ export const KinPartyUpdateInput = Schema.Struct({
   address: Schema.optional(Schema.NullOr(Address)),
   /** `null` clears these two. */
   gstin: Schema.optional(Schema.NullOr(KinGstin)),
+  accountsForTax: Schema.optional(Schema.Boolean),
+  taxNumber: Schema.optional(Schema.NullOr(KinTrimmedText.check(Schema.isMaxLength(100)))),
   placeOfSupply: Schema.optional(Schema.NullOr(PlaceOfSupply)),
   sensitive: Schema.optional(Schema.Boolean),
   active: Schema.optional(Schema.Boolean),
@@ -1646,6 +1713,10 @@ export const KinContactUpdateInput = Schema.Struct({
 });
 export type KinContactUpdateInput = typeof KinContactUpdateInput.Type;
 
+export const KinNoticeDays = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(1),
+  Schema.isLessThanOrEqualTo(730),
+);
 export const KinProjectCreateInput = Schema.Struct({
   orgId: KinOrgId,
   name: Name,
@@ -1661,6 +1732,8 @@ export const KinProjectCreateInput = Schema.Struct({
   value: Schema.optional(Schema.NullOr(KinMoney)),
   startsOn: Schema.optional(Schema.NullOr(KinDay)),
   renewsOn: Schema.optional(Schema.NullOr(KinDay)),
+  /** Days of notice before `renewsOn`, 1 to 730; `null` clears. */
+  noticeDays: Schema.optional(Schema.NullOr(KinNoticeDays)),
   members: Schema.optional(Schema.Array(KinWorkPrincipal).check(Schema.isMaxLength(50))),
   /** A campaign, with the tag its audience carries. */
   campaign: Schema.optional(Schema.Boolean),
@@ -1687,6 +1760,8 @@ export const KinProjectUpdateInput = Schema.Struct({
   value: Schema.optional(Schema.NullOr(KinMoney)),
   startsOn: Schema.optional(Schema.NullOr(KinDay)),
   renewsOn: Schema.optional(Schema.NullOr(KinDay)),
+  /** Days of notice before `renewsOn`, 1 to 730; `null` clears. */
+  noticeDays: Schema.optional(Schema.NullOr(KinNoticeDays)),
   members: Schema.optional(Schema.Array(KinWorkPrincipal).check(Schema.isMaxLength(50))),
   /** `false` makes a campaign an ordinary project again; its audience stays for when it returns. */
   campaign: Schema.optional(Schema.Boolean),
