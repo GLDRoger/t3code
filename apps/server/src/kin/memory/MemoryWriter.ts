@@ -57,7 +57,7 @@ import { journalEntry, MemoryJournalError, type JournalContext } from "./journal
 import { QUOTE_MISSING, quoteRefusal } from "./keeping.ts";
 import { kinShapeFailure } from "./lint.ts";
 import { KinSecretScan, KinSecretScanError } from "./secretScan.ts";
-import { deletedQuotes } from "./quoteAccess.ts";
+import { CHAT_SOURCE, deletedQuotes, withoutQuote } from "./quoteAccess.ts";
 import { retireLabels } from "./sensitivity.ts";
 import * as MemoryLander from "./MemoryLander.ts";
 import { MemoryPullRequests } from "./MemoryPullRequests.ts";
@@ -312,19 +312,25 @@ export class MemoryWriter extends Context.Service<
     readonly stripQuotes: (orgId: KinOrgId) => Effect.Effect<void, Failure>;
     /**
      * Once per live lead, lands the items its shadow branch held when leads began working on the
-     * default branch and that the default branch lacks: notes written at L0 before then. Where
-     * both changed an item, or the default branch deleted it, the default branch's stays.
+     * default branch and that the default branch lacks: notes written at L0 before then whose
+     * stored origin proves it (`provenOrigin`). Where both changed an item, or the default
+     * branch deleted it, the default branch's stays. Quotes stay behind.
      */
     readonly landShadows: (orgId: KinOrgId) => Effect.Effect<void, Failure>;
   }
 >()("t3/kin/memory/MemoryWriter") {}
 // No table of its own: a `kin_memory_heads` row no branch uses, holding the shadow head landed.
 const shadowLanded = (agentId: string) => `kin/shadow-landed/${agentId}`;
+// The held line (`deliverHeld`) telling the owner what of a lead's shadow stayed behind.
+const shadowNoticeKind = (agentId: string) => `kin-memory:shadow-landed:${agentId}`;
 // Why a shadow note stayed off the default branch, in the owner's words.
 const heldWhy = {
-  newer: "Memory already had a newer version, so that one stays.",
-  unreadable: "it couldn't be read.",
-  secret: "it looked like it held a password or key.",
+  different: "Memory had a different version, so Kin kept it.",
+  removed: "This note was removed from Memory, so Kin left it out.",
+  unreadable: "It couldn't be read.",
+  secret: "It looked like it held a password or key.",
+  unverified: "Kin couldn't confirm where it came from, so it left it out.",
+  clash: "It clashes with another note in Memory, so Kin left it out.",
 };
 const isRepoSlug = Schema.is(RepoSlug);
 const dreamBranch = /^dream\/\d{4}-\d{2}-\d{2}$/;
@@ -1943,8 +1949,14 @@ const make = Effect.gen(function* () {
         Effect.gen(function* () {
           const main = config.defaultBranch ?? "main";
           const toSql = Effect.mapError(toPersistenceSqlError("MemoryWriter.landShadows"));
-          const pending = yield* sql<{ agentId: string; name: string; branch: string }>`SELECT
-              l.agent_id AS "agentId", l.name, h.branch FROM kin_memory_heads h
+          const pending = yield* sql<{
+            agentId: string;
+            name: string;
+            branch: string;
+            owner: string;
+            ownerChat: string;
+          }>`SELECT l.agent_id AS "agentId", l.name, h.branch, a.owner_person_id AS owner,
+              l.owner_chat_id AS "ownerChat" FROM kin_memory_heads h
             JOIN kin_leads l ON l.org_id = h.org_id AND h.branch = 'kin/shadow/' || l.agent_id
             JOIN kin_agents a ON a.org_id = l.org_id AND a.agent_id = l.agent_id
               AND a.retired_at IS NULL
@@ -1969,14 +1981,61 @@ const make = Effect.gen(function* () {
           if (!Number.isFinite(cutOverSeconds)) return;
           const same = (a: Buffer | undefined, b: Buffer | undefined) =>
             a === undefined ? b === undefined : b !== undefined && a.equals(b);
+          const parsedAt = (path: string, text: string) =>
+            parseFrontMatter(orgId, path, text).pipe(
+              Effect.map(({ frontMatter }) => frontMatter),
+              Effect.option,
+            );
+          // History can't show which host or chat a shadow write came from, so each note's stored
+          // provenance must: this lead's own wake-up or event from before K035 ran here, or a
+          // direct chat of only the owner and this lead. Never a member's word.
+          const provenOrigin = Effect.fn("MemoryWriter.landShadows.provenOrigin")(function* (
+            agentId: string,
+            owner: string,
+            item: MemoryItemFrontMatter,
+          ) {
+            if (item.trust === "member" || item.shared_from !== undefined) return false;
+            const cutOverMs = cutOverSeconds * 1000;
+            const wakeup = /^wakeup:(.+)$/.exec(item.source)?.[1];
+            const event = /^kin:event:(.+)$/.exec(item.source)?.[1];
+            const cited = CHAT_SOURCE.exec(item.source)?.[1];
+            if (wakeup === undefined && event === undefined && cited === undefined) return false;
+            if (wakeup !== undefined) {
+              const [ran] = yield* sql`SELECT 1 FROM kin_wakeups WHERE org_id = ${orgId}
+                AND wakeup_id = ${wakeup} AND agent_id = ${agentId}
+                AND started_at < ${cutOverMs}`.pipe(toSql);
+              if (ran === undefined) return false;
+            }
+            if (event !== undefined) {
+              const [queued] = yield* sql`SELECT 1 FROM kin_events WHERE org_id = ${orgId}
+                AND event_id = ${event} AND agent_id = ${agentId}
+                AND queued_at < ${cutOverMs}`.pipe(toSql);
+              if (queued === undefined) return false;
+            }
+            const chats = [...new Set([item.chat, cited].filter((chat) => chat !== undefined))];
+            if (chats.length === 0) return true;
+            const direct = yield* sql<{ chatId: string }>`SELECT c.chat_id AS "chatId"
+              FROM kin_chats c WHERE c.org_id = ${orgId} AND c.kind = 'direct'
+                AND c.chat_id IN ${sql.in(chats)}
+                AND EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = c.org_id
+                  AND m.chat_id = c.chat_id AND m.agent_id = ${agentId})
+                AND EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = c.org_id
+                  AND m.chat_id = c.chat_id AND m.person_id = ${owner})
+                AND NOT EXISTS (SELECT 1 FROM kin_chat_members m WHERE m.org_id = c.org_id
+                  AND m.chat_id = c.chat_id AND m.principal_kind = 'person'
+                  AND m.person_id <> ${owner})
+              ORDER BY c.chat_id`.pipe(toSql);
+            return direct.length === chats.length;
+          });
           // A lead that fails is logged and left unmarked, so the next sync retries it alone.
-          for (const { agentId, name, branch } of pending)
+          for (const { agentId, name, branch, owner, ownerChat } of pending)
             yield* Effect.gen(function* () {
               const tip = yield* branchHead(orgId, writer, branch);
+              // `--before` takes its own second, and a commit that second may be after K035 ran.
               const shadowHead = yield* git(orgId, writer, [
                 "rev-list",
                 "-1",
-                `--before=@${cutOverSeconds}`,
+                `--before=@${Math.ceil(cutOverSeconds) - 1}`,
                 tip,
               ]);
               const mark = sql`INSERT INTO kin_memory_heads (org_id, branch, head)
@@ -1986,45 +2045,96 @@ const make = Effect.gen(function* () {
               const shadowFiles = yield* filesAt(orgId, writer, shadowHead);
               const head = yield* branchHead(orgId, writer, main);
               const headFiles = yield* filesAt(orgId, writer, head);
-              const base = yield* git(orgId, writer, ["merge-base", head, shadowHead]).pipe(
-                Effect.orElseSucceed(() => ""),
-              );
-              const baseFiles: ReadonlyMap<string, Buffer> =
-                base === "" ? new Map() : yield* filesAt(orgId, writer, base);
+              // Without one base both share, a note the default branch removed reads as new.
+              const bases = (yield* git(orgId, writer, ["merge-base", "--all", head, shadowHead]))
+                .split("\n")
+                .filter((line) => line !== "");
+              if (bases.length !== 1)
+                return yield* new MemorySyncConflict({
+                  orgId,
+                  operation: "landShadows",
+                  reason: "The shadow branch and the default branch share no single base",
+                });
+              const baseFiles = yield* filesAt(orgId, writer, bases[0]!);
               const files = new Map<string, string>();
-              const held: Array<{ path: string | undefined; why: keyof typeof heldWhy }> = [];
+              const held: Array<{ path: string; why: keyof typeof heldWhy }> = [];
               for (const [path, bytes] of shadowFiles) {
                 if (!folders.some((folder) => path.startsWith(`${folder}/`))) continue;
                 const now = headFiles.get(path);
-                if (same(baseFiles.get(path), bytes) || same(now, bytes)) continue;
+                const was = baseFiles.get(path);
+                if (same(was, bytes) || same(now, bytes)) continue;
                 // Changed on the default branch too, deletion included: its version stays.
-                if (!same(now, baseFiles.get(path))) held.push({ path, why: "newer" });
-                else files.set(path, bytes.toString("utf8"));
+                if (!same(now, was))
+                  held.push({ path, why: now === undefined ? "removed" : "different" });
+                // A quote can't be checked against a clear that runs while this lands.
+                else files.set(path, withoutQuote(bytes.toString("utf8")));
               }
-              const unquoted = yield* deletedQuotes(orgId, files).pipe(
-                Effect.provideService(SqlClient.SqlClient, sql),
-                toSql,
-              );
-              for (const [path, text] of unquoted) files.set(path, text);
-              const ending: Array<string> = [];
+              const items = new Map<string, MemoryItemFrontMatter>();
               for (const [path, text] of files) {
-                const parsed = yield* parseFrontMatter(orgId, path, text).pipe(Effect.option);
+                const item = yield* parsedAt(path, text);
+                if (Option.isNone(item)) held.push({ path, why: "unreadable" });
+                else if (
+                  (yield* scanner.scan({ orgId, files: [{ path, content: Buffer.from(text) }] }))
+                    .length > 0
+                )
+                  held.push({ path, why: "secret" });
+                else if (!(yield* provenOrigin(agentId, owner, item.value)))
+                  held.push({ path, why: "unverified" });
+                else {
+                  items.set(path, item.value);
+                  continue;
+                }
+                files.delete(path);
+              }
+              // Two notes with one id fail every read of it (`MemoryDuplicateId`).
+              const paths = new Map<string, Array<string>>();
+              const claim = (id: string, path: string) =>
+                paths.set(id, [...(paths.get(id) ?? []), path]);
+              for (const [path, bytes] of headFiles)
+                if (!files.has(path) && folders.some((folder) => path.startsWith(`${folder}/`))) {
+                  const item = yield* parsedAt(path, bytes.toString("utf8"));
+                  if (Option.isSome(item)) claim(item.value.id, path);
+                }
+              for (const [path, item] of items) claim(item.id, path);
+              const ending: Array<string> = [];
+              for (const [path, item] of items)
+                if ((paths.get(item.id)?.length ?? 0) > 1) {
+                  files.delete(path);
+                  held.push({ path, why: "clash" });
+                } else if (retired(item)) ending.push(item.id);
+              // A name the scan flags stays out of the owner's chat and the log.
+              const shown: Array<{ path: string | undefined; why: keyof typeof heldWhy }> = [];
+              for (const { path, why } of held.toSorted((a, b) => a.path.localeCompare(b.path))) {
                 const findings = yield* scanner.scan({
                   orgId,
-                  files: [{ path, content: Buffer.from(text) }],
+                  files: [{ path, content: new Uint8Array() }],
                 });
-                if (Option.isNone(parsed) || findings.length > 0) {
-                  files.delete(path);
-                  // A secret in the file's name keeps the name out of the owner's chat too.
-                  const named = !findings.some((finding) => finding.path !== path);
-                  held.push({
-                    path: named ? path : undefined,
-                    why: Option.isNone(parsed) ? "unreadable" : "secret",
-                  });
-                } else if (retired(parsed.value.frontMatter))
-                  ending.push(parsed.value.frontMatter.id);
+                shown.push({ path: findings.length > 0 ? undefined : path, why });
               }
-              if (files.size === 0) yield* mark;
+              const lines = shown.map(
+                ({ path, why }) => `- ${path ?? "One note"}: ${heldWhy[why]}`,
+              );
+              // Kept with the marker, so a restart can't lose it; `deliverHeld` posts it once,
+              // on its own, under an id of its own, after any quiet hours.
+              const at = yield* Clock.currentTimeMillis;
+              const told =
+                shown.length === 0
+                  ? Effect.void
+                  : sql`INSERT INTO kin_held_posts (hold_id, org_id, chat_id, person_id, kind,
+                        body, audience, held_at, deliver_at)
+                      VALUES (${`shadow-landed:${orgId}:${agentId}`}, ${orgId}, ${ownerChat},
+                        ${owner}, ${shadowNoticeKind(agentId)},
+                        ${`Some of ${name}'s earlier notes weren't added to Memory:\n${lines.join("\n")}`},
+                        'owner', ${at}, ${at})
+                      ON CONFLICT DO NOTHING`.pipe(toSql, Effect.asVoid);
+              const landed = mark.pipe(Effect.andThen(told));
+              if (files.size === 0)
+                yield* sql.withTransaction(landed).pipe(
+                  Effect.catchTags({
+                    SqlError: (cause) =>
+                      Effect.fail(toPersistenceSqlError("MemoryWriter.landShadows")(cause)),
+                  }),
+                );
               else {
                 yield* endSharing(orgId, ending);
                 yield* ownerCommit(orgId, {
@@ -2035,17 +2145,15 @@ const make = Effect.gen(function* () {
                   headFiles,
                   files,
                   message: `kin(${agentId}): land notes kept at L0\n\nKin-Shadow-Landed: ${shadowHead}\n`,
-                  landed: () => mark,
+                  landed: () => landed,
                 });
               }
-              if (held.length === 0) return;
-              const lines = held.map(({ path, why }) => `- ${path ?? "One note"}: ${heldWhy[why]}`);
-              yield* recovery.notify({
-                orgId,
-                branch,
-                reason: `Left on the shadow branch: ${held.map(({ path, why }) => `${path ?? "[redacted]"} (${why})`).join(", ")}`,
-                owner: `Some of ${name}'s earlier notes weren't added to Memory:\n${lines.join("\n")}`,
-              });
+              if (shown.length > 0)
+                yield* recovery.notify({
+                  orgId,
+                  branch,
+                  reason: `Left on the shadow branch: ${shown.map(({ path, why }) => `${path ?? "[redacted]"} (${why})`).join(", ")}`,
+                });
             }).pipe(
               Effect.catchCauseIf(
                 (cause) => !Cause.hasInterruptsOnly(cause),
