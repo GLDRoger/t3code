@@ -14,7 +14,9 @@ import {
 } from "@t3tools/contracts";
 import { useState } from "react";
 import { describe, expect, it, vi } from "vite-plus/test";
-import { userEvent } from "vite-plus/test/browser";
+import { page, userEvent } from "vite-plus/test/browser";
+
+import { AppAtomRegistryProvider } from "../rpc/atomRegistry";
 
 const state = vi.hoisted(() => ({
   uploaded: vi.fn<(file: File) => void>(),
@@ -32,6 +34,14 @@ vi.mock(import("../lib/attachmentUploadQueue"), () => ({
   getUploadedAttachments: ({ images }) => [...images],
   readAttachmentUpload: () => undefined,
   releaseAttachmentUpload: () => {},
+}));
+
+vi.mock(import("../assets/assetUrls"), async (original) => ({
+  ...(await original()),
+  useAssetUrls: (_environmentId, resources) =>
+    resources.map(
+      () => "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+    ),
 }));
 
 vi.mock(import("./useKinBills"), () => ({
@@ -235,7 +245,9 @@ describe("bills added in bulk", () => {
     const host = setup();
     const onOpenKey = vi.fn();
     await using screen = await render(
-      <KinBillsPage {...target} batchId="b-1" onOpenKey={onOpenKey} onOpenBatch={() => {}} />,
+      <AppAtomRegistryProvider>
+        <KinBillsPage {...target} batchId="b-1" onOpenKey={onOpenKey} onOpenBatch={() => {}} />
+      </AppAtomRegistryProvider>,
     );
     await expect
       .element(
@@ -248,6 +260,9 @@ describe("bills added in bulk", () => {
     await expect.element(screen.getByText("Couldn't read: amount, currency")).toBeVisible();
     // In the currency printed on it, never converted.
     await expect.element(screen.getByText("$49.00")).toBeVisible();
+
+    await userEvent.click(screen.getByRole("button", { name: "Open bill-1.jpg" }));
+    await userEvent.click(page.getByRole("button", { name: "Back, close image preview" }));
 
     await userEvent.click(screen.getByRole("button", { name: "Keep: bill-1.jpg" }));
     expect(host.act).toHaveBeenLastCalledWith(expect.objectContaining({ key: SHA(1) }), "keep");
