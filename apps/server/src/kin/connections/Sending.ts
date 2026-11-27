@@ -135,11 +135,13 @@ const decodeEvent = Schema.decodeUnknownOption(
 );
 const refused = (message: string) => new KinGatewayError({ reason: "protocol", message });
 
+// A title or calendar name is outside text: one line, so it can't add lines to the card.
+const oneLine = (text: string) => text.replace(/\s+/g, " ").trim();
 const deleteTarget = (event: MailCalendarEvent, eventId: string) => {
   if (event.recurrence === "series")
     return Effect.fail(
       refused(
-        "Kin can delete one occurrence, not a whole series. Delete the series in the calendar.",
+        "This is a whole repeating series, so nothing was deleted. Kin deletes one occurrence at a time; a whole series is deleted in the calendar itself.",
       ),
     );
   if (
@@ -151,17 +153,19 @@ const deleteTarget = (event: MailCalendarEvent, eventId: string) => {
     event.status === "cancelled"
   )
     return Effect.fail(
-      refused("Kin could not verify this event for deletion. Check it in the calendar."),
+      refused(
+        "Kin couldn't check this event (it may be cancelled or gone), so nothing was deleted. Check it in the calendar itself.",
+      ),
     );
   if (event.guests.length > 0 && !event.notifiesGuests)
     return Effect.fail(
       refused(
-        "Only the organizer can cancel this event and notify the guests. To remove it from this calendar, use the calendar directly.",
+        "Someone else organized this event and it has guests, so nothing was deleted. To take it off this calendar, decline or remove it in the calendar itself.",
       ),
     );
   return Effect.succeed({
     eventId,
-    title: event.summary?.trim().slice(0, 300) || "Untitled event",
+    title: oneLine(event.summary ?? "").slice(0, 300) || "Untitled event",
     start: event.start,
     end: event.end,
     occurrence: event.recurrence === "occurrence",
@@ -446,9 +450,14 @@ export const prepareMail = Effect.fn("KinSending.prepareMail")(function* (input:
   };
   if (input.tool === MAIL_TOOL.deleteEvent) {
     const eventId = optional(args, "eventId");
-    if (eventId === null) return yield* refused(`${MAIL_TOOL.deleteEvent} needs eventId.`);
+    if (eventId === null)
+      return yield* refused(
+        `${MAIL_TOOL.deleteEvent} needs eventId, the id ${MAIL_TOOL.events} gives for the event.`,
+      );
     if (input.account === null)
-      return yield* refused("Kin could not verify the calendar account for deletion.");
+      return yield* refused(
+        "Kin doesn't know which account this calendar is signed in as, so nothing was deleted. Signing in to it again in Settings › Connections fixes this.",
+      );
     const calendarId = optional(args, "calendarId") ?? "primary";
     const token = yield* input.token;
     const event = yield* input.provider.calendarEvent(
@@ -804,13 +813,15 @@ const cardOf = (
       `Event: ${prepared.title}`,
       plainWhen({ ...prepared, timeZone: null }, input.clock),
       `Calendar account: ${input.account}`,
-      ...(prepared.calendarName?.trim()
-        ? [`Calendar: ${prepared.calendarName.trim().slice(0, 300)}`]
+      ...(prepared.calendarName && oneLine(prepared.calendarName)
+        ? [`Calendar: ${oneLine(prepared.calendarName).slice(0, 300)}`]
         : prepared.calendarId === "primary"
           ? []
-          : [`Calendar: ${prepared.calendarId.slice(0, 300)}`]),
-      ...(prepared.occurrence ? ["Only this occurrence will be deleted."] : []),
-      ...(prepared.notifyGuests ? [`${service} will notify the guests.`] : []),
+          : [`Calendar: ${oneLine(prepared.calendarId).slice(0, 300)}`]),
+      ...(prepared.occurrence
+        ? ["Only this occurrence will be deleted; the rest of the series stays."]
+        : []),
+      ...(prepared.notifyGuests ? [`${service} will send the guests a cancellation.`] : []),
     ];
     const body = lines.join("\n");
     return {
@@ -985,7 +996,9 @@ export const sendMail = Effect.fn("KinSending.sendMail")(function* (
     );
     const target = yield* deleteTarget(event, prepared.eventId);
     if (target.revision !== prepared.revision)
-      return yield* refused("This event changed after the card was made. Ask for a new card.");
+      return yield* refused(
+        "This event changed after the card was made, so nothing was deleted. Ask for a new card if it should still go.",
+      );
     return yield* handOff(provider.deleteEvent(http, token, prepared));
   }
   const raw = mime(prepared, yield* filesOf(prepared.attachments));

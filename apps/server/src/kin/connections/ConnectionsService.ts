@@ -538,7 +538,7 @@ const sendEnded = (started: boolean, error: unknown): "not_sent" | "refused" | "
   }
 };
 const nothingSent = (why: string) =>
-  /nothing was sent/i.test(why) ? why : `${why} Nothing was sent.`;
+  /nothing was (?:sent|deleted)/i.test(why) ? why : `${why} Nothing was sent.`;
 /** What an identical call is told about its ask, or undefined while its card still waits. */
 const askClosed = (ask: {
   readonly state: string;
@@ -3590,7 +3590,7 @@ const make = Effect.gen(function* () {
     yield* record(turn, { ...entry, status: "awaiting_approval" });
     const asked =
       prepared._tag === "eventDelete"
-        ? "Nothing was deleted. The event can be deleted only by tapping Confirm on the card. Point to the card in one short line. A typed yes does not delete the event."
+        ? "Nothing was deleted yet: the event is deleted only if Confirm is tapped on the card. Say in one short line that the card is waiting. A typed yes does not delete it."
         : row.personId != null
           ? ASKED_OWN
           : outside === undefined
@@ -4525,7 +4525,7 @@ const make = Effect.gen(function* () {
           email
             ? `${where} gave no clear answer. ${UNKNOWN_DELIVERY} Check its sent mail before you confirm the same mail below.`
             : prepared._tag === "eventDelete"
-              ? `${where} gave no clear answer. Check the calendar before trying to delete this event again.`
+              ? `${where} gave no clear answer, so the event may or may not be deleted. Check the calendar before asking to delete it again.`
               : `${where} gave no clear answer. ${UNKNOWN_DELIVERY} Check before sending again.`,
           MAY_HAVE_GONE,
           email,
@@ -4720,13 +4720,17 @@ const make = Effect.gen(function* () {
           connection !== undefined &&
           !(yield* superseded(orgId, row.askId));
         const reason =
-          row.dispatchedAt === null
-            ? email
-              ? "Kin restarted before sending this, so nothing was sent. The same mail is below to confirm again."
-              : "Kin restarted before sending this, so nothing was sent."
-            : email
-              ? `Kin restarted while sending this. ${UNKNOWN_DELIVERY} Check the account's sent mail before you confirm the same mail below.`
-              : `Kin restarted while sending this. ${UNKNOWN_DELIVERY} Check before sending again.`;
+          prepared?._tag === "eventDelete"
+            ? row.dispatchedAt === null
+              ? "Kin restarted before deleting this event, so nothing was deleted."
+              : "Kin restarted while deleting this event, so it may or may not be deleted. Check the calendar before asking to delete it again."
+            : row.dispatchedAt === null
+              ? email
+                ? "Kin restarted before sending this, so nothing was sent. The same mail is below to confirm again."
+                : "Kin restarted before sending this, so nothing was sent."
+              : email
+                ? `Kin restarted while sending this. ${UNKNOWN_DELIVERY} Check the account's sent mail before you confirm the same mail below.`
+                : `Kin restarted while sending this. ${UNKNOWN_DELIVERY} Check before sending again.`;
         const [moved] = yield* sql<{ askId: string }>`UPDATE kin_connection_asks
             SET state = 'failed', reason = ${reason}, done_at = ${now}, owes_card = ${email ? 1 : 0},
               result_json = ${row.dispatchedAt === null ? null : toJson(MAY_HAVE_GONE)}

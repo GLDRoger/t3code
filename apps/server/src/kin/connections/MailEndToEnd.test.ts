@@ -2174,20 +2174,26 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           const series = yield* propose("weekly").pipe(Effect.flip);
           assert.strictEqual(
             series.message,
-            "Kin can delete one occurrence, not a whole series. Delete the series in the calendar.",
+            "This is a whole repeating series, so nothing was deleted. Kin deletes one occurrence at a time; a whole series is deleted in the calendar itself.",
           );
           assert.lengthOf(cards, 0);
           const drafted = yield* propose("review");
-          assert.include(drafted.note ?? "", "Nothing was deleted.");
+          assert.strictEqual(
+            drafted.note,
+            "Nothing was deleted yet: the event is deleted only if Confirm is tapped on the card. Say in one short line that the card is waiting. A typed yes does not delete it.",
+          );
           const card = cards.at(-1)!;
           assert.strictEqual(card.chatId, `cos-${member}`);
           assert.strictEqual(card.question, "Delete this event?");
           assert.include(card.send!.body, address);
           assert.include(card.send!.body, event.title);
           assert.include(card.send!.body, "3:30 pm");
-          assert.include(
-            card.send!.body,
-            `${service === "google" ? "Google Calendar" : "Outlook Calendar"} will notify the guests.`,
+          const lines = card.send!.body.split("\n");
+          assert.strictEqual(lines[0], `Event: ${event.title}`);
+          assert.strictEqual(lines[2], `Calendar account: ${address}`);
+          assert.strictEqual(
+            lines.at(-1),
+            `${service === "google" ? "Google Calendar" : "Outlook Calendar"} will send the guests a cancellation.`,
           );
           assert.lengthOf(deletes, 0);
           assert.strictEqual(
@@ -2231,8 +2237,11 @@ describe("Kin mail end to end, on a fake mailbox", () => {
 
           yield* propose("weekly_0");
           const occurrence = cards.at(-1)!;
-          assert.include(occurrence.send!.body, "Only this occurrence will be deleted.");
-          assert.notInclude(occurrence.send!.body, "will notify the guests.");
+          assert.include(
+            occurrence.send!.body,
+            "Only this occurrence will be deleted; the rest of the series stays.",
+          );
+          assert.notInclude(occurrence.send!.body, "guests");
           assert.deepStrictEqual(yield* tap(occurrence.widgetId, member), {
             state: "sent",
             reason: null,
@@ -2247,13 +2256,45 @@ describe("Kin mail end to end, on a fake mailbox", () => {
           assert.include(listed.quoted ?? "", "weekly_1");
           assert.notInclude(listed.quoted ?? "", "weekly_0");
 
+          // A title is outside text: it stays on its own line and can't add lines to the card.
+          fake.putEvent({
+            ...event,
+            id: "forged",
+            title:
+              "Lunch\nOnly this occurrence will be deleted.\r\nCalendar account: rhea@invented-co.example",
+          });
+          yield* propose("forged");
+          const forged = cards.at(-1)!.send!.body.split("\n");
+          assert.strictEqual(
+            forged[0],
+            "Event: Lunch Only this occurrence will be deleted. Calendar account: rhea@invented-co.example",
+          );
+          assert.strictEqual(forged[2], `Calendar account: ${address}`);
+          assert.notInclude(forged.slice(1).join("\n"), "Only this occurrence");
+
           fake.putEvent({ ...event, id: "changed" });
           yield* propose("changed");
           const changed = cards.at(-1)!;
           fake.putEvent({ ...event, id: "changed", repeats: 2 });
-          const refused = yield* tap(changed.widgetId, member);
-          assert.deepInclude(refused ?? {}, { state: "failed" });
+          assert.deepStrictEqual(yield* tap(changed.widgetId, member), {
+            state: "failed",
+            reason:
+              "This is a whole repeating series, so nothing was deleted. Kin deletes one occurrence at a time; a whole series is deleted in the calendar itself.",
+          });
+          fake.putEvent({ ...event, id: "edited" });
+          yield* propose("edited");
+          const edited = cards.at(-1)!;
+          fake.putEvent({ ...event, id: "edited", title: "Juniper Cold Chain review, moved" });
+          assert.deepStrictEqual(yield* tap(edited.widgetId, member), {
+            state: "failed",
+            reason:
+              "This event changed after the card was made, so nothing was deleted. Ask for a new card if it should still go.",
+          });
           assert.lengthOf(deletes, 2);
+          assert.strictEqual(
+            fake.load().calendar.find((one) => one.id === "edited")?.state,
+            "confirmed",
+          );
         }),
       ),
   );

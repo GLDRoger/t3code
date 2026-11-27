@@ -230,7 +230,7 @@ const sendTools = (vendor: MailVendor) => {
     {
       name: MAIL_TOOL.deleteEvent,
       title: "Delete a calendar event",
-      description: `Propose deleting one event from this account's ${words.calendar}. Nothing is deleted until the calendar owner taps Confirm on the card. Use the id of one occurrence for a repeating event. To delete a whole series, use the calendar directly.`,
+      description: `Propose deleting one event from this account's ${words.calendar}. Nothing is deleted until the calendar's owner taps Confirm on a card showing it. For a repeating event, give the id of one occurrence; Kin can't delete a whole series.`,
       inputSchema: {
         type: "object",
         properties: {
