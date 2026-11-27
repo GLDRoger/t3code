@@ -1841,6 +1841,9 @@ unlisted:
   "rpc:kin.docs.clearRecipeLabel": Served; no client clears a recipe's label yet.
   "rpc:kin.work.statementPasswords": Served; no client manages statement passwords yet.
   "rpc:kin.work.statementForgetAccount": Served; no client forgets a statement account yet.
+  "rpc:kin.bankSenders.list": Served; the Bank alert addresses Settings list is not built yet.
+  "rpc:kin.bankSenders.add": Served; the Bank alert addresses Settings form is not built yet.
+  "rpc:kin.bankSenders.remove": Served; the Bank alert addresses Settings screen is not built yet.
   "rpc:kin.people.setOwnerName": Called by the kin-verify seed (scripts/kin-verify/seed.ts); no client calls it.
   "rpc:kin.refreshes.announce": Called by the host CLI (apps/server/src/kin/cli/announce.ts) from the owner's session.
   "rpc:kin.open.read": Served; clients follow kin.open.subscribe instead, and an agent's list_waiting reads the same list on the host.
