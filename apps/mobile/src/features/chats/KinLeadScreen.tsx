@@ -397,6 +397,7 @@ function KinLeadClearChat(props: {
                 message: kinClearChatBody(
                   props.remembers,
                   AsyncResult.isSuccess(asked) ? asked.value.keptFiles : undefined,
+                  "unknown",
                 ),
                 confirmText: KIN_CLEAR_CHAT_ACTION,
                 destructive: true,
