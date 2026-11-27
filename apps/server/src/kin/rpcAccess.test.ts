@@ -22,6 +22,7 @@ import { authorizeRpc } from "../auth/RpcAuthorization.ts";
 import { layerKinAuthTest } from "./auth/ProofKeySessions.testkit.ts";
 import { KinIdentity } from "./chat/KinIdentity.ts";
 import type { Services } from "./KinServer.ts";
+import { KIN_READ_RPCS } from "./readRpcs.ts";
 import { admits, decodeKinAfterAccess, forPerson } from "./rpcHandlers.ts";
 import { countryFirstMessage } from "./work/companyProfile.ts";
 
@@ -216,6 +217,10 @@ it.layer(layerKinAuthTest("kin-rpc-access-"))("KIN_RPC_ACCESS", (it) => {
           ],
         );
         assert.deepStrictEqual(table.member, MEMBER);
+        assert.isFalse(
+          KIN_READ_RPCS.has("kin.connections.mineCalendar"),
+          "Calendar token rotation needs the existing writer transaction.",
+        );
         for (const method of [
           "kin.work.undoCreditPayment",
           "kin.work.unapplyCredit",

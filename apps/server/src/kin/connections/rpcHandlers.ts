@@ -303,6 +303,7 @@ export const makeKinConnectionHandlers = Effect.fn("makeKinConnectionHandlers")(
       call((c, people) => c.mineSignInStart(people, input)),
     "kin.connections.mineSignInFinish": (input) =>
       call((c, people) => c.mineSignInFinish(people, input)),
+    // OAuth rotation keeps its writer lock. The calendar visibility queries use reader transactions.
     "kin.connections.mineCalendar": (input) => call((c, people) => c.mineCalendar(people, input)),
     "kin.connections.mineRemove": (input) =>
       call((c, people, chat) => c.mineRemove(people, input, closing(input.orgId, chat))),

@@ -192,10 +192,6 @@ const cases = (
   "kin.watches.followUps": { payload: { orgId }, member: true },
   "kin.watches.log": { payload: { orgId }, member: true },
   "kin.org.get": { payload: { orgId }, member: true },
-  "kin.connections.mineCalendar": {
-    payload: { orgId, from: "2026-11-01T00:00:00.000Z", to: "2026-12-01T00:00:00.000Z" },
-    member: true,
-  },
   "kin.leads.list": { payload: { orgId }, member: true },
 });
 

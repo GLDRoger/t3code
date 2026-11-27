@@ -51,6 +51,7 @@ import {
   KinWidgetId,
   ThreadId,
 } from "@t3tools/contracts";
+import * as NodeSqliteClient from "@t3tools/shared/nodeSqliteClient";
 import { McpSchema } from "effect/ai";
 import * as Cache from "effect/Cache";
 import * as Clock from "effect/Clock";
@@ -1299,7 +1300,10 @@ const make = Effect.gen(function* () {
   const readCalendar = Effect.fn("KinConnections.readCalendar")(
     function* (key: CalendarKey): Effect.fn.Return<CalendarRead, unknown> {
       const { orgId, connectionId, signInGen, from, to } = key;
-      const row = yield* connectionById(orgId, connectionId).pipe(provideSql);
+      const row = yield* connectionById(orgId, connectionId).pipe(
+        provideSql,
+        NodeSqliteClient.readOnly,
+      );
       const provider = row === undefined ? undefined : mailProviderOf(row);
       if (
         row === undefined ||
@@ -1919,22 +1923,23 @@ const make = Effect.gen(function* () {
   ) {
     return yield* myMailbox(input.orgId, yield* self(people, input.orgId));
   }, settle);
-  const calendarSources = Effect.fn("KinConnections.calendarSources")(function* (
-    orgId: KinOrgId,
-    personId: KinPersonId,
-  ) {
-    const [person] = yield* sql`SELECT 1 FROM kin_people WHERE org_id = ${orgId}
+  const calendarSources = Effect.fn("KinConnections.calendarSources")(
+    function* (orgId: KinOrgId, personId: KinPersonId) {
+      const [person] = yield* sql`SELECT 1 FROM kin_people WHERE org_id = ${orgId}
         AND person_id = ${personId} AND removed_at IS NULL`;
-    if (person === undefined) return yield* notFound;
-    const own = yield* personConnections(orgId, personId).pipe(provideSql);
-    const company = (yield* ownerLevel(orgId, personId).pipe(provideSql))
-      ? yield* liveConnections(orgId).pipe(provideSql)
-      : [];
-    return [...own, ...company].flatMap((row) => {
-      const provider = mailProviderOf(row);
-      return provider !== undefined && row.pausedAt === null ? [{ row, provider }] : [];
-    });
-  }, sql.withTransaction);
+      if (person === undefined) return yield* notFound;
+      const own = yield* personConnections(orgId, personId).pipe(provideSql);
+      const company = (yield* ownerLevel(orgId, personId).pipe(provideSql))
+        ? yield* liveConnections(orgId).pipe(provideSql)
+        : [];
+      return [...own, ...company].flatMap((row) => {
+        const provider = mailProviderOf(row);
+        return provider !== undefined && row.pausedAt === null ? [{ row, provider }] : [];
+      });
+    },
+    sql.withTransaction,
+    NodeSqliteClient.readOnly,
+  );
 
   const mineCalendar = Effect.fn("KinConnections.mineCalendar")(function* (
     people: People,
