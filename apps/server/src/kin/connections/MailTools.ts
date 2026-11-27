@@ -686,6 +686,7 @@ export const mailProvider = (vendor: MailVendor): MailProvider => {
       vendor.changes({ http, token, mailbox: NO_MAILBOX }, position),
     arrival: (http, token, messageId) =>
       vendor.arrival({ http, token, mailbox: NO_MAILBOX }, messageId),
+    sentSince: vendor.sentSince,
     sendMessage: vendor.sendMessage,
     saveEvent: vendor.saveEvent,
     calendarEvent: (http, token, mailbox, calendarId, eventId) =>

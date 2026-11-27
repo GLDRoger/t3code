@@ -3,6 +3,7 @@ import { pauseMailRulesFor } from "../arrivals/ruleLifecycle.ts";
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- random ids for rows and secret names.
 import * as NodeCrypto from "node:crypto";
 import {
+  IsoDateTime,
   KinAgentId,
   type KinCalendarSource,
   KinChatError,
@@ -133,7 +134,7 @@ import {
   type SignInSecret,
 } from "./ConnectionSecrets.ts";
 import { urlRefusal } from "./EgressGuard.ts";
-import { DAY_MS, WEEK_MS } from "../durations.ts";
+import { DAY_MS, MINUTE_MS, WEEK_MS } from "../durations.ts";
 import { ownDirectChat, turnMailboxes } from "./turnMailbox.ts";
 import { callPrivacy, markPrivate } from "./privateTurn.ts";
 import { CONNECTION_LIMITS } from "./limits.ts";
@@ -151,6 +152,7 @@ import {
   type MailChange,
   type MailMessage,
   type MailProvider,
+  type SentMailHeader,
   receivedAfter,
 } from "./MailProvider.ts";
 import { agendaStartOrder, agendaTime, answeredWith } from "./MailTools.ts";
@@ -336,6 +338,36 @@ const MAY_HAVE_GONE = { mayHaveGone: true } as const;
 const decodeMayHaveGone = Schema.decodeOption(
   Schema.fromJsonString(Schema.Struct({ mayHaveGone: Schema.Literal(true) })),
 );
+const SentLook = Schema.Union([
+  Schema.Struct({ at: IsoDateTime, found: Schema.NullOr(IsoDateTime) }),
+  Schema.Struct({ at: IsoDateTime, unreadable: Schema.Literal(true) }),
+]);
+const decodeSentLook = Schema.decodeOption(
+  Schema.fromJsonString(Schema.Struct({ sentLook: SentLook })),
+);
+const SENT_LOOK_AFTER_MS = 5 * MINUTE_MS;
+const SENT_LOOK_MAX = 25;
+
+const audienceOf = (mail: Pick<Email, "to" | "cc">) =>
+  new Set([...mail.to, ...mail.cc].map((one) => one.trim().toLowerCase()));
+
+const sameSubject = (one: Pick<Email, "subject">, other: Pick<Email, "subject">) =>
+  one.subject.trim().toLowerCase() === other.subject.trim().toLowerCase();
+
+export const matchesSentMail = (
+  mail: Pick<Email, "to" | "cc" | "subject">,
+  since: number,
+  sent: SentMailHeader,
+) => {
+  const audience = audienceOf(mail);
+  const sentTo = audienceOf(sent);
+  return (
+    sent.sentAt >= since &&
+    sameSubject(mail, sent) &&
+    audience.size === sentTo.size &&
+    [...audience].every((address) => sentTo.has(address))
+  );
+};
 // An open ask's result is free until it ends: a retry keeps there the try it came back from.
 const decodeAfter = Schema.decodeOption(
   Schema.fromJsonString(Schema.Struct({ after: Schema.String })),
@@ -949,6 +981,10 @@ export class KinConnections extends Context.Service<
       orgId: KinOrgId,
       widgetId: string,
       rewrite: SaveCards["rewrite"],
+    ) => Effect.Effect<void, KinChatError>;
+    readonly lookInSent: <E>(
+      orgId: KinOrgId,
+      rewrite: (card: Parameters<SaveCards["rewrite"]>[0]) => Effect.Effect<unknown, E>,
     ) => Effect.Effect<void, KinChatError>;
     /** After the tap commits: sends a confirmed ask, once. */
     readonly sendAsk: (orgId: KinOrgId, askId: string) => Effect.Effect<AskOutcome, KinChatError>;
@@ -3663,9 +3699,6 @@ const make = Effect.gen(function* () {
         AND ${maybeSameMail(ask, yield* mailboxOfAsk(orgId, askId))}`;
     return later.some((one) => sameMail(ask, one));
   });
-  /** Who a mail goes to: To and Cc together, in any letter case, each once. */
-  const audienceOf = (mail: Pick<Email, "to" | "cc">) =>
-    new Set([...mail.to, ...mail.cc].map((one) => one.trim().toLowerCase()));
   /** A try at the same document or in the same thread: one that could be this card's mail. */
   const sameDocOrThread = (
     card: { readonly entry: string | null },
@@ -3675,10 +3708,28 @@ const make = Effect.gen(function* () {
   ) =>
     (card.entry !== null && card.entry === tried.entry) ||
     (draft.threadId !== null && draft.threadId === went.threadId);
+  type EndedTry = {
+    askId: string;
+    payload: string;
+    entry: string | null;
+    result: string | null;
+    reason: string | null;
+    doneAt: number;
+  };
+  /** What a look in Sent found for an unknown try: a time, null for nothing, else undefined. */
+  const foundInSent = (one: EndedTry) => {
+    const look =
+      one.result === null ? undefined : Option.getOrUndefined(decodeSentLook(one.result))?.sentLook;
+    return look !== undefined && "found" in look ? look.found : undefined;
+  };
+  const unknownEnd = (one: EndedTry) =>
+    (one.result !== null && Option.isSome(decodeMayHaveGone(one.result))) ||
+    one.reason?.includes(UNKNOWN_DELIVERY) === true;
   /**
-   * The last try (by the same document, the same thread, or the try the card came back from) to
-   * reach anyone this card sends to, when it ended with delivery unknown; undefined once the last
-   * such try is known to have gone or not. `mail`: the words that would go, when not the draft's.
+   * The last try (same document, same thread, or the try the card came back from) to reach anyone
+   * this card sends to, when it ended with delivery unknown. One whose Sent showed nothing gives
+   * way to the try before it, tied also by subject, since a retry's card loses its tie to the try
+   * before. `mail`: the words that would go, when not the draft's.
    */
   const earlierGone = Effect.fnUntraced(function* (
     orgId: KinOrgId,
@@ -3687,41 +3738,55 @@ const make = Effect.gen(function* () {
       readonly payload: string;
       readonly entry: string | null;
       readonly after: string | null;
-      readonly mail?: Pick<Email, "to" | "cc">;
+      readonly mail?: Pick<Email, "to" | "cc" | "subject">;
     },
   ) {
     const draft = Option.getOrUndefined(decodePrepared(ask.payload));
     if (draft?._tag !== "email") return undefined;
-    const reaches = audienceOf(ask.mail ?? draft);
-    const tries = yield* sql<{
-      askId: string;
-      payload: string;
-      entry: string | null;
-      result: string | null;
-      reason: string | null;
-      doneAt: number;
-    }>`SELECT ask_id AS "askId", payload_json AS payload, entry_record_id AS entry,
-        result_json AS result, reason, done_at AS "doneAt"
+    const words = ask.mail ?? draft;
+    const reaches = audienceOf(words);
+    const mailbox = yield* mailboxOfAsk(orgId, ask.askId);
+    const ended = (
+      which: ReturnType<typeof maybeSameMail>,
+    ) => sql<EndedTry>`SELECT ask_id AS "askId",
+        payload_json AS payload, entry_record_id AS entry, result_json AS result, reason,
+        done_at AS "doneAt"
       FROM kin_connection_asks
       WHERE org_id = ${orgId} AND ask_id <> ${ask.askId} AND state IN ('sent', 'failed')
-        AND done_at IS NOT NULL
-        AND (ask_id = ${ask.after} OR ${maybeSameMail(ask, yield* mailboxOfAsk(orgId, ask.askId))})
+        AND done_at IS NOT NULL AND ${which}
       ORDER BY done_at DESC, rowid DESC`;
-    const last = tries.find((one) => {
+    const tied = (one: EndedTry, bySubject: boolean) => {
       const went = Option.map(decodePrepared(one.payload), (prepared) =>
         confirmedOf(prepared, one.payload),
       ).pipe(Option.getOrUndefined);
       return (
         went?._tag === "email" &&
-        (one.askId === ask.after || sameDocOrThread(ask, draft, one, went)) &&
+        (one.askId === ask.after ||
+          sameDocOrThread(ask, draft, one, went) ||
+          (bySubject && sameSubject(words, went))) &&
         [...audienceOf(went)].some((address) => reaches.has(address))
       );
-    });
-    if (last === undefined) return undefined;
-    const marked = last.result !== null && Option.isSome(decodeMayHaveGone(last.result));
-    return marked || last.reason?.includes(UNKNOWN_DELIVERY) === true
-      ? { tryId: last.askId, at: DateTime.formatIso(DateTime.makeUnsafe(last.doneAt)) }
-      : undefined;
+    };
+    const tries = yield* ended(sql`(ask_id = ${ask.after} OR ${maybeSameMail(ask, mailbox)})`);
+    const last = tries.find((one) => tied(one, false));
+    if (last === undefined || !unknownEnd(last)) return undefined;
+    let held = last;
+    if (foundInSent(last) === null) {
+      const before = yield* ended(sql`done_at >= ${last.doneAt - WEEK_MS}
+        AND connection_id IN (SELECT m.connection_id FROM kin_connections m
+          WHERE m.org_id = ${identity.owner.orgId} AND m.person_id IS ${mailbox})`);
+      const next = before.find(
+        (one) => tied(one, true) && !(unknownEnd(one) && foundInSent(one) === null),
+      );
+      if (next === undefined || !unknownEnd(next)) return undefined;
+      held = next;
+    }
+    const found = foundInSent(held);
+    return {
+      tryId: held.askId,
+      at: DateTime.formatIso(DateTime.makeUnsafe(held.doneAt)),
+      ...(typeof found === "string" ? { seenInSentAt: found } : {}),
+    } satisfies KinSendTry;
   });
   const goneOn = (gone: KinSendTry | undefined) =>
     gone === undefined ? {} : { mayHaveGone: gone };
@@ -4304,7 +4369,11 @@ const make = Effect.gen(function* () {
           mail: shown,
         });
         if (gone !== undefined && !acknowledges(input.checkedSent, gone))
-          return yield* fail("conflict", NOT_CHECKED);
+          return yield* new KinChatError({
+            reason: "conflict",
+            message: NOT_CHECKED,
+            ...(gone.seenInSentAt === undefined ? {} : { mayHaveGone: gone }),
+          });
         if (shown !== drafted)
           yield* tx`UPDATE kin_connection_asks SET payload_json = json_set(payload_json,
               '$.confirmed', json(${toJson(confirmedWords(shown))}))
@@ -5134,7 +5203,12 @@ const make = Effect.gen(function* () {
         mail: shownMail(draft, card.send),
       }),
     );
-    if (had?.tryId === now.mayHaveGone?.tryId && had?.at === now.mayHaveGone?.at) return undefined;
+    if (
+      had?.tryId === now.mayHaveGone?.tryId &&
+      had?.at === now.mayHaveGone?.at &&
+      had?.seenInSentAt === now.mayHaveGone?.seenInSentAt
+    )
+      return undefined;
     return {
       widgetId: one.widgetId,
       revision: one.revision,
@@ -5143,14 +5217,8 @@ const make = Effect.gen(function* () {
     };
   });
 
-  const openWarnings = Effect.fn("KinConnections.openWarnings")(function* (
-    orgId: KinOrgId,
-    widgetId: string,
-  ) {
-    const [tried] = yield* sql<{ askId: string; payload: string; entry: string | null }>`SELECT
-        ask_id AS "askId", payload_json AS payload, entry_record_id AS entry
-      FROM kin_connection_asks WHERE org_id = ${orgId} AND widget_id = ${widgetId}`;
-    if (tried === undefined) return [];
+  type TriedMail = { askId: string; payload: string; entry: string | null };
+  const warningsForTry = Effect.fnUntraced(function* (orgId: KinOrgId, tried: TriedMail) {
     // Every open card that could send where this try went; each is judged on its own words.
     const open = yield* openCards(
       orgId,
@@ -5163,6 +5231,16 @@ const make = Effect.gen(function* () {
       if (card !== undefined) redrawn.push(card);
     }
     return redrawn;
+  });
+
+  const openWarnings = Effect.fn("KinConnections.openWarnings")(function* (
+    orgId: KinOrgId,
+    widgetId: string,
+  ) {
+    const [tried] = yield* sql<TriedMail>`SELECT
+        ask_id AS "askId", payload_json AS payload, entry_record_id AS entry
+      FROM kin_connection_asks WHERE org_id = ${orgId} AND widget_id = ${widgetId}`;
+    return tried === undefined ? [] : yield* warningsForTry(orgId, tried);
   }, settle);
 
   const redrawWarning = Effect.fn("KinConnections.redrawWarning")(function* (
@@ -5173,6 +5251,102 @@ const make = Effect.gen(function* () {
     const [one] = yield* openCards(orgId, sql`k.widget_id = ${widgetId}`);
     const card = one === undefined ? undefined : yield* warned(orgId, one);
     if (card !== undefined) yield* rewrite(card);
+  }, settle);
+
+  type SentLookTry = TriedMail &
+    Pick<AskRow, "account" | "connectionId" | "signInGen"> & {
+      readonly leftAt: number | null;
+    };
+  const noSentLook = sql`(CASE WHEN json_valid(result_json) THEN json_type(result_json, '$.sentLook') IS NULL ELSE 1 END)`;
+  const lookInSent = Effect.fn("KinConnections.lookInSent")(function* <E>(
+    orgId: KinOrgId,
+    rewrite: (card: Parameters<SaveCards["rewrite"]>[0]) => Effect.Effect<unknown, E>,
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    const tries = yield* sql<SentLookTry>`SELECT ask_id AS "askId", payload_json AS payload,
+        entry_record_id AS entry, connection_id AS "connectionId", account,
+        sign_in_gen AS "signInGen", left_at AS "leftAt"
+      FROM kin_connection_asks
+      WHERE org_id = ${orgId} AND state = 'failed'
+        AND done_at BETWEEN ${now - WEEK_MS} AND ${now - SENT_LOOK_AFTER_MS}
+        AND json_extract(payload_json, '$._tag') = 'email'
+        AND ${noSentLook}
+        AND (CASE WHEN json_valid(result_json) THEN json_extract(result_json, '$.mayHaveGone') END = 1
+          OR instr(reason, ${UNKNOWN_DELIVERY}) > 0)
+      ORDER BY done_at, rowid LIMIT ${REPAIR_BATCH}`;
+    for (const tried of tries) {
+      const draft = Option.getOrUndefined(decodePrepared(tried.payload));
+      const mail = draft === undefined ? undefined : confirmedOf(draft, tried.payload);
+      yield* fenced(
+        [tried.connectionId],
+        Effect.gen(function* () {
+          const stillRecent = (yield* Clock.currentTimeMillis) - WEEK_MS;
+          const [pending] = yield* sql<{ result: string | null }>`SELECT result_json AS result
+            FROM kin_connection_asks WHERE org_id = ${orgId} AND ask_id = ${tried.askId}
+              AND done_at >= ${stillRecent} AND ${noSentLook}`;
+          if (pending === undefined) return;
+          const sent = yield* Effect.gen(function* () {
+            if (mail?._tag !== "email" || tried.leftAt === null) return yield* unavailable;
+            const connection = yield* connectionById(orgId, tried.connectionId).pipe(provideSql);
+            if (
+              connection === undefined ||
+              !signedInAsShown(tried, connection) ||
+              connection.state === "needs_sign_in" ||
+              connection.pausedAt !== null
+            )
+              return yield* unavailable;
+            const provider = mailProviderOf(connection);
+            if (provider === undefined) return yield* unavailable;
+            const token = yield* tokenOf(orgId, connection, false);
+            const since = tried.leftAt - MINUTE_MS;
+            const messages = yield* provider.sentSince(http, token, since, SENT_LOOK_MAX);
+            const found = messages.find((message) => matchesSentMail(mail, since, message));
+            if (found !== undefined) return DateTime.formatIso(DateTime.makeUnsafe(found.sentAt));
+            // Newest first, one page: when it is full, the copy may be on the next.
+            return messages.length < SENT_LOOK_MAX ? null : yield* unavailable;
+          }).pipe(Effect.timeout(CONNECTION_LIMITS.timeout), Effect.option);
+          const at = DateTime.formatIso(DateTime.makeUnsafe(yield* Clock.currentTimeMillis));
+          const sentLook = Option.isSome(sent)
+            ? { at, found: sent.value }
+            : { at, unreadable: true };
+          const old = pending.result === null ? undefined : stored(pending.result);
+          const result = toJson({
+            ...(Predicate.isReadonlyObject(old) ? old : {}),
+            ...MAY_HAVE_GONE,
+            sentLook,
+          });
+          yield* sql.withTransaction(
+            Effect.gen(function* () {
+              const [written] = yield* sql`UPDATE kin_connection_asks SET result_json = ${result}
+                WHERE org_id = ${orgId} AND ask_id = ${tried.askId} AND ${noSentLook} RETURNING 1`;
+              if (written === undefined || Option.isNone(sent)) return;
+              const cards = yield* warningsForTry(orgId, tried);
+              for (const card of cards)
+                yield* rewrite(card).pipe(
+                  Effect.catch(() =>
+                    Effect.logWarning("Kin couldn't redraw a card for the same mail", {
+                      orgId,
+                      widgetId: card.widgetId,
+                    }),
+                  ),
+                );
+              if (cards.length > 0)
+                yield* records
+                  .announce(orgId)
+                  .pipe(
+                    Effect.catch(() =>
+                      Effect.logWarning("Kin couldn't tell Tasks to read again", { orgId }),
+                    ),
+                  );
+            }),
+          );
+        }),
+      ).pipe(
+        Effect.catch(() =>
+          Effect.logWarning("Kin couldn't record a sent-mail check", { orgId, askId: tried.askId }),
+        ),
+      );
+    }
   }, settle);
 
   /**
@@ -5496,6 +5670,7 @@ const make = Effect.gen(function* () {
     sendAsk,
     openWarnings,
     redrawWarning,
+    lookInSent,
     interruptedSends,
   });
 });
