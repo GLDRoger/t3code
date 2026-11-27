@@ -852,6 +852,53 @@ describe("Mail tool results with the sender's memory", () => {
     ),
   );
 
+  it.effect.each([
+    {
+      name: "uses a marked note in Spanish without English keywords",
+      what: "Me despido con «Un abrazo, Rhea».",
+      mark: true,
+      saidBy: "owner",
+      note: `${heading}\nMe despido con «Un abrazo, Rhea».`,
+    },
+    {
+      name: "uses a marked note whatever kind the agent saved it as",
+      what: "Me despido con «Un abrazo, Rhea».",
+      mark: true,
+      saidBy: "owner",
+      kind: "decision" as const,
+      note: `${heading}\nMe despido con «Un abrazo, Rhea».`,
+    },
+    {
+      name: "excludes a contact's style explicitly marked as outside the sender's voice",
+      what: "Zoya’s email signature ends with Cheers.",
+      mark: false,
+      saidBy: "owner",
+      note: undefined,
+    },
+    {
+      name: "excludes another person's marked style",
+      what: "Zoya’s email signature ends with Cheers.",
+      mark: true,
+      saidBy: "mate",
+      note: undefined,
+    },
+  ])("$name", ({ what, mark, saidBy, note, ...row }) =>
+    toolsWithVoice(
+      ({ own, tools }) =>
+        Effect.gen(function* () {
+          assert.strictEqual((yield* tools(scope, { connection: own })).note, note);
+        }),
+      [
+        voiceItem("mail-voice-fixture", what, {
+          title: "Preferencia",
+          said_by: saidBy,
+          sender_mail_voice: mark,
+          ...("kind" in row ? { kind: row.kind } : {}),
+        }),
+      ],
+    ),
+  );
+
   it.effect("omits the block when memory has no matching sender item", () =>
     toolsWithVoice(
       ({ own, tools }) =>

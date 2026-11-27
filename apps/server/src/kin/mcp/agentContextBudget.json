@@ -260,7 +260,7 @@
     },
     "memory_write": {
       "desc": 1769,
-      "schema": 1703
+      "schema": 1930
     },
     "message_replace": {
       "desc": 593,
